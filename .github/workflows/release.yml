@@ -26,9 +26,7 @@ jobs:
           - os: darwin
             arch: arm64
             suffix: darwin-arm64
-          - os: windows
-            arch: amd64
-            suffix: windows-amd64.exe
+        
     
     steps:
       - name: Checkout code
