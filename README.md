@@ -63,40 +63,6 @@ polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 | `POLLYTOOL_BASEURL` | Custom endpoint | (unset) |
 | `POLLYTOOL_CONTEXT` | Default context | (unset) |
 
-### Set Them (pick your shell)
-
-```bash
-# Bash/Zsh
-export POLLYTOOL_OPENAIKEY=sk_...
-export POLLYTOOL_MODEL=anthropic/claude-opus-4-1-20250805
-
-# Fish
-set -x POLLYTOOL_TEMP 0.7
-
-# Direnv (.envrc)
-export POLLYTOOL_SYSTEM="Be brief. Be bright. Be gone."
-```
-
-Pro tip: put them in a script; forget them forever. Or use `env | grep POLLYTOOL`.
-
-```bash
-
-# API Keys
-export POLLYTOOL_ANTHROPICKEY=your_key_here
-export POLLYTOOL_OPENAIKEY=your_key_here
-export POLLYTOOL_GEMINIKEY=your_key_here
-export POLLYTOOL_OLLAMAKEY=your_bearer_token  # Optional, for Ollama auth
-
-# env examples
-export POLLYTOOL_MODEL=anthropic/claude-opus-4-1-20250805
-export POLLYTOOL_TEMP=0.7
-export POLLYTOOL_MAXTOKENS=8192
-export POLLYTOOL_TIMEOUT=5m
-export POLLYTOOL_BASEURL=http://localhost:11434  #  custom Ollama endpoint
-export POLLYTOOL_SYSTEM="You are a helpful assistant"
-```
-
-
 ### Model Selection
 
 The default model is `anthropic/claude-sonnet-4-20250514`. Override with `-m` flag:
