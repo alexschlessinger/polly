@@ -13,6 +13,22 @@ type MultiPass struct {
 	apiKeys map[string]string
 }
 
+// getEnvVarNameForProvider returns the environment variable name for the given provider
+func getEnvVarNameForProvider(provider string) string {
+	switch provider {
+	case "openai":
+		return "POLLYTOOL_OPENAIKEY"
+	case "anthropic":
+		return "POLLYTOOL_ANTHROPICKEY"
+	case "gemini":
+		return "POLLYTOOL_GEMINIKEY"
+	case "ollama":
+		return "POLLYTOOL_OLLAMAKEY"
+	default:
+		return fmt.Sprintf("POLLYTOOL_%sKEY", strings.ToUpper(provider))
+	}
+}
+
 // NewMultiPass creates a new multi-provider router
 func NewMultiPass(apiKeys map[string]string) *MultiPass {
 	return &MultiPass{
@@ -47,9 +63,10 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 			req.APIKey = key
 		} else if provider != "ollama" {
 			errorChan := make(chan messages.ChatMessage, 1)
+			envVar := getEnvVarNameForProvider(provider)
 			errorChan <- messages.ChatMessage{
 				Role:    messages.MessageRoleAssistant,
-				Content: fmt.Sprintf("Error: missing API key for provider '%s'", provider),
+				Content: fmt.Sprintf("Error: missing API key for provider '%s'. Set the %s environment variable.", provider, envVar),
 			}
 			close(errorChan)
 			return processor.ProcessMessagesToEvents(errorChan)
