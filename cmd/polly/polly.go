@@ -137,40 +137,6 @@ func defineFlags() []cli.Flag {
 	}
 }
 
-func parseConfig(cmd *cli.Command) *Config {
-	return &Config{
-		// Model configuration
-		Model:       cmd.String("model"),
-		Temperature: cmd.Float64("temp"),
-		MaxTokens:   cmd.Int("maxtokens"),
-		Timeout:     cmd.Duration("timeout"),
-
-		// API configuration
-		BaseURL: cmd.String("baseurl"),
-
-		// Context configuration
-		ContextID:      cmd.String("context"),
-		ResetContext:   cmd.Bool("reset"),
-		UseLastContext: cmd.Bool("last"),
-		ListContexts:   cmd.Bool("list"),
-		DeleteContext:  cmd.String("delete"),
-		AddToContext:   cmd.Bool("add"),
-
-		// Tool configuration
-		ToolPaths:  cmd.StringSlice("tool"),
-		MCPServers: cmd.StringSlice("mcp"),
-
-		// Input/Output configuration
-		Prompt:             cmd.String("prompt"),
-		SystemPrompt:       cmd.String("system"),
-		SystemPromptWasSet: cmd.IsSet("system"),
-		Files:              cmd.StringSlice("file"),
-		SchemaPath:         cmd.String("schema"),
-		Quiet:              cmd.Bool("quiet"),
-		Debug:              cmd.Bool("debug"),
-	}
-}
-
 func runCommand(ctx context.Context, cmd *cli.Command) error {
 	config := parseConfig(cmd)
 
