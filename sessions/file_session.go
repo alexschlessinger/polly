@@ -26,8 +26,7 @@ type FileSession struct {
 
 // ContextInfo stores metadata about a context
 type ContextInfo struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name,omitempty"`
+	Name         string    `json:"name"`          // Name is the primary identifier (e.g., "@stocks" or random ID)
 	Created      time.Time `json:"created"`
 	LastUsed     time.Time `json:"lastUsed"`
 	Model        string    `json:"model,omitempty"`
@@ -36,6 +35,8 @@ type ContextInfo struct {
 	Description  string    `json:"description,omitempty"`
 	ToolPaths    []string  `json:"toolPaths,omitempty"`
 	MCPServers   []string  `json:"mcpServers,omitempty"`
+	// Deprecated: ID field for backwards compatibility during migration
+	LegacyID     string    `json:"id,omitempty"`
 }
 
 // ContextIndex manages the mapping of names to IDs
@@ -88,32 +89,42 @@ func GenerateSessionID() string {
 	return shortuuid.New()
 }
 
+// sanitizeFileName converts a context name to a safe filename
+func sanitizeFileName(name string) string {
+	// Replace any problematic characters for filesystem
+	safe := strings.ReplaceAll(name, "/", "_")
+	safe = strings.ReplaceAll(safe, "\\", "_")
+	safe = strings.ReplaceAll(safe, ":", "_")
+	safe = strings.ReplaceAll(safe, "*", "_")
+	safe = strings.ReplaceAll(safe, "?", "_")
+	safe = strings.ReplaceAll(safe, "\"", "_")
+	safe = strings.ReplaceAll(safe, "<", "_")
+	safe = strings.ReplaceAll(safe, ">", "_")
+	safe = strings.ReplaceAll(safe, "|", "_")
+	if safe == "" {
+		safe = "default"
+	}
+	return safe
+}
+
+// getFileNameForContext returns the filename for a context
+func getFileNameForContext(name string) string {
+	// Always sanitize the name for filesystem safety
+	return sanitizeFileName(name)
+}
+
 // Get retrieves or creates a session
-func (s *FileSessionStore) Get(id string) Session {
-	// Generate ID if empty
-	if id == "" {
-		id = GenerateSessionID()
+func (s *FileSessionStore) Get(name string) Session {
+	// Generate name if empty
+	if name == "" {
+		name = GenerateSessionID()
 	}
 
-	originalID := id
+	// Track last context
+	s.SetLastContext(name)
 
-	// Resolve name to ID if needed
-	if strings.HasPrefix(id, "@") {
-		resolvedID := s.ResolveContext(id)
-		if resolvedID == "" {
-			// Name doesn't exist yet, create a new ID for it
-			newID := GenerateSessionID()
-			s.SaveContextName(originalID, newID)
-			id = newID
-		} else {
-			id = resolvedID
-		}
-	}
-
-	// Track last context (use actual ID)
-	s.SetLastContext(id)
-
-	sessionPath := filepath.Join(s.baseDir, id+".json")
+	fileName := getFileNameForContext(name)
+	sessionPath := filepath.Join(s.baseDir, fileName+".json")
 	lockPath := sessionPath + ".lock"
 
 	// Open lock file with exclusive access
@@ -147,7 +158,7 @@ func (s *FileSessionStore) Get(id string) Session {
 
 	// Create new session
 	session := &FileSession{
-		ID:      id,
+		ID:      name,
 		History: []messages.ChatMessage{},
 		Created: time.Now(),
 		Updated: time.Now(),
@@ -159,29 +170,15 @@ func (s *FileSessionStore) Get(id string) Session {
 }
 
 // Delete removes a session
-func (s *FileSessionStore) Delete(id string) {
-	// Resolve name to ID if needed
-	originalID := id
-	if strings.HasPrefix(id, "@") {
-		id = s.ResolveContext(id)
-		if id == "" {
-			return // Name doesn't exist
-		}
-		// Remove the name mapping
-		s.DeleteContextName(originalID)
-	}
-
-	sessionPath := filepath.Join(s.baseDir, id+".json")
+func (s *FileSessionStore) Delete(name string) {
+	fileName := getFileNameForContext(name)
+	sessionPath := filepath.Join(s.baseDir, fileName+".json")
 	lockPath := sessionPath + ".lock"
 	os.Remove(sessionPath)
 	os.Remove(lockPath)
 
-	// Also remove any name mappings that point to this ID
-	for name, info := range s.GetContextInfo() {
-		if info.ID == id {
-			s.DeleteContextName(name)
-		}
-	}
+	// Remove from index if present
+	s.DeleteContextName(name)
 }
 
 // Expire removes old sessions
@@ -237,7 +234,7 @@ func (s *FileSessionStore) Expire() {
 	}
 }
 
-// ListContexts returns all available context IDs
+// ListContexts returns all available context names
 func (s *FileSessionStore) ListContexts() ([]string, error) {
 	entries, err := os.ReadDir(s.baseDir)
 	if err != nil {
@@ -247,8 +244,15 @@ func (s *FileSessionStore) ListContexts() ([]string, error) {
 	var sessions []string
 	for _, entry := range entries {
 		if filepath.Ext(entry.Name()) == ".json" && !strings.HasPrefix(entry.Name(), ".") {
-			sessionID := entry.Name()[:len(entry.Name())-5] // Remove .json extension
-			sessions = append(sessions, sessionID)
+			name := entry.Name()[:len(entry.Name())-5] // Remove .json extension
+			// Convert back to @name format if it's a named context
+			for ctxName := range s.index.Contexts {
+				if sanitizeFileName(ctxName) == name {
+					name = ctxName
+					break
+				}
+			}
+			sessions = append(sessions, name)
 		}
 	}
 	return sessions, nil
@@ -303,7 +307,10 @@ func (s *FileSessionStore) loadIndex() error {
 	s.indexMu.Lock()
 	defer s.indexMu.Unlock()
 
-	indexPath := filepath.Join(s.baseDir, ".index.json")
+	// Location: ~/.pollytool/index.json
+	baseDir := filepath.Dir(s.baseDir) // Get ~/.pollytool from ~/.pollytool/contexts
+	indexPath := filepath.Join(baseDir, "index.json")
+	
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
 		return err
@@ -326,7 +333,10 @@ func (s *FileSessionStore) saveIndex() error {
 	s.indexMu.RLock()
 	defer s.indexMu.RUnlock()
 
-	indexPath := filepath.Join(s.baseDir, ".index.json")
+	// Location: ~/.pollytool/index.json
+	baseDir := filepath.Dir(s.baseDir) // Get ~/.pollytool from ~/.pollytool/contexts
+	indexPath := filepath.Join(baseDir, "index.json")
+	
 	data, err := json.MarshalIndent(s.index, "", "  ")
 	if err != nil {
 		return err
@@ -335,33 +345,22 @@ func (s *FileSessionStore) saveIndex() error {
 	return os.WriteFile(indexPath, data, 0644)
 }
 
-// ResolveContext resolves a context name or ID to an actual ID
-func (s *FileSessionStore) ResolveContext(nameOrID string) string {
-	if !strings.HasPrefix(nameOrID, "@") {
-		return nameOrID // It's already an ID
-	}
-
-	s.indexMu.RLock()
-	defer s.indexMu.RUnlock()
-
-	if info, exists := s.index.Contexts[nameOrID]; exists {
-		return info.ID
-	}
-	return "" // Name not found
+// ResolveContext now just returns the name as-is (kept for compatibility)
+func (s *FileSessionStore) ResolveContext(name string) string {
+	return name
 }
 
-// SaveContextName saves a name mapping for a context
-func (s *FileSessionStore) SaveContextName(name, id string) error {
-	if !strings.HasPrefix(name, "@") {
-		name = "@" + name
-	}
-
+// SaveContextName saves context metadata
+func (s *FileSessionStore) SaveContextName(name, _ string) error {
 	s.indexMu.Lock()
-	s.index.Contexts[name] = &ContextInfo{
-		ID:       id,
-		Name:     name,
-		Created:  time.Now(),
-		LastUsed: time.Now(),
+	if s.index.Contexts[name] == nil {
+		s.index.Contexts[name] = &ContextInfo{
+			Name:     name,
+			Created:  time.Now(),
+			LastUsed: time.Now(),
+		}
+	} else {
+		s.index.Contexts[name].LastUsed = time.Now()
 	}
 	s.indexMu.Unlock()
 
@@ -370,9 +369,6 @@ func (s *FileSessionStore) SaveContextName(name, id string) error {
 
 // SaveContextInfo saves full context information including model and settings
 func (s *FileSessionStore) SaveContextInfo(info *ContextInfo) error {
-	if !strings.HasPrefix(info.Name, "@") {
-		info.Name = "@" + info.Name
-	}
 
 	s.indexMu.Lock()
 	// Preserve existing info if updating
@@ -408,7 +404,7 @@ func (s *FileSessionStore) SaveContextInfo(info *ContextInfo) error {
 	return s.saveIndex()
 }
 
-// GetLastContext returns the last used context ID
+// GetLastContext returns the last used context name
 func (s *FileSessionStore) GetLastContext() string {
 	s.indexMu.RLock()
 	defer s.indexMu.RUnlock()
@@ -416,16 +412,13 @@ func (s *FileSessionStore) GetLastContext() string {
 }
 
 // SetLastContext updates the last used context
-func (s *FileSessionStore) SetLastContext(id string) error {
+func (s *FileSessionStore) SetLastContext(name string) error {
 	s.indexMu.Lock()
-	s.index.LastContext = id
+	s.index.LastContext = name
 
 	// Update last used time for named contexts
-	for _, info := range s.index.Contexts {
-		if info.ID == id {
-			info.LastUsed = time.Now()
-			break
-		}
+	if info, exists := s.index.Contexts[name]; exists {
+		info.LastUsed = time.Now()
 	}
 	s.indexMu.Unlock()
 
@@ -446,20 +439,13 @@ func (s *FileSessionStore) GetContextInfo() map[string]*ContextInfo {
 }
 
 // GetContextByNameOrID returns context info for a specific context
-func (s *FileSessionStore) GetContextByNameOrID(nameOrID string) *ContextInfo {
+func (s *FileSessionStore) GetContextByNameOrID(name string) *ContextInfo {
 	s.indexMu.RLock()
 	defer s.indexMu.RUnlock()
 
-	// Try as name first
-	if info, exists := s.index.Contexts[nameOrID]; exists {
+	// Direct lookup by name
+	if info, exists := s.index.Contexts[name]; exists {
 		return info
-	}
-
-	// Try to find by ID
-	for _, info := range s.index.Contexts {
-		if info.ID == nameOrID {
-			return info
-		}
 	}
 
 	return nil
@@ -474,15 +460,11 @@ func (s *FileSessionStore) DeleteContextName(name string) error {
 	return s.saveIndex()
 }
 
-// ContextExists checks if a context with the given ID exists
-func (s *FileSessionStore) ContextExists(id string) bool {
-	// Check if it's a named context
-	if strings.HasPrefix(id, "@") {
-		return s.ResolveContext(id) != ""
-	}
-
+// ContextExists checks if a context with the given name exists
+func (s *FileSessionStore) ContextExists(name string) bool {
 	// Check if session file exists
-	sessionPath := filepath.Join(s.baseDir, id+".json")
+	fileName := getFileNameForContext(name)
+	sessionPath := filepath.Join(s.baseDir, fileName+".json")
 	_, err := os.Stat(sessionPath)
 	return err == nil
 }

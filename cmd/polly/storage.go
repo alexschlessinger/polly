@@ -33,15 +33,11 @@ func handleListContexts(store sessions.SessionStore) error {
 		// Print named contexts first
 		for name, info := range namedContexts {
 			marker := ""
-			if info.ID == lastContext {
+			if info.Name == lastContext {
 				marker = " *"
 			}
 			timeSince := time.Since(info.LastUsed)
 			timeStr := formatDuration(timeSince)
-			shortID := info.ID
-			if len(shortID) > 8 {
-				shortID = shortID[:8] + "..."
-			}
 
 			// Build model info string
 			modelInfo := ""
@@ -49,32 +45,24 @@ func handleListContexts(store sessions.SessionStore) error {
 				modelInfo = fmt.Sprintf(" [%s]", info.Model)
 			}
 
-			fmt.Printf("%s (%s)%s - last used: %s%s\n", name, shortID, modelInfo, timeStr, marker)
+			fmt.Printf("%s%s - last used: %s%s\n", name, modelInfo, timeStr, marker)
 		}
 
-		// Print unnamed contexts
-		for _, id := range contextIDs {
-			// Skip if already shown as named
-			isNamed := false
-			for _, info := range namedContexts {
-				if info.ID == id {
-					isNamed = true
-					break
-				}
+		// Print contexts without metadata in the index
+		for _, name := range contextIDs {
+			// Skip if already shown (has metadata in index)
+			if _, hasMetadata := namedContexts[name]; hasMetadata {
+				continue
 			}
-			if !isNamed {
-				marker := ""
-				if id == lastContext {
-					marker = " *"
-				}
-				shortID := id
-				if len(shortID) > 8 {
-					shortID = shortID[:8] + "..."
-				} else {
-					shortID = shortID + "..."
-				}
-				fmt.Printf("%s%s\n", shortID, marker)
+			marker := ""
+			if name == lastContext {
+				marker = " *"
 			}
+			shortName := name
+			if len(shortName) > 20 {
+				shortName = shortName[:8] + "..."
+			}
+			fmt.Printf("%s%s\n", shortName, marker)
 		}
 
 		if len(contextIDs) == 0 && len(namedContexts) == 0 {

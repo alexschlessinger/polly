@@ -107,7 +107,7 @@ func defineFlags() []cli.Flag {
 			Aliases: []string{"L"},
 			Usage:   "Use the last active context",
 		},
-		&cli.StringFlag{
+		&cli.BoolFlag{
 			Name:  "reset",
 			Usage: "Reset context (clear conversation history, keep settings)",
 		},
@@ -150,7 +150,7 @@ func parseConfig(cmd *cli.Command) *Config {
 
 		// Context configuration
 		ContextID:      cmd.String("context"),
-		ResetContext:   cmd.String("reset"),
+		ResetContext:   cmd.Bool("reset"),
 		UseLastContext: cmd.Bool("last"),
 		ListContexts:   cmd.Bool("list"),
 		DeleteContext:  cmd.String("delete"),
@@ -208,21 +208,35 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	var justCreatedContext bool
 
 	// Handle --reset flag (reset and use)
-	if config.ResetContext != "" {
-		// Check if context exists and handle accordingly
-		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-			if !checkAndPromptForReset(fileStore, config.ResetContext) {
-				return nil // User cancelled
+	if config.ResetContext {
+		// Determine which context to reset
+		resetContextName := contextID // Use the context from -c or environment
+		
+		// If --last was specified, get the last context
+		if config.UseLastContext && resetContextName == "" {
+			if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
+				resetContextName = fileStore.GetLastContext()
+				if resetContextName == "" {
+					return fmt.Errorf("no last context found to reset")
+				}
 			}
 		}
+		
+		// Ensure we have a context to reset
+		if resetContextName == "" {
+			return fmt.Errorf("--reset requires a context (use -c or --last)")
+		}
 
-		newID := sessions.GenerateSessionID()
+		// Check if context exists and handle accordingly
 		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
+			if !checkAndPromptForReset(fileStore, resetContextName) {
+				return nil // User cancelled or context doesn't exist
+			}
+
 			// Check if context already exists to preserve settings
-			existingInfo := fileStore.GetContextByNameOrID(config.ResetContext)
+			existingInfo := fileStore.GetContextByNameOrID(resetContextName)
 			if existingInfo != nil {
-				// Preserve existing settings, just update ID
-				existingInfo.ID = newID
+				// Preserve existing settings
 				existingInfo.LastUsed = time.Now()
 				// Override with command-line settings if provided
 				if config.Model != defaultModel {
@@ -244,23 +258,17 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 				if err := fileStore.SaveContextInfo(existingInfo); err != nil {
 					return fmt.Errorf("failed to save context info: %w", err)
 				}
+				
+				// Clear the conversation file
+				if err := resetContext(fileStore, resetContextName); err != nil {
+					return fmt.Errorf("failed to reset context: %w", err)
+				}
 			} else {
-				// New context, create fresh
-				info := &sessions.ContextInfo{
-					ID:           newID,
-					Name:         config.ResetContext,
-					Model:        config.Model,
-					Temperature:  config.Temperature,
-					SystemPrompt: config.SystemPrompt,
-					ToolPaths:    config.ToolPaths,
-					MCPServers:   config.MCPServers,
-				}
-				if err := fileStore.SaveContextInfo(info); err != nil {
-					return fmt.Errorf("failed to save context info: %w", err)
-				}
+				// This shouldn't happen since checkAndPromptForReset should have caught it
+				return fmt.Errorf("context '%s' does not exist", resetContextName)
 			}
 		}
-		contextID = newID
+		contextID = resetContextName
 		justCreatedContext = true
 		// Continue with normal flow using this reset context
 	}
@@ -307,7 +315,8 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 			// Check if system prompt is being changed (only if context has existing conversation)
 			if config.SystemPromptWasSet && config.SystemPrompt != contextInfo.SystemPrompt {
 				// Check if there's an existing conversation to reset
-				sessionPath := filepath.Join(fileStore.GetBaseDir(), contextInfo.ID+".json")
+				fileName := sanitizeFileNameForContext(contextInfo.Name)
+				sessionPath := filepath.Join(fileStore.GetBaseDir(), fileName+".json")
 				if _, err := os.Stat(sessionPath); err == nil {
 					needReset = true
 					fmt.Fprintf(os.Stderr, "System prompt changed, resetting conversation...\n")
@@ -338,24 +347,18 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	// Perform reset if system prompt changed
 	if needReset && originalContextInfo != nil {
 		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-			// Get the context name (if it's a named context)
-			contextName := ""
-			if strings.HasPrefix(contextID, "@") {
-				contextName = contextID
-			} else if originalContextInfo.Name != "" {
+			// Get the context name
+			contextName := contextID
+			if originalContextInfo != nil && originalContextInfo.Name != "" {
 				contextName = originalContextInfo.Name
 			}
 
 			// Reset the context
-			oldID := originalContextInfo.ID
-			if err := resetContext(fileStore, contextName, oldID); err != nil {
+			if err := resetContext(fileStore, contextName); err != nil {
 				return fmt.Errorf("failed to reset context: %w", err)
 			}
-
-			// Get the new ID from the updated context info
-			if updatedInfo := fileStore.GetContextByNameOrID(contextName); updatedInfo != nil {
-				contextID = updatedInfo.ID
-			}
+			// Context name remains the same after reset
+			contextID = contextName
 		}
 	}
 
@@ -388,10 +391,10 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 
 	ensureSystemPrompt(session, config.SystemPrompt)
 
-	// Update context info with current settings if it's a named context
+	// Update context info with current settings if it has metadata
 	if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-		if strings.HasPrefix(contextID, "@") || fileStore.GetContextByNameOrID(contextID) != nil {
-			// This is a tracked context, update its settings
+		if fileStore.GetContextByNameOrID(contextID) != nil {
+			// This context has metadata, update its settings
 			if contextInfo := fileStore.GetContextByNameOrID(contextID); contextInfo != nil {
 				contextInfo.Model = config.Model
 				contextInfo.Temperature = config.Temperature
@@ -428,7 +431,9 @@ func getPrompt(config *Config) (string, error) {
 		return readFromStdin()
 	}
 
-	return "", fmt.Errorf("no prompt provided (use -p or pipe input)")
+	// No -p flag and no pipe input, prompt the user interactively
+	fmt.Fprint(os.Stderr, "Enter prompt (Ctrl+D when done):\n")
+	return readFromStdin()
 }
 
 func executeCompletion(

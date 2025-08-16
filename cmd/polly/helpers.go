@@ -87,7 +87,7 @@ func getContextID(config *Config) string {
 // needsFileStore determines if we need a file-based session store
 func needsFileStore(config *Config, contextID string) bool {
 	return contextID != "" ||
-		config.ResetContext != "" ||
+		config.ResetContext ||
 		config.UseLastContext ||
 		config.ListContexts ||
 		config.DeleteContext != "" ||
@@ -113,14 +113,14 @@ func promptYesNo(prompt string) bool {
 // checkAndPromptForReset checks if a context exists and prompts to reset it
 // Returns true if we should proceed with resetting the context
 func checkAndPromptForReset(fileStore *sessions.FileSessionStore, name string) bool {
-	if name == "" || name == "true" || !strings.HasPrefix(name, "@") {
-		return true // Not a named context, proceed
+	if name == "" || name == "true" {
+		return true // No specific context, proceed
 	}
 
-	// Check if context name already exists
-	existingID := fileStore.ResolveContext(name)
-	if existingID == "" {
-		return true // Doesn't exist, will create new
+	// Check if context already exists
+	if !fileStore.ContextExists(name) {
+		fmt.Fprintf(os.Stderr, "Error: context '%s' does not exist\n", name)
+		return false // Context doesn't exist, cannot reset
 	}
 
 	// Context exists, prompt for reset
@@ -131,7 +131,7 @@ func checkAndPromptForReset(fileStore *sessions.FileSessionStore, name string) b
 	}
 
 	// Reset the context (preserve settings, clear history)
-	if err := resetContext(fileStore, name, existingID); err != nil {
+	if err := resetContext(fileStore, name); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to reset context: %v\n", err)
 		return false
 	}
@@ -141,21 +141,18 @@ func checkAndPromptForReset(fileStore *sessions.FileSessionStore, name string) b
 }
 
 // resetContext clears the conversation history but preserves the context settings
-func resetContext(fileStore *sessions.FileSessionStore, name string, oldID string) error {
+func resetContext(fileStore *sessions.FileSessionStore, name string) error {
 	// Get existing context info
 	contextInfo := fileStore.GetContextByNameOrID(name)
 	if contextInfo == nil {
 		// No stored settings, just delete the file
-		sessionPath := filepath.Join(fileStore.GetBaseDir(), oldID+".json")
+		fileName := sanitizeFileNameForContext(name)
+		sessionPath := filepath.Join(fileStore.GetBaseDir(), fileName+".json")
 		os.Remove(sessionPath)
 		return nil
 	}
 
-	// Generate new ID for the reset context
-	newID := sessions.GenerateSessionID()
-	
-	// Update the context info with new ID but preserve all settings
-	contextInfo.ID = newID
+	// Update last used time
 	contextInfo.LastUsed = time.Now()
 	
 	// Save updated context info
@@ -163,43 +160,53 @@ func resetContext(fileStore *sessions.FileSessionStore, name string, oldID strin
 		return err
 	}
 	
-	// Delete old conversation file
-	sessionPath := filepath.Join(fileStore.GetBaseDir(), oldID+".json")
+	// Delete conversation file
+	fileName := sanitizeFileNameForContext(name)
+	sessionPath := filepath.Join(fileStore.GetBaseDir(), fileName+".json")
 	os.Remove(sessionPath)
 	
 	return nil
 }
 
+// sanitizeFileNameForContext is a helper to match the session package's sanitization
+func sanitizeFileNameForContext(name string) string {
+	safe := strings.ReplaceAll(name, "/", "_")
+	safe = strings.ReplaceAll(safe, "\\", "_")
+	safe = strings.ReplaceAll(safe, ":", "_")
+	safe = strings.ReplaceAll(safe, "*", "_")
+	safe = strings.ReplaceAll(safe, "?", "_")
+	safe = strings.ReplaceAll(safe, "\"", "_")
+	safe = strings.ReplaceAll(safe, "<", "_")
+	safe = strings.ReplaceAll(safe, ">", "_")
+	safe = strings.ReplaceAll(safe, "|", "_")
+	if safe == "" {
+		safe = "default"
+	}
+	return safe
+}
+
 // checkAndPromptForMissingContext checks if a context exists and creates it if missing
-// Returns the context ID to use (existing or newly created)
-func checkAndPromptForMissingContext(fileStore *sessions.FileSessionStore, contextID string) string {
-	if contextID == "" {
-		return contextID // No context specified
+// Returns the context name to use (existing or newly created)
+func checkAndPromptForMissingContext(fileStore *sessions.FileSessionStore, contextName string) string {
+	if contextName == "" {
+		return contextName // No context specified
 	}
 
 	// Check if context exists
-	if fileStore.ContextExists(contextID) {
-		return contextID // Context exists, use it
+	if fileStore.ContextExists(contextName) {
+		return contextName // Context exists, use it
 	}
 
 	// Context doesn't exist, create it
-	contextDisplay := contextID
-	if !strings.HasPrefix(contextID, "@") {
-		// For IDs, show shortened version for readability
-		if len(contextID) > 8 {
-			contextDisplay = contextID[:8] + "..."
-		}
+	contextDisplay := contextName
+	// Show shortened version for long names
+	if len(contextName) > 20 {
+		contextDisplay = contextName[:8] + "..."
 	}
-
-	// If it's a named context, save the name mapping
-	if strings.HasPrefix(contextID, "@") {
-		newID := sessions.GenerateSessionID()
-		fileStore.SaveContextName(contextID, newID)
-		fmt.Fprintf(os.Stderr, "Created new context '%s'\n", contextID)
-		return newID
-	}
-
-	// For regular IDs, just return as-is (will be created when accessed)
+	
+	// Save metadata for the new context
+	fileStore.SaveContextName(contextName, "")
 	fmt.Fprintf(os.Stderr, "Created new context '%s'\n", contextDisplay)
-	return contextID
+	
+	return contextName
 }

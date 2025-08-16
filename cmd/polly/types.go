@@ -67,7 +67,7 @@ type Config struct {
 
 	// Context configuration
 	ContextID      string
-	ResetContext   string  // Reset context (clear history, keep settings)
+	ResetContext   bool    // Reset context (clear history, keep settings)
 	UseLastContext bool    // New field for --last flag
 	ListContexts   bool
 	DeleteContext  string
