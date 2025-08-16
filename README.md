@@ -93,19 +93,19 @@ Contexts allow you to maintain conversation history across multiple interactions
 
 ```bash
 # Create a new named context (auto-creates if doesn't exist)
-polly -c @project -p "I'm working on a Python web app"
+polly -c project -p "I'm working on a Python web app"
 
 # Continue the conversation
-polly -c @project -p "What database should I use?"
+polly -c project -p "What database should I use?"
 
 # Reset a context (clear conversation, keep settings)
-polly --reset @project -p "Let's start fresh"
+polly --reset -c project -p "Let's start fresh"
 
 # List all contexts
 polly --list
 
 # Delete a context
-polly --delete @project
+polly --delete project
 ```
 
 ### Context Settings Persistence
@@ -114,10 +114,10 @@ Contexts remember your settings (model, temperature, system prompt, tools) betwe
 
 ```bash
 # First use - settings are saved
-polly -c @helper -m gemini/gemini-2.5-pro -s "You are a SQL expert" -p "Hello"
+polly -c helper -m gemini/gemini-2.5-pro -s "You are a SQL expert" -p "Hello"
 
 # Later uses - settings are automatically restored
-polly -c @helper -p "Write a complex JOIN query"
+polly -c helper -p "Write a complex JOIN query"
 ```
 
 ### Automatic Context Creation
@@ -125,9 +125,9 @@ polly -c @helper -p "Write a complex JOIN query"
 No need for explicit creation - just use a context name and it's created automatically:
 
 ```bash
-# This automatically creates @newcontext if it doesn't exist
-polly -c @newcontext -p "Start of a new conversation"
-# Output: Created new context '@newcontext'
+# This automatically creates newcontext if it doesn't exist
+polly -c newcontext -p "Start of a new conversation"
+# Output: Created new context 'newcontext'
 ```
 
 ### Use Last Context
@@ -136,8 +136,11 @@ polly -c @newcontext -p "Start of a new conversation"
 # Use the last active context
 polly --last -p "Continue our discussion"
 
+# Reset the last used context
+polly --reset --last -p "Start fresh with last context"
+
 # Add content to context without calling LLM
-echo "Important note to remember" | polly -c @project --add
+echo "Important note to remember" | polly -c project --add
 ```
 
 ### Settings Priority
@@ -151,8 +154,8 @@ Settings are applied in this order (highest priority first):
 ```bash
 # Example: Environment variable is overridden by stored context setting
 export POLLYTOOL_MODEL=anthropic/claude-opus
-polly -c @test -m openai/gpt-4.1 -p "First message"  # Uses gpt-4.1 and saves it
-polly -c @test -p "Second message"                   # Still uses gpt-4.1 (not opus)
+polly -c test -m openai/gpt-4.1 -p "First message"  # Uses gpt-4.1 and saves it
+polly -c test -p "Second message"                   # Still uses gpt-4.1 (not opus)
 ```
 
 ## Structured Output
@@ -260,13 +263,13 @@ polly -f local-notes.txt -f https://example.com/diagram.jpg -p "How does the dia
 polly -s "You are a helpful Python expert" -p "How do I read a CSV file?"
 
 # System prompt with a new context
-polly -c @pythonhelper -s "You are a Python tutor" -p "Explain decorators"
+polly -c pythonhelper -s "You are a Python tutor" -p "Explain decorators"
 
 # Clear system prompt (use empty string)
-polly -c @pythonhelper -s "" -p "Back to normal"
+polly -c pythonhelper -s "" -p "Back to normal"
 
 # Changing system prompt auto-resets the conversation
-polly -c @coding -s "You are a code reviewer" -p "Review this function"
+polly -c coding -s "You are a code reviewer" -p "Review this function"
 # Output: System prompt changed, resetting conversation...
 ```
 
@@ -312,9 +315,9 @@ GLOBAL OPTIONS:
    --system string, -s string                             System prompt
    --file string, -f string [ --file string, -f string ]  File, image, or URL to include (can be specified multiple times)
    --schema string                                        Path to JSON schema file for structured output
-   --context string, -c string                            Context name (@name) or ID for conversation continuity (or uses POLLYTOOL_CONTEXT env var if set)
+   --context string, -c string                            Context name for conversation continuity (or uses POLLYTOOL_CONTEXT env var if set)
    --last, -L                                             Use the last active context (default: false)
-   --reset string                                         Reset context (clear conversation history, keep settings)
+   --reset                                                Reset context (clear conversation history, keep settings) - requires -c or --last
    --list                                                 List all available context IDs (default: false)
    --delete string                                        Delete the specified context
    --add                                                  Add stdin content to context without making an API call (default: false)
@@ -328,7 +331,7 @@ GLOBAL OPTIONS:
 ### Code Review
 ```bash
 # Review code changes
-git diff | polly -c @review -p "Review these changes for potential issues"
+git diff | polly -c review -p "Review these changes for potential issues"
 ```
 
 ### Data Extraction
@@ -340,18 +343,18 @@ polly -f invoice1.pdf -f invoice2.pdf --schema invoice.schema.json
 ### Interactive Development
 ```bash
 # Create a coding assistant context with custom settings
-polly -c @coding -s "You are an expert programmer. Be concise." \
+polly -c coding -s "You are an expert programmer. Be concise." \
      -p "I need to build a REST API"
 
 # Continue with specific questions (settings are preserved)
-polly -c @coding -p "What framework should I use for Python?"
-polly -c @coding -p "Show me a basic example"
+polly -c coding -p "What framework should I use for Python?"
+polly -c coding -p "Show me a basic example"
 
 # Reset the conversation but keep all settings (model, temperature, system prompt)
-polly --reset @coding -p "Now let's work on a CLI tool instead"
+polly --reset -c coding -p "Now let's work on a CLI tool instead"
 
 # Change personality mid-project (auto-resets conversation)
-polly -c @coding -s "You are a code reviewer. Focus on security." \
+polly -c coding -s "You are a code reviewer. Focus on security." \
      -p "Review this authentication code"
 # Output: System prompt changed, resetting conversation...
 ```
