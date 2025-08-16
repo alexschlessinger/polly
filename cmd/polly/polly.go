@@ -181,6 +181,13 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 
 	// Get context ID from config or environment
 	contextID := getContextID(config)
+	
+	// Validate context name if provided
+	if contextID != "" {
+		if err := validateContextName(contextID); err != nil {
+			return fmt.Errorf("invalid context name '%s': %w", contextID, err)
+		}
+	}
 
 	// Handle --last flag
 	if config.UseLastContext {
@@ -278,6 +285,10 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 		return handleListContexts(sessionStore)
 	}
 	if config.DeleteContext != "" {
+		// Validate the context name to delete
+		if err := validateContextName(config.DeleteContext); err != nil {
+			return fmt.Errorf("invalid context name '%s': %w", config.DeleteContext, err)
+		}
 		return handleDeleteContext(sessionStore, config.DeleteContext)
 	}
 	if config.AddToContext {
@@ -315,8 +326,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 			// Check if system prompt is being changed (only if context has existing conversation)
 			if config.SystemPromptWasSet && config.SystemPrompt != contextInfo.SystemPrompt {
 				// Check if there's an existing conversation to reset
-				fileName := sanitizeFileNameForContext(contextInfo.Name)
-				sessionPath := filepath.Join(fileStore.GetBaseDir(), fileName+".json")
+				sessionPath := filepath.Join(fileStore.GetBaseDir(), contextInfo.Name+".json")
 				if _, err := os.Stat(sessionPath); err == nil {
 					needReset = true
 					fmt.Fprintf(os.Stderr, "System prompt changed, resetting conversation...\n")

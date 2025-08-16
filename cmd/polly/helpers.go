@@ -146,8 +146,7 @@ func resetContext(fileStore *sessions.FileSessionStore, name string) error {
 	contextInfo := fileStore.GetContextByNameOrID(name)
 	if contextInfo == nil {
 		// No stored settings, just delete the file
-		fileName := sanitizeFileNameForContext(name)
-		sessionPath := filepath.Join(fileStore.GetBaseDir(), fileName+".json")
+		sessionPath := filepath.Join(fileStore.GetBaseDir(), name+".json")
 		os.Remove(sessionPath)
 		return nil
 	}
@@ -160,29 +159,45 @@ func resetContext(fileStore *sessions.FileSessionStore, name string) error {
 		return err
 	}
 	
-	// Delete conversation file
-	fileName := sanitizeFileNameForContext(name)
-	sessionPath := filepath.Join(fileStore.GetBaseDir(), fileName+".json")
+	// Delete conversation file (using name directly since it's already validated)
+	sessionPath := filepath.Join(fileStore.GetBaseDir(), name+".json")
 	os.Remove(sessionPath)
 	
 	return nil
 }
 
-// sanitizeFileNameForContext is a helper to match the session package's sanitization
-func sanitizeFileNameForContext(name string) string {
-	safe := strings.ReplaceAll(name, "/", "_")
-	safe = strings.ReplaceAll(safe, "\\", "_")
-	safe = strings.ReplaceAll(safe, ":", "_")
-	safe = strings.ReplaceAll(safe, "*", "_")
-	safe = strings.ReplaceAll(safe, "?", "_")
-	safe = strings.ReplaceAll(safe, "\"", "_")
-	safe = strings.ReplaceAll(safe, "<", "_")
-	safe = strings.ReplaceAll(safe, ">", "_")
-	safe = strings.ReplaceAll(safe, "|", "_")
-	if safe == "" {
-		safe = "default"
+// validateContextName checks if a context name is valid
+func validateContextName(name string) error {
+	if name == "" {
+		return fmt.Errorf("context name cannot be empty")
 	}
-	return safe
+	
+	// Check for problematic characters that could cause filesystem issues
+	if strings.ContainsAny(name, "/\\:*?\"<>|") {
+		return fmt.Errorf("context name contains invalid characters (/, \\, :, *, ?, \", <, >, |)")
+	}
+	
+	// Check for names that could be problematic on any OS
+	if name == "." || name == ".." {
+		return fmt.Errorf("context name cannot be '.' or '..'")
+	}
+	
+	// Check for names starting or ending with spaces or dots
+	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") {
+		return fmt.Errorf("context name cannot start or end with spaces")
+	}
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
+		return fmt.Errorf("context name cannot start or end with dots")
+	}
+	
+	// Check for control characters
+	for _, r := range name {
+		if r < 32 || r == 127 {
+			return fmt.Errorf("context name contains control characters")
+		}
+	}
+	
+	return nil
 }
 
 // checkAndPromptForMissingContext checks if a context exists and creates it if missing

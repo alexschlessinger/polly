@@ -89,42 +89,20 @@ func GenerateSessionID() string {
 	return shortuuid.New()
 }
 
-// sanitizeFileName converts a context name to a safe filename
-func sanitizeFileName(name string) string {
-	// Replace any problematic characters for filesystem
-	safe := strings.ReplaceAll(name, "/", "_")
-	safe = strings.ReplaceAll(safe, "\\", "_")
-	safe = strings.ReplaceAll(safe, ":", "_")
-	safe = strings.ReplaceAll(safe, "*", "_")
-	safe = strings.ReplaceAll(safe, "?", "_")
-	safe = strings.ReplaceAll(safe, "\"", "_")
-	safe = strings.ReplaceAll(safe, "<", "_")
-	safe = strings.ReplaceAll(safe, ">", "_")
-	safe = strings.ReplaceAll(safe, "|", "_")
-	if safe == "" {
-		safe = "default"
-	}
-	return safe
-}
-
-// getFileNameForContext returns the filename for a context
-func getFileNameForContext(name string) string {
-	// Always sanitize the name for filesystem safety
-	return sanitizeFileName(name)
-}
-
 // Get retrieves or creates a session
 func (s *FileSessionStore) Get(name string) Session {
-	// Generate name if empty
+	// The name should already be validated at the application level
+	// We just use it directly as the filename
 	if name == "" {
-		name = GenerateSessionID()
+		// This shouldn't happen - the app layer should ensure a name
+		panic("FileSessionStore.Get called with empty name")
 	}
 
 	// Track last context
 	s.SetLastContext(name)
 
-	fileName := getFileNameForContext(name)
-	sessionPath := filepath.Join(s.baseDir, fileName+".json")
+	// Use name directly as filename (already validated at app level)
+	sessionPath := filepath.Join(s.baseDir, name+".json")
 	lockPath := sessionPath + ".lock"
 
 	// Open lock file with exclusive access
@@ -171,8 +149,8 @@ func (s *FileSessionStore) Get(name string) Session {
 
 // Delete removes a session
 func (s *FileSessionStore) Delete(name string) {
-	fileName := getFileNameForContext(name)
-	sessionPath := filepath.Join(s.baseDir, fileName+".json")
+	// Use name directly (already validated at app level)
+	sessionPath := filepath.Join(s.baseDir, name+".json")
 	lockPath := sessionPath + ".lock"
 	os.Remove(sessionPath)
 	os.Remove(lockPath)
@@ -245,13 +223,6 @@ func (s *FileSessionStore) ListContexts() ([]string, error) {
 	for _, entry := range entries {
 		if filepath.Ext(entry.Name()) == ".json" && !strings.HasPrefix(entry.Name(), ".") {
 			name := entry.Name()[:len(entry.Name())-5] // Remove .json extension
-			// Convert back to @name format if it's a named context
-			for ctxName := range s.index.Contexts {
-				if sanitizeFileName(ctxName) == name {
-					name = ctxName
-					break
-				}
-			}
 			sessions = append(sessions, name)
 		}
 	}
@@ -462,9 +433,8 @@ func (s *FileSessionStore) DeleteContextName(name string) error {
 
 // ContextExists checks if a context with the given name exists
 func (s *FileSessionStore) ContextExists(name string) bool {
-	// Check if session file exists
-	fileName := getFileNameForContext(name)
-	sessionPath := filepath.Join(s.baseDir, fileName+".json")
+	// Check if session file exists (use name directly)
+	sessionPath := filepath.Join(s.baseDir, name+".json")
 	_, err := os.Stat(sessionPath)
 	return err == nil
 }
