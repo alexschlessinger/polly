@@ -147,7 +147,7 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 
 	// Get context ID from config or environment
 	contextID := getContextID(config)
-	
+
 	// Validate context name if provided
 	if contextID != "" {
 		if err := validateContextName(contextID); err != nil {
@@ -184,7 +184,7 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	if config.ResetContext {
 		// Determine which context to reset
 		resetContextName := contextID // Use the context from -c or environment
-		
+
 		// If --last was specified, get the last context
 		if config.UseLastContext && resetContextName == "" {
 			if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
@@ -194,7 +194,7 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 				}
 			}
 		}
-		
+
 		// Ensure we have a context to reset
 		if resetContextName == "" {
 			return fmt.Errorf("--reset requires a context (use -c or --last)")
@@ -231,7 +231,7 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 				if err := fileStore.SaveContextInfo(existingInfo); err != nil {
 					return fmt.Errorf("failed to save context info: %w", err)
 				}
-				
+
 				// Clear the conversation file
 				if err := resetContext(fileStore, resetContextName); err != nil {
 					return fmt.Errorf("failed to reset context: %w", err)
@@ -325,7 +325,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
 			// Get the context name
 			contextName := contextID
-			if originalContextInfo != nil && originalContextInfo.Name != "" {
+			if originalContextInfo.Name != "" {
 				contextName = originalContextInfo.Name
 			}
 
