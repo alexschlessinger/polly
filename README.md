@@ -6,6 +6,7 @@ https://en.wikipedia.org/wiki/Stochastic_parrot
 
 This is my llm cli tool. There are many like it, but this one is mine.
 
+
 ## Features
 
 - **Many Models**: OpenAI, Anthropic, Gemini, Ollama.
@@ -14,6 +15,7 @@ This is my llm cli tool. There are many like it, but this one is mine.
 - **Tool Calling**: Bolt on shell scripts & MCP servers.
 - **Contexts**: Memory, but opt‑in.
 - **Streaming**: Words appear while it thinks. 
+- **API**: Do the things yourself [docs](API.md)
 
 ## Installation
 

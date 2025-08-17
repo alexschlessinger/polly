@@ -8,38 +8,49 @@ This document describes how to use the pollytool package as a library to interac
 go get github.com/pkdindustries/pollytool
 ```
 
-## Core Interfaces
+## Environment Variables
 
-### LLM Interface
+Set these for API authentication:
 
-The main interface for interacting with language models:
+- `POLLYTOOL_OPENAIKEY` - OpenAI API key
+- `POLLYTOOL_ANTHROPICKEY` - Anthropic API key
+- `POLLYTOOL_GEMINIKEY` - Google Gemini API key
+- `POLLYTOOL_OLLAMAKEY` - Ollama API key (optional for local)
 
-```go
-import "github.com/pkdindustries/pollytool/llm"
+## Quick Start
 
-type LLM interface {
-    ChatCompletionStream(
-        ctx context.Context,
-        req *CompletionRequest,
-        processor StreamProcessor,
-    ) <-chan *messages.StreamEvent
-}
-```
-
-### CompletionRequest
-
-Configuration for LLM requests:
+### Simple Example Using Helpers
 
 ```go
-type CompletionRequest struct {
-    Model          string                   // Model identifier (e.g., "gpt-4.1", "claude-opus-4-1-20250805
-    Messages       []messages.ChatMessage   // Conversation history
-    Temperature    float32                  // Sampling temperature (0.0-1.0)
-    MaxTokens      int                      // Maximum tokens to generate
-    Tools          []tools.Tool             // Available tools for function calling
-    ResponseSchema *Schema                  // JSON schema for structured output
-    Timeout        time.Duration            // Request timeout
-    BaseURL        string                   // Custom API endpoint (for OpenAI-compatible)
+package main
+
+import (
+    "context"
+    "fmt"
+    
+    "github.com/pkdindustries/pollytool/llm"
+)
+
+func main() {
+    ctx := context.Background()
+    
+    // Set environment variable: export POLLYTOOL_OPENAIKEY="your-key"
+    
+    // Simple completion
+    joke, err := llm.QuickComplete(ctx, "openai/gpt-4.1", "Tell me a joke", 500)
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(joke)
+    
+    // Streaming completion
+    fmt.Println("\nWriting a story:")
+    err = llm.StreamComplete(ctx, "openai/gpt-4.1", "Write a short story", 500, func(chunk string) {
+        fmt.Print(chunk)
+    })
+    if err != nil {
+        panic(err)
+    }
 }
 ```
 
@@ -47,7 +58,7 @@ type CompletionRequest struct {
 
 The `llm/helpers` package provides convenience functions to simplify common LLM operations. These functions automatically handle client creation using API keys from environment variables:
 
-### Simplest: One-line Completions
+### One-line Completions
 
 ```go
 import "github.com/pkdindustries/pollytool/llm"
@@ -66,11 +77,6 @@ response, err := llm.QuickComplete(ctx, "anthropic/claude-opus-4-1-20250805", "W
 // Stream completion with real-time output
 err := llm.StreamComplete(ctx, "openai/gpt-4.1", "Write a story", 2000, func(chunk string) {
     fmt.Print(chunk) // Print each chunk as it arrives
-})
-
-// Or with different token limit
-err := llm.StreamComplete(ctx, "gemini/gemini-2.0-flash", "Explain quantum physics", 3000, func(chunk string) {
-    fmt.Print(chunk)
 })
 ```
 
@@ -120,8 +126,7 @@ err := llm.StructuredComplete(ctx, "openai/gpt-4.1",
 ### Builder Pattern for Complex Requests
 
 ```go
-// The builder still requires a client for advanced use cases
-client := llm.NewMultiPass(apiKeys) // Or use getDefaultClient() if you add an export
+client := llm.GetDefaultClient()
 
 // Fluent API for building requests
 result, err := llm.NewCompletionBuilder("openai/gpt-4.1").
@@ -155,116 +160,39 @@ response, err := llm.NewCompletionBuilder("openai/gpt-4.1").
 // Automatically calls weather tool and returns final response
 ```
 
-### Before vs After Comparison
+## Core Interfaces
 
-**Before (using raw API):**
+### LLM Interface
+
+The main interface for interacting with language models:
+
 ```go
-// First, set up API keys
-apiKeys := map[string]string{
-    "openai": os.Getenv("POLLYTOOL_OPENAIKEY"),
-}
-client := llm.NewMultiPass(apiKeys)
+import "github.com/pkdindustries/pollytool/llm"
 
-// Then create and execute request
-req := &llm.CompletionRequest{
-    Model: "openai/gpt-4.1",
-    Messages: []messages.ChatMessage{
-        {Role: messages.MessageRoleUser, Content: "Tell me a joke"},
-    },
-    Temperature: 0.7,
-    MaxTokens: 2000,
-    Timeout: 30 * time.Second,
-}
-processor := messages.NewStreamProcessor()
-eventChan := client.ChatCompletionStream(ctx, req, processor)
-var result string
-for event := range eventChan {
-    switch event.Type {
-    case messages.EventTypeContent:
-        result += event.Content
-    case messages.EventTypeError:
-        return event.Error
-    }
+type LLM interface {
+    ChatCompletionStream(
+        ctx context.Context,
+        req *CompletionRequest,
+        processor StreamProcessor,
+    ) <-chan *messages.StreamEvent
 }
 ```
 
-**After (using helpers):**
-```go
-// Just one line - API keys loaded from environment automatically
-result, err := llm.QuickComplete(ctx, "openai/gpt-4.1", "Tell me a joke", 1000)
-```
+### CompletionRequest
 
-## Provider Support
-
-### MultiPass Provider
-
-The recommended way to use multiple providers
-```go
-import (
-    "github.com/pkdindustries/pollytool/llm"
-    "github.com/pkdindustries/pollytool/messages"
-)
-
-// Create MultiPass with API keys
-apiKeys := map[string]string{
-    "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
-    "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
-    "gemini":    os.Getenv("POLLYTOOL_GEMINIKEY"),
-    "ollama":    os.Getenv("POLLYTOOL_OLLAMAKEY"),
-}
-
-multipass := llm.NewMultiPass(apiKeys)
-
-// Create request
-req := &llm.CompletionRequest{
-    Model: "anthropic/claude-opus-4-1-20250805",
-    Messages: []messages.ChatMessage{
-        {
-            Role:    messages.MessageRoleSystem,
-            Content: "You are a helpful assistant.",
-        },
-        {
-            Role:    messages.MessageRoleUser,
-            Content: "Hello, how are you?",
-        },
-    },
-    Temperature: 0.7,
-    MaxTokens:   1000,
-    Timeout:     30 * time.Second,
-}
-
-// Stream response
-processor := messages.NewStreamProcessor()
-eventChan := multipass.ChatCompletionStream(ctx, req, processor)
-
-for event := range eventChan {
-    switch event.Type {
-    case messages.EventTypeContent:
-        fmt.Print(event.Content)
-    case messages.EventTypeComplete:
-        fmt.Printf("\nComplete: %+v\n", event.Message)
-    case messages.EventTypeError:
-        fmt.Printf("Error: %v\n", event.Error)
-    }
-}
-```
-
-### Direct Provider Usage
-
-You can also use providers directly:
+Configuration for LLM requests:
 
 ```go
-// OpenAI
-client := llm.NewOpenAIClient(apiKey)
-
-// Anthropic  
-client := llm.NewAnthropicClient(apiKey)
-
-// Gemini
-client := llm.NewGeminiClient(apiKey)
-
-// Ollama (local)
-client := llm.NewOllamaClient(apiKey) // apiKey can be empty for local
+type CompletionRequest struct {
+    Model          string                   // Model identifier (e.g., "gpt-4.1", "claude-opus-4-1-20250805")
+    Messages       []messages.ChatMessage   // Conversation history
+    Temperature    float32                  // Sampling temperature (0.0-1.0)
+    MaxTokens      int                      // Maximum tokens to generate
+    Tools          []tools.Tool             // Available tools for function calling
+    ResponseSchema *Schema                  // JSON schema for structured output
+    Timeout        time.Duration            // Request timeout
+    BaseURL        string                   // Custom API endpoint (for OpenAI-compatible)
+}
 ```
 
 ## Message Types
@@ -317,6 +245,91 @@ const (
     EventTypeComplete EventType = "complete"  // Final message with all content
     EventTypeError    EventType = "error"     // Error occurred
 )
+```
+
+## Provider Support
+
+### Model Identifiers
+
+Use the format `provider/model`:
+
+- OpenAI: `openai/gpt-4.1`, `openai/gpt-5`
+- Anthropic: `anthropic/claude-opus-4-1-20250805`, `anthropic/claude-sonnet-4-20250514`
+- Gemini: `gemini/gemini-2.5-flash`, `gemini/gemini-2.5-pro`
+- Ollama: `ollama/llama3`, `ollama/mistral`
+
+### MultiPass Provider
+
+The recommended way to use multiple providers:
+
+```go
+import (
+    "github.com/pkdindustries/pollytool/llm"
+    "github.com/pkdindustries/pollytool/messages"
+)
+
+// Create MultiPass with API keys
+apiKeys := map[string]string{
+    "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
+    "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
+    "gemini":    os.Getenv("POLLYTOOL_GEMINIKEY"),
+    "ollama":    os.Getenv("POLLYTOOL_OLLAMAKEY"),
+}
+
+multipass := llm.NewMultiPass(apiKeys)
+// or use 
+// multipass:= llm.GetDefaultClient()
+
+// Create request
+req := &llm.CompletionRequest{
+    Model: "anthropic/claude-opus-4-1-20250805",
+    Messages: []messages.ChatMessage{
+        {
+            Role:    messages.MessageRoleSystem,
+            Content: "You are a helpful assistant.",
+        },
+        {
+            Role:    messages.MessageRoleUser,
+            Content: "Hello, how are you?",
+        },
+    },
+    Temperature: 0.7,
+    MaxTokens:   1000,
+    Timeout:     30 * time.Second,
+}
+
+// Stream response
+processor := messages.NewStreamProcessor()
+eventChan := multipass.ChatCompletionStream(ctx, req, processor)
+
+for event := range eventChan {
+    switch event.Type {
+    case messages.EventTypeContent:
+        fmt.Print(event.Content)
+    case messages.EventTypeComplete:
+        fmt.Printf("\nComplete: %+v\n", event.Message)
+    case messages.EventTypeError:
+        fmt.Printf("Error: %v\n", event.Error)
+    }
+}
+```
+
+### Direct Provider Usage
+
+You can also use providers directly:
+
+```go
+// OpenAI
+client := llm.NewOpenAIClient(apiKey)
+
+// Anthropic  
+client := llm.NewAnthropicClient(apiKey)
+
+// Gemini
+client := llm.NewGeminiClient(apiKey)
+
+// Ollama (local)
+client := llm.NewOllamaClient(apiKey) // apiKey can be empty for local
 ```
 
 ## Tool Integration
@@ -416,6 +429,313 @@ for event := range eventChan {
 }
 ```
 
+## Shell Tool Integration
+
+Pollytool includes a `ShellTool` that allows you to wrap shell scripts as LLM tools. The scripts must implement a simple protocol with `--schema` and `--execute` flags.
+
+### Example: Weather Script Tool
+
+Create a `weather.sh` script:
+
+```bash
+#!/bin/bash
+
+# weather.sh - A simple weather tool for LLMs
+
+if [ "$1" = "--schema" ]; then
+    cat <<EOF
+{
+  "title": "get_weather",
+  "description": "Get current weather for a location",
+  "type": "object",
+  "properties": {
+    "location": {
+      "type": "string",
+      "description": "City and state, e.g. 'San Francisco, CA'"
+    },
+    "units": {
+      "type": "string",
+      "enum": ["celsius", "fahrenheit"],
+      "default": "fahrenheit",
+      "description": "Temperature units"
+    }
+  },
+  "required": ["location"]
+}
+EOF
+    exit 0
+fi
+
+if [ "$1" = "--execute" ]; then
+    # Parse JSON arguments
+    LOCATION=$(echo "$2" | jq -r '.location')
+    UNITS=$(echo "$2" | jq -r '.units // "fahrenheit"')
+    
+    # In production, call a real weather API
+    # For demo, return mock data based on location
+    case "$LOCATION" in
+        "San Francisco, CA")
+            if [ "$UNITS" = "celsius" ]; then
+                echo "18°C, foggy with moderate winds"
+            else
+                echo "65°F, foggy with moderate winds"
+            fi
+            ;;
+        "New York, NY")
+            if [ "$UNITS" = "celsius" ]; then
+                echo "7°C, partly cloudy"
+            else
+                echo "45°F, partly cloudy"
+            fi
+            ;;
+        "Miami, FL")
+            if [ "$UNITS" = "celsius" ]; then
+                echo "28°C, sunny and humid"
+            else
+                echo "82°F, sunny and humid"
+            fi
+            ;;
+        *)
+            if [ "$UNITS" = "celsius" ]; then
+                echo "21°C, mild weather"
+            else
+                echo "70°F, mild weather"
+            fi
+            ;;
+    esac
+    exit 0
+fi
+
+echo "Usage: $0 [--schema | --execute <json-args>]"
+exit 1
+```
+
+Make it executable:
+```bash
+chmod +x weather.sh
+```
+
+### Using Shell Tools in Go
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+    
+    "github.com/pkdindustries/pollytool/llm"
+    "github.com/pkdindustries/pollytool/messages"
+    "github.com/pkdindustries/pollytool/tools"
+)
+
+func main() {
+    ctx := context.Background()
+    
+    // Load shell tools
+    shellTools, err := tools.LoadShellTools([]string{
+        "./weather.sh",
+        "./calculator.sh",  // You can load multiple scripts
+    })
+    if err != nil {
+        fmt.Printf("Warning: %v\n", err)
+    }
+    
+    // Create tool registry
+    registry := tools.NewToolRegistry(shellTools)
+    
+    client := llm.GetDefaultClient()
+    
+    // Create request with tools
+    req := &llm.CompletionRequest{
+        Model: "openai/gpt-4.1",
+        Messages: []messages.ChatMessage{
+            {
+                Role:    messages.MessageRoleUser,
+                Content: "What's the weather in San Francisco and New York?",
+            },
+        },
+        Tools:     registry.All(),
+        MaxTokens: 1000,
+    }
+    
+    // Process with automatic tool handling
+    processor := messages.NewStreamProcessor()
+    eventChan := client.ChatCompletionStream(ctx, req, processor)
+    
+    for event := range eventChan {
+        switch event.Type {
+        case messages.EventTypeContent:
+            fmt.Print(event.Content)
+            
+        case messages.EventTypeComplete:
+            if len(event.Message.ToolCalls) > 0 {
+                // Execute tool calls
+                for _, toolCall := range event.Message.ToolCalls {
+                    var args map[string]any
+                    json.Unmarshal([]byte(toolCall.Arguments), &args)
+                    
+                    tool, _ := registry.Get(toolCall.Name)
+                    result, err := tool.Execute(ctx, args)
+                    
+                    // Add tool response to conversation
+                    req.Messages = append(req.Messages,
+                        *event.Message,
+                        messages.ChatMessage{
+                            Role:       messages.MessageRoleTool,
+                            Content:    result,
+                            ToolCallID: toolCall.ID,
+                        },
+                    )
+                }
+                
+                // Continue conversation
+                eventChan = client.ChatCompletionStream(ctx, req, processor)
+            }
+            
+        case messages.EventTypeError:
+            fmt.Printf("Error: %v\n", event.Error)
+        }
+    }
+}
+```
+
+### Script Protocol Requirements
+
+Shell scripts used as tools must:
+
+1. Accept `--schema` flag and output a JSON Schema describing the tool
+2. Accept `--execute <json-args>` and process the JSON arguments
+3. Return results as plain text to stdout
+4. Exit with code 0 on success, non-zero on error
+
+### More Complex Example: Database Query Tool
+
+```bash
+#!/bin/bash
+# dbquery.sh - Query database tool
+
+if [ "$1" = "--schema" ]; then
+    cat <<EOF
+{
+  "title": "query_database",
+  "description": "Execute SQL queries on the application database",
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "SQL query to execute"
+    },
+    "database": {
+      "type": "string",
+      "enum": ["users", "products", "orders"],
+      "description": "Target database"
+    },
+    "limit": {
+      "type": "integer",
+      "default": 10,
+      "description": "Maximum rows to return"
+    }
+  },
+  "required": ["query", "database"]
+}
+EOF
+    exit 0
+fi
+
+if [ "$1" = "--execute" ]; then
+    QUERY=$(echo "$2" | jq -r '.query')
+    DATABASE=$(echo "$2" | jq -r '.database')
+    LIMIT=$(echo "$2" | jq -r '.limit // 10')
+    
+    # Add LIMIT clause if not present
+    if ! echo "$QUERY" | grep -qi "limit"; then
+        QUERY="$QUERY LIMIT $LIMIT"
+    fi
+    
+    # Execute query (example using sqlite)
+    sqlite3 "/data/${DATABASE}.db" "$QUERY" 2>&1
+    exit $?
+fi
+```
+
+## MCP Server Integration
+
+Pollytool supports Model Context Protocol (MCP) servers, allowing you to use remote tools and resources:
+
+### Connecting to MCP Servers
+
+```go
+import (
+    "github.com/pkdindustries/pollytool/mcp"
+    "github.com/pkdindustries/pollytool/tools"
+)
+
+// Connect to an MCP server
+mcpClient, err := mcp.NewClient("stdio", []string{"npx", "-y", "@modelcontextprotocol/server-filesystem"})
+if err != nil {
+    panic(err)
+}
+defer mcpClient.Close()
+
+// Get tools from MCP server
+mcpTools, err := mcpClient.GetTools()
+if err != nil {
+    panic(err)
+}
+
+// Create tool registry with MCP tools
+registry := tools.NewToolRegistry(mcpTools)
+```
+
+### Using MCP Tools with LLM
+
+```go
+// Create request with MCP tools
+req := &llm.CompletionRequest{
+    Model: "openai/gpt-4.1",
+    Messages: []messages.ChatMessage{
+        {
+            Role:    messages.MessageRoleUser,
+            Content: "List files in the current directory",
+        },
+    },
+    Tools: registry.All(),
+}
+
+// Process as usual - MCP tools work just like local tools
+eventChan := client.ChatCompletionStream(ctx, req, processor)
+```
+
+### Available MCP Servers
+
+Common MCP servers you can connect to:
+
+- `@modelcontextprotocol/server-filesystem` - File system operations
+- `@modelcontextprotocol/server-github` - GitHub API access
+- `@modelcontextprotocol/server-gitlab` - GitLab API access
+- `@modelcontextprotocol/server-postgres` - PostgreSQL database access
+- `@modelcontextprotocol/server-sqlite` - SQLite database access
+
+### Combining Local and MCP Tools
+
+```go
+// Load local tools
+localTools := []tools.Tool{
+    &WeatherTool{},
+    &CalculatorTool{},
+}
+
+// Get MCP tools
+mcpClient, _ := mcp.NewClient("stdio", []string{"npx", "-y", "@modelcontextprotocol/server-filesystem"})
+mcpTools, _ := mcpClient.GetTools()
+
+// Combine all tools
+allTools := append(localTools, mcpTools...)
+registry := tools.NewToolRegistry(allTools)
+```
+
 ## Session Management
 
 For persistent conversations:
@@ -507,44 +827,9 @@ for event := range eventChan {
 }
 ```
 
-## Complete Examples
+## Advanced Examples
 
-### Simple Example Using Helpers
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    
-    "github.com/pkdindustries/pollytool/llm"
-)
-
-func main() {
-    ctx := context.Background()
-    
-    // Set environment variable: export POLLYTOOL_OPENAIKEY="your-key"
-    
-    // Simple completion
-    joke, err := llm.QuickComplete(ctx, "openai/gpt-4.1", "Tell me a joke", 500)
-    if err != nil {
-        panic(err)
-    }
-    fmt.Println(joke)
-    
-    // Streaming completion
-    fmt.Println("\nWriting a story:")
-    err = llm.StreamComplete(ctx, "openai/gpt-4.1", "Write a short story", 500, func(chunk string) {
-        fmt.Print(chunk)
-    })
-    if err != nil {
-        panic(err)
-    }
-}
-```
-
-### Advanced Example with Sessions
+### Example with Sessions
 
 ```go
 package main
@@ -563,11 +848,8 @@ import (
 func main() {
     ctx := context.Background()
     
-    // For advanced use cases, create client manually
-    apiKeys := map[string]string{
-        "openai": os.Getenv("POLLYTOOL_OPENAIKEY"),
-    }
-    client := llm.NewMultiPass(apiKeys)
+    // you can create a specific client if you wish
+    client := llm.NewOpenAIClient(os.Getenv("OPENAIKEY"))
     
     // Create session
     store, _ := sessions.NewFileSessionStore("")
@@ -623,24 +905,6 @@ func main() {
     }
 }
 ```
-
-## Model Identifiers
-
-Use the format `provider/model`:
-
-- OpenAI: `openai/gpt-4`, `openai/gpt-3.5-turbo`
-- Anthropic: `anthropic/claude-opus-4-1-20250805`, `anthropic/claude-sonnet-4-20250514`
-- Gemini: `gemini/gemini-2.0-flash`, `gemini/gemini-2.0-pro`
-- Ollama: `ollama/llama2`, `ollama/mistral`
-
-## Environment Variables
-
-Set these for API authentication:
-
-- `POLLYTOOL_OPENAIKEY` - OpenAI API key
-- `POLLYTOOL_ANTHROPICKEY` - Anthropic API key
-- `POLLYTOOL_GEMINIKEY` - Google Gemini API key
-- `POLLYTOOL_OLLAMAKEY` - Ollama API key (optional for local)
 
 ## Thread Safety
 
