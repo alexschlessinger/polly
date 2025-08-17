@@ -1,11 +1,10 @@
-module github.com/pkdindustries/pollytool
+module github.com/alexschlessinger/pollytool
 
 go 1.24.0
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.9.1
 	github.com/google/generative-ai-go v0.20.1
-	github.com/lithammer/shortuuid/v4 v4.2.0
 	github.com/modelcontextprotocol/go-sdk v0.2.0
 	github.com/ollama/ollama v0.11.4
 	github.com/sashabaranov/go-openai v1.41.1
