@@ -11,8 +11,8 @@ import (
 	"github.com/pkdindustries/pollytool/tools"
 )
 
-// getDefaultClient creates a MultiPass client with API keys from environment
-func getDefaultClient() LLM {
+// GetDefaultClient creates a MultiPass client with API keys from environment
+func GetDefaultClient() LLM {
 	apiKeys := map[string]string{
 		"openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
 		"anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
@@ -24,7 +24,7 @@ func getDefaultClient() LLM {
 
 // QuickComplete performs a simple one-shot completion with minimal configuration
 func QuickComplete(ctx context.Context, model, prompt string, maxTokens int) (string, error) {
-	client := getDefaultClient()
+	client := GetDefaultClient()
 
 	req := &CompletionRequest{
 		Model: model,
@@ -56,7 +56,7 @@ func QuickComplete(ctx context.Context, model, prompt string, maxTokens int) (st
 
 // StreamComplete performs a streaming completion with a callback for each chunk
 func StreamComplete(ctx context.Context, model, prompt string, maxTokens int, onChunk func(string)) error {
-	client := getDefaultClient()
+	client := GetDefaultClient()
 
 	req := &CompletionRequest{
 		Model: model,
@@ -89,7 +89,7 @@ func StreamComplete(ctx context.Context, model, prompt string, maxTokens int, on
 
 // ChatWithHistory performs a completion with conversation history
 func ChatWithHistory(ctx context.Context, model string, history []messages.ChatMessage, newMessage string, maxTokens int) (*messages.ChatMessage, error) {
-	client := getDefaultClient()
+	client := GetDefaultClient()
 
 	// Add the new message to history
 	allMessages := append(history, messages.ChatMessage{
@@ -122,7 +122,7 @@ func ChatWithHistory(ctx context.Context, model string, history []messages.ChatM
 
 // StructuredComplete performs a completion expecting a structured JSON response
 func StructuredComplete(ctx context.Context, model, prompt string, schema *Schema, maxTokens int, result interface{}) error {
-	client := getDefaultClient()
+	client := GetDefaultClient()
 
 	req := &CompletionRequest{
 		Model: model,
