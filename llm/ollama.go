@@ -10,9 +10,9 @@ import (
 	"net/url"
 	"regexp"
 
+	"github.com/alexschlessinger/pollytool/messages"
 	mcpjsonschema "github.com/modelcontextprotocol/go-sdk/jsonschema"
 	ollamaapi "github.com/ollama/ollama/api"
-	"github.com/pkdindustries/pollytool/messages"
 )
 
 type OllamaClient struct {

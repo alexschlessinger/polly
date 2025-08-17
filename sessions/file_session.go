@@ -10,8 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lithammer/shortuuid/v4"
-	"github.com/pkdindustries/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/messages"
 )
 
 // FileSession implements a file-based persistent session
@@ -26,7 +25,7 @@ type FileSession struct {
 
 // ContextInfo stores metadata about a context
 type ContextInfo struct {
-	Name         string    `json:"name"`          // Name is the primary identifier (e.g., "@stocks" or random ID)
+	Name         string    `json:"name"` // Name is the primary identifier (e.g., "@stocks" or random ID)
 	Created      time.Time `json:"created"`
 	LastUsed     time.Time `json:"lastUsed"`
 	Model        string    `json:"model,omitempty"`
@@ -36,7 +35,7 @@ type ContextInfo struct {
 	ToolPaths    []string  `json:"toolPaths,omitempty"`
 	MCPServers   []string  `json:"mcpServers,omitempty"`
 	// Deprecated: ID field for backwards compatibility during migration
-	LegacyID     string    `json:"id,omitempty"`
+	LegacyID string `json:"id,omitempty"`
 }
 
 // ContextIndex manages the mapping of names to IDs
@@ -81,12 +80,6 @@ func NewFileSessionStore(baseDir string) (SessionStore, error) {
 	}
 
 	return store, nil
-}
-
-// GenerateSessionID creates a new unique session ID using ShortUUID
-// ShortUUID generates a base57-encoded UUID that's typically 22 characters long
-func GenerateSessionID() string {
-	return shortuuid.New()
 }
 
 // Get retrieves or creates a session
@@ -281,7 +274,7 @@ func (s *FileSessionStore) loadIndex() error {
 	// Location: ~/.pollytool/index.json
 	baseDir := filepath.Dir(s.baseDir) // Get ~/.pollytool from ~/.pollytool/contexts
 	indexPath := filepath.Join(baseDir, "index.json")
-	
+
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
 		return err
@@ -307,7 +300,7 @@ func (s *FileSessionStore) saveIndex() error {
 	// Location: ~/.pollytool/index.json
 	baseDir := filepath.Dir(s.baseDir) // Get ~/.pollytool from ~/.pollytool/contexts
 	indexPath := filepath.Join(baseDir, "index.json")
-	
+
 	data, err := json.MarshalIndent(s.index, "", "  ")
 	if err != nil {
 		return err

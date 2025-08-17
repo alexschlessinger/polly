@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pkdindustries/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/messages"
 )
 
 // MultiPass routes requests to different LLM providers based on model prefix

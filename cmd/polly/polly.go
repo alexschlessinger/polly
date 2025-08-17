@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkdindustries/pollytool/llm"
-	"github.com/pkdindustries/pollytool/messages"
-	"github.com/pkdindustries/pollytool/sessions"
-	"github.com/pkdindustries/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/urfave/cli/v3"
 )
 

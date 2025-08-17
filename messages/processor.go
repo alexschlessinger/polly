@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"log"
 
-	"github.com/pkdindustries/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 // StreamProcessor is a simple processor for message streams from LLMs

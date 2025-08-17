@@ -11,17 +11,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkdindustries/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/messages"
 )
 
 // supportedImageTypes lists common image MIME types
 var supportedImageTypes = map[string]bool{
-	"image/jpeg": true,
-	"image/jpg":  true,
-	"image/png":  true,
-	"image/gif":  true,
-	"image/webp": true,
-	"image/bmp":  true,
+	"image/jpeg":    true,
+	"image/jpg":     true,
+	"image/png":     true,
+	"image/gif":     true,
+	"image/webp":    true,
+	"image/bmp":     true,
 	"image/svg+xml": true,
 }
 
@@ -44,7 +44,7 @@ func readFile(path string) (*messages.ContentPart, error) {
 
 	// Detect MIME type
 	mimeType := detectMimeType(path, data)
-	
+
 	// Check if it's an image
 	if isImageType(mimeType) {
 		// Return as base64 encoded image
@@ -68,7 +68,7 @@ func readFile(path string) (*messages.ContentPart, error) {
 func detectMimeType(path string, data []byte) string {
 	// First try to detect from content
 	mimeType := http.DetectContentType(data)
-	
+
 	// If that fails or gives generic type, try from extension
 	if mimeType == "application/octet-stream" || mimeType == "" {
 		ext := strings.ToLower(filepath.Ext(path))
@@ -115,7 +115,7 @@ func detectMimeType(path string, data []byte) string {
 			return "text/yaml"
 		}
 	}
-	
+
 	return mimeType
 }
 
@@ -143,44 +143,44 @@ func fetchURL(urlStr string) (*messages.ContentPart, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
-	
+
 	// Make request
 	resp, err := client.Get(urlStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch URL %s: %w", urlStr, err)
 	}
 	defer resp.Body.Close()
-	
+
 	// Check status code
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to fetch URL %s: HTTP %d %s", urlStr, resp.StatusCode, resp.Status)
 	}
-	
+
 	// Read body
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response from %s: %w", urlStr, err)
 	}
-	
+
 	// Get MIME type from Content-Type header
 	mimeType := resp.Header.Get("Content-Type")
 	if mimeType == "" {
 		// Fallback to content detection
 		mimeType = http.DetectContentType(data)
 	}
-	
+
 	// Clean up MIME type (remove parameters)
 	if idx := strings.Index(mimeType, ";"); idx != -1 {
 		mimeType = strings.TrimSpace(mimeType[:idx])
 	}
-	
+
 	// Extract filename from URL
 	u, _ := url.Parse(urlStr)
 	fileName := filepath.Base(u.Path)
 	if fileName == "" || fileName == "/" || fileName == "." {
 		fileName = "downloaded-file"
 	}
-	
+
 	// Check if it's an image
 	if isImageType(mimeType) {
 		// Return as base64 encoded image
@@ -191,7 +191,7 @@ func fetchURL(urlStr string) (*messages.ContentPart, error) {
 			FileName:  fileName,
 		}, nil
 	}
-	
+
 	// Return as text content
 	return &messages.ContentPart{
 		Type:     "text",
@@ -203,11 +203,11 @@ func fetchURL(urlStr string) (*messages.ContentPart, error) {
 // processFiles reads all specified files and returns content parts
 func processFiles(paths []string) ([]messages.ContentPart, error) {
 	var parts []messages.ContentPart
-	
+
 	for _, path := range paths {
 		var part *messages.ContentPart
 		var err error
-		
+
 		// Check if path is a URL
 		if isURL(path) {
 			// Fetch from URL
@@ -224,17 +224,17 @@ func processFiles(paths []string) ([]messages.ContentPart, error) {
 					path = filepath.Join(home, path[2:])
 				}
 			}
-			
+
 			// Read the file
 			part, err = readFile(path)
 			if err != nil {
 				return nil, fmt.Errorf("error reading file %s: %w", path, err)
 			}
 		}
-		
+
 		parts = append(parts, *part)
 	}
-	
+
 	return parts, nil
 }
 
@@ -243,14 +243,14 @@ func buildMessageWithFiles(prompt string, files []string) (messages.ChatMessage,
 	msg := messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 	}
-	
+
 	// Process files if any
 	if len(files) > 0 {
 		parts, err := processFiles(files)
 		if err != nil {
 			return msg, err
 		}
-		
+
 		// Add text prompt as first part if present
 		if prompt != "" {
 			msg.Parts = append(msg.Parts, messages.ContentPart{
@@ -258,13 +258,13 @@ func buildMessageWithFiles(prompt string, files []string) (messages.ChatMessage,
 				Text: prompt,
 			})
 		}
-		
+
 		// Add file parts
 		msg.Parts = append(msg.Parts, parts...)
 	} else {
 		// Simple text message
 		msg.Content = prompt
 	}
-	
+
 	return msg, nil
 }

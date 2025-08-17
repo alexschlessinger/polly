@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/pkdindustries/pollytool/messages"
-	"github.com/pkdindustries/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 // setupSessionStore creates the appropriate session store based on configuration
@@ -106,7 +106,7 @@ func handleDeleteContext(store sessions.SessionStore, contextID string) error {
 	return nil
 }
 
-// handleAddToContext adds stdin content to a context without making an API call
+// handleAddToContext adds stdin content or file content to a context without making an API call
 func handleAddToContext(store sessions.SessionStore, config *Config, contextID string) error {
 	if contextID == "" {
 		// Try to use last context if available
@@ -131,22 +131,67 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 		}
 	}
 
-	if !hasStdinData() {
-		return fmt.Errorf("--add requires input from stdin")
-	}
-
-	content, err := readFromStdin()
-	if err != nil {
-		return err
-	}
-
 	session := store.Get(contextID)
 	defer closeFileSession(session)
 
-	session.AddMessage(messages.ChatMessage{
-		Role:    messages.MessageRoleUser,
-		Content: content,
-	})
+	// Check if files are provided via --file flag
+	if len(config.Files) > 0 {
+		// Process files to get their content
+		parts, err := processFiles(config.Files)
+		if err != nil {
+			return fmt.Errorf("error processing files: %w", err)
+		}
+
+		// Check if stdin data is also provided
+		if hasStdinData() {
+			content, err := readFromStdin()
+			if err != nil {
+				return err
+			}
+			// Add stdin content as a separate message
+			session.AddMessage(messages.ChatMessage{
+				Role:    messages.MessageRoleUser,
+				Content: content,
+			})
+		}
+
+		// Add each file as a separate message
+		for _, part := range parts {
+			switch part.Type {
+			case "text":
+				// Create a message for each file
+				var content string
+				if part.FileName != "" {
+					content = fmt.Sprintf("=== %s ===\n%s", part.FileName, part.Text)
+				} else {
+					content = part.Text
+				}
+				session.AddMessage(messages.ChatMessage{
+					Role:    messages.MessageRoleUser,
+					Content: content,
+				})
+			case "image_base64":
+				// For images, we need to preserve them as parts
+				// This is a limitation - we'll need to handle this case
+				return fmt.Errorf("--add with image files is not yet supported")
+			}
+		}
+	} else {
+		// Original behavior: require stdin when no files
+		if !hasStdinData() {
+			return fmt.Errorf("--add requires input from stdin or files via --file")
+		}
+
+		content, err := readFromStdin()
+		if err != nil {
+			return err
+		}
+
+		session.AddMessage(messages.ChatMessage{
+			Role:    messages.MessageRoleUser,
+			Content: content,
+		})
+	}
 
 	if !config.Quiet {
 		fmt.Fprintf(os.Stderr, "Added to context %s\n", contextID)

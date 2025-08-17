@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/pkdindustries/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/llm"
 )
 
 // loadSchemaFile loads and parses a JSON schema from a file

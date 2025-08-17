@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/pkdindustries/pollytool/messages"
-	"github.com/pkdindustries/pollytool/sessions"
-	"github.com/pkdindustries/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 // loadTools loads all configured tools (shell tools and MCP servers)
@@ -94,7 +94,7 @@ func executeToolCall(
 }
 
 // showToolExecutionInfo displays tool execution information to the user
-func showToolExecutionInfo(toolName string, args map[string]any, config *Config, statusLine *Status) {
+func showToolExecutionInfo(toolName string, args map[string]any, _ *Config, statusLine *Status) {
 	if statusLine != nil {
 		statusLine.ShowToolExecution(toolName, args)
 	}

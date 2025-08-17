@@ -8,7 +8,7 @@ import (
 	"log"
 	"maps"
 
-	"github.com/pkdindustries/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/messages"
 	mcpjsonschema "github.com/modelcontextprotocol/go-sdk/jsonschema"
 	ai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"

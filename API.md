@@ -5,7 +5,7 @@ This document describes how to use the pollytool package as a library to interac
 ## Installation
 
 ```bash
-go get github.com/pkdindustries/pollytool
+go get github.com/alexschlessinger/pollytool
 ```
 
 ## Environment Variables
@@ -28,7 +28,7 @@ import (
     "context"
     "fmt"
     
-    "github.com/pkdindustries/pollytool/llm"
+    "github.com/alexschlessinger/pollytool/llm"
 )
 
 func main() {
@@ -61,7 +61,7 @@ The `llm/helpers` package provides convenience functions to simplify common LLM 
 ### One-line Completions
 
 ```go
-import "github.com/pkdindustries/pollytool/llm"
+import "github.com/alexschlessinger/pollytool/llm"
 
 // Quick completion - just pass the model and prompt
 // API keys are loaded from POLLYTOOL_*KEY environment variables
@@ -167,7 +167,7 @@ response, err := llm.NewCompletionBuilder("openai/gpt-4.1").
 The main interface for interacting with language models:
 
 ```go
-import "github.com/pkdindustries/pollytool/llm"
+import "github.com/alexschlessinger/pollytool/llm"
 
 type LLM interface {
     ChatCompletionStream(
@@ -264,8 +264,8 @@ The recommended way to use multiple providers:
 
 ```go
 import (
-    "github.com/pkdindustries/pollytool/llm"
-    "github.com/pkdindustries/pollytool/messages"
+    "github.com/alexschlessinger/pollytool/llm"
+    "github.com/alexschlessinger/pollytool/messages"
 )
 
 // Create MultiPass with API keys
@@ -340,7 +340,7 @@ Tools allow LLMs to call functions. Implement the Tool interface:
 
 ```go
 import (
-    "github.com/pkdindustries/pollytool/tools"
+    "github.com/alexschlessinger/pollytool/tools"
     "github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
@@ -525,9 +525,9 @@ import (
     "fmt"
     "os"
     
-    "github.com/pkdindustries/pollytool/llm"
-    "github.com/pkdindustries/pollytool/messages"
-    "github.com/pkdindustries/pollytool/tools"
+    "github.com/alexschlessinger/pollytool/llm"
+    "github.com/alexschlessinger/pollytool/messages"
+    "github.com/alexschlessinger/pollytool/tools"
 )
 
 func main() {
@@ -668,8 +668,8 @@ Pollytool supports Model Context Protocol (MCP) servers, allowing you to use rem
 
 ```go
 import (
-    "github.com/pkdindustries/pollytool/mcp"
-    "github.com/pkdindustries/pollytool/tools"
+    "github.com/alexschlessinger/pollytool/mcp"
+    "github.com/alexschlessinger/pollytool/tools"
 )
 
 // Connect to an MCP server
@@ -741,7 +741,7 @@ registry := tools.NewToolRegistry(allTools)
 For persistent conversations:
 
 ```go
-import "github.com/pkdindustries/pollytool/sessions"
+import "github.com/alexschlessinger/pollytool/sessions"
 
 // Create file-based session store
 store, err := sessions.NewFileSessionStore("~/.pollytool/contexts")
@@ -840,9 +840,9 @@ import (
     "os"
     "time"
     
-    "github.com/pkdindustries/pollytool/llm"
-    "github.com/pkdindustries/pollytool/messages"
-    "github.com/pkdindustries/pollytool/sessions"
+    "github.com/alexschlessinger/pollytool/llm"
+    "github.com/alexschlessinger/pollytool/messages"
+    "github.com/alexschlessinger/pollytool/sessions"
 )
 
 func main() {

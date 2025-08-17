@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/pkdindustries/pollytool/messages"
-	"github.com/pkdindustries/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 // GetDefaultClient creates a MultiPass client with API keys from environment

@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pkdindustries/pollytool/messages"
-	"github.com/pkdindustries/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 // readFromStdin reads all lines from stdin and joins them with newlines
@@ -135,7 +135,7 @@ func checkAndPromptForReset(fileStore *sessions.FileSessionStore, name string) b
 		fmt.Fprintf(os.Stderr, "Failed to reset context: %v\n", err)
 		return false
 	}
-	
+
 	fmt.Fprintf(os.Stderr, "Reset context '%s'\n", name)
 	return true
 }
@@ -153,16 +153,16 @@ func resetContext(fileStore *sessions.FileSessionStore, name string) error {
 
 	// Update last used time
 	contextInfo.LastUsed = time.Now()
-	
+
 	// Save updated context info
 	if err := fileStore.SaveContextInfo(contextInfo); err != nil {
 		return err
 	}
-	
+
 	// Delete conversation file (using name directly since it's already validated)
 	sessionPath := filepath.Join(fileStore.GetBaseDir(), name+".json")
 	os.Remove(sessionPath)
-	
+
 	return nil
 }
 
@@ -171,17 +171,17 @@ func validateContextName(name string) error {
 	if name == "" {
 		return fmt.Errorf("context name cannot be empty")
 	}
-	
+
 	// Check for problematic characters that could cause filesystem issues
 	if strings.ContainsAny(name, "/\\:*?\"<>|") {
 		return fmt.Errorf("context name contains invalid characters (/, \\, :, *, ?, \", <, >, |)")
 	}
-	
+
 	// Check for names that could be problematic on any OS
 	if name == "." || name == ".." {
 		return fmt.Errorf("context name cannot be '.' or '..'")
 	}
-	
+
 	// Check for names starting or ending with spaces or dots
 	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") {
 		return fmt.Errorf("context name cannot start or end with spaces")
@@ -189,14 +189,14 @@ func validateContextName(name string) error {
 	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
 		return fmt.Errorf("context name cannot start or end with dots")
 	}
-	
+
 	// Check for control characters
 	for _, r := range name {
 		if r < 32 || r == 127 {
 			return fmt.Errorf("context name contains control characters")
 		}
 	}
-	
+
 	return nil
 }
 
@@ -218,10 +218,10 @@ func checkAndPromptForMissingContext(fileStore *sessions.FileSessionStore, conte
 	if len(contextName) > 20 {
 		contextDisplay = contextName[:8] + "..."
 	}
-	
+
 	// Save metadata for the new context
 	fileStore.SaveContextName(contextName, "")
 	fmt.Fprintf(os.Stderr, "Created new context '%s'\n", contextDisplay)
-	
+
 	return contextName
 }

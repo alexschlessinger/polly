@@ -1,6 +1,6 @@
 package messages
 
-import "github.com/pkdindustries/pollytool/tools"
+import "github.com/alexschlessinger/pollytool/tools"
 
 // StreamEventType represents the type of streaming event
 type StreamEventType string

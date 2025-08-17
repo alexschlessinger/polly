@@ -3,7 +3,7 @@ package sessions
 import (
 	"time"
 
-	"github.com/pkdindustries/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/messages"
 )
 
 // Session interface defines the contract for session implementations

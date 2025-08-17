@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/pkdindustries/pollytool/messages"
-	"github.com/pkdindustries/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 // LLM interface defines the contract for language model implementations

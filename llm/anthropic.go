@@ -6,10 +6,10 @@ import (
 	"log"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	mcpjsonschema "github.com/modelcontextprotocol/go-sdk/jsonschema"
-	"github.com/pkdindustries/pollytool/messages"
 )
 
 type AnthropicClient struct {
@@ -116,8 +116,8 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 				if json.Unmarshal(b, &block) == nil && block.Type == "tool_use" {
 					// Initialize a new tool call with empty JSON arguments by default
 					toolCalls = append(toolCalls, messages.ChatMessageToolCall{
-						ID:   block.ID,
-						Name: block.Name,
+						ID:        block.ID,
+						Name:      block.Name,
 						Arguments: "{}", // Default to empty JSON object
 					})
 				}

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/pkdindustries/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/llm"
 	"golang.org/x/term"
 )
 

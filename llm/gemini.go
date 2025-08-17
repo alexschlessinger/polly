@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/google/generative-ai-go/genai"
 	mcpjsonschema "github.com/modelcontextprotocol/go-sdk/jsonschema"
-	"github.com/pkdindustries/pollytool/messages"
 	"google.golang.org/api/option"
 )
 
