@@ -171,9 +171,12 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 					Content: content,
 				})
 			case "image_base64":
-				// For images, we need to preserve them as parts
-				// This is a limitation - we'll need to handle this case
-				return fmt.Errorf("--add with image files is not yet supported")
+				// Create a message with image content using Parts field
+				msg := messages.ChatMessage{
+					Role: messages.MessageRoleUser,
+					Parts: []messages.ContentPart{part},
+				}
+				session.AddMessage(msg)
 			}
 		}
 	} else {
