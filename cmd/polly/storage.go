@@ -14,7 +14,9 @@ func setupSessionStore(config *Config, contextID string) (sessions.SessionStore,
 	if needsFileStore(config, contextID) {
 		return sessions.NewFileSessionStore("") // Uses default ~/.pollytool/contexts
 	}
-	return sessions.NewSessionStore(memoryStoreTTL), nil
+	return sessions.NewSyncMapSessionStore(&sessions.SessionConfig{
+		TTL: memoryStoreTTL,
+	}), nil
 }
 
 // handleListContexts lists all available contexts

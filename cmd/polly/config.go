@@ -10,7 +10,7 @@ import (
 
 // Constants
 const (
-	memoryStoreTTL = 30 * time.Minute
+	memoryStoreTTL = 0 // No expiration for polly CLI sessions (runs for minutes at most)
 )
 
 // Default values from environment variables

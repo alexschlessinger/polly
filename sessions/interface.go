@@ -15,5 +15,6 @@ type Session interface {
 type SessionStore interface {
 	Get(string) Session
 	Delete(string)
+	Range(func(key, value any) bool)
 	Expire()
 }

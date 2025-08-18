@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,6 +22,7 @@ type FileSession struct {
 	Updated time.Time              `json:"updated"`
 	path    string
 	file    *os.File // Keep file open for locking
+	config  *SessionConfig
 }
 
 // ContextInfo stores metadata about a context
@@ -49,10 +51,20 @@ type FileSessionStore struct {
 	baseDir string
 	index   *ContextIndex
 	indexMu sync.RWMutex
+	config  *SessionConfig
 }
 
 // NewFileSessionStore creates a new file-based session store
 func NewFileSessionStore(baseDir string) (SessionStore, error) {
+	return NewFileSessionStoreWithConfig(baseDir, nil)
+}
+
+// NewFileSessionStoreWithConfig creates a new file-based session store with config
+func NewFileSessionStoreWithConfig(baseDir string, config *SessionConfig) (SessionStore, error) {
+	if config == nil {
+		config = DefaultConfig()
+	}
+
 	// Use default directory if not specified
 	if baseDir == "" {
 		homeDir, err := os.UserHomeDir()
@@ -69,6 +81,7 @@ func NewFileSessionStore(baseDir string) (SessionStore, error) {
 
 	store := &FileSessionStore{
 		baseDir: baseDir,
+		config:  config,
 	}
 
 	// Load or create index
@@ -121,6 +134,7 @@ func (s *FileSessionStore) Get(name string) Session {
 		if err := json.Unmarshal(data, &session); err == nil {
 			session.path = sessionPath
 			session.file = lockFile
+			session.config = s.config
 			session.Updated = time.Now()
 			session.save()
 			return &session
@@ -135,6 +149,7 @@ func (s *FileSessionStore) Get(name string) Session {
 		Updated: time.Now(),
 		path:    sessionPath,
 		file:    lockFile,
+		config:  s.config,
 	}
 	session.save()
 	return session
@@ -153,6 +168,23 @@ func (s *FileSessionStore) Delete(name string) {
 }
 
 // Expire removes old sessions
+// Range iterates over all sessions using the index
+func (s *FileSessionStore) Range(f func(key, value any) bool) {
+	s.indexMu.RLock()
+	defer s.indexMu.RUnlock()
+
+	// Iterate over contexts in the index
+	for name := range s.index.Contexts {
+		// Load the session for this context
+		session := s.Get(name)
+		
+		// Call the function with the session
+		if !f(name, session) {
+			break
+		}
+	}
+}
+
 func (s *FileSessionStore) Expire() {
 	// Clean up sessions older than 7 days
 	expiry := 7 * 24 * time.Hour
@@ -233,7 +265,24 @@ func (s *FileSession) GetHistory() []messages.ChatMessage {
 func (s *FileSession) AddMessage(msg messages.ChatMessage) {
 	s.History = append(s.History, msg)
 	s.Updated = time.Now()
+	s.trimHistory()
 	s.save()
+}
+
+// trimHistory limits the session history to MaxHistory messages
+func (s *FileSession) trimHistory() {
+	if s.config == nil || s.config.MaxHistory == 0 || len(s.History) <= s.config.MaxHistory {
+		return
+	}
+	
+	// Keep the first message (system prompt) and the most recent MaxHistory messages
+	s.History = append(s.History[:1], s.History[len(s.History)-s.config.MaxHistory+1:]...)
+	
+	// Handle the API constraint: tool responses must follow tool_calls
+	// If the second message is a tool response, remove it
+	if len(s.History) > 1 && s.History[1].Role == messages.MessageRoleTool {
+		s.History = slices.Delete(s.History, 1, 2)
+	}
 }
 
 // Clear clears the session history
