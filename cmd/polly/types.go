@@ -7,10 +7,11 @@ import (
 // Config holds all configuration from command-line flags
 type Config struct {
 	// Model configuration
-	Model       string
-	Temperature float64
-	MaxTokens   int
-	Timeout     time.Duration
+	Model          string
+	Temperature    float64
+	MaxTokens      int
+	Timeout        time.Duration
+	ThinkingEffort string
 
 	// API configuration
 	BaseURL string

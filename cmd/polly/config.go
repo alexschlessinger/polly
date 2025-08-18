@@ -61,12 +61,24 @@ func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
 
 // parseConfig extracts configuration from command-line flags
 func parseConfig(cmd *cli.Command) *Config {
+	// Handle thinking effort - check which flag is set
+	var thinkingEffort string
+	if cmd.Bool("think-hard") {
+		thinkingEffort = "high"
+	} else if cmd.Bool("think-medium") {
+		thinkingEffort = "medium"
+	} else if cmd.Bool("think") {
+		thinkingEffort = "low"
+	}
+	// If none are set, thinkingEffort remains empty (disabled)
+	
 	return &Config{
 		// Model configuration
-		Model:       cmd.String("model"),
-		Temperature: cmd.Float64("temp"),
-		MaxTokens:   cmd.Int("maxtokens"),
-		Timeout:     cmd.Duration("timeout"),
+		Model:          cmd.String("model"),
+		Temperature:    cmd.Float64("temp"),
+		MaxTokens:      cmd.Int("maxtokens"),
+		Timeout:        cmd.Duration("timeout"),
+		ThinkingEffort: thinkingEffort,
 
 		// API configuration
 		BaseURL: cmd.String("baseurl"),

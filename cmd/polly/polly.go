@@ -55,6 +55,18 @@ func defineFlags() []cli.Flag {
 			Usage: "Request timeout",
 			Value: defaultTimeout,
 		},
+		&cli.BoolFlag{
+			Name:  "think",
+			Usage: "Enable thinking/reasoning (low effort)",
+		},
+		&cli.BoolFlag{
+			Name:  "think-medium",
+			Usage: "Enable thinking/reasoning (medium effort)",
+		},
+		&cli.BoolFlag{
+			Name:  "think-hard",
+			Usage: "Enable thinking/reasoning (high effort)",
+		},
 
 		// API configuration
 		&cli.StringFlag{
@@ -440,6 +452,7 @@ func executeCompletionWithStatusLine(
 		Messages:       session.GetHistory(),
 		Tools:          registry.All(),
 		ResponseSchema: schema,
+		ThinkingEffort: config.ThinkingEffort,
 	}
 
 	// Create stream processor
@@ -489,10 +502,17 @@ func processEventStream(
 	var fullResponse messages.ChatMessage
 	var responseText strings.Builder
 	var firstByteReceived bool
-	thinkFilter := &llm.ThinkBlockFilter{}
+	var reasoningLength int
 
 	for event := range eventChan {
 		switch event.Type {
+		case messages.EventTypeReasoning:
+			// Track reasoning length for status display
+			reasoningLength += len(event.Content)
+			if statusLine != nil {
+				statusLine.UpdateThinkingProgress(reasoningLength)
+			}
+
 		case messages.EventTypeContent:
 			// Clear status on first content
 			if !firstByteReceived && statusLine != nil {
@@ -500,29 +520,22 @@ func processEventStream(
 				statusLine.ClearForContent()
 			}
 
-			// Filter think blocks from the content
-			filtered, isThinking := thinkFilter.ProcessChunk(event.Content)
-
-			// Always accumulate all content (including think blocks) for the session
+			// Accumulate content for the session
 			responseText.WriteString(event.Content)
 
 			if config.SchemaPath == "" {
-				// Only print filtered content (no think blocks)
-				if filtered != "" {
+				// Print content as it arrives
+				if event.Content != "" {
 					if statusLine != nil {
-						statusLine.Print(filtered)
+						statusLine.Print(event.Content)
 					} else {
-						fmt.Print(filtered)
+						fmt.Print(event.Content)
 					}
 				}
 
-				// Update terminal title - show total chars but indicate if thinking
+				// Update terminal title with streaming progress
 				if statusLine != nil {
-					if isThinking {
-						statusLine.UpdateThinkingProgress(responseText.Len())
-					} else {
-						statusLine.UpdateStreamingProgress(responseText.Len())
-					}
+					statusLine.UpdateStreamingProgress(responseText.Len())
 				}
 			}
 
@@ -535,8 +548,10 @@ func processEventStream(
 
 			// Use streamed content if available, otherwise use message content
 			if responseText.Len() > 0 {
-				fullResponse.Content = responseText.String()
+				fullResponse.Content = strings.TrimLeft(responseText.String(), " \t\n\r")
 			}
+
+			// Reasoning is already captured in the message from the event
 
 			// Add assistant response to session
 			session.AddMessage(fullResponse)

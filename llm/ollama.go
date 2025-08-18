@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"regexp"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	mcpjsonschema "github.com/modelcontextprotocol/go-sdk/jsonschema"
@@ -58,12 +57,6 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 	}
 }
 
-// stripThinkBlocks removes <think>...</think> blocks from the response content
-func stripThinkBlocks(content string) string {
-	// Match <think> blocks including nested content, using non-greedy matching
-	thinkRegex := regexp.MustCompile(`(?s)<think>.*?</think>`)
-	return thinkRegex.ReplaceAllString(content, "")
-}
 
 // ChatCompletionStream implements the event-based streaming interface
 func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
@@ -105,6 +98,15 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 				"num_predict": req.MaxTokens,
 			},
 		}
+		
+		// Enable thinking for supported models if requested
+		if req.ThinkingEffort != "" {
+			// Ollama's ThinkValue can be bool or string
+			// For now, we'll use boolean true for any effort level
+			// Some models may support string values like "low", "medium", "high"
+			thinkValue := ollamaapi.ThinkValue{Value: true}
+			chatReq.Think = &thinkValue
+		}
 
 		// Set JSON format if schema is specified
 		if req.ResponseSchema != nil {
@@ -126,9 +128,19 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		// Stream content chunks as they arrive and capture any tool calls the model returns.
 		var (
 			responseContent string
+			thinkingContent string
 			toolCalls       []messages.ChatMessageToolCall
 		)
 		err := o.client.Chat(ctx, chatReq, func(resp ollamaapi.ChatResponse) error {
+			// Stream thinking tokens as they arrive
+			if resp.Message.Thinking != "" {
+				thinkingContent += resp.Message.Thinking
+				// Send thinking update for status display
+				messageChannel <- messages.ChatMessage{
+					Role:      messages.MessageRoleAssistant,
+					Reasoning: resp.Message.Thinking,
+				}
+			}
 			// Stream content tokens as they arrive
 			if resp.Message.Content != "" {
 				responseContent += resp.Message.Content
@@ -163,8 +175,8 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			return
 		}
 
-		// Clean the content before sending
-		cleanContent := stripThinkBlocks(responseContent)
+		// Use the full response content
+		cleanContent := responseContent
 
 		// Send the complete message with tool calls if any
 		// Don't include content since it was already streamed
@@ -173,6 +185,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 				Role:      messages.MessageRoleAssistant,
 				Content:   "", // Content was already streamed, don't duplicate
 				ToolCalls: toolCalls,
+				Reasoning: thinkingContent,
 			}
 		}
 

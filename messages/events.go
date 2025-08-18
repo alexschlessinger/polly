@@ -8,6 +8,8 @@ type StreamEventType string
 const (
 	// EventTypeContent represents incremental content being streamed
 	EventTypeContent StreamEventType = "content"
+	// EventTypeReasoning represents incremental reasoning/thinking being streamed
+	EventTypeReasoning StreamEventType = "reasoning"
 	// EventTypeToolCall represents a tool call event
 	EventTypeToolCall StreamEventType = "tool_call"
 	// EventTypeComplete represents the complete message

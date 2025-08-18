@@ -60,6 +60,11 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 		Stream:              true, // Enable streaming
 	}
 
+	// Enable reasoning for supported models (o1, DeepSeek, etc.)
+	if req.ThinkingEffort != "" {
+		ccr.ReasoningEffort = req.ThinkingEffort
+	}
+
 	// Add structured output support
 	if req.ResponseSchema != nil {
 		ccr.ResponseFormat = ConvertToOpenAISchema(req.ResponseSchema)
@@ -87,6 +92,7 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 
 	// Accumulate the response
 	var fullContent string
+	var reasoningContent string
 	var toolCalls []messages.ChatMessageToolCall
 
 	for {
@@ -106,6 +112,16 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 
 		if len(response.Choices) > 0 {
 			delta := response.Choices[0].Delta
+
+			// Stream reasoning content if present (for models like DeepSeek)
+			if delta.ReasoningContent != "" {
+				reasoningContent += delta.ReasoningContent
+				// Send reasoning for status display
+				respChannel <- messages.ChatMessage{
+					Role:      messages.MessageRoleAssistant,
+					Reasoning: delta.ReasoningContent,
+				}
+			}
 
 			// Stream content chunks as they arrive
 			if delta.Content != "" {
@@ -165,6 +181,7 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 		Role:      messages.MessageRoleAssistant,
 		Content:   finalContent,
 		ToolCalls: toolCalls,
+		Reasoning: reasoningContent,
 	}
 
 	// Always send the final complete message (needed for processor to emit completion event)

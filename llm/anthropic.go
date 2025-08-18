@@ -47,6 +47,23 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 			Temperature: anthropic.Float(float64(req.Temperature)),
 			Messages:    anthropicMessages,
 		}
+		
+		// Enable thinking for supported models if requested
+		if req.ThinkingEffort != "" {
+			// Map effort levels to token budgets
+			var budget int64
+			switch req.ThinkingEffort {
+			case "low":
+				budget = 4096
+			case "medium":
+				budget = 8192
+			case "high":
+				budget = 16384
+			default:
+				budget = 8192 // Default to medium
+			}
+			params.Thinking = anthropic.ThinkingConfigParamOfEnabled(budget)
+		}
 
 		// Add system prompt if present
 		if systemPrompt != "" {
@@ -95,6 +112,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 
 		// Process the stream
 		var responseContent string
+		var thinkingContent string
 		var toolCalls []messages.ChatMessageToolCall
 
 		for stream.Next() {
@@ -104,7 +122,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 			case "message_start":
 				// Message started
 			case "content_block_start":
-				// Check if this is a tool use block
+				// Check block type
 				blockStart := event.AsContentBlockStart()
 				// Marshal to JSON to inspect the type
 				b, _ := json.Marshal(blockStart.ContentBlock)
@@ -124,7 +142,18 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 			case "content_block_delta":
 				// Handle content delta
 				blockDelta := event.AsContentBlockDelta()
-				// Check if it's text delta
+				
+				// Check for thinking delta
+				if thinking := blockDelta.Delta.Thinking; thinking != "" {
+					thinkingContent += thinking
+					// Stream the thinking
+					messageChannel <- messages.ChatMessage{
+						Role:      messages.MessageRoleAssistant,
+						Reasoning: thinking,
+					}
+				}
+				
+				// Check for text delta (regular content)
 				if text := blockDelta.Delta.Text; text != "" {
 					responseContent += text
 					// Stream partial content
@@ -193,6 +222,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 				Role:      messages.MessageRoleAssistant,
 				Content:   "", // Content was already streamed, don't duplicate
 				ToolCalls: toolCalls,
+				Reasoning: thinkingContent,
 			}
 		}
 

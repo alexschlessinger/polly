@@ -25,9 +25,19 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 		defer close(eventChan)
 
 		var accumulatedContent string
+		var accumulatedReasoning string
 		var lastMessageWithToolCalls *ChatMessage
 
 		for msg := range msgChan {
+			// If there's reasoning, accumulate it and emit as reasoning event
+			if msg.Reasoning != "" {
+				accumulatedReasoning += msg.Reasoning
+				eventChan <- &StreamEvent{
+					Type:    EventTypeReasoning,
+					Content: msg.Reasoning,
+				}
+			}
+			
 			// If there's content, emit it as a content event
 			// This ensures content is always available for streaming
 			if msg.Content != "" {
@@ -64,8 +74,9 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 
 		// At the end, emit a complete event with the full message
 		completeMsg := ChatMessage{
-			Role:    MessageRoleAssistant,
-			Content: accumulatedContent,
+			Role:      MessageRoleAssistant,
+			Content:   accumulatedContent,
+			Reasoning: accumulatedReasoning,
 		}
 
 		// If we had tool calls, include them in the complete message

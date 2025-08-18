@@ -17,6 +17,7 @@ type ChatMessage struct {
 	Parts      []ContentPart // Multimodal content parts
 	ToolCalls  []ChatMessageToolCall
 	ToolCallID string // For tool response messages
+	Reasoning  string // Reasoning/thinking content from <think> blocks
 }
 
 // GetContent returns the content as a string, handling both simple and multimodal messages
