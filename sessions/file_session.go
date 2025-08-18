@@ -3,9 +3,9 @@ package sessions
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -23,6 +23,7 @@ type FileSession struct {
 	path    string
 	file    *os.File // Keep file open for locking
 	config  *SessionConfig
+	mu      sync.RWMutex
 }
 
 // ContextInfo stores metadata about a context
@@ -55,12 +56,7 @@ type FileSessionStore struct {
 }
 
 // NewFileSessionStore creates a new file-based session store
-func NewFileSessionStore(baseDir string) (SessionStore, error) {
-	return NewFileSessionStoreWithConfig(baseDir, nil)
-}
-
-// NewFileSessionStoreWithConfig creates a new file-based session store with config
-func NewFileSessionStoreWithConfig(baseDir string, config *SessionConfig) (SessionStore, error) {
+func NewFileSessionStore(baseDir string, config *SessionConfig) (SessionStore, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -151,6 +147,8 @@ func (s *FileSessionStore) Get(name string) Session {
 		file:    lockFile,
 		config:  s.config,
 	}
+	// Initialize with system prompt if configured
+	session.History = InitializeWithSystemPrompt(session.History, s.config)
 	session.save()
 	return session
 }
@@ -177,7 +175,7 @@ func (s *FileSessionStore) Range(f func(key, value any) bool) {
 	for name := range s.index.Contexts {
 		// Load the session for this context
 		session := s.Get(name)
-		
+
 		// Call the function with the session
 		if !f(name, session) {
 			break
@@ -256,13 +254,17 @@ func (s *FileSessionStore) ListContexts() ([]string, error) {
 
 // GetHistory returns a copy of the session history
 func (s *FileSession) GetHistory() []messages.ChatMessage {
-	history := make([]messages.ChatMessage, len(s.History))
-	copy(history, s.History)
-	return history
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	return CopyHistory(s.History)
 }
 
 // AddMessage adds a message to the session history
 func (s *FileSession) AddMessage(msg messages.ChatMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
 	s.History = append(s.History, msg)
 	s.Updated = time.Now()
 	s.trimHistory()
@@ -271,23 +273,18 @@ func (s *FileSession) AddMessage(msg messages.ChatMessage) {
 
 // trimHistory limits the session history to MaxHistory messages
 func (s *FileSession) trimHistory() {
-	if s.config == nil || s.config.MaxHistory == 0 || len(s.History) <= s.config.MaxHistory {
+	if s.config == nil {
 		return
 	}
-	
-	// Keep the first message (system prompt) and the most recent MaxHistory messages
-	s.History = append(s.History[:1], s.History[len(s.History)-s.config.MaxHistory+1:]...)
-	
-	// Handle the API constraint: tool responses must follow tool_calls
-	// If the second message is a tool response, remove it
-	if len(s.History) > 1 && s.History[1].Role == messages.MessageRoleTool {
-		s.History = slices.Delete(s.History, 1, 2)
-	}
+	s.History = TrimHistory(s.History, s.config.MaxHistory)
 }
 
 // Clear clears the session history
 func (s *FileSession) Clear() {
-	s.History = []messages.ChatMessage{}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	s.History = InitializeWithSystemPrompt(s.History, s.config)
 	s.Updated = time.Now()
 	s.save()
 }
@@ -445,9 +442,7 @@ func (s *FileSessionStore) GetContextInfo() map[string]*ContextInfo {
 
 	// Create a copy to avoid race conditions
 	result := make(map[string]*ContextInfo)
-	for k, v := range s.index.Contexts {
-		result[k] = v
-	}
+	maps.Copy(result, s.index.Contexts)
 	return result
 }
 

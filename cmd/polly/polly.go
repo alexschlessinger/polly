@@ -365,8 +365,6 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	session := getOrCreateSession(sessionStore, contextID, needFileStore)
 	defer closeFileSession(session)
 
-	ensureSystemPrompt(session, config.SystemPrompt)
-
 	// Update context info with current settings if it has metadata
 	if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
 		if fileStore.GetContextByNameOrID(contextID) != nil {

@@ -1,7 +1,6 @@
 package sessions
 
 import (
-	"slices"
 	"sync"
 	"time"
 
@@ -81,7 +80,11 @@ func (s *SyncMapSessionStore) Range(f func(key, value any) bool) {
 func (s *SyncMapSessionStore) Expire() {
 	s.Range(func(key, value any) bool {
 		session := value.(*LocalSession)
-		if time.Since(session.last) > s.config.TTL {
+		session.mu.RLock()
+		lastAccess := session.last
+		session.mu.RUnlock()
+		
+		if time.Since(lastAccess) > s.config.TTL {
 			s.Delete(key.(string))
 		}
 		return true
@@ -93,9 +96,7 @@ func (s *LocalSession) GetHistory() []messages.ChatMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	history := make([]messages.ChatMessage, len(s.history))
-	copy(history, s.history)
-	return history
+	return CopyHistory(s.history)
 }
 
 // AddMessage adds a message to the session history
@@ -110,18 +111,10 @@ func (s *LocalSession) AddMessage(msg messages.ChatMessage) {
 
 // trimHistory limits the session history to MaxHistory messages
 func (s *LocalSession) trimHistory() {
-	if s.config == nil || s.config.MaxHistory == 0 || len(s.history) <= s.config.MaxHistory {
+	if s.config == nil {
 		return
 	}
-	
-	// Keep the first message (system prompt) and the most recent MaxHistory messages
-	s.history = append(s.history[:1], s.history[len(s.history)-s.config.MaxHistory+1:]...)
-	
-	// Handle the API constraint: tool responses must follow tool_calls
-	// If the second message is a tool response, remove it
-	if len(s.history) > 1 && s.history[1].Role == messages.MessageRoleTool {
-		s.history = slices.Delete(s.history, 1, 2)
-	}
+	s.history = TrimHistory(s.history, s.config.MaxHistory)
 }
 
 // Clear clears the session history
@@ -129,12 +122,6 @@ func (s *LocalSession) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	s.history = s.history[:0]
-	if s.config != nil && s.config.SystemPrompt != "" {
-		s.history = append(s.history, messages.ChatMessage{
-			Role:    messages.MessageRoleSystem,
-			Content: s.config.SystemPrompt,
-		})
-	}
+	s.history = InitializeWithSystemPrompt(s.history, s.config)
 	s.last = time.Now()
 }

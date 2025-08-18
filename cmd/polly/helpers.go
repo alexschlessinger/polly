@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
@@ -44,19 +43,6 @@ func setupSignalHandling(ctx context.Context) (context.Context, context.CancelFu
 		cancel()
 	}()
 	return ctx, cancel
-}
-
-// ensureSystemPrompt adds a system prompt to the session if it's empty
-func ensureSystemPrompt(session sessions.Session, systemPrompt string) {
-	if len(session.GetHistory()) == 0 {
-		if systemPrompt == "" {
-			systemPrompt = defaultSystemPrompt
-		}
-		session.AddMessage(messages.ChatMessage{
-			Role:    messages.MessageRoleSystem,
-			Content: systemPrompt,
-		})
-	}
 }
 
 // closeFileSession safely closes a file session if applicable

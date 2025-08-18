@@ -11,12 +11,16 @@ import (
 
 // setupSessionStore creates the appropriate session store based on configuration
 func setupSessionStore(config *Config, contextID string) (sessions.SessionStore, error) {
-	if needsFileStore(config, contextID) {
-		return sessions.NewFileSessionStore("") // Uses default ~/.pollytool/contexts
+	sessionConfig := &sessions.SessionConfig{
+		TTL:          memoryStoreTTL,
+		SystemPrompt: config.SystemPrompt,
+		MaxHistory:   0, // Unlimited for polly CLI
 	}
-	return sessions.NewSyncMapSessionStore(&sessions.SessionConfig{
-		TTL: memoryStoreTTL,
-	}), nil
+	
+	if needsFileStore(config, contextID) {
+		return sessions.NewFileSessionStore("", sessionConfig) // Uses default ~/.pollytool/contexts
+	}
+	return sessions.NewSyncMapSessionStore(sessionConfig), nil
 }
 
 // handleListContexts lists all available contexts
