@@ -112,7 +112,7 @@ func defineFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:    "context",
 			Aliases: []string{"c"},
-			Usage:   "Context name (@name) or ID for conversation continuity (uses pollyTOOL_CONTEXT env var if not set)",
+			Usage:   "Context name for conversation continuity (uses POLLYTOOL_CONTEXT env var if not set)",
 		},
 		&cli.BoolFlag{
 			Name:    "last",

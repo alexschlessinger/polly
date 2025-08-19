@@ -6,6 +6,40 @@ https://en.wikipedia.org/wiki/Stochastic_parrot
 
 This is my llm cli tool. There are many like it, but this one is mine.
 
+## Command-Line Options
+```
+NAME:
+   polly - Chat with LLMs using various providers
+
+USAGE:
+   polly [global options]
+
+GLOBAL OPTIONS:
+   --model string, -m string                              Model to use (provider/model format) (default: "anthropic/claude-sonnet-4-20250514")
+   --temp float                                           Temperature for sampling (default: 1)
+   --maxtokens int                                        Maximum tokens to generate (default: 4096)
+   --timeout duration                                     Request timeout (default: 2m0s)
+   --think                                                Enable thinking/reasoning (low effort) (default: false)
+   --think-medium                                         Enable thinking/reasoning (medium effort) (default: false)
+   --think-hard                                           Enable thinking/reasoning (high effort) (default: false)
+   --baseurl string                                       Base URL for API (for OpenAI-compatible endpoints or Ollama)
+   --tool string, -t string [ --tool string, -t string ]  Shell tool executable path (can be specified multiple times)
+   --mcp string [ --mcp string ]                          MCP server and arguments (can be specified multiple times)
+   --prompt string, -p string                             Initial prompt (reads from stdin if not provided)
+   --system string, -s string                             System prompt (default: "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.")
+   --file string, -f string [ --file string, -f string ]  File, image, or URL to include (can be specified multiple times)
+   --schema string                                        Path to JSON schema file for structured output
+   --context string, -c string                            Context name for conversation continuity (uses pollyTOOL_CONTEXT env var if not set)
+   --last, -L                                             Use the last active context (default: false)
+   --reset                                                Reset context (clear conversation history, keep settings) (default: false)
+   --list                                                 List all available context IDs (default: false)
+   --delete string                                        Delete the specified context
+   --add                                                  Add stdin content to context without making an API call (default: false)
+   --purge                                                Delete all sessions and index (requires confirmation) (default: false)
+   --quiet                                                Suppress confirmation messages (default: false)
+   --debug, -d                                            Enable debug logging (default: false)
+   --help, -h                                             show help
+```
 
 ## Features
 
@@ -114,15 +148,23 @@ polly --last -p "Explain the query"
 
 ```
 
-
 ### Settings Priority
 
-Settings are applied in this order (highest priority first):
-1. **Command-line flags** - Always take precedence
-2. **Context stored settings** - Remembered from previous uses
-3. **Environment variables** - Default values
-4. **Hard-coded defaults** - Fallback values
+Polly manages context settings with a clear priority system:
 
+1. **Settings Persistence**  
+  When you use a context, your current settings (model, temperature, system prompt, tools) are automatically saved to that context's metadata.
+
+2. **Settings Inheritance**  
+  When you resume a context, Polly restores the previously saved settings—unless you override them with command-line flags.
+
+3. **Settings Priority**  
+  Command-line flags always take precedence over stored context settings.  
+  *Example:*  
+  If your context uses `openai/gpt-5` but you run `-m openai/gpt-4.1`, Polly switches to GPT-4.1 and saves this change for future use.
+
+4. **System Prompt Changes**  
+  If you change the system prompt for a context with existing conversation history, Polly automatically resets the conversation to keep things consistent.
 
 ## Structured Output
 
@@ -215,41 +257,12 @@ polly --baseurl http://192.168.1.100:11434 -m ollama/llama3.2 -p "Hello"
 polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hello"
 ```
 
-## Command-Line Options
-```
-NAME:
-   polly - Chat with LLMs using various providers
-
-USAGE:
-   polly [global options]
-
-GLOBAL OPTIONS:
-   --model string, -m string                              Model to use (provider/model format) (default: "anthropic/claude-sonnet-4-20250514")
-   --temp float                                           Temperature for sampling (default: 1)
-   --maxtokens int                                        Maximum tokens to generate (default: 4096)
-   --timeout duration                                     Request timeout (default: 2m0s)
-   --baseurl string                                       Base URL for API (OpenAI-compatible endpoints or Ollama)
-   --tool string, -t string [ --tool string, -t string ]  Shell tool executable path (can be specified multiple times)
-   --mcp string [ --mcp string ]                          MCP server and arguments (can be specified multiple times)
-   --prompt string, -p string                             Prompt (reads from stdin if not provided)
-   --system string, -s string                             System prompt
-   --file string, -f string [ --file string, -f string ]  File, image, or URL to include (can be specified multiple times)
-   --schema string                                        Path to JSON schema file for structured output
-   --context string, -c string                            Context name for conversation continuity (or uses POLLYTOOL_CONTEXT env var if set)
-   --last, -L                                             Use the last active context (default: false)
-   --reset                                                Reset context (clear conversation history, keep settings) - requires -c or --last
-   --list                                                 List all available context IDs (default: false)
-   --delete string                                        Delete the specified context
-   --add                                                  Add stdin content to context without making an API call (default: false)
-   --quiet                                                Suppress confirmation messages (default: false)
-   --debug, -d                                            Enable debug logging (default: false)
-   --help, -h                                             show help
-```
 
 ## Provider-Specific Notes
 
 ### OpenAI
 - Supports GPT-4, 4.1, 5 and their distills
+- OpenAI compatible endpoints with --baseurl
 - Structured output uses `additionalProperties: false` in schema
 - Reliable schema support
 
@@ -261,16 +274,14 @@ GLOBAL OPTIONS:
 
 ### Gemini
 - Supports Gemini Pro and Flash models
-- Native structured output support via ResponseSchema
 - Good balance of speed and capability
-- Reliable schema support
+- Reliable schema output support via ResponseSchema
 
 ### Ollama
 - Requires Ollama installation
 - Supports any model available in Ollama
 - Use --baseurl for remote instances
-- Schema support hit and miss
-
+- Schema support hit and miss, depends on model
 
 ## License
 
