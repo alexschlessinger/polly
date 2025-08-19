@@ -185,7 +185,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 				Role:      messages.MessageRoleAssistant,
 				Content:   "", // Content was already streamed, don't duplicate
 				ToolCalls: toolCalls,
-				Reasoning: thinkingContent,
+				Reasoning: "", // Reasoning was already streamed, don't duplicate
 			}
 		}
 
