@@ -181,7 +181,7 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 		Role:      messages.MessageRoleAssistant,
 		Content:   finalContent,
 		ToolCalls: toolCalls,
-		Reasoning: reasoningContent,
+		Reasoning: "", // Reasoning was already streamed, don't duplicate
 	}
 
 	// Always send the final complete message (needed for processor to emit completion event)

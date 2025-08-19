@@ -27,6 +27,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 		var accumulatedContent string
 		var accumulatedReasoning string
 		var lastMessageWithToolCalls *ChatMessage
+		var lastMessageMetadata map[string]any
 
 		for msg := range msgChan {
 			// If there's reasoning, accumulate it and emit as reasoning event
@@ -37,7 +38,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 					Content: msg.Reasoning,
 				}
 			}
-			
+
 			// If there's content, emit it as a content event
 			// This ensures content is always available for streaming
 			if msg.Content != "" {
@@ -46,6 +47,11 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 					Type:    EventTypeContent,
 					Content: msg.Content,
 				}
+			}
+
+			// Save metadata if present
+			if len(msg.Metadata) > 0 {
+				lastMessageMetadata = msg.Metadata
 			}
 
 			// If this message has tool calls, save it for the complete event
@@ -77,6 +83,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			Role:      MessageRoleAssistant,
 			Content:   accumulatedContent,
 			Reasoning: accumulatedReasoning,
+			Metadata:  lastMessageMetadata,
 		}
 
 		// If we had tool calls, include them in the complete message

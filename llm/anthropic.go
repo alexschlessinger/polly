@@ -47,7 +47,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 			Temperature: anthropic.Float(float64(req.Temperature)),
 			Messages:    anthropicMessages,
 		}
-		
+
 		// Enable thinking for supported models if requested
 		if req.ThinkingEffort != "" {
 			// Map effort levels to token budgets
@@ -114,6 +114,9 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 		var responseContent string
 		var thinkingContent string
 		var toolCalls []messages.ChatMessageToolCall
+		var thinkingBlocks []map[string]any
+		var currentBlockType string
+		var currentThinkingBlock map[string]any
 
 		for stream.Next() {
 			event := stream.Current()
@@ -126,33 +129,58 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 				blockStart := event.AsContentBlockStart()
 				// Marshal to JSON to inspect the type
 				b, _ := json.Marshal(blockStart.ContentBlock)
-				var block struct {
-					Type string `json:"type"`
-					ID   string `json:"id"`
-					Name string `json:"name"`
-				}
-				if json.Unmarshal(b, &block) == nil && block.Type == "tool_use" {
-					// Initialize a new tool call with empty JSON arguments by default
-					toolCalls = append(toolCalls, messages.ChatMessageToolCall{
-						ID:        block.ID,
-						Name:      block.Name,
-						Arguments: "{}", // Default to empty JSON object
-					})
+				var block map[string]any
+				if json.Unmarshal(b, &block) == nil {
+					blockType, _ := block["type"].(string)
+					currentBlockType = blockType
+
+					switch blockType {
+					case "thinking":
+						// Start capturing a thinking block
+						currentThinkingBlock = map[string]any{
+							"type":     "thinking",
+							"thinking": "", // Will be filled by deltas
+						}
+					case "tool_use":
+						// Initialize a new tool call
+						id, _ := block["id"].(string)
+						name, _ := block["name"].(string)
+						toolCalls = append(toolCalls, messages.ChatMessageToolCall{
+							ID:        id,
+							Name:      name,
+							Arguments: "{}", // Default to empty JSON object
+						})
+					}
 				}
 			case "content_block_delta":
 				// Handle content delta
 				blockDelta := event.AsContentBlockDelta()
-				
+
 				// Check for thinking delta
 				if thinking := blockDelta.Delta.Thinking; thinking != "" {
 					thinkingContent += thinking
+					// Add to current thinking block if we're capturing one
+					if currentThinkingBlock != nil {
+						if existingThinking, ok := currentThinkingBlock["thinking"].(string); ok {
+							currentThinkingBlock["thinking"] = existingThinking + thinking
+						} else {
+							currentThinkingBlock["thinking"] = thinking
+						}
+					}
 					// Stream the thinking
 					messageChannel <- messages.ChatMessage{
 						Role:      messages.MessageRoleAssistant,
 						Reasoning: thinking,
 					}
 				}
-				
+
+				// Check for signature delta (comes after thinking content)
+				if signature := blockDelta.Delta.Signature; signature != "" {
+					if currentThinkingBlock != nil {
+						currentThinkingBlock["signature"] = signature
+					}
+				}
+
 				// Check for text delta (regular content)
 				if text := blockDelta.Delta.Text; text != "" {
 					responseContent += text
@@ -175,7 +203,13 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 					}
 				}
 			case "content_block_stop":
-				// Content block finished - arguments should already be properly initialized
+				// Content block finished
+				if currentBlockType == "thinking" && currentThinkingBlock != nil {
+					// Save completed thinking block
+					thinkingBlocks = append(thinkingBlocks, currentThinkingBlock)
+					currentThinkingBlock = nil
+				}
+				currentBlockType = ""
 			case "message_delta":
 				// Message delta (usage stats, etc)
 			case "message_stop":
@@ -217,13 +251,21 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 
 		// Send the completed message with tool calls if any
 		// Don't include content since it was already streamed
-		if len(toolCalls) > 0 {
-			messageChannel <- messages.ChatMessage{
+		if len(toolCalls) > 0 || len(thinkingBlocks) > 0 {
+			msg := messages.ChatMessage{
 				Role:      messages.MessageRoleAssistant,
 				Content:   "", // Content was already streamed, don't duplicate
 				ToolCalls: toolCalls,
-				Reasoning: thinkingContent,
+				Reasoning: "", // Reasoning was already streamed, don't duplicate
 			}
+			// Store thinking blocks in metadata for future use
+			if len(thinkingBlocks) > 0 {
+				if msg.Metadata == nil {
+					msg.Metadata = make(map[string]any)
+				}
+				msg.Metadata["anthropic_thinking_blocks"] = thinkingBlocks
+			}
+			messageChannel <- msg
 		}
 
 		// Log response details
@@ -433,6 +475,30 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 
 		case messages.MessageRoleAssistant:
 			var blocks []anthropic.ContentBlockParamUnion
+
+			// Check if we have preserved thinking blocks in metadata
+			if msg.Metadata != nil {
+				if thinkingBlocksData, ok := msg.Metadata["anthropic_thinking_blocks"]; ok {
+					// Restore thinking blocks with their signatures
+					// Handle both []map[string]any and []interface{} types
+					var thinkingBlocksList []map[string]any
+					switch v := thinkingBlocksData.(type) {
+					case []map[string]any:
+						thinkingBlocksList = v
+					}
+
+					for _, block := range thinkingBlocksList {
+						if blockType, _ := block["type"].(string); blockType == "thinking" {
+							thinking, _ := block["thinking"].(string)
+							signature, _ := block["signature"].(string)
+							if signature != "" && thinking != "" {
+								blocks = append(blocks, anthropic.NewThinkingBlock(signature, thinking))
+							}
+						}
+					}
+				}
+			}
+
 			if strings.TrimSpace(msg.Content) != "" {
 				blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
 			}
