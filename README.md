@@ -26,11 +26,14 @@ go build -o polly ./cmd/polly/
 ## Quick Start
 
 ```bash
+export POLLYTOOL_ANTHROPICKEY=...
+export POLYTOOL_OPENAIKEY=....
+
 # Basic
 echo "Hello?" | polly
 
 # Pick a model
-echo "Quantum computing in one breath" | polly -m openai/gpt-5
+echo "Quantum computing in one breath" | polly -m openai/gpt-4.1
 
 # Image
 polly -f image.jpg -p "What’s this?"
@@ -40,6 +43,9 @@ polly -f https://example.com/image.png -p "Describe it"
 
 # Mixed bag
 polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
+
+# tools example
+./polly -p "create a file in my workspace called news.txt with todays news" --mcp "uvx perplexity-mcp" --mcp "npx -y @modelcontextprotocol/server-filesystem /home/alex/workspace/"
 ```
 
 ## Configuration
@@ -69,27 +75,6 @@ polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 
 The default model is `anthropic/claude-sonnet-4-20250514`. Override with `-m` flag:
 
-```bash
-# Anthropic Claude 4 models (latest)
-polly -m anthropic/claude-sonnet-4-20250514 -p "Your prompt"
-polly -m anthropic/claude-opus-4-1-20250805 -p "Your prompt"
-
-
-# OpenAI models
-polly -m openai/gpt-4.1 -p "Your prompt"
-
-# Gemini models
-polly -m gemini/gemini-2.5-flash -p "Your prompt"
-polly -m gemini/gemini-2.5-pro -p "Your prompt"
-
-# Ollama models (requires local Ollama)
-polly -m ollama/llama3.2 -p "Your prompt"
-polly -m ollama/qwen3:30b -p "Your prompt"
-```
-
-## Context Management
-
-Contexts allow you to maintain conversation history across multiple interactions. When you specify a context that doesn't exist, it's automatically created - no need for separate creation commands.
 
 ### Create and Use Named Contexts
 
@@ -108,6 +93,9 @@ polly --list
 
 # Delete a context
 polly --delete project
+
+# delete all contexts
+polly --purge
 ```
 
 ### Context Settings Persistence
@@ -120,30 +108,12 @@ polly -c helper -m gemini/gemini-2.5-pro -s "You are a SQL expert" -p "Hello"
 
 # Later uses - settings are automatically restored
 polly -c helper -p "Write a complex JOIN query"
-```
 
-### Automatic Context Creation
-
-No need for explicit creation - just use a context name and it's created automatically:
-
-```bash
-# This automatically creates newcontext if it doesn't exist
-polly -c newcontext -p "Start of a new conversation"
-# Output: Created new context 'newcontext'
-```
-
-### Use Last Context
-
-```bash
 # Use the last active context
-polly --last -p "Continue our discussion"
+polly --last -p "Explain the query"
 
-# Reset the last used context
-polly --reset --last -p "Start fresh with last context"
-
-# Add content to context without calling LLM
-echo "Important note to remember" | polly -c project --add
 ```
+
 
 ### Settings Priority
 
@@ -153,12 +123,6 @@ Settings are applied in this order (highest priority first):
 3. **Environment variables** - Default values
 4. **Hard-coded defaults** - Fallback values
 
-```bash
-# Example: Environment variable is overridden by stored context setting
-export POLLYTOOL_MODEL=anthropic/claude-opus
-polly -c test -m openai/gpt-4.1 -p "First message"  # Uses gpt-4.1 and saves it
-polly -c test -p "Second message"                   # Still uses gpt-4.1 (not opus)
-```
 
 ## Structured Output
 
@@ -240,52 +204,6 @@ polly --mcp "npx @modelcontextprotocol/server-filesystem /path/to/files" \
       -p "List files in the directory"
 ```
 
-## Advanced Features
-
-### Multimodal Input
-
-```bash
-# Multiple images with text
-polly -f image1.jpg -f image2.jpg -p "Compare these images"
-
-# Mix files and images
-polly -f document.pdf -f screenshot.png -p "Summarize the document and explain the screenshot"
-
-# Fetch images from URLs
-polly -f https://example.com/chart.png -f https://example.com/data.csv -p "Analyze this chart and data"
-
-# Mix local files and URLs
-polly -f local-notes.txt -f https://example.com/diagram.jpg -p "How does the diagram relate to my notes?"
-```
-
-### System Prompts
-
-```bash
-# Set system prompt
-polly -s "You are a helpful Python expert" -p "How do I read a CSV file?"
-
-# System prompt with a new context
-polly -c pythonhelper -s "You are a Python tutor" -p "Explain decorators"
-
-# Clear system prompt (use empty string)
-polly -c pythonhelper -s "" -p "Back to normal"
-
-# Changing system prompt auto-resets the conversation
-polly -c coding -s "You are a code reviewer" -p "Review this function"
-# Output: System prompt changed, resetting conversation...
-```
-
-**Note:** Changing the system prompt for an existing context automatically resets the conversation while preserving other settings (model, temperature, tools). This ensures the AI's new personality starts fresh.
-
-### Temperature and Max Tokens
-
-```bash
-# Adjust temperature (range 0.0 to 2.0)
-polly --temp 0.2 -p "Write a formal email"
-
-# Set max tokens
-polly --maxtokens 500 -p "Brief summary of quantum computing"
-```
 
 ### Custom API Endpoints
 
@@ -326,48 +244,6 @@ GLOBAL OPTIONS:
    --quiet                                                Suppress confirmation messages (default: false)
    --debug, -d                                            Enable debug logging (default: false)
    --help, -h                                             show help
-```
-
-## Examples
-
-### Code Review
-```bash
-# Review code changes
-git diff | polly -c review -p "Review these changes for potential issues"
-```
-
-### Data Extraction
-```bash
-# Extract structured data from multiple documents
-polly -f invoice1.pdf -f invoice2.pdf --schema invoice.schema.json
-```
-
-### Interactive Development
-```bash
-# Create a coding assistant context with custom settings
-polly -c coding -s "You are an expert programmer. Be concise." \
-     -p "I need to build a REST API"
-
-# Continue with specific questions (settings are preserved)
-polly -c coding -p "What framework should I use for Python?"
-polly -c coding -p "Show me a basic example"
-
-# Reset the conversation but keep all settings (model, temperature, system prompt)
-polly --reset -c coding -p "Now let's work on a CLI tool instead"
-
-# Change personality mid-project (auto-resets conversation)
-polly -c coding -s "You are a code reviewer. Focus on security." \
-     -p "Review this authentication code"
-# Output: System prompt changed, resetting conversation...
-```
-
-### Image Analysis
-```bash
-# Describe an image
-polly -f screenshot.png -p "What UI issues do you see?"
-
-# Compare images
-polly -f before.png -f after.png -p "What changed between these images?"
 ```
 
 ## Provider-Specific Notes
