@@ -400,7 +400,10 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	}
 
 	// Load tools
-	toolRegistry := loadTools(config)
+	toolRegistry, err := loadTools(config)
+	if err != nil {
+		return err
+	}
 
 	// Build user message with files if provided
 	userMsg, err := buildMessageWithFiles(prompt, config.Files)

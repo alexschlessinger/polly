@@ -12,7 +12,7 @@ import (
 )
 
 // loadTools loads all configured tools (shell tools and MCP servers)
-func loadTools(config *Config) *tools.ToolRegistry {
+func loadTools(config *Config) (*tools.ToolRegistry, error) {
 	var allTools []tools.Tool
 
 	// Load shell tools
@@ -29,19 +29,17 @@ func loadTools(config *Config) *tools.ToolRegistry {
 		for _, server := range config.MCPServers {
 			mcpClient, err := tools.NewMCPClient(server)
 			if err != nil {
-				log.Printf("Warning: failed to connect to MCP server %s: %v", server, err)
-				continue
+				return nil, fmt.Errorf("failed to connect to MCP server %s: %w", server, err)
 			}
 			mcpTools, err := mcpClient.ListTools()
 			if err != nil {
-				log.Printf("Warning: failed to list tools from MCP server %s: %v", server, err)
-				continue
+				return nil, fmt.Errorf("failed to list tools from MCP server %s: %w", server, err)
 			}
 			allTools = append(allTools, mcpTools...)
 		}
 	}
 
-	return tools.NewToolRegistry(allTools)
+	return tools.NewToolRegistry(allTools), nil
 }
 
 // executeToolCall executes a single tool call and returns the result
