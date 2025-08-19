@@ -135,6 +135,10 @@ func defineFlags() []cli.Flag {
 			Name:  "add",
 			Usage: "Add stdin content to context without making an API call",
 		},
+		&cli.BoolFlag{
+			Name:  "purge",
+			Usage: "Delete all sessions and index (requires confirmation)",
+		},
 
 		// Output configuration
 		&cli.BoolFlag{
@@ -271,6 +275,9 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	}
 	if config.AddToContext {
 		return handleAddToContext(sessionStore, config, contextID)
+	}
+	if config.PurgeAll {
+		return handlePurgeAll(sessionStore)
 	}
 
 	// Set up signal handling

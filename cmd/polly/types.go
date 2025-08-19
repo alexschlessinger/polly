@@ -23,6 +23,7 @@ type Config struct {
 	ListContexts   bool
 	DeleteContext  string
 	AddToContext   bool
+	PurgeAll       bool // Delete all sessions and index
 
 	// Tool configuration
 	ToolPaths  []string

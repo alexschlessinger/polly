@@ -480,3 +480,14 @@ func (s *FileSessionStore) ContextExists(name string) bool {
 func (s *FileSessionStore) GetBaseDir() string {
 	return s.baseDir
 }
+
+// ClearIndex clears the entire index
+func (s *FileSessionStore) ClearIndex() error {
+	s.indexMu.Lock()
+	s.index = &ContextIndex{
+		Contexts: make(map[string]*ContextInfo),
+	}
+	s.indexMu.Unlock()
+
+	return s.saveIndex()
+}

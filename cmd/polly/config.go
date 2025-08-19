@@ -90,6 +90,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		ListContexts:   cmd.Bool("list"),
 		DeleteContext:  cmd.String("delete"),
 		AddToContext:   cmd.Bool("add"),
+		PurgeAll:       cmd.Bool("purge"),
 
 		// Tool configuration
 		ToolPaths:  cmd.StringSlice("tool"),

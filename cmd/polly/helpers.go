@@ -77,7 +77,8 @@ func needsFileStore(config *Config, contextID string) bool {
 		config.UseLastContext ||
 		config.ListContexts ||
 		config.DeleteContext != "" ||
-		config.AddToContext
+		config.AddToContext ||
+		config.PurgeAll
 }
 
 // promptYesNo prompts the user for a yes/no response (defaults to yes)

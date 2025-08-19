@@ -215,3 +215,45 @@ func getOrCreateSession(store sessions.SessionStore, contextID string, needFileS
 	}
 	return store.Get(contextID)
 }
+
+// handlePurgeAll deletes all sessions and the index
+func handlePurgeAll(store sessions.SessionStore) error {
+	// Check if it's a file store - only file-based contexts can be purged
+	fileStore, ok := store.(*sessions.FileSessionStore)
+	if !ok {
+		return fmt.Errorf("cannot purge: using memory store (no persistent data to delete)")
+	}
+
+	// Get count of contexts for the confirmation message
+	contextIDs, err := fileStore.ListContexts()
+	if err != nil {
+		return fmt.Errorf("failed to list contexts: %w", err)
+	}
+
+	if len(contextIDs) == 0 {
+		fmt.Println("No contexts to purge")
+		return nil
+	}
+
+	// Prompt for confirmation
+	prompt := fmt.Sprintf("This will permanently delete %d context(s) and all associated data. Are you sure?", len(contextIDs))
+	if !promptYesNo(prompt) {
+		fmt.Println("Purge cancelled")
+		return nil
+	}
+
+	// Delete all contexts
+	deletedCount := 0
+	for _, contextID := range contextIDs {
+		fileStore.Delete(contextID)
+		deletedCount++
+	}
+
+	// Clear the index
+	if err := fileStore.ClearIndex(); err != nil {
+		return fmt.Errorf("failed to clear index: %w", err)
+	}
+
+	fmt.Printf("Purged %d context(s) and cleared the index\n", deletedCount)
+	return nil
+}
