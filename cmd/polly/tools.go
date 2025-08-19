@@ -29,11 +29,11 @@ func loadTools(config *Config) (*tools.ToolRegistry, error) {
 		for _, server := range config.MCPServers {
 			mcpClient, err := tools.NewMCPClient(server)
 			if err != nil {
-				return nil, fmt.Errorf("failed to connect to MCP server %s: %w", server, err)
+				return nil, err
 			}
 			mcpTools, err := mcpClient.ListTools()
 			if err != nil {
-				return nil, fmt.Errorf("failed to list tools from MCP server %s: %w", server, err)
+				return nil, err
 			}
 			allTools = append(allTools, mcpTools...)
 		}
