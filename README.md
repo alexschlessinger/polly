@@ -29,13 +29,15 @@ GLOBAL OPTIONS:
    --system string, -s string                             System prompt (default: "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.")
    --file string, -f string [ --file string, -f string ]  File, image, or URL to include (can be specified multiple times)
    --schema string                                        Path to JSON schema file for structured output
-   --context string, -c string                            Context name for conversation continuity (uses pollyTOOL_CONTEXT env var if not set)
+   --context string, -c string                            Context name for conversation continuity (uses POLLYTOOL_CONTEXT env var if not set)
    --last, -L                                             Use the last active context (default: false)
    --reset                                                Reset context (clear conversation history, keep settings) (default: false)
    --list                                                 List all available context IDs (default: false)
    --delete string                                        Delete the specified context
    --add                                                  Add stdin content to context without making an API call (default: false)
    --purge                                                Delete all sessions and index (requires confirmation) (default: false)
+   --create string                                        Create a new context with specified name and configuration
+   --show string                                          Show configuration for the specified context
    --quiet                                                Suppress confirmation messages (default: false)
    --debug, -d                                            Enable debug logging (default: false)
    --help, -h                                             show help
@@ -48,7 +50,7 @@ GLOBAL OPTIONS:
 - **Structured Output**: JSON on purpose, not by accident.
 - **Tool Calling**: Bolt on shell scripts & MCP servers.
 - **Contexts**: Memory, but opt‑in.
-- **Streaming**: Words appear while it thinks. 
+- **Streaming**: Words appear while it thinks.
 - **API**: Do the things yourself [docs](API.md)
 
 ## Installation
@@ -113,14 +115,20 @@ The default model is `anthropic/claude-sonnet-4-20250514`. Override with `-m` fl
 ### Create and Use Named Contexts
 
 ```bash
-# Create a new named context (auto-creates if doesn't exist)
-polly -c project -p "I'm working on a Python web app"
+# Create a new named context with configuration
+polly --create project --model openai/gpt-4.1 --maxtokens 4096
+
+# Show context configuration
+polly --show project
+
+# Use the context (prompt required via -p or piped input)
+echo "I'm working on a Python web app" | polly -c project
 
 # Continue the conversation
 polly -c project -p "What database should I use?"
 
 # Reset a context (clear conversation, keep settings)
-polly --reset -c project -p "Let's start fresh"
+polly --reset -c project
 
 # List all contexts
 polly --list
@@ -128,7 +136,7 @@ polly --list
 # Delete a context
 polly --delete project
 
-# delete all contexts
+# Delete all contexts (requires confirmation)
 polly --purge
 ```
 

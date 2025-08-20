@@ -466,6 +466,11 @@ func (s *FileSessionStore) DeleteContextName(name string) error {
 
 // ContextExists checks if a context with the given name exists
 func (s *FileSessionStore) ContextExists(name string) bool {
+	// Check if context exists in index (created with --create)
+	if s.GetContextByNameOrID(name) != nil {
+		return true
+	}
+	
 	// Check if session file exists (use name directly)
 	sessionPath := filepath.Join(s.baseDir, name+".json")
 	_, err := os.Stat(sessionPath)

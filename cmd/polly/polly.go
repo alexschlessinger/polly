@@ -22,6 +22,7 @@ func main() {
 		Name:   "polly",
 		Usage:  "Chat with LLMs using various providers",
 		Flags:  defineFlags(),
+		Before: validateFlags,
 		Action: runCommand,
 	}
 
@@ -139,6 +140,14 @@ func defineFlags() []cli.Flag {
 			Name:  "purge",
 			Usage: "Delete all sessions and index (requires confirmation)",
 		},
+		&cli.StringFlag{
+			Name:  "create",
+			Usage: "Create a new context with specified name and configuration",
+		},
+		&cli.StringFlag{
+			Name:  "show",
+			Usage: "Show configuration for the specified context",
+		},
 
 		// Output configuration
 		&cli.BoolFlag{
@@ -151,6 +160,88 @@ func defineFlags() []cli.Flag {
 			Usage:   "Enable debug logging",
 		},
 	}
+}
+
+func validateFlags(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+	// Count how many standalone operations are requested
+	standaloneOps := 0
+	if cmd.Bool("reset") {
+		standaloneOps++
+	}
+	if cmd.Bool("purge") {
+		standaloneOps++
+	}
+	if cmd.String("create") != "" {
+		standaloneOps++
+	}
+	if cmd.String("show") != "" {
+		standaloneOps++
+	}
+	if cmd.Bool("list") {
+		standaloneOps++
+	}
+	if cmd.String("delete") != "" {
+		standaloneOps++
+	}
+	if cmd.Bool("add") {
+		standaloneOps++
+	}
+
+	if standaloneOps > 1 {
+		return ctx, fmt.Errorf("only one operation flag can be used at a time")
+	}
+
+	// --purge must be completely alone (except quiet/debug)
+	if cmd.Bool("purge") {
+		// Check for any other non-output flags
+		if cmd.String("context") != "" || cmd.Bool("last") ||
+			cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 ||
+			cmd.String("model") != defaultModel || 
+			cmd.Float64("temp") != defaultTemperature ||
+			cmd.Int("maxtokens") != defaultMaxTokens ||
+			len(cmd.StringSlice("tool")) > 0 || len(cmd.StringSlice("mcp")) > 0 {
+			return ctx, fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
+		}
+	}
+
+	// --reset only allows context specification and model/settings overrides
+	if cmd.Bool("reset") {
+		if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
+			return ctx, fmt.Errorf("--reset cannot be used with prompts or files")
+		}
+	}
+
+	// --create doesn't take a prompt
+	if cmd.String("create") != "" {
+		if cmd.String("prompt") != "" {
+			return ctx, fmt.Errorf("--create does not take a prompt (use model/settings flags to configure)")
+		}
+	}
+
+	// --show doesn't take prompt or files
+	if cmd.String("show") != "" {
+		if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
+			return ctx, fmt.Errorf("--show does not take prompts or files")
+		}
+	}
+
+	// --list doesn't need any other flags
+	if cmd.Bool("list") {
+		if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
+			return ctx, fmt.Errorf("--list does not take prompts or files")
+		}
+	}
+
+	// --delete doesn't take prompts/files
+	if cmd.String("delete") != "" {
+		if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
+			return ctx, fmt.Errorf("--delete does not take prompts or files")
+		}
+	}
+
+	// Note: --add can take -p, --file, or stdin (validated in handleAddToContext)
+
+	return ctx, nil
 }
 
 func runCommand(ctx context.Context, cmd *cli.Command) error {
@@ -281,6 +372,12 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	}
 	if config.PurgeAll {
 		return handlePurgeAll(sessionStore)
+	}
+	if config.CreateContext != "" {
+		return handleCreateContext(sessionStore, config, config.CreateContext)
+	}
+	if config.ShowContext != "" {
+		return handleShowContext(sessionStore, config.ShowContext)
 	}
 
 	// Set up signal handling
@@ -434,9 +531,8 @@ func getPrompt(config *Config) (string, error) {
 		return readFromStdin()
 	}
 
-	// No -p flag and no pipe input, prompt the user interactively
-	fmt.Fprint(os.Stderr, "Enter prompt (Ctrl+D when done):\n")
-	return readFromStdin()
+	// No -p flag and no pipe input - require one or the other
+	return "", fmt.Errorf("no prompt provided: use -p flag or pipe input via stdin")
 }
 
 func executeCompletion(

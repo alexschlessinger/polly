@@ -227,6 +227,106 @@ func getOrCreateSession(store sessions.SessionStore, contextID string, needFileS
 	return session
 }
 
+// handleCreateContext creates a new context with the specified configuration
+func handleCreateContext(store sessions.SessionStore, config *Config, contextID string) error {
+	if contextID == "" {
+		return fmt.Errorf("--create requires a context name (use -c or POLLYTOOL_CONTEXT)")
+	}
+
+	fileStore, ok := store.(*sessions.FileSessionStore)
+	if !ok {
+		return fmt.Errorf("--create requires file-based storage")
+	}
+
+	// Check if context already exists
+	if fileStore.ContextExists(contextID) {
+		return fmt.Errorf("context '%s' already exists", contextID)
+	}
+
+	// Create context info with all settings
+	info := &sessions.ContextInfo{
+		Name:         contextID,
+		Model:        config.Model,
+		Temperature:  config.Temperature,
+		MaxTokens:    config.MaxTokens,
+		SystemPrompt: config.SystemPrompt,
+		ToolPaths:    config.ToolPaths,
+		MCPServers:   config.MCPServers,
+		Created:      time.Now(),
+		LastUsed:     time.Now(),
+	}
+
+	// Save context info
+	if err := fileStore.SaveContextInfo(info); err != nil {
+		return fmt.Errorf("failed to save context: %w", err)
+	}
+
+	fmt.Printf("Created context '%s' with:\n", contextID)
+	fmt.Printf("  Model: %s\n", info.Model)
+	fmt.Printf("  Temperature: %.2f\n", info.Temperature)
+	fmt.Printf("  Max Tokens: %d\n", info.MaxTokens)
+	if info.SystemPrompt != "" && info.SystemPrompt != defaultSystemPrompt {
+		// Only show if different from default
+		fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
+	}
+	if len(info.ToolPaths) > 0 {
+		fmt.Printf("  Tools: %v\n", info.ToolPaths)
+	}
+	if len(info.MCPServers) > 0 {
+		fmt.Printf("  MCP Servers: %v\n", info.MCPServers)
+	}
+
+	return nil
+}
+
+// handleShowContext shows the configuration for a context
+func handleShowContext(store sessions.SessionStore, contextID string) error {
+	if contextID == "" {
+		return fmt.Errorf("--show requires a context name")
+	}
+
+	fileStore, ok := store.(*sessions.FileSessionStore)
+	if !ok {
+		return fmt.Errorf("--show requires file-based storage")
+	}
+
+	info := fileStore.GetContextByNameOrID(contextID)
+	if info == nil {
+		// Check if context exists but has no metadata
+		if fileStore.ContextExists(contextID) {
+			fmt.Printf("Context: %s\n", contextID)
+			fmt.Printf("  (no configuration metadata)\n")
+			return nil
+		}
+		return fmt.Errorf("context '%s' not found", contextID)
+	}
+
+	// Display detailed configuration
+	fmt.Printf("Context: %s\n", info.Name)
+	fmt.Printf("  Model: %s\n", info.Model)
+	fmt.Printf("  Temperature: %.2f\n", info.Temperature)
+	fmt.Printf("  Max Tokens: %d\n", info.MaxTokens)
+	
+	if info.SystemPrompt != "" {
+		fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
+	}
+	
+	if len(info.ToolPaths) > 0 {
+		fmt.Printf("  Tools: %v\n", info.ToolPaths)
+	}
+	
+	if len(info.MCPServers) > 0 {
+		fmt.Printf("  MCP Servers: %v\n", info.MCPServers)
+	}
+	
+	fmt.Printf("  Created: %s\n", info.Created.Format("2006-01-02 15:04:05"))
+	fmt.Printf("  Last Used: %s (%s ago)\n", 
+		info.LastUsed.Format("2006-01-02 15:04:05"),
+		formatDuration(time.Since(info.LastUsed)))
+
+	return nil
+}
+
 // handlePurgeAll deletes all sessions and the index
 func handlePurgeAll(store sessions.SessionStore) error {
 	// Check if it's a file store - only file-based contexts can be purged
