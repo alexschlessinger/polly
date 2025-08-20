@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -106,6 +107,13 @@ func handleDeleteContext(store sessions.SessionStore, contextID string) error {
 		return fmt.Errorf("context '%s' not found", contextID)
 	}
 
+	// Prompt for confirmation (default to no for destructive operation)
+	prompt := fmt.Sprintf("Delete context '%s' permanently?", contextID)
+	if !promptYesNo(prompt, false) {
+		fmt.Println("Delete cancelled")
+		return nil
+	}
+
 	// Delete the context
 	fileStore.Delete(contextID)
 	fmt.Printf("Context '%s' deleted\n", contextID)
@@ -124,7 +132,7 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 					contextDisplay = info.Name
 				}
 				prompt := fmt.Sprintf("No context specified. Use last context '%s'?", contextDisplay)
-				if promptYesNo(prompt) {
+				if promptYesNo(prompt, true) {
 					contextID = lastContext
 				} else {
 					return fmt.Errorf("--add requires a context ID (use --context or POLLYTOOL_CONTEXT)")
@@ -327,6 +335,67 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 	return nil
 }
 
+// handleResetContext resets a context (clears conversation, keeps settings)
+func handleResetContext(store sessions.SessionStore, config *Config, contextID string) error {
+	if contextID == "" {
+		return fmt.Errorf("--reset requires a context name")
+	}
+
+	fileStore, ok := store.(*sessions.FileSessionStore)
+	if !ok {
+		return fmt.Errorf("--reset requires file-based storage")
+	}
+
+	// Check if context exists
+	if !fileStore.ContextExists(contextID) {
+		return fmt.Errorf("context '%s' does not exist", contextID)
+	}
+
+	// Prompt for confirmation (default to no for destructive operation)
+	prompt := fmt.Sprintf("Reset context '%s' (clear conversation history)?", contextID)
+	if !promptYesNo(prompt, false) {
+		fmt.Println("Reset cancelled")
+		return nil
+	}
+
+	// Get existing context info to preserve settings
+	existingInfo := fileStore.GetContextByNameOrID(contextID)
+	if existingInfo != nil {
+		// Update settings with any command-line overrides
+		existingInfo.LastUsed = time.Now()
+		if config.Model != defaultModel {
+			existingInfo.Model = config.Model
+		}
+		if config.Temperature != defaultTemperature {
+			existingInfo.Temperature = config.Temperature
+		}
+		if config.MaxTokens != defaultMaxTokens {
+			existingInfo.MaxTokens = config.MaxTokens
+		}
+		if config.SystemPromptWasSet {
+			existingInfo.SystemPrompt = config.SystemPrompt
+		}
+		if len(config.ToolPaths) > 0 {
+			existingInfo.ToolPaths = config.ToolPaths
+		}
+		if len(config.MCPServers) > 0 {
+			existingInfo.MCPServers = config.MCPServers
+		}
+		if err := fileStore.SaveContextInfo(existingInfo); err != nil {
+			return fmt.Errorf("failed to save context info: %w", err)
+		}
+	}
+
+	// Clear the conversation file
+	sessionPath := filepath.Join(fileStore.GetBaseDir(), contextID+".json")
+	if err := os.Remove(sessionPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to reset context: %w", err)
+	}
+
+	fmt.Printf("Reset context '%s' (cleared conversation, kept settings)\n", contextID)
+	return nil
+}
+
 // handlePurgeAll deletes all sessions and the index
 func handlePurgeAll(store sessions.SessionStore) error {
 	// Check if it's a file store - only file-based contexts can be purged
@@ -346,9 +415,9 @@ func handlePurgeAll(store sessions.SessionStore) error {
 		return nil
 	}
 
-	// Prompt for confirmation
+	// Prompt for confirmation (default to no for destructive operation)
 	prompt := fmt.Sprintf("This will permanently delete %d context(s) and all associated data. Are you sure?", len(contextIDs))
-	if !promptYesNo(prompt) {
+	if !promptYesNo(prompt, false) {
 		fmt.Println("Purge cancelled")
 		return nil
 	}

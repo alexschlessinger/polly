@@ -73,7 +73,7 @@ func getContextID(config *Config) string {
 // needsFileStore determines if we need a file-based session store
 func needsFileStore(config *Config, contextID string) bool {
 	return contextID != "" ||
-		config.ResetContext ||
+		config.ResetContext != "" ||
 		config.UseLastContext ||
 		config.ListContexts ||
 		config.DeleteContext != "" ||
@@ -83,50 +83,27 @@ func needsFileStore(config *Config, contextID string) bool {
 		config.ShowContext != ""
 }
 
-// promptYesNo prompts the user for a yes/no response (defaults to yes)
-func promptYesNo(prompt string) bool {
-	fmt.Fprintf(os.Stderr, "%s (Y/n): ", prompt)
+// promptYesNo prompts the user for a yes/no response
+func promptYesNo(prompt string, defaultValue bool) bool {
+	var promptStr string
+	if defaultValue {
+		promptStr = fmt.Sprintf("%s (Y/n): ", prompt)
+	} else {
+		promptStr = fmt.Sprintf("%s (y/N): ", prompt)
+	}
+	
+	fmt.Fprint(os.Stderr, promptStr)
 	reader := bufio.NewReader(os.Stdin)
 	response, err := reader.ReadString('\n')
 	if err != nil {
 		return false
 	}
 	response = strings.TrimSpace(strings.ToLower(response))
-	// Default to yes if user just presses enter
+	// Return default if user just presses enter
 	if response == "" {
-		return true
+		return defaultValue
 	}
 	return response == "y" || response == "yes"
-}
-
-// checkAndPromptForReset checks if a context exists and prompts to reset it
-// Returns true if we should proceed with resetting the context
-func checkAndPromptForReset(fileStore *sessions.FileSessionStore, name string) bool {
-	if name == "" || name == "true" {
-		return true // No specific context, proceed
-	}
-
-	// Check if context already exists
-	if !fileStore.ContextExists(name) {
-		fmt.Fprintf(os.Stderr, "Error: context '%s' does not exist\n", name)
-		return false // Context doesn't exist, cannot reset
-	}
-
-	// Context exists, prompt for reset
-	prompt := fmt.Sprintf("Reset context '%s' (clear conversation history)?", name)
-	if !promptYesNo(prompt) {
-		fmt.Fprintf(os.Stderr, "Reset cancelled\n")
-		return false
-	}
-
-	// Reset the context (preserve settings, clear history)
-	if err := resetContext(fileStore, name); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to reset context: %v\n", err)
-		return false
-	}
-
-	fmt.Fprintf(os.Stderr, "Reset context '%s'\n", name)
-	return true
 }
 
 // resetContext clears the conversation history but preserves the context settings

@@ -85,7 +85,7 @@ func parseConfig(cmd *cli.Command) *Config {
 
 		// Context configuration
 		ContextID:      cmd.String("context"),
-		ResetContext:   cmd.Bool("reset"),
+		ResetContext:   cmd.String("reset"),
 		UseLastContext: cmd.Bool("last"),
 		ListContexts:   cmd.Bool("list"),
 		DeleteContext:  cmd.String("delete"),

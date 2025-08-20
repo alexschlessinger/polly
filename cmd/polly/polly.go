@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -24,6 +23,10 @@ func main() {
 		Flags:  defineFlags(),
 		Before: validateFlags,
 		Action: runCommand,
+		OnUsageError: func(ctx context.Context, cmd *cli.Command, err error, isSubcommand bool) error {
+			// Just return the error without showing usage
+			return err
+		},
 	}
 
 	if err := app.Run(context.Background(), os.Args); err != nil {
@@ -120,9 +123,9 @@ func defineFlags() []cli.Flag {
 			Aliases: []string{"L"},
 			Usage:   "Use the last active context",
 		},
-		&cli.BoolFlag{
+		&cli.StringFlag{
 			Name:  "reset",
-			Usage: "Reset context (clear conversation history, keep settings)",
+			Usage: "Reset the specified context (clear conversation history, keep settings)",
 		},
 		&cli.BoolFlag{
 			Name:  "list",
@@ -165,7 +168,7 @@ func defineFlags() []cli.Flag {
 func validateFlags(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 	// Count how many standalone operations are requested
 	standaloneOps := 0
-	if cmd.Bool("reset") {
+	if cmd.String("reset") != "" {
 		standaloneOps++
 	}
 	if cmd.Bool("purge") {
@@ -204,10 +207,10 @@ func validateFlags(ctx context.Context, cmd *cli.Command) (context.Context, erro
 		}
 	}
 
-	// --reset only allows context specification and model/settings overrides
-	if cmd.Bool("reset") {
+	// --reset doesn't take prompts or files
+	if cmd.String("reset") != "" {
 		if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
-			return ctx, fmt.Errorf("--reset cannot be used with prompts or files")
+			return ctx, fmt.Errorf("--reset does not take prompts or files")
 		}
 	}
 
@@ -287,73 +290,9 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	// Track if we just created a new context
 	var justCreatedContext bool
 
-	// Handle --reset flag (reset and use)
-	if config.ResetContext {
-		// Determine which context to reset
-		resetContextName := contextID // Use the context from -c or environment
-
-		// If --last was specified, get the last context
-		if config.UseLastContext && resetContextName == "" {
-			if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-				resetContextName = fileStore.GetLastContext()
-				if resetContextName == "" {
-					return fmt.Errorf("no last context found to reset")
-				}
-			}
-		}
-
-		// Ensure we have a context to reset
-		if resetContextName == "" {
-			return fmt.Errorf("--reset requires a context (use -c or --last)")
-		}
-
-		// Check if context exists and handle accordingly
-		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-			if !checkAndPromptForReset(fileStore, resetContextName) {
-				return nil // User cancelled or context doesn't exist
-			}
-
-			// Check if context already exists to preserve settings
-			existingInfo := fileStore.GetContextByNameOrID(resetContextName)
-			if existingInfo != nil {
-				// Preserve existing settings
-				existingInfo.LastUsed = time.Now()
-				// Override with command-line settings if provided
-				if config.Model != defaultModel {
-					existingInfo.Model = config.Model
-				}
-				if config.Temperature != defaultTemperature {
-					existingInfo.Temperature = config.Temperature
-				}
-				if config.MaxTokens != defaultMaxTokens {
-					existingInfo.MaxTokens = config.MaxTokens
-				}
-				// Update system prompt if explicitly set (even if empty)
-				if config.SystemPromptWasSet {
-					existingInfo.SystemPrompt = config.SystemPrompt
-				}
-				if len(config.ToolPaths) > 0 {
-					existingInfo.ToolPaths = config.ToolPaths
-				}
-				if len(config.MCPServers) > 0 {
-					existingInfo.MCPServers = config.MCPServers
-				}
-				if err := fileStore.SaveContextInfo(existingInfo); err != nil {
-					return fmt.Errorf("failed to save context info: %w", err)
-				}
-
-				// Clear the conversation file
-				if err := resetContext(fileStore, resetContextName); err != nil {
-					return fmt.Errorf("failed to reset context: %w", err)
-				}
-			} else {
-				// This shouldn't happen since checkAndPromptForReset should have caught it
-				return fmt.Errorf("context '%s' does not exist", resetContextName)
-			}
-		}
-		contextID = resetContextName
-		justCreatedContext = true
-		// Continue with normal flow using this reset context
+	// Handle --reset flag
+	if config.ResetContext != "" {
+		return handleResetContext(sessionStore, config, config.ResetContext)
 	}
 
 	// Handle context management operations

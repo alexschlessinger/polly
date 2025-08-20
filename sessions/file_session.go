@@ -7,7 +7,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -232,19 +231,14 @@ func (s *FileSessionStore) Expire() {
 
 // ListContexts returns all available context names
 func (s *FileSessionStore) ListContexts() ([]string, error) {
-	entries, err := os.ReadDir(s.baseDir)
-	if err != nil {
-		return nil, err
+	s.indexMu.RLock()
+	defer s.indexMu.RUnlock()
+	
+	var contexts []string
+	for name := range s.index.Contexts {
+		contexts = append(contexts, name)
 	}
-
-	var sessions []string
-	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) == ".json" && !strings.HasPrefix(entry.Name(), ".") {
-			name := entry.Name()[:len(entry.Name())-5] // Remove .json extension
-			sessions = append(sessions, name)
-		}
-	}
-	return sessions, nil
+	return contexts, nil
 }
 
 // GetHistory returns a copy of the session history
@@ -305,7 +299,33 @@ func (s *FileSession) Close() {
 
 // Index management methods
 
-// loadIndex loads the index from disk
+// withFileLock acquires a file lock and executes the provided function
+func withFileLock(lockPath string, exclusive bool, fn func() error) error {
+	fileLock := flock.New(lockPath)
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	var locked bool
+	var err error
+	if exclusive {
+		locked, err = fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	} else {
+		locked, err = fileLock.TryRLockContext(ctx, 100*time.Millisecond)
+	}
+	
+	if err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("could not acquire lock within 5 seconds")
+	}
+	defer fileLock.Unlock()
+	
+	return fn()
+}
+
+// loadIndex loads the index from disk with file locking
 func (s *FileSessionStore) loadIndex() error {
 	s.indexMu.Lock()
 	defer s.indexMu.Unlock()
@@ -313,25 +333,28 @@ func (s *FileSessionStore) loadIndex() error {
 	// Location: ~/.pollytool/index.json
 	baseDir := filepath.Dir(s.baseDir) // Get ~/.pollytool from ~/.pollytool/contexts
 	indexPath := filepath.Join(baseDir, "index.json")
+	lockPath := indexPath + ".lock"
 
-	data, err := os.ReadFile(indexPath)
-	if err != nil {
-		return err
-	}
+	return withFileLock(lockPath, false, func() error {
+		data, err := os.ReadFile(indexPath)
+		if err != nil {
+			return err
+		}
 
-	var index ContextIndex
-	if err := json.Unmarshal(data, &index); err != nil {
-		return err
-	}
+		var index ContextIndex
+		if err := json.Unmarshal(data, &index); err != nil {
+			return err
+		}
 
-	s.index = &index
-	if s.index.Contexts == nil {
-		s.index.Contexts = make(map[string]*ContextInfo)
-	}
-	return nil
+		s.index = &index
+		if s.index.Contexts == nil {
+			s.index.Contexts = make(map[string]*ContextInfo)
+		}
+		return nil
+	})
 }
 
-// saveIndex saves the index to disk
+// saveIndex saves the index to disk with file locking
 func (s *FileSessionStore) saveIndex() error {
 	s.indexMu.RLock()
 	defer s.indexMu.RUnlock()
@@ -339,13 +362,15 @@ func (s *FileSessionStore) saveIndex() error {
 	// Location: ~/.pollytool/index.json
 	baseDir := filepath.Dir(s.baseDir) // Get ~/.pollytool from ~/.pollytool/contexts
 	indexPath := filepath.Join(baseDir, "index.json")
+	lockPath := indexPath + ".lock"
 
-	data, err := json.MarshalIndent(s.index, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(indexPath, data, 0644)
+	return withFileLock(lockPath, true, func() error {
+		data, err := json.MarshalIndent(s.index, "", "  ")
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(indexPath, data, 0644)
+	})
 }
 
 // ResolveContext now just returns the name as-is (kept for compatibility)
@@ -466,15 +491,8 @@ func (s *FileSessionStore) DeleteContextName(name string) error {
 
 // ContextExists checks if a context with the given name exists
 func (s *FileSessionStore) ContextExists(name string) bool {
-	// Check if context exists in index (created with --create)
-	if s.GetContextByNameOrID(name) != nil {
-		return true
-	}
-	
-	// Check if session file exists (use name directly)
-	sessionPath := filepath.Join(s.baseDir, name+".json")
-	_, err := os.Stat(sessionPath)
-	return err == nil
+	// Check if context exists in index (the index is the source of truth)
+	return s.GetContextByNameOrID(name) != nil
 }
 
 // GetBaseDir returns the base directory for the file session store
