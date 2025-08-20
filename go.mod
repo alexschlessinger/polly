@@ -4,14 +4,13 @@ go 1.24.0
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.9.1
+	github.com/gofrs/flock v0.12.1
 	github.com/google/generative-ai-go v0.20.1
 	github.com/modelcontextprotocol/go-sdk v0.2.0
 	github.com/ollama/ollama v0.11.5
 	github.com/sashabaranov/go-openai v1.41.1
 	google.golang.org/api v0.248.0
 )
-
-require go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 
 require (
 	cloud.google.com/go v0.121.6 // indirect
@@ -33,6 +32,7 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/urfave/cli/v3 v3.4.1
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.62.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0 // indirect
 	go.opentelemetry.io/otel v1.37.0 // indirect

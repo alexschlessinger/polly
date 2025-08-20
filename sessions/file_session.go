@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -8,10 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/gofrs/flock"
 )
 
 // FileSession implements a file-based persistent session
@@ -21,7 +22,7 @@ type FileSession struct {
 	Created time.Time              `json:"created"`
 	Updated time.Time              `json:"updated"`
 	path    string
-	file    *os.File // Keep file open for locking
+	lock    *flock.Flock // File lock using flock
 	config  *SessionConfig
 	mu      sync.RWMutex
 }
@@ -37,8 +38,7 @@ type ContextInfo struct {
 	Description  string    `json:"description,omitempty"`
 	ToolPaths    []string  `json:"toolPaths,omitempty"`
 	MCPServers   []string  `json:"mcpServers,omitempty"`
-	// Deprecated: ID field for backwards compatibility during migration
-	LegacyID string `json:"id,omitempty"`
+	MaxTokens    int       `json:"maxTokens,omitempty"`
 }
 
 // ContextIndex manages the mapping of names to IDs
@@ -107,21 +107,21 @@ func (s *FileSessionStore) Get(name string) Session {
 	sessionPath := filepath.Join(s.baseDir, name+".json")
 	lockPath := sessionPath + ".lock"
 
-	// Open lock file with exclusive access
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		// Fall back to creating session without lock
-		fmt.Fprintf(os.Stderr, "Warning: Could not create lock file: %v\n", err)
-		lockFile = nil
-	}
+	// Create a new flock instance
+	fileLock := flock.New(lockPath)
 
-	// Try to acquire exclusive lock (blocking)
-	if lockFile != nil {
-		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-			lockFile.Close()
-			fmt.Fprintf(os.Stderr, "Warning: Could not acquire lock: %v\n", err)
-			lockFile = nil
-		}
+	// Try to acquire exclusive lock with 10 second timeout, retrying every 100ms
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Failed to acquire lock: %v\n", err)
+		return nil // Abort on failure
+	}
+	if !locked {
+		fmt.Fprintf(os.Stderr, "Error: Could not acquire lock within 10 seconds\n")
+		return nil // Abort on failure
 	}
 
 	// Try to load existing session
@@ -129,7 +129,7 @@ func (s *FileSessionStore) Get(name string) Session {
 		var session FileSession
 		if err := json.Unmarshal(data, &session); err == nil {
 			session.path = sessionPath
-			session.file = lockFile
+			session.lock = fileLock
 			session.config = s.config
 			session.Updated = time.Now()
 			session.save()
@@ -144,7 +144,7 @@ func (s *FileSessionStore) Get(name string) Session {
 		Created: time.Now(),
 		Updated: time.Now(),
 		path:    sessionPath,
-		file:    lockFile,
+		lock:    fileLock,
 		config:  s.config,
 	}
 	// Initialize with system prompt if configured
@@ -202,26 +202,22 @@ func (s *FileSessionStore) Expire() {
 		lockPath := filePath + ".lock"
 
 		// Try to acquire lock to check if session is in use
-		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
-		if err != nil {
-			continue
-		}
-
-		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			// Session is in use, skip
-			lockFile.Close()
+		fileLock := flock.New(lockPath)
+		locked, err := fileLock.TryLock()
+		if err != nil || !locked {
+			// Session is in use or error, skip
 			continue
 		}
 
 		data, err := os.ReadFile(filePath)
 		if err != nil {
-			lockFile.Close()
+			fileLock.Unlock()
 			continue
 		}
 
 		var session FileSession
 		if err := json.Unmarshal(data, &session); err != nil {
-			lockFile.Close()
+			fileLock.Unlock()
 			continue
 		}
 
@@ -230,8 +226,7 @@ func (s *FileSessionStore) Expire() {
 			os.Remove(lockPath)
 		}
 
-		syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-		lockFile.Close()
+		fileLock.Unlock()
 	}
 }
 
@@ -256,7 +251,7 @@ func (s *FileSessionStore) ListContexts() ([]string, error) {
 func (s *FileSession) GetHistory() []messages.ChatMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	return CopyHistory(s.History)
 }
 
@@ -264,7 +259,7 @@ func (s *FileSession) GetHistory() []messages.ChatMessage {
 func (s *FileSession) AddMessage(msg messages.ChatMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	s.History = append(s.History, msg)
 	s.Updated = time.Now()
 	s.trimHistory()
@@ -283,7 +278,7 @@ func (s *FileSession) trimHistory() {
 func (s *FileSession) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	s.History = InitializeWithSystemPrompt(s.History, s.config)
 	s.Updated = time.Now()
 	s.save()
@@ -300,13 +295,11 @@ func (s *FileSession) save() error {
 
 // Close releases the file lock and removes the lock file
 func (s *FileSession) Close() {
-	if s.file != nil {
-		syscall.Flock(int(s.file.Fd()), syscall.LOCK_UN)
-		lockPath := s.file.Name()
-		s.file.Close()
-		s.file = nil
+	if s.lock != nil {
+		s.lock.Unlock()
 		// Remove the lock file
-		os.Remove(lockPath)
+		os.Remove(s.lock.Path())
+		s.lock = nil
 	}
 }
 
@@ -388,6 +381,9 @@ func (s *FileSessionStore) SaveContextInfo(info *ContextInfo) error {
 		}
 		if info.Temperature == 0 {
 			info.Temperature = existing.Temperature
+		}
+		if info.MaxTokens == 0 {
+			info.MaxTokens = existing.MaxTokens
 		}
 		if info.SystemPrompt == "" {
 			info.SystemPrompt = existing.SystemPrompt

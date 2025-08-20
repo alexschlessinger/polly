@@ -138,6 +138,9 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 	}
 
 	session := store.Get(contextID)
+	if session == nil {
+		return fmt.Errorf("failed to acquire session lock for context %s (may be in use by another process)", contextID)
+	}
 	defer closeFileSession(session)
 
 	// Check if files are provided via --file flag
@@ -213,7 +216,15 @@ func getOrCreateSession(store sessions.SessionStore, contextID string, needFileS
 	if contextID == "" && !needFileStore {
 		contextID = "default" // Memory store context
 	}
-	return store.Get(contextID)
+	session := store.Get(contextID)
+	if session == nil {
+		// Exit cleanly with error message instead of panic
+		fmt.Fprintf(os.Stderr, "Error: Failed to acquire session lock for context '%s'\n", contextID)
+		fmt.Fprintf(os.Stderr, "The context may be in use by another polly process.\n")
+		fmt.Fprintf(os.Stderr, "Please wait for the other process to complete or use a different context.\n")
+		os.Exit(1)
+	}
+	return session
 }
 
 // handlePurgeAll deletes all sessions and the index

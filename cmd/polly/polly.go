@@ -234,6 +234,9 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 				if config.Temperature != defaultTemperature {
 					existingInfo.Temperature = config.Temperature
 				}
+				if config.MaxTokens != defaultMaxTokens {
+					existingInfo.MaxTokens = config.MaxTokens
+				}
 				// Update system prompt if explicitly set (even if empty)
 				if config.SystemPromptWasSet {
 					existingInfo.SystemPrompt = config.SystemPrompt
@@ -325,6 +328,9 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 			if config.Temperature == defaultTemperature && contextInfo.Temperature != 0 {
 				config.Temperature = contextInfo.Temperature
 			}
+			if config.MaxTokens == defaultMaxTokens && contextInfo.MaxTokens != 0 {
+				config.MaxTokens = contextInfo.MaxTokens
+			}
 			// Only use stored system prompt if flag wasn't explicitly set
 			if !config.SystemPromptWasSet && contextInfo.SystemPrompt != "" {
 				config.SystemPrompt = contextInfo.SystemPrompt
@@ -391,6 +397,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 			if contextInfo := fileStore.GetContextByNameOrID(contextID); contextInfo != nil {
 				contextInfo.Model = config.Model
 				contextInfo.Temperature = config.Temperature
+				contextInfo.MaxTokens = config.MaxTokens
 				contextInfo.SystemPrompt = config.SystemPrompt
 				contextInfo.ToolPaths = config.ToolPaths
 				contextInfo.MCPServers = config.MCPServers
