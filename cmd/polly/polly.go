@@ -13,6 +13,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/muesli/termenv"
 	"github.com/urfave/cli/v3"
 )
 
@@ -568,11 +569,30 @@ func processEventStream(
 				// For interactive mode, we need special handling of tool calls
 				_, isInteractive := statusLine.(*InteractiveStatus)
 				if isInteractive {
-					// Interactive mode shows tool calls as text inline
+					// Interactive mode shows tool calls with spinner and completion status
+					termOutput := termenv.NewOutput(os.Stdout)
+					var successStyle, errorStyle termenv.Style
+					
+					// Adapt colors based on terminal background
+					if termenv.HasDarkBackground() {
+						successStyle = termOutput.String().Foreground(termOutput.Color("65"))  // Muted green for dark
+						errorStyle = termOutput.String().Foreground(termOutput.Color("124"))   // Muted red for dark
+					} else {
+						successStyle = termOutput.String().Foreground(termOutput.Color("28"))  // Dark green for light
+						errorStyle = termOutput.String().Foreground(termOutput.Color("160"))   // Dark red for light
+					}
+					
 					for _, toolCall := range fullResponse.ToolCalls {
-						statusLine.ShowToolCall(toolCall.Name)
-						fmt.Println() // New line after tool name
-						executeToolCall(ctx, toolCall, registry, session, config, nil)
+						// Execute with spinner showing
+						success := executeToolCall(ctx, toolCall, registry, session, config, statusLine)
+						
+						// Clear spinner and show completion message
+						statusLine.Clear()
+						if success {
+							fmt.Printf("%s Completed: %s\n", successStyle.Styled("✓"), toolCall.Name)
+						} else {
+							fmt.Printf("%s Failed: %s\n", errorStyle.Styled("✗"), toolCall.Name)
+						}
 					}
 				} else {
 					// Regular mode uses status updates

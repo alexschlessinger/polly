@@ -43,6 +43,7 @@ func loadTools(config *Config) (*tools.ToolRegistry, error) {
 }
 
 // executeToolCall executes a single tool call and returns the result
+// Returns true if the tool executed successfully, false if there was an error
 func executeToolCall(
 	ctx context.Context,
 	toolCall messages.ChatMessageToolCall,
@@ -50,7 +51,7 @@ func executeToolCall(
 	session sessions.Session,
 	config *Config,
 	statusLine StatusHandler,
-) {
+) bool {
 	// Parse arguments from JSON string
 	var args map[string]any
 	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
@@ -60,7 +61,7 @@ func executeToolCall(
 			Content:    fmt.Sprintf("Error parsing arguments: %v", err),
 			ToolCallID: toolCall.ID,
 		})
-		return
+		return false
 	}
 
 	// Execute tool
@@ -72,7 +73,7 @@ func executeToolCall(
 			Content:    fmt.Sprintf("Error: tool not found: %s", toolCall.Name),
 			ToolCallID: toolCall.ID,
 		})
-		return
+		return false
 	}
 
 	log.Printf("%s %s", toolCall.Name, toolCall.Arguments)
@@ -83,6 +84,7 @@ func executeToolCall(
 	}
 
 	result, err := tool.Execute(ctx, args)
+	success := err == nil
 	if err != nil {
 		result = fmt.Sprintf("Error: %v", err)
 	}
@@ -93,6 +95,8 @@ func executeToolCall(
 		Content:    result,
 		ToolCallID: toolCall.ID,
 	})
+	
+	return success
 }
 
 
@@ -106,6 +110,7 @@ func processToolCalls(
 	statusLine StatusHandler,
 ) {
 	for _, toolCall := range toolCalls {
-		executeToolCall(ctx, toolCall, registry, session, config, statusLine)
+		// Ignore return value in regular mode - status is shown in title bar
+		_ = executeToolCall(ctx, toolCall, registry, session, config, statusLine)
 	}
 }

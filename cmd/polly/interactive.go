@@ -14,27 +14,14 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/chzyer/readline"
-	"github.com/muesli/termenv"
-)
-
-var (
-	// termenv output for consistent terminal styling
-	output = termenv.NewOutput(os.Stdout)
-
-	// Style helpers
-	highlightStyle = output.String().Foreground(output.Color("179")).Bold() // Muted yellow
-	errorStyle     = output.String().Foreground(output.Color("124"))        // Muted red
-	successStyle   = output.String().Foreground(output.Color("65"))         // Muted green
-	dimStyle       = output.String().Faint()                                // Dimmed text
-	boldStyle      = output.String().Bold()                                 // Bold text
-	userStyle      = output.String().Foreground(output.Color("32")).Bold()  // Muted blue for user
-	assistantStyle = output.String().Foreground(output.Color("141"))        // Muted purple for assistant
-	systemStyle    = output.String().Foreground(output.Color("244"))        // Gray for system
 )
 
 // runInteractiveMode runs the CLI in interactive mode with readline support
 func runInteractiveMode(ctx context.Context, config *Config, session sessions.Session, multipass llm.LLM, toolRegistry *tools.ToolRegistry, contextID string) error {
 	// Note: session is already initialized by caller, no need to close it here
+
+	// Initialize colors based on terminal background
+	initColors()
 
 	// Configure readline
 	rl, err := readline.NewEx(&readline.Config{

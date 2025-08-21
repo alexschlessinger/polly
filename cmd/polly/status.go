@@ -216,7 +216,8 @@ type InteractiveStatus struct {
 	spinner        []string
 	spinIdx        int
 	stopChan       chan struct{}
-	currentMessage string // Current status message being displayed
+	currentMessage string    // Current status message being displayed
+	startTime      time.Time // Track start time for elapsed display
 }
 
 // NewInteractiveStatus creates a new interactive status handler
@@ -257,6 +258,7 @@ func (s *InteractiveStatus) ShowSpinner(message string) {
 		return
 	}
 	s.active = true
+	s.startTime = time.Now() // Initialize start time
 	s.stopChan = make(chan struct{})
 	s.mu.Unlock()
 
@@ -274,7 +276,14 @@ func (s *InteractiveStatus) ShowSpinner(message string) {
 				// Move to start of line, clear, and redraw with current message
 				fmt.Fprint(s.output, "\r")
 				s.output.ClearLine()
-				fmt.Fprintf(s.output, "%s %s", s.spinner[s.spinIdx], s.currentMessage)
+				
+				// Show elapsed time for waiting and tool execution
+				if s.currentMessage == "waiting" || strings.HasPrefix(s.currentMessage, "running tool:") {
+					elapsed := time.Since(s.startTime).Seconds()
+					fmt.Fprintf(s.output, "%s %s [%.1fs]", s.spinner[s.spinIdx], s.currentMessage, elapsed)
+				} else {
+					fmt.Fprintf(s.output, "%s %s", s.spinner[s.spinIdx], s.currentMessage)
+				}
 				s.mu.Unlock()
 			}
 		}
@@ -304,9 +313,9 @@ func (s *InteractiveStatus) Clear() {
 
 // ShowToolCall shows that a tool is being called
 func (s *InteractiveStatus) ShowToolCall(toolName string) {
-	s.Clear()
-	// Print tool call as regular output
-	fmt.Printf("→ Running tool: %s", toolName)
+	// Start spinner for tool execution
+	message := fmt.Sprintf("running tool: %s", toolName)
+	s.ShowSpinner(message)
 }
 
 // ShowThinking shows thinking status
@@ -338,16 +347,22 @@ func (s *InteractiveStatus) Stop() {
 
 // ClearForContent clears status before content streaming
 func (s *InteractiveStatus) ClearForContent() {
+	// Don't show streaming status in interactive mode - just clear
 	s.Clear()
 }
 
 // UpdateStreamingProgress updates streaming progress (no-op for interactive)
 func (s *InteractiveStatus) UpdateStreamingProgress(bytes int) {
 	// No-op - we show content directly in interactive mode
+	// Don't show streaming progress in interactive since content is visible
 }
 
 // UpdateThinkingProgress updates thinking progress
 func (s *InteractiveStatus) UpdateThinkingProgress(tokens int) {
-	s.ShowThinking(tokens)
+	message := fmt.Sprintf("thinking (%d tokens)", tokens)
+	
+	s.mu.Lock()
+	s.currentMessage = message
+	s.mu.Unlock()
 }
 
