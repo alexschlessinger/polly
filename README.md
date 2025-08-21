@@ -1,6 +1,6 @@
 # Pollytool (polly)
 
-<img src="polly.png" width="128" height="128">
+<img src=".assets/polly.png" width="128" height="128">
 
 https://en.wikipedia.org/wiki/Stochastic_parrot
 
@@ -83,6 +83,34 @@ polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 # tools example
 ./polly -p "create a file in my workspace called news.txt with todays news" --mcp "uvx perplexity-mcp" --mcp "npx -y @modelcontextprotocol/server-filesystem /home/alex/workspace/"
 ```
+## Interactive Mode
+Launch interactive mode by running `polly` without any prompt:
+
+```bash
+# Start interactive mode
+polly
+
+# Start with a specific context
+polly -c project
+
+# Resume last context
+polly --last
+```
+![Interactive Mode Screenshot](.assets/interactive.png)
+### Interactive Commands
+
+| Command | Description |
+|---------|-------------|
+| `/exit`, `/quit`, `/q` | Exit interactive mode |
+| `/clear`, `/cls` | Clear the screen |
+| `/reset` | Reset conversation history |
+| `/model <name>` | Switch to a different model |
+| `/temp <0.0-2.0>` | Set temperature |
+| `/history`, `/h` | Show full conversation history |
+| `/save <file>` | Save conversation to file |
+| `/context`, `/c` | Show current context |
+| `/system <prompt>` | Update system prompt |
+| `/help`, `/?` | Show help message |
 
 ## Configuration
 
