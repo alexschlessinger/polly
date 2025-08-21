@@ -71,7 +71,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		thinkingEffort = "low"
 	}
 	// If none are set, thinkingEffort remains empty (disabled)
-	
+
 	return &Config{
 		// Model configuration
 		Model:          cmd.String("model"),

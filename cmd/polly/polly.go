@@ -17,6 +17,14 @@ import (
 )
 
 func main() {
+	// Set up panic recovery to ensure cleanup
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "Fatal error: %v\n", r)
+			cleanupAndExit(2)
+		}
+	}()
+
 	app := &cli.Command{
 		Name:   "polly",
 		Usage:  "Chat with LLMs using various providers",
@@ -31,7 +39,7 @@ func main() {
 
 	if err := app.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		cleanupAndExit(1)
 	}
 }
 
@@ -199,7 +207,7 @@ func validateFlags(ctx context.Context, cmd *cli.Command) (context.Context, erro
 		// Check for any other non-output flags
 		if cmd.String("context") != "" || cmd.Bool("last") ||
 			cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 ||
-			cmd.String("model") != defaultModel || 
+			cmd.String("model") != defaultModel ||
 			cmd.Float64("temp") != defaultTemperature ||
 			cmd.Int("maxtokens") != defaultMaxTokens ||
 			len(cmd.StringSlice("tool")) > 0 || len(cmd.StringSlice("mcp")) > 0 {
@@ -319,10 +327,6 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 		return handleShowContext(sessionStore, config.ShowContext)
 	}
 
-	// Set up signal handling
-	ctx, cancel := setupSignalHandling(ctx)
-	defer cancel()
-
 	// Check if context exists and prompt if not (skip if we just created it)
 	if contextID != "" && !justCreatedContext {
 		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
@@ -337,10 +341,313 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	return runConversation(ctx, config, sessionStore, contextID)
 }
 
+// initializeSession sets up everything needed for a conversation session
+func initializeSession(config *Config, sessionStore sessions.SessionStore, contextID string) (string, sessions.Session, llm.LLM, *tools.ToolRegistry, error) {
+	// Initialize conversation using helper function
+	var err error
+	contextID, _, _, err = initializeConversation(config, sessionStore, contextID)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+
+	// Load API keys
+	apiKeys := loadAPIKeys()
+
+	// Create LLM provider
+	multipass := llm.NewMultiPass(apiKeys)
+
+	// Get or create session
+	needFileStore := needsFileStore(config, contextID)
+	session := getOrCreateSession(sessionStore, contextID, needFileStore)
+
+	// Update context info with current settings using helper function
+	updateContextInfo(sessionStore, contextID, config)
+
+	// Load tools
+	toolRegistry, err := loadTools(config)
+	if err != nil {
+		closeFileSession(session)
+		return "", nil, nil, nil, err
+	}
+
+	return contextID, session, multipass, toolRegistry, nil
+}
+
 func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string) error {
-	// Track if we need to reset due to system prompt change
+	// Initialize session
+	contextID, session, multipass, toolRegistry, err := initializeSession(config, sessionStore, contextID)
+	if err != nil {
+		return err
+	}
+	defer closeFileSession(session)
+
+	// Get prompt early to determine if we're going to interactive mode
+	prompt, err := getPrompt(config)
+	if err != nil {
+		return err
+	}
+
+	// If no prompt provided and no stdin, switch to interactive mode
+	// Don't set up signal handling for interactive mode - let readline handle it
+	if prompt == "" {
+		return runInteractiveMode(ctx, config, session, multipass, toolRegistry, contextID)
+	}
+
+	// Only set up signal handling for non-interactive mode
+	ctx, cancel := setupSignalHandling(ctx)
+	defer cancel()
+
+	// Load schema if specified
+	var schema *llm.Schema
+	if config.SchemaPath != "" {
+		var err error
+		schema, err = loadSchemaFile(config.SchemaPath)
+		if err != nil {
+			return fmt.Errorf("failed to load schema: %w", err)
+		}
+	}
+
+	// Build user message with files if provided
+	userMsg, err := buildMessageWithFiles(prompt, config.Files)
+	if err != nil {
+		return fmt.Errorf("error processing files: %w", err)
+	}
+
+	// Add user message and execute
+	session.AddMessage(userMsg)
+
+	executeCompletion(ctx, config, multipass, session, toolRegistry, schema)
+	return nil
+}
+
+func getPrompt(config *Config) (string, error) {
+	if config.Prompt != "" {
+		return config.Prompt, nil
+	}
+
+	if hasStdinData() {
+		return readFromStdin()
+	}
+
+	// No -p flag and no pipe input - signal to use interactive mode
+	return "", nil
+}
+
+func executeCompletion(
+	ctx context.Context,
+	config *Config,
+	provider llm.LLM,
+	session sessions.Session,
+	registry *tools.ToolRegistry,
+	schema *llm.Schema,
+) {
+	executeCompletionWithStatusLine(ctx, config, provider, session, registry, schema, nil)
+}
+
+func executeCompletionWithStatusLine(
+	ctx context.Context,
+	config *Config,
+	provider llm.LLM,
+	session sessions.Session,
+	registry *tools.ToolRegistry,
+	schema *llm.Schema,
+	statusLine *Status,
+) {
+	// Create request using helper function
+	req := createCompletionRequest(config, session, registry, schema)
+
+	// Create stream processor
+	processor := messages.NewStreamProcessor()
+
+	// Create status line only if not provided (first call)
+	var shouldStopStatusLine bool
+	if statusLine == nil {
+		statusLine = createStatusLine(config)
+		if statusLine != nil {
+			statusLine.Start()
+			shouldStopStatusLine = true
+			defer func() {
+				if shouldStopStatusLine {
+					statusLine.Stop()
+				}
+			}()
+		}
+	}
+
+	// Show initial spinner
+	if statusLine != nil {
+		statusLine.ShowSpinner("waiting")
+	}
+
+	// Use event-based streaming
+	eventChan := provider.ChatCompletionStream(ctx, req, processor)
+
+	// Process response using the new event stream
+	response := processEventStream(ctx, config, session, registry, statusLine, schema, eventChan)
+
+	// If there were tool calls, continue the completion
+	if len(response.ToolCalls) > 0 {
+		executeCompletionWithStatusLine(ctx, config, provider, session, registry, schema, statusLine)
+	}
+}
+
+func processEventStream(
+	ctx context.Context,
+	config *Config,
+	session sessions.Session,
+	registry *tools.ToolRegistry,
+	statusLine *Status,
+	schema *llm.Schema,
+	eventChan <-chan *messages.StreamEvent,
+) messages.ChatMessage {
+	var fullResponse messages.ChatMessage
+	var responseText strings.Builder
+	var firstByteReceived bool
+	var reasoningLength int
+	var messageCommitted bool
+
+	for event := range eventChan {
+		// Check if context was cancelled (but only before committing messages)
+		if !messageCommitted {
+			select {
+			case <-ctx.Done():
+				// Context cancelled, return empty response
+				if statusLine != nil {
+					statusLine.Clear()
+				}
+				return messages.ChatMessage{}
+			default:
+			}
+		}
+		switch event.Type {
+		case messages.EventTypeReasoning:
+			// Track reasoning length for status display
+			reasoningLength += len(event.Content)
+			if statusLine != nil {
+				statusLine.UpdateThinkingProgress(reasoningLength)
+			}
+
+		case messages.EventTypeContent:
+			// Clear status on first content
+			if !firstByteReceived && statusLine != nil {
+				firstByteReceived = true
+				statusLine.ClearForContent()
+			}
+
+			// Accumulate content for the session
+			responseText.WriteString(event.Content)
+
+			if config.SchemaPath == "" {
+				// Print content as it arrives
+				if event.Content != "" {
+					if statusLine != nil {
+						statusLine.Print(event.Content)
+					} else {
+						fmt.Print(event.Content)
+					}
+				}
+
+				// Update terminal title with streaming progress
+				if statusLine != nil {
+					statusLine.UpdateStreamingProgress(responseText.Len())
+				}
+			}
+
+		case messages.EventTypeToolCall:
+			// Individual tool calls could be processed here if needed
+			// For now, we'll handle them in the complete event
+
+		case messages.EventTypeComplete:
+			fullResponse = *event.Message
+
+			// Use streamed content if available, otherwise use message content
+			if responseText.Len() > 0 {
+				fullResponse.Content = strings.TrimLeft(responseText.String(), " \t\n\r")
+			}
+
+			// Reasoning is already captured in the message from the event
+
+			// Add assistant response to session
+			session.AddMessage(fullResponse)
+			messageCommitted = true // Mark that we've committed a message
+
+			// Process tool calls if any
+			if len(fullResponse.ToolCalls) > 0 {
+				if statusLine != nil {
+					statusLine.Clear()
+				}
+
+				// If we have content, ensure proper formatting before tool execution
+				if fullResponse.Content != "" && config.SchemaPath != "" {
+					// In JSON mode, we'll output everything at the end
+				} else if fullResponse.Content != "" && responseText.Len() == 0 {
+					// Content wasn't streamed (responseText is empty), print it now
+					if statusLine != nil {
+						statusLine.Print(fullResponse.Content)
+					} else {
+						fmt.Print(fullResponse.Content)
+					}
+				} else if responseText.Len() > 0 && config.SchemaPath == "" {
+					// Content was streamed, add a newline before tool output
+					fmt.Println()
+				}
+
+				processToolCalls(ctx, fullResponse.ToolCalls, registry, session, config, statusLine)
+			}
+
+		case messages.EventTypeError:
+			if statusLine != nil {
+				statusLine.Clear()
+			}
+			fullResponse = messages.ChatMessage{
+				Role:    messages.MessageRoleAssistant,
+				Content: fmt.Sprintf("Error: %v", event.Error),
+			}
+			session.AddMessage(fullResponse)
+		}
+	}
+
+	// Output final response
+	if len(fullResponse.ToolCalls) == 0 {
+		if config.SchemaPath != "" {
+			outputStructured(fullResponse.Content, schema)
+		} else {
+			outputText()
+		}
+	}
+
+	return fullResponse
+}
+
+// createCompletionRequest builds an LLM completion request from config
+func createCompletionRequest(config *Config, session sessions.Session, registry *tools.ToolRegistry, schema *llm.Schema) *llm.CompletionRequest {
+	return &llm.CompletionRequest{
+		BaseURL:        config.BaseURL,
+		Timeout:        config.Timeout,
+		Temperature:    float32(config.Temperature),
+		Model:          config.Model,
+		MaxTokens:      config.MaxTokens,
+		Messages:       session.GetHistory(),
+		Tools:          registry.All(),
+		ResponseSchema: schema,
+		ThinkingEffort: config.ThinkingEffort,
+	}
+}
+
+// initializeConversation handles all the setup needed before starting a conversation
+func initializeConversation(config *Config, sessionStore sessions.SessionStore, contextID string) (string, *sessions.ContextInfo, bool, error) {
 	var needReset bool
 	var originalContextInfo *sessions.ContextInfo
+
+	// Resolve --last flag if specified
+	if config.UseLastContext {
+		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
+			contextID = fileStore.GetLastContext()
+			if contextID == "" {
+				return "", nil, false, fmt.Errorf("no last context found")
+			}
+		}
+	}
 
 	// Load context settings if available
 	if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
@@ -392,41 +699,18 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 
 			// Reset the context
 			if err := resetContext(fileStore, contextName); err != nil {
-				return fmt.Errorf("failed to reset context: %w", err)
+				return "", nil, false, fmt.Errorf("failed to reset context: %w", err)
 			}
 			// Context name remains the same after reset
 			contextID = contextName
 		}
 	}
 
-	// Get prompt
-	prompt, err := getPrompt(config)
-	if err != nil {
-		return err
-	}
+	return contextID, originalContextInfo, needReset, nil
+}
 
-	// Load schema if specified
-	var schema *llm.Schema
-	if config.SchemaPath != "" {
-		var err error
-		schema, err = loadSchemaFile(config.SchemaPath)
-		if err != nil {
-			return fmt.Errorf("failed to load schema: %w", err)
-		}
-	}
-
-	// Load API keys
-	apiKeys := loadAPIKeys()
-
-	// Create LLM provider
-	multipass := llm.NewMultiPass(apiKeys)
-
-	// Get or create session
-	needFileStore := needsFileStore(config, contextID)
-	session := getOrCreateSession(sessionStore, contextID, needFileStore)
-	defer closeFileSession(session)
-
-	// Update context info with current settings if it has metadata
+// updateContextInfo updates the context info with current settings
+func updateContextInfo(sessionStore sessions.SessionStore, contextID string, config *Config) {
 	if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
 		if fileStore.GetContextByNameOrID(contextID) != nil {
 			// This context has metadata, update its settings
@@ -441,217 +725,4 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 			}
 		}
 	}
-
-	// Load tools
-	toolRegistry, err := loadTools(config)
-	if err != nil {
-		return err
-	}
-
-	// Build user message with files if provided
-	userMsg, err := buildMessageWithFiles(prompt, config.Files)
-	if err != nil {
-		return fmt.Errorf("error processing files: %w", err)
-	}
-
-	// Add user message and execute
-	session.AddMessage(userMsg)
-
-	executeCompletion(ctx, config, multipass, session, toolRegistry, schema)
-	return nil
-}
-
-func getPrompt(config *Config) (string, error) {
-	if config.Prompt != "" {
-		return config.Prompt, nil
-	}
-
-	if hasStdinData() {
-		return readFromStdin()
-	}
-
-	// No -p flag and no pipe input - require one or the other
-	return "", fmt.Errorf("no prompt provided: use -p flag or pipe input via stdin")
-}
-
-func executeCompletion(
-	ctx context.Context,
-	config *Config,
-	provider llm.LLM,
-	session sessions.Session,
-	registry *tools.ToolRegistry,
-	schema *llm.Schema,
-) {
-	executeCompletionWithStatusLine(ctx, config, provider, session, registry, schema, nil)
-}
-
-func executeCompletionWithStatusLine(
-	ctx context.Context,
-	config *Config,
-	provider llm.LLM,
-	session sessions.Session,
-	registry *tools.ToolRegistry,
-	schema *llm.Schema,
-	statusLine *Status,
-) {
-	// Create request
-	req := &llm.CompletionRequest{
-		BaseURL:        config.BaseURL,
-		Timeout:        config.Timeout,
-		Temperature:    float32(config.Temperature),
-		Model:          config.Model,
-		MaxTokens:      config.MaxTokens,
-		Messages:       session.GetHistory(),
-		Tools:          registry.All(),
-		ResponseSchema: schema,
-		ThinkingEffort: config.ThinkingEffort,
-	}
-
-	// Create stream processor
-	processor := messages.NewStreamProcessor()
-
-	// Create status line only if not provided (first call)
-	var shouldStopStatusLine bool
-	if statusLine == nil {
-		statusLine = createStatusLine(config)
-		if statusLine != nil {
-			statusLine.Start()
-			shouldStopStatusLine = true
-			defer func() {
-				if shouldStopStatusLine {
-					statusLine.Stop()
-				}
-			}()
-		}
-	}
-
-	// Show initial spinner
-	if statusLine != nil {
-		statusLine.ShowSpinner("waiting")
-	}
-
-	// Use event-based streaming
-	eventChan := provider.ChatCompletionStream(ctx, req, processor)
-
-	// Process response using the new event stream
-	response := processEventStream(ctx, config, session, registry, statusLine, schema, eventChan)
-
-	// If there were tool calls, continue the completion
-	if len(response.ToolCalls) > 0 {
-		executeCompletionWithStatusLine(ctx, config, provider, session, registry, schema, statusLine)
-	}
-}
-
-func processEventStream(
-	ctx context.Context,
-	config *Config,
-	session sessions.Session,
-	registry *tools.ToolRegistry,
-	statusLine *Status,
-	schema *llm.Schema,
-	eventChan <-chan *messages.StreamEvent,
-) messages.ChatMessage {
-	var fullResponse messages.ChatMessage
-	var responseText strings.Builder
-	var firstByteReceived bool
-	var reasoningLength int
-
-	for event := range eventChan {
-		switch event.Type {
-		case messages.EventTypeReasoning:
-			// Track reasoning length for status display
-			reasoningLength += len(event.Content)
-			if statusLine != nil {
-				statusLine.UpdateThinkingProgress(reasoningLength)
-			}
-
-		case messages.EventTypeContent:
-			// Clear status on first content
-			if !firstByteReceived && statusLine != nil {
-				firstByteReceived = true
-				statusLine.ClearForContent()
-			}
-
-			// Accumulate content for the session
-			responseText.WriteString(event.Content)
-
-			if config.SchemaPath == "" {
-				// Print content as it arrives
-				if event.Content != "" {
-					if statusLine != nil {
-						statusLine.Print(event.Content)
-					} else {
-						fmt.Print(event.Content)
-					}
-				}
-
-				// Update terminal title with streaming progress
-				if statusLine != nil {
-					statusLine.UpdateStreamingProgress(responseText.Len())
-				}
-			}
-
-		case messages.EventTypeToolCall:
-			// Individual tool calls could be processed here if needed
-			// For now, we'll handle them in the complete event
-
-		case messages.EventTypeComplete:
-			fullResponse = *event.Message
-
-			// Use streamed content if available, otherwise use message content
-			if responseText.Len() > 0 {
-				fullResponse.Content = strings.TrimLeft(responseText.String(), " \t\n\r")
-			}
-
-			// Reasoning is already captured in the message from the event
-
-			// Add assistant response to session
-			session.AddMessage(fullResponse)
-
-			// Process tool calls if any
-			if len(fullResponse.ToolCalls) > 0 {
-				if statusLine != nil {
-					statusLine.Clear()
-				}
-
-				// If we have content, ensure proper formatting before tool execution
-				if fullResponse.Content != "" && config.SchemaPath != "" {
-					// In JSON mode, we'll output everything at the end
-				} else if fullResponse.Content != "" && responseText.Len() == 0 {
-					// Content wasn't streamed (responseText is empty), print it now
-					if statusLine != nil {
-						statusLine.Print(fullResponse.Content)
-					} else {
-						fmt.Print(fullResponse.Content)
-					}
-				} else if responseText.Len() > 0 && config.SchemaPath == "" {
-					// Content was streamed, add a newline before tool output
-					fmt.Println()
-				}
-
-				processToolCalls(ctx, fullResponse.ToolCalls, registry, session, config, statusLine)
-			}
-
-		case messages.EventTypeError:
-			if statusLine != nil {
-				statusLine.Clear()
-			}
-			fullResponse = messages.ChatMessage{
-				Role:    messages.MessageRoleAssistant,
-				Content: fmt.Sprintf("Error: %v", event.Error),
-			}
-			session.AddMessage(fullResponse)
-		}
-	}
-
-	// Output final response
-	if len(fullResponse.ToolCalls) == 0 {
-		if config.SchemaPath != "" {
-			outputStructured(fullResponse.Content, schema)
-		} else {
-			outputText()
-		}
-	}
-
-	return fullResponse
 }

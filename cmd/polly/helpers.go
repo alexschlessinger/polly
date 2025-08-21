@@ -8,11 +8,54 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 )
+
+// Global variable to track the active file session for cleanup
+var (
+	activeFileSession *sessions.FileSession
+	sessionMutex      sync.Mutex
+)
+
+// setActiveFileSession safely sets the active file session
+func setActiveFileSession(session sessions.Session) {
+	sessionMutex.Lock()
+	defer sessionMutex.Unlock()
+	
+	if fileSession, ok := session.(*sessions.FileSession); ok {
+		activeFileSession = fileSession
+	}
+}
+
+// clearActiveFileSession safely clears the active file session
+func clearActiveFileSession() {
+	sessionMutex.Lock()
+	defer sessionMutex.Unlock()
+	activeFileSession = nil
+}
+
+// cleanupAndExit performs cleanup and exits with the given code
+func cleanupAndExit(code int) {
+	sessionMutex.Lock()
+	defer sessionMutex.Unlock()
+	
+	// Close active file session if any
+	if activeFileSession != nil {
+		activeFileSession.Close()
+		activeFileSession = nil
+	}
+	
+	// Also clean up any lingering index lock file
+	homeDir, _ := os.UserHomeDir()
+	indexLockPath := filepath.Join(homeDir, ".pollytool", "index.json.lock")
+	os.Remove(indexLockPath)
+	
+	os.Exit(code)
+}
 
 // readFromStdin reads all lines from stdin and joins them with newlines
 func readFromStdin() (string, error) {
@@ -40,7 +83,8 @@ func setupSignalHandling(ctx context.Context) (context.Context, context.CancelFu
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		cancel()
+		// Cleanup before canceling context
+		cleanupAndExit(130) // 128 + SIGINT(2) = 130
 	}()
 	return ctx, cancel
 }
@@ -49,6 +93,8 @@ func setupSignalHandling(ctx context.Context) (context.Context, context.CancelFu
 func closeFileSession(session sessions.Session) {
 	if fileSession, ok := session.(*sessions.FileSession); ok {
 		fileSession.Close()
+		// Clear from global tracking
+		clearActiveFileSession()
 	}
 }
 

@@ -230,8 +230,10 @@ func getOrCreateSession(store sessions.SessionStore, contextID string, needFileS
 		fmt.Fprintf(os.Stderr, "Error: Failed to acquire session lock for context '%s'\n", contextID)
 		fmt.Fprintf(os.Stderr, "The context may be in use by another polly process.\n")
 		fmt.Fprintf(os.Stderr, "Please wait for the other process to complete or use a different context.\n")
-		os.Exit(1)
+		cleanupAndExit(1)
 	}
+	// Track active file session for cleanup
+	setActiveFileSession(session)
 	return session
 }
 
@@ -433,6 +435,11 @@ func handlePurgeAll(store sessions.SessionStore) error {
 	if err := fileStore.ClearIndex(); err != nil {
 		return fmt.Errorf("failed to clear index: %w", err)
 	}
+
+	// Also clean up any lingering index lock file
+	homeDir, _ := os.UserHomeDir()
+	indexLockPath := filepath.Join(homeDir, ".pollytool", "index.json.lock")
+	os.Remove(indexLockPath)
 
 	fmt.Printf("Purged %d context(s) and cleared the index\n", deletedCount)
 	return nil
