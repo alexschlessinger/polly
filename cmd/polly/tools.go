@@ -49,7 +49,7 @@ func executeToolCall(
 	registry *tools.ToolRegistry,
 	session sessions.Session,
 	config *Config,
-	statusLine *Status,
+	statusLine StatusHandler,
 ) {
 	// Parse arguments from JSON string
 	var args map[string]any
@@ -76,7 +76,11 @@ func executeToolCall(
 	}
 
 	log.Printf("%s %s", toolCall.Name, toolCall.Arguments)
-	showToolExecutionInfo(toolCall.Name, args, config, statusLine)
+	
+	// Show tool execution status
+	if statusLine != nil {
+		statusLine.ShowToolCall(toolCall.Name)
+	}
 
 	result, err := tool.Execute(ctx, args)
 	if err != nil {
@@ -91,13 +95,6 @@ func executeToolCall(
 	})
 }
 
-// showToolExecutionInfo displays tool execution information to the user
-func showToolExecutionInfo(toolName string, args map[string]any, _ *Config, statusLine *Status) {
-	if statusLine != nil {
-		statusLine.ShowToolExecution(toolName, args)
-	}
-	// No fallback output - only terminal title updates
-}
 
 // processToolCalls processes all tool calls in the response
 func processToolCalls(
@@ -106,7 +103,7 @@ func processToolCalls(
 	registry *tools.ToolRegistry,
 	session sessions.Session,
 	config *Config,
-	statusLine *Status,
+	statusLine StatusHandler,
 ) {
 	for _, toolCall := range toolCalls {
 		executeToolCall(ctx, toolCall, registry, session, config, statusLine)

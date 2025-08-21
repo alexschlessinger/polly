@@ -14,6 +14,22 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/chzyer/readline"
+	"github.com/muesli/termenv"
+)
+
+var (
+	// termenv output for consistent terminal styling
+	output = termenv.NewOutput(os.Stdout)
+
+	// Style helpers
+	highlightStyle = output.String().Foreground(output.Color("179")).Bold() // Muted yellow
+	errorStyle     = output.String().Foreground(output.Color("124"))        // Muted red
+	successStyle   = output.String().Foreground(output.Color("65"))         // Muted green
+	dimStyle       = output.String().Faint()                                // Dimmed text
+	boldStyle      = output.String().Bold()                                 // Bold text
+	userStyle      = output.String().Foreground(output.Color("32")).Bold()  // Muted blue for user
+	assistantStyle = output.String().Foreground(output.Color("141"))        // Muted purple for assistant
+	systemStyle    = output.String().Foreground(output.Color("244"))        // Gray for system
 )
 
 // runInteractiveMode runs the CLI in interactive mode with readline support
@@ -42,7 +58,8 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 	// Show recent history if resuming an existing conversation
 	hasHistory := showRecentHistory(session)
 	if hasHistory {
-		fmt.Println("\n─── Resuming context ───")
+		fmt.Println()
+		fmt.Println(dimStyle.Styled("─── Resuming context ───"))
 	}
 
 	// Track the current completion cancellation
@@ -84,7 +101,7 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 		input, err := rl.Readline()
 		if err == readline.ErrInterrupt {
 			// Ctrl-C during readline input - just show message
-			fmt.Println("Use /exit or Ctrl-D to quit")
+			fmt.Println(dimStyle.Styled("Use /exit or Ctrl-D to quit"))
 			continue
 		} else if err == io.EOF {
 			// Cancel any running completion before exiting
@@ -123,7 +140,7 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 				var err error
 				userMsg, err = buildMessageWithFiles(cleanPromptFromFileRefs(input), files)
 				if err != nil {
-					fmt.Printf("Error processing files: %v\n", err)
+					fmt.Println(errorStyle.Styled(fmt.Sprintf("Error processing files: %v", err)))
 					continue
 				}
 			}
@@ -136,8 +153,11 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 		completionCtx, cancel := context.WithCancel(ctx)
 		currentCompletionCancel = cancel
 
-		// Execute completion with cancellable context
-		executeCompletion(completionCtx, config, multipass, session, toolRegistry, nil)
+		// Create interactive status handler
+		interactiveStatus := NewInteractiveStatus()
+
+		// Execute completion with cancellable context and interactive status
+		executeCompletion(completionCtx, config, multipass, session, toolRegistry, nil, interactiveStatus)
 
 		// Clear the cancel function after completion
 		currentCompletionCancel = nil
@@ -165,31 +185,31 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 		// Clear the session history
 		if fileSession, ok := session.(*sessions.FileSession); ok {
 			fileSession.Clear()
-			fmt.Println("Conversation reset.")
+			fmt.Println(successStyle.Styled("Conversation reset."))
 		}
 		return true
 
 	case "/model", "/m":
 		if len(parts) < 2 {
-			fmt.Printf("Current model: %s\n", config.Model)
-			fmt.Println("Usage: /model <model-name>")
-			fmt.Println("Example: /model openai/gpt-4o")
+			fmt.Printf("Current model: %s\n", highlightStyle.Styled(config.Model))
+			fmt.Println(dimStyle.Styled("Usage: /model <model-name>"))
+			fmt.Println(dimStyle.Styled("Example: /model openai/gpt-4o"))
 		} else {
 			config.Model = parts[1]
-			fmt.Printf("Switched to model: %s\n", config.Model)
+			fmt.Println(successStyle.Styled(fmt.Sprintf("Switched to model: %s", config.Model)))
 		}
 		return true
 
 	case "/temp", "/temperature":
 		if len(parts) < 2 {
-			fmt.Printf("Current temperature: %.2f\n", config.Temperature)
-			fmt.Println("Usage: /temp <0.0-2.0>")
+			fmt.Printf("Current temperature: %s\n", highlightStyle.Styled(fmt.Sprintf("%.2f", config.Temperature)))
+			fmt.Println(dimStyle.Styled("Usage: /temp <0.0-2.0>"))
 		} else {
 			if temp, err := parseFloat(parts[1]); err == nil {
 				config.Temperature = temp
-				fmt.Printf("Temperature set to: %.2f\n", config.Temperature)
+				fmt.Println(successStyle.Styled(fmt.Sprintf("Temperature set to: %.2f", config.Temperature)))
 			} else {
-				fmt.Println("Invalid temperature value")
+				fmt.Println(errorStyle.Styled("Invalid temperature value"))
 			}
 		}
 		return true
@@ -200,7 +220,7 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 
 	case "/save":
 		if len(parts) < 2 {
-			fmt.Println("Usage: /save <filename>")
+			fmt.Println(dimStyle.Styled("Usage: /save <filename>"))
 		} else {
 			saveConversation(session, parts[1])
 		}
@@ -212,32 +232,32 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 
 	case "/context", "/c":
 		if len(parts) < 2 {
-			fmt.Printf("Current context: %s\n", getContextDisplayName(session))
+			fmt.Printf("Current context: %s\n", highlightStyle.Styled(getContextDisplayName(session)))
 		} else {
-			fmt.Println("To switch context, exit and restart with -c flag")
+			fmt.Println(dimStyle.Styled("To switch context, exit and restart with -c flag"))
 		}
 		return true
 
 	case "/system", "/sys":
 		if len(parts) < 2 {
-			fmt.Printf("Current system prompt: %s\n", config.SystemPrompt)
+			fmt.Printf("Current system prompt: %s\n", highlightStyle.Styled(config.SystemPrompt))
 		} else {
 			// Join all parts after the command as the new system prompt
 			newPrompt := strings.Join(parts[1:], " ")
 			config.SystemPrompt = newPrompt
-			fmt.Println("System prompt updated. Note: This will apply to new messages only.")
+			fmt.Println(successStyle.Styled("System prompt updated."), dimStyle.Styled("Note: This will apply to new messages only."))
 		}
 		return true
 
 	case "/debug":
 		config.Debug = !config.Debug
-		fmt.Printf("Debug mode: %v\n", config.Debug)
+		fmt.Println(successStyle.Styled(fmt.Sprintf("Debug mode: %v", config.Debug)))
 		return true
 	}
 
 	// Unknown command
 	if strings.HasPrefix(input, "/") {
-		fmt.Printf("Unknown command: %s (use /help for available commands)\n", parts[0])
+		fmt.Println(errorStyle.Styled(fmt.Sprintf("Unknown command: %s", parts[0])), dimStyle.Styled("(use /help for available commands)"))
 		return true
 	}
 
@@ -296,34 +316,23 @@ func filterInput(r rune) (rune, bool) {
 // printWelcomeMessage prints the interactive mode welcome message
 func printWelcomeMessage(config *Config, contextID string) {
 	// Show all configuration
-	fmt.Printf("Model: \033[1;33m%s\033[0m\n", config.Model)
+	fmt.Printf("Model: %s\n", highlightStyle.Styled(config.Model))
 	if contextID != "" {
-		fmt.Printf("Context: \033[1;33m%s\033[0m\n", contextID)
+		fmt.Printf("Context: %s\n", highlightStyle.Styled(contextID))
 	}
-	fmt.Printf("Temperature: \033[1;33m%.1f\033[0m\n", config.Temperature)
-	fmt.Printf("Max Tokens: \033[1;33m%d\033[0m\n", config.MaxTokens)
+	fmt.Printf("Temperature: %s\n", highlightStyle.Styled(fmt.Sprintf("%.1f", config.Temperature)))
+	fmt.Printf("Max Tokens: %s\n", highlightStyle.Styled(fmt.Sprintf("%d", config.MaxTokens)))
 
 	// Show tools if configured
 	if len(config.ToolPaths) > 0 {
-		fmt.Printf("Tools: \033[1;33m")
-		for i, tool := range config.ToolPaths {
-			if i > 0 {
-				fmt.Printf(", ")
-			}
-			// Show just the basename of the tool path
-			fmt.Printf("%s", tool)
-		}
-		fmt.Printf("\033[0m\n")
+		fmt.Print("Tools: ")
+		tools := []string{}
+		tools = append(tools, config.ToolPaths...)
+		fmt.Println(highlightStyle.Styled(strings.Join(tools, ", ")))
 	}
 	if len(config.MCPServers) > 0 {
-		fmt.Printf("MCP Servers: \033[1;33m")
-		for i, server := range config.MCPServers {
-			if i > 0 {
-				fmt.Printf(", ")
-			}
-			fmt.Printf("%s", server)
-		}
-		fmt.Printf("\033[0m\n")
+		fmt.Print("MCP Servers: ")
+		fmt.Println(highlightStyle.Styled(strings.Join(config.MCPServers, ", ")))
 	}
 
 	fmt.Println()
@@ -331,33 +340,44 @@ func printWelcomeMessage(config *Config, contextID string) {
 
 // printInteractiveHelp prints help for interactive commands
 func printInteractiveHelp() {
-	help := `
-Interactive Mode Commands:
-─────────────────────────
-  /exit, /quit       Exit interactive mode 
-  /clear            Clear the screen
-  /reset            Reset conversation history
-  /model <name>     Switch to a different model
-  /temp <0.0-2.0>   Set temperature
-  /history          Show conversation history
-  /save <file>      Save conversation to file
-  /context          Show current context
-  /system <prompt>  Update system prompt
-  /debug            Toggle debug mode
-  /help             Show this help message
+	fmt.Println()
+	fmt.Println(boldStyle.Styled("Interactive Mode Commands:"))
+	fmt.Println(dimStyle.Styled("─────────────────────────"))
 
-Examples:
-─────────
-  /model openai/gpt-4o-mini
-  /temp 0.7
-  /save chat.txt
-`
-	fmt.Println(help)
+	commands := []struct {
+		cmd  string
+		desc string
+	}{
+		{"/exit, /quit", "Exit interactive mode"},
+		{"/clear", "Clear the screen"},
+		{"/reset", "Reset conversation history"},
+		{"/model <name>", "Switch to a different model"},
+		{"/temp <0.0-2.0>", "Set temperature"},
+		{"/history", "Show conversation history"},
+		{"/save <file>", "Save conversation to file"},
+		{"/context", "Show current context"},
+		{"/system <prompt>", "Update system prompt"},
+		{"/debug", "Toggle debug mode"},
+		{"/help", "Show this help message"},
+	}
+
+	for _, c := range commands {
+		fmt.Printf("  %-18s %s\n", highlightStyle.Styled(c.cmd), c.desc)
+	}
+
+	fmt.Println()
+	fmt.Println(boldStyle.Styled("Examples:"))
+	fmt.Println(dimStyle.Styled("─────────"))
+	fmt.Println(dimStyle.Styled("  /model openai/gpt-4o-mini"))
+	fmt.Println(dimStyle.Styled("  /temp 0.7"))
+	fmt.Println(dimStyle.Styled("  /save chat.txt"))
+	fmt.Println()
 }
 
 // clearScreen clears the terminal screen
 func clearScreen() {
-	fmt.Print("\033[H\033[2J")
+	output.ClearScreen()
+	output.MoveCursor(1, 1)
 }
 
 // formatConversation formats conversation history in a consistent way
@@ -368,7 +388,20 @@ func formatConversation(history []messages.ChatMessage) string {
 
 	var builder strings.Builder
 	for _, msg := range history {
-		fmt.Fprintf(&builder, "=== %s ===\n", string(msg.Role))
+		// Style the role header based on the role type
+		var roleHeader string
+		switch msg.Role {
+		case messages.MessageRoleUser:
+			roleHeader = userStyle.Styled(fmt.Sprintf("═══ %s ═══", string(msg.Role)))
+		case messages.MessageRoleAssistant:
+			roleHeader = assistantStyle.Styled(fmt.Sprintf("═══ %s ═══", string(msg.Role)))
+		case messages.MessageRoleSystem:
+			roleHeader = systemStyle.Styled(fmt.Sprintf("═══ %s ═══", string(msg.Role)))
+		default:
+			roleHeader = fmt.Sprintf("═══ %s ═══", string(msg.Role))
+		}
+
+		fmt.Fprintf(&builder, "%s\n", roleHeader)
 		fmt.Fprintf(&builder, "%s\n\n", msg.Content)
 	}
 	return builder.String()
@@ -399,7 +432,7 @@ func showRecentHistory(session sessions.Session) bool {
 	// Keep only last 25 lines
 	lines := strings.Split(formatted, "\n")
 	if len(lines) > 25 {
-		fmt.Println("...")
+		fmt.Println(dimStyle.Styled("..."))
 		lines = lines[len(lines)-25:]
 		formatted = strings.Join(lines, "\n")
 	}
@@ -412,7 +445,7 @@ func showRecentHistory(session sessions.Session) bool {
 func showHistory(session sessions.Session) {
 	history := session.GetHistory()
 	if len(history) == 0 {
-		fmt.Println("No conversation history.")
+		fmt.Println(dimStyle.Styled("No conversation history."))
 		return
 	}
 
@@ -424,18 +457,18 @@ func showHistory(session sessions.Session) {
 func saveConversation(session sessions.Session, filename string) {
 	history := session.GetHistory()
 	if len(history) == 0 {
-		fmt.Println("No conversation to save.")
+		fmt.Println(dimStyle.Styled("No conversation to save."))
 		return
 	}
 
 	formatted := formatConversation(history)
 	err := os.WriteFile(filename, []byte(formatted), 0644)
 	if err != nil {
-		fmt.Printf("Error saving file: %v\n", err)
+		fmt.Println(errorStyle.Styled(fmt.Sprintf("Error saving file: %v", err)))
 		return
 	}
 
-	fmt.Printf("Conversation saved to %s\n", filename)
+	fmt.Println(successStyle.Styled(fmt.Sprintf("Conversation saved to %s", filename)))
 }
 
 // getContextDisplayName returns a display name for the current context

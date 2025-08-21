@@ -416,7 +416,14 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	// Add user message and execute
 	session.AddMessage(userMsg)
 
-	executeCompletion(ctx, config, multipass, session, toolRegistry, schema)
+	// Create status line if appropriate
+	statusLine := createStatusLine(config)
+	if statusLine != nil {
+		statusLine.Start()
+		defer statusLine.Stop()
+	}
+
+	executeCompletion(ctx, config, multipass, session, toolRegistry, schema, statusLine)
 	return nil
 }
 
@@ -440,18 +447,7 @@ func executeCompletion(
 	session sessions.Session,
 	registry *tools.ToolRegistry,
 	schema *llm.Schema,
-) {
-	executeCompletionWithStatusLine(ctx, config, provider, session, registry, schema, nil)
-}
-
-func executeCompletionWithStatusLine(
-	ctx context.Context,
-	config *Config,
-	provider llm.LLM,
-	session sessions.Session,
-	registry *tools.ToolRegistry,
-	schema *llm.Schema,
-	statusLine *Status,
+	statusLine StatusHandler,
 ) {
 	// Create request using helper function
 	req := createCompletionRequest(config, session, registry, schema)
@@ -459,20 +455,7 @@ func executeCompletionWithStatusLine(
 	// Create stream processor
 	processor := messages.NewStreamProcessor()
 
-	// Create status line only if not provided (first call)
-	var shouldStopStatusLine bool
-	if statusLine == nil {
-		statusLine = createStatusLine(config)
-		if statusLine != nil {
-			statusLine.Start()
-			shouldStopStatusLine = true
-			defer func() {
-				if shouldStopStatusLine {
-					statusLine.Stop()
-				}
-			}()
-		}
-	}
+	// Status line is now managed by the caller
 
 	// Show initial spinner
 	if statusLine != nil {
@@ -487,7 +470,7 @@ func executeCompletionWithStatusLine(
 
 	// If there were tool calls, continue the completion
 	if len(response.ToolCalls) > 0 {
-		executeCompletionWithStatusLine(ctx, config, provider, session, registry, schema, statusLine)
+		executeCompletion(ctx, config, provider, session, registry, schema, statusLine)
 	}
 }
 
@@ -496,7 +479,7 @@ func processEventStream(
 	config *Config,
 	session sessions.Session,
 	registry *tools.ToolRegistry,
-	statusLine *Status,
+	statusLine StatusHandler,
 	schema *llm.Schema,
 	eventChan <-chan *messages.StreamEvent,
 ) messages.ChatMessage {
@@ -537,20 +520,14 @@ func processEventStream(
 			// Accumulate content for the session
 			responseText.WriteString(event.Content)
 
-			if config.SchemaPath == "" {
-				// Print content as it arrives
-				if event.Content != "" {
-					if statusLine != nil {
-						statusLine.Print(event.Content)
-					} else {
-						fmt.Print(event.Content)
-					}
-				}
+			// Print content as it arrives (unless using schema/structured output)
+			if config.SchemaPath == "" && event.Content != "" {
+				fmt.Print(event.Content)
+			}
 
-				// Update terminal title with streaming progress
-				if statusLine != nil {
-					statusLine.UpdateStreamingProgress(responseText.Len())
-				}
+			// Update streaming progress for status line
+			if statusLine != nil && config.SchemaPath == "" {
+				statusLine.UpdateStreamingProgress(responseText.Len())
 			}
 
 		case messages.EventTypeToolCall:
@@ -582,17 +559,25 @@ func processEventStream(
 					// In JSON mode, we'll output everything at the end
 				} else if fullResponse.Content != "" && responseText.Len() == 0 {
 					// Content wasn't streamed (responseText is empty), print it now
-					if statusLine != nil {
-						statusLine.Print(fullResponse.Content)
-					} else {
-						fmt.Print(fullResponse.Content)
-					}
+					fmt.Print(fullResponse.Content)
 				} else if responseText.Len() > 0 && config.SchemaPath == "" {
 					// Content was streamed, add a newline before tool output
 					fmt.Println()
 				}
 
-				processToolCalls(ctx, fullResponse.ToolCalls, registry, session, config, statusLine)
+				// For interactive mode, we need special handling of tool calls
+				_, isInteractive := statusLine.(*InteractiveStatus)
+				if isInteractive {
+					// Interactive mode shows tool calls as text inline
+					for _, toolCall := range fullResponse.ToolCalls {
+						statusLine.ShowToolCall(toolCall.Name)
+						fmt.Println() // New line after tool name
+						executeToolCall(ctx, toolCall, registry, session, config, nil)
+					}
+				} else {
+					// Regular mode uses status updates
+					processToolCalls(ctx, fullResponse.ToolCalls, registry, session, config, statusLine)
+				}
 			}
 
 		case messages.EventTypeError:

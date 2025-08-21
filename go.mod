@@ -7,9 +7,17 @@ require (
 	github.com/gofrs/flock v0.12.1
 	github.com/google/generative-ai-go v0.20.1
 	github.com/modelcontextprotocol/go-sdk v0.2.0
+	github.com/muesli/termenv v0.16.0
 	github.com/ollama/ollama v0.11.5
 	github.com/sashabaranov/go-openai v1.41.1
 	google.golang.org/api v0.248.0
+)
+
+require (
+	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
+	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
 )
 
 require (
