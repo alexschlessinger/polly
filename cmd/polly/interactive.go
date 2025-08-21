@@ -327,10 +327,6 @@ func printWelcomeMessage(config *Config, contextID string) {
 
 // printInteractiveHelp prints help for interactive commands
 func printInteractiveHelp() {
-	fmt.Println()
-	fmt.Println(boldStyle.Styled("Interactive Mode Commands:"))
-	fmt.Println(dimStyle.Styled("─────────────────────────"))
-
 	commands := []struct {
 		cmd  string
 		desc string
@@ -352,13 +348,6 @@ func printInteractiveHelp() {
 		fmt.Printf("  %-18s %s\n", highlightStyle.Styled(c.cmd), c.desc)
 	}
 
-	fmt.Println()
-	fmt.Println(boldStyle.Styled("Examples:"))
-	fmt.Println(dimStyle.Styled("─────────"))
-	fmt.Println(dimStyle.Styled("  /model openai/gpt-4o-mini"))
-	fmt.Println(dimStyle.Styled("  /temp 0.7"))
-	fmt.Println(dimStyle.Styled("  /save chat.txt"))
-	fmt.Println()
 }
 
 // clearScreen clears the terminal screen
