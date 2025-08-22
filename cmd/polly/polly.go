@@ -418,8 +418,9 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	session.AddMessage(userMsg)
 
 	// Create status line if appropriate
-	statusLine := createStatusLine(config)
-	if statusLine != nil {
+	var statusLine StatusHandler
+	if status := createStatusLine(config); status != nil {
+		statusLine = status
 		statusLine.Start()
 		defer statusLine.Stop()
 	}
