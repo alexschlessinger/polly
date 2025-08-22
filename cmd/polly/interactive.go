@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm"
@@ -23,6 +24,13 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 	// Initialize colors based on terminal background
 	initColors()
 
+	// Create the file attachment listener
+	listener := &fileAttachListener{
+		session:        session,
+		config:         config,
+		processedPaths: make(map[string]bool),
+	}
+
 	// Configure readline
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          "> ",
@@ -33,6 +41,7 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 
 		HistorySearchFold:   true,
 		FuncFilterInputRune: filterInput,
+		Listener:            listener,
 	})
 	if err != nil {
 		return err
@@ -84,6 +93,9 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 		default:
 		}
 
+		// Reset the listener's processed paths for each new input line
+		listener.processedPaths = make(map[string]bool)
+
 		// Read input - simple, just get whatever they type/paste
 		input, err := rl.Readline()
 		if err == readline.ErrInterrupt {
@@ -106,31 +118,19 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 			continue
 		}
 
-		// Handle special commands
-		if strings.HasPrefix(input, "/") {
+		// Handle special commands - only process known commands
+		if strings.HasPrefix(input, "/") && isKnownCommand(input) {
 			if handled := handleInteractiveCommand(input, config, session, rl); handled {
 				continue
 			}
 		}
 
-		// Process the prompt as a regular message
+		// At this point, any files have already been attached by the listener
+		// The input is just the message text (files have been removed)
+		// Simply create a text message
 		userMsg := messages.ChatMessage{
 			Role:    messages.MessageRoleUser,
 			Content: input,
-		}
-
-		// Add files if specified via command in the prompt (e.g., "/file path/to/file")
-		if strings.Contains(input, "/file ") {
-			// Parse and attach files
-			files := parseFileReferences(input)
-			if len(files) > 0 {
-				var err error
-				userMsg, err = buildMessageWithFiles(cleanPromptFromFileRefs(input), files)
-				if err != nil {
-					fmt.Println(errorStyle.Styled(fmt.Sprintf("Error processing files: %v", err)))
-					continue
-				}
-			}
 		}
 
 		// Add user message and execute
@@ -150,6 +150,37 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 		currentCompletionCancel = nil
 
 	}
+}
+
+// isKnownCommand checks if the input starts with a known command
+func isKnownCommand(input string) bool {
+	parts := strings.Fields(input)
+	if len(parts) == 0 {
+		return false
+	}
+
+	command := strings.ToLower(parts[0])
+	knownCommands := []string{
+		"/exit", "/quit", "/q",
+		"/clear", "/cls",
+		"/reset",
+		"/model", "/m",
+		"/temp", "/temperature",
+		"/history", "/h",
+		"/save",
+		"/file", "/f",
+		"/help", "/?",
+		"/context", "/c",
+		"/system", "/sys",
+		"/debug",
+	}
+
+	for _, known := range knownCommands {
+		if command == known {
+			return true
+		}
+	}
+	return false
 }
 
 // handleInteractiveCommand processes special interactive commands
@@ -213,6 +244,41 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 		}
 		return true
 
+	case "/file", "/f":
+		if len(parts) < 2 {
+			fmt.Println(dimStyle.Styled("Usage: /file <path>"))
+		} else {
+			// Get the file path (join in case it has spaces)
+			filePath := strings.Join(parts[1:], " ")
+
+			// Expand home directory if needed
+			if strings.HasPrefix(filePath, "~/") {
+				home, _ := os.UserHomeDir()
+				filePath = filepath.Join(home, filePath[2:])
+			}
+
+			// Validate the file exists
+			if _, err := os.Stat(filePath); err != nil {
+				fmt.Println(errorStyle.Styled(fmt.Sprintf("File not found: %s", filePath)))
+				return true
+			}
+
+			// Build and add file message to session
+			userMsg, err := buildMessageWithFiles("", []string{filePath})
+			if err != nil {
+				fmt.Println(errorStyle.Styled(fmt.Sprintf("Error processing file: %v", err)))
+				return true
+			}
+
+			// Add to session
+			session.AddMessage(userMsg)
+
+			// Show confirmation
+			fileInfo := getFileInfo(filePath)
+			fmt.Println(dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
+		}
+		return true
+
 	case "/help", "/?":
 		printInteractiveHelp()
 		return true
@@ -242,12 +308,8 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 		return true
 	}
 
-	// Unknown command
-	if strings.HasPrefix(input, "/") {
-		fmt.Println(errorStyle.Styled(fmt.Sprintf("Unknown command: %s", parts[0])), dimStyle.Styled("(use /help for available commands)"))
-		return true
-	}
-
+	// Don't show "unknown command" for paths that start with /
+	// Let them fall through to file path handling
 	return false
 }
 
@@ -288,6 +350,7 @@ func createAutoCompleter() *readline.PrefixCompleter {
 		readline.PcItem("/system"),
 		readline.PcItem("/debug"),
 		readline.PcItem("/file"),
+		readline.PcItem("/f"),
 	)
 }
 
@@ -338,6 +401,7 @@ func printInteractiveHelp() {
 		{"/temp <0.0-2.0>", "Set temperature"},
 		{"/history", "Show conversation history"},
 		{"/save <file>", "Save conversation to file"},
+		{"/file <path>", "Attach a file to the conversation"},
 		{"/context", "Show current context"},
 		{"/system <prompt>", "Update system prompt"},
 		{"/debug", "Toggle debug mode"},
@@ -378,7 +442,28 @@ func formatConversation(history []messages.ChatMessage) string {
 		}
 
 		fmt.Fprintf(&builder, "%s\n", roleHeader)
-		fmt.Fprintf(&builder, "%s\n\n", msg.Content)
+
+		// Handle file attachments when content is empty
+		if msg.Content == "" && len(msg.Parts) > 0 {
+			var attachments []string
+			for _, part := range msg.Parts {
+				if part.FileName != "" {
+					attachments = append(attachments, fmt.Sprintf("📎 %s", part.FileName))
+				} else if part.Type == "image_base64" || part.Type == "image_url" {
+					attachments = append(attachments, "📎 [image]")
+				} else if part.Text != "" {
+					// If there's text in parts, show it
+					fmt.Fprintf(&builder, "%s\n", part.Text)
+				}
+			}
+			if len(attachments) > 0 {
+				fmt.Fprintf(&builder, "%s\n", strings.Join(attachments, "\n"))
+			}
+		} else {
+			// Regular content
+			fmt.Fprintf(&builder, "%s\n", msg.Content)
+		}
+		fmt.Fprintf(&builder, "\n")
 	}
 	return builder.String()
 }
@@ -457,36 +542,214 @@ func getContextDisplayName(session sessions.Session) string {
 	return "default"
 }
 
-// parseFileReferences extracts file paths from /file commands in the prompt
-func parseFileReferences(input string) []string {
-	var files []string
-	lines := strings.SplitSeq(input, "\n")
-	for line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "/file ") {
-			parts := strings.Fields(line)
-			if len(parts) > 1 {
-				files = append(files, parts[1:]...)
-			}
-		}
-	}
-	return files
-}
-
-// cleanPromptFromFileRefs removes /file commands from the prompt
-func cleanPromptFromFileRefs(input string) string {
-	lines := strings.Split(input, "\n")
-	var cleaned []string
-	for _, line := range lines {
-		if !strings.HasPrefix(strings.TrimSpace(line), "/file ") {
-			cleaned = append(cleaned, line)
-		}
-	}
-	return strings.Join(cleaned, "\n")
-}
-
 // parseFloat safely parses a string to float64
 func parseFloat(s string) (float64, error) {
 	var f float64
 	_, err := fmt.Sscanf(s, "%f", &f)
 	return f, err
+}
+
+// fileAttachListener handles real-time file detection and attachment
+type fileAttachListener struct {
+	session        sessions.Session
+	config         *Config
+	processedPaths map[string]bool // Track which paths we've already processed
+}
+
+// OnChange is called when the input line changes
+func (l *fileAttachListener) OnChange(line []rune, pos int, key rune) (newLine []rune, newPos int, ok bool) {
+	input := string(line)
+
+	// Skip processing if this looks like a command
+	if strings.HasPrefix(strings.TrimSpace(input), "/") {
+		return line, pos, true
+	}
+
+	// Extract file paths from current input
+	paths, remaining := extractFilePaths(input)
+
+	// Check for new paths we haven't processed yet
+	var newPaths []string
+	for _, path := range paths {
+		if !l.processedPaths[path] {
+			newPaths = append(newPaths, path)
+			l.processedPaths[path] = true
+		}
+	}
+
+	// If we found new valid paths, attach them immediately
+	if len(newPaths) > 0 {
+		// Build a message with just the new files
+		userMsg, err := buildMessageWithFiles("", newPaths)
+		if err == nil {
+			// Add files to session immediately
+			l.session.AddMessage(userMsg)
+
+			// Print attachment confirmations
+			for _, path := range newPaths {
+				fileInfo := getFileInfo(path)
+				fmt.Printf("\n%s\n", dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
+			}
+
+			// Move cursor back to input line
+			fmt.Print("> ")
+		}
+
+		// Return the remaining text without file paths
+		newLine = []rune(remaining)
+		if pos > len(newLine) {
+			newPos = len(newLine)
+		} else {
+			newPos = pos
+		}
+		return newLine, newPos, true
+	}
+
+	return line, pos, true
+}
+
+// extractFilePaths extracts file paths from user input that may contain drag-dropped files
+// Handles various formats: 'path', "path", path\ with\ spaces, /absolute/path, C:\Windows\path
+func extractFilePaths(input string) ([]string, string) {
+	var paths []string
+	remaining := input
+
+	// Regular expressions for different path patterns
+	// Single-quoted paths
+	singleQuotedPattern := regexp.MustCompile(`'([^']+)'`)
+	// Double-quoted paths
+	doubleQuotedPattern := regexp.MustCompile(`"([^"]+)"`)
+	// Escaped spaces (path\ with\ spaces)
+	escapedSpacePattern := regexp.MustCompile(`([^\s]+(?:\\ [^\s]*)+)`)
+
+	// Extract single-quoted paths
+	matches := singleQuotedPattern.FindAllStringSubmatch(input, -1)
+	for _, match := range matches {
+		if len(match) > 1 {
+			path := match[1]
+			if isValidPath(path) {
+				paths = append(paths, path)
+				remaining = strings.Replace(remaining, match[0], "", 1)
+			}
+		}
+	}
+
+	// Extract double-quoted paths
+	matches = doubleQuotedPattern.FindAllStringSubmatch(remaining, -1)
+	for _, match := range matches {
+		if len(match) > 1 {
+			path := match[1]
+			if isValidPath(path) {
+				paths = append(paths, path)
+				remaining = strings.Replace(remaining, match[0], "", 1)
+			}
+		}
+	}
+
+	// Extract escaped space paths
+	matches = escapedSpacePattern.FindAllStringSubmatch(remaining, -1)
+	for _, match := range matches {
+		if len(match) > 0 {
+			// Unescape the spaces
+			path := strings.ReplaceAll(match[0], "\\ ", " ")
+			if isValidPath(path) {
+				paths = append(paths, path)
+				remaining = strings.Replace(remaining, match[0], "", 1)
+			}
+		}
+	}
+
+	// Check for unquoted absolute paths (Unix/Mac)
+	// or Windows paths (C:\, D:\, etc.)
+	words := strings.Fields(remaining)
+	var nonPathWords []string
+	for _, word := range words {
+		// Check if it looks like a path
+		if isPathLike(word) && isValidPath(word) {
+			paths = append(paths, word)
+		} else {
+			nonPathWords = append(nonPathWords, word)
+		}
+	}
+
+	// If we found paths in the unquoted words, update remaining
+	if len(paths) > 0 && len(nonPathWords) < len(words) {
+		remaining = strings.Join(nonPathWords, " ")
+	}
+
+	// Clean up remaining text
+	remaining = strings.TrimSpace(remaining)
+
+	return paths, remaining
+}
+
+// isPathLike checks if a string looks like it could be a file path
+func isPathLike(s string) bool {
+	// Unix/Mac absolute paths
+	if strings.HasPrefix(s, "/") {
+		return true
+	}
+	// Home directory paths
+	if strings.HasPrefix(s, "~/") {
+		return true
+	}
+	// Relative paths
+	if strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
+		return true
+	}
+	// Windows paths (C:\, D:\, etc.)
+	if len(s) > 2 && s[1] == ':' && (s[2] == '\\' || s[2] == '/') {
+		return true
+	}
+	return false
+}
+
+// isValidPath checks if a path exists and is accessible
+func isValidPath(path string) bool {
+	// Expand home directory if needed
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+		path = filepath.Join(home, path[2:])
+	}
+
+	// Check if the path exists
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// getFileInfo returns a formatted string with filename and size
+func getFileInfo(path string) string {
+	// Expand home directory if needed
+	originalPath := path
+	if strings.HasPrefix(path, "~/") {
+		home, _ := os.UserHomeDir()
+		path = filepath.Join(home, path[2:])
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Sprintf("%s <unknown>", filepath.Base(originalPath))
+	}
+
+	// Get the base filename
+	filename := filepath.Base(path)
+
+	// Format size
+	size := info.Size()
+	var sizeStr string
+	switch {
+	case size < 1024:
+		sizeStr = fmt.Sprintf("%dB", size)
+	case size < 1024*1024:
+		sizeStr = fmt.Sprintf("%.1fKB", float64(size)/1024)
+	case size < 1024*1024*1024:
+		sizeStr = fmt.Sprintf("%.1fMB", float64(size)/(1024*1024))
+	default:
+		sizeStr = fmt.Sprintf("%.1fGB", float64(size)/(1024*1024*1024))
+	}
+
+	return fmt.Sprintf("%s <%s>", filename, sizeStr)
 }
