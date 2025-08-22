@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -541,7 +546,7 @@ func processEventStream(
 
 			// Use streamed content if available, otherwise use message content
 			if responseText.Len() > 0 {
-				fullResponse.Content = strings.TrimLeft(responseText.String(), " \t\n\r")
+				fullResponse.Content = strings.TrimLeft(responseText.String(), " 	\n\r")
 			}
 
 			// Reasoning is already captured in the message from the event
@@ -573,20 +578,20 @@ func processEventStream(
 					// Interactive mode shows tool calls with spinner and completion status
 					termOutput := termenv.NewOutput(os.Stdout)
 					var successStyle, errorStyle termenv.Style
-					
+
 					// Adapt colors based on terminal background
-					if termenv.HasDarkBackground() {
-						successStyle = termOutput.String().Foreground(termOutput.Color("65"))  // Muted green for dark
-						errorStyle = termOutput.String().Foreground(termOutput.Color("124"))   // Muted red for dark
+				if termenv.HasDarkBackground() {
+						successStyle = termOutput.String().Foreground(termOutput.Color("65")) // Muted green for dark
+						errorStyle = termOutput.String().Foreground(termOutput.Color("124"))  // Muted red for dark
 					} else {
-						successStyle = termOutput.String().Foreground(termOutput.Color("28"))  // Dark green for light
-						errorStyle = termOutput.String().Foreground(termOutput.Color("160"))   // Dark red for light
+						successStyle = termOutput.String().Foreground(termOutput.Color("28")) // Dark green for light
+						errorStyle = termOutput.String().Foreground(termOutput.Color("160"))  // Dark red for light
 					}
-					
+
 					for _, toolCall := range fullResponse.ToolCalls {
 						// Execute with spinner showing
 						success := executeToolCall(ctx, toolCall, registry, session, config, statusLine)
-						
+
 						// Clear spinner and show completion message
 						statusLine.Clear()
 						if success {
@@ -618,7 +623,7 @@ func processEventStream(
 		if config.SchemaPath != "" {
 			outputStructured(fullResponse.Content, schema)
 		} else {
-			outputText()
+			fmt.Println()
 		}
 	}
 
@@ -731,4 +736,119 @@ func updateContextInfo(sessionStore sessions.SessionStore, contextID string, con
 			}
 		}
 	}
+}
+
+// Global variable to track the active file session for cleanup
+var (
+	activeFileSession *sessions.FileSession
+	sessionMutex      sync.Mutex
+)
+
+// setActiveFileSession safely sets the active file session
+func setActiveFileSession(session sessions.Session) {
+	sessionMutex.Lock()
+	defer sessionMutex.Unlock()
+
+	if fileSession, ok := session.(*sessions.FileSession); ok {
+		activeFileSession = fileSession
+	}
+}
+
+// clearActiveFileSession safely clears the active file session
+func clearActiveFileSession() {
+	sessionMutex.Lock()
+	defer sessionMutex.Unlock()
+	activeFileSession = nil
+}
+
+// cleanupAndExit performs cleanup and exits with the given code
+func cleanupAndExit(code int) {
+	sessionMutex.Lock()
+	defer sessionMutex.Unlock()
+
+	// Close active file session if any
+	if activeFileSession != nil {
+		activeFileSession.Close()
+		activeFileSession = nil
+	}
+
+	// Also clean up any lingering index lock file
+	homeDir, _ := os.UserHomeDir()
+	indexLockPath := filepath.Join(homeDir, ".pollytool", "index.json.lock")
+	os.Remove(indexLockPath)
+
+	os.Exit(code)
+}
+
+// readFromStdin reads all lines from stdin and joins them with newlines
+func readFromStdin() (string, error) {
+	scanner := bufio.NewScanner(os.Stdin)
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("error reading stdin: %w", err)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// hasStdinData checks if stdin has data available
+func hasStdinData() bool {
+	stat, _ := os.Stdin.Stat()
+	return (stat.Mode() & os.ModeCharDevice) == 0
+}
+
+// setupSignalHandling sets up signal handling for graceful shutdown
+func setupSignalHandling(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		// Cleanup before canceling context
+		cleanupAndExit(130) // 128 + SIGINT(2) = 130
+	}()
+	return ctx, cancel
+}
+
+// closeFileSession safely closes a file session if applicable
+func closeFileSession(session sessions.Session) {
+	if fileSession, ok := session.(*sessions.FileSession); ok {
+		fileSession.Close()
+		// Clear from global tracking
+		clearActiveFileSession()
+	}
+}
+
+// outputStructured formats and outputs structured response
+func outputStructured(content string, schema *llm.Schema) {
+	// If content is already JSON, pretty-print it
+	var data any
+	if err := json.Unmarshal([]byte(content), &data); err == nil {
+		// Validate against schema if provided
+		if schema != nil {
+			if err := validateJSONAgainstSchema(data, schema); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Output doesn't match schema: %v\n", err)
+			}
+		}
+
+		jsonBytes, _ := json.MarshalIndent(data, "", "  ")
+		fmt.Println(string(jsonBytes))
+	} else {
+		// Fallback to raw output if not valid JSON
+		fmt.Println(content)
+	}
+}
+
+// createStatusLine creates a status line if appropriate
+func createStatusLine(config *Config) *Status {
+	// Use terminal title for status updates when in a terminal
+	// Status line works fine with schema since it outputs to stderr
+	if !config.Quiet && isTerminal() {
+		return NewStatus()
+	}
+
+	// Return nil when status updates are not appropriate
+	return nil
 }

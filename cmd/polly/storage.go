@@ -4,11 +4,25 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 )
+
+// needsFileStore determines if we need a file-based session store
+func needsFileStore(config *Config, contextID string) bool {
+	return contextID != "" ||
+		config.ResetContext != "" ||
+		config.UseLastContext ||
+		config.ListContexts ||
+		config.DeleteContext != "" ||
+		config.AddToContext ||
+		config.PurgeAll ||
+		config.CreateContext != "" ||
+		config.ShowContext != ""
+}
 
 // setupSessionStore creates the appropriate session store based on configuration
 func setupSessionStore(config *Config, contextID string) (sessions.SessionStore, error) {
@@ -17,7 +31,7 @@ func setupSessionStore(config *Config, contextID string) (sessions.SessionStore,
 		SystemPrompt: config.SystemPrompt,
 		MaxHistory:   0, // Unlimited for polly CLI
 	}
-	
+
 	if needsFileStore(config, contextID) {
 		return sessions.NewFileSessionStore("", sessionConfig) // Uses default ~/.pollytool/contexts
 	}
@@ -190,7 +204,7 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 			case "image_base64":
 				// Create a message with image content using Parts field
 				msg := messages.ChatMessage{
-					Role: messages.MessageRoleUser,
+					Role:  messages.MessageRoleUser,
 					Parts: []messages.ContentPart{part},
 				}
 				session.AddMessage(msg)
@@ -316,21 +330,21 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 	fmt.Printf("  Model: %s\n", info.Model)
 	fmt.Printf("  Temperature: %.2f\n", info.Temperature)
 	fmt.Printf("  Max Tokens: %d\n", info.MaxTokens)
-	
+
 	if info.SystemPrompt != "" {
 		fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
 	}
-	
+
 	if len(info.ToolPaths) > 0 {
 		fmt.Printf("  Tools: %v\n", info.ToolPaths)
 	}
-	
+
 	if len(info.MCPServers) > 0 {
 		fmt.Printf("  MCP Servers: %v\n", info.MCPServers)
 	}
-	
+
 	fmt.Printf("  Created: %s\n", info.Created.Format("2006-01-02 15:04:05"))
-	fmt.Printf("  Last Used: %s (%s ago)\n", 
+	fmt.Printf("  Last Used: %s (%s ago)\n",
 		info.LastUsed.Format("2006-01-02 15:04:05"),
 		formatDuration(time.Since(info.LastUsed)))
 
@@ -443,4 +457,90 @@ func handlePurgeAll(store sessions.SessionStore) error {
 
 	fmt.Printf("Purged %d context(s) and cleared the index\n", deletedCount)
 	return nil
+}
+
+// resetContext clears the conversation history but preserves the context settings
+func resetContext(fileStore *sessions.FileSessionStore, name string) error {
+	// Get existing context info
+	contextInfo := fileStore.GetContextByNameOrID(name)
+	if contextInfo == nil {
+		// No stored settings, just delete the file
+		sessionPath := filepath.Join(fileStore.GetBaseDir(), name+".json")
+		os.Remove(sessionPath)
+		return nil
+	}
+
+	// Update last used time
+	contextInfo.LastUsed = time.Now()
+
+	// Save updated context info
+	if err := fileStore.SaveContextInfo(contextInfo); err != nil {
+		return err
+	}
+
+	// Delete conversation file (using name directly since it's already validated)
+	sessionPath := filepath.Join(fileStore.GetBaseDir(), name+".json")
+	os.Remove(sessionPath)
+
+	return nil
+}
+
+// validateContextName checks if a context name is valid
+func validateContextName(name string) error {
+	if name == "" {
+		return fmt.Errorf("context name cannot be empty")
+	}
+
+	// Check for problematic characters that could cause filesystem issues
+	if strings.ContainsAny(name, "/\\:*?\"<>|") {
+		return fmt.Errorf("context name contains invalid characters (/, \\, :, *, ?, \", <, >, |)")
+	}
+
+	// Check for names that could be problematic on any OS
+	if name == "." || name == ".." {
+		return fmt.Errorf("context name cannot be '.' or '..'")
+	}
+
+	// Check for names starting or ending with spaces or dots
+	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") {
+		return fmt.Errorf("context name cannot start or end with spaces")
+	}
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
+		return fmt.Errorf("context name cannot start or end with dots")
+	}
+
+	// Check for control characters
+	for _, r := range name {
+		if r < 32 || r == 127 {
+			return fmt.Errorf("context name contains control characters")
+		}
+	}
+
+	return nil
+}
+
+// checkAndPromptForMissingContext checks if a context exists and creates it if missing
+// Returns the context name to use (existing or newly created)
+func checkAndPromptForMissingContext(fileStore *sessions.FileSessionStore, contextName string) string {
+	if contextName == "" {
+		return contextName // No context specified
+	}
+
+	// Check if context exists
+	if fileStore.ContextExists(contextName) {
+		return contextName // Context exists, use it
+	}
+
+	// Context doesn't exist, create it
+	contextDisplay := contextName
+	// Show shortened version for long names
+	if len(contextName) > 20 {
+		contextDisplay = contextName[:8] + "..."
+	}
+
+	// Save metadata for the new context
+	fileStore.SaveContextName(contextName, "")
+	fmt.Fprintf(os.Stderr, "Created new context '%s'\n", contextDisplay)
+
+	return contextName
 }
