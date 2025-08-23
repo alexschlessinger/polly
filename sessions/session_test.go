@@ -33,9 +33,9 @@ func testStores(t *testing.T) map[string]SessionStore {
 func TestAddMessage(t *testing.T) {
 	for name, store := range testStores(t) {
 		t.Run(name, func(t *testing.T) {
-			session := store.Get("test")
-			if session == nil {
-				t.Fatal("Failed to get session")
+			session, err := store.Get("test")
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
 			}
 
 			// Add a message
@@ -64,9 +64,9 @@ func TestAddMessage(t *testing.T) {
 func TestClearWithSystemPrompt(t *testing.T) {
 	for name, store := range testStores(t) {
 		t.Run(name, func(t *testing.T) {
-			session := store.Get("test")
-			if session == nil {
-				t.Fatal("Failed to get session")
+			session, err := store.Get("test")
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
 			}
 
 			// Add some messages
@@ -98,9 +98,9 @@ func TestDelete(t *testing.T) {
 	for name, store := range testStores(t) {
 		t.Run(name, func(t *testing.T) {
 			// Create and populate session
-			session1 := store.Get("deleteme")
-			if session1 == nil {
-				t.Fatal("Failed to get session1")
+			session1, err := store.Get("deleteme")
+			if err != nil {
+				t.Fatalf("Failed to get session1: %v", err)
 			}
 			session1.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "test"})
 
@@ -108,9 +108,9 @@ func TestDelete(t *testing.T) {
 			store.Delete("deleteme")
 
 			// Get it again - should be fresh
-			session2 := store.Get("deleteme")
-			if session2 == nil {
-				t.Fatal("Failed to get session2")
+			session2, err := store.Get("deleteme")
+			if err != nil {
+				t.Fatalf("Failed to get session2: %v", err)
 			}
 			history := session2.GetHistory()
 
@@ -126,9 +126,9 @@ func TestDelete(t *testing.T) {
 func TestTrimKeepsSystemPrompt(t *testing.T) {
 	for name, store := range testStores(t) {
 		t.Run(name, func(t *testing.T) {
-			session := store.Get("test")
-			if session == nil {
-				t.Fatal("Failed to get session")
+			session, err := store.Get("test")
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
 			}
 
 			// Add more than MaxHistory messages
@@ -179,9 +179,9 @@ func TestTrimRemovesOrphanedToolResponse(t *testing.T) {
 
 	for name, store := range stores {
 		t.Run(name, func(t *testing.T) {
-			session := store.Get("test")
-			if session == nil {
-				t.Fatal("Failed to get session")
+			session, err := store.Get("test")
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
 			}
 
 			// Add messages: system (auto), user, assistant with tool_calls, tool response, user
@@ -229,9 +229,9 @@ func TestTrimKeepsMaxHistory(t *testing.T) {
 
 	for name, store := range stores {
 		t.Run(name, func(t *testing.T) {
-			session := store.Get("test")
-			if session == nil {
-				t.Fatal("Failed to get session")
+			session, err := store.Get("test")
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
 			}
 
 			// Add 10 messages
@@ -263,9 +263,9 @@ func TestTrimKeepsMaxHistory(t *testing.T) {
 func TestConcurrentAddMessage(t *testing.T) {
 	for name, store := range testStores(t) {
 		t.Run(name, func(t *testing.T) {
-			session := store.Get("concurrent")
-			if session == nil {
-				t.Fatal("Failed to get session")
+			session, err := store.Get("concurrent")
+			if err != nil {
+				t.Fatalf("Failed to get session: %v", err)
 			}
 
 			// Use WaitGroup for proper synchronization
@@ -341,13 +341,14 @@ func TestMaxTokensPersistence(t *testing.T) {
 		Created:     time.Now(),
 		LastUsed:    time.Now(),
 	}
-	
+
 	if err := fileStore.SaveContextInfo(info); err != nil {
 		t.Fatalf("Failed to save context info: %v", err)
 	}
 
 	// Retrieve and verify
-	retrieved := fileStore.GetContextByNameOrID("test-context")
+	allInfo := fileStore.GetAllContextInfo()
+	retrieved := allInfo["test-context"]
 	if retrieved == nil {
 		t.Fatal("Failed to retrieve context")
 	}
@@ -361,12 +362,13 @@ func TestMaxTokensPersistence(t *testing.T) {
 		Name:  "test-context",
 		Model: "anthropic/claude-3",
 	}
-	
+
 	if err := fileStore.SaveContextInfo(info2); err != nil {
 		t.Fatalf("Failed to update context info: %v", err)
 	}
 
-	retrieved2 := fileStore.GetContextByNameOrID("test-context")
+	allInfo2 := fileStore.GetAllContextInfo()
+	retrieved2 := allInfo2["test-context"]
 	if retrieved2 == nil {
 		t.Fatal("Failed to retrieve updated context")
 	}
@@ -394,17 +396,17 @@ func TestExpiryGoroutine(t *testing.T) {
 	store := NewSyncMapSessionStore(config)
 
 	// Create multiple sessions with staggered access times
-	session1 := store.Get("session1")
-	if session1 == nil {
-		t.Fatal("Failed to get session1")
+	session1, err := store.Get("session1")
+	if err != nil {
+		t.Fatalf("Failed to get session1: %v", err)
 	}
 	session1.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "msg1"})
 
 	time.Sleep(30 * time.Millisecond)
 
-	session2 := store.Get("session2")
-	if session2 == nil {
-		t.Fatal("Failed to get session2")
+	session2, err := store.Get("session2")
+	if err != nil {
+		t.Fatalf("Failed to get session2: %v", err)
 	}
 	session2.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "msg2"})
 
@@ -426,9 +428,9 @@ func TestExpiryGoroutine(t *testing.T) {
 
 	// Now check what's left
 	// Session1 should be gone (expired)
-	newSession1 := store.Get("session1")
-	if newSession1 == nil {
-		t.Fatal("Failed to get newSession1")
+	newSession1, err := store.Get("session1")
+	if err != nil {
+		t.Fatalf("Failed to get newSession1: %v", err)
 	}
 	history1New := newSession1.GetHistory()
 	if len(history1New) != 1 {
@@ -446,9 +448,9 @@ func TestExpiryGoroutine(t *testing.T) {
 	time.Sleep(120 * time.Millisecond)
 
 	// Both should now be expired
-	finalSession2 := store.Get("session2")
-	if finalSession2 == nil {
-		t.Fatal("Failed to get finalSession2")
+	finalSession2, err := store.Get("session2")
+	if err != nil {
+		t.Fatalf("Failed to get finalSession2: %v", err)
 	}
 	finalHistory2 := finalSession2.GetHistory()
 	if len(finalHistory2) != 1 {

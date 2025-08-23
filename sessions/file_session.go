@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,34 +17,42 @@ import (
 
 // FileSession implements a file-based persistent session
 type FileSession struct {
-	ID      string                 `json:"id"`
-	History []messages.ChatMessage `json:"history"`
-	Created time.Time              `json:"created"`
-	Updated time.Time              `json:"updated"`
-	path    string
-	lock    *flock.Flock // File lock using flock
-	config  *SessionConfig
-	mu      sync.RWMutex
+	ID          string                 `json:"id"`
+	History     []messages.ChatMessage `json:"history"`
+	Created     time.Time              `json:"created"`
+	Updated     time.Time              `json:"updated"`
+	ContextInfo *ContextInfo           `json:"contextInfo"`
+	path        string
+	lock        *flock.Flock // File lock using flock
+	mu          sync.RWMutex
 }
 
 // ContextInfo stores metadata about a context
 type ContextInfo struct {
-	Name         string    `json:"name"` // Name is the primary identifier (e.g., "@stocks" or random ID)
-	Created      time.Time `json:"created"`
-	LastUsed     time.Time `json:"lastUsed"`
-	Model        string    `json:"model,omitempty"`
-	Temperature  float64   `json:"temperature,omitempty"`
-	SystemPrompt string    `json:"systemPrompt,omitempty"`
-	Description  string    `json:"description,omitempty"`
-	ToolPaths    []string  `json:"toolPaths,omitempty"`
-	MCPServers   []string  `json:"mcpServers,omitempty"`
-	MaxTokens    int       `json:"maxTokens,omitempty"`
+	Name         string        `json:"name"` // Name is the primary identifier (e.g., "@stocks" or random ID)
+	Created      time.Time     `json:"created"`
+	LastUsed     time.Time     `json:"lastUsed"`
+	Model        string        `json:"model,omitempty"`
+	Temperature  float64       `json:"temperature,omitempty"`
+	SystemPrompt string        `json:"systemPrompt,omitempty"`
+	Description  string        `json:"description,omitempty"`
+	ToolPaths    []string      `json:"toolPaths,omitempty"`
+	MCPServers   []string      `json:"mcpServers,omitempty"`
+	MaxTokens    int           `json:"maxTokens,omitempty"`
+	MaxHistory   int           `json:"maxHistory,omitempty"` // Maximum messages to keep (0 = unlimited)
+	TTL          time.Duration `json:"ttl,omitempty"`        // Time before context expires (0 = never)
 }
 
-// ContextIndex manages the mapping of names to IDs
+// IndexEntry is a lightweight reference for fast lookups
+type IndexEntry struct {
+	Name     string    `json:"name"`
+	LastUsed time.Time `json:"lastUsed"`
+}
+
+// ContextIndex manages the mapping of names to lightweight references
 type ContextIndex struct {
-	Contexts    map[string]*ContextInfo `json:"contexts"`
-	LastContext string                  `json:"lastContext,omitempty"`
+	Entries     map[string]*IndexEntry `json:"entries"`
+	LastContext string                 `json:"lastContext,omitempty"`
 }
 
 // FileSessionStore implements a file-based session store
@@ -83,31 +92,67 @@ func NewFileSessionStore(baseDir string, config *SessionConfig) (SessionStore, e
 	if err := store.loadIndex(); err != nil {
 		// Create new index if loading fails
 		store.index = &ContextIndex{
-			Contexts: make(map[string]*ContextInfo),
+			Entries: make(map[string]*IndexEntry),
 		}
 	}
+
+	// Cleanup any legacy lock file (index.json.lock) from previous versions
+	base := filepath.Dir(store.baseDir)
+	legacyLock := filepath.Join(base, "index.json.lock")
+	_ = os.Remove(legacyLock)
 
 	return store, nil
 }
 
-// Get retrieves or creates a session
-func (s *FileSessionStore) Get(name string) Session {
-	// The name should already be validated at the application level
-	// We just use it directly as the filename
+// validateContextName checks if a context name is valid for filesystem use
+func validateContextName(name string) error {
 	if name == "" {
-		// This shouldn't happen - the app layer should ensure a name
-		panic("FileSessionStore.Get called with empty name")
+		return fmt.Errorf("context name cannot be empty")
 	}
 
-	// Track last context
-	s.SetLastContext(name)
+	// Check for problematic characters that could cause filesystem issues
+	if strings.ContainsAny(name, "/\\:*?\"<>|") {
+		return fmt.Errorf("context name contains invalid characters (/, \\, :, *, ?, \", <, >, |)")
+	}
+
+	// Check for names that could be problematic on any OS
+	if name == "." || name == ".." {
+		return fmt.Errorf("context name cannot be '.' or '..'")
+	}
+
+	// Check for names starting or ending with spaces or dots
+	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") {
+		return fmt.Errorf("context name cannot start or end with spaces")
+	}
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
+		return fmt.Errorf("context name cannot start or end with dots")
+	}
+
+	// Check for control characters
+	for _, r := range name {
+		if r < 32 || r == 127 {
+			return fmt.Errorf("context name contains control characters")
+		}
+	}
+
+	return nil
+}
+
+// Get retrieves or creates a session
+func (s *FileSessionStore) Get(name string) (Session, error) {
+	// Validate context name for filesystem safety
+	if err := validateContextName(name); err != nil {
+		return nil, fmt.Errorf("invalid context name '%s': %w", name, err)
+	}
+
+	// Update last context in index only when creating or modifying
+	// Not on every read to avoid unnecessary disk writes
 
 	// Use name directly as filename (already validated at app level)
 	sessionPath := filepath.Join(s.baseDir, name+".json")
-	lockPath := sessionPath + ".lock"
 
-	// Create a new flock instance
-	fileLock := flock.New(lockPath)
+	// Lock the session file itself (no separate .lock file)
+	fileLock := flock.New(sessionPath)
 
 	// Try to acquire exclusive lock with 10 second timeout, retrying every 100ms
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -115,12 +160,10 @@ func (s *FileSessionStore) Get(name string) Session {
 
 	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: Failed to acquire lock: %v\n", err)
-		return nil // Abort on failure
+		return nil, fmt.Errorf("failed to acquire lock: %w", err)
 	}
 	if !locked {
-		fmt.Fprintf(os.Stderr, "Error: Could not acquire lock within 10 seconds\n")
-		return nil // Abort on failure
+		return nil, fmt.Errorf("could not acquire lock within 10 seconds")
 	}
 
 	// Try to load existing session
@@ -129,10 +172,34 @@ func (s *FileSessionStore) Get(name string) Session {
 		if err := json.Unmarshal(data, &session); err == nil {
 			session.path = sessionPath
 			session.lock = fileLock
-			session.config = s.config
 			session.Updated = time.Now()
+
+			// Ensure ContextInfo exists
+			if session.ContextInfo == nil {
+				session.ContextInfo = &ContextInfo{
+					Name:         name,
+					Created:      session.Created,
+					LastUsed:     time.Now(),
+					SystemPrompt: s.config.SystemPrompt,
+					MaxHistory:   s.config.MaxHistory,
+					TTL:          s.config.TTL,
+				}
+			} else {
+				session.ContextInfo.LastUsed = time.Now()
+			}
+
+			// Update index with lightweight entry
+			s.indexMu.Lock()
+			s.index.Entries[name] = &IndexEntry{
+				Name:     name,
+				LastUsed: time.Now(),
+			}
+			s.index.LastContext = name
+			s.indexMu.Unlock()
+			s.saveIndex()
+
 			session.save()
-			return &session
+			return &session, nil
 		}
 	}
 
@@ -142,26 +209,53 @@ func (s *FileSessionStore) Get(name string) Session {
 		History: []messages.ChatMessage{},
 		Created: time.Now(),
 		Updated: time.Now(),
-		path:    sessionPath,
-		lock:    fileLock,
-		config:  s.config,
+		ContextInfo: &ContextInfo{
+			Name:         name,
+			Created:      time.Now(),
+			LastUsed:     time.Now(),
+			SystemPrompt: s.config.SystemPrompt,
+			MaxHistory:   s.config.MaxHistory,
+			TTL:          s.config.TTL,
+		},
+		path: sessionPath,
+		lock: fileLock,
 	}
 	// Initialize with system prompt if configured
-	session.History = InitializeWithSystemPrompt(session.History, s.config)
+	config := &SessionConfig{
+		SystemPrompt: session.ContextInfo.SystemPrompt,
+		MaxHistory:   session.ContextInfo.MaxHistory,
+		TTL:          session.ContextInfo.TTL,
+	}
+	session.History = InitializeWithSystemPrompt(session.History, config)
+
+	// Create index entry and mark as last used
+	s.indexMu.Lock()
+	s.index.Entries[name] = &IndexEntry{
+		Name:     name,
+		LastUsed: time.Now(),
+	}
+	s.index.LastContext = name
+	s.indexMu.Unlock()
+	s.saveIndex()
+
 	session.save()
-	return session
+	return session, nil
 }
 
 // Delete removes a session
 func (s *FileSessionStore) Delete(name string) {
 	// Use name directly (already validated at app level)
 	sessionPath := filepath.Join(s.baseDir, name+".json")
-	lockPath := sessionPath + ".lock"
-	os.Remove(sessionPath)
-	os.Remove(lockPath)
+
+	// Unlink the session file even if another process holds it; open FDs will keep it
+	// alive for that process, but it disappears for new reads, matching expected semantics.
+	_ = os.Remove(sessionPath)
 
 	// Remove from index if present
-	s.DeleteContextName(name)
+	s.indexMu.Lock()
+	delete(s.index.Entries, name)
+	s.indexMu.Unlock()
+	s.saveIndex()
 }
 
 // Expire removes old sessions
@@ -171,9 +265,12 @@ func (s *FileSessionStore) Range(f func(key, value any) bool) {
 	defer s.indexMu.RUnlock()
 
 	// Iterate over contexts in the index
-	for name := range s.index.Contexts {
+	for name := range s.index.Entries {
 		// Load the session for this context
-		session := s.Get(name)
+		session, err := s.Get(name)
+		if err != nil {
+			continue // Skip sessions that can't be loaded
+		}
 
 		// Call the function with the session
 		if !f(name, session) {
@@ -198,10 +295,8 @@ func (s *FileSessionStore) Expire() {
 		}
 
 		filePath := filepath.Join(s.baseDir, entry.Name())
-		lockPath := filePath + ".lock"
-
-		// Try to acquire lock to check if session is in use
-		fileLock := flock.New(lockPath)
+		// Try to acquire lock on the session file to check if session is in use
+		fileLock := flock.New(filePath)
 		locked, err := fileLock.TryLock()
 		if err != nil || !locked {
 			// Session is in use or error, skip
@@ -222,20 +317,19 @@ func (s *FileSessionStore) Expire() {
 
 		if now.Sub(session.Updated) > expiry {
 			os.Remove(filePath)
-			os.Remove(lockPath)
 		}
 
 		fileLock.Unlock()
 	}
 }
 
-// ListContexts returns all available context names
-func (s *FileSessionStore) ListContexts() ([]string, error) {
+// List returns all available context names
+func (s *FileSessionStore) List() ([]string, error) {
 	s.indexMu.RLock()
 	defer s.indexMu.RUnlock()
-	
+
 	var contexts []string
-	for name := range s.index.Contexts {
+	for name := range s.index.Entries {
 		contexts = append(contexts, name)
 	}
 	return contexts, nil
@@ -262,10 +356,9 @@ func (s *FileSession) AddMessage(msg messages.ChatMessage) {
 
 // trimHistory limits the session history to MaxHistory messages
 func (s *FileSession) trimHistory() {
-	if s.config == nil {
-		return
+	if s.ContextInfo.MaxHistory > 0 {
+		s.History = TrimHistory(s.History, s.ContextInfo.MaxHistory)
 	}
-	s.History = TrimHistory(s.History, s.config.MaxHistory)
 }
 
 // Clear clears the session history
@@ -273,9 +366,46 @@ func (s *FileSession) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.History = InitializeWithSystemPrompt(s.History, s.config)
+	// Create a temporary config from context info for initialization
+	config := &SessionConfig{
+		SystemPrompt: s.ContextInfo.SystemPrompt,
+		MaxHistory:   s.ContextInfo.MaxHistory,
+		TTL:          s.ContextInfo.TTL,
+	}
+
+	s.History = InitializeWithSystemPrompt(s.History, config)
 	s.Updated = time.Now()
 	s.save()
+}
+
+// GetName returns the session name
+func (s *FileSession) GetName() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ID
+}
+
+// GetContextInfo returns the context metadata
+func (s *FileSession) GetContextInfo() *ContextInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ContextInfo
+}
+
+// SetContextInfo updates the context metadata
+func (s *FileSession) SetContextInfo(info *ContextInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ContextInfo = info
+	s.Updated = time.Now()
+	s.save()
+}
+
+// GetLastUsed returns when the session was last accessed
+func (s *FileSession) GetLastUsed() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Updated
 }
 
 // save persists the session to disk
@@ -287,12 +417,11 @@ func (s *FileSession) save() error {
 	return os.WriteFile(s.path, data, 0644)
 }
 
-// Close releases the file lock and removes the lock file
+// Close releases the file lock on the session file.
+// No files are removed here; the lock is ephemeral.
 func (s *FileSession) Close() {
 	if s.lock != nil {
 		s.lock.Unlock()
-		// Remove the lock file
-		os.Remove(s.lock.Path())
 		s.lock = nil
 	}
 }
@@ -301,11 +430,18 @@ func (s *FileSession) Close() {
 
 // withFileLock acquires a file lock and executes the provided function
 func withFileLock(lockPath string, exclusive bool, fn func() error) error {
+	// Ensure the lock target file exists so flock can operate reliably
+	if _, err := os.Stat(lockPath); os.IsNotExist(err) {
+		if f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644); err == nil {
+			f.Close()
+		}
+	}
+
 	fileLock := flock.New(lockPath)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	var locked bool
 	var err error
 	if exclusive {
@@ -313,7 +449,7 @@ func withFileLock(lockPath string, exclusive bool, fn func() error) error {
 	} else {
 		locked, err = fileLock.TryRLockContext(ctx, 100*time.Millisecond)
 	}
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
@@ -321,7 +457,7 @@ func withFileLock(lockPath string, exclusive bool, fn func() error) error {
 		return fmt.Errorf("could not acquire lock within 5 seconds")
 	}
 	defer fileLock.Unlock()
-	
+
 	return fn()
 }
 
@@ -333,9 +469,9 @@ func (s *FileSessionStore) loadIndex() error {
 	// Location: ~/.pollytool/index.json
 	baseDir := filepath.Dir(s.baseDir) // Get ~/.pollytool from ~/.pollytool/contexts
 	indexPath := filepath.Join(baseDir, "index.json")
-	lockPath := indexPath + ".lock"
 
-	return withFileLock(lockPath, false, func() error {
+	// Lock the index file itself (shared) to avoid a separate persistent lock file
+	return withFileLock(indexPath, false, func() error {
 		data, err := os.ReadFile(indexPath)
 		if err != nil {
 			return err
@@ -347,8 +483,8 @@ func (s *FileSessionStore) loadIndex() error {
 		}
 
 		s.index = &index
-		if s.index.Contexts == nil {
-			s.index.Contexts = make(map[string]*ContextInfo)
+		if s.index.Entries == nil {
+			s.index.Entries = make(map[string]*IndexEntry)
 		}
 		return nil
 	})
@@ -362,9 +498,9 @@ func (s *FileSessionStore) saveIndex() error {
 	// Location: ~/.pollytool/index.json
 	baseDir := filepath.Dir(s.baseDir) // Get ~/.pollytool from ~/.pollytool/contexts
 	indexPath := filepath.Join(baseDir, "index.json")
-	lockPath := indexPath + ".lock"
 
-	return withFileLock(lockPath, true, func() error {
+	// Lock the index file itself (exclusive) to avoid a separate persistent lock file
+	return withFileLock(indexPath, true, func() error {
 		data, err := json.MarshalIndent(s.index, "", "  ")
 		if err != nil {
 			return err
@@ -373,63 +509,100 @@ func (s *FileSessionStore) saveIndex() error {
 	})
 }
 
-// ResolveContext now just returns the name as-is (kept for compatibility)
-func (s *FileSessionStore) ResolveContext(name string) string {
-	return name
-}
+// SaveContextInfo saves full context information including model and settings
+func (s *FileSessionStore) SaveContextInfo(info *ContextInfo) error {
+	// Persist context metadata to the session file and index
+	// Load the session, merge/update its context info, and save it back
+	sessionPath := filepath.Join(s.baseDir, info.Name+".json")
 
-// SaveContextName saves context metadata
-func (s *FileSessionStore) SaveContextName(name, _ string) error {
-	s.indexMu.Lock()
-	if s.index.Contexts[name] == nil {
-		s.index.Contexts[name] = &ContextInfo{
-			Name:     name,
-			Created:  time.Now(),
-			LastUsed: time.Now(),
+	// Try to load existing session
+	var session *FileSession
+	if data, err := os.ReadFile(sessionPath); err == nil {
+		var loaded FileSession
+		if err := json.Unmarshal(data, &loaded); err == nil {
+			session = &loaded
 		}
-	} else {
-		s.index.Contexts[name].LastUsed = time.Now()
+	}
+
+	// If session doesn't exist, create a minimal one
+	if session == nil {
+		session = &FileSession{
+			ID:      info.Name,
+			History: []messages.ChatMessage{},
+			Created: time.Now(),
+			Updated: time.Now(),
+		}
+	}
+
+	// Merge provided info into existing context info via helper, preserving unspecified fields
+	session.ContextInfo = MergeContextInfo(session.ContextInfo, info)
+	session.Updated = time.Now()
+
+	// Save the session file
+	data, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(sessionPath, data, 0644); err != nil {
+		return err
+	}
+
+	// Update the index entry
+	s.indexMu.Lock()
+	s.index.Entries[info.Name] = &IndexEntry{
+		Name:     info.Name,
+		LastUsed: time.Now(),
 	}
 	s.indexMu.Unlock()
 
 	return s.saveIndex()
 }
 
-// SaveContextInfo saves full context information including model and settings
-func (s *FileSessionStore) SaveContextInfo(info *ContextInfo) error {
+// SaveContextUpdate applies a partial update to a context's metadata on disk
+func (s *FileSessionStore) SaveContextUpdate(upd *ContextUpdate) error {
+	if upd == nil || upd.Name == "" {
+		return nil
+	}
 
-	s.indexMu.Lock()
-	// Preserve existing info if updating
-	if existing, exists := s.index.Contexts[info.Name]; exists {
-		if info.Model == "" {
-			info.Model = existing.Model
+	sessionPath := filepath.Join(s.baseDir, upd.Name+".json")
+
+	// Load existing session if present
+	var session *FileSession
+	if data, err := os.ReadFile(sessionPath); err == nil {
+		var loaded FileSession
+		if err := json.Unmarshal(data, &loaded); err == nil {
+			session = &loaded
 		}
-		if info.Temperature == 0 {
-			info.Temperature = existing.Temperature
-		}
-		if info.MaxTokens == 0 {
-			info.MaxTokens = existing.MaxTokens
-		}
-		if info.SystemPrompt == "" {
-			info.SystemPrompt = existing.SystemPrompt
-		}
-		if len(info.ToolPaths) == 0 {
-			info.ToolPaths = existing.ToolPaths
-		}
-		if len(info.MCPServers) == 0 {
-			info.MCPServers = existing.MCPServers
-		}
-		if info.Created.IsZero() {
-			info.Created = existing.Created
-		}
-	} else {
-		if info.Created.IsZero() {
-			info.Created = time.Now()
+	}
+	if session == nil {
+		session = &FileSession{
+			ID:          upd.Name,
+			History:     []messages.ChatMessage{},
+			Created:     time.Now(),
+			Updated:     time.Now(),
+			ContextInfo: &ContextInfo{Name: upd.Name, Created: time.Now()},
 		}
 	}
 
-	info.LastUsed = time.Now()
-	s.index.Contexts[info.Name] = info
+	// Merge update into existing context info via helper
+	session.ContextInfo = ApplyContextUpdate(session.ContextInfo, upd)
+	session.Updated = time.Now()
+
+	// Save session file
+	data, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(sessionPath, data, 0644); err != nil {
+		return err
+	}
+
+	// Update index entry
+	s.indexMu.Lock()
+	s.index.Entries[upd.Name] = &IndexEntry{
+		Name:     upd.Name,
+		LastUsed: session.ContextInfo.LastUsed,
+	}
 	s.indexMu.Unlock()
 
 	return s.saveIndex()
@@ -442,71 +615,38 @@ func (s *FileSessionStore) GetLastContext() string {
 	return s.index.LastContext
 }
 
-// SetLastContext updates the last used context
-func (s *FileSessionStore) SetLastContext(name string) error {
-	s.indexMu.Lock()
-	s.index.LastContext = name
-
-	// Update last used time for named contexts
-	if info, exists := s.index.Contexts[name]; exists {
-		info.LastUsed = time.Now()
-	}
-	s.indexMu.Unlock()
-
-	return s.saveIndex()
-}
-
-// GetContextInfo returns information about all contexts
-func (s *FileSessionStore) GetContextInfo() map[string]*ContextInfo {
+// GetAllContextInfo returns information about all contexts
+func (s *FileSessionStore) GetAllContextInfo() map[string]*ContextInfo {
 	s.indexMu.RLock()
-	defer s.indexMu.RUnlock()
+	entries := make(map[string]*IndexEntry)
+	maps.Copy(entries, s.index.Entries)
+	s.indexMu.RUnlock()
 
-	// Create a copy to avoid race conditions
 	result := make(map[string]*ContextInfo)
-	maps.Copy(result, s.index.Contexts)
+
+	// Load context info from actual session files
+	for name := range entries {
+		sessionPath := filepath.Join(s.baseDir, name+".json")
+		if data, err := os.ReadFile(sessionPath); err == nil {
+			var session FileSession
+			if err := json.Unmarshal(data, &session); err == nil && session.ContextInfo != nil {
+				result[name] = session.ContextInfo
+			}
+		}
+	}
+
 	return result
 }
 
-// GetContextByNameOrID returns context info for a specific context
-func (s *FileSessionStore) GetContextByNameOrID(name string) *ContextInfo {
+// Exists checks if a context with the given name exists
+func (s *FileSessionStore) Exists(name string) bool {
 	s.indexMu.RLock()
 	defer s.indexMu.RUnlock()
-
-	// Direct lookup by name
-	if info, exists := s.index.Contexts[name]; exists {
-		return info
-	}
-
-	return nil
-}
-
-// DeleteContextName removes a context name mapping
-func (s *FileSessionStore) DeleteContextName(name string) error {
-	s.indexMu.Lock()
-	delete(s.index.Contexts, name)
-	s.indexMu.Unlock()
-
-	return s.saveIndex()
-}
-
-// ContextExists checks if a context with the given name exists
-func (s *FileSessionStore) ContextExists(name string) bool {
-	// Check if context exists in index (the index is the source of truth)
-	return s.GetContextByNameOrID(name) != nil
+	_, exists := s.index.Entries[name]
+	return exists
 }
 
 // GetBaseDir returns the base directory for the file session store
 func (s *FileSessionStore) GetBaseDir() string {
 	return s.baseDir
-}
-
-// ClearIndex clears the entire index
-func (s *FileSessionStore) ClearIndex() error {
-	s.indexMu.Lock()
-	s.index = &ContextIndex{
-		Contexts: make(map[string]*ContextInfo),
-	}
-	s.indexMu.Unlock()
-
-	return s.saveIndex()
 }

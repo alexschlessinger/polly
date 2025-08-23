@@ -199,38 +199,48 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 		clearScreen()
 		return true
 
-	case "/reset":
-		// Clear the session history
-		if fileSession, ok := session.(*sessions.FileSession); ok {
-			fileSession.Clear()
-			fmt.Println(successStyle.Styled("Conversation reset."))
-		}
-		return true
+case "/reset":
+        // Clear the session history for any session implementation
+        session.Clear()
+        fmt.Println(successStyle.Styled("Conversation reset."))
+        return true
 
-	case "/model", "/m":
-		if len(parts) < 2 {
-			fmt.Printf("Current model: %s\n", highlightStyle.Styled(config.Model))
-			fmt.Println(dimStyle.Styled("Usage: /model <model-name>"))
-			fmt.Println(dimStyle.Styled("Example: /model openai/gpt-4o"))
-		} else {
-			config.Model = parts[1]
-			fmt.Println(successStyle.Styled(fmt.Sprintf("Switched to model: %s", config.Model)))
-		}
-		return true
+    case "/model", "/m":
+        if len(parts) < 2 {
+            fmt.Printf("Current model: %s\n", highlightStyle.Styled(config.Model))
+            fmt.Println(dimStyle.Styled("Usage: /model <model-name>"))
+            fmt.Println(dimStyle.Styled("Example: /model openai/gpt-4o"))
+        } else {
+            config.Model = parts[1]
+            if contextInfo := session.GetContextInfo(); contextInfo != nil {
+                contextInfo.Model = config.Model
+                session.SetContextInfo(contextInfo)
+            }
+            fmt.Println(successStyle.Styled(fmt.Sprintf("Switched to model: %s", config.Model)))
+        }
+        return true
 
-	case "/temp", "/temperature":
-		if len(parts) < 2 {
-			fmt.Printf("Current temperature: %s\n", highlightStyle.Styled(fmt.Sprintf("%.2f", config.Temperature)))
-			fmt.Println(dimStyle.Styled("Usage: /temp <0.0-2.0>"))
-		} else {
-			if temp, err := parseFloat(parts[1]); err == nil {
-				config.Temperature = temp
-				fmt.Println(successStyle.Styled(fmt.Sprintf("Temperature set to: %.2f", config.Temperature)))
-			} else {
-				fmt.Println(errorStyle.Styled("Invalid temperature value"))
-			}
-		}
-		return true
+    case "/temp", "/temperature":
+        if len(parts) < 2 {
+            fmt.Printf("Current temperature: %s\n", highlightStyle.Styled(fmt.Sprintf("%.2f", config.Temperature)))
+            fmt.Println(dimStyle.Styled("Usage: /temp <0.0-2.0>"))
+        } else {
+            if temp, err := parseFloat(parts[1]); err == nil {
+                if temp < 0.0 || temp > 2.0 {
+                    fmt.Println(errorStyle.Styled("Temperature must be between 0.0 and 2.0"))
+                    return true
+                }
+                config.Temperature = temp
+                if contextInfo := session.GetContextInfo(); contextInfo != nil {
+                    contextInfo.Temperature = temp
+                    session.SetContextInfo(contextInfo)
+                }
+                fmt.Println(successStyle.Styled(fmt.Sprintf("Temperature set to: %.2f", config.Temperature)))
+            } else {
+                fmt.Println(errorStyle.Styled("Invalid temperature value"))
+            }
+        }
+        return true
 
 	case "/history", "/h":
 		showHistory(session)
@@ -291,16 +301,23 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 		}
 		return true
 
-	case "/system", "/sys":
-		if len(parts) < 2 {
-			fmt.Printf("Current system prompt: %s\n", highlightStyle.Styled(config.SystemPrompt))
-		} else {
-			// Join all parts after the command as the new system prompt
-			newPrompt := strings.Join(parts[1:], " ")
-			config.SystemPrompt = newPrompt
-			fmt.Println(successStyle.Styled("System prompt updated."), dimStyle.Styled("Note: This will apply to new messages only."))
-		}
-		return true
+    case "/system", "/sys":
+        if len(parts) < 2 {
+            fmt.Printf("Current system prompt: %s\n", highlightStyle.Styled(config.SystemPrompt))
+        } else {
+            // Join all parts after the command as the new system prompt
+            newPrompt := strings.Join(parts[1:], " ")
+            // Update config and session metadata
+            config.SystemPrompt = newPrompt
+            if contextInfo := session.GetContextInfo(); contextInfo != nil {
+                contextInfo.SystemPrompt = newPrompt
+                session.SetContextInfo(contextInfo)
+            }
+            // Reset conversation history to apply new system prompt
+            session.Clear()
+            fmt.Println(successStyle.Styled("System prompt updated and conversation reset."))
+        }
+        return true
 
 	case "/debug":
 		config.Debug = !config.Debug
@@ -312,6 +329,7 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 	// Let them fall through to file path handling
 	return false
 }
+
 
 // getHistoryFilePath returns the path for readline history
 func getHistoryFilePath(contextID string) string {
@@ -585,15 +603,12 @@ func (l *fileAttachListener) OnChange(line []rune, pos int, key rune) (newLine [
 			// Add files to session immediately
 			l.session.AddMessage(userMsg)
 
-			// Print attachment confirmations
-			for _, path := range newPaths {
-				fileInfo := getFileInfo(path)
-				fmt.Printf("\n%s\n", dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
-			}
-
-			// Move cursor back to input line
-			fmt.Print("> ")
-		}
+            // Print attachment confirmations
+            for _, path := range newPaths {
+                fileInfo := getFileInfo(path)
+                fmt.Printf("\n%s\n", dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
+            }
+        }
 
 		// Return the remaining text without file paths
 		newLine = []rune(remaining)

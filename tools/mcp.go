@@ -52,44 +52,44 @@ func (m *MCPTool) GetSchema() *jsonschema.Schema {
 
 // Execute runs the MCP tool with the given arguments
 func (m *MCPTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-    // Log the tool execution for debugging
-    log.Printf("%s %v", m.tool.Name, args)
+	// Log the tool execution for debugging
+	log.Printf("%s %v", m.tool.Name, args)
 
-    // Ensure args is not nil (some tools expect empty object instead of nil)
-    if args == nil {
-        args = make(map[string]any)
-    }
+	// Ensure args is not nil (some tools expect empty object instead of nil)
+	if args == nil {
+		args = make(map[string]any)
+	}
 
-    // Filter out any arguments not present in the tool's input schema.
-    // This is important for no-arg tools where we injected a placeholder
-    // property for OpenAI schema compliance.
-    if m.tool != nil {
-        allowed := map[string]struct{}{}
-        if m.tool.InputSchema != nil && len(m.tool.InputSchema.Properties) > 0 {
-            for k := range m.tool.InputSchema.Properties {
-                allowed[k] = struct{}{}
-            }
-        }
-        // Build a filtered args map with only allowed keys
-        if len(allowed) == 0 {
-            // No args allowed; drop everything
-            args = map[string]any{}
-        } else {
-            filtered := make(map[string]any)
-            for k, v := range args {
-                if _, ok := allowed[k]; ok {
-                    filtered[k] = v
-                }
-            }
-            args = filtered
-        }
-    }
+	// Filter out any arguments not present in the tool's input schema.
+	// This is important for no-arg tools where we injected a placeholder
+	// property for OpenAI schema compliance.
+	if m.tool != nil {
+		allowed := map[string]struct{}{}
+		if m.tool.InputSchema != nil && len(m.tool.InputSchema.Properties) > 0 {
+			for k := range m.tool.InputSchema.Properties {
+				allowed[k] = struct{}{}
+			}
+		}
+		// Build a filtered args map with only allowed keys
+		if len(allowed) == 0 {
+			// No args allowed; drop everything
+			args = map[string]any{}
+		} else {
+			filtered := make(map[string]any)
+			for k, v := range args {
+				if _, ok := allowed[k]; ok {
+					filtered[k] = v
+				}
+			}
+			args = filtered
+		}
+	}
 
 	// Create the call parameters
-    params := &mcp.CallToolParams{
-        Name:      m.tool.Name,
-        Arguments: args,
-    }
+	params := &mcp.CallToolParams{
+		Name:      m.tool.Name,
+		Arguments: args,
+	}
 
 	// Call the tool via MCP
 	result, err := m.session.CallTool(ctx, params)

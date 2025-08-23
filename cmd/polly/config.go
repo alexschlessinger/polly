@@ -74,11 +74,14 @@ func parseConfig(cmd *cli.Command) *Config {
 
 	return &Config{
 		// Model configuration
-		Model:          cmd.String("model"),
-		Temperature:    cmd.Float64("temp"),
-		MaxTokens:      cmd.Int("maxtokens"),
-		Timeout:        cmd.Duration("timeout"),
-		ThinkingEffort: thinkingEffort,
+		Model:              cmd.String("model"),
+		ModelWasSet:        cmd.IsSet("model"),
+		Temperature:        cmd.Float64("temp"),
+		TemperatureWasSet:  cmd.IsSet("temp"),
+		MaxTokens:          cmd.Int("maxtokens"),
+		MaxTokensWasSet:    cmd.IsSet("maxtokens"),
+		Timeout:            cmd.Duration("timeout"),
+		ThinkingEffort:     thinkingEffort,
 
 		// API configuration
 		BaseURL: cmd.String("baseurl"),

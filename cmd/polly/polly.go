@@ -9,10 +9,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -258,6 +257,52 @@ func validateFlags(ctx context.Context, cmd *cli.Command) (context.Context, erro
 
 	// Note: --add can take -p, --file, or stdin (validated in handleAddToContext)
 
+	// Validate model format and provider
+	model := cmd.String("model")
+	if model != "" {
+		parts := strings.SplitN(model, "/", 2)
+		if len(parts) != 2 {
+			return ctx, fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-4o', 'anthropic/claude-sonnet-4-20250514'). Got: %s", model)
+		}
+
+		provider := strings.ToLower(parts[0])
+		validProviders := []string{"openai", "anthropic", "gemini", "ollama"}
+		isValid := false
+		for _, validProvider := range validProviders {
+			if provider == validProvider {
+				isValid = true
+				break
+			}
+		}
+		if !isValid {
+			return ctx, fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(validProviders, ", "))
+		}
+	}
+
+	// Validate tool paths exist and are executable
+	toolPaths := cmd.StringSlice("tool")
+	for _, toolPath := range toolPaths {
+		if _, err := os.Stat(toolPath); err != nil {
+			if os.IsNotExist(err) {
+				return ctx, fmt.Errorf("tool not found: %s", toolPath)
+			}
+			return ctx, fmt.Errorf("cannot access tool: %s (%v)", toolPath, err)
+		}
+
+		// Check if file is executable
+		if info, err := os.Stat(toolPath); err == nil {
+			if info.Mode()&0111 == 0 {
+				return ctx, fmt.Errorf("tool is not executable: %s", toolPath)
+			}
+		}
+	}
+
+	// Validate temperature range
+	temp := cmd.Float64("temp")
+	if temp < 0.0 || temp > 2.0 {
+		return ctx, fmt.Errorf("temperature must be between 0.0 and 2.0, got %.1f", temp)
+	}
+
 	return ctx, nil
 }
 
@@ -272,12 +317,7 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	// Get context ID from config or environment
 	contextID := getContextID(config)
 
-	// Validate context name if provided
-	if contextID != "" {
-		if err := validateContextName(contextID); err != nil {
-			return fmt.Errorf("invalid context name '%s': %w", contextID, err)
-		}
-	}
+	// Context validation will now happen in SessionStore.Get() method
 
 	// Handle --last flag
 	if config.UseLastContext {
@@ -293,16 +333,11 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 
 	// Resolve --last flag if specified
 	if config.UseLastContext {
-		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-			contextID = fileStore.GetLastContext()
-			if contextID == "" {
-				return fmt.Errorf("no last context found")
-			}
+		contextID = sessionStore.GetLastContext()
+		if contextID == "" {
+			return fmt.Errorf("no last context found")
 		}
 	}
-
-	// Track if we just created a new context
-	var justCreatedContext bool
 
 	// Handle --reset flag
 	if config.ResetContext != "" {
@@ -314,10 +349,6 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 		return handleListContexts(sessionStore)
 	}
 	if config.DeleteContext != "" {
-		// Validate the context name to delete
-		if err := validateContextName(config.DeleteContext); err != nil {
-			return fmt.Errorf("invalid context name '%s': %w", config.DeleteContext, err)
-		}
 		return handleDeleteContext(sessionStore, config.DeleteContext)
 	}
 	if config.AddToContext {
@@ -333,59 +364,57 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 		return handleShowContext(sessionStore, config.ShowContext)
 	}
 
-	// Check if context exists and prompt if not (skip if we just created it)
-	if contextID != "" && !justCreatedContext {
-		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-			contextID = checkAndPromptForMissingContext(fileStore, contextID)
-			if contextID == "" {
-				return nil // User cancelled
-			}
+	// Check if context exists and prompt if not
+	if contextID != "" {
+		contextID = checkAndPromptForMissingContext(sessionStore, contextID)
+		if contextID == "" {
+			return nil // User cancelled
 		}
 	}
 
 	// Prepare for conversation
-	return runConversation(ctx, config, sessionStore, contextID)
+	return runConversation(ctx, config, sessionStore, contextID, cmd)
 }
 
 // initializeSession sets up everything needed for a conversation session
-func initializeSession(config *Config, sessionStore sessions.SessionStore, contextID string) (string, sessions.Session, llm.LLM, *tools.ToolRegistry, error) {
-	// Initialize conversation using helper function
-	var err error
-	contextID, _, _, err = initializeConversation(config, sessionStore, contextID)
-	if err != nil {
-		return "", nil, nil, nil, err
-	}
+func initializeSession(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, sessions.Session, llm.LLM, *tools.ToolRegistry, error) {
+    // Initialize conversation using helper function
+    var err error
+    contextID, _, err = initializeConversation(config, sessionStore, contextID, cmd)
+    if err != nil {
+        return "", nil, nil, nil, err
+    }
 
-	// Load API keys
-	apiKeys := loadAPIKeys()
+    // Load API keys
+    apiKeys := loadAPIKeys()
 
-	// Create LLM provider
-	multipass := llm.NewMultiPass(apiKeys)
+    // Create LLM provider
+    multipass := llm.NewMultiPass(apiKeys)
 
-	// Get or create session
-	needFileStore := needsFileStore(config, contextID)
-	session := getOrCreateSession(sessionStore, contextID, needFileStore)
+    // Get or create session
+    needFileStore := needsFileStore(config, contextID)
+    session := getOrCreateSession(sessionStore, contextID, needFileStore)
 
-	// Update context info with current settings using helper function
-	updateContextInfo(sessionStore, contextID, config)
+    // Update context info with current settings using helper function
+    updateContextInfo(sessionStore, session, contextID, config)
 
 	// Load tools
 	toolRegistry, err := loadTools(config)
 	if err != nil {
-		closeFileSession(session)
+		session.Close()
 		return "", nil, nil, nil, err
 	}
 
 	return contextID, session, multipass, toolRegistry, nil
 }
 
-func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string) error {
+func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) error {
 	// Initialize session
-	contextID, session, multipass, toolRegistry, err := initializeSession(config, sessionStore, contextID)
+	contextID, session, multipass, toolRegistry, err := initializeSession(config, sessionStore, contextID, cmd)
 	if err != nil {
 		return err
 	}
-	defer closeFileSession(session)
+	defer session.Close()
 
 	// Get prompt early to determine if we're going to interactive mode
 	prompt, err := getPrompt(config)
@@ -546,7 +575,7 @@ func processEventStream(
 
 			// Use streamed content if available, otherwise use message content
 			if responseText.Len() > 0 {
-				fullResponse.Content = strings.TrimLeft(responseText.String(), " 	\n\r")
+				fullResponse.Content = strings.TrimLeft(responseText.String(), "")
 			}
 
 			// Reasoning is already captured in the message from the event
@@ -580,7 +609,7 @@ func processEventStream(
 					var successStyle, errorStyle termenv.Style
 
 					// Adapt colors based on terminal background
-				if termenv.HasDarkBackground() {
+					if termenv.HasDarkBackground() {
 						successStyle = termOutput.String().Foreground(termOutput.Color("65")) // Muted green for dark
 						errorStyle = termOutput.String().Foreground(termOutput.Color("124"))  // Muted red for dark
 					} else {
@@ -646,54 +675,43 @@ func createCompletionRequest(config *Config, session sessions.Session, registry 
 }
 
 // initializeConversation handles all the setup needed before starting a conversation
-func initializeConversation(config *Config, sessionStore sessions.SessionStore, contextID string) (string, *sessions.ContextInfo, bool, error) {
+func initializeConversation(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, *sessions.ContextInfo, error) {
 	var needReset bool
 	var originalContextInfo *sessions.ContextInfo
 
-	// Resolve --last flag if specified
-	if config.UseLastContext {
-		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-			contextID = fileStore.GetLastContext()
-			if contextID == "" {
-				return "", nil, false, fmt.Errorf("no last context found")
-			}
-		}
-	}
-
 	// Load context settings if available
-	if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-		if contextInfo := fileStore.GetContextByNameOrID(contextID); contextInfo != nil {
+	if contextID != "" {
+		if contextInfo := sessionStore.GetAllContextInfo()[contextID]; contextInfo != nil {
 			originalContextInfo = contextInfo
 
 			// Check if system prompt is being changed (only if context has existing conversation)
-			if config.SystemPromptWasSet && config.SystemPrompt != contextInfo.SystemPrompt {
+			if cmd.IsSet("system") && config.SystemPrompt != contextInfo.SystemPrompt {
 				// Check if there's an existing conversation to reset
-				sessionPath := filepath.Join(fileStore.GetBaseDir(), contextInfo.Name+".json")
-				if _, err := os.Stat(sessionPath); err == nil {
+				if sessionStore.Exists(contextInfo.Name) {
 					needReset = true
 					fmt.Fprintf(os.Stderr, "System prompt changed, resetting conversation...\n")
 				}
 			}
 
 			// Use stored settings if not overridden by command line
-			if config.Model == defaultModel && contextInfo.Model != "" {
+			if !cmd.IsSet("model") && contextInfo.Model != "" {
 				config.Model = contextInfo.Model
 			}
-			if config.Temperature == defaultTemperature && contextInfo.Temperature != 0 {
+			if !cmd.IsSet("temp") && contextInfo.Temperature != 0 {
 				config.Temperature = contextInfo.Temperature
 			}
-			if config.MaxTokens == defaultMaxTokens && contextInfo.MaxTokens != 0 {
+			if !cmd.IsSet("maxtokens") && contextInfo.MaxTokens != 0 {
 				config.MaxTokens = contextInfo.MaxTokens
 			}
 			// Only use stored system prompt if flag wasn't explicitly set
-			if !config.SystemPromptWasSet && contextInfo.SystemPrompt != "" {
+			if !cmd.IsSet("system") && contextInfo.SystemPrompt != "" {
 				config.SystemPrompt = contextInfo.SystemPrompt
 			}
 			// Apply stored tools if none provided via command line
-			if len(config.ToolPaths) == 0 && len(contextInfo.ToolPaths) > 0 {
+			if !cmd.IsSet("tool") && len(contextInfo.ToolPaths) > 0 {
 				config.ToolPaths = contextInfo.ToolPaths
 			}
-			if len(config.MCPServers) == 0 && len(contextInfo.MCPServers) > 0 {
+			if !cmd.IsSet("mcp") && len(contextInfo.MCPServers) > 0 {
 				config.MCPServers = contextInfo.MCPServers
 			}
 		}
@@ -701,82 +719,109 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 
 	// Perform reset if system prompt changed
 	if needReset && originalContextInfo != nil {
-		if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-			// Get the context name
-			contextName := contextID
-			if originalContextInfo.Name != "" {
-				contextName = originalContextInfo.Name
-			}
-
-			// Reset the context
-			if err := resetContext(fileStore, contextName); err != nil {
-				return "", nil, false, fmt.Errorf("failed to reset context: %w", err)
-			}
-			// Context name remains the same after reset
-			contextID = contextName
+		// Get the context name
+		contextName := contextID
+		if originalContextInfo.Name != "" {
+			contextName = originalContextInfo.Name
 		}
+
+		// Reset the context
+		if err := resetContext(sessionStore, contextName); err != nil {
+			return "", nil, fmt.Errorf("failed to reset context: %w", err)
+		}
+		// Context name remains the same after reset
+		contextID = contextName
 	}
 
-	return contextID, originalContextInfo, needReset, nil
+	return contextID, originalContextInfo, nil
 }
 
 // updateContextInfo updates the context info with current settings
-func updateContextInfo(sessionStore sessions.SessionStore, contextID string, config *Config) {
-	if fileStore, ok := sessionStore.(*sessions.FileSessionStore); ok {
-		if fileStore.GetContextByNameOrID(contextID) != nil {
-			// This context has metadata, update its settings
-			if contextInfo := fileStore.GetContextByNameOrID(contextID); contextInfo != nil {
-				contextInfo.Model = config.Model
-				contextInfo.Temperature = config.Temperature
-				contextInfo.MaxTokens = config.MaxTokens
-				contextInfo.SystemPrompt = config.SystemPrompt
-				contextInfo.ToolPaths = config.ToolPaths
-				contextInfo.MCPServers = config.MCPServers
-				fileStore.SaveContextInfo(contextInfo)
-			}
-		}
-	}
-}
+func updateContextInfo(sessionStore sessions.SessionStore, session sessions.Session, contextID string, config *Config) {
+    // Persist only explicit updates; store merges with existing values.
+    if existing := sessionStore.GetAllContextInfo()[contextID]; existing != nil {
+        // Build partial update using only explicitly set fields
+        update := &sessions.ContextUpdate{Name: contextID}
+        if config.ModelWasSet {
+            update.Model = &config.Model
+        }
+        if config.TemperatureWasSet {
+            update.Temperature = &config.Temperature
+        }
+        if config.MaxTokensWasSet {
+            update.MaxTokens = &config.MaxTokens
+        }
+        if config.SystemPromptWasSet {
+            update.SystemPrompt = &config.SystemPrompt
+        }
+        if len(config.ToolPaths) > 0 {
+            update.ToolPaths = &config.ToolPaths
+        }
+        if len(config.MCPServers) > 0 {
+            update.MCPServers = &config.MCPServers
+        }
 
-// Global variable to track the active file session for cleanup
-var (
-	activeFileSession *sessions.FileSession
-	sessionMutex      sync.Mutex
-)
+        // Seed missing fields on first use with effective values
+        effModel := config.Model
+        if effModel == "" {
+            effModel = defaultModel
+        }
+        effTemp := config.Temperature
+        if effTemp == 0 {
+            effTemp = defaultTemperature
+        }
+        effMax := config.MaxTokens
+        if effMax == 0 {
+            effMax = defaultMaxTokens
+        }
+        if existing.Model == "" {
+            update.Model = &effModel
+        }
+        if existing.Temperature == 0 {
+            update.Temperature = &effTemp
+        }
+        if existing.MaxTokens == 0 {
+            update.MaxTokens = &effMax
+        }
+        now := time.Now()
+        update.LastUsed = &now
 
-// setActiveFileSession safely sets the active file session
-func setActiveFileSession(session sessions.Session) {
-	sessionMutex.Lock()
-	defer sessionMutex.Unlock()
-
-	if fileSession, ok := session.(*sessions.FileSession); ok {
-		activeFileSession = fileSession
-	}
-}
-
-// clearActiveFileSession safely clears the active file session
-func clearActiveFileSession() {
-	sessionMutex.Lock()
-	defer sessionMutex.Unlock()
-	activeFileSession = nil
+        // Persist to store (updates index and disk). File sessions will merge on write,
+        // avoiding stale in-memory overwrites.
+        _ = sessionStore.SaveContextUpdate(update)
+    } else {
+        // First-time creation: initialize with effective values so store has a full record
+        effModel := config.Model
+        if effModel == "" {
+            effModel = defaultModel
+        }
+        effTemp := config.Temperature
+        if effTemp == 0 {
+            effTemp = defaultTemperature
+        }
+        effMax := config.MaxTokens
+        if effMax == 0 {
+            effMax = defaultMaxTokens
+        }
+        info := &sessions.ContextInfo{
+            Name:         contextID,
+            Model:        effModel,
+            Temperature:  effTemp,
+            MaxTokens:    effMax,
+            SystemPrompt: config.SystemPrompt,
+            ToolPaths:    config.ToolPaths,
+            MCPServers:   config.MCPServers,
+            Created:      time.Now(),
+            LastUsed:     time.Now(),
+        }
+        _ = sessionStore.SaveContextInfo(info)
+    }
 }
 
 // cleanupAndExit performs cleanup and exits with the given code
 func cleanupAndExit(code int) {
-	sessionMutex.Lock()
-	defer sessionMutex.Unlock()
-
-	// Close active file session if any
-	if activeFileSession != nil {
-		activeFileSession.Close()
-		activeFileSession = nil
-	}
-
-	// Also clean up any lingering index lock file
-	homeDir, _ := os.UserHomeDir()
-	indexLockPath := filepath.Join(homeDir, ".pollytool", "index.json.lock")
-	os.Remove(indexLockPath)
-
+	// Don't remove any lock files - they could belong to other processes
+	// The flock library handles stale locks automatically
 	os.Exit(code)
 }
 
@@ -810,15 +855,6 @@ func setupSignalHandling(ctx context.Context) (context.Context, context.CancelFu
 		cleanupAndExit(130) // 128 + SIGINT(2) = 130
 	}()
 	return ctx, cancel
-}
-
-// closeFileSession safely closes a file session if applicable
-func closeFileSession(session sessions.Session) {
-	if fileSession, ok := session.(*sessions.FileSession); ok {
-		fileSession.Close()
-		// Clear from global tracking
-		clearActiveFileSession()
-	}
 }
 
 // outputStructured formats and outputs structured response

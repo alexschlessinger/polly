@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -40,58 +38,32 @@ func setupSessionStore(config *Config, contextID string) (sessions.SessionStore,
 
 // handleListContexts lists all available contexts
 func handleListContexts(store sessions.SessionStore) error {
-	if fileStore, ok := store.(*sessions.FileSessionStore); ok {
-		// Get named contexts
-		namedContexts := fileStore.GetContextInfo()
-		lastContext := fileStore.GetLastContext()
+	contexts := store.GetAllContextInfo()
+	lastContext := store.GetLastContext()
 
-		// Get all context IDs
-		contextIDs, err := fileStore.ListContexts()
-		if err != nil {
-			return fmt.Errorf("failed to list contexts: %w", err)
-		}
-
-		// Print named contexts first
-		for name, info := range namedContexts {
-			marker := ""
-			if info.Name == lastContext {
-				marker = " *"
-			}
-			timeSince := time.Since(info.LastUsed)
-			timeStr := formatDuration(timeSince)
-
-			// Build model info string
-			modelInfo := ""
-			if info.Model != "" {
-				modelInfo = fmt.Sprintf(" [%s]", info.Model)
-			}
-
-			fmt.Printf("%s%s - last used: %s%s\n", name, modelInfo, timeStr, marker)
-		}
-
-		// Print contexts without metadata in the index
-		for _, name := range contextIDs {
-			// Skip if already shown (has metadata in index)
-			if _, hasMetadata := namedContexts[name]; hasMetadata {
-				continue
-			}
-			marker := ""
-			if name == lastContext {
-				marker = " *"
-			}
-			shortName := name
-			if len(shortName) > 20 {
-				shortName = shortName[:8] + "..."
-			}
-			fmt.Printf("%s%s\n", shortName, marker)
-		}
-
-		if len(contextIDs) == 0 && len(namedContexts) == 0 {
-			fmt.Println("No contexts found")
-		}
-	} else {
-		fmt.Println("No persistent contexts (using memory store)")
+	if len(contexts) == 0 {
+		fmt.Println("No contexts found")
+		return nil
 	}
+
+	// Print all contexts with their metadata
+	for name, info := range contexts {
+		marker := ""
+		if info.Name == lastContext {
+			marker = " *"
+		}
+		timeSince := time.Since(info.LastUsed)
+		timeStr := formatDuration(timeSince)
+
+		// Build model info string
+		modelInfo := ""
+		if info.Model != "" {
+			modelInfo = fmt.Sprintf(" [%s]", info.Model)
+		}
+
+		fmt.Printf("%s%s - last used: %s%s\n", name, modelInfo, timeStr, marker)
+	}
+
 	return nil
 }
 
@@ -110,14 +82,8 @@ func formatDuration(d time.Duration) string {
 
 // handleDeleteContext deletes the specified context
 func handleDeleteContext(store sessions.SessionStore, contextID string) error {
-	// Check if it's a file store - only file-based contexts can be deleted
-	fileStore, ok := store.(*sessions.FileSessionStore)
-	if !ok {
-		return fmt.Errorf("cannot delete context: using memory store")
-	}
-
 	// Check if context exists
-	if !fileStore.ContextExists(contextID) {
+	if !store.Exists(contextID) {
 		return fmt.Errorf("context '%s' not found", contextID)
 	}
 
@@ -128,29 +94,32 @@ func handleDeleteContext(store sessions.SessionStore, contextID string) error {
 		return nil
 	}
 
-	// Delete the context
-	fileStore.Delete(contextID)
-	fmt.Printf("Context '%s' deleted\n", contextID)
-	return nil
+    // Delete the context
+    store.Delete(contextID)
+
+    // Reflect actual result: if still exists, it was likely in use and skipped
+    if store.Exists(contextID) {
+        fmt.Fprintf(os.Stderr, "Context '%s' is currently in use; deletion skipped\n", contextID)
+        return nil
+    }
+
+    fmt.Printf("Context '%s' deleted\n", contextID)
+    return nil
 }
 
 // handleAddToContext adds stdin content or file content to a context without making an API call
 func handleAddToContext(store sessions.SessionStore, config *Config, contextID string) error {
 	if contextID == "" {
 		// Try to use last context if available
-		if fileStore, ok := store.(*sessions.FileSessionStore); ok {
-			lastContext := fileStore.GetLastContext()
-			if lastContext != "" {
-				contextDisplay := lastContext
-				if info := fileStore.GetContextByNameOrID(lastContext); info != nil && info.Name != "" {
-					contextDisplay = info.Name
-				}
-				prompt := fmt.Sprintf("No context specified. Use last context '%s'?", contextDisplay)
-				if promptYesNo(prompt, true) {
-					contextID = lastContext
-				} else {
-					return fmt.Errorf("--add requires a context ID (use --context or POLLYTOOL_CONTEXT)")
-				}
+		lastContext := store.GetLastContext()
+		if lastContext != "" {
+			contextDisplay := lastContext
+			if info := store.GetAllContextInfo()[lastContext]; info != nil && info.Name != "" {
+				contextDisplay = info.Name
+			}
+			prompt := fmt.Sprintf("No context specified. Use last context '%s'?", contextDisplay)
+			if promptYesNo(prompt, true) {
+				contextID = lastContext
 			} else {
 				return fmt.Errorf("--add requires a context ID (use --context or POLLYTOOL_CONTEXT)")
 			}
@@ -159,11 +128,11 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 		}
 	}
 
-	session := store.Get(contextID)
-	if session == nil {
-		return fmt.Errorf("failed to acquire session lock for context %s (may be in use by another process)", contextID)
+	session, err := store.Get(contextID)
+	if err != nil {
+		return fmt.Errorf("failed to get session for context %s: %w", contextID, err)
 	}
-	defer closeFileSession(session)
+	defer session.Close()
 
 	// Check if files are provided via --file flag
 	if len(config.Files) > 0 {
@@ -238,16 +207,12 @@ func getOrCreateSession(store sessions.SessionStore, contextID string, needFileS
 	if contextID == "" && !needFileStore {
 		contextID = "default" // Memory store context
 	}
-	session := store.Get(contextID)
-	if session == nil {
+	session, err := store.Get(contextID)
+	if err != nil {
 		// Exit cleanly with error message instead of panic
-		fmt.Fprintf(os.Stderr, "Error: Failed to acquire session lock for context '%s'\n", contextID)
-		fmt.Fprintf(os.Stderr, "The context may be in use by another polly process.\n")
-		fmt.Fprintf(os.Stderr, "Please wait for the other process to complete or use a different context.\n")
+		fmt.Fprintf(os.Stderr, "Error: Failed to get session for context '%s': %v\n", contextID, err)
 		cleanupAndExit(1)
 	}
-	// Track active file session for cleanup
-	setActiveFileSession(session)
 	return session
 }
 
@@ -257,13 +222,8 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 		return fmt.Errorf("--create requires a context name (use -c or POLLYTOOL_CONTEXT)")
 	}
 
-	fileStore, ok := store.(*sessions.FileSessionStore)
-	if !ok {
-		return fmt.Errorf("--create requires file-based storage")
-	}
-
 	// Check if context already exists
-	if fileStore.ContextExists(contextID) {
+	if store.Exists(contextID) {
 		return fmt.Errorf("context '%s' already exists", contextID)
 	}
 
@@ -281,7 +241,7 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 	}
 
 	// Save context info
-	if err := fileStore.SaveContextInfo(info); err != nil {
+	if err := store.SaveContextInfo(info); err != nil {
 		return fmt.Errorf("failed to save context: %w", err)
 	}
 
@@ -309,19 +269,8 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 		return fmt.Errorf("--show requires a context name")
 	}
 
-	fileStore, ok := store.(*sessions.FileSessionStore)
-	if !ok {
-		return fmt.Errorf("--show requires file-based storage")
-	}
-
-	info := fileStore.GetContextByNameOrID(contextID)
+	info := store.GetAllContextInfo()[contextID]
 	if info == nil {
-		// Check if context exists but has no metadata
-		if fileStore.ContextExists(contextID) {
-			fmt.Printf("Context: %s\n", contextID)
-			fmt.Printf("  (no configuration metadata)\n")
-			return nil
-		}
 		return fmt.Errorf("context '%s' not found", contextID)
 	}
 
@@ -344,7 +293,7 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 	}
 
 	fmt.Printf("  Created: %s\n", info.Created.Format("2006-01-02 15:04:05"))
-	fmt.Printf("  Last Used: %s (%s ago)\n",
+	fmt.Printf("  Last Used: %s (%s)\n",
 		info.LastUsed.Format("2006-01-02 15:04:05"),
 		formatDuration(time.Since(info.LastUsed)))
 
@@ -357,13 +306,8 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 		return fmt.Errorf("--reset requires a context name")
 	}
 
-	fileStore, ok := store.(*sessions.FileSessionStore)
-	if !ok {
-		return fmt.Errorf("--reset requires file-based storage")
-	}
-
 	// Check if context exists
-	if !fileStore.ContextExists(contextID) {
+	if !store.Exists(contextID) {
 		return fmt.Errorf("context '%s' does not exist", contextID)
 	}
 
@@ -375,7 +319,7 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 	}
 
 	// Get existing context info to preserve settings
-	existingInfo := fileStore.GetContextByNameOrID(contextID)
+	existingInfo := store.GetAllContextInfo()[contextID]
 	if existingInfo != nil {
 		// Update settings with any command-line overrides
 		existingInfo.LastUsed = time.Now()
@@ -397,14 +341,13 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 		if len(config.MCPServers) > 0 {
 			existingInfo.MCPServers = config.MCPServers
 		}
-		if err := fileStore.SaveContextInfo(existingInfo); err != nil {
+		if err := store.SaveContextInfo(existingInfo); err != nil {
 			return fmt.Errorf("failed to save context info: %w", err)
 		}
 	}
 
-	// Clear the conversation file
-	sessionPath := filepath.Join(fileStore.GetBaseDir(), contextID+".json")
-	if err := os.Remove(sessionPath); err != nil && !os.IsNotExist(err) {
+	// Reset the context using the resetContext helper
+	if err := resetContext(store, contextID); err != nil {
 		return fmt.Errorf("failed to reset context: %w", err)
 	}
 
@@ -414,14 +357,8 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 
 // handlePurgeAll deletes all sessions and the index
 func handlePurgeAll(store sessions.SessionStore) error {
-	// Check if it's a file store - only file-based contexts can be purged
-	fileStore, ok := store.(*sessions.FileSessionStore)
-	if !ok {
-		return fmt.Errorf("cannot purge: using memory store (no persistent data to delete)")
-	}
-
 	// Get count of contexts for the confirmation message
-	contextIDs, err := fileStore.ListContexts()
+	contextIDs, err := store.List()
 	if err != nil {
 		return fmt.Errorf("failed to list contexts: %w", err)
 	}
@@ -438,96 +375,51 @@ func handlePurgeAll(store sessions.SessionStore) error {
 		return nil
 	}
 
-	// Delete all contexts
-	deletedCount := 0
-	for _, contextID := range contextIDs {
-		fileStore.Delete(contextID)
-		deletedCount++
-	}
+    // Delete all contexts, counting only successful deletions
+    deletedCount := 0
+    skippedCount := 0
+    for _, contextID := range contextIDs {
+        store.Delete(contextID)
+        if store.Exists(contextID) {
+            skippedCount++ // likely in use; store.Delete() already warned
+            continue
+        }
+        deletedCount++
+    }
 
-	// Clear the index
-	if err := fileStore.ClearIndex(); err != nil {
-		return fmt.Errorf("failed to clear index: %w", err)
-	}
-
-	// Also clean up any lingering index lock file
-	homeDir, _ := os.UserHomeDir()
-	indexLockPath := filepath.Join(homeDir, ".pollytool", "index.json.lock")
-	os.Remove(indexLockPath)
-
-	fmt.Printf("Purged %d context(s) and cleared the index\n", deletedCount)
-	return nil
+    fmt.Printf("Purged %d context(s)\n", deletedCount)
+    if skippedCount > 0 {
+        fmt.Fprintf(os.Stderr, "Skipped %d in-use context(s)\n", skippedCount)
+    }
+    return nil
 }
 
 // resetContext clears the conversation history but preserves the context settings
-func resetContext(fileStore *sessions.FileSessionStore, name string) error {
-	// Get existing context info
-	contextInfo := fileStore.GetContextByNameOrID(name)
-	if contextInfo == nil {
-		// No stored settings, just delete the file
-		sessionPath := filepath.Join(fileStore.GetBaseDir(), name+".json")
-		os.Remove(sessionPath)
-		return nil
-	}
+func resetContext(sessionStore sessions.SessionStore, name string) error {
+    // Get the session (creates if doesn't exist)
+    session, err := sessionStore.Get(name)
+    if err != nil {
+        return fmt.Errorf("failed to get session for context %s: %w", name, err)
+    }
+    // Ensure we release the file lock
+    defer session.Close()
 
-	// Update last used time
-	contextInfo.LastUsed = time.Now()
+	// Clear the session history
+    session.Clear()
 
-	// Save updated context info
-	if err := fileStore.SaveContextInfo(contextInfo); err != nil {
-		return err
-	}
-
-	// Delete conversation file (using name directly since it's already validated)
-	sessionPath := filepath.Join(fileStore.GetBaseDir(), name+".json")
-	os.Remove(sessionPath)
-
-	return nil
+    return nil
 }
 
-// validateContextName checks if a context name is valid
-func validateContextName(name string) error {
-	if name == "" {
-		return fmt.Errorf("context name cannot be empty")
-	}
-
-	// Check for problematic characters that could cause filesystem issues
-	if strings.ContainsAny(name, "/\\:*?\"<>|") {
-		return fmt.Errorf("context name contains invalid characters (/, \\, :, *, ?, \", <, >, |)")
-	}
-
-	// Check for names that could be problematic on any OS
-	if name == "." || name == ".." {
-		return fmt.Errorf("context name cannot be '.' or '..'")
-	}
-
-	// Check for names starting or ending with spaces or dots
-	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") {
-		return fmt.Errorf("context name cannot start or end with spaces")
-	}
-	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
-		return fmt.Errorf("context name cannot start or end with dots")
-	}
-
-	// Check for control characters
-	for _, r := range name {
-		if r < 32 || r == 127 {
-			return fmt.Errorf("context name contains control characters")
-		}
-	}
-
-	return nil
-}
 
 // checkAndPromptForMissingContext checks if a context exists and creates it if missing
 // Returns the context name to use (existing or newly created)
-func checkAndPromptForMissingContext(fileStore *sessions.FileSessionStore, contextName string) string {
+func checkAndPromptForMissingContext(sessionStore sessions.SessionStore, contextName string) string {
 	if contextName == "" {
 		return contextName // No context specified
 	}
 
 	// Check if context exists
-	if fileStore.ContextExists(contextName) {
+	if sessionStore.Exists(contextName) {
 		return contextName // Context exists, use it
 	}
 
@@ -538,8 +430,13 @@ func checkAndPromptForMissingContext(fileStore *sessions.FileSessionStore, conte
 		contextDisplay = contextName[:8] + "..."
 	}
 
-	// Save metadata for the new context
-	fileStore.SaveContextName(contextName, "")
+	// Get the session to create it (this will initialize the context)
+	if session, err := sessionStore.Get(contextName); err != nil {
+		// If we can't create the context, return empty string to signal cancellation
+		return ""
+	} else {
+		session.Close() // Release the lock immediately
+	}
 	fmt.Fprintf(os.Stderr, "Created new context '%s'\n", contextDisplay)
 
 	return contextName
