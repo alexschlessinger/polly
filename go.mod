@@ -8,13 +8,13 @@ require (
 	github.com/google/generative-ai-go v0.20.1
 	github.com/modelcontextprotocol/go-sdk v0.2.0
 	github.com/muesli/termenv v0.16.0
-	github.com/ollama/ollama v0.11.5
+	github.com/ollama/ollama v0.11.6
 	github.com/sashabaranov/go-openai v1.41.1
 	google.golang.org/api v0.248.0
 )
 
 require (
-	dario.cat/mergo v1.0.2 // indirect
+	dario.cat/mergo v1.0.2
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -59,5 +59,5 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20250818200422-3122310a409c // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250818200422-3122310a409c // indirect
 	google.golang.org/grpc v1.75.0 // indirect
-	google.golang.org/protobuf v1.36.7 // indirect
+	google.golang.org/protobuf v1.36.8 // indirect
 )
