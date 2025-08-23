@@ -26,6 +26,7 @@ type Config struct {
 	PurgeAll       bool   // Delete all sessions and index
 	CreateContext  string // Create a new context with this name
 	ShowContext    string // Show configuration for this context
+	MaxHistory     int    // Maximum messages to keep in history (0 = unlimited)
 
 	// Tool configuration
 	ToolPaths  []string

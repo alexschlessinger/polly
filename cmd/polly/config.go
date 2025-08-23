@@ -96,6 +96,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		PurgeAll:       cmd.Bool("purge"),
 		CreateContext:  cmd.String("create"),
 		ShowContext:    cmd.String("show"),
+		MaxHistory:     cmd.Int("maxhistory"),
 
 		// Tool configuration
 		ToolPaths:  cmd.StringSlice("tool"),

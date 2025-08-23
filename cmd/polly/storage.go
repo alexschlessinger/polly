@@ -27,7 +27,7 @@ func setupSessionStore(config *Config, contextID string) (sessions.SessionStore,
 	sessionConfig := &sessions.SessionConfig{
 		TTL:          memoryStoreTTL,
 		SystemPrompt: config.SystemPrompt,
-		MaxHistory:   0, // Unlimited for polly CLI
+		MaxHistory:   config.MaxHistory,
 	}
 
 	if needsFileStore(config, contextID) {
@@ -245,6 +245,7 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 		Model:        config.Model,
 		Temperature:  config.Temperature,
 		MaxTokens:    config.MaxTokens,
+		MaxHistory:   config.MaxHistory,
 		SystemPrompt: config.SystemPrompt,
 		ToolPaths:    config.ToolPaths,
 		MCPServers:   config.MCPServers,
@@ -265,6 +266,9 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 	fmt.Printf("  Model: %s\n", info.Model)
 	fmt.Printf("  Temperature: %.2f\n", info.Temperature)
 	fmt.Printf("  Max Tokens: %d\n", info.MaxTokens)
+	if info.MaxHistory > 0 {
+		fmt.Printf("  Max History: %d messages\n", info.MaxHistory)
+	}
 	if info.SystemPrompt != "" && info.SystemPrompt != defaultSystemPrompt {
 		// Only show if different from default
 		fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
@@ -355,7 +359,8 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 	
 	// If there are command-line overrides, apply them through the session
 	if config.Model != defaultModel || config.Temperature != defaultTemperature ||
-		config.MaxTokens != defaultMaxTokens || config.SystemPrompt != defaultSystemPrompt ||
+		config.MaxTokens != defaultMaxTokens || config.MaxHistory != 0 || 
+		config.SystemPrompt != defaultSystemPrompt ||
 		len(config.ToolPaths) > 0 || len(config.MCPServers) > 0 {
 		
 		session, err := store.Get(contextID)
@@ -377,6 +382,9 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 		}
 		if config.MaxTokens != defaultMaxTokens {
 			update.MaxTokens = &config.MaxTokens
+		}
+		if config.MaxHistory != 0 {
+			update.MaxHistory = &config.MaxHistory
 		}
 		if config.SystemPrompt != defaultSystemPrompt {
 			update.SystemPrompt = &config.SystemPrompt

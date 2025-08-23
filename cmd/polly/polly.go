@@ -166,6 +166,13 @@ func defineFlags() []cli.Flag {
 			Usage: "Show configuration for the specified context",
 		},
 
+		// History configuration
+		&cli.IntFlag{
+			Name:  "maxhistory",
+			Usage: "Maximum messages to keep in history (0 = unlimited)",
+			Value: 0,
+		},
+
 		// Output configuration
 		&cli.BoolFlag{
 			Name:  "quiet",
@@ -696,6 +703,9 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			if !cmd.IsSet("maxtokens") && contextInfo.MaxTokens != 0 {
 				config.MaxTokens = contextInfo.MaxTokens
 			}
+			if !cmd.IsSet("maxhistory") && contextInfo.MaxHistory != 0 {
+				config.MaxHistory = contextInfo.MaxHistory
+			}
 			// Only use stored system prompt if flag wasn't explicitly set
 			if !cmd.IsSet("system") && contextInfo.SystemPrompt != "" {
 				config.SystemPrompt = contextInfo.SystemPrompt
@@ -754,6 +764,9 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
     if cmd.IsSet("maxtokens") {
         update.MaxTokens = &config.MaxTokens
     }
+    if cmd.IsSet("maxhistory") {
+        update.MaxHistory = &config.MaxHistory
+    }
     if cmd.IsSet("system") {
         update.SystemPrompt = &config.SystemPrompt
     }
@@ -780,6 +793,7 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
         max := getEffectiveInt(config.MaxTokens, defaultMaxTokens)
         update.MaxTokens = &max
     }
+    // Don't set a default for MaxHistory - 0 means unlimited which is the intended default
     
     _ = session.UpdateContextInfo(update)
 }
