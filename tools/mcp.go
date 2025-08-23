@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -121,14 +122,45 @@ func (m *MCPTool) Execute(ctx context.Context, args map[string]any) (string, err
 	return string(output), nil
 }
 
+// MCPConfig represents the JSON configuration for an MCP server
+type MCPConfig struct {
+	Command string            `json:"command"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+}
+
 // MCPClient manages connection to an MCP server
 type MCPClient struct {
 	session *mcp.ClientSession
 	client  *mcp.Client
 }
 
-// NewMCPClient creates a new MCP client connected to the given server command
+// NewMCPClient creates a new MCP client connected to the given server command or JSON config file
 func NewMCPClient(serverCommand string) (*MCPClient, error) {
+	// Check if serverCommand is a JSON file path
+	if strings.HasSuffix(serverCommand, ".json") {
+		// Try to read and parse the JSON file
+		data, err := os.ReadFile(serverCommand)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read MCP config file %s: %v", serverCommand, err)
+		}
+
+		// Parse the JSON configuration as a single config
+		var config MCPConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, fmt.Errorf("failed to parse MCP config: %v", err)
+		}
+
+		log.Printf("loading MCP config from %s", serverCommand)
+		return NewMCPClientFromConfig(&config)
+	}
+
+	// Not a JSON file, treat as a command
+	return NewMCPClientFromCommand(serverCommand)
+}
+
+// NewMCPClientFromCommand creates a new MCP client from a command string
+func NewMCPClientFromCommand(serverCommand string) (*MCPClient, error) {
 	ctx := context.Background()
 
 	// Parse the command - it could have arguments
@@ -156,6 +188,49 @@ func NewMCPClient(serverCommand string) (*MCPClient, error) {
 
 	// Connect to the server
 	log.Printf("connecting to MCP server: %s", serverCommand)
+	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MCP server: %v", err)
+	}
+
+	return &MCPClient{
+		session: session,
+		client:  client,
+	}, nil
+}
+
+// NewMCPClientFromConfig creates a new MCP client from a JSON configuration
+func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
+	ctx := context.Background()
+
+	if config.Command == "" {
+		return nil, fmt.Errorf("empty command in MCP config")
+	}
+
+	// Create the MCP client
+	client := mcp.NewClient(&mcp.Implementation{
+		Name:    "pollytool",
+		Version: "1.0.0",
+	}, nil)
+
+	// Create the command with arguments
+	cmd := exec.Command(config.Command, config.Args...)
+
+	// Set environment variables if provided
+	if len(config.Env) > 0 {
+		// Start with current environment
+		cmd.Env = os.Environ()
+		// Add/override with config environment variables
+		for key, value := range config.Env {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
+	// Set up stderr to see any error output from the server
+	cmd.Stderr = log.Writer()
+
+	// Connect to the server
+	log.Printf("connecting to MCP server: %s %v", config.Command, config.Args)
 	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MCP server: %v", err)

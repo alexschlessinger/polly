@@ -31,6 +31,17 @@ fi
 EOF
 chmod +x "$TEST_DIR/test_tool.sh"
 
+# Create a test MCP JSON config file (using unquoted EOF to expand $TEST_DIR)
+cat > "$TEST_DIR/test_mcp.json" << EOF
+{
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "$TEST_DIR"],
+    "env": {
+        "TEST_ENV": "test_value"
+    }
+}
+EOF
+
 echo "=== Basic Tests ==="
 echo "y" | $POLLY_CMD --create test-ctx --quiet
 $POLLY_CMD --list
@@ -56,12 +67,12 @@ $POLLY_CMD --show settings-test | grep -q "System Prompt: You are a test assista
 
 # Test changing settings and persistence
 echo "Testing settings changes..."
-echo 'test message' | $POLLY_CMD -c settings-test --model openai/gpt-4o-mini --temp 1.5 --maxtokens 2000 --quiet
+echo 'test message' | $POLLY_CMD -c settings-test --model openai/gpt-4.1-mini --temp 1.00 --maxtokens 2000 --quiet
 
 # Verify changes were persisted
 echo "Testing settings persistence after change..."
-$POLLY_CMD --show settings-test | grep -q "Model: openai/gpt-4o-mini" && echo "PASS: Model change persisted" || echo "FAIL: Model change not persisted"
-$POLLY_CMD --show settings-test | grep -q "Temperature: 1.50" && echo "PASS: Temperature change persisted" || echo "FAIL: Temperature change not persisted"
+$POLLY_CMD --show settings-test | grep -q "Model: openai/gpt-4.1-mini" && echo "PASS: Model change persisted" || echo "FAIL: Model change not persisted"
+$POLLY_CMD --show settings-test | grep -q "Temperature: 1.00" && echo "PASS: Temperature change persisted" || echo "FAIL: Temperature change not persisted"
 $POLLY_CMD --show settings-test | grep -q "Max Tokens: 2000" && echo "PASS: MaxTokens change persisted" || echo "FAIL: MaxTokens change not persisted"
 
 # Test tool settings persistence
@@ -95,17 +106,17 @@ if [ -n "$POLLYTOOL_ANTHROPICKEY" ]; then
     echo 'Extract: John is 25' | timeout 30s $POLLY_CMD --schema "$TEST_DIR/test_schema.json" --quiet
     timeout 30s $POLLY_CMD -t "$TEST_DIR/test_tool.sh" -p 'Use the test tool' --quiet
     echo 'What is 2+2?' | timeout 30s $POLLY_CMD --think --maxtokens 8192 --quiet
-    timeout 30s $POLLY_CMD --mcp "npx -y @modelcontextprotocol/server-filesystem $TEST_DIR" -p 'List files in the directory' --quiet
+    timeout 30s $POLLY_CMD --mcp "$TEST_DIR/test_mcp.json" -p 'List files in the directory' --quiet
 fi
 
 if [ -n "$POLLYTOOL_OPENAIKEY" ]; then
     echo "=== OpenAI Tests ==="
-    echo 'Say hello' | timeout 30s $POLLY_CMD -m 'openai/gpt-4o-mini' --quiet
+    echo 'Say hello' | timeout 30s $POLLY_CMD -m 'openai/gpt-4.1-mini' --quiet
     timeout 30s $POLLY_CMD -f "$TEST_DIR/test.txt" -p 'What does this contain?' --quiet
     echo 'Extract: John is 25' | timeout 30s $POLLY_CMD --schema "$TEST_DIR/test_schema.json" --quiet
     timeout 30s $POLLY_CMD -t "$TEST_DIR/test_tool.sh" -p 'Use the test tool' --quiet
     echo 'What is 2+2?' | timeout 30s $POLLY_CMD --think --maxtokens 8192 --quiet
-    timeout 30s $POLLY_CMD --mcp "npx -y @modelcontextprotocol/server-filesystem $TEST_DIR" -p 'List files in the directory' --quiet
+    timeout 30s $POLLY_CMD --mcp "$TEST_DIR/test_mcp.json" -p 'List files in the directory' --quiet
 fi
 
 if [ -n "$POLLYTOOL_GEMINIKEY" ]; then
@@ -115,7 +126,7 @@ if [ -n "$POLLYTOOL_GEMINIKEY" ]; then
     echo 'Extract: John is 25' | timeout 30s $POLLY_CMD --schema "$TEST_DIR/test_schema.json" --quiet
     timeout 30s $POLLY_CMD -t "$TEST_DIR/test_tool.sh" -p 'Use the test tool' --quiet
     echo 'What is 2+2?' | timeout 30s $POLLY_CMD --think --maxtokens 8192 --quiet
-    timeout 30s $POLLY_CMD --mcp "npx -y @modelcontextprotocol/server-filesystem $TEST_DIR" -p 'List files in the directory' --quiet
+    timeout 30s $POLLY_CMD --mcp "$TEST_DIR/test_mcp.json" -p 'List files in the directory' --quiet
 fi
 
 # Cleanup
