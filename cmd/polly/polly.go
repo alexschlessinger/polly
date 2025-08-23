@@ -678,7 +678,7 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			originalContextInfo = contextInfo
 
 			// Check if system prompt is being changed (only if context has existing conversation)
-			if cmd.IsSet("system") && config.SystemPrompt != contextInfo.SystemPrompt {
+			if cmd.IsSet("system") && cmd.String("system") != contextInfo.SystemPrompt {
 				// Check if there's an existing conversation to reset
 				if sessionStore.Exists(contextInfo.Name) {
 					needReset = true
