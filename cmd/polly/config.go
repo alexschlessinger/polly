@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"time"
@@ -74,14 +75,11 @@ func parseConfig(cmd *cli.Command) *Config {
 
 	return &Config{
 		// Model configuration
-		Model:              cmd.String("model"),
-		ModelWasSet:        cmd.IsSet("model"),
-		Temperature:        cmd.Float64("temp"),
-		TemperatureWasSet:  cmd.IsSet("temp"),
-		MaxTokens:          cmd.Int("maxtokens"),
-		MaxTokensWasSet:    cmd.IsSet("maxtokens"),
-		Timeout:            cmd.Duration("timeout"),
-		ThinkingEffort:     thinkingEffort,
+		Model:          cmd.String("model"),
+		Temperature:    cmd.Float64("temp"),
+		MaxTokens:      cmd.Int("maxtokens"),
+		Timeout:        cmd.Duration("timeout"),
+		ThinkingEffort: thinkingEffort,
 
 		// API configuration
 		BaseURL: cmd.String("baseurl"),
@@ -102,13 +100,12 @@ func parseConfig(cmd *cli.Command) *Config {
 		MCPServers: cmd.StringSlice("mcp"),
 
 		// Input/Output configuration
-		Prompt:             cmd.String("prompt"),
-		SystemPrompt:       cmd.String("system"),
-		SystemPromptWasSet: cmd.IsSet("system"),
-		Files:              cmd.StringSlice("file"),
-		SchemaPath:         cmd.String("schema"),
-		Quiet:              cmd.Bool("quiet"),
-		Debug:              cmd.Bool("debug"),
+		Prompt:       cmd.String("prompt"),
+		SystemPrompt: cmd.String("system"),
+		Files:        cmd.StringSlice("file"),
+		SchemaPath:   cmd.String("schema"),
+		Quiet:        cmd.Bool("quiet"),
+		Debug:        cmd.Bool("debug"),
 	}
 }
 
@@ -128,4 +125,12 @@ func getContextID(config *Config) string {
 		return config.ContextID
 	}
 	return os.Getenv("POLLYTOOL_CONTEXT")
+}
+
+// validateTemperature checks if temperature is within valid range
+func validateTemperature(temp float64) error {
+	if temp < 0.0 || temp > 2.0 {
+		return fmt.Errorf("temperature must be between 0.0 and 2.0, got %.1f", temp)
+	}
+	return nil
 }

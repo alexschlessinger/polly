@@ -160,27 +160,37 @@ func isKnownCommand(input string) bool {
 	}
 
 	command := strings.ToLower(parts[0])
-	knownCommands := []string{
-		"/exit", "/quit", "/q",
-		"/clear", "/cls",
-		"/reset",
-		"/model", "/m",
-		"/temp", "/temperature",
-		"/history", "/h",
-		"/save",
-		"/file", "/f",
-		"/help", "/?",
-		"/context", "/c",
-		"/system", "/sys",
-		"/debug",
-	}
+	_, exists := interactiveCommands[command]
+	return exists
+}
 
-	for _, known := range knownCommands {
-		if command == known {
-			return true
-		}
-	}
-	return false
+// commandHandler is a function that handles an interactive command
+type commandHandler func(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool
+
+// interactiveCommands maps command names to their handlers
+var interactiveCommands = map[string]commandHandler{
+	"/exit":    handleExit,
+	"/quit":    handleExit,
+	"/q":       handleExit,
+	"/clear":   handleClear,
+	"/cls":     handleClear,
+	"/reset":   handleReset,
+	"/model":   handleModel,
+	"/m":       handleModel,
+	"/temp":    handleTemperature,
+	"/temperature": handleTemperature,
+	"/history": handleHistory,
+	"/h":       handleHistory,
+	"/save":    handleSave,
+	"/file":    handleFile,
+	"/f":       handleFile,
+	"/help":    handleHelp,
+	"/?":       handleHelp,
+	"/context": handleContext,
+	"/c":       handleContext,
+	"/system":  handleSystem,
+	"/sys":     handleSystem,
+	"/debug":   handleDebug,
 }
 
 // handleInteractiveCommand processes special interactive commands
@@ -191,143 +201,159 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 	}
 
 	command := strings.ToLower(parts[0])
-	switch command {
-	case "/exit", "/quit", "/q":
-		cleanupAndExit(0)
-
-	case "/clear", "/cls":
-		clearScreen()
-		return true
-
-case "/reset":
-        // Clear the session history for any session implementation
-        session.Clear()
-        fmt.Println(successStyle.Styled("Conversation reset."))
-        return true
-
-    case "/model", "/m":
-        if len(parts) < 2 {
-            fmt.Printf("Current model: %s\n", highlightStyle.Styled(config.Model))
-            fmt.Println(dimStyle.Styled("Usage: /model <model-name>"))
-            fmt.Println(dimStyle.Styled("Example: /model openai/gpt-4o"))
-        } else {
-            config.Model = parts[1]
-            if contextInfo := session.GetContextInfo(); contextInfo != nil {
-                contextInfo.Model = config.Model
-                session.SetContextInfo(contextInfo)
-            }
-            fmt.Println(successStyle.Styled(fmt.Sprintf("Switched to model: %s", config.Model)))
-        }
-        return true
-
-    case "/temp", "/temperature":
-        if len(parts) < 2 {
-            fmt.Printf("Current temperature: %s\n", highlightStyle.Styled(fmt.Sprintf("%.2f", config.Temperature)))
-            fmt.Println(dimStyle.Styled("Usage: /temp <0.0-2.0>"))
-        } else {
-            if temp, err := parseFloat(parts[1]); err == nil {
-                if temp < 0.0 || temp > 2.0 {
-                    fmt.Println(errorStyle.Styled("Temperature must be between 0.0 and 2.0"))
-                    return true
-                }
-                config.Temperature = temp
-                if contextInfo := session.GetContextInfo(); contextInfo != nil {
-                    contextInfo.Temperature = temp
-                    session.SetContextInfo(contextInfo)
-                }
-                fmt.Println(successStyle.Styled(fmt.Sprintf("Temperature set to: %.2f", config.Temperature)))
-            } else {
-                fmt.Println(errorStyle.Styled("Invalid temperature value"))
-            }
-        }
-        return true
-
-	case "/history", "/h":
-		showHistory(session)
-		return true
-
-	case "/save":
-		if len(parts) < 2 {
-			fmt.Println(dimStyle.Styled("Usage: /save <filename>"))
-		} else {
-			saveConversation(session, parts[1])
-		}
-		return true
-
-	case "/file", "/f":
-		if len(parts) < 2 {
-			fmt.Println(dimStyle.Styled("Usage: /file <path>"))
-		} else {
-			// Get the file path (join in case it has spaces)
-			filePath := strings.Join(parts[1:], " ")
-
-			// Expand home directory if needed
-			if strings.HasPrefix(filePath, "~/") {
-				home, _ := os.UserHomeDir()
-				filePath = filepath.Join(home, filePath[2:])
-			}
-
-			// Validate the file exists
-			if _, err := os.Stat(filePath); err != nil {
-				fmt.Println(errorStyle.Styled(fmt.Sprintf("File not found: %s", filePath)))
-				return true
-			}
-
-			// Build and add file message to session
-			userMsg, err := buildMessageWithFiles("", []string{filePath})
-			if err != nil {
-				fmt.Println(errorStyle.Styled(fmt.Sprintf("Error processing file: %v", err)))
-				return true
-			}
-
-			// Add to session
-			session.AddMessage(userMsg)
-
-			// Show confirmation
-			fileInfo := getFileInfo(filePath)
-			fmt.Println(dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
-		}
-		return true
-
-	case "/help", "/?":
-		printInteractiveHelp()
-		return true
-
-	case "/context", "/c":
-		if len(parts) < 2 {
-			fmt.Printf("Current context: %s\n", highlightStyle.Styled(getContextDisplayName(session)))
-		} else {
-			fmt.Println(dimStyle.Styled("To switch context, exit and restart with -c flag"))
-		}
-		return true
-
-    case "/system", "/sys":
-        if len(parts) < 2 {
-            fmt.Printf("Current system prompt: %s\n", highlightStyle.Styled(config.SystemPrompt))
-        } else {
-            // Join all parts after the command as the new system prompt
-            newPrompt := strings.Join(parts[1:], " ")
-            // Update config and session metadata
-            config.SystemPrompt = newPrompt
-            if contextInfo := session.GetContextInfo(); contextInfo != nil {
-                contextInfo.SystemPrompt = newPrompt
-                session.SetContextInfo(contextInfo)
-            }
-            // Reset conversation history to apply new system prompt
-            session.Clear()
-            fmt.Println(successStyle.Styled("System prompt updated and conversation reset."))
-        }
-        return true
-
-	case "/debug":
-		config.Debug = !config.Debug
-		fmt.Println(successStyle.Styled(fmt.Sprintf("Debug mode: %v", config.Debug)))
-		return true
+	if handler, ok := interactiveCommands[command]; ok {
+		return handler(parts, config, session, rl)
 	}
 
 	// Don't show "unknown command" for paths that start with /
 	// Let them fall through to file path handling
 	return false
+}
+
+// Command handlers
+func handleExit(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	cleanupAndExit(0)
+	return true
+}
+
+func handleClear(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	clearScreen()
+	return true
+}
+
+func handleReset(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	session.Clear()
+	fmt.Println(successStyle.Styled("Conversation reset."))
+	return true
+}
+
+func handleModel(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	if len(parts) < 2 {
+		fmt.Printf("Current model: %s\n", highlightStyle.Styled(config.Model))
+		fmt.Println(dimStyle.Styled("Usage: /model <model-name>"))
+		fmt.Println(dimStyle.Styled("Example: /model openai/gpt-4o"))
+	} else {
+		config.Model = parts[1]
+		if contextInfo := session.GetContextInfo(); contextInfo != nil {
+			contextInfo.Model = config.Model
+			session.SetContextInfo(contextInfo)
+		}
+		fmt.Println(successStyle.Styled(fmt.Sprintf("Switched to model: %s", config.Model)))
+	}
+	return true
+}
+
+func handleTemperature(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	if len(parts) < 2 {
+		fmt.Printf("Current temperature: %s\n", highlightStyle.Styled(fmt.Sprintf("%.2f", config.Temperature)))
+		fmt.Println(dimStyle.Styled("Usage: /temp <0.0-2.0>"))
+	} else {
+		if temp, err := parseFloat(parts[1]); err == nil {
+			if err := validateTemperature(temp); err != nil {
+				fmt.Println(errorStyle.Styled(err.Error()))
+				return true
+			}
+			config.Temperature = temp
+			if contextInfo := session.GetContextInfo(); contextInfo != nil {
+				contextInfo.Temperature = temp
+				session.SetContextInfo(contextInfo)
+			}
+			fmt.Println(successStyle.Styled(fmt.Sprintf("Temperature set to: %.2f", config.Temperature)))
+		} else {
+			fmt.Println(errorStyle.Styled("Invalid temperature value"))
+		}
+	}
+	return true
+}
+
+func handleHistory(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	showHistory(session)
+	return true
+}
+
+func handleSave(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	if len(parts) < 2 {
+		fmt.Println(dimStyle.Styled("Usage: /save <filename>"))
+	} else {
+		saveConversation(session, parts[1])
+	}
+	return true
+}
+
+func handleFile(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	if len(parts) < 2 {
+		fmt.Println(dimStyle.Styled("Usage: /file <path>"))
+		return true
+	}
+	
+	// Get the file path (join in case it has spaces)
+	filePath := strings.Join(parts[1:], " ")
+
+	// Expand home directory if needed
+	if strings.HasPrefix(filePath, "~/") {
+		home, _ := os.UserHomeDir()
+		filePath = filepath.Join(home, filePath[2:])
+	}
+
+	// Validate the file exists
+	if _, err := os.Stat(filePath); err != nil {
+		fmt.Println(errorStyle.Styled(fmt.Sprintf("File not found: %s", filePath)))
+		return true
+	}
+
+	// Build and add file message to session
+	userMsg, err := buildMessageWithFiles("", []string{filePath})
+	if err != nil {
+		fmt.Println(errorStyle.Styled(fmt.Sprintf("Error processing file: %v", err)))
+		return true
+	}
+
+	// Add to session
+	session.AddMessage(userMsg)
+
+	// Show confirmation
+	fileInfo := getFileInfo(filePath)
+	fmt.Println(dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
+	return true
+}
+
+func handleHelp(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	printInteractiveHelp()
+	return true
+}
+
+func handleContext(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	if len(parts) < 2 {
+		fmt.Printf("Current context: %s\n", highlightStyle.Styled(getContextDisplayName(session)))
+	} else {
+		fmt.Println(dimStyle.Styled("To switch context, exit and restart with -c flag"))
+	}
+	return true
+}
+
+func handleSystem(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	if len(parts) < 2 {
+		fmt.Printf("Current system prompt: %s\n", highlightStyle.Styled(config.SystemPrompt))
+	} else {
+		// Join all parts after the command as the new system prompt
+		newPrompt := strings.Join(parts[1:], " ")
+		// Update config and session metadata
+		config.SystemPrompt = newPrompt
+		if contextInfo := session.GetContextInfo(); contextInfo != nil {
+			contextInfo.SystemPrompt = newPrompt
+			session.SetContextInfo(contextInfo)
+		}
+		// Reset conversation history to apply new system prompt
+		session.Clear()
+		fmt.Println(successStyle.Styled("System prompt updated and conversation reset."))
+	}
+	return true
+}
+
+func handleDebug(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	config.Debug = !config.Debug
+	fmt.Println(successStyle.Styled(fmt.Sprintf("Debug mode: %v", config.Debug)))
+	return true
 }
 
 
@@ -578,15 +604,32 @@ type fileAttachListener struct {
 func (l *fileAttachListener) OnChange(line []rune, pos int, key rune) (newLine []rune, newPos int, ok bool) {
 	input := string(line)
 
-	// Skip processing if this looks like a command
+	// Skip processing for commands
 	if strings.HasPrefix(strings.TrimSpace(input), "/") {
 		return line, pos, true
 	}
 
-	// Extract file paths from current input
+	// Extract and process file paths
 	paths, remaining := extractFilePaths(input)
+	newPaths := l.filterNewPaths(paths)
+	
+	if len(newPaths) == 0 {
+		return line, pos, true
+	}
 
-	// Check for new paths we haven't processed yet
+	// Attach new files
+	if err := l.attachFiles(newPaths); err == nil {
+		l.showAttachmentConfirmations(newPaths)
+	}
+
+	// Return remaining text without file paths
+	newLine = []rune(remaining)
+	newPos = min(pos, len(newLine))
+	return newLine, newPos, true
+}
+
+// filterNewPaths returns paths that haven't been processed yet
+func (l *fileAttachListener) filterNewPaths(paths []string) []string {
 	var newPaths []string
 	for _, path := range paths {
 		if !l.processedPaths[path] {
@@ -594,33 +637,25 @@ func (l *fileAttachListener) OnChange(line []rune, pos int, key rune) (newLine [
 			l.processedPaths[path] = true
 		}
 	}
+	return newPaths
+}
 
-	// If we found new valid paths, attach them immediately
-	if len(newPaths) > 0 {
-		// Build a message with just the new files
-		userMsg, err := buildMessageWithFiles("", newPaths)
-		if err == nil {
-			// Add files to session immediately
-			l.session.AddMessage(userMsg)
-
-            // Print attachment confirmations
-            for _, path := range newPaths {
-                fileInfo := getFileInfo(path)
-                fmt.Printf("\n%s\n", dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
-            }
-        }
-
-		// Return the remaining text without file paths
-		newLine = []rune(remaining)
-		if pos > len(newLine) {
-			newPos = len(newLine)
-		} else {
-			newPos = pos
-		}
-		return newLine, newPos, true
+// attachFiles adds files to the session
+func (l *fileAttachListener) attachFiles(paths []string) error {
+	userMsg, err := buildMessageWithFiles("", paths)
+	if err != nil {
+		return err
 	}
+	l.session.AddMessage(userMsg)
+	return nil
+}
 
-	return line, pos, true
+// showAttachmentConfirmations displays confirmation messages for attached files
+func (l *fileAttachListener) showAttachmentConfirmations(paths []string) {
+	for _, path := range paths {
+		fileInfo := getFileInfo(path)
+		fmt.Printf("\n%s\n", dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
+	}
 }
 
 // extractFilePaths extracts file paths from user input that may contain drag-dropped files

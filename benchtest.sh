@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Simple Polly System Test Script
-set -e
+set -e 
 
+go build ./cmd/polly
 POLLY_CMD="./polly"
 TEST_DIR="/tmp/polly-test-$$"
 mkdir -p "$TEST_DIR"
@@ -37,10 +38,10 @@ $POLLY_CMD --show test-ctx
 echo "y" | $POLLY_CMD --delete test-ctx --quiet
 
 echo "=== Validation Tests ==="
-echo 'test' | $POLLY_CMD -m 'invalid/model' --quiet && echo "FAIL: Should reject invalid provider" || echo "PASS: Rejected invalid provider"
-echo 'test' | $POLLY_CMD -m 'badformat' --quiet && echo "FAIL: Should reject bad format" || echo "PASS: Rejected bad format"
-echo 'test' | $POLLY_CMD --temp 5.0 --quiet && echo "FAIL: Should reject bad temp" || echo "PASS: Rejected bad temp"
-$POLLY_CMD -t '/nonexistent/tool.sh' -p 'test' && echo "FAIL: Should reject missing tool" || echo "PASS: Rejected missing tool"
+echo 'test' | $POLLY_CMD -m 'invalid/model' --quiet > /dev/null 2>&1 && echo "FAIL: Should reject invalid provider" || echo "PASS: Rejected invalid provider"
+echo 'test' | $POLLY_CMD -m 'badformat' --quiet > /dev/null 2>&1 && echo "FAIL: Should reject bad format" || echo "PASS: Rejected bad format"
+echo 'test' | $POLLY_CMD --temp 5.0 --quiet > /dev/null 2>&1 && echo "FAIL: Should reject bad temp" || echo "PASS: Rejected bad temp"
+$POLLY_CMD -t '/nonexistent/tool.sh' -p 'test' > /dev/null 2>&1 && echo "FAIL: Should reject missing tool" || echo "PASS: Rejected missing tool"
 
 echo "=== Context Settings Persistence Tests ==="
 # Create test context with specific settings

@@ -4,6 +4,7 @@ import (
     "slices"
     "time"
 
+    "dario.cat/mergo"
     "github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -62,43 +63,17 @@ func MergeContextInfo(existing *ContextInfo, in *ContextInfo) *ContextInfo {
         out := *existing
         return &out
     }
+    
+    // Create a copy to avoid modifying the original
     out := *existing
-    if in.Name != "" {
-        out.Name = in.Name
+    
+    // Use mergo to merge non-zero values from 'in' into 'out'
+    // By default, mergo only overwrites zero values
+    if err := mergo.Merge(&out, in); err != nil {
+        // If merge fails for some reason, fall back to the original
+        return existing
     }
-    if !in.Created.IsZero() {
-        out.Created = in.Created
-    }
-    if !in.LastUsed.IsZero() {
-        out.LastUsed = in.LastUsed
-    }
-    if in.Model != "" {
-        out.Model = in.Model
-    }
-    if in.Temperature != 0 {
-        out.Temperature = in.Temperature
-    }
-    if in.SystemPrompt != "" {
-        out.SystemPrompt = in.SystemPrompt
-    }
-    if in.Description != "" {
-        out.Description = in.Description
-    }
-    if len(in.ToolPaths) > 0 {
-        out.ToolPaths = in.ToolPaths
-    }
-    if len(in.MCPServers) > 0 {
-        out.MCPServers = in.MCPServers
-    }
-    if in.MaxTokens != 0 {
-        out.MaxTokens = in.MaxTokens
-    }
-    if in.MaxHistory != 0 {
-        out.MaxHistory = in.MaxHistory
-    }
-    if in.TTL != 0 {
-        out.TTL = in.TTL
-    }
+    
     return &out
 }
 
@@ -111,38 +86,54 @@ func ApplyContextUpdate(existing *ContextInfo, upd *ContextUpdate) *ContextInfo 
         out := *existing
         return &out
     }
+    
     out := *existing
+    
+    // Convert ContextUpdate pointers to a temporary ContextInfo with values
+    // Only set fields that are non-nil in the update
+    tempInfo := ContextInfo{}
     if upd.Name != "" {
-        out.Name = upd.Name
+        tempInfo.Name = upd.Name
     }
     if upd.Model != nil {
-        out.Model = *upd.Model
+        tempInfo.Model = *upd.Model
     }
     if upd.Temperature != nil {
-        out.Temperature = *upd.Temperature
+        tempInfo.Temperature = *upd.Temperature
     }
     if upd.SystemPrompt != nil {
-        out.SystemPrompt = *upd.SystemPrompt
+        tempInfo.SystemPrompt = *upd.SystemPrompt
     }
     if upd.Description != nil {
-        out.Description = *upd.Description
+        tempInfo.Description = *upd.Description
     }
     if upd.ToolPaths != nil {
-        out.ToolPaths = *upd.ToolPaths
+        tempInfo.ToolPaths = *upd.ToolPaths
     }
     if upd.MCPServers != nil {
-        out.MCPServers = *upd.MCPServers
+        tempInfo.MCPServers = *upd.MCPServers
     }
     if upd.MaxTokens != nil {
-        out.MaxTokens = *upd.MaxTokens
+        tempInfo.MaxTokens = *upd.MaxTokens
     }
     if upd.MaxHistory != nil {
-        out.MaxHistory = *upd.MaxHistory
+        tempInfo.MaxHistory = *upd.MaxHistory
     }
     if upd.LastUsed != nil {
-        out.LastUsed = *upd.LastUsed
-    } else if out.LastUsed.IsZero() {
+        tempInfo.LastUsed = *upd.LastUsed
+    }
+    
+    // Use mergo with WithOverride option to overwrite existing values
+    // since we're explicitly setting values from the update
+    if err := mergo.Merge(&out, tempInfo, mergo.WithOverride); err != nil {
+        // If merge fails, return original
+        return existing
+    }
+    
+    // Handle special case: set LastUsed to now if it's still zero
+    if out.LastUsed.IsZero() {
         out.LastUsed = time.Now()
     }
+    
     return &out
 }

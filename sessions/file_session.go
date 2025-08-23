@@ -401,6 +401,17 @@ func (s *FileSession) SetContextInfo(info *ContextInfo) {
 	s.save()
 }
 
+// UpdateContextInfo applies a partial update to the context metadata
+func (s *FileSession) UpdateContextInfo(update *ContextUpdate) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	// Apply the update to current context info
+	s.ContextInfo = ApplyContextUpdate(s.ContextInfo, update)
+	s.Updated = time.Now()
+	return s.save()
+}
+
 // GetLastUsed returns when the session was last accessed
 func (s *FileSession) GetLastUsed() time.Time {
 	s.mu.RLock()
@@ -509,104 +520,6 @@ func (s *FileSessionStore) saveIndex() error {
 	})
 }
 
-// SaveContextInfo saves full context information including model and settings
-func (s *FileSessionStore) SaveContextInfo(info *ContextInfo) error {
-	// Persist context metadata to the session file and index
-	// Load the session, merge/update its context info, and save it back
-	sessionPath := filepath.Join(s.baseDir, info.Name+".json")
-
-	// Try to load existing session
-	var session *FileSession
-	if data, err := os.ReadFile(sessionPath); err == nil {
-		var loaded FileSession
-		if err := json.Unmarshal(data, &loaded); err == nil {
-			session = &loaded
-		}
-	}
-
-	// If session doesn't exist, create a minimal one
-	if session == nil {
-		session = &FileSession{
-			ID:      info.Name,
-			History: []messages.ChatMessage{},
-			Created: time.Now(),
-			Updated: time.Now(),
-		}
-	}
-
-	// Merge provided info into existing context info via helper, preserving unspecified fields
-	session.ContextInfo = MergeContextInfo(session.ContextInfo, info)
-	session.Updated = time.Now()
-
-	// Save the session file
-	data, err := json.MarshalIndent(session, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(sessionPath, data, 0644); err != nil {
-		return err
-	}
-
-	// Update the index entry
-	s.indexMu.Lock()
-	s.index.Entries[info.Name] = &IndexEntry{
-		Name:     info.Name,
-		LastUsed: time.Now(),
-	}
-	s.indexMu.Unlock()
-
-	return s.saveIndex()
-}
-
-// SaveContextUpdate applies a partial update to a context's metadata on disk
-func (s *FileSessionStore) SaveContextUpdate(upd *ContextUpdate) error {
-	if upd == nil || upd.Name == "" {
-		return nil
-	}
-
-	sessionPath := filepath.Join(s.baseDir, upd.Name+".json")
-
-	// Load existing session if present
-	var session *FileSession
-	if data, err := os.ReadFile(sessionPath); err == nil {
-		var loaded FileSession
-		if err := json.Unmarshal(data, &loaded); err == nil {
-			session = &loaded
-		}
-	}
-	if session == nil {
-		session = &FileSession{
-			ID:          upd.Name,
-			History:     []messages.ChatMessage{},
-			Created:     time.Now(),
-			Updated:     time.Now(),
-			ContextInfo: &ContextInfo{Name: upd.Name, Created: time.Now()},
-		}
-	}
-
-	// Merge update into existing context info via helper
-	session.ContextInfo = ApplyContextUpdate(session.ContextInfo, upd)
-	session.Updated = time.Now()
-
-	// Save session file
-	data, err := json.MarshalIndent(session, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(sessionPath, data, 0644); err != nil {
-		return err
-	}
-
-	// Update index entry
-	s.indexMu.Lock()
-	s.index.Entries[upd.Name] = &IndexEntry{
-		Name:     upd.Name,
-		LastUsed: session.ContextInfo.LastUsed,
-	}
-	s.indexMu.Unlock()
-
-	return s.saveIndex()
-}
 
 // GetLastContext returns the last used context name
 func (s *FileSessionStore) GetLastContext() string {

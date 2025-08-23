@@ -17,6 +17,7 @@ type Session interface {
     GetName() string
     GetContextInfo() *ContextInfo
     SetContextInfo(*ContextInfo)
+    UpdateContextInfo(*ContextUpdate) error  // Apply partial updates
     GetLastUsed() time.Time
 }
 
@@ -30,12 +31,8 @@ type SessionStore interface {
     // Session discovery and metadata
     List() ([]string, error)
     Exists(string) bool
-    GetAllContextInfo() map[string]*ContextInfo
-    SaveContextInfo(*ContextInfo) error
+    GetAllContextInfo() map[string]*ContextInfo  // Read-only bulk operation
     GetLastContext() string // Returns name of most recently used session
-
-    // Partial updates to context metadata (only non-nil fields are applied)
-    SaveContextUpdate(*ContextUpdate) error
 }
 
 // ContextUpdate represents a partial update to context metadata.

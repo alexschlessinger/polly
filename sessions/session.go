@@ -138,39 +138,6 @@ func (s *SyncMapSessionStore) GetAllContextInfo() map[string]*ContextInfo {
 	return result
 }
 
-// SaveContextInfo saves context information
-func (s *SyncMapSessionStore) SaveContextInfo(info *ContextInfo) error {
-    // Get the session and update its context info
-    if value, ok := s.Load(info.Name); ok {
-        session := value.(*LocalSession)
-        session.SetContextInfo(info)
-    }
-    return nil
-}
-
-// SaveContextUpdate applies a partial update to context info
-func (s *SyncMapSessionStore) SaveContextUpdate(upd *ContextUpdate) error {
-    if upd == nil || upd.Name == "" {
-        return nil
-    }
-    // Ensure the session exists
-    value, ok := s.Load(upd.Name)
-    if !ok {
-        // Create new session with default info
-        sess, err := s.Get(upd.Name)
-        if err != nil {
-            return err
-        }
-        value = sess
-    }
-    session := value.(*LocalSession)
-
-    // Merge update into existing context info via helper
-    session.mu.Lock()
-    session.contextInfo = ApplyContextUpdate(session.contextInfo, upd)
-    session.mu.Unlock()
-    return nil
-}
 
 // GetLastContext returns the name of the most recently used session
 func (s *SyncMapSessionStore) GetLastContext() string {
@@ -253,6 +220,17 @@ func (s *LocalSession) SetContextInfo(info *ContextInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.contextInfo = info
+}
+
+// UpdateContextInfo applies a partial update to the context metadata
+func (s *LocalSession) UpdateContextInfo(update *ContextUpdate) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	// Apply the update to current context info
+	s.contextInfo = ApplyContextUpdate(s.contextInfo, update)
+	s.last = time.Now()
+	return nil  // LocalSession has no persistence errors
 }
 
 // GetLastUsed returns when the session was last accessed

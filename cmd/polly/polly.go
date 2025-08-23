@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -267,14 +268,7 @@ func validateFlags(ctx context.Context, cmd *cli.Command) (context.Context, erro
 
 		provider := strings.ToLower(parts[0])
 		validProviders := []string{"openai", "anthropic", "gemini", "ollama"}
-		isValid := false
-		for _, validProvider := range validProviders {
-			if provider == validProvider {
-				isValid = true
-				break
-			}
-		}
-		if !isValid {
+		if !slices.Contains(validProviders, provider) {
 			return ctx, fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(validProviders, ", "))
 		}
 	}
@@ -298,9 +292,8 @@ func validateFlags(ctx context.Context, cmd *cli.Command) (context.Context, erro
 	}
 
 	// Validate temperature range
-	temp := cmd.Float64("temp")
-	if temp < 0.0 || temp > 2.0 {
-		return ctx, fmt.Errorf("temperature must be between 0.0 and 2.0, got %.1f", temp)
+	if err := validateTemperature(cmd.Float64("temp")); err != nil {
+		return ctx, err
 	}
 
 	return ctx, nil
@@ -396,7 +389,7 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
     session := getOrCreateSession(sessionStore, contextID, needFileStore)
 
     // Update context info with current settings using helper function
-    updateContextInfo(sessionStore, session, contextID, config)
+    updateContextInfo(session, config, cmd)
 
 	// Load tools
 	toolRegistry, err := loadTools(config)
@@ -737,85 +730,73 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 }
 
 // updateContextInfo updates the context info with current settings
-func updateContextInfo(sessionStore sessions.SessionStore, session sessions.Session, contextID string, config *Config) {
-    // Persist only explicit updates; store merges with existing values.
-    if existing := sessionStore.GetAllContextInfo()[contextID]; existing != nil {
-        // Build partial update using only explicitly set fields
-        update := &sessions.ContextUpdate{Name: contextID}
-        if config.ModelWasSet {
-            update.Model = &config.Model
-        }
-        if config.TemperatureWasSet {
-            update.Temperature = &config.Temperature
-        }
-        if config.MaxTokensWasSet {
-            update.MaxTokens = &config.MaxTokens
-        }
-        if config.SystemPromptWasSet {
-            update.SystemPrompt = &config.SystemPrompt
-        }
-        if len(config.ToolPaths) > 0 {
-            update.ToolPaths = &config.ToolPaths
-        }
-        if len(config.MCPServers) > 0 {
-            update.MCPServers = &config.MCPServers
-        }
-
-        // Seed missing fields on first use with effective values
-        effModel := config.Model
-        if effModel == "" {
-            effModel = defaultModel
-        }
-        effTemp := config.Temperature
-        if effTemp == 0 {
-            effTemp = defaultTemperature
-        }
-        effMax := config.MaxTokens
-        if effMax == 0 {
-            effMax = defaultMaxTokens
-        }
-        if existing.Model == "" {
-            update.Model = &effModel
-        }
-        if existing.Temperature == 0 {
-            update.Temperature = &effTemp
-        }
-        if existing.MaxTokens == 0 {
-            update.MaxTokens = &effMax
-        }
-        now := time.Now()
-        update.LastUsed = &now
-
-        // Persist to store (updates index and disk). File sessions will merge on write,
-        // avoiding stale in-memory overwrites.
-        _ = sessionStore.SaveContextUpdate(update)
-    } else {
-        // First-time creation: initialize with effective values so store has a full record
-        effModel := config.Model
-        if effModel == "" {
-            effModel = defaultModel
-        }
-        effTemp := config.Temperature
-        if effTemp == 0 {
-            effTemp = defaultTemperature
-        }
-        effMax := config.MaxTokens
-        if effMax == 0 {
-            effMax = defaultMaxTokens
-        }
-        info := &sessions.ContextInfo{
-            Name:         contextID,
-            Model:        effModel,
-            Temperature:  effTemp,
-            MaxTokens:    effMax,
-            SystemPrompt: config.SystemPrompt,
-            ToolPaths:    config.ToolPaths,
-            MCPServers:   config.MCPServers,
-            Created:      time.Now(),
-            LastUsed:     time.Now(),
-        }
-        _ = sessionStore.SaveContextInfo(info)
+func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Command) {
+    now := time.Now()
+    existing := session.GetContextInfo()
+    
+    // Build update with explicitly set fields
+    update := &sessions.ContextUpdate{
+        Name:     session.GetName(),
+        LastUsed: &now,
     }
+    
+    // Apply command-line overrides
+    if cmd.IsSet("model") {
+        update.Model = &config.Model
+    }
+    if cmd.IsSet("temp") {
+        update.Temperature = &config.Temperature
+    }
+    if cmd.IsSet("maxtokens") {
+        update.MaxTokens = &config.MaxTokens
+    }
+    if cmd.IsSet("system") {
+        update.SystemPrompt = &config.SystemPrompt
+    }
+    if len(config.ToolPaths) > 0 {
+        update.ToolPaths = &config.ToolPaths
+    }
+    if len(config.MCPServers) > 0 {
+        update.MCPServers = &config.MCPServers
+    }
+    
+    // Initialize empty fields with defaults on first use
+    if existing == nil || existing.Model == "" {
+        model := getEffectiveValue(config.Model, defaultModel)
+        update.Model = &model
+    }
+    if existing == nil || existing.Temperature == 0 {
+        temp := getEffectiveFloat(config.Temperature, defaultTemperature)
+        update.Temperature = &temp
+    }
+    if existing == nil || existing.MaxTokens == 0 {
+        max := getEffectiveInt(config.MaxTokens, defaultMaxTokens)
+        update.MaxTokens = &max
+    }
+    
+    _ = session.UpdateContextInfo(update)
+}
+
+// Helper functions for getting effective values
+func getEffectiveValue(value, defaultValue string) string {
+    if value != "" {
+        return value
+    }
+    return defaultValue
+}
+
+func getEffectiveFloat(value, defaultValue float64) float64 {
+    if value != 0 {
+        return value
+    }
+    return defaultValue
+}
+
+func getEffectiveInt(value, defaultValue int) int {
+    if value != 0 {
+        return value
+    }
+    return defaultValue
 }
 
 // cleanupAndExit performs cleanup and exits with the given code

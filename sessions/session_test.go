@@ -342,9 +342,13 @@ func TestMaxTokensPersistence(t *testing.T) {
 		LastUsed:    time.Now(),
 	}
 
-	if err := fileStore.SaveContextInfo(info); err != nil {
-		t.Fatalf("Failed to save context info: %v", err)
+	// Create session and set context info
+	session, err := fileStore.Get("test-context")
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
 	}
+	session.SetContextInfo(info)
+	session.Close()
 
 	// Retrieve and verify
 	allInfo := fileStore.GetAllContextInfo()
@@ -358,14 +362,21 @@ func TestMaxTokensPersistence(t *testing.T) {
 	}
 
 	// Test that it's preserved when updating other fields
-	info2 := &ContextInfo{
-		Name:  "test-context",
-		Model: "anthropic/claude-3",
-	}
+	newModel := "anthropic/claude-3"
 
-	if err := fileStore.SaveContextInfo(info2); err != nil {
+	// Update through session
+	session2, err := fileStore.Get("test-context")
+	if err != nil {
+		t.Fatalf("Failed to get session: %v", err)
+	}
+	update := &ContextUpdate{
+		Name:  "test-context",
+		Model: &newModel,
+	}
+	if err := session2.UpdateContextInfo(update); err != nil {
 		t.Fatalf("Failed to update context info: %v", err)
 	}
+	session2.Close()
 
 	allInfo2 := fileStore.GetAllContextInfo()
 	retrieved2 := allInfo2["test-context"]

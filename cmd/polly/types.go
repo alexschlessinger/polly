@@ -7,14 +7,11 @@ import (
 // Config holds all configuration from command-line flags
 type Config struct {
 	// Model configuration
-	Model              string
-	ModelWasSet        bool // Track if model was explicitly provided
-	Temperature        float64
-	TemperatureWasSet  bool // Track if temperature was explicitly provided
-	MaxTokens          int
-	MaxTokensWasSet    bool // Track if max tokens was explicitly provided
-	Timeout            time.Duration
-	ThinkingEffort     string
+	Model          string
+	Temperature    float64
+	MaxTokens      int
+	Timeout        time.Duration
+	ThinkingEffort string
 
 	// API configuration
 	BaseURL string
@@ -35,13 +32,12 @@ type Config struct {
 	MCPServers []string
 
 	// Input/Output configuration
-	Prompt             string
-	SystemPrompt       string
-	SystemPromptWasSet bool     // Track if system prompt was explicitly provided
-	Files              []string // Files/images to include
-	SchemaPath         string   // Path to JSON schema file
-	Quiet              bool
-	Debug              bool
+	Prompt       string
+	SystemPrompt string
+	Files        []string // Files/images to include
+	SchemaPath   string   // Path to JSON schema file
+	Quiet        bool
+	Debug        bool
 }
 
 // ExecutionState holds runtime state during command execution

@@ -88,23 +88,35 @@ func handleDeleteContext(store sessions.SessionStore, contextID string) error {
 	}
 
 	// Prompt for confirmation (default to no for destructive operation)
-	prompt := fmt.Sprintf("Delete context '%s' permanently?", contextID)
-	if !promptYesNo(prompt, false) {
-		fmt.Println("Delete cancelled")
+	if !confirmDeletion(contextID) {
 		return nil
 	}
 
-    // Delete the context
-    store.Delete(contextID)
+	return deleteContext(store, contextID)
+}
 
-    // Reflect actual result: if still exists, it was likely in use and skipped
-    if store.Exists(contextID) {
-        fmt.Fprintf(os.Stderr, "Context '%s' is currently in use; deletion skipped\n", contextID)
-        return nil
-    }
+// confirmDeletion prompts the user to confirm deletion
+func confirmDeletion(contextID string) bool {
+	prompt := fmt.Sprintf("Delete context '%s' permanently?", contextID)
+	if !promptYesNo(prompt, false) {
+		fmt.Println("Delete cancelled")
+		return false
+	}
+	return true
+}
 
-    fmt.Printf("Context '%s' deleted\n", contextID)
-    return nil
+// deleteContext performs the actual deletion
+func deleteContext(store sessions.SessionStore, contextID string) error {
+	store.Delete(contextID)
+
+	// Reflect actual result: if still exists, it was likely in use and skipped
+	if store.Exists(contextID) {
+		fmt.Fprintf(os.Stderr, "Context '%s' is currently in use; deletion skipped\n", contextID)
+		return nil
+	}
+
+	fmt.Printf("Context '%s' deleted\n", contextID)
+	return nil
 }
 
 // handleAddToContext adds stdin content or file content to a context without making an API call
@@ -240,10 +252,14 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 		LastUsed:     time.Now(),
 	}
 
-	// Save context info
-	if err := store.SaveContextInfo(info); err != nil {
-		return fmt.Errorf("failed to save context: %w", err)
+	// Create session and set its context info
+	session, err := store.Get(contextID)
+	if err != nil {
+		return fmt.Errorf("failed to create context: %w", err)
 	}
+	defer session.Close()
+	
+	session.SetContextInfo(info)
 
 	fmt.Printf("Created context '%s' with:\n", contextID)
 	fmt.Printf("  Model: %s\n", info.Model)
@@ -311,48 +327,68 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 		return fmt.Errorf("context '%s' does not exist", contextID)
 	}
 
-	// Prompt for confirmation (default to no for destructive operation)
-	prompt := fmt.Sprintf("Reset context '%s' (clear conversation history)?", contextID)
-	if !promptYesNo(prompt, false) {
-		fmt.Println("Reset cancelled")
+	// Prompt for confirmation
+	if !confirmReset(contextID) {
 		return nil
-	}
-
-	// Get existing context info to preserve settings
-	existingInfo := store.GetAllContextInfo()[contextID]
-	if existingInfo != nil {
-		// Update settings with any command-line overrides
-		existingInfo.LastUsed = time.Now()
-		if config.Model != defaultModel {
-			existingInfo.Model = config.Model
-		}
-		if config.Temperature != defaultTemperature {
-			existingInfo.Temperature = config.Temperature
-		}
-		if config.MaxTokens != defaultMaxTokens {
-			existingInfo.MaxTokens = config.MaxTokens
-		}
-		if config.SystemPromptWasSet {
-			existingInfo.SystemPrompt = config.SystemPrompt
-		}
-		if len(config.ToolPaths) > 0 {
-			existingInfo.ToolPaths = config.ToolPaths
-		}
-		if len(config.MCPServers) > 0 {
-			existingInfo.MCPServers = config.MCPServers
-		}
-		if err := store.SaveContextInfo(existingInfo); err != nil {
-			return fmt.Errorf("failed to save context info: %w", err)
-		}
 	}
 
 	// Reset the context using the resetContext helper
 	if err := resetContext(store, contextID); err != nil {
 		return fmt.Errorf("failed to reset context: %w", err)
 	}
+	
+	// If there are command-line overrides, apply them through the session
+	if config.Model != defaultModel || config.Temperature != defaultTemperature ||
+		config.MaxTokens != defaultMaxTokens || config.SystemPrompt != defaultSystemPrompt ||
+		len(config.ToolPaths) > 0 || len(config.MCPServers) > 0 {
+		
+		session, err := store.Get(contextID)
+		if err != nil {
+			return fmt.Errorf("failed to get session: %w", err)
+		}
+		defer session.Close()
+		
+		// Build update with overrides
+		update := &sessions.ContextUpdate{Name: contextID}
+		now := time.Now()
+		update.LastUsed = &now
+		
+		if config.Model != defaultModel {
+			update.Model = &config.Model
+		}
+		if config.Temperature != defaultTemperature {
+			update.Temperature = &config.Temperature
+		}
+		if config.MaxTokens != defaultMaxTokens {
+			update.MaxTokens = &config.MaxTokens
+		}
+		if config.SystemPrompt != defaultSystemPrompt {
+			update.SystemPrompt = &config.SystemPrompt
+		}
+		if len(config.ToolPaths) > 0 {
+			update.ToolPaths = &config.ToolPaths
+		}
+		if len(config.MCPServers) > 0 {
+			update.MCPServers = &config.MCPServers
+		}
+		
+		if err := session.UpdateContextInfo(update); err != nil {
+			return fmt.Errorf("failed to update context info: %w", err)
+		}
+	}
 
 	fmt.Printf("Reset context '%s' (cleared conversation, kept settings)\n", contextID)
 	return nil
+}
+
+// confirmReset prompts the user to confirm reset
+func confirmReset(contextID string) bool {
+	prompt := fmt.Sprintf("Reset context '%s' (clear conversation history)?", contextID)
+	if !promptYesNo(prompt, false) {
+		fmt.Println("Reset cancelled")
+		return false
+	}
+	return true
 }
 
 // handlePurgeAll deletes all sessions and the index
@@ -368,30 +404,42 @@ func handlePurgeAll(store sessions.SessionStore) error {
 		return nil
 	}
 
-	// Prompt for confirmation (default to no for destructive operation)
-	prompt := fmt.Sprintf("This will permanently delete %d context(s) and all associated data. Are you sure?", len(contextIDs))
-	if !promptYesNo(prompt, false) {
-		fmt.Println("Purge cancelled")
+	// Prompt for confirmation
+	if !confirmPurge(len(contextIDs)) {
 		return nil
 	}
 
-    // Delete all contexts, counting only successful deletions
-    deletedCount := 0
-    skippedCount := 0
-    for _, contextID := range contextIDs {
-        store.Delete(contextID)
-        if store.Exists(contextID) {
-            skippedCount++ // likely in use; store.Delete() already warned
-            continue
-        }
-        deletedCount++
-    }
+	return purgeContexts(store, contextIDs)
+}
 
-    fmt.Printf("Purged %d context(s)\n", deletedCount)
-    if skippedCount > 0 {
-        fmt.Fprintf(os.Stderr, "Skipped %d in-use context(s)\n", skippedCount)
-    }
-    return nil
+// confirmPurge prompts the user to confirm purge
+func confirmPurge(count int) bool {
+	prompt := fmt.Sprintf("This will permanently delete %d context(s) and all associated data. Are you sure?", count)
+	if !promptYesNo(prompt, false) {
+		fmt.Println("Purge cancelled")
+		return false
+	}
+	return true
+}
+
+// purgeContexts performs the actual purge operation
+func purgeContexts(store sessions.SessionStore, contextIDs []string) error {
+	deletedCount := 0
+	skippedCount := 0
+	for _, contextID := range contextIDs {
+		store.Delete(contextID)
+		if store.Exists(contextID) {
+			skippedCount++ // likely in use
+			continue
+		}
+		deletedCount++
+	}
+
+	fmt.Printf("Purged %d context(s)\n", deletedCount)
+	if skippedCount > 0 {
+		fmt.Fprintf(os.Stderr, "Skipped %d in-use context(s)\n", skippedCount)
+	}
+	return nil
 }
 
 // resetContext clears the conversation history but preserves the context settings
