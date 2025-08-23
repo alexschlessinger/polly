@@ -89,7 +89,7 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 	}
 
 	// Enable thinking for supported models if requested
-	if req.ThinkingEffort != "" {
+	if req.ThinkingEffort != "off" {
 		params.Thinking = a.getThinkingConfig(req.ThinkingEffort)
 	}
 

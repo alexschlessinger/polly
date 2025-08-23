@@ -38,14 +38,15 @@ type SessionStore interface {
 // ContextUpdate represents a partial update to context metadata.
 // Only fields set to non-nil values will be applied.
 type ContextUpdate struct {
-    Name         string
-    Model        *string
-    Temperature  *float64
-    SystemPrompt *string
-    Description  *string
-    ToolPaths    *[]string
-    MCPServers   *[]string
-    MaxTokens    *int
-    MaxHistory   *int
-    LastUsed     *time.Time
+    Name           string
+    Model          *string
+    Temperature    *float64
+    SystemPrompt   *string
+    Description    *string
+    ToolPaths      *[]string
+    MCPServers     *[]string
+    MaxTokens      *int
+    MaxHistory     *int
+    LastUsed       *time.Time
+    ThinkingEffort *string
 }

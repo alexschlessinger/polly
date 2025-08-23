@@ -707,6 +707,10 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			if !cmd.IsSet("mcp") && len(contextInfo.MCPServers) > 0 {
 				config.MCPServers = contextInfo.MCPServers
 			}
+			// Apply stored thinking effort if not provided via command line
+			if !cmd.IsSet("think") && !cmd.IsSet("think-medium") && !cmd.IsSet("think-hard") && contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
+				config.ThinkingEffort = contextInfo.ThinkingEffort
+			}
 		}
 	}
 
@@ -758,6 +762,9 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
     }
     if len(config.MCPServers) > 0 {
         update.MCPServers = &config.MCPServers
+    }
+    if cmd.IsSet("think") || cmd.IsSet("think-medium") || cmd.IsSet("think-hard") {
+        update.ThinkingEffort = &config.ThinkingEffort
     }
     
     // Initialize empty fields with defaults on first use

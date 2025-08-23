@@ -70,8 +70,10 @@ func parseConfig(cmd *cli.Command) *Config {
 		thinkingEffort = "medium"
 	} else if cmd.Bool("think") {
 		thinkingEffort = "low"
+	} else {
+		// Default to "off" instead of empty string
+		thinkingEffort = "off"
 	}
-	// If none are set, thinkingEffort remains empty (disabled)
 
 	return &Config{
 		// Model configuration

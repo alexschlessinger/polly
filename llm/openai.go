@@ -61,7 +61,7 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 	}
 
 	// Enable reasoning for supported models (o1, DeepSeek, etc.)
-	if req.ThinkingEffort != "" {
+	if req.ThinkingEffort != "off" {
 		ccr.ReasoningEffort = req.ThinkingEffort
 	}
 

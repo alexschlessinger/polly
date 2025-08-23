@@ -8,7 +8,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -49,7 +51,7 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 	defer rl.Close()
 
 	// Print welcome message
-	printWelcomeMessage(config, contextID)
+	printWelcomeMessage(config, session, contextID)
 
 	// Show recent history if resuming an existing conversation
 	hasHistory := showRecentHistory(session)
@@ -169,28 +171,38 @@ type commandHandler func(parts []string, config *Config, session sessions.Sessio
 
 // interactiveCommands maps command names to their handlers
 var interactiveCommands = map[string]commandHandler{
-	"/exit":    handleExit,
-	"/quit":    handleExit,
-	"/q":       handleExit,
-	"/clear":   handleClear,
-	"/cls":     handleClear,
-	"/reset":   handleReset,
-	"/model":   handleModel,
-	"/m":       handleModel,
-	"/temp":    handleTemperature,
+	"/exit":        handleExit,
+	"/quit":        handleExit,
+	"/q":           handleExit,
+	"/clear":       handleClear,
+	"/cls":         handleClear,
+	"/reset":       handleReset,
+	"/model":       handleModel,
+	"/m":           handleModel,
+	"/temp":        handleTemperature,
 	"/temperature": handleTemperature,
-	"/history": handleHistory,
-	"/h":       handleHistory,
-	"/save":    handleSave,
-	"/file":    handleFile,
-	"/f":       handleFile,
-	"/help":    handleHelp,
-	"/?":       handleHelp,
-	"/context": handleContext,
-	"/c":       handleContext,
-	"/system":  handleSystem,
-	"/sys":     handleSystem,
-	"/debug":   handleDebug,
+	"/history":     handleHistory,
+	"/h":           handleHistory,
+	"/save":        handleSave,
+	"/file":        handleFile,
+	"/f":           handleFile,
+	"/help":        handleHelp,
+	"/?":           handleHelp,
+	"/context":     handleContext,
+	"/c":           handleContext,
+	"/system":      handleSystem,
+	"/sys":         handleSystem,
+	"/debug":       handleDebug,
+	"/description": handleDescription,
+	"/desc":        handleDescription,
+	"/maxhistory":  handleMaxHistory,
+	"/ttl":         handleTTL,
+	"/tools":       handleTools,
+	"/mcp":         handleMCP,
+	"/think":       handleThinking,
+	"/thinking":    handleThinking,
+	"/maxtokens":   handleMaxTokens,
+	"/tokens":      handleMaxTokens,
 }
 
 // handleInteractiveCommand processes special interactive commands
@@ -285,7 +297,7 @@ func handleFile(parts []string, config *Config, session sessions.Session, rl *re
 		fmt.Println(dimStyle.Styled("Usage: /file <path>"))
 		return true
 	}
-	
+
 	// Get the file path (join in case it has spaces)
 	filePath := strings.Join(parts[1:], " ")
 
@@ -356,6 +368,318 @@ func handleDebug(parts []string, config *Config, session sessions.Session, rl *r
 	return true
 }
 
+func handleDescription(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	contextInfo := session.GetContextInfo()
+	if contextInfo == nil {
+		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		return true
+	}
+
+	if len(parts) < 2 {
+		if contextInfo.Description != "" {
+			fmt.Printf("Current description: %s\n", highlightStyle.Styled(contextInfo.Description))
+		} else {
+			fmt.Println(dimStyle.Styled("No description set"))
+		}
+		fmt.Println(dimStyle.Styled("Usage: /description <text>"))
+		fmt.Println(dimStyle.Styled("       /description clear  (to remove)"))
+	} else {
+		if parts[1] == "clear" {
+			contextInfo.Description = ""
+			session.SetContextInfo(contextInfo)
+			fmt.Println(successStyle.Styled("Description cleared"))
+		} else {
+			// Join all parts after the command as the description
+			contextInfo.Description = strings.Join(parts[1:], " ")
+			session.SetContextInfo(contextInfo)
+			fmt.Println(successStyle.Styled(fmt.Sprintf("Description set: %s", contextInfo.Description)))
+		}
+	}
+	return true
+}
+
+func handleMaxHistory(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	contextInfo := session.GetContextInfo()
+	if contextInfo == nil {
+		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		return true
+	}
+
+	if len(parts) < 2 {
+		if contextInfo.MaxHistory > 0 {
+			fmt.Printf("Current max history: %s\n", highlightStyle.Styled(fmt.Sprintf("%d messages", contextInfo.MaxHistory)))
+		} else {
+			fmt.Println(dimStyle.Styled("No max history limit set (unlimited)"))
+		}
+		fmt.Println(dimStyle.Styled("Usage: /maxhistory <number>"))
+		fmt.Println(dimStyle.Styled("       /maxhistory 0  (for unlimited)"))
+	} else {
+		if val, err := parseInt(parts[1]); err == nil {
+			if val < 0 {
+				fmt.Println(errorStyle.Styled("Max history must be 0 (unlimited) or positive"))
+				return true
+			}
+			contextInfo.MaxHistory = val
+			session.SetContextInfo(contextInfo)
+			if val == 0 {
+				fmt.Println(successStyle.Styled("Max history set to unlimited"))
+			} else {
+				fmt.Println(successStyle.Styled(fmt.Sprintf("Max history set to: %d messages", val)))
+			}
+		} else {
+			fmt.Println(errorStyle.Styled("Invalid number"))
+		}
+	}
+	return true
+}
+
+func handleTTL(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	contextInfo := session.GetContextInfo()
+	if contextInfo == nil {
+		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		return true
+	}
+
+	if len(parts) < 2 {
+		if contextInfo.TTL > 0 {
+			fmt.Printf("Current TTL: %s\n", highlightStyle.Styled(contextInfo.TTL.String()))
+		} else {
+			fmt.Println(dimStyle.Styled("No TTL set (never expires)"))
+		}
+		fmt.Println(dimStyle.Styled("Usage: /ttl <duration>"))
+		fmt.Println(dimStyle.Styled("Examples: /ttl 24h, /ttl 7d, /ttl 30m"))
+		fmt.Println(dimStyle.Styled("          /ttl 0  (never expires)"))
+	} else {
+		if parts[1] == "0" {
+			contextInfo.TTL = 0
+			session.SetContextInfo(contextInfo)
+			fmt.Println(successStyle.Styled("TTL cleared (context never expires)"))
+		} else {
+			if duration, err := time.ParseDuration(parts[1]); err == nil {
+				contextInfo.TTL = duration
+				session.SetContextInfo(contextInfo)
+				fmt.Println(successStyle.Styled(fmt.Sprintf("TTL set to: %s", duration)))
+			} else {
+				// Try parsing with days suffix
+				if strings.HasSuffix(parts[1], "d") {
+					daysStr := strings.TrimSuffix(parts[1], "d")
+					if days, err := parseInt(daysStr); err == nil {
+						duration := time.Duration(days) * 24 * time.Hour
+						contextInfo.TTL = duration
+						session.SetContextInfo(contextInfo)
+						fmt.Println(successStyle.Styled(fmt.Sprintf("TTL set to: %s", duration)))
+					} else {
+						fmt.Println(errorStyle.Styled("Invalid duration format"))
+					}
+				} else {
+					fmt.Println(errorStyle.Styled("Invalid duration format"))
+				}
+			}
+		}
+	}
+	return true
+}
+
+func handleTools(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	contextInfo := session.GetContextInfo()
+	if contextInfo == nil {
+		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		return true
+	}
+
+	if len(parts) < 2 {
+		if len(contextInfo.ToolPaths) > 0 {
+			fmt.Println("Current tool paths:")
+			for _, path := range contextInfo.ToolPaths {
+				fmt.Printf("  - %s\n", highlightStyle.Styled(path))
+			}
+		} else {
+			fmt.Println(dimStyle.Styled("No tool paths configured"))
+		}
+		fmt.Println(dimStyle.Styled("Usage: /tools add <path>"))
+		fmt.Println(dimStyle.Styled("       /tools remove <path>"))
+		fmt.Println(dimStyle.Styled("       /tools clear"))
+	} else {
+		switch parts[1] {
+		case "add":
+			if len(parts) < 3 {
+				fmt.Println(errorStyle.Styled("Usage: /tools add <path>"))
+			} else {
+				path := strings.Join(parts[2:], " ")
+				contextInfo.ToolPaths = append(contextInfo.ToolPaths, path)
+				config.ToolPaths = contextInfo.ToolPaths
+				session.SetContextInfo(contextInfo)
+				fmt.Println(successStyle.Styled(fmt.Sprintf("Added tool path: %s", path)))
+				fmt.Println(dimStyle.Styled("Note: Restart session for changes to take effect"))
+			}
+		case "remove":
+			if len(parts) < 3 {
+				fmt.Println(errorStyle.Styled("Usage: /tools remove <path>"))
+			} else {
+				path := strings.Join(parts[2:], " ")
+				newPaths := []string{}
+				found := false
+				for _, p := range contextInfo.ToolPaths {
+					if p != path {
+						newPaths = append(newPaths, p)
+					} else {
+						found = true
+					}
+				}
+				if found {
+					contextInfo.ToolPaths = newPaths
+					config.ToolPaths = contextInfo.ToolPaths
+					session.SetContextInfo(contextInfo)
+					fmt.Println(successStyle.Styled(fmt.Sprintf("Removed tool path: %s", path)))
+					fmt.Println(dimStyle.Styled("Note: Restart session for changes to take effect"))
+				} else {
+					fmt.Println(errorStyle.Styled("Tool path not found"))
+				}
+			}
+		case "clear":
+			contextInfo.ToolPaths = []string{}
+			config.ToolPaths = contextInfo.ToolPaths
+			session.SetContextInfo(contextInfo)
+			fmt.Println(successStyle.Styled("All tool paths cleared"))
+		default:
+			fmt.Println(errorStyle.Styled("Unknown subcommand. Use: add, remove, or clear"))
+		}
+	}
+	return true
+}
+
+func handleMCP(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	contextInfo := session.GetContextInfo()
+	if contextInfo == nil {
+		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		return true
+	}
+
+	if len(parts) < 2 {
+		if len(contextInfo.MCPServers) > 0 {
+			fmt.Println("Current MCP servers:")
+			for _, server := range contextInfo.MCPServers {
+				fmt.Printf("  - %s\n", highlightStyle.Styled(server))
+			}
+		} else {
+			fmt.Println(dimStyle.Styled("No MCP servers configured"))
+		}
+		fmt.Println(dimStyle.Styled("Usage: /mcp add <server>"))
+		fmt.Println(dimStyle.Styled("       /mcp remove <server>"))
+		fmt.Println(dimStyle.Styled("       /mcp clear"))
+	} else {
+		switch parts[1] {
+		case "add":
+			if len(parts) < 3 {
+				fmt.Println(errorStyle.Styled("Usage: /mcp add <server>"))
+			} else {
+				server := strings.Join(parts[2:], " ")
+				contextInfo.MCPServers = append(contextInfo.MCPServers, server)
+				config.MCPServers = contextInfo.MCPServers
+				session.SetContextInfo(contextInfo)
+				fmt.Println(successStyle.Styled(fmt.Sprintf("Added MCP server: %s", server)))
+				fmt.Println(dimStyle.Styled("Note: Restart session for MCP changes to take effect"))
+			}
+		case "remove":
+			if len(parts) < 3 {
+				fmt.Println(errorStyle.Styled("Usage: /mcp remove <server>"))
+			} else {
+				server := strings.Join(parts[2:], " ")
+				newServers := []string{}
+				found := false
+				for _, s := range contextInfo.MCPServers {
+					if s != server {
+						newServers = append(newServers, s)
+					} else {
+						found = true
+					}
+				}
+				if found {
+					contextInfo.MCPServers = newServers
+					config.MCPServers = contextInfo.MCPServers
+					session.SetContextInfo(contextInfo)
+					fmt.Println(successStyle.Styled(fmt.Sprintf("Removed MCP server: %s", server)))
+					fmt.Println(dimStyle.Styled("Note: Restart session for MCP changes to take effect"))
+				} else {
+					fmt.Println(errorStyle.Styled("MCP server not found"))
+				}
+			}
+		case "clear":
+			contextInfo.MCPServers = []string{}
+			config.MCPServers = contextInfo.MCPServers
+			session.SetContextInfo(contextInfo)
+			fmt.Println(successStyle.Styled("All MCP servers cleared"))
+			fmt.Println(dimStyle.Styled("Note: Restart session for MCP changes to take effect"))
+		default:
+			fmt.Println(errorStyle.Styled("Unknown subcommand. Use: add, remove, or clear"))
+		}
+	}
+	return true
+}
+
+func handleThinking(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	contextInfo := session.GetContextInfo()
+	if contextInfo == nil {
+		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		return true
+	}
+
+	if len(parts) < 2 {
+		if contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
+			fmt.Printf("Current thinking effort: %s\n", highlightStyle.Styled(contextInfo.ThinkingEffort))
+		} else if config.ThinkingEffort != "off" {
+			fmt.Printf("Current thinking effort: %s\n", highlightStyle.Styled(config.ThinkingEffort))
+		} else {
+			fmt.Printf("Current thinking effort: %s\n", highlightStyle.Styled("off"))
+		}
+		fmt.Println(dimStyle.Styled("Usage: /think <level>"))
+		fmt.Println(dimStyle.Styled("Levels: off, low, medium, high"))
+		fmt.Println(dimStyle.Styled("       /think off  (to disable)"))
+	} else {
+		effort := strings.ToLower(parts[1])
+		// Validate the thinking effort level
+		validEfforts := map[string]bool{"off": true, "low": true, "medium": true, "high": true}
+		if !validEfforts[effort] {
+			fmt.Println(errorStyle.Styled("Invalid thinking effort. Use: off, low, medium, or high"))
+			return true
+		}
+		
+		contextInfo.ThinkingEffort = effort
+		config.ThinkingEffort = effort
+		session.SetContextInfo(contextInfo)
+		
+		if effort == "off" {
+			fmt.Println(successStyle.Styled("Thinking disabled"))
+		} else {
+			fmt.Println(successStyle.Styled(fmt.Sprintf("Thinking effort set to: %s", effort)))
+		}
+	}
+	return true
+}
+
+func handleMaxTokens(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	if len(parts) < 2 {
+		fmt.Printf("Current max tokens: %s\n", highlightStyle.Styled(fmt.Sprintf("%d", config.MaxTokens)))
+		fmt.Println(dimStyle.Styled("Usage: /maxtokens <number>"))
+		fmt.Println(dimStyle.Styled("Example: /maxtokens 4096"))
+	} else {
+		if tokens, err := parseInt(parts[1]); err == nil {
+			if tokens <= 0 {
+				fmt.Println(errorStyle.Styled("Max tokens must be positive"))
+				return true
+			}
+			config.MaxTokens = tokens
+			if contextInfo := session.GetContextInfo(); contextInfo != nil {
+				contextInfo.MaxTokens = tokens
+				session.SetContextInfo(contextInfo)
+			}
+			fmt.Println(successStyle.Styled(fmt.Sprintf("Max tokens set to: %d", tokens)))
+		} else {
+			fmt.Println(errorStyle.Styled("Invalid number"))
+		}
+	}
+	return true
+}
 
 // getHistoryFilePath returns the path for readline history
 func getHistoryFilePath(contextID string) string {
@@ -387,11 +711,60 @@ func createAutoCompleter() *readline.PrefixCompleter {
 			readline.PcItem("ollama/gpt-oss:latest"),
 		),
 		readline.PcItem("/temp"),
+		readline.PcItem("/maxtokens",
+			readline.PcItem("1024"),
+			readline.PcItem("2048"),
+			readline.PcItem("4096"),
+			readline.PcItem("8192"),
+			readline.PcItem("16384"),
+		),
+		readline.PcItem("/tokens",
+			readline.PcItem("1024"),
+			readline.PcItem("2048"),
+			readline.PcItem("4096"),
+			readline.PcItem("8192"),
+			readline.PcItem("16384"),
+		),
 		readline.PcItem("/history"),
 		readline.PcItem("/save"),
 		readline.PcItem("/help"),
 		readline.PcItem("/context"),
 		readline.PcItem("/system"),
+		readline.PcItem("/description",
+			readline.PcItem("clear"),
+		),
+		readline.PcItem("/desc",
+			readline.PcItem("clear"),
+		),
+		readline.PcItem("/maxhistory"),
+		readline.PcItem("/ttl",
+			readline.PcItem("24h"),
+			readline.PcItem("7d"),
+			readline.PcItem("30d"),
+			readline.PcItem("0"),
+		),
+		readline.PcItem("/think",
+			readline.PcItem("off"),
+			readline.PcItem("low"),
+			readline.PcItem("medium"),
+			readline.PcItem("high"),
+		),
+		readline.PcItem("/thinking",
+			readline.PcItem("off"),
+			readline.PcItem("low"),
+			readline.PcItem("medium"),
+			readline.PcItem("high"),
+		),
+		readline.PcItem("/tools",
+			readline.PcItem("add"),
+			readline.PcItem("remove"),
+			readline.PcItem("clear"),
+		),
+		readline.PcItem("/mcp",
+			readline.PcItem("add"),
+			readline.PcItem("remove"),
+			readline.PcItem("clear"),
+		),
 		readline.PcItem("/debug"),
 		readline.PcItem("/file"),
 		readline.PcItem("/f"),
@@ -408,7 +781,7 @@ func filterInput(r rune) (rune, bool) {
 }
 
 // printWelcomeMessage prints the interactive mode welcome message
-func printWelcomeMessage(config *Config, contextID string) {
+func printWelcomeMessage(config *Config, session sessions.Session, contextID string) {
 	// Show all configuration
 	fmt.Printf("Model: %s\n", highlightStyle.Styled(config.Model))
 	if contextID != "" {
@@ -416,6 +789,59 @@ func printWelcomeMessage(config *Config, contextID string) {
 	}
 	fmt.Printf("Temperature: %s\n", highlightStyle.Styled(fmt.Sprintf("%.1f", config.Temperature)))
 	fmt.Printf("Max Tokens: %s\n", highlightStyle.Styled(fmt.Sprintf("%d", config.MaxTokens)))
+
+	// Get context info from session for additional details
+	if contextInfo := session.GetContextInfo(); contextInfo != nil {
+		// Show system prompt if set
+		if contextInfo.SystemPrompt != "" {
+			// Truncate long system prompts for display
+			prompt := contextInfo.SystemPrompt
+			fmt.Printf("System Prompt: %s\n", highlightStyle.Styled(prompt))
+		} else if config.SystemPrompt != "" {
+			// Fall back to config system prompt
+			prompt := config.SystemPrompt
+			if len(prompt) > 60 {
+				prompt = prompt[:57] + "..."
+			}
+			fmt.Printf("System Prompt: %s\n", highlightStyle.Styled(prompt))
+		}
+
+		// Show max history if set
+		if contextInfo.MaxHistory > 0 {
+			fmt.Printf("Max History: %s\n", highlightStyle.Styled(fmt.Sprintf("%d messages", contextInfo.MaxHistory)))
+		}
+
+		// Show description if set
+		if contextInfo.Description != "" {
+			desc := contextInfo.Description
+			if len(desc) > 60 {
+				desc = desc[:57] + "..."
+			}
+			fmt.Printf("Description: %s\n", highlightStyle.Styled(desc))
+		}
+
+		// Show TTL if set
+		if contextInfo.TTL > 0 {
+			fmt.Printf("TTL: %s\n", highlightStyle.Styled(contextInfo.TTL.String()))
+		}
+		
+		// Show thinking effort if set
+		if contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
+			fmt.Printf("Thinking: %s\n", highlightStyle.Styled(contextInfo.ThinkingEffort))
+		}
+	} else {
+		// No context info, show from config if available
+		if config.SystemPrompt != "" {
+			prompt := config.SystemPrompt
+			if len(prompt) > 60 {
+				prompt = prompt[:57] + "..."
+			}
+			fmt.Printf("System Prompt: %s\n", highlightStyle.Styled(prompt))
+		}
+		if config.ThinkingEffort != "off" {
+			fmt.Printf("Thinking: %s\n", highlightStyle.Styled(config.ThinkingEffort))
+		}
+	}
 
 	// Show tools if configured
 	if len(config.ToolPaths) > 0 {
@@ -443,17 +869,24 @@ func printInteractiveHelp() {
 		{"/reset", "Reset conversation history"},
 		{"/model <name>", "Switch to a different model"},
 		{"/temp <0.0-2.0>", "Set temperature"},
+		{"/maxtokens <n>", "Set max tokens for response"},
 		{"/history", "Show conversation history"},
 		{"/save <file>", "Save conversation to file"},
 		{"/file <path>", "Attach a file to the conversation"},
 		{"/context", "Show current context"},
 		{"/system <prompt>", "Update system prompt"},
+		{"/description <text>", "Set context description"},
+		{"/maxhistory <n>", "Set max history limit (0=unlimited)"},
+		{"/ttl <duration>", "Set context TTL (e.g., 24h, 7d)"},
+		{"/think <level>", "Set thinking effort (off/low/medium/high)"},
+		{"/tools", "Manage tool paths (add/remove/clear)"},
+		{"/mcp", "Manage MCP servers (add/remove/clear)"},
 		{"/debug", "Toggle debug mode"},
 		{"/help", "Show this help message"},
 	}
 
 	for _, c := range commands {
-		fmt.Printf("  %-18s %s\n", highlightStyle.Styled(c.cmd), c.desc)
+		fmt.Printf("  %-20s %s\n", highlightStyle.Styled(c.cmd), c.desc)
 	}
 
 }
@@ -593,6 +1026,10 @@ func parseFloat(s string) (float64, error) {
 	return f, err
 }
 
+func parseInt(s string) (int, error) {
+	return strconv.Atoi(s)
+}
+
 // fileAttachListener handles real-time file detection and attachment
 type fileAttachListener struct {
 	session        sessions.Session
@@ -612,7 +1049,7 @@ func (l *fileAttachListener) OnChange(line []rune, pos int, key rune) (newLine [
 	// Extract and process file paths
 	paths, remaining := extractFilePaths(input)
 	newPaths := l.filterNewPaths(paths)
-	
+
 	if len(newPaths) == 0 {
 		return line, pos, true
 	}

@@ -100,7 +100,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		}
 		
 		// Enable thinking for supported models if requested
-		if req.ThinkingEffort != "" {
+		if req.ThinkingEffort != "off" {
 			// Ollama's ThinkValue can be bool or string
 			// For now, we'll use boolean true for any effort level
 			// Some models may support string values like "low", "medium", "high"

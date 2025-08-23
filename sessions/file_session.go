@@ -29,18 +29,19 @@ type FileSession struct {
 
 // ContextInfo stores metadata about a context
 type ContextInfo struct {
-	Name         string        `json:"name"` // Name is the primary identifier (e.g., "@stocks" or random ID)
-	Created      time.Time     `json:"created"`
-	LastUsed     time.Time     `json:"lastUsed"`
-	Model        string        `json:"model,omitempty"`
-	Temperature  float64       `json:"temperature,omitempty"`
-	SystemPrompt string        `json:"systemPrompt,omitempty"`
-	Description  string        `json:"description,omitempty"`
-	ToolPaths    []string      `json:"toolPaths,omitempty"`
-	MCPServers   []string      `json:"mcpServers,omitempty"`
-	MaxTokens    int           `json:"maxTokens,omitempty"`
-	MaxHistory   int           `json:"maxHistory,omitempty"` // Maximum messages to keep (0 = unlimited)
-	TTL          time.Duration `json:"ttl,omitempty"`        // Time before context expires (0 = never)
+	Name           string        `json:"name"` // Name is the primary identifier (e.g., "@stocks" or random ID)
+	Created        time.Time     `json:"created"`
+	LastUsed       time.Time     `json:"lastUsed"`
+	Model          string        `json:"model,omitempty"`
+	Temperature    float64       `json:"temperature,omitempty"`
+	SystemPrompt   string        `json:"systemPrompt,omitempty"`
+	Description    string        `json:"description,omitempty"`
+	ToolPaths      []string      `json:"toolPaths,omitempty"`
+	MCPServers     []string      `json:"mcpServers,omitempty"`
+	MaxTokens      int           `json:"maxTokens,omitempty"`
+	MaxHistory     int           `json:"maxHistory,omitempty"` // Maximum messages to keep (0 = unlimited)
+	TTL            time.Duration `json:"ttl,omitempty"`        // Time before context expires (0 = never)
+	ThinkingEffort string        `json:"thinkingEffort,omitempty"` // Thinking effort level (e.g., "low", "medium", "high")
 }
 
 // IndexEntry is a lightweight reference for fast lookups

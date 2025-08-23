@@ -308,6 +308,22 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 		fmt.Printf("  MCP Servers: %v\n", info.MCPServers)
 	}
 
+	if info.ThinkingEffort != "" && info.ThinkingEffort != "off" {
+		fmt.Printf("  Thinking: %s\n", info.ThinkingEffort)
+	}
+
+	if info.Description != "" {
+		fmt.Printf("  Description: %s\n", info.Description)
+	}
+
+	if info.MaxHistory > 0 {
+		fmt.Printf("  Max History: %d messages\n", info.MaxHistory)
+	}
+
+	if info.TTL > 0 {
+		fmt.Printf("  TTL: %s\n", info.TTL)
+	}
+
 	fmt.Printf("  Created: %s\n", info.Created.Format("2006-01-02 15:04:05"))
 	fmt.Printf("  Last Used: %s (%s)\n",
 		info.LastUsed.Format("2006-01-02 15:04:05"),
