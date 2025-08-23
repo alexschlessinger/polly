@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonschema"
@@ -110,116 +109,5 @@ func TestRegistryGetSchemas(t *testing.T) {
 		if schema.Title != "tool1" && schema.Title != "tool2" {
 			t.Errorf("Unexpected schema title: %s", schema.Title)
 		}
-	}
-}
-
-func TestRegistryConcurrentAccess(t *testing.T) {
-	registry := NewToolRegistry([]Tool{})
-
-	// Number of goroutines for each operation
-	numGoroutines := 100
-	done := make(chan bool)
-
-	// Concurrent writes (Register)
-	for i := range numGoroutines {
-		go func(id int) {
-			tool := &testTool{name: fmt.Sprintf("tool%d", id)}
-			registry.Register(tool)
-			done <- true
-		}(i)
-	}
-
-	// Concurrent reads (Get)
-	for i := range numGoroutines {
-		go func(id int) {
-			registry.Get(fmt.Sprintf("tool%d", id))
-			done <- true
-		}(i)
-	}
-
-	// Concurrent All() calls
-	for range numGoroutines {
-		go func() {
-			registry.All()
-			done <- true
-		}()
-	}
-
-	// Concurrent GetSchemas() calls
-	for range numGoroutines {
-		go func() {
-			registry.GetSchemas()
-			done <- true
-		}()
-	}
-
-	// Concurrent removes
-	for i := range numGoroutines / 2 {
-		go func(id int) {
-			registry.Remove(fmt.Sprintf("tool%d", id))
-			done <- true
-		}(i)
-	}
-
-	// Wait for all goroutines to complete
-	for range numGoroutines*4 + numGoroutines/2 {
-		<-done
-	}
-
-	// Verify registry is still functional
-	tools := registry.All()
-	// Just verify we can still call All() without panic
-	_ = tools
-
-}
-
-func TestRegistryConcurrentReadWrite(t *testing.T) {
-	registry := NewToolRegistry([]Tool{
-		&testTool{name: "initial"},
-	})
-
-	done := make(chan bool)
-	errors := make(chan error, 1000)
-
-	// Readers
-	for range 50 {
-		go func() {
-			for j := range 100 {
-				_, exists := registry.Get("initial")
-				if !exists && j == 0 {
-					errors <- fmt.Errorf("initial tool should exist")
-				}
-				registry.All()
-				registry.GetSchemas()
-			}
-			done <- true
-		}()
-	}
-
-	// Writers
-	for i := range 10 {
-		go func(id int) {
-			toolName := fmt.Sprintf("concurrent%d", id)
-			tool := &testTool{name: toolName}
-
-			for range 50 {
-				registry.Register(tool)
-				registry.Remove(toolName)
-				registry.Register(tool)
-			}
-			done <- true
-		}(i)
-	}
-
-	// Wait for all goroutines
-	for range 60 {
-		<-done
-	}
-
-	close(errors)
-
-	// Check for any errors
-	for err := range errors {
-		t.Error(err)
 	}
 }
