@@ -22,27 +22,8 @@ import (
 )
 
 func main() {
-	// Set up panic recovery to ensure cleanup
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "Fatal error: %v\n", r)
-			cleanupAndExit(2)
-		}
-	}()
-
-	app := &cli.Command{
-		Name:   "polly",
-		Usage:  "Chat with LLMs using various providers",
-		Flags:  defineFlags(),
-		Before: validateFlags,
-		Action: runCommand,
-		OnUsageError: func(ctx context.Context, cmd *cli.Command, err error, isSubcommand bool) error {
-			// Just return the error without showing usage
-			return err
-		},
-	}
-
-	if err := app.Run(context.Background(), os.Args); err != nil {
+	command := getCommand()
+	if err := command.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		cleanupAndExit(1)
 	}
@@ -527,8 +508,7 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 
 // cleanupAndExit performs cleanup and exits with the given code
 func cleanupAndExit(code int) {
-	// Don't remove any lock files - they could belong to other processes
-	// The flock library handles stale locks automatically
+
 	os.Exit(code)
 }
 

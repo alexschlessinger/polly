@@ -11,19 +11,33 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+func getCommand() *cli.Command {
+	flags, mutuallyExclusiveGroups := defineFlagsWithGroups()
+	command := &cli.Command{
+		Name:                   "polly",
+		Usage:                  "Chat with LLMs using various providers",
+		Flags:                  flags,
+		MutuallyExclusiveFlags: mutuallyExclusiveGroups,
+		Action:                 runCommand,
+		OnUsageError: func(ctx context.Context, cmd *cli.Command, err error, isSubcommand bool) error {
+			// Just return the error without showing usage
+			return err
+		},
+	}
+	return command
+}
+
 // parseConfig extracts configuration from command-line flags
 func parseConfig(cmd *cli.Command) *Config {
-	// Handle thinking effort - check which flag is set
-	var thinkingEffort string
-	if cmd.Bool("think-hard") {
+	// Handle thinking effort - only one can be set due to MutuallyExclusiveFlags
+	thinkingEffort := "off"
+	switch {
+	case cmd.Bool("think-hard"):
 		thinkingEffort = "high"
-	} else if cmd.Bool("think-medium") {
+	case cmd.Bool("think-medium"):
 		thinkingEffort = "medium"
-	} else if cmd.Bool("think") {
+	case cmd.Bool("think"):
 		thinkingEffort = "low"
-	} else {
-		// Default to "off" instead of empty string
-		thinkingEffort = "off"
 	}
 
 	return &Config{
@@ -76,16 +90,101 @@ func loadAPIKeys() map[string]string {
 	}
 }
 
-// validateTemperature checks if temperature is within valid range
-func validateTemperature(temp float64) error {
-	if temp < 0.0 || temp > 2.0 {
-		return fmt.Errorf("temperature must be between 0.0 and 2.0, got %.1f", temp)
+func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
+	// Define all flags
+	resetFlag := &cli.StringFlag{
+		Name:  "reset",
+		Usage: "Reset the specified context (clear conversation history, keep settings)",
+		Action: func(ctx context.Context, cmd *cli.Command, v string) error {
+			if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
+				return fmt.Errorf("--reset does not take prompts or files")
+			}
+			return nil
+		},
 	}
-	return nil
-}
+	purgeFlag := &cli.BoolFlag{
+		Name:  "purge",
+		Usage: "Delete all sessions and index (requires confirmation)",
+		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
+			if !v {
+				return nil
+			}
+			// List of flags that are NOT allowed with purge
+			disallowedFlags := []string{
+				"context", "last", "prompt", "file", "model", "temp",
+				"maxtokens", "timeout", "tool", "mcp", "system", "schema",
+				"tooltimeout", "maxhistory", "think", "think-medium",
+				"think-hard", "baseurl",
+			}
+			if slices.ContainsFunc(disallowedFlags, cmd.IsSet) {
+				return fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
+			}
+			return nil
+		},
+	}
+	createFlag := &cli.StringFlag{
+		Name:  "create",
+		Usage: "Create a new context with specified name and configuration",
+		Action: func(ctx context.Context, cmd *cli.Command, v string) error {
+			if cmd.String("prompt") != "" {
+				return fmt.Errorf("--create does not take a prompt (use model/settings flags to configure)")
+			}
+			return nil
+		},
+	}
+	showFlag := &cli.StringFlag{
+		Name:  "show",
+		Usage: "Show configuration for the specified context",
+		Action: func(ctx context.Context, cmd *cli.Command, v string) error {
+			if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
+				return fmt.Errorf("--show does not take prompts or files")
+			}
+			return nil
+		},
+	}
+	listFlag := &cli.BoolFlag{
+		Name:  "list",
+		Usage: "List all available context IDs",
+		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
+			if v && (cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0) {
+				return fmt.Errorf("--list does not take prompts or files")
+			}
+			return nil
+		},
+	}
+	deleteFlag := &cli.StringFlag{
+		Name:  "delete",
+		Usage: "Delete the specified context",
+		Action: func(ctx context.Context, cmd *cli.Command, v string) error {
+			if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
+				return fmt.Errorf("--delete does not take prompts or files")
+			}
+			return nil
+		},
+	}
+	addFlag := &cli.BoolFlag{
+		Name:  "add",
+		Usage: "Add stdin content to context without making an API call",
+	}
 
-func defineFlags() []cli.Flag {
-	return []cli.Flag{
+	// Define thinking flags
+	thinkFlag := &cli.BoolFlag{
+		Name:  "think",
+		Usage: "Enable thinking/reasoning (low effort)",
+		Value: false,
+	}
+	thinkMediumFlag := &cli.BoolFlag{
+		Name:  "think-medium",
+		Usage: "Enable thinking/reasoning (medium effort)",
+		Value: false,
+	}
+	thinkHardFlag := &cli.BoolFlag{
+		Name:  "think-hard",
+		Usage: "Enable thinking/reasoning (high effort)",
+		Value: false,
+	}
+
+	flags := []cli.Flag{
 		// Model configuration
 		&cli.StringFlag{
 			Name:    "model",
@@ -93,12 +192,33 @@ func defineFlags() []cli.Flag {
 			Usage:   "Model to use (provider/model format)",
 			Value:   "anthropic/claude-sonnet-4-20250514",
 			Sources: cli.EnvVars("POLLYTOOL_MODEL"),
+			Validator: func(model string) error {
+				if model == "" {
+					return nil // empty is allowed, uses default
+				}
+				parts := strings.SplitN(model, "/", 2)
+				if len(parts) != 2 {
+					return fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-4o', 'anthropic/claude-sonnet-4-20250514'). Got: %s", model)
+				}
+				provider := strings.ToLower(parts[0])
+				validProviders := []string{"openai", "anthropic", "gemini", "ollama"}
+				if !slices.Contains(validProviders, provider) {
+					return fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(validProviders, ", "))
+				}
+				return nil
+			},
 		},
 		&cli.Float64Flag{
 			Name:    "temp",
 			Usage:   "Temperature for sampling",
 			Value:   1.0,
 			Sources: cli.EnvVars("POLLYTOOL_TEMP"),
+			Validator: func(temp float64) error {
+				if temp < 0.0 || temp > 2.0 {
+					return fmt.Errorf("temperature must be between 0.0 and 2.0, got %.1f", temp)
+				}
+				return nil
+			},
 		},
 		&cli.IntFlag{
 			Name:    "maxtokens",
@@ -112,21 +232,9 @@ func defineFlags() []cli.Flag {
 			Value:   2 * time.Minute,
 			Sources: cli.EnvVars("POLLYTOOL_TIMEOUT"),
 		},
-		&cli.BoolFlag{
-			Name:  "think",
-			Usage: "Enable thinking/reasoning (low effort)",
-			Value: false,
-		},
-		&cli.BoolFlag{
-			Name:  "think-medium",
-			Usage: "Enable thinking/reasoning (medium effort)",
-			Value: false,
-		},
-		&cli.BoolFlag{
-			Name:  "think-hard",
-			Usage: "Enable thinking/reasoning (high effort)",
-			Value: false,
-		},
+		thinkFlag,
+		thinkMediumFlag,
+		thinkHardFlag,
 
 		// API configuration
 		&cli.StringFlag{
@@ -141,10 +249,27 @@ func defineFlags() []cli.Flag {
 			Name:    "tool",
 			Aliases: []string{"t"},
 			Usage:   "Shell tool executable path (can be specified multiple times)",
+			Validator: func(toolPaths []string) error {
+				for _, toolPath := range toolPaths {
+					if _, err := os.Stat(toolPath); err != nil {
+						if os.IsNotExist(err) {
+							return fmt.Errorf("tool not found: %s", toolPath)
+						}
+						return fmt.Errorf("cannot access tool: %s (%v)", toolPath, err)
+					}
+					// Check if file is executable
+					if info, err := os.Stat(toolPath); err == nil {
+						if info.Mode()&0111 == 0 {
+							return fmt.Errorf("tool is not executable: %s", toolPath)
+						}
+					}
+				}
+				return nil
+			},
 		},
 		&cli.StringSliceFlag{
 			Name:  "mcp",
-			Usage: "MCP server and arguments (can be specified multiple times)",
+			Usage: "MCP server command or json spec (can be specified multiple times)",
 		},
 		&cli.DurationFlag{
 			Name:    "tooltimeout",
@@ -188,34 +313,13 @@ func defineFlags() []cli.Flag {
 			Aliases: []string{"L"},
 			Usage:   "Use the last active context",
 		},
-		&cli.StringFlag{
-			Name:  "reset",
-			Usage: "Reset the specified context (clear conversation history, keep settings)",
-		},
-		&cli.BoolFlag{
-			Name:  "list",
-			Usage: "List all available context IDs",
-		},
-		&cli.StringFlag{
-			Name:  "delete",
-			Usage: "Delete the specified context",
-		},
-		&cli.BoolFlag{
-			Name:  "add",
-			Usage: "Add stdin content to context without making an API call",
-		},
-		&cli.BoolFlag{
-			Name:  "purge",
-			Usage: "Delete all sessions and index (requires confirmation)",
-		},
-		&cli.StringFlag{
-			Name:  "create",
-			Usage: "Create a new context with specified name and configuration",
-		},
-		&cli.StringFlag{
-			Name:  "show",
-			Usage: "Show configuration for the specified context",
-		},
+		resetFlag,
+		listFlag,
+		deleteFlag,
+		addFlag,
+		purgeFlag,
+		createFlag,
+		showFlag,
 
 		// History configuration
 		&cli.IntFlag{
@@ -235,127 +339,30 @@ func defineFlags() []cli.Flag {
 			Usage:   "Enable debug logging",
 		},
 	}
-}
 
-func validateFlags(ctx context.Context, cmd *cli.Command) (context.Context, error) {
-	// Count how many standalone operations are requested
-	standaloneOps := 0
-	if cmd.String("reset") != "" {
-		standaloneOps++
-	}
-	if cmd.Bool("purge") {
-		standaloneOps++
-	}
-	if cmd.String("create") != "" {
-		standaloneOps++
-	}
-	if cmd.String("show") != "" {
-		standaloneOps++
-	}
-	if cmd.Bool("list") {
-		standaloneOps++
-	}
-	if cmd.String("delete") != "" {
-		standaloneOps++
-	}
-	if cmd.Bool("add") {
-		standaloneOps++
+	// Define mutually exclusive groups
+	mutuallyExclusiveGroups := []cli.MutuallyExclusiveFlags{
+		{
+			// Context operations are mutually exclusive
+			Flags: [][]cli.Flag{
+				{resetFlag},
+				{purgeFlag},
+				{createFlag},
+				{showFlag},
+				{listFlag},
+				{deleteFlag},
+				{addFlag},
+			},
+		},
+		{
+			// Thinking modes are mutually exclusive
+			Flags: [][]cli.Flag{
+				{thinkFlag},
+				{thinkMediumFlag},
+				{thinkHardFlag},
+			},
+		},
 	}
 
-	if standaloneOps > 1 {
-		return ctx, fmt.Errorf("only one operation flag can be used at a time")
-	}
-
-	// --purge must be completely alone (except quiet/debug)
-	if cmd.Bool("purge") {
-		// Check for any other non-output flags using IsSet
-		if cmd.IsSet("context") || cmd.IsSet("last") ||
-			cmd.IsSet("prompt") || cmd.IsSet("file") ||
-			cmd.IsSet("model") || cmd.IsSet("temp") ||
-			cmd.IsSet("maxtokens") || cmd.IsSet("timeout") ||
-			cmd.IsSet("tool") || cmd.IsSet("mcp") ||
-			cmd.IsSet("system") || cmd.IsSet("schema") ||
-			cmd.IsSet("tooltimeout") || cmd.IsSet("maxhistory") ||
-			cmd.IsSet("think") || cmd.IsSet("think-medium") || cmd.IsSet("think-hard") ||
-			cmd.IsSet("baseurl") {
-			return ctx, fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
-		}
-	}
-
-	// --reset doesn't take prompts or files
-	if cmd.String("reset") != "" {
-		if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
-			return ctx, fmt.Errorf("--reset does not take prompts or files")
-		}
-	}
-
-	// --create doesn't take a prompt
-	if cmd.String("create") != "" {
-		if cmd.String("prompt") != "" {
-			return ctx, fmt.Errorf("--create does not take a prompt (use model/settings flags to configure)")
-		}
-	}
-
-	// --show doesn't take prompt or files
-	if cmd.String("show") != "" {
-		if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
-			return ctx, fmt.Errorf("--show does not take prompts or files")
-		}
-	}
-
-	// --list doesn't need any other flags
-	if cmd.Bool("list") {
-		if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
-			return ctx, fmt.Errorf("--list does not take prompts or files")
-		}
-	}
-
-	// --delete doesn't take prompts/files
-	if cmd.String("delete") != "" {
-		if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
-			return ctx, fmt.Errorf("--delete does not take prompts or files")
-		}
-	}
-
-	// Note: --add can take -p, --file, or stdin (validated in handleAddToContext)
-
-	// Validate model format and provider
-	model := cmd.String("model")
-	if model != "" {
-		parts := strings.SplitN(model, "/", 2)
-		if len(parts) != 2 {
-			return ctx, fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-4o', 'anthropic/claude-sonnet-4-20250514'). Got: %s", model)
-		}
-
-		provider := strings.ToLower(parts[0])
-		validProviders := []string{"openai", "anthropic", "gemini", "ollama"}
-		if !slices.Contains(validProviders, provider) {
-			return ctx, fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(validProviders, ", "))
-		}
-	}
-
-	// Validate tool paths exist and are executable
-	toolPaths := cmd.StringSlice("tool")
-	for _, toolPath := range toolPaths {
-		if _, err := os.Stat(toolPath); err != nil {
-			if os.IsNotExist(err) {
-				return ctx, fmt.Errorf("tool not found: %s", toolPath)
-			}
-			return ctx, fmt.Errorf("cannot access tool: %s (%v)", toolPath, err)
-		}
-
-		// Check if file is executable
-		if info, err := os.Stat(toolPath); err == nil {
-			if info.Mode()&0111 == 0 {
-				return ctx, fmt.Errorf("tool is not executable: %s", toolPath)
-			}
-		}
-	}
-
-	// Validate temperature range
-	if err := validateTemperature(cmd.Float64("temp")); err != nil {
-		return ctx, err
-	}
-
-	return ctx, nil
+	return flags, mutuallyExclusiveGroups
 }

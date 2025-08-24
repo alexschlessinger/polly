@@ -277,8 +277,8 @@ func handleTemperature(parts []string, config *Config, session sessions.Session,
 		fmt.Println(dimStyle.Styled("Usage: /temp <0.0-2.0>"))
 	} else {
 		if temp, err := parseFloat(parts[1]); err == nil {
-			if err := validateTemperature(temp); err != nil {
-				fmt.Println(errorStyle.Styled(err.Error()))
+			if temp < 0.0 || temp > 2.0 {
+				fmt.Println(errorStyle.Styled(fmt.Sprintf("temperature must be between 0.0 and 2.0, got %.1f", temp)))
 				return true
 			}
 			config.Temperature = temp
