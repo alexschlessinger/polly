@@ -22,6 +22,7 @@ var (
 	defaultTemperature  = getEnvFloat("POLLYTOOL_TEMP", 1.0)
 	defaultMaxTokens    = getEnvInt("POLLYTOOL_MAXTOKENS", 4096)
 	defaultTimeout      = getEnvDuration("POLLYTOOL_TIMEOUT", 2*time.Minute)
+	defaultToolTimeout  = getEnvDuration("POLLYTOOL_TOOLTIMEOUT", 30*time.Second)
 )
 
 // Environment variable parsing functions
@@ -99,8 +100,9 @@ func parseConfig(cmd *cli.Command) *Config {
 		MaxHistory:     cmd.Int("maxhistory"),
 
 		// Tool configuration
-		ToolPaths:  cmd.StringSlice("tool"),
-		MCPServers: cmd.StringSlice("mcp"),
+		ToolPaths:   cmd.StringSlice("tool"),
+		MCPServers:  cmd.StringSlice("mcp"),
+		ToolTimeout: cmd.Duration("tooltimeout"),
 
 		// Input/Output configuration
 		Prompt:       cmd.String("prompt"),

@@ -29,8 +29,9 @@ type Config struct {
 	MaxHistory     int    // Maximum messages to keep in history (0 = unlimited)
 
 	// Tool configuration
-	ToolPaths  []string
-	MCPServers []string
+	ToolPaths    []string
+	MCPServers   []string
+	ToolTimeout  time.Duration
 
 	// Input/Output configuration
 	Prompt       string

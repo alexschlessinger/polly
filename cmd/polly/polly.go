@@ -103,6 +103,11 @@ func defineFlags() []cli.Flag {
 			Name:  "mcp",
 			Usage: "MCP server and arguments (can be specified multiple times)",
 		},
+		&cli.DurationFlag{
+			Name:  "tooltimeout",
+			Usage: "Timeout for tool execution",
+			Value: defaultToolTimeout,
+		},
 
 		// Input configuration
 		&cli.StringFlag{
@@ -619,7 +624,7 @@ func processEventStream(
 
 					for _, toolCall := range fullResponse.ToolCalls {
 						// Execute with spinner showing
-						success := executeToolCall(ctx, toolCall, registry, session, config, statusLine)
+						success := executeToolCall(ctx, toolCall, registry, session, statusLine)
 
 						// Clear spinner and show completion message
 						statusLine.Clear()
@@ -630,8 +635,9 @@ func processEventStream(
 						}
 					}
 				} else {
-					// Regular mode uses status updates
-					processToolCalls(ctx, fullResponse.ToolCalls, registry, session, config, statusLine)
+					for _, toolCall := range fullResponse.ToolCalls {
+						_ = executeToolCall(ctx, toolCall, registry, session, statusLine)
+					}
 				}
 			}
 
@@ -721,6 +727,10 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			if !cmd.IsSet("think") && !cmd.IsSet("think-medium") && !cmd.IsSet("think-hard") && contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
 				config.ThinkingEffort = contextInfo.ThinkingEffort
 			}
+			// Apply stored tool timeout if not provided via command line
+			if !cmd.IsSet("tooltimeout") && contextInfo.ToolTimeout > 0 {
+				config.ToolTimeout = contextInfo.ToolTimeout
+			}
 		}
 	}
 
@@ -745,33 +755,20 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 
 // updateContextInfo updates the context info with current settings
 func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Command) {
-	existing := session.GetMetadata()
-
-	// Build update with only the fields that should be updated
+	// Build update struct - config already has correct values from:
+	// 1. urfave defaults, OR
+	// 2. User-provided flags, OR
+	// 3. Loaded from existing context (via initializeConversation)
 	update := &sessions.Metadata{
-		Name:     session.GetName(),
-		LastUsed: time.Now(),
+		Name:        session.GetName(),
+		LastUsed:    time.Now(),
+		Model:       config.Model,
+		Temperature: config.Temperature,
+		MaxTokens:   config.MaxTokens,
+		ToolTimeout: config.ToolTimeout,
 	}
 
-	// Apply command-line overrides or defaults for new contexts
-	if cmd.IsSet("model") || existing == nil || existing.Model == "" {
-		update.Model = config.Model
-		if update.Model == "" {
-			update.Model = defaultModel
-		}
-	}
-	if cmd.IsSet("temp") || existing == nil || existing.Temperature == 0 {
-		update.Temperature = config.Temperature
-		if update.Temperature == 0 {
-			update.Temperature = defaultTemperature
-		}
-	}
-	if cmd.IsSet("maxtokens") || existing == nil || existing.MaxTokens == 0 {
-		update.MaxTokens = config.MaxTokens
-		if update.MaxTokens == 0 {
-			update.MaxTokens = defaultMaxTokens
-		}
-	}
+	// Only update these if explicitly set via command line
 	if cmd.IsSet("maxhistory") {
 		update.MaxHistory = config.MaxHistory
 	}

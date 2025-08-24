@@ -218,6 +218,7 @@ var interactiveCommands = map[string]commandHandler{
 	"/thinking":    handleThinking,
 	"/maxtokens":   handleMaxTokens,
 	"/tokens":      handleMaxTokens,
+	"/tooltimeout": handleToolTimeout,
 }
 
 // handleInteractiveCommand processes special interactive commands
@@ -696,6 +697,43 @@ func handleMaxTokens(parts []string, config *Config, session sessions.Session, r
 	return true
 }
 
+func handleToolTimeout(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+	if len(parts) < 2 {
+		if config.ToolTimeout > 0 {
+			fmt.Printf("Current tool timeout: %s\n", highlightStyle.Styled(config.ToolTimeout.String()))
+		} else {
+			fmt.Println(dimStyle.Styled("No tool timeout set (using default)"))
+		}
+		fmt.Println(dimStyle.Styled("Usage: /tooltimeout <duration>"))
+		fmt.Println(dimStyle.Styled("Examples: /tooltimeout 30s, /tooltimeout 2m, /tooltimeout 0 (no timeout)"))
+	} else {
+		if parts[1] == "0" {
+			config.ToolTimeout = 0
+			if contextInfo := session.GetMetadata(); contextInfo != nil {
+				contextInfo.ToolTimeout = 0
+				session.SetMetadata(contextInfo)
+			}
+			fmt.Println(successStyle.Styled("Tool timeout disabled"))
+		} else {
+			if duration, err := time.ParseDuration(parts[1]); err == nil {
+				if duration < 0 {
+					fmt.Println(errorStyle.Styled("Tool timeout must be positive or 0"))
+					return true
+				}
+				config.ToolTimeout = duration
+				if contextInfo := session.GetMetadata(); contextInfo != nil {
+					contextInfo.ToolTimeout = duration
+					session.SetMetadata(contextInfo)
+				}
+				fmt.Println(successStyle.Styled(fmt.Sprintf("Tool timeout set to: %s", duration)))
+			} else {
+				fmt.Println(errorStyle.Styled("Invalid duration format"))
+			}
+		}
+	}
+	return true
+}
+
 // getHistoryFilePath returns the path for readline history
 func getHistoryFilePath(contextID string) string {
 	homeDir, _ := os.UserHomeDir()
@@ -769,6 +807,13 @@ func createAutoCompleter() *readline.PrefixCompleter {
 			readline.PcItem("low"),
 			readline.PcItem("medium"),
 			readline.PcItem("high"),
+		),
+		readline.PcItem("/tooltimeout",
+			readline.PcItem("30s"),
+			readline.PcItem("1m"),
+			readline.PcItem("2m"),
+			readline.PcItem("5m"),
+			readline.PcItem("0"),
 		),
 		readline.PcItem("/tools",
 			readline.PcItem("add"),
@@ -894,6 +939,7 @@ func printInteractiveHelp() {
 		{"/maxhistory <n>", "Set max history limit (0=unlimited)"},
 		{"/ttl <duration>", "Set context TTL (e.g., 24h, 7d)"},
 		{"/think <level>", "Set thinking effort (off/low/medium/high)"},
+		{"/tooltimeout <duration>", "Set tool execution timeout"},
 		{"/tools", "Manage tool paths (add/remove/clear)"},
 		{"/mcp", "Manage MCP servers (add/remove/clear)"},
 		{"/debug", "Toggle debug mode"},

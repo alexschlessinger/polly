@@ -41,6 +41,7 @@ type Metadata struct {
 	MaxHistory     int           `json:"maxHistory,omitempty"`     // Maximum messages to keep (0 = unlimited)
 	TTL            time.Duration `json:"ttl,omitempty"`            // Time before context expires (0 = never)
 	ThinkingEffort string        `json:"thinkingEffort,omitempty"` // Thinking effort level (e.g., "low", "medium", "high", "off")
+	ToolTimeout    time.Duration `json:"toolTimeout,omitempty"`    // Timeout for tool execution
 }
 
 

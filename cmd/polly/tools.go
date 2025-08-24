@@ -49,7 +49,6 @@ func executeToolCall(
 	toolCall messages.ChatMessageToolCall,
 	registry *tools.ToolRegistry,
 	session sessions.Session,
-	config *Config,
 	statusLine StatusHandler,
 ) bool {
 	// Parse arguments from JSON string
@@ -77,16 +76,32 @@ func executeToolCall(
 	}
 
 	log.Printf("%s %s", toolCall.Name, toolCall.Arguments)
-	
+
 	// Show tool execution status
 	if statusLine != nil {
 		statusLine.ShowToolCall(toolCall.Name)
 	}
 
-	result, err := tool.Execute(ctx, args)
+	// Apply timeout from session metadata (always has a value due to defaults)
+	metadata := session.GetMetadata()
+	timeout := metadata.ToolTimeout
+
+	executeCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		executeCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	result, err := tool.Execute(executeCtx, args)
 	success := err == nil
 	if err != nil {
-		result = fmt.Sprintf("Error: %v", err)
+		// Check if it was a timeout
+		if executeCtx.Err() == context.DeadlineExceeded {
+			result = fmt.Sprintf("Error: tool execution timed out after %v", timeout)
+		} else {
+			result = fmt.Sprintf("Error: %v", err)
+		}
 	}
 
 	// Add tool result to session
@@ -95,22 +110,6 @@ func executeToolCall(
 		Content:    result,
 		ToolCallID: toolCall.ID,
 	})
-	
+
 	return success
-}
-
-
-// processToolCalls processes all tool calls in the response
-func processToolCalls(
-	ctx context.Context,
-	toolCalls []messages.ChatMessageToolCall,
-	registry *tools.ToolRegistry,
-	session sessions.Session,
-	config *Config,
-	statusLine StatusHandler,
-) {
-	for _, toolCall := range toolCalls {
-		// Ignore return value in regular mode - status is shown in title bar
-		_ = executeToolCall(ctx, toolCall, registry, session, config, statusLine)
-	}
 }
