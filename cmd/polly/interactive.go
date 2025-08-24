@@ -246,9 +246,9 @@ func handleModel(parts []string, config *Config, session sessions.Session, rl *r
 		fmt.Println(dimStyle.Styled("Example: /model openai/gpt-4o"))
 	} else {
 		config.Model = parts[1]
-		if contextInfo := session.GetContextInfo(); contextInfo != nil {
+		if contextInfo := session.GetMetadata(); contextInfo != nil {
 			contextInfo.Model = config.Model
-			session.SetContextInfo(contextInfo)
+			session.SetMetadata(contextInfo)
 		}
 		fmt.Println(successStyle.Styled(fmt.Sprintf("Switched to model: %s", config.Model)))
 	}
@@ -266,9 +266,9 @@ func handleTemperature(parts []string, config *Config, session sessions.Session,
 				return true
 			}
 			config.Temperature = temp
-			if contextInfo := session.GetContextInfo(); contextInfo != nil {
+			if contextInfo := session.GetMetadata(); contextInfo != nil {
 				contextInfo.Temperature = temp
-				session.SetContextInfo(contextInfo)
+				session.SetMetadata(contextInfo)
 			}
 			fmt.Println(successStyle.Styled(fmt.Sprintf("Temperature set to: %.2f", config.Temperature)))
 		} else {
@@ -351,9 +351,9 @@ func handleSystem(parts []string, config *Config, session sessions.Session, rl *
 		newPrompt := strings.Join(parts[1:], " ")
 		// Update config and session metadata
 		config.SystemPrompt = newPrompt
-		if contextInfo := session.GetContextInfo(); contextInfo != nil {
+		if contextInfo := session.GetMetadata(); contextInfo != nil {
 			contextInfo.SystemPrompt = newPrompt
-			session.SetContextInfo(contextInfo)
+			session.SetMetadata(contextInfo)
 		}
 		// Reset conversation history to apply new system prompt
 		session.Clear()
@@ -369,7 +369,7 @@ func handleDebug(parts []string, config *Config, session sessions.Session, rl *r
 }
 
 func handleDescription(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	contextInfo := session.GetContextInfo()
+	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
 		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
@@ -386,12 +386,12 @@ func handleDescription(parts []string, config *Config, session sessions.Session,
 	} else {
 		if parts[1] == "clear" {
 			contextInfo.Description = ""
-			session.SetContextInfo(contextInfo)
+			session.SetMetadata(contextInfo)
 			fmt.Println(successStyle.Styled("Description cleared"))
 		} else {
 			// Join all parts after the command as the description
 			contextInfo.Description = strings.Join(parts[1:], " ")
-			session.SetContextInfo(contextInfo)
+			session.SetMetadata(contextInfo)
 			fmt.Println(successStyle.Styled(fmt.Sprintf("Description set: %s", contextInfo.Description)))
 		}
 	}
@@ -399,7 +399,7 @@ func handleDescription(parts []string, config *Config, session sessions.Session,
 }
 
 func handleMaxHistory(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	contextInfo := session.GetContextInfo()
+	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
 		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
@@ -420,7 +420,7 @@ func handleMaxHistory(parts []string, config *Config, session sessions.Session, 
 				return true
 			}
 			contextInfo.MaxHistory = val
-			session.SetContextInfo(contextInfo)
+			session.SetMetadata(contextInfo)
 			if val == 0 {
 				fmt.Println(successStyle.Styled("Max history set to unlimited"))
 			} else {
@@ -434,7 +434,7 @@ func handleMaxHistory(parts []string, config *Config, session sessions.Session, 
 }
 
 func handleTTL(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	contextInfo := session.GetContextInfo()
+	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
 		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
@@ -452,12 +452,12 @@ func handleTTL(parts []string, config *Config, session sessions.Session, rl *rea
 	} else {
 		if parts[1] == "0" {
 			contextInfo.TTL = 0
-			session.SetContextInfo(contextInfo)
+			session.SetMetadata(contextInfo)
 			fmt.Println(successStyle.Styled("TTL cleared (context never expires)"))
 		} else {
 			if duration, err := time.ParseDuration(parts[1]); err == nil {
 				contextInfo.TTL = duration
-				session.SetContextInfo(contextInfo)
+				session.SetMetadata(contextInfo)
 				fmt.Println(successStyle.Styled(fmt.Sprintf("TTL set to: %s", duration)))
 			} else {
 				// Try parsing with days suffix
@@ -466,7 +466,7 @@ func handleTTL(parts []string, config *Config, session sessions.Session, rl *rea
 					if days, err := parseInt(daysStr); err == nil {
 						duration := time.Duration(days) * 24 * time.Hour
 						contextInfo.TTL = duration
-						session.SetContextInfo(contextInfo)
+						session.SetMetadata(contextInfo)
 						fmt.Println(successStyle.Styled(fmt.Sprintf("TTL set to: %s", duration)))
 					} else {
 						fmt.Println(errorStyle.Styled("Invalid duration format"))
@@ -481,7 +481,7 @@ func handleTTL(parts []string, config *Config, session sessions.Session, rl *rea
 }
 
 func handleTools(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	contextInfo := session.GetContextInfo()
+	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
 		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
@@ -508,7 +508,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 				path := strings.Join(parts[2:], " ")
 				contextInfo.ToolPaths = append(contextInfo.ToolPaths, path)
 				config.ToolPaths = contextInfo.ToolPaths
-				session.SetContextInfo(contextInfo)
+				session.SetMetadata(contextInfo)
 				fmt.Println(successStyle.Styled(fmt.Sprintf("Added tool path: %s", path)))
 				fmt.Println(dimStyle.Styled("Note: Restart session for changes to take effect"))
 			}
@@ -529,7 +529,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 				if found {
 					contextInfo.ToolPaths = newPaths
 					config.ToolPaths = contextInfo.ToolPaths
-					session.SetContextInfo(contextInfo)
+					session.SetMetadata(contextInfo)
 					fmt.Println(successStyle.Styled(fmt.Sprintf("Removed tool path: %s", path)))
 					fmt.Println(dimStyle.Styled("Note: Restart session for changes to take effect"))
 				} else {
@@ -539,7 +539,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 		case "clear":
 			contextInfo.ToolPaths = []string{}
 			config.ToolPaths = contextInfo.ToolPaths
-			session.SetContextInfo(contextInfo)
+			session.SetMetadata(contextInfo)
 			fmt.Println(successStyle.Styled("All tool paths cleared"))
 		default:
 			fmt.Println(errorStyle.Styled("Unknown subcommand. Use: add, remove, or clear"))
@@ -549,7 +549,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 }
 
 func handleMCP(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	contextInfo := session.GetContextInfo()
+	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
 		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
@@ -576,7 +576,7 @@ func handleMCP(parts []string, config *Config, session sessions.Session, rl *rea
 				server := strings.Join(parts[2:], " ")
 				contextInfo.MCPServers = append(contextInfo.MCPServers, server)
 				config.MCPServers = contextInfo.MCPServers
-				session.SetContextInfo(contextInfo)
+				session.SetMetadata(contextInfo)
 				fmt.Println(successStyle.Styled(fmt.Sprintf("Added MCP server: %s", server)))
 				fmt.Println(dimStyle.Styled("Note: Restart session for MCP changes to take effect"))
 			}
@@ -597,7 +597,7 @@ func handleMCP(parts []string, config *Config, session sessions.Session, rl *rea
 				if found {
 					contextInfo.MCPServers = newServers
 					config.MCPServers = contextInfo.MCPServers
-					session.SetContextInfo(contextInfo)
+					session.SetMetadata(contextInfo)
 					fmt.Println(successStyle.Styled(fmt.Sprintf("Removed MCP server: %s", server)))
 					fmt.Println(dimStyle.Styled("Note: Restart session for MCP changes to take effect"))
 				} else {
@@ -607,7 +607,7 @@ func handleMCP(parts []string, config *Config, session sessions.Session, rl *rea
 		case "clear":
 			contextInfo.MCPServers = []string{}
 			config.MCPServers = contextInfo.MCPServers
-			session.SetContextInfo(contextInfo)
+			session.SetMetadata(contextInfo)
 			fmt.Println(successStyle.Styled("All MCP servers cleared"))
 			fmt.Println(dimStyle.Styled("Note: Restart session for MCP changes to take effect"))
 		default:
@@ -618,7 +618,7 @@ func handleMCP(parts []string, config *Config, session sessions.Session, rl *rea
 }
 
 func handleThinking(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	contextInfo := session.GetContextInfo()
+	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
 		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
@@ -643,11 +643,11 @@ func handleThinking(parts []string, config *Config, session sessions.Session, rl
 			fmt.Println(errorStyle.Styled("Invalid thinking effort. Use: off, low, medium, or high"))
 			return true
 		}
-		
+
 		contextInfo.ThinkingEffort = effort
 		config.ThinkingEffort = effort
-		session.SetContextInfo(contextInfo)
-		
+		session.SetMetadata(contextInfo)
+
 		if effort == "off" {
 			fmt.Println(successStyle.Styled("Thinking disabled"))
 		} else {
@@ -669,9 +669,9 @@ func handleMaxTokens(parts []string, config *Config, session sessions.Session, r
 				return true
 			}
 			config.MaxTokens = tokens
-			if contextInfo := session.GetContextInfo(); contextInfo != nil {
+			if contextInfo := session.GetMetadata(); contextInfo != nil {
 				contextInfo.MaxTokens = tokens
-				session.SetContextInfo(contextInfo)
+				session.SetMetadata(contextInfo)
 			}
 			fmt.Println(successStyle.Styled(fmt.Sprintf("Max tokens set to: %d", tokens)))
 		} else {
@@ -791,7 +791,7 @@ func printWelcomeMessage(config *Config, session sessions.Session, contextID str
 	fmt.Printf("Max Tokens: %s\n", highlightStyle.Styled(fmt.Sprintf("%d", config.MaxTokens)))
 
 	// Get context info from session for additional details
-	if contextInfo := session.GetContextInfo(); contextInfo != nil {
+	if contextInfo := session.GetMetadata(); contextInfo != nil {
 		// Show system prompt if set
 		if contextInfo.SystemPrompt != "" {
 			// Truncate long system prompts for display
@@ -824,7 +824,7 @@ func printWelcomeMessage(config *Config, session sessions.Session, contextID str
 		if contextInfo.TTL > 0 {
 			fmt.Printf("TTL: %s\n", highlightStyle.Styled(contextInfo.TTL.String()))
 		}
-		
+
 		// Show thinking effort if set
 		if contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
 			fmt.Printf("Thinking: %s\n", highlightStyle.Styled(contextInfo.ThinkingEffort))

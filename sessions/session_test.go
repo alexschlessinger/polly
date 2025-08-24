@@ -11,20 +11,20 @@ import (
 
 // testStores returns both store implementations for testing
 func testStores(t *testing.T) map[string]SessionStore {
-	config := &SessionConfig{
+	defaultInfo := &Metadata{
 		MaxHistory:   10,
 		TTL:          0, // No expiry for tests
 		SystemPrompt: "test system prompt",
 	}
 
 	// Create file store in temp directory
-	fileStore, err := NewFileSessionStore(t.TempDir(), config)
+	fileStore, err := NewFileSessionStore(t.TempDir(), defaultInfo)
 	if err != nil {
 		t.Fatalf("Failed to create file store: %v", err)
 	}
 
 	return map[string]SessionStore{
-		"SyncMap": NewSyncMapSessionStore(config),
+		"SyncMap": NewSyncMapSessionStore(defaultInfo),
 		"File":    fileStore,
 	}
 }
@@ -161,18 +161,18 @@ func TestTrimKeepsSystemPrompt(t *testing.T) {
 // TestTrimRemovesOrphanedToolResponse verifies orphaned tool responses are removed
 func TestTrimRemovesOrphanedToolResponse(t *testing.T) {
 	// Create config with small MaxHistory to make test clearer
-	config := &SessionConfig{
+	defaultInfo := &Metadata{
 		MaxHistory:   3,
 		TTL:          0,
 		SystemPrompt: "system",
 	}
 
 	stores := map[string]SessionStore{
-		"SyncMap": NewSyncMapSessionStore(config),
+		"SyncMap": NewSyncMapSessionStore(defaultInfo),
 	}
 
 	// Add File store
-	fileStore, err := NewFileSessionStore(t.TempDir(), config)
+	fileStore, err := NewFileSessionStore(t.TempDir(), defaultInfo)
 	if err == nil {
 		stores["File"] = fileStore
 	}
@@ -211,18 +211,18 @@ func TestTrimRemovesOrphanedToolResponse(t *testing.T) {
 
 // TestTrimKeepsMaxHistory verifies only MaxHistory messages are kept
 func TestTrimKeepsMaxHistory(t *testing.T) {
-	config := &SessionConfig{
+	defaultInfo := &Metadata{
 		MaxHistory:   5,
 		TTL:          0,
 		SystemPrompt: "system",
 	}
 
 	stores := map[string]SessionStore{
-		"SyncMap": NewSyncMapSessionStore(config),
+		"SyncMap": NewSyncMapSessionStore(defaultInfo),
 	}
 
 	// Add File store
-	fileStore, err := NewFileSessionStore(t.TempDir(), config)
+	fileStore, err := NewFileSessionStore(t.TempDir(), defaultInfo)
 	if err == nil {
 		stores["File"] = fileStore
 	}
@@ -319,13 +319,13 @@ func TestConcurrentAddMessage(t *testing.T) {
 // TestMaxTokensPersistence verifies that MaxTokens is saved and loaded correctly
 func TestMaxTokensPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
-	config := &SessionConfig{
+	defaultInfo := &Metadata{
 		MaxHistory:   10,
 		TTL:          0,
 		SystemPrompt: "test",
 	}
 
-	store, err := NewFileSessionStore(tmpDir, config)
+	store, err := NewFileSessionStore(tmpDir, defaultInfo)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestMaxTokensPersistence(t *testing.T) {
 	fileStore := store.(*FileSessionStore)
 
 	// Save context info with MaxTokens
-	info := &ContextInfo{
+	info := &Metadata{
 		Name:        "test-context",
 		Model:       "openai/gpt-4",
 		Temperature: 0.7,
@@ -347,11 +347,11 @@ func TestMaxTokensPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get session: %v", err)
 	}
-	session.SetContextInfo(info)
+	session.SetMetadata(info)
 	session.Close()
 
 	// Retrieve and verify
-	allInfo := fileStore.GetAllContextInfo()
+	allInfo := fileStore.GetAllMetadata()
 	retrieved := allInfo["test-context"]
 	if retrieved == nil {
 		t.Fatal("Failed to retrieve context")
@@ -369,16 +369,16 @@ func TestMaxTokensPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get session: %v", err)
 	}
-	update := &ContextUpdate{
+	update := &Metadata{
 		Name:  "test-context",
-		Model: &newModel,
+		Model: newModel,
 	}
-	if err := session2.UpdateContextInfo(update); err != nil {
+	if err := session2.UpdateMetadata(update); err != nil {
 		t.Fatalf("Failed to update context info: %v", err)
 	}
 	session2.Close()
 
-	allInfo2 := fileStore.GetAllContextInfo()
+	allInfo2 := fileStore.GetAllMetadata()
 	retrieved2 := allInfo2["test-context"]
 	if retrieved2 == nil {
 		t.Fatal("Failed to retrieve updated context")
@@ -398,13 +398,13 @@ func TestMaxTokensPersistence(t *testing.T) {
 // TestExpiryGoroutine verifies the expiry goroutine actually runs and cleans up sessions
 func TestExpiryGoroutine(t *testing.T) {
 	// Create store with very short TTL
-	config := &SessionConfig{
+	defaultInfo := &Metadata{
 		MaxHistory:   10,
 		TTL:          50 * time.Millisecond, // Very short TTL for testing
 		SystemPrompt: "test",
 	}
 
-	store := NewSyncMapSessionStore(config)
+	store := NewSyncMapSessionStore(defaultInfo)
 
 	// Create multiple sessions with staggered access times
 	session1, err := store.Get("session1")

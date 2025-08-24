@@ -333,7 +333,7 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 
 	// Resolve --last flag if specified
 	if config.UseLastContext {
-		contextID = sessionStore.GetLastContext()
+		contextID = sessionStore.GetLast()
 		if contextID == "" {
 			return fmt.Errorf("no last context found")
 		}
@@ -378,25 +378,25 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 
 // initializeSession sets up everything needed for a conversation session
 func initializeSession(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, sessions.Session, llm.LLM, *tools.ToolRegistry, error) {
-    // Initialize conversation using helper function
-    var err error
-    contextID, _, err = initializeConversation(config, sessionStore, contextID, cmd)
-    if err != nil {
-        return "", nil, nil, nil, err
-    }
+	// Initialize conversation using helper function
+	var err error
+	contextID, _, err = initializeConversation(config, sessionStore, contextID, cmd)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
 
-    // Load API keys
-    apiKeys := loadAPIKeys()
+	// Load API keys
+	apiKeys := loadAPIKeys()
 
-    // Create LLM provider
-    multipass := llm.NewMultiPass(apiKeys)
+	// Create LLM provider
+	multipass := llm.NewMultiPass(apiKeys)
 
-    // Get or create session
-    needFileStore := needsFileStore(config, contextID)
-    session := getOrCreateSession(sessionStore, contextID, needFileStore)
+	// Get or create session
+	needFileStore := needsFileStore(config, contextID)
+	session := getOrCreateSession(sessionStore, contextID, needFileStore)
 
-    // Update context info with current settings using helper function
-    updateContextInfo(session, config, cmd)
+	// Update context info with current settings using helper function
+	updateContextInfo(session, config, cmd)
 
 	// Load tools
 	toolRegistry, err := loadTools(config)
@@ -675,13 +675,13 @@ func createCompletionRequest(config *Config, session sessions.Session, registry 
 }
 
 // initializeConversation handles all the setup needed before starting a conversation
-func initializeConversation(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, *sessions.ContextInfo, error) {
+func initializeConversation(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, *sessions.Metadata, error) {
 	var needReset bool
-	var originalContextInfo *sessions.ContextInfo
+	var originalContextInfo *sessions.Metadata
 
 	// Load context settings if available
 	if contextID != "" {
-		if contextInfo := sessionStore.GetAllContextInfo()[contextID]; contextInfo != nil {
+		if contextInfo := sessionStore.GetAllMetadata()[contextID]; contextInfo != nil {
 			originalContextInfo = contextInfo
 
 			// Check if system prompt is being changed (only if context has existing conversation)
@@ -745,79 +745,50 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 
 // updateContextInfo updates the context info with current settings
 func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Command) {
-    now := time.Now()
-    existing := session.GetContextInfo()
-    
-    // Build update with explicitly set fields
-    update := &sessions.ContextUpdate{
-        Name:     session.GetName(),
-        LastUsed: &now,
-    }
-    
-    // Apply command-line overrides
-    if cmd.IsSet("model") {
-        update.Model = &config.Model
-    }
-    if cmd.IsSet("temp") {
-        update.Temperature = &config.Temperature
-    }
-    if cmd.IsSet("maxtokens") {
-        update.MaxTokens = &config.MaxTokens
-    }
-    if cmd.IsSet("maxhistory") {
-        update.MaxHistory = &config.MaxHistory
-    }
-    if cmd.IsSet("system") {
-        update.SystemPrompt = &config.SystemPrompt
-    }
-    if len(config.ToolPaths) > 0 {
-        update.ToolPaths = &config.ToolPaths
-    }
-    if len(config.MCPServers) > 0 {
-        update.MCPServers = &config.MCPServers
-    }
-    if cmd.IsSet("think") || cmd.IsSet("think-medium") || cmd.IsSet("think-hard") {
-        update.ThinkingEffort = &config.ThinkingEffort
-    }
-    
-    // Initialize empty fields with defaults on first use
-    if existing == nil || existing.Model == "" {
-        model := getEffectiveValue(config.Model, defaultModel)
-        update.Model = &model
-    }
-    if existing == nil || existing.Temperature == 0 {
-        temp := getEffectiveFloat(config.Temperature, defaultTemperature)
-        update.Temperature = &temp
-    }
-    if existing == nil || existing.MaxTokens == 0 {
-        max := getEffectiveInt(config.MaxTokens, defaultMaxTokens)
-        update.MaxTokens = &max
-    }
-    // Don't set a default for MaxHistory - 0 means unlimited which is the intended default
-    
-    _ = session.UpdateContextInfo(update)
-}
+	existing := session.GetMetadata()
 
-// Helper functions for getting effective values
-func getEffectiveValue(value, defaultValue string) string {
-    if value != "" {
-        return value
-    }
-    return defaultValue
-}
+	// Build update with only the fields that should be updated
+	update := &sessions.Metadata{
+		Name:     session.GetName(),
+		LastUsed: time.Now(),
+	}
 
-func getEffectiveFloat(value, defaultValue float64) float64 {
-    if value != 0 {
-        return value
-    }
-    return defaultValue
-}
+	// Apply command-line overrides or defaults for new contexts
+	if cmd.IsSet("model") || existing == nil || existing.Model == "" {
+		update.Model = config.Model
+		if update.Model == "" {
+			update.Model = defaultModel
+		}
+	}
+	if cmd.IsSet("temp") || existing == nil || existing.Temperature == 0 {
+		update.Temperature = config.Temperature
+		if update.Temperature == 0 {
+			update.Temperature = defaultTemperature
+		}
+	}
+	if cmd.IsSet("maxtokens") || existing == nil || existing.MaxTokens == 0 {
+		update.MaxTokens = config.MaxTokens
+		if update.MaxTokens == 0 {
+			update.MaxTokens = defaultMaxTokens
+		}
+	}
+	if cmd.IsSet("maxhistory") {
+		update.MaxHistory = config.MaxHistory
+	}
+	if cmd.IsSet("system") {
+		update.SystemPrompt = config.SystemPrompt
+	}
+	if len(config.ToolPaths) > 0 {
+		update.ToolPaths = config.ToolPaths
+	}
+	if len(config.MCPServers) > 0 {
+		update.MCPServers = config.MCPServers
+	}
+	if cmd.IsSet("think") || cmd.IsSet("think-medium") || cmd.IsSet("think-hard") {
+		update.ThinkingEffort = config.ThinkingEffort
+	}
 
-func getEffectiveInt(value, defaultValue int) int {
-    if value != 0 {
-        return value
-    }
-    return defaultValue
+	_ = session.UpdateMetadata(update)
 }
 
 // cleanupAndExit performs cleanup and exits with the given code

@@ -8,45 +8,29 @@ import (
 
 // Session interface defines the contract for session implementations
 type Session interface {
-    GetHistory() []messages.ChatMessage
-    AddMessage(messages.ChatMessage)
-    Clear()
-    Close() // Clean up resources (file locks, etc.)
+	GetHistory() []messages.ChatMessage
+	AddMessage(messages.ChatMessage)
+	Clear()
+	Close() // Clean up resources (file locks, etc.)
 
-    // Session metadata
-    GetName() string
-    GetContextInfo() *ContextInfo
-    SetContextInfo(*ContextInfo)
-    UpdateContextInfo(*ContextUpdate) error  // Apply partial updates
-    GetLastUsed() time.Time
+	// Session metadata
+	GetName() string
+	GetMetadata() *Metadata
+	SetMetadata(*Metadata)
+	UpdateMetadata(*Metadata) error // Apply partial updates (only non-zero values)
+	GetLastUsed() time.Time
 }
 
 // SessionStore manages multiple sessions
 type SessionStore interface {
-    Get(string) (Session, error)
-    Delete(string)
-    Range(func(key, value any) bool)
-    Expire()
+	Get(string) (Session, error)
+	Delete(string)
+	Range(func(key, value any) bool)
+	Expire()
 
-    // Session discovery and metadata
-    List() ([]string, error)
-    Exists(string) bool
-    GetAllContextInfo() map[string]*ContextInfo  // Read-only bulk operation
-    GetLastContext() string // Returns name of most recently used session
-}
-
-// ContextUpdate represents a partial update to context metadata.
-// Only fields set to non-nil values will be applied.
-type ContextUpdate struct {
-    Name           string
-    Model          *string
-    Temperature    *float64
-    SystemPrompt   *string
-    Description    *string
-    ToolPaths      *[]string
-    MCPServers     *[]string
-    MaxTokens      *int
-    MaxHistory     *int
-    LastUsed       *time.Time
-    ThinkingEffort *string
+	// Session discovery and metadata
+	List() ([]string, error)
+	Exists(string) bool
+	GetAllMetadata() map[string]*Metadata // Read-only bulk operation
+	GetLast() string                      // Returns name of most recently used session
 }

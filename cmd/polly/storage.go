@@ -24,22 +24,23 @@ func needsFileStore(config *Config, contextID string) bool {
 
 // setupSessionStore creates the appropriate session store based on configuration
 func setupSessionStore(config *Config, contextID string) (sessions.SessionStore, error) {
-	sessionConfig := &sessions.SessionConfig{
+	// Create default context info with initial settings
+	defaultInfo := &sessions.Metadata{
 		TTL:          memoryStoreTTL,
 		SystemPrompt: config.SystemPrompt,
 		MaxHistory:   config.MaxHistory,
 	}
 
 	if needsFileStore(config, contextID) {
-		return sessions.NewFileSessionStore("", sessionConfig) // Uses default ~/.pollytool/contexts
+		return sessions.NewFileSessionStore("", defaultInfo) // Uses default ~/.pollytool/contexts
 	}
-	return sessions.NewSyncMapSessionStore(sessionConfig), nil
+	return sessions.NewSyncMapSessionStore(defaultInfo), nil
 }
 
 // handleListContexts lists all available contexts
 func handleListContexts(store sessions.SessionStore) error {
-	contexts := store.GetAllContextInfo()
-	lastContext := store.GetLastContext()
+	contexts := store.GetAllMetadata()
+	lastContext := store.GetLast()
 
 	if len(contexts) == 0 {
 		fmt.Println("No contexts found")
@@ -123,10 +124,10 @@ func deleteContext(store sessions.SessionStore, contextID string) error {
 func handleAddToContext(store sessions.SessionStore, config *Config, contextID string) error {
 	if contextID == "" {
 		// Try to use last context if available
-		lastContext := store.GetLastContext()
+		lastContext := store.GetLast()
 		if lastContext != "" {
 			contextDisplay := lastContext
-			if info := store.GetAllContextInfo()[lastContext]; info != nil && info.Name != "" {
+			if info := store.GetAllMetadata()[lastContext]; info != nil && info.Name != "" {
 				contextDisplay = info.Name
 			}
 			prompt := fmt.Sprintf("No context specified. Use last context '%s'?", contextDisplay)
@@ -240,7 +241,7 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 	}
 
 	// Create context info with all settings
-	info := &sessions.ContextInfo{
+	info := &sessions.Metadata{
 		Name:         contextID,
 		Model:        config.Model,
 		Temperature:  config.Temperature,
@@ -259,8 +260,8 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 		return fmt.Errorf("failed to create context: %w", err)
 	}
 	defer session.Close()
-	
-	session.SetContextInfo(info)
+
+	session.SetMetadata(info)
 
 	fmt.Printf("Created context '%s' with:\n", contextID)
 	fmt.Printf("  Model: %s\n", info.Model)
@@ -289,7 +290,7 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 		return fmt.Errorf("--show requires a context name")
 	}
 
-	info := store.GetAllContextInfo()[contextID]
+	info := store.GetAllMetadata()[contextID]
 	if info == nil {
 		return fmt.Errorf("context '%s' not found", contextID)
 	}
@@ -356,47 +357,48 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 	if err := resetContext(store, contextID); err != nil {
 		return fmt.Errorf("failed to reset context: %w", err)
 	}
-	
+
 	// If there are command-line overrides, apply them through the session
 	if config.Model != defaultModel || config.Temperature != defaultTemperature ||
-		config.MaxTokens != defaultMaxTokens || config.MaxHistory != 0 || 
+		config.MaxTokens != defaultMaxTokens || config.MaxHistory != 0 ||
 		config.SystemPrompt != defaultSystemPrompt ||
 		len(config.ToolPaths) > 0 || len(config.MCPServers) > 0 {
-		
+
 		session, err := store.Get(contextID)
 		if err != nil {
 			return fmt.Errorf("failed to get session: %w", err)
 		}
 		defer session.Close()
-		
+
 		// Build update with overrides
-		update := &sessions.ContextUpdate{Name: contextID}
-		now := time.Now()
-		update.LastUsed = &now
-		
+		update := &sessions.Metadata{
+			Name:     contextID,
+			LastUsed: time.Now(),
+		}
+
 		if config.Model != defaultModel {
-			update.Model = &config.Model
+			update.Model = config.Model
 		}
 		if config.Temperature != defaultTemperature {
-			update.Temperature = &config.Temperature
+			update.Temperature = config.Temperature
 		}
 		if config.MaxTokens != defaultMaxTokens {
-			update.MaxTokens = &config.MaxTokens
+			update.MaxTokens = config.MaxTokens
 		}
 		if config.MaxHistory != 0 {
-			update.MaxHistory = &config.MaxHistory
+			update.MaxHistory = config.MaxHistory
 		}
 		if config.SystemPrompt != defaultSystemPrompt {
-			update.SystemPrompt = &config.SystemPrompt
+			update.SystemPrompt = config.SystemPrompt
 		}
 		if len(config.ToolPaths) > 0 {
-			update.ToolPaths = &config.ToolPaths
+			update.ToolPaths = config.ToolPaths
 		}
 		if len(config.MCPServers) > 0 {
-			update.MCPServers = &config.MCPServers
+			update.MCPServers = config.MCPServers
 		}
-		
-		if err := session.UpdateContextInfo(update); err != nil {
+
+		if err := session.UpdateMetadata(update); err != nil {
 			return fmt.Errorf("failed to update context info: %w", err)
 		}
 	}
@@ -468,20 +470,19 @@ func purgeContexts(store sessions.SessionStore, contextIDs []string) error {
 
 // resetContext clears the conversation history but preserves the context settings
 func resetContext(sessionStore sessions.SessionStore, name string) error {
-    // Get the session (creates if doesn't exist)
-    session, err := sessionStore.Get(name)
-    if err != nil {
-        return fmt.Errorf("failed to get session for context %s: %w", name, err)
-    }
-    // Ensure we release the file lock
-    defer session.Close()
+	// Get the session (creates if doesn't exist)
+	session, err := sessionStore.Get(name)
+	if err != nil {
+		return fmt.Errorf("failed to get session for context %s: %w", name, err)
+	}
+	// Ensure we release the file lock
+	defer session.Close()
 
 	// Clear the session history
-    session.Clear()
+	session.Clear()
 
-    return nil
+	return nil
 }
-
 
 // checkAndPromptForMissingContext checks if a context exists and creates it if missing
 // Returns the context name to use (existing or newly created)

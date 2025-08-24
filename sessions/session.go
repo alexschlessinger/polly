@@ -9,33 +9,34 @@ import (
 
 // LocalSession implements an in-memory session
 type LocalSession struct {
-	history     []messages.ChatMessage
-	last        time.Time
-	name        string
-	mu          sync.RWMutex
-	contextInfo *ContextInfo
+	history  []messages.ChatMessage
+	last     time.Time
+	name     string
+	mu       sync.RWMutex
+	metadata *Metadata
 }
 
 // SyncMapSessionStore implements a thread-safe in-memory session store
 type SyncMapSessionStore struct {
 	sync.Map
-	config *SessionConfig
+	defaults *Metadata // Default values for new contexts
 }
 
 // NewSyncMapSessionStore creates a new thread-safe in-memory session store
-func NewSyncMapSessionStore(config *SessionConfig) SessionStore {
-	if config == nil {
-		config = DefaultConfig()
+func NewSyncMapSessionStore(metadata *Metadata) SessionStore {
+	// Use empty defaults if none provided
+	if metadata == nil {
+		metadata = &Metadata{}
 	}
 
 	store := &SyncMapSessionStore{
-		config: config,
+		defaults: metadata,
 	}
 
 	// Start expiry goroutine if TTL is set
-	if config.TTL > 0 {
+	if metadata.TTL > 0 {
 		go func() {
-			ticker := time.NewTicker(config.TTL)
+			ticker := time.NewTicker(metadata.TTL)
 			defer ticker.Stop()
 			for range ticker.C {
 				store.Expire()
@@ -56,20 +57,20 @@ func (s *SyncMapSessionStore) Get(id string) (Session, error) {
 		return session, nil
 	}
 
-	// Initialize context info from default config
-	contextInfo := &ContextInfo{
+	// Initialize context info from defaults
+	contextInfo := &Metadata{
 		Name:         id,
 		Created:      time.Now(),
 		LastUsed:     time.Now(),
-		SystemPrompt: s.config.SystemPrompt,
-		MaxHistory:   s.config.MaxHistory,
-		TTL:          s.config.TTL,
+		SystemPrompt: s.defaults.SystemPrompt,
+		MaxHistory:   s.defaults.MaxHistory,
+		TTL:          s.defaults.TTL,
 	}
 
 	session := &LocalSession{
-		name:        id,
-		last:        time.Now(),
-		contextInfo: contextInfo,
+		name:     id,
+		last:     time.Now(),
+		metadata: contextInfo,
 	}
 	session.Clear()
 	s.Store(id, session)
@@ -92,13 +93,13 @@ func (s *SyncMapSessionStore) Expire() {
 		session := value.(*LocalSession)
 		session.mu.RLock()
 		lastAccess := session.last
-		contextInfo := session.contextInfo
+		contextInfo := session.metadata
 		session.mu.RUnlock()
 
 		// Use per-context TTL if available, otherwise use default
 		ttl := contextInfo.TTL
 		if ttl == 0 {
-			ttl = s.config.TTL
+			ttl = s.defaults.TTL
 		}
 
 		if ttl > 0 && time.Since(lastAccess) > ttl {
@@ -124,13 +125,13 @@ func (s *SyncMapSessionStore) Exists(id string) bool {
 	return ok
 }
 
-// GetAllContextInfo returns metadata for all contexts
-func (s *SyncMapSessionStore) GetAllContextInfo() map[string]*ContextInfo {
-	result := make(map[string]*ContextInfo)
+// GetAllMetadata returns metadata for all contexts
+func (s *SyncMapSessionStore) GetAllMetadata() map[string]*Metadata {
+	result := make(map[string]*Metadata)
 	s.Range(func(key, value any) bool {
 		session := value.(*LocalSession)
 		session.mu.RLock()
-		info := session.contextInfo
+		info := session.metadata
 		session.mu.RUnlock()
 		result[key.(string)] = info
 		return true
@@ -138,9 +139,8 @@ func (s *SyncMapSessionStore) GetAllContextInfo() map[string]*ContextInfo {
 	return result
 }
 
-
-// GetLastContext returns the name of the most recently used session
-func (s *SyncMapSessionStore) GetLastContext() string {
+// GetLast returns the name of the most recently used session
+func (s *SyncMapSessionStore) GetLast() string {
 	var lastContext string
 	var lastTime time.Time
 
@@ -180,10 +180,10 @@ func (s *LocalSession) AddMessage(msg messages.ChatMessage) {
 
 // trimHistory limits the session history to MaxHistory messages
 func (s *LocalSession) trimHistory() {
-	if s.contextInfo.MaxHistory == 0 {
+	if s.metadata.MaxHistory == 0 {
 		return
 	}
-	s.history = TrimHistory(s.history, s.contextInfo.MaxHistory)
+	s.history = TrimHistory(s.history, s.metadata.MaxHistory)
 }
 
 // Clear clears the session history
@@ -191,13 +191,14 @@ func (s *LocalSession) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Create a temporary config from contextInfo for initialization
-	config := &SessionConfig{
-		SystemPrompt: s.contextInfo.SystemPrompt,
-		MaxHistory:   s.contextInfo.MaxHistory,
-		TTL:          s.contextInfo.TTL,
+	// Clear history and re-initialize with system prompt if configured
+	s.history = s.history[:0]
+	if s.metadata.SystemPrompt != "" {
+		s.history = append(s.history, messages.ChatMessage{
+			Role:    messages.MessageRoleSystem,
+			Content: s.metadata.SystemPrompt,
+		})
 	}
-	s.history = InitializeWithSystemPrompt(s.history, config)
 	s.last = time.Now()
 }
 
@@ -208,29 +209,29 @@ func (s *LocalSession) GetName() string {
 	return s.name
 }
 
-// GetContextInfo returns the context metadata
-func (s *LocalSession) GetContextInfo() *ContextInfo {
+// GetMetadata returns the context metadata
+func (s *LocalSession) GetMetadata() *Metadata {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.contextInfo
+	return s.metadata
 }
 
-// SetContextInfo updates the context metadata
-func (s *LocalSession) SetContextInfo(info *ContextInfo) {
+// SetMetadata updates the context metadata
+func (s *LocalSession) SetMetadata(info *Metadata) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.contextInfo = info
+	s.metadata = info
 }
 
-// UpdateContextInfo applies a partial update to the context metadata
-func (s *LocalSession) UpdateContextInfo(update *ContextUpdate) error {
+// UpdateMetadata applies a partial update to the context metadata
+func (s *LocalSession) UpdateMetadata(update *Metadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
-	// Apply the update to current context info
-	s.contextInfo = ApplyContextUpdate(s.contextInfo, update)
+
+	// Apply the update to current context info (only non-zero values)
+	s.metadata = MergeContextInfo(s.metadata, update)
 	s.last = time.Now()
-	return nil  // LocalSession has no persistence errors
+	return nil // LocalSession has no persistence errors
 }
 
 // GetLastUsed returns when the session was last accessed
