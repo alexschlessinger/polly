@@ -358,49 +358,29 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 		return fmt.Errorf("failed to reset context: %w", err)
 	}
 
-	// If there are command-line overrides, apply them through the session
-	if config.Model != defaultModel || config.Temperature != defaultTemperature ||
-		config.MaxTokens != defaultMaxTokens || config.MaxHistory != 0 ||
-		config.SystemPrompt != defaultSystemPrompt ||
-		len(config.ToolPaths) > 0 || len(config.MCPServers) > 0 {
+	// Apply any command-line overrides through the session
+	// MergeContextInfo will automatically skip zero/default values
+	session, err := store.Get(contextID)
+	if err != nil {
+		return fmt.Errorf("failed to get session: %w", err)
+	}
+	defer session.Close()
 
-		session, err := store.Get(contextID)
-		if err != nil {
-			return fmt.Errorf("failed to get session: %w", err)
-		}
-		defer session.Close()
+	// Build update with all config values (mergo will skip zeros/defaults)
+	update := &sessions.Metadata{
+		Name:         contextID,
+		LastUsed:     time.Now(),
+		Model:        config.Model,
+		Temperature:  config.Temperature,
+		MaxTokens:    config.MaxTokens,
+		MaxHistory:   config.MaxHistory,
+		SystemPrompt: config.SystemPrompt,
+		ToolPaths:    config.ToolPaths,
+		MCPServers:   config.MCPServers,
+	}
 
-		// Build update with overrides
-		update := &sessions.Metadata{
-			Name:     contextID,
-			LastUsed: time.Now(),
-		}
-
-		if config.Model != defaultModel {
-			update.Model = config.Model
-		}
-		if config.Temperature != defaultTemperature {
-			update.Temperature = config.Temperature
-		}
-		if config.MaxTokens != defaultMaxTokens {
-			update.MaxTokens = config.MaxTokens
-		}
-		if config.MaxHistory != 0 {
-			update.MaxHistory = config.MaxHistory
-		}
-		if config.SystemPrompt != defaultSystemPrompt {
-			update.SystemPrompt = config.SystemPrompt
-		}
-		if len(config.ToolPaths) > 0 {
-			update.ToolPaths = config.ToolPaths
-		}
-		if len(config.MCPServers) > 0 {
-			update.MCPServers = config.MCPServers
-		}
-
-		if err := session.UpdateMetadata(update); err != nil {
-			return fmt.Errorf("failed to update context info: %w", err)
-		}
+	if err := session.UpdateMetadata(update); err != nil {
+		return fmt.Errorf("failed to update context info: %w", err)
 	}
 
 	fmt.Printf("Reset context '%s' (cleared conversation, kept settings)\n", contextID)
