@@ -40,9 +40,9 @@ func CopyHistory(history []messages.ChatMessage) []messages.ChatMessage {
 	return result
 }
 
-// MergeContextInfo merges non-zero fields from 'update' into 'existing'.
+// MergeMetadata merges non-zero fields from 'update' into 'existing'.
 // Zero values (empty strings, 0 numbers, nil slices) in 'update' do not overwrite existing values.
-func MergeContextInfo(existing *Metadata, update *Metadata) *Metadata {
+func MergeMetadata(existing *Metadata, update *Metadata) *Metadata {
 	if existing == nil {
 		existing = &Metadata{}
 	}

@@ -229,7 +229,7 @@ func (s *LocalSession) UpdateMetadata(update *Metadata) error {
 	defer s.mu.Unlock()
 
 	// Apply the update to current context info (only non-zero values)
-	s.metadata = MergeContextInfo(s.metadata, update)
+	s.metadata = MergeMetadata(s.metadata, update)
 	s.last = time.Now()
 	return nil // LocalSession has no persistence errors
 }

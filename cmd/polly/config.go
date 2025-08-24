@@ -27,17 +27,26 @@ func parseConfig(cmd *cli.Command) *Config {
 	}
 
 	return &Config{
-		// Model configuration
-		Model:          cmd.String("model"),
-		Temperature:    cmd.Float64("temp"),
-		MaxTokens:      cmd.Int("maxtokens"),
-		Timeout:        cmd.Duration("timeout"),
-		ThinkingEffort: thinkingEffort,
+		Settings: Settings{
+			// Model configuration
+			Model:          cmd.String("model"),
+			Temperature:    cmd.Float64("temp"),
+			MaxTokens:      cmd.Int("maxtokens"),
+			MaxHistory:     cmd.Int("maxhistory"),
+			ThinkingEffort: thinkingEffort,
+			SystemPrompt:   cmd.String("system"),
 
-		// API configuration
+			// Tool configuration
+			ToolPaths:   cmd.StringSlice("tool"),
+			MCPServers:  cmd.StringSlice("mcp"),
+			ToolTimeout: cmd.Duration("tooltimeout"),
+		},
+
+		// Runtime configuration
+		Timeout: cmd.Duration("timeout"),
 		BaseURL: cmd.String("baseurl"),
 
-		// Context configuration
+		// Context operations
 		ContextID:      cmd.String("context"),
 		ResetContext:   cmd.String("reset"),
 		UseLastContext: cmd.Bool("last"),
@@ -47,20 +56,13 @@ func parseConfig(cmd *cli.Command) *Config {
 		PurgeAll:       cmd.Bool("purge"),
 		CreateContext:  cmd.String("create"),
 		ShowContext:    cmd.String("show"),
-		MaxHistory:     cmd.Int("maxhistory"),
-
-		// Tool configuration
-		ToolPaths:   cmd.StringSlice("tool"),
-		MCPServers:  cmd.StringSlice("mcp"),
-		ToolTimeout: cmd.Duration("tooltimeout"),
 
 		// Input/Output configuration
-		Prompt:       cmd.String("prompt"),
-		SystemPrompt: cmd.String("system"),
-		Files:        cmd.StringSlice("file"),
-		SchemaPath:   cmd.String("schema"),
-		Quiet:        cmd.Bool("quiet"),
-		Debug:        cmd.Bool("debug"),
+		Prompt:     cmd.String("prompt"),
+		Files:      cmd.StringSlice("file"),
+		SchemaPath: cmd.String("schema"),
+		Quiet:      cmd.Bool("quiet"),
+		Debug:      cmd.Bool("debug"),
 	}
 }
 

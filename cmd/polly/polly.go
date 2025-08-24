@@ -438,35 +438,35 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 
 			// Use stored settings if not overridden by command line
 			if !cmd.IsSet("model") && contextInfo.Model != "" {
-				config.Model = contextInfo.Model
+				config.Settings.Model = contextInfo.Model
 			}
 			if !cmd.IsSet("temp") && contextInfo.Temperature != 0 {
-				config.Temperature = contextInfo.Temperature
+				config.Settings.Temperature = contextInfo.Temperature
 			}
 			if !cmd.IsSet("maxtokens") && contextInfo.MaxTokens != 0 {
-				config.MaxTokens = contextInfo.MaxTokens
+				config.Settings.MaxTokens = contextInfo.MaxTokens
 			}
 			if !cmd.IsSet("maxhistory") && contextInfo.MaxHistory != 0 {
-				config.MaxHistory = contextInfo.MaxHistory
+				config.Settings.MaxHistory = contextInfo.MaxHistory
 			}
 			// Only use stored system prompt if flag wasn't explicitly set
 			if !cmd.IsSet("system") && contextInfo.SystemPrompt != "" {
-				config.SystemPrompt = contextInfo.SystemPrompt
+				config.Settings.SystemPrompt = contextInfo.SystemPrompt
 			}
 			// Apply stored tools if none provided via command line
 			if !cmd.IsSet("tool") && len(contextInfo.ToolPaths) > 0 {
-				config.ToolPaths = contextInfo.ToolPaths
+				config.Settings.ToolPaths = contextInfo.ToolPaths
 			}
 			if !cmd.IsSet("mcp") && len(contextInfo.MCPServers) > 0 {
-				config.MCPServers = contextInfo.MCPServers
+				config.Settings.MCPServers = contextInfo.MCPServers
 			}
 			// Apply stored thinking effort if not provided via command line
 			if !cmd.IsSet("think") && !cmd.IsSet("think-medium") && !cmd.IsSet("think-hard") && contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
-				config.ThinkingEffort = contextInfo.ThinkingEffort
+				config.Settings.ThinkingEffort = contextInfo.ThinkingEffort
 			}
 			// Apply stored tool timeout if not provided via command line
 			if !cmd.IsSet("tooltimeout") && contextInfo.ToolTimeout > 0 {
-				config.ToolTimeout = contextInfo.ToolTimeout
+				config.Settings.ToolTimeout = contextInfo.ToolTimeout
 			}
 		}
 	}
@@ -499,27 +499,27 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 	update := &sessions.Metadata{
 		Name:        session.GetName(),
 		LastUsed:    time.Now(),
-		Model:       config.Model,
-		Temperature: config.Temperature,
-		MaxTokens:   config.MaxTokens,
-		ToolTimeout: config.ToolTimeout,
+		Model:       config.Settings.Model,
+		Temperature: config.Settings.Temperature,
+		MaxTokens:   config.Settings.MaxTokens,
+		ToolTimeout: config.Settings.ToolTimeout,
 	}
 
 	// Only update these if explicitly set via command line
 	if cmd.IsSet("maxhistory") {
-		update.MaxHistory = config.MaxHistory
+		update.MaxHistory = config.Settings.MaxHistory
 	}
 	if cmd.IsSet("system") {
-		update.SystemPrompt = config.SystemPrompt
+		update.SystemPrompt = config.Settings.SystemPrompt
 	}
-	if len(config.ToolPaths) > 0 {
-		update.ToolPaths = config.ToolPaths
+	if len(config.Settings.ToolPaths) > 0 {
+		update.ToolPaths = config.Settings.ToolPaths
 	}
-	if len(config.MCPServers) > 0 {
-		update.MCPServers = config.MCPServers
+	if len(config.Settings.MCPServers) > 0 {
+		update.MCPServers = config.Settings.MCPServers
 	}
 	if cmd.IsSet("think") || cmd.IsSet("think-medium") || cmd.IsSet("think-hard") {
-		update.ThinkingEffort = config.ThinkingEffort
+		update.ThinkingEffort = config.Settings.ThinkingEffort
 	}
 
 	_ = session.UpdateMetadata(update)

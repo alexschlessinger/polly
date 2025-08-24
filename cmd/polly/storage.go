@@ -242,19 +242,12 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 
 	// Create context info with all settings
 	info := &sessions.Metadata{
-		Name:           contextID,
-		Model:          config.Model,
-		Temperature:    config.Temperature,
-		MaxTokens:      config.MaxTokens,
-		MaxHistory:     config.MaxHistory,
-		SystemPrompt:   config.SystemPrompt,
-		ToolPaths:      config.ToolPaths,
-		MCPServers:     config.MCPServers,
-		ThinkingEffort: config.ThinkingEffort,
-		ToolTimeout:    config.ToolTimeout,
-		Created:        time.Now(),
-		LastUsed:       time.Now(),
+		Name:     contextID,
+		Created:  time.Now(),
+		LastUsed: time.Now(),
 	}
+	// Copy settings from config
+	config.Settings.ToMetadataSettings(info)
 
 	// Create session and set its context info
 	session, err := store.Get(contextID)
@@ -265,29 +258,7 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 
 	session.SetMetadata(info)
 
-	fmt.Printf("Created context '%s' with:\n", contextID)
-	fmt.Printf("  Model: %s\n", info.Model)
-	fmt.Printf("  Temperature: %.2f\n", info.Temperature)
-	fmt.Printf("  Max Tokens: %d\n", info.MaxTokens)
-	if info.MaxHistory > 0 {
-		fmt.Printf("  Max History: %d messages\n", info.MaxHistory)
-	}
-	if info.ThinkingEffort != "" && info.ThinkingEffort != "off" {
-		fmt.Printf("  Thinking: %s\n", info.ThinkingEffort)
-	}
-
-	fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
-
-	if len(info.ToolPaths) > 0 {
-		fmt.Printf("  Tools: %v\n", info.ToolPaths)
-	}
-	if len(info.MCPServers) > 0 {
-		fmt.Printf("  MCP Servers: %v\n", info.MCPServers)
-	}
-	if info.ToolTimeout > 0 {
-		fmt.Printf("  Tool Timeout: %s\n", info.ToolTimeout)
-	}
-
+	handleShowContext(store, contextID) // Show the new context info
 	return nil
 }
 
@@ -304,27 +275,27 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 
 	// Display detailed configuration
 	fmt.Printf("Context: %s\n", info.Name)
-	
+
 	// Timestamps
 	fmt.Printf("  Created: %s\n", info.Created.Format("2006-01-02 15:04:05"))
 	fmt.Printf("  Last Used: %s (%s)\n",
 		info.LastUsed.Format("2006-01-02 15:04:05"),
 		formatDuration(time.Since(info.LastUsed)))
-	
+
 	// Model configuration
 	fmt.Printf("  Model: %s\n", info.Model)
 	fmt.Printf("  Temperature: %.2f\n", info.Temperature)
 	fmt.Printf("  Max Tokens: %d\n", info.MaxTokens)
 	fmt.Printf("  Thinking: %s\n", info.ThinkingEffort)
-	
+
 	// Conversation settings
 	fmt.Printf("  Max History: %d\n", info.MaxHistory)
 	fmt.Printf("  TTL: %s\n", info.TTL)
-	
+
 	// Prompts and description
 	fmt.Printf("  Description: %s\n", info.Description)
 	fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
-	
+
 	// Tool configuration
 	fmt.Printf("  Tools: %v\n", info.ToolPaths)
 	fmt.Printf("  MCP Servers: %v\n", info.MCPServers)
@@ -355,7 +326,6 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 	}
 
 	// Apply any command-line overrides through the session
-	// MergeContextInfo will automatically skip zero/default values
 	session, err := store.Get(contextID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -364,16 +334,11 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 
 	// Build update with all config values (mergo will skip zeros/defaults)
 	update := &sessions.Metadata{
-		Name:         contextID,
-		LastUsed:     time.Now(),
-		Model:        config.Model,
-		Temperature:  config.Temperature,
-		MaxTokens:    config.MaxTokens,
-		MaxHistory:   config.MaxHistory,
-		SystemPrompt: config.SystemPrompt,
-		ToolPaths:    config.ToolPaths,
-		MCPServers:   config.MCPServers,
+		Name:     contextID,
+		LastUsed: time.Now(),
 	}
+	// Copy settings from config
+	config.Settings.ToMetadataSettings(update)
 
 	if err := session.UpdateMetadata(update); err != nil {
 		return fmt.Errorf("failed to update context info: %w", err)

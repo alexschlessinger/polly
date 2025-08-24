@@ -34,3 +34,24 @@ type SessionStore interface {
 	GetAllMetadata() map[string]*Metadata // Read-only bulk operation
 	GetLast() string                      // Returns name of most recently used session
 }
+
+// Metadata stores metadata about a context
+type Metadata struct {
+	// Persistence-specific fields
+	Name        string        `json:"name"`
+	Created     time.Time     `json:"created"`
+	LastUsed    time.Time     `json:"lastUsed"`
+	Description string        `json:"description,omitempty"`
+	TTL         time.Duration `json:"ttl,omitempty"` // Time before context expires (0 = never)
+
+	// Settings that can be persisted
+	Model          string        `json:"model,omitempty"`
+	Temperature    float64       `json:"temperature,omitempty"`
+	MaxTokens      int           `json:"maxTokens,omitempty"`
+	MaxHistory     int           `json:"maxHistory,omitempty"`
+	ThinkingEffort string        `json:"thinkingEffort,omitempty"`
+	SystemPrompt   string        `json:"systemPrompt,omitempty"`
+	ToolPaths      []string      `json:"toolPaths,omitempty"`
+	MCPServers     []string      `json:"mcpServers,omitempty"`
+	ToolTimeout    time.Duration `json:"toolTimeout,omitempty"`
+}

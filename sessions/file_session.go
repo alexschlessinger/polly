@@ -20,30 +20,11 @@ type FileSession struct {
 	History  []messages.ChatMessage `json:"history"`
 	Created  time.Time              `json:"created"`
 	Updated  time.Time              `json:"updated"`
-	Metadata *Metadata              `json:"contextInfo"`
+	Metadata *Metadata              `json:"metadata"`
 	path     string
 	lock     *flock.Flock // File lock using flock
 	mu       sync.RWMutex
 }
-
-// Metadata stores metadata about a context
-type Metadata struct {
-	Name           string        `json:"name"` // Name is the primary identifier (e.g., "@stocks" or random ID)
-	Created        time.Time     `json:"created"`
-	LastUsed       time.Time     `json:"lastUsed"`
-	Model          string        `json:"model,omitempty"`
-	Temperature    float64       `json:"temperature,omitempty"`
-	SystemPrompt   string        `json:"systemPrompt,omitempty"`
-	Description    string        `json:"description,omitempty"`
-	ToolPaths      []string      `json:"toolPaths,omitempty"`
-	MCPServers     []string      `json:"mcpServers,omitempty"`
-	MaxTokens      int           `json:"maxTokens,omitempty"`
-	MaxHistory     int           `json:"maxHistory,omitempty"`     // Maximum messages to keep (0 = unlimited)
-	TTL            time.Duration `json:"ttl,omitempty"`            // Time before context expires (0 = never)
-	ThinkingEffort string        `json:"thinkingEffort,omitempty"` // Thinking effort level (e.g., "low", "medium", "high", "off")
-	ToolTimeout    time.Duration `json:"toolTimeout,omitempty"`    // Timeout for tool execution
-}
-
 
 // FileSessionStore implements a file-based session store
 type FileSessionStore struct {
@@ -219,7 +200,7 @@ func (s *FileSessionStore) Range(f func(key, value any) bool) {
 		if filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		
+
 		name := strings.TrimSuffix(entry.Name(), ".json")
 		// Load the session for this context
 		session, err := s.Get(name)
@@ -367,7 +348,7 @@ func (s *FileSession) UpdateMetadata(update *Metadata) error {
 	defer s.mu.Unlock()
 
 	// Apply the update to current context info (only non-zero values)
-	s.Metadata = MergeContextInfo(s.Metadata, update)
+	s.Metadata = MergeMetadata(s.Metadata, update)
 	s.Updated = time.Now()
 	return s.save()
 }
@@ -397,7 +378,6 @@ func (s *FileSession) Close() {
 	}
 }
 
-
 // GetLast returns the last used context name based on file modification time
 func (s *FileSessionStore) GetLast() string {
 	entries, err := os.ReadDir(s.baseDir)
@@ -412,25 +392,25 @@ func (s *FileSessionStore) GetLast() string {
 		if filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		
+
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
-		
+
 		if info.ModTime().After(lastTime) {
 			lastTime = info.ModTime()
 			lastFile = strings.TrimSuffix(entry.Name(), ".json")
 		}
 	}
-	
+
 	return lastFile
 }
 
 // GetAllMetadata returns information about all contexts
 func (s *FileSessionStore) GetAllMetadata() map[string]*Metadata {
 	result := make(map[string]*Metadata)
-	
+
 	entries, err := os.ReadDir(s.baseDir)
 	if err != nil {
 		return result
@@ -440,10 +420,10 @@ func (s *FileSessionStore) GetAllMetadata() map[string]*Metadata {
 		if filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		
+
 		name := strings.TrimSuffix(entry.Name(), ".json")
 		sessionPath := filepath.Join(s.baseDir, name+".json")
-		
+
 		if data, err := os.ReadFile(sessionPath); err == nil {
 			var session FileSession
 			if err := json.Unmarshal(data, &session); err == nil && session.Metadata != nil {
