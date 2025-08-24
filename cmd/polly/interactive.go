@@ -19,6 +19,20 @@ import (
 	"github.com/chzyer/readline"
 )
 
+var RL *readline.Instance
+
+func safePrintln(text string) {
+	RL.Clean()
+	fmt.Println(text)
+	RL.Refresh()
+}
+
+func safePrintf(format string, args ...interface{}) {
+	RL.Clean()
+	fmt.Printf(format, args...)
+	RL.Refresh()
+}
+
 // runInteractiveMode runs the CLI in interactive mode with readline support
 func runInteractiveMode(ctx context.Context, config *Config, session sessions.Session, multipass llm.LLM, toolRegistry *tools.ToolRegistry, contextID string) error {
 	// Note: session is already initialized by caller, no need to close it here
@@ -48,6 +62,7 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 	if err != nil {
 		return err
 	}
+	RL = rl
 	defer rl.Close()
 
 	// Print welcome message
@@ -886,7 +901,7 @@ func printInteractiveHelp() {
 	}
 
 	for _, c := range commands {
-		fmt.Printf("  %-20s %s\n", highlightStyle.Styled(c.cmd), c.desc)
+		safePrintf("  %-20s %s\n", highlightStyle.Styled(c.cmd), c.desc)
 	}
 
 }
@@ -983,12 +998,12 @@ func showRecentHistory(session sessions.Session) bool {
 func showHistory(session sessions.Session) {
 	history := session.GetHistory()
 	if len(history) == 0 {
-		fmt.Println(dimStyle.Styled("No conversation history."))
+		safePrintln(dimStyle.Styled("No conversation history."))
 		return
 	}
 
 	formatted := formatConversation(history)
-	fmt.Print(formatted)
+	safePrintf("%s", formatted)
 }
 
 // saveConversation saves the conversation to a file
