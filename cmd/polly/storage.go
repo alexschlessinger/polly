@@ -26,7 +26,7 @@ func needsFileStore(config *Config, contextID string) bool {
 func setupSessionStore(config *Config, contextID string) (sessions.SessionStore, error) {
 	// Create default context info with initial settings
 	defaultInfo := &sessions.Metadata{
-		TTL:          memoryStoreTTL,
+		TTL:          0,
 		SystemPrompt: config.SystemPrompt,
 		MaxHistory:   config.MaxHistory,
 	}
@@ -242,16 +242,18 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 
 	// Create context info with all settings
 	info := &sessions.Metadata{
-		Name:         contextID,
-		Model:        config.Model,
-		Temperature:  config.Temperature,
-		MaxTokens:    config.MaxTokens,
-		MaxHistory:   config.MaxHistory,
-		SystemPrompt: config.SystemPrompt,
-		ToolPaths:    config.ToolPaths,
-		MCPServers:   config.MCPServers,
-		Created:      time.Now(),
-		LastUsed:     time.Now(),
+		Name:           contextID,
+		Model:          config.Model,
+		Temperature:    config.Temperature,
+		MaxTokens:      config.MaxTokens,
+		MaxHistory:     config.MaxHistory,
+		SystemPrompt:   config.SystemPrompt,
+		ToolPaths:      config.ToolPaths,
+		MCPServers:     config.MCPServers,
+		ThinkingEffort: config.ThinkingEffort,
+		ToolTimeout:    config.ToolTimeout,
+		Created:        time.Now(),
+		LastUsed:       time.Now(),
 	}
 
 	// Create session and set its context info
@@ -270,15 +272,20 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 	if info.MaxHistory > 0 {
 		fmt.Printf("  Max History: %d messages\n", info.MaxHistory)
 	}
-	if info.SystemPrompt != "" && info.SystemPrompt != defaultSystemPrompt {
-		// Only show if different from default
-		fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
+	if info.ThinkingEffort != "" && info.ThinkingEffort != "off" {
+		fmt.Printf("  Thinking: %s\n", info.ThinkingEffort)
 	}
+
+	fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
+
 	if len(info.ToolPaths) > 0 {
 		fmt.Printf("  Tools: %v\n", info.ToolPaths)
 	}
 	if len(info.MCPServers) > 0 {
 		fmt.Printf("  MCP Servers: %v\n", info.MCPServers)
+	}
+	if info.ToolTimeout > 0 {
+		fmt.Printf("  Tool Timeout: %s\n", info.ToolTimeout)
 	}
 
 	return nil
@@ -297,42 +304,31 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 
 	// Display detailed configuration
 	fmt.Printf("Context: %s\n", info.Name)
-	fmt.Printf("  Model: %s\n", info.Model)
-	fmt.Printf("  Temperature: %.2f\n", info.Temperature)
-	fmt.Printf("  Max Tokens: %d\n", info.MaxTokens)
-
-	if info.SystemPrompt != "" {
-		fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
-	}
-
-	if len(info.ToolPaths) > 0 {
-		fmt.Printf("  Tools: %v\n", info.ToolPaths)
-	}
-
-	if len(info.MCPServers) > 0 {
-		fmt.Printf("  MCP Servers: %v\n", info.MCPServers)
-	}
-
-	if info.ThinkingEffort != "" && info.ThinkingEffort != "off" {
-		fmt.Printf("  Thinking: %s\n", info.ThinkingEffort)
-	}
-
-	if info.Description != "" {
-		fmt.Printf("  Description: %s\n", info.Description)
-	}
-
-	if info.MaxHistory > 0 {
-		fmt.Printf("  Max History: %d messages\n", info.MaxHistory)
-	}
-
-	if info.TTL > 0 {
-		fmt.Printf("  TTL: %s\n", info.TTL)
-	}
-
+	
+	// Timestamps
 	fmt.Printf("  Created: %s\n", info.Created.Format("2006-01-02 15:04:05"))
 	fmt.Printf("  Last Used: %s (%s)\n",
 		info.LastUsed.Format("2006-01-02 15:04:05"),
 		formatDuration(time.Since(info.LastUsed)))
+	
+	// Model configuration
+	fmt.Printf("  Model: %s\n", info.Model)
+	fmt.Printf("  Temperature: %.2f\n", info.Temperature)
+	fmt.Printf("  Max Tokens: %d\n", info.MaxTokens)
+	fmt.Printf("  Thinking: %s\n", info.ThinkingEffort)
+	
+	// Conversation settings
+	fmt.Printf("  Max History: %d\n", info.MaxHistory)
+	fmt.Printf("  TTL: %s\n", info.TTL)
+	
+	// Prompts and description
+	fmt.Printf("  Description: %s\n", info.Description)
+	fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
+	
+	// Tool configuration
+	fmt.Printf("  Tools: %v\n", info.ToolPaths)
+	fmt.Printf("  MCP Servers: %v\n", info.MCPServers)
+	fmt.Printf("  Tool Timeout: %s\n", info.ToolTimeout)
 
 	return nil
 }
