@@ -129,6 +129,47 @@ type MCPConfig struct {
 	Env     map[string]string `json:"env,omitempty"`
 }
 
+// GetMCPDisplayName returns a display-friendly name for an MCP server spec
+// For JSON files, it shows: "filename.json → command args"
+// For direct commands, it returns them as-is
+func GetMCPDisplayName(serverSpec string) string {
+	// Check if it's a JSON file
+	if !strings.HasSuffix(serverSpec, ".json") {
+		return serverSpec
+	}
+
+	// Try to read and parse the JSON file
+	data, err := os.ReadFile(serverSpec)
+	if err != nil {
+		// If we can't read the file, just return the spec as-is
+		return serverSpec
+	}
+
+	// Parse the JSON configuration
+	var config MCPConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		// If we can't parse it, return the spec as-is
+		return serverSpec
+	}
+
+	// Build the display name from the command and args
+	displayParts := []string{config.Command}
+	displayParts = append(displayParts, config.Args...)
+	displayName := strings.Join(displayParts, " ")
+
+	// Return in the format: "file.json → command args"
+	return fmt.Sprintf("%s → %s", serverSpec, displayName)
+}
+
+// FormatMCPServersForDisplay formats a list of MCP server specs for display
+func FormatMCPServersForDisplay(servers []string) []string {
+	formatted := make([]string, len(servers))
+	for i, server := range servers {
+		formatted[i] = GetMCPDisplayName(server)
+	}
+	return formatted
+}
+
 // MCPClient manages connection to an MCP server
 type MCPClient struct {
 	session *mcp.ClientSession

@@ -575,7 +575,8 @@ func handleMCP(parts []string, config *Config, session sessions.Session, rl *rea
 		if len(contextInfo.MCPServers) > 0 {
 			fmt.Println("Current MCP servers:")
 			for _, server := range contextInfo.MCPServers {
-				fmt.Printf("  - %s\n", highlightStyle.Styled(server))
+				displayName := tools.GetMCPDisplayName(server)
+				fmt.Printf("  - %s\n", highlightStyle.Styled(displayName))
 			}
 		} else {
 			fmt.Println(dimStyle.Styled("No MCP servers configured"))
@@ -912,7 +913,8 @@ func printWelcomeMessage(config *Config, session sessions.Session, contextID str
 	}
 	if len(config.MCPServers) > 0 {
 		fmt.Print("MCP Servers: ")
-		fmt.Println(highlightStyle.Styled(strings.Join(config.MCPServers, ", ")))
+		displayNames := tools.FormatMCPServersForDisplay(config.MCPServers)
+		fmt.Println(highlightStyle.Styled(strings.Join(displayNames, ", ")))
 	}
 
 	fmt.Println()
