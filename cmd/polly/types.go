@@ -2,30 +2,28 @@ package main
 
 import (
 	"time"
-	
+
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 // Settings contains configuration that can be persisted with a context
 type Settings struct {
 	// Model configuration
-	Model          string        `json:"model,omitempty"`
-	Temperature    float64       `json:"temperature,omitempty"`
-	MaxTokens      int           `json:"maxTokens,omitempty"`
-	MaxHistory     int           `json:"maxHistory,omitempty"`
-	ThinkingEffort string        `json:"thinkingEffort,omitempty"`
-	SystemPrompt   string        `json:"systemPrompt,omitempty"`
-	
+	Model          string  `json:"model,omitempty"`
+	Temperature    float64 `json:"temperature,omitempty"`
+	MaxTokens      int     `json:"maxTokens,omitempty"`
+	MaxHistory     int     `json:"maxHistory,omitempty"`
+	ThinkingEffort string  `json:"thinkingEffort,omitempty"`
+	SystemPrompt   string  `json:"systemPrompt,omitempty"`
+
 	// Tool configuration
-	ToolPaths    []string      `json:"toolPaths,omitempty"`
-	MCPServers   []string      `json:"mcpServers,omitempty"`
-	ToolTimeout  time.Duration `json:"toolTimeout,omitempty"`
+	ToolTimeout time.Duration `json:"toolTimeout,omitempty"`
 }
 
 // Config holds all configuration from command-line flags
 type Config struct {
 	Settings // Embed the shared settings
-	
+
 	// Runtime configuration
 	Timeout time.Duration
 	BaseURL string
@@ -47,12 +45,9 @@ type Config struct {
 	SchemaPath string   // Path to JSON schema file
 	Quiet      bool
 	Debug      bool
-}
 
-// ExecutionState holds runtime state during command execution
-type ExecutionState struct {
-	NeedFileStore bool
-	ContextID     string
+	// Temporary storage for command line tools (before conversion to ActiveTools)
+	Tools []string
 }
 
 // ToMetadataSettings copies Settings fields to Metadata
@@ -63,20 +58,5 @@ func (s Settings) ToMetadataSettings(m *sessions.Metadata) {
 	m.MaxHistory = s.MaxHistory
 	m.ThinkingEffort = s.ThinkingEffort
 	m.SystemPrompt = s.SystemPrompt
-	m.ToolPaths = s.ToolPaths
-	m.MCPServers = s.MCPServers
 	m.ToolTimeout = s.ToolTimeout
-}
-
-// FromMetadata copies settings from Metadata to Settings
-func (s *Settings) FromMetadata(m *sessions.Metadata) {
-	s.Model = m.Model
-	s.Temperature = m.Temperature
-	s.MaxTokens = m.MaxTokens
-	s.MaxHistory = m.MaxHistory
-	s.ThinkingEffort = m.ThinkingEffort
-	s.SystemPrompt = m.SystemPrompt
-	s.ToolPaths = m.ToolPaths
-	s.MCPServers = m.MCPServers
-	s.ToolTimeout = m.ToolTimeout
 }

@@ -7,7 +7,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
-	"github.com/alexschlessinger/pollytool/tools"
 )
 
 // needsFileStore determines if we need a file-based session store
@@ -298,15 +297,13 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 	fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
 
 	// Tool configuration
-	fmt.Printf("  Tools: %v\n", info.ToolPaths)
-	if len(info.MCPServers) > 0 {
-		fmt.Println("  MCP Servers:")
-		for _, server := range info.MCPServers {
-			displayName := tools.GetMCPDisplayName(server)
-			fmt.Printf("    - %s\n", displayName)
+	if len(info.ActiveTools) > 0 {
+		fmt.Println("  Active Tools:")
+		for _, loader := range info.ActiveTools {
+			fmt.Printf("    - %s [%s] from %s\n", loader.Name, loader.Type, loader.Source)
 		}
 	} else {
-		fmt.Printf("  MCP Servers: []\n")
+		fmt.Printf("  Active Tools: []\n")
 	}
 	fmt.Printf("  Tool Timeout: %s\n", info.ToolTimeout)
 

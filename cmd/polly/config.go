@@ -40,7 +40,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		thinkingEffort = "low"
 	}
 
-	return &Config{
+	config := &Config{
 		Settings: Settings{
 			// Model configuration
 			Model:          cmd.String("model"),
@@ -49,11 +49,7 @@ func parseConfig(cmd *cli.Command) *Config {
 			MaxHistory:     cmd.Int("maxhistory"),
 			ThinkingEffort: thinkingEffort,
 			SystemPrompt:   cmd.String("system"),
-
-			// Tool configuration
-			ToolPaths:   cmd.StringSlice("tool"),
-			MCPServers:  cmd.StringSlice("mcp"),
-			ToolTimeout: cmd.Duration("tooltimeout"),
+			ToolTimeout:    cmd.Duration("tooltimeout"),
 		},
 
 		// Runtime configuration
@@ -77,7 +73,10 @@ func parseConfig(cmd *cli.Command) *Config {
 		SchemaPath: cmd.String("schema"),
 		Quiet:      cmd.Bool("quiet"),
 		Debug:      cmd.Bool("debug"),
+		Tools:      cmd.StringSlice("tool"),
 	}
+
+	return config
 }
 
 // loadAPIKeys loads API keys from environment variables
@@ -248,28 +247,9 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		&cli.StringSliceFlag{
 			Name:    "tool",
 			Aliases: []string{"t"},
-			Usage:   "Shell tool executable path (can be specified multiple times)",
-			Validator: func(toolPaths []string) error {
-				for _, toolPath := range toolPaths {
-					if _, err := os.Stat(toolPath); err != nil {
-						if os.IsNotExist(err) {
-							return fmt.Errorf("tool not found: %s", toolPath)
-						}
-						return fmt.Errorf("cannot access tool: %s (%v)", toolPath, err)
-					}
-					// Check if file is executable
-					if info, err := os.Stat(toolPath); err == nil {
-						if info.Mode()&0111 == 0 {
-							return fmt.Errorf("tool is not executable: %s", toolPath)
-						}
-					}
-				}
-				return nil
-			},
-		},
-		&cli.StringSliceFlag{
-			Name:  "mcp",
-			Usage: "MCP server command or json spec (can be specified multiple times)",
+			Usage:   "Tool provider: shell script (provides 1 tool) or MCP server (can provide multiple tools). Can be specified multiple times",
+			// Note: validation removed since we now auto-detect tool type
+			// Shell tools will be validated when loaded, MCP servers can be JSON files or commands
 		},
 		&cli.DurationFlag{
 			Name:    "tooltimeout",

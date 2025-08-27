@@ -13,8 +13,9 @@ import (
 
 // ShellTool wraps external commands/scripts as tools
 type ShellTool struct {
-	Command string
-	schema  *jsonschema.Schema
+	Command   string
+	Namespace string // Namespace prefix for the tool
+	schema    *jsonschema.Schema
 }
 
 // NewShellTool creates a new shell tool from a command
@@ -37,9 +38,49 @@ func NewShellTool(command string) (*ShellTool, error) {
 	return tool, nil
 }
 
-// GetSchema returns the tool's schema
+// GetSchema returns the tool's schema with namespaced title
 func (s *ShellTool) GetSchema() *jsonschema.Schema {
-	return s.schema
+	if s.schema == nil {
+		return nil
+	}
+	
+	// Create a copy to avoid modifying the original
+	schema := &jsonschema.Schema{
+		Title:                s.schema.Title,
+		Description:          s.schema.Description,
+		Type:                 s.schema.Type,
+		Properties:           s.schema.Properties,
+		Required:             s.schema.Required,
+		AdditionalProperties: s.schema.AdditionalProperties,
+	}
+	
+	// Add namespace to title if present
+	if s.Namespace != "" && schema.Title != "" {
+		schema.Title = fmt.Sprintf("%s__%s", s.Namespace, schema.Title)
+	}
+	
+	return schema
+}
+
+// GetName returns the namespaced name of the tool
+func (s *ShellTool) GetName() string {
+	if s.schema != nil && s.schema.Title != "" {
+		if s.Namespace != "" {
+			return fmt.Sprintf("%s__%s", s.Namespace, s.schema.Title)
+		}
+		return s.schema.Title
+	}
+	return ""
+}
+
+// GetType returns "shell" for shell tools
+func (s *ShellTool) GetType() string {
+	return "shell"
+}
+
+// GetSource returns the command/script path
+func (s *ShellTool) GetSource() string {
+	return s.Command
 }
 
 // Execute runs the tool with the given arguments

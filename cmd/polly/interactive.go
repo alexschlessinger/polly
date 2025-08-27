@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -21,6 +22,13 @@ import (
 
 var RL *readline.Instance
 
+// interactiveContext holds context needed by interactive commands
+type interactiveContext struct {
+	registry *tools.ToolRegistry
+}
+
+var interactiveCtx *interactiveContext
+
 func safePrintln(text string) {
 	RL.Clean()
 	fmt.Println(text)
@@ -36,6 +44,11 @@ func safePrintf(format string, args ...interface{}) {
 // runInteractiveMode runs the CLI in interactive mode with readline support
 func runInteractiveMode(ctx context.Context, config *Config, session sessions.Session, multipass llm.LLM, toolRegistry *tools.ToolRegistry, contextID string) error {
 	// Note: session is already initialized by caller, no need to close it here
+
+	// Set interactive context for commands
+	interactiveCtx = &interactiveContext{
+		registry: toolRegistry,
+	}
 
 	// Initialize colors based on terminal background
 	initColors()
@@ -66,13 +79,13 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 	defer rl.Close()
 
 	// Print welcome message
-	printWelcomeMessage(config, session, contextID)
+	printWelcomeMessage(config, session, contextID, toolRegistry)
 
 	// Show recent history if resuming an existing conversation
 	hasHistory := showRecentHistory(session)
 	if hasHistory {
 		fmt.Println()
-		fmt.Println(dimStyle.Styled("─── Resuming context ───"))
+		fmt.Println(userStyle.Styled("─── Resuming context ───"))
 	}
 
 	// Track the current completion cancellation
@@ -213,7 +226,6 @@ var interactiveCommands = map[string]commandHandler{
 	"/maxhistory":  handleMaxHistory,
 	"/ttl":         handleTTL,
 	"/tools":       handleTools,
-	"/mcp":         handleMCP,
 	"/think":       handleThinking,
 	"/thinking":    handleThinking,
 	"/maxtokens":   handleMaxTokens,
@@ -499,136 +511,217 @@ func handleTTL(parts []string, config *Config, session sessions.Session, rl *rea
 func handleTools(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
 	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
-		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		safePrintln(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
 	}
 
-	if len(parts) < 2 {
-		if len(contextInfo.ToolPaths) > 0 {
-			fmt.Println("Current tool paths:")
-			for _, path := range contextInfo.ToolPaths {
-				fmt.Printf("  - %s\n", highlightStyle.Styled(path))
-			}
-		} else {
-			fmt.Println(dimStyle.Styled("No tool paths configured"))
-		}
-		fmt.Println(dimStyle.Styled("Usage: /tools add <path>"))
-		fmt.Println(dimStyle.Styled("       /tools remove <path>"))
-		fmt.Println(dimStyle.Styled("       /tools clear"))
-	} else {
-		switch parts[1] {
-		case "add":
-			if len(parts) < 3 {
-				fmt.Println(errorStyle.Styled("Usage: /tools add <path>"))
-			} else {
-				path := strings.Join(parts[2:], " ")
-				contextInfo.ToolPaths = append(contextInfo.ToolPaths, path)
-				config.ToolPaths = contextInfo.ToolPaths
-				session.SetMetadata(contextInfo)
-				fmt.Println(successStyle.Styled(fmt.Sprintf("Added tool path: %s", path)))
-				fmt.Println(dimStyle.Styled("Note: Restart session for changes to take effect"))
-			}
-		case "remove":
-			if len(parts) < 3 {
-				fmt.Println(errorStyle.Styled("Usage: /tools remove <path>"))
-			} else {
-				path := strings.Join(parts[2:], " ")
-				newPaths := []string{}
-				found := false
-				for _, p := range contextInfo.ToolPaths {
-					if p != path {
-						newPaths = append(newPaths, p)
-					} else {
-						found = true
-					}
-				}
-				if found {
-					contextInfo.ToolPaths = newPaths
-					config.ToolPaths = contextInfo.ToolPaths
-					session.SetMetadata(contextInfo)
-					fmt.Println(successStyle.Styled(fmt.Sprintf("Removed tool path: %s", path)))
-					fmt.Println(dimStyle.Styled("Note: Restart session for changes to take effect"))
-				} else {
-					fmt.Println(errorStyle.Styled("Tool path not found"))
-				}
-			}
-		case "clear":
-			contextInfo.ToolPaths = []string{}
-			config.ToolPaths = contextInfo.ToolPaths
-			session.SetMetadata(contextInfo)
-			fmt.Println(successStyle.Styled("All tool paths cleared"))
-		default:
-			fmt.Println(errorStyle.Styled("Unknown subcommand. Use: add, remove, or clear"))
-		}
-	}
-	return true
-}
-
-func handleMCP(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	contextInfo := session.GetMetadata()
-	if contextInfo == nil {
-		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+	// Check if we have a registry for operations that need it
+	needsRegistry := len(parts) >= 2 && (parts[1] == "remove" || parts[1] == "reload" || parts[1] == "shell" || parts[1] == "mcp")
+	if needsRegistry && (interactiveCtx == nil || interactiveCtx.registry == nil) {
+		safePrintln(errorStyle.Styled("Tool registry not available. Please restart the session."))
 		return true
 	}
 
-	if len(parts) < 2 {
-		if len(contextInfo.MCPServers) > 0 {
-			fmt.Println("Current MCP servers:")
-			for _, server := range contextInfo.MCPServers {
-				displayName := tools.GetMCPDisplayName(server)
-				fmt.Printf("  - %s\n", highlightStyle.Styled(displayName))
+	if len(parts) < 2 || parts[1] == "list" {
+		// List all tools with their types
+		if interactiveCtx != nil && interactiveCtx.registry != nil {
+			// Get all tools and display them
+			allTools := interactiveCtx.registry.All()
+			if len(allTools) == 0 {
+				safePrintln(userStyle.Styled("No tools currently loaded"))
+			} else {
+				safePrintln("Currently loaded tools:")
+				for _, tool := range allTools {
+					// Capitalize tool type for display
+					toolType := tool.GetType()
+					displayType := toolType
+					switch toolType {
+					case "shell":
+						displayType = "Shell"
+					case "mcp":
+						displayType = "MCP"
+					case "native":
+						displayType = "Native"
+					}
+					safePrintf("  - %s [%s]\n", highlightStyle.Styled(tool.GetName()), dimStyle.Styled(displayType))
+				}
 			}
 		} else {
-			fmt.Println(dimStyle.Styled("No MCP servers configured"))
+			safePrintln(userStyle.Styled("No tools currently loaded"))
 		}
-		fmt.Println(dimStyle.Styled("Usage: /mcp add <server>"))
-		fmt.Println(dimStyle.Styled("       /mcp remove <server>"))
-		fmt.Println(dimStyle.Styled("       /mcp clear"))
 	} else {
 		switch parts[1] {
-		case "add":
-			if len(parts) < 3 {
-				fmt.Println(errorStyle.Styled("Usage: /mcp add <server>"))
-			} else {
-				server := strings.Join(parts[2:], " ")
-				contextInfo.MCPServers = append(contextInfo.MCPServers, server)
-				config.MCPServers = contextInfo.MCPServers
-				session.SetMetadata(contextInfo)
-				fmt.Println(successStyle.Styled(fmt.Sprintf("Added MCP server: %s", server)))
-				fmt.Println(dimStyle.Styled("Note: Restart session for MCP changes to take effect"))
-			}
 		case "remove":
 			if len(parts) < 3 {
-				fmt.Println(errorStyle.Styled("Usage: /mcp remove <server>"))
+				fmt.Println(errorStyle.Styled("Usage: /tools remove <name>"))
 			} else {
-				server := strings.Join(parts[2:], " ")
-				newServers := []string{}
-				found := false
-				for _, s := range contextInfo.MCPServers {
-					if s != server {
-						newServers = append(newServers, s)
-					} else {
-						found = true
+				toolName := strings.Join(parts[2:], " ")
+
+				// Check if tool exists
+				_, exists := interactiveCtx.registry.Get(toolName)
+				if !exists {
+					fmt.Println(errorStyle.Styled(fmt.Sprintf("Tool not found: %s", toolName)))
+					return true
+				}
+
+				// Remove the tool from registry
+				interactiveCtx.registry.Remove(toolName)
+				
+				// Update ActiveTools in metadata - remove just this specific tool
+				newLoaders := []tools.ToolLoaderInfo{}
+				for _, loader := range contextInfo.ActiveTools {
+					// Keep loader if it's a different tool
+					if loader.Name != toolName {
+						newLoaders = append(newLoaders, loader)
 					}
 				}
-				if found {
-					contextInfo.MCPServers = newServers
-					config.MCPServers = contextInfo.MCPServers
-					session.SetMetadata(contextInfo)
-					fmt.Println(successStyle.Styled(fmt.Sprintf("Removed MCP server: %s", server)))
-					fmt.Println(dimStyle.Styled("Note: Restart session for MCP changes to take effect"))
+				contextInfo.ActiveTools = newLoaders
+				session.SetMetadata(contextInfo)
+				
+				fmt.Println(successStyle.Styled(fmt.Sprintf("Removed tool: %s", toolName)))
+
+				// Add assistant message to update LLM context
+				session.AddMessage(messages.ChatMessage{
+					Role:    messages.MessageRoleAssistant,
+					Content: "My available tools have been updated.",
+				})
+			}
+
+		case "add":
+			if len(parts) < 3 {
+				fmt.Println(errorStyle.Styled("Usage: /tools add <path|server>"))
+			} else {
+				pathOrServer := strings.Join(parts[2:], " ")
+
+				// Try to auto-detect and load
+				isShell, err := interactiveCtx.registry.LoadToolAuto(pathOrServer)
+				if err != nil {
+					fmt.Println(errorStyle.Styled(fmt.Sprintf("Failed to load tool: %v", err)))
+					return true
+				}
+
+				// Update ActiveTools metadata with new loader info
+				contextInfo.ActiveTools = interactiveCtx.registry.GetActiveToolLoaders()
+				session.SetMetadata(contextInfo)
+
+				// Update display based on what was loaded
+				if isShell {
+					fmt.Println(successStyle.Styled(fmt.Sprintf("Loaded shell tool: %s", pathOrServer)))
 				} else {
-					fmt.Println(errorStyle.Styled("MCP server not found"))
+					fmt.Println(successStyle.Styled(fmt.Sprintf("Loaded MCP server: %s", tools.GetMCPDisplayName(pathOrServer))))
+				}
+
+				// Add assistant message to update LLM context
+				session.AddMessage(messages.ChatMessage{
+					Role:    messages.MessageRoleAssistant,
+					Content: "My available tools have been updated.",
+				})
+			}
+
+		case "reload":
+			// Clear and reload all tools
+			safePrintln("Reloading all tools...")
+
+			// Close existing registry
+			if err := interactiveCtx.registry.Close(); err != nil {
+				log.Printf("Error closing registry: %v", err)
+			}
+
+			// Reload tools from session metadata
+			contextInfo := session.GetMetadata()
+			registry, err := loadTools(contextInfo.ActiveTools)
+			if err != nil {
+				safePrintln(errorStyle.Styled(fmt.Sprintf("Failed to reload tools: %v", err)))
+				return true
+			}
+
+			interactiveCtx.registry = registry
+			safePrintln(successStyle.Styled("All tools reloaded"))
+
+			// Add assistant message to update LLM context
+			session.AddMessage(messages.ChatMessage{
+				Role:    messages.MessageRoleAssistant,
+				Content: "My available tools have been updated.",
+			})
+
+		case "mcp":
+			if len(parts) < 3 {
+				fmt.Println(dimStyle.Styled("Usage: /tools mcp list"))
+				fmt.Println(dimStyle.Styled("       /tools mcp remove <server>"))
+			} else {
+				switch parts[2] {
+				case "list":
+					// Get unique MCP servers from ActiveTools
+					mcpServers := make(map[string]bool)
+					for _, loader := range contextInfo.ActiveTools {
+						if loader.Type == "mcp" {
+							mcpServers[loader.Source] = true
+						}
+					}
+					
+					if len(mcpServers) > 0 {
+						safePrintln("Current MCP servers:")
+						for server := range mcpServers {
+							displayName := tools.GetMCPDisplayName(server)
+							safePrintf("  - %s\n", highlightStyle.Styled(displayName))
+						}
+					} else {
+						safePrintln(dimStyle.Styled("No MCP servers configured"))
+					}
+
+				case "remove":
+					if len(parts) < 4 {
+						safePrintln(errorStyle.Styled("Usage: /tools mcp remove <server>"))
+					} else {
+						server := strings.Join(parts[3:], " ")
+
+						// Try to unload the server immediately
+						err := interactiveCtx.registry.UnloadMCPServer(server)
+						if err != nil {
+							// Not loaded in registry, but might be in config
+							log.Printf("MCP server not loaded in registry: %v", err)
+						} else {
+							safePrintln(successStyle.Styled(fmt.Sprintf("Unloaded MCP server: %s", tools.GetMCPDisplayName(server))))
+						}
+
+						// Remove all tools from this server from ActiveTools
+						newLoaders := []tools.ToolLoaderInfo{}
+						removed := false
+						for _, loader := range contextInfo.ActiveTools {
+							if loader.Type != "mcp" || loader.Source != server {
+								newLoaders = append(newLoaders, loader)
+							} else {
+								removed = true
+							}
+						}
+						
+						if removed {
+							contextInfo.ActiveTools = newLoaders
+							session.SetMetadata(contextInfo)
+
+							// Add assistant message to update LLM context
+							session.AddMessage(messages.ChatMessage{
+								Role:    messages.MessageRoleAssistant,
+								Content: "My available tools have been updated.",
+							})
+						} else {
+							safePrintln(errorStyle.Styled("MCP server not found in configuration"))
+						}
+					}
+
+				default:
+					safePrintln(errorStyle.Styled("Unknown mcp subcommand. Use: list or remove"))
 				}
 			}
-		case "clear":
-			contextInfo.MCPServers = []string{}
-			config.MCPServers = contextInfo.MCPServers
-			session.SetMetadata(contextInfo)
-			fmt.Println(successStyle.Styled("All MCP servers cleared"))
-			fmt.Println(dimStyle.Styled("Note: Restart session for MCP changes to take effect"))
+
 		default:
-			fmt.Println(errorStyle.Styled("Unknown subcommand. Use: add, remove, or clear"))
+			safePrintln(errorStyle.Styled(fmt.Sprintf("Unknown subcommand: %s", parts[1])))
+			safePrintln(userStyle.Styled("Usage: /tools list"))
+			safePrintln(userStyle.Styled("       /tools add <path|server>"))
+			safePrintln(userStyle.Styled("       /tools remove <name>"))
+			safePrintln(userStyle.Styled("       /tools reload"))
+			safePrintln(userStyle.Styled("       /tools mcp list"))
+			safePrintln(userStyle.Styled("       /tools mcp remove <server>"))
 		}
 	}
 	return true
@@ -817,14 +910,14 @@ func createAutoCompleter() *readline.PrefixCompleter {
 			readline.PcItem("0"),
 		),
 		readline.PcItem("/tools",
+			readline.PcItem("list"),
 			readline.PcItem("add"),
 			readline.PcItem("remove"),
-			readline.PcItem("clear"),
-		),
-		readline.PcItem("/mcp",
-			readline.PcItem("add"),
-			readline.PcItem("remove"),
-			readline.PcItem("clear"),
+			readline.PcItem("reload"),
+			readline.PcItem("mcp",
+				readline.PcItem("list"),
+				readline.PcItem("remove"),
+			),
 		),
 		readline.PcItem("/debug"),
 		readline.PcItem("/file"),
@@ -842,7 +935,7 @@ func filterInput(r rune) (rune, bool) {
 }
 
 // printWelcomeMessage prints the interactive mode welcome message
-func printWelcomeMessage(config *Config, session sessions.Session, contextID string) {
+func printWelcomeMessage(config *Config, session sessions.Session, contextID string, toolRegistry *tools.ToolRegistry) {
 	// Show all configuration
 	fmt.Printf("Model: %s\n", highlightStyle.Styled(config.Model))
 	if contextID != "" {
@@ -904,17 +997,28 @@ func printWelcomeMessage(config *Config, session sessions.Session, contextID str
 		}
 	}
 
-	// Show tools if configured
-	if len(config.ToolPaths) > 0 {
-		fmt.Print("Tools: ")
-		tools := []string{}
-		tools = append(tools, config.ToolPaths...)
-		fmt.Println(highlightStyle.Styled(strings.Join(tools, ", ")))
-	}
-	if len(config.MCPServers) > 0 {
-		fmt.Print("MCP Servers: ")
-		displayNames := tools.FormatMCPServersForDisplay(config.MCPServers)
-		fmt.Println(highlightStyle.Styled(strings.Join(displayNames, ", ")))
+	// Show all loaded tools
+	if toolRegistry != nil {
+		// Get all tools directly for display
+		allTools := toolRegistry.All()
+		if len(allTools) > 0 {
+			fmt.Print("Tools: ")
+			toolNames := []string{}
+			for _, tool := range allTools {
+				// Determine tool type display
+				toolType := ""
+				switch tool.GetType() {
+				case "shell":
+					toolType = " [Shell]"
+				case "mcp":
+					toolType = " [MCP]"
+				case "native":
+					toolType = " [Native]"
+				}
+				toolNames = append(toolNames, tool.GetName()+toolType)
+			}
+			fmt.Println(highlightStyle.Styled(strings.Join(toolNames, ", ")))
+		}
 	}
 
 	fmt.Println()
@@ -942,8 +1046,7 @@ func printInteractiveHelp() {
 		{"/ttl <duration>", "Set context TTL (e.g., 24h, 7d)"},
 		{"/think <level>", "Set thinking effort (off/low/medium/high)"},
 		{"/tooltimeout <duration>", "Set tool execution timeout"},
-		{"/tools", "Manage tool paths (add/remove/clear)"},
-		{"/mcp", "Manage MCP servers (add/remove/clear)"},
+		{"/tools", "Manage all tools (list/add/remove/reload/mcp)"},
 		{"/debug", "Toggle debug mode"},
 		{"/help", "Show this help message"},
 	}

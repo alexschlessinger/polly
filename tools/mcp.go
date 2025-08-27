@@ -15,8 +15,10 @@ import (
 
 // MCPTool wraps an MCP tool to implement the Tool interface
 type MCPTool struct {
-	session *mcp.ClientSession
-	tool    *mcp.Tool
+	session   *mcp.ClientSession
+	tool      *mcp.Tool
+	Namespace string // Namespace prefix for the tool
+	Source    string // Server spec that provided this tool
 }
 
 // NewMCPTool creates a new MCP tool wrapper
@@ -27,28 +29,63 @@ func NewMCPTool(session *mcp.ClientSession, tool *mcp.Tool) *MCPTool {
 	}
 }
 
-// GetSchema returns the tool's schema
+// GetSchema returns the tool's schema with namespaced title
 func (m *MCPTool) GetSchema() *jsonschema.Schema {
-	// MCP tools already use jsonschema.Schema, so we can return it directly
+	var schema *jsonschema.Schema
+	
+	// Get base schema
 	if m.tool.InputSchema != nil {
+		// Create a copy to avoid modifying the original
+		schema = &jsonschema.Schema{
+			Title:                m.tool.InputSchema.Title,
+			Description:          m.tool.InputSchema.Description,
+			Type:                 m.tool.InputSchema.Type,
+			Properties:           m.tool.InputSchema.Properties,
+			Required:             m.tool.InputSchema.Required,
+			AdditionalProperties: m.tool.InputSchema.AdditionalProperties,
+		}
 		// Set the title from the tool name if not already set
-		if m.tool.InputSchema.Title == "" {
-			m.tool.InputSchema.Title = m.tool.Name
+		if schema.Title == "" {
+			schema.Title = m.tool.Name
 		}
 		// Set the description if not already set
-		if m.tool.InputSchema.Description == "" {
-			m.tool.InputSchema.Description = m.tool.Description
+		if schema.Description == "" {
+			schema.Description = m.tool.Description
 		}
-		return m.tool.InputSchema
+	} else {
+		// If no input schema, create a basic one with no properties
+		schema = &jsonschema.Schema{
+			Title:       m.tool.Name,
+			Description: m.tool.Description,
+			Type:        "object",
+		}
 	}
+	
+	// Add namespace to title if present
+	if m.Namespace != "" && schema.Title != "" {
+		schema.Title = fmt.Sprintf("%s__%s", m.Namespace, schema.Title)
+	}
+	
+	return schema
+}
 
-	// If no input schema, create a basic one with no properties
-	// Don't set Properties to empty map - leave it nil for tools with no inputs
-	return &jsonschema.Schema{
-		Title:       m.tool.Name,
-		Description: m.tool.Description,
-		Type:        "object",
+// GetName returns the namespaced name of the tool
+func (m *MCPTool) GetName() string {
+	name := m.tool.Name
+	if m.Namespace != "" {
+		return fmt.Sprintf("%s__%s", m.Namespace, name)
 	}
+	return name
+}
+
+// GetType returns "mcp" for MCP tools
+func (m *MCPTool) GetType() string {
+	return "mcp"
+}
+
+// GetSource returns the server spec that provided this tool
+func (m *MCPTool) GetSource() string {
+	return m.Source
 }
 
 // Execute runs the MCP tool with the given arguments
@@ -172,73 +209,40 @@ func FormatMCPServersForDisplay(servers []string) []string {
 
 // MCPClient manages connection to an MCP server
 type MCPClient struct {
-	session *mcp.ClientSession
-	client  *mcp.Client
+	session    *mcp.ClientSession
+	client     *mcp.Client
+	serverSpec string // The server spec (JSON file path) for this client
 }
 
-// NewMCPClient creates a new MCP client connected to the given server command or JSON config file
-func NewMCPClient(serverCommand string) (*MCPClient, error) {
-	// Check if serverCommand is a JSON file path
-	if strings.HasSuffix(serverCommand, ".json") {
-		// Try to read and parse the JSON file
-		data, err := os.ReadFile(serverCommand)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read MCP config file %s: %v", serverCommand, err)
-		}
-
-		// Parse the JSON configuration as a single config
-		var config MCPConfig
-		if err := json.Unmarshal(data, &config); err != nil {
-			return nil, fmt.Errorf("failed to parse MCP config: %v", err)
-		}
-
-		log.Printf("loading MCP config from %s", serverCommand)
-		return NewMCPClientFromConfig(&config)
+// NewMCPClient creates a new MCP client from a JSON config file
+func NewMCPClient(jsonFile string) (*MCPClient, error) {
+	// Require JSON file
+	if !strings.HasSuffix(jsonFile, ".json") {
+		return nil, fmt.Errorf("MCP servers must be defined in JSON files (got %s)", jsonFile)
 	}
 
-	// Not a JSON file, treat as a command
-	return NewMCPClientFromCommand(serverCommand)
-}
-
-// NewMCPClientFromCommand creates a new MCP client from a command string
-func NewMCPClientFromCommand(serverCommand string) (*MCPClient, error) {
-	ctx := context.Background()
-
-	// Parse the command - it could have arguments
-	parts := strings.Fields(serverCommand)
-	if len(parts) == 0 {
-		return nil, fmt.Errorf("empty server command")
-	}
-
-	// Create the MCP client
-	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "pollytool",
-		Version: "1.0.0",
-	}, nil)
-
-	// Create the command to run the server
-	var cmd *exec.Cmd
-	if len(parts) == 1 {
-		cmd = exec.Command(parts[0])
-	} else {
-		cmd = exec.Command(parts[0], parts[1:]...)
-	}
-
-	// Set up stderr to see any error output from the server
-	cmd.Stderr = log.Writer()
-
-	// Connect to the server
-	log.Printf("connecting to MCP server: %s", serverCommand)
-	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
+	// Try to read and parse the JSON file
+	data, err := os.ReadFile(jsonFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to MCP server: %v", err)
+		return nil, fmt.Errorf("failed to read MCP config file %s: %v", jsonFile, err)
 	}
 
-	return &MCPClient{
-		session: session,
-		client:  client,
-	}, nil
+	// Parse the JSON configuration as a single config
+	var config MCPConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse MCP config: %v", err)
+	}
+
+	log.Printf("loading MCP config from %s", jsonFile)
+	client, err := NewMCPClientFromConfig(&config)
+	if err != nil {
+		return nil, err
+	}
+	// Set the serverSpec for persistence
+	client.serverSpec = jsonFile
+	return client, nil
 }
+
 
 // NewMCPClientFromConfig creates a new MCP client from a JSON configuration
 func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
@@ -278,8 +282,9 @@ func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
 	}
 
 	return &MCPClient{
-		session: session,
-		client:  client,
+		session:    session,
+		client:     client,
+		// serverSpec will be set by caller if needed
 	}, nil
 }
 
@@ -295,7 +300,10 @@ func (c *MCPClient) ListTools() ([]Tool, error) {
 		}
 		if tool != nil {
 			log.Printf("loaded MCP tool: %s - %s", tool.Name, tool.Description)
-			tools = append(tools, NewMCPTool(c.session, tool))
+			mcpTool := NewMCPTool(c.session, tool)
+			// Set the source to the server spec so it can be persisted
+			mcpTool.Source = c.serverSpec
+			tools = append(tools, mcpTool)
 		}
 	}
 

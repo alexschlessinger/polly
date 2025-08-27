@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 // Session interface defines the contract for session implementations
@@ -49,9 +50,8 @@ type Metadata struct {
 	Temperature    float64       `json:"temperature,omitempty"`
 	MaxTokens      int           `json:"maxTokens,omitempty"`
 	MaxHistory     int           `json:"maxHistory,omitempty"`
-	ThinkingEffort string        `json:"thinkingEffort,omitempty"`
-	SystemPrompt   string        `json:"systemPrompt,omitempty"`
-	ToolPaths      []string      `json:"toolPaths,omitempty"`
-	MCPServers     []string      `json:"mcpServers,omitempty"`
-	ToolTimeout    time.Duration `json:"toolTimeout,omitempty"`
+	ThinkingEffort string            `json:"thinkingEffort,omitempty"`
+	SystemPrompt   string            `json:"systemPrompt,omitempty"`
+	ActiveTools    []tools.ToolLoaderInfo  `json:"activeTools,omitempty"`
+	ToolTimeout    time.Duration     `json:"toolTimeout,omitempty"`
 }

@@ -118,15 +118,34 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 	needFileStore := needsFileStore(config, contextID)
 	session := getOrCreateSession(sessionStore, contextID, needFileStore)
 
+	// Handle command-line tools if provided - they replace session tools
+	metadata := session.GetMetadata()
+	var toolRegistry *tools.ToolRegistry
+	
+	if len(config.Tools) > 0 {
+		// Load command-line tools directly into the registry we'll use
+		toolRegistry = tools.NewToolRegistry(nil)
+		for _, source := range config.Tools {
+			_, err := toolRegistry.LoadToolAuto(source)
+			if err != nil {
+				session.Close()
+				return "", nil, nil, nil, fmt.Errorf("failed to load tool %s: %w", source, err)
+			}
+		}
+		// Store the metadata for persistence
+		metadata.ActiveTools = toolRegistry.GetActiveToolLoaders()
+		session.SetMetadata(metadata)
+	} else {
+		// Load tools from session metadata
+		toolRegistry, err = loadTools(metadata.ActiveTools)
+		if err != nil {
+			session.Close()
+			return "", nil, nil, nil, err
+		}
+	}
+
 	// Update context info with current settings using helper function
 	updateContextInfo(session, config, cmd)
-
-	// Load tools
-	toolRegistry, err := loadTools(config)
-	if err != nil {
-		session.Close()
-		return "", nil, nil, nil, err
-	}
 
 	return contextID, session, multipass, toolRegistry, nil
 }
@@ -434,13 +453,7 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			if !cmd.IsSet("system") && contextInfo.SystemPrompt != "" {
 				config.Settings.SystemPrompt = contextInfo.SystemPrompt
 			}
-			// Apply stored tools if none provided via command line
-			if !cmd.IsSet("tool") && len(contextInfo.ToolPaths) > 0 {
-				config.Settings.ToolPaths = contextInfo.ToolPaths
-			}
-			if !cmd.IsSet("mcp") && len(contextInfo.MCPServers) > 0 {
-				config.Settings.MCPServers = contextInfo.MCPServers
-			}
+			// Tools are now handled directly with session metadata in initializeSession
 			// Apply stored thinking effort if not provided via command line
 			if !cmd.IsSet("think") && !cmd.IsSet("think-medium") && !cmd.IsSet("think-hard") && contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
 				config.Settings.ThinkingEffort = contextInfo.ThinkingEffort
@@ -493,12 +506,7 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 	if cmd.IsSet("system") {
 		update.SystemPrompt = config.Settings.SystemPrompt
 	}
-	if len(config.Settings.ToolPaths) > 0 {
-		update.ToolPaths = config.Settings.ToolPaths
-	}
-	if len(config.Settings.MCPServers) > 0 {
-		update.MCPServers = config.Settings.MCPServers
-	}
+	// Tools are already handled in initializeSession, no need to update here
 	if cmd.IsSet("think") || cmd.IsSet("think-medium") || cmd.IsSet("think-hard") {
 		update.ThinkingEffort = config.Settings.ThinkingEffort
 	}

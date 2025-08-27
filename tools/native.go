@@ -13,6 +13,21 @@ import (
 // UpperCaseTool is a simple example of a native Go tool
 type UpperCaseTool struct{}
 
+// GetName returns the tool name
+func (t *UpperCaseTool) GetName() string {
+	return "uppercase"
+}
+
+// GetType returns "native" for built-in tools
+func (t *UpperCaseTool) GetType() string {
+	return "native"
+}
+
+// GetSource returns "builtin" for native tools
+func (t *UpperCaseTool) GetSource() string {
+	return "builtin"
+}
+
 func (t *UpperCaseTool) GetSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{
 		Title:       "uppercase",
@@ -38,6 +53,21 @@ func (t *UpperCaseTool) Execute(ctx context.Context, args map[string]any) (strin
 
 // WordCountTool counts words in text
 type WordCountTool struct{}
+
+// GetName returns the tool name
+func (t *WordCountTool) GetName() string {
+	return "wordcount"
+}
+
+// GetType returns "native" for built-in tools
+func (t *WordCountTool) GetType() string {
+	return "native"
+}
+
+// GetSource returns "builtin" for native tools
+func (t *WordCountTool) GetSource() string {
+	return "builtin"
+}
 
 func (t *WordCountTool) GetSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{
@@ -69,6 +99,21 @@ func (t *WordCountTool) Execute(ctx context.Context, args map[string]any) (strin
 // LoggerTool is an example tool that needs context to be injected
 type LoggerTool struct {
 	logger Logger // Interface to be injected
+}
+
+// GetName returns the tool name
+func (t *LoggerTool) GetName() string {
+	return "logger"
+}
+
+// GetType returns "native" for built-in tools
+func (t *LoggerTool) GetType() string {
+	return "native"
+}
+
+// GetSource returns "builtin" for native tools
+func (t *LoggerTool) GetSource() string {
+	return "builtin"
 }
 
 // Logger interface for dependency injection
