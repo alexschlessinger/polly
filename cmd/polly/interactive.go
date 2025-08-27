@@ -566,7 +566,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 
 				// Remove the tool from registry
 				interactiveCtx.registry.Remove(toolName)
-				
+
 				// Update ActiveTools in metadata - remove just this specific tool
 				newLoaders := []tools.ToolLoaderInfo{}
 				for _, loader := range contextInfo.ActiveTools {
@@ -577,7 +577,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 				}
 				contextInfo.ActiveTools = newLoaders
 				session.SetMetadata(contextInfo)
-				
+
 				fmt.Println(successStyle.Styled(fmt.Sprintf("Removed tool: %s", toolName)))
 
 				// Add assistant message to update LLM context
@@ -593,22 +593,37 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 			} else {
 				pathOrServer := strings.Join(parts[2:], " ")
 
+				// Get current tools before loading
+				toolsBefore := make(map[string]bool)
+				for _, tool := range interactiveCtx.registry.All() {
+					toolsBefore[tool.GetName()] = true
+				}
+
 				// Try to auto-detect and load
-				isShell, err := interactiveCtx.registry.LoadToolAuto(pathOrServer)
+				_, err := interactiveCtx.registry.LoadToolAuto(pathOrServer)
 				if err != nil {
 					fmt.Println(errorStyle.Styled(fmt.Sprintf("Failed to load tool: %v", err)))
 					return true
+				}
+
+				// Find newly loaded tools
+				var newTools []string
+				for _, tool := range interactiveCtx.registry.All() {
+					name := tool.GetName()
+					if !toolsBefore[name] {
+						newTools = append(newTools, name)
+					}
 				}
 
 				// Update ActiveTools metadata with new loader info
 				contextInfo.ActiveTools = interactiveCtx.registry.GetActiveToolLoaders()
 				session.SetMetadata(contextInfo)
 
-				// Update display based on what was loaded
-				if isShell {
-					fmt.Println(successStyle.Styled(fmt.Sprintf("Loaded shell tool: %s", pathOrServer)))
+				// Display what was loaded
+				if len(newTools) > 0 {
+					safePrintln(successStyle.Styled(fmt.Sprintf("Loaded tools: %s", strings.Join(newTools, ", "))))
 				} else {
-					fmt.Println(successStyle.Styled(fmt.Sprintf("Loaded MCP server: %s", tools.GetMCPDisplayName(pathOrServer))))
+					safePrintln(dimStyle.Styled("No new tools were loaded"))
 				}
 
 				// Add assistant message to update LLM context
@@ -658,7 +673,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 							mcpServers[loader.Source] = true
 						}
 					}
-					
+
 					if len(mcpServers) > 0 {
 						safePrintln("Current MCP servers:")
 						for server := range mcpServers {
@@ -694,7 +709,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 								removed = true
 							}
 						}
-						
+
 						if removed {
 							contextInfo.ActiveTools = newLoaders
 							session.SetMetadata(contextInfo)
