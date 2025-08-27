@@ -346,10 +346,58 @@ polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 
 ### MCP Servers
 
+MCP servers must be configured through JSON files that specify the command and environment:
+
 ```bash
-# Use MCP server
-polly --mcp "npx @modelcontextprotocol/server-filesystem /path/to/files" \
-      -p "List files in the directory"
+# Create an MCP server config
+cat > filesystem.json << 'EOF'
+{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/workspace"],
+  "env": {}
+}
+EOF
+
+# Use the MCP server
+polly -t filesystem.json -p "List files in the workspace"
+
+# Multiple MCP servers
+polly -t perplexity.json -t filesystem.json \
+      -p "Search for Python tutorials and save to tutorials.txt"
+```
+
+#### MCP Server Examples
+
+```bash
+# Perplexity search
+cat > perp.json << 'EOF'
+{
+  "command": "uvx",
+  "args": ["perplexity-mcp"],
+  "env": {
+    "PERPLEXITY_API_KEY": "pplx-..."
+  }
+}
+EOF
+
+# Filesystem access
+cat > fs.json << 'EOF'
+{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/files"]
+}
+EOF
+
+# GitHub integration
+cat > github.json << 'EOF'
+{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-github"],
+  "env": {
+    "GITHUB_TOKEN": "ghp_..."
+  }
+}
+EOF
 ```
 
 
