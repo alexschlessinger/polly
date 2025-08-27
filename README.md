@@ -23,8 +23,8 @@ GLOBAL OPTIONS:
    --think-medium                                         Enable thinking/reasoning (medium effort) (default: false)
    --think-hard                                           Enable thinking/reasoning (high effort) (default: false)
    --baseurl string                                       Base URL for API (for OpenAI-compatible endpoints or Ollama)
-   --tool string, -t string [ --tool string, -t string ]  Shell tool executable path (can be specified multiple times)
-   --mcp string [ --mcp string ]                          MCP server and arguments (can be specified multiple times)
+   --tool string, -t string [ --tool string, -t string ]  Tool provider: shell script or MCP server (can be specified multiple times)
+   --tooltimeout duration                                 Tool execution timeout (default: 2m0s)
    --prompt string, -p string                             Initial prompt (reads from stdin if not provided)
    --system string, -s string                             System prompt (default: "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.")
    --file string, -f string [ --file string, -f string ]  File, image, or URL to include (can be specified multiple times)
@@ -80,8 +80,9 @@ polly -f https://example.com/image.png -p "Describe it"
 # Mixed bag
 polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 
-# tools example
-./polly -p "create a file in my workspace called news.txt with todays news" --mcp "uvx perplexity-mcp" --mcp "npx -y @modelcontextprotocol/server-filesystem /home/alex/workspace/"
+# Tools example - auto-detects shell tools vs MCP servers
+./polly -p "uppercase this: hello" --tool ./uppercase.sh
+./polly -p "create news.txt with today's news" --tool perp.json --tool filesystem.json
 ```
 ## Interactive Mode
 Launch interactive mode by running `polly` without any prompt:
@@ -106,10 +107,17 @@ polly --last
 | `/reset` | Reset conversation history |
 | `/model <name>` | Switch to a different model |
 | `/temp <0.0-2.0>` | Set temperature |
+| `/maxtokens <n>` | Set max tokens |
+| `/maxhistory <n>` | Set max history messages (0 for unlimited) |
+| `/ttl <duration>` | Set context TTL (e.g., 24h, 7d) |
+| `/think <level>` | Set thinking effort (off/low/medium/high) |
+| `/tooltimeout <duration>` | Set tool execution timeout |
+| `/tools` | Manage tools (list/add/remove/reload/mcp) |
 | `/history`, `/h` | Show full conversation history |
 | `/save <file>` | Save conversation to file |
 | `/context`, `/c` | Show current context |
 | `/system <prompt>` | Update system prompt |
+| `/debug` | Toggle debug mode |
 | `/help`, `/?` | Show help message |
 
 ## Configuration
@@ -170,7 +178,7 @@ polly --purge
 
 ### Context Settings Persistence
 
-Contexts remember your settings (model, temperature, system prompt, tools) between conversations:
+Contexts remember your settings (model, temperature, system prompt, active tools) between conversations:
 
 ```bash
 # First use - settings are saved
@@ -201,6 +209,68 @@ Polly manages context settings with a clear priority system:
 
 4. **System Prompt Changes**  
   If you change the system prompt for a context with existing conversation history, Polly automatically resets the conversation to keep things consistent.
+
+## Tool Management
+
+Polly now provides unified tool management for both shell scripts and MCP servers:
+
+### Command-Line Tool Loading
+
+Tools are auto-detected based on file type:
+- **Shell scripts** (`.sh` files): Loaded as individual tools
+- **MCP servers** (`.json` files): Can provide multiple tools from one server
+
+```bash
+# Load a shell tool
+polly -t ./uppercase.sh -p "make this LOUD: hello"
+
+# Load an MCP server (JSON config)
+polly -t filesystem.json -p "list files in /tmp"
+
+# Mix both types
+polly -t ./mytool.sh -t perplexity.json -p "search and process"
+```
+
+### Interactive Tool Management
+
+In interactive mode, use `/tools` commands to manage tools dynamically:
+
+```bash
+# List all loaded tools
+/tools
+/tools list
+
+# Add a new tool (auto-detects type)
+/tools add ./uppercase.sh
+/tools add perplexity.json
+
+# Remove a specific tool
+/tools remove uppercase__to_uppercase
+
+# Reload all tools
+/tools reload
+
+# MCP server management
+/tools mcp list              # List loaded MCP servers
+/tools mcp remove perp.json  # Remove all tools from a server
+```
+
+### Tool Namespacing
+
+To avoid conflicts, tools are automatically namespaced:
+- Shell tools: `scriptname__toolname` (e.g., `uppercase__to_uppercase`)
+- MCP tools: `servername__toolname` (e.g., `filesystem__read_file`)
+
+### Tool Persistence
+
+When tools are loaded in a context, they're automatically saved and restored:
+```bash
+# Tools are saved with the context
+polly -c project -t ./build.sh -p "build the project"
+
+# Later, tools are automatically restored
+polly -c project -p "run tests"  # build.sh is still available
+```
 
 ## Structured Output
 
