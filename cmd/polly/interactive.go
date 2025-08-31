@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -516,7 +517,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 	}
 
 	// Check if we have a registry for operations that need it
-	needsRegistry := len(parts) >= 2 && (parts[1] == "remove" || parts[1] == "reload" || parts[1] == "shell" || parts[1] == "mcp")
+	needsRegistry := len(parts) >= 2 && parts[1] != "list"
 	if needsRegistry && (interactiveCtx == nil || interactiveCtx.registry == nil) {
 		safePrintln(errorStyle.Styled("Tool registry not available. Please restart the session."))
 		return true
@@ -525,7 +526,6 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 	if len(parts) < 2 || parts[1] == "list" {
 		// List all tools with their types
 		if interactiveCtx != nil && interactiveCtx.registry != nil {
-			// Get all tools and display them
 			allTools := interactiveCtx.registry.All()
 			if len(allTools) == 0 {
 				safePrintln(userStyle.Styled("No tools currently loaded"))
@@ -549,196 +549,169 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 		} else {
 			safePrintln(userStyle.Styled("No tools currently loaded"))
 		}
-	} else {
-		switch parts[1] {
-		case "remove":
-			if len(parts) < 3 {
-				fmt.Println(errorStyle.Styled("Usage: /tools remove <name>"))
-			} else {
-				toolName := strings.Join(parts[2:], " ")
+		return true
+	}
 
-				// Check if tool exists
-				_, exists := interactiveCtx.registry.Get(toolName)
-				if !exists {
-					fmt.Println(errorStyle.Styled(fmt.Sprintf("Tool not found: %s", toolName)))
-					return true
+	switch parts[1] {
+	case "add":
+		if len(parts) < 3 {
+			fmt.Println(errorStyle.Styled("Usage: /tools add <path|server>"))
+			return true
+		}
+		
+		pathOrServer := strings.Join(parts[2:], " ")
+
+		// Get current tools before loading
+		toolsBefore := make(map[string]bool)
+		for _, tool := range interactiveCtx.registry.All() {
+			toolsBefore[tool.GetName()] = true
+		}
+
+		// Try to auto-detect and load
+		_, err := interactiveCtx.registry.LoadToolAuto(pathOrServer)
+		if err != nil {
+			fmt.Println(errorStyle.Styled(fmt.Sprintf("Failed to load tool: %v", err)))
+			return true
+		}
+
+		// Find newly loaded tools
+		var newTools []string
+		for _, tool := range interactiveCtx.registry.All() {
+			name := tool.GetName()
+			if !toolsBefore[name] {
+				newTools = append(newTools, name)
+			}
+		}
+
+		// Update ActiveTools metadata with new loader info
+		contextInfo.ActiveTools = interactiveCtx.registry.GetActiveToolLoaders()
+		session.SetMetadata(contextInfo)
+
+		// Display what was loaded
+		if len(newTools) > 0 {
+			safePrintln(successStyle.Styled(fmt.Sprintf("Loaded tools: %s", strings.Join(newTools, ", "))))
+		} else {
+			safePrintln(dimStyle.Styled("No new tools were loaded"))
+		}
+
+		// Add assistant message to update LLM context
+		session.AddMessage(messages.ChatMessage{
+			Role:    messages.MessageRoleAssistant,
+			Content: "My available tools have been updated.",
+		})
+
+	case "remove":
+		if len(parts) < 3 {
+			fmt.Println(errorStyle.Styled("Usage: /tools remove <name or pattern>"))
+			return true
+		}
+		
+		pattern := strings.Join(parts[2:], " ")
+		
+		// Check if it's a wildcard pattern
+		if strings.Contains(pattern, "*") {
+			// Wildcard removal
+			var removed []string
+			for _, tool := range interactiveCtx.registry.All() {
+				name := tool.GetName()
+				matched, _ := path.Match(pattern, name)
+				if matched {
+					interactiveCtx.registry.Remove(name)
+					removed = append(removed, name)
 				}
-
-				// Remove the tool from registry
-				interactiveCtx.registry.Remove(toolName)
-
-				// Update ActiveTools in metadata - remove just this specific tool
+			}
+			
+			if len(removed) > 0 {
+				// Update ActiveTools in metadata - remove all matched tools
 				newLoaders := []tools.ToolLoaderInfo{}
 				for _, loader := range contextInfo.ActiveTools {
-					// Keep loader if it's a different tool
-					if loader.Name != toolName {
+					found := false
+					for _, removedName := range removed {
+						if loader.Name == removedName {
+							found = true
+							break
+						}
+					}
+					if !found {
 						newLoaders = append(newLoaders, loader)
 					}
 				}
 				contextInfo.ActiveTools = newLoaders
 				session.SetMetadata(contextInfo)
-
-				fmt.Println(successStyle.Styled(fmt.Sprintf("Removed tool: %s", toolName)))
-
+				
+				fmt.Println(successStyle.Styled(fmt.Sprintf("Removed %d tools: %s", len(removed), strings.Join(removed, ", "))))
+				
 				// Add assistant message to update LLM context
 				session.AddMessage(messages.ChatMessage{
 					Role:    messages.MessageRoleAssistant,
 					Content: "My available tools have been updated.",
 				})
-			}
-
-		case "add":
-			if len(parts) < 3 {
-				fmt.Println(errorStyle.Styled("Usage: /tools add <path|server>"))
 			} else {
-				pathOrServer := strings.Join(parts[2:], " ")
-
-				// Get current tools before loading
-				toolsBefore := make(map[string]bool)
-				for _, tool := range interactiveCtx.registry.All() {
-					toolsBefore[tool.GetName()] = true
-				}
-
-				// Try to auto-detect and load
-				_, err := interactiveCtx.registry.LoadToolAuto(pathOrServer)
-				if err != nil {
-					fmt.Println(errorStyle.Styled(fmt.Sprintf("Failed to load tool: %v", err)))
-					return true
-				}
-
-				// Find newly loaded tools
-				var newTools []string
-				for _, tool := range interactiveCtx.registry.All() {
-					name := tool.GetName()
-					if !toolsBefore[name] {
-						newTools = append(newTools, name)
-					}
-				}
-
-				// Update ActiveTools metadata with new loader info
-				contextInfo.ActiveTools = interactiveCtx.registry.GetActiveToolLoaders()
-				session.SetMetadata(contextInfo)
-
-				// Display what was loaded
-				if len(newTools) > 0 {
-					safePrintln(successStyle.Styled(fmt.Sprintf("Loaded tools: %s", strings.Join(newTools, ", "))))
-				} else {
-					safePrintln(dimStyle.Styled("No new tools were loaded"))
-				}
-
-				// Add assistant message to update LLM context
-				session.AddMessage(messages.ChatMessage{
-					Role:    messages.MessageRoleAssistant,
-					Content: "My available tools have been updated.",
-				})
+				fmt.Println(errorStyle.Styled(fmt.Sprintf("No tools matched pattern: %s", pattern)))
 			}
-
-		case "reload":
-			// Clear and reload all tools
-			safePrintln("Reloading all tools...")
-
-			// Close existing registry
-			if err := interactiveCtx.registry.Close(); err != nil {
-				log.Printf("Error closing registry: %v", err)
-			}
-
-			// Reload tools from session metadata
-			contextInfo := session.GetMetadata()
-			registry, err := loadTools(contextInfo.ActiveTools)
-			if err != nil {
-				safePrintln(errorStyle.Styled(fmt.Sprintf("Failed to reload tools: %v", err)))
+		} else {
+			// Exact match removal
+			_, exists := interactiveCtx.registry.Get(pattern)
+			if !exists {
+				fmt.Println(errorStyle.Styled(fmt.Sprintf("Tool not found: %s", pattern)))
 				return true
 			}
 
-			interactiveCtx.registry = registry
-			safePrintln(successStyle.Styled("All tools reloaded"))
+			// Remove the tool from registry
+			interactiveCtx.registry.Remove(pattern)
+
+			// Update ActiveTools in metadata - remove just this specific tool
+			newLoaders := []tools.ToolLoaderInfo{}
+			for _, loader := range contextInfo.ActiveTools {
+				if loader.Name != pattern {
+					newLoaders = append(newLoaders, loader)
+				}
+			}
+			contextInfo.ActiveTools = newLoaders
+			session.SetMetadata(contextInfo)
+
+			fmt.Println(successStyle.Styled(fmt.Sprintf("Removed tool: %s", pattern)))
 
 			// Add assistant message to update LLM context
 			session.AddMessage(messages.ChatMessage{
 				Role:    messages.MessageRoleAssistant,
 				Content: "My available tools have been updated.",
 			})
-
-		case "mcp":
-			if len(parts) < 3 {
-				fmt.Println(dimStyle.Styled("Usage: /tools mcp list"))
-				fmt.Println(dimStyle.Styled("       /tools mcp remove <server>"))
-			} else {
-				switch parts[2] {
-				case "list":
-					// Get unique MCP servers from ActiveTools
-					mcpServers := make(map[string]bool)
-					for _, loader := range contextInfo.ActiveTools {
-						if loader.Type == "mcp" {
-							mcpServers[loader.Source] = true
-						}
-					}
-
-					if len(mcpServers) > 0 {
-						safePrintln("Current MCP servers:")
-						for server := range mcpServers {
-							displayName := tools.GetMCPDisplayName(server)
-							safePrintf("  - %s\n", highlightStyle.Styled(displayName))
-						}
-					} else {
-						safePrintln(dimStyle.Styled("No MCP servers configured"))
-					}
-
-				case "remove":
-					if len(parts) < 4 {
-						safePrintln(errorStyle.Styled("Usage: /tools mcp remove <server>"))
-					} else {
-						server := strings.Join(parts[3:], " ")
-
-						// Try to unload the server immediately
-						err := interactiveCtx.registry.UnloadMCPServer(server)
-						if err != nil {
-							// Not loaded in registry, but might be in config
-							log.Printf("MCP server not loaded in registry: %v", err)
-						} else {
-							safePrintln(successStyle.Styled(fmt.Sprintf("Unloaded MCP server: %s", tools.GetMCPDisplayName(server))))
-						}
-
-						// Remove all tools from this server from ActiveTools
-						newLoaders := []tools.ToolLoaderInfo{}
-						removed := false
-						for _, loader := range contextInfo.ActiveTools {
-							if loader.Type != "mcp" || loader.Source != server {
-								newLoaders = append(newLoaders, loader)
-							} else {
-								removed = true
-							}
-						}
-
-						if removed {
-							contextInfo.ActiveTools = newLoaders
-							session.SetMetadata(contextInfo)
-
-							// Add assistant message to update LLM context
-							session.AddMessage(messages.ChatMessage{
-								Role:    messages.MessageRoleAssistant,
-								Content: "My available tools have been updated.",
-							})
-						} else {
-							safePrintln(errorStyle.Styled("MCP server not found in configuration"))
-						}
-					}
-
-				default:
-					safePrintln(errorStyle.Styled("Unknown mcp subcommand. Use: list or remove"))
-				}
-			}
-
-		default:
-			safePrintln(errorStyle.Styled(fmt.Sprintf("Unknown subcommand: %s", parts[1])))
-			safePrintln(userStyle.Styled("Usage: /tools list"))
-			safePrintln(userStyle.Styled("       /tools add <path|server>"))
-			safePrintln(userStyle.Styled("       /tools remove <name>"))
-			safePrintln(userStyle.Styled("       /tools reload"))
-			safePrintln(userStyle.Styled("       /tools mcp list"))
-			safePrintln(userStyle.Styled("       /tools mcp remove <server>"))
 		}
+
+	case "reload":
+		// Clear and reload all tools
+		safePrintln("Reloading all tools...")
+
+		// Close existing registry
+		if err := interactiveCtx.registry.Close(); err != nil {
+			log.Printf("Error closing registry: %v", err)
+		}
+
+		// Reload tools from session metadata
+		registry, err := loadTools(contextInfo.ActiveTools)
+		if err != nil {
+			safePrintln(errorStyle.Styled(fmt.Sprintf("Failed to reload tools: %v", err)))
+			return true
+		}
+
+		interactiveCtx.registry = registry
+		safePrintln(successStyle.Styled("All tools reloaded"))
+
+		// Add assistant message to update LLM context
+		session.AddMessage(messages.ChatMessage{
+			Role:    messages.MessageRoleAssistant,
+			Content: "My available tools have been updated.",
+		})
+
+	default:
+		safePrintln(errorStyle.Styled(fmt.Sprintf("Unknown subcommand: %s", parts[1])))
+		safePrintln(userStyle.Styled("Usage: /tools [list]              - List all loaded tools"))
+		safePrintln(userStyle.Styled("       /tools add <path|server>   - Add a tool"))
+		safePrintln(userStyle.Styled("       /tools remove <name|pattern> - Remove tool(s)"))
+		safePrintln(userStyle.Styled("       /tools reload              - Reload all tools"))
 	}
+	
 	return true
 }
 

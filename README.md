@@ -247,12 +247,13 @@ In interactive mode, use `/tools` commands to manage tools dynamically:
 # Remove a specific tool
 /tools remove uppercase__to_uppercase
 
+# Remove tools with wildcard patterns
+/tools remove filesystem__*  # Remove all filesystem 
+/tools remove perplexity__*        # Remove all perplexity 
+/tools remove uppercase__*   # Remove uppercase 
+
 # Reload all tools
 /tools reload
-
-# MCP server management
-/tools mcp list              # List loaded MCP servers
-/tools mcp remove perp.json  # Remove all tools from a server
 ```
 
 ### Tool Namespacing
