@@ -76,8 +76,11 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 	if err != nil {
 		return err
 	}
-	RL = rl
-	defer rl.Close()
+    RL = rl
+    defer rl.Close()
+
+    // Set initial styled prompt and dynamic autocomplete
+    refreshInteractiveUI(config, session, toolRegistry)
 
 	// Print welcome message
 	printWelcomeMessage(config, session, contextID, toolRegistry)
@@ -279,9 +282,10 @@ func handleModel(parts []string, config *Config, session sessions.Session, rl *r
 			contextInfo.Model = config.Model
 			session.SetMetadata(contextInfo)
 		}
-		fmt.Println(successStyle.Styled(fmt.Sprintf("Switched to model: %s", config.Model)))
-	}
-	return true
+        fmt.Println(successStyle.Styled(fmt.Sprintf("Switched to model: %s", config.Model)))
+        refreshInteractiveUI(config, session, interactiveCtx.registry)
+    }
+    return true
 }
 
 func handleTemperature(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
@@ -322,10 +326,10 @@ func handleSave(parts []string, config *Config, session sessions.Session, rl *re
 }
 
 func handleFile(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	if len(parts) < 2 {
-		fmt.Println(dimStyle.Styled("Usage: /file <path>"))
-		return true
-	}
+    if len(parts) < 2 {
+        safePrintln(dimStyle.Styled("Usage: /file <path>"))
+        return true
+    }
 
 	// Get the file path (join in case it has spaces)
 	filePath := strings.Join(parts[1:], " ")
@@ -337,25 +341,25 @@ func handleFile(parts []string, config *Config, session sessions.Session, rl *re
 	}
 
 	// Validate the file exists
-	if _, err := os.Stat(filePath); err != nil {
-		fmt.Println(errorStyle.Styled(fmt.Sprintf("File not found: %s", filePath)))
-		return true
-	}
+    if _, err := os.Stat(filePath); err != nil {
+        safePrintln(errorStyle.Styled(fmt.Sprintf("File not found: %s", filePath)))
+        return true
+    }
 
 	// Build and add file message to session
 	userMsg, err := buildMessageWithFiles("", []string{filePath})
-	if err != nil {
-		fmt.Println(errorStyle.Styled(fmt.Sprintf("Error processing file: %v", err)))
-		return true
-	}
+    if err != nil {
+        safePrintln(errorStyle.Styled(fmt.Sprintf("Error processing file: %v", err)))
+        return true
+    }
 
 	// Add to session
 	session.AddMessage(userMsg)
 
 	// Show confirmation
 	fileInfo := getFileInfo(filePath)
-	fmt.Println(dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
-	return true
+    safePrintln(dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
+    return true
 }
 
 func handleHelp(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
@@ -523,7 +527,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 		return true
 	}
 
-	if len(parts) < 2 || parts[1] == "list" {
+    if len(parts) < 2 || parts[1] == "list" {
 		// List all tools with their types
 		if interactiveCtx != nil && interactiveCtx.registry != nil {
 			allTools := interactiveCtx.registry.All()
@@ -549,15 +553,16 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 		} else {
 			safePrintln(userStyle.Styled("No tools currently loaded"))
 		}
-		return true
-	}
+        refreshInteractiveUI(config, session, interactiveCtx.registry)
+        return true
+    }
 
 	switch parts[1] {
 	case "add":
-		if len(parts) < 3 {
-			fmt.Println(errorStyle.Styled("Usage: /tools add <path|server>"))
-			return true
-		}
+        if len(parts) < 3 {
+            safePrintln(errorStyle.Styled("Usage: /tools add <path|server>"))
+            return true
+        }
 		
 		pathOrServer := strings.Join(parts[2:], " ")
 
@@ -569,10 +574,10 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 
 		// Try to auto-detect and load
 		_, err := interactiveCtx.registry.LoadToolAuto(pathOrServer)
-		if err != nil {
-			fmt.Println(errorStyle.Styled(fmt.Sprintf("Failed to load tool: %v", err)))
-			return true
-		}
+        if err != nil {
+            safePrintln(errorStyle.Styled(fmt.Sprintf("Failed to load tool: %v", err)))
+            return true
+        }
 
 		// Find newly loaded tools
 		var newTools []string
@@ -590,6 +595,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 		// Display what was loaded
 		if len(newTools) > 0 {
 			safePrintln(successStyle.Styled(fmt.Sprintf("Loaded tools: %s", strings.Join(newTools, ", "))))
+			refreshInteractiveUI(config, session, interactiveCtx.registry)
 		} else {
 			safePrintln(dimStyle.Styled("No new tools were loaded"))
 		}
@@ -601,10 +607,10 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 		})
 
 	case "remove":
-		if len(parts) < 3 {
-			fmt.Println(errorStyle.Styled("Usage: /tools remove <name or pattern>"))
-			return true
-		}
+        if len(parts) < 3 {
+            safePrintln(errorStyle.Styled("Usage: /tools remove <name or pattern>"))
+            return true
+        }
 		
 		pattern := strings.Join(parts[2:], " ")
 		
@@ -621,7 +627,7 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 				}
 			}
 			
-			if len(removed) > 0 {
+            if len(removed) > 0 {
 				// Update ActiveTools in metadata - remove all matched tools
 				newLoaders := []tools.ToolLoaderInfo{}
 				for _, loader := range contextInfo.ActiveTools {
@@ -639,7 +645,8 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 				contextInfo.ActiveTools = newLoaders
 				session.SetMetadata(contextInfo)
 				
-				fmt.Println(successStyle.Styled(fmt.Sprintf("Removed %d tools: %s", len(removed), strings.Join(removed, ", "))))
+                safePrintln(successStyle.Styled(fmt.Sprintf("Removed %d tools: %s", len(removed), strings.Join(removed, ", "))))
+				refreshInteractiveUI(config, session, interactiveCtx.registry)
 				
 				// Add assistant message to update LLM context
 				session.AddMessage(messages.ChatMessage{
@@ -647,15 +654,15 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 					Content: "My available tools have been updated.",
 				})
 			} else {
-				fmt.Println(errorStyle.Styled(fmt.Sprintf("No tools matched pattern: %s", pattern)))
-			}
-		} else {
-			// Exact match removal
-			_, exists := interactiveCtx.registry.Get(pattern)
-			if !exists {
-				fmt.Println(errorStyle.Styled(fmt.Sprintf("Tool not found: %s", pattern)))
-				return true
-			}
+                    safePrintln(errorStyle.Styled(fmt.Sprintf("No tools matched pattern: %s", pattern)))
+                }
+            } else {
+                // Exact match removal
+                _, exists := interactiveCtx.registry.Get(pattern)
+                if !exists {
+                    safePrintln(errorStyle.Styled(fmt.Sprintf("Tool not found: %s", pattern)))
+                    return true
+                }
 
 			// Remove the tool from registry
 			interactiveCtx.registry.Remove(pattern)
@@ -670,7 +677,8 @@ func handleTools(parts []string, config *Config, session sessions.Session, rl *r
 			contextInfo.ActiveTools = newLoaders
 			session.SetMetadata(contextInfo)
 
-			fmt.Println(successStyle.Styled(fmt.Sprintf("Removed tool: %s", pattern)))
+                safePrintln(successStyle.Styled(fmt.Sprintf("Removed tool: %s", pattern)))
+			refreshInteractiveUI(config, session, interactiveCtx.registry)
 
 			// Add assistant message to update LLM context
 			session.AddMessage(messages.ChatMessage{
@@ -746,13 +754,15 @@ func handleThinking(parts []string, config *Config, session sessions.Session, rl
 		config.ThinkingEffort = effort
 		session.SetMetadata(contextInfo)
 
-		if effort == "off" {
-			fmt.Println(successStyle.Styled("Thinking disabled"))
-		} else {
-			fmt.Println(successStyle.Styled(fmt.Sprintf("Thinking effort set to: %s", effort)))
-		}
-	}
-	return true
+        if effort == "off" {
+            fmt.Println(successStyle.Styled("Thinking disabled"))
+        } else {
+            fmt.Println(successStyle.Styled(fmt.Sprintf("Thinking effort set to: %s", effort)))
+        }
+        refreshInteractiveUI(config, session, interactiveCtx.registry)
+    }
+    refreshInteractiveUI(config, session, interactiveCtx.registry)
+    return true
 }
 
 func handleMaxTokens(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
@@ -830,7 +840,15 @@ func getHistoryFilePath(contextID string) string {
 
 // createAutoCompleter creates readline auto-completer
 func createAutoCompleter() *readline.PrefixCompleter {
-	return readline.NewPrefixCompleter(
+    // Build dynamic tool name list for `/tools remove` suggestions
+    var toolItems []readline.PrefixCompleterInterface
+    if interactiveCtx != nil && interactiveCtx.registry != nil {
+        for _, t := range interactiveCtx.registry.All() {
+            toolItems = append(toolItems, readline.PcItem(t.GetName()))
+        }
+    }
+
+    return readline.NewPrefixCompleter(
 		readline.PcItem("/exit"),
 		readline.PcItem("/quit"),
 		readline.PcItem("/clear"),
@@ -897,20 +915,20 @@ func createAutoCompleter() *readline.PrefixCompleter {
 			readline.PcItem("5m"),
 			readline.PcItem("0"),
 		),
-		readline.PcItem("/tools",
-			readline.PcItem("list"),
-			readline.PcItem("add"),
-			readline.PcItem("remove"),
-			readline.PcItem("reload"),
-			readline.PcItem("mcp",
-				readline.PcItem("list"),
-				readline.PcItem("remove"),
-			),
-		),
-		readline.PcItem("/debug"),
-		readline.PcItem("/file"),
-		readline.PcItem("/f"),
-	)
+        readline.PcItem("/tools",
+            readline.PcItem("list"),
+            readline.PcItem("add"),
+            readline.PcItem("remove", toolItems...),
+            readline.PcItem("reload"),
+            readline.PcItem("mcp",
+                readline.PcItem("list"),
+                readline.PcItem("remove"),
+            ),
+        ),
+        readline.PcItem("/debug"),
+        readline.PcItem("/file"),
+        readline.PcItem("/f"),
+    )
 }
 
 // filterInput filters input runes for readline
@@ -1009,7 +1027,48 @@ func printWelcomeMessage(config *Config, session sessions.Session, contextID str
 		}
 	}
 
-	fmt.Println()
+    fmt.Println()
+}
+
+// refreshInteractiveUI updates the prompt and autocomplete based on current state
+func refreshInteractiveUI(config *Config, session sessions.Session, registry *tools.ToolRegistry) {
+    if RL == nil {
+        return
+    }
+    RL.SetPrompt(makePrompt(config, session, registry))
+    RL.Config.AutoComplete = createAutoCompleter()
+    // Force redraw so the new prompt is visible immediately
+    RL.Refresh()
+}
+
+// makePrompt builds a dynamic, styled prompt
+func makePrompt(config *Config, session sessions.Session, registry *tools.ToolRegistry) string {
+    ctxName := getContextDisplayName(session)
+
+    // Abbreviate model by removing provider prefix (provider/model -> model)
+    displayModel := config.Model
+    if idx := strings.Index(displayModel, "/"); idx != -1 && idx+1 < len(displayModel) {
+        displayModel = displayModel[idx+1:]
+    }
+    if len(displayModel) > 24 {
+        displayModel = displayModel[:21] + "..."
+    }
+
+    toolCount := 0
+    if registry != nil {
+        toolCount = len(registry.All())
+    }
+
+    // Build prompt pieces; omit context when it is "default"
+    base := userStyle.Styled("polly")
+    parts := []string{base}
+    if ctxName != "default" {
+        parts = append(parts, highlightStyle.Styled(ctxName))
+    }
+    parts = append(parts, highlightStyle.Styled(displayModel))
+    parts = append(parts, fmt.Sprintf("%d tools", toolCount))
+
+    return strings.Join(parts, " · ") + " > "
 }
 
 // printInteractiveHelp prints help for interactive commands
@@ -1090,13 +1149,29 @@ func formatConversation(history []messages.ChatMessage) string {
 			if len(attachments) > 0 {
 				fmt.Fprintf(&builder, "%s\n", strings.Join(attachments, "\n"))
 			}
-		} else {
-			// Regular content
-			fmt.Fprintf(&builder, "%s\n", msg.Content)
-		}
-		fmt.Fprintf(&builder, "\n")
-	}
-	return builder.String()
+        } else {
+            // Regular content with simple fenced code styling
+            lines := strings.Split(msg.Content, "\n")
+            inFence := false
+            for _, line := range lines {
+                trimmed := strings.TrimSpace(line)
+                if strings.HasPrefix(trimmed, "```") {
+                    // Toggle fence; print fence lines dimmed
+                    inFence = !inFence
+                    fmt.Fprintf(&builder, "%s\n", dimStyle.Styled(line))
+                    continue
+                }
+                if inFence {
+                    // Faint gutter for code lines
+                    fmt.Fprintf(&builder, "%s%s\n", dimStyle.Styled("│ "), dimStyle.Styled(line))
+                } else {
+                    fmt.Fprintf(&builder, "%s\n", line)
+                }
+            }
+        }
+        fmt.Fprintf(&builder, "\n")
+    }
+    return builder.String()
 }
 
 // showRecentHistory displays recent conversation history (up to 25 lines)
@@ -1243,10 +1318,25 @@ func (l *fileAttachListener) attachFiles(paths []string) error {
 
 // showAttachmentConfirmations displays confirmation messages for attached files
 func (l *fileAttachListener) showAttachmentConfirmations(paths []string) {
-	for _, path := range paths {
-		fileInfo := getFileInfo(path)
-		fmt.Printf("\n%s\n", dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
-	}
+    if len(paths) <= 2 {
+        for _, path := range paths {
+            fileInfo := getFileInfo(path)
+            safePrintln(dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
+        }
+        return
+    }
+    // Summarize many attachments on a single line
+    infos := make([]string, 0, len(paths))
+    for i, p := range paths {
+        if i < 2 {
+            infos = append(infos, getFileInfo(p))
+        } else {
+            break
+        }
+    }
+    more := len(paths) - 2
+    summary := fmt.Sprintf("📎 %d files attached (%s, … and %d more)", len(paths), strings.Join(infos, ", "), more)
+    safePrintln(dimStyle.Styled(summary))
 }
 
 // extractFilePaths extracts file paths from user input that may contain drag-dropped files

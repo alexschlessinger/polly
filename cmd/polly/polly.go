@@ -359,18 +359,20 @@ func processEventStream(
 						errorStyle = termOutput.String().Foreground(termOutput.Color("160"))  // Dark red for light
 					}
 
-					for _, toolCall := range fullResponse.ToolCalls {
-						// Execute with spinner showing
-						success := executeToolCall(ctx, toolCall, registry, session, statusLine)
+                    for _, toolCall := range fullResponse.ToolCalls {
+                        // Execute with spinner showing
+                        start := time.Now()
+                        success := executeToolCall(ctx, toolCall, registry, session, statusLine)
 
-						// Clear spinner and show completion message
-						statusLine.Clear()
-						if success {
-							fmt.Printf("%s Completed: %s\n", successStyle.Styled("✓"), toolCall.Name)
-						} else {
-							fmt.Printf("%s Failed: %s\n", errorStyle.Styled("✗"), toolCall.Name)
-						}
-					}
+                        // Clear spinner and show completion message with duration
+                        statusLine.Clear()
+                        dur := time.Since(start).Truncate(time.Millisecond)
+                        if success {
+                            fmt.Printf("%s Completed: %s (%s)\n", successStyle.Styled("✓"), toolCall.Name, dur)
+                        } else {
+                            fmt.Printf("%s Failed: %s (%s)\n", errorStyle.Styled("✗"), toolCall.Name, dur)
+                        }
+                    }
 				} else {
 					for _, toolCall := range fullResponse.ToolCalls {
 						_ = executeToolCall(ctx, toolCall, registry, session, statusLine)
