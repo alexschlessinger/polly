@@ -29,74 +29,103 @@ func main() {
 	}
 }
 
-func runCommand(ctx context.Context, cmd *cli.Command) error {
+type commandRunner struct {
+	ctx          context.Context
+	cmd          *cli.Command
+	config       *Config
+	sessionStore sessions.SessionStore
+	contextID    string
+}
+
+func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, error) {
 	config := parseConfig(cmd)
 
-	// Set up logging
 	if !config.Debug {
 		log.SetOutput(io.Discard)
 	}
 
-	// Get context ID from config
 	contextID := config.ContextID
-
-	// Context validation will now happen in SessionStore.Get() method
-
-	// Handle --last flag
 	if config.UseLastContext {
-		// Will be resolved after sessionStore is created
 		contextID = ""
 	}
 
-	// Set up session store
 	sessionStore, err := setupSessionStore(config, contextID)
 	if err != nil {
-		return fmt.Errorf("failed to create context store: %w", err)
+		return nil, fmt.Errorf("failed to create context store: %w", err)
 	}
 
-	// Resolve --last flag if specified
 	if config.UseLastContext {
 		contextID = sessionStore.GetLast()
 		if contextID == "" {
-			return fmt.Errorf("no last context found")
+			return nil, fmt.Errorf("no last context found")
 		}
 	}
 
-	// Handle --reset flag
-	if config.ResetContext != "" {
-		return handleResetContext(sessionStore, config, config.ResetContext)
+	return &commandRunner{
+		ctx:          ctx,
+		cmd:          cmd,
+		config:       config,
+		sessionStore: sessionStore,
+		contextID:    contextID,
+	}, nil
+}
+
+func (r *commandRunner) Run() error {
+	handled, err := r.handleManagementFlags()
+	if err != nil {
+		return err
+	}
+	if handled {
+		return nil
 	}
 
-	// Handle context management operations
-	if config.ListContexts {
-		return handleListContexts(sessionStore)
-	}
-	if config.DeleteContext != "" {
-		return handleDeleteContext(sessionStore, config.DeleteContext)
-	}
-	if config.AddToContext {
-		return handleAddToContext(sessionStore, config, contextID)
-	}
-	if config.PurgeAll {
-		return handlePurgeAll(sessionStore)
-	}
-	if config.CreateContext != "" {
-		return handleCreateContext(sessionStore, config, config.CreateContext)
-	}
-	if config.ShowContext != "" {
-		return handleShowContext(sessionStore, config.ShowContext)
-	}
-
-	// Check if context exists and prompt if not
-	if contextID != "" {
-		contextID = checkAndPromptForMissingContext(sessionStore, contextID)
+	if r.contextID != "" {
+		contextID := checkAndPromptForMissingContext(r.sessionStore, r.contextID)
 		if contextID == "" {
-			return nil // User cancelled
+			return nil
 		}
+		r.contextID = contextID
 	}
 
-	// Prepare for conversation
-	return runConversation(ctx, config, sessionStore, contextID, cmd)
+	return runConversation(r.ctx, r.config, r.sessionStore, r.contextID, r.cmd)
+}
+
+func (r *commandRunner) handleManagementFlags() (bool, error) {
+	cfg := r.config
+	store := r.sessionStore
+
+	if cfg.ResetContext != "" {
+		return true, handleResetContext(store, cfg, cfg.ResetContext)
+	}
+	if cfg.ListContexts {
+		return true, handleListContexts(store)
+	}
+	if cfg.DeleteContext != "" {
+		return true, handleDeleteContext(store, cfg.DeleteContext)
+	}
+	if cfg.AddToContext {
+		return true, handleAddToContext(store, cfg, r.contextID)
+	}
+	if cfg.PurgeAll {
+		return true, handlePurgeAll(store)
+	}
+	if cfg.CreateContext != "" {
+		return true, handleCreateContext(store, cfg, cfg.CreateContext)
+	}
+	if cfg.ShowContext != "" {
+		return true, handleShowContext(store, cfg.ShowContext)
+	}
+
+	return false, nil
+}
+
+func runCommand(ctx context.Context, cmd *cli.Command) error {
+	runner, err := newCommandRunner(ctx, cmd)
+	if err != nil {
+		return err
+	}
+
+	return runner.Run()
 }
 
 // initializeSession sets up everything needed for a conversation session
@@ -121,7 +150,7 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 	// Handle command-line tools if provided - they replace session tools
 	metadata := session.GetMetadata()
 	var toolRegistry *tools.ToolRegistry
-	
+
 	if len(config.Tools) > 0 {
 		// Load command-line tools directly into the registry we'll use
 		toolRegistry = tools.NewToolRegistry(nil)
@@ -359,20 +388,20 @@ func processEventStream(
 						errorStyle = termOutput.String().Foreground(termOutput.Color("160"))  // Dark red for light
 					}
 
-                    for _, toolCall := range fullResponse.ToolCalls {
-                        // Execute with spinner showing
-                        start := time.Now()
-                        success := executeToolCall(ctx, toolCall, registry, session, statusLine)
+					for _, toolCall := range fullResponse.ToolCalls {
+						// Execute with spinner showing
+						start := time.Now()
+						success := executeToolCall(ctx, toolCall, registry, session, statusLine)
 
-                        // Clear spinner and show completion message with duration
-                        statusLine.Clear()
-                        dur := time.Since(start).Truncate(time.Millisecond)
-                        if success {
-                            fmt.Printf("%s Completed: %s (%s)\n", successStyle.Styled("✓"), toolCall.Name, dur)
-                        } else {
-                            fmt.Printf("%s Failed: %s (%s)\n", errorStyle.Styled("✗"), toolCall.Name, dur)
-                        }
-                    }
+						// Clear spinner and show completion message with duration
+						statusLine.Clear()
+						dur := time.Since(start).Truncate(time.Millisecond)
+						if success {
+							fmt.Printf("%s Completed: %s (%s)\n", successStyle.Styled("✓"), toolCall.Name, dur)
+						} else {
+							fmt.Printf("%s Failed: %s (%s)\n", errorStyle.Styled("✗"), toolCall.Name, dur)
+						}
+					}
 				} else {
 					for _, toolCall := range fullResponse.ToolCalls {
 						_ = executeToolCall(ctx, toolCall, registry, session, statusLine)

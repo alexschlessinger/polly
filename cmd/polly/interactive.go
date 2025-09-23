@@ -21,51 +21,52 @@ import (
 	"github.com/chzyer/readline"
 )
 
-var RL *readline.Instance
-
-// interactiveContext holds context needed by interactive commands
-type interactiveContext struct {
-	registry *tools.ToolRegistry
+// readlineUI wraps the readline instance and ensures output plays nicely with the prompt.
+type readlineUI struct {
+	rl *readline.Instance
 }
 
-var interactiveCtx *interactiveContext
+func newReadlineUI(rl *readline.Instance) *readlineUI {
+	return &readlineUI{rl: rl}
+}
 
-func safePrintln(text string) {
-	RL.Clean()
+func (ui *readlineUI) Println(text string) {
+	if ui == nil || ui.rl == nil {
+		fmt.Println(text)
+		return
+	}
+	ui.rl.Clean()
 	fmt.Println(text)
-	RL.Refresh()
+	ui.rl.Refresh()
 }
 
-func safePrintf(format string, args ...interface{}) {
-	RL.Clean()
+func (ui *readlineUI) Printf(format string, args ...interface{}) {
+	if ui == nil || ui.rl == nil {
+		fmt.Printf(format, args...)
+		return
+	}
+	ui.rl.Clean()
 	fmt.Printf(format, args...)
-	RL.Refresh()
+	ui.rl.Refresh()
 }
 
 // runInteractiveMode runs the CLI in interactive mode with readline support
+
 func runInteractiveMode(ctx context.Context, config *Config, session sessions.Session, multipass llm.LLM, toolRegistry *tools.ToolRegistry, contextID string) error {
 	// Note: session is already initialized by caller, no need to close it here
-
-	// Set interactive context for commands
-	interactiveCtx = &interactiveContext{
-		registry: toolRegistry,
-	}
 
 	// Initialize colors based on terminal background
 	initColors()
 
-	// Create the file attachment listener
 	listener := &fileAttachListener{
 		session:        session,
-		config:         config,
 		processedPaths: make(map[string]bool),
 	}
 
-	// Configure readline
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          "> ",
 		HistoryFile:     getHistoryFilePath(contextID),
-		AutoComplete:    createAutoCompleter(),
+		AutoComplete:    createAutoCompleter(toolRegistry),
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
 
@@ -76,11 +77,12 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 	if err != nil {
 		return err
 	}
-    RL = rl
-    defer rl.Close()
+	defer rl.Close()
 
-    // Set initial styled prompt and dynamic autocomplete
-    refreshInteractiveUI(config, session, toolRegistry)
+	ui := newReadlineUI(rl)
+	listener.ui = ui
+
+	refreshInteractiveUI(config, session, toolRegistry, ui)
 
 	// Print welcome message
 	printWelcomeMessage(config, session, contextID, toolRegistry)
@@ -154,7 +156,7 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 
 		// Handle special commands - only process known commands
 		if strings.HasPrefix(input, "/") && isKnownCommand(input) {
-			if handled := handleInteractiveCommand(input, config, session, rl); handled {
+			if handled := handleInteractiveCommand(input, config, session, &toolRegistry, ui); handled {
 				continue
 			}
 		}
@@ -199,7 +201,7 @@ func isKnownCommand(input string) bool {
 }
 
 // commandHandler is a function that handles an interactive command
-type commandHandler func(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool
+type commandHandler func(parts []string, config *Config, session sessions.Session, registry **tools.ToolRegistry, ui *readlineUI) bool
 
 // interactiveCommands maps command names to their handlers
 var interactiveCommands = map[string]commandHandler{
@@ -238,7 +240,7 @@ var interactiveCommands = map[string]commandHandler{
 }
 
 // handleInteractiveCommand processes special interactive commands
-func handleInteractiveCommand(input string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleInteractiveCommand(input string, config *Config, session sessions.Session, registry **tools.ToolRegistry, ui *readlineUI) bool {
 	parts := strings.Fields(input)
 	if len(parts) == 0 {
 		return false
@@ -246,7 +248,7 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 
 	command := strings.ToLower(parts[0])
 	if handler, ok := interactiveCommands[command]; ok {
-		return handler(parts, config, session, rl)
+		return handler(parts, config, session, registry, ui)
 	}
 
 	// Don't show "unknown command" for paths that start with /
@@ -255,47 +257,47 @@ func handleInteractiveCommand(input string, config *Config, session sessions.Ses
 }
 
 // Command handlers
-func handleExit(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleExit(_ []string, _ *Config, _ sessions.Session, _ **tools.ToolRegistry, _ *readlineUI) bool {
 	cleanupAndExit(0)
 	return true
 }
 
-func handleClear(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleClear(_ []string, _ *Config, _ sessions.Session, _ **tools.ToolRegistry, _ *readlineUI) bool {
 	clearScreen()
 	return true
 }
 
-func handleReset(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleReset(_ []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
 	session.Clear()
-	fmt.Println(successStyle.Styled("Conversation reset."))
+	ui.Println(successStyle.Styled("Conversation reset."))
 	return true
 }
 
-func handleModel(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleModel(parts []string, config *Config, session sessions.Session, registry **tools.ToolRegistry, ui *readlineUI) bool {
 	if len(parts) < 2 {
-		fmt.Printf("Current model: %s\n", highlightStyle.Styled(config.Model))
-		fmt.Println(dimStyle.Styled("Usage: /model <model-name>"))
-		fmt.Println(dimStyle.Styled("Example: /model openai/gpt-4o"))
+		ui.Printf("Current model: %s\n", highlightStyle.Styled(config.Model))
+		ui.Println(dimStyle.Styled("Usage: /model <model-name>"))
+		ui.Println(dimStyle.Styled("Example: /model openai/gpt-4o"))
 	} else {
 		config.Model = parts[1]
 		if contextInfo := session.GetMetadata(); contextInfo != nil {
 			contextInfo.Model = config.Model
 			session.SetMetadata(contextInfo)
 		}
-        fmt.Println(successStyle.Styled(fmt.Sprintf("Switched to model: %s", config.Model)))
-        refreshInteractiveUI(config, session, interactiveCtx.registry)
-    }
-    return true
+		ui.Println(successStyle.Styled(fmt.Sprintf("Switched to model: %s", config.Model)))
+		refreshInteractiveUI(config, session, *registry, ui)
+	}
+	return true
 }
 
-func handleTemperature(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleTemperature(parts []string, config *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
 	if len(parts) < 2 {
-		fmt.Printf("Current temperature: %s\n", highlightStyle.Styled(fmt.Sprintf("%.2f", config.Temperature)))
-		fmt.Println(dimStyle.Styled("Usage: /temp <0.0-2.0>"))
+		ui.Printf("Current temperature: %s\n", highlightStyle.Styled(fmt.Sprintf("%.2f", config.Temperature)))
+		ui.Println(dimStyle.Styled("Usage: /temp <0.0-2.0>"))
 	} else {
 		if temp, err := parseFloat(parts[1]); err == nil {
 			if temp < 0.0 || temp > 2.0 {
-				fmt.Println(errorStyle.Styled(fmt.Sprintf("temperature must be between 0.0 and 2.0, got %.1f", temp)))
+				ui.Println(errorStyle.Styled(fmt.Sprintf("temperature must be between 0.0 and 2.0, got %.1f", temp)))
 				return true
 			}
 			config.Temperature = temp
@@ -303,526 +305,508 @@ func handleTemperature(parts []string, config *Config, session sessions.Session,
 				contextInfo.Temperature = temp
 				session.SetMetadata(contextInfo)
 			}
-			fmt.Println(successStyle.Styled(fmt.Sprintf("Temperature set to: %.2f", config.Temperature)))
+			ui.Println(successStyle.Styled(fmt.Sprintf("Temperature set to: %.2f", config.Temperature)))
 		} else {
-			fmt.Println(errorStyle.Styled("Invalid temperature value"))
+			ui.Println(errorStyle.Styled("Invalid temperature value"))
 		}
 	}
 	return true
 }
 
-func handleHistory(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	showHistory(session)
+func handleHistory(_ []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
+	showHistory(session, ui)
 	return true
 }
 
-func handleSave(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleSave(parts []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
 	if len(parts) < 2 {
-		fmt.Println(dimStyle.Styled("Usage: /save <filename>"))
-	} else {
-		saveConversation(session, parts[1])
+		ui.Println(dimStyle.Styled("Usage: /save <filename>"))
+		return true
 	}
+
+	saveConversation(session, parts[1], ui)
 	return true
 }
 
-func handleFile(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-    if len(parts) < 2 {
-        safePrintln(dimStyle.Styled("Usage: /file <path>"))
-        return true
-    }
+func handleFile(parts []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
+	if len(parts) < 2 {
+		ui.Println(dimStyle.Styled("Usage: /file <path>"))
+		return true
+	}
 
-	// Get the file path (join in case it has spaces)
 	filePath := strings.Join(parts[1:], " ")
-
-	// Expand home directory if needed
 	if strings.HasPrefix(filePath, "~/") {
 		home, _ := os.UserHomeDir()
 		filePath = filepath.Join(home, filePath[2:])
 	}
 
-	// Validate the file exists
-    if _, err := os.Stat(filePath); err != nil {
-        safePrintln(errorStyle.Styled(fmt.Sprintf("File not found: %s", filePath)))
-        return true
-    }
+	if _, err := os.Stat(filePath); err != nil {
+		ui.Println(errorStyle.Styled(fmt.Sprintf("File not found: %s", filePath)))
+		return true
+	}
 
-	// Build and add file message to session
 	userMsg, err := buildMessageWithFiles("", []string{filePath})
-    if err != nil {
-        safePrintln(errorStyle.Styled(fmt.Sprintf("Error processing file: %v", err)))
-        return true
-    }
+	if err != nil {
+		ui.Println(errorStyle.Styled(fmt.Sprintf("Error processing file: %v", err)))
+		return true
+	}
 
-	// Add to session
 	session.AddMessage(userMsg)
-
-	// Show confirmation
 	fileInfo := getFileInfo(filePath)
-    safePrintln(dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
-    return true
-}
-
-func handleHelp(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	printInteractiveHelp()
+	ui.Println(dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
 	return true
 }
 
-func handleContext(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleHelp(_ []string, _ *Config, _ sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
+	printInteractiveHelp(ui)
+	return true
+}
+
+func handleContext(parts []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
 	if len(parts) < 2 {
-		fmt.Printf("Current context: %s\n", highlightStyle.Styled(getContextDisplayName(session)))
-	} else {
-		fmt.Println(dimStyle.Styled("To switch context, exit and restart with -c flag"))
+		ui.Printf("Current context: %s\n", highlightStyle.Styled(getContextDisplayName(session)))
+		return true
 	}
+
+	ui.Println(dimStyle.Styled("To switch context, exit and restart with -c flag"))
 	return true
 }
 
-func handleSystem(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleSystem(parts []string, config *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
 	if len(parts) < 2 {
-		fmt.Printf("Current system prompt: %s\n", highlightStyle.Styled(config.SystemPrompt))
-	} else {
-		// Join all parts after the command as the new system prompt
-		newPrompt := strings.Join(parts[1:], " ")
-		// Update config and session metadata
-		config.SystemPrompt = newPrompt
-		if contextInfo := session.GetMetadata(); contextInfo != nil {
-			contextInfo.SystemPrompt = newPrompt
-			session.SetMetadata(contextInfo)
-		}
-		// Reset conversation history to apply new system prompt
-		session.Clear()
-		fmt.Println(successStyle.Styled("System prompt updated and conversation reset."))
+		ui.Printf("Current system prompt: %s\n", highlightStyle.Styled(config.SystemPrompt))
+		return true
 	}
+
+	newPrompt := strings.Join(parts[1:], " ")
+	config.SystemPrompt = newPrompt
+	if contextInfo := session.GetMetadata(); contextInfo != nil {
+		contextInfo.SystemPrompt = newPrompt
+		session.SetMetadata(contextInfo)
+	}
+	session.Clear()
+	ui.Println(successStyle.Styled("System prompt updated and conversation reset."))
 	return true
 }
 
-func handleDebug(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleDebug(_ []string, config *Config, _ sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
 	config.Debug = !config.Debug
-	fmt.Println(successStyle.Styled(fmt.Sprintf("Debug mode: %v", config.Debug)))
+	ui.Println(successStyle.Styled(fmt.Sprintf("Debug mode: %v", config.Debug)))
 	return true
 }
 
-func handleDescription(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleDescription(parts []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
 	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
-		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		ui.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
 	}
 
 	if len(parts) < 2 {
 		if contextInfo.Description != "" {
-			fmt.Printf("Current description: %s\n", highlightStyle.Styled(contextInfo.Description))
+			ui.Printf("Current description: %s\n", highlightStyle.Styled(contextInfo.Description))
 		} else {
-			fmt.Println(dimStyle.Styled("No description set"))
+			ui.Println(dimStyle.Styled("No description set"))
 		}
-		fmt.Println(dimStyle.Styled("Usage: /description <text>"))
-		fmt.Println(dimStyle.Styled("       /description clear  (to remove)"))
-	} else {
-		if parts[1] == "clear" {
-			contextInfo.Description = ""
-			session.SetMetadata(contextInfo)
-			fmt.Println(successStyle.Styled("Description cleared"))
-		} else {
-			// Join all parts after the command as the description
-			contextInfo.Description = strings.Join(parts[1:], " ")
-			session.SetMetadata(contextInfo)
-			fmt.Println(successStyle.Styled(fmt.Sprintf("Description set: %s", contextInfo.Description)))
-		}
+		ui.Println(dimStyle.Styled("Usage: /description <text>"))
+		ui.Println(dimStyle.Styled("       /description clear  (to remove)"))
+		return true
 	}
+
+	if parts[1] == "clear" {
+		contextInfo.Description = ""
+		session.SetMetadata(contextInfo)
+		ui.Println(successStyle.Styled("Description cleared"))
+		return true
+	}
+
+	contextInfo.Description = strings.Join(parts[1:], " ")
+	session.SetMetadata(contextInfo)
+	ui.Println(successStyle.Styled(fmt.Sprintf("Description set: %s", contextInfo.Description)))
 	return true
 }
 
-func handleMaxHistory(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleMaxHistory(parts []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
 	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
-		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		ui.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
 	}
 
 	if len(parts) < 2 {
 		if contextInfo.MaxHistory > 0 {
-			fmt.Printf("Current max history: %s\n", highlightStyle.Styled(fmt.Sprintf("%d messages", contextInfo.MaxHistory)))
+			ui.Printf("Current max history: %s\n", highlightStyle.Styled(fmt.Sprintf("%d messages", contextInfo.MaxHistory)))
 		} else {
-			fmt.Println(dimStyle.Styled("No max history limit set (unlimited)"))
+			ui.Println(dimStyle.Styled("No max history limit set (unlimited)"))
 		}
-		fmt.Println(dimStyle.Styled("Usage: /maxhistory <number>"))
-		fmt.Println(dimStyle.Styled("       /maxhistory 0  (for unlimited)"))
+		ui.Println(dimStyle.Styled("Usage: /maxhistory <number>"))
+		ui.Println(dimStyle.Styled("       /maxhistory 0  (for unlimited)"))
+		return true
+	}
+
+	val, err := parseInt(parts[1])
+	if err != nil {
+		ui.Println(errorStyle.Styled("Invalid number"))
+		return true
+	}
+	if val < 0 {
+		ui.Println(errorStyle.Styled("Max history must be 0 (unlimited) or positive"))
+		return true
+	}
+
+	contextInfo.MaxHistory = val
+	session.SetMetadata(contextInfo)
+	if val == 0 {
+		ui.Println(successStyle.Styled("Max history set to unlimited"))
 	} else {
-		if val, err := parseInt(parts[1]); err == nil {
-			if val < 0 {
-				fmt.Println(errorStyle.Styled("Max history must be 0 (unlimited) or positive"))
-				return true
-			}
-			contextInfo.MaxHistory = val
-			session.SetMetadata(contextInfo)
-			if val == 0 {
-				fmt.Println(successStyle.Styled("Max history set to unlimited"))
-			} else {
-				fmt.Println(successStyle.Styled(fmt.Sprintf("Max history set to: %d messages", val)))
-			}
-		} else {
-			fmt.Println(errorStyle.Styled("Invalid number"))
-		}
+		ui.Println(successStyle.Styled(fmt.Sprintf("Max history set to: %d messages", val)))
 	}
 	return true
 }
 
-func handleTTL(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleTTL(parts []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
 	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
-		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		ui.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
 	}
 
 	if len(parts) < 2 {
 		if contextInfo.TTL > 0 {
-			fmt.Printf("Current TTL: %s\n", highlightStyle.Styled(contextInfo.TTL.String()))
+			ui.Printf("Current TTL: %s\n", highlightStyle.Styled(contextInfo.TTL.String()))
 		} else {
-			fmt.Println(dimStyle.Styled("No TTL set (never expires)"))
+			ui.Println(dimStyle.Styled("No TTL set (never expires)"))
 		}
-		fmt.Println(dimStyle.Styled("Usage: /ttl <duration>"))
-		fmt.Println(dimStyle.Styled("Examples: /ttl 24h, /ttl 7d, /ttl 30m"))
-		fmt.Println(dimStyle.Styled("          /ttl 0  (never expires)"))
-	} else {
-		if parts[1] == "0" {
-			contextInfo.TTL = 0
-			session.SetMetadata(contextInfo)
-			fmt.Println(successStyle.Styled("TTL cleared (context never expires)"))
-		} else {
-			if duration, err := time.ParseDuration(parts[1]); err == nil {
-				contextInfo.TTL = duration
-				session.SetMetadata(contextInfo)
-				fmt.Println(successStyle.Styled(fmt.Sprintf("TTL set to: %s", duration)))
-			} else {
-				// Try parsing with days suffix
-				if strings.HasSuffix(parts[1], "d") {
-					daysStr := strings.TrimSuffix(parts[1], "d")
-					if days, err := parseInt(daysStr); err == nil {
-						duration := time.Duration(days) * 24 * time.Hour
-						contextInfo.TTL = duration
-						session.SetMetadata(contextInfo)
-						fmt.Println(successStyle.Styled(fmt.Sprintf("TTL set to: %s", duration)))
-					} else {
-						fmt.Println(errorStyle.Styled("Invalid duration format"))
-					}
-				} else {
-					fmt.Println(errorStyle.Styled("Invalid duration format"))
-				}
-			}
-		}
+		ui.Println(dimStyle.Styled("Usage: /ttl <duration>"))
+		ui.Println(dimStyle.Styled("Examples: /ttl 24h, /ttl 7d, /ttl 30m"))
+		ui.Println(dimStyle.Styled("          /ttl 0  (never expires)"))
+		return true
 	}
+
+	if parts[1] == "0" {
+		contextInfo.TTL = 0
+		session.SetMetadata(contextInfo)
+		ui.Println(successStyle.Styled("TTL cleared (context never expires)"))
+		return true
+	}
+
+	if duration, err := time.ParseDuration(parts[1]); err == nil {
+		contextInfo.TTL = duration
+		session.SetMetadata(contextInfo)
+		ui.Println(successStyle.Styled(fmt.Sprintf("TTL set to: %s", duration)))
+		return true
+	}
+
+	if strings.HasSuffix(parts[1], "d") {
+		daysStr := strings.TrimSuffix(parts[1], "d")
+		days, err := parseInt(daysStr)
+		if err != nil {
+			ui.Println(errorStyle.Styled("Invalid duration format"))
+			return true
+		}
+		duration := time.Duration(days) * 24 * time.Hour
+		contextInfo.TTL = duration
+		session.SetMetadata(contextInfo)
+		ui.Println(successStyle.Styled(fmt.Sprintf("TTL set to: %s", duration)))
+		return true
+	}
+
+	ui.Println(errorStyle.Styled("Invalid duration format"))
 	return true
 }
 
-func handleTools(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleTools(parts []string, config *Config, session sessions.Session, registry **tools.ToolRegistry, ui *readlineUI) bool {
 	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
-		safePrintln(errorStyle.Styled("No context available. Create or switch to a context first."))
+		ui.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
 	}
 
-	// Check if we have a registry for operations that need it
+	current := *registry
 	needsRegistry := len(parts) >= 2 && parts[1] != "list"
-	if needsRegistry && (interactiveCtx == nil || interactiveCtx.registry == nil) {
-		safePrintln(errorStyle.Styled("Tool registry not available. Please restart the session."))
+	if needsRegistry && current == nil {
+		ui.Println(errorStyle.Styled("Tool registry not available. Please restart the session."))
 		return true
 	}
 
-    if len(parts) < 2 || parts[1] == "list" {
-		// List all tools with their types
-		if interactiveCtx != nil && interactiveCtx.registry != nil {
-			allTools := interactiveCtx.registry.All()
-			if len(allTools) == 0 {
-				safePrintln(userStyle.Styled("No tools currently loaded"))
-			} else {
-				safePrintln("Currently loaded tools:")
-				for _, tool := range allTools {
-					// Capitalize tool type for display
-					toolType := tool.GetType()
-					displayType := toolType
-					switch toolType {
-					case "shell":
-						displayType = "Shell"
-					case "mcp":
-						displayType = "MCP"
-					case "native":
-						displayType = "Native"
-					}
-					safePrintf("  - %s [%s]\n", highlightStyle.Styled(tool.GetName()), dimStyle.Styled(displayType))
-				}
-			}
-		} else {
-			safePrintln(userStyle.Styled("No tools currently loaded"))
+	if len(parts) < 2 || parts[1] == "list" {
+		if current == nil || len(current.All()) == 0 {
+			ui.Println(userStyle.Styled("No tools currently loaded"))
+			refreshInteractiveUI(config, session, current, ui)
+			return true
 		}
-        refreshInteractiveUI(config, session, interactiveCtx.registry)
-        return true
-    }
+
+		ui.Println("Currently loaded tools:")
+		for _, tool := range current.All() {
+			displayType := tool.GetType()
+			switch displayType {
+			case "shell":
+				displayType = "Shell"
+			case "mcp":
+				displayType = "MCP"
+			case "native":
+				displayType = "Native"
+			}
+			ui.Printf("  - %s [%s]\n", highlightStyle.Styled(tool.GetName()), dimStyle.Styled(displayType))
+		}
+		refreshInteractiveUI(config, session, current, ui)
+		return true
+	}
 
 	switch parts[1] {
 	case "add":
-        if len(parts) < 3 {
-            safePrintln(errorStyle.Styled("Usage: /tools add <path|server>"))
-            return true
-        }
-		
-		pathOrServer := strings.Join(parts[2:], " ")
+		if len(parts) < 3 {
+			ui.Println(errorStyle.Styled("Usage: /tools add <path|server>"))
+			return true
+		}
+		if current == nil {
+			current = tools.NewToolRegistry(nil)
+			*registry = current
+		}
 
-		// Get current tools before loading
+		pathOrServer := strings.Join(parts[2:], " ")
 		toolsBefore := make(map[string]bool)
-		for _, tool := range interactiveCtx.registry.All() {
+		for _, tool := range current.All() {
 			toolsBefore[tool.GetName()] = true
 		}
 
-		// Try to auto-detect and load
-		_, err := interactiveCtx.registry.LoadToolAuto(pathOrServer)
-        if err != nil {
-            safePrintln(errorStyle.Styled(fmt.Sprintf("Failed to load tool: %v", err)))
-            return true
-        }
+		if _, err := current.LoadToolAuto(pathOrServer); err != nil {
+			ui.Println(errorStyle.Styled(fmt.Sprintf("Failed to load tool: %v", err)))
+			return true
+		}
 
-		// Find newly loaded tools
 		var newTools []string
-		for _, tool := range interactiveCtx.registry.All() {
+		for _, tool := range current.All() {
 			name := tool.GetName()
 			if !toolsBefore[name] {
 				newTools = append(newTools, name)
 			}
 		}
 
-		// Update ActiveTools metadata with new loader info
-		contextInfo.ActiveTools = interactiveCtx.registry.GetActiveToolLoaders()
+		contextInfo.ActiveTools = current.GetActiveToolLoaders()
 		session.SetMetadata(contextInfo)
 
-		// Display what was loaded
 		if len(newTools) > 0 {
-			safePrintln(successStyle.Styled(fmt.Sprintf("Loaded tools: %s", strings.Join(newTools, ", "))))
-			refreshInteractiveUI(config, session, interactiveCtx.registry)
+			ui.Println(successStyle.Styled(fmt.Sprintf("Loaded tools: %s", strings.Join(newTools, ", "))))
+			refreshInteractiveUI(config, session, current, ui)
 		} else {
-			safePrintln(dimStyle.Styled("No new tools were loaded"))
+			ui.Println(dimStyle.Styled("No new tools were loaded"))
 		}
 
-		// Add assistant message to update LLM context
 		session.AddMessage(messages.ChatMessage{
 			Role:    messages.MessageRoleAssistant,
 			Content: "My available tools have been updated.",
 		})
 
 	case "remove":
-        if len(parts) < 3 {
-            safePrintln(errorStyle.Styled("Usage: /tools remove <name or pattern>"))
-            return true
-        }
-		
+		if len(parts) < 3 {
+			ui.Println(errorStyle.Styled("Usage: /tools remove <name or pattern>"))
+			return true
+		}
+
 		pattern := strings.Join(parts[2:], " ")
-		
-		// Check if it's a wildcard pattern
 		if strings.Contains(pattern, "*") {
-			// Wildcard removal
 			var removed []string
-			for _, tool := range interactiveCtx.registry.All() {
+			for _, tool := range current.All() {
 				name := tool.GetName()
 				matched, _ := path.Match(pattern, name)
 				if matched {
-					interactiveCtx.registry.Remove(name)
+					current.Remove(name)
 					removed = append(removed, name)
 				}
 			}
-			
-            if len(removed) > 0 {
-				// Update ActiveTools in metadata - remove all matched tools
-				newLoaders := []tools.ToolLoaderInfo{}
-				for _, loader := range contextInfo.ActiveTools {
-					found := false
-					for _, removedName := range removed {
-						if loader.Name == removedName {
-							found = true
-							break
-						}
-					}
-					if !found {
-						newLoaders = append(newLoaders, loader)
+
+			if len(removed) == 0 {
+				ui.Println(errorStyle.Styled(fmt.Sprintf("No tools matched pattern: %s", pattern)))
+				return true
+			}
+
+			var newLoaders []tools.ToolLoaderInfo
+			for _, loader := range contextInfo.ActiveTools {
+				keep := true
+				for _, removedName := range removed {
+					if loader.Name == removedName {
+						keep = false
+						break
 					}
 				}
-				contextInfo.ActiveTools = newLoaders
-				session.SetMetadata(contextInfo)
-				
-                safePrintln(successStyle.Styled(fmt.Sprintf("Removed %d tools: %s", len(removed), strings.Join(removed, ", "))))
-				refreshInteractiveUI(config, session, interactiveCtx.registry)
-				
-				// Add assistant message to update LLM context
-				session.AddMessage(messages.ChatMessage{
-					Role:    messages.MessageRoleAssistant,
-					Content: "My available tools have been updated.",
-				})
-			} else {
-                    safePrintln(errorStyle.Styled(fmt.Sprintf("No tools matched pattern: %s", pattern)))
-                }
-            } else {
-                // Exact match removal
-                _, exists := interactiveCtx.registry.Get(pattern)
-                if !exists {
-                    safePrintln(errorStyle.Styled(fmt.Sprintf("Tool not found: %s", pattern)))
-                    return true
-                }
-
-			// Remove the tool from registry
-			interactiveCtx.registry.Remove(pattern)
-
-			// Update ActiveTools in metadata - remove just this specific tool
-			newLoaders := []tools.ToolLoaderInfo{}
-			for _, loader := range contextInfo.ActiveTools {
-				if loader.Name != pattern {
+				if keep {
 					newLoaders = append(newLoaders, loader)
 				}
 			}
 			contextInfo.ActiveTools = newLoaders
 			session.SetMetadata(contextInfo)
 
-                safePrintln(successStyle.Styled(fmt.Sprintf("Removed tool: %s", pattern)))
-			refreshInteractiveUI(config, session, interactiveCtx.registry)
+			ui.Println(successStyle.Styled(fmt.Sprintf("Removed %d tools: %s", len(removed), strings.Join(removed, ", "))))
+			refreshInteractiveUI(config, session, current, ui)
 
-			// Add assistant message to update LLM context
 			session.AddMessage(messages.ChatMessage{
 				Role:    messages.MessageRoleAssistant,
 				Content: "My available tools have been updated.",
 			})
-		}
-
-	case "reload":
-		// Clear and reload all tools
-		safePrintln("Reloading all tools...")
-
-		// Close existing registry
-		if err := interactiveCtx.registry.Close(); err != nil {
-			log.Printf("Error closing registry: %v", err)
-		}
-
-		// Reload tools from session metadata
-		registry, err := loadTools(contextInfo.ActiveTools)
-		if err != nil {
-			safePrintln(errorStyle.Styled(fmt.Sprintf("Failed to reload tools: %v", err)))
 			return true
 		}
 
-		interactiveCtx.registry = registry
-		safePrintln(successStyle.Styled("All tools reloaded"))
+		if _, exists := current.Get(pattern); !exists {
+			ui.Println(errorStyle.Styled(fmt.Sprintf("Tool not found: %s", pattern)))
+			return true
+		}
 
-		// Add assistant message to update LLM context
+		current.Remove(pattern)
+		var newLoaders []tools.ToolLoaderInfo
+		for _, loader := range contextInfo.ActiveTools {
+			if loader.Name != pattern {
+				newLoaders = append(newLoaders, loader)
+			}
+		}
+		contextInfo.ActiveTools = newLoaders
+		session.SetMetadata(contextInfo)
+
+		ui.Println(successStyle.Styled(fmt.Sprintf("Removed tool: %s", pattern)))
+		refreshInteractiveUI(config, session, current, ui)
+
+		session.AddMessage(messages.ChatMessage{
+			Role:    messages.MessageRoleAssistant,
+			Content: "My available tools have been updated.",
+		})
+
+	case "reload":
+		ui.Println("Reloading all tools...")
+		if current != nil {
+			if err := current.Close(); err != nil {
+				log.Printf("Error closing registry: %v", err)
+			}
+		}
+
+		newRegistry, err := loadTools(contextInfo.ActiveTools)
+		if err != nil {
+			ui.Println(errorStyle.Styled(fmt.Sprintf("Failed to reload tools: %v", err)))
+			return true
+		}
+
+		*registry = newRegistry
+		current = newRegistry
+		ui.Println(successStyle.Styled("All tools reloaded"))
+		refreshInteractiveUI(config, session, current, ui)
+
 		session.AddMessage(messages.ChatMessage{
 			Role:    messages.MessageRoleAssistant,
 			Content: "My available tools have been updated.",
 		})
 
 	default:
-		safePrintln(errorStyle.Styled(fmt.Sprintf("Unknown subcommand: %s", parts[1])))
-		safePrintln(userStyle.Styled("Usage: /tools [list]              - List all loaded tools"))
-		safePrintln(userStyle.Styled("       /tools add <path|server>   - Add a tool"))
-		safePrintln(userStyle.Styled("       /tools remove <name|pattern> - Remove tool(s)"))
-		safePrintln(userStyle.Styled("       /tools reload              - Reload all tools"))
+		ui.Println(errorStyle.Styled(fmt.Sprintf("Unknown subcommand: %s", parts[1])))
+		ui.Println(userStyle.Styled("Usage: /tools [list]              - List all loaded tools"))
+		ui.Println(userStyle.Styled("       /tools add <path|server>   - Add a tool"))
+		ui.Println(userStyle.Styled("       /tools remove <name|pattern> - Remove tool(s)"))
+		ui.Println(userStyle.Styled("       /tools reload              - Reload all tools"))
+		return true
 	}
-	
+
 	return true
 }
 
-func handleThinking(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleThinking(parts []string, config *Config, session sessions.Session, registry **tools.ToolRegistry, ui *readlineUI) bool {
 	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
-		fmt.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		ui.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
 		return true
 	}
 
 	if len(parts) < 2 {
 		if contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
-			fmt.Printf("Current thinking effort: %s\n", highlightStyle.Styled(contextInfo.ThinkingEffort))
+			ui.Printf("Current thinking effort: %s\n", highlightStyle.Styled(contextInfo.ThinkingEffort))
 		} else if config.ThinkingEffort != "off" {
-			fmt.Printf("Current thinking effort: %s\n", highlightStyle.Styled(config.ThinkingEffort))
+			ui.Printf("Current thinking effort: %s\n", highlightStyle.Styled(config.ThinkingEffort))
 		} else {
-			fmt.Printf("Current thinking effort: %s\n", highlightStyle.Styled("off"))
+			ui.Printf("Current thinking effort: %s\n", highlightStyle.Styled("off"))
 		}
-		fmt.Println(dimStyle.Styled("Usage: /think <level>"))
-		fmt.Println(dimStyle.Styled("Levels: off, low, medium, high"))
-		fmt.Println(dimStyle.Styled("       /think off  (to disable)"))
-	} else {
-		effort := strings.ToLower(parts[1])
-		// Validate the thinking effort level
-		validEfforts := map[string]bool{"off": true, "low": true, "medium": true, "high": true}
-		if !validEfforts[effort] {
-			fmt.Println(errorStyle.Styled("Invalid thinking effort. Use: off, low, medium, or high"))
-			return true
-		}
-
-		contextInfo.ThinkingEffort = effort
-		config.ThinkingEffort = effort
-		session.SetMetadata(contextInfo)
-
-        if effort == "off" {
-            fmt.Println(successStyle.Styled("Thinking disabled"))
-        } else {
-            fmt.Println(successStyle.Styled(fmt.Sprintf("Thinking effort set to: %s", effort)))
-        }
-        refreshInteractiveUI(config, session, interactiveCtx.registry)
-    }
-    refreshInteractiveUI(config, session, interactiveCtx.registry)
-    return true
-}
-
-func handleMaxTokens(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
-	if len(parts) < 2 {
-		fmt.Printf("Current max tokens: %s\n", highlightStyle.Styled(fmt.Sprintf("%d", config.MaxTokens)))
-		fmt.Println(dimStyle.Styled("Usage: /maxtokens <number>"))
-		fmt.Println(dimStyle.Styled("Example: /maxtokens 4096"))
-	} else {
-		if tokens, err := parseInt(parts[1]); err == nil {
-			if tokens <= 0 {
-				fmt.Println(errorStyle.Styled("Max tokens must be positive"))
-				return true
-			}
-			config.MaxTokens = tokens
-			if contextInfo := session.GetMetadata(); contextInfo != nil {
-				contextInfo.MaxTokens = tokens
-				session.SetMetadata(contextInfo)
-			}
-			fmt.Println(successStyle.Styled(fmt.Sprintf("Max tokens set to: %d", tokens)))
-		} else {
-			fmt.Println(errorStyle.Styled("Invalid number"))
-		}
+		ui.Println(dimStyle.Styled("Usage: /think <level>"))
+		ui.Println(dimStyle.Styled("Levels: off, low, medium, high"))
+		ui.Println(dimStyle.Styled("       /think off  (to disable)"))
+		return true
 	}
+
+	effort := strings.ToLower(parts[1])
+	validEfforts := map[string]bool{"off": true, "low": true, "medium": true, "high": true}
+	if !validEfforts[effort] {
+		ui.Println(errorStyle.Styled("Invalid thinking effort. Use: off, low, medium, or high"))
+		return true
+	}
+
+	contextInfo.ThinkingEffort = effort
+	config.ThinkingEffort = effort
+	session.SetMetadata(contextInfo)
+
+	if effort == "off" {
+		ui.Println(successStyle.Styled("Thinking disabled"))
+	} else {
+		ui.Println(successStyle.Styled(fmt.Sprintf("Thinking effort set to: %s", effort)))
+	}
+	refreshInteractiveUI(config, session, *registry, ui)
 	return true
 }
 
-func handleToolTimeout(parts []string, config *Config, session sessions.Session, rl *readline.Instance) bool {
+func handleMaxTokens(parts []string, config *Config, session sessions.Session, registry **tools.ToolRegistry, ui *readlineUI) bool {
+	if len(parts) < 2 {
+		ui.Printf("Current max tokens: %s\n", highlightStyle.Styled(fmt.Sprintf("%d", config.MaxTokens)))
+		ui.Println(dimStyle.Styled("Usage: /maxtokens <number>"))
+		ui.Println(dimStyle.Styled("Example: /maxtokens 4096"))
+		return true
+	}
+
+	tokens, err := parseInt(parts[1])
+	if err != nil || tokens <= 0 {
+		ui.Println(errorStyle.Styled("Max tokens must be a positive number"))
+		return true
+	}
+
+	config.MaxTokens = tokens
+	if contextInfo := session.GetMetadata(); contextInfo != nil {
+		contextInfo.MaxTokens = tokens
+		session.SetMetadata(contextInfo)
+	}
+	ui.Println(successStyle.Styled(fmt.Sprintf("Max tokens set to: %d", tokens)))
+	refreshInteractiveUI(config, session, *registry, ui)
+	return true
+}
+
+func handleToolTimeout(parts []string, config *Config, session sessions.Session, registry **tools.ToolRegistry, ui *readlineUI) bool {
 	if len(parts) < 2 {
 		if config.ToolTimeout > 0 {
-			fmt.Printf("Current tool timeout: %s\n", highlightStyle.Styled(config.ToolTimeout.String()))
+			ui.Printf("Current tool timeout: %s\n", highlightStyle.Styled(config.ToolTimeout.String()))
 		} else {
-			fmt.Println(dimStyle.Styled("No tool timeout set (using default)"))
+			ui.Println(dimStyle.Styled("No tool timeout set (using default)"))
 		}
-		fmt.Println(dimStyle.Styled("Usage: /tooltimeout <duration>"))
-		fmt.Println(dimStyle.Styled("Examples: /tooltimeout 30s, /tooltimeout 2m, /tooltimeout 0 (no timeout)"))
-	} else {
-		if parts[1] == "0" {
-			config.ToolTimeout = 0
-			if contextInfo := session.GetMetadata(); contextInfo != nil {
-				contextInfo.ToolTimeout = 0
-				session.SetMetadata(contextInfo)
-			}
-			fmt.Println(successStyle.Styled("Tool timeout disabled"))
-		} else {
-			if duration, err := time.ParseDuration(parts[1]); err == nil {
-				if duration < 0 {
-					fmt.Println(errorStyle.Styled("Tool timeout must be positive or 0"))
-					return true
-				}
-				config.ToolTimeout = duration
-				if contextInfo := session.GetMetadata(); contextInfo != nil {
-					contextInfo.ToolTimeout = duration
-					session.SetMetadata(contextInfo)
-				}
-				fmt.Println(successStyle.Styled(fmt.Sprintf("Tool timeout set to: %s", duration)))
-			} else {
-				fmt.Println(errorStyle.Styled("Invalid duration format"))
-			}
-		}
+		ui.Println(dimStyle.Styled("Usage: /tooltimeout <duration>"))
+		ui.Println(dimStyle.Styled("Examples: /tooltimeout 30s, /tooltimeout 2m, /tooltimeout 0 (no timeout)"))
+		return true
 	}
+
+	if parts[1] == "0" {
+		config.ToolTimeout = 0
+		if contextInfo := session.GetMetadata(); contextInfo != nil {
+			contextInfo.ToolTimeout = 0
+			session.SetMetadata(contextInfo)
+		}
+		ui.Println(successStyle.Styled("Tool timeout disabled"))
+		refreshInteractiveUI(config, session, *registry, ui)
+		return true
+	}
+
+	duration, err := time.ParseDuration(parts[1])
+	if err != nil || duration < 0 {
+		ui.Println(errorStyle.Styled("Invalid duration format"))
+		return true
+	}
+
+	config.ToolTimeout = duration
+	if contextInfo := session.GetMetadata(); contextInfo != nil {
+		contextInfo.ToolTimeout = duration
+		session.SetMetadata(contextInfo)
+	}
+	ui.Println(successStyle.Styled(fmt.Sprintf("Tool timeout set to: %s", duration)))
+	refreshInteractiveUI(config, session, *registry, ui)
 	return true
 }
 
@@ -839,16 +823,15 @@ func getHistoryFilePath(contextID string) string {
 }
 
 // createAutoCompleter creates readline auto-completer
-func createAutoCompleter() *readline.PrefixCompleter {
-    // Build dynamic tool name list for `/tools remove` suggestions
-    var toolItems []readline.PrefixCompleterInterface
-    if interactiveCtx != nil && interactiveCtx.registry != nil {
-        for _, t := range interactiveCtx.registry.All() {
-            toolItems = append(toolItems, readline.PcItem(t.GetName()))
-        }
-    }
+func createAutoCompleter(registry *tools.ToolRegistry) *readline.PrefixCompleter {
+	var toolItems []readline.PrefixCompleterInterface
+	if registry != nil {
+		for _, t := range registry.All() {
+			toolItems = append(toolItems, readline.PcItem(t.GetName()))
+		}
+	}
 
-    return readline.NewPrefixCompleter(
+	return readline.NewPrefixCompleter(
 		readline.PcItem("/exit"),
 		readline.PcItem("/quit"),
 		readline.PcItem("/clear"),
@@ -915,20 +898,20 @@ func createAutoCompleter() *readline.PrefixCompleter {
 			readline.PcItem("5m"),
 			readline.PcItem("0"),
 		),
-        readline.PcItem("/tools",
-            readline.PcItem("list"),
-            readline.PcItem("add"),
-            readline.PcItem("remove", toolItems...),
-            readline.PcItem("reload"),
-            readline.PcItem("mcp",
-                readline.PcItem("list"),
-                readline.PcItem("remove"),
-            ),
-        ),
-        readline.PcItem("/debug"),
-        readline.PcItem("/file"),
-        readline.PcItem("/f"),
-    )
+		readline.PcItem("/tools",
+			readline.PcItem("list"),
+			readline.PcItem("add"),
+			readline.PcItem("remove", toolItems...),
+			readline.PcItem("reload"),
+			readline.PcItem("mcp",
+				readline.PcItem("list"),
+				readline.PcItem("remove"),
+			),
+		),
+		readline.PcItem("/debug"),
+		readline.PcItem("/file"),
+		readline.PcItem("/f"),
+	)
 }
 
 // filterInput filters input runes for readline
@@ -1027,52 +1010,51 @@ func printWelcomeMessage(config *Config, session sessions.Session, contextID str
 		}
 	}
 
-    fmt.Println()
+	fmt.Println()
 }
 
 // refreshInteractiveUI updates the prompt and autocomplete based on current state
-func refreshInteractiveUI(config *Config, session sessions.Session, registry *tools.ToolRegistry) {
-    if RL == nil {
-        return
-    }
-    RL.SetPrompt(makePrompt(config, session, registry))
-    RL.Config.AutoComplete = createAutoCompleter()
-    // Force redraw so the new prompt is visible immediately
-    RL.Refresh()
+func refreshInteractiveUI(config *Config, session sessions.Session, registry *tools.ToolRegistry, ui *readlineUI) {
+	if ui == nil || ui.rl == nil {
+		return
+	}
+	ui.rl.SetPrompt(makePrompt(config, session, registry))
+	ui.rl.Config.AutoComplete = createAutoCompleter(registry)
+	ui.rl.Refresh()
 }
 
 // makePrompt builds a dynamic, styled prompt
 func makePrompt(config *Config, session sessions.Session, registry *tools.ToolRegistry) string {
-    ctxName := getContextDisplayName(session)
+	ctxName := getContextDisplayName(session)
 
-    // Abbreviate model by removing provider prefix (provider/model -> model)
-    displayModel := config.Model
-    if idx := strings.Index(displayModel, "/"); idx != -1 && idx+1 < len(displayModel) {
-        displayModel = displayModel[idx+1:]
-    }
-    if len(displayModel) > 24 {
-        displayModel = displayModel[:21] + "..."
-    }
+	// Abbreviate model by removing provider prefix (provider/model -> model)
+	displayModel := config.Model
+	if idx := strings.Index(displayModel, "/"); idx != -1 && idx+1 < len(displayModel) {
+		displayModel = displayModel[idx+1:]
+	}
+	if len(displayModel) > 24 {
+		displayModel = displayModel[:21] + "..."
+	}
 
-    toolCount := 0
-    if registry != nil {
-        toolCount = len(registry.All())
-    }
+	toolCount := 0
+	if registry != nil {
+		toolCount = len(registry.All())
+	}
 
-    // Build prompt pieces; omit context when it is "default"
-    base := userStyle.Styled("polly")
-    parts := []string{base}
-    if ctxName != "default" {
-        parts = append(parts, highlightStyle.Styled(ctxName))
-    }
-    parts = append(parts, highlightStyle.Styled(displayModel))
-    parts = append(parts, fmt.Sprintf("%d tools", toolCount))
+	// Build prompt pieces; omit context when it is "default"
+	base := userStyle.Styled("polly")
+	parts := []string{base}
+	if ctxName != "default" {
+		parts = append(parts, highlightStyle.Styled(ctxName))
+	}
+	parts = append(parts, highlightStyle.Styled(displayModel))
+	parts = append(parts, fmt.Sprintf("%d tools", toolCount))
 
-    return strings.Join(parts, " · ") + " > "
+	return strings.Join(parts, " · ") + " > "
 }
 
 // printInteractiveHelp prints help for interactive commands
-func printInteractiveHelp() {
+func printInteractiveHelp(ui *readlineUI) {
 	commands := []struct {
 		cmd  string
 		desc string
@@ -1099,7 +1081,7 @@ func printInteractiveHelp() {
 	}
 
 	for _, c := range commands {
-		safePrintf("  %-20s %s\n", highlightStyle.Styled(c.cmd), c.desc)
+		ui.Printf("  %-20s %s\n", highlightStyle.Styled(c.cmd), c.desc)
 	}
 
 }
@@ -1149,29 +1131,29 @@ func formatConversation(history []messages.ChatMessage) string {
 			if len(attachments) > 0 {
 				fmt.Fprintf(&builder, "%s\n", strings.Join(attachments, "\n"))
 			}
-        } else {
-            // Regular content with simple fenced code styling
-            lines := strings.Split(msg.Content, "\n")
-            inFence := false
-            for _, line := range lines {
-                trimmed := strings.TrimSpace(line)
-                if strings.HasPrefix(trimmed, "```") {
-                    // Toggle fence; print fence lines dimmed
-                    inFence = !inFence
-                    fmt.Fprintf(&builder, "%s\n", dimStyle.Styled(line))
-                    continue
-                }
-                if inFence {
-                    // Faint gutter for code lines
-                    fmt.Fprintf(&builder, "%s%s\n", dimStyle.Styled("│ "), dimStyle.Styled(line))
-                } else {
-                    fmt.Fprintf(&builder, "%s\n", line)
-                }
-            }
-        }
-        fmt.Fprintf(&builder, "\n")
-    }
-    return builder.String()
+		} else {
+			// Regular content with simple fenced code styling
+			lines := strings.Split(msg.Content, "\n")
+			inFence := false
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "```") {
+					// Toggle fence; print fence lines dimmed
+					inFence = !inFence
+					fmt.Fprintf(&builder, "%s\n", dimStyle.Styled(line))
+					continue
+				}
+				if inFence {
+					// Faint gutter for code lines
+					fmt.Fprintf(&builder, "%s%s\n", dimStyle.Styled("│ "), dimStyle.Styled(line))
+				} else {
+					fmt.Fprintf(&builder, "%s\n", line)
+				}
+			}
+		}
+		fmt.Fprintf(&builder, "\n")
+	}
+	return builder.String()
 }
 
 // showRecentHistory displays recent conversation history (up to 25 lines)
@@ -1209,33 +1191,34 @@ func showRecentHistory(session sessions.Session) bool {
 }
 
 // showHistory displays conversation history
-func showHistory(session sessions.Session) {
+
+func showHistory(session sessions.Session, ui *readlineUI) {
 	history := session.GetHistory()
 	if len(history) == 0 {
-		safePrintln(dimStyle.Styled("No conversation history."))
+		ui.Println(dimStyle.Styled("No conversation history."))
 		return
 	}
 
 	formatted := formatConversation(history)
-	safePrintf("%s", formatted)
+	ui.Printf("%s", formatted)
 }
 
 // saveConversation saves the conversation to a file
-func saveConversation(session sessions.Session, filename string) {
+func saveConversation(session sessions.Session, filename string, ui *readlineUI) {
 	history := session.GetHistory()
 	if len(history) == 0 {
-		fmt.Println(dimStyle.Styled("No conversation to save."))
+		ui.Println(dimStyle.Styled("No conversation to save."))
 		return
 	}
 
 	formatted := formatConversation(history)
 	err := os.WriteFile(filename, []byte(formatted), 0644)
 	if err != nil {
-		fmt.Println(errorStyle.Styled(fmt.Sprintf("Error saving file: %v", err)))
+		ui.Println(errorStyle.Styled(fmt.Sprintf("Error saving file: %v", err)))
 		return
 	}
 
-	fmt.Println(successStyle.Styled(fmt.Sprintf("Conversation saved to %s", filename)))
+	ui.Println(successStyle.Styled(fmt.Sprintf("Conversation saved to %s", filename)))
 }
 
 // getContextDisplayName returns a display name for the current context
@@ -1262,8 +1245,16 @@ func parseInt(s string) (int, error) {
 // fileAttachListener handles real-time file detection and attachment
 type fileAttachListener struct {
 	session        sessions.Session
-	config         *Config
 	processedPaths map[string]bool // Track which paths we've already processed
+	ui             *readlineUI
+}
+
+func (l *fileAttachListener) println(text string) {
+	if l.ui != nil {
+		l.ui.Println(text)
+		return
+	}
+	fmt.Println(text)
 }
 
 // OnChange is called when the input line changes
@@ -1318,25 +1309,26 @@ func (l *fileAttachListener) attachFiles(paths []string) error {
 
 // showAttachmentConfirmations displays confirmation messages for attached files
 func (l *fileAttachListener) showAttachmentConfirmations(paths []string) {
-    if len(paths) <= 2 {
-        for _, path := range paths {
-            fileInfo := getFileInfo(path)
-            safePrintln(dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
-        }
-        return
-    }
-    // Summarize many attachments on a single line
-    infos := make([]string, 0, len(paths))
-    for i, p := range paths {
-        if i < 2 {
-            infos = append(infos, getFileInfo(p))
-        } else {
-            break
-        }
-    }
-    more := len(paths) - 2
-    summary := fmt.Sprintf("📎 %d files attached (%s, … and %d more)", len(paths), strings.Join(infos, ", "), more)
-    safePrintln(dimStyle.Styled(summary))
+	if len(paths) <= 2 {
+		for _, path := range paths {
+			fileInfo := getFileInfo(path)
+			l.println(dimStyle.Styled(fmt.Sprintf("📎 Attached: %s", fileInfo)))
+		}
+		return
+	}
+
+	// Summarize many attachments on a single line
+	infos := make([]string, 0, len(paths))
+	for i, p := range paths {
+		if i < 2 {
+			infos = append(infos, getFileInfo(p))
+		} else {
+			break
+		}
+	}
+	more := len(paths) - 2
+	summary := fmt.Sprintf("📎 %d files attached (%s, … and %d more)", len(paths), strings.Join(infos, ", "), more)
+	l.println(dimStyle.Styled(summary))
 }
 
 // extractFilePaths extracts file paths from user input that may contain drag-dropped files
