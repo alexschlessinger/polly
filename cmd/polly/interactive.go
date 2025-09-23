@@ -178,9 +178,27 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 
 		// Create interactive status handler
 		interactiveStatus := NewInteractiveStatus()
+		interactiveStatus.ShowSpinner("waiting")
 
-		// Execute completion with cancellable context and interactive status
-		executeCompletion(completionCtx, config, multipass, session, toolRegistry, nil, interactiveStatus)
+		// Create completion request
+		req := createCompletionRequest(config, session, toolRegistry, nil)
+
+		// Create stream processor
+		processor := messages.NewStreamProcessor()
+
+		// Use event-based streaming
+		eventChan := multipass.ChatCompletionStream(completionCtx, req, processor)
+
+		// Create interactive event processor
+		eventProcessor := NewInteractiveEventProcessor(completionCtx, session, toolRegistry, interactiveStatus)
+
+		// Process response using the event processor
+		response := messages.ProcessEventStream(completionCtx, eventChan, eventProcessor)
+
+		// If there were tool calls, continue the completion
+		if len(response.ToolCalls) > 0 {
+			executeCompletion(completionCtx, config, multipass, session, toolRegistry, nil, interactiveStatus)
+		}
 
 		// Clear the cancel function after completion
 		currentCompletionCancel = nil

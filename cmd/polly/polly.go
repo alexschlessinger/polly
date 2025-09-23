@@ -17,7 +17,6 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
-	"github.com/muesli/termenv"
 	"github.com/urfave/cli/v3"
 )
 
@@ -272,8 +271,16 @@ func executeCompletion(
 	// Use event-based streaming
 	eventChan := provider.ChatCompletionStream(ctx, req, processor)
 
-	// Process response using the new event stream
-	response := processEventStream(ctx, config, session, registry, statusLine, schema, eventChan)
+	// Create appropriate event processor based on status line type
+	var eventProcessor messages.EventProcessor
+	if _, isInteractive := statusLine.(*InteractiveStatus); isInteractive {
+		eventProcessor = NewInteractiveEventProcessor(ctx, session, registry, statusLine.(*InteractiveStatus))
+	} else {
+		eventProcessor = NewCLIEventProcessor(ctx, config, session, registry, statusLine, schema)
+	}
+
+	// Process response using the event processor
+	response := messages.ProcessEventStream(ctx, eventChan, eventProcessor)
 
 	// If there were tool calls, continue the completion
 	if len(response.ToolCalls) > 0 {
@@ -281,157 +288,6 @@ func executeCompletion(
 	}
 }
 
-func processEventStream(
-	ctx context.Context,
-	config *Config,
-	session sessions.Session,
-	registry *tools.ToolRegistry,
-	statusLine StatusHandler,
-	schema *llm.Schema,
-	eventChan <-chan *messages.StreamEvent,
-) messages.ChatMessage {
-	var fullResponse messages.ChatMessage
-	var responseText strings.Builder
-	var firstByteReceived bool
-	var reasoningLength int
-	var messageCommitted bool
-
-	for event := range eventChan {
-		// Check if context was cancelled (but only before committing messages)
-		if !messageCommitted {
-			select {
-			case <-ctx.Done():
-				// Context cancelled, return empty response
-				if statusLine != nil {
-					statusLine.Clear()
-				}
-				return messages.ChatMessage{}
-			default:
-			}
-		}
-		switch event.Type {
-		case messages.EventTypeReasoning:
-			// Track reasoning length for status display
-			reasoningLength += len(event.Content)
-			if statusLine != nil {
-				statusLine.UpdateThinkingProgress(reasoningLength)
-			}
-
-		case messages.EventTypeContent:
-			// Clear status on first content
-			if !firstByteReceived && statusLine != nil {
-				firstByteReceived = true
-				statusLine.ClearForContent()
-			}
-
-			// Accumulate content for the session
-			responseText.WriteString(event.Content)
-
-			// Print content as it arrives (unless using schema/structured output)
-			if config.SchemaPath == "" && event.Content != "" {
-				fmt.Print(event.Content)
-			}
-
-			// Update streaming progress for status line
-			if statusLine != nil && config.SchemaPath == "" {
-				statusLine.UpdateStreamingProgress(responseText.Len())
-			}
-
-		case messages.EventTypeToolCall:
-			// Individual tool calls could be processed here if needed
-			// For now, we'll handle them in the complete event
-
-		case messages.EventTypeComplete:
-			fullResponse = *event.Message
-
-			// Use streamed content if available, otherwise use message content
-			if responseText.Len() > 0 {
-				fullResponse.Content = strings.TrimLeft(responseText.String(), "")
-			}
-
-			// Reasoning is already captured in the message from the event
-
-			// Add assistant response to session
-			session.AddMessage(fullResponse)
-			messageCommitted = true // Mark that we've committed a message
-
-			// Process tool calls if any
-			if len(fullResponse.ToolCalls) > 0 {
-				if statusLine != nil {
-					statusLine.Clear()
-				}
-
-				// If we have content, ensure proper formatting before tool execution
-				if fullResponse.Content != "" && config.SchemaPath != "" {
-					// In JSON mode, we'll output everything at the end
-				} else if fullResponse.Content != "" && responseText.Len() == 0 {
-					// Content wasn't streamed (responseText is empty), print it now
-					fmt.Print(fullResponse.Content)
-				} else if responseText.Len() > 0 && config.SchemaPath == "" {
-					// Content was streamed, add a newline before tool output
-					fmt.Println()
-				}
-
-				// For interactive mode, we need special handling of tool calls
-				_, isInteractive := statusLine.(*InteractiveStatus)
-				if isInteractive {
-					// Interactive mode shows tool calls with spinner and completion status
-					termOutput := termenv.NewOutput(os.Stdout)
-					var successStyle, errorStyle termenv.Style
-
-					// Adapt colors based on terminal background
-					if termenv.HasDarkBackground() {
-						successStyle = termOutput.String().Foreground(termOutput.Color("65")) // Muted green for dark
-						errorStyle = termOutput.String().Foreground(termOutput.Color("124"))  // Muted red for dark
-					} else {
-						successStyle = termOutput.String().Foreground(termOutput.Color("28")) // Dark green for light
-						errorStyle = termOutput.String().Foreground(termOutput.Color("160"))  // Dark red for light
-					}
-
-					for _, toolCall := range fullResponse.ToolCalls {
-						// Execute with spinner showing
-						start := time.Now()
-						success := executeToolCall(ctx, toolCall, registry, session, statusLine)
-
-						// Clear spinner and show completion message with duration
-						statusLine.Clear()
-						dur := time.Since(start).Truncate(time.Millisecond)
-						if success {
-							fmt.Printf("%s Completed: %s (%s)\n", successStyle.Styled("✓"), toolCall.Name, dur)
-						} else {
-							fmt.Printf("%s Failed: %s (%s)\n", errorStyle.Styled("✗"), toolCall.Name, dur)
-						}
-					}
-				} else {
-					for _, toolCall := range fullResponse.ToolCalls {
-						_ = executeToolCall(ctx, toolCall, registry, session, statusLine)
-					}
-				}
-			}
-
-		case messages.EventTypeError:
-			if statusLine != nil {
-				statusLine.Clear()
-			}
-			fullResponse = messages.ChatMessage{
-				Role:    messages.MessageRoleAssistant,
-				Content: fmt.Sprintf("Error: %v", event.Error),
-			}
-			session.AddMessage(fullResponse)
-		}
-	}
-
-	// Output final response
-	if len(fullResponse.ToolCalls) == 0 {
-		if config.SchemaPath != "" {
-			outputStructured(fullResponse.Content, schema)
-		} else {
-			fmt.Println()
-		}
-	}
-
-	return fullResponse
-}
 
 // createCompletionRequest builds an LLM completion request from config
 func createCompletionRequest(config *Config, session sessions.Session, registry *tools.ToolRegistry, schema *llm.Schema) *llm.CompletionRequest {
