@@ -46,6 +46,9 @@ type ToolRegistry struct {
 	mu        sync.RWMutex
 	tools     map[string]Tool
 
+	// Native tool factories
+	nativeTools map[string]func() Tool // toolName -> factory
+
 	// MCP tracking
 	toolClients map[string]*MCPClient // toolName -> client
 	serverTools map[string][]string   // serverSpec -> toolNames
@@ -55,6 +58,7 @@ type ToolRegistry struct {
 func NewToolRegistry(tools []Tool) *ToolRegistry {
 	registry := &ToolRegistry{
 		tools:       make(map[string]Tool),
+		nativeTools: make(map[string]func() Tool),
 		toolClients: make(map[string]*MCPClient),
 		serverTools: make(map[string][]string),
 	}
@@ -85,6 +89,15 @@ func (r *ToolRegistry) Register(tool Tool) {
 		log.Printf("registered tool: %s", name)
 		r.tools[name] = tool
 	}
+}
+
+// RegisterNative registers a native tool factory
+func (r *ToolRegistry) RegisterNative(name string, factory func() Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.nativeTools[name] = factory
+	log.Printf("registered native tool factory: %s", name)
 }
 
 // Get retrieves a tool by name
@@ -289,22 +302,33 @@ func (r *ToolRegistry) LoadShellTool(path string) error {
 	return nil
 }
 
-// LoadToolAuto attempts to load a tool, auto-detecting if it's a shell tool or MCP server
-func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (isShell bool, err error) {
-	// First try as shell tool
+// LoadToolAuto attempts to load a tool, auto-detecting if it's native, shell tool, or MCP server
+func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (toolType string, err error) {
+	// First check if it's a registered native tool
+	r.mu.RLock()
+	factory, isNative := r.nativeTools[pathOrServer]
+	r.mu.RUnlock()
+
+	if isNative {
+		tool := factory()
+		r.Register(tool)
+		return "native", nil
+	}
+
+	// Try as shell tool
 	shellErr := r.LoadShellTool(pathOrServer)
 	if shellErr == nil {
-		return true, nil
+		return "shell", nil
 	}
 
 	// If shell tool failed, try as MCP server
 	mcpErr := r.LoadMCPServer(pathOrServer)
 	if mcpErr == nil {
-		return false, nil
+		return "mcp", nil
 	}
 
-	// Both failed, return combined error
-	return false, fmt.Errorf("failed to load as shell tool (%v) or MCP server (%v)", shellErr, mcpErr)
+	// All failed, return combined error
+	return "", fmt.Errorf("'%s' not a native tool, failed as shell (%v) or MCP (%v)", pathOrServer, shellErr, mcpErr)
 }
 
 // LoadMCPServers batch loads multiple servers
