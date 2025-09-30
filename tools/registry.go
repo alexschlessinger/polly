@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // NamespacedTool wraps a tool to provide a namespaced schema

@@ -6,7 +6,8 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.13.0
 	github.com/gofrs/flock v0.12.1
 	github.com/google/generative-ai-go v0.20.1
-	github.com/modelcontextprotocol/go-sdk v0.2.0
+	github.com/google/jsonschema-go v0.3.0
+	github.com/modelcontextprotocol/go-sdk v0.8.0
 	github.com/muesli/termenv v0.16.0
 	github.com/ollama/ollama v0.12.3
 	github.com/sashabaranov/go-openai v1.41.2

@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -32,25 +32,36 @@ func NewMCPTool(session *mcp.ClientSession, tool *mcp.Tool) *MCPTool {
 // GetSchema returns the tool's schema with namespaced title
 func (m *MCPTool) GetSchema() *jsonschema.Schema {
 	var schema *jsonschema.Schema
-	
+
 	// Get base schema
 	if m.tool.InputSchema != nil {
-		// Create a copy to avoid modifying the original
-		schema = &jsonschema.Schema{
-			Title:                m.tool.InputSchema.Title,
-			Description:          m.tool.InputSchema.Description,
-			Type:                 m.tool.InputSchema.Type,
-			Properties:           m.tool.InputSchema.Properties,
-			Required:             m.tool.InputSchema.Required,
-			AdditionalProperties: m.tool.InputSchema.AdditionalProperties,
+		// InputSchema is now 'any' in v0.8.0, try to convert it
+		// First, try to unmarshal it to jsonschema.Schema
+		schemaBytes, err := json.Marshal(m.tool.InputSchema)
+		if err == nil {
+			schema = &jsonschema.Schema{}
+			if err := json.Unmarshal(schemaBytes, schema); err != nil {
+				schema = nil
+			}
 		}
-		// Set the title from the tool name if not already set
-		if schema.Title == "" {
-			schema.Title = m.tool.Name
-		}
-		// Set the description if not already set
-		if schema.Description == "" {
-			schema.Description = m.tool.Description
+
+		// If we got a schema, set defaults
+		if schema != nil {
+			// Set the title from the tool name if not already set
+			if schema.Title == "" {
+				schema.Title = m.tool.Name
+			}
+			// Set the description if not already set
+			if schema.Description == "" {
+				schema.Description = m.tool.Description
+			}
+		} else {
+			// If conversion failed, create a basic schema
+			schema = &jsonschema.Schema{
+				Title:       m.tool.Name,
+				Description: m.tool.Description,
+				Type:        "object",
+			}
 		}
 	} else {
 		// If no input schema, create a basic one with no properties
@@ -60,12 +71,12 @@ func (m *MCPTool) GetSchema() *jsonschema.Schema {
 			Type:        "object",
 		}
 	}
-	
+
 	// Add namespace to title if present
 	if m.Namespace != "" && schema.Title != "" {
 		schema.Title = fmt.Sprintf("%s__%s", m.Namespace, schema.Title)
 	}
-	
+
 	return schema
 }
 
@@ -101,13 +112,18 @@ func (m *MCPTool) Execute(ctx context.Context, args map[string]any) (string, err
 	// Filter out any arguments not present in the tool's input schema.
 	// This is important for no-arg tools where we injected a placeholder
 	// property for OpenAI schema compliance.
-	if m.tool != nil {
+	if m.tool != nil && m.tool.InputSchema != nil {
 		allowed := map[string]struct{}{}
-		if m.tool.InputSchema != nil && len(m.tool.InputSchema.Properties) > 0 {
-			for k := range m.tool.InputSchema.Properties {
-				allowed[k] = struct{}{}
+
+		// Try to extract properties from the schema (which is now 'any')
+		if schemaMap, ok := m.tool.InputSchema.(map[string]any); ok {
+			if props, ok := schemaMap["properties"].(map[string]any); ok && len(props) > 0 {
+				for k := range props {
+					allowed[k] = struct{}{}
+				}
 			}
 		}
+
 		// Build a filtered args map with only allowed keys
 		if len(allowed) == 0 {
 			// No args allowed; drop everything
@@ -276,7 +292,8 @@ func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
 
 	// Connect to the server
 	log.Printf("connecting to MCP server: %s %v", config.Command, config.Args)
-	session, err := client.Connect(ctx, mcp.NewCommandTransport(cmd))
+	transport := &mcp.CommandTransport{Command: cmd}
+	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MCP server: %v", err)
 	}

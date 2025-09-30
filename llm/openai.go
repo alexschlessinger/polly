@@ -9,7 +9,7 @@ import (
 	"maps"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	mcpjsonschema "github.com/modelcontextprotocol/go-sdk/jsonschema"
+	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	ai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )

@@ -10,7 +10,7 @@ import (
 	"net/url"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	mcpjsonschema "github.com/modelcontextprotocol/go-sdk/jsonschema"
+	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	ollamaapi "github.com/ollama/ollama/api"
 )
 

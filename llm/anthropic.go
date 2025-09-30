@@ -11,7 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
-	mcpjsonschema "github.com/modelcontextprotocol/go-sdk/jsonschema"
+	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 )
 
 // Metadata keys
