@@ -11,10 +11,8 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/ollama/ollama v0.12.3
 	github.com/sashabaranov/go-openai v1.41.2
-	google.golang.org/api v0.250.0
+	google.golang.org/api v0.219.0
 )
-
-require google.golang.org/genproto v0.0.0-20250603155806-513f23925822 // indirect
 
 require (
 	dario.cat/mergo v1.0.2
@@ -25,12 +23,12 @@ require (
 )
 
 require (
-	cloud.google.com/go v0.123.0 // indirect
-	cloud.google.com/go/ai v0.13.0 // indirect
-	cloud.google.com/go/auth v0.16.5 // indirect
+	cloud.google.com/go v0.118.2 // indirect
+	cloud.google.com/go/ai v0.10.0 // indirect
+	cloud.google.com/go/auth v0.16.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
-	cloud.google.com/go/longrunning v0.6.7 // indirect
+	cloud.google.com/go/longrunning v0.6.4 // indirect
 	github.com/chzyer/readline v1.5.1
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -38,7 +36,7 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
-	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
+	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
