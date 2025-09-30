@@ -167,11 +167,3 @@ func (t *LoggerTool) Execute(ctx context.Context, args map[string]any) (string, 
 
 	return fmt.Sprintf("Logged: %s", logMessage), nil
 }
-
-// GetExampleNativeTools returns a list of example native tools
-func GetExampleNativeTools() []Tool {
-	return []Tool{
-		&UpperCaseTool{},
-		&WordCountTool{},
-	}
-}

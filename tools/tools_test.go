@@ -711,19 +711,3 @@ func TestLoggerToolSetContext(t *testing.T) {
 		t.Error("Expected logger to remain unchanged with invalid context")
 	}
 }
-
-func TestGetExampleNativeTools(t *testing.T) {
-	tools := GetExampleNativeTools()
-
-	if len(tools) != 2 {
-		t.Errorf("Expected 2 example tools, got %d", len(tools))
-	}
-
-	// Verify the tools are the expected types
-	if _, ok := tools[0].(*UpperCaseTool); !ok {
-		t.Error("Expected first tool to be UpperCaseTool")
-	}
-	if _, ok := tools[1].(*WordCountTool); !ok {
-		t.Error("Expected second tool to be WordCountTool")
-	}
-}
