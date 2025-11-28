@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -112,14 +113,24 @@ func (p *InteractiveEventProcessor) OnComplete(message *messages.ChatMessage) {
 			errorStyle = termOutput.String().Foreground(termOutput.Color("160"))  // Dark red for light
 		}
 
+		// Create executor with timeout from session metadata
+		executor := llm.NewToolExecutor(p.registry).
+			WithTimeout(p.session.GetMetadata().ToolTimeout)
+
 		for _, toolCall := range p.response.ToolCalls {
-			// Execute with spinner showing
+			// Show spinner for this tool
+			if p.statusLine != nil {
+				p.statusLine.ShowToolCall(toolCall.Name)
+			}
+
 			start := time.Now()
-			success := executeToolCall(p.ctx, toolCall, p.registry, p.session, p.statusLine)
+			success := executor.ExecuteToolCall(p.ctx, toolCall, p.session)
+			dur := time.Since(start).Truncate(time.Millisecond)
 
 			// Clear spinner and show completion message with duration
-			p.statusLine.Clear()
-			dur := time.Since(start).Truncate(time.Millisecond)
+			if p.statusLine != nil {
+				p.statusLine.Clear()
+			}
 			if success {
 				fmt.Printf("%s Completed: %s (%s)\n", successStyle.Styled("✓"), toolCall.Name, dur)
 			} else {

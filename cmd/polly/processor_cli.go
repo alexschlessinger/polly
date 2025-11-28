@@ -110,10 +110,10 @@ func (p *CLIEventProcessor) OnComplete(message *messages.ChatMessage) {
 			fmt.Println()
 		}
 
-		// Execute tool calls
-		for _, toolCall := range p.response.ToolCalls {
-			_ = executeToolCall(p.ctx, toolCall, p.registry, p.session, p.statusLine)
-		}
+		// Execute tool calls using the executor
+		executor := llm.NewToolExecutor(p.registry).
+			WithTimeout(p.session.GetMetadata().ToolTimeout)
+		executor.ExecuteAll(p.ctx, p.response.ToolCalls, p.session)
 	}
 
 	// Output final response if no tool calls
