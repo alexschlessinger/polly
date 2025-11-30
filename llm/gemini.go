@@ -8,9 +8,8 @@ import (
 	"log"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/google/generative-ai-go/genai"
 	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
-	"google.golang.org/api/option"
+	"google.golang.org/genai"
 )
 
 type GeminiClient struct {
@@ -43,7 +42,10 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		}
 
 		// Create client with API key
-		client, err := genai.NewClient(ctx, option.WithAPIKey(g.apiKey))
+		client, err := genai.NewClient(ctx, &genai.ClientConfig{
+			APIKey:  g.apiKey,
+			Backend: genai.BackendGeminiAPI,
+		})
 		if err != nil {
 			log.Printf("gemini: failed to create client: %v", err)
 			messageChannel <- messages.ChatMessage{
@@ -52,48 +54,29 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			}
 			return
 		}
-		defer client.Close()
 
-		// Get the model
-		model := client.GenerativeModel(req.Model)
+		// Convert session history to Gemini chat history
+		contents, systemInstruction, _ := MessagesToGeminiContent(req.Messages)
 
 		// Configure model parameters
-		model.SetTemperature(req.Temperature)
-		model.SetMaxOutputTokens(int32(req.MaxTokens))
+		temp := req.Temperature
+		maxTokens := int32(req.MaxTokens)
+
+		config := &genai.GenerateContentConfig{
+			Temperature:     &temp,
+			MaxOutputTokens: maxTokens,
+		}
 
 		// Add structured output support
 		if req.ResponseSchema != nil {
-			model.ResponseMIMEType = "application/json"
-			model.ResponseSchema = ConvertToGeminiSchema(req.ResponseSchema)
+			config.ResponseMIMEType = "application/json"
+			config.ResponseSchema = ConvertToGeminiSchema(req.ResponseSchema)
 		}
 
-		// Convert session history to Gemini chat history
-		history, systemInstruction, _ := MessagesToGeminiContent(req.Messages)
-
-		// Extract the last user message parts if present
-		var userParts []genai.Part
-		if len(req.Messages) > 0 {
-			lastMsg := req.Messages[len(req.Messages)-1]
-			switch lastMsg.Role {
-			case messages.MessageRoleUser:
-				// Use the already converted parts from history if available
-				if len(history) > 0 && history[len(history)-1].Role == "user" {
-					userParts = history[len(history)-1].Parts
-					history = history[:len(history)-1]
-				} else if lastMsg.Content != "" {
-					// Fallback to simple content if no history
-					userParts = append(userParts, genai.Text(lastMsg.Content))
-				}
-			case messages.MessageRoleAssistant:
-				// If the last message is from assistant, we need to add empty user message
-				userParts = append(userParts, genai.Text(""))
-			}
-		}
-
-		// Set system instruction if provided
+		// System instruction
 		if systemInstruction != "" {
-			model.SystemInstruction = &genai.Content{
-				Parts: []genai.Part{genai.Text(systemInstruction)},
+			config.SystemInstruction = &genai.Content{
+				Parts: []*genai.Part{{Text: systemInstruction}},
 			}
 		}
 
@@ -107,31 +90,23 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 					geminiFuncs = append(geminiFuncs, geminiTool.FunctionDeclarations...)
 				}
 			}
-			model.Tools = []*genai.Tool{
+			config.Tools = []*genai.Tool{
 				{FunctionDeclarations: geminiFuncs},
 			}
 		}
 
-		// Start a chat session with history
-		chat := model.StartChat()
-		chat.History = history
-
 		log.Printf("gemini: sending streaming request to model %s", req.Model)
 
 		// Send message and get streaming response
-		iter := chat.SendMessageStream(ctx, userParts...)
+		iter := client.Models.GenerateContentStream(ctx, req.Model, contents, config)
 
 		// Process the stream
 		var responseContent string
 		var toolCalls []messages.ChatMessageToolCall
+		signatures := make(map[string]string)
 
-		for {
-			resp, err := iter.Next()
+		for resp, err := range iter {
 			if err != nil {
-				// Check if we're done iterating
-				if err.Error() == "no more items in iterator" {
-					break
-				}
 				log.Printf("gemini: stream error: %v", err)
 				messageChannel <- messages.ChatMessage{
 					Role:    messages.MessageRoleAssistant,
@@ -143,37 +118,50 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			// Process each candidate's parts
 			if len(resp.Candidates) > 0 {
 				candidate := resp.Candidates[0]
-				for _, part := range candidate.Content.Parts {
-					switch p := part.(type) {
-					case genai.Text:
-						text := string(p)
-						responseContent += text
-						// Stream partial content
-						messageChannel <- messages.ChatMessage{
-							Role:    messages.MessageRoleAssistant,
-							Content: text,
+				if candidate.Content != nil {
+					for _, part := range candidate.Content.Parts {
+						if part.Text != "" {
+							text := part.Text
+							responseContent += text
+							messageChannel <- messages.ChatMessage{
+								Role:    messages.MessageRoleAssistant,
+								Content: text,
+							}
 						}
-					case genai.FunctionCall:
-						// Accumulate tool calls
-						argsJSON, _ := json.Marshal(p.Args)
-						toolCalls = append(toolCalls, messages.ChatMessageToolCall{
-							ID:        fmt.Sprintf("gemini-%d", len(toolCalls)),
-							Name:      p.Name,
-							Arguments: string(argsJSON),
-						})
+						if part.FunctionCall != nil {
+							// Accumulate tool calls
+							argsJSON, _ := json.Marshal(part.FunctionCall.Args)
+							toolCallID := fmt.Sprintf("gemini-%d", len(toolCalls))
+							toolCalls = append(toolCalls, messages.ChatMessageToolCall{
+								ID:        toolCallID,
+								Name:      part.FunctionCall.Name,
+								Arguments: string(argsJSON),
+							})
+
+							if len(part.ThoughtSignature) > 0 {
+								signatures[toolCallID] = base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+							}
+						}
 					}
 				}
 			}
 		}
 
 		// Send the completed message with tool calls if any
-		// Don't include content since it was already streamed
 		if len(toolCalls) > 0 {
-			messageChannel <- messages.ChatMessage{
+			msg := messages.ChatMessage{
 				Role:      messages.MessageRoleAssistant,
-				Content:   "", // Content was already streamed, don't duplicate
+				Content:   "",
 				ToolCalls: toolCalls,
 			}
+
+			if len(signatures) > 0 {
+				msg.Metadata = map[string]any{
+					"gemini_thought_signatures": signatures,
+				}
+			}
+
+			messageChannel <- msg
 		}
 
 		// Log response details
@@ -368,18 +356,20 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 		case messages.MessageRoleUser:
 			// Handle multimodal content
 			if len(msg.Parts) > 0 {
-				var parts []genai.Part
+				var parts []*genai.Part
 				for _, part := range msg.Parts {
 					switch part.Type {
 					case "text":
-						parts = append(parts, genai.Text(part.Text))
+						parts = append(parts, &genai.Part{Text: part.Text})
 					case "image_base64":
 						// Decode base64 to bytes
 						imageData, err := base64.StdEncoding.DecodeString(part.ImageData)
 						if err == nil {
-							parts = append(parts, genai.Blob{
-								MIMEType: part.MimeType,
-								Data:     imageData,
+							parts = append(parts, &genai.Part{
+								InlineData: &genai.Blob{
+									MIMEType: part.MimeType,
+									Data:     imageData,
+								},
 							})
 						}
 					case "image_url":
@@ -388,17 +378,23 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 					}
 				}
 				if len(parts) > 0 {
-					history = append(history, genai.NewUserContent(parts...))
+					history = append(history, &genai.Content{
+						Role:  "user",
+						Parts: parts,
+					})
 				}
 			} else if msg.Content != "" {
 				// Backward compatibility: simple text content
-				history = append(history, genai.NewUserContent(genai.Text(msg.Content)))
+				history = append(history, &genai.Content{
+					Role:  "user",
+					Parts: []*genai.Part{{Text: msg.Content}},
+				})
 			}
 
 		case messages.MessageRoleAssistant:
-			var parts []genai.Part
+			var parts []*genai.Part
 			if msg.Content != "" {
-				parts = append(parts, genai.Text(msg.Content))
+				parts = append(parts, &genai.Part{Text: msg.Content})
 			}
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
@@ -407,10 +403,25 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 					}
 					var args map[string]any
 					if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
-						parts = append(parts, genai.FunctionCall{
-							Name: tc.Name,
-							Args: args,
-						})
+						part := &genai.Part{
+							FunctionCall: &genai.FunctionCall{
+								Name: tc.Name,
+								Args: args,
+							},
+						}
+
+						// Check metadata for thought signature
+						if msg.Metadata != nil {
+							if signatures, ok := msg.Metadata["gemini_thought_signatures"].(map[string]string); ok {
+								if sigStr, exists := signatures[tc.ID]; exists {
+									if sig, err := base64.StdEncoding.DecodeString(sigStr); err == nil {
+										part.ThoughtSignature = sig
+									}
+								}
+							}
+						}
+
+						parts = append(parts, part)
 					}
 				}
 			}
@@ -439,37 +450,17 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 			} else {
 				response = map[string]any{"result": output}
 			}
-			history = append(history, genai.NewUserContent(genai.FunctionResponse{
-				Name:     funcName,
-				Response: response,
-			}))
+			history = append(history, &genai.Content{
+				Role: "user",
+				Parts: []*genai.Part{{
+					FunctionResponse: &genai.FunctionResponse{
+						Name:     funcName,
+						Response: response,
+					},
+				}},
+			})
 		}
 	}
 
 	return history, systemInstruction, callIDToName
-}
-
-// MessageFromGeminiCandidate converts a Gemini candidate to our message format
-func MessageFromGeminiCandidate(candidate *genai.Candidate) messages.ChatMessage {
-	msg := messages.ChatMessage{
-		Role: messages.MessageRoleAssistant,
-	}
-
-	if candidate.Content != nil {
-		for _, part := range candidate.Content.Parts {
-			switch p := part.(type) {
-			case genai.Text:
-				msg.Content += string(p)
-			case genai.FunctionCall:
-				argsJSON, _ := json.Marshal(p.Args)
-				msg.ToolCalls = append(msg.ToolCalls, messages.ChatMessageToolCall{
-					ID:        "", // Gemini doesn't use IDs
-					Name:      p.Name,
-					Arguments: string(argsJSON),
-				})
-			}
-		}
-	}
-
-	return msg
 }
