@@ -9,6 +9,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
+	"golang.org/x/sync/errgroup"
 )
 
 // Agent handles the agentic loop without owning session state.
@@ -21,8 +22,9 @@ type Agent struct {
 
 // AgentConfig configures agent behavior
 type AgentConfig struct {
-	MaxIterations int           // Maximum LLM calls before giving up (default: 10)
-	ToolTimeout   time.Duration // Per-tool execution timeout (0 = no timeout)
+	MaxIterations    int           // Maximum LLM calls before giving up (default: 10)
+	ToolTimeout      time.Duration // Per-tool execution timeout (0 = no timeout)
+	MaxParallelTools int           // Maximum parallel tool executions (0 = unlimited)
 }
 
 // AgentCallbacks provides hooks for observing and customizing agent execution
@@ -54,7 +56,7 @@ type AgentCallbacks struct {
 
 // AgentResponse contains the results after Run completes
 type AgentResponse struct {
-	Message        *messages.ChatMessage // Final assistant message (no tool calls)
+	Message        *messages.ChatMessage  // Final assistant message (no tool calls)
 	AllMessages    []messages.ChatMessage // All messages generated (assistant + tool results)
 	IterationCount int                    // Number of LLM calls made
 }
@@ -129,19 +131,25 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			}, nil
 		}
 
-		// Execute tool calls
-		for _, tc := range response.ToolCalls {
-			toolMsg := a.executeTool(ctx, tc, cb)
-			msgs = append(msgs, toolMsg)
-			allGenerated = append(allGenerated, toolMsg)
+		// Execute tool calls in parallel
+		toolMsgs, err := a.executeToolsParallel(ctx, response.ToolCalls, cb)
+		if err != nil {
+			return nil, err
 		}
+		msgs = append(msgs, toolMsgs...)
+		allGenerated = append(allGenerated, toolMsgs...)
 	}
 
 	err := errors.New("max iterations exceeded")
 	if cb != nil && cb.OnError != nil {
 		cb.OnError(err)
 	}
-	return nil, err
+	// Return the partial response so the caller can save the history
+	return &AgentResponse{
+		Message:        &msgs[len(msgs)-1], // Last message
+		AllMessages:    allGenerated,
+		IterationCount: a.config.MaxIterations,
+	}, err
 }
 
 // processEvents processes the event stream and returns the final message
@@ -253,4 +261,44 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 	}
 
 	return result, nil
+}
+
+// executeToolsParallel executes multiple tool calls concurrently and returns results in order.
+// If context is cancelled, all running tools are notified via their context.
+func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.ChatMessageToolCall, cb *AgentCallbacks) ([]messages.ChatMessage, error) {
+	results := make([]messages.ChatMessage, len(toolCalls))
+
+	g, ctx := errgroup.WithContext(ctx)
+
+	// Semaphore for concurrency limiting
+	sem := make(chan struct{}, a.effectiveParallelism(len(toolCalls)))
+
+	for i, tc := range toolCalls {
+		i, tc := i, tc // capture loop vars
+		g.Go(func() error {
+			// Acquire semaphore (respects context cancellation)
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+
+			results[i] = a.executeTool(ctx, tc, cb)
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return results, err // Return partial results + error
+	}
+	return results, nil
+}
+
+// effectiveParallelism returns the concurrency limit based on config and number of tools.
+func (a *Agent) effectiveParallelism(n int) int {
+	if a.config.MaxParallelTools <= 0 || a.config.MaxParallelTools > n {
+		return n
+	}
+	return a.config.MaxParallelTools
 }

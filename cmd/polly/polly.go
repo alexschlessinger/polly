@@ -277,13 +277,16 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		},
 	})
-	if err != nil {
-		return err
+
+	// Add all generated messages to session, even if there was an error
+	if resp != nil {
+		for _, msg := range resp.AllMessages {
+			session.AddMessage(msg)
+		}
 	}
 
-	// Add all generated messages to session
-	for _, msg := range resp.AllMessages {
-		session.AddMessage(msg)
+	if err != nil {
+		return err
 	}
 
 	// Output final result

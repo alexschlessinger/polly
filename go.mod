@@ -10,6 +10,7 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/ollama/ollama v0.13.0
 	github.com/sashabaranov/go-openai v1.41.2
+	golang.org/x/sync v0.18.0
 	google.golang.org/genai v1.36.0
 )
 
