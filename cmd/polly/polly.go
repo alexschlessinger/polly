@@ -128,7 +128,7 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 }
 
 // initializeSession sets up everything needed for a conversation session
-func initializeSession(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, sessions.Session, llm.LLM, *tools.ToolRegistry, error) {
+func initializeSession(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, error) {
 	// Initialize conversation using helper function
 	var err error
 	contextID, _, err = initializeConversation(config, sessionStore, contextID, cmd)
@@ -140,7 +140,7 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 	apiKeys := loadAPIKeys()
 
 	// Create LLM provider
-	multipass := llm.NewMultiPass(apiKeys)
+	llmClient := llm.NewMultiPass(apiKeys)
 
 	// Get or create session
 	needFileStore := needsFileStore(config, contextID)
@@ -175,12 +175,18 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 	// Update context info with current settings using helper function
 	updateContextInfo(session, config, cmd)
 
-	return contextID, session, multipass, toolRegistry, nil
+	// Create the agent with the tool registry
+	agent := llm.NewAgent(llmClient, toolRegistry, llm.AgentConfig{
+		MaxIterations: 10,
+		ToolTimeout:   config.ToolTimeout,
+	})
+
+	return contextID, session, agent, toolRegistry, nil
 }
 
 func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) error {
 	// Initialize session
-	contextID, session, multipass, toolRegistry, err := initializeSession(config, sessionStore, contextID, cmd)
+	contextID, session, agent, toolRegistry, err := initializeSession(config, sessionStore, contextID, cmd)
 	if err != nil {
 		return err
 	}
@@ -195,7 +201,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	// If no prompt provided and no stdin, switch to interactive mode
 	// Don't set up signal handling for interactive mode - let readline handle it
 	if prompt == "" {
-		return runInteractiveMode(ctx, config, session, multipass, toolRegistry, contextID)
+		return runInteractiveMode(ctx, config, session, agent, toolRegistry, contextID)
 	}
 
 	// Only set up signal handling for non-interactive mode
@@ -218,7 +224,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		return fmt.Errorf("error processing files: %w", err)
 	}
 
-	// Add user message and execute
+	// Add user message to session
 	session.AddMessage(userMsg)
 
 	// Create status line if appropriate
@@ -229,7 +235,64 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		defer statusLine.Stop()
 	}
 
-	executeCompletion(ctx, config, multipass, session, toolRegistry, schema, statusLine)
+	// Show initial spinner
+	if statusLine != nil {
+		statusLine.ShowSpinner("waiting")
+	}
+
+	// Create completion request
+	req := createCompletionRequest(config, session, toolRegistry, schema)
+
+	// Run completion using the agent
+	resp, err := agent.Run(ctx, req, &llm.AgentCallbacks{
+		OnReasoning: func(content string) {
+			if statusLine != nil {
+				// Track total reasoning length for status
+				statusLine.UpdateThinkingProgress(len(content))
+			}
+		},
+		OnContent: func(content string) {
+			if statusLine != nil {
+				statusLine.ClearForContent()
+			}
+			// Print content unless using schema mode
+			if config.SchemaPath == "" {
+				fmt.Print(content)
+			}
+		},
+		OnToolStart: func(tc messages.ChatMessageToolCall) {
+			if statusLine != nil {
+				statusLine.ShowToolCall(tc.Name)
+			}
+		},
+		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+			if statusLine != nil {
+				statusLine.Clear()
+			}
+		},
+		OnError: func(err error) {
+			if statusLine != nil {
+				statusLine.Clear()
+			}
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Add all generated messages to session
+	for _, msg := range resp.AllMessages {
+		session.AddMessage(msg)
+	}
+
+	// Output final result
+	if config.SchemaPath != "" {
+		outputStructured(resp.Message.Content, schema)
+	} else {
+		fmt.Println() // Final newline
+	}
+
 	return nil
 }
 
@@ -245,49 +308,6 @@ func getPrompt(config *Config) (string, error) {
 	// No -p flag and no pipe input - signal to use interactive mode
 	return "", nil
 }
-
-func executeCompletion(
-	ctx context.Context,
-	config *Config,
-	provider llm.LLM,
-	session sessions.Session,
-	registry *tools.ToolRegistry,
-	schema *llm.Schema,
-	statusLine StatusHandler,
-) {
-	// Create request using helper function
-	req := createCompletionRequest(config, session, registry, schema)
-
-	// Create stream processor
-	processor := messages.NewStreamProcessor()
-
-	// Status line is now managed by the caller
-
-	// Show initial spinner
-	if statusLine != nil {
-		statusLine.ShowSpinner("waiting")
-	}
-
-	// Use event-based streaming
-	eventChan := provider.ChatCompletionStream(ctx, req, processor)
-
-	// Create appropriate event processor based on status line type
-	var eventProcessor messages.EventProcessor
-	if _, isInteractive := statusLine.(*InteractiveStatus); isInteractive {
-		eventProcessor = NewInteractiveEventProcessor(ctx, session, registry, statusLine.(*InteractiveStatus))
-	} else {
-		eventProcessor = NewCLIEventProcessor(ctx, config, session, registry, statusLine, schema)
-	}
-
-	// Process response using the event processor
-	response := messages.ProcessEventStream(ctx, eventChan, eventProcessor)
-
-	// If there were tool calls, continue the completion
-	if len(response.ToolCalls) > 0 {
-		executeCompletion(ctx, config, provider, session, registry, schema, statusLine)
-	}
-}
-
 
 // createCompletionRequest builds an LLM completion request from config
 func createCompletionRequest(config *Config, session sessions.Session, registry *tools.ToolRegistry, schema *llm.Schema) *llm.CompletionRequest {

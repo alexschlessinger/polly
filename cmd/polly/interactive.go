@@ -52,7 +52,7 @@ func (ui *readlineUI) Printf(format string, args ...interface{}) {
 
 // runInteractiveMode runs the CLI in interactive mode with readline support
 
-func runInteractiveMode(ctx context.Context, config *Config, session sessions.Session, multipass llm.LLM, toolRegistry *tools.ToolRegistry, contextID string) error {
+func runInteractiveMode(ctx context.Context, config *Config, session sessions.Session, agent *llm.Agent, toolRegistry *tools.ToolRegistry, contextID string) error {
 	// Note: session is already initialized by caller, no need to close it here
 
 	// Initialize colors based on terminal background
@@ -169,7 +169,7 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 			Content: input,
 		}
 
-		// Add user message and execute
+		// Add user message to session
 		session.AddMessage(userMsg)
 
 		// Create a cancellable context for this completion
@@ -183,21 +183,50 @@ func runInteractiveMode(ctx context.Context, config *Config, session sessions.Se
 		// Create completion request
 		req := createCompletionRequest(config, session, toolRegistry, nil)
 
-		// Create stream processor
-		processor := messages.NewStreamProcessor()
+		// Track if we've received first content
+		firstContent := true
 
-		// Use event-based streaming
-		eventChan := multipass.ChatCompletionStream(completionCtx, req, processor)
+		// Run completion using the agent
+		resp, err := agent.Run(completionCtx, req, &llm.AgentCallbacks{
+			OnReasoning: func(content string) {
+				interactiveStatus.UpdateThinkingProgress(len(content))
+			},
+			OnContent: func(content string) {
+				if firstContent {
+					firstContent = false
+					interactiveStatus.ClearForContent()
+				}
+				fmt.Print(content)
+			},
+			OnToolStart: func(tc messages.ChatMessageToolCall) {
+				interactiveStatus.ShowToolCall(tc.Name)
+			},
+			OnToolEnd: func(tc messages.ChatMessageToolCall, result string, dur time.Duration, toolErr error) {
+				interactiveStatus.Clear()
+				if toolErr != nil {
+					fmt.Printf("%s Failed: %s (%s)\n", errorStyle.Styled("✗"), tc.Name, dur.Truncate(time.Millisecond))
+				} else {
+					fmt.Printf("%s Completed: %s (%s)\n", successStyle.Styled("✓"), tc.Name, dur.Truncate(time.Millisecond))
+				}
+			},
+			OnComplete: func(msg *messages.ChatMessage) {
+				fmt.Println() // Final newline after content
+			},
+			OnError: func(err error) {
+				interactiveStatus.Clear()
+				fmt.Printf("Error: %v\n", err)
+			},
+		})
 
-		// Create interactive event processor
-		eventProcessor := NewInteractiveEventProcessor(completionCtx, session, toolRegistry, interactiveStatus)
+		if err != nil {
+			// Error already reported via OnError callback
+			currentCompletionCancel = nil
+			continue
+		}
 
-		// Process response using the event processor
-		response := messages.ProcessEventStream(completionCtx, eventChan, eventProcessor)
-
-		// If there were tool calls, continue the completion
-		if len(response.ToolCalls) > 0 {
-			executeCompletion(completionCtx, config, multipass, session, toolRegistry, nil, interactiveStatus)
+		// Add all generated messages to session
+		for _, msg := range resp.AllMessages {
+			session.AddMessage(msg)
 		}
 
 		// Clear the cancel function after completion
