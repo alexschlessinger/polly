@@ -248,8 +248,8 @@ In interactive mode, use `/tools` commands to manage tools dynamically:
 /tools remove uppercase__to_uppercase
 
 # Remove tools with wildcard patterns
-/tools remove filesystem__*  # Remove all filesystem 
-/tools remove perplexity__*        # Remove all perplexity 
+/tools remove filesystem__*  # Remove all filesystem
+/tools remove perplexity__*  # Remove all perplexity
 /tools remove uppercase__*   # Remove uppercase 
 
 # Reload all tools
@@ -347,55 +347,78 @@ polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 
 ### MCP Servers
 
-MCP servers must be configured through JSON files that specify the command and environment:
+MCP servers are configured through JSON files using the Claude Desktop format. A single config file can define multiple servers:
 
 ```bash
 # Create an MCP server config
-cat > filesystem.json << 'EOF'
+cat > mcp.json << 'EOF'
 {
-  "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/workspace"],
-  "env": {}
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/workspace"]
+    },
+    "perplexity": {
+      "command": "uvx",
+      "args": ["perplexity-mcp"],
+      "env": {
+        "PERPLEXITY_API_KEY": "pplx-..."
+      }
+    }
+  }
 }
 EOF
 
-# Use the MCP server
-polly -t filesystem.json -p "List files in the workspace"
+# Load all servers from the config
+polly -t mcp.json -p "List files and search for tutorials"
 
-# Multiple MCP servers
-polly -t perplexity.json -t filesystem.json \
-      -p "Search for Python tutorials and save to tutorials.txt"
+# Or load a specific server
+polly -t mcp.json#filesystem -p "List files in the workspace"
+```
+
+#### Remote MCP Servers
+
+MCP servers can also connect via SSE or Streamable HTTP transports:
+
+```json
+{
+  "mcpServers": {
+    "remote-api": {
+      "transport": "sse",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ..."
+      },
+      "timeout": "60s"
+    }
+  }
+}
 ```
 
 #### MCP Server Examples
 
 ```bash
-# Perplexity search
-cat > perp.json << 'EOF'
+cat > servers.json << 'EOF'
 {
-  "command": "uvx",
-  "args": ["perplexity-mcp"],
-  "env": {
-    "PERPLEXITY_API_KEY": "pplx-..."
-  }
-}
-EOF
-
-# Filesystem access
-cat > fs.json << 'EOF'
-{
-  "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/files"]
-}
-EOF
-
-# GitHub integration
-cat > github.json << 'EOF'
-{
-  "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-github"],
-  "env": {
-    "GITHUB_TOKEN": "ghp_..."
+  "mcpServers": {
+    "perplexity": {
+      "command": "uvx",
+      "args": ["perplexity-mcp"],
+      "env": {
+        "PERPLEXITY_API_KEY": "pplx-..."
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/files"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_..."
+      }
+    }
   }
 }
 EOF
