@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -119,8 +120,10 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		msgs = append(msgs, *response)
 		allGenerated = append(allGenerated, *response)
 
-		// No tool calls = done
-		if len(response.ToolCalls) == 0 {
+		// Check stop reason to determine next action
+		switch response.StopReason {
+		case messages.StopReasonEndTurn:
+			// Normal completion
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
 			}
@@ -129,6 +132,51 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 				AllMessages:    allGenerated,
 				IterationCount: iteration + 1,
 			}, nil
+
+		case messages.StopReasonMaxTokens:
+			// Response truncated - warn and return
+			log.Printf("agent: response truncated due to max_tokens")
+			if cb != nil && cb.OnComplete != nil {
+				cb.OnComplete(response)
+			}
+			return &AgentResponse{
+				Message:        response,
+				AllMessages:    allGenerated,
+				IterationCount: iteration + 1,
+			}, nil
+
+		case messages.StopReasonContentFilter:
+			// Response blocked by safety/policy
+			err := errors.New("response blocked by content filter")
+			if cb != nil && cb.OnError != nil {
+				cb.OnError(err)
+			}
+			return nil, err
+
+		case messages.StopReasonError:
+			// Model produced malformed output
+			err := errors.New("model produced malformed output")
+			if cb != nil && cb.OnError != nil {
+				cb.OnError(err)
+			}
+			return nil, err
+
+		case messages.StopReasonToolUse:
+			// Continue to execute tool calls below
+
+		default:
+			// Unknown stop reason with no tool calls = treat as completion
+			if len(response.ToolCalls) == 0 {
+				if cb != nil && cb.OnComplete != nil {
+					cb.OnComplete(response)
+				}
+				return &AgentResponse{
+					Message:        response,
+					AllMessages:    allGenerated,
+					IterationCount: iteration + 1,
+				}, nil
+			}
+			// Has tool calls, continue to execute them
 		}
 
 		// Execute tool calls in parallel
