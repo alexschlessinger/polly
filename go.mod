@@ -8,10 +8,10 @@ require (
 	github.com/google/jsonschema-go v0.3.0
 	github.com/modelcontextprotocol/go-sdk v1.1.0
 	github.com/muesli/termenv v0.16.0
-	github.com/ollama/ollama v0.13.0
+	github.com/ollama/ollama v0.13.1
 	github.com/sashabaranov/go-openai v1.41.2
 	golang.org/x/sync v0.18.0
-	google.golang.org/genai v1.36.0
+	google.golang.org/genai v1.37.0
 )
 
 require (
@@ -56,7 +56,7 @@ require (
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/term v0.37.0
 	golang.org/x/text v0.31.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251124214823-79d6a2a48846 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	google.golang.org/grpc v1.77.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 )
