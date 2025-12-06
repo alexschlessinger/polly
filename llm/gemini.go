@@ -180,6 +180,12 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			}
 		}
 
+		// If there are tool calls, override stop reason to ToolUse
+		// (Gemini doesn't have a specific finish reason for tool calls - it uses "STOP")
+		if len(toolCalls) > 0 {
+			stopReason = messages.StopReasonToolUse
+		}
+
 		// Always send a final message with stop reason (needed for agent completion detection)
 		msg := messages.ChatMessage{
 			Role:       messages.MessageRoleAssistant,
