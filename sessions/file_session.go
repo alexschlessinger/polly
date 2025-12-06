@@ -134,12 +134,12 @@ func (s *FileSessionStore) Get(name string) (Session, error) {
 			// Ensure ContextInfo exists
 			if session.Metadata == nil {
 				session.Metadata = &Metadata{
-					Name:         name,
-					Created:      session.Created,
-					LastUsed:     time.Now(),
-					SystemPrompt: s.defaultInfo.SystemPrompt,
-					MaxHistory:   s.defaultInfo.MaxHistory,
-					TTL:          s.defaultInfo.TTL,
+					Name:             name,
+					Created:          session.Created,
+					LastUsed:         time.Now(),
+					SystemPrompt:     s.defaultInfo.SystemPrompt,
+					MaxHistoryTokens: s.defaultInfo.MaxHistoryTokens,
+					TTL:              s.defaultInfo.TTL,
 				}
 			} else {
 				session.Metadata.LastUsed = time.Now()
@@ -157,12 +157,12 @@ func (s *FileSessionStore) Get(name string) (Session, error) {
 		Created: time.Now(),
 		Updated: time.Now(),
 		Metadata: &Metadata{
-			Name:         name,
-			Created:      time.Now(),
-			LastUsed:     time.Now(),
-			SystemPrompt: s.defaultInfo.SystemPrompt,
-			MaxHistory:   s.defaultInfo.MaxHistory,
-			TTL:          s.defaultInfo.TTL,
+			Name:             name,
+			Created:          time.Now(),
+			LastUsed:         time.Now(),
+			SystemPrompt:     s.defaultInfo.SystemPrompt,
+			MaxHistoryTokens: s.defaultInfo.MaxHistoryTokens,
+			TTL:              s.defaultInfo.TTL,
 		},
 		path: sessionPath,
 		lock: fileLock,
@@ -295,10 +295,10 @@ func (s *FileSession) AddMessage(msg messages.ChatMessage) {
 	s.save()
 }
 
-// trimHistory limits the session history to MaxHistory messages
+// trimHistory limits the session history to MaxHistoryTokens
 func (s *FileSession) trimHistory() {
-	if s.Metadata.MaxHistory > 0 {
-		s.History = TrimHistory(s.History, s.Metadata.MaxHistory)
+	if s.Metadata.MaxHistoryTokens > 0 {
+		s.History = TrimHistory(s.History, s.Metadata.MaxHistoryTokens)
 	}
 }
 

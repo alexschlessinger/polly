@@ -59,12 +59,12 @@ func (s *SyncMapSessionStore) Get(id string) (Session, error) {
 
 	// Initialize context info from defaults
 	contextInfo := &Metadata{
-		Name:         id,
-		Created:      time.Now(),
-		LastUsed:     time.Now(),
-		SystemPrompt: s.defaults.SystemPrompt,
-		MaxHistory:   s.defaults.MaxHistory,
-		TTL:          s.defaults.TTL,
+		Name:             id,
+		Created:          time.Now(),
+		LastUsed:         time.Now(),
+		SystemPrompt:     s.defaults.SystemPrompt,
+		MaxHistoryTokens: s.defaults.MaxHistoryTokens,
+		TTL:              s.defaults.TTL,
 	}
 
 	session := &LocalSession{
@@ -178,12 +178,12 @@ func (s *LocalSession) AddMessage(msg messages.ChatMessage) {
 	s.trimHistory()
 }
 
-// trimHistory limits the session history to MaxHistory messages
+// trimHistory limits the session history to MaxHistoryTokens
 func (s *LocalSession) trimHistory() {
-	if s.metadata.MaxHistory == 0 {
+	if s.metadata.MaxHistoryTokens == 0 {
 		return
 	}
-	s.history = TrimHistory(s.history, s.metadata.MaxHistory)
+	s.history = TrimHistory(s.history, s.metadata.MaxHistoryTokens)
 }
 
 // Clear clears the session history

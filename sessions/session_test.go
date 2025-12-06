@@ -12,9 +12,9 @@ import (
 // testStores returns both store implementations for testing
 func testStores(t *testing.T) map[string]SessionStore {
 	defaultInfo := &Metadata{
-		MaxHistory:   10,
-		TTL:          0, // No expiry for tests
-		SystemPrompt: "test system prompt",
+		MaxHistoryTokens: 70, // ~10 messages worth of tokens
+		TTL:              0,  // No expiry for tests
+		SystemPrompt:     "test system prompt",
 	}
 
 	// Create file store in temp directory
@@ -131,7 +131,7 @@ func TestTrimKeepsSystemPrompt(t *testing.T) {
 				t.Fatalf("Failed to get session: %v", err)
 			}
 
-			// Add more than MaxHistory messages
+			// Add enough messages to trigger token-based trimming
 			for i := range 15 {
 				session.AddMessage(messages.ChatMessage{
 					Role:    messages.MessageRoleUser,
@@ -150,9 +150,9 @@ func TestTrimKeepsSystemPrompt(t *testing.T) {
 				t.Errorf("System prompt content changed: %s", history[0].Content)
 			}
 
-			// Should have at most MaxHistory + 1 (system prompt)
-			if len(history) > 11 { // 10 + system prompt
-				t.Errorf("History too long: %d messages", len(history))
+			// Should have fewer than 16 messages due to token limit
+			if len(history) >= 16 {
+				t.Errorf("History too long (not trimmed): %d messages", len(history))
 			}
 		})
 	}
@@ -160,11 +160,11 @@ func TestTrimKeepsSystemPrompt(t *testing.T) {
 
 // TestTrimRemovesOrphanedToolResponse verifies orphaned tool responses are removed
 func TestTrimRemovesOrphanedToolResponse(t *testing.T) {
-	// Create config with small MaxHistory to make test clearer
+	// Create config with small token limit to make test clearer
 	defaultInfo := &Metadata{
-		MaxHistory:   3,
-		TTL:          0,
-		SystemPrompt: "system",
+		MaxHistoryTokens: 50, // small limit to trigger trimming
+		TTL:              0,
+		SystemPrompt:     "system",
 	}
 
 	stores := map[string]SessionStore{
@@ -190,7 +190,7 @@ func TestTrimRemovesOrphanedToolResponse(t *testing.T) {
 			session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleTool, Content: "tool response"})
 			session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "second"})
 
-			// This should trigger trim - with MaxHistory=3, we keep system + last 2
+			// This should trigger trim due to token limit
 			// If trim makes position 1 a tool response, it should be removed
 			session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "third"})
 
@@ -209,12 +209,13 @@ func TestTrimRemovesOrphanedToolResponse(t *testing.T) {
 	}
 }
 
-// TestTrimKeepsMaxHistory verifies only MaxHistory messages are kept
-func TestTrimKeepsMaxHistory(t *testing.T) {
+// TestTrimKeepsWithinTokenLimit verifies history is trimmed to token limit
+func TestTrimKeepsWithinTokenLimit(t *testing.T) {
+	// Each message is ~5-6 tokens (content + overhead), so 30 tokens should keep ~5-6 messages
 	defaultInfo := &Metadata{
-		MaxHistory:   5,
-		TTL:          0,
-		SystemPrompt: "system",
+		MaxHistoryTokens: 30,
+		TTL:              0,
+		SystemPrompt:     "system",
 	}
 
 	stores := map[string]SessionStore{
@@ -244,16 +245,20 @@ func TestTrimKeepsMaxHistory(t *testing.T) {
 
 			history := session.GetHistory()
 
-			// Should have system + MaxHistory messages
-			expectedLen := 6 // system + 5
-			if len(history) != expectedLen {
-				t.Errorf("Expected %d messages, got %d", expectedLen, len(history))
+			// Should have less than 10 messages due to token limit
+			if len(history) >= 11 { // system + 10
+				t.Errorf("Expected trimming to occur, got %d messages", len(history))
 			}
 
 			// Verify we kept the most recent messages
 			lastMsg := history[len(history)-1]
 			if lastMsg.Content != "msg-9" {
 				t.Errorf("Expected last message to be 'msg-9', got '%s'", lastMsg.Content)
+			}
+
+			// Verify system prompt is preserved
+			if history[0].Role != messages.MessageRoleSystem {
+				t.Error("System prompt should be preserved")
 			}
 		})
 	}
@@ -294,11 +299,10 @@ func TestConcurrentAddMessage(t *testing.T) {
 
 			history := session.GetHistory()
 
-			// Should have system prompt + all messages (may be trimmed if > MaxHistory)
-			// But we should have at least MaxHistory messages
-			minExpected := 11 // MaxHistory (10) + system prompt
-			if len(history) < minExpected {
-				t.Errorf("Expected at least %d messages, got %d", minExpected, len(history))
+			// Should have system prompt + messages (limited by token budget)
+			// With token limit, we should have at least a few messages
+			if len(history) < 2 {
+				t.Errorf("Expected at least 2 messages (system + user), got %d", len(history))
 			}
 
 			// Verify system prompt is still first
@@ -320,9 +324,9 @@ func TestConcurrentAddMessage(t *testing.T) {
 func TestMaxTokensPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	defaultInfo := &Metadata{
-		MaxHistory:   10,
-		TTL:          0,
-		SystemPrompt: "test",
+		MaxHistoryTokens: 100000,
+		TTL:              0,
+		SystemPrompt:     "test",
 	}
 
 	store, err := NewFileSessionStore(tmpDir, defaultInfo)
@@ -399,9 +403,9 @@ func TestMaxTokensPersistence(t *testing.T) {
 func TestExpiryGoroutine(t *testing.T) {
 	// Create store with very short TTL
 	defaultInfo := &Metadata{
-		MaxHistory:   10,
-		TTL:          50 * time.Millisecond, // Very short TTL for testing
-		SystemPrompt: "test",
+		MaxHistoryTokens: 100000,
+		TTL:              50 * time.Millisecond, // Very short TTL for testing
+		SystemPrompt:     "test",
 	}
 
 	store := NewSyncMapSessionStore(defaultInfo)

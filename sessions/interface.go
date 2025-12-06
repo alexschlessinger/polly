@@ -46,12 +46,12 @@ type Metadata struct {
 	TTL         time.Duration `json:"ttl,omitempty"` // Time before context expires (0 = never)
 
 	// Settings that can be persisted
-	Model          string        `json:"model,omitempty"`
-	Temperature    float64       `json:"temperature,omitempty"`
-	MaxTokens      int           `json:"maxTokens,omitempty"`
-	MaxHistory     int           `json:"maxHistory,omitempty"`
-	ThinkingEffort string            `json:"thinkingEffort,omitempty"`
-	SystemPrompt   string            `json:"systemPrompt,omitempty"`
-	ActiveTools    []tools.ToolLoaderInfo  `json:"activeTools,omitempty"`
-	ToolTimeout    time.Duration     `json:"toolTimeout,omitempty"`
+	Model            string                 `json:"model,omitempty"`
+	Temperature      float64                `json:"temperature,omitempty"`
+	MaxTokens        int                    `json:"maxTokens,omitempty"`
+	MaxHistoryTokens int                    `json:"maxHistoryTokens,omitempty"`
+	ThinkingEffort   string                 `json:"thinkingEffort,omitempty"`
+	SystemPrompt     string                 `json:"systemPrompt,omitempty"`
+	ActiveTools      []tools.ToolLoaderInfo `json:"activeTools,omitempty"`
+	ToolTimeout      time.Duration          `json:"toolTimeout,omitempty"`
 }
