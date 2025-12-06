@@ -39,6 +39,27 @@ type streamState struct {
 	thinkingBlocks       []map[string]any
 	currentBlockType     string
 	currentThinkingBlock map[string]any
+	stopReason           messages.StopReason
+	inputTokens          int
+	outputTokens         int
+}
+
+// mapAnthropicStopReason converts Anthropic's stop reason to our normalized type
+func mapAnthropicStopReason(sr anthropic.StopReason) messages.StopReason {
+	switch sr {
+	case "end_turn":
+		return messages.StopReasonEndTurn
+	case "tool_use":
+		return messages.StopReasonToolUse
+	case "max_tokens":
+		return messages.StopReasonMaxTokens
+	case "refusal":
+		return messages.StopReasonContentFilter
+	case "stop_sequence":
+		return messages.StopReasonEndTurn
+	default:
+		return messages.StopReasonEndTurn
+	}
 }
 
 type AnthropicClient struct {
@@ -190,7 +211,9 @@ func (a *AnthropicClient) processStream(stream *ssestream.Stream[anthropic.Messa
 func (a *AnthropicClient) processStreamEvent(event anthropic.MessageStreamEventUnion, state *streamState, messageChannel chan messages.ChatMessage) {
 	switch event.Type {
 	case string(constant.ValueOf[constant.MessageStart]()):
-		// Message started
+		// Message started - capture input tokens
+		msgStart := event.AsMessageStart()
+		state.inputTokens = int(msgStart.Message.Usage.InputTokens)
 	case string(constant.ValueOf[constant.ContentBlockStart]()):
 		a.processContentBlockStart(event, state)
 	case string(constant.ValueOf[constant.ContentBlockDelta]()):
@@ -198,7 +221,10 @@ func (a *AnthropicClient) processStreamEvent(event anthropic.MessageStreamEventU
 	case string(constant.ValueOf[constant.ContentBlockStop]()):
 		a.processContentBlockStop(state)
 	case string(constant.ValueOf[constant.MessageDelta]()):
-		// Message delta (usage stats, etc)
+		// Message delta contains stop_reason and usage stats
+		msgDelta := event.AsMessageDelta()
+		state.stopReason = mapAnthropicStopReason(msgDelta.Delta.StopReason)
+		state.outputTokens = int(msgDelta.Usage.OutputTokens)
 	case string(constant.ValueOf[constant.MessageStop]()):
 		// Message complete
 	}
@@ -328,24 +354,27 @@ func (a *AnthropicClient) handleStructuredOutput(toolCalls []messages.ChatMessag
 	return false
 }
 
-// sendFinalMessage sends the final message with tool calls if any
+// sendFinalMessage sends the final message with stop reason and tool calls if any
 func (a *AnthropicClient) sendFinalMessage(state *streamState, messageChannel chan messages.ChatMessage) {
-	if len(state.toolCalls) > 0 || len(state.thinkingBlocks) > 0 {
-		msg := messages.ChatMessage{
-			Role:      messages.MessageRoleAssistant,
-			Content:   "", // Content was already streamed, don't duplicate
-			ToolCalls: state.toolCalls,
-			Reasoning: "", // Reasoning was already streamed, don't duplicate
-		}
-		// Store thinking blocks in metadata for future use
-		if len(state.thinkingBlocks) > 0 {
-			if msg.Metadata == nil {
-				msg.Metadata = make(map[string]any)
-			}
-			msg.Metadata[metadataKeyThinkingBlocks] = state.thinkingBlocks
-		}
-		messageChannel <- msg
+	// Always send a final message with stop reason (needed for agent completion detection)
+	msg := messages.ChatMessage{
+		Role:       messages.MessageRoleAssistant,
+		Content:    "", // Content was already streamed, don't duplicate
+		ToolCalls:  state.toolCalls,
+		Reasoning:  "", // Reasoning was already streamed, don't duplicate
+		StopReason: state.stopReason,
 	}
+	// Initialize metadata map
+	if msg.Metadata == nil {
+		msg.Metadata = make(map[string]any)
+	}
+	// Store token usage
+	msg.SetTokenUsage(state.inputTokens, state.outputTokens)
+	// Store thinking blocks for future use
+	if len(state.thinkingBlocks) > 0 {
+		msg.Metadata[metadataKeyThinkingBlocks] = state.thinkingBlocks
+	}
+	messageChannel <- msg
 }
 
 // logResponseDetails logs the completion details for debugging

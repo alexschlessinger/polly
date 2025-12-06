@@ -130,8 +130,15 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			responseContent string
 			thinkingContent string
 			toolCalls       []messages.ChatMessageToolCall
+			inputTokens     int
+			outputTokens    int
 		)
 		err := o.client.Chat(ctx, chatReq, func(resp ollamaapi.ChatResponse) error {
+			// Capture token counts from final response
+			if resp.Done {
+				inputTokens = resp.PromptEvalCount
+				outputTokens = resp.EvalCount
+			}
 			// Stream thinking tokens as they arrive
 			if resp.Message.Thinking != "" {
 				thinkingContent += resp.Message.Thinking
@@ -178,16 +185,25 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		// Use the full response content
 		cleanContent := responseContent
 
-		// Send the complete message with tool calls if any
-		// Don't include content since it was already streamed
+		// Infer stop reason (Ollama doesn't expose detailed stop reasons)
+		var stopReason messages.StopReason
 		if len(toolCalls) > 0 {
-			messageChannel <- messages.ChatMessage{
-				Role:      messages.MessageRoleAssistant,
-				Content:   "", // Content was already streamed, don't duplicate
-				ToolCalls: toolCalls,
-				Reasoning: "", // Reasoning was already streamed, don't duplicate
-			}
+			stopReason = messages.StopReasonToolUse
+		} else {
+			stopReason = messages.StopReasonEndTurn
 		}
+
+		// Always send a final message with stop reason (needed for agent completion detection)
+		finalMsg := messages.ChatMessage{
+			Role:       messages.MessageRoleAssistant,
+			Content:    "", // Content was already streamed, don't duplicate
+			ToolCalls:  toolCalls,
+			Reasoning:  "", // Reasoning was already streamed, don't duplicate
+			StopReason: stopReason,
+		}
+		// Store token usage
+		finalMsg.SetTokenUsage(inputTokens, outputTokens)
+		messageChannel <- finalMsg
 
 		// Log response details
 		contentPreview := cleanContent

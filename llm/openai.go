@@ -16,6 +16,22 @@ import (
 
 var _ LLM = (*OpenAIClient)(nil)
 
+// mapOpenAIFinishReason converts OpenAI's finish reason to our normalized type
+func mapOpenAIFinishReason(fr ai.FinishReason) messages.StopReason {
+	switch fr {
+	case ai.FinishReasonStop:
+		return messages.StopReasonEndTurn
+	case ai.FinishReasonToolCalls, ai.FinishReasonFunctionCall:
+		return messages.StopReasonToolUse
+	case ai.FinishReasonLength:
+		return messages.StopReasonMaxTokens
+	case ai.FinishReasonContentFilter:
+		return messages.StopReasonContentFilter
+	default:
+		return messages.StopReasonEndTurn
+	}
+}
+
 type OpenAIClient struct {
 	ClientConfig ai.ClientConfig
 	Client       *ai.Client
@@ -58,6 +74,9 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 		Messages:            openAIMessages,
 		Temperature:         req.Temperature,
 		Stream:              true, // Enable streaming
+		StreamOptions: &ai.StreamOptions{
+			IncludeUsage: true, // Include token usage in final chunk
+		},
 	}
 
 	// Enable reasoning for supported models (o1, DeepSeek, etc.)
@@ -94,6 +113,8 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 	var fullContent string
 	var reasoningContent string
 	var toolCalls []messages.ChatMessageToolCall
+	var stopReason messages.StopReason
+	var inputTokens, outputTokens int
 
 	for {
 		response, err := stream.Recv()
@@ -110,8 +131,20 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 			return err
 		}
 
+		// Capture usage from final chunk (sent when StreamOptions.IncludeUsage is true)
+		if response.Usage != nil {
+			inputTokens = response.Usage.PromptTokens
+			outputTokens = response.Usage.CompletionTokens
+		}
+
 		if len(response.Choices) > 0 {
-			delta := response.Choices[0].Delta
+			choice := response.Choices[0]
+			delta := choice.Delta
+
+			// Capture finish reason when it's set
+			if choice.FinishReason != "" {
+				stopReason = mapOpenAIFinishReason(choice.FinishReason)
+			}
 
 			// Stream reasoning content if present (for models like DeepSeek)
 			if delta.ReasoningContent != "" {
@@ -178,11 +211,14 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 	}
 
 	msg := messages.ChatMessage{
-		Role:      messages.MessageRoleAssistant,
-		Content:   finalContent,
-		ToolCalls: toolCalls,
-		Reasoning: "", // Reasoning was already streamed, don't duplicate
+		Role:       messages.MessageRoleAssistant,
+		Content:    finalContent,
+		ToolCalls:  toolCalls,
+		Reasoning:  "", // Reasoning was already streamed, don't duplicate
+		StopReason: stopReason,
 	}
+	// Store token usage
+	msg.SetTokenUsage(inputTokens, outputTokens)
 
 	// Always send the final complete message (needed for processor to emit completion event)
 	respChannel <- msg

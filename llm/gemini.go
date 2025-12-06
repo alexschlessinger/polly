@@ -12,6 +12,25 @@ import (
 	"google.golang.org/genai"
 )
 
+// mapGeminiFinishReason converts Gemini's finish reason to our normalized type
+func mapGeminiFinishReason(fr genai.FinishReason) messages.StopReason {
+	switch fr {
+	case genai.FinishReasonStop:
+		return messages.StopReasonEndTurn
+	case genai.FinishReasonMaxTokens:
+		return messages.StopReasonMaxTokens
+	case genai.FinishReasonSafety, genai.FinishReasonRecitation,
+		genai.FinishReasonBlocklist, genai.FinishReasonProhibitedContent,
+		genai.FinishReasonSPII, genai.FinishReasonImageSafety,
+		genai.FinishReasonImageProhibitedContent:
+		return messages.StopReasonContentFilter
+	case genai.FinishReasonMalformedFunctionCall:
+		return messages.StopReasonError
+	default:
+		return messages.StopReasonEndTurn
+	}
+}
+
 type GeminiClient struct {
 	apiKey string
 }
@@ -103,6 +122,8 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		// Process the stream
 		var responseContent string
 		var toolCalls []messages.ChatMessageToolCall
+		var stopReason messages.StopReason
+		var inputTokens, outputTokens int
 		signatures := make(map[string]string)
 
 		for resp, err := range iter {
@@ -115,9 +136,21 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 				return
 			}
 
+			// Capture token usage (available on each chunk, use latest values)
+			if resp.UsageMetadata != nil {
+				inputTokens = int(resp.UsageMetadata.PromptTokenCount)
+				outputTokens = int(resp.UsageMetadata.CandidatesTokenCount)
+			}
+
 			// Process each candidate's parts
 			if len(resp.Candidates) > 0 {
 				candidate := resp.Candidates[0]
+
+				// Capture finish reason when set
+				if candidate.FinishReason != "" {
+					stopReason = mapGeminiFinishReason(candidate.FinishReason)
+				}
+
 				if candidate.Content != nil {
 					for _, part := range candidate.Content.Parts {
 						if part.Text != "" {
@@ -147,22 +180,23 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			}
 		}
 
-		// Send the completed message with tool calls if any
-		if len(toolCalls) > 0 {
-			msg := messages.ChatMessage{
-				Role:      messages.MessageRoleAssistant,
-				Content:   "",
-				ToolCalls: toolCalls,
-			}
-
-			if len(signatures) > 0 {
-				msg.Metadata = map[string]any{
-					"gemini_thought_signatures": signatures,
-				}
-			}
-
-			messageChannel <- msg
+		// Always send a final message with stop reason (needed for agent completion detection)
+		msg := messages.ChatMessage{
+			Role:       messages.MessageRoleAssistant,
+			Content:    "", // Content was already streamed
+			ToolCalls:  toolCalls,
+			StopReason: stopReason,
 		}
+
+		// Store token usage
+		msg.SetTokenUsage(inputTokens, outputTokens)
+
+		// Store thought signatures if present
+		if len(signatures) > 0 {
+			msg.Metadata["gemini_thought_signatures"] = signatures
+		}
+
+		messageChannel <- msg
 
 		// Log response details
 		contentPreview := responseContent
