@@ -139,8 +139,8 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 				inputTokens = resp.PromptEvalCount
 				outputTokens = resp.EvalCount
 			}
-			// Stream thinking tokens as they arrive
-			if resp.Message.Thinking != "" {
+			// Stream thinking tokens as they arrive (skip final chunk which contains full content)
+			if resp.Message.Thinking != "" && !resp.Done {
 				thinkingContent += resp.Message.Thinking
 				// Send thinking update for status display
 				messageChannel <- messages.ChatMessage{
@@ -148,8 +148,8 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 					Reasoning: resp.Message.Thinking,
 				}
 			}
-			// Stream content tokens as they arrive
-			if resp.Message.Content != "" {
+			// Stream content tokens as they arrive (skip final chunk which contains full content)
+			if resp.Message.Content != "" && !resp.Done {
 				responseContent += resp.Message.Content
 				// Send partial content for streaming
 				messageChannel <- messages.ChatMessage{
