@@ -28,8 +28,13 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 		var accumulatedReasoning string
 		var lastMessageWithToolCalls *ChatMessage
 		var lastMessageMetadata map[string]any
+		var stopReason StopReason
 
 		for msg := range msgChan {
+			// Capture stop reason if set (usually on the final message)
+			if msg.StopReason != "" {
+				stopReason = msg.StopReason
+			}
 			// If there's reasoning, accumulate it and emit as reasoning event
 			if msg.Reasoning != "" {
 				accumulatedReasoning += msg.Reasoning
@@ -80,10 +85,11 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 
 		// At the end, emit a complete event with the full message
 		completeMsg := ChatMessage{
-			Role:      MessageRoleAssistant,
-			Content:   accumulatedContent,
-			Reasoning: accumulatedReasoning,
-			Metadata:  lastMessageMetadata,
+			Role:       MessageRoleAssistant,
+			Content:    accumulatedContent,
+			Reasoning:  accumulatedReasoning,
+			Metadata:   lastMessageMetadata,
+			StopReason: stopReason,
 		}
 
 		// If we had tool calls, include them in the complete message
