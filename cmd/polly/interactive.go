@@ -276,7 +276,7 @@ var interactiveCommands = map[string]commandHandler{
 	"/debug":       handleDebug,
 	"/description": handleDescription,
 	"/desc":        handleDescription,
-	"/maxhistory":  handleMaxHistory,
+	"/maxcontext":  handleMaxContext,
 	"/ttl":         handleTTL,
 	"/tools":       handleTools,
 	"/think":       handleThinking,
@@ -473,44 +473,6 @@ func handleDescription(parts []string, _ *Config, session sessions.Session, _ **
 	return true
 }
 
-func handleMaxHistory(parts []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
-	contextInfo := session.GetMetadata()
-	if contextInfo == nil {
-		ui.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
-		return true
-	}
-
-	if len(parts) < 2 {
-		if contextInfo.MaxHistory > 0 {
-			ui.Printf("Current max history: %s\n", highlightStyle.Styled(fmt.Sprintf("%d messages", contextInfo.MaxHistory)))
-		} else {
-			ui.Println(dimStyle.Styled("No max history limit set (unlimited)"))
-		}
-		ui.Println(dimStyle.Styled("Usage: /maxhistory <number>"))
-		ui.Println(dimStyle.Styled("       /maxhistory 0  (for unlimited)"))
-		return true
-	}
-
-	val, err := parseInt(parts[1])
-	if err != nil {
-		ui.Println(errorStyle.Styled("Invalid number"))
-		return true
-	}
-	if val < 0 {
-		ui.Println(errorStyle.Styled("Max history must be 0 (unlimited) or positive"))
-		return true
-	}
-
-	contextInfo.MaxHistory = val
-	session.SetMetadata(contextInfo)
-	if val == 0 {
-		ui.Println(successStyle.Styled("Max history set to unlimited"))
-	} else {
-		ui.Println(successStyle.Styled(fmt.Sprintf("Max history set to: %d messages", val)))
-	}
-	return true
-}
-
 func handleTTL(parts []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
 	contextInfo := session.GetMetadata()
 	if contextInfo == nil {
@@ -559,6 +521,44 @@ func handleTTL(parts []string, _ *Config, session sessions.Session, _ **tools.To
 	}
 
 	ui.Println(errorStyle.Styled("Invalid duration format"))
+	return true
+}
+
+func handleMaxContext(parts []string, _ *Config, session sessions.Session, _ **tools.ToolRegistry, ui *readlineUI) bool {
+	contextInfo := session.GetMetadata()
+	if contextInfo == nil {
+		ui.Println(errorStyle.Styled("No context available. Create or switch to a context first."))
+		return true
+	}
+
+	if len(parts) < 2 {
+		if contextInfo.MaxHistoryTokens > 0 {
+			ui.Printf("Current max context: %s\n", highlightStyle.Styled(fmt.Sprintf("%d tokens", contextInfo.MaxHistoryTokens)))
+		} else {
+			ui.Println(dimStyle.Styled("No max context limit set (unlimited)"))
+		}
+		ui.Println(dimStyle.Styled("Usage: /maxcontext <number>"))
+		ui.Println(dimStyle.Styled("       /maxcontext 0  (for unlimited)"))
+		return true
+	}
+
+	val, err := parseInt(parts[1])
+	if err != nil {
+		ui.Println(errorStyle.Styled("Invalid number"))
+		return true
+	}
+	if val < 0 {
+		ui.Println(errorStyle.Styled("Max context must be 0 (unlimited) or positive"))
+		return true
+	}
+
+	contextInfo.MaxHistoryTokens = val
+	session.SetMetadata(contextInfo)
+	if val == 0 {
+		ui.Println(successStyle.Styled("Max context set to unlimited"))
+	} else {
+		ui.Println(successStyle.Styled(fmt.Sprintf("Max context set to: %d tokens", val)))
+	}
 	return true
 }
 
@@ -919,7 +919,7 @@ func createAutoCompleter(registry *tools.ToolRegistry) *readline.PrefixCompleter
 		readline.PcItem("/desc",
 			readline.PcItem("clear"),
 		),
-		readline.PcItem("/maxhistory"),
+		readline.PcItem("/maxcontext"),
 		readline.PcItem("/ttl",
 			readline.PcItem("24h"),
 			readline.PcItem("7d"),
@@ -996,9 +996,9 @@ func printWelcomeMessage(config *Config, session sessions.Session, contextID str
 			fmt.Printf("System Prompt: %s\n", highlightStyle.Styled(prompt))
 		}
 
-		// Show max history if set
-		if contextInfo.MaxHistory > 0 {
-			fmt.Printf("Max History: %s\n", highlightStyle.Styled(fmt.Sprintf("%d messages", contextInfo.MaxHistory)))
+		// Show max context if set
+		if contextInfo.MaxHistoryTokens > 0 {
+			fmt.Printf("Max Context: %s\n", highlightStyle.Styled(fmt.Sprintf("%d tokens", contextInfo.MaxHistoryTokens)))
 		}
 
 		// Show description if set
@@ -1118,7 +1118,7 @@ func printInteractiveHelp(ui *readlineUI) {
 		{"/context", "Show current context"},
 		{"/system <prompt>", "Update system prompt"},
 		{"/description <text>", "Set context description"},
-		{"/maxhistory <n>", "Set max history limit (0=unlimited)"},
+		{"/maxcontext <n>", "Set max context tokens (0=unlimited)"},
 		{"/ttl <duration>", "Set context TTL (e.g., 24h, 7d)"},
 		{"/think <level>", "Set thinking effort (off/low/medium/high)"},
 		{"/tooltimeout <duration>", "Set tool execution timeout"},

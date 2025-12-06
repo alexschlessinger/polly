@@ -26,9 +26,9 @@ func needsFileStore(config *Config, contextID string) bool {
 func setupSessionStore(config *Config, contextID string) (sessions.SessionStore, error) {
 	// Create default context info with initial settings
 	defaultInfo := &sessions.Metadata{
-		TTL:          0,
-		SystemPrompt: config.SystemPrompt,
-		MaxHistory:   config.MaxHistory,
+		TTL:              0,
+		SystemPrompt:     config.SystemPrompt,
+		MaxHistoryTokens: config.MaxHistoryTokens,
 	}
 
 	if needsFileStore(config, contextID) {
@@ -289,7 +289,7 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 	fmt.Printf("  Thinking: %s\n", info.ThinkingEffort)
 
 	// Conversation settings
-	fmt.Printf("  Max History: %d\n", info.MaxHistory)
+	fmt.Printf("  Max Context: %d tokens\n", info.MaxHistoryTokens)
 	fmt.Printf("  TTL: %s\n", info.TTL)
 
 	// Prompts and description

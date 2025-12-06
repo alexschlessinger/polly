@@ -9,12 +9,12 @@ import (
 // Settings contains configuration that can be persisted with a context
 type Settings struct {
 	// Model configuration
-	Model          string  `json:"model,omitempty"`
-	Temperature    float64 `json:"temperature,omitempty"`
-	MaxTokens      int     `json:"maxTokens,omitempty"`
-	MaxHistory     int     `json:"maxHistory,omitempty"`
-	ThinkingEffort string  `json:"thinkingEffort,omitempty"`
-	SystemPrompt   string  `json:"systemPrompt,omitempty"`
+	Model            string  `json:"model,omitempty"`
+	Temperature      float64 `json:"temperature,omitempty"`
+	MaxTokens        int     `json:"maxTokens,omitempty"`
+	MaxHistoryTokens int     `json:"maxHistoryTokens,omitempty"` // max tokens for context history
+	ThinkingEffort   string  `json:"thinkingEffort,omitempty"`
+	SystemPrompt     string  `json:"systemPrompt,omitempty"`
 
 	// Tool configuration
 	ToolTimeout time.Duration `json:"toolTimeout,omitempty"`
@@ -55,7 +55,7 @@ func (s Settings) ToMetadataSettings(m *sessions.Metadata) {
 	m.Model = s.Model
 	m.Temperature = s.Temperature
 	m.MaxTokens = s.MaxTokens
-	m.MaxHistory = s.MaxHistory
+	m.MaxHistoryTokens = s.MaxHistoryTokens
 	m.ThinkingEffort = s.ThinkingEffort
 	m.SystemPrompt = s.SystemPrompt
 	m.ToolTimeout = s.ToolTimeout

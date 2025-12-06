@@ -356,8 +356,8 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			if !cmd.IsSet("maxtokens") && contextInfo.MaxTokens != 0 {
 				config.Settings.MaxTokens = contextInfo.MaxTokens
 			}
-			if !cmd.IsSet("maxhistory") && contextInfo.MaxHistory != 0 {
-				config.Settings.MaxHistory = contextInfo.MaxHistory
+			if !cmd.IsSet("maxcontext") && contextInfo.MaxHistoryTokens != 0 {
+				config.Settings.MaxHistoryTokens = contextInfo.MaxHistoryTokens
 			}
 			// Only use stored system prompt if flag wasn't explicitly set
 			if !cmd.IsSet("system") && contextInfo.SystemPrompt != "" {
@@ -410,8 +410,8 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 	}
 
 	// Only update these if explicitly set via command line
-	if cmd.IsSet("maxhistory") {
-		update.MaxHistory = config.Settings.MaxHistory
+	if cmd.IsSet("maxcontext") {
+		update.MaxHistoryTokens = config.Settings.MaxHistoryTokens
 	}
 	if cmd.IsSet("system") {
 		update.SystemPrompt = config.Settings.SystemPrompt

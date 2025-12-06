@@ -46,7 +46,7 @@ func parseConfig(cmd *cli.Command) *Config {
 			Model:          cmd.String("model"),
 			Temperature:    cmd.Float64("temp"),
 			MaxTokens:      cmd.Int("maxtokens"),
-			MaxHistory:     cmd.Int("maxhistory"),
+			MaxHistoryTokens: cmd.Int("maxcontext"),
 			ThinkingEffort: thinkingEffort,
 			SystemPrompt:   cmd.String("system"),
 			ToolTimeout:    cmd.Duration("tooltimeout"),
@@ -112,7 +112,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			disallowedFlags := []string{
 				"context", "last", "prompt", "file", "model", "temp",
 				"maxtokens", "timeout", "tool", "mcp", "system", "schema",
-				"tooltimeout", "maxhistory", "think", "think-medium",
+				"tooltimeout", "maxcontext", "think", "think-medium",
 				"think-hard", "baseurl",
 			}
 			if slices.ContainsFunc(disallowedFlags, cmd.IsSet) {
@@ -303,9 +303,9 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 
 		// History configuration
 		&cli.IntFlag{
-			Name:  "maxhistory",
-			Usage: "Maximum messages to keep in history (0 = unlimited)",
-			Value: 0,
+			Name:  "maxcontext",
+			Usage: "Maximum tokens to keep in history (0 = unlimited)",
+			Value: 100000,
 		},
 
 		// Output configuration
