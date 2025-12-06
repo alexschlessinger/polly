@@ -13,9 +13,8 @@ import (
 
 // ShellTool wraps external commands/scripts as tools
 type ShellTool struct {
-	Command   string
-	Namespace string // Namespace prefix for the tool
-	schema    *jsonschema.Schema
+	Command string
+	schema  *jsonschema.Schema
 }
 
 // NewShellTool creates a new shell tool from a command
@@ -45,7 +44,7 @@ func (s *ShellTool) GetSchema() *jsonschema.Schema {
 	}
 	
 	// Create a copy to avoid modifying the original
-	schema := &jsonschema.Schema{
+	return &jsonschema.Schema{
 		Title:                s.schema.Title,
 		Description:          s.schema.Description,
 		Type:                 s.schema.Type,
@@ -53,21 +52,11 @@ func (s *ShellTool) GetSchema() *jsonschema.Schema {
 		Required:             s.schema.Required,
 		AdditionalProperties: s.schema.AdditionalProperties,
 	}
-	
-	// Add namespace to title if present
-	if s.Namespace != "" && schema.Title != "" {
-		schema.Title = fmt.Sprintf("%s__%s", s.Namespace, schema.Title)
-	}
-	
-	return schema
 }
 
-// GetName returns the namespaced name of the tool
+// GetName returns the name of the tool
 func (s *ShellTool) GetName() string {
 	if s.schema != nil && s.schema.Title != "" {
-		if s.Namespace != "" {
-			return fmt.Sprintf("%s__%s", s.Namespace, s.schema.Title)
-		}
 		return s.schema.Title
 	}
 	return ""

@@ -10,6 +10,18 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
+// LoadResult contains information about tools that were loaded
+type LoadResult struct {
+	Type    string         // "native", "shell", "mcp"
+	Servers []ServerResult // For MCP, one per server loaded; for shell/native, single entry
+}
+
+// ServerResult contains information about tools loaded from a single source
+type ServerResult struct {
+	Name      string   // Server/tool name (e.g., "git", "filesystem", "datetime")
+	ToolNames []string // Fully namespaced tool names loaded
+}
+
 // NamespacedTool wraps a tool to provide a namespaced schema
 type NamespacedTool struct {
 	Tool
@@ -187,21 +199,72 @@ func (r *ToolRegistry) GetSchemas() []*jsonschema.Schema {
 }
 
 // LoadMCPServer connects to an MCP server and registers its tools with namespace
-func (r *ToolRegistry) LoadMCPServer(serverSpec string) error {
-	// Create client
-	client, err := NewMCPClient(serverSpec)
+// For multi-server configs (mcpServers format), loads ALL servers
+func (r *ToolRegistry) LoadMCPServer(serverSpec string) (LoadResult, error) {
+	jsonFile, serverName := ParseServerSpec(serverSpec)
+
+	// Load config file
+	configs, err := LoadMCPConfigFile(jsonFile)
 	if err != nil {
-		return err
+		return LoadResult{}, err
 	}
 
-	// Extract namespace from file path
-	namespace := extractNamespace(serverSpec)
+	result := LoadResult{Type: "mcp"}
+
+	// If specific server requested, only load that one
+	if serverName != "" {
+		config, ok := configs[serverName]
+		if !ok {
+			var available []string
+			for name := range configs {
+				available = append(available, name)
+			}
+			return LoadResult{}, fmt.Errorf("server %q not found in config (available: %v)", serverName, available)
+		}
+		toolNames, err := r.loadSingleMCPServer(jsonFile, serverName, &config)
+		if err != nil {
+			return LoadResult{}, err
+		}
+		result.Servers = append(result.Servers, ServerResult{
+			Name:      serverName,
+			ToolNames: toolNames,
+		})
+		return result, nil
+	}
+
+	// Load all servers from config
+	for name, config := range configs {
+		cfg := config // avoid loop variable capture
+		toolNames, err := r.loadSingleMCPServer(jsonFile, name, &cfg)
+		if err != nil {
+			return LoadResult{}, fmt.Errorf("server %s: %w", name, err)
+		}
+		result.Servers = append(result.Servers, ServerResult{
+			Name:      name,
+			ToolNames: toolNames,
+		})
+	}
+
+	return result, nil
+}
+
+// loadSingleMCPServer loads a single server and registers its tools
+// Returns the list of registered tool names
+func (r *ToolRegistry) loadSingleMCPServer(jsonFile, serverName string, config *MCPConfig) ([]string, error) {
+	client, err := NewMCPClientFromConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build the server spec for persistence
+	serverSpec := fmt.Sprintf("%s#%s", jsonFile, serverName)
+	client.serverSpec = serverSpec
 
 	// Get tools
 	tools, err := client.ListTools()
 	if err != nil {
 		client.Close()
-		return err
+		return nil, err
 	}
 
 	// Register tools
@@ -212,8 +275,13 @@ func (r *ToolRegistry) LoadMCPServer(serverSpec string) error {
 	for _, tool := range tools {
 		schema := tool.GetSchema()
 		if schema != nil && schema.Title != "" {
-			// Create namespaced name
-			namespacedName := fmt.Sprintf("%s__%s", namespace, schema.Title)
+			// Create namespaced name using server name
+			namespacedName := fmt.Sprintf("%s__%s", serverName, schema.Title)
+
+			// Set source on the tool for persistence
+			if mcpTool, ok := tool.(*MCPTool); ok {
+				mcpTool.Source = serverSpec
+			}
 
 			// Wrap the tool to provide namespaced schema
 			wrappedTool := &NamespacedTool{
@@ -230,7 +298,7 @@ func (r *ToolRegistry) LoadMCPServer(serverSpec string) error {
 	// Track which tools came from this server
 	r.serverTools[serverSpec] = toolNames
 
-	return nil
+	return toolNames, nil
 }
 
 // UnloadMCPServer removes all tools from a server and closes it
@@ -269,16 +337,16 @@ func (r *ToolRegistry) UnloadMCPServer(serverSpec string) error {
 }
 
 // LoadShellTool loads a single shell tool from a file path with namespace
-func (r *ToolRegistry) LoadShellTool(path string) error {
+func (r *ToolRegistry) LoadShellTool(path string) (LoadResult, error) {
 	shellTool, err := NewShellTool(path)
 	if err != nil {
-		return fmt.Errorf("failed to load shell tool %s: %w", path, err)
+		return LoadResult{}, fmt.Errorf("failed to load shell tool %s: %w", path, err)
 	}
 
 	// Get the tool's schema to find its name
 	schema := shellTool.GetSchema()
 	if schema == nil || schema.Title == "" {
-		return fmt.Errorf("shell tool %s has no name in schema", path)
+		return LoadResult{}, fmt.Errorf("shell tool %s has no name in schema", path)
 	}
 
 	// Extract namespace from script filename
@@ -299,11 +367,17 @@ func (r *ToolRegistry) LoadShellTool(path string) error {
 	r.tools[namespacedName] = wrappedTool
 	log.Printf("registered shell tool: %s", namespacedName)
 
-	return nil
+	return LoadResult{
+		Type: "shell",
+		Servers: []ServerResult{{
+			Name:      namespace,
+			ToolNames: []string{namespacedName},
+		}},
+	}, nil
 }
 
 // LoadToolAuto attempts to load a tool, auto-detecting if it's native, shell tool, or MCP server
-func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (toolType string, err error) {
+func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (LoadResult, error) {
 	// First check if it's a registered native tool
 	r.mu.RLock()
 	factory, isNative := r.nativeTools[pathOrServer]
@@ -312,29 +386,35 @@ func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (toolType string, err e
 	if isNative {
 		tool := factory()
 		r.Register(tool)
-		return "native", nil
+		return LoadResult{
+			Type: "native",
+			Servers: []ServerResult{{
+				Name:      "native",
+				ToolNames: []string{pathOrServer},
+			}},
+		}, nil
 	}
 
 	// Try as shell tool
-	shellErr := r.LoadShellTool(pathOrServer)
+	shellResult, shellErr := r.LoadShellTool(pathOrServer)
 	if shellErr == nil {
-		return "shell", nil
+		return shellResult, nil
 	}
 
 	// If shell tool failed, try as MCP server
-	mcpErr := r.LoadMCPServer(pathOrServer)
+	mcpResult, mcpErr := r.LoadMCPServer(pathOrServer)
 	if mcpErr == nil {
-		return "mcp", nil
+		return mcpResult, nil
 	}
 
 	// All failed, return combined error
-	return "", fmt.Errorf("'%s' not a native tool, failed as shell (%v) or MCP (%v)", pathOrServer, shellErr, mcpErr)
+	return LoadResult{}, fmt.Errorf("'%s' not a native tool, failed as shell (%v) or MCP (%v)", pathOrServer, shellErr, mcpErr)
 }
 
 // LoadMCPServers batch loads multiple servers
 func (r *ToolRegistry) LoadMCPServers(serverSpecs []string) error {
 	for _, spec := range serverSpecs {
-		if err := r.LoadMCPServer(spec); err != nil {
+		if _, err := r.LoadMCPServer(spec); err != nil {
 			return fmt.Errorf("failed to load MCP server %s: %w", spec, err)
 		}
 	}
@@ -361,16 +441,44 @@ func (r *ToolRegistry) GetActiveToolLoaders() []ToolLoaderInfo {
 }
 
 
-// LoadMCPServerWithFilter connects to an MCP server and only registers specified tools with namespace
+// LoadMCPServerWithFilter connects to an MCP server and only registers specified tools
+// serverSpec format: "path/to/config.json#servername"
 func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools []string) error {
-	// Create client
-	client, err := NewMCPClient(serverSpec)
+	jsonFile, serverName := ParseServerSpec(serverSpec)
+
+	// Load config file
+	configs, err := LoadMCPConfigFile(jsonFile)
 	if err != nil {
 		return err
 	}
 
-	// Extract namespace from file path
-	namespace := extractNamespace(serverSpec)
+	// Find the right config
+	var config MCPConfig
+	var namespace string
+
+	if serverName != "" {
+		cfg, ok := configs[serverName]
+		if !ok {
+			return fmt.Errorf("server %q not found in config", serverName)
+		}
+		config = cfg
+		namespace = serverName
+	} else if len(configs) == 1 {
+		for name, cfg := range configs {
+			config = cfg
+			namespace = name
+			break
+		}
+	} else {
+		return fmt.Errorf("config has multiple servers, need specific server in spec")
+	}
+
+	// Create client
+	client, err := NewMCPClientFromConfig(&config)
+	if err != nil {
+		return err
+	}
+	client.serverSpec = serverSpec
 
 	// Get all tools from server
 	tools, err := client.ListTools()
@@ -404,6 +512,11 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 			if allowed[schema.Title] {
 				// Create namespaced name
 				namespacedName := fmt.Sprintf("%s__%s", namespace, schema.Title)
+
+				// Set source on the tool for persistence
+				if mcpTool, ok := tool.(*MCPTool); ok {
+					mcpTool.Source = serverSpec
+				}
 
 				// Wrap the tool to provide namespaced schema
 				wrappedTool := &NamespacedTool{
@@ -458,10 +571,15 @@ func (r *ToolRegistry) Close() error {
 	return nil
 }
 
-// extractNamespace extracts a namespace from a file path
+// extractNamespace extracts a namespace from a server spec
 // e.g., "/path/to/filesystem.json" -> "filesystem"
-func extractNamespace(filePath string) string {
-	base := filepath.Base(filePath)
+// e.g., "/path/to/mcp.json#myserver" -> "myserver"
+func extractNamespace(serverSpec string) string {
+	jsonFile, serverName := ParseServerSpec(serverSpec)
+	if serverName != "" {
+		return serverName
+	}
+	base := filepath.Base(jsonFile)
 	// Remove extension
 	namespace := strings.TrimSuffix(base, filepath.Ext(base))
 	return namespace

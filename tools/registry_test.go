@@ -176,11 +176,11 @@ func TestNamespacedToolFiltering(t *testing.T) {
 		expected string
 	}{
 		{"perp__perplexity_search", "perplexity_search"},
-		{"test__tool_name", "tool_name"}, 
+		{"test__tool_name", "tool_name"},
 		{"no_namespace", "no_namespace"},
 		{"multiple__under__scores", "under__scores"},
 	}
-	
+
 	for _, tc := range testCases {
 		var result string
 		if idx := strings.Index(tc.input, "__"); idx != -1 {
@@ -188,7 +188,7 @@ func TestNamespacedToolFiltering(t *testing.T) {
 		} else {
 			result = tc.input
 		}
-		
+
 		if result != tc.expected {
 			t.Errorf("For input %q, expected %q but got %q", tc.input, tc.expected, result)
 		}

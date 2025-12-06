@@ -33,7 +33,7 @@ func loadTools(loaderInfos []tools.ToolLoaderInfo) (*tools.ToolRegistry, error) 
 	
 	// Load shell tools
 	for path := range shellTools {
-		if err := registry.LoadShellTool(path); err != nil {
+		if _, err := registry.LoadShellTool(path); err != nil {
 			return nil, fmt.Errorf("failed to load shell tool %s: %w", path, err)
 		}
 	}

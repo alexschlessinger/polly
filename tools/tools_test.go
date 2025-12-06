@@ -19,16 +19,47 @@ func checkUvxAvailable(t *testing.T) {
 	}
 }
 
+// createMCPTestConfig creates a temporary MCP config file for testing
+func createMCPTestConfig(t *testing.T, serverName, command string, args []string) string {
+	t.Helper()
+
+	config := MCPServersConfig{
+		MCPServers: map[string]MCPConfig{
+			serverName: {
+				Command: command,
+				Args:    args,
+			},
+		},
+	}
+
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal test config: %v", err)
+	}
+
+	// Create temp file
+	f, err := os.CreateTemp(t.TempDir(), "mcp-test-*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp config file: %v", err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write(data); err != nil {
+		t.Fatalf("Failed to write temp config: %v", err)
+	}
+
+	return f.Name()
+}
+
 func TestMCPClient(t *testing.T) {
 	checkUvxAvailable(t)
 
-	// Start the MCP server using uvx
-	serverCmd := "uvx mcp-server-time"
+	// Create MCP server config file
+	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(serverCmd)
+	client, err := NewMCPClient(configPath)
 	if err != nil {
-		// If uvx is not available or server can't start, skip the test
-		t.Skipf("Could not start MCP server (is uvx available?): %v", err)
+		t.Skipf("Could not start MCP server: %v", err)
 	}
 	defer client.Close()
 
@@ -64,10 +95,10 @@ func TestMCPToolExecution(t *testing.T) {
 	checkUvxAvailable(t)
 	ctx := context.Background()
 
-	// Start the MCP server
-	serverCmd := "uvx mcp-server-time"
+	// Create MCP server config file
+	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(serverCmd)
+	client, err := NewMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -121,10 +152,10 @@ func TestMCPToolExecution(t *testing.T) {
 func TestMCPToolSchema(t *testing.T) {
 	checkUvxAvailable(t)
 
-	// Start the MCP server
-	serverCmd := "uvx mcp-server-time"
+	// Create MCP server config file
+	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(serverCmd)
+	client, err := NewMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -177,14 +208,14 @@ func TestMCPClientEmptyCommand(t *testing.T) {
 	}
 }
 
-func TestMCPToolFilterArguments(t *testing.T) {
+func TestMCPToolNoargsFiltering(t *testing.T) {
 	checkUvxAvailable(t)
 	ctx := context.Background()
 
-	// Start the MCP server
-	serverCmd := "uvx mcp-server-time"
+	// Create MCP server config file
+	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(serverCmd)
+	client, err := NewMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -203,22 +234,22 @@ func TestMCPToolFilterArguments(t *testing.T) {
 		t.Fatal("No tools available")
 	}
 
-	// Test that extra arguments are filtered out
 	tool := tools[0]
 
-	// Pass extra arguments that shouldn't be in the schema
+	// Test that __noargs placeholder (injected for OpenAI compatibility) is removed.
+	// The __noargs key is added in llm/openai.go for no-arg tools because
+	// OpenAI requires at least one property in function schemas.
 	args := map[string]any{
-		"extra_arg_1": "should be filtered",
-		"extra_arg_2": 123,
-		"extra_arg_3": true,
+		"__noargs": "should be filtered out",
+		"timezone": "America/New_York", // Valid arg for mcp-server-time
 	}
 
-	// This should not fail due to extra arguments
-	// The Execute method should filter them out
+	// Execute should succeed - __noargs is removed, valid args pass through
 	_, err = tool.Execute(ctx, args)
 	// We don't check the error because the tool might still fail for other reasons
-	// The important thing is that it doesn't fail due to unexpected arguments
-	t.Logf("Execution with extra args completed (error ok): %v", err)
+	// (network issues, invalid timezone format, etc.)
+	// The important thing is that __noargs doesn't cause issues
+	t.Logf("Execution with __noargs completed (error ok): %v", err)
 }
 
 func createTestScript(t *testing.T, dir string) string {
