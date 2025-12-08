@@ -2,12 +2,13 @@ package tools
 
 import (
 	"fmt"
-	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"go.uber.org/zap"
 )
 
 // LoadResult contains information about tools that were loaded
@@ -98,7 +99,7 @@ func (r *ToolRegistry) Register(tool Tool) {
 	}
 
 	if name != "" {
-		log.Printf("registered tool: %s", name)
+		zap.S().Debugf("registered tool: %s", name)
 		r.tools[name] = tool
 	}
 }
@@ -109,7 +110,7 @@ func (r *ToolRegistry) RegisterNative(name string, factory func() Tool) {
 	defer r.mu.Unlock()
 
 	r.nativeTools[name] = factory
-	log.Printf("registered native tool factory: %s", name)
+	zap.S().Debugf("registered native tool factory: %s", name)
 }
 
 // Get retrieves a tool by name
@@ -138,7 +139,7 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 	// Remove from registry
 	delete(r.tools, namespacedName)
 	delete(r.toolClients, namespacedName)
-	log.Printf("removed tool: %s", namespacedName)
+	zap.S().Debugf("removed tool: %s", namespacedName)
 
 	// Clean up MCP-specific tracking
 	if client != nil {
@@ -168,7 +169,7 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 			}
 		}
 		if !stillInUse {
-			log.Printf("closing MCP client (no remaining tools)")
+			zap.S().Debug("closing MCP client (no remaining tools)")
 			client.Close()
 		}
 	}
@@ -291,7 +292,7 @@ func (r *ToolRegistry) loadSingleMCPServer(jsonFile, serverName string, config *
 			r.tools[namespacedName] = wrappedTool
 			r.toolClients[namespacedName] = client
 			toolNames = append(toolNames, namespacedName)
-			log.Printf("registered MCP tool: %s", namespacedName)
+			zap.S().Debugf("registered MCP tool: %s", namespacedName)
 		}
 	}
 
@@ -321,13 +322,13 @@ func (r *ToolRegistry) UnloadMCPServer(serverSpec string) error {
 	for _, name := range toolNames {
 		delete(r.tools, name)
 		delete(r.toolClients, name)
-		log.Printf("removed MCP tool: %s", name)
+		zap.S().Debugf("removed MCP tool: %s", name)
 	}
 
 	// Close client
 	if client != nil {
 		client.Close()
-		log.Printf("closed MCP server: %s", GetMCPDisplayName(serverSpec))
+		zap.S().Debugf("closed MCP server: %s", GetMCPDisplayName(serverSpec))
 	}
 
 	// Clean up tracking
@@ -365,7 +366,7 @@ func (r *ToolRegistry) LoadShellTool(path string) (LoadResult, error) {
 	defer r.mu.Unlock()
 
 	r.tools[namespacedName] = wrappedTool
-	log.Printf("registered shell tool: %s", namespacedName)
+	zap.S().Debugf("registered shell tool: %s", namespacedName)
 
 	return LoadResult{
 		Type: "shell",
@@ -395,20 +396,38 @@ func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (LoadResult, error) {
 		}, nil
 	}
 
-	// Try as shell tool
+	// Check if file exists
+	info, err := os.Stat(pathOrServer)
+	if os.IsNotExist(err) {
+		return LoadResult{}, fmt.Errorf("file not found: %s", pathOrServer)
+	}
+	if err != nil {
+		return LoadResult{}, fmt.Errorf("cannot access %s: %v", pathOrServer, err)
+	}
+
+	// Determine type based on extension and try appropriate loader
+	isJSON := strings.HasSuffix(strings.ToLower(pathOrServer), ".json")
+
+	if isJSON {
+		// Try MCP for JSON files
+		mcpResult, mcpErr := r.LoadMCPServer(pathOrServer)
+		if mcpErr == nil {
+			return mcpResult, nil
+		}
+		return LoadResult{}, mcpErr
+	}
+
+	// For non-JSON, try as shell tool
+	// Check if executable
+	if info.Mode()&0111 == 0 {
+		return LoadResult{}, fmt.Errorf("%s is not executable (for shell tools, run: chmod +x %s)", pathOrServer, pathOrServer)
+	}
+
 	shellResult, shellErr := r.LoadShellTool(pathOrServer)
 	if shellErr == nil {
 		return shellResult, nil
 	}
-
-	// If shell tool failed, try as MCP server
-	mcpResult, mcpErr := r.LoadMCPServer(pathOrServer)
-	if mcpErr == nil {
-		return mcpResult, nil
-	}
-
-	// All failed, return combined error
-	return LoadResult{}, fmt.Errorf("'%s' not a native tool, failed as shell (%v) or MCP (%v)", pathOrServer, shellErr, mcpErr)
+	return LoadResult{}, shellErr
 }
 
 // LoadMCPServers batch loads multiple servers
@@ -526,7 +545,7 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 				r.tools[namespacedName] = wrappedTool
 				r.toolClients[namespacedName] = client
 				toolNames = append(toolNames, namespacedName)
-				log.Printf("registered MCP tool: %s", namespacedName)
+				zap.S().Debugf("registered MCP tool: %s", namespacedName)
 			}
 		}
 	}

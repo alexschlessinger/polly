@@ -84,65 +84,6 @@ polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 ./polly -p "uppercase this: hello" --tool ./uppercase.sh
 ./polly -p "create news.txt with today's news" --tool perp.json --tool filesystem.json
 ```
-## Interactive Mode
-Launch interactive mode by running `polly` without any prompt:
-
-```bash
-# Start interactive mode
-polly
-
-# Start with a specific context
-polly -c project
-
-# Resume last context
-polly --last
-```
-![Interactive Mode Screenshot](.assets/interactive.png)
-### Interactive Commands
-
-| Command | Description |
-|---------|-------------|
-| `/exit`, `/quit`, `/q` | Exit interactive mode |
-| `/clear`, `/cls` | Clear the screen |
-| `/reset` | Reset conversation history |
-| `/model <name>` | Switch to a different model |
-| `/temp <0.0-2.0>` | Set temperature |
-| `/maxtokens <n>` | Set max tokens |
-| `/maxhistory <n>` | Set max history messages (0 for unlimited) |
-| `/ttl <duration>` | Set context TTL (e.g., 24h, 7d) |
-| `/think <level>` | Set thinking effort (off/low/medium/high) |
-| `/tooltimeout <duration>` | Set tool execution timeout |
-| `/tools` | Manage tools (list/add/remove/reload/mcp) |
-| `/history`, `/h` | Show full conversation history |
-| `/save <file>` | Save conversation to file |
-| `/context`, `/c` | Show current context |
-| `/system <prompt>` | Update system prompt |
-| `/debug` | Toggle debug mode |
-| `/help`, `/?` | Show help message |
-
-## Configuration
-
-### Environment Variables
-
-#### API Keys
-| Variable | Purpose |
-|----------|---------|
-| `POLLYTOOL_ANTHROPICKEY` | Claude |
-| `POLLYTOOL_OPENAIKEY` | GPT |
-| `POLLYTOOL_GEMINIKEY` | Gemini |
-| `POLLYTOOL_OLLAMAKEY` | Ollama bearer (optional) |
-
-#### Config
-| Variable | Meaning | Default |
-|----------|---------|---------|
-| `POLLYTOOL_MODEL` | Default model | `anthropic/claude-sonnet-4-20250514` |
-| `POLLYTOOL_TEMP` | Creative wiggle | `1.0` |
-| `POLLYTOOL_MAXTOKENS` | Output cap | `4096` |
-| `POLLYTOOL_TIMEOUT` | Give up after | `2m` |
-| `POLLYTOOL_SYSTEM` | System prompt | `Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.` |
-| `POLLYTOOL_BASEURL` | Custom endpoint | (unset) |
-| `POLLYTOOL_CONTEXT` | Default context | (unset) |
-
 ### Model Selection
 
 The default model is `anthropic/claude-sonnet-4-20250514`. Override with `-m` flag:
@@ -231,30 +172,6 @@ polly -t filesystem.json -p "list files in /tmp"
 polly -t ./mytool.sh -t perplexity.json -p "search and process"
 ```
 
-### Interactive Tool Management
-
-In interactive mode, use `/tools` commands to manage tools dynamically:
-
-```bash
-# List all loaded tools
-/tools
-/tools list
-
-# Add a new tool (auto-detects type)
-/tools add ./uppercase.sh
-/tools add perplexity.json
-
-# Remove a specific tool
-/tools remove uppercase__to_uppercase
-
-# Remove tools with wildcard patterns
-/tools remove filesystem__*  # Remove all filesystem
-/tools remove perplexity__*  # Remove all perplexity
-/tools remove uppercase__*   # Remove uppercase 
-
-# Reload all tools
-/tools reload
-```
 
 ### Tool Namespacing
 
@@ -460,6 +377,10 @@ polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hel
 - Supports any model available in Ollama
 - Use --baseurl for remote instances
 - Schema support hit and miss, depends on model
+
+## See Also
+
+- [Soulshack](https://github.com/pkdindustries/soulshack) - An IRC chatbot that uses Polly for LLM features.
 
 ## License
 

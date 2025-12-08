@@ -5,14 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/log"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -39,9 +38,7 @@ type commandRunner struct {
 func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, error) {
 	config := parseConfig(cmd)
 
-	if !config.Debug {
-		log.SetOutput(io.Discard)
-	}
+	log.InitLogger(config.Debug)
 
 	contextID := config.ContextID
 	if config.UseLastContext {
@@ -198,13 +195,12 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		return err
 	}
 
-	// If no prompt provided and no stdin, switch to interactive mode
-	// Don't set up signal handling for interactive mode - let readline handle it
+	// If no prompt provided and no stdin, return error as interactive mode is disabled
 	if prompt == "" {
-		return runInteractiveMode(ctx, config, session, agent, toolRegistry, contextID)
+		return fmt.Errorf("no prompt provided. Please provide a prompt via -p flag or stdin")
 	}
 
-	// Only set up signal handling for non-interactive mode
+	// Set up signal handling
 	ctx, cancel := setupSignalHandling(ctx)
 	defer cancel()
 

@@ -2,9 +2,9 @@ package messages
 
 import (
 	"encoding/json"
-	"log"
 
 	"github.com/alexschlessinger/pollytool/tools"
+	"go.uber.org/zap"
 )
 
 // StreamProcessor is a simple processor for message streams from LLMs
@@ -77,7 +77,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 							ToolCall: tc,
 						}
 					} else {
-						log.Printf("processMessagesToEvents: failed to parse tool call arguments: %v", err)
+						zap.S().Debugf("processMessagesToEvents: failed to parse tool call arguments: %v", err)
 					}
 				}
 			}

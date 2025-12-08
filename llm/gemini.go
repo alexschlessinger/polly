@@ -5,10 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
+	"go.uber.org/zap"
 	"google.golang.org/genai"
 )
 
@@ -37,7 +37,7 @@ type GeminiClient struct {
 
 func NewGeminiClient(apiKey string) *GeminiClient {
 	if apiKey == "" {
-		log.Println("gemini: warning - no API key configured")
+		zap.S().Debug("gemini: warning - no API key configured")
 	}
 
 	return &GeminiClient{
@@ -66,7 +66,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			Backend: genai.BackendGeminiAPI,
 		})
 		if err != nil {
-			log.Printf("gemini: failed to create client: %v", err)
+			zap.S().Debugf("gemini: failed to create client: %v", err)
 			messageChannel <- messages.ChatMessage{
 				Role:    messages.MessageRoleAssistant,
 				Content: "Error creating Gemini client: " + err.Error(),
@@ -114,7 +114,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			}
 		}
 
-		log.Printf("gemini: sending streaming request to model %s", req.Model)
+		zap.S().Debugf("gemini: sending streaming request to model %s", req.Model)
 
 		// Send message and get streaming response
 		iter := client.Models.GenerateContentStream(ctx, req.Model, contents, config)
@@ -128,7 +128,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 
 		for resp, err := range iter {
 			if err != nil {
-				log.Printf("gemini: stream error: %v", err)
+				zap.S().Debugf("gemini: stream error: %v", err)
 				messageChannel <- messages.ChatMessage{
 					Role:    messages.MessageRoleAssistant,
 					Content: "Error: " + err.Error(),
@@ -215,10 +215,10 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			for i, tc := range toolCalls {
 				toolInfo[i] = tc.Name
 			}
-			log.Printf("gemini: completed, content: '%s' (%d chars), tool calls: %d %v",
+			zap.S().Debugf("gemini: completed, content: '%s' (%d chars), tool calls: %d %v",
 				contentPreview, len(responseContent), len(toolCalls), toolInfo)
 		} else {
-			log.Printf("gemini: completed, content: '%s' (%d chars)",
+			zap.S().Debugf("gemini: completed, content: '%s' (%d chars)",
 				contentPreview, len(responseContent))
 		}
 	}()

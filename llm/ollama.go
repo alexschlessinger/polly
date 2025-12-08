@@ -5,13 +5,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	ollamaapi "github.com/ollama/ollama/api"
+	"go.uber.org/zap"
 )
 
 type OllamaClient struct {
@@ -33,7 +33,7 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 	// Parse URL and create client
 	u, err := url.Parse(baseURL)
 	if err != nil {
-		log.Printf("ollama: invalid URL %s: %v", baseURL, err)
+		zap.S().Debugf("ollama: invalid URL %s: %v", baseURL, err)
 		// Fall back to default if parsing fails
 		u, _ = url.Parse("http://localhost:11434")
 	}
@@ -47,7 +47,7 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 				Base:  http.DefaultTransport,
 			},
 		}
-		log.Printf("ollama: using Bearer token authentication")
+		zap.S().Debug("ollama: using Bearer token authentication")
 	}
 
 	client := ollamaapi.NewClient(u, httpClient)
@@ -122,7 +122,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			chatReq.Tools = ollamaTools
 		}
 
-		log.Printf("ollama: chat request to model %s", req.Model)
+		zap.S().Debugf("ollama: chat request to model %s", req.Model)
 
 		// Execute chat - the callback is called for each streamed chunk.
 		// Stream content chunks as they arrive and capture any tool calls the model returns.
@@ -174,7 +174,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		})
 
 		if err != nil {
-			log.Printf("ollama: chat error: %v", err)
+			zap.S().Debugf("ollama: chat error: %v", err)
 			messageChannel <- messages.ChatMessage{
 				Role:    messages.MessageRoleAssistant,
 				Content: "Error: " + err.Error(),
@@ -216,10 +216,10 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			for i, tc := range toolCalls {
 				toolInfo[i] = tc.Name
 			}
-			log.Printf("ollama: completed, content: '%s' (%d chars), tool calls: %d %v",
+			zap.S().Debugf("ollama: completed, content: '%s' (%d chars), tool calls: %d %v",
 				contentPreview, len(cleanContent), len(toolCalls), toolInfo)
 		} else {
-			log.Printf("ollama: completed, content: '%s' (%d chars)",
+			zap.S().Debugf("ollama: completed, content: '%s' (%d chars)",
 				contentPreview, len(cleanContent))
 		}
 	}()

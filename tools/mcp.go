@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 )
 
 // MCPTool wraps an MCP tool to implement the Tool interface
@@ -101,7 +101,7 @@ func (m *MCPTool) GetSource() string {
 // Execute runs the MCP tool with the given arguments
 func (m *MCPTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	// Log the tool execution for debugging
-	log.Printf("%s %v", m.tool.Name, args)
+	zap.S().Debugf("%s %v", m.tool.Name, args)
 
 	// Ensure args is not nil (some tools expect empty object instead of nil)
 	if args == nil {
@@ -338,7 +338,7 @@ func NewMCPClient(serverSpec string) (*MCPClient, error) {
 		return nil, fmt.Errorf("config has multiple servers, specify one: %s#<servername> (available: %v)", jsonFile, available)
 	}
 
-	log.Printf("loading MCP config %s (server: %s)", jsonFile, namespace)
+	zap.S().Debugf("loading MCP config %s (server: %s)", jsonFile, namespace)
 	client, err := NewMCPClientFromConfig(&config)
 	if err != nil {
 		return nil, err
@@ -380,7 +380,7 @@ func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
 		if config.URL == "" {
 			return nil, fmt.Errorf("SSE transport requires a URL")
 		}
-		log.Printf("connecting to MCP server via SSE: %s", config.URL)
+		zap.S().Debugf("connecting to MCP server via SSE: %s", config.URL)
 		transport = &mcp.SSEClientTransport{
 			Endpoint:   config.URL,
 			HTTPClient: httpClientWithTimeout(config.Headers, timeout),
@@ -390,7 +390,7 @@ func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
 		if config.URL == "" {
 			return nil, fmt.Errorf("streamable transport requires a URL")
 		}
-		log.Printf("connecting to MCP server via streamable HTTP: %s", config.URL)
+		zap.S().Debugf("connecting to MCP server via streamable HTTP: %s", config.URL)
 		transport = &mcp.StreamableClientTransport{
 			Endpoint:   config.URL,
 			HTTPClient: httpClientWithTimeout(config.Headers, timeout),
@@ -416,9 +416,9 @@ func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
 		}
 
 		// Set up stderr to see any error output from the server
-		cmd.Stderr = log.Writer()
+		cmd.Stderr = os.Stderr
 
-		log.Printf("connecting to MCP server: %s %v", config.Command, config.Args)
+		zap.S().Debugf("connecting to MCP server: %s %v", config.Command, config.Args)
 		transport = &mcp.CommandTransport{Command: cmd}
 
 	default:
@@ -448,7 +448,7 @@ func (c *MCPClient) ListTools() ([]Tool, error) {
 			return nil, fmt.Errorf("error listing tools: %v", err)
 		}
 		if tool != nil {
-			log.Printf("loaded MCP tool: %s - %s", tool.Name, tool.Description)
+			zap.S().Debugf("loaded MCP tool: %s - %s", tool.Name, tool.Description)
 			mcpTool := NewMCPTool(c.session, tool)
 			// Set the source to the server spec so it can be persisted
 			mcpTool.Source = c.serverSpec

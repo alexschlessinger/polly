@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"maps"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	ai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
+	"go.uber.org/zap"
 )
 
 var _ LLM = (*OpenAIClient)(nil)
@@ -63,7 +63,7 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 	timeout, cancel := context.WithTimeout(ctx, req.Timeout)
 	defer close(respChannel)
 	defer cancel()
-	log.Println("completionTask: start")
+	zap.S().Debug("completionTask: start")
 
 	// Convert agnostic messages to OpenAI format
 	openAIMessages := MessagesToOpenAI(req.Messages)
@@ -100,7 +100,7 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 	// Use streaming API
 	stream, err := o.Client.CreateChatCompletionStream(timeout, ccr)
 	if err != nil {
-		log.Println("completionTask: failed to create chat completion stream:", err)
+		zap.S().Debugf("completionTask: failed to create chat completion stream: %v", err)
 		respChannel <- messages.ChatMessage{
 			Role:    messages.MessageRoleAssistant,
 			Content: "failed to create chat completion stream: " + err.Error(),
@@ -123,7 +123,7 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 				// Stream complete
 				break
 			}
-			log.Printf("openai: stream error: %v", err)
+			zap.S().Debugf("openai: stream error: %v", err)
 			respChannel <- messages.ChatMessage{
 				Role:    messages.MessageRoleAssistant,
 				Content: "Error during streaming: " + err.Error(),
@@ -234,12 +234,12 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 		for i, tc := range toolCalls {
 			toolInfo[i] = fmt.Sprintf("%s(%s)", tc.Name, tc.Arguments)
 		}
-		log.Printf("openai: completed, content: '%s' (%d chars), tool calls: %d %v",
+		zap.S().Debugf("openai: completed, content: '%s' (%d chars), tool calls: %d %v",
 			contentPreview, len(fullContent), len(toolCalls), toolInfo)
 	} else if len(fullContent) == 0 {
-		log.Printf("openai: completed, empty response (no content or tool calls)")
+		zap.S().Debug("openai: completed, empty response (no content or tool calls)")
 	} else {
-		log.Printf("openai: completed, content: '%s' (%d chars)",
+		zap.S().Debugf("openai: completed, content: '%s' (%d chars)",
 			contentPreview, len(fullContent))
 	}
 	return nil

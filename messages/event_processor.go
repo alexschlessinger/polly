@@ -4,7 +4,7 @@ import "context"
 
 // EventProcessor defines an interface for processing stream events.
 // Implementations can handle events differently based on the context
-// (e.g., CLI mode vs interactive mode).
+// (e.g., CLI mode vs other consumers).
 type EventProcessor interface {
 	// OnReasoning is called when reasoning/thinking content is received
 	OnReasoning(content string, totalLength int)

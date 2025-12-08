@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -12,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
+	"go.uber.org/zap"
 )
 
 // Metadata keys
@@ -68,7 +68,7 @@ type AnthropicClient struct {
 
 func NewAnthropicClient(apiKey string) *AnthropicClient {
 	if apiKey == "" {
-		log.Println("anthropic: warning - no API key configured")
+		zap.S().Debug("anthropic: warning - no API key configured")
 	}
 
 	client := anthropic.NewClient(
@@ -166,7 +166,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 		// Build request parameters
 		params := a.buildRequestParams(req)
 
-		log.Printf("anthropic: sending streaming request to model %s", req.Model)
+		zap.S().Debugf("anthropic: sending streaming request to model %s", req.Model)
 
 		// Use streaming API
 		stream := a.client.Messages.NewStreaming(ctx, params)
@@ -325,7 +325,7 @@ func (a *AnthropicClient) processContentBlockStop(state *streamState) {
 
 // handleStreamError handles stream errors
 func (a *AnthropicClient) handleStreamError(err error, messageChannel chan messages.ChatMessage) {
-	log.Printf("anthropic: stream error: %v", err)
+	zap.S().Debugf("anthropic: stream error: %v", err)
 	messageChannel <- messages.ChatMessage{
 		Role:    messages.MessageRoleAssistant,
 		Content: "Error: " + err.Error(),
@@ -389,10 +389,10 @@ func (a *AnthropicClient) logResponseDetails(responseContent string, toolCalls [
 		for i, tc := range toolCalls {
 			toolInfo[i] = tc.Name
 		}
-		log.Printf("anthropic: completed, content: '%s' (%d chars), tool calls: %d %v",
+		zap.S().Debugf("anthropic: completed, content: '%s' (%d chars), tool calls: %d %v",
 			contentPreview, len(responseContent), len(toolCalls), toolInfo)
 	} else {
-		log.Printf("anthropic: completed, content: '%s' (%d chars)",
+		zap.S().Debugf("anthropic: completed, content: '%s' (%d chars)",
 			contentPreview, len(responseContent))
 	}
 }

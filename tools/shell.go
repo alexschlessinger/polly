@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os/exec"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"go.uber.org/zap"
 )
 
 // ShellTool wraps external commands/scripts as tools
@@ -90,7 +90,7 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 		if s.schema != nil && s.schema.Title != "" {
 			name = s.schema.Title
 		}
-		log.Printf("shelltool %s: usr=%v sys=%v rc=%d",
+		zap.S().Debugf("shelltool %s: usr=%v sys=%v rc=%d",
 			name,
 			cmd.ProcessState.UserTime(),
 			cmd.ProcessState.SystemTime(),
@@ -120,10 +120,10 @@ func LoadShellTools(paths []string) ([]Tool, error) {
 	var tools []Tool
 
 	for _, path := range paths {
-		log.Printf("loading tool from: %s", path)
+		zap.S().Debugf("loading tool from: %s", path)
 		shellTool, err := NewShellTool(path)
 		if err != nil {
-			log.Printf("failed to load tool %s: %v", path, err)
+			zap.S().Debugf("failed to load tool %s: %v", path, err)
 			// Continue loading other tools even if one fails
 			continue
 		}
