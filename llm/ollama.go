@@ -57,7 +57,6 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 	}
 }
 
-
 // ChatCompletionStream implements the event-based streaming interface
 func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	messageChannel := make(chan messages.ChatMessage, 10)
@@ -98,9 +97,9 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 				"num_predict": req.MaxTokens,
 			},
 		}
-		
+
 		// Enable thinking for supported models if requested
-		if req.ThinkingEffort != "off" {
+		if req.ThinkingEffort.IsEnabled() {
 			// Ollama's ThinkValue can be bool or string
 			// For now, we'll use boolean true for any effort level
 			// Some models may support string values like "low", "medium", "high"

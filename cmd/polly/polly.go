@@ -310,6 +310,9 @@ func getPrompt(config *Config) (string, error) {
 
 // createCompletionRequest builds an LLM completion request from config
 func createCompletionRequest(config *Config, session sessions.Session, registry *tools.ToolRegistry, schema *llm.Schema) *llm.CompletionRequest {
+	// Parse thinking effort - already validated at config parsing time
+	thinkingEffort, _ := llm.ParseThinkingEffort(config.ThinkingEffort)
+
 	return &llm.CompletionRequest{
 		BaseURL:        config.BaseURL,
 		Timeout:        config.Timeout,
@@ -319,7 +322,7 @@ func createCompletionRequest(config *Config, session sessions.Session, registry 
 		Messages:       session.GetHistory(),
 		Tools:          registry.All(),
 		ResponseSchema: schema,
-		ThinkingEffort: config.ThinkingEffort,
+		ThinkingEffort: thinkingEffort,
 	}
 }
 
@@ -361,7 +364,7 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			}
 			// Tools are now handled directly with session metadata in initializeSession
 			// Apply stored thinking effort if not provided via command line
-			if !cmd.IsSet("think") && !cmd.IsSet("think-medium") && !cmd.IsSet("think-hard") && contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
+			if !cmd.IsSet("thinkingeffort") && contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
 				config.Settings.ThinkingEffort = contextInfo.ThinkingEffort
 			}
 			// Apply stored tool timeout if not provided via command line
@@ -413,7 +416,7 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 		update.SystemPrompt = config.Settings.SystemPrompt
 	}
 	// Tools are already handled in initializeSession, no need to update here
-	if cmd.IsSet("think") || cmd.IsSet("think-medium") || cmd.IsSet("think-hard") {
+	if cmd.IsSet("thinkingeffort") {
 		update.ThinkingEffort = config.Settings.ThinkingEffort
 	}
 

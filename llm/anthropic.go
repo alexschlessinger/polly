@@ -81,14 +81,14 @@ func NewAnthropicClient(apiKey string) *AnthropicClient {
 }
 
 // getThinkingConfig returns the thinking configuration based on effort level
-func (a *AnthropicClient) getThinkingConfig(effort string) anthropic.ThinkingConfigParamUnion {
+func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort) anthropic.ThinkingConfigParamUnion {
 	var budget int64
 	switch effort {
-	case "low":
+	case ThinkingLow:
 		budget = thinkingBudgetLow
-	case "medium":
+	case ThinkingMedium:
 		budget = thinkingBudgetMedium
-	case "high":
+	case ThinkingHigh:
 		budget = thinkingBudgetHigh
 	default:
 		budget = thinkingBudgetMedium
@@ -110,7 +110,7 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 	}
 
 	// Enable thinking for supported models if requested
-	if req.ThinkingEffort != "off" {
+	if req.ThinkingEffort.IsEnabled() {
 		params.Thinking = a.getThinkingConfig(req.ThinkingEffort)
 	}
 

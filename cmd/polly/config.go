@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/urfave/cli/v3"
 )
 
@@ -29,25 +30,14 @@ func getCommand() *cli.Command {
 
 // parseConfig extracts configuration from command-line flags
 func parseConfig(cmd *cli.Command) *Config {
-	// Handle thinking effort - only one can be set due to MutuallyExclusiveFlags
-	thinkingEffort := "off"
-	switch {
-	case cmd.Bool("think-hard"):
-		thinkingEffort = "high"
-	case cmd.Bool("think-medium"):
-		thinkingEffort = "medium"
-	case cmd.Bool("think"):
-		thinkingEffort = "low"
-	}
-
 	config := &Config{
 		Settings: Settings{
 			// Model configuration
-			Model:          cmd.String("model"),
-			Temperature:    cmd.Float64("temp"),
-			MaxTokens:      cmd.Int("maxtokens"),
+			Model:            cmd.String("model"),
+			Temperature:      cmd.Float64("temp"),
+			MaxTokens:        cmd.Int("maxtokens"),
 			MaxHistoryTokens: cmd.Int("maxcontext"),
-			ThinkingEffort: thinkingEffort,
+			ThinkingEffort:   cmd.String("thinkingeffort"),
 			SystemPrompt:   cmd.String("system"),
 			ToolTimeout:    cmd.Duration("tooltimeout"),
 		},
@@ -112,8 +102,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			disallowedFlags := []string{
 				"context", "last", "prompt", "file", "model", "temp",
 				"maxtokens", "timeout", "tool", "mcp", "system", "schema",
-				"tooltimeout", "maxcontext", "think", "think-medium",
-				"think-hard", "baseurl",
+				"tooltimeout", "maxcontext", "thinkingeffort", "baseurl",
 			}
 			if slices.ContainsFunc(disallowedFlags, cmd.IsSet) {
 				return fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
@@ -166,21 +155,16 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		Usage: "Add stdin content to context without making an API call",
 	}
 
-	// Define thinking flags
-	thinkFlag := &cli.BoolFlag{
-		Name:  "think",
-		Usage: "Enable thinking/reasoning (low effort)",
-		Value: false,
-	}
-	thinkMediumFlag := &cli.BoolFlag{
-		Name:  "think-medium",
-		Usage: "Enable thinking/reasoning (medium effort)",
-		Value: false,
-	}
-	thinkHardFlag := &cli.BoolFlag{
-		Name:  "think-hard",
-		Usage: "Enable thinking/reasoning (high effort)",
-		Value: false,
+	// Define thinking effort flag
+	thinkingEffortFlag := &cli.StringFlag{
+		Name:    "thinkingeffort",
+		Usage:   "Thinking/reasoning effort level: off, low, medium, high",
+		Value:   "off",
+		Sources: cli.EnvVars("POLLYTOOL_THINKINGEFFORT"),
+		Validator: func(v string) error {
+			_, err := llm.ParseThinkingEffort(v)
+			return err
+		},
 	}
 
 	flags := []cli.Flag{
@@ -231,9 +215,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Value:   2 * time.Minute,
 			Sources: cli.EnvVars("POLLYTOOL_TIMEOUT"),
 		},
-		thinkFlag,
-		thinkMediumFlag,
-		thinkHardFlag,
+		thinkingEffortFlag,
 
 		// API configuration
 		&cli.StringFlag{
@@ -332,14 +314,6 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 				{listFlag},
 				{deleteFlag},
 				{addFlag},
-			},
-		},
-		{
-			// Thinking modes are mutually exclusive
-			Flags: [][]cli.Flag{
-				{thinkFlag},
-				{thinkMediumFlag},
-				{thinkHardFlag},
 			},
 		},
 	}
