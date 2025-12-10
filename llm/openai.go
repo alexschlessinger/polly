@@ -63,7 +63,7 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 	timeout, cancel := context.WithTimeout(ctx, req.Timeout)
 	defer close(respChannel)
 	defer cancel()
-	zap.S().Debug("completionTask: start")
+	zap.S().Debugw("completion_started")
 
 	// Convert agnostic messages to OpenAI format
 	openAIMessages := MessagesToOpenAI(req.Messages)
@@ -100,7 +100,7 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 	// Use streaming API
 	stream, err := o.Client.CreateChatCompletionStream(timeout, ccr)
 	if err != nil {
-		zap.S().Debugf("completionTask: failed to create chat completion stream: %v", err)
+		zap.S().Debugw("stream_creation_failed", "error", err)
 		respChannel <- messages.ChatMessage{
 			Role:    messages.MessageRoleAssistant,
 			Content: "failed to create chat completion stream: " + err.Error(),
@@ -123,7 +123,7 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 				// Stream complete
 				break
 			}
-			zap.S().Debugf("openai: stream error: %v", err)
+			zap.S().Debugw("openai_stream_error", "error", err)
 			respChannel <- messages.ChatMessage{
 				Role:    messages.MessageRoleAssistant,
 				Content: "Error during streaming: " + err.Error(),
@@ -234,13 +234,17 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 		for i, tc := range toolCalls {
 			toolInfo[i] = fmt.Sprintf("%s(%s)", tc.Name, tc.Arguments)
 		}
-		zap.S().Debugf("openai: completed, content: '%s' (%d chars), tool calls: %d %v",
-			contentPreview, len(fullContent), len(toolCalls), toolInfo)
+		zap.S().Debugw("openai_completion_finished",
+			"content_preview", contentPreview,
+			"content_length", len(fullContent),
+			"tool_call_count", len(toolCalls),
+			"tool_info", toolInfo)
 	} else if len(fullContent) == 0 {
-		zap.S().Debug("openai: completed, empty response (no content or tool calls)")
+		zap.S().Debugw("openai_completion_empty")
 	} else {
-		zap.S().Debugf("openai: completed, content: '%s' (%d chars)",
-			contentPreview, len(fullContent))
+		zap.S().Debugw("openai_completion_finished",
+			"content_preview", contentPreview,
+			"content_length", len(fullContent))
 	}
 	return nil
 }

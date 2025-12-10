@@ -77,7 +77,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 							ToolCall: tc,
 						}
 					} else {
-						zap.S().Debugf("processMessagesToEvents: failed to parse tool call arguments: %v", err)
+						zap.S().Debugw("tool_call_parse_failed", "error", err)
 					}
 				}
 			}

@@ -135,7 +135,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 
 		case messages.StopReasonMaxTokens:
 			// Response truncated - warn and return
-			zap.S().Debug("agent: response truncated due to max_tokens")
+			zap.S().Debugw("response_truncated", "reason", "max_tokens")
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
 			}

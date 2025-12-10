@@ -37,7 +37,7 @@ type GeminiClient struct {
 
 func NewGeminiClient(apiKey string) *GeminiClient {
 	if apiKey == "" {
-		zap.S().Debug("gemini: warning - no API key configured")
+		zap.S().Debugw("gemini_missing_api_key")
 	}
 
 	return &GeminiClient{
@@ -66,7 +66,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			Backend: genai.BackendGeminiAPI,
 		})
 		if err != nil {
-			zap.S().Debugf("gemini: failed to create client: %v", err)
+			zap.S().Debugw("gemini_client_creation_failed", "error", err)
 			messageChannel <- messages.ChatMessage{
 				Role:    messages.MessageRoleAssistant,
 				Content: "Error creating Gemini client: " + err.Error(),
@@ -114,7 +114,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			}
 		}
 
-		zap.S().Debugf("gemini: sending streaming request to model %s", req.Model)
+		zap.S().Debugw("gemini_streaming_started", "model", req.Model)
 
 		// Send message and get streaming response
 		iter := client.Models.GenerateContentStream(ctx, req.Model, contents, config)
@@ -128,7 +128,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 
 		for resp, err := range iter {
 			if err != nil {
-				zap.S().Debugf("gemini: stream error: %v", err)
+				zap.S().Debugw("gemini_stream_error", "error", err)
 				messageChannel <- messages.ChatMessage{
 					Role:    messages.MessageRoleAssistant,
 					Content: "Error: " + err.Error(),
@@ -215,11 +215,15 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			for i, tc := range toolCalls {
 				toolInfo[i] = tc.Name
 			}
-			zap.S().Debugf("gemini: completed, content: '%s' (%d chars), tool calls: %d %v",
-				contentPreview, len(responseContent), len(toolCalls), toolInfo)
+			zap.S().Debugw("gemini_completion_finished",
+				"content_preview", contentPreview,
+				"content_length", len(responseContent),
+				"tool_call_count", len(toolCalls),
+				"tool_info", toolInfo)
 		} else {
-			zap.S().Debugf("gemini: completed, content: '%s' (%d chars)",
-				contentPreview, len(responseContent))
+			zap.S().Debugw("gemini_completion_finished",
+				"content_preview", contentPreview,
+				"content_length", len(responseContent))
 		}
 	}()
 

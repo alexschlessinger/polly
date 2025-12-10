@@ -33,7 +33,7 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 	// Parse URL and create client
 	u, err := url.Parse(baseURL)
 	if err != nil {
-		zap.S().Debugf("ollama: invalid URL %s: %v", baseURL, err)
+		zap.S().Debugw("ollama_invalid_url", "url", baseURL, "error", err)
 		// Fall back to default if parsing fails
 		u, _ = url.Parse("http://localhost:11434")
 	}
@@ -47,7 +47,7 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 				Base:  http.DefaultTransport,
 			},
 		}
-		zap.S().Debug("ollama: using Bearer token authentication")
+		zap.S().Debugw("ollama_bearer_auth_enabled")
 	}
 
 	client := ollamaapi.NewClient(u, httpClient)
@@ -121,7 +121,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			chatReq.Tools = ollamaTools
 		}
 
-		zap.S().Debugf("ollama: chat request to model %s", req.Model)
+		zap.S().Debugw("ollama_chat_started", "model", req.Model)
 
 		// Execute chat - the callback is called for each streamed chunk.
 		// Stream content chunks as they arrive and capture any tool calls the model returns.
@@ -173,7 +173,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		})
 
 		if err != nil {
-			zap.S().Debugf("ollama: chat error: %v", err)
+			zap.S().Debugw("ollama_chat_error", "error", err)
 			messageChannel <- messages.ChatMessage{
 				Role:    messages.MessageRoleAssistant,
 				Content: "Error: " + err.Error(),
@@ -215,11 +215,15 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			for i, tc := range toolCalls {
 				toolInfo[i] = tc.Name
 			}
-			zap.S().Debugf("ollama: completed, content: '%s' (%d chars), tool calls: %d %v",
-				contentPreview, len(cleanContent), len(toolCalls), toolInfo)
+			zap.S().Debugw("ollama_completion_finished",
+				"content_preview", contentPreview,
+				"content_length", len(cleanContent),
+				"tool_call_count", len(toolCalls),
+				"tool_info", toolInfo)
 		} else {
-			zap.S().Debugf("ollama: completed, content: '%s' (%d chars)",
-				contentPreview, len(cleanContent))
+			zap.S().Debugw("ollama_completion_finished",
+				"content_preview", contentPreview,
+				"content_length", len(cleanContent))
 		}
 	}()
 

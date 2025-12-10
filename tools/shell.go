@@ -90,11 +90,11 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 		if s.schema != nil && s.schema.Title != "" {
 			name = s.schema.Title
 		}
-		zap.S().Debugf("shelltool %s: usr=%v sys=%v rc=%d",
-			name,
-			cmd.ProcessState.UserTime(),
-			cmd.ProcessState.SystemTime(),
-			cmd.ProcessState.ExitCode())
+		zap.S().Debugw("shell_tool_completed",
+			"tool_name", name,
+			"user_time", cmd.ProcessState.UserTime(),
+			"system_time", cmd.ProcessState.SystemTime(),
+			"exit_code", cmd.ProcessState.ExitCode())
 	}
 
 	result := strings.TrimSpace(string(output))
@@ -120,10 +120,10 @@ func LoadShellTools(paths []string) ([]Tool, error) {
 	var tools []Tool
 
 	for _, path := range paths {
-		zap.S().Debugf("loading tool from: %s", path)
+		zap.S().Debugw("tool_loading", "path", path)
 		shellTool, err := NewShellTool(path)
 		if err != nil {
-			zap.S().Debugf("failed to load tool %s: %v", path, err)
+			zap.S().Debugw("tool_load_failed", "path", path, "error", err)
 			// Continue loading other tools even if one fails
 			continue
 		}

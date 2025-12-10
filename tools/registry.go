@@ -99,7 +99,7 @@ func (r *ToolRegistry) Register(tool Tool) {
 	}
 
 	if name != "" {
-		zap.S().Debugf("registered tool: %s", name)
+		zap.S().Debugw("tool_registered", "tool_name", name)
 		r.tools[name] = tool
 	}
 }
@@ -110,7 +110,7 @@ func (r *ToolRegistry) RegisterNative(name string, factory func() Tool) {
 	defer r.mu.Unlock()
 
 	r.nativeTools[name] = factory
-	zap.S().Debugf("registered native tool factory: %s", name)
+	zap.S().Debugw("native_factory_registered", "factory_name", name)
 }
 
 // Get retrieves a tool by name
@@ -139,7 +139,7 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 	// Remove from registry
 	delete(r.tools, namespacedName)
 	delete(r.toolClients, namespacedName)
-	zap.S().Debugf("removed tool: %s", namespacedName)
+	zap.S().Debugw("tool_removed", "tool_name", namespacedName)
 
 	// Clean up MCP-specific tracking
 	if client != nil {
@@ -169,7 +169,7 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 			}
 		}
 		if !stillInUse {
-			zap.S().Debug("closing MCP client (no remaining tools)")
+			zap.S().Debugw("mcp_client_closed", "reason", "no_remaining_tools")
 			client.Close()
 		}
 	}
@@ -292,7 +292,7 @@ func (r *ToolRegistry) loadSingleMCPServer(jsonFile, serverName string, config *
 			r.tools[namespacedName] = wrappedTool
 			r.toolClients[namespacedName] = client
 			toolNames = append(toolNames, namespacedName)
-			zap.S().Debugf("registered MCP tool: %s", namespacedName)
+			zap.S().Debugw("mcp_tool_registered", "tool_name", namespacedName)
 		}
 	}
 
@@ -322,13 +322,13 @@ func (r *ToolRegistry) UnloadMCPServer(serverSpec string) error {
 	for _, name := range toolNames {
 		delete(r.tools, name)
 		delete(r.toolClients, name)
-		zap.S().Debugf("removed MCP tool: %s", name)
+		zap.S().Debugw("mcp_tool_removed", "tool_name", name)
 	}
 
 	// Close client
 	if client != nil {
 		client.Close()
-		zap.S().Debugf("closed MCP server: %s", GetMCPDisplayName(serverSpec))
+		zap.S().Debugw("mcp_server_closed", "server_name", GetMCPDisplayName(serverSpec))
 	}
 
 	// Clean up tracking
@@ -366,7 +366,7 @@ func (r *ToolRegistry) LoadShellTool(path string) (LoadResult, error) {
 	defer r.mu.Unlock()
 
 	r.tools[namespacedName] = wrappedTool
-	zap.S().Debugf("registered shell tool: %s", namespacedName)
+	zap.S().Debugw("shell_tool_registered", "tool_name", namespacedName)
 
 	return LoadResult{
 		Type: "shell",
@@ -545,7 +545,7 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 				r.tools[namespacedName] = wrappedTool
 				r.toolClients[namespacedName] = client
 				toolNames = append(toolNames, namespacedName)
-				zap.S().Debugf("registered MCP tool: %s", namespacedName)
+				zap.S().Debugw("mcp_tool_registered", "tool_name", namespacedName)
 			}
 		}
 	}

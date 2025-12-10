@@ -68,7 +68,7 @@ type AnthropicClient struct {
 
 func NewAnthropicClient(apiKey string) *AnthropicClient {
 	if apiKey == "" {
-		zap.S().Debug("anthropic: warning - no API key configured")
+		zap.S().Debugw("anthropic_missing_api_key")
 	}
 
 	client := anthropic.NewClient(
@@ -166,7 +166,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 		// Build request parameters
 		params := a.buildRequestParams(req)
 
-		zap.S().Debugf("anthropic: sending streaming request to model %s", req.Model)
+		zap.S().Debugw("anthropic_streaming_started", "model", req.Model)
 
 		// Use streaming API
 		stream := a.client.Messages.NewStreaming(ctx, params)
@@ -325,7 +325,7 @@ func (a *AnthropicClient) processContentBlockStop(state *streamState) {
 
 // handleStreamError handles stream errors
 func (a *AnthropicClient) handleStreamError(err error, messageChannel chan messages.ChatMessage) {
-	zap.S().Debugf("anthropic: stream error: %v", err)
+	zap.S().Debugw("anthropic_stream_error", "error", err)
 	messageChannel <- messages.ChatMessage{
 		Role:    messages.MessageRoleAssistant,
 		Content: "Error: " + err.Error(),
@@ -389,11 +389,15 @@ func (a *AnthropicClient) logResponseDetails(responseContent string, toolCalls [
 		for i, tc := range toolCalls {
 			toolInfo[i] = tc.Name
 		}
-		zap.S().Debugf("anthropic: completed, content: '%s' (%d chars), tool calls: %d %v",
-			contentPreview, len(responseContent), len(toolCalls), toolInfo)
+		zap.S().Debugw("anthropic_completion_finished",
+			"content_preview", contentPreview,
+			"content_length", len(responseContent),
+			"tool_call_count", len(toolCalls),
+			"tool_info", toolInfo)
 	} else {
-		zap.S().Debugf("anthropic: completed, content: '%s' (%d chars)",
-			contentPreview, len(responseContent))
+		zap.S().Debugw("anthropic_completion_finished",
+			"content_preview", contentPreview,
+			"content_length", len(responseContent))
 	}
 }
 
