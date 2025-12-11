@@ -50,7 +50,7 @@ func (a *AnthropicAdapter) ProcessChunk(chunk any, state streaming.StreamStateIn
 	case string(constant.ValueOf[constant.MessageDelta]()):
 		// Message delta contains stop_reason and usage stats
 		msgDelta := event.AsMessageDelta()
-		state.SetStopReason(mapAnthropicStopReason(msgDelta.Delta.StopReason))
+		state.SetStopReason(MapAnthropicStopReason(msgDelta.Delta.StopReason))
 		state.SetTokenUsage(state.GetInputTokens(), int(msgDelta.Usage.OutputTokens))
 
 	case string(constant.ValueOf[constant.MessageStop]()):
@@ -169,8 +169,17 @@ func (a *AnthropicAdapter) HandleToolCall(toolData any, state streaming.StreamSt
 	return nil
 }
 
-// mapAnthropicStopReason converts Anthropic's stop reason to our normalized type
-func mapAnthropicStopReason(sr anthropic.StopReason) messages.StopReason {
+// AddThinkingBlock adds a thinking block for non-streaming responses
+func (a *AnthropicAdapter) AddThinkingBlock(thinking, signature string) {
+	a.thinkingBlocks = append(a.thinkingBlocks, map[string]any{
+		"type":      "thinking",
+		"thinking":  thinking,
+		"signature": signature,
+	})
+}
+
+// MapAnthropicStopReason converts Anthropic's stop reason to our normalized type
+func MapAnthropicStopReason(sr anthropic.StopReason) messages.StopReason {
 	switch sr {
 	case "end_turn":
 		return messages.StopReasonEndTurn

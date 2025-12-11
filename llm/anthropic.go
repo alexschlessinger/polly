@@ -144,13 +144,17 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 		// Build request parameters
 		params := a.buildRequestParams(req)
 
-		zap.S().Debugw("anthropic_streaming_started", "model", req.Model)
+		isStreaming := req.Stream == nil || *req.Stream
+		zap.S().Debugw("anthropic_completion_started", "model", req.Model, "stream", isStreaming)
 
-		// Use streaming API
-		stream := a.client.Messages.NewStreaming(ctx, params)
-
-		// Process the stream
-		a.processStream(stream, req, streamCore)
+		if isStreaming {
+			// Use streaming API
+			stream := a.client.Messages.NewStreaming(ctx, params)
+			a.processStream(stream, req, streamCore)
+		} else {
+			// Use non-streaming API
+			a.processNonStreaming(ctx, params, req, streamCore, adapter)
+		}
 	}()
 
 	return processor.ProcessMessagesToEvents(messageChannel)
@@ -198,6 +202,49 @@ func (a *AnthropicClient) processStream(stream *ssestream.Stream[anthropic.Messa
 	}
 
 	// Send final message with accumulated state
+	streamCore.Complete()
+}
+
+// processNonStreaming handles non-streaming API requests
+func (a *AnthropicClient) processNonStreaming(ctx context.Context, params anthropic.MessageNewParams, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *adapters.AnthropicAdapter) {
+	resp, err := a.client.Messages.New(ctx, params)
+	if err != nil {
+		zap.S().Debugw("anthropic_completion_failed", "error", err)
+		streamCore.EmitError(err)
+		return
+	}
+
+	// Process content blocks
+	for _, block := range resp.Content {
+		switch block.Type {
+		case "thinking":
+			streamCore.EmitReasoning(block.Thinking)
+			// Add thinking block to adapter for metadata preservation
+			adapter.AddThinkingBlock(block.Thinking, block.Signature)
+		case "text":
+			streamCore.EmitContent(block.Text)
+		case "tool_use":
+			streamCore.GetState().AddToolCall(messages.ChatMessageToolCall{
+				ID:        block.ID,
+				Name:      block.Name,
+				Arguments: string(block.Input),
+			})
+		}
+	}
+
+	// Set stop reason
+	streamCore.SetStopReason(adapters.MapAnthropicStopReason(resp.StopReason))
+
+	// Set token usage
+	streamCore.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
+
+	// Handle structured output if needed
+	if req.ResponseSchema != nil {
+		if streamCore.HandleStructuredOutput(structuredOutputToolName) {
+			return
+		}
+	}
+
 	streamCore.Complete()
 }
 

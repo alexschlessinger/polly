@@ -97,43 +97,80 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			}
 		}
 
-		zap.S().Debugw("gemini_streaming_started", "model", req.Model)
+		isStreaming := req.Stream == nil || *req.Stream
+		zap.S().Debugw("gemini_completion_started", "model", req.Model, "stream", isStreaming)
 
-		// Send message and get streaming response
-		iter := client.Models.GenerateContentStream(ctx, req.Model, contents, config)
+		if isStreaming {
+			g.handleStreamingCompletion(ctx, client, req, contents, config, streamCore)
+		} else {
+			g.handleNonStreamingCompletion(ctx, client, req, contents, config, streamCore)
+		}
+	}()
 
-		// Process the stream using StreamingCore
-		for resp, err := range iter {
-			if err != nil {
-				zap.S().Debugw("gemini_stream_error", "error", err)
-				streamCore.EmitError(err)
-				return
-			}
+	return processor.ProcessMessagesToEvents(messageChannel)
+}
 
-			// Process the chunk through the adapter
-			if err := streamCore.ProcessChunk(resp); err != nil {
-				streamCore.EmitError(err)
-				return
-			}
+// handleStreamingCompletion handles streaming Gemini API requests
+func (g *GeminiClient) handleStreamingCompletion(ctx context.Context, client *genai.Client, req *CompletionRequest, contents []*genai.Content, config *genai.GenerateContentConfig, streamCore *streaming.StreamingCore) {
+	iter := client.Models.GenerateContentStream(ctx, req.Model, contents, config)
 
-			// Emit content from each part
-			if len(resp.Candidates) > 0 {
-				candidate := resp.Candidates[0]
-				if candidate.Content != nil {
-					for _, part := range candidate.Content.Parts {
-						if part.Text != "" {
-							streamCore.EmitContent(part.Text)
-						}
+	for resp, err := range iter {
+		if err != nil {
+			zap.S().Debugw("gemini_stream_error", "error", err)
+			streamCore.EmitError(err)
+			return
+		}
+
+		// Process the chunk through the adapter
+		if err := streamCore.ProcessChunk(resp); err != nil {
+			streamCore.EmitError(err)
+			return
+		}
+
+		// Emit content from each part
+		if len(resp.Candidates) > 0 {
+			candidate := resp.Candidates[0]
+			if candidate.Content != nil {
+				for _, part := range candidate.Content.Parts {
+					if part.Text != "" {
+						streamCore.EmitContent(part.Text)
 					}
 				}
 			}
 		}
+	}
 
-		// Send the final message with accumulated state
-		streamCore.Complete()
-	}()
+	streamCore.Complete()
+}
 
-	return processor.ProcessMessagesToEvents(messageChannel)
+// handleNonStreamingCompletion handles non-streaming Gemini API requests
+func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, client *genai.Client, req *CompletionRequest, contents []*genai.Content, config *genai.GenerateContentConfig, streamCore *streaming.StreamingCore) {
+	resp, err := client.Models.GenerateContent(ctx, req.Model, contents, config)
+	if err != nil {
+		zap.S().Debugw("gemini_completion_failed", "error", err)
+		streamCore.EmitError(err)
+		return
+	}
+
+	// Process through adapter (handles tool calls, tokens, stop reason)
+	if err := streamCore.ProcessChunk(resp); err != nil {
+		streamCore.EmitError(err)
+		return
+	}
+
+	// Emit content from response
+	if len(resp.Candidates) > 0 {
+		candidate := resp.Candidates[0]
+		if candidate.Content != nil {
+			for _, part := range candidate.Content.Parts {
+				if part.Text != "" {
+					streamCore.EmitContent(part.Text)
+				}
+			}
+		}
+	}
+
+	streamCore.Complete()
 }
 
 // ConvertToGeminiSchema converts a generic JSON schema to Gemini's format

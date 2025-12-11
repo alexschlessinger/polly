@@ -57,7 +57,9 @@ func (o OpenAIClient) ChatCompletionStream(ctx context.Context, req *CompletionR
 func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	timeout, cancel := context.WithTimeout(ctx, req.Timeout)
 	defer cancel()
-	zap.S().Debugw("openai_completion_started")
+
+	isStreaming := req.Stream == nil || *req.Stream
+	zap.S().Debugw("openai_completion_started", "stream", isStreaming)
 
 	// Convert agnostic messages to OpenAI format
 	openAIMessages := MessagesToOpenAI(req.Messages)
@@ -67,10 +69,6 @@ func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionReque
 		Model:               req.Model,
 		Messages:            openAIMessages,
 		Temperature:         req.Temperature,
-		Stream:              true, // Enable streaming
-		StreamOptions: &ai.StreamOptions{
-			IncludeUsage: true, // Include token usage in final chunk
-		},
 	}
 
 	// Enable reasoning for supported models (o1, DeepSeek, etc.)
@@ -91,8 +89,19 @@ func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionReque
 		ccr.Tools = openaiTools
 	}
 
-	// Use streaming API
-	stream, err := o.Client.CreateChatCompletionStream(timeout, ccr)
+	if isStreaming {
+		return o.handleStreamingCompletion(timeout, ccr, streamCore)
+	}
+	return o.handleNonStreamingCompletion(timeout, ccr, streamCore)
+}
+
+func (o OpenAIClient) handleStreamingCompletion(ctx context.Context, ccr ai.ChatCompletionRequest, streamCore *streaming.StreamingCore) error {
+	ccr.Stream = true
+	ccr.StreamOptions = &ai.StreamOptions{
+		IncludeUsage: true, // Include token usage in final chunk
+	}
+
+	stream, err := o.Client.CreateChatCompletionStream(ctx, ccr)
 	if err != nil {
 		zap.S().Debugw("openai_stream_creation_failed", "error", err)
 		return fmt.Errorf("failed to create chat completion stream: %w", err)
@@ -135,7 +144,60 @@ func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionReque
 
 	// Send the final message with accumulated state
 	streamCore.Complete()
+	return nil
+}
 
+func (o OpenAIClient) handleNonStreamingCompletion(ctx context.Context, ccr ai.ChatCompletionRequest, streamCore *streaming.StreamingCore) error {
+	ccr.Stream = false
+
+	resp, err := o.Client.CreateChatCompletion(ctx, ccr)
+	if err != nil {
+		zap.S().Debugw("openai_completion_failed", "error", err)
+		return fmt.Errorf("failed to create chat completion: %w", err)
+	}
+
+	// Process single response
+	if len(resp.Choices) > 0 {
+		choice := resp.Choices[0]
+		msg := choice.Message
+
+		// Emit reasoning if present
+		if msg.ReasoningContent != "" {
+			streamCore.EmitReasoning(msg.ReasoningContent)
+		}
+
+		// Emit content
+		if msg.Content != "" {
+			streamCore.EmitContent(msg.Content)
+		}
+
+		// Handle tool calls - add them to state
+		for _, tc := range msg.ToolCalls {
+			streamCore.GetState().AddToolCall(messages.ChatMessageToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			})
+		}
+
+		// Set stop reason based on finish reason
+		switch choice.FinishReason {
+		case ai.FinishReasonToolCalls, ai.FinishReasonFunctionCall:
+			streamCore.SetStopReason(messages.StopReasonToolUse)
+		case ai.FinishReasonLength:
+			streamCore.SetStopReason(messages.StopReasonMaxTokens)
+		case ai.FinishReasonContentFilter:
+			streamCore.SetStopReason(messages.StopReasonContentFilter)
+		default:
+			streamCore.SetStopReason(messages.StopReasonEndTurn)
+		}
+	}
+
+	// Set token usage
+	streamCore.SetTokenUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+
+	// Send the final message with accumulated state
+	streamCore.Complete()
 	return nil
 }
 
