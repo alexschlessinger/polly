@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	ollamaapi "github.com/ollama/ollama/api"
@@ -64,6 +66,10 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 	go func() {
 		defer close(messageChannel)
 
+		// Create streaming core with Ollama adapter
+		adapter := adapters.NewOllamaAdapter()
+		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
+
 		// Convert messages to Ollama format
 		ollamaMessages := MessagesToOllama(req.Messages)
 
@@ -89,9 +95,16 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		}
 
 		// Create chat request
+		// Default to non-streaming for Ollama (nil means streaming in Ollama API)
+		stream := req.Stream
+		if stream == nil {
+			streamFalse := false
+			stream = &streamFalse
+		}
 		chatReq := &ollamaapi.ChatRequest{
 			Model:    req.Model,
 			Messages: ollamaMessages,
+			Stream:   stream,
 			Options: map[string]any{
 				"temperature": req.Temperature,
 				"num_predict": req.MaxTokens,
@@ -121,110 +134,58 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			chatReq.Tools = ollamaTools
 		}
 
-		zap.S().Debugw("ollama_chat_started", "model", req.Model)
+		// For Ollama, we default to non-streaming (stream is already set above)
+		isStreaming := *stream
+		zap.S().Debugw("ollama_chat_started", "model", req.Model, "stream", isStreaming)
 
-		// Execute chat - the callback is called for each streamed chunk.
-		// Stream content chunks as they arrive and capture any tool calls the model returns.
-		var (
-			responseContent string
-			thinkingContent string
-			toolCalls       []messages.ChatMessageToolCall
-			inputTokens     int
-			outputTokens    int
-		)
+		// Track whether we've seen thinking content.
+		// Some models output content before thinking, then repeat it after.
+		// We only want to emit content that appears AFTER thinking has started.
+		var sawThinking bool
+		thinkingEnabled := req.ThinkingEffort.IsEnabled()
+
+		// Execute chat - the callback is called for each streamed chunk (or once if non-streaming).
 		err := o.client.Chat(ctx, chatReq, func(resp ollamaapi.ChatResponse) error {
-			// Capture token counts from final response
-			if resp.Done {
-				inputTokens = resp.PromptEvalCount
-				outputTokens = resp.EvalCount
+			// Process the chunk through the adapter
+			if err := streamCore.ProcessChunk(&resp); err != nil {
+				return err
 			}
-			// Stream thinking tokens as they arrive (skip final chunk which contains full content)
-			if resp.Message.Thinking != "" && !resp.Done {
-				thinkingContent += resp.Message.Thinking
-				// Send thinking update for status display
-				messageChannel <- messages.ChatMessage{
-					Role:      messages.MessageRoleAssistant,
-					Reasoning: resp.Message.Thinking,
+
+			if isStreaming {
+				// Streaming mode: emit tokens incrementally, skip final chunk which contains full content
+				if resp.Message.Thinking != "" && !resp.Done {
+					sawThinking = true
+					streamCore.EmitReasoning(resp.Message.Thinking)
+				}
+
+				// When thinking is enabled, only emit content AFTER thinking has started
+				// to avoid duplicate content (some models output content before AND after thinking)
+				if resp.Message.Content != "" && !resp.Done {
+					if !thinkingEnabled || sawThinking {
+						streamCore.EmitContent(resp.Message.Content)
+					}
+				}
+			} else {
+				// Non-streaming mode: callback is called once with complete response
+				if resp.Message.Thinking != "" {
+					streamCore.EmitReasoning(resp.Message.Thinking)
+				}
+				if resp.Message.Content != "" {
+					streamCore.EmitContent(resp.Message.Content)
 				}
 			}
-			// Stream content tokens as they arrive (skip final chunk which contains full content)
-			if resp.Message.Content != "" && !resp.Done {
-				responseContent += resp.Message.Content
-				// Send partial content for streaming
-				messageChannel <- messages.ChatMessage{
-					Role:    messages.MessageRoleAssistant,
-					Content: resp.Message.Content,
-				}
-			}
-			// Record tool calls if present on this chunk (found on the message)
-			if len(resp.Message.ToolCalls) > 0 {
-				// Reset and capture the latest set of tool calls.
-				toolCalls = toolCalls[:0]
-				for _, tc := range resp.Message.ToolCalls {
-					tcArgStr, _ := json.Marshal(tc.Function.Arguments)
-					toolCalls = append(toolCalls, messages.ChatMessageToolCall{
-						ID:        fmt.Sprintf("call_%d", len(toolCalls)),
-						Name:      tc.Function.Name,
-						Arguments: string(tcArgStr),
-					})
-				}
-			}
+
 			return nil
 		})
 
 		if err != nil {
 			zap.S().Debugw("ollama_chat_error", "error", err)
-			messageChannel <- messages.ChatMessage{
-				Role:    messages.MessageRoleAssistant,
-				Content: "Error: " + err.Error(),
-			}
+			streamCore.EmitError(err)
 			return
 		}
 
-		// Use the full response content
-		cleanContent := responseContent
-
-		// Infer stop reason (Ollama doesn't expose detailed stop reasons)
-		var stopReason messages.StopReason
-		if len(toolCalls) > 0 {
-			stopReason = messages.StopReasonToolUse
-		} else {
-			stopReason = messages.StopReasonEndTurn
-		}
-
-		// Always send a final message with stop reason (needed for agent completion detection)
-		finalMsg := messages.ChatMessage{
-			Role:       messages.MessageRoleAssistant,
-			Content:    "", // Content was already streamed, don't duplicate
-			ToolCalls:  toolCalls,
-			Reasoning:  "", // Reasoning was already streamed, don't duplicate
-			StopReason: stopReason,
-		}
-		// Store token usage
-		finalMsg.SetTokenUsage(inputTokens, outputTokens)
-		messageChannel <- finalMsg
-
-		// Log response details
-		contentPreview := cleanContent
-		if len(contentPreview) > 200 {
-			contentPreview = contentPreview[:200] + "..."
-		}
-
-		if len(toolCalls) > 0 {
-			toolInfo := make([]string, len(toolCalls))
-			for i, tc := range toolCalls {
-				toolInfo[i] = tc.Name
-			}
-			zap.S().Debugw("ollama_completion_finished",
-				"content_preview", contentPreview,
-				"content_length", len(cleanContent),
-				"tool_call_count", len(toolCalls),
-				"tool_info", toolInfo)
-		} else {
-			zap.S().Debugw("ollama_completion_finished",
-				"content_preview", contentPreview,
-				"content_length", len(cleanContent))
-		}
+		// Send the final message with accumulated state
+		streamCore.Complete()
 	}()
 
 	return processor.ProcessMessagesToEvents(messageChannel)
@@ -393,6 +354,7 @@ func MessagesToOllama(msgs []messages.ChatMessage) []ollamaapi.Message {
 		if msg.Role == messages.MessageRoleTool {
 			// Ollama expects tool responses to have "tool" role
 			ollamaMsg.Role = "tool"
+			ollamaMsg.ToolName = msg.ToolName
 		}
 
 		ollamaMessages = append(ollamaMessages, ollamaMsg)

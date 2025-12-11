@@ -33,6 +33,7 @@ type ChatMessage struct {
 	Parts      []ContentPart // Multimodal content parts
 	ToolCalls  []ChatMessageToolCall
 	ToolCallID string         // For tool response messages
+	ToolName   string         // For tool response messages - name of the tool that was executed
 	Reasoning  string         // Reasoning/thinking content from <think> blocks
 	Metadata   map[string]any // Additional metadata for the message
 	StopReason StopReason     // Why the model stopped generating (only set on final message)

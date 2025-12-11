@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -31,36 +33,8 @@ const (
 	thinkingBudgetHigh   = 16384
 )
 
-// streamState holds the state during streaming
-type streamState struct {
-	responseContent      string
-	thinkingContent      string
-	toolCalls            []messages.ChatMessageToolCall
-	thinkingBlocks       []map[string]any
-	currentBlockType     string
-	currentThinkingBlock map[string]any
-	stopReason           messages.StopReason
-	inputTokens          int
-	outputTokens         int
-}
-
-// mapAnthropicStopReason converts Anthropic's stop reason to our normalized type
-func mapAnthropicStopReason(sr anthropic.StopReason) messages.StopReason {
-	switch sr {
-	case "end_turn":
-		return messages.StopReasonEndTurn
-	case "tool_use":
-		return messages.StopReasonToolUse
-	case "max_tokens":
-		return messages.StopReasonMaxTokens
-	case "refusal":
-		return messages.StopReasonContentFilter
-	case "stop_sequence":
-		return messages.StopReasonEndTurn
-	default:
-		return messages.StopReasonEndTurn
-	}
-}
+// Removed streamState - now using common StreamState
+// Removed mapAnthropicStopReason - now in adapters/anthropic_adapter.go
 
 type AnthropicClient struct {
 	client anthropic.Client
@@ -163,6 +137,10 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 	go func() {
 		defer close(messageChannel)
 
+		// Create streaming core with Anthropic adapter
+		adapter := adapters.NewAnthropicAdapter()
+		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
+
 		// Build request parameters
 		params := a.buildRequestParams(req)
 
@@ -172,234 +150,66 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 		stream := a.client.Messages.NewStreaming(ctx, params)
 
 		// Process the stream
-		a.processStream(stream, req, messageChannel)
+		a.processStream(stream, req, streamCore)
 	}()
 
 	return processor.ProcessMessagesToEvents(messageChannel)
 }
 
 // processStream handles the main stream processing logic
-func (a *AnthropicClient) processStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion], req *CompletionRequest, messageChannel chan messages.ChatMessage) {
-	state := &streamState{}
-
+func (a *AnthropicClient) processStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion], req *CompletionRequest, streamCore *streaming.StreamingCore) {
 	for stream.Next() {
 		event := stream.Current()
-		a.processStreamEvent(event, state, messageChannel)
+
+		// Process the event through the adapter
+		if err := streamCore.ProcessChunk(event); err != nil {
+			streamCore.EmitError(err)
+			return
+		}
+
+		// Handle content and reasoning streaming
+		switch event.Type {
+		case string(constant.ValueOf[constant.ContentBlockDelta]()):
+			blockDelta := event.AsContentBlockDelta()
+
+			// Stream thinking content
+			if thinking := blockDelta.Delta.Thinking; thinking != "" {
+				streamCore.EmitReasoning(thinking)
+			}
+
+			// Stream regular content
+			if text := blockDelta.Delta.Text; text != "" {
+				streamCore.EmitContent(text)
+			}
+		}
 	}
 
 	// Check for stream error
 	if err := stream.Err(); err != nil {
-		a.handleStreamError(err, messageChannel)
+		streamCore.EmitError(err)
 		return
 	}
 
 	// Handle structured output response
-	if req.ResponseSchema != nil && len(state.toolCalls) > 0 {
-		if a.handleStructuredOutput(state.toolCalls, messageChannel) {
+	if req.ResponseSchema != nil {
+		if streamCore.HandleStructuredOutput(structuredOutputToolName) {
 			return
 		}
 	}
 
-	// Send final message with tool calls if any
-	a.sendFinalMessage(state, messageChannel)
-
-	// Log response details
-	a.logResponseDetails(state.responseContent, state.toolCalls)
+	// Send final message with accumulated state
+	streamCore.Complete()
 }
 
-// processStreamEvent processes a single stream event
-func (a *AnthropicClient) processStreamEvent(event anthropic.MessageStreamEventUnion, state *streamState, messageChannel chan messages.ChatMessage) {
-	switch event.Type {
-	case string(constant.ValueOf[constant.MessageStart]()):
-		// Message started - capture input tokens
-		msgStart := event.AsMessageStart()
-		state.inputTokens = int(msgStart.Message.Usage.InputTokens)
-	case string(constant.ValueOf[constant.ContentBlockStart]()):
-		a.processContentBlockStart(event, state)
-	case string(constant.ValueOf[constant.ContentBlockDelta]()):
-		a.processContentBlockDelta(event, state, messageChannel)
-	case string(constant.ValueOf[constant.ContentBlockStop]()):
-		a.processContentBlockStop(state)
-	case string(constant.ValueOf[constant.MessageDelta]()):
-		// Message delta contains stop_reason and usage stats
-		msgDelta := event.AsMessageDelta()
-		state.stopReason = mapAnthropicStopReason(msgDelta.Delta.StopReason)
-		state.outputTokens = int(msgDelta.Usage.OutputTokens)
-	case string(constant.ValueOf[constant.MessageStop]()):
-		// Message complete
-	}
-}
-
-// processContentBlockStart handles content block start events
-func (a *AnthropicClient) processContentBlockStart(event anthropic.MessageStreamEventUnion, state *streamState) {
-	blockStart := event.AsContentBlockStart()
-	// Marshal to JSON to inspect the type
-	b, _ := json.Marshal(blockStart.ContentBlock)
-	var block map[string]any
-	if json.Unmarshal(b, &block) == nil {
-		blockType, _ := block["type"].(string)
-		state.currentBlockType = blockType
-
-		switch blockType {
-		case string(constant.ValueOf[constant.Thinking]()):
-			// Start capturing a thinking block
-			state.currentThinkingBlock = map[string]any{
-				"type":     string(constant.ValueOf[constant.Thinking]()),
-				"thinking": "", // Will be filled by deltas
-			}
-		case string(constant.ValueOf[constant.ToolUse]()):
-			// Initialize a new tool call
-			id, _ := block["id"].(string)
-			name, _ := block["name"].(string)
-			state.toolCalls = append(state.toolCalls, messages.ChatMessageToolCall{
-				ID:        id,
-				Name:      name,
-				Arguments: "{}", // Default to empty JSON object
-			})
-		}
-	}
-}
-
-// processContentBlockDelta handles content block delta events
-func (a *AnthropicClient) processContentBlockDelta(event anthropic.MessageStreamEventUnion, state *streamState, messageChannel chan messages.ChatMessage) {
-	blockDelta := event.AsContentBlockDelta()
-
-	// Check for thinking delta
-	if thinking := blockDelta.Delta.Thinking; thinking != "" {
-		state.thinkingContent += thinking
-		// Add to current thinking block if we're capturing one
-		if state.currentThinkingBlock != nil {
-			if existingThinking, ok := state.currentThinkingBlock["thinking"].(string); ok {
-				state.currentThinkingBlock["thinking"] = existingThinking + thinking
-			} else {
-				state.currentThinkingBlock["thinking"] = thinking
-			}
-		}
-		// Stream the thinking
-		messageChannel <- messages.ChatMessage{
-			Role:      messages.MessageRoleAssistant,
-			Reasoning: thinking,
-		}
-	}
-
-	// Check for signature delta (comes after thinking content)
-	if signature := blockDelta.Delta.Signature; signature != "" {
-		if state.currentThinkingBlock != nil {
-			state.currentThinkingBlock["signature"] = signature
-		}
-	}
-
-	// Check for text delta (regular content)
-	if text := blockDelta.Delta.Text; text != "" {
-		state.responseContent += text
-		// Stream partial content
-		messageChannel <- messages.ChatMessage{
-			Role:    messages.MessageRoleAssistant,
-			Content: text,
-		}
-	}
-
-	// Check if it's tool use input delta
-	if blockDelta.Delta.PartialJSON != "" && len(state.toolCalls) > 0 {
-		// Replace or append to the last tool call's arguments
-		lastIdx := len(state.toolCalls) - 1
-		if state.toolCalls[lastIdx].Arguments == "{}" {
-			// First content, replace the default empty object
-			state.toolCalls[lastIdx].Arguments = blockDelta.Delta.PartialJSON
-		} else {
-			// Append to existing content
-			state.toolCalls[lastIdx].Arguments += blockDelta.Delta.PartialJSON
-		}
-	}
-}
-
-// processContentBlockStop handles content block stop events
-func (a *AnthropicClient) processContentBlockStop(state *streamState) {
-	if state.currentBlockType == string(constant.ValueOf[constant.Thinking]()) && state.currentThinkingBlock != nil {
-		// Save completed thinking block
-		state.thinkingBlocks = append(state.thinkingBlocks, state.currentThinkingBlock)
-		state.currentThinkingBlock = nil
-	}
-	state.currentBlockType = ""
-}
-
-// handleStreamError handles stream errors
-func (a *AnthropicClient) handleStreamError(err error, messageChannel chan messages.ChatMessage) {
-	zap.S().Debugw("anthropic_stream_error", "error", err)
-	messageChannel <- messages.ChatMessage{
-		Role:    messages.MessageRoleAssistant,
-		Content: "Error: " + err.Error(),
-	}
-}
-
-// handleStructuredOutput processes structured output responses
-func (a *AnthropicClient) handleStructuredOutput(toolCalls []messages.ChatMessageToolCall, messageChannel chan messages.ChatMessage) bool {
-	for _, tc := range toolCalls {
-		if tc.Name == structuredOutputToolName {
-			// Parse the arguments to get the data field
-			var args map[string]any
-			if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
-				if data, ok := args["data"]; ok {
-					// Return just the structured data as content
-					dataJSON, _ := json.Marshal(data)
-					messageChannel <- messages.ChatMessage{
-						Role:    messages.MessageRoleAssistant,
-						Content: string(dataJSON),
-					}
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-// sendFinalMessage sends the final message with stop reason and tool calls if any
-func (a *AnthropicClient) sendFinalMessage(state *streamState, messageChannel chan messages.ChatMessage) {
-	// Always send a final message with stop reason (needed for agent completion detection)
-	msg := messages.ChatMessage{
-		Role:       messages.MessageRoleAssistant,
-		Content:    "", // Content was already streamed, don't duplicate
-		ToolCalls:  state.toolCalls,
-		Reasoning:  "", // Reasoning was already streamed, don't duplicate
-		StopReason: state.stopReason,
-	}
-	// Initialize metadata map
-	if msg.Metadata == nil {
-		msg.Metadata = make(map[string]any)
-	}
-	// Store token usage
-	msg.SetTokenUsage(state.inputTokens, state.outputTokens)
-	// Store thinking blocks for future use
-	if len(state.thinkingBlocks) > 0 {
-		msg.Metadata[metadataKeyThinkingBlocks] = state.thinkingBlocks
-	}
-	messageChannel <- msg
-}
-
-// logResponseDetails logs the completion details for debugging
-func (a *AnthropicClient) logResponseDetails(responseContent string, toolCalls []messages.ChatMessageToolCall) {
-	contentPreview := responseContent
-	if len(contentPreview) > 200 {
-		contentPreview = contentPreview[:200] + "..."
-	}
-
-	if len(toolCalls) > 0 {
-		toolInfo := make([]string, len(toolCalls))
-		for i, tc := range toolCalls {
-			toolInfo[i] = tc.Name
-		}
-		zap.S().Debugw("anthropic_completion_finished",
-			"content_preview", contentPreview,
-			"content_length", len(responseContent),
-			"tool_call_count", len(toolCalls),
-			"tool_info", toolInfo)
-	} else {
-		zap.S().Debugw("anthropic_completion_finished",
-			"content_preview", contentPreview,
-			"content_length", len(responseContent))
-	}
-}
+// Removed old streaming helper functions - now handled by StreamingCore and AnthropicAdapter:
+// - processStreamEvent
+// - processContentBlockStart
+// - processContentBlockDelta
+// - processContentBlockStop
+// - handleStreamError
+// - handleStructuredOutput (now in StreamingCore)
+// - sendFinalMessage (now in StreamingCore)
+// - logResponseDetails (now in StreamingCore)
 
 // ConvertToAnthropicTool creates a synthetic tool for structured output with Anthropic
 func ConvertToAnthropicTool(schema *Schema) anthropic.ToolUnionParam {

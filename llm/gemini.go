@@ -6,30 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	"go.uber.org/zap"
 	"google.golang.org/genai"
 )
 
-// mapGeminiFinishReason converts Gemini's finish reason to our normalized type
-func mapGeminiFinishReason(fr genai.FinishReason) messages.StopReason {
-	switch fr {
-	case genai.FinishReasonStop:
-		return messages.StopReasonEndTurn
-	case genai.FinishReasonMaxTokens:
-		return messages.StopReasonMaxTokens
-	case genai.FinishReasonSafety, genai.FinishReasonRecitation,
-		genai.FinishReasonBlocklist, genai.FinishReasonProhibitedContent,
-		genai.FinishReasonSPII, genai.FinishReasonImageSafety,
-		genai.FinishReasonImageProhibitedContent:
-		return messages.StopReasonContentFilter
-	case genai.FinishReasonMalformedFunctionCall:
-		return messages.StopReasonError
-	default:
-		return messages.StopReasonEndTurn
-	}
-}
+// Removed mapGeminiFinishReason - now in adapters/gemini_adapter.go
 
 type GeminiClient struct {
 	apiKey string
@@ -52,11 +37,12 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 	go func() {
 		defer close(messageChannel)
 
+		// Create streaming core with Gemini adapter
+		adapter := adapters.NewGeminiAdapter()
+		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
+
 		if g.apiKey == "" {
-			messageChannel <- messages.ChatMessage{
-				Role:    messages.MessageRoleAssistant,
-				Content: "Error: Gemini API key not configured",
-			}
+			streamCore.EmitError(fmt.Errorf("Gemini API key not configured"))
 			return
 		}
 
@@ -67,10 +53,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		})
 		if err != nil {
 			zap.S().Debugw("gemini_client_creation_failed", "error", err)
-			messageChannel <- messages.ChatMessage{
-				Role:    messages.MessageRoleAssistant,
-				Content: "Error creating Gemini client: " + err.Error(),
-			}
+			streamCore.EmitError(fmt.Errorf("error creating Gemini client: %w", err))
 			return
 		}
 
@@ -119,112 +102,35 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		// Send message and get streaming response
 		iter := client.Models.GenerateContentStream(ctx, req.Model, contents, config)
 
-		// Process the stream
-		var responseContent string
-		var toolCalls []messages.ChatMessageToolCall
-		var stopReason messages.StopReason
-		var inputTokens, outputTokens int
-		signatures := make(map[string]string)
-
+		// Process the stream using StreamingCore
 		for resp, err := range iter {
 			if err != nil {
 				zap.S().Debugw("gemini_stream_error", "error", err)
-				messageChannel <- messages.ChatMessage{
-					Role:    messages.MessageRoleAssistant,
-					Content: "Error: " + err.Error(),
-				}
+				streamCore.EmitError(err)
 				return
 			}
 
-			// Capture token usage (available on each chunk, use latest values)
-			if resp.UsageMetadata != nil {
-				inputTokens = int(resp.UsageMetadata.PromptTokenCount)
-				outputTokens = int(resp.UsageMetadata.CandidatesTokenCount)
+			// Process the chunk through the adapter
+			if err := streamCore.ProcessChunk(resp); err != nil {
+				streamCore.EmitError(err)
+				return
 			}
 
-			// Process each candidate's parts
+			// Emit content from each part
 			if len(resp.Candidates) > 0 {
 				candidate := resp.Candidates[0]
-
-				// Capture finish reason when set
-				if candidate.FinishReason != "" {
-					stopReason = mapGeminiFinishReason(candidate.FinishReason)
-				}
-
 				if candidate.Content != nil {
 					for _, part := range candidate.Content.Parts {
 						if part.Text != "" {
-							text := part.Text
-							responseContent += text
-							messageChannel <- messages.ChatMessage{
-								Role:    messages.MessageRoleAssistant,
-								Content: text,
-							}
-						}
-						if part.FunctionCall != nil {
-							// Accumulate tool calls
-							argsJSON, _ := json.Marshal(part.FunctionCall.Args)
-							toolCallID := fmt.Sprintf("gemini-%d", len(toolCalls))
-							toolCalls = append(toolCalls, messages.ChatMessageToolCall{
-								ID:        toolCallID,
-								Name:      part.FunctionCall.Name,
-								Arguments: string(argsJSON),
-							})
-
-							if len(part.ThoughtSignature) > 0 {
-								signatures[toolCallID] = base64.StdEncoding.EncodeToString(part.ThoughtSignature)
-							}
+							streamCore.EmitContent(part.Text)
 						}
 					}
 				}
 			}
 		}
 
-		// If there are tool calls, override stop reason to ToolUse
-		// (Gemini doesn't have a specific finish reason for tool calls - it uses "STOP")
-		if len(toolCalls) > 0 {
-			stopReason = messages.StopReasonToolUse
-		}
-
-		// Always send a final message with stop reason (needed for agent completion detection)
-		msg := messages.ChatMessage{
-			Role:       messages.MessageRoleAssistant,
-			Content:    "", // Content was already streamed
-			ToolCalls:  toolCalls,
-			StopReason: stopReason,
-		}
-
-		// Store token usage
-		msg.SetTokenUsage(inputTokens, outputTokens)
-
-		// Store thought signatures if present
-		if len(signatures) > 0 {
-			msg.Metadata["gemini_thought_signatures"] = signatures
-		}
-
-		messageChannel <- msg
-
-		// Log response details
-		contentPreview := responseContent
-		if len(contentPreview) > 200 {
-			contentPreview = contentPreview[:200] + "..."
-		}
-
-		if len(toolCalls) > 0 {
-			toolInfo := make([]string, len(toolCalls))
-			for i, tc := range toolCalls {
-				toolInfo[i] = tc.Name
-			}
-			zap.S().Debugw("gemini_completion_finished",
-				"content_preview", contentPreview,
-				"content_length", len(responseContent),
-				"tool_call_count", len(toolCalls),
-				"tool_info", toolInfo)
-		} else {
-			zap.S().Debugw("gemini_completion_finished",
-				"content_preview", contentPreview,
-				"content_length", len(responseContent))
-		}
+		// Send the final message with accumulated state
+		streamCore.Complete()
 	}()
 
 	return processor.ProcessMessagesToEvents(messageChannel)
@@ -477,8 +383,9 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 			}
 
 		case messages.MessageRoleTool:
-			funcName := ""
-			if msg.ToolCallID != "" {
+			funcName := msg.ToolName
+			if funcName == "" && msg.ToolCallID != "" {
+				// Fallback to map if ToolName not set (shouldn't happen)
 				funcName = callIDToName[msg.ToolCallID]
 			}
 

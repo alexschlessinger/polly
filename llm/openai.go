@@ -7,6 +7,8 @@ import (
 	"io"
 	"maps"
 
+	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	ai "github.com/sashabaranov/go-openai"
@@ -15,22 +17,6 @@ import (
 )
 
 var _ LLM = (*OpenAIClient)(nil)
-
-// mapOpenAIFinishReason converts OpenAI's finish reason to our normalized type
-func mapOpenAIFinishReason(fr ai.FinishReason) messages.StopReason {
-	switch fr {
-	case ai.FinishReasonStop:
-		return messages.StopReasonEndTurn
-	case ai.FinishReasonToolCalls, ai.FinishReasonFunctionCall:
-		return messages.StopReasonToolUse
-	case ai.FinishReasonLength:
-		return messages.StopReasonMaxTokens
-	case ai.FinishReasonContentFilter:
-		return messages.StopReasonContentFilter
-	default:
-		return messages.StopReasonEndTurn
-	}
-}
 
 type OpenAIClient struct {
 	ClientConfig ai.ClientConfig
@@ -53,17 +39,25 @@ func (o OpenAIClient) ChatCompletionStream(ctx context.Context, req *CompletionR
 	messageChannel := make(chan messages.ChatMessage, 10)
 
 	go func() {
-		o.completion(ctx, req, messageChannel)
+		defer close(messageChannel)
+
+		// Create streaming core with OpenAI adapter
+		adapter := adapters.NewOpenAIAdapter()
+		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
+
+		// Process the request
+		if err := o.streamCompletion(ctx, req, streamCore); err != nil {
+			streamCore.EmitError(err)
+		}
 	}()
 
 	return processor.ProcessMessagesToEvents(messageChannel)
 }
 
-func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, respChannel chan<- messages.ChatMessage) error {
+func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	timeout, cancel := context.WithTimeout(ctx, req.Timeout)
-	defer close(respChannel)
 	defer cancel()
-	zap.S().Debugw("completion_started")
+	zap.S().Debugw("openai_completion_started")
 
 	// Convert agnostic messages to OpenAI format
 	openAIMessages := MessagesToOpenAI(req.Messages)
@@ -100,22 +94,12 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 	// Use streaming API
 	stream, err := o.Client.CreateChatCompletionStream(timeout, ccr)
 	if err != nil {
-		zap.S().Debugw("stream_creation_failed", "error", err)
-		respChannel <- messages.ChatMessage{
-			Role:    messages.MessageRoleAssistant,
-			Content: "failed to create chat completion stream: " + err.Error(),
-		}
-		return err
+		zap.S().Debugw("openai_stream_creation_failed", "error", err)
+		return fmt.Errorf("failed to create chat completion stream: %w", err)
 	}
 	defer stream.Close()
 
-	// Accumulate the response
-	var fullContent string
-	var reasoningContent string
-	var toolCalls []messages.ChatMessageToolCall
-	var stopReason messages.StopReason
-	var inputTokens, outputTokens int
-
+	// Process the stream using StreamingCore
 	for {
 		response, err := stream.Recv()
 		if err != nil {
@@ -124,128 +108,34 @@ func (o OpenAIClient) completion(ctx context.Context, req *CompletionRequest, re
 				break
 			}
 			zap.S().Debugw("openai_stream_error", "error", err)
-			respChannel <- messages.ChatMessage{
-				Role:    messages.MessageRoleAssistant,
-				Content: "Error during streaming: " + err.Error(),
-			}
+			return fmt.Errorf("error during streaming: %w", err)
+		}
+
+		// Process the chunk through the adapter
+		if err := streamCore.ProcessChunk(&response); err != nil {
 			return err
 		}
 
-		// Capture usage from final chunk (sent when StreamOptions.IncludeUsage is true)
-		if response.Usage != nil {
-			inputTokens = response.Usage.PromptTokens
-			outputTokens = response.Usage.CompletionTokens
-		}
-
+		// Emit content if present
 		if len(response.Choices) > 0 {
 			choice := response.Choices[0]
 			delta := choice.Delta
 
-			// Capture finish reason when it's set
-			if choice.FinishReason != "" {
-				stopReason = mapOpenAIFinishReason(choice.FinishReason)
-			}
-
-			// Stream reasoning content if present (for models like DeepSeek)
+			// Stream reasoning content if present
 			if delta.ReasoningContent != "" {
-				reasoningContent += delta.ReasoningContent
-				// Send reasoning for status display
-				respChannel <- messages.ChatMessage{
-					Role:      messages.MessageRoleAssistant,
-					Reasoning: delta.ReasoningContent,
-				}
+				streamCore.EmitReasoning(delta.ReasoningContent)
 			}
 
-			// Stream content chunks as they arrive
+			// Stream content chunks
 			if delta.Content != "" {
-				fullContent += delta.Content
-				// Send partial content for streaming
-				respChannel <- messages.ChatMessage{
-					Role:    messages.MessageRoleAssistant,
-					Content: delta.Content,
-				}
-			}
-
-			// Accumulate tool calls
-			if len(delta.ToolCalls) > 0 {
-				// Handle tool call deltas (OpenAI sends them incrementally)
-				for _, tc := range delta.ToolCalls {
-					// Find or create the tool call by index
-					for len(toolCalls) <= *tc.Index {
-						toolCalls = append(toolCalls, messages.ChatMessageToolCall{
-							Arguments: "{}", // Initialize with empty JSON object
-						})
-					}
-
-					if tc.ID != "" {
-						toolCalls[*tc.Index].ID = tc.ID
-					}
-					if tc.Function.Name != "" {
-						toolCalls[*tc.Index].Name = tc.Function.Name
-					}
-					if tc.Function.Arguments != "" {
-						if toolCalls[*tc.Index].Arguments == "{}" {
-							// First content, replace the default empty object
-							toolCalls[*tc.Index].Arguments = tc.Function.Arguments
-						} else {
-							// Append to existing content
-							toolCalls[*tc.Index].Arguments += tc.Function.Arguments
-						}
-					}
-				}
+				streamCore.EmitContent(delta.Content)
 			}
 		}
 	}
 
-	// Send the complete message with any tool calls
-	// Only include full content if we haven't streamed it
-	// (If we streamed chunks, the processor already has the content)
-	finalContent := ""
-	if fullContent != "" && len(toolCalls) == 0 {
-		// No tool calls and we have content - this means we need to send a final message
-		// But the content was already streamed, so send empty to avoid duplication
-		finalContent = ""
-	} else if len(toolCalls) > 0 {
-		// With tool calls, don't include content since it was already streamed
-		finalContent = ""
-	}
+	// Send the final message with accumulated state
+	streamCore.Complete()
 
-	msg := messages.ChatMessage{
-		Role:       messages.MessageRoleAssistant,
-		Content:    finalContent,
-		ToolCalls:  toolCalls,
-		Reasoning:  "", // Reasoning was already streamed, don't duplicate
-		StopReason: stopReason,
-	}
-	// Store token usage
-	msg.SetTokenUsage(inputTokens, outputTokens)
-
-	// Always send the final complete message (needed for processor to emit completion event)
-	respChannel <- msg
-
-	// Log detailed response information
-	contentPreview := fullContent
-	if len(contentPreview) > 200 {
-		contentPreview = contentPreview[:200] + "..."
-	}
-
-	if len(toolCalls) > 0 {
-		toolInfo := make([]string, len(toolCalls))
-		for i, tc := range toolCalls {
-			toolInfo[i] = fmt.Sprintf("%s(%s)", tc.Name, tc.Arguments)
-		}
-		zap.S().Debugw("openai_completion_finished",
-			"content_preview", contentPreview,
-			"content_length", len(fullContent),
-			"tool_call_count", len(toolCalls),
-			"tool_info", toolInfo)
-	} else if len(fullContent) == 0 {
-		zap.S().Debugw("openai_completion_empty")
-	} else {
-		zap.S().Debugw("openai_completion_finished",
-			"content_preview", contentPreview,
-			"content_length", len(fullContent))
-	}
 	return nil
 }
 

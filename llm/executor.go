@@ -73,6 +73,7 @@ func (e *ToolExecutor) ExecuteToolCall(
 			Role:       messages.MessageRoleTool,
 			Content:    errMsg,
 			ToolCallID: toolCall.ID,
+			ToolName:   toolCall.Name,
 		})
 		return false
 	}
@@ -88,6 +89,7 @@ func (e *ToolExecutor) ExecuteToolCall(
 			Role:       messages.MessageRoleTool,
 			Content:    errMsg,
 			ToolCallID: toolCall.ID,
+			ToolName:   toolCall.Name,
 		})
 		return false
 	}
@@ -129,6 +131,7 @@ func (e *ToolExecutor) ExecuteToolCall(
 		Role:       messages.MessageRoleTool,
 		Content:    result,
 		ToolCallID: toolCall.ID,
+		ToolName:   toolCall.Name,
 	})
 
 	return success

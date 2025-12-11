@@ -331,6 +331,7 @@ func (b *CompletionBuilder) ExecuteWithTools(ctx context.Context, client LLM, to
 						Role:       messages.MessageRoleTool,
 						Content:    result,
 						ToolCallID: toolCall.ID,
+						ToolName:   toolCall.Name,
 					})
 				}
 

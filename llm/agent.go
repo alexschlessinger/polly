@@ -108,6 +108,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 
 		// Stream completion
 		processor := messages.NewStreamProcessor()
+
 		events := a.client.ChatCompletionStream(ctx, &iterReq, processor)
 
 		// Process events
@@ -116,7 +117,6 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			return nil, err
 		}
 
-		// Track the assistant response
 		msgs = append(msgs, *response)
 		allGenerated = append(allGenerated, *response)
 
@@ -267,6 +267,7 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 		Role:       messages.MessageRoleTool,
 		Content:    result,
 		ToolCallID: tc.ID,
+		ToolName:   tc.Name,
 	}
 }
 
