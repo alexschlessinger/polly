@@ -256,9 +256,10 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 				fmt.Print(content)
 			}
 		},
-		OnToolStart: func(tc messages.ChatMessageToolCall) {
-			if statusLine != nil {
-				statusLine.ShowToolCall(tc.Name)
+		OnToolStart: func(calls []messages.ChatMessageToolCall) {
+			if statusLine != nil && len(calls) > 0 {
+				// Show first tool name (or could combine all)
+				statusLine.ShowToolCall(calls[0].Name)
 			}
 		},
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {

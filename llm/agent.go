@@ -42,8 +42,8 @@ type AgentCallbacks struct {
 	// If nil, context passes through unchanged.
 	BeforeToolExecute func(ctx context.Context, call messages.ChatMessageToolCall, args map[string]any) context.Context
 
-	// OnToolStart is called before each tool executes (after BeforeToolExecute)
-	OnToolStart func(call messages.ChatMessageToolCall)
+	// OnToolStart is called once before parallel tool execution begins with all tool calls
+	OnToolStart func(calls []messages.ChatMessageToolCall)
 
 	// OnToolEnd is called after each tool executes
 	OnToolEnd func(call messages.ChatMessageToolCall, result string, duration time.Duration, err error)
@@ -251,9 +251,6 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 		execCtx = cb.BeforeToolExecute(ctx, tc, args)
 	}
 
-	if cb != nil && cb.OnToolStart != nil {
-		cb.OnToolStart(tc)
-	}
 
 	start := time.Now()
 	result, err := a.executeToolCall(execCtx, tc, args)
@@ -315,6 +312,11 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 // executeToolsParallel executes multiple tool calls concurrently and returns results in order.
 // If context is cancelled, all running tools are notified via their context.
 func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.ChatMessageToolCall, cb *AgentCallbacks) ([]messages.ChatMessage, error) {
+	// Fire callback once with all tools before parallel execution
+	if cb != nil && cb.OnToolStart != nil {
+		cb.OnToolStart(toolCalls)
+	}
+
 	results := make([]messages.ChatMessage, len(toolCalls))
 
 	g, ctx := errgroup.WithContext(ctx)
