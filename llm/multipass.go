@@ -57,11 +57,11 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	// Update the request with the actual model name (without prefix)
 	req.Model = actualModel
 
-	// Populate or validate API key (ollama can be keyless)
+	// Populate or validate API key (ollama can be keyless, openai with custom endpoint can be keyless)
 	if req.APIKey == "" {
 		if key := m.apiKeys[provider]; key != "" {
 			req.APIKey = key
-		} else if provider != "ollama" {
+		} else if provider != "ollama" && !(provider == "openai" && req.BaseURL != "") {
 			errorChan := make(chan messages.ChatMessage, 1)
 			envVar := getEnvVarNameForProvider(provider)
 			errorChan <- messages.ChatMessage{
