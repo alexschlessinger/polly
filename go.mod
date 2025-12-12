@@ -8,11 +8,11 @@ require (
 	github.com/google/jsonschema-go v0.3.0
 	github.com/modelcontextprotocol/go-sdk v1.1.0
 	github.com/muesli/termenv v0.16.0
-	github.com/ollama/ollama v0.13.2
+	github.com/ollama/ollama v0.13.3
 	github.com/sashabaranov/go-openai v1.41.2
 	go.uber.org/zap v1.27.1
 	golang.org/x/sync v0.19.0
-	google.golang.org/genai v1.38.0
+	google.golang.org/genai v1.39.0
 )
 
 require (
