@@ -275,3 +275,44 @@ func (s *LocalSession) GetCapacityPercentage() float64 {
 
 	return float64(total) / float64(s.metadata.MaxHistoryTokens) * 100
 }
+
+// GetTimeToExpiry returns the time remaining until the session expires
+// Returns 0 if no TTL is set or if the session has already expired
+func (s *LocalSession) GetTimeToExpiry() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.metadata == nil || s.metadata.TTL == 0 {
+		return 0 // No expiry
+	}
+
+	remaining := s.metadata.TTL - time.Since(s.last)
+	if remaining < 0 {
+		return 0 // Expired
+	}
+	return remaining
+}
+
+// GetMessageCounts returns the count of messages by role
+func (s *LocalSession) GetMessageCounts() map[string]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	counts := make(map[string]int)
+	for _, msg := range s.history {
+		counts[string(msg.Role)]++
+	}
+	return counts
+}
+
+// GetToolCallCount returns the total number of tool calls in the session
+func (s *LocalSession) GetToolCallCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	total := 0
+	for _, msg := range s.history {
+		total += len(msg.ToolCalls)
+	}
+	return total
+}

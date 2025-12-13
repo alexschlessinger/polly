@@ -476,3 +476,44 @@ func (s *FileSession) GetCapacityPercentage() float64 {
 
 	return float64(total) / float64(s.Metadata.MaxHistoryTokens) * 100
 }
+
+// GetTimeToExpiry returns the time remaining until the session expires
+// Returns 0 if no TTL is set or if the session has already expired
+func (s *FileSession) GetTimeToExpiry() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.Metadata == nil || s.Metadata.TTL == 0 {
+		return 0 // No expiry
+	}
+
+	remaining := s.Metadata.TTL - time.Since(s.Updated)
+	if remaining < 0 {
+		return 0 // Expired
+	}
+	return remaining
+}
+
+// GetMessageCounts returns the count of messages by role
+func (s *FileSession) GetMessageCounts() map[string]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	counts := make(map[string]int)
+	for _, msg := range s.History {
+		counts[string(msg.Role)]++
+	}
+	return counts
+}
+
+// GetToolCallCount returns the total number of tool calls in the session
+func (s *FileSession) GetToolCallCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	total := 0
+	for _, msg := range s.History {
+		total += len(msg.ToolCalls)
+	}
+	return total
+}

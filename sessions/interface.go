@@ -24,6 +24,11 @@ type Session interface {
 	// Capacity tracking
 	GetTotalTokens() int        // Sum of all message tokens in history
 	GetCapacityPercentage() float64 // 0-100, or 0 if no limit set
+
+	// Session statistics
+	GetTimeToExpiry() time.Duration   // Time until TTL expiry (0 if no TTL or expired)
+	GetMessageCounts() map[string]int // Counts by role (user, assistant, tool, system)
+	GetToolCallCount() int            // Total tool calls in session
 }
 
 // SessionStore manages multiple sessions
