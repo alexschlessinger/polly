@@ -245,3 +245,33 @@ func (s *LocalSession) GetLastUsed() time.Time {
 func (s *LocalSession) Close() {
 	// No-op: LocalSession doesn't hold any resources that need cleanup
 }
+
+// GetTotalTokens returns the sum of all message tokens in history
+func (s *LocalSession) GetTotalTokens() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	total := 0
+	for _, msg := range s.history {
+		total += GetMessageTokens(msg)
+	}
+	return total
+}
+
+// GetCapacityPercentage returns the percentage of capacity used (0-100)
+// Returns 0 if no limit is set
+func (s *LocalSession) GetCapacityPercentage() float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.metadata == nil || s.metadata.MaxHistoryTokens == 0 {
+		return 0 // No limit set
+	}
+
+	total := 0
+	for _, msg := range s.history {
+		total += GetMessageTokens(msg)
+	}
+
+	return float64(total) / float64(s.metadata.MaxHistoryTokens) * 100
+}

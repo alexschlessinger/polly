@@ -20,6 +20,10 @@ type Session interface {
 	SetMetadata(*Metadata)
 	UpdateMetadata(*Metadata) error // Apply partial updates (only non-zero values)
 	GetLastUsed() time.Time
+
+	// Capacity tracking
+	GetTotalTokens() int        // Sum of all message tokens in history
+	GetCapacityPercentage() float64 // 0-100, or 0 if no limit set
 }
 
 // SessionStore manages multiple sessions

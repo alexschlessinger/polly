@@ -446,3 +446,33 @@ func (s *FileSessionStore) Exists(name string) bool {
 func (s *FileSessionStore) GetBaseDir() string {
 	return s.baseDir
 }
+
+// GetTotalTokens returns the sum of all message tokens in history
+func (s *FileSession) GetTotalTokens() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	total := 0
+	for _, msg := range s.History {
+		total += GetMessageTokens(msg)
+	}
+	return total
+}
+
+// GetCapacityPercentage returns the percentage of capacity used (0-100)
+// Returns 0 if no limit is set
+func (s *FileSession) GetCapacityPercentage() float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.Metadata == nil || s.Metadata.MaxHistoryTokens == 0 {
+		return 0 // No limit set
+	}
+
+	total := 0
+	for _, msg := range s.History {
+		total += GetMessageTokens(msg)
+	}
+
+	return float64(total) / float64(s.Metadata.MaxHistoryTokens) * 100
+}
