@@ -248,13 +248,13 @@ func convertSchemaToOllamaProperty(schema *mcpjsonschema.Schema) ollamaapi.ToolP
 }
 
 // convertPropertiesToOllamaFromSchema converts schema properties to Ollama format
-func convertPropertiesToOllamaFromSchema(schema *mcpjsonschema.Schema) map[string]ollamaapi.ToolProperty {
-	result := make(map[string]ollamaapi.ToolProperty)
+func convertPropertiesToOllamaFromSchema(schema *mcpjsonschema.Schema) *ollamaapi.ToolPropertiesMap {
+	result := ollamaapi.NewToolPropertiesMap()
 
 	if schema != nil && schema.Properties != nil {
 		for name, prop := range schema.Properties {
 			if prop != nil {
-				result[name] = convertSchemaToOllamaProperty(prop)
+				result.Set(name, convertSchemaToOllamaProperty(prop))
 			}
 		}
 	}
@@ -339,10 +339,14 @@ func MessagesToOllama(msgs []messages.ChatMessage) []ollamaapi.Message {
 			for _, tc := range msg.ToolCalls {
 				var args map[string]any
 				if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
+					tcArgs := ollamaapi.NewToolCallFunctionArguments()
+					for k, v := range args {
+						tcArgs.Set(k, v)
+					}
 					ollamaToolCalls = append(ollamaToolCalls, ollamaapi.ToolCall{
 						Function: ollamaapi.ToolCallFunction{
 							Name:      tc.Name,
-							Arguments: args,
+							Arguments: tcArgs,
 						},
 					})
 				}
