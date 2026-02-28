@@ -269,7 +269,7 @@ if [ "$1" = "--schema" ]; then
 	}'
 elif [ "$1" = "--execute" ]; then
 	# Parse JSON argument
-	MESSAGE=$(echo "$2" | grep -oP '"message":\s*"\K[^"]+')
+	MESSAGE=$(echo "$2" | sed -n 's/.*"message":[[:space:]]*"\([^"]*\)".*/\1/p')
 	echo "Received: $MESSAGE"
 else
 	echo "Unknown argument: $1"
