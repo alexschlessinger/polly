@@ -41,14 +41,8 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	// Parse the model string to extract provider and actual model name
 	parts := strings.SplitN(req.Model, "/", 2)
 	if len(parts) != 2 {
-		// Return error through the channel
-		errorChan := make(chan messages.ChatMessage, 1)
-		errorChan <- messages.ChatMessage{
-			Role:    messages.MessageRoleAssistant,
-			Content: fmt.Sprintf("Error: model must include provider prefix (e.g., 'openai/gpt-4.1', 'anthropic/claude-sonnet-4-20250514'). Got: %s", req.Model),
-		}
-		close(errorChan)
-		return processor.ProcessMessagesToEvents(errorChan)
+		err := fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-4.1', 'anthropic/claude-sonnet-4-20250514'). Got: %s", req.Model)
+		return processor.ProcessMessagesToEvents(singleErrorMessage(err))
 	}
 
 	provider := strings.ToLower(parts[0])
@@ -62,14 +56,9 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 		if key := m.apiKeys[provider]; key != "" {
 			req.APIKey = key
 		} else if provider != "ollama" && !(provider == "openai" && req.BaseURL != "") {
-			errorChan := make(chan messages.ChatMessage, 1)
 			envVar := getEnvVarNameForProvider(provider)
-			errorChan <- messages.ChatMessage{
-				Role:    messages.MessageRoleAssistant,
-				Content: fmt.Sprintf("Error: missing API key for provider '%s'. Set the %s environment variable.", provider, envVar),
-			}
-			close(errorChan)
-			return processor.ProcessMessagesToEvents(errorChan)
+			err := fmt.Errorf("missing API key for provider '%s'. Set the %s environment variable.", provider, envVar)
+			return processor.ProcessMessagesToEvents(singleErrorMessage(err))
 		}
 	}
 
@@ -89,16 +78,24 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 		}
 		llm = NewOllamaClient(baseURL, req.APIKey)
 	default:
-		// Return error through the channel
-		errorChan := make(chan messages.ChatMessage, 1)
-		errorChan <- messages.ChatMessage{
-			Role:    messages.MessageRoleAssistant,
-			Content: fmt.Sprintf("Error: unknown provider '%s'. Valid providers: openai, anthropic, gemini, ollama", provider),
-		}
-		close(errorChan)
-		return processor.ProcessMessagesToEvents(errorChan)
+		err := fmt.Errorf("unknown provider '%s'. Valid providers: openai, anthropic, gemini, ollama", provider)
+		return processor.ProcessMessagesToEvents(singleErrorMessage(err))
 	}
 
 	// Delegate to the selected provider
 	return llm.ChatCompletionStream(ctx, req, processor)
+}
+
+func singleErrorMessage(err error) <-chan messages.ChatMessage {
+	errorChan := make(chan messages.ChatMessage, 1)
+
+	msg := messages.ChatMessage{
+		Role:    messages.MessageRoleAssistant,
+		Content: fmt.Sprintf("Error: %v", err),
+	}
+	msg.SetError(err)
+
+	errorChan <- msg
+	close(errorChan)
+	return errorChan
 }

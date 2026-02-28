@@ -1,5 +1,7 @@
 package messages
 
+import "errors"
+
 // StopReason indicates why the model stopped generating
 type StopReason string
 
@@ -79,10 +81,12 @@ const (
 	MessageRoleTool      = "tool"
 )
 
-// Metadata keys for token usage
+// Metadata keys for token usage and terminal errors
 const (
 	MetadataKeyInputTokens  = "input_tokens"
 	MetadataKeyOutputTokens = "output_tokens"
+	MetadataKeyIsError      = "is_error"
+	MetadataKeyError        = "error"
 )
 
 // GetInputTokens returns the input token count from metadata, or 0 if not set
@@ -120,4 +124,36 @@ func (m *ChatMessage) SetTokenUsage(input, output int) {
 	}
 	m.Metadata[MetadataKeyInputTokens] = input
 	m.Metadata[MetadataKeyOutputTokens] = output
+}
+
+// SetError marks the message as a terminal stream error.
+func (m *ChatMessage) SetError(err error) {
+	if err == nil {
+		return
+	}
+	if m.Metadata == nil {
+		m.Metadata = make(map[string]any)
+	}
+	m.Metadata[MetadataKeyIsError] = true
+	m.Metadata[MetadataKeyError] = err.Error()
+}
+
+// IsError reports whether this message represents a terminal stream error.
+func (m *ChatMessage) IsError() bool {
+	if m.Metadata == nil {
+		return false
+	}
+	v, ok := m.Metadata[MetadataKeyIsError].(bool)
+	return ok && v
+}
+
+// GetError returns the terminal stream error if present.
+func (m *ChatMessage) GetError() error {
+	if m.Metadata == nil {
+		return nil
+	}
+	if msg, ok := m.Metadata[MetadataKeyError].(string); ok && msg != "" {
+		return errors.New(msg)
+	}
+	return nil
 }

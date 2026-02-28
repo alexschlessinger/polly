@@ -93,13 +93,16 @@ func (sc *StreamingCore) EmitReasoning(reasoning string) {
 
 // EmitError sends an error message through the channel
 func (sc *StreamingCore) EmitError(err error) {
+	msg := messages.ChatMessage{
+		Role:    messages.MessageRoleAssistant,
+		Content: fmt.Sprintf("Error: %v", err),
+	}
+	msg.SetError(err)
+
 	select {
 	case <-sc.ctx.Done():
 		return
-	case sc.messageChannel <- messages.ChatMessage{
-		Role:    messages.MessageRoleAssistant,
-		Content: fmt.Sprintf("Error: %v", err),
-	}:
+	case sc.messageChannel <- msg:
 		zap.S().Debugw("streaming_error", "error", err)
 	}
 }

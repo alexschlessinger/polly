@@ -49,6 +49,17 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 				"content_len", len(msg.Content),
 				"has_tool_calls", len(msg.ToolCalls) > 0,
 			)
+
+			// Terminal error messages should emit an explicit error event and stop.
+			if msg.IsError() {
+				err := msg.GetError()
+				if err == nil {
+					err = fmt.Errorf("unknown stream error")
+				}
+				eventChan <- &StreamEvent{Type: EventTypeError, Error: err}
+				return
+			}
+
 			// Capture stop reason if set (usually on the final message)
 			if msg.StopReason != "" {
 				stopReason = msg.StopReason
