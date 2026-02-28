@@ -132,20 +132,20 @@ func TestRegistryGetSchemas(t *testing.T) {
 func TestGetActiveToolLoaders(t *testing.T) {
 	tool1 := &testTool{name: "tool1", source: "source1"}
 	tool2 := &testTool{name: "tool2", source: "source2"}
-	
+
 	registry := NewToolRegistry([]Tool{tool1, tool2})
 	loaders := registry.GetActiveToolLoaders()
-	
+
 	if len(loaders) != 2 {
 		t.Errorf("Expected 2 loaders, got %d", len(loaders))
 	}
-	
+
 	// Check that loaders have correct data
 	loaderMap := make(map[string]ToolLoaderInfo)
 	for _, loader := range loaders {
 		loaderMap[loader.Name] = loader
 	}
-	
+
 	if loader, ok := loaderMap["tool1"]; !ok {
 		t.Error("Expected tool1 in loaders")
 	} else {
@@ -156,7 +156,7 @@ func TestGetActiveToolLoaders(t *testing.T) {
 			t.Errorf("Expected source 'source1', got %s", loader.Source)
 		}
 	}
-	
+
 	if loader, ok := loaderMap["tool2"]; !ok {
 		t.Error("Expected tool2 in loaders")
 	} else {

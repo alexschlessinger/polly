@@ -251,7 +251,6 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 		execCtx = cb.BeforeToolExecute(ctx, tc, args)
 	}
 
-
 	start := time.Now()
 	result, err := a.executeToolCall(execCtx, tc, args)
 	duration := time.Since(start)

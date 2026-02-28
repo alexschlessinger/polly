@@ -41,8 +41,8 @@ func parseConfig(cmd *cli.Command) *Config {
 			MaxTokens:        cmd.Int("maxtokens"),
 			MaxHistoryTokens: cmd.Int("maxcontext"),
 			ThinkingEffort:   cmd.String("thinkingeffort"),
-			SystemPrompt:   cmd.String("system"),
-			ToolTimeout:    cmd.Duration("tooltimeout"),
+			SystemPrompt:     cmd.String("system"),
+			ToolTimeout:      cmd.Duration("tooltimeout"),
 		},
 
 		// Runtime configuration

@@ -22,7 +22,7 @@ type Session interface {
 	GetLastUsed() time.Time
 
 	// Capacity tracking
-	GetTotalTokens() int        // Sum of all message tokens in history
+	GetTotalTokens() int            // Sum of all message tokens in history
 	GetCapacityPercentage() float64 // 0-100, or 0 if no limit set
 
 	// Session statistics

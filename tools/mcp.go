@@ -354,7 +354,6 @@ func NewMCPClient(serverSpec string) (*MCPClient, error) {
 	return client, nil
 }
 
-
 // NewMCPClientFromConfig creates a new MCP client from a JSON configuration
 func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
 	ctx := context.Background()
@@ -431,8 +430,8 @@ func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
 	}
 
 	return &MCPClient{
-		session:    session,
-		client:     client,
+		session: session,
+		client:  client,
 		// serverSpec will be set by caller if needed
 	}, nil
 }

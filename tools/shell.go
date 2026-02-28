@@ -42,7 +42,7 @@ func (s *ShellTool) GetSchema() *jsonschema.Schema {
 	if s.schema == nil {
 		return nil
 	}
-	
+
 	// Create a copy to avoid modifying the original
 	return &jsonschema.Schema{
 		Title:                s.schema.Title,

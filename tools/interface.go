@@ -11,7 +11,7 @@ type Tool interface {
 	// Execution methods
 	GetSchema() *jsonschema.Schema
 	Execute(ctx context.Context, args map[string]any) (string, error)
-	
+
 	// Metadata methods
 	GetName() string   // Returns the namespaced name (e.g., "script__toolname")
 	GetType() string   // Returns the tool type: "shell", "mcp", or "native"

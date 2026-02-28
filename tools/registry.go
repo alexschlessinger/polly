@@ -56,8 +56,8 @@ func (n *NamespacedTool) GetName() string {
 
 // ToolRegistry manages available tools
 type ToolRegistry struct {
-	mu        sync.RWMutex
-	tools     map[string]Tool
+	mu    sync.RWMutex
+	tools map[string]Tool
 
 	// Native tool factories
 	nativeTools map[string]func() Tool // toolName -> factory
@@ -82,7 +82,6 @@ func NewToolRegistry(tools []Tool) *ToolRegistry {
 
 	return registry
 }
-
 
 // Register adds a tool to the registry
 func (r *ToolRegistry) Register(tool Tool) {
@@ -122,7 +121,6 @@ func (r *ToolRegistry) Get(name string) (Tool, bool) {
 	return tool, ok
 }
 
-
 // Remove removes a tool by namespaced name from the registry
 func (r *ToolRegistry) Remove(namespacedName string) {
 	r.mu.Lock()
@@ -144,7 +142,7 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 	// Clean up MCP-specific tracking
 	if client != nil {
 		source := tool.GetSource()
-		
+
 		// Update serverTools list
 		if tools := r.serverTools[source]; len(tools) > 0 {
 			var remaining []string
@@ -447,7 +445,7 @@ func (r *ToolRegistry) GetActiveToolLoaders() []ToolLoaderInfo {
 	defer r.mu.RUnlock()
 
 	var loaders []ToolLoaderInfo
-	
+
 	for name, tool := range r.tools {
 		loaders = append(loaders, ToolLoaderInfo{
 			Name:   name,
@@ -455,10 +453,9 @@ func (r *ToolRegistry) GetActiveToolLoaders() []ToolLoaderInfo {
 			Source: tool.GetSource(),
 		})
 	}
-	
+
 	return loaders
 }
-
 
 // LoadMCPServerWithFilter connects to an MCP server and only registers specified tools
 // serverSpec format: "path/to/config.json#servername"

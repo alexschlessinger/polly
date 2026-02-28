@@ -50,7 +50,7 @@ func TestGetCapacityPercentage_HalfFull(t *testing.T) {
 	// Each message with 4-char content = 1 token content + 4 overhead = 5 tokens
 	s := newTestSession(&Metadata{MaxHistoryTokens: 20})
 	s.history = []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "aaaa"},     // 5 tokens
+		{Role: messages.MessageRoleUser, Content: "aaaa"},      // 5 tokens
 		{Role: messages.MessageRoleAssistant, Content: "bbbb"}, // 5 tokens
 	}
 
