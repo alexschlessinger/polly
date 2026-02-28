@@ -20,6 +20,9 @@ func getCommand() *cli.Command {
 		Flags:                  flags,
 		MutuallyExclusiveFlags: mutuallyExclusiveGroups,
 		Action:                 runCommand,
+		Commands: []*cli.Command{
+			embedCommand(),
+		},
 		OnUsageError: func(ctx context.Context, cmd *cli.Command, err error, isSubcommand bool) error {
 			// Just return the error without showing usage
 			return err
