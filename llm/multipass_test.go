@@ -42,6 +42,35 @@ func TestMultiPass_UnknownProvider_EmitsErrorEvent(t *testing.T) {
 	assertSingleErrorEvent(t, events, "unknown provider 'unknown'")
 }
 
+func TestGetEnvVarNameForProvider_Known(t *testing.T) {
+	tests := []struct {
+		provider string
+		want     string
+	}{
+		{"openai", "POLLYTOOL_OPENAIKEY"},
+		{"anthropic", "POLLYTOOL_ANTHROPICKEY"},
+		{"gemini", "POLLYTOOL_GEMINIKEY"},
+		{"ollama", "POLLYTOOL_OLLAMAKEY"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			got := getEnvVarNameForProvider(tt.provider)
+			if got != tt.want {
+				t.Errorf("getEnvVarNameForProvider(%q) = %q, want %q", tt.provider, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetEnvVarNameForProvider_Unknown(t *testing.T) {
+	got := getEnvVarNameForProvider("mycloud")
+	want := "POLLYTOOL_MYCLOUDKEY"
+	if got != want {
+		t.Errorf("getEnvVarNameForProvider(%q) = %q, want %q", "mycloud", got, want)
+	}
+}
+
 func assertSingleErrorEvent(t *testing.T, events <-chan *messages.StreamEvent, wantSubstring string) {
 	t.Helper()
 

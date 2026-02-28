@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -274,6 +275,95 @@ func TestTrimHistoryPathological(t *testing.T) {
 			for i, m := range result {
 				t.Logf("  [%d] Role=%s Content=%q ToolCallID=%s", i, m.Role, m.Content, m.ToolCallID)
 			}
+		}
+	})
+}
+
+func TestValidateContextName(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"empty", "", true},
+		{"slash", "a/b", true},
+		{"backslash", "a\\b", true},
+		{"colon", "a:b", true},
+		{"star", "a*b", true},
+		{"question", "a?b", true},
+		{"quote", `a"b`, true},
+		{"lt", "a<b", true},
+		{"gt", "a>b", true},
+		{"pipe", "a|b", true},
+		{"dot", ".", true},
+		{"dotdot", "..", true},
+		{"leading_space", " name", true},
+		{"trailing_space", "name ", true},
+		{"leading_dot", ".name", true},
+		{"trailing_dot", "name.", true},
+		{"control_null", "ab\x00c", true},
+		{"control_x1f", "ab\x1fc", true},
+		{"control_del", "ab\x7fc", true},
+		{"valid_simple", "my-context", false},
+		{"valid_underscores", "my_context_2", false},
+		{"valid_spaces_middle", "my context", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateContextName(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateContextName(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMergeMetadata(t *testing.T) {
+	t.Run("nil existing", func(t *testing.T) {
+		result := MergeMetadata(nil, &Metadata{Name: "new"})
+		if result.Name != "new" {
+			t.Errorf("Name = %q, want %q", result.Name, "new")
+		}
+	})
+
+	t.Run("nil update", func(t *testing.T) {
+		result := MergeMetadata(&Metadata{Name: "original"}, nil)
+		if result.Name != "original" {
+			t.Errorf("Name = %q, want %q", result.Name, "original")
+		}
+	})
+
+	t.Run("non-zero overrides", func(t *testing.T) {
+		existing := &Metadata{Name: "old", MaxTokens: 100}
+		update := &Metadata{Name: "new", Temperature: 0.7}
+		result := MergeMetadata(existing, update)
+		if result.Name != "new" {
+			t.Errorf("Name = %q, want %q", result.Name, "new")
+		}
+		if result.Temperature != 0.7 {
+			t.Errorf("Temperature = %f, want 0.7", result.Temperature)
+		}
+	})
+
+	t.Run("zero value does not override", func(t *testing.T) {
+		existing := &Metadata{MaxTokens: 8192}
+		update := &Metadata{MaxTokens: 0} // zero should not override
+		result := MergeMetadata(existing, update)
+		if result.MaxTokens != 8192 {
+			t.Errorf("MaxTokens = %d, want 8192", result.MaxTokens)
+		}
+	})
+
+	t.Run("zero LastUsed gets backfilled", func(t *testing.T) {
+		existing := &Metadata{Name: "test"}
+		update := &Metadata{}
+		result := MergeMetadata(existing, update)
+		if result.LastUsed.IsZero() {
+			t.Error("LastUsed should be backfilled when zero")
+		}
+		if time.Since(result.LastUsed) > time.Second {
+			t.Error("LastUsed should be approximately now")
 		}
 	})
 }
