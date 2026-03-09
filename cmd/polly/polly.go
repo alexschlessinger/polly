@@ -15,6 +15,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/urfave/cli/v3"
 )
@@ -96,6 +97,9 @@ func (r *commandRunner) handleManagementFlags() (bool, error) {
 	if cfg.ListContexts {
 		return true, handleListContexts(store)
 	}
+	if cfg.ListSkills {
+		return true, handleListSkills(cfg)
+	}
 	if cfg.DeleteContext != "" {
 		return true, handleDeleteContext(store, cfg.DeleteContext)
 	}
@@ -125,12 +129,12 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 }
 
 // initializeSession sets up everything needed for a conversation session
-func initializeSession(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, error) {
+func initializeSession(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, *skills.Catalog, *tools.SkillRuntime, *skillCatalogResult, error) {
 	// Initialize conversation using helper function
 	var err error
 	contextID, _, err = initializeConversation(config, sessionStore, contextID, cmd)
 	if err != nil {
-		return "", nil, nil, nil, err
+		return "", nil, nil, nil, nil, nil, nil, err
 	}
 
 	// Load API keys
@@ -139,12 +143,27 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 	// Create LLM provider
 	llmClient := llm.NewMultiPass(apiKeys)
 
-	// Get or create session
+	// Get or create session early so we can read persisted skill sources.
 	needFileStore := needsFileStore(config, contextID)
 	session := getOrCreateSession(sessionStore, contextID, needFileStore)
+	metadata := session.GetMetadata()
+
+	// Discover skills before building the runtime tool registry.
+	// Pass persisted SkillSources so --skill is restored on session resume.
+	skillResult, err := loadSkillCatalog(config, metadata.SkillSources)
+	if err != nil {
+		session.Close()
+		return "", nil, nil, nil, nil, nil, nil, err
+	}
+	skillCatalog := skillResult.catalog
+
+	// Persist skill sources for future session restores.
+	if len(skillResult.sources) > 0 {
+		metadata.SkillSources = skillResult.sources
+		session.SetMetadata(metadata)
+	}
 
 	// Handle command-line tools if provided - they replace session tools
-	metadata := session.GetMetadata()
 	var toolRegistry *tools.ToolRegistry
 
 	if len(config.Tools) > 0 {
@@ -154,7 +173,7 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 			_, err := toolRegistry.LoadToolAuto(source)
 			if err != nil {
 				session.Close()
-				return "", nil, nil, nil, fmt.Errorf("failed to load tool %s: %w", source, err)
+				return "", nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to load tool %s: %w", source, err)
 			}
 		}
 		// Store the metadata for persistence
@@ -165,8 +184,27 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 		toolRegistry, err = loadTools(metadata.ActiveTools)
 		if err != nil {
 			session.Close()
-			return "", nil, nil, nil, err
+			return "", nil, nil, nil, nil, nil, nil, err
 		}
+	}
+	skillRuntime, err := newSkillRuntime(skillCatalog, toolRegistry)
+	if err != nil {
+		session.Close()
+		return "", nil, nil, nil, nil, nil, nil, err
+	}
+	if err := restoreActiveSkills(metadata, skillRuntime); err != nil {
+		if toolRegistry != nil {
+			_ = toolRegistry.Close()
+		}
+		session.Close()
+		return "", nil, nil, nil, nil, nil, nil, err
+	}
+	if err := autoActivateSkills(skillResult.autoActivate, skillRuntime); err != nil {
+		if toolRegistry != nil {
+			_ = toolRegistry.Close()
+		}
+		session.Close()
+		return "", nil, nil, nil, nil, nil, nil, err
 	}
 
 	// Update context info with current settings using helper function
@@ -174,20 +212,23 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 
 	// Create the agent with the tool registry
 	agent := llm.NewAgent(llmClient, toolRegistry, llm.AgentConfig{
-		MaxIterations: 10,
+		MaxIterations: config.MaxIterations,
 		ToolTimeout:   config.ToolTimeout,
 	})
 
-	return contextID, session, agent, toolRegistry, nil
+	return contextID, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, nil
 }
 
 func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) error {
 	// Initialize session
-	contextID, session, agent, toolRegistry, err := initializeSession(config, sessionStore, contextID, cmd)
+	contextID, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSession(config, sessionStore, contextID, cmd)
 	if err != nil {
 		return err
 	}
 	defer session.Close()
+	if toolRegistry != nil {
+		defer toolRegistry.Close()
+	}
 
 	// Get prompt early to determine if we're going to interactive mode
 	prompt, err := getPrompt(config)
@@ -237,7 +278,18 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	}
 
 	// Create completion request
-	req := createCompletionRequest(config, session, toolRegistry, schema)
+	req := createCompletionRequest(config, session, toolRegistry, skillCatalog, schema)
+
+	// Track whether we need a newline before the next content block
+	// (i.e., tool calls happened since the last content output)
+	needsNewline := false
+	contentPrinted := false
+
+	// Set up tool approval if --confirm is active
+	var approver *toolApprover
+	if config.Confirm && isTerminal() {
+		approver = &toolApprover{}
+	}
 
 	// Run completion using the agent
 	resp, err := agent.Run(ctx, req, &llm.AgentCallbacks{
@@ -253,18 +305,46 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 			}
 			// Print content unless using schema mode
 			if config.SchemaPath == "" {
+				if needsNewline {
+					fmt.Println()
+					needsNewline = false
+				}
 				fmt.Print(content)
+				contentPrinted = true
 			}
 		},
 		OnToolStart: func(calls []messages.ChatMessageToolCall) {
-			if statusLine != nil && len(calls) > 0 {
-				// Show first tool name (or could combine all)
+			needsNewline = true
+			if toolDisplayEnabled(config) {
+				if contentPrinted {
+					fmt.Fprintln(os.Stderr)
+					contentPrinted = false
+				}
+				for _, tc := range calls {
+					printToolStart(tc)
+				}
+			}
+			if statusLine != nil && len(calls) > 0 && approver == nil {
 				statusLine.ShowToolCall(calls[0].Name)
 			}
 		},
+		ApproveToolCalls: func() func([]messages.ChatMessageToolCall) []bool {
+			if approver != nil {
+				return func(calls []messages.ChatMessageToolCall) []bool {
+					if statusLine != nil {
+						statusLine.Clear()
+					}
+					return approver.approveToolCalls(calls)
+				}
+			}
+			return nil
+		}(),
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 			if statusLine != nil {
 				statusLine.Clear()
+			}
+			if toolDisplayEnabled(config) {
+				printToolEnd(tc, duration, err)
 			}
 		},
 		OnError: func(err error) {
@@ -281,9 +361,17 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 			session.AddMessage(msg)
 		}
 	}
+	if err := persistActiveSkills(session, skillRuntime, skillResult.sources); err != nil {
+		return fmt.Errorf("failed to persist active skills: %w", err)
+	}
 
 	if err != nil {
 		return err
+	}
+
+	// Warn if response was truncated due to token limit
+	if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
+		fmt.Fprintf(os.Stderr, "\nWarning: response truncated (hit %d token limit, use --maxtokens to increase)\n", config.MaxTokens)
 	}
 
 	// Output final result
@@ -310,7 +398,7 @@ func getPrompt(config *Config) (string, error) {
 }
 
 // createCompletionRequest builds an LLM completion request from config
-func createCompletionRequest(config *Config, session sessions.Session, registry *tools.ToolRegistry, schema *llm.Schema) *llm.CompletionRequest {
+func createCompletionRequest(config *Config, session sessions.Session, registry *tools.ToolRegistry, skillCatalog *skills.Catalog, schema *llm.Schema) *llm.CompletionRequest {
 	// Parse thinking effort - already validated at config parsing time
 	thinkingEffort, _ := llm.ParseThinkingEffort(config.ThinkingEffort)
 
@@ -321,6 +409,7 @@ func createCompletionRequest(config *Config, session sessions.Session, registry 
 		Model:          config.Model,
 		MaxTokens:      config.MaxTokens,
 		Messages:       session.GetHistory(),
+		Skills:         skillCatalog,
 		Tools:          registry.All(),
 		ResponseSchema: schema,
 		ThinkingEffort: thinkingEffort,
@@ -372,6 +461,12 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			if !cmd.IsSet("tooltimeout") && contextInfo.ToolTimeout > 0 {
 				config.Settings.ToolTimeout = contextInfo.ToolTimeout
 			}
+			if !cmd.IsSet("maxiterations") && contextInfo.MaxIterations > 0 {
+				config.MaxIterations = contextInfo.MaxIterations
+			}
+			if !cmd.IsSet("skilldir") && len(contextInfo.SkillDirs) > 0 {
+				config.Settings.SkillDirs = contextInfo.SkillDirs
+			}
 		}
 	}
 
@@ -406,7 +501,9 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 		Model:       config.Settings.Model,
 		Temperature: config.Settings.Temperature,
 		MaxTokens:   config.Settings.MaxTokens,
-		ToolTimeout: config.Settings.ToolTimeout,
+		MaxIterations: config.MaxIterations,
+		ToolTimeout:   config.Settings.ToolTimeout,
+		SkillDirs:     config.Settings.SkillDirs,
 	}
 
 	// Only update these if explicitly set via command line

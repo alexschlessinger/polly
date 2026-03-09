@@ -305,6 +305,14 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 	} else {
 		fmt.Printf("  Active Tools: []\n")
 	}
+	if len(info.ActiveSkills) > 0 {
+		fmt.Println("  Active Skills:")
+		for _, skill := range info.ActiveSkills {
+			fmt.Printf("    - %s\n", skill)
+		}
+	} else {
+		fmt.Printf("  Active Skills: []\n")
+	}
 	fmt.Printf("  Tool Timeout: %s\n", info.ToolTimeout)
 
 	return nil

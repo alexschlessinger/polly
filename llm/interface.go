@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -38,4 +39,28 @@ type CompletionRequest struct {
 	ResponseSchema *Schema                // Optional schema for structured output
 	ThinkingEffort ThinkingEffort         // Reasoning effort level: ThinkingOff, ThinkingLow, ThinkingMedium, ThinkingHigh
 	Stream         *bool                  // nil = streaming (default), false = non-streaming
+	Skills         *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
+}
+
+// ResolvedMessages returns a copy of Messages with skill prompt injected.
+// No-op when Skills is nil or empty.
+func (r *CompletionRequest) ResolvedMessages() []messages.ChatMessage {
+	out := make([]messages.ChatMessage, len(r.Messages))
+	copy(out, r.Messages)
+	if r.Skills == nil || r.Skills.IsEmpty() {
+		return out
+	}
+	basePrompt := ""
+	if len(out) > 0 && out[0].Role == messages.MessageRoleSystem {
+		basePrompt = out[0].Content
+	}
+	runtimeSystem := r.Skills.RuntimeSystemPrompt(basePrompt)
+	if len(out) > 0 && out[0].Role == messages.MessageRoleSystem {
+		out[0].Content = runtimeSystem
+		return out
+	}
+	return append([]messages.ChatMessage{{
+		Role:    messages.MessageRoleSystem,
+		Content: runtimeSystem,
+	}}, out...)
 }

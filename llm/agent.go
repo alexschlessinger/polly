@@ -45,6 +45,11 @@ type AgentCallbacks struct {
 	// OnToolStart is called once before parallel tool execution begins with all tool calls
 	OnToolStart func(calls []messages.ChatMessageToolCall)
 
+	// ApproveToolCalls is called before parallel execution with all pending tool calls.
+	// Returns a bool slice indicating which tools are approved.
+	// If nil, all tools are approved.
+	ApproveToolCalls func(calls []messages.ChatMessageToolCall) []bool
+
 	// OnToolEnd is called after each tool executes
 	OnToolEnd func(call messages.ChatMessageToolCall, result string, duration time.Duration, err error)
 
@@ -89,6 +94,15 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	msgs := make([]messages.ChatMessage, len(req.Messages))
 	copy(msgs, req.Messages)
 
+	// Resolve skills once before the loop to avoid double-augmentation
+	// on subsequent iterations (where msgs[0] already has the augmented prompt).
+	loopReq := *req
+	if loopReq.Skills != nil && !loopReq.Skills.IsEmpty() {
+		loopReq.Messages = msgs
+		msgs = loopReq.ResolvedMessages()
+		loopReq.Skills = nil
+	}
+
 	var allGenerated []messages.ChatMessage
 
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
@@ -100,7 +114,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 
 		// Build request with accumulated messages
-		iterReq := *req
+		iterReq := loopReq
 		iterReq.Messages = msgs
 		if a.tools != nil {
 			iterReq.Tools = a.tools.All()
@@ -183,6 +197,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		toolMsgs, err := a.executeToolsParallel(ctx, response.ToolCalls, cb)
 		if err != nil {
 			return nil, err
+		}
+		if a.tools != nil {
+			a.tools.CommitPendingChanges()
 		}
 		msgs = append(msgs, toolMsgs...)
 		allGenerated = append(allGenerated, toolMsgs...)
@@ -290,10 +307,14 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 		return errMsg, errors.New("no tool registry")
 	}
 
-	tool, exists := a.tools.Get(tc.Name)
+	tool, exists, allowed := a.tools.GetIfAllowed(tc.Name)
 	if !exists {
 		errMsg := fmt.Sprintf("Tool not found: %s", tc.Name)
 		return errMsg, errors.New("tool not found: " + tc.Name)
+	}
+	if !allowed {
+		errMsg := fmt.Sprintf("Tool not allowed by active skill policy: %s", tc.Name)
+		return errMsg, errors.New("tool not allowed: " + tc.Name)
 	}
 
 	// Execute
@@ -318,13 +339,41 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 
 	results := make([]messages.ChatMessage, len(toolCalls))
 
+	// Determine which tools are approved
+	approved := make([]bool, len(toolCalls))
+	for i := range approved {
+		approved[i] = true
+	}
+	if cb != nil && cb.ApproveToolCalls != nil {
+		approved = cb.ApproveToolCalls(toolCalls)
+	}
+
+	// Fill in denied results immediately
+	var approvedIndices []int
+	for i, tc := range toolCalls {
+		if !approved[i] {
+			results[i] = messages.ChatMessage{
+				Role:       messages.MessageRoleTool,
+				Content:    "Tool call denied by user.",
+				ToolCallID: tc.ID,
+				ToolName:   tc.Name,
+			}
+			if cb != nil && cb.OnToolEnd != nil {
+				cb.OnToolEnd(tc, results[i].Content, 0, nil)
+			}
+		} else {
+			approvedIndices = append(approvedIndices, i)
+		}
+	}
+
 	g, ctx := errgroup.WithContext(ctx)
 
 	// Semaphore for concurrency limiting
-	sem := make(chan struct{}, a.effectiveParallelism(len(toolCalls)))
+	sem := make(chan struct{}, a.effectiveParallelism(len(approvedIndices)))
 
-	for i, tc := range toolCalls {
-		i, tc := i, tc // capture loop vars
+	for _, idx := range approvedIndices {
+		idx := idx
+		tc := toolCalls[idx]
 		g.Go(func() error {
 			// Acquire semaphore (respects context cancellation)
 			select {
@@ -334,7 +383,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 				return ctx.Err()
 			}
 
-			results[i] = a.executeTool(ctx, tc, cb)
+			results[idx] = a.executeTool(ctx, tc, cb)
 			return nil
 		})
 	}

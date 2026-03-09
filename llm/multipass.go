@@ -62,6 +62,12 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 		}
 	}
 
+	// Resolve skill prompt injection if configured
+	if req.Skills != nil && !req.Skills.IsEmpty() {
+		req.Messages = req.ResolvedMessages()
+		req.Skills = nil
+	}
+
 	// Route to the appropriate provider
 	var llm LLM
 	switch provider {

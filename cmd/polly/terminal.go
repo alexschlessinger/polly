@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 )
@@ -72,6 +73,64 @@ func promptYesNo(prompt string, defaultValue bool) bool {
 		return defaultValue
 	}
 	return response == "y" || response == "yes"
+}
+
+// promptYesNoAll prompts for y/n/a (yes, no, approve all). Returns 'y', 'n', or 'a'.
+func promptYesNoAll(prompt string) byte {
+	fmt.Fprintf(os.Stderr, "%s (Y/n/a): ", prompt)
+	reader := bufio.NewReader(os.Stdin)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return 'n'
+	}
+	response = strings.TrimSpace(strings.ToLower(response))
+	switch response {
+	case "", "y", "yes":
+		return 'y'
+	case "a", "all":
+		return 'a'
+	default:
+		return 'n'
+	}
+}
+
+// toolApprover manages tool call approval state across a session.
+type toolApprover struct {
+	approveAll bool
+}
+
+// approveToolCalls prompts the user to approve each tool in a batch.
+func (ta *toolApprover) approveToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	approved := make([]bool, len(calls))
+	if ta.approveAll {
+		for i := range approved {
+			approved[i] = true
+		}
+		return approved
+	}
+
+	for i, tc := range calls {
+		summary := summarizeToolArgs(tc.Name, tc.Arguments)
+		label := tc.Name
+		if summary != "" {
+			label += ": " + truncate(summary, 80)
+		}
+		fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled(label))
+
+		switch promptYesNoAll("  allow?") {
+		case 'y':
+			approved[i] = true
+		case 'a':
+			ta.approveAll = true
+			for j := i; j < len(calls); j++ {
+				approved[j] = true
+			}
+			return approved
+		default:
+			approved[i] = false
+		}
+	}
+	return approved
 }
 
 // isTerminal checks if output is going to a terminal

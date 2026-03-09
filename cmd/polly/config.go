@@ -43,11 +43,18 @@ func parseConfig(cmd *cli.Command) *Config {
 			ThinkingEffort:   cmd.String("thinkingeffort"),
 			SystemPrompt:     cmd.String("system"),
 			ToolTimeout:      cmd.Duration("tooltimeout"),
+			SkillDirs:        cmd.StringSlice("skilldir"),
 		},
 
 		// Runtime configuration
-		Timeout: cmd.Duration("timeout"),
-		BaseURL: cmd.String("baseurl"),
+		Timeout:       cmd.Duration("timeout"),
+		MaxIterations: int(cmd.Int("maxiterations")),
+		BaseURL:       cmd.String("baseurl"),
+		Confirm:       cmd.Bool("confirm"),
+
+		// Skill configuration
+		NoSkills:   cmd.Bool("noskills"),
+		ListSkills: cmd.Bool("listskills"),
 
 		// Context operations
 		ContextID:      cmd.String("context"),
@@ -67,6 +74,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		Quiet:      cmd.Bool("quiet"),
 		Debug:      cmd.Bool("debug"),
 		Tools:      cmd.StringSlice("tool"),
+		Skills:     cmd.StringSlice("skill"),
 	}
 
 	return config
@@ -104,8 +112,9 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			// List of flags that are NOT allowed with purge
 			disallowedFlags := []string{
 				"context", "last", "prompt", "file", "model", "temp",
-				"maxtokens", "timeout", "tool", "mcp", "system", "schema",
+				"maxtokens", "maxiterations", "timeout", "tool", "mcp", "system", "schema",
 				"tooltimeout", "maxcontext", "thinkingeffort", "baseurl",
+				"skilldir", "skill", "noskills", "listskills",
 			}
 			if slices.ContainsFunc(disallowedFlags, cmd.IsSet) {
 				return fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
@@ -139,6 +148,16 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
 			if v && (cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0) {
 				return fmt.Errorf("--list does not take prompts or files")
+			}
+			return nil
+		},
+	}
+	listSkillsFlag := &cli.BoolFlag{
+		Name:  "listskills",
+		Usage: "List discovered Agent Skills",
+		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
+			if v && (cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0) {
+				return fmt.Errorf("--listskills does not take prompts or files")
 			}
 			return nil
 		},
@@ -212,6 +231,12 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Value:   4096,
 			Sources: cli.EnvVars("POLLYTOOL_MAXTOKENS"),
 		},
+		&cli.IntFlag{
+			Name:    "maxiterations",
+			Usage:   "Maximum agent iterations (LLM calls) before stopping",
+			Value:   50,
+			Sources: cli.EnvVars("POLLYTOOL_MAXITERATIONS"),
+		},
 		&cli.DurationFlag{
 			Name:    "timeout",
 			Usage:   "Request timeout",
@@ -227,6 +252,23 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Value:   "",
 			Sources: cli.EnvVars("POLLYTOOL_BASEURL"),
 		},
+
+		// Skill configuration
+		&cli.StringSliceFlag{
+			Name:    "skilldir",
+			Usage:   "Skill directory or directory containing skill folders (can be specified multiple times)",
+			Sources: cli.EnvVars("POLLYTOOL_SKILLDIR"),
+		},
+		&cli.StringSliceFlag{
+			Name:    "skill",
+			Aliases: []string{"S"},
+			Usage:   "Skill to load: local directory, git repo URL, or archive URL. Auto-activated on start.",
+		},
+		&cli.BoolFlag{
+			Name:  "noskills",
+			Usage: "Disable Agent Skill discovery and runtime skill tools",
+		},
+		listSkillsFlag,
 
 		// Tool configuration
 		&cli.StringSliceFlag{
@@ -293,10 +335,16 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Value: 100000,
 		},
 
+		// Approval
+		&cli.BoolFlag{
+			Name:  "confirm",
+			Usage: "Require confirmation before each tool call",
+		},
+
 		// Output configuration
 		&cli.BoolFlag{
 			Name:  "quiet",
-			Usage: "Suppress confirmation messages",
+			Usage: "Suppress status and tool display output",
 		},
 		&cli.BoolFlag{
 			Name:    "debug",

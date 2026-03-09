@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -229,6 +230,12 @@ func (b *CompletionBuilder) WithTimeout(timeout time.Duration) *CompletionBuilde
 	return b
 }
 
+// WithSkills sets a skill catalog for automatic system prompt augmentation
+func (b *CompletionBuilder) WithSkills(catalog *skills.Catalog) *CompletionBuilder {
+	b.req.Skills = catalog
+	return b
+}
+
 // WithTools adds tools for function calling
 func (b *CompletionBuilder) WithTools(tools []tools.Tool) *CompletionBuilder {
 	b.req.Tools = tools
@@ -315,9 +322,12 @@ func (b *CompletionBuilder) ExecuteWithTools(ctx context.Context, client LLM, to
 					}
 
 					// Get and execute tool
-					tool, exists := toolRegistry.Get(toolCall.Name)
+					tool, exists, allowed := toolRegistry.GetIfAllowed(toolCall.Name)
 					if !exists {
 						return nil, fmt.Errorf("tool not found: %s", toolCall.Name)
+					}
+					if !allowed {
+						return nil, fmt.Errorf("tool not allowed by active skill policy: %s", toolCall.Name)
 					}
 
 					result, err := tool.Execute(ctx, args)
@@ -334,6 +344,7 @@ func (b *CompletionBuilder) ExecuteWithTools(ctx context.Context, client LLM, to
 						ToolName:   toolCall.Name,
 					})
 				}
+				toolRegistry.CommitPendingChanges()
 
 				// Continue conversation with tool results
 				return b.ExecuteWithTools(ctx, client, toolRegistry)

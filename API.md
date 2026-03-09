@@ -158,6 +158,72 @@ response, err := llm.NewCompletionBuilder("openai/gpt-4.1").
     WithTools(registry.All()).
     ExecuteWithTools(ctx, client, registry)
 // Automatically calls weather tool and returns final response
+
+// Skills are also supported on the builder
+result, err := llm.NewCompletionBuilder("openai/gpt-4.1").
+    WithSystemPrompt("You are a helpful assistant").
+    WithSkills(catalog).
+    WithUserMessage("Tell me about Go").
+    Execute(ctx, client)
+```
+
+### Skills Runtime
+
+```go
+import (
+    "github.com/alexschlessinger/pollytool/skills"
+    "github.com/alexschlessinger/pollytool/tools"
+)
+
+// Resolve skill directories (expands ~, deduplicates, validates).
+// Falls back to ~/.pollytool/skills when dirs is empty.
+dirs, err := skills.ResolveDirs([]string{"~/my-skills", "./local-skills"})
+
+// Or load a ready-to-use catalog in one step:
+catalog, err := skills.LoadCatalog([]string{"~/my-skills"})
+if err != nil {
+    panic(err)
+}
+
+// LoadCatalog returns nil when no skills are found.
+if catalog == nil {
+    // no skills available — proceed without them
+}
+
+registry := tools.NewToolRegistry(nil)
+skillRuntime, err := tools.NewSkillRuntime(catalog, registry)
+if err != nil {
+    panic(err)
+}
+
+// Set Skills on CompletionRequest for automatic system prompt augmentation.
+// Skill prompt injection happens transparently during completion.
+req := &llm.CompletionRequest{
+    Model:    "openai/gpt-4.1",
+    Messages: history,
+    Skills:   catalog,
+}
+
+// Or use RuntimeSystemPrompt / BuildMessages for manual control:
+systemPrompt := catalog.RuntimeSystemPrompt("You are a helpful assistant")
+
+// Activate directly from application code
+_, err = skillRuntime.Activate("code-reviewer")
+if err != nil {
+    panic(err)
+}
+
+// Persist and restore active skills across runs
+savedSkills := skillRuntime.ActivatedSkills()
+err = skillRuntime.Restore(savedSkills)
+if err != nil {
+    panic(err)
+}
+
+_ = systemPrompt
+_ = msgs
+_ = dirs
+_ = registry
 ```
 
 ## Core Interfaces
@@ -192,6 +258,7 @@ type CompletionRequest struct {
     ResponseSchema *Schema                  // JSON schema for structured output
     Timeout        time.Duration            // Request timeout
     BaseURL        string                   // Custom API endpoint (for OpenAI-compatible)
+    Skills         *skills.Catalog          // Optional skill catalog for system prompt augmentation
 }
 ```
 

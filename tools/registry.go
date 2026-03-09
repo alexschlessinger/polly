@@ -65,15 +65,56 @@ type ToolRegistry struct {
 	// MCP tracking
 	toolClients map[string]*MCPClient // toolName -> client
 	serverTools map[string][]string   // serverSpec -> toolNames
+
+	// Runtime activation state
+	pendingTools       map[string]Tool
+	pendingToolClients map[string]*MCPClient
+	pendingServerTools map[string][]string
+
+	alwaysAllowedTools map[string]bool
+	policyActive       bool
+	allowedPatterns    []string
+	autoAllowedTools   map[string]bool
+
+	pendingPolicyActive    bool
+	pendingAllowedPatterns []string
+	pendingAutoAllowed     map[string]bool
+}
+
+type stagedToolRecord struct {
+	name       string
+	tool       Tool
+	client     *MCPClient
+	serverSpec string
+}
+
+func closeStagedToolRecords(records []stagedToolRecord) {
+	closed := make(map[*MCPClient]bool)
+	for _, record := range records {
+		if record.client != nil && !closed[record.client] {
+			record.client.Close()
+			closed[record.client] = true
+		}
+	}
 }
 
 // NewToolRegistry creates a new tool registry from a list of tools
 func NewToolRegistry(tools []Tool) *ToolRegistry {
 	registry := &ToolRegistry{
-		tools:       make(map[string]Tool),
-		nativeTools: make(map[string]func() Tool),
-		toolClients: make(map[string]*MCPClient),
-		serverTools: make(map[string][]string),
+		tools:              make(map[string]Tool),
+		nativeTools:        make(map[string]func() Tool),
+		toolClients:        make(map[string]*MCPClient),
+		serverTools:        make(map[string][]string),
+		pendingTools:       make(map[string]Tool),
+		pendingToolClients: make(map[string]*MCPClient),
+		pendingServerTools: make(map[string][]string),
+		alwaysAllowedTools: make(map[string]bool),
+		autoAllowedTools:   make(map[string]bool),
+		pendingAutoAllowed: make(map[string]bool),
+	}
+
+	registry.nativeTools["bash"] = func() Tool {
+		return NewBashTool("")
 	}
 
 	for _, tool := range tools {
@@ -103,6 +144,13 @@ func (r *ToolRegistry) Register(tool Tool) {
 	}
 }
 
+// MarkAlwaysAllowed exempts a tool from active skill allowlist filtering.
+func (r *ToolRegistry) MarkAlwaysAllowed(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.alwaysAllowedTools[name] = true
+}
+
 // RegisterNative registers a native tool factory
 func (r *ToolRegistry) RegisterNative(name string, factory func() Tool) {
 	r.mu.Lock()
@@ -118,7 +166,26 @@ func (r *ToolRegistry) Get(name string) (Tool, bool) {
 	defer r.mu.RUnlock()
 
 	tool, ok := r.tools[name]
-	return tool, ok
+	if !ok || !r.isToolAllowedLocked(name) {
+		return nil, false
+	}
+	return tool, true
+}
+
+// GetIfAllowed retrieves a tool by name, returning existence and allowance in a single lock acquisition.
+func (r *ToolRegistry) GetIfAllowed(name string) (tool Tool, exists bool, allowed bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	tool, exists = r.tools[name]
+	if !exists {
+		return nil, false, false
+	}
+	allowed = r.isToolAllowedLocked(name)
+	if !allowed {
+		return nil, true, false
+	}
+	return tool, true, true
 }
 
 // Remove removes a tool by namespaced name from the registry
@@ -179,7 +246,10 @@ func (r *ToolRegistry) All() []Tool {
 	defer r.mu.RUnlock()
 
 	tools := make([]Tool, 0, len(r.tools))
-	for _, tool := range r.tools {
+	for name, tool := range r.tools {
+		if !r.isToolAllowedLocked(name) {
+			continue
+		}
 		tools = append(tools, tool)
 	}
 	return tools
@@ -191,113 +261,136 @@ func (r *ToolRegistry) GetSchemas() []*jsonschema.Schema {
 	defer r.mu.RUnlock()
 
 	schemas := make([]*jsonschema.Schema, 0, len(r.tools))
-	for _, tool := range r.tools {
+	for name, tool := range r.tools {
+		if !r.isToolAllowedLocked(name) {
+			continue
+		}
 		schemas = append(schemas, tool.GetSchema())
 	}
 	return schemas
 }
 
-// LoadMCPServer connects to an MCP server and registers its tools with namespace
-// For multi-server configs (mcpServers format), loads ALL servers
-func (r *ToolRegistry) LoadMCPServer(serverSpec string) (LoadResult, error) {
-	jsonFile, serverName := ParseServerSpec(serverSpec)
-
-	// Load config file
-	configs, err := LoadMCPConfigFile(jsonFile)
-	if err != nil {
-		return LoadResult{}, err
+func (r *ToolRegistry) isToolAllowedLocked(name string) bool {
+	if r.alwaysAllowedTools[name] {
+		return true
 	}
-
-	result := LoadResult{Type: "mcp"}
-
-	// If specific server requested, only load that one
-	if serverName != "" {
-		config, ok := configs[serverName]
-		if !ok {
-			var available []string
-			for name := range configs {
-				available = append(available, name)
-			}
-			return LoadResult{}, fmt.Errorf("server %q not found in config (available: %v)", serverName, available)
-		}
-		toolNames, err := r.loadSingleMCPServer(jsonFile, serverName, &config)
-		if err != nil {
-			return LoadResult{}, err
-		}
-		result.Servers = append(result.Servers, ServerResult{
-			Name:      serverName,
-			ToolNames: toolNames,
-		})
-		return result, nil
+	if !r.policyActive {
+		return true
 	}
-
-	// Load all servers from config
-	for name, config := range configs {
-		cfg := config // avoid loop variable capture
-		toolNames, err := r.loadSingleMCPServer(jsonFile, name, &cfg)
-		if err != nil {
-			return LoadResult{}, fmt.Errorf("server %s: %w", name, err)
-		}
-		result.Servers = append(result.Servers, ServerResult{
-			Name:      name,
-			ToolNames: toolNames,
-		})
+	if r.autoAllowedTools[name] {
+		return true
 	}
-
-	return result, nil
+	for _, pattern := range r.allowedPatterns {
+		if matchesToolPattern(pattern, name) {
+			return true
+		}
+	}
+	return false
 }
 
-// loadSingleMCPServer loads a single server and registers its tools
-// Returns the list of registered tool names
-func (r *ToolRegistry) loadSingleMCPServer(jsonFile, serverName string, config *MCPConfig) ([]string, error) {
-	client, err := NewMCPClientFromConfig(config)
-	if err != nil {
-		return nil, err
+func matchesToolPattern(pattern, name string) bool {
+	if pattern == "" {
+		return false
 	}
-
-	// Build the server spec for persistence
-	serverSpec := fmt.Sprintf("%s#%s", jsonFile, serverName)
-	client.serverSpec = serverSpec
-
-	// Get tools
-	tools, err := client.ListTools()
-	if err != nil {
-		client.Close()
-		return nil, err
+	matched, err := filepath.Match(pattern, name)
+	if err == nil {
+		return matched
 	}
+	return pattern == name
+}
 
-	// Register tools
+func appendUniqueStrings(dst []string, src []string) []string {
+	seen := make(map[string]bool, len(dst))
+	for _, item := range dst {
+		seen[item] = true
+	}
+	for _, item := range src {
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		dst = append(dst, item)
+	}
+	return dst
+}
+
+func (r *ToolRegistry) stageTool(name string, tool Tool, client *MCPClient) {
+	r.pendingTools[name] = tool
+	if client != nil {
+		r.pendingToolClients[name] = client
+	}
+}
+
+func (r *ToolRegistry) stageServerTools(serverSpec string, toolNames []string) {
+	if len(toolNames) == 0 {
+		r.pendingServerTools[serverSpec] = nil
+		return
+	}
+	r.pendingServerTools[serverSpec] = appendUniqueStrings(r.pendingServerTools[serverSpec], toolNames)
+}
+
+// stageSkillAllowance queues allowed-tool patterns and auto-approved skill-owned tools.
+func (r *ToolRegistry) stageSkillAllowance(patterns, autoAllowed []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	var toolNames []string
-	for _, tool := range tools {
-		schema := tool.GetSchema()
-		if schema != nil && schema.Title != "" {
-			// Create namespaced name using server name
-			namespacedName := fmt.Sprintf("%s__%s", serverName, schema.Title)
-
-			// Set source on the tool for persistence
-			if mcpTool, ok := tool.(*MCPTool); ok {
-				mcpTool.Source = serverSpec
-			}
-
-			// Wrap the tool to provide namespaced schema
-			wrappedTool := &NamespacedTool{
-				Tool:           tool,
-				namespacedName: namespacedName,
-			}
-			r.tools[namespacedName] = wrappedTool
-			r.toolClients[namespacedName] = client
-			toolNames = append(toolNames, namespacedName)
-			zap.S().Debugw("mcp_tool_registered", "tool_name", namespacedName)
+	if len(patterns) > 0 {
+		r.pendingPolicyActive = true
+		r.pendingAllowedPatterns = appendUniqueStrings(r.pendingAllowedPatterns, patterns)
+	}
+	for _, name := range autoAllowed {
+		if name != "" {
+			r.pendingAutoAllowed[name] = true
 		}
 	}
+}
 
-	// Track which tools came from this server
-	r.serverTools[serverSpec] = toolNames
+// CommitPendingChanges applies staged skill activations between agent turns.
+func (r *ToolRegistry) CommitPendingChanges() {
+	r.mu.RLock()
+	empty := len(r.pendingTools) == 0 &&
+		len(r.pendingToolClients) == 0 &&
+		len(r.pendingServerTools) == 0 &&
+		!r.pendingPolicyActive &&
+		len(r.pendingAllowedPatterns) == 0 &&
+		len(r.pendingAutoAllowed) == 0
+	r.mu.RUnlock()
+	if empty {
+		return
+	}
 
-	return toolNames, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for name, tool := range r.pendingTools {
+		r.tools[name] = tool
+	}
+	for name, client := range r.pendingToolClients {
+		r.toolClients[name] = client
+	}
+	for serverSpec, toolNames := range r.pendingServerTools {
+		r.serverTools[serverSpec] = appendUniqueStrings(r.serverTools[serverSpec], toolNames)
+	}
+	if r.pendingPolicyActive {
+		r.policyActive = true
+	}
+	r.allowedPatterns = appendUniqueStrings(r.allowedPatterns, r.pendingAllowedPatterns)
+	for name := range r.pendingAutoAllowed {
+		r.autoAllowedTools[name] = true
+	}
+
+	r.pendingTools = make(map[string]Tool)
+	r.pendingToolClients = make(map[string]*MCPClient)
+	r.pendingServerTools = make(map[string][]string)
+	r.pendingPolicyActive = false
+	r.pendingAllowedPatterns = nil
+	r.pendingAutoAllowed = make(map[string]bool)
+}
+
+// LoadMCPServer connects to an MCP server and registers its tools with namespace
+// For multi-server configs (mcpServers format), loads ALL servers
+func (r *ToolRegistry) LoadMCPServer(serverSpec string) (LoadResult, error) {
+	return r.LoadMCPServerWithNamespacePrefix(serverSpec, "")
 }
 
 // UnloadMCPServer removes all tools from a server and closes it
@@ -335,44 +428,219 @@ func (r *ToolRegistry) UnloadMCPServer(serverSpec string) error {
 	return nil
 }
 
-// LoadShellTool loads a single shell tool from a file path with namespace
-func (r *ToolRegistry) LoadShellTool(path string) (LoadResult, error) {
-	shellTool, err := NewShellTool(path)
+func (r *ToolRegistry) loadShellToolWithNamespace(path, namespace string) (LoadResult, error) {
+	records, result, err := r.prepareShellToolWithNamespace(path, namespace)
 	if err != nil {
-		return LoadResult{}, fmt.Errorf("failed to load shell tool %s: %w", path, err)
-	}
-
-	// Get the tool's schema to find its name
-	schema := shellTool.GetSchema()
-	if schema == nil || schema.Title == "" {
-		return LoadResult{}, fmt.Errorf("shell tool %s has no name in schema", path)
-	}
-
-	// Extract namespace from script filename
-	namespace := extractNamespace(path)
-
-	// Create namespaced name
-	namespacedName := fmt.Sprintf("%s__%s", namespace, schema.Title)
-
-	// Wrap the tool to provide namespaced schema
-	wrappedTool := &NamespacedTool{
-		Tool:           shellTool,
-		namespacedName: namespacedName,
+		return LoadResult{}, err
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.tools[namespacedName] = wrappedTool
-	zap.S().Debugw("shell_tool_registered", "tool_name", namespacedName)
+	for _, record := range records {
+		r.tools[record.name] = record.tool
+		zap.S().Debugw("shell_tool_registered", "tool_name", record.name)
+	}
 
-	return LoadResult{
+	return result, nil
+}
+
+func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]stagedToolRecord, LoadResult, error) {
+	shellTool, err := NewShellTool(path)
+	if err != nil {
+		return nil, LoadResult{}, fmt.Errorf("failed to load shell tool %s: %w", path, err)
+	}
+
+	schema := shellTool.GetSchema()
+	if schema == nil || schema.Title == "" {
+		return nil, LoadResult{}, fmt.Errorf("shell tool %s has no name in schema", path)
+	}
+	if namespace == "" {
+		namespace = extractNamespace(path)
+	}
+
+	namespacedName := fmt.Sprintf("%s__%s", namespace, schema.Title)
+	record := stagedToolRecord{
+		name: namespacedName,
+		tool: &NamespacedTool{
+			Tool:           shellTool,
+			namespacedName: namespacedName,
+		},
+	}
+
+	return []stagedToolRecord{record}, LoadResult{
 		Type: "shell",
 		Servers: []ServerResult{{
 			Name:      namespace,
 			ToolNames: []string{namespacedName},
 		}},
 	}, nil
+}
+
+func joinNamespacePrefix(prefix, name string) string {
+	switch {
+	case prefix == "":
+		return name
+	case name == "":
+		return prefix
+	default:
+		return prefix + "-" + name
+	}
+}
+
+func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, record := range records {
+		r.stageTool(record.name, record.tool, record.client)
+		if record.serverSpec != "" {
+			r.stageServerTools(record.serverSpec, []string{record.name})
+		}
+		zap.S().Debugw("tool_staged", "tool_name", record.name)
+	}
+}
+
+func prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
+	client, err := NewMCPClientFromConfig(config)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	serverSpec := fmt.Sprintf("%s#%s", jsonFile, serverName)
+	client.serverSpec = serverSpec
+
+	serverTools, err := client.ListTools()
+	if err != nil {
+		client.Close()
+		return nil, nil, err
+	}
+
+	var records []stagedToolRecord
+	var toolNames []string
+	for _, tool := range serverTools {
+		schema := tool.GetSchema()
+		if schema == nil || schema.Title == "" {
+			continue
+		}
+
+		namespacedName := fmt.Sprintf("%s__%s", namespace, schema.Title)
+		if mcpTool, ok := tool.(*MCPTool); ok {
+			mcpTool.Source = serverSpec
+		}
+
+		wrappedTool := &NamespacedTool{
+			Tool:           tool,
+			namespacedName: namespacedName,
+		}
+		records = append(records, stagedToolRecord{
+			name:       namespacedName,
+			tool:       wrappedTool,
+			client:     client,
+			serverSpec: serverSpec,
+		})
+		toolNames = append(toolNames, namespacedName)
+	}
+
+	if len(records) == 0 {
+		client.Close()
+	}
+
+	return records, toolNames, nil
+}
+
+func (r *ToolRegistry) prepareMCPServerWithNamespacePrefix(serverSpec, namespacePrefix string) ([]stagedToolRecord, LoadResult, error) {
+	jsonFile, serverName := ParseServerSpec(serverSpec)
+
+	configs, err := LoadMCPConfigFile(jsonFile)
+	if err != nil {
+		return nil, LoadResult{}, err
+	}
+
+	var records []stagedToolRecord
+	result := LoadResult{Type: "mcp"}
+	appendServer := func(name string, config MCPConfig) error {
+		namespace := joinNamespacePrefix(namespacePrefix, name)
+		serverRecords, toolNames, err := prepareSingleMCPServerWithNamespace(jsonFile, name, namespace, &config)
+		if err != nil {
+			return err
+		}
+		records = append(records, serverRecords...)
+		result.Servers = append(result.Servers, ServerResult{Name: namespace, ToolNames: toolNames})
+		return nil
+	}
+
+	if serverName != "" {
+		config, ok := configs[serverName]
+		if !ok {
+			var available []string
+			for name := range configs {
+				available = append(available, name)
+			}
+			return nil, LoadResult{}, fmt.Errorf("server %q not found in config (available: %v)", serverName, available)
+		}
+		if err := appendServer(serverName, config); err != nil {
+			closeStagedToolRecords(records)
+			return nil, LoadResult{}, err
+		}
+		return records, result, nil
+	}
+
+	for name, config := range configs {
+		if err := appendServer(name, config); err != nil {
+			closeStagedToolRecords(records)
+			return nil, LoadResult{}, fmt.Errorf("server %s: %w", name, err)
+		}
+	}
+
+	return records, result, nil
+}
+
+// LoadMCPServerWithNamespacePrefix loads all servers from a config file with an explicit namespace prefix.
+func (r *ToolRegistry) LoadMCPServerWithNamespacePrefix(serverSpec, namespacePrefix string) (LoadResult, error) {
+	records, result, err := r.prepareMCPServerWithNamespacePrefix(serverSpec, namespacePrefix)
+	if err != nil {
+		return LoadResult{}, err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, record := range records {
+		r.tools[record.name] = record.tool
+		if record.client != nil {
+			r.toolClients[record.name] = record.client
+		}
+		if record.serverSpec != "" {
+			r.serverTools[record.serverSpec] = appendUniqueStrings(r.serverTools[record.serverSpec], []string{record.name})
+		}
+		zap.S().Debugw("mcp_tool_registered", "tool_name", record.name)
+	}
+
+	return result, nil
+}
+
+// stageMCPServerWithNamespacePrefix queues MCP tools to be activated on the next turn.
+func (r *ToolRegistry) stageMCPServerWithNamespacePrefix(serverSpec, namespacePrefix string) (LoadResult, error) {
+	records, result, err := r.prepareMCPServerWithNamespacePrefix(serverSpec, namespacePrefix)
+	if err != nil {
+		return LoadResult{}, err
+	}
+	r.stagePreparedTools(records)
+	return result, nil
+}
+
+// LoadShellTool loads a single shell tool from a file path with the default namespace.
+func (r *ToolRegistry) LoadShellTool(path string) (LoadResult, error) {
+	return r.loadShellToolWithNamespace(path, extractNamespace(path))
+}
+
+// LoadShellToolWithNamespace loads a single shell tool from a file path with an explicit namespace.
+func (r *ToolRegistry) LoadShellToolWithNamespace(path, namespace string) (LoadResult, error) {
+	if namespace == "" {
+		namespace = extractNamespace(path)
+	}
+	return r.loadShellToolWithNamespace(path, namespace)
 }
 
 // LoadToolAuto attempts to load a tool, auto-detecting if it's native, shell tool, or MCP server
@@ -578,11 +846,27 @@ func (r *ToolRegistry) Close() error {
 			closed[client] = true
 		}
 	}
+	for _, client := range r.pendingToolClients {
+		if !closed[client] {
+			client.Close()
+			closed[client] = true
+		}
+	}
 
 	// Clear maps
 	r.tools = make(map[string]Tool)
 	r.toolClients = make(map[string]*MCPClient)
 	r.serverTools = make(map[string][]string)
+	r.pendingTools = make(map[string]Tool)
+	r.pendingToolClients = make(map[string]*MCPClient)
+	r.pendingServerTools = make(map[string][]string)
+	r.alwaysAllowedTools = make(map[string]bool)
+	r.autoAllowedTools = make(map[string]bool)
+	r.pendingAutoAllowed = make(map[string]bool)
+	r.policyActive = false
+	r.pendingPolicyActive = false
+	r.allowedPatterns = nil
+	r.pendingAllowedPatterns = nil
 
 	return nil
 }

@@ -62,5 +62,9 @@ type Metadata struct {
 	ThinkingEffort   string                 `json:"thinkingEffort,omitempty"`
 	SystemPrompt     string                 `json:"systemPrompt,omitempty"`
 	ActiveTools      []tools.ToolLoaderInfo `json:"activeTools,omitempty"`
+	ActiveSkills     []string               `json:"activeSkills,omitempty"`
+	MaxIterations    int                    `json:"maxIterations,omitempty"`
 	ToolTimeout      time.Duration          `json:"toolTimeout,omitempty"`
+	SkillDirs        []string               `json:"skillDirs,omitempty"`
+	SkillSources     []string               `json:"skillSources,omitempty"`
 }
