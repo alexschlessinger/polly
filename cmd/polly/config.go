@@ -50,6 +50,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		Timeout:       cmd.Duration("timeout"),
 		MaxIterations: int(cmd.Int("maxiterations")),
 		BaseURL:       cmd.String("baseurl"),
+		Confirm:       cmd.Bool("confirm"),
 
 		// Skill configuration
 		NoSkills:   cmd.Bool("noskills"),
@@ -334,10 +335,16 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Value: 100000,
 		},
 
+		// Approval
+		&cli.BoolFlag{
+			Name:  "confirm",
+			Usage: "Require confirmation before each tool call",
+		},
+
 		// Output configuration
 		&cli.BoolFlag{
 			Name:  "quiet",
-			Usage: "Suppress confirmation messages",
+			Usage: "Suppress status and tool display output",
 		},
 		&cli.BoolFlag{
 			Name:    "debug",

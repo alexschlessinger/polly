@@ -32,6 +32,7 @@ type Config struct {
 	Timeout       time.Duration
 	MaxIterations int
 	BaseURL       string
+	Confirm       bool
 
 	// Skill configuration
 	NoSkills   bool

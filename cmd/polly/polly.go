@@ -285,6 +285,12 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	needsNewline := false
 	contentPrinted := false
 
+	// Set up tool approval if --confirm is active
+	var approver *toolApprover
+	if config.Confirm && isTerminal() {
+		approver = &toolApprover{}
+	}
+
 	// Run completion using the agent
 	resp, err := agent.Run(ctx, req, &llm.AgentCallbacks{
 		OnReasoning: func(content string) {
@@ -309,9 +315,6 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		},
 		OnToolStart: func(calls []messages.ChatMessageToolCall) {
 			needsNewline = true
-			if statusLine != nil && len(calls) > 0 {
-				statusLine.ShowToolCall(calls[0].Name)
-			}
 			if toolDisplayEnabled(config) {
 				if contentPrinted {
 					fmt.Fprintln(os.Stderr)
@@ -321,7 +324,21 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 					printToolStart(tc)
 				}
 			}
+			if statusLine != nil && len(calls) > 0 && approver == nil {
+				statusLine.ShowToolCall(calls[0].Name)
+			}
 		},
+		ApproveToolCalls: func() func([]messages.ChatMessageToolCall) []bool {
+			if approver != nil {
+				return func(calls []messages.ChatMessageToolCall) []bool {
+					if statusLine != nil {
+						statusLine.Clear()
+					}
+					return approver.approveToolCalls(calls)
+				}
+			}
+			return nil
+		}(),
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 			if statusLine != nil {
 				statusLine.Clear()

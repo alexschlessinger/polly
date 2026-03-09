@@ -45,6 +45,11 @@ type AgentCallbacks struct {
 	// OnToolStart is called once before parallel tool execution begins with all tool calls
 	OnToolStart func(calls []messages.ChatMessageToolCall)
 
+	// ApproveToolCalls is called before parallel execution with all pending tool calls.
+	// Returns a bool slice indicating which tools are approved.
+	// If nil, all tools are approved.
+	ApproveToolCalls func(calls []messages.ChatMessageToolCall) []bool
+
 	// OnToolEnd is called after each tool executes
 	OnToolEnd func(call messages.ChatMessageToolCall, result string, duration time.Duration, err error)
 
@@ -334,13 +339,41 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 
 	results := make([]messages.ChatMessage, len(toolCalls))
 
+	// Determine which tools are approved
+	approved := make([]bool, len(toolCalls))
+	for i := range approved {
+		approved[i] = true
+	}
+	if cb != nil && cb.ApproveToolCalls != nil {
+		approved = cb.ApproveToolCalls(toolCalls)
+	}
+
+	// Fill in denied results immediately
+	var approvedIndices []int
+	for i, tc := range toolCalls {
+		if !approved[i] {
+			results[i] = messages.ChatMessage{
+				Role:       messages.MessageRoleTool,
+				Content:    "Tool call denied by user.",
+				ToolCallID: tc.ID,
+				ToolName:   tc.Name,
+			}
+			if cb != nil && cb.OnToolEnd != nil {
+				cb.OnToolEnd(tc, results[i].Content, 0, nil)
+			}
+		} else {
+			approvedIndices = append(approvedIndices, i)
+		}
+	}
+
 	g, ctx := errgroup.WithContext(ctx)
 
 	// Semaphore for concurrency limiting
-	sem := make(chan struct{}, a.effectiveParallelism(len(toolCalls)))
+	sem := make(chan struct{}, a.effectiveParallelism(len(approvedIndices)))
 
-	for i, tc := range toolCalls {
-		i, tc := i, tc // capture loop vars
+	for _, idx := range approvedIndices {
+		idx := idx
+		tc := toolCalls[idx]
 		g.Go(func() error {
 			// Acquire semaphore (respects context cancellation)
 			select {
@@ -350,7 +383,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 				return ctx.Err()
 			}
 
-			results[i] = a.executeTool(ctx, tc, cb)
+			results[idx] = a.executeTool(ctx, tc, cb)
 			return nil
 		})
 	}
