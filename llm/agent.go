@@ -89,6 +89,15 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	msgs := make([]messages.ChatMessage, len(req.Messages))
 	copy(msgs, req.Messages)
 
+	// Resolve skills once before the loop to avoid double-augmentation
+	// on subsequent iterations (where msgs[0] already has the augmented prompt).
+	loopReq := *req
+	if loopReq.Skills != nil && !loopReq.Skills.IsEmpty() {
+		loopReq.Messages = msgs
+		msgs = loopReq.ResolvedMessages()
+		loopReq.Skills = nil
+	}
+
 	var allGenerated []messages.ChatMessage
 
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
@@ -100,7 +109,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 
 		// Build request with accumulated messages
-		iterReq := *req
+		iterReq := loopReq
 		iterReq.Messages = msgs
 		if a.tools != nil {
 			iterReq.Tools = a.tools.All()
@@ -183,6 +192,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		toolMsgs, err := a.executeToolsParallel(ctx, response.ToolCalls, cb)
 		if err != nil {
 			return nil, err
+		}
+		if a.tools != nil {
+			a.tools.CommitPendingChanges()
 		}
 		msgs = append(msgs, toolMsgs...)
 		allGenerated = append(allGenerated, toolMsgs...)
@@ -290,10 +302,14 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 		return errMsg, errors.New("no tool registry")
 	}
 
-	tool, exists := a.tools.Get(tc.Name)
+	tool, exists, allowed := a.tools.GetIfAllowed(tc.Name)
 	if !exists {
 		errMsg := fmt.Sprintf("Tool not found: %s", tc.Name)
 		return errMsg, errors.New("tool not found: " + tc.Name)
+	}
+	if !allowed {
+		errMsg := fmt.Sprintf("Tool not allowed by active skill policy: %s", tc.Name)
+		return errMsg, errors.New("tool not allowed: " + tc.Name)
 	}
 
 	// Execute

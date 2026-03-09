@@ -16,8 +16,12 @@ type Settings struct {
 	ThinkingEffort   string  `json:"thinkingEffort,omitempty"`
 	SystemPrompt     string  `json:"systemPrompt,omitempty"`
 
-	// Tool configuration
-	ToolTimeout time.Duration `json:"toolTimeout,omitempty"`
+	// Agent configuration
+	MaxIterations int           `json:"maxIterations,omitempty"`
+	ToolTimeout   time.Duration `json:"toolTimeout,omitempty"`
+
+	// Skill configuration
+	SkillDirs []string `json:"skillDirs,omitempty"`
 }
 
 // Config holds all configuration from command-line flags
@@ -25,8 +29,13 @@ type Config struct {
 	Settings // Embed the shared settings
 
 	// Runtime configuration
-	Timeout time.Duration
-	BaseURL string
+	Timeout       time.Duration
+	MaxIterations int
+	BaseURL       string
+
+	// Skill configuration
+	NoSkills   bool
+	ListSkills bool
 
 	// Context operations
 	ContextID      string
@@ -48,6 +57,9 @@ type Config struct {
 
 	// Temporary storage for command line tools (before conversion to ActiveTools)
 	Tools []string
+
+	// Skills to load directly (local paths or URLs, auto-activated)
+	Skills []string
 }
 
 // ToMetadataSettings copies Settings fields to Metadata
@@ -58,5 +70,7 @@ func (s Settings) ToMetadataSettings(m *sessions.Metadata) {
 	m.MaxHistoryTokens = s.MaxHistoryTokens
 	m.ThinkingEffort = s.ThinkingEffort
 	m.SystemPrompt = s.SystemPrompt
+	m.MaxIterations = s.MaxIterations
 	m.ToolTimeout = s.ToolTimeout
+	m.SkillDirs = s.SkillDirs
 }

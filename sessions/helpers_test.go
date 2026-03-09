@@ -366,4 +366,13 @@ func TestMergeMetadata(t *testing.T) {
 			t.Error("LastUsed should be approximately now")
 		}
 	})
+
+	t.Run("active skills override when provided", func(t *testing.T) {
+		existing := &Metadata{ActiveSkills: []string{"old-skill"}}
+		update := &Metadata{ActiveSkills: []string{"new-skill"}}
+		result := MergeMetadata(existing, update)
+		if len(result.ActiveSkills) != 1 || result.ActiveSkills[0] != "new-skill" {
+			t.Errorf("ActiveSkills = %v, want [new-skill]", result.ActiveSkills)
+		}
+	})
 }

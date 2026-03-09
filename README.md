@@ -23,6 +23,9 @@ GLOBAL OPTIONS:
    --think-medium                                         Enable thinking/reasoning (medium effort) (default: false)
    --think-hard                                           Enable thinking/reasoning (high effort) (default: false)
    --baseurl string                                       Base URL for API (for OpenAI-compatible endpoints or Ollama)
+   --skill-dir string [ --skill-dir string ]              Skill directory or directory containing skill folders (can be specified multiple times)
+   --no-skills                                            Disable Agent Skill discovery and runtime skill tools (default: false)
+   --list-skills                                          List discovered Agent Skills (default: false)
    --tool string, -t string [ --tool string, -t string ]  Tool provider: shell script or MCP server (can be specified multiple times)
    --tooltimeout duration                                 Tool execution timeout (default: 2m0s)
    --prompt string, -p string                             Initial prompt (reads from stdin if not provided)
@@ -49,6 +52,7 @@ GLOBAL OPTIONS:
 - **Multimodal**: Text, pics, random files.
 - **Structured Output**: JSON on purpose, not by accident.
 - **Tool Calling**: Bolt on shell scripts & MCP servers.
+- **Agent Skills**: Discover `SKILL.md` bundles, activate them on demand, and expose bundled helper scripts as tools.
 - **Contexts**: Memory, but opt‑in.
 - **Streaming**: Words appear while it thinks.
 - **API**: Do the things yourself [docs](API.md)
@@ -83,6 +87,10 @@ polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 # Tools example - auto-detects shell tools vs MCP servers
 ./polly -p "uppercase this: hello" --tool ./uppercase.sh
 ./polly -p "create news.txt with today's news" --tool perp.json --tool filesystem.json
+
+# Agent Skills
+./polly --skill-dir ~/.pollytool/skills --list-skills
+./polly --skill-dir ~/.pollytool/skills -p "review this patch for regressions"
 ```
 ### Model Selection
 
@@ -188,6 +196,35 @@ polly -c project -t ./build.sh -p "build the project"
 
 # Later, tools are automatically restored
 polly -c project -p "run tests"  # build.sh is still available
+```
+
+## Agent Skills
+
+Polly can discover [Agent Skills](https://agentskills.io/specification) from one or more directories. Each skill lives in a folder named after the skill and contains a `SKILL.md` manifest with YAML frontmatter.
+
+At runtime Polly:
+- advertises discovered skills in the system prompt
+- exposes `activate_skill` and `read_skill_file` native tools
+- loads executable files under a skill's `scripts/` directory as normal Polly shell tools, namespaced by skill name, when the skill is activated
+- loads Claude Desktop style MCP configs from a skill's optional `mcp/` directory, namespaced by skill and server name, when the skill is activated
+- enforces `allowed-tools` on future turns after activation, matching Polly tool names with `*` glob support; skill-bundled tools remain auto-approved, and multiple skill activations combine their allowlists additively
+
+`allowed-tools` is additive for the duration of the run: activating another skill can widen access, but it does not revoke tools that were already allowed by a previously activated skill.
+
+Examples:
+
+```bash
+# Use the default ~/.pollytool/skills directory if it exists
+polly --list-skills
+
+# Point at one or more explicit skill directories
+polly --skill-dir ~/.pollytool/skills --skill-dir ./skills --list-skills
+
+# Run with skills enabled
+polly --skill-dir ~/.pollytool/skills -p "help me review this Go change"
+
+# Disable skills for a run
+polly --no-skills -p "summarize this file"
 ```
 
 ## Structured Output

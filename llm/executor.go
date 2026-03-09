@@ -79,12 +79,22 @@ func (e *ToolExecutor) ExecuteToolCall(
 	}
 
 	// Get tool from registry
-	tool, exists := e.Registry.Get(toolCall.Name)
+	tool, exists, allowed := e.Registry.GetIfAllowed(toolCall.Name)
 	if !exists {
 		errMsg := fmt.Sprintf("Tool not found: %s", toolCall.Name)
 		if e.Hooks != nil && e.Hooks.OnToolNotFound != nil {
 			errMsg = e.Hooks.OnToolNotFound(toolCall)
 		}
+		session.AddMessage(messages.ChatMessage{
+			Role:       messages.MessageRoleTool,
+			Content:    errMsg,
+			ToolCallID: toolCall.ID,
+			ToolName:   toolCall.Name,
+		})
+		return false
+	}
+	if !allowed {
+		errMsg := fmt.Sprintf("Tool not allowed by active skill policy: %s", toolCall.Name)
 		session.AddMessage(messages.ChatMessage{
 			Role:       messages.MessageRoleTool,
 			Content:    errMsg,
@@ -145,5 +155,8 @@ func (e *ToolExecutor) ExecuteAll(
 ) {
 	for _, tc := range toolCalls {
 		e.ExecuteToolCall(ctx, tc, session)
+	}
+	if e.Registry != nil {
+		e.Registry.CommitPendingChanges()
 	}
 }
