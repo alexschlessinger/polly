@@ -163,7 +163,7 @@ func TestLoadSkillCatalogCombinesSkillDirAndSkill(t *testing.T) {
 		t.Fatal("expected catalog to be non-nil")
 	}
 	if _, ok := result.catalog.Get("dir-skill"); !ok {
-		t.Fatal("expected dir-skill from --skill-dir")
+		t.Fatal("expected dir-skill from --skilldir")
 	}
 	if _, ok := result.catalog.Get("flag-skill"); !ok {
 		t.Fatal("expected flag-skill from --skill")

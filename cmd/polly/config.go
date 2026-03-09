@@ -43,7 +43,7 @@ func parseConfig(cmd *cli.Command) *Config {
 			ThinkingEffort:   cmd.String("thinkingeffort"),
 			SystemPrompt:     cmd.String("system"),
 			ToolTimeout:      cmd.Duration("tooltimeout"),
-			SkillDirs:        cmd.StringSlice("skill-dir"),
+			SkillDirs:        cmd.StringSlice("skilldir"),
 		},
 
 		// Runtime configuration
@@ -52,8 +52,8 @@ func parseConfig(cmd *cli.Command) *Config {
 		BaseURL:       cmd.String("baseurl"),
 
 		// Skill configuration
-		NoSkills:   cmd.Bool("no-skills"),
-		ListSkills: cmd.Bool("list-skills"),
+		NoSkills:   cmd.Bool("noskills"),
+		ListSkills: cmd.Bool("listskills"),
 
 		// Context operations
 		ContextID:      cmd.String("context"),
@@ -113,7 +113,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 				"context", "last", "prompt", "file", "model", "temp",
 				"maxtokens", "maxiterations", "timeout", "tool", "mcp", "system", "schema",
 				"tooltimeout", "maxcontext", "thinkingeffort", "baseurl",
-				"skill-dir", "skill", "no-skills", "list-skills",
+				"skilldir", "skill", "noskills", "listskills",
 			}
 			if slices.ContainsFunc(disallowedFlags, cmd.IsSet) {
 				return fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
@@ -152,11 +152,11 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		},
 	}
 	listSkillsFlag := &cli.BoolFlag{
-		Name:  "list-skills",
+		Name:  "listskills",
 		Usage: "List discovered Agent Skills",
 		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
 			if v && (cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0) {
-				return fmt.Errorf("--list-skills does not take prompts or files")
+				return fmt.Errorf("--listskills does not take prompts or files")
 			}
 			return nil
 		},
@@ -254,7 +254,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 
 		// Skill configuration
 		&cli.StringSliceFlag{
-			Name:    "skill-dir",
+			Name:    "skilldir",
 			Usage:   "Skill directory or directory containing skill folders (can be specified multiple times)",
 			Sources: cli.EnvVars("POLLYTOOL_SKILLDIR"),
 		},
@@ -264,7 +264,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Usage:   "Skill to load: local directory, git repo URL, or archive URL. Auto-activated on start.",
 		},
 		&cli.BoolFlag{
-			Name:  "no-skills",
+			Name:  "noskills",
 			Usage: "Disable Agent Skill discovery and runtime skill tools",
 		},
 		listSkillsFlag,

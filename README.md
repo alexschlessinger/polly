@@ -23,9 +23,9 @@ GLOBAL OPTIONS:
    --think-medium                                         Enable thinking/reasoning (medium effort) (default: false)
    --think-hard                                           Enable thinking/reasoning (high effort) (default: false)
    --baseurl string                                       Base URL for API (for OpenAI-compatible endpoints or Ollama)
-   --skill-dir string [ --skill-dir string ]              Skill directory or directory containing skill folders (can be specified multiple times)
-   --no-skills                                            Disable Agent Skill discovery and runtime skill tools (default: false)
-   --list-skills                                          List discovered Agent Skills (default: false)
+   --skilldir string [ --skilldir string ]              Skill directory or directory containing skill folders (can be specified multiple times)
+   --noskills                                            Disable Agent Skill discovery and runtime skill tools (default: false)
+   --listskills                                          List discovered Agent Skills (default: false)
    --tool string, -t string [ --tool string, -t string ]  Tool provider: shell script or MCP server (can be specified multiple times)
    --tooltimeout duration                                 Tool execution timeout (default: 2m0s)
    --prompt string, -p string                             Initial prompt (reads from stdin if not provided)
@@ -89,8 +89,8 @@ polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 ./polly -p "create news.txt with today's news" --tool perp.json --tool filesystem.json
 
 # Agent Skills
-./polly --skill-dir ~/.pollytool/skills --list-skills
-./polly --skill-dir ~/.pollytool/skills -p "review this patch for regressions"
+./polly --skilldir ~/.pollytool/skills --listskills
+./polly --skilldir ~/.pollytool/skills -p "review this patch for regressions"
 ```
 ### Model Selection
 
@@ -215,16 +215,16 @@ Examples:
 
 ```bash
 # Use the default ~/.pollytool/skills directory if it exists
-polly --list-skills
+polly --listskills
 
 # Point at one or more explicit skill directories
-polly --skill-dir ~/.pollytool/skills --skill-dir ./skills --list-skills
+polly --skilldir ~/.pollytool/skills --skilldir ./skills --listskills
 
 # Run with skills enabled
-polly --skill-dir ~/.pollytool/skills -p "help me review this Go change"
+polly --skilldir ~/.pollytool/skills -p "help me review this Go change"
 
 # Disable skills for a run
-polly --no-skills -p "summarize this file"
+polly --noskills -p "summarize this file"
 ```
 
 ## Structured Output

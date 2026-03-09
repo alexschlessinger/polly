@@ -447,7 +447,7 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			if !cmd.IsSet("maxiterations") && contextInfo.MaxIterations > 0 {
 				config.MaxIterations = contextInfo.MaxIterations
 			}
-			if !cmd.IsSet("skill-dir") && len(contextInfo.SkillDirs) > 0 {
+			if !cmd.IsSet("skilldir") && len(contextInfo.SkillDirs) > 0 {
 				config.Settings.SkillDirs = contextInfo.SkillDirs
 			}
 		}
