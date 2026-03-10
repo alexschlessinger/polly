@@ -497,7 +497,13 @@ func (r *ToolRegistry) loadShellToolWithNamespace(path, namespace string) (LoadR
 }
 
 func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]stagedToolRecord, LoadResult, error) {
-	shellTool, err := NewShellTool(path)
+	// Create a schema-loading sandbox (base config: no network, temp-only writes)
+	// so that --schema execution cannot perform side effects.
+	var schemaSB sandbox.Sandbox
+	if r.sandboxFactory != nil {
+		schemaSB, _ = r.sandboxFactory(r.baseSandboxCfg)
+	}
+	shellTool, err := NewShellTool(path, schemaSB)
 	if err != nil {
 		return nil, LoadResult{}, fmt.Errorf("failed to load shell tool %s: %w", path, err)
 	}
@@ -562,8 +568,11 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
 	var sb sandbox.Sandbox
 	if r.sandboxFactory != nil {
-		if spec := config.SandboxSpec(); spec != nil {
-			var err error
+		spec, err := config.SandboxSpec()
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid sandbox config for MCP server %s: %w", serverName, err)
+		}
+		if spec != nil {
 			sb, err = r.NewSandbox(spec)
 			if err != nil {
 				return nil, nil, fmt.Errorf("sandbox for MCP server %s: %w", serverName, err)
@@ -829,7 +838,11 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 	// Create sandbox if configured
 	var sb sandbox.Sandbox
 	if r.sandboxFactory != nil {
-		if spec := config.SandboxSpec(); spec != nil {
+		spec, specErr := config.SandboxSpec()
+		if specErr != nil {
+			return fmt.Errorf("invalid sandbox config for MCP server %s: %w", namespace, specErr)
+		}
+		if spec != nil {
 			sb, err = r.NewSandbox(spec)
 			if err != nil {
 				return fmt.Errorf("sandbox for MCP server %s: %w", namespace, err)

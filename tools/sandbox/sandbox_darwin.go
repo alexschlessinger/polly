@@ -63,7 +63,12 @@ func buildProfile(cfg Config) string {
 
 	if !cfg.DenyWrite {
 		// Allow writes to OS temp dir and configured paths.
+		// Include both /private/tmp and the runtime TMPDIR (typically
+		// /var/folders/...) so that programs using os.TempDir() work.
 		writePaths := []string{"/private/tmp"}
+		if tmpdir := os.TempDir(); tmpdir != "" && tmpdir != "/private/tmp" && tmpdir != "/tmp" {
+			writePaths = append(writePaths, tmpdir)
+		}
 		for _, p := range cfg.WritablePaths {
 			writePaths = append(writePaths, expandTilde(p))
 		}

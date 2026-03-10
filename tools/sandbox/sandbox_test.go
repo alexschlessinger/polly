@@ -47,6 +47,7 @@ func TestParseSpec(t *testing.T) {
 		name      string
 		input     string
 		isNil     bool
+		wantErr   bool
 		net       bool
 		denyDNS   bool
 		paths     int
@@ -54,23 +55,35 @@ func TestParseSpec(t *testing.T) {
 		allowEnv  int
 		denyWrite bool
 	}{
-		{"true", `true`, false, false, false, 0, 0, 0, false},
-		{"false", `false`, true, false, false, 0, 0, 0, false},
-		{"null", `null`, true, false, false, 0, 0, 0, false},
-		{"empty", ``, true, false, false, 0, 0, 0, false},
-		{"object defaults", `{}`, false, false, false, 0, 0, 0, false},
-		{"allow network", `{"allowNetwork":true}`, false, true, false, 0, 0, 0, false},
-		{"writable paths", `{"writablePaths":["/a","/b"]}`, false, false, false, 2, 0, 0, false},
-		{"full", `{"allowNetwork":true,"writablePaths":["/x"]}`, false, true, false, 1, 0, 0, false},
-		{"readPaths", `{"readPaths":["~/.aws"]}`, false, false, false, 0, 1, 0, false},
-		{"allowEnv", `{"allowEnv":["HOME","PATH"]}`, false, false, false, 0, 0, 2, false},
-		{"denyWrite", `{"denyWrite":true}`, false, false, false, 0, 0, 0, true},
-		{"denyDNS", `{"denyDNS":true}`, false, false, true, 0, 0, 0, false},
-		{"denyDNS with network", `{"allowNetwork":true,"denyDNS":true}`, false, true, true, 0, 0, 0, false},
+		{"true", `true`, false, false, false, false, 0, 0, 0, false},
+		{"false", `false`, true, false, false, false, 0, 0, 0, false},
+		{"null", `null`, true, false, false, false, 0, 0, 0, false},
+		{"empty", ``, true, false, false, false, 0, 0, 0, false},
+		{"object defaults", `{}`, false, false, false, false, 0, 0, 0, false},
+		{"allow network", `{"allowNetwork":true}`, false, false, true, false, 0, 0, 0, false},
+		{"writable paths", `{"writablePaths":["/a","/b"]}`, false, false, false, false, 2, 0, 0, false},
+		{"full", `{"allowNetwork":true,"writablePaths":["/x"]}`, false, false, true, false, 1, 0, 0, false},
+		{"readPaths", `{"readPaths":["~/.aws"]}`, false, false, false, false, 0, 1, 0, false},
+		{"allowEnv", `{"allowEnv":["HOME","PATH"]}`, false, false, false, false, 0, 0, 2, false},
+		{"denyWrite", `{"denyWrite":true}`, false, false, false, false, 0, 0, 0, true},
+		{"denyDNS", `{"denyDNS":true}`, false, false, false, true, 0, 0, 0, false},
+		{"denyDNS with network", `{"allowNetwork":true,"denyDNS":true}`, false, false, true, true, 0, 0, 0, false},
+		{"invalid string", `"yes"`, false, true, false, false, 0, 0, 0, false},
+		{"invalid number", `123`, false, true, false, false, 0, 0, 0, false},
+		{"invalid array", `["network"]`, false, true, false, false, 0, 0, 0, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			spec := ParseSpec(json.RawMessage(tt.input))
+			spec, err := ParseSpec(json.RawMessage(tt.input))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for input %s, got spec %+v", tt.input, spec)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if tt.isNil {
 				if spec != nil {
 					t.Fatalf("expected nil, got %+v", spec)

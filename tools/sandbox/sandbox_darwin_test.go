@@ -116,7 +116,16 @@ func TestSandboxBlocksWriteOutsideAllowedPath(t *testing.T) {
 	skipIfNoSandboxExec(t)
 
 	allowedDir := t.TempDir()
-	blockedDir := t.TempDir()
+	// Use a dir outside temp so it's not auto-allowed by the sandbox.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot get home dir")
+	}
+	blockedDir := filepath.Join(home, ".polly-sandbox-test-blocked")
+	if err := os.MkdirAll(blockedDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	defer os.RemoveAll(blockedDir)
 
 	sb, err := New(Config{WritablePaths: []string{allowedDir}})
 	if err != nil {
@@ -129,6 +138,7 @@ func TestSandboxBlocksWriteOutsideAllowedPath(t *testing.T) {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err == nil {
+		os.Remove(target)
 		t.Fatal("expected sandboxed write outside allowed path to fail")
 	}
 }
@@ -283,8 +293,16 @@ func TestSpecMergeIntoAddsWritablePaths(t *testing.T) {
 		t.Fatalf("write to extra dir failed: %v", err)
 	}
 
-	// Write to a third dir should be blocked
-	blockedDir := t.TempDir()
+	// Write to a dir outside temp should be blocked
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot get home dir")
+	}
+	blockedDir := filepath.Join(home, ".polly-sandbox-test-merge")
+	if mkErr := os.MkdirAll(blockedDir, 0755); mkErr != nil {
+		t.Fatalf("MkdirAll: %v", mkErr)
+	}
+	defer os.RemoveAll(blockedDir)
 	cmd = exec.CommandContext(context.Background(), "bash", "-c", "echo bad > "+filepath.Join(blockedDir, "c.txt"))
 	if err := sb.Wrap(cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)

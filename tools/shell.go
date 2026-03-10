@@ -31,12 +31,21 @@ func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
 	return &ShellTool{Command: s.Command, schema: s.schema, sandbox: sb, sandboxSpec: s.sandboxSpec}
 }
 
-// NewShellTool creates a new shell tool from a command
-func NewShellTool(command string) (*ShellTool, error) {
+// NewShellTool creates a new shell tool from a command.
+// An optional sandbox.Sandbox can be provided to run the --schema
+// invocation inside a sandbox, preventing untrusted scripts from
+// executing side effects during schema loading.
+func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
 	tool := &ShellTool{Command: command}
 
-	// Load schema from the tool
-	schemaJSON, err := tool.runCommand("--schema")
+	// Load schema from the tool, sandboxed if a sandbox is provided.
+	var schemaJSON string
+	var err error
+	if len(schemaSandbox) > 0 && schemaSandbox[0] != nil {
+		schemaJSON, err = tool.runCommandSandboxed("--schema", schemaSandbox[0])
+	} else {
+		schemaJSON, err = tool.runCommand("--schema")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema from %s: %v", command, err)
 	}
@@ -46,7 +55,10 @@ func NewShellTool(command string) (*ShellTool, error) {
 		Sandbox json.RawMessage `json:"sandbox"`
 	}
 	_ = json.Unmarshal([]byte(schemaJSON), &meta)
-	tool.sandboxSpec = sandbox.ParseSpec(meta.Sandbox)
+	tool.sandboxSpec, err = sandbox.ParseSpec(meta.Sandbox)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sandbox spec in %s: %w", command, err)
+	}
 
 	// Parse the schema directly - it should unmarshal properly
 	tool.schema = &jsonschema.Schema{}
@@ -138,9 +150,22 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 	return result, nil
 }
 
-// runCommand executes the shell tool with a single argument
+// runCommand executes the shell tool with a single argument.
 func (s *ShellTool) runCommand(arg string) (string, error) {
 	cmd := exec.Command(s.Command, arg)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// runCommandSandboxed executes the shell tool inside a sandbox.
+func (s *ShellTool) runCommandSandboxed(arg string, sb sandbox.Sandbox) (string, error) {
+	cmd := exec.Command(s.Command, arg)
+	if err := sb.Wrap(cmd); err != nil {
+		return "", fmt.Errorf("sandbox: %w", err)
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err

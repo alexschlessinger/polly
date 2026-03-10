@@ -760,15 +760,17 @@ func TestShellToolSandboxWrapError(t *testing.T) {
 
 func TestMCPConfigSandboxSpec(t *testing.T) {
 	tests := []struct {
-		name  string
-		json  string
-		isNil bool
-		net   bool
+		name    string
+		json    string
+		isNil   bool
+		wantErr bool
+		net     bool
 	}{
-		{"absent", `{"command":"echo"}`, true, false},
-		{"true", `{"command":"echo","sandbox":true}`, false, false},
-		{"false", `{"command":"echo","sandbox":false}`, true, false},
-		{"object", `{"command":"echo","sandbox":{"allowNetwork":true}}`, false, true},
+		{"absent", `{"command":"echo"}`, true, false, false},
+		{"true", `{"command":"echo","sandbox":true}`, false, false, false},
+		{"false", `{"command":"echo","sandbox":false}`, true, false, false},
+		{"object", `{"command":"echo","sandbox":{"allowNetwork":true}}`, false, false, true},
+		{"invalid string", `{"command":"echo","sandbox":"yes"}`, false, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -776,7 +778,16 @@ func TestMCPConfigSandboxSpec(t *testing.T) {
 			if err := json.Unmarshal([]byte(tt.json), &cfg); err != nil {
 				t.Fatalf("Unmarshal error: %v", err)
 			}
-			spec := cfg.SandboxSpec()
+			spec, err := cfg.SandboxSpec()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got spec %+v", spec)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if tt.isNil {
 				if spec != nil {
 					t.Fatalf("expected nil spec, got %+v", spec)

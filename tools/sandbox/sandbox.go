@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,23 +86,33 @@ type Spec struct {
 	DenyWrite     bool     `json:"denyWrite,omitempty"`     // deny all file writes including temp
 }
 
-// ParseSpec parses a JSON sandbox field. Returns nil for absent, null, or false.
-func ParseSpec(raw json.RawMessage) *Spec {
+// ParseSpec parses a JSON sandbox field.
+// Returns (nil, nil) for absent, null, or false.
+// Returns an error for values that are not bool, null, or object
+// (e.g. "yes", 123, []) so callers fail closed instead of silently
+// running unsandboxed.
+func ParseSpec(raw json.RawMessage) (*Spec, error) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
+	// null
+	if string(raw) == "null" {
+		return nil, nil
+	}
+	// bool
 	var b bool
 	if json.Unmarshal(raw, &b) == nil {
 		if b {
-			return &Spec{}
+			return &Spec{}, nil
 		}
-		return nil
+		return nil, nil
 	}
+	// object
 	var s Spec
 	if json.Unmarshal(raw, &s) == nil {
-		return &s
+		return &s, nil
 	}
-	return nil
+	return nil, fmt.Errorf("unsupported sandbox value: %s (must be true, false, or an object)", string(raw))
 }
 
 // MergeInto applies spec overrides onto a base Config.

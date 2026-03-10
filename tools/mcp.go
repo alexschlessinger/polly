@@ -169,7 +169,7 @@ type MCPConfig struct {
 }
 
 // SandboxSpec returns the parsed sandbox spec, or nil if not requested.
-func (c *MCPConfig) SandboxSpec() *sandbox.Spec {
+func (c *MCPConfig) SandboxSpec() (*sandbox.Spec, error) {
 	return sandbox.ParseSpec(c.Sandbox)
 }
 
