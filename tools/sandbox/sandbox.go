@@ -18,12 +18,21 @@ type Sandbox interface {
 
 // Config controls sandbox permissions.
 type Config struct {
-	// Directories where file writes are allowed.
-	// The OS temp dir is always included automatically.
+	// Directories where file writes are allowed (supports ~ expansion).
+	// The OS temp dir is included automatically unless DenyWrite is set.
 	WritablePaths []string
 
 	// Allow outbound network access (denied by default).
 	AllowNetwork bool
+
+	// Paths exempted from the DeniedPaths deny list.
+	ReadPaths []string
+
+	// If non-empty, only these env vars are passed through to the sandbox.
+	AllowEnv []string
+
+	// Deny all file writes, including to temp directories.
+	DenyWrite bool
 }
 
 // DeniedPathKind identifies how a denied path should be masked by platform sandboxes.
@@ -67,6 +76,9 @@ var DeniedPaths = []DeniedPath{
 type Spec struct {
 	AllowNetwork  bool     `json:"allowNetwork,omitempty"`
 	WritablePaths []string `json:"writablePaths,omitempty"`
+	ReadPaths     []string `json:"readPaths,omitempty"`     // exempt from DeniedPaths
+	AllowEnv      []string `json:"allowEnv,omitempty"`      // env vars to keep (if set, all others stripped)
+	DenyWrite     bool     `json:"denyWrite,omitempty"`     // deny all file writes including temp
 }
 
 // ParseSpec parses a JSON sandbox field. Returns nil for absent, null, or false.
@@ -92,7 +104,20 @@ func ParseSpec(raw json.RawMessage) *Spec {
 func (s *Spec) MergeInto(base Config) Config {
 	base.AllowNetwork = base.AllowNetwork || s.AllowNetwork
 	base.WritablePaths = append(base.WritablePaths, s.WritablePaths...)
+	base.ReadPaths = append(base.ReadPaths, s.ReadPaths...)
+	base.AllowEnv = append(base.AllowEnv, s.AllowEnv...)
+	base.DenyWrite = base.DenyWrite || s.DenyWrite
 	return base
+}
+
+// expandTilde resolves a ~ prefix to the user's home directory for a single path.
+func expandTilde(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
 }
 
 // ExpandHome resolves ~ prefixes to the user's home directory.

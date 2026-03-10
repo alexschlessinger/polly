@@ -44,20 +44,26 @@ func TestDeniedPathsNotEmpty(t *testing.T) {
 
 func TestParseSpec(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		isNil  bool
-		net    bool
-		paths  int
+		name      string
+		input     string
+		isNil     bool
+		net       bool
+		paths     int
+		readPaths int
+		allowEnv  int
+		denyWrite bool
 	}{
-		{"true", `true`, false, false, 0},
-		{"false", `false`, true, false, 0},
-		{"null", `null`, true, false, 0},
-		{"empty", ``, true, false, 0},
-		{"object defaults", `{}`, false, false, 0},
-		{"allow network", `{"allowNetwork":true}`, false, true, 0},
-		{"writable paths", `{"writablePaths":["/a","/b"]}`, false, false, 2},
-		{"full", `{"allowNetwork":true,"writablePaths":["/x"]}`, false, true, 1},
+		{"true", `true`, false, false, 0, 0, 0, false},
+		{"false", `false`, true, false, 0, 0, 0, false},
+		{"null", `null`, true, false, 0, 0, 0, false},
+		{"empty", ``, true, false, 0, 0, 0, false},
+		{"object defaults", `{}`, false, false, 0, 0, 0, false},
+		{"allow network", `{"allowNetwork":true}`, false, true, 0, 0, 0, false},
+		{"writable paths", `{"writablePaths":["/a","/b"]}`, false, false, 2, 0, 0, false},
+		{"full", `{"allowNetwork":true,"writablePaths":["/x"]}`, false, true, 1, 0, 0, false},
+		{"readPaths", `{"readPaths":["~/.aws"]}`, false, false, 0, 1, 0, false},
+		{"allowEnv", `{"allowEnv":["HOME","PATH"]}`, false, false, 0, 0, 2, false},
+		{"denyWrite", `{"denyWrite":true}`, false, false, 0, 0, 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,13 +83,33 @@ func TestParseSpec(t *testing.T) {
 			if len(spec.WritablePaths) != tt.paths {
 				t.Fatalf("WritablePaths = %v, want %d entries", spec.WritablePaths, tt.paths)
 			}
+			if len(spec.ReadPaths) != tt.readPaths {
+				t.Fatalf("ReadPaths = %v, want %d entries", spec.ReadPaths, tt.readPaths)
+			}
+			if len(spec.AllowEnv) != tt.allowEnv {
+				t.Fatalf("AllowEnv = %v, want %d entries", spec.AllowEnv, tt.allowEnv)
+			}
+			if spec.DenyWrite != tt.denyWrite {
+				t.Fatalf("DenyWrite = %v, want %v", spec.DenyWrite, tt.denyWrite)
+			}
 		})
 	}
 }
 
 func TestSpecMergeInto(t *testing.T) {
-	base := Config{WritablePaths: []string{"/work"}, AllowNetwork: false}
-	spec := &Spec{AllowNetwork: true, WritablePaths: []string{"/extra"}}
+	base := Config{
+		WritablePaths: []string{"/work"},
+		AllowNetwork:  false,
+		ReadPaths:     []string{"~/.kube"},
+		AllowEnv:      []string{"HOME"},
+	}
+	spec := &Spec{
+		AllowNetwork:  true,
+		WritablePaths: []string{"/extra"},
+		ReadPaths:     []string{"~/.aws"},
+		AllowEnv:      []string{"PATH"},
+		DenyWrite:     true,
+	}
 	merged := spec.MergeInto(base)
 
 	if !merged.AllowNetwork {
@@ -94,6 +120,15 @@ func TestSpecMergeInto(t *testing.T) {
 	}
 	if merged.WritablePaths[0] != "/work" || merged.WritablePaths[1] != "/extra" {
 		t.Fatalf("WritablePaths = %v, want [/work /extra]", merged.WritablePaths)
+	}
+	if len(merged.ReadPaths) != 2 || merged.ReadPaths[0] != "~/.kube" || merged.ReadPaths[1] != "~/.aws" {
+		t.Fatalf("ReadPaths = %v, want [~/.kube ~/.aws]", merged.ReadPaths)
+	}
+	if len(merged.AllowEnv) != 2 || merged.AllowEnv[0] != "HOME" || merged.AllowEnv[1] != "PATH" {
+		t.Fatalf("AllowEnv = %v, want [HOME PATH]", merged.AllowEnv)
+	}
+	if !merged.DenyWrite {
+		t.Fatal("MergeInto should set DenyWrite to true")
 	}
 }
 

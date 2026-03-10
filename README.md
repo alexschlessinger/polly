@@ -301,7 +301,7 @@ polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 
 #### Sandboxing
 
-Sandboxing is enabled by default. Shell tools and MCP servers can opt into sandboxing by setting `"sandbox"` to `true` (defaults) or an object with overrides. Opted-in tools run with restricted file writes (only the working directory and temp), no network access, and no reads to sensitive credential paths. The tool's description will include a `[sandboxed]` hint so the LLM knows the tool is restricted. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
+Shell tools and MCP servers can opt into sandboxing by setting `"sandbox"` to `true` (defaults) or an object with overrides. Opted-in tools run with restricted file writes (temp directory only, plus any explicit `writablePaths`), no network access, no reads to sensitive credential paths, and `POLLYTOOL_*` env vars stripped. The tool's description will include a `[sandboxed]` hint so the LLM knows the tool is restricted. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API docs](API.md) for the full sandbox spec reference.
 
 ```bash
 # Shell tool — sandbox with defaults
@@ -324,7 +324,20 @@ fi
 ```bash
 # Shell tool — sandbox with overrides
 "sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/data"] }
+
+# Shell tool — sandbox with read paths and env filtering
+"sandbox": {
+  "allowNetwork": true,
+  "writablePaths": ["/tmp/deploy"],
+  "readPaths": ["~/.aws"],
+  "allowEnv": ["AWS_PROFILE", "AWS_REGION", "HOME", "PATH"]
+}
+
+# Shell tool — fully read-only sandbox (no writes, not even temp)
+"sandbox": { "denyWrite": true }
 ```
+
+`POLLYTOOL_*` env vars (API keys) are always stripped from sandboxed processes unless explicitly included in `allowEnv`.
 
 ```json
 // MCP server — sandbox the server process

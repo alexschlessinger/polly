@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,19 @@ func TestBuildProfileWritePaths(t *testing.T) {
 	}
 	if !strings.Contains(profile, `(allow file-write* (subpath "/Users/test/project"))`) {
 		t.Fatalf("profile missing project path allow:\n%s", profile)
+	}
+}
+
+func TestBuildProfileWritePathsTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot get home dir")
+	}
+	profile := buildProfile(Config{
+		WritablePaths: []string{"~/output"},
+	})
+	if !strings.Contains(profile, fmt.Sprintf(`(allow file-write* (subpath %q))`, filepath.Join(home, "output"))) {
+		t.Fatalf("profile did not expand ~ in writablePaths:\n%s", profile)
 	}
 }
 
@@ -277,6 +291,132 @@ func TestSpecMergeIntoAddsWritablePaths(t *testing.T) {
 	}
 	if err := cmd.Run(); err == nil {
 		t.Fatal("expected write to non-allowed dir to be blocked")
+	}
+}
+
+func TestBuildProfileReadPaths(t *testing.T) {
+	profile := buildProfile(Config{
+		ReadPaths: []string{"~/.aws"},
+	})
+	// Should have the deny for .aws (from DeniedPaths)
+	if !strings.Contains(profile, "(deny file-read*") {
+		t.Fatal("profile missing file-read deny rules")
+	}
+	// Should have an allow after the deny for .aws
+	if !strings.Contains(profile, "(allow file-read* (subpath") {
+		t.Fatalf("profile missing file-read allow for ReadPaths:\n%s", profile)
+	}
+	// The allow should mention .aws
+	if !strings.Contains(profile, ".aws") {
+		t.Fatalf("profile ReadPaths allow does not include .aws:\n%s", profile)
+	}
+}
+
+func TestSandboxAllowsReadOfExemptedPath(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	// Create a temp dir to stand in for a credential path
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "creds")
+	if err := os.WriteFile(secret, []byte("secret-value"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{ReadPaths: []string{dir}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "cat", secret)
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected read of exempted path to succeed: %v (%s)", err, string(out))
+	}
+	if strings.TrimSpace(string(out)) != "secret-value" {
+		t.Fatalf("unexpected output: %s", string(out))
+	}
+}
+
+func TestSandboxEnvFiltering(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{AllowEnv: []string{"POLLY_TEST_KEEP"}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo keep=$POLLY_TEST_KEEP drop=$POLLY_TEST_DROP")
+	cmd.Env = []string{"POLLY_TEST_KEEP=yes", "POLLY_TEST_DROP=no"}
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("command failed: %v (%s)", err, string(out))
+	}
+	result := strings.TrimSpace(string(out))
+	if !strings.Contains(result, "keep=yes") {
+		t.Fatalf("expected POLLY_TEST_KEEP=yes in output, got: %s", result)
+	}
+	if strings.Contains(result, "drop=no") {
+		t.Fatalf("expected POLLY_TEST_DROP to be filtered out, got: %s", result)
+	}
+}
+
+func TestSandboxStripsPollytoolEnvByDefault(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo key=$POLLYTOOL_OPENAIKEY other=$OTHER_VAR")
+	cmd.Env = []string{"POLLYTOOL_OPENAIKEY=secret", "OTHER_VAR=kept"}
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("command failed: %v (%s)", err, string(out))
+	}
+	result := strings.TrimSpace(string(out))
+	if strings.Contains(result, "key=secret") {
+		t.Fatalf("expected POLLYTOOL_OPENAIKEY to be stripped, got: %s", result)
+	}
+	if !strings.Contains(result, "other=kept") {
+		t.Fatalf("expected OTHER_VAR to be kept, got: %s", result)
+	}
+}
+
+func TestBuildProfileDenyWrite(t *testing.T) {
+	profile := buildProfile(Config{DenyWrite: true})
+	if !strings.Contains(profile, "(deny file-write*)") {
+		t.Fatal("profile missing file-write deny")
+	}
+	if strings.Contains(profile, "(allow file-write*") {
+		t.Fatalf("profile should not have any file-write allows when DenyWrite is true:\n%s", profile)
+	}
+}
+
+func TestSandboxDenyWriteBlocksTemp(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{DenyWrite: true})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo bad > /tmp/polly-deny-test")
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected write to /tmp to be blocked when DenyWrite is true")
+		os.Remove("/tmp/polly-deny-test")
 	}
 }
 

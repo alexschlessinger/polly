@@ -60,6 +60,121 @@ func TestLinuxBuildBwrapArgs(t *testing.T) {
 	}
 }
 
+func TestLinuxBuildBwrapArgsWritePathsTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot get home dir")
+	}
+	expanded := filepath.Join(home, "output")
+	args := buildBwrapArgs(Config{
+		WritablePaths: []string{"~/output"},
+	}, nil, "/tmp/pollytool-sandbox-empty")
+
+	joined := strings.Join(args, " ")
+	expected := "--bind " + expanded + " " + expanded
+	if !strings.Contains(joined, expected) {
+		t.Fatalf("expected tilde-expanded writable bind %q in:\n%s", expected, joined)
+	}
+}
+
+func TestLinuxBuildBwrapArgsReadPaths(t *testing.T) {
+	args := buildBwrapArgs(Config{
+		ReadPaths: []string{"/home/user/.ssh"},
+	}, []DeniedPath{
+		{Path: "/home/user/.ssh", Kind: DeniedPathDir},
+		{Path: "/home/user/.aws", Kind: DeniedPathDir},
+		{Path: "/home/user/.npmrc", Kind: DeniedPathFile},
+	}, "/tmp/pollytool-sandbox-empty")
+
+	joined := strings.Join(args, " ")
+
+	// .ssh should NOT be overlaid because it's in ReadPaths
+	if strings.Contains(joined, "--tmpfs /home/user/.ssh") {
+		t.Fatal("denied path in ReadPaths should be skipped, but got --tmpfs for .ssh")
+	}
+	// .aws should still be overlaid
+	if !strings.Contains(joined, "--tmpfs /home/user/.aws") {
+		t.Fatal("denied path NOT in ReadPaths should still have --tmpfs")
+	}
+	// .npmrc should still be overlaid
+	if !strings.Contains(joined, "--ro-bind /tmp/pollytool-sandbox-empty /home/user/.npmrc") {
+		t.Fatal("denied file NOT in ReadPaths should still have placeholder bind")
+	}
+}
+
+func TestLinuxSandboxEnvFiltering(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	sb, err := New(Config{AllowEnv: []string{"POLLY_KEEP"}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", "echo keep=$POLLY_KEEP drop=$POLLY_DROP")
+	cmd.Env = []string{"POLLY_KEEP=yes", "POLLY_DROP=no"}
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+
+	// Verify env was filtered before bwrap args are applied
+	foundKeep := false
+	foundDrop := false
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, "POLLY_KEEP=") {
+			foundKeep = true
+		}
+		if strings.HasPrefix(e, "POLLY_DROP=") {
+			foundDrop = true
+		}
+	}
+	if !foundKeep {
+		t.Fatal("expected POLLY_KEEP to remain in cmd.Env")
+	}
+	if foundDrop {
+		t.Fatal("expected POLLY_DROP to be filtered from cmd.Env")
+	}
+}
+
+func TestLinuxSandboxStripsPollytoolEnvByDefault(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", "echo test")
+	cmd.Env = []string{"POLLYTOOL_OPENAIKEY=secret", "OTHER_VAR=kept"}
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+
+	foundPollytool := false
+	foundOther := false
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, "POLLYTOOL_") {
+			foundPollytool = true
+		}
+		if strings.HasPrefix(e, "OTHER_VAR=") {
+			foundOther = true
+		}
+	}
+	if foundPollytool {
+		t.Fatal("expected POLLYTOOL_* vars to be stripped by default")
+	}
+	if !foundOther {
+		t.Fatal("expected non-POLLYTOOL vars to be kept")
+	}
+}
+
+func TestLinuxBuildBwrapArgsDenyWrite(t *testing.T) {
+	args := buildBwrapArgs(Config{DenyWrite: true}, nil, "/tmp/pollytool-sandbox-empty")
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--bind /tmp /tmp") {
+		t.Fatal("should not have writable /tmp bind when DenyWrite is true")
+	}
+}
+
 func TestLinuxBuildBwrapArgsAllowsNetwork(t *testing.T) {
 	args := buildBwrapArgs(Config{AllowNetwork: true}, nil, "/tmp/pollytool-sandbox-empty")
 	joined := strings.Join(args, " ")

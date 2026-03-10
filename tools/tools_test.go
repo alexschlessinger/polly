@@ -597,6 +597,72 @@ func TestShellToolSandboxSpecObject(t *testing.T) {
 	}
 }
 
+func createSandboxedTestScriptWithFullSpec(t *testing.T, dir string) string {
+	t.Helper()
+	script := `#!/bin/bash
+if [ "$1" = "--schema" ]; then
+	echo '{
+		"title": "full-spec-tool",
+		"description": "A tool with full sandbox spec",
+		"type": "object",
+		"sandbox": {
+			"allowNetwork": true,
+			"writablePaths": ["/tmp/deploy"],
+			"readPaths": ["~/.aws"],
+			"allowEnv": ["AWS_PROFILE", "AWS_REGION", "HOME", "PATH"]
+		},
+		"properties": {
+			"cmd": {"type": "string"}
+		}
+	}'
+elif [ "$1" = "--execute" ]; then
+	echo "ok"
+fi
+`
+	scriptPath := filepath.Join(dir, "full-spec-tool.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to create full spec test script: %v", err)
+	}
+	return scriptPath
+}
+
+func TestShellToolSandboxSpecWithReadPathsAndEnv(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createSandboxedTestScriptWithFullSpec(t, dir)
+
+	tool, err := NewShellTool(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to create shell tool: %v", err)
+	}
+
+	if !tool.WantsSandbox() {
+		t.Fatal("Expected WantsSandbox()=true")
+	}
+
+	spec := tool.SandboxSpec()
+	if spec == nil {
+		t.Fatal("Expected non-nil SandboxSpec")
+	}
+	if !spec.AllowNetwork {
+		t.Error("Expected AllowNetwork=true")
+	}
+	if len(spec.WritablePaths) != 1 || spec.WritablePaths[0] != "/tmp/deploy" {
+		t.Errorf("WritablePaths = %v, want [/tmp/deploy]", spec.WritablePaths)
+	}
+	if len(spec.ReadPaths) != 1 || spec.ReadPaths[0] != "~/.aws" {
+		t.Errorf("ReadPaths = %v, want [~/.aws]", spec.ReadPaths)
+	}
+	if len(spec.AllowEnv) != 4 {
+		t.Errorf("AllowEnv = %v, want 4 entries", spec.AllowEnv)
+	}
+	expected := []string{"AWS_PROFILE", "AWS_REGION", "HOME", "PATH"}
+	for i, want := range expected {
+		if i >= len(spec.AllowEnv) || spec.AllowEnv[i] != want {
+			t.Errorf("AllowEnv[%d] = %q, want %q", i, spec.AllowEnv[i], want)
+		}
+	}
+}
+
 func TestShellToolWantsSandbox(t *testing.T) {
 	dir := t.TempDir()
 
