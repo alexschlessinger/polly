@@ -48,22 +48,25 @@ func TestParseSpec(t *testing.T) {
 		input     string
 		isNil     bool
 		net       bool
+		denyDNS   bool
 		paths     int
 		readPaths int
 		allowEnv  int
 		denyWrite bool
 	}{
-		{"true", `true`, false, false, 0, 0, 0, false},
-		{"false", `false`, true, false, 0, 0, 0, false},
-		{"null", `null`, true, false, 0, 0, 0, false},
-		{"empty", ``, true, false, 0, 0, 0, false},
-		{"object defaults", `{}`, false, false, 0, 0, 0, false},
-		{"allow network", `{"allowNetwork":true}`, false, true, 0, 0, 0, false},
-		{"writable paths", `{"writablePaths":["/a","/b"]}`, false, false, 2, 0, 0, false},
-		{"full", `{"allowNetwork":true,"writablePaths":["/x"]}`, false, true, 1, 0, 0, false},
-		{"readPaths", `{"readPaths":["~/.aws"]}`, false, false, 0, 1, 0, false},
-		{"allowEnv", `{"allowEnv":["HOME","PATH"]}`, false, false, 0, 0, 2, false},
-		{"denyWrite", `{"denyWrite":true}`, false, false, 0, 0, 0, true},
+		{"true", `true`, false, false, false, 0, 0, 0, false},
+		{"false", `false`, true, false, false, 0, 0, 0, false},
+		{"null", `null`, true, false, false, 0, 0, 0, false},
+		{"empty", ``, true, false, false, 0, 0, 0, false},
+		{"object defaults", `{}`, false, false, false, 0, 0, 0, false},
+		{"allow network", `{"allowNetwork":true}`, false, true, false, 0, 0, 0, false},
+		{"writable paths", `{"writablePaths":["/a","/b"]}`, false, false, false, 2, 0, 0, false},
+		{"full", `{"allowNetwork":true,"writablePaths":["/x"]}`, false, true, false, 1, 0, 0, false},
+		{"readPaths", `{"readPaths":["~/.aws"]}`, false, false, false, 0, 1, 0, false},
+		{"allowEnv", `{"allowEnv":["HOME","PATH"]}`, false, false, false, 0, 0, 2, false},
+		{"denyWrite", `{"denyWrite":true}`, false, false, false, 0, 0, 0, true},
+		{"denyDNS", `{"denyDNS":true}`, false, false, true, 0, 0, 0, false},
+		{"denyDNS with network", `{"allowNetwork":true,"denyDNS":true}`, false, true, true, 0, 0, 0, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,6 +82,9 @@ func TestParseSpec(t *testing.T) {
 			}
 			if spec.AllowNetwork != tt.net {
 				t.Fatalf("AllowNetwork = %v, want %v", spec.AllowNetwork, tt.net)
+			}
+			if spec.DenyDNS != tt.denyDNS {
+				t.Fatalf("DenyDNS = %v, want %v", spec.DenyDNS, tt.denyDNS)
 			}
 			if len(spec.WritablePaths) != tt.paths {
 				t.Fatalf("WritablePaths = %v, want %d entries", spec.WritablePaths, tt.paths)
@@ -105,6 +111,7 @@ func TestSpecMergeInto(t *testing.T) {
 	}
 	spec := &Spec{
 		AllowNetwork:  true,
+		DenyDNS:       true,
 		WritablePaths: []string{"/extra"},
 		ReadPaths:     []string{"~/.aws"},
 		AllowEnv:      []string{"PATH"},
@@ -114,6 +121,9 @@ func TestSpecMergeInto(t *testing.T) {
 
 	if !merged.AllowNetwork {
 		t.Fatal("MergeInto should set AllowNetwork to true")
+	}
+	if !merged.DenyDNS {
+		t.Fatal("MergeInto should set DenyDNS to true")
 	}
 	if len(merged.WritablePaths) != 2 {
 		t.Fatalf("WritablePaths = %v, want 2 entries", merged.WritablePaths)
@@ -129,6 +139,23 @@ func TestSpecMergeInto(t *testing.T) {
 	}
 	if !merged.DenyWrite {
 		t.Fatal("MergeInto should set DenyWrite to true")
+	}
+}
+
+func TestSpecMergeIntoDenyDNSOR(t *testing.T) {
+	// DenyDNS should OR: if either side sets it, the result is true.
+	base := Config{DenyDNS: true}
+	spec := &Spec{DenyDNS: false}
+	merged := spec.MergeInto(base)
+	if !merged.DenyDNS {
+		t.Fatal("DenyDNS should be true when base has it set")
+	}
+
+	base2 := Config{DenyDNS: false}
+	spec2 := &Spec{DenyDNS: true}
+	merged2 := spec2.MergeInto(base2)
+	if !merged2.DenyDNS {
+		t.Fatal("DenyDNS should be true when spec has it set")
 	}
 }
 

@@ -25,6 +25,9 @@ type Config struct {
 	// Allow outbound network access (denied by default).
 	AllowNetwork bool
 
+	// Block DNS resolution. Only effective when AllowNetwork is true.
+	DenyDNS bool
+
 	// Paths exempted from the DeniedPaths deny list.
 	ReadPaths []string
 
@@ -75,6 +78,7 @@ var DeniedPaths = []DeniedPath{
 // true (use defaults) or an object with optional fields.
 type Spec struct {
 	AllowNetwork  bool     `json:"allowNetwork,omitempty"`
+	DenyDNS       bool     `json:"denyDNS,omitempty"`       // block DNS resolution (only effective with allowNetwork)
 	WritablePaths []string `json:"writablePaths,omitempty"`
 	ReadPaths     []string `json:"readPaths,omitempty"`     // exempt from DeniedPaths
 	AllowEnv      []string `json:"allowEnv,omitempty"`      // env vars to keep (if set, all others stripped)
@@ -103,6 +107,7 @@ func ParseSpec(raw json.RawMessage) *Spec {
 // MergeInto applies spec overrides onto a base Config.
 func (s *Spec) MergeInto(base Config) Config {
 	base.AllowNetwork = base.AllowNetwork || s.AllowNetwork
+	base.DenyDNS = base.DenyDNS || s.DenyDNS
 	base.WritablePaths = append(base.WritablePaths, s.WritablePaths...)
 	base.ReadPaths = append(base.ReadPaths, s.ReadPaths...)
 	base.AllowEnv = append(base.AllowEnv, s.AllowEnv...)

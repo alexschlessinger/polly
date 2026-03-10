@@ -89,6 +89,12 @@ func buildProfile(cfg Config) string {
 
 	if !cfg.AllowNetwork {
 		sb.WriteString("(deny network*)\n")
+	} else if cfg.DenyDNS {
+		// Block macOS system resolver (mDNSResponder Unix domain socket).
+		sb.WriteString("(deny network-outbound (to unix-socket (path-literal \"/private/var/run/mDNSResponder\")))\n")
+		// Block direct DNS queries (port 53) as a fallback.
+		sb.WriteString("(deny network-outbound (remote udp \"*:53\"))\n")
+		sb.WriteString("(deny network-outbound (remote tcp \"*:53\"))\n")
 	}
 
 	return sb.String()

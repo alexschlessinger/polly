@@ -392,6 +392,60 @@ func TestSandboxStripsPollytoolEnvByDefault(t *testing.T) {
 	}
 }
 
+func TestBuildProfileDenyDNS(t *testing.T) {
+	profile := buildProfile(Config{AllowNetwork: true, DenyDNS: true})
+	if strings.Contains(profile, "(deny network*)") {
+		t.Fatal("profile should not have blanket network deny when AllowNetwork is true")
+	}
+	if !strings.Contains(profile, `(deny network-outbound (to unix-socket (path-literal "/private/var/run/mDNSResponder")))`) {
+		t.Fatalf("profile missing mDNSResponder socket deny:\n%s", profile)
+	}
+	if !strings.Contains(profile, `(deny network-outbound (remote udp "*:53"))`) {
+		t.Fatalf("profile missing UDP port 53 deny:\n%s", profile)
+	}
+	if !strings.Contains(profile, `(deny network-outbound (remote tcp "*:53"))`) {
+		t.Fatalf("profile missing TCP port 53 deny:\n%s", profile)
+	}
+}
+
+func TestBuildProfileDenyDNSWithoutNetwork(t *testing.T) {
+	profile := buildProfile(Config{AllowNetwork: false, DenyDNS: true})
+	if !strings.Contains(profile, "(deny network*)") {
+		t.Fatal("profile should have blanket network deny when AllowNetwork is false")
+	}
+	if strings.Contains(profile, "mDNSResponder") || strings.Contains(profile, "remote udp") || strings.Contains(profile, "remote tcp") {
+		t.Fatalf("profile should not have DNS-specific rules when network is fully denied:\n%s", profile)
+	}
+}
+
+func TestSandboxDenyDNSBlocksResolution(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{AllowNetwork: true, DenyDNS: true})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Hostname resolution should fail
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "curl -s --max-time 3 https://example.com")
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected DNS-based request to fail with DenyDNS")
+	}
+
+	// Direct IP TCP connection should still work (network is allowed, only DNS is blocked).
+	// Use bash /dev/tcp to avoid file-write sandbox restrictions that affect curl.
+	cmd2 := exec.CommandContext(context.Background(), "bash", "-c", "exec 3<>/dev/tcp/1.1.1.1/80 && echo ok")
+	if err := sb.Wrap(cmd2); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd2.Run(); err != nil {
+		t.Fatalf("expected direct IP connection to succeed with DenyDNS, got: %v", err)
+	}
+}
+
 func TestBuildProfileDenyWrite(t *testing.T) {
 	profile := buildProfile(Config{DenyWrite: true})
 	if !strings.Contains(profile, "(deny file-write*)") {

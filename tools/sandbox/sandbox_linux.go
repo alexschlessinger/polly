@@ -109,6 +109,8 @@ func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath, placeholderFile string
 
 	if !cfg.AllowNetwork {
 		args = append(args, "--unshare-net")
+	} else if cfg.DenyDNS {
+		args = append(args, "--ro-bind", placeholderFile, "/etc/resolv.conf")
 	}
 
 	args = append(args, "--die-with-parent")

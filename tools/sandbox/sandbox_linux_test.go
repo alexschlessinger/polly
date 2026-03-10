@@ -167,6 +167,28 @@ func TestLinuxSandboxStripsPollytoolEnvByDefault(t *testing.T) {
 	}
 }
 
+func TestLinuxBuildBwrapArgsDenyDNS(t *testing.T) {
+	args := buildBwrapArgs(Config{AllowNetwork: true, DenyDNS: true}, nil, "/tmp/pollytool-sandbox-empty")
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--unshare-net") {
+		t.Fatal("should not have --unshare-net when AllowNetwork is true")
+	}
+	if !strings.Contains(joined, "--ro-bind /tmp/pollytool-sandbox-empty /etc/resolv.conf") {
+		t.Fatalf("missing resolv.conf masking for DenyDNS:\n%s", joined)
+	}
+}
+
+func TestLinuxBuildBwrapArgsDenyDNSWithoutNetwork(t *testing.T) {
+	args := buildBwrapArgs(Config{AllowNetwork: false, DenyDNS: true}, nil, "/tmp/pollytool-sandbox-empty")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--unshare-net") {
+		t.Fatal("should have --unshare-net when AllowNetwork is false")
+	}
+	if strings.Contains(joined, "/etc/resolv.conf") {
+		t.Fatal("should not mask resolv.conf when network is fully denied")
+	}
+}
+
 func TestLinuxBuildBwrapArgsDenyWrite(t *testing.T) {
 	args := buildBwrapArgs(Config{DenyWrite: true}, nil, "/tmp/pollytool-sandbox-empty")
 	joined := strings.Join(args, " ")

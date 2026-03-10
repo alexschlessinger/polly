@@ -688,6 +688,7 @@ Tools that omit `"sandbox"` or set it to `false` run without restrictions, even 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `allowNetwork` | bool | `false` | Allow outbound network access |
+| `denyDNS` | bool | `false` | Block DNS resolution. Only effective when `allowNetwork` is `true`. |
 | `writablePaths` | string[] | `[]` | Directories where writes are allowed (supports `~`) |
 | `readPaths` | string[] | `[]` | Paths exempted from the credential deny list (supports `~`) |
 | `allowEnv` | string[] | all | If set, only these env vars are passed through |
@@ -704,7 +705,7 @@ Tools that omit `"sandbox"` or set it to `false` run without restrictions, even 
 
 **`POLLYTOOL_*` env vars** (API keys) are always stripped from sandboxed processes, even without `allowEnv`. To explicitly pass one through, include it in `allowEnv`.
 
-**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths`.
+**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths`. `denyDNS: true` has no additional effect when `allowNetwork` is `false`.
 
 #### Examples
 
@@ -724,6 +725,16 @@ Network access and extra write paths:
   "title": "api_tool",
   "type": "object",
   "sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/data"] },
+  "properties": { ... }
+}
+```
+
+Network access without DNS (connect by IP only):
+```json
+{
+  "title": "ip_only_tool",
+  "type": "object",
+  "sandbox": { "allowNetwork": true, "denyDNS": true },
   "properties": { ... }
 }
 ```

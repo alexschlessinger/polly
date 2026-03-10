@@ -333,6 +333,9 @@ fi
   "allowEnv": ["AWS_PROFILE", "AWS_REGION", "HOME", "PATH"]
 }
 
+# Shell tool — network access without DNS (connect by IP only)
+"sandbox": { "allowNetwork": true, "denyDNS": true }
+
 # Shell tool — fully read-only sandbox (no writes, not even temp)
 "sandbox": { "denyWrite": true }
 ```
