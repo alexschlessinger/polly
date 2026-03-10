@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/alexschlessinger/pollytool/skills"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // ErrSkillRuntimeUnavailable is returned when activation or restore is attempted without discovered skills.
@@ -35,11 +36,17 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 	registry.Register(runtime.activateTool)
 	registry.Register(NewSkillReadFileTool(catalog))
 	bt := NewBashTool("")
+	writablePaths := []string{"/tmp"}
 	if registry.HasSandbox() {
-		if sb, err := registry.NewSandbox(nil); err == nil {
+		cfg := sandbox.Config{
+			WritablePaths: writablePaths,
+			AllowNetwork:  true,
+		}
+		if sb, err := registry.NewSandboxFromConfig(cfg); err == nil {
 			bt = bt.WithSandbox(sb)
 		}
 	}
+	runtime.activateTool.writablePaths = writablePaths
 	registry.Register(bt)
 	registry.MarkAlwaysAllowed("activate_skill")
 	registry.MarkAlwaysAllowed("read_skill_file")

@@ -15,10 +15,11 @@ import (
 
 // SkillActivateTool loads a skill's instructions and registers any executable scripts.
 type SkillActivateTool struct {
-	catalog   *skills.Catalog
-	registry  *ToolRegistry
-	mu        sync.Mutex
-	activated map[string]bool
+	catalog       *skills.Catalog
+	registry      *ToolRegistry
+	mu            sync.Mutex
+	activated     map[string]bool
+	writablePaths []string // sandbox writable paths to communicate to the skill
 }
 
 // NewSkillActivateTool creates the skill activation tool.
@@ -206,6 +207,12 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 			b.WriteString(pattern)
 			b.WriteString("\n")
 		}
+	}
+
+	if len(t.writablePaths) > 0 {
+		b.WriteString("Sandbox: bash commands can only write to: ")
+		b.WriteString(strings.Join(t.writablePaths, ", "))
+		b.WriteString("\n")
 	}
 
 	return strings.TrimSpace(b.String()), nil

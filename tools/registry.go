@@ -119,6 +119,14 @@ func (r *ToolRegistry) NewSandbox(spec *sandbox.Spec) (sandbox.Sandbox, error) {
 	return r.sandboxFactory(cfg)
 }
 
+// NewSandboxFromConfig creates a sandbox from an explicit config, ignoring the base config.
+func (r *ToolRegistry) NewSandboxFromConfig(cfg sandbox.Config) (sandbox.Sandbox, error) {
+	if r.sandboxFactory == nil {
+		return nil, fmt.Errorf("sandboxing not available")
+	}
+	return r.sandboxFactory(cfg)
+}
+
 type stagedToolRecord struct {
 	name       string
 	tool       Tool
