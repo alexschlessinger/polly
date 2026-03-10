@@ -229,7 +229,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		&cli.IntFlag{
 			Name:    "maxtokens",
 			Usage:   "Maximum tokens to generate",
-			Value:   4096,
+			Value:   50000,
 			Sources: cli.EnvVars("POLLYTOOL_MAXTOKENS"),
 		},
 		&cli.IntFlag{
