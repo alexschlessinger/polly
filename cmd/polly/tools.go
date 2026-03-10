@@ -7,8 +7,8 @@ import (
 )
 
 // loadTools loads tools based on ToolLoaderInfo list
-func loadTools(loaderInfos []tools.ToolLoaderInfo) (*tools.ToolRegistry, error) {
-	registry := tools.NewToolRegistry(nil)
+func loadTools(loaderInfos []tools.ToolLoaderInfo, opts ...tools.RegistryOption) (*tools.ToolRegistry, error) {
+	registry := tools.NewToolRegistry(nil, opts...)
 
 	if len(loaderInfos) == 0 {
 		return registry, nil

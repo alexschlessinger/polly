@@ -15,34 +15,27 @@ func toolDisplayEnabled(config *Config) bool {
 	return !config.Quiet && isTerminal()
 }
 
-// printToolStart prints a tool call header with summarized args to stderr.
+// printToolStart prints a tool start indicator with summarized args to stderr.
 func printToolStart(tc messages.ChatMessageToolCall) {
-	name := tc.Name
-	summary := summarizeToolArgs(name, tc.Arguments)
-
-	header := fmt.Sprintf("── tool: %s ", name)
-	pad := 40 - len(header)
-	if pad < 3 {
-		pad = 3
-	}
-	header += strings.Repeat("─", pad)
-
-	fmt.Fprintf(os.Stderr, "%s%s%s\n",
-		dimStyle.Styled(""),
-		dimStyle.Styled(header),
-		dimStyle.Styled(""),
-	)
+	summary := summarizeToolArgs(tc.Name, tc.Arguments)
+	label := tc.Name
 	if summary != "" {
-		fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled(summary))
+		label += " " + summary
 	}
+	fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled("→ "+label))
 }
 
 // printToolEnd prints a tool completion line with duration to stderr.
 func printToolEnd(tc messages.ChatMessageToolCall, duration time.Duration, err error) {
+	summary := summarizeToolArgs(tc.Name, tc.Arguments)
+	label := tc.Name
+	if summary != "" {
+		label += " " + summary
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  %s\n", errorStyle.Styled(fmt.Sprintf("✗ %s (%.1fs)", err, duration.Seconds())))
+		fmt.Fprintf(os.Stderr, "  %s\n", errorStyle.Styled(fmt.Sprintf("✗ %.1fs %s — %s", duration.Seconds(), label, err)))
 	} else {
-		fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled(fmt.Sprintf("✓ %.1fs", duration.Seconds())))
+		fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled(fmt.Sprintf("✓ %.1fs %s", duration.Seconds(), label)))
 	}
 }
 
@@ -58,7 +51,7 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 
 	switch toolName {
 	case "bash":
-		return strVal(args, "command")
+		return summarizeBashCommand(args)
 	case "read":
 		s := strVal(args, "file_path")
 		if offset := intVal(args, "offset"); offset > 0 {
@@ -78,9 +71,44 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 		return strVal(args, "pattern")
 	case "grep":
 		return strVal(args, "pattern")
+	case "activate_skill":
+		return strVal(args, "name")
+	case "read_skill_file":
+		skill := strVal(args, "skill")
+		path := strVal(args, "path")
+		if skill != "" && path != "" {
+			return skill + "/" + path
+		}
+		return skill + path
 	default:
 		return ""
 	}
+}
+
+// summarizeBashCommand returns a one-line summary for a bash command,
+// collapsing heredocs to show the command prefix and first body line.
+func summarizeBashCommand(args map[string]any) string {
+	cmd, ok := args["command"].(string)
+	if !ok || cmd == "" {
+		return ""
+	}
+
+	lines := strings.SplitN(cmd, "\n", 20)
+	first := lines[0]
+
+	// Detect heredoc: look for <<EOF, <<'EOF', <<"EOF", <<-EOF etc.
+	if idx := strings.Index(first, "<<"); idx >= 0 && len(lines) > 1 {
+		prefix := strings.TrimSpace(first[:idx+2])
+		// Find first non-empty body line (skip the delimiter line)
+		for _, line := range lines[1:] {
+			line = strings.TrimSpace(line)
+			if line != "" && line != "EOF" && line != "'EOF'" {
+				return truncate(prefix+" "+line, 120)
+			}
+		}
+	}
+
+	return truncate(first, 120)
 }
 
 func strVal(m map[string]any, key string) string {

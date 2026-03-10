@@ -677,6 +677,93 @@ Shell scripts used as tools must:
 3. Return results as plain text to stdout
 4. Exit with code 0 on success, non-zero on error
 
+The schema may include `"sandbox"` at the top level to opt a tool into sandboxing. When sandbox is applied, `[sandboxed]` is appended to the tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
+
+Tools that omit `"sandbox"` or set it to `false` run without restrictions, even when sandboxing is active.
+
+#### Sandbox Spec Reference
+
+`"sandbox"` can be `true` (use defaults) or an object:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `allowNetwork` | bool | `false` | Allow outbound network access |
+| `denyDNS` | bool | `false` | Block DNS resolution. Only effective when `allowNetwork` is `true`. |
+| `writablePaths` | string[] | `[]` | Directories where writes are allowed (supports `~`) |
+| `readPaths` | string[] | `[]` | Paths exempted from the credential deny list (supports `~`) |
+| `allowEnv` | string[] | all | If set, only these env vars are passed through |
+| `denyWrite` | bool | `false` | Deny all file writes, including temp. Overrides `writablePaths`. |
+
+**Defaults** (when `"sandbox": true`):
+- Writes: denied everywhere except OS temp dir (`/tmp`)
+- Network: denied
+- Reads: all files accessible except credential paths (see below)
+- Env: all vars passed through, except `POLLYTOOL_*` which are always stripped
+
+**Credential paths denied by default:**
+`~/.ssh`, `~/.gnupg`, `~/.gpg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.npmrc`, `~/.pypirc`, `~/.gem/credentials`, `~/.cargo/credentials`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`
+
+**`POLLYTOOL_*` env vars** (API keys) are always stripped from sandboxed processes, even without `allowEnv`. To explicitly pass one through, include it in `allowEnv`.
+
+**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths`. `denyDNS: true` has no additional effect when `allowNetwork` is `false`.
+
+#### Examples
+
+Sandbox with defaults:
+```json
+{
+  "title": "my_tool",
+  "type": "object",
+  "sandbox": true,
+  "properties": { ... }
+}
+```
+
+Network access and extra write paths:
+```json
+{
+  "title": "api_tool",
+  "type": "object",
+  "sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/data"] },
+  "properties": { ... }
+}
+```
+
+Network access without DNS (connect by IP only):
+```json
+{
+  "title": "ip_only_tool",
+  "type": "object",
+  "sandbox": { "allowNetwork": true, "denyDNS": true },
+  "properties": { ... }
+}
+```
+
+Deploy tool that needs AWS credentials and specific env vars:
+```json
+{
+  "title": "deploy_tool",
+  "type": "object",
+  "sandbox": {
+    "allowNetwork": true,
+    "writablePaths": ["/tmp/deploy"],
+    "readPaths": ["~/.aws"],
+    "allowEnv": ["AWS_PROFILE", "AWS_REGION", "HOME", "PATH"]
+  },
+  "properties": { ... }
+}
+```
+
+Fully read-only sandbox (no writes anywhere, not even temp):
+```json
+{
+  "title": "readonly_tool",
+  "type": "object",
+  "sandbox": { "denyWrite": true },
+  "properties": { ... }
+}
+```
+
 ### More Complex Example: Database Query Tool
 
 ```bash

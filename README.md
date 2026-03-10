@@ -299,6 +299,69 @@ Use the tool:
 polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 ```
 
+#### Sandboxing
+
+Shell tools and MCP servers can opt into sandboxing by setting `"sandbox"` to `true` (defaults) or an object with overrides. Opted-in tools run with restricted file writes (temp directory only, plus any explicit `writablePaths`), no network access, no reads to sensitive credential paths, and `POLLYTOOL_*` env vars stripped. The tool's description will include a `[sandboxed]` hint so the LLM knows the tool is restricted. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API docs](API.md) for the full sandbox spec reference.
+
+```bash
+# Shell tool — sandbox with defaults
+if [ "$1" = "--schema" ]; then
+  cat <<SCHEMA
+{
+  "title": "file_processor",
+  "description": "Process files in the workspace",
+  "type": "object",
+  "sandbox": true,
+  "properties": {
+    "path": {"type": "string"}
+  },
+  "required": ["path"]
+}
+SCHEMA
+fi
+```
+
+```bash
+# Shell tool — sandbox with overrides
+"sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/data"] }
+
+# Shell tool — sandbox with read paths and env filtering
+"sandbox": {
+  "allowNetwork": true,
+  "writablePaths": ["/tmp/deploy"],
+  "readPaths": ["~/.aws"],
+  "allowEnv": ["AWS_PROFILE", "AWS_REGION", "HOME", "PATH"]
+}
+
+# Shell tool — network access without DNS (connect by IP only)
+"sandbox": { "allowNetwork": true, "denyDNS": true }
+
+# Shell tool — fully read-only sandbox (no writes, not even temp)
+"sandbox": { "denyWrite": true }
+```
+
+`POLLYTOOL_*` env vars (API keys) are always stripped from sandboxed processes unless explicitly included in `allowEnv`.
+
+```json
+// MCP server — sandbox the server process
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "node",
+      "args": ["server.js"],
+      "sandbox": true
+    },
+    "api_proxy": {
+      "command": "python",
+      "args": ["proxy.py"],
+      "sandbox": { "allowNetwork": true }
+    }
+  }
+}
+```
+
+Tools and servers that do not set `"sandbox"` run without restrictions, even when sandboxing is active.
+
 ### MCP Servers
 
 MCP servers are configured through JSON files using the Claude Desktop format. A single config file can define multiple servers:

@@ -7,18 +7,25 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // BashTool executes shell commands via bash -c.
 type BashTool struct {
 	workDir string
+	sandbox sandbox.Sandbox
 }
 
 // NewBashTool creates a bash tool that runs commands in the given working directory.
 // If workDir is empty, commands run in the current process directory.
 func NewBashTool(workDir string) *BashTool {
 	return &BashTool{workDir: workDir}
+}
+
+// WithSandbox returns a copy with sandboxing enabled.
+func (t *BashTool) WithSandbox(sb sandbox.Sandbox) *BashTool {
+	return &BashTool{workDir: t.workDir, sandbox: sb}
 }
 
 func (t *BashTool) GetName() string   { return "bash" }
@@ -49,6 +56,12 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) (string, er
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	if t.workDir != "" {
 		cmd.Dir = t.workDir
+	}
+
+	if t.sandbox != nil {
+		if err := t.sandbox.Wrap(cmd); err != nil {
+			return "", fmt.Errorf("sandbox: %w", err)
+		}
 	}
 
 	var stdout, stderr bytes.Buffer

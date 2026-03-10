@@ -7,24 +7,57 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/google/jsonschema-go/jsonschema"
 	"go.uber.org/zap"
 )
 
 // ShellTool wraps external commands/scripts as tools
 type ShellTool struct {
-	Command string
-	schema  *jsonschema.Schema
+	Command     string
+	schema      *jsonschema.Schema
+	sandbox     sandbox.Sandbox
+	sandboxSpec *sandbox.Spec // parsed from the script's schema "sandbox" field
 }
 
-// NewShellTool creates a new shell tool from a command
-func NewShellTool(command string) (*ShellTool, error) {
+// SandboxSpec returns the parsed sandbox spec, or nil if the tool didn't opt in.
+func (s *ShellTool) SandboxSpec() *sandbox.Spec { return s.sandboxSpec }
+
+// WantsSandbox reports whether the script's schema requested sandboxing.
+func (s *ShellTool) WantsSandbox() bool { return s.sandboxSpec != nil }
+
+// WithSandbox returns a copy with sandboxing enabled.
+func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
+	return &ShellTool{Command: s.Command, schema: s.schema, sandbox: sb, sandboxSpec: s.sandboxSpec}
+}
+
+// NewShellTool creates a new shell tool from a command.
+// An optional sandbox.Sandbox can be provided to run the --schema
+// invocation inside a sandbox, preventing untrusted scripts from
+// executing side effects during schema loading.
+func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
 	tool := &ShellTool{Command: command}
 
-	// Load schema from the tool
-	schemaJSON, err := tool.runCommand("--schema")
+	// Load schema from the tool, sandboxed if a sandbox is provided.
+	var schemaJSON string
+	var err error
+	if len(schemaSandbox) > 0 && schemaSandbox[0] != nil {
+		schemaJSON, err = tool.runCommandSandboxed("--schema", schemaSandbox[0])
+	} else {
+		schemaJSON, err = tool.runCommand("--schema")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema from %s: %v", command, err)
+	}
+
+	// Extract the sandbox spec before parsing the standard schema.
+	var meta struct {
+		Sandbox json.RawMessage `json:"sandbox"`
+	}
+	_ = json.Unmarshal([]byte(schemaJSON), &meta)
+	tool.sandboxSpec, err = sandbox.ParseSpec(meta.Sandbox)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sandbox spec in %s: %w", command, err)
 	}
 
 	// Parse the schema directly - it should unmarshal properly
@@ -43,10 +76,15 @@ func (s *ShellTool) GetSchema() *jsonschema.Schema {
 		return nil
 	}
 
+	desc := s.schema.Description
+	if s.sandbox != nil {
+		desc += " [sandboxed]"
+	}
+
 	// Create a copy to avoid modifying the original
 	return &jsonschema.Schema{
 		Title:                s.schema.Title,
-		Description:          s.schema.Description,
+		Description:          desc,
 		Type:                 s.schema.Type,
 		Properties:           s.schema.Properties,
 		Required:             s.schema.Required,
@@ -82,6 +120,13 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 
 	// Run command with --execute using context for timeout
 	cmd := exec.CommandContext(ctx, s.Command, "--execute", string(argsJSON))
+
+	if s.sandbox != nil {
+		if err := s.sandbox.Wrap(cmd); err != nil {
+			return "", fmt.Errorf("sandbox: %w", err)
+		}
+	}
+
 	output, err := cmd.CombinedOutput()
 
 	// Log execution details
@@ -105,9 +150,22 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 	return result, nil
 }
 
-// runCommand executes the shell tool with a single argument
+// runCommand executes the shell tool with a single argument.
 func (s *ShellTool) runCommand(arg string) (string, error) {
 	cmd := exec.Command(s.Command, arg)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// runCommandSandboxed executes the shell tool inside a sandbox.
+func (s *ShellTool) runCommandSandboxed(arg string, sb sandbox.Sandbox) (string, error) {
+	cmd := exec.Command(s.Command, arg)
+	if err := sb.Wrap(cmd); err != nil {
+		return "", fmt.Errorf("sandbox: %w", err)
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err

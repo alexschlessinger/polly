@@ -17,6 +17,7 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
 )
 
@@ -35,6 +36,8 @@ type commandRunner struct {
 	sessionStore sessions.SessionStore
 	contextID    string
 }
+
+var newSandbox = sandbox.New
 
 func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, error) {
 	config := parseConfig(cmd)
@@ -163,12 +166,18 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 		session.SetMetadata(metadata)
 	}
 
+	registryOpts, err := sandboxRegistryOptions(config)
+	if err != nil {
+		session.Close()
+		return "", nil, nil, nil, nil, nil, nil, err
+	}
+
 	// Handle command-line tools if provided - they replace session tools
 	var toolRegistry *tools.ToolRegistry
 
 	if len(config.Tools) > 0 {
 		// Load command-line tools directly into the registry we'll use
-		toolRegistry = tools.NewToolRegistry(nil)
+		toolRegistry = tools.NewToolRegistry(nil, registryOpts...)
 		for _, source := range config.Tools {
 			_, err := toolRegistry.LoadToolAuto(source)
 			if err != nil {
@@ -181,7 +190,7 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 		session.SetMetadata(metadata)
 	} else {
 		// Load tools from session metadata
-		toolRegistry, err = loadTools(metadata.ActiveTools)
+		toolRegistry, err = loadTools(metadata.ActiveTools, registryOpts...)
 		if err != nil {
 			session.Close()
 			return "", nil, nil, nil, nil, nil, nil, err
@@ -217,6 +226,21 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 	})
 
 	return contextID, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, nil
+}
+
+func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
+	if config.NoSandbox {
+		return nil, nil
+	}
+
+	baseCfg := sandbox.Config{WritablePaths: []string{os.TempDir()}}
+
+	// Validate that the backend works before proceeding.
+	if _, err := newSandbox(baseCfg); err != nil {
+		return nil, fmt.Errorf("sandbox requested but unavailable: %w", err)
+	}
+
+	return []tools.RegistryOption{tools.WithSandboxFactory(newSandbox, baseCfg)}, nil
 }
 
 func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) error {
@@ -496,11 +520,11 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 	// 2. User-provided flags, OR
 	// 3. Loaded from existing context (via initializeConversation)
 	update := &sessions.Metadata{
-		Name:        session.GetName(),
-		LastUsed:    time.Now(),
-		Model:       config.Settings.Model,
-		Temperature: config.Settings.Temperature,
-		MaxTokens:   config.Settings.MaxTokens,
+		Name:          session.GetName(),
+		LastUsed:      time.Now(),
+		Model:         config.Settings.Model,
+		Temperature:   config.Settings.Temperature,
+		MaxTokens:     config.Settings.MaxTokens,
 		MaxIterations: config.MaxIterations,
 		ToolTimeout:   config.Settings.ToolTimeout,
 		SkillDirs:     config.Settings.SkillDirs,

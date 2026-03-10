@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.uber.org/zap"
@@ -162,6 +163,14 @@ type MCPConfig struct {
 	Transport string            `json:"transport,omitempty"` // "stdio" | "sse" | "streamable"
 	Headers   map[string]string `json:"headers,omitempty"`   // Auth headers, API keys
 	Timeout   string            `json:"timeout,omitempty"`   // Connection timeout (e.g., "30s")
+
+	// Sandboxing (stdio only). true for defaults, or {"allowNetwork":true,"writablePaths":[...]}.
+	Sandbox json.RawMessage `json:"sandbox,omitempty"`
+}
+
+// SandboxSpec returns the parsed sandbox spec, or nil if not requested.
+func (c *MCPConfig) SandboxSpec() (*sandbox.Spec, error) {
+	return sandbox.ParseSpec(c.Sandbox)
 }
 
 // MCPServersConfig represents the Claude Desktop format with multiple servers
@@ -339,7 +348,7 @@ func NewMCPClient(serverSpec string) (*MCPClient, error) {
 	}
 
 	zap.S().Debugw("mcp_config_loading", "config_file", jsonFile, "server_name", namespace)
-	client, err := NewMCPClientFromConfig(&config)
+	client, err := NewMCPClientFromConfig(&config, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -354,8 +363,9 @@ func NewMCPClient(serverSpec string) (*MCPClient, error) {
 	return client, nil
 }
 
-// NewMCPClientFromConfig creates a new MCP client from a JSON configuration
-func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
+// NewMCPClientFromConfig creates a new MCP client from a JSON configuration.
+// If sb is non-nil and transport is stdio, the server process runs sandboxed.
+func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, error) {
 	ctx := context.Background()
 
 	// Create the MCP client
@@ -416,6 +426,12 @@ func NewMCPClientFromConfig(config *MCPConfig) (*MCPClient, error) {
 
 		// Set up stderr to see any error output from the server
 		cmd.Stderr = os.Stderr
+
+		if sb != nil {
+			if err := sb.Wrap(cmd); err != nil {
+				return nil, fmt.Errorf("sandbox: %w", err)
+			}
+		}
 
 		zap.S().Debugw("mcp_stdio_connecting", "command", config.Command, "arguments", config.Args)
 		transport = &mcp.CommandTransport{Command: cmd}

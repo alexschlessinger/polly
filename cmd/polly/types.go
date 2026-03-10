@@ -33,6 +33,7 @@ type Config struct {
 	MaxIterations int
 	BaseURL       string
 	Confirm       bool
+	NoSandbox     bool
 
 	// Skill configuration
 	NoSkills   bool

@@ -51,6 +51,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		MaxIterations: int(cmd.Int("maxiterations")),
 		BaseURL:       cmd.String("baseurl"),
 		Confirm:       cmd.Bool("confirm"),
+		NoSandbox:     cmd.Bool("nosandbox"),
 
 		// Skill configuration
 		NoSkills:   cmd.Bool("noskills"),
@@ -228,7 +229,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		&cli.IntFlag{
 			Name:    "maxtokens",
 			Usage:   "Maximum tokens to generate",
-			Value:   4096,
+			Value:   50000,
 			Sources: cli.EnvVars("POLLYTOOL_MAXTOKENS"),
 		},
 		&cli.IntFlag{
@@ -339,6 +340,13 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		&cli.BoolFlag{
 			Name:  "confirm",
 			Usage: "Require confirmation before each tool call",
+		},
+
+		// Sandboxing
+		&cli.BoolFlag{
+			Name:    "nosandbox",
+			Usage:   "Disable sandboxing of bash commands",
+			Sources: cli.EnvVars("POLLYTOOL_NOSANDBOX"),
 		},
 
 		// Output configuration
