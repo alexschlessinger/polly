@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/google/jsonschema-go/jsonschema"
 	"go.uber.org/zap"
 )
@@ -79,6 +80,43 @@ type ToolRegistry struct {
 	pendingPolicyActive    bool
 	pendingAllowedPatterns []string
 	pendingAutoAllowed     map[string]bool
+
+	// Sandbox factory and base config
+	sandboxFactory func(sandbox.Config) (sandbox.Sandbox, error)
+	baseSandboxCfg sandbox.Config
+}
+
+type registryOptions struct {
+	sandboxFactory func(sandbox.Config) (sandbox.Sandbox, error)
+	baseSandboxCfg sandbox.Config
+}
+
+// RegistryOption configures a ToolRegistry.
+type RegistryOption func(*registryOptions)
+
+// WithSandboxFactory sets the sandbox factory and base config for the registry.
+func WithSandboxFactory(factory func(sandbox.Config) (sandbox.Sandbox, error), baseCfg sandbox.Config) RegistryOption {
+	return func(o *registryOptions) {
+		o.sandboxFactory = factory
+		o.baseSandboxCfg = baseCfg
+	}
+}
+
+// HasSandbox reports whether sandboxing is available.
+func (r *ToolRegistry) HasSandbox() bool {
+	return r.sandboxFactory != nil
+}
+
+// NewSandbox creates a sandbox with the base config merged with optional per-tool overrides.
+func (r *ToolRegistry) NewSandbox(spec *sandbox.Spec) (sandbox.Sandbox, error) {
+	if r.sandboxFactory == nil {
+		return nil, fmt.Errorf("sandboxing not available")
+	}
+	cfg := r.baseSandboxCfg
+	if spec != nil {
+		cfg = spec.MergeInto(cfg)
+	}
+	return r.sandboxFactory(cfg)
 }
 
 type stagedToolRecord struct {
@@ -99,7 +137,12 @@ func closeStagedToolRecords(records []stagedToolRecord) {
 }
 
 // NewToolRegistry creates a new tool registry from a list of tools
-func NewToolRegistry(tools []Tool) *ToolRegistry {
+func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
+	var o registryOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	registry := &ToolRegistry{
 		tools:              make(map[string]Tool),
 		nativeTools:        make(map[string]func() Tool),
@@ -111,10 +154,18 @@ func NewToolRegistry(tools []Tool) *ToolRegistry {
 		alwaysAllowedTools: make(map[string]bool),
 		autoAllowedTools:   make(map[string]bool),
 		pendingAutoAllowed: make(map[string]bool),
+		sandboxFactory: o.sandboxFactory,
+		baseSandboxCfg: o.baseSandboxCfg,
 	}
 
 	registry.nativeTools["bash"] = func() Tool {
-		return NewBashTool("")
+		bt := NewBashTool("")
+		if registry.sandboxFactory != nil {
+			if sb, err := registry.sandboxFactory(registry.baseSandboxCfg); err == nil {
+				bt = bt.WithSandbox(sb)
+			}
+		}
+		return bt
 	}
 
 	for _, tool := range tools {
@@ -451,6 +502,13 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 		return nil, LoadResult{}, fmt.Errorf("failed to load shell tool %s: %w", path, err)
 	}
 
+	if r.sandboxFactory != nil && shellTool.WantsSandbox() {
+		sb, err := r.NewSandbox(shellTool.SandboxSpec())
+		if err == nil {
+			shellTool = shellTool.WithSandbox(sb)
+		}
+	}
+
 	schema := shellTool.GetSchema()
 	if schema == nil || schema.Title == "" {
 		return nil, LoadResult{}, fmt.Errorf("shell tool %s has no name in schema", path)
@@ -501,8 +559,19 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 	}
 }
 
-func prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
-	client, err := NewMCPClientFromConfig(config)
+func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
+	var sb sandbox.Sandbox
+	if r.sandboxFactory != nil {
+		if spec := config.SandboxSpec(); spec != nil {
+			var err error
+			sb, err = r.NewSandbox(spec)
+			if err != nil {
+				return nil, nil, fmt.Errorf("sandbox for MCP server %s: %w", serverName, err)
+			}
+		}
+	}
+
+	client, err := NewMCPClientFromConfig(config, sb)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -561,7 +630,7 @@ func (r *ToolRegistry) prepareMCPServerWithNamespacePrefix(serverSpec, namespace
 	result := LoadResult{Type: "mcp"}
 	appendServer := func(name string, config MCPConfig) error {
 		namespace := joinNamespacePrefix(namespacePrefix, name)
-		serverRecords, toolNames, err := prepareSingleMCPServerWithNamespace(jsonFile, name, namespace, &config)
+		serverRecords, toolNames, err := r.prepareSingleMCPServerWithNamespace(jsonFile, name, namespace, &config)
 		if err != nil {
 			return err
 		}
@@ -757,8 +826,19 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 		return fmt.Errorf("config has multiple servers, need specific server in spec")
 	}
 
+	// Create sandbox if configured
+	var sb sandbox.Sandbox
+	if r.sandboxFactory != nil {
+		if spec := config.SandboxSpec(); spec != nil {
+			sb, err = r.NewSandbox(spec)
+			if err != nil {
+				return fmt.Errorf("sandbox for MCP server %s: %w", namespace, err)
+			}
+		}
+	}
+
 	// Create client
-	client, err := NewMCPClientFromConfig(&config)
+	client, err := NewMCPClientFromConfig(&config, sb)
 	if err != nil {
 		return err
 	}

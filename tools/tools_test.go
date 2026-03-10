@@ -3,12 +3,15 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // checkUvxAvailable checks if uvx is available on the system
@@ -508,6 +511,279 @@ fi
 
 	if int(resultMap["count"].(float64)) != 42 {
 		t.Errorf("Expected count 42, got %v", resultMap["count"])
+	}
+}
+
+func createSandboxedTestScript(t *testing.T, dir string) string {
+	t.Helper()
+	script := `#!/bin/bash
+if [ "$1" = "--schema" ]; then
+	echo '{
+		"title": "sandboxed-tool",
+		"description": "A sandboxed test tool",
+		"type": "object",
+		"sandbox": true,
+		"properties": {
+			"message": {
+				"type": "string",
+				"description": "A test message"
+			}
+		},
+		"required": ["message"]
+	}'
+elif [ "$1" = "--execute" ]; then
+	MESSAGE=$(echo "$2" | sed -n 's/.*"message":[[:space:]]*"\([^"]*\)".*/\1/p')
+	echo "Received: $MESSAGE"
+fi
+`
+	scriptPath := filepath.Join(dir, "sandboxed-tool.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to create sandboxed test script: %v", err)
+	}
+	return scriptPath
+}
+
+func createSandboxedTestScriptWithSpec(t *testing.T, dir string) string {
+	t.Helper()
+	script := `#!/bin/bash
+if [ "$1" = "--schema" ]; then
+	echo '{
+		"title": "sandboxed-spec-tool",
+		"description": "A sandboxed test tool with spec overrides",
+		"type": "object",
+		"sandbox": {"allowNetwork": true, "writablePaths": ["/tmp/extra"]},
+		"properties": {
+			"message": {
+				"type": "string",
+				"description": "A test message"
+			}
+		},
+		"required": ["message"]
+	}'
+elif [ "$1" = "--execute" ]; then
+	MESSAGE=$(echo "$2" | sed -n 's/.*"message":[[:space:]]*"\([^"]*\)".*/\1/p')
+	echo "Received: $MESSAGE"
+fi
+`
+	scriptPath := filepath.Join(dir, "sandboxed-spec-tool.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to create sandboxed spec test script: %v", err)
+	}
+	return scriptPath
+}
+
+func TestShellToolSandboxSpecObject(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createSandboxedTestScriptWithSpec(t, dir)
+
+	tool, err := NewShellTool(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to create shell tool: %v", err)
+	}
+
+	if !tool.WantsSandbox() {
+		t.Fatal("Expected WantsSandbox()=true for script with sandbox object")
+	}
+
+	spec := tool.SandboxSpec()
+	if spec == nil {
+		t.Fatal("Expected non-nil SandboxSpec")
+	}
+	if !spec.AllowNetwork {
+		t.Error("Expected AllowNetwork=true from spec")
+	}
+	if len(spec.WritablePaths) != 1 || spec.WritablePaths[0] != "/tmp/extra" {
+		t.Errorf("Expected WritablePaths=[/tmp/extra], got %v", spec.WritablePaths)
+	}
+}
+
+func TestShellToolWantsSandbox(t *testing.T) {
+	dir := t.TempDir()
+
+	// Script without sandbox flag
+	tool, err := NewShellTool(createTestScript(t, dir))
+	if err != nil {
+		t.Fatalf("Failed to create shell tool: %v", err)
+	}
+	if tool.WantsSandbox() {
+		t.Error("Expected WantsSandbox()=false for script without sandbox flag")
+	}
+
+	// Script with sandbox: true
+	tool2, err := NewShellTool(createSandboxedTestScript(t, dir))
+	if err != nil {
+		t.Fatalf("Failed to create sandboxed shell tool: %v", err)
+	}
+	if !tool2.WantsSandbox() {
+		t.Error("Expected WantsSandbox()=true for script with sandbox flag")
+	}
+}
+
+func TestShellToolWithSandbox(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createSandboxedTestScript(t, dir)
+
+	tool, err := NewShellTool(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to create shell tool: %v", err)
+	}
+
+	// Without sandbox applied, description should not contain [sandboxed]
+	schema := tool.GetSchema()
+	if strings.Contains(schema.Description, "[sandboxed]") {
+		t.Error("Expected no [sandboxed] hint without sandbox applied")
+	}
+
+	// With sandbox applied, description should contain [sandboxed]
+	sandboxed := tool.WithSandbox(&mockSandbox{})
+	schema = sandboxed.GetSchema()
+	if !strings.Contains(schema.Description, "[sandboxed]") {
+		t.Errorf("Expected [sandboxed] hint in description, got %q", schema.Description)
+	}
+
+	// WithSandbox should preserve command, schema, and wantsSandbox
+	if sandboxed.Command != tool.Command {
+		t.Error("WithSandbox should preserve Command")
+	}
+	if sandboxed.GetName() != tool.GetName() {
+		t.Error("WithSandbox should preserve name")
+	}
+	if !sandboxed.WantsSandbox() {
+		t.Error("WithSandbox should preserve wantsSandbox")
+	}
+}
+
+func TestShellToolSandboxExecution(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createSandboxedTestScript(t, dir)
+
+	tool, err := NewShellTool(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to create shell tool: %v", err)
+	}
+
+	sb := &mockSandbox{}
+	sandboxed := tool.WithSandbox(sb)
+
+	_, _ = sandboxed.Execute(context.Background(), map[string]any{"message": "test"})
+	if !sb.called {
+		t.Error("Expected sandbox.Wrap to be called during execution")
+	}
+}
+
+func TestShellToolSandboxWrapError(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createSandboxedTestScript(t, dir)
+
+	tool, err := NewShellTool(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to create shell tool: %v", err)
+	}
+
+	sb := &mockSandbox{err: fmt.Errorf("sandbox unavailable")}
+	sandboxed := tool.WithSandbox(sb)
+
+	_, err = sandboxed.Execute(context.Background(), map[string]any{"message": "test"})
+	if err == nil {
+		t.Fatal("Expected error when sandbox.Wrap fails")
+	}
+	if !strings.Contains(err.Error(), "sandbox") {
+		t.Errorf("Expected sandbox error, got: %v", err)
+	}
+}
+
+func TestMCPConfigSandboxSpec(t *testing.T) {
+	tests := []struct {
+		name  string
+		json  string
+		isNil bool
+		net   bool
+	}{
+		{"absent", `{"command":"echo"}`, true, false},
+		{"true", `{"command":"echo","sandbox":true}`, false, false},
+		{"false", `{"command":"echo","sandbox":false}`, true, false},
+		{"object", `{"command":"echo","sandbox":{"allowNetwork":true}}`, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg MCPConfig
+			if err := json.Unmarshal([]byte(tt.json), &cfg); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+			spec := cfg.SandboxSpec()
+			if tt.isNil {
+				if spec != nil {
+					t.Fatalf("expected nil spec, got %+v", spec)
+				}
+				return
+			}
+			if spec == nil {
+				t.Fatal("expected non-nil spec")
+			}
+			if spec.AllowNetwork != tt.net {
+				t.Fatalf("AllowNetwork = %v, want %v", spec.AllowNetwork, tt.net)
+			}
+		})
+	}
+}
+
+func TestRegistryAppliesSandboxToOptInShellTools(t *testing.T) {
+	dir := t.TempDir()
+	sandboxedScript := createSandboxedTestScript(t, dir)
+
+	sb := &mockSandbox{}
+	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}))
+
+	_, err := registry.LoadShellTool(sandboxedScript)
+	if err != nil {
+		t.Fatalf("Failed to load shell tool: %v", err)
+	}
+
+	// Tool that opted in should have the [sandboxed] hint
+	for _, tool := range registry.All() {
+		schema := tool.GetSchema()
+		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
+			return
+		}
+	}
+	t.Error("Expected opt-in shell tool to have [sandboxed] hint when registry has sandbox")
+}
+
+func TestRegistrySkipsSandboxForNonOptInShellTools(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createTestScript(t, dir)
+
+	sb := &mockSandbox{}
+	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}))
+
+	_, err := registry.LoadShellTool(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to load shell tool: %v", err)
+	}
+
+	// Tool that did NOT opt in should NOT have the [sandboxed] hint
+	for _, tool := range registry.All() {
+		schema := tool.GetSchema()
+		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
+			t.Error("Expected non-opt-in shell tool to NOT have [sandboxed] hint")
+		}
+	}
+}
+
+// mockSandbox implements sandbox.Sandbox for testing
+type mockSandbox struct {
+	called bool
+	err    error
+}
+
+func (m *mockSandbox) Wrap(cmd *exec.Cmd) error {
+	m.called = true
+	return m.err
+}
+
+func mockSandboxFactory(sb *mockSandbox) func(sandbox.Config) (sandbox.Sandbox, error) {
+	return func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return sb, nil
 	}
 }
 

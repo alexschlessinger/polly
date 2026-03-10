@@ -677,6 +677,32 @@ Shell scripts used as tools must:
 3. Return results as plain text to stdout
 4. Exit with code 0 on success, non-zero on error
 
+Sandboxing is enabled by default. The schema may include `"sandbox"` at the top level to opt a tool into sandboxing. Sandboxed tools run with restricted file writes (working directory and temp only), no network access, and no reads to sensitive credential paths (~/.ssh, ~/.aws, etc.). When sandbox is applied, `[sandboxed]` is appended to the tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
+
+`"sandbox"` can be `true` (use defaults) or an object with overrides:
+
+```json
+{
+  "title": "my_tool",
+  "description": "Does something safely",
+  "type": "object",
+  "sandbox": true,
+  "properties": { ... }
+}
+```
+
+```json
+{
+  "title": "api_tool",
+  "description": "Calls an external API",
+  "type": "object",
+  "sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/data"] },
+  "properties": { ... }
+}
+```
+
+Tools that omit `"sandbox"` or set it to `false` run without restrictions, even when sandboxing is active.
+
 ### More Complex Example: Database Query Tool
 
 ```bash

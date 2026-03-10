@@ -299,6 +299,53 @@ Use the tool:
 polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 ```
 
+#### Sandboxing
+
+Sandboxing is enabled by default. Shell tools and MCP servers can opt into sandboxing by setting `"sandbox"` to `true` (defaults) or an object with overrides. Opted-in tools run with restricted file writes (only the working directory and temp), no network access, and no reads to sensitive credential paths. The tool's description will include a `[sandboxed]` hint so the LLM knows the tool is restricted. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
+
+```bash
+# Shell tool — sandbox with defaults
+if [ "$1" = "--schema" ]; then
+  cat <<SCHEMA
+{
+  "title": "file_processor",
+  "description": "Process files in the workspace",
+  "type": "object",
+  "sandbox": true,
+  "properties": {
+    "path": {"type": "string"}
+  },
+  "required": ["path"]
+}
+SCHEMA
+fi
+```
+
+```bash
+# Shell tool — sandbox with overrides
+"sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/data"] }
+```
+
+```json
+// MCP server — sandbox the server process
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "node",
+      "args": ["server.js"],
+      "sandbox": true
+    },
+    "api_proxy": {
+      "command": "python",
+      "args": ["proxy.py"],
+      "sandbox": { "allowNetwork": true }
+    }
+  }
+}
+```
+
+Tools and servers that do not set `"sandbox"` run without restrictions, even when sandboxing is active.
+
 ### MCP Servers
 
 MCP servers are configured through JSON files using the Claude Desktop format. A single config file can define multiple servers:

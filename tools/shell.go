@@ -7,14 +7,28 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/google/jsonschema-go/jsonschema"
 	"go.uber.org/zap"
 )
 
 // ShellTool wraps external commands/scripts as tools
 type ShellTool struct {
-	Command string
-	schema  *jsonschema.Schema
+	Command     string
+	schema      *jsonschema.Schema
+	sandbox     sandbox.Sandbox
+	sandboxSpec *sandbox.Spec // parsed from the script's schema "sandbox" field
+}
+
+// SandboxSpec returns the parsed sandbox spec, or nil if the tool didn't opt in.
+func (s *ShellTool) SandboxSpec() *sandbox.Spec { return s.sandboxSpec }
+
+// WantsSandbox reports whether the script's schema requested sandboxing.
+func (s *ShellTool) WantsSandbox() bool { return s.sandboxSpec != nil }
+
+// WithSandbox returns a copy with sandboxing enabled.
+func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
+	return &ShellTool{Command: s.Command, schema: s.schema, sandbox: sb, sandboxSpec: s.sandboxSpec}
 }
 
 // NewShellTool creates a new shell tool from a command
@@ -26,6 +40,13 @@ func NewShellTool(command string) (*ShellTool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema from %s: %v", command, err)
 	}
+
+	// Extract the sandbox spec before parsing the standard schema.
+	var meta struct {
+		Sandbox json.RawMessage `json:"sandbox"`
+	}
+	_ = json.Unmarshal([]byte(schemaJSON), &meta)
+	tool.sandboxSpec = sandbox.ParseSpec(meta.Sandbox)
 
 	// Parse the schema directly - it should unmarshal properly
 	tool.schema = &jsonschema.Schema{}
@@ -43,10 +64,15 @@ func (s *ShellTool) GetSchema() *jsonschema.Schema {
 		return nil
 	}
 
+	desc := s.schema.Description
+	if s.sandbox != nil {
+		desc += " [sandboxed]"
+	}
+
 	// Create a copy to avoid modifying the original
 	return &jsonschema.Schema{
 		Title:                s.schema.Title,
-		Description:          s.schema.Description,
+		Description:          desc,
 		Type:                 s.schema.Type,
 		Properties:           s.schema.Properties,
 		Required:             s.schema.Required,
@@ -82,6 +108,13 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 
 	// Run command with --execute using context for timeout
 	cmd := exec.CommandContext(ctx, s.Command, "--execute", string(argsJSON))
+
+	if s.sandbox != nil {
+		if err := s.sandbox.Wrap(cmd); err != nil {
+			return "", fmt.Errorf("sandbox: %w", err)
+		}
+	}
+
 	output, err := cmd.CombinedOutput()
 
 	// Log execution details
