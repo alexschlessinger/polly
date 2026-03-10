@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -36,7 +37,7 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 	registry.Register(runtime.activateTool)
 	registry.Register(NewSkillReadFileTool(catalog))
 	bt := NewBashTool("")
-	writablePaths := []string{"/tmp"}
+	writablePaths := []string{os.TempDir()}
 	if registry.HasSandbox() {
 		cfg := sandbox.Config{
 			WritablePaths: writablePaths,

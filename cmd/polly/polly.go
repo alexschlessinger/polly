@@ -233,12 +233,7 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 		return nil, nil
 	}
 
-	workDir, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("sandbox requested but unavailable: resolve working directory: %w", err)
-	}
-
-	baseCfg := sandbox.Config{WritablePaths: []string{workDir}}
+	baseCfg := sandbox.Config{WritablePaths: []string{os.TempDir()}}
 
 	// Validate that the backend works before proceeding.
 	if _, err := newSandbox(baseCfg); err != nil {
