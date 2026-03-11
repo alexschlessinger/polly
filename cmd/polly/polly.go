@@ -233,7 +233,7 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 		return nil, nil
 	}
 
-	baseCfg := sandbox.Config{WritablePaths: []string{os.TempDir()}}
+	baseCfg := sandbox.DefaultConfig()
 
 	// Validate that the backend works before proceeding.
 	if _, err := newSandbox(baseCfg); err != nil {

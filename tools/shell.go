@@ -14,21 +14,21 @@ import (
 
 // ShellTool wraps external commands/scripts as tools
 type ShellTool struct {
-	Command     string
-	schema      *jsonschema.Schema
-	sandbox     sandbox.Sandbox
-	sandboxSpec *sandbox.Spec // parsed from the script's schema "sandbox" field
+	Command    string
+	schema     *jsonschema.Schema
+	sandbox    sandbox.Sandbox
+	sandboxCfg *sandbox.Config // parsed from the script's schema "sandbox" field
 }
 
-// SandboxSpec returns the parsed sandbox spec, or nil if the tool didn't opt in.
-func (s *ShellTool) SandboxSpec() *sandbox.Spec { return s.sandboxSpec }
+// SandboxConfig returns the parsed sandbox config, or nil if the tool didn't opt in.
+func (s *ShellTool) SandboxConfig() *sandbox.Config { return s.sandboxCfg }
 
 // WantsSandbox reports whether the script's schema requested sandboxing.
-func (s *ShellTool) WantsSandbox() bool { return s.sandboxSpec != nil }
+func (s *ShellTool) WantsSandbox() bool { return s.sandboxCfg != nil }
 
 // WithSandbox returns a copy with sandboxing enabled.
 func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
-	return &ShellTool{Command: s.Command, schema: s.schema, sandbox: sb, sandboxSpec: s.sandboxSpec}
+	return &ShellTool{Command: s.Command, schema: s.schema, sandbox: sb, sandboxCfg: s.sandboxCfg}
 }
 
 // NewShellTool creates a new shell tool from a command.
@@ -55,9 +55,9 @@ func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool,
 		Sandbox json.RawMessage `json:"sandbox"`
 	}
 	_ = json.Unmarshal([]byte(schemaJSON), &meta)
-	tool.sandboxSpec, err = sandbox.ParseSpec(meta.Sandbox)
+	tool.sandboxCfg, err = sandbox.ParseConfig(meta.Sandbox)
 	if err != nil {
-		return nil, fmt.Errorf("invalid sandbox spec in %s: %w", command, err)
+		return nil, fmt.Errorf("invalid sandbox config in %s: %w", command, err)
 	}
 
 	// Parse the schema directly - it should unmarshal properly

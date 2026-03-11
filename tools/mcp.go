@@ -168,9 +168,9 @@ type MCPConfig struct {
 	Sandbox json.RawMessage `json:"sandbox,omitempty"`
 }
 
-// SandboxSpec returns the parsed sandbox spec, or nil if not requested.
-func (c *MCPConfig) SandboxSpec() (*sandbox.Spec, error) {
-	return sandbox.ParseSpec(c.Sandbox)
+// SandboxConfig returns the parsed sandbox config, or nil if not requested.
+func (c *MCPConfig) SandboxConfig() (*sandbox.Config, error) {
+	return sandbox.ParseConfig(c.Sandbox)
 }
 
 // MCPServersConfig represents the Claude Desktop format with multiple servers

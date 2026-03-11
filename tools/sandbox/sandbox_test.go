@@ -42,7 +42,7 @@ func TestDeniedPathsNotEmpty(t *testing.T) {
 	}
 }
 
-func TestParseSpec(t *testing.T) {
+func TestParseConfig(t *testing.T) {
 	tests := []struct {
 		name      string
 		input     string
@@ -74,10 +74,10 @@ func TestParseSpec(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			spec, err := ParseSpec(json.RawMessage(tt.input))
+			cfg, err := ParseConfig(json.RawMessage(tt.input))
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("expected error for input %s, got spec %+v", tt.input, spec)
+					t.Fatalf("expected error for input %s, got config %+v", tt.input, cfg)
 				}
 				return
 			}
@@ -85,44 +85,44 @@ func TestParseSpec(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if tt.isNil {
-				if spec != nil {
-					t.Fatalf("expected nil, got %+v", spec)
+				if cfg != nil {
+					t.Fatalf("expected nil, got %+v", cfg)
 				}
 				return
 			}
-			if spec == nil {
-				t.Fatal("expected non-nil spec")
+			if cfg == nil {
+				t.Fatal("expected non-nil config")
 			}
-			if spec.AllowNetwork != tt.net {
-				t.Fatalf("AllowNetwork = %v, want %v", spec.AllowNetwork, tt.net)
+			if cfg.AllowNetwork != tt.net {
+				t.Fatalf("AllowNetwork = %v, want %v", cfg.AllowNetwork, tt.net)
 			}
-			if spec.DenyDNS != tt.denyDNS {
-				t.Fatalf("DenyDNS = %v, want %v", spec.DenyDNS, tt.denyDNS)
+			if cfg.DenyDNS != tt.denyDNS {
+				t.Fatalf("DenyDNS = %v, want %v", cfg.DenyDNS, tt.denyDNS)
 			}
-			if len(spec.WritablePaths) != tt.paths {
-				t.Fatalf("WritablePaths = %v, want %d entries", spec.WritablePaths, tt.paths)
+			if len(cfg.WritablePaths) != tt.paths {
+				t.Fatalf("WritablePaths = %v, want %d entries", cfg.WritablePaths, tt.paths)
 			}
-			if len(spec.ReadPaths) != tt.readPaths {
-				t.Fatalf("ReadPaths = %v, want %d entries", spec.ReadPaths, tt.readPaths)
+			if len(cfg.ReadPaths) != tt.readPaths {
+				t.Fatalf("ReadPaths = %v, want %d entries", cfg.ReadPaths, tt.readPaths)
 			}
-			if len(spec.AllowEnv) != tt.allowEnv {
-				t.Fatalf("AllowEnv = %v, want %d entries", spec.AllowEnv, tt.allowEnv)
+			if len(cfg.AllowEnv) != tt.allowEnv {
+				t.Fatalf("AllowEnv = %v, want %d entries", cfg.AllowEnv, tt.allowEnv)
 			}
-			if spec.DenyWrite != tt.denyWrite {
-				t.Fatalf("DenyWrite = %v, want %v", spec.DenyWrite, tt.denyWrite)
+			if cfg.DenyWrite != tt.denyWrite {
+				t.Fatalf("DenyWrite = %v, want %v", cfg.DenyWrite, tt.denyWrite)
 			}
 		})
 	}
 }
 
-func TestSpecMergeInto(t *testing.T) {
+func TestMerge(t *testing.T) {
 	base := Config{
 		WritablePaths: []string{"/work"},
 		AllowNetwork:  false,
 		ReadPaths:     []string{"~/.kube"},
 		AllowEnv:      []string{"HOME"},
 	}
-	spec := &Spec{
+	overlay := Config{
 		AllowNetwork:  true,
 		DenyDNS:       true,
 		WritablePaths: []string{"/extra"},
@@ -130,13 +130,13 @@ func TestSpecMergeInto(t *testing.T) {
 		AllowEnv:      []string{"PATH"},
 		DenyWrite:     true,
 	}
-	merged := spec.MergeInto(base)
+	merged := base.Merge(overlay)
 
 	if !merged.AllowNetwork {
-		t.Fatal("MergeInto should set AllowNetwork to true")
+		t.Fatal("Merge should set AllowNetwork to true")
 	}
 	if !merged.DenyDNS {
-		t.Fatal("MergeInto should set DenyDNS to true")
+		t.Fatal("Merge should set DenyDNS to true")
 	}
 	if len(merged.WritablePaths) != 2 {
 		t.Fatalf("WritablePaths = %v, want 2 entries", merged.WritablePaths)
@@ -151,24 +151,24 @@ func TestSpecMergeInto(t *testing.T) {
 		t.Fatalf("AllowEnv = %v, want [HOME PATH]", merged.AllowEnv)
 	}
 	if !merged.DenyWrite {
-		t.Fatal("MergeInto should set DenyWrite to true")
+		t.Fatal("Merge should set DenyWrite to true")
 	}
 }
 
-func TestSpecMergeIntoDenyDNSOR(t *testing.T) {
+func TestMergeDenyDNSOR(t *testing.T) {
 	// DenyDNS should OR: if either side sets it, the result is true.
 	base := Config{DenyDNS: true}
-	spec := &Spec{DenyDNS: false}
-	merged := spec.MergeInto(base)
+	overlay := Config{DenyDNS: false}
+	merged := base.Merge(overlay)
 	if !merged.DenyDNS {
 		t.Fatal("DenyDNS should be true when base has it set")
 	}
 
 	base2 := Config{DenyDNS: false}
-	spec2 := &Spec{DenyDNS: true}
-	merged2 := spec2.MergeInto(base2)
+	overlay2 := Config{DenyDNS: true}
+	merged2 := base2.Merge(overlay2)
 	if !merged2.DenyDNS {
-		t.Fatal("DenyDNS should be true when spec has it set")
+		t.Fatal("DenyDNS should be true when overlay has it set")
 	}
 }
 

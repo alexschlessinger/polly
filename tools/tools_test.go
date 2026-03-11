@@ -572,7 +572,7 @@ fi
 	return scriptPath
 }
 
-func TestShellToolSandboxSpecObject(t *testing.T) {
+func TestShellToolSandboxConfigObject(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScriptWithSpec(t, dir)
 
@@ -585,15 +585,15 @@ func TestShellToolSandboxSpecObject(t *testing.T) {
 		t.Fatal("Expected WantsSandbox()=true for script with sandbox object")
 	}
 
-	spec := tool.SandboxSpec()
-	if spec == nil {
-		t.Fatal("Expected non-nil SandboxSpec")
+	sbCfg := tool.SandboxConfig()
+	if sbCfg == nil {
+		t.Fatal("Expected non-nil SandboxConfig")
 	}
-	if !spec.AllowNetwork {
-		t.Error("Expected AllowNetwork=true from spec")
+	if !sbCfg.AllowNetwork {
+		t.Error("Expected AllowNetwork=true from config")
 	}
-	if len(spec.WritablePaths) != 1 || spec.WritablePaths[0] != "/tmp/extra" {
-		t.Errorf("Expected WritablePaths=[/tmp/extra], got %v", spec.WritablePaths)
+	if len(sbCfg.WritablePaths) != 1 || sbCfg.WritablePaths[0] != "/tmp/extra" {
+		t.Errorf("Expected WritablePaths=[/tmp/extra], got %v", sbCfg.WritablePaths)
 	}
 }
 
@@ -626,7 +626,7 @@ fi
 	return scriptPath
 }
 
-func TestShellToolSandboxSpecWithReadPathsAndEnv(t *testing.T) {
+func TestShellToolSandboxConfigWithReadPathsAndEnv(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScriptWithFullSpec(t, dir)
 
@@ -639,26 +639,26 @@ func TestShellToolSandboxSpecWithReadPathsAndEnv(t *testing.T) {
 		t.Fatal("Expected WantsSandbox()=true")
 	}
 
-	spec := tool.SandboxSpec()
-	if spec == nil {
-		t.Fatal("Expected non-nil SandboxSpec")
+	sbCfg := tool.SandboxConfig()
+	if sbCfg == nil {
+		t.Fatal("Expected non-nil SandboxConfig")
 	}
-	if !spec.AllowNetwork {
+	if !sbCfg.AllowNetwork {
 		t.Error("Expected AllowNetwork=true")
 	}
-	if len(spec.WritablePaths) != 1 || spec.WritablePaths[0] != "/tmp/deploy" {
-		t.Errorf("WritablePaths = %v, want [/tmp/deploy]", spec.WritablePaths)
+	if len(sbCfg.WritablePaths) != 1 || sbCfg.WritablePaths[0] != "/tmp/deploy" {
+		t.Errorf("WritablePaths = %v, want [/tmp/deploy]", sbCfg.WritablePaths)
 	}
-	if len(spec.ReadPaths) != 1 || spec.ReadPaths[0] != "~/.aws" {
-		t.Errorf("ReadPaths = %v, want [~/.aws]", spec.ReadPaths)
+	if len(sbCfg.ReadPaths) != 1 || sbCfg.ReadPaths[0] != "~/.aws" {
+		t.Errorf("ReadPaths = %v, want [~/.aws]", sbCfg.ReadPaths)
 	}
-	if len(spec.AllowEnv) != 4 {
-		t.Errorf("AllowEnv = %v, want 4 entries", spec.AllowEnv)
+	if len(sbCfg.AllowEnv) != 4 {
+		t.Errorf("AllowEnv = %v, want 4 entries", sbCfg.AllowEnv)
 	}
 	expected := []string{"AWS_PROFILE", "AWS_REGION", "HOME", "PATH"}
 	for i, want := range expected {
-		if i >= len(spec.AllowEnv) || spec.AllowEnv[i] != want {
-			t.Errorf("AllowEnv[%d] = %q, want %q", i, spec.AllowEnv[i], want)
+		if i >= len(sbCfg.AllowEnv) || sbCfg.AllowEnv[i] != want {
+			t.Errorf("AllowEnv[%d] = %q, want %q", i, sbCfg.AllowEnv[i], want)
 		}
 	}
 }
@@ -758,7 +758,7 @@ func TestShellToolSandboxWrapError(t *testing.T) {
 	}
 }
 
-func TestMCPConfigSandboxSpec(t *testing.T) {
+func TestMCPConfigSandboxConfig(t *testing.T) {
 	tests := []struct {
 		name    string
 		json    string
@@ -778,10 +778,10 @@ func TestMCPConfigSandboxSpec(t *testing.T) {
 			if err := json.Unmarshal([]byte(tt.json), &cfg); err != nil {
 				t.Fatalf("Unmarshal error: %v", err)
 			}
-			spec, err := cfg.SandboxSpec()
+			sbCfg, err := cfg.SandboxConfig()
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("expected error, got spec %+v", spec)
+					t.Fatalf("expected error, got config %+v", sbCfg)
 				}
 				return
 			}
@@ -789,16 +789,16 @@ func TestMCPConfigSandboxSpec(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if tt.isNil {
-				if spec != nil {
-					t.Fatalf("expected nil spec, got %+v", spec)
+				if sbCfg != nil {
+					t.Fatalf("expected nil config, got %+v", sbCfg)
 				}
 				return
 			}
-			if spec == nil {
-				t.Fatal("expected non-nil spec")
+			if sbCfg == nil {
+				t.Fatal("expected non-nil config")
 			}
-			if spec.AllowNetwork != tt.net {
-				t.Fatalf("AllowNetwork = %v, want %v", spec.AllowNetwork, tt.net)
+			if sbCfg.AllowNetwork != tt.net {
+				t.Fatalf("AllowNetwork = %v, want %v", sbCfg.AllowNetwork, tt.net)
 			}
 		})
 	}

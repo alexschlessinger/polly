@@ -108,19 +108,19 @@ func (r *ToolRegistry) HasSandbox() bool {
 }
 
 // NewSandbox creates a sandbox with the base config merged with optional per-tool overrides.
-func (r *ToolRegistry) NewSandbox(spec *sandbox.Spec) (sandbox.Sandbox, error) {
+func (r *ToolRegistry) NewSandbox(overlay *sandbox.Config) (sandbox.Sandbox, error) {
 	if r.sandboxFactory == nil {
 		return nil, fmt.Errorf("sandboxing not available")
 	}
 	cfg := r.baseSandboxCfg
-	if spec != nil {
-		cfg = spec.MergeInto(cfg)
+	if overlay != nil {
+		cfg = cfg.Merge(*overlay)
 	}
 	return r.sandboxFactory(cfg)
 }
 
-// NewSandboxFromConfig creates a sandbox from an explicit config, ignoring the base config.
-func (r *ToolRegistry) NewSandboxFromConfig(cfg sandbox.Config) (sandbox.Sandbox, error) {
+// NewSandboxDirect creates a sandbox from an explicit config, ignoring the base config.
+func (r *ToolRegistry) NewSandboxDirect(cfg sandbox.Config) (sandbox.Sandbox, error) {
 	if r.sandboxFactory == nil {
 		return nil, fmt.Errorf("sandboxing not available")
 	}
@@ -517,7 +517,7 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 	}
 
 	if r.sandboxFactory != nil && shellTool.WantsSandbox() {
-		sb, err := r.NewSandbox(shellTool.SandboxSpec())
+		sb, err := r.NewSandbox(shellTool.SandboxConfig())
 		if err == nil {
 			shellTool = shellTool.WithSandbox(sb)
 		}
@@ -576,12 +576,12 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
 	var sb sandbox.Sandbox
 	if r.sandboxFactory != nil {
-		spec, err := config.SandboxSpec()
+		overlayCfg, err := config.SandboxConfig()
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid sandbox config for MCP server %s: %w", serverName, err)
 		}
-		if spec != nil {
-			sb, err = r.NewSandbox(spec)
+		if overlayCfg != nil {
+			sb, err = r.NewSandbox(overlayCfg)
 			if err != nil {
 				return nil, nil, fmt.Errorf("sandbox for MCP server %s: %w", serverName, err)
 			}
@@ -846,12 +846,12 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 	// Create sandbox if configured
 	var sb sandbox.Sandbox
 	if r.sandboxFactory != nil {
-		spec, specErr := config.SandboxSpec()
+		overlayCfg, specErr := config.SandboxConfig()
 		if specErr != nil {
 			return fmt.Errorf("invalid sandbox config for MCP server %s: %w", namespace, specErr)
 		}
-		if spec != nil {
-			sb, err = r.NewSandbox(spec)
+		if overlayCfg != nil {
+			sb, err = r.NewSandbox(overlayCfg)
 			if err != nil {
 				return fmt.Errorf("sandbox for MCP server %s: %w", namespace, err)
 			}

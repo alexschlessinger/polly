@@ -3,7 +3,6 @@ package tools
 import (
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -37,17 +36,14 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 	registry.Register(runtime.activateTool)
 	registry.Register(NewSkillReadFileTool(catalog))
 	bt := NewBashTool("")
-	writablePaths := []string{os.TempDir()}
+	cfg := sandbox.DefaultConfig()
+	cfg.AllowNetwork = true
 	if registry.HasSandbox() {
-		cfg := sandbox.Config{
-			WritablePaths: writablePaths,
-			AllowNetwork:  true,
-		}
-		if sb, err := registry.NewSandboxFromConfig(cfg); err == nil {
+		if sb, err := registry.NewSandboxDirect(cfg); err == nil {
 			bt = bt.WithSandbox(sb)
 		}
 	}
-	runtime.activateTool.writablePaths = writablePaths
+	runtime.activateTool.writablePaths = cfg.WritablePaths
 	registry.Register(bt)
 	registry.MarkAlwaysAllowed("activate_skill")
 	registry.MarkAlwaysAllowed("read_skill_file")

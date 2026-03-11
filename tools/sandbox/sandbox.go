@@ -17,26 +17,33 @@ type Sandbox interface {
 	Wrap(cmd *exec.Cmd) error
 }
 
-// Config controls sandbox permissions.
+// Config controls sandbox permissions. It can be unmarshaled from JSON
+// (true for defaults, or an object with optional fields) and merged with
+// another Config via the Merge method.
 type Config struct {
 	// Directories where file writes are allowed (supports ~ expansion).
 	// The OS temp dir is included automatically unless DenyWrite is set.
-	WritablePaths []string
+	WritablePaths []string `json:"writablePaths,omitempty"`
 
 	// Allow outbound network access (denied by default).
-	AllowNetwork bool
+	AllowNetwork bool `json:"allowNetwork,omitempty"`
 
 	// Block DNS resolution. Only effective when AllowNetwork is true.
-	DenyDNS bool
+	DenyDNS bool `json:"denyDNS,omitempty"`
 
 	// Paths exempted from the DeniedPaths deny list.
-	ReadPaths []string
+	ReadPaths []string `json:"readPaths,omitempty"`
 
 	// If non-empty, only these env vars are passed through to the sandbox.
-	AllowEnv []string
+	AllowEnv []string `json:"allowEnv,omitempty"`
 
 	// Deny all file writes, including to temp directories.
-	DenyWrite bool
+	DenyWrite bool `json:"denyWrite,omitempty"`
+}
+
+// DefaultConfig returns the standard base sandbox config (temp-dir-only writes).
+func DefaultConfig() Config {
+	return Config{WritablePaths: []string{os.TempDir()}}
 }
 
 // DeniedPathKind identifies how a denied path should be masked by platform sandboxes.
@@ -75,23 +82,12 @@ var DeniedPaths = []DeniedPath{
 	{Path: "~/Library/Keychains", Kind: DeniedPathDir},
 }
 
-// Spec describes per-tool sandbox overrides. It can be unmarshaled from
-// true (use defaults) or an object with optional fields.
-type Spec struct {
-	AllowNetwork  bool     `json:"allowNetwork,omitempty"`
-	DenyDNS       bool     `json:"denyDNS,omitempty"`       // block DNS resolution (only effective with allowNetwork)
-	WritablePaths []string `json:"writablePaths,omitempty"`
-	ReadPaths     []string `json:"readPaths,omitempty"`     // exempt from DeniedPaths
-	AllowEnv      []string `json:"allowEnv,omitempty"`      // env vars to keep (if set, all others stripped)
-	DenyWrite     bool     `json:"denyWrite,omitempty"`     // deny all file writes including temp
-}
-
-// ParseSpec parses a JSON sandbox field.
+// ParseConfig parses a JSON sandbox field.
 // Returns (nil, nil) for absent, null, or false.
 // Returns an error for values that are not bool, null, or object
 // (e.g. "yes", 123, []) so callers fail closed instead of silently
 // running unsandboxed.
-func ParseSpec(raw json.RawMessage) (*Spec, error) {
+func ParseConfig(raw json.RawMessage) (*Config, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -103,27 +99,29 @@ func ParseSpec(raw json.RawMessage) (*Spec, error) {
 	var b bool
 	if json.Unmarshal(raw, &b) == nil {
 		if b {
-			return &Spec{}, nil
+			return &Config{}, nil
 		}
 		return nil, nil
 	}
 	// object
-	var s Spec
-	if json.Unmarshal(raw, &s) == nil {
-		return &s, nil
+	var c Config
+	if json.Unmarshal(raw, &c) == nil {
+		return &c, nil
 	}
 	return nil, fmt.Errorf("unsupported sandbox value: %s (must be true, false, or an object)", string(raw))
 }
 
-// MergeInto applies spec overrides onto a base Config.
-func (s *Spec) MergeInto(base Config) Config {
-	base.AllowNetwork = base.AllowNetwork || s.AllowNetwork
-	base.DenyDNS = base.DenyDNS || s.DenyDNS
-	base.WritablePaths = append(base.WritablePaths, s.WritablePaths...)
-	base.ReadPaths = append(base.ReadPaths, s.ReadPaths...)
-	base.AllowEnv = append(base.AllowEnv, s.AllowEnv...)
-	base.DenyWrite = base.DenyWrite || s.DenyWrite
-	return base
+// Merge returns a new Config combining c (base) with overlay.
+// Booleans are OR'd (either side can widen allowances or add restrictions,
+// but neither can reduce them). Slices are appended.
+func (c Config) Merge(overlay Config) Config {
+	c.AllowNetwork = c.AllowNetwork || overlay.AllowNetwork
+	c.DenyDNS = c.DenyDNS || overlay.DenyDNS
+	c.WritablePaths = append(c.WritablePaths, overlay.WritablePaths...)
+	c.ReadPaths = append(c.ReadPaths, overlay.ReadPaths...)
+	c.AllowEnv = append(c.AllowEnv, overlay.AllowEnv...)
+	c.DenyWrite = c.DenyWrite || overlay.DenyWrite
+	return c
 }
 
 // expandTilde resolves a ~ prefix to the user's home directory for a single path.

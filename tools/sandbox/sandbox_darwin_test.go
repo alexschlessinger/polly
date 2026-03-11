@@ -239,12 +239,12 @@ func TestSandboxBlocksAllExistingCredentialPaths(t *testing.T) {
 	t.Logf("tested %d/%d credential paths that exist on this machine", tested, len(denied))
 }
 
-func TestSpecMergeIntoAllowsNetwork(t *testing.T) {
+func TestMergeAllowsNetwork(t *testing.T) {
 	skipIfNoSandboxExec(t)
 
 	base := Config{WritablePaths: []string{t.TempDir()}}
-	spec := &Spec{AllowNetwork: true}
-	merged := spec.MergeInto(base)
+	overlay := Config{AllowNetwork: true}
+	merged := base.Merge(overlay)
 
 	sb, err := New(merged)
 	if err != nil {
@@ -260,15 +260,15 @@ func TestSpecMergeIntoAllowsNetwork(t *testing.T) {
 	}
 }
 
-func TestSpecMergeIntoAddsWritablePaths(t *testing.T) {
+func TestMergeAddsWritablePaths(t *testing.T) {
 	skipIfNoSandboxExec(t)
 
 	baseDir := t.TempDir()
 	extraDir := t.TempDir()
 
 	base := Config{WritablePaths: []string{baseDir}}
-	spec := &Spec{WritablePaths: []string{extraDir}}
-	merged := spec.MergeInto(base)
+	overlay := Config{WritablePaths: []string{extraDir}}
+	merged := base.Merge(overlay)
 
 	sb, err := New(merged)
 	if err != nil {
