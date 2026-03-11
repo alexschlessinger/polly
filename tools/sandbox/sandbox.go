@@ -17,6 +17,15 @@ type Sandbox interface {
 	Wrap(cmd *exec.Cmd) error
 }
 
+// WrapCmd applies sandbox restrictions to cmd if sb is non-nil.
+// Returns nil when sb is nil (no sandbox available).
+func WrapCmd(sb Sandbox, cmd *exec.Cmd) error {
+	if sb == nil {
+		return nil
+	}
+	return sb.Wrap(cmd)
+}
+
 // Config controls sandbox permissions. It can be unmarshaled from JSON
 // (true for defaults, or an object with optional fields) and merged with
 // another Config via the Merge method.

@@ -58,10 +58,8 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) (string, er
 		cmd.Dir = t.workDir
 	}
 
-	if t.sandbox != nil {
-		if err := t.sandbox.Wrap(cmd); err != nil {
-			return "", fmt.Errorf("sandbox: %w", err)
-		}
+	if err := sandbox.WrapCmd(t.sandbox, cmd); err != nil {
+		return "", fmt.Errorf("sandbox: %w", err)
 	}
 
 	var stdout, stderr bytes.Buffer

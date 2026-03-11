@@ -434,10 +434,8 @@ func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, 
 		// Set up stderr to see any error output from the server
 		cmd.Stderr = os.Stderr
 
-		if sb != nil {
-			if err := sb.Wrap(cmd); err != nil {
-				return nil, fmt.Errorf("sandbox: %w", err)
-			}
+		if err := sandbox.WrapCmd(sb, cmd); err != nil {
+			return nil, fmt.Errorf("sandbox: %w", err)
 		}
 
 		zap.S().Debugw("mcp_stdio_connecting", "command", config.Command, "arguments", config.Args)

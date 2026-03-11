@@ -125,10 +125,8 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 	// Run command with --execute using context for timeout
 	cmd := exec.CommandContext(ctx, s.Command, "--execute", string(argsJSON))
 
-	if s.sandbox != nil {
-		if err := s.sandbox.Wrap(cmd); err != nil {
-			return "", fmt.Errorf("sandbox: %w", err)
-		}
+	if err := sandbox.WrapCmd(s.sandbox, cmd); err != nil {
+		return "", fmt.Errorf("sandbox: %w", err)
 	}
 
 	output, err := cmd.CombinedOutput()
@@ -167,7 +165,7 @@ func (s *ShellTool) runCommand(arg string) (string, error) {
 // runCommandSandboxed executes the shell tool inside a sandbox.
 func (s *ShellTool) runCommandSandboxed(arg string, sb sandbox.Sandbox) (string, error) {
 	cmd := exec.Command(s.Command, arg)
-	if err := sb.Wrap(cmd); err != nil {
+	if err := sandbox.WrapCmd(sb, cmd); err != nil {
 		return "", fmt.Errorf("sandbox: %w", err)
 	}
 	output, err := cmd.Output()

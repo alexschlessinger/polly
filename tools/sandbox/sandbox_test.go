@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"encoding/json"
+	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -169,6 +171,42 @@ func TestMergeDenyDNSOR(t *testing.T) {
 	merged2 := base2.Merge(overlay2)
 	if !merged2.DenyDNS {
 		t.Fatal("DenyDNS should be true when overlay has it set")
+	}
+}
+
+type mockSandbox struct {
+	called bool
+	err    error
+}
+
+func (m *mockSandbox) Wrap(cmd *exec.Cmd) error {
+	m.called = true
+	return m.err
+}
+
+func TestWrapCmdNilSandbox(t *testing.T) {
+	cmd := exec.Command("echo", "hello")
+	if err := WrapCmd(nil, cmd); err != nil {
+		t.Fatalf("WrapCmd(nil) should return nil, got %v", err)
+	}
+}
+
+func TestWrapCmdApplied(t *testing.T) {
+	sb := &mockSandbox{}
+	cmd := exec.Command("echo", "hello")
+	if err := WrapCmd(sb, cmd); err != nil {
+		t.Fatalf("WrapCmd returned unexpected error: %v", err)
+	}
+	if !sb.called {
+		t.Fatal("expected Wrap to be called")
+	}
+}
+
+func TestWrapCmdError(t *testing.T) {
+	sb := &mockSandbox{err: fmt.Errorf("denied")}
+	cmd := exec.Command("echo", "hello")
+	if err := WrapCmd(sb, cmd); err == nil {
+		t.Fatal("expected error from WrapCmd")
 	}
 }
 
