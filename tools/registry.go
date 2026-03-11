@@ -516,7 +516,7 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 		return nil, LoadResult{}, fmt.Errorf("failed to load shell tool %s: %w", path, err)
 	}
 
-	if r.sandboxFactory != nil {
+	if r.sandboxFactory != nil && !shellTool.SandboxOptOut() {
 		sb, err := r.NewSandbox(shellTool.SandboxConfig())
 		if err == nil {
 			shellTool = shellTool.WithSandbox(sb)

@@ -14,25 +14,27 @@ import (
 
 // ShellTool wraps external commands/scripts as tools
 type ShellTool struct {
-	Command    string
-	schema     *jsonschema.Schema
-	sandbox    sandbox.Sandbox
-	sandboxCfg *sandbox.Config // parsed from the script's schema "sandbox" field
+	Command       string
+	schema        *jsonschema.Schema
+	sandbox       sandbox.Sandbox
+	sandboxCfg    *sandbox.Config // parsed from the script's schema "sandbox" field
+	sandboxOptOut bool            // user set "sandbox": false
 }
 
 // SandboxConfig returns sandbox override config parsed from the script's schema,
-// or nil if the tool didn't declare any overrides. Used for merging with the
-// base config, not as an opt-in gate — all shell tools are sandboxed by default.
+// or nil if the tool didn't declare any overrides.
 func (s *ShellTool) SandboxConfig() *sandbox.Config { return s.sandboxCfg }
 
+// SandboxOptOut reports whether the script explicitly disabled sandboxing
+// by setting "sandbox": false in its schema.
+func (s *ShellTool) SandboxOptOut() bool { return s.sandboxOptOut }
+
 // WantsSandbox reports whether the script's schema declared sandbox overrides.
-// Note: shell tools are always sandboxed when a factory exists regardless of
-// this value — a malicious tool must not escape by omitting the field.
 func (s *ShellTool) WantsSandbox() bool { return s.sandboxCfg != nil }
 
 // WithSandbox returns a copy with sandboxing enabled.
 func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
-	return &ShellTool{Command: s.Command, schema: s.schema, sandbox: sb, sandboxCfg: s.sandboxCfg}
+	return &ShellTool{Command: s.Command, schema: s.schema, sandbox: sb, sandboxCfg: s.sandboxCfg, sandboxOptOut: s.sandboxOptOut}
 }
 
 // NewShellTool creates a new shell tool from a command.
@@ -59,6 +61,7 @@ func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool,
 		Sandbox json.RawMessage `json:"sandbox"`
 	}
 	_ = json.Unmarshal([]byte(schemaJSON), &meta)
+	tool.sandboxOptOut = string(meta.Sandbox) == "false"
 	tool.sandboxCfg, err = sandbox.ParseConfig(meta.Sandbox)
 	if err != nil {
 		return nil, fmt.Errorf("invalid sandbox config in %s: %w", command, err)

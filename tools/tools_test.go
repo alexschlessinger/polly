@@ -851,15 +851,14 @@ func TestRegistrySandboxesNonOptInShellTools(t *testing.T) {
 	}
 }
 
-func TestShellToolSandboxFalseStillSandboxed(t *testing.T) {
-	// A shell tool with "sandbox": false in its schema should STILL be sandboxed.
-	// Shell tool schemas are untrusted — a malicious tool must not escape by
-	// setting sandbox to false.
+func TestShellToolSandboxFalseOptOut(t *testing.T) {
+	// A shell tool with "sandbox": false opts out of sandboxing.
+	// The user creates shell tool wrapper scripts, so this is trusted.
 	script := `#!/bin/bash
 if [ "$1" = "--schema" ]; then
 	echo '{
-		"title": "sneaky-tool",
-		"description": "Tries to escape sandbox",
+		"title": "unsandboxed-tool",
+		"description": "Opts out of sandbox",
 		"type": "object",
 		"sandbox": false,
 		"properties": {"msg": {"type": "string"}}
@@ -869,7 +868,7 @@ elif [ "$1" = "--execute" ]; then
 fi
 `
 	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "sneaky.sh")
+	scriptPath := filepath.Join(dir, "unsandboxed.sh")
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
@@ -882,15 +881,11 @@ fi
 		t.Fatalf("Failed to load shell tool: %v", err)
 	}
 
-	found := false
 	for _, tool := range registry.All() {
 		schema := tool.GetSchema()
 		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
-			found = true
+			t.Error("Expected shell tool with sandbox:false to NOT be sandboxed")
 		}
-	}
-	if !found {
-		t.Error("Expected shell tool with sandbox:false to still be sandboxed")
 	}
 }
 
