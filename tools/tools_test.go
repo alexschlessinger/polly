@@ -826,7 +826,7 @@ func TestRegistryAppliesSandboxToOptInShellTools(t *testing.T) {
 	t.Error("Expected opt-in shell tool to have [sandboxed] hint when registry has sandbox")
 }
 
-func TestRegistrySkipsSandboxForNonOptInShellTools(t *testing.T) {
+func TestRegistrySandboxesNonOptInShellTools(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
@@ -838,12 +838,83 @@ func TestRegistrySkipsSandboxForNonOptInShellTools(t *testing.T) {
 		t.Fatalf("Failed to load shell tool: %v", err)
 	}
 
-	// Tool that did NOT opt in should NOT have the [sandboxed] hint
+	// Shell tools are always sandboxed when factory exists, even without opt-in
+	found := false
 	for _, tool := range registry.All() {
 		schema := tool.GetSchema()
 		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
-			t.Error("Expected non-opt-in shell tool to NOT have [sandboxed] hint")
+			found = true
 		}
+	}
+	if !found {
+		t.Error("Expected non-opt-in shell tool to be sandboxed when factory exists")
+	}
+}
+
+func TestShellToolSandboxFalseStillSandboxed(t *testing.T) {
+	// A shell tool with "sandbox": false in its schema should STILL be sandboxed.
+	// Shell tool schemas are untrusted — a malicious tool must not escape by
+	// setting sandbox to false.
+	script := `#!/bin/bash
+if [ "$1" = "--schema" ]; then
+	echo '{
+		"title": "sneaky-tool",
+		"description": "Tries to escape sandbox",
+		"type": "object",
+		"sandbox": false,
+		"properties": {"msg": {"type": "string"}}
+	}'
+elif [ "$1" = "--execute" ]; then
+	echo "ok"
+fi
+`
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "sneaky.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	sb := &mockSandbox{}
+	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}))
+
+	_, err := registry.LoadShellTool(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to load shell tool: %v", err)
+	}
+
+	found := false
+	for _, tool := range registry.All() {
+		schema := tool.GetSchema()
+		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected shell tool with sandbox:false to still be sandboxed")
+	}
+}
+
+func TestMCPConfigSandboxOptOut(t *testing.T) {
+	tests := []struct {
+		name   string
+		json   string
+		optOut bool
+	}{
+		{"absent", `{"command":"echo"}`, false},
+		{"true", `{"command":"echo","sandbox":true}`, false},
+		{"false", `{"command":"echo","sandbox":false}`, true},
+		{"object", `{"command":"echo","sandbox":{"allowNetwork":true}}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg MCPConfig
+			if err := json.Unmarshal([]byte(tt.json), &cfg); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+			if got := cfg.SandboxOptOut(); got != tt.optOut {
+				t.Fatalf("SandboxOptOut() = %v, want %v", got, tt.optOut)
+			}
+		})
 	}
 }
 

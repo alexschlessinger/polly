@@ -168,9 +168,16 @@ type MCPConfig struct {
 	Sandbox json.RawMessage `json:"sandbox,omitempty"`
 }
 
-// SandboxConfig returns the parsed sandbox config, or nil if not requested.
+// SandboxConfig returns the parsed sandbox config for merging overrides,
+// or nil when the user didn't specify any sandbox overrides.
 func (c *MCPConfig) SandboxConfig() (*sandbox.Config, error) {
 	return sandbox.ParseConfig(c.Sandbox)
+}
+
+// SandboxOptOut reports whether the user explicitly disabled sandboxing
+// for this server by setting "sandbox": false in their config.
+func (c *MCPConfig) SandboxOptOut() bool {
+	return string(c.Sandbox) == "false"
 }
 
 // MCPServersConfig represents the Claude Desktop format with multiple servers

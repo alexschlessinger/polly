@@ -20,10 +20,14 @@ type ShellTool struct {
 	sandboxCfg *sandbox.Config // parsed from the script's schema "sandbox" field
 }
 
-// SandboxConfig returns the parsed sandbox config, or nil if the tool didn't opt in.
+// SandboxConfig returns sandbox override config parsed from the script's schema,
+// or nil if the tool didn't declare any overrides. Used for merging with the
+// base config, not as an opt-in gate — all shell tools are sandboxed by default.
 func (s *ShellTool) SandboxConfig() *sandbox.Config { return s.sandboxCfg }
 
-// WantsSandbox reports whether the script's schema requested sandboxing.
+// WantsSandbox reports whether the script's schema declared sandbox overrides.
+// Note: shell tools are always sandboxed when a factory exists regardless of
+// this value — a malicious tool must not escape by omitting the field.
 func (s *ShellTool) WantsSandbox() bool { return s.sandboxCfg != nil }
 
 // WithSandbox returns a copy with sandboxing enabled.

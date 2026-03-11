@@ -516,7 +516,7 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 		return nil, LoadResult{}, fmt.Errorf("failed to load shell tool %s: %w", path, err)
 	}
 
-	if r.sandboxFactory != nil && shellTool.WantsSandbox() {
+	if r.sandboxFactory != nil {
 		sb, err := r.NewSandbox(shellTool.SandboxConfig())
 		if err == nil {
 			shellTool = shellTool.WithSandbox(sb)
@@ -575,16 +575,14 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 
 func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
 	var sb sandbox.Sandbox
-	if r.sandboxFactory != nil {
+	if r.sandboxFactory != nil && !config.SandboxOptOut() {
 		overlayCfg, err := config.SandboxConfig()
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid sandbox config for MCP server %s: %w", serverName, err)
 		}
-		if overlayCfg != nil {
-			sb, err = r.NewSandbox(overlayCfg)
-			if err != nil {
-				return nil, nil, fmt.Errorf("sandbox for MCP server %s: %w", serverName, err)
-			}
+		sb, err = r.NewSandbox(overlayCfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("sandbox for MCP server %s: %w", serverName, err)
 		}
 	}
 
@@ -843,18 +841,16 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 		return fmt.Errorf("config has multiple servers, need specific server in spec")
 	}
 
-	// Create sandbox if configured
+	// Create sandbox unless user opted out
 	var sb sandbox.Sandbox
-	if r.sandboxFactory != nil {
+	if r.sandboxFactory != nil && !config.SandboxOptOut() {
 		overlayCfg, specErr := config.SandboxConfig()
 		if specErr != nil {
 			return fmt.Errorf("invalid sandbox config for MCP server %s: %w", namespace, specErr)
 		}
-		if overlayCfg != nil {
-			sb, err = r.NewSandbox(overlayCfg)
-			if err != nil {
-				return fmt.Errorf("sandbox for MCP server %s: %w", namespace, err)
-			}
+		sb, err = r.NewSandbox(overlayCfg)
+		if err != nil {
+			return fmt.Errorf("sandbox for MCP server %s: %w", namespace, err)
 		}
 	}
 
