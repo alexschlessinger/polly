@@ -8,25 +8,12 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
-// Example native Go tools showing the pattern from IRC tools
+// Example native Go tools demonstrating NativeTool embedding
 
 // UpperCaseTool is a simple example of a native Go tool
-type UpperCaseTool struct{}
+type UpperCaseTool struct{ NativeTool }
 
-// GetName returns the tool name
-func (t *UpperCaseTool) GetName() string {
-	return "uppercase"
-}
-
-// GetType returns "native" for built-in tools
-func (t *UpperCaseTool) GetType() string {
-	return "native"
-}
-
-// GetSource returns "builtin" for native tools
-func (t *UpperCaseTool) GetSource() string {
-	return "builtin"
-}
+func (t *UpperCaseTool) GetName() string { return "uppercase" }
 
 func (t *UpperCaseTool) GetSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{
@@ -52,22 +39,9 @@ func (t *UpperCaseTool) Execute(ctx context.Context, args map[string]any) (strin
 }
 
 // WordCountTool counts words in text
-type WordCountTool struct{}
+type WordCountTool struct{ NativeTool }
 
-// GetName returns the tool name
-func (t *WordCountTool) GetName() string {
-	return "wordcount"
-}
-
-// GetType returns "native" for built-in tools
-func (t *WordCountTool) GetType() string {
-	return "native"
-}
-
-// GetSource returns "builtin" for native tools
-func (t *WordCountTool) GetSource() string {
-	return "builtin"
-}
+func (t *WordCountTool) GetName() string { return "wordcount" }
 
 func (t *WordCountTool) GetSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{
@@ -89,37 +63,21 @@ func (t *WordCountTool) Execute(ctx context.Context, args map[string]any) (strin
 	if !ok {
 		return "", fmt.Errorf("text must be a string")
 	}
-
-	words := strings.Fields(text)
-	return fmt.Sprintf("Word count: %d", len(words)), nil
+	return fmt.Sprintf("Word count: %d", len(strings.Fields(text))), nil
 }
-
-// Example of a contextual tool that needs runtime configuration
 
 // LoggerTool is an example tool that needs context to be injected
 type LoggerTool struct {
-	logger Logger // Interface to be injected
-}
-
-// GetName returns the tool name
-func (t *LoggerTool) GetName() string {
-	return "logger"
-}
-
-// GetType returns "native" for built-in tools
-func (t *LoggerTool) GetType() string {
-	return "native"
-}
-
-// GetSource returns "builtin" for native tools
-func (t *LoggerTool) GetSource() string {
-	return "builtin"
+	NativeTool
+	logger Logger
 }
 
 // Logger interface for dependency injection
 type Logger interface {
 	Log(message string)
 }
+
+func (t *LoggerTool) GetName() string { return "logger" }
 
 func (t *LoggerTool) SetContext(ctx any) {
 	if logger, ok := ctx.(Logger); ok {

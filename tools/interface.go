@@ -31,6 +31,14 @@ type ContextualTool interface {
 	SetContext(ctx any)
 }
 
+// MetaTool is an optional interface for tools that expose metadata.
+// Convention keys: "confirm" ("true" if tool requires user approval),
+// "category" (e.g., "mutation", "query", "config").
+type MetaTool interface {
+	Tool
+	GetMeta() map[string]string
+}
+
 // ToolLoaderInfo stores information needed to reload a specific tool
 type ToolLoaderInfo struct {
 	Name   string `json:"name"`   // Full namespaced tool name

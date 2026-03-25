@@ -247,6 +247,21 @@ func (r *ToolRegistry) GetIfAllowed(name string) (tool Tool, exists bool, allowe
 	return tool, true, true
 }
 
+// GetMeta returns metadata for a tool if it implements MetaTool, otherwise nil.
+func (r *ToolRegistry) GetMeta(name string) map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	tool, ok := r.tools[name]
+	if !ok {
+		return nil
+	}
+	if mt, ok := tool.(MetaTool); ok {
+		return mt.GetMeta()
+	}
+	return nil
+}
+
 // Remove removes a tool by namespaced name from the registry
 func (r *ToolRegistry) Remove(namespacedName string) {
 	r.mu.Lock()
