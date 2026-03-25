@@ -6,11 +6,14 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"go.uber.org/zap"
 )
 
-// MultiPass routes requests to different LLM providers based on model prefix
+// MultiPass routes requests to different LLM providers based on model prefix.
+// Provider clients are created eagerly at construction time and reused.
 type MultiPass struct {
 	apiKeys map[string]string
+	clients map[string]LLM
 }
 
 // getEnvVarNameForProvider returns the environment variable name for the given provider
@@ -29,15 +32,41 @@ func getEnvVarNameForProvider(provider string) string {
 	}
 }
 
-// NewMultiPass creates a new multi-provider router
+// NewMultiPass creates a new multi-provider router with eagerly initialized clients.
 func NewMultiPass(apiKeys map[string]string) *MultiPass {
+	clients := make(map[string]LLM)
+	for provider, key := range apiKeys {
+		if key == "" {
+			continue
+		}
+		switch provider {
+		case "openai":
+			clients["openai"] = NewOpenAIClient(key, "")
+		case "anthropic":
+			clients["anthropic"] = NewAnthropicClient(key)
+		case "gemini":
+			c, err := NewGeminiClient(key)
+			if err != nil {
+				zap.S().Warnw("skipping gemini client", "error", err)
+				continue
+			}
+			clients["gemini"] = c
+		case "ollama":
+			clients["ollama"] = NewOllamaClient("http://localhost:11434", key)
+		}
+	}
 	return &MultiPass{
 		apiKeys: apiKeys,
+		clients: clients,
 	}
 }
 
 // ChatCompletionStream routes the request to the appropriate provider using event-based streaming
 func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+	// Work on a copy so we don't mutate the caller's request
+	localReq := *req
+	req = &localReq
+
 	// Parse the model string to extract provider and actual model name
 	parts := strings.SplitN(req.Model, "/", 2)
 	if len(parts) != 2 {
@@ -68,28 +97,38 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 		req.Skills = nil
 	}
 
-	// Route to the appropriate provider
-	var llm LLM
-	switch provider {
-	case "openai":
-		llm = NewOpenAIClient(req.APIKey, req.BaseURL)
-	case "anthropic":
-		llm = NewAnthropicClient(req.APIKey)
-	case "gemini":
-		llm = NewGeminiClient(req.APIKey)
-	case "ollama":
-		baseURL := req.BaseURL
-		if baseURL == "" {
-			baseURL = "http://localhost:11434"
-		}
-		llm = NewOllamaClient(baseURL, req.APIKey)
-	default:
-		err := fmt.Errorf("unknown provider '%s'. Valid providers: openai, anthropic, gemini, ollama", provider)
+	// Use pre-built client if key/baseURL match defaults, otherwise create one-off
+	client, err := m.clientFor(provider, req.APIKey, req.BaseURL)
+	if err != nil {
 		return processor.ProcessMessagesToEvents(singleErrorMessage(err))
 	}
 
-	// Delegate to the selected provider
-	return llm.ChatCompletionStream(ctx, req, processor)
+	return client.ChatCompletionStream(ctx, req, processor)
+}
+
+// clientFor returns the pre-built client for a provider when the request uses
+// default credentials, or creates a one-off client for overridden keys/baseURLs.
+func (m *MultiPass) clientFor(provider, apiKey, baseURL string) (LLM, error) {
+	// Use the pre-built client when key matches the default and no custom baseURL
+	if c, ok := m.clients[provider]; ok && apiKey == m.apiKeys[provider] && baseURL == "" {
+		return c, nil
+	}
+
+	switch provider {
+	case "openai":
+		return NewOpenAIClient(apiKey, baseURL), nil
+	case "anthropic":
+		return NewAnthropicClient(apiKey), nil
+	case "gemini":
+		return NewGeminiClient(apiKey)
+	case "ollama":
+		if baseURL == "" {
+			baseURL = "http://localhost:11434"
+		}
+		return NewOllamaClient(baseURL, apiKey), nil
+	default:
+		return nil, fmt.Errorf("unknown provider '%s'. Valid providers: openai, anthropic, gemini, ollama", provider)
+	}
 }
 
 func singleErrorMessage(err error) <-chan messages.ChatMessage {

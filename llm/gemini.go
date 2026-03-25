@@ -14,20 +14,24 @@ import (
 	"google.golang.org/genai"
 )
 
-// Removed mapGeminiFinishReason - now in adapters/gemini_adapter.go
-
 type GeminiClient struct {
-	apiKey string
+	client *genai.Client
 }
 
-func NewGeminiClient(apiKey string) *GeminiClient {
+func NewGeminiClient(apiKey string) (*GeminiClient, error) {
 	if apiKey == "" {
-		zap.S().Debugw("gemini_missing_api_key")
+		return nil, fmt.Errorf("gemini API key not configured")
 	}
 
-	return &GeminiClient{
-		apiKey: apiKey,
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating gemini client: %w", err)
 	}
+
+	return &GeminiClient{client: client}, nil
 }
 
 // ChatCompletionStream implements the event-based streaming interface
@@ -41,21 +45,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		adapter := adapters.NewGeminiAdapter()
 		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
 
-		if g.apiKey == "" {
-			streamCore.EmitError(fmt.Errorf("Gemini API key not configured"))
-			return
-		}
-
-		// Create client with API key
-		client, err := genai.NewClient(ctx, &genai.ClientConfig{
-			APIKey:  g.apiKey,
-			Backend: genai.BackendGeminiAPI,
-		})
-		if err != nil {
-			zap.S().Debugw("gemini_client_creation_failed", "error", err)
-			streamCore.EmitError(fmt.Errorf("error creating Gemini client: %w", err))
-			return
-		}
+		client := g.client
 
 		// Convert session history to Gemini chat history
 		contents, systemInstruction, _ := MessagesToGeminiContent(req.Messages)

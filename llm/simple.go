@@ -332,7 +332,11 @@ func (b *CompletionBuilder) ExecuteWithTools(ctx context.Context, client LLM, to
 
 					result, err := tool.Execute(ctx, args)
 					if err != nil {
-						result = fmt.Sprintf("Error executing tool: %v", err)
+						if msg, ok := tools.FormatToolError(err); ok {
+							result = msg
+						} else {
+							result = fmt.Sprintf("Error executing tool: %v", err)
+						}
 					}
 
 					// Add tool result to messages
@@ -372,6 +376,14 @@ func (s *SimpleProcessor) ProcessMessagesToEvents(msgChan <-chan messages.ChatMe
 
 		for msg := range msgChan {
 			lastMessage = msg
+
+			if msg.IsError() {
+				eventChan <- &messages.StreamEvent{
+					Type:  messages.EventTypeError,
+					Error: msg.GetError(),
+				}
+				return
+			}
 
 			if msg.Content != "" {
 				fullContent += msg.Content

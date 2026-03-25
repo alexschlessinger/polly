@@ -104,6 +104,23 @@ func (e *ToolExecutor) ExecuteToolCall(
 		return false
 	}
 
+	// Client-only tools skip Execute and return args as the result
+	if mt, ok := tool.(tools.MetaTool); ok {
+		if mt.GetMeta()["execute"] == "client" {
+			result := tools.Result(args)
+			if e.Hooks != nil && e.Hooks.AfterExecute != nil {
+				e.Hooks.AfterExecute(toolCall, result, 0, nil)
+			}
+			session.AddMessage(messages.ChatMessage{
+				Role:       messages.MessageRoleTool,
+				Content:    result,
+				ToolCallID: toolCall.ID,
+				ToolName:   toolCall.Name,
+			})
+			return true
+		}
+	}
+
 	// Pre-execution hook - allows modifying context
 	execCtx := ctx
 	if e.Hooks != nil && e.Hooks.BeforeExecute != nil {
@@ -124,7 +141,9 @@ func (e *ToolExecutor) ExecuteToolCall(
 
 	success := err == nil
 	if err != nil {
-		if execCtx.Err() == context.DeadlineExceeded {
+		if msg, ok := tools.FormatToolError(err); ok {
+			result = msg
+		} else if execCtx.Err() == context.DeadlineExceeded {
 			result = fmt.Sprintf("Error: tool execution timed out after %v", e.Timeout)
 		} else {
 			result = fmt.Sprintf("Error: %v", err)
