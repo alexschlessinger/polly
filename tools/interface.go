@@ -3,13 +3,13 @@ package tools
 import (
 	"context"
 
-	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
 // Tool is the generic interface for all tools
 type Tool interface {
 	// Execution methods
-	GetSchema() *jsonschema.Schema
+	GetSchema() *schema.ToolSchema
 	Execute(ctx context.Context, args map[string]any) (string, error)
 
 	// Metadata methods
