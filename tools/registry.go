@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
-	"github.com/google/jsonschema-go/jsonschema"
 	"go.uber.org/zap"
 )
 
@@ -31,23 +31,13 @@ type NamespacedTool struct {
 }
 
 // GetSchema returns a schema with the namespaced title
-func (n *NamespacedTool) GetSchema() *jsonschema.Schema {
-	schema := n.Tool.GetSchema()
-	if schema != nil {
-		// Create a copy to avoid modifying the original
-		modifiedSchema := &jsonschema.Schema{
-			Title:                schema.Title,
-			Description:          schema.Description,
-			Type:                 schema.Type,
-			Properties:           schema.Properties,
-			Required:             schema.Required,
-			AdditionalProperties: schema.AdditionalProperties,
-		}
-		// Update the title to the namespaced name
-		modifiedSchema.Title = n.namespacedName
-		return modifiedSchema
+func (n *NamespacedTool) GetSchema() *schema.ToolSchema {
+	c := n.Tool.GetSchema().Copy()
+	if c == nil {
+		return nil
 	}
-	return schema
+	c.SetTitle(n.namespacedName)
+	return c
 }
 
 // GetName returns the namespaced name
@@ -191,9 +181,8 @@ func (r *ToolRegistry) Register(tool Tool) {
 	name := tool.GetName()
 	if name == "" {
 		// Fallback to schema title if GetName() returns empty
-		schema := tool.GetSchema()
-		if schema != nil && schema.Title != "" {
-			name = schema.Title
+		if s := tool.GetSchema(); s != nil && s.Title() != "" {
+			name = s.Title()
 		}
 	}
 
@@ -330,11 +319,11 @@ func (r *ToolRegistry) All() []Tool {
 }
 
 // GetSchemas returns all tool schemas
-func (r *ToolRegistry) GetSchemas() []*jsonschema.Schema {
+func (r *ToolRegistry) GetSchemas() []*schema.ToolSchema {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	schemas := make([]*jsonschema.Schema, 0, len(r.tools))
+	schemas := make([]*schema.ToolSchema, 0, len(r.tools))
 	for name, tool := range r.tools {
 		if !r.isToolAllowedLocked(name) {
 			continue
@@ -538,15 +527,15 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 		}
 	}
 
-	schema := shellTool.GetSchema()
-	if schema == nil || schema.Title == "" {
+	s := shellTool.GetSchema()
+	if s == nil || s.Title() == "" {
 		return nil, LoadResult{}, fmt.Errorf("shell tool %s has no name in schema", path)
 	}
 	if namespace == "" {
 		namespace = extractNamespace(path)
 	}
 
-	namespacedName := fmt.Sprintf("%s__%s", namespace, schema.Title)
+	namespacedName := fmt.Sprintf("%s__%s", namespace, s.Title())
 	record := stagedToolRecord{
 		name: namespacedName,
 		tool: &NamespacedTool{
@@ -618,12 +607,12 @@ func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName,
 	var records []stagedToolRecord
 	var toolNames []string
 	for _, tool := range serverTools {
-		schema := tool.GetSchema()
-		if schema == nil || schema.Title == "" {
+		s := tool.GetSchema()
+		if s == nil || s.Title() == "" {
 			continue
 		}
 
-		namespacedName := fmt.Sprintf("%s__%s", namespace, schema.Title)
+		namespacedName := fmt.Sprintf("%s__%s", namespace, s.Title())
 		if mcpTool, ok := tool.(*MCPTool); ok {
 			mcpTool.Source = serverSpec
 		}
@@ -902,12 +891,12 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 
 	var toolNames []string
 	for _, tool := range tools {
-		schema := tool.GetSchema()
-		if schema != nil && schema.Title != "" {
+		s := tool.GetSchema()
+		if s != nil && s.Title() != "" {
 			// Only register if this tool is in the allowed list
-			if allowed[schema.Title] {
+			if allowed[s.Title()] {
 				// Create namespaced name
-				namespacedName := fmt.Sprintf("%s__%s", namespace, schema.Title)
+				namespacedName := fmt.Sprintf("%s__%s", namespace, s.Title())
 
 				// Set source on the tool for persistence
 				if mcpTool, ok := tool.(*MCPTool); ok {

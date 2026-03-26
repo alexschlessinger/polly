@@ -82,8 +82,8 @@ func TestMCPClient(t *testing.T) {
 	// Verify we got expected tools
 	var foundTimeTools bool
 	for _, tool := range tools {
-		schema := tool.GetSchema()
-		if schema != nil && strings.Contains(schema.Title, "time") {
+		s := tool.GetSchema()
+		if s != nil && strings.Contains(s.Title(), "time") {
 			foundTimeTools = true
 			break
 		}
@@ -122,9 +122,9 @@ func TestMCPToolExecution(t *testing.T) {
 
 	// Find the get_current_time tool and test it
 	for _, tool := range tools {
-		schema := tool.GetSchema()
-		if schema.Title == "get_current_time" {
-			t.Logf("Testing tool: %s", schema.Title)
+		s := tool.GetSchema()
+		if s.Title() == "get_current_time" {
+			t.Logf("Testing tool: %s", s.Title())
 
 			// Test with valid timezone
 			args := map[string]any{
@@ -175,23 +175,23 @@ func TestMCPToolSchema(t *testing.T) {
 
 	// Test schema generation for each tool
 	for _, tool := range tools {
-		schema := tool.GetSchema()
+		s := tool.GetSchema()
 
-		if schema == nil {
+		if s == nil {
 			t.Error("Expected non-nil schema")
 			continue
 		}
 
 		// Verify basic schema properties
-		if schema.Title == "" {
+		if s.Title() == "" {
 			t.Error("Expected schema to have a title")
 		}
 
-		if schema.Type != "object" {
-			t.Errorf("Expected schema type to be 'object', got %s", schema.Type)
+		if typ, _ := s.Raw["type"].(string); typ != "object" {
+			t.Errorf("Expected schema type to be 'object', got %s", typ)
 		}
 
-		t.Logf("Tool schema - Title: %s, Description: %s", schema.Title, schema.Description)
+		t.Logf("Tool schema - Title: %s, Description: %s", s.Title(), s.Description())
 	}
 }
 
@@ -301,12 +301,12 @@ func TestNewShellTool(t *testing.T) {
 		t.Fatal("Expected schema to be non-nil")
 	}
 
-	if schema.Title != "test-tool" {
-		t.Errorf("Expected title 'test-tool', got %s", schema.Title)
+	if schema.Title() != "test-tool" {
+		t.Errorf("Expected title 'test-tool', got %s", schema.Title())
 	}
 
-	if schema.Description != "A test tool" {
-		t.Errorf("Expected description 'A test tool', got %s", schema.Description)
+	if schema.Description() != "A test tool" {
+		t.Errorf("Expected description 'A test tool', got %s", schema.Description())
 	}
 }
 
@@ -696,15 +696,15 @@ func TestShellToolWithSandbox(t *testing.T) {
 
 	// Without sandbox applied, description should not contain [sandboxed]
 	schema := tool.GetSchema()
-	if strings.Contains(schema.Description, "[sandboxed]") {
+	if strings.Contains(schema.Description(), "[sandboxed]") {
 		t.Error("Expected no [sandboxed] hint without sandbox applied")
 	}
 
 	// With sandbox applied, description should contain [sandboxed]
 	sandboxed := tool.WithSandbox(&mockSandbox{})
 	schema = sandboxed.GetSchema()
-	if !strings.Contains(schema.Description, "[sandboxed]") {
-		t.Errorf("Expected [sandboxed] hint in description, got %q", schema.Description)
+	if !strings.Contains(schema.Description(), "[sandboxed]") {
+		t.Errorf("Expected [sandboxed] hint in description, got %q", schema.Description())
 	}
 
 	// WithSandbox should preserve command, schema, and wantsSandbox
@@ -819,7 +819,7 @@ func TestRegistryAppliesSandboxToOptInShellTools(t *testing.T) {
 	// Tool that opted in should have the [sandboxed] hint
 	for _, tool := range registry.All() {
 		schema := tool.GetSchema()
-		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
+		if schema != nil && strings.Contains(schema.Description(), "[sandboxed]") {
 			return
 		}
 	}
@@ -842,7 +842,7 @@ func TestRegistrySandboxesNonOptInShellTools(t *testing.T) {
 	found := false
 	for _, tool := range registry.All() {
 		schema := tool.GetSchema()
-		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
+		if schema != nil && strings.Contains(schema.Description(), "[sandboxed]") {
 			found = true
 		}
 	}
@@ -883,7 +883,7 @@ fi
 
 	for _, tool := range registry.All() {
 		schema := tool.GetSchema()
-		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
+		if schema != nil && strings.Contains(schema.Description(), "[sandboxed]") {
 			t.Error("Expected shell tool with sandbox:false to NOT be sandboxed")
 		}
 	}
@@ -980,14 +980,14 @@ fi
 }
 
 func TestUpperCaseTool(t *testing.T) {
-	tool := &UpperCaseTool{}
+	tool := UpperCaseTool
 
 	// Test schema
 	schema := tool.GetSchema()
-	if schema.Title != "uppercase" {
-		t.Errorf("Expected title 'uppercase', got %s", schema.Title)
+	if schema.Title() != "uppercase" {
+		t.Errorf("Expected title 'uppercase', got %s", schema.Title())
 	}
-	if len(schema.Required) != 1 || schema.Required[0] != "text" {
+	if req := schema.Required(); len(req) != 1 || req[0] != "text" {
 		t.Error("Expected 'text' to be required")
 	}
 
@@ -1005,7 +1005,7 @@ func TestUpperCaseTool(t *testing.T) {
 }
 
 func TestUpperCaseToolInvalidArgs(t *testing.T) {
-	tool := &UpperCaseTool{}
+	tool := UpperCaseTool
 
 	// Test with missing text argument
 	args := map[string]any{}
@@ -1025,12 +1025,12 @@ func TestUpperCaseToolInvalidArgs(t *testing.T) {
 }
 
 func TestWordCountTool(t *testing.T) {
-	tool := &WordCountTool{}
+	tool := WordCountTool
 
 	// Test schema
 	schema := tool.GetSchema()
-	if schema.Title != "wordcount" {
-		t.Errorf("Expected title 'wordcount', got %s", schema.Title)
+	if schema.Title() != "wordcount" {
+		t.Errorf("Expected title 'wordcount', got %s", schema.Title())
 	}
 
 	// Test word counting
@@ -1060,7 +1060,7 @@ func TestWordCountTool(t *testing.T) {
 }
 
 func TestWordCountToolInvalidArgs(t *testing.T) {
-	tool := &WordCountTool{}
+	tool := WordCountTool
 
 	// Test with non-string argument
 	args := map[string]any{
@@ -1096,8 +1096,8 @@ func TestLoggerTool(t *testing.T) {
 
 	// Test schema
 	schema := tool.GetSchema()
-	if schema.Title != "log" {
-		t.Errorf("Expected title 'log', got %s", schema.Title)
+	if schema.Title() != "log" {
+		t.Errorf("Expected title 'log', got %s", schema.Title())
 	}
 
 	// Test logging with default level

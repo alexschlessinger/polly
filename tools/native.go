@@ -5,65 +5,36 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
-// Example native Go tools demonstrating NativeTool embedding
+// Example native Go tools
 
-// UpperCaseTool is a simple example of a native Go tool
-type UpperCaseTool struct{ NativeTool }
-
-func (t *UpperCaseTool) GetName() string { return "uppercase" }
-
-func (t *UpperCaseTool) GetSchema() *jsonschema.Schema {
-	return &jsonschema.Schema{
-		Title:       "uppercase",
-		Description: "Convert text to uppercase",
-		Type:        "object",
-		Properties: map[string]*jsonschema.Schema{
-			"text": {
-				Type:        "string",
-				Description: "The text to convert to uppercase",
-			},
-		},
-		Required: []string{"text"},
-	}
+var UpperCaseTool = &Func{
+	Name:     "uppercase",
+	Desc:     "Convert text to uppercase",
+	Params:   schema.Params{"text": schema.S("The text to convert to uppercase")},
+	Required: []string{"text"},
+	Run: func(_ context.Context, args Args) (string, error) {
+		text, ok := args["text"].(string)
+		if !ok {
+			return "", fmt.Errorf("text must be a string")
+		}
+		return strings.ToUpper(text), nil
+	},
 }
 
-func (t *UpperCaseTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	text, ok := args["text"].(string)
-	if !ok {
-		return "", fmt.Errorf("text must be a string")
-	}
-	return strings.ToUpper(text), nil
-}
-
-// WordCountTool counts words in text
-type WordCountTool struct{ NativeTool }
-
-func (t *WordCountTool) GetName() string { return "wordcount" }
-
-func (t *WordCountTool) GetSchema() *jsonschema.Schema {
-	return &jsonschema.Schema{
-		Title:       "wordcount",
-		Description: "Count words in text",
-		Type:        "object",
-		Properties: map[string]*jsonschema.Schema{
-			"text": {
-				Type:        "string",
-				Description: "The text to count words in",
-			},
-		},
-		Required: []string{"text"},
-	}
-}
-
-func (t *WordCountTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	text, ok := args["text"].(string)
-	if !ok {
-		return "", fmt.Errorf("text must be a string")
-	}
-	return fmt.Sprintf("Word count: %d", len(strings.Fields(text))), nil
+var WordCountTool = &Func{
+	Name:     "wordcount",
+	Desc:     "Count words in text",
+	Params:   schema.Params{"text": schema.S("The text to count words in")},
+	Required: []string{"text"},
+	Run: func(_ context.Context, args Args) (string, error) {
+		if _, ok := args["text"].(string); !ok {
+			return "", fmt.Errorf("text must be a string")
+		}
+		return fmt.Sprintf("Word count: %d", len(strings.Fields(args.String("text")))), nil
+	},
 }
 
 // LoggerTool is an example tool that needs context to be injected
@@ -85,24 +56,14 @@ func (t *LoggerTool) SetContext(ctx any) {
 	}
 }
 
-func (t *LoggerTool) GetSchema() *jsonschema.Schema {
-	return &jsonschema.Schema{
-		Title:       "log",
-		Description: "Log a message to the configured logger",
-		Type:        "object",
-		Properties: map[string]*jsonschema.Schema{
-			"message": {
-				Type:        "string",
-				Description: "The message to log",
-			},
-			"level": {
-				Type:        "string",
-				Description: "Log level (info, warn, error)",
-				Enum:        []any{"info", "warn", "error"},
-			},
+func (t *LoggerTool) GetSchema() *schema.ToolSchema {
+	return schema.Tool("log", "Log a message to the configured logger",
+		schema.Params{
+			"message": schema.S("The message to log"),
+			"level":   schema.Enum("Log level (info, warn, error)", "info", "warn", "error"),
 		},
-		Required: []string{"message"},
-	}
+		"message",
+	)
 }
 
 func (t *LoggerTool) Execute(ctx context.Context, args map[string]any) (string, error) {

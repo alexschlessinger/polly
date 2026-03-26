@@ -7,15 +7,15 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
-	"github.com/google/jsonschema-go/jsonschema"
 	"go.uber.org/zap"
 )
 
 // ShellTool wraps external commands/scripts as tools
 type ShellTool struct {
 	Command       string
-	schema        *jsonschema.Schema
+	schema        *schema.ToolSchema
 	sandbox       sandbox.Sandbox
 	sandboxCfg    *sandbox.Config // parsed from the script's schema "sandbox" field
 	sandboxOptOut bool            // user set "sandbox": false
@@ -67,42 +67,30 @@ func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool,
 		return nil, fmt.Errorf("invalid sandbox config in %s: %w", command, err)
 	}
 
-	// Parse the schema directly - it should unmarshal properly
-	tool.schema = &jsonschema.Schema{}
-	err = json.Unmarshal([]byte(schemaJSON), tool.schema)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse schema from %s: %v", command, err)
+	tool.schema = schema.ToolSchemaFromString(schemaJSON)
+	if tool.schema == nil {
+		return nil, fmt.Errorf("failed to parse schema from %s", command)
 	}
 
 	return tool, nil
 }
 
-// GetSchema returns the tool's schema with namespaced title
-func (s *ShellTool) GetSchema() *jsonschema.Schema {
-	if s.schema == nil {
+// GetSchema returns the tool's schema, annotated with [sandboxed] if applicable
+func (s *ShellTool) GetSchema() *schema.ToolSchema {
+	c := s.schema.Copy()
+	if c == nil {
 		return nil
 	}
-
-	desc := s.schema.Description
 	if s.sandbox != nil {
-		desc += " [sandboxed]"
+		c.Raw["description"] = c.Description() + " [sandboxed]"
 	}
-
-	// Create a copy to avoid modifying the original
-	return &jsonschema.Schema{
-		Title:                s.schema.Title,
-		Description:          desc,
-		Type:                 s.schema.Type,
-		Properties:           s.schema.Properties,
-		Required:             s.schema.Required,
-		AdditionalProperties: s.schema.AdditionalProperties,
-	}
+	return c
 }
 
 // GetName returns the name of the tool
 func (s *ShellTool) GetName() string {
-	if s.schema != nil && s.schema.Title != "" {
-		return s.schema.Title
+	if s.schema != nil {
+		return s.schema.Title()
 	}
 	return ""
 }
@@ -137,8 +125,8 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 	// Log execution details
 	if cmd.ProcessState != nil {
 		name := ""
-		if s.schema != nil && s.schema.Title != "" {
-			name = s.schema.Title
+		if s.schema != nil {
+			name = s.schema.Title()
 		}
 		zap.S().Debugw("shell_tool_completed",
 			"tool_name", name,

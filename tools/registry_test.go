@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
 type testTool struct {
@@ -13,12 +13,8 @@ type testTool struct {
 	source string
 }
 
-func (t *testTool) GetSchema() *jsonschema.Schema {
-	return &jsonschema.Schema{
-		Title:       t.name,
-		Description: "Test tool",
-		Type:        "object",
-	}
+func (t *testTool) GetSchema() *schema.ToolSchema {
+	return schema.Tool(t.name, "Test tool", nil)
 }
 
 func (t *testTool) Execute(ctx context.Context, args map[string]any) (string, error) {
@@ -118,13 +114,13 @@ func TestRegistryGetSchemas(t *testing.T) {
 		t.Errorf("Expected 2 schemas, got %d", len(schemas))
 	}
 
-	for _, schema := range schemas {
-		if schema == nil {
+	for _, s := range schemas {
+		if s == nil {
 			t.Error("Expected non-nil schema")
 			continue
 		}
-		if schema.Title != "tool1" && schema.Title != "tool2" {
-			t.Errorf("Unexpected schema title: %s", schema.Title)
+		if s.Title() != "tool1" && s.Title() != "tool2" {
+			t.Errorf("Unexpected schema title: %s", s.Title())
 		}
 	}
 }
