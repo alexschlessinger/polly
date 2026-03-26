@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -24,6 +25,19 @@ type EventStreamProcessor interface {
 type Schema struct {
 	Raw    map[string]any // Raw JSON schema
 	Strict bool           // Whether to enforce strict validation
+}
+
+// SchemaFromJSON parses a JSON schema string into a strict Schema.
+// Returns nil if the string is empty or invalid.
+func SchemaFromJSON(s string) *Schema {
+	if s == "" {
+		return nil
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(s), &raw); err != nil {
+		return nil
+	}
+	return &Schema{Raw: raw, Strict: true}
 }
 
 // CompletionRequest contains all parameters for a completion request
