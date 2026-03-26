@@ -73,6 +73,11 @@ type ChatMessageToolCall struct {
 	Arguments string // JSON string of arguments
 }
 
+// User returns a single-element message history with a user message.
+func User(text string) []ChatMessage {
+	return []ChatMessage{{Role: MessageRoleUser, Content: text}}
+}
+
 // Standard role constants
 const (
 	MessageRoleSystem    = "system"
