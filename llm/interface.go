@@ -3,7 +3,12 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
+
+	ijs "github.com/invopop/jsonschema"
+	"github.com/xeipuuv/gojsonschema"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/skills"
@@ -25,6 +30,50 @@ type EventStreamProcessor interface {
 type Schema struct {
 	Raw    map[string]any // Raw JSON schema
 	Strict bool           // Whether to enforce strict validation
+}
+
+// Validate checks that a JSON string conforms to this schema.
+func (s *Schema) Validate(jsonStr string) error {
+	if s == nil {
+		return nil
+	}
+	schemaBytes, err := json.Marshal(s.Raw)
+	if err != nil {
+		return fmt.Errorf("schema marshal error: %w", err)
+	}
+	result, err := gojsonschema.Validate(
+		gojsonschema.NewBytesLoader(schemaBytes),
+		gojsonschema.NewStringLoader(jsonStr),
+	)
+	if err != nil {
+		return fmt.Errorf("schema validation error: %w", err)
+	}
+	if !result.Valid() {
+		var msgs []string
+		for _, e := range result.Errors() {
+			msgs = append(msgs, e.String())
+		}
+		return fmt.Errorf("validation failed: %s", strings.Join(msgs, "; "))
+	}
+	return nil
+}
+
+// SchemaFor generates a strict JSON schema from a Go struct using reflection.
+// Fields are derived from json tags; descriptions from jsonschema tags.
+func SchemaFor(v any) *Schema {
+	r := new(ijs.Reflector)
+	r.DoNotReference = true
+	s := r.Reflect(v)
+	s.AdditionalProperties = ijs.FalseSchema
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	return &Schema{Raw: m, Strict: true}
 }
 
 // SchemaFromJSON parses a JSON schema string into a strict Schema.
