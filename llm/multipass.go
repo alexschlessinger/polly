@@ -6,14 +6,14 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	"go.uber.org/zap"
 )
 
+type providerFactory func(apiKey, baseURL string) (LLM, error)
+
 // MultiPass routes requests to different LLM providers based on model prefix.
-// Provider clients are created eagerly at construction time and reused.
 type MultiPass struct {
-	apiKeys map[string]string
-	clients map[string]LLM
+	apiKeys   map[string]string
+	factories map[string]providerFactory
 }
 
 // getEnvVarNameForProvider returns the environment variable name for the given provider
@@ -32,33 +32,50 @@ func getEnvVarNameForProvider(provider string) string {
 	}
 }
 
-// NewMultiPass creates a new multi-provider router with eagerly initialized clients.
+// NewMultiPass creates a new multi-provider router using a snapshot of the
+// provided API keys.
 func NewMultiPass(apiKeys map[string]string) *MultiPass {
-	clients := make(map[string]LLM)
-	for provider, key := range apiKeys {
-		if key == "" {
-			continue
-		}
-		switch provider {
-		case "openai":
-			clients["openai"] = NewOpenAIClient(key, "")
-		case "anthropic":
-			clients["anthropic"] = NewAnthropicClient(key)
-		case "gemini":
-			c, err := NewGeminiClient(key)
-			if err != nil {
-				zap.S().Warnw("skipping gemini client", "error", err)
-				continue
-			}
-			clients["gemini"] = c
-		case "ollama":
-			clients["ollama"] = NewOllamaClient("http://localhost:11434", key)
-		}
-	}
+	return newMultiPass(apiKeys, defaultProviderFactories())
+}
+
+func newMultiPass(apiKeys map[string]string, factories map[string]providerFactory) *MultiPass {
 	return &MultiPass{
-		apiKeys: apiKeys,
-		clients: clients,
+		apiKeys:   copyAPIKeys(apiKeys),
+		factories: copyProviderFactories(factories),
 	}
+}
+
+func defaultProviderFactories() map[string]providerFactory {
+	return map[string]providerFactory{
+		"openai": func(apiKey, baseURL string) (LLM, error) {
+			return NewOpenAIClient(apiKey, baseURL), nil
+		},
+		"anthropic": func(apiKey, _ string) (LLM, error) {
+			return NewAnthropicClient(apiKey), nil
+		},
+		"gemini": func(apiKey, _ string) (LLM, error) {
+			return NewGeminiClient(apiKey)
+		},
+		"ollama": func(apiKey, baseURL string) (LLM, error) {
+			return NewOllamaClient(baseURL, apiKey), nil
+		},
+	}
+}
+
+func copyAPIKeys(apiKeys map[string]string) map[string]string {
+	out := make(map[string]string, len(apiKeys))
+	for provider, key := range apiKeys {
+		out[provider] = key
+	}
+	return out
+}
+
+func copyProviderFactories(factories map[string]providerFactory) map[string]providerFactory {
+	out := make(map[string]providerFactory, len(factories))
+	for provider, factory := range factories {
+		out[provider] = factory
+	}
+	return out
 }
 
 // ChatCompletionStream routes the request to the appropriate provider using event-based streaming
@@ -97,7 +114,7 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 		req.Skills = nil
 	}
 
-	// Use pre-built client if key/baseURL match defaults, otherwise create one-off
+	// Create a provider client for this request.
 	client, err := m.clientFor(provider, req.APIKey, req.BaseURL)
 	if err != nil {
 		return processor.ProcessMessagesToEvents(singleErrorMessage(err))
@@ -106,29 +123,18 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	return client.ChatCompletionStream(ctx, req, processor)
 }
 
-// clientFor returns the pre-built client for a provider when the request uses
-// default credentials, or creates a one-off client for overridden keys/baseURLs.
+// clientFor creates a provider client for the current request.
 func (m *MultiPass) clientFor(provider, apiKey, baseURL string) (LLM, error) {
-	// Use the pre-built client when key matches the default and no custom baseURL
-	if c, ok := m.clients[provider]; ok && apiKey == m.apiKeys[provider] && baseURL == "" {
-		return c, nil
-	}
-
-	switch provider {
-	case "openai":
-		return NewOpenAIClient(apiKey, baseURL), nil
-	case "anthropic":
-		return NewAnthropicClient(apiKey), nil
-	case "gemini":
-		return NewGeminiClient(apiKey)
-	case "ollama":
-		if baseURL == "" {
-			baseURL = "http://localhost:11434"
-		}
-		return NewOllamaClient(baseURL, apiKey), nil
-	default:
+	factory, ok := m.factories[provider]
+	if !ok {
 		return nil, fmt.Errorf("unknown provider '%s'. Valid providers: openai, anthropic, gemini, ollama", provider)
 	}
+
+	if provider == "ollama" && baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+
+	return factory(apiKey, baseURL)
 }
 
 func singleErrorMessage(err error) <-chan messages.ChatMessage {
