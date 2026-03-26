@@ -12,7 +12,7 @@ import (
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
-// GetDefaultClient creates a MultiPass client with API keys from environment
+// GetDefaultClient creates a new MultiPass router with API keys from the environment.
 func GetDefaultClient() LLM {
 	apiKeys := map[string]string{
 		"openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
@@ -23,7 +23,7 @@ func GetDefaultClient() LLM {
 	return NewMultiPass(apiKeys)
 }
 
-// QuickComplete performs a simple one-shot completion with minimal configuration
+// QuickComplete performs a simple one-shot completion with minimal configuration.
 func QuickComplete(ctx context.Context, model, prompt string, maxTokens int) (string, error) {
 	client := GetDefaultClient()
 
@@ -55,7 +55,7 @@ func QuickComplete(ctx context.Context, model, prompt string, maxTokens int) (st
 	return result, nil
 }
 
-// StreamComplete performs a streaming completion with a callback for each chunk
+// StreamComplete performs a streaming completion with a callback for each chunk.
 func StreamComplete(ctx context.Context, model, prompt string, maxTokens int, onChunk func(string)) error {
 	client := GetDefaultClient()
 
@@ -88,7 +88,7 @@ func StreamComplete(ctx context.Context, model, prompt string, maxTokens int, on
 	return nil
 }
 
-// ChatWithHistory performs a completion with conversation history
+// ChatWithHistory performs a completion with conversation history.
 func ChatWithHistory(ctx context.Context, model string, history []messages.ChatMessage, newMessage string, maxTokens int) (*messages.ChatMessage, error) {
 	client := GetDefaultClient()
 
@@ -121,7 +121,7 @@ func ChatWithHistory(ctx context.Context, model string, history []messages.ChatM
 	return &response, nil
 }
 
-// StructuredComplete performs a completion expecting a structured JSON response
+// StructuredComplete performs a completion expecting a structured JSON response.
 func StructuredComplete(ctx context.Context, model, prompt string, schema *Schema, maxTokens int, result interface{}) error {
 	client := GetDefaultClient()
 
