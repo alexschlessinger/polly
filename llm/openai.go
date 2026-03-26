@@ -10,7 +10,6 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	ai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 	"go.uber.org/zap"
@@ -248,66 +247,64 @@ func ConvertToOpenAISchema(schema *Schema) *ai.ChatCompletionResponseFormat {
 	}
 }
 
-// convertSchemaToOpenAIDefinition recursively converts an MCP schema to an OpenAI Definition
-func convertSchemaToOpenAIDefinition(schema *mcpjsonschema.Schema) jsonschema.Definition {
-	if schema == nil {
+// convertMapToOpenAIDefinition recursively converts a JSON schema map to an OpenAI Definition
+func convertMapToOpenAIDefinition(m map[string]any) jsonschema.Definition {
+	if m == nil {
 		return jsonschema.Definition{}
 	}
 
-	def := jsonschema.Definition{
-		Type:        jsonschema.DataType(schema.Type),
-		Description: schema.Description,
+	def := jsonschema.Definition{}
+	if t, ok := m["type"].(string); ok {
+		def.Type = jsonschema.DataType(t)
+	}
+	if d, ok := m["description"].(string); ok {
+		def.Description = d
 	}
 
-	// Handle different types
-	switch schema.Type {
+	switch def.Type {
 	case "array":
-		// Handle array items
-		if schema.Items != nil {
-			items := convertSchemaToOpenAIDefinition(schema.Items)
-			def.Items = &items
+		if items, ok := m["items"].(map[string]any); ok {
+			converted := convertMapToOpenAIDefinition(items)
+			def.Items = &converted
 		}
 	case "object":
-		// Handle nested object properties recursively
-		if schema.Properties != nil {
-			props := make(map[string]jsonschema.Definition)
-			for name, prop := range schema.Properties {
-				if prop != nil {
-					props[name] = convertSchemaToOpenAIDefinition(prop)
+		if props, ok := m["properties"].(map[string]any); ok {
+			def.Properties = make(map[string]jsonschema.Definition)
+			for name, prop := range props {
+				if propMap, ok := prop.(map[string]any); ok {
+					def.Properties[name] = convertMapToOpenAIDefinition(propMap)
 				}
 			}
-			def.Properties = props
 		}
-		if len(schema.Required) > 0 {
-			def.Required = schema.Required
+		if req, ok := m["required"].([]string); ok {
+			def.Required = req
+		} else if req, ok := m["required"].([]any); ok {
+			for _, r := range req {
+				if s, ok := r.(string); ok {
+					def.Required = append(def.Required, s)
+				}
+			}
 		}
 	}
 
-	// Handle enums if present
-	if len(schema.Enum) > 0 {
-		// Convert any type enums to string enums for OpenAI
-		enumStrs := make([]string, 0, len(schema.Enum))
-		for _, e := range schema.Enum {
+	if enum, ok := m["enum"].([]any); ok {
+		for _, e := range enum {
 			if s, ok := e.(string); ok {
-				enumStrs = append(enumStrs, s)
+				def.Enum = append(def.Enum, s)
 			}
-		}
-		if len(enumStrs) > 0 {
-			def.Enum = enumStrs
 		}
 	}
 
 	return def
 }
 
-// ConvertToolToOpenAI converts a generic tool schema to OpenAI format
-func ConvertToolToOpenAI(schema *mcpjsonschema.Schema) ai.Tool {
-	// Convert properties to OpenAI jsonschema.Definition using recursive conversion
+// ConvertToolToOpenAI converts a tool schema to OpenAI format
+func ConvertToolToOpenAI(schema *ToolSchema) ai.Tool {
 	props := make(map[string]jsonschema.Definition)
-	if schema != nil && schema.Properties != nil {
-		for k, v := range schema.Properties {
-			if v != nil {
-				props[k] = convertSchemaToOpenAIDefinition(v)
+	if schema != nil {
+		for k, v := range schema.Properties() {
+			if vm, ok := v.(map[string]any); ok {
+				props[k] = convertMapToOpenAIDefinition(vm)
 			}
 		}
 	}
@@ -317,15 +314,12 @@ func ConvertToolToOpenAI(schema *mcpjsonschema.Schema) ai.Tool {
 	var required []string
 
 	if schema != nil {
-		name = schema.Title
-		description = schema.Description
-		required = schema.Required
+		name = schema.Title()
+		description = schema.Description()
+		required = schema.Required()
 	}
 
-	// Create parameters definition
 	// OpenAI requires Properties field to be present, even if empty.
-	// The go-openai jsonschema omits empty maps, so for truly no-arg tools
-	// we inject a benign optional placeholder property to keep the field present.
 	if len(props) == 0 {
 		props["__noargs"] = jsonschema.Definition{
 			Type:        jsonschema.String,

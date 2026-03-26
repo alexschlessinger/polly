@@ -11,7 +11,6 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	ollamaapi "github.com/ollama/ollama/api"
 	"go.uber.org/zap"
 )
@@ -202,92 +201,71 @@ func ConvertToOllamaFormat(schema *Schema) string {
 	return fmt.Sprintf("You must respond with JSON that matches this schema:\n%s", string(schemaJSON))
 }
 
-// convertSchemaToOllamaProperty recursively converts an MCP schema to an Ollama ToolProperty
-func convertSchemaToOllamaProperty(schema *mcpjsonschema.Schema) ollamaapi.ToolProperty {
-	if schema == nil {
-		return ollamaapi.ToolProperty{
-			Type: ollamaapi.PropertyType{"string"},
-		}
+// convertMapToOllamaProperty recursively converts a JSON schema map to an Ollama ToolProperty
+func convertMapToOllamaProperty(m map[string]any) ollamaapi.ToolProperty {
+	if m == nil {
+		return ollamaapi.ToolProperty{Type: ollamaapi.PropertyType{"string"}}
 	}
 
-	ollamaProp := ollamaapi.ToolProperty{
-		Type:        ollamaapi.PropertyType{schema.Type},
-		Description: schema.Description,
+	typeStr := "string"
+	if t, ok := m["type"].(string); ok {
+		typeStr = t
 	}
 
-	// Handle different types
-	switch schema.Type {
-	case "array":
-		// Handle array items
-		if schema.Items != nil {
-			itemsProp := convertSchemaToOllamaProperty(schema.Items)
-			ollamaProp.Items = itemsProp
+	prop := ollamaapi.ToolProperty{
+		Type: ollamaapi.PropertyType{typeStr},
+	}
+	if d, ok := m["description"].(string); ok {
+		prop.Description = d
+	}
+
+	if typeStr == "array" {
+		if items, ok := m["items"].(map[string]any); ok {
+			prop.Items = convertMapToOllamaProperty(items)
 		} else {
-			// Default to string items if not specified
-			ollamaProp.Items = ollamaapi.ToolProperty{
-				Type: ollamaapi.PropertyType{"string"},
-			}
-		}
-	case "object":
-		// For nested objects, we need to handle properties recursively
-		// Note: Ollama's ToolProperty doesn't have a Properties field for nested objects
-		// So we'll need to handle this differently or flatten the structure
-		if len(schema.Properties) > 0 {
-			// We can't directly set nested properties in ToolProperty
-			// This is a limitation of the Ollama API structure
-			// For now, we'll just mark it as object type
+			prop.Items = ollamaapi.ToolProperty{Type: ollamaapi.PropertyType{"string"}}
 		}
 	}
 
-	// Handle enums if present
-	if len(schema.Enum) > 0 {
-		ollamaProp.Enum = schema.Enum
+	if enum, ok := m["enum"].([]any); ok {
+		prop.Enum = enum
 	}
 
-	return ollamaProp
+	return prop
 }
 
-// convertPropertiesToOllamaFromSchema converts schema properties to Ollama format
-func convertPropertiesToOllamaFromSchema(schema *mcpjsonschema.Schema) *ollamaapi.ToolPropertiesMap {
-	result := ollamaapi.NewToolPropertiesMap()
-
-	if schema != nil && schema.Properties != nil {
-		for name, prop := range schema.Properties {
-			if prop != nil {
-				result.Set(name, convertSchemaToOllamaProperty(prop))
-			}
-		}
-	}
-
-	return result
-}
-
-// ConvertToolToOllama converts a generic tool schema to Ollama native format
-func ConvertToolToOllama(schema *mcpjsonschema.Schema) ollamaapi.Tool {
+// ConvertToolToOllama converts a tool schema to Ollama native format
+func ConvertToolToOllama(schema *ToolSchema) ollamaapi.Tool {
 	name := ""
 	description := ""
 	typeStr := "object"
 	var required []string
 
 	if schema != nil {
-		name = schema.Title
-		description = schema.Description
-		if schema.Type != "" {
-			typeStr = schema.Type
+		name = schema.Title()
+		description = schema.Description()
+		if t, ok := schema.Raw["type"].(string); ok && t != "" {
+			typeStr = t
 		}
-		required = schema.Required
+		required = schema.Required()
 	}
 
-	// Create the tool function
+	propsMap := ollamaapi.NewToolPropertiesMap()
+	if schema != nil {
+		for k, v := range schema.Properties() {
+			if vm, ok := v.(map[string]any); ok {
+				propsMap.Set(k, convertMapToOllamaProperty(vm))
+			}
+		}
+	}
+
 	toolFunc := ollamaapi.ToolFunction{
 		Name:        name,
 		Description: description,
 	}
-
-	// Set parameters
 	toolFunc.Parameters.Type = typeStr
 	toolFunc.Parameters.Required = required
-	toolFunc.Parameters.Properties = convertPropertiesToOllamaFromSchema(schema)
+	toolFunc.Parameters.Properties = propsMap
 
 	return ollamaapi.Tool{
 		Type:     "function",

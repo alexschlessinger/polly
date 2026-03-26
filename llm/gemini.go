@@ -9,7 +9,6 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	"go.uber.org/zap"
 	"google.golang.org/genai"
 )
@@ -236,85 +235,27 @@ func convertJSONSchemaToGemini(schemaMap map[string]any) *genai.Schema {
 	return geminiSchema
 }
 
-// convertSchemaToGeminiSchema recursively converts an MCP schema to a Gemini schema
-func convertSchemaToGeminiSchema(schema *mcpjsonschema.Schema) *genai.Schema {
-	if schema == nil {
-		return nil
-	}
-
-	geminiSchema := &genai.Schema{
-		Description: schema.Description,
-	}
-
-	// Map type
-	switch schema.Type {
-	case "string":
-		geminiSchema.Type = genai.TypeString
-	case "number":
-		geminiSchema.Type = genai.TypeNumber
-	case "boolean":
-		geminiSchema.Type = genai.TypeBoolean
-	case "array":
-		geminiSchema.Type = genai.TypeArray
-		// Handle array items
-		if schema.Items != nil {
-			geminiSchema.Items = convertSchemaToGeminiSchema(schema.Items)
-		}
-	case "object":
-		geminiSchema.Type = genai.TypeObject
-		// Handle nested object properties recursively
-		if schema.Properties != nil {
-			props := make(map[string]*genai.Schema)
-			for name, prop := range schema.Properties {
-				if prop != nil {
-					props[name] = convertSchemaToGeminiSchema(prop)
-				}
-			}
-			geminiSchema.Properties = props
-		}
-		if len(schema.Required) > 0 {
-			geminiSchema.Required = schema.Required
-		}
-	default:
-		// Default to string for unknown types
-		geminiSchema.Type = genai.TypeString
-	}
-
-	return geminiSchema
-}
-
-// ConvertToolToGemini converts a generic tool schema to Gemini format
-func ConvertToolToGemini(schema *mcpjsonschema.Schema) *genai.Tool {
-	// Convert properties to Gemini schema format using recursive conversion
-	props := make(map[string]*genai.Schema)
-
-	if schema != nil && schema.Properties != nil {
-		for name, prop := range schema.Properties {
-			if prop != nil {
-				props[name] = convertSchemaToGeminiSchema(prop)
-			}
-		}
-	}
-
+// ConvertToolToGemini converts a tool schema to Gemini format
+func ConvertToolToGemini(schema *ToolSchema) *genai.Tool {
 	name := ""
 	description := ""
-	var required []string
+	var params *genai.Schema
 
 	if schema != nil {
-		name = schema.Title
-		description = schema.Description
-		required = schema.Required
+		name = schema.Title()
+		description = schema.Description()
+		// Reuse the same map-based converter used for response schemas
+		params = convertJSONSchemaToGemini(schema.Raw)
+	}
+	if params == nil {
+		params = &genai.Schema{Type: genai.TypeObject}
 	}
 
 	return &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{{
 			Name:        name,
 			Description: description,
-			Parameters: &genai.Schema{
-				Type:       genai.TypeObject,
-				Properties: props,
-				Required:   required,
-			},
+			Parameters:  params,
 		}},
 	}
 }
