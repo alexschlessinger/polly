@@ -23,6 +23,20 @@ func GetDefaultClient() LLM {
 	return NewMultiPass(apiKeys)
 }
 
+// Collect calls ChatCompletionStream on the given LLM client and returns the final content string.
+func Collect(ctx context.Context, client LLM, req *CompletionRequest) (string, error) {
+	events := client.ChatCompletionStream(ctx, req, &SimpleProcessor{})
+	for event := range events {
+		switch event.Type {
+		case messages.EventTypeComplete:
+			return event.Message.GetContent(), nil
+		case messages.EventTypeError:
+			return "", event.Error
+		}
+	}
+	return "", fmt.Errorf("no response from LLM")
+}
+
 // QuickComplete performs a simple one-shot completion with minimal configuration.
 func QuickComplete(ctx context.Context, model, prompt string, maxTokens int) (string, error) {
 	client := GetDefaultClient()
