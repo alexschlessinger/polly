@@ -22,10 +22,10 @@ type EventStreamProcessor interface {
 	ProcessMessagesToEvents(<-chan messages.ChatMessage) <-chan *messages.StreamEvent
 }
 
-// Schema is a type alias for backward compatibility.
+// Schema is a type alias so callers can use llm.Schema without importing schema.
 type Schema = schema.Schema
 
-// ToolSchema is a type alias for backward compatibility.
+// ToolSchema is a type alias so callers can use llm.ToolSchema without importing schema.
 type ToolSchema = schema.ToolSchema
 
 // SchemaFor generates a strict JSON schema from a Go struct using reflection.

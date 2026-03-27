@@ -192,13 +192,23 @@ func ConvertToOllamaFormat(schema *Schema) string {
 }
 
 // ConvertToolToOllama converts a tool schema to Ollama native format.
-// Ollama's ToolFunctionParameters has custom UnmarshalJSON, so we round-trip
-// through JSON to let the SDK handle the conversion.
+// We unmarshal only the properties into ToolPropertiesMap (which uses an
+// ordered map internally) and set the remaining fields directly.
 func ConvertToolToOllama(schema *ToolSchema) ollamaapi.Tool {
 	var params ollamaapi.ToolFunctionParameters
 	if schema != nil {
-		if b, err := json.Marshal(schema.Raw); err == nil {
-			json.Unmarshal(b, &params)
+		params.Type = "object"
+		if t, ok := schema.Raw["type"].(string); ok && t != "" {
+			params.Type = t
+		}
+		params.Required = schema.Required()
+		// Unmarshal just the properties into the SDK's ordered map.
+		if props := schema.Properties(); props != nil {
+			if b, err := json.Marshal(props); err == nil {
+				propsMap := ollamaapi.NewToolPropertiesMap()
+				json.Unmarshal(b, propsMap)
+				params.Properties = propsMap
+			}
 		}
 	}
 

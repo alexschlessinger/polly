@@ -152,16 +152,22 @@ func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, client 
 }
 
 // ConvertToolToGemini converts a tool schema to Gemini format.
-// Gemini's FunctionDeclaration.ParametersJsonSchema accepts any, so we pass the raw map.
+// Gemini's FunctionDeclaration.ParametersJsonSchema accepts any, so we pass a raw map.
+// We strip title/description since those are set on the FunctionDeclaration itself.
 func ConvertToolToGemini(schema *ToolSchema) *genai.Tool {
 	if schema == nil {
 		return &genai.Tool{FunctionDeclarations: []*genai.FunctionDeclaration{{}}}
+	}
+	// Build a parameters-only schema without title/description metadata.
+	params := map[string]any{"type": "object", "properties": schema.Properties()}
+	if req := schema.Required(); len(req) > 0 {
+		params["required"] = req
 	}
 	return &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{{
 			Name:                 schema.Title(),
 			Description:          schema.Description(),
-			ParametersJsonSchema: schema.Raw,
+			ParametersJsonSchema: params,
 		}},
 	}
 }

@@ -33,10 +33,16 @@ func TestConvertToolToGemini_PreservesRequiredFromSchemaTool(t *testing.T) {
 		t.Fatalf("description = %q, want %q", fd.Description, "Search for documents")
 	}
 
-	// ParametersJsonSchema should be the raw schema map
+	// ParametersJsonSchema should contain only parameter fields, not title/description
 	params, ok := fd.ParametersJsonSchema.(map[string]any)
 	if !ok {
 		t.Fatalf("ParametersJsonSchema type = %T, want map[string]any", fd.ParametersJsonSchema)
+	}
+	if _, ok := params["title"]; ok {
+		t.Fatal("ParametersJsonSchema should not contain title")
+	}
+	if _, ok := params["description"]; ok {
+		t.Fatal("ParametersJsonSchema should not contain description")
 	}
 	req, ok := params["required"].([]string)
 	if !ok {
