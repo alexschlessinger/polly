@@ -11,7 +11,6 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 	ai "github.com/sashabaranov/go-openai"
-	"github.com/sashabaranov/go-openai/jsonschema"
 	"go.uber.org/zap"
 )
 
@@ -35,22 +34,11 @@ func NewOpenAIClient(apiKey string, baseURL string) *OpenAIClient {
 
 // ChatCompletionStream implements the event-based streaming interface
 func (o OpenAIClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	messageChannel := make(chan messages.ChatMessage, 10)
-
-	go func() {
-		defer close(messageChannel)
-
-		// Create streaming core with OpenAI adapter
-		adapter := adapters.NewOpenAIAdapter()
-		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
-
-		// Process the request
+	return runStream(ctx, processor, adapters.NewOpenAIAdapter(), func(streamCore *streaming.StreamingCore) {
 		if err := o.streamCompletion(ctx, req, streamCore); err != nil {
 			streamCore.EmitError(err)
 		}
-	}()
-
-	return processor.ProcessMessagesToEvents(messageChannel)
+	})
 }
 
 func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
@@ -179,17 +167,8 @@ func (o OpenAIClient) handleNonStreamingCompletion(ctx context.Context, ccr ai.C
 			})
 		}
 
-		// Set stop reason based on finish reason
-		switch choice.FinishReason {
-		case ai.FinishReasonToolCalls, ai.FinishReasonFunctionCall:
-			streamCore.SetStopReason(messages.StopReasonToolUse)
-		case ai.FinishReasonLength:
-			streamCore.SetStopReason(messages.StopReasonMaxTokens)
-		case ai.FinishReasonContentFilter:
-			streamCore.SetStopReason(messages.StopReasonContentFilter)
-		default:
-			streamCore.SetStopReason(messages.StopReasonEndTurn)
-		}
+		// Set stop reason
+		streamCore.SetStopReason(adapters.MapOpenAIFinishReason(choice.FinishReason))
 	}
 
 	// Set token usage
@@ -247,91 +226,24 @@ func ConvertToOpenAISchema(schema *Schema) *ai.ChatCompletionResponseFormat {
 	}
 }
 
-// convertMapToOpenAIDefinition recursively converts a JSON schema map to an OpenAI Definition
-func convertMapToOpenAIDefinition(m map[string]any) jsonschema.Definition {
-	if m == nil {
-		return jsonschema.Definition{}
-	}
-
-	def := jsonschema.Definition{}
-	if t, ok := m["type"].(string); ok {
-		def.Type = jsonschema.DataType(t)
-	}
-	if d, ok := m["description"].(string); ok {
-		def.Description = d
-	}
-
-	switch def.Type {
-	case "array":
-		if items, ok := m["items"].(map[string]any); ok {
-			converted := convertMapToOpenAIDefinition(items)
-			def.Items = &converted
-		}
-	case "object":
-		if props, ok := m["properties"].(map[string]any); ok {
-			def.Properties = make(map[string]jsonschema.Definition)
-			for name, prop := range props {
-				if propMap, ok := prop.(map[string]any); ok {
-					def.Properties[name] = convertMapToOpenAIDefinition(propMap)
-				}
-			}
-		}
-		if req, ok := m["required"].([]string); ok {
-			def.Required = req
-		} else if req, ok := m["required"].([]any); ok {
-			for _, r := range req {
-				if s, ok := r.(string); ok {
-					def.Required = append(def.Required, s)
-				}
-			}
-		}
-	}
-
-	if enum, ok := m["enum"].([]any); ok {
-		for _, e := range enum {
-			if s, ok := e.(string); ok {
-				def.Enum = append(def.Enum, s)
-			}
-		}
-	}
-
-	return def
-}
-
-// ConvertToolToOpenAI converts a tool schema to OpenAI format
+// ConvertToolToOpenAI converts a tool schema to OpenAI format.
+// OpenAI's FunctionDefinition.Parameters accepts any, so we pass a raw map.
 func ConvertToolToOpenAI(schema *ToolSchema) ai.Tool {
-	props := make(map[string]jsonschema.Definition)
+	params := map[string]any{"type": "object", "properties": map[string]any{}}
 	if schema != nil {
-		for k, v := range schema.Properties() {
-			if vm, ok := v.(map[string]any); ok {
-				props[k] = convertMapToOpenAIDefinition(vm)
-			}
+		params = map[string]any{
+			"type":       "object",
+			"properties": schema.Properties(),
+		}
+		if req := schema.Required(); len(req) > 0 {
+			params["required"] = req
 		}
 	}
 
-	name := ""
-	description := ""
-	var required []string
-
+	name, description := "", ""
 	if schema != nil {
 		name = schema.Title()
 		description = schema.Description()
-		required = schema.Required()
-	}
-
-	// OpenAI requires Properties field to be present, even if empty.
-	if len(props) == 0 {
-		props["__noargs"] = jsonschema.Definition{
-			Type:        jsonschema.String,
-			Description: "No arguments expected; value ignored.",
-		}
-	}
-
-	params := jsonschema.Definition{
-		Type:                 jsonschema.Object,
-		Properties:           props,
-		Required:             required,
-		AdditionalProperties: false,
 	}
 
 	return ai.Tool{

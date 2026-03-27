@@ -13,6 +13,11 @@ type testTool struct {
 	source string
 }
 
+type metaTestTool struct {
+	*testTool
+	meta map[string]string
+}
+
 func (t *testTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(t.name, "Test tool", nil)
 }
@@ -34,6 +39,10 @@ func (t *testTool) GetSource() string {
 		return t.source
 	}
 	return "test-source"
+}
+
+func (t *metaTestTool) GetMeta() map[string]string {
+	return t.meta
 }
 
 func TestNewToolRegistry(t *testing.T) {
@@ -188,5 +197,32 @@ func TestNamespacedToolFiltering(t *testing.T) {
 		if result != tc.expected {
 			t.Errorf("For input %q, expected %q but got %q", tc.input, tc.expected, result)
 		}
+	}
+}
+
+func TestNamespacedTool_PreservesMetaTool(t *testing.T) {
+	base := &metaTestTool{
+		testTool: &testTool{name: "search"},
+		meta: map[string]string{
+			"confirm":  "true",
+			"category": "query",
+		},
+	}
+	wrapped := &NamespacedTool{
+		Tool:           base,
+		namespacedName: "demo__search",
+	}
+
+	metaTool, ok := any(wrapped).(MetaTool)
+	if !ok {
+		t.Fatal("expected namespaced tool to preserve MetaTool support")
+	}
+
+	meta := metaTool.GetMeta()
+	if meta["confirm"] != "true" {
+		t.Fatalf("confirm meta = %q, want %q", meta["confirm"], "true")
+	}
+	if meta["category"] != "query" {
+		t.Fatalf("category meta = %q, want %q", meta["category"], "query")
 	}
 }

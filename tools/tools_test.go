@@ -239,20 +239,14 @@ func TestMCPToolNoargsFiltering(t *testing.T) {
 
 	tool := tools[0]
 
-	// Test that __noargs placeholder (injected for OpenAI compatibility) is removed.
-	// The __noargs key is added in llm/openai.go for no-arg tools because
-	// OpenAI requires at least one property in function schemas.
 	args := map[string]any{
-		"__noargs": "should be filtered out",
-		"timezone": "America/New_York", // Valid arg for mcp-server-time
+		"timezone": "America/New_York",
 	}
 
-	// Execute should succeed - __noargs is removed, valid args pass through
 	_, err = tool.Execute(ctx, args)
 	// We don't check the error because the tool might still fail for other reasons
 	// (network issues, invalid timezone format, etc.)
-	// The important thing is that __noargs doesn't cause issues
-	t.Logf("Execution with __noargs completed (error ok): %v", err)
+	t.Logf("Execution completed (error ok): %v", err)
 }
 
 func createTestScript(t *testing.T, dir string) string {

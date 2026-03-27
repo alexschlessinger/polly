@@ -15,25 +15,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// Metadata keys
-const (
-	metadataKeyThinkingBlocks = "anthropic_thinking_blocks"
-)
-
-// Tool names
 const (
 	structuredOutputToolName = "extract_structured_data"
+	thinkingBudgetLow        = 4096
+	thinkingBudgetMedium     = 8192
+	thinkingBudgetHigh       = 16384
 )
-
-// Thinking token budgets
-const (
-	thinkingBudgetLow    = 4096
-	thinkingBudgetMedium = 8192
-	thinkingBudgetHigh   = 16384
-)
-
-// Removed streamState - now using common StreamState
-// Removed mapAnthropicStopReason - now in adapters/anthropic_adapter.go
 
 type AnthropicClient struct {
 	client anthropic.Client
@@ -131,32 +118,19 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 
 // ChatCompletionStream implements the event-based streaming interface
 func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	messageChannel := make(chan messages.ChatMessage, 10)
-
-	go func() {
-		defer close(messageChannel)
-
-		// Create streaming core with Anthropic adapter
-		adapter := adapters.NewAnthropicAdapter()
-		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
-
-		// Build request parameters
+	adapter := adapters.NewAnthropicAdapter()
+	return runStream(ctx, processor, adapter, func(streamCore *streaming.StreamingCore) {
 		params := a.buildRequestParams(req)
-
 		isStreaming := req.Stream == nil || *req.Stream
 		zap.S().Debugw("anthropic_completion_started", "model", req.Model, "stream", isStreaming)
 
 		if isStreaming {
-			// Use streaming API
 			stream := a.client.Messages.NewStreaming(ctx, params)
 			a.processStream(stream, req, streamCore)
 		} else {
-			// Use non-streaming API
 			a.processNonStreaming(ctx, params, req, streamCore, adapter)
 		}
-	}()
-
-	return processor.ProcessMessagesToEvents(messageChannel)
+	})
 }
 
 // processStream handles the main stream processing logic
@@ -247,37 +221,13 @@ func (a *AnthropicClient) processNonStreaming(ctx context.Context, params anthro
 	streamCore.Complete()
 }
 
-// Removed old streaming helper functions - now handled by StreamingCore and AnthropicAdapter:
-// - processStreamEvent
-// - processContentBlockStart
-// - processContentBlockDelta
-// - processContentBlockStop
-// - handleStreamError
-// - handleStructuredOutput (now in StreamingCore)
-// - sendFinalMessage (now in StreamingCore)
-// - logResponseDetails (now in StreamingCore)
-
 // ConvertToAnthropicTool creates a synthetic tool for structured output with Anthropic
 func ConvertToAnthropicTool(schema *Schema) anthropic.ToolUnionParam {
 	if schema == nil {
 		return anthropic.ToolUnionParam{}
 	}
 
-	// Create a tool that represents the structured output
-	toolSchema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"data": schema.Raw,
-		},
-		"required": []string{"data"},
-	}
-
-	// Convert toolSchema properties for Anthropic
-	properties := make(map[string]any)
-	if props, ok := toolSchema["properties"].(map[string]any); ok {
-		properties = props
-	}
-
+	properties := map[string]any{"data": schema.Raw}
 	required := []string{"data"}
 
 	toolParam := anthropic.ToolParam{
@@ -295,34 +245,21 @@ func ConvertToAnthropicTool(schema *Schema) anthropic.ToolUnionParam {
 	}
 }
 
-// ConvertToolToAnthropic converts a tool schema to Anthropic format
+// ConvertToolToAnthropic converts a tool schema to Anthropic format.
+// Anthropic's InputSchema.Properties accepts any, so we pass the raw map directly.
 func ConvertToolToAnthropic(schema *ToolSchema) anthropic.ToolUnionParam {
-	properties := make(map[string]any)
-	var required []string
-	name := ""
-	description := ""
-
-	if schema != nil {
-		name = schema.Title()
-		description = schema.Description()
-		if p := schema.Properties(); p != nil {
-			properties = p
-		}
-		required = schema.Required()
+	if schema == nil {
+		return anthropic.ToolUnionParam{}
 	}
-
 	inputSchema := anthropic.ToolInputSchemaParam{
 		Type:       "object",
-		Properties: properties,
+		Properties: schema.Properties(),
+		Required:   schema.Required(),
 	}
-	if len(required) > 0 {
-		inputSchema.Required = required
-	}
-
 	return anthropic.ToolUnionParam{
 		OfTool: &anthropic.ToolParam{
-			Name:        name,
-			Description: anthropic.String(description),
+			Name:        schema.Title(),
+			Description: anthropic.String(schema.Description()),
 			InputSchema: inputSchema,
 		},
 	}

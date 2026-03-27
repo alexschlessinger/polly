@@ -45,6 +45,14 @@ func (n *NamespacedTool) GetName() string {
 	return n.namespacedName
 }
 
+// GetMeta forwards metadata for wrapped MetaTools.
+func (n *NamespacedTool) GetMeta() map[string]string {
+	if mt, ok := n.Tool.(MetaTool); ok {
+		return mt.GetMeta()
+	}
+	return nil
+}
+
 // ToolRegistry manages available tools
 type ToolRegistry struct {
 	mu    sync.RWMutex

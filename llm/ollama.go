@@ -60,15 +60,7 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 
 // ChatCompletionStream implements the event-based streaming interface
 func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	messageChannel := make(chan messages.ChatMessage, 10)
-
-	go func() {
-		defer close(messageChannel)
-
-		// Create streaming core with Ollama adapter
-		adapter := adapters.NewOllamaAdapter()
-		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
-
+	return runStream(ctx, processor, adapters.NewOllamaAdapter(), func(streamCore *streaming.StreamingCore) {
 		// Convert messages to Ollama format
 		ollamaMessages := MessagesToOllama(req.Messages)
 
@@ -185,9 +177,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 
 		// Send the final message with accumulated state
 		streamCore.Complete()
-	}()
-
-	return processor.ProcessMessagesToEvents(messageChannel)
+	})
 }
 
 // ConvertToOllamaFormat adds format instructions for Ollama
@@ -201,75 +191,30 @@ func ConvertToOllamaFormat(schema *Schema) string {
 	return fmt.Sprintf("You must respond with JSON that matches this schema:\n%s", string(schemaJSON))
 }
 
-// convertMapToOllamaProperty recursively converts a JSON schema map to an Ollama ToolProperty
-func convertMapToOllamaProperty(m map[string]any) ollamaapi.ToolProperty {
-	if m == nil {
-		return ollamaapi.ToolProperty{Type: ollamaapi.PropertyType{"string"}}
-	}
-
-	typeStr := "string"
-	if t, ok := m["type"].(string); ok {
-		typeStr = t
-	}
-
-	prop := ollamaapi.ToolProperty{
-		Type: ollamaapi.PropertyType{typeStr},
-	}
-	if d, ok := m["description"].(string); ok {
-		prop.Description = d
-	}
-
-	if typeStr == "array" {
-		if items, ok := m["items"].(map[string]any); ok {
-			prop.Items = convertMapToOllamaProperty(items)
-		} else {
-			prop.Items = ollamaapi.ToolProperty{Type: ollamaapi.PropertyType{"string"}}
+// ConvertToolToOllama converts a tool schema to Ollama native format.
+// Ollama's ToolFunctionParameters has custom UnmarshalJSON, so we round-trip
+// through JSON to let the SDK handle the conversion.
+func ConvertToolToOllama(schema *ToolSchema) ollamaapi.Tool {
+	var params ollamaapi.ToolFunctionParameters
+	if schema != nil {
+		if b, err := json.Marshal(schema.Raw); err == nil {
+			json.Unmarshal(b, &params)
 		}
 	}
 
-	if enum, ok := m["enum"].([]any); ok {
-		prop.Enum = enum
-	}
-
-	return prop
-}
-
-// ConvertToolToOllama converts a tool schema to Ollama native format
-func ConvertToolToOllama(schema *ToolSchema) ollamaapi.Tool {
-	name := ""
-	description := ""
-	typeStr := "object"
-	var required []string
-
+	name, description := "", ""
 	if schema != nil {
 		name = schema.Title()
 		description = schema.Description()
-		if t, ok := schema.Raw["type"].(string); ok && t != "" {
-			typeStr = t
-		}
-		required = schema.Required()
 	}
-
-	propsMap := ollamaapi.NewToolPropertiesMap()
-	if schema != nil {
-		for k, v := range schema.Properties() {
-			if vm, ok := v.(map[string]any); ok {
-				propsMap.Set(k, convertMapToOllamaProperty(vm))
-			}
-		}
-	}
-
-	toolFunc := ollamaapi.ToolFunction{
-		Name:        name,
-		Description: description,
-	}
-	toolFunc.Parameters.Type = typeStr
-	toolFunc.Parameters.Required = required
-	toolFunc.Parameters.Properties = propsMap
 
 	return ollamaapi.Tool{
-		Type:     "function",
-		Function: toolFunc,
+		Type: "function",
+		Function: ollamaapi.ToolFunction{
+			Name:        name,
+			Description: description,
+			Parameters:  params,
+		},
 	}
 }
 

@@ -84,12 +84,6 @@ func (m *MCPTool) Execute(ctx context.Context, args map[string]any) (string, err
 		args = make(map[string]any)
 	}
 
-	// Remove OpenAI compatibility placeholder if present.
-	// OpenAI requires at least one property in function schemas, so we inject
-	// "__noargs" for no-arg tools (see llm/openai.go ConvertToolToOpenAI).
-	// Remove it before calling the actual MCP server.
-	delete(args, "__noargs")
-
 	// Create the call parameters
 	params := &mcp.CallToolParams{
 		Name:      m.tool.Name,
