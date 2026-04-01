@@ -6,13 +6,12 @@ import (
 	"github.com/alexschlessinger/pollytool/schema"
 )
 
-// Func is a declarative tool definition. It implements Tool and MetaTool.
+// Func is a declarative tool definition. It implements Tool.
 type Func struct {
 	Name     string
 	Desc     string
 	Params   schema.Params
 	Required []string
-	Meta     map[string]string
 	Source   string // defaults to "builtin"
 	Run      func(ctx context.Context, args Args) (string, error)
 }
@@ -33,8 +32,4 @@ func (f *Func) GetSchema() *schema.ToolSchema {
 
 func (f *Func) Execute(ctx context.Context, args map[string]any) (string, error) {
 	return f.Run(ctx, Args(args))
-}
-
-func (f *Func) GetMeta() map[string]string {
-	return f.Meta
 }

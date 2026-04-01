@@ -45,14 +45,6 @@ func (n *NamespacedTool) GetName() string {
 	return n.namespacedName
 }
 
-// GetMeta forwards metadata for wrapped MetaTools.
-func (n *NamespacedTool) GetMeta() map[string]string {
-	if mt, ok := n.Tool.(MetaTool); ok {
-		return mt.GetMeta()
-	}
-	return nil
-}
-
 // ToolRegistry manages available tools
 type ToolRegistry struct {
 	mu    sync.RWMutex
@@ -242,21 +234,6 @@ func (r *ToolRegistry) GetIfAllowed(name string) (tool Tool, exists bool, allowe
 		return nil, true, false
 	}
 	return tool, true, true
-}
-
-// GetMeta returns metadata for a tool if it implements MetaTool, otherwise nil.
-func (r *ToolRegistry) GetMeta(name string) map[string]string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	tool, ok := r.tools[name]
-	if !ok {
-		return nil
-	}
-	if mt, ok := tool.(MetaTool); ok {
-		return mt.GetMeta()
-	}
-	return nil
 }
 
 // Remove removes a tool by namespaced name from the registry
@@ -790,16 +767,6 @@ func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (LoadResult, error) {
 		return shellResult, nil
 	}
 	return LoadResult{}, shellErr
-}
-
-// LoadMCPServers batch loads multiple servers
-func (r *ToolRegistry) LoadMCPServers(serverSpecs []string) error {
-	for _, spec := range serverSpecs {
-		if _, err := r.LoadMCPServer(spec); err != nil {
-			return fmt.Errorf("failed to load MCP server %s: %w", spec, err)
-		}
-	}
-	return nil
 }
 
 // GetActiveToolLoaders returns loader information for all tools

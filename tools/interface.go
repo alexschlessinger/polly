@@ -25,19 +25,6 @@ type ToolCall struct {
 	Args map[string]any // Parsed arguments
 }
 
-// ContextualTool is a tool that needs external context to execute
-type ContextualTool interface {
-	Tool
-	SetContext(ctx any)
-}
-
-// MetaTool is an optional interface for tools that expose metadata.
-// Convention keys are tool-specific.
-type MetaTool interface {
-	Tool
-	GetMeta() map[string]string
-}
-
 // ToolLoaderInfo stores information needed to reload a specific tool
 type ToolLoaderInfo struct {
 	Name   string `json:"name"`   // Full namespaced tool name

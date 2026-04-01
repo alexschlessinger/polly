@@ -318,13 +318,6 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 		return errMsg, errors.New("tool not allowed: " + tc.Name)
 	}
 
-	// Client-only tools skip Execute and return args as the result
-	if mt, ok := tool.(tools.MetaTool); ok {
-		if mt.GetMeta()["execute"] == "client" {
-			return tools.Result(args), nil
-		}
-	}
-
 	// Execute
 	result, err := tool.Execute(ctx, args)
 	if err != nil {
