@@ -226,3 +226,4 @@ func TestNamespacedTool_PreservesMetaTool(t *testing.T) {
 		t.Fatalf("category meta = %q, want %q", meta["category"], "query")
 	}
 }
+

@@ -32,8 +32,7 @@ type ContextualTool interface {
 }
 
 // MetaTool is an optional interface for tools that expose metadata.
-// Convention keys: "confirm" ("true" if tool requires user approval),
-// "category" (e.g., "mutation", "query", "config").
+// Convention keys are tool-specific.
 type MetaTool interface {
 	Tool
 	GetMeta() map[string]string

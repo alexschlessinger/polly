@@ -160,8 +160,8 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 		alwaysAllowedTools: make(map[string]bool),
 		autoAllowedTools:   make(map[string]bool),
 		pendingAutoAllowed: make(map[string]bool),
-		sandboxFactory: o.sandboxFactory,
-		baseSandboxCfg: o.baseSandboxCfg,
+		sandboxFactory:     o.sandboxFactory,
+		baseSandboxCfg:     o.baseSandboxCfg,
 	}
 
 	registry.nativeTools["bash"] = func() Tool {
