@@ -30,15 +30,15 @@ type ContentPart struct {
 
 // ChatMessage represents a provider-agnostic chat message
 type ChatMessage struct {
-	Role       string
-	Content    string        // Simple string content (backward compatible)
-	Parts      []ContentPart // Multimodal content parts
-	ToolCalls  []ChatMessageToolCall
-	ToolCallID string         // For tool response messages
-	ToolName   string         // For tool response messages - name of the tool that was executed
-	Reasoning  string         // Reasoning/thinking content from <think> blocks
-	Metadata   map[string]any // Additional metadata for the message
-	StopReason StopReason     // Why the model stopped generating (only set on final message)
+	Role       string                `json:"role"`
+	Content    string                `json:"content,omitempty"`
+	Parts      []ContentPart         `json:"parts,omitempty"`
+	ToolCalls  []ChatMessageToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string                `json:"tool_call_id,omitempty"`
+	ToolName   string                `json:"tool_name,omitempty"`
+	Reasoning  string                `json:"reasoning,omitempty"`
+	Metadata   map[string]any        `json:"metadata,omitempty"`
+	StopReason StopReason            `json:"stop_reason,omitempty"`
 }
 
 // GetContent returns the content as a string, handling both simple and multimodal messages
@@ -68,9 +68,9 @@ func (m *ChatMessage) HasImages() bool {
 
 // ChatMessageToolCall represents a tool call within a message
 type ChatMessageToolCall struct {
-	ID        string
-	Name      string
-	Arguments string // JSON string of arguments
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 // User returns a single-element message history with a user message.
