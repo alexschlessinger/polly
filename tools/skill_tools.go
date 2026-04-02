@@ -9,8 +9,8 @@ import (
 	"sync"
 	"unicode"
 
+	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/skills"
-	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // SkillActivateTool loads a skill's instructions and registers any executable scripts.
@@ -43,19 +43,11 @@ func (t *SkillActivateTool) GetSource() string {
 	return "builtin"
 }
 
-func (t *SkillActivateTool) GetSchema() *jsonschema.Schema {
-	return &jsonschema.Schema{
-		Title:       "activate_skill",
-		Description: "Load a skill's instructions and list any bundled scripts for this run.",
-		Type:        "object",
-		Properties: map[string]*jsonschema.Schema{
-			"name": {
-				Type:        "string",
-				Description: "The skill name from the available_skills list.",
-			},
-		},
-		Required: []string{"name"},
-	}
+func (t *SkillActivateTool) GetSchema() *schema.ToolSchema {
+	return schema.Tool("activate_skill", "Load a skill's instructions and list any bundled scripts for this run.",
+		schema.Params{"name": schema.S("The skill name from the available_skills list.")},
+		"name",
+	)
 }
 
 func (t *SkillActivateTool) activate(name string) (string, error) {
@@ -270,23 +262,14 @@ func (t *SkillReadFileTool) GetSource() string {
 	return "builtin"
 }
 
-func (t *SkillReadFileTool) GetSchema() *jsonschema.Schema {
-	return &jsonschema.Schema{
-		Title:       "read_skill_file",
-		Description: "Read a file relative to a discovered skill root.",
-		Type:        "object",
-		Properties: map[string]*jsonschema.Schema{
-			"skill": {
-				Type:        "string",
-				Description: "The skill name.",
-			},
-			"path": {
-				Type:        "string",
-				Description: "The relative file path within the skill directory.",
-			},
+func (t *SkillReadFileTool) GetSchema() *schema.ToolSchema {
+	return schema.Tool("read_skill_file", "Read a file relative to a discovered skill root.",
+		schema.Params{
+			"skill": schema.S("The skill name."),
+			"path":  schema.S("The relative file path within the skill directory."),
 		},
-		Required: []string{"skill", "path"},
-	}
+		"skill", "path",
+	)
 }
 
 func (t *SkillReadFileTool) Execute(ctx context.Context, args map[string]any) (string, error) {

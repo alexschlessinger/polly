@@ -9,53 +9,34 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	"go.uber.org/zap"
 	"google.golang.org/genai"
 )
 
-// Removed mapGeminiFinishReason - now in adapters/gemini_adapter.go
-
 type GeminiClient struct {
-	apiKey string
+	client *genai.Client
 }
 
-func NewGeminiClient(apiKey string) *GeminiClient {
+func NewGeminiClient(apiKey string) (*GeminiClient, error) {
 	if apiKey == "" {
-		zap.S().Debugw("gemini_missing_api_key")
+		return nil, fmt.Errorf("gemini API key not configured")
 	}
 
-	return &GeminiClient{
-		apiKey: apiKey,
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating gemini client: %w", err)
 	}
+
+	return &GeminiClient{client: client}, nil
 }
 
 // ChatCompletionStream implements the event-based streaming interface
 func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	messageChannel := make(chan messages.ChatMessage, 10)
-
-	go func() {
-		defer close(messageChannel)
-
-		// Create streaming core with Gemini adapter
-		adapter := adapters.NewGeminiAdapter()
-		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
-
-		if g.apiKey == "" {
-			streamCore.EmitError(fmt.Errorf("Gemini API key not configured"))
-			return
-		}
-
-		// Create client with API key
-		client, err := genai.NewClient(ctx, &genai.ClientConfig{
-			APIKey:  g.apiKey,
-			Backend: genai.BackendGeminiAPI,
-		})
-		if err != nil {
-			zap.S().Debugw("gemini_client_creation_failed", "error", err)
-			streamCore.EmitError(fmt.Errorf("error creating Gemini client: %w", err))
-			return
-		}
+	return runStream(ctx, processor, adapters.NewGeminiAdapter(), func(streamCore *streaming.StreamingCore) {
+		client := g.client
 
 		// Convert session history to Gemini chat history
 		contents, systemInstruction, _ := MessagesToGeminiContent(req.Messages)
@@ -72,7 +53,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		// Add structured output support
 		if req.ResponseSchema != nil {
 			config.ResponseMIMEType = "application/json"
-			config.ResponseSchema = ConvertToGeminiSchema(req.ResponseSchema)
+			config.ResponseJsonSchema = req.ResponseSchema.Raw
 		}
 
 		// System instruction
@@ -87,7 +68,6 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			var geminiFuncs []*genai.FunctionDeclaration
 			for _, tool := range req.Tools {
 				geminiTool := ConvertToolToGemini(tool.GetSchema())
-				// Extract function declarations from the tool
 				if geminiTool != nil && len(geminiTool.FunctionDeclarations) > 0 {
 					geminiFuncs = append(geminiFuncs, geminiTool.FunctionDeclarations...)
 				}
@@ -105,9 +85,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		} else {
 			g.handleNonStreamingCompletion(ctx, client, req, contents, config, streamCore)
 		}
-	}()
-
-	return processor.ProcessMessagesToEvents(messageChannel)
+	})
 }
 
 // handleStreamingCompletion handles streaming Gemini API requests
@@ -173,158 +151,23 @@ func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, client 
 	streamCore.Complete()
 }
 
-// ConvertToGeminiSchema converts a generic JSON schema to Gemini's format
-func ConvertToGeminiSchema(schema *Schema) *genai.Schema {
+// ConvertToolToGemini converts a tool schema to Gemini format.
+// Gemini's FunctionDeclaration.ParametersJsonSchema accepts any, so we pass a raw map.
+// We strip title/description since those are set on the FunctionDeclaration itself.
+func ConvertToolToGemini(schema *ToolSchema) *genai.Tool {
 	if schema == nil {
-		return nil
+		return &genai.Tool{FunctionDeclarations: []*genai.FunctionDeclaration{{}}}
 	}
-
-	return convertJSONSchemaToGemini(schema.Raw)
-}
-
-func convertJSONSchemaToGemini(schemaMap map[string]any) *genai.Schema {
-	geminiSchema := &genai.Schema{}
-
-	// Convert type
-	if typeStr, ok := schemaMap["type"].(string); ok {
-		switch typeStr {
-		case "object":
-			geminiSchema.Type = genai.TypeObject
-		case "array":
-			geminiSchema.Type = genai.TypeArray
-		case "string":
-			geminiSchema.Type = genai.TypeString
-		case "number":
-			geminiSchema.Type = genai.TypeNumber
-		case "integer":
-			geminiSchema.Type = genai.TypeInteger
-		case "boolean":
-			geminiSchema.Type = genai.TypeBoolean
-		default:
-			geminiSchema.Type = genai.TypeString
-		}
+	// Build a parameters-only schema without title/description metadata.
+	params := map[string]any{"type": "object", "properties": schema.Properties()}
+	if req := schema.Required(); len(req) > 0 {
+		params["required"] = req
 	}
-
-	// Convert properties for objects
-	if props, ok := schemaMap["properties"].(map[string]any); ok {
-		geminiSchema.Properties = make(map[string]*genai.Schema)
-		for key, value := range props {
-			if propMap, ok := value.(map[string]any); ok {
-				geminiSchema.Properties[key] = convertJSONSchemaToGemini(propMap)
-			}
-		}
-	}
-
-	// Convert required fields
-	if required, ok := schemaMap["required"].([]any); ok {
-		for _, field := range required {
-			if fieldStr, ok := field.(string); ok {
-				geminiSchema.Required = append(geminiSchema.Required, fieldStr)
-			}
-		}
-	}
-
-	// Convert items for arrays
-	if items, ok := schemaMap["items"].(map[string]any); ok {
-		geminiSchema.Items = convertJSONSchemaToGemini(items)
-	}
-
-	// Convert description
-	if desc, ok := schemaMap["description"].(string); ok {
-		geminiSchema.Description = desc
-	}
-
-	// Convert enum
-	if enum, ok := schemaMap["enum"].([]any); ok {
-		for _, val := range enum {
-			if strVal, ok := val.(string); ok {
-				geminiSchema.Enum = append(geminiSchema.Enum, strVal)
-			}
-		}
-	}
-
-	return geminiSchema
-}
-
-// convertSchemaToGeminiSchema recursively converts an MCP schema to a Gemini schema
-func convertSchemaToGeminiSchema(schema *mcpjsonschema.Schema) *genai.Schema {
-	if schema == nil {
-		return nil
-	}
-
-	geminiSchema := &genai.Schema{
-		Description: schema.Description,
-	}
-
-	// Map type
-	switch schema.Type {
-	case "string":
-		geminiSchema.Type = genai.TypeString
-	case "number":
-		geminiSchema.Type = genai.TypeNumber
-	case "boolean":
-		geminiSchema.Type = genai.TypeBoolean
-	case "array":
-		geminiSchema.Type = genai.TypeArray
-		// Handle array items
-		if schema.Items != nil {
-			geminiSchema.Items = convertSchemaToGeminiSchema(schema.Items)
-		}
-	case "object":
-		geminiSchema.Type = genai.TypeObject
-		// Handle nested object properties recursively
-		if schema.Properties != nil {
-			props := make(map[string]*genai.Schema)
-			for name, prop := range schema.Properties {
-				if prop != nil {
-					props[name] = convertSchemaToGeminiSchema(prop)
-				}
-			}
-			geminiSchema.Properties = props
-		}
-		if len(schema.Required) > 0 {
-			geminiSchema.Required = schema.Required
-		}
-	default:
-		// Default to string for unknown types
-		geminiSchema.Type = genai.TypeString
-	}
-
-	return geminiSchema
-}
-
-// ConvertToolToGemini converts a generic tool schema to Gemini format
-func ConvertToolToGemini(schema *mcpjsonschema.Schema) *genai.Tool {
-	// Convert properties to Gemini schema format using recursive conversion
-	props := make(map[string]*genai.Schema)
-
-	if schema != nil && schema.Properties != nil {
-		for name, prop := range schema.Properties {
-			if prop != nil {
-				props[name] = convertSchemaToGeminiSchema(prop)
-			}
-		}
-	}
-
-	name := ""
-	description := ""
-	var required []string
-
-	if schema != nil {
-		name = schema.Title
-		description = schema.Description
-		required = schema.Required
-	}
-
 	return &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{{
-			Name:        name,
-			Description: description,
-			Parameters: &genai.Schema{
-				Type:       genai.TypeObject,
-				Properties: props,
-				Required:   required,
-			},
+			Name:                 schema.Title(),
+			Description:          schema.Description(),
+			ParametersJsonSchema: params,
 		}},
 	}
 }

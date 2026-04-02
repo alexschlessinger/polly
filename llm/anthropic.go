@@ -12,29 +12,15 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
-	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	"go.uber.org/zap"
 )
 
-// Metadata keys
-const (
-	metadataKeyThinkingBlocks = "anthropic_thinking_blocks"
-)
-
-// Tool names
 const (
 	structuredOutputToolName = "extract_structured_data"
+	thinkingBudgetLow        = 4096
+	thinkingBudgetMedium     = 8192
+	thinkingBudgetHigh       = 16384
 )
-
-// Thinking token budgets
-const (
-	thinkingBudgetLow    = 4096
-	thinkingBudgetMedium = 8192
-	thinkingBudgetHigh   = 16384
-)
-
-// Removed streamState - now using common StreamState
-// Removed mapAnthropicStopReason - now in adapters/anthropic_adapter.go
 
 type AnthropicClient struct {
 	client anthropic.Client
@@ -132,32 +118,19 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 
 // ChatCompletionStream implements the event-based streaming interface
 func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	messageChannel := make(chan messages.ChatMessage, 10)
-
-	go func() {
-		defer close(messageChannel)
-
-		// Create streaming core with Anthropic adapter
-		adapter := adapters.NewAnthropicAdapter()
-		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
-
-		// Build request parameters
+	adapter := adapters.NewAnthropicAdapter()
+	return runStream(ctx, processor, adapter, func(streamCore *streaming.StreamingCore) {
 		params := a.buildRequestParams(req)
-
 		isStreaming := req.Stream == nil || *req.Stream
 		zap.S().Debugw("anthropic_completion_started", "model", req.Model, "stream", isStreaming)
 
 		if isStreaming {
-			// Use streaming API
 			stream := a.client.Messages.NewStreaming(ctx, params)
 			a.processStream(stream, req, streamCore)
 		} else {
-			// Use non-streaming API
 			a.processNonStreaming(ctx, params, req, streamCore, adapter)
 		}
-	}()
-
-	return processor.ProcessMessagesToEvents(messageChannel)
+	})
 }
 
 // processStream handles the main stream processing logic
@@ -248,37 +221,13 @@ func (a *AnthropicClient) processNonStreaming(ctx context.Context, params anthro
 	streamCore.Complete()
 }
 
-// Removed old streaming helper functions - now handled by StreamingCore and AnthropicAdapter:
-// - processStreamEvent
-// - processContentBlockStart
-// - processContentBlockDelta
-// - processContentBlockStop
-// - handleStreamError
-// - handleStructuredOutput (now in StreamingCore)
-// - sendFinalMessage (now in StreamingCore)
-// - logResponseDetails (now in StreamingCore)
-
 // ConvertToAnthropicTool creates a synthetic tool for structured output with Anthropic
 func ConvertToAnthropicTool(schema *Schema) anthropic.ToolUnionParam {
 	if schema == nil {
 		return anthropic.ToolUnionParam{}
 	}
 
-	// Create a tool that represents the structured output
-	toolSchema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"data": schema.Raw,
-		},
-		"required": []string{"data"},
-	}
-
-	// Convert toolSchema properties for Anthropic
-	properties := make(map[string]any)
-	if props, ok := toolSchema["properties"].(map[string]any); ok {
-		properties = props
-	}
-
+	properties := map[string]any{"data": schema.Raw}
 	required := []string{"data"}
 
 	toolParam := anthropic.ToolParam{
@@ -296,110 +245,23 @@ func ConvertToAnthropicTool(schema *Schema) anthropic.ToolUnionParam {
 	}
 }
 
-// convertSchemaToAnthropicMap recursively converts an MCP schema to Anthropic format map
-func convertSchemaToAnthropicMap(schema *mcpjsonschema.Schema) map[string]any {
+// ConvertToolToAnthropic converts a tool schema to Anthropic format.
+// Anthropic's InputSchema.Properties accepts any, so we pass the raw map directly.
+func ConvertToolToAnthropic(schema *ToolSchema) anthropic.ToolUnionParam {
 	if schema == nil {
-		return nil
+		return anthropic.ToolUnionParam{}
 	}
-
-	propMap := make(map[string]any)
-
-	// Always set type, default to string if empty
-	if schema.Type != "" {
-		propMap["type"] = schema.Type
-	} else {
-		propMap["type"] = "string"
-	}
-
-	// Only add description if non-empty
-	if schema.Description != "" {
-		propMap["description"] = schema.Description
-	}
-
-	// Handle different types
-	switch schema.Type {
-	case "array":
-		// Handle array items
-		if schema.Items != nil {
-			propMap["items"] = convertSchemaToAnthropicMap(schema.Items)
-		} else {
-			// Array must have items defined for JSON Schema 2020-12
-			propMap["items"] = map[string]any{
-				"type": "string",
-			}
-		}
-	case "object":
-		// Handle nested object properties recursively
-		if len(schema.Properties) > 0 {
-			props := make(map[string]any)
-			for name, prop := range schema.Properties {
-				if prop != nil {
-					props[name] = convertSchemaToAnthropicMap(prop)
-				}
-			}
-			propMap["properties"] = props
-		} else {
-			// Object should have properties defined
-			propMap["properties"] = make(map[string]any)
-		}
-		if len(schema.Required) > 0 {
-			propMap["required"] = schema.Required
-		}
-	}
-
-	// Handle enums if present
-	if len(schema.Enum) > 0 {
-		propMap["enum"] = schema.Enum
-	}
-
-	return propMap
-}
-
-// ConvertToolToAnthropic converts a generic tool schema to Anthropic format
-func ConvertToolToAnthropic(schema *mcpjsonschema.Schema) anthropic.ToolUnionParam {
-	// Convert properties to Anthropic format using recursive conversion
-	properties := make(map[string]any)
-	if schema != nil && schema.Properties != nil {
-		for k, v := range schema.Properties {
-			if v != nil {
-				properties[k] = convertSchemaToAnthropicMap(v)
-			}
-		}
-	}
-
-	name := ""
-	description := ""
-	var required []string
-
-	if schema != nil {
-		name = schema.Title
-		description = schema.Description
-		// Only set required if it's not empty
-		if len(schema.Required) > 0 {
-			required = schema.Required
-		}
-	}
-
-	// Build InputSchema with proper JSON Schema 2020-12 format
 	inputSchema := anthropic.ToolInputSchemaParam{
 		Type:       "object",
-		Properties: properties,
+		Properties: schema.Properties(),
+		Required:   schema.Required(),
 	}
-
-	// Only add required field if it's not empty
-	if len(required) > 0 {
-		inputSchema.Required = required
-	}
-
-	tool := anthropic.ToolParam{
-		Name:        name,
-		Description: anthropic.String(description),
-		InputSchema: inputSchema,
-	}
-
-	// Wrap in ToolUnionParam
 	return anthropic.ToolUnionParam{
-		OfTool: &tool,
+		OfTool: &anthropic.ToolParam{
+			Name:        schema.Title(),
+			Description: anthropic.String(schema.Description()),
+			InputSchema: inputSchema,
+		},
 	}
 }
 

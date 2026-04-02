@@ -56,7 +56,7 @@ func main() {
 
 ## Helper Functions
 
-The `llm/helpers` package provides convenience functions to simplify common LLM operations. These functions automatically handle client creation using API keys from environment variables:
+The `llm/helpers` package provides convenience functions to simplify common LLM operations. These functions create a fresh router from environment variables on each call. If your application makes many requests, create one client with `GetDefaultClient` or `NewMultiPass` and reuse it explicitly.
 
 ### One-line Completions
 
@@ -346,6 +346,8 @@ apiKeys := map[string]string{
 multipass := llm.NewMultiPass(apiKeys)
 // or use 
 // multipass:= llm.GetDefaultClient()
+
+// MultiPass is a stateless router. It does not memoize provider clients internally.
 
 // Create request
 req := &llm.CompletionRequest{

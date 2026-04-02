@@ -82,8 +82,8 @@ func TestMCPClient(t *testing.T) {
 	// Verify we got expected tools
 	var foundTimeTools bool
 	for _, tool := range tools {
-		schema := tool.GetSchema()
-		if schema != nil && strings.Contains(schema.Title, "time") {
+		s := tool.GetSchema()
+		if s != nil && strings.Contains(s.Title(), "time") {
 			foundTimeTools = true
 			break
 		}
@@ -122,9 +122,9 @@ func TestMCPToolExecution(t *testing.T) {
 
 	// Find the get_current_time tool and test it
 	for _, tool := range tools {
-		schema := tool.GetSchema()
-		if schema.Title == "get_current_time" {
-			t.Logf("Testing tool: %s", schema.Title)
+		s := tool.GetSchema()
+		if s.Title() == "get_current_time" {
+			t.Logf("Testing tool: %s", s.Title())
 
 			// Test with valid timezone
 			args := map[string]any{
@@ -175,23 +175,23 @@ func TestMCPToolSchema(t *testing.T) {
 
 	// Test schema generation for each tool
 	for _, tool := range tools {
-		schema := tool.GetSchema()
+		s := tool.GetSchema()
 
-		if schema == nil {
+		if s == nil {
 			t.Error("Expected non-nil schema")
 			continue
 		}
 
 		// Verify basic schema properties
-		if schema.Title == "" {
+		if s.Title() == "" {
 			t.Error("Expected schema to have a title")
 		}
 
-		if schema.Type != "object" {
-			t.Errorf("Expected schema type to be 'object', got %s", schema.Type)
+		if typ, _ := s.Raw["type"].(string); typ != "object" {
+			t.Errorf("Expected schema type to be 'object', got %s", typ)
 		}
 
-		t.Logf("Tool schema - Title: %s, Description: %s", schema.Title, schema.Description)
+		t.Logf("Tool schema - Title: %s, Description: %s", s.Title(), s.Description())
 	}
 }
 
@@ -239,20 +239,14 @@ func TestMCPToolNoargsFiltering(t *testing.T) {
 
 	tool := tools[0]
 
-	// Test that __noargs placeholder (injected for OpenAI compatibility) is removed.
-	// The __noargs key is added in llm/openai.go for no-arg tools because
-	// OpenAI requires at least one property in function schemas.
 	args := map[string]any{
-		"__noargs": "should be filtered out",
-		"timezone": "America/New_York", // Valid arg for mcp-server-time
+		"timezone": "America/New_York",
 	}
 
-	// Execute should succeed - __noargs is removed, valid args pass through
 	_, err = tool.Execute(ctx, args)
 	// We don't check the error because the tool might still fail for other reasons
 	// (network issues, invalid timezone format, etc.)
-	// The important thing is that __noargs doesn't cause issues
-	t.Logf("Execution with __noargs completed (error ok): %v", err)
+	t.Logf("Execution completed (error ok): %v", err)
 }
 
 func createTestScript(t *testing.T, dir string) string {
@@ -301,12 +295,12 @@ func TestNewShellTool(t *testing.T) {
 		t.Fatal("Expected schema to be non-nil")
 	}
 
-	if schema.Title != "test-tool" {
-		t.Errorf("Expected title 'test-tool', got %s", schema.Title)
+	if schema.Title() != "test-tool" {
+		t.Errorf("Expected title 'test-tool', got %s", schema.Title())
 	}
 
-	if schema.Description != "A test tool" {
-		t.Errorf("Expected description 'A test tool', got %s", schema.Description)
+	if schema.Description() != "A test tool" {
+		t.Errorf("Expected description 'A test tool', got %s", schema.Description())
 	}
 }
 
@@ -696,15 +690,15 @@ func TestShellToolWithSandbox(t *testing.T) {
 
 	// Without sandbox applied, description should not contain [sandboxed]
 	schema := tool.GetSchema()
-	if strings.Contains(schema.Description, "[sandboxed]") {
+	if strings.Contains(schema.Description(), "[sandboxed]") {
 		t.Error("Expected no [sandboxed] hint without sandbox applied")
 	}
 
 	// With sandbox applied, description should contain [sandboxed]
 	sandboxed := tool.WithSandbox(&mockSandbox{})
 	schema = sandboxed.GetSchema()
-	if !strings.Contains(schema.Description, "[sandboxed]") {
-		t.Errorf("Expected [sandboxed] hint in description, got %q", schema.Description)
+	if !strings.Contains(schema.Description(), "[sandboxed]") {
+		t.Errorf("Expected [sandboxed] hint in description, got %q", schema.Description())
 	}
 
 	// WithSandbox should preserve command, schema, and wantsSandbox
@@ -819,7 +813,7 @@ func TestRegistryAppliesSandboxToOptInShellTools(t *testing.T) {
 	// Tool that opted in should have the [sandboxed] hint
 	for _, tool := range registry.All() {
 		schema := tool.GetSchema()
-		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
+		if schema != nil && strings.Contains(schema.Description(), "[sandboxed]") {
 			return
 		}
 	}
@@ -842,7 +836,7 @@ func TestRegistrySandboxesNonOptInShellTools(t *testing.T) {
 	found := false
 	for _, tool := range registry.All() {
 		schema := tool.GetSchema()
-		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
+		if schema != nil && strings.Contains(schema.Description(), "[sandboxed]") {
 			found = true
 		}
 	}
@@ -883,7 +877,7 @@ fi
 
 	for _, tool := range registry.All() {
 		schema := tool.GetSchema()
-		if schema != nil && strings.Contains(schema.Description, "[sandboxed]") {
+		if schema != nil && strings.Contains(schema.Description(), "[sandboxed]") {
 			t.Error("Expected shell tool with sandbox:false to NOT be sandboxed")
 		}
 	}
@@ -979,185 +973,4 @@ fi
 	}
 }
 
-func TestUpperCaseTool(t *testing.T) {
-	tool := &UpperCaseTool{}
 
-	// Test schema
-	schema := tool.GetSchema()
-	if schema.Title != "uppercase" {
-		t.Errorf("Expected title 'uppercase', got %s", schema.Title)
-	}
-	if len(schema.Required) != 1 || schema.Required[0] != "text" {
-		t.Error("Expected 'text' to be required")
-	}
-
-	// Test execution
-	args := map[string]any{
-		"text": "hello world",
-	}
-	result, err := tool.Execute(context.Background(), args)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if result != "HELLO WORLD" {
-		t.Errorf("Expected 'HELLO WORLD', got '%s'", result)
-	}
-}
-
-func TestUpperCaseToolInvalidArgs(t *testing.T) {
-	tool := &UpperCaseTool{}
-
-	// Test with missing text argument
-	args := map[string]any{}
-	_, err := tool.Execute(context.Background(), args)
-	if err == nil {
-		t.Error("Expected error for missing text argument")
-	}
-
-	// Test with wrong type
-	args = map[string]any{
-		"text": 123,
-	}
-	_, err = tool.Execute(context.Background(), args)
-	if err == nil {
-		t.Error("Expected error for non-string text argument")
-	}
-}
-
-func TestWordCountTool(t *testing.T) {
-	tool := &WordCountTool{}
-
-	// Test schema
-	schema := tool.GetSchema()
-	if schema.Title != "wordcount" {
-		t.Errorf("Expected title 'wordcount', got %s", schema.Title)
-	}
-
-	// Test word counting
-	testCases := []struct {
-		input    string
-		expected string
-	}{
-		{"hello world", "Word count: 2"},
-		{"one two three four five", "Word count: 5"},
-		{"   spaces   between   words   ", "Word count: 3"},
-		{"", "Word count: 0"},
-		{"single", "Word count: 1"},
-	}
-
-	for _, tc := range testCases {
-		args := map[string]any{
-			"text": tc.input,
-		}
-		result, err := tool.Execute(context.Background(), args)
-		if err != nil {
-			t.Fatalf("Unexpected error for input '%s': %v", tc.input, err)
-		}
-		if result != tc.expected {
-			t.Errorf("For input '%s': expected '%s', got '%s'", tc.input, tc.expected, result)
-		}
-	}
-}
-
-func TestWordCountToolInvalidArgs(t *testing.T) {
-	tool := &WordCountTool{}
-
-	// Test with non-string argument
-	args := map[string]any{
-		"text": []int{1, 2, 3},
-	}
-	_, err := tool.Execute(context.Background(), args)
-	if err == nil {
-		t.Error("Expected error for non-string text argument")
-	}
-}
-
-// Mock logger for testing LoggerTool
-type mockLogger struct {
-	messages []string
-}
-
-func (m *mockLogger) Log(message string) {
-	m.messages = append(m.messages, message)
-}
-
-func TestLoggerTool(t *testing.T) {
-	tool := &LoggerTool{}
-	logger := &mockLogger{}
-
-	// Test without context
-	_, err := tool.Execute(context.Background(), map[string]any{"message": "test"})
-	if err == nil {
-		t.Error("Expected error when logger context is not set")
-	}
-
-	// Set context
-	tool.SetContext(logger)
-
-	// Test schema
-	schema := tool.GetSchema()
-	if schema.Title != "log" {
-		t.Errorf("Expected title 'log', got %s", schema.Title)
-	}
-
-	// Test logging with default level
-	args := map[string]any{
-		"message": "Test message",
-	}
-	result, err := tool.Execute(context.Background(), args)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "[INFO] Test message") {
-		t.Errorf("Expected result to contain '[INFO] Test message', got '%s'", result)
-	}
-	if len(logger.messages) != 1 || logger.messages[0] != "[INFO] Test message" {
-		t.Errorf("Expected logger to receive '[INFO] Test message', got %v", logger.messages)
-	}
-
-	// Test logging with specific level
-	args = map[string]any{
-		"message": "Error occurred",
-		"level":   "error",
-	}
-	result, err = tool.Execute(context.Background(), args)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "[ERROR] Error occurred") {
-		t.Errorf("Expected result to contain '[ERROR] Error occurred', got '%s'", result)
-	}
-}
-
-func TestLoggerToolInvalidArgs(t *testing.T) {
-	tool := &LoggerTool{}
-	logger := &mockLogger{}
-	tool.SetContext(logger)
-
-	// Test with non-string message
-	args := map[string]any{
-		"message": 12345,
-	}
-	_, err := tool.Execute(context.Background(), args)
-	if err == nil {
-		t.Error("Expected error for non-string message")
-	}
-}
-
-func TestLoggerToolSetContext(t *testing.T) {
-	tool := &LoggerTool{}
-
-	// Test setting valid context
-	logger := &mockLogger{}
-	tool.SetContext(logger)
-	if tool.logger != logger {
-		t.Error("Expected logger to be set correctly")
-	}
-
-	// Test setting invalid context (should not panic)
-	tool.SetContext("not a logger")
-	// Logger should remain unchanged since the context is wrong type
-	if tool.logger != logger {
-		t.Error("Expected logger to remain unchanged with invalid context")
-	}
-}

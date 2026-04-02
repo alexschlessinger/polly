@@ -10,15 +10,15 @@ import (
 
 func TestBashToolSchema(t *testing.T) {
 	tool := NewBashTool("")
-	schema := tool.GetSchema()
-	if schema.Title != "bash" {
-		t.Fatalf("schema title = %q, want %q", schema.Title, "bash")
+	s := tool.GetSchema()
+	if s.Title() != "bash" {
+		t.Fatalf("schema title = %q, want %q", s.Title(), "bash")
 	}
-	if schema.Properties["command"] == nil {
+	if s.Properties()["command"] == nil {
 		t.Fatal("schema missing 'command' property")
 	}
-	if len(schema.Required) != 1 || schema.Required[0] != "command" {
-		t.Fatalf("schema required = %v, want [command]", schema.Required)
+	if req := s.Required(); len(req) != 1 || req[0] != "command" {
+		t.Fatalf("schema required = %v, want [command]", req)
 	}
 }
 

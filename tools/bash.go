@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
-	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // BashTool executes shell commands via bash -c.
@@ -32,19 +32,11 @@ func (t *BashTool) GetName() string   { return "bash" }
 func (t *BashTool) GetType() string   { return "native" }
 func (t *BashTool) GetSource() string { return "builtin" }
 
-func (t *BashTool) GetSchema() *jsonschema.Schema {
-	return &jsonschema.Schema{
-		Title:       "bash",
-		Description: "Execute a shell command and return its output",
-		Type:        "object",
-		Properties: map[string]*jsonschema.Schema{
-			"command": {
-				Type:        "string",
-				Description: "The shell command to execute",
-			},
-		},
-		Required: []string{"command"},
-	}
+func (t *BashTool) GetSchema() *schema.ToolSchema {
+	return schema.Tool("bash", "Execute a shell command and return its output",
+		schema.Params{"command": schema.S("The shell command to execute")},
+		"command",
+	)
 }
 
 func (t *BashTool) Execute(ctx context.Context, args map[string]any) (string, error) {

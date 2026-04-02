@@ -33,7 +33,7 @@ func (a *OpenAIAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 
 		// Capture finish reason when it's set
 		if choice.FinishReason != "" {
-			state.SetStopReason(mapOpenAIFinishReason(choice.FinishReason))
+			state.SetStopReason(MapOpenAIFinishReason(choice.FinishReason))
 		}
 
 		// Handle tool calls - OpenAI's special index-based accumulation
@@ -87,8 +87,8 @@ func (a *OpenAIAdapter) HandleToolCall(toolData any, state streaming.StreamState
 	return nil
 }
 
-// mapOpenAIFinishReason converts OpenAI's finish reason to our normalized type
-func mapOpenAIFinishReason(fr ai.FinishReason) messages.StopReason {
+// MapOpenAIFinishReason converts OpenAI's finish reason to our normalized type
+func MapOpenAIFinishReason(fr ai.FinishReason) messages.StopReason {
 	switch fr {
 	case ai.FinishReasonStop:
 		return messages.StopReasonEndTurn

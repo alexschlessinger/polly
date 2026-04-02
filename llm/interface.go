@@ -4,7 +4,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -20,11 +22,17 @@ type EventStreamProcessor interface {
 	ProcessMessagesToEvents(<-chan messages.ChatMessage) <-chan *messages.StreamEvent
 }
 
-// Schema represents a JSON schema for structured output
-type Schema struct {
-	Raw    map[string]any // Raw JSON schema
-	Strict bool           // Whether to enforce strict validation
-}
+// Schema is a type alias so callers can use llm.Schema without importing schema.
+type Schema = schema.Schema
+
+// ToolSchema is a type alias so callers can use llm.ToolSchema without importing schema.
+type ToolSchema = schema.ToolSchema
+
+// SchemaFor generates a strict JSON schema from a Go struct using reflection.
+func SchemaFor(v any) *Schema { return schema.SchemaFor(v) }
+
+// SchemaFromJSON parses a JSON schema string into a strict Schema.
+func SchemaFromJSON(s string) *Schema { return schema.SchemaFromJSON(s) }
 
 // CompletionRequest contains all parameters for a completion request
 type CompletionRequest struct {
@@ -63,4 +71,16 @@ func (r *CompletionRequest) ResolvedMessages() []messages.ChatMessage {
 		Role:    messages.MessageRoleSystem,
 		Content: runtimeSystem,
 	}}, out...)
+}
+
+// runStream handles the common goroutine scaffolding for ChatCompletionStream.
+// Each provider creates its adapter, then passes a function that does the
+// provider-specific work with the StreamingCore.
+func runStream(ctx context.Context, processor EventStreamProcessor, adapter streaming.ProviderAdapter, fn func(*streaming.StreamingCore)) <-chan *messages.StreamEvent {
+	ch := make(chan messages.ChatMessage, 10)
+	go func() {
+		defer close(ch)
+		fn(streaming.NewStreamingCore(ctx, ch, adapter))
+	}()
+	return processor.ProcessMessagesToEvents(ch)
 }

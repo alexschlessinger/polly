@@ -12,7 +12,7 @@ import (
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
-// GetDefaultClient creates a MultiPass client with API keys from environment
+// GetDefaultClient creates a new MultiPass router with API keys from the environment.
 func GetDefaultClient() LLM {
 	apiKeys := map[string]string{
 		"openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
@@ -23,7 +23,21 @@ func GetDefaultClient() LLM {
 	return NewMultiPass(apiKeys)
 }
 
-// QuickComplete performs a simple one-shot completion with minimal configuration
+// Collect calls ChatCompletionStream on the given LLM client and returns the final content string.
+func Collect(ctx context.Context, client LLM, req *CompletionRequest) (string, error) {
+	events := client.ChatCompletionStream(ctx, req, &SimpleProcessor{})
+	for event := range events {
+		switch event.Type {
+		case messages.EventTypeComplete:
+			return event.Message.GetContent(), nil
+		case messages.EventTypeError:
+			return "", event.Error
+		}
+	}
+	return "", fmt.Errorf("no response from LLM")
+}
+
+// QuickComplete performs a simple one-shot completion with minimal configuration.
 func QuickComplete(ctx context.Context, model, prompt string, maxTokens int) (string, error) {
 	client := GetDefaultClient()
 
@@ -55,7 +69,7 @@ func QuickComplete(ctx context.Context, model, prompt string, maxTokens int) (st
 	return result, nil
 }
 
-// StreamComplete performs a streaming completion with a callback for each chunk
+// StreamComplete performs a streaming completion with a callback for each chunk.
 func StreamComplete(ctx context.Context, model, prompt string, maxTokens int, onChunk func(string)) error {
 	client := GetDefaultClient()
 
@@ -88,7 +102,7 @@ func StreamComplete(ctx context.Context, model, prompt string, maxTokens int, on
 	return nil
 }
 
-// ChatWithHistory performs a completion with conversation history
+// ChatWithHistory performs a completion with conversation history.
 func ChatWithHistory(ctx context.Context, model string, history []messages.ChatMessage, newMessage string, maxTokens int) (*messages.ChatMessage, error) {
 	client := GetDefaultClient()
 
@@ -121,7 +135,7 @@ func ChatWithHistory(ctx context.Context, model string, history []messages.ChatM
 	return &response, nil
 }
 
-// StructuredComplete performs a completion expecting a structured JSON response
+// StructuredComplete performs a completion expecting a structured JSON response.
 func StructuredComplete(ctx context.Context, model, prompt string, schema *Schema, maxTokens int, result interface{}) error {
 	client := GetDefaultClient()
 
@@ -332,7 +346,11 @@ func (b *CompletionBuilder) ExecuteWithTools(ctx context.Context, client LLM, to
 
 					result, err := tool.Execute(ctx, args)
 					if err != nil {
-						result = fmt.Sprintf("Error executing tool: %v", err)
+						if msg, ok := tools.FormatToolError(err); ok {
+							result = msg
+						} else {
+							result = fmt.Sprintf("Error executing tool: %v", err)
+						}
 					}
 
 					// Add tool result to messages
@@ -372,6 +390,14 @@ func (s *SimpleProcessor) ProcessMessagesToEvents(msgChan <-chan messages.ChatMe
 
 		for msg := range msgChan {
 			lastMessage = msg
+
+			if msg.IsError() {
+				eventChan <- &messages.StreamEvent{
+					Type:  messages.EventTypeError,
+					Error: msg.GetError(),
+				}
+				return
+			}
 
 			if msg.Content != "" {
 				fullContent += msg.Content

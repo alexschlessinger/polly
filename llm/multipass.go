@@ -8,9 +8,12 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// MultiPass routes requests to different LLM providers based on model prefix
+type providerFactory func(apiKey, baseURL string) (LLM, error)
+
+// MultiPass routes requests to different LLM providers based on model prefix.
 type MultiPass struct {
-	apiKeys map[string]string
+	apiKeys   map[string]string
+	factories map[string]providerFactory
 }
 
 // getEnvVarNameForProvider returns the environment variable name for the given provider
@@ -29,15 +32,58 @@ func getEnvVarNameForProvider(provider string) string {
 	}
 }
 
-// NewMultiPass creates a new multi-provider router
+// NewMultiPass creates a new multi-provider router using a snapshot of the
+// provided API keys.
 func NewMultiPass(apiKeys map[string]string) *MultiPass {
+	return newMultiPass(apiKeys, defaultProviderFactories())
+}
+
+func newMultiPass(apiKeys map[string]string, factories map[string]providerFactory) *MultiPass {
 	return &MultiPass{
-		apiKeys: apiKeys,
+		apiKeys:   copyAPIKeys(apiKeys),
+		factories: copyProviderFactories(factories),
 	}
+}
+
+func defaultProviderFactories() map[string]providerFactory {
+	return map[string]providerFactory{
+		"openai": func(apiKey, baseURL string) (LLM, error) {
+			return NewOpenAIClient(apiKey, baseURL), nil
+		},
+		"anthropic": func(apiKey, _ string) (LLM, error) {
+			return NewAnthropicClient(apiKey), nil
+		},
+		"gemini": func(apiKey, _ string) (LLM, error) {
+			return NewGeminiClient(apiKey)
+		},
+		"ollama": func(apiKey, baseURL string) (LLM, error) {
+			return NewOllamaClient(baseURL, apiKey), nil
+		},
+	}
+}
+
+func copyAPIKeys(apiKeys map[string]string) map[string]string {
+	out := make(map[string]string, len(apiKeys))
+	for provider, key := range apiKeys {
+		out[provider] = key
+	}
+	return out
+}
+
+func copyProviderFactories(factories map[string]providerFactory) map[string]providerFactory {
+	out := make(map[string]providerFactory, len(factories))
+	for provider, factory := range factories {
+		out[provider] = factory
+	}
+	return out
 }
 
 // ChatCompletionStream routes the request to the appropriate provider using event-based streaming
 func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+	// Work on a copy so we don't mutate the caller's request
+	localReq := *req
+	req = &localReq
+
 	// Parse the model string to extract provider and actual model name
 	parts := strings.SplitN(req.Model, "/", 2)
 	if len(parts) != 2 {
@@ -68,28 +114,27 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 		req.Skills = nil
 	}
 
-	// Route to the appropriate provider
-	var llm LLM
-	switch provider {
-	case "openai":
-		llm = NewOpenAIClient(req.APIKey, req.BaseURL)
-	case "anthropic":
-		llm = NewAnthropicClient(req.APIKey)
-	case "gemini":
-		llm = NewGeminiClient(req.APIKey)
-	case "ollama":
-		baseURL := req.BaseURL
-		if baseURL == "" {
-			baseURL = "http://localhost:11434"
-		}
-		llm = NewOllamaClient(baseURL, req.APIKey)
-	default:
-		err := fmt.Errorf("unknown provider '%s'. Valid providers: openai, anthropic, gemini, ollama", provider)
+	// Create a provider client for this request.
+	client, err := m.clientFor(provider, req.APIKey, req.BaseURL)
+	if err != nil {
 		return processor.ProcessMessagesToEvents(singleErrorMessage(err))
 	}
 
-	// Delegate to the selected provider
-	return llm.ChatCompletionStream(ctx, req, processor)
+	return client.ChatCompletionStream(ctx, req, processor)
+}
+
+// clientFor creates a provider client for the current request.
+func (m *MultiPass) clientFor(provider, apiKey, baseURL string) (LLM, error) {
+	factory, ok := m.factories[provider]
+	if !ok {
+		return nil, fmt.Errorf("unknown provider '%s'. Valid providers: openai, anthropic, gemini, ollama", provider)
+	}
+
+	if provider == "ollama" && baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+
+	return factory(apiKey, baseURL)
 }
 
 func singleErrorMessage(err error) <-chan messages.ChatMessage {

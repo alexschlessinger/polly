@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
-	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.uber.org/zap"
 )
@@ -20,8 +20,8 @@ import (
 type MCPTool struct {
 	session      *mcp.ClientSession
 	tool         *mcp.Tool
-	Source       string             // Server spec that provided this tool
-	cachedSchema *jsonschema.Schema // Cached converted schema
+	Source       string      // Server spec that provided this tool
+	cachedSchema *schema.ToolSchema // Cached converted schema
 }
 
 // NewMCPTool creates a new MCP tool wrapper
@@ -33,55 +33,30 @@ func NewMCPTool(session *mcp.ClientSession, tool *mcp.Tool) *MCPTool {
 }
 
 // GetSchema returns the tool's schema (cached after first call)
-func (m *MCPTool) GetSchema() *jsonschema.Schema {
-	// Return cached schema if available
+func (m *MCPTool) GetSchema() *schema.ToolSchema {
 	if m.cachedSchema != nil {
 		return m.cachedSchema
 	}
 
-	var schema *jsonschema.Schema
-
-	// Get base schema
+	var s *schema.ToolSchema
 	if m.tool.InputSchema != nil {
-		// InputSchema is now 'any' in v0.8.0, try to convert it
-		// First, try to unmarshal it to jsonschema.Schema
-		schemaBytes, err := json.Marshal(m.tool.InputSchema)
-		if err == nil {
-			schema = &jsonschema.Schema{}
-			if err := json.Unmarshal(schemaBytes, schema); err != nil {
-				schema = nil
-			}
+		if data, err := json.Marshal(m.tool.InputSchema); err == nil {
+			s = schema.ToolSchemaFromJSON(data)
 		}
-
-		// If we got a schema, set defaults
-		if schema != nil {
-			// Set the title from the tool name if not already set
-			if schema.Title == "" {
-				schema.Title = m.tool.Name
-			}
-			// Set the description if not already set
-			if schema.Description == "" {
-				schema.Description = m.tool.Description
-			}
-		} else {
-			// If conversion failed, create a basic schema
-			schema = &jsonschema.Schema{
-				Title:       m.tool.Name,
-				Description: m.tool.Description,
-				Type:        "object",
-			}
-		}
+	}
+	if s == nil {
+		s = schema.Tool(m.tool.Name, m.tool.Description, nil)
 	} else {
-		// If no input schema, create a basic one with no properties
-		schema = &jsonschema.Schema{
-			Title:       m.tool.Name,
-			Description: m.tool.Description,
-			Type:        "object",
+		if s.Title() == "" {
+			s.SetTitle(m.tool.Name)
+		}
+		if s.Description() == "" {
+			s.Raw["description"] = m.tool.Description
 		}
 	}
 
-	m.cachedSchema = schema
-	return schema
+	m.cachedSchema = s
+	return m.cachedSchema
 }
 
 // GetName returns the name of the tool
@@ -108,12 +83,6 @@ func (m *MCPTool) Execute(ctx context.Context, args map[string]any) (string, err
 	if args == nil {
 		args = make(map[string]any)
 	}
-
-	// Remove OpenAI compatibility placeholder if present.
-	// OpenAI requires at least one property in function schemas, so we inject
-	// "__noargs" for no-arg tools (see llm/openai.go ConvertToolToOpenAI).
-	// Remove it before calling the actual MCP server.
-	delete(args, "__noargs")
 
 	// Create the call parameters
 	params := &mcp.CallToolParams{

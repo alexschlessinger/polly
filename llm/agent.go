@@ -9,6 +9,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
+
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -320,6 +321,9 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 	// Execute
 	result, err := tool.Execute(ctx, args)
 	if err != nil {
+		if msg, ok := tools.FormatToolError(err); ok {
+			return msg, err
+		}
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Sprintf("Error: tool execution timed out after %v", a.config.ToolTimeout), err
 		}

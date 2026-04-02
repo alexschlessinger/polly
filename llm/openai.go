@@ -10,9 +10,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	mcpjsonschema "github.com/google/jsonschema-go/jsonschema"
 	ai "github.com/sashabaranov/go-openai"
-	"github.com/sashabaranov/go-openai/jsonschema"
 	"go.uber.org/zap"
 )
 
@@ -36,22 +34,11 @@ func NewOpenAIClient(apiKey string, baseURL string) *OpenAIClient {
 
 // ChatCompletionStream implements the event-based streaming interface
 func (o OpenAIClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	messageChannel := make(chan messages.ChatMessage, 10)
-
-	go func() {
-		defer close(messageChannel)
-
-		// Create streaming core with OpenAI adapter
-		adapter := adapters.NewOpenAIAdapter()
-		streamCore := streaming.NewStreamingCore(ctx, messageChannel, adapter)
-
-		// Process the request
+	return runStream(ctx, processor, adapters.NewOpenAIAdapter(), func(streamCore *streaming.StreamingCore) {
 		if err := o.streamCompletion(ctx, req, streamCore); err != nil {
 			streamCore.EmitError(err)
 		}
-	}()
-
-	return processor.ProcessMessagesToEvents(messageChannel)
+	})
 }
 
 func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
@@ -180,17 +167,8 @@ func (o OpenAIClient) handleNonStreamingCompletion(ctx context.Context, ccr ai.C
 			})
 		}
 
-		// Set stop reason based on finish reason
-		switch choice.FinishReason {
-		case ai.FinishReasonToolCalls, ai.FinishReasonFunctionCall:
-			streamCore.SetStopReason(messages.StopReasonToolUse)
-		case ai.FinishReasonLength:
-			streamCore.SetStopReason(messages.StopReasonMaxTokens)
-		case ai.FinishReasonContentFilter:
-			streamCore.SetStopReason(messages.StopReasonContentFilter)
-		default:
-			streamCore.SetStopReason(messages.StopReasonEndTurn)
-		}
+		// Set stop reason
+		streamCore.SetStopReason(adapters.MapOpenAIFinishReason(choice.FinishReason))
 	}
 
 	// Set token usage
@@ -248,96 +226,24 @@ func ConvertToOpenAISchema(schema *Schema) *ai.ChatCompletionResponseFormat {
 	}
 }
 
-// convertSchemaToOpenAIDefinition recursively converts an MCP schema to an OpenAI Definition
-func convertSchemaToOpenAIDefinition(schema *mcpjsonschema.Schema) jsonschema.Definition {
-	if schema == nil {
-		return jsonschema.Definition{}
-	}
-
-	def := jsonschema.Definition{
-		Type:        jsonschema.DataType(schema.Type),
-		Description: schema.Description,
-	}
-
-	// Handle different types
-	switch schema.Type {
-	case "array":
-		// Handle array items
-		if schema.Items != nil {
-			items := convertSchemaToOpenAIDefinition(schema.Items)
-			def.Items = &items
-		}
-	case "object":
-		// Handle nested object properties recursively
-		if schema.Properties != nil {
-			props := make(map[string]jsonschema.Definition)
-			for name, prop := range schema.Properties {
-				if prop != nil {
-					props[name] = convertSchemaToOpenAIDefinition(prop)
-				}
-			}
-			def.Properties = props
-		}
-		if len(schema.Required) > 0 {
-			def.Required = schema.Required
-		}
-	}
-
-	// Handle enums if present
-	if len(schema.Enum) > 0 {
-		// Convert any type enums to string enums for OpenAI
-		enumStrs := make([]string, 0, len(schema.Enum))
-		for _, e := range schema.Enum {
-			if s, ok := e.(string); ok {
-				enumStrs = append(enumStrs, s)
-			}
-		}
-		if len(enumStrs) > 0 {
-			def.Enum = enumStrs
-		}
-	}
-
-	return def
-}
-
-// ConvertToolToOpenAI converts a generic tool schema to OpenAI format
-func ConvertToolToOpenAI(schema *mcpjsonschema.Schema) ai.Tool {
-	// Convert properties to OpenAI jsonschema.Definition using recursive conversion
-	props := make(map[string]jsonschema.Definition)
-	if schema != nil && schema.Properties != nil {
-		for k, v := range schema.Properties {
-			if v != nil {
-				props[k] = convertSchemaToOpenAIDefinition(v)
-			}
-		}
-	}
-
-	name := ""
-	description := ""
-	var required []string
-
+// ConvertToolToOpenAI converts a tool schema to OpenAI format.
+// OpenAI's FunctionDefinition.Parameters accepts any, so we pass a raw map.
+func ConvertToolToOpenAI(schema *ToolSchema) ai.Tool {
+	params := map[string]any{"type": "object", "properties": map[string]any{}}
 	if schema != nil {
-		name = schema.Title
-		description = schema.Description
-		required = schema.Required
-	}
-
-	// Create parameters definition
-	// OpenAI requires Properties field to be present, even if empty.
-	// The go-openai jsonschema omits empty maps, so for truly no-arg tools
-	// we inject a benign optional placeholder property to keep the field present.
-	if len(props) == 0 {
-		props["__noargs"] = jsonschema.Definition{
-			Type:        jsonschema.String,
-			Description: "No arguments expected; value ignored.",
+		params = map[string]any{
+			"type":       "object",
+			"properties": schema.Properties(),
+		}
+		if req := schema.Required(); len(req) > 0 {
+			params["required"] = req
 		}
 	}
 
-	params := jsonschema.Definition{
-		Type:                 jsonschema.Object,
-		Properties:           props,
-		Required:             required,
-		AdditionalProperties: false,
+	name, description := "", ""
+	if schema != nil {
+		name = schema.Title()
+		description = schema.Description()
 	}
 
 	return ai.Tool{

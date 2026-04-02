@@ -47,9 +47,9 @@ func TestMapOpenAIFinishReason(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.input), func(t *testing.T) {
-			got := mapOpenAIFinishReason(tt.input)
+			got := MapOpenAIFinishReason(tt.input)
 			if got != tt.want {
-				t.Errorf("mapOpenAIFinishReason(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("MapOpenAIFinishReason(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

@@ -66,15 +66,20 @@ func validateJSONAgainstSchema(data any, schema *llm.Schema) error {
 		}
 
 		// Check required fields
-		if required, ok := schema.Raw["required"].([]any); ok {
-			for _, field := range required {
-				fieldName, ok := field.(string)
-				if !ok {
-					continue
+		var required []string
+		switch req := schema.Raw["required"].(type) {
+		case []string:
+			required = req
+		case []any:
+			for _, r := range req {
+				if s, ok := r.(string); ok {
+					required = append(required, s)
 				}
-				if _, exists := obj[fieldName]; !exists {
-					return fmt.Errorf("missing required field: %s", fieldName)
-				}
+			}
+		}
+		for _, fieldName := range required {
+			if _, exists := obj[fieldName]; !exists {
+				return fmt.Errorf("missing required field: %s", fieldName)
 			}
 		}
 
