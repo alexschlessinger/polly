@@ -6,12 +6,12 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.28.0
 	github.com/gofrs/flock v0.13.0
 	github.com/invopop/jsonschema v0.13.0
+	github.com/lmittmann/tint v1.1.3
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/muesli/termenv v0.16.0
 	github.com/ollama/ollama v0.19.0
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/xeipuuv/gojsonschema v1.2.0
-	go.uber.org/zap v1.27.1
 	golang.org/x/sync v0.20.0
 	google.golang.org/genai v1.52.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -30,7 +30,6 @@ require (
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb // indirect
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
-	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	google.golang.org/api v0.273.1 // indirect
 )

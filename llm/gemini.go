@@ -5,11 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	"go.uber.org/zap"
 	"google.golang.org/genai"
 )
 
@@ -78,7 +78,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		}
 
 		isStreaming := req.Stream == nil || *req.Stream
-		zap.S().Debugw("gemini_completion_started", "model", req.Model, "stream", isStreaming)
+		slog.Debug("gemini_completion_started", "model", req.Model, "stream", isStreaming)
 
 		if isStreaming {
 			g.handleStreamingCompletion(ctx, client, req, contents, config, streamCore)
@@ -94,7 +94,7 @@ func (g *GeminiClient) handleStreamingCompletion(ctx context.Context, client *ge
 
 	for resp, err := range iter {
 		if err != nil {
-			zap.S().Debugw("gemini_stream_error", "error", err)
+			slog.Debug("gemini_stream_error", "error", err)
 			streamCore.EmitError(err)
 			return
 		}
@@ -125,7 +125,7 @@ func (g *GeminiClient) handleStreamingCompletion(ctx context.Context, client *ge
 func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, client *genai.Client, req *CompletionRequest, contents []*genai.Content, config *genai.GenerateContentConfig, streamCore *streaming.StreamingCore) {
 	resp, err := client.Models.GenerateContent(ctx, req.Model, contents, config)
 	if err != nil {
-		zap.S().Debugw("gemini_completion_failed", "error", err)
+		slog.Debug("gemini_completion_failed", "error", err)
 		streamCore.EmitError(err)
 		return
 	}

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
-	"go.uber.org/zap"
 )
 
 // LoadResult contains information about tools that were loaded
@@ -187,7 +187,7 @@ func (r *ToolRegistry) Register(tool Tool) {
 	}
 
 	if name != "" {
-		zap.S().Debugw("tool_registered", "tool_name", name)
+		slog.Debug("tool_registered", "tool_name", name)
 		r.tools[name] = tool
 	}
 }
@@ -205,7 +205,7 @@ func (r *ToolRegistry) RegisterNative(name string, factory func() Tool) {
 	defer r.mu.Unlock()
 
 	r.nativeTools[name] = factory
-	zap.S().Debugw("native_factory_registered", "factory_name", name)
+	slog.Debug("native_factory_registered", "factory_name", name)
 }
 
 // Get retrieves a tool by name
@@ -252,7 +252,7 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 	// Remove from registry
 	delete(r.tools, namespacedName)
 	delete(r.toolClients, namespacedName)
-	zap.S().Debugw("tool_removed", "tool_name", namespacedName)
+	slog.Debug("tool_removed", "tool_name", namespacedName)
 
 	// Clean up MCP-specific tracking
 	if client != nil {
@@ -282,7 +282,7 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 			}
 		}
 		if !stillInUse {
-			zap.S().Debugw("mcp_client_closed", "reason", "no_remaining_tools")
+			slog.Debug("mcp_client_closed", "reason", "no_remaining_tools")
 			client.Close()
 		}
 	}
@@ -461,13 +461,13 @@ func (r *ToolRegistry) UnloadMCPServer(serverSpec string) error {
 	for _, name := range toolNames {
 		delete(r.tools, name)
 		delete(r.toolClients, name)
-		zap.S().Debugw("mcp_tool_removed", "tool_name", name)
+		slog.Debug("mcp_tool_removed", "tool_name", name)
 	}
 
 	// Close client
 	if client != nil {
 		client.Close()
-		zap.S().Debugw("mcp_server_closed", "server_name", GetMCPDisplayName(serverSpec))
+		slog.Debug("mcp_server_closed", "server_name", GetMCPDisplayName(serverSpec))
 	}
 
 	// Clean up tracking
@@ -487,7 +487,7 @@ func (r *ToolRegistry) loadShellToolWithNamespace(path, namespace string) (LoadR
 
 	for _, record := range records {
 		r.tools[record.name] = record.tool
-		zap.S().Debugw("shell_tool_registered", "tool_name", record.name)
+		slog.Debug("shell_tool_registered", "tool_name", record.name)
 	}
 
 	return result, nil
@@ -558,7 +558,7 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 		if record.serverSpec != "" {
 			r.stageServerTools(record.serverSpec, []string{record.name})
 		}
-		zap.S().Debugw("tool_staged", "tool_name", record.name)
+		slog.Debug("tool_staged", "tool_name", record.name)
 	}
 }
 
@@ -687,7 +687,7 @@ func (r *ToolRegistry) LoadMCPServerWithNamespacePrefix(serverSpec, namespacePre
 		if record.serverSpec != "" {
 			r.serverTools[record.serverSpec] = appendUniqueStrings(r.serverTools[record.serverSpec], []string{record.name})
 		}
-		zap.S().Debugw("mcp_tool_registered", "tool_name", record.name)
+		slog.Debug("mcp_tool_registered", "tool_name", record.name)
 	}
 
 	return result, nil
@@ -886,7 +886,7 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 				r.tools[namespacedName] = wrappedTool
 				r.toolClients[namespacedName] = client
 				toolNames = append(toolNames, namespacedName)
-				zap.S().Debugw("mcp_tool_registered", "tool_name", namespacedName)
+				slog.Debug("mcp_tool_registered", "tool_name", namespacedName)
 			}
 		}
 	}
