@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/adapters"
@@ -12,7 +13,6 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
-	"go.uber.org/zap"
 )
 
 const (
@@ -28,7 +28,7 @@ type AnthropicClient struct {
 
 func NewAnthropicClient(apiKey string) *AnthropicClient {
 	if apiKey == "" {
-		zap.S().Debugw("anthropic_missing_api_key")
+		slog.Debug("anthropic_missing_api_key")
 	}
 
 	client := anthropic.NewClient(
@@ -122,7 +122,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 	return runStream(ctx, processor, adapter, func(streamCore *streaming.StreamingCore) {
 		params := a.buildRequestParams(req)
 		isStreaming := req.Stream == nil || *req.Stream
-		zap.S().Debugw("anthropic_completion_started", "model", req.Model, "stream", isStreaming)
+		slog.Debug("anthropic_completion_started", "model", req.Model, "stream", isStreaming)
 
 		if isStreaming {
 			stream := a.client.Messages.NewStreaming(ctx, params)
@@ -182,7 +182,7 @@ func (a *AnthropicClient) processStream(stream *ssestream.Stream[anthropic.Messa
 func (a *AnthropicClient) processNonStreaming(ctx context.Context, params anthropic.MessageNewParams, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *adapters.AnthropicAdapter) {
 	resp, err := a.client.Messages.New(ctx, params)
 	if err != nil {
-		zap.S().Debugw("anthropic_completion_failed", "error", err)
+		slog.Debug("anthropic_completion_failed", "error", err)
 		streamCore.EmitError(err)
 		return
 	}

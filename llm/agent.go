@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
-
-	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -150,7 +149,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 
 		case messages.StopReasonMaxTokens:
 			// Response truncated - warn and return
-			zap.S().Debugw("response_truncated", "reason", "max_tokens")
+			slog.Debug("response_truncated", "reason", "max_tokens")
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
 			}

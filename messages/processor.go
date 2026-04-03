@@ -3,9 +3,9 @@ package messages
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/alexschlessinger/pollytool/tools"
-	"go.uber.org/zap"
 )
 
 func min(a, b int) int {
@@ -44,7 +44,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 		var stopReason StopReason
 
 		for msg := range msgChan {
-			zap.S().Debugw("processor_message_received",
+			slog.Debug("processor_message_received",
 				"processor_id", processorID,
 				"content_len", len(msg.Content),
 				"has_tool_calls", len(msg.ToolCalls) > 0,
@@ -66,7 +66,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			}
 			// If there's reasoning, accumulate it and emit as reasoning event
 			if msg.Reasoning != "" {
-				zap.S().Debugw("processor_reasoning_chunk_received",
+				slog.Debug("processor_reasoning_chunk_received",
 					"processor_id", processorID,
 					"chunk_len", len(msg.Reasoning),
 					"accumulated_len", len(accumulatedReasoning),
@@ -82,7 +82,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			// If there's content, emit it as a content event
 			// This ensures content is always available for streaming
 			if msg.Content != "" {
-				zap.S().Debugw("processor_content_chunk_received",
+				slog.Debug("processor_content_chunk_received",
 					"processor_id", processorID,
 					"chunk_len", len(msg.Content),
 					"accumulated_len_before", len(accumulatedContent),
@@ -94,7 +94,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 					Type:    EventTypeContent,
 					Content: msg.Content,
 				}
-				zap.S().Debugw("processor_event_type_content_sent",
+				slog.Debug("processor_event_type_content_sent",
 					"content", msg.Content,
 				)
 			}
@@ -122,7 +122,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 							ToolCall: tc,
 						}
 					} else {
-						zap.S().Debugw("processor_tool_call_parse_failed", "error", err)
+						slog.Debug("processor_tool_call_parse_failed", "error", err)
 					}
 				}
 			}
@@ -131,7 +131,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 		// At the end, emit a complete event with the full message
 		// For history purposes, we need the complete content, but streaming clients
 		// should ignore this to avoid duplication
-		zap.S().Debugw("processor_event_type_complete_created",
+		slog.Debug("processor_event_type_complete_created",
 			"processor_id", processorID,
 			"accumulated_content_len", len(accumulatedContent),
 			"accumulated_reasoning_len", len(accumulatedReasoning),
@@ -151,7 +151,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 		// If we had tool calls, include them in the complete message
 		if lastMessageWithToolCalls != nil {
 			completeMsg.ToolCalls = lastMessageWithToolCalls.ToolCalls
-			zap.S().Debugw("processor_event_type_complete_created",
+			slog.Debug("processor_event_type_complete_created",
 				"num_tools", len(lastMessageWithToolCalls.ToolCalls),
 			)
 		}
@@ -160,7 +160,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			Type:    EventTypeComplete,
 			Message: &completeMsg,
 		}
-		zap.S().Debugw("processor_event_type_complete_sent",
+		slog.Debug("processor_event_type_complete_sent",
 			"content_in_complete", completeMsg.Content,
 		)
 	}()

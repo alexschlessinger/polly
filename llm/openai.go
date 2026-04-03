@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 
 	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 	ai "github.com/sashabaranov/go-openai"
-	"go.uber.org/zap"
 )
 
 var _ LLM = (*OpenAIClient)(nil)
@@ -46,7 +46,7 @@ func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionReque
 	defer cancel()
 
 	isStreaming := req.Stream == nil || *req.Stream
-	zap.S().Debugw("openai_completion_started", "stream", isStreaming)
+	slog.Debug("openai_completion_started", "stream", isStreaming)
 
 	// Convert agnostic messages to OpenAI format
 	openAIMessages := MessagesToOpenAI(req.Messages)
@@ -90,7 +90,7 @@ func (o OpenAIClient) handleStreamingCompletion(ctx context.Context, ccr ai.Chat
 
 	stream, err := o.Client.CreateChatCompletionStream(ctx, ccr)
 	if err != nil {
-		zap.S().Debugw("openai_stream_creation_failed", "error", err)
+		slog.Debug("openai_stream_creation_failed", "error", err)
 		return fmt.Errorf("failed to create chat completion stream: %w", err)
 	}
 	defer stream.Close()
@@ -103,7 +103,7 @@ func (o OpenAIClient) handleStreamingCompletion(ctx context.Context, ccr ai.Chat
 				// Stream complete
 				break
 			}
-			zap.S().Debugw("openai_stream_error", "error", err)
+			slog.Debug("openai_stream_error", "error", err)
 			return fmt.Errorf("error during streaming: %w", err)
 		}
 
@@ -139,7 +139,7 @@ func (o OpenAIClient) handleNonStreamingCompletion(ctx context.Context, ccr ai.C
 
 	resp, err := o.Client.CreateChatCompletion(ctx, ccr)
 	if err != nil {
-		zap.S().Debugw("openai_completion_failed", "error", err)
+		slog.Debug("openai_completion_failed", "error", err)
 		return fmt.Errorf("failed to create chat completion: %w", err)
 	}
 

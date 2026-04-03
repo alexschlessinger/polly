@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	"go.uber.org/zap"
 )
 
 // StreamingCore provides common streaming functionality for all providers.
@@ -103,7 +103,7 @@ func (sc *StreamingCore) EmitError(err error) {
 	case <-sc.ctx.Done():
 		return
 	case sc.messageChannel <- msg:
-		zap.S().Debugw("streaming_error", "error", err)
+		slog.Debug("streaming_error", "error", err)
 	}
 }
 
@@ -233,7 +233,7 @@ func (sc *StreamingCore) logCompletionDetails() {
 		)
 	}
 
-	zap.S().Debugw("streaming_completed", fields...)
+	slog.Debug("streaming_completed", fields...)
 }
 
 // Helper functions for JSON operations

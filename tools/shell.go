@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
-	"go.uber.org/zap"
 )
 
 // ShellTool wraps external commands/scripts as tools
@@ -128,7 +128,7 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 		if s.schema != nil {
 			name = s.schema.Title()
 		}
-		zap.S().Debugw("shell_tool_completed",
+		slog.Debug("shell_tool_completed",
 			"tool_name", name,
 			"user_time", cmd.ProcessState.UserTime(),
 			"system_time", cmd.ProcessState.SystemTime(),
@@ -171,10 +171,10 @@ func LoadShellTools(paths []string) ([]Tool, error) {
 	var tools []Tool
 
 	for _, path := range paths {
-		zap.S().Debugw("tool_loading", "path", path)
+		slog.Debug("tool_loading", "path", path)
 		shellTool, err := NewShellTool(path)
 		if err != nil {
-			zap.S().Debugw("tool_load_failed", "path", path, "error", err)
+			slog.Debug("tool_load_failed", "path", path, "error", err)
 			// Continue loading other tools even if one fails
 			continue
 		}
