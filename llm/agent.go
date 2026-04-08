@@ -115,6 +115,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 
 	var allGenerated []messages.ChatMessage
 	var nudgedResponseTool bool
+	var responseToolCalled bool
 
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
 		// Check for context cancellation
@@ -152,7 +153,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// Check stop reason to determine next action
 		switch response.StopReason {
 		case messages.StopReasonEndTurn:
-			if a.config.ResponseTool != "" && !hasToolCall(response, a.config.ResponseTool) && !nudgedResponseTool {
+			if a.config.ResponseTool != "" && !responseToolCalled && !nudgedResponseTool {
 				nudgedResponseTool = true
 				nudge := messages.ChatMessage{
 					Role:    messages.MessageRoleUser,
@@ -206,7 +207,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		default:
 			// Unknown stop reason with no tool calls = treat as completion
 			if len(response.ToolCalls) == 0 {
-				if a.config.ResponseTool != "" && !hasToolCall(response, a.config.ResponseTool) && !nudgedResponseTool {
+				if a.config.ResponseTool != "" && !responseToolCalled && !nudgedResponseTool {
 					nudgedResponseTool = true
 					nudge := messages.ChatMessage{
 						Role:    messages.MessageRoleUser,
@@ -226,6 +227,16 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 				}, nil
 			}
 			// Has tool calls, continue to execute them
+		}
+
+		// Track if response tool was called in this batch
+		if a.config.ResponseTool != "" {
+			for _, tc := range response.ToolCalls {
+				if tc.Name == a.config.ResponseTool {
+					responseToolCalled = true
+					break
+				}
+			}
 		}
 
 		// Execute tool calls in parallel
