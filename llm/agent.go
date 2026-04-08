@@ -142,6 +142,10 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			return nil, err
 		}
 
+		// Ensure content is never null — some providers reject null content in history
+		if response.Content == "" && len(response.ToolCalls) == 0 {
+			response.Content = " "
+		}
 		msgs = append(msgs, *response)
 		allGenerated = append(allGenerated, *response)
 
