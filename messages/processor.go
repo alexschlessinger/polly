@@ -66,12 +66,12 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			}
 			// If there's reasoning, accumulate it and emit as reasoning event
 			if msg.Reasoning != "" {
-				slog.Debug("processor_reasoning_chunk_received",
-					"processor_id", processorID,
-					"chunk_len", len(msg.Reasoning),
-					"accumulated_len", len(accumulatedReasoning),
-					"preview", msg.Reasoning[:min(50, len(msg.Reasoning))],
-				)
+				// slog.Debug("processor_reasoning_chunk_received",
+				// 	"processor_id", processorID,
+				// 	"chunk_len", len(msg.Reasoning),
+				// 	"accumulated_len", len(accumulatedReasoning),
+				// 	"preview", msg.Reasoning[:min(50, len(msg.Reasoning))],
+				// )
 				accumulatedReasoning += msg.Reasoning
 				eventChan <- &StreamEvent{
 					Type:    EventTypeReasoning,
@@ -82,21 +82,21 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			// If there's content, emit it as a content event
 			// This ensures content is always available for streaming
 			if msg.Content != "" {
-				slog.Debug("processor_content_chunk_received",
-					"processor_id", processorID,
-					"chunk_len", len(msg.Content),
-					"accumulated_len_before", len(accumulatedContent),
-					"accumulated_len_after", len(accumulatedContent)+len(msg.Content),
-					"preview", msg.Content[:min(50, len(msg.Content))],
-				)
+				// slog.Debug("processor_content_chunk_received",
+				// 	"processor_id", processorID,
+				// 	"chunk_len", len(msg.Content),
+				// 	"accumulated_len_before", len(accumulatedContent),
+				// 	"accumulated_len_after", len(accumulatedContent)+len(msg.Content),
+				// 	"preview", msg.Content[:min(50, len(msg.Content))],
+				// )
 				accumulatedContent += msg.Content
 				eventChan <- &StreamEvent{
 					Type:    EventTypeContent,
 					Content: msg.Content,
 				}
-				slog.Debug("processor_event_type_content_sent",
-					"content", msg.Content,
-				)
+				// slog.Debug("processor_event_type_content_sent",
+				// 	"content", msg.Content,
+				// )
 			}
 
 			// Save metadata if present
@@ -122,7 +122,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 							ToolCall: tc,
 						}
 					} else {
-						slog.Debug("processor_tool_call_parse_failed", "error", err)
+						slog.Warn("processor_tool_call_parse_failed", "error", err)
 					}
 				}
 			}
@@ -160,9 +160,9 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			Type:    EventTypeComplete,
 			Message: &completeMsg,
 		}
-		slog.Debug("processor_event_type_complete_sent",
-			"content_in_complete", completeMsg.Content,
-		)
+		// slog.Debug("processor_event_type_complete_sent",
+		// 	"content_in_complete", completeMsg.Content,
+		// )
 	}()
 
 	return eventChan
