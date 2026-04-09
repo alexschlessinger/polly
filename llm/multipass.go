@@ -61,7 +61,7 @@ func defaultProviderFactories() map[string]providerFactory {
 		},
 		"huggingface": func(apiKey, baseURL string) (LLM, error) {
 			if baseURL == "" {
-				baseURL = "https://api-inference.huggingface.co/v1"
+				baseURL = "https://router.huggingface.co/v1"
 			}
 			return NewOpenAIClient(apiKey, baseURL), nil
 		},
