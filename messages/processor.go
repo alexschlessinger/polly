@@ -44,11 +44,11 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 		var stopReason StopReason
 
 		for msg := range msgChan {
-			slog.Debug("processor_message_received",
-				"processor_id", processorID,
-				"content_len", len(msg.Content),
-				"has_tool_calls", len(msg.ToolCalls) > 0,
-			)
+			// slog.Debug("processor_message_received",
+			// 	"processor_id", processorID,
+			// 	"content_len", len(msg.Content),
+			// 	"has_tool_calls", len(msg.ToolCalls) > 0,
+			// )
 
 			// Terminal error messages should emit an explicit error event and stop.
 			if msg.IsError() {
