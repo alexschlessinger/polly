@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 // sequentialLLM returns a fixed sequence of ChatMessages, one per call.
@@ -157,5 +158,62 @@ func TestAgentResponseToolNotSetPassthrough(t *testing.T) {
 	}
 	if resp.Message.Content != "direct answer" {
 		t.Fatalf("unexpected final message: %q", resp.Message.Content)
+	}
+}
+
+// TestAgentResponseToolShortCircuit: when the model emits the response tool
+// with StopReasonToolUse, the agent must execute the tool and then return
+// immediately without making another LLM call. Otherwise a "wasted" extra
+// completion is generated whose plain-text output the caller discards.
+func TestAgentResponseToolShortCircuit(t *testing.T) {
+	fake := &sequentialLLM{
+		responses: []messages.ChatMessage{
+			{
+				Role: messages.MessageRoleAssistant,
+				ToolCalls: []messages.ChatMessageToolCall{
+					{ID: "tc1", Name: "respond", Arguments: `{"text":"structured answer"}`},
+				},
+				StopReason: messages.StopReasonToolUse,
+			},
+			{
+				Role:       messages.MessageRoleAssistant,
+				Content:    "wasted text the caller would never read",
+				StopReason: messages.StopReasonEndTurn,
+			},
+		},
+	}
+
+	var executed bool
+	respondTool := &tools.Func{
+		Name: "respond",
+		Run: func(_ context.Context, args tools.Args) (string, error) {
+			executed = true
+			return "ok", nil
+		},
+	}
+	registry := tools.NewToolRegistry([]tools.Tool{respondTool})
+
+	agent := NewAgent(fake, registry, AgentConfig{
+		MaxIterations: 5,
+		ResponseTool:  "respond",
+	})
+
+	resp, err := agent.Run(context.Background(), &CompletionRequest{
+		Messages: messages.User("hi"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.callCount != 1 {
+		t.Fatalf("expected exactly 1 LLM call after short-circuit, got %d", fake.callCount)
+	}
+	if !executed {
+		t.Fatal("expected respond tool to be executed before short-circuit")
+	}
+	if len(resp.Message.ToolCalls) == 0 || resp.Message.ToolCalls[0].Name != "respond" {
+		t.Fatalf("expected final message to carry the respond tool call, got %#v", resp.Message)
+	}
+	if resp.IterationCount != 1 {
+		t.Fatalf("expected IterationCount=1, got %d", resp.IterationCount)
 	}
 }
