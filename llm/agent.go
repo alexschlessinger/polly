@@ -249,6 +249,21 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 		msgs = append(msgs, toolMsgs...)
 		allGenerated = append(allGenerated, toolMsgs...)
+
+		// Short-circuit when the response tool was called: the caller
+		// extracts the structured response from the tool call's arguments,
+		// so making another LLM call to "process" the tool result would
+		// generate plain text the caller discards anyway.
+		if responseToolCalled {
+			if cb != nil && cb.OnComplete != nil {
+				cb.OnComplete(response)
+			}
+			return &AgentResponse{
+				Message:        response,
+				AllMessages:    allGenerated,
+				IterationCount: iteration + 1,
+			}, nil
+		}
 	}
 
 	err := errors.New("max iterations exceeded")
