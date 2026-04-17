@@ -20,6 +20,8 @@ func TestSummarizeToolArgs(t *testing.T) {
 		{"edit file", "edit", `{"file_path":"src/main.go","old_string":"a","new_string":"b"}`, "src/main.go"},
 		{"glob pattern", "glob", `{"pattern":"**/*.go"}`, "**/*.go"},
 		{"grep pattern", "grep", `{"pattern":"func main"}`, "func main"},
+		{"activate skill", "activate_skill", `{"name":"doc"}`, "doc"},
+		{"read skill file", "read_skill_file", `{"skill":"doc","path":"references/template.md"}`, "doc/references/template.md"},
 		{"unknown tool", "custom_tool", `{"foo":"bar"}`, ""},
 		{"empty args", "bash", `{}`, ""},
 		{"invalid json", "bash", `not json`, ""},

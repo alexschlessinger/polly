@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 // toolDisplayEnabled returns true when tool display should be shown.
@@ -17,21 +18,12 @@ func toolDisplayEnabled(config *Config) bool {
 
 // printToolStart prints a tool start indicator with summarized args to stderr.
 func printToolStart(tc messages.ChatMessageToolCall) {
-	summary := summarizeToolArgs(tc.Name, tc.Arguments)
-	label := tc.Name
-	if summary != "" {
-		label += " " + summary
-	}
-	fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled("→ "+label))
+	fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled("→ "+toolLabel(tc)))
 }
 
 // printToolEnd prints a tool completion line with duration to stderr.
 func printToolEnd(tc messages.ChatMessageToolCall, duration time.Duration, err error) {
-	summary := summarizeToolArgs(tc.Name, tc.Arguments)
-	label := tc.Name
-	if summary != "" {
-		label += " " + summary
-	}
+	label := toolLabel(tc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  %s\n", errorStyle.Styled(fmt.Sprintf("✗ %.1fs %s — %s", duration.Seconds(), label, err)))
 	} else {
@@ -39,57 +31,74 @@ func printToolEnd(tc messages.ChatMessageToolCall, duration time.Duration, err e
 	}
 }
 
+func toolLabel(tc messages.ChatMessageToolCall) string {
+	summary := summarizeToolArgs(tc.Name, tc.Arguments)
+	if summary == "" {
+		return tc.Name
+	}
+	return tc.Name + " " + summary
+}
+
 // summarizeToolArgs returns a one-line summary of tool arguments.
 func summarizeToolArgs(toolName, argsJSON string) string {
 	if argsJSON == "" {
 		return ""
 	}
-	var args map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+	var rawArgs map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &rawArgs); err != nil {
 		return ""
 	}
+	args := tools.Args(rawArgs)
 
 	switch toolName {
 	case "bash":
 		return summarizeBashCommand(args)
 	case "read":
-		s := strVal(args, "file_path")
-		if offset := intVal(args, "offset"); offset > 0 {
-			limit := intVal(args, "limit")
-			if limit > 0 {
-				s += fmt.Sprintf(" (lines %d-%d)", offset, offset+limit)
-			} else {
-				s += fmt.Sprintf(" (from line %d)", offset)
-			}
-		}
-		return s
+		return summarizeReadArgs(args)
 	case "write":
-		return strVal(args, "file_path")
+		return truncate(args.String("file_path"), 120)
 	case "edit":
-		return strVal(args, "file_path")
+		return truncate(args.String("file_path"), 120)
 	case "glob":
-		return strVal(args, "pattern")
+		return truncate(args.String("pattern"), 120)
 	case "grep":
-		return strVal(args, "pattern")
+		return truncate(args.String("pattern"), 120)
 	case "activate_skill":
-		return strVal(args, "name")
+		return truncate(args.String("name"), 120)
 	case "read_skill_file":
-		skill := strVal(args, "skill")
-		path := strVal(args, "path")
-		if skill != "" && path != "" {
-			return skill + "/" + path
-		}
-		return skill + path
+		return summarizeReadSkillFileArgs(args)
 	default:
 		return ""
 	}
 }
 
+func summarizeReadArgs(args tools.Args) string {
+	summary := truncate(args.String("file_path"), 120)
+	if offset := args.Int("offset", 0); offset > 0 {
+		limit := args.Int("limit", 0)
+		if limit > 0 {
+			summary += fmt.Sprintf(" (lines %d-%d)", offset, offset+limit)
+		} else {
+			summary += fmt.Sprintf(" (from line %d)", offset)
+		}
+	}
+	return summary
+}
+
+func summarizeReadSkillFileArgs(args tools.Args) string {
+	skill := truncate(args.String("skill"), 120)
+	path := truncate(args.String("path"), 120)
+	if skill != "" && path != "" {
+		return skill + "/" + path
+	}
+	return skill + path
+}
+
 // summarizeBashCommand returns a one-line summary for a bash command,
 // collapsing heredocs to show the command prefix and first body line.
-func summarizeBashCommand(args map[string]any) string {
-	cmd, ok := args["command"].(string)
-	if !ok || cmd == "" {
+func summarizeBashCommand(args tools.Args) string {
+	cmd := args.String("command")
+	if cmd == "" {
 		return ""
 	}
 
@@ -109,24 +118,6 @@ func summarizeBashCommand(args map[string]any) string {
 	}
 
 	return truncate(first, 120)
-}
-
-func strVal(m map[string]any, key string) string {
-	if v, ok := m[key]; ok {
-		if s, ok := v.(string); ok {
-			return truncate(s, 120)
-		}
-	}
-	return ""
-}
-
-func intVal(m map[string]any, key string) int {
-	if v, ok := m[key]; ok {
-		if f, ok := v.(float64); ok {
-			return int(f)
-		}
-	}
-	return 0
 }
 
 func truncate(s string, max int) string {

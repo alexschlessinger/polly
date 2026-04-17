@@ -12,6 +12,16 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+var (
+	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama"}
+	purgeDisallowedFlags = []string{
+		"context", "last", "prompt", "file", "model", "temp",
+		"maxtokens", "maxiterations", "timeout", "tool", "mcp", "system", "schema",
+		"tooltimeout", "maxcontext", "thinkingeffort", "baseurl",
+		"skilldir", "skill", "noskills", "listskills",
+	}
+)
+
 func getCommand() *cli.Command {
 	flags, mutuallyExclusiveGroups := defineFlagsWithGroups()
 	command := &cli.Command{
@@ -92,106 +102,46 @@ func loadAPIKeys() map[string]string {
 }
 
 func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
-	// Define all flags
-	resetFlag := &cli.StringFlag{
-		Name:  "reset",
-		Usage: "Reset the specified context (clear conversation history, keep settings)",
-		Action: func(ctx context.Context, cmd *cli.Command, v string) error {
-			if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
-				return fmt.Errorf("--reset does not take prompts or files")
-			}
-			return nil
-		},
-	}
-	purgeFlag := &cli.BoolFlag{
-		Name:  "purge",
-		Usage: "Delete all sessions and index (requires confirmation)",
-		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
-			if !v {
-				return nil
-			}
-			// List of flags that are NOT allowed with purge
-			disallowedFlags := []string{
-				"context", "last", "prompt", "file", "model", "temp",
-				"maxtokens", "maxiterations", "timeout", "tool", "mcp", "system", "schema",
-				"tooltimeout", "maxcontext", "thinkingeffort", "baseurl",
-				"skilldir", "skill", "noskills", "listskills",
-			}
-			if slices.ContainsFunc(disallowedFlags, cmd.IsSet) {
-				return fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
-			}
-			return nil
-		},
-	}
-	createFlag := &cli.StringFlag{
-		Name:  "create",
-		Usage: "Create a new context with specified name and configuration",
-		Action: func(ctx context.Context, cmd *cli.Command, v string) error {
-			if cmd.String("prompt") != "" {
-				return fmt.Errorf("--create does not take a prompt (use model/settings flags to configure)")
-			}
-			return nil
-		},
-	}
-	showFlag := &cli.StringFlag{
-		Name:  "show",
-		Usage: "Show configuration for the specified context",
-		Action: func(ctx context.Context, cmd *cli.Command, v string) error {
-			if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
-				return fmt.Errorf("--show does not take prompts or files")
-			}
-			return nil
-		},
-	}
-	listFlag := &cli.BoolFlag{
-		Name:  "list",
-		Usage: "List all available context IDs",
-		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
-			if v && (cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0) {
-				return fmt.Errorf("--list does not take prompts or files")
-			}
-			return nil
-		},
-	}
-	listSkillsFlag := &cli.BoolFlag{
-		Name:  "listskills",
-		Usage: "List discovered Agent Skills",
-		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
-			if v && (cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0) {
-				return fmt.Errorf("--listskills does not take prompts or files")
-			}
-			return nil
-		},
-	}
-	deleteFlag := &cli.StringFlag{
-		Name:  "delete",
-		Usage: "Delete the specified context",
-		Action: func(ctx context.Context, cmd *cli.Command, v string) error {
-			if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
-				return fmt.Errorf("--delete does not take prompts or files")
-			}
-			return nil
-		},
-	}
+	resetFlag := newPromptAndFileFreeStringFlag("reset", "Reset the specified context (clear conversation history, keep settings)")
+	purgeFlag := newPurgeFlag()
+	createFlag := newCreateFlag()
+	showFlag := newPromptAndFileFreeStringFlag("show", "Show configuration for the specified context")
+	listFlag := newPromptAndFileFreeBoolFlag("list", "List all available context IDs")
+	listSkillsFlag := newPromptAndFileFreeBoolFlag("listskills", "List discovered Agent Skills")
+	deleteFlag := newPromptAndFileFreeStringFlag("delete", "Delete the specified context")
 	addFlag := &cli.BoolFlag{
 		Name:  "add",
 		Usage: "Add stdin content to context without making an API call",
 	}
 
-	// Define thinking effort flag
-	thinkingEffortFlag := &cli.StringFlag{
-		Name:    "thinkingeffort",
-		Usage:   "Thinking/reasoning effort level: off, low, medium, high",
-		Value:   "off",
-		Sources: cli.EnvVars("POLLYTOOL_THINKINGEFFORT"),
-		Validator: func(v string) error {
-			_, err := llm.ParseThinkingEffort(v)
-			return err
+	flags := append([]cli.Flag{}, modelConfigFlags()...)
+	flags = append(flags, apiConfigFlags()...)
+	flags = append(flags, skillConfigFlags(listSkillsFlag)...)
+	flags = append(flags, toolConfigFlags()...)
+	flags = append(flags, inputConfigFlags()...)
+	flags = append(flags, contextManagementFlags(resetFlag, listFlag, deleteFlag, addFlag, purgeFlag, createFlag, showFlag)...)
+	flags = append(flags, historyConfigFlags()...)
+	flags = append(flags, approvalConfigFlags()...)
+	flags = append(flags, sandboxConfigFlags()...)
+	flags = append(flags, outputConfigFlags()...)
+
+	return flags, []cli.MutuallyExclusiveFlags{
+		{
+			Flags: [][]cli.Flag{
+				{resetFlag},
+				{purgeFlag},
+				{createFlag},
+				{showFlag},
+				{listFlag},
+				{deleteFlag},
+				{addFlag},
+			},
 		},
 	}
+}
 
-	flags := []cli.Flag{
-		// Model configuration
+func modelConfigFlags() []cli.Flag {
+	return []cli.Flag{
 		&cli.StringFlag{
 			Name:    "model",
 			Aliases: []string{"m"},
@@ -199,19 +149,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Value:   "anthropic/claude-sonnet-4-20250514",
 			Sources: cli.EnvVars("POLLYTOOL_MODEL"),
 			Validator: func(model string) error {
-				if model == "" {
-					return nil // empty is allowed, uses default
-				}
-				parts := strings.SplitN(model, "/", 2)
-				if len(parts) != 2 {
-					return fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-4o', 'anthropic/claude-sonnet-4-20250514'). Got: %s", model)
-				}
-				provider := strings.ToLower(parts[0])
-				validProviders := []string{"openai", "anthropic", "gemini", "ollama"}
-				if !slices.Contains(validProviders, provider) {
-					return fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(validProviders, ", "))
-				}
-				return nil
+				return validateModel(model)
 			},
 		},
 		&cli.Float64Flag{
@@ -220,10 +158,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Value:   1.0,
 			Sources: cli.EnvVars("POLLYTOOL_TEMP"),
 			Validator: func(temp float64) error {
-				if temp < 0.0 || temp > 2.0 {
-					return fmt.Errorf("temperature must be between 0.0 and 2.0, got %.1f", temp)
-				}
-				return nil
+				return validateTemperature(temp)
 			},
 		},
 		&cli.IntFlag{
@@ -244,17 +179,23 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Value:   2 * time.Minute,
 			Sources: cli.EnvVars("POLLYTOOL_TIMEOUT"),
 		},
-		thinkingEffortFlag,
+		newThinkingEffortFlag(),
+	}
+}
 
-		// API configuration
+func apiConfigFlags() []cli.Flag {
+	return []cli.Flag{
 		&cli.StringFlag{
 			Name:    "baseurl",
 			Usage:   "Base URL for API (for OpenAI-compatible endpoints or Ollama)",
 			Value:   "",
 			Sources: cli.EnvVars("POLLYTOOL_BASEURL"),
 		},
+	}
+}
 
-		// Skill configuration
+func skillConfigFlags(listSkillsFlag *cli.BoolFlag) []cli.Flag {
+	return []cli.Flag{
 		&cli.StringSliceFlag{
 			Name:    "skilldir",
 			Usage:   "Skill directory or directory containing skill folders (can be specified multiple times)",
@@ -270,14 +211,15 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Usage: "Disable Agent Skill discovery and runtime skill tools",
 		},
 		listSkillsFlag,
+	}
+}
 
-		// Tool configuration
+func toolConfigFlags() []cli.Flag {
+	return []cli.Flag{
 		&cli.StringSliceFlag{
 			Name:    "tool",
 			Aliases: []string{"t"},
 			Usage:   "Tool provider: shell script (provides 1 tool) or MCP server (can provide multiple tools). Can be specified multiple times",
-			// Note: validation removed since we now auto-detect tool type
-			// Shell tools will be validated when loaded, MCP servers can be JSON files or commands
 		},
 		&cli.DurationFlag{
 			Name:    "tooltimeout",
@@ -285,8 +227,11 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Value:   30 * time.Second,
 			Sources: cli.EnvVars("POLLYTOOL_TOOLTIMEOUT"),
 		},
+	}
+}
 
-		// Input configuration
+func inputConfigFlags() []cli.Flag {
+	return []cli.Flag{
 		&cli.StringFlag{
 			Name:    "prompt",
 			Aliases: []string{"p"},
@@ -308,8 +253,11 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Name:  "schema",
 			Usage: "Path to JSON schema file for structured output",
 		},
+	}
+}
 
-		// Context management
+func contextManagementFlags(resetFlag *cli.StringFlag, listFlag *cli.BoolFlag, deleteFlag *cli.StringFlag, addFlag *cli.BoolFlag, purgeFlag *cli.BoolFlag, createFlag *cli.StringFlag, showFlag *cli.StringFlag) []cli.Flag {
+	return []cli.Flag{
 		&cli.StringFlag{
 			Name:    "context",
 			Aliases: []string{"c"},
@@ -328,28 +276,40 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		purgeFlag,
 		createFlag,
 		showFlag,
+	}
+}
 
-		// History configuration
+func historyConfigFlags() []cli.Flag {
+	return []cli.Flag{
 		&cli.IntFlag{
 			Name:  "maxcontext",
 			Usage: "Maximum tokens to keep in history (0 = unlimited)",
 			Value: 100000,
 		},
+	}
+}
 
-		// Approval
+func approvalConfigFlags() []cli.Flag {
+	return []cli.Flag{
 		&cli.BoolFlag{
 			Name:  "confirm",
 			Usage: "Require confirmation before each tool call",
 		},
+	}
+}
 
-		// Sandboxing
+func sandboxConfigFlags() []cli.Flag {
+	return []cli.Flag{
 		&cli.BoolFlag{
 			Name:    "nosandbox",
 			Usage:   "Disable sandboxing of bash commands",
 			Sources: cli.EnvVars("POLLYTOOL_NOSANDBOX"),
 		},
+	}
+}
 
-		// Output configuration
+func outputConfigFlags() []cli.Flag {
+	return []cli.Flag{
 		&cli.BoolFlag{
 			Name:  "quiet",
 			Usage: "Suppress status and tool display output",
@@ -360,22 +320,101 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 			Usage:   "Enable debug logging",
 		},
 	}
+}
 
-	// Define mutually exclusive groups
-	mutuallyExclusiveGroups := []cli.MutuallyExclusiveFlags{
-		{
-			// Context operations are mutually exclusive
-			Flags: [][]cli.Flag{
-				{resetFlag},
-				{purgeFlag},
-				{createFlag},
-				{showFlag},
-				{listFlag},
-				{deleteFlag},
-				{addFlag},
-			},
+func newThinkingEffortFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:    "thinkingeffort",
+		Usage:   "Thinking/reasoning effort level: off, low, medium, high",
+		Value:   "off",
+		Sources: cli.EnvVars("POLLYTOOL_THINKINGEFFORT"),
+		Validator: func(v string) error {
+			_, err := llm.ParseThinkingEffort(v)
+			return err
 		},
 	}
+}
 
-	return flags, mutuallyExclusiveGroups
+func newPromptAndFileFreeStringFlag(name, usage string) *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:  name,
+		Usage: usage,
+		Action: func(ctx context.Context, cmd *cli.Command, v string) error {
+			return validateNoPromptOrFiles(cmd, name)
+		},
+	}
+}
+
+func newPromptAndFileFreeBoolFlag(name, usage string) *cli.BoolFlag {
+	return &cli.BoolFlag{
+		Name:  name,
+		Usage: usage,
+		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
+			if !v {
+				return nil
+			}
+			return validateNoPromptOrFiles(cmd, name)
+		},
+	}
+}
+
+func newCreateFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:  "create",
+		Usage: "Create a new context with specified name and configuration",
+		Action: func(ctx context.Context, cmd *cli.Command, v string) error {
+			if cmd.String("prompt") != "" {
+				return fmt.Errorf("--create does not take a prompt (use model/settings flags to configure)")
+			}
+			return nil
+		},
+	}
+}
+
+func newPurgeFlag() *cli.BoolFlag {
+	return &cli.BoolFlag{
+		Name:  "purge",
+		Usage: "Delete all sessions and index (requires confirmation)",
+		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
+			if !v {
+				return nil
+			}
+			if slices.ContainsFunc(purgeDisallowedFlags, cmd.IsSet) {
+				return fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
+			}
+			return nil
+		},
+	}
+}
+
+func validateNoPromptOrFiles(cmd *cli.Command, flagName string) error {
+	if cmd.String("prompt") != "" || len(cmd.StringSlice("file")) > 0 {
+		return fmt.Errorf("--%s does not take prompts or files", flagName)
+	}
+	return nil
+}
+
+func validateModel(model string) error {
+	if model == "" {
+		return nil
+	}
+
+	parts := strings.SplitN(model, "/", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-4o', 'anthropic/claude-sonnet-4-20250514'). Got: %s", model)
+	}
+
+	provider := strings.ToLower(parts[0])
+	if !slices.Contains(validModelProviders, provider) {
+		return fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(validModelProviders, ", "))
+	}
+
+	return nil
+}
+
+func validateTemperature(temp float64) error {
+	if temp < 0.0 || temp > 2.0 {
+		return fmt.Errorf("temperature must be between 0.0 and 2.0, got %.1f", temp)
+	}
+	return nil
 }
