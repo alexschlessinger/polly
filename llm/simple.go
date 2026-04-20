@@ -15,10 +15,11 @@ import (
 // GetDefaultClient creates a new MultiPass router with API keys from the environment.
 func GetDefaultClient() LLM {
 	apiKeys := map[string]string{
-		"openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
-		"anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
-		"gemini":    os.Getenv("POLLYTOOL_GEMINIKEY"),
-		"ollama":    os.Getenv("POLLYTOOL_OLLAMAKEY"),
+		"openai":      os.Getenv("POLLYTOOL_OPENAIKEY"),
+		"anthropic":   os.Getenv("POLLYTOOL_ANTHROPICKEY"),
+		"gemini":      os.Getenv("POLLYTOOL_GEMINIKEY"),
+		"ollama":      os.Getenv("POLLYTOOL_OLLAMAKEY"),
+		"huggingface": os.Getenv("POLLYTOOL_HUGGINGFACEKEY"),
 	}
 	return NewMultiPass(apiKeys)
 }
