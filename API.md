@@ -323,7 +323,7 @@ Use the format `provider/model`:
 - OpenAI: `openai/gpt-5.4`, `openai/gpt-5.4-mini`
 - Anthropic: `anthropic/claude-opus-4-7`, `anthropic/claude-sonnet-4-6`
 - Gemini: `gemini/gemini-3.1-pro-preview`, `gemini/gemini-3.1-flash-lite-preview`
-- Ollama: `ollama/llama3`, `ollama/mistral`
+- Ollama: `ollama/gpt-oss`
 
 ### MultiPass Provider
 

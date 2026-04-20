@@ -465,7 +465,7 @@ EOF
 
 ```bash
 # Use a custom Ollama endpoint
-polly --baseurl http://192.168.1.100:11434 -m ollama/llama3.2 -p "Hello"
+polly --baseurl http://192.168.1.100:11434 -m ollama/gpt-oss -p "Hello"
 
 # Use OpenAI-compatible endpoint
 polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hello"
