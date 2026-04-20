@@ -391,6 +391,10 @@ func toolToChatCompletionTool(schema *ToolSchema) openai.ChatCompletionToolUnion
 
 func toolToResponsesFunctionTool(schema *ToolSchema) responses.ToolUnionParam {
 	params := toolParametersFromSchema(schema)
+	// Strict mode on the Responses API requires every object node to declare
+	// additionalProperties=false; otherwise the API 400s with
+	// "'additionalProperties' is required to be supplied and to be false".
+	addObjectAdditionalPropertiesFalse(params)
 
 	tool := responses.FunctionToolParam{
 		Name:       toolNameFromSchema(schema),
@@ -597,6 +601,30 @@ func normalizeOpenAISchema(schema *Schema) map[string]any {
 	}
 
 	return schemaCopy
+}
+
+// addObjectAdditionalPropertiesFalse walks a JSON-schema map and sets
+// additionalProperties=false on every object node that doesn't already set it.
+// Used to prep tool parameter schemas for OpenAI strict mode without touching
+// `required` (tools may legitimately have optional params; we don't want to
+// silently promote optional fields, so callers using strict mode should ensure
+// their tool schemas mark all fields required themselves).
+func addObjectAdditionalPropertiesFalse(node map[string]any) {
+	if node == nil {
+		return
+	}
+	if t, ok := node["type"].(string); ok && t == "object" {
+		if _, set := node["additionalProperties"]; !set {
+			node["additionalProperties"] = false
+		}
+	}
+	if props, ok := node["properties"].(map[string]any); ok {
+		for _, prop := range props {
+			if propMap, ok := prop.(map[string]any); ok {
+				addObjectAdditionalPropertiesFalse(propMap)
+			}
+		}
+	}
 }
 
 func toolParametersFromSchema(schema *ToolSchema) map[string]any {
