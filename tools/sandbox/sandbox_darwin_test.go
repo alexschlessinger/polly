@@ -47,6 +47,29 @@ func TestBuildProfileWritePathsTilde(t *testing.T) {
 	}
 }
 
+func TestBuildProfileAllowsStandardDeviceFiles(t *testing.T) {
+	// Standard character devices must be writable even under DenyWrite, matching
+	// bwrap's --dev /dev on Linux. `echo foo > /dev/null` is too universal an
+	// idiom to break at the sandbox layer.
+	wantDevices := []string{
+		"/dev/null",
+		"/dev/zero",
+		"/dev/random",
+		"/dev/urandom",
+		"/dev/stdout",
+		"/dev/stderr",
+	}
+	for _, cfg := range []Config{{}, {DenyWrite: true}} {
+		profile := buildProfile(cfg)
+		for _, dev := range wantDevices {
+			want := fmt.Sprintf(`(allow file-write* (literal %q))`, dev)
+			if !strings.Contains(profile, want) {
+				t.Errorf("DenyWrite=%v: profile missing %q\nprofile:\n%s", cfg.DenyWrite, want, profile)
+			}
+		}
+	}
+}
+
 func TestBuildProfileNetworkDeny(t *testing.T) {
 	profile := buildProfile(Config{})
 	if !strings.Contains(profile, "(deny network*)") {
