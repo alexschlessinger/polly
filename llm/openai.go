@@ -498,8 +498,12 @@ func messageToResponsesInputItems(msg messages.ChatMessage, messageIndex int) []
 		}
 	case messages.MessageRoleAssistant:
 		items := make([]responses.ResponseInputItemUnionParam, 0, len(msg.ToolCalls)+1)
-		if content := responseInputContentFromMessage(msg); len(content) > 0 {
-			items = append(items, responses.ResponseInputItemParamOfMessage(content, responses.EasyInputMessageRoleAssistant))
+		if content := responseOutputContentFromMessage(msg); len(content) > 0 {
+			items = append(items, responses.ResponseInputItemParamOfOutputMessage(
+				content,
+				responseReplayMessageID(messageIndex),
+				responses.ResponseOutputMessageStatusCompleted,
+			))
 		}
 		for toolIndex, toolCall := range msg.ToolCalls {
 			callID := responseReplayToolCallID(toolCall.ID, messageIndex, toolIndex)
@@ -564,6 +568,33 @@ func responseInputContentFromMessage(msg messages.ChatMessage) responses.Respons
 	return content
 }
 
+func responseOutputContentFromMessage(msg messages.ChatMessage) []responses.ResponseOutputMessageContentUnionParam {
+	content := make([]responses.ResponseOutputMessageContentUnionParam, 0, len(msg.Parts)+1)
+	if len(msg.Parts) > 0 {
+		for _, part := range msg.Parts {
+			if part.Type != "text" {
+				continue
+			}
+			content = append(content, responseOutputTextContent(part.Text))
+		}
+	}
+	if len(content) == 0 {
+		if text := msg.GetContent(); text != "" {
+			content = append(content, responseOutputTextContent(text))
+		}
+	}
+	return content
+}
+
+func responseOutputTextContent(text string) responses.ResponseOutputMessageContentUnionParam {
+	return responses.ResponseOutputMessageContentUnionParam{
+		OfOutputText: &responses.ResponseOutputTextParam{
+			Annotations: []responses.ResponseOutputTextAnnotationUnionParam{},
+			Text:        text,
+		},
+	}
+}
+
 func responsesReasoningFromThinkingEffort(effort ThinkingEffort) (shared.ReasoningParam, bool) {
 	if !effort.IsEnabled() {
 		return shared.ReasoningParam{}, false
@@ -625,6 +656,9 @@ func addObjectAdditionalPropertiesFalse(node map[string]any) {
 			}
 		}
 	}
+	if items, ok := node["items"].(map[string]any); ok {
+		addObjectAdditionalPropertiesFalse(items)
+	}
 }
 
 func toolParametersFromSchema(schema *ToolSchema) map[string]any {
@@ -665,6 +699,10 @@ func responseReplayToolCallID(id string, messageIndex, toolIndex int) string {
 		return id
 	}
 	return fmt.Sprintf("call_%d_%d", messageIndex, toolIndex)
+}
+
+func responseReplayMessageID(messageIndex int) string {
+	return fmt.Sprintf("msg_%d", messageIndex)
 }
 
 func responseToolCallID(callID, itemID string) string {

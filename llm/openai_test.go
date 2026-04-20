@@ -151,14 +151,20 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 		t.Fatalf("unexpected image part: %#v", imagePart)
 	}
 
-	assistantItem := inputItems[1].OfMessage
+	assistantItem := inputItems[1].OfOutputMessage
 	if assistantItem == nil {
 		t.Fatal("expected second item to be an assistant message")
 	}
-	if got := assistantItem.Role; got != responses.EasyInputMessageRoleAssistant {
-		t.Fatalf("assistant role = %q, want %q", got, responses.EasyInputMessageRoleAssistant)
+	if got := assistantItem.ID; got != "msg_3" {
+		t.Fatalf("assistant ID = %q, want %q", got, "msg_3")
 	}
-	if got := assistantItem.Content.OfInputItemContentList[0].OfInputText.Text; got != "Calling a tool" {
+	if got := assistantItem.Status; got != responses.ResponseOutputMessageStatusCompleted {
+		t.Fatalf("assistant status = %q, want %q", got, responses.ResponseOutputMessageStatusCompleted)
+	}
+	if len(assistantItem.Content) != 1 || assistantItem.Content[0].OfOutputText == nil {
+		t.Fatalf("expected one assistant output_text content item, got %#v", assistantItem.Content)
+	}
+	if got := assistantItem.Content[0].OfOutputText.Text; got != "Calling a tool" {
 		t.Fatalf("assistant text = %q, want %q", got, "Calling a tool")
 	}
 
@@ -268,5 +274,37 @@ func TestBuildChatCompletionRequestParams(t *testing.T) {
 	}
 	if got := params.Tools[0].OfFunction.Function.Name; got != "lookup_weather" {
 		t.Fatalf("chat tool name = %q, want %q", got, "lookup_weather")
+	}
+}
+
+func TestToolToResponsesFunctionToolSetsAdditionalPropertiesOnArrayItems(t *testing.T) {
+	tool := toolToResponsesFunctionTool(schema.Tool(
+		"batch_lookup",
+		"Resolve a batch of lookups",
+		schema.Params{
+			"items": schema.Array("Items to resolve", map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"city": map[string]any{"type": "string"},
+				},
+			}),
+		},
+		"items",
+	))
+
+	if tool.OfFunction == nil {
+		t.Fatal("expected function tool")
+	}
+
+	itemsParam, ok := tool.OfFunction.Parameters["properties"].(map[string]any)["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected array parameter schema, got %#v", tool.OfFunction.Parameters["properties"])
+	}
+	itemSchema, ok := itemsParam["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected array item schema, got %#v", itemsParam["items"])
+	}
+	if itemSchema["additionalProperties"] != false {
+		t.Fatalf("expected array item additionalProperties=false, got %#v", itemSchema["additionalProperties"])
 	}
 }
