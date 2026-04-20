@@ -61,6 +61,23 @@ func buildProfile(cfg Config) string {
 	sb.WriteString("(allow default)\n")
 	sb.WriteString("(deny file-write*)\n")
 
+	// Always allow writes to the standard character devices. /dev/null in
+	// particular is a universal shell idiom (`>/dev/null 2>&1`) and blocking
+	// it breaks otherwise-innocuous tools. The kernel's device drivers handle
+	// the discard/zero/random semantics; there's no data at rest, so allowing
+	// these writes does not weaken the sandbox. Apply even under DenyWrite —
+	// matches bwrap's behavior on Linux (--dev /dev gives a fresh devtmpfs).
+	for _, dev := range []string{
+		"/dev/null",
+		"/dev/zero",
+		"/dev/random",
+		"/dev/urandom",
+		"/dev/stdout",
+		"/dev/stderr",
+	} {
+		sb.WriteString(fmt.Sprintf("(allow file-write* (literal %q))\n", dev))
+	}
+
 	if !cfg.DenyWrite {
 		// Allow writes to OS temp dir and configured paths.
 		// Include both /private/tmp and the runtime TMPDIR (typically
