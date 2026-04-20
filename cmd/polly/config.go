@@ -402,7 +402,7 @@ func validateModel(model string) error {
 
 	parts := strings.SplitN(model, "/", 2)
 	if len(parts) != 2 {
-		return fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-4o', 'anthropic/claude-sonnet-4-20250514'). Got: %s", model)
+		return fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-4o', 'anthropic/claude-sonnet-4-6'). Got: %s", model)
 	}
 
 	provider := strings.ToLower(parts[0])
