@@ -1,40 +1,48 @@
 package log
 
 import (
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
+	"io"
+	"log/slog"
+	"os"
+	"time"
+
+	"github.com/lmittmann/tint"
 )
 
-var logger *zap.SugaredLogger
+var logger *slog.Logger
 
-// InitLogger initializes the global zap logger
-// If debug is true, uses development config with colored console output
-// If debug is false, uses a no-op logger (silent)
+// InitLogger initializes the global slog logger.
+// If debug is true, uses tint with colorized console output.
+// If debug is false, uses a discard-backed logger (silent).
 func InitLogger(debug bool) {
-	var l *zap.Logger
-
-	if debug {
-		config := zap.NewDevelopmentConfig()
-		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-		config.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05.000")
-		config.DisableStacktrace = true
-
-		var err error
-		l, err = config.Build()
-		if err != nil {
-			panic(err)
-		}
-	} else {
-		l = zap.NewNop()
-	}
-
-	zap.ReplaceGlobals(l)
-	zap.RedirectStdLog(l)
-	logger = l.Sugar()
+	initLogger(debug, os.Stdout)
 }
 
-// GetLogger returns the global sugared logger
-func GetLogger() *zap.SugaredLogger {
+func initLogger(debug bool, w io.Writer) {
+	if w == nil {
+		w = os.Stdout
+	}
+
+	logger = slog.New(newHandler(debug, w))
+	slog.SetDefault(logger)
+}
+
+func newHandler(debug bool, w io.Writer) slog.Handler {
+	if debug {
+		return tint.NewHandler(w, &tint.Options{
+			Level:      slog.LevelDebug,
+			AddSource:  true,
+			TimeFormat: time.DateTime,
+		})
+	}
+
+	return slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+}
+
+// GetLogger returns the global logger.
+func GetLogger() *slog.Logger {
 	if logger == nil {
 		InitLogger(false)
 	}

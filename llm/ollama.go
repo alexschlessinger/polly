@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 	ollamaapi "github.com/ollama/ollama/api"
-	"go.uber.org/zap"
 )
 
 type OllamaClient struct {
@@ -34,7 +34,7 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 	// Parse URL and create client
 	u, err := url.Parse(baseURL)
 	if err != nil {
-		zap.S().Debugw("ollama_invalid_url", "url", baseURL, "error", err)
+		slog.Debug("ollama_invalid_url", "url", baseURL, "error", err)
 		// Fall back to default if parsing fails
 		u, _ = url.Parse("http://localhost:11434")
 	}
@@ -48,7 +48,7 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 				Base:  http.DefaultTransport,
 			},
 		}
-		zap.S().Debugw("ollama_bearer_auth_enabled")
+		slog.Debug("ollama_bearer_auth_enabled")
 	}
 
 	client := ollamaapi.NewClient(u, httpClient)
@@ -127,7 +127,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 
 		// For Ollama, we default to non-streaming (stream is already set above)
 		isStreaming := *stream
-		zap.S().Debugw("ollama_chat_started", "model", req.Model, "stream", isStreaming)
+		slog.Debug("ollama_chat_started", "model", req.Model, "stream", isStreaming)
 
 		// Track whether we've seen thinking content.
 		// Some models output content before thinking, then repeat it after.
@@ -170,7 +170,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		})
 
 		if err != nil {
-			zap.S().Debugw("ollama_chat_error", "error", err)
+			slog.Debug("ollama_chat_error", "error", err)
 			streamCore.EmitError(err)
 			return
 		}
