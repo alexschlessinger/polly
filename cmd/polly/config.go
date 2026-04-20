@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama"}
+	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama", "huggingface"}
 	purgeDisallowedFlags = []string{
 		"context", "last", "prompt", "file", "model", "temp",
 		"maxtokens", "maxiterations", "timeout", "tool", "mcp", "system", "schema",
@@ -94,10 +94,11 @@ func parseConfig(cmd *cli.Command) *Config {
 // loadAPIKeys loads API keys from environment variables
 func loadAPIKeys() map[string]string {
 	return map[string]string{
-		"ollama":    os.Getenv("POLLYTOOL_OLLAMAKEY"),
-		"openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
-		"anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
-		"gemini":    os.Getenv("POLLYTOOL_GEMINIKEY"),
+		"ollama":      os.Getenv("POLLYTOOL_OLLAMAKEY"),
+		"openai":      os.Getenv("POLLYTOOL_OPENAIKEY"),
+		"anthropic":   os.Getenv("POLLYTOOL_ANTHROPICKEY"),
+		"gemini":      os.Getenv("POLLYTOOL_GEMINIKEY"),
+		"huggingface": os.Getenv("POLLYTOOL_HUGGINGFACEKEY"),
 	}
 }
 
