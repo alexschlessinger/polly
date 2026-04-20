@@ -84,10 +84,11 @@ func parseConfig(cmd *cli.Command) *Config {
 // loadAPIKeys loads API keys from environment variables
 func loadAPIKeys() map[string]string {
 	return map[string]string{
-		"ollama":    os.Getenv("POLLYTOOL_OLLAMAKEY"),
-		"openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
-		"anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
-		"gemini":    os.Getenv("POLLYTOOL_GEMINIKEY"),
+		"ollama":      os.Getenv("POLLYTOOL_OLLAMAKEY"),
+		"openai":      os.Getenv("POLLYTOOL_OPENAIKEY"),
+		"anthropic":   os.Getenv("POLLYTOOL_ANTHROPICKEY"),
+		"gemini":      os.Getenv("POLLYTOOL_GEMINIKEY"),
+		"huggingface": os.Getenv("POLLYTOOL_HUGGINGFACEKEY"),
 	}
 }
 
@@ -207,7 +208,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 					return fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-4o', 'anthropic/claude-sonnet-4-20250514'). Got: %s", model)
 				}
 				provider := strings.ToLower(parts[0])
-				validProviders := []string{"openai", "anthropic", "gemini", "ollama"}
+				validProviders := []string{"openai", "anthropic", "gemini", "ollama", "huggingface"}
 				if !slices.Contains(validProviders, provider) {
 					return fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(validProviders, ", "))
 				}
