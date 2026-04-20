@@ -70,5 +70,5 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
-          draft: false
+          draft: true
           prerelease: false
