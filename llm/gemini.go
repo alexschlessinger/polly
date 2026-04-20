@@ -50,10 +50,12 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			MaxOutputTokens: maxTokens,
 		}
 
-		// Add structured output support
+		// Add structured output support. Preview models (3.x) silently ignore
+		// ResponseJsonSchema, so route through the typed ResponseSchema path
+		// (the SDK's canonical structured-output mechanism) instead.
 		if req.ResponseSchema != nil {
 			config.ResponseMIMEType = "application/json"
-			config.ResponseJsonSchema = req.ResponseSchema.Raw
+			config.ResponseSchema = jsonSchemaToGeminiSchema(req.ResponseSchema.Raw)
 		}
 
 		// System instruction
@@ -78,6 +80,14 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		}
 
 		isStreaming := req.Stream == nil || *req.Stream
+		// Force non-streaming for structured output: streaming + responseSchema
+		// is unreliable on preview models (3.x), which happily emit a prose
+		// preamble like "Here is the JSON" before any object — and with
+		// --maxtokens caps, the JSON often never arrives. The non-streaming
+		// path applies the schema constraint to the full response in one shot.
+		if req.ResponseSchema != nil {
+			isStreaming = false
+		}
 		slog.Debug("gemini_completion_started", "model", req.Model, "stream", isStreaming)
 
 		if isStreaming {
@@ -149,6 +159,74 @@ func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, client 
 	}
 
 	streamCore.Complete()
+}
+
+// jsonSchemaToGeminiSchema converts a JSON Schema map (as parsed from a
+// user-supplied schema file) to the genai SDK's typed Schema. The typed path
+// is enforced by Gemini's structured-output backend; the JSON-schema-shaped
+// alternative ResponseJsonSchema is silently ignored on preview models.
+// Only the subset of JSON Schema that maps cleanly to genai.Schema is handled
+// — that's enough for the structured-output feature polly exposes.
+func jsonSchemaToGeminiSchema(raw map[string]any) *genai.Schema {
+	if raw == nil {
+		return nil
+	}
+	out := &genai.Schema{}
+	if t, ok := raw["type"].(string); ok {
+		switch t {
+		case "string":
+			out.Type = genai.TypeString
+		case "number":
+			out.Type = genai.TypeNumber
+		case "integer":
+			out.Type = genai.TypeInteger
+		case "boolean":
+			out.Type = genai.TypeBoolean
+		case "array":
+			out.Type = genai.TypeArray
+		case "object":
+			out.Type = genai.TypeObject
+		case "null":
+			out.Type = genai.TypeNULL
+		}
+	}
+	if d, ok := raw["description"].(string); ok {
+		out.Description = d
+	}
+	if title, ok := raw["title"].(string); ok {
+		out.Title = title
+	}
+	if format, ok := raw["format"].(string); ok {
+		out.Format = format
+	}
+	if enum, ok := raw["enum"].([]any); ok {
+		for _, e := range enum {
+			if s, ok := e.(string); ok {
+				out.Enum = append(out.Enum, s)
+			}
+		}
+	}
+	if items, ok := raw["items"].(map[string]any); ok {
+		out.Items = jsonSchemaToGeminiSchema(items)
+	}
+	if props, ok := raw["properties"].(map[string]any); ok {
+		out.Properties = make(map[string]*genai.Schema, len(props))
+		for name, p := range props {
+			if pm, ok := p.(map[string]any); ok {
+				out.Properties[name] = jsonSchemaToGeminiSchema(pm)
+			}
+		}
+	}
+	if req, ok := raw["required"].([]any); ok {
+		for _, r := range req {
+			if s, ok := r.(string); ok {
+				out.Required = append(out.Required, s)
+			}
+		}
+	} else if req, ok := raw["required"].([]string); ok {
+		out.Required = append(out.Required, req...)
+	}
+	return out
 }
 
 // ConvertToolToGemini converts a tool schema to Gemini format.
