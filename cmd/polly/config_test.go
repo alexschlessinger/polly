@@ -15,8 +15,8 @@ func TestValidateModel(t *testing.T) {
 		wantErr string
 	}{
 		{name: "empty uses default", model: ""},
-		{name: "known provider", model: "openai/gpt-4o"},
-		{name: "missing provider prefix", model: "gpt-4o", wantErr: "model must include provider prefix"},
+		{name: "known provider", model: "openai/gpt-5.4"},
+		{name: "missing provider prefix", model: "gpt-5.4", wantErr: "model must include provider prefix"},
 		{name: "unknown provider", model: "custom/model", wantErr: "unknown provider 'custom'"},
 	}
 
@@ -93,7 +93,7 @@ func TestConfigFlagsRejectPromptAndFileOnManagementCommands(t *testing.T) {
 }
 
 func TestConfigFlagsRejectPurgeWithOtherFlags(t *testing.T) {
-	err := runConfigValidationCommand("--purge", "--model", "openai/gpt-4o")
+	err := runConfigValidationCommand("--purge", "--model", "openai/gpt-5.4")
 	if err == nil || !strings.Contains(err.Error(), "--purge must be used alone") {
 		t.Fatalf("run error = %v, want purge validation error", err)
 	}

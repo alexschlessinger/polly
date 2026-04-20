@@ -161,7 +161,7 @@ Polly manages context settings with a clear priority system:
 3. **Settings Priority**  
   Command-line flags always take precedence over stored context settings.  
   *Example:*  
-  If your context uses `openai/gpt-5` but you run `-m openai/gpt-5.4`, Polly switches to GPT-5.4 and saves this change for future use.
+  If your context uses `openai/gpt-5.4` but you run `-m openai/gpt-5.4-mini`, Polly switches to GPT-5.4-mini and saves this change for future use.
 
 4. **System Prompt Changes**  
   If you change the system prompt for a context with existing conversation history, Polly automatically resets the conversation to keep things consistent.
@@ -475,7 +475,7 @@ polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hel
 ## Provider-Specific Notes
 
 ### OpenAI
-- Supports GPT-4, 4.1, 5, 5.4 and their distills
+- Supports GPT-5.4 and its distills (5.4-mini, 5.4-nano)
 - Native OpenAI uses the Responses API when `--baseurl` is not set
 - OpenAI-compatible endpoints stay on Chat Completions when `--baseurl` is set
 - Structured output uses `additionalProperties: false` in schema

@@ -339,7 +339,7 @@ func TestMaxTokensPersistence(t *testing.T) {
 	// Save context info with MaxTokens
 	info := &Metadata{
 		Name:        "test-context",
-		Model:       "openai/gpt-4",
+		Model:       "openai/gpt-5.4",
 		Temperature: 0.7,
 		MaxTokens:   8192,
 		Created:     time.Now(),
@@ -366,7 +366,7 @@ func TestMaxTokensPersistence(t *testing.T) {
 	}
 
 	// Test that it's preserved when updating other fields
-	newModel := "anthropic/claude-3"
+	newModel := "anthropic/claude-sonnet-4-6"
 
 	// Update through session
 	session2, err := fileStore.Get("test-context")
@@ -394,7 +394,7 @@ func TestMaxTokensPersistence(t *testing.T) {
 	}
 
 	// Model should be updated
-	if retrieved2.Model != "anthropic/claude-3" {
+	if retrieved2.Model != "anthropic/claude-sonnet-4-6" {
 		t.Errorf("Model was not updated, got %s", retrieved2.Model)
 	}
 }

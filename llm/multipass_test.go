@@ -26,7 +26,7 @@ func TestMultiPass_InvalidModelFormat_EmitsErrorEvent(t *testing.T) {
 	processor := messages.NewStreamProcessor()
 
 	events := m.ChatCompletionStream(context.Background(), &CompletionRequest{
-		Model: "gpt-4.1",
+		Model: "gpt-5.4",
 	}, processor)
 
 	assertSingleErrorEvent(t, events, "model must include provider prefix")
@@ -37,7 +37,7 @@ func TestMultiPass_MissingAPIKey_EmitsErrorEvent(t *testing.T) {
 	processor := messages.NewStreamProcessor()
 
 	events := m.ChatCompletionStream(context.Background(), &CompletionRequest{
-		Model: "openai/gpt-4.1",
+		Model: "openai/gpt-5.4",
 	}, processor)
 
 	assertSingleErrorEvent(t, events, "missing API key for provider 'openai'")
@@ -158,7 +158,7 @@ func TestMultiPass_UsesDefaultProviderConfig(t *testing.T) {
 
 	processor := messages.NewStreamProcessor()
 	events := m.ChatCompletionStream(context.Background(), &CompletionRequest{
-		Model: "openai/gpt-4.1",
+		Model: "openai/gpt-5.4",
 	}, processor)
 	drainEvents(events)
 
@@ -174,8 +174,8 @@ func TestMultiPass_UsesDefaultProviderConfig(t *testing.T) {
 	if gotReq.APIKey != "default-key" {
 		t.Fatalf("request apiKey = %q, want %q", gotReq.APIKey, "default-key")
 	}
-	if gotReq.Model != "gpt-4.1" {
-		t.Fatalf("request model = %q, want %q", gotReq.Model, "gpt-4.1")
+	if gotReq.Model != "gpt-5.4" {
+		t.Fatalf("request model = %q, want %q", gotReq.Model, "gpt-5.4")
 	}
 }
 
@@ -198,7 +198,7 @@ func TestMultiPass_OpenAIBaseURLAllowsMissingAPIKey(t *testing.T) {
 
 	processor := messages.NewStreamProcessor()
 	events := m.ChatCompletionStream(context.Background(), &CompletionRequest{
-		Model:   "openai/gpt-4.1",
+		Model:   "openai/gpt-5.4",
 		BaseURL: "http://example.test/v1",
 	}, processor)
 	drainEvents(events)

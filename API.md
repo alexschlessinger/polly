@@ -68,7 +68,7 @@ import "github.com/alexschlessinger/pollytool/llm"
 response, err := llm.QuickComplete(ctx, "openai/gpt-5.4", "Tell me a joke", 1000)
 
 // Or with more tokens for longer output
-response, err := llm.QuickComplete(ctx, "anthropic/claude-opus-4-1-20250805", "Write a story", 4000)
+response, err := llm.QuickComplete(ctx, "anthropic/claude-opus-4-7", "Write a story", 4000)
 ```
 
 ### Streaming with Callback
@@ -320,9 +320,9 @@ const (
 
 Use the format `provider/model`:
 
-- OpenAI: `openai/gpt-5.4`, `openai/gpt-5`
+- OpenAI: `openai/gpt-5.4`, `openai/gpt-5.4-mini`
 - Anthropic: `anthropic/claude-opus-4-7`, `anthropic/claude-sonnet-4-6`
-- Gemini: `gemini/gemini-2.5-flash`, `gemini/gemini-3.1-pro-preview`
+- Gemini: `gemini/gemini-3.1-pro-preview`, `gemini/gemini-3.1-flash-lite-preview`
 - Ollama: `ollama/llama3`, `ollama/mistral`
 
 ### MultiPass Provider
@@ -351,7 +351,7 @@ multipass := llm.NewMultiPass(apiKeys)
 
 // Create request
 req := &llm.CompletionRequest{
-    Model: "anthropic/claude-opus-4-1-20250805",
+    Model: "anthropic/claude-opus-4-7",
     Messages: []messages.ChatMessage{
         {
             Role:    messages.MessageRoleSystem,

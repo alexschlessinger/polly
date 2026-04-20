@@ -93,7 +93,7 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	// Parse the model string to extract provider and actual model name
 	parts := strings.SplitN(req.Model, "/", 2)
 	if len(parts) != 2 {
-		err := fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-4.1', 'anthropic/claude-sonnet-4-20250514'). Got: %s", req.Model)
+		err := fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-5.4', 'anthropic/claude-sonnet-4-6'). Got: %s", req.Model)
 		return processor.ProcessMessagesToEvents(singleErrorMessage(err))
 	}
 
