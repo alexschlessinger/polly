@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
-	ai "github.com/sashabaranov/go-openai"
+	openai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
 )
 
 const defaultEmbeddingTimeout = 120 * time.Second
@@ -103,11 +105,14 @@ func resolveEmbeddingAPIKey(provider, explicit, baseURL string) (string, error) 
 }
 
 func embedOpenAI(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error) {
-	cfg := ai.DefaultConfig(apiKey)
-	if req.BaseURL != "" {
-		cfg.BaseURL = req.BaseURL
+	baseURL := defaultOpenAIBaseURL
+	if strings.TrimSpace(req.BaseURL) != "" {
+		baseURL = strings.TrimSpace(req.BaseURL)
 	}
-	client := ai.NewClientWithConfig(cfg)
+	client := openai.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(baseURL),
+	)
 
 	timeout := req.Timeout
 	if timeout <= 0 {
@@ -116,15 +121,17 @@ func embedOpenAI(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	openAIReq := &ai.EmbeddingRequest{
-		Input: req.Input,
-		Model: ai.EmbeddingModel(model),
+	openAIReq := openai.EmbeddingNewParams{
+		Input: openai.EmbeddingNewParamsInputUnion{
+			OfArrayOfStrings: req.Input,
+		},
+		Model: openai.EmbeddingModel(model),
 	}
 	if req.Dimensions > 0 {
-		openAIReq.Dimensions = req.Dimensions
+		openAIReq.Dimensions = param.NewOpt(int64(req.Dimensions))
 	}
 
-	resp, err := client.CreateEmbeddings(requestCtx, openAIReq)
+	resp, err := client.Embeddings.New(requestCtx, openAIReq)
 	if err != nil {
 		return nil, fmt.Errorf("openai embedding request failed: %w", err)
 	}
@@ -144,6 +151,6 @@ func embedOpenAI(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 	return &EmbeddingResponse{
 		Model:       string(resp.Model),
 		Embeddings:  embeddings,
-		InputTokens: resp.Usage.TotalTokens,
+		InputTokens: int(resp.Usage.TotalTokens),
 	}, nil
 }

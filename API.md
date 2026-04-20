@@ -389,7 +389,7 @@ You can also use providers directly:
 
 ```go
 // OpenAI
-client := llm.NewOpenAIClient(apiKey)
+client := llm.NewOpenAIClient(apiKey, "")
 
 // Anthropic  
 client := llm.NewAnthropicClient(apiKey)
@@ -1005,7 +1005,7 @@ func main() {
     ctx := context.Background()
     
     // you can create a specific client if you wish
-    client := llm.NewOpenAIClient(os.Getenv("OPENAIKEY"))
+    client := llm.NewOpenAIClient(os.Getenv("OPENAIKEY"), "")
     
     // Create session
     store, _ := sessions.NewFileSessionStore("")

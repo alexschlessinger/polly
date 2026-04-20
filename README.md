@@ -456,10 +456,12 @@ polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hel
 ## Provider-Specific Notes
 
 ### OpenAI
-- Supports GPT-4, 4.1, 5 and their distills
-- OpenAI compatible endpoints with --baseurl
+- Supports GPT-4, 4.1, 5, 5.4 and their distills
+- Native OpenAI uses the Responses API when `--baseurl` is not set
+- OpenAI-compatible endpoints stay on Chat Completions when `--baseurl` is set
 - Structured output uses `additionalProperties: false` in schema
 - Reliable schema support
+- Built-in Responses tools are not exposed yet
 
 ### Anthropic
 - Supports Claude family (Opus, Sonnet, Haiku)
