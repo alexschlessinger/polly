@@ -37,7 +37,7 @@ func main() {
     // Set environment variable: export POLLYTOOL_OPENAIKEY="your-key"
     
     // Simple completion
-    joke, err := llm.QuickComplete(ctx, "openai/gpt-4.1", "Tell me a joke", 500)
+    joke, err := llm.QuickComplete(ctx, "openai/gpt-5.4", "Tell me a joke", 500)
     if err != nil {
         panic(err)
     }
@@ -45,7 +45,7 @@ func main() {
     
     // Streaming completion
     fmt.Println("\nWriting a story:")
-    err = llm.StreamComplete(ctx, "openai/gpt-4.1", "Write a short story", 500, func(chunk string) {
+    err = llm.StreamComplete(ctx, "openai/gpt-5.4", "Write a short story", 500, func(chunk string) {
         fmt.Print(chunk)
     })
     if err != nil {
@@ -65,7 +65,7 @@ import "github.com/alexschlessinger/pollytool/llm"
 
 // Quick completion - just pass the model and prompt
 // API keys are loaded from POLLYTOOL_*KEY environment variables
-response, err := llm.QuickComplete(ctx, "openai/gpt-4.1", "Tell me a joke", 1000)
+response, err := llm.QuickComplete(ctx, "openai/gpt-5.4", "Tell me a joke", 1000)
 
 // Or with more tokens for longer output
 response, err := llm.QuickComplete(ctx, "anthropic/claude-opus-4-1-20250805", "Write a story", 4000)
@@ -75,7 +75,7 @@ response, err := llm.QuickComplete(ctx, "anthropic/claude-opus-4-1-20250805", "W
 
 ```go
 // Stream completion with real-time output
-err := llm.StreamComplete(ctx, "openai/gpt-4.1", "Write a story", 2000, func(chunk string) {
+err := llm.StreamComplete(ctx, "openai/gpt-5.4", "Write a story", 2000, func(chunk string) {
     fmt.Print(chunk) // Print each chunk as it arrives
 })
 ```
@@ -90,7 +90,7 @@ history := []messages.ChatMessage{
     {Role: messages.MessageRoleAssistant, Content: "Hello! How can I help?"},
 }
 
-response, err := llm.ChatWithHistory(ctx, "openai/gpt-4.1", history, "What did I just say?", 1000)
+response, err := llm.ChatWithHistory(ctx, "openai/gpt-5.4", history, "What did I just say?", 1000)
 ```
 
 ### Structured JSON Output
@@ -118,7 +118,7 @@ schema := &llm.Schema{
 
 // Get structured response
 var user UserInfo
-err := llm.StructuredComplete(ctx, "openai/gpt-4.1", 
+err := llm.StructuredComplete(ctx, "openai/gpt-5.4", 
     "Extract: John Doe, 30, john@example.com", schema, 500, &user)
 // user now contains: {Name: "John Doe", Age: 30, Email: "john@example.com"}
 ```
@@ -129,7 +129,7 @@ err := llm.StructuredComplete(ctx, "openai/gpt-4.1",
 client := llm.GetDefaultClient()
 
 // Fluent API for building requests
-result, err := llm.NewCompletionBuilder("openai/gpt-4.1").
+result, err := llm.NewCompletionBuilder("openai/gpt-5.4").
     WithSystemPrompt("You are a helpful assistant").
     WithUserMessage("Tell me about Go").
     WithTemperature(0.8).
@@ -137,7 +137,7 @@ result, err := llm.NewCompletionBuilder("openai/gpt-4.1").
     Execute(ctx, client)
 
 // Or with streaming
-err := llm.NewCompletionBuilder("openai/gpt-4.1").
+err := llm.NewCompletionBuilder("openai/gpt-5.4").
     WithSystemPrompt("You are a creative writer").
     WithUserMessage("Write a haiku").
     ExecuteStreaming(ctx, client, func(chunk string) {
@@ -153,14 +153,14 @@ weatherTool := &WeatherTool{}
 registry := tools.NewToolRegistry([]tools.Tool{weatherTool})
 
 // Execute with automatic tool handling
-response, err := llm.NewCompletionBuilder("openai/gpt-4.1").
+response, err := llm.NewCompletionBuilder("openai/gpt-5.4").
     WithUserMessage("What's the weather in NYC?").
     WithTools(registry.All()).
     ExecuteWithTools(ctx, client, registry)
 // Automatically calls weather tool and returns final response
 
 // Skills are also supported on the builder
-result, err := llm.NewCompletionBuilder("openai/gpt-4.1").
+result, err := llm.NewCompletionBuilder("openai/gpt-5.4").
     WithSystemPrompt("You are a helpful assistant").
     WithSkills(catalog).
     WithUserMessage("Tell me about Go").
@@ -199,7 +199,7 @@ if err != nil {
 // Set Skills on CompletionRequest for automatic system prompt augmentation.
 // Skill prompt injection happens transparently during completion.
 req := &llm.CompletionRequest{
-    Model:    "openai/gpt-4.1",
+    Model:    "openai/gpt-5.4",
     Messages: history,
     Skills:   catalog,
 }
@@ -250,7 +250,7 @@ Configuration for LLM requests:
 
 ```go
 type CompletionRequest struct {
-    Model          string                   // Model identifier (e.g., "gpt-4.1", "claude-opus-4-1-20250805")
+    Model          string                   // Model identifier (e.g., "gpt-5.4", "claude-opus-4-7")
     Messages       []messages.ChatMessage   // Conversation history
     Temperature    float32                  // Sampling temperature (0.0-1.0)
     MaxTokens      int                      // Maximum tokens to generate
@@ -320,9 +320,9 @@ const (
 
 Use the format `provider/model`:
 
-- OpenAI: `openai/gpt-4.1`, `openai/gpt-5`
-- Anthropic: `anthropic/claude-opus-4-1-20250805`, `anthropic/claude-sonnet-4-20250514`
-- Gemini: `gemini/gemini-2.5-flash`, `gemini/gemini-2.5-pro`
+- OpenAI: `openai/gpt-5.4`, `openai/gpt-5`
+- Anthropic: `anthropic/claude-opus-4-7`, `anthropic/claude-sonnet-4-6`
+- Gemini: `gemini/gemini-2.5-flash`, `gemini/gemini-3.1-pro-preview`
 - Ollama: `ollama/llama3`, `ollama/mistral`
 
 ### MultiPass Provider
@@ -460,7 +460,7 @@ registry := tools.NewToolRegistry([]tools.Tool{
 
 // Include tools in request
 req := &llm.CompletionRequest{
-    Model: "openai/gpt-4.1",
+    Model: "openai/gpt-5.4",
     Messages: []messages.ChatMessage{
         {
             Role:    messages.MessageRoleUser,
@@ -618,7 +618,7 @@ func main() {
     
     // Create request with tools
     req := &llm.CompletionRequest{
-        Model: "openai/gpt-4.1",
+        Model: "openai/gpt-5.4",
         Messages: []messages.ChatMessage{
             {
                 Role:    messages.MessageRoleUser,
@@ -850,7 +850,7 @@ registry := tools.NewToolRegistry(mcpTools)
 ```go
 // Create request with MCP tools
 req := &llm.CompletionRequest{
-    Model: "openai/gpt-4.1",
+    Model: "openai/gpt-5.4",
     Messages: []messages.ChatMessage{
         {
             Role:    messages.MessageRoleUser,
@@ -952,7 +952,7 @@ schema := &llm.Schema{
 }
 
 req := &llm.CompletionRequest{
-    Model: "openai/gpt-4.1",
+    Model: "openai/gpt-5.4",
     Messages: []messages.ChatMessage{
         {
             Role:    messages.MessageRoleUser,
@@ -1032,7 +1032,7 @@ func main() {
     
     // Create request
     req := &llm.CompletionRequest{
-        Model:       "openai/gpt-4.1",
+        Model:       "openai/gpt-5.4",
         Messages:    session.GetHistory(),
         Temperature: 0.7,
         MaxTokens:   500,

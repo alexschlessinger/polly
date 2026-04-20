@@ -12,38 +12,45 @@ NAME:
    polly - Chat with LLMs using various providers
 
 USAGE:
-   polly [global options]
+   polly [global options] [command [command options]]
+
+COMMANDS:
+   embed    Generate embedding vectors for text input
+   help, h  Shows a list of commands or help for one command
 
 GLOBAL OPTIONS:
-   --model string, -m string                              Model to use (provider/model format) (default: "anthropic/claude-sonnet-4-20250514")
-   --temp float                                           Temperature for sampling (default: 1)
-   --maxtokens int                                        Maximum tokens to generate (default: 4096)
-   --timeout duration                                     Request timeout (default: 2m0s)
-   --think                                                Enable thinking/reasoning (low effort) (default: false)
-   --think-medium                                         Enable thinking/reasoning (medium effort) (default: false)
-   --think-hard                                           Enable thinking/reasoning (high effort) (default: false)
-   --baseurl string                                       Base URL for API (for OpenAI-compatible endpoints or Ollama)
-   --skilldir string [ --skilldir string ]              Skill directory or directory containing skill folders (can be specified multiple times)
-   --noskills                                            Disable Agent Skill discovery and runtime skill tools (default: false)
-   --listskills                                          List discovered Agent Skills (default: false)
-   --tool string, -t string [ --tool string, -t string ]  Tool provider: shell script or MCP server (can be specified multiple times)
-   --tooltimeout duration                                 Tool execution timeout (default: 2m0s)
-   --prompt string, -p string                             Initial prompt (reads from stdin if not provided)
-   --system string, -s string                             System prompt (default: "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.")
-   --file string, -f string [ --file string, -f string ]  File, image, or URL to include (can be specified multiple times)
-   --schema string                                        Path to JSON schema file for structured output
-   --context string, -c string                            Context name for conversation continuity (uses POLLYTOOL_CONTEXT env var if not set)
-   --last, -L                                             Use the last active context (default: false)
-   --reset                                                Reset context (clear conversation history, keep settings) (default: false)
-   --list                                                 List all available context IDs (default: false)
-   --delete string                                        Delete the specified context
-   --add                                                  Add stdin content to context without making an API call (default: false)
-   --purge                                                Delete all sessions and index (requires confirmation) (default: false)
-   --create string                                        Create a new context with specified name and configuration
-   --show string                                          Show configuration for the specified context
-   --quiet                                                Suppress confirmation messages (default: false)
-   --debug, -d                                            Enable debug logging (default: false)
-   --help, -h                                             show help
+   --model string, -m string                                Model to use (provider/model format) (default: "anthropic/claude-sonnet-4-6") [$POLLYTOOL_MODEL]
+   --temp float                                             Temperature for sampling (default: 1) [$POLLYTOOL_TEMP]
+   --maxtokens int                                          Maximum tokens to generate (default: 50000) [$POLLYTOOL_MAXTOKENS]
+   --maxiterations int                                      Maximum agent iterations (LLM calls) before stopping (default: 50) [$POLLYTOOL_MAXITERATIONS]
+   --timeout duration                                       Request timeout (default: 2m0s) [$POLLYTOOL_TIMEOUT]
+   --thinkingeffort string                                  Thinking/reasoning effort level: off, low, medium, high (default: "off") [$POLLYTOOL_THINKINGEFFORT]
+   --baseurl string                                         Base URL for API (for OpenAI-compatible endpoints or Ollama) [$POLLYTOOL_BASEURL]
+   --skilldir string [ --skilldir string ]                  Skill directory or directory containing skill folders (can be specified multiple times) [$POLLYTOOL_SKILLDIR]
+   --skill string, -S string [ --skill string, -S string ]  Skill to load: local directory, git repo URL, or archive URL. Auto-activated on start.
+   --noskills                                               Disable Agent Skill discovery and runtime skill tools
+   --listskills                                             List discovered Agent Skills
+   --tool string, -t string [ --tool string, -t string ]    Tool provider: shell script (provides 1 tool) or MCP server (can provide multiple tools). Can be specified multiple times
+   --tooltimeout duration                                   Timeout for tool execution (default: 30s) [$POLLYTOOL_TOOLTIMEOUT]
+   --prompt string, -p string                               Initial prompt (reads from stdin if not provided)
+   --system string, -s string                               System prompt (default: "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.") [$POLLYTOOL_SYSTEM]
+   --file string, -f string [ --file string, -f string ]    File, image, or URL to include (can be specified multiple times)
+   --schema string                                          Path to JSON schema file for structured output
+   --context string, -c string                              Context name for conversation continuity [$POLLYTOOL_CONTEXT]
+   --last, -L                                               Use the last active context
+   --reset string                                           Reset the specified context (clear conversation history, keep settings)
+   --list                                                   List all available context IDs
+   --delete string                                          Delete the specified context
+   --add                                                    Add stdin content to context without making an API call
+   --purge                                                  Delete all sessions and index (requires confirmation)
+   --create string                                          Create a new context with specified name and configuration
+   --show string                                            Show configuration for the specified context
+   --maxcontext int                                         Maximum tokens to keep in history (0 = unlimited) (default: 100000)
+   --confirm                                                Require confirmation before each tool call
+   --nosandbox                                              Disable sandboxing of bash commands [$POLLYTOOL_NOSANDBOX]
+   --quiet                                                  Suppress status and tool display output
+   --debug, -d                                              Enable debug logging
+   --help, -h                                               show help
 ```
 
 ## Features
@@ -67,13 +74,13 @@ go build -o polly ./cmd/polly/
 
 ```bash
 export POLLYTOOL_ANTHROPICKEY=...
-export POLYTOOL_OPENAIKEY=....
+export POLLYTOOL_OPENAIKEY=...
 
 # Basic
 echo "Hello?" | polly
 
 # Pick a model
-echo "Quantum computing in one breath" | polly -m openai/gpt-4.1
+echo "Quantum computing in one breath" | polly -m openai/gpt-5.4
 
 # Image
 polly -f image.jpg -p "What’s this?"
@@ -94,14 +101,14 @@ polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 ```
 ### Model Selection
 
-The default model is `anthropic/claude-sonnet-4-20250514`. Override with `-m` flag:
+The default model is `anthropic/claude-sonnet-4-6`. Override with `-m` flag:
 
 
 ### Create and Use Named Contexts
 
 ```bash
 # Create a new named context with configuration
-polly --create project --model openai/gpt-4.1 --maxtokens 4096
+polly --create project --model openai/gpt-5.4 --maxtokens 4096
 
 # Show context configuration
 polly --show project
@@ -113,7 +120,7 @@ echo "I'm working on a Python web app" | polly -c project
 polly -c project -p "What database should I use?"
 
 # Reset a context (clear conversation, keep settings)
-polly --reset -c project
+polly --reset project
 
 # List all contexts
 polly --list
@@ -131,7 +138,7 @@ Contexts remember your settings (model, temperature, system prompt, active tools
 
 ```bash
 # First use - settings are saved
-polly -c helper -m gemini/gemini-2.5-pro -s "You are a SQL expert" -p "Hello"
+polly -c helper -m gemini/gemini-3.1-pro-preview -s "You are a SQL expert" -p "Hello"
 
 # Later uses - settings are automatically restored
 polly -c helper -p "Write a complex JOIN query"
@@ -154,7 +161,7 @@ Polly manages context settings with a clear priority system:
 3. **Settings Priority**  
   Command-line flags always take precedence over stored context settings.  
   *Example:*  
-  If your context uses `openai/gpt-5` but you run `-m openai/gpt-4.1`, Polly switches to GPT-4.1 and saves this change for future use.
+  If your context uses `openai/gpt-5` but you run `-m openai/gpt-5.4`, Polly switches to GPT-5.4 and saves this change for future use.
 
 4. **System Prompt Changes**  
   If you change the system prompt for a context with existing conversation history, Polly automatically resets the conversation to keep things consistent.
@@ -301,66 +308,79 @@ polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 
 #### Sandboxing
 
-Shell tools and MCP servers can opt into sandboxing by setting `"sandbox"` to `true` (defaults) or an object with overrides. Opted-in tools run with restricted file writes (temp directory only, plus any explicit `writablePaths`), no network access, no reads to sensitive credential paths, and `POLLYTOOL_*` env vars stripped. The tool's description will include a `[sandboxed]` hint so the LLM knows the tool is restricted. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API docs](API.md) for the full sandbox spec reference.
+Shell tools and MCP servers opt into sandboxing by setting `"sandbox"` in their schema. An opted-in process runs with a read-only root filesystem, writes restricted to the OS temp directory (plus any `writablePaths`), no network by default, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and `POLLYTOOL_*` env vars stripped. The tool's description gets a `[sandboxed]` suffix so the LLM knows it's restricted.
+
+Sandboxing requires `bwrap` (Linux) or `sandbox-exec` (macOS). If neither is available, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API.md](API.md) for the full spec.
+
+**Full example — default sandbox** (writes limited to `$TMPDIR`, no network):
 
 ```bash
-# Shell tool — sandbox with defaults
+cat > ./sandboxed_uppercase.sh << 'EOF'
+#!/bin/bash
 if [ "$1" = "--schema" ]; then
-  cat <<SCHEMA
+  cat <<'SCHEMA'
 {
-  "title": "file_processor",
-  "description": "Process files in the workspace",
+  "title": "sandboxed_uppercase",
+  "description": "Uppercase input text",
   "type": "object",
   "sandbox": true,
-  "properties": {
-    "path": {"type": "string"}
-  },
-  "required": ["path"]
+  "properties": {"text": {"type": "string"}},
+  "required": ["text"]
 }
 SCHEMA
+elif [ "$1" = "--execute" ]; then
+  echo "$2" | jq -r .text | tr '[:lower:]' '[:upper:]'
 fi
+EOF
+chmod +x ./sandboxed_uppercase.sh
+
+polly -t ./sandboxed_uppercase.sh -p "uppercase 'hello world' using the tool"
 ```
 
-```bash
-# Shell tool — sandbox with overrides
+**Config variations** — replace `"sandbox": true` in the schema with any of:
+
+```jsonc
+// Grant network + extra writable path
 "sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/data"] }
 
-# Shell tool — sandbox with read paths and env filtering
+// Allow network but block DNS (IP-only connections)
+"sandbox": { "allowNetwork": true, "denyDNS": true }
+
+// Unmask specific sensitive paths and pass through selected env vars
 "sandbox": {
-  "allowNetwork": true,
-  "writablePaths": ["/tmp/deploy"],
   "readPaths": ["~/.aws"],
   "allowEnv": ["AWS_PROFILE", "AWS_REGION", "HOME", "PATH"]
 }
 
-# Shell tool — network access without DNS (connect by IP only)
-"sandbox": { "allowNetwork": true, "denyDNS": true }
-
-# Shell tool — fully read-only sandbox (no writes, not even temp)
+// Fully read-only — no writes, not even to temp
 "sandbox": { "denyWrite": true }
+
+// Opt out entirely (runs unsandboxed even when sandboxing is available)
+"sandbox": false
 ```
 
-`POLLYTOOL_*` env vars (API keys) are always stripped from sandboxed processes unless explicitly included in `allowEnv`.
+`POLLYTOOL_*` env vars are always stripped from sandboxed processes unless explicitly listed in `allowEnv`.
+
+**MCP server sandboxing** — set `sandbox` on each server entry in the config:
 
 ```json
-// MCP server — sandbox the server process
 {
   "mcpServers": {
     "filesystem": {
-      "command": "node",
-      "args": ["server.js"],
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/workspace"],
       "sandbox": true
     },
     "api_proxy": {
       "command": "python",
       "args": ["proxy.py"],
-      "sandbox": { "allowNetwork": true }
+      "sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/proxy"] }
     }
   }
 }
 ```
 
-Tools and servers that do not set `"sandbox"` run without restrictions, even when sandboxing is active.
+Tools and servers without a `sandbox` field run without restrictions, even when a sandbox backend is available.
 
 ### MCP Servers
 
