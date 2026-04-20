@@ -492,8 +492,17 @@ func TestBuildProfileDenyWrite(t *testing.T) {
 	if !strings.Contains(profile, "(deny file-write*)") {
 		t.Fatal("profile missing file-write deny")
 	}
-	if strings.Contains(profile, "(allow file-write*") {
-		t.Fatalf("profile should not have any file-write allows when DenyWrite is true:\n%s", profile)
+	// The only file-write allows permitted under DenyWrite are the standard
+	// character devices (/dev/null, /dev/zero, etc) — see
+	// TestBuildProfileAllowsStandardDeviceFiles. Any other allow means a user
+	// path has leaked through.
+	for _, line := range strings.Split(profile, "\n") {
+		if !strings.Contains(line, "(allow file-write*") {
+			continue
+		}
+		if !strings.Contains(line, `"/dev/`) {
+			t.Fatalf("unexpected file-write allow under DenyWrite: %s\nprofile:\n%s", line, profile)
+		}
 	}
 }
 
