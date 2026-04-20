@@ -26,6 +26,7 @@ type AgentConfig struct {
 	MaxIterations    int           // Maximum LLM calls before giving up (default: 10)
 	ToolTimeout      time.Duration // Per-tool execution timeout (0 = no timeout)
 	MaxParallelTools int           // Maximum parallel tool executions (0 = unlimited)
+	ResponseTool     string        // If set, require final response via this tool
 }
 
 // AgentCallbacks provides hooks for observing and customizing agent execution
@@ -67,6 +68,15 @@ type AgentResponse struct {
 	IterationCount int                    // Number of LLM calls made
 }
 
+func hasToolCall(msg *messages.ChatMessage, name string) bool {
+	for _, tc := range msg.ToolCalls {
+		if tc.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // NewAgent creates a stateless agent that handles the agentic loop.
 // The agent does not own session state - callers provide messages and
 // receive back all generated messages to add to their own session.
@@ -104,6 +114,8 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	}
 
 	var allGenerated []messages.ChatMessage
+	var nudgedResponseTool bool
+	var responseToolCalled bool
 
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
 		// Check for context cancellation
@@ -131,12 +143,26 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			return nil, err
 		}
 
+		// Ensure content is never null — some providers reject null content in history
+		if response.Content == "" && len(response.ToolCalls) == 0 {
+			response.Content = " "
+		}
 		msgs = append(msgs, *response)
 		allGenerated = append(allGenerated, *response)
 
 		// Check stop reason to determine next action
 		switch response.StopReason {
 		case messages.StopReasonEndTurn:
+			if a.config.ResponseTool != "" && !responseToolCalled && !nudgedResponseTool {
+				nudgedResponseTool = true
+				nudge := messages.ChatMessage{
+					Role:    messages.MessageRoleUser,
+					Content: "Respond using the " + a.config.ResponseTool + " tool.",
+				}
+				msgs = append(msgs, nudge)
+				allGenerated = append(allGenerated, nudge)
+				continue
+			}
 			// Normal completion
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
@@ -181,6 +207,16 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		default:
 			// Unknown stop reason with no tool calls = treat as completion
 			if len(response.ToolCalls) == 0 {
+				if a.config.ResponseTool != "" && !responseToolCalled && !nudgedResponseTool {
+					nudgedResponseTool = true
+					nudge := messages.ChatMessage{
+						Role:    messages.MessageRoleUser,
+						Content: "Respond using the " + a.config.ResponseTool + " tool.",
+					}
+					msgs = append(msgs, nudge)
+					allGenerated = append(allGenerated, nudge)
+					continue
+				}
 				if cb != nil && cb.OnComplete != nil {
 					cb.OnComplete(response)
 				}
@@ -193,6 +229,16 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			// Has tool calls, continue to execute them
 		}
 
+		// Track if response tool was called in this batch
+		if a.config.ResponseTool != "" {
+			for _, tc := range response.ToolCalls {
+				if tc.Name == a.config.ResponseTool {
+					responseToolCalled = true
+					break
+				}
+			}
+		}
+
 		// Execute tool calls in parallel
 		toolMsgs, err := a.executeToolsParallel(ctx, response.ToolCalls, cb)
 		if err != nil {
@@ -203,6 +249,21 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 		msgs = append(msgs, toolMsgs...)
 		allGenerated = append(allGenerated, toolMsgs...)
+
+		// Short-circuit when the response tool was called: the caller
+		// extracts the structured response from the tool call's arguments,
+		// so making another LLM call to "process" the tool result would
+		// generate plain text the caller discards anyway.
+		if responseToolCalled {
+			if cb != nil && cb.OnComplete != nil {
+				cb.OnComplete(response)
+			}
+			return &AgentResponse{
+				Message:        response,
+				AllMessages:    allGenerated,
+				IterationCount: iteration + 1,
+			}, nil
+		}
 	}
 
 	err := errors.New("max iterations exceeded")

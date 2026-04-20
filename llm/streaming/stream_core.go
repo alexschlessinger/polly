@@ -187,6 +187,12 @@ func (sc *StreamingCore) HandleStructuredOutput(toolName string) bool {
 				if data, ok := args["data"]; ok {
 					// Return just the structured data as content
 					if dataJSON, err := marshalJSON(data); err == nil {
+						// The structured payload IS the final answer — flip the
+						// stop reason from ToolUse to EndTurn so the agent loop
+						// terminates instead of issuing another LLM call against
+						// a transcript that ends with this synthetic assistant
+						// message (Anthropic 4.x rejects assistant prefill).
+						sc.state.SetStopReason(messages.StopReasonEndTurn)
 						sc.CompleteWithContent(string(dataJSON))
 						return true
 					}
