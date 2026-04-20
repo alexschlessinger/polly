@@ -296,8 +296,7 @@ if [ "$1" = "--schema" ]; then
 }
 SCHEMA
 elif [ "$1" = "--execute" ]; then
-  text=$(echo "$2" | jq -r .text)
-  echo "${text^^}"
+  echo "$2" | jq -r .text | tr '[:lower:]' '[:upper:]'
 fi
 ```
 
