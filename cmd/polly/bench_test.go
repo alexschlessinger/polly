@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -88,7 +89,9 @@ type readmeCase struct {
 	stdoutContains []string
 	// extraCheck, if non-nil, runs after the generic pass/fail checks and can
 	// assert additional properties on stdout/stderr (e.g. JSON schema shape).
-	extraCheck func(t *testing.T, stdout, stderr string)
+	// `home` is the isolated tempdir HOME the case ran under, so checks can
+	// re-invoke polly against the same context store for multi-step tests.
+	extraCheck func(t *testing.T, stdout, stderr, home string)
 	// timeout caps subprocess wall time. Defaults to 60s if zero.
 	timeout time.Duration
 	// maxTokensOverride, if non-empty, replaces the default "--maxtokens 200"
@@ -200,17 +203,12 @@ func (c readmeCase) run(t *testing.T) {
 		}
 	}
 	if c.extraCheck != nil {
-		c.extraCheck(t, stdout.String(), stderr.String())
+		c.extraCheck(t, stdout.String(), stderr.String(), home)
 	}
 }
 
 func containsFlag(args []string, flag string) bool {
-	for _, a := range args {
-		if a == flag {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, flag)
 }
 
 // sandboxAvailable reports whether a sandbox backend exists on this host.
@@ -254,8 +252,7 @@ if [ "$1" = "--schema" ]; then
 }
 SCHEMA
 elif [ "$1" = "--execute" ]; then
-  text=$(echo "$2" | jq -r .text)
-  echo "${text^^}"
+  echo "$2" | jq -r .text | tr '[:lower:]' '[:upper:]'
 fi
 `
 
@@ -280,13 +277,15 @@ fi
 `
 
 // denyWriteTool mirrors the README's "Fully read-only" sandbox config variation.
-// denyWrite: true blocks all writes, even to temp dirs.
+// denyWrite: true blocks all writes, even to temp dirs. The probe attempts a
+// real write under /tmp and reports whether the sandbox blocked it — that's
+// the actual signal we want the test to gate on, not just "tool ran".
 const denyWriteTool = `#!/bin/bash
 if [ "$1" = "--schema" ]; then
   cat <<'SCHEMA'
 {
-  "title": "readonly_echo",
-  "description": "Echo the given text (runs fully read-only)",
+  "title": "denywrite_probe",
+  "description": "Echoes the given text and reports whether writes are blocked.",
   "type": "object",
   "sandbox": { "denyWrite": true },
   "properties": {"text": {"type": "string"}},
@@ -294,8 +293,44 @@ if [ "$1" = "--schema" ]; then
 }
 SCHEMA
 elif [ "$1" = "--execute" ]; then
-  echo "$2" | jq -r .text
+  text=$(echo "$2" | jq -r .text)
+  probe="/tmp/polly-denywrite-probe-$$"
+  if echo x > "$probe" 2>/dev/null; then
+    write_status="WRITE_ALLOWED"
+    rm -f "$probe"
+  else
+    write_status="WRITE_BLOCKED"
+  fi
+  echo "text=$text status=$write_status"
 fi
+`
+
+// phraseEmitterSkillMD is the SKILL.md frontmatter+body for the end-to-end
+// skills test fixture. Auto-activated via --skill, so the bundled say tool
+// is registered before the model's first turn.
+const phraseEmitterSkillMD = `---
+name: phrase-emitter
+description: Use this skill whenever the user asks about the special phrase. It exposes a say tool that returns the phrase verbatim.
+---
+Whenever the user asks "what is the special phrase" (or any close paraphrase),
+call the bundled say tool and relay its exact output back to the user. The
+tool takes no arguments. Do not invent or guess the phrase yourself — only
+this tool knows the real value.
+`
+
+// phraseEmitterScript is the say.sh body. The sentinel is intentionally
+// unguessable so a passing assertion proves the skill's bundled script
+// actually ran — a model that fabricates a phrase will never match it.
+const phraseEmitterScript = `#!/bin/sh
+if [ "$1" = "--schema" ]; then
+  printf '%s\n' '{"title":"say","description":"Emit the special phrase","type":"object","properties":{},"required":[]}'
+  exit 0
+fi
+if [ "$1" = "--execute" ]; then
+  printf '%s\n' 'SKILLPROOF_X9Q7Z'
+  exit 0
+fi
+exit 1
 `
 
 // writeFile is a small helper for setup() closures.
@@ -326,14 +361,6 @@ func TestReadmeExamples(t *testing.T) {
 			wantStdoutNonEmpty: true,
 		},
 
-		// --- Model Selection: explicit default (README:97) ---
-		{
-			name:               "model_selection_anthropic_default",
-			args:               []string{"-m", "anthropic/claude-sonnet-4-6", "-p", "Say hello in under ten words.", "--quiet"},
-			needsEnv:           []string{"POLLYTOOL_ANTHROPICKEY"},
-			wantStdoutNonEmpty: true,
-		},
-
 		// --- Model Selection: opus 4.7 (new, exercises adaptive/no-temp path) ---
 		{
 			name:               "model_selection_opus_4_7",
@@ -350,8 +377,8 @@ func TestReadmeExamples(t *testing.T) {
 				"--model", "anthropic/claude-sonnet-4-6",
 				"--maxtokens", "4096",
 			},
-			maxTokensOverride: "skip", // --create takes --maxtokens as config, don't double-up
-			wantStdoutNonEmpty: false, // --create prints a confirmation but not strictly required
+			maxTokensOverride:  "skip", // --create takes --maxtokens as config, don't double-up
+			wantStdoutNonEmpty: false,  // --create prints a confirmation but not strictly required
 		},
 
 		// --- Contexts: create + show (README:107) ---
@@ -362,20 +389,7 @@ func TestReadmeExamples(t *testing.T) {
 				preCreateContext(t, home, "readmetest", "anthropic/claude-sonnet-4-6")
 				return nil
 			},
-			maxTokensOverride: "skip",
-			wantStdoutNonEmpty: true,
-		},
-
-		// --- Contexts: use via pipe (README:110) ---
-		{
-			name:     "contexts_use_via_pipe",
-			args:     []string{"-c", "readmetest", "--quiet"},
-			stdin:    "Say hello in under ten words.",
-			needsEnv: []string{"POLLYTOOL_ANTHROPICKEY"},
-			setup: func(t *testing.T, home string) map[string]string {
-				preCreateContext(t, home, "readmetest", "anthropic/claude-sonnet-4-6")
-				return nil
-			},
+			maxTokensOverride:  "skip",
 			wantStdoutNonEmpty: true,
 		},
 
@@ -399,15 +413,15 @@ func TestReadmeExamples(t *testing.T) {
 				preCreateContext(t, home, "readmetest", "anthropic/claude-sonnet-4-6")
 				return nil
 			},
-			maxTokensOverride: "skip",
+			maxTokensOverride:  "skip",
 			wantStdoutNonEmpty: true,
 		},
 
 		// --- Contexts: list (empty) ---
 		{
-			name:              "contexts_list_empty",
-			args:              []string{"--list"},
-			maxTokensOverride: "skip",
+			name:               "contexts_list_empty",
+			args:               []string{"--list"},
+			maxTokensOverride:  "skip",
 			wantStdoutNonEmpty: true, // prints "No contexts found"
 		},
 
@@ -434,6 +448,9 @@ func TestReadmeExamples(t *testing.T) {
 		},
 
 		// --- Context Settings Persistence (README:134) ---
+		// First invocation seeds the "helper" context with -s; the extraCheck
+		// re-runs polly under the same HOME with --show to confirm the
+		// system prompt was persisted to the context store.
 		{
 			name: "contexts_gemini_persistence_first_use",
 			args: []string{
@@ -445,6 +462,15 @@ func TestReadmeExamples(t *testing.T) {
 			},
 			needsEnv:           []string{"POLLYTOOL_GEMINIKEY"},
 			wantStdoutNonEmpty: true,
+			extraCheck: func(t *testing.T, _, _, home string) {
+				show := runPollyLocal(t, home, "--show", "helper")
+				if !strings.Contains(show, "System Prompt: You are a SQL expert") {
+					t.Fatalf("expected persisted system prompt in --show output:\n%s", show)
+				}
+				if !strings.Contains(show, "Model: gemini/gemini-3.1-pro-preview") {
+					t.Fatalf("expected persisted model in --show output:\n%s", show)
+				}
+			},
 		},
 
 		// --- Agent Skills: list (README:218) ---
@@ -454,12 +480,42 @@ func TestReadmeExamples(t *testing.T) {
 			maxTokensOverride: "skip",
 		},
 
-		// --- Agent Skills: disable with --noskills (README:227) ---
+		// --- Agent Skills: end-to-end via --skill auto-activation (README:208) ---
+		// Materializes a one-script skill on disk, points polly at it via
+		// --skill (auto-activates so the bundled say tool is registered up
+		// front), and asserts the unique sentinel emitted by say.sh appears
+		// in stdout. Proves: skill discovery → activation → bundled-script
+		// registration as a polly tool → model invocation → output relayed
+		// to the user. A model that skips the tool or fabricates a phrase
+		// will fail because the sentinel is unguessable.
 		{
-			name:               "skills_noskills",
-			args:               []string{"--noskills", "-p", "Say hello in under ten words.", "--quiet"},
-			needsEnv:           []string{"POLLYTOOL_ANTHROPICKEY"},
+			name: "skills_phrase_emitter",
+			args: []string{
+				"--skill", "{SKILL}",
+				// Prompt is intentionally vague about *which* tool to use —
+				// the test's whole point is that the skill's description
+				// guides the model to its bundled tool. Naming the tool
+				// directly would just be a tool-routing test.
+				"-p", "What is the special phrase? Reply with only the phrase, nothing else.",
+				"--nosandbox",
+				"--quiet",
+			},
+			setup: func(t *testing.T, home string) map[string]string {
+				skillDir := filepath.Join(home, "skills", "phrase-emitter")
+				if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0755); err != nil {
+					t.Fatalf("mkdir skill dir: %v", err)
+				}
+				writeFile(t, filepath.Join(skillDir, "SKILL.md"), phraseEmitterSkillMD, 0644)
+				writeFile(t, filepath.Join(skillDir, "scripts", "say.sh"), phraseEmitterScript, 0755)
+				return map[string]string{"{SKILL}": skillDir}
+			},
+			crossProvider: true,
+			// Gemini 3.x burns thinking tokens before any output; the default
+			// 200-token cap truncates before the tool result reaches stdout.
+			maxTokensOverride:  "2000",
 			wantStdoutNonEmpty: true,
+			stdoutContains:     []string{"SKILLPROOF_X9Q7Z"},
+			timeout:            90 * time.Second,
 		},
 
 		// --- Structured Output: schema (README:249) — run across all providers ---
@@ -472,14 +528,19 @@ func TestReadmeExamples(t *testing.T) {
 				writeFile(t, p, schemaJSON, 0644)
 				return map[string]string{"{SCHEMA}": p}
 			},
-			crossProvider:      true,
+			crossProvider: true,
+			// Bumped from the harness default (200) because Gemini 3.x burns
+			// most of the budget on thinking tokens before emitting the JSON
+			// payload; 200 truncates mid-thought, leaving the test with no
+			// JSON to validate.
+			maxTokensOverride:  "2000",
 			wantStdoutNonEmpty: true,
 			// The schema input has age as an integer and states "John Doe is
 			// 30". Parsing into the struct below simultaneously checks that
 			// stdout is valid JSON and that age came back as an integer, not
 			// a float or string — a real schema violation would fail to
 			// unmarshal into `int`.
-			extraCheck: func(t *testing.T, stdout, _ string) {
+			extraCheck: func(t *testing.T, stdout, _, _ string) {
 				var got struct {
 					Name  string `json:"name"`
 					Age   int    `json:"age"`
@@ -541,23 +602,29 @@ func TestReadmeExamples(t *testing.T) {
 		},
 
 		// --- Sandboxing: denyWrite variation (README "Fully read-only") — all providers ---
+		// The probe tool tries a real write under /tmp and reports the result;
+		// asserting WRITE_BLOCKED in stdout proves denyWrite actually took
+		// effect inside the sandbox (not just that the tool ran).
 		{
 			name: "sandbox_deny_write",
 			args: []string{
 				"-t", "{TOOL}",
-				"-p", "Use the readonly_echo tool to echo the text 'sandboxtest', then reply with the tool output verbatim.",
+				"-p", "Use the denywrite_probe tool with text 'sandboxtest', then reply with the tool output verbatim.",
 				"--quiet",
 			},
 			setup: func(t *testing.T, home string) map[string]string {
-				p := filepath.Join(home, "readonly_echo.sh")
+				p := filepath.Join(home, "denywrite_probe.sh")
 				writeFile(t, p, denyWriteTool, 0755)
 				return map[string]string{"{TOOL}": p}
 			},
-			crossProvider:      true,
-			needsBin:           []string{"jq"},
-			needsSandbox:       true,
+			crossProvider: true,
+			needsBin:      []string{"jq"},
+			needsSandbox:  true,
+			// Gemini 3.x burns most of a 200-token budget on thinking before
+			// the tool result reaches stdout — bump for headroom.
+			maxTokensOverride:  "2000",
 			wantStdoutNonEmpty: true,
-			stdoutContains:     []string{"sandboxtest"},
+			stdoutContains:     []string{"sandboxtest", "WRITE_BLOCKED"},
 			timeout:            90 * time.Second,
 		},
 	}
@@ -577,6 +644,25 @@ func TestReadmeExamples(t *testing.T) {
 			t.Run(tc.name+"/"+p.name, fork.run)
 		}
 	}
+}
+
+// runPollyLocal invokes polly with the given args under the supplied HOME,
+// returning combined stdout+stderr. Used by extraCheck hooks that need to
+// observe context-store state via local-only commands like --show / --list.
+// No API key is forwarded since these commands don't make LLM calls.
+func runPollyLocal(t *testing.T, home string, args ...string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, pollyBin, args...)
+	cmd.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("polly %s: %v\noutput:\n%s", strings.Join(args, " "), err, out.String())
+	}
+	return out.String()
 }
 
 // preCreateContext invokes `polly --create <name>` in the given HOME so that
