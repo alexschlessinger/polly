@@ -10,7 +10,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/muesli/termenv v0.16.0
 	github.com/ollama/ollama v0.19.0
-	github.com/sashabaranov/go-openai v1.41.2
+	github.com/openai/openai-go/v3 v3.32.0
 	github.com/xeipuuv/gojsonschema v1.2.0
 	golang.org/x/sync v0.20.0
 	google.golang.org/genai v1.52.1
