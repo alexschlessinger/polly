@@ -28,9 +28,10 @@ type providerModel struct {
 // providers enumerates the three providers README examples target. The models
 // mirror the ones the README advertises. Update in lockstep with README.md.
 var providers = []providerModel{
-	{"openai", "openai/gpt-5.4", "POLLYTOOL_OPENAIKEY"},
+	{"openai", "openai/gpt-5.4-mini", "POLLYTOOL_OPENAIKEY"},
 	{"anthropic", "anthropic/claude-sonnet-4-6", "POLLYTOOL_ANTHROPICKEY"},
-	{"gemini", "gemini/gemini-3.1-pro-preview", "POLLYTOOL_GEMINIKEY"},
+	{"gemini", "gemini/gemini-3.1-flash-lite-preview", "POLLYTOOL_GEMINIKEY"},
+	{"huggingface", "huggingface/zai-org/GLM-5.1:together", "POLLYTOOL_HUGGINGFACEKEY"},
 }
 
 func TestMain(m *testing.M) {
@@ -174,6 +175,7 @@ func (c readmeCase) run(t *testing.T) {
 		"POLLYTOOL_OPENAIKEY",
 		"POLLYTOOL_GEMINIKEY",
 		"POLLYTOOL_OLLAMAKEY",
+		"POLLYTOOL_HUGGINGFACEKEY",
 	} {
 		if v := os.Getenv(k); v != "" {
 			env = append(env, k+"="+v)
@@ -629,14 +631,24 @@ func TestReadmeExamples(t *testing.T) {
 		},
 	}
 
+	only := os.Getenv("BENCH_PROVIDER")
 	for _, tc := range cases {
 		if !tc.crossProvider {
+			// When BENCH_PROVIDER pins a single provider, skip cases that
+			// aren't cross-provider — they either hard-code a different
+			// provider or make no LLM call at all.
+			if only != "" {
+				continue
+			}
 			t.Run(tc.name, tc.run)
 			continue
 		}
 		// Expand the case into one subtest per provider. Each fork takes a
 		// fresh copy of args/needsEnv so the loop doesn't accumulate.
 		for _, p := range providers {
+			if only != "" && p.name != only {
+				continue
+			}
 			p := p
 			fork := tc
 			fork.args = append([]string{"-m", p.model}, tc.args...)
