@@ -22,6 +22,38 @@ const (
 	thinkingBudgetHigh       = 16384
 )
 
+// supportsAdaptiveThinking reports whether the model expects adaptive thinking
+// (type:"adaptive" + OutputConfig.Effort) rather than legacy enabled/budget_tokens.
+// True for the Claude 4.6+ family: opus-4-6, opus-4-7, sonnet-4-6.
+func supportsAdaptiveThinking(model string) bool {
+	switch {
+	case strings.HasPrefix(model, "claude-opus-4-6"),
+		strings.HasPrefix(model, "claude-opus-4-7"),
+		strings.HasPrefix(model, "claude-sonnet-4-6"):
+		return true
+	}
+	return false
+}
+
+// rejectsSamplingParams reports whether the model 400s on temperature/top_p/top_k.
+// True for the Claude Opus 4.7 family only.
+func rejectsSamplingParams(model string) bool {
+	return strings.HasPrefix(model, "claude-opus-4-7")
+}
+
+// mapEffort converts a ThinkingEffort to the Anthropic OutputConfig effort level
+// used with adaptive thinking. Callers must guard with ThinkingEffort.IsEnabled().
+func mapEffort(effort ThinkingEffort) anthropic.OutputConfigEffort {
+	switch effort {
+	case ThinkingLow:
+		return anthropic.OutputConfigEffortLow
+	case ThinkingHigh:
+		return anthropic.OutputConfigEffortHigh
+	default:
+		return anthropic.OutputConfigEffortMedium
+	}
+}
+
 type AnthropicClient struct {
 	client anthropic.Client
 }
@@ -40,8 +72,20 @@ func NewAnthropicClient(apiKey string) *AnthropicClient {
 	}
 }
 
-// getThinkingConfig returns the thinking configuration based on effort level
-func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort) anthropic.ThinkingConfigParamUnion {
+// getThinkingConfig returns the thinking configuration based on effort level and
+// the target model. Opus 4.7 rejects the legacy enabled/budget_tokens mode, and
+// Anthropic recommends adaptive thinking for all 4.6+ family models.
+func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string) anthropic.ThinkingConfigParamUnion {
+	if supportsAdaptiveThinking(model) {
+		return anthropic.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
+				// "summarized" keeps thinking text flowing through the stream;
+				// the default "omitted" would make reasoning render as a long pause.
+				Display: anthropic.ThinkingConfigAdaptiveDisplaySummarized,
+			},
+		}
+	}
+
 	var budget int64
 	switch effort {
 	case ThinkingLow:
@@ -63,15 +107,26 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 
 	// Create the request
 	params := anthropic.MessageNewParams{
-		Model:       anthropic.Model(req.Model),
-		MaxTokens:   int64(req.MaxTokens),
-		Temperature: anthropic.Float(float64(req.Temperature)),
-		Messages:    anthropicMessages,
+		Model:     anthropic.Model(req.Model),
+		MaxTokens: int64(req.MaxTokens),
+		Messages:  anthropicMessages,
+	}
+
+	// Opus 4.7 rejects temperature/top_p/top_k with a 400.
+	if !rejectsSamplingParams(req.Model) {
+		params.Temperature = anthropic.Float(float64(req.Temperature))
 	}
 
 	// Enable thinking for supported models if requested
 	if req.ThinkingEffort.IsEnabled() {
-		params.Thinking = a.getThinkingConfig(req.ThinkingEffort)
+		params.Thinking = a.getThinkingConfig(req.ThinkingEffort, req.Model)
+		// Adaptive thinking pairs with OutputConfig.Effort to control depth,
+		// replacing the legacy budget_tokens knob.
+		if supportsAdaptiveThinking(req.Model) {
+			params.OutputConfig = anthropic.OutputConfigParam{
+				Effort: mapEffort(req.ThinkingEffort),
+			}
+		}
 	}
 
 	// Add system prompt if present
