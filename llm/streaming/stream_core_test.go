@@ -22,6 +22,9 @@ func newTestStreamingCore() (*StreamingCore, chan messages.ChatMessage) {
 
 func TestHandleStructuredOutput_WithDataKey(t *testing.T) {
 	sc, ch := newTestStreamingCore()
+	// Simulate a provider that surfaced the structured-output payload via a
+	// tool_use stop, which is the realistic incoming state for Anthropic.
+	sc.state.SetStopReason(messages.StopReasonToolUse)
 	sc.state.AddToolCall(messages.ChatMessageToolCall{
 		Name:      "structured_output",
 		Arguments: `{"data": {"foo": "bar"}}`,
@@ -35,6 +38,12 @@ func TestHandleStructuredOutput_WithDataKey(t *testing.T) {
 	msg := <-ch
 	if msg.Content != `{"foo":"bar"}` {
 		t.Errorf("expected content %q, got %q", `{"foo":"bar"}`, msg.Content)
+	}
+	// Once the structured payload is extracted, the turn is logically over.
+	// The agent loop relies on EndTurn here to avoid issuing a follow-up call
+	// against a transcript whose last entry is this synthetic assistant msg.
+	if msg.StopReason != messages.StopReasonEndTurn {
+		t.Errorf("expected stop reason EndTurn, got %v", msg.StopReason)
 	}
 }
 
