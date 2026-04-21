@@ -73,10 +73,16 @@ func (a *OpenAIAdapter) HandleToolCall(_ any, _ streaming.StreamStateInterface) 
 }
 
 // OpenAIResponsesAdapter handles Responses API streaming events.
-type OpenAIResponsesAdapter struct{}
+type OpenAIResponsesAdapter struct {
+	// OutputIndex is shared across reasoning/text/function_call items, so it
+	// can be sparse — map it to a dense tool-call index.
+	toolCallIndexByOutput map[int]int
+}
 
 func NewOpenAIResponsesAdapter() *OpenAIResponsesAdapter {
-	return &OpenAIResponsesAdapter{}
+	return &OpenAIResponsesAdapter{
+		toolCallIndexByOutput: make(map[int]int),
+	}
 }
 
 func (a *OpenAIResponsesAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
@@ -112,7 +118,7 @@ func (a *OpenAIResponsesAdapter) handleFunctionCallDelta(event responses.Respons
 	if event.Delta == "" {
 		return
 	}
-	state.UpdateToolCallAtIndex(int(event.OutputIndex), func(toolCall *messages.ChatMessageToolCall) {
+	a.updateToolCallAtOutputIndex(int(event.OutputIndex), state, func(toolCall *messages.ChatMessageToolCall) {
 		if toolCall.Arguments == "{}" {
 			toolCall.Arguments = event.Delta
 			return
@@ -122,7 +128,7 @@ func (a *OpenAIResponsesAdapter) handleFunctionCallDelta(event responses.Respons
 }
 
 func (a *OpenAIResponsesAdapter) handleFunctionCallDone(event responses.ResponseStreamEventUnion, state streaming.StreamStateInterface) {
-	state.UpdateToolCallAtIndex(int(event.OutputIndex), func(toolCall *messages.ChatMessageToolCall) {
+	a.updateToolCallAtOutputIndex(int(event.OutputIndex), state, func(toolCall *messages.ChatMessageToolCall) {
 		if event.Name != "" {
 			toolCall.Name = event.Name
 		}
@@ -136,7 +142,7 @@ func (a *OpenAIResponsesAdapter) handleOutputItem(item responses.ResponseOutputI
 	if item.Type != "function_call" {
 		return
 	}
-	state.UpdateToolCallAtIndex(index, func(toolCall *messages.ChatMessageToolCall) {
+	a.updateToolCallAtOutputIndex(index, state, func(toolCall *messages.ChatMessageToolCall) {
 		if item.CallID != "" {
 			toolCall.ID = item.CallID
 		} else if item.ID != "" {
@@ -149,6 +155,15 @@ func (a *OpenAIResponsesAdapter) handleOutputItem(item responses.ResponseOutputI
 			toolCall.Arguments = args
 		}
 	})
+}
+
+func (a *OpenAIResponsesAdapter) updateToolCallAtOutputIndex(outputIndex int, state streaming.StreamStateInterface, updater func(*messages.ChatMessageToolCall)) {
+	toolIndex, exists := a.toolCallIndexByOutput[outputIndex]
+	if !exists {
+		toolIndex = len(a.toolCallIndexByOutput)
+		a.toolCallIndexByOutput[outputIndex] = toolIndex
+	}
+	state.UpdateToolCallAtIndex(toolIndex, updater)
 }
 
 func (a *OpenAIResponsesAdapter) applyResponse(resp responses.Response, state streaming.StreamStateInterface) {

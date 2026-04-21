@@ -77,6 +77,78 @@ func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
+	adapter := NewOpenAIResponsesAdapter()
+	state := streaming.NewStreamState()
+
+	events := []responses.ResponseStreamEventUnion{
+		{
+			Type:        "response.function_call_arguments.delta",
+			OutputIndex: 1,
+			Delta:       `{"command":"docker ps"`,
+		},
+		{
+			Type:        "response.output_item.done",
+			OutputIndex: 1,
+			Item: responses.ResponseOutputItemUnion{
+				Type:   "function_call",
+				CallID: "call_bash_1",
+				Name:   "bash",
+			},
+		},
+		{
+			Type:        "response.function_call_arguments.done",
+			OutputIndex: 1,
+			Name:        "bash",
+			Arguments:   `{"command":"docker ps"}`,
+		},
+		{
+			Type:        "response.output_item.done",
+			OutputIndex: 3,
+			Item: responses.ResponseOutputItemUnion{
+				Type:   "function_call",
+				CallID: "call_bash_2",
+				Name:   "bash",
+			},
+		},
+		{
+			Type:        "response.function_call_arguments.done",
+			OutputIndex: 3,
+			Name:        "bash",
+			Arguments:   `{"command":"docker inspect nginx"}`,
+		},
+		{
+			Type: "response.completed",
+			Response: responses.Response{
+				Status: responses.ResponseStatusCompleted,
+			},
+		},
+	}
+
+	for _, event := range events {
+		if err := adapter.ProcessChunk(event, state); err != nil {
+			t.Fatalf("ProcessChunk returned error: %v", err)
+		}
+	}
+
+	toolCalls := state.GetToolCalls()
+	if len(toolCalls) != 2 {
+		t.Fatalf("tool call count = %d, want 2", len(toolCalls))
+	}
+	if got := toolCalls[0].Name; got != "bash" {
+		t.Fatalf("first tool call name = %q, want %q", got, "bash")
+	}
+	if got := toolCalls[0].Arguments; got != `{"command":"docker ps"}` {
+		t.Fatalf("first tool call arguments = %q, want %q", got, `{"command":"docker ps"}`)
+	}
+	if got := toolCalls[1].ID; got != "call_bash_2" {
+		t.Fatalf("second tool call ID = %q, want %q", got, "call_bash_2")
+	}
+	if got := toolCalls[1].Arguments; got != `{"command":"docker inspect nginx"}` {
+		t.Fatalf("second tool call arguments = %q, want %q", got, `{"command":"docker inspect nginx"}`)
+	}
+}
+
 func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 	tests := []struct {
 		name             string
