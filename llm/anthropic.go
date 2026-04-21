@@ -158,8 +158,11 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 	if len(anthropicTools) > 0 {
 		params.Tools = anthropicTools
 
-		// Only force tool use if ONLY schema is provided (no regular tools)
-		if req.ResponseSchema != nil && len(req.Tools) == 0 {
+		// Only force tool use if ONLY schema is provided (no regular tools).
+		// Anthropic rejects thinking+forced tool_choice together, so skip the
+		// force when thinking is enabled — the schema tool is still available,
+		// the model just isn't compelled to call it.
+		if req.ResponseSchema != nil && len(req.Tools) == 0 && !req.ThinkingEffort.IsEnabled() {
 			params.ToolChoice = anthropic.ToolChoiceUnionParam{
 				OfAny: &anthropic.ToolChoiceAnyParam{
 					Type: "any",

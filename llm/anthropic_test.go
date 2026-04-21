@@ -168,3 +168,46 @@ func TestAnthropicCapabilityPredicates(t *testing.T) {
 		}
 	}
 }
+
+// TestAnthropicToolChoiceWithThinking verifies that when thinking is enabled,
+// buildRequestParams does NOT force tool_choice=any — Anthropic rejects the
+// combination with "Thinking may not be enabled when tool_choice forces tool use".
+func TestAnthropicToolChoiceWithThinking(t *testing.T) {
+	client := NewAnthropicClient("")
+	schema := &Schema{
+		Raw: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"answer": map[string]any{"type": "string"}},
+			"required":   []any{"answer"},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		effort     ThinkingEffort
+		wantForced bool
+	}{
+		{"no_thinking_forces_tool_choice", ThinkingOff, true},
+		{"thinking_low_skips_force", ThinkingLow, false},
+		{"thinking_medium_skips_force", ThinkingMedium, false},
+		{"thinking_high_skips_force", ThinkingHigh, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			params := client.buildRequestParams(&CompletionRequest{
+				Model:          "claude-haiku-4-5",
+				MaxTokens:      1024,
+				ResponseSchema: schema,
+				ThinkingEffort: tc.effort,
+				Messages: []messages.ChatMessage{
+					{Role: messages.MessageRoleUser, Content: "hi"},
+				},
+			})
+			gotForced := params.ToolChoice.OfAny != nil
+			if gotForced != tc.wantForced {
+				t.Errorf("tool_choice forced = %v, want %v", gotForced, tc.wantForced)
+			}
+		})
+	}
+}
