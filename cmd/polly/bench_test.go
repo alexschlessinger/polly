@@ -94,7 +94,8 @@ type readmeCase struct {
 	// assert additional properties on stdout/stderr (e.g. JSON schema shape).
 	// `home` is the isolated tempdir HOME the case ran under, so checks can
 	// re-invoke polly against the same context store for multi-step tests.
-	extraCheck func(t *testing.T, stdout, stderr, home string)
+	// `args` is the fully expanded argv used for the first run.
+	extraCheck func(t *testing.T, stdout, stderr, home string, args []string)
 	// timeout caps subprocess wall time. Defaults to 60s if zero.
 	timeout time.Duration
 	// maxTokensOverride, if non-empty, replaces the default "--maxtokens 200"
@@ -207,12 +208,23 @@ func (c readmeCase) run(t *testing.T) {
 		}
 	}
 	if c.extraCheck != nil {
-		c.extraCheck(t, stdout.String(), stderr.String(), home)
+		c.extraCheck(t, stdout.String(), stderr.String(), home, args)
 	}
 }
 
 func containsFlag(args []string, flag string) bool {
 	return slices.Contains(args, flag)
+}
+
+func argValue(args []string, flags ...string) string {
+	for i := 0; i < len(args)-1; i++ {
+		for _, flag := range flags {
+			if args[i] == flag {
+				return args[i+1]
+			}
+		}
+	}
+	return ""
 }
 
 // sandboxAvailable reports whether a sandbox backend exists on this host.
@@ -466,13 +478,52 @@ func TestReadmeExamples(t *testing.T) {
 			},
 			needsEnv:           []string{"POLLYTOOL_GEMINIKEY"},
 			wantStdoutNonEmpty: true,
-			extraCheck: func(t *testing.T, _, _, home string) {
+			extraCheck: func(t *testing.T, _, _, home string, _ []string) {
 				show := runPollyLocal(t, home, "--show", "helper")
 				if !strings.Contains(show, "System Prompt: You are a SQL expert") {
 					t.Fatalf("expected persisted system prompt in --show output:\n%s", show)
 				}
 				if !strings.Contains(show, "Model: gemini/gemini-3.1-pro-preview") {
 					t.Fatalf("expected persisted model in --show output:\n%s", show)
+				}
+			},
+		},
+
+		// --- Contexts: second use replays persisted assistant history ---
+		// First invocation stores a unique assistant token in the context.
+		// extraCheck then performs a second live model call against the same
+		// context and requires the model to repeat that exact prior token.
+		// This exercises provider-specific transcript replay on resumed
+		// contexts; it would have caught the OpenAI assistant-history replay
+		// bug where prior assistant text was encoded incorrectly.
+		{
+			name: "contexts_history_replay_second_use",
+			args: []string{
+				"-c", "replay",
+				"-p", "Reply with exactly CTXPROOF_A1B2 and nothing else.",
+				"--quiet",
+			},
+			crossProvider:      true,
+			maxTokensOverride:  "200",
+			wantStdoutNonEmpty: true,
+			stdoutContains:     []string{"CTXPROOF_A1B2"},
+			extraCheck: func(t *testing.T, _, _, home string, args []string) {
+				model := argValue(args, "-m", "--model")
+				if model == "" {
+					t.Fatal("expected first run args to include a model")
+				}
+				stdout, stderr := runPollyWithAPIKeys(
+					t,
+					home,
+					"",
+					"-c", "replay",
+					"-m", model,
+					"-p", "What exact token did you previously reply with? Return only that token.",
+					"--quiet",
+					"--maxtokens", "200",
+				)
+				if got := strings.TrimSpace(stdout); got != "CTXPROOF_A1B2" {
+					t.Fatalf("expected second-use replay token %q, got %q\nstderr:\n%s", "CTXPROOF_A1B2", got, stderr)
 				}
 			},
 		},
@@ -544,7 +595,7 @@ func TestReadmeExamples(t *testing.T) {
 			// stdout is valid JSON and that age came back as an integer, not
 			// a float or string — a real schema violation would fail to
 			// unmarshal into `int`.
-			extraCheck: func(t *testing.T, stdout, _, _ string) {
+			extraCheck: func(t *testing.T, stdout, _, _ string, _ []string) {
 				var got struct {
 					Name  string `json:"name"`
 					Age   int    `json:"age"`
@@ -677,6 +728,45 @@ func runPollyLocal(t *testing.T, home string, args ...string) string {
 		t.Fatalf("polly %s: %v\noutput:\n%s", strings.Join(args, " "), err, out.String())
 	}
 	return out.String()
+}
+
+// runPollyWithAPIKeys invokes polly under the supplied HOME while forwarding
+// any provider API keys from the parent environment. Used by extraCheck hooks
+// that need a second live model call against the same persisted context.
+func runPollyWithAPIKeys(t *testing.T, home, stdin string, args ...string) (stdout string, stderr string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, pollyBin, args...)
+	cmd.Stdin = strings.NewReader(stdin)
+
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	cmd.Env = []string{
+		"HOME=" + home,
+		"PATH=" + os.Getenv("PATH"),
+	}
+	for _, k := range []string{
+		"POLLYTOOL_ANTHROPICKEY",
+		"POLLYTOOL_OPENAIKEY",
+		"POLLYTOOL_GEMINIKEY",
+		"POLLYTOOL_OLLAMAKEY",
+		"POLLYTOOL_HUGGINGFACEKEY",
+	} {
+		if v := os.Getenv(k); v != "" {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("polly %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, out.String(), errBuf.String())
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("polly %s: timed out after %s", strings.Join(args, " "), 60*time.Second)
+	}
+	return out.String(), errBuf.String()
 }
 
 // preCreateContext invokes `polly --create <name>` in the given HOME so that
