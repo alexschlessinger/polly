@@ -4,7 +4,8 @@ import "encoding/json"
 
 // ToolSchema describes a tool's name, description, and input parameters.
 type ToolSchema struct {
-	Raw map[string]any
+	Raw    map[string]any
+	Strict bool
 }
 
 // Title returns the tool name, or "" if absent.
@@ -45,7 +46,7 @@ func (s *ToolSchema) Copy() *ToolSchema {
 	for k, v := range s.Raw {
 		raw[k] = v
 	}
-	return &ToolSchema{Raw: raw}
+	return &ToolSchema{Raw: raw, Strict: s.Strict}
 }
 
 // Properties returns the tool's parameter definitions, or nil if absent.
@@ -91,7 +92,12 @@ func ToolSchemaFromJSON(data []byte) *ToolSchema {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
 	}
-	return &ToolSchema{Raw: raw}
+	toolSchema := &ToolSchema{Raw: raw}
+	if strict, ok := raw["strict"].(bool); ok {
+		toolSchema.Strict = strict
+		delete(toolSchema.Raw, "strict")
+	}
+	return toolSchema
 }
 
 // ToolSchemaFromString parses a JSON string into a ToolSchema.

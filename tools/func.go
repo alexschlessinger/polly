@@ -12,6 +12,7 @@ type Func struct {
 	Desc     string
 	Params   schema.Params
 	Required []string
+	Strict   bool
 	Source   string // defaults to "builtin"
 	Run      func(ctx context.Context, args Args) (string, error)
 }
@@ -27,7 +28,9 @@ func (f *Func) GetSource() string {
 }
 
 func (f *Func) GetSchema() *schema.ToolSchema {
-	return schema.Tool(f.Name, f.Desc, f.Params, f.Required...)
+	toolSchema := schema.Tool(f.Name, f.Desc, f.Params, f.Required...)
+	toolSchema.Strict = f.Strict
+	return toolSchema
 }
 
 func (f *Func) Execute(ctx context.Context, args map[string]any) (string, error) {

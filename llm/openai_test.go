@@ -124,8 +124,11 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 	if got := params.Tools[0].OfFunction.Name; got != "lookup_weather" {
 		t.Fatalf("tool name = %q, want %q", got, "lookup_weather")
 	}
-	if !params.Tools[0].OfFunction.Strict.Valid() || !params.Tools[0].OfFunction.Strict.Value {
-		t.Fatalf("expected responses tool strict mode to be enabled")
+	if !params.Tools[0].OfFunction.Strict.Valid() || params.Tools[0].OfFunction.Strict.Value {
+		t.Fatalf("expected responses tool strict mode to be disabled by default")
+	}
+	if _, ok := params.Tools[0].OfFunction.Parameters["additionalProperties"]; ok {
+		t.Fatalf("expected non-strict tool params to omit additionalProperties, got %#v", params.Tools[0].OfFunction.Parameters["additionalProperties"])
 	}
 
 	inputItems := params.Input.OfInputItemList
@@ -277,8 +280,8 @@ func TestBuildChatCompletionRequestParams(t *testing.T) {
 	}
 }
 
-func TestToolToResponsesFunctionToolSetsAdditionalPropertiesOnArrayItems(t *testing.T) {
-	tool := toolToResponsesFunctionTool(schema.Tool(
+func TestToolToResponsesFunctionToolStrictModeNormalizesArrayItemsWithoutMutatingSchema(t *testing.T) {
+	toolSchema := schema.Tool(
 		"batch_lookup",
 		"Resolve a batch of lookups",
 		schema.Params{
@@ -290,10 +293,19 @@ func TestToolToResponsesFunctionToolSetsAdditionalPropertiesOnArrayItems(t *test
 			}),
 		},
 		"items",
-	))
+	)
+	toolSchema.Strict = true
+
+	tool := toolToResponsesFunctionTool(toolSchema)
 
 	if tool.OfFunction == nil {
 		t.Fatal("expected function tool")
+	}
+	if !tool.OfFunction.Strict.Valid() || !tool.OfFunction.Strict.Value {
+		t.Fatalf("expected strict tool to enable Responses strict mode")
+	}
+	if tool.OfFunction.Parameters["additionalProperties"] != false {
+		t.Fatalf("expected strict tool params to set top-level additionalProperties=false, got %#v", tool.OfFunction.Parameters["additionalProperties"])
 	}
 
 	itemsParam, ok := tool.OfFunction.Parameters["properties"].(map[string]any)["items"].(map[string]any)
@@ -306,5 +318,17 @@ func TestToolToResponsesFunctionToolSetsAdditionalPropertiesOnArrayItems(t *test
 	}
 	if itemSchema["additionalProperties"] != false {
 		t.Fatalf("expected array item additionalProperties=false, got %#v", itemSchema["additionalProperties"])
+	}
+
+	originalItemsParam, ok := toolSchema.Properties()["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected original array parameter schema, got %#v", toolSchema.Properties())
+	}
+	originalItemSchema, ok := originalItemsParam["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected original array item schema, got %#v", originalItemsParam["items"])
+	}
+	if _, mutated := originalItemSchema["additionalProperties"]; mutated {
+		t.Fatalf("expected original schema to remain unmodified, got %#v", originalItemSchema["additionalProperties"])
 	}
 }

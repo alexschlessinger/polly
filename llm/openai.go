@@ -391,15 +391,19 @@ func toolToChatCompletionTool(schema *ToolSchema) openai.ChatCompletionToolUnion
 
 func toolToResponsesFunctionTool(schema *ToolSchema) responses.ToolUnionParam {
 	params := toolParametersFromSchema(schema)
-	// Strict mode on the Responses API requires every object node to declare
-	// additionalProperties=false; otherwise the API 400s with
-	// "'additionalProperties' is required to be supplied and to be false".
-	addObjectAdditionalPropertiesFalse(params)
+	strict := schema != nil && schema.Strict
+	if strict {
+		params = deepCopyMap(params)
+		// Strict mode on the Responses API requires every object node to declare
+		// additionalProperties=false; otherwise the API 400s with
+		// "'additionalProperties' is required to be supplied and to be false".
+		addObjectAdditionalPropertiesFalse(params)
+	}
 
 	tool := responses.FunctionToolParam{
 		Name:       toolNameFromSchema(schema),
 		Parameters: params,
-		Strict:     param.NewOpt(true),
+		Strict:     param.NewOpt(strict),
 	}
 	if description := toolDescriptionFromSchema(schema); description != "" {
 		tool.Description = param.NewOpt(description)

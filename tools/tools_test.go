@@ -304,6 +304,47 @@ func TestNewShellTool(t *testing.T) {
 	}
 }
 
+func TestNewShellToolParsesStrictMetadata(t *testing.T) {
+	script := `#!/bin/bash
+if [ "$1" = "--schema" ]; then
+	echo '{
+		"title": "strict-tool",
+		"description": "A strict test tool",
+		"type": "object",
+		"strict": true,
+		"properties": {
+			"message": {
+				"type": "string"
+			}
+		}
+	}'
+elif [ "$1" = "--execute" ]; then
+	echo "ok"
+fi
+`
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "strict-tool.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to create strict test script: %v", err)
+	}
+
+	tool, err := NewShellTool(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to create shell tool: %v", err)
+	}
+
+	schema := tool.GetSchema()
+	if schema == nil {
+		t.Fatal("Expected schema to be non-nil")
+	}
+	if !schema.Strict {
+		t.Fatal("expected strict metadata to set ToolSchema.Strict")
+	}
+	if _, ok := schema.Raw["strict"]; ok {
+		t.Fatalf("expected strict metadata to be removed from Raw, got %#v", schema.Raw["strict"])
+	}
+}
+
 func TestShellToolExecute(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
@@ -972,5 +1013,3 @@ fi
 		t.Errorf("Expected 1 tool (valid only), got %d", len(tools))
 	}
 }
-
-
