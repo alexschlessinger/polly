@@ -479,6 +479,7 @@ polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hel
 - Native OpenAI uses the Responses API when `--baseurl` is not set
 - OpenAI-compatible endpoints stay on Chat Completions when `--baseurl` is set
 - Structured output uses `additionalProperties: false` in schema
+- Strict tool schemas with optional parameters are downgraded to non-strict on native OpenAI Responses
 - Reliable schema support
 - Built-in Responses tools are not exposed yet
 

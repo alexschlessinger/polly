@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -25,6 +26,36 @@ func (t testTool) GetType() string   { return "native" }
 func (t testTool) GetSource() string { return "test" }
 
 var _ tools.Tool = testTool{}
+
+func requireSchemaRequired(t *testing.T, node map[string]any, want ...string) {
+	t.Helper()
+	got, ok := node["required"].([]string)
+	if !ok {
+		raw, ok := node["required"].([]any)
+		if !ok {
+			t.Fatalf("required = %#v, want []string", node["required"])
+		}
+		got = make([]string, 0, len(raw))
+		for _, value := range raw {
+			str, ok := value.(string)
+			if !ok {
+				t.Fatalf("required entry = %#v, want string", value)
+			}
+			got = append(got, str)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("required = %#v, want %#v", got, want)
+	}
+}
+
+func requireClosedObjectSchema(t *testing.T, node map[string]any, wantRequired ...string) {
+	t.Helper()
+	if node["additionalProperties"] != false {
+		t.Fatalf("additionalProperties = %#v, want false", node["additionalProperties"])
+	}
+	requireSchemaRequired(t, node, wantRequired...)
+}
 
 func TestNewOpenAIClientRoutesByBaseURL(t *testing.T) {
 	native := NewOpenAIClient("key", "")
@@ -210,6 +241,7 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 	if metaProp["additionalProperties"] != false {
 		t.Fatalf("expected nested object additionalProperties=false, got %#v", metaProp["additionalProperties"])
 	}
+	requireSchemaRequired(t, metaProp, "confidence")
 }
 
 func TestBuildResponsesRequestParamsSkipsInvalidToolReplayItems(t *testing.T) {
@@ -324,19 +356,126 @@ func TestBuildChatCompletionRequestParams(t *testing.T) {
 	}
 }
 
-func TestToolToResponsesFunctionToolStrictModeNormalizesArrayItemsWithoutMutatingSchema(t *testing.T) {
+func TestNormalizeOpenAISchemaStrictRecursesWithoutMutatingInput(t *testing.T) {
+	raw := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"choice": map[string]any{
+				"anyOf": []any{
+					map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"kind": map[string]any{"type": "string"},
+						},
+					},
+					map[string]any{"type": "string"},
+				},
+			},
+			"steps": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"name": map[string]any{"type": "string"},
+					},
+				},
+			},
+			"payload": map[string]any{
+				"$ref": "#/$defs/payload",
+			},
+		},
+		"$defs": map[string]any{
+			"payload": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"meta": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"count": map[string]any{"type": "integer"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	normalized := normalizeOpenAISchema(&Schema{Raw: raw, Strict: true})
+
+	requireClosedObjectSchema(t, normalized, "choice", "payload", "steps")
+
+	stepsItem := normalized["properties"].(map[string]any)["steps"].(map[string]any)["items"].(map[string]any)
+	requireClosedObjectSchema(t, stepsItem, "name")
+
+	defPayload := normalized["$defs"].(map[string]any)["payload"].(map[string]any)
+	requireClosedObjectSchema(t, defPayload, "meta")
+
+	meta := defPayload["properties"].(map[string]any)["meta"].(map[string]any)
+	requireClosedObjectSchema(t, meta, "count")
+
+	anyOfObject := normalized["properties"].(map[string]any)["choice"].(map[string]any)["anyOf"].([]any)[0].(map[string]any)
+	requireClosedObjectSchema(t, anyOfObject, "kind")
+
+	originalStepsItem := raw["properties"].(map[string]any)["steps"].(map[string]any)["items"].(map[string]any)
+	if _, mutated := originalStepsItem["additionalProperties"]; mutated {
+		t.Fatalf("expected original array item schema to remain unmodified, got %#v", originalStepsItem["additionalProperties"])
+	}
+	if _, mutated := originalStepsItem["required"]; mutated {
+		t.Fatalf("expected original array item schema required list to remain unmodified, got %#v", originalStepsItem["required"])
+	}
+
+	originalPayload := raw["$defs"].(map[string]any)["payload"].(map[string]any)
+	if _, mutated := originalPayload["additionalProperties"]; mutated {
+		t.Fatalf("expected original $defs payload schema to remain unmodified, got %#v", originalPayload["additionalProperties"])
+	}
+
+	originalAnyOfObject := raw["properties"].(map[string]any)["choice"].(map[string]any)["anyOf"].([]any)[0].(map[string]any)
+	if _, mutated := originalAnyOfObject["additionalProperties"]; mutated {
+		t.Fatalf("expected original anyOf object schema to remain unmodified, got %#v", originalAnyOfObject["additionalProperties"])
+	}
+}
+
+func TestToolToResponsesFunctionToolStrictModeRecursesWhenCompatible(t *testing.T) {
 	toolSchema := schema.Tool(
 		"batch_lookup",
 		"Resolve a batch of lookups",
 		schema.Params{
-			"items": schema.Array("Items to resolve", map[string]any{
+			"items": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"city": map[string]any{"type": "string"},
+						"meta": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"country": map[string]any{"type": "string"},
+							},
+							"required": []string{"country"},
+						},
+					},
+					"required": []string{"city", "meta"},
+				},
+			},
+			"profile": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"city": map[string]any{"type": "string"},
+					"prefs": map[string]any{
+						"$ref": "#/$defs/prefs",
+					},
 				},
-			}),
+				"required": []string{"prefs"},
+				"$defs": map[string]any{
+					"prefs": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"lang": map[string]any{"type": "string"},
+						},
+						"required": []string{"lang"},
+					},
+				},
+			},
 		},
-		"items",
+		"items", "profile",
 	)
 	toolSchema.Strict = true
 
@@ -363,6 +502,22 @@ func TestToolToResponsesFunctionToolStrictModeNormalizesArrayItemsWithoutMutatin
 	if itemSchema["additionalProperties"] != false {
 		t.Fatalf("expected array item additionalProperties=false, got %#v", itemSchema["additionalProperties"])
 	}
+	nestedMeta := itemSchema["properties"].(map[string]any)["meta"].(map[string]any)
+	if nestedMeta["additionalProperties"] != false {
+		t.Fatalf("expected nested object additionalProperties=false, got %#v", nestedMeta["additionalProperties"])
+	}
+
+	profileParam, ok := tool.OfFunction.Parameters["properties"].(map[string]any)["profile"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected profile parameter schema, got %#v", tool.OfFunction.Parameters["properties"])
+	}
+	if profileParam["additionalProperties"] != false {
+		t.Fatalf("expected profile additionalProperties=false, got %#v", profileParam["additionalProperties"])
+	}
+	prefsDef := profileParam["$defs"].(map[string]any)["prefs"].(map[string]any)
+	if prefsDef["additionalProperties"] != false {
+		t.Fatalf("expected $defs object additionalProperties=false, got %#v", prefsDef["additionalProperties"])
+	}
 
 	originalItemsParam, ok := toolSchema.Properties()["items"].(map[string]any)
 	if !ok {
@@ -374,5 +529,88 @@ func TestToolToResponsesFunctionToolStrictModeNormalizesArrayItemsWithoutMutatin
 	}
 	if _, mutated := originalItemSchema["additionalProperties"]; mutated {
 		t.Fatalf("expected original schema to remain unmodified, got %#v", originalItemSchema["additionalProperties"])
+	}
+
+	originalProfileParam, ok := toolSchema.Properties()["profile"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected original profile schema, got %#v", toolSchema.Properties())
+	}
+	if _, mutated := originalProfileParam["additionalProperties"]; mutated {
+		t.Fatalf("expected original profile schema to remain unmodified, got %#v", originalProfileParam["additionalProperties"])
+	}
+	originalPrefsDef := originalProfileParam["$defs"].(map[string]any)["prefs"].(map[string]any)
+	if _, mutated := originalPrefsDef["additionalProperties"]; mutated {
+		t.Fatalf("expected original $defs schema to remain unmodified, got %#v", originalPrefsDef["additionalProperties"])
+	}
+}
+
+func TestToolToResponsesFunctionToolStrictModeDowngradesOptionalTopLevelField(t *testing.T) {
+	toolSchema := schema.Tool(
+		"lookup_weather",
+		"Get weather data",
+		schema.Params{
+			"city": map[string]any{"type": "string"},
+			"unit": map[string]any{"type": "string"},
+		},
+		"city",
+	)
+	toolSchema.Strict = true
+
+	tool := toolToResponsesFunctionTool(toolSchema)
+
+	if tool.OfFunction == nil {
+		t.Fatal("expected function tool")
+	}
+	if !tool.OfFunction.Strict.Valid() || tool.OfFunction.Strict.Value {
+		t.Fatalf("expected incompatible strict tool to downgrade to non-strict")
+	}
+	if _, ok := tool.OfFunction.Parameters["additionalProperties"]; ok {
+		t.Fatalf("expected downgraded tool params to preserve original top-level schema, got %#v", tool.OfFunction.Parameters["additionalProperties"])
+	}
+	requireSchemaRequired(t, tool.OfFunction.Parameters, "city")
+}
+
+func TestToolToResponsesFunctionToolStrictModeDowngradesOptionalNestedField(t *testing.T) {
+	toolSchema := schema.Tool(
+		"lookup_weather",
+		"Get weather data",
+		schema.Params{
+			"filters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"city": map[string]any{"type": "string"},
+					"unit": map[string]any{"type": "string"},
+				},
+				"required": []string{"city"},
+			},
+		},
+		"filters",
+	)
+	toolSchema.Strict = true
+
+	tool := toolToResponsesFunctionTool(toolSchema)
+
+	if tool.OfFunction == nil {
+		t.Fatal("expected function tool")
+	}
+	if !tool.OfFunction.Strict.Valid() || tool.OfFunction.Strict.Value {
+		t.Fatalf("expected incompatible nested strict tool to downgrade to non-strict")
+	}
+	if _, ok := tool.OfFunction.Parameters["additionalProperties"]; ok {
+		t.Fatalf("expected downgraded tool params to preserve original top-level schema, got %#v", tool.OfFunction.Parameters["additionalProperties"])
+	}
+
+	filtersParam, ok := tool.OfFunction.Parameters["properties"].(map[string]any)["filters"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected filters parameter schema, got %#v", tool.OfFunction.Parameters["properties"])
+	}
+	if _, ok := filtersParam["additionalProperties"]; ok {
+		t.Fatalf("expected downgraded nested tool schema to preserve original object openness, got %#v", filtersParam["additionalProperties"])
+	}
+	requireSchemaRequired(t, filtersParam, "city")
+
+	originalFilters := toolSchema.Properties()["filters"].(map[string]any)
+	if _, mutated := originalFilters["additionalProperties"]; mutated {
+		t.Fatalf("expected original nested schema to remain unmodified, got %#v", originalFilters["additionalProperties"])
 	}
 }

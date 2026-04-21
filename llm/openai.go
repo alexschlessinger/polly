@@ -398,10 +398,15 @@ func toolToResponsesFunctionTool(schema *ToolSchema) responses.ToolUnionParam {
 	strict := schema != nil && schema.Strict
 	if strict {
 		params = deepCopyMap(params)
-		// Strict mode on the Responses API requires every object node to declare
-		// additionalProperties=false; otherwise the API 400s with
-		// "'additionalProperties' is required to be supplied and to be false".
-		addObjectAdditionalPropertiesFalse(params)
+		if missing := strictJSONSchemaCompatibilityIssue(params); missing != "" {
+			strict = false
+			slog.Warn("openai_responses_tool_strict_downgraded",
+				"tool", toolNameFromSchema(schema),
+				"missing_required", missing,
+			)
+		} else {
+			addObjectAdditionalPropertiesFalse(params)
+		}
 	}
 
 	tool := responses.FunctionToolParam{
@@ -628,50 +633,144 @@ func normalizeOpenAISchema(schema *Schema) map[string]any {
 		return schemaCopy
 	}
 
-	schemaCopy["additionalProperties"] = false
-
-	if props, ok := schemaCopy["properties"].(map[string]any); ok {
-		required := make([]string, 0, len(props))
-		for key, prop := range props {
-			required = append(required, key)
-			if propMap, ok := prop.(map[string]any); ok {
-				if propType, ok := propMap["type"].(string); ok && propType == "object" {
-					propMap["additionalProperties"] = false
-				}
-			}
-		}
-		sort.Strings(required)
-		schemaCopy["required"] = required
-	}
-
+	normalizeStrictJSONSchema(schemaCopy)
 	return schemaCopy
+}
+
+// normalizeStrictJSONSchema walks a JSON-schema map and normalizes every object
+// node to satisfy OpenAI Structured Outputs strict mode: sets
+// additionalProperties=false and marks every declared property as required.
+func normalizeStrictJSONSchema(node map[string]any) {
+	if node == nil {
+		return
+	}
+	if t, _ := node["type"].(string); t == "object" {
+		node["additionalProperties"] = false
+		if props, ok := node["properties"].(map[string]any); ok {
+			node["required"] = sortedSchemaKeys(props)
+		}
+	}
+	walkJSONSchemaChildren(node, normalizeStrictJSONSchema)
 }
 
 // addObjectAdditionalPropertiesFalse walks a JSON-schema map and sets
 // additionalProperties=false on every object node that doesn't already set it.
-// Used to prep tool parameter schemas for OpenAI strict mode without touching
-// `required` (tools may legitimately have optional params; we don't want to
-// silently promote optional fields, so callers using strict mode should ensure
-// their tool schemas mark all fields required themselves).
+// Preserves the declared required fields — callers using this for strict tool
+// schemas should verify compatibility with strictJSONSchemaCompatibilityIssue.
 func addObjectAdditionalPropertiesFalse(node map[string]any) {
 	if node == nil {
 		return
 	}
-	if t, ok := node["type"].(string); ok && t == "object" {
+	if t, _ := node["type"].(string); t == "object" {
 		if _, set := node["additionalProperties"]; !set {
 			node["additionalProperties"] = false
 		}
 	}
-	if props, ok := node["properties"].(map[string]any); ok {
-		for _, prop := range props {
-			if propMap, ok := prop.(map[string]any); ok {
-				addObjectAdditionalPropertiesFalse(propMap)
+	walkJSONSchemaChildren(node, addObjectAdditionalPropertiesFalse)
+}
+
+// strictJSONSchemaCompatibilityIssue returns a comma-separated list of property
+// names that are declared but not marked required on the first incompatible
+// object node found. Returns "" when every object node in the tree marks all
+// declared properties as required (the OpenAI strict-mode requirement).
+func strictJSONSchemaCompatibilityIssue(node map[string]any) string {
+	if node == nil {
+		return ""
+	}
+	if t, _ := node["type"].(string); t == "object" {
+		if props, ok := node["properties"].(map[string]any); ok {
+			required := schemaRequiredSet(node["required"])
+			missing := make([]string, 0, len(props))
+			for name := range props {
+				if _, ok := required[name]; !ok {
+					missing = append(missing, name)
+				}
+			}
+			if len(missing) > 0 {
+				sort.Strings(missing)
+				return strings.Join(missing, ", ")
 			}
 		}
 	}
-	if items, ok := node["items"].(map[string]any); ok {
-		addObjectAdditionalPropertiesFalse(items)
+
+	var issue string
+	walkJSONSchemaChildren(node, func(child map[string]any) {
+		if issue != "" {
+			return
+		}
+		issue = strictJSONSchemaCompatibilityIssue(child)
+	})
+	return issue
+}
+
+func walkJSONSchemaChildren(node map[string]any, visit func(child map[string]any)) {
+	if node == nil || visit == nil {
+		return
 	}
+
+	if props, ok := node["properties"].(map[string]any); ok {
+		for _, prop := range props {
+			if propMap, ok := prop.(map[string]any); ok {
+				visit(propMap)
+			}
+		}
+	}
+
+	for _, defsKey := range []string{"$defs", "definitions"} {
+		if defs, ok := node[defsKey].(map[string]any); ok {
+			for _, def := range defs {
+				if defMap, ok := def.(map[string]any); ok {
+					visit(defMap)
+				}
+			}
+		}
+	}
+
+	if items, ok := node["items"].(map[string]any); ok {
+		visit(items)
+	} else if itemsList, ok := node["items"].([]any); ok {
+		for _, item := range itemsList {
+			if itemMap, ok := item.(map[string]any); ok {
+				visit(itemMap)
+			}
+		}
+	}
+
+	for _, unionKey := range []string{"anyOf", "oneOf"} {
+		if variants, ok := node[unionKey].([]any); ok {
+			for _, variant := range variants {
+				if variantMap, ok := variant.(map[string]any); ok {
+					visit(variantMap)
+				}
+			}
+		}
+	}
+}
+
+func sortedSchemaKeys(props map[string]any) []string {
+	keys := make([]string, 0, len(props))
+	for key := range props {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func schemaRequiredSet(raw any) map[string]struct{} {
+	required := make(map[string]struct{})
+	switch values := raw.(type) {
+	case []string:
+		for _, value := range values {
+			required[value] = struct{}{}
+		}
+	case []any:
+		for _, value := range values {
+			if name, ok := value.(string); ok {
+				required[name] = struct{}{}
+			}
+		}
+	}
+	return required
 }
 
 func toolParametersFromSchema(schema *ToolSchema) map[string]any {
