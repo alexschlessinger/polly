@@ -212,6 +212,50 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesRequestParamsSkipsInvalidToolReplayItems(t *testing.T) {
+	req := &CompletionRequest{
+		Model: "gpt-5.4",
+		Messages: []messages.ChatMessage{
+			{Role: messages.MessageRoleUser, Content: "what containers are running"},
+			{
+				Role: messages.MessageRoleAssistant,
+				ToolCalls: []messages.ChatMessageToolCall{
+					{Arguments: `{"command":"ignored"}`},
+					{ID: "call_bash", Name: "bash", Arguments: `{"command":"docker ps"}`},
+				},
+			},
+			{
+				Role:       messages.MessageRoleTool,
+				Content:    "Tool not found:",
+				ToolCallID: "",
+			},
+			{
+				Role:       messages.MessageRoleTool,
+				Content:    "CONTAINER ID   IMAGE",
+				ToolCallID: "call_bash",
+			},
+		},
+	}
+
+	params := buildResponsesRequestParams(req)
+	inputItems := params.Input.OfInputItemList
+	if len(inputItems) != 3 {
+		t.Fatalf("input item count = %d, want 3", len(inputItems))
+	}
+	if inputItems[1].OfFunctionCall == nil {
+		t.Fatal("expected second item to be a function_call replay")
+	}
+	if got := inputItems[1].OfFunctionCall.Name; got != "bash" {
+		t.Fatalf("function call name = %q, want %q", got, "bash")
+	}
+	if inputItems[2].OfFunctionCallOutput == nil {
+		t.Fatal("expected third item to be a function_call_output")
+	}
+	if got := inputItems[2].OfFunctionCallOutput.CallID; got != "call_bash" {
+		t.Fatalf("function call output ID = %q, want %q", got, "call_bash")
+	}
+}
+
 func TestBuildChatCompletionRequestParams(t *testing.T) {
 	req := &CompletionRequest{
 		Model:       "gpt-5.4",

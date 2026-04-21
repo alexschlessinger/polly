@@ -480,6 +480,7 @@ func messageToChatCompletionParam(msg messages.ChatMessage) openai.ChatCompletio
 func messagesToResponsesInput(msgs []messages.ChatMessage) (responses.ResponseInputParam, string) {
 	items := make(responses.ResponseInputParam, 0, len(msgs))
 	systemParts := make([]string, 0, len(msgs))
+	replayedToolCallIDs := make(map[string]struct{})
 
 	for messageIndex, msg := range msgs {
 		if msg.Role == messages.MessageRoleSystem {
@@ -488,13 +489,13 @@ func messagesToResponsesInput(msgs []messages.ChatMessage) (responses.ResponseIn
 			}
 			continue
 		}
-		items = append(items, messageToResponsesInputItems(msg, messageIndex)...)
+		items = append(items, messageToResponsesInputItems(msg, messageIndex, replayedToolCallIDs)...)
 	}
 
 	return items, strings.Join(systemParts, "\n\n")
 }
 
-func messageToResponsesInputItems(msg messages.ChatMessage, messageIndex int) []responses.ResponseInputItemUnionParam {
+func messageToResponsesInputItems(msg messages.ChatMessage, messageIndex int, replayedToolCallIDs map[string]struct{}) []responses.ResponseInputItemUnionParam {
 	switch msg.Role {
 	case messages.MessageRoleUser:
 		content := responseInputContentFromMessage(msg)
@@ -514,7 +515,11 @@ func messageToResponsesInputItems(msg messages.ChatMessage, messageIndex int) []
 			))
 		}
 		for toolIndex, toolCall := range msg.ToolCalls {
+			if strings.TrimSpace(toolCall.Name) == "" {
+				continue
+			}
 			callID := responseReplayToolCallID(toolCall.ID, messageIndex, toolIndex)
+			replayedToolCallIDs[callID] = struct{}{}
 			items = append(items, responses.ResponseInputItemUnionParam{
 				OfFunctionCall: &responses.ResponseFunctionToolCallParam{
 					Arguments: toolCall.Arguments,
@@ -527,8 +532,8 @@ func messageToResponsesInputItems(msg messages.ChatMessage, messageIndex int) []
 		return items
 	case messages.MessageRoleTool:
 		callID := strings.TrimSpace(msg.ToolCallID)
-		if callID == "" {
-			callID = fmt.Sprintf("tool_output_%d", messageIndex)
+		if _, ok := replayedToolCallIDs[callID]; !ok {
+			return nil
 		}
 		return []responses.ResponseInputItemUnionParam{
 			{
