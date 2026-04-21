@@ -50,7 +50,7 @@ func QuickComplete(ctx context.Context, model, prompt string, maxTokens int) (st
 				Content: prompt,
 			},
 		},
-		Temperature: 1,
+		Temperature: Float32Ptr(1),
 		MaxTokens:   maxTokens,
 		Timeout:     120 * time.Second,
 	}
@@ -82,7 +82,7 @@ func StreamComplete(ctx context.Context, model, prompt string, maxTokens int, on
 				Content: prompt,
 			},
 		},
-		Temperature: 1,
+		Temperature: Float32Ptr(1),
 		MaxTokens:   maxTokens,
 		Timeout:     120 * time.Second,
 	}
@@ -116,7 +116,7 @@ func ChatWithHistory(ctx context.Context, model string, history []messages.ChatM
 	req := &CompletionRequest{
 		Model:       model,
 		Messages:    allMessages,
-		Temperature: 1,
+		Temperature: Float32Ptr(1),
 		MaxTokens:   maxTokens,
 		Timeout:     120 * time.Second,
 	}
@@ -149,7 +149,7 @@ func StructuredComplete(ctx context.Context, model, prompt string, schema *Schem
 			},
 		},
 		ResponseSchema: schema,
-		Temperature:    0.3, // Lower temperature for structured output
+		Temperature:    Float32Ptr(0.3), // Lower temperature for structured output
 		MaxTokens:      maxTokens,
 		Timeout:        120 * time.Second,
 	}
@@ -191,7 +191,7 @@ func NewCompletionBuilder(model string) *CompletionBuilder {
 		req: &CompletionRequest{
 			Model:       model,
 			Messages:    []messages.ChatMessage{},
-			Temperature: 1,
+			Temperature: Float32Ptr(1),
 			MaxTokens:   2000,
 			Timeout:     120 * time.Second,
 		},
@@ -229,7 +229,7 @@ func (b *CompletionBuilder) WithAssistantMessage(content string) *CompletionBuil
 
 // WithTemperature sets the temperature
 func (b *CompletionBuilder) WithTemperature(temp float32) *CompletionBuilder {
-	b.req.Temperature = temp
+	b.req.Temperature = &temp
 	return b
 }
 

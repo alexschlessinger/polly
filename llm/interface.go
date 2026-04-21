@@ -34,12 +34,20 @@ func SchemaFor(v any) *Schema { return schema.SchemaFor(v) }
 // SchemaFromJSON parses a JSON schema string into a strict Schema.
 func SchemaFromJSON(s string) *Schema { return schema.SchemaFromJSON(s) }
 
+// Float32Ptr returns a pointer to v. Convenience constructor for optional
+// float32 fields like CompletionRequest.Temperature, where nil means "don't
+// send the field" (some reasoning models reject `temperature` outright).
+func Float32Ptr(v float32) *float32 { return &v }
+
 // CompletionRequest contains all parameters for a completion request
 type CompletionRequest struct {
-	APIKey         string
-	BaseURL        string
-	Timeout        time.Duration
-	Temperature    float32
+	APIKey  string
+	BaseURL string
+	Timeout time.Duration
+	// Temperature controls sampling when non-nil. Leave nil to omit the
+	// parameter from the upstream request — required for reasoning models
+	// (o1, o3, gpt-5.x) which 400 if temperature is supplied at all.
+	Temperature    *float32
 	Model          string
 	MaxTokens      int
 	Messages       []messages.ChatMessage // Message history

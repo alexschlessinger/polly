@@ -93,7 +93,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			params := client.buildRequestParams(&CompletionRequest{
 				Model:          tc.model,
 				MaxTokens:      1024,
-				Temperature:    1.0,
+				Temperature:    Float32Ptr(1.0),
 				ThinkingEffort: tc.effort,
 				Messages: []messages.ChatMessage{
 					{Role: messages.MessageRoleUser, Content: "hi"},

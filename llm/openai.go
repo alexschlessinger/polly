@@ -283,9 +283,11 @@ func (o OpenAIClient) emitResponseOutput(resp *responses.Response, streamCore *s
 
 func buildChatCompletionRequestParams(req *CompletionRequest) openai.ChatCompletionNewParams {
 	params := openai.ChatCompletionNewParams{
-		Messages:    messagesToChatCompletionParams(req.Messages),
-		Model:       shared.ChatModel(req.Model),
-		Temperature: param.NewOpt(float64(req.Temperature)),
+		Messages: messagesToChatCompletionParams(req.Messages),
+		Model:    shared.ChatModel(req.Model),
+	}
+	if req.Temperature != nil {
+		params.Temperature = param.NewOpt(float64(*req.Temperature))
 	}
 
 	if req.MaxTokens > 0 {
@@ -311,9 +313,11 @@ func buildResponsesRequestParams(req *CompletionRequest) responses.ResponseNewPa
 	inputItems, instructions := messagesToResponsesInput(req.Messages)
 
 	params := responses.ResponseNewParams{
-		Input:       responses.ResponseNewParamsInputUnion{OfInputItemList: inputItems},
-		Model:       shared.ResponsesModel(req.Model),
-		Temperature: param.NewOpt(float64(req.Temperature)),
+		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: inputItems},
+		Model: shared.ResponsesModel(req.Model),
+	}
+	if req.Temperature != nil {
+		params.Temperature = param.NewOpt(float64(*req.Temperature))
 	}
 
 	if instructions != "" {

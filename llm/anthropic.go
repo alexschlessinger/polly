@@ -113,8 +113,8 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 	}
 
 	// Opus 4.7 rejects temperature/top_p/top_k with a 400.
-	if !rejectsSamplingParams(req.Model) {
-		params.Temperature = anthropic.Float(float64(req.Temperature))
+	if req.Temperature != nil && !rejectsSamplingParams(req.Model) {
+		params.Temperature = anthropic.Float(float64(*req.Temperature))
 	}
 
 	// Enable thinking for supported models if requested

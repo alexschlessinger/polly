@@ -429,7 +429,7 @@ func createCompletionRequest(config *Config, session sessions.Session, registry 
 	return &llm.CompletionRequest{
 		BaseURL:        config.BaseURL,
 		Timeout:        config.Timeout,
-		Temperature:    float32(config.Temperature),
+		Temperature:    llm.Float32Ptr(float32(config.Temperature)),
 		Model:          config.Model,
 		MaxTokens:      config.MaxTokens,
 		Messages:       session.GetHistory(),

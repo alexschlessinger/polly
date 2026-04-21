@@ -92,14 +92,17 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			streamFalse := false
 			stream = &streamFalse
 		}
+		options := map[string]any{
+			"num_predict": req.MaxTokens,
+		}
+		if req.Temperature != nil {
+			options["temperature"] = *req.Temperature
+		}
 		chatReq := &ollamaapi.ChatRequest{
 			Model:    req.Model,
 			Messages: ollamaMessages,
 			Stream:   stream,
-			Options: map[string]any{
-				"temperature": req.Temperature,
-				"num_predict": req.MaxTokens,
-			},
+			Options:  options,
 		}
 
 		// Enable thinking for supported models if requested

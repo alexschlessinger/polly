@@ -48,7 +48,7 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 	req := &CompletionRequest{
 		Model:          "gpt-5.4",
 		MaxTokens:      512,
-		Temperature:    0.2,
+		Temperature:    Float32Ptr(0.2),
 		ThinkingEffort: ThinkingHigh,
 		Messages: []messages.ChatMessage{
 			{Role: messages.MessageRoleSystem, Content: "System one"},
@@ -216,7 +216,7 @@ func TestBuildChatCompletionRequestParams(t *testing.T) {
 	req := &CompletionRequest{
 		Model:       "gpt-5.4",
 		MaxTokens:   256,
-		Temperature: 0,
+		Temperature: Float32Ptr(0),
 		Messages: []messages.ChatMessage{
 			{
 				Role: messages.MessageRoleUser,

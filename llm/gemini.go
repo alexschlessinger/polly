@@ -42,12 +42,14 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		contents, systemInstruction, _ := MessagesToGeminiContent(req.Messages)
 
 		// Configure model parameters
-		temp := req.Temperature
 		maxTokens := int32(req.MaxTokens)
 
 		config := &genai.GenerateContentConfig{
-			Temperature:     &temp,
 			MaxOutputTokens: maxTokens,
+		}
+		if req.Temperature != nil {
+			temp := *req.Temperature
+			config.Temperature = &temp
 		}
 
 		// Add structured output support. Preview models (3.x) silently ignore
