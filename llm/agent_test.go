@@ -217,3 +217,134 @@ func TestAgentResponseToolShortCircuit(t *testing.T) {
 		t.Fatalf("expected IterationCount=1, got %d", resp.IterationCount)
 	}
 }
+
+// TestAgentDenialShortCircuits: when every tool in a batch is denied, the
+// agent must stop after filling denial stubs rather than kicking off another
+// LLM call to editorialize. The generated messages should include the
+// assistant tool-use turn and the denial stubs, and nothing more.
+func TestAgentDenialShortCircuits(t *testing.T) {
+	fake := &sequentialLLM{
+		responses: []messages.ChatMessage{
+			{
+				Role: messages.MessageRoleAssistant,
+				ToolCalls: []messages.ChatMessageToolCall{
+					{ID: "tc1", Name: "bash", Arguments: `{"command":"ls"}`},
+				},
+				StopReason: messages.StopReasonToolUse,
+			},
+			{
+				Role:       messages.MessageRoleAssistant,
+				Content:    "should never run",
+				StopReason: messages.StopReasonEndTurn,
+			},
+		},
+	}
+
+	agent := NewAgent(fake, nil, AgentConfig{MaxIterations: 5})
+
+	resp, err := agent.Run(context.Background(), &CompletionRequest{
+		Messages: messages.User("ls"),
+	}, &AgentCallbacks{
+		ApproveToolCalls: func(calls []messages.ChatMessageToolCall) []bool {
+			return make([]bool, len(calls))
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.callCount != 1 {
+		t.Fatalf("expected exactly 1 LLM call before short-circuit, got %d", fake.callCount)
+	}
+	if len(resp.AllMessages) != 2 {
+		t.Fatalf("expected 2 generated messages (assistant tool_use + denial stub), got %d", len(resp.AllMessages))
+	}
+	if resp.AllMessages[1].Content != ToolDeniedContent {
+		t.Fatalf("expected second message to be denial stub, got %q", resp.AllMessages[1].Content)
+	}
+}
+
+// TestStripDeniedExchangesRemovesPair: the filter should drop the denied
+// tool-result message and the assistant tool_use that proposed it.
+func TestStripDeniedExchangesRemovesPair(t *testing.T) {
+	msgs := []messages.ChatMessage{
+		{
+			Role: messages.MessageRoleAssistant,
+			ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "tc1", Name: "bash", Arguments: `{"command":"ls"}`},
+			},
+		},
+		{
+			Role:       messages.MessageRoleTool,
+			Content:    ToolDeniedContent,
+			ToolCallID: "tc1",
+			ToolName:   "bash",
+		},
+	}
+	out := StripDeniedExchanges(msgs)
+	if len(out) != 0 {
+		t.Fatalf("expected all messages stripped, got %d: %#v", len(out), out)
+	}
+}
+
+// TestStripDeniedExchangesPreservesPartial: in a mixed batch where one tool
+// was denied and another ran, the filter should remove only the denied pair
+// and keep the approved tool call and its result.
+func TestStripDeniedExchangesPreservesPartial(t *testing.T) {
+	msgs := []messages.ChatMessage{
+		{
+			Role: messages.MessageRoleAssistant,
+			ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "tc1", Name: "bash", Arguments: `{"command":"ls"}`},
+				{ID: "tc2", Name: "grep", Arguments: `{"pattern":"foo"}`},
+			},
+		},
+		{
+			Role:       messages.MessageRoleTool,
+			Content:    ToolDeniedContent,
+			ToolCallID: "tc1",
+			ToolName:   "bash",
+		},
+		{
+			Role:       messages.MessageRoleTool,
+			Content:    "match: foo",
+			ToolCallID: "tc2",
+			ToolName:   "grep",
+		},
+	}
+	out := StripDeniedExchanges(msgs)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 messages (assistant + approved tool result), got %d", len(out))
+	}
+	if len(out[0].ToolCalls) != 1 || out[0].ToolCalls[0].ID != "tc2" {
+		t.Fatalf("expected only tc2 to survive on assistant message, got %#v", out[0].ToolCalls)
+	}
+	if out[1].ToolCallID != "tc2" {
+		t.Fatalf("expected surviving tool result to be tc2, got %q", out[1].ToolCallID)
+	}
+}
+
+// TestStripDeniedExchangesKeepsAssistantContent: if an assistant message
+// carried both text and a denied tool call, the text survives.
+func TestStripDeniedExchangesKeepsAssistantContent(t *testing.T) {
+	msgs := []messages.ChatMessage{
+		{
+			Role:    messages.MessageRoleAssistant,
+			Content: "let me check",
+			ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "tc1", Name: "bash", Arguments: `{"command":"ls"}`},
+			},
+		},
+		{
+			Role:       messages.MessageRoleTool,
+			Content:    ToolDeniedContent,
+			ToolCallID: "tc1",
+		},
+	}
+	out := StripDeniedExchanges(msgs)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 surviving message, got %d", len(out))
+	}
+	if out[0].Content != "let me check" || len(out[0].ToolCalls) != 0 {
+		t.Fatalf("expected content preserved and tool_calls empty, got %#v", out[0])
+	}
+}

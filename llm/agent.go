@@ -13,6 +13,12 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// ToolDeniedContent is the tool-result content recorded when the caller
+// denies a tool call via AgentCallbacks.ApproveToolCalls. Callers can match
+// on this exact string to detect denials (e.g. to filter denied exchanges
+// out of persisted history).
+const ToolDeniedContent = "Tool call denied by user."
+
 // Agent handles the agentic loop without owning session state.
 // It executes completions with automatic tool call handling.
 type Agent struct {
@@ -250,6 +256,21 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		msgs = append(msgs, toolMsgs...)
 		allGenerated = append(allGenerated, toolMsgs...)
 
+		// Short-circuit when every tool in the batch was denied. Looping to
+		// feed the denials back would just make the model editorialize ("I
+		// can't run that"), which pollutes history and teaches it to refuse
+		// preemptively on later turns. The caller already saw the denial.
+		if allDenied(toolMsgs) {
+			if cb != nil && cb.OnComplete != nil {
+				cb.OnComplete(response)
+			}
+			return &AgentResponse{
+				Message:        response,
+				AllMessages:    allGenerated,
+				IterationCount: iteration + 1,
+			}, nil
+		}
+
 		// Short-circuit when the response tool was called: the caller
 		// extracts the structured response from the tool call's arguments,
 		// so making another LLM call to "process" the tool result would
@@ -418,7 +439,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 		if !approved[i] {
 			results[i] = messages.ChatMessage{
 				Role:       messages.MessageRoleTool,
-				Content:    "Tool call denied by user.",
+				Content:    ToolDeniedContent,
 				ToolCallID: tc.ID,
 				ToolName:   tc.Name,
 			}
@@ -464,4 +485,55 @@ func (a *Agent) effectiveParallelism(n int) int {
 		return n
 	}
 	return a.config.MaxParallelTools
+}
+
+// allDenied reports whether every message in toolMsgs is a denial stub.
+func allDenied(toolMsgs []messages.ChatMessage) bool {
+	if len(toolMsgs) == 0 {
+		return false
+	}
+	for _, m := range toolMsgs {
+		if m.Content != ToolDeniedContent {
+			return false
+		}
+	}
+	return true
+}
+
+// StripDeniedExchanges removes tool-denial pairs from a message slice so they
+// don't pollute persisted history. It drops the "Tool call denied by user."
+// tool-result messages and strips the matching tool_calls from the assistant
+// messages that proposed them. An assistant message left with no content and
+// no remaining tool_calls is dropped entirely.
+func StripDeniedExchanges(msgs []messages.ChatMessage) []messages.ChatMessage {
+	deniedIDs := map[string]bool{}
+	for _, m := range msgs {
+		if m.Role == messages.MessageRoleTool && m.Content == ToolDeniedContent {
+			deniedIDs[m.ToolCallID] = true
+		}
+	}
+	if len(deniedIDs) == 0 {
+		return msgs
+	}
+
+	out := make([]messages.ChatMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == messages.MessageRoleTool && deniedIDs[m.ToolCallID] {
+			continue
+		}
+		if m.Role == messages.MessageRoleAssistant && len(m.ToolCalls) > 0 {
+			remaining := make([]messages.ChatMessageToolCall, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				if !deniedIDs[tc.ID] {
+					remaining = append(remaining, tc)
+				}
+			}
+			m.ToolCalls = remaining
+			if len(remaining) == 0 && m.Content == "" {
+				continue
+			}
+		}
+		out = append(out, m)
+	}
+	return out
 }
