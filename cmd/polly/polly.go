@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 )
 
 func main() {
+	initColors()
 	command := getCommand()
 	if err := command.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -54,12 +56,13 @@ type conversationInput struct {
 }
 
 type conversationState struct {
-	session      sessions.Session
-	agent        *llm.Agent
-	toolRegistry *tools.ToolRegistry
-	skillCatalog *skills.Catalog
-	skillRuntime *tools.SkillRuntime
-	skillSources []string
+	session       sessions.Session
+	agent         *llm.Agent
+	toolRegistry  *tools.ToolRegistry
+	skillCatalog  *skills.Catalog
+	skillRuntime  *tools.SkillRuntime
+	skillSources  []string
+	statusHandler StatusHandler
 }
 
 func (s *conversationState) Close() {
@@ -374,6 +377,16 @@ func validateREPLConfig(config *Config) error {
 }
 
 func runREPL(ctx context.Context, config *Config, state *conversationState) error {
+	if bar, ok := createStatusLine(config, conversationModeREPL, state.session.GetName()).(*statusBar); ok && bar != nil {
+		state.statusHandler = bar
+		bar.SetCounts(toolCount(state.toolRegistry), skillCount(state.skillCatalog))
+		// cleanupAndExit (signal path) runs this synchronously before os.Exit
+		// so Ctrl-C resets the scroll region. Uninstall is idempotent, so the
+		// defer below safely covers the no-signal exit path too.
+		setBeforeExit(bar.Uninstall)
+		defer setBeforeExit(nil)
+		defer bar.Uninstall()
+	}
 	reader := bufio.NewReader(os.Stdin)
 	return runREPLLoop(reader, os.Stderr, func(prompt string) error {
 		return executeTurn(ctx, config, state, prompt, nil, reader)
@@ -382,7 +395,7 @@ func runREPL(ctx context.Context, config *Config, state *conversationState) erro
 
 func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {
 	for {
-		if _, err := fmt.Fprint(promptWriter, "> "); err != nil {
+		if _, err := fmt.Fprint(promptWriter, promptStyle.Styled("> ")); err != nil {
 			return err
 		}
 
@@ -429,8 +442,12 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 	state.session.AddMessage(userMsg)
 
 	var statusLine StatusHandler
-	if status := createStatusLine(config); status != nil {
+	if state.statusHandler != nil {
+		statusLine = state.statusHandler
+	} else if status := createStatusLine(config, conversationModeOneShot, ""); status != nil {
 		statusLine = status
+	}
+	if statusLine != nil {
 		statusLine.Start()
 		defer statusLine.Stop()
 		statusLine.ShowSpinner("waiting")
@@ -440,6 +457,12 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 
 	needsNewline := false
 	contentPrinted := false
+	// trimLeadingNL strips leading newlines from the next content burst.
+	// Armed only after a reasoning event fires — models with thinking enabled
+	// commonly emit a leading "\n\n" to visually separate the (hidden)
+	// reasoning from the reply. We strip only \n/\r so leading spaces/tabs
+	// (e.g. code-block indentation) are preserved.
+	trimLeadingNL := false
 
 	var approver *toolApprover
 	if config.Confirm && isTerminal() {
@@ -448,6 +471,7 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 
 	resp, err := state.agent.Run(ctx, req, &llm.AgentCallbacks{
 		OnReasoning: func(content string) {
+			trimLeadingNL = true
 			if statusLine != nil {
 				statusLine.UpdateThinkingProgress(len(content))
 			}
@@ -461,7 +485,14 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 					fmt.Println()
 					needsNewline = false
 				}
-				fmt.Print(content)
+				if trimLeadingNL {
+					content = strings.TrimLeft(content, "\r\n")
+					if content == "" {
+						return
+					}
+					trimLeadingNL = false
+				}
+				fmt.Print(assistantOut.Styled(content))
 				contentPrinted = true
 			}
 		},
@@ -510,6 +541,23 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 		for _, msg := range resp.AllMessages {
 			state.session.AddMessage(msg)
 		}
+	}
+	if resp != nil && statusLine != nil {
+		// Multi-iteration turns produce multiple assistant messages (one per
+		// LLM call between tool roundtrips). Providers report input tokens
+		// cumulatively per-call (each call resends history), so take max for
+		// input. Output tokens are per-iteration, so sum them.
+		var in, out int
+		for _, m := range resp.AllMessages {
+			if m.Role != messages.MessageRoleAssistant {
+				continue
+			}
+			if t := m.GetInputTokens(); t > in {
+				in = t
+			}
+			out += m.GetOutputTokens()
+		}
+		statusLine.RecordTurnTokens(in, out)
 	}
 	if err := persistActiveSkills(state.session, state.skillRuntime, state.skillSources); err != nil {
 		return fmt.Errorf("failed to persist active skills: %w", err)
@@ -655,9 +703,30 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 	_ = session.UpdateMetadata(update)
 }
 
+// beforeExit is invoked synchronously by cleanupAndExit before os.Exit.
+// runREPL sets it to the status bar's Uninstall so Ctrl-C restores the
+// terminal scroll region without racing the os.Exit path. The mutex
+// serializes assignment from runREPL with the read in cleanupAndExit
+// (which runs from the SIGINT goroutine in setupSignalHandling).
+var (
+	beforeExitMu sync.Mutex
+	beforeExit   func()
+)
+
+func setBeforeExit(fn func()) {
+	beforeExitMu.Lock()
+	beforeExit = fn
+	beforeExitMu.Unlock()
+}
+
 // cleanupAndExit performs cleanup and exits with the given code
 func cleanupAndExit(code int) {
-
+	beforeExitMu.Lock()
+	fn := beforeExit
+	beforeExitMu.Unlock()
+	if fn != nil {
+		fn()
+	}
 	os.Exit(code)
 }
 
@@ -713,14 +782,43 @@ func outputStructured(content string, schema *llm.Schema) {
 	}
 }
 
-// createStatusLine creates a status line if appropriate
-func createStatusLine(config *Config) *Status {
-	// Use terminal title for status updates when in a terminal
-	// Status line works fine with schema since it outputs to stderr
-	if !config.Quiet && isTerminal() {
-		return NewStatus()
+// createStatusLine returns the appropriate StatusHandler for the mode.
+// In REPL mode on a capable terminal, returns a bottom status bar. Otherwise
+// returns the window-title Status (or nil when --quiet / non-terminal).
+func createStatusLine(config *Config, mode conversationMode, contextID string) StatusHandler {
+	if config.Quiet || !isTerminal() {
+		return nil
 	}
+	if mode == conversationModeREPL {
+		bar := newStatusBar(os.Stderr, termSizer{fd: int(os.Stderr.Fd())})
+		bar.SetModel(stripProviderPrefix(config.Model))
+		bar.SetContext(contextID)
+		if err := bar.Install(); err == nil {
+			return bar
+		}
+		// Fallback to window-title status on any install failure.
+	}
+	return NewStatus()
+}
 
-	// Return nil when status updates are not appropriate
-	return nil
+// stripProviderPrefix returns the bare model name, dropping "provider/" if present.
+func stripProviderPrefix(m string) string {
+	if i := strings.IndexByte(m, '/'); i >= 0 {
+		return m[i+1:]
+	}
+	return m
+}
+
+func toolCount(r *tools.ToolRegistry) int {
+	if r == nil {
+		return 0
+	}
+	return len(r.All())
+}
+
+func skillCount(c *skills.Catalog) int {
+	if c == nil {
+		return 0
+	}
+	return len(c.List())
 }

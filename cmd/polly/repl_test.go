@@ -128,3 +128,40 @@ func TestRunREPLLoop(t *testing.T) {
 		})
 	}
 }
+
+func TestRunREPLLoopWithStatusBar(t *testing.T) {
+	var barOut bytes.Buffer
+	bar := newStatusBar(&barOut, &fakeSizer{w: 80, h: 24})
+	bar.SetModel("claude-sonnet-4-6")
+	bar.SetContext("itest")
+	if err := bar.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	reader := bufio.NewReader(strings.NewReader("hello\n/exit\n"))
+	var promptBuf bytes.Buffer
+	var turns []string
+
+	err := runREPLLoop(reader, &promptBuf, func(prompt string) error {
+		turns = append(turns, prompt)
+		bar.Start()
+		bar.ClearForContent()
+		bar.RecordTurnTokens(1234, 380)
+		bar.Stop()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("runREPLLoop: %v", err)
+	}
+	bar.Uninstall()
+
+	if !reflect.DeepEqual(turns, []string{"hello"}) {
+		t.Fatalf("turns = %v, want [hello]", turns)
+	}
+	if !strings.Contains(barOut.String(), "streaming") {
+		t.Errorf("expected streaming state to have been painted")
+	}
+	if !strings.Contains(barOut.String(), "\x1b[r") {
+		t.Errorf("expected scroll region reset on Uninstall")
+	}
+}
