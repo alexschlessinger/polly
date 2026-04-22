@@ -52,6 +52,7 @@ type Config struct {
 
 	// Input/Output configuration
 	Prompt     string
+	PromptSet  bool
 	Files      []string // Files/images to include
 	SchemaPath string   // Path to JSON schema file
 	Quiet      bool
