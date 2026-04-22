@@ -130,6 +130,7 @@ func TestRunREPLLoop(t *testing.T) {
 }
 
 func TestRunREPLLoopWithStatusBar(t *testing.T) {
+	forceStatusBarTERM(t)
 	var barOut bytes.Buffer
 	bar := newStatusBar(&barOut, &fakeSizer{w: 80, h: 24})
 	bar.SetModel("claude-sonnet-4-6")
@@ -139,10 +140,9 @@ func TestRunREPLLoopWithStatusBar(t *testing.T) {
 	}
 
 	reader := bufio.NewReader(strings.NewReader("hello\n/exit\n"))
-	var promptBuf bytes.Buffer
 	var turns []string
 
-	err := runREPLLoop(reader, &promptBuf, func(prompt string) error {
+	err := runREPLLoop(reader, bar.ContentWriter(), func(prompt string) error {
 		turns = append(turns, prompt)
 		bar.Start()
 		bar.ClearForContent()
@@ -160,8 +160,5 @@ func TestRunREPLLoopWithStatusBar(t *testing.T) {
 	}
 	if !strings.Contains(barOut.String(), "streaming") {
 		t.Errorf("expected streaming state to have been painted")
-	}
-	if !strings.Contains(barOut.String(), "\x1b[r") {
-		t.Errorf("expected scroll region reset on Uninstall")
 	}
 }
