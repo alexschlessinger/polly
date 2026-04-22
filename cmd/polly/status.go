@@ -25,6 +25,7 @@ type StatusHandler interface {
 	ClearForContent()
 	UpdateStreamingProgress(bytes int)
 	UpdateThinkingProgress(tokens int)
+	RecordTurnTokens(in, out int)
 }
 
 // Status manages terminal title updates for status display
@@ -205,3 +206,6 @@ func (s *Status) Clear() {
 	s.stopSpinner()
 	setTerminalTitle("")
 }
+
+// RecordTurnTokens is a no-op for the window-title status handler.
+func (s *Status) RecordTurnTokens(in, out int) {}
