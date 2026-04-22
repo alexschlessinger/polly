@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -38,6 +40,36 @@ type commandRunner struct {
 }
 
 var newSandbox = sandbox.New
+
+type conversationMode int
+
+const (
+	conversationModeOneShot conversationMode = iota
+	conversationModeREPL
+)
+
+type conversationInput struct {
+	mode   conversationMode
+	prompt string
+}
+
+type conversationState struct {
+	session      sessions.Session
+	agent        *llm.Agent
+	toolRegistry *tools.ToolRegistry
+	skillCatalog *skills.Catalog
+	skillRuntime *tools.SkillRuntime
+	skillSources []string
+}
+
+func (s *conversationState) Close() {
+	if s.toolRegistry != nil {
+		_ = s.toolRegistry.Close()
+	}
+	if s.session != nil {
+		s.session.Close()
+	}
+}
 
 func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, error) {
 	config := parseConfig(cmd)
@@ -244,82 +276,179 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 }
 
 func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) error {
-	// Initialize session
-	contextID, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSession(config, sessionStore, contextID, cmd)
-	if err != nil {
-		return err
-	}
-	defer session.Close()
-	if toolRegistry != nil {
-		defer toolRegistry.Close()
-	}
-
-	// Get prompt early to determine if we're going to interactive mode
-	prompt, err := getPrompt(config)
+	input, err := resolveConversationInput(config)
 	if err != nil {
 		return err
 	}
 
-	// If no prompt provided and no stdin, return error as interactive mode is disabled
-	if prompt == "" {
-		return fmt.Errorf("no prompt provided. Please provide a prompt via -p flag or stdin")
+	// Initialize session state once so one-shot and REPL share the same runtime.
+	_, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSession(config, sessionStore, contextID, cmd)
+	if err != nil {
+		return err
 	}
+	state := &conversationState{
+		session:      session,
+		agent:        agent,
+		toolRegistry: toolRegistry,
+		skillCatalog: skillCatalog,
+		skillRuntime: skillRuntime,
+		skillSources: skillResult.sources,
+	}
+	defer state.Close()
 
 	// Set up signal handling
 	ctx, cancel := setupSignalHandling(ctx)
 	defer cancel()
 
-	// Load schema if specified
-	var schema *llm.Schema
-	if config.SchemaPath != "" {
-		var err error
-		schema, err = loadSchemaFile(config.SchemaPath)
-		if err != nil {
-			return fmt.Errorf("failed to load schema: %w", err)
+	switch input.mode {
+	case conversationModeOneShot:
+		var schema *llm.Schema
+		if config.SchemaPath != "" {
+			schema, err = loadSchemaFile(config.SchemaPath)
+			if err != nil {
+				return fmt.Errorf("failed to load schema: %w", err)
+			}
 		}
+		return executeTurn(ctx, config, state, input.prompt, schema, bufio.NewReader(os.Stdin))
+	case conversationModeREPL:
+		return runREPL(ctx, config, state)
+	default:
+		return fmt.Errorf("unknown conversation mode")
+	}
+}
+
+func selectConversationMode(config *Config, stdinAvailable bool) (conversationMode, error) {
+	if config.PromptSet || stdinAvailable {
+		return conversationModeOneShot, nil
 	}
 
-	// Build user message with files if provided
+	if err := validateREPLConfig(config); err != nil {
+		return conversationModeOneShot, err
+	}
+
+	return conversationModeREPL, nil
+}
+
+func resolveConversationInput(config *Config) (conversationInput, error) {
+	stdinAvailable := hasStdinData()
+	mode, err := selectConversationMode(config, stdinAvailable)
+	if err != nil {
+		return conversationInput{}, err
+	}
+
+	switch mode {
+	case conversationModeOneShot:
+		if config.PromptSet {
+			return conversationInput{mode: conversationModeOneShot, prompt: config.Prompt}, nil
+		}
+		prompt, err := readFromStdin()
+		if err != nil {
+			return conversationInput{}, err
+		}
+		return conversationInput{mode: conversationModeOneShot, prompt: prompt}, nil
+	case conversationModeREPL:
+		return conversationInput{mode: conversationModeREPL}, nil
+	default:
+		return conversationInput{}, fmt.Errorf("unknown conversation mode")
+	}
+}
+
+func validateREPLConfig(config *Config) error {
+	var rejected []string
+	if len(config.Files) > 0 {
+		rejected = append(rejected, "--file")
+	}
+	if config.SchemaPath != "" {
+		rejected = append(rejected, "--schema")
+	}
+	if len(rejected) == 0 {
+		return nil
+	}
+
+	verb := "require"
+	if len(rejected) == 1 {
+		verb = "requires"
+	}
+
+	return fmt.Errorf("%s %s -p or stdin; bare polly starts a text-only REPL", strings.Join(rejected, " and "), verb)
+}
+
+func runREPL(ctx context.Context, config *Config, state *conversationState) error {
+	reader := bufio.NewReader(os.Stdin)
+	return runREPLLoop(reader, os.Stderr, func(prompt string) error {
+		return executeTurn(ctx, config, state, prompt, nil, reader)
+	})
+}
+
+func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {
+	for {
+		if _, err := fmt.Fprint(promptWriter, "> "); err != nil {
+			return err
+		}
+
+		line, eof, err := readREPLLine(reader)
+		if err != nil {
+			return err
+		}
+		if eof {
+			return nil
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		switch trimmed {
+		case "/exit", "/quit":
+			return nil
+		}
+
+		if err := runTurn(line); err != nil {
+			return err
+		}
+	}
+}
+
+func readREPLLine(reader *bufio.Reader) (line string, eof bool, err error) {
+	line, err = readLine(reader)
+	if err == nil {
+		return line, false, nil
+	}
+	if errors.Is(err, io.EOF) {
+		return "", true, nil
+	}
+	return "", false, err
+}
+
+func executeTurn(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader) error {
 	userMsg, err := buildMessageWithFiles(prompt, config.Files)
 	if err != nil {
 		return fmt.Errorf("error processing files: %w", err)
 	}
 
-	// Add user message to session
-	session.AddMessage(userMsg)
+	state.session.AddMessage(userMsg)
 
-	// Create status line if appropriate
 	var statusLine StatusHandler
 	if status := createStatusLine(config); status != nil {
 		statusLine = status
 		statusLine.Start()
 		defer statusLine.Stop()
-	}
-
-	// Show initial spinner
-	if statusLine != nil {
 		statusLine.ShowSpinner("waiting")
 	}
 
-	// Create completion request
-	req := createCompletionRequest(config, session, toolRegistry, skillCatalog, schema)
+	req := createCompletionRequest(config, state.session, state.toolRegistry, state.skillCatalog, schema)
 
-	// Track whether we need a newline before the next content block
-	// (i.e., tool calls happened since the last content output)
 	needsNewline := false
 	contentPrinted := false
 
-	// Set up tool approval if --confirm is active
 	var approver *toolApprover
 	if config.Confirm && isTerminal() {
-		approver = &toolApprover{}
+		approver = newToolApprover(inputReader)
 	}
 
-	// Run completion using the agent
-	resp, err := agent.Run(ctx, req, &llm.AgentCallbacks{
+	resp, err := state.agent.Run(ctx, req, &llm.AgentCallbacks{
 		OnReasoning: func(content string) {
 			if statusLine != nil {
-				// Track total reasoning length for status
 				statusLine.UpdateThinkingProgress(len(content))
 			}
 		},
@@ -327,7 +456,6 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 			if statusLine != nil {
 				statusLine.ClearForContent()
 			}
-			// Print content unless using schema mode
 			if config.SchemaPath == "" {
 				if needsNewline {
 					fmt.Println()
@@ -375,50 +503,32 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 			if statusLine != nil {
 				statusLine.Clear()
 			}
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		},
 	})
 
-	// Add all generated messages to session, even if there was an error
 	if resp != nil {
 		for _, msg := range resp.AllMessages {
-			session.AddMessage(msg)
+			state.session.AddMessage(msg)
 		}
 	}
-	if err := persistActiveSkills(session, skillRuntime, skillResult.sources); err != nil {
+	if err := persistActiveSkills(state.session, state.skillRuntime, state.skillSources); err != nil {
 		return fmt.Errorf("failed to persist active skills: %w", err)
 	}
-
 	if err != nil {
 		return err
 	}
 
-	// Warn if response was truncated due to token limit
 	if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
 		fmt.Fprintf(os.Stderr, "\nWarning: response truncated (hit %d token limit, use --maxtokens to increase)\n", config.MaxTokens)
 	}
 
-	// Output final result
 	if config.SchemaPath != "" {
 		outputStructured(resp.Message.Content, schema)
 	} else {
-		fmt.Println() // Final newline
+		fmt.Println()
 	}
 
 	return nil
-}
-
-func getPrompt(config *Config) (string, error) {
-	if config.Prompt != "" {
-		return config.Prompt, nil
-	}
-
-	if hasStdinData() {
-		return readFromStdin()
-	}
-
-	// No -p flag and no pipe input - signal to use interactive mode
-	return "", nil
 }
 
 // createCompletionRequest builds an LLM completion request from config

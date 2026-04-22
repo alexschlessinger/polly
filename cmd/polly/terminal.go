@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -54,6 +55,10 @@ func initColors() {
 
 // promptYesNo prompts the user for a yes/no response
 func promptYesNo(prompt string, defaultValue bool) bool {
+	return promptYesNoWithReader(prompt, defaultValue, bufio.NewReader(os.Stdin))
+}
+
+func promptYesNoWithReader(prompt string, defaultValue bool, reader *bufio.Reader) bool {
 	var promptStr string
 	if defaultValue {
 		promptStr = fmt.Sprintf("%s (Y/n): ", prompt)
@@ -62,8 +67,7 @@ func promptYesNo(prompt string, defaultValue bool) bool {
 	}
 
 	fmt.Fprint(os.Stderr, promptStr)
-	reader := bufio.NewReader(os.Stdin)
-	response, err := reader.ReadString('\n')
+	response, err := readLine(reader)
 	if err != nil {
 		return false
 	}
@@ -77,9 +81,12 @@ func promptYesNo(prompt string, defaultValue bool) bool {
 
 // promptYesNoAll prompts for y/n/a (yes, no, approve all). Returns 'y', 'n', or 'a'.
 func promptYesNoAll(prompt string) byte {
+	return promptYesNoAllWithReader(prompt, bufio.NewReader(os.Stdin))
+}
+
+func promptYesNoAllWithReader(prompt string, reader *bufio.Reader) byte {
 	fmt.Fprintf(os.Stderr, "%s (Y/n/a): ", prompt)
-	reader := bufio.NewReader(os.Stdin)
-	response, err := reader.ReadString('\n')
+	response, err := readLine(reader)
 	if err != nil {
 		return 'n'
 	}
@@ -97,6 +104,11 @@ func promptYesNoAll(prompt string) byte {
 // toolApprover manages tool call approval state across a session.
 type toolApprover struct {
 	approveAll bool
+	reader     *bufio.Reader
+}
+
+func newToolApprover(reader *bufio.Reader) *toolApprover {
+	return &toolApprover{reader: reader}
 }
 
 // approveToolCalls prompts the user to approve each tool in a batch.
@@ -117,7 +129,7 @@ func (ta *toolApprover) approveToolCalls(calls []messages.ChatMessageToolCall) [
 		}
 		fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled(label))
 
-		switch promptYesNoAll("  allow?") {
+		switch promptYesNoAllWithReader("  allow?", ta.reader) {
 		case 'y':
 			approved[i] = true
 		case 'a':
@@ -136,4 +148,15 @@ func (ta *toolApprover) approveToolCalls(calls []messages.ChatMessageToolCall) [
 // isTerminal checks if output is going to a terminal
 func isTerminal() bool {
 	return term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
+}
+
+func readLine(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err == nil {
+		return strings.TrimRight(line, "\r\n"), nil
+	}
+	if err == io.EOF && line != "" {
+		return strings.TrimRight(line, "\r\n"), nil
+	}
+	return "", err
 }
