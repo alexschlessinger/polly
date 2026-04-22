@@ -26,6 +26,11 @@ type StatusHandler interface {
 	UpdateStreamingProgress(bytes int)
 	UpdateThinkingProgress(tokens int)
 	RecordTurnTokens(in, out int)
+
+	// ContentWriter returns the writer to use for REPL/content output. The
+	// fixed status bar implementation uses this to serialize prompt/content
+	// writes with bar repaints; simpler handlers just return os.Stdout.
+	ContentWriter() io.Writer
 }
 
 // Status manages terminal title updates for status display
@@ -209,3 +214,7 @@ func (s *Status) Clear() {
 
 // RecordTurnTokens is a no-op for the window-title status handler.
 func (s *Status) RecordTurnTokens(in, out int) {}
+
+// ContentWriter returns os.Stdout for the window-title status handler —
+// content is printed normally and only the title bar is updated.
+func (s *Status) ContentWriter() io.Writer { return os.Stdout }
