@@ -75,10 +75,7 @@ func formatElapsed(d time.Duration) string {
 // renderBar turns a state snapshot into a single styled line of at most `width`
 // visible columns. Fields are dropped in this order when the line doesn't fit:
 // model, elapsed, tools, skills. Returns plain text (no ANSI styling). The
-// caller (paintLocked) wraps the result in colors.
-// Drop priorities for renderBar fields. Higher value = dropped sooner when
-// the line doesn't fit. Named constants prevent re-introducing the bug where
-// these were inverted relative to the documented drop order.
+// caller wraps the result in colors via styleStatusLine.
 const (
 	keepAlways  = 0
 	dropSkills  = 1
@@ -175,11 +172,8 @@ const (
 	esc         = "\x1b"
 	saveCursor  = esc + "7"
 	restCursor  = esc + "8"
-	showCursor  = esc + "[?25h"
 	clearLine   = esc + "[2K"
 	resetRegion = esc + "[r"
-	titlePush   = esc + "[22;0t"
-	titlePop    = esc + "[23;0t"
 )
 
 // sizer reports the current terminal dimensions (columns, rows).
@@ -187,12 +181,9 @@ type sizer interface {
 	Size() (int, int, error)
 }
 
-// statusBar pins a one-line status display at the bottom of the terminal using
-// DECSTBM. The single mutex serializes the bar's own state mutations and its
-// own paint bursts; it does NOT synchronize against external goroutines that
-// write directly to the same Writer. Callers that share the writer with the
-// streaming agent output must accept occasional visual interleaving, or route
-// all stdio through a bar-aware writer (out of scope for this type).
+// statusBar keeps the bottom row reserved for a fixed status line via DECSTBM.
+// User-visible content scrolls inside rows 1..h-1, while the bar is repainted
+// at row h with absolute cursor addressing and the prior cursor restored.
 type statusBar struct {
 	out io.Writer
 	sz  sizer
@@ -200,6 +191,11 @@ type statusBar struct {
 	mu        sync.Mutex
 	installed bool
 	torn      bool
+	resizing  bool
+	visible   bool // false when the terminal is too small for the bar
+	barShown  bool // true when bar is currently painted on the terminal
+	paintedW  int  // visibleWidth of the last rendered bar text
+	paintedLn string
 	state     barState
 	cachedW   int
 	cachedH   int
@@ -255,7 +251,30 @@ func (b *statusBar) SetCounts(tools, skills int) {
 // meet the minimum requirements. Callers fall back to the window-title Status.
 var errStatusBarUnavailable = errors.New("terminal does not support status bar")
 
-// Install reserves the bottom row and paints the initial status line.
+const minStatusBarCols = 28
+
+func supportsStatusBar(w, h int) bool {
+	return h >= 10 && w >= minStatusBarCols && os.Getenv("TERM") != "dumb"
+}
+
+func paintWidth(w int) int {
+	if w <= 1 {
+		return 1
+	}
+	// Reserve the last column so painting the bar can't trigger autowrap on
+	// a freshly-shown bar at full terminal width.
+	return w - 1
+}
+
+func cursorPos(row, col int) string {
+	return fmt.Sprintf(esc+"[%d;%dH", row, col)
+}
+
+func scrollRegion(bottom int) string {
+	return fmt.Sprintf(esc+"[1;%dr", bottom)
+}
+
+// Install paints the initial bar and starts the ticker + resize watcher.
 func (b *statusBar) Install() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -263,20 +282,13 @@ func (b *statusBar) Install() error {
 		return nil
 	}
 	w, h, err := b.sz.Size()
-	if err != nil || h < 10 || w < 20 || os.Getenv("TERM") == "dumb" {
+	if err != nil || !supportsStatusBar(w, h) {
 		return errStatusBarUnavailable
 	}
 	b.cachedW, b.cachedH = w, h
 	b.installed = true
-
-	fmt.Fprint(b.out, titlePush)
-	fmt.Fprintf(b.out, esc+"]0;polly · %s\x07", b.state.contextName)
-	// Erase the visible screen and home the cursor so the user enters the
-	// REPL on a clean slate instead of layering on top of the previous
-	// terminal contents. \x1b[2J leaves scrollback intact on modern terms.
-	fmt.Fprint(b.out, esc+"[2J", esc+"[H")
-	fmt.Fprintf(b.out, esc+"[1;%dr", h-1)
-	fmt.Fprint(b.out, esc+"[1;1H")
+	b.visible = true
+	b.applyRegionLocked()
 	b.paintLocked()
 	b.done = make(chan struct{})
 	b.startTicker(b.done)
@@ -284,7 +296,8 @@ func (b *statusBar) Install() error {
 	return nil
 }
 
-// Uninstall resets the scroll region and restores the window title. Idempotent.
+// Uninstall clears the bar, resets the scroll region, and stops the ticker.
+// Idempotent.
 func (b *statusBar) Uninstall() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -296,29 +309,107 @@ func (b *statusBar) Uninstall() {
 		close(b.done)
 		b.done = nil
 	}
-	fmt.Fprint(b.out, saveCursor)
-	fmt.Fprintf(b.out, esc+"[%d;1H", b.cachedH)
-	fmt.Fprint(b.out, clearLine, resetRegion, restCursor, showCursor)
-	fmt.Fprint(b.out, titlePop)
-	fmt.Fprintf(b.out, esc+"]0;\x07")
+	if b.barShown {
+		b.clearBarLocked(b.wrappedRowsForWidth(b.cachedW))
+	}
+	b.resetRegionLocked()
+	b.visible = false
 }
 
-// paintLocked writes a single status-line repaint. Caller must hold b.mu.
-// The full save+move+clear+content+restore sequence is built in memory and
-// emitted in one Write so it can't interleave with concurrent stderr writes
-// from printToolStart/printToolEnd or other goroutines sharing the writer.
-func (b *statusBar) paintLocked() {
-	if !b.installed || b.torn {
+func (b *statusBar) applyRegionLocked() {
+	if b.cachedH < 2 {
 		return
 	}
-	styled := styleStatusLine(renderBar(b.state, b.cachedW), b.state.turnState)
-	fmt.Fprint(b.out, saveCursor+fmt.Sprintf(esc+"[%d;1H", b.cachedH)+clearLine+styled+restCursor)
+	fmt.Fprintf(b.out, "%s%s%s", saveCursor, scrollRegion(b.cachedH-1), restCursor)
+}
+
+func (b *statusBar) resetRegionLocked() {
+	fmt.Fprintf(b.out, "%s%s%s", saveCursor, resetRegion, restCursor)
+}
+
+func (b *statusBar) wrappedRowsForWidth(width int) int {
+	if b.paintedW <= 0 {
+		return 1
+	}
+	pw := paintWidth(width)
+	if pw <= 0 {
+		pw = 1
+	}
+	rows := (b.paintedW + pw - 1) / pw
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
+// paintLocked repaints the fixed bottom-row bar and restores the content
+// cursor. Caller must hold b.mu.
+func (b *statusBar) paintLocked() {
+	if !b.installed || b.torn || !b.visible {
+		return
+	}
+	rendered := renderBar(b.state, paintWidth(b.cachedW))
+	styled := styleStatusLine(rendered, b.state.turnState)
+	fmt.Fprintf(b.out, "%s%s%s%s%s", saveCursor, cursorPos(b.cachedH, 1), clearLine, styled, restCursor)
+	b.barShown = true
+	b.paintedW = visibleWidth(rendered)
+	b.paintedLn = rendered
+}
+
+// clearBarLocked clears the bar row and any wrapped residue the terminal may
+// have introduced above it after a width shrink. Caller must hold b.mu.
+func (b *statusBar) clearBarLocked(rows int) {
+	if rows < 1 {
+		rows = 1
+	}
+	if b.cachedH < 1 {
+		return
+	}
+	start := b.cachedH - rows + 1
+	if start < 1 {
+		start = 1
+	}
+	var seq strings.Builder
+	seq.WriteString(saveCursor)
+	for row := start; row <= b.cachedH; row++ {
+		seq.WriteString(cursorPos(row, 1))
+		seq.WriteString(clearLine)
+	}
+	seq.WriteString(restCursor)
+	fmt.Fprint(b.out, seq.String())
+	b.barShown = false
+	b.paintedLn = ""
+}
+
+func (b *statusBar) clearWidthForResize(minWidth, finalWidth int) int {
+	clearWidth := finalWidth
+	if minWidth > 0 && minWidth < clearWidth {
+		clearWidth = minWidth
+	}
+	// If a resize burst finishes at the same width it started (or wider), we
+	// may have missed transient narrower widths because SIGWINCH coalesced.
+	// Clear conservatively for the narrowest visible supported width so wrapped
+	// bar residue from a skipped narrow phase doesn't survive the final repaint.
+	if finalWidth >= b.cachedW && clearWidth > minStatusBarCols {
+		clearWidth = minStatusBarCols
+	}
+	if clearWidth < 1 {
+		return 1
+	}
+	return clearWidth
+}
+
+// Write implements io.Writer. Content writes stay in the scroll region above
+// the fixed bar. The mutex only serializes our own writes so ticker / resize
+// repaints cannot interleave with prompt, tool, or streaming output.
+func (b *statusBar) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.out.Write(p)
 }
 
 // styleStatusLine wraps the rendered line in barFieldStyle and substitutes a
-// highlighted (or error-colored) version of the turnState token. The
-// substitution preserves the field-style wrapping; we just swap one
-// occurrence of the state text for the active style.
+// highlighted (or error-colored) version of the turnState token.
 func styleStatusLine(line, turnState string) string {
 	base := barFieldStyle.Styled(line)
 	if turnState == "" || turnState == "idle" {
@@ -334,7 +425,9 @@ func styleStatusLine(line, turnState string) string {
 func (b *statusBar) setState(mut func(*barState)) {
 	b.mu.Lock()
 	mut(&b.state)
-	b.paintLocked()
+	if !b.resizing {
+		b.paintLocked()
+	}
 	b.mu.Unlock()
 }
 
@@ -343,14 +436,11 @@ func (b *statusBar) setState(mut func(*barState)) {
 // barely costs anything. The line-diff cache suppresses no-op paints.
 const tickInterval = 250 * time.Millisecond
 
-// startTicker spawns the redraw goroutine. It stops when done is closed, or
-// when it observes the bar has been torn down (so a forgotten close still
-// lets the goroutine exit within one tick).
+// startTicker spawns the redraw goroutine. It stops when done is closed.
 func (b *statusBar) startTicker(done <-chan struct{}) {
 	go func() {
 		t := time.NewTicker(tickInterval)
 		defer t.Stop()
-		var last string
 		for {
 			select {
 			case <-done:
@@ -361,10 +451,9 @@ func (b *statusBar) startTicker(done <-chan struct{}) {
 					b.mu.Unlock()
 					return
 				}
-				line := renderBar(b.state, b.cachedW)
-				if line != last {
+				line := renderBar(b.state, paintWidth(b.cachedW))
+				if !b.resizing && b.visible && (!b.barShown || line != b.paintedLn) {
 					b.paintLocked()
-					last = line
 				}
 				b.mu.Unlock()
 			}
@@ -372,29 +461,49 @@ func (b *statusBar) startTicker(done <-chan struct{}) {
 	}()
 }
 
-// handleResize re-measures the terminal and either reapplies the scroll
-// region + repaints, or uninstalls the bar if the new height is too small.
-// Safe to call from a signal goroutine. Do not hold b.mu when entering this
-// function: the too-small branch calls Uninstall, which acquires b.mu itself.
+// handleResizeBurst applies a settled resize after the watcher has observed a
+// burst of SIGWINCH events. minWidth is the narrowest width seen in the burst;
+// finalW/finalH are the settled dimensions.
+func (b *statusBar) handleResizeBurst(minWidth, finalW, finalH int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.installed || b.torn {
+		return
+	}
+	defer func() { b.resizing = false }()
+
+	clearRows := 0
+	if b.barShown {
+		clearRows = b.wrappedRowsForWidth(b.clearWidthForResize(minWidth, finalW))
+	}
+	b.cachedW, b.cachedH = finalW, finalH
+	supported := supportsStatusBar(finalW, finalH)
+
+	if supported {
+		if clearRows > 0 {
+			b.clearBarLocked(clearRows)
+		}
+		b.visible = true
+		b.applyRegionLocked()
+		b.paintLocked()
+	} else {
+		if clearRows > 0 {
+			b.clearBarLocked(clearRows)
+		}
+		b.resetRegionLocked()
+		b.visible = false
+	}
+}
+
+// handleResize re-measures the terminal and applies the resize immediately.
+// Tests call this directly; the live watcher uses handleResizeBurst after it
+// has collected a resize burst.
 func (b *statusBar) handleResize() {
 	w, h, err := b.sz.Size()
 	if err != nil {
 		return
 	}
-	if h < 3 {
-		// Uninstall acquires b.mu — must be called BEFORE locking below.
-		b.Uninstall()
-		return
-	}
-	b.mu.Lock()
-	if !b.installed || b.torn {
-		b.mu.Unlock()
-		return
-	}
-	b.cachedW, b.cachedH = w, h
-	fmt.Fprintf(b.out, esc+"[1;%dr", h-1)
-	b.paintLocked()
-	b.mu.Unlock()
+	b.handleResizeBurst(w, w, h)
 }
 
 // --- StatusHandler implementation ---
@@ -414,9 +523,7 @@ func (b *statusBar) Stop() {
 }
 
 // Clear is called by the agent loop after a tool finishes (OnToolEnd) or
-// errors (OnError). The previous turnState was "tool: <name>", which would
-// otherwise linger in the bar for seconds while the model decides what to do
-// next. Reset to "waiting" so the bar stops claiming an active tool.
+// errors (OnError). Reset to "waiting" so the bar stops claiming an active tool.
 func (b *statusBar) Clear() {
 	b.setState(func(s *barState) { s.turnState = "waiting" })
 }
@@ -452,6 +559,10 @@ func (b *statusBar) RecordTurnTokens(in, out int) {
 	b.setState(func(s *barState) { s.lastIn = in; s.lastOut = out })
 }
 
+// ContentWriter routes terminal output through the bar so all writes share the
+// same mutex as bar repaints.
+func (b *statusBar) ContentWriter() io.Writer { return b }
+
 // snapshot returns a copy of the current state under the mutex. Test-only
 // helper that lets state assertions stay race-free even when the ticker and
 // SIGWINCH goroutines are live.
@@ -464,21 +575,77 @@ func (b *statusBar) snapshot() barState {
 // Compile-time interface assertion.
 var _ StatusHandler = (*statusBar)(nil)
 
-// watchResizes spawns a goroutine that listens for SIGWINCH until done closes.
-func (b *statusBar) watchResizes(done <-chan struct{}) {
-	// Buffer 1 coalesces signal bursts: each handleResize re-measures from
-	// scratch, so dropped signals never lose size info.
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGWINCH)
-	go func() {
-		defer signal.Stop(ch)
-		for {
+const (
+	resizeSettleInterval = 16 * time.Millisecond
+	resizeStableSamples  = 2
+)
+
+func (b *statusBar) sampleSize() (int, int, error) {
+	return b.sz.Size()
+}
+
+// watchResizeLoop drains resize bursts, tracks the narrowest width seen during
+// the burst, suppresses intermediate repaints, then redraws once at the final
+// settled size.
+func (b *statusBar) watchResizeLoop(done <-chan struct{}, ch <-chan os.Signal) {
+	for {
+		select {
+		case <-done:
+			return
+		case <-ch:
+		}
+
+		w, h, err := b.sampleSize()
+		if err != nil {
+			continue
+		}
+		minWidth, finalW, finalH := w, w, h
+
+		b.mu.Lock()
+		if !b.installed || b.torn {
+			b.mu.Unlock()
+			return
+		}
+		b.resizing = true
+		b.mu.Unlock()
+
+		stable := 0
+		for stable < resizeStableSamples {
 			select {
 			case <-done:
 				return
 			case <-ch:
-				b.handleResize()
+				stable = 0
+			case <-time.After(resizeSettleInterval):
+				stable++
+			}
+
+			w, h, err = b.sampleSize()
+			if err != nil {
+				continue
+			}
+			if w < minWidth {
+				minWidth = w
+			}
+			if w != finalW || h != finalH {
+				finalW, finalH = w, h
+				stable = 0
 			}
 		}
+
+		b.handleResizeBurst(minWidth, finalW, finalH)
+	}
+}
+
+// watchResizes spawns a goroutine that listens for SIGWINCH until done closes.
+func (b *statusBar) watchResizes(done <-chan struct{}) {
+	// Buffer 1 is fine here because watchResizeLoop drains bursts by polling the
+	// terminal size until it stabilizes, so dropped intermediate signals do not
+	// lose the narrowest width that matters for wrap-residue cleanup.
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGWINCH)
+	go func() {
+		defer signal.Stop(ch)
+		b.watchResizeLoop(done, ch)
 	}()
 }
