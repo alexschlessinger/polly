@@ -80,6 +80,7 @@ func parseConfig(cmd *cli.Command) *Config {
 
 		// Input/Output configuration
 		Prompt:     cmd.String("prompt"),
+		PromptSet:  cmd.IsSet("prompt"),
 		Files:      cmd.StringSlice("file"),
 		SchemaPath: cmd.String("schema"),
 		Quiet:      cmd.Bool("quiet"),
@@ -120,7 +121,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 	flags = append(flags, skillConfigFlags(listSkillsFlag)...)
 	flags = append(flags, toolConfigFlags()...)
 	flags = append(flags, inputConfigFlags()...)
-	flags = append(flags, contextManagementFlags(resetFlag, listFlag, deleteFlag, addFlag, purgeFlag, createFlag, showFlag)...)
+	flags = append(flags, contextManagementFlags()...)
 	flags = append(flags, historyConfigFlags()...)
 	flags = append(flags, approvalConfigFlags()...)
 	flags = append(flags, sandboxConfigFlags()...)
@@ -236,7 +237,7 @@ func inputConfigFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:    "prompt",
 			Aliases: []string{"p"},
-			Usage:   "Initial prompt (reads from stdin if not provided)",
+			Usage:   "Initial prompt (reads from stdin if not provided; starts REPL when neither is provided)",
 		},
 		&cli.StringFlag{
 			Name:    "system",
@@ -257,7 +258,7 @@ func inputConfigFlags() []cli.Flag {
 	}
 }
 
-func contextManagementFlags(resetFlag *cli.StringFlag, listFlag *cli.BoolFlag, deleteFlag *cli.StringFlag, addFlag *cli.BoolFlag, purgeFlag *cli.BoolFlag, createFlag *cli.StringFlag, showFlag *cli.StringFlag) []cli.Flag {
+func contextManagementFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
 			Name:    "context",
@@ -270,13 +271,6 @@ func contextManagementFlags(resetFlag *cli.StringFlag, listFlag *cli.BoolFlag, d
 			Aliases: []string{"L"},
 			Usage:   "Use the last active context",
 		},
-		resetFlag,
-		listFlag,
-		deleteFlag,
-		addFlag,
-		purgeFlag,
-		createFlag,
-		showFlag,
 	}
 }
 
@@ -293,8 +287,9 @@ func historyConfigFlags() []cli.Flag {
 func approvalConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{
-			Name:  "confirm",
-			Usage: "Require confirmation before each tool call",
+			Name:        "confirm",
+			Usage:       "Require confirmation before each tool call",
+			DefaultText: "false",
 		},
 	}
 }

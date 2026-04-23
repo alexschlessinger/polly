@@ -32,7 +32,7 @@ GLOBAL OPTIONS:
    --listskills                                             List discovered Agent Skills
    --tool string, -t string [ --tool string, -t string ]    Tool provider: shell script (provides 1 tool) or MCP server (can provide multiple tools). Can be specified multiple times
    --tooltimeout duration                                   Timeout for tool execution (default: 30s) [$POLLYTOOL_TOOLTIMEOUT]
-   --prompt string, -p string                               Initial prompt (reads from stdin if not provided)
+   --prompt string, -p string                               Initial prompt (reads from stdin if not provided; starts REPL when neither is provided)
    --system string, -s string                               System prompt (default: "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.") [$POLLYTOOL_SYSTEM]
    --file string, -f string [ --file string, -f string ]    File, image, or URL to include (can be specified multiple times)
    --schema string                                          Path to JSON schema file for structured output
@@ -76,6 +76,9 @@ go build -o polly ./cmd/polly/
 export POLLYTOOL_ANTHROPICKEY=...
 export POLLYTOOL_OPENAIKEY=...
 
+# Bare polly drops into a simple text REPL
+polly
+
 # Basic
 echo "Hello?" | polly
 
@@ -113,11 +116,14 @@ polly --create project --model openai/gpt-5.4 --maxtokens 4096
 # Show context configuration
 polly --show project
 
-# Use the context (prompt required via -p or piped input)
+# Use the context in one-shot mode
 echo "I'm working on a Python web app" | polly -c project
 
 # Continue the conversation
 polly -c project -p "What database should I use?"
+
+# Or continue interactively in the REPL
+polly -c project
 
 # Reset a context (clear conversation, keep settings)
 polly --reset project

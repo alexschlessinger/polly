@@ -3,10 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -16,19 +17,33 @@ func toolDisplayEnabled(config *Config) bool {
 	return !config.Quiet && isTerminal()
 }
 
-// printToolStart prints a tool start indicator with summarized args to stderr.
-func printToolStart(tc messages.ChatMessageToolCall) {
-	fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled("→ "+toolLabel(tc)))
+// printToolStart prints a tool start indicator with summarized args.
+func printToolStart(w io.Writer, tc messages.ChatMessageToolCall) {
+	fmt.Fprintf(w, "  %s %s\n",
+		toolStartStyle.Styled("→"),
+		toolLabelStyle.Styled(toolLabel(tc)))
 }
 
-// printToolEnd prints a tool completion line with duration to stderr.
-func printToolEnd(tc messages.ChatMessageToolCall, duration time.Duration, err error) {
+// printToolEnd prints a tool completion line with duration.
+func printToolEnd(w io.Writer, tc messages.ChatMessageToolCall, duration time.Duration, err error, result string) {
 	label := toolLabel(tc)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "  %s\n", errorStyle.Styled(fmt.Sprintf("✗ %.1fs %s — %s", duration.Seconds(), label, err)))
-	} else {
-		fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled(fmt.Sprintf("✓ %.1fs %s", duration.Seconds(), label)))
+	if result == llm.ToolDeniedContent {
+		fmt.Fprintf(w, "  %s %s\n",
+			toolErrStyle.Styled("✗"),
+			toolLabelStyle.Styled("denied "+label))
+		return
 	}
+	dur := fmt.Sprintf("%.1fs", duration.Seconds())
+	if err != nil {
+		fmt.Fprintf(w, "  %s %s %s\n",
+			toolErrStyle.Styled("✗"),
+			toolLabelStyle.Styled(dur+" "+label),
+			toolErrStyle.Styled("- "+err.Error()))
+		return
+	}
+	fmt.Fprintf(w, "  %s %s\n",
+		toolOkStyle.Styled("✓"),
+		toolLabelStyle.Styled(dur+" "+label))
 }
 
 func toolLabel(tc messages.ChatMessageToolCall) string {
