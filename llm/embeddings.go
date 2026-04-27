@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
+	"google.golang.org/genai"
 )
 
 const defaultEmbeddingTimeout = 120 * time.Second
@@ -22,6 +24,7 @@ type EmbeddingRequest struct {
 	Model      string   // provider/model format, e.g. openai/text-embedding-3-large
 	Input      []string // one or more texts
 	Dimensions int      // optional output dimensions for supported providers
+	TaskType   string   // optional, gemini-only; e.g. "RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY", "CLASSIFICATION"
 }
 
 // EmbeddingResponse is the provider-agnostic embeddings result.
@@ -83,6 +86,12 @@ func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, erro
 			return nil, err
 		}
 		return embedOpenAI(ctx, req, model, apiKey)
+	case "gemini":
+		apiKey, err := resolveEmbeddingAPIKey(provider, req.APIKey, req.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		return embedGemini(ctx, req, model, apiKey)
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider %q", provider)
 	}
@@ -153,4 +162,80 @@ func embedOpenAI(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 		Embeddings:  embeddings,
 		InputTokens: int(resp.Usage.TotalTokens),
 	}, nil
+}
+
+func embedGemini(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error) {
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = defaultEmbeddingTimeout
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	client, err := genai.NewClient(requestCtx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating gemini client: %w", err)
+	}
+
+	contents := make([]*genai.Content, len(req.Input))
+	for i, text := range req.Input {
+		contents[i] = &genai.Content{
+			Parts: []*genai.Part{{Text: text}},
+		}
+	}
+
+	config := &genai.EmbedContentConfig{}
+	if req.Dimensions > 0 {
+		dim := int32(req.Dimensions)
+		config.OutputDimensionality = &dim
+	}
+	if strings.TrimSpace(req.TaskType) != "" {
+		config.TaskType = req.TaskType
+	}
+
+	resp, err := client.Models.EmbedContent(requestCtx, model, contents, config)
+	if err != nil {
+		return nil, fmt.Errorf("gemini embedding request failed: %w", err)
+	}
+	if len(resp.Embeddings) == 0 {
+		return nil, fmt.Errorf("gemini embedding response returned no vectors")
+	}
+
+	// Gemini API only pre-normalizes outputs at the native 3072 dimension.
+	// Other MRL truncations must be L2-normalized before cosine similarity is meaningful.
+	needsNormalize := req.Dimensions > 0 && req.Dimensions != 3072
+
+	embeddings := make([][]float64, len(resp.Embeddings))
+	for i, item := range resp.Embeddings {
+		vector := make([]float64, len(item.Values))
+		for j, value := range item.Values {
+			vector[j] = float64(value)
+		}
+		if needsNormalize {
+			l2Normalize(vector)
+		}
+		embeddings[i] = vector
+	}
+
+	return &EmbeddingResponse{
+		Model:      model,
+		Embeddings: embeddings,
+	}, nil
+}
+
+func l2Normalize(v []float64) {
+	var sumSq float64
+	for _, x := range v {
+		sumSq += x * x
+	}
+	if sumSq == 0 {
+		return
+	}
+	norm := math.Sqrt(sumSq)
+	for i := range v {
+		v[i] /= norm
+	}
 }

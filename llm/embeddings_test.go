@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 )
@@ -81,5 +82,33 @@ func TestEmbed_OpenAIBaseURLDoesNotFailAPIKeyValidation(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "missing API key") {
 		t.Fatalf("expected non-validation error, got %v", err)
+	}
+}
+
+func TestEmbed_GeminiMissingAPIKey(t *testing.T) {
+	t.Setenv("POLLYTOOL_GEMINIKEY", "")
+
+	_, err := Embed(context.Background(), &EmbeddingRequest{
+		Model: "gemini/gemini-embedding-001",
+		Input: []string{"hello"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "POLLYTOOL_GEMINIKEY") {
+		t.Fatalf("expected missing API key error, got %v", err)
+	}
+}
+
+func TestL2Normalize(t *testing.T) {
+	v := []float64{3, 4}
+	l2Normalize(v)
+	if math.Abs(v[0]-0.6) > 1e-9 || math.Abs(v[1]-0.8) > 1e-9 {
+		t.Fatalf("expected [0.6, 0.8], got %v", v)
+	}
+
+	z := []float64{0, 0, 0}
+	l2Normalize(z)
+	for i, x := range z {
+		if x != 0 {
+			t.Fatalf("expected zero vector unchanged at index %d, got %v", i, z)
+		}
 	}
 }
