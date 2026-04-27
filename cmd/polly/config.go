@@ -14,6 +14,7 @@ import (
 
 var (
 	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama", "huggingface"}
+	validEmbedProviders  = []string{"openai", "gemini"}
 	purgeDisallowedFlags = []string{
 		"context", "last", "prompt", "file", "model", "temp",
 		"maxtokens", "maxiterations", "timeout", "tool", "mcp", "system", "schema",
@@ -396,18 +397,26 @@ func validateNoPromptOrFiles(cmd *cli.Command, flagName string) error {
 }
 
 func validateModel(model string) error {
+	return validateModelWithProviders(model, validModelProviders, "anthropic/claude-sonnet-4-6")
+}
+
+func validateEmbedModel(model string) error {
+	return validateModelWithProviders(model, validEmbedProviders, "openai/text-embedding-3-large")
+}
+
+func validateModelWithProviders(model string, providers []string, example string) error {
 	if model == "" {
 		return nil
 	}
 
 	parts := strings.SplitN(model, "/", 2)
 	if len(parts) != 2 {
-		return fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-5.4', 'anthropic/claude-sonnet-4-6'). Got: %s", model)
+		return fmt.Errorf("model must include provider prefix (e.g., %q). Got: %s", example, model)
 	}
 
 	provider := strings.ToLower(parts[0])
-	if !slices.Contains(validModelProviders, provider) {
-		return fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(validModelProviders, ", "))
+	if !slices.Contains(providers, provider) {
+		return fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(providers, ", "))
 	}
 
 	return nil

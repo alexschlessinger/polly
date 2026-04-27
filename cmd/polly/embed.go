@@ -24,6 +24,9 @@ func embedCommand() *cli.Command {
 				Usage:   "Embedding model (provider/model format)",
 				Value:   "openai/text-embedding-3-large",
 				Sources: cli.EnvVars("POLLYTOOL_EMBED_MODEL"),
+				Validator: func(model string) error {
+					return validateEmbedModel(model)
+				},
 			},
 			&cli.IntFlag{
 				Name:  "dimensions",
@@ -45,6 +48,16 @@ func embedCommand() *cli.Command {
 				Aliases: []string{"i"},
 				Usage:   "Text to embed (can be specified multiple times)",
 			},
+			&cli.StringSliceFlag{
+				Name:    "file",
+				Aliases: []string{"f"},
+				Usage:   "File whose contents to embed as a single vector (can be specified multiple times)",
+			},
+			&cli.StringFlag{
+				Name:    "task-type",
+				Usage:   "Gemini task type (e.g. RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, CLASSIFICATION)",
+				Sources: cli.EnvVars("POLLYTOOL_EMBED_TASKTYPE"),
+			},
 			&cli.BoolFlag{
 				Name:  "raw",
 				Usage: "Output raw vectors only (one JSON array per line)",
@@ -55,9 +68,12 @@ func embedCommand() *cli.Command {
 }
 
 func runEmbed(ctx context.Context, cmd *cli.Command) error {
-	input := collectEmbedInput(cmd)
+	input, err := collectEmbedInput(cmd)
+	if err != nil {
+		return err
+	}
 	if len(input) == 0 {
-		return fmt.Errorf("no input provided. use -i flags, positional args, or stdin")
+		return fmt.Errorf("no input provided. use -i, -f, positional args, or stdin")
 	}
 
 	resp, err := llm.Embed(ctx, &llm.EmbeddingRequest{
@@ -66,6 +82,7 @@ func runEmbed(ctx context.Context, cmd *cli.Command) error {
 		Timeout:    cmd.Duration("timeout"),
 		Input:      input,
 		Dimensions: int(cmd.Int("dimensions")),
+		TaskType:   cmd.String("task-type"),
 	})
 	if err != nil {
 		return err
@@ -77,25 +94,35 @@ func runEmbed(ctx context.Context, cmd *cli.Command) error {
 	return outputJSON(resp)
 }
 
-func collectEmbedInput(cmd *cli.Command) []string {
-	// priority: -i flags, then positional args, then stdin
-	if inputs := cmd.StringSlice("input"); len(inputs) > 0 {
-		return inputs
+func collectEmbedInput(cmd *cli.Command) ([]string, error) {
+	var inputs []string
+	inputs = append(inputs, cmd.StringSlice("input")...)
+
+	for _, path := range cmd.StringSlice("file") {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", path, err)
+		}
+		inputs = append(inputs, string(data))
 	}
-	if args := cmd.Args().Slice(); len(args) > 0 {
-		return args
+
+	inputs = append(inputs, cmd.Args().Slice()...)
+
+	if len(inputs) > 0 {
+		return inputs, nil
 	}
 	if hasStdinData() {
 		scanner := bufio.NewScanner(os.Stdin)
-		var lines []string
 		for scanner.Scan() {
 			if line := strings.TrimSpace(scanner.Text()); line != "" {
-				lines = append(lines, line)
+				inputs = append(inputs, line)
 			}
 		}
-		return lines
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("reading stdin: %w", err)
+		}
 	}
-	return nil
+	return inputs, nil
 }
 
 type embedOutput struct {
