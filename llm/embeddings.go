@@ -180,20 +180,32 @@ func embedGemini(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 		return nil, fmt.Errorf("creating gemini client: %w", err)
 	}
 
-	contents := make([]*genai.Content, len(req.Input))
-	for i, text := range req.Input {
-		contents[i] = &genai.Content{
-			Parts: []*genai.Part{{Text: text}},
-		}
-	}
-
 	config := &genai.EmbedContentConfig{}
 	if req.Dimensions > 0 {
 		dim := int32(req.Dimensions)
 		config.OutputDimensionality = &dim
 	}
-	if strings.TrimSpace(req.TaskType) != "" {
-		config.TaskType = req.TaskType
+
+	// gemini-embedding-2 ignores the task_type field and expects task instructions
+	// prepended to each input; older models keep using the SDK's TaskType config.
+	var prefix string
+	if taskType := strings.TrimSpace(req.TaskType); taskType != "" {
+		if isGemini2EmbedModel(model) {
+			p, err := gemini2TaskPrefix(taskType)
+			if err != nil {
+				return nil, err
+			}
+			prefix = p
+		} else {
+			config.TaskType = taskType
+		}
+	}
+
+	contents := make([]*genai.Content, len(req.Input))
+	for i, text := range req.Input {
+		contents[i] = &genai.Content{
+			Parts: []*genai.Part{{Text: prefix + text}},
+		}
 	}
 
 	resp, err := client.Models.EmbedContent(requestCtx, model, contents, config)
@@ -224,6 +236,32 @@ func embedGemini(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 		Model:      model,
 		Embeddings: embeddings,
 	}, nil
+}
+
+// gemini2TaskPrefixes maps the gemini-embedding-001 task_type enum onto the
+// prompt-prefix templates that gemini-embedding-2 expects. RETRIEVAL_DOCUMENT
+// uses the title/text format with no title since the API takes a single string.
+var gemini2TaskPrefixes = map[string]string{
+	"RETRIEVAL_QUERY":      "task: search result | query: ",
+	"RETRIEVAL_DOCUMENT":   "title: none | text: ",
+	"SEMANTIC_SIMILARITY":  "task: sentence similarity | query: ",
+	"CLASSIFICATION":       "task: classification | query: ",
+	"CLUSTERING":           "task: clustering | query: ",
+	"QUESTION_ANSWERING":   "task: question answering | query: ",
+	"FACT_VERIFICATION":    "task: fact checking | query: ",
+	"CODE_RETRIEVAL_QUERY": "task: code retrieval | query: ",
+}
+
+func isGemini2EmbedModel(model string) bool {
+	return strings.HasPrefix(model, "gemini-embedding-2")
+}
+
+func gemini2TaskPrefix(taskType string) (string, error) {
+	prefix, ok := gemini2TaskPrefixes[strings.ToUpper(taskType)]
+	if !ok {
+		return "", fmt.Errorf("unsupported task type %q for gemini-embedding-2", taskType)
+	}
+	return prefix, nil
 }
 
 func l2Normalize(v []float64) {
