@@ -78,6 +78,9 @@ func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, erro
 	if model == "" {
 		return nil, fmt.Errorf("embedding model name cannot be empty for provider %q", provider)
 	}
+	if req.TaskType != "" && provider != "gemini" {
+		return nil, fmt.Errorf("task-type is only supported with gemini models")
+	}
 
 	switch provider {
 	case "openai":
