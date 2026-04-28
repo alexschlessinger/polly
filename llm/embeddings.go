@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"strings"
@@ -79,7 +80,7 @@ func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, erro
 		return nil, fmt.Errorf("embedding model name cannot be empty for provider %q", provider)
 	}
 	if req.TaskType != "" && provider != "gemini" {
-		return nil, fmt.Errorf("task-type is only supported with gemini models")
+		slog.Warn("embedding_task_type_ignored", "provider", provider, "task_type", req.TaskType)
 	}
 
 	switch provider {
