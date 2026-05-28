@@ -55,7 +55,7 @@ GLOBAL OPTIONS:
 
 ## Features
 
-- **Many Models**: OpenAI, Anthropic, Gemini, Ollama.
+- **Many Models**: OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Ollama.
 - **Multimodal**: Text, pics, random files.
 - **Structured Output**: JSON on purpose, not by accident.
 - **Tool Calling**: Bolt on shell scripts & MCP servers.
@@ -493,6 +493,28 @@ polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hel
 - Supports Gemini Pro and Flash models
 - Good balance of speed and capability
 - Reliable schema output support via ResponseSchema
+
+### DeepSeek
+- Supports DeepSeek's hosted models (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`)
+- API key in `POLLYTOOL_DEEPSEEKKEY`
+- Reasoning models emit a non-standard `reasoning_content` field that the API requires echoed back on follow-up turns; the provider captures and replays it automatically, so tool use works without configuration
+
+```bash
+export POLLYTOOL_DEEPSEEKKEY=...
+polly -m deepseek/deepseek-v4-pro -p "Hello!"
+```
+
+### OpenRouter
+- Routes to many upstream providers through one OpenAI-compatible endpoint
+- API key in `POLLYTOOL_OPENROUTERKEY`
+- Use the upstream `provider/model` slug after the `openrouter/` prefix
+
+```bash
+export POLLYTOOL_OPENROUTERKEY=...
+polly -m openrouter/anthropic/claude-sonnet-4-5 -p "Hello!"
+polly -m openrouter/openai/gpt-5 -p "Hello!"
+polly -m openrouter/deepseek/deepseek-chat -p "Hello!"
+```
 
 ### Ollama
 - Requires Ollama installation

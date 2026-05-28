@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama", "huggingface"}
+	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
 	validEmbedProviders  = []string{"openai", "gemini"}
 	purgeDisallowedFlags = []string{
 		"context", "last", "prompt", "file", "model", "temp",
@@ -100,6 +100,8 @@ func loadAPIKeys() map[string]string {
 		"anthropic":   os.Getenv("POLLYTOOL_ANTHROPICKEY"),
 		"gemini":      os.Getenv("POLLYTOOL_GEMINIKEY"),
 		"huggingface": os.Getenv("POLLYTOOL_HUGGINGFACEKEY"),
+		"deepseek":    os.Getenv("POLLYTOOL_DEEPSEEKKEY"),
+		"openrouter":  os.Getenv("POLLYTOOL_OPENROUTERKEY"),
 	}
 }
 
