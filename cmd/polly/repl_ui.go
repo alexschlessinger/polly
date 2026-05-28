@@ -3,67 +3,22 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	ui "github.com/metaspartan/gotui/v5"
+	"github.com/metaspartan/gotui/v5/widgets"
 	"golang.org/x/term"
 )
 
-const (
-	hideCursor = esc + "[?25l"
-	showCursor = esc + "[?25h"
-)
-
-type spanStyle int
-
-const (
-	spanPlain spanStyle = iota
-	spanPrompt
-	spanAssistant
-	spanToolStart
-	spanToolOK
-	spanToolErr
-	spanToolLabel
-	spanDim
-)
-
-func styleSpan(kind spanStyle, text string) string {
-	switch kind {
-	case spanPrompt:
-		return promptStyle.Styled(text)
-	case spanAssistant:
-		return assistantOut.Styled(text)
-	case spanToolStart:
-		return toolStartStyle.Styled(text)
-	case spanToolOK:
-		return toolOkStyle.Styled(text)
-	case spanToolErr:
-		return toolErrStyle.Styled(text)
-	case spanToolLabel:
-		return toolLabelStyle.Styled(text)
-	case spanDim:
-		return dimStyle.Styled(text)
-	default:
-		return text
-	}
-}
-
-type uiSpan struct {
-	text  string
-	style spanStyle
-}
-
+// transcriptKind classifies a transcript entry so it can be rendered with the
+// right glyph and color when converted to a styled row for the List widget.
 type transcriptKind int
 
 const (
@@ -84,271 +39,189 @@ type transcriptEntry struct {
 	errText  string
 }
 
-func (e transcriptEntry) logicalLines() [][]uiSpan {
+// turnState describes what the agent is currently doing for the status bar.
+type turnState int
+
+const (
+	turnStateIdle turnState = iota
+	turnStateWaiting
+	turnStateThinking
+	turnStateStreaming
+	turnStateTool
+	turnStateError
+)
+
+func (s turnState) label(toolName string) string {
+	switch s {
+	case turnStateIdle:
+		return "idle"
+	case turnStateWaiting:
+		return "waiting"
+	case turnStateThinking:
+		return "thinking"
+	case turnStateStreaming:
+		return "streaming"
+	case turnStateTool:
+		if toolName == "" {
+			return "tool"
+		}
+		return "tool: " + toolName
+	case turnStateError:
+		return "error"
+	default:
+		return ""
+	}
+}
+
+// styleEscape escapes [ and ] so user-supplied text isn't mistaken for the
+// inline style markup gotui's ParseStyles consumes.
+func styleEscape(s string) string {
+	s = strings.ReplaceAll(s, "[", `\[`)
+	s = strings.ReplaceAll(s, "]", `\]`)
+	return s
+}
+
+// styled wraps text in gotui's inline style markup. Color names come from
+// gotui's StyleParserColorMap; "" means no styling.
+func styled(text, fg, modifier string) string {
+	if text == "" {
+		return ""
+	}
+	text = styleEscape(text)
+	parts := []string{}
+	if fg != "" {
+		parts = append(parts, "fg:"+fg)
+	}
+	if modifier != "" {
+		parts = append(parts, "mod:"+modifier)
+	}
+	if len(parts) == 0 {
+		return text
+	}
+	return "[" + text + "](" + strings.Join(parts, ",") + ")"
+}
+
+// renderEntryRows renders a transcript entry as one or more List rows. The
+// List widget wraps long rows itself when WrapText is true; we only need to
+// split on explicit newlines.
+func renderEntryRows(e transcriptEntry) []string {
 	switch e.kind {
 	case transcriptUser:
-		return splitStyledText([]uiSpan{
-			{text: "> ", style: spanPrompt},
-			{text: e.text, style: spanPlain},
-		})
+		return splitLines(styled("> ", "skyblue", "bold") + styleEscape(e.text))
 	case transcriptAssistant:
-		return splitStyledText([]uiSpan{{text: e.text, style: spanAssistant}})
+		return splitLines(styleEscape(e.text))
 	case transcriptToolStart:
-		return [][]uiSpan{{
-			{text: "  →", style: spanToolStart},
-			{text: " " + e.text, style: spanToolLabel},
-		}}
+		return []string{"  " + styled("→", "teal", "") + " " + styled(e.text, "grey", "")}
 	case transcriptToolOK:
-		return [][]uiSpan{{
-			{text: "  ✓", style: spanToolOK},
-			{text: " " + strings.TrimSpace(strings.TrimSpace(e.duration+" "+e.text)), style: spanToolLabel},
-		}}
+		label := strings.TrimSpace(e.duration + " " + e.text)
+		return []string{"  " + styled("✓", "green", "bold") + " " + styled(label, "grey", "")}
 	case transcriptToolErr:
-		return [][]uiSpan{{
-			{text: "  ✗", style: spanToolErr},
-			{text: " " + strings.TrimSpace(strings.TrimSpace(e.duration+" "+e.text)), style: spanToolLabel},
-			{text: " - " + e.errText, style: spanToolErr},
-		}}
+		label := strings.TrimSpace(e.duration + " " + e.text)
+		row := "  " + styled("✗", "salmon", "bold") + " " + styled(label, "grey", "")
+		if e.errText != "" {
+			row += " " + styled("- "+e.errText, "salmon", "")
+		}
+		return []string{row}
 	case transcriptToolDenied:
-		return [][]uiSpan{{
-			{text: "  ✗", style: spanToolErr},
-			{text: " denied " + e.text, style: spanToolLabel},
-		}}
+		return []string{"  " + styled("✗", "salmon", "bold") + " " + styled("denied "+e.text, "grey", "")}
 	case transcriptNotice:
-		return splitStyledText([]uiSpan{{text: e.text, style: spanDim}})
+		return splitLines(styled(e.text, "grey", ""))
 	case transcriptBlank:
-		return [][]uiSpan{{}}
+		return []string{""}
 	default:
-		return [][]uiSpan{{{text: e.text, style: spanPlain}}}
+		return []string{styleEscape(e.text)}
 	}
 }
 
-func splitStyledText(spans []uiSpan) [][]uiSpan {
-	lines := [][]uiSpan{{}}
-	for _, span := range spans {
-		parts := strings.Split(span.text, "\n")
-		for i, part := range parts {
-			if part != "" {
-				lines[len(lines)-1] = append(lines[len(lines)-1], uiSpan{text: part, style: span.style})
-			}
-			if i < len(parts)-1 {
-				lines = append(lines, []uiSpan{})
-			}
-		}
+func splitLines(text string) []string {
+	if text == "" {
+		return []string{""}
 	}
-	return lines
+	return strings.Split(text, "\n")
 }
 
-func wrapStyledLine(spans []uiSpan, width int) []string {
-	if width < 1 {
-		return []string{""}
-	}
-	if len(spans) == 0 {
-		return []string{""}
-	}
+// replModel holds the REPL state. Mutated only from the event loop goroutine;
+// the gotui widgets are populated from this model on each render.
+type replModel struct {
+	transcript       []transcriptEntry
+	currentAssistant int
+	input            []rune
+	cursor           int
+	history          []string
+	historyIndex     int
+	historyDraft     string
 
-	var out []string
-	var b strings.Builder
-	cols := 0
-	flush := func() {
-		out = append(out, b.String())
-		b.Reset()
-		cols = 0
-	}
+	busy     bool
+	approval *approvalState
 
-	for _, span := range spans {
-		for _, r := range span.text {
-			if cols == width {
-				flush()
-			}
-			b.WriteString(styleSpan(span.style, string(r)))
-			cols++
-		}
-	}
-	if b.Len() > 0 || len(out) == 0 {
-		flush()
-	}
-	return out
+	state    turnState
+	toolName string
+
+	model       string
+	contextName string
+	tools       int
+	skills      int
+	quiet       bool
+
+	turnStarted time.Time
+	lastIn      int
+	lastOut     int
 }
 
 type approvalState struct {
-	calls   []messages.ChatMessageToolCall
-	index   int
-	results []bool
-	reply   chan []bool
+	calls []messages.ChatMessageToolCall
+	index int
+	reply chan []bool
+	out   []bool
 }
 
-func newApprovalState(calls []messages.ChatMessageToolCall, reply chan []bool) *approvalState {
-	return &approvalState{
-		calls:   calls,
-		results: make([]bool, len(calls)),
-		reply:   reply,
-	}
-}
-
-type replKeyKind int
-
-const (
-	keyRune replKeyKind = iota
-	keyEnter
-	keyBackspace
-	keyDelete
-	keyLeft
-	keyRight
-	keyUp
-	keyDown
-	keyHome
-	keyEnd
-	keyPageUp
-	keyPageDown
-	keyCtrlA
-	keyCtrlE
-	keyCtrlU
-	keyCtrlK
-	keyCtrlW
-	keyCtrlC
-	keyCtrlD
-)
-
-type replKey struct {
-	kind replKeyKind
-	r    rune
-}
-
-type replScreen struct {
-	w int
-	h int
-
-	status       barState
-	quiet        bool
-	busy         bool
-	followBottom bool
-	scrollOffset int
-
-	transcript       []transcriptEntry
-	currentAssistant int
-
-	input       []rune
-	cursor      int
-	inputScroll int
-
-	history      []string
-	historyIndex int
-	historyDraft string
-
-	approval *approvalState
-}
-
-func newReplScreen(w, h int, quiet bool, model, contextName string, tools, skills int) *replScreen {
+func newReplModel(config *Config, contextName string, tools, skills int) *replModel {
 	if contextName == "" {
 		contextName = "-"
 	}
-	return &replScreen{
-		w:                w,
-		h:                h,
-		quiet:            quiet,
-		followBottom:     true,
-		historyIndex:     -1,
+	return &replModel{
 		currentAssistant: -1,
-		status: barState{
-			model:       model,
-			contextName: contextName,
-			turnState:   "idle",
-			tools:       tools,
-			skills:      skills,
-			utf8:        utf8Locale(os.Getenv("LANG") + "," + os.Getenv("LC_ALL")),
-		},
+		historyIndex:     -1,
+		model:            stripProviderPrefix(config.Model),
+		contextName:      contextName,
+		tools:            tools,
+		skills:           skills,
+		quiet:            config.Quiet,
+		state:            turnStateIdle,
 	}
 }
 
-func (s *replScreen) setSize(w, h int) {
-	if w < 1 {
-		w = 1
-	}
-	if h < 1 {
-		h = 1
-	}
-	s.w = w
-	s.h = h
-	s.ensureInputCursorVisible()
-	s.clampScroll()
-}
-
-func (s *replScreen) viewportHeight() int {
-	if s.h <= 2 {
-		return 0
-	}
-	return s.h - 2
-}
-
-func (s *replScreen) appendEntry(entry transcriptEntry) {
-	beforeRows := 0
-	if !s.followBottom {
-		beforeRows = len(s.wrappedTranscriptRows())
-	}
-	s.transcript = append(s.transcript, entry)
-	if entry.kind != transcriptAssistant {
-		s.currentAssistant = -1
-	}
-	if s.followBottom {
-		s.scrollOffset = 0
-	} else {
-		s.scrollOffset += len(s.wrappedTranscriptRows()) - beforeRows
-		s.clampScroll()
+func (m *replModel) appendEntry(e transcriptEntry) {
+	m.transcript = append(m.transcript, e)
+	if e.kind != transcriptAssistant {
+		m.currentAssistant = -1
 	}
 }
 
-func (s *replScreen) appendBlankIfNeeded() {
-	if len(s.transcript) == 0 {
-		return
-	}
-	if s.transcript[len(s.transcript)-1].kind == transcriptBlank {
-		return
-	}
-	s.appendEntry(transcriptEntry{kind: transcriptBlank})
-}
-
-func (s *replScreen) appendUserPrompt(prompt string) {
-	s.appendEntry(transcriptEntry{kind: transcriptUser, text: prompt})
-}
-
-func (s *replScreen) appendAssistantText(text string) {
+func (m *replModel) appendAssistantText(text string) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
-	beforeRows := 0
-	if !s.followBottom {
-		beforeRows = len(s.wrappedTranscriptRows())
+	if m.currentAssistant >= 0 && m.currentAssistant < len(m.transcript) {
+		m.transcript[m.currentAssistant].text += text
+		return
 	}
-	if s.currentAssistant >= 0 && s.currentAssistant < len(s.transcript) {
-		s.transcript[s.currentAssistant].text += text
-	} else {
-		s.appendEntry(transcriptEntry{kind: transcriptAssistant, text: text})
-		s.currentAssistant = len(s.transcript) - 1
-		if !s.followBottom {
-			return
-		}
-	}
-	if s.followBottom {
-		s.scrollOffset = 0
-	} else {
-		s.scrollOffset += len(s.wrappedTranscriptRows()) - beforeRows
-		s.clampScroll()
-	}
+	m.appendEntry(transcriptEntry{kind: transcriptAssistant, text: text})
+	m.currentAssistant = len(m.transcript) - 1
 }
 
-func (s *replScreen) appendToolStart(call messages.ChatMessageToolCall) {
-	s.appendEntry(transcriptEntry{kind: transcriptToolStart, text: toolLabel(call)})
+func (m *replModel) appendToolStart(call messages.ChatMessageToolCall) {
+	m.appendEntry(transcriptEntry{kind: transcriptToolStart, text: toolLabel(call)})
 }
 
-func (s *replScreen) appendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+func (m *replModel) appendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 	label := toolLabel(call)
 	if result == llm.ToolDeniedContent {
-		s.appendEntry(transcriptEntry{kind: transcriptToolDenied, text: label})
+		m.appendEntry(transcriptEntry{kind: transcriptToolDenied, text: label})
 		return
 	}
 	dur := fmt.Sprintf("%.1fs", duration.Seconds())
 	if err != nil {
-		s.appendEntry(transcriptEntry{
+		m.appendEntry(transcriptEntry{
 			kind:     transcriptToolErr,
 			text:     label,
 			duration: dur,
@@ -356,488 +229,307 @@ func (s *replScreen) appendToolEnd(call messages.ChatMessageToolCall, result str
 		})
 		return
 	}
-	s.appendEntry(transcriptEntry{
+	m.appendEntry(transcriptEntry{
 		kind:     transcriptToolOK,
 		text:     label,
 		duration: dur,
 	})
 }
 
-func (s *replScreen) appendNotice(text string) {
-	s.appendEntry(transcriptEntry{kind: transcriptNotice, text: text})
+func (m *replModel) appendBlankIfNeeded() {
+	if len(m.transcript) == 0 {
+		return
+	}
+	if m.transcript[len(m.transcript)-1].kind == transcriptBlank {
+		return
+	}
+	m.appendEntry(transcriptEntry{kind: transcriptBlank})
 }
 
-func (s *replScreen) setWaiting() {
-	s.status.turnState = "waiting"
+func (m *replModel) appendNotice(text string) {
+	if text == "" {
+		m.appendBlankIfNeeded()
+		return
+	}
+	m.appendEntry(transcriptEntry{kind: transcriptNotice, text: text})
 }
 
-func (s *replScreen) setThinking() {
-	s.status.turnState = "thinking"
+func (m *replModel) appendUserPrompt(p string) {
+	m.appendEntry(transcriptEntry{kind: transcriptUser, text: p})
 }
 
-func (s *replScreen) setStreaming() {
-	s.status.turnState = "streaming"
+func (m *replModel) startTurn() {
+	m.busy = true
+	m.state = turnStateWaiting
+	m.turnStarted = time.Now()
 }
 
-func (s *replScreen) setToolState(name string) {
-	s.status.turnState = "tool: " + name
+func (m *replModel) stopTurn() {
+	m.busy = false
+	m.approval = nil
+	m.currentAssistant = -1
+	m.state = turnStateIdle
+	m.turnStarted = time.Time{}
+	m.toolName = ""
 }
 
-func (s *replScreen) startTurn() {
-	s.busy = true
-	s.status.turnStarted = time.Now()
-	s.status.turnState = "waiting"
-}
-
-func (s *replScreen) stopTurn() {
-	s.busy = false
-	s.approval = nil
-	s.currentAssistant = -1
-	s.status.turnState = "idle"
-	s.status.turnStarted = time.Time{}
-}
-
-func (s *replScreen) recordTurnTokens(in, out int) {
-	s.status.lastIn = in
-	s.status.lastOut = out
-}
-
-func (s *replScreen) inputPrefix() string {
-	if s.approval != nil {
+func (m *replModel) inputPrefix() string {
+	if m.approval != nil {
 		return "allow? [Y/n/a] "
 	}
 	return "> "
 }
 
-func (s *replScreen) inputViewWidth() int {
-	w := s.w - visibleWidth(s.inputPrefix())
-	if w < 0 {
-		return 0
-	}
-	return w
-}
-
-func (s *replScreen) ensureInputCursorVisible() {
-	viewWidth := s.inputViewWidth()
-	if s.approval != nil || viewWidth <= 0 {
-		s.inputScroll = 0
-		return
-	}
-	if s.cursor < s.inputScroll {
-		s.inputScroll = s.cursor
-	}
-	if s.cursor > s.inputScroll+viewWidth {
-		s.inputScroll = s.cursor - viewWidth
-	}
-	if s.inputScroll < 0 {
-		s.inputScroll = 0
-	}
-	maxScroll := len(s.input)
-	if s.inputScroll > maxScroll {
-		s.inputScroll = maxScroll
-	}
-}
-
-func (s *replScreen) resetHistoryBrowse() {
-	s.historyIndex = -1
-	s.historyDraft = ""
-}
-
-func (s *replScreen) submitPrompt() string {
-	prompt := string(s.input)
-	s.input = nil
-	s.cursor = 0
-	s.inputScroll = 0
-	s.resetHistoryBrowse()
+func (m *replModel) submitPrompt() string {
+	prompt := string(m.input)
+	m.input = nil
+	m.cursor = 0
+	m.historyIndex = -1
+	m.historyDraft = ""
 	if prompt != "" {
-		s.history = append(s.history, prompt)
-		s.appendUserPrompt(prompt)
+		m.history = append(m.history, prompt)
+		m.appendUserPrompt(prompt)
 	}
-	s.busy = true
+	m.busy = true
 	return prompt
 }
 
-func (s *replScreen) backspaceWord() {
-	if s.cursor == 0 {
+func (m *replModel) historyUp() {
+	if len(m.history) == 0 || m.busy || m.approval != nil {
 		return
 	}
-	start := s.cursor
-	for start > 0 && s.input[start-1] == ' ' {
-		start--
+	if m.historyIndex == -1 {
+		m.historyDraft = string(m.input)
+		m.historyIndex = len(m.history) - 1
+	} else if m.historyIndex > 0 {
+		m.historyIndex--
 	}
-	for start > 0 && s.input[start-1] != ' ' {
-		start--
-	}
-	s.input = append(s.input[:start], s.input[s.cursor:]...)
-	s.cursor = start
-	s.ensureInputCursorVisible()
+	m.input = []rune(m.history[m.historyIndex])
+	m.cursor = len(m.input)
 }
 
-func (s *replScreen) historyUp() {
-	if len(s.history) == 0 || s.busy || s.approval != nil {
+func (m *replModel) historyDown() {
+	if m.historyIndex == -1 || m.busy || m.approval != nil {
 		return
 	}
-	if s.historyIndex == -1 {
-		s.historyDraft = string(s.input)
-		s.historyIndex = len(s.history) - 1
-	} else if s.historyIndex > 0 {
-		s.historyIndex--
-	}
-	s.input = []rune(s.history[s.historyIndex])
-	s.cursor = len(s.input)
-	s.ensureInputCursorVisible()
-}
-
-func (s *replScreen) historyDown() {
-	if s.historyIndex == -1 || s.busy || s.approval != nil {
-		return
-	}
-	if s.historyIndex < len(s.history)-1 {
-		s.historyIndex++
-		s.input = []rune(s.history[s.historyIndex])
+	if m.historyIndex < len(m.history)-1 {
+		m.historyIndex++
+		m.input = []rune(m.history[m.historyIndex])
 	} else {
-		s.historyIndex = -1
-		s.input = []rune(s.historyDraft)
+		m.historyIndex = -1
+		m.input = []rune(m.historyDraft)
 	}
-	s.cursor = len(s.input)
-	s.ensureInputCursorVisible()
+	m.cursor = len(m.input)
 }
 
-func (s *replScreen) inputString() string {
-	return string(s.input)
+func (m *replModel) backspaceWord() {
+	if m.cursor == 0 {
+		return
+	}
+	start := m.cursor
+	for start > 0 && m.input[start-1] == ' ' {
+		start--
+	}
+	for start > 0 && m.input[start-1] != ' ' {
+		start--
+	}
+	m.input = append(m.input[:start], m.input[m.cursor:]...)
+	m.cursor = start
 }
 
-func (s *replScreen) handleApprovalKey(key replKey) bool {
-	if s.approval == nil {
-		return false
+// handleApprovalAnswer applies a single y/n/a answer to the pending approval
+// batch and finishes the batch when every tool has been answered.
+func (m *replModel) handleApprovalAnswer(answer byte) {
+	if m.approval == nil {
+		return
 	}
-
-	answer := byte(0)
-	switch key.kind {
-	case keyEnter:
-		answer = 'y'
-	case keyRune:
-		switch strings.ToLower(string(key.r)) {
-		case "y":
-			answer = 'y'
-		case "n":
-			answer = 'n'
-		case "a":
-			answer = 'a'
-		default:
-			return false
-		}
-	case keyPageUp:
-		s.pageUp()
-		return false
-	case keyPageDown:
-		s.pageDown()
-		return false
-	case keyEnd:
-		s.followBottom = true
-		s.scrollOffset = 0
-		return false
-	default:
-		return false
+	a := m.approval
+	if a.out == nil {
+		a.out = make([]bool, len(a.calls))
 	}
-
-	idx := s.approval.index
 	switch answer {
 	case 'a':
-		for i := idx; i < len(s.approval.results); i++ {
-			s.approval.results[i] = true
+		for i := a.index; i < len(a.out); i++ {
+			a.out[i] = true
 		}
-		s.finishApproval()
+		m.finishApproval()
 	case 'y':
-		s.approval.results[idx] = true
-		s.approval.index++
-		if s.approval.index >= len(s.approval.results) {
-			s.finishApproval()
+		a.out[a.index] = true
+		a.index++
+		if a.index >= len(a.out) {
+			m.finishApproval()
 		}
 	case 'n':
-		s.approval.results[idx] = false
-		s.approval.index++
-		if s.approval.index >= len(s.approval.results) {
-			s.finishApproval()
+		a.out[a.index] = false
+		a.index++
+		if a.index >= len(a.out) {
+			m.finishApproval()
 		}
 	}
-	return false
 }
 
-func (s *replScreen) finishApproval() {
-	if s.approval == nil {
+func (m *replModel) finishApproval() {
+	if m.approval == nil {
 		return
 	}
-	reply := append([]bool(nil), s.approval.results...)
-	s.approval.reply <- reply
-	close(s.approval.reply)
-	s.approval = nil
-	s.setWaiting()
+	out := append([]bool(nil), m.approval.out...)
+	m.approval.reply <- out
+	close(m.approval.reply)
+	m.approval = nil
+	m.state = turnStateWaiting
 }
 
-func (s *replScreen) pageUp() {
-	total := len(s.wrappedTranscriptRows())
-	vh := s.viewportHeight()
-	if vh == 0 || total <= vh {
-		return
-	}
-	s.followBottom = false
-	s.scrollOffset += vh
-	maxOffset := total - vh
-	if s.scrollOffset > maxOffset {
-		s.scrollOffset = maxOffset
-	}
-}
-
-func (s *replScreen) pageDown() {
-	if s.scrollOffset == 0 {
-		s.followBottom = true
-		return
-	}
-	vh := s.viewportHeight()
-	s.scrollOffset -= vh
-	if s.scrollOffset <= 0 {
-		s.scrollOffset = 0
-		s.followBottom = true
-	}
-}
-
-func (s *replScreen) clampScroll() {
-	total := len(s.wrappedTranscriptRows())
-	vh := s.viewportHeight()
-	if s.followBottom || total <= vh {
-		s.scrollOffset = 0
-		if total <= vh {
-			s.followBottom = true
-		}
-		return
-	}
-	maxOffset := total - vh
-	if s.scrollOffset > maxOffset {
-		s.scrollOffset = maxOffset
-	}
-	if s.scrollOffset < 0 {
-		s.scrollOffset = 0
-	}
-}
-
-func (s *replScreen) handleKey(key replKey) (submit string, exit bool) {
-	if key.kind == keyCtrlC {
-		return "", true
-	}
-	if s.approval != nil {
-		return "", s.handleApprovalKey(key)
-	}
-	if s.busy {
-		switch key.kind {
-		case keyPageUp:
-			s.pageUp()
-		case keyPageDown:
-			s.pageDown()
-		case keyEnd:
-			s.followBottom = true
-			s.scrollOffset = 0
-		}
-		return "", false
-	}
-
-	switch key.kind {
-	case keyEnter:
-		trimmed := strings.TrimSpace(string(s.input))
-		if trimmed == "" {
-			return "", false
-		}
-		if trimmed == "/exit" || trimmed == "/quit" {
-			return "", true
-		}
-		return s.submitPrompt(), false
-	case keyRune:
-		s.input = append(s.input[:s.cursor], append([]rune{key.r}, s.input[s.cursor:]...)...)
-		s.cursor++
-		s.ensureInputCursorVisible()
-	case keyBackspace:
-		if s.cursor > 0 {
-			s.input = append(s.input[:s.cursor-1], s.input[s.cursor:]...)
-			s.cursor--
-			s.ensureInputCursorVisible()
-		}
-	case keyDelete:
-		if s.cursor < len(s.input) {
-			s.input = append(s.input[:s.cursor], s.input[s.cursor+1:]...)
-			s.ensureInputCursorVisible()
-		}
-	case keyLeft:
-		if s.cursor > 0 {
-			s.cursor--
-			s.ensureInputCursorVisible()
-		}
-	case keyRight:
-		if s.cursor < len(s.input) {
-			s.cursor++
-			s.ensureInputCursorVisible()
-		}
-	case keyHome, keyCtrlA:
-		s.cursor = 0
-		s.ensureInputCursorVisible()
-	case keyEnd, keyCtrlE:
-		s.cursor = len(s.input)
-		s.followBottom = true
-		s.scrollOffset = 0
-		s.ensureInputCursorVisible()
-	case keyCtrlU:
-		s.input = append([]rune(nil), s.input[s.cursor:]...)
-		s.cursor = 0
-		s.ensureInputCursorVisible()
-	case keyCtrlK:
-		s.input = append([]rune(nil), s.input[:s.cursor]...)
-		s.ensureInputCursorVisible()
-	case keyCtrlW:
-		s.backspaceWord()
-	case keyUp:
-		s.historyUp()
-	case keyDown:
-		s.historyDown()
-	case keyPageUp:
-		s.pageUp()
-	case keyPageDown:
-		s.pageDown()
-	case keyCtrlD:
-		if len(s.input) == 0 {
-			return "", true
-		}
-		if s.cursor < len(s.input) {
-			s.input = append(s.input[:s.cursor], s.input[s.cursor+1:]...)
-			s.ensureInputCursorVisible()
-		}
-	}
-	return "", false
-}
-
-func (s *replScreen) wrappedTranscriptRows() []string {
-	width := s.w
-	if width < 1 {
-		width = 1
-	}
-	var rows []string
-	for _, entry := range s.transcript {
-		for _, line := range entry.logicalLines() {
-			rows = append(rows, wrapStyledLine(line, width)...)
-		}
-	}
-	return rows
-}
-
-func (s *replScreen) visibleTranscriptRows() []string {
-	all := s.wrappedTranscriptRows()
-	vh := s.viewportHeight()
-	if vh <= 0 {
-		return nil
-	}
-	if len(all) <= vh {
-		return all
-	}
-	if s.followBottom {
-		return all[len(all)-vh:]
-	}
-	start := len(all) - vh - s.scrollOffset
-	if start < 0 {
-		start = 0
-	}
-	end := start + vh
-	if end > len(all) {
-		end = len(all)
-	}
-	return all[start:end]
-}
-
-func (s *replScreen) renderInputRow() string {
-	prefix := promptStyle.Styled(s.inputPrefix())
-	if s.approval != nil {
-		return prefix
-	}
-	if s.busy {
-		return prefix + dimStyle.Styled("")
-	}
-	viewWidth := s.inputViewWidth()
-	if viewWidth <= 0 {
-		return prefix
-	}
-	start := s.inputScroll
-	if start > len(s.input) {
-		start = len(s.input)
-	}
-	end := start + viewWidth
-	if end > len(s.input) {
-		end = len(s.input)
-	}
-	return prefix + string(s.input[start:end])
-}
-
-func (s *replScreen) cursorRowCol() (row, col int, visible bool) {
-	if s.approval != nil {
-		return maxInt(1, s.h-1), visibleWidth(s.inputPrefix()) + 1, true
-	}
-	if s.busy {
-		return 0, 0, false
-	}
-	row = maxInt(1, s.h-1)
-	col = visibleWidth(s.inputPrefix()) + 1 + (s.cursor - s.inputScroll)
-	if col < 1 {
-		col = 1
-	}
-	if col > s.w {
-		col = s.w
-	}
-	return row, col, true
-}
-
-func (s *replScreen) renderFrame() []string {
-	if s.h < 1 {
-		return nil
-	}
-	rows := make([]string, s.h)
-	transcriptRows := s.visibleTranscriptRows()
-	for i := 0; i < s.viewportHeight() && i < len(transcriptRows); i++ {
-		rows[i] = transcriptRows[i]
-	}
-	if s.h >= 2 {
-		rows[s.h-2] = s.renderInputRow()
-		rows[s.h-1] = s.renderStatusRow()
-	} else {
-		rows[s.h-1] = s.renderStatusRow()
-	}
-	return rows
-}
-
-func (s *replScreen) renderStatusRow() string {
-	if s.quiet {
+// statusRow renders the bar contents based on the current model state.
+// Returns a string with gotui inline style markup applied.
+func (m *replModel) statusRow(width int) string {
+	if m.quiet {
 		return ""
 	}
-	return styleStatusLine(renderBar(s.status, paintWidth(s.w)), s.status.turnState)
+	utf8Bar := utf8Locale(os.Getenv("LANG") + "," + os.Getenv("LC_ALL"))
+	sep := " · "
+	if !utf8Bar {
+		sep = " | "
+	}
+
+	type field struct {
+		drop int
+		text string
+	}
+
+	stateText := m.state.label(m.toolName)
+	tokens := fmt.Sprintf("%s→%s", humanizeTokens(m.lastIn), humanizeTokens(m.lastOut))
+
+	fields := []field{}
+	if m.model != "" {
+		fields = append(fields, field{drop: 4, text: m.model})
+	}
+	fields = append(fields, field{drop: 0, text: m.contextName})
+	fields = append(fields, field{drop: 0, text: stateText})
+	if !m.turnStarted.IsZero() {
+		fields = append(fields, field{drop: 3, text: formatElapsed(time.Since(m.turnStarted))})
+	}
+	fields = append(fields, field{drop: 0, text: tokens})
+	if m.tools > 0 {
+		fields = append(fields, field{drop: 2, text: fmt.Sprintf("tools:%d", m.tools)})
+	}
+	if m.skills > 0 {
+		fields = append(fields, field{drop: 1, text: fmt.Sprintf("skills:%d", m.skills)})
+	}
+
+	visibleLen := func(fs []field) int {
+		// 1 space leading + (len-1) separators + 1 space trailing + fields
+		n := 2
+		for i, f := range fs {
+			n += len([]rune(f.text))
+			if i < len(fs)-1 {
+				n += len([]rune(sep))
+			}
+		}
+		return n
+	}
+
+	for visibleLen(fields) > width && len(fields) > 0 {
+		idx := -1
+		best := 0
+		for i, f := range fields {
+			if f.drop > best {
+				best = f.drop
+				idx = i
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		fields = append(fields[:idx], fields[idx+1:]...)
+	}
+
+	parts := make([]string, len(fields))
+	for i, f := range fields {
+		if f.text == stateText && stateText != "" && stateText != "idle" {
+			color := "gold"
+			if m.state == turnStateError {
+				color = "salmon"
+			}
+			parts[i] = styled(f.text, color, "bold")
+			continue
+		}
+		parts[i] = styled(f.text, "grey", "")
+	}
+
+	return " " + strings.Join(parts, styled(sep, "grey", "")) + " "
 }
 
-type managedEventKind int
+func humanizeTokens(n int) string {
+	switch {
+	case n < 1000:
+		return fmt.Sprintf("%d", n)
+	case n < 100_000:
+		whole := n / 1000
+		frac := (n % 1000) / 100
+		return fmt.Sprintf("%d.%dk", whole, frac)
+	case n < 1_000_000:
+		return fmt.Sprintf("%dk", n/1000)
+	default:
+		whole := n / 1_000_000
+		frac := (n % 1_000_000) / 100_000
+		return fmt.Sprintf("%d.%dM", whole, frac)
+	}
+}
+
+func formatElapsed(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	m := int(d / time.Minute)
+	s := int((d % time.Minute) / time.Second)
+	return fmt.Sprintf("%dm%02ds", m, s)
+}
+
+func utf8Locale(env string) bool {
+	return strings.Contains(strings.ToLower(env), "utf")
+}
+
+// inputRow renders the prompt prefix + current input text. Used by the input
+// Paragraph widget.
+func (m *replModel) inputRow() string {
+	prefix := styled(m.inputPrefix(), "skyblue", "bold")
+	if m.approval != nil {
+		return prefix
+	}
+	if m.busy {
+		return prefix + styled("…", "grey", "")
+	}
+	return prefix + styleEscape(string(m.input))
+}
+
+// ---------------------------------------------------------------------------
+// gotui-driven REPL orchestrator
+// ---------------------------------------------------------------------------
+
+// replEventKind is the discriminator for replEvent, which multiplexes UI
+// events (key presses, resize) and agent callbacks (assistant text, tool
+// start, tool end) into a single channel so the model is only mutated from
+// one goroutine.
+type replEventKind int
 
 const (
-	managedEventInput managedEventKind = iota
-	managedEventResize
-	managedEventTick
-	managedEventTurnStart
-	managedEventTurnStop
-	managedEventThinking
-	managedEventAssistantContent
-	managedEventToolStart
-	managedEventToolEnd
-	managedEventTokens
-	managedEventNotice
-	managedEventApprovalRequest
+	replEventUI replEventKind = iota
+	replEventTick
+	replEventTurnStart
+	replEventTurnStop
+	replEventThinking
+	replEventAssistant
+	replEventToolStart
+	replEventToolEnd
+	replEventTokens
+	replEventNotice
+	replEventApprovalRequest
+	replEventQuit
 )
 
-type managedEvent struct {
-	kind     managedEventKind
-	data     []byte
-	w        int
-	h        int
+type replEvent struct {
+	kind     replEventKind
+	ev       ui.Event
 	text     string
 	calls    []messages.ChatMessageToolCall
 	call     messages.ChatMessageToolCall
@@ -850,372 +542,516 @@ type managedEvent struct {
 }
 
 type managedREPL struct {
-	out io.Writer
-	in  *os.File
-	sz  sizer
-
-	model   string
-	context string
-	quiet   bool
-	tools   int
-	skills  int
 	config  *Config
+	model   *replModel
+	events  chan replEvent
+	submit  chan string
+	quit    chan struct{}
+	done    chan struct{}
+	closeMu sync.Mutex
+	closed  bool
 
-	events      chan managedEvent
-	submissions chan string
-	exitCh      chan struct{}
-	done        chan struct{}
-	ownerDone   chan struct{}
+	transcriptList *widgets.List
+	inputBox       *widgets.Paragraph
+	statusBar      *widgets.Paragraph
+	rootFlex       *widgets.Flex
 
-	rawState *term.State
+	followBottom bool
 
-	exitRequested atomic.Bool
-
-	prevFrame []string
-
-	activeTurnMu     sync.Mutex
-	activeTurnCancel context.CancelFunc
+	turnMu     sync.Mutex
+	turnCancel context.CancelFunc
+	turnDone   chan error
 }
 
 func newManagedREPL(config *Config, contextName string, tools, skills int) *managedREPL {
 	return &managedREPL{
-		out:         os.Stderr,
-		in:          os.Stdin,
-		sz:          termSizer{fd: int(os.Stderr.Fd())},
-		model:       stripProviderPrefix(config.Model),
-		context:     contextName,
-		quiet:       config.Quiet,
-		tools:       tools,
-		skills:      skills,
-		config:      config,
-		events:      make(chan managedEvent, 64),
-		submissions: make(chan string, 1),
-		exitCh:      make(chan struct{}, 1),
-		done:        make(chan struct{}),
-		ownerDone:   make(chan struct{}),
+		config:       config,
+		model:        newReplModel(config, contextName, tools, skills),
+		events:       make(chan replEvent, 64),
+		submit:       make(chan string, 1),
+		quit:         make(chan struct{}, 1),
+		done:         make(chan struct{}),
+		followBottom: true,
 	}
 }
 
+// supportsManagedREPL returns true when stdin/stdout are TTYs and gotui's
+// tcell backend is likely to initialize cleanly.
 func supportsManagedREPL() bool {
-	if !isTerminal() || os.Getenv("TERM") == "dumb" {
+	if os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	_, _, err := term.GetSize(int(os.Stderr.Fd()))
-	return err == nil
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return false
+	}
+	return true
 }
 
-func (ui *managedREPL) sendEvent(ev managedEvent) {
+func (r *managedREPL) sendEvent(e replEvent) {
 	select {
-	case <-ui.done:
+	case <-r.done:
 		return
-	case ui.events <- ev:
+	case r.events <- e:
 	}
 }
 
-func (ui *managedREPL) requestExit() {
-	if ui.exitRequested.CompareAndSwap(false, true) {
-		ui.cancelActiveTurn()
+func (r *managedREPL) close() {
+	r.closeMu.Lock()
+	defer r.closeMu.Unlock()
+	if r.closed {
+		return
+	}
+	r.closed = true
+	close(r.done)
+}
+
+func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) error {
+	if err := ui.Init(); err != nil {
+		return err
+	}
+	defer ui.Close()
+
+	r.setupWidgets()
+	r.render()
+
+	uiEvents := ui.PollEvents()
+
+	// Bridge UI events into our multiplexed channel so the main loop can
+	// also process turn callbacks without an inner select per event.
+	go r.bridgeUIEvents(uiEvents)
+	go r.tickLoop()
+
+	for {
 		select {
-		case ui.exitCh <- struct{}{}:
-		default:
+		case <-ctx.Done():
+			r.shutdown()
+			return ctx.Err()
+		case <-r.quit:
+			r.shutdown()
+			return nil
+		case prompt := <-r.submit:
+			r.startTurn(ctx, prompt, runTurn)
+		case err := <-r.currentTurnDone():
+			r.clearActiveTurn()
+			if err != nil {
+				r.shutdown()
+				return err
+			}
+		case ev := <-r.events:
+			if r.dispatchEvent(ev) {
+				r.shutdown()
+				return nil
+			}
+			r.render()
 		}
 	}
 }
 
-func (ui *managedREPL) setActiveTurnCancel(cancel context.CancelFunc) {
-	ui.activeTurnMu.Lock()
-	ui.activeTurnCancel = cancel
-	ui.activeTurnMu.Unlock()
+// shutdown cancels any in-flight turn and releases any approval waiter so the
+// agent goroutine can return before we tear down the TUI. Order matters:
+// close(r.done) first unblocks any sendEvent that was waiting on a full
+// r.events buffer, then we release approval/cancel context, then we wait for
+// the agent goroutine to finish so it doesn't race with ui.Close().
+func (r *managedREPL) shutdown() {
+	r.close()
+	r.cancelPendingApproval()
+	r.cancelActiveTurn()
+	if done := r.currentTurnDone(); done != nil {
+		<-done
+		r.clearActiveTurn()
+	}
 }
 
-func (ui *managedREPL) clearActiveTurnCancel() {
-	ui.activeTurnMu.Lock()
-	ui.activeTurnCancel = nil
-	ui.activeTurnMu.Unlock()
+func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func(context.Context, string, TurnUI) error) {
+	turnCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	r.turnMu.Lock()
+	r.turnCancel = cancel
+	r.turnDone = done
+	r.turnMu.Unlock()
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	go func() {
+		done <- runTurn(turnCtx, prompt, tui)
+	}()
 }
 
-func (ui *managedREPL) cancelActiveTurn() {
-	ui.activeTurnMu.Lock()
-	cancel := ui.activeTurnCancel
-	ui.activeTurnMu.Unlock()
+// currentTurnDone returns the active turn's done channel, or nil when no turn
+// is running so the select case is silently disabled.
+func (r *managedREPL) currentTurnDone() chan error {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	return r.turnDone
+}
+
+func (r *managedREPL) clearActiveTurn() {
+	r.turnMu.Lock()
+	r.turnCancel = nil
+	r.turnDone = nil
+	r.turnMu.Unlock()
+}
+
+func (r *managedREPL) cancelActiveTurn() {
+	r.turnMu.Lock()
+	cancel := r.turnCancel
+	r.turnMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 }
 
-func (ui *managedREPL) Install() error {
-	state, err := term.MakeRaw(int(ui.in.Fd()))
-	if err != nil {
-		return err
-	}
-	ui.rawState = state
-	return nil
-}
-
-func (ui *managedREPL) Close() {
-	select {
-	case <-ui.done:
-	default:
-		close(ui.done)
-	}
-	ui.cancelActiveTurn()
-	<-ui.ownerDone
-	if ui.rawState != nil {
-		_ = term.Restore(int(ui.in.Fd()), ui.rawState)
-		ui.rawState = nil
-	}
-
-	w, h := 1, 1
-	if sw, sh, err := ui.sz.Size(); err == nil {
-		w, h = sw, sh
-	}
-	_ = w
-	var b strings.Builder
-	b.WriteString(showCursor)
-	if h > 1 {
-		b.WriteString(cursorPos(h-1, 1))
-		b.WriteString(clearLine)
-	}
-	b.WriteString(cursorPos(h, 1))
-	b.WriteString(clearLine)
-	b.WriteString(cursorPos(h, 1))
-	b.WriteString("\r\n")
-	fmt.Fprint(ui.out, b.String())
-}
-
-func (ui *managedREPL) Run(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) error {
-	if err := ui.Install(); err != nil {
-		return err
-	}
-	setBeforeExit(ui.Close)
-	defer setBeforeExit(nil)
-	defer ui.Close()
-
-	w, h, err := ui.sz.Size()
-	if err != nil {
-		return err
-	}
-
-	go ui.ownerLoop(ctx, newReplScreen(w, h, ui.quiet, ui.model, ui.context, ui.tools, ui.skills))
-	go ui.readInputLoop()
-	go ui.watchResizes()
-	go ui.tickLoop()
-
+func (r *managedREPL) bridgeUIEvents(uiEvents <-chan ui.Event) {
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ui.exitCh:
-			return nil
-		case prompt := <-ui.submissions:
-			turnCtx, cancel := context.WithCancel(ctx)
-			ui.setActiveTurnCancel(cancel)
-			err := runTurn(turnCtx, prompt, &managedTurnUI{repl: ui, config: ui.config})
-			cancel()
-			ui.clearActiveTurnCancel()
-			if ui.exitRequested.Load() {
-				return nil
+		case <-r.done:
+			return
+		case e, ok := <-uiEvents:
+			if !ok {
+				return
 			}
-			if err != nil {
-				return err
-			}
+			r.sendEvent(replEvent{kind: replEventUI, ev: e})
 		}
 	}
 }
 
-func (ui *managedREPL) readInputLoop() {
-	buf := make([]byte, 256)
-	for {
-		n, err := ui.in.Read(buf)
-		if n > 0 {
-			data := make([]byte, n)
-			copy(data, buf[:n])
-			ui.sendEvent(managedEvent{kind: managedEventInput, data: data})
-		}
-		if err != nil {
-			ui.requestExit()
-			return
-		}
-		select {
-		case <-ui.done:
-			return
-		default:
-		}
-	}
-}
-
-func (ui *managedREPL) watchResizes() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGWINCH)
-	defer signal.Stop(ch)
-	for {
-		select {
-		case <-ui.done:
-			return
-		case <-ch:
-			w, h, err := ui.sz.Size()
-			if err != nil {
-				continue
-			}
-			ui.sendEvent(managedEvent{kind: managedEventResize, w: w, h: h})
-		}
-	}
-}
-
-func (ui *managedREPL) tickLoop() {
-	t := time.NewTicker(tickInterval)
+func (r *managedREPL) tickLoop() {
+	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
 	for {
 		select {
-		case <-ui.done:
+		case <-r.done:
 			return
 		case <-t.C:
-			ui.sendEvent(managedEvent{kind: managedEventTick})
+			r.sendEvent(replEvent{kind: replEventTick})
 		}
 	}
 }
 
-func (ui *managedREPL) ownerLoop(ctx context.Context, screen *replScreen) {
-	defer close(ui.ownerDone)
-	var pending []byte
-	ui.render(screen, true)
-	for {
-		select {
-		case <-ui.done:
-			return
-		case <-ctx.Done():
-			return
-		case ev := <-ui.events:
-			full := false
-			switch ev.kind {
-			case managedEventInput:
-				var keys []replKey
-				keys, pending = parseReplKeys(pending, ev.data)
-				for _, key := range keys {
-					submit, exit := screen.handleKey(key)
-					if exit {
-						ui.requestExit()
-						break
-					}
-					if submit != "" {
-						select {
-						case ui.submissions <- submit:
-						default:
-						}
-					}
-				}
-			case managedEventResize:
-				screen.setSize(ev.w, ev.h)
-				full = true
-			case managedEventTick:
-			case managedEventTurnStart:
-				screen.startTurn()
-			case managedEventTurnStop:
-				screen.stopTurn()
-			case managedEventThinking:
-				screen.setThinking()
-			case managedEventAssistantContent:
-				screen.setStreaming()
-				screen.appendAssistantText(ev.text)
-			case managedEventToolStart:
-				if toolDisplayEnabled(ui.config) {
-					for _, call := range ev.calls {
-						screen.appendToolStart(call)
-					}
-				}
-				if len(ev.calls) > 0 {
-					screen.setToolState(ev.calls[0].Name)
-				}
-			case managedEventToolEnd:
-				if toolDisplayEnabled(ui.config) {
-					screen.appendToolEnd(ev.call, ev.result, ev.duration, ev.err)
-				}
-				if screen.busy {
-					screen.setWaiting()
-				}
-			case managedEventTokens:
-				screen.recordTurnTokens(ev.in, ev.out)
-			case managedEventNotice:
-				if ev.text == "" {
-					screen.appendBlankIfNeeded()
-				} else {
-					screen.appendNotice(ev.text)
-				}
-			case managedEventApprovalRequest:
-				screen.approval = newApprovalState(ev.calls, ev.reply)
-				screen.setWaiting()
+func (r *managedREPL) requestQuit() {
+	select {
+	case r.quit <- struct{}{}:
+	default:
+	}
+}
+
+func (r *managedREPL) cancelPendingApproval() {
+	if r.model.approval == nil {
+		return
+	}
+	denied := make([]bool, len(r.model.approval.calls))
+	r.model.approval.reply <- denied
+	close(r.model.approval.reply)
+	r.model.approval = nil
+}
+
+func (r *managedREPL) setupWidgets() {
+	r.transcriptList = widgets.NewList()
+	r.transcriptList.Border = false
+	r.transcriptList.WrapText = true
+	r.transcriptList.TextStyle = ui.NewStyle(ui.ColorWhite)
+	r.transcriptList.SelectedStyle = ui.NewStyle(ui.ColorWhite)
+
+	r.inputBox = widgets.NewParagraph()
+	r.inputBox.Border = false
+	r.inputBox.WrapText = false
+	r.inputBox.TextStyle = ui.NewStyle(ui.ColorWhite)
+
+	r.statusBar = widgets.NewParagraph()
+	r.statusBar.Border = false
+	r.statusBar.WrapText = false
+	r.statusBar.TextStyle = ui.NewStyle(ui.ColorGrey)
+
+	r.rootFlex = widgets.NewFlex()
+	r.rootFlex.Border = false
+	r.rootFlex.Direction = widgets.FlexColumn
+	r.rootFlex.AddItem(r.transcriptList, 0, 1, false)
+	r.rootFlex.AddItem(r.inputBox, 1, 0, false)
+	r.rootFlex.AddItem(r.statusBar, 1, 0, false)
+}
+
+func (r *managedREPL) render() {
+	w, h := ui.TerminalDimensions()
+	if w < 1 || h < 1 {
+		return
+	}
+
+	rows := []string{}
+	for _, e := range r.model.transcript {
+		rows = append(rows, renderEntryRows(e)...)
+	}
+	if len(rows) == 0 {
+		rows = []string{""}
+	}
+	r.transcriptList.Rows = rows
+
+	if r.followBottom {
+		r.transcriptList.ScrollBottom()
+	}
+
+	r.inputBox.Text = r.model.inputRow()
+	r.statusBar.Text = r.model.statusRow(w)
+
+	r.rootFlex.SetRect(0, 0, w, h)
+	ui.Clear()
+	ui.Render(r.rootFlex)
+}
+
+// dispatchEvent mutates the model in response to an incoming event. Returns
+// true when the event was a quit request.
+func (r *managedREPL) dispatchEvent(ev replEvent) bool {
+	switch ev.kind {
+	case replEventUI:
+		return r.handleUIEvent(ev.ev)
+	case replEventTick:
+		// Re-render to refresh elapsed time in the status bar.
+	case replEventTurnStart:
+		r.model.startTurn()
+	case replEventTurnStop:
+		r.model.stopTurn()
+	case replEventThinking:
+		r.model.state = turnStateThinking
+	case replEventAssistant:
+		r.model.state = turnStateStreaming
+		r.model.appendAssistantText(ev.text)
+		if r.followBottom {
+			r.transcriptList.ScrollBottom()
+		}
+	case replEventToolStart:
+		if toolDisplayEnabled(r.config) {
+			for _, c := range ev.calls {
+				r.model.appendToolStart(c)
 			}
-			ui.render(screen, full)
 		}
+		if len(ev.calls) > 0 {
+			r.model.state = turnStateTool
+			r.model.toolName = ev.calls[0].Name
+		}
+	case replEventToolEnd:
+		if toolDisplayEnabled(r.config) {
+			r.model.appendToolEnd(ev.call, ev.result, ev.duration, ev.err)
+		}
+		if r.model.busy {
+			r.model.state = turnStateWaiting
+			r.model.toolName = ""
+		}
+	case replEventTokens:
+		r.model.lastIn = ev.in
+		r.model.lastOut = ev.out
+	case replEventNotice:
+		r.model.appendNotice(ev.text)
+	case replEventApprovalRequest:
+		r.model.approval = &approvalState{
+			calls: ev.calls,
+			reply: ev.reply,
+		}
+		r.model.state = turnStateWaiting
+	case replEventQuit:
+		r.requestQuit()
+		return true
+	}
+	return false
+}
+
+// handleUIEvent maps gotui events to model mutations. Returns true on quit.
+func (r *managedREPL) handleUIEvent(e ui.Event) bool {
+	if e.Type == ui.ResizeEvent {
+		// render() reads terminal dimensions fresh each tick.
+		return false
+	}
+
+	m := r.model
+
+	// Approval shortcut: any other key is ignored unless it's y/n/a or enter.
+	if m.approval != nil {
+		switch e.ID {
+		case "<C-c>":
+			r.requestQuit()
+			return true
+		case "<Enter>":
+			m.handleApprovalAnswer('y')
+		case "y", "Y":
+			m.handleApprovalAnswer('y')
+		case "n", "N":
+			m.handleApprovalAnswer('n')
+		case "a", "A":
+			m.handleApprovalAnswer('a')
+		case "<PageUp>":
+			r.scrollPageUp()
+		case "<PageDown>":
+			r.scrollPageDown()
+		case "<End>":
+			r.followBottom = true
+			r.transcriptList.ScrollBottom()
+		}
+		return false
+	}
+
+	if m.busy {
+		switch e.ID {
+		case "<C-c>":
+			r.requestQuit()
+			return true
+		case "<PageUp>":
+			r.scrollPageUp()
+		case "<PageDown>":
+			r.scrollPageDown()
+		case "<End>":
+			r.followBottom = true
+			r.transcriptList.ScrollBottom()
+		case "<MouseWheelUp>":
+			r.scrollUp()
+		case "<MouseWheelDown>":
+			r.scrollDown()
+		}
+		return false
+	}
+
+	switch e.ID {
+	case "<C-c>":
+		r.requestQuit()
+		return true
+	case "<C-d>":
+		if len(m.input) == 0 {
+			r.requestQuit()
+			return true
+		}
+		if m.cursor < len(m.input) {
+			m.input = append(m.input[:m.cursor], m.input[m.cursor+1:]...)
+		}
+	case "<Enter>":
+		trimmed := strings.TrimSpace(string(m.input))
+		if trimmed == "" {
+			return false
+		}
+		if trimmed == "/exit" || trimmed == "/quit" {
+			r.requestQuit()
+			return true
+		}
+		prompt := m.submitPrompt()
+		r.followBottom = true
+		r.transcriptList.ScrollBottom()
+		select {
+		case r.submit <- prompt:
+		default:
+		}
+	case "<Backspace>", "<Delete>":
+		if m.cursor > 0 {
+			m.input = append(m.input[:m.cursor-1], m.input[m.cursor:]...)
+			m.cursor--
+		}
+	case "<Left>":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "<Right>":
+		if m.cursor < len(m.input) {
+			m.cursor++
+		}
+	case "<Home>", "<C-a>":
+		m.cursor = 0
+	case "<End>", "<C-e>":
+		m.cursor = len(m.input)
+	case "<C-u>":
+		m.input = append([]rune(nil), m.input[m.cursor:]...)
+		m.cursor = 0
+	case "<C-k>":
+		m.input = append([]rune(nil), m.input[:m.cursor]...)
+	case "<C-w>":
+		m.backspaceWord()
+	case "<Up>":
+		m.historyUp()
+	case "<Down>":
+		m.historyDown()
+	case "<PageUp>":
+		r.scrollPageUp()
+	case "<PageDown>":
+		r.scrollPageDown()
+	case "<Space>":
+		m.input = append(m.input[:m.cursor], append([]rune{' '}, m.input[m.cursor:]...)...)
+		m.cursor++
+	case "<Tab>":
+		m.input = append(m.input[:m.cursor], append([]rune{'\t'}, m.input[m.cursor:]...)...)
+		m.cursor++
+	case "<MouseWheelUp>":
+		r.scrollUp()
+	case "<MouseWheelDown>":
+		r.scrollDown()
+	default:
+		if len(e.ID) == 1 {
+			r := []rune(e.ID)[0]
+			if r >= 0x20 {
+				m.input = append(m.input[:m.cursor], append([]rune{r}, m.input[m.cursor:]...)...)
+				m.cursor++
+			}
+		}
+	}
+	return false
+}
+
+func (r *managedREPL) scrollUp() {
+	r.followBottom = false
+	r.transcriptList.ScrollUp()
+}
+
+func (r *managedREPL) scrollDown() {
+	r.transcriptList.ScrollDown()
+	if r.transcriptList.SelectedRow >= len(r.transcriptList.Rows)-1 {
+		r.followBottom = true
 	}
 }
 
-func (ui *managedREPL) render(screen *replScreen, full bool) {
-	frame := screen.renderFrame()
-	if full || len(ui.prevFrame) != len(frame) {
-		ui.prevFrame = make([]string, len(frame))
-	}
-
-	var b strings.Builder
-	b.WriteString(hideCursor)
-	for i, row := range frame {
-		if !full && ui.prevFrame[i] == row {
-			continue
-		}
-		b.WriteString(cursorPos(i+1, 1))
-		b.WriteString(clearLine)
-		b.WriteString(row)
-		ui.prevFrame[i] = row
-	}
-	if row, col, visible := screen.cursorRowCol(); visible {
-		b.WriteString(showCursor)
-		b.WriteString(cursorPos(row, col))
-	}
-	fmt.Fprint(ui.out, b.String())
+func (r *managedREPL) scrollPageUp() {
+	r.followBottom = false
+	r.transcriptList.ScrollPageUp()
 }
 
-type managedTurnUI struct {
+func (r *managedREPL) scrollPageDown() {
+	r.transcriptList.ScrollPageDown()
+	if r.transcriptList.SelectedRow >= len(r.transcriptList.Rows)-1 {
+		r.followBottom = true
+	}
+}
+
+// ---------------------------------------------------------------------------
+// gotuiTurnUI is the TurnUI impl that posts events into the managedREPL.
+// ---------------------------------------------------------------------------
+
+type gotuiTurnUI struct {
 	repl           *managedREPL
 	config         *Config
 	needsSeparator bool
 	contentPrinted bool
 }
 
-func (ui *managedTurnUI) Start() {
-	ui.repl.sendEvent(managedEvent{kind: managedEventTurnStart})
+func (t *gotuiTurnUI) Start() { t.repl.sendEvent(replEvent{kind: replEventTurnStart}) }
+func (t *gotuiTurnUI) Stop()  { t.repl.sendEvent(replEvent{kind: replEventTurnStop}) }
+
+func (t *gotuiTurnUI) ShowThinking(tokens int) {
+	t.repl.sendEvent(replEvent{kind: replEventThinking})
 }
 
-func (ui *managedTurnUI) Stop() {
-	ui.repl.sendEvent(managedEvent{kind: managedEventTurnStop})
-}
-
-func (ui *managedTurnUI) ShowThinking(tokens int) {
-	ui.repl.sendEvent(managedEvent{kind: managedEventThinking})
-}
-
-func (ui *managedTurnUI) AppendAssistantText(content string) {
-	if ui.needsSeparator {
-		ui.repl.sendEvent(managedEvent{kind: managedEventNotice, text: ""})
-		ui.needsSeparator = false
+func (t *gotuiTurnUI) AppendAssistantText(content string) {
+	if t.needsSeparator {
+		t.repl.sendEvent(replEvent{kind: replEventNotice, text: ""})
+		t.needsSeparator = false
 	}
-	ui.repl.sendEvent(managedEvent{kind: managedEventAssistantContent, text: content})
-	ui.contentPrinted = true
+	t.repl.sendEvent(replEvent{kind: replEventAssistant, text: content})
+	t.contentPrinted = true
 }
 
-func (ui *managedTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
+func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	if len(calls) == 0 {
 		return
 	}
-	if toolDisplayEnabled(ui.config) && ui.contentPrinted {
-		ui.repl.sendEvent(managedEvent{kind: managedEventNotice, text: ""})
-		ui.contentPrinted = false
+	if toolDisplayEnabled(t.config) && t.contentPrinted {
+		t.repl.sendEvent(replEvent{kind: replEventNotice, text: ""})
+		t.contentPrinted = false
 	}
-	ui.needsSeparator = toolDisplayEnabled(ui.config)
-	ui.repl.sendEvent(managedEvent{kind: managedEventToolStart, calls: calls})
+	t.needsSeparator = toolDisplayEnabled(t.config)
+	t.repl.sendEvent(replEvent{kind: replEventToolStart, calls: calls})
 }
 
-func (ui *managedTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
-	if !ui.config.Confirm {
+func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	if !t.config.Confirm {
 		approved := make([]bool, len(calls))
 		for i := range approved {
 			approved[i] = true
@@ -1223,18 +1059,17 @@ func (ui *managedTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) 
 		return approved
 	}
 	reply := make(chan []bool, 1)
-	ui.repl.sendEvent(managedEvent{kind: managedEventApprovalRequest, calls: calls, reply: reply})
+	t.repl.sendEvent(replEvent{kind: replEventApprovalRequest, calls: calls, reply: reply})
 	results, ok := <-reply
 	if !ok {
-		approved := make([]bool, len(calls))
-		return approved
+		return make([]bool, len(calls))
 	}
 	return results
 }
 
-func (ui *managedTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
-	ui.repl.sendEvent(managedEvent{
-		kind:     managedEventToolEnd,
+func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+	t.repl.sendEvent(replEvent{
+		kind:     replEventToolEnd,
 		call:     call,
 		result:   result,
 		duration: duration,
@@ -1242,144 +1077,24 @@ func (ui *managedTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result
 	})
 }
 
-func (ui *managedTurnUI) AppendWarning(text string) {
-	ui.repl.sendEvent(managedEvent{kind: managedEventNotice, text: "Warning: " + text})
+func (t *gotuiTurnUI) AppendWarning(text string) {
+	t.repl.sendEvent(replEvent{kind: replEventNotice, text: "Warning: " + text})
 }
 
-func (ui *managedTurnUI) RecordTurnTokens(in, out int) {
-	ui.repl.sendEvent(managedEvent{kind: managedEventTokens, in: in, out: out})
+func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
+	t.repl.sendEvent(replEvent{kind: replEventTokens, in: in, out: out})
 }
 
-func (ui *managedTurnUI) FinishTextTurn() {}
+func (t *gotuiTurnUI) FinishTextTurn() {}
 
-func parseReplKeys(pending, input []byte) ([]replKey, []byte) {
-	data := append(append([]byte(nil), pending...), input...)
-	var keys []replKey
-	for len(data) > 0 {
-		b := data[0]
-		switch b {
-		case 0x01:
-			keys = append(keys, replKey{kind: keyCtrlA})
-			data = data[1:]
-		case 0x03:
-			keys = append(keys, replKey{kind: keyCtrlC})
-			data = data[1:]
-		case 0x04:
-			keys = append(keys, replKey{kind: keyCtrlD})
-			data = data[1:]
-		case 0x05:
-			keys = append(keys, replKey{kind: keyCtrlE})
-			data = data[1:]
-		case 0x0b:
-			keys = append(keys, replKey{kind: keyCtrlK})
-			data = data[1:]
-		case 0x15:
-			keys = append(keys, replKey{kind: keyCtrlU})
-			data = data[1:]
-		case 0x17:
-			keys = append(keys, replKey{kind: keyCtrlW})
-			data = data[1:]
-		case '\r', '\n':
-			keys = append(keys, replKey{kind: keyEnter})
-			data = data[1:]
-		case 0x7f:
-			keys = append(keys, replKey{kind: keyBackspace})
-			data = data[1:]
-		case 0x1b:
-			key, n, ok, needMore := parseEscapeKey(data)
-			if needMore {
-				return keys, data
-			}
-			if ok {
-				keys = append(keys, key)
-				data = data[n:]
-			} else {
-				data = data[1:]
-			}
-		default:
-			r, n := utf8.DecodeRune(data)
-			if r == utf8.RuneError && n == 1 {
-				if !utf8.FullRune(data) {
-					return keys, data
-				}
-				data = data[1:]
-				continue
-			}
-			if r >= 0x20 {
-				keys = append(keys, replKey{kind: keyRune, r: r})
-			}
-			data = data[n:]
-		}
-	}
-	return keys, nil
-}
-
-func parseEscapeKey(data []byte) (replKey, int, bool, bool) {
-	if len(data) < 2 {
-		return replKey{}, 0, false, true
-	}
-	if data[1] == '[' {
-		if len(data) < 3 {
-			return replKey{}, 0, false, true
-		}
-		switch data[2] {
-		case 'A':
-			return replKey{kind: keyUp}, 3, true, false
-		case 'B':
-			return replKey{kind: keyDown}, 3, true, false
-		case 'C':
-			return replKey{kind: keyRight}, 3, true, false
-		case 'D':
-			return replKey{kind: keyLeft}, 3, true, false
-		case 'H':
-			return replKey{kind: keyHome}, 3, true, false
-		case 'F':
-			return replKey{kind: keyEnd}, 3, true, false
-		case '1', '3', '4', '5', '6', '7', '8':
-			if len(data) < 4 {
-				return replKey{}, 0, false, true
-			}
-			if data[3] != '~' {
-				return replKey{}, 0, false, false
-			}
-			switch data[2] {
-			case '1', '7':
-				return replKey{kind: keyHome}, 4, true, false
-			case '3':
-				return replKey{kind: keyDelete}, 4, true, false
-			case '4', '8':
-				return replKey{kind: keyEnd}, 4, true, false
-			case '5':
-				return replKey{kind: keyPageUp}, 4, true, false
-			case '6':
-				return replKey{kind: keyPageDown}, 4, true, false
-			}
-		}
-	}
-	if data[1] == 'O' {
-		if len(data) < 3 {
-			return replKey{}, 0, false, true
-		}
-		switch data[2] {
-		case 'H':
-			return replKey{kind: keyHome}, 3, true, false
-		case 'F':
-			return replKey{kind: keyEnd}, 3, true, false
-		}
-	}
-	return replKey{}, 0, false, false
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
+// ---------------------------------------------------------------------------
+// Entry points used by runREPL
+// ---------------------------------------------------------------------------
 
 func runManagedREPL(ctx context.Context, config *Config, state *conversationState) error {
-	ui := newManagedREPL(config, state.session.GetName(), toolCount(state.toolRegistry), skillCount(state.skillCatalog))
-	return ui.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
+	repl := newManagedREPL(config, state.session.GetName(), toolCount(state.toolRegistry), skillCount(state.skillCatalog))
+	defer repl.close()
+	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
 		return executeTurn(turnCtx, config, state, prompt, nil, nil, turnUI)
 	})
 }
@@ -1391,4 +1106,27 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 	})
 }
 
-var errManagedREPLUnsupported = errors.New("managed repl unsupported")
+func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {
+	for {
+		if _, err := fmt.Fprint(promptWriter, "> "); err != nil {
+			return err
+		}
+		line, err := readLine(reader)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if trimmed == "/exit" || trimmed == "/quit" {
+			return nil
+		}
+		if err := runTurn(line); err != nil {
+			return err
+		}
+	}
+}

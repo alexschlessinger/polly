@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -25,7 +23,6 @@ import (
 )
 
 func main() {
-	initColors()
 	command := getCommand()
 	if err := command.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -382,46 +379,6 @@ func runREPL(ctx context.Context, config *Config, state *conversationState) erro
 	return runFallbackREPL(ctx, config, state)
 }
 
-// runREPLLoop drives the interactive prompt.
-func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {
-	for {
-		if _, err := fmt.Fprint(promptWriter, promptStyle.Styled("> ")); err != nil {
-			return err
-		}
-		line, eof, err := readREPLLine(reader)
-		if err != nil {
-			return err
-		}
-		if eof {
-			return nil
-		}
-
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		switch trimmed {
-		case "/exit", "/quit":
-			return nil
-		}
-
-		if err := runTurn(line); err != nil {
-			return err
-		}
-	}
-}
-
-func readREPLLine(reader *bufio.Reader) (line string, eof bool, err error) {
-	line, err = readLine(reader)
-	if err == nil {
-		return line, false, nil
-	}
-	if errors.Is(err, io.EOF) {
-		return "", true, nil
-	}
-	return "", false, err
-}
-
 func executeTurn(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI) error {
 	userMsg, err := buildMessageWithFiles(prompt, config.Files)
 	if err != nil {
@@ -431,7 +388,7 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 	state.session.AddMessage(userMsg)
 
 	if turnUI == nil {
-		turnUI = newLineTurnUI(config, createStatusLine(config, conversationModeOneShot, ""), inputReader)
+		turnUI = newLineTurnUI(config, inputReader)
 	}
 	turnUI.Start()
 	defer turnUI.Stop()
@@ -716,15 +673,6 @@ func outputStructured(content string, schema *llm.Schema) {
 		// Fallback to raw output if not valid JSON
 		fmt.Println(content)
 	}
-}
-
-// createStatusLine returns the line-oriented status handler used outside the
-// managed REPL or when the REPL falls back to the old line-based prompt loop.
-func createStatusLine(config *Config, _ conversationMode, _ string) StatusHandler {
-	if config.Quiet || !isTerminal() {
-		return nil
-	}
-	return NewStatus()
 }
 
 // stripProviderPrefix returns the bare model name, dropping "provider/" if present.

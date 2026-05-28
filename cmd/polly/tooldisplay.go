@@ -3,48 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
-	"time"
 
-	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
-
-// toolDisplayEnabled returns true when tool display should be shown.
-func toolDisplayEnabled(config *Config) bool {
-	return !config.Quiet && isTerminal()
-}
-
-// printToolStart prints a tool start indicator with summarized args.
-func printToolStart(w io.Writer, tc messages.ChatMessageToolCall) {
-	fmt.Fprintf(w, "  %s %s\n",
-		toolStartStyle.Styled("→"),
-		toolLabelStyle.Styled(toolLabel(tc)))
-}
-
-// printToolEnd prints a tool completion line with duration.
-func printToolEnd(w io.Writer, tc messages.ChatMessageToolCall, duration time.Duration, err error, result string) {
-	label := toolLabel(tc)
-	if result == llm.ToolDeniedContent {
-		fmt.Fprintf(w, "  %s %s\n",
-			toolErrStyle.Styled("✗"),
-			toolLabelStyle.Styled("denied "+label))
-		return
-	}
-	dur := fmt.Sprintf("%.1fs", duration.Seconds())
-	if err != nil {
-		fmt.Fprintf(w, "  %s %s %s\n",
-			toolErrStyle.Styled("✗"),
-			toolLabelStyle.Styled(dur+" "+label),
-			toolErrStyle.Styled("- "+err.Error()))
-		return
-	}
-	fmt.Fprintf(w, "  %s %s\n",
-		toolOkStyle.Styled("✓"),
-		toolLabelStyle.Styled(dur+" "+label))
-}
 
 func toolLabel(tc messages.ChatMessageToolCall) string {
 	summary := summarizeToolArgs(tc.Name, tc.Arguments)
@@ -54,7 +17,6 @@ func toolLabel(tc messages.ChatMessageToolCall) string {
 	return tc.Name + " " + summary
 }
 
-// summarizeToolArgs returns a one-line summary of tool arguments.
 func summarizeToolArgs(toolName, argsJSON string) string {
 	if argsJSON == "" {
 		return ""
@@ -109,8 +71,6 @@ func summarizeReadSkillFileArgs(args tools.Args) string {
 	return skill + path
 }
 
-// summarizeBashCommand returns a one-line summary for a bash command,
-// collapsing heredocs to show the command prefix and first body line.
 func summarizeBashCommand(args tools.Args) string {
 	cmd := args.String("command")
 	if cmd == "" {
@@ -120,10 +80,8 @@ func summarizeBashCommand(args tools.Args) string {
 	lines := strings.SplitN(cmd, "\n", 20)
 	first := lines[0]
 
-	// Detect heredoc: look for <<EOF, <<'EOF', <<"EOF", <<-EOF etc.
 	if idx := strings.Index(first, "<<"); idx >= 0 && len(lines) > 1 {
 		prefix := strings.TrimSpace(first[:idx+2])
-		// Find first non-empty body line (skip the delimiter line)
 		for _, line := range lines[1:] {
 			line = strings.TrimSpace(line)
 			if line != "" && line != "EOF" && line != "'EOF'" {
@@ -136,7 +94,6 @@ func summarizeBashCommand(args tools.Args) string {
 }
 
 func truncate(s string, max int) string {
-	// Take first line only
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
@@ -144,4 +101,8 @@ func truncate(s string, max int) string {
 		return s[:max-3] + "..."
 	}
 	return s
+}
+
+func toolDisplayEnabled(config *Config) bool {
+	return !config.Quiet && isTerminal()
 }

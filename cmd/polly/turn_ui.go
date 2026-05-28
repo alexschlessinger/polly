@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -26,54 +27,35 @@ type TurnUI interface {
 	FinishTextTurn()
 }
 
+// lineTurnUI prints turn output to an io.Writer one line at a time.
+// Used for one-shot mode and as the input loop for the fallback REPL.
 type lineTurnUI struct {
 	config         *Config
-	statusLine     StatusHandler
 	writer         io.Writer
+	errWriter      io.Writer
 	approver       *toolApprover
 	needsSeparator bool
 	contentPrinted bool
 }
 
-func newLineTurnUI(config *Config, statusLine StatusHandler, inputReader *bufio.Reader) *lineTurnUI {
+func newLineTurnUI(config *Config, inputReader *bufio.Reader) *lineTurnUI {
 	ui := &lineTurnUI{
-		config:     config,
-		statusLine: statusLine,
-		writer:     os.Stdout,
+		config:    config,
+		writer:    os.Stdout,
+		errWriter: os.Stderr,
 	}
-	if statusLine != nil {
-		ui.writer = statusLine.ContentWriter()
-	}
-	if config.Confirm {
+	if config.Confirm && inputReader != nil {
 		ui.approver = newToolApprover(inputReader)
 	}
 	return ui
 }
 
-func (ui *lineTurnUI) Start() {
-	if ui.statusLine == nil {
-		return
-	}
-	ui.statusLine.Start()
-	ui.statusLine.ShowSpinner("waiting")
-}
+func (ui *lineTurnUI) Start() {}
+func (ui *lineTurnUI) Stop()  {}
 
-func (ui *lineTurnUI) Stop() {
-	if ui.statusLine != nil {
-		ui.statusLine.Stop()
-	}
-}
-
-func (ui *lineTurnUI) ShowThinking(tokens int) {
-	if ui.statusLine != nil {
-		ui.statusLine.UpdateThinkingProgress(tokens)
-	}
-}
+func (ui *lineTurnUI) ShowThinking(tokens int) {}
 
 func (ui *lineTurnUI) AppendAssistantText(content string) {
-	if ui.statusLine != nil {
-		ui.statusLine.ClearForContent()
-	}
 	if ui.config.SchemaPath != "" {
 		return
 	}
@@ -81,16 +63,13 @@ func (ui *lineTurnUI) AppendAssistantText(content string) {
 		fmt.Fprintln(ui.writer)
 		ui.needsSeparator = false
 	}
-	fmt.Fprint(ui.writer, assistantOut.Styled(content))
+	fmt.Fprint(ui.writer, content)
 	ui.contentPrinted = true
 }
 
 func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	ui.needsSeparator = true
 	if !toolDisplayEnabled(ui.config) {
-		if ui.statusLine != nil && len(calls) > 0 && ui.approver == nil {
-			ui.statusLine.ShowToolCall(calls[0].Name)
-		}
 		return
 	}
 	if ui.contentPrinted {
@@ -98,10 +77,7 @@ func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 		ui.contentPrinted = false
 	}
 	for _, tc := range calls {
-		printToolStart(ui.writer, tc)
-	}
-	if ui.statusLine != nil && len(calls) > 0 && ui.approver == nil {
-		ui.statusLine.ShowToolCall(calls[0].Name)
+		fmt.Fprintf(ui.errWriter, "  → %s\n", toolLabel(tc))
 	}
 }
 
@@ -113,20 +89,24 @@ func (ui *lineTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 		}
 		return approved
 	}
-	if ui.statusLine != nil {
-		ui.statusLine.Clear()
-	}
 	return ui.approver.approveToolCalls(calls)
 }
 
 func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
-	if ui.statusLine != nil {
-		ui.statusLine.Clear()
-	}
 	if !toolDisplayEnabled(ui.config) {
 		return
 	}
-	printToolEnd(ui.writer, call, duration, err, result)
+	label := toolLabel(call)
+	if result == llm.ToolDeniedContent {
+		fmt.Fprintf(ui.errWriter, "  ✗ denied %s\n", label)
+		return
+	}
+	dur := fmt.Sprintf("%.1fs", duration.Seconds())
+	if err != nil {
+		fmt.Fprintf(ui.errWriter, "  ✗ %s %s - %s\n", dur, label, err.Error())
+		return
+	}
+	fmt.Fprintf(ui.errWriter, "  ✓ %s %s\n", dur, label)
 }
 
 func (ui *lineTurnUI) AppendWarning(text string) {
@@ -137,11 +117,7 @@ func (ui *lineTurnUI) AppendWarning(text string) {
 	fmt.Fprintf(ui.writer, "\nWarning: %s\n", text)
 }
 
-func (ui *lineTurnUI) RecordTurnTokens(in, out int) {
-	if ui.statusLine != nil {
-		ui.statusLine.RecordTurnTokens(in, out)
-	}
-}
+func (ui *lineTurnUI) RecordTurnTokens(in, out int) {}
 
 func (ui *lineTurnUI) FinishTextTurn() {
 	if ui.config.SchemaPath == "" {
