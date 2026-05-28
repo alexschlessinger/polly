@@ -53,17 +53,19 @@ func (s turnState) label(toolName string) string {
 	return ""
 }
 
-// styleEscape escapes [ and ] so user-supplied text isn't mistaken for the
-// inline style markup gotui's ParseStyles consumes.
+// styleEscape neutralizes the only sequence gotui's ParseStyles treats as
+// style markup: a "[...](...)" run. gotui has no backslash escape — balanced
+// brackets already render literally via its nesting counter — so we just break
+// a "](" adjacency (e.g. a markdown link in model output) with a zero-width
+// space, leaving every other character untouched. Adding backslashes would be
+// wrong: gotui renders them verbatim.
 func styleEscape(s string) string {
-	s = strings.ReplaceAll(s, "[", `\[`)
-	s = strings.ReplaceAll(s, "]", `\]`)
-	return s
+	return strings.ReplaceAll(s, "](", "]\u200b(")
 }
 
 // styled wraps text in gotui's inline style markup. Color names come from
-// gotui's StyleParserColorMap; empty fg/modifier means no styling. The text
-// itself is bracket-escaped — callers don't need to pre-escape.
+// gotui's StyleParserColorMap; empty fg/modifier means no styling. The text is
+// run through styleEscape — callers don't need to pre-sanitize.
 func styled(text, fg, modifier string) string {
 	if text == "" {
 		return ""

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	ui "github.com/metaspartan/gotui/v5"
 )
 
 func TestSelectConversationMode(t *testing.T) {
@@ -327,10 +328,38 @@ func TestBusyIndicatorShowsStateAndElapsed(t *testing.T) {
 	}
 }
 
-func TestStyleEscapeRejectsMarkup(t *testing.T) {
-	got := styleEscape("hello [world] (fg:red)")
-	if !strings.Contains(got, `\[world\]`) {
-		t.Fatalf("expected brackets escaped, got %q", got)
+func TestStyleEscapeNeutralizesMarkup(t *testing.T) {
+	// Lone/balanced brackets are left untouched (gotui renders them literally).
+	if got := styleEscape("hello [world]"); got != "hello [world]" {
+		t.Fatalf("balanced brackets must be untouched, got %q", got)
+	}
+	// The one style trigger, "](", is broken with a zero-width space — and no
+	// backslashes are ever introduced (gotui renders them verbatim).
+	got := styleEscape("see [text](url)")
+	if strings.Contains(got, `\`) {
+		t.Fatalf("must not introduce backslashes, got %q", got)
+	}
+	if got != "see [text]\u200b(url)" {
+		t.Fatalf("expected ZWSP between ] and (, got %q", got)
+	}
+}
+
+func TestApprovalPromptRendersLiteralBrackets(t *testing.T) {
+	m := newReplModel()
+	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "bash"}}}
+
+	cells := ui.ParseStyles(m.inputDisplay(), ui.NewStyle(ui.ColorWhite))
+	var b strings.Builder
+	for _, c := range cells {
+		b.WriteRune(c.Rune)
+	}
+	out := b.String()
+
+	if !strings.Contains(out, "[y/n/a]") {
+		t.Fatalf("approval prompt should render literal [y/n/a], got %q", out)
+	}
+	if strings.Contains(out, `\`) {
+		t.Fatalf("approval prompt should not contain backslashes, got %q", out)
 	}
 }
 
