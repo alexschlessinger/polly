@@ -65,6 +65,15 @@ func defaultProviderFactories() map[string]providerFactory {
 			}
 			return NewOpenAIClient(apiKey, baseURL), nil
 		},
+		"deepseek": func(apiKey, baseURL string) (LLM, error) {
+			return NewDeepSeekClient(apiKey, baseURL), nil
+		},
+		"openrouter": func(apiKey, baseURL string) (LLM, error) {
+			if baseURL == "" {
+				baseURL = "https://openrouter.ai/api/v1"
+			}
+			return NewOpenAIClient(apiKey, baseURL), nil
+		},
 	}
 }
 
@@ -133,7 +142,7 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 func (m *MultiPass) clientFor(provider, apiKey, baseURL string) (LLM, error) {
 	factory, ok := m.factories[provider]
 	if !ok {
-		return nil, fmt.Errorf("unknown provider '%s'. Valid providers: openai, anthropic, gemini, ollama, huggingface", provider)
+		return nil, fmt.Errorf("unknown provider '%s'. Valid providers: openai, anthropic, gemini, ollama, huggingface, deepseek, openrouter", provider)
 	}
 
 	if provider == "ollama" && baseURL == "" {
