@@ -7,6 +7,7 @@ require (
 	github.com/gofrs/flock v0.13.0
 	github.com/invopop/jsonschema v0.13.0
 	github.com/lmittmann/tint v1.1.3
+	github.com/mattn/go-runewidth v0.0.19
 	github.com/metaspartan/gotui/v5 v5.0.3
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/ollama/ollama v0.21.0
@@ -28,7 +29,6 @@ require (
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/mailru/easyjson v0.9.2 // indirect
-	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect

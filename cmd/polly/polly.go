@@ -597,10 +597,11 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 }
 
 // beforeExit is invoked synchronously by cleanupAndExit before os.Exit.
-// runREPL sets it to the status bar's Uninstall so Ctrl-C restores the
-// terminal scroll region without racing the os.Exit path. The mutex
-// serializes assignment from runREPL with the read in cleanupAndExit
-// (which runs from the SIGINT goroutine in setupSignalHandling).
+// The managed REPL registers gotui's ui.Close here so a signal-triggered
+// exit (SIGTERM, or a SIGINT that tcell's raw mode didn't capture as a key
+// event) still restores the terminal — os.Exit skips the deferred ui.Close
+// in managedREPL.Run. The mutex serializes registration from the REPL
+// goroutine with the read from the signal goroutine in setupSignalHandling.
 var (
 	beforeExitMu sync.Mutex
 	beforeExit   func()

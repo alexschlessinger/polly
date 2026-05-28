@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -53,9 +53,8 @@ func TestValidateREPLConfigRejectsBoth(t *testing.T) {
 }
 
 func TestReplModelSubmitAndHistory(t *testing.T) {
-	m := newReplModel(&Config{Settings: Settings{Model: "test/gpt"}}, "ctx", 0, 0)
-	m.input = []rune("hello")
-	m.cursor = 5
+	m := newReplModel()
+	m.ed.setText("hello")
 	got := m.submitPrompt()
 	if got != "hello" {
 		t.Fatalf("submit returned %q", got)
@@ -63,16 +62,15 @@ func TestReplModelSubmitAndHistory(t *testing.T) {
 	if !m.busy {
 		t.Fatal("submit should mark busy")
 	}
-	if len(m.transcript) != 1 || m.transcript[0].kind != transcriptUser {
-		t.Fatalf("expected one user transcript entry, got %+v", m.transcript)
+	if len(m.transcript) != 1 || !strings.Contains(m.transcript[0], "hello") {
+		t.Fatalf("expected one transcript entry containing 'hello', got %+v", m.transcript)
 	}
 	if len(m.history) != 1 || m.history[0] != "hello" {
 		t.Fatalf("history not recorded: %+v", m.history)
 	}
 
-	// Empty submit doesn't push to history.
 	m.busy = false
-	m.input = nil
+	m.ed.clear()
 	got = m.submitPrompt()
 	if got != "" {
 		t.Fatalf("empty submit returned %q", got)
@@ -83,87 +81,62 @@ func TestReplModelSubmitAndHistory(t *testing.T) {
 }
 
 func TestReplModelHistoryNavigation(t *testing.T) {
-	m := newReplModel(&Config{}, "", 0, 0)
+	m := newReplModel()
 	m.history = []string{"first", "second"}
-	m.input = []rune("draft")
-	m.cursor = 5
+	m.ed.setText("draft")
 
 	m.historyUp()
-	if string(m.input) != "second" {
-		t.Fatalf("first up should land on 'second', got %q", string(m.input))
+	if m.ed.text() != "second" {
+		t.Fatalf("first up should land on 'second', got %q", m.ed.text())
 	}
 	m.historyUp()
-	if string(m.input) != "first" {
-		t.Fatalf("second up should land on 'first', got %q", string(m.input))
+	if m.ed.text() != "first" {
+		t.Fatalf("second up should land on 'first', got %q", m.ed.text())
 	}
-	m.historyUp() // pinned at top
-	if string(m.input) != "first" {
-		t.Fatalf("upper bound should stay on 'first', got %q", string(m.input))
+	m.historyUp()
+	if m.ed.text() != "first" {
+		t.Fatalf("upper bound should stay on 'first', got %q", m.ed.text())
 	}
 	m.historyDown()
-	if string(m.input) != "second" {
-		t.Fatalf("down should return to 'second', got %q", string(m.input))
+	if m.ed.text() != "second" {
+		t.Fatalf("down should return to 'second', got %q", m.ed.text())
 	}
-	m.historyDown() // restores draft
-	if string(m.input) != "draft" {
-		t.Fatalf("down past last should restore draft, got %q", string(m.input))
+	m.historyDown()
+	if m.ed.text() != "draft" {
+		t.Fatalf("down past last should restore draft, got %q", m.ed.text())
 	}
 }
 
 func TestReplModelHistoryFrozenWhileBusy(t *testing.T) {
-	m := newReplModel(&Config{}, "", 0, 0)
+	m := newReplModel()
 	m.history = []string{"one"}
 	m.busy = true
 	m.historyUp()
-	if len(m.input) != 0 {
-		t.Fatalf("history nav should be a no-op while busy, got %q", string(m.input))
+	if !m.ed.empty() {
+		t.Fatalf("history nav should be a no-op while busy, got %q", m.ed.text())
 	}
 }
 
 func TestReplModelAppendAssistantStreaming(t *testing.T) {
-	m := newReplModel(&Config{}, "", 0, 0)
-	m.appendAssistantText("Hello ")
-	m.appendAssistantText("world")
+	m := newReplModel()
+	m.appendAssistant("Hello ")
+	m.appendAssistant("world")
 	if len(m.transcript) != 1 {
 		t.Fatalf("streaming should accumulate into one entry, got %d", len(m.transcript))
 	}
-	if m.transcript[0].text != "Hello world" {
-		t.Fatalf("got %q", m.transcript[0].text)
+	if m.transcript[0] != "Hello world" {
+		t.Fatalf("got %q", m.transcript[0])
 	}
 
-	// A non-assistant entry should reset the streaming target.
-	m.appendEntry(transcriptEntry{kind: transcriptToolStart, text: "bash"})
-	m.appendAssistantText("after-tool")
+	m.appendLine("tool started")
+	m.appendAssistant("after-tool")
 	if len(m.transcript) != 3 {
-		t.Fatalf("expected new assistant entry after tool, got %d", len(m.transcript))
-	}
-}
-
-func TestReplModelAppendToolEndShapes(t *testing.T) {
-	m := newReplModel(&Config{}, "", 0, 0)
-	call := messages.ChatMessageToolCall{Name: "bash", Arguments: `{"command":"ls"}`}
-
-	m.appendToolEnd(call, "files", 1500*time.Millisecond, nil)
-	last := m.transcript[len(m.transcript)-1]
-	if last.kind != transcriptToolOK || last.duration != "1.5s" {
-		t.Fatalf("expected toolOK with 1.5s, got %+v", last)
-	}
-
-	m.appendToolEnd(call, "", time.Second, errors.New("boom"))
-	last = m.transcript[len(m.transcript)-1]
-	if last.kind != transcriptToolErr || last.errText != "boom" {
-		t.Fatalf("expected toolErr with err, got %+v", last)
-	}
-
-	m.appendToolEnd(call, llm.ToolDeniedContent, 0, nil)
-	last = m.transcript[len(m.transcript)-1]
-	if last.kind != transcriptToolDenied {
-		t.Fatalf("expected toolDenied, got %+v", last)
+		t.Fatalf("expected new assistant entry after non-assistant line, got %d", len(m.transcript))
 	}
 }
 
 func TestReplModelApprovalFlow(t *testing.T) {
-	m := newReplModel(&Config{}, "", 0, 0)
+	m := newReplModel()
 	reply := make(chan []bool, 1)
 	m.approval = &approvalState{
 		calls: []messages.ChatMessageToolCall{{Name: "a"}, {Name: "b"}, {Name: "c"}},
@@ -190,7 +163,7 @@ func TestReplModelApprovalFlow(t *testing.T) {
 }
 
 func TestReplModelApprovalAcceptAllShortCircuits(t *testing.T) {
-	m := newReplModel(&Config{}, "", 0, 0)
+	m := newReplModel()
 	reply := make(chan []bool, 1)
 	m.approval = &approvalState{
 		calls: []messages.ChatMessageToolCall{{Name: "a"}, {Name: "b"}},
@@ -206,8 +179,212 @@ func TestReplModelApprovalAcceptAllShortCircuits(t *testing.T) {
 	}
 }
 
+func TestLineEditorWordOps(t *testing.T) {
+	var e lineEditor
+	e.setText("foo bar baz")
+
+	// deleteWordBackward from end removes "baz".
+	e.deleteWordBackward()
+	if e.text() != "foo bar " {
+		t.Fatalf("deleteWordBackward = %q", e.text())
+	}
+
+	// wordLeft hops to the start of "bar"; another to start of "foo".
+	e.wordLeft()
+	if e.cursor != 4 {
+		t.Fatalf("wordLeft cursor = %d, want 4", e.cursor)
+	}
+	e.wordLeft()
+	if e.cursor != 0 {
+		t.Fatalf("second wordLeft cursor = %d, want 0", e.cursor)
+	}
+
+	// deleteWordForward from start removes "foo" (cursor stays put).
+	e.deleteWordForward()
+	if e.text() != " bar " {
+		t.Fatalf("deleteWordForward = %q", e.text())
+	}
+	if e.cursor != 0 {
+		t.Fatalf("deleteWordForward moved cursor to %d", e.cursor)
+	}
+
+	// wordRight skips the leading space and lands past "bar".
+	e.wordRight()
+	if e.cursor != 4 {
+		t.Fatalf("wordRight cursor = %d, want 4", e.cursor)
+	}
+}
+
+func TestLineEditorKillAndInsert(t *testing.T) {
+	var e lineEditor
+	e.setText("hello world")
+	e.home()
+	e.right()
+	e.right()
+	e.killToEnd()
+	if e.text() != "he" {
+		t.Fatalf("killToEnd = %q", e.text())
+	}
+	e.killToStart()
+	if e.text() != "" || e.cursor != 0 {
+		t.Fatalf("killToStart = %q cursor %d", e.text(), e.cursor)
+	}
+	e.insert('x')
+	e.insert('y')
+	if e.text() != "xy" || e.cursor != 2 {
+		t.Fatalf("insert = %q cursor %d", e.text(), e.cursor)
+	}
+}
+
+func TestAppendHelpPopulatesTranscript(t *testing.T) {
+	m := newReplModel()
+	m.appendHelp()
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "commands:") || !strings.Contains(joined, "Ctrl-C") {
+		t.Fatalf("transcript missing help content: %q", joined)
+	}
+}
+
+func TestRunREPLLoopShowsHelp(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("/help\n"))
+	var out bytes.Buffer
+	err := runREPLLoop(reader, &out, func(prompt string) error {
+		t.Fatalf("runTurn should not be called for /help")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.String(), "commands:") || !strings.Contains(out.String(), "/exit") {
+		t.Fatalf("help output missing: %q", out.String())
+	}
+}
+
+func TestHandleInterruptCancelsThenQuits(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	canceled := false
+	r.turnCancel = func() { canceled = true }
+	reply := make(chan []bool, 1)
+	r.model.busy = true
+	r.model.state = turnStateTool
+	r.model.toolName = "bash"
+	r.model.approval = &approvalState{
+		calls: []messages.ChatMessageToolCall{{Name: "bash"}},
+		reply: reply,
+	}
+
+	// First Ctrl-C: cancel the turn, deny the pending approval, stay open.
+	if quit := r.handleInterrupt(); quit {
+		t.Fatal("first interrupt should not quit")
+	}
+	if !canceled {
+		t.Fatal("first interrupt should cancel the turn context")
+	}
+	if !r.model.canceling {
+		t.Fatal("first interrupt should mark canceling")
+	}
+	if r.model.approval != nil {
+		t.Fatal("first interrupt should clear the pending approval")
+	}
+	if got := <-reply; len(got) != 1 || got[0] {
+		t.Fatalf("pending approval should be denied, got %v", got)
+	}
+	if r.model.busyLabel() != "canceling" {
+		t.Fatalf("busy label should read 'canceling', got %q", r.model.busyLabel())
+	}
+
+	// Second Ctrl-C while still winding down: force quit.
+	if quit := r.handleInterrupt(); !quit {
+		t.Fatal("second interrupt should quit")
+	}
+}
+
+func TestHandleInterruptQuitsWhenIdle(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	if quit := r.handleInterrupt(); !quit {
+		t.Fatal("interrupt at an idle prompt should quit")
+	}
+}
+
+func TestBusyIndicatorShowsStateAndElapsed(t *testing.T) {
+	m := newReplModel()
+	m.busy = true
+	m.state = turnStateTool
+	m.toolName = "bash"
+	m.turnStarted = time.Now().Add(-3 * time.Second)
+
+	got := m.inputDisplay()
+	if !strings.Contains(got, "running bash") {
+		t.Fatalf("expected state label 'running bash', got %q", got)
+	}
+	if !strings.Contains(got, "3.0s") {
+		t.Fatalf("expected elapsed '3.0s', got %q", got)
+	}
+
+	m.state = turnStateThinking
+	if label := m.busyLabel(); label != "thinking" {
+		t.Fatalf("thinking state label = %q", label)
+	}
+}
+
+func TestStyleEscapeRejectsMarkup(t *testing.T) {
+	got := styleEscape("hello [world] (fg:red)")
+	if !strings.Contains(got, `\[world\]`) {
+		t.Fatalf("expected brackets escaped, got %q", got)
+	}
+}
+
+func TestScrollBackHoldsAnchor(t *testing.T) {
+	m := newReplModel()
+	for i := 0; i < 20; i++ {
+		m.appendLine("line " + string(rune('a'+i)))
+	}
+	if !m.followBottom {
+		t.Fatal("expected followBottom true initially")
+	}
+
+	// Viewport = 5 lines. Scrolling up should pin the anchor and disable
+	// follow.
+	m.scrollBy(-3, 5)
+	if m.followBottom {
+		t.Fatal("scrollBy(-3) should disable followBottom")
+	}
+	wantAnchor := 20 - 5 - 3 // total - viewport - delta
+	if m.scrollAnchor != wantAnchor {
+		t.Fatalf("scrollAnchor = %d, want %d", m.scrollAnchor, wantAnchor)
+	}
+
+	// New content arrives while user is scrolled up — anchor must not jump.
+	m.appendLine("new line")
+	if m.scrollAnchor != wantAnchor {
+		t.Fatalf("appendLine moved anchor: got %d", m.scrollAnchor)
+	}
+
+	// Scrolling back down re-engages follow.
+	m.scrollBy(100, 5)
+	if !m.followBottom {
+		t.Fatalf("scrolling past bottom should re-engage follow")
+	}
+}
+
+func TestVisibleTranscriptFollowsBottom(t *testing.T) {
+	m := newReplModel()
+	for i := 0; i < 10; i++ {
+		m.appendLine(fmt.Sprintf("line %d", i))
+	}
+	got := m.visibleTranscript(3)
+	want := "line 7\nline 8\nline 9"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
 func TestStatusRowDropsLowPriorityFields(t *testing.T) {
-	m := newReplModel(&Config{Settings: Settings{Model: "openai/gpt-extra-long-name"}}, "my-context", 4, 2)
+	m := newReplModel()
+	m.modelName = "gpt-extra-long-name"
+	m.contextName = "my-context"
+	m.toolCount = 4
+	m.skillCount = 2
 	m.lastIn = 1234
 	m.lastOut = 567
 
@@ -250,24 +427,6 @@ func TestFormatElapsed(t *testing.T) {
 	}
 	if got := formatElapsed(65 * time.Second); got != "1m05s" {
 		t.Errorf("got %q", got)
-	}
-}
-
-func TestRenderEntryRowsToolFormatting(t *testing.T) {
-	rows := renderEntryRows(transcriptEntry{kind: transcriptToolOK, text: "bash ls", duration: "0.5s"})
-	if len(rows) != 1 || !strings.Contains(rows[0], "0.5s bash ls") {
-		t.Fatalf("toolOK row malformed: %v", rows)
-	}
-	rows = renderEntryRows(transcriptEntry{kind: transcriptToolErr, text: "bash ls", duration: "0.5s", errText: "exit 1"})
-	if len(rows) != 1 || !strings.Contains(rows[0], "exit 1") {
-		t.Fatalf("toolErr row malformed: %v", rows)
-	}
-}
-
-func TestStyleEscapeRejectsMarkup(t *testing.T) {
-	got := styleEscape("hello [world] (fg:red)")
-	if !strings.Contains(got, `\[world\]`) {
-		t.Fatalf("expected brackets escaped, got %q", got)
 	}
 }
 
