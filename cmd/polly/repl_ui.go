@@ -291,6 +291,13 @@ type replModel struct {
 	// streaming into, or -1 when no streaming entry exists.
 	currentAssistant int
 
+	// activeTools tracks tool calls currently executing, each pinned to the
+	// transcript entry that displays it. While a tool runs, render() rewrites
+	// that entry every frame with a breathing arrow and live elapsed time; when
+	// it finishes the entry is frozen into the final ✓/✗ line. Parallel calls
+	// finish out of order, so each is matched back to its line by call ID.
+	activeTools []activeTool
+
 	ed           lineEditor
 	busy         bool
 	canceling    bool
@@ -472,27 +479,95 @@ func (m *replModel) appendUserPrompt(p string) {
 	m.appendLine(styled("> ", "blue", "bold") + styleEscape(p))
 }
 
-func (m *replModel) appendToolStartLine(label string) {
-	m.appendLine("  " + styled("→", "cyan", "") + " " + styled(label, "grey", ""))
+// activeTool is one still-executing tool call, pinned to the transcript entry
+// that displays it.
+type activeTool struct {
+	id      string
+	index   int
+	label   string
+	started time.Time
 }
 
-func (m *replModel) appendToolEndLine(kind transcriptKind, label, duration string) {
-	switch kind {
-	case transcriptToolOK:
-		body := strings.TrimSpace(duration + " " + label)
-		m.appendLine("  " + styled("✓", "darkgreen", "bold") + " " + styled(body, "grey", ""))
-	case transcriptToolDenied:
-		m.appendLine("  " + styled("✗", "red", "bold") + " " + styled("denied "+label, "grey", ""))
+// appendToolStartLine adds a transcript entry for a tool that just began and
+// starts tracking it so render() can animate it. The placeholder text is
+// rewritten on the very next frame by refreshActiveTools.
+func (m *replModel) appendToolStartLine(id, label string) {
+	m.appendLine(runningToolLine(label, 0))
+	m.activeTools = append(m.activeTools, activeTool{
+		id:      id,
+		index:   len(m.transcript) - 1,
+		label:   label,
+		started: time.Now(),
+	})
+}
+
+// arrowPulse is a palindrome of cyan shades (light → dark → light) that the
+// running-tool arrow cycles through to "breathe" while a tool executes.
+var arrowPulse = []string{"cyan", "turquoise", "teal", "darkcyan", "teal", "turquoise"}
+
+// arrowPulsePeriod is how long each pulse shade holds; len(arrowPulse) steps
+// make one full breath (~1.1s), independent of the render tick.
+const arrowPulsePeriod = 180 * time.Millisecond
+
+// runningToolLine renders a still-executing tool entry: a breathing arrow whose
+// color is chosen from elapsed time, the label, and a live elapsed timer.
+func runningToolLine(label string, elapsed time.Duration) string {
+	color := arrowPulse[int(elapsed/arrowPulsePeriod)%len(arrowPulse)]
+	return "  " + styled("→", color, "bold") + " " +
+		styled(label, "grey", "") + " " +
+		styled("· "+formatElapsed(elapsed), "grey", "")
+}
+
+// refreshActiveTools rewrites each running tool's transcript entry with the
+// current breathing-arrow frame and live elapsed time. Caller must hold m.mu.
+func (m *replModel) refreshActiveTools() {
+	for _, at := range m.activeTools {
+		if at.index >= 0 && at.index < len(m.transcript) {
+			m.transcript[at.index] = runningToolLine(at.label, time.Since(at.started))
+		}
 	}
 }
 
-// appendToolErrorLine renders a failed tool call as a single line: a red ✗, the
-// grey metadata (timing · command · exit code), and the error message itself in
-// dark red so it stands out without being the bright-red wall of the full
-// output. code/summary may each be empty (no exit code from an MCP error, no
-// output from a silent failure). The model still receives the full output — this
-// only shapes the transcript.
-func (m *replModel) appendToolErrorLine(label, duration, code, summary string) {
+// takeActiveTool stops tracking a finished tool and returns the transcript index
+// of its line so the caller can freeze it into a final ✓/✗ entry. It matches by
+// call id, falling back to the oldest still-running entry (the only one in the
+// common sequential case, and a safe default if an id is missing). Returns false
+// when nothing is tracked. Caller must hold m.mu.
+func (m *replModel) takeActiveTool(id string) (int, bool) {
+	if len(m.activeTools) == 0 {
+		return -1, false
+	}
+	pick := 0
+	for i, at := range m.activeTools {
+		if at.id == id {
+			pick = i
+			break
+		}
+	}
+	idx := m.activeTools[pick].index
+	m.activeTools = append(m.activeTools[:pick], m.activeTools[pick+1:]...)
+	return idx, true
+}
+
+// toolOKLine / toolDeniedLine / toolErrorLine build the final transcript entry
+// for a completed tool call. They return the styled string (rather than
+// appending) so AppendToolEnd can freeze it over the running line in place.
+
+func toolOKLine(label, duration string) string {
+	body := strings.TrimSpace(duration + " " + label)
+	return "  " + styled("✓", "darkgreen", "bold") + " " + styled(body, "grey", "")
+}
+
+func toolDeniedLine(label string) string {
+	return "  " + styled("✗", "red", "bold") + " " + styled("denied "+label, "grey", "")
+}
+
+// toolErrorLine renders a failed tool call: a red ✗, the grey metadata
+// (timing · command · exit code), and the error message itself in dark red so
+// it stands out without being the bright-red wall of the full output.
+// code/summary may each be empty (no exit code from an MCP error, no output from
+// a silent failure). The model still receives the full output — display only.
+func toolErrorLine(label, duration, code, summary string) string {
 	meta := strings.TrimSpace(duration + " " + label)
 	line := "  " + styled("✗", "red", "bold") + " " + styled(meta, "grey", "")
 	if code != "" {
@@ -501,7 +576,7 @@ func (m *replModel) appendToolErrorLine(label, duration, code, summary string) {
 	if summary != "" {
 		line += styled(" · ", "grey", "") + styled(summary, "darkred", "")
 	}
-	m.appendLine(line)
+	return line
 }
 
 // toolErrorSummaryMax bounds the one-line error summary so a failing tool can't
@@ -731,6 +806,7 @@ func (r *managedREPL) cmdClear() {
 	}
 	r.model.transcript = nil
 	r.model.currentAssistant = -1
+	r.model.activeTools = nil
 	r.model.appendNoticeLine("context cleared")
 }
 
@@ -794,15 +870,6 @@ func (r *managedREPL) cmdSkills() {
 		m.appendNoticeLine(line)
 	}
 }
-
-// transcriptKind classifies a tool-end line for appendToolEndLine.
-type transcriptKind int
-
-const (
-	transcriptToolOK transcriptKind = iota
-	transcriptToolErr
-	transcriptToolDenied
-)
 
 // submitPrompt finalizes the current input as a user turn. Returns the prompt
 // string (possibly empty if input was blank).
@@ -1022,7 +1089,7 @@ func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editab
 			styled("? [y/n/a] ", "blue", "bold")
 		return text, 1, 0, 0, false
 	case m.busy:
-		return m.busyIndicator(), 1, 0, 0, false
+		return m.busyDisplay(), 1, 0, 0, false
 	}
 
 	lines := strings.Split(m.ed.text(), "\n")
@@ -1069,6 +1136,22 @@ func (m *replModel) inputDisplay() string {
 
 // spinnerFrames is the braille dot cycle used by the busy indicator.
 var spinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+// busyDisplay renders the bottom input row while a turn is in flight. When tool
+// lines are animating in the transcript above (they already carry the spinner
+// and elapsed time), this collapses to a faint interrupt hint instead of
+// duplicating them; otherwise — thinking/streaming/waiting, or quiet mode where
+// no tool line is drawn — it shows the spinner indicator. Caller must hold m.mu.
+func (m *replModel) busyDisplay() string {
+	if len(m.activeTools) > 0 {
+		hint := "ctrl-c to interrupt"
+		if m.canceling {
+			hint = "canceling…"
+		}
+		return styled(hint, "darkgrey", "")
+	}
+	return m.busyIndicator()
+}
 
 // busyIndicator renders the animated processing line: spinner + a friendly
 // state word + elapsed time, e.g. "⠹ running bash · 3.8s". The frame advances
@@ -1332,6 +1415,9 @@ func (r *managedREPL) endTurn(err error) {
 	r.model.currentAssistant = -1
 	r.model.turnStarted = time.Time{}
 	r.model.toolName = ""
+	// Any tool whose OnToolEnd never fired (e.g. an abandoned turn) stops
+	// breathing here; its line freezes at the last rendered frame.
+	r.model.activeTools = nil
 	if err != nil && !errors.Is(err, context.Canceled) {
 		r.model.appendLine(styled("Error: "+err.Error(), "red", ""))
 		r.model.state = turnStateError
@@ -1517,6 +1603,7 @@ func (r *managedREPL) render() {
 	}
 
 	r.model.mu.Lock()
+	r.model.refreshActiveTools()
 	input, inputRows, curRow, curCol, editable := r.model.renderInput()
 	transcriptHeight := h - inputRows - statusRows
 	if transcriptHeight < 1 {
@@ -1859,7 +1946,7 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 		return
 	}
 	for _, c := range calls {
-		t.repl.model.appendToolStartLine(toolLabel(c))
+		t.repl.model.appendToolStartLine(c.ID, toolLabel(c))
 	}
 }
 
@@ -1893,14 +1980,24 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	if !toolDisplayEnabled(t.config) {
 		return
 	}
+	m := t.repl.model
+	var final string
 	switch {
 	case result == llm.ToolDeniedContent:
-		t.repl.model.appendToolEndLine(transcriptToolDenied, label, "")
+		final = toolDeniedLine(label)
 	case err != nil:
 		code, summary := toolErrorParts(err)
-		t.repl.model.appendToolErrorLine(label, fmt.Sprintf("%.1fs", duration.Seconds()), code, summary)
+		final = toolErrorLine(label, fmt.Sprintf("%.1fs", duration.Seconds()), code, summary)
 	default:
-		t.repl.model.appendToolEndLine(transcriptToolOK, label, fmt.Sprintf("%.1fs", duration.Seconds()))
+		final = toolOKLine(label, fmt.Sprintf("%.1fs", duration.Seconds()))
+	}
+	// Freeze the final line over the running (breathing) one in place, so a tool
+	// is a single transcript line from start to finish. Falls back to appending
+	// if the start line wasn't tracked (shouldn't happen when display is on).
+	if idx, ok := m.takeActiveTool(call.ID); ok {
+		m.transcript[idx] = final
+	} else {
+		m.appendLine(final)
 	}
 }
 

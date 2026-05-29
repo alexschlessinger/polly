@@ -397,16 +397,11 @@ func TestToolExitCodeFromExitError(t *testing.T) {
 	}
 }
 
-func TestAppendToolErrorLine(t *testing.T) {
-	m := newReplModel()
+func TestToolErrorLineRendering(t *testing.T) {
 	err := errors.New("command failed: exit status 1 (output: line one\nfatal: the real error)")
 	code, summary := toolErrorParts(err)
-	m.appendToolErrorLine("bash", "1.4s", code, summary)
+	line := toolErrorLine("bash", "1.4s", code, summary)
 
-	if len(m.transcript) != 1 {
-		t.Fatalf("error should be one transcript entry, got %d", len(m.transcript))
-	}
-	line := m.transcript[0]
 	if strings.Contains(line, "\n") {
 		t.Fatalf("error line should not wrap into multiple rows: %q", line)
 	}
@@ -425,6 +420,102 @@ func TestAppendToolErrorLine(t *testing.T) {
 	}
 	if !strings.Contains(line, "exit 1](fg:grey)") {
 		t.Errorf("exit code should be grey: %q", line)
+	}
+}
+
+func TestRunningToolLine(t *testing.T) {
+	line := runningToolLine("bash sleep 30", 15500*time.Millisecond)
+	for _, want := range []string{"→", "bash sleep 30", "15.5s"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("running tool line %q missing %q", line, want)
+		}
+	}
+	// The arrow breathes: its color must come from the pulse palette.
+	hasPulseColor := false
+	for _, c := range arrowPulse {
+		if strings.Contains(line, "→](fg:"+c+",mod:bold)") {
+			hasPulseColor = true
+			break
+		}
+	}
+	if !hasPulseColor {
+		t.Errorf("arrow should use a pulse color: %q", line)
+	}
+}
+
+func TestActiveToolLifecycle(t *testing.T) {
+	m := newReplModel()
+
+	// Starting a tool adds one transcript line and tracks it.
+	m.appendToolStartLine("id1", "bash sleep 30")
+	if len(m.transcript) != 1 || len(m.activeTools) != 1 {
+		t.Fatalf("after start: %d transcript, %d active", len(m.transcript), len(m.activeTools))
+	}
+	if m.activeTools[0].index != 0 {
+		t.Fatalf("active tool index = %d, want 0", m.activeTools[0].index)
+	}
+
+	// A render frame rewrites the line with live elapsed time.
+	m.activeTools[0].started = m.activeTools[0].started.Add(-15500 * time.Millisecond)
+	m.refreshActiveTools()
+	if !strings.Contains(m.transcript[0], "15.5s") {
+		t.Fatalf("refreshed line missing elapsed: %q", m.transcript[0])
+	}
+
+	// Finishing it frees the slot and freezes the line in place — still one line.
+	idx, ok := m.takeActiveTool("id1")
+	if !ok || idx != 0 {
+		t.Fatalf("takeActiveTool = (%d, %v), want (0, true)", idx, ok)
+	}
+	if len(m.activeTools) != 0 {
+		t.Fatalf("active tools should be empty, got %d", len(m.activeTools))
+	}
+	m.transcript[idx] = toolOKLine("bash sleep 30", "30.0s")
+	if len(m.transcript) != 1 || !strings.Contains(m.transcript[0], "✓") {
+		t.Fatalf("finalized transcript = %v", m.transcript)
+	}
+}
+
+func TestTakeActiveToolMatchesByIDWithFallback(t *testing.T) {
+	m := newReplModel()
+	m.appendToolStartLine("a", "bash one") // index 0
+	m.appendToolStartLine("b", "bash two") // index 1
+
+	// Out-of-order finish: the second tool's id resolves to its own line.
+	if idx, ok := m.takeActiveTool("b"); !ok || idx != 1 {
+		t.Fatalf("take(b) = (%d, %v), want (1, true)", idx, ok)
+	}
+	// An unknown id falls back to the oldest still-running entry (a@0).
+	if idx, ok := m.takeActiveTool("missing"); !ok || idx != 0 {
+		t.Fatalf("take(missing) = (%d, %v), want (0, true)", idx, ok)
+	}
+	if _, ok := m.takeActiveTool("anything"); ok {
+		t.Fatalf("take on empty should report false")
+	}
+}
+
+func TestBusyDisplayHintVsSpinner(t *testing.T) {
+	m := newReplModel()
+
+	// With a tool animating above, the bottom row is just an interrupt hint —
+	// no duplicated spinner or tool name.
+	m.appendToolStartLine("id1", "bash sleep 30")
+	hint := m.busyDisplay()
+	if !strings.Contains(hint, "ctrl-c to interrupt") {
+		t.Fatalf("tool-active busy display = %q, want interrupt hint", hint)
+	}
+	if strings.Contains(hint, "running") || strings.Contains(hint, "bash") {
+		t.Fatalf("busy display should not duplicate the tool line: %q", hint)
+	}
+
+	// With no active tool line (thinking/streaming, or quiet mode), fall back to
+	// the spinner indicator.
+	m.takeActiveTool("id1")
+	m.state = turnStateThinking
+	m.turnStarted = time.Now()
+	spin := m.busyDisplay()
+	if !strings.Contains(spin, "thinking") {
+		t.Fatalf("no-tool busy display = %q, want spinner indicator", spin)
 	}
 }
 
