@@ -321,52 +321,57 @@ func TestHandleEventUpDownLineThenHistory(t *testing.T) {
 	}
 }
 
-func TestToolErrorDetail(t *testing.T) {
+func TestToolErrorParts(t *testing.T) {
 	cases := []struct {
-		name string
-		err  error
-		want string
+		name        string
+		err         error
+		wantCode    string
+		wantSummary string
 	}{
 		{
 			// bash-style: exit code + last line of the embedded output.
-			name: "bash with traceback",
-			err:  errors.New("command failed: exit status 1 (output: Traceback ...\n  File x\nModuleNotFoundError: No module named 'foo')"),
-			want: "exit 1 · ModuleNotFoundError: No module named 'foo'",
+			name:        "bash with traceback",
+			err:         errors.New("command failed: exit status 1 (output: Traceback ...\n  File x\nModuleNotFoundError: No module named 'foo')"),
+			wantCode:    "exit 1",
+			wantSummary: "ModuleNotFoundError: No module named 'foo'",
 		},
 		{
 			// shell-style (%v, no wrap) still yields the exit code via the string.
-			name: "shell with one-line output",
-			err:  errors.New("tool execution failed: exit status 2 (output: ls: nope: No such file or directory)"),
-			want: "exit 2 · ls: nope: No such file or directory",
+			name:        "shell with one-line output",
+			err:         errors.New("tool execution failed: exit status 2 (output: ls: nope: No such file or directory)"),
+			wantCode:    "exit 2",
+			wantSummary: "ls: nope: No such file or directory",
 		},
 		{
 			// A command that failed with no output shows just the code.
-			name: "empty output",
-			err:  errors.New("command failed: exit status 3 (output: )"),
-			want: "exit 3",
+			name:        "empty output",
+			err:         errors.New("command failed: exit status 3 (output: )"),
+			wantCode:    "exit 3",
+			wantSummary: "",
 		},
 		{
 			// No exit code and no output wrapper: fall back to the message line.
-			name: "timeout-style message",
-			err:  errors.New("tool execution timed out after 30s"),
-			want: "tool execution timed out after 30s",
+			name:        "timeout-style message",
+			err:         errors.New("tool execution timed out after 30s"),
+			wantCode:    "",
+			wantSummary: "tool execution timed out after 30s",
 		},
 	}
 	for _, c := range cases {
-		if got := toolErrorDetail(c.err); got != c.want {
-			t.Errorf("%s: toolErrorDetail = %q, want %q", c.name, got, c.want)
+		code, summary := toolErrorParts(c.err)
+		if code != c.wantCode || summary != c.wantSummary {
+			t.Errorf("%s: toolErrorParts = (%q, %q), want (%q, %q)", c.name, code, summary, c.wantCode, c.wantSummary)
 		}
 	}
 }
 
-func TestToolErrorDetailTruncates(t *testing.T) {
+func TestToolErrorPartsTruncates(t *testing.T) {
 	long := strings.Repeat("x", toolErrorSummaryMax+50)
 	err := fmt.Errorf("command failed: exit status 1 (output: %s)", long)
-	got := toolErrorDetail(err)
-	if !strings.HasPrefix(got, "exit 1 · ") {
-		t.Fatalf("missing exit prefix: %q", got)
+	code, summary := toolErrorParts(err)
+	if code != "exit 1" {
+		t.Fatalf("code = %q, want \"exit 1\"", code)
 	}
-	summary := strings.TrimPrefix(got, "exit 1 · ")
 	if !strings.HasSuffix(summary, "…") {
 		t.Fatalf("long summary should end with ellipsis: %q", summary)
 	}
@@ -392,10 +397,11 @@ func TestToolExitCodeFromExitError(t *testing.T) {
 	}
 }
 
-func TestAppendToolEndErrorIsOneMutedLine(t *testing.T) {
+func TestAppendToolErrorLine(t *testing.T) {
 	m := newReplModel()
 	err := errors.New("command failed: exit status 1 (output: line one\nfatal: the real error)")
-	m.appendToolEndLine(transcriptToolErr, "bash", "1.4s", toolErrorDetail(err))
+	code, summary := toolErrorParts(err)
+	m.appendToolErrorLine("bash", "1.4s", code, summary)
 
 	if len(m.transcript) != 1 {
 		t.Fatalf("error should be one transcript entry, got %d", len(m.transcript))
@@ -413,9 +419,12 @@ func TestAppendToolEndErrorIsOneMutedLine(t *testing.T) {
 	if strings.Contains(line, "line one") {
 		t.Errorf("error line should not include earlier output: %q", line)
 	}
-	// Only the ✗ glyph carries red; the body is grey (no red style run on text).
-	if strings.Contains(line, "fatal: the real error](fg:red") {
-		t.Errorf("summary should be muted, not red: %q", line)
+	// The message is dark red; the metadata/exit code stays grey.
+	if !strings.Contains(line, "fatal: the real error](fg:darkred)") {
+		t.Errorf("summary should be dark red: %q", line)
+	}
+	if !strings.Contains(line, "exit 1](fg:grey)") {
+		t.Errorf("exit code should be grey: %q", line)
 	}
 }
 

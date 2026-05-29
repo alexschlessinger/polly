@@ -476,23 +476,32 @@ func (m *replModel) appendToolStartLine(label string) {
 	m.appendLine("  " + styled("→", "cyan", "") + " " + styled(label, "grey", ""))
 }
 
-func (m *replModel) appendToolEndLine(kind transcriptKind, label, duration, detail string) {
+func (m *replModel) appendToolEndLine(kind transcriptKind, label, duration string) {
 	switch kind {
 	case transcriptToolOK:
 		body := strings.TrimSpace(duration + " " + label)
 		m.appendLine("  " + styled("✓", "green", "bold") + " " + styled(body, "grey", ""))
-	case transcriptToolErr:
-		body := strings.TrimSpace(duration + " " + label)
-		if detail != "" {
-			body += " · " + detail
-		}
-		// Only the ✗ glyph is red; the rest is muted like the success line, so a
-		// failure reads as one quiet line instead of a wall of red. The model
-		// still receives the full output — this is display only.
-		m.appendLine("  " + styled("✗", "red", "bold") + " " + styled(body, "grey", ""))
 	case transcriptToolDenied:
 		m.appendLine("  " + styled("✗", "red", "bold") + " " + styled("denied "+label, "grey", ""))
 	}
+}
+
+// appendToolErrorLine renders a failed tool call as a single line: a red ✗, the
+// grey metadata (timing · command · exit code), and the error message itself in
+// dark red so it stands out without being the bright-red wall of the full
+// output. code/summary may each be empty (no exit code from an MCP error, no
+// output from a silent failure). The model still receives the full output — this
+// only shapes the transcript.
+func (m *replModel) appendToolErrorLine(label, duration, code, summary string) {
+	meta := strings.TrimSpace(duration + " " + label)
+	line := "  " + styled("✗", "red", "bold") + " " + styled(meta, "grey", "")
+	if code != "" {
+		line += styled(" · "+code, "grey", "")
+	}
+	if summary != "" {
+		line += styled(" · ", "grey", "") + styled(summary, "darkred", "")
+	}
+	m.appendLine(line)
 }
 
 // toolErrorSummaryMax bounds the one-line error summary so a failing tool can't
@@ -500,20 +509,18 @@ func (m *replModel) appendToolEndLine(kind transcriptKind, label, duration, deta
 // very narrow terminal the line may still wrap — but it can never be huge.
 const toolErrorSummaryMax = 100
 
-// toolErrorDetail builds the compact "exit N · last-output-line" string shown
-// after a failed tool's label. Either segment may be empty (e.g. an MCP error
-// has no exit code; a command that failed silently has no output line), in
-// which case it's omitted. The full output still reaches the model — this only
-// shapes the transcript.
-func toolErrorDetail(err error) string {
-	var parts []string
-	if code, ok := toolExitCode(err); ok {
-		parts = append(parts, fmt.Sprintf("exit %d", code))
+// toolErrorParts splits a failed tool call into its display segments: a compact
+// "exit N" code (empty when none applies) and the most useful single line of
+// output (empty when the failure produced none). The model still receives the
+// full output — this only shapes the transcript.
+func toolErrorParts(err error) (code, summary string) {
+	if c, ok := toolExitCode(err); ok {
+		code = fmt.Sprintf("exit %d", c)
 	}
 	if s := toolErrorSummary(err); s != "" {
-		parts = append(parts, truncateRunes(s, toolErrorSummaryMax))
+		summary = truncateRunes(s, toolErrorSummaryMax)
 	}
-	return strings.Join(parts, " · ")
+	return code, summary
 }
 
 // toolExitCode recovers a process exit code from a failed tool call. BashTool
@@ -1888,11 +1895,12 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	}
 	switch {
 	case result == llm.ToolDeniedContent:
-		t.repl.model.appendToolEndLine(transcriptToolDenied, label, "", "")
+		t.repl.model.appendToolEndLine(transcriptToolDenied, label, "")
 	case err != nil:
-		t.repl.model.appendToolEndLine(transcriptToolErr, label, fmt.Sprintf("%.1fs", duration.Seconds()), toolErrorDetail(err))
+		code, summary := toolErrorParts(err)
+		t.repl.model.appendToolErrorLine(label, fmt.Sprintf("%.1fs", duration.Seconds()), code, summary)
 	default:
-		t.repl.model.appendToolEndLine(transcriptToolOK, label, fmt.Sprintf("%.1fs", duration.Seconds()), "")
+		t.repl.model.appendToolEndLine(transcriptToolOK, label, fmt.Sprintf("%.1fs", duration.Seconds()))
 	}
 }
 
