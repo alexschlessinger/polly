@@ -373,26 +373,26 @@ func newReplModel() *replModel {
 }
 
 // statusRowGutter is the display width reserved at the left of the status bar
-// for the live activity (spinner + state + elapsed) while a turn runs. Holding
-// it constant keeps the static fields from shifting as the state or elapsed time
-// changes mid-turn; it fits "⠹ streaming · 12.3s" with a trailing gap. At idle
-// the gutter collapses so the bar isn't left-padded when nothing is happening.
-const statusRowGutter = 20
+// for the live activity (spinner + state) while a turn runs. Holding it constant
+// keeps the static fields from shifting as the state word changes mid-turn; it
+// fits "⠹ streaming" with a trailing gap. At idle the gutter collapses so the
+// bar isn't left-padded when nothing is happening.
+const statusRowGutter = 12
 
 // statusRow renders the bar contents at the given terminal width. While a turn
-// runs, the live activity (spinner + transient state + elapsed) fills a
-// fixed-width gutter on the left so the static fields don't move; at idle the
-// gutter collapses to a single leading space. Low-priority static fields drop
-// when they don't fit. Returns "" when the user asked for quiet mode.
+// runs, the live activity (spinner + transient state) fills a fixed-width gutter
+// on the left so the static fields don't move; at idle the gutter collapses to a
+// single leading space. Low-priority static fields drop when they don't fit.
+// Returns "" when the user asked for quiet mode.
 func (m *replModel) statusRow(width int) string {
 	if m.quiet {
 		return ""
 	}
 	const sep = " · "
 
-	// Activity gutter: spinner + state + elapsed, padded to a fixed width. The
-	// state word is compact (no tool name — the transcript line already shows
-	// it) so the gutter stays bounded and never reshapes the bar.
+	// Activity gutter: spinner + state, padded to a fixed width. The state word
+	// is compact (no tool name — the transcript line already shows it) so the
+	// gutter stays bounded and never reshapes the bar.
 	glyph, spinning := m.spinnerFrame()
 	var act strings.Builder
 	actRaw := ""
@@ -409,16 +409,10 @@ func (m *replModel) statusRow(width int) string {
 		}
 		act.WriteString(styled(word, color, "bold"))
 		actRaw += word
-		if !m.turnStarted.IsZero() {
-			el := formatElapsed(time.Since(m.turnStarted))
-			act.WriteString(styled(sep, "muted", ""))
-			act.WriteString(styled(el, "muted", ""))
-			actRaw += sep + el
-		}
 	}
 	// While a turn runs, pad the activity to a fixed width so the static fields
-	// hold their column as the state/elapsed change. At idle the activity is
-	// empty — collapse to a single leading space instead of a wide blank margin.
+	// hold their column as the state changes. At idle the activity is empty —
+	// collapse to a single leading space instead of a wide blank margin.
 	gutter := act.String()
 	if m.state == turnStateIdle {
 		gutter = " "
