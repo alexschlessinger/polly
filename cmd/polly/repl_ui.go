@@ -480,7 +480,7 @@ func (m *replModel) appendToolEndLine(kind transcriptKind, label, duration strin
 	switch kind {
 	case transcriptToolOK:
 		body := strings.TrimSpace(duration + " " + label)
-		m.appendLine("  " + styled("✓", "green", "bold") + " " + styled(body, "grey", ""))
+		m.appendLine("  " + styled("✓", "darkgreen", "bold") + " " + styled(body, "grey", ""))
 	case transcriptToolDenied:
 		m.appendLine("  " + styled("✗", "red", "bold") + " " + styled("denied "+label, "grey", ""))
 	}
