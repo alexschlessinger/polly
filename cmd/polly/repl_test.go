@@ -1208,13 +1208,30 @@ func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 	if !strings.Contains(wide, "skills:2") || !strings.Contains(wide, "tools:4") {
 		t.Fatalf("wide bar should include all fields: %q", wide)
 	}
-
-	narrow := m.statusRow(30)
-	if strings.Contains(narrow, "skills:2") {
-		t.Fatalf("narrow bar should drop skills first: %q", narrow)
+	// Tokens moved to the post-turn summary line; the bar never shows them.
+	if strings.Contains(wide, "1.2k") || strings.Contains(wide, "→") {
+		t.Fatalf("status bar should not carry token counts: %q", wide)
 	}
-	if !strings.Contains(narrow, "my-context") || !strings.Contains(narrow, "1.2k") {
-		t.Fatalf("narrow bar should keep context and tokens: %q", narrow)
+
+	narrow := m.statusRow(20)
+	if strings.Contains(narrow, "skills:2") {
+		t.Fatalf("narrow bar should drop higher-priority fields before context: %q", narrow)
+	}
+	if !strings.Contains(narrow, "my-context") {
+		t.Fatalf("narrow bar should keep the context (drop:0) field: %q", narrow)
+	}
+}
+
+func TestTurnSummaryLine(t *testing.T) {
+	line := turnSummaryLine(15500*time.Millisecond, 1234, 567)
+	for _, want := range []string{"15.5s", "1234 in", "567 out"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("turn summary %q missing %q", line, want)
+		}
+	}
+	// The whole line is muted metadata, not an accent.
+	if !strings.Contains(line, "](fg:muted)") {
+		t.Errorf("turn summary should be muted: %q", line)
 	}
 }
 

@@ -420,8 +420,9 @@ func (m *replModel) statusRow(width int) string {
 		gutter += strings.Repeat(" ", pad)
 	}
 
-	// Static fields, rendered after the gutter at a constant column.
-	tokens := fmt.Sprintf("%s→%s", humanizeTokens(m.lastIn), humanizeTokens(m.lastOut))
+	// Static fields, rendered after the gutter at a constant column. Per-turn
+	// token counts live in the post-turn summary line (turnSummaryLine), not
+	// here.
 	type field struct {
 		drop int // higher = dropped sooner
 		text string
@@ -431,7 +432,6 @@ func (m *replModel) statusRow(width int) string {
 		fields = append(fields, field{drop: 4, text: m.modelName})
 	}
 	fields = append(fields, field{drop: 0, text: m.contextName})
-	fields = append(fields, field{drop: 0, text: tokens})
 	if m.toolCount > 0 {
 		fields = append(fields, field{drop: 2, text: fmt.Sprintf("tools:%d", m.toolCount)})
 	}
@@ -501,6 +501,13 @@ func formatElapsed(d time.Duration) string {
 	m := int(d / time.Minute)
 	s := int((d % time.Minute) / time.Second)
 	return fmt.Sprintf("%dm%02ds", m, s)
+}
+
+// turnSummaryLine is the one-line report appended to the transcript when a turn
+// finishes: total wall-clock elapsed and the turn's input/output token counts.
+func turnSummaryLine(elapsed time.Duration, in, out int) string {
+	body := fmt.Sprintf("%s · %d in · %d out", formatElapsed(elapsed), in, out)
+	return "  " + styled(body, "muted", "")
 }
 
 // appendLine appends a pre-rendered transcript entry (may contain inline
@@ -946,6 +953,10 @@ func (m *replModel) beginTurn(prompt string) {
 	m.canceling = false
 	m.state = turnStateWaiting
 	m.turnStarted = time.Now()
+	// Token counts are per-turn: clear them so the end-of-turn summary reflects
+	// this turn alone, even if the turn errors before any usage is recorded.
+	m.lastIn = 0
+	m.lastOut = 0
 	m.followBottom = true
 }
 
@@ -1517,6 +1528,13 @@ func (r *managedREPL) endTurn(err error) {
 	r.model.busy = false
 	r.model.canceling = false
 	r.model.currentAssistant = -1
+	// On normal completion, drop a one-line turn report (elapsed + tokens) into
+	// the transcript. Computed before turnStarted is cleared; skipped on cancel
+	// or error, where the turn has no meaningful summary.
+	if err == nil && !r.model.turnStarted.IsZero() {
+		elapsed := time.Since(r.model.turnStarted)
+		r.model.appendLine(turnSummaryLine(elapsed, r.model.lastIn, r.model.lastOut))
+	}
 	r.model.turnStarted = time.Time{}
 	r.model.toolName = ""
 	// Any tool whose OnToolEnd never fired (e.g. an abandoned turn) stops
