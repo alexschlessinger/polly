@@ -307,6 +307,11 @@ type replModel struct {
 	historyIdx   int
 	historyDraft string
 
+	// queue holds inputs submitted while a turn is in flight (the prompt stays
+	// editable during a turn). They run in order once the current turn ends;
+	// each entry is raw trimmed text routed to a command or a prompt at dequeue.
+	queue []string
+
 	// Reverse-incremental history search (Ctrl-R). searchMatch is the index
 	// into history of the current hit, or -1 when the query matches nothing.
 	searching   bool
@@ -385,9 +390,19 @@ func (m *replModel) statusRow(width int) string {
 	if m.skillCount > 0 {
 		fields = append(fields, field{drop: 1, text: fmt.Sprintf("skills:%d", m.skillCount)})
 	}
+	if len(m.queue) > 0 {
+		fields = append(fields, field{drop: 5, text: fmt.Sprintf("queued:%d", len(m.queue))})
+	}
+
+	// The busy spinner lives at the far left of the bar while a turn runs.
+	glyph, spinning := m.spinnerFrame()
+	spinnerCols := 0
+	if spinning {
+		spinnerCols = 1 // the glyph; its trailing gap is the bar's leading space
+	}
 
 	visibleLen := func(fs []field) int {
-		n := 2 // leading + trailing space
+		n := 2 + spinnerCols // leading + trailing space, plus optional spinner
 		for i, f := range fs {
 			n += len([]rune(f.text))
 			if i < len(fs)-1 {
@@ -424,7 +439,11 @@ func (m *replModel) statusRow(width int) string {
 		}
 		parts[i] = styled(f.text, "grey", "")
 	}
-	return " " + strings.Join(parts, styled(sep, "grey", "")) + " "
+	bar := " " + strings.Join(parts, styled(sep, "grey", "")) + " "
+	if spinning {
+		bar = styled(string(glyph), "blue", "bold") + bar
+	}
+	return bar
 }
 
 func humanizeTokens(n int) string {
@@ -882,17 +901,24 @@ func (m *replModel) submitPrompt() string {
 		return ""
 	}
 	m.history = append(m.history, prompt)
+	m.beginTurn(prompt)
+	return prompt
+}
+
+// beginTurn echoes a user prompt and marks a turn in flight. Shared by the idle
+// submit path and the queued-prompt drain; neither records history here (callers
+// do that when the text is first accepted). Caller must hold m.mu.
+func (m *replModel) beginTurn(prompt string) {
 	m.appendUserPrompt(prompt)
 	m.busy = true
 	m.canceling = false
 	m.state = turnStateWaiting
 	m.turnStarted = time.Now()
 	m.followBottom = true
-	return prompt
 }
 
 func (m *replModel) historyUp() {
-	if len(m.history) == 0 || m.busy || m.approval != nil {
+	if len(m.history) == 0 || m.approval != nil {
 		return
 	}
 	if m.historyIdx == -1 {
@@ -905,7 +931,7 @@ func (m *replModel) historyUp() {
 }
 
 func (m *replModel) historyDown() {
-	if m.historyIdx == -1 || m.busy || m.approval != nil {
+	if m.historyIdx == -1 || m.approval != nil {
 		return
 	}
 	if m.historyIdx < len(m.history)-1 {
@@ -1042,10 +1068,11 @@ const inputPromptWidth = 2
 const maxInputRows = 8
 
 // inputRows is how many terminal rows the input region currently occupies. The
-// busy/approval/search overlays are always single-line; an editable prompt
-// grows with its embedded newlines, capped at maxInputRows. Caller must hold m.mu.
+// approval/search overlays (and the quiet-mode busy row) are always single-line;
+// an editable prompt — including while a turn runs — grows with its embedded
+// newlines, capped at maxInputRows. Caller must hold m.mu.
 func (m *replModel) inputRows() int {
-	if m.busy || m.approval != nil || m.searching {
+	if m.approval != nil || m.searching || (m.busy && m.quiet) {
 		return 1
 	}
 	n := 1 + strings.Count(m.ed.text(), "\n")
@@ -1088,8 +1115,11 @@ func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editab
 			styled(label, "grey", "") +
 			styled("? [y/n/a] ", "blue", "bold")
 		return text, 1, 0, 0, false
-	case m.busy:
-		return m.busyDisplay(), 1, 0, 0, false
+	case m.busy && m.quiet:
+		// Quiet mode has no status bar to carry the spinner, so keep the inline
+		// busy row. Otherwise the prompt stays editable while a turn runs and
+		// the status-line spinner shows progress.
+		return m.busyIndicator(), 1, 0, 0, false
 	}
 
 	lines := strings.Split(m.ed.text(), "\n")
@@ -1137,32 +1167,30 @@ func (m *replModel) inputDisplay() string {
 // spinnerFrames is the braille dot cycle used by the busy indicator.
 var spinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
-// busyDisplay renders the bottom input row while a turn is in flight. When tool
-// lines are animating in the transcript above (they already carry the spinner
-// and elapsed time), this collapses to a faint interrupt hint instead of
-// duplicating them; otherwise — thinking/streaming/waiting, or quiet mode where
-// no tool line is drawn — it shows the spinner indicator. Caller must hold m.mu.
-func (m *replModel) busyDisplay() string {
-	if len(m.activeTools) > 0 {
-		hint := "ctrl-c to interrupt"
-		if m.canceling {
-			hint = "canceling…"
-		}
-		return styled(hint, "darkgrey", "")
+// spinnerFrame returns the current braille frame for the busy animation,
+// advanced off turnStarted at 100ms so the rate is independent of the render
+// tick. ok is false at idle, where no spinner should show. Caller must hold m.mu.
+func (m *replModel) spinnerFrame() (rune, bool) {
+	if m.state == turnStateIdle || m.turnStarted.IsZero() {
+		return 0, false
 	}
-	return m.busyIndicator()
+	frame := spinnerFrames[int(time.Since(m.turnStarted)/(100*time.Millisecond))%len(spinnerFrames)]
+	return frame, true
 }
 
 // busyIndicator renders the animated processing line: spinner + a friendly
-// state word + elapsed time, e.g. "⠹ running bash · 3.8s". The frame advances
-// every 100ms off turnStarted so the animation rate is independent of the
-// render tick. Caller must hold m.mu.
+// state word + elapsed time, e.g. "⠹ running bash · 3.8s". It is the inline
+// busy row used only in quiet mode, where there is no status bar to carry the
+// spinner. Caller must hold m.mu.
 func (m *replModel) busyIndicator() string {
 	var elapsed time.Duration
 	if !m.turnStarted.IsZero() {
 		elapsed = time.Since(m.turnStarted)
 	}
-	frame := spinnerFrames[int(elapsed/(100*time.Millisecond))%len(spinnerFrames)]
+	frame, ok := m.spinnerFrame()
+	if !ok {
+		frame = spinnerFrames[0]
+	}
 	return styled(string(frame), "blue", "bold") + " " +
 		styled(m.busyLabel(), "grey", "") + " " +
 		styled("· "+formatElapsed(elapsed), "grey", "")
@@ -1366,6 +1394,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 		case err := <-turnDone:
 			turnDone = nil
 			r.endTurn(err)
+			turnDone = r.startNextQueued(ctx, runTurn)
 			r.render()
 		case ev := <-events:
 			if r.handleEvent(ev) {
@@ -1407,6 +1436,43 @@ func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func
 	return done
 }
 
+// startNextQueued drains inputs queued during the turn that just ended. It runs
+// queued commands inline (honoring a quit) and starts a turn for the first
+// queued prompt, returning that turn's done channel — or nil when the queue
+// empties without a prompt. Called from the main loop after endTurn, the safe
+// point where currentAssistant is already reset so echoing a queued prompt or a
+// queued /clear can't corrupt the just-finished stream.
+func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) chan error {
+	for {
+		r.model.mu.Lock()
+		if len(r.model.queue) == 0 {
+			r.model.mu.Unlock()
+			return nil
+		}
+		text := r.model.queue[0]
+		r.model.queue = r.model.queue[1:]
+
+		// A single-line "/…" is a command; multi-line input is always a prompt.
+		if strings.Contains(text, "\n") || !strings.HasPrefix(text, "/") {
+			r.model.beginTurn(text)
+			r.model.mu.Unlock()
+			return r.startTurn(ctx, text, runTurn)
+		}
+
+		// runCommand and its helpers expect the model lock held (as in
+		// handleEvent); requestQuit does not, so release before quitting.
+		handled, quit := r.runCommand(text)
+		if !handled {
+			r.model.appendNoticeLine("unknown command: " + text + " (try /help)")
+		}
+		r.model.mu.Unlock()
+		if quit {
+			r.requestQuit()
+			return nil
+		}
+	}
+}
+
 func (r *managedREPL) endTurn(err error) {
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
@@ -1446,6 +1512,7 @@ func (r *managedREPL) handleInterrupt() bool {
 		return true
 	}
 	m.canceling = true
+	m.queue = nil // "stop" means stop: don't auto-run queued inputs after a cancel
 	r.cancelTurn()
 	if m.approval != nil {
 		denied := make([]bool, len(m.approval.calls))
@@ -1803,20 +1870,34 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		return false
 	}
 
-	// Busy: keys other than scroll/interrupt (both handled above) are ignored.
-	if m.busy {
-		return false
-	}
+	// While a turn is in flight the prompt stays editable so the user can
+	// compose the next message; Enter queues it (see below) rather than
+	// submitting immediately. Editing/history/search keys all work as usual.
 
 	switch e.ID {
 	case "<C-d>":
-		if m.ed.empty() {
+		// Quit on empty only at idle; mid-turn Ctrl-C is the interrupt.
+		if m.ed.empty() && !m.busy {
 			r.requestQuit()
 			return true
 		}
 	case "<Enter>":
 		trimmed := strings.TrimSpace(m.ed.text())
 		if trimmed == "" {
+			return false
+		}
+		if m.busy {
+			// A turn is running — queue this input to run when it ends instead
+			// of interrupting. Routing (command vs prompt) happens at dequeue;
+			// mirror the idle path's history handling for prompts here.
+			m.ed.clear()
+			m.historyIdx = -1
+			m.historyDraft = ""
+			if strings.Contains(trimmed, "\n") || !strings.HasPrefix(trimmed, "/") {
+				m.history = append(m.history, trimmed)
+				r.appendHistory(trimmed)
+			}
+			m.queue = append(m.queue, trimmed)
 			return false
 		}
 		// Only a single-line "/…" is a command; a multi-line prompt that happens

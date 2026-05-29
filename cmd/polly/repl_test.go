@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -113,13 +114,15 @@ func TestReplModelHistoryNavigation(t *testing.T) {
 	}
 }
 
-func TestReplModelHistoryFrozenWhileBusy(t *testing.T) {
+func TestReplModelHistoryWorksWhileBusy(t *testing.T) {
+	// The prompt stays editable during a turn, so history recall must work too
+	// (the user can compose/queue the next message while the model runs).
 	m := newReplModel()
 	m.history = []string{"one"}
 	m.busy = true
 	m.historyUp()
-	if !m.ed.empty() {
-		t.Fatalf("history nav should be a no-op while busy, got %q", m.ed.text())
+	if m.ed.text() != "one" {
+		t.Fatalf("history recall while busy = %q, want \"one\"", m.ed.text())
 	}
 }
 
@@ -494,28 +497,31 @@ func TestTakeActiveToolMatchesByIDWithFallback(t *testing.T) {
 	}
 }
 
-func TestBusyDisplayHintVsSpinner(t *testing.T) {
+func TestStatusRowShowsSpinnerWhenBusy(t *testing.T) {
 	m := newReplModel()
+	m.contextName = "ctx"
 
-	// With a tool animating above, the bottom row is just an interrupt hint —
-	// no duplicated spinner or tool name.
-	m.appendToolStartLine("id1", "bash sleep 30")
-	hint := m.busyDisplay()
-	if !strings.Contains(hint, "ctrl-c to interrupt") {
-		t.Fatalf("tool-active busy display = %q, want interrupt hint", hint)
-	}
-	if strings.Contains(hint, "running") || strings.Contains(hint, "bash") {
-		t.Fatalf("busy display should not duplicate the tool line: %q", hint)
+	// Idle: no spinner glyph leads the bar.
+	idle := m.statusRow(120)
+	if strings.ContainsAny(idle, string(spinnerFrames)) {
+		t.Fatalf("idle status row should carry no spinner, got %q", idle)
 	}
 
-	// With no active tool line (thinking/streaming, or quiet mode), fall back to
-	// the spinner indicator.
-	m.takeActiveTool("id1")
+	// Busy: a spinner frame leads the bar, alongside the state word.
 	m.state = turnStateThinking
 	m.turnStarted = time.Now()
-	spin := m.busyDisplay()
-	if !strings.Contains(spin, "thinking") {
-		t.Fatalf("no-tool busy display = %q, want spinner indicator", spin)
+	busy := m.statusRow(120)
+	if !strings.ContainsAny(busy, string(spinnerFrames)) {
+		t.Fatalf("busy status row should lead with a spinner frame, got %q", busy)
+	}
+	if !strings.Contains(busy, "thinking") {
+		t.Fatalf("busy status row should include the state word, got %q", busy)
+	}
+
+	// The spinner glyph sits at the very start (far left) of the bar.
+	cells := ui.ParseStyles(busy, ui.NewStyle(ui.ColorWhite))
+	if len(cells) == 0 || !strings.ContainsRune(string(spinnerFrames), cells[0].Rune) {
+		t.Fatalf("first cell should be a spinner frame, got bar %q", busy)
 	}
 }
 
@@ -934,6 +940,76 @@ func TestHandleInterruptCancelsThenQuits(t *testing.T) {
 	}
 }
 
+func TestEnterWhileBusyQueues(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	r.model.busy = true
+	r.model.ed.setText("queued one")
+	send("<Enter>")
+
+	if r.model.ed.text() != "" {
+		t.Fatalf("editor should clear after queueing, got %q", r.model.ed.text())
+	}
+	if len(r.model.queue) != 1 || r.model.queue[0] != "queued one" {
+		t.Fatalf("queue = %v, want [\"queued one\"]", r.model.queue)
+	}
+	if len(r.model.history) != 1 || r.model.history[0] != "queued one" {
+		t.Fatalf("history should record the queued prompt, got %v", r.model.history)
+	}
+	// Queueing must not start a turn.
+	select {
+	case p := <-r.pending:
+		t.Fatalf("queueing should not submit, got %q", p)
+	default:
+	}
+
+	// Ctrl-C while busy clears the queue ("stop means stop").
+	r.handleInterrupt()
+	if len(r.model.queue) != 0 {
+		t.Fatalf("interrupt should clear the queue, got %v", r.model.queue)
+	}
+}
+
+func TestStartNextQueuedRunsPromptAfterCommand(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.queue = []string{"/help", "hello"}
+
+	ran := make(chan string, 1)
+	runTurn := func(ctx context.Context, prompt string, _ TurnUI) error {
+		ran <- prompt
+		return nil
+	}
+
+	done := r.startNextQueued(context.Background(), runTurn)
+	if done == nil {
+		t.Fatal("expected a turn to start for the queued prompt")
+	}
+	// The queued "/help" runs inline; the queued prompt then starts a turn.
+	select {
+	case p := <-ran:
+		if p != "hello" {
+			t.Fatalf("started turn for %q, want \"hello\"", p)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued prompt turn did not start")
+	}
+	if !r.model.busy {
+		t.Fatal("beginTurn should mark the model busy")
+	}
+	if len(r.model.queue) != 0 {
+		t.Fatalf("queue should be drained, got %v", r.model.queue)
+	}
+}
+
+func TestStartNextQueuedEmptyReturnsNil(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	runTurn := func(context.Context, string, TurnUI) error { return nil }
+	if done := r.startNextQueued(context.Background(), runTurn); done != nil {
+		t.Fatal("empty queue should not start a turn")
+	}
+}
+
 func TestHandleInterruptQuitsWhenIdle(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	if quit := r.handleInterrupt(); !quit {
@@ -942,7 +1018,10 @@ func TestHandleInterruptQuitsWhenIdle(t *testing.T) {
 }
 
 func TestBusyIndicatorShowsStateAndElapsed(t *testing.T) {
+	// In quiet mode there is no status bar, so the inline busy row carries the
+	// spinner + state + elapsed time.
 	m := newReplModel()
+	m.quiet = true
 	m.busy = true
 	m.state = turnStateTool
 	m.toolName = "bash"
@@ -959,6 +1038,24 @@ func TestBusyIndicatorShowsStateAndElapsed(t *testing.T) {
 	m.state = turnStateThinking
 	if label := m.busyLabel(); label != "thinking" {
 		t.Fatalf("thinking state label = %q", label)
+	}
+}
+
+func TestBusyPromptStaysEditable(t *testing.T) {
+	// Outside quiet mode the prompt stays editable while a turn runs (the
+	// status-line spinner shows progress instead of overlaying the input).
+	m := newReplModel()
+	m.busy = true
+	m.state = turnStateThinking
+	m.turnStarted = time.Now()
+	m.ed.setText("next message")
+
+	text, _, _, _, editable := m.renderInput()
+	if !editable {
+		t.Fatal("prompt should stay editable while busy (non-quiet)")
+	}
+	if !strings.Contains(text, "next message") {
+		t.Fatalf("busy input should show the editable draft, got %q", text)
 	}
 }
 
