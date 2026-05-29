@@ -312,6 +312,60 @@ func TestHandleEventTabCompletesAndLists(t *testing.T) {
 	}
 }
 
+func TestReverseSearch(t *testing.T) {
+	r := &managedREPL{model: newReplModel()}
+	r.model.history = []string{"git status", "go build", "git commit", "go test"}
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	send("<C-r>")
+	if !r.model.searching {
+		t.Fatal("Ctrl-R did not enter search")
+	}
+
+	// Typing "git" matches the most recent entry containing it.
+	send("g")
+	send("i")
+	send("t")
+	if r.model.searchMatch < 0 || r.model.history[r.model.searchMatch] != "git commit" {
+		t.Fatalf("first match = %d, want index of \"git commit\"", r.model.searchMatch)
+	}
+
+	// Repeated Ctrl-R steps to the older match.
+	send("<C-r>")
+	if r.model.history[r.model.searchMatch] != "git status" {
+		t.Fatalf("stepped match = %q, want \"git status\"", r.model.history[r.model.searchMatch])
+	}
+
+	// Enter accepts the match into the editor and leaves search (no submit).
+	send("<Enter>")
+	if r.model.searching {
+		t.Fatal("Enter did not exit search")
+	}
+	if r.model.ed.text() != "git status" {
+		t.Fatalf("accepted text = %q", r.model.ed.text())
+	}
+}
+
+func TestReverseSearchCancelKeepsDraft(t *testing.T) {
+	r := &managedREPL{model: newReplModel()}
+	r.model.history = []string{"alpha", "beta"}
+	r.model.ed.setText("draft")
+
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-r>"})
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "a"})
+
+	// Ctrl-C cancels the search instead of quitting the REPL.
+	if quit := r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-c>"}); quit {
+		t.Fatal("Ctrl-C during search should cancel, not quit")
+	}
+	if r.model.searching {
+		t.Fatal("Ctrl-C did not exit search")
+	}
+	if r.model.ed.text() != "draft" {
+		t.Fatalf("cancel altered editor: %q", r.model.ed.text())
+	}
+}
+
 func TestLoadHistory(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hist")

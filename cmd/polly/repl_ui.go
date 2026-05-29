@@ -220,6 +220,12 @@ type replModel struct {
 	historyIdx   int
 	historyDraft string
 
+	// Reverse-incremental history search (Ctrl-R). searchMatch is the index
+	// into history of the current hit, or -1 when the query matches nothing.
+	searching   bool
+	searchQuery string
+	searchMatch int
+
 	// Scrollback. When followBottom is true, the render trims to the most
 	// recent lines that fit. When false, scrollAnchor names the absolute
 	// transcript-line index of the top visible row.
@@ -464,6 +470,7 @@ func helpLines() []string {
 		"  Tab               complete /command",
 		"  Ctrl-C            interrupt turn (twice to quit)",
 		"  Up / Down         previous / next input",
+		"  Ctrl-R            reverse-search history",
 		"  PgUp / PgDn       scroll transcript",
 		"  Ctrl-A / Ctrl-E   line start / end",
 		"  Ctrl-U / Ctrl-K   clear before / after cursor",
@@ -634,6 +641,80 @@ func (m *replModel) historyDown() {
 	}
 }
 
+// startSearch enters reverse-incremental history search with an empty query.
+func (m *replModel) startSearch() {
+	m.searching = true
+	m.searchQuery = ""
+	m.searchMatch = -1
+}
+
+func (m *replModel) endSearch() {
+	m.searching = false
+	m.searchQuery = ""
+	m.searchMatch = -1
+}
+
+// searchFrom scans history backward from index `from`, returning the index of
+// the most recent entry containing query, or -1.
+func (m *replModel) searchFrom(from int, query string) int {
+	if query == "" || from >= len(m.history) {
+		return -1
+	}
+	for i := from; i >= 0; i-- {
+		if strings.Contains(m.history[i], query) {
+			return i
+		}
+	}
+	return -1
+}
+
+// searchType extends the query by one rune and re-matches from the newest entry.
+func (m *replModel) searchType(r rune) {
+	m.searchQuery += string(r)
+	m.searchMatch = m.searchFrom(len(m.history)-1, m.searchQuery)
+}
+
+// searchBackspace shortens the query by one rune and re-matches.
+func (m *replModel) searchBackspace() {
+	if m.searchQuery == "" {
+		return
+	}
+	q := []rune(m.searchQuery)
+	m.searchQuery = string(q[:len(q)-1])
+	m.searchMatch = m.searchFrom(len(m.history)-1, m.searchQuery)
+}
+
+// searchNext steps to the next older match (repeated Ctrl-R). Stays put when
+// there's no earlier hit.
+func (m *replModel) searchNext() {
+	start := len(m.history) - 1
+	if m.searchMatch >= 0 {
+		start = m.searchMatch - 1
+	}
+	if next := m.searchFrom(start, m.searchQuery); next >= 0 {
+		m.searchMatch = next
+	}
+}
+
+// acceptSearch places the current match into the editor and leaves search mode.
+// The text is not submitted — the user can edit it and press Enter.
+func (m *replModel) acceptSearch() {
+	if m.searchMatch >= 0 && m.searchMatch < len(m.history) {
+		m.ed.setText(m.history[m.searchMatch])
+	}
+	m.endSearch()
+}
+
+// searchDisplay renders the reverse-i-search prompt and the current match.
+func (m *replModel) searchDisplay() string {
+	matched := ""
+	if m.searchMatch >= 0 && m.searchMatch < len(m.history) {
+		matched = m.history[m.searchMatch]
+	}
+	prompt := fmt.Sprintf("(reverse-i-search)`%s`: ", m.searchQuery)
+	return styled(prompt, "blue", "bold") + styleEscape(matched)
+}
+
 // handleApprovalAnswer applies one answer to the pending approval batch.
 // Returns true when the batch is complete and the reply was sent.
 func (m *replModel) handleApprovalAnswer(answer byte) bool {
@@ -689,6 +770,8 @@ func (m *replModel) inputCursorColumn() int {
 // inline style markup for the prompt prefix.
 func (m *replModel) inputDisplay() string {
 	switch {
+	case m.searching:
+		return m.searchDisplay()
 	case m.approval != nil:
 		call := m.approval.calls[m.approval.index]
 		label := toolLabel(call)
@@ -1006,6 +1089,36 @@ func (r *managedREPL) handleInterrupt() bool {
 	return false
 }
 
+// handleSearchKey processes one key while reverse-i-search is active. Enter (or
+// any non-editing key) accepts the current match into the editor; Esc/Ctrl-C/
+// Ctrl-G cancel; Ctrl-R steps to the next older match; printable runes extend
+// the query. Caller must hold m.mu.
+func (r *managedREPL) handleSearchKey(e ui.Event) bool {
+	m := r.model
+	switch e.ID {
+	case "<C-c>", "<Escape>", "<C-g>":
+		m.endSearch()
+	case "<C-r>":
+		m.searchNext()
+	case "<Enter>":
+		m.acceptSearch()
+	case "<Backspace>", "<Delete>":
+		m.searchBackspace()
+	case "<Space>":
+		m.searchType(' ')
+	default:
+		if e.Type == ui.KeyboardEvent {
+			if runes := []rune(e.ID); len(runes) == 1 && runes[0] >= 0x20 {
+				m.searchType(runes[0])
+				return false
+			}
+		}
+		// Any other key (cursor moves, etc.) accepts the match and exits.
+		m.acceptSearch()
+	}
+	return false
+}
+
 func (r *managedREPL) releaseApproval() {
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
@@ -1096,7 +1209,7 @@ func (r *managedREPL) render() {
 	transcript := r.model.visibleTranscript(transcriptHeight)
 	input := r.model.inputDisplay()
 	status := r.model.statusRow(w)
-	editable := r.model.busy == false && r.model.approval == nil
+	editable := !r.model.busy && r.model.approval == nil && !r.model.searching
 	cursorCol := r.model.inputCursorColumn()
 	r.model.mu.Unlock()
 
@@ -1249,6 +1362,12 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		return false
 	}
 
+	// Reverse-incremental search owns the keyboard while active, so Ctrl-C
+	// cancels the search rather than quitting. Scroll still works (handled above).
+	if m.searching {
+		return r.handleSearchKey(e)
+	}
+
 	// Ctrl-C is the universal interrupt: cancel an in-flight turn (first
 	// press) or quit (second press, or at an idle prompt). See handleInterrupt.
 	if e.ID == "<C-c>" {
@@ -1331,6 +1450,8 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		m.ed.killToStart()
 	case "<C-k>":
 		m.ed.killToEnd()
+	case "<C-r>":
+		m.startSearch()
 	case "<Up>":
 		m.historyUp()
 	case "<Down>":
