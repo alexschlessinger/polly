@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -307,6 +309,60 @@ func TestHandleEventTabCompletesAndLists(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
 	if got := r.model.ed.text(); got != "ab\t" {
 		t.Fatalf("after Tab on ab, input = %q, want ab\\t", got)
+	}
+}
+
+func TestLoadHistory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hist")
+	// Blank lines are skipped; a trailing newline is tolerated.
+	if err := os.WriteFile(path, []byte("one\n\ntwo\nthree\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadHistory(path); strings.Join(got, ",") != "one,two,three" {
+		t.Fatalf("loadHistory = %v", got)
+	}
+	// A missing file loads nil, not an error.
+	if loadHistory(filepath.Join(dir, "nope")) != nil {
+		t.Fatal("missing file should load nil")
+	}
+}
+
+func TestInitHistoryTrimsAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hist")
+	t.Setenv("POLLY_HISTORY_FILE", path)
+
+	var b strings.Builder
+	for i := 0; i < maxPersistedHistory+10; i++ {
+		fmt.Fprintf(&b, "cmd%d\n", i)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.initHistory()
+
+	if len(r.model.history) != maxPersistedHistory {
+		t.Fatalf("loaded %d entries, want %d", len(r.model.history), maxPersistedHistory)
+	}
+	if last := r.model.history[len(r.model.history)-1]; last != fmt.Sprintf("cmd%d", maxPersistedHistory+9) {
+		t.Fatalf("newest entry = %q", last)
+	}
+
+	// A new submission persists and survives a reload; the file stays trimmed.
+	r.appendHistory("fresh")
+	r.closeHistory()
+
+	// loadHistory re-caps at maxPersistedHistory, so the count holds steady and
+	// the freshly appended entry is the newest survivor.
+	reloaded := loadHistory(path)
+	if len(reloaded) != maxPersistedHistory {
+		t.Fatalf("persisted %d entries, want %d", len(reloaded), maxPersistedHistory)
+	}
+	if last := reloaded[len(reloaded)-1]; last != "fresh" {
+		t.Fatalf("appended entry not persisted; last = %q", last)
 	}
 }
 

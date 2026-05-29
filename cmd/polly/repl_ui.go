@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -761,6 +762,86 @@ type managedREPL struct {
 	quit       chan struct{}
 	pending    chan string
 	turnCancel context.CancelFunc
+
+	// histFile is the append handle for persistent input history; nil when
+	// history couldn't be opened (best-effort — never fatal).
+	histFile *os.File
+}
+
+// maxPersistedHistory bounds how many input lines are kept across runs. On
+// startup the history file is rewritten to its trailing maxPersistedHistory
+// lines, so it never grows without limit.
+const maxPersistedHistory = 500
+
+// replHistoryPath is where input history persists. POLLY_HISTORY_FILE overrides
+// it (used by tests); otherwise it sits beside the session store under
+// ~/.pollytool.
+func replHistoryPath() (string, error) {
+	if p := os.Getenv("POLLY_HISTORY_FILE"); p != "" {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".pollytool", "repl_history"), nil
+}
+
+// loadHistory reads the last maxPersistedHistory non-blank lines from path.
+// A missing or unreadable file yields nil — history is always best-effort.
+func loadHistory(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	for _, l := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > maxPersistedHistory {
+		lines = lines[len(lines)-maxPersistedHistory:]
+	}
+	return lines
+}
+
+// initHistory loads prior history into the model and opens an append handle,
+// rewriting the file to its trimmed tail so it stays bounded. All failures are
+// silent: a REPL with no persisted history is still fully functional.
+func (r *managedREPL) initHistory() {
+	path, err := replHistoryPath()
+	if err != nil {
+		return
+	}
+	r.model.history = loadHistory(path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return
+	}
+	for _, l := range r.model.history {
+		fmt.Fprintln(f, l)
+	}
+	r.histFile = f
+}
+
+func (r *managedREPL) closeHistory() {
+	if r.histFile != nil {
+		_ = r.histFile.Close()
+		r.histFile = nil
+	}
+}
+
+// appendHistory persists one submitted prompt. Single-line only — multi-line
+// prompts would break the line-per-entry format and are not stored.
+func (r *managedREPL) appendHistory(prompt string) {
+	if r.histFile == nil || strings.ContainsRune(prompt, '\n') {
+		return
+	}
+	fmt.Fprintln(r.histFile, prompt)
 }
 
 func newManagedREPL(config *Config, contextName string, toolCount, skillCount int) *managedREPL {
@@ -806,6 +887,9 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 		setBeforeExit(nil)
 		closeUI()
 	}()
+
+	r.initHistory()
+	defer r.closeHistory()
 
 	r.setupWidgets()
 	r.render()
@@ -1219,6 +1303,7 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			return false
 		}
 		prompt := m.submitPrompt()
+		r.appendHistory(prompt)
 		select {
 		case r.pending <- prompt:
 		default:
