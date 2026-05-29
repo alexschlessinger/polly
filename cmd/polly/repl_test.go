@@ -241,6 +241,85 @@ func TestLineEditorKillAndInsert(t *testing.T) {
 	}
 }
 
+func TestLineEditorVerticalMove(t *testing.T) {
+	var e lineEditor
+	e.setText("abcde\nfg\nhijkl") // lines of length 5, 2, 5
+	// Cursor is at the very end (line 2, col 5).
+
+	// up from the last line clamps to the short middle line's end (col 2)...
+	if !e.up() {
+		t.Fatal("up from last line should move within the buffer")
+	}
+	if e.cursor != 8 { // "abcde\n" = 6, "fg" end at 8
+		t.Fatalf("up landed at cursor %d, want 8 (end of \"fg\")", e.cursor)
+	}
+	// ...but the goal column (5) is remembered, so a second up restores col 5
+	// on the long first line rather than staying at the clamped col 2.
+	if !e.up() {
+		t.Fatal("second up should move to the first line")
+	}
+	if e.cursor != 5 { // col 5 on "abcde"
+		t.Fatalf("second up landed at cursor %d, want 5 (goal column held)", e.cursor)
+	}
+	// up on the first line reports no movement (caller recalls history).
+	if e.up() {
+		t.Fatal("up on the first line should return false")
+	}
+	if e.cursor != 5 {
+		t.Fatalf("failed up moved cursor to %d", e.cursor)
+	}
+
+	// down mirrors: back to the clamped middle line, then col 5 on the last line.
+	if !e.down() || e.cursor != 8 {
+		t.Fatalf("down to middle line: cursor %d, want 8", e.cursor)
+	}
+	if !e.down() || e.cursor != 14 { // "abcde\nfg\n" = 9, col 5 -> 14
+		t.Fatalf("down to last line: cursor %d, want 14", e.cursor)
+	}
+	if e.down() {
+		t.Fatal("down on the last line should return false")
+	}
+
+	// A horizontal move resets the goal column, so the next up uses the new col.
+	e.setText("abcde\nfg\nhijkl")
+	e.up()       // -> col 2 on "fg" (goal 5)
+	e.left()     // -> col 1, goal reset
+	if !e.up() { // -> col 1 on "abcde"
+		t.Fatal("up after left should move")
+	}
+	if e.cursor != 1 {
+		t.Fatalf("up after left landed at cursor %d, want 1 (goal recomputed)", e.cursor)
+	}
+}
+
+func TestHandleEventUpDownLineThenHistory(t *testing.T) {
+	r := &managedREPL{model: newReplModel()}
+	m := r.model
+	m.history = []string{"old one", "old two"}
+	m.historyIdx = -1
+	m.ed.setText("first\nsecond") // cursor at end (line 1)
+
+	up := ui.Event{Type: ui.KeyboardEvent, ID: "<Up>"}
+
+	// First Up moves within the buffer to the first line — history untouched.
+	r.handleEvent(up)
+	if m.ed.text() != "first\nsecond" {
+		t.Fatalf("Up within buffer altered text: %q", m.ed.text())
+	}
+	if m.historyIdx != -1 {
+		t.Fatalf("Up within buffer touched history (idx %d)", m.historyIdx)
+	}
+	if row, _ := m.inputCursorRowCol(); row != 0 {
+		t.Fatalf("cursor row after Up = %d, want 0", row)
+	}
+
+	// Now on the first line: another Up recalls the newest history entry.
+	r.handleEvent(up)
+	if m.ed.text() != "old two" {
+		t.Fatalf("Up on first line should recall history, got %q", m.ed.text())
+	}
+}
+
 func TestCompleteSlash(t *testing.T) {
 	cases := []struct {
 		in            string
@@ -403,6 +482,38 @@ func TestRenderInputAnchorsToBottom(t *testing.T) {
 	}
 	if strings.Contains(text, "L0") {
 		t.Fatalf("oldest line should have scrolled off: %q", text)
+	}
+}
+
+func TestRenderInputFollowsCursorUp(t *testing.T) {
+	m := newReplModel()
+	var lines []string
+	for i := 0; i < maxInputRows+3; i++ {
+		lines = append(lines, fmt.Sprintf("L%d", i))
+	}
+	m.ed.setText(strings.Join(lines, "\n"))
+
+	// Walk the cursor up to the very first line.
+	for i := 0; i < maxInputRows+2; i++ {
+		if !m.ed.up() {
+			t.Fatalf("up %d returned false early", i)
+		}
+	}
+
+	text, rows, curRow, _, _ := m.renderInput()
+	if rows != maxInputRows {
+		t.Fatalf("rows = %d, want %d", rows, maxInputRows)
+	}
+	// The window scrolled up to reveal the cursor: L0 is now shown and the
+	// cursor sits on the top visible row, while the newest line scrolled off.
+	if !strings.Contains(text, "L0") {
+		t.Fatalf("cursor's line (L0) not visible: %q", text)
+	}
+	if curRow != 0 {
+		t.Fatalf("curRow = %d, want 0 (cursor on top visible row)", curRow)
+	}
+	if strings.Contains(text, fmt.Sprintf("L%d", maxInputRows+2)) {
+		t.Fatalf("newest line should have scrolled off the top-anchored window: %q", text)
 	}
 }
 

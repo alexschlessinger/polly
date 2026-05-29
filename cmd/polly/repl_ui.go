@@ -93,6 +93,12 @@ func styled(text, fg, modifier string) string {
 type lineEditor struct {
 	buf    []rune
 	cursor int
+	// goalCol is the rune column that vertical movement (up/down) tries to
+	// keep as the cursor crosses lines of differing length; -1 means "unset —
+	// recompute from the cursor on the next vertical move". Every horizontal
+	// move or edit resets it, so each fresh up/down run starts from the column
+	// the cursor is on, while a run of consecutive up/downs holds its column.
+	goalCol int
 }
 
 func (e *lineEditor) text() string { return string(e.buf) }
@@ -101,16 +107,19 @@ func (e *lineEditor) empty() bool  { return len(e.buf) == 0 }
 func (e *lineEditor) setText(s string) {
 	e.buf = []rune(s)
 	e.cursor = len(e.buf)
+	e.goalCol = -1
 }
 
 func (e *lineEditor) clear() {
 	e.buf = nil
 	e.cursor = 0
+	e.goalCol = -1
 }
 
 func (e *lineEditor) insert(r rune) {
 	e.buf = append(e.buf[:e.cursor], append([]rune{r}, e.buf[e.cursor:]...)...)
 	e.cursor++
+	e.goalCol = -1
 }
 
 func (e *lineEditor) backspace() {
@@ -118,30 +127,35 @@ func (e *lineEditor) backspace() {
 		e.buf = append(e.buf[:e.cursor-1], e.buf[e.cursor:]...)
 		e.cursor--
 	}
+	e.goalCol = -1
 }
 
 func (e *lineEditor) left() {
 	if e.cursor > 0 {
 		e.cursor--
 	}
+	e.goalCol = -1
 }
 
 func (e *lineEditor) right() {
 	if e.cursor < len(e.buf) {
 		e.cursor++
 	}
+	e.goalCol = -1
 }
 
-func (e *lineEditor) home() { e.cursor = 0 }
-func (e *lineEditor) end()  { e.cursor = len(e.buf) }
+func (e *lineEditor) home() { e.cursor = 0; e.goalCol = -1 }
+func (e *lineEditor) end()  { e.cursor = len(e.buf); e.goalCol = -1 }
 
 func (e *lineEditor) killToStart() {
 	e.buf = append([]rune(nil), e.buf[e.cursor:]...)
 	e.cursor = 0
+	e.goalCol = -1
 }
 
 func (e *lineEditor) killToEnd() {
 	e.buf = append([]rune(nil), e.buf[:e.cursor]...)
+	e.goalCol = -1
 }
 
 // prevWordStart is the index where the word before the cursor begins: skip any
@@ -170,10 +184,11 @@ func (e *lineEditor) nextWordEnd() int {
 	return i
 }
 
-func (e *lineEditor) wordLeft()  { e.cursor = e.prevWordStart() }
-func (e *lineEditor) wordRight() { e.cursor = e.nextWordEnd() }
+func (e *lineEditor) wordLeft()  { e.cursor = e.prevWordStart(); e.goalCol = -1 }
+func (e *lineEditor) wordRight() { e.cursor = e.nextWordEnd(); e.goalCol = -1 }
 
 func (e *lineEditor) deleteWordBackward() {
+	e.goalCol = -1
 	start := e.prevWordStart()
 	if start == e.cursor {
 		return
@@ -183,11 +198,73 @@ func (e *lineEditor) deleteWordBackward() {
 }
 
 func (e *lineEditor) deleteWordForward() {
+	e.goalCol = -1
 	end := e.nextWordEnd()
 	if end == e.cursor {
 		return
 	}
 	e.buf = append(e.buf[:e.cursor], e.buf[end:]...)
+}
+
+// lineStartAt returns the index of the first rune on the logical line that
+// contains position pos (0, or one past the preceding '\n').
+func (e *lineEditor) lineStartAt(pos int) int {
+	i := pos
+	for i > 0 && e.buf[i-1] != '\n' {
+		i--
+	}
+	return i
+}
+
+// lineEndAt returns the index just past the last rune on the logical line that
+// contains pos (the index of the next '\n', or len(buf)).
+func (e *lineEditor) lineEndAt(pos int) int {
+	i := pos
+	for i < len(e.buf) && e.buf[i] != '\n' {
+		i++
+	}
+	return i
+}
+
+// up moves the cursor to the same column on the previous logical line, holding
+// the goal column across shorter lines. It returns false when the cursor is
+// already on the first line, so the caller can fall through to history recall.
+func (e *lineEditor) up() bool {
+	start := e.lineStartAt(e.cursor)
+	if start == 0 {
+		return false // already on the first line
+	}
+	if e.goalCol < 0 {
+		e.goalCol = e.cursor - start
+	}
+	prevStart := e.lineStartAt(start - 1)
+	prevLen := (start - 1) - prevStart // runes before the '\n' that ends it
+	col := e.goalCol
+	if col > prevLen {
+		col = prevLen
+	}
+	e.cursor = prevStart + col
+	return true
+}
+
+// down mirrors up onto the next logical line. It returns false when the cursor
+// is already on the last line.
+func (e *lineEditor) down() bool {
+	end := e.lineEndAt(e.cursor)
+	if end >= len(e.buf) {
+		return false // already on the last line
+	}
+	if e.goalCol < 0 {
+		e.goalCol = e.cursor - e.lineStartAt(e.cursor)
+	}
+	nextStart := end + 1
+	nextLen := e.lineEndAt(nextStart) - nextStart
+	col := e.goalCol
+	if col > nextLen {
+		col = nextLen
+	}
+	e.cursor = nextStart + col
+	return true
 }
 
 // displayWidthToCursor is the terminal column count of the text left of the
@@ -256,12 +333,14 @@ type approvalState struct {
 }
 
 func newReplModel() *replModel {
-	return &replModel{
+	m := &replModel{
 		currentAssistant: -1,
 		historyIdx:       -1,
 		state:            turnStateIdle,
 		followBottom:     true,
 	}
+	m.ed.goalCol = -1
+	return m
 }
 
 // statusRow renders the bar contents at the given terminal width. Drops
@@ -471,7 +550,7 @@ func helpLines() []string {
 		"  Ctrl-J            newline (multi-line input)",
 		"  Tab               complete /command",
 		"  Ctrl-C            interrupt turn (twice to quit)",
-		"  Up / Down         previous / next input",
+		"  Up / Down         move line; recall history at top/bottom",
 		"  Ctrl-R            reverse-search history",
 		"  PgUp / PgDn       scroll transcript",
 		"  Ctrl-A / Ctrl-E   line start / end",
@@ -821,13 +900,18 @@ func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editab
 	lines := strings.Split(m.ed.text(), "\n")
 	cr, cc := m.inputCursorRowCol()
 
-	// Anchor to the bottom so the newest lines (and the cursor after a paste)
-	// stay visible when the prompt is taller than the region.
+	// Window the visible lines to maxInputRows. Anchor to the bottom so the
+	// newest lines (and the cursor after a paste) stay visible — but if the
+	// cursor has moved up above that window (editing higher in a long paste),
+	// scroll up just enough to keep the cursor's line on screen.
 	start := 0
 	if len(lines) > maxInputRows {
 		start = len(lines) - maxInputRows
+		if cr < start {
+			start = cr
+		}
 	}
-	visible := lines[start:]
+	visible := lines[start : start+min(maxInputRows, len(lines)-start)]
 
 	parts := make([]string, len(visible))
 	for i, ln := range visible {
@@ -1572,9 +1656,15 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	case "<C-r>":
 		m.startSearch()
 	case "<Up>":
-		m.historyUp()
+		// Move up a line within a multi-line prompt; recall older history only
+		// when already on the first line (zsh up-line-or-history).
+		if !m.ed.up() {
+			m.historyUp()
+		}
 	case "<Down>":
-		m.historyDown()
+		if !m.ed.down() {
+			m.historyDown()
+		}
 	case "<Space>":
 		m.ed.insert(' ')
 	case "<Tab>":
