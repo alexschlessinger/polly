@@ -537,8 +537,9 @@ func TestStatusRowShowsSpinnerWhenBusy(t *testing.T) {
 }
 
 func TestStatusRowGutterKeepsStaticFixed(t *testing.T) {
-	// The fixed-width activity gutter must keep the static fields at the same
-	// column whether idle or busy, so the bar doesn't jump as a turn runs.
+	// During a turn the fixed-width gutter keeps the static fields at a constant
+	// column across state/elapsed changes; at idle the gutter collapses so the
+	// bar isn't left-padded when nothing is happening.
 	plain := func(s string) string {
 		var b strings.Builder
 		for _, c := range ui.ParseStyles(s, ui.NewStyle(ui.ColorWhite)) {
@@ -564,12 +565,19 @@ func TestStatusRowGutterKeepsStaticFixed(t *testing.T) {
 
 	idleCol := col(m.statusRow(120))
 
+	busyCol := -1
 	for _, st := range []turnState{turnStateWaiting, turnStateThinking, turnStateStreaming, turnStateTool} {
 		m.state = st
 		m.turnStarted = time.Now()
-		if c := col(m.statusRow(120)); c != idleCol {
-			t.Fatalf("model shifted in state %v: idle col %d, busy col %d", st, idleCol, c)
+		c := col(m.statusRow(120))
+		if busyCol == -1 {
+			busyCol = c
+		} else if c != busyCol {
+			t.Fatalf("model shifted between states: %d vs %d (state %v)", busyCol, c, st)
 		}
+	}
+	if idleCol >= busyCol {
+		t.Fatalf("idle gutter should collapse below the busy gutter: idle %d, busy %d", idleCol, busyCol)
 	}
 }
 

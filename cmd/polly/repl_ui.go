@@ -372,15 +372,17 @@ func newReplModel() *replModel {
 	return m
 }
 
-// statusRowGutter is the fixed display width reserved at the left of the status
-// bar for the live activity (spinner + state + elapsed). Holding it constant
-// keeps the static fields from shifting as a turn starts, ticks, or ends; it
-// fits "⠹ streaming · 12.3s" with a trailing gap.
+// statusRowGutter is the display width reserved at the left of the status bar
+// for the live activity (spinner + state + elapsed) while a turn runs. Holding
+// it constant keeps the static fields from shifting as the state or elapsed time
+// changes mid-turn; it fits "⠹ streaming · 12.3s" with a trailing gap. At idle
+// the gutter collapses so the bar isn't left-padded when nothing is happening.
 const statusRowGutter = 20
 
-// statusRow renders the bar contents at the given terminal width. The live
-// activity (spinner + transient state + elapsed) occupies a fixed-width gutter
-// on the left so the static fields never move; low-priority static fields drop
+// statusRow renders the bar contents at the given terminal width. While a turn
+// runs, the live activity (spinner + transient state + elapsed) fills a
+// fixed-width gutter on the left so the static fields don't move; at idle the
+// gutter collapses to a single leading space. Low-priority static fields drop
 // when they don't fit. Returns "" when the user asked for quiet mode.
 func (m *replModel) statusRow(width int) string {
 	if m.quiet {
@@ -414,8 +416,13 @@ func (m *replModel) statusRow(width int) string {
 			actRaw += sep + el
 		}
 	}
+	// While a turn runs, pad the activity to a fixed width so the static fields
+	// hold their column as the state/elapsed change. At idle the activity is
+	// empty — collapse to a single leading space instead of a wide blank margin.
 	gutter := act.String()
-	if pad := statusRowGutter - rw.StringWidth(actRaw); pad > 0 {
+	if m.state == turnStateIdle {
+		gutter = " "
+	} else if pad := statusRowGutter - rw.StringWidth(actRaw); pad > 0 {
 		gutter += strings.Repeat(" ", pad)
 	}
 
