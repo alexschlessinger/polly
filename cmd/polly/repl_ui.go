@@ -215,6 +215,7 @@ type replModel struct {
 	ed           lineEditor
 	busy         bool
 	canceling    bool
+	pasting      bool // inside a bracketed paste; runes go in verbatim
 	approval     *approvalState
 	history      []string
 	historyIdx   int
@@ -467,6 +468,7 @@ func helpLines() []string {
 		"  /exit, /quit      leave the REPL",
 		"keys:",
 		"  Enter             send message",
+		"  Ctrl-J            newline (multi-line input)",
 		"  Tab               complete /command",
 		"  Ctrl-C            interrupt turn (twice to quit)",
 		"  Up / Down         previous / next input",
@@ -756,33 +758,101 @@ func (m *replModel) finishApproval() {
 	m.approval = nil
 }
 
-// inputPromptWidth is the visible column count of the "> " prompt prefix.
+// inputPromptWidth is the visible column count of the "> " prompt prefix (and
+// of the matching indent on wrapped continuation lines).
 const inputPromptWidth = 2
 
-// inputCursorColumn returns the on-screen column of the edit cursor: the
-// prompt prefix width plus the display width of the input up to the cursor.
-// Caller must hold m.mu.
-func (m *replModel) inputCursorColumn() int {
-	return inputPromptWidth + m.ed.displayWidthToCursor()
+// maxInputRows caps how tall the editable input region can grow for multi-line
+// prompts. Beyond this the region anchors to the bottom so the cursor stays
+// visible while composing or after a paste.
+const maxInputRows = 8
+
+// inputRows is how many terminal rows the input region currently occupies. The
+// busy/approval/search overlays are always single-line; an editable prompt
+// grows with its embedded newlines, capped at maxInputRows. Caller must hold m.mu.
+func (m *replModel) inputRows() int {
+	if m.busy || m.approval != nil || m.searching {
+		return 1
+	}
+	n := 1 + strings.Count(m.ed.text(), "\n")
+	if n > maxInputRows {
+		n = maxInputRows
+	}
+	return n
 }
 
-// inputDisplay renders the bottom input row text (prefix + content) with
-// inline style markup for the prompt prefix.
-func (m *replModel) inputDisplay() string {
+// inputCursorRowCol is the cursor's row (0-based, within the full input text)
+// and on-screen column, accounting for the prompt/indent prefix and wide runes.
+// Caller must hold m.mu.
+func (m *replModel) inputCursorRowCol() (row, col int) {
+	before := m.ed.buf[:m.ed.cursor]
+	lineStart := 0
+	for i, r := range before {
+		if r == '\n' {
+			row++
+			lineStart = i + 1
+		}
+	}
+	col = inputPromptWidth + rw.StringWidth(string(before[lineStart:]))
+	return row, col
+}
+
+// renderInput produces the bottom input region: its display text (possibly
+// multiple lines), the row count it occupies, the cursor's row/col within that
+// region, and whether the cursor should be shown. The busy/approval/search
+// overlays are single-line and hide the cursor; the editable prompt may span
+// several rows, anchored to the bottom when it overflows maxInputRows. Caller
+// must hold m.mu.
+func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editable bool) {
 	switch {
 	case m.searching:
-		return m.searchDisplay()
+		return m.searchDisplay(), 1, 0, 0, false
 	case m.approval != nil:
 		call := m.approval.calls[m.approval.index]
 		label := toolLabel(call)
-		return styled("allow ", "blue", "bold") +
+		text = styled("allow ", "blue", "bold") +
 			styled(label, "grey", "") +
 			styled("? [y/n/a] ", "blue", "bold")
+		return text, 1, 0, 0, false
 	case m.busy:
-		return m.busyIndicator()
-	default:
-		return styled("> ", "blue", "bold") + styleEscape(m.ed.text())
+		return m.busyIndicator(), 1, 0, 0, false
 	}
+
+	lines := strings.Split(m.ed.text(), "\n")
+	cr, cc := m.inputCursorRowCol()
+
+	// Anchor to the bottom so the newest lines (and the cursor after a paste)
+	// stay visible when the prompt is taller than the region.
+	start := 0
+	if len(lines) > maxInputRows {
+		start = len(lines) - maxInputRows
+	}
+	visible := lines[start:]
+
+	parts := make([]string, len(visible))
+	for i, ln := range visible {
+		if start+i == 0 {
+			parts[i] = styled("> ", "blue", "bold") + styleEscape(ln)
+		} else {
+			parts[i] = "  " + styleEscape(ln)
+		}
+	}
+
+	curRow = cr - start
+	if curRow < 0 {
+		curRow = 0
+	}
+	if curRow > len(visible)-1 {
+		curRow = len(visible) - 1
+	}
+	return strings.Join(parts, "\n"), len(visible), curRow, cc, true
+}
+
+// inputDisplay returns just the input region's text. Retained for tests that
+// assert on the busy/approval overlays.
+func (m *replModel) inputDisplay() string {
+	text, _, _, _, _ := m.renderInput()
+	return text
 }
 
 // spinnerFrames is the braille dot cycle used by the busy indicator.
@@ -977,7 +1047,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	r.setupWidgets()
 	r.render()
 
-	events := ui.PollEvents()
+	events := pollManagedEvents(ui.DefaultBackend.Screen)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -1119,6 +1189,31 @@ func (r *managedREPL) handleSearchKey(e ui.Event) bool {
 	return false
 }
 
+// insertPasted adds one key from a bracketed paste to the editor as literal
+// text, mapping newline keys to '\n'. Pasted content is dropped while busy,
+// approving, or searching — there's no editable prompt to receive it. Caller
+// must hold m.mu.
+func (r *managedREPL) insertPasted(e ui.Event) {
+	m := r.model
+	if m.busy || m.approval != nil || m.searching {
+		return
+	}
+	switch e.ID {
+	case "<Enter>", "<C-j>":
+		m.ed.insert('\n')
+	case "<Space>":
+		m.ed.insert(' ')
+	case "<Tab>":
+		m.ed.insert('\t')
+	default:
+		if e.Type == ui.KeyboardEvent {
+			if runes := []rune(e.ID); len(runes) == 1 && runes[0] >= 0x20 {
+				m.ed.insert(runes[0])
+			}
+		}
+	}
+}
+
 func (r *managedREPL) releaseApproval() {
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
@@ -1136,11 +1231,11 @@ func (r *managedREPL) releaseApproval() {
 // scroll deltas match what the user actually sees.
 func (r *managedREPL) transcriptHeight() int {
 	_, h := ui.TerminalDimensions()
-	chrome := 1
+	statusRows := 0
 	if !r.model.quiet {
-		chrome = 2
+		statusRows = 1
 	}
-	height := h - chrome
+	height := h - r.model.inputRows() - statusRows
 	if height < 1 {
 		return 1
 	}
@@ -1168,15 +1263,22 @@ func (r *managedREPL) setupWidgets() {
 	noBorder(&r.statusW.Block)
 	r.statusW.WrapText = false
 	r.statusW.TextStyle = ui.NewStyle(ui.ColorGrey)
+}
 
-	r.rootFlex = widgets.NewFlex()
-	noBorder(&r.rootFlex.Block)
-	r.rootFlex.Direction = widgets.FlexColumn
-	r.rootFlex.AddItem(r.transcriptW, 0, 1, false)
-	r.rootFlex.AddItem(r.inputW, 1, 0, false)
-	if !r.model.quiet {
-		r.rootFlex.AddItem(r.statusW, 1, 0, false)
+// layout (re)builds the root flex for the current input height. The input row
+// count varies with multi-line prompts, so the flex is rebuilt each render
+// rather than sized once at setup.
+func (r *managedREPL) layout(w, h, inputRows int, showStatus bool) {
+	flex := widgets.NewFlex()
+	noBorder(&flex.Block)
+	flex.Direction = widgets.FlexColumn
+	flex.AddItem(r.transcriptW, 0, 1, false)
+	flex.AddItem(r.inputW, inputRows, 0, false)
+	if showStatus {
+		flex.AddItem(r.statusW, 1, 0, false)
 	}
+	flex.SetRect(0, 0, w, h)
+	r.rootFlex = flex
 }
 
 // noBorder disables the visible border AND cancels the unconditional 1-cell
@@ -1196,30 +1298,29 @@ func (r *managedREPL) render() {
 		return
 	}
 
-	chrome := 1
-	if !r.model.quiet {
-		chrome = 2
-	}
-	transcriptHeight := h - chrome
-	if transcriptHeight < 1 {
-		transcriptHeight = 1
+	showStatus := !r.model.quiet
+	statusRows := 0
+	if showStatus {
+		statusRows = 1
 	}
 
 	r.model.mu.Lock()
+	input, inputRows, curRow, curCol, editable := r.model.renderInput()
+	transcriptHeight := h - inputRows - statusRows
+	if transcriptHeight < 1 {
+		transcriptHeight = 1
+	}
 	transcript := r.model.visibleTranscript(transcriptHeight)
-	input := r.model.inputDisplay()
 	status := r.model.statusRow(w)
-	editable := !r.model.busy && r.model.approval == nil && !r.model.searching
-	cursorCol := r.model.inputCursorColumn()
 	r.model.mu.Unlock()
 
 	r.transcriptW.Text = transcript
 	r.inputW.Text = input
 	r.statusW.Text = status
 
-	r.rootFlex.SetRect(0, 0, w, h)
+	r.layout(w, h, inputRows, showStatus)
 	ui.Clear()
-	r.placeCursor(editable, cursorCol, h-chrome, w)
+	r.placeCursor(editable, curCol, transcriptHeight+curRow, w)
 	ui.Render(r.rootFlex)
 }
 
@@ -1362,6 +1463,19 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		return false
 	}
 
+	// Bracketed-paste markers bound a run of literal input. While pasting, keys
+	// are inserted verbatim — newlines included — instead of triggering actions,
+	// so a multi-line paste lands as one prompt rather than firing a submit per
+	// line. (gotui drops these markers; our own event pump surfaces them.)
+	if e.ID == pasteStartID || e.ID == pasteEndID {
+		m.pasting = e.ID == pasteStartID
+		return false
+	}
+	if m.pasting {
+		r.insertPasted(e)
+		return false
+	}
+
 	// Reverse-incremental search owns the keyboard while active, so Ctrl-C
 	// cancels the search rather than quitting. Scroll still works (handled above).
 	if m.searching {
@@ -1406,7 +1520,9 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		if trimmed == "" {
 			return false
 		}
-		if strings.HasPrefix(trimmed, "/") {
+		// Only a single-line "/…" is a command; a multi-line prompt that happens
+		// to start with "/" is real input.
+		if !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/") {
 			m.ed.clear()
 			m.historyIdx = -1
 			m.historyDraft = ""
@@ -1427,6 +1543,9 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		case r.pending <- prompt:
 		default:
 		}
+	case "<C-j>":
+		// Ctrl-J inserts a newline for composing multi-line prompts; Enter sends.
+		m.ed.insert('\n')
 	case "<Backspace>", "<Delete>":
 		m.ed.backspace()
 	case "<C-w>":

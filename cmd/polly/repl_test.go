@@ -312,6 +312,100 @@ func TestHandleEventTabCompletesAndLists(t *testing.T) {
 	}
 }
 
+func TestBracketedPasteInsertsMultiLine(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	send(pasteStartID)
+	if !r.model.pasting {
+		t.Fatal("PasteStart did not enter paste mode")
+	}
+	// Within a paste, an Enter is literal text, not a submit.
+	send("a")
+	send("<Enter>")
+	send("b")
+	send(pasteEndID)
+	if r.model.pasting {
+		t.Fatal("PasteEnd did not leave paste mode")
+	}
+	if r.model.ed.text() != "a\nb" {
+		t.Fatalf("pasted text = %q, want \"a\\nb\"", r.model.ed.text())
+	}
+	select {
+	case p := <-r.pending:
+		t.Fatalf("paste should not submit, got %q", p)
+	default:
+	}
+
+	// A real Enter now submits the whole multi-line prompt.
+	send("<Enter>")
+	select {
+	case p := <-r.pending:
+		if p != "a\nb" {
+			t.Fatalf("submitted %q, want \"a\\nb\"", p)
+		}
+	default:
+		t.Fatal("Enter after paste should submit")
+	}
+}
+
+func TestCtrlJInsertsNewline(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+	send("a")
+	send("<C-j>")
+	send("b")
+	if r.model.ed.text() != "a\nb" {
+		t.Fatalf("Ctrl-J editor = %q, want \"a\\nb\"", r.model.ed.text())
+	}
+}
+
+func TestRenderInputMultiLine(t *testing.T) {
+	m := newReplModel()
+	m.ed.setText("foo\nbar")
+	text, rows, curRow, curCol, editable := m.renderInput()
+	if !editable {
+		t.Fatal("editable should be true")
+	}
+	if rows != 2 {
+		t.Fatalf("rows = %d, want 2", rows)
+	}
+	// Cursor sits at the end of "bar": row 1, col = prompt(2) + len("bar").
+	if curRow != 1 || curCol != 5 {
+		t.Fatalf("cursor = (row %d, col %d), want (1, 5)", curRow, curCol)
+	}
+	if !strings.Contains(text, "foo") || !strings.Contains(text, "bar") {
+		t.Fatalf("text = %q", text)
+	}
+}
+
+func TestRenderInputAnchorsToBottom(t *testing.T) {
+	m := newReplModel()
+	var lines []string
+	for i := 0; i < maxInputRows+3; i++ {
+		lines = append(lines, fmt.Sprintf("L%d", i))
+	}
+	m.ed.setText(strings.Join(lines, "\n"))
+
+	if got := m.inputRows(); got != maxInputRows {
+		t.Fatalf("inputRows = %d, want %d", got, maxInputRows)
+	}
+	text, rows, curRow, _, _ := m.renderInput()
+	if rows != maxInputRows {
+		t.Fatalf("rows = %d, want %d", rows, maxInputRows)
+	}
+	// Cursor at the end lands on the last visible row; oldest lines drop off.
+	if curRow != maxInputRows-1 {
+		t.Fatalf("curRow = %d, want %d", curRow, maxInputRows-1)
+	}
+	if !strings.Contains(text, fmt.Sprintf("L%d", maxInputRows+2)) {
+		t.Fatalf("newest line missing from %q", text)
+	}
+	if strings.Contains(text, "L0") {
+		t.Fatalf("oldest line should have scrolled off: %q", text)
+	}
+}
+
 func TestReverseSearch(t *testing.T) {
 	r := &managedREPL{model: newReplModel()}
 	r.model.history = []string{"git status", "go build", "git commit", "go test"}
