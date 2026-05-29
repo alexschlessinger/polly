@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/tools"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -249,7 +251,11 @@ func TestCompleteSlash(t *testing.T) {
 		{"/e", true, "/exit", []string{"/exit"}},
 		{"/q", true, "/quit", []string{"/quit"}},
 		// Bare "/" matches everything; common prefix is just "/" (no progress).
-		{"/", true, "/", []string{"/exit", "/help", "/quit"}},
+		{"/", true, "/", slashCommands},
+		// "/c" matches /clear and /context; common prefix extends to "/c".
+		{"/c", true, "/c", []string{"/clear", "/context"}},
+		{"/cl", true, "/clear", []string{"/clear"}},
+		{"/t", true, "/tools", []string{"/tools"}},
 		// Already complete stays put but still reports its single match.
 		{"/help", true, "/help", []string{"/help"}},
 		// No completion when it isn't a bare slash token.
@@ -301,6 +307,53 @@ func TestHandleEventTabCompletesAndLists(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
 	if got := r.model.ed.text(); got != "ab\t" {
 		t.Fatalf("after Tab on ab, input = %q, want ab\\t", got)
+	}
+}
+
+func TestRunCommandSessionCommands(t *testing.T) {
+	store := sessions.NewSyncMapSessionStore(nil)
+	session, err := store.Get("ctx-test")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
+	session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello"})
+
+	r := newManagedREPL(&Config{}, "ctx-test", 0, 0)
+	r.state = &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil)}
+
+	// /context reports the session name and message stats.
+	if handled, quit := r.runCommand("/context"); !handled || quit {
+		t.Fatalf("/context handled=%v quit=%v", handled, quit)
+	}
+	if joined := strings.Join(r.model.transcript, "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "messages:") {
+		t.Fatalf("/context output missing fields: %q", joined)
+	}
+
+	// /clear empties both the session history and the transcript, leaving the notice.
+	r.runCommand("/clear")
+	if got := len(session.GetHistory()); got != 0 {
+		t.Fatalf("/clear left %d messages", got)
+	}
+	if len(r.model.transcript) != 1 || !strings.Contains(r.model.transcript[0], "cleared") {
+		t.Fatalf("/clear transcript = %v", r.model.transcript)
+	}
+
+	// /tools on an empty registry reports none.
+	r.model.transcript = nil
+	r.runCommand("/tools")
+	if !strings.Contains(strings.Join(r.model.transcript, "\n"), "no tools loaded") {
+		t.Fatalf("/tools = %v", r.model.transcript)
+	}
+
+	// Unknown command is not handled (caller reports it).
+	if handled, _ := r.runCommand("/bogus"); handled {
+		t.Fatal("/bogus should be unhandled")
+	}
+
+	// /quit signals quit.
+	if _, quit := r.runCommand("/quit"); !quit {
+		t.Fatal("/quit should signal quit")
 	}
 }
 

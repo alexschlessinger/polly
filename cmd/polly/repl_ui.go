@@ -14,6 +14,8 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/skills"
+	"github.com/alexschlessinger/pollytool/tools"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/metaspartan/gotui/v5/widgets"
@@ -408,7 +410,7 @@ func (m *replModel) appendNoticeLine(text string) {
 
 // slashCommands are the REPL meta-commands recognized at the prompt. Used by
 // Tab completion; /help documents them and the Enter handler dispatches them.
-var slashCommands = []string{"/exit", "/help", "/quit"}
+var slashCommands = []string{"/clear", "/context", "/exit", "/help", "/quit", "/skills", "/stats", "/tools"}
 
 // completeSlash attempts Tab completion of a slash command. Given the current
 // input line it returns the text the input should become — extended to the
@@ -451,6 +453,10 @@ func helpLines() []string {
 	return []string{
 		"commands:",
 		"  /help             show this help",
+		"  /context, /stats  session tokens, capacity, counts",
+		"  /tools            list loaded tools",
+		"  /skills           list loaded skills",
+		"  /clear            clear conversation history",
 		"  /exit, /quit      leave the REPL",
 		"keys:",
 		"  Enter             send message",
@@ -470,6 +476,104 @@ func helpLines() []string {
 // appendHelp writes the /help output into the transcript. Caller must hold m.mu.
 func (m *replModel) appendHelp() {
 	for _, line := range helpLines() {
+		m.appendNoticeLine(line)
+	}
+}
+
+// runCommand dispatches a slash command entered at the prompt. It returns
+// handled=false when the line isn't a recognized command, and quit=true when
+// the command should end the REPL. Caller must hold m.mu.
+func (r *managedREPL) runCommand(line string) (handled, quit bool) {
+	switch line {
+	case "/exit", "/quit":
+		return true, true
+	case "/help":
+		r.model.appendHelp()
+		return true, false
+	case "/clear":
+		r.cmdClear()
+		return true, false
+	case "/context", "/stats":
+		r.cmdContext()
+		return true, false
+	case "/tools":
+		r.cmdTools()
+		return true, false
+	case "/skills":
+		r.cmdSkills()
+		return true, false
+	}
+	return false, false
+}
+
+// cmdClear resets both the conversation history and the visible transcript.
+// The next turn rebuilds the request from the now-empty session.
+func (r *managedREPL) cmdClear() {
+	if r.state != nil && r.state.session != nil {
+		r.state.session.Clear()
+	}
+	r.model.transcript = nil
+	r.model.currentAssistant = -1
+	r.model.appendNoticeLine("context cleared")
+}
+
+// cmdContext prints session capacity and message statistics.
+func (r *managedREPL) cmdContext() {
+	m := r.model
+	if r.state == nil || r.state.session == nil {
+		m.appendNoticeLine("no active session")
+		return
+	}
+	s := r.state.session
+	m.appendNoticeLine("context: " + s.GetName())
+	if m.modelName != "" {
+		m.appendNoticeLine("model: " + m.modelName)
+	}
+	if pct := s.GetCapacityPercentage(); pct > 0 {
+		m.appendNoticeLine(fmt.Sprintf("tokens: %s (%.0f%% of capacity)", humanizeTokens(s.GetTotalTokens()), pct))
+	} else {
+		m.appendNoticeLine("tokens: " + humanizeTokens(s.GetTotalTokens()))
+	}
+	c := s.GetMessageCounts()
+	m.appendNoticeLine(fmt.Sprintf("messages: user %d · assistant %d · tool %d · system %d",
+		c["user"], c["assistant"], c["tool"], c["system"]))
+	m.appendNoticeLine(fmt.Sprintf("tool calls: %d", s.GetToolCallCount()))
+}
+
+// cmdTools lists the loaded tools by namespaced name.
+func (r *managedREPL) cmdTools() {
+	m := r.model
+	var all []tools.Tool
+	if r.state != nil && r.state.toolRegistry != nil {
+		all = r.state.toolRegistry.All()
+	}
+	if len(all) == 0 {
+		m.appendNoticeLine("no tools loaded")
+		return
+	}
+	m.appendNoticeLine(fmt.Sprintf("tools (%d):", len(all)))
+	for _, t := range all {
+		m.appendNoticeLine("  " + t.GetName())
+	}
+}
+
+// cmdSkills lists the loaded skills with their descriptions.
+func (r *managedREPL) cmdSkills() {
+	m := r.model
+	var list []*skills.Skill
+	if r.state != nil && r.state.skillCatalog != nil {
+		list = r.state.skillCatalog.List()
+	}
+	if len(list) == 0 {
+		m.appendNoticeLine("no skills loaded")
+		return
+	}
+	m.appendNoticeLine(fmt.Sprintf("skills (%d):", len(list)))
+	for _, s := range list {
+		line := "  " + s.Name
+		if s.Description != "" {
+			line += " — " + s.Description
+		}
 		m.appendNoticeLine(line)
 	}
 }
@@ -641,6 +745,11 @@ func (m *replModel) busyLabel() string {
 
 type managedREPL struct {
 	config *Config
+
+	// state backs the session slash commands (/clear, /context, /tools,
+	// /skills). Nil in unit tests that exercise only the editor/event layer;
+	// command handlers guard against that.
+	state *conversationState
 
 	model *replModel
 
@@ -1094,16 +1203,19 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		if trimmed == "" {
 			return false
 		}
-		if trimmed == "/exit" || trimmed == "/quit" {
-			r.requestQuit()
-			return true
-		}
-		if trimmed == "/help" {
+		if strings.HasPrefix(trimmed, "/") {
 			m.ed.clear()
 			m.historyIdx = -1
 			m.historyDraft = ""
-			m.appendHelp()
 			m.followBottom = true
+			handled, quit := r.runCommand(trimmed)
+			if quit {
+				r.requestQuit()
+				return true
+			}
+			if !handled {
+				m.appendNoticeLine("unknown command: " + trimmed + " (try /help)")
+			}
 			return false
 		}
 		prompt := m.submitPrompt()
@@ -1269,6 +1381,7 @@ func (t *gotuiTurnUI) FinishTextTurn() {}
 
 func runManagedREPL(ctx context.Context, config *Config, state *conversationState) error {
 	repl := newManagedREPL(config, state.session.GetName(), toolCount(state.toolRegistry), skillCount(state.skillCatalog))
+	repl.state = state
 	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
 		return executeTurn(turnCtx, config, state, prompt, nil, nil, turnUI)
 	})
