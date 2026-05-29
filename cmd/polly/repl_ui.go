@@ -406,6 +406,46 @@ func (m *replModel) appendNoticeLine(text string) {
 	m.appendLine(styled(text, "grey", ""))
 }
 
+// slashCommands are the REPL meta-commands recognized at the prompt. Used by
+// Tab completion; /help documents them and the Enter handler dispatches them.
+var slashCommands = []string{"/exit", "/help", "/quit"}
+
+// completeSlash attempts Tab completion of a slash command. Given the current
+// input line it returns the text the input should become — extended to the
+// longest common prefix of all matches, or the sole match — and the matching
+// commands. ok is false when completion doesn't apply (the line isn't a bare
+// "/command" token) or nothing matches, in which case the caller falls back to
+// inserting a literal tab.
+func completeSlash(input string) (completed string, matches []string, ok bool) {
+	if !strings.HasPrefix(input, "/") || strings.ContainsAny(input, " \t") {
+		return "", nil, false
+	}
+	for _, c := range slashCommands {
+		if strings.HasPrefix(c, input) {
+			matches = append(matches, c)
+		}
+	}
+	if len(matches) == 0 {
+		return "", nil, false
+	}
+	return longestCommonPrefix(matches), matches, true
+}
+
+// longestCommonPrefix returns the longest leading string shared by every
+// element. Slash commands are ASCII, so byte-slicing the prefix is safe.
+func longestCommonPrefix(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	prefix := ss[0]
+	for _, s := range ss[1:] {
+		for !strings.HasPrefix(s, prefix) {
+			prefix = prefix[:len(prefix)-1]
+		}
+	}
+	return prefix
+}
+
 // helpLines is the content shown by the /help command, one entry per line.
 func helpLines() []string {
 	return []string{
@@ -414,6 +454,7 @@ func helpLines() []string {
 		"  /exit, /quit      leave the REPL",
 		"keys:",
 		"  Enter             send message",
+		"  Tab               complete /command",
 		"  Ctrl-C            interrupt turn (twice to quit)",
 		"  Up / Down         previous / next input",
 		"  PgUp / PgDn       scroll transcript",
@@ -1100,6 +1141,16 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	case "<Space>":
 		m.ed.insert(' ')
 	case "<Tab>":
+		cur := m.ed.text()
+		if completed, matches, ok := completeSlash(cur); ok {
+			if completed != cur {
+				m.ed.setText(completed)
+			} else if len(matches) > 1 {
+				m.appendNoticeLine(strings.Join(matches, "  "))
+				m.followBottom = true
+			}
+			return false
+		}
 		m.ed.insert('\t')
 	default:
 		// Only printable single-rune keyboard events become input. This

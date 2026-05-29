@@ -237,6 +237,73 @@ func TestLineEditorKillAndInsert(t *testing.T) {
 	}
 }
 
+func TestCompleteSlash(t *testing.T) {
+	cases := []struct {
+		in            string
+		wantOK        bool
+		wantCompleted string
+		wantMatches   []string
+	}{
+		// Unique prefix completes to the full command.
+		{"/h", true, "/help", []string{"/help"}},
+		{"/e", true, "/exit", []string{"/exit"}},
+		{"/q", true, "/quit", []string{"/quit"}},
+		// Bare "/" matches everything; common prefix is just "/" (no progress).
+		{"/", true, "/", []string{"/exit", "/help", "/quit"}},
+		// Already complete stays put but still reports its single match.
+		{"/help", true, "/help", []string{"/help"}},
+		// No completion when it isn't a bare slash token.
+		{"hello", false, "", nil},
+		{"/help me", false, "", nil},
+		{"/zzz", false, "", nil},
+	}
+	for _, c := range cases {
+		completed, matches, ok := completeSlash(c.in)
+		if ok != c.wantOK {
+			t.Errorf("completeSlash(%q) ok = %v, want %v", c.in, ok, c.wantOK)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if completed != c.wantCompleted {
+			t.Errorf("completeSlash(%q) completed = %q, want %q", c.in, completed, c.wantCompleted)
+		}
+		if strings.Join(matches, ",") != strings.Join(c.wantMatches, ",") {
+			t.Errorf("completeSlash(%q) matches = %v, want %v", c.in, matches, c.wantMatches)
+		}
+	}
+}
+
+func TestHandleEventTabCompletesAndLists(t *testing.T) {
+	r := &managedREPL{model: newReplModel()}
+
+	// Unique prefix: Tab fills in the whole command.
+	r.model.ed.setText("/h")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
+	if got := r.model.ed.text(); got != "/help" {
+		t.Fatalf("after Tab on /h, input = %q, want /help", got)
+	}
+
+	// Ambiguous bare "/": Tab can't extend, so it lists the candidates.
+	r.model.ed.setText("/")
+	before := len(r.model.transcript)
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
+	if got := r.model.ed.text(); got != "/" {
+		t.Fatalf("after Tab on /, input = %q, want / unchanged", got)
+	}
+	if len(r.model.transcript) != before+1 {
+		t.Fatalf("expected one notice line listing candidates, got %d new", len(r.model.transcript)-before)
+	}
+
+	// Non-slash text: Tab inserts a literal tab (legacy behavior).
+	r.model.ed.setText("ab")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
+	if got := r.model.ed.text(); got != "ab\t" {
+		t.Fatalf("after Tab on ab, input = %q, want ab\\t", got)
+	}
+}
+
 func TestAppendHelpPopulatesTranscript(t *testing.T) {
 	m := newReplModel()
 	m.appendHelp()
