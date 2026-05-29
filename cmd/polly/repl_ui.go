@@ -357,32 +357,64 @@ func newReplModel() *replModel {
 	return m
 }
 
-// statusRow renders the bar contents at the given terminal width. Drops
-// low-priority fields when they don't fit. Returns "" when the user asked
-// for quiet mode.
+// statusRowGutter is the fixed display width reserved at the left of the status
+// bar for the live activity (spinner + state + elapsed). Holding it constant
+// keeps the static fields from shifting as a turn starts, ticks, or ends; it
+// fits "⠹ streaming · 12.3s" with a trailing gap.
+const statusRowGutter = 20
+
+// statusRow renders the bar contents at the given terminal width. The live
+// activity (spinner + transient state + elapsed) occupies a fixed-width gutter
+// on the left so the static fields never move; low-priority static fields drop
+// when they don't fit. Returns "" when the user asked for quiet mode.
 func (m *replModel) statusRow(width int) string {
 	if m.quiet {
 		return ""
 	}
 	const sep = " · "
 
+	// Activity gutter: spinner + state + elapsed, padded to a fixed width. The
+	// state word is compact (no tool name — the transcript line already shows
+	// it) so the gutter stays bounded and never reshapes the bar.
+	glyph, spinning := m.spinnerFrame()
+	var act strings.Builder
+	actRaw := ""
+	if spinning {
+		act.WriteString(styled(string(glyph), "blue", "bold"))
+		act.WriteByte(' ')
+		actRaw += string(glyph) + " "
+	}
+	if m.state != turnStateIdle {
+		word := m.state.label("")
+		color := "yellow"
+		if m.state == turnStateError {
+			color = "red"
+		}
+		act.WriteString(styled(word, color, "bold"))
+		actRaw += word
+		if !m.turnStarted.IsZero() {
+			el := formatElapsed(time.Since(m.turnStarted))
+			act.WriteString(styled(sep, "grey", ""))
+			act.WriteString(styled(el, "grey", ""))
+			actRaw += sep + el
+		}
+	}
+	gutter := act.String()
+	if pad := statusRowGutter - rw.StringWidth(actRaw); pad > 0 {
+		gutter += strings.Repeat(" ", pad)
+	}
+
+	// Static fields, rendered after the gutter at a constant column.
+	tokens := fmt.Sprintf("%s→%s", humanizeTokens(m.lastIn), humanizeTokens(m.lastOut))
 	type field struct {
 		drop int // higher = dropped sooner
 		text string
 	}
-
-	stateText := m.state.label(m.toolName)
-	tokens := fmt.Sprintf("%s→%s", humanizeTokens(m.lastIn), humanizeTokens(m.lastOut))
-
 	fields := []field{}
 	if m.modelName != "" {
 		fields = append(fields, field{drop: 4, text: m.modelName})
 	}
 	fields = append(fields, field{drop: 0, text: m.contextName})
-	fields = append(fields, field{drop: 0, text: stateText})
-	if !m.turnStarted.IsZero() {
-		fields = append(fields, field{drop: 3, text: formatElapsed(time.Since(m.turnStarted))})
-	}
 	fields = append(fields, field{drop: 0, text: tokens})
 	if m.toolCount > 0 {
 		fields = append(fields, field{drop: 2, text: fmt.Sprintf("tools:%d", m.toolCount)})
@@ -394,15 +426,11 @@ func (m *replModel) statusRow(width int) string {
 		fields = append(fields, field{drop: 5, text: fmt.Sprintf("queued:%d", len(m.queue))})
 	}
 
-	// The busy spinner lives at the far left of the bar while a turn runs.
-	glyph, spinning := m.spinnerFrame()
-	spinnerCols := 0
-	if spinning {
-		spinnerCols = 1 // the glyph; its trailing gap is the bar's leading space
-	}
-
+	// Budget for the static fields is what's left after the gutter and the
+	// trailing space.
+	avail := width - rw.StringWidth(gutter) - 1
 	visibleLen := func(fs []field) int {
-		n := 2 + spinnerCols // leading + trailing space, plus optional spinner
+		n := 0
 		for i, f := range fs {
 			n += len([]rune(f.text))
 			if i < len(fs)-1 {
@@ -411,8 +439,7 @@ func (m *replModel) statusRow(width int) string {
 		}
 		return n
 	}
-
-	for visibleLen(fields) > width && len(fields) > 0 {
+	for visibleLen(fields) > avail && len(fields) > 0 {
 		idx := -1
 		best := 0
 		for i, f := range fields {
@@ -429,21 +456,9 @@ func (m *replModel) statusRow(width int) string {
 
 	parts := make([]string, len(fields))
 	for i, f := range fields {
-		if f.text == stateText && stateText != "" && stateText != "idle" {
-			color := "yellow"
-			if m.state == turnStateError {
-				color = "red"
-			}
-			parts[i] = styled(f.text, color, "bold")
-			continue
-		}
 		parts[i] = styled(f.text, "grey", "")
 	}
-	bar := " " + strings.Join(parts, styled(sep, "grey", "")) + " "
-	if spinning {
-		bar = styled(string(glyph), "blue", "bold") + bar
-	}
-	return bar
+	return gutter + strings.Join(parts, styled(sep, "grey", "")) + " "
 }
 
 func humanizeTokens(n int) string {

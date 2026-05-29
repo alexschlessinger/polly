@@ -499,12 +499,17 @@ func TestTakeActiveToolMatchesByIDWithFallback(t *testing.T) {
 
 func TestStatusRowShowsSpinnerWhenBusy(t *testing.T) {
 	m := newReplModel()
+	m.modelName = "gpt-mini"
 	m.contextName = "ctx"
 
-	// Idle: no spinner glyph leads the bar.
+	// Idle: no spinner glyph and no "idle" label — an idle bar is just the
+	// static fields.
 	idle := m.statusRow(120)
 	if strings.ContainsAny(idle, string(spinnerFrames)) {
 		t.Fatalf("idle status row should carry no spinner, got %q", idle)
+	}
+	if strings.Contains(idle, "idle") {
+		t.Fatalf("idle status row should omit the idle label, got %q", idle)
 	}
 
 	// Busy: a spinner frame leads the bar, alongside the state word.
@@ -522,6 +527,49 @@ func TestStatusRowShowsSpinnerWhenBusy(t *testing.T) {
 	cells := ui.ParseStyles(busy, ui.NewStyle(ui.ColorWhite))
 	if len(cells) == 0 || !strings.ContainsRune(string(spinnerFrames), cells[0].Rune) {
 		t.Fatalf("first cell should be a spinner frame, got bar %q", busy)
+	}
+
+	// The live activity (state + elapsed) is grouped right after the spinner,
+	// ahead of the static model name.
+	if i, j := strings.Index(busy, "thinking"), strings.Index(busy, "gpt-mini"); i < 0 || j < 0 || i > j {
+		t.Fatalf("state word should precede the model name, got %q", busy)
+	}
+}
+
+func TestStatusRowGutterKeepsStaticFixed(t *testing.T) {
+	// The fixed-width activity gutter must keep the static fields at the same
+	// column whether idle or busy, so the bar doesn't jump as a turn runs.
+	plain := func(s string) string {
+		var b strings.Builder
+		for _, c := range ui.ParseStyles(s, ui.NewStyle(ui.ColorWhite)) {
+			b.WriteRune(c.Rune)
+		}
+		return b.String()
+	}
+
+	// Display column of "gpt-mini" — measured in runes, since the spinner glyph
+	// and middle-dot separators are multibyte (a byte offset would mislead).
+	col := func(s string) int {
+		p := plain(s)
+		i := strings.Index(p, "gpt-mini")
+		if i < 0 {
+			t.Fatalf("model name missing from bar %q", p)
+		}
+		return len([]rune(p[:i]))
+	}
+
+	m := newReplModel()
+	m.modelName = "gpt-mini"
+	m.contextName = "ctx"
+
+	idleCol := col(m.statusRow(120))
+
+	for _, st := range []turnState{turnStateWaiting, turnStateThinking, turnStateStreaming, turnStateTool} {
+		m.state = st
+		m.turnStarted = time.Now()
+		if c := col(m.statusRow(120)); c != idleCol {
+			t.Fatalf("model shifted in state %v: idle col %d, busy col %d", st, idleCol, c)
+		}
 	}
 }
 
