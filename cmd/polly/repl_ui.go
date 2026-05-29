@@ -501,13 +501,13 @@ func (m *replModel) appendToolStartLine(id, label string) {
 	})
 }
 
-// arrowPulse is a palindrome of cyan shades (light → dark → light) that the
-// running-tool arrow cycles through to "breathe" while a tool executes.
-var arrowPulse = []string{"cyan", "turquoise", "teal", "darkcyan", "teal", "turquoise"}
+// arrowPulse is a single hue at two brightnesses; the running-tool arrow
+// alternates between them to gently breathe while a tool executes.
+var arrowPulse = []string{"cyan", "darkcyan"}
 
 // arrowPulsePeriod is how long each pulse shade holds; len(arrowPulse) steps
-// make one full breath (~1.1s), independent of the render tick.
-const arrowPulsePeriod = 180 * time.Millisecond
+// make one full breath (~1s), slow enough to read as a pulse, not a strobe.
+const arrowPulsePeriod = 500 * time.Millisecond
 
 // runningToolLine renders a still-executing tool entry: a breathing arrow whose
 // color is chosen from elapsed time, the label, and a live elapsed timer.
