@@ -417,12 +417,12 @@ func TestToolErrorLineRendering(t *testing.T) {
 	if strings.Contains(line, "line one") {
 		t.Errorf("error line should not include earlier output: %q", line)
 	}
-	// The message is dark red; the metadata/exit code stays grey.
-	if !strings.Contains(line, "fatal: the real error](fg:darkred)") {
-		t.Errorf("summary should be dark red: %q", line)
+	// The message is dim red; the metadata/exit code stays muted.
+	if !strings.Contains(line, "fatal: the real error](fg:err,mod:dim)") {
+		t.Errorf("summary should be dim red: %q", line)
 	}
-	if !strings.Contains(line, "exit 1](fg:grey)") {
-		t.Errorf("exit code should be grey: %q", line)
+	if !strings.Contains(line, "exit 1](fg:muted)") {
+		t.Errorf("exit code should be muted: %q", line)
 	}
 }
 
@@ -433,16 +433,16 @@ func TestRunningToolLine(t *testing.T) {
 			t.Errorf("running tool line %q missing %q", line, want)
 		}
 	}
-	// The arrow breathes: its color must come from the pulse palette.
-	hasPulseColor := false
-	for _, c := range arrowPulse {
-		if strings.Contains(line, "→](fg:"+c+",mod:bold)") {
-			hasPulseColor = true
+	// The arrow breathes: it's a themed hue whose modifier comes from the pulse.
+	hasPulseMod := false
+	for _, mod := range arrowPulse {
+		if strings.Contains(line, "→](fg:run,mod:"+mod+")") {
+			hasPulseMod = true
 			break
 		}
 	}
-	if !hasPulseColor {
-		t.Errorf("arrow should use a pulse color: %q", line)
+	if !hasPulseMod {
+		t.Errorf("arrow should use a pulse modifier: %q", line)
 	}
 }
 

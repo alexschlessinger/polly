@@ -19,6 +19,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
+	tcell "github.com/gdamore/tcell/v3"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/metaspartan/gotui/v5/widgets"
@@ -56,6 +57,20 @@ func (s turnState) label(toolName string) string {
 		return "error"
 	}
 	return ""
+}
+
+// init registers polly's semantic accent colors. Each name maps to an ANSI
+// palette slot (XTerm 0–15) that the terminal (e.g. Ghostty) remaps to the
+// active theme — unlike gotui's dark*/cyan names, which resolve to fixed RGB
+// (e.g. darkred = 0x8B0000) and ignore the theme. Quiet variants are produced
+// with the "dim" modifier at the call site, not a darker fixed color.
+func init() {
+	ui.StyleParserColorMap["ok"] = ui.ColorGreen      // success ✓
+	ui.StyleParserColorMap["err"] = ui.ColorRed       // failure ✗ / errors
+	ui.StyleParserColorMap["run"] = ui.ColorTeal      // running-tool arrow (ANSI cyan, XTerm6)
+	ui.StyleParserColorMap["accent"] = ui.ColorBlue   // prompts & interactive markers
+	ui.StyleParserColorMap["active"] = ui.ColorYellow // status-bar active turn
+	ui.StyleParserColorMap["muted"] = ui.ColorGrey    // metadata (ANSI bright-black, XTerm8)
 }
 
 // styleEscape neutralizes the only sequence gotui's ParseStyles treats as
@@ -380,22 +395,22 @@ func (m *replModel) statusRow(width int) string {
 	var act strings.Builder
 	actRaw := ""
 	if spinning {
-		act.WriteString(styled(string(glyph), "blue", "bold"))
+		act.WriteString(styled(string(glyph), "accent", "bold"))
 		act.WriteByte(' ')
 		actRaw += string(glyph) + " "
 	}
 	if m.state != turnStateIdle {
 		word := m.state.label("")
-		color := "yellow"
+		color := "active"
 		if m.state == turnStateError {
-			color = "red"
+			color = "err"
 		}
 		act.WriteString(styled(word, color, "bold"))
 		actRaw += word
 		if !m.turnStarted.IsZero() {
 			el := formatElapsed(time.Since(m.turnStarted))
-			act.WriteString(styled(sep, "grey", ""))
-			act.WriteString(styled(el, "grey", ""))
+			act.WriteString(styled(sep, "muted", ""))
+			act.WriteString(styled(el, "muted", ""))
 			actRaw += sep + el
 		}
 	}
@@ -456,9 +471,9 @@ func (m *replModel) statusRow(width int) string {
 
 	parts := make([]string, len(fields))
 	for i, f := range fields {
-		parts[i] = styled(f.text, "grey", "")
+		parts[i] = styled(f.text, "muted", "")
 	}
-	return gutter + strings.Join(parts, styled(sep, "grey", "")) + " "
+	return gutter + strings.Join(parts, styled(sep, "muted", "")) + " "
 }
 
 func humanizeTokens(n int) string {
@@ -510,7 +525,7 @@ func (m *replModel) appendAssistant(text string) {
 }
 
 func (m *replModel) appendUserPrompt(p string) {
-	m.appendLine(styled("> ", "blue", "bold") + styleEscape(p))
+	m.appendLine(styled("> ", "accent", "bold") + styleEscape(p))
 }
 
 // activeTool is one still-executing tool call, pinned to the transcript entry
@@ -535,21 +550,22 @@ func (m *replModel) appendToolStartLine(id, label string) {
 	})
 }
 
-// arrowPulse is a single hue at two brightnesses; the running-tool arrow
-// alternates between them to gently breathe while a tool executes.
-var arrowPulse = []string{"cyan", "darkcyan"}
+// arrowPulse breathes the running-tool arrow between two brightnesses of one
+// themed hue: it alternates the modifier (bold ↔ dim) on a fixed color so the
+// arrow gently pulses while a tool executes — and follows the terminal theme.
+var arrowPulse = []string{"bold", "dim"}
 
 // arrowPulsePeriod is how long each pulse shade holds; len(arrowPulse) steps
 // make one full breath (~1s), slow enough to read as a pulse, not a strobe.
 const arrowPulsePeriod = 500 * time.Millisecond
 
 // runningToolLine renders a still-executing tool entry: a breathing arrow whose
-// color is chosen from elapsed time, the label, and a live elapsed timer.
+// modifier is chosen from elapsed time, the label, and a live elapsed timer.
 func runningToolLine(label string, elapsed time.Duration) string {
-	color := arrowPulse[int(elapsed/arrowPulsePeriod)%len(arrowPulse)]
-	return "  " + styled("→", color, "bold") + " " +
-		styled(label, "grey", "") + " " +
-		styled("· "+formatElapsed(elapsed), "grey", "")
+	mod := arrowPulse[int(elapsed/arrowPulsePeriod)%len(arrowPulse)]
+	return "  " + styled("→", "run", mod) + " " +
+		styled(label, "muted", "") + " " +
+		styled("· "+formatElapsed(elapsed), "muted", "")
 }
 
 // refreshActiveTools rewrites each running tool's transcript entry with the
@@ -589,26 +605,26 @@ func (m *replModel) takeActiveTool(id string) (int, bool) {
 
 func toolOKLine(label, duration string) string {
 	body := strings.TrimSpace(duration + " " + label)
-	return "  " + styled("✓", "darkgreen", "bold") + " " + styled(body, "grey", "")
+	return "  " + styled("✓", "ok", "bold") + " " + styled(body, "muted", "")
 }
 
 func toolDeniedLine(label string) string {
-	return "  " + styled("✗", "red", "bold") + " " + styled("denied "+label, "grey", "")
+	return "  " + styled("✗", "err", "bold") + " " + styled("denied "+label, "muted", "")
 }
 
-// toolErrorLine renders a failed tool call: a red ✗, the grey metadata
-// (timing · command · exit code), and the error message itself in dark red so
+// toolErrorLine renders a failed tool call: a red ✗, the muted metadata
+// (timing · command · exit code), and the error message itself in dim red so
 // it stands out without being the bright-red wall of the full output.
 // code/summary may each be empty (no exit code from an MCP error, no output from
 // a silent failure). The model still receives the full output — display only.
 func toolErrorLine(label, duration, code, summary string) string {
 	meta := strings.TrimSpace(duration + " " + label)
-	line := "  " + styled("✗", "red", "bold") + " " + styled(meta, "grey", "")
+	line := "  " + styled("✗", "err", "bold") + " " + styled(meta, "muted", "")
 	if code != "" {
-		line += styled(" · "+code, "grey", "")
+		line += styled(" · "+code, "muted", "")
 	}
 	if summary != "" {
-		line += styled(" · ", "grey", "") + styled(summary, "darkred", "")
+		line += styled(" · ", "muted", "") + styled(summary, "err", "dim")
 	}
 	return line
 }
@@ -729,7 +745,7 @@ func truncateRunes(s string, max int) string {
 }
 
 func (m *replModel) appendNoticeLine(text string) {
-	m.appendLine(styled(text, "grey", ""))
+	m.appendLine(styled(text, "muted", ""))
 }
 
 // slashCommands are the REPL meta-commands recognized at the prompt. Used by
@@ -1029,7 +1045,7 @@ func (m *replModel) searchDisplay() string {
 		matched = m.history[m.searchMatch]
 	}
 	prompt := fmt.Sprintf("(reverse-i-search)`%s`: ", m.searchQuery)
-	return styled(prompt, "blue", "bold") + styleEscape(matched)
+	return styled(prompt, "accent", "bold") + styleEscape(matched)
 }
 
 // handleApprovalAnswer applies one answer to the pending approval batch.
@@ -1126,9 +1142,9 @@ func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editab
 	case m.approval != nil:
 		call := m.approval.calls[m.approval.index]
 		label := toolLabel(call)
-		text = styled("allow ", "blue", "bold") +
-			styled(label, "grey", "") +
-			styled("? [y/n/a] ", "blue", "bold")
+		text = styled("allow ", "accent", "bold") +
+			styled(label, "muted", "") +
+			styled("? [y/n/a] ", "accent", "bold")
 		return text, 1, 0, 0, false
 	case m.busy && m.quiet:
 		// Quiet mode has no status bar to carry the spinner, so keep the inline
@@ -1156,7 +1172,7 @@ func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editab
 	parts := make([]string, len(visible))
 	for i, ln := range visible {
 		if start+i == 0 {
-			parts[i] = styled("> ", "blue", "bold") + styleEscape(ln)
+			parts[i] = styled("> ", "accent", "bold") + styleEscape(ln)
 		} else {
 			parts[i] = "  " + styleEscape(ln)
 		}
@@ -1206,9 +1222,9 @@ func (m *replModel) busyIndicator() string {
 	if !ok {
 		frame = spinnerFrames[0]
 	}
-	return styled(string(frame), "blue", "bold") + " " +
-		styled(m.busyLabel(), "grey", "") + " " +
-		styled("· "+formatElapsed(elapsed), "grey", "")
+	return styled(string(frame), "accent", "bold") + " " +
+		styled(m.busyLabel(), "muted", "") + " " +
+		styled("· "+formatElapsed(elapsed), "muted", "")
 }
 
 // busyLabel maps the current turn state to the word shown on the input row.
@@ -1369,6 +1385,12 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	if err := ui.Init(); err != nil {
 		return err
 	}
+	// gotui inits the tcell screen with a white default foreground, and tcell
+	// substitutes that default for any cell drawn with the zero style — which is
+	// exactly our ColorClear body text (input + LLM responses). Reset the screen
+	// default to all-defaults so unstyled text emits the terminal's own
+	// foreground (SGR 39) and follows the theme instead of being forced white.
+	ui.DefaultBackend.Screen.SetStyle(tcell.StyleDefault)
 	// Restore the terminal exactly once, whether we return normally or a
 	// signal short-circuits to os.Exit (which skips deferred calls).
 	var closeOnce sync.Once
@@ -1500,7 +1522,7 @@ func (r *managedREPL) endTurn(err error) {
 	// breathing here; its line freezes at the last rendered frame.
 	r.model.activeTools = nil
 	if err != nil && !errors.Is(err, context.Canceled) {
-		r.model.appendLine(styled("Error: "+err.Error(), "red", ""))
+		r.model.appendLine(styled("Error: "+err.Error(), "err", ""))
 		r.model.state = turnStateError
 	} else {
 		r.model.state = turnStateIdle
@@ -1630,14 +1652,20 @@ func (r *managedREPL) requestQuit() {
 }
 
 func (r *managedREPL) setupWidgets() {
+	// gotui paragraphs default their TextStyle to ColorWhite, which forces
+	// unstyled text (primary input, LLM responses) to white and ignores the
+	// terminal theme. ColorClear (= tcell.ColorDefault) inherits the terminal's
+	// default foreground instead, so text follows the theme like our accents do.
 	r.transcriptW = widgets.NewParagraph()
 	noBorder(&r.transcriptW.Block)
 	r.transcriptW.WrapText = true
 	r.transcriptW.VerticalAlignment = ui.AlignBottom
+	r.transcriptW.TextStyle = ui.NewStyle(ui.ColorClear)
 
 	r.inputW = widgets.NewParagraph()
 	noBorder(&r.inputW.Block)
 	r.inputW.WrapText = false
+	r.inputW.TextStyle = ui.NewStyle(ui.ColorClear)
 
 	r.statusW = widgets.NewParagraph()
 	noBorder(&r.statusW.Block)
