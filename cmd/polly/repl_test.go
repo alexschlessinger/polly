@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -324,105 +323,22 @@ func TestHandleEventUpDownLineThenHistory(t *testing.T) {
 	}
 }
 
-func TestToolErrorParts(t *testing.T) {
-	cases := []struct {
-		name        string
-		err         error
-		wantCode    string
-		wantSummary string
-	}{
-		{
-			// bash-style: exit code + last line of the embedded output.
-			name:        "bash with traceback",
-			err:         errors.New("command failed: exit status 1 (output: Traceback ...\n  File x\nModuleNotFoundError: No module named 'foo')"),
-			wantCode:    "exit 1",
-			wantSummary: "ModuleNotFoundError: No module named 'foo'",
-		},
-		{
-			// shell-style (%v, no wrap) still yields the exit code via the string.
-			name:        "shell with one-line output",
-			err:         errors.New("tool execution failed: exit status 2 (output: ls: nope: No such file or directory)"),
-			wantCode:    "exit 2",
-			wantSummary: "ls: nope: No such file or directory",
-		},
-		{
-			// A command that failed with no output shows just the code.
-			name:        "empty output",
-			err:         errors.New("command failed: exit status 3 (output: )"),
-			wantCode:    "exit 3",
-			wantSummary: "",
-		},
-		{
-			// No exit code and no output wrapper: fall back to the message line.
-			name:        "timeout-style message",
-			err:         errors.New("tool execution timed out after 30s"),
-			wantCode:    "",
-			wantSummary: "tool execution timed out after 30s",
-		},
-	}
-	for _, c := range cases {
-		code, summary := toolErrorParts(c.err)
-		if code != c.wantCode || summary != c.wantSummary {
-			t.Errorf("%s: toolErrorParts = (%q, %q), want (%q, %q)", c.name, code, summary, c.wantCode, c.wantSummary)
-		}
-	}
-}
-
-func TestToolErrorPartsTruncates(t *testing.T) {
-	long := strings.Repeat("x", toolErrorSummaryMax+50)
-	err := fmt.Errorf("command failed: exit status 1 (output: %s)", long)
-	code, summary := toolErrorParts(err)
-	if code != "exit 1" {
-		t.Fatalf("code = %q, want \"exit 1\"", code)
-	}
-	if !strings.HasSuffix(summary, "…") {
-		t.Fatalf("long summary should end with ellipsis: %q", summary)
-	}
-	if n := len([]rune(summary)); n != toolErrorSummaryMax {
-		t.Fatalf("summary len = %d runes, want %d", n, toolErrorSummaryMax)
-	}
-}
-
-func TestToolExitCodeFromExitError(t *testing.T) {
-	// A real subprocess yields a *exec.ExitError; bash wraps it with %w, so
-	// errors.As must still recover the code through the wrapper.
-	raw := exec.Command("bash", "-c", "exit 7").Run()
-	if raw == nil {
-		t.Skip("bash unavailable or did not fail")
-	}
-	wrapped := fmt.Errorf("command failed: %w (output: boom)", raw)
-	if code, ok := toolExitCode(wrapped); !ok || code != 7 {
-		t.Fatalf("toolExitCode(wrapped) = (%d, %v), want (7, true)", code, ok)
-	}
-	// Signal-killed processes report ExitCode()<0; we treat that as no code.
-	if _, ok := toolExitCode(errors.New("command failed: signal: killed (output: )")); ok {
-		t.Fatalf("a non-numeric failure should not report an exit code")
-	}
-}
-
 func TestToolErrorLineRendering(t *testing.T) {
-	err := errors.New("command failed: exit status 1 (output: line one\nfatal: the real error)")
-	code, summary := toolErrorParts(err)
-	line := toolErrorLine("bash", "1.4s", code, summary)
+	line := toolErrorLine("bash", "1.4s")
 
 	if strings.Contains(line, "\n") {
 		t.Fatalf("error line should not wrap into multiple rows: %q", line)
 	}
-	for _, want := range []string{"bash", "exit 1", "fatal: the real error"} {
+	for _, want := range []string{"bash", "1.4s"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("error line %q missing %q", line, want)
 		}
 	}
-	// The verbose first line of output must not appear — only the last line does.
-	if strings.Contains(line, "line one") {
-		t.Errorf("error line should not include earlier output: %q", line)
-	}
-	// The message is dim red; the metadata/exit code stays muted.
-	if !strings.Contains(line, "fatal: the real error](fg:err,mod:dim)") {
-		t.Errorf("summary should be dim red: %q", line)
-	}
-	if !strings.Contains(line, "exit 1](fg:muted)") {
-		t.Errorf("exit code should be muted: %q", line)
+	// Display is only ✗, time, and command — no tool output and no exit code.
+	for _, unwanted := range []string{"line one", "fatal: the real error", "exit 1"} {
+		if strings.Contains(line, unwanted) {
+			t.Errorf("error line should not include %q: %q", unwanted, line)
+		}
 	}
 }
 

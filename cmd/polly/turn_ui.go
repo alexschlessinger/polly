@@ -105,7 +105,9 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	}
 	dur := formatElapsed(duration)
 	if err != nil {
-		fmt.Fprintf(ui.errWriter, "  ✗ %s %s - %s\n", dur, label, err.Error())
+		// Tool output/error text is intentionally omitted; the model still
+		// receives the full output. The ✗ alone marks the failure.
+		fmt.Fprintf(ui.errWriter, "  ✗ %s %s\n", dur, label)
 		return
 	}
 	fmt.Fprintf(ui.errWriter, "  ✓ %s %s\n", dur, label)

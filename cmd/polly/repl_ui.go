@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -653,133 +651,13 @@ func toolDeniedLine(label string) string {
 	return "  " + styled("✗", "err", "bold") + " " + styled("denied "+label, "muted", "")
 }
 
-// toolErrorLine renders a failed tool call: a red ✗, the muted metadata
-// (timing · command · exit code), and the error message itself in dim red so
-// it stands out without being the bright-red wall of the full output.
-// code/summary may each be empty (no exit code from an MCP error, no output from
-// a silent failure). The model still receives the full output — display only.
-func toolErrorLine(label, duration, code, summary string) string {
+// toolErrorLine renders a failed tool call as a red ✗ plus the muted metadata
+// (timing · command) — the same shape as a success line. The tool's own
+// output/error text and exit code are deliberately not shown; the model still
+// receives the full output, this is display only.
+func toolErrorLine(label, duration string) string {
 	meta := strings.TrimSpace(duration + " " + label)
-	line := "  " + styled("✗", "err", "bold") + " " + styled(meta, "muted", "")
-	if code != "" {
-		line += styled(" · "+code, "err", "")
-	}
-	return line
-}
-
-// toolErrorSummaryMax bounds the one-line error summary so a failing tool can't
-// reflow into a multi-row block. It's a rune budget, not a column count, so on a
-// very narrow terminal the line may still wrap — but it can never be huge.
-const toolErrorSummaryMax = 100
-
-// toolErrorParts splits a failed tool call into its display segments: a compact
-// "exit N" code (empty when none applies) and the most useful single line of
-// output (empty when the failure produced none). The model still receives the
-// full output — this only shapes the transcript.
-func toolErrorParts(err error) (code, summary string) {
-	if c, ok := toolExitCode(err); ok {
-		code = fmt.Sprintf("exit %d", c)
-	}
-	if s := toolErrorSummary(err); s != "" {
-		summary = truncateRunes(s, toolErrorSummaryMax)
-	}
-	return code, summary
-}
-
-// toolExitCode recovers a process exit code from a failed tool call. BashTool
-// wraps *exec.ExitError with %w so errors.As finds it directly; ShellTool
-// formats it with %v, so we also parse the conventional "exit status N" text.
-// A negative code (process killed by a signal) is reported as not-found, since
-// "exit -1" is more confusing than just showing the output summary.
-func toolExitCode(err error) (int, bool) {
-	if err == nil {
-		return 0, false
-	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		if code := ee.ExitCode(); code >= 0 {
-			return code, true
-		}
-		return 0, false
-	}
-	if n, ok := parseExitStatus(err.Error()); ok {
-		return n, true
-	}
-	return 0, false
-}
-
-// parseExitStatus extracts N from a "...exit status N..." message.
-func parseExitStatus(s string) (int, bool) {
-	const marker = "exit status "
-	i := strings.Index(s, marker)
-	if i < 0 {
-		return 0, false
-	}
-	j := i + len(marker)
-	k := j
-	for k < len(s) && s[k] >= '0' && s[k] <= '9' {
-		k++
-	}
-	if k == j {
-		return 0, false
-	}
-	n, err := strconv.Atoi(s[j:k])
-	if err != nil {
-		return 0, false
-	}
-	return n, true
-}
-
-// toolErrorSummary returns the single most useful line of a tool failure: the
-// last non-blank line of the command's output when the error embeds one (the
-// "(output: …)" tail that bash/shell tools append — usually the real error in a
-// traceback or build log), otherwise the last line of the error message itself.
-func toolErrorSummary(err error) string {
-	if err == nil {
-		return ""
-	}
-	msg := err.Error()
-	if out, ok := extractToolOutput(msg); ok {
-		return lastLine(out)
-	}
-	return lastLine(msg)
-}
-
-// extractToolOutput pulls the OUTPUT out of a "...(output: OUTPUT)" wrapper that
-// BashTool/ShellTool append to their errors. ok is false when there's no such
-// wrapper (e.g. a timeout, "tool not found", or a structured MCP error).
-func extractToolOutput(s string) (string, bool) {
-	const marker = " (output: "
-	i := strings.Index(s, marker)
-	if i < 0 {
-		return "", false
-	}
-	out := s[i+len(marker):]
-	return strings.TrimSuffix(out, ")"), true
-}
-
-// lastLine returns the last non-blank line of s, trimmed of surrounding space.
-func lastLine(s string) string {
-	lines := strings.Split(s, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if t := strings.TrimSpace(lines[i]); t != "" {
-			return t
-		}
-	}
-	return ""
-}
-
-// truncateRunes shortens s to at most max runes, appending an ellipsis when it
-// had to cut. Rune-based so multibyte output isn't sliced mid-character.
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	if max <= 1 {
-		return "…"
-	}
-	return string(r[:max-1]) + "…"
+	return "  " + styled("✗", "err", "bold") + " " + styled(meta, "muted", "")
 }
 
 func (m *replModel) appendNoticeLine(text string) {
@@ -2081,8 +1959,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	case toolWasDenied(result):
 		final = toolDeniedLine(label)
 	case err != nil:
-		code, summary := toolErrorParts(err)
-		final = toolErrorLine(label, formatElapsed(duration), code, summary)
+		final = toolErrorLine(label, formatElapsed(duration))
 	default:
 		final = toolOKLine(label, formatElapsed(duration))
 	}
