@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -44,7 +43,10 @@ func newLineTurnUI(config *Config, inputReader *bufio.Reader) *lineTurnUI {
 		writer:    os.Stdout,
 		errWriter: os.Stderr,
 	}
-	if config.Confirm && inputReader != nil {
+	// Only prompt for confirmation when stdin can actually answer. A piped
+	// prompt or `< /dev/null` leaves the approval reader at EOF, which would
+	// otherwise deny every tool call.
+	if config.Confirm && inputReader != nil && canPromptOnStdin() {
 		ui.approver = newToolApprover(inputReader)
 	}
 	return ui
@@ -97,11 +99,11 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 		return
 	}
 	label := toolLabel(call)
-	if result == llm.ToolDeniedContent {
+	if toolWasDenied(result) {
 		fmt.Fprintf(ui.errWriter, "  ✗ denied %s\n", label)
 		return
 	}
-	dur := fmt.Sprintf("%.1fs", duration.Seconds())
+	dur := formatElapsed(duration)
 	if err != nil {
 		fmt.Fprintf(ui.errWriter, "  ✗ %s %s - %s\n", dur, label, err.Error())
 		return

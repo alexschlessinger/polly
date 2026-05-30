@@ -635,13 +635,15 @@ func TestHandleEventTabCompletesAndLists(t *testing.T) {
 
 	// Ambiguous bare "/": Tab can't extend, so it lists the candidates.
 	r.model.ed.setText("/")
-	before := len(r.model.transcript)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
 	if got := r.model.ed.text(); got != "/" {
 		t.Fatalf("after Tab on /, input = %q, want / unchanged", got)
 	}
-	if len(r.model.transcript) != before+1 {
-		t.Fatalf("expected one notice line listing candidates, got %d new", len(r.model.transcript)-before)
+	if r.model.slashHints == "" || !strings.Contains(r.model.slashHints, "/help") {
+		t.Fatalf("expected transient slash hints, got %q", r.model.slashHints)
+	}
+	if len(r.model.transcript) != 0 {
+		t.Fatalf("slash hints should not append transcript lines, got %v", r.model.transcript)
 	}
 
 	// Non-slash text: Tab inserts a literal tab (legacy behavior).
@@ -649,6 +651,73 @@ func TestHandleEventTabCompletesAndLists(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
 	if got := r.model.ed.text(); got != "ab\t" {
 		t.Fatalf("after Tab on ab, input = %q, want ab\\t", got)
+	}
+}
+
+func TestHandleEventSlashListsCommandsOnInsert(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	send("/")
+	if got := r.model.ed.text(); got != "/" {
+		t.Fatalf("after typing /, input = %q, want /", got)
+	}
+	if r.model.slashHints == "" || !strings.Contains(r.model.slashHints, "/help") {
+		t.Fatalf("typing / should set transient command hints, got %q", r.model.slashHints)
+	}
+	if len(r.model.transcript) != 0 {
+		t.Fatalf("typing / should not append transcript lines, got %v", r.model.transcript)
+	}
+	if got := r.model.visibleTranscript(3); !strings.Contains(got, "/help") {
+		t.Fatalf("visible transcript = %q, want transient command list", got)
+	}
+
+	r.model.ed.setText("ask")
+	send("/")
+	if got := r.model.ed.text(); got != "ask/" {
+		t.Fatalf("after typing / mid-input, input = %q, want ask/", got)
+	}
+	if r.model.slashHints != "" {
+		t.Fatalf("typing / mid-input should clear slash hints, got %q", r.model.slashHints)
+	}
+	if len(r.model.transcript) != 0 {
+		t.Fatalf("typing / mid-input should not list commands, got %v", r.model.transcript)
+	}
+}
+
+func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	send("/")
+	send("<Backspace>")
+	if got := r.model.ed.text(); got != "" {
+		t.Fatalf("after backspacing /, input = %q, want empty", got)
+	}
+	if r.model.slashHints != "" {
+		t.Fatalf("slash hints should clear after backspace, got %q", r.model.slashHints)
+	}
+	if got := r.model.visibleTranscript(3); got != "" {
+		t.Fatalf("visible transcript should drop cleared slash hints, got %q", got)
+	}
+
+	send("/")
+	send("<Enter>")
+	if r.model.slashHints != "" {
+		t.Fatalf("slash hints should clear after slash command submit, got %q", r.model.slashHints)
+	}
+
+	r.model.ed.clear()
+	r.model.transcript = nil
+	r.model.invalidateFlat()
+	r.model.history = []string{"hello"}
+	send("/")
+	send("<Up>")
+	if got := r.model.ed.text(); got != "hello" {
+		t.Fatalf("history recall = %q, want hello", got)
+	}
+	if r.model.slashHints != "" {
+		t.Fatalf("slash hints should clear after history recall, got %q", r.model.slashHints)
 	}
 }
 
@@ -996,6 +1065,35 @@ func TestHandleInterruptCancelsThenQuits(t *testing.T) {
 	}
 }
 
+func TestEnterSlashCommandRecordsHistoryAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hist")
+	t.Setenv("POLLY_HISTORY_FILE", path)
+
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.initHistory()
+
+	r.model.ed.setText("/help")
+	if quit := r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"}); quit {
+		t.Fatal("/help should not quit")
+	}
+	if got := r.model.ed.text(); got != "" {
+		t.Fatalf("editor should clear after command submit, got %q", got)
+	}
+	if len(r.model.history) != 1 || r.model.history[0] != "/help" {
+		t.Fatalf("slash command history = %v, want [/help]", r.model.history)
+	}
+	r.model.historyUp()
+	if got := r.model.ed.text(); got != "/help" {
+		t.Fatalf("history recall = %q, want /help", got)
+	}
+
+	r.closeHistory()
+	if got := loadHistory(path); len(got) != 1 || got[0] != "/help" {
+		t.Fatalf("persisted slash command history = %v, want [/help]", got)
+	}
+}
+
 func TestEnterWhileBusyQueues(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
@@ -1024,6 +1122,30 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	r.handleInterrupt()
 	if len(r.model.queue) != 0 {
 		t.Fatalf("interrupt should clear the queue, got %v", r.model.queue)
+	}
+}
+
+func TestEnterWhileBusyQueuesSlashCommandInHistory(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	r.model.busy = true
+	r.model.ed.setText("/help")
+	send("<Enter>")
+
+	if r.model.ed.text() != "" {
+		t.Fatalf("editor should clear after queueing, got %q", r.model.ed.text())
+	}
+	if len(r.model.queue) != 1 || r.model.queue[0] != "/help" {
+		t.Fatalf("queue = %v, want [/help]", r.model.queue)
+	}
+	if len(r.model.history) != 1 || r.model.history[0] != "/help" {
+		t.Fatalf("history should record the queued slash command, got %v", r.model.history)
+	}
+	select {
+	case p := <-r.pending:
+		t.Fatalf("queueing slash command should not submit, got %q", p)
+	default:
 	}
 }
 

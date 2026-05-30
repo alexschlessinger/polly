@@ -464,11 +464,14 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 	}
 
 	if config.SchemaPath != "" {
-		outputStructured(resp.Message.Content, schema)
-	} else {
-		turnUI.FinishTextTurn()
+		var content string
+		if resp.Message != nil {
+			content = resp.Message.Content
+		}
+		return outputStructured(content, schema)
 	}
 
+	turnUI.FinishTextTurn()
 	return nil
 }
 
@@ -657,7 +660,13 @@ func setupSignalHandling(ctx context.Context) (context.Context, context.CancelFu
 }
 
 // outputStructured formats and outputs structured response
-func outputStructured(content string, schema *llm.Schema) {
+func outputStructured(content string, schema *llm.Schema) error {
+	// Empty content means no structured output was produced — e.g. the model
+	// emitted a tool call that was denied and the turn short-circuited. Report
+	// it instead of printing a silent blank line that looks like success.
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("no structured output produced")
+	}
 	// If content is already JSON, pretty-print it
 	var data any
 	if err := json.Unmarshal([]byte(content), &data); err == nil {
@@ -674,6 +683,7 @@ func outputStructured(content string, schema *llm.Schema) {
 		// Fallback to raw output if not valid JSON
 		fmt.Println(content)
 	}
+	return nil
 }
 
 // stripProviderPrefix returns the bare model name, dropping "provider/" if present.

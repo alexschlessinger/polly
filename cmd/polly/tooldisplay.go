@@ -5,9 +5,18 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
+
+// toolWasDenied reports whether a tool result represents a user denial rather
+// than real tool output. The agent substitutes the llm.ToolDeniedContent
+// sentinel for the result of an unapproved call; this predicate owns that
+// contract so the renderers don't each hard-code the comparison.
+func toolWasDenied(result string) bool {
+	return result == llm.ToolDeniedContent
+}
 
 func toolLabel(tc messages.ChatMessageToolCall) string {
 	summary := summarizeToolArgs(tc.Name, tc.Arguments)

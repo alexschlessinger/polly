@@ -11,6 +11,8 @@ import (
 	"golang.org/x/term"
 )
 
+var terminalFD = term.IsTerminal
+
 func promptYesNo(prompt string, defaultValue bool) bool {
 	return promptYesNoWithReader(prompt, defaultValue, bufio.NewReader(os.Stdin))
 }
@@ -95,7 +97,11 @@ func (ta *toolApprover) approveToolCalls(calls []messages.ChatMessageToolCall) [
 }
 
 func isTerminal() bool {
-	return term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
+	return terminalFD(int(os.Stdout.Fd())) && terminalFD(int(os.Stderr.Fd()))
+}
+
+func canPromptOnStdin() bool {
+	return terminalFD(int(os.Stdin.Fd())) && terminalFD(int(os.Stderr.Fd()))
 }
 
 func readLine(reader *bufio.Reader) (string, error) {

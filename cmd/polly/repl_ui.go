@@ -15,10 +15,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/skills"
-	"github.com/alexschlessinger/pollytool/tools"
 	tcell "github.com/gdamore/tcell/v3"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -306,6 +303,22 @@ type replModel struct {
 	// streaming into, or -1 when no streaming entry exists.
 	currentAssistant int
 
+	// stream accumulates the text of the current assistant entry. Appending to
+	// a Builder and storing its (copy-free) String() keeps streaming O(n) total
+	// instead of the O(n²) of repeatedly reallocating a growing string.
+	stream strings.Builder
+
+	// flatCache memoizes flattenTranscript's result; nil means "stale". Every
+	// transcript mutation clears it so the next flatten recomputes. render(),
+	// visibleTranscript and scrollBy all flatten, often without an intervening
+	// change (idle typing, scrolling, waiting for the first token), so the cache
+	// turns those into O(1) instead of re-splitting the whole backlog each time.
+	flatCache []string
+
+	// slashHints is a transient command-completion hint. It renders near the
+	// transcript but is not part of the transcript or persistent history.
+	slashHints string
+
 	// activeTools tracks tool calls currently executing, each pinned to the
 	// transcript entry that displays it. While a tool runs, render() rewrites
 	// that entry every frame with a breathing arrow and live elapsed time; when
@@ -352,6 +365,12 @@ type replModel struct {
 	turnStarted time.Time
 	lastIn      int
 	lastOut     int
+
+	// runningTools counts tool calls currently in flight this turn. A parallel
+	// batch starts several at once; the status only returns to "waiting" when
+	// the last of them finishes, so the first to complete doesn't prematurely
+	// flip the bar (and drop the running-tool name) while siblings still run.
+	runningTools int
 }
 
 type approvalState struct {
@@ -510,26 +529,36 @@ func turnSummaryLine(elapsed time.Duration, in, out int) string {
 	return "  " + styled(body, "muted", "")
 }
 
+// invalidateFlat marks the flattened-transcript cache stale. Caller must hold
+// m.mu (every transcript mutation already does).
+func (m *replModel) invalidateFlat() { m.flatCache = nil }
+
 // appendLine appends a pre-rendered transcript entry (may contain inline
 // style markup). Resets the streaming assistant cursor.
 func (m *replModel) appendLine(s string) {
 	m.transcript = append(m.transcript, s)
 	m.currentAssistant = -1
+	m.invalidateFlat()
 }
 
 // appendAssistant accumulates streamed model output into the current
 // assistant entry. Text is bracket-escaped so any '[' or ']' in the model's
-// response don't trip the style parser.
+// response don't trip the style parser. The run is built in m.stream and stored
+// via its copy-free String() so a long streamed turn stays O(n), not O(n²).
 func (m *replModel) appendAssistant(text string) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	escaped := styleEscape(text)
-	if m.currentAssistant >= 0 && m.currentAssistant < len(m.transcript) {
-		m.transcript[m.currentAssistant] += escaped
-		return
+	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
+		// Start a fresh assistant entry (currentAssistant is reset to -1 by any
+		// intervening non-assistant line), so the builder starts empty too.
+		m.stream.Reset()
+		m.transcript = append(m.transcript, "")
+		m.currentAssistant = len(m.transcript) - 1
 	}
-	m.transcript = append(m.transcript, escaped)
-	m.currentAssistant = len(m.transcript) - 1
+	m.stream.WriteString(escaped)
+	m.transcript[m.currentAssistant] = m.stream.String()
+	m.invalidateFlat()
 }
 
 func (m *replModel) appendUserPrompt(p string) {
@@ -579,11 +608,15 @@ func runningToolLine(label string, elapsed time.Duration) string {
 // refreshActiveTools rewrites each running tool's transcript entry with the
 // current breathing-arrow frame and live elapsed time. Caller must hold m.mu.
 func (m *replModel) refreshActiveTools() {
+	if len(m.activeTools) == 0 {
+		return
+	}
 	for _, at := range m.activeTools {
 		if at.index >= 0 && at.index < len(m.transcript) {
 			m.transcript[at.index] = runningToolLine(at.label, time.Since(at.started))
 		}
 	}
+	m.invalidateFlat()
 }
 
 // takeActiveTool stops tracking a finished tool and returns the transcript index
@@ -629,10 +662,7 @@ func toolErrorLine(label, duration, code, summary string) string {
 	meta := strings.TrimSpace(duration + " " + label)
 	line := "  " + styled("✗", "err", "bold") + " " + styled(meta, "muted", "")
 	if code != "" {
-		line += styled(" · "+code, "muted", "")
-	}
-	if summary != "" {
-		line += styled(" · ", "muted", "") + styled(summary, "err", "dim")
+		line += styled(" · "+code, "err", "")
 	}
 	return line
 }
@@ -756,177 +786,16 @@ func (m *replModel) appendNoticeLine(text string) {
 	m.appendLine(styled(text, "muted", ""))
 }
 
-// slashCommands are the REPL meta-commands recognized at the prompt. Used by
-// Tab completion; /help documents them and the Enter handler dispatches them.
-var slashCommands = []string{"/clear", "/context", "/exit", "/help", "/quit", "/skills", "/stats", "/tools"}
-
-// completeSlash attempts Tab completion of a slash command. Given the current
-// input line it returns the text the input should become — extended to the
-// longest common prefix of all matches, or the sole match — and the matching
-// commands. ok is false when completion doesn't apply (the line isn't a bare
-// "/command" token) or nothing matches, in which case the caller falls back to
-// inserting a literal tab.
-func completeSlash(input string) (completed string, matches []string, ok bool) {
-	if !strings.HasPrefix(input, "/") || strings.ContainsAny(input, " \t") {
-		return "", nil, false
-	}
-	for _, c := range slashCommands {
-		if strings.HasPrefix(c, input) {
-			matches = append(matches, c)
-		}
-	}
-	if len(matches) == 0 {
-		return "", nil, false
-	}
-	return longestCommonPrefix(matches), matches, true
-}
-
-// longestCommonPrefix returns the longest leading string shared by every
-// element. Slash commands are ASCII, so byte-slicing the prefix is safe.
-func longestCommonPrefix(ss []string) string {
-	if len(ss) == 0 {
-		return ""
-	}
-	prefix := ss[0]
-	for _, s := range ss[1:] {
-		for !strings.HasPrefix(s, prefix) {
-			prefix = prefix[:len(prefix)-1]
-		}
-	}
-	return prefix
-}
-
-// helpLines is the content shown by the /help command, one entry per line.
-func helpLines() []string {
-	return []string{
-		"commands:",
-		"  /help             show this help",
-		"  /context, /stats  session tokens, capacity, counts",
-		"  /tools            list loaded tools",
-		"  /skills           list loaded skills",
-		"  /clear            clear conversation history",
-		"  /exit, /quit      leave the REPL",
-		"keys:",
-		"  Enter             send message",
-		"  Ctrl-J            newline (multi-line input)",
-		"  Tab               complete /command",
-		"  Ctrl-C            interrupt turn (twice to quit)",
-		"  Up / Down         move line; recall history at top/bottom",
-		"  Ctrl-R            reverse-search history",
-		"  PgUp / PgDn       scroll transcript",
-		"  Ctrl-A / Ctrl-E   line start / end",
-		"  Ctrl-U / Ctrl-K   clear before / after cursor",
-		"  Ctrl-W            delete previous word",
-		"  Alt-B / Alt-F     word left / right",
-		"  Alt-D             delete next word",
-		"  y / n / a         answer approval prompts",
-	}
-}
-
-// appendHelp writes the /help output into the transcript. Caller must hold m.mu.
-func (m *replModel) appendHelp() {
-	for _, line := range helpLines() {
-		m.appendNoticeLine(line)
-	}
-}
-
-// runCommand dispatches a slash command entered at the prompt. It returns
-// handled=false when the line isn't a recognized command, and quit=true when
-// the command should end the REPL. Caller must hold m.mu.
-func (r *managedREPL) runCommand(line string) (handled, quit bool) {
-	switch line {
-	case "/exit", "/quit":
-		return true, true
-	case "/help":
-		r.model.appendHelp()
-		return true, false
-	case "/clear":
-		r.cmdClear()
-		return true, false
-	case "/context", "/stats":
-		r.cmdContext()
-		return true, false
-	case "/tools":
-		r.cmdTools()
-		return true, false
-	case "/skills":
-		r.cmdSkills()
-		return true, false
-	}
-	return false, false
-}
-
-// cmdClear resets both the conversation history and the visible transcript.
-// The next turn rebuilds the request from the now-empty session.
-func (r *managedREPL) cmdClear() {
-	if r.state != nil && r.state.session != nil {
-		r.state.session.Clear()
-	}
-	r.model.transcript = nil
-	r.model.currentAssistant = -1
-	r.model.activeTools = nil
-	r.model.appendNoticeLine("context cleared")
-}
-
-// cmdContext prints session capacity and message statistics.
-func (r *managedREPL) cmdContext() {
-	m := r.model
-	if r.state == nil || r.state.session == nil {
-		m.appendNoticeLine("no active session")
+func (m *replModel) setSlashHints(matches []string) {
+	if len(matches) > 1 {
+		m.slashHints = strings.Join(matches, "  ")
 		return
 	}
-	s := r.state.session
-	m.appendNoticeLine("context: " + s.GetName())
-	if m.modelName != "" {
-		m.appendNoticeLine("model: " + m.modelName)
-	}
-	if pct := s.GetCapacityPercentage(); pct > 0 {
-		m.appendNoticeLine(fmt.Sprintf("tokens: %s (%.0f%% of capacity)", humanizeTokens(s.GetTotalTokens()), pct))
-	} else {
-		m.appendNoticeLine("tokens: " + humanizeTokens(s.GetTotalTokens()))
-	}
-	c := s.GetMessageCounts()
-	m.appendNoticeLine(fmt.Sprintf("messages: user %d · assistant %d · tool %d · system %d",
-		c["user"], c["assistant"], c["tool"], c["system"]))
-	m.appendNoticeLine(fmt.Sprintf("tool calls: %d", s.GetToolCallCount()))
+	m.clearSlashHints()
 }
 
-// cmdTools lists the loaded tools by namespaced name.
-func (r *managedREPL) cmdTools() {
-	m := r.model
-	var all []tools.Tool
-	if r.state != nil && r.state.toolRegistry != nil {
-		all = r.state.toolRegistry.All()
-	}
-	if len(all) == 0 {
-		m.appendNoticeLine("no tools loaded")
-		return
-	}
-	m.appendNoticeLine(fmt.Sprintf("tools (%d):", len(all)))
-	for _, t := range all {
-		m.appendNoticeLine("  " + t.GetName())
-	}
-}
-
-// cmdSkills lists the loaded skills with their descriptions.
-func (r *managedREPL) cmdSkills() {
-	m := r.model
-	var list []*skills.Skill
-	if r.state != nil && r.state.skillCatalog != nil {
-		list = r.state.skillCatalog.List()
-	}
-	if len(list) == 0 {
-		m.appendNoticeLine("no skills loaded")
-		return
-	}
-	m.appendNoticeLine(fmt.Sprintf("skills (%d):", len(list)))
-	for _, s := range list {
-		line := "  " + s.Name
-		if s.Description != "" {
-			line += " — " + s.Description
-		}
-		m.appendNoticeLine(line)
-	}
+func (m *replModel) clearSlashHints() {
+	m.slashHints = ""
 }
 
 // submitPrompt finalizes the current input as a user turn. Returns the prompt
@@ -934,6 +803,7 @@ func (r *managedREPL) cmdSkills() {
 func (m *replModel) submitPrompt() string {
 	prompt := strings.TrimSpace(m.ed.text())
 	m.ed.clear()
+	m.clearSlashHints()
 	m.historyIdx = -1
 	m.historyDraft = ""
 	if prompt == "" {
@@ -952,6 +822,7 @@ func (m *replModel) beginTurn(prompt string) {
 	m.busy = true
 	m.canceling = false
 	m.state = turnStateWaiting
+	m.runningTools = 0
 	m.turnStarted = time.Now()
 	// Token counts are per-turn: clear them so the end-of-turn summary reflects
 	// this turn alone, even if the turn errors before any usage is recorded.
@@ -961,6 +832,7 @@ func (m *replModel) beginTurn(prompt string) {
 }
 
 func (m *replModel) historyUp() {
+	m.clearSlashHints()
 	if len(m.history) == 0 || m.approval != nil {
 		return
 	}
@@ -974,6 +846,7 @@ func (m *replModel) historyUp() {
 }
 
 func (m *replModel) historyDown() {
+	m.clearSlashHints()
 	if m.historyIdx == -1 || m.approval != nil {
 		return
 	}
@@ -988,6 +861,7 @@ func (m *replModel) historyDown() {
 
 // startSearch enters reverse-incremental history search with an empty query.
 func (m *replModel) startSearch() {
+	m.clearSlashHints()
 	m.searching = true
 	m.searchQuery = ""
 	m.searchMatch = -1
@@ -1044,6 +918,7 @@ func (m *replModel) searchNext() {
 // acceptSearch places the current match into the editor and leaves search mode.
 // The text is not submitted — the user can edit it and press Enter.
 func (m *replModel) acceptSearch() {
+	m.clearSlashHints()
 	if m.searchMatch >= 0 && m.searchMatch < len(m.history) {
 		m.ed.setText(m.history[m.searchMatch])
 	}
@@ -1363,6 +1238,19 @@ func (r *managedREPL) appendHistory(prompt string) {
 	fmt.Fprintln(r.histFile, prompt)
 }
 
+// recordAcceptedInput records one accepted input for recall/search and
+// best-effort persistence. It does not echo a prompt or start a turn.
+func (r *managedREPL) recordAcceptedInput(input string) {
+	if input == "" {
+		return
+	}
+	r.model.clearSlashHints()
+	r.model.historyIdx = -1
+	r.model.historyDraft = ""
+	r.model.history = append(r.model.history, input)
+	r.appendHistory(input)
+}
+
 func newManagedREPL(config *Config, contextName string, toolCount, skillCount int) *managedREPL {
 	m := newReplModel()
 	m.modelName = stripProviderPrefix(config.Model)
@@ -1439,7 +1327,9 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			}
 			return nil
 		case <-ticker.C:
-			r.render()
+			if r.needsTick() {
+				r.render()
+			}
 		case err := <-turnDone:
 			turnDone = nil
 			r.endTurn(err)
@@ -1457,12 +1347,37 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			if prompt := r.takePending(); prompt != "" {
 				turnDone = r.startTurn(ctx, prompt, runTurn)
 			}
-			r.render()
+			if r.wantsRenderForEvent(ev) {
+				r.render()
+			}
 		case prompt := <-r.pending:
 			turnDone = r.startTurn(ctx, prompt, runTurn)
 			r.render()
 		}
 	}
+}
+
+// needsTick reports whether the periodic render tick should repaint. Only a
+// live turn animates (spinner, breathing tool arrow, elapsed timers); at idle
+// nothing changes between events, so the tick repaint is skipped — otherwise
+// the REPL would redraw the full screen ~20×/sec while just sitting at a prompt.
+func (r *managedREPL) needsTick() bool {
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	return r.model.busy
+}
+
+// wantsRenderForEvent reports whether to repaint after handling ev. Bracketed
+// paste arrives as one event per rune; those are coalesced into a single
+// repaint when the paste's closing marker flips m.pasting back off (handleEvent
+// clears it), so a large paste draws once instead of once per character.
+func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
+	if ev.ID == pasteStartID {
+		return false
+	}
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	return !r.model.pasting
 }
 
 func (r *managedREPL) takePending() string {
@@ -1540,6 +1455,7 @@ func (r *managedREPL) endTurn(err error) {
 	// Any tool whose OnToolEnd never fired (e.g. an abandoned turn) stops
 	// breathing here; its line freezes at the last rendered frame.
 	r.model.activeTools = nil
+	r.model.runningTools = 0
 	if err != nil && !errors.Is(err, context.Canceled) {
 		r.model.appendLine(styled("Error: "+err.Error(), "err", ""))
 		r.model.state = turnStateError
@@ -1563,6 +1479,7 @@ func (r *managedREPL) cancelTurn() {
 // quit. Caller must hold m.mu.
 func (r *managedREPL) handleInterrupt() bool {
 	m := r.model
+	m.clearSlashHints()
 	if !m.busy || m.canceling {
 		r.requestQuit()
 		return true
@@ -1778,6 +1695,12 @@ func (r *managedREPL) placeCursor(editable bool, cursorCol, rowY, width int) {
 // wrapped messages can scroll past partially without confusing the user.
 func (m *replModel) visibleTranscript(maxLines int) string {
 	lines := m.flattenTranscript()
+	if m.slashHints != "" {
+		withHints := make([]string, 0, len(lines)+1)
+		withHints = append(withHints, lines...)
+		withHints = append(withHints, styled(m.slashHints, "muted", ""))
+		lines = withHints
+	}
 	total := len(lines)
 	if total == 0 {
 		return ""
@@ -1812,7 +1735,10 @@ func (m *replModel) visibleTranscript(maxLines int) string {
 // flattenTranscript expands embedded "\n" within entries into separate lines
 // so scroll math is uniform.
 func (m *replModel) flattenTranscript() []string {
-	var out []string
+	if m.flatCache != nil {
+		return m.flatCache
+	}
+	out := make([]string, 0, len(m.transcript))
 	for _, e := range m.transcript {
 		if strings.Contains(e, "\n") {
 			out = append(out, strings.Split(e, "\n")...)
@@ -1820,6 +1746,7 @@ func (m *replModel) flattenTranscript() []string {
 			out = append(out, e)
 		}
 	}
+	m.flatCache = out
 	return out
 }
 
@@ -1896,10 +1823,12 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	// so a multi-line paste lands as one prompt rather than firing a submit per
 	// line. (gotui drops these markers; our own event pump surfaces them.)
 	if e.ID == pasteStartID || e.ID == pasteEndID {
+		m.clearSlashHints()
 		m.pasting = e.ID == pasteStartID
 		return false
 	}
 	if m.pasting {
+		m.clearSlashHints()
 		r.insertPasted(e)
 		return false
 	}
@@ -1940,6 +1869,7 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	case "<C-d>":
 		// Quit on empty only at idle; mid-turn Ctrl-C is the interrupt.
 		if m.ed.empty() && !m.busy {
+			m.clearSlashHints()
 			r.requestQuit()
 			return true
 		}
@@ -1951,14 +1881,9 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		if m.busy {
 			// A turn is running — queue this input to run when it ends instead
 			// of interrupting. Routing (command vs prompt) happens at dequeue;
-			// mirror the idle path's history handling for prompts here.
+			// mirror the idle path's history handling here.
 			m.ed.clear()
-			m.historyIdx = -1
-			m.historyDraft = ""
-			if strings.Contains(trimmed, "\n") || !strings.HasPrefix(trimmed, "/") {
-				m.history = append(m.history, trimmed)
-				r.appendHistory(trimmed)
-			}
+			r.recordAcceptedInput(trimmed)
 			m.queue = append(m.queue, trimmed)
 			return false
 		}
@@ -1966,8 +1891,7 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		// to start with "/" is real input.
 		if !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/") {
 			m.ed.clear()
-			m.historyIdx = -1
-			m.historyDraft = ""
+			r.recordAcceptedInput(trimmed)
 			m.followBottom = true
 			handled, quit := r.runCommand(trimmed)
 			if quit {
@@ -1987,29 +1911,41 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		}
 	case "<C-j>":
 		// Ctrl-J inserts a newline for composing multi-line prompts; Enter sends.
+		m.clearSlashHints()
 		m.ed.insert('\n')
 	case "<Backspace>", "<Delete>":
+		m.clearSlashHints()
 		m.ed.backspace()
 	case "<C-w>":
+		m.clearSlashHints()
 		m.ed.deleteWordBackward()
 	case "<M-d>":
+		m.clearSlashHints()
 		m.ed.deleteWordForward()
 	case "<Left>":
+		m.clearSlashHints()
 		m.ed.left()
 	case "<Right>":
+		m.clearSlashHints()
 		m.ed.right()
 	case "<M-b>":
+		m.clearSlashHints()
 		m.ed.wordLeft()
 	case "<M-f>":
+		m.clearSlashHints()
 		m.ed.wordRight()
 	case "<Home>", "<C-a>":
+		m.clearSlashHints()
 		m.ed.home()
 	case "<End>", "<C-e>":
+		m.clearSlashHints()
 		m.ed.end()
 		m.scrollToBottom()
 	case "<C-u>":
+		m.clearSlashHints()
 		m.ed.killToStart()
 	case "<C-k>":
+		m.clearSlashHints()
 		m.ed.killToEnd()
 	case "<C-r>":
 		m.startSearch()
@@ -2024,18 +1960,20 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			m.historyDown()
 		}
 	case "<Space>":
+		m.clearSlashHints()
 		m.ed.insert(' ')
 	case "<Tab>":
 		cur := m.ed.text()
 		if completed, matches, ok := completeSlash(cur); ok {
 			if completed != cur {
+				m.clearSlashHints()
 				m.ed.setText(completed)
 			} else if len(matches) > 1 {
-				m.appendNoticeLine(strings.Join(matches, "  "))
-				m.followBottom = true
+				m.setSlashHints(matches)
 			}
 			return false
 		}
+		m.clearSlashHints()
 		m.ed.insert('\t')
 	default:
 		// Only printable single-rune keyboard events become input. This
@@ -2048,6 +1986,13 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		runes := []rune(e.ID)
 		if len(runes) == 1 && runes[0] >= 0x20 {
 			m.ed.insert(runes[0])
+			if runes[0] == '/' && m.ed.text() == "/" {
+				if _, matches, ok := completeSlash("/"); ok && len(matches) > 1 {
+					m.setSlashHints(matches)
+				}
+			} else {
+				m.clearSlashHints()
+			}
 		}
 	}
 	return false
@@ -2082,6 +2027,7 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	t.repl.model.mu.Lock()
 	defer t.repl.model.mu.Unlock()
 	if len(calls) > 0 {
+		t.repl.model.runningTools += len(calls)
 		t.repl.model.state = turnStateTool
 		t.repl.model.toolName = calls[0].Name
 	}
@@ -2116,29 +2062,36 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	label := toolLabel(call)
 	t.repl.model.mu.Lock()
 	defer t.repl.model.mu.Unlock()
-	if t.repl.model.busy {
-		t.repl.model.state = turnStateWaiting
-		t.repl.model.toolName = ""
+	m := t.repl.model
+	if m.runningTools > 0 {
+		m.runningTools--
+	}
+	// Return to "waiting" only once every tool in the batch has finished;
+	// otherwise the first of several parallel tools to complete would flip the
+	// status back to waiting (and drop the running-tool name) mid-batch.
+	if m.busy && m.runningTools == 0 {
+		m.state = turnStateWaiting
+		m.toolName = ""
 	}
 	if !toolDisplayEnabled(t.config) {
 		return
 	}
-	m := t.repl.model
 	var final string
 	switch {
-	case result == llm.ToolDeniedContent:
+	case toolWasDenied(result):
 		final = toolDeniedLine(label)
 	case err != nil:
 		code, summary := toolErrorParts(err)
-		final = toolErrorLine(label, fmt.Sprintf("%.1fs", duration.Seconds()), code, summary)
+		final = toolErrorLine(label, formatElapsed(duration), code, summary)
 	default:
-		final = toolOKLine(label, fmt.Sprintf("%.1fs", duration.Seconds()))
+		final = toolOKLine(label, formatElapsed(duration))
 	}
 	// Freeze the final line over the running (breathing) one in place, so a tool
 	// is a single transcript line from start to finish. Falls back to appending
 	// if the start line wasn't tracked (shouldn't happen when display is on).
 	if idx, ok := m.takeActiveTool(call.ID); ok {
 		m.transcript[idx] = final
+		m.invalidateFlat()
 	} else {
 		m.appendLine(final)
 	}
@@ -2173,12 +2126,17 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 
 func runFallbackREPL(ctx context.Context, config *Config, state *conversationState) error {
 	reader := bufio.NewReader(os.Stdin)
-	return runREPLLoop(reader, os.Stderr, func(prompt string) error {
+	commandCtx := newWriterReplCommandContext(config, state, os.Stderr)
+	return runREPLLoopWithCommands(reader, os.Stderr, commandCtx, func(prompt string) error {
 		return executeTurn(ctx, config, state, prompt, nil, reader, nil)
 	})
 }
 
 func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {
+	return runREPLLoopWithCommands(reader, promptWriter, newWriterReplCommandContext(nil, nil, promptWriter), runTurn)
+}
+
+func runREPLLoopWithCommands(reader *bufio.Reader, promptWriter io.Writer, commandCtx *replCommandContext, runTurn func(string) error) error {
 	for {
 		if _, err := fmt.Fprint(promptWriter, "> "); err != nil {
 			return err
@@ -2194,19 +2152,32 @@ func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(stri
 		if trimmed == "" {
 			continue
 		}
-		if trimmed == "/exit" || trimmed == "/quit" {
-			return nil
-		}
-		if trimmed == "/help" {
-			for _, l := range helpLines() {
-				if _, err := fmt.Fprintln(promptWriter, l); err != nil {
-					return err
-				}
+		if strings.HasPrefix(trimmed, "/") {
+			handled, quit, err := defaultReplCommands.dispatch(trimmed, commandCtx)
+			if err != nil {
+				return err
+			}
+			if quit {
+				return nil
+			}
+			if handled {
+				continue
+			}
+			if _, err := fmt.Fprintf(promptWriter, "unknown command: %s (try /help)\n", trimmed); err != nil {
+				return err
 			}
 			continue
 		}
 		if err := runTurn(line); err != nil {
-			return err
+			// Context cancellation (shutdown) ends the loop cleanly; any other
+			// per-turn error is recoverable — show it and keep the session open,
+			// matching the managed REPL rather than dropping to the shell.
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			if _, werr := fmt.Fprintf(promptWriter, "Error: %v\n", err); werr != nil {
+				return werr
+			}
 		}
 	}
 }
