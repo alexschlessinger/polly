@@ -67,6 +67,7 @@ func init() {
 	ui.StyleParserColorMap["accent"] = ui.ColorBlue   // prompts & interactive markers
 	ui.StyleParserColorMap["active"] = ui.ColorYellow // status-bar active turn
 	ui.StyleParserColorMap["muted"] = ui.ColorGrey    // metadata (ANSI bright-black, XTerm8)
+	ui.StyleParserColorMap["code"] = ui.ColorWhite    // fenced code block contents
 }
 
 // styleEscape neutralizes the only sequence gotui's ParseStyles treats as
@@ -305,8 +306,11 @@ type replModel struct {
 	// stream accumulates the text of the current assistant entry. Appending to
 	// a Builder and storing its (copy-free) String() keeps streaming O(n) total
 	// instead of the O(n²) of repeatedly reallocating a growing string.
-	stream         strings.Builder
-	streamLastRune rune
+	stream             strings.Builder
+	streamLastRune     rune
+	streamLineStart    bool
+	streamFencePending strings.Builder
+	streamInCodeBlock  bool
 
 	// flatCache memoizes flattenTranscript's result; nil means "stale". Every
 	// transcript mutation clears it so the next flatten recomputes. render(),
@@ -387,6 +391,7 @@ func newReplModel() *replModel {
 		historyIdx:       -1,
 		state:            turnStateIdle,
 		followBottom:     true,
+		streamLineStart:  true,
 	}
 	m.ed.goalCol = -1
 	return m
@@ -544,6 +549,14 @@ func (m *replModel) appendLine(s string) {
 	m.invalidateFlat()
 }
 
+func (m *replModel) resetAssistantStream() {
+	m.stream.Reset()
+	m.streamLastRune = 0
+	m.streamLineStart = true
+	m.streamFencePending.Reset()
+	m.streamInCodeBlock = false
+}
+
 // appendAssistant accumulates streamed model output into the current
 // assistant entry. Text is bracket-escaped so any '[' or ']' in the model's
 // response don't trip the style parser. The run is built in m.stream and stored
@@ -557,26 +570,160 @@ func (m *replModel) appendAssistant(text string) {
 	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
 		// Start a fresh assistant entry (currentAssistant is reset to -1 by any
 		// intervening non-assistant line), so the builder starts empty too.
-		m.stream.Reset()
-		m.streamLastRune = 0
+		m.resetAssistantStream()
 		m.transcript = append(m.transcript, "")
 		m.currentAssistant = len(m.transcript) - 1
+	}
+	m.stream.WriteString(m.renderAssistantChunk(text))
+	m.transcript[m.currentAssistant] = m.stream.String()
+	m.invalidateFlat()
+}
+
+func (m *replModel) finishAssistantStream() {
+	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) || m.streamFencePending.Len() == 0 {
+		return
+	}
+	var out strings.Builder
+	m.flushFenceCandidate(&out)
+	m.stream.WriteString(out.String())
+	m.transcript[m.currentAssistant] = m.stream.String()
+	m.invalidateFlat()
+}
+
+func (m *replModel) renderAssistantChunk(text string) string {
+	var out strings.Builder
+	for text != "" {
+		if m.streamFencePending.Len() > 0 {
+			text = m.collectFenceCandidate(&out, text)
+			continue
+		}
+		if m.streamLineStart && strings.HasPrefix(text, "`") {
+			text = m.collectFenceCandidate(&out, text)
+			continue
+		}
+		if m.streamInCodeBlock {
+			text = m.renderCodeSegment(&out, text)
+			continue
+		}
+		segment := text
+		text = ""
+		if i := strings.IndexByte(segment, '\n'); i >= 0 {
+			text = segment[i+1:]
+			segment = segment[:i+1]
+		}
+		m.writeStreamText(&out, segment)
+		m.streamLineStart = strings.HasSuffix(segment, "\n")
+	}
+	return out.String()
+}
+
+func (m *replModel) collectFenceCandidate(out *strings.Builder, text string) string {
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		m.streamFencePending.WriteString(text[:i+1])
+		m.flushFenceCandidate(out)
+		return text[i+1:]
+	}
+	m.streamFencePending.WriteString(text)
+	return ""
+}
+
+func (m *replModel) flushFenceCandidate(out *strings.Builder) {
+	line := m.streamFencePending.String()
+	m.streamFencePending.Reset()
+
+	trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
+	if strings.HasPrefix(trimmed, "```") {
+		if m.streamInCodeBlock {
+			m.streamInCodeBlock = false
+		} else {
+			m.streamInCodeBlock = true
+			if lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```")); lang != "" {
+				m.writeStreamStyledText(out, "╭─ "+lang+"\n", "muted", "")
+			}
+		}
+		m.streamLineStart = true
+		return
+	}
+
+	if m.streamInCodeBlock {
+		m.writeCodeText(out, line)
+	} else {
+		m.writeStreamText(out, line)
+		m.streamLineStart = strings.HasSuffix(line, "\n")
+	}
+}
+
+func (m *replModel) renderCodeSegment(out *strings.Builder, text string) string {
+	segment := text
+	text = ""
+	if i := strings.IndexByte(segment, '\n'); i >= 0 {
+		text = segment[i+1:]
+		segment = segment[:i+1]
+	}
+	m.writeCodeText(out, segment)
+	return text
+}
+
+func (m *replModel) writeCodeText(out *strings.Builder, text string) {
+	for text != "" {
+		if m.streamLineStart {
+			m.writeStreamStyledText(out, "│ ", "muted", "")
+			m.streamLineStart = false
+		}
+		if i := strings.IndexByte(text, '\n'); i >= 0 {
+			if i > 0 {
+				m.writeStreamStyledText(out, text[:i], "code", "")
+			}
+			m.writeStreamText(out, "\n")
+			m.streamLineStart = true
+			text = text[i+1:]
+			continue
+		}
+		m.writeStreamStyledText(out, text, "code", "")
+		return
+	}
+}
+
+func (m *replModel) writeStreamText(out *strings.Builder, text string) {
+	if text == "" {
+		return
 	}
 	if m.streamLastRune == ']' {
 		for _, r := range text {
 			if r == '(' {
-				m.stream.WriteRune('\u200b')
+				out.WriteRune('\u200b')
 			}
 			break
 		}
 	}
-	escaped := styleEscape(text)
-	m.stream.WriteString(escaped)
+	out.WriteString(styleEscape(text))
 	for _, r := range text {
 		m.streamLastRune = r
 	}
-	m.transcript[m.currentAssistant] = m.stream.String()
-	m.invalidateFlat()
+}
+
+func (m *replModel) writeStreamStyledText(out *strings.Builder, text, fg, modifier string) {
+	if text == "" {
+		return
+	}
+	var escaped strings.Builder
+	m.writeStreamText(&escaped, text)
+	parts := []string{}
+	if fg != "" {
+		parts = append(parts, "fg:"+fg)
+	}
+	if modifier != "" {
+		parts = append(parts, "mod:"+modifier)
+	}
+	if len(parts) == 0 {
+		out.WriteString(escaped.String())
+		return
+	}
+	out.WriteString("[")
+	out.WriteString(escaped.String())
+	out.WriteString("](")
+	out.WriteString(strings.Join(parts, ","))
+	out.WriteString(")")
 }
 
 func (m *replModel) appendUserPrompt(p string) {
@@ -1546,8 +1693,7 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.busy = false
 	m.canceling = false
 	m.currentAssistant = -1
-	m.stream.Reset()
-	m.streamLastRune = 0
+	m.resetAssistantStream()
 	m.turnStarted = time.Time{}
 	m.toolName = ""
 	m.activeTools = nil
@@ -2251,7 +2397,13 @@ func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 	t.repl.model.mu.Unlock()
 }
 
-func (t *gotuiTurnUI) FinishTextTurn() {}
+func (t *gotuiTurnUI) FinishTextTurn() {
+	t.repl.model.mu.Lock()
+	if t.activeLocked() {
+		t.repl.model.finishAssistantStream()
+	}
+	t.repl.model.mu.Unlock()
+}
 
 // ---------------------------------------------------------------------------
 // Entry points used by runREPL

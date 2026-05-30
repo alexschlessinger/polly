@@ -1266,6 +1266,56 @@ func TestAppendAssistantEscapesMarkupAcrossChunks(t *testing.T) {
 	}
 }
 
+func plainStyledText(s string) string {
+	var rendered strings.Builder
+	for _, c := range ui.ParseStyles(s, ui.NewStyle(ui.ColorWhite)) {
+		if c.Rune != '\u200b' {
+			rendered.WriteRune(c.Rune)
+		}
+	}
+	return rendered.String()
+}
+
+func TestAppendAssistantRendersStreamingCodeFenceWithLanguage(t *testing.T) {
+	m := newReplModel()
+	m.appendAssistant("before\n```go\n")
+	m.appendAssistant("totalIn  int  // cumulative input tokens this session\n")
+	m.appendAssistant("totalOut int  // cumulative output tokens this session\n```\nafter")
+
+	got := plainStyledText(m.transcript[0])
+	want := "before\n╭─ go\n│ totalIn  int  // cumulative input tokens this session\n│ totalOut int  // cumulative output tokens this session\nafter"
+	if got != want {
+		t.Fatalf("rendered code fence = %q, want %q", got, want)
+	}
+}
+
+func TestAppendAssistantRendersBareCodeFenceAcrossChunks(t *testing.T) {
+	m := newReplModel()
+	m.appendAssistant("```")
+	m.appendAssistant("\n")
+	m.appendAssistant("fmt.Println([text]")
+	m.appendAssistant("(url))\n``")
+	m.appendAssistant("`\n")
+
+	got := plainStyledText(m.transcript[0])
+	want := "│ fmt.Println([text](url))\n"
+	if got != want {
+		t.Fatalf("rendered bare code fence = %q, want %q", got, want)
+	}
+}
+
+func TestFinishAssistantStreamFlushesPendingFenceLine(t *testing.T) {
+	m := newReplModel()
+	m.appendAssistant("```go\nx\n```")
+	m.finishAssistantStream()
+
+	got := plainStyledText(m.transcript[0])
+	want := "╭─ go\n│ x\n"
+	if got != want {
+		t.Fatalf("finished code fence = %q, want %q", got, want)
+	}
+}
+
 func TestTranscriptParagraphPinsWrappedOverflowToBottom(t *testing.T) {
 	p := newTranscriptParagraph()
 	noBorder(&p.Block)
