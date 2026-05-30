@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"os"
 	"path/filepath"
@@ -304,7 +305,8 @@ type replModel struct {
 	// stream accumulates the text of the current assistant entry. Appending to
 	// a Builder and storing its (copy-free) String() keeps streaming O(n) total
 	// instead of the O(n²) of repeatedly reallocating a growing string.
-	stream strings.Builder
+	stream         strings.Builder
+	streamLastRune rune
 
 	// flatCache memoizes flattenTranscript's result; nil means "stale". Every
 	// transcript mutation clears it so the next flatten recomputes. render(),
@@ -327,6 +329,7 @@ type replModel struct {
 	ed           lineEditor
 	busy         bool
 	canceling    bool
+	turnID       int64
 	pasting      bool // inside a bracketed paste; runes go in verbatim
 	approval     *approvalState
 	history      []string
@@ -388,6 +391,8 @@ func newReplModel() *replModel {
 	m.ed.goalCol = -1
 	return m
 }
+
+const turnCancelDetachAfter = 2 * time.Second
 
 // statusRowGutter is the display width reserved at the left of the status bar
 // for the live activity (spinner + state) while a turn runs. Holding it constant
@@ -546,15 +551,30 @@ func (m *replModel) appendLine(s string) {
 func (m *replModel) appendAssistant(text string) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
-	escaped := styleEscape(text)
+	if text == "" {
+		return
+	}
 	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
 		// Start a fresh assistant entry (currentAssistant is reset to -1 by any
 		// intervening non-assistant line), so the builder starts empty too.
 		m.stream.Reset()
+		m.streamLastRune = 0
 		m.transcript = append(m.transcript, "")
 		m.currentAssistant = len(m.transcript) - 1
 	}
+	if m.streamLastRune == ']' {
+		for _, r := range text {
+			if r == '(' {
+				m.stream.WriteRune('\u200b')
+			}
+			break
+		}
+	}
+	escaped := styleEscape(text)
 	m.stream.WriteString(escaped)
+	for _, r := range text {
+		m.streamLastRune = r
+	}
 	m.transcript[m.currentAssistant] = m.stream.String()
 	m.invalidateFlat()
 }
@@ -901,6 +921,17 @@ func (m *replModel) inputCursorRowCol() (row, col int) {
 // several rows, anchored to the bottom when it overflows maxInputRows. Caller
 // must hold m.mu.
 func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editable bool) {
+	return m.renderInputWithMaxRows(maxInputRows)
+}
+
+func (m *replModel) renderInputWithMaxRows(maxRows int) (text string, rows, curRow, curCol int, editable bool) {
+	return m.renderInputForTerminal(maxRows, 0)
+}
+
+func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, rows, curRow, curCol int, editable bool) {
+	if maxRows < 1 {
+		maxRows = 1
+	}
 	switch {
 	case m.searching:
 		return m.searchDisplay(), 1, 0, 0, false
@@ -921,21 +952,42 @@ func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editab
 	lines := strings.Split(m.ed.text(), "\n")
 	cr, cc := m.inputCursorRowCol()
 
-	// Window the visible lines to maxInputRows. Anchor to the bottom so the
+	// Window the visible lines to maxRows. Anchor to the bottom so the
 	// newest lines (and the cursor after a paste) stay visible — but if the
 	// cursor has moved up above that window (editing higher in a long paste),
 	// scroll up just enough to keep the cursor's line on screen.
 	start := 0
-	if len(lines) > maxInputRows {
-		start = len(lines) - maxInputRows
+	if len(lines) > maxRows {
+		start = len(lines) - maxRows
 		if cr < start {
 			start = cr
 		}
 	}
-	visible := lines[start : start+min(maxInputRows, len(lines)-start)]
+	visible := lines[start : start+min(maxRows, len(lines)-start)]
 
 	parts := make([]string, len(visible))
 	for i, ln := range visible {
+		if width > inputPromptWidth {
+			contentWidth := width - inputPromptWidth
+			if start+i == cr {
+				cursorContentCol := cc - inputPromptWidth
+				lineStartCol := cursorContentCol - contentWidth
+				if lineStartCol < 0 {
+					lineStartCol = 0
+				}
+				var skipped int
+				ln, skipped = sliceDisplayWidth(ln, lineStartCol, contentWidth)
+				cc = inputPromptWidth + cursorContentCol - skipped
+				if cc > width-1 {
+					cc = width - 1
+				}
+				if cc < inputPromptWidth {
+					cc = inputPromptWidth
+				}
+			} else {
+				ln, _ = sliceDisplayWidth(ln, 0, contentWidth)
+			}
+		}
 		if start+i == 0 {
 			parts[i] = styled("> ", "accent", "bold") + styleEscape(ln)
 		} else {
@@ -951,6 +1003,34 @@ func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editab
 		curRow = len(visible) - 1
 	}
 	return strings.Join(parts, "\n"), len(visible), curRow, cc, true
+}
+
+func sliceDisplayWidth(s string, start, width int) (string, int) {
+	if start <= 0 && (width <= 0 || rw.StringWidth(s) <= width) {
+		return s, 0
+	}
+	if width <= 0 {
+		return "", 0
+	}
+	var b strings.Builder
+	col := 0
+	skipped := 0
+	outWidth := 0
+	for _, r := range s {
+		runeWidth := rw.RuneWidth(r)
+		if runeWidth > 0 && col+runeWidth <= start {
+			col += runeWidth
+			skipped = col
+			continue
+		}
+		if runeWidth > 0 && outWidth+runeWidth > width {
+			break
+		}
+		b.WriteRune(r)
+		col += runeWidth
+		outWidth += runeWidth
+	}
+	return b.String(), skipped
 }
 
 // inputDisplay returns just the input region's text. Retained for tests that
@@ -1026,7 +1106,7 @@ type managedREPL struct {
 
 	model *replModel
 
-	transcriptW *widgets.Paragraph
+	transcriptW *transcriptParagraph
 	inputW      *widgets.Paragraph
 	statusW     *widgets.Paragraph
 	rootFlex    *widgets.Flex
@@ -1038,6 +1118,92 @@ type managedREPL struct {
 	// histFile is the append handle for persistent input history; nil when
 	// history couldn't be opened (best-effort — never fatal).
 	histFile *os.File
+}
+
+// transcriptParagraph is a small, REPL-specific paragraph renderer. gotui's
+// stock Paragraph clips from the top after wrapping, which hides the newest
+// rows of a long assistant message exactly when follow-bottom matters most.
+// This renderer wraps before clipping and can pin overflow to the bottom.
+type transcriptParagraph struct {
+	ui.Block
+	Text      string
+	TextStyle ui.Style
+	PinBottom bool
+}
+
+func newTranscriptParagraph() *transcriptParagraph {
+	return &transcriptParagraph{
+		Block:     *ui.NewBlock(),
+		TextStyle: ui.Theme.Paragraph.Text,
+		PinBottom: true,
+	}
+}
+
+func (p *transcriptParagraph) Draw(buf *ui.Buffer) {
+	p.Block.Draw(buf)
+	if p.Inner.Dx() <= 0 || p.Inner.Dy() <= 0 {
+		return
+	}
+	cells := ui.ParseStyles(p.Text, p.TextStyle)
+	cells = wrapCellsHard(cells, p.Inner.Dx())
+	rows := ui.SplitCells(cells, '\n')
+	p.drawRows(buf, rows)
+}
+
+func (p *transcriptParagraph) drawRows(buf *ui.Buffer, rows [][]ui.Cell) {
+	height := p.Inner.Dy()
+	if height <= 0 || len(rows) == 0 {
+		return
+	}
+
+	start := 0
+	if p.PinBottom && len(rows) > height {
+		start = len(rows) - height
+	}
+	rows = rows[start:]
+	if len(rows) > height {
+		rows = rows[:height]
+	}
+
+	topPadding := 0
+	if p.PinBottom && len(rows) < height {
+		topPadding = height - len(rows)
+	}
+	for i, row := range rows {
+		y := i + topPadding
+		if y >= height {
+			break
+		}
+		for _, cx := range ui.BuildCellWithXArray(row) {
+			if rw.RuneWidth(cx.Cell.Rune) == 0 {
+				continue
+			}
+			buf.SetCell(cx.Cell, image.Pt(cx.X, y).Add(p.Inner.Min))
+		}
+	}
+}
+
+func wrapCellsHard(cells []ui.Cell, width int) []ui.Cell {
+	if width <= 0 || len(cells) == 0 {
+		return cells
+	}
+	out := make([]ui.Cell, 0, len(cells))
+	col := 0
+	for _, cell := range cells {
+		if cell.Rune == '\n' {
+			out = append(out, cell)
+			col = 0
+			continue
+		}
+		cellWidth := rw.RuneWidth(cell.Rune)
+		if cellWidth > 0 && col > 0 && col+cellWidth > width {
+			out = append(out, ui.Cell{Rune: '\n', Style: ui.StyleClear})
+			col = 0
+		}
+		out = append(out, cell)
+		col += cellWidth
+	}
+	return out
 }
 
 // maxPersistedHistory bounds how many input lines are kept across runs. On
@@ -1190,6 +1356,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	defer ticker.Stop()
 
 	var turnDone chan error
+	var cancelDetach <-chan time.Time
 
 	for {
 		select {
@@ -1200,16 +1367,21 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 		case <-r.quit:
 			r.cancelTurn()
 			r.releaseApproval()
-			if turnDone != nil {
-				<-turnDone
-			}
 			return nil
 		case <-ticker.C:
 			if r.needsTick() {
 				r.render()
 			}
+		case <-cancelDetach:
+			cancelDetach = nil
+			if turnDone != nil && r.cancelPending() {
+				r.abandonCanceledTurn()
+				turnDone = nil
+				r.render()
+			}
 		case err := <-turnDone:
 			turnDone = nil
+			cancelDetach = nil
 			r.endTurn(err)
 			turnDone = r.startNextQueued(ctx, runTurn)
 			r.render()
@@ -1217,19 +1389,21 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			if r.handleEvent(ev) {
 				r.cancelTurn()
 				r.releaseApproval()
-				if turnDone != nil {
-					<-turnDone
-				}
 				return nil
 			}
 			if prompt := r.takePending(); prompt != "" {
 				turnDone = r.startTurn(ctx, prompt, runTurn)
+				cancelDetach = nil
+			}
+			if turnDone != nil && cancelDetach == nil && r.cancelPending() {
+				cancelDetach = time.After(turnCancelDetachAfter)
 			}
 			if r.wantsRenderForEvent(ev) {
 				r.render()
 			}
 		case prompt := <-r.pending:
 			turnDone = r.startTurn(ctx, prompt, runTurn)
+			cancelDetach = nil
 			r.render()
 		}
 	}
@@ -1268,10 +1442,15 @@ func (r *managedREPL) takePending() string {
 }
 
 func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func(context.Context, string, TurnUI) error) chan error {
+	r.model.mu.Lock()
+	r.model.turnID++
+	turnID := r.model.turnID
+	r.model.mu.Unlock()
+
 	turnCtx, cancel := context.WithCancel(ctx)
 	r.turnCancel = cancel
 	done := make(chan error, 1)
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: turnID}
 	go func() {
 		done <- runTurn(turnCtx, prompt, tui)
 	}()
@@ -1350,6 +1529,34 @@ func (r *managedREPL) cancelTurn() {
 	}
 }
 
+func (r *managedREPL) cancelPending() bool {
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	return r.model.busy && r.model.canceling
+}
+
+func (r *managedREPL) abandonCanceledTurn() {
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	m := r.model
+	if !m.busy || !m.canceling {
+		return
+	}
+	m.turnID++
+	m.busy = false
+	m.canceling = false
+	m.currentAssistant = -1
+	m.stream.Reset()
+	m.streamLastRune = 0
+	m.turnStarted = time.Time{}
+	m.toolName = ""
+	m.activeTools = nil
+	m.runningTools = 0
+	m.denyApprovalLocked()
+	m.state = turnStateIdle
+	m.appendNoticeLine("^C cancellation timed out; detached turn")
+}
+
 // handleInterrupt processes Ctrl-C. While a turn is in flight the first press
 // cancels it — denying any pending approval so the turn goroutine isn't parked
 // on the reply channel — and keeps the REPL open. A second press while the turn
@@ -1365,12 +1572,7 @@ func (r *managedREPL) handleInterrupt() bool {
 	m.canceling = true
 	m.queue = nil // "stop" means stop: don't auto-run queued inputs after a cancel
 	r.cancelTurn()
-	if m.approval != nil {
-		denied := make([]bool, len(m.approval.calls))
-		m.approval.reply <- denied
-		close(m.approval.reply)
-		m.approval = nil
-	}
+	m.denyApprovalLocked()
 	m.appendNoticeLine("^C interrupted")
 	return false
 }
@@ -1433,13 +1635,20 @@ func (r *managedREPL) insertPasted(e ui.Event) {
 func (r *managedREPL) releaseApproval() {
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
-	if r.model.approval == nil {
+	r.model.denyApprovalLocked()
+}
+
+func (m *replModel) denyApprovalLocked() {
+	if m.approval == nil {
 		return
 	}
-	denied := make([]bool, len(r.model.approval.calls))
-	r.model.approval.reply <- denied
-	close(r.model.approval.reply)
-	r.model.approval = nil
+	denied := make([]bool, len(m.approval.calls))
+	select {
+	case m.approval.reply <- denied:
+	default:
+	}
+	close(m.approval.reply)
+	m.approval = nil
 }
 
 // transcriptHeight returns the current usable line count of the transcript
@@ -1470,10 +1679,8 @@ func (r *managedREPL) setupWidgets() {
 	// unstyled text (primary input, LLM responses) to white and ignores the
 	// terminal theme. ColorClear (= tcell.ColorDefault) inherits the terminal's
 	// default foreground instead, so text follows the theme like our accents do.
-	r.transcriptW = widgets.NewParagraph()
+	r.transcriptW = newTranscriptParagraph()
 	noBorder(&r.transcriptW.Block)
-	r.transcriptW.WrapText = true
-	r.transcriptW.VerticalAlignment = ui.AlignBottom
 	r.transcriptW.TextStyle = ui.NewStyle(ui.ColorClear)
 
 	r.inputW = widgets.NewParagraph()
@@ -1528,16 +1735,24 @@ func (r *managedREPL) render() {
 
 	r.model.mu.Lock()
 	r.model.refreshActiveTools()
-	input, inputRows, curRow, curCol, editable := r.model.renderInput()
+	inputMaxRows := maxInputRows
+	if h-statusRows > 1 {
+		inputMaxRows = min(inputMaxRows, h-statusRows-1)
+	} else {
+		inputMaxRows = 1
+	}
+	input, inputRows, curRow, curCol, editable := r.model.renderInputForTerminal(inputMaxRows, w)
 	transcriptHeight := h - inputRows - statusRows
-	if transcriptHeight < 1 {
-		transcriptHeight = 1
+	if transcriptHeight < 0 {
+		transcriptHeight = 0
 	}
 	transcript := r.model.visibleTranscript(transcriptHeight)
+	pinTranscriptBottom := r.model.followBottom
 	status := r.model.statusRow(w)
 	r.model.mu.Unlock()
 
 	r.transcriptW.Text = transcript
+	r.transcriptW.PinBottom = pinTranscriptBottom
 	r.inputW.Text = input
 	r.statusW.Text = status
 
@@ -1563,14 +1778,21 @@ func (r *managedREPL) placeCursor(editable bool, cursorCol, rowY, width int) {
 	if x > width-1 {
 		x = width - 1
 	}
+	_, height := screen.Size()
+	if rowY < 0 {
+		rowY = 0
+	}
+	if height > 0 && rowY > height-1 {
+		rowY = height - 1
+	}
 	screen.ShowCursor(x, rowY)
 }
 
 // visibleTranscript returns the slice of transcript lines that should fill
 // the pane right now, honoring scroll state. Caller must hold m.mu.
 //
-// Scrolling is line-based (not wrap-aware). That's good enough for MVP — long
-// wrapped messages can scroll past partially without confusing the user.
+// Scrolling is logical-line based; transcriptParagraph handles wrapped overflow
+// inside the selected slice so follow-bottom still shows the newest rows.
 func (m *replModel) visibleTranscript(maxLines int) string {
 	lines := m.flattenTranscript()
 	if m.slashHints != "" {
@@ -1883,19 +2105,36 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 type gotuiTurnUI struct {
 	repl   *managedREPL
 	config *Config
+	turnID int64
 }
 
 func (t *gotuiTurnUI) Start() {}
 func (t *gotuiTurnUI) Stop()  {}
 
+func (t *gotuiTurnUI) activeLocked() bool {
+	return t.turnID == 0 || t.repl.model.turnID == t.turnID
+}
+
+func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	return make([]bool, len(calls))
+}
+
 func (t *gotuiTurnUI) ShowThinking(tokens int) {
 	t.repl.model.mu.Lock()
+	if !t.activeLocked() {
+		t.repl.model.mu.Unlock()
+		return
+	}
 	t.repl.model.state = turnStateThinking
 	t.repl.model.mu.Unlock()
 }
 
 func (t *gotuiTurnUI) AppendAssistantText(content string) {
 	t.repl.model.mu.Lock()
+	if !t.activeLocked() {
+		t.repl.model.mu.Unlock()
+		return
+	}
 	t.repl.model.state = turnStateStreaming
 	t.repl.model.appendAssistant(content)
 	t.repl.model.mu.Unlock()
@@ -1904,6 +2143,9 @@ func (t *gotuiTurnUI) AppendAssistantText(content string) {
 func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	t.repl.model.mu.Lock()
 	defer t.repl.model.mu.Unlock()
+	if !t.activeLocked() || t.repl.model.canceling {
+		return
+	}
 	if len(calls) > 0 {
 		t.repl.model.runningTools += len(calls)
 		t.repl.model.state = turnStateTool
@@ -1918,6 +2160,13 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 }
 
 func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	t.repl.model.mu.Lock()
+	if !t.activeLocked() || t.repl.model.canceling {
+		t.repl.model.mu.Unlock()
+		return denyToolCalls(calls)
+	}
+	t.repl.model.mu.Unlock()
+
 	if !t.config.Confirm {
 		approved := make([]bool, len(calls))
 		for i := range approved {
@@ -1927,6 +2176,10 @@ func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 	}
 	reply := make(chan []bool, 1)
 	t.repl.model.mu.Lock()
+	if !t.activeLocked() || t.repl.model.canceling {
+		t.repl.model.mu.Unlock()
+		return denyToolCalls(calls)
+	}
 	t.repl.model.approval = &approvalState{calls: calls, reply: reply}
 	t.repl.model.mu.Unlock()
 	results, ok := <-reply
@@ -1941,6 +2194,9 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	t.repl.model.mu.Lock()
 	defer t.repl.model.mu.Unlock()
 	m := t.repl.model
+	if !t.activeLocked() {
+		return
+	}
 	if m.runningTools > 0 {
 		m.runningTools--
 	}
@@ -1976,12 +2232,20 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 
 func (t *gotuiTurnUI) AppendWarning(text string) {
 	t.repl.model.mu.Lock()
+	if !t.activeLocked() {
+		t.repl.model.mu.Unlock()
+		return
+	}
 	t.repl.model.appendNoticeLine("Warning: " + text)
 	t.repl.model.mu.Unlock()
 }
 
 func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 	t.repl.model.mu.Lock()
+	if !t.activeLocked() {
+		t.repl.model.mu.Unlock()
+		return
+	}
 	t.repl.model.lastIn = in
 	t.repl.model.lastOut = out
 	t.repl.model.mu.Unlock()

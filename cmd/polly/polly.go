@@ -429,6 +429,9 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 		},
 		OnError: func(err error) {},
 	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	if resp != nil {
 		for _, msg := range llm.StripDeniedExchanges(resp.AllMessages) {

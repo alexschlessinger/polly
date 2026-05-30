@@ -8,6 +8,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
+	rw "github.com/mattn/go-runewidth"
 )
 
 // toolWasDenied reports whether a tool result represents a user denial rather
@@ -106,8 +107,8 @@ func truncate(s string, max int) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	if len(s) > max {
-		return s[:max-3] + "..."
+	if rw.StringWidth(s) > max {
+		return rw.Truncate(s, max, "...")
 	}
 	return s
 }

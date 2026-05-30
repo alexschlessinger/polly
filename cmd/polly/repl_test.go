@@ -6,11 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -731,6 +733,35 @@ func TestRenderInputAnchorsToBottom(t *testing.T) {
 	}
 }
 
+func TestRenderInputHonorsSmallerRowBudget(t *testing.T) {
+	m := newReplModel()
+	m.ed.setText("L0\nL1\nL2\nL3")
+
+	text, rows, curRow, _, _ := m.renderInputWithMaxRows(2)
+	if rows != 2 {
+		t.Fatalf("rows = %d, want 2", rows)
+	}
+	if curRow != 1 {
+		t.Fatalf("curRow = %d, want 1", curRow)
+	}
+	if !strings.Contains(text, "L3") || strings.Contains(text, "L0") {
+		t.Fatalf("input should be capped to the bottom two lines, got %q", text)
+	}
+}
+
+func TestRenderInputHorizontallyFollowsCursor(t *testing.T) {
+	m := newReplModel()
+	m.ed.setText("0123456789abcdef")
+
+	text, _, _, curCol, _ := m.renderInputForTerminal(maxInputRows, 8)
+	if !strings.Contains(text, "abcdef") || strings.Contains(text, "0123") {
+		t.Fatalf("long input should show the cursor-side tail, got %q", text)
+	}
+	if curCol != 7 {
+		t.Fatalf("curCol = %d, want clamped right edge 7", curCol)
+	}
+}
+
 func TestRenderInputFollowsCursorUp(t *testing.T) {
 	m := newReplModel()
 	var lines []string
@@ -981,6 +1012,51 @@ func TestHandleInterruptCancelsThenQuits(t *testing.T) {
 	}
 }
 
+func TestAbandonCanceledTurnRestoresPromptAndInvalidatesCallbacks(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.busy = true
+	m.canceling = true
+	m.state = turnStateTool
+	m.toolName = "bash"
+	m.turnStarted = time.Now()
+	m.turnID = 7
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 7}
+
+	r.abandonCanceledTurn()
+	if m.busy || m.canceling {
+		t.Fatalf("abandoned turn should restore idle prompt, busy=%v canceling=%v", m.busy, m.canceling)
+	}
+	if m.state != turnStateIdle {
+		t.Fatalf("state = %v, want idle", m.state)
+	}
+	if m.turnID != 8 {
+		t.Fatalf("turnID = %d, want stale callbacks invalidated to 8", m.turnID)
+	}
+
+	tui.AppendAssistantText("late text")
+	tui.AppendWarning("late warning")
+	tui.RecordTurnTokens(1, 2)
+	if strings.Contains(strings.Join(m.transcript, "\n"), "late") {
+		t.Fatalf("stale turn UI callback mutated transcript: %v", m.transcript)
+	}
+	if m.lastIn != 0 || m.lastOut != 0 {
+		t.Fatalf("stale token callback mutated counts: %d/%d", m.lastIn, m.lastOut)
+	}
+}
+
+func TestGotuiTurnUIDeniesApprovalWhileCanceling(t *testing.T) {
+	r := newManagedREPL(&Config{Confirm: false}, "ctx", 0, 0)
+	r.model.turnID = 1
+	r.model.canceling = true
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 1}
+
+	got := tui.ApproveToolCalls([]messages.ChatMessageToolCall{{Name: "bash"}})
+	if len(got) != 1 || got[0] {
+		t.Fatalf("canceling turn should deny tool approval, got %v", got)
+	}
+}
+
 func TestEnterSlashCommandRecordsHistoryAndPersists(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hist")
@@ -1169,6 +1245,55 @@ func TestStyleEscapeNeutralizesMarkup(t *testing.T) {
 	}
 }
 
+func TestAppendAssistantEscapesMarkupAcrossChunks(t *testing.T) {
+	m := newReplModel()
+	m.appendAssistant("see [text]")
+	m.appendAssistant("(url)")
+
+	got := m.transcript[0]
+	if got != "see [text]\u200b(url)" {
+		t.Fatalf("streamed markup boundary was not escaped: %q", got)
+	}
+
+	var rendered strings.Builder
+	for _, c := range ui.ParseStyles(got, ui.NewStyle(ui.ColorWhite)) {
+		if c.Rune != '\u200b' {
+			rendered.WriteRune(c.Rune)
+		}
+	}
+	if rendered.String() != "see [text](url)" {
+		t.Fatalf("parsed transcript lost literal link text: %q", rendered.String())
+	}
+}
+
+func TestTranscriptParagraphPinsWrappedOverflowToBottom(t *testing.T) {
+	p := newTranscriptParagraph()
+	noBorder(&p.Block)
+	p.Text = "abcdefghijkl"
+	p.SetRect(0, 0, 4, 2)
+
+	buf := ui.NewBuffer(image.Rect(0, 0, 4, 2))
+	p.Draw(buf)
+
+	line := func(y int) string {
+		var b strings.Builder
+		for x := 0; x < 4; x++ {
+			b.WriteRune(buf.GetCell(image.Pt(x, y)).Rune)
+		}
+		return b.String()
+	}
+	if got := line(0) + "\n" + line(1); got != "efgh\nijkl" {
+		t.Fatalf("bottom-pinned wrapped rows = %q, want last two rows", got)
+	}
+
+	p.PinBottom = false
+	buf = ui.NewBuffer(image.Rect(0, 0, 4, 2))
+	p.Draw(buf)
+	if got := line(0) + "\n" + line(1); got != "abcd\nefgh" {
+		t.Fatalf("top-clipped wrapped rows = %q, want first two rows", got)
+	}
+}
+
 func TestApprovalPromptRendersLiteralBrackets(t *testing.T) {
 	m := newReplModel()
 	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "bash"}}}
@@ -1270,6 +1395,16 @@ func TestTurnSummaryLine(t *testing.T) {
 	// The whole line is muted metadata, not an accent.
 	if !strings.Contains(line, "](fg:muted)") {
 		t.Errorf("turn summary should be muted: %q", line)
+	}
+}
+
+func TestTruncatePreservesUTF8(t *testing.T) {
+	got := truncate(strings.Repeat("é", 20), 10)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncate split a UTF-8 sequence: %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("truncated string should carry an ellipsis tail, got %q", got)
 	}
 }
 
