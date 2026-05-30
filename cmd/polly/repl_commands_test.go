@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -192,3 +193,30 @@ func TestFallbackREPLReportsUnknownSlashCommand(t *testing.T) {
 		t.Fatalf("unknown slash output = %q", got)
 	}
 }
+
+func TestFallbackREPLRecoversFromCancelledTurn(t *testing.T) {
+	// A per-turn cancellation (context.Canceled from the turn, but parent
+	// context still alive) must show an error and keep the loop open, not
+	// exit the REPL.
+	var out bytes.Buffer
+	reader := bufio.NewReader(strings.NewReader("prompt1\nprompt2\n/exit\n"))
+	callCount := 0
+	err := runREPLLoopWithCommands(reader, &out, newWriterReplCommandContext(nil, nil, &out), func(prompt string) error {
+		callCount++
+		if callCount == 1 {
+			return fmt.Errorf("cancelled")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("runREPLLoopWithCommands() error = %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 calls to runTurn, got %d", callCount)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Error: cancelled") {
+		t.Fatalf("expected 'Error: cancelled' in output, got %q", got)
+	}
+}
+
