@@ -1,0 +1,2485 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"image"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+
+	"github.com/alexschlessinger/pollytool/messages"
+	tcell "github.com/gdamore/tcell/v3"
+	rw "github.com/mattn/go-runewidth"
+	ui "github.com/metaspartan/gotui/v5"
+	"github.com/metaspartan/gotui/v5/widgets"
+	"golang.org/x/term"
+)
+
+// turnState describes what the agent is currently doing, for the status bar.
+type turnState int
+
+const (
+	turnStateIdle turnState = iota
+	turnStateWaiting
+	turnStateThinking
+	turnStateStreaming
+	turnStateTool
+	turnStateError
+)
+
+func (s turnState) label(toolName string) string {
+	switch s {
+	case turnStateIdle:
+		return "idle"
+	case turnStateWaiting:
+		return "waiting"
+	case turnStateThinking:
+		return "thinking"
+	case turnStateStreaming:
+		return "streaming"
+	case turnStateTool:
+		if toolName == "" {
+			return "tool"
+		}
+		return "tool: " + toolName
+	case turnStateError:
+		return "error"
+	}
+	return ""
+}
+
+// init registers polly's semantic accent colors. Each name maps to an ANSI
+// palette slot (XTerm 0–15) that the terminal (e.g. Ghostty) remaps to the
+// active theme — unlike gotui's dark*/cyan names, which resolve to fixed RGB
+// (e.g. darkred = 0x8B0000) and ignore the theme. Quiet variants are produced
+// with the "dim" modifier at the call site, not a darker fixed color.
+func init() {
+	ui.StyleParserColorMap["ok"] = ui.ColorGreen      // success ✓
+	ui.StyleParserColorMap["err"] = ui.ColorRed       // failure ✗ / errors
+	ui.StyleParserColorMap["run"] = ui.ColorTeal      // running-tool arrow (ANSI cyan, XTerm6)
+	ui.StyleParserColorMap["accent"] = ui.ColorBlue   // prompts & interactive markers
+	ui.StyleParserColorMap["active"] = ui.ColorYellow // status-bar active turn
+	ui.StyleParserColorMap["muted"] = ui.ColorGrey    // metadata (ANSI bright-black, XTerm8)
+	ui.StyleParserColorMap["code"] = ui.ColorWhite    // fenced code block contents
+}
+
+// styleEscape neutralizes the only sequence gotui's ParseStyles treats as
+// style markup: a "[...](...)" run. gotui has no backslash escape — balanced
+// brackets already render literally via its nesting counter — so we just break
+// a "](" adjacency (e.g. a markdown link in model output) with a zero-width
+// space, leaving every other character untouched. Adding backslashes would be
+// wrong: gotui renders them verbatim.
+func styleEscape(s string) string {
+	return strings.ReplaceAll(s, "](", "]\u200b(")
+}
+
+// styled wraps text in gotui's inline style markup. Color names come from
+// gotui's StyleParserColorMap; empty fg/modifier means no styling. The text is
+// run through styleEscape — callers don't need to pre-sanitize.
+func styled(text, fg, modifier string) string {
+	if text == "" {
+		return ""
+	}
+	text = styleEscape(text)
+	parts := []string{}
+	if fg != "" {
+		parts = append(parts, "fg:"+fg)
+	}
+	if modifier != "" {
+		parts = append(parts, "mod:"+modifier)
+	}
+	if len(parts) == 0 {
+		return text
+	}
+	return "[" + text + "](" + strings.Join(parts, ",") + ")"
+}
+
+// lineEditor is a single-line rune buffer with a cursor and readline-style
+// editing operations. It owns no terminal state and performs no rendering —
+// the REPL feeds it discrete key events and reads back text/cursor for display.
+type lineEditor struct {
+	buf    []rune
+	cursor int
+	// goalCol is the rune column that vertical movement (up/down) tries to
+	// keep as the cursor crosses lines of differing length; -1 means "unset —
+	// recompute from the cursor on the next vertical move". Every horizontal
+	// move or edit resets it, so each fresh up/down run starts from the column
+	// the cursor is on, while a run of consecutive up/downs holds its column.
+	goalCol int
+}
+
+func (e *lineEditor) text() string { return string(e.buf) }
+func (e *lineEditor) empty() bool  { return len(e.buf) == 0 }
+
+func (e *lineEditor) setText(s string) {
+	e.buf = []rune(s)
+	e.cursor = len(e.buf)
+	e.goalCol = -1
+}
+
+func (e *lineEditor) clear() {
+	e.buf = nil
+	e.cursor = 0
+	e.goalCol = -1
+}
+
+func (e *lineEditor) insert(r rune) {
+	e.buf = append(e.buf[:e.cursor], append([]rune{r}, e.buf[e.cursor:]...)...)
+	e.cursor++
+	e.goalCol = -1
+}
+
+func (e *lineEditor) backspace() {
+	if e.cursor > 0 {
+		e.buf = append(e.buf[:e.cursor-1], e.buf[e.cursor:]...)
+		e.cursor--
+	}
+	e.goalCol = -1
+}
+
+func (e *lineEditor) left() {
+	if e.cursor > 0 {
+		e.cursor--
+	}
+	e.goalCol = -1
+}
+
+func (e *lineEditor) right() {
+	if e.cursor < len(e.buf) {
+		e.cursor++
+	}
+	e.goalCol = -1
+}
+
+func (e *lineEditor) home() { e.cursor = 0; e.goalCol = -1 }
+func (e *lineEditor) end()  { e.cursor = len(e.buf); e.goalCol = -1 }
+
+func (e *lineEditor) killToStart() {
+	e.buf = append([]rune(nil), e.buf[e.cursor:]...)
+	e.cursor = 0
+	e.goalCol = -1
+}
+
+func (e *lineEditor) killToEnd() {
+	e.buf = append([]rune(nil), e.buf[:e.cursor]...)
+	e.goalCol = -1
+}
+
+// prevWordStart is the index where the word before the cursor begins: skip any
+// whitespace to the left, then skip the run of non-whitespace.
+func (e *lineEditor) prevWordStart() int {
+	i := e.cursor
+	for i > 0 && unicode.IsSpace(e.buf[i-1]) {
+		i--
+	}
+	for i > 0 && !unicode.IsSpace(e.buf[i-1]) {
+		i--
+	}
+	return i
+}
+
+// nextWordEnd is the index just past the word after the cursor: skip any
+// whitespace to the right, then skip the run of non-whitespace.
+func (e *lineEditor) nextWordEnd() int {
+	i, n := e.cursor, len(e.buf)
+	for i < n && unicode.IsSpace(e.buf[i]) {
+		i++
+	}
+	for i < n && !unicode.IsSpace(e.buf[i]) {
+		i++
+	}
+	return i
+}
+
+func (e *lineEditor) wordLeft()  { e.cursor = e.prevWordStart(); e.goalCol = -1 }
+func (e *lineEditor) wordRight() { e.cursor = e.nextWordEnd(); e.goalCol = -1 }
+
+func (e *lineEditor) deleteWordBackward() {
+	e.goalCol = -1
+	start := e.prevWordStart()
+	if start == e.cursor {
+		return
+	}
+	e.buf = append(e.buf[:start], e.buf[e.cursor:]...)
+	e.cursor = start
+}
+
+func (e *lineEditor) deleteWordForward() {
+	e.goalCol = -1
+	end := e.nextWordEnd()
+	if end == e.cursor {
+		return
+	}
+	e.buf = append(e.buf[:e.cursor], e.buf[end:]...)
+}
+
+// lineStartAt returns the index of the first rune on the logical line that
+// contains position pos (0, or one past the preceding '\n').
+func (e *lineEditor) lineStartAt(pos int) int {
+	i := pos
+	for i > 0 && e.buf[i-1] != '\n' {
+		i--
+	}
+	return i
+}
+
+// lineEndAt returns the index just past the last rune on the logical line that
+// contains pos (the index of the next '\n', or len(buf)).
+func (e *lineEditor) lineEndAt(pos int) int {
+	i := pos
+	for i < len(e.buf) && e.buf[i] != '\n' {
+		i++
+	}
+	return i
+}
+
+// up moves the cursor to the same column on the previous logical line, holding
+// the goal column across shorter lines. It returns false when the cursor is
+// already on the first line, so the caller can fall through to history recall.
+func (e *lineEditor) up() bool {
+	start := e.lineStartAt(e.cursor)
+	if start == 0 {
+		return false // already on the first line
+	}
+	if e.goalCol < 0 {
+		e.goalCol = e.cursor - start
+	}
+	prevStart := e.lineStartAt(start - 1)
+	prevLen := (start - 1) - prevStart // runes before the '\n' that ends it
+	col := e.goalCol
+	if col > prevLen {
+		col = prevLen
+	}
+	e.cursor = prevStart + col
+	return true
+}
+
+// down mirrors up onto the next logical line. It returns false when the cursor
+// is already on the last line.
+func (e *lineEditor) down() bool {
+	end := e.lineEndAt(e.cursor)
+	if end >= len(e.buf) {
+		return false // already on the last line
+	}
+	if e.goalCol < 0 {
+		e.goalCol = e.cursor - e.lineStartAt(e.cursor)
+	}
+	nextStart := end + 1
+	nextLen := e.lineEndAt(nextStart) - nextStart
+	col := e.goalCol
+	if col > nextLen {
+		col = nextLen
+	}
+	e.cursor = nextStart + col
+	return true
+}
+
+// displayWidthToCursor is the terminal column count of the text left of the
+// cursor, accounting for wide runes.
+func (e *lineEditor) displayWidthToCursor() int {
+	return rw.StringWidth(string(e.buf[:e.cursor]))
+}
+
+// replModel is the mutex-protected state for the MVP TUI. Mutated from both
+// the main event loop and any in-flight turn goroutine, so every read/write
+// holds mu.
+type replModel struct {
+	mu sync.Mutex
+
+	// transcript is the accumulated text rendered into the upper pane.
+	// Each entry is a logical "block" (user prompt, assistant turn, notice,
+	// tool line) and may contain inline style markup. They get joined with
+	// "\n" at render time.
+	transcript []string
+
+	// currentAssistant points at the entry that the agent is currently
+	// streaming into, or -1 when no streaming entry exists.
+	currentAssistant int
+
+	// stream accumulates the text of the current assistant entry. Appending to
+	// a Builder and storing its (copy-free) String() keeps streaming O(n) total
+	// instead of the O(n²) of repeatedly reallocating a growing string.
+	stream             strings.Builder
+	streamLastRune     rune
+	streamLineStart    bool
+	streamFencePending strings.Builder
+	streamInCodeBlock  bool
+
+	// flatCache memoizes flattenTranscript's result; nil means "stale". Every
+	// transcript mutation clears it so the next flatten recomputes. render(),
+	// visibleTranscript and scrollBy all flatten, often without an intervening
+	// change (idle typing, scrolling, waiting for the first token), so the cache
+	// turns those into O(1) instead of re-splitting the whole backlog each time.
+	flatCache []string
+
+	// slashHints is a transient command-completion hint. It renders near the
+	// transcript but is not part of the transcript or persistent history.
+	slashHints string
+
+	// activeTools tracks tool calls currently executing, each pinned to the
+	// transcript entry that displays it. While a tool runs, render() rewrites
+	// that entry every frame with a breathing arrow and live elapsed time; when
+	// it finishes the entry is frozen into the final ✓/✗ line. Parallel calls
+	// finish out of order, so each is matched back to its line by call ID.
+	activeTools []activeTool
+
+	ed           lineEditor
+	busy         bool
+	canceling    bool
+	turnID       int64
+	pasting      bool // inside a bracketed paste; runes go in verbatim
+	approval     *approvalState
+	history      []string
+	historyIdx   int
+	historyDraft string
+
+	// queue holds inputs submitted while a turn is in flight (the prompt stays
+	// editable during a turn). They run in order once the current turn ends;
+	// each entry is raw trimmed text routed to a command or a prompt at dequeue.
+	queue []string
+
+	// Reverse-incremental history search (Ctrl-R). searchMatch is the index
+	// into history of the current hit, or -1 when the query matches nothing.
+	searching   bool
+	searchQuery string
+	searchMatch int
+
+	// Scrollback. When followBottom is true, the render trims to the most
+	// recent lines that fit. When false, scrollAnchor names the absolute
+	// transcript-line index of the top visible row.
+	followBottom bool
+	scrollAnchor int
+
+	// Status bar fields. modelName/contextName/toolCount/skillCount are
+	// set once at startup; the rest are mutated as a turn progresses.
+	modelName   string
+	contextName string
+	toolCount   int
+	skillCount  int
+	quiet       bool
+
+	state       turnState
+	toolName    string
+	turnStarted time.Time
+	lastIn      int
+	lastOut     int
+
+	// runningTools counts tool calls currently in flight this turn. A parallel
+	// batch starts several at once; the status only returns to "waiting" when
+	// the last of them finishes, so the first to complete doesn't prematurely
+	// flip the bar (and drop the running-tool name) while siblings still run.
+	runningTools int
+}
+
+type approvalState struct {
+	calls []messages.ChatMessageToolCall
+	index int
+	out   []bool
+	reply chan []bool
+}
+
+func newReplModel() *replModel {
+	m := &replModel{
+		currentAssistant: -1,
+		historyIdx:       -1,
+		state:            turnStateIdle,
+		followBottom:     true,
+		streamLineStart:  true,
+	}
+	m.ed.goalCol = -1
+	return m
+}
+
+const turnCancelDetachAfter = 2 * time.Second
+
+// statusRowGutter is the display width reserved at the left of the status bar
+// for the live activity (spinner + state) while a turn runs. Holding it constant
+// keeps the static fields from shifting as the state word changes mid-turn; it
+// fits "⠹ streaming" with a trailing gap. At idle the gutter collapses so the
+// bar isn't left-padded when nothing is happening.
+const statusRowGutter = 12
+
+// statusRow renders the bar contents at the given terminal width. While a turn
+// runs, the live activity (spinner + transient state) fills a fixed-width gutter
+// on the left so the static fields don't move; at idle the gutter collapses to a
+// single leading space. Low-priority static fields drop when they don't fit.
+// Returns "" when the user asked for quiet mode.
+func (m *replModel) statusRow(width int) string {
+	if m.quiet {
+		return ""
+	}
+	const sep = " · "
+
+	// Activity gutter: spinner + state, padded to a fixed width. The state word
+	// is compact (no tool name — the transcript line already shows it) so the
+	// gutter stays bounded and never reshapes the bar.
+	glyph, spinning := m.spinnerFrame()
+	var act strings.Builder
+	actRaw := ""
+	if spinning {
+		act.WriteString(styled(string(glyph), "accent", "bold"))
+		act.WriteByte(' ')
+		actRaw += string(glyph) + " "
+	}
+	if m.state != turnStateIdle {
+		word := m.state.label("")
+		color := "active"
+		if m.state == turnStateError {
+			color = "err"
+		}
+		act.WriteString(styled(word, color, "bold"))
+		actRaw += word
+	}
+	// While a turn runs, pad the activity to a fixed width so the static fields
+	// hold their column as the state changes. At idle the activity is empty —
+	// collapse to a single leading space instead of a wide blank margin.
+	gutter := act.String()
+	if m.state == turnStateIdle {
+		gutter = " "
+	} else if pad := statusRowGutter - rw.StringWidth(actRaw); pad > 0 {
+		gutter += strings.Repeat(" ", pad)
+	}
+
+	// Static fields, rendered after the gutter at a constant column. Per-turn
+	// token counts live in the post-turn summary line (turnSummaryLine), not
+	// here.
+	type field struct {
+		drop int // higher = dropped sooner
+		text string
+	}
+	fields := []field{}
+	if m.modelName != "" {
+		fields = append(fields, field{drop: 4, text: m.modelName})
+	}
+	fields = append(fields, field{drop: 0, text: m.contextName})
+	if m.toolCount > 0 {
+		fields = append(fields, field{drop: 2, text: fmt.Sprintf("tools:%d", m.toolCount)})
+	}
+	if m.skillCount > 0 {
+		fields = append(fields, field{drop: 1, text: fmt.Sprintf("skills:%d", m.skillCount)})
+	}
+	if len(m.queue) > 0 {
+		fields = append(fields, field{drop: 5, text: fmt.Sprintf("queued:%d", len(m.queue))})
+	}
+
+	// Budget for the static fields is what's left after the gutter and the
+	// trailing space.
+	avail := width - rw.StringWidth(gutter) - 1
+	visibleLen := func(fs []field) int {
+		n := 0
+		for i, f := range fs {
+			n += len([]rune(f.text))
+			if i < len(fs)-1 {
+				n += len([]rune(sep))
+			}
+		}
+		return n
+	}
+	for visibleLen(fields) > avail && len(fields) > 0 {
+		idx := -1
+		best := 0
+		for i, f := range fields {
+			if f.drop > best {
+				best = f.drop
+				idx = i
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		fields = append(fields[:idx], fields[idx+1:]...)
+	}
+
+	parts := make([]string, len(fields))
+	for i, f := range fields {
+		parts[i] = styled(f.text, "muted", "")
+	}
+	return gutter + strings.Join(parts, styled(sep, "muted", "")) + " "
+}
+
+func humanizeTokens(n int) string {
+	switch {
+	case n < 1000:
+		return fmt.Sprintf("%d", n)
+	case n < 100_000:
+		whole := n / 1000
+		frac := (n % 1000) / 100
+		return fmt.Sprintf("%d.%dk", whole, frac)
+	case n < 1_000_000:
+		return fmt.Sprintf("%dk", n/1000)
+	default:
+		whole := n / 1_000_000
+		frac := (n % 1_000_000) / 100_000
+		return fmt.Sprintf("%d.%dM", whole, frac)
+	}
+}
+
+func formatElapsed(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	m := int(d / time.Minute)
+	s := int((d % time.Minute) / time.Second)
+	return fmt.Sprintf("%dm%02ds", m, s)
+}
+
+// turnSummaryLine is the one-line report appended to the transcript when a turn
+// finishes: total wall-clock elapsed and the turn's input/output token counts.
+func turnSummaryLine(elapsed time.Duration, in, out int) string {
+	body := fmt.Sprintf("%s · %d in · %d out", formatElapsed(elapsed), in, out)
+	return "  " + styled(body, "muted", "")
+}
+
+// invalidateFlat marks the flattened-transcript cache stale. Caller must hold
+// m.mu (every transcript mutation already does).
+func (m *replModel) invalidateFlat() { m.flatCache = nil }
+
+// appendLine appends a pre-rendered transcript entry (may contain inline
+// style markup). Resets the streaming assistant cursor.
+func (m *replModel) appendLine(s string) {
+	m.transcript = append(m.transcript, s)
+	m.currentAssistant = -1
+	m.invalidateFlat()
+}
+
+func (m *replModel) resetAssistantStream() {
+	m.stream.Reset()
+	m.streamLastRune = 0
+	m.streamLineStart = true
+	m.streamFencePending.Reset()
+	m.streamInCodeBlock = false
+}
+
+// appendAssistant accumulates streamed model output into the current
+// assistant entry. Text is bracket-escaped so any '[' or ']' in the model's
+// response don't trip the style parser. The run is built in m.stream and stored
+// via its copy-free String() so a long streamed turn stays O(n), not O(n²).
+func (m *replModel) appendAssistant(text string) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	if text == "" {
+		return
+	}
+	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
+		// Start a fresh assistant entry (currentAssistant is reset to -1 by any
+		// intervening non-assistant line), so the builder starts empty too.
+		m.resetAssistantStream()
+		m.transcript = append(m.transcript, "")
+		m.currentAssistant = len(m.transcript) - 1
+	}
+	m.stream.WriteString(m.renderAssistantChunk(text))
+	m.transcript[m.currentAssistant] = m.stream.String()
+	m.invalidateFlat()
+}
+
+func (m *replModel) finishAssistantStream() {
+	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) || m.streamFencePending.Len() == 0 {
+		return
+	}
+	var out strings.Builder
+	m.flushFenceCandidate(&out)
+	m.stream.WriteString(out.String())
+	m.transcript[m.currentAssistant] = m.stream.String()
+	m.invalidateFlat()
+}
+
+func (m *replModel) renderAssistantChunk(text string) string {
+	var out strings.Builder
+	for text != "" {
+		if m.streamFencePending.Len() > 0 {
+			text = m.collectFenceCandidate(&out, text)
+			continue
+		}
+		if m.streamLineStart && strings.HasPrefix(text, "`") {
+			text = m.collectFenceCandidate(&out, text)
+			continue
+		}
+		if m.streamInCodeBlock {
+			text = m.renderCodeSegment(&out, text)
+			continue
+		}
+		segment := text
+		text = ""
+		if i := strings.IndexByte(segment, '\n'); i >= 0 {
+			text = segment[i+1:]
+			segment = segment[:i+1]
+		}
+		m.writeStreamText(&out, segment)
+		m.streamLineStart = strings.HasSuffix(segment, "\n")
+	}
+	return out.String()
+}
+
+func (m *replModel) collectFenceCandidate(out *strings.Builder, text string) string {
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		m.streamFencePending.WriteString(text[:i+1])
+		m.flushFenceCandidate(out)
+		return text[i+1:]
+	}
+	m.streamFencePending.WriteString(text)
+	return ""
+}
+
+func (m *replModel) flushFenceCandidate(out *strings.Builder) {
+	line := m.streamFencePending.String()
+	m.streamFencePending.Reset()
+
+	trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
+	if strings.HasPrefix(trimmed, "```") {
+		if m.streamInCodeBlock {
+			m.streamInCodeBlock = false
+		} else {
+			m.streamInCodeBlock = true
+			if lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```")); lang != "" {
+				m.writeStreamStyledText(out, "╭─ "+lang+"\n", "muted", "")
+			}
+		}
+		m.streamLineStart = true
+		return
+	}
+
+	if m.streamInCodeBlock {
+		m.writeCodeText(out, line)
+	} else {
+		m.writeStreamText(out, line)
+		m.streamLineStart = strings.HasSuffix(line, "\n")
+	}
+}
+
+func (m *replModel) renderCodeSegment(out *strings.Builder, text string) string {
+	segment := text
+	text = ""
+	if i := strings.IndexByte(segment, '\n'); i >= 0 {
+		text = segment[i+1:]
+		segment = segment[:i+1]
+	}
+	m.writeCodeText(out, segment)
+	return text
+}
+
+func (m *replModel) writeCodeText(out *strings.Builder, text string) {
+	for text != "" {
+		if m.streamLineStart {
+			m.writeStreamStyledText(out, "│ ", "muted", "")
+			m.streamLineStart = false
+		}
+		if i := strings.IndexByte(text, '\n'); i >= 0 {
+			if i > 0 {
+				m.writeStreamStyledText(out, text[:i], "code", "")
+			}
+			m.writeStreamText(out, "\n")
+			m.streamLineStart = true
+			text = text[i+1:]
+			continue
+		}
+		m.writeStreamStyledText(out, text, "code", "")
+		return
+	}
+}
+
+func (m *replModel) writeStreamText(out *strings.Builder, text string) {
+	if text == "" {
+		return
+	}
+	if m.streamLastRune == ']' {
+		for _, r := range text {
+			if r == '(' {
+				out.WriteRune('\u200b')
+			}
+			break
+		}
+	}
+	out.WriteString(styleEscape(text))
+	for _, r := range text {
+		m.streamLastRune = r
+	}
+}
+
+func (m *replModel) writeStreamStyledText(out *strings.Builder, text, fg, modifier string) {
+	if text == "" {
+		return
+	}
+	var escaped strings.Builder
+	m.writeStreamText(&escaped, text)
+	parts := []string{}
+	if fg != "" {
+		parts = append(parts, "fg:"+fg)
+	}
+	if modifier != "" {
+		parts = append(parts, "mod:"+modifier)
+	}
+	if len(parts) == 0 {
+		out.WriteString(escaped.String())
+		return
+	}
+	out.WriteString("[")
+	out.WriteString(escaped.String())
+	out.WriteString("](")
+	out.WriteString(strings.Join(parts, ","))
+	out.WriteString(")")
+}
+
+func (m *replModel) appendUserPrompt(p string) {
+	m.appendLine(styled("> ", "accent", "bold") + styleEscape(p))
+}
+
+// activeTool is one still-executing tool call, pinned to the transcript entry
+// that displays it.
+type activeTool struct {
+	id      string
+	index   int
+	label   string
+	started time.Time
+}
+
+// appendToolStartLine adds a transcript entry for a tool that just began and
+// starts tracking it so render() can animate it. The placeholder text is
+// rewritten on the very next frame by refreshActiveTools.
+func (m *replModel) appendToolStartLine(id, label string) {
+	m.appendLine(runningToolLine(label, 0))
+	m.activeTools = append(m.activeTools, activeTool{
+		id:      id,
+		index:   len(m.transcript) - 1,
+		label:   label,
+		started: time.Now(),
+	})
+}
+
+// arrowPulse breathes the running-tool arrow between two brightnesses of one
+// themed hue: it alternates the modifier (bold ↔ dim) on a fixed color so the
+// arrow gently pulses while a tool executes — and follows the terminal theme.
+var arrowPulse = []string{"bold", "dim"}
+
+// arrowPulsePeriod is how long each pulse shade holds; len(arrowPulse) steps
+// make one full breath (~1s), slow enough to read as a pulse, not a strobe.
+const arrowPulsePeriod = 500 * time.Millisecond
+
+// runningToolLine renders a still-executing tool entry: a breathing arrow whose
+// modifier is chosen from elapsed time, the label, and a live elapsed timer.
+func runningToolLine(label string, elapsed time.Duration) string {
+	mod := arrowPulse[int(elapsed/arrowPulsePeriod)%len(arrowPulse)]
+	return "  " + styled("→", "run", mod) + " " +
+		styled(label, "muted", "") + " " +
+		styled("· "+formatElapsed(elapsed), "muted", "")
+}
+
+// refreshActiveTools rewrites each running tool's transcript entry with the
+// current breathing-arrow frame and live elapsed time. Caller must hold m.mu.
+func (m *replModel) refreshActiveTools() {
+	if len(m.activeTools) == 0 {
+		return
+	}
+	for _, at := range m.activeTools {
+		if at.index >= 0 && at.index < len(m.transcript) {
+			m.transcript[at.index] = runningToolLine(at.label, time.Since(at.started))
+		}
+	}
+	m.invalidateFlat()
+}
+
+// takeActiveTool stops tracking a finished tool and returns the transcript index
+// of its line so the caller can freeze it into a final ✓/✗ entry. It matches by
+// call id, falling back to the oldest still-running entry (the only one in the
+// common sequential case, and a safe default if an id is missing). Returns false
+// when nothing is tracked. Caller must hold m.mu.
+func (m *replModel) takeActiveTool(id string) (int, bool) {
+	if len(m.activeTools) == 0 {
+		return -1, false
+	}
+	pick := 0
+	for i, at := range m.activeTools {
+		if at.id == id {
+			pick = i
+			break
+		}
+	}
+	idx := m.activeTools[pick].index
+	m.activeTools = append(m.activeTools[:pick], m.activeTools[pick+1:]...)
+	return idx, true
+}
+
+// toolOKLine / toolDeniedLine / toolErrorLine build the final transcript entry
+// for a completed tool call. They return the styled string (rather than
+// appending) so AppendToolEnd can freeze it over the running line in place.
+
+func toolOKLine(label, duration string) string {
+	body := strings.TrimSpace(duration + " " + label)
+	return "  " + styled("✓", "ok", "bold") + " " + styled(body, "muted", "")
+}
+
+func toolDeniedLine(label string) string {
+	return "  " + styled("✗", "err", "bold") + " " + styled("denied "+label, "muted", "")
+}
+
+// toolErrorLine renders a failed tool call as a red ✗ plus the muted metadata
+// (timing · command) — the same shape as a success line. The tool's own
+// output/error text and exit code are deliberately not shown; the model still
+// receives the full output, this is display only.
+func toolErrorLine(label, duration string) string {
+	meta := strings.TrimSpace(duration + " " + label)
+	return "  " + styled("✗", "err", "bold") + " " + styled(meta, "muted", "")
+}
+
+func (m *replModel) appendNoticeLine(text string) {
+	m.appendLine(styled(text, "muted", ""))
+}
+
+func (m *replModel) setSlashHints(matches []string) {
+	if len(matches) > 1 {
+		m.slashHints = strings.Join(matches, "  ")
+		return
+	}
+	m.clearSlashHints()
+}
+
+func (m *replModel) clearSlashHints() {
+	m.slashHints = ""
+}
+
+// submitPrompt finalizes the current input as a user turn. Returns the prompt
+// string (possibly empty if input was blank).
+func (m *replModel) submitPrompt() string {
+	prompt := strings.TrimSpace(m.ed.text())
+	m.ed.clear()
+	m.clearSlashHints()
+	m.historyIdx = -1
+	m.historyDraft = ""
+	if prompt == "" {
+		return ""
+	}
+	m.history = append(m.history, prompt)
+	m.beginTurn(prompt)
+	return prompt
+}
+
+// beginTurn echoes a user prompt and marks a turn in flight. Shared by the idle
+// submit path and the queued-prompt drain; neither records history here (callers
+// do that when the text is first accepted). Caller must hold m.mu.
+func (m *replModel) beginTurn(prompt string) {
+	m.appendUserPrompt(prompt)
+	m.busy = true
+	m.canceling = false
+	m.state = turnStateWaiting
+	m.runningTools = 0
+	m.turnStarted = time.Now()
+	// Token counts are per-turn: clear them so the end-of-turn summary reflects
+	// this turn alone, even if the turn errors before any usage is recorded.
+	m.lastIn = 0
+	m.lastOut = 0
+	m.followBottom = true
+}
+
+func (m *replModel) historyUp() {
+	m.clearSlashHints()
+	if len(m.history) == 0 || m.approval != nil {
+		return
+	}
+	if m.historyIdx == -1 {
+		m.historyDraft = m.ed.text()
+		m.historyIdx = len(m.history) - 1
+	} else if m.historyIdx > 0 {
+		m.historyIdx--
+	}
+	m.ed.setText(m.history[m.historyIdx])
+}
+
+func (m *replModel) historyDown() {
+	m.clearSlashHints()
+	if m.historyIdx == -1 || m.approval != nil {
+		return
+	}
+	if m.historyIdx < len(m.history)-1 {
+		m.historyIdx++
+		m.ed.setText(m.history[m.historyIdx])
+	} else {
+		m.historyIdx = -1
+		m.ed.setText(m.historyDraft)
+	}
+}
+
+// startSearch enters reverse-incremental history search with an empty query.
+func (m *replModel) startSearch() {
+	m.clearSlashHints()
+	m.searching = true
+	m.searchQuery = ""
+	m.searchMatch = -1
+}
+
+func (m *replModel) endSearch() {
+	m.searching = false
+	m.searchQuery = ""
+	m.searchMatch = -1
+}
+
+// searchFrom scans history backward from index `from`, returning the index of
+// the most recent entry containing query, or -1.
+func (m *replModel) searchFrom(from int, query string) int {
+	if query == "" || from >= len(m.history) {
+		return -1
+	}
+	for i := from; i >= 0; i-- {
+		if strings.Contains(m.history[i], query) {
+			return i
+		}
+	}
+	return -1
+}
+
+// searchType extends the query by one rune and re-matches from the newest entry.
+func (m *replModel) searchType(r rune) {
+	m.searchQuery += string(r)
+	m.searchMatch = m.searchFrom(len(m.history)-1, m.searchQuery)
+}
+
+// searchBackspace shortens the query by one rune and re-matches.
+func (m *replModel) searchBackspace() {
+	if m.searchQuery == "" {
+		return
+	}
+	q := []rune(m.searchQuery)
+	m.searchQuery = string(q[:len(q)-1])
+	m.searchMatch = m.searchFrom(len(m.history)-1, m.searchQuery)
+}
+
+// searchNext steps to the next older match (repeated Ctrl-R). Stays put when
+// there's no earlier hit.
+func (m *replModel) searchNext() {
+	start := len(m.history) - 1
+	if m.searchMatch >= 0 {
+		start = m.searchMatch - 1
+	}
+	if next := m.searchFrom(start, m.searchQuery); next >= 0 {
+		m.searchMatch = next
+	}
+}
+
+// acceptSearch places the current match into the editor and leaves search mode.
+// The text is not submitted — the user can edit it and press Enter.
+func (m *replModel) acceptSearch() {
+	m.clearSlashHints()
+	if m.searchMatch >= 0 && m.searchMatch < len(m.history) {
+		m.ed.setText(m.history[m.searchMatch])
+	}
+	m.endSearch()
+}
+
+// searchDisplay renders the reverse-i-search prompt and the current match.
+func (m *replModel) searchDisplay() string {
+	matched := ""
+	if m.searchMatch >= 0 && m.searchMatch < len(m.history) {
+		matched = m.history[m.searchMatch]
+	}
+	prompt := fmt.Sprintf("(reverse-i-search)`%s`: ", m.searchQuery)
+	return styled(prompt, "accent", "bold") + styleEscape(matched)
+}
+
+// handleApprovalAnswer applies one answer to the pending approval batch.
+// Returns true when the batch is complete and the reply was sent.
+func (m *replModel) handleApprovalAnswer(answer byte) bool {
+	a := m.approval
+	if a == nil {
+		return false
+	}
+	if a.out == nil {
+		a.out = make([]bool, len(a.calls))
+	}
+	switch answer {
+	case 'a':
+		for i := a.index; i < len(a.out); i++ {
+			a.out[i] = true
+		}
+		m.finishApproval()
+		return true
+	case 'y':
+		a.out[a.index] = true
+		a.index++
+	case 'n':
+		a.out[a.index] = false
+		a.index++
+	}
+	if a.index >= len(a.out) {
+		m.finishApproval()
+		return true
+	}
+	return false
+}
+
+func (m *replModel) finishApproval() {
+	if m.approval == nil {
+		return
+	}
+	out := append([]bool(nil), m.approval.out...)
+	m.approval.reply <- out
+	close(m.approval.reply)
+	m.approval = nil
+}
+
+// inputPromptWidth is the visible column count of the "> " prompt prefix (and
+// of the matching indent on wrapped continuation lines).
+const inputPromptWidth = 2
+
+// maxInputRows caps how tall the editable input region can grow for multi-line
+// prompts. Beyond this the region anchors to the bottom so the cursor stays
+// visible while composing or after a paste.
+const maxInputRows = 8
+
+// inputRows is how many terminal rows the input region currently occupies. The
+// approval/search overlays (and the quiet-mode busy row) are always single-line;
+// an editable prompt — including while a turn runs — grows with its embedded
+// newlines, capped at maxInputRows. Caller must hold m.mu.
+func (m *replModel) inputRows() int {
+	if m.approval != nil || m.searching || (m.busy && m.quiet) {
+		return 1
+	}
+	n := 1 + strings.Count(m.ed.text(), "\n")
+	if n > maxInputRows {
+		n = maxInputRows
+	}
+	return n
+}
+
+// inputCursorRowCol is the cursor's row (0-based, within the full input text)
+// and on-screen column, accounting for the prompt/indent prefix and wide runes.
+// Caller must hold m.mu.
+func (m *replModel) inputCursorRowCol() (row, col int) {
+	before := m.ed.buf[:m.ed.cursor]
+	lineStart := 0
+	for i, r := range before {
+		if r == '\n' {
+			row++
+			lineStart = i + 1
+		}
+	}
+	col = inputPromptWidth + rw.StringWidth(string(before[lineStart:]))
+	return row, col
+}
+
+// renderInput produces the bottom input region: its display text (possibly
+// multiple lines), the row count it occupies, the cursor's row/col within that
+// region, and whether the cursor should be shown. The busy/approval/search
+// overlays are single-line and hide the cursor; the editable prompt may span
+// several rows, anchored to the bottom when it overflows maxInputRows. Caller
+// must hold m.mu.
+func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editable bool) {
+	return m.renderInputWithMaxRows(maxInputRows)
+}
+
+func (m *replModel) renderInputWithMaxRows(maxRows int) (text string, rows, curRow, curCol int, editable bool) {
+	return m.renderInputForTerminal(maxRows, 0)
+}
+
+func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, rows, curRow, curCol int, editable bool) {
+	if maxRows < 1 {
+		maxRows = 1
+	}
+	switch {
+	case m.searching:
+		return m.searchDisplay(), 1, 0, 0, false
+	case m.approval != nil:
+		call := m.approval.calls[m.approval.index]
+		label := toolLabel(call)
+		text = styled("allow ", "accent", "bold") +
+			styled(label, "muted", "") +
+			styled("? [y/n/a] ", "accent", "bold")
+		return text, 1, 0, 0, false
+	case m.busy && m.quiet:
+		// Quiet mode has no status bar to carry the spinner, so keep the inline
+		// busy row. Otherwise the prompt stays editable while a turn runs and
+		// the status-line spinner shows progress.
+		return m.busyIndicator(), 1, 0, 0, false
+	}
+
+	lines := strings.Split(m.ed.text(), "\n")
+	cr, cc := m.inputCursorRowCol()
+
+	// Window the visible lines to maxRows. Anchor to the bottom so the
+	// newest lines (and the cursor after a paste) stay visible — but if the
+	// cursor has moved up above that window (editing higher in a long paste),
+	// scroll up just enough to keep the cursor's line on screen.
+	start := 0
+	if len(lines) > maxRows {
+		start = len(lines) - maxRows
+		if cr < start {
+			start = cr
+		}
+	}
+	visible := lines[start : start+min(maxRows, len(lines)-start)]
+
+	parts := make([]string, len(visible))
+	for i, ln := range visible {
+		if width > inputPromptWidth {
+			contentWidth := width - inputPromptWidth
+			if start+i == cr {
+				cursorContentCol := cc - inputPromptWidth
+				lineStartCol := cursorContentCol - contentWidth
+				if lineStartCol < 0 {
+					lineStartCol = 0
+				}
+				var skipped int
+				ln, skipped = sliceDisplayWidth(ln, lineStartCol, contentWidth)
+				cc = inputPromptWidth + cursorContentCol - skipped
+				if cc > width-1 {
+					cc = width - 1
+				}
+				if cc < inputPromptWidth {
+					cc = inputPromptWidth
+				}
+			} else {
+				ln, _ = sliceDisplayWidth(ln, 0, contentWidth)
+			}
+		}
+		if start+i == 0 {
+			parts[i] = styled("> ", "accent", "bold") + styleEscape(ln)
+		} else {
+			parts[i] = "  " + styleEscape(ln)
+		}
+	}
+
+	curRow = cr - start
+	if curRow < 0 {
+		curRow = 0
+	}
+	if curRow > len(visible)-1 {
+		curRow = len(visible) - 1
+	}
+	return strings.Join(parts, "\n"), len(visible), curRow, cc, true
+}
+
+func sliceDisplayWidth(s string, start, width int) (string, int) {
+	if start <= 0 && (width <= 0 || rw.StringWidth(s) <= width) {
+		return s, 0
+	}
+	if width <= 0 {
+		return "", 0
+	}
+	var b strings.Builder
+	col := 0
+	skipped := 0
+	outWidth := 0
+	for _, r := range s {
+		runeWidth := rw.RuneWidth(r)
+		if runeWidth > 0 && col+runeWidth <= start {
+			col += runeWidth
+			skipped = col
+			continue
+		}
+		if runeWidth > 0 && outWidth+runeWidth > width {
+			break
+		}
+		b.WriteRune(r)
+		col += runeWidth
+		outWidth += runeWidth
+	}
+	return b.String(), skipped
+}
+
+// inputDisplay returns just the input region's text. Retained for tests that
+// assert on the busy/approval overlays.
+func (m *replModel) inputDisplay() string {
+	text, _, _, _, _ := m.renderInput()
+	return text
+}
+
+// spinnerFrames is the braille dot cycle used by the busy indicator.
+var spinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+// spinnerFrame returns the current braille frame for the busy animation,
+// advanced off turnStarted at 100ms so the rate is independent of the render
+// tick. ok is false at idle, where no spinner should show. Caller must hold m.mu.
+func (m *replModel) spinnerFrame() (rune, bool) {
+	if m.state == turnStateIdle || m.turnStarted.IsZero() {
+		return 0, false
+	}
+	frame := spinnerFrames[int(time.Since(m.turnStarted)/(100*time.Millisecond))%len(spinnerFrames)]
+	return frame, true
+}
+
+// busyIndicator renders the animated processing line: spinner + a friendly
+// state word + elapsed time, e.g. "⠹ running bash · 3.8s". It is the inline
+// busy row used only in quiet mode, where there is no status bar to carry the
+// spinner. Caller must hold m.mu.
+func (m *replModel) busyIndicator() string {
+	var elapsed time.Duration
+	if !m.turnStarted.IsZero() {
+		elapsed = time.Since(m.turnStarted)
+	}
+	frame, ok := m.spinnerFrame()
+	if !ok {
+		frame = spinnerFrames[0]
+	}
+	return styled(string(frame), "accent", "bold") + " " +
+		styled(m.busyLabel(), "muted", "") + " " +
+		styled("· "+formatElapsed(elapsed), "muted", "")
+}
+
+// busyLabel maps the current turn state to the word shown on the input row.
+func (m *replModel) busyLabel() string {
+	if m.canceling {
+		return "canceling"
+	}
+	switch m.state {
+	case turnStateThinking:
+		return "thinking"
+	case turnStateStreaming:
+		return "streaming"
+	case turnStateTool:
+		if m.toolName != "" {
+			return "running " + m.toolName
+		}
+		return "running tool"
+	default:
+		return "waiting"
+	}
+}
+
+// ---------------------------------------------------------------------------
+// managedREPL wires the model to gotui widgets and the agent.
+// ---------------------------------------------------------------------------
+
+type managedREPL struct {
+	config *Config
+
+	// state backs the session slash commands (/clear, /context, /tools,
+	// /skills). Nil in unit tests that exercise only the editor/event layer;
+	// command handlers guard against that.
+	state *conversationState
+
+	model *replModel
+
+	transcriptW *transcriptParagraph
+	inputW      *widgets.Paragraph
+	statusW     *widgets.Paragraph
+	rootFlex    *widgets.Flex
+
+	quit       chan struct{}
+	pending    chan string
+	turnCancel context.CancelFunc
+
+	// histFile is the append handle for persistent input history; nil when
+	// history couldn't be opened (best-effort — never fatal).
+	histFile *os.File
+}
+
+// transcriptParagraph is a small, REPL-specific paragraph renderer. gotui's
+// stock Paragraph clips from the top after wrapping, which hides the newest
+// rows of a long assistant message exactly when follow-bottom matters most.
+// This renderer wraps before clipping and can pin overflow to the bottom.
+type transcriptParagraph struct {
+	ui.Block
+	Text      string
+	TextStyle ui.Style
+	PinBottom bool
+}
+
+func newTranscriptParagraph() *transcriptParagraph {
+	return &transcriptParagraph{
+		Block:     *ui.NewBlock(),
+		TextStyle: ui.Theme.Paragraph.Text,
+		PinBottom: true,
+	}
+}
+
+func (p *transcriptParagraph) Draw(buf *ui.Buffer) {
+	p.Block.Draw(buf)
+	if p.Inner.Dx() <= 0 || p.Inner.Dy() <= 0 {
+		return
+	}
+	cells := ui.ParseStyles(p.Text, p.TextStyle)
+	cells = wrapCellsHard(cells, p.Inner.Dx())
+	rows := ui.SplitCells(cells, '\n')
+	p.drawRows(buf, rows)
+}
+
+func (p *transcriptParagraph) drawRows(buf *ui.Buffer, rows [][]ui.Cell) {
+	height := p.Inner.Dy()
+	if height <= 0 || len(rows) == 0 {
+		return
+	}
+
+	start := 0
+	if p.PinBottom && len(rows) > height {
+		start = len(rows) - height
+	}
+	rows = rows[start:]
+	if len(rows) > height {
+		rows = rows[:height]
+	}
+
+	topPadding := 0
+	if p.PinBottom && len(rows) < height {
+		topPadding = height - len(rows)
+	}
+	for i, row := range rows {
+		y := i + topPadding
+		if y >= height {
+			break
+		}
+		for _, cx := range ui.BuildCellWithXArray(row) {
+			if rw.RuneWidth(cx.Cell.Rune) == 0 {
+				continue
+			}
+			buf.SetCell(cx.Cell, image.Pt(cx.X, y).Add(p.Inner.Min))
+		}
+	}
+}
+
+func wrapCellsHard(cells []ui.Cell, width int) []ui.Cell {
+	if width <= 0 || len(cells) == 0 {
+		return cells
+	}
+	out := make([]ui.Cell, 0, len(cells))
+	col := 0
+	for _, cell := range cells {
+		if cell.Rune == '\n' {
+			out = append(out, cell)
+			col = 0
+			continue
+		}
+		cellWidth := rw.RuneWidth(cell.Rune)
+		if cellWidth > 0 && col > 0 && col+cellWidth > width {
+			out = append(out, ui.Cell{Rune: '\n', Style: ui.StyleClear})
+			col = 0
+		}
+		out = append(out, cell)
+		col += cellWidth
+	}
+	return out
+}
+
+// maxPersistedHistory bounds how many input lines are kept across runs. On
+// startup the history file is rewritten to its trailing maxPersistedHistory
+// lines, so it never grows without limit.
+const maxPersistedHistory = 500
+
+// replHistoryPath is where input history persists. POLLY_HISTORY_FILE overrides
+// it (used by tests); otherwise it sits beside the session store under
+// ~/.pollytool.
+func replHistoryPath() (string, error) {
+	if p := os.Getenv("POLLY_HISTORY_FILE"); p != "" {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".pollytool", "repl_history"), nil
+}
+
+// loadHistory reads the last maxPersistedHistory non-blank lines from path.
+// A missing or unreadable file yields nil — history is always best-effort.
+func loadHistory(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	for _, l := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > maxPersistedHistory {
+		lines = lines[len(lines)-maxPersistedHistory:]
+	}
+	return lines
+}
+
+// initHistory loads prior history into the model and opens an append handle,
+// rewriting the file to its trimmed tail so it stays bounded. All failures are
+// silent: a REPL with no persisted history is still fully functional.
+func (r *managedREPL) initHistory() {
+	path, err := replHistoryPath()
+	if err != nil {
+		return
+	}
+	r.model.history = loadHistory(path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return
+	}
+	for _, l := range r.model.history {
+		fmt.Fprintln(f, l)
+	}
+	r.histFile = f
+}
+
+func (r *managedREPL) closeHistory() {
+	if r.histFile != nil {
+		_ = r.histFile.Close()
+		r.histFile = nil
+	}
+}
+
+// appendHistory persists one submitted prompt. Single-line only — multi-line
+// prompts would break the line-per-entry format and are not stored.
+func (r *managedREPL) appendHistory(prompt string) {
+	if r.histFile == nil || strings.ContainsRune(prompt, '\n') {
+		return
+	}
+	fmt.Fprintln(r.histFile, prompt)
+}
+
+// recordAcceptedInput records one accepted input for recall/search and
+// best-effort persistence. It does not echo a prompt or start a turn.
+func (r *managedREPL) recordAcceptedInput(input string) {
+	if input == "" {
+		return
+	}
+	r.model.clearSlashHints()
+	r.model.historyIdx = -1
+	r.model.historyDraft = ""
+	r.model.history = append(r.model.history, input)
+	r.appendHistory(input)
+}
+
+func newManagedREPL(config *Config, contextName string, toolCount, skillCount int) *managedREPL {
+	m := newReplModel()
+	m.modelName = stripProviderPrefix(config.Model)
+	if contextName == "" {
+		contextName = "-"
+	}
+	m.contextName = contextName
+	m.toolCount = toolCount
+	m.skillCount = skillCount
+	m.quiet = config.Quiet
+	return &managedREPL{
+		config:  config,
+		model:   m,
+		quit:    make(chan struct{}, 1),
+		pending: make(chan string, 1),
+	}
+}
+
+// supportsManagedREPL returns true when stdin/stdout are TTYs and gotui's
+// tcell backend is likely to initialize cleanly.
+func supportsManagedREPL() bool {
+	if os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return false
+	}
+	return true
+}
+
+func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) error {
+	if err := ui.Init(); err != nil {
+		return err
+	}
+	// gotui inits the tcell screen with a white default foreground, and tcell
+	// substitutes that default for any cell drawn with the zero style — which is
+	// exactly our ColorClear body text (input + LLM responses). Reset the screen
+	// default to all-defaults so unstyled text emits the terminal's own
+	// foreground (SGR 39) and follows the theme instead of being forced white.
+	ui.DefaultBackend.Screen.SetStyle(tcell.StyleDefault)
+	// Restore the terminal exactly once, whether we return normally or a
+	// signal short-circuits to os.Exit (which skips deferred calls).
+	var closeOnce sync.Once
+	closeUI := func() { closeOnce.Do(ui.Close) }
+	setBeforeExit(closeUI)
+	defer func() {
+		setBeforeExit(nil)
+		closeUI()
+	}()
+
+	r.initHistory()
+	defer r.closeHistory()
+
+	r.setupWidgets()
+	r.render()
+
+	events := pollManagedEvents(ui.DefaultBackend.Screen)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	var turnDone chan error
+	var cancelDetach <-chan time.Time
+
+	for {
+		select {
+		case <-ctx.Done():
+			r.cancelTurn()
+			r.releaseApproval()
+			return ctx.Err()
+		case <-r.quit:
+			r.cancelTurn()
+			r.releaseApproval()
+			return nil
+		case <-ticker.C:
+			if r.needsTick() {
+				r.render()
+			}
+		case <-cancelDetach:
+			cancelDetach = nil
+			if turnDone != nil && r.cancelPending() {
+				r.abandonCanceledTurn()
+				turnDone = nil
+				r.render()
+			}
+		case err := <-turnDone:
+			turnDone = nil
+			cancelDetach = nil
+			r.endTurn(err)
+			turnDone = r.startNextQueued(ctx, runTurn)
+			r.render()
+		case ev := <-events:
+			if r.handleEvent(ev) {
+				r.cancelTurn()
+				r.releaseApproval()
+				return nil
+			}
+			if prompt := r.takePending(); prompt != "" {
+				turnDone = r.startTurn(ctx, prompt, runTurn)
+				cancelDetach = nil
+			}
+			if turnDone != nil && cancelDetach == nil && r.cancelPending() {
+				cancelDetach = time.After(turnCancelDetachAfter)
+			}
+			if r.wantsRenderForEvent(ev) {
+				r.render()
+			}
+		case prompt := <-r.pending:
+			turnDone = r.startTurn(ctx, prompt, runTurn)
+			cancelDetach = nil
+			r.render()
+		}
+	}
+}
+
+// needsTick reports whether the periodic render tick should repaint. Only a
+// live turn animates (spinner, breathing tool arrow, elapsed timers); at idle
+// nothing changes between events, so the tick repaint is skipped — otherwise
+// the REPL would redraw the full screen ~20×/sec while just sitting at a prompt.
+func (r *managedREPL) needsTick() bool {
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	return r.model.busy
+}
+
+// wantsRenderForEvent reports whether to repaint after handling ev. Bracketed
+// paste arrives as one event per rune; those are coalesced into a single
+// repaint when the paste's closing marker flips m.pasting back off (handleEvent
+// clears it), so a large paste draws once instead of once per character.
+func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
+	if ev.ID == pasteStartID {
+		return false
+	}
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	return !r.model.pasting
+}
+
+func (r *managedREPL) takePending() string {
+	select {
+	case p := <-r.pending:
+		return p
+	default:
+		return ""
+	}
+}
+
+func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func(context.Context, string, TurnUI) error) chan error {
+	r.model.mu.Lock()
+	r.model.turnID++
+	turnID := r.model.turnID
+	r.model.mu.Unlock()
+
+	turnCtx, cancel := context.WithCancel(ctx)
+	r.turnCancel = cancel
+	done := make(chan error, 1)
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: turnID}
+	go func() {
+		done <- runTurn(turnCtx, prompt, tui)
+	}()
+	return done
+}
+
+// startNextQueued drains inputs queued during the turn that just ended. It runs
+// queued commands inline (honoring a quit) and starts a turn for the first
+// queued prompt, returning that turn's done channel — or nil when the queue
+// empties without a prompt. Called from the main loop after endTurn, the safe
+// point where currentAssistant is already reset so echoing a queued prompt or a
+// queued /clear can't corrupt the just-finished stream.
+func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) chan error {
+	for {
+		r.model.mu.Lock()
+		if len(r.model.queue) == 0 {
+			r.model.mu.Unlock()
+			return nil
+		}
+		text := r.model.queue[0]
+		r.model.queue = r.model.queue[1:]
+
+		// A single-line "/…" is a command; multi-line input is always a prompt.
+		if strings.Contains(text, "\n") || !strings.HasPrefix(text, "/") {
+			r.model.beginTurn(text)
+			r.model.mu.Unlock()
+			return r.startTurn(ctx, text, runTurn)
+		}
+
+		// runCommand and its helpers expect the model lock held (as in
+		// handleEvent); requestQuit does not, so release before quitting.
+		handled, quit := r.runCommand(text)
+		if !handled {
+			r.model.appendNoticeLine("unknown command: " + text + " (try /help)")
+		}
+		r.model.mu.Unlock()
+		if quit {
+			r.requestQuit()
+			return nil
+		}
+	}
+}
+
+func (r *managedREPL) endTurn(err error) {
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	r.model.busy = false
+	r.model.canceling = false
+	r.model.currentAssistant = -1
+	// On normal completion, drop a one-line turn report (elapsed + tokens) into
+	// the transcript. Computed before turnStarted is cleared; skipped on cancel
+	// or error, where the turn has no meaningful summary.
+	if err == nil && !r.model.turnStarted.IsZero() {
+		elapsed := time.Since(r.model.turnStarted)
+		r.model.appendLine(turnSummaryLine(elapsed, r.model.lastIn, r.model.lastOut))
+	}
+	r.model.turnStarted = time.Time{}
+	r.model.toolName = ""
+	// Any tool whose OnToolEnd never fired (e.g. an abandoned turn) stops
+	// breathing here; its line freezes at the last rendered frame.
+	r.model.activeTools = nil
+	r.model.runningTools = 0
+	if err != nil && !errors.Is(err, context.Canceled) {
+		r.model.appendLine(styled("Error: "+err.Error(), "err", ""))
+		r.model.state = turnStateError
+	} else {
+		r.model.state = turnStateIdle
+	}
+	r.turnCancel = nil
+}
+
+func (r *managedREPL) cancelTurn() {
+	if r.turnCancel != nil {
+		r.turnCancel()
+		r.turnCancel = nil
+	}
+}
+
+func (r *managedREPL) cancelPending() bool {
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	return r.model.busy && r.model.canceling
+}
+
+func (r *managedREPL) abandonCanceledTurn() {
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	m := r.model
+	if !m.busy || !m.canceling {
+		return
+	}
+	m.turnID++
+	m.busy = false
+	m.canceling = false
+	m.currentAssistant = -1
+	m.resetAssistantStream()
+	m.turnStarted = time.Time{}
+	m.toolName = ""
+	m.activeTools = nil
+	m.runningTools = 0
+	m.denyApprovalLocked()
+	m.state = turnStateIdle
+	m.appendNoticeLine("^C cancellation timed out; detached turn")
+}
+
+// handleInterrupt processes Ctrl-C. While a turn is in flight the first press
+// cancels it — denying any pending approval so the turn goroutine isn't parked
+// on the reply channel — and keeps the REPL open. A second press while the turn
+// is still winding down, or Ctrl-C at an idle prompt, quits. Returns true to
+// quit. Caller must hold m.mu.
+func (r *managedREPL) handleInterrupt() bool {
+	m := r.model
+	m.clearSlashHints()
+	if !m.busy || m.canceling {
+		r.requestQuit()
+		return true
+	}
+	m.canceling = true
+	m.queue = nil // "stop" means stop: don't auto-run queued inputs after a cancel
+	r.cancelTurn()
+	m.denyApprovalLocked()
+	m.appendNoticeLine("^C interrupted")
+	return false
+}
+
+// handleSearchKey processes one key while reverse-i-search is active. Enter (or
+// any non-editing key) accepts the current match into the editor; Esc/Ctrl-C/
+// Ctrl-G cancel; Ctrl-R steps to the next older match; printable runes extend
+// the query. Caller must hold m.mu.
+func (r *managedREPL) handleSearchKey(e ui.Event) bool {
+	m := r.model
+	switch e.ID {
+	case "<C-c>", "<Escape>", "<C-g>":
+		m.endSearch()
+	case "<C-r>":
+		m.searchNext()
+	case "<Enter>":
+		m.acceptSearch()
+	case "<Backspace>", "<Delete>":
+		m.searchBackspace()
+	case "<Space>":
+		m.searchType(' ')
+	default:
+		if e.Type == ui.KeyboardEvent {
+			if runes := []rune(e.ID); len(runes) == 1 && runes[0] >= 0x20 {
+				m.searchType(runes[0])
+				return false
+			}
+		}
+		// Any other key (cursor moves, etc.) accepts the match and exits.
+		m.acceptSearch()
+	}
+	return false
+}
+
+// insertPasted adds one key from a bracketed paste to the editor as literal
+// text, mapping newline keys to '\n'. Pasted content is dropped while busy,
+// approving, or searching — there's no editable prompt to receive it. Caller
+// must hold m.mu.
+func (r *managedREPL) insertPasted(e ui.Event) {
+	m := r.model
+	if m.busy || m.approval != nil || m.searching {
+		return
+	}
+	switch e.ID {
+	case "<Enter>", "<C-j>":
+		m.ed.insert('\n')
+	case "<Space>":
+		m.ed.insert(' ')
+	case "<Tab>":
+		m.ed.insert('\t')
+	default:
+		if e.Type == ui.KeyboardEvent {
+			if runes := []rune(e.ID); len(runes) == 1 && runes[0] >= 0x20 {
+				m.ed.insert(runes[0])
+			}
+		}
+	}
+}
+
+func (r *managedREPL) releaseApproval() {
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	r.model.denyApprovalLocked()
+}
+
+func (m *replModel) denyApprovalLocked() {
+	if m.approval == nil {
+		return
+	}
+	denied := make([]bool, len(m.approval.calls))
+	select {
+	case m.approval.reply <- denied:
+	default:
+	}
+	close(m.approval.reply)
+	m.approval = nil
+}
+
+// transcriptHeight returns the current usable line count of the transcript
+// pane based on the live terminal dimensions. Used by scroll handlers so
+// scroll deltas match what the user actually sees.
+func (r *managedREPL) transcriptHeight() int {
+	_, h := ui.TerminalDimensions()
+	statusRows := 0
+	if !r.model.quiet {
+		statusRows = 1
+	}
+	height := h - r.model.inputRows() - statusRows
+	if height < 1 {
+		return 1
+	}
+	return height
+}
+
+func (r *managedREPL) requestQuit() {
+	select {
+	case r.quit <- struct{}{}:
+	default:
+	}
+}
+
+func (r *managedREPL) setupWidgets() {
+	// gotui paragraphs default their TextStyle to ColorWhite, which forces
+	// unstyled text (primary input, LLM responses) to white and ignores the
+	// terminal theme. ColorClear (= tcell.ColorDefault) inherits the terminal's
+	// default foreground instead, so text follows the theme like our accents do.
+	r.transcriptW = newTranscriptParagraph()
+	noBorder(&r.transcriptW.Block)
+	r.transcriptW.TextStyle = ui.NewStyle(ui.ColorClear)
+
+	r.inputW = widgets.NewParagraph()
+	noBorder(&r.inputW.Block)
+	r.inputW.WrapText = false
+	r.inputW.TextStyle = ui.NewStyle(ui.ColorClear)
+
+	r.statusW = widgets.NewParagraph()
+	noBorder(&r.statusW.Block)
+	r.statusW.WrapText = false
+	r.statusW.TextStyle = ui.NewStyle(ui.ColorGrey)
+}
+
+// layout (re)builds the root flex for the current input height. The input row
+// count varies with multi-line prompts, so the flex is rebuilt each render
+// rather than sized once at setup.
+func (r *managedREPL) layout(w, h, inputRows int, showStatus bool) {
+	flex := widgets.NewFlex()
+	noBorder(&flex.Block)
+	flex.Direction = widgets.FlexColumn
+	flex.AddItem(r.transcriptW, 0, 1, false)
+	flex.AddItem(r.inputW, inputRows, 0, false)
+	if showStatus {
+		flex.AddItem(r.statusW, 1, 0, false)
+	}
+	flex.SetRect(0, 0, w, h)
+	r.rootFlex = flex
+}
+
+// noBorder disables the visible border AND cancels the unconditional 1-cell
+// Inner inset that Block.SetRect adds. Without negative padding, a 1-row
+// borderless Paragraph collapses to zero inner rows and refuses to paint.
+func noBorder(b *ui.Block) {
+	b.Border = false
+	b.PaddingLeft = -1
+	b.PaddingRight = -1
+	b.PaddingTop = -1
+	b.PaddingBottom = -1
+}
+
+func (r *managedREPL) render() {
+	w, h := ui.TerminalDimensions()
+	if w < 1 || h < 2 {
+		return
+	}
+
+	showStatus := !r.model.quiet
+	statusRows := 0
+	if showStatus {
+		statusRows = 1
+	}
+
+	r.model.mu.Lock()
+	r.model.refreshActiveTools()
+	inputMaxRows := maxInputRows
+	if h-statusRows > 1 {
+		inputMaxRows = min(inputMaxRows, h-statusRows-1)
+	} else {
+		inputMaxRows = 1
+	}
+	input, inputRows, curRow, curCol, editable := r.model.renderInputForTerminal(inputMaxRows, w)
+	transcriptHeight := h - inputRows - statusRows
+	if transcriptHeight < 0 {
+		transcriptHeight = 0
+	}
+	transcript := r.model.visibleTranscript(transcriptHeight)
+	pinTranscriptBottom := r.model.followBottom
+	status := r.model.statusRow(w)
+	r.model.mu.Unlock()
+
+	r.transcriptW.Text = transcript
+	r.transcriptW.PinBottom = pinTranscriptBottom
+	r.inputW.Text = input
+	r.statusW.Text = status
+
+	r.layout(w, h, inputRows, showStatus)
+	ui.Clear()
+	r.placeCursor(editable, curCol, transcriptHeight+curRow, w)
+	ui.Render(r.rootFlex)
+}
+
+// placeCursor positions (or hides) the hardware terminal cursor on the input
+// row. gotui's render flushes the screen with Show(), which also emits the
+// cursor state set here, so this must run before ui.Render.
+func (r *managedREPL) placeCursor(editable bool, cursorCol, rowY, width int) {
+	screen := ui.DefaultBackend.Screen
+	if screen == nil {
+		return
+	}
+	if !editable {
+		screen.HideCursor()
+		return
+	}
+	x := cursorCol
+	if x > width-1 {
+		x = width - 1
+	}
+	_, height := screen.Size()
+	if rowY < 0 {
+		rowY = 0
+	}
+	if height > 0 && rowY > height-1 {
+		rowY = height - 1
+	}
+	screen.ShowCursor(x, rowY)
+}
+
+// visibleTranscript returns the slice of transcript lines that should fill
+// the pane right now, honoring scroll state. Caller must hold m.mu.
+//
+// Scrolling is logical-line based; transcriptParagraph handles wrapped overflow
+// inside the selected slice so follow-bottom still shows the newest rows.
+func (m *replModel) visibleTranscript(maxLines int) string {
+	lines := m.flattenTranscript()
+	if m.slashHints != "" {
+		withHints := make([]string, 0, len(lines)+1)
+		withHints = append(withHints, lines...)
+		withHints = append(withHints, styled(m.slashHints, "muted", ""))
+		lines = withHints
+	}
+	total := len(lines)
+	if total == 0 {
+		return ""
+	}
+
+	if m.followBottom {
+		if total <= maxLines {
+			return strings.Join(lines, "\n")
+		}
+		return strings.Join(lines[total-maxLines:], "\n")
+	}
+
+	top := m.scrollAnchor
+	if top < 0 {
+		top = 0
+	}
+	if top+maxLines >= total {
+		// User scrolled all the way down; re-engage follow.
+		m.followBottom = true
+		top = total - maxLines
+		if top < 0 {
+			top = 0
+		}
+	}
+	end := top + maxLines
+	if end > total {
+		end = total
+	}
+	return strings.Join(lines[top:end], "\n")
+}
+
+// flattenTranscript expands embedded "\n" within entries into separate lines
+// so scroll math is uniform.
+func (m *replModel) flattenTranscript() []string {
+	if m.flatCache != nil {
+		return m.flatCache
+	}
+	out := make([]string, 0, len(m.transcript))
+	for _, e := range m.transcript {
+		if strings.Contains(e, "\n") {
+			out = append(out, strings.Split(e, "\n")...)
+		} else {
+			out = append(out, e)
+		}
+	}
+	m.flatCache = out
+	return out
+}
+
+// scrollBy moves the scroll anchor by delta lines (negative = up). Caller
+// must hold m.mu. Disengages followBottom on first upward scroll; re-engages
+// when the user scrolls back to the bottom.
+func (m *replModel) scrollBy(delta, viewportHeight int) {
+	lines := m.flattenTranscript()
+	total := len(lines)
+	if total <= viewportHeight {
+		m.followBottom = true
+		m.scrollAnchor = 0
+		return
+	}
+
+	if m.followBottom {
+		m.scrollAnchor = total - viewportHeight
+	}
+	m.followBottom = false
+	m.scrollAnchor += delta
+	if m.scrollAnchor < 0 {
+		m.scrollAnchor = 0
+	}
+	if m.scrollAnchor >= total-viewportHeight {
+		m.scrollAnchor = total - viewportHeight
+		m.followBottom = true
+	}
+}
+
+func (m *replModel) scrollToBottom() {
+	m.followBottom = true
+}
+
+// handleEvent mutates the model in response to a UI event. Returns true on
+// quit.
+func (r *managedREPL) handleEvent(e ui.Event) bool {
+	if e.Type == ui.ResizeEvent {
+		return false
+	}
+
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+
+	m := r.model
+	viewport := r.transcriptHeight()
+
+	// Scroll keys work in every mode (idle, busy, approval) so the user
+	// can review history without interrupting the agent.
+	switch e.ID {
+	case "<PageUp>":
+		m.scrollBy(-viewport/2, viewport)
+		return false
+	case "<PageDown>":
+		m.scrollBy(viewport/2, viewport)
+		return false
+	case "<MouseWheelUp>":
+		m.scrollBy(-3, viewport)
+		return false
+	case "<MouseWheelDown>":
+		m.scrollBy(3, viewport)
+		return false
+	}
+
+	// Drop any other mouse events (release, drag, unknown buttons). gotui
+	// returns "Unknown_Mouse_Button" — a bare string — for events it
+	// doesn't recognize, which would otherwise be typed into the prompt
+	// by the default input case below.
+	if e.Type == ui.MouseEvent {
+		return false
+	}
+
+	// Bracketed-paste markers bound a run of literal input. While pasting, keys
+	// are inserted verbatim — newlines included — instead of triggering actions,
+	// so a multi-line paste lands as one prompt rather than firing a submit per
+	// line. (gotui drops these markers; our own event pump surfaces them.)
+	if e.ID == pasteStartID || e.ID == pasteEndID {
+		m.clearSlashHints()
+		m.pasting = e.ID == pasteStartID
+		return false
+	}
+	if m.pasting {
+		m.clearSlashHints()
+		r.insertPasted(e)
+		return false
+	}
+
+	// Reverse-incremental search owns the keyboard while active, so Ctrl-C
+	// cancels the search rather than quitting. Scroll still works (handled above).
+	if m.searching {
+		return r.handleSearchKey(e)
+	}
+
+	// Ctrl-C is the universal interrupt: cancel an in-flight turn (first
+	// press) or quit (second press, or at an idle prompt). See handleInterrupt.
+	if e.ID == "<C-c>" {
+		return r.handleInterrupt()
+	}
+
+	// Approval has its own keyset.
+	if m.approval != nil {
+		switch e.ID {
+		case "<Escape>":
+			r.requestQuit()
+			return true
+		case "<Enter>", "y", "Y":
+			m.handleApprovalAnswer('y')
+		case "n", "N":
+			m.handleApprovalAnswer('n')
+		case "a", "A":
+			m.handleApprovalAnswer('a')
+		}
+		return false
+	}
+
+	// While a turn is in flight the prompt stays editable so the user can
+	// compose the next message; Enter queues it (see below) rather than
+	// submitting immediately. Editing/history/search keys all work as usual.
+
+	switch e.ID {
+	case "<C-d>":
+		// Quit on empty only at idle; mid-turn Ctrl-C is the interrupt.
+		if m.ed.empty() && !m.busy {
+			m.clearSlashHints()
+			r.requestQuit()
+			return true
+		}
+	case "<Enter>":
+		trimmed := strings.TrimSpace(m.ed.text())
+		if trimmed == "" {
+			return false
+		}
+		if m.busy {
+			// A turn is running — queue this input to run when it ends instead
+			// of interrupting. Routing (command vs prompt) happens at dequeue;
+			// mirror the idle path's history handling here.
+			m.ed.clear()
+			r.recordAcceptedInput(trimmed)
+			m.queue = append(m.queue, trimmed)
+			return false
+		}
+		// Only a single-line "/…" is a command; a multi-line prompt that happens
+		// to start with "/" is real input.
+		if !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/") {
+			m.ed.clear()
+			r.recordAcceptedInput(trimmed)
+			m.followBottom = true
+			handled, quit := r.runCommand(trimmed)
+			if quit {
+				r.requestQuit()
+				return true
+			}
+			if !handled {
+				m.appendNoticeLine("unknown command: " + trimmed + " (try /help)")
+			}
+			return false
+		}
+		prompt := m.submitPrompt()
+		r.appendHistory(prompt)
+		select {
+		case r.pending <- prompt:
+		default:
+		}
+	case "<C-j>":
+		// Ctrl-J inserts a newline for composing multi-line prompts; Enter sends.
+		m.clearSlashHints()
+		m.ed.insert('\n')
+	case "<Backspace>", "<Delete>":
+		m.clearSlashHints()
+		m.ed.backspace()
+	case "<C-w>":
+		m.clearSlashHints()
+		m.ed.deleteWordBackward()
+	case "<M-d>":
+		m.clearSlashHints()
+		m.ed.deleteWordForward()
+	case "<Left>":
+		m.clearSlashHints()
+		m.ed.left()
+	case "<Right>":
+		m.clearSlashHints()
+		m.ed.right()
+	case "<M-b>":
+		m.clearSlashHints()
+		m.ed.wordLeft()
+	case "<M-f>":
+		m.clearSlashHints()
+		m.ed.wordRight()
+	case "<Home>", "<C-a>":
+		m.clearSlashHints()
+		m.ed.home()
+	case "<End>", "<C-e>":
+		m.clearSlashHints()
+		m.ed.end()
+		m.scrollToBottom()
+	case "<C-u>":
+		m.clearSlashHints()
+		m.ed.killToStart()
+	case "<C-k>":
+		m.clearSlashHints()
+		m.ed.killToEnd()
+	case "<C-r>":
+		m.startSearch()
+	case "<Up>":
+		// Move up a line within a multi-line prompt; recall older history only
+		// when already on the first line (zsh up-line-or-history).
+		if !m.ed.up() {
+			m.historyUp()
+		}
+	case "<Down>":
+		if !m.ed.down() {
+			m.historyDown()
+		}
+	case "<Space>":
+		m.clearSlashHints()
+		m.ed.insert(' ')
+	case "<Tab>":
+		cur := m.ed.text()
+		if completed, matches, ok := completeSlash(cur); ok {
+			if completed != cur {
+				m.clearSlashHints()
+				m.ed.setText(completed)
+			} else if len(matches) > 1 {
+				m.setSlashHints(matches)
+			}
+			return false
+		}
+		m.clearSlashHints()
+		m.ed.insert('\t')
+	default:
+		// Only printable single-rune keyboard events become input. This
+		// rejects any multi-character event ID — bracketed key names like
+		// "<F1>" as well as gotui's bare "Unknown_Mouse_Button" — so stray
+		// events never get typed into the prompt.
+		if e.Type != ui.KeyboardEvent {
+			return false
+		}
+		runes := []rune(e.ID)
+		if len(runes) == 1 && runes[0] >= 0x20 {
+			m.ed.insert(runes[0])
+			if runes[0] == '/' && m.ed.text() == "/" {
+				if _, matches, ok := completeSlash("/"); ok && len(matches) > 1 {
+					m.setSlashHints(matches)
+				}
+			} else {
+				m.clearSlashHints()
+			}
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// gotuiTurnUI: TurnUI impl that pokes the managedREPL model under lock.
+// ---------------------------------------------------------------------------
+
+type gotuiTurnUI struct {
+	repl   *managedREPL
+	config *Config
+	turnID int64
+}
+
+func (t *gotuiTurnUI) Start() {}
+func (t *gotuiTurnUI) Stop()  {}
+
+func (t *gotuiTurnUI) activeLocked() bool {
+	return t.turnID == 0 || t.repl.model.turnID == t.turnID
+}
+
+func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	return make([]bool, len(calls))
+}
+
+func (t *gotuiTurnUI) ShowThinking(tokens int) {
+	t.repl.model.mu.Lock()
+	if !t.activeLocked() {
+		t.repl.model.mu.Unlock()
+		return
+	}
+	t.repl.model.state = turnStateThinking
+	t.repl.model.mu.Unlock()
+}
+
+func (t *gotuiTurnUI) AppendAssistantText(content string) {
+	t.repl.model.mu.Lock()
+	if !t.activeLocked() {
+		t.repl.model.mu.Unlock()
+		return
+	}
+	t.repl.model.state = turnStateStreaming
+	t.repl.model.appendAssistant(content)
+	t.repl.model.mu.Unlock()
+}
+
+func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
+	t.repl.model.mu.Lock()
+	defer t.repl.model.mu.Unlock()
+	if !t.activeLocked() || t.repl.model.canceling {
+		return
+	}
+	if len(calls) > 0 {
+		t.repl.model.runningTools += len(calls)
+		t.repl.model.state = turnStateTool
+		t.repl.model.toolName = calls[0].Name
+	}
+	if !toolDisplayEnabled(t.config) {
+		return
+	}
+	for _, c := range calls {
+		t.repl.model.appendToolStartLine(c.ID, toolLabel(c))
+	}
+}
+
+func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	t.repl.model.mu.Lock()
+	if !t.activeLocked() || t.repl.model.canceling {
+		t.repl.model.mu.Unlock()
+		return denyToolCalls(calls)
+	}
+	t.repl.model.mu.Unlock()
+
+	if !t.config.Confirm {
+		approved := make([]bool, len(calls))
+		for i := range approved {
+			approved[i] = true
+		}
+		return approved
+	}
+	reply := make(chan []bool, 1)
+	t.repl.model.mu.Lock()
+	if !t.activeLocked() || t.repl.model.canceling {
+		t.repl.model.mu.Unlock()
+		return denyToolCalls(calls)
+	}
+	t.repl.model.approval = &approvalState{calls: calls, reply: reply}
+	t.repl.model.mu.Unlock()
+	results, ok := <-reply
+	if !ok {
+		return make([]bool, len(calls))
+	}
+	return results
+}
+
+func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+	label := toolLabel(call)
+	t.repl.model.mu.Lock()
+	defer t.repl.model.mu.Unlock()
+	m := t.repl.model
+	if !t.activeLocked() {
+		return
+	}
+	if m.runningTools > 0 {
+		m.runningTools--
+	}
+	// Return to "waiting" only once every tool in the batch has finished;
+	// otherwise the first of several parallel tools to complete would flip the
+	// status back to waiting (and drop the running-tool name) mid-batch.
+	if m.busy && m.runningTools == 0 {
+		m.state = turnStateWaiting
+		m.toolName = ""
+	}
+	if !toolDisplayEnabled(t.config) {
+		return
+	}
+	var final string
+	switch {
+	case toolWasDenied(result):
+		final = toolDeniedLine(label)
+	case err != nil:
+		final = toolErrorLine(label, formatElapsed(duration))
+	default:
+		final = toolOKLine(label, formatElapsed(duration))
+	}
+	// Freeze the final line over the running (breathing) one in place, so a tool
+	// is a single transcript line from start to finish. Falls back to appending
+	// if the start line wasn't tracked (shouldn't happen when display is on).
+	if idx, ok := m.takeActiveTool(call.ID); ok {
+		m.transcript[idx] = final
+		m.invalidateFlat()
+	} else {
+		m.appendLine(final)
+	}
+}
+
+func (t *gotuiTurnUI) AppendWarning(text string) {
+	t.repl.model.mu.Lock()
+	if !t.activeLocked() {
+		t.repl.model.mu.Unlock()
+		return
+	}
+	t.repl.model.appendNoticeLine("Warning: " + text)
+	t.repl.model.mu.Unlock()
+}
+
+func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
+	t.repl.model.mu.Lock()
+	if !t.activeLocked() {
+		t.repl.model.mu.Unlock()
+		return
+	}
+	t.repl.model.lastIn = in
+	t.repl.model.lastOut = out
+	t.repl.model.mu.Unlock()
+}
+
+func (t *gotuiTurnUI) FinishTextTurn() {
+	t.repl.model.mu.Lock()
+	if t.activeLocked() {
+		t.repl.model.finishAssistantStream()
+	}
+	t.repl.model.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// Entry points used by runREPL
+// ---------------------------------------------------------------------------
+
+func runManagedREPL(ctx context.Context, config *Config, state *conversationState) error {
+	repl := newManagedREPL(config, state.session.GetName(), toolCount(state.toolRegistry), skillCount(state.skillCatalog))
+	repl.state = state
+	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
+		return executeTurn(turnCtx, config, state, prompt, nil, nil, turnUI)
+	})
+}
+
+func runFallbackREPL(ctx context.Context, config *Config, state *conversationState) error {
+	reader := bufio.NewReader(os.Stdin)
+	commandCtx := newWriterReplCommandContext(config, state, os.Stderr)
+	return runREPLLoopWithCommands(reader, os.Stderr, commandCtx, func(prompt string) error {
+		turnCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		err := executeTurn(turnCtx, config, state, prompt, nil, reader, nil)
+		// If the turn was cancelled but the parent context is still alive
+		// (not a shutdown signal), treat it as a recoverable per-turn
+		// cancellation and let the loop continue.
+		if errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			return fmt.Errorf("cancelled")
+		}
+		return err
+	})
+}
+
+func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {
+	return runREPLLoopWithCommands(reader, promptWriter, newWriterReplCommandContext(nil, nil, promptWriter), runTurn)
+}
+
+func runREPLLoopWithCommands(reader *bufio.Reader, promptWriter io.Writer, commandCtx *replCommandContext, runTurn func(string) error) error {
+	for {
+		if _, err := fmt.Fprint(promptWriter, "> "); err != nil {
+			return err
+		}
+		line, err := readLine(reader)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "/") {
+			handled, quit, err := defaultReplCommands.dispatch(trimmed, commandCtx)
+			if err != nil {
+				return err
+			}
+			if quit {
+				return nil
+			}
+			if handled {
+				continue
+			}
+			if _, err := fmt.Fprintf(promptWriter, "unknown command: %s (try /help)\n", trimmed); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := runTurn(line); err != nil {
+			// Context cancellation (shutdown) ends the loop cleanly; any other
+			// per-turn error is recoverable — show it and keep the session open,
+			// matching the managed REPL rather than dropping to the shell.
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			if _, werr := fmt.Fprintf(promptWriter, "Error: %v\n", err); werr != nil {
+				return werr
+			}
+		}
+	}
+}

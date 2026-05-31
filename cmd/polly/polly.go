@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -38,6 +39,36 @@ type commandRunner struct {
 }
 
 var newSandbox = sandbox.New
+
+type conversationMode int
+
+const (
+	conversationModeOneShot conversationMode = iota
+	conversationModeREPL
+)
+
+type conversationInput struct {
+	mode   conversationMode
+	prompt string
+}
+
+type conversationState struct {
+	session      sessions.Session
+	agent        *llm.Agent
+	toolRegistry *tools.ToolRegistry
+	skillCatalog *skills.Catalog
+	skillRuntime *tools.SkillRuntime
+	skillSources []string
+}
+
+func (s *conversationState) Close() {
+	if s.toolRegistry != nil {
+		_ = s.toolRegistry.Close()
+	}
+	if s.session != nil {
+		s.session.Close()
+	}
+}
 
 func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, error) {
 	config := parseConfig(cmd)
@@ -244,181 +275,207 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 }
 
 func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) error {
-	// Initialize session
-	contextID, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSession(config, sessionStore, contextID, cmd)
-	if err != nil {
-		return err
-	}
-	defer session.Close()
-	if toolRegistry != nil {
-		defer toolRegistry.Close()
-	}
-
-	// Get prompt early to determine if we're going to interactive mode
-	prompt, err := getPrompt(config)
+	input, err := resolveConversationInput(config)
 	if err != nil {
 		return err
 	}
 
-	// If no prompt provided and no stdin, return error as interactive mode is disabled
-	if prompt == "" {
-		return fmt.Errorf("no prompt provided. Please provide a prompt via -p flag or stdin")
+	// Initialize session state once so one-shot and REPL share the same runtime.
+	_, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSession(config, sessionStore, contextID, cmd)
+	if err != nil {
+		return err
 	}
+	state := &conversationState{
+		session:      session,
+		agent:        agent,
+		toolRegistry: toolRegistry,
+		skillCatalog: skillCatalog,
+		skillRuntime: skillRuntime,
+		skillSources: skillResult.sources,
+	}
+	defer state.Close()
 
 	// Set up signal handling
 	ctx, cancel := setupSignalHandling(ctx)
 	defer cancel()
 
-	// Load schema if specified
-	var schema *llm.Schema
-	if config.SchemaPath != "" {
-		var err error
-		schema, err = loadSchemaFile(config.SchemaPath)
-		if err != nil {
-			return fmt.Errorf("failed to load schema: %w", err)
+	switch input.mode {
+	case conversationModeOneShot:
+		var schema *llm.Schema
+		if config.SchemaPath != "" {
+			schema, err = loadSchemaFile(config.SchemaPath)
+			if err != nil {
+				return fmt.Errorf("failed to load schema: %w", err)
+			}
 		}
+		return executeTurn(ctx, config, state, input.prompt, schema, bufio.NewReader(os.Stdin), nil)
+	case conversationModeREPL:
+		return runREPL(ctx, config, state)
+	default:
+		return fmt.Errorf("unknown conversation mode")
+	}
+}
+
+func selectConversationMode(config *Config, stdinAvailable bool) (conversationMode, error) {
+	if config.PromptSet || stdinAvailable {
+		return conversationModeOneShot, nil
 	}
 
-	// Build user message with files if provided
+	if err := validateREPLConfig(config); err != nil {
+		return conversationModeOneShot, err
+	}
+
+	return conversationModeREPL, nil
+}
+
+func resolveConversationInput(config *Config) (conversationInput, error) {
+	stdinAvailable := hasStdinData()
+	mode, err := selectConversationMode(config, stdinAvailable)
+	if err != nil {
+		return conversationInput{}, err
+	}
+
+	switch mode {
+	case conversationModeOneShot:
+		if config.PromptSet {
+			return conversationInput{mode: conversationModeOneShot, prompt: config.Prompt}, nil
+		}
+		prompt, err := readFromStdin()
+		if err != nil {
+			return conversationInput{}, err
+		}
+		return conversationInput{mode: conversationModeOneShot, prompt: prompt}, nil
+	case conversationModeREPL:
+		return conversationInput{mode: conversationModeREPL}, nil
+	default:
+		return conversationInput{}, fmt.Errorf("unknown conversation mode")
+	}
+}
+
+func validateREPLConfig(config *Config) error {
+	var rejected []string
+	if len(config.Files) > 0 {
+		rejected = append(rejected, "--file")
+	}
+	if config.SchemaPath != "" {
+		rejected = append(rejected, "--schema")
+	}
+	if len(rejected) == 0 {
+		return nil
+	}
+
+	verb := "require"
+	if len(rejected) == 1 {
+		verb = "requires"
+	}
+
+	return fmt.Errorf("%s %s -p or stdin; bare polly starts a text-only REPL", strings.Join(rejected, " and "), verb)
+}
+
+func runREPL(ctx context.Context, config *Config, state *conversationState) error {
+	if supportsManagedREPL() {
+		return runManagedREPL(ctx, config, state)
+	}
+	return runFallbackREPL(ctx, config, state)
+}
+
+func executeTurn(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI) error {
 	userMsg, err := buildMessageWithFiles(prompt, config.Files)
 	if err != nil {
 		return fmt.Errorf("error processing files: %w", err)
 	}
 
-	// Add user message to session
-	session.AddMessage(userMsg)
+	state.session.AddMessage(userMsg)
 
-	// Create status line if appropriate
-	var statusLine StatusHandler
-	if status := createStatusLine(config); status != nil {
-		statusLine = status
-		statusLine.Start()
-		defer statusLine.Stop()
+	if turnUI == nil {
+		turnUI = newLineTurnUI(config, inputReader)
 	}
+	turnUI.Start()
+	defer turnUI.Stop()
 
-	// Show initial spinner
-	if statusLine != nil {
-		statusLine.ShowSpinner("waiting")
-	}
+	req := createCompletionRequest(config, state.session, state.toolRegistry, state.skillCatalog, schema)
 
-	// Create completion request
-	req := createCompletionRequest(config, session, toolRegistry, skillCatalog, schema)
+	// trimLeadingNL strips leading newlines from the next content burst.
+	// Armed only after a reasoning event fires — models with thinking enabled
+	// commonly emit a leading "\n\n" to visually separate the (hidden)
+	// reasoning from the reply. We strip only \n/\r so leading spaces/tabs
+	// (e.g. code-block indentation) are preserved.
+	trimLeadingNL := false
 
-	// Track whether we need a newline before the next content block
-	// (i.e., tool calls happened since the last content output)
-	needsNewline := false
-	contentPrinted := false
-
-	// Set up tool approval if --confirm is active
-	var approver *toolApprover
-	if config.Confirm && isTerminal() {
-		approver = &toolApprover{}
-	}
-
-	// Run completion using the agent
-	resp, err := agent.Run(ctx, req, &llm.AgentCallbacks{
+	resp, err := state.agent.Run(ctx, req, &llm.AgentCallbacks{
 		OnReasoning: func(content string) {
-			if statusLine != nil {
-				// Track total reasoning length for status
-				statusLine.UpdateThinkingProgress(len(content))
-			}
+			trimLeadingNL = true
+			turnUI.ShowThinking(len(content))
 		},
 		OnContent: func(content string) {
-			if statusLine != nil {
-				statusLine.ClearForContent()
+			if config.SchemaPath != "" {
+				return
 			}
-			// Print content unless using schema mode
-			if config.SchemaPath == "" {
-				if needsNewline {
-					fmt.Println()
-					needsNewline = false
+			if trimLeadingNL {
+				content = trimLeadingResponseNewlines(content)
+				if content == "" {
+					return
 				}
-				fmt.Print(content)
-				contentPrinted = true
+				trimLeadingNL = false
 			}
+			turnUI.AppendAssistantText(content)
 		},
 		OnToolStart: func(calls []messages.ChatMessageToolCall) {
-			needsNewline = true
-			if toolDisplayEnabled(config) {
-				if contentPrinted {
-					fmt.Fprintln(os.Stderr)
-					contentPrinted = false
-				}
-				for _, tc := range calls {
-					printToolStart(tc)
-				}
-			}
-			if statusLine != nil && len(calls) > 0 && approver == nil {
-				statusLine.ShowToolCall(calls[0].Name)
-			}
+			turnUI.AppendToolStart(calls)
 		},
-		ApproveToolCalls: func() func([]messages.ChatMessageToolCall) []bool {
-			if approver != nil {
-				return func(calls []messages.ChatMessageToolCall) []bool {
-					if statusLine != nil {
-						statusLine.Clear()
-					}
-					return approver.approveToolCalls(calls)
-				}
-			}
-			return nil
-		}(),
+		ApproveToolCalls: turnUI.ApproveToolCalls,
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
-			if statusLine != nil {
-				statusLine.Clear()
-			}
-			if toolDisplayEnabled(config) {
-				printToolEnd(tc, duration, err)
-			}
+			turnUI.AppendToolEnd(tc, result, duration, err)
 		},
-		OnError: func(err error) {
-			if statusLine != nil {
-				statusLine.Clear()
-			}
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		},
+		OnError: func(err error) {},
 	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
-	// Add all generated messages to session, even if there was an error
 	if resp != nil {
-		for _, msg := range resp.AllMessages {
-			session.AddMessage(msg)
+		for _, msg := range llm.StripDeniedExchanges(resp.AllMessages) {
+			state.session.AddMessage(msg)
 		}
 	}
-	if err := persistActiveSkills(session, skillRuntime, skillResult.sources); err != nil {
+	if resp != nil {
+		// Multi-iteration turns produce multiple assistant messages (one per
+		// LLM call between tool roundtrips). Providers report input tokens
+		// cumulatively per-call (each call resends history), so take max for
+		// input. Output tokens are per-iteration, so sum them.
+		var in, out int
+		for _, m := range resp.AllMessages {
+			if m.Role != messages.MessageRoleAssistant {
+				continue
+			}
+			if t := m.GetInputTokens(); t > in {
+				in = t
+			}
+			out += m.GetOutputTokens()
+		}
+		turnUI.RecordTurnTokens(in, out)
+	}
+	if err := persistActiveSkills(state.session, state.skillRuntime, state.skillSources); err != nil {
 		return fmt.Errorf("failed to persist active skills: %w", err)
 	}
-
 	if err != nil {
 		return err
 	}
 
-	// Warn if response was truncated due to token limit
 	if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
-		fmt.Fprintf(os.Stderr, "\nWarning: response truncated (hit %d token limit, use --maxtokens to increase)\n", config.MaxTokens)
+		turnUI.AppendWarning(fmt.Sprintf("response truncated (hit %d token limit, use --maxtokens to increase)", config.MaxTokens))
 	}
 
-	// Output final result
 	if config.SchemaPath != "" {
-		outputStructured(resp.Message.Content, schema)
-	} else {
-		fmt.Println() // Final newline
+		var content string
+		if resp.Message != nil {
+			content = resp.Message.Content
+		}
+		return outputStructured(content, schema)
 	}
 
+	turnUI.FinishTextTurn()
 	return nil
-}
-
-func getPrompt(config *Config) (string, error) {
-	if config.Prompt != "" {
-		return config.Prompt, nil
-	}
-
-	if hasStdinData() {
-		return readFromStdin()
-	}
-
-	// No -p flag and no pipe input - signal to use interactive mode
-	return "", nil
 }
 
 // createCompletionRequest builds an LLM completion request from config
@@ -545,9 +602,31 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 	_ = session.UpdateMetadata(update)
 }
 
+// beforeExit is invoked synchronously by cleanupAndExit before os.Exit.
+// The managed REPL registers gotui's ui.Close here so a signal-triggered
+// exit (SIGTERM, or a SIGINT that tcell's raw mode didn't capture as a key
+// event) still restores the terminal — os.Exit skips the deferred ui.Close
+// in managedREPL.Run. The mutex serializes registration from the REPL
+// goroutine with the read from the signal goroutine in setupSignalHandling.
+var (
+	beforeExitMu sync.Mutex
+	beforeExit   func()
+)
+
+func setBeforeExit(fn func()) {
+	beforeExitMu.Lock()
+	beforeExit = fn
+	beforeExitMu.Unlock()
+}
+
 // cleanupAndExit performs cleanup and exits with the given code
 func cleanupAndExit(code int) {
-
+	beforeExitMu.Lock()
+	fn := beforeExit
+	beforeExitMu.Unlock()
+	if fn != nil {
+		fn()
+	}
 	os.Exit(code)
 }
 
@@ -584,7 +663,13 @@ func setupSignalHandling(ctx context.Context) (context.Context, context.CancelFu
 }
 
 // outputStructured formats and outputs structured response
-func outputStructured(content string, schema *llm.Schema) {
+func outputStructured(content string, schema *llm.Schema) error {
+	// Empty content means no structured output was produced — e.g. the model
+	// emitted a tool call that was denied and the turn short-circuited. Report
+	// it instead of printing a silent blank line that looks like success.
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("no structured output produced")
+	}
 	// If content is already JSON, pretty-print it
 	var data any
 	if err := json.Unmarshal([]byte(content), &data); err == nil {
@@ -601,16 +686,27 @@ func outputStructured(content string, schema *llm.Schema) {
 		// Fallback to raw output if not valid JSON
 		fmt.Println(content)
 	}
+	return nil
 }
 
-// createStatusLine creates a status line if appropriate
-func createStatusLine(config *Config) *Status {
-	// Use terminal title for status updates when in a terminal
-	// Status line works fine with schema since it outputs to stderr
-	if !config.Quiet && isTerminal() {
-		return NewStatus()
+// stripProviderPrefix returns the bare model name, dropping "provider/" if present.
+func stripProviderPrefix(m string) string {
+	if i := strings.IndexByte(m, '/'); i >= 0 {
+		return m[i+1:]
 	}
+	return m
+}
 
-	// Return nil when status updates are not appropriate
-	return nil
+func toolCount(r *tools.ToolRegistry) int {
+	if r == nil {
+		return 0
+	}
+	return len(r.All())
+}
+
+func skillCount(c *skills.Catalog) int {
+	if c == nil {
+		return 0
+	}
+	return len(c.List())
 }

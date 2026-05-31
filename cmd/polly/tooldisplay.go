@@ -3,32 +3,20 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
-	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
+	rw "github.com/mattn/go-runewidth"
 )
 
-// toolDisplayEnabled returns true when tool display should be shown.
-func toolDisplayEnabled(config *Config) bool {
-	return !config.Quiet && isTerminal()
-}
-
-// printToolStart prints a tool start indicator with summarized args to stderr.
-func printToolStart(tc messages.ChatMessageToolCall) {
-	fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled("→ "+toolLabel(tc)))
-}
-
-// printToolEnd prints a tool completion line with duration to stderr.
-func printToolEnd(tc messages.ChatMessageToolCall, duration time.Duration, err error) {
-	label := toolLabel(tc)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "  %s\n", errorStyle.Styled(fmt.Sprintf("✗ %.1fs %s — %s", duration.Seconds(), label, err)))
-	} else {
-		fmt.Fprintf(os.Stderr, "  %s\n", dimStyle.Styled(fmt.Sprintf("✓ %.1fs %s", duration.Seconds(), label)))
-	}
+// toolWasDenied reports whether a tool result represents a user denial rather
+// than real tool output. The agent substitutes the llm.ToolDeniedContent
+// sentinel for the result of an unapproved call; this predicate owns that
+// contract so the renderers don't each hard-code the comparison.
+func toolWasDenied(result string) bool {
+	return result == llm.ToolDeniedContent
 }
 
 func toolLabel(tc messages.ChatMessageToolCall) string {
@@ -39,7 +27,6 @@ func toolLabel(tc messages.ChatMessageToolCall) string {
 	return tc.Name + " " + summary
 }
 
-// summarizeToolArgs returns a one-line summary of tool arguments.
 func summarizeToolArgs(toolName, argsJSON string) string {
 	if argsJSON == "" {
 		return ""
@@ -94,8 +81,6 @@ func summarizeReadSkillFileArgs(args tools.Args) string {
 	return skill + path
 }
 
-// summarizeBashCommand returns a one-line summary for a bash command,
-// collapsing heredocs to show the command prefix and first body line.
 func summarizeBashCommand(args tools.Args) string {
 	cmd := args.String("command")
 	if cmd == "" {
@@ -105,10 +90,8 @@ func summarizeBashCommand(args tools.Args) string {
 	lines := strings.SplitN(cmd, "\n", 20)
 	first := lines[0]
 
-	// Detect heredoc: look for <<EOF, <<'EOF', <<"EOF", <<-EOF etc.
 	if idx := strings.Index(first, "<<"); idx >= 0 && len(lines) > 1 {
 		prefix := strings.TrimSpace(first[:idx+2])
-		// Find first non-empty body line (skip the delimiter line)
 		for _, line := range lines[1:] {
 			line = strings.TrimSpace(line)
 			if line != "" && line != "EOF" && line != "'EOF'" {
@@ -121,12 +104,15 @@ func summarizeBashCommand(args tools.Args) string {
 }
 
 func truncate(s string, max int) string {
-	// Take first line only
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	if len(s) > max {
-		return s[:max-3] + "..."
+	if rw.StringWidth(s) > max {
+		return rw.Truncate(s, max, "...")
 	}
 	return s
+}
+
+func toolDisplayEnabled(config *Config) bool {
+	return !config.Quiet && isTerminal()
 }

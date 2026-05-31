@@ -17,6 +17,7 @@ func loadTools(loaderInfos []tools.ToolLoaderInfo, opts ...tools.RegistryOption)
 	// Group tools by source for efficient loading
 	shellTools := make(map[string]bool)
 	mcpServers := make(map[string][]string) // server -> list of tool names
+	nativeTools := make(map[string]bool)
 
 	for _, info := range loaderInfos {
 		switch info.Type {
@@ -27,8 +28,9 @@ func loadTools(loaderInfos []tools.ToolLoaderInfo, opts ...tools.RegistryOption)
 				mcpServers[info.Source] = []string{}
 			}
 			mcpServers[info.Source] = append(mcpServers[info.Source], info.Name)
+		case "native":
+			nativeTools[info.Name] = true
 		}
-		// Native tools are registered automatically
 	}
 
 	// Load shell tools
@@ -42,6 +44,13 @@ func loadTools(loaderInfos []tools.ToolLoaderInfo, opts ...tools.RegistryOption)
 	for server, toolNames := range mcpServers {
 		if err := registry.LoadMCPServerWithFilter(server, toolNames); err != nil {
 			return nil, fmt.Errorf("failed to load MCP server %s: %w", server, err)
+		}
+	}
+
+	// Load native tools
+	for name := range nativeTools {
+		if _, err := registry.LoadToolAuto(name); err != nil {
+			return nil, fmt.Errorf("failed to load native tool %s: %w", name, err)
 		}
 	}
 
