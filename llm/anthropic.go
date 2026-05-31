@@ -24,11 +24,14 @@ const (
 
 // supportsAdaptiveThinking reports whether the model expects adaptive thinking
 // (type:"adaptive" + OutputConfig.Effort) rather than legacy enabled/budget_tokens.
-// True for the Claude 4.6+ family: opus-4-6, opus-4-7, sonnet-4-6.
+// True for the Claude 4.6+ family: opus-4-6, opus-4-7, opus-4-8, sonnet-4-6.
+// Note: opus-4-7 and opus-4-8 *reject* the legacy enabled mode with a 400, so
+// new model strings in these families must be added here as they ship.
 func supportsAdaptiveThinking(model string) bool {
 	switch {
 	case strings.HasPrefix(model, "claude-opus-4-6"),
 		strings.HasPrefix(model, "claude-opus-4-7"),
+		strings.HasPrefix(model, "claude-opus-4-8"),
 		strings.HasPrefix(model, "claude-sonnet-4-6"):
 		return true
 	}
@@ -36,9 +39,10 @@ func supportsAdaptiveThinking(model string) bool {
 }
 
 // rejectsSamplingParams reports whether the model 400s on temperature/top_p/top_k.
-// True for the Claude Opus 4.7 family only.
+// True for the Claude Opus 4.7 and 4.8 families.
 func rejectsSamplingParams(model string) bool {
-	return strings.HasPrefix(model, "claude-opus-4-7")
+	return strings.HasPrefix(model, "claude-opus-4-7") ||
+		strings.HasPrefix(model, "claude-opus-4-8")
 }
 
 // mapEffort converts a ThinkingEffort to the Anthropic OutputConfig effort level

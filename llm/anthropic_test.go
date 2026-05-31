@@ -54,6 +54,24 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			wantEffort:   anthropic.OutputConfigEffortMedium,
 		},
 		{
+			// Regression: opus-4-8 must use adaptive thinking, not legacy
+			// enabled/budget_tokens, which 400s ("hi" reproduced this).
+			name:         "opus_4_8_high",
+			model:        "claude-opus-4-8",
+			effort:       ThinkingHigh,
+			wantTemp:     false,
+			wantAdaptive: true,
+			wantEffort:   anthropic.OutputConfigEffortHigh,
+		},
+		{
+			name:         "opus_4_8_dated_variant",
+			model:        "claude-opus-4-8-20260601",
+			effort:       ThinkingMedium,
+			wantTemp:     false,
+			wantAdaptive: true,
+			wantEffort:   anthropic.OutputConfigEffortMedium,
+		},
+		{
 			name:         "sonnet_4_6_medium",
 			model:        "claude-sonnet-4-6",
 			effort:       ThinkingMedium,
@@ -136,6 +154,8 @@ func TestAnthropicCapabilityPredicates(t *testing.T) {
 		"claude-opus-4-6",
 		"claude-opus-4-7",
 		"claude-opus-4-7-20260101",
+		"claude-opus-4-8",
+		"claude-opus-4-8-20260601",
 		"claude-sonnet-4-6",
 	}
 	for _, m := range adaptive {
@@ -161,6 +181,12 @@ func TestAnthropicCapabilityPredicates(t *testing.T) {
 	}
 	if !rejectsSamplingParams("claude-opus-4-7-20260101") {
 		t.Errorf("rejectsSamplingParams(dated opus-4-7) = false, want true")
+	}
+	if !rejectsSamplingParams("claude-opus-4-8") {
+		t.Errorf("rejectsSamplingParams(claude-opus-4-8) = false, want true")
+	}
+	if !rejectsSamplingParams("claude-opus-4-8-20260601") {
+		t.Errorf("rejectsSamplingParams(dated opus-4-8) = false, want true")
 	}
 	for _, m := range []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929"} {
 		if rejectsSamplingParams(m) {
