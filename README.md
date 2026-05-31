@@ -61,6 +61,7 @@ GLOBAL OPTIONS:
 - **Tool Calling**: Bolt on shell scripts & MCP servers.
 - **Agent Skills**: Discover `SKILL.md` bundles, activate them on demand, and expose bundled helper scripts as tools.
 - **Contexts**: Memory, but opt‑in.
+- **Interactive TUI**: A full-screen terminal UI (scrollback, history search, bracketed paste, slash commands) when you launch `polly` with no prompt.
 - **Streaming**: Words appear while it thinks.
 - **API**: Do the things yourself [docs](API.md)
 
@@ -76,7 +77,7 @@ go build -o polly ./cmd/polly/
 export POLLYTOOL_ANTHROPICKEY=...
 export POLLYTOOL_OPENAIKEY=...
 
-# Bare polly drops into a simple text REPL
+# Bare polly launches the interactive TUI
 polly
 
 # Basic
@@ -102,6 +103,29 @@ polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 ./polly --skilldir ~/.pollytool/skills --listskills
 ./polly --skilldir ~/.pollytool/skills -p "review this patch for regressions"
 ```
+## Interactive TUI
+
+Running `polly` with no `--prompt` and no piped stdin drops you into a full-screen
+terminal UI (built on tcell/gotui). It supports streaming responses, scrollback,
+reverse history search (Ctrl-R), bracketed paste, and tool/skill display. If the
+terminal isn't a TTY (e.g. `TERM=dumb` or redirected I/O), polly falls back to
+plain one-shot mode.
+
+Slash commands inside the TUI:
+
+```
+/help [command]              Show help
+/clear                       Clear the conversation
+/context  (/stats)           Show context info and token stats
+/get <key|all>               Inspect current settings
+/tools [list [ns]|show <n>]  List or inspect loaded tools
+/skills                      List discovered Agent Skills
+/exit  (/quit)               Leave the TUI
+```
+
+Ctrl-C interrupts an in-flight turn; pressing it again (or at an idle prompt)
+quits.
+
 ### Model Selection
 
 The default model is `anthropic/claude-sonnet-4-6`. Override with `-m` flag:
