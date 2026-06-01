@@ -48,6 +48,7 @@ This runs ONE headless sub-agent and writes, under `$POLLY_AGENT_DIR`:
 
 - `out/<id>.txt` — the answer
 - `err/<id>.log` — tool progress and any error
+- `meta/<id>.txt` — outcome sidecar: `stop_reason`, `tool_calls`, `tool_errors`, tokens, `duration_ms`
 - a row in `status.tsv` — `<id> <TAB> <exit> <TAB> ok|fail`
 
 Optional 3rd/4th args set the model and tool: `./run-agent.sh <id> "<prompt>" anthropic/claude-opus-4-8 bash`.
@@ -110,12 +111,13 @@ cat err/<id>.log                                # why a failed agent failed
 cat out/<id>.txt                                # an agent's answer
 ```
 
-- Exit codes: `0` ok, `1` error (LLM/API error, tool-load failure, **max-iterations**),
-  `130` interrupted.
-- **`ok` only means the LLM loop finished — not that the answer is right or that the
-  tools worked.** A single failed command, a wrong-but-confident answer, or a model
-  that gave up still exits `0`/`ok`. Always read `out/<id>.txt` and sanity-check it;
-  don't trust the status column alone.
+- Exit codes (also in `status.tsv`): `0` ok · `2` truncated (`max_tokens`) ·
+  `3` iteration cap (`max_iterations`) · `1` hard error · `130` interrupted.
+  Find iteration-capped agents with `awk -F'\t' '$2==3' status.tsv`.
+- **`ok`/exit 0 still doesn't mean the answer is right.** Read `meta/<id>.txt`:
+  a high `tool_errors` (e.g. every call failed) is the machine-readable tell that
+  the agent thrashed and likely gave up — the silent-failure signal the exit code
+  can't carry. Then sanity-check `out/<id>.txt`.
 - A `fail` row may still have useful **partial** output in `out/<id>.txt` — e.g. a
   max-iterations run returns its work so far before exiting non-zero.
 

@@ -29,11 +29,12 @@ tool=${4:-bash}
 polly=${POLLY_BIN:-./polly}
 dir=${POLLY_AGENT_DIR:-${TMPDIR:-/tmp}/polly-agent}
 
-mkdir -p "$dir/out" "$dir/err"
+mkdir -p "$dir/out" "$dir/err" "$dir/meta"
 
 # NEVER pass --confirm: headless there is no TTY to answer it, so it would hang.
 # --quiet drops progress chrome; the answer still goes to stdout (-> out/<id>.txt).
-"$polly" -m "$model" -p "$prompt" --tool "$tool" --quiet \
+printf '%s' "$prompt" | "$polly" -m "$model" --tool "$tool" --quiet \
+  --meta-out "$dir/meta/$id.txt" \
   > "$dir/out/$id.txt" 2> "$dir/err/$id.log"
 rc=$?
 
