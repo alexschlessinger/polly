@@ -15,12 +15,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 )
 
-const (
-	structuredOutputToolName = "extract_structured_data"
-	thinkingBudgetLow        = 4096
-	thinkingBudgetMedium     = 8192
-	thinkingBudgetHigh       = 16384
-)
+const structuredOutputToolName = "extract_structured_data"
 
 // supportsAdaptiveThinking reports whether the model expects adaptive thinking
 // (type:"adaptive" + OutputConfig.Effort) rather than legacy enabled/budget_tokens.
@@ -46,13 +41,21 @@ func rejectsSamplingParams(model string) bool {
 }
 
 // mapEffort converts a ThinkingEffort to the Anthropic OutputConfig effort level
-// used with adaptive thinking. Callers must guard with ThinkingEffort.IsEnabled().
+// used with adaptive thinking. Callers must guard with ThinkingEffort.IsEnabled()
+// and skip Dynamic (which uses adaptive thinking with no effort). Anthropic has
+// no "minimal" tier, so minimal clamps to low.
 func mapEffort(effort ThinkingEffort) anthropic.OutputConfigEffort {
-	switch effort {
-	case ThinkingLow:
+	switch effort.AsLevel(LevelMedium) {
+	case LevelMinimal, LevelLow:
 		return anthropic.OutputConfigEffortLow
-	case ThinkingHigh:
+	case LevelMedium:
+		return anthropic.OutputConfigEffortMedium
+	case LevelHigh:
 		return anthropic.OutputConfigEffortHigh
+	case LevelXHigh:
+		return anthropic.OutputConfigEffortXhigh
+	case LevelMax:
+		return anthropic.OutputConfigEffortMax
 	default:
 		return anthropic.OutputConfigEffortMedium
 	}
@@ -79,7 +82,7 @@ func NewAnthropicClient(apiKey string) *AnthropicClient {
 // getThinkingConfig returns the thinking configuration based on effort level and
 // the target model. Opus 4.7 rejects the legacy enabled/budget_tokens mode, and
 // Anthropic recommends adaptive thinking for all 4.6+ family models.
-func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string) anthropic.ThinkingConfigParamUnion {
+func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string, maxTokens int) anthropic.ThinkingConfigParamUnion {
 	if supportsAdaptiveThinking(model) {
 		return anthropic.ThinkingConfigParamUnion{
 			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
@@ -90,18 +93,28 @@ func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string)
 		}
 	}
 
-	var budget int64
-	switch effort {
-	case ThinkingLow:
-		budget = thinkingBudgetLow
-	case ThinkingMedium:
-		budget = thinkingBudgetMedium
-	case ThinkingHigh:
-		budget = thinkingBudgetHigh
-	default:
-		budget = thinkingBudgetMedium
+	// Legacy enabled/budget_tokens mode. A named level maps to its canonical
+	// budget; a raw budget passes through; Dynamic has no legacy equivalent, so
+	// it falls back to the medium canonical budget.
+	budget, ok := effort.AsBudget()
+	if !ok {
+		budget = levelBudgets[LevelMedium]
 	}
-	return anthropic.ThinkingConfigParamOfEnabled(budget)
+	return anthropic.ThinkingConfigParamOfEnabled(int64(clampThinkingBudget(budget, maxTokens)))
+}
+
+// clampThinkingBudget keeps a legacy thinking budget within Anthropic's limits:
+// at least 1024 tokens, and strictly less than max_tokens (the API 400s
+// otherwise). When max_tokens is too small to leave room, the floor wins.
+func clampThinkingBudget(budget, maxTokens int) int {
+	const minThinkingBudget = 1024
+	if maxTokens > minThinkingBudget && budget > maxTokens-1 {
+		budget = maxTokens - 1
+	}
+	if budget < minThinkingBudget {
+		budget = minThinkingBudget
+	}
+	return budget
 }
 
 // buildRequestParams creates the Anthropic API request parameters
@@ -123,10 +136,11 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 
 	// Enable thinking for supported models if requested
 	if req.ThinkingEffort.IsEnabled() {
-		params.Thinking = a.getThinkingConfig(req.ThinkingEffort, req.Model)
+		params.Thinking = a.getThinkingConfig(req.ThinkingEffort, req.Model, req.MaxTokens)
 		// Adaptive thinking pairs with OutputConfig.Effort to control depth,
-		// replacing the legacy budget_tokens knob.
-		if supportsAdaptiveThinking(req.Model) {
+		// replacing the legacy budget_tokens knob. Dynamic effort means "let the
+		// model decide", so we send adaptive thinking with no explicit effort.
+		if supportsAdaptiveThinking(req.Model) && !req.ThinkingEffort.IsDynamic() {
 			params.OutputConfig = anthropic.OutputConfigParam{
 				Effort: mapEffort(req.ThinkingEffort),
 			}

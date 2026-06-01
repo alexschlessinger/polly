@@ -385,7 +385,7 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	return replCommandResult{err: ctx.replyLines(lines)}
 }
 
-var replSettingKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinkingeffort", "system", "tooltimeout", "skilldir"}
+var replSettingKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir"}
 
 func completeGetCommand(_ *replCommandContext, _ []string, prefix string) []string {
 	return matchingWords(append([]string{"all"}, replSettingKeys...), prefix)
@@ -421,7 +421,7 @@ func replSettingValue(config *Config, key string) (string, bool) {
 		return fmt.Sprintf("%d", config.MaxTokens), true
 	case "maxcontext":
 		return fmt.Sprintf("%d", config.MaxHistoryTokens), true
-	case "thinkingeffort":
+	case "thinking":
 		return config.ThinkingEffort, true
 	case "system":
 		return config.SystemPrompt, true

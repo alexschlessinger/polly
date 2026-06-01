@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
@@ -31,6 +32,57 @@ func NewGeminiClient(apiKey string) (*GeminiClient, error) {
 	}
 
 	return &GeminiClient{client: client}, nil
+}
+
+// geminiThinkingConfig builds Gemini's thinking configuration from a
+// provider-agnostic effort. Gemini 3.x uses a ThinkingLevel enum (no xhigh/max,
+// so those clamp to high); Gemini 2.5 uses an integer ThinkingBudget where -1
+// means dynamic. Callers must guard with ThinkingEffort.IsEnabled().
+func geminiThinkingConfig(effort ThinkingEffort, model string) *genai.ThinkingConfig {
+	cfg := &genai.ThinkingConfig{IncludeThoughts: true}
+
+	if strings.HasPrefix(model, "gemini-3") {
+		// 3.x: enum levels. Dynamic leaves the level unset (model default).
+		if !effort.IsDynamic() {
+			switch effort.AsLevel(LevelMedium) {
+			case LevelMinimal:
+				cfg.ThinkingLevel = genai.ThinkingLevelMinimal
+			case LevelLow:
+				cfg.ThinkingLevel = genai.ThinkingLevelLow
+			case LevelMedium:
+				cfg.ThinkingLevel = genai.ThinkingLevelMedium
+			default: // high, xhigh, max all clamp to high (Gemini's ceiling)
+				cfg.ThinkingLevel = genai.ThinkingLevelHigh
+			}
+		}
+		return cfg
+	}
+
+	// 2.5 and older: integer budget. Dynamic uses -1 (model-managed).
+	var budget int32
+	if b, ok := effort.AsBudget(); ok {
+		budget = clampGeminiBudget(int32(b), model)
+	} else {
+		budget = -1
+	}
+	cfg.ThinkingBudget = &budget
+	return cfg
+}
+
+// clampGeminiBudget keeps a 2.5-family thinking budget within the model's
+// documented range. Pro cannot fully disable thinking (floor 128); Flash can.
+func clampGeminiBudget(budget int32, model string) int32 {
+	var lo, hi int32 = 0, 24576 // Flash family
+	if strings.Contains(model, "pro") {
+		lo, hi = 128, 32768 // Pro family
+	}
+	if budget < lo {
+		budget = lo
+	}
+	if budget > hi {
+		budget = hi
+	}
+	return budget
 }
 
 // ChatCompletionStream implements the event-based streaming interface
