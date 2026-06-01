@@ -46,15 +46,13 @@ export POLLY_AGENT_DIR=${POLLY_AGENT_DIR:-${TMPDIR:-/tmp}/polly-agent}
 
 This runs ONE headless sub-agent and writes, under `$POLLY_AGENT_DIR`:
 
-- `out/<id>.txt` — the answer, and only the answer (clean stdout)
-- `err/<id>.log` — tool progress plus the `polly-meta` outcome trailer (stderr)
-- a row in `status.tsv` — `<id> <TAB> <exit> <TAB> ok|fail`
+- `out/<id>.txt` — the answer, nothing else
+- `err/<id>.log` — tool progress + the `polly-meta` outcome trailer
+- `status.tsv` — one row: `<id> <TAB> <exit> <TAB> ok|fail`
 
-The outcome trailer is machine-readable: every line is `polly-meta key=value`.
-Extract a run's record with `sed -n 's/^polly-meta //p' err/<id>.log` — fields:
-`stop_reason`, `model`, `iterations`, `tool_calls`, `tool_errors`, `last_tool`,
-`tool_error.N` (first 10 failures, `name: message`), `input_tokens`,
-`output_tokens`, `duration_ms`, and `error` (hard errors only).
+Read the outcome: `sed -n 's/^polly-meta //p' err/<id>.log`. Keys: `stop_reason`
+`model` `iterations` `tool_calls` `tool_errors` `last_tool` `tool_error.N`
+(first 10, `name: message`) `input_tokens` `output_tokens` `duration_ms` `error`.
 
 Optional 3rd/4th args set the model and tool: `./run-agent.sh <id> "<prompt>" anthropic/claude-opus-4-8 bash`.
 Defaults are `deepseek/deepseek-v4-flash` and the `bash` tool. You can run many
@@ -119,12 +117,9 @@ cat out/<id>.txt                                # an agent's answer
 - Exit codes (also in `status.tsv`): `0` ok · `2` truncated (`max_tokens`) ·
   `3` iteration cap (`max_iterations`) · `1` hard error · `130` interrupted.
   Find iteration-capped agents with `awk -F'\t' '$2==3' status.tsv`.
-- **`ok`/exit 0 still doesn't mean the answer is right.** Read the `polly-meta`
-  trailer in `err/<id>.log`: a high `tool_errors` (e.g. every call failed) is the
-  machine-readable tell that the agent thrashed and likely gave up — the
-  silent-failure signal the exit code can't carry. `tool_error.N` names *which*
-  tool failed and why (surfaced even under `--quiet`), and `last_tool` shows what
-  it was doing when the turn ended. Then sanity-check `out/<id>.txt`.
+- **Exit 0 ≠ correct.** Check the trailer: `tool_errors>0` means the agent hit
+  tool failures (and may have thrashed); `tool_error.N` says which and why (even
+  under `--quiet`); `last_tool` is where it stopped. Then read `out/<id>.txt`.
 - A `fail` row may still have useful **partial** output in `out/<id>.txt` — e.g. a
   max-iterations run returns its work so far before exiting non-zero.
 
@@ -157,9 +152,8 @@ result=$("$POLLY_BIN" -p "summarize this repo" --tool bash --quiet)
 "$POLLY_BIN" -p "do X" --skilldir ./skills --skill myskill
 ```
 
-A `--maxtokens` cap that truncates the answer exits `2` with
-`stop_reason=max_tokens` in the trailer; the `Warning: response truncated...`
-note goes to stderr, so stdout (`out/<id>.txt`) stays the clean answer.
+A `--maxtokens` truncation exits `2` (`stop_reason=max_tokens`); the warning goes
+to stderr, so `out/<id>.txt` stays clean.
 
 ## Key flags
 
