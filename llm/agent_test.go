@@ -402,3 +402,45 @@ func TestStripDeniedExchangesKeepsAssistantContent(t *testing.T) {
 		t.Fatalf("expected content preserved and tool_calls empty, got %#v", out[0])
 	}
 }
+
+// alwaysToolUseLLM keeps asking to call a tool so the agent loop never
+// terminates on its own — it must hit the MaxIterations cap.
+type alwaysToolUseLLM struct{ calls int }
+
+func (a *alwaysToolUseLLM) ChatCompletionStream(_ context.Context, _ *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+	a.calls++
+	ch := make(chan messages.ChatMessage, 1)
+	ch <- messages.ChatMessage{
+		Role:       messages.MessageRoleAssistant,
+		ToolCalls:  []messages.ChatMessageToolCall{{ID: "tc", Name: "noop", Arguments: "{}"}},
+		StopReason: messages.StopReasonToolUse,
+	}
+	close(ch)
+	return processor.ProcessMessagesToEvents(ch)
+}
+
+func TestAgentMaxIterationsStopReason(t *testing.T) {
+	noop := &tools.Func{
+		Name: "noop",
+		Run:  func(_ context.Context, _ tools.Args) (string, error) { return "ok", nil },
+	}
+	registry := tools.NewToolRegistry([]tools.Tool{noop})
+	agent := NewAgent(&alwaysToolUseLLM{}, registry, AgentConfig{MaxIterations: 2})
+
+	resp, err := agent.Run(context.Background(), &CompletionRequest{
+		Messages: messages.User("go"),
+	}, nil)
+
+	if !errors.Is(err, ErrMaxIterations) {
+		t.Fatalf("err = %v, want ErrMaxIterations", err)
+	}
+	if resp == nil || resp.Message == nil {
+		t.Fatal("expected partial response with a final message")
+	}
+	if resp.Message.StopReason != messages.StopReasonMaxIterations {
+		t.Fatalf("stop reason = %q, want %q", resp.Message.StopReason, messages.StopReasonMaxIterations)
+	}
+	if resp.IterationCount != 2 {
+		t.Fatalf("IterationCount = %d, want 2", resp.IterationCount)
+	}
+}

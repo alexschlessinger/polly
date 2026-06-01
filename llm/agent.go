@@ -19,6 +19,10 @@ import (
 // out of persisted history).
 const ToolDeniedContent = "Tool call denied by user."
 
+// ErrMaxIterations is returned (with a partial AgentResponse) when the agent
+// loop reaches its MaxIterations cap before the model finishes.
+var ErrMaxIterations = errors.New("max iterations exceeded")
+
 // Agent handles the agentic loop without owning session state.
 // It executes completions with automatic tool call handling.
 type Agent struct {
@@ -294,16 +298,17 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 	}
 
-	err := errors.New("max iterations exceeded")
+	last := &msgs[len(msgs)-1]
+	last.StopReason = messages.StopReasonMaxIterations
 	if cb != nil && cb.OnError != nil {
-		cb.OnError(err)
+		cb.OnError(ErrMaxIterations)
 	}
 	// Return the partial response so the caller can save the history
 	return &AgentResponse{
-		Message:        &msgs[len(msgs)-1], // Last message
+		Message:        last,
 		AllMessages:    allGenerated,
 		IterationCount: a.config.MaxIterations,
-	}, err
+	}, ErrMaxIterations
 }
 
 // processEvents processes the event stream and returns the final message
