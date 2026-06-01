@@ -8,6 +8,45 @@ import (
 	"testing"
 )
 
+// stubSandbox lets a test control how the probe command is wrapped.
+type stubSandbox struct{ rewrite func(*exec.Cmd) }
+
+func (s stubSandbox) Wrap(cmd *exec.Cmd) error {
+	if s.rewrite != nil {
+		s.rewrite(cmd)
+	}
+	return nil
+}
+
+func TestProbeNilSandbox(t *testing.T) {
+	if err := Probe(nil); err != nil {
+		t.Fatalf("Probe(nil) = %v, want nil (no sandbox = nothing to probe)", err)
+	}
+}
+
+func TestProbePassesWhenCommandSucceeds(t *testing.T) {
+	// stub leaves the probe command (true) intact -> it should exit 0.
+	if err := Probe(stubSandbox{}); err != nil {
+		t.Fatalf("Probe() = %v, want nil when the sandboxed command succeeds", err)
+	}
+}
+
+func TestProbeFailsWhenCommandFails(t *testing.T) {
+	// Rewrite the probe command to one that exits non-zero, simulating a
+	// sandbox backend that is present but can't actually start a command.
+	sb := stubSandbox{rewrite: func(cmd *exec.Cmd) {
+		p, err := exec.LookPath("false")
+		if err != nil {
+			t.Skipf("no 'false' binary: %v", err)
+		}
+		cmd.Path = p
+		cmd.Args = []string{"false"}
+	}}
+	if err := Probe(sb); err == nil {
+		t.Fatal("Probe() = nil, want error when the sandboxed command fails to run")
+	}
+}
+
 func TestConfigDefaults(t *testing.T) {
 	cfg := Config{}
 	if cfg.AllowNetwork {

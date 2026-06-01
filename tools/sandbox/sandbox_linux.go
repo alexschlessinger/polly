@@ -25,12 +25,40 @@ func New(cfg Config) (Sandbox, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prepare placeholder file: %w", err)
 	}
-	deniedPaths := ExpandHome(DeniedPaths)
+	deniedPaths := existingDeniedPaths(ExpandHome(DeniedPaths))
 	return &linuxSandbox{
 		args:            buildBwrapArgs(cfg, deniedPaths, placeholderFile),
 		placeholderFile: placeholderFile,
 		allowEnv:        cfg.AllowEnv,
 	}, nil
+}
+
+// existingDeniedPaths resolves each deny-path to its real location and drops the
+// ones that don't exist. Two failure modes motivate this:
+//
+//   - Missing paths: masking one forces bwrap to mkdir a mountpoint under the
+//     read-only root bind, which fails ("Can't mkdir <path>: Read-only file
+//     system") and aborts the whole sandbox — so one absent credential dir
+//     (e.g. ~/.gnupg) would break every command.
+//   - Symlinks (e.g. WSL's ~/.aws -> /mnt/c/Users/.../.aws): bwrap can't mount a
+//     tmpfs on the link itself ("Can't mount tmpfs ...: No such file or
+//     directory"), and masking the link wouldn't cover the real target anyway.
+//
+// EvalSymlinks handles both: it returns an error for missing paths (skip them)
+// and the resolved real path for symlinks (mask that instead). Resolved paths
+// are de-duplicated so two links to the same target don't double-mask.
+func existingDeniedPaths(paths []DeniedPath) []DeniedPath {
+	kept := make([]DeniedPath, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		real, err := filepath.EvalSymlinks(p.Path)
+		if err != nil || seen[real] {
+			continue
+		}
+		seen[real] = true
+		kept = append(kept, DeniedPath{Path: real, Kind: p.Kind})
+	}
+	return kept
 }
 
 func (s *linuxSandbox) Wrap(cmd *exec.Cmd) error {
