@@ -3,12 +3,16 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
+
+// maxEnumeratedToolErrors caps how many tool-failure lines the trailer emits.
+// tool_errors still reports the true total.
+const maxEnumeratedToolErrors = 10
 
 // exitError carries the process exit code a run should produce. main() unwraps
 // it; any other error maps to exit 1.
@@ -54,13 +58,15 @@ func classifyOutcome(resp *llm.AgentResponse, err error) (messages.StopReason, i
 	}
 }
 
-// metaFields is the flat outcome record written to a --meta-out sidecar.
+// metaFields is the flat run-outcome record emitted as the polly-meta trailer.
 type metaFields struct {
 	StopReason   messages.StopReason
 	Model        string
 	Iterations   int
 	ToolCalls    int
 	ToolErrors   int
+	LastTool     string   // last tool invoked this turn (empty if none)
+	ToolFailures []string // "name: message" per tool-runner failure; capped at write time
 	InputTokens  int
 	OutputTokens int
 	DurationMS   int64
@@ -70,7 +76,7 @@ type metaFields struct {
 // buildMeta assembles the sidecar record from a run's results. It classifies
 // the outcome so stop_reason and the error line stay consistent with the exit
 // code.
-func buildMeta(resp *llm.AgentResponse, err error, model string, toolCalls, toolErrors, inTokens, outTokens int, durationMS int64) metaFields {
+func buildMeta(resp *llm.AgentResponse, err error, model string, toolCalls, toolErrors, inTokens, outTokens int, durationMS int64, lastTool string, toolFailures []string) metaFields {
 	stopReason, _ := classifyOutcome(resp, err)
 	iterations := 0
 	if resp != nil {
@@ -86,6 +92,8 @@ func buildMeta(resp *llm.AgentResponse, err error, model string, toolCalls, tool
 		Iterations:   iterations,
 		ToolCalls:    toolCalls,
 		ToolErrors:   toolErrors,
+		LastTool:     lastTool,
+		ToolFailures: toolFailures,
 		InputTokens:  inTokens,
 		OutputTokens: outTokens,
 		DurationMS:   durationMS,
@@ -98,25 +106,32 @@ func oneLine(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " ")
 }
 
-// writeMetaOut writes the record as flat key=value lines, atomically
-// (temp file + rename) so a partial write never leaves a half-written sidecar.
-func writeMetaOut(path string, m metaFields) error {
-	var b strings.Builder
-	fmt.Fprintf(&b, "stop_reason=%s\n", m.StopReason)
-	fmt.Fprintf(&b, "model=%s\n", m.Model)
-	fmt.Fprintf(&b, "iterations=%d\n", m.Iterations)
-	fmt.Fprintf(&b, "tool_calls=%d\n", m.ToolCalls)
-	fmt.Fprintf(&b, "tool_errors=%d\n", m.ToolErrors)
-	fmt.Fprintf(&b, "input_tokens=%d\n", m.InputTokens)
-	fmt.Fprintf(&b, "output_tokens=%d\n", m.OutputTokens)
-	fmt.Fprintf(&b, "duration_ms=%d\n", m.DurationMS)
+// writeMetaTrailer emits the run outcome as prefixed key=value lines to w
+// (stderr in practice). The fixed "polly-meta " sentinel lets a caller extract
+// the record from captured stderr (`sed -n 's/^polly-meta //p'`) without it
+// colliding with free-form tool-progress chrome. stdout stays the pure answer.
+func writeMetaTrailer(w io.Writer, m metaFields) {
+	p := func(format string, args ...any) {
+		fmt.Fprintf(w, "polly-meta "+format+"\n", args...)
+	}
+	p("stop_reason=%s", m.StopReason)
+	p("model=%s", m.Model)
+	p("iterations=%d", m.Iterations)
+	p("tool_calls=%d", m.ToolCalls)
+	p("tool_errors=%d", m.ToolErrors)
+	if m.LastTool != "" {
+		p("last_tool=%s", oneLine(m.LastTool))
+	}
+	for i, f := range m.ToolFailures {
+		if i >= maxEnumeratedToolErrors {
+			break
+		}
+		p("tool_error.%d=%s", i+1, oneLine(f))
+	}
+	p("input_tokens=%d", m.InputTokens)
+	p("output_tokens=%d", m.OutputTokens)
+	p("duration_ms=%d", m.DurationMS)
 	if m.Err != "" {
-		fmt.Fprintf(&b, "error=%s\n", m.Err)
+		p("error=%s", m.Err)
 	}
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }

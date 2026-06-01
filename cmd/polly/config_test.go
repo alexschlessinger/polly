@@ -124,20 +124,20 @@ func TestDefineFlagsWithGroupsContextManagementMutex(t *testing.T) {
 	}
 }
 
-func TestParseConfigMetaOut(t *testing.T) {
-	var got string
+func TestParseConfigMeta(t *testing.T) {
+	var got bool
 	cmd := &cli.Command{
 		Flags: func() []cli.Flag { f, _ := defineFlagsWithGroups(); return f }(),
 		Action: func(_ context.Context, c *cli.Command) error {
-			got = parseConfig(c).MetaOut
+			got = parseConfig(c).Meta
 			return nil
 		},
 	}
-	if err := cmd.Run(context.Background(), []string{"polly", "--meta-out", "/tmp/m.txt", "-p", "hi"}); err != nil {
+	if err := cmd.Run(context.Background(), []string{"polly", "--meta", "-p", "hi"}); err != nil {
 		t.Fatalf("run error = %v", err)
 	}
-	if got != "/tmp/m.txt" {
-		t.Fatalf("MetaOut = %q, want /tmp/m.txt", got)
+	if !got {
+		t.Fatal("Meta = false, want true when --meta is set")
 	}
 }
 

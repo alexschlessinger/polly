@@ -55,7 +55,7 @@ type Config struct {
 	PromptSet  bool
 	Files      []string // Files/images to include
 	SchemaPath string   // Path to JSON schema file
-	MetaOut    string   // Path to write the run-outcome sidecar (key=value)
+	Meta       bool     // Emit a machine-readable run-outcome trailer (polly-meta lines) to stderr
 	Quiet      bool
 	Debug      bool
 

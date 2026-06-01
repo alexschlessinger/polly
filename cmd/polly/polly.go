@@ -460,6 +460,8 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 	trimLeadingNL := false
 
 	var toolCalls, toolErrors int
+	var lastTool string
+	var toolFailures []string
 	turnStart := time.Now()
 
 	resp, err := state.agent.Run(ctx, req, &llm.AgentCallbacks{
@@ -486,8 +488,12 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 		ApproveToolCalls: turnUI.ApproveToolCalls,
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 			toolCalls++
+			lastTool = tc.Name
 			if err != nil {
 				toolErrors++
+				if len(toolFailures) < maxEnumeratedToolErrors {
+					toolFailures = append(toolFailures, oneLine(tc.Name+": "+err.Error()))
+				}
 			}
 			turnUI.AppendToolEnd(tc, result, duration, err)
 		},
@@ -515,11 +521,9 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 	}
 
 	stopReason, code := classifyOutcome(resp, err)
-	if config.MetaOut != "" {
-		meta := buildMeta(resp, err, config.Model, toolCalls, toolErrors, in, out, time.Since(turnStart).Milliseconds())
-		if werr := writeMetaOut(config.MetaOut, meta); werr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write meta-out sidecar %s: %v\n", config.MetaOut, werr)
-		}
+	if config.Meta {
+		meta := buildMeta(resp, err, config.Model, toolCalls, toolErrors, in, out, time.Since(turnStart).Milliseconds(), lastTool, toolFailures)
+		writeMetaTrailer(os.Stderr, meta)
 	}
 
 	// A failed/canceled turn keeps any streamed text visibly labeled as

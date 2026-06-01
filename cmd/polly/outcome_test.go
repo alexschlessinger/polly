@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"errors"
-	"os"
-	"path/filepath"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -74,11 +74,14 @@ func TestBuildMeta(t *testing.T) {
 		Message:        &messages.ChatMessage{StopReason: messages.StopReasonEndTurn},
 		IterationCount: 3,
 	}
-	m := buildMeta(r, nil, "deepseek/deepseek-v4-flash", 5, 1, 1200, 600, 8123)
+	m := buildMeta(r, nil, "deepseek/deepseek-v4-flash", 5, 1, 1200, 600, 8123, "bash", []string{"fetch: timeout"})
 	if m.StopReason != messages.StopReasonEndTurn || m.Iterations != 3 ||
 		m.ToolCalls != 5 || m.ToolErrors != 1 || m.InputTokens != 1200 ||
 		m.OutputTokens != 600 || m.DurationMS != 8123 || m.Model != "deepseek/deepseek-v4-flash" {
 		t.Fatalf("buildMeta produced %+v", m)
+	}
+	if m.LastTool != "bash" || len(m.ToolFailures) != 1 || m.ToolFailures[0] != "fetch: timeout" {
+		t.Fatalf("buildMeta did not carry tool detail: %+v", m)
 	}
 	if m.Err != "" {
 		t.Fatalf("Err should be empty on success, got %q", m.Err)
@@ -86,7 +89,7 @@ func TestBuildMeta(t *testing.T) {
 }
 
 func TestBuildMetaHardError(t *testing.T) {
-	m := buildMeta(nil, errors.New("api\nfailed"), "m", 0, 0, 0, 0, 5)
+	m := buildMeta(nil, errors.New("api\nfailed"), "m", 0, 0, 0, 0, 5, "", nil)
 	if m.StopReason != messages.StopReasonError {
 		t.Fatalf("StopReason = %q, want error", m.StopReason)
 	}
@@ -98,44 +101,69 @@ func TestBuildMetaHardError(t *testing.T) {
 	}
 }
 
-func TestWriteMetaOut(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "meta.txt")
-	m := metaFields{
+func trailer(m metaFields) string {
+	var b bytes.Buffer
+	writeMetaTrailer(&b, m)
+	return b.String()
+}
+
+func TestWriteMetaTrailerPrefixesEveryLine(t *testing.T) {
+	got := trailer(metaFields{
 		StopReason: messages.StopReasonMaxTokens, Model: "m", Iterations: 2,
 		ToolCalls: 4, ToolErrors: 0, InputTokens: 100, OutputTokens: 50, DurationMS: 99,
-	}
-	if err := writeMetaOut(path, m); err != nil {
-		t.Fatalf("writeMetaOut error = %v", err)
-	}
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-		t.Fatal("temp file should not remain after rename")
-	}
-	body, _ := os.ReadFile(path)
-	got := string(body)
-	for _, want := range []string{
-		"stop_reason=max_tokens\n", "model=m\n", "iterations=2\n",
-		"tool_calls=4\n", "tool_errors=0\n", "input_tokens=100\n",
-		"output_tokens=50\n", "duration_ms=99\n",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("meta missing %q in:\n%s", want, got)
+	})
+	for _, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
+		if !strings.HasPrefix(line, "polly-meta ") {
+			t.Fatalf("every trailer line must start with the sentinel, got %q", line)
 		}
 	}
-	if strings.Contains(got, "error=") {
-		t.Fatalf("error= line should be absent when no error:\n%s", got)
+	for _, want := range []string{
+		"polly-meta stop_reason=max_tokens\n", "polly-meta model=m\n",
+		"polly-meta iterations=2\n", "polly-meta tool_calls=4\n",
+		"polly-meta input_tokens=100\n", "polly-meta duration_ms=99\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("trailer missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "error=") || strings.Contains(got, "last_tool=") || strings.Contains(got, "tool_error.") {
+		t.Fatalf("absent fields must be omitted:\n%s", got)
 	}
 }
 
-func TestWriteMetaOutErrorLine(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "meta.txt")
-	m := metaFields{StopReason: messages.StopReasonError, Err: "boom"}
-	if err := writeMetaOut(path, m); err != nil {
-		t.Fatalf("writeMetaOut error = %v", err)
+func TestWriteMetaTrailerToolFailures(t *testing.T) {
+	got := trailer(metaFields{
+		StopReason: messages.StopReasonEndTurn, LastTool: "bash",
+		ToolFailures: []string{"bash: exit status 1", "fetch: timeout"},
+	})
+	for _, want := range []string{
+		"polly-meta last_tool=bash\n",
+		"polly-meta tool_error.1=bash: exit status 1\n",
+		"polly-meta tool_error.2=fetch: timeout\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("trailer missing %q in:\n%s", want, got)
+		}
 	}
-	body, _ := os.ReadFile(path)
-	if !strings.Contains(string(body), "error=boom\n") {
-		t.Fatalf("expected error=boom line, got:\n%s", body)
+}
+
+func TestWriteMetaTrailerErrorLine(t *testing.T) {
+	got := trailer(metaFields{StopReason: messages.StopReasonError, Err: "boom"})
+	if !strings.Contains(got, "polly-meta error=boom\n") {
+		t.Fatalf("expected error line, got:\n%s", got)
+	}
+}
+
+func TestWriteMetaTrailerCapsFailures(t *testing.T) {
+	fails := make([]string, 15)
+	for i := range fails {
+		fails[i] = fmt.Sprintf("bash: err %d", i)
+	}
+	got := trailer(metaFields{StopReason: messages.StopReasonEndTurn, ToolFailures: fails})
+	if strings.Contains(got, "tool_error.11=") {
+		t.Fatalf("must cap at 10 failures:\n%s", got)
+	}
+	if !strings.Contains(got, "tool_error.10=") {
+		t.Fatalf("expected first 10 failures:\n%s", got)
 	}
 }

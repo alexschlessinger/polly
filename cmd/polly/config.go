@@ -92,7 +92,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		PromptSet:  cmd.IsSet("prompt"),
 		Files:      cmd.StringSlice("file"),
 		SchemaPath: cmd.String("schema"),
-		MetaOut:    cmd.String("meta-out"),
+		Meta:       cmd.Bool("meta"),
 		Quiet:      cmd.Bool("quiet"),
 		Debug:      cmd.Bool("debug"),
 		Tools:      cmd.StringSlice("tool"),
@@ -327,9 +327,9 @@ func outputConfigFlags() []cli.Flag {
 			Aliases: []string{"d"},
 			Usage:   "Enable debug logging",
 		},
-		&cli.StringFlag{
-			Name:  "meta-out",
-			Usage: "Write a key=value run-outcome sidecar to this file",
+		&cli.BoolFlag{
+			Name:  "meta",
+			Usage: "Emit a machine-readable run-outcome trailer (polly-meta key=value lines) to stderr",
 		},
 	}
 }
