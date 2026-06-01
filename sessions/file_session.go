@@ -412,7 +412,7 @@ func (s *FileSession) SetMetadata(info *Metadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	candidate, err := s.candidateForWriteLocked()
+	candidate, err := s.metadataCandidateLocked()
 	if err != nil {
 		return err
 	}
@@ -441,7 +441,7 @@ func (s *FileSession) UpdateMetadata(update *Metadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	candidate, err := s.candidateForWriteLocked()
+	candidate, err := s.metadataCandidateLocked()
 	if err != nil {
 		return err
 	}
@@ -466,14 +466,32 @@ func (s *FileSession) GetLastUsed() time.Time {
 	return s.Updated
 }
 
+// candidateForWriteLocked builds a working copy for mutations that change
+// history. History is copied so an interrupted save never leaves the in-memory
+// slice diverging from what reached disk; the candidate is only committed back
+// once save() succeeds.
 func (s *FileSession) candidateForWriteLocked() (*FileSession, error) {
+	candidate, err := s.metadataCandidateLocked()
+	if err != nil {
+		return nil, err
+	}
+	candidate.History = CopyHistory(s.History)
+	return candidate, nil
+}
+
+// metadataCandidateLocked builds a working copy for mutations that touch only
+// metadata. It shares the existing history slice rather than cloning it: these
+// paths never read or mutate history beyond marshalling it unchanged, so the
+// O(len(history)) copy would be pure waste. The clone happens in
+// candidateForWriteLocked for paths that actually modify history.
+func (s *FileSession) metadataCandidateLocked() (*FileSession, error) {
 	if s.Metadata == nil {
 		return nil, fmt.Errorf("session '%s' has no metadata", s.ID)
 	}
 
 	candidate := &FileSession{
 		ID:       s.ID,
-		History:  CopyHistory(s.History),
+		History:  s.History,
 		Created:  s.Created,
 		Updated:  s.Updated,
 		Metadata: cloneMetadata(s.Metadata),
