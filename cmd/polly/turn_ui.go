@@ -128,12 +128,14 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 }
 
 func (ui *lineTurnUI) AppendWarning(text string) {
-	if ui.config.SchemaPath != "" {
-		fmt.Fprintf(os.Stderr, "Warning: %s\n", text)
-		return
+	// Warnings ride stderr so a captured stdout answer stays clean. Terminate
+	// any unfinished stdout line first so a shared terminal doesn't glue the
+	// warning onto the tail of the streamed answer.
+	if ui.contentPrinted && !ui.endsWithNewline {
+		fmt.Fprintln(ui.writer)
+		ui.endsWithNewline = true
 	}
-	fmt.Fprintf(ui.writer, "\nWarning: %s\n", text)
-	ui.endsWithNewline = true
+	fmt.Fprintf(ui.errWriter, "Warning: %s\n", text)
 }
 
 func (ui *lineTurnUI) RecordTurnTokens(in, out int) {}
