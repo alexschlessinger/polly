@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -40,4 +42,71 @@ func classifyOutcome(resp *llm.AgentResponse, err error) (messages.StopReason, i
 	default:
 		return messages.StopReasonEndTurn, 0
 	}
+}
+
+// metaFields is the flat outcome record written to a --meta-out sidecar.
+type metaFields struct {
+	StopReason   messages.StopReason
+	Model        string
+	Iterations   int
+	ToolCalls    int
+	ToolErrors   int
+	InputTokens  int
+	OutputTokens int
+	DurationMS   int64
+	Err          string // single-line; present only on hard error
+}
+
+// buildMeta assembles the sidecar record from a run's results. It classifies
+// the outcome so stop_reason and the error line stay consistent with the exit
+// code.
+func buildMeta(resp *llm.AgentResponse, err error, model string, toolCalls, toolErrors, inTokens, outTokens int, durationMS int64) metaFields {
+	stopReason, _ := classifyOutcome(resp, err)
+	iterations := 0
+	if resp != nil {
+		iterations = resp.IterationCount
+	}
+	errStr := ""
+	if stopReason == messages.StopReasonError && err != nil {
+		errStr = oneLine(err.Error())
+	}
+	return metaFields{
+		StopReason:   stopReason,
+		Model:        model,
+		Iterations:   iterations,
+		ToolCalls:    toolCalls,
+		ToolErrors:   toolErrors,
+		InputTokens:  inTokens,
+		OutputTokens: outTokens,
+		DurationMS:   durationMS,
+		Err:          errStr,
+	}
+}
+
+// oneLine collapses newlines so a value can't break the line-oriented format.
+func oneLine(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " ")
+}
+
+// writeMetaOut writes the record as flat key=value lines, atomically
+// (temp file + rename) so a partial write never leaves a half-written sidecar.
+func writeMetaOut(path string, m metaFields) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "stop_reason=%s\n", m.StopReason)
+	fmt.Fprintf(&b, "model=%s\n", m.Model)
+	fmt.Fprintf(&b, "iterations=%d\n", m.Iterations)
+	fmt.Fprintf(&b, "tool_calls=%d\n", m.ToolCalls)
+	fmt.Fprintf(&b, "tool_errors=%d\n", m.ToolErrors)
+	fmt.Fprintf(&b, "input_tokens=%d\n", m.InputTokens)
+	fmt.Fprintf(&b, "output_tokens=%d\n", m.OutputTokens)
+	fmt.Fprintf(&b, "duration_ms=%d\n", m.DurationMS)
+	if m.Err != "" {
+		fmt.Fprintf(&b, "error=%s\n", m.Err)
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
