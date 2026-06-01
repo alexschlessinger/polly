@@ -124,6 +124,23 @@ func TestDefineFlagsWithGroupsContextManagementMutex(t *testing.T) {
 	}
 }
 
+func TestParseConfigMetaOut(t *testing.T) {
+	var got string
+	cmd := &cli.Command{
+		Flags: func() []cli.Flag { f, _ := defineFlagsWithGroups(); return f }(),
+		Action: func(_ context.Context, c *cli.Command) error {
+			got = parseConfig(c).MetaOut
+			return nil
+		},
+	}
+	if err := cmd.Run(context.Background(), []string{"polly", "--meta-out", "/tmp/m.txt", "-p", "hi"}); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	if got != "/tmp/m.txt" {
+		t.Fatalf("MetaOut = %q, want /tmp/m.txt", got)
+	}
+}
+
 func runConfigValidationCommand(args ...string) error {
 	flags, groups := defineFlagsWithGroups()
 	cmd := &cli.Command{

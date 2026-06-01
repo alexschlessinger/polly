@@ -55,6 +55,7 @@ type Config struct {
 	PromptSet  bool
 	Files      []string // Files/images to include
 	SchemaPath string   // Path to JSON schema file
+	MetaOut    string   // Path to write the run-outcome sidecar (key=value)
 	Quiet      bool
 	Debug      bool
 
