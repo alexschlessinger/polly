@@ -3,10 +3,13 @@
 #
 # Launch ONE headless polly sub-agent and record its result + status.
 # Writes under the run directory POLLY_AGENT_DIR (default ${TMPDIR:-/tmp}/polly-agent):
-#   <run-dir>/out/<id>.txt   the answer (agent stdout)
-#   <run-dir>/err/<id>.log   tool progress + errors (agent stderr)
+#   <run-dir>/out/<id>.txt   the answer, and only the answer (agent stdout)
+#   <run-dir>/err/<id>.log   tool progress + the polly-meta outcome trailer (agent stderr)
 #   <run-dir>/status.tsv     one row per agent: <id> <TAB> <exit> <TAB> ok|fail  (race-safe upsert)
-#   <run-dir>/meta/<id>.txt  outcome sidecar: stop_reason, tool_calls, tool_errors, tokens, duration_ms
+# Extract a run's outcome record from its err log with:
+#   sed -n 's/^polly-meta //p' <run-dir>/err/<id>.log
+# (fields: stop_reason, model, iterations, tool_calls, tool_errors, last_tool,
+#  tool_error.N, input_tokens, output_tokens, duration_ms, error)
 # Prints the run directory to stderr. Exits with the agent's own exit code:
 #   0 ok | 2 truncated (max_tokens) | 3 max-iterations | 1 error | 130 interrupted.
 #
@@ -30,12 +33,11 @@ tool=${4:-bash}
 polly=${POLLY_BIN:-./polly}
 dir=${POLLY_AGENT_DIR:-${TMPDIR:-/tmp}/polly-agent}
 
-mkdir -p "$dir/out" "$dir/err" "$dir/meta"
+mkdir -p "$dir/out" "$dir/err"
 
 # NEVER pass --confirm: headless there is no TTY to answer it, so it would hang.
 # --quiet drops progress chrome; the answer still goes to stdout (-> out/<id>.txt).
-printf '%s' "$prompt" | "$polly" -m "$model" --tool "$tool" --quiet \
-  --meta-out "$dir/meta/$id.txt" \
+printf '%s' "$prompt" | "$polly" -m "$model" --tool "$tool" --quiet --meta \
   > "$dir/out/$id.txt" 2> "$dir/err/$id.log"
 rc=$?
 
