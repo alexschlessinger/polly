@@ -3432,7 +3432,12 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 		if tui, ok := turnUI.(*gotuiTurnUI); ok {
 			reuseUser = tui.reuseUser
 		}
-		return executeTurnWithExistingUser(turnCtx, config, state, prompt, nil, nil, turnUI, reuseUser)
+		// A code-only exitError (e.g. truncation -> 2) is a one-shot exit
+		// signal with no error to show; the REPL already rendered any warning.
+		if err := executeTurnWithExistingUser(turnCtx, config, state, prompt, nil, nil, turnUI, reuseUser); !isExitCodeOnly(err) {
+			return err
+		}
+		return nil
 	})
 }
 
@@ -3443,6 +3448,11 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		err := executeTurn(turnCtx, config, state, prompt, nil, reader, nil)
+		// A code-only exitError (e.g. truncation -> 2) is a one-shot exit
+		// signal with no error to show; the REPL already rendered any warning.
+		if isExitCodeOnly(err) {
+			err = nil
+		}
 		// If the turn was cancelled but the parent context is still alive
 		// (not a shutdown signal), treat it as a recoverable per-turn
 		// cancellation and let the loop continue.

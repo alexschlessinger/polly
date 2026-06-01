@@ -26,6 +26,16 @@ func (e *exitError) Error() string {
 
 func (e *exitError) Unwrap() error { return e.err }
 
+// isExitCodeOnly reports whether err is an exitError carrying only a process
+// exit code with no underlying error (e.g. a truncated-but-complete run that
+// exits 2). Such errors are meaningful only to main() in one-shot mode; the
+// interactive REPLs should ignore them rather than print a spurious
+// "Error: exit status N" for what is a clean, warning-only outcome.
+func isExitCodeOnly(err error) bool {
+	var ee *exitError
+	return errors.As(err, &ee) && ee.err == nil
+}
+
 // classifyOutcome maps an agent run's (response, error) to a terminal stop
 // reason and the process exit code per the documented contract:
 // 0 end_turn, 2 max_tokens, 3 max_iterations, 1 hard error.

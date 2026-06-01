@@ -6,8 +6,9 @@
 #   <run-dir>/out/<id>.txt   the answer (agent stdout)
 #   <run-dir>/err/<id>.log   tool progress + errors (agent stderr)
 #   <run-dir>/status.tsv     one row per agent: <id> <TAB> <exit> <TAB> ok|fail  (race-safe upsert)
+#   <run-dir>/meta/<id>.txt  outcome sidecar: stop_reason, tool_calls, tool_errors, tokens, duration_ms
 # Prints the run directory to stderr. Exits with the agent's own exit code:
-#   0 ok | 1 error (incl. max-iterations) | 130 interrupted.
+#   0 ok | 2 truncated (max_tokens) | 3 max-iterations | 1 error | 130 interrupted.
 #
 # Defaults: model deepseek/deepseek-v4-flash, tool bash.
 # Override the polly binary with POLLY_BIN (default: ./polly).

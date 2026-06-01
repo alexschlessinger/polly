@@ -54,6 +54,21 @@ func TestExitError(t *testing.T) {
 	}
 }
 
+func TestIsExitCodeOnly(t *testing.T) {
+	if !isExitCodeOnly(&exitError{code: 2}) {
+		t.Fatal("code-only exitError should be ignorable by the REPL")
+	}
+	if isExitCodeOnly(&exitError{code: 3, err: llm.ErrMaxIterations}) {
+		t.Fatal("an exitError wrapping a real error must NOT be ignored")
+	}
+	if isExitCodeOnly(errors.New("plain")) {
+		t.Fatal("a plain error is not a code-only exitError")
+	}
+	if isExitCodeOnly(nil) {
+		t.Fatal("nil is not a code-only exitError")
+	}
+}
+
 func TestBuildMeta(t *testing.T) {
 	r := &llm.AgentResponse{
 		Message:        &messages.ChatMessage{StopReason: messages.StopReasonEndTurn},
