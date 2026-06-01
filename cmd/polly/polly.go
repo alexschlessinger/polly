@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -26,6 +27,13 @@ import (
 func main() {
 	command := getCommand()
 	if err := command.Run(context.Background(), os.Args); err != nil {
+		var ee *exitError
+		if errors.As(err, &ee) {
+			if ee.err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", ee.err)
+			}
+			cleanupAndExit(ee.code)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		cleanupAndExit(1)
 	}
@@ -451,6 +459,9 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 	// (e.g. code-block indentation) are preserved.
 	trimLeadingNL := false
 
+	var toolCalls, toolErrors int
+	turnStart := time.Now()
+
 	resp, err := state.agent.Run(ctx, req, &llm.AgentCallbacks{
 		OnReasoning: func(content string) {
 			trimLeadingNL = true
@@ -474,6 +485,10 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 		},
 		ApproveToolCalls: turnUI.ApproveToolCalls,
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+			toolCalls++
+			if err != nil {
+				toolErrors++
+			}
 			turnUI.AppendToolEnd(tc, result, duration, err)
 		},
 		OnError: func(err error) {},
@@ -481,11 +496,38 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	var in, out int
+	if resp != nil {
+		// Multi-iteration turns produce multiple assistant messages (one per
+		// LLM call between tool roundtrips). Providers report input tokens
+		// cumulatively per-call (each call resends history), so take max for
+		// input. Output tokens are per-iteration, so sum them.
+		for _, m := range resp.AllMessages {
+			if m.Role != messages.MessageRoleAssistant {
+				continue
+			}
+			if t := m.GetInputTokens(); t > in {
+				in = t
+			}
+			out += m.GetOutputTokens()
+		}
+		turnUI.RecordTurnTokens(in, out)
+	}
+
+	stopReason, code := classifyOutcome(resp, err)
+	if config.MetaOut != "" {
+		meta := buildMeta(resp, err, config.Model, toolCalls, toolErrors, in, out, time.Since(turnStart).Milliseconds())
+		if werr := writeMetaOut(config.MetaOut, meta); werr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write meta-out sidecar %s: %v\n", config.MetaOut, werr)
+		}
+	}
+
 	// A failed/canceled turn keeps any streamed text visibly labeled as
 	// not saved. Keep persistence aligned with that contract: generated messages
 	// and skill metadata are committed only after the agent has completed.
+	// The exit code stays granular (3 for max-iterations, 1 otherwise).
 	if err != nil {
-		return err
+		return &exitError{code: code, err: err}
 	}
 	if resp == nil {
 		return fmt.Errorf("agent returned no response")
@@ -499,23 +541,8 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 	if perr := state.session.AddMessages(durableTurnMessages(resp.AllMessages)); perr != nil {
 		return fmt.Errorf("failed to persist turn: %w", perr)
 	}
-	// Multi-iteration turns produce multiple assistant messages (one per
-	// LLM call between tool roundtrips). Providers report input tokens
-	// cumulatively per-call (each call resends history), so take max for
-	// input. Output tokens are per-iteration, so sum them.
-	var in, out int
-	for _, m := range resp.AllMessages {
-		if m.Role != messages.MessageRoleAssistant {
-			continue
-		}
-		if t := m.GetInputTokens(); t > in {
-			in = t
-		}
-		out += m.GetOutputTokens()
-	}
-	turnUI.RecordTurnTokens(in, out)
 
-	if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
+	if stopReason == messages.StopReasonMaxTokens {
 		turnUI.AppendWarning(fmt.Sprintf("response truncated (hit %d token limit, use --maxtokens to increase)", config.MaxTokens))
 	}
 
@@ -524,10 +551,18 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 		if resp.Message != nil {
 			content = resp.Message.Content
 		}
-		return outputStructured(content, schema)
+		if oerr := outputStructured(content, schema); oerr != nil {
+			return oerr
+		}
+	} else {
+		turnUI.FinishTextTurn()
 	}
 
-	turnUI.FinishTextTurn()
+	// Output is done; signal a nonzero code for incomplete-but-produced runs
+	// (e.g. truncation -> 2) without an error message.
+	if code != 0 {
+		return &exitError{code: code}
+	}
 	return nil
 }
 
