@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,9 +33,19 @@ func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
 	if env == nil {
 		env = os.Environ()
 	}
-	cmd.Env = filterEnv(env, s.cfg.AllowEnv)
+	filtered, stripped := filterEnv(env, s.cfg.AllowEnv)
+	cmd.Env = filtered
 
 	origArgs := cmd.Args
+	// denied_paths counts deny rules before existence filtering (Seatbelt
+	// emits rules regardless), unlike linux which counts applied masks.
+	slog.Debug("sandbox_wrap",
+		"command", commandSummary(origArgs),
+		"network", s.cfg.AllowNetwork,
+		"deny_write", s.cfg.DenyWrite,
+		"writable_paths", s.cfg.WritablePaths,
+		"env_stripped", stripped,
+		"denied_paths", len(allDeniedPaths(s.cfg)))
 	cmd.Path = "/usr/bin/sandbox-exec"
 	// The profile is rebuilt on every wrap, not frozen at construction, so the
 	// symlink resolution below tracks the filesystem as it is now.

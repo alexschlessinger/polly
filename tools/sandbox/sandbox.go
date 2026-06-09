@@ -194,12 +194,12 @@ func isSensitiveEnv(name string) bool {
 	return false
 }
 
-// filterEnv returns the env vars a sandboxed process should receive.
+// filterEnv returns the env vars a sandboxed process should receive, plus the
+// names (never values) of the vars it removed, for debug logging.
 // With allowEnv set, only those names pass (an explicit allowlist wins over
 // the sensitivity heuristics). Otherwise everything passes except
 // sensitive-looking vars — see isSensitiveEnv.
-func filterEnv(env, allowEnv []string) []string {
-	var filtered []string
+func filterEnv(env, allowEnv []string) (filtered, stripped []string) {
 	if len(allowEnv) > 0 {
 		allowed := make(map[string]bool, len(allowEnv))
 		for _, k := range allowEnv {
@@ -208,16 +208,29 @@ func filterEnv(env, allowEnv []string) []string {
 		for _, e := range env {
 			if k, _, _ := strings.Cut(e, "="); allowed[k] {
 				filtered = append(filtered, e)
+			} else {
+				stripped = append(stripped, k)
 			}
 		}
-		return filtered
+		return filtered, stripped
 	}
 	for _, e := range env {
 		if k, _, _ := strings.Cut(e, "="); !isSensitiveEnv(k) {
 			filtered = append(filtered, e)
+		} else {
+			stripped = append(stripped, k)
 		}
 	}
-	return filtered
+	return filtered, stripped
+}
+
+// commandSummary returns the first two argv entries — enough to identify the
+// wrapped tool in debug logs without capturing argument payloads.
+func commandSummary(args []string) string {
+	if len(args) > 2 {
+		args = args[:2]
+	}
+	return strings.Join(args, " ")
 }
 
 // allDeniedPaths combines the built-in deny list with cfg.DenyPaths, all

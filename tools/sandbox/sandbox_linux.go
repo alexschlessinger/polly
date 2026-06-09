@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,7 +81,8 @@ func (s *linuxSandbox) Wrap(cmd *exec.Cmd) error {
 	if env == nil {
 		env = os.Environ()
 	}
-	cmd.Env = filterEnv(env, s.cfg.AllowEnv)
+	filtered, stripped := filterEnv(env, s.cfg.AllowEnv)
+	cmd.Env = filtered
 
 	// The deny list is re-evaluated on every wrap, not frozen at construction:
 	// a credential dir created mid-session (e.g. `aws configure` in another
@@ -89,6 +91,13 @@ func (s *linuxSandbox) Wrap(cmd *exec.Cmd) error {
 	denied := existingDeniedPaths(allDeniedPaths(s.cfg))
 
 	origArgs := cmd.Args
+	slog.Debug("sandbox_wrap",
+		"command", commandSummary(origArgs),
+		"network", s.cfg.AllowNetwork,
+		"deny_write", s.cfg.DenyWrite,
+		"writable_paths", s.cfg.WritablePaths,
+		"env_stripped", stripped,
+		"denied_paths", len(denied))
 	bwrapPath, _ := exec.LookPath("bwrap")
 	cmd.Path = bwrapPath
 	args := buildBwrapArgs(s.cfg, denied)

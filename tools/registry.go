@@ -99,6 +99,12 @@ func (r *ToolRegistry) HasSandbox() bool {
 
 // NewSandbox creates a sandbox with the base config merged with optional per-tool overrides.
 func (r *ToolRegistry) NewSandbox(overlay *sandbox.Config) (sandbox.Sandbox, error) {
+	return r.newSandboxFor("", overlay)
+}
+
+// newSandboxFor is NewSandbox with a tool/server identity for debug logging
+// of the effective merged config (names and flags only, never env values).
+func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sandbox.Sandbox, error) {
 	if r.sandboxFactory == nil {
 		return nil, fmt.Errorf("sandboxing not available")
 	}
@@ -106,6 +112,15 @@ func (r *ToolRegistry) NewSandbox(overlay *sandbox.Config) (sandbox.Sandbox, err
 	if overlay != nil {
 		cfg = cfg.Merge(*overlay)
 	}
+	slog.Debug("sandbox_config",
+		"tool", name,
+		"network", cfg.AllowNetwork,
+		"deny_dns", cfg.DenyDNS,
+		"deny_write", cfg.DenyWrite,
+		"writable_paths", cfg.WritablePaths,
+		"read_paths", cfg.ReadPaths,
+		"deny_paths", cfg.DenyPaths,
+		"allow_env", cfg.AllowEnv)
 	return r.sandboxFactory(cfg)
 }
 
@@ -162,7 +177,7 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 			return bt, nil
 		}
 		// Fail closed: bash without its sandbox must not load.
-		sb, err := registry.NewSandbox(nil)
+		sb, err := registry.newSandboxFor("bash", nil)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox for bash: %w", err)
 		}
@@ -515,7 +530,7 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 	if r.sandboxFactory != nil && !shellTool.SandboxOptOut() {
 		// Fail closed: a tool that should be sandboxed but can't be must not
 		// load, or it would silently run unsandboxed.
-		sb, err := r.NewSandbox(shellTool.SandboxConfig())
+		sb, err := r.newSandboxFor(path, shellTool.SandboxConfig())
 		if err != nil {
 			return nil, LoadResult{}, fmt.Errorf("sandbox for shell tool %s: %w", path, err)
 		}
@@ -579,7 +594,7 @@ func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName,
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid sandbox config for MCP server %s: %w", serverName, err)
 		}
-		sb, err = r.NewSandbox(overlayCfg)
+		sb, err = r.newSandboxFor(serverName, overlayCfg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("sandbox for MCP server %s: %w", serverName, err)
 		}
@@ -843,7 +858,7 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 		if specErr != nil {
 			return fmt.Errorf("invalid sandbox config for MCP server %s: %w", namespace, specErr)
 		}
-		sb, err = r.NewSandbox(overlayCfg)
+		sb, err = r.newSandboxFor(namespace, overlayCfg)
 		if err != nil {
 			return fmt.Errorf("sandbox for MCP server %s: %w", namespace, err)
 		}
