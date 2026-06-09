@@ -679,9 +679,9 @@ Shell scripts used as tools must:
 3. Return results as plain text to stdout
 4. Exit with code 0 on success, non-zero on error
 
-The schema may include `"sandbox"` at the top level to opt a tool into sandboxing. When sandbox is applied, `[sandboxed]` is appended to the tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
+Shell tools run sandboxed by default. The schema may include `"sandbox"` at the top level to customize permissions or opt out. When the sandbox is applied, `[sandboxed]` is appended to the shell tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
 
-Tools that omit `"sandbox"` or set it to `false` run without restrictions, even when sandboxing is active.
+Tools that omit `"sandbox"` get the defaults below; only an explicit `"sandbox": false` runs without restrictions.
 
 #### Sandbox Spec Reference
 

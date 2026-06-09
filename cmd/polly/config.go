@@ -311,7 +311,7 @@ func sandboxConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{
 			Name:    "nosandbox",
-			Usage:   "Disable sandboxing of bash commands",
+			Usage:   "Disable sandboxing of tool commands",
 			Sources: cli.EnvVars("POLLYTOOL_NOSANDBOX"),
 		},
 		&cli.StringSliceFlag{
