@@ -557,7 +557,7 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			}
 			// Tools are now handled directly with session metadata in initializeSession
 			// Apply stored thinking effort if not provided via command line
-			if !cmd.IsSet("thinkingeffort") && contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
+			if !cmd.IsSet("thinking") && contextInfo.ThinkingEffort != "off" && contextInfo.ThinkingEffort != "" {
 				config.Settings.ThinkingEffort = contextInfo.ThinkingEffort
 			}
 			// Apply stored tool timeout if not provided via command line
@@ -617,7 +617,7 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 		update.SystemPrompt = config.Settings.SystemPrompt
 	}
 	// Tools are already handled in initializeSession, no need to update here
-	if cmd.IsSet("thinkingeffort") {
+	if cmd.IsSet("thinking") {
 		update.ThinkingEffort = config.Settings.ThinkingEffort
 	}
 

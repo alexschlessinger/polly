@@ -53,7 +53,7 @@ type CompletionRequest struct {
 	Messages       []messages.ChatMessage // Message history
 	Tools          []tools.Tool           // Available tools
 	ResponseSchema *Schema                // Optional schema for structured output
-	ThinkingEffort ThinkingEffort         // Reasoning effort level: ThinkingOff, ThinkingLow, ThinkingMedium, ThinkingHigh
+	ThinkingEffort ThinkingEffort         // Reasoning effort: Off, a named Level, a raw token Budget, or Dynamic
 	Stream         *bool                  // nil = streaming (default), false = non-streaming
 	Skills         *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
 }

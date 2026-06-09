@@ -24,7 +24,7 @@ GLOBAL OPTIONS:
    --maxtokens int                                          Maximum tokens to generate (default: 50000) [$POLLYTOOL_MAXTOKENS]
    --maxiterations int                                      Maximum agent iterations (LLM calls) before stopping (default: 50) [$POLLYTOOL_MAXITERATIONS]
    --timeout duration                                       Request timeout (default: 2m0s) [$POLLYTOOL_TIMEOUT]
-   --thinkingeffort string                                  Thinking/reasoning effort level: off, low, medium, high (default: "off") [$POLLYTOOL_THINKINGEFFORT]
+   --thinking string                                        Reasoning effort: off, dynamic, a level (minimal, low, medium, high, xhigh, max), or a token budget (e.g. 12000) (default: "off") [$POLLYTOOL_THINKING]
    --baseurl string                                         Base URL for API (for OpenAI-compatible endpoints or Ollama) [$POLLYTOOL_BASEURL]
    --skilldir string [ --skilldir string ]                  Skill directory or directory containing skill folders (can be specified multiple times) [$POLLYTOOL_SKILLDIR]
    --skill string, -S string [ --skill string, -S string ]  Skill to load: local directory, git repo URL, or archive URL. Auto-activated on start.

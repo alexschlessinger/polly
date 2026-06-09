@@ -293,8 +293,8 @@ func buildChatCompletionRequestParams(req *CompletionRequest) openai.ChatComplet
 	if req.MaxTokens > 0 {
 		params.MaxCompletionTokens = param.NewOpt(int64(req.MaxTokens))
 	}
-	if req.ThinkingEffort.IsEnabled() {
-		params.ReasoningEffort = shared.ReasoningEffort(req.ThinkingEffort)
+	if effort, ok := openAIReasoningEffort(req.ThinkingEffort); ok {
+		params.ReasoningEffort = effort
 	}
 	if req.ResponseSchema != nil {
 		params.ResponseFormat = chatResponseFormatFromSchema(req.ResponseSchema)
@@ -614,13 +614,38 @@ func responseOutputTextContent(text string) responses.ResponseOutputMessageConte
 }
 
 func responsesReasoningFromThinkingEffort(effort ThinkingEffort) (shared.ReasoningParam, bool) {
-	if !effort.IsEnabled() {
+	reasoning, ok := openAIReasoningEffort(effort)
+	if !ok {
 		return shared.ReasoningParam{}, false
 	}
 	return shared.ReasoningParam{
-		Effort:  shared.ReasoningEffort(effort),
+		Effort:  reasoning,
 		Summary: shared.ReasoningSummaryAuto,
 	}, true
+}
+
+// openAIReasoningEffort maps a ThinkingEffort to OpenAI's reasoning_effort enum.
+// Off and Dynamic return ok=false (omit the param; OpenAI has no dynamic mode,
+// so it falls back to the model's default). A Budget is reduced to its nearest
+// level. OpenAI has no "max", so max clamps to xhigh.
+func openAIReasoningEffort(effort ThinkingEffort) (shared.ReasoningEffort, bool) {
+	if !effort.IsEnabled() || effort.IsDynamic() {
+		return "", false
+	}
+	switch effort.AsLevel(LevelMedium) {
+	case LevelMinimal:
+		return shared.ReasoningEffortMinimal, true
+	case LevelLow:
+		return shared.ReasoningEffortLow, true
+	case LevelMedium:
+		return shared.ReasoningEffortMedium, true
+	case LevelHigh:
+		return shared.ReasoningEffortHigh, true
+	case LevelXHigh, LevelMax:
+		return shared.ReasoningEffortXhigh, true
+	default:
+		return shared.ReasoningEffortMedium, true
+	}
 }
 
 func normalizeOpenAISchema(schema *Schema) map[string]any {

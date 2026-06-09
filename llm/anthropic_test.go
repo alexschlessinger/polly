@@ -15,6 +15,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 		name         string
 		model        string
 		effort       ThinkingEffort
+		maxTokens    int // 0 -> defaults to 1024
 		wantTemp     bool
 		wantAdaptive bool
 		wantEnabled  bool
@@ -24,7 +25,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 		{
 			name:         "opus_4_7_no_thinking",
 			model:        "claude-opus-4-7",
-			effort:       ThinkingOff,
+			effort:       EffortOff(),
 			wantTemp:     false,
 			wantAdaptive: false,
 			wantEnabled:  false,
@@ -32,7 +33,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 		{
 			name:         "opus_4_7_low",
 			model:        "claude-opus-4-7",
-			effort:       ThinkingLow,
+			effort:       EffortLevel(LevelLow),
 			wantTemp:     false,
 			wantAdaptive: true,
 			wantEffort:   anthropic.OutputConfigEffortLow,
@@ -40,15 +41,58 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 		{
 			name:         "opus_4_7_high",
 			model:        "claude-opus-4-7",
-			effort:       ThinkingHigh,
+			effort:       EffortLevel(LevelHigh),
 			wantTemp:     false,
 			wantAdaptive: true,
 			wantEffort:   anthropic.OutputConfigEffortHigh,
 		},
 		{
+			// minimal has no Anthropic equivalent and clamps up to low.
+			name:         "opus_4_7_minimal_clamps_to_low",
+			model:        "claude-opus-4-7",
+			effort:       EffortLevel(LevelMinimal),
+			wantTemp:     false,
+			wantAdaptive: true,
+			wantEffort:   anthropic.OutputConfigEffortLow,
+		},
+		{
+			name:         "opus_4_7_xhigh",
+			model:        "claude-opus-4-7",
+			effort:       EffortLevel(LevelXHigh),
+			wantTemp:     false,
+			wantAdaptive: true,
+			wantEffort:   anthropic.OutputConfigEffortXhigh,
+		},
+		{
+			name:         "opus_4_7_max",
+			model:        "claude-opus-4-7",
+			effort:       EffortLevel(LevelMax),
+			wantTemp:     false,
+			wantAdaptive: true,
+			wantEffort:   anthropic.OutputConfigEffortMax,
+		},
+		{
+			// Dynamic -> adaptive thinking with NO explicit effort (model decides).
+			name:         "opus_4_7_dynamic_has_no_effort",
+			model:        "claude-opus-4-7",
+			effort:       EffortDynamic(),
+			wantTemp:     false,
+			wantAdaptive: true,
+			wantEffort:   "", // OutputConfig.Effort left unset
+		},
+		{
+			// A raw budget on an adaptive model reduces to its nearest level.
+			name:         "opus_4_7_budget_maps_to_level",
+			model:        "claude-opus-4-7",
+			effort:       EffortBudget(70000), // above the max threshold (65536) -> max
+			wantTemp:     false,
+			wantAdaptive: true,
+			wantEffort:   anthropic.OutputConfigEffortMax,
+		},
+		{
 			name:         "opus_4_7_dated_variant",
 			model:        "claude-opus-4-7-20260101",
-			effort:       ThinkingMedium,
+			effort:       EffortLevel(LevelMedium),
 			wantTemp:     false,
 			wantAdaptive: true,
 			wantEffort:   anthropic.OutputConfigEffortMedium,
@@ -58,7 +102,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			// enabled/budget_tokens, which 400s ("hi" reproduced this).
 			name:         "opus_4_8_high",
 			model:        "claude-opus-4-8",
-			effort:       ThinkingHigh,
+			effort:       EffortLevel(LevelHigh),
 			wantTemp:     false,
 			wantAdaptive: true,
 			wantEffort:   anthropic.OutputConfigEffortHigh,
@@ -66,7 +110,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 		{
 			name:         "opus_4_8_dated_variant",
 			model:        "claude-opus-4-8-20260601",
-			effort:       ThinkingMedium,
+			effort:       EffortLevel(LevelMedium),
 			wantTemp:     false,
 			wantAdaptive: true,
 			wantEffort:   anthropic.OutputConfigEffortMedium,
@@ -74,7 +118,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 		{
 			name:         "sonnet_4_6_medium",
 			model:        "claude-sonnet-4-6",
-			effort:       ThinkingMedium,
+			effort:       EffortLevel(LevelMedium),
 			wantTemp:     true,
 			wantAdaptive: true,
 			wantEffort:   anthropic.OutputConfigEffortMedium,
@@ -82,23 +126,54 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 		{
 			name:         "opus_4_6_low",
 			model:        "claude-opus-4-6",
-			effort:       ThinkingLow,
+			effort:       EffortLevel(LevelLow),
 			wantTemp:     true,
 			wantAdaptive: true,
 			wantEffort:   anthropic.OutputConfigEffortLow,
 		},
 		{
-			name:         "sonnet_4_5_legacy_low",
-			model:        "claude-sonnet-4-5-20250929",
-			effort:       ThinkingLow,
-			wantTemp:     true,
-			wantEnabled:  true,
-			wantBudget:   thinkingBudgetLow,
+			name:        "sonnet_4_5_legacy_low",
+			model:       "claude-sonnet-4-5-20250929",
+			effort:      EffortLevel(LevelLow),
+			maxTokens:   16000,
+			wantTemp:    true,
+			wantEnabled: true,
+			wantBudget:  int64(levelBudgets[LevelLow]),
+		},
+		{
+			// A raw budget passes through on legacy models...
+			name:        "sonnet_4_5_legacy_raw_budget",
+			model:       "claude-sonnet-4-5-20250929",
+			effort:      EffortBudget(6000),
+			maxTokens:   16000,
+			wantTemp:    true,
+			wantEnabled: true,
+			wantBudget:  6000,
+		},
+		{
+			// ...but is clamped to strictly less than max_tokens (API 400s otherwise).
+			name:        "sonnet_4_5_legacy_budget_clamped_to_maxtokens",
+			model:       "claude-sonnet-4-5-20250929",
+			effort:      EffortBudget(50000),
+			maxTokens:   16000,
+			wantTemp:    true,
+			wantEnabled: true,
+			wantBudget:  15999,
+		},
+		{
+			// Dynamic has no legacy equivalent: fall back to the medium budget.
+			name:        "sonnet_4_5_legacy_dynamic_falls_back_to_medium",
+			model:       "claude-sonnet-4-5-20250929",
+			effort:      EffortDynamic(),
+			maxTokens:   16000,
+			wantTemp:    true,
+			wantEnabled: true,
+			wantBudget:  int64(levelBudgets[LevelMedium]),
 		},
 		{
 			name:         "sonnet_4_5_legacy_no_thinking",
 			model:        "claude-sonnet-4-5-20250929",
-			effort:       ThinkingOff,
+			effort:       EffortOff(),
 			wantTemp:     true,
 			wantAdaptive: false,
 			wantEnabled:  false,
@@ -108,9 +183,13 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 	client := NewAnthropicClient("")
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			maxTokens := tc.maxTokens
+			if maxTokens == 0 {
+				maxTokens = 1024
+			}
 			params := client.buildRequestParams(&CompletionRequest{
 				Model:          tc.model,
-				MaxTokens:      1024,
+				MaxTokens:      maxTokens,
 				Temperature:    Float32Ptr(1.0),
 				ThinkingEffort: tc.effort,
 				Messages: []messages.ChatMessage{
@@ -213,10 +292,12 @@ func TestAnthropicToolChoiceWithThinking(t *testing.T) {
 		effort     ThinkingEffort
 		wantForced bool
 	}{
-		{"no_thinking_forces_tool_choice", ThinkingOff, true},
-		{"thinking_low_skips_force", ThinkingLow, false},
-		{"thinking_medium_skips_force", ThinkingMedium, false},
-		{"thinking_high_skips_force", ThinkingHigh, false},
+		{"no_thinking_forces_tool_choice", EffortOff(), true},
+		{"thinking_low_skips_force", EffortLevel(LevelLow), false},
+		{"thinking_medium_skips_force", EffortLevel(LevelMedium), false},
+		{"thinking_high_skips_force", EffortLevel(LevelHigh), false},
+		{"thinking_dynamic_skips_force", EffortDynamic(), false},
+		{"thinking_budget_skips_force", EffortBudget(12000), false},
 	}
 
 	for _, tc := range tests {

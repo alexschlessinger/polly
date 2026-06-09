@@ -57,6 +57,50 @@ func requireClosedObjectSchema(t *testing.T, node map[string]any, wantRequired .
 	requireSchemaRequired(t, node, wantRequired...)
 }
 
+func TestOpenAIReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort ThinkingEffort
+		want   shared.ReasoningEffort
+		wantOK bool
+	}{
+		{"off omitted", EffortOff(), "", false},
+		{"dynamic omitted", EffortDynamic(), "", false},
+		{"minimal", EffortLevel(LevelMinimal), shared.ReasoningEffortMinimal, true},
+		{"low", EffortLevel(LevelLow), shared.ReasoningEffortLow, true},
+		{"medium", EffortLevel(LevelMedium), shared.ReasoningEffortMedium, true},
+		{"high", EffortLevel(LevelHigh), shared.ReasoningEffortHigh, true},
+		{"xhigh", EffortLevel(LevelXHigh), shared.ReasoningEffortXhigh, true},
+		{"max clamps to xhigh", EffortLevel(LevelMax), shared.ReasoningEffortXhigh, true},
+		{"budget maps to nearest level", EffortBudget(4096), shared.ReasoningEffortLow, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := openAIReasoningEffort(tc.effort)
+			if ok != tc.wantOK || got != tc.want {
+				t.Fatalf("openAIReasoningEffort(%+v) = (%q, %v), want (%q, %v)", tc.effort, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+// TestChatCompletionReasoningEffort confirms the chat-completions path (which
+// DeepSeek and OpenRouter also route through) sets reasoning_effort via the
+// shared mapping.
+func TestChatCompletionReasoningEffort(t *testing.T) {
+	params := buildChatCompletionRequestParams(&CompletionRequest{
+		Model:          "deepseek-reasoner",
+		MaxTokens:      512,
+		ThinkingEffort: EffortLevel(LevelXHigh),
+		Messages: []messages.ChatMessage{
+			{Role: messages.MessageRoleUser, Content: "hi"},
+		},
+	})
+	if got := params.ReasoningEffort; got != shared.ReasoningEffortXhigh {
+		t.Fatalf("reasoning_effort = %q, want %q", got, shared.ReasoningEffortXhigh)
+	}
+}
+
 func TestNewOpenAIClientRoutesByBaseURL(t *testing.T) {
 	native := NewOpenAIClient("key", "")
 	if native.apiMode != openAIAPIModeResponses {
@@ -80,7 +124,7 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 		Model:          "gpt-5.4",
 		MaxTokens:      512,
 		Temperature:    Float32Ptr(0.2),
-		ThinkingEffort: ThinkingHigh,
+		ThinkingEffort: EffortLevel(LevelHigh),
 		Messages: []messages.ChatMessage{
 			{Role: messages.MessageRoleSystem, Content: "System one"},
 			{Role: messages.MessageRoleSystem, Content: "System two"},

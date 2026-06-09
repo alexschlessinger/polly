@@ -18,7 +18,7 @@ var (
 	purgeDisallowedFlags = []string{
 		"context", "last", "prompt", "file", "model", "temp",
 		"maxtokens", "maxiterations", "timeout", "tool", "mcp", "system", "schema",
-		"tooltimeout", "maxcontext", "thinkingeffort", "baseurl",
+		"tooltimeout", "maxcontext", "thinking", "baseurl",
 		"skilldir", "skill", "noskills", "listskills",
 	}
 )
@@ -51,7 +51,7 @@ func parseConfig(cmd *cli.Command) *Config {
 			Temperature:      cmd.Float64("temp"),
 			MaxTokens:        cmd.Int("maxtokens"),
 			MaxHistoryTokens: cmd.Int("maxcontext"),
-			ThinkingEffort:   cmd.String("thinkingeffort"),
+			ThinkingEffort:   cmd.String("thinking"),
 			SystemPrompt:     cmd.String("system"),
 			ToolTimeout:      cmd.Duration("tooltimeout"),
 			SkillDirs:        cmd.StringSlice("skilldir"),
@@ -184,7 +184,7 @@ func modelConfigFlags() []cli.Flag {
 			Value:   2 * time.Minute,
 			Sources: cli.EnvVars("POLLYTOOL_TIMEOUT"),
 		},
-		newThinkingEffortFlag(),
+		newThinkingFlag(),
 	}
 }
 
@@ -321,12 +321,12 @@ func outputConfigFlags() []cli.Flag {
 	}
 }
 
-func newThinkingEffortFlag() *cli.StringFlag {
+func newThinkingFlag() *cli.StringFlag {
 	return &cli.StringFlag{
-		Name:    "thinkingeffort",
-		Usage:   "Thinking/reasoning effort level: off, low, medium, high",
+		Name:    "thinking",
+		Usage:   "Reasoning effort: off, dynamic, a level (minimal, low, medium, high, xhigh, max), or a token budget (e.g. 12000)",
 		Value:   "off",
-		Sources: cli.EnvVars("POLLYTOOL_THINKINGEFFORT"),
+		Sources: cli.EnvVars("POLLYTOOL_THINKING"),
 		Validator: func(v string) error {
 			_, err := llm.ParseThinkingEffort(v)
 			return err
