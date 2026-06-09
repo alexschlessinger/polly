@@ -3,7 +3,9 @@
 package sandbox
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,9 +13,7 @@ import (
 )
 
 type linuxSandbox struct {
-	args            []string // pre-built bwrap args (everything before --)
-	placeholderFile string
-	allowEnv        []string
+	cfg Config
 }
 
 // New creates a Sandbox for Linux using bubblewrap (bwrap).
@@ -21,20 +21,26 @@ func New(cfg Config) (Sandbox, error) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		return nil, fmt.Errorf("bwrap not available: %w", err)
 	}
-	placeholderFile, err := ensurePlaceholderFile()
-	if err != nil {
-		return nil, fmt.Errorf("prepare placeholder file: %w", err)
+	// Without a home directory the credential deny list expands to nothing;
+	// refuse to construct a sandbox that silently masks zero paths.
+	if _, err := os.UserHomeDir(); err != nil {
+		return nil, fmt.Errorf("cannot resolve home directory for credential masking: %w", err)
 	}
-	deniedPaths := existingDeniedPaths(ExpandHome(DeniedPaths))
-	return &linuxSandbox{
-		args:            buildBwrapArgs(cfg, deniedPaths, placeholderFile),
-		placeholderFile: placeholderFile,
-		allowEnv:        cfg.AllowEnv,
-	}, nil
+	// bwrap aborts on a bind whose source or mountpoint is missing, which
+	// would fail every command run through this sandbox. Catch it here so the
+	// tool fails at construction with the offending path named.
+	if !cfg.DenyWrite {
+		for _, p := range cfg.WritablePaths {
+			if _, err := os.Stat(expandTilde(p)); err != nil {
+				return nil, fmt.Errorf("writable path %q: %w", p, err)
+			}
+		}
+	}
+	return &linuxSandbox{cfg: cfg}, nil
 }
 
-// existingDeniedPaths resolves each deny-path to its real location and drops the
-// ones that don't exist. Two failure modes motivate this:
+// existingDeniedPaths resolves each deny-path to its real location and drops
+// the ones that don't exist. Two failure modes motivate this:
 //
 //   - Missing paths: masking one forces bwrap to mkdir a mountpoint under the
 //     read-only root bind, which fails ("Can't mkdir <path>: Read-only file
@@ -44,15 +50,23 @@ func New(cfg Config) (Sandbox, error) {
 //     tmpfs on the link itself ("Can't mount tmpfs ...: No such file or
 //     directory"), and masking the link wouldn't cover the real target anyway.
 //
-// EvalSymlinks handles both: it returns an error for missing paths (skip them)
-// and the resolved real path for symlinks (mask that instead). Resolved paths
-// are de-duplicated so two links to the same target don't double-mask.
+// Only a confirmed not-exist drops a mask. Any other resolution failure
+// (permissions, I/O) keeps the original path — if bwrap then can't mask it,
+// the command errors instead of running with the path readable.
+// Resolved paths are de-duplicated so two links to the same target don't
+// double-mask.
 func existingDeniedPaths(paths []DeniedPath) []DeniedPath {
 	kept := make([]DeniedPath, 0, len(paths))
 	seen := make(map[string]bool, len(paths))
 	for _, p := range paths {
 		real, err := filepath.EvalSymlinks(p.Path)
-		if err != nil || seen[real] {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			real = p.Path
+		}
+		if seen[real] {
 			continue
 		}
 		seen[real] = true
@@ -66,38 +80,26 @@ func (s *linuxSandbox) Wrap(cmd *exec.Cmd) error {
 	if env == nil {
 		env = os.Environ()
 	}
-	if len(s.allowEnv) > 0 {
-		allowed := make(map[string]bool, len(s.allowEnv))
-		for _, k := range s.allowEnv {
-			allowed[k] = true
-		}
-		var filtered []string
-		for _, e := range env {
-			if k, _, _ := strings.Cut(e, "="); allowed[k] {
-				filtered = append(filtered, e)
-			}
-		}
-		cmd.Env = filtered
-	} else {
-		var filtered []string
-		for _, e := range env {
-			if k, _, _ := strings.Cut(e, "="); !strings.HasPrefix(k, "POLLYTOOL_") {
-				filtered = append(filtered, e)
-			}
-		}
-		cmd.Env = filtered
-	}
+	cmd.Env = filterEnv(env, s.cfg.AllowEnv)
+
+	// The deny list is re-evaluated on every wrap, not frozen at construction:
+	// a credential dir created mid-session (e.g. `aws configure` in another
+	// terminal) must be masked by the next command, not left readable because
+	// it didn't exist at startup.
+	denied := existingDeniedPaths(allDeniedPaths(s.cfg))
+
 	origArgs := cmd.Args
 	bwrapPath, _ := exec.LookPath("bwrap")
 	cmd.Path = bwrapPath
-	cmd.Args = make([]string, 0, len(s.args)+1+len(origArgs))
-	cmd.Args = append(cmd.Args, s.args...)
+	args := buildBwrapArgs(s.cfg, denied)
+	cmd.Args = make([]string, 0, len(args)+1+len(origArgs))
+	cmd.Args = append(cmd.Args, args...)
 	cmd.Args = append(cmd.Args, "--")
 	cmd.Args = append(cmd.Args, origArgs...)
 	return nil
 }
 
-func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath, placeholderFile string) []string {
+func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath) []string {
 	args := []string{"bwrap"}
 
 	// Read-only root filesystem.
@@ -119,13 +121,16 @@ func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath, placeholderFile string
 	}
 
 	// Overlay sensitive credential paths, skipping those exempted by ReadPaths.
+	// Denied files are masked with /dev/null (reads return empty): unlike a
+	// shared placeholder file in /tmp, it can't be written through the
+	// writable /tmp bind to plant content at the masked paths.
 	for _, denied := range deniedPaths {
 		if readSet[denied.Path] || isUnderAny(denied.Path, readSet) {
 			continue
 		}
 		switch denied.Kind {
 		case DeniedPathFile:
-			args = append(args, "--ro-bind", placeholderFile, denied.Path)
+			args = append(args, "--ro-bind", "/dev/null", denied.Path)
 		default:
 			args = append(args, "--tmpfs", denied.Path)
 		}
@@ -135,13 +140,23 @@ func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath, placeholderFile string
 	args = append(args, "--dev", "/dev")
 	args = append(args, "--proc", "/proc")
 
+	// Without a PID namespace the sandbox shares the host's, and /proc lets it
+	// read /proc/<pid>/environ of any same-UID process — including polly's own
+	// POLLYTOOL_* API keys, defeating the env filtering above.
+	args = append(args, "--unshare-pid")
+
 	if !cfg.AllowNetwork {
 		args = append(args, "--unshare-net")
 	} else if cfg.DenyDNS {
-		args = append(args, "--ro-bind", placeholderFile, "/etc/resolv.conf")
+		args = append(args, "--ro-bind", "/dev/null", "/etc/resolv.conf")
 	}
 
 	args = append(args, "--die-with-parent")
+
+	// Detach from the controlling terminal: a sandboxed process holding the
+	// tty can otherwise inject keystrokes into the parent shell via the
+	// TIOCSTI ioctl (see bwrap(1) on --new-session).
+	args = append(args, "--new-session")
 
 	return args
 }
@@ -154,16 +169,4 @@ func isUnderAny(path string, set map[string]bool) bool {
 		}
 	}
 	return false
-}
-
-func ensurePlaceholderFile() (string, error) {
-	path := filepath.Join(os.TempDir(), "pollytool-sandbox-empty")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		return "", err
-	}
-	return path, nil
 }

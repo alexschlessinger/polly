@@ -337,7 +337,7 @@ polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 
 #### Sandboxing
 
-Shell tools and MCP servers opt into sandboxing by setting `"sandbox"` in their schema. An opted-in process runs with a read-only root filesystem, writes restricted to the OS temp directory (plus any `writablePaths`), no network by default, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and `POLLYTOOL_*` env vars stripped. The tool's description gets a `[sandboxed]` suffix so the LLM knows it's restricted.
+Shell tools and MCP servers opt into sandboxing by setting `"sandbox"` in their schema. An opted-in process runs with a read-only root filesystem, writes restricted to the OS temp directory (plus any `writablePaths`), no network by default, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, ...) stripped. On Linux the process also gets its own PID namespace and session, so it can't read other processes' environments or inject keystrokes into the parent terminal. The tool's description gets a `[sandboxed]` suffix so the LLM knows it's restricted. Extra paths can be blocked globally with `--denypath` (or `POLLYTOOL_DENYPATHS`).
 
 Sandboxing requires `bwrap` (Linux) or `sandbox-exec` (macOS). If neither is available, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API.md](API.md) for the full spec.
 
@@ -388,7 +388,7 @@ polly -t ./sandboxed_uppercase.sh -p "uppercase 'hello world' using the tool"
 "sandbox": false
 ```
 
-`POLLYTOOL_*` env vars are always stripped from sandboxed processes unless explicitly listed in `allowEnv`.
+Credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, names ending in `_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, ..., plus agent sockets like `SSH_AUTH_SOCK`) are stripped from sandboxed processes unless explicitly listed in `allowEnv`.
 
 **MCP server sandboxing** — set `sandbox` on each server entry in the config:
 

@@ -3,7 +3,9 @@ package sandbox
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -246,6 +248,92 @@ func TestWrapCmdError(t *testing.T) {
 	cmd := exec.Command("echo", "hello")
 	if err := WrapCmd(sb, cmd); err == nil {
 		t.Fatal("expected error from WrapCmd")
+	}
+}
+
+func TestFilterEnvStripsSensitiveByDefault(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/user",
+		"EDITOR=vi",
+		"POLLYTOOL_ANTHROPICKEY=sk-1",
+		"SSH_AUTH_SOCK=/run/agent.sock",
+		"GPG_AGENT_INFO=/run/gpg",
+		"AWS_SECRET_ACCESS_KEY=aws-secret",
+		"AWS_REGION=us-east-1",
+		"GITHUB_TOKEN=ghp",
+		"OPENAI_API_KEY=sk-2",
+		"DB_PASSWORD=hunter2",
+		"GOOGLE_APPLICATION_CREDENTIALS=/creds.json",
+	}
+	got := filterEnv(env, nil)
+
+	want := map[string]bool{"PATH=/usr/bin": true, "HOME=/home/user": true, "EDITOR=vi": true}
+	if len(got) != len(want) {
+		t.Fatalf("filterEnv = %v, want only %v", got, want)
+	}
+	for _, e := range got {
+		if !want[e] {
+			t.Fatalf("sensitive var %q survived default filtering: %v", e, got)
+		}
+	}
+}
+
+func TestFilterEnvAllowEnvOverridesSensitivity(t *testing.T) {
+	// An explicit allowlist wins, even for vars the heuristics call sensitive.
+	env := []string{"GITHUB_TOKEN=ghp", "PATH=/usr/bin", "HOME=/home/user"}
+	got := filterEnv(env, []string{"GITHUB_TOKEN"})
+	if len(got) != 1 || got[0] != "GITHUB_TOKEN=ghp" {
+		t.Fatalf("filterEnv with allowEnv = %v, want only the explicitly allowed GITHUB_TOKEN", got)
+	}
+}
+
+func TestAllDeniedPathsIncludesUserDenyPaths(t *testing.T) {
+	dir := t.TempDir()
+	extraDir := filepath.Join(dir, "secrets")
+	if err := os.MkdirAll(extraDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	extraFile := filepath.Join(dir, "token.txt")
+	if err := os.WriteFile(extraFile, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "nope")
+
+	got := allDeniedPaths(Config{DenyPaths: []string{extraDir, extraFile, missing}})
+
+	kinds := make(map[string]DeniedPathKind, len(got))
+	for _, p := range got {
+		kinds[p.Path] = p.Kind
+	}
+	if kinds[extraDir] != DeniedPathDir {
+		t.Fatalf("existing directory %q kind = %q, want %q", extraDir, kinds[extraDir], DeniedPathDir)
+	}
+	if kinds[extraFile] != DeniedPathFile {
+		t.Fatalf("existing file %q kind = %q, want %q", extraFile, kinds[extraFile], DeniedPathFile)
+	}
+	if kinds[missing] != DeniedPathFile {
+		t.Fatalf("missing path %q kind = %q, want %q (platforms drop or harmlessly deny it)", missing, kinds[missing], DeniedPathFile)
+	}
+	if len(got) != len(ExpandHome(DeniedPaths))+3 {
+		t.Fatalf("allDeniedPaths returned %d entries, want built-ins plus 3", len(got))
+	}
+}
+
+func TestParseConfigDenyPaths(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`{"denyPaths":["~/secrets","/var/private"]}`))
+	if err != nil {
+		t.Fatalf("ParseConfig error = %v", err)
+	}
+	if len(cfg.DenyPaths) != 2 {
+		t.Fatalf("DenyPaths = %v, want 2 entries", cfg.DenyPaths)
+	}
+}
+
+func TestMergeDenyPaths(t *testing.T) {
+	merged := Config{DenyPaths: []string{"/a"}}.Merge(Config{DenyPaths: []string{"/b"}})
+	if len(merged.DenyPaths) != 2 || merged.DenyPaths[0] != "/a" || merged.DenyPaths[1] != "/b" {
+		t.Fatalf("DenyPaths = %v, want [/a /b]", merged.DenyPaths)
 	}
 }
 

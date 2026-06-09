@@ -524,6 +524,98 @@ func TestSandboxDenyWriteBlocksTemp(t *testing.T) {
 	}
 }
 
+func TestBuildProfileIncludesUserDenyPaths(t *testing.T) {
+	dir := t.TempDir()
+	profile := buildProfile(Config{DenyPaths: []string{dir}})
+	if !strings.Contains(profile, fmt.Sprintf(`(deny file-read* (subpath %q))`, dir)) {
+		t.Fatalf("profile missing deny for user denyPath %q:\n%s", dir, profile)
+	}
+}
+
+func TestBuildProfileResolvesSymlinkedDenyPaths(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-creds")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, ".creds")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := buildProfile(Config{DenyPaths: []string{link}})
+
+	// Seatbelt matches resolved vnode paths, so the deny must name the real
+	// target, not just the link.
+	resolved, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(profile, fmt.Sprintf(`(deny file-read* (subpath %q))`, resolved)) {
+		t.Fatalf("profile missing deny for symlink target %q:\n%s", resolved, profile)
+	}
+	if !strings.Contains(profile, fmt.Sprintf(`(deny file-read* (subpath %q))`, link)) {
+		t.Fatalf("profile missing deny for the link itself %q:\n%s", link, profile)
+	}
+}
+
+func TestSandboxBlocksSymlinkedDenyPath(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-creds")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(target, "key")
+	if err := os.WriteFile(secret, []byte("secret-value"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, ".creds")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{DenyPaths: []string{link}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Reading through the link and reading the target directly must both fail.
+	for _, path := range []string{filepath.Join(link, "key"), secret} {
+		cmd := exec.CommandContext(context.Background(), "cat", path)
+		if err := sb.Wrap(cmd); err != nil {
+			t.Fatalf("Wrap() error = %v", err)
+		}
+		if out, err := cmd.CombinedOutput(); err == nil {
+			t.Fatalf("expected read of %s to be blocked, got output: %s", path, string(out))
+		}
+	}
+}
+
+func TestWrapStripsSensitiveEnvByDefault(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", "true")
+	cmd.Env = []string{
+		"SSH_AUTH_SOCK=/run/agent.sock",
+		"GITHUB_TOKEN=ghp",
+		"MY_API_KEY=sk",
+		"OTHER_VAR=kept",
+	}
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if len(cmd.Env) != 1 || cmd.Env[0] != "OTHER_VAR=kept" {
+		t.Fatalf("cmd.Env = %v, want only OTHER_VAR=kept", cmd.Env)
+	}
+}
+
 func TestSandboxGracefulFallback(t *testing.T) {
 	// Override PATH to exclude sandbox-exec
 	origPath := os.Getenv("PATH")

@@ -693,19 +693,23 @@ Tools that omit `"sandbox"` or set it to `false` run without restrictions, even 
 | `denyDNS` | bool | `false` | Block DNS resolution. Only effective when `allowNetwork` is `true`. |
 | `writablePaths` | string[] | `[]` | Directories where writes are allowed (supports `~`) |
 | `readPaths` | string[] | `[]` | Paths exempted from the credential deny list (supports `~`) |
-| `allowEnv` | string[] | all | If set, only these env vars are passed through |
+| `denyPaths` | string[] | `[]` | Extra paths blocked from reads, in addition to the built-in deny list (supports `~`) |
+| `allowEnv` | string[] | all non-sensitive | If set, only these env vars are passed through (overrides the sensitive-var stripping) |
 | `denyWrite` | bool | `false` | Deny all file writes, including temp. Overrides `writablePaths`. |
 
 **Defaults** (when `"sandbox": true`):
 - Writes: denied everywhere except OS temp dir (`/tmp`)
 - Network: denied
 - Reads: all files accessible except credential paths (see below)
-- Env: all vars passed through, except `POLLYTOOL_*` which are always stripped
+- Env: all vars passed through except sensitive ones (see below)
+- Linux: own PID namespace (host processes invisible) and own session (no terminal injection)
 
 **Credential paths denied by default:**
 `~/.ssh`, `~/.gnupg`, `~/.gpg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.npmrc`, `~/.pypirc`, `~/.gem/credentials`, `~/.cargo/credentials`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`
 
-**`POLLYTOOL_*` env vars** (API keys) are always stripped from sandboxed processes, even without `allowEnv`. To explicitly pass one through, include it in `allowEnv`.
+Deny paths are re-checked on every command, and symlinked entries are resolved to their real targets. The `--denypath` flag (env `POLLYTOOL_DENYPATHS`) adds global entries for all sandboxed tools.
+
+**Sensitive env vars** are always stripped, even without `allowEnv`: `POLLYTOOL_*` and `AWS_*` prefixes; names ending in `_API_KEY`, `_APIKEY`, `_TOKEN`, `_SECRET`, `_SECRET_KEY`, `_ACCESS_KEY`, `_PASSWORD`, `_PASSPHRASE`, `_CREDENTIALS`, `_PRIVATE_KEY`; and the agent sockets `SSH_AUTH_SOCK` / `GPG_AGENT_INFO`. To pass one through, include it in `allowEnv`.
 
 **Conflict resolution:** `denyWrite: true` silently overrides `writablePaths`. `denyDNS: true` has no additional effect when `allowNetwork` is `false`.
 

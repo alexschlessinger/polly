@@ -69,6 +69,9 @@ type Config struct {
 	// Paths exempted from the DeniedPaths deny list.
 	ReadPaths []string `json:"readPaths,omitempty"`
 
+	// Extra paths blocked from reads, in addition to DeniedPaths (supports ~ expansion).
+	DenyPaths []string `json:"denyPaths,omitempty"`
+
 	// If non-empty, only these env vars are passed through to the sandbox.
 	AllowEnv []string `json:"allowEnv,omitempty"`
 
@@ -154,9 +157,83 @@ func (c Config) Merge(overlay Config) Config {
 	c.DenyDNS = c.DenyDNS || overlay.DenyDNS
 	c.WritablePaths = append(c.WritablePaths, overlay.WritablePaths...)
 	c.ReadPaths = append(c.ReadPaths, overlay.ReadPaths...)
+	c.DenyPaths = append(c.DenyPaths, overlay.DenyPaths...)
 	c.AllowEnv = append(c.AllowEnv, overlay.AllowEnv...)
 	c.DenyWrite = c.DenyWrite || overlay.DenyWrite
 	return c
+}
+
+// Default-stripped env vars: agent sockets give a sandboxed process use of the
+// user's keys even with ~/.ssh and ~/.gnupg masked, and credential-shaped
+// names (FOO_API_KEY, FOO_TOKEN, ...) are secrets regardless of which tool
+// they belong to. AllowEnv passes any of these through explicitly.
+var (
+	sensitiveEnvNames    = map[string]bool{"SSH_AUTH_SOCK": true, "GPG_AGENT_INFO": true}
+	sensitiveEnvPrefixes = []string{"POLLYTOOL_", "AWS_"}
+	sensitiveEnvSuffixes = []string{
+		"_API_KEY", "_APIKEY", "_TOKEN", "_SECRET", "_SECRET_KEY",
+		"_ACCESS_KEY", "_PASSWORD", "_PASSPHRASE", "_CREDENTIALS", "_PRIVATE_KEY",
+	}
+)
+
+func isSensitiveEnv(name string) bool {
+	upper := strings.ToUpper(name)
+	if sensitiveEnvNames[upper] {
+		return true
+	}
+	for _, p := range sensitiveEnvPrefixes {
+		if strings.HasPrefix(upper, p) {
+			return true
+		}
+	}
+	for _, s := range sensitiveEnvSuffixes {
+		if strings.HasSuffix(upper, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// filterEnv returns the env vars a sandboxed process should receive.
+// With allowEnv set, only those names pass (an explicit allowlist wins over
+// the sensitivity heuristics). Otherwise everything passes except
+// sensitive-looking vars — see isSensitiveEnv.
+func filterEnv(env, allowEnv []string) []string {
+	var filtered []string
+	if len(allowEnv) > 0 {
+		allowed := make(map[string]bool, len(allowEnv))
+		for _, k := range allowEnv {
+			allowed[k] = true
+		}
+		for _, e := range env {
+			if k, _, _ := strings.Cut(e, "="); allowed[k] {
+				filtered = append(filtered, e)
+			}
+		}
+		return filtered
+	}
+	for _, e := range env {
+		if k, _, _ := strings.Cut(e, "="); !isSensitiveEnv(k) {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
+}
+
+// allDeniedPaths combines the built-in deny list with cfg.DenyPaths, all
+// tilde-expanded. User entries get their kind from a stat (missing paths
+// default to file; platforms that need existence handle that themselves).
+func allDeniedPaths(cfg Config) []DeniedPath {
+	paths := ExpandHome(DeniedPaths)
+	for _, p := range cfg.DenyPaths {
+		expanded := expandTilde(p)
+		kind := DeniedPathFile
+		if fi, err := os.Stat(expanded); err == nil && fi.IsDir() {
+			kind = DeniedPathDir
+		}
+		paths = append(paths, DeniedPath{Path: expanded, Kind: kind})
+	}
+	return paths
 }
 
 // expandTilde resolves a ~ prefix to the user's home directory for a single path.

@@ -34,6 +34,7 @@ type Config struct {
 	BaseURL       string
 	Confirm       bool
 	NoSandbox     bool
+	DenyPaths     []string
 
 	// Skill configuration
 	NoSkills   bool

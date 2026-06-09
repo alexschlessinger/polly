@@ -71,6 +71,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		BaseURL:       cmd.String("baseurl"),
 		Confirm:       cmd.Bool("confirm"),
 		NoSandbox:     cmd.Bool("nosandbox"),
+		DenyPaths:     cmd.StringSlice("denypath"),
 
 		// Skill configuration
 		NoSkills:   cmd.Bool("noskills"),
@@ -312,6 +313,11 @@ func sandboxConfigFlags() []cli.Flag {
 			Name:    "nosandbox",
 			Usage:   "Disable sandboxing of bash commands",
 			Sources: cli.EnvVars("POLLYTOOL_NOSANDBOX"),
+		},
+		&cli.StringSliceFlag{
+			Name:    "denypath",
+			Usage:   "Additional path blocked from sandboxed reads (repeatable, supports ~)",
+			Sources: cli.EnvVars("POLLYTOOL_DENYPATHS"),
 		},
 	}
 }

@@ -11,8 +11,7 @@ import (
 )
 
 type darwinSandbox struct {
-	profile  string
-	allowEnv []string
+	cfg Config
 }
 
 // New creates a Sandbox for macOS using sandbox-exec with Seatbelt profiles.
@@ -20,7 +19,12 @@ func New(cfg Config) (Sandbox, error) {
 	if _, err := exec.LookPath("sandbox-exec"); err != nil {
 		return nil, fmt.Errorf("sandbox-exec not available: %w", err)
 	}
-	return &darwinSandbox{profile: buildProfile(cfg), allowEnv: cfg.AllowEnv}, nil
+	// Without a home directory the credential deny list expands to nothing;
+	// refuse to construct a sandbox that silently masks zero paths.
+	if _, err := os.UserHomeDir(); err != nil {
+		return nil, fmt.Errorf("cannot resolve home directory for credential masking: %w", err)
+	}
+	return &darwinSandbox{cfg: cfg}, nil
 }
 
 func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
@@ -28,31 +32,25 @@ func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
 	if env == nil {
 		env = os.Environ()
 	}
-	if len(s.allowEnv) > 0 {
-		allowed := make(map[string]bool, len(s.allowEnv))
-		for _, k := range s.allowEnv {
-			allowed[k] = true
-		}
-		var filtered []string
-		for _, e := range env {
-			if k, _, _ := strings.Cut(e, "="); allowed[k] {
-				filtered = append(filtered, e)
-			}
-		}
-		cmd.Env = filtered
-	} else {
-		var filtered []string
-		for _, e := range env {
-			if k, _, _ := strings.Cut(e, "="); !strings.HasPrefix(k, "POLLYTOOL_") {
-				filtered = append(filtered, e)
-			}
-		}
-		cmd.Env = filtered
-	}
+	cmd.Env = filterEnv(env, s.cfg.AllowEnv)
+
 	origArgs := cmd.Args
 	cmd.Path = "/usr/bin/sandbox-exec"
-	cmd.Args = append([]string{"sandbox-exec", "-p", s.profile}, origArgs...)
+	// The profile is rebuilt on every wrap, not frozen at construction, so the
+	// symlink resolution below tracks the filesystem as it is now.
+	cmd.Args = append([]string{"sandbox-exec", "-p", buildProfile(s.cfg)}, origArgs...)
 	return nil
+}
+
+// pathAndResolved returns path plus its symlink-resolved target when that
+// differs. Seatbelt matches resolved vnode paths, so a rule on a
+// dotfiles-managed symlink (~/.npmrc -> ~/dotfiles/npmrc) never fires for the
+// real file; rules must name both.
+func pathAndResolved(path string) []string {
+	if real, err := filepath.EvalSymlinks(path); err == nil && real != path {
+		return []string{path, real}
+	}
+	return []string{path}
 }
 
 func buildProfile(cfg Config) string {
@@ -100,13 +98,17 @@ func buildProfile(cfg Config) string {
 	}
 
 	// Deny read access to sensitive credential paths.
-	for _, denied := range ExpandHome(DeniedPaths) {
-		sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", denied.Path))
+	for _, denied := range allDeniedPaths(cfg) {
+		for _, p := range pathAndResolved(denied.Path) {
+			sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", p))
+		}
 	}
 
 	// Re-allow read access for exempted paths (last-match-wins in Seatbelt).
 	for _, p := range cfg.ReadPaths {
-		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", expandTilde(p)))
+		for _, rp := range pathAndResolved(expandTilde(p)) {
+			sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", rp))
+		}
 	}
 
 	if !cfg.AllowNetwork {

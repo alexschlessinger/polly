@@ -41,10 +41,17 @@ func TestLinuxExistingDeniedPaths(t *testing.T) {
 		t.Fatalf("Symlink error = %v", err)
 	}
 
+	// A dangling symlink reads as ENOENT through the link: nothing to mask.
+	dangling := filepath.Join(dir, ".azure")
+	if err := os.Symlink(filepath.Join(dir, "gone"), dangling); err != nil {
+		t.Fatalf("Symlink error = %v", err)
+	}
+
 	got := existingDeniedPaths([]DeniedPath{
 		{Path: present, Kind: DeniedPathDir},
 		{Path: missing, Kind: DeniedPathDir},
 		{Path: link, Kind: DeniedPathDir},
+		{Path: dangling, Kind: DeniedPathDir},
 	})
 
 	want := map[string]bool{present: true, target: true}
@@ -55,6 +62,75 @@ func TestLinuxExistingDeniedPaths(t *testing.T) {
 		if !want[p.Path] {
 			t.Fatalf("unexpected path %q in result %v (missing should be dropped, symlink resolved to %q)", p.Path, got, target)
 		}
+	}
+}
+
+// An EvalSymlinks failure that is NOT "does not exist" (here: an unreadable
+// parent directory) must keep the original path — dropping the mask on an
+// unexpected error would silently leave a real path readable.
+func TestLinuxExistingDeniedPathsFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions are not enforced")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	secret := filepath.Join(locked, ".secret")
+	if err := os.MkdirAll(secret, 0700); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", secret, err)
+	}
+	if err := os.Chmod(locked, 0000); err != nil {
+		t.Fatalf("Chmod error = %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0700) })
+
+	got := existingDeniedPaths([]DeniedPath{{Path: secret, Kind: DeniedPathDir}})
+	if len(got) != 1 || got[0].Path != secret {
+		t.Fatalf("existingDeniedPaths = %v, want the unresolvable path %q kept (fail closed)", got, secret)
+	}
+}
+
+// The deny list must be re-evaluated per Wrap: a credential dir created after
+// the sandbox was constructed still has to be masked.
+func TestLinuxWrapReevaluatesDeniedPaths(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	sshDir := filepath.Join(home, ".ssh")
+
+	cmd := exec.Command("bash", "-c", "true")
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if strings.Contains(strings.Join(cmd.Args, " "), "--tmpfs "+sshDir) {
+		t.Fatalf("mask for %q present before the directory exists", sshDir)
+	}
+
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", sshDir, err)
+	}
+
+	cmd = exec.Command("bash", "-c", "true")
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if !strings.Contains(strings.Join(cmd.Args, " "), "--tmpfs "+sshDir) {
+		t.Fatalf("mask for %q missing after the directory was created mid-session:\n%s", sshDir, strings.Join(cmd.Args, " "))
+	}
+}
+
+func TestLinuxNewRejectsMissingWritablePath(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if _, err := New(Config{WritablePaths: []string{missing}}); err == nil {
+		t.Fatal("New() = nil error, want failure for a missing writable path (bwrap would abort every command)")
 	}
 }
 
@@ -94,7 +170,7 @@ func TestLinuxBuildBwrapArgs(t *testing.T) {
 	}, []DeniedPath{
 		{Path: "/home/user/.ssh", Kind: DeniedPathDir},
 		{Path: "/home/user/.npmrc", Kind: DeniedPathFile},
-	}, "/tmp/pollytool-sandbox-empty")
+	})
 
 	joined := strings.Join(args, " ")
 
@@ -110,14 +186,20 @@ func TestLinuxBuildBwrapArgs(t *testing.T) {
 	if !strings.Contains(joined, "--tmpfs /home/user/.ssh") {
 		t.Fatal("missing tmpfs overlay for denied directory")
 	}
-	if !strings.Contains(joined, "--ro-bind /tmp/pollytool-sandbox-empty /home/user/.npmrc") {
-		t.Fatal("missing placeholder bind for denied file")
+	if !strings.Contains(joined, "--ro-bind /dev/null /home/user/.npmrc") {
+		t.Fatal("missing /dev/null bind for denied file")
 	}
 	if strings.Contains(joined, "--tmpfs /home/user/.npmrc") {
 		t.Fatal("denied file should not be mounted with tmpfs")
 	}
 	if !strings.Contains(joined, "--unshare-net") {
 		t.Fatal("missing --unshare-net (network should be denied by default)")
+	}
+	if !strings.Contains(joined, "--unshare-pid") {
+		t.Fatal("missing --unshare-pid (host /proc leaks same-UID process environs)")
+	}
+	if !strings.Contains(joined, "--new-session") {
+		t.Fatal("missing --new-session (controlling tty allows TIOCSTI keystroke injection)")
 	}
 	if !strings.Contains(joined, "--die-with-parent") {
 		t.Fatal("missing --die-with-parent")
@@ -138,7 +220,7 @@ func TestLinuxBuildBwrapArgsWritePathsTilde(t *testing.T) {
 	expanded := filepath.Join(home, "output")
 	args := buildBwrapArgs(Config{
 		WritablePaths: []string{"~/output"},
-	}, nil, "/tmp/pollytool-sandbox-empty")
+	}, nil)
 
 	joined := strings.Join(args, " ")
 	expected := "--bind " + expanded + " " + expanded
@@ -154,7 +236,7 @@ func TestLinuxBuildBwrapArgsReadPaths(t *testing.T) {
 		{Path: "/home/user/.ssh", Kind: DeniedPathDir},
 		{Path: "/home/user/.aws", Kind: DeniedPathDir},
 		{Path: "/home/user/.npmrc", Kind: DeniedPathFile},
-	}, "/tmp/pollytool-sandbox-empty")
+	})
 
 	joined := strings.Join(args, " ")
 
@@ -167,8 +249,8 @@ func TestLinuxBuildBwrapArgsReadPaths(t *testing.T) {
 		t.Fatal("denied path NOT in ReadPaths should still have --tmpfs")
 	}
 	// .npmrc should still be overlaid
-	if !strings.Contains(joined, "--ro-bind /tmp/pollytool-sandbox-empty /home/user/.npmrc") {
-		t.Fatal("denied file NOT in ReadPaths should still have placeholder bind")
+	if !strings.Contains(joined, "--ro-bind /dev/null /home/user/.npmrc") {
+		t.Fatal("denied file NOT in ReadPaths should still have /dev/null bind")
 	}
 }
 
@@ -238,18 +320,18 @@ func TestLinuxSandboxStripsPollytoolEnvByDefault(t *testing.T) {
 }
 
 func TestLinuxBuildBwrapArgsDenyDNS(t *testing.T) {
-	args := buildBwrapArgs(Config{AllowNetwork: true, DenyDNS: true}, nil, "/tmp/pollytool-sandbox-empty")
+	args := buildBwrapArgs(Config{AllowNetwork: true, DenyDNS: true}, nil)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--unshare-net") {
 		t.Fatal("should not have --unshare-net when AllowNetwork is true")
 	}
-	if !strings.Contains(joined, "--ro-bind /tmp/pollytool-sandbox-empty /etc/resolv.conf") {
+	if !strings.Contains(joined, "--ro-bind /dev/null /etc/resolv.conf") {
 		t.Fatalf("missing resolv.conf masking for DenyDNS:\n%s", joined)
 	}
 }
 
 func TestLinuxBuildBwrapArgsDenyDNSWithoutNetwork(t *testing.T) {
-	args := buildBwrapArgs(Config{AllowNetwork: false, DenyDNS: true}, nil, "/tmp/pollytool-sandbox-empty")
+	args := buildBwrapArgs(Config{AllowNetwork: false, DenyDNS: true}, nil)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--unshare-net") {
 		t.Fatal("should have --unshare-net when AllowNetwork is false")
@@ -260,7 +342,7 @@ func TestLinuxBuildBwrapArgsDenyDNSWithoutNetwork(t *testing.T) {
 }
 
 func TestLinuxBuildBwrapArgsDenyWrite(t *testing.T) {
-	args := buildBwrapArgs(Config{DenyWrite: true}, nil, "/tmp/pollytool-sandbox-empty")
+	args := buildBwrapArgs(Config{DenyWrite: true}, nil)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--bind /tmp /tmp") {
 		t.Fatal("should not have writable /tmp bind when DenyWrite is true")
@@ -268,27 +350,10 @@ func TestLinuxBuildBwrapArgsDenyWrite(t *testing.T) {
 }
 
 func TestLinuxBuildBwrapArgsAllowsNetwork(t *testing.T) {
-	args := buildBwrapArgs(Config{AllowNetwork: true}, nil, "/tmp/pollytool-sandbox-empty")
+	args := buildBwrapArgs(Config{AllowNetwork: true}, nil)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--unshare-net") {
 		t.Fatal("should not have --unshare-net when AllowNetwork is true")
-	}
-}
-
-func TestEnsurePlaceholderFile(t *testing.T) {
-	path, err := ensurePlaceholderFile()
-	if err != nil {
-		t.Fatalf("ensurePlaceholderFile() error = %v", err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("Stat(%q) error = %v", path, err)
-	}
-	if info.Size() != 0 {
-		t.Fatalf("placeholder file size = %d, want 0", info.Size())
-	}
-	if !strings.HasPrefix(path, os.TempDir()) {
-		t.Fatalf("placeholder path = %q, want prefix %q", path, os.TempDir())
 	}
 }
 

@@ -280,6 +280,7 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 	}
 
 	baseCfg := sandbox.DefaultConfig()
+	baseCfg.DenyPaths = append(baseCfg.DenyPaths, config.DenyPaths...)
 
 	// Validate that the backend constructs (e.g. the binary exists)...
 	sb, err := newSandbox(baseCfg)
