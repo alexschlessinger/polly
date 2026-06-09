@@ -39,9 +39,13 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 	cfg := sandbox.DefaultConfig()
 	cfg.AllowNetwork = true
 	if registry.HasSandbox() {
-		if sb, err := registry.NewSandboxDirect(cfg); err == nil {
-			bt = bt.WithSandbox(sb)
+		// Fail closed: the skill bash tool must not fall back to running
+		// unsandboxed when its sandbox can't be constructed.
+		sb, err := registry.NewSandboxDirect(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox for skill bash tool: %w", err)
 		}
+		bt = bt.WithSandbox(sb)
 	}
 	runtime.activateTool.writablePaths = cfg.WritablePaths
 	registry.Register(bt)

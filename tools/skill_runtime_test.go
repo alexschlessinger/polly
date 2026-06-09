@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/skills"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 func TestNewSkillRuntimeRegistersBuiltins(t *testing.T) {
@@ -29,6 +30,21 @@ func TestNewSkillRuntimeRegistersBuiltins(t *testing.T) {
 	}
 	if _, ok := registry.Get("read_skill_file"); !ok {
 		t.Fatal("expected read_skill_file to be registered")
+	}
+}
+
+func TestNewSkillRuntimeSandboxFailureFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	createSkillWithScript(t, root, "runtime-skill")
+
+	catalog, err := skills.Discover([]string{root})
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+
+	registry := NewToolRegistry(nil, WithSandboxFactory(failingSandboxFactory(), sandbox.Config{}))
+	if _, err := NewSkillRuntime(catalog, registry); err == nil {
+		t.Fatal("expected NewSkillRuntime to fail when the skill bash sandbox can't be constructed")
 	}
 }
 

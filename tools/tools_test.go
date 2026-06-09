@@ -965,6 +965,82 @@ func mockSandboxFactory(sb *mockSandbox) func(sandbox.Config) (sandbox.Sandbox, 
 	}
 }
 
+func failingSandboxFactory() func(sandbox.Config) (sandbox.Sandbox, error) {
+	return func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return nil, fmt.Errorf("backend broken")
+	}
+}
+
+func TestRegistryShellToolSchemaSandboxFailureFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createTestScript(t, dir)
+
+	registry := NewToolRegistry(nil, WithSandboxFactory(failingSandboxFactory(), sandbox.Config{}))
+
+	if _, err := registry.LoadShellTool(scriptPath); err == nil {
+		t.Fatal("expected load to fail when the schema sandbox can't be constructed")
+	}
+	if len(registry.All()) != 0 {
+		t.Fatalf("registry should be empty after a failed load, has %d tools", len(registry.All()))
+	}
+}
+
+func TestRegistryShellToolSandboxFailureFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createTestScript(t, dir)
+
+	// First construction (schema-load sandbox) succeeds, second (execution
+	// sandbox) fails — the tool must not load and run unsandboxed.
+	calls := 0
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		calls++
+		if calls > 1 {
+			return nil, fmt.Errorf("backend broken")
+		}
+		return &mockSandbox{}, nil
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}))
+
+	_, err := registry.LoadShellTool(scriptPath)
+	if err == nil {
+		t.Fatal("expected load to fail when the execution sandbox can't be constructed")
+	}
+	if !strings.Contains(err.Error(), "sandbox for shell tool") {
+		t.Fatalf("error = %q, want it to name the sandbox failure", err)
+	}
+	if len(registry.All()) != 0 {
+		t.Fatalf("registry should be empty after a failed load, has %d tools", len(registry.All()))
+	}
+}
+
+func TestLoadToolAutoBashSandboxFailureFailsClosed(t *testing.T) {
+	registry := NewToolRegistry(nil, WithSandboxFactory(failingSandboxFactory(), sandbox.Config{}))
+
+	_, err := registry.LoadToolAuto("bash")
+	if err == nil {
+		t.Fatal("expected bash load to fail when its sandbox can't be constructed")
+	}
+	if !strings.Contains(err.Error(), "sandbox for bash") {
+		t.Fatalf("error = %q, want it to name the sandbox failure", err)
+	}
+	if _, ok := registry.Get("bash"); ok {
+		t.Fatal("bash should not be registered after a failed load")
+	}
+}
+
+func TestRegisterNativeFactoryNilTool(t *testing.T) {
+	registry := NewToolRegistry(nil)
+	registry.RegisterNative("broken", func() Tool { return nil })
+
+	_, err := registry.LoadToolAuto("broken")
+	if err == nil {
+		t.Fatal("expected an error, not a panic, for a native factory returning nil")
+	}
+	if _, ok := registry.Get("broken"); ok {
+		t.Fatal("nil tool should not be registered")
+	}
+}
+
 func TestShellToolNonExecutable(t *testing.T) {
 	// Test with a non-executable file
 	dir := t.TempDir()

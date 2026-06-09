@@ -51,7 +51,7 @@ type ToolRegistry struct {
 	tools map[string]Tool
 
 	// Native tool factories
-	nativeTools map[string]func() Tool // toolName -> factory
+	nativeTools map[string]func() (Tool, error) // toolName -> factory
 
 	// MCP tracking
 	toolClients map[string]*MCPClient // toolName -> client
@@ -143,7 +143,7 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 
 	registry := &ToolRegistry{
 		tools:              make(map[string]Tool),
-		nativeTools:        make(map[string]func() Tool),
+		nativeTools:        make(map[string]func() (Tool, error)),
 		toolClients:        make(map[string]*MCPClient),
 		serverTools:        make(map[string][]string),
 		pendingTools:       make(map[string]Tool),
@@ -156,14 +156,17 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 		baseSandboxCfg:     o.baseSandboxCfg,
 	}
 
-	registry.nativeTools["bash"] = func() Tool {
+	registry.nativeTools["bash"] = func() (Tool, error) {
 		bt := NewBashTool("")
-		if registry.sandboxFactory != nil {
-			if sb, err := registry.sandboxFactory(registry.baseSandboxCfg); err == nil {
-				bt = bt.WithSandbox(sb)
-			}
+		if registry.sandboxFactory == nil {
+			return bt, nil
 		}
-		return bt
+		// Fail closed: bash without its sandbox must not load.
+		sb, err := registry.NewSandbox(nil)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox for bash: %w", err)
+		}
+		return bt.WithSandbox(sb), nil
 	}
 
 	for _, tool := range tools {
@@ -204,7 +207,7 @@ func (r *ToolRegistry) RegisterNative(name string, factory func() Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.nativeTools[name] = factory
+	r.nativeTools[name] = func() (Tool, error) { return factory(), nil }
 	slog.Debug("native_factory_registered", "factory_name", name)
 }
 
@@ -498,7 +501,11 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 	// so that --schema execution cannot perform side effects.
 	var schemaSB sandbox.Sandbox
 	if r.sandboxFactory != nil {
-		schemaSB, _ = r.sandboxFactory(r.baseSandboxCfg)
+		var err error
+		schemaSB, err = r.sandboxFactory(r.baseSandboxCfg)
+		if err != nil {
+			return nil, LoadResult{}, fmt.Errorf("schema sandbox for shell tool %s: %w", path, err)
+		}
 	}
 	shellTool, err := NewShellTool(path, schemaSB)
 	if err != nil {
@@ -506,10 +513,13 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 	}
 
 	if r.sandboxFactory != nil && !shellTool.SandboxOptOut() {
+		// Fail closed: a tool that should be sandboxed but can't be must not
+		// load, or it would silently run unsandboxed.
 		sb, err := r.NewSandbox(shellTool.SandboxConfig())
-		if err == nil {
-			shellTool = shellTool.WithSandbox(sb)
+		if err != nil {
+			return nil, LoadResult{}, fmt.Errorf("sandbox for shell tool %s: %w", path, err)
 		}
+		shellTool = shellTool.WithSandbox(sb)
 	}
 
 	s := shellTool.GetSchema()
@@ -724,7 +734,13 @@ func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (LoadResult, error) {
 	r.mu.RUnlock()
 
 	if isNative {
-		tool := factory()
+		tool, err := factory()
+		if err != nil {
+			return LoadResult{}, err
+		}
+		if tool == nil {
+			return LoadResult{}, fmt.Errorf("native tool factory %s returned no tool", pathOrServer)
+		}
 		r.Register(tool)
 		return LoadResult{
 			Type: "native",
