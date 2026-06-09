@@ -18,6 +18,76 @@ func skipIfNoBwrap(t *testing.T) {
 	}
 }
 
+func TestLinuxExistingDeniedPaths(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir()) // resolve once so comparisons are stable
+	if err != nil {
+		t.Fatalf("EvalSymlinks(tempdir) error = %v", err)
+	}
+
+	present := filepath.Join(dir, ".ssh")
+	if err := os.MkdirAll(present, 0700); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", present, err)
+	}
+
+	missing := filepath.Join(dir, ".gnupg") // deliberately not created
+
+	// A symlinked deny-path (like WSL's ~/.aws) should resolve to its target.
+	target := filepath.Join(dir, "real-aws")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", target, err)
+	}
+	link := filepath.Join(dir, ".aws")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink error = %v", err)
+	}
+
+	got := existingDeniedPaths([]DeniedPath{
+		{Path: present, Kind: DeniedPathDir},
+		{Path: missing, Kind: DeniedPathDir},
+		{Path: link, Kind: DeniedPathDir},
+	})
+
+	want := map[string]bool{present: true, target: true}
+	if len(got) != len(want) {
+		t.Fatalf("existingDeniedPaths = %v, want paths %v", got, want)
+	}
+	for _, p := range got {
+		if !want[p.Path] {
+			t.Fatalf("unexpected path %q in result %v (missing should be dropped, symlink resolved to %q)", p.Path, got, target)
+		}
+	}
+}
+
+// Reproduces the original bug: when a credential dir (e.g. ~/.gnupg) is absent,
+// bwrap used to abort trying to mkdir a mountpoint for it under the read-only
+// root bind ("Can't mkdir ...: Read-only file system"), killing every command.
+func TestLinuxSandboxRunsWhenCredentialPathsMissing(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	home := t.TempDir() // empty: none of the denied credential paths exist
+	t.Setenv("HOME", home)
+
+	sb, err := New(Config{WritablePaths: []string{home}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo ok")
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "Operation not permitted") || strings.Contains(string(out), "Permission denied") {
+			t.Skipf("bwrap execution unavailable in this environment: %v (%s)", err, strings.TrimSpace(string(out)))
+		}
+		t.Fatalf("sandbox failed when credential paths are missing: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("sandboxed output = %q, want %q", strings.TrimSpace(string(out)), "ok")
+	}
+}
+
 func TestLinuxBuildBwrapArgs(t *testing.T) {
 	args := buildBwrapArgs(Config{
 		WritablePaths: []string{"/home/user/project"},
@@ -320,7 +390,7 @@ func TestLinuxSandboxBlocksAllExistingCredentialPaths(t *testing.T) {
 		var shellCmd string
 		switch dp.Kind {
 		case DeniedPathDir:
-			shellCmd = "ls " + dp.Path
+			shellCmd = "ls -A " + dp.Path // -A: real entries only, excludes . and ..
 		case DeniedPathFile:
 			shellCmd = "cat " + dp.Path
 		}
@@ -330,9 +400,13 @@ func TestLinuxSandboxBlocksAllExistingCredentialPaths(t *testing.T) {
 			if err := sb.Wrap(cmd); err != nil {
 				t.Fatalf("Wrap() error = %v", err)
 			}
-			out, err := cmd.CombinedOutput()
-			if err == nil {
-				t.Fatalf("expected read of %s to be blocked, got output: %s", dp.Path, string(out))
+			// The mask replaces the path with an empty tmpfs (dir) or empty
+			// placeholder (file). The command may exit 0 with empty output OR
+			// error (permission) — both hide the secret. What must never happen
+			// is real credential content coming back.
+			out, _ := cmd.CombinedOutput()
+			if strings.TrimSpace(string(out)) != "" {
+				t.Fatalf("expected %s to be masked (no contents), but read: %q", dp.Path, string(out))
 			}
 		})
 	}

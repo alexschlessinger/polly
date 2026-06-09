@@ -266,9 +266,18 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 
 	baseCfg := sandbox.DefaultConfig()
 
-	// Validate that the backend works before proceeding.
-	if _, err := newSandbox(baseCfg); err != nil {
+	// Validate that the backend constructs (e.g. the binary exists)...
+	sb, err := newSandbox(baseCfg)
+	if err != nil {
 		return nil, fmt.Errorf("sandbox requested but unavailable: %w", err)
+	}
+	// ...and that it can actually start a command. Construction alone misses
+	// environments where the backend is present but fails at runtime; without
+	// this probe every bash call would silently return a refusal while the run
+	// still exits 0/ok.
+	if err := sandbox.Probe(sb); err != nil {
+		return nil, fmt.Errorf("sandbox requested but failed to start: %w\n"+
+			"Set POLLYTOOL_NOSANDBOX=1 (or pass --nosandbox) to run without the sandbox", err)
 	}
 
 	return []tools.RegistryOption{tools.WithSandboxFactory(newSandbox, baseCfg)}, nil

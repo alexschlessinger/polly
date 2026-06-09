@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -24,6 +25,31 @@ func WrapCmd(sb Sandbox, cmd *exec.Cmd) error {
 		return nil
 	}
 	return sb.Wrap(cmd)
+}
+
+// Probe runs a trivial command through the sandbox to confirm it can actually
+// start. Construction (New) only checks that the backend binary exists; it does
+// not catch environments where the backend is present but fails at runtime
+// (e.g. bwrap unable to create a mountpoint). Callers use this to fail fast with
+// an actionable error instead of letting every tool call silently return a
+// refusal. Returns nil when sb is nil (nothing to probe).
+func Probe(sb Sandbox) error {
+	if sb == nil {
+		return nil
+	}
+	cmd := exec.Command("true")
+	if err := sb.Wrap(cmd); err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // Config controls sandbox permissions. It can be unmarshaled from JSON

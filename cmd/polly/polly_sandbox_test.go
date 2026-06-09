@@ -2,12 +2,43 @@ package main
 
 import (
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
+
+// probeFailSandbox constructs fine but any command run through it exits non-zero,
+// simulating a backend (e.g. bwrap) that is present but can't actually start.
+type probeFailSandbox struct{}
+
+func (probeFailSandbox) Wrap(cmd *exec.Cmd) error {
+	p, err := exec.LookPath("false")
+	if err != nil {
+		return err
+	}
+	cmd.Path = p
+	cmd.Args = []string{"false"}
+	return nil
+}
+
+func TestSandboxRegistryOptionsFailsWhenProbeFails(t *testing.T) {
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return probeFailSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	_, err := sandboxRegistryOptions(&Config{})
+	if err == nil {
+		t.Fatal("sandboxRegistryOptions() error = nil, want failure when the sandbox can't start")
+	}
+	if !strings.Contains(err.Error(), "POLLYTOOL_NOSANDBOX") {
+		t.Fatalf("error = %q, want it to mention the POLLYTOOL_NOSANDBOX escape hatch", err)
+	}
+}
 
 func TestInitializeSessionFailsWhenSandboxRequestedButUnavailable(t *testing.T) {
 	originalNewSandbox := newSandbox
