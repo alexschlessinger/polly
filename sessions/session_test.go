@@ -103,6 +103,7 @@ func TestDelete(t *testing.T) {
 				t.Fatalf("Failed to get session1: %v", err)
 			}
 			session1.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "test"})
+			session1.Close()
 
 			// Delete it
 			store.Delete("deleteme")

@@ -147,6 +147,9 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 	}
 	defer session.Close()
 
+	// Collect the messages, then persist them all in a single write below.
+	var msgs []messages.ChatMessage
+
 	// Check if files are provided via --file flag
 	if len(config.Files) > 0 {
 		// Process files to get their content
@@ -162,7 +165,7 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 				return err
 			}
 			// Add stdin content as a separate message
-			session.AddMessage(messages.ChatMessage{
+			msgs = append(msgs, messages.ChatMessage{
 				Role:    messages.MessageRoleUser,
 				Content: content,
 			})
@@ -179,17 +182,16 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 				} else {
 					content = part.Text
 				}
-				session.AddMessage(messages.ChatMessage{
+				msgs = append(msgs, messages.ChatMessage{
 					Role:    messages.MessageRoleUser,
 					Content: content,
 				})
 			case "image_base64":
 				// Create a message with image content using Parts field
-				msg := messages.ChatMessage{
+				msgs = append(msgs, messages.ChatMessage{
 					Role:  messages.MessageRoleUser,
 					Parts: []messages.ContentPart{part},
-				}
-				session.AddMessage(msg)
+				})
 			}
 		}
 	} else {
@@ -203,10 +205,14 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 			return err
 		}
 
-		session.AddMessage(messages.ChatMessage{
+		msgs = append(msgs, messages.ChatMessage{
 			Role:    messages.MessageRoleUser,
 			Content: content,
 		})
+	}
+
+	if err := session.AddMessages(msgs); err != nil {
+		return fmt.Errorf("failed to add to context %s: %w", contextID, err)
 	}
 
 	if !config.Quiet {
@@ -256,7 +262,9 @@ func handleCreateContext(store sessions.SessionStore, config *Config, contextID 
 	}
 	defer session.Close()
 
-	session.SetMetadata(info)
+	if err := session.SetMetadata(info); err != nil {
+		return fmt.Errorf("failed to create context '%s': %w", contextID, err)
+	}
 
 	handleShowContext(store, contextID) // Show the new context info
 	return nil
@@ -434,7 +442,9 @@ func resetContext(sessionStore sessions.SessionStore, name string) error {
 	defer session.Close()
 
 	// Clear the session history
-	session.Clear()
+	if err := session.Clear(); err != nil {
+		return fmt.Errorf("failed to clear context %s: %w", name, err)
+	}
 
 	return nil
 }

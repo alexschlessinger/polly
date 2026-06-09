@@ -355,7 +355,9 @@ func replHelpCommand(ctx *replCommandContext, args []string) replCommandResult {
 
 func replClearCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if ctx != nil && ctx.state != nil && ctx.state.session != nil {
-		ctx.state.session.Clear()
+		if err := ctx.state.session.Clear(); err != nil {
+			return replCommandResult{err: ctx.replyLine(fmt.Sprintf("failed to clear context: %v", err))}
+		}
 	}
 	if ctx != nil && ctx.clearTranscript != nil {
 		return replCommandResult{err: ctx.clearTranscript()}

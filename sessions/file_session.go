@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/gofrs/flock"
 )
 
@@ -102,14 +103,11 @@ func (s *FileSessionStore) Get(name string) (Session, error) {
 		return nil, fmt.Errorf("invalid context name '%s': %w", name, err)
 	}
 
-	// Update last context in index only when creating or modifying
-	// Not on every read to avoid unnecessary disk writes
-
-	// Use name directly as filename (already validated at app level)
 	sessionPath := filepath.Join(s.baseDir, name+".json")
 
-	// Lock the session file itself (no separate .lock file)
-	fileLock := flock.New(sessionPath)
+	// Lock a dedicated lock file rather than the data file: atomic saves replace
+	// the data file's inode via rename, which would drop a lock held on it.
+	fileLock := flock.New(lockPath(sessionPath))
 
 	// Try to acquire exclusive lock with 10 second timeout, retrying every 100ms
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -123,34 +121,41 @@ func (s *FileSessionStore) Get(name string) (Session, error) {
 		return nil, fmt.Errorf("could not acquire lock within 10 seconds")
 	}
 
-	// Try to load existing session
-	if data, err := os.ReadFile(sessionPath); err == nil {
+	// Try to load an existing session.
+	data, readErr := os.ReadFile(sessionPath)
+	switch {
+	case readErr == nil && len(data) > 0:
 		var session FileSession
-		if err := json.Unmarshal(data, &session); err == nil {
+		if err := json.Unmarshal(data, &session); err != nil {
+			// The file exists but is unreadable. Preserve the original bytes for
+			// recovery instead of silently discarding them, then fall through to
+			// create a fresh session.
+			if _, backupErr := backupCorruptSession(sessionPath); backupErr != nil {
+				fileLock.Unlock()
+				return nil, fmt.Errorf("failed to preserve corrupt session '%s': %w", name, backupErr)
+			}
+		} else {
 			session.path = sessionPath
 			session.lock = fileLock
-			session.Updated = time.Now()
 
-			// Ensure ContextInfo exists
 			if session.Metadata == nil {
-				session.Metadata = &Metadata{
-					Name:             name,
-					Created:          session.Created,
-					LastUsed:         time.Now(),
-					SystemPrompt:     s.defaultInfo.SystemPrompt,
-					MaxHistoryTokens: s.defaultInfo.MaxHistoryTokens,
-					TTL:              s.defaultInfo.TTL,
-				}
-			} else {
-				session.Metadata.LastUsed = time.Now()
+				fileLock.Unlock()
+				return nil, fmt.Errorf("session '%s' has no metadata", name)
 			}
 
-			session.save()
+			// Loading an existing session is a pure read: attach the runtime
+			// handles but do not bump timestamps or rewrite the file. The next
+			// real mutation (AddMessage/SetMetadata/UpdateMetadata) persists any
+			// changes, so merely opening a context costs no disk write.
 			return &session, nil
 		}
+	case readErr != nil && !os.IsNotExist(readErr):
+		// A real read error (permissions, I/O): do not clobber the file.
+		fileLock.Unlock()
+		return nil, fmt.Errorf("failed to read session '%s': %w", name, readErr)
 	}
 
-	// Create new session
+	// File absent, empty, or corrupt-and-backed-up: create a new session.
 	session := &FileSession{
 		ID:      name,
 		History: []messages.ChatMessage{},
@@ -175,21 +180,36 @@ func (s *FileSessionStore) Get(name string) (Session, error) {
 		})
 	}
 
-	session.save()
+	if err := session.save(); err != nil {
+		fileLock.Unlock()
+		return nil, fmt.Errorf("failed to persist new session '%s': %w", name, err)
+	}
 	return session, nil
 }
 
 // Delete removes a session
 func (s *FileSessionStore) Delete(name string) {
-	// Use name directly (already validated at app level)
+	// Validate the name so a malformed/hostile name can't escape baseDir.
+	if err := validateContextName(name); err != nil {
+		return
+	}
 	sessionPath := filepath.Join(s.baseDir, name+".json")
 
-	// Unlink the session file even if another process holds it; open FDs will keep it
-	// alive for that process, but it disappears for new reads, matching expected semantics.
+	fileLock := flock.New(lockPath(sessionPath))
+	locked, err := fileLock.TryLock()
+	if err != nil || !locked {
+		return
+	}
+	defer fileLock.Unlock()
+
+	// Leave the dedicated lock file in place so future sessions keep
+	// coordinating on the same filesystem path.
 	_ = os.Remove(sessionPath)
 }
 
-// Range iterates over all sessions
+// Range iterates over all sessions. It is read-only: each session is loaded
+// directly without taking a lock or rewriting it, so iteration neither leaks
+// file locks nor mutates sessions on disk.
 func (s *FileSessionStore) Range(f func(key, value any) bool) {
 	entries, err := os.ReadDir(s.baseDir)
 	if err != nil {
@@ -201,23 +221,29 @@ func (s *FileSessionStore) Range(f func(key, value any) bool) {
 			continue
 		}
 
-		name := strings.TrimSuffix(entry.Name(), ".json")
-		// Load the session for this context
-		session, err := s.Get(name)
+		sessionPath := filepath.Join(s.baseDir, entry.Name())
+		data, err := os.ReadFile(sessionPath)
 		if err != nil {
-			continue // Skip sessions that can't be loaded
+			continue // Skip sessions that can't be read
 		}
 
-		// Call the function with the session
-		if !f(name, session) {
+		var session FileSession
+		if err := json.Unmarshal(data, &session); err != nil {
+			continue // Skip sessions that can't be parsed
+		}
+
+		name := strings.TrimSuffix(entry.Name(), ".json")
+		if !f(name, &session) {
 			break
 		}
 	}
 }
 
+// Expire removes sessions that have outlived their TTL. The effective TTL is the
+// session's own TTL, then the store's default TTL, and finally a 7-day safety net
+// when neither is configured (so the directory can't grow without bound).
 func (s *FileSessionStore) Expire() {
-	// Clean up sessions older than 7 days
-	expiry := 7 * 24 * time.Hour
+	const defaultExpiry = 7 * 24 * time.Hour
 	now := time.Now()
 
 	entries, err := os.ReadDir(s.baseDir)
@@ -231,8 +257,8 @@ func (s *FileSessionStore) Expire() {
 		}
 
 		filePath := filepath.Join(s.baseDir, entry.Name())
-		// Try to acquire lock on the session file to check if session is in use
-		fileLock := flock.New(filePath)
+		// Try to acquire the session's lock to check if it is in use
+		fileLock := flock.New(lockPath(filePath))
 		locked, err := fileLock.TryLock()
 		if err != nil || !locked {
 			// Session is in use or error, skip
@@ -249,6 +275,13 @@ func (s *FileSessionStore) Expire() {
 		if err := json.Unmarshal(data, &session); err != nil {
 			fileLock.Unlock()
 			continue
+		}
+
+		expiry := defaultExpiry
+		if session.Metadata != nil && session.Metadata.TTL > 0 {
+			expiry = session.Metadata.TTL
+		} else if s.defaultInfo != nil && s.defaultInfo.TTL > 0 {
+			expiry = s.defaultInfo.TTL
 		}
 
 		if now.Sub(session.Updated) > expiry {
@@ -284,39 +317,76 @@ func (s *FileSession) GetHistory() []messages.ChatMessage {
 	return CopyHistory(s.History)
 }
 
-// AddMessage adds a message to the session history
-func (s *FileSession) AddMessage(msg messages.ChatMessage) {
+// AddMessage adds a message to the session history and persists it.
+func (s *FileSession) AddMessage(msg messages.ChatMessage) error {
+	return s.AddMessages([]messages.ChatMessage{msg})
+}
+
+// AddMessages appends a batch of messages and persists them with a single
+// write. A whole agentic turn (the assistant message for each iteration plus
+// every tool result) is replayed at once; adding them one at a time would
+// rewrite the entire history file once per message. A persistence failure is
+// returned so callers can surface it rather than silently losing the messages.
+func (s *FileSession) AddMessages(msgs []messages.ChatMessage) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.History = append(s.History, msg)
-	s.Updated = time.Now()
-	s.trimHistory()
-	s.save()
+	candidate, err := s.candidateForWriteLocked()
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	candidate.History = append(candidate.History, msgs...)
+	candidate.Updated = now
+	candidate.touchMetadata(now)
+	candidate.trimHistory()
+	if err := candidate.save(); err != nil {
+		return err
+	}
+
+	s.commitCandidateLocked(candidate)
+	return nil
 }
 
 // trimHistory limits the session history to MaxHistoryTokens
 func (s *FileSession) trimHistory() {
-	if s.Metadata.MaxHistoryTokens > 0 {
+	if s.Metadata != nil && s.Metadata.MaxHistoryTokens > 0 {
 		s.History = TrimHistory(s.History, s.Metadata.MaxHistoryTokens)
 	}
 }
 
 // Clear clears the session history
-func (s *FileSession) Clear() {
+func (s *FileSession) Clear() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	candidate, err := s.candidateForWriteLocked()
+	if err != nil {
+		return err
+	}
+
 	// Clear history and re-initialize with system prompt if configured
-	s.History = s.History[:0]
-	if s.Metadata.SystemPrompt != "" {
-		s.History = append(s.History, messages.ChatMessage{
+	candidate.History = candidate.History[:0]
+	if candidate.Metadata.SystemPrompt != "" {
+		candidate.History = append(candidate.History, messages.ChatMessage{
 			Role:    messages.MessageRoleSystem,
-			Content: s.Metadata.SystemPrompt,
+			Content: candidate.Metadata.SystemPrompt,
 		})
 	}
-	s.Updated = time.Now()
-	s.save()
+	now := time.Now()
+	candidate.Updated = now
+	candidate.touchMetadata(now)
+	if err := candidate.save(); err != nil {
+		return err
+	}
+
+	s.commitCandidateLocked(candidate)
+	return nil
 }
 
 // GetName returns the session name
@@ -330,16 +400,40 @@ func (s *FileSession) GetName() string {
 func (s *FileSession) GetMetadata() *Metadata {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Metadata
+	return cloneMetadata(s.Metadata)
 }
 
 // SetMetadata updates the context metadata
-func (s *FileSession) SetMetadata(info *Metadata) {
+func (s *FileSession) SetMetadata(info *Metadata) error {
+	if info == nil {
+		return fmt.Errorf("metadata cannot be nil")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Metadata = info
-	s.Updated = time.Now()
-	s.save()
+
+	candidate, err := s.metadataCandidateLocked()
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	metadata := cloneMetadata(info)
+	if metadata.Name == "" {
+		metadata.Name = s.ID
+	}
+	if metadata.Created.IsZero() {
+		metadata.Created = s.Created
+	}
+	metadata.LastUsed = now
+	candidate.Metadata = metadata
+	candidate.Updated = now
+	if err := candidate.save(); err != nil {
+		return err
+	}
+
+	s.commitCandidateLocked(candidate)
+	return nil
 }
 
 // UpdateMetadata applies a partial update to the context metadata
@@ -347,10 +441,22 @@ func (s *FileSession) UpdateMetadata(update *Metadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	candidate, err := s.metadataCandidateLocked()
+	if err != nil {
+		return err
+	}
+
 	// Apply the update to current context info (only non-zero values)
-	s.Metadata = MergeMetadata(s.Metadata, update)
-	s.Updated = time.Now()
-	return s.save()
+	now := time.Now()
+	candidate.Metadata = MergeMetadata(candidate.Metadata, update)
+	candidate.touchMetadata(now)
+	candidate.Updated = now
+	if err := candidate.save(); err != nil {
+		return err
+	}
+
+	s.commitCandidateLocked(candidate)
+	return nil
 }
 
 // GetLastUsed returns when the session was last accessed
@@ -360,13 +466,158 @@ func (s *FileSession) GetLastUsed() time.Time {
 	return s.Updated
 }
 
-// save persists the session to disk
+// candidateForWriteLocked builds a working copy for mutations that change
+// history. History is copied so an interrupted save never leaves the in-memory
+// slice diverging from what reached disk; the candidate is only committed back
+// once save() succeeds.
+func (s *FileSession) candidateForWriteLocked() (*FileSession, error) {
+	candidate, err := s.metadataCandidateLocked()
+	if err != nil {
+		return nil, err
+	}
+	candidate.History = CopyHistory(s.History)
+	return candidate, nil
+}
+
+// metadataCandidateLocked builds a working copy for mutations that touch only
+// metadata. It shares the existing history slice rather than cloning it: these
+// paths never read or mutate history beyond marshalling it unchanged, so the
+// O(len(history)) copy would be pure waste. The clone happens in
+// candidateForWriteLocked for paths that actually modify history.
+func (s *FileSession) metadataCandidateLocked() (*FileSession, error) {
+	if s.Metadata == nil {
+		return nil, fmt.Errorf("session '%s' has no metadata", s.ID)
+	}
+
+	candidate := &FileSession{
+		ID:       s.ID,
+		History:  s.History,
+		Created:  s.Created,
+		Updated:  s.Updated,
+		Metadata: cloneMetadata(s.Metadata),
+		path:     s.path,
+	}
+	return candidate, nil
+}
+
+func (s *FileSession) commitCandidateLocked(candidate *FileSession) {
+	s.History = candidate.History
+	s.Updated = candidate.Updated
+	s.Metadata = candidate.Metadata
+}
+
+func (s *FileSession) touchMetadata(now time.Time) {
+	if s.Metadata == nil {
+		return
+	}
+	if s.Metadata.Name == "" {
+		s.Metadata.Name = s.ID
+	}
+	if s.Metadata.Created.IsZero() {
+		s.Metadata.Created = s.Created
+	}
+	s.Metadata.LastUsed = now
+}
+
+func cloneMetadata(metadata *Metadata) *Metadata {
+	if metadata == nil {
+		return nil
+	}
+
+	out := *metadata
+	if metadata.ActiveTools != nil {
+		out.ActiveTools = append([]tools.ToolLoaderInfo(nil), metadata.ActiveTools...)
+	}
+	if metadata.ActiveSkills != nil {
+		out.ActiveSkills = append([]string(nil), metadata.ActiveSkills...)
+	}
+	if metadata.SkillDirs != nil {
+		out.SkillDirs = append([]string(nil), metadata.SkillDirs...)
+	}
+	if metadata.SkillSources != nil {
+		out.SkillSources = append([]string(nil), metadata.SkillSources...)
+	}
+	return &out
+}
+
+// save persists the session to disk atomically (write temp + fsync + rename),
+// so an interrupted write can never leave a truncated/corrupt session file.
 func (s *FileSession) save() error {
+	if s.path == "" {
+		return fmt.Errorf("session has no backing file")
+	}
+
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0644)
+	return atomicWriteFile(s.path, data, 0600)
+}
+
+// atomicWriteFile writes data to a temporary file in the same directory as path,
+// flushes it to stable storage, then renames it over path. The rename is atomic
+// on POSIX filesystems, so readers and crash recovery only ever observe the old
+// complete file or the new complete file, never a partial write.
+var atomicWriteFile = func(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err = tmp.Chmod(perm); err != nil {
+		return err
+	}
+	if _, err = tmp.Write(data); err != nil {
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	err = os.Rename(tmpName, path)
+	return err
+}
+
+// backupCorruptSession moves an unreadable session file aside without
+// overwriting an existing recovery file.
+func backupCorruptSession(path string) (string, error) {
+	candidates := []string{path + ".corrupt"}
+	stamp := time.Now().UTC().Format("20060102T150405.000000000")
+	for i := range 10 {
+		candidates = append(candidates, fmt.Sprintf("%s.corrupt.%s.%d", path, stamp, i))
+	}
+
+	for _, candidate := range candidates {
+		if _, err := os.Lstat(candidate); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+
+		if err := os.Rename(path, candidate); err != nil {
+			return "", err
+		}
+		return candidate, nil
+	}
+
+	return "", fmt.Errorf("could not find a unique corrupt-session backup path for %s", path)
+}
+
+// lockPath returns the path of the dedicated lock file guarding a session file.
+// The lock is kept separate from the data file because atomic saves replace the
+// data file's inode via rename, which would silently drop a flock held on it.
+func lockPath(sessionPath string) string {
+	return sessionPath + ".lock"
 }
 
 // Close releases the file lock on the session file.
@@ -437,6 +688,10 @@ func (s *FileSessionStore) GetAllMetadata() map[string]*Metadata {
 
 // Exists checks if a context with the given name exists
 func (s *FileSessionStore) Exists(name string) bool {
+	// Validate the name so we never stat paths outside baseDir.
+	if err := validateContextName(name); err != nil {
+		return false
+	}
 	sessionPath := filepath.Join(s.baseDir, name+".json")
 	_, err := os.Stat(sessionPath)
 	return err == nil

@@ -194,7 +194,10 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 	// Persist skill sources for future session restores.
 	if len(skillResult.sources) > 0 {
 		metadata.SkillSources = skillResult.sources
-		session.SetMetadata(metadata)
+		if err := session.SetMetadata(metadata); err != nil {
+			session.Close()
+			return "", nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to persist skill sources: %w", err)
+		}
 	}
 
 	registryOpts, err := sandboxRegistryOptions(config)
@@ -218,7 +221,10 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 		}
 		// Store the metadata for persistence
 		metadata.ActiveTools = toolRegistry.GetActiveToolLoaders()
-		session.SetMetadata(metadata)
+		if err := session.SetMetadata(metadata); err != nil {
+			session.Close()
+			return "", nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to persist tool metadata: %w", err)
+		}
 	} else {
 		// Load tools from session metadata
 		toolRegistry, err = loadTools(metadata.ActiveTools, registryOpts...)
@@ -394,7 +400,12 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 		return fmt.Errorf("error processing files: %w", err)
 	}
 
-	state.session.AddMessage(userMsg)
+	// Persist the user message before spending API tokens. If the session store
+	// is broken (e.g. disk full), fail fast rather than make a call whose result
+	// can't be saved either. In-memory sessions never error here.
+	if err := state.session.AddMessage(userMsg); err != nil {
+		return fmt.Errorf("failed to persist user message: %w", err)
+	}
 
 	if turnUI == nil {
 		turnUI = newLineTurnUI(config, inputReader)
@@ -443,8 +454,10 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 	}
 
 	if resp != nil {
-		for _, msg := range llm.StripDeniedExchanges(resp.AllMessages) {
-			state.session.AddMessage(msg)
+		// Persist the whole turn (assistant message per iteration + every tool
+		// result) with a single write instead of one rewrite per message.
+		if perr := state.session.AddMessages(llm.StripDeniedExchanges(resp.AllMessages)); perr != nil {
+			return fmt.Errorf("failed to persist turn: %w", perr)
 		}
 	}
 	if resp != nil {

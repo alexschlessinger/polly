@@ -72,7 +72,7 @@ func (s *SyncMapSessionStore) Get(id string) (Session, error) {
 		last:     time.Now(),
 		metadata: contextInfo,
 	}
-	session.Clear()
+	_ = session.Clear() // in-memory; never fails
 	s.Store(id, session)
 	return session, nil
 }
@@ -169,13 +169,25 @@ func (s *LocalSession) GetHistory() []messages.ChatMessage {
 }
 
 // AddMessage adds a message to the session history
-func (s *LocalSession) AddMessage(msg messages.ChatMessage) {
+func (s *LocalSession) AddMessage(msg messages.ChatMessage) error {
+	return s.AddMessages([]messages.ChatMessage{msg})
+}
+
+// AddMessages appends a batch of messages to the session history. It never
+// fails (in-memory only); the error return satisfies the Session interface so
+// file-backed sessions can report persistence failures.
+func (s *LocalSession) AddMessages(msgs []messages.ChatMessage) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.history = append(s.history, msg)
+	s.history = append(s.history, msgs...)
 	s.last = time.Now()
 	s.trimHistory()
+	return nil
 }
 
 // trimHistory limits the session history to MaxHistoryTokens
@@ -187,7 +199,7 @@ func (s *LocalSession) trimHistory() {
 }
 
 // Clear clears the session history
-func (s *LocalSession) Clear() {
+func (s *LocalSession) Clear() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -200,6 +212,7 @@ func (s *LocalSession) Clear() {
 		})
 	}
 	s.last = time.Now()
+	return nil
 }
 
 // GetName returns the session name
@@ -213,14 +226,15 @@ func (s *LocalSession) GetName() string {
 func (s *LocalSession) GetMetadata() *Metadata {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.metadata
+	return cloneMetadata(s.metadata)
 }
 
 // SetMetadata updates the context metadata
-func (s *LocalSession) SetMetadata(info *Metadata) {
+func (s *LocalSession) SetMetadata(info *Metadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.metadata = info
+	return nil
 }
 
 // UpdateMetadata applies a partial update to the context metadata

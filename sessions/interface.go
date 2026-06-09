@@ -10,14 +10,15 @@ import (
 // Session interface defines the contract for session implementations
 type Session interface {
 	GetHistory() []messages.ChatMessage
-	AddMessage(messages.ChatMessage)
-	Clear()
+	AddMessage(messages.ChatMessage) error
+	AddMessages([]messages.ChatMessage) error // Append a batch with a single persist
+	Clear() error
 	Close() // Clean up resources (file locks, etc.)
 
 	// Session metadata
 	GetName() string
 	GetMetadata() *Metadata
-	SetMetadata(*Metadata)
+	SetMetadata(*Metadata) error
 	UpdateMetadata(*Metadata) error // Apply partial updates (only non-zero values)
 	GetLastUsed() time.Time
 
