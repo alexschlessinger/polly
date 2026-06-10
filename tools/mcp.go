@@ -19,9 +19,27 @@ import (
 // MCPTool wraps an MCP tool to implement the Tool interface
 type MCPTool struct {
 	session      *mcp.ClientSession
+	client       *MCPClient
 	tool         *mcp.Tool
 	Source       string             // Server spec that provided this tool
 	cachedSchema *schema.ToolSchema // Cached converted schema
+}
+
+// Sandboxed reports whether the tool's server process runs inside a sandbox.
+func (m *MCPTool) Sandboxed() bool {
+	return m.client != nil && m.client.sandboxed
+}
+
+// SandboxDetails reports whether the owning MCP server process is sandboxed.
+func (m *MCPTool) SandboxDetails() SandboxInfo {
+	info := SandboxInfo{Capable: true}
+	if m.client == nil {
+		return info
+	}
+	info.Active = m.client.sandboxed
+	info.OptedOut = m.client.sandboxOptOut
+	info.Config = copySandboxConfig(m.client.sandboxCfg)
+	return info
 }
 
 // NewMCPTool creates a new MCP tool wrapper
@@ -272,9 +290,12 @@ func httpClientWithTimeout(headers map[string]string, timeout time.Duration) *ht
 
 // MCPClient manages connection to an MCP server
 type MCPClient struct {
-	session    *mcp.ClientSession
-	client     *mcp.Client
-	serverSpec string // The server spec (JSON file path) for this client
+	session       *mcp.ClientSession
+	client        *mcp.Client
+	serverSpec    string // The server spec (JSON file path) for this client
+	sandboxed     bool   // server process runs inside a sandbox (stdio only)
+	sandboxCfg    *sandbox.Config
+	sandboxOptOut bool
 }
 
 // NewMCPClient creates a new MCP client from a server spec
@@ -341,8 +362,12 @@ func NewMCPClient(serverSpec string) (*MCPClient, error) {
 
 // NewMCPClientFromConfig creates a new MCP client from a JSON configuration.
 // If sb is non-nil and transport is stdio, the server process runs sandboxed.
-func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, error) {
+func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg ...sandbox.Config) (*MCPClient, error) {
 	ctx := context.Background()
+	var cfg *sandbox.Config
+	if len(effectiveCfg) > 0 {
+		cfg = copySandboxConfig(&effectiveCfg[0])
+	}
 
 	// Create the MCP client
 	client := mcp.NewClient(&mcp.Implementation{
@@ -359,6 +384,7 @@ func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, 
 	}
 
 	var transport mcp.Transport
+	var sandboxed bool
 
 	switch config.Transport {
 	case "sse":
@@ -390,21 +416,31 @@ func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, 
 		// Create the command with arguments
 		cmd := exec.Command(config.Command, config.Args...)
 
-		// Set environment variables if provided
-		if len(config.Env) > 0 {
-			// Start with current environment
-			cmd.Env = os.Environ()
-			// Add/override with config environment variables
-			for key, value := range config.Env {
-				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
-			}
-		}
-
 		// Set up stderr to see any error output from the server
 		cmd.Stderr = os.Stderr
 
+		// Sandbox first: WrapCmd filters the inherited environment, stripping
+		// credential-shaped names (the sandbox's job is to remove ambient/
+		// inherited secrets the server didn't ask for).
 		if err := sandbox.WrapCmd(sb, cmd); err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
+		}
+		sandboxed = sb != nil
+
+		// Then apply the env vars configured explicitly on this server entry —
+		// AFTER filtering, so a deliberately-set credential (e.g.
+		// GITHUB_TOKEN) still reaches the process even though it matches the
+		// sandbox's credential-name heuristics. These were chosen for this
+		// server; the sandbox only strips what the server inherited by accident.
+		if len(config.Env) > 0 {
+			if cmd.Env == nil {
+				// Unsandboxed path: WrapCmd left Env nil (inherit parent).
+				// Materialize it so appending config.Env doesn't drop everything else.
+				cmd.Env = os.Environ()
+			}
+			for key, value := range config.Env {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
+			}
 		}
 
 		slog.Debug("mcp_stdio_connecting", "command", config.Command, "arguments", config.Args)
@@ -420,8 +456,11 @@ func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, 
 	}
 
 	return &MCPClient{
-		session: session,
-		client:  client,
+		session:       session,
+		client:        client,
+		sandboxed:     sandboxed,
+		sandboxCfg:    cfg,
+		sandboxOptOut: config.SandboxOptOut(),
 		// serverSpec will be set by caller if needed
 	}, nil
 }
@@ -439,6 +478,7 @@ func (c *MCPClient) ListTools() ([]Tool, error) {
 		if tool != nil {
 			slog.Debug("mcp_tool_loaded", "tool_name", tool.Name, "description", tool.Description)
 			mcpTool := NewMCPTool(c.session, tool)
+			mcpTool.client = c
 			// Set the source to the server spec so it can be persisted
 			mcpTool.Source = c.serverSpec
 			tools = append(tools, mcpTool)

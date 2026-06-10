@@ -621,11 +621,34 @@ func TestBuildProfileDeniesSignal(t *testing.T) {
 	for _, rule := range []string{
 		"(deny signal)",
 		"(allow signal (target self))",
-		"(allow signal (target pgrp))",
+		"(allow signal (target same-sandbox))",
 	} {
 		if !strings.Contains(profile, rule) {
 			t.Fatalf("profile missing signal rule %q:\n%s", rule, profile)
 		}
+	}
+}
+
+// A sandboxed script must be able to signal its own children even when it
+// detaches them into a separate process group (job control / setsid workers).
+// The (target same-sandbox) scope covers descendants regardless of pgroup,
+// where a (target pgrp) scope would deny them with EPERM.
+func TestSandboxAllowsSignalingOwnDetachedChild(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	// `set -m` enables job control, putting the background job in its own
+	// process group; the script then signals it by job spec.
+	cmd := exec.CommandContext(context.Background(), "bash", "-c",
+		"set -m; sleep 30 & kill %1")
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed script could not signal its own detached child: %v (%s)", err, out)
 	}
 }
 
@@ -697,16 +720,18 @@ func TestSandboxBlocksSignalingUnrelatedProcess(t *testing.T) {
 	}
 }
 
-func TestNewRejectsMissingWritablePath(t *testing.T) {
+// A missing writable path must not fail construction: it would otherwise brick
+// session restore over a single stale path. On macOS the profile rule for a
+// missing path is simply inert.
+func TestNewToleratesMissingWritablePath(t *testing.T) {
 	skipIfNoSandboxExec(t)
 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	if _, err := New(Config{WritablePaths: []string{missing}}); err == nil {
-		t.Fatal("expected New() to reject a missing writable path, matching the Linux backend")
+	if _, err := New(Config{WritablePaths: []string{missing}}); err != nil {
+		t.Fatalf("New() should tolerate a missing writable path, got: %v", err)
 	}
-	// Under DenyWrite the writable paths are irrelevant, so they aren't validated.
 	if _, err := New(Config{WritablePaths: []string{missing}, DenyWrite: true}); err != nil {
-		t.Fatalf("DenyWrite should skip writable-path validation, got: %v", err)
+		t.Fatalf("New() with DenyWrite should also tolerate it, got: %v", err)
 	}
 }
 

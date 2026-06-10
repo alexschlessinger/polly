@@ -84,6 +84,20 @@ func DefaultConfig() Config {
 	return Config{WritablePaths: []string{os.TempDir()}}
 }
 
+// validateConfig rejects only configs the sandbox fundamentally cannot honor.
+// It deliberately does NOT reject a missing writablePaths entry: a path that
+// doesn't exist yet (or was removed since the config was saved) must not brick
+// tool loading or session restore — that one stale path would otherwise abort
+// the whole startup. Missing writable binds are skipped per-command instead
+// (buildBwrapArgs on Linux drops them; the macOS profile rule is inert for a
+// path that isn't there), so writes there simply fail at runtime — fail-closed.
+func validateConfig(cfg Config) error {
+	if _, err := os.UserHomeDir(); err != nil {
+		return fmt.Errorf("cannot resolve home directory for credential masking: %w", err)
+	}
+	return nil
+}
+
 // DeniedPathKind identifies how a denied path should be masked by platform sandboxes.
 type DeniedPathKind string
 
@@ -151,16 +165,31 @@ func ParseConfig(raw json.RawMessage) (*Config, error) {
 
 // Merge returns a new Config combining c (base) with overlay.
 // Booleans are OR'd (either side can widen allowances or add restrictions,
-// but neither can reduce them). Slices are appended.
+// but neither can reduce them). Slices are concatenated into fresh arrays.
 func (c Config) Merge(overlay Config) Config {
 	c.AllowNetwork = c.AllowNetwork || overlay.AllowNetwork
 	c.DenyDNS = c.DenyDNS || overlay.DenyDNS
-	c.WritablePaths = append(c.WritablePaths, overlay.WritablePaths...)
-	c.ReadPaths = append(c.ReadPaths, overlay.ReadPaths...)
-	c.DenyPaths = append(c.DenyPaths, overlay.DenyPaths...)
-	c.AllowEnv = append(c.AllowEnv, overlay.AllowEnv...)
+	c.WritablePaths = concatStrings(c.WritablePaths, overlay.WritablePaths)
+	c.ReadPaths = concatStrings(c.ReadPaths, overlay.ReadPaths)
+	c.DenyPaths = concatStrings(c.DenyPaths, overlay.DenyPaths)
+	c.AllowEnv = concatStrings(c.AllowEnv, overlay.AllowEnv)
 	c.DenyWrite = c.DenyWrite || overlay.DenyWrite
 	return c
+}
+
+// concatStrings returns a/b joined in a freshly allocated slice. Merge must not
+// append onto its receiver's backing array: the registry reuses one
+// baseSandboxCfg for every tool, so appending an overlay's entries in place
+// could write into spare capacity shared with another tool's config and let one
+// tool's denyPaths silently overwrite another's.
+func concatStrings(a, b []string) []string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(a)+len(b))
+	out = append(out, a...)
+	out = append(out, b...)
+	return out
 }
 
 // Default-stripped env vars: agent sockets give a sandboxed process use of the
@@ -200,6 +229,12 @@ func isSensitiveEnv(name string) bool {
 // the sensitivity heuristics). Otherwise everything passes except
 // sensitive-looking vars — see isSensitiveEnv.
 func filterEnv(env, allowEnv []string) (filtered, stripped []string) {
+	// Never leave filtered nil: os/exec treats a nil Env as "inherit the full
+	// parent environment", so a config that strips every var (e.g. an allowEnv
+	// listing only names absent from the environment) would hand the sandboxed
+	// process every secret this function exists to remove. A non-nil empty
+	// slice means "no environment", which is the fail-closed behavior we want.
+	filtered = make([]string, 0, len(env))
 	if len(allowEnv) > 0 {
 		allowed := make(map[string]bool, len(allowEnv))
 		for _, k := range allowEnv {

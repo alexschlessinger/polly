@@ -18,6 +18,26 @@ func skipIfNoBwrap(t *testing.T) {
 	}
 }
 
+// When a deny entry's parent is a regular file (e.g. ~/.docker is a file, so
+// ~/.docker/config.json can't exist), EvalSymlinks returns ENOTDIR, not ENOENT.
+// existingDeniedPaths must still drop it — keeping it would make bwrap try to
+// create a mountpoint under a non-directory and abort every command.
+func TestLinuxExistingDeniedPathsDropsENOTDIR(t *testing.T) {
+	dir := t.TempDir()
+	fileParent := filepath.Join(dir, "dockerfile-not-dir")
+	if err := os.WriteFile(fileParent, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	underFile := filepath.Join(fileParent, "config.json") // parent is a file → ENOTDIR
+
+	kept := existingDeniedPaths([]DeniedPath{
+		{Path: underFile, Kind: DeniedPathFile},
+	})
+	if len(kept) != 0 {
+		t.Fatalf("expected the ENOTDIR path to be dropped, got %v", kept)
+	}
+}
+
 func TestLinuxExistingDeniedPaths(t *testing.T) {
 	dir, err := filepath.EvalSymlinks(t.TempDir()) // resolve once so comparisons are stable
 	if err != nil {
@@ -125,12 +145,38 @@ func TestLinuxWrapReevaluatesDeniedPaths(t *testing.T) {
 	}
 }
 
-func TestLinuxNewRejectsMissingWritablePath(t *testing.T) {
+// A missing writable path must NOT fail construction (that would brick session
+// restore over one stale path). It is skipped per-command instead, so bwrap
+// never sees a missing bind source and aborts.
+func TestLinuxMissingWritablePathIsSkippedNotRejected(t *testing.T) {
 	skipIfNoBwrap(t)
 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	if _, err := New(Config{WritablePaths: []string{missing}}); err == nil {
-		t.Fatal("New() = nil error, want failure for a missing writable path (bwrap would abort every command)")
+	sb, err := New(Config{WritablePaths: []string{missing}})
+	if err != nil {
+		t.Fatalf("New() should tolerate a missing writable path, got: %v", err)
+	}
+
+	cmd := exec.Command("true")
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if strings.Contains(strings.Join(cmd.Args, " "), missing) {
+		t.Fatalf("missing writable path should be skipped, but a bind for it was emitted:\n%s", strings.Join(cmd.Args, " "))
+	}
+
+	// A path that exists is still bound.
+	present := t.TempDir()
+	sb2, err := New(Config{WritablePaths: []string{present}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	cmd2 := exec.Command("true")
+	if err := sb2.Wrap(cmd2); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if !strings.Contains(strings.Join(cmd2.Args, " "), "--bind "+present+" "+present) {
+		t.Fatalf("existing writable path should be bound:\n%s", strings.Join(cmd2.Args, " "))
 	}
 }
 

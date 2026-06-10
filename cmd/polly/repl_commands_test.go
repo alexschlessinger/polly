@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +15,14 @@ import (
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
+
+type passthroughSandbox struct{}
+
+func (passthroughSandbox) Wrap(cmd *exec.Cmd) error {
+	return nil
+}
 
 func TestReplCommandRegistryDispatchAliasesAndHelp(t *testing.T) {
 	registry := newReplCommandRegistry()
@@ -124,6 +134,200 @@ func TestToolsCommandListNamespaceAndShow(t *testing.T) {
 	r.runCommand("/tools show missing")
 	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "tool not found: missing") {
 		t.Fatalf("/tools show missing output = %q", got)
+	}
+}
+
+// stubSandboxRegistry returns a registry whose factory hands out no-op
+// sandboxes, with bash loaded (and therefore sandboxed).
+func stubSandboxRegistry(t *testing.T) *tools.ToolRegistry {
+	t.Helper()
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return probeFailSandbox{}, nil
+	}
+	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, sandbox.Config{}))
+	if _, err := registry.LoadToolAuto("bash"); err != nil {
+		t.Fatalf("LoadToolAuto(bash) error = %v", err)
+	}
+	return registry
+}
+
+func TestGetSandboxSetting(t *testing.T) {
+	r := newManagedREPL(&Config{NoSandbox: true}, "ctx", 0, 0)
+	if handled, quit := r.runCommand("/get sandbox"); !handled || quit {
+		t.Fatalf("/get sandbox handled=%v quit=%v", handled, quit)
+	}
+	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "sandbox: disabled (--nosandbox)") {
+		t.Fatalf("/get sandbox output = %q", got)
+	}
+
+	registry := stubSandboxRegistry(t)
+	registry.Register(&tools.Func{Name: "plain", Desc: "no sandbox support"})
+	r = newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.state = &conversationState{toolRegistry: registry}
+	r.runCommand("/get sandbox")
+	got := strings.Join(r.model.transcript, "\n")
+	if !strings.Contains(got, "active") || !strings.Contains(got, "1 sandboxed, 0 not") {
+		t.Fatalf("/get sandbox output = %q", got)
+	}
+
+	r.model.transcript = nil
+	r.runCommand("/get all")
+	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "sandbox: active") {
+		t.Fatalf("/get all missing sandbox row: %q", got)
+	}
+}
+
+func TestToolsListMarksSandboxed(t *testing.T) {
+	registry := stubSandboxRegistry(t)
+	registry.Register(&tools.Func{Name: "plain", Desc: "no sandbox support"})
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.state = &conversationState{toolRegistry: registry}
+
+	if handled, quit := r.runCommand("/tools list"); !handled || quit {
+		t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
+	}
+	got := strings.Join(r.model.transcript, "\n")
+	if !strings.Contains(got, "bash [sandboxed: net off, temp writes, env filtered]") {
+		t.Fatalf("/tools list missing sandbox details for bash: %q", got)
+	}
+	if strings.Contains(got, "plain [sandboxed]") {
+		t.Fatalf("/tools list wrongly marked plain tool: %q", got)
+	}
+
+	r.model.transcript = nil
+	if handled, quit := r.runCommand("/tools show bash"); !handled || quit {
+		t.Fatalf("/tools show handled=%v quit=%v", handled, quit)
+	}
+	got = strings.Join(r.model.transcript, "\n")
+	for _, want := range []string{
+		"sandboxed: true",
+		"sandbox: network off; writes limited to temp; env filters credential-like variables",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("/tools show missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestToolsSandboxBadges(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  sandbox.Config
+		want string
+	}{
+		{
+			name: "network allowed",
+			cfg:  sandbox.Config{AllowNetwork: true},
+			want: "bash [sandboxed: net on, temp writes, env filtered]",
+		},
+		{
+			name: "dns denied",
+			cfg:  sandbox.Config{AllowNetwork: true, DenyDNS: true},
+			want: "bash [sandboxed: net on, dns off, temp writes, env filtered]",
+		},
+		{
+			name: "read only",
+			cfg:  sandbox.Config{DenyWrite: true},
+			want: "bash [sandboxed: net off, read-only, env filtered]",
+		},
+		{
+			name: "custom writes",
+			cfg:  sandbox.Config{WritablePaths: []string{"/tmp", "/workspace/out"}},
+			want: "bash [sandboxed: net off, temp+custom writes, env filtered]",
+		},
+		{
+			name: "env allowlist",
+			cfg:  sandbox.Config{AllowEnv: []string{"PATH"}},
+			want: "bash [sandboxed: net off, temp writes, env allowlist]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+				return probeFailSandbox{}, nil
+			}
+			registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, tt.cfg))
+			if _, err := registry.LoadToolAuto("bash"); err != nil {
+				t.Fatalf("LoadToolAuto(bash) error = %v", err)
+			}
+			r := newManagedREPL(&Config{}, "ctx", 0, 0)
+			r.state = &conversationState{toolRegistry: registry}
+			if handled, quit := r.runCommand("/tools list"); !handled || quit {
+				t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
+			}
+			if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, tt.want) {
+				t.Fatalf("/tools list missing %q in %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestToolsSandboxOptOutAndFallbackBadges(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/bash
+if [ "$1" = "--schema" ]; then
+	echo '{"title":"unsandboxed_tool","description":"Opts out","type":"object","sandbox":false,"properties":{}}'
+elif [ "$1" = "--execute" ]; then
+	echo "ok"
+fi
+`
+	scriptPath := filepath.Join(dir, "unsandboxed.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return passthroughSandbox{}, nil
+	}
+	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, sandbox.Config{}))
+	if _, err := registry.LoadShellTool(scriptPath); err != nil {
+		t.Fatalf("LoadShellTool() error = %v", err)
+	}
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.state = &conversationState{toolRegistry: registry}
+	if handled, quit := r.runCommand("/tools list"); !handled || quit {
+		t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
+	}
+	got := strings.Join(r.model.transcript, "\n")
+	if !strings.Contains(got, "unsandboxed__unsandboxed_tool [not sandboxed: opted out]") {
+		t.Fatalf("/tools list missing opt-out badge: %q", got)
+	}
+
+	registry = tools.NewToolRegistry([]tools.Tool{tools.NewBashTool("").WithSandbox(probeFailSandbox{})})
+	r = newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.state = &conversationState{toolRegistry: registry}
+	if handled, quit := r.runCommand("/tools list"); !handled || quit {
+		t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
+	}
+	got = strings.Join(r.model.transcript, "\n")
+	if !strings.Contains(got, "bash [sandboxed]") || strings.Contains(got, "bash [sandboxed:") {
+		t.Fatalf("/tools list should fall back to simple sandbox badge without config: %q", got)
+	}
+}
+
+func TestSandboxNoticeLine(t *testing.T) {
+	if got := sandboxNoticeLine(&Config{NoSandbox: true}, nil); got != "sandbox: disabled (--nosandbox)" {
+		t.Fatalf("disabled notice = %q", got)
+	}
+	if got := sandboxNoticeLine(&Config{}, nil); got != "sandbox: unavailable" {
+		t.Fatalf("nil-state notice = %q", got)
+	}
+
+	registry := stubSandboxRegistry(t)
+	state := &conversationState{toolRegistry: registry}
+	if got := sandboxNoticeLine(&Config{}, state); got != "sandbox: active (1 tools sandboxed)" {
+		t.Fatalf("active notice = %q", got)
+	}
+
+	// An unsandboxed-but-capable tool is called out by name.
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return probeFailSandbox{}, nil
+	}
+	registry = tools.NewToolRegistry([]tools.Tool{tools.NewBashTool("")},
+		tools.WithSandboxFactory(factory, sandbox.Config{}))
+	state = &conversationState{toolRegistry: registry}
+	got := sandboxNoticeLine(&Config{}, state)
+	if !strings.Contains(got, "0 tools sandboxed") || !strings.Contains(got, "not sandboxed: bash") {
+		t.Fatalf("opt-out notice = %q", got)
 	}
 }
 

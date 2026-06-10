@@ -21,21 +21,8 @@ func New(cfg Config) (Sandbox, error) {
 	if _, err := exec.LookPath("sandbox-exec"); err != nil {
 		return nil, fmt.Errorf("sandbox-exec not available: %w", err)
 	}
-	// Without a home directory the credential deny list expands to nothing;
-	// refuse to construct a sandbox that silently masks zero paths.
-	if _, err := os.UserHomeDir(); err != nil {
-		return nil, fmt.Errorf("cannot resolve home directory for credential masking: %w", err)
-	}
-	// Reject missing writable paths at construction, matching the Linux backend.
-	// A missing path here would only render an inert profile rule (Seatbelt
-	// silently ignores it), so without this check a typo'd writablePath fails
-	// closed on Linux but passes unnoticed on macOS.
-	if !cfg.DenyWrite {
-		for _, p := range cfg.WritablePaths {
-			if _, err := os.Stat(expandTilde(p)); err != nil {
-				return nil, fmt.Errorf("writable path %q: %w", p, err)
-			}
-		}
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
 	}
 	return &darwinSandbox{cfg: cfg}, nil
 }
@@ -49,19 +36,18 @@ func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
 	cmd.Env = filtered
 
 	origArgs := cmd.Args
-	// denied_paths counts deny rules before existence filtering (Seatbelt
-	// emits rules regardless), unlike linux which counts applied masks.
+	denied := allDeniedPaths(s.cfg)
 	slog.Debug("sandbox_wrap",
 		"command", commandSummary(origArgs),
 		"network", s.cfg.AllowNetwork,
 		"deny_write", s.cfg.DenyWrite,
 		"writable_paths", s.cfg.WritablePaths,
 		"env_stripped", stripped,
-		"denied_paths", len(allDeniedPaths(s.cfg)))
+		"denied_paths", len(denied))
 	cmd.Path = "/usr/bin/sandbox-exec"
 	// The profile is rebuilt on every wrap, not frozen at construction, so the
 	// symlink resolution below tracks the filesystem as it is now.
-	cmd.Args = append([]string{"sandbox-exec", "-p", buildProfile(s.cfg)}, origArgs...)
+	cmd.Args = append([]string{"sandbox-exec", "-p", buildProfile(s.cfg, denied)}, origArgs...)
 
 	// Run in a new session, detaching the controlling terminal. This is the
 	// macOS counterpart to bwrap's --new-session on Linux: it closes terminal
@@ -87,7 +73,11 @@ func pathAndResolved(path string) []string {
 	return []string{path}
 }
 
-func buildProfile(cfg Config) string {
+func buildProfile(cfg Config, deniedLists ...[]DeniedPath) string {
+	deniedPaths := allDeniedPaths(cfg)
+	if len(deniedLists) > 0 {
+		deniedPaths = deniedLists[0]
+	}
 	var sb strings.Builder
 	sb.WriteString("(version 1)\n")
 	sb.WriteString("(allow default)\n")
@@ -132,7 +122,7 @@ func buildProfile(cfg Config) string {
 	}
 
 	// Deny read access to sensitive credential paths.
-	for _, denied := range allDeniedPaths(cfg) {
+	for _, denied := range deniedPaths {
 		for _, p := range pathAndResolved(denied.Path) {
 			sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", p))
 		}
@@ -145,15 +135,19 @@ func buildProfile(cfg Config) string {
 		}
 	}
 
-	// Deny signaling unrelated processes while still allowing a script to
-	// manage its own jobs (self + process group). Paired with the Setsid in
-	// Wrap, which puts the sandboxed process in its own session/group so
-	// "process group" means its own children, not the user's other processes.
-	// This is the macOS approximation of the isolation Linux gets for free from
-	// the PID namespace (where other processes are simply invisible).
+	// Deny signaling unrelated processes while still allowing a script to manage
+	// its own descendants. (target same-sandbox) matches exactly the processes
+	// running inside this sandbox instance — the script's own children,
+	// including ones it detached into their own session/process group (job
+	// control, `setsid` workers) — while the user's other processes, which are
+	// not in the sandbox, stay unreachable. This is stricter and more robust
+	// than a process-group scope: it doesn't depend on the Setsid in Wrap and
+	// doesn't break a tool that re-groups its children. macOS approximation of
+	// the isolation Linux gets for free from the PID namespace (where other
+	// processes are simply invisible).
 	sb.WriteString("(deny signal)\n")
 	sb.WriteString("(allow signal (target self))\n")
-	sb.WriteString("(allow signal (target pgrp))\n")
+	sb.WriteString("(allow signal (target same-sandbox))\n")
 
 	if !cfg.AllowNetwork {
 		sb.WriteString("(deny network*)\n")

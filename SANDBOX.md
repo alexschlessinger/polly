@@ -109,8 +109,11 @@ Properties worth knowing:
   to mask a nonexistent path. Only a confirmed does-not-exist drops a mask;
   any other resolution failure (permissions, I/O) keeps the path, so the
   command fails rather than running with that path readable.
-- `writablePaths` are validated at construction: a typo'd path fails the tool
-  load instead of aborting every command at runtime.
+- A `writablePaths` entry that doesn't exist is skipped per-command (with a
+  debug log), not bound — bwrap aborts on a missing bind source, and failing
+  construction would brick session restore over one stale path. A path created
+  later becomes writable on the next command; writes to a missing path just
+  fail at runtime (fail-closed).
 - `denyDNS` (with `allowNetwork`) is implemented by masking
   `/etc/resolv.conf` with `/dev/null`.
 
@@ -131,12 +134,12 @@ with a profile generated per command. The default config renders:
 ; ... one deny rule per denied path, 17 built-in ...
 (deny signal)                            ; can't signal unrelated processes...
 (allow signal (target self))             ; ...but a script can manage its own
-(allow signal (target pgrp))             ;    jobs (self + process group)
+(allow signal (target same-sandbox))     ;    descendants (anything in this sandbox)
 (deny network*)
 ```
 
 The command also runs with `setsid()` (via `SysProcAttr.Setsid`), giving it its
-own session and process group — see the signal and terminal notes below.
+own session and detached terminal — see the terminal note below.
 
 Properties worth knowing:
 
@@ -148,16 +151,16 @@ Properties worth knowing:
   filesystem readable, and both platforms deny the same credential list, so the
   read surface matches.
 - **Signaling is denied for unrelated processes.** `(deny signal)` plus a
-  self/process-group re-allow lets a script manage its own jobs (timeouts,
-  background workers) but blocks it from `kill`-ing or `SIGSTOP`-ing your other
-  processes. This works because of the `setsid()` below: the sandbox gets its
-  own process group, so "process group" means its own children. It's the macOS
-  approximation of the isolation Linux gets for free from the PID namespace
-  (where other processes are simply invisible).
+  self/`same-sandbox` re-allow lets a script manage its own descendants
+  (timeouts, background workers, even children it detaches into their own
+  session) but blocks it from `kill`-ing or `SIGSTOP`-ing your other processes.
+  `same-sandbox` scopes by sandbox membership, so it covers descendants
+  regardless of process group and doesn't depend on the `setsid()` below. It's
+  the macOS approximation of the isolation Linux gets for free from the PID
+  namespace (where other processes are simply invisible).
 - **Own session, no controlling terminal.** `setsid()` is the macOS counterpart
-  to bwrap's `--new-session`: it detaches the controlling tty (closing
-  terminal-injection vectors) and is what makes the process-group signal rule
-  correct.
+  to bwrap's `--new-session`: it detaches the controlling tty, closing
+  terminal-injection vectors.
 - **Denied reads fail loudly**: `cat ~/.ssh/config` returns
   `Operation not permitted`, where Linux would return empty.
 - **Rules are emitted for both the literal path and its symlink-resolved
@@ -168,8 +171,9 @@ Properties worth knowing:
   `allow file-read*` rules after the denies.
 - Deny rules are emitted whether or not the path exists (harmless, unlike
   bwrap), so no existence filtering is needed.
-- `writablePaths` are validated at construction (same as Linux): a typo'd path
-  fails the tool load rather than silently rendering an inert profile rule.
+- A missing `writablePaths` entry renders an inert profile rule (Seatbelt
+  ignores it), so it's tolerated the same as on Linux — a stale path never
+  fails tool loading.
 - `denyDNS` blocks the system resolver socket (`mDNSResponder`) plus direct
   port-53 UDP/TCP.
 - `sandbox-exec` is deprecated by Apple but remains functional and is what
@@ -185,9 +189,9 @@ Properties worth knowing:
 | Network | denied (`--unshare-net`) | denied (`deny network*`) | ✅ effect matches |
 | Env stripping | shared Go-side filtering | shared Go-side filtering | ✅ identical code |
 | Cross-process env read | blocked by PID namespace | blocked by the OS (`KERN_PROCARGS2` truncates) | ✅ effect matches |
-| Signal other processes | invisible, can't signal | `deny signal` + self/pgrp re-allow | ✅ effect matches |
+| Signal other processes | invisible, can't signal | `deny signal` + self/same-sandbox re-allow | ✅ effect matches |
 | Controlling terminal | detached (`--new-session`) | detached (`setsid()`) | ✅ effect matches |
-| Missing `writablePaths` | construction error | construction error | ✅ identical behavior |
+| Missing `writablePaths` | skipped per-command | inert profile rule | ✅ tolerated, not fatal |
 | **Denied-read failure mode** | reads as empty | `Operation not permitted` | ❌ inherent (masking vs policy) |
 | **Process enumeration** | invisible (PID namespace) | visible (`KERN_PROC` sysctl, ungated) | ❌ inherent |
 | **Mach / IPC** | n/a | allowed (allow-default) | ❌ inherent (no Linux analogue) |

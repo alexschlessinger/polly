@@ -1028,6 +1028,79 @@ func TestLoadToolAutoBashSandboxFailureFailsClosed(t *testing.T) {
 	}
 }
 
+func TestSandboxState(t *testing.T) {
+	dir := t.TempDir()
+	shell, err := NewShellTool(createTestScript(t, dir))
+	if err != nil {
+		t.Fatalf("NewShellTool error = %v", err)
+	}
+	sandboxedBash := NewBashTool("").WithSandbox(&mockSandbox{})
+
+	tests := []struct {
+		name    string
+		tool    Tool
+		capable bool
+		active  bool
+	}{
+		{"bash plain", NewBashTool(""), true, false},
+		{"bash sandboxed", sandboxedBash, true, true},
+		{"shell plain", shell, true, false},
+		{"shell sandboxed", shell.WithSandbox(&mockSandbox{}), true, true},
+		{"mcp sandboxed", &MCPTool{client: &MCPClient{sandboxed: true}}, true, true},
+		{"func not capable", &Func{Name: "f"}, false, false},
+		{"namespaced unwraps", &NamespacedTool{Tool: sandboxedBash, namespacedName: "ns__bash"}, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capable, active := SandboxState(tt.tool)
+			if capable != tt.capable || active != tt.active {
+				t.Fatalf("SandboxState() = (%v, %v), want (%v, %v)", capable, active, tt.capable, tt.active)
+			}
+		})
+	}
+}
+
+func TestSandboxDetailsIncludesEffectiveConfigAndOptOut(t *testing.T) {
+	cfg := sandbox.Config{
+		AllowNetwork:  true,
+		WritablePaths: []string{"/tmp/work"},
+		AllowEnv:      []string{"PATH"},
+	}
+	bash := NewBashTool("").WithSandbox(&mockSandbox{}, cfg)
+	info := SandboxDetails(bash)
+	if !info.Capable || !info.Active {
+		t.Fatalf("SandboxDetails(bash) = %+v, want capable active", info)
+	}
+	if info.Config == nil || !info.Config.AllowNetwork || len(info.Config.WritablePaths) != 1 || info.Config.WritablePaths[0] != "/tmp/work" {
+		t.Fatalf("SandboxDetails(bash).Config = %+v, want copied effective config", info.Config)
+	}
+	cfg.WritablePaths[0] = "/mutated"
+	if info.Config.WritablePaths[0] != "/tmp/work" {
+		t.Fatalf("SandboxDetails exposed mutable config: %+v", info.Config.WritablePaths)
+	}
+
+	dir := t.TempDir()
+	script := `#!/bin/bash
+if [ "$1" = "--schema" ]; then
+	echo '{"title":"unsandboxed-tool","description":"Opts out","type":"object","sandbox":false,"properties":{}}'
+elif [ "$1" = "--execute" ]; then
+	echo "ok"
+fi
+`
+	scriptPath := filepath.Join(dir, "unsandboxed.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	shell, err := NewShellTool(scriptPath)
+	if err != nil {
+		t.Fatalf("NewShellTool() error = %v", err)
+	}
+	info = SandboxDetails(shell)
+	if !info.Capable || info.Active || !info.OptedOut {
+		t.Fatalf("SandboxDetails(opt-out shell) = %+v, want capable inactive opted out", info)
+	}
+}
+
 func TestRegisterNativeFactoryNilTool(t *testing.T) {
 	registry := NewToolRegistry(nil)
 	registry.RegisterNative("broken", func() Tool { return nil })

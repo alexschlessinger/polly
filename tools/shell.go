@@ -18,6 +18,7 @@ type ShellTool struct {
 	schema        *schema.ToolSchema
 	sandbox       sandbox.Sandbox
 	sandboxCfg    *sandbox.Config // parsed from the script's schema "sandbox" field
+	effectiveCfg  *sandbox.Config // merged config used for the sandbox, when known
 	sandboxOptOut bool            // user set "sandbox": false
 }
 
@@ -33,8 +34,29 @@ func (s *ShellTool) SandboxOptOut() bool { return s.sandboxOptOut }
 func (s *ShellTool) WantsSandbox() bool { return s.sandboxCfg != nil }
 
 // WithSandbox returns a copy with sandboxing enabled.
-func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
-	return &ShellTool{Command: s.Command, schema: s.schema, sandbox: sb, sandboxCfg: s.sandboxCfg, sandboxOptOut: s.sandboxOptOut}
+func (s *ShellTool) WithSandbox(sb sandbox.Sandbox, cfg ...sandbox.Config) *ShellTool {
+	out := &ShellTool{
+		Command:       s.Command,
+		schema:        s.schema,
+		sandbox:       sb,
+		sandboxCfg:    copySandboxConfig(s.sandboxCfg),
+		effectiveCfg:  copySandboxConfig(s.effectiveCfg),
+		sandboxOptOut: s.sandboxOptOut,
+	}
+	if len(cfg) > 0 {
+		out.effectiveCfg = copySandboxConfig(&cfg[0])
+	}
+	return out
+}
+
+// SandboxDetails reports shell tool sandbox posture and the effective config if known.
+func (s *ShellTool) SandboxDetails() SandboxInfo {
+	return SandboxInfo{
+		Capable:  true,
+		Active:   s.sandbox != nil,
+		OptedOut: s.sandboxOptOut,
+		Config:   copySandboxConfig(s.effectiveCfg),
+	}
 }
 
 // NewShellTool creates a new shell tool from a command.

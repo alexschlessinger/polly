@@ -2106,6 +2106,12 @@ func (r *managedREPL) recordAcceptedInput(input string) {
 	r.appendHistory(input)
 }
 
+// sandboxNoticeLine summarizes the sandbox posture for the REPL startup
+// notice, so the operator can see at a glance which tools run restricted.
+func sandboxNoticeLine(config *Config, state *conversationState) string {
+	return currentSandboxPosture(config, state).noticeString()
+}
+
 func newManagedREPL(config *Config, contextName string, toolCount, skillCount int) *managedREPL {
 	m := newReplModel()
 	m.modelName = stripProviderPrefix(config.Model)
@@ -2176,6 +2182,9 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 
 	r.setupWidgets()
 	r.startupLogoVisible = true
+	if !r.model.quiet {
+		r.model.appendNoticeLine(sandboxNoticeLine(r.config, r.state))
+	}
 	r.render()
 
 	events := pollManagedEvents(ui.DefaultBackend.Screen)

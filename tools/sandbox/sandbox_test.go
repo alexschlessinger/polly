@@ -302,6 +302,34 @@ func TestFilterEnvAllowEnvOverridesSensitivity(t *testing.T) {
 	}
 }
 
+// filterEnv must never return a nil slice: callers assign it to cmd.Env, and
+// os/exec treats a nil Env as "inherit the full parent environment" — which
+// would defeat the filtering entirely. The dangerous case is an allowlist whose
+// names are all absent from the environment.
+func TestFilterEnvNeverReturnsNil(t *testing.T) {
+	cases := []struct {
+		name     string
+		env      []string
+		allowEnv []string
+	}{
+		{"allowlist matches nothing", []string{"PATH=/usr/bin", "MY_API_KEY=sk"}, []string{"GITHUB_TOKEN"}},
+		{"empty env with allowlist", nil, []string{"GITHUB_TOKEN"}},
+		{"all vars sensitive, no allowlist", []string{"AWS_SECRET=x", "FOO_TOKEN=y"}, nil},
+		{"empty env, no allowlist", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			filtered, _ := filterEnv(tc.env, tc.allowEnv)
+			if filtered == nil {
+				t.Fatalf("filterEnv returned a nil slice; cmd.Env=nil makes exec inherit the full parent environment")
+			}
+			if len(filtered) != 0 {
+				t.Fatalf("expected an empty (but non-nil) env, got %v", filtered)
+			}
+		})
+	}
+}
+
 func TestCommandSummary(t *testing.T) {
 	tests := []struct {
 		args []string
@@ -365,6 +393,29 @@ func TestMergeDenyPaths(t *testing.T) {
 	merged := Config{DenyPaths: []string{"/a"}}.Merge(Config{DenyPaths: []string{"/b"}})
 	if len(merged.DenyPaths) != 2 || merged.DenyPaths[0] != "/a" || merged.DenyPaths[1] != "/b" {
 		t.Fatalf("DenyPaths = %v, want [/a /b]", merged.DenyPaths)
+	}
+}
+
+// Merging two overlays onto the same base must not alias: the registry reuses
+// one baseSandboxCfg for every tool, so if Merge appended into the base's spare
+// capacity, one tool's deny path would overwrite another's. The base slice here
+// has cap > len to expose the aliasing if it regresses.
+func TestMergeDoesNotAliasBase(t *testing.T) {
+	base := Config{DenyPaths: make([]string, 1, 8)}
+	base.DenyPaths[0] = "/base"
+
+	mergedA := base.Merge(Config{DenyPaths: []string{"/toolA"}})
+	mergedB := base.Merge(Config{DenyPaths: []string{"/toolB"}})
+
+	if got := mergedA.DenyPaths; len(got) != 2 || got[1] != "/toolA" {
+		t.Fatalf("mergedA.DenyPaths = %v, want [/base /toolA] — tool B's merge contaminated tool A", got)
+	}
+	if got := mergedB.DenyPaths; len(got) != 2 || got[1] != "/toolB" {
+		t.Fatalf("mergedB.DenyPaths = %v, want [/base /toolB]", got)
+	}
+	// The base itself must be untouched.
+	if len(base.DenyPaths) != 1 || base.DenyPaths[0] != "/base" {
+		t.Fatalf("base mutated by Merge: %v", base.DenyPaths)
 	}
 }
 

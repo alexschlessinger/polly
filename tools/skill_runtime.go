@@ -45,7 +45,7 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 		if err != nil {
 			return nil, fmt.Errorf("sandbox for skill bash tool: %w", err)
 		}
-		bt = bt.WithSandbox(sb)
+		bt = bt.WithSandbox(sb, cfg)
 	}
 	runtime.activateTool.writablePaths = cfg.WritablePaths
 	registry.Register(bt)

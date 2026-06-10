@@ -99,14 +99,15 @@ func (r *ToolRegistry) HasSandbox() bool {
 
 // NewSandbox creates a sandbox with the base config merged with optional per-tool overrides.
 func (r *ToolRegistry) NewSandbox(overlay *sandbox.Config) (sandbox.Sandbox, error) {
-	return r.newSandboxFor("", overlay)
+	sb, _, err := r.newSandboxFor("", overlay)
+	return sb, err
 }
 
 // newSandboxFor is NewSandbox with a tool/server identity for debug logging
 // of the effective merged config (names and flags only, never env values).
-func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sandbox.Sandbox, error) {
+func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sandbox.Sandbox, sandbox.Config, error) {
 	if r.sandboxFactory == nil {
-		return nil, fmt.Errorf("sandboxing not available")
+		return nil, sandbox.Config{}, fmt.Errorf("sandboxing not available")
 	}
 	cfg := r.baseSandboxCfg
 	if overlay != nil {
@@ -121,7 +122,11 @@ func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sand
 		"read_paths", cfg.ReadPaths,
 		"deny_paths", cfg.DenyPaths,
 		"allow_env", cfg.AllowEnv)
-	return r.sandboxFactory(cfg)
+	sb, err := r.sandboxFactory(cfg)
+	if err != nil {
+		return nil, cfg, err
+	}
+	return sb, cfg, nil
 }
 
 // NewSandboxDirect creates a sandbox from an explicit config, ignoring the base config.
@@ -177,11 +182,11 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 			return bt, nil
 		}
 		// Fail closed: bash without its sandbox must not load.
-		sb, err := registry.newSandboxFor("bash", nil)
+		sb, cfg, err := registry.newSandboxFor("bash", nil)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox for bash: %w", err)
 		}
-		return bt.WithSandbox(sb), nil
+		return bt.WithSandbox(sb, cfg), nil
 	}
 
 	for _, tool := range tools {
@@ -222,7 +227,13 @@ func (r *ToolRegistry) RegisterNative(name string, factory func() Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.nativeTools[name] = func() (Tool, error) { return factory(), nil }
+	r.nativeTools[name] = func() (Tool, error) {
+		tool := factory()
+		if tool == nil {
+			return nil, fmt.Errorf("native tool factory %s returned no tool", name)
+		}
+		return tool, nil
+	}
 	slog.Debug("native_factory_registered", "factory_name", name)
 }
 
@@ -530,11 +541,11 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 	if r.sandboxFactory != nil && !shellTool.SandboxOptOut() {
 		// Fail closed: a tool that should be sandboxed but can't be must not
 		// load, or it would silently run unsandboxed.
-		sb, err := r.newSandboxFor(path, shellTool.SandboxConfig())
+		sb, cfg, err := r.newSandboxFor(path, shellTool.SandboxConfig())
 		if err != nil {
 			return nil, LoadResult{}, fmt.Errorf("sandbox for shell tool %s: %w", path, err)
 		}
-		shellTool = shellTool.WithSandbox(sb)
+		shellTool = shellTool.WithSandbox(sb, cfg)
 	}
 
 	s := shellTool.GetSchema()
@@ -589,18 +600,27 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 
 func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
 	var sb sandbox.Sandbox
+	var sbCfg sandbox.Config
+	var hasSandboxCfg bool
 	if r.sandboxFactory != nil && !config.SandboxOptOut() {
 		overlayCfg, err := config.SandboxConfig()
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid sandbox config for MCP server %s: %w", serverName, err)
 		}
-		sb, err = r.newSandboxFor(serverName, overlayCfg)
+		sb, sbCfg, err = r.newSandboxFor(serverName, overlayCfg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("sandbox for MCP server %s: %w", serverName, err)
 		}
+		hasSandboxCfg = true
 	}
 
-	client, err := NewMCPClientFromConfig(config, sb)
+	var client *MCPClient
+	var err error
+	if hasSandboxCfg {
+		client, err = NewMCPClientFromConfig(config, sb, sbCfg)
+	} else {
+		client, err = NewMCPClientFromConfig(config, sb)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -753,9 +773,6 @@ func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (LoadResult, error) {
 		if err != nil {
 			return LoadResult{}, err
 		}
-		if tool == nil {
-			return LoadResult{}, fmt.Errorf("native tool factory %s returned no tool", pathOrServer)
-		}
 		r.Register(tool)
 		return LoadResult{
 			Type: "native",
@@ -853,19 +870,27 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 
 	// Create sandbox unless user opted out
 	var sb sandbox.Sandbox
+	var sbCfg sandbox.Config
+	var hasSandboxCfg bool
 	if r.sandboxFactory != nil && !config.SandboxOptOut() {
 		overlayCfg, specErr := config.SandboxConfig()
 		if specErr != nil {
 			return fmt.Errorf("invalid sandbox config for MCP server %s: %w", namespace, specErr)
 		}
-		sb, err = r.newSandboxFor(namespace, overlayCfg)
+		sb, sbCfg, err = r.newSandboxFor(namespace, overlayCfg)
 		if err != nil {
 			return fmt.Errorf("sandbox for MCP server %s: %w", namespace, err)
 		}
+		hasSandboxCfg = true
 	}
 
 	// Create client
-	client, err := NewMCPClientFromConfig(&config, sb)
+	var client *MCPClient
+	if hasSandboxCfg {
+		client, err = NewMCPClientFromConfig(&config, sb, sbCfg)
+	} else {
+		client, err = NewMCPClientFromConfig(&config, sb)
+	}
 	if err != nil {
 		return err
 	}

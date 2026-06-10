@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 type linuxSandbox struct {
@@ -22,20 +23,8 @@ func New(cfg Config) (Sandbox, error) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		return nil, fmt.Errorf("bwrap not available: %w", err)
 	}
-	// Without a home directory the credential deny list expands to nothing;
-	// refuse to construct a sandbox that silently masks zero paths.
-	if _, err := os.UserHomeDir(); err != nil {
-		return nil, fmt.Errorf("cannot resolve home directory for credential masking: %w", err)
-	}
-	// bwrap aborts on a bind whose source or mountpoint is missing, which
-	// would fail every command run through this sandbox. Catch it here so the
-	// tool fails at construction with the offending path named.
-	if !cfg.DenyWrite {
-		for _, p := range cfg.WritablePaths {
-			if _, err := os.Stat(expandTilde(p)); err != nil {
-				return nil, fmt.Errorf("writable path %q: %w", p, err)
-			}
-		}
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
 	}
 	return &linuxSandbox{cfg: cfg}, nil
 }
@@ -51,9 +40,13 @@ func New(cfg Config) (Sandbox, error) {
 //     tmpfs on the link itself ("Can't mount tmpfs ...: No such file or
 //     directory"), and masking the link wouldn't cover the real target anyway.
 //
-// Only a confirmed not-exist drops a mask. Any other resolution failure
-// (permissions, I/O) keeps the original path — if bwrap then can't mask it,
-// the command errors instead of running with the path readable.
+// Only a confirmed not-exist drops a mask. ENOTDIR counts as not-exist: a deny
+// entry like ~/.docker/config.json resolves with ENOTDIR (not ENOENT) when
+// ~/.docker is a regular file, and the credential file cannot exist under a
+// non-directory — keeping it would make bwrap try to mkdir a mountpoint under a
+// file and abort every command. Any OTHER resolution failure (permissions, I/O)
+// keeps the original path — if bwrap then can't mask it, the command errors
+// instead of running with the path readable.
 // Resolved paths are de-duplicated so two links to the same target don't
 // double-mask.
 func existingDeniedPaths(paths []DeniedPath) []DeniedPath {
@@ -62,7 +55,7 @@ func existingDeniedPaths(paths []DeniedPath) []DeniedPath {
 	for _, p := range paths {
 		real, err := filepath.EvalSymlinks(p.Path)
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
+			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 				continue
 			}
 			real = p.Path
@@ -119,6 +112,15 @@ func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath) []string {
 		args = append(args, "--bind", "/tmp", "/tmp")
 		for _, p := range cfg.WritablePaths {
 			expanded := expandTilde(p)
+			// bwrap aborts the whole command if a bind source is missing, so
+			// skip a writable path that doesn't exist (yet) rather than failing
+			// every command. Re-evaluated per wrap, so a path created later
+			// mid-session becomes writable on the next command. Writes to a
+			// skipped path fail at runtime — fail-closed.
+			if _, err := os.Stat(expanded); err != nil {
+				slog.Warn("sandbox_skip_writable_path", "path", expanded, "reason", err)
+				continue
+			}
 			args = append(args, "--bind", expanded, expanded)
 		}
 	}
