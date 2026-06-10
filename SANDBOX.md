@@ -129,16 +129,35 @@ with a profile generated per command. The default config renders:
 (allow file-write* (subpath "/var/folders/.../T"))  ; your real $TMPDIR
 (deny file-read* (subpath "/Users/you/.ssh"))
 ; ... one deny rule per denied path, 17 built-in ...
+(deny signal)                            ; can't signal unrelated processes...
+(allow signal (target self))             ; ...but a script can manage its own
+(allow signal (target pgrp))             ;    jobs (self + process group)
 (deny network*)
 ```
+
+The command also runs with `setsid()` (via `SysProcAttr.Setsid`), giving it its
+own session and process group — see the signal and terminal notes below.
 
 Properties worth knowing:
 
 - **Allow-by-default.** Unlike the Linux side, Seatbelt here is a targeted
-  deny: writes, credential reads, and network are blocked; everything else
-  (reading the rest of your home dir, spawning processes, signaling, mach
-  services) is permitted. macOS has no equivalent of the PID-namespace or
-  session isolation.
+  deny: writes, credential reads, network, and cross-process signaling are
+  blocked; the rest (spawning processes, *enumerating* other processes, mach
+  services) is permitted. Note this mostly affects process and IPC operations,
+  **not** file reads — Linux's read-only root bind also exposes the whole
+  filesystem readable, and both platforms deny the same credential list, so the
+  read surface matches.
+- **Signaling is denied for unrelated processes.** `(deny signal)` plus a
+  self/process-group re-allow lets a script manage its own jobs (timeouts,
+  background workers) but blocks it from `kill`-ing or `SIGSTOP`-ing your other
+  processes. This works because of the `setsid()` below: the sandbox gets its
+  own process group, so "process group" means its own children. It's the macOS
+  approximation of the isolation Linux gets for free from the PID namespace
+  (where other processes are simply invisible).
+- **Own session, no controlling terminal.** `setsid()` is the macOS counterpart
+  to bwrap's `--new-session`: it detaches the controlling tty (closing
+  terminal-injection vectors) and is what makes the process-group signal rule
+  correct.
 - **Denied reads fail loudly**: `cat ~/.ssh/config` returns
   `Operation not permitted`, where Linux would return empty.
 - **Rules are emitted for both the literal path and its symlink-resolved
@@ -149,6 +168,8 @@ Properties worth knowing:
   `allow file-read*` rules after the denies.
 - Deny rules are emitted whether or not the path exists (harmless, unlike
   bwrap), so no existence filtering is needed.
+- `writablePaths` are validated at construction (same as Linux): a typo'd path
+  fails the tool load rather than silently rendering an inert profile rule.
 - `denyDNS` blocks the system resolver socket (`mDNSResponder`) plus direct
   port-53 UDP/TCP.
 - `sandbox-exec` is deprecated by Apple but remains functional and is what
@@ -157,24 +178,34 @@ Properties worth knowing:
 
 ### Differences at a glance
 
-| | Linux (bwrap) | macOS (Seatbelt) |
-|---|---|---|
-| Mechanism | mount + PID namespaces | kernel policy on syscalls |
-| Model | read-only root, allowances are mounts | allow default, targeted denies |
-| Denied dir read | appears empty | `Operation not permitted` |
-| Denied file read | reads as empty | `Operation not permitted` |
-| Other processes | invisible (own PID namespace) | visible, signalable |
-| Terminal | detached (`--new-session`) | shared |
-| Missing deny path | dropped (bwrap would abort) | rule emitted anyway |
-| Symlinked deny path | resolved, target masked, deduped | both literal and resolved denied |
-| Missing `writablePaths` | construction error | allowed (rule is inert) |
-| Backend status | maintained | deprecated but ubiquitous |
-| Env stripping | shared Go-side filtering, identical on both | ← |
+| | Linux (bwrap) | macOS (Seatbelt) | Unified? |
+|---|---|---|---|
+| File reads / credentials | whole fs readable, 17-path deny list | whole fs readable, same deny list | ✅ effect matches |
+| Writes | read-only root + temp binds | `deny file-write*` + temp allows | ✅ effect matches |
+| Network | denied (`--unshare-net`) | denied (`deny network*`) | ✅ effect matches |
+| Env stripping | shared Go-side filtering | shared Go-side filtering | ✅ identical code |
+| Cross-process env read | blocked by PID namespace | blocked by the OS (`KERN_PROCARGS2` truncates) | ✅ effect matches |
+| Signal other processes | invisible, can't signal | `deny signal` + self/pgrp re-allow | ✅ effect matches |
+| Controlling terminal | detached (`--new-session`) | detached (`setsid()`) | ✅ effect matches |
+| Missing `writablePaths` | construction error | construction error | ✅ identical behavior |
+| **Denied-read failure mode** | reads as empty | `Operation not permitted` | ❌ inherent (masking vs policy) |
+| **Process enumeration** | invisible (PID namespace) | visible (`KERN_PROC` sysctl, ungated) | ❌ inherent |
+| **Mach / IPC** | n/a | allowed (allow-default) | ❌ inherent (no Linux analogue) |
+| Mechanism / backend | namespaces, maintained | kernel policy, `sandbox-exec` deprecated | ❌ inherent |
 
-The practical consequence of the model difference: on Linux a probing command
-concludes "no credentials here"; on macOS it sees an explicit denial. And the
-Linux sandbox is strictly stronger — process isolation and terminal detachment
-have no macOS counterpart.
+The bold rows are the only genuinely operator-visible gaps that remain, and each
+is inherent to the platform rather than a config choice:
+
+- **Denied-read failure mode** is the one that can actually bite portability: a
+  tool doing `[ -f ~/.aws/credentials ]` sees *absent* on Linux but
+  *present-but-unreadable* on macOS. Unifying it would mean changing one
+  platform's masking mechanism.
+- **Process enumeration** isn't gateable on macOS — `KERN_PROC` sysctl isn't
+  covered by `process-info*`. A sandboxed process can *list* your processes
+  (but no longer signal or read the env of them).
+- **Mach/IPC** has no Linux counterpart; flipping macOS to `(deny default)` to
+  match Linux's posture would break most tools (you'd have to allowlist every
+  syscall, file read, and mach service), so it stays allow-default.
 
 ## Configuration
 
@@ -289,9 +320,11 @@ Know what this does *not* do:
   user namespace. The kernel attack surface is fully exposed, and anything
   your user can do that isn't explicitly denied, the sandbox can do.
 - **macOS is allow-by-default.** A sandboxed process can still read every
-  non-denied file you can, enumerate and signal your processes, and talk to
-  mach services. Treat the macOS sandbox as credential/write/network
-  containment, not process isolation.
+  non-denied file you can, *enumerate* your other processes, and talk to mach
+  services — though it can no longer signal them, read their environments, or
+  hold your terminal. Treat the macOS sandbox as credential/write/network
+  containment with partial process isolation, not the full PID-namespace
+  isolation Linux provides.
 - **Temp is shared.** `/tmp` is bind-mounted from the host on Linux (and
   `/private/tmp` is writable on macOS), so sandboxed processes share temp
   with each other and with the host — they can read and interfere with other

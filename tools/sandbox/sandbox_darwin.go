@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 type darwinSandbox struct {
@@ -24,6 +25,17 @@ func New(cfg Config) (Sandbox, error) {
 	// refuse to construct a sandbox that silently masks zero paths.
 	if _, err := os.UserHomeDir(); err != nil {
 		return nil, fmt.Errorf("cannot resolve home directory for credential masking: %w", err)
+	}
+	// Reject missing writable paths at construction, matching the Linux backend.
+	// A missing path here would only render an inert profile rule (Seatbelt
+	// silently ignores it), so without this check a typo'd writablePath fails
+	// closed on Linux but passes unnoticed on macOS.
+	if !cfg.DenyWrite {
+		for _, p := range cfg.WritablePaths {
+			if _, err := os.Stat(expandTilde(p)); err != nil {
+				return nil, fmt.Errorf("writable path %q: %w", p, err)
+			}
+		}
 	}
 	return &darwinSandbox{cfg: cfg}, nil
 }
@@ -50,6 +62,17 @@ func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
 	// The profile is rebuilt on every wrap, not frozen at construction, so the
 	// symlink resolution below tracks the filesystem as it is now.
 	cmd.Args = append([]string{"sandbox-exec", "-p", buildProfile(s.cfg)}, origArgs...)
+
+	// Run in a new session, detaching the controlling terminal. This is the
+	// macOS counterpart to bwrap's --new-session on Linux: it closes terminal
+	// injection vectors and, by giving the process its own process group, makes
+	// the (allow signal (target pgrp)) rule in the profile mean "own children
+	// only" — so a sandboxed tool can signal its own jobs but not the user's
+	// other processes. The two must change together.
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setsid = true
 	return nil
 }
 
@@ -121,6 +144,16 @@ func buildProfile(cfg Config) string {
 			sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", rp))
 		}
 	}
+
+	// Deny signaling unrelated processes while still allowing a script to
+	// manage its own jobs (self + process group). Paired with the Setsid in
+	// Wrap, which puts the sandboxed process in its own session/group so
+	// "process group" means its own children, not the user's other processes.
+	// This is the macOS approximation of the isolation Linux gets for free from
+	// the PID namespace (where other processes are simply invisible).
+	sb.WriteString("(deny signal)\n")
+	sb.WriteString("(allow signal (target self))\n")
+	sb.WriteString("(allow signal (target pgrp))\n")
 
 	if !cfg.AllowNetwork {
 		sb.WriteString("(deny network*)\n")

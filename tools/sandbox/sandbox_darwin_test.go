@@ -616,6 +616,100 @@ func TestWrapStripsSensitiveEnvByDefault(t *testing.T) {
 	}
 }
 
+func TestBuildProfileDeniesSignal(t *testing.T) {
+	profile := buildProfile(Config{})
+	for _, rule := range []string{
+		"(deny signal)",
+		"(allow signal (target self))",
+		"(allow signal (target pgrp))",
+	} {
+		if !strings.Contains(profile, rule) {
+			t.Fatalf("profile missing signal rule %q:\n%s", rule, profile)
+		}
+	}
+}
+
+func TestWrapSetsNewSession(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	cmd := exec.Command("true")
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	// Setsid detaches the controlling terminal (macOS counterpart to bwrap's
+	// --new-session) and gives the process its own group, which the profile's
+	// (allow signal (target pgrp)) rule depends on.
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
+		t.Fatalf("expected Wrap to set SysProcAttr.Setsid = true, got %+v", cmd.SysProcAttr)
+	}
+}
+
+func TestSandboxAllowsSignalingOwnChild(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	// A script must still be able to manage its own jobs (timeouts, background
+	// workers). The child shares the sandbox's process group, so (target pgrp)
+	// permits it.
+	cmd := exec.CommandContext(context.Background(), "bash", "-c",
+		"sleep 30 & c=$!; kill $c")
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed script could not signal its own child: %v (%s)", err, out)
+	}
+}
+
+func TestSandboxBlocksSignalingUnrelatedProcess(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	// An unrelated same-user process: spawned by the test, so it lives in the
+	// test's session. The sandboxed process gets its own session via Setsid, so
+	// this target is out of its process group and the signal must be denied.
+	victim := exec.Command("sleep", "30")
+	if err := victim.Start(); err != nil {
+		t.Fatalf("starting victim: %v", err)
+	}
+	defer func() {
+		_ = victim.Process.Kill()
+		_ = victim.Wait()
+	}()
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	cmd := exec.CommandContext(context.Background(), "bash", "-c",
+		fmt.Sprintf("kill -0 %d", victim.Process.Pid))
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("expected signaling an unrelated process to be blocked, got output: %s", out)
+	}
+}
+
+func TestNewRejectsMissingWritablePath(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if _, err := New(Config{WritablePaths: []string{missing}}); err == nil {
+		t.Fatal("expected New() to reject a missing writable path, matching the Linux backend")
+	}
+	// Under DenyWrite the writable paths are irrelevant, so they aren't validated.
+	if _, err := New(Config{WritablePaths: []string{missing}, DenyWrite: true}); err != nil {
+		t.Fatalf("DenyWrite should skip writable-path validation, got: %v", err)
+	}
+}
+
 func TestSandboxGracefulFallback(t *testing.T) {
 	// Override PATH to exclude sandbox-exec
 	origPath := os.Getenv("PATH")
