@@ -339,7 +339,7 @@ polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 
 The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by default** whenever a backend is available. Setting `"sandbox"` in a tool's schema or MCP server config customizes the permissions; `"sandbox": false` opts out entirely. A sandboxed process runs with a read-only root filesystem, writes restricted to the OS temp directory (plus any `writablePaths`), no network by default, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, ...) stripped. On Linux the process also gets its own PID namespace and session, so it can't read other processes' environments or inject keystrokes into the parent terminal. Shell tools get a `[sandboxed]` suffix on their description so the LLM knows they're restricted. Extra paths can be blocked globally with `--denypath` (or `POLLYTOOL_DENYPATHS`).
 
-Sandboxing requires `bwrap` (Linux) or `sandbox-exec` (macOS). If neither is available, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API.md](API.md) for the full spec.
+Sandboxing requires `bwrap` (Linux) or `sandbox-exec` (macOS). If neither is available, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API.md](API.md) for the full spec and [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
 
 **Full example — default sandbox** (writes limited to `$TMPDIR`, no network):
 

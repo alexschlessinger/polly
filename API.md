@@ -681,7 +681,7 @@ Shell scripts used as tools must:
 
 Shell tools run sandboxed by default. The schema may include `"sandbox"` at the top level to customize permissions or opt out. When the sandbox is applied, `[sandboxed]` is appended to the shell tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
 
-Tools that omit `"sandbox"` get the defaults below; only an explicit `"sandbox": false` runs without restrictions.
+Tools that omit `"sandbox"` get the defaults below; only an explicit `"sandbox": false` runs without restrictions. See [SANDBOX.md](SANDBOX.md) for design intent and how the Linux (bubblewrap) and macOS (Seatbelt) implementations differ.
 
 #### Sandbox Spec Reference
 
