@@ -306,6 +306,37 @@ func TestLinuxBuildBwrapArgsReadPaths(t *testing.T) {
 	}
 }
 
+// A readPaths exemption that names a symlink (e.g. WSL's ~/.aws -> /mnt/c/...)
+// must still exempt the resolved target: denied paths arrive already
+// symlink-resolved, so an unresolved exemption would never match and the path
+// would stay masked despite the user opting to read it.
+func TestLinuxReadPathsResolvesSymlinkExemption(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks(tempdir) error = %v", err)
+	}
+	target := filepath.Join(dir, "real-aws")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", target, err)
+	}
+	link := filepath.Join(dir, ".aws")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink error = %v", err)
+	}
+
+	// The denied path is the resolved target (what existingDeniedPaths yields);
+	// the readPaths exemption names the link.
+	args := buildBwrapArgs(Config{
+		ReadPaths: []string{link},
+	}, []DeniedPath{
+		{Path: target, Kind: DeniedPathDir},
+	})
+
+	if joined := strings.Join(args, " "); strings.Contains(joined, "--tmpfs "+target) {
+		t.Fatalf("readPaths exemption naming a symlink should exempt its resolved target, but it was masked:\n%s", joined)
+	}
+}
+
 func TestLinuxSandboxEnvFiltering(t *testing.T) {
 	skipIfNoBwrap(t)
 

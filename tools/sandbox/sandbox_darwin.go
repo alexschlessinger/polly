@@ -121,10 +121,20 @@ func buildProfile(cfg Config, deniedLists ...[]DeniedPath) string {
 		}
 	}
 
-	// Deny read access to sensitive credential paths.
+	// Deny access to sensitive credential paths — both reads AND writes.
+	// The write deny matters because a writablePaths entry that is an ancestor
+	// of a denied path (e.g. writablePaths ["~"] over ~/.ssh) would otherwise
+	// re-open write access through the (allow file-write* (subpath ...)) rules
+	// emitted above: a sandboxed process couldn't read ~/.ssh but could plant
+	// ~/.ssh/authorized_keys or overwrite ~/.aws/credentials. These rules come
+	// after the writable allows so Seatbelt's last-match-wins blocks the write.
+	// (On Linux the same case is covered structurally — the tmpfs/dev-null mask
+	// sits over the writable bind, so writes hit the ephemeral overlay.)
+	// readPaths re-allows reads below, but deliberately never writes.
 	for _, denied := range deniedPaths {
 		for _, p := range pathAndResolved(denied.Path) {
 			sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", p))
+			sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", p))
 		}
 	}
 

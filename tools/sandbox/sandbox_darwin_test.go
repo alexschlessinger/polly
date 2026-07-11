@@ -532,6 +532,60 @@ func TestBuildProfileIncludesUserDenyPaths(t *testing.T) {
 	}
 }
 
+// A writablePaths entry that is an ancestor of a denied credential path must
+// not re-open write access to it: the deny file-write* rule has to appear
+// after the writable allow so Seatbelt's last-match-wins blocks the write.
+func TestBuildProfileDeniesWritesToCredentialPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// writablePaths deliberately includes an ancestor of the credential paths.
+	profile := buildProfile(Config{WritablePaths: []string{home}})
+
+	sshDir := filepath.Join(home, ".ssh")
+	denyRule := fmt.Sprintf(`(deny file-write* (subpath %q))`, sshDir)
+	denyIdx := strings.Index(profile, denyRule)
+	if denyIdx < 0 {
+		t.Fatalf("profile missing write deny for credential path %q under a writable ancestor:\n%s", sshDir, profile)
+	}
+	firstWriteAllow := strings.Index(profile, "(allow file-write* (subpath")
+	if firstWriteAllow < 0 || denyIdx < firstWriteAllow {
+		t.Fatalf("write deny for %q must come after the writable allows (last-match-wins):\n%s", sshDir, profile)
+	}
+}
+
+// End-to-end: with home as a writablePath, a sandboxed process must still be
+// unable to plant a file in ~/.ssh — reads are denied and so are writes.
+func TestSandboxBlocksWriteToCredentialUnderWritablePath(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{WritablePaths: []string{home}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	victim := filepath.Join(sshDir, "authorized_keys")
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo pwned > "+victim)
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd.Run(); err == nil {
+		os.Remove(victim)
+		t.Fatal("expected write to ~/.ssh to be blocked even though home is a writablePath")
+	}
+	if _, err := os.Stat(victim); err == nil {
+		os.Remove(victim)
+		t.Fatal("credential file was created despite the sandbox")
+	}
+}
+
 func TestBuildProfileResolvesSymlinkedDenyPaths(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real-creds")

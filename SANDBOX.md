@@ -115,7 +115,14 @@ Properties worth knowing:
   later becomes writable on the next command; writes to a missing path just
   fail at runtime (fail-closed).
 - `denyDNS` (with `allowNetwork`) is implemented by masking
-  `/etc/resolv.conf` with `/dev/null`.
+  `/etc/resolv.conf` with `/dev/null`. **This is weaker than the macOS
+  equivalent and is best-effort only:** bubblewrap has no port-level network
+  filtering (the net namespace is all-or-nothing, and seccomp-BPF can't inspect
+  the destination port behind the `connect()` sockaddr pointer), so a process
+  that hardcodes a resolver (`dig @8.8.8.8`) still resolves names. It stops the
+  libc default resolver, not a determined one. True DNS egress control on Linux
+  would need a userspace network proxy (netns + slirp/pasta), which is out of
+  scope. On macOS the port-53 block below is enforced by the kernel policy.
 
 ### macOS: Seatbelt (`sandbox-exec`)
 
@@ -163,6 +170,13 @@ Properties worth knowing:
   terminal-injection vectors.
 - **Denied reads fail loudly**: `cat ~/.ssh/config` returns
   `Operation not permitted`, where Linux would return empty.
+- **Denied paths are also write-blocked.** Each credential path gets a
+  `deny file-write*` rule after the `writablePaths` allows, so a broad
+  `writablePaths` (e.g. `["~"]`) can't re-open write access to `~/.ssh` or
+  `~/.aws` — a sandboxed process can neither read nor plant credentials there.
+  On Linux this is structural instead: the tmpfs/`/dev/null` mask sits over the
+  writable bind, so writes land on the ephemeral overlay, not the real file.
+  `readPaths` re-allows reads for exempted paths but never writes.
 - **Rules are emitted for both the literal path and its symlink-resolved
   target.** Seatbelt matches resolved vnode paths, so a rule on a
   dotfiles-managed symlink (`~/.npmrc -> ~/dotfiles/npmrc`) would never fire

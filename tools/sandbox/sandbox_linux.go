@@ -125,10 +125,19 @@ func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath) []string {
 		}
 	}
 
-	// Expand ReadPaths (resolve ~) for comparison with denied paths.
+	// Expand ReadPaths (resolve ~) for comparison with denied paths. Denied
+	// paths arrive already symlink-resolved (existingDeniedPaths), so resolve
+	// the exemptions the same way: a readPaths entry naming a symlinked
+	// credential dir (e.g. WSL's ~/.aws -> /mnt/c/...) would otherwise never
+	// match the resolved denied path and the exemption would silently fail,
+	// leaving the path masked despite the user opting to read it.
 	readSet := make(map[string]bool, len(cfg.ReadPaths))
 	for _, rp := range cfg.ReadPaths {
-		readSet[expandTilde(rp)] = true
+		expanded := expandTilde(rp)
+		readSet[expanded] = true
+		if real, err := filepath.EvalSymlinks(expanded); err == nil {
+			readSet[real] = true
+		}
 	}
 
 	// Overlay sensitive credential paths, skipping those exempted by ReadPaths.
