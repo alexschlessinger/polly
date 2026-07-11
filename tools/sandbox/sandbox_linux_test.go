@@ -211,8 +211,12 @@ func TestLinuxSandboxRunsWhenCredentialPathsMissing(t *testing.T) {
 }
 
 func TestLinuxBuildBwrapArgs(t *testing.T) {
+	// The writable path must exist: buildBwrapArgs skips missing bind sources
+	// (bwrap would abort on them). Denied paths need no existence check here —
+	// existingDeniedPaths has already filtered them by the time they arrive.
+	project := t.TempDir()
 	args := buildBwrapArgs(Config{
-		WritablePaths: []string{"/home/user/project"},
+		WritablePaths: []string{project},
 	}, []DeniedPath{
 		{Path: "/home/user/.ssh", Kind: DeniedPathDir},
 		{Path: "/home/user/.npmrc", Kind: DeniedPathFile},
@@ -223,7 +227,7 @@ func TestLinuxBuildBwrapArgs(t *testing.T) {
 	if !strings.Contains(joined, "--ro-bind / /") {
 		t.Fatal("missing --ro-bind / /")
 	}
-	if !strings.Contains(joined, "--bind /home/user/project /home/user/project") {
+	if !strings.Contains(joined, "--bind "+project+" "+project) {
 		t.Fatalf("missing project writable bind:\n%s", joined)
 	}
 	if !strings.Contains(joined, "--bind /tmp /tmp") {
@@ -259,11 +263,13 @@ func TestLinuxBuildBwrapArgs(t *testing.T) {
 }
 
 func TestLinuxBuildBwrapArgsWritePathsTilde(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("cannot get home dir")
-	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	expanded := filepath.Join(home, "output")
+	// Must exist, or the skip-missing-bind-source logic drops it.
+	if err := os.MkdirAll(expanded, 0700); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", expanded, err)
+	}
 	args := buildBwrapArgs(Config{
 		WritablePaths: []string{"~/output"},
 	}, nil)
