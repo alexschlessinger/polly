@@ -72,6 +72,13 @@ type Config struct {
 	// Extra paths blocked from reads, in addition to DeniedPaths (supports ~ expansion).
 	DenyPaths []string `json:"denyPaths,omitempty"`
 
+	// Paths that stay readable but are denied writes, even when they sit
+	// inside a WritablePaths entry (supports ~ expansion). Used to carve
+	// read-only islands out of a writable tree — e.g. protecting .git/hooks
+	// and .git/config when the workspace is writable. Redundant under
+	// DenyWrite, which already denies all writes.
+	DenyWritePaths []string `json:"denyWritePaths,omitempty"`
+
 	// If non-empty, only these env vars are passed through to the sandbox.
 	AllowEnv []string `json:"allowEnv,omitempty"`
 
@@ -123,6 +130,9 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.DenyPaths, err = normalize("denyPaths", cfg.DenyPaths); err != nil {
+		return Config{}, err
+	}
+	if cfg.DenyWritePaths, err = normalize("denyWritePaths", cfg.DenyWritePaths); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -216,6 +226,7 @@ func (c Config) Merge(overlay Config) Config {
 	c.WritablePaths = concatStrings(c.WritablePaths, overlay.WritablePaths)
 	c.ReadPaths = concatStrings(c.ReadPaths, overlay.ReadPaths)
 	c.DenyPaths = concatStrings(c.DenyPaths, overlay.DenyPaths)
+	c.DenyWritePaths = concatStrings(c.DenyWritePaths, overlay.DenyWritePaths)
 	c.AllowEnv = concatStrings(c.AllowEnv, overlay.AllowEnv)
 	c.DenyWrite = c.DenyWrite || overlay.DenyWrite
 	return c

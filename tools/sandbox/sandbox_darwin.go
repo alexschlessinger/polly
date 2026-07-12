@@ -130,6 +130,16 @@ func buildProfile(cfg Config, deniedLists ...[]DeniedPath) string {
 		}
 	}
 
+	// Write-denied islands inside the writable subpaths. Emitted after the
+	// allows so last-match-wins blocks the write; reads stay allowed (unlike
+	// deniedPaths below, which blocks both). A rule for a path that doesn't
+	// exist yet still applies, so a sandboxed process can't create it either.
+	for _, p := range cfg.DenyWritePaths {
+		for _, rp := range pathAndResolved(expandTilde(p)) {
+			sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", rp))
+		}
+	}
+
 	// Deny access to sensitive credential paths — both reads AND writes.
 	// The write deny matters because a writablePaths entry that is an ancestor
 	// of a denied path (e.g. writablePaths ["~"] over ~/.ssh) would otherwise

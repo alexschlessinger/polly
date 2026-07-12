@@ -318,8 +318,11 @@ func TestSandboxNoticeLine(t *testing.T) {
 
 	registry := stubSandboxRegistry(t)
 	state := &conversationState{toolRegistry: registry}
-	if got := sandboxNoticeLine(&Config{}, state); got != "sandbox: active (1 tools sandboxed)" {
+	if got := sandboxNoticeLine(&Config{}, state); got != "sandbox: active (base; 1 tools sandboxed)" {
 		t.Fatalf("active notice = %q", got)
+	}
+	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net"}, state); got != "sandbox: active (workspace+net; 1 tools sandboxed)" {
+		t.Fatalf("preset notice = %q", got)
 	}
 
 	// An unsandboxed-but-capable tool is called out by name.

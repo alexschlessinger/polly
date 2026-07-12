@@ -201,12 +201,13 @@ func TestMerge(t *testing.T) {
 		AllowEnv:      []string{"HOME"},
 	}
 	overlay := Config{
-		AllowNetwork:  true,
-		DenyDNS:       true,
-		WritablePaths: []string{"/extra"},
-		ReadPaths:     []string{"~/.aws"},
-		AllowEnv:      []string{"PATH"},
-		DenyWrite:     true,
+		AllowNetwork:   true,
+		DenyDNS:        true,
+		WritablePaths:  []string{"/extra"},
+		ReadPaths:      []string{"~/.aws"},
+		AllowEnv:       []string{"PATH"},
+		DenyWrite:      true,
+		DenyWritePaths: []string{"/work/.git/hooks"},
 	}
 	merged := base.Merge(overlay)
 
@@ -230,6 +231,9 @@ func TestMerge(t *testing.T) {
 	}
 	if !merged.DenyWrite {
 		t.Fatal("Merge should set DenyWrite to true")
+	}
+	if len(merged.DenyWritePaths) != 1 || merged.DenyWritePaths[0] != "/work/.git/hooks" {
+		t.Fatalf("DenyWritePaths = %v, want [/work/.git/hooks]", merged.DenyWritePaths)
 	}
 }
 

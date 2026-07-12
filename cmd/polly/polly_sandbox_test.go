@@ -2,7 +2,10 @@ package main
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,6 +40,60 @@ func TestSandboxRegistryOptionsFailsWhenProbeFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "POLLYTOOL_NOSANDBOX") {
 		t.Fatalf("error = %q, want it to mention the POLLYTOOL_NOSANDBOX escape hatch", err)
+	}
+}
+
+func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
+	var captured sandbox.Config
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		captured = cfg
+		return passthroughSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, ".git", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+
+	opts, err := sandboxRegistryOptions(&Config{
+		SandboxPreset: "workspace+net",
+		DenyPaths:     []string{"~/.config/secrets"},
+		WritePaths:    []string{"/data"},
+	})
+	if err != nil {
+		t.Fatalf("sandboxRegistryOptions() error = %v", err)
+	}
+	if len(opts) == 0 {
+		t.Fatal("sandboxRegistryOptions() returned no options")
+	}
+
+	if !captured.AllowNetwork {
+		t.Fatal("workspace+net should allow network")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(captured.WritablePaths, cwd) {
+		t.Fatalf("WritablePaths = %v, want cwd %q from the workspace preset", captured.WritablePaths, cwd)
+	}
+	if !slices.Contains(captured.WritablePaths, "/data") {
+		t.Fatalf("WritablePaths = %v, want --writepath entry /data", captured.WritablePaths)
+	}
+	if !slices.Contains(captured.DenyWritePaths, filepath.Join(cwd, ".git", "hooks")) {
+		t.Fatalf("DenyWritePaths = %v, want the .git/hooks guardrail", captured.DenyWritePaths)
+	}
+	if !slices.Contains(captured.DenyPaths, "~/.config/secrets") {
+		t.Fatalf("DenyPaths = %v, want the --denypath entry", captured.DenyPaths)
+	}
+}
+
+func TestSandboxRegistryOptionsRejectsUnknownPreset(t *testing.T) {
+	if _, err := sandboxRegistryOptions(&Config{SandboxPreset: "everything"}); err == nil {
+		t.Fatal("sandboxRegistryOptions() error = nil, want unknown-preset failure")
 	}
 }
 

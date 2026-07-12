@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -279,8 +281,16 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil
 	}
 
-	baseCfg := sandbox.DefaultConfig()
-	baseCfg.DenyPaths = append(baseCfg.DenyPaths, config.DenyPaths...)
+	baseCfg, err := sandbox.ParsePreset(config.SandboxPreset)
+	if err != nil {
+		return nil, err
+	}
+	baseCfg = baseCfg.Merge(sandbox.Config{
+		WritablePaths: config.WritePaths,
+		DenyPaths:     config.DenyPaths,
+		AllowNetwork:  config.AllowNet,
+	})
+	warnBroadWritablePaths(baseCfg.WritablePaths)
 
 	// Validate that the backend constructs (e.g. the binary exists)...
 	sb, err := newSandbox(baseCfg)
@@ -297,6 +307,20 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 	}
 
 	return []tools.RegistryOption{tools.WithSandboxFactory(newSandbox, baseCfg)}, nil
+}
+
+// warnBroadWritablePaths flags a writable path that covers the whole home
+// directory or the filesystem root — most likely the workspace preset run
+// from ~, which makes far more writable than a project directory. The
+// credential deny list still applies; this is a heads-up, not a refusal.
+func warnBroadWritablePaths(paths []string) {
+	home, _ := os.UserHomeDir()
+	for _, p := range paths {
+		if p == "/" || (home != "" && filepath.Clean(p) == filepath.Clean(home)) {
+			slog.Warn("sandbox_broad_writable_path", "path", p,
+				"hint", "workspace preset run from a broad directory; consider --sandbox base or cd into a project")
+		}
+	}
 }
 
 func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) error {

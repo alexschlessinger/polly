@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
 )
 
@@ -19,6 +20,11 @@ const (
 	defaultSystemPrompt     = "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown."
 	defaultREPLSystemPrompt = "Your output will be displayed in a unix terminal with markdown rendering. Be terse. Use markdown where it aids readability."
 )
+
+// defaultSandboxPreset is the sandbox policy when --sandbox is not given:
+// the working directory is writable (with .git guardrails) and outbound
+// network is allowed. Tighten with e.g. --sandbox base or --sandbox readonly.
+const defaultSandboxPreset = "workspace+net"
 
 var (
 	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
@@ -71,7 +77,10 @@ func parseConfig(cmd *cli.Command) *Config {
 		BaseURL:       cmd.String("baseurl"),
 		Confirm:       cmd.Bool("confirm"),
 		NoSandbox:     cmd.Bool("nosandbox"),
+		SandboxPreset: cmd.String("sandbox"),
 		DenyPaths:     cmd.StringSlice("denypath"),
+		WritePaths:    cmd.StringSlice("writepath"),
+		AllowNet:      cmd.Bool("allownet"),
 
 		// Skill configuration
 		NoSkills:   cmd.Bool("noskills"),
@@ -309,6 +318,16 @@ func approvalConfigFlags() []cli.Flag {
 
 func sandboxConfigFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{
+			Name:    "sandbox",
+			Usage:   "Sandbox preset: base, readonly, workspace, net — join with + (e.g. workspace+net)",
+			Value:   defaultSandboxPreset,
+			Sources: cli.EnvVars("POLLYTOOL_SANDBOX"),
+			Validator: func(spec string) error {
+				_, err := sandbox.ParsePreset(spec)
+				return err
+			},
+		},
 		&cli.BoolFlag{
 			Name:    "nosandbox",
 			Usage:   "Disable sandboxing of tool commands",
@@ -318,6 +337,16 @@ func sandboxConfigFlags() []cli.Flag {
 			Name:    "denypath",
 			Usage:   "Additional path blocked from sandboxed reads (repeatable, supports ~)",
 			Sources: cli.EnvVars("POLLYTOOL_DENYPATHS"),
+		},
+		&cli.StringSliceFlag{
+			Name:    "writepath",
+			Usage:   "Additional path sandboxed tools may write to (repeatable, supports ~)",
+			Sources: cli.EnvVars("POLLYTOOL_WRITEPATHS"),
+		},
+		&cli.BoolFlag{
+			Name:    "allownet",
+			Usage:   "Allow sandboxed tools outbound network access",
+			Sources: cli.EnvVars("POLLYTOOL_ALLOWNET"),
 		},
 	}
 }

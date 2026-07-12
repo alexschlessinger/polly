@@ -702,30 +702,33 @@ Tools that omit `"sandbox"` get the defaults below. Tool-controlled metadata can
 | `writablePaths` | string[] | `[]` | Directories where writes are allowed (supports `~`) |
 | `readPaths` | string[] | `[]` | Paths exempted from the credential deny list (supports `~`) |
 | `denyPaths` | string[] | `[]` | Extra paths blocked from reads, in addition to the built-in deny list (supports `~`) |
+| `denyWritePaths` | string[] | `[]` | Paths kept read-only even inside a `writablePaths` entry (supports `~`). Used to carve protected islands out of a writable tree, e.g. `.git/hooks`. |
 | `allowEnv` | string[] | all non-sensitive | If set, only these env vars are passed through (overrides the sensitive-var stripping) |
 | `denyWrite` | bool | `false` | Deny all file writes, including temp. Overrides `writablePaths`. |
 
-**Defaults** (when `"sandbox": true`):
+**Base policy** (when `"sandbox": true` and the registry's base config is `sandbox.DefaultConfig()`):
 - Writes: denied everywhere except the sandbox temp dir (`/tmp` is a private tmpfs on Linux)
 - Network: denied
 - Reads: all files accessible except credential paths (see below)
 - Env: all vars passed through except sensitive ones (see below)
 - Linux: private `/tmp` and `/run`, filesystem Unix sockets denied, own PID and IPC namespaces, and own session
 
+**CLI presets:** the `polly` CLI selects its base config with `--sandbox <preset>` (components `base`, `readonly`, `workspace`, `net` joined with `+`; library equivalent `sandbox.ParsePreset`). The CLI default is `workspace+net`: the working directory is added to `writablePaths` (with `.git/hooks` and `.git/config` on `denyWritePaths` so a sandboxed tool can't plant hooks that later run unsandboxed) and `allowNetwork` is enabled. A tool's own `sandbox` object merges on top of the base config and can only widen it. `--writepath` and `--allownet` add to any preset.
+
 **Credential paths denied by default:**
 `~/.ssh`, `~/.gnupg`, `~/.gpg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.npmrc`, `~/.pypirc`, `~/.gem/credentials`, `~/.cargo/credentials`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`
 
 Deny paths are re-checked on every command, and symlinked entries are resolved to their real targets. The `--denypath` flag (env `POLLYTOOL_DENYPATHS`) adds global entries for all sandboxed tools.
 
-Relative `writablePaths`, `readPaths`, and `denyPaths` entries are resolved
-against the process working directory when the sandbox is constructed. Empty
-path entries are rejected. On Linux, a `readPaths` entry may name a child of a
-denied directory (for example `~/.ssh/config`); that child is restored
-read-only while its siblings remain masked.
+Relative `writablePaths`, `readPaths`, `denyPaths`, and `denyWritePaths`
+entries are resolved against the process working directory when the sandbox is
+constructed. Empty path entries are rejected. On Linux, a `readPaths` entry may
+name a child of a denied directory (for example `~/.ssh/config`); that child is
+restored read-only while its siblings remain masked.
 
 **Sensitive env vars** are always stripped, even without `allowEnv`: `POLLYTOOL_*` and `AWS_*` prefixes; names ending in `_API_KEY`, `_APIKEY`, `_TOKEN`, `_SECRET`, `_SECRET_KEY`, `_ACCESS_KEY`, `_PASSWORD`, `_PASSPHRASE`, `_CREDENTIALS`, `_PRIVATE_KEY`; and the agent sockets `SSH_AUTH_SOCK` / `GPG_AGENT_INFO`. To pass one through, include it in `allowEnv`.
 
-**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths`. `denyDNS: true` has no additional effect when `allowNetwork` is `false`.
+**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths` (and makes `denyWritePaths` redundant). `denyDNS: true` has no additional effect when `allowNetwork` is `false`. On Linux, a `denyWritePaths` entry that does not exist yet is skipped for that command (bwrap cannot bind a missing path); on macOS the rule applies regardless, so the path can't be created either.
 
 #### Examples
 

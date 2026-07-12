@@ -206,6 +206,23 @@ func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath, commandPaths ...string
 			}
 			args = append(args, "--bind", expanded, expanded)
 		}
+
+		// Re-cover write-denied islands inside the writable binds with read-only
+		// binds; mount order means these shadow the writable parent. Sources are
+		// symlink-resolved so a write through the real path can't bypass the
+		// shadow. A missing path is skipped (bwrap aborts on absent bind
+		// sources) — there's nothing there to protect yet, but a sandboxed
+		// process could create it, so the skip is logged. Redundant under
+		// DenyWrite, where nothing is writable to begin with.
+		for _, p := range cfg.DenyWritePaths {
+			expanded := expandTilde(p)
+			real, err := filepath.EvalSymlinks(expanded)
+			if err != nil {
+				slog.Debug("sandbox_skip_deny_write_path", "path", expanded, "reason", err)
+				continue
+			}
+			args = append(args, "--ro-bind", real, real)
+		}
 	}
 
 	// Expand ReadPaths (resolve ~) for comparison with denied paths. Denied

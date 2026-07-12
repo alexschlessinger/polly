@@ -624,6 +624,72 @@ func TestSandboxBlocksWriteToCredentialUnderWritablePath(t *testing.T) {
 	}
 }
 
+func TestBuildProfileDenyWritePaths(t *testing.T) {
+	work := t.TempDir()
+	hooks := filepath.Join(work, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := buildProfile(Config{WritablePaths: []string{work}, DenyWritePaths: []string{hooks}})
+
+	denyRule := fmt.Sprintf(`(deny file-write* (subpath %q))`, hooks)
+	denyIdx := strings.Index(profile, denyRule)
+	if denyIdx < 0 {
+		t.Fatalf("profile missing write deny for %q:\n%s", hooks, profile)
+	}
+	firstWriteAllow := strings.Index(profile, "(allow file-write* (subpath")
+	if firstWriteAllow < 0 || denyIdx < firstWriteAllow {
+		t.Fatalf("denyWritePaths rule must come after the writable allows (last-match-wins):\n%s", profile)
+	}
+	// Reads must stay allowed: denyWritePaths must not emit a read deny.
+	if strings.Contains(profile, fmt.Sprintf(`(deny file-read* (subpath %q))`, hooks)) {
+		t.Fatalf("denyWritePaths must not deny reads:\n%s", profile)
+	}
+}
+
+// End-to-end: with the workspace writable, a sandboxed process must still be
+// unable to plant a git hook, but can read the hooks dir and write elsewhere
+// in the workspace.
+func TestSandboxDenyWritePathBlocksHookPlanting(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	work := t.TempDir()
+	hooks := filepath.Join(work, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{WritablePaths: []string{work}, DenyWritePaths: []string{hooks}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	victim := filepath.Join(hooks, "pre-commit")
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo pwned > "+victim)
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd.Run(); err == nil {
+		os.Remove(victim)
+		t.Fatal("expected hook write to be blocked despite the writable workspace")
+	}
+	if _, err := os.Stat(victim); err == nil {
+		os.Remove(victim)
+		t.Fatal("hook file was created despite the sandbox")
+	}
+
+	// The rest of the workspace stays writable and the hooks dir readable.
+	cmd = exec.CommandContext(context.Background(), "bash", "-c",
+		"ls "+hooks+" >/dev/null && echo ok > "+filepath.Join(work, "note.txt"))
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("workspace write/read alongside denyWritePaths failed: %v", err)
+	}
+}
+
 func TestBuildProfileResolvesSymlinkedDenyPaths(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real-creds")

@@ -240,8 +240,27 @@ is inherent to the platform rather than a config choice:
 
 ## Configuration
 
-Seven knobs, settable per tool (schema `"sandbox"` object, MCP server entry) on
-top of the global flags:
+### CLI presets
+
+`--sandbox <spec>` (`POLLYTOOL_SANDBOX`) picks the base policy every sandboxed
+tool starts from. A spec is one or more preset names joined with `+`:
+
+| Preset | Policy |
+|---|---|
+| `base` | temp-dir writes only, no network |
+| `readonly` | `denyWrite` — nothing writable, not even temp |
+| `workspace` | working directory writable; its `.git/hooks` and `.git/config` pinned read-only |
+| `net` | `allowNetwork` |
+
+The default is **`workspace+net`** — agentic work on the current project with
+network access, while credentials stay masked and the rest of the filesystem
+stays read-only. `workspace` resolves the working directory *at startup*, and
+follows a `.git` pointer file (linked worktrees, submodules) to pin the real
+hooks dir and config. Running from a broad directory (`~`, `/`) logs a warning
+suggesting `--sandbox base`.
+
+Per-tool knobs (schema `"sandbox"` object, MCP server entry) merge on top of
+the base policy — merging widens, never narrows:
 
 | Field | Default | Effect |
 |---|---|---|
@@ -250,19 +269,29 @@ top of the global flags:
 | `denyDNS` | `false` | with `allowNetwork`: block name resolution |
 | `readPaths` | `[]` | exempt entries from the deny list |
 | `denyPaths` | `[]` | extra read-blocked paths (`~` ok) |
+| `denyWritePaths` | `[]` | read-only islands inside writable trees (`~` ok) |
 | `allowEnv` | `[]` | strict env allowlist — replaces the heuristic stripping |
 | `denyWrite` | `false` | no writes anywhere, not even temp |
 
 Global flags: `--nosandbox` (`POLLYTOOL_NOSANDBOX`) disables everything;
-`--denypath` (`POLLYTOOL_DENYPATHS`, repeatable) adds read-blocked paths for
-all sandboxed tools.
+`--denypath` (`POLLYTOOL_DENYPATHS`, repeatable) adds read-blocked paths,
+`--writepath` (`POLLYTOOL_WRITEPATHS`, repeatable) adds writable paths, and
+`--allownet` (`POLLYTOOL_ALLOWNET`) enables network for all sandboxed tools.
 
-Two interactions to keep in mind:
+Three interactions to keep in mind:
 
 - `denyDNS` only matters when `allowNetwork` is true (no network ⊃ no DNS).
 - `allowEnv` is a mode switch, not an addition: when set, *only* those
   variables pass through. Use it to hand a tool one specific token —
   `"allowEnv": ["GITHUB_TOKEN"]` — that the heuristics would otherwise strip.
+- `denyWritePaths` blocks writes but leaves reads alone (unlike `denyPaths`,
+  which blocks both). On Linux it's a read-only bind shadowing the writable
+  parent, so an entry that doesn't exist yet is skipped for that command; on
+  macOS the deny rule holds whether or not the path exists, so it can't be
+  created either. The `workspace` preset relies on this for `.git/hooks` and
+  `.git/config` — writable-project sandboxes otherwise re-open the classic
+  escape of planting a hook (or `core.hooksPath`) that the *user's* next
+  unsandboxed `git commit` executes.
 
 Policy paths are normalized when the sandbox is constructed. `~` expands to
 the user's home directory, relative paths resolve against the process working

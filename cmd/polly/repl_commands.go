@@ -659,6 +659,7 @@ const (
 
 type sandboxPosture struct {
 	state       sandboxPostureState
+	preset      string
 	denyPaths   int
 	sandboxed   []string
 	unsandboxed []string
@@ -680,8 +681,13 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 		return sandboxPosture{state: sandboxPostureUnavailable}
 	}
 	sandboxed, unsandboxed := sandboxToolSplit(reg)
+	preset := cfg.SandboxPreset
+	if preset == "" {
+		preset = "base"
+	}
 	return sandboxPosture{
 		state:       sandboxPostureActive,
+		preset:      preset,
 		denyPaths:   len(cfg.DenyPaths),
 		sandboxed:   sandboxed,
 		unsandboxed: unsandboxed,
@@ -702,7 +708,7 @@ func (p sandboxPosture) settingString() string {
 	case sandboxPostureUnavailable:
 		return "unavailable (no backend)"
 	default:
-		line := fmt.Sprintf("active (denypaths: %d; tools: %d sandboxed, %d not", p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
+		line := fmt.Sprintf("active (preset: %s; denypaths: %d; tools: %d sandboxed, %d not", p.preset, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
 		if len(p.unsandboxed) > 0 {
 			line += ": " + strings.Join(p.unsandboxed, ", ")
 		}
@@ -717,7 +723,7 @@ func (p sandboxPosture) noticeString() string {
 	case sandboxPostureUnavailable:
 		return "sandbox: unavailable"
 	default:
-		line := fmt.Sprintf("sandbox: active (%d tools sandboxed", len(p.sandboxed))
+		line := fmt.Sprintf("sandbox: active (%s; %d tools sandboxed", p.preset, len(p.sandboxed))
 		if len(p.unsandboxed) > 0 {
 			line += "; not sandboxed: " + strings.Join(p.unsandboxed, ", ")
 		}

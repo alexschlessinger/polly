@@ -34,7 +34,10 @@ type Config struct {
 	BaseURL       string
 	Confirm       bool
 	NoSandbox     bool
+	SandboxPreset string
 	DenyPaths     []string
+	WritePaths    []string
+	AllowNet      bool
 
 	// Skill configuration
 	NoSkills   bool

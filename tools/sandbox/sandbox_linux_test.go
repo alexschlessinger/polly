@@ -299,6 +299,76 @@ func TestLinuxBuildBwrapArgsWritePathsTilde(t *testing.T) {
 	}
 }
 
+func TestLinuxBuildBwrapArgsDenyWritePaths(t *testing.T) {
+	work := t.TempDir()
+	hooks := filepath.Join(work, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	args := buildBwrapArgs(Config{
+		WritablePaths:  []string{work},
+		DenyWritePaths: []string{hooks, filepath.Join(work, ".git", "missing")},
+	}, nil)
+	joined := strings.Join(args, " ")
+
+	roBind := "--ro-bind " + hooks + " " + hooks
+	roIdx := strings.Index(joined, roBind)
+	if roIdx < 0 {
+		t.Fatalf("missing read-only shadow bind for denyWritePaths entry:\n%s", joined)
+	}
+	// The shadow must be mounted after the writable parent bind so it wins.
+	writableIdx := strings.Index(joined, "--bind "+work+" "+work)
+	if writableIdx < 0 || roIdx < writableIdx {
+		t.Fatalf("denyWritePaths ro-bind must come after the writable bind:\n%s", joined)
+	}
+	// The missing entry is skipped — bwrap aborts on absent bind sources.
+	if strings.Contains(joined, filepath.Join(work, ".git", "missing")) {
+		t.Fatalf("missing denyWritePaths entry should be skipped:\n%s", joined)
+	}
+}
+
+// End-to-end: with the workspace writable, a sandboxed process must still be
+// unable to plant a git hook, but can read the hooks dir and write elsewhere
+// in the workspace.
+func TestLinuxSandboxDenyWritePathBlocksHookPlanting(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	work := t.TempDir()
+	hooks := filepath.Join(work, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{WritablePaths: []string{work}, DenyWritePaths: []string{hooks}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	victim := filepath.Join(hooks, "pre-commit")
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo pwned > "+victim)
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd.Run(); err == nil {
+		os.Remove(victim)
+		t.Fatal("expected hook write to be blocked despite the writable workspace")
+	}
+	if _, err := os.Stat(victim); err == nil {
+		os.Remove(victim)
+		t.Fatal("hook file was created despite the sandbox")
+	}
+
+	cmd = exec.CommandContext(context.Background(), "bash", "-c",
+		"ls "+hooks+" >/dev/null && echo ok > "+filepath.Join(work, "note.txt"))
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("workspace write/read alongside denyWritePaths failed: %v", err)
+	}
+}
+
 func TestLinuxBuildBwrapArgsReadPaths(t *testing.T) {
 	args := buildBwrapArgs(Config{
 		ReadPaths: []string{"/home/user/.ssh"},
