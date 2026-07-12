@@ -33,6 +33,41 @@ func TestProbePassesWhenCommandSucceeds(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigPathsMakesRelativePolicyPathsAbsolute(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := Config{
+		WritablePaths: []string{"build/output"},
+		ReadPaths:     []string{"secrets/readable"},
+		DenyPaths:     []string{".env"},
+	}
+
+	got, err := normalizeConfigPaths(original)
+	if err != nil {
+		t.Fatalf("normalizeConfigPaths() error = %v", err)
+	}
+	if want := filepath.Join(cwd, "build/output"); got.WritablePaths[0] != want {
+		t.Fatalf("WritablePaths[0] = %q, want %q", got.WritablePaths[0], want)
+	}
+	if want := filepath.Join(cwd, "secrets/readable"); got.ReadPaths[0] != want {
+		t.Fatalf("ReadPaths[0] = %q, want %q", got.ReadPaths[0], want)
+	}
+	if want := filepath.Join(cwd, ".env"); got.DenyPaths[0] != want {
+		t.Fatalf("DenyPaths[0] = %q, want %q", got.DenyPaths[0], want)
+	}
+	if original.DenyPaths[0] != ".env" {
+		t.Fatalf("normalizeConfigPaths mutated its input: %+v", original)
+	}
+}
+
+func TestNormalizeConfigPathsRejectsEmptyPath(t *testing.T) {
+	if _, err := normalizeConfigPaths(Config{DenyPaths: []string{""}}); err == nil {
+		t.Fatal("normalizeConfigPaths() accepted an empty deny path")
+	}
+}
+
 func TestProbeFailsWhenCommandFails(t *testing.T) {
 	// Rewrite the probe command to one that exits non-zero, simulating a
 	// sandbox backend that is present but can't actually start a command.
@@ -259,6 +294,9 @@ func TestFilterEnvStripsSensitiveByDefault(t *testing.T) {
 		"POLLYTOOL_ANTHROPICKEY=sk-1",
 		"SSH_AUTH_SOCK=/run/agent.sock",
 		"GPG_AGENT_INFO=/run/gpg",
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+		"DOCKER_HOST=unix:///var/run/docker.sock",
+		"XDG_RUNTIME_DIR=/run/user/1000",
 		"AWS_SECRET_ACCESS_KEY=aws-secret",
 		"AWS_REGION=us-east-1",
 		"GITHUB_TOKEN=ghp",

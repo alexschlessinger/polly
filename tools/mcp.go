@@ -161,8 +161,8 @@ func (c *MCPConfig) SandboxConfig() (*sandbox.Config, error) {
 	return sandbox.ParseConfig(c.Sandbox)
 }
 
-// SandboxOptOut reports whether the user explicitly disabled sandboxing
-// for this server by setting "sandbox": false in their config.
+// SandboxOptOut reports whether this server requested sandbox:false. The
+// registry honors that request only after an explicit WithUnsafeNoSandbox.
 func (c *MCPConfig) SandboxOptOut() bool {
 	return string(c.Sandbox) == "false"
 }
@@ -298,9 +298,10 @@ type MCPClient struct {
 	sandboxOptOut bool
 }
 
-// NewMCPClient creates a new MCP client from a server spec
-// Format: "path/to/config.json" or "path/to/config.json#servername"
-func NewMCPClient(serverSpec string) (*MCPClient, error) {
+// NewUnsafeMCPClient creates an unsandboxed MCP client from a server spec.
+// Prefer ToolRegistry.LoadMCPServer, which applies the registry sandbox policy
+// before starting stdio servers.
+func NewUnsafeMCPClient(serverSpec string) (*MCPClient, error) {
 	jsonFile, serverName := ParseServerSpec(serverSpec)
 
 	// Require JSON file
@@ -345,7 +346,7 @@ func NewMCPClient(serverSpec string) (*MCPClient, error) {
 	}
 
 	slog.Debug("mcp_config_loading", "config_file", jsonFile, "server_name", namespace)
-	client, err := NewMCPClientFromConfig(&config, nil)
+	client, err := newMCPClientFromConfig(&config, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -360,9 +361,9 @@ func NewMCPClient(serverSpec string) (*MCPClient, error) {
 	return client, nil
 }
 
-// NewMCPClientFromConfig creates a new MCP client from a JSON configuration.
-// If sb is non-nil and transport is stdio, the server process runs sandboxed.
-func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg ...sandbox.Config) (*MCPClient, error) {
+// newMCPClientFromConfig creates a client after the registry has decided and
+// constructed the effective sandbox policy.
+func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg ...sandbox.Config) (*MCPClient, error) {
 	ctx := context.Background()
 	var cfg *sandbox.Config
 	if len(effectiveCfg) > 0 {

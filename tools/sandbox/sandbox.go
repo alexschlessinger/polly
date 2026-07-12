@@ -84,6 +84,50 @@ func DefaultConfig() Config {
 	return Config{WritablePaths: []string{os.TempDir()}}
 }
 
+// normalizeConfigPaths resolves policy paths once, when the sandbox is
+// constructed. Relative paths use the caller's current working directory as
+// their stable base; without this, Seatbelt receives ineffective relative
+// vnode rules while bubblewrap rejects relative mount destinations.
+func normalizeConfigPaths(cfg Config) (Config, error) {
+	var cwd string
+	normalize := func(field string, paths []string) ([]string, error) {
+		if paths == nil {
+			return nil, nil
+		}
+		out := make([]string, len(paths))
+		for i, path := range paths {
+			if path == "" {
+				return nil, fmt.Errorf("sandbox %s contains an empty path", field)
+			}
+			path = expandTilde(path)
+			if !filepath.IsAbs(path) {
+				if cwd == "" {
+					var err error
+					cwd, err = os.Getwd()
+					if err != nil {
+						return nil, fmt.Errorf("resolve sandbox working directory: %w", err)
+					}
+				}
+				path = filepath.Join(cwd, path)
+			}
+			out[i] = filepath.Clean(path)
+		}
+		return out, nil
+	}
+
+	var err error
+	if cfg.WritablePaths, err = normalize("writablePaths", cfg.WritablePaths); err != nil {
+		return Config{}, err
+	}
+	if cfg.ReadPaths, err = normalize("readPaths", cfg.ReadPaths); err != nil {
+		return Config{}, err
+	}
+	if cfg.DenyPaths, err = normalize("denyPaths", cfg.DenyPaths); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
 // validateConfig rejects only configs the sandbox fundamentally cannot honor.
 // It deliberately does NOT reject a missing writablePaths entry: a path that
 // doesn't exist yet (or was removed since the config was saved) must not brick
@@ -197,7 +241,18 @@ func concatStrings(a, b []string) []string {
 // names (FOO_API_KEY, FOO_TOKEN, ...) are secrets regardless of which tool
 // they belong to. AllowEnv passes any of these through explicitly.
 var (
-	sensitiveEnvNames    = map[string]bool{"SSH_AUTH_SOCK": true, "GPG_AGENT_INFO": true}
+	sensitiveEnvNames = map[string]bool{
+		"SSH_AUTH_SOCK":            true,
+		"SSH_AGENT_PID":            true,
+		"GPG_AGENT_INFO":           true,
+		"DBUS_SESSION_BUS_ADDRESS": true,
+		"DBUS_SYSTEM_BUS_ADDRESS":  true,
+		"DOCKER_HOST":              true,
+		"CONTAINER_HOST":           true,
+		"XDG_RUNTIME_DIR":          true,
+		"WAYLAND_DISPLAY":          true,
+		"PULSE_SERVER":             true,
+	}
 	sensitiveEnvPrefixes = []string{"POLLYTOOL_", "AWS_"}
 	sensitiveEnvSuffixes = []string{
 		"_API_KEY", "_APIKEY", "_TOKEN", "_SECRET", "_SECRET_KEY",
@@ -286,12 +341,44 @@ func allDeniedPaths(cfg Config) []DeniedPath {
 
 // expandTilde resolves a ~ prefix to the user's home directory for a single path.
 func expandTilde(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+	}
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, path[2:])
 		}
 	}
 	return path
+}
+
+// resolvedExecutablePath returns the executable selected by os/exec before a
+// platform wrapper replaces cmd.Path. Executing cmd.Args[0] again would repeat
+// PATH lookup inside the filtered environment and can select a different
+// program or fail entirely when PATH is intentionally omitted.
+func resolvedExecutablePath(cmd *exec.Cmd) (string, error) {
+	if cmd.Path == "" {
+		return "", fmt.Errorf("sandbox command has no executable path")
+	}
+	path := cmd.Path
+	if !filepath.IsAbs(path) {
+		base := cmd.Dir
+		if base == "" {
+			var err error
+			base, err = os.Getwd()
+			if err != nil {
+				return "", fmt.Errorf("resolve sandbox command directory: %w", err)
+			}
+		}
+		path = filepath.Join(base, path)
+	}
+	path = filepath.Clean(path)
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	return path, nil
 }
 
 // ExpandHome resolves ~ prefixes to the user's home directory.

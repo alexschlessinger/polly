@@ -60,7 +60,7 @@ func TestMCPClient(t *testing.T) {
 	// Create MCP server config file
 	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(configPath)
+	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestMCPToolExecution(t *testing.T) {
 	// Create MCP server config file
 	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(configPath)
+	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestMCPToolSchema(t *testing.T) {
 	// Create MCP server config file
 	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(configPath)
+	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestMCPToolSchema(t *testing.T) {
 
 func TestMCPClientInvalidCommand(t *testing.T) {
 	// Test with a non-existent command
-	_, err := NewMCPClient("this-command-does-not-exist")
+	_, err := NewUnsafeMCPClient("this-command-does-not-exist")
 	if err == nil {
 		t.Error("Expected error for non-existent command")
 	}
@@ -205,7 +205,7 @@ func TestMCPClientInvalidCommand(t *testing.T) {
 
 func TestMCPClientEmptyCommand(t *testing.T) {
 	// Test with empty command
-	_, err := NewMCPClient("")
+	_, err := NewUnsafeMCPClient("")
 	if err == nil {
 		t.Error("Expected error for empty command")
 	}
@@ -218,7 +218,7 @@ func TestMCPToolNoargsFiltering(t *testing.T) {
 	// Create MCP server config file
 	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(configPath)
+	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestNewShellTool(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -328,7 +328,7 @@ fi
 		t.Fatalf("Failed to create strict test script: %v", err)
 	}
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestShellToolExecute(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -386,7 +386,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -420,7 +420,8 @@ fi
 		t.Fatalf("Failed to create second test script: %v", err)
 	}
 
-	tools, err := LoadShellTools([]string{script1, script2Path})
+	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
+	tools, err := LoadShellTools(registry, []string{script1, script2Path})
 	if err != nil {
 		t.Fatalf("Failed to load shell tools: %v", err)
 	}
@@ -444,7 +445,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	_, err = NewShellTool(scriptPath)
+	_, err = newShellTool(scriptPath)
 	if err == nil {
 		t.Error("Expected error for invalid JSON schema")
 	}
@@ -467,7 +468,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -482,7 +483,7 @@ func TestShellToolMarshalArgsError(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -522,7 +523,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -611,7 +612,7 @@ func TestShellToolSandboxConfigObject(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScriptWithSpec(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -665,7 +666,7 @@ func TestShellToolSandboxConfigWithReadPathsAndEnv(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScriptWithFullSpec(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -702,7 +703,7 @@ func TestShellToolWantsSandbox(t *testing.T) {
 	dir := t.TempDir()
 
 	// Script without sandbox flag
-	tool, err := NewShellTool(createTestScript(t, dir))
+	tool, err := newShellTool(createTestScript(t, dir))
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -711,7 +712,7 @@ func TestShellToolWantsSandbox(t *testing.T) {
 	}
 
 	// Script with sandbox: true
-	tool2, err := NewShellTool(createSandboxedTestScript(t, dir))
+	tool2, err := newShellTool(createSandboxedTestScript(t, dir))
 	if err != nil {
 		t.Fatalf("Failed to create sandboxed shell tool: %v", err)
 	}
@@ -724,7 +725,7 @@ func TestShellToolWithSandbox(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -758,7 +759,7 @@ func TestShellToolSandboxExecution(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -776,7 +777,7 @@ func TestShellToolSandboxWrapError(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -887,8 +888,9 @@ func TestRegistrySandboxesNonOptInShellTools(t *testing.T) {
 }
 
 func TestShellToolSandboxFalseOptOut(t *testing.T) {
-	// A shell tool with "sandbox": false opts out of sandboxing.
-	// The user creates shell tool wrapper scripts, so this is trusted.
+	// A shell tool may opt out only when the registry owner also made the
+	// explicit unsafe choice; tool-controlled schema metadata is not authority
+	// to silently disable containment by itself.
 	script := `#!/bin/bash
 if [ "$1" = "--schema" ]; then
 	echo '{
@@ -909,7 +911,9 @@ fi
 	}
 
 	sb := &mockSandbox{}
-	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}))
+	registry := NewToolRegistry(nil,
+		WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}),
+		WithUnsafeNoSandbox())
 
 	_, err := registry.LoadShellTool(scriptPath)
 	if err != nil {
@@ -921,6 +925,23 @@ fi
 		if schema != nil && strings.Contains(schema.Description(), "[sandboxed]") {
 			t.Error("Expected shell tool with sandbox:false to NOT be sandboxed")
 		}
+	}
+}
+
+func TestShellToolSandboxFalseRequiresUnsafeRegistryOptOut(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "unsandboxed.sh")
+	script := `#!/bin/bash
+if [ "$1" = "--schema" ]; then
+  echo '{"title":"unsandboxed-tool","type":"object","sandbox":false}'
+fi
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
+	if _, err := registry.LoadShellTool(scriptPath); err == nil {
+		t.Fatal("expected sandbox:false to be refused without WithUnsafeNoSandbox")
 	}
 }
 
@@ -985,6 +1006,43 @@ func TestRegistryShellToolSchemaSandboxFailureFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRegistryRefusesShellWithoutSandboxBeforeSchemaExecution(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "schema-ran")
+	scriptPath := filepath.Join(dir, "tool.sh")
+	script := fmt.Sprintf(`#!/bin/bash
+if [ "$1" = "--schema" ]; then
+  touch %q
+  echo '{"title":"unsafe","type":"object"}'
+fi
+`, marker)
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewToolRegistry(nil)
+	if _, err := registry.LoadShellTool(scriptPath); err == nil {
+		t.Fatal("expected a registry without sandbox policy to reject shell loading")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("schema command ran before sandbox policy rejection: %v", err)
+	}
+}
+
+func TestRegistryRefusesStdioMCPWithoutSandbox(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "mcp.json")
+	config := `{"mcpServers":{"unsafe":{"command":"definitely-not-started"}}}`
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewToolRegistry(nil)
+	if _, err := registry.LoadMCPServer(configPath); err == nil || !strings.Contains(err.Error(), "requires sandboxing") {
+		t.Fatalf("LoadMCPServer() error = %v, want secure-default refusal", err)
+	}
+}
+
 func TestRegistryShellToolSandboxFailureFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
@@ -1030,11 +1088,11 @@ func TestLoadToolAutoBashSandboxFailureFailsClosed(t *testing.T) {
 
 func TestSandboxState(t *testing.T) {
 	dir := t.TempDir()
-	shell, err := NewShellTool(createTestScript(t, dir))
+	shell, err := newShellTool(createTestScript(t, dir))
 	if err != nil {
 		t.Fatalf("NewShellTool error = %v", err)
 	}
-	sandboxedBash := NewBashTool("").WithSandbox(&mockSandbox{})
+	sandboxedBash := newBashTool("").WithSandbox(&mockSandbox{})
 
 	tests := []struct {
 		name    string
@@ -1042,7 +1100,7 @@ func TestSandboxState(t *testing.T) {
 		capable bool
 		active  bool
 	}{
-		{"bash plain", NewBashTool(""), true, false},
+		{"bash plain", newBashTool(""), true, false},
 		{"bash sandboxed", sandboxedBash, true, true},
 		{"shell plain", shell, true, false},
 		{"shell sandboxed", shell.WithSandbox(&mockSandbox{}), true, true},
@@ -1066,7 +1124,7 @@ func TestSandboxDetailsIncludesEffectiveConfigAndOptOut(t *testing.T) {
 		WritablePaths: []string{"/tmp/work"},
 		AllowEnv:      []string{"PATH"},
 	}
-	bash := NewBashTool("").WithSandbox(&mockSandbox{}, cfg)
+	bash := newBashTool("").WithSandbox(&mockSandbox{}, cfg)
 	info := SandboxDetails(bash)
 	if !info.Capable || !info.Active {
 		t.Fatalf("SandboxDetails(bash) = %+v, want capable active", info)
@@ -1091,9 +1149,9 @@ fi
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
-	shell, err := NewShellTool(scriptPath)
+	shell, err := newShellTool(scriptPath)
 	if err != nil {
-		t.Fatalf("NewShellTool() error = %v", err)
+		t.Fatalf("newShellTool() error = %v", err)
 	}
 	info = SandboxDetails(shell)
 	if !info.Capable || info.Active || !info.OptedOut {
@@ -1123,13 +1181,13 @@ func TestShellToolNonExecutable(t *testing.T) {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	_, err = NewShellTool(scriptPath)
+	_, err = newShellTool(scriptPath)
 	if err == nil {
 		t.Error("Expected error for non-executable file")
 	}
 }
 
-func TestLoadShellToolsContinuesOnError(t *testing.T) {
+func TestLoadShellToolsFailsClosedOnError(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create one valid tool
@@ -1151,14 +1209,12 @@ fi
 		t.Fatalf("Failed to create invalid file: %v", err)
 	}
 
-	// Load should succeed with the valid tool and skip the invalid one
-	tools, err := LoadShellTools([]string{invalidPath, validPath})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
+	tools, err := LoadShellTools(registry, []string{invalidPath, validPath})
+	if err == nil {
+		t.Fatal("expected invalid tool to abort secure loading")
 	}
-
-	// Should have loaded only the valid tool
-	if len(tools) != 1 {
-		t.Errorf("Expected 1 tool (valid only), got %d", len(tools))
+	if len(tools) != 0 {
+		t.Fatalf("LoadShellTools() returned partial tools after failure: %d", len(tools))
 	}
 }

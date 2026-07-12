@@ -18,11 +18,15 @@ type BashTool struct {
 	sandboxCfg *sandbox.Config
 }
 
-// NewBashTool creates a bash tool that runs commands in the given working directory.
-// If workDir is empty, commands run in the current process directory.
-func NewBashTool(workDir string) *BashTool {
+func newBashTool(workDir string) *BashTool {
 	return &BashTool{workDir: workDir}
 }
+
+// NewUnsafeBashTool creates an unsandboxed bash tool. Prefer loading "bash"
+// through a ToolRegistry configured with WithSandboxFactory. This constructor
+// is intentionally explicit because executing model-authored commands without
+// containment grants them the caller's ambient host access.
+func NewUnsafeBashTool(workDir string) *BashTool { return newBashTool(workDir) }
 
 // WithSandbox returns a copy with sandboxing enabled.
 func (t *BashTool) WithSandbox(sb sandbox.Sandbox, cfg ...sandbox.Config) *BashTool {

@@ -26,8 +26,8 @@ type ShellTool struct {
 // or nil if the tool didn't declare any overrides.
 func (s *ShellTool) SandboxConfig() *sandbox.Config { return s.sandboxCfg }
 
-// SandboxOptOut reports whether the script explicitly disabled sandboxing
-// by setting "sandbox": false in its schema.
+// SandboxOptOut reports whether the script requested sandbox:false. The
+// registry honors that request only after an explicit WithUnsafeNoSandbox.
 func (s *ShellTool) SandboxOptOut() bool { return s.sandboxOptOut }
 
 // WantsSandbox reports whether the script's schema declared sandbox overrides.
@@ -59,11 +59,10 @@ func (s *ShellTool) SandboxDetails() SandboxInfo {
 	}
 }
 
-// NewShellTool creates a new shell tool from a command.
-// An optional sandbox.Sandbox can be provided to run the --schema
-// invocation inside a sandbox, preventing untrusted scripts from
-// executing side effects during schema loading.
-func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
+// newShellTool creates a shell tool and optionally contains its schema command.
+// Public callers should load process-backed tools through ToolRegistry, which
+// enforces either a sandbox factory or an explicit unsafe opt-out.
+func newShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
 	tool := &ShellTool{Command: command}
 
 	// Load schema from the tool, sandboxed if a sandbox is provided.
@@ -95,6 +94,12 @@ func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool,
 	}
 
 	return tool, nil
+}
+
+// NewUnsafeShellTool loads a shell tool without containing its --schema
+// command or future executions. Prefer ToolRegistry.LoadShellTool.
+func NewUnsafeShellTool(command string) (*ShellTool, error) {
+	return newShellTool(command)
 }
 
 // GetSchema returns the tool's schema, annotated with [sandboxed] if applicable
@@ -188,20 +193,26 @@ func (s *ShellTool) runCommandSandboxed(arg string, sb sandbox.Sandbox) (string,
 	return strings.TrimSpace(string(output)), nil
 }
 
-// LoadShellTools loads shell tools from the given file paths
-func LoadShellTools(paths []string) ([]Tool, error) {
-	var tools []Tool
-
-	for _, path := range paths {
-		slog.Debug("tool_loading", "path", path)
-		shellTool, err := NewShellTool(path)
-		if err != nil {
-			slog.Debug("tool_load_failed", "path", path, "error", err)
-			// Continue loading other tools even if one fails
-			continue
-		}
-		tools = append(tools, shellTool)
+// LoadShellTools loads and registers shell tools through registry's sandbox
+// policy. It fails on the first rejected tool rather than returning a partial,
+// ambiguously secured result.
+func LoadShellTools(registry *ToolRegistry, paths []string) ([]Tool, error) {
+	if registry == nil {
+		return nil, fmt.Errorf("tool registry is nil")
 	}
-
-	return tools, nil
+	var loaded []Tool
+	for _, path := range paths {
+		result, err := registry.LoadShellTool(path)
+		if err != nil {
+			return nil, err
+		}
+		for _, server := range result.Servers {
+			for _, name := range server.ToolNames {
+				if tool, ok := registry.Get(name); ok {
+					loaded = append(loaded, tool)
+				}
+			}
+		}
+	}
+	return loaded, nil
 }

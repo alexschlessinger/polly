@@ -93,6 +93,10 @@ func TestWrapCmd(t *testing.T) {
 	}
 
 	cmd := exec.Command("bash", "-c", "echo hello")
+	origPath, err := resolvedExecutablePath(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := sb.Wrap(cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
@@ -108,8 +112,42 @@ func TestWrapCmd(t *testing.T) {
 	}
 	// Original args should be at the end
 	tail := cmd.Args[3:]
-	if len(tail) != 3 || tail[0] != "bash" || tail[1] != "-c" || tail[2] != "echo hello" {
-		t.Fatalf("cmd.Args tail = %v, want [bash -c echo hello]", tail)
+	if len(tail) != 3 || tail[0] != origPath || tail[1] != "-c" || tail[2] != "echo hello" {
+		t.Fatalf("cmd.Args tail = %v, want [%s -c echo hello]", tail, origPath)
+	}
+}
+
+func TestSandboxPreservesExecutableResolvedBeforeEnvFiltering(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	dir := t.TempDir()
+	toolPath := filepath.Join(dir, "p2-resolved-tool")
+	if err := os.WriteFile(toolPath, []byte("#!/bin/sh\necho resolved\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd := exec.Command("p2-resolved-tool")
+	resolvedPath, err := resolvedExecutablePath(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{AllowEnv: []string{"HOME"}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if cmd.Args[3] != resolvedPath {
+		t.Fatalf("wrapped executable = %q, want resolved path %q", cmd.Args[3], resolvedPath)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolved command failed without PATH in its environment: %v (%s)", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "resolved" {
+		t.Fatalf("output = %q, want resolved", strings.TrimSpace(string(out)))
 	}
 }
 

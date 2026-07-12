@@ -106,7 +106,7 @@ func TestToolsCommandListNamespaceAndShow(t *testing.T) {
 	registry := tools.NewToolRegistry([]tools.Tool{
 		&tools.Func{Name: "git__status", Desc: "Show git status", Params: schema.Params{"path": schema.S("Repository path")}, Required: []string{"path"}},
 		&tools.Func{Name: "git__diff", Desc: "Show git diff"},
-		tools.NewBashTool(""),
+		tools.NewUnsafeBashTool(""),
 	})
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.state = &conversationState{toolRegistry: registry}
@@ -144,7 +144,9 @@ func stubSandboxRegistry(t *testing.T) *tools.ToolRegistry {
 	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return probeFailSandbox{}, nil
 	}
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, sandbox.Config{}))
+	registry := tools.NewToolRegistry(nil,
+		tools.WithSandboxFactory(factory, sandbox.Config{}),
+		tools.WithUnsafeNoSandbox())
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
 		t.Fatalf("LoadToolAuto(bash) error = %v", err)
 	}
@@ -278,7 +280,9 @@ fi
 	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return passthroughSandbox{}, nil
 	}
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, sandbox.Config{}))
+	registry := tools.NewToolRegistry(nil,
+		tools.WithSandboxFactory(factory, sandbox.Config{}),
+		tools.WithUnsafeNoSandbox())
 	if _, err := registry.LoadShellTool(scriptPath); err != nil {
 		t.Fatalf("LoadShellTool() error = %v", err)
 	}
@@ -292,7 +296,7 @@ fi
 		t.Fatalf("/tools list missing opt-out badge: %q", got)
 	}
 
-	registry = tools.NewToolRegistry([]tools.Tool{tools.NewBashTool("").WithSandbox(probeFailSandbox{})})
+	registry = tools.NewToolRegistry([]tools.Tool{tools.NewUnsafeBashTool("").WithSandbox(probeFailSandbox{})})
 	r = newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.state = &conversationState{toolRegistry: registry}
 	if handled, quit := r.runCommand("/tools list"); !handled || quit {
@@ -322,7 +326,7 @@ func TestSandboxNoticeLine(t *testing.T) {
 	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return probeFailSandbox{}, nil
 	}
-	registry = tools.NewToolRegistry([]tools.Tool{tools.NewBashTool("")},
+	registry = tools.NewToolRegistry([]tools.Tool{tools.NewUnsafeBashTool("")},
 		tools.WithSandboxFactory(factory, sandbox.Config{}))
 	state = &conversationState{toolRegistry: registry}
 	got := sandboxNoticeLine(&Config{}, state)

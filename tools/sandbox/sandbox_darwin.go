@@ -21,6 +21,11 @@ func New(cfg Config) (Sandbox, error) {
 	if _, err := exec.LookPath("sandbox-exec"); err != nil {
 		return nil, fmt.Errorf("sandbox-exec not available: %w", err)
 	}
+	var err error
+	cfg, err = normalizeConfigPaths(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -36,6 +41,10 @@ func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
 	cmd.Env = filtered
 
 	origArgs := cmd.Args
+	origPath, err := resolvedExecutablePath(cmd)
+	if err != nil {
+		return err
+	}
 	denied := allDeniedPaths(s.cfg)
 	slog.Debug("sandbox_wrap",
 		"command", commandSummary(origArgs),
@@ -47,7 +56,7 @@ func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
 	cmd.Path = "/usr/bin/sandbox-exec"
 	// The profile is rebuilt on every wrap, not frozen at construction, so the
 	// symlink resolution below tracks the filesystem as it is now.
-	cmd.Args = append([]string{"sandbox-exec", "-p", buildProfile(s.cfg, denied)}, origArgs...)
+	cmd.Args = append([]string{"sandbox-exec", "-p", buildProfile(s.cfg, denied), origPath}, origArgs[1:]...)
 
 	// Run in a new session, detaching the controlling terminal. This is the
 	// macOS counterpart to bwrap's --new-session on Linux: it closes terminal

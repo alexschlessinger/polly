@@ -19,7 +19,7 @@ func TestSkillActivateToolLoadsScripts(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	tool := NewSkillActivateTool(catalog, registry)
 
 	result, err := tool.Execute(context.Background(), map[string]any{"name": "shell-helper"})
@@ -147,7 +147,7 @@ func TestSkillAllowedToolsPolicyBlocksBash(t *testing.T) {
 		&testTool{name: "activate_skill"},
 		&testTool{name: "read_skill_file"},
 	})
-	registry.Register(NewBashTool(""))
+	registry.Register(newBashTool(""))
 	registry.MarkAlwaysAllowed("activate_skill")
 	registry.MarkAlwaysAllowed("read_skill_file")
 
@@ -173,7 +173,7 @@ func TestStageMCPServerWithNamespacePrefix(t *testing.T) {
 	checkUvxAvailable(t)
 
 	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 
 	result, err := registry.stageMCPServerWithNamespacePrefix(configPath, "clock-skill")
 	if err != nil {
@@ -546,7 +546,7 @@ func TestBashAvailabilityWithStandardSkills(t *testing.T) {
 		}
 
 		registry := NewToolRegistry(nil)
-		registry.Register(NewBashTool(""))
+		registry.Register(newBashTool(""))
 
 		activateTool := NewSkillActivateTool(catalog, registry)
 		if _, err := activateTool.Execute(context.Background(), map[string]any{"name": "pdf"}); err != nil {
@@ -566,7 +566,7 @@ func TestBashAvailabilityWithStandardSkills(t *testing.T) {
 		}
 
 		registry := NewToolRegistry(nil)
-		registry.Register(NewBashTool(""))
+		registry.Register(newBashTool(""))
 		registry.MarkAlwaysAllowed("activate_skill")
 		registry.MarkAlwaysAllowed("read_skill_file")
 
@@ -588,7 +588,7 @@ func TestBashAvailabilityWithStandardSkills(t *testing.T) {
 		}
 
 		registry := NewToolRegistry(nil)
-		registry.Register(NewBashTool(""))
+		registry.Register(newBashTool(""))
 		registry.MarkAlwaysAllowed("activate_skill")
 		registry.MarkAlwaysAllowed("read_skill_file")
 

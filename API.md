@@ -173,6 +173,7 @@ result, err := llm.NewCompletionBuilder("openai/gpt-5.4").
 import (
     "github.com/alexschlessinger/pollytool/skills"
     "github.com/alexschlessinger/pollytool/tools"
+    "github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // Resolve skill directories (expands ~, deduplicates, validates).
@@ -190,7 +191,10 @@ if catalog == nil {
     // no skills available — proceed without them
 }
 
-registry := tools.NewToolRegistry(nil)
+sandboxConfig := sandbox.DefaultConfig()
+registry := tools.NewToolRegistry(nil,
+    tools.WithSandboxFactory(sandbox.New, sandboxConfig),
+)
 skillRuntime, err := tools.NewSkillRuntime(catalog, registry)
 if err != nil {
     panic(err)
@@ -597,22 +601,26 @@ import (
     "github.com/alexschlessinger/pollytool/llm"
     "github.com/alexschlessinger/pollytool/messages"
     "github.com/alexschlessinger/pollytool/tools"
+    "github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 func main() {
     ctx := context.Background()
     
-    // Load shell tools
-    shellTools, err := tools.LoadShellTools([]string{
+    // Process-backed tools require an explicit sandbox policy. Registries
+    // without one reject shell tools before executing their --schema command.
+    sandboxConfig := sandbox.DefaultConfig()
+    registry := tools.NewToolRegistry(nil,
+        tools.WithSandboxFactory(sandbox.New, sandboxConfig),
+    )
+
+    _, err := tools.LoadShellTools(registry, []string{
         "./weather.sh",
         "./calculator.sh",  // You can load multiple scripts
     })
     if err != nil {
         fmt.Printf("Warning: %v\n", err)
     }
-    
-    // Create tool registry
-    registry := tools.NewToolRegistry(shellTools)
     
     client := llm.GetDefaultClient()
     
@@ -679,9 +687,9 @@ Shell scripts used as tools must:
 3. Return results as plain text to stdout
 4. Exit with code 0 on success, non-zero on error
 
-Shell tools run sandboxed by default. The schema may include `"sandbox"` at the top level to customize permissions or opt out. When the sandbox is applied, `[sandboxed]` is appended to the shell tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
+Shell tools run sandboxed by default. The schema may include `"sandbox"` at the top level to customize permissions. When the sandbox is applied, `[sandboxed]` is appended to the shell tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable globally with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
 
-Tools that omit `"sandbox"` get the defaults below; only an explicit `"sandbox": false` runs without restrictions. See [SANDBOX.md](SANDBOX.md) for design intent and how the Linux (bubblewrap) and macOS (Seatbelt) implementations differ.
+Tools that omit `"sandbox"` get the defaults below. Tool-controlled metadata cannot silently disable containment: `"sandbox": false` is refused unless the registry was constructed with the deliberately named `tools.WithUnsafeNoSandbox()` option (the CLI equivalent is `--nosandbox`). See [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
 
 #### Sandbox Spec Reference
 
@@ -698,16 +706,22 @@ Tools that omit `"sandbox"` get the defaults below; only an explicit `"sandbox":
 | `denyWrite` | bool | `false` | Deny all file writes, including temp. Overrides `writablePaths`. |
 
 **Defaults** (when `"sandbox": true`):
-- Writes: denied everywhere except OS temp dir (`/tmp`)
+- Writes: denied everywhere except the sandbox temp dir (`/tmp` is a private tmpfs on Linux)
 - Network: denied
 - Reads: all files accessible except credential paths (see below)
 - Env: all vars passed through except sensitive ones (see below)
-- Linux: own PID namespace (host processes invisible) and own session (no terminal injection)
+- Linux: private `/tmp` and `/run`, filesystem Unix sockets denied, own PID and IPC namespaces, and own session
 
 **Credential paths denied by default:**
 `~/.ssh`, `~/.gnupg`, `~/.gpg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.npmrc`, `~/.pypirc`, `~/.gem/credentials`, `~/.cargo/credentials`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`
 
 Deny paths are re-checked on every command, and symlinked entries are resolved to their real targets. The `--denypath` flag (env `POLLYTOOL_DENYPATHS`) adds global entries for all sandboxed tools.
+
+Relative `writablePaths`, `readPaths`, and `denyPaths` entries are resolved
+against the process working directory when the sandbox is constructed. Empty
+path entries are rejected. On Linux, a `readPaths` entry may name a child of a
+denied directory (for example `~/.ssh/config`); that child is restored
+read-only while its siblings remain masked.
 
 **Sensitive env vars** are always stripped, even without `allowEnv`: `POLLYTOOL_*` and `AWS_*` prefixes; names ending in `_API_KEY`, `_APIKEY`, `_TOKEN`, `_SECRET`, `_SECRET_KEY`, `_ACCESS_KEY`, `_PASSWORD`, `_PASSPHRASE`, `_CREDENTIALS`, `_PRIVATE_KEY`; and the agent sockets `SSH_AUTH_SOCK` / `GPG_AGENT_INFO`. To pass one through, include it in `allowEnv`.
 

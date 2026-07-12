@@ -276,7 +276,7 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 
 func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 	if config.NoSandbox {
-		return nil, nil
+		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil
 	}
 
 	baseCfg := sandbox.DefaultConfig()

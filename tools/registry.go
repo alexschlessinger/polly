@@ -72,13 +72,15 @@ type ToolRegistry struct {
 	pendingAutoAllowed     map[string]bool
 
 	// Sandbox factory and base config
-	sandboxFactory func(sandbox.Config) (sandbox.Sandbox, error)
-	baseSandboxCfg sandbox.Config
+	sandboxFactory  func(sandbox.Config) (sandbox.Sandbox, error)
+	baseSandboxCfg  sandbox.Config
+	unsafeNoSandbox bool
 }
 
 type registryOptions struct {
-	sandboxFactory func(sandbox.Config) (sandbox.Sandbox, error)
-	baseSandboxCfg sandbox.Config
+	sandboxFactory  func(sandbox.Config) (sandbox.Sandbox, error)
+	baseSandboxCfg  sandbox.Config
+	unsafeNoSandbox bool
 }
 
 // RegistryOption configures a ToolRegistry.
@@ -92,9 +94,26 @@ func WithSandboxFactory(factory func(sandbox.Config) (sandbox.Sandbox, error), b
 	}
 }
 
+// WithUnsafeNoSandbox explicitly permits process-backed tools to run without
+// an OS sandbox. Without this option, registries that lack a sandbox factory
+// reject bash, shell tools, and stdio MCP servers instead of silently running
+// them with ambient host access.
+func WithUnsafeNoSandbox() RegistryOption {
+	return func(o *registryOptions) {
+		o.unsafeNoSandbox = true
+	}
+}
+
 // HasSandbox reports whether sandboxing is available.
 func (r *ToolRegistry) HasSandbox() bool {
 	return r.sandboxFactory != nil
+}
+
+func (r *ToolRegistry) requireProcessSandbox(kind string) error {
+	if r.sandboxFactory != nil || r.unsafeNoSandbox {
+		return nil
+	}
+	return fmt.Errorf("%s requires sandboxing; configure WithSandboxFactory or explicitly use WithUnsafeNoSandbox", kind)
 }
 
 // NewSandbox creates a sandbox with the base config merged with optional per-tool overrides.
@@ -154,7 +173,9 @@ func closeStagedToolRecords(records []stagedToolRecord) {
 	}
 }
 
-// NewToolRegistry creates a new tool registry from a list of tools
+// NewToolRegistry creates a registry. Process-backed tools are rejected unless
+// the registry has a sandbox factory or the caller explicitly selects
+// WithUnsafeNoSandbox; in-process tools can be registered without either.
 func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 	var o registryOptions
 	for _, opt := range opts {
@@ -174,11 +195,15 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 		pendingAutoAllowed: make(map[string]bool),
 		sandboxFactory:     o.sandboxFactory,
 		baseSandboxCfg:     o.baseSandboxCfg,
+		unsafeNoSandbox:    o.unsafeNoSandbox,
 	}
 
 	registry.nativeTools["bash"] = func() (Tool, error) {
-		bt := NewBashTool("")
+		bt := newBashTool("")
 		if registry.sandboxFactory == nil {
+			if err := registry.requireProcessSandbox("bash"); err != nil {
+				return nil, err
+			}
 			return bt, nil
 		}
 		// Fail closed: bash without its sandbox must not load.
@@ -213,6 +238,32 @@ func (r *ToolRegistry) Register(tool Tool) {
 		slog.Debug("tool_registered", "tool_name", name)
 		r.tools[name] = tool
 	}
+}
+
+// registerIfAbsent adds tool without weakening an already-registered tool of
+// the same name. Skill runtime setup uses this for bash so it cannot replace a
+// caller-provided instance carrying a stricter effective policy.
+func (r *ToolRegistry) registerIfAbsent(tool Tool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	name := tool.GetName()
+	if name == "" {
+		return false
+	}
+	if _, exists := r.tools[name]; exists {
+		return false
+	}
+	r.tools[name] = tool
+	slog.Debug("tool_registered", "tool_name", name)
+	return true
+}
+
+func (r *ToolRegistry) registeredTool(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tool, ok := r.tools[name]
+	return tool, ok
 }
 
 // MarkAlwaysAllowed exempts a tool from active skill allowlist filtering.
@@ -523,6 +574,9 @@ func (r *ToolRegistry) loadShellToolWithNamespace(path, namespace string) (LoadR
 }
 
 func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]stagedToolRecord, LoadResult, error) {
+	if err := r.requireProcessSandbox("shell tool"); err != nil {
+		return nil, LoadResult{}, err
+	}
 	// Create a schema-loading sandbox (base config: no network, temp-only writes)
 	// so that --schema execution cannot perform side effects.
 	var schemaSB sandbox.Sandbox
@@ -533,11 +587,14 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 			return nil, LoadResult{}, fmt.Errorf("schema sandbox for shell tool %s: %w", path, err)
 		}
 	}
-	shellTool, err := NewShellTool(path, schemaSB)
+	shellTool, err := newShellTool(path, schemaSB)
 	if err != nil {
 		return nil, LoadResult{}, fmt.Errorf("failed to load shell tool %s: %w", path, err)
 	}
 
+	if shellTool.SandboxOptOut() && !r.unsafeNoSandbox {
+		return nil, LoadResult{}, fmt.Errorf("shell tool %s requested sandbox:false; refusing without WithUnsafeNoSandbox", path)
+	}
 	if r.sandboxFactory != nil && !shellTool.SandboxOptOut() {
 		// Fail closed: a tool that should be sandboxed but can't be must not
 		// load, or it would silently run unsandboxed.
@@ -599,6 +656,15 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 }
 
 func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
+	localProcess := config.Transport == "" || config.Transport == "stdio"
+	if localProcess {
+		if err := r.requireProcessSandbox("stdio MCP server"); err != nil {
+			return nil, nil, err
+		}
+		if config.SandboxOptOut() && !r.unsafeNoSandbox {
+			return nil, nil, fmt.Errorf("MCP server %s requested sandbox:false; refusing without WithUnsafeNoSandbox", serverName)
+		}
+	}
 	var sb sandbox.Sandbox
 	var sbCfg sandbox.Config
 	var hasSandboxCfg bool
@@ -617,9 +683,9 @@ func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName,
 	var client *MCPClient
 	var err error
 	if hasSandboxCfg {
-		client, err = NewMCPClientFromConfig(config, sb, sbCfg)
+		client, err = newMCPClientFromConfig(config, sb, sbCfg)
 	} else {
-		client, err = NewMCPClientFromConfig(config, sb)
+		client, err = newMCPClientFromConfig(config, sb)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -867,6 +933,15 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 	} else {
 		return fmt.Errorf("config has multiple servers, need specific server in spec")
 	}
+	localProcess := config.Transport == "" || config.Transport == "stdio"
+	if localProcess {
+		if err := r.requireProcessSandbox("stdio MCP server"); err != nil {
+			return err
+		}
+		if config.SandboxOptOut() && !r.unsafeNoSandbox {
+			return fmt.Errorf("MCP server %s requested sandbox:false; refusing without WithUnsafeNoSandbox", namespace)
+		}
+	}
 
 	// Create sandbox unless user opted out
 	var sb sandbox.Sandbox
@@ -887,9 +962,9 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 	// Create client
 	var client *MCPClient
 	if hasSandboxCfg {
-		client, err = NewMCPClientFromConfig(&config, sb, sbCfg)
+		client, err = newMCPClientFromConfig(&config, sb, sbCfg)
 	} else {
-		client, err = NewMCPClientFromConfig(&config, sb)
+		client, err = newMCPClientFromConfig(&config, sb)
 	}
 	if err != nil {
 		return err

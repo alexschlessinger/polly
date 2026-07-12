@@ -25,12 +25,14 @@ Concretely, a sandboxed process cannot:
   can use your SSH keys without ever reading `~/.ssh`.
 - **Write outside temp directories.** The filesystem is read-only except the
   OS temp dir and any configured `writablePaths`.
-- **Reach the network.** All network access is denied unless the tool's config
-  opts into it (`allowNetwork`, optionally narrowed with `denyDNS`).
+- **Reach the network or host IPC.** TCP/UDP network access is denied unless the
+  tool opts into `allowNetwork`. On Linux, host filesystem Unix sockets remain
+  blocked even when TCP/UDP is enabled.
 
 Design principles:
 
-- **Default-on.** Tools don't opt in; they may opt out (`"sandbox": false`).
+- **Default-on.** Tools don't opt in. Tool metadata cannot opt out by itself;
+  the caller must explicitly select `--nosandbox` / `WithUnsafeNoSandbox`.
 - **Fail closed.** If no backend exists, or a sandbox fails to construct, the
   tool errors instead of silently running unsandboxed. At startup polly probes
   the backend with a trivial command and aborts with a pointer to
@@ -51,8 +53,8 @@ the process runs as your user on a shared kernel. See
 | Execution path | Sandboxed | Opt-out |
 |---|---|---|
 | Builtin `bash` tool | yes | `--nosandbox` |
-| Shell tools (`-t ./tool.sh`) | yes | `"sandbox": false` in the schema |
-| Stdio MCP servers | yes (the whole server process) | `"sandbox": false` on the server entry |
+| Shell tools (`-t ./tool.sh`) | yes | global `--nosandbox` only |
+| Stdio MCP servers | yes (the whole server process) | global `--nosandbox` only |
 | Remote MCP servers (HTTP/SSE) | no — the process runs elsewhere | n/a |
 | Skill helper / function tools | no — in-process, nothing to wrap | n/a |
 
@@ -76,14 +78,17 @@ in a fresh mount + PID namespace. The default config renders roughly:
 ```
 bwrap \
   --ro-bind / /                          # entire filesystem read-only
-  --bind /tmp /tmp                       # writable temp (+ any writablePaths)
+  --tmpfs /tmp                           # private writable temp
+  --tmpfs /run --remount-ro /run         # hide host runtime sockets
   --tmpfs /home/you/.ssh                 # denied dirs masked with empty tmpfs
   --ro-bind /dev/null /home/you/.netrc   # denied files masked with /dev/null
   ...                                    # one mask per existing denied path
   --dev /dev                             # fresh devtmpfs
   --proc /proc                           # proc scoped to the new PID namespace
   --unshare-pid                          # own PID namespace
+  --unshare-ipc                          # own SysV/POSIX IPC namespace
   --unshare-net                          # no network (omitted when allowNetwork)
+  --seccomp FD                           # deny AF_UNIX sockets + io_uring setup
   --die-with-parent
   --new-session                          # detach from the controlling tty
   -- original command...
@@ -91,8 +96,13 @@ bwrap \
 
 Properties worth knowing:
 
-- **Writes are physically impossible** outside the writable binds — the root
+- **Writes are physically impossible** outside private temp and writable binds — the root
   is a read-only mount, not a policy check.
+- **Host runtime state is private.** `/tmp` and `/run` are fresh mounts, so
+  D-Bus, Docker/Podman, SSH-agent, Wayland, and similar host sockets are absent.
+  A seccomp rule also denies `socket(AF_UNIX)` so sockets elsewhere in the broad
+  read-only filesystem view cannot be reached. `socketpair()` remains available
+  for private communication among sandbox descendants.
 - **Denied paths read as empty**, not as errors: a masked directory lists
   nothing (tmpfs), a masked file reads zero bytes (`/dev/null`). Tools probing
   for credentials see "not configured" rather than "blocked".
@@ -105,6 +115,9 @@ Properties worth knowing:
 - **Symlinked deny paths are resolved** to their real targets before masking
   (bwrap can't mount over the link itself, and masking the link wouldn't
   cover the target). Resolved duplicates are masked once.
+- **Child read exemptions are bind-backed read-only.** For example,
+  `readPaths: ["~/.ssh/config"]` keeps the parent `~/.ssh` mask and restores
+  only `config` from a private staging mount; sibling keys remain hidden.
 - **Missing deny paths are dropped** — bwrap aborts the whole command if asked
   to mask a nonexistent path. Only a confirmed does-not-exist drops a mask;
   any other resolution failure (permissions, I/O) keeps the path, so the
@@ -208,7 +221,7 @@ Properties worth knowing:
 | Missing `writablePaths` | skipped per-command | inert profile rule | ✅ tolerated, not fatal |
 | **Denied-read failure mode** | reads as empty | `Operation not permitted` | ❌ inherent (masking vs policy) |
 | **Process enumeration** | invisible (PID namespace) | visible (`KERN_PROC` sysctl, ungated) | ❌ inherent |
-| **Mach / IPC** | n/a | allowed (allow-default) | ❌ inherent (no Linux analogue) |
+| **Host IPC** | private IPC namespace; host Unix sockets blocked | Mach services allowed (allow-default) | ❌ platform gap |
 | Mechanism / backend | namespaces, maintained | kernel policy, `sandbox-exec` deprecated | ❌ inherent |
 
 The bold rows are the only genuinely operator-visible gaps that remain, and each
@@ -221,9 +234,9 @@ is inherent to the platform rather than a config choice:
 - **Process enumeration** isn't gateable on macOS — `KERN_PROC` sysctl isn't
   covered by `process-info*`. A sandboxed process can *list* your processes
   (but no longer signal or read the env of them).
-- **Mach/IPC** has no Linux counterpart; flipping macOS to `(deny default)` to
-  match Linux's posture would break most tools (you'd have to allowlist every
-  syscall, file read, and mach service), so it stays allow-default.
+- **Host IPC** is isolated on Linux but not macOS. Flipping macOS to
+  `(deny default)` would break most tools because every syscall, file read, and
+  Mach service would need an allowlist, so Seatbelt remains allow-default.
 
 ## Configuration
 
@@ -250,6 +263,10 @@ Two interactions to keep in mind:
 - `allowEnv` is a mode switch, not an addition: when set, *only* those
   variables pass through. Use it to hand a tool one specific token —
   `"allowEnv": ["GITHUB_TOKEN"]` — that the heuristics would otherwise strip.
+
+Policy paths are normalized when the sandbox is constructed. `~` expands to
+the user's home directory, relative paths resolve against the process working
+directory at that moment, and empty entries are rejected.
 
 ### Examples
 
@@ -314,7 +331,9 @@ merged config) and one `sandbox_wrap` line per command:
         denied_paths=17
 ```
 
-`env_stripped` and all path fields log **names only, never values**.
+`env_stripped` and all path fields log **names only, never values**. Linux also
+strips host-runtime hints such as `DBUS_SESSION_BUS_ADDRESS`, `DOCKER_HOST`, and
+`XDG_RUNTIME_DIR`.
 `command` is truncated to the first two argv entries.
 
 In the REPL:
@@ -343,11 +362,8 @@ Know what this does *not* do:
   hold your terminal. Treat the macOS sandbox as credential/write/network
   containment with partial process isolation, not the full PID-namespace
   isolation Linux provides.
-- **Temp is shared.** `/tmp` is bind-mounted from the host on Linux (and
-  `/private/tmp` is writable on macOS), so sandboxed processes share temp
-  with each other and with the host — they can read and interfere with other
-  processes' temp files, and stage data there for a later non-sandboxed
-  exfiltration path.
+- **macOS temp is shared.** Linux uses a private tmpfs for `/tmp`; Seatbelt
+  cannot provide a mount namespace, so `/private/tmp` remains shared on macOS.
 - **The deny list is a list.** Credentials living outside the 17 built-in
   paths (a `.env` in your project, a token in a config the list doesn't know)
   are readable unless you add them with `--denypath` or `denyPaths`.

@@ -337,7 +337,7 @@ polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 
 #### Sandboxing
 
-The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by default** whenever a backend is available. Setting `"sandbox"` in a tool's schema or MCP server config customizes the permissions; `"sandbox": false` opts out entirely. A sandboxed process runs with a read-only root filesystem, writes restricted to the OS temp directory (plus any `writablePaths`), no network by default, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, ...) stripped. On Linux the process also gets its own PID namespace and session, so it can't read other processes' environments or inject keystrokes into the parent terminal. Shell tools get a `[sandboxed]` suffix on their description so the LLM knows they're restricted. Extra paths can be blocked globally with `--denypath` (or `POLLYTOOL_DENYPATHS`).
+The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by default**. A sandboxed process runs with a read-only root filesystem, writes restricted to its temp directory (plus any `writablePaths`), no TCP/UDP network by default, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and credential/runtime env vars (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, ...) stripped. On Linux, `/tmp` and `/run` are private, filesystem Unix sockets are blocked, and the process gets private PID and IPC namespaces plus a detached session. Shell tools get a `[sandboxed]` suffix on their description so the LLM knows they're restricted. Extra paths can be blocked globally with `--denypath` (or `POLLYTOOL_DENYPATHS`).
 
 Sandboxing requires `bwrap` (Linux) or `sandbox-exec` (macOS). If neither is available, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API.md](API.md) for the full spec and [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
 
@@ -384,11 +384,16 @@ polly -t ./sandboxed_uppercase.sh -p "uppercase 'hello world' using the tool"
 // Fully read-only — no writes, not even to temp
 "sandbox": { "denyWrite": true }
 
-// Opt out entirely (runs unsandboxed even when sandboxing is available)
-"sandbox": false
+// Tool metadata cannot disable the sandbox by itself. The caller must make
+// the explicit global unsafe choice with --nosandbox.
 ```
 
 Credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, names ending in `_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, ..., plus agent sockets like `SSH_AUTH_SOCK`) are stripped from sandboxed processes unless explicitly listed in `allowEnv`.
+
+Relative `writablePaths`, `readPaths`, and `denyPaths` entries resolve against
+Polly's working directory when the sandbox is created. A child read exemption
+such as `~/.ssh/config` exposes only that path; the rest of the denied parent
+remains hidden.
 
 **MCP server sandboxing** — set `sandbox` on each server entry in the config:
 
@@ -409,7 +414,7 @@ Credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, names ending in `_API_KEY`, 
 }
 ```
 
-Tools and servers without a `sandbox` field get the default sandbox; only an explicit `"sandbox": false` runs without restrictions.
+Tools and servers without a `sandbox` field get the default sandbox. A `"sandbox": false` request is refused unless the caller also made the explicit global unsafe choice with `--nosandbox`.
 
 ### MCP Servers
 

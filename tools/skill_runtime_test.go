@@ -17,7 +17,7 @@ func TestNewSkillRuntimeRegistersBuiltins(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	runtime, err := NewSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("NewSkillRuntime() error = %v", err)
@@ -48,6 +48,61 @@ func TestNewSkillRuntimeSandboxFailureFailsClosed(t *testing.T) {
 	}
 }
 
+func TestNewSkillRuntimeRequiresExplicitProcessPolicy(t *testing.T) {
+	root := t.TempDir()
+	createSkillWithScript(t, root, "runtime-skill")
+	catalog, err := skills.Discover([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewToolRegistry(nil)
+	if _, err := NewSkillRuntime(catalog, registry); err == nil || !strings.Contains(err.Error(), "requires sandboxing") {
+		t.Fatalf("NewSkillRuntime() error = %v, want secure-default refusal", err)
+	}
+}
+
+func TestNewSkillRuntimeInheritsBaseSandboxPolicy(t *testing.T) {
+	root := t.TempDir()
+	createSkillWithScript(t, root, "runtime-skill")
+	catalog, err := skills.Discover([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := sandbox.Config{
+		DenyPaths: []string{"/private/project-secret"},
+		DenyWrite: true,
+	}
+	var received sandbox.Config
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		received = cfg
+		return &mockSandbox{}, nil
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(factory, base))
+	if _, err := NewSkillRuntime(catalog, registry); err != nil {
+		t.Fatal(err)
+	}
+
+	if received.AllowNetwork {
+		t.Fatal("skill bash unexpectedly enabled network")
+	}
+	if !received.DenyWrite {
+		t.Fatal("skill bash dropped base DenyWrite")
+	}
+	if len(received.DenyPaths) != 1 || received.DenyPaths[0] != base.DenyPaths[0] {
+		t.Fatalf("skill bash DenyPaths = %v, want %v", received.DenyPaths, base.DenyPaths)
+	}
+	tool, ok := registry.Get("bash")
+	if !ok {
+		t.Fatal("skill bash was not registered")
+	}
+	info := SandboxDetails(tool)
+	if !info.Active || info.Config == nil || info.Config.AllowNetwork || !info.Config.DenyWrite {
+		t.Fatalf("skill bash sandbox details = %+v", info)
+	}
+}
+
 func TestSkillRuntimeActivateCommitsTools(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
@@ -57,7 +112,7 @@ func TestSkillRuntimeActivateCommitsTools(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	runtime, err := NewSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("NewSkillRuntime() error = %v", err)
@@ -93,7 +148,7 @@ func TestSkillRuntimeRestoreCommitsTools(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	runtime, err := NewSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("NewSkillRuntime() error = %v", err)
@@ -122,7 +177,7 @@ func TestNewSkillRuntimeRegistersBash(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	_, err = NewSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("NewSkillRuntime() error = %v", err)

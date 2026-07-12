@@ -7,7 +7,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -15,8 +18,20 @@ jobs:
         with:
           go-version: '1.26.2'
 
+      - name: Install Linux sandbox backend
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+
       - run: go build ./...
 
       - run: go vet ./...
+
+      - name: Linux sandbox security tests
+        if: runner.os == 'Linux'
+        run: go test ./tools/sandbox
+        env:
+          POLLYTOOL_REQUIRE_SANDBOX_TESTS: '1'
 
       - run: go test ./...

@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,14 @@ func skipIfNoBwrap(t *testing.T) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		t.Skip("bwrap not available")
 	}
+}
+
+func skipOrFailBwrapUnavailable(t *testing.T, err error, output []byte) {
+	t.Helper()
+	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") == "1" {
+		t.Fatalf("bwrap execution is required in this environment: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+	t.Skipf("bwrap execution unavailable: %v (%s)", err, strings.TrimSpace(string(output)))
 }
 
 // When a deny entry's parent is a regular file (e.g. ~/.docker is a file, so
@@ -230,8 +239,14 @@ func TestLinuxBuildBwrapArgs(t *testing.T) {
 	if !strings.Contains(joined, "--bind "+project+" "+project) {
 		t.Fatalf("missing project writable bind:\n%s", joined)
 	}
-	if !strings.Contains(joined, "--bind /tmp /tmp") {
-		t.Fatal("missing /tmp writable bind")
+	if !strings.Contains(joined, "--tmpfs /tmp") {
+		t.Fatal("missing private /tmp tmpfs")
+	}
+	if strings.Contains(joined, "--bind /tmp /tmp") {
+		t.Fatal("host /tmp must not be bind-mounted")
+	}
+	if !strings.Contains(joined, "--tmpfs /run") || !strings.Contains(joined, "--remount-ro /run") {
+		t.Fatal("missing private read-only /run")
 	}
 	if !strings.Contains(joined, "--tmpfs /home/user/.ssh") {
 		t.Fatal("missing tmpfs overlay for denied directory")
@@ -247,6 +262,9 @@ func TestLinuxBuildBwrapArgs(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--unshare-pid") {
 		t.Fatal("missing --unshare-pid (host /proc leaks same-UID process environs)")
+	}
+	if !strings.Contains(joined, "--unshare-ipc") {
+		t.Fatal("missing --unshare-ipc")
 	}
 	if !strings.Contains(joined, "--new-session") {
 		t.Fatal("missing --new-session (controlling tty allows TIOCSTI keystroke injection)")
@@ -303,6 +321,77 @@ func TestLinuxBuildBwrapArgsReadPaths(t *testing.T) {
 	// .npmrc should still be overlaid
 	if !strings.Contains(joined, "--ro-bind /dev/null /home/user/.npmrc") {
 		t.Fatal("denied file NOT in ReadPaths should still have /dev/null bind")
+	}
+}
+
+func TestLinuxBuildBwrapArgsRestoresChildReadPath(t *testing.T) {
+	deniedDir := t.TempDir()
+	readable := filepath.Join(deniedDir, "config")
+	if err := os.WriteFile(readable, []byte("allowed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	args := buildBwrapArgs(Config{ReadPaths: []string{readable}, DenyWrite: true}, []DeniedPath{{
+		Path: deniedDir,
+		Kind: DeniedPathDir,
+	}})
+	joined := strings.Join(args, " ")
+	stage := "/run/.pollytool-readpaths/0"
+	if !strings.Contains(joined, "--ro-bind "+readable+" "+stage) {
+		t.Fatalf("child exemption was not staged before its parent mask:\n%s", joined)
+	}
+	if !strings.Contains(joined, "--tmpfs "+deniedDir) {
+		t.Fatalf("denied parent was not masked:\n%s", joined)
+	}
+	if !strings.Contains(joined, "--ro-bind "+stage+" "+readable) {
+		t.Fatalf("child exemption was not restored over its parent mask:\n%s", joined)
+	}
+	if strings.Index(joined, "--ro-bind "+readable+" "+stage) > strings.Index(joined, "--tmpfs "+deniedDir) {
+		t.Fatalf("child exemption source was staged after it became hidden:\n%s", joined)
+	}
+	if strings.Index(joined, "--ro-bind "+stage+" "+readable) < strings.Index(joined, "--tmpfs "+deniedDir) {
+		t.Fatalf("child exemption was restored before the parent mask:\n%s", joined)
+	}
+	if strings.Index(joined, "--remount-ro "+deniedDir) < strings.Index(joined, "--ro-bind "+stage+" "+readable) {
+		t.Fatalf("denied parent became read-only before the exemption was restored:\n%s", joined)
+	}
+}
+
+func TestLinuxSandboxAllowsChildReadPathExemption(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("cannot resolve home: %v", err)
+	}
+	deniedDir, err := os.MkdirTemp(home, ".polly-sandbox-readpath-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(deniedDir) })
+	readable := filepath.Join(deniedDir, "allowed")
+	hidden := filepath.Join(deniedDir, "hidden")
+	if err := os.WriteFile(readable, []byte("allowed-value"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hidden, []byte("hidden-value"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{DenyPaths: []string{deniedDir}, ReadPaths: []string{readable}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "cat \"$1\"; test ! -e \"$2\"", "bash", readable, hidden)
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		skipOrFailBwrapUnavailable(t, err, out)
+	}
+	if strings.TrimSpace(string(out)) != "allowed-value" {
+		t.Fatalf("child read exemption output = %q, want allowed-value", strings.TrimSpace(string(out)))
 	}
 }
 
@@ -408,7 +497,7 @@ func TestLinuxBuildBwrapArgsDenyDNS(t *testing.T) {
 	if strings.Contains(joined, "--unshare-net") {
 		t.Fatal("should not have --unshare-net when AllowNetwork is true")
 	}
-	if !strings.Contains(joined, "--ro-bind /dev/null /etc/resolv.conf") {
+	if !strings.Contains(joined, "--ro-bind /dev/null ") {
 		t.Fatalf("missing resolv.conf masking for DenyDNS:\n%s", joined)
 	}
 }
@@ -430,6 +519,9 @@ func TestLinuxBuildBwrapArgsDenyWrite(t *testing.T) {
 	if strings.Contains(joined, "--bind /tmp /tmp") {
 		t.Fatal("should not have writable /tmp bind when DenyWrite is true")
 	}
+	if !strings.Contains(joined, "--tmpfs /tmp --tmpfs /run") || !strings.Contains(joined, "--remount-ro /tmp") {
+		t.Fatalf("private temp must be remounted read-only under DenyWrite:\n%s", joined)
+	}
 }
 
 func TestLinuxBuildBwrapArgsAllowsNetwork(t *testing.T) {
@@ -449,6 +541,10 @@ func TestLinuxWrapCmd(t *testing.T) {
 	}
 
 	cmd := exec.Command("bash", "-c", "echo hello")
+	origPath, err := resolvedExecutablePath(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := sb.Wrap(cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
@@ -458,10 +554,117 @@ func TestLinuxWrapCmd(t *testing.T) {
 		t.Fatalf("cmd.Path = %q, want bwrap", cmd.Path)
 	}
 
-	// Original args should appear after --
+	defer func() {
+		for _, f := range cmd.ExtraFiles {
+			_ = f.Close()
+		}
+	}()
+
+	// The already-resolved executable should appear after --, and the seccomp
+	// program must be passed as an extra file descriptor.
 	joined := strings.Join(cmd.Args, " ")
-	if !strings.Contains(joined, "-- bash -c echo hello") {
+	if !strings.Contains(joined, "--seccomp 3") {
+		t.Fatalf("cmd.Args missing seccomp fd:\n%s", joined)
+	}
+	if !strings.Contains(joined, "-- "+origPath+" -c echo hello") {
 		t.Fatalf("cmd.Args missing original command after --:\n%s", joined)
+	}
+	if len(cmd.ExtraFiles) != 1 {
+		t.Fatalf("cmd.ExtraFiles = %d, want seccomp filter fd", len(cmd.ExtraFiles))
+	}
+}
+
+func TestLinuxBuildBwrapArgsReexposesTemporaryCommandReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	commandPath := filepath.Join(dir, "tool")
+	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(buildBwrapArgs(Config{}, nil, commandPath), " ")
+	want := "--ro-bind " + dir + " " + dir
+	if !strings.Contains(joined, want) {
+		t.Fatalf("temporary command directory was not re-exposed read-only; want %q in:\n%s", want, joined)
+	}
+	if strings.Contains(joined, "--bind "+dir+" "+dir) {
+		t.Fatalf("temporary command directory became writable:\n%s", joined)
+	}
+}
+
+func TestLinuxSandboxUsesPrivateTmp(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	hostDir := t.TempDir()
+	hostMarker := filepath.Join(hostDir, "host-only")
+	if err := os.WriteFile(hostMarker, []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	createdOnHost := filepath.Join("/tmp", filepath.Base(hostDir)+"-sandbox-created")
+	defer os.Remove(createdOnHost)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-c", "test ! -e "+hostMarker+" && echo private > "+createdOnHost)
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatal(err)
+	}
+	out, err := cmd.CombinedOutput()
+	for _, f := range cmd.ExtraFiles {
+		_ = f.Close()
+	}
+	if err != nil {
+		if strings.Contains(string(out), "Operation not permitted") || strings.Contains(string(out), "Permission denied") {
+			skipOrFailBwrapUnavailable(t, err, out)
+		}
+		t.Fatalf("sandboxed private-temp probe failed: %v (%s)", err, out)
+	}
+	if _, err := os.Stat(createdOnHost); !os.IsNotExist(err) {
+		t.Fatalf("sandbox temp write escaped to host: %v", err)
+	}
+}
+
+func TestLinuxSandboxBlocksUnixSocketsEvenWithNetwork(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "host.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	sb, err := New(Config{AllowNetwork: true, WritablePaths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLinuxUnixSocketClientHelper$")
+	cmd.Env = append(os.Environ(), "POLLY_TEST_UNIX_SOCKET="+socketPath)
+	if err := sb.Wrap(cmd); err != nil {
+		t.Fatal(err)
+	}
+	out, err := cmd.CombinedOutput()
+	for _, f := range cmd.ExtraFiles {
+		_ = f.Close()
+	}
+	if err != nil {
+		if strings.Contains(string(out), "Operation not permitted") || strings.Contains(string(out), "Permission denied") {
+			skipOrFailBwrapUnavailable(t, err, out)
+		}
+		t.Fatalf("Unix-socket escape probe failed: %v (%s)", err, out)
+	}
+}
+
+func TestLinuxUnixSocketClientHelper(t *testing.T) {
+	path := os.Getenv("POLLY_TEST_UNIX_SOCKET")
+	if path == "" {
+		return
+	}
+	conn, err := net.Dial("unix", path)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("connected to host Unix socket from sandbox")
 	}
 }
 
