@@ -28,6 +28,7 @@ func (a *OpenAIAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 
 	if response.JSON.Usage.Valid() {
 		state.SetTokenUsage(int(response.Usage.PromptTokens), int(response.Usage.CompletionTokens))
+		state.SetCachedTokens(int(response.Usage.PromptTokensDetails.CachedTokens))
 	}
 
 	if len(response.Choices) == 0 {
@@ -169,6 +170,7 @@ func (a *OpenAIResponsesAdapter) updateToolCallAtOutputIndex(outputIndex int, st
 func (a *OpenAIResponsesAdapter) applyResponse(resp responses.Response, state streaming.StreamStateInterface) {
 	if resp.Usage.JSON.TotalTokens.Valid() {
 		state.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
+		state.SetCachedTokens(int(resp.Usage.InputTokensDetails.CachedTokens))
 	}
 	state.SetStopReason(MapResponsesStopReason(resp.Status, resp.IncompleteDetails.Reason, len(state.GetToolCalls()) > 0))
 }

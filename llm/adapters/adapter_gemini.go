@@ -36,6 +36,8 @@ func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 			int(resp.UsageMetadata.PromptTokenCount),
 			int(resp.UsageMetadata.CandidatesTokenCount),
 		)
+		// implicit caching: gemini reports what it reused, we never ask for it
+		state.SetCachedTokens(int(resp.UsageMetadata.CachedContentTokenCount))
 	}
 
 	// Process each candidate's parts

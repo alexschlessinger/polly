@@ -128,6 +128,7 @@ func (sc *StreamingCore) Complete() {
 
 	// Set token usage
 	msg.SetTokenUsage(sc.state.InputTokens, sc.state.OutputTokens)
+	msg.SetCachedTokens(sc.state.CachedTokens)
 
 	// Let the adapter enrich with provider-specific metadata
 	if sc.adapter != nil {
@@ -154,6 +155,7 @@ func (sc *StreamingCore) CompleteWithContent(content string) {
 
 	// Set token usage
 	msg.SetTokenUsage(sc.state.InputTokens, sc.state.OutputTokens)
+	msg.SetCachedTokens(sc.state.CachedTokens)
 
 	// Let the adapter enrich if needed
 	if sc.adapter != nil {
@@ -170,6 +172,11 @@ func (sc *StreamingCore) CompleteWithContent(content string) {
 // SetTokenUsage updates token counts in the state
 func (sc *StreamingCore) SetTokenUsage(input, output int) {
 	sc.state.SetTokenUsage(input, output)
+}
+
+// SetCachedTokens records how much of the input the provider served from cache.
+func (sc *StreamingCore) SetCachedTokens(cached int) {
+	sc.state.SetCachedTokens(cached)
 }
 
 // SetStopReason updates the stop reason in the state

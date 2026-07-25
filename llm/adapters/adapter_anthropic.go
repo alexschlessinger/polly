@@ -37,6 +37,7 @@ func (a *AnthropicAdapter) ProcessChunk(chunk any, state streaming.StreamStateIn
 		// Message started - capture input tokens
 		msgStart := event.AsMessageStart()
 		state.SetTokenUsage(int(msgStart.Message.Usage.InputTokens), state.GetOutputTokens())
+		state.SetCachedTokens(int(msgStart.Message.Usage.CacheReadInputTokens))
 
 	case string(constant.ValueOf[constant.ContentBlockStart]()):
 		a.handleContentBlockStart(event, state)

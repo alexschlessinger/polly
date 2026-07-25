@@ -153,6 +153,13 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 			{
 				Type: "text",
 				Text: systemPrompt,
+				// anthropic is the one provider that caches nothing unless
+				// asked. the system prompt is the safest breakpoint there is:
+				// identical on every turn and, for an agent loop, across every
+				// conversation it runs. below the model's minimum prefix the
+				// marker is ignored rather than rejected, so this cannot fail
+				// closed -- it either saves money or does nothing.
+				CacheControl: anthropic.NewCacheControlEphemeralParam(),
 			},
 		}
 	}
@@ -286,6 +293,7 @@ func (a *AnthropicClient) processNonStreaming(ctx context.Context, params anthro
 
 	// Set token usage
 	streamCore.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
+	streamCore.SetCachedTokens(int(resp.Usage.CacheReadInputTokens))
 
 	// Handle structured output if needed
 	if req.ResponseSchema != nil {

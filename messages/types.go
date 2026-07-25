@@ -90,9 +90,38 @@ const (
 const (
 	MetadataKeyInputTokens  = "input_tokens"
 	MetadataKeyOutputTokens = "output_tokens"
+	MetadataKeyCachedTokens = "cached_tokens"
 	MetadataKeyIsError      = "is_error"
 	MetadataKeyError        = "error"
 )
+
+// GetCachedTokens returns how many of the input tokens were served from the
+// provider's prompt cache, or 0 if the provider did not say.
+//
+// It is a subset of GetInputTokens, not an addition to it, and it is billed at a
+// discount rather than free. Worth surfacing because caching is invisible
+// otherwise: a prefix that stopped being byte-stable still reports exactly the
+// same input count, at several times the price.
+func (m *ChatMessage) GetCachedTokens() int {
+	if m.Metadata == nil {
+		return 0
+	}
+	if v, ok := m.Metadata[MetadataKeyCachedTokens].(int); ok {
+		return v
+	}
+	if v, ok := m.Metadata[MetadataKeyCachedTokens].(int64); ok {
+		return int(v)
+	}
+	return 0
+}
+
+// SetCachedTokens records the cache-read portion of this message's input.
+func (m *ChatMessage) SetCachedTokens(cached int) {
+	if m.Metadata == nil {
+		m.Metadata = make(map[string]any)
+	}
+	m.Metadata[MetadataKeyCachedTokens] = cached
+}
 
 // GetInputTokens returns the input token count from metadata, or 0 if not set
 func (m *ChatMessage) GetInputTokens() int {

@@ -15,6 +15,7 @@ type StreamStateInterface interface {
 	AppendReasoning(reasoning string)
 	AddToolCall(toolCall messages.ChatMessageToolCall)
 	SetTokenUsage(input, output int)
+	SetCachedTokens(cached int)
 	SetStopReason(reason messages.StopReason)
 	SetMetadata(key string, value any)
 	UpdateToolCallAtIndex(index int, updater func(*messages.ChatMessageToolCall))
@@ -25,6 +26,7 @@ type StreamStateInterface interface {
 	GetToolCalls() []messages.ChatMessageToolCall
 	GetInputTokens() int
 	GetOutputTokens() int
+	GetCachedTokens() int
 }
 
 // StreamState holds the common state during streaming for all providers.
@@ -37,6 +39,7 @@ type StreamState struct {
 	StopReason       messages.StopReason            // Reason for completion
 	InputTokens      int                            // Token count for prompt
 	OutputTokens     int                            // Token count for completion
+	CachedTokens     int                            // Portion of InputTokens served from the provider's prompt cache
 
 	// Provider-specific metadata storage
 	// Used for things like Anthropic thinking blocks, Gemini signatures, etc.
@@ -81,6 +84,20 @@ func (s *StreamState) SetTokenUsage(input, output int) {
 	defer s.mu.Unlock()
 	s.InputTokens = input
 	s.OutputTokens = output
+}
+
+// SetCachedTokens safely records the cache-read portion of the input.
+func (s *StreamState) SetCachedTokens(cached int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.CachedTokens = cached
+}
+
+// GetCachedTokens safely returns the cache-read portion of the input.
+func (s *StreamState) GetCachedTokens() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.CachedTokens
 }
 
 // SetStopReason safely sets the stop reason
@@ -168,6 +185,7 @@ func (s *StreamState) Clone() *StreamState {
 		StopReason:       s.StopReason,
 		InputTokens:      s.InputTokens,
 		OutputTokens:     s.OutputTokens,
+		CachedTokens:     s.CachedTokens,
 		ToolCalls:        make([]messages.ChatMessageToolCall, len(s.ToolCalls)),
 		Metadata:         make(map[string]any),
 	}

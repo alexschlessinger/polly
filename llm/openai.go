@@ -154,6 +154,10 @@ func (o OpenAIClient) handleNonStreamingChatCompletion(ctx context.Context, para
 
 	if resp.JSON.Usage.Valid() {
 		streamCore.SetTokenUsage(int(resp.Usage.PromptTokens), int(resp.Usage.CompletionTokens))
+		// a subset of PromptTokens, billed cheaper. openai caches automatically
+		// for any prefix over its minimum, so this number is the only evidence
+		// that the prefix really is byte-stable from turn to turn.
+		streamCore.SetCachedTokens(int(resp.Usage.PromptTokensDetails.CachedTokens))
 	}
 
 	streamCore.Complete()
@@ -230,6 +234,7 @@ func (o OpenAIClient) handleNonStreamingResponse(ctx context.Context, params res
 
 	if resp.Usage.JSON.TotalTokens.Valid() {
 		streamCore.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
+		streamCore.SetCachedTokens(int(resp.Usage.InputTokensDetails.CachedTokens))
 	}
 	streamCore.SetStopReason(adapters.MapResponsesStopReason(resp.Status, resp.IncompleteDetails.Reason, len(streamCore.GetState().GetToolCalls()) > 0))
 
