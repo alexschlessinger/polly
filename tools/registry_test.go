@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/schema"
@@ -50,5 +51,33 @@ func TestRegistryRemove(t *testing.T) {
 	_, exists = registry.Get("removable")
 	if exists {
 		t.Error("Expected tool to not exist after removal")
+	}
+}
+
+// Every provider's prompt cache keys on an exact request prefix, and the agent
+// loop rebuilds the tool list on every iteration. Ranging over the map here used
+// to ship a differently ordered tool block each turn, so the prefix never
+// repeated and the cache could not hit once in a conversation.
+func TestToolOrderIsStableAcrossCalls(t *testing.T) {
+	r := NewToolRegistry(nil)
+	for _, name := range []string{"search_tree", "read_file", "git_log", "finish", "alpha"} {
+		r.Register(&Func{Name: name, Desc: name})
+	}
+	want := []string{"alpha", "finish", "git_log", "read_file", "search_tree"}
+	for i := range 20 {
+		var got []string
+		for _, tool := range r.All() {
+			got = append(got, tool.GetName())
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("call %d: tool order %v, want %v", i, got, want)
+		}
+		var schemas []string
+		for _, s := range r.GetSchemas() {
+			schemas = append(schemas, s.Title())
+		}
+		if !slices.Equal(schemas, want) {
+			t.Fatalf("call %d: schema order %v, want %v", i, schemas, want)
+		}
 	}
 }

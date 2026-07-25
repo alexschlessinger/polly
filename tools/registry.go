@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -288,32 +289,48 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 	}
 }
 
-// All returns all tools in the registry
+// allowedNamesLocked is every registered tool the current policy permits, in a
+// stable order.
+//
+// The order matters well beyond tidiness. Every provider's prompt cache keys on
+// an exact request prefix, and the serialised tool list is part of that prefix.
+// The agent loop rebuilds Tools on every iteration, so ranging over the map here
+// shipped a differently ordered tool block each turn: the prefix never repeated,
+// and the cache could not hit once in a conversation, however stable the
+// messages were. Sorting is the whole fix.
+func (r *ToolRegistry) allowedNamesLocked() []string {
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		if r.isToolAllowedLocked(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// All returns all tools in the registry, ordered by name.
 func (r *ToolRegistry) All() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	tools := make([]Tool, 0, len(r.tools))
-	for name, tool := range r.tools {
-		if !r.isToolAllowedLocked(name) {
-			continue
-		}
-		tools = append(tools, tool)
+	names := r.allowedNamesLocked()
+	tools := make([]Tool, 0, len(names))
+	for _, name := range names {
+		tools = append(tools, r.tools[name])
 	}
 	return tools
 }
 
-// GetSchemas returns all tool schemas
+// GetSchemas returns all tool schemas, ordered by tool name.
 func (r *ToolRegistry) GetSchemas() []*schema.ToolSchema {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	schemas := make([]*schema.ToolSchema, 0, len(r.tools))
-	for name, tool := range r.tools {
-		if !r.isToolAllowedLocked(name) {
-			continue
-		}
-		schemas = append(schemas, tool.GetSchema())
+	names := r.allowedNamesLocked()
+	schemas := make([]*schema.ToolSchema, 0, len(names))
+	for _, name := range names {
+		schemas = append(schemas, r.tools[name].GetSchema())
 	}
 	return schemas
 }
