@@ -186,7 +186,7 @@ func TestApprovalPromptFitsNarrowTerminal(t *testing.T) {
 	if rw.StringWidth(plain) > 20 {
 		t.Fatalf("approval width = %d, want <= 20: %q", rw.StringWidth(plain), plain)
 	}
-	if !strings.Contains(plain, "[y/N/a]") {
+	if !strings.Contains(plain, "[y/N/a/v]") {
 		t.Fatalf("narrow approval lost its actions: %q", plain)
 	}
 }

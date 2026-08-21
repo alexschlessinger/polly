@@ -326,18 +326,18 @@ func TestHandleEventUpDownLineThenHistory(t *testing.T) {
 }
 
 func TestToolErrorLineRendering(t *testing.T) {
-	line := toolErrorLine("bash", "1.4s")
+	line := toolErrorLine("bash", "1.4s", "exit 1")
 
 	if strings.Contains(line, "\n") {
 		t.Fatalf("error line should not wrap into multiple rows: %q", line)
 	}
-	for _, want := range []string{"bash", "1.4s"} {
+	for _, want := range []string{"bash", "1.4s", "exit 1"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("error line %q missing %q", line, want)
 		}
 	}
-	// Display is only ✗, time, and command — no tool output and no exit code.
-	for _, unwanted := range []string{"line one", "fatal: the real error", "exit 1"} {
+	// Display is only ✗, time, command, and exit code — no tool output.
+	for _, unwanted := range []string{"line one", "fatal: the real error"} {
 		if strings.Contains(line, unwanted) {
 			t.Errorf("error line should not include %q: %q", unwanted, line)
 		}
@@ -391,7 +391,7 @@ func TestActiveToolLifecycle(t *testing.T) {
 	if len(m.activeTools) != 0 {
 		t.Fatalf("active tools should be empty, got %d", len(m.activeTools))
 	}
-	m.transcript[idx] = toolOKLine("bash sleep 30", "30.0s")
+	m.transcript[idx] = toolOKLine("bash sleep 30", "30.0s", "")
 	if len(m.transcript) != 1 || !strings.Contains(m.transcript[0], "✓") {
 		t.Fatalf("finalized transcript = %v", m.transcript)
 	}

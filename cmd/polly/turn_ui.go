@@ -16,7 +16,9 @@ import (
 type TurnUI interface {
 	Start()
 	Stop()
-	ShowThinking(tokens int)
+	// ShowThinking reports one streamed reasoning chunk; chars is that chunk's
+	// text length, so implementations accumulate for a running total.
+	ShowThinking(chars int)
 	AppendAssistantText(content string)
 	AppendToolStart(calls []messages.ChatMessageToolCall)
 	ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool
@@ -60,7 +62,7 @@ func (ui *lineTurnUI) Start() {
 }
 func (ui *lineTurnUI) Stop() {}
 
-func (ui *lineTurnUI) ShowThinking(tokens int) {}
+func (ui *lineTurnUI) ShowThinking(chars int) {}
 
 func (ui *lineTurnUI) AppendAssistantText(content string) {
 	if ui.config.SchemaPath != "" {
@@ -118,11 +120,11 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	dur := formatElapsed(duration)
 	if err != nil {
 		// Tool output/error text is intentionally omitted; the model still
-		// receives the full output. The ✗ alone marks the failure.
-		fmt.Fprintf(ui.errWriter, "  ✗ %s %s\n", dur, label)
+		// receives the full output. The ✗ and exit code alone mark the failure.
+		fmt.Fprintf(ui.errWriter, "  ✗ %s\n", joinMeta(dur+" "+label, toolFailureMeta(err)))
 		return
 	}
-	fmt.Fprintf(ui.errWriter, "  ✓ %s %s\n", dur, label)
+	fmt.Fprintf(ui.errWriter, "  ✓ %s\n", joinMeta(dur+" "+label, resultLineMeta(result)))
 }
 
 func (ui *lineTurnUI) AppendWarning(text string) {
@@ -145,4 +147,13 @@ func (ui *lineTurnUI) FinishTextTurn() {
 
 func trimLeadingResponseNewlines(content string) string {
 	return strings.TrimLeft(content, "\r\n")
+}
+
+// joinMeta appends an optional annotation to a tool line body with the shared
+// "·" separator.
+func joinMeta(body, meta string) string {
+	if meta == "" {
+		return body
+	}
+	return body + " · " + meta
 }

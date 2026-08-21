@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -200,6 +203,79 @@ func summarizeBashCommand(args tools.Args) string {
 	}
 
 	return truncate(first, 120)
+}
+
+// resultLineMeta summarizes how much output a successful tool handed the
+// model, as a human count of lines. Empty output earns no annotation rather
+// than a noisy "0 lines".
+func resultLineMeta(result string) string {
+	result = strings.TrimRight(result, "\n")
+	if strings.TrimSpace(result) == "" {
+		return ""
+	}
+	if n := strings.Count(result, "\n") + 1; n != 1 {
+		return fmt.Sprintf("%d lines", n)
+	}
+	return "1 line"
+}
+
+// toolFailureMeta extracts a compact descriptor from a failed tool call: the
+// process exit code when the error chain carries one (bash and shell tools),
+// nothing otherwise. Deliberately no output text — the ✗ line stays metadata
+// only, and the model still receives the full error.
+func toolFailureMeta(err error) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() >= 0 {
+		return fmt.Sprintf("exit %d", exitErr.ExitCode())
+	}
+	return ""
+}
+
+// approvalViewMaxLines caps the [v]iew block so a giant generated script can't
+// scroll the approval prompt's context away.
+const approvalViewMaxLines = 24
+
+// expandToolCall renders a tool call's full arguments for the approval [v]iew
+// key: the verbatim command for bash, pretty-printed JSON with sensitive
+// values redacted for everything else. Multi-line plain text, capped at
+// approvalViewMaxLines; the caller owns styling.
+func expandToolCall(tc messages.ChatMessageToolCall) string {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(tc.Arguments), &raw); err != nil {
+		// Malformed JSON would be executed as-is by the tool layer's own error
+		// path; show the payload rather than pretend there are no arguments.
+		return capLines(tc.Arguments, approvalViewMaxLines)
+	}
+	if tc.Name == "bash" {
+		if cmd, ok := raw["command"].(string); ok && strings.TrimSpace(cmd) != "" {
+			return capLines(strings.TrimRight(cmd, "\n"), approvalViewMaxLines)
+		}
+	}
+	for key := range raw {
+		if sensitiveToolArgKey(key) {
+			raw[key] = "<redacted>"
+		}
+	}
+	// Encoder rather than MarshalIndent: the latter HTML-escapes angle
+	// brackets, garbling the redaction marker into unicode escapes.
+	var pretty bytes.Buffer
+	enc := json.NewEncoder(&pretty)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(raw); err != nil {
+		return capLines(tc.Arguments, approvalViewMaxLines)
+	}
+	return capLines(strings.TrimRight(pretty.String(), "\n"), approvalViewMaxLines)
+}
+
+// capLines bounds s to max lines, noting how much was elided.
+func capLines(s string, max int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= max {
+		return s
+	}
+	kept := lines[:max]
+	return strings.Join(kept, "\n") + fmt.Sprintf("\n… (+%d more lines)", len(lines)-max)
 }
 
 func truncate(s string, max int) string {

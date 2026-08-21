@@ -405,6 +405,26 @@ type replModel struct {
 	lastElapsed time.Duration
 	lastOutcome turnOutcome
 
+	// thinkingChars accumulates the streamed reasoning text length this turn;
+	// the status row shows a ~chars/4 token estimate while state is thinking.
+	thinkingChars int
+
+	// focusKnown/focused mirror the terminal's focus reports (tcell
+	// EnableFocus). Desktop notifications fire only when the terminal has
+	// explicitly said the user is elsewhere; with no reports they stay silent.
+	focusKnown bool
+	focused    bool
+
+	// notices queues desktop-notification bodies. Turn goroutines push under
+	// mu; the render loop drains and emits on the event-loop goroutine so no
+	// turn goroutine ever writes to the terminal.
+	notices []string
+
+	// streamCursorFrame is the styled caret currently appended to the
+	// streaming assistant block ("" when hidden). Tracked like the breathing
+	// tool arrows so a pulse flip invalidates the visual cache.
+	streamCursorFrame string
+
 	// currentPrompt identifies the user turn in flight. Failed/canceled turns
 	// retain it for /retry; retryingNext tells startTurn to reuse the already
 	// persisted user message instead of appending a duplicate.
@@ -433,6 +453,9 @@ type approvalState struct {
 	index int
 	out   []bool
 	reply chan []bool
+	// viewed marks that [v]iew already expanded the current call's arguments,
+	// so holding v can't spam the transcript. Reset as index advances.
+	viewed bool
 }
 
 func newReplModel() *replModel {
@@ -587,12 +610,19 @@ func (m *replModel) statusActivity() (raw, rendered string) {
 		if m.canceling {
 			word = "canceling"
 		}
+		meta := m.busyStatusMeta()
 		if spinning {
 			raw = string(glyph) + " " + word
 			rendered = styled(string(glyph), "accent", "bold") + " " + styled(word, "active", "bold")
-			return raw, rendered
+		} else {
+			raw = word
+			rendered = styled(word, "active", "bold")
 		}
-		return word, styled(word, "active", "bold")
+		if meta != "" {
+			raw += " · " + meta
+			rendered += " " + styled("· "+meta, "muted", "")
+		}
+		return raw, rendered
 	}
 
 	switch m.lastOutcome {
@@ -611,6 +641,30 @@ func (m *replModel) statusActivity() (raw, rendered string) {
 		rendered = styled(raw, "muted", "bold")
 	}
 	return raw, rendered
+}
+
+// thinkingCharsPerToken is the standard rough chars→tokens estimate used for
+// the live thinking counter; the value is presented with a "~".
+const thinkingCharsPerToken = 4
+
+// busyStatusMeta is the muted trailer after the busy state word: a thinking
+// size estimate while reasoning streams, then the live turn elapsed time.
+// Caller must hold m.mu.
+func (m *replModel) busyStatusMeta() string {
+	meta := ""
+	if m.state == turnStateThinking && !m.canceling {
+		if est := m.thinkingChars / thinkingCharsPerToken; est > 0 {
+			meta = "~" + humanizeTokens(est) + " tok"
+		}
+	}
+	if !m.turnStarted.IsZero() {
+		elapsed := formatElapsed(time.Since(m.turnStarted))
+		if meta != "" {
+			return meta + " · " + elapsed
+		}
+		return elapsed
+	}
+	return meta
 }
 
 func compactQueuePreview(text string) string {
@@ -641,6 +695,79 @@ func formatElapsed(d time.Duration) string {
 	m := int(d / time.Minute)
 	s := int((d % time.Minute) / time.Second)
 	return fmt.Sprintf("%dm%02ds", m, s)
+}
+
+// frameTitle is the desired terminal window title: app · context, then the
+// live turn state so progress is readable from another window or the tab bar.
+// Caller must hold m.mu.
+func (m *replModel) frameTitle() string {
+	title := "polly"
+	if m.contextName != "" && m.contextName != "-" {
+		title += " · " + m.contextName
+	}
+	switch {
+	case m.approval != nil:
+		return title + " — approval needed"
+	case m.busy:
+		s := title + " — " + m.busyLabel()
+		if !m.turnStarted.IsZero() {
+			s += " · " + coarseElapsed(time.Since(m.turnStarted))
+		}
+		return s
+	}
+	switch m.lastOutcome {
+	case turnOutcomeDone:
+		return title + " — done · " + formatElapsed(m.lastElapsed)
+	case turnOutcomeFailed:
+		return title + " — failed"
+	case turnOutcomeCanceled:
+		return title + " — canceled"
+	}
+	return title
+}
+
+// frameProgress is the desired taskbar progress payload (see terminalFX): an
+// indeterminate bar while a turn runs, an error badge while a failure is the
+// settled outcome, nothing otherwise. Caller must hold m.mu.
+func (m *replModel) frameProgress() string {
+	if m.busy {
+		return progressBusy
+	}
+	if m.lastOutcome == turnOutcomeFailed {
+		return progressFail
+	}
+	return progressNone
+}
+
+// coarseElapsed formats a duration at whole-second granularity for surfaces
+// that shouldn't churn ten times a second (window title, notifications).
+func coarseElapsed(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return formatElapsed(d)
+}
+
+// notifyMinTurn is the shortest turn whose completion is worth a desktop
+// notification; anything quicker, the user never had time to look away.
+const notifyMinTurn = 10 * time.Second
+
+// pushNotice queues a desktop-notification body. Caller must hold m.mu.
+func (m *replModel) pushNotice(body string) {
+	m.notices = append(m.notices, body)
+}
+
+// takeNotices drains queued notifications, returning them only when the
+// terminal has explicitly reported itself unfocused — a watching user needs no
+// ping. Drained-but-dropped notices are gone for good; going unfocused later
+// must not replay stale news. Caller must hold m.mu.
+func (m *replModel) takeNotices() []string {
+	out := m.notices
+	m.notices = nil
+	if !m.focusKnown || m.focused {
+		return nil
+	}
+	return out
 }
 
 // invalidateFlat marks the flattened-transcript cache stale. Caller must hold
@@ -939,6 +1066,32 @@ func runningToolLine(label string, elapsed time.Duration) string {
 		styled("· "+formatElapsed(elapsed), "muted", "")
 }
 
+// streamCursorGlyph is the caret appended to the streaming assistant block —
+// the classic "the model is typing here" marker.
+const streamCursorGlyph = "▍"
+
+// streamCursorNow returns the styled caret for the current pulse phase, or ""
+// when no assistant text is actively streaming. It breathes on the same
+// bold↔dim cycle as the running-tool arrows. Caller must hold m.mu.
+func (m *replModel) streamCursorNow() string {
+	if !m.busy || m.canceling || m.state != turnStateStreaming || m.turnStarted.IsZero() {
+		return ""
+	}
+	mod := arrowPulse[int(time.Since(m.turnStarted)/arrowPulsePeriod)%len(arrowPulse)]
+	return styled(streamCursorGlyph, "accent", mod)
+}
+
+// refreshStreamCursor recomputes the caret frame, invalidating the visual
+// cache only when it changes — the caret is display-only chrome and never
+// enters the transcript. Caller must hold m.mu.
+func (m *replModel) refreshStreamCursor() {
+	next := m.streamCursorNow()
+	if next != m.streamCursorFrame {
+		m.streamCursorFrame = next
+		m.invalidateVisual()
+	}
+}
+
 // refreshActiveTools rewrites each running tool's transcript entry with the
 // current breathing-arrow frame and live elapsed time. Caller must hold m.mu.
 func (m *replModel) refreshActiveTools() {
@@ -999,8 +1152,11 @@ func (m *replModel) settleActiveTools(reason string) {
 // for a completed tool call. They return the styled string (rather than
 // appending) so AppendToolEnd can freeze it over the running line in place.
 
-func toolOKLine(label, duration string) string {
+func toolOKLine(label, duration, meta string) string {
 	body := strings.TrimSpace(duration + " " + label)
+	if meta != "" {
+		body += " · " + meta
+	}
 	return "  " + styled("✓", "ok", "bold") + " " + styled(body, "muted", "")
 }
 
@@ -1009,12 +1165,15 @@ func toolDeniedLine(label string) string {
 }
 
 // toolErrorLine renders a failed tool call as a red ✗ plus the muted metadata
-// (timing · command) — the same shape as a success line. The tool's own
-// output/error text and exit code are deliberately not shown; the model still
+// (timing · command · exit code) — the same shape as a success line. The
+// tool's own output/error text is deliberately not shown; the model still
 // receives the full output, this is display only.
-func toolErrorLine(label, duration string) string {
-	meta := strings.TrimSpace(duration + " " + label)
-	return "  " + styled("✗", "err", "bold") + " " + styled(meta, "muted", "")
+func toolErrorLine(label, duration, meta string) string {
+	body := strings.TrimSpace(duration + " " + label)
+	if meta != "" {
+		body += " · " + meta
+	}
+	return "  " + styled("✗", "err", "bold") + " " + styled(body, "muted", "")
 }
 
 func (m *replModel) appendNoticeLine(text string) {
@@ -1313,6 +1472,7 @@ func (m *replModel) beginTurn(prompt string) {
 	m.canceling = false
 	m.state = turnStateWaiting
 	m.runningTools = 0
+	m.thinkingChars = 0
 	m.turnStarted = time.Now()
 	m.currentPrompt = prompt
 	m.turnHasOutput = false
@@ -1448,15 +1608,37 @@ func (m *replModel) handleApprovalAnswer(answer byte) bool {
 	case 'y':
 		a.out[a.index] = true
 		a.index++
+		a.viewed = false
 	case 'n':
 		a.out[a.index] = false
 		a.index++
+		a.viewed = false
 	}
 	if a.index >= len(a.out) {
 		m.finishApproval()
 		return true
 	}
 	return false
+}
+
+// showApprovalArgs expands the current approval candidate's full arguments
+// into the transcript as a gutter block, so [v]iew survives scrollback and the
+// prompt stays put. No-op when already expanded for this call. Caller must
+// hold m.mu.
+func (m *replModel) showApprovalArgs() {
+	a := m.approval
+	if a == nil || a.viewed {
+		return
+	}
+	a.viewed = true
+	call := a.calls[a.index]
+	var b strings.Builder
+	b.WriteString("  " + styled("╭─ "+call.Name, "muted", ""))
+	for _, line := range strings.Split(expandToolCall(call), "\n") {
+		b.WriteString("\n  " + styled("│ ", "muted", "") + styled(line, "code", ""))
+	}
+	m.appendLine(b.String())
+	m.followBottom = true
 }
 
 func (m *replModel) finishApproval() {
@@ -1595,9 +1777,9 @@ func (m *replModel) approvalPrompt(width int) string {
 	if len(m.approval.calls) > 1 {
 		prefix += fmt.Sprintf("(%d/%d) ", m.approval.index+1, len(m.approval.calls))
 	}
-	actions := "[y]es [N]o [a]ll"
-	if width > 0 && width < 40 {
-		actions = "[y/N/a]"
+	actions := "[y]es [N]o [a]ll [v]iew"
+	if width > 0 && width < 46 {
+		actions = "[y/N/a/v]"
 	}
 	suffix := "? " + actions
 	label := toolLabel(call)
@@ -1733,6 +1915,10 @@ type managedREPL struct {
 	quit       chan struct{}
 	pending    chan string
 	turnCancel context.CancelFunc
+
+	// fx drives window-level terminal effects (title, taskbar progress,
+	// desktop notifications); nil outside a managed-screen Run (unit tests).
+	fx *terminalFX
 
 	// histFile is the append handle for persistent input history; nil when
 	// history couldn't be opened (best-effort — never fatal).
@@ -1970,10 +2156,21 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	// mouse UI beyond scrollback, and consuming motion/drag events prevents the
 	// terminal's native selection and copy behavior. PgUp/PgDn remain available.
 	ui.DefaultBackend.Screen.DisableMouse()
+	// Focus reports gate desktop notifications (notify only when the user is
+	// known to be elsewhere); terminals without focus reporting simply never
+	// flip the gate open.
+	ui.DefaultBackend.Screen.EnableFocus()
+	r.fx = newTerminalFX(ui.DefaultBackend.Screen)
 	// Restore the terminal exactly once, whether we return normally or a
-	// signal short-circuits to os.Exit (which skips deferred calls).
+	// signal short-circuits to os.Exit (which skips deferred calls). Terminal
+	// effects clear first: the progress OSC must go out while the screen is up.
 	var closeOnce sync.Once
-	closeUI := func() { closeOnce.Do(ui.Close) }
+	closeUI := func() {
+		closeOnce.Do(func() {
+			r.fx.shutdown()
+			ui.Close()
+		})
+	}
 	setBeforeExit(closeUI)
 	defer func() {
 		setBeforeExit(nil)
@@ -2196,6 +2393,20 @@ func (r *managedREPL) endTurn(err error) {
 		m.lastOutcome = turnOutcomeFailed
 		m.retryPrompt = m.currentPrompt
 		m.queuePaused = len(m.queue) > 0 && !resumeQueue
+	}
+	// A long turn settling is the "walk away and get pinged" moment; a quick
+	// one never gave the user time to leave. Cancellation is user-initiated,
+	// so only done/failed notify.
+	if m.lastElapsed >= notifyMinTurn &&
+		(m.lastOutcome == turnOutcomeDone || m.lastOutcome == turnOutcomeFailed) {
+		body := "done in " + coarseElapsed(m.lastElapsed)
+		if m.lastOutcome == turnOutcomeFailed {
+			body = "failed after " + coarseElapsed(m.lastElapsed)
+		}
+		if preview := compactQueuePreview(m.currentPrompt); preview != "" {
+			body += " — " + preview
+		}
+		m.pushNotice(body)
 	}
 	m.currentAssistant = -1
 	m.resetAssistantStream()
@@ -2458,6 +2669,7 @@ func (r *managedREPL) render() {
 
 	r.model.mu.Lock()
 	r.model.refreshActiveTools()
+	r.model.refreshStreamCursor()
 	inputMaxRows := maxInputRows
 	if h-statusRows > 1 {
 		inputMaxRows = min(inputMaxRows, h-statusRows-1)
@@ -2488,6 +2700,9 @@ func (r *managedREPL) render() {
 		r.model.scrollAnchor = topRow
 	}
 	status := r.model.statusRow(w)
+	title := r.model.frameTitle()
+	progress := r.model.frameProgress()
+	notices := r.model.takeNotices()
 	r.model.mu.Unlock()
 
 	r.transcriptW.Rows = transcriptRows
@@ -2501,6 +2716,16 @@ func (r *managedREPL) render() {
 	ui.Clear()
 	r.placeCursor(editable, curCol, transcriptHeight+curRow, w)
 	ui.Render(r.rootFlex)
+
+	// Window-level effects go out after the frame, on this same goroutine, so
+	// their escapes serialize with tcell's own writes.
+	if r.fx != nil {
+		r.fx.setTitle(title)
+		r.fx.setProgress(progress)
+		for _, body := range notices {
+			r.fx.notify("polly", body)
+		}
+	}
 }
 
 // placeCursor positions (or hides) the hardware terminal cursor on the input
@@ -2651,6 +2876,7 @@ func (m *replModel) transcriptDisplayBlocks() []string {
 			if entry == "" {
 				continue
 			}
+			entry += m.streamCursorFrame
 		}
 		blocks = append(blocks, entry)
 	}
@@ -2756,6 +2982,17 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		terminalWidth = 80
 	}
 
+	// Focus reports update notification gating and are never input, whatever
+	// mode (paste, search, approval) is active.
+	switch e.ID {
+	case focusGainedID:
+		m.focusKnown, m.focused = true, true
+		return false
+	case focusLostID:
+		m.focusKnown, m.focused = true, false
+		return false
+	}
+
 	// Scroll keys work in every mode (idle, busy, approval) so the user
 	// can review history without interrupting the agent.
 	switch e.ID {
@@ -2817,6 +3054,8 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			m.handleApprovalAnswer('n')
 		case "a", "A":
 			m.handleApprovalAnswer('a')
+		case "v", "V":
+			m.showApprovalArgs()
 		}
 		return false
 	}
@@ -3026,13 +3265,14 @@ func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {
 	return make([]bool, len(calls))
 }
 
-func (t *gotuiTurnUI) ShowThinking(tokens int) {
+func (t *gotuiTurnUI) ShowThinking(chars int) {
 	t.repl.model.mu.Lock()
 	if !t.acceptingLocked() {
 		t.repl.model.mu.Unlock()
 		return
 	}
 	t.repl.model.state = turnStateThinking
+	t.repl.model.thinkingChars += chars
 	t.repl.model.mu.Unlock()
 }
 
@@ -3096,6 +3336,11 @@ func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 		return denyToolCalls(calls)
 	}
 	t.repl.model.approval = &approvalState{calls: calls, reply: reply}
+	label := toolLabel(calls[0])
+	if len(calls) > 1 {
+		label += fmt.Sprintf(" +%d more", len(calls)-1)
+	}
+	t.repl.model.pushNotice("approval needed: " + truncate(label, 80))
 	t.repl.model.mu.Unlock()
 	results, ok := <-reply
 	if !ok {
@@ -3131,9 +3376,9 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	case toolWasDenied(result):
 		final = toolDeniedLine(label)
 	case err != nil:
-		final = toolErrorLine(label, formatElapsed(duration))
+		final = toolErrorLine(label, formatElapsed(duration), toolFailureMeta(err))
 	default:
-		final = toolOKLine(label, formatElapsed(duration))
+		final = toolOKLine(label, formatElapsed(duration), resultLineMeta(result))
 	}
 	// Freeze the final line over the running (breathing) one in place, so a tool
 	// is a single transcript line from start to finish. Falls back to appending

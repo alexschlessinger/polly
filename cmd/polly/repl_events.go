@@ -18,6 +18,13 @@ const (
 	pasteEndID   = "<PasteEnd>"
 )
 
+// Focus reports (tcell EnableFocus) gate desktop notifications: polly only
+// notifies when the terminal has told us the user is looking elsewhere.
+const (
+	focusGainedID = "<FocusGained>"
+	focusLostID   = "<FocusLost>"
+)
+
 // tcellKeyMap mirrors gotui's internal key map (events.go) so the IDs the REPL
 // switches on ("<Enter>", "<C-w>", "<Left>", …) are identical to what
 // ui.PollEvents would have produced.
@@ -83,6 +90,12 @@ func convertTcellEvent(ev tcell.Event) (ui.Event, bool) {
 		id := pasteEndID
 		if e.Start() {
 			id = pasteStartID
+		}
+		return ui.Event{Type: ui.KeyboardEvent, ID: id}, true
+	case *tcell.EventFocus:
+		id := focusLostID
+		if e.Focused {
+			id = focusGainedID
 		}
 		return ui.Event{Type: ui.KeyboardEvent, ID: id}, true
 	default:

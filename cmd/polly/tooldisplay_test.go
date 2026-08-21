@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -69,4 +72,76 @@ func TestSummarizeToolArgsPreservesSpecializedSummaries(t *testing.T) {
 // generic summarizer tests with unrelated message fields.
 func messagesToolCall(name, arguments string) messages.ChatMessageToolCall {
 	return messages.ChatMessageToolCall{Name: name, Arguments: arguments}
+}
+
+func TestResultLineMeta(t *testing.T) {
+	cases := []struct {
+		result string
+		want   string
+	}{
+		{"", ""},
+		{"   \n  \n", ""},
+		{"single", "1 line"},
+		{"single trailing newline\n", "1 line"},
+		{"a\nb\nc", "3 lines"},
+		{"a\nb\nc\n", "3 lines"},
+	}
+	for _, tc := range cases {
+		if got := resultLineMeta(tc.result); got != tc.want {
+			t.Errorf("resultLineMeta(%q) = %q, want %q", tc.result, got, tc.want)
+		}
+	}
+}
+
+func TestToolFailureMetaExtractsExitCode(t *testing.T) {
+	cmd := exec.Command("bash", "-c", "exit 3")
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("expected the probe command to fail")
+	}
+	// Match bash.go's wrapping so the chain is representative.
+	wrapped := fmt.Errorf("command failed: %w (output: boom)", err)
+	if got := toolFailureMeta(wrapped); got != "exit 3" {
+		t.Fatalf("toolFailureMeta = %q, want %q", got, "exit 3")
+	}
+	// Non-exec errors (MCP failures, timeouts) add nothing.
+	if got := toolFailureMeta(fmt.Errorf("connection reset")); got != "" {
+		t.Fatalf("non-exec error meta = %q, want empty", got)
+	}
+}
+
+func TestExpandToolCallShowsBashCommandVerbatim(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{"command": "go test ./... &&\ngofmt -l .\n"})
+	got := expandToolCall(messages.ChatMessageToolCall{Name: "bash", Arguments: string(args)})
+	if got != "go test ./... &&\ngofmt -l ." {
+		t.Fatalf("bash expansion = %q", got)
+	}
+}
+
+func TestExpandToolCallRedactsAndCaps(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{"url": "https://x", "api_key": "hunter2"})
+	got := expandToolCall(messages.ChatMessageToolCall{Name: "fetch", Arguments: string(args)})
+	if strings.Contains(got, "hunter2") || !strings.Contains(got, "<redacted>") {
+		t.Fatalf("expansion leaked a sensitive value: %q", got)
+	}
+	if !strings.Contains(got, "https://x") {
+		t.Fatalf("expansion lost ordinary args: %q", got)
+	}
+
+	long := strings.Repeat("echo line\n", approvalViewMaxLines+10)
+	cmd, _ := json.Marshal(map[string]any{"command": long})
+	capped := expandToolCall(messages.ChatMessageToolCall{Name: "bash", Arguments: string(cmd)})
+	if lines := strings.Count(capped, "\n") + 1; lines != approvalViewMaxLines+1 {
+		t.Fatalf("capped expansion has %d lines, want %d + elision row", lines, approvalViewMaxLines)
+	}
+	if !strings.Contains(capped, "more lines)") {
+		t.Fatalf("capped expansion should note the elision: %q", capped)
+	}
+}
+
+func TestExpandToolCallMalformedArguments(t *testing.T) {
+	got := expandToolCall(messages.ChatMessageToolCall{Name: "bash", Arguments: "{not json"})
+	if got != "{not json" {
+		t.Fatalf("malformed args should render as-is, got %q", got)
+	}
 }
