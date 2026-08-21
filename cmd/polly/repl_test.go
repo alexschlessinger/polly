@@ -431,6 +431,7 @@ func TestStatusRowShowsSpinnerWhenBusy(t *testing.T) {
 	}
 
 	// Busy: a spinner frame leads the bar, alongside the state word.
+	m.busy = true
 	m.state = turnStateThinking
 	m.turnStarted = time.Now()
 	busy := m.statusRow(120)
@@ -454,10 +455,9 @@ func TestStatusRowShowsSpinnerWhenBusy(t *testing.T) {
 	}
 }
 
-func TestStatusRowGutterKeepsStaticFixed(t *testing.T) {
-	// During a turn the fixed-width gutter keeps the static fields at a constant
-	// column across state/elapsed changes; at idle the gutter collapses so the
-	// bar isn't left-padded when nothing is happening.
+func TestStatusRowKeepsStaticFieldsFixed(t *testing.T) {
+	// Static context stays right-aligned across idle and active states, so the
+	// model/context do not jump horizontally when a completion settles.
 	plain := func(s string) string {
 		var b strings.Builder
 		for _, c := range ui.ParseStyles(s, ui.NewStyle(ui.ColorWhite)) {
@@ -483,6 +483,7 @@ func TestStatusRowGutterKeepsStaticFixed(t *testing.T) {
 
 	idleCol := col(m.statusRow(120))
 
+	m.busy = true
 	busyCol := -1
 	for _, st := range []turnState{turnStateWaiting, turnStateThinking, turnStateStreaming, turnStateTool} {
 		m.state = st
@@ -494,8 +495,8 @@ func TestStatusRowGutterKeepsStaticFixed(t *testing.T) {
 			t.Fatalf("model shifted between states: %d vs %d (state %v)", busyCol, c, st)
 		}
 	}
-	if idleCol >= busyCol {
-		t.Fatalf("idle gutter should collapse below the busy gutter: idle %d, busy %d", idleCol, busyCol)
+	if idleCol != busyCol {
+		t.Fatalf("static fields shifted at completion: idle %d, busy %d", idleCol, busyCol)
 	}
 }
 
@@ -509,7 +510,7 @@ func TestCompleteSlash(t *testing.T) {
 		// Unique prefix completes to the full command.
 		{"/h", true, "/help", []string{"/help"}},
 		{"/e", true, "/exit", []string{"/exit"}},
-		{"/q", true, "/quit", []string{"/quit"}},
+		{"/q", true, "/qu", []string{"/queue", "/quit"}},
 		// Bare "/" matches everything; common prefix is just "/" (no progress).
 		{"/", true, "/", slashCommands},
 		// "/c" matches /clear and /context; common prefix extends to "/c".
@@ -922,13 +923,23 @@ func TestRunCommandSessionCommands(t *testing.T) {
 		t.Fatalf("/context output missing fields: %q", joined)
 	}
 
-	// /clear empties both the session history and the transcript, leaving the notice.
+	// /clear is display-only: durable history remains intact.
 	r.runCommand("/clear")
-	if got := len(session.GetHistory()); got != 0 {
-		t.Fatalf("/clear left %d messages", got)
+	if got := len(session.GetHistory()); got != 2 {
+		t.Fatalf("/clear changed durable history; got %d messages", got)
 	}
 	if len(r.model.transcript) != 1 || !strings.Contains(r.model.transcript[0], "cleared") {
 		t.Fatalf("/clear transcript = %v", r.model.transcript)
+	}
+
+	// /reset requires the literal confirmation token, then clears persistence.
+	r.runCommand("/reset")
+	if got := len(session.GetHistory()); got != 2 {
+		t.Fatalf("unconfirmed /reset changed history; got %d messages", got)
+	}
+	r.runCommand("/reset confirm")
+	if got := len(session.GetHistory()); got != 0 {
+		t.Fatalf("/reset confirm left %d messages", got)
 	}
 
 	// /tools on an empty registry reports none.
@@ -1110,10 +1121,10 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	default:
 	}
 
-	// Ctrl-C while busy clears the queue ("stop means stop").
+	// Ctrl-C preserves the queue but pauses it until retry or explicit continue.
 	r.handleInterrupt()
-	if len(r.model.queue) != 0 {
-		t.Fatalf("interrupt should clear the queue, got %v", r.model.queue)
+	if len(r.model.queue) != 1 || !r.model.queuePaused {
+		t.Fatalf("interrupt should preserve and pause queue, got %v paused=%v", r.model.queue, r.model.queuePaused)
 	}
 }
 
@@ -1187,22 +1198,18 @@ func TestHandleInterruptQuitsWhenIdle(t *testing.T) {
 	}
 }
 
-func TestBusyIndicatorShowsStateAndElapsed(t *testing.T) {
-	// In quiet mode there is no status bar, so the inline busy row carries the
-	// spinner + state + elapsed time.
+func TestQuietBusyPromptStaysEditable(t *testing.T) {
 	m := newReplModel()
 	m.quiet = true
 	m.busy = true
 	m.state = turnStateTool
 	m.toolName = "bash"
 	m.turnStarted = time.Now().Add(-3 * time.Second)
+	m.ed.setText("compose next")
 
-	got := m.inputDisplay()
-	if !strings.Contains(got, "running bash") {
-		t.Fatalf("expected state label 'running bash', got %q", got)
-	}
-	if !strings.Contains(got, "3.0s") {
-		t.Fatalf("expected elapsed '3.0s', got %q", got)
+	got, _, _, _, editable := m.renderInput()
+	if !editable || !strings.Contains(got, "compose next") {
+		t.Fatalf("quiet busy composer should remain visible and editable, got %q editable=%v", got, editable)
 	}
 
 	m.state = turnStateThinking
@@ -1355,8 +1362,8 @@ func TestApprovalPromptRendersLiteralBrackets(t *testing.T) {
 	}
 	out := b.String()
 
-	if !strings.Contains(out, "[y/n/a]") {
-		t.Fatalf("approval prompt should render literal [y/n/a], got %q", out)
+	if !strings.Contains(out, "[y]es [N]o [a]ll") {
+		t.Fatalf("approval prompt should render explicit actions, got %q", out)
 	}
 	if strings.Contains(out, `\`) {
 		t.Fatalf("approval prompt should not contain backslashes, got %q", out)
@@ -1435,16 +1442,21 @@ func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 	}
 }
 
-func TestTurnSummaryLine(t *testing.T) {
-	line := turnSummaryLine(15500*time.Millisecond, 1234, 567)
-	for _, want := range []string{"15.5s", "1234 in", "567 out"} {
+func TestCompletedTurnMetricsStayInStatus(t *testing.T) {
+	m := newReplModel()
+	m.contextName = "ctx"
+	m.lastOutcome = turnOutcomeDone
+	m.lastElapsed = 15500 * time.Millisecond
+	m.lastIn = 1234
+	m.lastOut = 567
+	line := m.statusRow(200)
+	for _, want := range []string{"done", "15.5s", "1.2k/567 tok"} {
 		if !strings.Contains(line, want) {
-			t.Errorf("turn summary %q missing %q", line, want)
+			t.Errorf("completed status %q missing %q", line, want)
 		}
 	}
-	// The whole line is muted metadata, not an accent.
-	if !strings.Contains(line, "](fg:muted)") {
-		t.Errorf("turn summary should be muted: %q", line)
+	if len(m.transcript) != 0 {
+		t.Fatalf("status metrics must not add transcript rows: %v", m.transcript)
 	}
 }
 

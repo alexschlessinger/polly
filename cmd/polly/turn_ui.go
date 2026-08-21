@@ -29,12 +29,13 @@ type TurnUI interface {
 // lineTurnUI prints turn output to an io.Writer one line at a time.
 // Used for one-shot mode and as the input loop for the fallback REPL.
 type lineTurnUI struct {
-	config         *Config
-	writer         io.Writer
-	errWriter      io.Writer
-	approver       *toolApprover
-	needsSeparator bool
-	contentPrinted bool
+	config          *Config
+	writer          io.Writer
+	errWriter       io.Writer
+	approver        *toolApprover
+	needsSeparator  bool
+	contentPrinted  bool
+	endsWithNewline bool
 }
 
 func newLineTurnUI(config *Config, inputReader *bufio.Reader) *lineTurnUI {
@@ -52,8 +53,12 @@ func newLineTurnUI(config *Config, inputReader *bufio.Reader) *lineTurnUI {
 	return ui
 }
 
-func (ui *lineTurnUI) Start() {}
-func (ui *lineTurnUI) Stop()  {}
+func (ui *lineTurnUI) Start() {
+	ui.needsSeparator = false
+	ui.contentPrinted = false
+	ui.endsWithNewline = false
+}
+func (ui *lineTurnUI) Stop() {}
 
 func (ui *lineTurnUI) ShowThinking(tokens int) {}
 
@@ -63,10 +68,14 @@ func (ui *lineTurnUI) AppendAssistantText(content string) {
 	}
 	if ui.needsSeparator {
 		fmt.Fprintln(ui.writer)
+		ui.endsWithNewline = true
 		ui.needsSeparator = false
 	}
 	fmt.Fprint(ui.writer, content)
-	ui.contentPrinted = true
+	if content != "" {
+		ui.contentPrinted = true
+		ui.endsWithNewline = strings.HasSuffix(content, "\n")
+	}
 }
 
 func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
@@ -75,7 +84,10 @@ func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 		return
 	}
 	if ui.contentPrinted {
-		fmt.Fprintln(ui.writer)
+		if !ui.endsWithNewline {
+			fmt.Fprintln(ui.writer)
+			ui.endsWithNewline = true
+		}
 		ui.contentPrinted = false
 	}
 	for _, tc := range calls {
@@ -119,13 +131,15 @@ func (ui *lineTurnUI) AppendWarning(text string) {
 		return
 	}
 	fmt.Fprintf(ui.writer, "\nWarning: %s\n", text)
+	ui.endsWithNewline = true
 }
 
 func (ui *lineTurnUI) RecordTurnTokens(in, out int) {}
 
 func (ui *lineTurnUI) FinishTextTurn() {
-	if ui.config.SchemaPath == "" {
+	if ui.config.SchemaPath == "" && !ui.endsWithNewline {
 		fmt.Fprintln(ui.writer)
+		ui.endsWithNewline = true
 	}
 }
 

@@ -55,6 +55,18 @@ func (s turnState) label(toolName string) string {
 	return ""
 }
 
+// turnOutcome is the last settled result shown in the status row while the
+// composer is idle. It deliberately lives outside the transcript: completing a
+// turn must not append chrome that shifts the answer vertically.
+type turnOutcome int
+
+const (
+	turnOutcomeNone turnOutcome = iota
+	turnOutcomeDone
+	turnOutcomeFailed
+	turnOutcomeCanceled
+)
+
 // init registers polly's semantic accent colors. Each name maps to an ANSI
 // palette slot (XTerm 0–15) that the terminal (e.g. Ghostty) remaps to the
 // active theme — unlike gotui's dark*/cyan names, which resolve to fixed RGB
@@ -144,6 +156,13 @@ func (e *lineEditor) backspace() {
 	e.goalCol = -1
 }
 
+func (e *lineEditor) deleteForward() {
+	if e.cursor < len(e.buf) {
+		e.buf = append(e.buf[:e.cursor], e.buf[e.cursor+1:]...)
+	}
+	e.goalCol = -1
+}
+
 func (e *lineEditor) left() {
 	if e.cursor > 0 {
 		e.cursor--
@@ -158,8 +177,8 @@ func (e *lineEditor) right() {
 	e.goalCol = -1
 }
 
-func (e *lineEditor) home() { e.cursor = 0; e.goalCol = -1 }
-func (e *lineEditor) end()  { e.cursor = len(e.buf); e.goalCol = -1 }
+func (e *lineEditor) home() { e.cursor = e.lineStartAt(e.cursor); e.goalCol = -1 }
+func (e *lineEditor) end()  { e.cursor = e.lineEndAt(e.cursor); e.goalCol = -1 }
 
 func (e *lineEditor) killToStart() {
 	e.buf = append([]rune(nil), e.buf[e.cursor:]...)
@@ -318,10 +337,21 @@ type replModel struct {
 	// change (idle typing, scrolling, waiting for the first token), so the cache
 	// turns those into O(1) instead of re-splitting the whole backlog each time.
 	flatCache []string
+	// visualCache keeps the fully styled/wrapped transcript for the current
+	// terminal width. Busy spinner ticks can then redraw only visible rows
+	// without reparsing a long, unchanged context 20 times per second.
+	visualCache      [][]ui.Cell
+	visualCacheWidth int
+	visualCacheValid bool
+	visualBlocks     []transcriptVisualBlock
 
 	// slashHints is a transient command-completion hint. It renders near the
 	// transcript but is not part of the transcript or persistent history.
 	slashHints string
+	// queueHint is the quiet-mode equivalent of queue status. Keeping it as a
+	// transient render block avoids splitting an assistant stream just because
+	// the user accepted another input while generation was in flight.
+	queueHint string
 
 	// activeTools tracks tool calls currently executing, each pinned to the
 	// transcript entry that displays it. While a tool runs, render() rewrites
@@ -343,7 +373,9 @@ type replModel struct {
 	// queue holds inputs submitted while a turn is in flight (the prompt stays
 	// editable during a turn). They run in order once the current turn ends;
 	// each entry is raw trimmed text routed to a command or a prompt at dequeue.
-	queue []string
+	queue                []string
+	queuePaused          bool
+	queueResumeAfterTurn bool
 
 	// Reverse-incremental history search (Ctrl-R). searchMatch is the index
 	// into history of the current hit, or -1 when the query matches nothing.
@@ -370,12 +402,30 @@ type replModel struct {
 	turnStarted time.Time
 	lastIn      int
 	lastOut     int
+	lastElapsed time.Duration
+	lastOutcome turnOutcome
+
+	// currentPrompt identifies the user turn in flight. Failed/canceled turns
+	// retain it for /retry; retryingNext tells startTurn to reuse the already
+	// persisted user message instead of appending a duplicate.
+	currentPrompt   string
+	retryPrompt     string
+	retryingNext    bool
+	currentWasRetry bool
+	turnHasOutput   bool
+	unsavedLabeled  bool
 
 	// runningTools counts tool calls currently in flight this turn. A parallel
 	// batch starts several at once; the status only returns to "waiting" when
 	// the last of them finishes, so the first to complete doesn't prematurely
 	// flip the bar (and drop the running-tool name) while siblings still run.
 	runningTools int
+}
+
+type transcriptVisualBlock struct {
+	text     string
+	followed bool
+	rows     [][]ui.Cell
 }
 
 type approvalState struct {
@@ -399,90 +449,67 @@ func newReplModel() *replModel {
 
 const turnCancelDetachAfter = 2 * time.Second
 
-// statusRowGutter is the display width reserved at the left of the status bar
-// for the live activity (spinner + state) while a turn runs. Holding it constant
-// keeps the static fields from shifting as the state word changes mid-turn; it
-// fits "⠹ streaming" with a trailing gap. At idle the gutter collapses so the
-// bar isn't left-padded when nothing is happening.
-const statusRowGutter = 12
-
-// statusRow renders the bar contents at the given terminal width. While a turn
-// runs, the live activity (spinner + transient state) fills a fixed-width gutter
-// on the left so the static fields don't move; at idle the gutter collapses to a
-// single leading space. Low-priority static fields drop when they don't fit.
-// Returns "" when the user asked for quiet mode.
+// statusRow renders live/last-turn state on the left and stable context on the
+// right. Right alignment means a completion can change "streaming" to
+// "done 1.8s" without moving the model/context horizontally. Operational queue
+// state outranks static metadata on narrow terminals.
 func (m *replModel) statusRow(width int) string {
-	if m.quiet {
+	if m.quiet || width <= 0 {
 		return ""
 	}
 	const sep = " · "
 
-	// Activity gutter: spinner + state, padded to a fixed width. The state word
-	// is compact (no tool name — the transcript line already shows it) so the
-	// gutter stays bounded and never reshapes the bar.
-	glyph, spinning := m.spinnerFrame()
-	var act strings.Builder
-	actRaw := ""
-	if spinning {
-		act.WriteString(styled(string(glyph), "accent", "bold"))
-		act.WriteByte(' ')
-		actRaw += string(glyph) + " "
-	}
-	if m.state != turnStateIdle {
-		word := m.state.label("")
-		color := "active"
-		if m.state == turnStateError {
-			color = "err"
+	leftRaw, leftStyled := m.statusActivity()
+	if len(m.queue) > 0 {
+		queueRaw := fmt.Sprintf("queued:%d", len(m.queue))
+		if m.queuePaused {
+			queueRaw += " paused"
 		}
-		act.WriteString(styled(word, color, "bold"))
-		actRaw += word
-	}
-	// While a turn runs, pad the activity to a fixed width so the static fields
-	// hold their column as the state changes. At idle the activity is empty —
-	// collapse to a single leading space instead of a wide blank margin.
-	gutter := act.String()
-	if m.state == turnStateIdle {
-		gutter = " "
-	} else if pad := statusRowGutter - rw.StringWidth(actRaw); pad > 0 {
-		gutter += strings.Repeat(" ", pad)
+		if preview := compactQueuePreview(m.queue[len(m.queue)-1]); preview != "" {
+			queueRaw += " › " + preview
+		}
+		queueStyled := styled(queueRaw, "active", "bold")
+		if leftRaw != "" {
+			// Queue state leads the operational side so narrow truncation keeps
+			// the accepted next input visible ahead of transient spinner text.
+			leftRaw = queueRaw + sep + leftRaw
+			leftStyled = queueStyled + styled(sep, "muted", "") + leftStyled
+		} else {
+			leftRaw, leftStyled = queueRaw, queueStyled
+		}
 	}
 
-	// Static fields, rendered after the gutter at a constant column. Per-turn
-	// token counts live in the post-turn summary line (turnSummaryLine), not
-	// here.
 	type field struct {
-		drop int // higher = dropped sooner
+		drop int
 		text string
 	}
 	fields := []field{}
 	if m.modelName != "" {
-		fields = append(fields, field{drop: 4, text: m.modelName})
+		fields = append(fields, field{drop: 3, text: m.modelName})
 	}
 	fields = append(fields, field{drop: 0, text: m.contextName})
 	if m.toolCount > 0 {
 		fields = append(fields, field{drop: 2, text: fmt.Sprintf("tools:%d", m.toolCount)})
 	}
 	if m.skillCount > 0 {
-		fields = append(fields, field{drop: 1, text: fmt.Sprintf("skills:%d", m.skillCount)})
-	}
-	if len(m.queue) > 0 {
-		fields = append(fields, field{drop: 5, text: fmt.Sprintf("queued:%d", len(m.queue))})
+		fields = append(fields, field{drop: 4, text: fmt.Sprintf("skills:%d", m.skillCount)})
 	}
 
-	// Budget for the static fields is what's left after the gutter and the
-	// trailing space.
-	avail := width - rw.StringWidth(gutter) - 1
-	visibleLen := func(fs []field) int {
-		n := 0
+	fieldWidth := func(fs []field) int {
+		parts := make([]string, len(fs))
 		for i, f := range fs {
-			n += len([]rune(f.text))
-			if i < len(fs)-1 {
-				n += len([]rune(sep))
-			}
+			parts[i] = f.text
+		}
+		return rw.StringWidth(strings.Join(parts, sep))
+	}
+	needed := func() int {
+		n := rw.StringWidth(leftRaw) + fieldWidth(fields)
+		if leftRaw != "" && len(fields) > 0 {
+			n++
 		}
 		return n
 	}
-	for visibleLen(fields) > avail && len(fields) > 0 {
+	for needed() > width && len(fields) > 1 {
 		idx := -1
 		best := 0
 		for i, f := range fields {
@@ -497,11 +524,97 @@ func (m *replModel) statusRow(width int) string {
 		fields = append(fields[:idx], fields[idx+1:]...)
 	}
 
-	parts := make([]string, len(fields))
-	for i, f := range fields {
-		parts[i] = styled(f.text, "muted", "")
+	// Context is the one non-droppable field. Truncate it rather than letting a
+	// wide context name push operational state off-screen.
+	if needed() > width && len(fields) == 1 {
+		budget := width - rw.StringWidth(leftRaw)
+		if leftRaw != "" {
+			budget--
+		}
+		if budget < 0 {
+			budget = 0
+		}
+		if budget == 0 {
+			fields[0].text = ""
+		} else {
+			fields[0].text = rw.Truncate(fields[0].text, budget, "…")
+		}
 	}
-	return gutter + strings.Join(parts, styled(sep, "muted", "")) + " "
+
+	rightRawParts := make([]string, len(fields))
+	rightStyledParts := make([]string, len(fields))
+	for i, f := range fields {
+		rightRawParts[i] = f.text
+		rightStyledParts[i] = styled(f.text, "muted", "")
+	}
+	rightRaw := strings.Join(rightRawParts, sep)
+	rightStyled := strings.Join(rightStyledParts, styled(sep, "muted", ""))
+
+	rightWidth := rw.StringWidth(rightRaw)
+	leftBudget := width - rightWidth
+	if leftRaw != "" && rightRaw != "" {
+		leftBudget--
+	}
+	if leftBudget < 0 {
+		leftBudget = 0
+	}
+	if rw.StringWidth(leftRaw) > leftBudget {
+		if leftBudget == 0 {
+			leftRaw, leftStyled = "", ""
+		} else {
+			leftRaw = rw.Truncate(leftRaw, leftBudget, "…")
+			leftStyled = styled(leftRaw, "muted", "")
+		}
+	}
+
+	if rightRaw == "" {
+		return leftStyled
+	}
+	gap := width - rw.StringWidth(leftRaw) - rightWidth
+	if leftRaw != "" && gap < 1 {
+		gap = 1
+	}
+	if gap < 0 {
+		gap = 0
+	}
+	return leftStyled + strings.Repeat(" ", gap) + rightStyled
+}
+
+func (m *replModel) statusActivity() (raw, rendered string) {
+	if m.busy {
+		glyph, spinning := m.spinnerFrame()
+		word := m.state.label(m.toolName)
+		if m.canceling {
+			word = "canceling"
+		}
+		if spinning {
+			raw = string(glyph) + " " + word
+			rendered = styled(string(glyph), "accent", "bold") + " " + styled(word, "active", "bold")
+			return raw, rendered
+		}
+		return word, styled(word, "active", "bold")
+	}
+
+	switch m.lastOutcome {
+	case turnOutcomeDone:
+		meta := formatElapsed(m.lastElapsed)
+		if m.lastIn > 0 || m.lastOut > 0 {
+			meta += fmt.Sprintf(" · %s/%s tok", humanizeTokens(m.lastIn), humanizeTokens(m.lastOut))
+		}
+		raw = "done " + meta
+		rendered = styled("done", "ok", "bold") + " " + styled(meta, "muted", "")
+	case turnOutcomeFailed:
+		raw = "failed"
+		rendered = styled(raw, "err", "bold")
+	case turnOutcomeCanceled:
+		raw = "canceled"
+		rendered = styled(raw, "muted", "bold")
+	}
+	return raw, rendered
+}
+
+func compactQueuePreview(text string) string {
+	return truncate(strings.Join(strings.Fields(text), " "), 36)
 }
 
 func humanizeTokens(n int) string {
@@ -530,20 +643,23 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%dm%02ds", m, s)
 }
 
-// turnSummaryLine is the one-line report appended to the transcript when a turn
-// finishes: total wall-clock elapsed and the turn's input/output token counts.
-func turnSummaryLine(elapsed time.Duration, in, out int) string {
-	body := fmt.Sprintf("%s · %d in · %d out", formatElapsed(elapsed), in, out)
-	return "  " + styled(body, "muted", "")
-}
-
 // invalidateFlat marks the flattened-transcript cache stale. Caller must hold
 // m.mu (every transcript mutation already does).
-func (m *replModel) invalidateFlat() { m.flatCache = nil }
+func (m *replModel) invalidateFlat() {
+	m.flatCache = nil
+	m.visualCacheValid = false
+}
+
+func (m *replModel) invalidateVisual() { m.visualCacheValid = false }
 
 // appendLine appends a pre-rendered transcript entry (may contain inline
-// style markup). Resets the streaming assistant cursor.
+// style markup). A non-assistant boundary first settles any active assistant
+// block so pending fence text and provider terminal newlines cannot leak across
+// notices, warnings, tools, or user turns.
 func (m *replModel) appendLine(s string) {
+	if m.currentAssistant >= 0 && m.currentAssistant < len(m.transcript) {
+		m.finishAssistantBlock("")
+	}
 	m.transcript = append(m.transcript, s)
 	m.currentAssistant = -1
 	m.invalidateFlat()
@@ -588,6 +704,41 @@ func (m *replModel) finishAssistantStream() {
 	m.stream.WriteString(out.String())
 	m.transcript[m.currentAssistant] = m.stream.String()
 	m.invalidateFlat()
+}
+
+// finishAssistantBlock closes the semantic assistant block that is currently
+// streaming. Provider-owned terminal newlines are removed here so layout—not
+// arbitrary chunk boundaries—owns the space between turns. Internal markdown
+// whitespace is preserved. label, when non-empty, records that the visible
+// partial block was not committed to session history.
+func (m *replModel) finishAssistantBlock(label string) bool {
+	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
+		return false
+	}
+	m.finishAssistantStream()
+	idx := m.currentAssistant
+	content := strings.TrimRight(m.transcript[idx], "\r\n")
+	if content == "" {
+		m.transcript = append(m.transcript[:idx], m.transcript[idx+1:]...)
+	} else {
+		m.transcript[idx] = content
+	}
+	m.currentAssistant = -1
+	m.resetAssistantStream()
+	m.invalidateFlat()
+	if label != "" && content != "" {
+		m.appendLine("  " + styled(label, "muted", ""))
+		m.unsavedLabeled = true
+	}
+	return content != ""
+}
+
+func (m *replModel) labelTurnUnsaved(label string) {
+	if m.unsavedLabeled || !m.turnHasOutput {
+		return
+	}
+	m.appendLine("  " + styled(label, "muted", ""))
+	m.unsavedLabeled = true
 }
 
 func (m *replModel) renderAssistantChunk(text string) string {
@@ -727,7 +878,25 @@ func (m *replModel) writeStreamStyledText(out *strings.Builder, text, fg, modifi
 }
 
 func (m *replModel) appendUserPrompt(p string) {
-	m.appendLine(styled("> ", "accent", "bold") + styleEscape(p))
+	lines := strings.Split(p, "\n")
+	for i, line := range lines {
+		if i == 0 {
+			lines[i] = styled("> ", "accent", "bold") + styleEscape(line)
+		} else {
+			lines[i] = "  " + styleEscape(line)
+		}
+	}
+	m.appendLine(strings.Join(lines, "\n"))
+}
+
+// appendTurnSeparator inserts the single renderer-owned blank row between
+// settled transcript activity and the next user turn. No completion path adds
+// spacing, which keeps an answer stationary when its status changes to done.
+func (m *replModel) appendTurnSeparator() {
+	if len(m.transcript) == 0 || m.transcript[len(m.transcript)-1] == "" {
+		return
+	}
+	m.appendLine("")
 }
 
 // activeTool is one still-executing tool call, pinned to the transcript entry
@@ -776,12 +945,19 @@ func (m *replModel) refreshActiveTools() {
 	if len(m.activeTools) == 0 {
 		return
 	}
+	changed := false
 	for _, at := range m.activeTools {
 		if at.index >= 0 && at.index < len(m.transcript) {
-			m.transcript[at.index] = runningToolLine(at.label, time.Since(at.started))
+			next := runningToolLine(at.label, time.Since(at.started))
+			if m.transcript[at.index] != next {
+				m.transcript[at.index] = next
+				changed = true
+			}
 		}
 	}
-	m.invalidateFlat()
+	if changed {
+		m.invalidateFlat()
+	}
 }
 
 // takeActiveTool stops tracking a finished tool and returns the transcript index
@@ -803,6 +979,20 @@ func (m *replModel) takeActiveTool(id string) (int, bool) {
 	idx := m.activeTools[pick].index
 	m.activeTools = append(m.activeTools[:pick], m.activeTools[pick+1:]...)
 	return idx, true
+}
+
+func (m *replModel) settleActiveTools(reason string) {
+	if len(m.activeTools) == 0 {
+		return
+	}
+	for _, at := range m.activeTools {
+		if at.index < 0 || at.index >= len(m.transcript) {
+			continue
+		}
+		m.transcript[at.index] = "  " + styled("✗", "err", "bold") + " " +
+			styled(strings.TrimSpace(reason+" "+at.label), "muted", "")
+	}
+	m.invalidateFlat()
 }
 
 // toolOKLine / toolDeniedLine / toolErrorLine build the final transcript entry
@@ -831,16 +1021,270 @@ func (m *replModel) appendNoticeLine(text string) {
 	m.appendLine(styled(text, "muted", ""))
 }
 
+func (m *replModel) clearDisplay() {
+	m.transcript = nil
+	m.currentAssistant = -1
+	m.activeTools = nil
+	if !m.busy {
+		m.runningTools = 0
+	}
+	m.resetAssistantStream()
+	m.scrollAnchor = 0
+	m.followBottom = true
+	m.invalidateFlat()
+}
+
+const resumedTurnLimit = 5
+
+// hydrateHistory makes a resumed context honest about what the model already
+// remembers. It shows only recent user turns, keeps assistant prose, and folds
+// raw tool exchanges into compact activity rows.
+func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
+	totalTurns := 0
+	for _, msg := range history {
+		if msg.Role == messages.MessageRoleUser {
+			totalTurns++
+		}
+	}
+	if totalTurns == 0 {
+		return
+	}
+
+	showTurns := min(totalTurns, resumedTurnLimit)
+	skipTurns := totalTurns - showTurns
+	start := 0
+	seen := 0
+	for i, msg := range history {
+		if msg.Role != messages.MessageRoleUser {
+			continue
+		}
+		if seen == skipTurns {
+			start = i
+			break
+		}
+		seen++
+	}
+
+	name := contextName
+	if name == "" {
+		name = "context"
+	}
+	turnWord := "turns"
+	if totalTurns == 1 {
+		turnWord = "turn"
+	}
+	if totalTurns > showTurns {
+		m.appendNoticeLine(fmt.Sprintf("resumed %s · showing last %d of %d turns", name, showTurns, totalTurns))
+	} else {
+		m.appendNoticeLine(fmt.Sprintf("resumed %s · %d %s", name, totalTurns, turnWord))
+	}
+
+	var toolNames []string
+	toolFailed := false
+	toolResults := 0
+	toolKnownSuccesses := 0
+	flushTools := func() {
+		if len(toolNames) == 0 {
+			return
+		}
+		glyph := "·"
+		color := "muted"
+		if toolFailed {
+			glyph = "✗"
+			color = "err"
+		} else if toolResults == len(toolNames) && toolKnownSuccesses == toolResults {
+			glyph = "✓"
+			color = "ok"
+		}
+		word := "tool"
+		if len(toolNames) != 1 {
+			word = "tools"
+		}
+		m.appendLine("  " + styled(glyph, color, "bold") + " " +
+			styled(fmt.Sprintf("%d %s · %s", len(toolNames), word, compactToolNames(toolNames)), "muted", ""))
+		toolNames = nil
+		toolFailed = false
+		toolResults = 0
+		toolKnownSuccesses = 0
+	}
+
+	lastRole := ""
+	lastUserPrompt := ""
+	lastUserRetryable := false
+	lastUserContextOnly := false
+	for _, msg := range history[start:] {
+		switch msg.Role {
+		case messages.MessageRoleUser:
+			flushTools()
+			m.appendTurnSeparator()
+			content, retryPrompt, retryable, contextOnly := historyUserSummary(msg)
+			m.appendUserPrompt(content)
+			lastUserPrompt = retryPrompt
+			lastUserRetryable = retryable
+			lastUserContextOnly = contextOnly
+			lastRole = msg.Role
+		case messages.MessageRoleAssistant:
+			flushTools()
+			if content := msg.GetContent(); content != "" {
+				m.appendAssistant(content)
+				m.finishAssistantBlock("")
+			}
+			for _, call := range msg.ToolCalls {
+				name := call.Name
+				if name == "" {
+					name = "tool"
+				}
+				toolNames = append(toolNames, name)
+			}
+			lastRole = msg.Role
+		case messages.MessageRoleTool:
+			if len(toolNames) == 0 {
+				name := msg.ToolName
+				if name == "" {
+					name = "tool"
+				}
+				toolNames = append(toolNames, name)
+			}
+			toolResults++
+			if toolWasDenied(msg.Content) || msg.IsError() {
+				toolFailed = true
+			} else if succeeded, known := msg.ToolSucceeded(); known {
+				if succeeded {
+					toolKnownSuccesses++
+				} else {
+					toolFailed = true
+				}
+			}
+			lastRole = msg.Role
+		case messages.MessageRoleInternal:
+			flushTools()
+			if status, _ := msg.Metadata[messages.MetadataKeyTurnStatus].(string); status == messages.TurnStatusToolDenied {
+				m.appendLine("  " + styled("✗", "err", "bold") + " " + styled("tool request denied", "muted", ""))
+				// A durable internal completion marker settles the preceding user
+				// turn without becoming model-visible assistant content.
+				lastRole = messages.MessageRoleAssistant
+			}
+		}
+	}
+	flushTools()
+	if lastRole == messages.MessageRoleUser && !lastUserContextOnly {
+		if lastUserRetryable && lastUserPrompt != "" {
+			m.retryPrompt = lastUserPrompt
+			m.appendLine("  " + styled("incomplete · /retry available", "muted", ""))
+		} else {
+			m.appendLine("  " + styled("incomplete", "muted", ""))
+		}
+	}
+	m.followBottom = true
+}
+
+func historyUserSummary(msg messages.ChatMessage) (display, retryPrompt string, retryable, contextOnly bool) {
+	display = msg.Content
+	contextOnly, _ = msg.Metadata[messages.MetadataKeyContextImport].(bool)
+	if name, ok := legacyImportedTextFile(msg); ok {
+		display = "[attached: " + name + "]"
+		return display, "", false, true
+	}
+	if contextOnly && len(msg.Parts) == 0 {
+		return "[context added]", "", false, true
+	}
+	var attachments []string
+	if display == "" {
+		for _, part := range msg.Parts {
+			if part.Type == "text" && part.FileName == "" {
+				display += part.Text
+			}
+		}
+	}
+	for _, part := range msg.Parts {
+		if part.FileName != "" {
+			attachments = append(attachments, part.FileName)
+		} else if part.Type != "text" {
+			attachments = append(attachments, "attachment")
+		}
+	}
+	if len(attachments) > 0 {
+		label := compactToolNames(attachments)
+		if display == "" {
+			display = "[attached: " + label + "]"
+		} else {
+			display += " [attached: " + label + "]"
+		}
+	}
+	if display == "" {
+		display = "[empty message]"
+	}
+	// Parts-based messages may include file bodies even when their Type is
+	// "text". The original payload cannot be faithfully rebuilt from a prompt
+	// string, so only simple Content messages are safe to retry.
+	retryable = len(msg.Parts) == 0 && msg.Content != ""
+	if retryable {
+		retryPrompt = msg.Content
+	}
+	return display, retryPrompt, retryable, contextOnly
+}
+
+func legacyImportedTextFile(msg messages.ChatMessage) (string, bool) {
+	if len(msg.Parts) != 0 || !strings.HasPrefix(msg.Content, "=== ") {
+		return "", false
+	}
+	lineEnd := strings.IndexByte(msg.Content, '\n')
+	if lineEnd < 8 {
+		return "", false
+	}
+	header := msg.Content[:lineEnd]
+	if !strings.HasSuffix(header, " ===") {
+		return "", false
+	}
+	name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(header, "=== "), " ==="))
+	return name, name != ""
+}
+
+func compactToolNames(names []string) string {
+	const visible = 3
+	shown := names
+	if len(shown) > visible {
+		shown = shown[:visible]
+	}
+	text := strings.Join(shown, ", ")
+	if len(names) > visible {
+		text += fmt.Sprintf(" +%d", len(names)-visible)
+	}
+	return truncate(text, 120)
+}
+
 func (m *replModel) setSlashHints(matches []string) {
 	if len(matches) > 1 {
 		m.slashHints = strings.Join(matches, "  ")
+		m.invalidateVisual()
 		return
 	}
 	m.clearSlashHints()
 }
 
 func (m *replModel) clearSlashHints() {
+	if m.slashHints == "" {
+		return
+	}
 	m.slashHints = ""
+	m.invalidateVisual()
+}
+
+func (m *replModel) updateQueueHint() {
+	next := ""
+	if m.quiet && len(m.queue) > 0 {
+		next = fmt.Sprintf("queued:%d", len(m.queue))
+		if m.queuePaused {
+			next += " paused"
+		}
+		if preview := compactQueuePreview(m.queue[len(m.queue)-1]); preview != "" {
+			next += " › " + preview
+		}
+	}
+	if m.queueHint != next {
+		m.queueHint = next
+		m.invalidateVisual()
+	}
 }
 
 // submitPrompt finalizes the current input as a user turn. Returns the prompt
@@ -863,14 +1307,18 @@ func (m *replModel) submitPrompt() string {
 // submit path and the queued-prompt drain; neither records history here (callers
 // do that when the text is first accepted). Caller must hold m.mu.
 func (m *replModel) beginTurn(prompt string) {
+	m.appendTurnSeparator()
 	m.appendUserPrompt(prompt)
 	m.busy = true
 	m.canceling = false
 	m.state = turnStateWaiting
 	m.runningTools = 0
 	m.turnStarted = time.Now()
-	// Token counts are per-turn: clear them so the end-of-turn summary reflects
-	// this turn alone, even if the turn errors before any usage is recorded.
+	m.currentPrompt = prompt
+	m.turnHasOutput = false
+	m.unsavedLabeled = false
+	m.lastOutcome = turnOutcomeNone
+	// Token counts are per-turn and live only in the status row.
 	m.lastIn = 0
 	m.lastOut = 0
 	m.followBottom = true
@@ -1031,11 +1479,10 @@ const inputPromptWidth = 2
 const maxInputRows = 8
 
 // inputRows is how many terminal rows the input region currently occupies. The
-// approval/search overlays (and the quiet-mode busy row) are always single-line;
-// an editable prompt — including while a turn runs — grows with its embedded
-// newlines, capped at maxInputRows. Caller must hold m.mu.
+// approval/search overlays are always single-line; the composer remains visible
+// and editable while a turn runs, including in quiet mode.
 func (m *replModel) inputRows() int {
-	if m.approval != nil || m.searching || (m.busy && m.quiet) {
+	if m.approval != nil || m.searching {
 		return 1
 	}
 	n := 1 + strings.Count(m.ed.text(), "\n")
@@ -1083,17 +1530,7 @@ func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, row
 	case m.searching:
 		return m.searchDisplay(), 1, 0, 0, false
 	case m.approval != nil:
-		call := m.approval.calls[m.approval.index]
-		label := toolLabel(call)
-		text = styled("allow ", "accent", "bold") +
-			styled(label, "muted", "") +
-			styled("? [y/n/a] ", "accent", "bold")
-		return text, 1, 0, 0, false
-	case m.busy && m.quiet:
-		// Quiet mode has no status bar to carry the spinner, so keep the inline
-		// busy row. Otherwise the prompt stays editable while a turn runs and
-		// the status-line spinner shows progress.
-		return m.busyIndicator(), 1, 0, 0, false
+		return m.approvalPrompt(width), 1, 0, 0, false
 	}
 
 	lines := strings.Split(m.ed.text(), "\n")
@@ -1152,6 +1589,41 @@ func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, row
 	return strings.Join(parts, "\n"), len(visible), curRow, cc, true
 }
 
+func (m *replModel) approvalPrompt(width int) string {
+	call := m.approval.calls[m.approval.index]
+	prefix := "allow "
+	if len(m.approval.calls) > 1 {
+		prefix += fmt.Sprintf("(%d/%d) ", m.approval.index+1, len(m.approval.calls))
+	}
+	actions := "[y]es [N]o [a]ll"
+	if width > 0 && width < 40 {
+		actions = "[y/N/a]"
+	}
+	suffix := "? " + actions
+	label := toolLabel(call)
+	if width > 0 {
+		budget := width - rw.StringWidth(prefix) - rw.StringWidth(suffix)
+		if budget < 0 {
+			prefix = ""
+			budget = width - rw.StringWidth(suffix)
+		}
+		if budget < 0 {
+			// Truncating bracketed action text can leave an unmatched "[";
+			// wrapping that fragment in gotui style markup makes the parser expose
+			// the markup itself. Render the tiny fallback literally.
+			return styleEscape(rw.Truncate(actions, width, "…"))
+		}
+		if budget == 0 {
+			label = ""
+		} else {
+			label = rw.Truncate(label, budget, "…")
+		}
+	}
+	return styled(prefix, "accent", "bold") +
+		styled(label, "muted", "") +
+		styled(suffix, "accent", "bold")
+}
+
 func sliceDisplayWidth(s string, start, width int) (string, int) {
 	if start <= 0 && (width <= 0 || rw.StringWidth(s) <= width) {
 		return s, 0
@@ -1194,7 +1666,7 @@ var spinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 // advanced off turnStarted at 100ms so the rate is independent of the render
 // tick. ok is false at idle, where no spinner should show. Caller must hold m.mu.
 func (m *replModel) spinnerFrame() (rune, bool) {
-	if m.state == turnStateIdle || m.turnStarted.IsZero() {
+	if !m.busy || m.turnStarted.IsZero() {
 		return 0, false
 	}
 	frame := spinnerFrames[int(time.Since(m.turnStarted)/(100*time.Millisecond))%len(spinnerFrames)]
@@ -1276,6 +1748,9 @@ type transcriptParagraph struct {
 	Text      string
 	TextStyle ui.Style
 	PinBottom bool
+	TopRow    int
+	Rows      [][]ui.Cell
+	UseRows   bool
 }
 
 func newTranscriptParagraph() *transcriptParagraph {
@@ -1291,9 +1766,10 @@ func (p *transcriptParagraph) Draw(buf *ui.Buffer) {
 	if p.Inner.Dx() <= 0 || p.Inner.Dy() <= 0 {
 		return
 	}
-	cells := ui.ParseStyles(p.Text, p.TextStyle)
-	cells = wrapCellsHard(cells, p.Inner.Dx())
-	rows := ui.SplitCells(cells, '\n')
+	rows := p.Rows
+	if !p.UseRows {
+		rows = transcriptVisualRows(p.Text, p.TextStyle, p.Inner.Dx())
+	}
 	p.drawRows(buf, rows)
 }
 
@@ -1306,6 +1782,14 @@ func (p *transcriptParagraph) drawRows(buf *ui.Buffer, rows [][]ui.Cell) {
 	start := 0
 	if p.PinBottom && len(rows) > height {
 		start = len(rows) - height
+	} else if !p.PinBottom {
+		start = p.TopRow
+		if start < 0 {
+			start = 0
+		}
+		if start > len(rows)-1 {
+			start = len(rows) - 1
+		}
 	}
 	rows = rows[start:]
 	if len(rows) > height {
@@ -1482,6 +1966,10 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	// default to all-defaults so unstyled text emits the terminal's own
 	// foreground (SGR 39) and follows the theme instead of being forced white.
 	ui.DefaultBackend.Screen.SetStyle(tcell.StyleDefault)
+	// gotui enables full mouse-motion tracking during Init. The REPL has no
+	// mouse UI beyond scrollback, and consuming motion/drag events prevents the
+	// terminal's native selection and copy behavior. PgUp/PgDn remain available.
+	ui.DefaultBackend.Screen.DisableMouse()
 	// Restore the terminal exactly once, whether we return normally or a
 	// signal short-circuits to os.Exit (which skips deferred calls).
 	var closeOnce sync.Once
@@ -1522,8 +2010,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 		case <-cancelDetach:
 			cancelDetach = nil
 			if turnDone != nil && r.cancelPending() {
-				r.abandonCanceledTurn()
-				turnDone = nil
+				turnDone = r.detachCanceledTurn(ctx, runTurn)
 				r.render()
 			}
 		case err := <-turnDone:
@@ -1541,6 +2028,9 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			if prompt := r.takePending(); prompt != "" {
 				turnDone = r.startTurn(ctx, prompt, runTurn)
 				cancelDetach = nil
+			}
+			if turnDone == nil {
+				turnDone = r.startNextQueued(ctx, runTurn)
 			}
 			if turnDone != nil && cancelDetach == nil && r.cancelPending() {
 				cancelDetach = time.After(turnCancelDetachAfter)
@@ -1592,12 +2082,15 @@ func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func
 	r.model.mu.Lock()
 	r.model.turnID++
 	turnID := r.model.turnID
+	reuseUser := r.model.retryingNext
+	r.model.retryingNext = false
+	r.model.currentWasRetry = reuseUser
 	r.model.mu.Unlock()
 
 	turnCtx, cancel := context.WithCancel(ctx)
 	r.turnCancel = cancel
 	done := make(chan error, 1)
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: turnID}
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: turnID, reuseUser: reuseUser}
 	go func() {
 		done <- runTurn(turnCtx, prompt, tui)
 	}()
@@ -1613,12 +2106,13 @@ func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func
 func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) chan error {
 	for {
 		r.model.mu.Lock()
-		if len(r.model.queue) == 0 {
+		if r.model.queuePaused || len(r.model.queue) == 0 {
 			r.model.mu.Unlock()
 			return nil
 		}
 		text := r.model.queue[0]
 		r.model.queue = r.model.queue[1:]
+		r.model.updateQueueHint()
 
 		// A single-line "/…" is a command; multi-line input is always a prompt.
 		if strings.Contains(text, "\n") || !strings.HasPrefix(text, "/") {
@@ -1633,6 +2127,17 @@ func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.
 		if !handled {
 			r.model.appendNoticeLine("unknown command: " + text + " (try /help)")
 		}
+		// /retry is a command that starts a turn. Consume the prompt it placed on
+		// pending before looking at later queue entries; otherwise a following
+		// prompt could leapfrog it and inherit its reuse-user flag.
+		if r.model.busy {
+			prompt := r.takePending()
+			r.model.mu.Unlock()
+			if prompt == "" {
+				return nil
+			}
+			return r.startTurn(ctx, prompt, runTurn)
+		}
 		r.model.mu.Unlock()
 		if quit {
 			r.requestQuit()
@@ -1644,28 +2149,65 @@ func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.
 func (r *managedREPL) endTurn(err error) {
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
-	r.model.busy = false
-	r.model.canceling = false
-	r.model.currentAssistant = -1
-	// On normal completion, drop a one-line turn report (elapsed + tokens) into
-	// the transcript. Computed before turnStarted is cleared; skipped on cancel
-	// or error, where the turn has no meaningful summary.
-	if err == nil && !r.model.turnStarted.IsZero() {
-		elapsed := time.Since(r.model.turnStarted)
-		r.model.appendLine(turnSummaryLine(elapsed, r.model.lastIn, r.model.lastOut))
+	m := r.model
+	wasCanceling := m.canceling
+	if !m.turnStarted.IsZero() {
+		m.lastElapsed = time.Since(m.turnStarted)
 	}
-	r.model.turnStarted = time.Time{}
-	r.model.toolName = ""
-	// Any tool whose OnToolEnd never fired (e.g. an abandoned turn) stops
-	// breathing here; its line freezes at the last rendered frame.
-	r.model.activeTools = nil
-	r.model.runningTools = 0
-	if err != nil && !errors.Is(err, context.Canceled) {
-		r.model.appendLine(styled("Error: "+err.Error(), "err", ""))
-		r.model.state = turnStateError
-	} else {
-		r.model.state = turnStateIdle
+	m.busy = false
+	m.canceling = false
+	m.toolName = ""
+	// Any tool whose OnToolEnd never fired must settle to a terminal row; leaving
+	// the animated arrow frozen would make an idle transcript look active.
+	activeToolReason := "stopped"
+	if errors.Is(err, context.Canceled) {
+		activeToolReason = "canceled"
+	} else if err != nil {
+		activeToolReason = "failed"
 	}
+	m.settleActiveTools(activeToolReason)
+	m.activeTools = nil
+	m.runningTools = 0
+	resumeQueue := m.queueResumeAfterTurn || queuedRetryAtFront(m.queue)
+	m.queueResumeAfterTurn = false
+
+	switch {
+	case err == nil:
+		m.finishAssistantBlock("")
+		if !m.turnHasOutput {
+			m.appendNoticeLine("(no response)")
+		}
+		m.lastOutcome = turnOutcomeDone
+		m.retryPrompt = ""
+		m.queuePaused = false
+	case errors.Is(err, context.Canceled):
+		m.finishAssistantBlock("canceled · not saved")
+		m.labelTurnUnsaved("canceled · not saved")
+		m.lastOutcome = turnOutcomeCanceled
+		m.retryPrompt = m.currentPrompt
+		m.queuePaused = len(m.queue) > 0 && !resumeQueue
+		if !wasCanceling {
+			m.appendNoticeLine("turn canceled")
+		}
+	default:
+		m.finishAssistantBlock("failed · not saved")
+		m.labelTurnUnsaved("failed · not saved")
+		m.appendLine(styled("Error: "+err.Error(), "err", ""))
+		m.lastOutcome = turnOutcomeFailed
+		m.retryPrompt = m.currentPrompt
+		m.queuePaused = len(m.queue) > 0 && !resumeQueue
+	}
+	m.currentAssistant = -1
+	m.resetAssistantStream()
+	m.turnStarted = time.Time{}
+	m.state = turnStateIdle
+	m.currentPrompt = ""
+	m.currentWasRetry = false
+	m.updateQueueHint()
+	// A settled turn owns no callbacks. Advance the generation before exposing
+	// the idle prompt so a provider goroutine that emits late cannot reopen the
+	// assistant block or move the status back to streaming.
+	m.turnID++
 	r.turnCancel = nil
 }
 
@@ -1690,36 +2232,72 @@ func (r *managedREPL) abandonCanceledTurn() {
 		return
 	}
 	m.turnID++
+	if !m.turnStarted.IsZero() {
+		m.lastElapsed = time.Since(m.turnStarted)
+	}
+	m.finishAssistantBlock("canceled · not saved")
+	m.labelTurnUnsaved("canceled · not saved")
 	m.busy = false
 	m.canceling = false
 	m.currentAssistant = -1
 	m.resetAssistantStream()
 	m.turnStarted = time.Time{}
 	m.toolName = ""
+	m.settleActiveTools("canceled")
 	m.activeTools = nil
 	m.runningTools = 0
 	m.denyApprovalLocked()
 	m.state = turnStateIdle
+	m.lastOutcome = turnOutcomeCanceled
+	m.retryPrompt = m.currentPrompt
+	m.currentPrompt = ""
+	resumeQueue := m.queueResumeAfterTurn || queuedRetryAtFront(m.queue)
+	m.queueResumeAfterTurn = false
+	m.queuePaused = len(m.queue) > 0 && !resumeQueue
+	m.updateQueueHint()
 	m.appendNoticeLine("^C cancellation timed out; detached turn")
+}
+
+func (r *managedREPL) detachCanceledTurn(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) chan error {
+	r.abandonCanceledTurn()
+	return r.startNextQueued(ctx, runTurn)
+}
+
+func queuedRetryAtFront(queue []string) bool {
+	return len(queue) > 0 && queue[0] == "/retry"
 }
 
 // handleInterrupt processes Ctrl-C. While a turn is in flight the first press
 // cancels it — denying any pending approval so the turn goroutine isn't parked
 // on the reply channel — and keeps the REPL open. A second press while the turn
-// is still winding down, or Ctrl-C at an idle prompt, quits. Returns true to
-// quit. Caller must hold m.mu.
+// is still winding down quits. At idle, Ctrl-C first clears a draft; only an
+// empty prompt exits. Returns true to quit. Caller must hold m.mu.
 func (r *managedREPL) handleInterrupt() bool {
 	m := r.model
 	m.clearSlashHints()
-	if !m.busy || m.canceling {
+	if !m.busy {
+		if !m.ed.empty() {
+			m.ed.clear()
+			return false
+		}
+		r.requestQuit()
+		return true
+	}
+	if m.canceling {
 		r.requestQuit()
 		return true
 	}
 	m.canceling = true
-	m.queue = nil // "stop" means stop: don't auto-run queued inputs after a cancel
+	// Freeze the visible partial immediately, but do not label it unsaved until
+	// the turn actually settles as canceled. Completion and Ctrl-C can race; a
+	// successful result must never retain a false "not saved" label.
+	m.finishAssistantBlock("")
+	m.queueResumeAfterTurn = false
+	m.queuePaused = len(m.queue) > 0
+	m.updateQueueHint()
 	r.cancelTurn()
 	m.denyApprovalLocked()
-	m.appendNoticeLine("^C interrupted")
+	m.appendNoticeLine("^C cancel requested")
 	return false
 }
 
@@ -1754,12 +2332,11 @@ func (r *managedREPL) handleSearchKey(e ui.Event) bool {
 }
 
 // insertPasted adds one key from a bracketed paste to the editor as literal
-// text, mapping newline keys to '\n'. Pasted content is dropped while busy,
-// approving, or searching — there's no editable prompt to receive it. Caller
-// must hold m.mu.
+// text, mapping newline keys to '\n'. The composer remains available while a
+// turn runs, so busy paste behaves exactly like busy typing.
 func (r *managedREPL) insertPasted(e ui.Event) {
 	m := r.model
-	if m.busy || m.approval != nil || m.searching {
+	if m.approval != nil || m.searching {
 		return
 	}
 	switch e.ID {
@@ -1892,13 +2469,31 @@ func (r *managedREPL) render() {
 	if transcriptHeight < 0 {
 		transcriptHeight = 0
 	}
-	transcript := r.model.visibleTranscript(transcriptHeight)
+	transcriptRows := r.model.transcriptRows(w)
 	pinTranscriptBottom := r.model.followBottom
+	topRow := r.model.scrollAnchor
+	if !pinTranscriptBottom {
+		maxTop := len(transcriptRows) - transcriptHeight
+		if maxTop < 0 {
+			maxTop = 0
+		}
+		if topRow >= maxTop {
+			topRow = maxTop
+			r.model.followBottom = true
+			pinTranscriptBottom = true
+		}
+		if topRow < 0 {
+			topRow = 0
+		}
+		r.model.scrollAnchor = topRow
+	}
 	status := r.model.statusRow(w)
 	r.model.mu.Unlock()
 
-	r.transcriptW.Text = transcript
+	r.transcriptW.Rows = transcriptRows
+	r.transcriptW.UseRows = true
 	r.transcriptW.PinBottom = pinTranscriptBottom
+	r.transcriptW.TopRow = topRow
 	r.inputW.Text = input
 	r.statusW.Text = status
 
@@ -1941,6 +2536,9 @@ func (r *managedREPL) placeCursor(editable bool, cursorCol, rowY, width int) {
 // inside the selected slice so follow-bottom still shows the newest rows.
 func (m *replModel) visibleTranscript(maxLines int) string {
 	lines := m.flattenTranscript()
+	if m.queueHint != "" {
+		lines = append(append([]string(nil), lines...), styled(m.queueHint, "active", "bold"))
+	}
 	if m.slashHints != "" {
 		withHints := make([]string, 0, len(lines)+1)
 		withHints = append(withHints, lines...)
@@ -1978,6 +2576,105 @@ func (m *replModel) visibleTranscript(maxLines int) string {
 	return strings.Join(lines[top:end], "\n")
 }
 
+// fullTranscript returns every semantic block plus transient slash hints.
+// Visual clipping happens after style parsing and wrapping in
+// transcriptParagraph, so wrapped rows remain reachable through scrollback.
+func (m *replModel) fullTranscript() string {
+	lines := m.flattenTranscript()
+	if m.queueHint != "" {
+		lines = append(append([]string(nil), lines...), styled(m.queueHint, "active", "bold"))
+	}
+	if m.slashHints != "" {
+		lines = append(append([]string(nil), lines...), styled(m.slashHints, "muted", ""))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *replModel) transcriptRows(width int) [][]ui.Cell {
+	if width < 1 {
+		width = 1
+	}
+	if m.visualCacheValid && m.visualCacheWidth == width {
+		return m.visualCache
+	}
+
+	sources := m.transcriptDisplayBlocks()
+	oldBlocks := m.visualBlocks
+	canPatch := m.visualCacheWidth == width && len(oldBlocks) == len(sources)
+	if len(oldBlocks) != len(sources) {
+		m.visualBlocks = make([]transcriptVisualBlock, len(sources))
+	}
+
+	offset := 0
+	for i, source := range sources {
+		followed := i < len(sources)-1
+		var old transcriptVisualBlock
+		if i < len(oldBlocks) {
+			old = oldBlocks[i]
+		}
+		rows := old.rows
+		changed := m.visualCacheWidth != width || old.text != source || old.followed != followed
+		if changed {
+			rows = transcriptBlockRows(source, followed, width)
+		}
+		if canPatch && len(rows) != len(old.rows) {
+			canPatch = false
+		}
+		if canPatch && changed {
+			copy(m.visualCache[offset:offset+len(rows)], rows)
+		}
+		m.visualBlocks[i] = transcriptVisualBlock{text: source, followed: followed, rows: rows}
+		offset += len(old.rows)
+	}
+
+	if !canPatch {
+		total := 0
+		for _, block := range m.visualBlocks {
+			total += len(block.rows)
+		}
+		rows := make([][]ui.Cell, 0, total)
+		for _, block := range m.visualBlocks {
+			rows = append(rows, block.rows...)
+		}
+		m.visualCache = rows
+	}
+	m.visualCacheWidth = width
+	m.visualCacheValid = true
+	return m.visualCache
+}
+
+func (m *replModel) transcriptDisplayBlocks() []string {
+	blocks := make([]string, 0, len(m.transcript)+1)
+	for i, entry := range m.transcript {
+		if i == m.currentAssistant {
+			entry = strings.TrimRight(entry, "\r\n")
+			if entry == "" {
+				continue
+			}
+		}
+		blocks = append(blocks, entry)
+	}
+	if m.queueHint != "" {
+		blocks = append(blocks, styled(m.queueHint, "active", "bold"))
+	}
+	if m.slashHints != "" {
+		blocks = append(blocks, styled(m.slashHints, "muted", ""))
+	}
+	return blocks
+}
+
+func transcriptBlockRows(text string, followed bool, width int) [][]ui.Cell {
+	cells := ui.ParseStyles(text, ui.NewStyle(ui.ColorClear))
+	if followed {
+		// The joined renderer places one newline between transcript blocks. Add
+		// that separator before splitting: a normal separator is absorbed by the
+		// following block, while a block that already ends in a (possibly styled)
+		// newline correctly produces an interior blank row.
+		cells = append(cells, ui.Cell{Rune: '\n', Style: ui.StyleClear})
+	}
+	return ui.SplitCells(wrapTranscriptCells(cells, width), '\n')
+}
+
 // flattenTranscript expands embedded "\n" within entries into separate lines
 // so scroll math is uniform.
 func (m *replModel) flattenTranscript() []string {
@@ -1985,7 +2682,16 @@ func (m *replModel) flattenTranscript() []string {
 		return m.flatCache
 	}
 	out := make([]string, 0, len(m.transcript))
-	for _, e := range m.transcript {
+	for i, e := range m.transcript {
+		if i == m.currentAssistant {
+			// A provider often streams its final newline as its own chunk. Keep it
+			// provisional until more text arrives so completion does not create and
+			// then remove a visible blank row.
+			e = strings.TrimRight(e, "\r\n")
+			if e == "" {
+				continue
+			}
+		}
 		if strings.Contains(e, "\n") {
 			out = append(out, strings.Split(e, "\n")...)
 		} else {
@@ -2000,8 +2706,15 @@ func (m *replModel) flattenTranscript() []string {
 // must hold m.mu. Disengages followBottom on first upward scroll; re-engages
 // when the user scrolls back to the bottom.
 func (m *replModel) scrollBy(delta, viewportHeight int) {
-	lines := m.flattenTranscript()
-	total := len(lines)
+	width, _ := ui.TerminalDimensions()
+	if width < 1 {
+		width = 80
+	}
+	m.scrollByWidth(delta, viewportHeight, width)
+}
+
+func (m *replModel) scrollByWidth(delta, viewportHeight, width int) {
+	total := len(m.transcriptRows(width))
 	if total <= viewportHeight {
 		m.followBottom = true
 		m.scrollAnchor = 0
@@ -2038,21 +2751,25 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 
 	m := r.model
 	viewport := r.transcriptHeight()
+	terminalWidth, _ := ui.TerminalDimensions()
+	if terminalWidth < 1 {
+		terminalWidth = 80
+	}
 
 	// Scroll keys work in every mode (idle, busy, approval) so the user
 	// can review history without interrupting the agent.
 	switch e.ID {
 	case "<PageUp>":
-		m.scrollBy(-viewport/2, viewport)
+		m.scrollByWidth(-viewport/2, viewport, terminalWidth)
 		return false
 	case "<PageDown>":
-		m.scrollBy(viewport/2, viewport)
+		m.scrollByWidth(viewport/2, viewport, terminalWidth)
 		return false
 	case "<MouseWheelUp>":
-		m.scrollBy(-3, viewport)
+		m.scrollByWidth(-3, viewport, terminalWidth)
 		return false
 	case "<MouseWheelDown>":
-		m.scrollBy(3, viewport)
+		m.scrollByWidth(3, viewport, terminalWidth)
 		return false
 	}
 
@@ -2094,12 +2811,9 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	// Approval has its own keyset.
 	if m.approval != nil {
 		switch e.ID {
-		case "<Escape>":
-			r.requestQuit()
-			return true
-		case "<Enter>", "y", "Y":
+		case "y", "Y":
 			m.handleApprovalAnswer('y')
-		case "n", "N":
+		case "<Enter>", "<Escape>", "n", "N":
 			m.handleApprovalAnswer('n')
 		case "a", "A":
 			m.handleApprovalAnswer('a')
@@ -2113,15 +2827,30 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 
 	switch e.ID {
 	case "<C-d>":
-		// Quit on empty only at idle; mid-turn Ctrl-C is the interrupt.
 		if m.ed.empty() && !m.busy {
 			m.clearSlashHints()
 			r.requestQuit()
 			return true
 		}
+		m.clearSlashHints()
+		m.ed.deleteForward()
 	case "<Enter>":
 		trimmed := strings.TrimSpace(m.ed.text())
 		if trimmed == "" {
+			return false
+		}
+		if m.busy && immediateBusyCommand(trimmed) {
+			m.ed.clear()
+			r.recordAcceptedInput(trimmed)
+			m.followBottom = true
+			handled, quit := r.runCommand(trimmed)
+			if quit {
+				r.requestQuit()
+				return true
+			}
+			if !handled {
+				m.appendNoticeLine("unknown command: " + trimmed + " (try /help)")
+			}
 			return false
 		}
 		if m.busy {
@@ -2131,6 +2860,10 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
 			m.queue = append(m.queue, trimmed)
+			if m.canceling {
+				m.queuePaused = true
+			}
+			m.updateQueueHint()
 			return false
 		}
 		// Only a single-line "/…" is a command; a multi-line prompt that happens
@@ -2149,6 +2882,13 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			}
 			return false
 		}
+		if m.queuePaused {
+			m.ed.clear()
+			r.recordAcceptedInput(trimmed)
+			m.queue = append(m.queue, trimmed)
+			m.updateQueueHint()
+			return false
+		}
 		prompt := m.submitPrompt()
 		r.appendHistory(prompt)
 		select {
@@ -2159,9 +2899,12 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		// Ctrl-J inserts a newline for composing multi-line prompts; Enter sends.
 		m.clearSlashHints()
 		m.ed.insert('\n')
-	case "<Backspace>", "<Delete>":
+	case "<Backspace>", "<C-h>":
 		m.clearSlashHints()
 		m.ed.backspace()
+	case "<Delete>":
+		m.clearSlashHints()
+		m.ed.deleteForward()
 	case "<C-w>":
 		m.clearSlashHints()
 		m.ed.deleteWordBackward()
@@ -2193,6 +2936,8 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	case "<C-k>":
 		m.clearSlashHints()
 		m.ed.killToEnd()
+	case "<C-l>":
+		m.clearDisplay()
 	case "<C-r>":
 		m.startSearch()
 	case "<Up>":
@@ -2244,14 +2989,26 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	return false
 }
 
+func immediateBusyCommand(input string) bool {
+	if strings.Contains(input, "\n") {
+		return false
+	}
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return false
+	}
+	return fields[0] == "/queue" || fields[0] == "/clear"
+}
+
 // ---------------------------------------------------------------------------
 // gotuiTurnUI: TurnUI impl that pokes the managedREPL model under lock.
 // ---------------------------------------------------------------------------
 
 type gotuiTurnUI struct {
-	repl   *managedREPL
-	config *Config
-	turnID int64
+	repl      *managedREPL
+	config    *Config
+	turnID    int64
+	reuseUser bool
 }
 
 func (t *gotuiTurnUI) Start() {}
@@ -2261,13 +3018,17 @@ func (t *gotuiTurnUI) activeLocked() bool {
 	return t.turnID == 0 || t.repl.model.turnID == t.turnID
 }
 
+func (t *gotuiTurnUI) acceptingLocked() bool {
+	return t.activeLocked() && !t.repl.model.canceling
+}
+
 func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {
 	return make([]bool, len(calls))
 }
 
 func (t *gotuiTurnUI) ShowThinking(tokens int) {
 	t.repl.model.mu.Lock()
-	if !t.activeLocked() {
+	if !t.acceptingLocked() {
 		t.repl.model.mu.Unlock()
 		return
 	}
@@ -2277,11 +3038,14 @@ func (t *gotuiTurnUI) ShowThinking(tokens int) {
 
 func (t *gotuiTurnUI) AppendAssistantText(content string) {
 	t.repl.model.mu.Lock()
-	if !t.activeLocked() {
+	if !t.acceptingLocked() {
 		t.repl.model.mu.Unlock()
 		return
 	}
 	t.repl.model.state = turnStateStreaming
+	if content != "" {
+		t.repl.model.turnHasOutput = true
+	}
 	t.repl.model.appendAssistant(content)
 	t.repl.model.mu.Unlock()
 }
@@ -2289,10 +3053,12 @@ func (t *gotuiTurnUI) AppendAssistantText(content string) {
 func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	t.repl.model.mu.Lock()
 	defer t.repl.model.mu.Unlock()
-	if !t.activeLocked() || t.repl.model.canceling {
+	if !t.acceptingLocked() {
 		return
 	}
 	if len(calls) > 0 {
+		t.repl.model.turnHasOutput = true
+		t.repl.model.finishAssistantBlock("")
 		t.repl.model.runningTools += len(calls)
 		t.repl.model.state = turnStateTool
 		t.repl.model.toolName = calls[0].Name
@@ -2306,6 +3072,9 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 }
 
 func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	if len(calls) == 0 {
+		return nil
+	}
 	t.repl.model.mu.Lock()
 	if !t.activeLocked() || t.repl.model.canceling {
 		t.repl.model.mu.Unlock()
@@ -2340,12 +3109,13 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	t.repl.model.mu.Lock()
 	defer t.repl.model.mu.Unlock()
 	m := t.repl.model
-	if !t.activeLocked() {
+	if !t.acceptingLocked() {
 		return
 	}
 	if m.runningTools > 0 {
 		m.runningTools--
 	}
+	m.turnHasOutput = true
 	// Return to "waiting" only once every tool in the batch has finished;
 	// otherwise the first of several parallel tools to complete would flip the
 	// status back to waiting (and drop the running-tool name) mid-batch.
@@ -2378,17 +3148,18 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 
 func (t *gotuiTurnUI) AppendWarning(text string) {
 	t.repl.model.mu.Lock()
-	if !t.activeLocked() {
+	if !t.acceptingLocked() {
 		t.repl.model.mu.Unlock()
 		return
 	}
 	t.repl.model.appendNoticeLine("Warning: " + text)
+	t.repl.model.turnHasOutput = true
 	t.repl.model.mu.Unlock()
 }
 
 func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 	t.repl.model.mu.Lock()
-	if !t.activeLocked() {
+	if !t.acceptingLocked() {
 		t.repl.model.mu.Unlock()
 		return
 	}
@@ -2399,8 +3170,8 @@ func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 
 func (t *gotuiTurnUI) FinishTextTurn() {
 	t.repl.model.mu.Lock()
-	if t.activeLocked() {
-		t.repl.model.finishAssistantStream()
+	if t.acceptingLocked() {
+		t.repl.model.finishAssistantBlock("")
 	}
 	t.repl.model.mu.Unlock()
 }
@@ -2412,8 +3183,13 @@ func (t *gotuiTurnUI) FinishTextTurn() {
 func runManagedREPL(ctx context.Context, config *Config, state *conversationState) error {
 	repl := newManagedREPL(config, state.session.GetName(), toolCount(state.toolRegistry), skillCount(state.skillCatalog))
 	repl.state = state
+	repl.model.hydrateHistory(state.session.GetHistory(), state.session.GetName())
 	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
-		return executeTurn(turnCtx, config, state, prompt, nil, nil, turnUI)
+		reuseUser := false
+		if tui, ok := turnUI.(*gotuiTurnUI); ok {
+			reuseUser = tui.reuseUser
+		}
+		return executeTurnWithExistingUser(turnCtx, config, state, prompt, nil, nil, turnUI, reuseUser)
 	})
 }
 

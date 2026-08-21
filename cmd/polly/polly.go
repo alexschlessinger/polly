@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -395,6 +396,15 @@ func runREPL(ctx context.Context, config *Config, state *conversationState) erro
 }
 
 func executeTurn(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI) error {
+	return executeTurnWithExistingUser(ctx, config, state, prompt, schema, inputReader, turnUI, false)
+}
+
+// executeTurnWithExistingUser runs a turn and, when reuseUser is true, avoids
+// persisting the same user message twice. This is used when retrying a canceled
+// turn whose user message was already durably stored. Reuse is deliberately
+// conservative: only an equivalent user message at the very end of history is
+// reused, so a missing, changed, or non-terminal message is persisted normally.
+func executeTurnWithExistingUser(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) error {
 	userMsg, err := buildMessageWithFiles(prompt, config.Files)
 	if err != nil {
 		return fmt.Errorf("error processing files: %w", err)
@@ -403,7 +413,7 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 	// Persist the user message before spending API tokens. If the session store
 	// is broken (e.g. disk full), fail fast rather than make a call whose result
 	// can't be saved either. In-memory sessions never error here.
-	if err := state.session.AddMessage(userMsg); err != nil {
+	if err := persistUserMessageForTurn(state.session, userMsg, reuseUser); err != nil {
 		return fmt.Errorf("failed to persist user message: %w", err)
 	}
 
@@ -452,37 +462,39 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-
-	if resp != nil {
-		// Persist the whole turn (assistant message per iteration + every tool
-		// result) with a single write instead of one rewrite per message.
-		if perr := state.session.AddMessages(llm.StripDeniedExchanges(resp.AllMessages)); perr != nil {
-			return fmt.Errorf("failed to persist turn: %w", perr)
-		}
+	// A failed/canceled turn keeps any streamed text visibly labeled as
+	// not saved. Keep persistence aligned with that contract: generated messages
+	// and skill metadata are committed only after the agent has completed.
+	if err != nil {
+		return err
 	}
-	if resp != nil {
-		// Multi-iteration turns produce multiple assistant messages (one per
-		// LLM call between tool roundtrips). Providers report input tokens
-		// cumulatively per-call (each call resends history), so take max for
-		// input. Output tokens are per-iteration, so sum them.
-		var in, out int
-		for _, m := range resp.AllMessages {
-			if m.Role != messages.MessageRoleAssistant {
-				continue
-			}
-			if t := m.GetInputTokens(); t > in {
-				in = t
-			}
-			out += m.GetOutputTokens()
-		}
-		turnUI.RecordTurnTokens(in, out)
+	if resp == nil {
+		return fmt.Errorf("agent returned no response")
 	}
 	if err := persistActiveSkills(state.session, state.skillRuntime, state.skillSources); err != nil {
 		return fmt.Errorf("failed to persist active skills: %w", err)
 	}
-	if err != nil {
-		return err
+
+	// Persist the whole turn (assistant message per iteration + every tool
+	// result) with a single write instead of one rewrite per message.
+	if perr := state.session.AddMessages(durableTurnMessages(resp.AllMessages)); perr != nil {
+		return fmt.Errorf("failed to persist turn: %w", perr)
 	}
+	// Multi-iteration turns produce multiple assistant messages (one per
+	// LLM call between tool roundtrips). Providers report input tokens
+	// cumulatively per-call (each call resends history), so take max for
+	// input. Output tokens are per-iteration, so sum them.
+	var in, out int
+	for _, m := range resp.AllMessages {
+		if m.Role != messages.MessageRoleAssistant {
+			continue
+		}
+		if t := m.GetInputTokens(); t > in {
+			in = t
+		}
+		out += m.GetOutputTokens()
+	}
+	turnUI.RecordTurnTokens(in, out)
 
 	if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
 		turnUI.AppendWarning(fmt.Sprintf("response truncated (hit %d token limit, use --maxtokens to increase)", config.MaxTokens))
@@ -500,6 +512,75 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 	return nil
 }
 
+// durableTurnMessages removes provider-protocol denial exchanges while still
+// recording that an all-denied turn completed. The internal marker is never
+// sent to a model; hydration folds it into one compact denied row instead of
+// resurrecting the completed prompt as an incomplete /retry candidate.
+func durableTurnMessages(generated []messages.ChatMessage) []messages.ChatMessage {
+	stripped := llm.StripDeniedExchanges(generated)
+	if terminalToolBatchAllDenied(generated) {
+		stripped = append(stripped, messages.ChatMessage{
+			Role: messages.MessageRoleInternal,
+			Metadata: map[string]any{
+				messages.MetadataKeyTurnStatus: messages.TurnStatusToolDenied,
+			},
+		})
+	}
+	return stripped
+}
+
+func terminalToolBatchAllDenied(generated []messages.ChatMessage) bool {
+	proposal := -1
+	for i, msg := range generated {
+		if msg.Role == messages.MessageRoleAssistant && len(msg.ToolCalls) > 0 {
+			proposal = i
+		}
+	}
+	if proposal < 0 {
+		return false
+	}
+	seen := false
+	for _, msg := range generated[proposal+1:] {
+		if msg.Role != messages.MessageRoleTool {
+			continue
+		}
+		seen = true
+		if msg.Content != llm.ToolDeniedContent {
+			return false
+		}
+	}
+	return seen
+}
+
+func persistUserMessageForTurn(session sessions.Session, userMsg messages.ChatMessage, reuseUser bool) error {
+	if reuseUser && sessionEndsWithEquivalentUserMessage(session, userMsg) {
+		return nil
+	}
+	return session.AddMessage(userMsg)
+}
+
+func sessionEndsWithEquivalentUserMessage(session sessions.Session, userMsg messages.ChatMessage) bool {
+	history := session.GetHistory()
+	if len(history) == 0 {
+		return false
+	}
+	last := history[len(history)-1]
+	return last.Role == messages.MessageRoleUser &&
+		userMsg.Role == messages.MessageRoleUser &&
+		last.Content == userMsg.Content &&
+		slices.Equal(last.Parts, userMsg.Parts)
+}
+
+func modelVisibleHistory(history []messages.ChatMessage) []messages.ChatMessage {
+	visible := make([]messages.ChatMessage, 0, len(history))
+	for _, msg := range history {
+		if msg.Role != messages.MessageRoleInternal {
+			visible = append(visible, msg)
+		}
+	}
+	return visible
+}
+
 // createCompletionRequest builds an LLM completion request from config
 func createCompletionRequest(config *Config, session sessions.Session, registry *tools.ToolRegistry, skillCatalog *skills.Catalog, schema *llm.Schema) *llm.CompletionRequest {
 	// Parse thinking effort - already validated at config parsing time
@@ -511,7 +592,7 @@ func createCompletionRequest(config *Config, session sessions.Session, registry 
 		Temperature:    llm.Float32Ptr(float32(config.Temperature)),
 		Model:          config.Model,
 		MaxTokens:      config.MaxTokens,
-		Messages:       session.GetHistory(),
+		Messages:       modelVisibleHistory(session.GetHistory()),
 		Skills:         skillCatalog,
 		Tools:          registry.All(),
 		ResponseSchema: schema,

@@ -3,7 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -55,8 +58,104 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 	case "read_skill_file":
 		return summarizeReadSkillFileArgs(args)
 	default:
+		return summarizeGenericToolArgs(rawArgs)
+	}
+}
+
+const genericToolSummaryWidth = 120
+
+// summarizeGenericToolArgs gives custom and MCP tools a useful approval label
+// without dumping arbitrary payloads into the terminal. Only scalar top-level
+// values are shown; nested objects and arrays are represented by their shape.
+// Sorting makes the result stable across Go's randomized map iteration order.
+func summarizeGenericToolArgs(args map[string]any) string {
+	if len(args) == 0 {
 		return ""
 	}
+
+	keys := make([]string, 0, len(args))
+	for key := range args {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := genericToolArgValue(args[key])
+		if sensitiveToolArgKey(key) {
+			value = "<redacted>"
+		}
+		parts = append(parts, compactToolArgKey(key)+"="+value)
+	}
+	return truncate(strings.Join(parts, ", "), genericToolSummaryWidth)
+}
+
+func compactToolArgKey(key string) string {
+	key = strings.Join(strings.Fields(key), " ")
+	return truncate(key, 32)
+}
+
+func genericToolArgValue(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return "null"
+	case string:
+		return strconv.Quote(v)
+	case bool:
+		return strconv.FormatBool(v)
+	case float64:
+		return strconv.FormatFloat(v, 'g', -1, 64)
+	case map[string]any:
+		return fmt.Sprintf("{%d fields}", len(v))
+	case []any:
+		return fmt.Sprintf("[%d items]", len(v))
+	default:
+		// JSON decoding should constrain values to the cases above. Keep the
+		// fallback opaque in case that contract changes; never dump an unknown
+		// nested payload into an approval prompt.
+		return "<value>"
+	}
+}
+
+func sensitiveToolArgKey(key string) bool {
+	words := splitToolArgKey(key)
+	for _, word := range words {
+		switch word {
+		case "token", "key", "secret", "password", "auth", "authorization", "authentication", "credential", "credentials", "cookie", "cookies":
+			return true
+		}
+		// Cover common unsplit spellings such as accesstoken, clientsecret,
+		// apikey, and cookiejar without treating ordinary keys like "author"
+		// or "monkey" as sensitive.
+		for _, marker := range []string{"token", "secret", "password", "credential", "cookie"} {
+			if strings.Contains(word, marker) {
+				return true
+			}
+		}
+		switch word {
+		case "apikey", "accesskey", "privatekey", "secretkey", "signingkey":
+			return true
+		}
+	}
+	return false
+}
+
+func splitToolArgKey(key string) []string {
+	var normalized strings.Builder
+	var previous rune
+	for _, r := range key {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			normalized.WriteByte(' ')
+			previous = 0
+			continue
+		}
+		if unicode.IsUpper(r) && previous != 0 && (unicode.IsLower(previous) || unicode.IsDigit(previous)) {
+			normalized.WriteByte(' ')
+		}
+		normalized.WriteRune(unicode.ToLower(r))
+		previous = r
+	}
+	return strings.Fields(normalized.String())
 }
 
 func summarizeReadArgs(args tools.Args) string {

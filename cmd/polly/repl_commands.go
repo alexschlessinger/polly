@@ -5,6 +5,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -33,11 +34,23 @@ type replCommandRegistry struct {
 }
 
 type replCommandContext struct {
-	config          *Config
-	state           *conversationState
-	registry        *replCommandRegistry
-	reply           func(string) error
-	clearTranscript func() error
+	config   *Config
+	state    *conversationState
+	registry *replCommandRegistry
+	reply    func(string) error
+
+	// Interactive-only operations are callbacks so the command parser stays
+	// independent of the managed REPL's queue and turn state. The fallback REPL
+	// leaves them nil; handlers report that the operation is unavailable.
+	clearTranscript   func() error
+	resetConversation func() error
+	// queueLines returns raw queued inputs in execution order (oldest first).
+	queueLines func() []string
+	// dropQueued removes the most recently queued (last) input.
+	dropQueued    func() (string, bool)
+	clearQueue    func() int
+	continueQueue func() error
+	retryTurn     func() error
 }
 
 var (
@@ -50,7 +63,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:    "/clear",
 		usage:   "/clear",
-		summary: "clear conversation history",
+		summary: "clear the display (keep conversation history)",
 		run:     replClearCommand,
 	})
 	r.register(replCommand{
@@ -81,6 +94,25 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		usage:   "/help [command]",
 		summary: "show this help",
 		run:     replHelpCommand,
+	})
+	r.register(replCommand{
+		name:     "/queue",
+		usage:    "/queue [list|drop|clear|continue]",
+		summary:  "inspect or manage queued input",
+		run:      replQueueCommand,
+		complete: completeQueueCommand,
+	})
+	r.register(replCommand{
+		name:    "/reset",
+		usage:   "/reset confirm",
+		summary: "clear durable conversation history",
+		run:     replResetCommand,
+	})
+	r.register(replCommand{
+		name:    "/retry",
+		usage:   "/retry",
+		summary: "retry the last failed or canceled turn",
+		run:     replRetryCommand,
 	})
 	r.register(replCommand{
 		name:    "/skills",
@@ -194,11 +226,13 @@ func keyHelpLines() []string {
 		"  Ctrl-R            reverse-search history",
 		"  PgUp / PgDn       scroll transcript",
 		"  Ctrl-A / Ctrl-E   line start / end",
+		"  Delete / Ctrl-D   delete next char (Ctrl-D exits when empty)",
 		"  Ctrl-U / Ctrl-K   clear before / after cursor",
+		"  Ctrl-L            clear display",
 		"  Ctrl-W            delete previous word",
 		"  Alt-B / Alt-F     word left / right",
 		"  Alt-D             delete next word",
-		"  y / n / a         answer approval prompts",
+		"  y approve · n/Enter/Esc deny · a approve all",
 	}
 }
 
@@ -239,20 +273,103 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			return nil
 		},
 		clearTranscript: func() error {
-			r.model.transcript = nil
-			r.model.currentAssistant = -1
-			r.model.activeTools = nil
-			r.model.runningTools = 0
-			r.model.stream.Reset()
-			r.model.invalidateFlat()
-			r.model.appendNoticeLine("context cleared")
+			r.model.clearDisplay()
 			return nil
+		},
+		resetConversation: func() error {
+			if r.state == nil || r.state.session == nil {
+				return fmt.Errorf("no active session")
+			}
+			if err := r.state.session.Clear(); err != nil {
+				// A queued reset is a barrier. If it fails, keep later prompts
+				// paused against the old history instead of running them silently.
+				if len(r.model.queue) > 0 {
+					r.model.queuePaused = true
+					r.model.updateQueueHint()
+				}
+				return err
+			}
+			r.model.clearDisplay()
+			r.model.retryPrompt = ""
+			r.model.lastOutcome = turnOutcomeNone
+			r.model.lastIn = 0
+			r.model.lastOut = 0
+			r.model.lastElapsed = 0
+			r.model.turnHasOutput = false
+			r.model.unsavedLabeled = false
+			return nil
+		},
+		queueLines: func() []string {
+			return append([]string(nil), r.model.queue...)
+		},
+		dropQueued: func() (string, bool) {
+			if len(r.model.queue) == 0 {
+				return "", false
+			}
+			last := len(r.model.queue) - 1
+			line := r.model.queue[last]
+			r.model.queue = r.model.queue[:last]
+			if len(r.model.queue) == 0 {
+				r.model.queuePaused = false
+				r.model.queueResumeAfterTurn = false
+			}
+			r.model.updateQueueHint()
+			return line, true
+		},
+		clearQueue: func() int {
+			count := len(r.model.queue)
+			r.model.queue = nil
+			r.model.queuePaused = false
+			r.model.queueResumeAfterTurn = false
+			r.model.updateQueueHint()
+			return count
+		},
+		continueQueue: func() error {
+			r.model.queuePaused = false
+			if r.model.busy {
+				r.model.queueResumeAfterTurn = true
+			}
+			r.model.updateQueueHint()
+			return nil
+		},
+		retryTurn: func() error {
+			m := r.model
+			if m.busy {
+				return fmt.Errorf("a turn is already running")
+			}
+			if m.retryPrompt == "" {
+				return fmt.Errorf("no failed or canceled turn")
+			}
+			prompt := m.retryPrompt
+			m.appendTurnSeparator()
+			m.busy = true
+			m.canceling = false
+			m.state = turnStateWaiting
+			m.runningTools = 0
+			m.turnStarted = time.Now()
+			m.currentPrompt = prompt
+			m.turnHasOutput = false
+			m.unsavedLabeled = false
+			m.lastOutcome = turnOutcomeNone
+			m.lastIn = 0
+			m.lastOut = 0
+			m.retryingNext = true
+			m.followBottom = true
+			select {
+			case r.pending <- prompt:
+				return nil
+			default:
+				m.busy = false
+				m.state = turnStateIdle
+				m.retryingNext = false
+				return fmt.Errorf("turn queue is unavailable")
+			}
 		},
 	}
 }
 
 func newWriterReplCommandContext(config *Config, state *conversationState, w io.Writer) *replCommandContext {
-	return &replCommandContext{
+	ctx := &replCommandContext{
 		config:   config,
 		state:    state,
 		registry: defaultReplCommands,
@@ -261,6 +378,10 @@ func newWriterReplCommandContext(config *Config, state *conversationState, w io.
 			return err
 		},
 	}
+	if state != nil && state.session != nil {
+		ctx.resetConversation = state.session.Clear
+	}
+	return ctx
 }
 
 func helpLines() []string {
@@ -354,15 +475,108 @@ func replHelpCommand(ctx *replCommandContext, args []string) replCommandResult {
 }
 
 func replClearCommand(ctx *replCommandContext, args []string) replCommandResult {
-	if ctx != nil && ctx.state != nil && ctx.state.session != nil {
-		if err := ctx.state.session.Clear(); err != nil {
-			return replCommandResult{err: ctx.replyLine(fmt.Sprintf("failed to clear context: %v", err))}
+	if len(args) != 1 {
+		return replCommandResult{err: ctx.replyLine("usage: /clear")}
+	}
+	if ctx == nil || ctx.clearTranscript == nil {
+		return replCommandResult{err: ctx.replyLine("display clear unavailable")}
+	}
+	if err := ctx.clearTranscript(); err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("failed to clear display: %v", err))}
+	}
+	return replCommandResult{err: ctx.replyLine("display cleared")}
+}
+
+func replResetCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 2 || args[1] != "confirm" {
+		return replCommandResult{err: ctx.replyLine("reset clears durable conversation history; run /reset confirm")}
+	}
+	if ctx == nil || ctx.resetConversation == nil {
+		return replCommandResult{err: ctx.replyLine("conversation reset unavailable")}
+	}
+	if err := ctx.resetConversation(); err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("failed to reset conversation: %v", err))}
+	}
+	return replCommandResult{err: ctx.replyLine("conversation reset")}
+}
+
+func completeQueueCommand(_ *replCommandContext, _ []string, prefix string) []string {
+	return matchingWords([]string{"list", "drop", "clear", "continue"}, prefix)
+}
+
+func replQueueCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) > 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /queue [list|drop|clear|continue]")}
+	}
+	action := "list"
+	if len(args) == 2 {
+		action = args[1]
+	}
+
+	switch action {
+	case "list":
+		if ctx == nil || ctx.queueLines == nil {
+			return replCommandResult{err: ctx.replyLine("queue unavailable")}
 		}
+		lines := ctx.queueLines()
+		if len(lines) == 0 {
+			return replCommandResult{err: ctx.replyLine("queue empty")}
+		}
+		out := []string{fmt.Sprintf("queue (%d):", len(lines))}
+		for i, line := range lines {
+			out = append(out, fmt.Sprintf("  %d. %s", i+1, queueLinePreview(line)))
+		}
+		return replCommandResult{err: ctx.replyLines(out)}
+	case "drop":
+		if ctx == nil || ctx.dropQueued == nil {
+			return replCommandResult{err: ctx.replyLine("queue drop unavailable")}
+		}
+		line, ok := ctx.dropQueued()
+		if !ok {
+			return replCommandResult{err: ctx.replyLine("queue empty")}
+		}
+		return replCommandResult{err: ctx.replyLine("dropped newest queued input: " + queueLinePreview(line))}
+	case "clear":
+		if ctx == nil || ctx.clearQueue == nil {
+			return replCommandResult{err: ctx.replyLine("queue clear unavailable")}
+		}
+		count := ctx.clearQueue()
+		if count == 0 {
+			return replCommandResult{err: ctx.replyLine("queue already empty")}
+		}
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("cleared %d queued input(s)", count))}
+	case "continue":
+		if ctx == nil || ctx.continueQueue == nil {
+			return replCommandResult{err: ctx.replyLine("queue continue unavailable")}
+		}
+		if err := ctx.continueQueue(); err != nil {
+			return replCommandResult{err: ctx.replyLine(fmt.Sprintf("failed to continue queue: %v", err))}
+		}
+		return replCommandResult{err: ctx.replyLine("queue continued")}
+	default:
+		return replCommandResult{err: ctx.replyLine("usage: /queue [list|drop|clear|continue]")}
 	}
-	if ctx != nil && ctx.clearTranscript != nil {
-		return replCommandResult{err: ctx.clearTranscript()}
+}
+
+func queueLinePreview(line string) string {
+	line = strings.TrimSpace(strings.ReplaceAll(line, "\n", " ↵ "))
+	if line == "" {
+		return "(blank)"
 	}
-	return replCommandResult{err: ctx.replyLine("context cleared")}
+	return truncate(line, 120)
+}
+
+func replRetryCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 1 {
+		return replCommandResult{err: ctx.replyLine("usage: /retry")}
+	}
+	if ctx == nil || ctx.retryTurn == nil {
+		return replCommandResult{err: ctx.replyLine("retry unavailable")}
+	}
+	if err := ctx.retryTurn(); err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("failed to retry turn: %v", err))}
+	}
+	return replCommandResult{err: ctx.replyLine("retrying last turn")}
 }
 
 func replContextCommand(ctx *replCommandContext, args []string) replCommandResult {

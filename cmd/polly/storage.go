@@ -175,7 +175,8 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 		for _, part := range parts {
 			switch part.Type {
 			case "text":
-				// Create a message for each file
+				// Keep filename boundaries in provider-visible text. Metadata below
+				// lets the resumed REPL compact the body without losing that context.
 				var content string
 				if part.FileName != "" {
 					content = fmt.Sprintf("=== %s ===\n%s", part.FileName, part.Text)
@@ -209,6 +210,12 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 			Role:    messages.MessageRoleUser,
 			Content: content,
 		})
+	}
+	for i := range msgs {
+		if msgs[i].Metadata == nil {
+			msgs[i].Metadata = make(map[string]any)
+		}
+		msgs[i].Metadata[messages.MetadataKeyContextImport] = true
 	}
 
 	if err := session.AddMessages(msgs); err != nil {
