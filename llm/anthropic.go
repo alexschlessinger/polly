@@ -17,27 +17,47 @@ import (
 
 const structuredOutputToolName = "extract_structured_data"
 
+// legacyThinkingPrefixes enumerates the closed set of models that still use the
+// legacy enabled/budget_tokens thinking mode. Everything from the 4.6 family
+// onward uses adaptive thinking (type:"adaptive" + OutputConfig.Effort), and all
+// future models will too, so unknown models default to adaptive. This list can
+// only shrink (as legacy models retire), never grow.
+var legacyThinkingPrefixes = [...]string{
+	"claude-2",
+	"claude-3", // all 3.x, including claude-3-5-* and claude-3-7-*
+	"claude-opus-4-0",
+	"claude-opus-4-1",
+	"claude-opus-4-5",
+	"claude-opus-4-20250514", // dated full ID for opus 4.0
+	"claude-sonnet-4-0",
+	"claude-sonnet-4-20250514", // dated full ID for sonnet 4.0
+	"claude-sonnet-4-5",
+	"claude-haiku-4-5",
+	"claude-mythos-preview",
+}
+
 // supportsAdaptiveThinking reports whether the model expects adaptive thinking
 // (type:"adaptive" + OutputConfig.Effort) rather than legacy enabled/budget_tokens.
-// True for the Claude 4.6+ family: opus-4-6, opus-4-7, opus-4-8, sonnet-4-6.
-// Note: opus-4-7 and opus-4-8 *reject* the legacy enabled mode with a 400, so
-// new model strings in these families must be added here as they ship.
+// Everything past the 4.5 generation *rejects* the legacy enabled mode with a
+// 400, so adaptive is the default and legacy models are the exception.
 func supportsAdaptiveThinking(model string) bool {
-	switch {
-	case strings.HasPrefix(model, "claude-opus-4-6"),
-		strings.HasPrefix(model, "claude-opus-4-7"),
-		strings.HasPrefix(model, "claude-opus-4-8"),
-		strings.HasPrefix(model, "claude-sonnet-4-6"):
-		return true
+	for _, p := range legacyThinkingPrefixes {
+		if strings.HasPrefix(model, p) {
+			return false
+		}
 	}
-	return false
+	return true
 }
 
 // rejectsSamplingParams reports whether the model 400s on temperature/top_p/top_k.
-// True for the Claude Opus 4.7 and 4.8 families.
+// The 4.6 family is the only adaptive generation that still accepts them; every
+// later model rejects them (sonnet-5 rejects non-default values), so unknown
+// models default to rejecting — the worst case of guessing wrong here is a
+// dropped temperature rather than a 400.
 func rejectsSamplingParams(model string) bool {
-	return strings.HasPrefix(model, "claude-opus-4-7") ||
-		strings.HasPrefix(model, "claude-opus-4-8")
+	return supportsAdaptiveThinking(model) &&
+		!strings.HasPrefix(model, "claude-opus-4-6") &&
+		!strings.HasPrefix(model, "claude-sonnet-4-6")
 }
 
 // mapEffort converts a ThinkingEffort to the Anthropic OutputConfig effort level

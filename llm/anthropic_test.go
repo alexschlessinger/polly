@@ -236,6 +236,11 @@ func TestAnthropicCapabilityPredicates(t *testing.T) {
 		"claude-opus-4-8",
 		"claude-opus-4-8-20260601",
 		"claude-sonnet-4-6",
+		"claude-opus-5",
+		"claude-sonnet-5",
+		"claude-fable-5",
+		"claude-mythos-5",
+		"claude-opus-6", // unknown future models default to adaptive
 	}
 	for _, m := range adaptive {
 		if !supportsAdaptiveThinking(m) {
@@ -245,9 +250,14 @@ func TestAnthropicCapabilityPredicates(t *testing.T) {
 
 	legacy := []string{
 		"claude-sonnet-4-5-20250929",
+		"claude-sonnet-4-20250514",
 		"claude-opus-4-5",
 		"claude-opus-4-1",
+		"claude-opus-4-20250514",
+		"claude-haiku-4-5",
+		"claude-haiku-4-5-20251001",
 		"claude-3-5-sonnet-20240620",
+		"claude-mythos-preview",
 	}
 	for _, m := range legacy {
 		if supportsAdaptiveThinking(m) {
@@ -267,7 +277,12 @@ func TestAnthropicCapabilityPredicates(t *testing.T) {
 	if !rejectsSamplingParams("claude-opus-4-8-20260601") {
 		t.Errorf("rejectsSamplingParams(dated opus-4-8) = false, want true")
 	}
-	for _, m := range []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929"} {
+	for _, m := range []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5", "claude-opus-6"} {
+		if !rejectsSamplingParams(m) {
+			t.Errorf("rejectsSamplingParams(%q) = false, want true", m)
+		}
+	}
+	for _, m := range []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929", "claude-haiku-4-5"} {
 		if rejectsSamplingParams(m) {
 			t.Errorf("rejectsSamplingParams(%q) = true, want false", m)
 		}
