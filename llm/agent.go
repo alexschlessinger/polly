@@ -208,6 +208,13 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			return nil, err
 
 		case messages.StopReasonToolUse:
+			if len(response.ToolCalls) == 0 {
+				err := errors.New("model requested tool use without any tool calls")
+				if cb != nil && cb.OnError != nil {
+					cb.OnError(err)
+				}
+				return nil, err
+			}
 			// Continue to execute tool calls below
 
 		default:
@@ -358,12 +365,17 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 		cb.OnToolEnd(tc, result, duration, err)
 	}
 
-	return messages.ChatMessage{
+	msg := messages.ChatMessage{
 		Role:       messages.MessageRoleTool,
 		Content:    result,
 		ToolCallID: tc.ID,
 		ToolName:   tc.Name,
 	}
+	// Record an explicit ordinary tool outcome so transcript hydration can
+	// distinguish it from older tool messages whose outcome is unknown. Tool
+	// failures must not use the terminal stream-error metadata.
+	msg.SetToolSucceeded(err == nil)
+	return msg
 }
 
 // executeToolCall performs the actual tool execution
@@ -417,6 +429,9 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 // executeToolsParallel executes multiple tool calls concurrently and returns results in order.
 // If context is cancelled, all running tools are notified via their context.
 func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.ChatMessageToolCall, cb *AgentCallbacks) ([]messages.ChatMessage, error) {
+	if len(toolCalls) == 0 {
+		return nil, nil
+	}
 	// Fire callback once with all tools before parallel execution
 	if cb != nil && cb.OnToolStart != nil {
 		cb.OnToolStart(toolCalls)

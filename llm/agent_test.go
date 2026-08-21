@@ -2,11 +2,65 @@ package llm
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
+
+func TestAgentToolMessagesPersistExplicitOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		runErr    error
+		wantError bool
+	}{
+		{name: "success"},
+		{name: "failure", runErr: errors.New("boom"), wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := &tools.Func{
+				Name: "test_tool",
+				Run: func(context.Context, tools.Args) (string, error) {
+					return "result", tc.runErr
+				},
+			}
+			agent := NewAgent(nil, tools.NewToolRegistry([]tools.Tool{tool}), AgentConfig{})
+			msg := agent.executeTool(context.Background(), messages.ChatMessageToolCall{
+				ID: "1", Name: "test_tool", Arguments: `{}`,
+			}, nil)
+			succeeded, known := msg.ToolSucceeded()
+			if !known || succeeded == tc.wantError {
+				t.Fatalf("persisted tool outcome = (%v, %v), want success=%v; metadata=%v", succeeded, known, !tc.wantError, msg.Metadata)
+			}
+			if msg.IsError() {
+				t.Fatal("ordinary tool failure was incorrectly marked as a terminal stream error")
+			}
+		})
+	}
+}
+
+func TestAgentRejectsToolUseWithoutCalls(t *testing.T) {
+	model := &sequentialLLM{responses: []messages.ChatMessage{{
+		Role:       messages.MessageRoleAssistant,
+		StopReason: messages.StopReasonToolUse,
+	}}}
+	agent := NewAgent(model, tools.NewToolRegistry(nil), AgentConfig{MaxIterations: 1})
+	approvalCalled := false
+	_, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
+		ApproveToolCalls: func([]messages.ChatMessageToolCall) []bool {
+			approvalCalled = true
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "without any tool calls") {
+		t.Fatalf("Run() error = %v, want malformed tool-use error", err)
+	}
+	if approvalCalled {
+		t.Fatal("malformed empty tool batch reached approval callback")
+	}
+}
 
 // sequentialLLM returns a fixed sequence of ChatMessages, one per call.
 type sequentialLLM struct {

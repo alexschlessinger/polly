@@ -56,6 +56,34 @@ func TestProcessMessagesToEvents_EmitsCompleteForNormalStream(t *testing.T) {
 	}
 }
 
+func TestProcessMessagesToEvents_ToolFailureIsNotTerminal(t *testing.T) {
+	p := NewStreamProcessor()
+	msgChan := make(chan ChatMessage, 2)
+	events := p.ProcessMessagesToEvents(msgChan)
+
+	toolResult := ChatMessage{Role: MessageRoleTool, Content: "tool failed"}
+	toolResult.SetToolSucceeded(false)
+	msgChan <- toolResult
+	msgChan <- ChatMessage{Role: MessageRoleAssistant, Content: "later response"}
+	close(msgChan)
+
+	var sawLater, sawComplete bool
+	for ev := range events {
+		if ev.Type == EventTypeError {
+			t.Fatalf("ordinary tool failure emitted terminal error: %v", ev.Error)
+		}
+		if ev.Type == EventTypeContent && ev.Content == "later response" {
+			sawLater = true
+		}
+		if ev.Type == EventTypeComplete {
+			sawComplete = true
+		}
+	}
+	if !sawLater || !sawComplete {
+		t.Fatalf("stream after tool failure: later=%v complete=%v", sawLater, sawComplete)
+	}
+}
+
 func TestProcessMessagesToEvents_ReasoningChunk(t *testing.T) {
 	p := NewStreamProcessor()
 	msgChan := make(chan ChatMessage, 1)

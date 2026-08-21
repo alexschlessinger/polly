@@ -84,14 +84,21 @@ const (
 	MessageRoleUser      = "user"
 	MessageRoleAssistant = "assistant"
 	MessageRoleTool      = "tool"
+	// MessageRoleInternal is durable application state that must be filtered
+	// before history is sent to a model provider.
+	MessageRoleInternal = "internal"
 )
 
-// Metadata keys for token usage and terminal errors
+// Metadata keys for token usage, terminal errors, and durable tool outcomes.
 const (
-	MetadataKeyInputTokens  = "input_tokens"
-	MetadataKeyOutputTokens = "output_tokens"
-	MetadataKeyIsError      = "is_error"
-	MetadataKeyError        = "error"
+	MetadataKeyInputTokens   = "input_tokens"
+	MetadataKeyOutputTokens  = "output_tokens"
+	MetadataKeyIsError       = "is_error"
+	MetadataKeyError         = "error"
+	MetadataKeyToolSucceeded = "tool_succeeded"
+	MetadataKeyTurnStatus    = "turn_status"
+	MetadataKeyContextImport = "context_import"
+	TurnStatusToolDenied     = "tool_denied"
 )
 
 // GetInputTokens returns the input token count from metadata, or 0 if not set
@@ -161,4 +168,22 @@ func (m *ChatMessage) GetError() error {
 		return errors.New(msg)
 	}
 	return nil
+}
+
+// SetToolSucceeded records the durable outcome of an ordinary tool call.
+// Tool failures are not terminal stream errors and must not use SetError.
+func (m *ChatMessage) SetToolSucceeded(succeeded bool) {
+	if m.Metadata == nil {
+		m.Metadata = make(map[string]any)
+	}
+	m.Metadata[MetadataKeyToolSucceeded] = succeeded
+}
+
+// ToolSucceeded returns a durable tool outcome when one was recorded.
+func (m *ChatMessage) ToolSucceeded() (succeeded bool, known bool) {
+	if m.Metadata == nil {
+		return false, false
+	}
+	succeeded, known = m.Metadata[MetadataKeyToolSucceeded].(bool)
+	return succeeded, known
 }
