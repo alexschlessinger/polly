@@ -245,6 +245,13 @@ func TestToolsSandboxBadges(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "custom writes" {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					t.Fatal(err)
+				}
+				tt.cfg.WritablePaths = []string{os.TempDir(), home}
+			}
 			factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 				return probeFailSandbox{}, nil
 			}
@@ -335,6 +342,20 @@ func TestSandboxNoticeLine(t *testing.T) {
 	got := sandboxNoticeLine(&Config{}, state)
 	if !strings.Contains(got, "0 tools sandboxed") || !strings.Contains(got, "not sandboxed: bash") {
 		t.Fatalf("opt-out notice = %q", got)
+	}
+}
+
+func TestWriteFallbackSandboxNotice(t *testing.T) {
+	var out bytes.Buffer
+	writeFallbackSandboxNotice(&out, &Config{NoSandbox: true}, nil)
+	if got := out.String(); got != "sandbox: disabled (--nosandbox)\n" {
+		t.Fatalf("fallback sandbox notice = %q", got)
+	}
+
+	out.Reset()
+	writeFallbackSandboxNotice(&out, &Config{NoSandbox: true, Quiet: true}, nil)
+	if out.Len() != 0 {
+		t.Fatalf("quiet fallback wrote sandbox notice: %q", out.String())
 	}
 }
 

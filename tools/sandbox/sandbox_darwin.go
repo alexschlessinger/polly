@@ -8,37 +8,144 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
+)
+
+const (
+	darwinSandboxExecPath          = "/usr/bin/sandbox-exec"
+	darwinEnvBootstrapPath         = "/usr/bin/perl"
+	darwinEnvBootstrapMagic        = "pollytool-darwin-env-v2"
+	darwinEnvBootstrapMaxPayload   = 1 << 20
+	darwinEnvBootstrapMaxPipeCount = 512
+	darwinEnvBootstrapCode         = `use strict;
+use warnings;
+my $pipe_count = shift @ARGV;
+my $first_fd = shift @ARGV;
+defined($pipe_count) && defined($first_fd) or die "missing environment descriptors";
+$pipe_count =~ /\A[1-9][0-9]*\z/ && $pipe_count <= 512 or die "invalid environment descriptor count";
+$first_fd =~ /\A(?:0|[1-9][0-9]*)\z/ && $first_fd >= 3 or die "invalid environment descriptor";
+my $framed = "";
+for (my $offset = 0; $offset < $pipe_count; $offset++) {
+    my $fd = $first_fd + $offset;
+    open(my $fh, "<&=$fd") or die "open environment descriptor: $!";
+    binmode($fh);
+    local $/;
+    my $chunk = <$fh>;
+    $chunk = "" unless defined($chunk);
+    close($fh) or die "close environment descriptor: $!";
+    $framed .= $chunk;
+}
+my ($magic, $length_field, $data) = split(/\0/, $framed, 3);
+defined($magic) && defined($length_field) && defined($data) or die "invalid environment payload";
+$magic eq "pollytool-darwin-env-v2" or die "invalid environment payload";
+$length_field =~ /\A(?:0|[1-9][0-9]*)\z/ or die "invalid environment payload";
+my $expected = 0 + $length_field;
+length($data) == $expected or die "truncated environment payload";
+my @parts = ();
+if (length($data)) {
+    @parts = split(/\0/, $data, -1);
+    my $tail = pop @parts;
+    defined($tail) && $tail eq "" or die "invalid environment payload";
+}
+%ENV = ();
+for my $entry (@parts) {
+    my ($name, $value) = split(/=/, $entry, 2);
+    die "invalid environment entry" unless defined($value) && length($name);
+    $ENV{$name} = $value;
+}
+die "missing target" unless @ARGV;
+my $target = shift @ARGV;
+die "missing target argument vector" unless @ARGV;
+exec {$target} @ARGV;
+die "exec target: $!";
+`
 )
 
 type darwinSandbox struct {
-	cfg Config
+	cfg             Config
+	sandboxExecPath string
+	writePaths      []string
+	authorityPaths  []authorityPathIdentity
 }
 
 // New creates a Sandbox for macOS using sandbox-exec with Seatbelt profiles.
 func New(cfg Config) (Sandbox, error) {
-	if _, err := exec.LookPath("sandbox-exec"); err != nil {
-		return nil, fmt.Errorf("sandbox-exec not available: %w", err)
+	if err := validateDarwinSandboxExecExecutable(darwinSandboxExecPath); err != nil {
+		return nil, err
+	}
+	if err := validateDarwinEnvBootstrapExecutable(darwinEnvBootstrapPath); err != nil {
+		return nil, err
 	}
 	var err error
-	cfg, err = normalizeConfigPaths(cfg)
+	cfg, err = PrepareConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
-	return &darwinSandbox{cfg: cfg}, nil
+	if !cfg.DenyWrite {
+		if _, err := resolveDenyWritePaths(cfg.DenyWritePaths, cfg.WritablePaths); err != nil {
+			return nil, err
+		}
+	}
+	writePaths := darwinWritePaths(cfg)
+	authorityRoutes := append([]string{}, cfg.ReadPaths...)
+	if !cfg.DenyWrite {
+		authorityRoutes = append(authorityRoutes, writePaths...)
+	}
+	authorityPaths, err := captureAuthorityPathIdentities(authorityRoutes)
+	if err != nil {
+		return nil, err
+	}
+	return &darwinSandbox{
+		cfg:             cfg,
+		sandboxExecPath: darwinSandboxExecPath,
+		writePaths:      append([]string(nil), writePaths...),
+		authorityPaths:  authorityPaths,
+	}, nil
+}
+
+func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
+	return freezeAuthorityPaths(cfg)
 }
 
 func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
+	return ErrManagedWrapRequired
+}
+
+func (s *darwinSandbox) WrapWithEnv(cmd *exec.Cmd, explicitEnv map[string]string) error {
+	if err := validateExplicitEnv(explicitEnv); err != nil {
+		return err
+	}
+	return ErrManagedWrapRequired
+}
+
+func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string) error {
+	if err := validateExplicitEnv(explicitEnv); err != nil {
+		return err
+	}
+	if err := validateAuthorityPathIdentities(s.authorityPaths); err != nil {
+		return err
+	}
+	if err := validateReadPathAliasIdentities(s.cfg.readPathAliases); err != nil {
+		return err
+	}
+	if !s.cfg.DenyWrite {
+		if _, err := resolveDenyWritePaths(s.cfg.DenyWritePaths, s.cfg.WritablePaths); err != nil {
+			return err
+		}
+	}
 	env := cmd.Env
 	if env == nil {
 		env = os.Environ()
 	}
 	filtered, stripped := filterEnv(env, s.cfg.AllowEnv)
-	cmd.Env = filtered
+	filtered = mergeExplicitEnv(filtered, explicitEnv)
 
 	origArgs := cmd.Args
 	origPath, err := resolvedExecutablePath(cmd)
@@ -53,10 +160,30 @@ func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
 		"writable_paths", s.cfg.WritablePaths,
 		"env_stripped", stripped,
 		"denied_paths", len(denied))
-	cmd.Path = "/usr/bin/sandbox-exec"
-	// The profile is rebuilt on every wrap, not frozen at construction, so the
-	// symlink resolution below tracks the filesystem as it is now.
-	cmd.Args = append([]string{"sandbox-exec", "-p", buildProfile(s.cfg, denied), origPath}, origArgs[1:]...)
+	bootstrapFD, bootstrapPipeCount, err := attachDarwinEnvBootstrap(cmd, filtered)
+	if err != nil {
+		return fmt.Errorf("prepare target environment: %w", err)
+	}
+	cmd.Path = s.sandboxExecPath
+	// The deny profile is rebuilt on every wrap so newly created credential
+	// paths are covered. Approved write roots remain the construction-time set.
+	targetArgs := origArgs
+	if len(targetArgs) == 0 {
+		targetArgs = []string{origPath}
+	}
+	cmd.Args = []string{
+		"sandbox-exec", "-p", buildProfileWithWritePaths(s.cfg, s.writePaths, denied), darwinEnvBootstrapPath,
+		"-e", darwinEnvBootstrapCode, strconv.Itoa(bootstrapPipeCount), strconv.Itoa(bootstrapFD), origPath,
+	}
+	cmd.Args = append(cmd.Args, targetArgs...)
+	// sandbox-exec and the fixed, root-owned bootstrap receive no target
+	// environment. Perl concatenates the anonymous, prefilled pipe shards and
+	// validates their length-framed payload only after Seatbelt is active, then
+	// closes every reader, clears its own environment, and uses its builtin exec
+	// to launch the target with the exact filtered environment, resolved
+	// executable, original argv, and inherited stdin. No intermediate exec argv
+	// contains a target value.
+	cmd.Env = []string{}
 
 	// Run in a new session, detaching the controlling terminal. This is the
 	// macOS counterpart to bwrap's --new-session on Linux: it closes terminal
@@ -71,6 +198,174 @@ func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
 	return nil
 }
 
+func validateDarwinEnvBootstrapExecutable(path string) error {
+	return validateDarwinTrustedExecutable(path, "environment bootstrap")
+}
+
+func validateDarwinSandboxExecExecutable(path string) error {
+	return validateDarwinTrustedExecutable(path, "backend")
+}
+
+func validateDarwinTrustedExecutable(path, description string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("Darwin sandbox %s unavailable: %w", description, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		return fmt.Errorf("Darwin sandbox %s %q is not a regular executable", description, path)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 || info.Mode().Perm()&0022 != 0 {
+		return fmt.Errorf("Darwin sandbox %s %q is not root-owned and immutable to non-root users", description, path)
+	}
+	return nil
+}
+
+// attachDarwinEnvBootstrap transports the target environment through
+// anonymous, prefilled pipe shards. Each writer is nonblocking and closed
+// before Wrap returns; when one pipe fills, the remainder goes into another.
+// This handles payloads larger than a pipe buffer without a named object,
+// target-visible writer, or goroutine that could outlive an abandoned raw Wrap.
+// On any setup error cmd.ExtraFiles is left unchanged.
+func attachDarwinEnvBootstrap(cmd *exec.Cmd, env []string) (int, int, error) {
+	payload, err := darwinEnvBootstrapPayload(env)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(payload) > darwinEnvBootstrapMaxPayload {
+		return 0, 0, fmt.Errorf("target environment payload is %d bytes; maximum is %d", len(payload), darwinEnvBootstrapMaxPayload)
+	}
+	readers, err := prefillDarwinEnvPipes(payload)
+	if err != nil {
+		return 0, 0, err
+	}
+	firstFD := 3 + len(cmd.ExtraFiles)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, readers...)
+	return firstFD, len(readers), nil
+}
+
+func prefillDarwinEnvPipes(payload []byte) ([]*os.File, error) {
+	readers := make([]*os.File, 0, 1)
+	closeReaders := func() {
+		for _, reader := range readers {
+			_ = reader.Close()
+		}
+	}
+	for len(payload) > 0 {
+		if len(readers) >= darwinEnvBootstrapMaxPipeCount {
+			closeReaders()
+			return nil, fmt.Errorf("target environment requires more than %d anonymous pipe shards", darwinEnvBootstrapMaxPipeCount)
+		}
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			closeReaders()
+			return nil, fmt.Errorf("create anonymous environment pipe: %w", err)
+		}
+		// Cache Fd once: os.File.Fd may restore blocking mode for descriptors
+		// managed by the runtime poller, which would defeat the shard boundary.
+		writerFD := int(writer.Fd())
+		if err := unix.SetNonblock(writerFD, true); err != nil {
+			_ = reader.Close()
+			_ = writer.Close()
+			closeReaders()
+			return nil, fmt.Errorf("make anonymous environment pipe nonblocking: %w", err)
+		}
+		writtenTotal := 0
+		for len(payload) > 0 {
+			written, writeErr := unix.Write(writerFD, payload)
+			if written > 0 {
+				payload = payload[written:]
+				writtenTotal += written
+			}
+			if writeErr == nil {
+				if written == 0 {
+					_ = reader.Close()
+					_ = writer.Close()
+					closeReaders()
+					return nil, fmt.Errorf("prefill anonymous environment pipe: zero-byte write")
+				}
+				continue
+			}
+			if writeErr == unix.EINTR {
+				continue
+			}
+			if writeErr == unix.EAGAIN || writeErr == unix.EWOULDBLOCK {
+				break
+			}
+			_ = reader.Close()
+			_ = writer.Close()
+			closeReaders()
+			return nil, fmt.Errorf("prefill anonymous environment pipe: %w", writeErr)
+		}
+		if closeErr := writer.Close(); closeErr != nil {
+			_ = reader.Close()
+			closeReaders()
+			return nil, fmt.Errorf("close anonymous environment pipe writer: %w", closeErr)
+		}
+		if writtenTotal == 0 {
+			_ = reader.Close()
+			closeReaders()
+			return nil, fmt.Errorf("anonymous environment pipe accepted no payload")
+		}
+		readers = append(readers, reader)
+	}
+	return readers, nil
+}
+
+func darwinEnvBootstrapPayload(env []string) ([]byte, error) {
+	var body strings.Builder
+	for _, entry := range env {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || name == "" || strings.ContainsRune(name, '=') || strings.IndexByte(name, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
+			return nil, fmt.Errorf("invalid target environment entry for %q", name)
+		}
+		if len(entry)+1 > darwinEnvBootstrapMaxPayload-body.Len() {
+			return nil, fmt.Errorf("target environment payload exceeds %d bytes", darwinEnvBootstrapMaxPayload)
+		}
+		bodyLen := body.Len() + len(entry) + 1
+		framedLen := len(darwinEnvBootstrapMagic) + 1 + len(strconv.Itoa(bodyLen)) + 1 + bodyLen
+		if framedLen > darwinEnvBootstrapMaxPayload {
+			return nil, fmt.Errorf("target environment payload exceeds %d bytes", darwinEnvBootstrapMaxPayload)
+		}
+		body.WriteString(entry)
+		body.WriteByte(0)
+	}
+	var payload strings.Builder
+	payload.WriteString(darwinEnvBootstrapMagic)
+	payload.WriteByte(0)
+	payload.WriteString(strconv.Itoa(body.Len()))
+	payload.WriteByte(0)
+	payload.WriteString(body.String())
+	return []byte(payload.String()), nil
+}
+
+func parseDarwinEnvBootstrapPayload(data []byte) ([]string, error) {
+	magic, rest, found := strings.Cut(string(data), "\x00")
+	if !found || magic != darwinEnvBootstrapMagic {
+		return nil, fmt.Errorf("invalid bootstrap environment payload")
+	}
+	lengthField, body, found := strings.Cut(rest, "\x00")
+	expected, err := strconv.Atoi(lengthField)
+	if !found || err != nil || expected < 0 || strconv.Itoa(expected) != lengthField || len(body) != expected {
+		return nil, fmt.Errorf("invalid bootstrap environment payload")
+	}
+	if body == "" {
+		return nil, nil
+	}
+	parts := strings.Split(body, "\x00")
+	if parts[len(parts)-1] != "" {
+		return nil, fmt.Errorf("invalid bootstrap environment payload")
+	}
+	env := append([]string(nil), parts[:len(parts)-1]...)
+	for _, entry := range env {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || name == "" || strings.ContainsRune(name, '=') || strings.IndexByte(name, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
+			return nil, fmt.Errorf("invalid bootstrap environment entry for %q", name)
+		}
+	}
+	return env, nil
+}
+
 // pathAndResolved returns path plus its symlink-resolved target when that
 // differs. Seatbelt matches resolved vnode paths, so a rule on a
 // dotfiles-managed symlink (~/.npmrc -> ~/dotfiles/npmrc) never fires for the
@@ -82,7 +377,92 @@ func pathAndResolved(path string) []string {
 	return []string{path}
 }
 
+// denyWriteAncestors returns every writable ancestor whose directory entry
+// must remain pinned for a DenyWritePaths rule to keep naming the same object.
+// Denying writes only at /work/nested/.git is insufficient if a process can
+// rename /work/nested and create a replacement tree at the original pathname.
+// Seatbelt can deny unlink/rename of these ancestor entries without making
+// their contents read-only, so ordinary workspace edits remain available.
+func denyWriteAncestors(protectedPaths, writablePaths []string) []string {
+	var ancestors []string
+	seen := make(map[string]bool)
+	for _, protected := range protectedPaths {
+		for _, protectedPath := range pathAndResolved(expandTilde(protected)) {
+			for _, writable := range writablePaths {
+				writable = expandTilde(writable)
+				writable = filepath.Clean(writable)
+				for ancestor := filepath.Dir(protectedPath); pathWithinPolicy(ancestor, writable); ancestor = filepath.Dir(ancestor) {
+					if !seen[ancestor] {
+						seen[ancestor] = true
+						ancestors = append(ancestors, ancestor)
+					}
+					if ancestor == writable {
+						break
+					}
+				}
+			}
+		}
+	}
+	return ancestors
+}
+
+func authorityWritePins(authorityPaths, writablePaths []string) []string {
+	var pins []string
+	seen := make(map[string]bool)
+	add := func(path string) {
+		path = filepath.Clean(expandTilde(path))
+		if !seen[path] {
+			seen[path] = true
+			pins = append(pins, path)
+		}
+	}
+	for _, authority := range authorityPaths {
+		authority = filepath.Clean(expandTilde(authority))
+		for _, writable := range writablePaths {
+			writable = filepath.Clean(expandTilde(writable))
+			if !pathWithinPolicy(authority, writable) {
+				continue
+			}
+			add(authority)
+			for ancestor := filepath.Dir(authority); pathWithinPolicy(ancestor, writable); ancestor = filepath.Dir(ancestor) {
+				add(ancestor)
+				if ancestor == writable {
+					break
+				}
+			}
+		}
+	}
+	return pins
+}
+
+func darwinWritePaths(cfg Config) []string {
+	paths := []string{"/private/tmp"}
+	if tmpdir := os.TempDir(); tmpdir != "" && tmpdir != "/private/tmp" && tmpdir != "/tmp" {
+		if real, err := filepath.EvalSymlinks(tmpdir); err == nil {
+			tmpdir = real
+		}
+		paths = append(paths, tmpdir)
+	}
+	for _, path := range cfg.WritablePaths {
+		paths = append(paths, filepath.Clean(expandTilde(path)))
+	}
+	seen := make(map[string]bool, len(paths))
+	kept := paths[:0]
+	for _, path := range paths {
+		path = filepath.Clean(path)
+		if !seen[path] {
+			seen[path] = true
+			kept = append(kept, path)
+		}
+	}
+	return kept
+}
+
 func buildProfile(cfg Config, deniedLists ...[]DeniedPath) string {
+	return buildProfileWithWritePaths(cfg, darwinWritePaths(cfg), deniedLists...)
+}
+
+func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedLists ...[]DeniedPath) string {
 	deniedPaths := allDeniedPaths(cfg)
 	if len(deniedLists) > 0 {
 		deniedPaths = deniedLists[0]
@@ -111,31 +491,55 @@ func buildProfile(cfg Config, deniedLists ...[]DeniedPath) string {
 
 	if !cfg.DenyWrite {
 		// Allow writes to OS temp dir and configured paths.
-		// Include both /private/tmp and the runtime TMPDIR (typically
-		// /var/folders/...) so that programs using os.TempDir() work.
-		writePaths := []string{"/private/tmp"}
-		if tmpdir := os.TempDir(); tmpdir != "" && tmpdir != "/private/tmp" && tmpdir != "/tmp" {
-			writePaths = append(writePaths, tmpdir)
-		}
-		for _, p := range cfg.WritablePaths {
-			writePaths = append(writePaths, expandTilde(p))
-		}
 
 		for _, p := range writePaths {
-			resolved, err := filepath.EvalSymlinks(p)
-			if err != nil {
-				resolved = p
-			}
-			sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n", resolved))
+			sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n", filepath.Clean(expandTilde(p))))
 		}
+	}
+
+	// Freeze writable/read grant routing entries and their mutable ancestors.
+	// This denies only unlink/rename of the directory entries; writes beneath a
+	// writable directory remain permitted.
+	authorityPaths := append([]string{}, cfg.ReadPaths...)
+	for _, alias := range cfg.readPathAliases {
+		for _, symlink := range alias.symlinks {
+			authorityPaths = append(authorityPaths, symlink.path)
+		}
+	}
+	if !cfg.DenyWrite {
+		authorityPaths = append(authorityPaths, writePaths...)
+	}
+	for _, path := range authorityWritePins(authorityPaths, writePaths) {
+		sb.WriteString(fmt.Sprintf("(deny file-write-unlink (literal %q))\n", path))
+	}
+
+	// Pin every mutable ancestor before applying the write-denied islands. This
+	// prevents moving an ancestor and rebuilding a replacement at the guarded
+	// pathname while still allowing data writes beneath those ancestors.
+	for _, ancestor := range denyWriteAncestors(cfg.DenyWritePaths, writePaths) {
+		sb.WriteString(fmt.Sprintf("(deny file-write-unlink (literal %q))\n", ancestor))
+	}
+
+	// A denied credential entry must not be movable to a new readable name
+	// under a broad writable grant. Pin the entry itself and every mutable
+	// routing ancestor, including the literal side of a symlinked deny path.
+	var deniedRoutes []string
+	for _, denied := range deniedPaths {
+		deniedRoutes = append(deniedRoutes, pathAndResolved(denied.Path)...)
+	}
+	for _, path := range authorityWritePins(deniedRoutes, writePaths) {
+		sb.WriteString(fmt.Sprintf("(deny file-write-unlink (literal %q))\n", path))
 	}
 
 	// Write-denied islands inside the writable subpaths. Emitted after the
 	// allows so last-match-wins blocks the write; reads stay allowed (unlike
-	// deniedPaths below, which blocks both). A rule for a path that doesn't
-	// exist yet still applies, so a sandboxed process can't create it either.
+	// deniedPaths below, which blocks both). Literal rules protect the entry
+	// itself, while subpath rules protect its contents. New and Wrap reject a
+	// missing protected entry because Seatbelt cannot reserve a nonexistent
+	// vnode reliably.
 	for _, p := range cfg.DenyWritePaths {
 		for _, rp := range pathAndResolved(expandTilde(p)) {
+			sb.WriteString(fmt.Sprintf("(deny file-write* (literal %q))\n", rp))
 			sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", rp))
 		}
 	}
@@ -152,16 +556,19 @@ func buildProfile(cfg Config, deniedLists ...[]DeniedPath) string {
 	// readPaths re-allows reads below, but deliberately never writes.
 	for _, denied := range deniedPaths {
 		for _, p := range pathAndResolved(denied.Path) {
+			sb.WriteString(fmt.Sprintf("(deny file-read* (literal %q))\n", p))
 			sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", p))
+			sb.WriteString(fmt.Sprintf("(deny file-write* (literal %q))\n", p))
 			sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", p))
 		}
 	}
 
 	// Re-allow read access for exempted paths (last-match-wins in Seatbelt).
 	for _, p := range cfg.ReadPaths {
-		for _, rp := range pathAndResolved(expandTilde(p)) {
-			sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", rp))
-		}
+		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", filepath.Clean(expandTilde(p))))
+	}
+	for _, p := range readPathAliasPaths(cfg) {
+		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", filepath.Clean(p)))
 	}
 
 	// Deny signaling unrelated processes while still allowing a script to manage
@@ -180,12 +587,19 @@ func buildProfile(cfg Config, deniedLists ...[]DeniedPath) string {
 
 	if !cfg.AllowNetwork {
 		sb.WriteString("(deny network*)\n")
-	} else if cfg.DenyDNS {
-		// Block macOS system resolver (mDNSResponder Unix domain socket).
-		sb.WriteString("(deny network-outbound (to unix-socket (path-literal \"/private/var/run/mDNSResponder\")))\n")
-		// Block direct DNS queries (port 53) as a fallback.
-		sb.WriteString("(deny network-outbound (remote udp \"*:53\"))\n")
-		sb.WriteString("(deny network-outbound (remote tcp \"*:53\"))\n")
+	} else {
+		// Enabling TCP/UDP must not also expose host Docker, VM, agent, or
+		// service Unix sockets. macOS DNS normally uses the fixed
+		// mDNSResponder socket, so re-allow only that system endpoint unless
+		// DNS itself was denied.
+		sb.WriteString("(deny network-outbound (remote unix-socket))\n")
+		if !cfg.DenyDNS {
+			sb.WriteString("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))\n")
+		} else {
+			// Block direct DNS queries (port 53) as a fallback.
+			sb.WriteString("(deny network-outbound (remote udp \"*:53\"))\n")
+			sb.WriteString("(deny network-outbound (remote tcp \"*:53\"))\n")
+		}
 	}
 
 	return sb.String()

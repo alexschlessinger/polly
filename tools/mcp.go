@@ -27,15 +27,15 @@ type MCPTool struct {
 
 // Sandboxed reports whether the tool's server process runs inside a sandbox.
 func (m *MCPTool) Sandboxed() bool {
-	return m.client != nil && m.client.sandboxed
+	return m.client != nil && m.client.sandboxCapable && m.client.sandboxed
 }
 
 // SandboxDetails reports whether the owning MCP server process is sandboxed.
 func (m *MCPTool) SandboxDetails() SandboxInfo {
-	info := SandboxInfo{Capable: true}
-	if m.client == nil {
-		return info
+	if m.client == nil || !m.client.sandboxCapable {
+		return SandboxInfo{}
 	}
+	info := SandboxInfo{Capable: true}
 	info.Active = m.client.sandboxed
 	info.OptedOut = m.client.sandboxOptOut
 	info.Config = copySandboxConfig(m.client.sandboxCfg)
@@ -290,12 +290,13 @@ func httpClientWithTimeout(headers map[string]string, timeout time.Duration) *ht
 
 // MCPClient manages connection to an MCP server
 type MCPClient struct {
-	session       *mcp.ClientSession
-	client        *mcp.Client
-	serverSpec    string // The server spec (JSON file path) for this client
-	sandboxed     bool   // server process runs inside a sandbox (stdio only)
-	sandboxCfg    *sandbox.Config
-	sandboxOptOut bool
+	session        *mcp.ClientSession
+	client         *mcp.Client
+	serverSpec     string // The server spec (JSON file path) for this client
+	sandboxCapable bool   // local stdio subprocess can be OS-sandboxed
+	sandboxed      bool   // server process runs inside a sandbox (stdio only)
+	sandboxCfg     *sandbox.Config
+	sandboxOptOut  bool
 }
 
 // NewUnsafeMCPClient creates an unsandboxed MCP client from a server spec.
@@ -361,6 +362,14 @@ func NewUnsafeMCPClient(serverSpec string) (*MCPClient, error) {
 	return client, nil
 }
 
+// NewMCPClient creates an unsandboxed MCP client from a server spec.
+//
+// Deprecated: use NewUnsafeMCPClient, or ToolRegistry.LoadMCPServer to enforce
+// sandbox policy for local stdio servers.
+func NewMCPClient(serverSpec string) (*MCPClient, error) {
+	return NewUnsafeMCPClient(serverSpec)
+}
+
 // newMCPClientFromConfig creates a client after the registry has decided and
 // constructed the effective sandbox policy.
 func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg ...sandbox.Config) (*MCPClient, error) {
@@ -420,29 +429,15 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 		// Set up stderr to see any error output from the server
 		cmd.Stderr = os.Stderr
 
-		// Sandbox first: WrapCmd filters the inherited environment, stripping
-		// credential-shaped names (the sandbox's job is to remove ambient/
-		// inherited secrets the server didn't ask for).
-		if err := sandbox.WrapCmd(sb, cmd); err != nil {
+		// Treat config.Env as an explicit target-process grant. The sandbox
+		// filters inherited variables, merges these configured values into the
+		// target environment, and keeps them out of any pre-containment wrapper.
+		closeSandboxFiles, err := sandbox.WrapCmdWithEnvManaged(sb, cmd, config.Env)
+		if err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
+		defer func() { _ = closeSandboxFiles() }()
 		sandboxed = sb != nil
-
-		// Then apply the env vars configured explicitly on this server entry —
-		// AFTER filtering, so a deliberately-set credential (e.g.
-		// GITHUB_TOKEN) still reaches the process even though it matches the
-		// sandbox's credential-name heuristics. These were chosen for this
-		// server; the sandbox only strips what the server inherited by accident.
-		if len(config.Env) > 0 {
-			if cmd.Env == nil {
-				// Unsandboxed path: WrapCmd left Env nil (inherit parent).
-				// Materialize it so appending config.Env doesn't drop everything else.
-				cmd.Env = os.Environ()
-			}
-			for key, value := range config.Env {
-				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
-			}
-		}
 
 		slog.Debug("mcp_stdio_connecting", "command", config.Command, "arguments", config.Args)
 		transport = &mcp.CommandTransport{Command: cmd}
@@ -457,13 +452,24 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 	}
 
 	return &MCPClient{
-		session:       session,
-		client:        client,
-		sandboxed:     sandboxed,
-		sandboxCfg:    cfg,
-		sandboxOptOut: config.SandboxOptOut(),
+		session:        session,
+		client:         client,
+		sandboxCapable: config.Transport == "" || config.Transport == "stdio",
+		sandboxed:      sandboxed,
+		sandboxCfg:     cfg,
+		sandboxOptOut:  config.SandboxOptOut(),
 		// serverSpec will be set by caller if needed
 	}, nil
+}
+
+// NewMCPClientFromConfig creates an MCP client from a configuration. A non-nil
+// sandbox contains local stdio transport; remote transports are never reported
+// as sandbox-capable because their process runs outside this client.
+//
+// Deprecated: load servers through ToolRegistry so sandbox construction and
+// opt-out policy are enforced centrally.
+func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, error) {
+	return newMCPClientFromConfig(config, sb)
 }
 
 // ListTools returns all tools available from the MCP server

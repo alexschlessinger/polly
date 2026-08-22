@@ -290,6 +290,10 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 		DenyPaths:     config.DenyPaths,
 		AllowNetwork:  config.AllowNet,
 	})
+	baseCfg, err = sandbox.PrepareConfig(baseCfg)
+	if err != nil {
+		return nil, fmt.Errorf("prepare sandbox config: %w", err)
+	}
 	warnBroadWritablePaths(baseCfg.WritablePaths)
 
 	// Validate that the backend constructs (e.g. the binary exists)...

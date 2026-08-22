@@ -96,6 +96,15 @@ func newShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool,
 	return tool, nil
 }
 
+// NewShellTool loads a shell tool and optionally contains its --schema command.
+// Executions remain unsandboxed unless the returned tool is given a sandbox.
+//
+// Deprecated: use NewUnsafeShellTool for an explicitly unsandboxed tool, or
+// ToolRegistry.LoadShellTool to enforce the registry's sandbox policy.
+func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
+	return newShellTool(command, schemaSandbox...)
+}
+
 // NewUnsafeShellTool loads a shell tool without containing its --schema
 // command or future executions. Prefer ToolRegistry.LoadShellTool.
 func NewUnsafeShellTool(command string) (*ShellTool, error) {
@@ -143,9 +152,11 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 	// Run command with --execute using context for timeout
 	cmd := exec.CommandContext(ctx, s.Command, "--execute", string(argsJSON))
 
-	if err := sandbox.WrapCmd(s.sandbox, cmd); err != nil {
+	closeSandboxFiles, err := sandbox.WrapCmdManaged(s.sandbox, cmd)
+	if err != nil {
 		return "", fmt.Errorf("sandbox: %w", err)
 	}
+	defer func() { _ = closeSandboxFiles() }()
 
 	output, err := cmd.CombinedOutput()
 
@@ -183,9 +194,11 @@ func (s *ShellTool) runCommand(arg string) (string, error) {
 // runCommandSandboxed executes the shell tool inside a sandbox.
 func (s *ShellTool) runCommandSandboxed(arg string, sb sandbox.Sandbox) (string, error) {
 	cmd := exec.Command(s.Command, arg)
-	if err := sandbox.WrapCmd(sb, cmd); err != nil {
+	closeSandboxFiles, err := sandbox.WrapCmdManaged(sb, cmd)
+	if err != nil {
 		return "", fmt.Errorf("sandbox: %w", err)
 	}
+	defer func() { _ = closeSandboxFiles() }()
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -193,26 +206,50 @@ func (s *ShellTool) runCommandSandboxed(arg string, sb sandbox.Sandbox) (string,
 	return strings.TrimSpace(string(output)), nil
 }
 
-// LoadShellTools loads and registers shell tools through registry's sandbox
-// policy. It fails on the first rejected tool rather than returning a partial,
-// ambiguously secured result.
-func LoadShellTools(registry *ToolRegistry, paths []string) ([]Tool, error) {
+// LoadShellTools loads unsandboxed shell tools using the legacy best-effort
+// behavior: invalid paths are skipped and successfully loaded tools are
+// returned with a nil error. Prefer LoadShellToolsWithRegistry so discovery and
+// later executions are contained and the batch leaves no partial registry state.
+//
+// Deprecated: use LoadShellToolsWithRegistry.
+func LoadShellTools(paths []string) ([]Tool, error) {
+	loaded := make([]Tool, 0, len(paths))
+	for _, path := range paths {
+		slog.Debug("tool_loading", "path", path)
+		tool, err := NewUnsafeShellTool(path)
+		if err != nil {
+			slog.Debug("tool_load_failed", "path", path, "error", err)
+			continue
+		}
+		loaded = append(loaded, tool)
+	}
+	return loaded, nil
+}
+
+// LoadShellToolsWithRegistry prepares every shell tool under registry policy,
+// then registers the whole batch under one lock. A preparation failure leaves
+// the registry unchanged.
+func LoadShellToolsWithRegistry(registry *ToolRegistry, paths []string) ([]Tool, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("tool registry is nil")
 	}
-	var loaded []Tool
+	records := make([]stagedToolRecord, 0, len(paths))
 	for _, path := range paths {
-		result, err := registry.LoadShellTool(path)
+		prepared, _, err := registry.prepareShellToolWithNamespace(path, extractNamespace(path))
 		if err != nil {
 			return nil, err
 		}
-		for _, server := range result.Servers {
-			for _, name := range server.ToolNames {
-				if tool, ok := registry.Get(name); ok {
-					loaded = append(loaded, tool)
-				}
-			}
-		}
+		records = append(records, prepared...)
+	}
+
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	loaded := make([]Tool, 0, len(records))
+	for _, record := range records {
+		registry.tools[record.name] = record.tool
+		loaded = append(loaded, record.tool)
+		slog.Debug("shell_tool_registered", "tool_name", record.name)
 	}
 	return loaded, nil
 }

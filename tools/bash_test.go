@@ -9,7 +9,7 @@ import (
 )
 
 func TestBashToolSchema(t *testing.T) {
-	tool := newBashTool("")
+	tool := NewBashTool("")
 	s := tool.GetSchema()
 	if s.Title() != "bash" {
 		t.Fatalf("schema title = %q, want %q", s.Title(), "bash")
@@ -45,6 +45,20 @@ func TestBashToolExecutesCommand(t *testing.T) {
 	}
 	if strings.TrimSpace(result) != "hello" {
 		t.Fatalf("Execute() result = %q, want %q", result, "hello")
+	}
+}
+
+func TestBashToolClosesSandboxFilesAfterExecution(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "bash-sandbox-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := newBashTool("").WithSandbox(&mockSandbox{file: file})
+	if _, err := tool.Execute(context.Background(), map[string]any{"command": "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Stat(); err == nil {
+		t.Fatal("sandbox-added descriptor remains open after bash execution")
 	}
 }
 

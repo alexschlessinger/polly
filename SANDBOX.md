@@ -39,7 +39,9 @@ Design principles:
   `--nosandbox` if it can't actually start processes.
 - **Track the live filesystem.** Deny lists and profiles are rebuilt on every
   command, so a credential dir created mid-session (`aws configure` in another
-  terminal) is masked by the next command.
+  terminal) is masked by the next command. On Linux, denied directory entries
+  are also reserved when a long-lived process starts, so later host-side
+  creation or replacement cannot appear inside that existing namespace.
 - **Observable.** Every decision is visible under `--debug` (variable and path
   names only — never values), and the REPL reports posture at startup and via
   `/get sandbox`.
@@ -64,11 +66,28 @@ Merging only widens: booleans OR, path lists append. A tool can grant itself
 network access; nothing can un-deny a credential path except an explicit
 `readPaths` exemption in its own config.
 
+Shell-tool `--schema` discovery is deliberately stricter than execution. Before
+the schema can be trusted, discovery runs with private-temp writes only and no
+network, workspace, read-path, or environment grants. Base `denyPaths`,
+`denyWritePaths`, and `denyWrite` restrictions are retained.
+
 ## Platform implementations
 
-Both platforms share the same policy surface (the `Config` fields) and the
-same env filtering, which happens in Go before exec. The enforcement
-mechanisms are very different.
+Both platforms share the same policy surface (the `Config` fields) and ambient
+environment filtering in Go. The pre-containment wrapper receives an empty
+environment; the filtered target environment, including explicitly configured
+values, is installed only after containment is active. The enforcement
+mechanisms are otherwise very different.
+
+Both built-in backends also require the managed wrapping API. Use
+`WrapCmdManaged` or `WrapCmdWithEnvManaged`, then call the returned idempotent
+cleanup after the process start/run method returns. This deterministically
+closes backend-owned bootstrap, policy, mount-source, and environment
+descriptors without touching caller-owned `ExtraFiles`. The legacy
+cleanup-less `Sandbox.Wrap`, `WrapCmd`, and `WrapCmdWithEnv` calls fail before
+mutating the command with `ErrManagedWrapRequired`; they cannot safely infer
+when a caller later invokes `exec.Cmd.Start`. Custom descriptor-free sandbox
+implementations remain compatible with those legacy helpers.
 
 ### Linux: bubblewrap (`bwrap`)
 
@@ -82,7 +101,7 @@ bwrap \
   --tmpfs /run --remount-ro /run         # hide host runtime sockets
   --tmpfs /home/you/.ssh                 # denied dirs masked with empty tmpfs
   --ro-bind /dev/null /home/you/.netrc   # denied files masked with /dev/null
-  ...                                    # one mask per existing denied path
+  ...                                    # one mask per denied path
   --dev /dev                             # fresh devtmpfs
   --proc /proc                           # proc scoped to the new PID namespace
   --unshare-pid                          # own PID namespace
@@ -91,18 +110,32 @@ bwrap \
   --seccomp FD                           # deny AF_UNIX sockets + io_uring setup
   --die-with-parent
   --new-session                          # detach from the controlling tty
-  -- original command...
+  -- /proc/self/fd/BOOTSTRAP_FD ...      # pinned post-containment bootstrap
 ```
 
 Properties worth knowing:
 
+- **The launcher has a fixed trusted route.** Polly executes only the regular,
+  root-owned, non-user-writable `/usr/bin/bwrap`; a workspace or temp-directory
+  `bwrap` earlier on `PATH` is never selected. Construction fails closed if the
+  fixed backend is unavailable or mutable.
+- **Target environment is installed only after containment.** bwrap itself gets
+  a non-nil empty environment. The parent passes a pinned descriptor for its
+  own executable plus a sealed anonymous NUL-delimited environment descriptor;
+  after namespaces, mounts, and seccomp are active, the internal bootstrap
+  closes those descriptors and directly `exec`s the original target with its
+  exact argument vector and filtered environment. Target environment values
+  never appear in bwrap's environment or argv; the original target argv is
+  forwarded.
 - **Writes are physically impossible** outside private temp and writable binds — the root
   is a read-only mount, not a policy check.
 - **Host runtime state is private.** `/tmp` and `/run` are fresh mounts, so
   D-Bus, Docker/Podman, SSH-agent, Wayland, and similar host sockets are absent.
   A seccomp rule also denies `socket(AF_UNIX)` so sockets elsewhere in the broad
-  read-only filesystem view cannot be reached. `socketpair()` remains available
-  for private communication among sandbox descendants.
+  read-only filesystem view cannot be reached. Private AF_UNIX stream
+  `socketpair()` remains available for descendant IPC; reconnectable datagram
+  and seqpacket pairs are denied. With networking disabled, socket creation is
+  denied for every address family except that private stream pair.
 - **Denied paths read as empty**, not as errors: a masked directory lists
   nothing (tmpfs), a masked file reads zero bytes (`/dev/null`). Tools probing
   for credentials see "not configured" rather than "blocked".
@@ -117,16 +150,21 @@ Properties worth knowing:
   cover the target). Resolved duplicates are masked once.
 - **Child read exemptions are bind-backed read-only.** For example,
   `readPaths: ["~/.ssh/config"]` keeps the parent `~/.ssh` mask and restores
-  only `config` from a private staging mount; sibling keys remain hidden.
-- **Missing deny paths are dropped** — bwrap aborts the whole command if asked
-  to mask a nonexistent path. Only a confirmed does-not-exist drops a mask;
-  any other resolution failure (permissions, I/O) keeps the path, so the
-  command fails rather than running with that path readable.
-- A `writablePaths` entry that doesn't exist is skipped per-command (with a
-  debug log), not bound — bwrap aborts on a missing bind source, and failing
-  construction would brick session restore over one stale path. A path created
-  later becomes writable on the next command; writes to a missing path just
-  fail at runtime (fail-closed).
+  only `config`; sibling keys remain hidden.
+- **Missing deny paths are reserved before they are masked.** bwrap cannot
+  create a mount destination below the read-only host root, so Polly first gives
+  the nearest existing parent a private, snapshotted directory view with the
+  denied entry omitted, then creates the empty-tmpfs or `/dev/null` mask inside
+  that private view. A host process cannot make a later creation, replacement,
+  or symlink retarget appear inside the already-running sandbox. Existing denied
+  leaves receive the same masks directly. Unexpected resolution or snapshot
+  errors fail the command closed. When the reserved parent is itself
+  writable, existing allowed children remain host-backed, but new direct
+  siblings are created in the private snapshot rather than on the host.
+- A `writablePaths` entry that doesn't exist is dropped when the sandbox is
+  constructed, rather than bound — bwrap aborts on a missing bind source, and
+  failing construction would brick session restore over one stale path. A path
+  created later does not acquire authority on a subsequent command.
 - `denyDNS` (with `allowNetwork`) is implemented by masking
   `/etc/resolv.conf` with `/dev/null`. **This is weaker than the macOS
   equivalent and is best-effort only:** bubblewrap has no port-level network
@@ -139,8 +177,15 @@ Properties worth knowing:
 
 ### macOS: Seatbelt (`sandbox-exec`)
 
-Each command runs as `/usr/bin/sandbox-exec -p <profile> original command...`
-with a profile generated per command. The default config renders:
+Each command runs under `sandbox-exec` with a generated profile. A fixed,
+root-owned `/usr/bin/perl` bootstrap reads the filtered target environment from
+anonymous, prefilled pipe descriptors, clears its own environment, closes the
+descriptors, and directly `exec`s the original command. Large environments are
+split across nonblocking pipe shards whose writers are closed before wrapping
+returns, so no named filesystem object or background writer exists. Target
+values therefore never appear in the pre-containment wrapper environment or
+any intermediate process argv. Framed target environments larger than 1 MiB
+are rejected before pipe allocation. The default config renders:
 
 ```scheme
 (version 1)
@@ -198,14 +243,25 @@ Properties worth knowing:
   `allow file-read*` rules after the denies.
 - Deny rules are emitted whether or not the path exists (harmless, unlike
   bwrap), so no existence filtering is needed.
-- A missing `writablePaths` entry renders an inert profile rule (Seatbelt
-  ignores it), so it's tolerated the same as on Linux — a stale path never
-  fails tool loading.
+- A missing `writablePaths` entry is dropped when the sandbox is constructed,
+  so it is tolerated without leaving an inert grant that could activate after
+  a later creation.
+- Automatic writable roots, including the construction-time `TMPDIR`, are also
+  frozen; changing the parent process environment before a later command does
+  not add a new write grant.
+- `allowNetwork` enables TCP/UDP but still denies outbound Unix-domain sockets,
+  preventing access to host Docker, VM, agent, and service endpoints. The one
+  exception is macOS's fixed `mDNSResponder` socket, re-allowed only when DNS
+  is enabled; `denyDNS` removes that exception and also blocks direct port 53.
 - `denyDNS` blocks the system resolver socket (`mDNSResponder`) plus direct
   port-53 UDP/TCP.
 - `sandbox-exec` is deprecated by Apple but remains functional and is what
   Bazel, Nix, and Chromium-family tooling ride on; there is no supported
   replacement API for ad-hoc profiles.
+- The Darwin backend executes only fixed `/usr/bin/sandbox-exec` and
+  `/usr/bin/perl` routes. Both must be regular, root-owned executables that
+  non-root users cannot modify. Construction fails closed if either trusted
+  component is unavailable.
 
 ### Differences at a glance
 
@@ -214,14 +270,14 @@ Properties worth knowing:
 | File reads / credentials | whole fs readable, 17-path deny list | whole fs readable, same deny list | ✅ effect matches |
 | Writes | read-only root + temp binds | `deny file-write*` + temp allows | ✅ effect matches |
 | Network | denied (`--unshare-net`) | denied (`deny network*`) | ✅ effect matches |
-| Env stripping | shared Go-side filtering | shared Go-side filtering | ✅ identical code |
+| Env handling | shared filtering; pinned in-namespace bootstrap reads a sealed anonymous env FD and directly `exec`s the target | shared filtering; fixed in-profile bootstrap reads anonymous pipe shards and directly `exec`s the target | ✅ effect matches |
 | Cross-process env read | blocked by PID namespace | blocked by the OS (`KERN_PROCARGS2` truncates) | ✅ effect matches |
 | Signal other processes | invisible, can't signal | `deny signal` + self/same-sandbox re-allow | ✅ effect matches |
 | Controlling terminal | detached (`--new-session`) | detached (`setsid()`) | ✅ effect matches |
-| Missing `writablePaths` | skipped per-command | inert profile rule | ✅ tolerated, not fatal |
+| Missing `writablePaths` | dropped at construction | dropped at construction | ✅ tolerated, cannot activate later |
 | **Denied-read failure mode** | reads as empty | `Operation not permitted` | ❌ inherent (masking vs policy) |
 | **Process enumeration** | invisible (PID namespace) | visible (`KERN_PROC` sysctl, ungated) | ❌ inherent |
-| **Host IPC** | private IPC namespace; host Unix sockets blocked | Mach services allowed (allow-default) | ❌ platform gap |
+| **Host IPC** | private IPC namespace; host Unix sockets blocked | host Unix sockets blocked; Mach services allowed (allow-default) | ❌ platform gap |
 | Mechanism / backend | namespaces, maintained | kernel policy, `sandbox-exec` deprecated | ❌ inherent |
 
 The bold rows are the only genuinely operator-visible gaps that remain, and each
@@ -234,9 +290,10 @@ is inherent to the platform rather than a config choice:
 - **Process enumeration** isn't gateable on macOS — `KERN_PROC` sysctl isn't
   covered by `process-info*`. A sandboxed process can *list* your processes
   (but no longer signal or read the env of them).
-- **Host IPC** is isolated on Linux but not macOS. Flipping macOS to
-  `(deny default)` would break most tools because every syscall, file read, and
-  Mach service would need an allowlist, so Seatbelt remains allow-default.
+- **Host IPC** Unix sockets are blocked on both platforms, including when
+  TCP/UDP is enabled. Mach services remain visible on macOS. Flipping Seatbelt
+  to `(deny default)` would break most tools because every syscall, file read,
+  and Mach service would need an allowlist, so it remains allow-default.
 
 ## Configuration
 
@@ -249,14 +306,14 @@ tool starts from. A spec is one or more preset names joined with `+`:
 |---|---|
 | `base` | temp-dir writes only, no network |
 | `readonly` | `denyWrite` — nothing writable, not even temp |
-| `workspace` | working directory writable; its `.git/hooks` and `.git/config` pinned read-only |
+| `workspace` | working directory writable; discovered Git routing entries and metadata trees pinned read-only |
 | `net` | `allowNetwork` |
 
 The default is **`workspace+net`** — agentic work on the current project with
 network access, while credentials stay masked and the rest of the filesystem
 stays read-only. `workspace` resolves the working directory *at startup*, and
-follows a `.git` pointer file (linked worktrees, submodules) to pin the real
-hooks dir and config. Running from a broad directory (`~`, `/`) logs a warning
+follows `.git` and `commondir` pointer files to pin the complete resolved Git
+metadata trees. Running from a broad directory (`~`, `/`) logs a warning
 suggesting `--sandbox base`.
 
 Per-tool knobs (schema `"sandbox"` object, MCP server entry) merge on top of
@@ -285,17 +342,64 @@ Three interactions to keep in mind:
   variables pass through. Use it to hand a tool one specific token —
   `"allowEnv": ["GITHUB_TOKEN"]` — that the heuristics would otherwise strip.
 - `denyWritePaths` blocks writes but leaves reads alone (unlike `denyPaths`,
-  which blocks both). On Linux it's a read-only bind shadowing the writable
-  parent, so an entry that doesn't exist yet is skipped for that command; on
-  macOS the deny rule holds whether or not the path exists, so it can't be
-  created either. The `workspace` preset relies on this for `.git/hooks` and
-  `.git/config` — writable-project sandboxes otherwise re-open the classic
-  escape of planting a hook (or `core.hooksPath`) that the *user's* next
-  unsandboxed `git commit` executes.
+  which blocks both). Mutable ancestors inside a writable tree are pinned so a
+  process cannot rename an ancestor and rebuild a replacement at the guarded
+  pathname. A missing or unresolvable entry fails sandbox construction (and is
+  checked again before every command) because neither backend can reliably
+  reserve a nonexistent protected object. The `workspace` preset avoids
+  missing Git leaves by protecting whole metadata directories, including a
+  not-yet-created `config.worktree`.
+
+The `workspace` preset recursively discovers regular and nested repositories,
+submodules, and linked worktrees. It makes each `.git` routing entry, resolved
+per-worktree gitdir, `commondir` pointer, and common gitdir read-only. This
+closes replacement and alternate-config paths at the cost of blocking all Git
+metadata-tree writes inside the sandbox (working-tree content remains writable).
+Bare-repository working directories are rejected, as are symlinked `.git`,
+config, `config.worktree`, hooks directories, and hook files: neither backend
+can portably pin those links if a merged policy later makes their targets
+writable. Protected routing/config/hook files with hard-link aliases are also
+rejected. Repository-local `core.hooksPath` and config includes fail closed
+because the effective redirected target cannot be pinned without evaluating
+Git's full configuration environment. Polly requires PATH-selected `git` to
+reach the same filesystem object as fixed `/usr/bin/git` through a stable,
+non-symlink route outside writable paths, but executes only the fixed path with
+repository-routing variables removed. Relevant global/system config selectors
+and ordinary-command overrides remain present so the audit matches the user's
+next host Git invocation; the `git config`-only `GIT_CONFIG` override is
+removed. It
+checks effective and overridden global/system `core.hooksPath` values and
+recursively inspects nested includes regardless of current `includeIf`
+conditions. Hook targets, selected config sources, and include targets in
+host-visible writable content outside protected Git metadata are rejected,
+including absent targets and the host temp trees writable under Seatbelt on
+macOS. Existing config sources with hard-link aliases are rejected as well.
+Configured hook directories are scanned, and symlinked or hard-linked hook
+entries are rejected before containment. `/dev/null` is accepted as Git's
+immutable hook-disabling target. Repository discovery runs once when the
+workspace preset is parsed; its private policy record survives `Config.Merge`,
+and the config/include/hook audit runs again at backend construction against
+all final host-visible writable roots. Consequently, CLI `--writepath` and
+per-tool `writablePaths` overlays cannot reopen an external hook-planting
+route. Linux's exact private `/tmp` and `/run` mounts are excluded from that
+host-persistence check, while explicitly rebound descendants and wider roots
+remain covered.
 
 Policy paths are normalized when the sandbox is constructed. `~` expands to
 the user's home directory, relative paths resolve against the process working
-directory at that moment, and empty entries are rejected.
+directory at that moment, and empty entries are rejected. Existing
+`writablePaths` and `readPaths` grants are frozen to their canonical targets;
+their mutable routing entries are pinned for each command, and missing grants
+are dropped rather than becoming active after later creation. A `readPaths`
+entry that traverses a symlink keeps its approved lexical route usable, but the
+route and target are revalidated before each command so replacement or
+retargeting fails closed. `PrepareConfig` also carries the approved filesystem
+identities privately through
+`Config.Merge`. A tool registry prepares its base before any process-backed
+tool or schema sandbox starts (`WithSandboxFactory` snapshots it when the
+option is created) and reuses those identities for later lazy tool
+construction, so replacing or rerouting an approved object fails before the
+sandbox factory is called.
 
 ### Examples
 

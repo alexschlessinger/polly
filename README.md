@@ -345,12 +345,12 @@ The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by d
 |---|---|
 | `base` | temp-dir writes only, no network |
 | `readonly` | no writes at all, not even temp; no network |
-| `workspace` | the working directory is writable; `.git/hooks` and `.git/config` stay read-only so a tool can't plant hooks that run unsandboxed later |
+| `workspace` | the working directory is writable; discovered Git routing entries and metadata trees stay read-only so a tool cannot replace `.git` or alter repository-local hook/config entry points |
 | `net` | outbound network allowed |
 
 The default is **`workspace+net`**: tools can edit the project and reach the network, but credentials stay masked and everything outside the workspace is read-only. Tighten with `--sandbox base` or `--sandbox readonly` when tools only need to compute or inspect. Granular additions: `--writepath <dir>` (repeatable, env `POLLYTOOL_WRITEPATHS`) grants extra writable paths and `--allownet` (env `POLLYTOOL_ALLOWNET`) grants network on top of any preset.
 
-Sandboxing requires `bwrap` (Linux) or `sandbox-exec` (macOS). If neither is available, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API.md](API.md) for the full spec and [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
+Sandboxing requires the fixed system `/usr/bin/bwrap` (Linux), or fixed system `/usr/bin/sandbox-exec` plus `/usr/bin/perl` (macOS). If the required trusted backend is unavailable, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API.md](API.md) for the full spec and [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
 
 **Full example** — `"sandbox": true` inherits the CLI preset; add `--sandbox base` to limit writes to `$TMPDIR` with no network:
 
@@ -405,8 +405,34 @@ Relative `writablePaths`, `readPaths`, and `denyPaths` entries resolve against
 Polly's working directory when the sandbox is created. A child read exemption
 such as `~/.ssh/config` exposes only that path; the rest of the denied parent
 remains hidden. `denyWritePaths` entries carve read-only islands out of a
-writable tree — the `workspace` preset uses this for `.git/hooks` and
-`.git/config`.
+writable tree. The `workspace` preset recursively discovers regular, nested,
+submodule, and linked-worktree `.git` entries and protects each routing entry,
+per-worktree gitdir, `commondir` pointer, and common gitdir. This intentionally
+blocks direct writes into those Git metadata trees (index/ref updates as well
+as hooks/config) while leaving working-tree files writable. Bare-repository
+working directories and symlinked Git routing or executable/config metadata
+are refused because their identity cannot be pinned portably. Hard-linked
+protected files, repository-local `core.hooksPath`, and config includes are
+refused for the same reason: protecting the config pathname would not protect
+the writable alias or redirected target. Polly verifies that PATH reaches the
+same filesystem object as the fixed OS Git executable through a stable,
+non-symlink route outside writable paths, then uses that fixed path with a
+routing-free environment. It checks effective and overridden
+global/system `core.hooksPath` values plus every nested include (even inactive
+`includeIf` branches). The workspace preset is refused when a hook target,
+selected config source, or config include is in host-visible writable content
+(including macOS temp trees) outside protected Git metadata; hard-linked config
+sources and symlinked or hard-linked configured hook entries are refused as
+mutable aliases. `/dev/null` remains a supported `core.hooksPath` value for
+disabling hooks. The config/hook audit is repeated when each sandbox is
+constructed, after CLI `--writepath` and per-tool `writablePaths` overlays are
+merged, so a later grant cannot make an otherwise external config, include, or
+hook target plantable.
+
+Writable and read-exemption paths are canonicalized when the effective policy
+is prepared. Missing grants are dropped, and the approved filesystem identities
+survive later per-tool merges; replacing or rerouting one before another tool
+is loaded fails closed instead of silently widening that later sandbox.
 
 **MCP server sandboxing** — set `sandbox` on each server entry in the config:
 

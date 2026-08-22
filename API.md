@@ -614,7 +614,7 @@ func main() {
         tools.WithSandboxFactory(sandbox.New, sandboxConfig),
     )
 
-    _, err := tools.LoadShellTools(registry, []string{
+    _, err := tools.LoadShellToolsWithRegistry(registry, []string{
         "./weather.sh",
         "./calculator.sh",  // You can load multiple scripts
     })
@@ -693,6 +693,18 @@ Tools that omit `"sandbox"` get the defaults below. Tool-controlled metadata can
 
 #### Sandbox Spec Reference
 
+Library callers executing an `exec.Cmd` through a built-in sandbox must use
+`sandbox.WrapCmdManaged` (or `sandbox.WrapCmdWithEnvManaged`) and invoke the
+returned idempotent cleanup after `Start`, `Run`, `Output`, or `CombinedOutput`
+returns. Linux and macOS backends keep bootstrap, policy, and environment file
+descriptors open until process start; the managed helpers close only those
+backend-owned descriptors while preserving caller-owned `ExtraFiles`. The
+legacy cleanup-less `Sandbox.Wrap`, `WrapCmd`, and `WrapCmdWithEnv` entry points
+remain source-compatible but fail closed with `sandbox.ErrManagedWrapRequired`
+before mutating the command when used with a built-in backend. Custom sandbox
+implementations that do not opt into the built-in managed capability retain
+the legacy behavior.
+
 `"sandbox"` can be `true` (use defaults) or an object:
 
 | Field | Type | Default | Description |
@@ -702,7 +714,7 @@ Tools that omit `"sandbox"` get the defaults below. Tool-controlled metadata can
 | `writablePaths` | string[] | `[]` | Directories where writes are allowed (supports `~`) |
 | `readPaths` | string[] | `[]` | Paths exempted from the credential deny list (supports `~`) |
 | `denyPaths` | string[] | `[]` | Extra paths blocked from reads, in addition to the built-in deny list (supports `~`) |
-| `denyWritePaths` | string[] | `[]` | Paths kept read-only even inside a `writablePaths` entry (supports `~`). Used to carve protected islands out of a writable tree, e.g. `.git/hooks`. |
+| `denyWritePaths` | string[] | `[]` | Paths kept read-only even inside a `writablePaths` entry (supports `~`). Mutable writable ancestors are pinned so the protected path cannot be bypassed by relocation. |
 | `allowEnv` | string[] | all non-sensitive | If set, only these env vars are passed through (overrides the sensitive-var stripping) |
 | `denyWrite` | bool | `false` | Deny all file writes, including temp. Overrides `writablePaths`. |
 
@@ -713,7 +725,7 @@ Tools that omit `"sandbox"` get the defaults below. Tool-controlled metadata can
 - Env: all vars passed through except sensitive ones (see below)
 - Linux: private `/tmp` and `/run`, filesystem Unix sockets denied, own PID and IPC namespaces, and own session
 
-**CLI presets:** the `polly` CLI selects its base config with `--sandbox <preset>` (components `base`, `readonly`, `workspace`, `net` joined with `+`; library equivalent `sandbox.ParsePreset`). The CLI default is `workspace+net`: the working directory is added to `writablePaths` (with `.git/hooks` and `.git/config` on `denyWritePaths` so a sandboxed tool can't plant hooks that later run unsandboxed) and `allowNetwork` is enabled. A tool's own `sandbox` object merges on top of the base config and can only widen it. `--writepath` and `--allownet` add to any preset.
+**CLI presets:** the `polly` CLI selects its base config with `--sandbox <preset>` (components `base`, `readonly`, `workspace`, `net` joined with `+`; library equivalent `sandbox.ParsePreset`). The CLI default is `workspace+net`: the working directory is added to `writablePaths`, while recursively discovered `.git` routing entries and their resolved per-worktree/common metadata directories are added to `denyWritePaths`; `allowNetwork` is enabled. Git metadata is therefore read-only (including missing leaves such as `config.worktree`) while working-tree files remain writable. Bare-repository working directories; symlinked or hard-linked Git routing/config/hook metadata; repository-local `core.hooksPath`; and config includes are refused because their effective identity or target cannot be pinned portably. After verifying that PATH reaches the same filesystem object as fixed `/usr/bin/git` through a stable non-symlink route outside writable paths, Polly uses only that fixed executable to resolve effective and overridden global/system `core.hooksPath` values and recursively inspect config includes regardless of current `includeIf` conditions. The workspace preset is refused when a hook, config source, or include path lands in host-visible writable content outside protected metadata (including macOS host temp trees), when an existing config source has hard-link aliases, or when a configured hook entry is symlinked or hard-linked; `/dev/null` is accepted as an immutable hook-disabling target. A tool's own `sandbox` object merges on top of the base config and can only widen it. `--writepath` and `--allownet` add to any preset. Before each final sandbox is constructed, Polly re-runs the stored workspace config/include/hook audit against all merged host-visible writable roots, so a CLI or per-tool overlay cannot reopen one of those persistence routes (Linux's exact private temp/runtime mounts remain non-host-visible). Effective configs are prepared with canonical writable/read paths and private filesystem identities; the CLI and tool registry retain those identities across later lazy sandbox construction, rejecting a replaced or rerouted approved path before the backend runs.
 
 **Credential paths denied by default:**
 `~/.ssh`, `~/.gnupg`, `~/.gpg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.npmrc`, `~/.pypirc`, `~/.gem/credentials`, `~/.cargo/credentials`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`
@@ -724,11 +736,13 @@ Relative `writablePaths`, `readPaths`, `denyPaths`, and `denyWritePaths`
 entries are resolved against the process working directory when the sandbox is
 constructed. Empty path entries are rejected. On Linux, a `readPaths` entry may
 name a child of a denied directory (for example `~/.ssh/config`); that child is
-restored read-only while its siblings remain masked.
+restored read-only while its siblings remain masked. A symlinked `readPaths`
+entry keeps its approved lexical route, but both the route and canonical target
+are frozen and revalidated so a later replacement or retarget fails closed.
 
 **Sensitive env vars** are always stripped, even without `allowEnv`: `POLLYTOOL_*` and `AWS_*` prefixes; names ending in `_API_KEY`, `_APIKEY`, `_TOKEN`, `_SECRET`, `_SECRET_KEY`, `_ACCESS_KEY`, `_PASSWORD`, `_PASSPHRASE`, `_CREDENTIALS`, `_PRIVATE_KEY`; and the agent sockets `SSH_AUTH_SOCK` / `GPG_AGENT_INFO`. To pass one through, include it in `allowEnv`.
 
-**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths` (and makes `denyWritePaths` redundant). `denyDNS: true` has no additional effect when `allowNetwork` is `false`. On Linux, a `denyWritePaths` entry that does not exist yet is skipped for that command (bwrap cannot bind a missing path); on macOS the rule applies regardless, so the path can't be created either.
+**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths` (and makes `denyWritePaths` redundant). `denyDNS: true` has no additional effect when `allowNetwork` is `false`. A missing or unresolvable `denyWritePaths` entry fails sandbox construction and is checked again before every command; neither backend can reliably reserve a nonexistent protected object. On both platforms, writable ancestors of a protected entry are pinned against relocation so moving an ancestor cannot expose a replacement at the original path.
 
 #### Examples
 

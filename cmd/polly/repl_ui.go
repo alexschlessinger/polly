@@ -3500,6 +3500,7 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 
 func runFallbackREPL(ctx context.Context, config *Config, state *conversationState) error {
 	reader := bufio.NewReader(os.Stdin)
+	writeFallbackSandboxNotice(os.Stderr, config, state)
 	commandCtx := newWriterReplCommandContext(config, state, os.Stderr)
 	return runREPLLoopWithCommands(reader, os.Stderr, commandCtx, func(prompt string) error {
 		turnCtx, cancel := context.WithCancel(ctx)
@@ -3515,6 +3516,13 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 		}
 		return err
 	})
+}
+
+func writeFallbackSandboxNotice(w io.Writer, config *Config, state *conversationState) {
+	if config == nil || config.Quiet {
+		return
+	}
+	fmt.Fprintln(w, sandboxNoticeLine(config, state))
 }
 
 func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {

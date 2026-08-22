@@ -72,25 +72,39 @@ type ToolRegistry struct {
 	pendingAutoAllowed     map[string]bool
 
 	// Sandbox factory and base config
-	sandboxFactory  func(sandbox.Config) (sandbox.Sandbox, error)
-	baseSandboxCfg  sandbox.Config
-	unsafeNoSandbox bool
+	sandboxFactory        func(sandbox.Config) (sandbox.Sandbox, error)
+	sandboxConfigMu       sync.Mutex
+	baseSandboxCfg        sandbox.Config
+	baseSandboxPrepared   bool
+	baseSandboxPrepareErr error
+	unsafeNoSandbox       bool
 }
 
 type registryOptions struct {
-	sandboxFactory  func(sandbox.Config) (sandbox.Sandbox, error)
-	baseSandboxCfg  sandbox.Config
-	unsafeNoSandbox bool
+	sandboxFactory        func(sandbox.Config) (sandbox.Sandbox, error)
+	baseSandboxCfg        sandbox.Config
+	baseSandboxPrepared   bool
+	baseSandboxPrepareErr error
+	unsafeNoSandbox       bool
 }
 
 // RegistryOption configures a ToolRegistry.
 type RegistryOption func(*registryOptions)
 
-// WithSandboxFactory sets the sandbox factory and base config for the registry.
+// WithSandboxFactory sets the sandbox factory and snapshots the prepared base
+// config immediately. Preparation errors surface when the registry first
+// constructs a process sandbox because RegistryOption cannot return an error.
 func WithSandboxFactory(factory func(sandbox.Config) (sandbox.Sandbox, error), baseCfg sandbox.Config) RegistryOption {
+	preparedBase, prepareErr := sandbox.PrepareConfig(baseCfg.Merge(sandbox.Config{}))
 	return func(o *registryOptions) {
 		o.sandboxFactory = factory
-		o.baseSandboxCfg = baseCfg
+		// Snapshot both the slices and filesystem identities when the option is
+		// created. Registry construction and native-tool loading may be delayed;
+		// neither caller mutation nor path replacement during that gap may change
+		// which authority was approved.
+		o.baseSandboxCfg = preparedBase.Merge(sandbox.Config{})
+		o.baseSandboxPrepared = true
+		o.baseSandboxPrepareErr = prepareErr
 	}
 }
 
@@ -122,15 +136,58 @@ func (r *ToolRegistry) NewSandbox(overlay *sandbox.Config) (sandbox.Sandbox, err
 	return sb, err
 }
 
+func (r *ToolRegistry) constructPreparedSandbox(cfg sandbox.Config) (sandbox.Sandbox, error) {
+	if r.sandboxFactory == nil {
+		return nil, fmt.Errorf("sandboxing not available")
+	}
+	sb, err := r.sandboxFactory(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if sb == nil {
+		return nil, fmt.Errorf("sandbox factory returned no sandbox")
+	}
+	return sb, nil
+}
+
+func (r *ToolRegistry) constructSandbox(cfg sandbox.Config) (sandbox.Sandbox, error) {
+	prepared, err := sandbox.PrepareConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return r.constructPreparedSandbox(prepared)
+}
+
+// preparedBaseSandboxConfig freezes the caller-approved base authority once
+// for the lifetime of the registry. Backends are constructed lazily, so
+// re-preparing the original path spellings for each tool would let an earlier
+// sandbox retarget a symlink before a later tool is loaded.
+func (r *ToolRegistry) preparedBaseSandboxConfig() (sandbox.Config, error) {
+	r.sandboxConfigMu.Lock()
+	defer r.sandboxConfigMu.Unlock()
+	if !r.baseSandboxPrepared {
+		r.baseSandboxCfg, r.baseSandboxPrepareErr = sandbox.PrepareConfig(r.baseSandboxCfg)
+		r.baseSandboxPrepared = true
+	}
+	return r.baseSandboxCfg, r.baseSandboxPrepareErr
+}
+
 // newSandboxFor is NewSandbox with a tool/server identity for debug logging
 // of the effective merged config (names and flags only, never env values).
 func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sandbox.Sandbox, sandbox.Config, error) {
 	if r.sandboxFactory == nil {
 		return nil, sandbox.Config{}, fmt.Errorf("sandboxing not available")
 	}
-	cfg := r.baseSandboxCfg
+	cfg, err := r.preparedBaseSandboxConfig()
+	if err != nil {
+		return nil, sandbox.Config{}, fmt.Errorf("prepare base sandbox config: %w", err)
+	}
 	if overlay != nil {
 		cfg = cfg.Merge(*overlay)
+	}
+	cfg, err = sandbox.PrepareConfig(cfg)
+	if err != nil {
+		return nil, sandbox.Config{}, fmt.Errorf("prepare effective sandbox config: %w", err)
 	}
 	slog.Debug("sandbox_config",
 		"tool", name,
@@ -141,7 +198,7 @@ func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sand
 		"read_paths", cfg.ReadPaths,
 		"deny_paths", cfg.DenyPaths,
 		"allow_env", cfg.AllowEnv)
-	sb, err := r.sandboxFactory(cfg)
+	sb, err := r.constructPreparedSandbox(cfg)
 	if err != nil {
 		return nil, cfg, err
 	}
@@ -150,10 +207,27 @@ func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sand
 
 // NewSandboxDirect creates a sandbox from an explicit config, ignoring the base config.
 func (r *ToolRegistry) NewSandboxDirect(cfg sandbox.Config) (sandbox.Sandbox, error) {
-	if r.sandboxFactory == nil {
-		return nil, fmt.Errorf("sandboxing not available")
+	if _, err := r.preparedBaseSandboxConfig(); err != nil {
+		return nil, fmt.Errorf("prepare base sandbox config: %w", err)
 	}
-	return r.sandboxFactory(cfg)
+	return r.constructSandbox(cfg)
+}
+
+// newSchemaSandbox constructs a deliberately narrower policy for executable
+// --schema discovery. Discovery never inherits workspace writes, network, read
+// exceptions, or environment allowances from the normal execution policy. It
+// does retain deny rules so a policy cannot become weaker while metadata is
+// being inspected.
+func (r *ToolRegistry) newSchemaSandbox() (sandbox.Sandbox, error) {
+	baseCfg, err := r.preparedBaseSandboxConfig()
+	if err != nil {
+		return nil, fmt.Errorf("prepare base sandbox config: %w", err)
+	}
+	cfg := sandbox.DefaultConfig()
+	cfg.DenyPaths = append([]string(nil), baseCfg.DenyPaths...)
+	cfg.DenyWritePaths = append([]string(nil), baseCfg.DenyWritePaths...)
+	cfg.DenyWrite = baseCfg.DenyWrite
+	return r.NewSandboxDirect(cfg)
 }
 
 type stagedToolRecord struct {
@@ -183,19 +257,21 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 	}
 
 	registry := &ToolRegistry{
-		tools:              make(map[string]Tool),
-		nativeTools:        make(map[string]func() (Tool, error)),
-		toolClients:        make(map[string]*MCPClient),
-		serverTools:        make(map[string][]string),
-		pendingTools:       make(map[string]Tool),
-		pendingToolClients: make(map[string]*MCPClient),
-		pendingServerTools: make(map[string][]string),
-		alwaysAllowedTools: make(map[string]bool),
-		autoAllowedTools:   make(map[string]bool),
-		pendingAutoAllowed: make(map[string]bool),
-		sandboxFactory:     o.sandboxFactory,
-		baseSandboxCfg:     o.baseSandboxCfg,
-		unsafeNoSandbox:    o.unsafeNoSandbox,
+		tools:                 make(map[string]Tool),
+		nativeTools:           make(map[string]func() (Tool, error)),
+		toolClients:           make(map[string]*MCPClient),
+		serverTools:           make(map[string][]string),
+		pendingTools:          make(map[string]Tool),
+		pendingToolClients:    make(map[string]*MCPClient),
+		pendingServerTools:    make(map[string][]string),
+		alwaysAllowedTools:    make(map[string]bool),
+		autoAllowedTools:      make(map[string]bool),
+		pendingAutoAllowed:    make(map[string]bool),
+		sandboxFactory:        o.sandboxFactory,
+		baseSandboxCfg:        o.baseSandboxCfg,
+		baseSandboxPrepared:   o.baseSandboxPrepared,
+		baseSandboxPrepareErr: o.baseSandboxPrepareErr,
+		unsafeNoSandbox:       o.unsafeNoSandbox,
 	}
 
 	registry.nativeTools["bash"] = func() (Tool, error) {
@@ -582,7 +658,7 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 	var schemaSB sandbox.Sandbox
 	if r.sandboxFactory != nil {
 		var err error
-		schemaSB, err = r.sandboxFactory(r.baseSandboxCfg)
+		schemaSB, err = r.newSchemaSandbox()
 		if err != nil {
 			return nil, LoadResult{}, fmt.Errorf("schema sandbox for shell tool %s: %w", path, err)
 		}
@@ -668,7 +744,7 @@ func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName,
 	var sb sandbox.Sandbox
 	var sbCfg sandbox.Config
 	var hasSandboxCfg bool
-	if r.sandboxFactory != nil && !config.SandboxOptOut() {
+	if localProcess && r.sandboxFactory != nil && !config.SandboxOptOut() {
 		overlayCfg, err := config.SandboxConfig()
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid sandbox config for MCP server %s: %w", serverName, err)
@@ -947,7 +1023,7 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 	var sb sandbox.Sandbox
 	var sbCfg sandbox.Config
 	var hasSandboxCfg bool
-	if r.sandboxFactory != nil && !config.SandboxOptOut() {
+	if localProcess && r.sandboxFactory != nil && !config.SandboxOptOut() {
 		overlayCfg, specErr := config.SandboxConfig()
 		if specErr != nil {
 			return fmt.Errorf("invalid sandbox config for MCP server %s: %w", namespace, specErr)

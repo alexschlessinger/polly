@@ -53,15 +53,23 @@ func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	work := t.TempDir()
+	extraWrite, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(work, ".git", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "")
 	t.Chdir(work)
 
 	opts, err := sandboxRegistryOptions(&Config{
 		SandboxPreset: "workspace+net",
 		DenyPaths:     []string{"~/.config/secrets"},
-		WritePaths:    []string{"/data"},
+		WritePaths:    []string{extraWrite},
 	})
 	if err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
@@ -77,17 +85,72 @@ func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(captured.WritablePaths, cwd) {
-		t.Fatalf("WritablePaths = %v, want cwd %q from the workspace preset", captured.WritablePaths, cwd)
+	realCWD, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !slices.Contains(captured.WritablePaths, "/data") {
-		t.Fatalf("WritablePaths = %v, want --writepath entry /data", captured.WritablePaths)
+	workspaceWritable := false
+	for _, writable := range captured.WritablePaths {
+		rel, relErr := filepath.Rel(writable, realCWD)
+		if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			workspaceWritable = true
+			break
+		}
 	}
-	if !slices.Contains(captured.DenyWritePaths, filepath.Join(cwd, ".git", "hooks")) {
-		t.Fatalf("DenyWritePaths = %v, want the .git/hooks guardrail", captured.DenyWritePaths)
+	if !workspaceWritable {
+		t.Fatalf("WritablePaths = %v, want an effective grant covering workspace %q", captured.WritablePaths, realCWD)
 	}
-	if !slices.Contains(captured.DenyPaths, "~/.config/secrets") {
+	realExtraWrite, err := filepath.EvalSymlinks(extraWrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(captured.WritablePaths, realExtraWrite) {
+		t.Fatalf("WritablePaths = %v, want --writepath entry %q", captured.WritablePaths, realExtraWrite)
+	}
+	realGitDir, err := filepath.EvalSymlinks(filepath.Join(cwd, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(captured.DenyWritePaths, realGitDir) {
+		t.Fatalf("DenyWritePaths = %v, want the .git routing guardrail", captured.DenyWritePaths)
+	}
+	wantDenied := filepath.Join(extraWrite, ".config", "secrets")
+	if !slices.Contains(captured.DenyPaths, wantDenied) {
 		t.Fatalf("DenyPaths = %v, want the --denypath entry", captured.DenyPaths)
+	}
+}
+
+func TestSandboxRegistryOptionsRevalidatesGitPolicyAfterWritePath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(home) || filepath.Clean(home) == string(filepath.Separator) {
+		t.Skipf("need a bounded absolute home directory, got %q", home)
+	}
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, ".git", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalConfig := filepath.Join(home, ".polly-sandbox-policy-"+filepath.Base(work), "global.gitconfig")
+	if _, err := os.Lstat(filepath.Dir(externalConfig)); err == nil {
+		t.Skipf("test target unexpectedly exists: %s", filepath.Dir(externalConfig))
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GIT_CONFIG_GLOBAL", externalConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "")
+	t.Chdir(work)
+
+	_, err = sandboxRegistryOptions(&Config{
+		SandboxPreset: "workspace",
+		WritePaths:    []string{home},
+	})
+	if err == nil || !strings.Contains(err.Error(), "global Git config source") {
+		t.Fatalf("sandboxRegistryOptions() error = %v, want post-merge --writepath Git policy rejection", err)
 	}
 }
 

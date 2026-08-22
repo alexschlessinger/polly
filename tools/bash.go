@@ -22,6 +22,12 @@ func newBashTool(workDir string) *BashTool {
 	return &BashTool{workDir: workDir}
 }
 
+// NewBashTool creates an unsandboxed bash tool.
+//
+// Deprecated: use NewUnsafeBashTool to make the lack of containment explicit,
+// or load "bash" through a ToolRegistry configured with WithSandboxFactory.
+func NewBashTool(workDir string) *BashTool { return NewUnsafeBashTool(workDir) }
+
 // NewUnsafeBashTool creates an unsandboxed bash tool. Prefer loading "bash"
 // through a ToolRegistry configured with WithSandboxFactory. This constructor
 // is intentionally explicit because executing model-authored commands without
@@ -71,15 +77,17 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) (string, er
 		cmd.Dir = t.workDir
 	}
 
-	if err := sandbox.WrapCmd(t.sandbox, cmd); err != nil {
+	closeSandboxFiles, err := sandbox.WrapCmdManaged(t.sandbox, cmd)
+	if err != nil {
 		return "", fmt.Errorf("sandbox: %w", err)
 	}
+	defer func() { _ = closeSandboxFiles() }()
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 
 	result := stdout.String()
 	if stderr.Len() > 0 {

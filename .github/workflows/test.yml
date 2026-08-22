@@ -8,6 +8,7 @@ on:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -23,13 +24,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap
+          # Ubuntu's AppArmor policy can restrict unprivileged user namespaces.
+          # Modern bubblewrap intentionally has no setuid mode, so enable the
+          # kernel facility it uses and prove the fixed backend works here.
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          /usr/bin/bwrap --ro-bind / / --dev /dev --proc /proc \
+            --unshare-pid --die-with-parent /usr/bin/true
 
       - run: go build ./...
 
       - run: go vet ./...
 
-      - name: Linux sandbox security tests
-        if: runner.os == 'Linux'
+      - name: Sandbox security tests
         run: go test ./tools/sandbox
         env:
           POLLYTOOL_REQUIRE_SANDBOX_TESTS: '1'

@@ -45,6 +45,7 @@ func copySandboxConfig(cfg *sandbox.Config) *sandbox.Config {
 	c.WritablePaths = append([]string(nil), cfg.WritablePaths...)
 	c.ReadPaths = append([]string(nil), cfg.ReadPaths...)
 	c.DenyPaths = append([]string(nil), cfg.DenyPaths...)
+	c.DenyWritePaths = append([]string(nil), cfg.DenyWritePaths...)
 	c.AllowEnv = append([]string(nil), cfg.AllowEnv...)
 	return &c
 }
