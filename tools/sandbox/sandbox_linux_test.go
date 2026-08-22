@@ -492,6 +492,53 @@ func TestLinuxBuildBwrapArgs(t *testing.T) {
 	}
 }
 
+func TestLinuxBuildBwrapArgsDropsInheritedCapabilities(t *testing.T) {
+	args := buildBwrapArgs(Config{}, nil)
+	wantTail := []string{"--cap-drop", "ALL", "--die-with-parent", "--new-session"}
+	if len(args) < len(wantTail) {
+		t.Fatalf("bwrap args too short: %v", args)
+	}
+	gotTail := args[len(args)-len(wantTail):]
+	if strings.Join(gotTail, "\x00") != strings.Join(wantTail, "\x00") {
+		t.Fatalf("bwrap security tail = %v, want %v:\n%s", gotTail, wantTail, strings.Join(args, " "))
+	}
+}
+
+func TestLinuxBuildBwrapArgsMountsNestedPrivateRootsAfterWritableAncestor(t *testing.T) {
+	work := t.TempDir()
+	tempRoot := filepath.Join(work, ".tmp")
+	runRoot := filepath.Join(work, ".run")
+	for _, root := range []string{tempRoot, runRoot} {
+		if err := os.Mkdir(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	args, err := buildBwrapArgsInternalWithPlanAndRoots(
+		Config{WritablePaths: []string{work}},
+		nil,
+		nil,
+		true,
+		nil,
+		nil,
+		nil,
+		[]string{tempRoot},
+		[]string{runRoot},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := []string{
+		"bwrap", "--ro-bind", "/", "/",
+		"--bind", work, work,
+		"--tmpfs", tempRoot,
+		"--tmpfs", runRoot,
+	}
+	if len(args) < len(wantPrefix) || strings.Join(args[:len(wantPrefix)], "\x00") != strings.Join(wantPrefix, "\x00") {
+		t.Fatalf("bwrap mount prefix must install writable ancestors before private roots; want %v:\n%s", wantPrefix, strings.Join(args, " "))
+	}
+}
+
 func TestLinuxBuildBwrapArgsWritePathsTilde(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -2068,6 +2115,45 @@ func TestLinuxDistinctTMPDIRIsPrivateButSelectedCommandRuns(t *testing.T) {
 	}
 	if strings.TrimSpace(string(out)) != "ok" {
 		t.Fatalf("selected command output = %q", out)
+	}
+}
+
+func TestLinuxWritableAncestorDoesNotExposeDistinctTMPDIR(t *testing.T) {
+	skipIfNoBwrap(t)
+	work, err := os.MkdirTemp("/var/tmp", "polly-private-tmp-parent-")
+	if err != nil {
+		skipOrFailSandboxPrerequisite(t, "cannot create workspace outside /tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(work) })
+	hostTemp := filepath.Join(work, ".tmp")
+	if err := os.Mkdir(hostTemp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(hostTemp, "host-marker")
+	if err := os.WriteFile(marker, []byte("host"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspaceOutput := filepath.Join(work, "sandbox-output")
+	t.Setenv("TMPDIR", hostTemp)
+
+	sb, err := New(Config{WritablePaths: []string{work}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", `test ! -e "$1" && printf ok > "$2"`, "sh", marker, workspaceOutput)
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatal(err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		skipOrFailBwrapUnavailable(t, err, out)
+	}
+	got, err := os.ReadFile(workspaceOutput)
+	if err != nil {
+		t.Fatalf("sandbox did not retain the surrounding workspace write grant: %v", err)
+	}
+	if string(got) != "ok" {
+		t.Fatalf("workspace output = %q, want ok", got)
 	}
 }
 

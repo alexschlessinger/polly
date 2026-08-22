@@ -699,6 +699,31 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 	args := []string{"bwrap", "--ro-bind", "/", "/"}
 	privateRoots := append(append([]string{}, tempRoots...), runRoots...)
 	privateRun := runRoots[0]
+	var routingAfterPrivateRoots []string
+	if !cfg.DenyWrite {
+		if denyWritePlan == nil {
+			planned, err := planDenyWriteMounts(cfg, strict)
+			if err != nil {
+				return nil, err
+			}
+			denyWritePlan = &planned
+		}
+		routingArgs, err := appendLinuxRoutingMounts(nil, cfg, privateRoots, reservations, *denyWritePlan, authoritySources)
+		if err != nil {
+			return nil, err
+		}
+		for i := 0; i < len(routingArgs); i += 3 {
+			mountArgs := routingArgs[i : i+3]
+			if linuxRoutingMountCoversPrivateRoot(mountArgs[2], privateRoots) {
+				args = append(args, mountArgs...)
+			} else {
+				routingAfterPrivateRoots = append(routingAfterPrivateRoots, mountArgs...)
+			}
+		}
+	}
+	if denyWritePlan == nil {
+		denyWritePlan = &denyWriteMountPlan{}
+	}
 	for _, root := range tempRoots {
 		args = append(args, "--tmpfs", root)
 	}
@@ -743,23 +768,7 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 		}
 	}
 
-	if !cfg.DenyWrite {
-		if denyWritePlan == nil {
-			planned, err := planDenyWriteMounts(cfg, strict)
-			if err != nil {
-				return nil, err
-			}
-			denyWritePlan = &planned
-		}
-		var err error
-		args, err = appendLinuxRoutingMounts(args, cfg, privateRoots, reservations, *denyWritePlan, authoritySources)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if denyWritePlan == nil {
-		denyWritePlan = &denyWriteMountPlan{}
-	}
+	args = append(args, routingAfterPrivateRoots...)
 
 	readSet := deniedReadSet(cfg)
 	if readExemptionBinds == nil {
@@ -872,8 +881,17 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 	} else if cfg.DenyDNS && !resolvInPrivateRun {
 		args = append(args, "--ro-bind", "/dev/null", "/etc/resolv.conf")
 	}
-	args = append(args, "--die-with-parent", "--new-session")
+	args = append(args, "--cap-drop", "ALL", "--die-with-parent", "--new-session")
 	return args, nil
+}
+
+func linuxRoutingMountCoversPrivateRoot(destination string, privateRoots []string) bool {
+	for _, root := range privateRoots {
+		if isPathWithin(root, destination) {
+			return true
+		}
+	}
+	return false
 }
 
 // appendAuthorityPathMounts pins every writable grant and every mutable route
