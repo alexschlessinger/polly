@@ -175,7 +175,7 @@ func modelConfigFlags() []cli.Flag {
 		&cli.IntFlag{
 			Name:    "maxiterations",
 			Usage:   "Maximum agent iterations (LLM calls) before stopping",
-			Value:   50,
+			Value:   250,
 			Sources: cli.EnvVars("POLLYTOOL_MAXITERATIONS"),
 		},
 		&cli.DurationFlag{

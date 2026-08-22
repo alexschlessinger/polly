@@ -22,7 +22,7 @@ GLOBAL OPTIONS:
    --model string, -m string                                Model to use (provider/model format) (default: "anthropic/claude-sonnet-4-6") [$POLLYTOOL_MODEL]
    --temp float                                             Temperature for sampling (default: 1) [$POLLYTOOL_TEMP]
    --maxtokens int                                          Maximum tokens to generate (default: 50000) [$POLLYTOOL_MAXTOKENS]
-   --maxiterations int                                      Maximum agent iterations (LLM calls) before stopping (default: 50) [$POLLYTOOL_MAXITERATIONS]
+   --maxiterations int                                      Maximum agent iterations (LLM calls) before stopping (default: 250) [$POLLYTOOL_MAXITERATIONS]
    --timeout duration                                       Request timeout (default: 2m0s) [$POLLYTOOL_TIMEOUT]
    --thinking string                                        Reasoning effort: off, dynamic, a level (minimal, low, medium, high, xhigh, max), or a token budget (e.g. 12000) (default: "off") [$POLLYTOOL_THINKING]
    --baseurl string                                         Base URL for API (for OpenAI-compatible endpoints or Ollama) [$POLLYTOOL_BASEURL]

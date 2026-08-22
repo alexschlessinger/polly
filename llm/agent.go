@@ -29,7 +29,7 @@ type Agent struct {
 
 // AgentConfig configures agent behavior
 type AgentConfig struct {
-	MaxIterations    int           // Maximum LLM calls before giving up (default: 10)
+	MaxIterations    int           // Maximum LLM calls before giving up (default: 250)
 	ToolTimeout      time.Duration // Per-tool execution timeout (0 = no timeout)
 	MaxParallelTools int           // Maximum parallel tool executions (0 = unlimited)
 	ResponseTool     string        // If set, require final response via this tool
@@ -88,7 +88,7 @@ func hasToolCall(msg *messages.ChatMessage, name string) bool {
 // receive back all generated messages to add to their own session.
 func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
 	if config.MaxIterations <= 0 {
-		config.MaxIterations = 10
+		config.MaxIterations = 250
 	}
 	return &Agent{
 		client: client,
