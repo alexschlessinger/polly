@@ -414,10 +414,12 @@ working directories and symlinked Git routing or executable/config metadata
 are refused because their identity cannot be pinned portably. Hard-linked
 protected files, repository-local `core.hooksPath`, and config includes are
 refused for the same reason: protecting the config pathname would not protect
-the writable alias or redirected target. Polly verifies that PATH reaches the
-same filesystem object as the fixed OS Git executable through a stable,
-non-symlink route outside writable paths, then uses that fixed path with a
-routing-free environment. It checks effective and overridden
+the writable alias or redirected target. Polly accepts either a stable route
+to fixed OS Git or, on Darwin, a standard Homebrew `bin/git` leaf symlink to a
+non-writable, single-link Cellar target; every accepted route and target must stay
+outside writable paths. It executes the resolved selected Git with a
+routing-free environment, preserving that Git's compiled config-prefix
+semantics. It checks effective and overridden
 global/system `core.hooksPath` values plus every nested include (even inactive
 `includeIf` branches). The workspace preset is refused when a hook target,
 selected config source, or config include is in host-visible writable content

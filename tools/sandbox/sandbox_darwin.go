@@ -23,21 +23,41 @@ const (
 	darwinEnvBootstrapMaxPipeCount = 512
 	darwinEnvBootstrapCode         = `use strict;
 use warnings;
+use POSIX ();
 my $pipe_count = shift @ARGV;
 my $first_fd = shift @ARGV;
 defined($pipe_count) && defined($first_fd) or die "missing environment descriptors";
 $pipe_count =~ /\A[1-9][0-9]*\z/ && $pipe_count <= 512 or die "invalid environment descriptor count";
 $first_fd =~ /\A(?:0|[1-9][0-9]*)\z/ && $first_fd >= 3 or die "invalid environment descriptor";
 my $framed = "";
+my %transport_identities = ();
 for (my $offset = 0; $offset < $pipe_count; $offset++) {
     my $fd = $first_fd + $offset;
     open(my $fh, "<&=$fd") or die "open environment descriptor: $!";
+    my @identity = stat($fh);
+    @identity or die "stat environment descriptor: $!";
+    $transport_identities{join(":", @identity[0, 1, 2, 6])} = 1;
     binmode($fh);
     local $/;
     my $chunk = <$fh>;
     $chunk = "" unless defined($chunk);
     close($fh) or die "close environment descriptor: $!";
     $framed .= $chunk;
+}
+opendir(my $fd_dir, "/dev/fd") or die "open descriptor directory: $!";
+my @open_fds = grep { /\A(?:0|[1-9][0-9]*)\z/ } readdir($fd_dir);
+closedir($fd_dir) or die "close descriptor directory: $!";
+my @transport_duplicates = ();
+for my $fd (@open_fds) {
+    open(my $candidate, "<&", $fd) or next;
+    my @identity = stat($candidate);
+    close($candidate) or die "close descriptor probe: $!";
+    next unless @identity;
+    push @transport_duplicates, 0 + $fd
+        if $transport_identities{join(":", @identity[0, 1, 2, 6])};
+}
+for my $fd (@transport_duplicates) {
+    defined(POSIX::close($fd)) or die "close duplicate environment descriptor: $!";
 }
 my ($magic, $length_field, $data) = split(/\0/, $framed, 3);
 defined($magic) && defined($length_field) && defined($data) or die "invalid environment payload";
@@ -179,10 +199,11 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 	// sandbox-exec and the fixed, root-owned bootstrap receive no target
 	// environment. Perl concatenates the anonymous, prefilled pipe shards and
 	// validates their length-framed payload only after Seatbelt is active, then
-	// closes every reader, clears its own environment, and uses its builtin exec
-	// to launch the target with the exact filtered environment, resolved
-	// executable, original argv, and inherited stdin. No intermediate exec argv
-	// contains a target value.
+	// closes every reader and any inherited duplicate that still identifies the
+	// same pipe, clears its own environment, and uses its builtin exec to launch
+	// the target with the exact filtered environment, resolved executable,
+	// original argv, inherited stdin, and unrelated caller-owned ExtraFiles. No
+	// intermediate exec argv contains a target value.
 	cmd.Env = []string{}
 
 	// Run in a new session, detaching the controlling terminal. This is the

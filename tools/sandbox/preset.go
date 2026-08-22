@@ -300,13 +300,27 @@ func rejectEffectiveHooksPathsWithWritableRoots(repositories []gitRepositoryCont
 	return nil
 }
 
-// trustedGitExecutable deliberately ignores PATH. Git config must be queried
-// before containment exists, so executing a workspace or temp-dir binary (or
-// a writable hard-link alias to one) would itself be code execution. Both
-// supported backends provide the OS-managed Git at this fixed location;
-// fail closed on hosts that do not.
+// trustedGitExecutable resolves PATH without executing it, then accepts only
+// the fixed OS Git or a standard Homebrew Git installation on Darwin. The
+// latter must use Homebrew's direct bin/git -> Cellar/git/<version>/bin/git
+// route, and neither route nor target may be writable by the eventual sandbox.
+// Executing the resolved selected Git matters: its compiled system-config path
+// and %(prefix) expansion must match the user's next host Git invocation.
 func trustedGitExecutable(writableRoots []string) (string, error) {
 	const systemGit = "/usr/bin/git"
+	selected, err := exec.LookPath("git")
+	if err != nil {
+		return "", fmt.Errorf("resolve PATH-selected Git executable: %w", err)
+	}
+	return validateTrustedGitExecutable(selected, systemGit, writableRoots, homebrewGitPrefixes())
+}
+
+func validateTrustedGitExecutable(selected, systemGit string, writableRoots, homebrewPrefixes []string) (string, error) {
+	if !filepath.IsAbs(selected) {
+		return "", fmt.Errorf("PATH-selected Git executable %q is not absolute", selected)
+	}
+	selected = filepath.Clean(selected)
+	systemGit = filepath.Clean(systemGit)
 	systemInfo, err := os.Stat(systemGit)
 	if err != nil {
 		return "", fmt.Errorf("inspect trusted Git executable %q: %w", systemGit, err)
@@ -314,40 +328,116 @@ func trustedGitExecutable(writableRoots []string) (string, error) {
 	if !systemInfo.Mode().IsRegular() || systemInfo.Mode()&0o111 == 0 {
 		return "", fmt.Errorf("trusted Git executable %q is not an executable regular file", systemGit)
 	}
-	selected, err := exec.LookPath("git")
-	if err != nil {
-		return "", fmt.Errorf("resolve PATH-selected Git executable: %w", err)
-	}
 	selectedInfo, err := os.Stat(selected)
 	if err != nil {
 		return "", fmt.Errorf("inspect PATH-selected Git executable %q: %w", selected, err)
 	}
-	if !os.SameFile(selectedInfo, systemInfo) {
-		return "", fmt.Errorf("PATH-selected Git executable %q does not match trusted OS Git %q", selected, systemGit)
+	if os.SameFile(selectedInfo, systemInfo) {
+		if symlink, err := firstSymlinkComponent(selected); err != nil {
+			return "", fmt.Errorf("inspect PATH-selected Git route %q: %w", selected, err)
+		} else if symlink != "" {
+			return "", fmt.Errorf("PATH-selected Git route %q traverses symlink %q and cannot be trusted persistently", selected, symlink)
+		}
+		for _, writable := range writableRoots {
+			if pathWithinPolicy(selected, writable) {
+				return "", fmt.Errorf("PATH-selected Git route %q is inside writable sandbox path %q", selected, writable)
+			}
+		}
+		real, err := filepath.EvalSymlinks(systemGit)
+		if err != nil {
+			return "", fmt.Errorf("resolve trusted Git executable %q: %w", systemGit, err)
+		}
+		for _, writable := range writableRoots {
+			if pathWithinPolicy(systemGit, writable) || pathWithinPolicy(real, writable) {
+				return "", fmt.Errorf("trusted Git executable %q resolves inside writable sandbox path %q", systemGit, writable)
+			}
+		}
+		return real, nil
 	}
-	if !filepath.IsAbs(selected) {
-		return "", fmt.Errorf("PATH-selected Git executable %q is not absolute", selected)
+
+	homebrewTarget, supported, err := homebrewGitTarget(selected, homebrewPrefixes)
+	if err != nil {
+		return "", err
 	}
-	if symlink, err := firstSymlinkComponent(selected); err != nil {
-		return "", fmt.Errorf("inspect PATH-selected Git route %q: %w", selected, err)
-	} else if symlink != "" {
-		return "", fmt.Errorf("PATH-selected Git route %q traverses symlink %q and cannot be trusted persistently", selected, symlink)
+	if !supported {
+		return "", fmt.Errorf("PATH-selected Git executable %q does not match trusted OS Git %q or a supported Homebrew installation", selected, systemGit)
+	}
+	targetInfo, err := os.Lstat(homebrewTarget)
+	if err != nil {
+		return "", fmt.Errorf("inspect Homebrew Git target %q: %w", homebrewTarget, err)
+	}
+	if !targetInfo.Mode().IsRegular() || targetInfo.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("Homebrew Git target %q is not an executable regular file", homebrewTarget)
+	}
+	if targetInfo.Mode().Perm()&0o222 != 0 {
+		return "", fmt.Errorf("Homebrew Git target %q is writable and cannot be trusted", homebrewTarget)
+	}
+	if targetInfo.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
+		return "", fmt.Errorf("Homebrew Git target %q has privilege bits and cannot be trusted", homebrewTarget)
+	}
+	if hasMultipleLinks(targetInfo) {
+		return "", fmt.Errorf("Homebrew Git target %q has multiple hard links and cannot be trusted", homebrewTarget)
+	}
+	if !os.SameFile(selectedInfo, targetInfo) {
+		return "", fmt.Errorf("Homebrew Git route %q changed while it was inspected", selected)
 	}
 	for _, writable := range writableRoots {
 		if pathWithinPolicy(selected, writable) {
 			return "", fmt.Errorf("PATH-selected Git route %q is inside writable sandbox path %q", selected, writable)
 		}
-	}
-	real, err := filepath.EvalSymlinks(systemGit)
-	if err != nil {
-		return "", fmt.Errorf("resolve trusted Git executable %q: %w", systemGit, err)
-	}
-	for _, writable := range writableRoots {
-		if pathWithinPolicy(systemGit, writable) || pathWithinPolicy(real, writable) {
-			return "", fmt.Errorf("trusted Git executable %q resolves inside writable sandbox path %q", systemGit, writable)
+		if pathWithinPolicy(homebrewTarget, writable) {
+			return "", fmt.Errorf("Homebrew Git target %q is inside writable sandbox path %q", homebrewTarget, writable)
 		}
 	}
-	return real, nil
+	return homebrewTarget, nil
+}
+
+func homebrewGitPrefixes() []string {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	return []string{"/opt/homebrew", "/usr/local"}
+}
+
+func homebrewGitTarget(selected string, prefixes []string) (string, bool, error) {
+	for _, prefix := range prefixes {
+		prefix = filepath.Clean(prefix)
+		if selected != filepath.Join(prefix, "bin", "git") {
+			continue
+		}
+		symlink, err := firstSymlinkComponent(selected)
+		if err != nil {
+			return "", false, fmt.Errorf("inspect Homebrew Git route %q: %w", selected, err)
+		}
+		if symlink != selected {
+			if symlink == "" {
+				return "", false, fmt.Errorf("Homebrew Git route %q is not a direct Cellar symlink", selected)
+			}
+			return "", false, fmt.Errorf("Homebrew Git route %q traverses unexpected symlink %q", selected, symlink)
+		}
+		target, err := os.Readlink(selected)
+		if err != nil {
+			return "", false, fmt.Errorf("read Homebrew Git route %q: %w", selected, err)
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(selected), target)
+		}
+		target = filepath.Clean(target)
+		cellarGit := filepath.Join(prefix, "Cellar", "git")
+		rel, err := filepath.Rel(cellarGit, target)
+		components := strings.Split(rel, string(filepath.Separator))
+		if err != nil || len(components) != 3 || components[0] == "" || components[0] == "." ||
+			components[0] == ".." || components[1] != "bin" || components[2] != "git" {
+			return "", false, fmt.Errorf("Homebrew Git route %q targets unexpected path %q", selected, target)
+		}
+		if symlink, err := firstSymlinkComponent(target); err != nil {
+			return "", false, fmt.Errorf("inspect Homebrew Git target route %q: %w", target, err)
+		} else if symlink != "" {
+			return "", false, fmt.Errorf("Homebrew Git target route %q traverses unexpected symlink %q", target, symlink)
+		}
+		return target, true, nil
+	}
+	return "", false, nil
 }
 
 func firstSymlinkComponent(path string) (string, error) {

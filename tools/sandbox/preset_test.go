@@ -501,6 +501,124 @@ func TestValidateConfiguredHooksPathRejectsExternalAliases(t *testing.T) {
 	}
 }
 
+func TestValidateTrustedGitExecutableAcceptsStandardHomebrewRoute(t *testing.T) {
+	selected, systemGit, target, prefix := homebrewGitFixture(t)
+	workspace := filepath.Join(filepath.Dir(prefix), "workspace")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Homebrew's standard bin directory may be group-writable by the host
+	// account. It remains safe here because it is outside every path writable
+	// by the sandbox; the resolved executable itself must still be immutable.
+	if err := os.Chmod(filepath.Join(prefix, "bin"), 0o775); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := validateTrustedGitExecutable(selected, systemGit, []string{workspace}, []string{prefix})
+	if err != nil {
+		t.Fatalf("validateTrustedGitExecutable() error = %v", err)
+	}
+	if got != target {
+		t.Fatalf("validateTrustedGitExecutable() = %q, want resolved Cellar target %q", got, target)
+	}
+}
+
+func TestValidateTrustedGitExecutableRejectsUnsafeHomebrewRoutes(t *testing.T) {
+	t.Run("writable target", func(t *testing.T) {
+		selected, systemGit, target, prefix := homebrewGitFixture(t)
+		if err := os.Chmod(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := validateTrustedGitExecutable(selected, systemGit, nil, []string{prefix}); err == nil || !strings.Contains(err.Error(), "is writable") {
+			t.Fatalf("validateTrustedGitExecutable() error = %v, want writable-target rejection", err)
+		}
+	})
+
+	t.Run("hard-linked target", func(t *testing.T) {
+		selected, systemGit, target, prefix := homebrewGitFixture(t)
+		if err := os.Link(target, target+"-alias"); err != nil {
+			t.Skipf("hard links unavailable: %v", err)
+		}
+
+		if _, err := validateTrustedGitExecutable(selected, systemGit, nil, []string{prefix}); err == nil || !strings.Contains(err.Error(), "multiple hard links") {
+			t.Fatalf("validateTrustedGitExecutable() error = %v, want hard-link rejection", err)
+		}
+	})
+
+	t.Run("sandbox-writable route", func(t *testing.T) {
+		selected, systemGit, _, prefix := homebrewGitFixture(t)
+
+		if _, err := validateTrustedGitExecutable(selected, systemGit, []string{prefix}, []string{prefix}); err == nil || !strings.Contains(err.Error(), "writable sandbox path") {
+			t.Fatalf("validateTrustedGitExecutable() error = %v, want writable-route rejection", err)
+		}
+	})
+
+	t.Run("sandbox-writable resolved target", func(t *testing.T) {
+		selected, systemGit, target, prefix := homebrewGitFixture(t)
+
+		if _, err := validateTrustedGitExecutable(selected, systemGit, []string{filepath.Dir(target)}, []string{prefix}); err == nil || !strings.Contains(err.Error(), "writable sandbox path") {
+			t.Fatalf("validateTrustedGitExecutable() error = %v, want writable-target-route rejection", err)
+		}
+	})
+
+	t.Run("unexpected symlink chain", func(t *testing.T) {
+		root := mustEvalSymlinks(t, t.TempDir())
+		prefix := filepath.Join(root, "homebrew")
+		realCellar := filepath.Join(root, "real-cellar")
+		target := filepath.Join(realCellar, "git", "2.52.0", "bin", "git")
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("git"), 0o555); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(prefix, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(realCellar, filepath.Join(prefix, "Cellar")); err != nil {
+			t.Fatal(err)
+		}
+		selected := filepath.Join(prefix, "bin", "git")
+		if err := os.Symlink("../Cellar/git/2.52.0/bin/git", selected); err != nil {
+			t.Fatal(err)
+		}
+		systemGit := filepath.Join(root, "system-git")
+		if err := os.WriteFile(systemGit, []byte("git"), 0o555); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := validateTrustedGitExecutable(selected, systemGit, nil, []string{prefix}); err == nil || !strings.Contains(err.Error(), "unexpected symlink") {
+			t.Fatalf("validateTrustedGitExecutable() error = %v, want symlink-chain rejection", err)
+		}
+	})
+}
+
+func homebrewGitFixture(t *testing.T) (selected, systemGit, target, prefix string) {
+	t.Helper()
+	root := mustEvalSymlinks(t, t.TempDir())
+	prefix = filepath.Join(root, "homebrew")
+	target = filepath.Join(prefix, "Cellar", "git", "2.52.0", "bin", "git")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("git"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(prefix, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	selected = filepath.Join(prefix, "bin", "git")
+	if err := os.Symlink("../Cellar/git/2.52.0/bin/git", selected); err != nil {
+		t.Fatal(err)
+	}
+	systemGit = filepath.Join(root, "system-git")
+	if err := os.WriteFile(systemGit, []byte("git"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	return selected, systemGit, target, prefix
+}
+
 func TestGitGuardrailPathsDoesNotExecuteWorkspaceGitBinary(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {

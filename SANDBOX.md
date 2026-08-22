@@ -361,13 +361,17 @@ can portably pin those links if a merged policy later makes their targets
 writable. Protected routing/config/hook files with hard-link aliases are also
 rejected. Repository-local `core.hooksPath` and config includes fail closed
 because the effective redirected target cannot be pinned without evaluating
-Git's full configuration environment. Polly requires PATH-selected `git` to
-reach the same filesystem object as fixed `/usr/bin/git` through a stable,
-non-symlink route outside writable paths, but executes only the fixed path with
-repository-routing variables removed. Relevant global/system config selectors
-and ordinary-command overrides remain present so the audit matches the user's
-next host Git invocation; the `git config`-only `GIT_CONFIG` override is
-removed. It
+Git's full configuration environment. Polly accepts PATH-selected `git` when
+it reaches fixed `/usr/bin/git` through a stable non-symlink route outside
+writable paths. On Darwin it also accepts the standard `/opt/homebrew/bin/git`
+and `/usr/local/bin/git` leaf symlinks when they resolve directly into the
+matching `Cellar/git/<version>/bin/git`; the resolved target must be
+non-writable, single-linked, and outside every sandbox-writable path. Polly
+executes the resolved selected target with repository-routing variables
+removed, so compiled system-config paths and prefix expansion match the user's
+next host Git invocation. Relevant global/system config selectors and
+ordinary-command overrides remain present; the `git config`-only `GIT_CONFIG`
+override is removed. It
 checks effective and overridden global/system `core.hooksPath` values and
 recursively inspects nested includes regardless of current `includeIf`
 conditions. Hook targets, selected config sources, and include targets in

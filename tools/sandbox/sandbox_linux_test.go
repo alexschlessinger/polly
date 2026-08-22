@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -1244,9 +1245,11 @@ func TestLinuxExplicitEnvIsTargetOnly(t *testing.T) {
 	}
 	cmd := exec.Command("true")
 	cmd.Env = []string{"LD_PRELOAD=/ambient.so", "SAFE=kept"}
-	if err := WrapCmdWithEnv(sb, cmd, map[string]string{"LD_PRELOAD": "/explicit.so"}); err != nil {
+	cleanup, err := WrapCmdWithEnvManaged(sb, cmd, map[string]string{"LD_PRELOAD": "/explicit.so"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = cleanup() }()
 	if cmd.Env == nil || len(cmd.Env) != 0 {
 		t.Fatalf("bwrap Env = %v, want non-nil empty", cmd.Env)
 	}
@@ -1410,13 +1413,18 @@ __attribute__((constructor)) static void polly_constructor(void) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("true")
-	if err := WrapCmdWithEnv(sb, cmd, map[string]string{
+	cleanup, err := WrapCmdWithEnvManaged(sb, cmd, map[string]string{
 		"LD_PRELOAD":             library,
 		"POLLY_TEST_HOST_MARKER": hostMarker,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = cleanup() }()
 	out, err := cmd.CombinedOutput()
+	if cleanupErr := cleanup(); cleanupErr != nil {
+		t.Fatal(cleanupErr)
+	}
 	if err != nil {
 		skipOrFailBwrapUnavailable(t, err, out)
 	}
@@ -2539,26 +2547,45 @@ func TestLinuxSandboxBlocksAllExistingCredentialPaths(t *testing.T) {
 		}
 		tested++
 
-		var shellCmd string
+		var command string
+		var args []string
 		switch dp.Kind {
 		case DeniedPathDir:
-			shellCmd = "ls -A " + dp.Path // -A: real entries only, excludes . and ..
+			command = "/usr/bin/ls"
+			args = []string{"-A", "--", dp.Path} // -A: real entries only, excludes . and ..
 		case DeniedPathFile:
-			shellCmd = "cat " + dp.Path
+			command = "/usr/bin/cat"
+			args = []string{"--", dp.Path}
 		}
 
 		t.Run(dp.Path, func(t *testing.T) {
-			cmd := exec.CommandContext(context.Background(), "bash", "-c", shellCmd)
-			if err := wrapCmdForTest(t, sb, cmd); err != nil {
+			cmd := exec.CommandContext(context.Background(), command, args...)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			cleanup, err := WrapCmdManaged(sb, cmd)
+			if err != nil {
 				t.Fatalf("Wrap() error = %v", err)
 			}
 			// The mask replaces the path with an empty tmpfs (dir) or empty
 			// placeholder (file). The command may exit 0 with empty output OR
-			// error (permission) — both hide the secret. What must never happen
-			// is real credential content coming back.
-			out, _ := cmd.CombinedOutput()
-			if strings.TrimSpace(string(out)) != "" {
-				t.Fatalf("expected %s to be masked (no contents), but read: %q", dp.Path, string(out))
+			// error (permission) — both hide the secret. Diagnostics are not
+			// credential content, so inspect stdout separately while still surfacing
+			// unexpected launcher failures.
+			runErr := cmd.Run()
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				t.Fatal(cleanupErr)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected %s to be masked (no contents), but read: %q", dp.Path, stdout.String())
+			}
+			if runErr != nil {
+				diagnostic := strings.TrimSpace(stderr.String())
+				commandDenied := strings.Contains(diagnostic, dp.Path) &&
+					(strings.HasPrefix(diagnostic, "cat:") || strings.HasPrefix(diagnostic, "ls:"))
+				if !commandDenied {
+					skipOrFailBwrapUnavailable(t, runErr, stderr.Bytes())
+				}
 			}
 		})
 	}

@@ -364,23 +364,107 @@ func TestDarwinLargeTargetEnvironmentUsesMultipleAnonymousPipes(t *testing.T) {
 	}
 	const valueSize = 96 << 10
 	value := strings.Repeat("x", valueSize)
+	callerBefore, err := os.CreateTemp(t.TempDir(), "caller-before-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callerBefore.Close()
+	if _, err := callerBefore.WriteString("before"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callerBefore.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	callerAfter, err := os.CreateTemp(t.TempDir(), "caller-after-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callerAfter.Close()
+	if _, err := callerAfter.WriteString("after"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callerAfter.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/bin/perl", "-e", `
-my @open = grep { -e "/dev/fd/$_" } (3..1024);
-die "environment descriptors survived exec: @open" if @open;
+my ($first_fd, $pipe_count, $before_fd, $after_fd, @transport_specs) = @ARGV;
+@transport_specs == 3 * $pipe_count or die "invalid transport descriptor specifications";
+sub fd_identity {
+    my ($fd) = @_;
+    open(my $fh, "<&", $fd) or return "";
+    my @identity = stat($fh);
+    close($fh) or die "close descriptor probe $fd: $!";
+    return @identity ? join(":", @identity[0, 1, 2, 6]) : "";
+}
+my @open = ();
+for (my $offset = 0; $offset < $pipe_count; $offset++) {
+    my ($duplicate_fd, $high_duplicate_fd, $transport_identity) = splice(@transport_specs, 0, 3);
+    push @open, grep { fd_identity($_) eq $transport_identity }
+        ($first_fd + $offset, $duplicate_fd, $high_duplicate_fd);
+}
+die "bootstrap transport descriptors survived exec: @open" if @open;
+sub read_fd {
+    my ($fd) = @_;
+    open(my $fh, "<&", $fd) or die "open caller descriptor $fd: $!";
+    local $/;
+    return scalar(<$fh>) // "";
+}
+die "caller descriptor before transport was closed" unless read_fd($before_fd) eq "before";
+die "caller descriptor after transport was closed" unless read_fd($after_fd) eq "after";
 print length($ENV{"SAFE_LARGE_ENV"} // "");
 `)
 	cmd.Env = []string{"SAFE_LARGE_ENV=" + value}
+	cmd.ExtraFiles = []*os.File{callerBefore}
 	cleanup, err := WrapCmdManaged(sb, cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = cleanup() }()
 	pipeCount, err := strconv.Atoi(cmd.Args[6])
-	if err != nil || pipeCount < 2 || len(cmd.ExtraFiles) != pipeCount {
-		t.Fatalf("large environment used %d descriptors, argv = %v", len(cmd.ExtraFiles), cmd.Args[:8])
+	if err != nil || pipeCount < 2 || len(cmd.ExtraFiles) != 1+pipeCount {
+		t.Fatalf("large environment used %d descriptors, argv = %v", len(cmd.ExtraFiles)-1, cmd.Args[:8])
 	}
+	firstFD, err := strconv.Atoi(cmd.Args[7])
+	if err != nil || firstFD != 4 {
+		t.Fatalf("first bootstrap descriptor = %q, want 4", cmd.Args[7])
+	}
+	duplicateChildStart := 3 + len(cmd.ExtraFiles)
+	transportDuplicates := make([]*os.File, 0, pipeCount)
+	transportSpecs := make([]string, 0, 3*pipeCount)
+	// F_DUPFD intentionally leaves high, non-close-on-exec aliases in addition
+	// to the contiguous ExtraFiles mappings. This reproduces the several
+	// scattered transport descriptors seen under sandbox-exec on CI.
+	for offset, transport := range cmd.ExtraFiles[1:] {
+		var transportStat unix.Stat_t
+		if err := unix.Fstat(int(transport.Fd()), &transportStat); err != nil {
+			t.Fatal(err)
+		}
+		transportIdentity := fmt.Sprintf("%d:%d:%d:%d", transportStat.Dev, transportStat.Ino, transportStat.Mode, transportStat.Rdev)
+		duplicateFD, err := unix.FcntlInt(transport.Fd(), unix.F_DUPFD, 128)
+		if err != nil {
+			t.Fatal(err)
+		}
+		transportDuplicate := os.NewFile(uintptr(duplicateFD), fmt.Sprintf("bootstrap-transport-duplicate-%d", offset))
+		defer transportDuplicate.Close()
+		transportDuplicates = append(transportDuplicates, transportDuplicate)
+		transportSpecs = append(transportSpecs,
+			strconv.Itoa(duplicateChildStart+offset),
+			strconv.Itoa(duplicateFD),
+			transportIdentity,
+		)
+	}
+	cmd.ExtraFiles = append(cmd.ExtraFiles, transportDuplicates...)
+	afterChildFD := 3 + len(cmd.ExtraFiles)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, callerAfter)
+	cmd.Args = append(cmd.Args,
+		strconv.Itoa(firstFD),
+		strconv.Itoa(pipeCount),
+		"3",
+		strconv.Itoa(afterChildFD),
+	)
+	cmd.Args = append(cmd.Args, transportSpecs...)
 	if strings.Contains(strings.Join(cmd.Args, "\x00"), value) {
 		t.Fatal("large target environment leaked into wrapper argv")
 	}
@@ -390,6 +474,19 @@ print length($ENV{"SAFE_LARGE_ENV"} // "");
 	}
 	if string(out) != strconv.Itoa(valueSize) {
 		t.Fatalf("large target environment length = %q, want %d", out, valueSize)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	wantCallerFiles := append([]*os.File{callerBefore}, transportDuplicates...)
+	wantCallerFiles = append(wantCallerFiles, callerAfter)
+	if !slices.Equal(cmd.ExtraFiles, wantCallerFiles) {
+		t.Fatalf("managed cleanup removed caller descriptors: %v", cmd.ExtraFiles)
+	}
+	for _, file := range cmd.ExtraFiles {
+		if _, err := file.Stat(); err != nil {
+			t.Fatalf("managed cleanup closed caller descriptor %q: %v", file.Name(), err)
+		}
 	}
 }
 
