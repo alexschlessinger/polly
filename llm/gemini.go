@@ -104,6 +104,14 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			config.Temperature = &temp
 		}
 
+		// Thinking: map the provider-agnostic effort onto Gemini's config and
+		// request thought summaries so reasoning streams back (IncludeThoughts);
+		// without it the model thinks silently and the stream stays empty until
+		// the first answer token.
+		if req.ThinkingEffort.IsEnabled() {
+			config.ThinkingConfig = geminiThinkingConfig(req.ThinkingEffort, req.Model)
+		}
+
 		// Add structured output support. Preview models (3.x) silently ignore
 		// ResponseJsonSchema, so route through the typed ResponseSchema path
 		// (the SDK's canonical structured-output mechanism) instead.
@@ -169,20 +177,30 @@ func (g *GeminiClient) handleStreamingCompletion(ctx context.Context, client *ge
 			return
 		}
 
-		// Emit content from each part
-		if len(resp.Candidates) > 0 {
-			candidate := resp.Candidates[0]
-			if candidate.Content != nil {
-				for _, part := range candidate.Content.Parts {
-					if part.Text != "" {
-						streamCore.EmitContent(part.Text)
-					}
-				}
-			}
-		}
+		emitGeminiParts(streamCore, resp)
 	}
 
 	streamCore.Complete()
+}
+
+// emitGeminiParts routes a response's text parts to the stream: parts flagged
+// Thought are thought summaries (present when IncludeThoughts is on) and
+// stream as reasoning; everything else is answer content. Without the split,
+// thinking text would leak into the visible response.
+func emitGeminiParts(streamCore *streaming.StreamingCore, resp *genai.GenerateContentResponse) {
+	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+		return
+	}
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if part.Text == "" {
+			continue
+		}
+		if part.Thought {
+			streamCore.EmitReasoning(part.Text)
+		} else {
+			streamCore.EmitContent(part.Text)
+		}
+	}
 }
 
 // handleNonStreamingCompletion handles non-streaming Gemini API requests
@@ -200,17 +218,7 @@ func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, client 
 		return
 	}
 
-	// Emit content from response
-	if len(resp.Candidates) > 0 {
-		candidate := resp.Candidates[0]
-		if candidate.Content != nil {
-			for _, part := range candidate.Content.Parts {
-				if part.Text != "" {
-					streamCore.EmitContent(part.Text)
-				}
-			}
-		}
-	}
+	emitGeminiParts(streamCore, resp)
 
 	streamCore.Complete()
 }

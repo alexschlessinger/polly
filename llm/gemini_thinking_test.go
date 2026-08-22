@@ -1,8 +1,12 @@
 package llm
 
 import (
+	"context"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/streaming"
+	"github.com/alexschlessinger/pollytool/messages"
 	"google.golang.org/genai"
 )
 
@@ -81,5 +85,52 @@ func TestGeminiThinkingConfig25(t *testing.T) {
 				t.Errorf("ThinkingLevel = %q, want unset for 2.5", cfg.ThinkingLevel)
 			}
 		})
+	}
+}
+
+// TestEmitGeminiPartsRoutesThoughtsToReasoning verifies thought-summary parts
+// stream as reasoning while ordinary parts stream as content, so thinking
+// never leaks into the visible response.
+func TestEmitGeminiPartsRoutesThoughtsToReasoning(t *testing.T) {
+	ch := make(chan messages.ChatMessage, 10)
+	core := streaming.NewStreamingCore(context.Background(), ch, adapters.NewGeminiAdapter())
+
+	emitGeminiParts(core, &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{{
+			Content: &genai.Content{Parts: []*genai.Part{
+				{Text: "planning the answer", Thought: true},
+				{Text: "the actual answer"},
+				{Text: ""}, // empty parts are skipped entirely
+			}},
+		}},
+	})
+	close(ch)
+
+	var reasoning, content []string
+	for msg := range ch {
+		if msg.Reasoning != "" {
+			reasoning = append(reasoning, msg.Reasoning)
+		}
+		if msg.Content != "" {
+			content = append(content, msg.Content)
+		}
+	}
+	if len(reasoning) != 1 || reasoning[0] != "planning the answer" {
+		t.Fatalf("reasoning chunks = %v, want the thought part only", reasoning)
+	}
+	if len(content) != 1 || content[0] != "the actual answer" {
+		t.Fatalf("content chunks = %v, want the answer part only", content)
+	}
+}
+
+// TestEmitGeminiPartsHandlesEmptyCandidates guards the nil paths.
+func TestEmitGeminiPartsHandlesEmptyCandidates(t *testing.T) {
+	ch := make(chan messages.ChatMessage, 1)
+	core := streaming.NewStreamingCore(context.Background(), ch, adapters.NewGeminiAdapter())
+	emitGeminiParts(core, &genai.GenerateContentResponse{})
+	emitGeminiParts(core, &genai.GenerateContentResponse{Candidates: []*genai.Candidate{{}}})
+	close(ch)
+	if msg, ok := <-ch; ok {
+		t.Fatalf("empty responses should emit nothing, got %#v", msg)
 	}
 }
