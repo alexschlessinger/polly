@@ -48,15 +48,18 @@ This runs ONE headless sub-agent and writes, under `$POLLY_AGENT_DIR`:
 
 - `out/<id>.txt` — the answer, nothing else
 - `err/<id>.log` — tool progress + the `polly-meta` outcome trailer
-- `status.tsv` — one row: `<id> <TAB> <exit> <TAB> ok|fail`
+- `status/<id>.tsv` — this agent's row: `<id> <TAB> <exit> <TAB> ok|fail`
+- `status.tsv` — all rows combined, rebuilt as each agent finishes
 
 Read the outcome: `sed -n 's/^polly-meta //p' err/<id>.log`. Keys: `stop_reason`
 `model` `iterations` `tool_calls` `tool_errors` `last_tool` `tool_error.N`
 (first 10, `name: message`) `input_tokens` `output_tokens` `duration_ms` `error`.
 
 Optional 3rd/4th args set the model and tool: `./run-agent.sh <id> "<prompt>" anthropic/claude-opus-4-8 bash`.
-Defaults are `deepseek/deepseek-v4-flash` and the `bash` tool. You can run many
-of these in parallel — each records its own row in `status.tsv` safely.
+Defaults are `deepseek/deepseek-v4-flash` and the `bash` tool. A `<prompt>` of
+`-` reads the prompt from stdin (`./run-agent.sh big - < task.txt`), so huge
+prompts don't hit the argv size limit. You can run many of these in parallel —
+each agent owns its `status/<id>.tsv` row file, so there is no contention.
 
 The `bash` tool runs in a bubblewrap sandbox (credential dirs like `~/.ssh` are
 masked). If the sandbox can't start (e.g. `bwrap` missing or blocked), polly
@@ -89,12 +92,14 @@ echo "list the open TODOs in ./src" > /tmp/mytasks/todos.txt
 ```
 
 `fanout.sh` runs **every** regular file in the dir as an agent — don't reuse a dir
-that holds other files (e.g. the repo's own `tasks/`). Each prompt is passed as a
-command-line argument, so a huge task file fails with `Argument list too long`;
-keep prompts modest and pass bulk data via `--file` on the raw CLI instead.
+that holds other files (e.g. the repo's own `tasks/`). Prompts are streamed to
+each agent over stdin, so task files of any size work. If stripping `.txt`
+would collide two ids (files `report` and `report.txt`), the second keeps its
+full file name as the id.
 
 `fanout.sh` runs all tasks in parallel, prints the run directory (stderr) and
-`status.tsv` (stdout):
+`status.tsv` (stdout), and exits `0` only when every agent succeeded (`1`
+otherwise, `64` on usage errors):
 
 ```
 readme	0	ok
@@ -115,7 +120,8 @@ cat out/<id>.txt                                # an agent's answer
 ```
 
 - Exit codes (also in `status.tsv`): `0` ok · `2` truncated (`max_tokens`) ·
-  `3` iteration cap (`max_iterations`) · `1` hard error · `130` interrupted.
+  `3` iteration cap (`max_iterations`) · `1` hard error · `130` interrupted ·
+  `64` script usage error (never recorded in `status.tsv` — the agent never ran).
   Find iteration-capped agents with `awk -F'\t' '$2==3' status.tsv`.
 - **Exit 0 ≠ correct.** Check the trailer: `tool_errors>0` means the agent hit
   tool failures (and may have thrashed); `tool_error.N` says which and why (even
@@ -167,8 +173,8 @@ to stderr, so `out/<id>.txt` stays clean.
 | `--tooltimeout` | `30s` | Per-tool timeout |
 | `--confirm` | false | Prompt before each tool call; **TTY only** (ignored headless, where tools auto-run) |
 | `--temp` | `1.0` | Temperature (0–2) |
-| `--maxtokens` | `50000` | Max output tokens |
-| `--maxiterations` | `50` | Max agent iterations (LLM calls) |
+| `--maxtokens` | `64000` | Max output tokens |
+| `--maxiterations` | `250` | Max agent iterations (LLM calls) |
 | `--timeout` | `2m` | Per-request timeout |
 | `--maxcontext` | `100000` | Max history tokens (0 = unlimited) |
 | `--thinkingeffort` | `off` | `off`/`low`/`medium`/`high` |
