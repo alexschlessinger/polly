@@ -313,16 +313,17 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 	return []tools.RegistryOption{tools.WithSandboxFactory(newSandbox, baseCfg)}, nil
 }
 
-// warnBroadWritablePaths flags a writable path that covers the whole home
-// directory or the filesystem root — most likely the workspace preset run
-// from ~, which makes far more writable than a project directory. The
-// credential deny list still applies; this is a heads-up, not a refusal.
+// warnBroadWritablePaths flags an explicit writable grant that covers the
+// whole home directory or filesystem root. The workspace preset rejects those
+// roots before discovery, but --writepath and per-tool overlays can still add
+// them. The credential deny list still applies; this is a heads-up, not a
+// refusal.
 func warnBroadWritablePaths(paths []string) {
 	home, _ := os.UserHomeDir()
 	for _, p := range paths {
 		if p == "/" || (home != "" && filepath.Clean(p) == filepath.Clean(home)) {
 			slog.Warn("sandbox_broad_writable_path", "path", p,
-				"hint", "workspace preset run from a broad directory; consider --sandbox base or cd into a project")
+				"hint", "broad writable grant; prefer a bounded project directory or --sandbox base")
 		}
 	}
 }

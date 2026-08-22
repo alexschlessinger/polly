@@ -92,6 +92,56 @@ func TestParsePresetWorkspaceWithoutGit(t *testing.T) {
 	}
 }
 
+func TestParsePresetWorkspaceRejectsHomeBeforeGitScan(t *testing.T) {
+	home := t.TempDir()
+	protectedDescendant := filepath.Join(home, "Library", "TCC-protected")
+	if err := os.MkdirAll(protectedDescendant, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// If workspace discovery reaches this entry, it fails as invalid Git
+	// routing. The broad-workspace check must run first instead of accepting a
+	// partial scan when another descendant is unreadable on the host.
+	if err := os.WriteFile(filepath.Join(protectedDescendant, ".git"), []byte("not a Git pointer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	} else {
+		t.Setenv("HOME", home)
+	}
+	t.Chdir(home)
+
+	_, err := ParsePreset("workspace+net")
+	if err == nil {
+		t.Fatal("ParsePreset(workspace+net) error = nil, want broad home-directory rejection")
+	}
+	for _, want := range []string{"home directory", "bounded project directory", "cd into a project directory", "--sandbox base"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("ParsePreset(workspace+net) error = %q, want actionable %q guidance", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "protect Git metadata") || strings.Contains(err.Error(), "Git routing entry") {
+		t.Fatalf("ParsePreset(workspace+net) error = %q, broad workspace was scanned before rejection", err)
+	}
+}
+
+func TestRejectBroadWorkspaceRejectsFilesystemRoot(t *testing.T) {
+	root := filepath.Clean(t.TempDir())
+	for filepath.Dir(root) != root {
+		root = filepath.Dir(root)
+	}
+
+	err := rejectBroadWorkspace(root)
+	if err == nil {
+		t.Fatalf("rejectBroadWorkspace(%q) error = nil, want filesystem-root rejection", root)
+	}
+	for _, want := range []string{"filesystem root", "bounded project directory", "--sandbox base"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("rejectBroadWorkspace(%q) error = %q, want actionable %q guidance", root, err, want)
+		}
+	}
+}
+
 func TestGitGuardrailPathsWorktreePointer(t *testing.T) {
 	// Layout: main repo at main/.git with a linked worktree at wt/ whose
 	// .git file points at main/.git/worktrees/wt, which in turn has a

@@ -25,7 +25,8 @@ var PresetNames = []string{"base", "readonly", "workspace", "net"}
 //	readonly  — deny all writes, including temp (analysis only)
 //	workspace — the working directory is writable, with every discovered Git
 //	            metadata directory carved back out as read-only so a sandboxed
-//	            tool can't replace repository routing or plant host-side hooks
+//	            tool can't replace repository routing or plant host-side hooks;
+//	            broad home-directory and filesystem-root workspaces are rejected
 //	net       — allow outbound network
 //
 // An empty spec is the base config. Unknown names error so a typo fails
@@ -48,6 +49,9 @@ func ParsePreset(spec string) (Config, error) {
 			if err != nil {
 				return Config{}, fmt.Errorf("sandbox preset %q: resolve working directory: %w", part, err)
 			}
+			if err := rejectBroadWorkspace(cwd); err != nil {
+				return Config{}, fmt.Errorf("sandbox preset %q: %w", part, err)
+			}
 			gitPolicy, err := gitWorkspaceGuardrailPolicy(cwd)
 			if err != nil {
 				return Config{}, fmt.Errorf("sandbox preset %q: protect Git metadata: %w", part, err)
@@ -61,6 +65,36 @@ func ParsePreset(spec string) (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// rejectBroadWorkspace keeps the recursive Git metadata discovery pass bounded.
+// A home directory commonly contains OS-protected descendants that cannot be
+// scanned, and accepting a partial scan would leave undiscovered repositories
+// writable. The filesystem root has the same safety problem at a larger scale.
+func rejectBroadWorkspace(dir string) error {
+	dir = filepath.Clean(dir)
+	if filepath.IsAbs(dir) && filepath.Dir(dir) == dir {
+		return broadWorkspaceError(dir, "filesystem root")
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	home = filepath.Clean(home)
+	if dir == home {
+		return broadWorkspaceError(dir, "home directory")
+	}
+	dirInfo, dirErr := os.Stat(dir)
+	homeInfo, homeErr := os.Stat(home)
+	if dirErr == nil && homeErr == nil && os.SameFile(dirInfo, homeInfo) {
+		return broadWorkspaceError(dir, "home directory")
+	}
+	return nil
+}
+
+func broadWorkspaceError(dir, kind string) error {
+	return fmt.Errorf("refusing to make the %s %q a writable workspace: Git metadata protection requires a bounded project directory; cd into a project directory or use --sandbox base", kind, dir)
 }
 
 // gitGuardrailPaths discovers Git repositories rooted anywhere under dir and
