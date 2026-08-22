@@ -2582,7 +2582,7 @@ func TestLinuxSandboxBlocksAllExistingCredentialPaths(t *testing.T) {
 			if runErr != nil {
 				diagnostic := strings.TrimSpace(stderr.String())
 				commandDenied := strings.Contains(diagnostic, dp.Path) &&
-					(strings.HasPrefix(diagnostic, "cat:") || strings.HasPrefix(diagnostic, "ls:"))
+					(strings.HasPrefix(diagnostic, command+":") || strings.HasPrefix(diagnostic, filepath.Base(command)+":"))
 				if !commandDenied {
 					skipOrFailBwrapUnavailable(t, runErr, stderr.Bytes())
 				}
