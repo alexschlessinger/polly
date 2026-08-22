@@ -1878,6 +1878,7 @@ type managedREPL struct {
 
 	model *replModel
 
+	logoW       *transcriptParagraph
 	transcriptW *transcriptParagraph
 	dividerW    *widgets.Paragraph
 	inputW      *widgets.Paragraph
@@ -1891,6 +1892,10 @@ type managedREPL struct {
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
 	fx *terminalFX
+
+	// startupLogoVisible reserves a small header above the transcript until the
+	// first real turn starts. The composer and status remain live from frame one.
+	startupLogoVisible bool
 
 	// histFile is the append handle for persistent input history; nil when
 	// history couldn't be opened (best-effort — never fatal).
@@ -2170,6 +2175,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	defer r.closeHistory()
 
 	r.setupWidgets()
+	r.startupLogoVisible = true
 	r.render()
 
 	events := pollManagedEvents(ui.DefaultBackend.Screen)
@@ -2265,6 +2271,7 @@ func (r *managedREPL) takePending() string {
 }
 
 func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func(context.Context, string, TurnUI) error) chan error {
+	r.startupLogoVisible = false
 	r.model.mu.Lock()
 	r.model.turnID++
 	turnID := r.model.turnID
@@ -2584,7 +2591,10 @@ func (r *managedREPL) transcriptHeight() int {
 		statusRows = 1
 	}
 	inputRows := r.model.inputRows()
-	height := h - inputRows - statusRows - dividerRowCount(h, inputRows, statusRows, r.model.quiet)
+	dividerRows := dividerRowCount(h, inputRows, statusRows, r.model.quiet)
+	contentHeight := h - inputRows - statusRows - dividerRows
+	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible)
+	height := contentHeight - logoRows
 	if height < 1 {
 		return 1
 	}
@@ -2613,6 +2623,12 @@ func (r *managedREPL) setupWidgets() {
 	// unstyled text (primary input, LLM responses) to white and ignores the
 	// terminal theme. ColorClear (= tcell.ColorDefault) inherits the terminal's
 	// default foreground instead, so text follows the theme like our accents do.
+	r.logoW = newTranscriptParagraph()
+	noBorder(&r.logoW.Block)
+	r.logoW.TextStyle = ui.NewStyle(ui.ColorClear)
+	r.logoW.UseRows = true
+	r.logoW.PinBottom = false
+
 	r.transcriptW = newTranscriptParagraph()
 	noBorder(&r.transcriptW.Block)
 	r.transcriptW.TextStyle = ui.NewStyle(ui.ColorClear)
@@ -2636,10 +2652,13 @@ func (r *managedREPL) setupWidgets() {
 // layout (re)builds the root flex for the current input height. The input row
 // count varies with multi-line prompts, so the flex is rebuilt each render
 // rather than sized once at setup.
-func (r *managedREPL) layout(w, h, inputRows int, showStatus, showDivider bool) {
+func (r *managedREPL) layout(w, h, inputRows, logoRows int, showStatus, showDivider bool) {
 	flex := widgets.NewFlex()
 	noBorder(&flex.Block)
 	flex.Direction = widgets.FlexColumn
+	if logoRows > 0 {
+		flex.AddItem(r.logoW, logoRows, 0, false)
+	}
 	flex.AddItem(r.transcriptW, 0, 1, false)
 	if showDivider {
 		flex.AddItem(r.dividerW, 1, 0, false)
@@ -2687,7 +2706,9 @@ func (r *managedREPL) render() {
 	}
 	input, inputRows, curRow, curCol, editable := r.model.renderInputForTerminal(inputMaxRows, w)
 	dividerRows := dividerRowCount(h, inputRows, statusRows, r.model.quiet)
-	transcriptHeight := h - inputRows - statusRows - dividerRows
+	contentHeight := h - inputRows - statusRows - dividerRows
+	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible)
+	transcriptHeight := contentHeight - logoRows
 	if transcriptHeight < 0 {
 		transcriptHeight = 0
 	}
@@ -2726,15 +2747,18 @@ func (r *managedREPL) render() {
 	r.transcriptW.PinBottom = pinTranscriptBottom
 	r.transcriptW.TopRow = topRow
 	r.transcriptW.OverlayBottom = overlay
+	r.logoW.Rows = pollyLogoRows(w)
+	r.logoW.TopRow = 0
+	r.logoW.OverlayBottom = nil
 	r.inputW.Text = input
 	r.statusW.Text = status
 	if dividerRows > 0 {
 		r.dividerW.Text = styled(strings.Repeat("─", w), "muted", "")
 	}
 
-	r.layout(w, h, inputRows, showStatus, dividerRows > 0)
+	r.layout(w, h, inputRows, logoRows, showStatus, dividerRows > 0)
 	ui.Clear()
-	r.placeCursor(editable, curCol, transcriptHeight+dividerRows+curRow, w)
+	r.placeCursor(editable, curCol, logoRows+transcriptHeight+dividerRows+curRow, w)
 	ui.Render(r.rootFlex)
 
 	// Window-level effects go out after the frame, on this same goroutine, so
