@@ -430,6 +430,11 @@ type replModel struct {
 	// tool arrows so a pulse flip invalidates the visual cache.
 	streamCursorFrame string
 
+	// thinkingGhostFrame is the display-only thinking excerpt shown where the
+	// response will appear ("" when hidden). Same cache discipline as the
+	// stream caret; it never enters the transcript.
+	thinkingGhostFrame string
+
 	// currentPrompt identifies the user turn in flight. Failed/canceled turns
 	// retain it for /retry; retryingNext tells startTurn to reuse the already
 	// persisted user message instead of appending a duplicate.
@@ -626,15 +631,6 @@ func (m *replModel) statusActivity() (raw, rendered string) {
 			raw += " · " + meta
 			rendered += " " + styled("· "+meta, "muted", "")
 		}
-		// The whisper trails everything else so width truncation eats the
-		// oldest thought text first, never the state word or timers. Muted, not
-		// dim: SGR dim on the default foreground vanishes in many themes.
-		if m.state == turnStateThinking && !m.canceling {
-			if whisper := m.thinkingWhisper(); whisper != "" {
-				raw += " · " + whisper
-				rendered += " " + styled("· "+whisper, "muted", "")
-			}
-		}
 		return raw, rendered
 	}
 
@@ -661,13 +657,13 @@ func (m *replModel) statusActivity() (raw, rendered string) {
 const thinkingCharsPerToken = 4
 
 // thinkingTailMax bounds the retained reasoning tail; whisperMaxRunes is how
-// much of it the status row shows. The margin absorbs whitespace collapse.
+// much of it the thinking ghost shows. The margin absorbs whitespace collapse.
 const (
-	thinkingTailMax = 160
-	whisperMaxRunes = 48
+	thinkingTailMax = 200
+	whisperMaxRunes = 72
 )
 
-// appendThinkingTail keeps the newest reasoning runes for the status whisper.
+// appendThinkingTail keeps the newest reasoning runes for the thinking ghost.
 // Caller must hold m.mu.
 func (m *replModel) appendThinkingTail(chunk string) {
 	if chunk == "" {
@@ -1036,6 +1032,32 @@ func (m *replModel) refreshStreamCursor() {
 	next := m.streamCursorNow()
 	if next != m.streamCursorFrame {
 		m.streamCursorFrame = next
+		m.invalidateVisual()
+	}
+}
+
+// thinkingGhostNow renders the thinking ghost: the breathing caret plus the
+// newest reasoning excerpt, sitting exactly where the response will appear.
+// The first content chunk replaces it with real text in place. Caller must
+// hold m.mu.
+func (m *replModel) thinkingGhostNow() string {
+	if !m.busy || m.canceling || m.state != turnStateThinking || m.turnStarted.IsZero() {
+		return ""
+	}
+	whisper := m.thinkingWhisper()
+	if whisper == "" {
+		return ""
+	}
+	mod := arrowPulse[int(time.Since(m.turnStarted)/arrowPulsePeriod)%len(arrowPulse)]
+	return styled(streamCursorGlyph, "accent", mod) + " " + styled(whisper, "muted", "italic")
+}
+
+// refreshThinkingGhost mirrors refreshStreamCursor for the thinking ghost.
+// Caller must hold m.mu.
+func (m *replModel) refreshThinkingGhost() {
+	next := m.thinkingGhostNow()
+	if next != m.thinkingGhostFrame {
+		m.thinkingGhostFrame = next
 		m.invalidateVisual()
 	}
 }
@@ -2656,6 +2678,7 @@ func (r *managedREPL) render() {
 	r.model.mu.Lock()
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
+	r.model.refreshThinkingGhost()
 	inputMaxRows := maxInputRows
 	if h-statusRows > 1 {
 		inputMaxRows = min(inputMaxRows, h-statusRows-1)
@@ -2876,6 +2899,9 @@ func (m *replModel) transcriptDisplayBlocks() []string {
 			entry += m.streamCursorFrame
 		}
 		blocks = append(blocks, entry)
+	}
+	if m.thinkingGhostFrame != "" {
+		blocks = append(blocks, m.thinkingGhostFrame)
 	}
 	if m.queueHint != "" {
 		blocks = append(blocks, styled(m.queueHint, "active", "bold"))

@@ -352,7 +352,7 @@ func TestApprovalViewExpandsArgsOncePerCall(t *testing.T) {
 	}
 }
 
-func TestThinkingWhisperShowsNewestThought(t *testing.T) {
+func TestThinkingGhostShowsNewestThoughtAtResponsePosition(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
@@ -360,29 +360,46 @@ func TestThinkingWhisperShowsNewestThought(t *testing.T) {
 
 	tui.ShowThinking("I should check\nthe   parse loop ")
 	tui.ShowThinking("for off-by-one errors")
-	raw, _ := m.statusActivity()
-	if !strings.Contains(raw, "…") || !strings.Contains(raw, "off-by-one errors") {
-		t.Fatalf("whisper should show the newest thought, got %q", raw)
+	m.refreshThinkingGhost()
+
+	blocks := m.transcriptDisplayBlocks()
+	ghost := blocks[len(blocks)-1]
+	if !strings.Contains(ghost, "…") || !strings.Contains(ghost, "off-by-one errors") {
+		t.Fatalf("ghost should trail the transcript with the newest thought, got %q", ghost)
 	}
-	if strings.Contains(raw, "\n") || strings.Contains(raw, "  ") {
-		t.Fatalf("whisper should collapse whitespace, got %q", raw)
+	if !strings.Contains(ghost, streamCursorGlyph) || !strings.Contains(ghost, "mod:italic") {
+		t.Fatalf("ghost should carry the caret and italic styling, got %q", ghost)
+	}
+	if strings.Contains(ghost, "\n") || strings.Contains(plainStyledText(ghost), "  ") {
+		t.Fatalf("ghost should collapse whitespace, got %q", ghost)
+	}
+
+	// The ghost is display-only: never in the transcript, never in the status.
+	if strings.Contains(strings.Join(m.transcript, "\n"), "off-by-one") {
+		t.Fatalf("ghost leaked into the transcript: %#v", m.transcript)
+	}
+	if raw, _ := m.statusActivity(); strings.Contains(raw, "off-by-one") {
+		t.Fatalf("whisper should no longer crowd the status row: %q", raw)
 	}
 
 	// The newest words survive; the oldest are clipped from the left.
 	tui.ShowThinking(strings.Repeat("padding ", 40) + "final insight")
-	raw, _ = m.statusActivity()
-	if !strings.Contains(raw, "final insight") {
-		t.Fatalf("whisper lost the newest thought: %q", raw)
+	m.refreshThinkingGhost()
+	blocks = m.transcriptDisplayBlocks()
+	if !strings.Contains(blocks[len(blocks)-1], "final insight") {
+		t.Fatalf("ghost lost the newest thought: %q", blocks[len(blocks)-1])
 	}
 	if len(m.thinkingTail) > thinkingTailMax {
 		t.Fatalf("thinking tail unbounded: %d runes", len(m.thinkingTail))
 	}
 
-	// Streaming hides the whisper along with the thinking state.
-	m.state = turnStateStreaming
-	raw, _ = m.statusActivity()
-	if strings.Contains(raw, "final insight") {
-		t.Fatalf("whisper should vanish once streaming starts: %q", raw)
+	// The first content chunk replaces the ghost with real text in place.
+	tui.AppendAssistantText("Here is the answer")
+	m.refreshThinkingGhost()
+	blocks = m.transcriptDisplayBlocks()
+	last := blocks[len(blocks)-1]
+	if strings.Contains(last, "final insight") || !strings.Contains(last, "Here is the answer") {
+		t.Fatalf("streaming should replace the ghost with content, got %q", last)
 	}
 
 	// The next turn starts with a clean slate.
