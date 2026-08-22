@@ -16,6 +16,8 @@ const (
 	StopReasonContentFilter StopReason = "content_filter"
 	// StopReasonError indicates malformed output or other error
 	StopReasonError StopReason = "error"
+	// StopReasonMaxIterations indicates the agent hit its iteration cap
+	StopReasonMaxIterations StopReason = "max_iterations"
 )
 
 // ContentPart represents a part of a message content (text, image, etc.)

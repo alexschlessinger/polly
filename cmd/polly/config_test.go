@@ -124,6 +124,23 @@ func TestDefineFlagsWithGroupsContextManagementMutex(t *testing.T) {
 	}
 }
 
+func TestParseConfigMeta(t *testing.T) {
+	var got bool
+	cmd := &cli.Command{
+		Flags: func() []cli.Flag { f, _ := defineFlagsWithGroups(); return f }(),
+		Action: func(_ context.Context, c *cli.Command) error {
+			got = parseConfig(c).Meta
+			return nil
+		},
+	}
+	if err := cmd.Run(context.Background(), []string{"polly", "--meta", "-p", "hi"}); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	if !got {
+		t.Fatal("Meta = false, want true when --meta is set")
+	}
+}
+
 func runConfigValidationCommand(args ...string) error {
 	flags, groups := defineFlagsWithGroups()
 	cmd := &cli.Command{

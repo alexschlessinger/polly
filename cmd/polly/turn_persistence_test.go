@@ -228,15 +228,19 @@ func TestLineTurnUIToolBoundaryPreservesSeparatorWithoutExtraFinalNewline(t *tes
 }
 
 func TestLineTurnUIWarningAlreadyTerminatesOutput(t *testing.T) {
-	var out bytes.Buffer
+	var out, errOut bytes.Buffer
 	ui := newLineTurnUI(&Config{}, nil)
 	ui.writer = &out
+	ui.errWriter = &errOut
 	ui.AppendAssistantText("answer")
 	ui.AppendWarning("truncated")
 	ui.FinishTextTurn()
 
-	if got, want := out.String(), "answer\nWarning: truncated\n"; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
+	if got, want := out.String(), "answer\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if got, want := errOut.String(), "Warning: truncated\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 }
 

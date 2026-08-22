@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -26,6 +27,13 @@ import (
 func main() {
 	command := getCommand()
 	if err := command.Run(context.Background(), os.Args); err != nil {
+		var ee *exitError
+		if errors.As(err, &ee) {
+			if ee.err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", ee.err)
+			}
+			cleanupAndExit(ee.code)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		cleanupAndExit(1)
 	}
@@ -331,7 +339,16 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 				return fmt.Errorf("failed to load schema: %w", err)
 			}
 		}
-		return executeTurn(ctx, config, state, input.prompt, schema, bufio.NewReader(os.Stdin), nil)
+		code, err := executeTurn(ctx, config, state, input.prompt, schema, bufio.NewReader(os.Stdin), nil)
+		if err != nil {
+			return &exitError{code: code, err: err}
+		}
+		if code != 0 {
+			// Output completed; the code alone signals an incomplete outcome
+			// (e.g. truncation -> 2) with no error message to print.
+			return &exitError{code: code}
+		}
+		return nil
 	case conversationModeREPL:
 		return runREPL(ctx, config, state)
 	default:
@@ -383,6 +400,11 @@ func validateREPLConfig(config *Config) error {
 	if config.SchemaPath != "" {
 		rejected = append(rejected, "--schema")
 	}
+	// The trailer writes raw lines to stderr, which would garble the managed
+	// REPL's tcell screen and interleave with the fallback REPL's prompt.
+	if config.Meta {
+		rejected = append(rejected, "--meta")
+	}
 	if len(rejected) == 0 {
 		return nil
 	}
@@ -414,7 +436,11 @@ func runREPL(ctx context.Context, config *Config, state *conversationState) erro
 	return runFallbackREPL(ctx, config, state)
 }
 
-func executeTurn(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI) error {
+// executeTurn runs one turn and returns the process exit code the turn's
+// outcome maps to (0 end_turn, 2 max_tokens, 3 max_iterations, 1 hard error)
+// alongside any error. Only the one-shot path acts on the code; the REPLs
+// ignore it and consume just the error.
+func executeTurn(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI) (int, error) {
 	return executeTurnWithExistingUser(ctx, config, state, prompt, schema, inputReader, turnUI, false)
 }
 
@@ -423,17 +449,17 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 // turn whose user message was already durably stored. Reuse is deliberately
 // conservative: only an equivalent user message at the very end of history is
 // reused, so a missing, changed, or non-terminal message is persisted normally.
-func executeTurnWithExistingUser(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) error {
+func executeTurnWithExistingUser(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (int, error) {
 	userMsg, err := buildMessageWithFiles(prompt, config.Files)
 	if err != nil {
-		return fmt.Errorf("error processing files: %w", err)
+		return 1, fmt.Errorf("error processing files: %w", err)
 	}
 
 	// Persist the user message before spending API tokens. If the session store
 	// is broken (e.g. disk full), fail fast rather than make a call whose result
 	// can't be saved either. In-memory sessions never error here.
 	if err := persistUserMessageForTurn(state.session, userMsg, reuseUser); err != nil {
-		return fmt.Errorf("failed to persist user message: %w", err)
+		return 1, fmt.Errorf("failed to persist user message: %w", err)
 	}
 
 	if turnUI == nil {
@@ -450,6 +476,9 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 	// reasoning from the reply. We strip only \n/\r so leading spaces/tabs
 	// (e.g. code-block indentation) are preserved.
 	trimLeadingNL := false
+
+	stats := &turnToolStats{}
+	turnStart := time.Now()
 
 	resp, err := state.agent.Run(ctx, req, &llm.AgentCallbacks{
 		OnReasoning: func(content string) {
@@ -474,61 +503,76 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 		},
 		ApproveToolCalls: turnUI.ApproveToolCalls,
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+			stats.record(tc.Name, err)
 			turnUI.AppendToolEnd(tc, result, duration, err)
 		},
 		OnError: func(err error) {},
 	})
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return 1, ctx.Err()
 	}
+	var in, out int
+	if resp != nil {
+		// Multi-iteration turns produce multiple assistant messages (one per
+		// LLM call between tool roundtrips). Providers report input tokens
+		// cumulatively per-call (each call resends history), so take max for
+		// input. Output tokens are per-iteration, so sum them.
+		for _, m := range resp.AllMessages {
+			if m.Role != messages.MessageRoleAssistant {
+				continue
+			}
+			if t := m.GetInputTokens(); t > in {
+				in = t
+			}
+			out += m.GetOutputTokens()
+		}
+		turnUI.RecordTurnTokens(in, out)
+	}
+
+	// finishTurn covers everything downstream of a completed agent run:
+	// persistence, the truncation warning, and final output. Folding its error
+	// into runErr means the trailer and exit code below always describe the
+	// turn's final state, whichever stage failed.
 	// A failed/canceled turn keeps any streamed text visibly labeled as
 	// not saved. Keep persistence aligned with that contract: generated messages
 	// and skill metadata are committed only after the agent has completed.
-	if err != nil {
-		return err
-	}
-	if resp == nil {
-		return fmt.Errorf("agent returned no response")
-	}
-	if err := persistActiveSkills(state.session, state.skillRuntime, state.skillSources); err != nil {
-		return fmt.Errorf("failed to persist active skills: %w", err)
+	runErr := err
+	if runErr == nil {
+		runErr = func() error {
+			if resp == nil {
+				return fmt.Errorf("agent returned no response")
+			}
+			if err := persistActiveSkills(state.session, state.skillRuntime, state.skillSources); err != nil {
+				return fmt.Errorf("failed to persist active skills: %w", err)
+			}
+
+			// Persist the whole turn (assistant message per iteration + every tool
+			// result) with a single write instead of one rewrite per message.
+			if perr := state.session.AddMessages(durableTurnMessages(resp.AllMessages)); perr != nil {
+				return fmt.Errorf("failed to persist turn: %w", perr)
+			}
+
+			if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
+				turnUI.AppendWarning(fmt.Sprintf("response truncated (hit %d token limit, use --maxtokens to increase)", config.MaxTokens))
+			}
+
+			if config.SchemaPath != "" {
+				var content string
+				if resp.Message != nil {
+					content = resp.Message.Content
+				}
+				return outputStructured(content, schema)
+			}
+			turnUI.FinishTextTurn()
+			return nil
+		}()
 	}
 
-	// Persist the whole turn (assistant message per iteration + every tool
-	// result) with a single write instead of one rewrite per message.
-	if perr := state.session.AddMessages(durableTurnMessages(resp.AllMessages)); perr != nil {
-		return fmt.Errorf("failed to persist turn: %w", perr)
+	stopReason, code := classifyOutcome(resp, runErr)
+	if config.Meta {
+		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, config.Model, stats, in, out, time.Since(turnStart).Milliseconds()))
 	}
-	// Multi-iteration turns produce multiple assistant messages (one per
-	// LLM call between tool roundtrips). Providers report input tokens
-	// cumulatively per-call (each call resends history), so take max for
-	// input. Output tokens are per-iteration, so sum them.
-	var in, out int
-	for _, m := range resp.AllMessages {
-		if m.Role != messages.MessageRoleAssistant {
-			continue
-		}
-		if t := m.GetInputTokens(); t > in {
-			in = t
-		}
-		out += m.GetOutputTokens()
-	}
-	turnUI.RecordTurnTokens(in, out)
-
-	if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
-		turnUI.AppendWarning(fmt.Sprintf("response truncated (hit %d token limit, use --maxtokens to increase)", config.MaxTokens))
-	}
-
-	if config.SchemaPath != "" {
-		var content string
-		if resp.Message != nil {
-			content = resp.Message.Content
-		}
-		return outputStructured(content, schema)
-	}
-
-	turnUI.FinishTextTurn()
-	return nil
+	return code, runErr
 }
 
 // durableTurnMessages removes provider-protocol denial exchanges while still

@@ -3432,7 +3432,10 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 		if tui, ok := turnUI.(*gotuiTurnUI); ok {
 			reuseUser = tui.reuseUser
 		}
-		return executeTurnWithExistingUser(turnCtx, config, state, prompt, nil, nil, turnUI, reuseUser)
+		// The exit code is a one-shot concern; the REPL already rendered
+		// any warning.
+		_, err := executeTurnWithExistingUser(turnCtx, config, state, prompt, nil, nil, turnUI, reuseUser)
+		return err
 	})
 }
 
@@ -3442,7 +3445,9 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 	return runREPLLoopWithCommands(reader, os.Stderr, commandCtx, func(prompt string) error {
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		err := executeTurn(turnCtx, config, state, prompt, nil, reader, nil)
+		// The exit code is a one-shot concern; the REPL already rendered
+		// any warning.
+		_, err := executeTurn(turnCtx, config, state, prompt, nil, reader, nil)
 		// If the turn was cancelled but the parent context is still alive
 		// (not a shutdown signal), treat it as a recoverable per-turn
 		// cancellation and let the loop continue.
