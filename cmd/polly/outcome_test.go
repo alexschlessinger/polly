@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm"
@@ -54,18 +55,26 @@ func TestExitError(t *testing.T) {
 	}
 }
 
-func TestIsExitCodeOnly(t *testing.T) {
-	if !isExitCodeOnly(&exitError{code: 2}) {
-		t.Fatal("code-only exitError should be ignorable by the REPL")
+func TestTurnToolStatsConcurrentRecord(t *testing.T) {
+	stats := &turnToolStats{}
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stats.record("bash", errors.New("boom"))
+		}()
 	}
-	if isExitCodeOnly(&exitError{code: 3, err: llm.ErrMaxIterations}) {
-		t.Fatal("an exitError wrapping a real error must NOT be ignored")
+	wg.Wait()
+	calls, errCount, lastTool, failures := stats.snapshot()
+	if calls != 100 || errCount != 100 {
+		t.Fatalf("lost updates: calls=%d errors=%d, want 100/100", calls, errCount)
 	}
-	if isExitCodeOnly(errors.New("plain")) {
-		t.Fatal("a plain error is not a code-only exitError")
+	if lastTool != "bash" {
+		t.Fatalf("lastTool = %q, want bash", lastTool)
 	}
-	if isExitCodeOnly(nil) {
-		t.Fatal("nil is not a code-only exitError")
+	if len(failures) != maxEnumeratedToolErrors {
+		t.Fatalf("failures accumulation should stop at %d, got %d", maxEnumeratedToolErrors, len(failures))
 	}
 }
 
@@ -74,7 +83,13 @@ func TestBuildMeta(t *testing.T) {
 		Message:        &messages.ChatMessage{StopReason: messages.StopReasonEndTurn},
 		IterationCount: 3,
 	}
-	m := buildMeta(r, nil, "deepseek/deepseek-v4-flash", 5, 1, 1200, 600, 8123, "bash", []string{"fetch: timeout"})
+	stats := &turnToolStats{}
+	stats.record("read", nil)
+	stats.record("read", nil)
+	stats.record("read", nil)
+	stats.record("fetch", errors.New("timeout"))
+	stats.record("bash", nil)
+	m := buildMeta(messages.StopReasonEndTurn, r, nil, "deepseek/deepseek-v4-flash", stats, 1200, 600, 8123)
 	if m.StopReason != messages.StopReasonEndTurn || m.Iterations != 3 ||
 		m.ToolCalls != 5 || m.ToolErrors != 1 || m.InputTokens != 1200 ||
 		m.OutputTokens != 600 || m.DurationMS != 8123 || m.Model != "deepseek/deepseek-v4-flash" {
@@ -89,12 +104,9 @@ func TestBuildMeta(t *testing.T) {
 }
 
 func TestBuildMetaHardError(t *testing.T) {
-	m := buildMeta(nil, errors.New("api\nfailed"), "m", 0, 0, 0, 0, 5, "", nil)
+	m := buildMeta(messages.StopReasonError, nil, errors.New("api failed"), "m", &turnToolStats{}, 0, 0, 5)
 	if m.StopReason != messages.StopReasonError {
 		t.Fatalf("StopReason = %q, want error", m.StopReason)
-	}
-	if strings.Contains(m.Err, "\n") {
-		t.Fatalf("Err must be single-line, got %q", m.Err)
 	}
 	if m.Err == "" {
 		t.Fatal("Err should be populated on hard error")
@@ -151,6 +163,12 @@ func TestWriteMetaTrailerErrorLine(t *testing.T) {
 	got := trailer(metaFields{StopReason: messages.StopReasonError, Err: "boom"})
 	if !strings.Contains(got, "polly-meta error=boom\n") {
 		t.Fatalf("expected error line, got:\n%s", got)
+	}
+	// The writer owns line-format sanitization: a multi-line error message
+	// must collapse to one trailer line.
+	got = trailer(metaFields{StopReason: messages.StopReasonError, Err: "api\nfailed"})
+	if !strings.Contains(got, "polly-meta error=api failed\n") {
+		t.Fatalf("expected collapsed error line, got:\n%s", got)
 	}
 }
 

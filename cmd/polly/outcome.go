@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -30,14 +32,36 @@ func (e *exitError) Error() string {
 
 func (e *exitError) Unwrap() error { return e.err }
 
-// isExitCodeOnly reports whether err is an exitError carrying only a process
-// exit code with no underlying error (e.g. a truncated-but-complete run that
-// exits 2). Such errors are meaningful only to main() in one-shot mode; the
-// interactive REPLs should ignore them rather than print a spurious
-// "Error: exit status N" for what is a clean, warning-only outcome.
-func isExitCodeOnly(err error) bool {
-	var ee *exitError
-	return errors.As(err, &ee) && ee.err == nil
+// turnToolStats accumulates per-turn tool telemetry. The agent executes tool
+// batches on parallel goroutines, so OnToolEnd fires concurrently; all access
+// goes through the mutex.
+type turnToolStats struct {
+	mu       sync.Mutex
+	calls    int
+	errors   int
+	lastTool string
+	failures []string // "name: message" per failure; sanitized at write time
+}
+
+func (s *turnToolStats) record(name string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	s.lastTool = name
+	if err != nil {
+		s.errors++
+		// The trailer enumerates at most maxEnumeratedToolErrors failures;
+		// stop accumulating past that so a pathological run stays bounded.
+		if len(s.failures) < maxEnumeratedToolErrors {
+			s.failures = append(s.failures, name+": "+err.Error())
+		}
+	}
+}
+
+func (s *turnToolStats) snapshot() (calls, errCount int, lastTool string, failures []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls, s.errors, s.lastTool, slices.Clone(s.failures)
 }
 
 // classifyOutcome maps an agent run's (response, error) to a terminal stop
@@ -73,19 +97,19 @@ type metaFields struct {
 	Err          string // single-line; present only on hard error
 }
 
-// buildMeta assembles the sidecar record from a run's results. It classifies
-// the outcome so stop_reason and the error line stay consistent with the exit
-// code.
-func buildMeta(resp *llm.AgentResponse, err error, model string, toolCalls, toolErrors, inTokens, outTokens int, durationMS int64, lastTool string, toolFailures []string) metaFields {
-	stopReason, _ := classifyOutcome(resp, err)
+// buildMeta assembles the trailer record from a turn's final state. stopReason
+// must come from the same classifyOutcome call that produced the turn's exit
+// code, so the trailer and the exit code cannot diverge.
+func buildMeta(stopReason messages.StopReason, resp *llm.AgentResponse, err error, model string, stats *turnToolStats, inTokens, outTokens int, durationMS int64) metaFields {
 	iterations := 0
 	if resp != nil {
 		iterations = resp.IterationCount
 	}
 	errStr := ""
 	if stopReason == messages.StopReasonError && err != nil {
-		errStr = oneLine(err.Error())
+		errStr = err.Error()
 	}
+	toolCalls, toolErrors, lastTool, toolFailures := stats.snapshot()
 	return metaFields{
 		StopReason:   stopReason,
 		Model:        model,
@@ -132,6 +156,6 @@ func writeMetaTrailer(w io.Writer, m metaFields) {
 	p("output_tokens=%d", m.OutputTokens)
 	p("duration_ms=%d", m.DurationMS)
 	if m.Err != "" {
-		p("error=%s", m.Err)
+		p("error=%s", oneLine(m.Err))
 	}
 }
