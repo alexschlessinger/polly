@@ -169,7 +169,7 @@ func modelConfigFlags() []cli.Flag {
 		&cli.IntFlag{
 			Name:    "maxtokens",
 			Usage:   "Maximum tokens to generate",
-			Value:   50000,
+			Value:   64000,
 			Sources: cli.EnvVars("POLLYTOOL_MAXTOKENS"),
 		},
 		&cli.IntFlag{
