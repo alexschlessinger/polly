@@ -47,7 +47,11 @@ GLOBAL OPTIONS:
    --show string                                            Show configuration for the specified context
    --maxcontext int                                         Maximum tokens to keep in history (0 = unlimited) (default: 100000)
    --confirm                                                Require confirmation before each tool call
+   --sandbox string                                         Sandbox preset: base, readonly, workspace, net — join with + (e.g. workspace+net) (default: "workspace+net") [$POLLYTOOL_SANDBOX]
    --nosandbox                                              Disable sandboxing of tool commands [$POLLYTOOL_NOSANDBOX]
+   --denypath string [ --denypath string ]                  Additional path blocked from sandboxed reads (repeatable, supports ~) [$POLLYTOOL_DENYPATHS]
+   --writepath string [ --writepath string ]                Additional path sandboxed tools may write to (repeatable, supports ~) [$POLLYTOOL_WRITEPATHS]
+   --allownet                                               Allow sandboxed tools outbound network access [$POLLYTOOL_ALLOWNET]
    --quiet                                                  Suppress status and tool display output
    --debug, -d                                              Enable debug logging
    --help, -h                                               show help
@@ -348,7 +352,7 @@ The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by d
 | `workspace` | the working directory is writable; discovered Git routing entries and metadata trees stay read-only so a tool cannot replace `.git` or alter repository-local hook/config entry points |
 | `net` | outbound network allowed |
 
-The default is **`workspace+net`**: tools can edit the project and reach the network, but credentials stay masked and everything outside the workspace is read-only. Tighten with `--sandbox base` or `--sandbox readonly` when tools only need to compute or inspect. Granular additions: `--writepath <dir>` (repeatable, env `POLLYTOOL_WRITEPATHS`) grants extra writable paths and `--allownet` (env `POLLYTOOL_ALLOWNET`) grants network on top of any preset.
+The default is **`workspace+net`**: tools can edit the project and reach the network, but credentials stay masked and everything outside the workspace is read-only. `workspace` refuses to run from the home directory or filesystem root because recursively protecting Git metadata there cannot safely use a partial scan; change into a project directory or use `--sandbox base`. Tighten with `--sandbox base` or `--sandbox readonly` when tools only need to compute or inspect. Granular additions: `--writepath <dir>` (repeatable, env `POLLYTOOL_WRITEPATHS`) grants extra writable paths and `--allownet` (env `POLLYTOOL_ALLOWNET`) grants network on top of any preset.
 
 Sandboxing requires the fixed system `/usr/bin/bwrap` (Linux), or fixed system `/usr/bin/sandbox-exec` plus `/usr/bin/perl` (macOS). If the required trusted backend is unavailable, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API.md](API.md) for the full spec and [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
 

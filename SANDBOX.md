@@ -108,6 +108,7 @@ bwrap \
   --unshare-ipc                          # own SysV/POSIX IPC namespace
   --unshare-net                          # no network (omitted when allowNetwork)
   --seccomp FD                           # deny AF_UNIX sockets + io_uring setup
+  --cap-drop ALL                         # discard inherited launcher capabilities
   --die-with-parent
   --new-session                          # detach from the controlling tty
   -- /proc/self/fd/BOOTSTRAP_FD ...      # pinned post-containment bootstrap
@@ -128,9 +129,12 @@ Properties worth knowing:
   never appear in bwrap's environment or argv; the original target argv is
   forwarded.
 - **Writes are physically impossible** outside private temp and writable binds — the root
-  is a read-only mount, not a policy check.
+  is a read-only mount, not a policy check. Inherited capabilities are dropped,
+  so a capability-bearing root launcher cannot remount those binds writable.
 - **Host runtime state is private.** `/tmp` and `/run` are fresh mounts, so
   D-Bus, Docker/Podman, SSH-agent, Wayland, and similar host sockets are absent.
+  Private roots are installed after writable ancestor binds, so a workspace or
+  explicit write grant cannot cover them and reveal the host temp/runtime tree.
   A seccomp rule also denies `socket(AF_UNIX)` so sockets elsewhere in the broad
   read-only filesystem view cannot be reached. Private AF_UNIX stream
   `socketpair()` remains available for descendant IPC; reconnectable datagram
@@ -313,8 +317,9 @@ The default is **`workspace+net`** — agentic work on the current project with
 network access, while credentials stay masked and the rest of the filesystem
 stays read-only. `workspace` resolves the working directory *at startup*, and
 follows `.git` and `commondir` pointer files to pin the complete resolved Git
-metadata trees. Running from a broad directory (`~`, `/`) logs a warning
-suggesting `--sandbox base`.
+metadata trees. Because that protection cannot safely use a partial recursive
+scan, `workspace` refuses the home directory and filesystem root; change into a
+bounded project directory or select `--sandbox base` there.
 
 Per-tool knobs (schema `"sandbox"` object, MCP server entry) merge on top of
 the base policy — merging widens, never narrows:
