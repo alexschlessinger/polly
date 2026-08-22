@@ -16,9 +16,9 @@ import (
 type TurnUI interface {
 	Start()
 	Stop()
-	// ShowThinking reports one streamed reasoning chunk; chars is that chunk's
-	// text length, so implementations accumulate for a running total.
-	ShowThinking(chars int)
+	// ShowThinking reports one streamed reasoning chunk verbatim;
+	// implementations accumulate for running totals or live excerpts.
+	ShowThinking(chunk string)
 	AppendAssistantText(content string)
 	AppendToolStart(calls []messages.ChatMessageToolCall)
 	ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool
@@ -62,7 +62,7 @@ func (ui *lineTurnUI) Start() {
 }
 func (ui *lineTurnUI) Stop() {}
 
-func (ui *lineTurnUI) ShowThinking(chars int) {}
+func (ui *lineTurnUI) ShowThinking(chunk string) {}
 
 func (ui *lineTurnUI) AppendAssistantText(content string) {
 	if ui.config.SchemaPath != "" {

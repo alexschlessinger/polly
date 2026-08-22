@@ -322,14 +322,14 @@ type replModel struct {
 	// streaming into, or -1 when no streaming entry exists.
 	currentAssistant int
 
-	// stream accumulates the text of the current assistant entry. Appending to
-	// a Builder and storing its (copy-free) String() keeps streaming O(n) total
-	// instead of the O(n²) of repeatedly reallocating a growing string.
-	stream             strings.Builder
-	streamLastRune     rune
-	streamLineStart    bool
-	streamFencePending strings.Builder
-	streamInCodeBlock  bool
+	// streamRaw accumulates the in-flight assistant message's raw markdown;
+	// streamShown is how many of its bytes are currently rendered. The whole
+	// message re-renders through goldmark per growth of the visible prefix —
+	// bounded by message size, never conversation size — while unclosed inline
+	// markup near the tail is held back (safeVisibleLen) so text lands on
+	// screen already styled instead of visibly transforming.
+	streamRaw   strings.Builder
+	streamShown int
 
 	// flatCache memoizes flattenTranscript's result; nil means "stale". Every
 	// transcript mutation clears it so the next flatten recomputes. render(),
@@ -409,6 +409,11 @@ type replModel struct {
 	// the status row shows a ~chars/4 token estimate while state is thinking.
 	thinkingChars int
 
+	// thinkingTail keeps the newest runes of the reasoning stream so the
+	// status row can whisper what the model is currently thinking about.
+	// Raw text; whitespace is collapsed at render time.
+	thinkingTail []rune
+
 	// focusKnown/focused mirror the terminal's focus reports (tcell
 	// EnableFocus). Desktop notifications fire only when the terminal has
 	// explicitly said the user is elsewhere; with no reports they stay silent.
@@ -464,7 +469,6 @@ func newReplModel() *replModel {
 		historyIdx:       -1,
 		state:            turnStateIdle,
 		followBottom:     true,
-		streamLineStart:  true,
 	}
 	m.ed.goalCol = -1
 	return m
@@ -622,6 +626,15 @@ func (m *replModel) statusActivity() (raw, rendered string) {
 			raw += " · " + meta
 			rendered += " " + styled("· "+meta, "muted", "")
 		}
+		// The whisper trails everything else so width truncation eats the
+		// oldest thought text first, never the state word or timers. Muted, not
+		// dim: SGR dim on the default foreground vanishes in many themes.
+		if m.state == turnStateThinking && !m.canceling {
+			if whisper := m.thinkingWhisper(); whisper != "" {
+				raw += " · " + whisper
+				rendered += " " + styled("· "+whisper, "muted", "")
+			}
+		}
 		return raw, rendered
 	}
 
@@ -646,6 +659,70 @@ func (m *replModel) statusActivity() (raw, rendered string) {
 // thinkingCharsPerToken is the standard rough chars→tokens estimate used for
 // the live thinking counter; the value is presented with a "~".
 const thinkingCharsPerToken = 4
+
+// thinkingTailMax bounds the retained reasoning tail; whisperMaxRunes is how
+// much of it the status row shows. The margin absorbs whitespace collapse.
+const (
+	thinkingTailMax = 160
+	whisperMaxRunes = 48
+)
+
+// appendThinkingTail keeps the newest reasoning runes for the status whisper.
+// Caller must hold m.mu.
+func (m *replModel) appendThinkingTail(chunk string) {
+	if chunk == "" {
+		return
+	}
+	m.thinkingTail = append(m.thinkingTail, []rune(chunk)...)
+	if len(m.thinkingTail) > thinkingTailMax {
+		// Copy so the backing array doesn't grow without bound across a turn.
+		m.thinkingTail = append([]rune(nil), m.thinkingTail[len(m.thinkingTail)-thinkingTailMax:]...)
+	}
+}
+
+// thinkingWhisper is the live excerpt of what the model is currently thinking
+// about: the newest words of the reasoning stream, whitespace-collapsed and
+// clipped from the left so the freshest thought always survives. Caller must
+// hold m.mu.
+func (m *replModel) thinkingWhisper() string {
+	if len(m.thinkingTail) == 0 {
+		return ""
+	}
+	collapsed := []rune(strings.Join(strings.Fields(string(m.thinkingTail)), " "))
+	if len(collapsed) == 0 {
+		return ""
+	}
+	if len(collapsed) > whisperMaxRunes {
+		collapsed = collapsed[len(collapsed)-whisperMaxRunes:]
+	}
+	return "…" + string(collapsed)
+}
+
+// activityTicker is the pinned bottom-row notice shown while the user is
+// scrolled up: how much transcript lies below the viewport, what the agent is
+// doing right now, and the way back. Empty when following or nothing is below.
+// Caller must hold m.mu.
+func (m *replModel) activityTicker(totalRows, topRow, height int) string {
+	if m.followBottom || height <= 0 {
+		return ""
+	}
+	below := totalRows - (topRow + height)
+	if below <= 0 {
+		return ""
+	}
+	word := "rows"
+	if below == 1 {
+		word = "row"
+	}
+	raw := fmt.Sprintf("↓ %d %s below", below, word)
+	if m.busy {
+		raw += " · " + m.busyLabel()
+		if !m.turnStarted.IsZero() {
+			raw += " · " + formatElapsed(time.Since(m.turnStarted))
+		}
+	}
+	return styled(raw, "accent", "bold") + styled(" · End to follow", "muted", "")
+}
 
 // busyStatusMeta is the muted trailer after the busy state word: a thinking
 // size estimate while reasoning streams, then the live turn elapsed time.
@@ -793,17 +870,14 @@ func (m *replModel) appendLine(s string) {
 }
 
 func (m *replModel) resetAssistantStream() {
-	m.stream.Reset()
-	m.streamLastRune = 0
-	m.streamLineStart = true
-	m.streamFencePending.Reset()
-	m.streamInCodeBlock = false
+	m.streamRaw.Reset()
+	m.streamShown = 0
 }
 
 // appendAssistant accumulates streamed model output into the current
-// assistant entry. Text is bracket-escaped so any '[' or ']' in the model's
-// response don't trip the style parser. The run is built in m.stream and stored
-// via its copy-free String() so a long streamed turn stays O(n), not O(n²).
+// assistant entry, rendering the visible (holdback-trimmed) prefix of the raw
+// markdown through goldmark. Unchanged visible prefixes skip the re-render, so
+// a chunk that only extends a held-back token costs nothing.
 func (m *replModel) appendAssistant(text string) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -817,19 +891,29 @@ func (m *replModel) appendAssistant(text string) {
 		m.transcript = append(m.transcript, "")
 		m.currentAssistant = len(m.transcript) - 1
 	}
-	m.stream.WriteString(m.renderAssistantChunk(text))
-	m.transcript[m.currentAssistant] = m.stream.String()
+	m.streamRaw.WriteString(text)
+	raw := m.streamRaw.String()
+	visible := raw[:safeVisibleLen(raw)]
+	if len(visible) == m.streamShown && m.transcript[m.currentAssistant] != "" {
+		return
+	}
+	m.streamShown = len(visible)
+	m.transcript[m.currentAssistant] = renderMarkdown(visible)
 	m.invalidateFlat()
 }
 
+// finishAssistantStream renders any text still held back by the streaming
+// holdback — at settle time the message is final, so everything shows.
 func (m *replModel) finishAssistantStream() {
-	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) || m.streamFencePending.Len() == 0 {
+	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
 		return
 	}
-	var out strings.Builder
-	m.flushFenceCandidate(&out)
-	m.stream.WriteString(out.String())
-	m.transcript[m.currentAssistant] = m.stream.String()
+	raw := m.streamRaw.String()
+	if raw == "" || m.streamShown >= len(raw) {
+		return
+	}
+	m.streamShown = len(raw)
+	m.transcript[m.currentAssistant] = renderMarkdown(raw)
 	m.invalidateFlat()
 }
 
@@ -866,142 +950,6 @@ func (m *replModel) labelTurnUnsaved(label string) {
 	}
 	m.appendLine("  " + styled(label, "muted", ""))
 	m.unsavedLabeled = true
-}
-
-func (m *replModel) renderAssistantChunk(text string) string {
-	var out strings.Builder
-	for text != "" {
-		if m.streamFencePending.Len() > 0 {
-			text = m.collectFenceCandidate(&out, text)
-			continue
-		}
-		if m.streamLineStart && strings.HasPrefix(text, "`") {
-			text = m.collectFenceCandidate(&out, text)
-			continue
-		}
-		if m.streamInCodeBlock {
-			text = m.renderCodeSegment(&out, text)
-			continue
-		}
-		segment := text
-		text = ""
-		if i := strings.IndexByte(segment, '\n'); i >= 0 {
-			text = segment[i+1:]
-			segment = segment[:i+1]
-		}
-		m.writeStreamText(&out, segment)
-		m.streamLineStart = strings.HasSuffix(segment, "\n")
-	}
-	return out.String()
-}
-
-func (m *replModel) collectFenceCandidate(out *strings.Builder, text string) string {
-	if i := strings.IndexByte(text, '\n'); i >= 0 {
-		m.streamFencePending.WriteString(text[:i+1])
-		m.flushFenceCandidate(out)
-		return text[i+1:]
-	}
-	m.streamFencePending.WriteString(text)
-	return ""
-}
-
-func (m *replModel) flushFenceCandidate(out *strings.Builder) {
-	line := m.streamFencePending.String()
-	m.streamFencePending.Reset()
-
-	trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
-	if strings.HasPrefix(trimmed, "```") {
-		if m.streamInCodeBlock {
-			m.streamInCodeBlock = false
-		} else {
-			m.streamInCodeBlock = true
-			if lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```")); lang != "" {
-				m.writeStreamStyledText(out, "╭─ "+lang+"\n", "muted", "")
-			}
-		}
-		m.streamLineStart = true
-		return
-	}
-
-	if m.streamInCodeBlock {
-		m.writeCodeText(out, line)
-	} else {
-		m.writeStreamText(out, line)
-		m.streamLineStart = strings.HasSuffix(line, "\n")
-	}
-}
-
-func (m *replModel) renderCodeSegment(out *strings.Builder, text string) string {
-	segment := text
-	text = ""
-	if i := strings.IndexByte(segment, '\n'); i >= 0 {
-		text = segment[i+1:]
-		segment = segment[:i+1]
-	}
-	m.writeCodeText(out, segment)
-	return text
-}
-
-func (m *replModel) writeCodeText(out *strings.Builder, text string) {
-	for text != "" {
-		if m.streamLineStart {
-			m.writeStreamStyledText(out, "│ ", "muted", "")
-			m.streamLineStart = false
-		}
-		if i := strings.IndexByte(text, '\n'); i >= 0 {
-			if i > 0 {
-				m.writeStreamStyledText(out, text[:i], "code", "")
-			}
-			m.writeStreamText(out, "\n")
-			m.streamLineStart = true
-			text = text[i+1:]
-			continue
-		}
-		m.writeStreamStyledText(out, text, "code", "")
-		return
-	}
-}
-
-func (m *replModel) writeStreamText(out *strings.Builder, text string) {
-	if text == "" {
-		return
-	}
-	if m.streamLastRune == ']' {
-		for _, r := range text {
-			if r == '(' {
-				out.WriteRune('\u200b')
-			}
-			break
-		}
-	}
-	out.WriteString(styleEscape(text))
-	for _, r := range text {
-		m.streamLastRune = r
-	}
-}
-
-func (m *replModel) writeStreamStyledText(out *strings.Builder, text, fg, modifier string) {
-	if text == "" {
-		return
-	}
-	var escaped strings.Builder
-	m.writeStreamText(&escaped, text)
-	parts := []string{}
-	if fg != "" {
-		parts = append(parts, "fg:"+fg)
-	}
-	if modifier != "" {
-		parts = append(parts, "mod:"+modifier)
-	}
-	if len(parts) == 0 {
-		out.WriteString(escaped.String())
-		return
-	}
-	out.WriteString("[")
-	out.WriteString(escaped.String())
-	out.WriteString("](")
-	out.WriteString(strings.Join(parts, ","))
-	out.WriteString(")")
 }
 
 func (m *replModel) appendUserPrompt(p string) {
@@ -1473,6 +1421,7 @@ func (m *replModel) beginTurn(prompt string) {
 	m.state = turnStateWaiting
 	m.runningTools = 0
 	m.thinkingChars = 0
+	m.thinkingTail = nil
 	m.turnStarted = time.Now()
 	m.currentPrompt = prompt
 	m.turnHasOutput = false
@@ -1908,6 +1857,7 @@ type managedREPL struct {
 	model *replModel
 
 	transcriptW *transcriptParagraph
+	dividerW    *widgets.Paragraph
 	inputW      *widgets.Paragraph
 	statusW     *widgets.Paragraph
 	rootFlex    *widgets.Flex
@@ -1937,6 +1887,10 @@ type transcriptParagraph struct {
 	TopRow    int
 	Rows      [][]ui.Cell
 	UseRows   bool
+	// OverlayBottom, when non-empty, replaces the pane's bottom row — the
+	// scrolled-up activity ticker. It covers one transcript row; the row is
+	// still reachable by scrolling, so nothing is lost.
+	OverlayBottom []ui.Cell
 }
 
 func newTranscriptParagraph() *transcriptParagraph {
@@ -1993,6 +1947,19 @@ func (p *transcriptParagraph) drawRows(buf *ui.Buffer, rows [][]ui.Cell) {
 		}
 		for _, cx := range ui.BuildCellWithXArray(row) {
 			if rw.RuneWidth(cx.Cell.Rune) == 0 {
+				continue
+			}
+			buf.SetCell(cx.Cell, image.Pt(cx.X, y).Add(p.Inner.Min))
+		}
+	}
+
+	if len(p.OverlayBottom) > 0 {
+		y := height - 1
+		for x := 0; x < p.Inner.Dx(); x++ {
+			buf.SetCell(ui.Cell{Rune: ' ', Style: ui.StyleClear}, image.Pt(x, y).Add(p.Inner.Min))
+		}
+		for _, cx := range ui.BuildCellWithXArray(p.OverlayBottom) {
+			if cx.X >= p.Inner.Dx() || rw.RuneWidth(cx.Cell.Rune) == 0 {
 				continue
 			}
 			buf.SetCell(cx.Cell, image.Pt(cx.X, y).Add(p.Inner.Min))
@@ -2594,11 +2561,22 @@ func (r *managedREPL) transcriptHeight() int {
 	if !r.model.quiet {
 		statusRows = 1
 	}
-	height := h - r.model.inputRows() - statusRows
+	inputRows := r.model.inputRows()
+	height := h - inputRows - statusRows - dividerRowCount(h, inputRows, statusRows, r.model.quiet)
 	if height < 1 {
 		return 1
 	}
 	return height
+}
+
+// dividerRowCount is the height of the rule separating the transcript from the
+// bottom chrome: one row outside quiet mode, dropped entirely when the
+// terminal is too short to spare it.
+func dividerRowCount(h, inputRows, statusRows int, quiet bool) int {
+	if quiet || h-inputRows-statusRows < 2 {
+		return 0
+	}
+	return 1
 }
 
 func (r *managedREPL) requestQuit() {
@@ -2617,6 +2595,11 @@ func (r *managedREPL) setupWidgets() {
 	noBorder(&r.transcriptW.Block)
 	r.transcriptW.TextStyle = ui.NewStyle(ui.ColorClear)
 
+	r.dividerW = widgets.NewParagraph()
+	noBorder(&r.dividerW.Block)
+	r.dividerW.WrapText = false
+	r.dividerW.TextStyle = ui.NewStyle(ui.ColorClear)
+
 	r.inputW = widgets.NewParagraph()
 	noBorder(&r.inputW.Block)
 	r.inputW.WrapText = false
@@ -2631,11 +2614,14 @@ func (r *managedREPL) setupWidgets() {
 // layout (re)builds the root flex for the current input height. The input row
 // count varies with multi-line prompts, so the flex is rebuilt each render
 // rather than sized once at setup.
-func (r *managedREPL) layout(w, h, inputRows int, showStatus bool) {
+func (r *managedREPL) layout(w, h, inputRows int, showStatus, showDivider bool) {
 	flex := widgets.NewFlex()
 	noBorder(&flex.Block)
 	flex.Direction = widgets.FlexColumn
 	flex.AddItem(r.transcriptW, 0, 1, false)
+	if showDivider {
+		flex.AddItem(r.dividerW, 1, 0, false)
+	}
 	flex.AddItem(r.inputW, inputRows, 0, false)
 	if showStatus {
 		flex.AddItem(r.statusW, 1, 0, false)
@@ -2677,7 +2663,8 @@ func (r *managedREPL) render() {
 		inputMaxRows = 1
 	}
 	input, inputRows, curRow, curCol, editable := r.model.renderInputForTerminal(inputMaxRows, w)
-	transcriptHeight := h - inputRows - statusRows
+	dividerRows := dividerRowCount(h, inputRows, statusRows, r.model.quiet)
+	transcriptHeight := h - inputRows - statusRows - dividerRows
 	if transcriptHeight < 0 {
 		transcriptHeight = 0
 	}
@@ -2703,18 +2690,28 @@ func (r *managedREPL) render() {
 	title := r.model.frameTitle()
 	progress := r.model.frameProgress()
 	notices := r.model.takeNotices()
+	ticker := r.model.activityTicker(len(transcriptRows), topRow, transcriptHeight)
 	r.model.mu.Unlock()
+
+	var overlay []ui.Cell
+	if ticker != "" {
+		overlay = ui.ParseStyles(ticker, ui.NewStyle(ui.ColorClear))
+	}
 
 	r.transcriptW.Rows = transcriptRows
 	r.transcriptW.UseRows = true
 	r.transcriptW.PinBottom = pinTranscriptBottom
 	r.transcriptW.TopRow = topRow
+	r.transcriptW.OverlayBottom = overlay
 	r.inputW.Text = input
 	r.statusW.Text = status
+	if dividerRows > 0 {
+		r.dividerW.Text = styled(strings.Repeat("─", w), "muted", "")
+	}
 
-	r.layout(w, h, inputRows, showStatus)
+	r.layout(w, h, inputRows, showStatus, dividerRows > 0)
 	ui.Clear()
-	r.placeCursor(editable, curCol, transcriptHeight+curRow, w)
+	r.placeCursor(editable, curCol, transcriptHeight+dividerRows+curRow, w)
 	ui.Render(r.rootFlex)
 
 	// Window-level effects go out after the frame, on this same goroutine, so
@@ -3265,14 +3262,15 @@ func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {
 	return make([]bool, len(calls))
 }
 
-func (t *gotuiTurnUI) ShowThinking(chars int) {
+func (t *gotuiTurnUI) ShowThinking(chunk string) {
 	t.repl.model.mu.Lock()
 	if !t.acceptingLocked() {
 		t.repl.model.mu.Unlock()
 		return
 	}
 	t.repl.model.state = turnStateThinking
-	t.repl.model.thinkingChars += chars
+	t.repl.model.thinkingChars += len(chunk)
+	t.repl.model.appendThinkingTail(chunk)
 	t.repl.model.mu.Unlock()
 }
 

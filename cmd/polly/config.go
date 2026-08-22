@@ -12,6 +12,14 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+// defaultSystemPrompt is the one-shot/pipe default: output goes to raw stdout
+// where markdown would be noise. The managed REPL renders markdown, so it
+// swaps in defaultREPLSystemPrompt instead (only when -s wasn't given).
+const (
+	defaultSystemPrompt     = "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown."
+	defaultREPLSystemPrompt = "Your output will be displayed in a unix terminal with markdown rendering. Be terse. Use markdown where it aids readability."
+)
+
 var (
 	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
 	validEmbedProviders  = []string{"openai", "gemini"}
@@ -246,7 +254,7 @@ func inputConfigFlags() []cli.Flag {
 			Name:    "system",
 			Aliases: []string{"s"},
 			Usage:   "System prompt",
-			Value:   "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.",
+			Value:   defaultSystemPrompt,
 			Sources: cli.EnvVars("POLLYTOOL_SYSTEM"),
 		},
 		&cli.StringSliceFlag{

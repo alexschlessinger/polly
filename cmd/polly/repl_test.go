@@ -1252,24 +1252,21 @@ func TestStyleEscapeNeutralizesMarkup(t *testing.T) {
 	}
 }
 
-func TestAppendAssistantEscapesMarkupAcrossChunks(t *testing.T) {
+func TestAppendAssistantRendersStreamedLink(t *testing.T) {
 	m := newReplModel()
 	m.appendAssistant("see [text]")
+
+	// The bracket may still become a link \u2014 held back, only settled text shows.
+	if got := plainStyledText(m.transcript[0]); got != "see" {
+		t.Fatalf("partial link should be held back, got %q", got)
+	}
+
 	m.appendAssistant("(url)")
-
-	got := m.transcript[0]
-	if got != "see [text]\u200b(url)" {
-		t.Fatalf("streamed markup boundary was not escaped: %q", got)
+	if got := plainStyledText(m.transcript[0]); got != "see text (url)" {
+		t.Fatalf("completed link render = %q, want %q", got, "see text (url)")
 	}
-
-	var rendered strings.Builder
-	for _, c := range ui.ParseStyles(got, ui.NewStyle(ui.ColorWhite)) {
-		if c.Rune != '\u200b' {
-			rendered.WriteRune(c.Rune)
-		}
-	}
-	if rendered.String() != "see [text](url)" {
-		t.Fatalf("parsed transcript lost literal link text: %q", rendered.String())
+	if !strings.Contains(m.transcript[0], "fg:accent") {
+		t.Fatalf("link text should carry the accent color: %q", m.transcript[0])
 	}
 }
 
@@ -1290,7 +1287,7 @@ func TestAppendAssistantRendersStreamingCodeFenceWithLanguage(t *testing.T) {
 	m.appendAssistant("totalOut int  // cumulative output tokens this session\n```\nafter")
 
 	got := plainStyledText(m.transcript[0])
-	want := "before\n╭─ go\n│ totalIn  int  // cumulative input tokens this session\n│ totalOut int  // cumulative output tokens this session\nafter"
+	want := "before\n\n╭─ go\n│ totalIn  int  // cumulative input tokens this session\n│ totalOut int  // cumulative output tokens this session\n\nafter"
 	if got != want {
 		t.Fatalf("rendered code fence = %q, want %q", got, want)
 	}
@@ -1305,7 +1302,7 @@ func TestAppendAssistantRendersBareCodeFenceAcrossChunks(t *testing.T) {
 	m.appendAssistant("`\n")
 
 	got := plainStyledText(m.transcript[0])
-	want := "│ fmt.Println([text](url))\n"
+	want := "│ fmt.Println([text](url))"
 	if got != want {
 		t.Fatalf("rendered bare code fence = %q, want %q", got, want)
 	}
@@ -1317,7 +1314,7 @@ func TestFinishAssistantStreamFlushesPendingFenceLine(t *testing.T) {
 	m.finishAssistantStream()
 
 	got := plainStyledText(m.transcript[0])
-	want := "╭─ go\n│ x\n"
+	want := "╭─ go\n│ x"
 	if got != want {
 		t.Fatalf("finished code fence = %q, want %q", got, want)
 	}

@@ -296,6 +296,13 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		return err
 	}
 
+	// Applies before initializeSession so a context's stored prompt still
+	// overrides the effective default.
+	if input.mode == conversationModeREPL {
+		config.Settings.SystemPrompt = effectiveDefaultSystemPrompt(
+			config.Settings.SystemPrompt, cmd.IsSet("system"), supportsManagedREPL())
+	}
+
 	// Initialize session state once so one-shot and REPL share the same runtime.
 	_, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSession(config, sessionStore, contextID, cmd)
 	if err != nil {
@@ -388,6 +395,18 @@ func validateREPLConfig(config *Config) error {
 	return fmt.Errorf("%s %s -p or stdin; bare polly starts a text-only REPL", strings.Join(rejected, " and "), verb)
 }
 
+// effectiveDefaultSystemPrompt swaps the pipe-oriented default system prompt
+// (which forbids markdown) for the markdown-welcoming one when the managed
+// REPL — which renders markdown — is about to run. Only the untouched default
+// is swapped: an explicit -s/POLLYTOOL_SYSTEM value passes through, and the
+// fallback line REPL keeps the plain-output default.
+func effectiveDefaultSystemPrompt(current string, isSet, managedREPL bool) string {
+	if managedREPL && !isSet && current == defaultSystemPrompt {
+		return defaultREPLSystemPrompt
+	}
+	return current
+}
+
 func runREPL(ctx context.Context, config *Config, state *conversationState) error {
 	if supportsManagedREPL() {
 		return runManagedREPL(ctx, config, state)
@@ -435,7 +454,7 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 	resp, err := state.agent.Run(ctx, req, &llm.AgentCallbacks{
 		OnReasoning: func(content string) {
 			trimLeadingNL = true
-			turnUI.ShowThinking(len(content))
+			turnUI.ShowThinking(content)
 		},
 		OnContent: func(content string) {
 			if config.SchemaPath != "" {

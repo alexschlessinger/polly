@@ -137,3 +137,22 @@ func runConfigValidationCommand(args ...string) error {
 
 	return cmd.Run(context.Background(), append([]string{"polly"}, args...))
 }
+
+func TestEffectiveDefaultSystemPrompt(t *testing.T) {
+	// Managed REPL with the untouched default: markdown-friendly swap.
+	if got := effectiveDefaultSystemPrompt(defaultSystemPrompt, false, true); got != defaultREPLSystemPrompt {
+		t.Fatalf("managed REPL default = %q, want the markdown-friendly prompt", got)
+	}
+	// Explicit -s always wins, even if it matches the default text.
+	if got := effectiveDefaultSystemPrompt(defaultSystemPrompt, true, true); got != defaultSystemPrompt {
+		t.Fatalf("explicit -s was overridden: %q", got)
+	}
+	// The fallback line REPL renders no markdown: keep the plain default.
+	if got := effectiveDefaultSystemPrompt(defaultSystemPrompt, false, false); got != defaultSystemPrompt {
+		t.Fatalf("fallback REPL default = %q, want the plain prompt", got)
+	}
+	// A custom prompt from env/flag passes through untouched.
+	if got := effectiveDefaultSystemPrompt("be a pirate", false, true); got != "be a pirate" {
+		t.Fatalf("custom prompt mangled: %q", got)
+	}
+}

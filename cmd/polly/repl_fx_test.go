@@ -351,3 +351,96 @@ func TestApprovalViewExpandsArgsOncePerCall(t *testing.T) {
 		t.Fatalf("[v]iew after advancing should expand the next call, got %q", got)
 	}
 }
+
+func TestThinkingWhisperShowsNewestThought(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	tui.ShowThinking("I should check\nthe   parse loop ")
+	tui.ShowThinking("for off-by-one errors")
+	raw, _ := m.statusActivity()
+	if !strings.Contains(raw, "…") || !strings.Contains(raw, "off-by-one errors") {
+		t.Fatalf("whisper should show the newest thought, got %q", raw)
+	}
+	if strings.Contains(raw, "\n") || strings.Contains(raw, "  ") {
+		t.Fatalf("whisper should collapse whitespace, got %q", raw)
+	}
+
+	// The newest words survive; the oldest are clipped from the left.
+	tui.ShowThinking(strings.Repeat("padding ", 40) + "final insight")
+	raw, _ = m.statusActivity()
+	if !strings.Contains(raw, "final insight") {
+		t.Fatalf("whisper lost the newest thought: %q", raw)
+	}
+	if len(m.thinkingTail) > thinkingTailMax {
+		t.Fatalf("thinking tail unbounded: %d runes", len(m.thinkingTail))
+	}
+
+	// Streaming hides the whisper along with the thinking state.
+	m.state = turnStateStreaming
+	raw, _ = m.statusActivity()
+	if strings.Contains(raw, "final insight") {
+		t.Fatalf("whisper should vanish once streaming starts: %q", raw)
+	}
+
+	// The next turn starts with a clean slate.
+	m.beginTurn("again")
+	if m.thinkingTail != nil {
+		t.Fatalf("thinking tail should reset per turn, got %q", string(m.thinkingTail))
+	}
+}
+
+func TestActivityTickerWhileScrolledUp(t *testing.T) {
+	m := newReplModel()
+
+	// Following the bottom: no ticker, whatever the geometry.
+	if got := m.activityTicker(100, 0, 20); got != "" {
+		t.Fatalf("ticker while following = %q, want empty", got)
+	}
+
+	m.followBottom = false
+	got := m.activityTicker(100, 30, 20) // rows 30-49 visible, 50 below
+	for _, want := range []string{"↓ 50 rows below", "End to follow"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ticker %q missing %q", got, want)
+		}
+	}
+
+	// Singular row, and live activity while a turn runs.
+	m.busy = true
+	m.state = turnStateTool
+	m.toolName = "bash"
+	m.turnStarted = time.Now().Add(-8 * time.Second)
+	got = m.activityTicker(52, 30, 21)
+	for _, want := range []string{"↓ 1 row below", "running bash", "8."} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("busy ticker %q missing %q", got, want)
+		}
+	}
+
+	// Scrolled but nothing below (clamp edge): no ticker.
+	if got := m.activityTicker(50, 30, 20); got != "" {
+		t.Fatalf("ticker with nothing below = %q, want empty", got)
+	}
+}
+
+func TestDividerRowCount(t *testing.T) {
+	// Normal terminal: one divider row between transcript and bottom chrome.
+	if got := dividerRowCount(24, 1, 1, false); got != 1 {
+		t.Fatalf("divider on roomy terminal = %d, want 1", got)
+	}
+	// Quiet mode stays chromeless.
+	if got := dividerRowCount(24, 1, 0, true); got != 0 {
+		t.Fatalf("divider in quiet mode = %d, want 0", got)
+	}
+	// Too short to spare a row: the transcript wins.
+	if got := dividerRowCount(3, 1, 1, false); got != 0 {
+		t.Fatalf("divider on cramped terminal = %d, want 0", got)
+	}
+	// Boundary: exactly one transcript row left after chrome keeps the divider.
+	if got := dividerRowCount(4, 1, 1, false); got != 1 {
+		t.Fatalf("divider at boundary = %d, want 1", got)
+	}
+}
