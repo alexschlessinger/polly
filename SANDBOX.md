@@ -481,11 +481,12 @@ strips host-runtime hints such as `DBUS_SESSION_BUS_ADDRESS`, `DOCKER_HOST`, and
 In the REPL:
 
 - Startup prints a posture line:
-  `sandbox: active (3 tools sandboxed; not sandboxed: weather)` — or
+  `sandbox: active (base; 3 tools sandboxed; not sandboxed: weather)` — or
   `sandbox: disabled (--nosandbox)`.
 - `/get sandbox` shows the live state:
-  `active (denypaths: 2; tools: 3 sandboxed, 1 not: weather)`.
-- `/tools list` marks each sandboxed tool with `[sandboxed]`, and
+  `active (preset: base; denypaths: 2; tools: 3 sandboxed, 1 not: weather)`.
+- `/tools list` marks each sandboxed tool with a policy summary such as
+  `[sandboxed: net off, temp writes, env filtered]`, and
   `/tools show <name>` includes a `sandboxed: true/false` line.
 
 The LLM also sees it: sandboxed shell tools get `[sandboxed]` appended to

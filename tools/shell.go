@@ -33,6 +33,9 @@ func (s *ShellTool) SandboxOptOut() bool { return s.sandboxOptOut }
 // WantsSandbox reports whether the script's schema declared sandbox overrides.
 func (s *ShellTool) WantsSandbox() bool { return s.sandboxCfg != nil }
 
+// Sandboxed reports whether commands run inside a sandbox.
+func (s *ShellTool) Sandboxed() bool { return s.sandbox != nil }
+
 // WithSandbox returns a copy with sandboxing enabled.
 func (s *ShellTool) WithSandbox(sb sandbox.Sandbox, cfg ...sandbox.Config) *ShellTool {
 	out := &ShellTool{
