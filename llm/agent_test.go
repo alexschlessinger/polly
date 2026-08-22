@@ -440,7 +440,20 @@ func TestAgentMaxIterationsStopReason(t *testing.T) {
 	if resp.Message.StopReason != messages.StopReasonMaxIterations {
 		t.Fatalf("stop reason = %q, want %q", resp.Message.StopReason, messages.StopReasonMaxIterations)
 	}
+	if resp.Message.Role != messages.MessageRoleAssistant {
+		t.Fatalf("final message role = %q, want assistant", resp.Message.Role)
+	}
 	if resp.IterationCount != 2 {
 		t.Fatalf("IterationCount = %d, want 2", resp.IterationCount)
+	}
+	// The stamp must land in AllMessages — that is what callers persist.
+	var stamped bool
+	for _, m := range resp.AllMessages {
+		if m.Role == messages.MessageRoleAssistant && m.StopReason == messages.StopReasonMaxIterations {
+			stamped = true
+		}
+	}
+	if !stamped {
+		t.Fatal("no assistant message in AllMessages carries the max_iterations stop reason")
 	}
 }

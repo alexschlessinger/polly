@@ -109,6 +109,10 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 // all generated messages (assistant responses + tool results) in
 // AgentResponse.AllMessages. The caller is responsible for adding
 // these to their session.
+//
+// On error, Run still returns an AgentResponse carrying whatever was
+// generated before the failure (Message may be nil) so callers can account
+// for iterations and tokens actually spent.
 func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks) (*AgentResponse, error) {
 	// Work with a copy of messages - don't mutate input
 	msgs := make([]messages.ChatMessage, len(req.Messages))
@@ -131,7 +135,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return &AgentResponse{AllMessages: allGenerated, IterationCount: iteration}, ctx.Err()
 		default:
 		}
 
@@ -150,7 +154,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// Process events
 		response, err := a.processEvents(ctx, events, cb)
 		if err != nil {
-			return nil, err
+			return &AgentResponse{AllMessages: allGenerated, IterationCount: iteration + 1}, err
 		}
 
 		// Ensure content is never null — some providers reject null content in history
@@ -201,7 +205,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			if cb != nil && cb.OnError != nil {
 				cb.OnError(err)
 			}
-			return nil, err
+			return &AgentResponse{Message: response, AllMessages: allGenerated, IterationCount: iteration + 1}, err
 
 		case messages.StopReasonError:
 			// Model produced malformed output
@@ -209,7 +213,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			if cb != nil && cb.OnError != nil {
 				cb.OnError(err)
 			}
-			return nil, err
+			return &AgentResponse{Message: response, AllMessages: allGenerated, IterationCount: iteration + 1}, err
 
 		case messages.StopReasonToolUse:
 			if len(response.ToolCalls) == 0 {
@@ -217,7 +221,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 				if cb != nil && cb.OnError != nil {
 					cb.OnError(err)
 				}
-				return nil, err
+				return &AgentResponse{Message: response, AllMessages: allGenerated, IterationCount: iteration + 1}, err
 			}
 			// Continue to execute tool calls below
 
@@ -259,7 +263,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// Execute tool calls in parallel
 		toolMsgs, err := a.executeToolsParallel(ctx, response.ToolCalls, cb)
 		if err != nil {
-			return nil, err
+			return &AgentResponse{Message: response, AllMessages: allGenerated, IterationCount: iteration + 1}, err
 		}
 		if a.tools != nil {
 			a.tools.CommitPendingChanges()
@@ -298,8 +302,18 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 	}
 
-	last := &msgs[len(msgs)-1]
-	last.StopReason = messages.StopReasonMaxIterations
+	// Stamp the last generated assistant message (the one whose tool calls
+	// exhausted the budget) so callers that persist AllMessages record why the
+	// turn ended. The stamp must land in allGenerated itself — msgs holds
+	// separate copies that are never returned.
+	var last *messages.ChatMessage
+	for i := len(allGenerated) - 1; i >= 0; i-- {
+		if allGenerated[i].Role == messages.MessageRoleAssistant {
+			last = &allGenerated[i]
+			last.StopReason = messages.StopReasonMaxIterations
+			break
+		}
+	}
 	if cb != nil && cb.OnError != nil {
 		cb.OnError(ErrMaxIterations)
 	}
