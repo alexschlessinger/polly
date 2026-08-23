@@ -2106,6 +2106,12 @@ func (r *managedREPL) recordAcceptedInput(input string) {
 	r.appendHistory(input)
 }
 
+// sandboxNoticeLine summarizes the sandbox posture for the REPL startup
+// notice, so the operator can see at a glance which tools run restricted.
+func sandboxNoticeLine(config *Config, state *conversationState) string {
+	return currentSandboxPosture(config, state).noticeString()
+}
+
 func newManagedREPL(config *Config, contextName string, toolCount, skillCount int) *managedREPL {
 	m := newReplModel()
 	m.modelName = stripProviderPrefix(config.Model)
@@ -2176,6 +2182,9 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 
 	r.setupWidgets()
 	r.startupLogoVisible = true
+	if !r.model.quiet {
+		r.model.appendNoticeLine(sandboxNoticeLine(r.config, r.state))
+	}
 	r.render()
 
 	events := pollManagedEvents(ui.DefaultBackend.Screen)
@@ -3491,6 +3500,7 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 
 func runFallbackREPL(ctx context.Context, config *Config, state *conversationState) error {
 	reader := bufio.NewReader(os.Stdin)
+	writeFallbackSandboxNotice(os.Stderr, config, state)
 	commandCtx := newWriterReplCommandContext(config, state, os.Stderr)
 	return runREPLLoopWithCommands(reader, os.Stderr, commandCtx, func(prompt string) error {
 		turnCtx, cancel := context.WithCancel(ctx)
@@ -3506,6 +3516,13 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 		}
 		return err
 	})
+}
+
+func writeFallbackSandboxNotice(w io.Writer, config *Config, state *conversationState) {
+	if config == nil || config.Quiet {
+		return
+	}
+	fmt.Fprintln(w, sandboxNoticeLine(config, state))
 }
 
 func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {

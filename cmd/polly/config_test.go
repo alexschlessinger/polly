@@ -141,6 +141,40 @@ func TestParseConfigMeta(t *testing.T) {
 	}
 }
 
+func TestSandboxPresetFlagDefaultsAndValidation(t *testing.T) {
+	var parsed *Config
+	flags, groups := defineFlagsWithGroups()
+	cmd := &cli.Command{
+		Name:                   "polly",
+		Flags:                  flags,
+		MutuallyExclusiveFlags: groups,
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			parsed = parseConfig(cmd)
+			return nil
+		},
+	}
+
+	if err := cmd.Run(context.Background(), []string{"polly"}); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	if parsed.SandboxPreset != defaultSandboxPreset {
+		t.Fatalf("SandboxPreset = %q, want default %q", parsed.SandboxPreset, defaultSandboxPreset)
+	}
+
+	if err := cmd.Run(context.Background(), []string{"polly", "--sandbox", "readonly", "--writepath", "/data", "--allownet"}); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	if parsed.SandboxPreset != "readonly" || !parsed.AllowNet || len(parsed.WritePaths) != 1 || parsed.WritePaths[0] != "/data" {
+		t.Fatalf("parsed sandbox flags = preset %q, allownet %v, writepaths %v",
+			parsed.SandboxPreset, parsed.AllowNet, parsed.WritePaths)
+	}
+
+	// A typo'd preset must fail flag validation, not run with another policy.
+	if err := runConfigValidationCommand("--sandbox", "workspace+typo"); err == nil || !strings.Contains(err.Error(), "unknown sandbox preset") {
+		t.Fatalf("run error = %v, want unknown-preset validation error", err)
+	}
+}
+
 func runConfigValidationCommand(args ...string) error {
 	flags, groups := defineFlagsWithGroups()
 	cmd := &cli.Command{

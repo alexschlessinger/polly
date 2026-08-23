@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -601,7 +603,7 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	return replCommandResult{err: ctx.replyLines(lines)}
 }
 
-var replSettingKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir"}
+var replSettingKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir", "sandbox"}
 
 func completeGetCommand(_ *replCommandContext, _ []string, prefix string) []string {
 	return matchingWords(append([]string{"all"}, replSettingKeys...), prefix)
@@ -615,19 +617,122 @@ func replGetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if key == "all" {
 		lines := []string{"settings:"}
 		for _, k := range replSettingKeys {
-			v, _ := replSettingValue(ctx.configOrDefault(), k)
+			v, _ := replSettingValue(ctx, k)
 			lines = append(lines, fmt.Sprintf("  %s: %s", k, v))
 		}
 		return replCommandResult{err: ctx.replyLines(lines)}
 	}
-	value, ok := replSettingValue(ctx.configOrDefault(), key)
+	value, ok := replSettingValue(ctx, key)
 	if !ok {
 		return replCommandResult{err: ctx.replyLine("unknown key: " + key + " (available: " + strings.Join(append([]string{"all"}, replSettingKeys...), ", ") + ")")}
 	}
 	return replCommandResult{err: ctx.replyLine(key + ": " + value)}
 }
 
-func replSettingValue(config *Config, key string) (string, bool) {
+// sandboxToolSplit partitions sandbox-capable tools by whether they run
+// sandboxed. Tools that can't be sandboxed at all (skill helpers, function
+// tools) are excluded.
+func sandboxToolSplit(reg *tools.ToolRegistry) (sandboxed, unsandboxed []string) {
+	for _, t := range reg.All() {
+		capable, active := tools.SandboxState(t)
+		if !capable {
+			continue
+		}
+		if active {
+			sandboxed = append(sandboxed, t.GetName())
+		} else {
+			unsandboxed = append(unsandboxed, t.GetName())
+		}
+	}
+	sort.Strings(sandboxed)
+	sort.Strings(unsandboxed)
+	return sandboxed, unsandboxed
+}
+
+type sandboxPostureState int
+
+const (
+	sandboxPostureDisabled sandboxPostureState = iota
+	sandboxPostureUnavailable
+	sandboxPostureActive
+)
+
+type sandboxPosture struct {
+	state       sandboxPostureState
+	preset      string
+	denyPaths   int
+	sandboxed   []string
+	unsandboxed []string
+}
+
+func currentSandboxPosture(config *Config, state *conversationState) sandboxPosture {
+	cfg := config
+	if cfg == nil {
+		cfg = &Config{}
+	}
+	if cfg.NoSandbox {
+		return sandboxPosture{state: sandboxPostureDisabled}
+	}
+	var reg *tools.ToolRegistry
+	if state != nil {
+		reg = state.toolRegistry
+	}
+	if reg == nil || !reg.HasSandbox() {
+		return sandboxPosture{state: sandboxPostureUnavailable}
+	}
+	sandboxed, unsandboxed := sandboxToolSplit(reg)
+	preset := cfg.SandboxPreset
+	if preset == "" {
+		preset = "base"
+	}
+	return sandboxPosture{
+		state:       sandboxPostureActive,
+		preset:      preset,
+		denyPaths:   len(cfg.DenyPaths),
+		sandboxed:   sandboxed,
+		unsandboxed: unsandboxed,
+	}
+}
+
+func sandboxPostureForContext(ctx *replCommandContext) sandboxPosture {
+	if ctx == nil {
+		return currentSandboxPosture(nil, nil)
+	}
+	return currentSandboxPosture(ctx.configOrDefault(), ctx.state)
+}
+
+func (p sandboxPosture) settingString() string {
+	switch p.state {
+	case sandboxPostureDisabled:
+		return "disabled (--nosandbox)"
+	case sandboxPostureUnavailable:
+		return "unavailable (no backend)"
+	default:
+		line := fmt.Sprintf("active (preset: %s; denypaths: %d; tools: %d sandboxed, %d not", p.preset, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
+		if len(p.unsandboxed) > 0 {
+			line += ": " + strings.Join(p.unsandboxed, ", ")
+		}
+		return line + ")"
+	}
+}
+
+func (p sandboxPosture) noticeString() string {
+	switch p.state {
+	case sandboxPostureDisabled:
+		return "sandbox: disabled (--nosandbox)"
+	case sandboxPostureUnavailable:
+		return "sandbox: unavailable"
+	default:
+		line := fmt.Sprintf("sandbox: active (%s; %d tools sandboxed", p.preset, len(p.sandboxed))
+		if len(p.unsandboxed) > 0 {
+			line += "; not sandboxed: " + strings.Join(p.unsandboxed, ", ")
+		}
+		return line + ")"
+	}
+}
+
+func replSettingValue(ctx *replCommandContext, key string) (string, bool) {
+	config := ctx.configOrDefault()
 	switch key {
 	case "model":
 		return config.Model, true
@@ -648,6 +753,8 @@ func replSettingValue(config *Config, key string) (string, bool) {
 			return "[]", true
 		}
 		return strings.Join(config.SkillDirs, ", "), true
+	case "sandbox":
+		return sandboxPostureForContext(ctx).settingString(), true
 	default:
 		return "", false
 	}
@@ -692,6 +799,9 @@ func replListTools(ctx *replCommandContext, namespace string) replCommandResult 
 		if namespace != "" && !strings.HasPrefix(name, namespace+"__") {
 			continue
 		}
+		if badge := sandboxListBadge(tools.SandboxDetails(t)); badge != "" {
+			name += " " + badge
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -719,6 +829,12 @@ func replShowTool(ctx *replCommandContext, name string) replCommandResult {
 		"type: " + tool.GetType(),
 		"source: " + tool.GetSource(),
 	}
+	if info := tools.SandboxDetails(tool); info.Capable {
+		lines = append(lines, fmt.Sprintf("sandboxed: %t", info.Active))
+		if detail := sandboxShowDetail(info); detail != "" {
+			lines = append(lines, "sandbox: "+detail)
+		}
+	}
 	if desc := schema.Description(); desc != "" {
 		lines = append(lines, "description: "+desc)
 	}
@@ -729,6 +845,109 @@ func replShowTool(ctx *replCommandContext, name string) replCommandResult {
 		lines = append(lines, "required: "+strings.Join(required, ", "))
 	}
 	return replCommandResult{err: ctx.replyLines(lines)}
+}
+
+func sandboxListBadge(info tools.SandboxInfo) string {
+	if !info.Capable {
+		return ""
+	}
+	if !info.Active {
+		if info.OptedOut {
+			return "[not sandboxed: opted out]"
+		}
+		return "[not sandboxed]"
+	}
+	if info.Config == nil {
+		return "[sandboxed]"
+	}
+	return "[sandboxed: " + sandboxCompactSummary(info) + "]"
+}
+
+func sandboxCompactSummary(info tools.SandboxInfo) string {
+	cfg := info.Config
+	if cfg == nil {
+		return ""
+	}
+	parts := []string{"net off"}
+	if cfg.AllowNetwork {
+		parts[0] = "net on"
+		if cfg.DenyDNS {
+			parts = append(parts, "dns off")
+		}
+	}
+	switch {
+	case cfg.DenyWrite:
+		parts = append(parts, "read-only")
+	case hasCustomWritablePaths(cfg.WritablePaths):
+		parts = append(parts, "temp+custom writes")
+	default:
+		parts = append(parts, "temp writes")
+	}
+	if len(cfg.AllowEnv) > 0 {
+		parts = append(parts, "env allowlist")
+	} else {
+		parts = append(parts, "env filtered")
+	}
+	return strings.Join(parts, ", ")
+}
+
+func sandboxShowDetail(info tools.SandboxInfo) string {
+	if !info.Capable {
+		return ""
+	}
+	if !info.Active {
+		if info.OptedOut {
+			return "not sandboxed (opted out)"
+		}
+		return "not sandboxed"
+	}
+	cfg := info.Config
+	if cfg == nil {
+		return "active (details unavailable)"
+	}
+	parts := []string{"network off"}
+	if cfg.AllowNetwork {
+		parts[0] = "network on"
+		if cfg.DenyDNS {
+			parts = append(parts, "DNS off")
+		}
+	}
+	switch {
+	case cfg.DenyWrite:
+		parts = append(parts, "writes denied")
+	case hasCustomWritablePaths(cfg.WritablePaths):
+		parts = append(parts, "writes limited to temp and custom paths")
+	default:
+		parts = append(parts, "writes limited to temp")
+	}
+	if len(cfg.AllowEnv) > 0 {
+		parts = append(parts, "env allowlist active")
+	} else {
+		parts = append(parts, "env filters credential-like variables")
+	}
+	return strings.Join(parts, "; ")
+}
+
+func hasCustomWritablePaths(paths []string) bool {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if !isTempWritablePath(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTempWritablePath(path string) bool {
+	clean := filepath.Clean(path)
+	for _, candidate := range []string{os.TempDir(), "/tmp", "/private/tmp"} {
+		if clean == filepath.Clean(candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func replSkillsCommand(ctx *replCommandContext, args []string) replCommandResult {
