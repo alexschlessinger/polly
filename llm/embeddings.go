@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm/gemini"
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
-	"google.golang.org/genai"
 )
 
 const defaultEmbeddingTimeout = 120 * time.Second
@@ -176,43 +176,39 @@ func embedGemini(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	client, err := genai.NewClient(requestCtx, &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating gemini client: %w", err)
-	}
+	client := gemini.NewClient(apiKey)
 
-	config := &genai.EmbedContentConfig{}
+	var dimensions *int32
 	if req.Dimensions > 0 {
 		dim := int32(req.Dimensions)
-		config.OutputDimensionality = &dim
+		dimensions = &dim
 	}
 
 	// gemini-embedding-2 ignores the task_type field and expects task instructions
-	// prepended to each input; older models keep using the SDK's TaskType config.
-	var prefix string
-	if taskType := strings.TrimSpace(req.TaskType); taskType != "" {
+	// prepended to each input; older models keep using the taskType request field.
+	var prefix, taskType string
+	if tt := strings.TrimSpace(req.TaskType); tt != "" {
 		if isGemini2EmbedModel(model) {
-			p, err := gemini2TaskPrefix(taskType)
+			p, err := gemini2TaskPrefix(tt)
 			if err != nil {
 				return nil, err
 			}
 			prefix = p
 		} else {
-			config.TaskType = taskType
+			taskType = tt
 		}
 	}
 
-	contents := make([]*genai.Content, len(req.Input))
+	requests := make([]*gemini.EmbedContentRequest, len(req.Input))
 	for i, text := range req.Input {
-		contents[i] = &genai.Content{
-			Parts: []*genai.Part{{Text: prefix + text}},
+		requests[i] = &gemini.EmbedContentRequest{
+			Content:              &gemini.Content{Parts: []*gemini.Part{{Text: prefix + text}}},
+			TaskType:             taskType,
+			OutputDimensionality: dimensions,
 		}
 	}
 
-	resp, err := client.Models.EmbedContent(requestCtx, model, contents, config)
+	resp, err := client.BatchEmbedContents(requestCtx, model, requests)
 	if err != nil {
 		return nil, fmt.Errorf("gemini embedding request failed: %w", err)
 	}
