@@ -37,6 +37,7 @@ type deniedReservationEntry struct {
 
 type deniedReservation struct {
 	root      string
+	rootInfo  os.FileInfo
 	omitted   map[string]bool
 	entries   []deniedReservationEntry
 	ancestors []authorityPathIdentity
@@ -321,6 +322,14 @@ func planDeniedReservations(paths []DeniedPath, _ map[string]bool, cfg Config, p
 
 	plans := make([]deniedReservation, 0, len(plansByRoot))
 	for _, plan := range plansByRoot {
+		rootInfo, err := os.Stat(plan.root)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot denied path parent %q: %w", plan.root, err)
+		}
+		if !rootInfo.IsDir() {
+			return nil, fmt.Errorf("snapshot denied path parent %q: not a directory", plan.root)
+		}
+		plan.rootInfo = rootInfo
 		entries, err := os.ReadDir(plan.root)
 		if err != nil {
 			return nil, fmt.Errorf("snapshot denied path parent %q: %w", plan.root, err)
@@ -485,6 +494,18 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 		closeAddedFiles()
 		return fmt.Errorf("prepare target environment: %w", err)
 	}
+	reservationValidationOvermounts := make([]string, 0, len(deniedMounts)+len(readExemptionBinds))
+	for _, denied := range deniedMounts {
+		reservationValidationOvermounts = append(reservationValidationOvermounts, denied.Path)
+	}
+	for _, bind := range readExemptionBinds {
+		reservationValidationOvermounts = append(reservationValidationOvermounts, bind.destination)
+	}
+	reservationValidationFD, err := attachLinuxReservationValidation(cmd, reservations, reservationValidationOvermounts)
+	if err != nil {
+		closeAddedFiles()
+		return fmt.Errorf("prepare denied reservation validation: %w", err)
+	}
 	pinnedIdentities := cloneAuthorityPathIdentities(s.authorityPaths)
 	pinnedIdentities = append(pinnedIdentities, reservationSourceIdentities(reservations)...)
 	pinnedIdentities = append(pinnedIdentities, denyWritePlan.ancestors...)
@@ -492,6 +513,10 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	pinnedIdentities = append(pinnedIdentities, readExemptionSourceIdentities(readExemptionBinds)...)
 	authoritySources, authorityFDs, err := attachLinuxAuthorityPaths(cmd, pinnedIdentities)
 	if err != nil {
+		closeAddedFiles()
+		return err
+	}
+	if err := addLinuxReservationSources(reservations, authoritySources); err != nil {
 		closeAddedFiles()
 		return err
 	}
@@ -516,7 +541,8 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	cmd.Args = append(cmd.Args, args...)
 	cmd.Args = append(cmd.Args, "--")
 	cmd.Args = append(cmd.Args, bootstrapPath, linuxEnvBootstrapArg,
-		strconv.Itoa(bootstrapFD), strconv.Itoa(targetEnvFD), formatLinuxFDList(authorityFDs), origPath)
+		strconv.Itoa(bootstrapFD), strconv.Itoa(targetEnvFD), formatLinuxOptionalFD(reservationValidationFD),
+		formatLinuxFDList(authorityFDs), origPath)
 	cmd.Args = append(cmd.Args, targetArgs...)
 
 	// bwrap itself receives no target environment values in its environment or
@@ -598,20 +624,40 @@ func attachLinuxAuthorityPaths(cmd *exec.Cmd, identities []authorityPathIdentity
 }
 
 func reservationSourceIdentities(reservations []deniedReservation) []authorityPathIdentity {
-	var identities []authorityPathIdentity
+	identities := make([]authorityPathIdentity, 0, len(reservations))
 	for _, reservation := range reservations {
 		identities = append(identities, reservation.ancestors...)
-		for _, entry := range reservation.entries {
-			if entry.symlink || entry.info == nil {
-				continue
-			}
+		if reservation.rootInfo != nil {
 			identities = append(identities, authorityPathIdentity{
-				path: filepath.Join(reservation.root, entry.name),
-				info: entry.info,
+				path: reservation.root,
+				info: reservation.rootInfo,
 			})
 		}
 	}
 	return identities
+}
+
+// addLinuxReservationSources routes every restored sibling through the one
+// pinned descriptor for its reservation root. The path lookup can still race a
+// host-side replacement, so the post-containment bootstrap verifies the final
+// bind mount identities before the target is allowed to start.
+func addLinuxReservationSources(reservations []deniedReservation, sources map[string]string) error {
+	for _, reservation := range reservations {
+		rootSource, err := linuxPinnedSource(reservation.root, sources)
+		if err != nil {
+			return err
+		}
+		for _, entry := range reservation.entries {
+			if entry.symlink || entry.info == nil {
+				continue
+			}
+			destination := filepath.Join(reservation.root, entry.name)
+			if sources[destination] == "" {
+				sources[destination] = filepath.Join(rootSource, entry.name)
+			}
+		}
+	}
+	return nil
 }
 
 type linuxReadExemptionBind struct {

@@ -1106,7 +1106,7 @@ func assertLinuxWrappedFDLayout(t *testing.T, cmd *exec.Cmd, callerFiles int) {
 	if seccompArg < 0 || seccompArg+1 >= len(cmd.Args) || cmd.Args[seccompArg+1] != strconv.Itoa(seccompFD) {
 		t.Fatalf("cmd.Args seccomp fd = %v, want %d", cmd.Args, seccompFD)
 	}
-	if bootstrapArg <= 0 || bootstrapArg+4 >= len(cmd.Args) {
+	if bootstrapArg <= 0 || bootstrapArg+5 >= len(cmd.Args) {
 		t.Fatalf("cmd.Args missing Linux environment bootstrap: %v", cmd.Args)
 	}
 	if cmd.Args[bootstrapArg-1] != "/proc/self/fd/"+strconv.Itoa(bootstrapFD) ||
@@ -1114,18 +1114,30 @@ func assertLinuxWrappedFDLayout(t *testing.T, cmd *exec.Cmd, callerFiles int) {
 		cmd.Args[bootstrapArg+2] != strconv.Itoa(envFD) {
 		t.Fatalf("cmd.Args bootstrap fd layout = %v, want bootstrap %d and env %d", cmd.Args, bootstrapFD, envFD)
 	}
-	authorityFDs, err := parseLinuxFDList(cmd.Args[bootstrapArg+3])
+	validationFD, err := parseLinuxOptionalFD(cmd.Args[bootstrapArg+3])
+	if err != nil {
+		t.Fatalf("parse reservation validation fd: %v", err)
+	}
+	authorityFDs, err := parseLinuxFDList(cmd.Args[bootstrapArg+4])
 	if err != nil {
 		t.Fatalf("parse authority fd list: %v", err)
 	}
 	wantAuthority := len(cmd.ExtraFiles) - callerFiles - 3
+	wantFirstAuthority := envFD + 1
+	if validationFD >= 0 {
+		if validationFD != envFD+1 || validationFD >= seccompFD {
+			t.Fatalf("reservation validation fd = %d, want %d below seccomp fd %d", validationFD, envFD+1, seccompFD)
+		}
+		wantAuthority--
+		wantFirstAuthority++
+	}
 	if len(authorityFDs) != wantAuthority {
 		t.Fatalf("authority fds = %v, want %d for ExtraFiles %v", authorityFDs, wantAuthority, cmd.ExtraFiles)
 	}
 	for i, fd := range authorityFDs {
-		want := envFD + 1 + i
+		want := wantFirstAuthority + i
 		if fd != want || fd >= seccompFD {
-			t.Fatalf("authority fds = %v, want contiguous range starting at %d below seccomp fd %d", authorityFDs, envFD+1, seccompFD)
+			t.Fatalf("authority fds = %v, want contiguous range starting at %d below seccomp fd %d", authorityFDs, wantFirstAuthority, seccompFD)
 		}
 	}
 }
@@ -1326,6 +1338,35 @@ func TestLinuxTargetEnvPayloadRoundTripAndDeduplicatesLast(t *testing.T) {
 	want := []string{"PLAIN=value", "NOT-POSIX=execve-valid", "DUP=last"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("payload round trip = %q, want %q", got, want)
+	}
+}
+
+func TestLinuxReservationIdentityPayloadRoundTripAndBounds(t *testing.T) {
+	want := []linuxReservationMountIdentity{{
+		path: "/home/user/allowed", device: 42, inode: 99,
+		fileType: unix.S_IFDIR, rdev: 0,
+	}}
+	payload, err := linuxReservationIdentityPayload(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := parseLinuxReservationIdentityPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("reservation identity round trip = %+v, want %+v", got, want)
+	}
+
+	malformed := []byte(linuxReservationIdentityMagic + "\x002\x00/home/user/allowed\x0042\x0099\x00" + strconv.FormatUint(unix.S_IFDIR, 10) + "\x000\x00")
+	if _, err := parseLinuxReservationIdentityPayload(malformed); err == nil {
+		t.Fatal("reservation identity payload accepted a mismatched entry count")
+	}
+	tooLarge := []linuxReservationMountIdentity{{
+		path: "/" + strings.Repeat("x", linuxReservationIdentityPayloadLimit),
+	}}
+	if _, err := linuxReservationIdentityPayload(tooLarge); err == nil || !strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("oversized reservation identity payload error = %v, want bounded fail-closed error", err)
 	}
 }
 
@@ -1536,6 +1577,8 @@ func TestLinuxDeniedPathsStayReservedForLongLivedProcess(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		"POLLY_TEST_DENIED_FILES="+strings.Join([]string{missingFile, existingFile, filepath.Join(deniedLink, "value")}, "\n"),
 		"POLLY_TEST_ALLOWED_FILE="+allowedFile)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -1558,7 +1601,7 @@ func TestLinuxDeniedPathsStayReservedForLongLivedProcess(t *testing.T) {
 		}
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("read sandboxed reservation probe: %v (%s)\nargs: %v", err, strings.TrimSpace(stderr.String()), cmd.Args)
 		}
 		return strings.TrimSpace(line)
 	}
@@ -1931,17 +1974,14 @@ func TestPlanDeniedReservationsOrdersEqualDepthRootsLexically(t *testing.T) {
 	}
 }
 
-func TestLinuxReservationSiblingSourcesRejectReplacement(t *testing.T) {
+func TestLinuxReservationSiblingValidationRejectsSameTypeReplacement(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	allowed := filepath.Join(root, "allowed")
-	external := filepath.Join(root, "external")
-	for _, path := range []string{allowed, external} {
-		if err := os.Mkdir(path, 0700); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.Mkdir(allowed, 0700); err != nil {
+		t.Fatal(err)
 	}
 	denied := filepath.Join(root, "missing-secret")
 	tempRoots, runRoots := privateLinuxRoots()
@@ -1958,19 +1998,240 @@ func TestLinuxReservationSiblingSourcesRejectReplacement(t *testing.T) {
 	if len(plans) != 1 {
 		t.Fatalf("host-backed temp deny reservation plans = %d, want 1", len(plans))
 	}
+	mountIdentities, err := linuxReservationMountIdentities(plans, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Rename(allowed, allowed+"-original"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(external, allowed); err != nil {
+	if err := os.Mkdir(allowed, 0700); err != nil {
 		t.Fatal(err)
 	}
 
 	cmd := exec.Command("true")
-	if _, _, err := attachLinuxAuthorityPaths(cmd, reservationSourceIdentities(plans)); err == nil {
-		t.Fatal("reservation source pinning accepted a sibling replaced after planning")
+	sources, _, err := attachLinuxAuthorityPaths(cmd, reservationSourceIdentities(plans))
+	if err != nil {
+		t.Fatalf("reservation root pinning failed after a child replacement: %v", err)
+	}
+	if err := addLinuxReservationSources(plans, sources); err != nil {
+		t.Fatal(err)
+	}
+	if source := sources[allowed]; !strings.HasPrefix(source, "/proc/self/fd/") || filepath.Base(source) != "allowed" {
+		t.Fatalf("reservation sibling source = %q, want root-fd-relative route", source)
+	}
+	if err := validateLinuxReservationMountIdentities(mountIdentities); err == nil {
+		t.Fatal("post-containment validation accepted a same-type sibling replacement")
 	}
 	for _, file := range cmd.ExtraFiles {
 		_ = file.Close()
+	}
+}
+
+func TestLinuxReservationSiblingReplacementAfterWrapFailsClosed(t *testing.T) {
+	skipIfNoBwrap(t)
+	hostHome, err := os.UserHomeDir()
+	if err != nil {
+		skipOrFailSandboxPrerequisite(t, "cannot resolve home: %v", err)
+	}
+	home, err := os.MkdirTemp(hostHome, ".polly-post-wrap-replacement-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	allowed := filepath.Join(home, "allowed")
+	if err := os.Mkdir(allowed, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{
+		WritablePaths: []string{home},
+		DenyPaths:     []string{filepath.Join(home, "missing-secret")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/usr/bin/true")
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	if err := os.Rename(allowed, allowed+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(allowed, 0700); err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	if cleanupErr := cleanup(); cleanupErr != nil {
+		t.Fatal(cleanupErr)
+	}
+	if runErr == nil {
+		t.Fatalf("sandbox target started after a restored sibling was replaced: %s", out)
+	}
+	if !strings.Contains(string(out), "denied reservation mount "+strconv.Quote(allowed)+" was replaced or changed") {
+		t.Fatalf("post-containment replacement failure = %v (%s)", runErr, out)
+	}
+}
+
+func TestLinuxReservationDescriptorsDoNotScaleWithSiblingCount(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const siblingCount = 512
+	for i := 0; i < siblingCount; i++ {
+		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("sibling-%04d", i)), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plans, err := planDeniedReservations(
+		[]DeniedPath{{Path: filepath.Join(root, "missing-secret"), Kind: DeniedPathFile}},
+		nil,
+		Config{},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 1 || len(plans[0].entries) != siblingCount {
+		t.Fatalf("reservation plan roots=%d entries=%d, want 1 root and %d entries", len(plans), len(plans[0].entries), siblingCount)
+	}
+	if got := len(reservationSourceIdentities(plans)); got != 1 {
+		t.Fatalf("reservation authority identities = %d, want one root identity", got)
+	}
+
+	cmd := exec.Command("true")
+	validationFD, err := attachLinuxReservationValidation(cmd, plans, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validationFD < 3 {
+		t.Fatalf("reservation validation fd = %d, want inherited descriptor", validationFD)
+	}
+	sources, authorityFDs, err := attachLinuxAuthorityPaths(cmd, reservationSourceIdentities(plans))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, file := range cmd.ExtraFiles {
+			_ = file.Close()
+		}
+	}()
+	if err := addLinuxReservationSources(plans, sources); err != nil {
+		t.Fatal(err)
+	}
+	if len(cmd.ExtraFiles) != 2 || len(authorityFDs) != 1 {
+		t.Fatalf("reservation descriptors = files:%d authority:%v, want one payload plus one root", len(cmd.ExtraFiles), authorityFDs)
+	}
+	for _, entry := range plans[0].entries {
+		source := sources[filepath.Join(root, entry.name)]
+		if !strings.HasPrefix(source, sources[root]+"/") {
+			t.Fatalf("sibling %q source = %q, want below root source %q", entry.name, source, sources[root])
+		}
+	}
+}
+
+func TestLinuxReservationDescriptorsFitLowRlimit(t *testing.T) {
+	if root := os.Getenv("POLLY_TEST_LOW_RLIMIT_RESERVATION_ROOT"); root != "" {
+		var limit unix.Rlimit
+		if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
+			t.Fatal(err)
+		}
+		if limit.Max < 32 {
+			t.Skipf("RLIMIT_NOFILE hard limit %d is already below test threshold", limit.Max)
+		}
+		limit.Cur = 32
+		if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
+			t.Fatal(err)
+		}
+		plans, err := planDeniedReservations(
+			[]DeniedPath{{Path: filepath.Join(root, "missing-secret"), Kind: DeniedPathFile}}, nil, Config{}, nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("true")
+		if _, err := attachLinuxReservationValidation(cmd, plans, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := attachLinuxAuthorityPaths(cmd, reservationSourceIdentities(plans)); err != nil {
+			t.Fatal(err)
+		}
+		if len(cmd.ExtraFiles) != 2 {
+			t.Fatalf("reservation descriptors = %d, want payload plus root", len(cmd.ExtraFiles))
+		}
+		for _, file := range cmd.ExtraFiles {
+			_ = file.Close()
+		}
+		return
+	}
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 256; i++ {
+		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("entry-%04d", i)), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLinuxReservationDescriptorsFitLowRlimit$")
+	cmd.Env = append(os.Environ(), "POLLY_TEST_LOW_RLIMIT_RESERVATION_ROOT="+root)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("low-RLIMIT reservation helper failed: %v\n%s", err, out)
+	}
+}
+
+func TestLinuxNestedReservationValidationUsesFinalVisibleMounts(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(home, ".config")
+	configChild := filepath.Join(config, "allowed")
+	outerChild := filepath.Join(home, "notes")
+	for _, path := range []string{configChild, outerChild} {
+		if err := os.MkdirAll(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plans, err := planDeniedReservations([]DeniedPath{
+		{Path: filepath.Join(home, "missing-outer"), Kind: DeniedPathFile},
+		{Path: filepath.Join(config, "missing-inner"), Kind: DeniedPathFile},
+	}, nil, Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities, err := linuxReservationMountIdentities(plans, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(identities))
+	for _, identity := range identities {
+		got[identity.path] = true
+	}
+	if got[config] {
+		t.Fatalf("outer restored entry %q is validated after an inner tmpfs intentionally replaces it", config)
+	}
+	for _, want := range []string{configChild, outerChild} {
+		if !got[want] {
+			t.Fatalf("final-visible restored entry %q is not validated: %v", want, got)
+		}
+	}
+	if err := validateLinuxReservationMountIdentities(identities); err != nil {
+		t.Fatalf("unchanged final-visible entries failed validation: %v", err)
+	}
+	overmountedIdentities, err := linuxReservationMountIdentities(plans, []string{outerChild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, identity := range overmountedIdentities {
+		if identity.path == outerChild {
+			t.Fatalf("later exact mount %q remained in final-visible validation set", outerChild)
+		}
 	}
 }
 
