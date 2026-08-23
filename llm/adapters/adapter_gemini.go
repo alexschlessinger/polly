@@ -14,12 +14,14 @@ import (
 // Gemini receives complete tool calls per chunk and manages thought signatures.
 type GeminiAdapter struct {
 	signatures map[string]string // Tool call ID -> base64 encoded signature
+	idPrefix   string            // random per-stream namespace for synthetic tool call IDs
 }
 
 // NewGeminiAdapter creates a new Gemini streaming adapter
 func NewGeminiAdapter() *GeminiAdapter {
 	return &GeminiAdapter{
 		signatures: make(map[string]string),
+		idPrefix:   randomIDPrefix(),
 	}
 }
 
@@ -86,7 +88,7 @@ func (a *GeminiAdapter) handleFunctionCall(part *genai.Part, state streaming.Str
 
 	// Generate a synthetic tool call ID (Gemini doesn't provide one)
 	toolCalls := state.GetToolCalls()
-	toolCallID := fmt.Sprintf("gemini-%d", len(toolCalls))
+	toolCallID := fmt.Sprintf("gemini-%s-%d", a.idPrefix, len(toolCalls))
 
 	// Add the tool call
 	state.AddToolCall(messages.ChatMessageToolCall{
