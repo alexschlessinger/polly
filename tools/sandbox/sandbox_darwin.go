@@ -16,7 +16,18 @@ import (
 )
 
 const (
-	darwinSandboxExecPath          = "/usr/bin/sandbox-exec"
+	darwinSandboxExecPath = "/usr/bin/sandbox-exec"
+	// The bootstrap interpreter must be a fixed, root-owned, SIP-sealed binary
+	// that ships with macOS (validateDarwinTrustedExecutable), and must read
+	// the NUL-framed payload from inherited pipes, stat and close descriptors,
+	// rebuild the environment, and exec with an explicit argv[0] — natively,
+	// in one process, with no string interpolation. /usr/bin/perl is the only
+	// stock interpreter that satisfies all of that: shell variables cannot
+	// hold NUL bytes and POSIX sh has no argv[0] control; python3 is an
+	// on-demand CLT stub; ruby is nearer removal than perl; env(1) would
+	// expose secrets in visible argv; and a Go helper cannot be pinned the way
+	// Linux pins /proc/self/exe — it would have to be exec'd from
+	// user-writable disk, which the trust check exists to forbid.
 	darwinEnvBootstrapPath         = "/usr/bin/perl"
 	darwinEnvBootstrapMagic        = "pollytool-darwin-env-v2"
 	darwinEnvBootstrapMaxPayload   = 1 << 20
