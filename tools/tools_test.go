@@ -14,6 +14,18 @@ import (
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
+// Preserve the pre-hardening public call signatures while callers migrate to
+// the explicit unsafe constructors and registry-backed batch loader.
+var (
+	_ func(string) *BashTool                                = NewBashTool
+	_ func(string, ...sandbox.Sandbox) (*ShellTool, error)  = NewShellTool
+	_ func(string) (*MCPClient, error)                      = NewMCPClient
+	_ func(*MCPConfig, sandbox.Sandbox) (*MCPClient, error) = NewMCPClientFromConfig
+	_ func([]string) ([]Tool, error)                        = LoadShellTools
+	_ func(*BashTool, sandbox.Sandbox) *BashTool            = (*BashTool).WithSandbox
+	_ func(*ShellTool, sandbox.Sandbox) *ShellTool          = (*ShellTool).WithSandbox
+)
+
 // checkUvxAvailable checks if uvx is available on the system
 func checkUvxAvailable(t *testing.T) {
 	t.Helper()
@@ -60,7 +72,7 @@ func TestMCPClient(t *testing.T) {
 	// Create MCP server config file
 	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(configPath)
+	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -101,7 +113,7 @@ func TestMCPToolExecution(t *testing.T) {
 	// Create MCP server config file
 	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(configPath)
+	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -158,7 +170,7 @@ func TestMCPToolSchema(t *testing.T) {
 	// Create MCP server config file
 	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(configPath)
+	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -205,7 +217,7 @@ func TestMCPClientInvalidCommand(t *testing.T) {
 
 func TestMCPClientEmptyCommand(t *testing.T) {
 	// Test with empty command
-	_, err := NewMCPClient("")
+	_, err := NewUnsafeMCPClient("")
 	if err == nil {
 		t.Error("Expected error for empty command")
 	}
@@ -218,7 +230,7 @@ func TestMCPToolNoargsFiltering(t *testing.T) {
 	// Create MCP server config file
 	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 
-	client, err := NewMCPClient(configPath)
+	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
 		t.Skipf("Could not start MCP server: %v", err)
 	}
@@ -328,7 +340,7 @@ fi
 		t.Fatalf("Failed to create strict test script: %v", err)
 	}
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -349,7 +361,7 @@ func TestShellToolExecute(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -386,7 +398,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -420,7 +432,8 @@ fi
 		t.Fatalf("Failed to create second test script: %v", err)
 	}
 
-	tools, err := LoadShellTools([]string{script1, script2Path})
+	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
+	tools, err := LoadShellToolsWithRegistry(registry, []string{script1, script2Path})
 	if err != nil {
 		t.Fatalf("Failed to load shell tools: %v", err)
 	}
@@ -444,7 +457,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	_, err = NewShellTool(scriptPath)
+	_, err = newShellTool(scriptPath)
 	if err == nil {
 		t.Error("Expected error for invalid JSON schema")
 	}
@@ -467,7 +480,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -482,7 +495,7 @@ func TestShellToolMarshalArgsError(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -522,7 +535,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -611,7 +624,7 @@ func TestShellToolSandboxConfigObject(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScriptWithSpec(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -665,7 +678,7 @@ func TestShellToolSandboxConfigWithReadPathsAndEnv(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScriptWithFullSpec(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -702,7 +715,7 @@ func TestShellToolWantsSandbox(t *testing.T) {
 	dir := t.TempDir()
 
 	// Script without sandbox flag
-	tool, err := NewShellTool(createTestScript(t, dir))
+	tool, err := newShellTool(createTestScript(t, dir))
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -711,7 +724,7 @@ func TestShellToolWantsSandbox(t *testing.T) {
 	}
 
 	// Script with sandbox: true
-	tool2, err := NewShellTool(createSandboxedTestScript(t, dir))
+	tool2, err := newShellTool(createSandboxedTestScript(t, dir))
 	if err != nil {
 		t.Fatalf("Failed to create sandboxed shell tool: %v", err)
 	}
@@ -724,7 +737,7 @@ func TestShellToolWithSandbox(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -758,7 +771,7 @@ func TestShellToolSandboxExecution(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -772,11 +785,33 @@ func TestShellToolSandboxExecution(t *testing.T) {
 	}
 }
 
+func TestShellToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
+	dir := t.TempDir()
+	tool, err := newShellTool(createSandboxedTestScript(t, dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.CreateTemp(t.TempDir(), "shell-sandbox-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	sandboxed := tool.WithSandbox(&mockSandbox{file: file})
+	if _, err := sandboxed.Execute(context.Background(), map[string]any{"message": "test"}); err != nil {
+		t.Fatal(err)
+	}
+	// Legacy Sandbox implementations retain ownership of descriptors they
+	// place in ExtraFiles; execution must not close them.
+	if _, err := file.Stat(); err != nil {
+		t.Fatalf("legacy sandbox descriptor was closed after shell execution: %v", err)
+	}
+}
+
 func TestShellToolSandboxWrapError(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
-	tool, err := NewShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -887,8 +922,9 @@ func TestRegistrySandboxesNonOptInShellTools(t *testing.T) {
 }
 
 func TestShellToolSandboxFalseOptOut(t *testing.T) {
-	// A shell tool with "sandbox": false opts out of sandboxing.
-	// The user creates shell tool wrapper scripts, so this is trusted.
+	// A shell tool may opt out only when the registry owner also made the
+	// explicit unsafe choice; tool-controlled schema metadata is not authority
+	// to silently disable containment by itself.
 	script := `#!/bin/bash
 if [ "$1" = "--schema" ]; then
 	echo '{
@@ -909,7 +945,9 @@ fi
 	}
 
 	sb := &mockSandbox{}
-	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}))
+	registry := NewToolRegistry(nil,
+		WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}),
+		WithUnsafeNoSandbox())
 
 	_, err := registry.LoadShellTool(scriptPath)
 	if err != nil {
@@ -921,6 +959,23 @@ fi
 		if schema != nil && strings.Contains(schema.Description(), "[sandboxed]") {
 			t.Error("Expected shell tool with sandbox:false to NOT be sandboxed")
 		}
+	}
+}
+
+func TestShellToolSandboxFalseRequiresUnsafeRegistryOptOut(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "unsandboxed.sh")
+	script := `#!/bin/bash
+if [ "$1" = "--schema" ]; then
+  echo '{"title":"unsandboxed-tool","type":"object","sandbox":false}'
+fi
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
+	if _, err := registry.LoadShellTool(scriptPath); err == nil {
+		t.Fatal("expected sandbox:false to be refused without WithUnsafeNoSandbox")
 	}
 }
 
@@ -952,16 +1007,547 @@ func TestMCPConfigSandboxOptOut(t *testing.T) {
 type mockSandbox struct {
 	called bool
 	err    error
+	file   *os.File
 }
 
 func (m *mockSandbox) Wrap(cmd *exec.Cmd) error {
 	m.called = true
+	if m.file != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, m.file)
+	}
 	return m.err
+}
+
+type explicitEnvCaptureSandbox struct {
+	explicit map[string]string
+}
+
+func (s *explicitEnvCaptureSandbox) Wrap(*exec.Cmd) error {
+	return fmt.Errorf("plain Wrap called instead of WrapWithEnv")
+}
+
+func (s *explicitEnvCaptureSandbox) WrapWithEnv(_ *exec.Cmd, explicit map[string]string) error {
+	s.explicit = make(map[string]string, len(explicit))
+	for key, value := range explicit {
+		s.explicit[key] = value
+	}
+	return fmt.Errorf("stop after environment capture")
+}
+
+type mcpExtraFileSandbox struct {
+	file *os.File
+}
+
+func (s *mcpExtraFileSandbox) Wrap(cmd *exec.Cmd) error {
+	cmd.ExtraFiles = append(cmd.ExtraFiles, s.file)
+	return nil
+}
+
+func (s *mcpExtraFileSandbox) WrapWithEnv(cmd *exec.Cmd, _ map[string]string) error {
+	return s.Wrap(cmd)
 }
 
 func mockSandboxFactory(sb *mockSandbox) func(sandbox.Config) (sandbox.Sandbox, error) {
 	return func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return sb, nil
+	}
+}
+
+func failingSandboxFactory() func(sandbox.Config) (sandbox.Sandbox, error) {
+	return func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return nil, fmt.Errorf("backend broken")
+	}
+}
+
+func TestRegistryShellToolSchemaSandboxFailureFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createTestScript(t, dir)
+
+	registry := NewToolRegistry(nil, WithSandboxFactory(failingSandboxFactory(), sandbox.Config{}))
+
+	if _, err := registry.LoadShellTool(scriptPath); err == nil {
+		t.Fatal("expected load to fail when the schema sandbox can't be constructed")
+	}
+	if len(registry.All()) != 0 {
+		t.Fatalf("registry should be empty after a failed load, has %d tools", len(registry.All()))
+	}
+}
+
+func TestRegistryShellSchemaUsesStrictDiscoveryConfig(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createTestScript(t, dir)
+	base := sandbox.Config{
+		AllowNetwork:   true,
+		WritablePaths:  []string{dir},
+		ReadPaths:      []string{"/read-exception"},
+		DenyPaths:      []string{"/blocked-secret"},
+		DenyWritePaths: []string{"/protected-write"},
+		AllowEnv:       []string{"SECRET_TOKEN"},
+	}
+	var configs []sandbox.Config
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		configs = append(configs, cfg)
+		return &mockSandbox{}, nil
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(factory, base))
+
+	if _, err := registry.LoadShellTool(scriptPath); err != nil {
+		t.Fatalf("LoadShellTool() error = %v", err)
+	}
+	if len(configs) != 2 {
+		t.Fatalf("sandbox factory calls = %d, want schema and execution", len(configs))
+	}
+	discovery := configs[0]
+	realTemp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	realTemp = filepath.Clean(realTemp)
+	if discovery.AllowNetwork {
+		t.Fatal("schema discovery inherited network access")
+	}
+	if len(discovery.WritablePaths) != 1 || discovery.WritablePaths[0] != realTemp {
+		t.Fatalf("schema discovery writable paths = %v, want only %q", discovery.WritablePaths, realTemp)
+	}
+	if len(discovery.ReadPaths) != 0 || len(discovery.AllowEnv) != 0 {
+		t.Fatalf("schema discovery inherited allowances: read=%v env=%v", discovery.ReadPaths, discovery.AllowEnv)
+	}
+	if len(discovery.DenyPaths) != 1 || discovery.DenyPaths[0] != "/blocked-secret" {
+		t.Fatalf("schema discovery deny paths = %v", discovery.DenyPaths)
+	}
+	if len(discovery.DenyWritePaths) != 1 || discovery.DenyWritePaths[0] != "/protected-write" {
+		t.Fatalf("schema discovery deny-write paths = %v", discovery.DenyWritePaths)
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !configs[1].AllowNetwork || len(configs[1].WritablePaths) != 1 || configs[1].WritablePaths[0] != realDir {
+		t.Fatalf("execution config = %+v, want base execution allowances", configs[1])
+	}
+}
+
+func TestRegistryPreparedBaseSurvivesLaterSandboxConstruction(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "approved-child")
+	external := filepath.Join(parent, "external")
+	for _, path := range []string{child, external} {
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	realChild, err := filepath.EvalSymlinks(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := filepath.Join(parent, "approved-route")
+	if err := os.Symlink(child, route); err != nil {
+		t.Fatal(err)
+	}
+
+	var configs []sandbox.Config
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		configs = append(configs, cfg)
+		return &mockSandbox{}, nil
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{
+		WritablePaths: []string{route},
+	}))
+	if _, err := registry.LoadToolAuto("bash"); err != nil {
+		t.Fatal(err)
+	}
+	bash, ok := registry.Get("bash")
+	if !ok {
+		t.Fatal("bash not registered")
+	}
+	details := SandboxDetails(bash)
+	if details.Config == nil || len(details.Config.WritablePaths) != 1 || details.Config.WritablePaths[0] != realChild {
+		t.Fatalf("SandboxDetails config = %+v, want canonical writable path %q", details.Config, realChild)
+	}
+
+	// A later tool may legitimately add the parent as its own overlay. The
+	// inherited child identity must survive minimization even though the parent
+	// makes the child's public path redundant for that one effective config.
+	if _, err := registry.NewSandbox(&sandbox.Config{WritablePaths: []string{parent}}); err != nil {
+		t.Fatalf("construct parent-writable sandbox: %v", err)
+	}
+	if err := os.Rename(child, child+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, child); err != nil {
+		t.Fatal(err)
+	}
+
+	callsBefore := len(configs)
+	if _, err := registry.NewSandbox(nil); err == nil {
+		t.Fatal("later NewSandbox accepted a replaced prepared base authority")
+	}
+	if len(configs) != callsBefore {
+		t.Fatalf("sandbox factory called after prepared authority identity failure: %d -> %d", callsBefore, len(configs))
+	}
+}
+
+func TestRegistryPreparedBaseDoesNotActivateMissingGrantLater(t *testing.T) {
+	parent := t.TempDir()
+	missing := filepath.Join(parent, "missing-at-approval")
+	var configs []sandbox.Config
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		configs = append(configs, cfg)
+		return &mockSandbox{}, nil
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{
+		WritablePaths: []string{missing},
+	}))
+	if _, err := registry.NewSandbox(&sandbox.Config{WritablePaths: []string{parent}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(missing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.NewSandbox(nil); err != nil {
+		t.Fatal(err)
+	}
+	last := configs[len(configs)-1]
+	if len(last.WritablePaths) != 0 {
+		t.Fatalf("missing base grant activated after later creation: %v", last.WritablePaths)
+	}
+}
+
+func TestWithSandboxFactorySnapshotsBaseConfig(t *testing.T) {
+	approved := t.TempDir()
+	mutated := t.TempDir()
+	base := sandbox.Config{WritablePaths: []string{approved}}
+	var captured sandbox.Config
+	option := WithSandboxFactory(func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		captured = cfg
+		return &mockSandbox{}, nil
+	}, base)
+	base.WritablePaths[0] = mutated
+
+	registry := NewToolRegistry(nil, option)
+	if _, err := registry.NewSandbox(nil); err != nil {
+		t.Fatal(err)
+	}
+	realApproved, err := filepath.EvalSymlinks(approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.WritablePaths) != 1 || captured.WritablePaths[0] != realApproved {
+		t.Fatalf("factory received caller-mutated base config: %v, want %q", captured.WritablePaths, realApproved)
+	}
+}
+
+func TestWithSandboxFactorySnapshotsBaseIdentityAtOptionCreation(t *testing.T) {
+	parent := t.TempDir()
+	approved := filepath.Join(parent, "approved")
+	external := filepath.Join(parent, "external")
+	for _, path := range []string{approved, external} {
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	called := false
+	option := WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
+		called = true
+		return &mockSandbox{}, nil
+	}, sandbox.Config{WritablePaths: []string{approved}})
+	if err := os.Rename(approved, approved+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, approved); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewToolRegistry(nil, option)
+	if _, err := registry.NewSandbox(nil); err == nil {
+		t.Fatal("NewSandbox accepted base authority replaced after option creation")
+	}
+	if called {
+		t.Fatal("sandbox factory called after prepared base identity failure")
+	}
+}
+
+func TestWithSandboxFactoryDefersBasePreparationError(t *testing.T) {
+	called := false
+	option := WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
+		called = true
+		return &mockSandbox{}, nil
+	}, sandbox.Config{WritablePaths: []string{""}})
+	registry := NewToolRegistry(nil, option)
+	if _, err := registry.NewSandbox(nil); err == nil || !strings.Contains(err.Error(), "empty path") {
+		t.Fatalf("NewSandbox() error = %v, want deferred preparation failure", err)
+	}
+	if called {
+		t.Fatal("sandbox factory called after base preparation failure")
+	}
+}
+
+func TestRegistryRejectsNilSuccessfulSandbox(t *testing.T) {
+	factory := func(sandbox.Config) (sandbox.Sandbox, error) { return nil, nil }
+	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}))
+
+	if _, err := registry.NewSandbox(nil); err == nil || !strings.Contains(err.Error(), "returned no sandbox") {
+		t.Fatalf("NewSandbox() error = %v, want nil-result rejection", err)
+	}
+	if _, err := registry.NewSandboxDirect(sandbox.Config{}); err == nil || !strings.Contains(err.Error(), "returned no sandbox") {
+		t.Fatalf("NewSandboxDirect() error = %v, want nil-result rejection", err)
+	}
+	if _, err := registry.LoadToolAuto("bash"); err == nil || !strings.Contains(err.Error(), "returned no sandbox") {
+		t.Fatalf("LoadToolAuto(bash) error = %v, want nil-result rejection", err)
+	}
+	if _, ok := registry.Get("bash"); ok {
+		t.Fatal("bash registered after its sandbox factory returned nil")
+	}
+	if _, err := registry.LoadShellTool(createTestScript(t, t.TempDir())); err == nil || !strings.Contains(err.Error(), "schema sandbox") {
+		t.Fatalf("LoadShellTool() error = %v, want schema sandbox rejection", err)
+	}
+	mcpConfig := filepath.Join(t.TempDir(), "mcp.json")
+	if err := os.WriteFile(mcpConfig, []byte(`{"mcpServers":{"local":{"command":"true"}}}`), 0600); err != nil {
+		t.Fatalf("write MCP config: %v", err)
+	}
+	if _, err := registry.LoadMCPServer(mcpConfig); err == nil || !strings.Contains(err.Error(), "returned no sandbox") {
+		t.Fatalf("LoadMCPServer() error = %v, want nil-result rejection", err)
+	}
+	if len(registry.All()) != 0 {
+		t.Fatalf("registry should stay empty, has %d tools", len(registry.All()))
+	}
+}
+
+func TestMCPConfiguredEnvUsesExplicitTargetChannel(t *testing.T) {
+	sb := &explicitEnvCaptureSandbox{}
+	config := &MCPConfig{
+		Command: "/bin/true",
+		Env: map[string]string{
+			"GITHUB_TOKEN":   "configured-secret",
+			"ORDINARY_VALUE": "configured-value",
+		},
+	}
+
+	if _, err := NewMCPClientFromConfig(config, sb); err == nil || !strings.Contains(err.Error(), "environment capture") {
+		t.Fatalf("NewMCPClientFromConfig() error = %v, want capture sentinel", err)
+	}
+	if len(sb.explicit) != len(config.Env) {
+		t.Fatalf("explicit env = %v, want %v", sb.explicit, config.Env)
+	}
+	for key, value := range config.Env {
+		if sb.explicit[key] != value {
+			t.Fatalf("explicit env[%q] = %q, want %q", key, sb.explicit[key], value)
+		}
+	}
+}
+
+func TestMCPConnectFailureLeavesLegacySandboxFilesOpen(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "mcp-sandbox-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	config := &MCPConfig{
+		Command: "/bin/true",
+		Env:     map[string]string{"TARGET_ONLY": "value"},
+	}
+	if _, err := NewMCPClientFromConfig(config, &mcpExtraFileSandbox{file: file}); err == nil {
+		t.Fatal("MCP connection unexpectedly succeeded")
+	}
+	// Legacy Sandbox implementations retain ownership of descriptors they
+	// place in ExtraFiles; a failed connect must not close them.
+	if _, err := file.Stat(); err != nil {
+		t.Fatalf("legacy sandbox descriptor was closed after MCP Connect failure: %v", err)
+	}
+}
+
+func TestRegistryRefusesShellWithoutSandboxBeforeSchemaExecution(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "schema-ran")
+	scriptPath := filepath.Join(dir, "tool.sh")
+	script := fmt.Sprintf(`#!/bin/bash
+if [ "$1" = "--schema" ]; then
+  touch %q
+  echo '{"title":"unsafe","type":"object"}'
+fi
+`, marker)
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewToolRegistry(nil)
+	if _, err := registry.LoadShellTool(scriptPath); err == nil {
+		t.Fatal("expected a registry without sandbox policy to reject shell loading")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("schema command ran before sandbox policy rejection: %v", err)
+	}
+}
+
+func TestRegistryRefusesStdioMCPWithoutSandbox(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "mcp.json")
+	config := `{"mcpServers":{"unsafe":{"command":"definitely-not-started"}}}`
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewToolRegistry(nil)
+	if _, err := registry.LoadMCPServer(configPath); err == nil || !strings.Contains(err.Error(), "requires sandboxing") {
+		t.Fatalf("LoadMCPServer() error = %v, want secure-default refusal", err)
+	}
+}
+
+func TestRegistryShellToolSandboxFailureFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := createTestScript(t, dir)
+
+	// First construction (schema-load sandbox) succeeds, second (execution
+	// sandbox) fails — the tool must not load and run unsandboxed.
+	calls := 0
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		calls++
+		if calls > 1 {
+			return nil, fmt.Errorf("backend broken")
+		}
+		return &mockSandbox{}, nil
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}))
+
+	_, err := registry.LoadShellTool(scriptPath)
+	if err == nil {
+		t.Fatal("expected load to fail when the execution sandbox can't be constructed")
+	}
+	if !strings.Contains(err.Error(), "sandbox for shell tool") {
+		t.Fatalf("error = %q, want it to name the sandbox failure", err)
+	}
+	if len(registry.All()) != 0 {
+		t.Fatalf("registry should be empty after a failed load, has %d tools", len(registry.All()))
+	}
+}
+
+func TestLoadToolAutoBashSandboxFailureFailsClosed(t *testing.T) {
+	registry := NewToolRegistry(nil, WithSandboxFactory(failingSandboxFactory(), sandbox.Config{}))
+
+	_, err := registry.LoadToolAuto("bash")
+	if err == nil {
+		t.Fatal("expected bash load to fail when its sandbox can't be constructed")
+	}
+	if !strings.Contains(err.Error(), "sandbox for bash") {
+		t.Fatalf("error = %q, want it to name the sandbox failure", err)
+	}
+	if _, ok := registry.Get("bash"); ok {
+		t.Fatal("bash should not be registered after a failed load")
+	}
+}
+
+func TestSandboxState(t *testing.T) {
+	dir := t.TempDir()
+	shell, err := newShellTool(createTestScript(t, dir))
+	if err != nil {
+		t.Fatalf("NewShellTool error = %v", err)
+	}
+	sandboxedBash := newBashTool("").WithSandbox(&mockSandbox{})
+
+	tests := []struct {
+		name    string
+		tool    Tool
+		capable bool
+		active  bool
+	}{
+		{"bash plain", newBashTool(""), true, false},
+		{"bash sandboxed", sandboxedBash, true, true},
+		{"shell plain", shell, true, false},
+		{"shell sandboxed", shell.WithSandbox(&mockSandbox{}), true, true},
+		{"mcp sandboxed", &MCPTool{client: &MCPClient{sandboxCapable: true, sandboxed: true}}, true, true},
+		{"mcp remote", &MCPTool{client: &MCPClient{sandboxCapable: false, sandboxed: true}}, false, false},
+		{"func not capable", &Func{Name: "f"}, false, false},
+		{"namespaced unwraps", &NamespacedTool{Tool: sandboxedBash, namespacedName: "ns__bash"}, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capable, active := SandboxState(tt.tool)
+			if capable != tt.capable || active != tt.active {
+				t.Fatalf("SandboxState() = (%v, %v), want (%v, %v)", capable, active, tt.capable, tt.active)
+			}
+		})
+	}
+}
+
+func TestSandboxDetailsIncludesEffectiveConfigAndOptOut(t *testing.T) {
+	cfg := sandbox.Config{
+		AllowNetwork:   true,
+		WritablePaths:  []string{"/tmp/work"},
+		DenyWritePaths: []string{"/tmp/work/.git"},
+		AllowEnv:       []string{"PATH"},
+	}
+	bash := newBashTool("").withSandboxConfig(&mockSandbox{}, cfg)
+	info := SandboxDetails(bash)
+	if !info.Capable || !info.Active {
+		t.Fatalf("SandboxDetails(bash) = %+v, want capable active", info)
+	}
+	if info.Config == nil || !info.Config.AllowNetwork || len(info.Config.WritablePaths) != 1 || info.Config.WritablePaths[0] != "/tmp/work" {
+		t.Fatalf("SandboxDetails(bash).Config = %+v, want copied effective config", info.Config)
+	}
+	cfg.WritablePaths[0] = "/mutated"
+	cfg.DenyWritePaths[0] = "/mutated-deny"
+	if info.Config.WritablePaths[0] != "/tmp/work" {
+		t.Fatalf("SandboxDetails exposed mutable config: %+v", info.Config.WritablePaths)
+	}
+	if info.Config.DenyWritePaths[0] != "/tmp/work/.git" {
+		t.Fatalf("SandboxDetails exposed mutable deny-write config: %+v", info.Config.DenyWritePaths)
+	}
+	info.Config.DenyWritePaths[0] = "/mutated-return"
+	if got := SandboxDetails(bash).Config.DenyWritePaths[0]; got != "/tmp/work/.git" {
+		t.Fatalf("SandboxDetails retained caller mutation: %q", got)
+	}
+
+	dir := t.TempDir()
+	script := `#!/bin/bash
+if [ "$1" = "--schema" ]; then
+	echo '{"title":"unsandboxed-tool","description":"Opts out","type":"object","sandbox":false,"properties":{}}'
+elif [ "$1" = "--execute" ]; then
+	echo "ok"
+fi
+`
+	scriptPath := filepath.Join(dir, "unsandboxed.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	shell, err := newShellTool(scriptPath)
+	if err != nil {
+		t.Fatalf("newShellTool() error = %v", err)
+	}
+	info = SandboxDetails(shell)
+	if !info.Capable || info.Active || !info.OptedOut {
+		t.Fatalf("SandboxDetails(opt-out shell) = %+v, want capable inactive opted out", info)
+	}
+}
+
+func TestWithSandboxClearsUnknownEffectiveConfig(t *testing.T) {
+	cfg := sandbox.Config{WritablePaths: []string{"/tmp/work"}}
+	bash := newBashTool("").withSandboxConfig(&mockSandbox{}, cfg)
+	bash = bash.WithSandbox(&mockSandbox{})
+	if info := SandboxDetails(bash); !info.Active || info.Config != nil {
+		t.Fatalf("SandboxDetails(rewrapped bash) = %+v, want active with unknown config", info)
+	}
+
+	shell, err := newShellTool(createTestScript(t, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell = shell.withSandboxConfig(&mockSandbox{}, cfg)
+	shell = shell.WithSandbox(&mockSandbox{})
+	if info := SandboxDetails(shell); !info.Active || info.Config != nil {
+		t.Fatalf("SandboxDetails(rewrapped shell) = %+v, want active with unknown config", info)
+	}
+}
+
+func TestRegisterNativeFactoryNilTool(t *testing.T) {
+	registry := NewToolRegistry(nil)
+	registry.RegisterNative("broken", func() Tool { return nil })
+
+	_, err := registry.LoadToolAuto("broken")
+	if err == nil {
+		t.Fatal("expected an error, not a panic, for a native factory returning nil")
+	}
+	if _, ok := registry.Get("broken"); ok {
+		t.Fatal("nil tool should not be registered")
 	}
 }
 
@@ -974,13 +1560,13 @@ func TestShellToolNonExecutable(t *testing.T) {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	_, err = NewShellTool(scriptPath)
+	_, err = newShellTool(scriptPath)
 	if err == nil {
 		t.Error("Expected error for non-executable file")
 	}
 }
 
-func TestLoadShellToolsContinuesOnError(t *testing.T) {
+func TestLoadShellToolsFailsClosedOnError(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create one valid tool
@@ -1002,14 +1588,32 @@ fi
 		t.Fatalf("Failed to create invalid file: %v", err)
 	}
 
-	// Load should succeed with the valid tool and skip the invalid one
-	tools, err := LoadShellTools([]string{invalidPath, validPath})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
+	tools, err := LoadShellToolsWithRegistry(registry, []string{validPath, invalidPath})
+	if err == nil {
+		t.Fatal("expected invalid tool to abort secure loading")
+	}
+	if len(tools) != 0 {
+		t.Fatalf("LoadShellToolsWithRegistry() returned partial tools after failure: %d", len(tools))
+	}
+	if len(registry.All()) != 0 {
+		t.Fatalf("registry mutated after batch failure: %d tools", len(registry.All()))
+	}
+}
+
+func TestLoadShellToolsLegacyBestEffortCompatibility(t *testing.T) {
+	dir := t.TempDir()
+	validPath := createTestScript(t, dir)
+	invalidPath := filepath.Join(dir, "not-executable")
+	if err := os.WriteFile(invalidPath, []byte("not executable"), 0644); err != nil {
+		t.Fatalf("write invalid tool: %v", err)
 	}
 
-	// Should have loaded only the valid tool
-	if len(tools) != 1 {
-		t.Errorf("Expected 1 tool (valid only), got %d", len(tools))
+	loaded, err := LoadShellTools([]string{invalidPath, validPath})
+	if err != nil {
+		t.Fatalf("legacy LoadShellTools() error = %v, want nil", err)
+	}
+	if len(loaded) != 1 || loaded[0].GetName() != "test-tool" {
+		t.Fatalf("legacy LoadShellTools() = %v, want the one valid tool", loaded)
 	}
 }

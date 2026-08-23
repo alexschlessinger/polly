@@ -58,11 +58,13 @@ func loadSkillCatalog(config *Config, persistedSources []string) (*skillCatalogR
 	}, nil
 }
 
+var newSkillRuntimeImpl = tools.NewSkillRuntime
+
 func newSkillRuntime(catalog *skills.Catalog, registry *tools.ToolRegistry) (*tools.SkillRuntime, error) {
 	if registry == nil {
 		return nil, nil
 	}
-	return tools.NewSkillRuntime(catalog, registry)
+	return newSkillRuntimeImpl(catalog, registry)
 }
 
 func restoreActiveSkills(metadata *sessions.Metadata, skillRuntime *tools.SkillRuntime) error {
