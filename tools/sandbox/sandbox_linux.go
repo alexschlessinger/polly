@@ -57,6 +57,9 @@ func New(cfg Config) (Sandbox, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateLinuxSpecialMountRestrictions(cfg); err != nil {
+		return nil, err
+	}
 	if !cfg.DenyWrite {
 		if _, err := resolveDenyWritePaths(cfg.DenyWritePaths, cfg.WritablePaths); err != nil {
 			return nil, err
@@ -114,6 +117,62 @@ func validateLinuxBwrapExecutable(path string) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != 0 || info.Mode().Perm()&0022 != 0 {
 		return fmt.Errorf("Linux sandbox backend %q is not root-owned and immutable to non-root users", path)
+	}
+	return nil
+}
+
+// validateLinuxSpecialMountRestrictions rejects deny rules that bubblewrap
+// cannot preserve. The backend mounts fresh /dev and /proc filesystems after
+// constructing the ordinary path policy; either mount would cover a deny mask
+// on one of its descendants. Rejecting intersecting rules is safer than
+// accepting a configuration that silently runs with less protection.
+func validateLinuxSpecialMountRestrictions(cfg Config) error {
+	validate := func(field, path string) error {
+		path = filepath.Clean(expandTilde(path))
+		intersectionError := func(root string) error {
+			return fmt.Errorf("sandbox %s entry %q intersects Linux special mount %q and cannot be enforced", field, path, root)
+		}
+		checkRoute := func(candidate string) error {
+			for _, root := range []string{"/dev", "/proc"} {
+				if isPathWithin(candidate, root) || isPathWithin(root, candidate) {
+					return intersectionError(root)
+				}
+			}
+			return nil
+		}
+		checkTraversal := func(candidate string) error {
+			for _, root := range []string{"/dev", "/proc"} {
+				if isPathWithin(candidate, root) {
+					return intersectionError(root)
+				}
+			}
+			return nil
+		}
+		// Check the lexical route as well as its current target. Procfs magic
+		// links such as /proc/self/cwd can resolve outside /proc in the parent
+		// while pointing somewhere else in the sandboxed process.
+		if err := checkRoute(path); err != nil {
+			return err
+		}
+		resolved, err := resolveExistingPathPrefixObserved(path, checkTraversal)
+		if err != nil {
+			return fmt.Errorf("resolve sandbox %s entry %q for Linux special mounts: %w", field, path, err)
+		}
+		if err := checkRoute(resolved); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	for _, denied := range allDeniedPaths(cfg) {
+		if err := validate("denyPaths", denied.Path); err != nil {
+			return err
+		}
+	}
+	for _, path := range cfg.DenyWritePaths {
+		if err := validate("denyWritePaths", path); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -411,6 +470,9 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 		return err
 	}
 	if err := validateReadPathAliasIdentities(s.cfg.readPathAliases); err != nil {
+		return err
+	}
+	if err := validateLinuxSpecialMountRestrictions(s.cfg); err != nil {
 		return err
 	}
 	env := cmd.Env
@@ -915,7 +977,14 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 		}
 	}
 
-	args = append(args, "--dev", "/dev", "--proc", "/proc", "--unshare-pid", "--unshare-ipc")
+	args = append(args, "--dev", "/dev", "--proc", "/proc")
+	if cfg.DenyWrite {
+		// Fresh special filesystems are mounted after the read-only root. Keep
+		// their directory trees and procfs controls read-only too; character
+		// devices such as /dev/null remain usable through a read-only devtmpfs.
+		args = append(args, "--remount-ro", "/dev", "--remount-ro", "/proc")
+	}
+	args = append(args, "--unshare-pid", "--unshare-ipc")
 	if !cfg.AllowNetwork {
 		args = append(args, "--unshare-net")
 	} else if cfg.DenyDNS && !resolvInPrivateRun {

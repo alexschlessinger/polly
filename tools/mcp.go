@@ -432,7 +432,6 @@ func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, 
 		if err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
-		defer func() { _ = closeSandboxFiles() }()
 
 		slog.Debug("mcp_stdio_connecting", "command", config.Command, "arguments", config.Args)
 		transport = &sandboxCleanupTransport{
