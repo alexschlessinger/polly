@@ -20,7 +20,19 @@ func New(cfg Config) (Sandbox, error) {
 	if _, err := exec.LookPath("sandbox-exec"); err != nil {
 		return nil, fmt.Errorf("sandbox-exec not available: %w", err)
 	}
+	var err error
+	cfg, err = PrepareConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
 	return &darwinSandbox{profile: buildProfile(cfg), allowEnv: cfg.AllowEnv}, nil
+}
+
+func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
+	return freezeAuthorityPaths(cfg)
 }
 
 func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
