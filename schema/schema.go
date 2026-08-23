@@ -3,10 +3,9 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
+	"reflect"
 
-	ijs "github.com/invopop/jsonschema"
-	"github.com/xeipuuv/gojsonschema"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // Schema represents a JSON schema for structured output
@@ -24,30 +23,40 @@ func (s *Schema) Validate(jsonStr string) error {
 	if err != nil {
 		return fmt.Errorf("schema marshal error: %w", err)
 	}
-	result, err := gojsonschema.Validate(
-		gojsonschema.NewBytesLoader(schemaBytes),
-		gojsonschema.NewStringLoader(jsonStr),
-	)
+	var compiled jsonschema.Schema
+	if err := json.Unmarshal(schemaBytes, &compiled); err != nil {
+		return fmt.Errorf("schema validation error: %w", err)
+	}
+	resolved, err := compiled.Resolve(nil)
 	if err != nil {
 		return fmt.Errorf("schema validation error: %w", err)
 	}
-	if !result.Valid() {
-		var msgs []string
-		for _, e := range result.Errors() {
-			msgs = append(msgs, e.String())
-		}
-		return fmt.Errorf("validation failed: %s", strings.Join(msgs, "; "))
+	var instance any
+	if err := json.Unmarshal([]byte(jsonStr), &instance); err != nil {
+		return fmt.Errorf("schema validation error: %w", err)
+	}
+	if err := resolved.Validate(instance); err != nil {
+		return fmt.Errorf("validation failed: %s", err)
 	}
 	return nil
 }
 
 // SchemaFor generates a strict JSON schema from a Go struct using reflection.
-// Fields are derived from json tags; descriptions from jsonschema tags.
+// Fields are derived from json tags; a field's jsonschema tag becomes its
+// description. Fields without omitempty/omitzero are required, and object
+// nodes reject additional properties.
 func SchemaFor(v any) *Schema {
-	r := new(ijs.Reflector)
-	r.DoNotReference = true
-	s := r.Reflect(v)
-	s.AdditionalProperties = ijs.FalseSchema
+	t := reflect.TypeOf(v)
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return nil
+	}
+	s, err := jsonschema.ForType(t, nil)
+	if err != nil {
+		return nil
+	}
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return nil
