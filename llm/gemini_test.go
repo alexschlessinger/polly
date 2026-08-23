@@ -100,3 +100,43 @@ func TestMessagesToGeminiContentThoughtSignatures(t *testing.T) {
 		})
 	}
 }
+
+// TestMessagesToGeminiContentNativeCallIDs verifies provider-issued function
+// call IDs are echoed back on both the replayed call and its response, while
+// polly-synthesized IDs (gemini-<nonce>-<n>) are kept internal.
+func TestMessagesToGeminiContentNativeCallIDs(t *testing.T) {
+	msgs := []messages.ChatMessage{
+		{
+			Role: messages.MessageRoleAssistant,
+			ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "native-id-1", Name: "search", Arguments: "{}"},
+			},
+		},
+		{Role: messages.MessageRoleTool, ToolCallID: "native-id-1", ToolName: "search", Content: `{"ok":true}`},
+		{
+			Role: messages.MessageRoleAssistant,
+			ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "gemini-ab12cd34-0", Name: "search", Arguments: "{}"},
+			},
+		},
+		{Role: messages.MessageRoleTool, ToolCallID: "gemini-ab12cd34-0", ToolName: "search", Content: `{"ok":true}`},
+	}
+
+	contents, _, _ := MessagesToGeminiContent(msgs)
+	if len(contents) != 4 {
+		t.Fatalf("content count = %d, want 4", len(contents))
+	}
+
+	if id := contents[0].Parts[0].FunctionCall.ID; id != "native-id-1" {
+		t.Errorf("native FunctionCall.ID = %q, want native-id-1", id)
+	}
+	if id := contents[1].Parts[0].FunctionResponse.ID; id != "native-id-1" {
+		t.Errorf("native FunctionResponse.ID = %q, want native-id-1", id)
+	}
+	if id := contents[2].Parts[0].FunctionCall.ID; id != "" {
+		t.Errorf("synthetic FunctionCall.ID = %q, want empty", id)
+	}
+	if id := contents[3].Parts[0].FunctionResponse.ID; id != "" {
+		t.Errorf("synthetic FunctionResponse.ID = %q, want empty", id)
+	}
+}

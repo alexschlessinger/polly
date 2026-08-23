@@ -75,9 +75,13 @@ func (a *OllamaAdapter) handleToolCalls(toolCalls []ollamaapi.ToolCall, state st
 			tcArgStr = []byte("{}")
 		}
 
-		// Add the tool call with a generated ID
+		// Prefer the native call ID when provided; synthesize one otherwise
+		id := tc.ID
+		if id == "" {
+			id = fmt.Sprintf("call_%s_%d", a.idPrefix, i)
+		}
 		state.AddToolCall(messages.ChatMessageToolCall{
-			ID:        fmt.Sprintf("call_%s_%d", a.idPrefix, i),
+			ID:        id,
 			Name:      tc.Function.Name,
 			Arguments: string(tcArgStr),
 		})

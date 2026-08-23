@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
@@ -232,6 +233,16 @@ func ConvertToolToOllama(schema *ToolSchema) ollamaapi.Tool {
 }
 
 // MessagesToOllama converts messages to Ollama format
+// nativeOllamaCallID returns the provider-issued tool call ID, or "" when the
+// ID is one polly synthesized (call_<nonce>_<n>) for internal pairing and
+// must not be echoed back to the API.
+func nativeOllamaCallID(id string) string {
+	if strings.HasPrefix(id, "call_") {
+		return ""
+	}
+	return id
+}
+
 func MessagesToOllama(msgs []messages.ChatMessage) []ollamaapi.Message {
 	var ollamaMessages []ollamaapi.Message
 
@@ -280,6 +291,7 @@ func MessagesToOllama(msgs []messages.ChatMessage) []ollamaapi.Message {
 						tcArgs.Set(k, v)
 					}
 					ollamaToolCalls = append(ollamaToolCalls, ollamaapi.ToolCall{
+						ID: nativeOllamaCallID(tc.ID),
 						Function: ollamaapi.ToolCallFunction{
 							Name:      tc.Name,
 							Arguments: tcArgs,

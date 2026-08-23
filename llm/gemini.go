@@ -312,6 +312,16 @@ func ConvertToolToGemini(schema *ToolSchema) *genai.Tool {
 	}
 }
 
+// nativeGeminiCallID returns the provider-issued function call ID, or "" when
+// the ID is one polly synthesized (gemini-<nonce>-<n>) for internal pairing
+// and must not be echoed back to the API.
+func nativeGeminiCallID(id string) string {
+	if strings.HasPrefix(id, "gemini-") {
+		return ""
+	}
+	return id
+}
+
 // MessagesToGeminiContent converts messages to Gemini content format
 func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, string, map[string]string) {
 	var history []*genai.Content
@@ -375,6 +385,7 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 					if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
 						part := &genai.Part{
 							FunctionCall: &genai.FunctionCall{
+								ID:   nativeGeminiCallID(tc.ID),
 								Name: tc.Name,
 								Args: args,
 							},
@@ -432,6 +443,7 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 				Role: "user",
 				Parts: []*genai.Part{{
 					FunctionResponse: &genai.FunctionResponse{
+						ID:       nativeGeminiCallID(msg.ToolCallID),
 						Name:     funcName,
 						Response: response,
 					},

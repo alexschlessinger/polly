@@ -86,9 +86,13 @@ func (a *GeminiAdapter) handleFunctionCall(part *genai.Part, state streaming.Str
 		argsJSON = []byte("{}")
 	}
 
-	// Generate a synthetic tool call ID (Gemini doesn't provide one)
+	// Prefer the native call ID when the API provides one (it must be echoed
+	// back on the matching FunctionResponse); synthesize one otherwise.
 	toolCalls := state.GetToolCalls()
-	toolCallID := fmt.Sprintf("gemini-%s-%d", a.idPrefix, len(toolCalls))
+	toolCallID := part.FunctionCall.ID
+	if toolCallID == "" {
+		toolCallID = fmt.Sprintf("gemini-%s-%d", a.idPrefix, len(toolCalls))
+	}
 
 	// Add the tool call
 	state.AddToolCall(messages.ChatMessageToolCall{
