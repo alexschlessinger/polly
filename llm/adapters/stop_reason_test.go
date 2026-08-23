@@ -3,9 +3,9 @@ package adapters
 import (
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
 	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/openai/openai-go/v3/responses"
 )
 

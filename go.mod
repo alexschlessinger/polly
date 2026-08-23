@@ -5,7 +5,6 @@ go 1.27.0
 require (
 	dario.cat/mergo v1.0.2
 	github.com/alecthomas/chroma/v2 v2.27.0
-	github.com/anthropics/anthropic-sdk-go v1.66.0
 	github.com/gdamore/tcell/v3 v3.0.5
 	github.com/gofrs/flock v0.13.0
 	github.com/invopop/jsonschema v0.14.0
@@ -40,7 +39,6 @@ require (
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
-	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

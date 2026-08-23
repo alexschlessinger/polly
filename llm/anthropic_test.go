@@ -3,8 +3,8 @@ package llm
 import (
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/anthropics/anthropic-sdk-go"
 )
 
 // TestAnthropicBuildRequestParams_ModelFamilyBehavior verifies that buildRequestParams
@@ -20,7 +20,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 		wantAdaptive bool
 		wantEnabled  bool
 		wantBudget   int64
-		wantEffort   anthropic.OutputConfigEffort
+		wantEffort   anthropic.Effort
 	}{
 		{
 			name:         "opus_4_7_no_thinking",
@@ -36,7 +36,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortLevel(LevelLow),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortLow,
+			wantEffort:   anthropic.EffortLow,
 		},
 		{
 			name:         "opus_4_7_high",
@@ -44,7 +44,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortLevel(LevelHigh),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortHigh,
+			wantEffort:   anthropic.EffortHigh,
 		},
 		{
 			// minimal has no Anthropic equivalent and clamps up to low.
@@ -53,7 +53,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortLevel(LevelMinimal),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortLow,
+			wantEffort:   anthropic.EffortLow,
 		},
 		{
 			name:         "opus_4_7_xhigh",
@@ -61,7 +61,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortLevel(LevelXHigh),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortXhigh,
+			wantEffort:   anthropic.EffortXHigh,
 		},
 		{
 			name:         "opus_4_7_max",
@@ -69,7 +69,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortLevel(LevelMax),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortMax,
+			wantEffort:   anthropic.EffortMax,
 		},
 		{
 			// Dynamic -> adaptive thinking with NO explicit effort (model decides).
@@ -87,7 +87,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortBudget(70000), // above the max threshold (65536) -> max
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortMax,
+			wantEffort:   anthropic.EffortMax,
 		},
 		{
 			name:         "opus_4_7_dated_variant",
@@ -95,7 +95,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortLevel(LevelMedium),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortMedium,
+			wantEffort:   anthropic.EffortMedium,
 		},
 		{
 			// Regression: opus-4-8 must use adaptive thinking, not legacy
@@ -105,7 +105,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortLevel(LevelHigh),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortHigh,
+			wantEffort:   anthropic.EffortHigh,
 		},
 		{
 			name:         "opus_4_8_dated_variant",
@@ -113,7 +113,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortLevel(LevelMedium),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortMedium,
+			wantEffort:   anthropic.EffortMedium,
 		},
 		{
 			name:         "sonnet_4_6_medium",
@@ -121,7 +121,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortLevel(LevelMedium),
 			wantTemp:     true,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortMedium,
+			wantEffort:   anthropic.EffortMedium,
 		},
 		{
 			name:         "opus_4_6_low",
@@ -129,7 +129,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			effort:       EffortLevel(LevelLow),
 			wantTemp:     true,
 			wantAdaptive: true,
-			wantEffort:   anthropic.OutputConfigEffortLow,
+			wantEffort:   anthropic.EffortLow,
 		},
 		{
 			name:        "sonnet_4_5_legacy_low",
@@ -197,32 +197,36 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 				},
 			})
 
-			if got := params.Temperature.Valid(); got != tc.wantTemp {
-				t.Errorf("Temperature.Valid() = %v, want %v", got, tc.wantTemp)
+			if got := params.Temperature != nil; got != tc.wantTemp {
+				t.Errorf("Temperature set = %v, want %v", got, tc.wantTemp)
 			}
 
-			gotAdaptive := params.Thinking.OfAdaptive != nil
+			gotAdaptive := params.Thinking != nil && params.Thinking.Type == anthropic.ThinkingTypeAdaptive
 			if gotAdaptive != tc.wantAdaptive {
-				t.Errorf("Thinking.OfAdaptive set = %v, want %v", gotAdaptive, tc.wantAdaptive)
+				t.Errorf("thinking type adaptive = %v, want %v", gotAdaptive, tc.wantAdaptive)
 			}
 			if gotAdaptive {
-				if got := params.Thinking.OfAdaptive.Display; got != anthropic.ThinkingConfigAdaptiveDisplaySummarized {
-					t.Errorf("adaptive Display = %q, want %q", got, anthropic.ThinkingConfigAdaptiveDisplaySummarized)
+				if got := params.Thinking.Display; got != anthropic.DisplaySummarized {
+					t.Errorf("adaptive Display = %q, want %q", got, anthropic.DisplaySummarized)
 				}
 			}
 
-			gotEnabled := params.Thinking.OfEnabled != nil
+			gotEnabled := params.Thinking != nil && params.Thinking.Type == anthropic.ThinkingTypeEnabled
 			if gotEnabled != tc.wantEnabled {
-				t.Errorf("Thinking.OfEnabled set = %v, want %v", gotEnabled, tc.wantEnabled)
+				t.Errorf("thinking type enabled = %v, want %v", gotEnabled, tc.wantEnabled)
 			}
 			if gotEnabled {
-				if got := params.Thinking.OfEnabled.BudgetTokens; got != tc.wantBudget {
+				if got := params.Thinking.BudgetTokens; got != tc.wantBudget {
 					t.Errorf("budget_tokens = %d, want %d", got, tc.wantBudget)
 				}
 			}
 
-			if got := params.OutputConfig.Effort; got != tc.wantEffort {
-				t.Errorf("OutputConfig.Effort = %q, want %q", got, tc.wantEffort)
+			var gotEffort anthropic.Effort
+			if params.OutputConfig != nil {
+				gotEffort = params.OutputConfig.Effort
+			}
+			if gotEffort != tc.wantEffort {
+				t.Errorf("output_config effort = %q, want %q", gotEffort, tc.wantEffort)
 			}
 		})
 	}
@@ -326,7 +330,7 @@ func TestAnthropicToolChoiceWithThinking(t *testing.T) {
 					{Role: messages.MessageRoleUser, Content: "hi"},
 				},
 			})
-			gotForced := params.ToolChoice.OfAny != nil
+			gotForced := params.ToolChoice != nil && params.ToolChoice.Type == "any"
 			if gotForced != tc.wantForced {
 				t.Errorf("tool_choice forced = %v, want %v", gotForced, tc.wantForced)
 			}
