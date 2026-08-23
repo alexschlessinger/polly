@@ -936,6 +936,16 @@ func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Comman
 	}
 
 	_ = session.UpdateMetadata(update)
+
+	// UpdateMetadata merges and drops zero values, so an explicit
+	// --maxcontext 0 (unlimited) would silently keep the stored limit;
+	// write it through directly.
+	if cmd.IsSet("maxcontext") && config.Settings.MaxHistoryTokens == 0 {
+		if md := session.GetMetadata(); md != nil && md.MaxHistoryTokens != 0 {
+			md.MaxHistoryTokens = 0
+			_ = session.SetMetadata(md)
+		}
+	}
 }
 
 // beforeExit is invoked synchronously by cleanupAndExit before os.Exit.
