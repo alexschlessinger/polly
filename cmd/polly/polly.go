@@ -154,7 +154,7 @@ func (r *commandRunner) handleManagementFlags() (bool, error) {
 	store := r.sessionStore
 
 	if cfg.ResetContext != "" {
-		return true, handleResetContext(store, cfg, cfg.ResetContext)
+		return true, handleResetContext(store, cfg, r.cmd, cfg.ResetContext)
 	}
 	if cfg.ListContexts {
 		return true, handleListContexts(store)
@@ -285,7 +285,13 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 	}
 
 	// Update context info with current settings using helper function
-	updateContextInfo(session, config, cmd)
+	if err := updateContextInfo(session, config, cmd); err != nil {
+		if toolRegistry != nil {
+			_ = toolRegistry.Close()
+		}
+		session.Close()
+		return "", nil, nil, nil, nil, nil, nil, err
+	}
 
 	// Create the agent with the tool registry
 	agent := llm.NewAgent(llmClient, toolRegistry, llm.AgentConfig{
@@ -862,7 +868,9 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 			if !cmd.IsSet("maxtokens") && contextInfo.MaxTokens != 0 {
 				config.Settings.MaxTokens = contextInfo.MaxTokens
 			}
-			if !cmd.IsSet("maxcontext") && contextInfo.MaxHistoryTokens != 0 {
+			// Stored zero means unlimited and must sync too, or /get would
+			// report the flag default while trimming is actually off.
+			if !cmd.IsSet("maxcontext") {
 				config.Settings.MaxHistoryTokens = contextInfo.MaxHistoryTokens
 			}
 			// Only use stored system prompt if flag wasn't explicitly set
@@ -906,46 +914,61 @@ func initializeConversation(config *Config, sessionStore sessions.SessionStore, 
 	return contextID, originalContextInfo, nil
 }
 
-// updateContextInfo updates the context info with current settings
-func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Command) {
-	// Build update struct - config already has correct values from:
-	// 1. urfave defaults, OR
-	// 2. User-provided flags, OR
-	// 3. Loaded from existing context (via initializeConversation)
-	update := &sessions.Metadata{
-		Name:          session.GetName(),
-		LastUsed:      time.Now(),
-		Model:         config.Settings.Model,
-		Temperature:   config.Settings.Temperature,
-		MaxTokens:     config.Settings.MaxTokens,
-		MaxIterations: config.MaxIterations,
-		ToolTimeout:   config.Settings.ToolTimeout,
-		SkillDirs:     config.Settings.SkillDirs,
+// applyFlagSettings copies only explicitly-set CLI flags onto md. Explicit
+// zero values (e.g. --maxcontext 0 = unlimited) are preserved, which the
+// mergo-based UpdateMetadata merge cannot do.
+func applyFlagSettings(md *sessions.Metadata, config *Config, cmd *cli.Command) {
+	if cmd.IsSet("model") {
+		md.Model = config.Settings.Model
 	}
-
-	// Only update these if explicitly set via command line
+	if cmd.IsSet("temp") {
+		md.Temperature = config.Settings.Temperature
+	}
+	if cmd.IsSet("maxtokens") {
+		md.MaxTokens = config.Settings.MaxTokens
+	}
 	if cmd.IsSet("maxcontext") {
-		update.MaxHistoryTokens = config.Settings.MaxHistoryTokens
+		md.MaxHistoryTokens = config.Settings.MaxHistoryTokens
+	}
+	if cmd.IsSet("maxiterations") {
+		md.MaxIterations = config.MaxIterations
+	}
+	if cmd.IsSet("tooltimeout") {
+		md.ToolTimeout = config.Settings.ToolTimeout
 	}
 	if cmd.IsSet("system") {
-		update.SystemPrompt = config.Settings.SystemPrompt
+		md.SystemPrompt = config.Settings.SystemPrompt
 	}
-	// Tools are already handled in initializeSession, no need to update here
 	if cmd.IsSet("thinking") {
-		update.ThinkingEffort = config.Settings.ThinkingEffort
+		md.ThinkingEffort = config.Settings.ThinkingEffort
 	}
-
-	_ = session.UpdateMetadata(update)
-
-	// UpdateMetadata merges and drops zero values, so an explicit
-	// --maxcontext 0 (unlimited) would silently keep the stored limit;
-	// write it through directly.
-	if cmd.IsSet("maxcontext") && config.Settings.MaxHistoryTokens == 0 {
-		if md := session.GetMetadata(); md != nil && md.MaxHistoryTokens != 0 {
-			md.MaxHistoryTokens = 0
-			_ = session.SetMetadata(md)
-		}
+	if cmd.IsSet("skilldir") {
+		md.SkillDirs = config.Settings.SkillDirs
 	}
+}
+
+// updateContextInfo persists current settings onto the session metadata via
+// read-modify-write, so explicit zero values survive (UpdateMetadata's merge
+// drops them) and persistence errors surface.
+func updateContextInfo(session sessions.Session, config *Config, cmd *cli.Command) error {
+	md := session.GetMetadata()
+	if md == nil {
+		md = &sessions.Metadata{}
+	}
+	md.Name = session.GetName()
+	md.LastUsed = time.Now()
+	// Config holds resolved values — stored settings unless flags override
+	// (see initializeConversation) — so these are safe to write back.
+	md.Model = config.Settings.Model
+	md.Temperature = config.Settings.Temperature
+	md.MaxTokens = config.Settings.MaxTokens
+	md.MaxIterations = config.MaxIterations
+	md.ToolTimeout = config.Settings.ToolTimeout
+	md.SkillDirs = config.Settings.SkillDirs
+	// Tools are already handled in initializeSession; settings that have no
+	// resolved-config equivalent apply only when explicitly set.
+	applyFlagSettings(md, config, cmd)
+	return session.SetMetadata(md)
 }
 
 // beforeExit is invoked synchronously by cleanupAndExit before os.Exit.
