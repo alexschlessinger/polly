@@ -26,7 +26,8 @@ var PresetNames = []string{"base", "readonly", "workspace", "net"}
 //	workspace — the working directory is writable, with every discovered Git
 //	            metadata directory carved back out as read-only so a sandboxed
 //	            tool can't replace repository routing or plant host-side hooks;
-//	            broad home-directory and filesystem-root workspaces are rejected
+//	            broad home-directory, filesystem-root, mounted-volume-root, and
+//	            platform-private-root workspaces are rejected
 //	net       — allow outbound network
 //
 // An empty spec is the base config. Unknown names error so a typo fails
@@ -49,16 +50,22 @@ func ParsePreset(spec string) (Config, error) {
 			if err != nil {
 				return Config{}, fmt.Errorf("sandbox preset %q: resolve working directory: %w", part, err)
 			}
-			if err := rejectBroadWorkspace(cwd); err != nil {
+			workspace, err := canonicalWorkspace(cwd)
+			if err != nil {
+				return Config{}, fmt.Errorf("sandbox preset %q: canonicalize working directory %q: %w", part, cwd, err)
+			}
+			if err := rejectBroadWorkspace(workspace); err != nil {
 				return Config{}, fmt.Errorf("sandbox preset %q: %w", part, err)
 			}
-			gitPolicy, err := gitWorkspaceGuardrailPolicy(cwd)
+			gitPolicy, err := gitWorkspaceGuardrailPolicy(workspace)
 			if err != nil {
 				return Config{}, fmt.Errorf("sandbox preset %q: protect Git metadata: %w", part, err)
 			}
-			cfg.WritablePaths = append(cfg.WritablePaths, cwd)
+			cfg.WritablePaths = append(cfg.WritablePaths, workspace)
 			cfg.DenyWritePaths = append(cfg.DenyWritePaths, gitPolicy.protected...)
-			cfg.gitPolicies = append(cfg.gitPolicies, gitPolicy)
+			if len(gitPolicy.repositories) != 0 {
+				cfg.gitPolicies = append(cfg.gitPolicies, gitPolicy)
+			}
 		default:
 			return Config{}, fmt.Errorf("unknown sandbox preset %q (valid: %s, joined with +)",
 				strings.TrimSpace(part), strings.Join(PresetNames, ", "))
@@ -70,27 +77,50 @@ func ParsePreset(spec string) (Config, error) {
 // rejectBroadWorkspace keeps the recursive Git metadata discovery pass bounded.
 // A home directory commonly contains OS-protected descendants that cannot be
 // scanned, and accepting a partial scan would leave undiscovered repositories
-// writable. The filesystem root has the same safety problem at a larger scale.
+// writable. Filesystem, mounted-volume, and platform-private roots have the
+// same safety problem at a larger scale.
 func rejectBroadWorkspace(dir string) error {
-	dir = filepath.Clean(dir)
+	rawDir := dir
+	var err error
+	dir, err = canonicalWorkspace(dir)
+	if err != nil {
+		return fmt.Errorf("resolve candidate workspace %q: %w", rawDir, err)
+	}
 	if filepath.IsAbs(dir) && filepath.Dir(dir) == dir {
 		return broadWorkspaceError(dir, "filesystem root")
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return nil
+	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
+		home = filepath.Clean(home)
+		if dir == home {
+			return broadWorkspaceError(dir, "home directory")
+		}
+		dirInfo, dirErr := os.Stat(dir)
+		homeInfo, homeErr := os.Stat(home)
+		if dirErr == nil && homeErr == nil && os.SameFile(dirInfo, homeInfo) {
+			return broadWorkspaceError(dir, "home directory")
+		}
 	}
-	home = filepath.Clean(home)
-	if dir == home {
-		return broadWorkspaceError(dir, "home directory")
+	return rejectPlatformBroadWorkspace(dir)
+}
+
+func canonicalWorkspace(dir string) (string, error) {
+	dir = filepath.Clean(dir)
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("workspace path %q is not absolute", dir)
 	}
-	dirInfo, dirErr := os.Stat(dir)
-	homeInfo, homeErr := os.Stat(home)
-	if dirErr == nil && homeErr == nil && os.SameFile(dirInfo, homeInfo) {
-		return broadWorkspaceError(dir, "home directory")
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
 	}
-	return nil
+	info, err := os.Stat(real)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("workspace path %q is not a directory", real)
+	}
+	return filepath.Clean(real), nil
 }
 
 func broadWorkspaceError(dir, kind string) error {
@@ -121,6 +151,12 @@ func gitGuardrailPaths(dir string) ([]string, error) {
 }
 
 func gitWorkspaceGuardrailPolicy(dir string) (gitWorkspacePolicy, error) {
+	rawDir := dir
+	var err error
+	dir, err = canonicalWorkspace(dir)
+	if err != nil {
+		return gitWorkspacePolicy{}, fmt.Errorf("resolve workspace root %q: %w", rawDir, err)
+	}
 	var paths []string
 	var repositories []gitRepositoryContext
 	seen := make(map[string]bool)
@@ -136,7 +172,7 @@ func gitWorkspaceGuardrailPolicy(dir string) (gitWorkspacePolicy, error) {
 		return nil
 	}
 
-	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("scan %q: %w", path, walkErr)
 		}
