@@ -57,27 +57,124 @@ func TestParsePresetWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePreset() error = %v", err)
 	}
-	// Compare against the same Getwd ParsePreset uses so tmpdir symlinks
-	// (macOS /var -> /private/var) don't skew the expectation.
+	// ParsePreset freezes the workspace to its real path so later policy passes
+	// cannot resolve a logical cwd alias differently.
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(cfg.WritablePaths, cwd) {
-		t.Fatalf("WritablePaths = %v, want to include cwd %q", cfg.WritablePaths, cwd)
+	workspace := mustEvalSymlinks(t, cwd)
+	if !slices.Contains(cfg.WritablePaths, workspace) {
+		t.Fatalf("WritablePaths = %v, want to include canonical workspace %q", cfg.WritablePaths, workspace)
 	}
 	if !cfg.AllowNetwork {
 		t.Fatal("workspace+net should set AllowNetwork")
 	}
-	if len(cfg.gitPolicies) != 1 || cfg.gitPolicies[0].workspace != filepath.Clean(cwd) {
-		t.Fatalf("workspace Git policy = %+v, want one policy for %q", cfg.gitPolicies, cwd)
+	if len(cfg.gitPolicies) != 1 || cfg.gitPolicies[0].workspace != workspace {
+		t.Fatalf("workspace Git policy = %+v, want one policy for %q", cfg.gitPolicies, workspace)
 	}
 	for _, want := range []string{
-		mustEvalSymlinks(t, filepath.Join(cwd, ".git")),
+		mustEvalSymlinks(t, filepath.Join(workspace, ".git")),
 	} {
 		if !slices.Contains(cfg.DenyWritePaths, want) {
 			t.Fatalf("DenyWritePaths = %v, want to include %q", cfg.DenyWritePaths, want)
 		}
+	}
+}
+
+func TestParsePresetWorkspaceCanonicalizesLogicalSymlinkCWD(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		t.Skip("logical PWD symlink aliases are Unix-specific")
+	}
+	isolateGitConfig(t)
+
+	project := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(filepath.Join(project, ".git", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".git", "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "project-link")
+	if err := os.Symlink(project, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(alias)
+	logical, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logical != alias {
+		t.Skipf("os.Getwd() resolved logical cwd %q to %q", alias, logical)
+	}
+
+	cfg, err := ParsePreset("workspace")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace) error = %v", err)
+	}
+	realProject := mustEvalSymlinks(t, project)
+	realGit := mustEvalSymlinks(t, filepath.Join(project, ".git"))
+	if !slices.Contains(cfg.WritablePaths, realProject) {
+		t.Fatalf("WritablePaths = %v, want canonical workspace %q", cfg.WritablePaths, realProject)
+	}
+	if slices.Contains(cfg.WritablePaths, alias) {
+		t.Fatalf("WritablePaths = %v, must not retain logical alias %q", cfg.WritablePaths, alias)
+	}
+	if !slices.Contains(cfg.DenyWritePaths, realGit) {
+		t.Fatalf("DenyWritePaths = %v, want canonical Git directory %q", cfg.DenyWritePaths, realGit)
+	}
+	if len(cfg.gitPolicies) != 1 {
+		t.Fatalf("Git policies = %+v, want one workspace policy", cfg.gitPolicies)
+	}
+	policy := cfg.gitPolicies[0]
+	if policy.workspace != realProject {
+		t.Fatalf("policy workspace = %q, want %q", policy.workspace, realProject)
+	}
+	if len(policy.repositories) != 1 {
+		t.Fatalf("policy repositories = %+v, want one repository", policy.repositories)
+	}
+	if got := policy.repositories[0].workTree; got != realProject {
+		t.Fatalf("repository work tree = %q, want %q", got, realProject)
+	}
+	if got := policy.repositories[0].gitDir; got != realGit {
+		t.Fatalf("repository Git directory = %q, want %q", got, realGit)
+	}
+}
+
+func TestParsePresetWorkspaceRejectsLogicalFilesystemRootAlias(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		t.Skip("logical PWD symlink aliases are Unix-specific")
+	}
+	isolateGitConfig(t)
+
+	root := filepath.Clean(t.TempDir())
+	for filepath.Dir(root) != root {
+		root = filepath.Dir(root)
+	}
+	alias := filepath.Join(t.TempDir(), "root-link")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(alias)
+	logical, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logical != alias {
+		t.Skipf("os.Getwd() resolved logical cwd %q to %q", alias, logical)
+	}
+
+	_, err = ParsePreset("workspace")
+	if err == nil {
+		t.Fatal("ParsePreset(workspace) error = nil, want filesystem-root alias rejection")
+	}
+	for _, want := range []string{"filesystem root", "bounded project directory", "--sandbox base"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("ParsePreset(workspace) error = %q, want actionable %q guidance", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "protect Git metadata") || strings.Contains(err.Error(), "Git routing entry") {
+		t.Fatalf("ParsePreset(workspace) error = %q, root alias was scanned before rejection", err)
 	}
 }
 
@@ -89,6 +186,39 @@ func TestParsePresetWorkspaceWithoutGit(t *testing.T) {
 	}
 	if len(cfg.DenyWritePaths) != 0 {
 		t.Fatalf("DenyWritePaths = %v, want none without a .git", cfg.DenyWritePaths)
+	}
+	if len(cfg.gitPolicies) != 0 {
+		t.Fatalf("Git policies = %+v, want no policy without a repository", cfg.gitPolicies)
+	}
+}
+
+func TestPreparePresetWorkspaceWithoutGitToleratesRemovedWorkspace(t *testing.T) {
+	parent := t.TempDir()
+	workspace := filepath.Join(parent, "workspace")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workspace)
+	cfg, err := ParsePreset("workspace")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace) error = %v", err)
+	}
+	realWorkspace := mustEvalSymlinks(t, workspace)
+
+	// Leave the workspace before removing it so the regression is portable to
+	// platforms that do not allow the current directory to be removed.
+	if err := os.Chdir(parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(workspace); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(cfg)
+	if err != nil {
+		t.Fatalf("PrepareConfig() error = %v, want missing repository-free workspace dropped", err)
+	}
+	if slices.Contains(prepared.WritablePaths, realWorkspace) {
+		t.Fatalf("prepared WritablePaths = %v, want removed workspace %q dropped", prepared.WritablePaths, realWorkspace)
 	}
 }
 
