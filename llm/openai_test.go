@@ -5,11 +5,10 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools"
-	"github.com/openai/openai-go/v3/responses"
-	"github.com/openai/openai-go/v3/shared"
 )
 
 type testTool struct {
@@ -61,18 +60,18 @@ func TestOpenAIReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name   string
 		effort ThinkingEffort
-		want   shared.ReasoningEffort
+		want   openai.ReasoningEffort
 		wantOK bool
 	}{
 		{"off omitted", EffortOff(), "", false},
 		{"dynamic omitted", EffortDynamic(), "", false},
-		{"minimal", EffortLevel(LevelMinimal), shared.ReasoningEffortMinimal, true},
-		{"low", EffortLevel(LevelLow), shared.ReasoningEffortLow, true},
-		{"medium", EffortLevel(LevelMedium), shared.ReasoningEffortMedium, true},
-		{"high", EffortLevel(LevelHigh), shared.ReasoningEffortHigh, true},
-		{"xhigh", EffortLevel(LevelXHigh), shared.ReasoningEffortXhigh, true},
-		{"max clamps to xhigh", EffortLevel(LevelMax), shared.ReasoningEffortXhigh, true},
-		{"budget maps to nearest level", EffortBudget(4096), shared.ReasoningEffortLow, true},
+		{"minimal", EffortLevel(LevelMinimal), openai.ReasoningEffortMinimal, true},
+		{"low", EffortLevel(LevelLow), openai.ReasoningEffortLow, true},
+		{"medium", EffortLevel(LevelMedium), openai.ReasoningEffortMedium, true},
+		{"high", EffortLevel(LevelHigh), openai.ReasoningEffortHigh, true},
+		{"xhigh", EffortLevel(LevelXHigh), openai.ReasoningEffortXhigh, true},
+		{"max clamps to xhigh", EffortLevel(LevelMax), openai.ReasoningEffortXhigh, true},
+		{"budget maps to nearest level", EffortBudget(4096), openai.ReasoningEffortLow, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,8 +95,8 @@ func TestChatCompletionReasoningEffort(t *testing.T) {
 			{Role: messages.MessageRoleUser, Content: "hi"},
 		},
 	})
-	if got := params.ReasoningEffort; got != shared.ReasoningEffortXhigh {
-		t.Fatalf("reasoning_effort = %q, want %q", got, shared.ReasoningEffortXhigh)
+	if got := params.ReasoningEffort; got != openai.ReasoningEffortXhigh {
+		t.Fatalf("reasoning_effort = %q, want %q", got, openai.ReasoningEffortXhigh)
 	}
 }
 
@@ -178,76 +177,83 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 
 	params := buildResponsesRequestParams(req)
 
-	if !params.Instructions.Valid() {
-		t.Fatal("expected instructions to be set")
-	}
-	if got := params.Instructions.Value; got != "System one\n\nSystem two" {
+	if got := params.Instructions; got != "System one\n\nSystem two" {
 		t.Fatalf("instructions = %q, want %q", got, "System one\n\nSystem two")
 	}
-	if got := params.MaxOutputTokens.Value; got != 512 {
-		t.Fatalf("max output tokens = %d, want 512", got)
+	if params.MaxOutputTokens == nil || *params.MaxOutputTokens != 512 {
+		t.Fatalf("max output tokens = %v, want 512", params.MaxOutputTokens)
 	}
-	if got := params.Reasoning.Effort; got != shared.ReasoningEffortHigh {
-		t.Fatalf("reasoning effort = %q, want %q", got, shared.ReasoningEffortHigh)
+	if params.Reasoning == nil {
+		t.Fatal("expected reasoning to be set")
 	}
-	if got := params.Reasoning.Summary; got != shared.ReasoningSummaryAuto {
-		t.Fatalf("reasoning summary = %q, want %q", got, shared.ReasoningSummaryAuto)
+	if got := params.Reasoning.Effort; got != openai.ReasoningEffortHigh {
+		t.Fatalf("reasoning effort = %q, want %q", got, openai.ReasoningEffortHigh)
 	}
-	if len(params.Tools) != 1 || params.Tools[0].OfFunction == nil {
+	if got := params.Reasoning.Summary; got != "auto" {
+		t.Fatalf("reasoning summary = %q, want %q", got, "auto")
+	}
+	if len(params.Tools) != 1 {
 		t.Fatalf("expected one function tool in responses request")
 	}
-	if got := params.Tools[0].OfFunction.Name; got != "lookup_weather" {
+	if got := params.Tools[0].Name; got != "lookup_weather" {
 		t.Fatalf("tool name = %q, want %q", got, "lookup_weather")
 	}
-	if !params.Tools[0].OfFunction.Strict.Valid() || params.Tools[0].OfFunction.Strict.Value {
+	if params.Tools[0].Strict == nil || *params.Tools[0].Strict {
 		t.Fatalf("expected responses tool strict mode to be disabled by default")
 	}
-	if _, ok := params.Tools[0].OfFunction.Parameters["additionalProperties"]; ok {
-		t.Fatalf("expected non-strict tool params to omit additionalProperties, got %#v", params.Tools[0].OfFunction.Parameters["additionalProperties"])
+	if _, ok := params.Tools[0].Parameters["additionalProperties"]; ok {
+		t.Fatalf("expected non-strict tool params to omit additionalProperties, got %#v", params.Tools[0].Parameters["additionalProperties"])
 	}
 
-	inputItems := params.Input.OfInputItemList
+	inputItems := params.Input
 	if len(inputItems) != 4 {
 		t.Fatalf("input item count = %d, want 4", len(inputItems))
 	}
 
-	userItem := inputItems[0].OfMessage
-	if userItem == nil {
-		t.Fatal("expected first item to be a user message")
+	userItem := inputItems[0]
+	if userItem.Role != "user" {
+		t.Fatalf("user role = %q, want %q", userItem.Role, "user")
 	}
-	if got := userItem.Role; got != responses.EasyInputMessageRoleUser {
-		t.Fatalf("user role = %q, want %q", got, responses.EasyInputMessageRoleUser)
+	if userItem.Type != "" {
+		t.Fatalf("user item type = %q, want empty (inferred message)", userItem.Type)
 	}
-	if len(userItem.Content.OfInputItemContentList) != 2 {
-		t.Fatalf("user content part count = %d, want 2", len(userItem.Content.OfInputItemContentList))
+	userContent, ok := userItem.Content.([]openai.ResponseInputContent)
+	if !ok {
+		t.Fatalf("user content = %#v, want []openai.ResponseInputContent", userItem.Content)
 	}
-	if got := userItem.Content.OfInputItemContentList[0].OfInputText.Text; got != "look at this" {
+	if len(userContent) != 2 {
+		t.Fatalf("user content part count = %d, want 2", len(userContent))
+	}
+	if got := userContent[0].Text; got != "look at this" {
 		t.Fatalf("user text = %q, want %q", got, "look at this")
 	}
-	imagePart := userItem.Content.OfInputItemContentList[1].OfInputImage
-	if imagePart == nil || !imagePart.ImageURL.Valid() || imagePart.ImageURL.Value != "https://example.com/cat.png" {
-		t.Fatalf("unexpected image part: %#v", imagePart)
+	if userContent[1].Type != "input_image" || userContent[1].ImageURL != "https://example.com/cat.png" || userContent[1].Detail != "auto" {
+		t.Fatalf("unexpected image part: %#v", userContent[1])
 	}
 
-	assistantItem := inputItems[1].OfOutputMessage
-	if assistantItem == nil {
-		t.Fatal("expected second item to be an assistant message")
+	assistantItem := inputItems[1]
+	if assistantItem.Type != "message" || assistantItem.Role != "assistant" {
+		t.Fatalf("assistant item = %#v, want message/assistant", assistantItem)
 	}
 	if got := assistantItem.ID; got != "msg_3" {
 		t.Fatalf("assistant ID = %q, want %q", got, "msg_3")
 	}
-	if got := assistantItem.Status; got != responses.ResponseOutputMessageStatusCompleted {
-		t.Fatalf("assistant status = %q, want %q", got, responses.ResponseOutputMessageStatusCompleted)
+	if got := assistantItem.Status; got != "completed" {
+		t.Fatalf("assistant status = %q, want %q", got, "completed")
 	}
-	if len(assistantItem.Content) != 1 || assistantItem.Content[0].OfOutputText == nil {
+	assistantContent, ok := assistantItem.Content.([]openai.ResponseOutputContent)
+	if !ok || len(assistantContent) != 1 {
 		t.Fatalf("expected one assistant output_text content item, got %#v", assistantItem.Content)
 	}
-	if got := assistantItem.Content[0].OfOutputText.Text; got != "Calling a tool" {
+	if got := assistantContent[0].Text; got != "Calling a tool" {
 		t.Fatalf("assistant text = %q, want %q", got, "Calling a tool")
 	}
+	if assistantContent[0].Type != "output_text" || assistantContent[0].Annotations == nil {
+		t.Fatalf("assistant content = %#v, want output_text with annotations", assistantContent[0])
+	}
 
-	toolCallItem := inputItems[2].OfFunctionCall
-	if toolCallItem == nil {
+	toolCallItem := inputItems[2]
+	if toolCallItem.Type != "function_call" {
 		t.Fatal("expected third item to be a function_call replay")
 	}
 	if got := toolCallItem.CallID; got != "call_123" {
@@ -259,25 +265,25 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 	if got := toolCallItem.Arguments; got != `{"city":"SF"}` {
 		t.Fatalf("function call arguments = %q, want %q", got, `{"city":"SF"}`)
 	}
-	if got := toolCallItem.Status; got != responses.ResponseFunctionToolCallStatusCompleted {
-		t.Fatalf("function call status = %q, want %q", got, responses.ResponseFunctionToolCallStatusCompleted)
+	if got := toolCallItem.Status; got != "completed" {
+		t.Fatalf("function call status = %q, want %q", got, "completed")
 	}
 
-	toolOutputItem := inputItems[3].OfFunctionCallOutput
-	if toolOutputItem == nil {
+	toolOutputItem := inputItems[3]
+	if toolOutputItem.Type != "function_call_output" {
 		t.Fatal("expected fourth item to be function_call_output")
 	}
 	if got := toolOutputItem.CallID; got != "call_123" {
 		t.Fatalf("function call output ID = %q, want %q", got, "call_123")
 	}
-	if !toolOutputItem.Output.OfString.Valid() || toolOutputItem.Output.OfString.Value != `{"temp_f":65}` {
-		t.Fatalf("function call output = %q, want %q", toolOutputItem.Output.OfString.Value, `{"temp_f":65}`)
+	if got := toolOutputItem.Output; got != `{"temp_f":65}` {
+		t.Fatalf("function call output = %q, want %q", got, `{"temp_f":65}`)
 	}
 
-	if params.Text.Format.OfJSONSchema == nil {
+	if params.Text == nil || params.Text.Format == nil || params.Text.Format.Type != "json_schema" {
 		t.Fatal("expected responses text format to use JSON schema")
 	}
-	schemaMap := params.Text.Format.OfJSONSchema.Schema
+	schemaMap := params.Text.Format.Schema
 	if schemaMap["additionalProperties"] != false {
 		t.Fatalf("expected top-level additionalProperties=false, got %#v", schemaMap["additionalProperties"])
 	}
@@ -314,20 +320,20 @@ func TestBuildResponsesRequestParamsSkipsInvalidToolReplayItems(t *testing.T) {
 	}
 
 	params := buildResponsesRequestParams(req)
-	inputItems := params.Input.OfInputItemList
+	inputItems := params.Input
 	if len(inputItems) != 3 {
 		t.Fatalf("input item count = %d, want 3", len(inputItems))
 	}
-	if inputItems[1].OfFunctionCall == nil {
+	if inputItems[1].Type != "function_call" {
 		t.Fatal("expected second item to be a function_call replay")
 	}
-	if got := inputItems[1].OfFunctionCall.Name; got != "bash" {
+	if got := inputItems[1].Name; got != "bash" {
 		t.Fatalf("function call name = %q, want %q", got, "bash")
 	}
-	if inputItems[2].OfFunctionCallOutput == nil {
+	if inputItems[2].Type != "function_call_output" {
 		t.Fatal("expected third item to be a function_call_output")
 	}
-	if got := inputItems[2].OfFunctionCallOutput.CallID; got != "call_bash" {
+	if got := inputItems[2].CallID; got != "call_bash" {
 		t.Fatalf("function call output ID = %q, want %q", got, "call_bash")
 	}
 }
@@ -370,32 +376,38 @@ func TestBuildChatCompletionRequestParams(t *testing.T) {
 
 	params := buildChatCompletionRequestParams(req)
 
-	if got := params.Model; got != shared.ChatModel("gpt-5.4") {
-		t.Fatalf("chat model = %q, want %q", got, shared.ChatModel("gpt-5.4"))
+	if got := params.Model; got != "gpt-5.4" {
+		t.Fatalf("chat model = %q, want %q", got, "gpt-5.4")
 	}
-	if got := params.MaxCompletionTokens.Value; got != 256 {
-		t.Fatalf("max completion tokens = %d, want 256", got)
+	if params.MaxCompletionTokens == nil || *params.MaxCompletionTokens != 256 {
+		t.Fatalf("max completion tokens = %v, want 256", params.MaxCompletionTokens)
 	}
-	if len(params.Messages) != 1 || params.Messages[0].OfUser == nil {
+	if params.Temperature == nil || *params.Temperature != 0 {
+		t.Fatalf("temperature = %v, want explicit 0", params.Temperature)
+	}
+	if len(params.Messages) != 1 || params.Messages[0].Role != "user" {
 		t.Fatalf("expected one user chat message")
 	}
-	userParts := params.Messages[0].OfUser.Content.OfArrayOfContentParts
+	userParts, ok := params.Messages[0].Content.([]openai.ChatContentPart)
+	if !ok {
+		t.Fatalf("user content = %#v, want []openai.ChatContentPart", params.Messages[0].Content)
+	}
 	if len(userParts) != 2 {
 		t.Fatalf("user part count = %d, want 2", len(userParts))
 	}
-	if got := userParts[0].OfText.Text; got != "describe" {
+	if got := userParts[0].Text; got != "describe" {
 		t.Fatalf("user text = %q, want %q", got, "describe")
 	}
-	if got := userParts[1].OfImageURL.ImageURL.URL; got != "data:image/png;base64,AAA" {
-		t.Fatalf("image URL = %q, want %q", got, "data:image/png;base64,AAA")
+	if userParts[1].ImageURL == nil || userParts[1].ImageURL.URL != "data:image/png;base64,AAA" {
+		t.Fatalf("image URL = %#v, want data URI", userParts[1].ImageURL)
 	}
-	if params.ResponseFormat.OfJSONSchema == nil {
+	if params.ResponseFormat == nil || params.ResponseFormat.JSONSchema == nil {
 		t.Fatal("expected chat response format to use JSON schema")
 	}
-	if len(params.Tools) != 1 || params.Tools[0].OfFunction == nil {
+	if len(params.Tools) != 1 || params.Tools[0].Type != "function" {
 		t.Fatal("expected one chat function tool")
 	}
-	if got := params.Tools[0].OfFunction.Function.Name; got != "lookup_weather" {
+	if got := params.Tools[0].Function.Name; got != "lookup_weather" {
 		t.Fatalf("chat tool name = %q, want %q", got, "lookup_weather")
 	}
 }
@@ -525,19 +537,16 @@ func TestToolToResponsesFunctionToolStrictModeRecursesWhenCompatible(t *testing.
 
 	tool := toolToResponsesFunctionTool(toolSchema)
 
-	if tool.OfFunction == nil {
-		t.Fatal("expected function tool")
-	}
-	if !tool.OfFunction.Strict.Valid() || !tool.OfFunction.Strict.Value {
+	if tool.Strict == nil || !*tool.Strict {
 		t.Fatalf("expected strict tool to enable Responses strict mode")
 	}
-	if tool.OfFunction.Parameters["additionalProperties"] != false {
-		t.Fatalf("expected strict tool params to set top-level additionalProperties=false, got %#v", tool.OfFunction.Parameters["additionalProperties"])
+	if tool.Parameters["additionalProperties"] != false {
+		t.Fatalf("expected strict tool params to set top-level additionalProperties=false, got %#v", tool.Parameters["additionalProperties"])
 	}
 
-	itemsParam, ok := tool.OfFunction.Parameters["properties"].(map[string]any)["items"].(map[string]any)
+	itemsParam, ok := tool.Parameters["properties"].(map[string]any)["items"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected array parameter schema, got %#v", tool.OfFunction.Parameters["properties"])
+		t.Fatalf("expected array parameter schema, got %#v", tool.Parameters["properties"])
 	}
 	itemSchema, ok := itemsParam["items"].(map[string]any)
 	if !ok {
@@ -551,9 +560,9 @@ func TestToolToResponsesFunctionToolStrictModeRecursesWhenCompatible(t *testing.
 		t.Fatalf("expected nested object additionalProperties=false, got %#v", nestedMeta["additionalProperties"])
 	}
 
-	profileParam, ok := tool.OfFunction.Parameters["properties"].(map[string]any)["profile"].(map[string]any)
+	profileParam, ok := tool.Parameters["properties"].(map[string]any)["profile"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected profile parameter schema, got %#v", tool.OfFunction.Parameters["properties"])
+		t.Fatalf("expected profile parameter schema, got %#v", tool.Parameters["properties"])
 	}
 	if profileParam["additionalProperties"] != false {
 		t.Fatalf("expected profile additionalProperties=false, got %#v", profileParam["additionalProperties"])
@@ -602,16 +611,13 @@ func TestToolToResponsesFunctionToolStrictModeDowngradesOptionalTopLevelField(t 
 
 	tool := toolToResponsesFunctionTool(toolSchema)
 
-	if tool.OfFunction == nil {
-		t.Fatal("expected function tool")
-	}
-	if !tool.OfFunction.Strict.Valid() || tool.OfFunction.Strict.Value {
+	if tool.Strict == nil || *tool.Strict {
 		t.Fatalf("expected incompatible strict tool to downgrade to non-strict")
 	}
-	if _, ok := tool.OfFunction.Parameters["additionalProperties"]; ok {
-		t.Fatalf("expected downgraded tool params to preserve original top-level schema, got %#v", tool.OfFunction.Parameters["additionalProperties"])
+	if _, ok := tool.Parameters["additionalProperties"]; ok {
+		t.Fatalf("expected downgraded tool params to preserve original top-level schema, got %#v", tool.Parameters["additionalProperties"])
 	}
-	requireSchemaRequired(t, tool.OfFunction.Parameters, "city")
+	requireSchemaRequired(t, tool.Parameters, "city")
 }
 
 func TestToolToResponsesFunctionToolStrictModeDowngradesOptionalNestedField(t *testing.T) {
@@ -634,19 +640,16 @@ func TestToolToResponsesFunctionToolStrictModeDowngradesOptionalNestedField(t *t
 
 	tool := toolToResponsesFunctionTool(toolSchema)
 
-	if tool.OfFunction == nil {
-		t.Fatal("expected function tool")
-	}
-	if !tool.OfFunction.Strict.Valid() || tool.OfFunction.Strict.Value {
+	if tool.Strict == nil || *tool.Strict {
 		t.Fatalf("expected incompatible nested strict tool to downgrade to non-strict")
 	}
-	if _, ok := tool.OfFunction.Parameters["additionalProperties"]; ok {
-		t.Fatalf("expected downgraded tool params to preserve original top-level schema, got %#v", tool.OfFunction.Parameters["additionalProperties"])
+	if _, ok := tool.Parameters["additionalProperties"]; ok {
+		t.Fatalf("expected downgraded tool params to preserve original top-level schema, got %#v", tool.Parameters["additionalProperties"])
 	}
 
-	filtersParam, ok := tool.OfFunction.Parameters["properties"].(map[string]any)["filters"].(map[string]any)
+	filtersParam, ok := tool.Parameters["properties"].(map[string]any)["filters"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected filters parameter schema, got %#v", tool.OfFunction.Parameters["properties"])
+		t.Fatalf("expected filters parameter schema, got %#v", tool.Parameters["properties"])
 	}
 	if _, ok := filtersParam["additionalProperties"]; ok {
 		t.Fatalf("expected downgraded nested tool schema to preserve original object openness, got %#v", filtersParam["additionalProperties"])

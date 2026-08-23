@@ -3,17 +3,16 @@ package adapters
 import (
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/openai/openai-go/v3/packages/respjson"
-	"github.com/openai/openai-go/v3/responses"
 )
 
 func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter()
 	state := streaming.NewStreamState()
 
-	events := []responses.ResponseStreamEventUnion{
+	events := []*openai.ResponseStreamEvent{
 		{
 			Type:        "response.function_call_arguments.delta",
 			OutputIndex: 0,
@@ -22,7 +21,7 @@ func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
 		{
 			Type:        "response.output_item.done",
 			OutputIndex: 0,
-			Item: responses.ResponseOutputItemUnion{
+			Item: &openai.ResponseOutputItem{
 				Type:   "function_call",
 				CallID: "call_weather",
 				Name:   "lookup_weather",
@@ -36,16 +35,16 @@ func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
 		},
 		{
 			Type: "response.completed",
-			Response: responses.Response{
-				Status: responses.ResponseStatusCompleted,
-				Usage: responses.ResponseUsage{
+			Response: &openai.Response{
+				Status: openai.ResponseStatusCompleted,
+				Usage: &openai.ResponseUsage{
 					InputTokens:  12,
 					OutputTokens: 7,
+					TotalTokens:  19,
 				},
 			},
 		},
 	}
-	events[3].Response.Usage.JSON.TotalTokens = respjson.NewField("19")
 
 	for _, event := range events {
 		if err := adapter.ProcessChunk(event, state); err != nil {
@@ -81,7 +80,7 @@ func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter()
 	state := streaming.NewStreamState()
 
-	events := []responses.ResponseStreamEventUnion{
+	events := []*openai.ResponseStreamEvent{
 		{
 			Type:        "response.function_call_arguments.delta",
 			OutputIndex: 1,
@@ -90,7 +89,7 @@ func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
 		{
 			Type:        "response.output_item.done",
 			OutputIndex: 1,
-			Item: responses.ResponseOutputItemUnion{
+			Item: &openai.ResponseOutputItem{
 				Type:   "function_call",
 				CallID: "call_bash_1",
 				Name:   "bash",
@@ -105,7 +104,7 @@ func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
 		{
 			Type:        "response.output_item.done",
 			OutputIndex: 3,
-			Item: responses.ResponseOutputItemUnion{
+			Item: &openai.ResponseOutputItem{
 				Type:   "function_call",
 				CallID: "call_bash_2",
 				Name:   "bash",
@@ -119,8 +118,8 @@ func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
 		},
 		{
 			Type: "response.completed",
-			Response: responses.Response{
-				Status: responses.ResponseStatusCompleted,
+			Response: &openai.Response{
+				Status: openai.ResponseStatusCompleted,
 			},
 		},
 	}
@@ -152,17 +151,17 @@ func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
 func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 	tests := []struct {
 		name             string
-		event            responses.ResponseStreamEventUnion
+		event            *openai.ResponseStreamEvent
 		want             messages.StopReason
 		wantErrorMessage string
 	}{
 		{
 			name: "max_output_tokens",
-			event: responses.ResponseStreamEventUnion{
+			event: &openai.ResponseStreamEvent{
 				Type: "response.incomplete",
-				Response: responses.Response{
-					Status: responses.ResponseStatusIncomplete,
-					IncompleteDetails: responses.ResponseIncompleteDetails{
+				Response: &openai.Response{
+					Status: openai.ResponseStatusIncomplete,
+					IncompleteDetails: &openai.IncompleteDetails{
 						Reason: "max_output_tokens",
 					},
 				},
@@ -171,11 +170,11 @@ func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 		},
 		{
 			name: "content_filter",
-			event: responses.ResponseStreamEventUnion{
+			event: &openai.ResponseStreamEvent{
 				Type: "response.incomplete",
-				Response: responses.Response{
-					Status: responses.ResponseStatusIncomplete,
-					IncompleteDetails: responses.ResponseIncompleteDetails{
+				Response: &openai.Response{
+					Status: openai.ResponseStatusIncomplete,
+					IncompleteDetails: &openai.IncompleteDetails{
 						Reason: "content_filter",
 					},
 				},
@@ -184,7 +183,7 @@ func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 		},
 		{
 			name: "error_event",
-			event: responses.ResponseStreamEventUnion{
+			event: &openai.ResponseStreamEvent{
 				Type:    "error",
 				Code:    "server_error",
 				Message: "boom",

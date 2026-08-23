@@ -4,10 +4,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	openai "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/responses"
 )
 
 const responsesErrorMetadataKey = "openai_responses_error"
@@ -26,7 +25,7 @@ func (a *OpenAIAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 		return nil
 	}
 
-	if response.JSON.Usage.Valid() {
+	if response.Usage != nil {
 		state.SetTokenUsage(int(response.Usage.PromptTokens), int(response.Usage.CompletionTokens))
 	}
 
@@ -46,7 +45,7 @@ func (a *OpenAIAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 	return nil
 }
 
-func (a *OpenAIAdapter) handleIndexedToolCall(index int, tc openai.ChatCompletionChunkChoiceDeltaToolCall, state streaming.StreamStateInterface) {
+func (a *OpenAIAdapter) handleIndexedToolCall(index int, tc openai.ChatToolCallDelta, state streaming.StreamStateInterface) {
 	state.UpdateToolCallAtIndex(index, func(toolCall *messages.ChatMessageToolCall) {
 		if tc.ID != "" {
 			toolCall.ID = tc.ID
@@ -114,20 +113,20 @@ func (a *OpenAIResponsesAdapter) ProcessChunk(chunk any, state streaming.StreamS
 	return nil
 }
 
-func (a *OpenAIResponsesAdapter) handleFunctionCallDelta(event responses.ResponseStreamEventUnion, state streaming.StreamStateInterface) {
+func (a *OpenAIResponsesAdapter) handleFunctionCallDelta(event *openai.ResponseStreamEvent, state streaming.StreamStateInterface) {
 	if event.Delta == "" {
 		return
 	}
 	a.updateToolCallAtOutputIndex(int(event.OutputIndex), state, func(toolCall *messages.ChatMessageToolCall) {
 		if toolCall.Arguments == "{}" {
-			toolCall.Arguments = event.Delta
+			toolCall.Arguments = string(event.Delta)
 			return
 		}
-		toolCall.Arguments += event.Delta
+		toolCall.Arguments += string(event.Delta)
 	})
 }
 
-func (a *OpenAIResponsesAdapter) handleFunctionCallDone(event responses.ResponseStreamEventUnion, state streaming.StreamStateInterface) {
+func (a *OpenAIResponsesAdapter) handleFunctionCallDone(event *openai.ResponseStreamEvent, state streaming.StreamStateInterface) {
 	a.updateToolCallAtOutputIndex(int(event.OutputIndex), state, func(toolCall *messages.ChatMessageToolCall) {
 		if event.Name != "" {
 			toolCall.Name = event.Name
@@ -138,8 +137,8 @@ func (a *OpenAIResponsesAdapter) handleFunctionCallDone(event responses.Response
 	})
 }
 
-func (a *OpenAIResponsesAdapter) handleOutputItem(item responses.ResponseOutputItemUnion, index int, state streaming.StreamStateInterface) {
-	if item.Type != "function_call" {
+func (a *OpenAIResponsesAdapter) handleOutputItem(item *openai.ResponseOutputItem, index int, state streaming.StreamStateInterface) {
+	if item == nil || item.Type != "function_call" {
 		return
 	}
 	a.updateToolCallAtOutputIndex(index, state, func(toolCall *messages.ChatMessageToolCall) {
@@ -151,7 +150,7 @@ func (a *OpenAIResponsesAdapter) handleOutputItem(item responses.ResponseOutputI
 		if item.Name != "" {
 			toolCall.Name = item.Name
 		}
-		if args := responseArgumentsString(item.Arguments); args != "" {
+		if args := string(item.Arguments); args != "" {
 			toolCall.Arguments = args
 		}
 	})
@@ -166,11 +165,18 @@ func (a *OpenAIResponsesAdapter) updateToolCallAtOutputIndex(outputIndex int, st
 	state.UpdateToolCallAtIndex(toolIndex, updater)
 }
 
-func (a *OpenAIResponsesAdapter) applyResponse(resp responses.Response, state streaming.StreamStateInterface) {
-	if resp.Usage.JSON.TotalTokens.Valid() {
+func (a *OpenAIResponsesAdapter) applyResponse(resp *openai.Response, state streaming.StreamStateInterface) {
+	if resp == nil {
+		return
+	}
+	if resp.Usage != nil {
 		state.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
 	}
-	state.SetStopReason(MapResponsesStopReason(resp.Status, resp.IncompleteDetails.Reason, len(state.GetToolCalls()) > 0))
+	incompleteReason := ""
+	if resp.IncompleteDetails != nil {
+		incompleteReason = resp.IncompleteDetails.Reason
+	}
+	state.SetStopReason(MapResponsesStopReason(resp.Status, incompleteReason, len(state.GetToolCalls()) > 0))
 }
 
 func (a *OpenAIResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
@@ -206,14 +212,14 @@ func MapOpenAIFinishReason(fr string) messages.StopReason {
 }
 
 // MapResponsesStopReason converts Responses terminal state to Polly's normalized type.
-func MapResponsesStopReason(status responses.ResponseStatus, incompleteReason string, hasToolCalls bool) messages.StopReason {
+func MapResponsesStopReason(status openai.ResponseStatus, incompleteReason string, hasToolCalls bool) messages.StopReason {
 	switch status {
-	case responses.ResponseStatusCompleted:
+	case openai.ResponseStatusCompleted:
 		if hasToolCalls {
 			return messages.StopReasonToolUse
 		}
 		return messages.StopReasonEndTurn
-	case responses.ResponseStatusIncomplete:
+	case openai.ResponseStatusIncomplete:
 		switch incompleteReason {
 		case "max_output_tokens":
 			return messages.StopReasonMaxTokens
@@ -222,7 +228,7 @@ func MapResponsesStopReason(status responses.ResponseStatus, incompleteReason st
 		default:
 			return messages.StopReasonError
 		}
-	case responses.ResponseStatusFailed, responses.ResponseStatusCancelled:
+	case openai.ResponseStatusFailed, openai.ResponseStatusCancelled:
 		return messages.StopReasonError
 	default:
 		if hasToolCalls {
@@ -243,23 +249,16 @@ func asChatCompletionChunk(chunk any) (*openai.ChatCompletionChunk, bool) {
 	}
 }
 
-func asResponsesEvent(chunk any) (responses.ResponseStreamEventUnion, bool) {
+func asResponsesEvent(chunk any) (*openai.ResponseStreamEvent, bool) {
 	switch value := chunk.(type) {
-	case responses.ResponseStreamEventUnion:
-		return value, true
-	case *responses.ResponseStreamEventUnion:
+	case *openai.ResponseStreamEvent:
 		if value == nil {
-			return responses.ResponseStreamEventUnion{}, false
+			return nil, false
 		}
-		return *value, true
+		return value, true
+	case openai.ResponseStreamEvent:
+		return &value, true
 	default:
-		return responses.ResponseStreamEventUnion{}, false
+		return nil, false
 	}
-}
-
-func responseArgumentsString(args responses.ResponseOutputItemUnionArguments) string {
-	if args.JSON.OfString.Valid() {
-		return args.OfString
-	}
-	return ""
 }
