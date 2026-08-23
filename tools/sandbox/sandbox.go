@@ -101,6 +101,48 @@ func sandboxFileCleanup(cmd *exec.Cmd, owned []*os.File) func() error {
 	}
 }
 
+// resolveDenyWritePaths validates and resolves every write-denied path at the
+// point a command is wrapped. A missing or unresolvable guardrail must fail the
+// command instead of being silently skipped.
+func resolveDenyWritePaths(paths, writablePaths []string) ([]string, error) {
+	resolved := make([]string, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		expanded := filepath.Clean(expandTilde(path))
+		for _, writable := range writablePaths {
+			writable = filepath.Clean(expandTilde(writable))
+			rel, relErr := filepath.Rel(writable, expanded)
+			if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			current := writable
+			for _, component := range strings.Split(rel, string(filepath.Separator)) {
+				if component == "" || component == "." {
+					continue
+				}
+				current = filepath.Join(current, component)
+				info, lstatErr := os.Lstat(current)
+				if lstatErr != nil {
+					break
+				}
+				if info.Mode()&os.ModeSymlink != 0 {
+					return nil, fmt.Errorf("sandbox denyWritePaths route %q is a symlink inside writable path %q", current, writable)
+				}
+			}
+		}
+		real, err := filepath.EvalSymlinks(expanded)
+		if err != nil {
+			return nil, fmt.Errorf("resolve sandbox denyWritePaths entry %q: %w", expanded, err)
+		}
+		if seen[real] {
+			continue
+		}
+		seen[real] = true
+		resolved = append(resolved, real)
+	}
+	return resolved, nil
+}
+
 // Probe runs a trivial command through the sandbox to confirm it can actually
 // start. Construction (New) only checks that the backend binary exists; it does
 // not catch environments where the backend is present but fails at runtime
@@ -147,6 +189,17 @@ type Config struct {
 	// Paths exempted from the DeniedPaths deny list. Paths are resolved once at
 	// construction; missing exemptions are dropped and cannot appear later.
 	ReadPaths []string `json:"readPaths,omitempty"`
+
+	// Extra paths blocked from reads, in addition to DeniedPaths (supports ~ expansion).
+	DenyPaths []string `json:"denyPaths,omitempty"`
+
+	// Paths that stay readable but are denied writes, even when they sit
+	// inside a WritablePaths entry (supports ~ expansion). Used to carve
+	// read-only islands out of a writable tree — e.g. protecting complete Git
+	// metadata trees when the workspace is writable. Every entry must exist;
+	// symlink routing through a configured writable tree is rejected.
+	// Redundant under DenyWrite, which already denies all writes.
+	DenyWritePaths []string `json:"denyWritePaths,omitempty"`
 
 	// If non-empty, only these env vars are passed through to the sandbox.
 	AllowEnv []string `json:"allowEnv,omitempty"`
@@ -216,6 +269,12 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.ReadPaths, err = normalize("readPaths", cfg.ReadPaths); err != nil {
+		return Config{}, err
+	}
+	if cfg.DenyPaths, err = normalize("denyPaths", cfg.DenyPaths); err != nil {
+		return Config{}, err
+	}
+	if cfg.DenyWritePaths, err = normalize("denyWritePaths", cfg.DenyWritePaths); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -660,6 +719,16 @@ func dedupeReadPathAliasIdentities(aliases []readPathAliasIdentity) ([]readPathA
 	return kept, nil
 }
 
+func readPathAliasSymlinkSet(cfg Config) map[string]bool {
+	paths := make(map[string]bool)
+	for _, alias := range cfg.readPathAliases {
+		for _, symlink := range alias.symlinks {
+			paths[filepath.Clean(symlink.path)] = true
+		}
+	}
+	return paths
+}
+
 func cloneAuthorityPathIdentities(identities []authorityPathIdentity) []authorityPathIdentity {
 	if len(identities) == 0 {
 		return nil
@@ -913,6 +982,8 @@ func (c Config) Merge(overlay Config) Config {
 	c.DenyDNS = c.DenyDNS || overlay.DenyDNS
 	c.WritablePaths = concatStrings(c.WritablePaths, overlay.WritablePaths)
 	c.ReadPaths = concatStrings(c.ReadPaths, overlay.ReadPaths)
+	c.DenyPaths = concatStrings(c.DenyPaths, overlay.DenyPaths)
+	c.DenyWritePaths = concatStrings(c.DenyWritePaths, overlay.DenyWritePaths)
 	c.AllowEnv = concatStrings(c.AllowEnv, overlay.AllowEnv)
 	c.DenyWrite = c.DenyWrite || overlay.DenyWrite
 	c.authorityPaths = append(cloneAuthorityPathIdentities(c.authorityPaths), overlay.authorityPaths...)
@@ -924,7 +995,7 @@ func (c Config) Merge(overlay Config) Config {
 // append onto its receiver's backing array: the registry reuses one
 // baseSandboxCfg for every tool, so appending an overlay's entries in place
 // could write into spare capacity shared with another tool's config and let one
-// tool's entries silently overwrite another's.
+// tool's denyPaths silently overwrite another's.
 func concatStrings(a, b []string) []string {
 	if len(a) == 0 && len(b) == 0 {
 		return nil
@@ -933,6 +1004,31 @@ func concatStrings(a, b []string) []string {
 	out = append(out, a...)
 	out = append(out, b...)
 	return out
+}
+
+// commandSummary returns the first two argv entries — enough to identify the
+// wrapped tool in debug logs without capturing argument payloads.
+func commandSummary(args []string) string {
+	if len(args) > 2 {
+		args = args[:2]
+	}
+	return strings.Join(args, " ")
+}
+
+// allDeniedPaths combines the built-in deny list with cfg.DenyPaths, all
+// tilde-expanded. User entries get their kind from a stat (missing paths
+// default to file; platforms that need existence handle that themselves).
+func allDeniedPaths(cfg Config) []DeniedPath {
+	paths := ExpandHome(DeniedPaths)
+	for _, p := range cfg.DenyPaths {
+		expanded := expandTilde(p)
+		kind := DeniedPathFile
+		if fi, err := os.Stat(expanded); err == nil && fi.IsDir() {
+			kind = DeniedPathDir
+		}
+		paths = append(paths, DeniedPath{Path: expanded, Kind: kind})
+	}
+	return paths
 }
 
 // expandTilde resolves a ~ prefix to the user's home directory for a single path.
@@ -948,6 +1044,43 @@ func expandTilde(path string) string {
 		}
 	}
 	return path
+}
+
+// resolvedExecutablePath returns the executable selected by os/exec before a
+// platform wrapper replaces cmd.Path. Executing cmd.Args[0] again would repeat
+// PATH lookup inside the filtered environment and can select a different
+// program or fail entirely when PATH is intentionally omitted.
+func resolvedExecutablePath(cmd *exec.Cmd) (string, error) {
+	if cmd.Path == "" {
+		return "", fmt.Errorf("sandbox command has no executable path")
+	}
+	path := cmd.Path
+	if !filepath.IsAbs(path) {
+		base, err := resolvedCommandDir(cmd.Dir)
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(base, path)
+	}
+	path = filepath.Clean(path)
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	return path, nil
+}
+
+func resolvedCommandDir(dir string) (string, error) {
+	if filepath.IsAbs(dir) {
+		return filepath.Clean(dir), nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve sandbox command directory: %w", err)
+	}
+	if dir == "" {
+		return filepath.Clean(cwd), nil
+	}
+	return filepath.Clean(filepath.Join(cwd, dir)), nil
 }
 
 // ExpandHome resolves ~ prefixes to the user's home directory.

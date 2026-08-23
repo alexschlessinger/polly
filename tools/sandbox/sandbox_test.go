@@ -41,6 +41,7 @@ func TestNormalizeConfigPathsMakesRelativePolicyPathsAbsolute(t *testing.T) {
 	original := Config{
 		WritablePaths: []string{"build/output"},
 		ReadPaths:     []string{"secrets/readable"},
+		DenyPaths:     []string{".env"},
 	}
 
 	got, err := normalizeConfigPaths(original)
@@ -53,14 +54,17 @@ func TestNormalizeConfigPathsMakesRelativePolicyPathsAbsolute(t *testing.T) {
 	if want := filepath.Join(cwd, "secrets/readable"); got.ReadPaths[0] != want {
 		t.Fatalf("ReadPaths[0] = %q, want %q", got.ReadPaths[0], want)
 	}
-	if original.ReadPaths[0] != "secrets/readable" {
+	if want := filepath.Join(cwd, ".env"); got.DenyPaths[0] != want {
+		t.Fatalf("DenyPaths[0] = %q, want %q", got.DenyPaths[0], want)
+	}
+	if original.DenyPaths[0] != ".env" {
 		t.Fatalf("normalizeConfigPaths mutated its input: %+v", original)
 	}
 }
 
 func TestNormalizeConfigPathsRejectsEmptyPath(t *testing.T) {
-	if _, err := normalizeConfigPaths(Config{ReadPaths: []string{""}}); err == nil {
-		t.Fatal("normalizeConfigPaths() accepted an empty read path")
+	if _, err := normalizeConfigPaths(Config{DenyPaths: []string{""}}); err == nil {
+		t.Fatal("normalizeConfigPaths() accepted an empty deny path")
 	}
 }
 
@@ -414,12 +418,13 @@ func TestMerge(t *testing.T) {
 		AllowEnv:      []string{"HOME"},
 	}
 	overlay := Config{
-		AllowNetwork:  true,
-		DenyDNS:       true,
-		WritablePaths: []string{"/extra"},
-		ReadPaths:     []string{"~/.aws"},
-		AllowEnv:      []string{"PATH"},
-		DenyWrite:     true,
+		AllowNetwork:   true,
+		DenyDNS:        true,
+		WritablePaths:  []string{"/extra"},
+		ReadPaths:      []string{"~/.aws"},
+		AllowEnv:       []string{"PATH"},
+		DenyWrite:      true,
+		DenyWritePaths: []string{"/work/.git/hooks"},
 	}
 	merged := base.Merge(overlay)
 
@@ -443,6 +448,9 @@ func TestMerge(t *testing.T) {
 	}
 	if !merged.DenyWrite {
 		t.Fatal("Merge should set DenyWrite to true")
+	}
+	if len(merged.DenyWritePaths) != 1 || merged.DenyWritePaths[0] != "/work/.git/hooks" {
+		t.Fatalf("DenyWritePaths = %v, want [/work/.git/hooks]", merged.DenyWritePaths)
 	}
 }
 
@@ -923,22 +931,103 @@ func TestPrepareConfigNarrowedReadAliasRejectsParentTargetReplacement(t *testing
 // one baseSandboxCfg for every tool, so if Merge appended into the base's spare
 // capacity, one tool's deny path would overwrite another's. The base slice here
 // has cap > len to expose the aliasing if it regresses.
+// Merging two overlays onto the same base must not alias: the registry reuses
+// one baseSandboxCfg for every tool, so if Merge appended into the base's spare
+// capacity, one tool's deny path would overwrite another's. The base slice here
+// has cap > len to expose the aliasing if it regresses.
 func TestMergeDoesNotAliasBase(t *testing.T) {
-	base := Config{ReadPaths: make([]string, 1, 8)}
-	base.ReadPaths[0] = "/base"
+	base := Config{DenyPaths: make([]string, 1, 8)}
+	base.DenyPaths[0] = "/base"
 
-	mergedA := base.Merge(Config{ReadPaths: []string{"/toolA"}})
-	mergedB := base.Merge(Config{ReadPaths: []string{"/toolB"}})
+	mergedA := base.Merge(Config{DenyPaths: []string{"/toolA"}})
+	mergedB := base.Merge(Config{DenyPaths: []string{"/toolB"}})
 
-	if got := mergedA.ReadPaths; len(got) != 2 || got[1] != "/toolA" {
-		t.Fatalf("mergedA.ReadPaths = %v, want [/base /toolA] — tool B's merge contaminated tool A", got)
+	if got := mergedA.DenyPaths; len(got) != 2 || got[1] != "/toolA" {
+		t.Fatalf("mergedA.DenyPaths = %v, want [/base /toolA] — tool B's merge contaminated tool A", got)
 	}
-	if got := mergedB.ReadPaths; len(got) != 2 || got[1] != "/toolB" {
-		t.Fatalf("mergedB.ReadPaths = %v, want [/base /toolB]", got)
+	if got := mergedB.DenyPaths; len(got) != 2 || got[1] != "/toolB" {
+		t.Fatalf("mergedB.DenyPaths = %v, want [/base /toolB]", got)
 	}
 	// The base itself must be untouched.
-	if len(base.ReadPaths) != 1 || base.ReadPaths[0] != "/base" {
-		t.Fatalf("base mutated by Merge: %v", base.ReadPaths)
+	if len(base.DenyPaths) != 1 || base.DenyPaths[0] != "/base" {
+		t.Fatalf("base mutated by Merge: %v", base.DenyPaths)
+	}
+}
+
+func TestResolvedExecutablePathUsesAbsoluteBaseForRelativeDir(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "tool")
+	if err := os.WriteFile(tool, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	relativeDir, err := filepath.Rel(cwd, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := &exec.Cmd{Path: "./tool", Dir: relativeDir}
+	got, err := resolvedExecutablePath(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("resolvedExecutablePath() = %q, want %q", got, want)
+	}
+}
+
+func TestAllDeniedPathsIncludesUserDenyPaths(t *testing.T) {
+	dir := t.TempDir()
+	extraDir := filepath.Join(dir, "secrets")
+	if err := os.MkdirAll(extraDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	extraFile := filepath.Join(dir, "token.txt")
+	if err := os.WriteFile(extraFile, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "nope")
+
+	got := allDeniedPaths(Config{DenyPaths: []string{extraDir, extraFile, missing}})
+
+	kinds := make(map[string]DeniedPathKind, len(got))
+	for _, p := range got {
+		kinds[p.Path] = p.Kind
+	}
+	if kinds[extraDir] != DeniedPathDir {
+		t.Fatalf("existing directory %q kind = %q, want %q", extraDir, kinds[extraDir], DeniedPathDir)
+	}
+	if kinds[extraFile] != DeniedPathFile {
+		t.Fatalf("existing file %q kind = %q, want %q", extraFile, kinds[extraFile], DeniedPathFile)
+	}
+	if kinds[missing] != DeniedPathFile {
+		t.Fatalf("missing path %q kind = %q, want %q (platforms drop or harmlessly deny it)", missing, kinds[missing], DeniedPathFile)
+	}
+	if len(got) != len(ExpandHome(DeniedPaths))+3 {
+		t.Fatalf("allDeniedPaths returned %d entries, want built-ins plus 3", len(got))
+	}
+}
+
+func TestParseConfigDenyPaths(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`{"denyPaths":["~/secrets","/var/private"]}`))
+	if err != nil {
+		t.Fatalf("ParseConfig error = %v", err)
+	}
+	if len(cfg.DenyPaths) != 2 {
+		t.Fatalf("DenyPaths = %v, want 2 entries", cfg.DenyPaths)
+	}
+}
+
+func TestMergeDenyPaths(t *testing.T) {
+	merged := Config{DenyPaths: []string{"/a"}}.Merge(Config{DenyPaths: []string{"/b"}})
+	if len(merged.DenyPaths) != 2 || merged.DenyPaths[0] != "/a" || merged.DenyPaths[1] != "/b" {
+		t.Fatalf("DenyPaths = %v, want [/a /b]", merged.DenyPaths)
 	}
 }
 
