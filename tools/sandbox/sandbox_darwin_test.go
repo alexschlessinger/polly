@@ -5,16 +5,22 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func skipIfNoSandboxExec(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("sandbox-exec"); err != nil {
+	if err := validateDarwinSandboxExecExecutable(darwinSandboxExecPath); err != nil {
+		if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") == "1" {
+			t.Fatalf("sandbox-exec is required in this environment: %v", err)
+		}
 		t.Skip("sandbox-exec not available")
 	}
 }
@@ -31,6 +37,9 @@ func TestBuildProfileWritePaths(t *testing.T) {
 	}
 	if !strings.Contains(profile, `(allow file-write* (subpath "/Users/test/project"))`) {
 		t.Fatalf("profile missing project path allow:\n%s", profile)
+	}
+	if !strings.Contains(profile, `(deny file-write-unlink (literal "/private/tmp"))`) {
+		t.Fatalf("profile does not pin automatic temp grant:\n%s", profile)
 	}
 }
 
@@ -82,6 +91,12 @@ func TestBuildProfileNetworkAllow(t *testing.T) {
 	if strings.Contains(profile, "(deny network*)") {
 		t.Fatal("profile should not deny network when AllowNetwork is true")
 	}
+	if !strings.Contains(profile, "(deny network-outbound (remote unix-socket))") {
+		t.Fatalf("profile should still deny host Unix-domain sockets:\n%s", profile)
+	}
+	if !strings.Contains(profile, `(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))`) {
+		t.Fatalf("profile should re-allow only the system DNS Unix socket:\n%s", profile)
+	}
 }
 
 func TestWrapCmd(t *testing.T) {
@@ -93,23 +108,86 @@ func TestWrapCmd(t *testing.T) {
 	}
 
 	cmd := exec.Command("bash", "-c", "echo hello")
-	if err := sb.Wrap(cmd); err != nil {
+	origPath, err := resolvedExecutablePath(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
+	defer func() { _ = cleanup() }()
 
 	if cmd.Path != "/usr/bin/sandbox-exec" {
 		t.Fatalf("cmd.Path = %q, want /usr/bin/sandbox-exec", cmd.Path)
 	}
-	if len(cmd.Args) < 4 {
+	if len(cmd.Args) < 6 {
 		t.Fatalf("cmd.Args too short: %v", cmd.Args)
 	}
 	if cmd.Args[0] != "sandbox-exec" || cmd.Args[1] != "-p" {
 		t.Fatalf("cmd.Args prefix = %v, want [sandbox-exec -p ...]", cmd.Args[:2])
 	}
-	// Original args should be at the end
-	tail := cmd.Args[3:]
-	if len(tail) != 3 || tail[0] != "bash" || tail[1] != "-c" || tail[2] != "echo hello" {
-		t.Fatalf("cmd.Args tail = %v, want [bash -c echo hello]", tail)
+	if len(cmd.ExtraFiles) != 0 {
+		t.Fatalf("cmd.ExtraFiles = %d, want none", len(cmd.ExtraFiles))
+	}
+	if tail := cmd.Args[len(cmd.Args)-3:]; tail[0] != origPath || tail[1] != "-c" || tail[2] != "echo hello" {
+		t.Fatalf("cmd.Args tail = %v, want [%s -c echo hello]", tail, origPath)
+	}
+}
+
+func TestDarwinLegacyWrapFailsBeforeAllocatingDescriptors(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("true")
+	if err := WrapCmd(sb, cmd); err != ErrManagedWrapRequired {
+		t.Fatalf("WrapCmd error = %v, want managed-cleanup requirement", err)
+	}
+	if len(cmd.ExtraFiles) != 0 {
+		t.Fatalf("legacy WrapCmd allocated descriptors before failing: %v", cmd.ExtraFiles)
+	}
+}
+
+func TestSandboxPreservesExecutableResolvedBeforeEnvFiltering(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	dir := t.TempDir()
+	toolPath := filepath.Join(dir, "p2-resolved-tool")
+	if err := os.WriteFile(toolPath, []byte("#!/bin/sh\necho resolved\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd := exec.Command("p2-resolved-tool")
+	resolvedPath, err := resolvedExecutablePath(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{AllowEnv: []string{"HOME"}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	foundResolved := false
+	for _, arg := range cmd.Args {
+		if arg == resolvedPath {
+			foundResolved = true
+			break
+		}
+	}
+	if !foundResolved {
+		t.Fatalf("wrapped args do not contain resolved executable %q: %v", resolvedPath, cmd.Args)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolved command failed without PATH in its environment: %v (%s)", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "resolved" {
+		t.Fatalf("output = %q, want resolved", strings.TrimSpace(string(out)))
 	}
 }
 
@@ -124,7 +202,7 @@ func TestSandboxAllowsWriteInAllowedPath(t *testing.T) {
 
 	target := filepath.Join(dir, "test.txt")
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo ok > "+target)
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err != nil {
@@ -157,7 +235,7 @@ func TestSandboxBlocksWriteOutsideAllowedPath(t *testing.T) {
 
 	target := filepath.Join(blockedDir, "test.txt")
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo bad > "+target)
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err == nil {
@@ -175,11 +253,102 @@ func TestSandboxBlocksNetwork(t *testing.T) {
 	}
 
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "curl -s --max-time 2 https://example.com")
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err == nil {
 		t.Fatal("expected network access to be blocked")
+	}
+}
+
+func TestDarwinAllowNetworkBlocksHostUnixSocketsButAllowsTCP(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home: %v", err)
+	}
+	hostDir, err := os.MkdirTemp(home, ".polly-unix-socket-")
+	if err != nil {
+		t.Fatalf("create host socket directory: %v", err)
+	}
+	defer os.RemoveAll(hostDir)
+
+	socketPath := filepath.Join(hostDir, "listener.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+	if err != nil {
+		t.Fatalf("listen on host Unix socket: %v", err)
+	}
+	defer listener.Close()
+	if err := listener.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set listener deadline: %v", err)
+	}
+	accepted := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.AcceptUnix()
+		if acceptErr == nil {
+			_ = conn.Close()
+		}
+		accepted <- acceptErr
+	}()
+
+	sb, err := New(Config{AllowNetwork: true})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/bin/nc", "-U", socketPath)
+	cmd.Stdin = strings.NewReader("probe")
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	runErr := cmd.Run()
+	if err := cleanup(); err != nil {
+		t.Fatalf("close Unix client sandbox files: %v", err)
+	}
+	if runErr == nil {
+		t.Fatal("allowNetwork sandbox connected to a host Unix-domain socket")
+	}
+	if acceptErr := <-accepted; acceptErr == nil {
+		t.Fatal("host Unix-domain listener accepted a sandboxed connection")
+	}
+
+	tcpListener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen on host TCP socket: %v", err)
+	}
+	defer tcpListener.Close()
+	if err := tcpListener.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set TCP listener deadline: %v", err)
+	}
+	tcpAccepted := make(chan error, 1)
+	go func() {
+		conn, acceptErr := tcpListener.AcceptTCP()
+		if acceptErr == nil {
+			_ = conn.Close()
+		}
+		tcpAccepted <- acceptErr
+	}()
+
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	port := fmt.Sprintf("%d", tcpListener.Addr().(*net.TCPAddr).Port)
+	cmd = exec.CommandContext(ctx, "/usr/bin/nc", "127.0.0.1", port)
+	cmd.Stdin = strings.NewReader("probe")
+	cleanup, err = WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatalf("Wrap() TCP client error = %v", err)
+	}
+	runErr = cmd.Run()
+	if err := cleanup(); err != nil {
+		t.Fatalf("close TCP client sandbox files: %v", err)
+	}
+	if acceptErr := <-tcpAccepted; acceptErr != nil {
+		t.Fatalf("host TCP listener did not accept sandboxed connection: %v", acceptErr)
+	}
+	if runErr != nil {
+		t.Fatalf("allowNetwork sandbox could not connect over TCP: %v", runErr)
 	}
 }
 
@@ -194,6 +363,9 @@ func TestBuildProfileDeniesCredentialPaths(t *testing.T) {
 	// Verify they use file-read* deny
 	if !strings.Contains(profile, "(deny file-read* (subpath") {
 		t.Fatal("profile missing file-read deny rules")
+	}
+	if !strings.Contains(profile, "(deny file-read* (literal") || !strings.Contains(profile, "(deny file-write* (literal") {
+		t.Fatal("profile missing denied-entry literal rules")
 	}
 }
 
@@ -213,7 +385,7 @@ func TestSandboxBlocksCredentialRead(t *testing.T) {
 	}
 
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "ls "+sshDir)
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err == nil {
@@ -247,7 +419,7 @@ func TestSandboxBlocksAllExistingCredentialPaths(t *testing.T) {
 
 		t.Run(dp.Path, func(t *testing.T) {
 			cmd := exec.CommandContext(context.Background(), "bash", "-c", shellCmd)
-			if err := sb.Wrap(cmd); err != nil {
+			if err := wrapCmdForTest(t, sb, cmd); err != nil {
 				t.Fatalf("Wrap() error = %v", err)
 			}
 			out, err := cmd.CombinedOutput()
@@ -275,7 +447,7 @@ func TestMergeAllowsNetwork(t *testing.T) {
 	}
 
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "curl -s --max-time 3 https://example.com")
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err != nil {
@@ -300,7 +472,7 @@ func TestMergeAddsWritablePaths(t *testing.T) {
 
 	// Write to base dir should work
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo ok > "+filepath.Join(baseDir, "a.txt"))
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err != nil {
@@ -309,7 +481,7 @@ func TestMergeAddsWritablePaths(t *testing.T) {
 
 	// Write to extra dir should also work
 	cmd = exec.CommandContext(context.Background(), "bash", "-c", "echo ok > "+filepath.Join(extraDir, "b.txt"))
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err != nil {
@@ -327,7 +499,7 @@ func TestMergeAddsWritablePaths(t *testing.T) {
 	}
 	defer os.RemoveAll(blockedDir)
 	cmd = exec.CommandContext(context.Background(), "bash", "-c", "echo bad > "+filepath.Join(blockedDir, "c.txt"))
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err == nil {
@@ -353,6 +525,41 @@ func TestBuildProfileReadPaths(t *testing.T) {
 	}
 }
 
+func TestBuildProfileNarrowedReadAliasDoesNotAllowParent(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	alias := filepath.Join(root, "alias")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "allowed.txt"), []byte("allowed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(Config{ReadPaths: []string{alias}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowedAlias := filepath.Join(alias, "allowed.txt")
+	prepared.ReadPaths = []string{allowedAlias}
+	narrowed, err := PrepareConfig(prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	profile := buildProfile(narrowed)
+	childRule := fmt.Sprintf("(allow file-read* (subpath %q))", allowedAlias)
+	parentRule := fmt.Sprintf("(allow file-read* (subpath %q))", alias)
+	if !strings.Contains(profile, childRule) {
+		t.Fatalf("profile does not allow narrowed alias child %q:\n%s", allowedAlias, profile)
+	}
+	if strings.Contains(profile, parentRule) {
+		t.Fatalf("profile retained broader alias allow %q:\n%s", alias, profile)
+	}
+}
+
 func TestSandboxAllowsReadOfExemptedPath(t *testing.T) {
 	skipIfNoSandboxExec(t)
 
@@ -369,7 +576,7 @@ func TestSandboxAllowsReadOfExemptedPath(t *testing.T) {
 	}
 
 	cmd := exec.CommandContext(context.Background(), "cat", secret)
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	out, err := cmd.CombinedOutput()
@@ -378,6 +585,63 @@ func TestSandboxAllowsReadOfExemptedPath(t *testing.T) {
 	}
 	if strings.TrimSpace(string(out)) != "secret-value" {
 		t.Fatalf("unexpected output: %s", string(out))
+	}
+}
+
+func TestDarwinReadPathAliasRemainsUsableAndRejectsRetarget(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(first, "credentials"), []byte("first-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(second, "credentials"), []byte("second-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(home, ".aws")
+	if err := os.Symlink(first, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	sb, err := New(Config{WritablePaths: []string{home}, ReadPaths: []string{alias}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := buildProfileWithWritePaths(sb.(*darwinSandbox).cfg, sb.(*darwinSandbox).writePaths)
+	if !strings.Contains(profile, fmt.Sprintf("(allow file-read* (subpath %q))", alias)) {
+		t.Fatalf("profile omitted configured read alias %q:\n%s", alias, profile)
+	}
+	cmd := exec.Command("/bin/cat", filepath.Join(alias, "credentials"))
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil {
+		t.Fatalf("read configured alias: %v (%s)", runErr, out)
+	}
+	if string(out) != "first-secret" {
+		t.Fatalf("read through configured alias = %q, want original target", out)
+	}
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(second, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := wrapCmdForTest(t, sb, exec.Command("/usr/bin/true")); err == nil {
+		t.Fatal("Wrap accepted a replaced and retargeted readPaths alias")
 	}
 }
 
@@ -391,7 +655,7 @@ func TestSandboxEnvFiltering(t *testing.T) {
 
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo keep=$POLLY_TEST_KEEP drop=$POLLY_TEST_DROP")
 	cmd.Env = []string{"POLLY_TEST_KEEP=yes", "POLLY_TEST_DROP=no"}
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	out, err := cmd.CombinedOutput()
@@ -407,6 +671,19 @@ func TestSandboxEnvFiltering(t *testing.T) {
 	}
 }
 
+func TestDarwinNewCopiesCallerAllowEnv(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	allow := []string{"SAFE_NAME"}
+	sb, err := New(Config{AllowEnv: allow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow[0] = "AWS_SECRET_ACCESS_KEY"
+	if got := sb.(*darwinSandbox).cfg.AllowEnv; len(got) != 1 || got[0] != "SAFE_NAME" {
+		t.Fatalf("sandbox AllowEnv aliases caller slice: %v", got)
+	}
+}
+
 func TestSandboxStripsPollytoolEnvByDefault(t *testing.T) {
 	skipIfNoSandboxExec(t)
 
@@ -417,7 +694,7 @@ func TestSandboxStripsPollytoolEnvByDefault(t *testing.T) {
 
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo key=$POLLYTOOL_OPENAIKEY other=$OTHER_VAR")
 	cmd.Env = []string{"POLLYTOOL_OPENAIKEY=secret", "OTHER_VAR=kept"}
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	out, err := cmd.CombinedOutput()
@@ -438,8 +715,11 @@ func TestBuildProfileDenyDNS(t *testing.T) {
 	if strings.Contains(profile, "(deny network*)") {
 		t.Fatal("profile should not have blanket network deny when AllowNetwork is true")
 	}
-	if !strings.Contains(profile, `(deny network-outbound (to unix-socket (path-literal "/private/var/run/mDNSResponder")))`) {
-		t.Fatalf("profile missing mDNSResponder socket deny:\n%s", profile)
+	if !strings.Contains(profile, `(deny network-outbound (remote unix-socket))`) {
+		t.Fatalf("profile missing blanket Unix-socket deny:\n%s", profile)
+	}
+	if strings.Contains(profile, "mDNSResponder") {
+		t.Fatalf("profile re-allows mDNSResponder despite DenyDNS:\n%s", profile)
 	}
 	if !strings.Contains(profile, `(deny network-outbound (remote udp "*:53"))`) {
 		t.Fatalf("profile missing UDP port 53 deny:\n%s", profile)
@@ -469,7 +749,7 @@ func TestSandboxDenyDNSBlocksResolution(t *testing.T) {
 
 	// Hostname resolution should fail
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "curl -s --max-time 3 https://example.com")
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err == nil {
@@ -479,7 +759,7 @@ func TestSandboxDenyDNSBlocksResolution(t *testing.T) {
 	// Direct IP TCP connection should still work (network is allowed, only DNS is blocked).
 	// Use bash /dev/tcp to avoid file-write sandbox restrictions that affect curl.
 	cmd2 := exec.CommandContext(context.Background(), "bash", "-c", "exec 3<>/dev/tcp/1.1.1.1/80 && echo ok")
-	if err := sb.Wrap(cmd2); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd2); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd2.Run(); err != nil {
@@ -515,7 +795,7 @@ func TestSandboxDenyWriteBlocksTemp(t *testing.T) {
 	}
 
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo bad > /tmp/polly-deny-test")
-	if err := sb.Wrap(cmd); err != nil {
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err == nil {
@@ -524,17 +804,801 @@ func TestSandboxDenyWriteBlocksTemp(t *testing.T) {
 	}
 }
 
-func TestSandboxGracefulFallback(t *testing.T) {
-	// Override PATH to exclude sandbox-exec
-	origPath := os.Getenv("PATH")
-	t.Setenv("PATH", "/nonexistent")
-	defer os.Setenv("PATH", origPath)
+func TestBuildProfileIncludesUserDenyPaths(t *testing.T) {
+	dir := t.TempDir()
+	profile := buildProfile(Config{DenyPaths: []string{dir}})
+	if !strings.Contains(profile, fmt.Sprintf(`(deny file-read* (subpath %q))`, dir)) {
+		t.Fatalf("profile missing deny for user denyPath %q:\n%s", dir, profile)
+	}
+}
+
+// A writablePaths entry that is an ancestor of a denied credential path must
+// not re-open write access to it: the deny file-write* rule has to appear
+// after the writable allow so Seatbelt's last-match-wins blocks the write.
+func TestBuildProfileDeniesWritesToCredentialPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// writablePaths deliberately includes an ancestor of the credential paths.
+	profile := buildProfile(Config{WritablePaths: []string{home}})
+
+	sshDir := filepath.Join(home, ".ssh")
+	denyRule := fmt.Sprintf(`(deny file-write* (subpath %q))`, sshDir)
+	denyIdx := strings.Index(profile, denyRule)
+	if denyIdx < 0 {
+		t.Fatalf("profile missing write deny for credential path %q under a writable ancestor:\n%s", sshDir, profile)
+	}
+	firstWriteAllow := strings.Index(profile, "(allow file-write* (subpath")
+	if firstWriteAllow < 0 || denyIdx < firstWriteAllow {
+		t.Fatalf("write deny for %q must come after the writable allows (last-match-wins):\n%s", sshDir, profile)
+	}
+}
+
+// End-to-end: with home as a writablePath, a sandboxed process must still be
+// unable to plant a file in ~/.ssh — reads are denied and so are writes.
+func TestSandboxBlocksWriteToCredentialUnderWritablePath(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{WritablePaths: []string{home}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	victim := filepath.Join(sshDir, "authorized_keys")
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo pwned > "+victim)
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd.Run(); err == nil {
+		os.Remove(victim)
+		t.Fatal("expected write to ~/.ssh to be blocked even though home is a writablePath")
+	}
+	if _, err := os.Stat(victim); err == nil {
+		os.Remove(victim)
+		t.Fatal("credential file was created despite the sandbox")
+	}
+}
+
+func TestBuildProfileDenyWritePaths(t *testing.T) {
+	work := t.TempDir()
+	hooks := filepath.Join(work, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := buildProfile(Config{WritablePaths: []string{work}, DenyWritePaths: []string{hooks}})
+
+	literalRule := fmt.Sprintf(`(deny file-write* (literal %q))`, hooks)
+	if !strings.Contains(profile, literalRule) {
+		t.Fatalf("profile missing literal write deny for protected entry %q:\n%s", hooks, profile)
+	}
+	denyRule := fmt.Sprintf(`(deny file-write* (subpath %q))`, hooks)
+	denyIdx := strings.Index(profile, denyRule)
+	if denyIdx < 0 {
+		t.Fatalf("profile missing write deny for %q:\n%s", hooks, profile)
+	}
+	firstWriteAllow := strings.Index(profile, "(allow file-write* (subpath")
+	if firstWriteAllow < 0 || denyIdx < firstWriteAllow {
+		t.Fatalf("denyWritePaths rule must come after the writable allows (last-match-wins):\n%s", profile)
+	}
+	// Reads must stay allowed: denyWritePaths must not emit a read deny.
+	if strings.Contains(profile, fmt.Sprintf(`(deny file-read* (subpath %q))`, hooks)) {
+		t.Fatalf("denyWritePaths must not deny reads:\n%s", profile)
+	}
+}
+
+func TestBuildProfilePinsMutableDenyWriteAncestors(t *testing.T) {
+	work := t.TempDir()
+	protected := filepath.Join(work, "packages", "nested", ".git")
+	if err := os.MkdirAll(protected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := buildProfile(Config{WritablePaths: []string{work}, DenyWritePaths: []string{protected}})
+	realWork, err := filepath.EvalSymlinks(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ancestor := range []string{
+		realWork,
+		filepath.Join(realWork, "packages"),
+		filepath.Join(realWork, "packages", "nested"),
+	} {
+		want := fmt.Sprintf(`(deny file-write-unlink (literal %q))`, ancestor)
+		if !strings.Contains(profile, want) {
+			t.Errorf("profile missing mutable-ancestor pin %q:\n%s", want, profile)
+		}
+	}
+}
+
+func caseVariedWorkspace(t *testing.T) (string, string) {
+	t.Helper()
+	parent := t.TempDir()
+	root := filepath.Join(parent, "CaseWorkspace")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	variant := filepath.Join(parent, "caseworkspace")
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variantInfo, err := os.Stat(variant)
+	if err != nil || !os.SameFile(rootInfo, variantInfo) {
+		t.Skip("test volume is case-sensitive")
+	}
+	return root, variant
+}
+
+func TestDenyWriteAncestorsMatchesCaseVariedWritableRoot(t *testing.T) {
+	work, caseVariant := caseVariedWorkspace(t)
+	protected := filepath.Join(work, "packages", "nested", ".git")
+	if err := os.MkdirAll(protected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ancestors := denyWriteAncestors([]string{protected}, []string{caseVariant})
+	for _, want := range []string{
+		work,
+		filepath.Join(work, "packages"),
+		filepath.Join(work, "packages", "nested"),
+	} {
+		if !slices.Contains(ancestors, want) {
+			t.Fatalf("denyWriteAncestors() = %v, want case-aliased ancestor %q", ancestors, want)
+		}
+	}
+}
+
+func TestDarwinNewRejectsMissingDenyWritePath(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	work := t.TempDir()
+	missing := filepath.Join(work, "reserved")
+	if _, err := New(Config{WritablePaths: []string{work}, DenyWritePaths: []string{missing}}); err == nil {
+		t.Fatal("New() error = nil, want missing denyWritePaths entry to fail closed")
+	}
+}
+
+// End-to-end: with the workspace writable, a sandboxed process must still be
+// unable to plant a git hook, but can read the hooks dir and write elsewhere
+// in the workspace.
+func TestSandboxDenyWritePathBlocksHookPlanting(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	work := t.TempDir()
+	hooks := filepath.Join(work, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{WritablePaths: []string{work}, DenyWritePaths: []string{hooks}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	victim := filepath.Join(hooks, "pre-commit")
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo pwned > "+victim)
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd.Run(); err == nil {
+		os.Remove(victim)
+		t.Fatal("expected hook write to be blocked despite the writable workspace")
+	}
+	if _, err := os.Stat(victim); err == nil {
+		os.Remove(victim)
+		t.Fatal("hook file was created despite the sandbox")
+	}
+
+	// The rest of the workspace stays writable and the hooks dir readable.
+	cmd = exec.CommandContext(context.Background(), "bash", "-c",
+		"ls "+hooks+" >/dev/null && echo ok > "+filepath.Join(work, "note.txt"))
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("workspace write/read alongside denyWritePaths failed: %v", err)
+	}
+}
+
+func TestDarwinWrapRejectsDenyWritePathRemovedAfterConstruction(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	work := t.TempDir()
+	protected := filepath.Join(work, "protected")
+	if err := os.MkdirAll(protected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{WritablePaths: []string{work}, DenyWritePaths: []string{protected}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := os.RemoveAll(protected); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "true")
+	if err := wrapCmdForTest(t, sb, cmd); err == nil {
+		t.Fatal("Wrap() error = nil after protected entry removal, want fail-closed error")
+	}
+}
+
+func TestBuildProfileResolvesSymlinkedDenyPaths(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-creds")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, ".creds")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	profile := buildProfile(Config{DenyPaths: []string{link}})
+
+	// Seatbelt matches resolved vnode paths, so the deny must name the real
+	// target, not just the link.
+	resolved, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(profile, fmt.Sprintf(`(deny file-read* (subpath %q))`, resolved)) {
+		t.Fatalf("profile missing deny for symlink target %q:\n%s", resolved, profile)
+	}
+	if !strings.Contains(profile, fmt.Sprintf(`(deny file-read* (subpath %q))`, link)) {
+		t.Fatalf("profile missing deny for the link itself %q:\n%s", link, profile)
+	}
+}
+
+func TestSandboxBlocksSymlinkedDenyPath(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-creds")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(target, "key")
+	if err := os.WriteFile(secret, []byte("secret-value"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, ".creds")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := New(Config{DenyPaths: []string{link}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Reading through the link and reading the target directly must both fail.
+	for _, path := range []string{filepath.Join(link, "key"), secret} {
+		cmd := exec.CommandContext(context.Background(), "cat", path)
+		if err := wrapCmdForTest(t, sb, cmd); err != nil {
+			t.Fatalf("Wrap() error = %v", err)
+		}
+		if out, err := cmd.CombinedOutput(); err == nil {
+			t.Fatalf("expected read of %s to be blocked, got output: %s", path, string(out))
+		}
+	}
+}
+
+func TestBuildProfileDeniesSignal(t *testing.T) {
+	profile := buildProfile(Config{})
+	for _, rule := range []string{
+		"(deny signal)",
+		"(allow signal (target self))",
+		"(allow signal (target same-sandbox))",
+	} {
+		if !strings.Contains(profile, rule) {
+			t.Fatalf("profile missing signal rule %q:\n%s", rule, profile)
+		}
+	}
+}
+
+// A sandboxed script must be able to signal its own children even when it
+// detaches them into a separate process group (job control / setsid workers).
+// The (target same-sandbox) scope covers descendants regardless of pgroup,
+// where a (target pgrp) scope would deny them with EPERM.
+func TestSandboxAllowsSignalingOwnDetachedChild(t *testing.T) {
+	skipIfNoSandboxExec(t)
 
 	sb, err := New(Config{})
-	if err == nil {
-		t.Fatal("expected New() to return an error when sandbox-exec is not in PATH")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
 	}
-	if sb != nil {
-		t.Fatal("expected New() to return nil sandbox when sandbox-exec is not in PATH")
+	// `set -m` enables job control, putting the background job in its own
+	// process group; the script then signals it by job spec.
+	cmd := exec.CommandContext(context.Background(), "bash", "-c",
+		"set -m; sleep 30 & kill %1")
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed script could not signal its own detached child: %v (%s)", err, out)
+	}
+}
+
+func TestWrapSetsNewSession(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	cmd := exec.Command("true")
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	// Setsid detaches the controlling terminal (macOS counterpart to bwrap's
+	// --new-session) and gives the process its own group, which the profile's
+	// (allow signal (target pgrp)) rule depends on.
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
+		t.Fatalf("expected Wrap to set SysProcAttr.Setsid = true, got %+v", cmd.SysProcAttr)
+	}
+}
+
+func TestSandboxAllowsSignalingOwnChild(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	// A script must still be able to manage its own jobs (timeouts, background
+	// workers). The child shares the sandbox's process group, so (target pgrp)
+	// permits it.
+	cmd := exec.CommandContext(context.Background(), "bash", "-c",
+		"sleep 30 & c=$!; kill $c")
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed script could not signal its own child: %v (%s)", err, out)
+	}
+}
+
+func TestSandboxBlocksSignalingUnrelatedProcess(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	// An unrelated same-user process: spawned by the test, so it lives in the
+	// test's session. The sandboxed process gets its own session via Setsid, so
+	// this target is out of its process group and the signal must be denied.
+	victim := exec.Command("sleep", "30")
+	if err := victim.Start(); err != nil {
+		t.Fatalf("starting victim: %v", err)
+	}
+	defer func() {
+		_ = victim.Process.Kill()
+		_ = victim.Wait()
+	}()
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	cmd := exec.CommandContext(context.Background(), "bash", "-c",
+		fmt.Sprintf("kill -0 %d", victim.Process.Pid))
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("expected signaling an unrelated process to be blocked, got output: %s", out)
+	}
+}
+
+// A missing writable path must not fail construction: it would otherwise brick
+// session restore over a single stale path. The grant is dropped permanently,
+// so a later creation cannot acquire authority.
+func TestNewToleratesMissingWritablePath(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if _, err := New(Config{WritablePaths: []string{missing}}); err != nil {
+		t.Fatalf("New() should tolerate a missing writable path, got: %v", err)
+	}
+	if _, err := New(Config{WritablePaths: []string{missing}, DenyWrite: true}); err != nil {
+		t.Fatalf("New() with DenyWrite should also tolerate it, got: %v", err)
+	}
+}
+
+func TestDarwinMissingAuthorityPathsCannotActivateLater(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostDir, err := os.MkdirTemp(home, ".polly-authority-freeze-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(hostDir) })
+	if err := os.WriteFile(filepath.Join(hostDir, "secret"), []byte("host-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	work := t.TempDir()
+	writableLink := filepath.Join(work, "out")
+	readLink := filepath.Join(work, "readlink")
+	sb, err := New(Config{
+		WritablePaths: []string{work, writableLink},
+		ReadPaths:     []string{readLink},
+		DenyPaths:     []string{hostDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := sb.(*darwinSandbox).cfg
+	if len(frozen.WritablePaths) != 1 || len(frozen.ReadPaths) != 0 {
+		t.Fatalf("missing authority survived construction: writable=%v read=%v", frozen.WritablePaths, frozen.ReadPaths)
+	}
+
+	create := exec.Command("bash", "-c", `ln -s "$1" "$3" && ln -s "$2" "$4"`, "bash", hostDir, hostDir, writableLink, readLink)
+	cleanupCreate, err := WrapCmdManaged(sb, create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createOut, createErr := create.CombinedOutput()
+	_ = cleanupCreate()
+	if createErr != nil {
+		t.Fatalf("create authority-retarget links: %v (%s)", createErr, createOut)
+	}
+
+	probe := exec.Command("bash", "-c", `
+echo escaped > "$1/write-marker" 2>/dev/null || true
+if test "$(cat "$2/secret" 2>/dev/null)" = host-secret; then exit 11; fi
+`, "bash", writableLink, readLink)
+	cleanupProbe, err := WrapCmdManaged(sb, probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeOut, probeErr := probe.CombinedOutput()
+	_ = cleanupProbe()
+	if probeErr != nil {
+		t.Fatalf("frozen-authority probe failed: %v (%s)", probeErr, probeOut)
+	}
+	if _, err := os.Stat(filepath.Join(hostDir, "write-marker")); !os.IsNotExist(err) {
+		t.Fatalf("later writable symlink escaped to host: %v", err)
+	}
+}
+
+func TestDarwinFrozenAuthorityRejectsCrossSandboxReplacement(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostDir, err := os.MkdirTemp(home, ".polly-cross-sandbox-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(hostDir) })
+
+	work := t.TempDir()
+	child := filepath.Join(work, "child")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	narrow, err := New(Config{WritablePaths: []string{child}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broad, err := New(Config{WritablePaths: []string{work}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replace := exec.Command("bash", "-c", `mv "$1" "$1-old" && ln -s "$2" "$1"`, "bash", child, hostDir)
+	cleanup, err := WrapCmdManaged(broad, replace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := replace.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil {
+		t.Fatalf("replace authority path from broad sandbox: %v (%s)", runErr, out)
+	}
+
+	cmd := exec.Command("true")
+	if err := wrapCmdForTest(t, narrow, cmd); err == nil {
+		t.Fatal("narrow sandbox accepted a writable path replaced by another sandbox")
+	}
+	if len(cmd.ExtraFiles) != 0 {
+		t.Fatalf("failed identity check leaked sandbox descriptors: %v", cmd.ExtraFiles)
+	}
+}
+
+func TestDarwinWrappedAuthorityDoesNotFollowReplacementBeforeStart(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := os.MkdirTemp(home, ".polly-wrapped-authority-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+
+	child := filepath.Join(base, "child")
+	external := filepath.Join(base, "external")
+	for _, path := range []string{child, external} {
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sb, err := New(Config{WritablePaths: []string{child}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(child, "marker")
+	cmd := exec.Command("bash", "-c", `printf escaped > "$1"`, "bash", marker)
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	defer func() { _ = cleanup() }()
+
+	if err := os.Rename(child, child+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, child); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("profile compiled after replacement followed writable symlink: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(external, "marker")); !os.IsNotExist(err) {
+		t.Fatalf("wrapped authority replacement wrote outside approved inode: %v", err)
+	}
+}
+
+func TestDarwinAutomaticTempGrantIsPinnedAcrossSandboxes(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := os.MkdirTemp(home, ".polly-auto-temp-pin-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	tmpdir := filepath.Join(base, "tmp")
+	laterTmpdir := filepath.Join(base, "later-tmp")
+	external := filepath.Join(base, "external")
+	for _, path := range []string{tmpdir, laterTmpdir, external} {
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TMPDIR", tmpdir)
+
+	narrow, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", laterTmpdir)
+	profileCmd := exec.Command("/usr/bin/true")
+	profileCleanup, err := WrapCmdManaged(narrow, profileCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := profileCmd.Args[2]
+	if err := profileCleanup(); err != nil {
+		t.Fatal(err)
+	}
+	wantInitial := fmt.Sprintf(`(allow file-write* (subpath %q))`, tmpdir)
+	wantLater := fmt.Sprintf(`(allow file-write* (subpath %q))`, laterTmpdir)
+	if !strings.Contains(profile, wantInitial) {
+		t.Fatalf("profile lost construction-time TMPDIR grant %q:\n%s", tmpdir, profile)
+	}
+	if strings.Contains(profile, wantLater) {
+		t.Fatalf("profile acquired post-construction TMPDIR grant %q:\n%s", laterTmpdir, profile)
+	}
+	// Keep the existing cross-sandbox replacement proof focused on the same
+	// automatic route captured by both sandboxes.
+	t.Setenv("TMPDIR", tmpdir)
+	broad, err := New(Config{WritablePaths: []string{base}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replace := exec.Command("bash", "-c", `mv "$1" "$1-old" && ln -s "$2" "$1"`, "bash", tmpdir, external)
+	cleanup, err := WrapCmdManaged(broad, replace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := replace.CombinedOutput()
+	_ = cleanup()
+	if runErr == nil {
+		t.Fatalf("broader sandbox replaced automatic TMPDIR grant: %s", out)
+	}
+	if info, err := os.Lstat(tmpdir); err != nil || !info.IsDir() {
+		t.Fatalf("automatic TMPDIR route changed after denied replacement: %v, %v", info, err)
+	}
+
+	if err := os.Rename(tmpdir, tmpdir+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, tmpdir); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("true")
+	if err := wrapCmdForTest(t, narrow, cmd); err == nil {
+		t.Fatal("sandbox accepted a replaced automatic TMPDIR grant")
+	}
+}
+
+func TestDarwinDeniedPathCannotBeRelocatedUnderWritableParent(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := os.MkdirTemp(home, ".polly-denied-relocation-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	denied := filepath.Join(base, "secret")
+	if err := os.Mkdir(denied, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(denied, "value"), []byte("host-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{WritablePaths: []string{base}, DenyPaths: []string{denied}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relocated := denied + "-old"
+	cmd := exec.Command("bash", "-c", `mv "$1" "$2" && cat "$2/value"`, "bash", denied, relocated)
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr == nil {
+		t.Fatalf("sandbox relocated and read denied credentials: %s", out)
+	}
+	if _, err := os.Stat(denied); err != nil {
+		t.Fatalf("denied entry was relocated despite route pin: %v", err)
+	}
+	if _, err := os.Stat(relocated); !os.IsNotExist(err) {
+		t.Fatalf("relocated denied entry exists: %v", err)
+	}
+}
+
+func TestDarwinWritablePathCannotHardlinkExternalFile(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalDir, err := os.MkdirTemp(home, ".polly-hardlink-boundary-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(externalDir) })
+	external := filepath.Join(externalDir, "external")
+	if err := os.WriteFile(external, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeStat := before.Sys()
+
+	work := t.TempDir()
+	alias := filepath.Join(work, "alias")
+	sb, err := New(Config{WritablePaths: []string{work}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", `ln "$1" "$2" && printf escaped > "$2"`, "sh", external, alias)
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr == nil {
+		t.Fatalf("sandbox created and overwrote an external hardlink: %s", out)
+	}
+	if data, err := os.ReadFile(external); err != nil || string(data) != "original" {
+		t.Fatalf("external file changed through writable hardlink: %q, %v", data, err)
+	}
+	if _, err := os.Lstat(alias); !os.IsNotExist(err) {
+		t.Fatalf("sandbox created external hardlink alias: %v", err)
+	}
+	after, err := os.Stat(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeStat != nil && after.Sys() != nil {
+		// SameFile plus alias absence is the portable link-count invariant; the
+		// external file must still be the original object.
+		if !os.SameFile(before, after) {
+			t.Fatal("external file identity changed during hardlink probe")
+		}
+	}
+}
+
+func TestDarwinPreservesRelativeCommandDirectoryAndExecutable(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	relativeDir, err := filepath.Rel(cwd, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := filepath.Join(dir, "relative-tool.sh")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\npwd\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{WritablePaths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("./relative-tool.sh")
+	cmd.Dir = relativeDir
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil {
+		t.Fatalf("relative target failed: %v (%s)", runErr, out)
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); got != realDir {
+		t.Fatalf("relative command cwd = %q, want %q", got, realDir)
+	}
+}
+
+func TestSandboxIgnoresPATHSandboxExec(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	fakeDir := t.TempDir()
+	fakeSandboxExec := filepath.Join(fakeDir, "sandbox-exec")
+	marker := fakeSandboxExec + ".ran"
+	if err := os.WriteFile(fakeSandboxExec, []byte("#!/bin/sh\n: > \"$0.ran\"\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/usr/bin/true")
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	if cmd.Path != darwinSandboxExecPath {
+		t.Fatalf("sandbox launcher = %q, want fixed %q", cmd.Path, darwinSandboxExecPath)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("PATH-selected fake sandbox-exec executed: %v", err)
 	}
 }

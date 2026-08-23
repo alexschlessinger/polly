@@ -719,6 +719,14 @@ func dedupeReadPathAliasIdentities(aliases []readPathAliasIdentity) ([]readPathA
 	return kept, nil
 }
 
+func readPathAliasPaths(cfg Config) []string {
+	paths := make([]string, 0, len(cfg.readPathAliases))
+	for _, alias := range cfg.readPathAliases {
+		paths = append(paths, alias.path)
+	}
+	return paths
+}
+
 func readPathAliasSymlinkSet(cfg Config) map[string]bool {
 	paths := make(map[string]bool)
 	for _, alias := range cfg.readPathAliases {
