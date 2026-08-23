@@ -22,6 +22,8 @@ var (
 	_ func(string) (*MCPClient, error)                      = NewMCPClient
 	_ func(*MCPConfig, sandbox.Sandbox) (*MCPClient, error) = NewMCPClientFromConfig
 	_ func([]string) ([]Tool, error)                        = LoadShellTools
+	_ func(*BashTool, sandbox.Sandbox) *BashTool            = (*BashTool).WithSandbox
+	_ func(*ShellTool, sandbox.Sandbox) *ShellTool          = (*ShellTool).WithSandbox
 )
 
 // checkUvxAvailable checks if uvx is available on the system
@@ -783,7 +785,7 @@ func TestShellToolSandboxExecution(t *testing.T) {
 	}
 }
 
-func TestShellToolClosesSandboxFilesAfterExecution(t *testing.T) {
+func TestShellToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
 	dir := t.TempDir()
 	tool, err := newShellTool(createSandboxedTestScript(t, dir))
 	if err != nil {
@@ -793,12 +795,15 @@ func TestShellToolClosesSandboxFilesAfterExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer file.Close()
 	sandboxed := tool.WithSandbox(&mockSandbox{file: file})
 	if _, err := sandboxed.Execute(context.Background(), map[string]any{"message": "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := file.Stat(); err == nil {
-		t.Fatal("sandbox-added descriptor remains open after shell execution")
+	// Legacy Sandbox implementations retain ownership of descriptors they
+	// place in ExtraFiles; execution must not close them.
+	if _, err := file.Stat(); err != nil {
+		t.Fatalf("legacy sandbox descriptor was closed after shell execution: %v", err)
 	}
 }
 
@@ -1331,11 +1336,12 @@ func TestMCPConfiguredEnvUsesExplicitTargetChannel(t *testing.T) {
 	}
 }
 
-func TestMCPConnectFailureClosesSandboxFiles(t *testing.T) {
+func TestMCPConnectFailureLeavesLegacySandboxFilesOpen(t *testing.T) {
 	file, err := os.CreateTemp(t.TempDir(), "mcp-sandbox-extra-*")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer file.Close()
 	config := &MCPConfig{
 		Command: "/bin/true",
 		Env:     map[string]string{"TARGET_ONLY": "value"},
@@ -1343,8 +1349,10 @@ func TestMCPConnectFailureClosesSandboxFiles(t *testing.T) {
 	if _, err := NewMCPClientFromConfig(config, &mcpExtraFileSandbox{file: file}); err == nil {
 		t.Fatal("MCP connection unexpectedly succeeded")
 	}
-	if _, err := file.Stat(); err == nil {
-		t.Fatal("sandbox-added descriptor remains open after MCP Connect failure")
+	// Legacy Sandbox implementations retain ownership of descriptors they
+	// place in ExtraFiles; a failed connect must not close them.
+	if _, err := file.Stat(); err != nil {
+		t.Fatalf("legacy sandbox descriptor was closed after MCP Connect failure: %v", err)
 	}
 }
 
@@ -1468,7 +1476,7 @@ func TestSandboxDetailsIncludesEffectiveConfigAndOptOut(t *testing.T) {
 		DenyWritePaths: []string{"/tmp/work/.git"},
 		AllowEnv:       []string{"PATH"},
 	}
-	bash := newBashTool("").WithSandbox(&mockSandbox{}, cfg)
+	bash := newBashTool("").withSandboxConfig(&mockSandbox{}, cfg)
 	info := SandboxDetails(bash)
 	if !info.Capable || !info.Active {
 		t.Fatalf("SandboxDetails(bash) = %+v, want capable active", info)
@@ -1508,6 +1516,25 @@ fi
 	info = SandboxDetails(shell)
 	if !info.Capable || info.Active || !info.OptedOut {
 		t.Fatalf("SandboxDetails(opt-out shell) = %+v, want capable inactive opted out", info)
+	}
+}
+
+func TestWithSandboxClearsUnknownEffectiveConfig(t *testing.T) {
+	cfg := sandbox.Config{WritablePaths: []string{"/tmp/work"}}
+	bash := newBashTool("").withSandboxConfig(&mockSandbox{}, cfg)
+	bash = bash.WithSandbox(&mockSandbox{})
+	if info := SandboxDetails(bash); !info.Active || info.Config != nil {
+		t.Fatalf("SandboxDetails(rewrapped bash) = %+v, want active with unknown config", info)
+	}
+
+	shell, err := newShellTool(createTestScript(t, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell = shell.withSandboxConfig(&mockSandbox{}, cfg)
+	shell = shell.WithSandbox(&mockSandbox{})
+	if info := SandboxDetails(shell); !info.Active || info.Config != nil {
+		t.Fatalf("SandboxDetails(rewrapped shell) = %+v, want active with unknown config", info)
 	}
 }
 

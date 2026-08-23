@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/alexschlessinger/pollytool/skills"
-	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // ErrSkillRuntimeUnavailable is returned when activation or restore is attempted without discovered skills.
@@ -33,14 +32,8 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 	}
 
 	runtime.activateTool = NewSkillActivateTool(catalog, registry)
-	registry.Register(runtime.activateTool)
-	registry.Register(NewSkillReadFileTool(catalog))
-	cfg := sandbox.DefaultConfig()
-	if existing, ok := registry.registeredTool("bash"); ok {
-		if info := SandboxDetails(existing); info.Config != nil {
-			cfg = *copySandboxConfig(info.Config)
-		}
-	} else {
+	readFileTool := NewSkillReadFileTool(catalog)
+	newSkillBash := func() (*BashTool, error) {
 		bt := newBashTool("")
 		if registry.HasSandbox() {
 			// Fail closed: the skill bash tool must inherit the registry's base
@@ -49,16 +42,34 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 			if err != nil {
 				return nil, fmt.Errorf("sandbox for skill bash tool: %w", err)
 			}
-			cfg = effectiveCfg
-			bt = bt.WithSandbox(sb, cfg)
+			bt = bt.withSandboxConfig(sb, effectiveCfg)
 		} else if err := registry.requireProcessSandbox("skill bash tool"); err != nil {
 			return nil, err
 		}
-		registry.registerIfAbsent(bt)
+		return bt, nil
 	}
-	runtime.activateTool.writablePaths = cfg.WritablePaths
-	registry.MarkAlwaysAllowed("activate_skill")
-	registry.MarkAlwaysAllowed("read_skill_file")
+
+	var bashCandidate *BashTool
+	if _, ok := registry.registeredTool("bash"); !ok {
+		var err error
+		bashCandidate, err = newSkillBash()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// The initial bash snapshot may change while its sandbox is being prepared.
+	// The atomic commit returns false without mutation only when that snapshot had
+	// bash but the tool was removed before commit, so construct a candidate and
+	// retry. A non-nil candidate makes the second commit unconditional.
+	if !registry.registerSkillRuntimeTools(runtime.activateTool, readFileTool, bashCandidate) {
+		var err error
+		bashCandidate, err = newSkillBash()
+		if err != nil {
+			return nil, err
+		}
+		_ = registry.registerSkillRuntimeTools(runtime.activateTool, readFileTool, bashCandidate)
+	}
 
 	return runtime, nil
 }

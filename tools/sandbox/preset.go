@@ -1137,6 +1137,14 @@ func normalizeTrustedGitPolicyAlias(path string) string {
 // for a dangling external link into the workspace: EvalSymlinks alone loses
 // that target precisely until a sandboxed tool creates it.
 func resolveExistingPathPrefix(path string) (string, error) {
+	return resolveExistingPathPrefixObserved(path, nil)
+}
+
+// resolveExistingPathPrefixObserved is resolveExistingPathPrefix with a hook
+// for every candidate reached during traversal. Symlink targets are processed
+// component by component so that dot-dot entries apply after earlier symlinks,
+// matching kernel path resolution rather than lexical filepath.Clean behavior.
+func resolveExistingPathPrefixObserved(path string, observe func(string) error) (string, error) {
 	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("path %q is not absolute", path)
@@ -1147,13 +1155,32 @@ func resolveExistingPathPrefix(path string) (string, error) {
 	for len(pending) > 0 {
 		component := pending[0]
 		pending = pending[1:]
+		if component == ".." {
+			resolved = filepath.Dir(resolved)
+			continue
+		}
 		candidate := filepath.Join(resolved, component)
+		if observe != nil {
+			if err := observe(candidate); err != nil {
+				return "", err
+			}
+		}
 		info, err := os.Lstat(candidate)
 		if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
+			resolved = candidate
 			for _, trailing := range pending {
-				candidate = filepath.Join(candidate, trailing)
+				if trailing == ".." {
+					resolved = filepath.Dir(resolved)
+					continue
+				}
+				resolved = filepath.Join(resolved, trailing)
+				if observe != nil {
+					if err := observe(resolved); err != nil {
+						return "", err
+					}
+				}
 			}
-			return filepath.Clean(candidate), nil
+			return filepath.Clean(resolved), nil
 		}
 		if err != nil {
 			return "", err
@@ -1170,14 +1197,13 @@ func resolveExistingPathPrefix(path string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(candidate), target)
+		targetRoot, targetComponents := absolutePathComponents(target)
+		if filepath.IsAbs(target) {
+			resolved = targetRoot
+		} else {
+			resolved = filepath.Dir(candidate)
 		}
-		for _, trailing := range pending {
-			target = filepath.Join(target, trailing)
-		}
-		root, pending = absolutePathComponents(filepath.Clean(target))
-		resolved = root
+		pending = append(targetComponents, pending...)
 	}
 	return filepath.Clean(resolved), nil
 }

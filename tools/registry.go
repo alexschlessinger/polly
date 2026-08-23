@@ -287,7 +287,7 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 		if err != nil {
 			return nil, fmt.Errorf("sandbox for bash: %w", err)
 		}
-		return bt.WithSandbox(sb, cfg), nil
+		return bt.withSandboxConfig(sb, cfg), nil
 	}
 
 	for _, tool := range tools {
@@ -316,22 +316,27 @@ func (r *ToolRegistry) Register(tool Tool) {
 	}
 }
 
-// registerIfAbsent adds tool without weakening an already-registered tool of
-// the same name. Skill runtime setup uses this for bash so it cannot replace a
-// caller-provided instance carrying a stricter effective policy.
-func (r *ToolRegistry) registerIfAbsent(tool Tool) bool {
+// registerSkillRuntimeTools publishes the skill built-ins and their bash
+// dependency as one registry state transition. If bash is already registered,
+// it remains authoritative; otherwise candidate is installed. A nil candidate
+// leaves the registry untouched so its caller can construct one outside r.mu.
+func (r *ToolRegistry) registerSkillRuntimeTools(activate *SkillActivateTool, readFile *SkillReadFileTool, candidate *BashTool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	name := tool.GetName()
-	if name == "" {
-		return false
+	if _, exists := r.tools["bash"]; !exists {
+		if candidate == nil {
+			return false
+		}
+		r.tools["bash"] = candidate
+		slog.Debug("tool_registered", "tool_name", "bash")
 	}
-	if _, exists := r.tools[name]; exists {
-		return false
-	}
-	r.tools[name] = tool
-	slog.Debug("tool_registered", "tool_name", name)
+	r.tools[activate.GetName()] = activate
+	r.tools[readFile.GetName()] = readFile
+	r.alwaysAllowedTools[activate.GetName()] = true
+	r.alwaysAllowedTools[readFile.GetName()] = true
+	slog.Debug("tool_registered", "tool_name", activate.GetName())
+	slog.Debug("tool_registered", "tool_name", readFile.GetName())
 	return true
 }
 
@@ -678,7 +683,7 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 		if err != nil {
 			return nil, LoadResult{}, fmt.Errorf("sandbox for shell tool %s: %w", path, err)
 		}
-		shellTool = shellTool.WithSandbox(sb, cfg)
+		shellTool = shellTool.withSandboxConfig(sb, cfg)
 	}
 
 	s := shellTool.GetSchema()

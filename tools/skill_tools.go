@@ -15,11 +15,10 @@ import (
 
 // SkillActivateTool loads a skill's instructions and registers any executable scripts.
 type SkillActivateTool struct {
-	catalog       *skills.Catalog
-	registry      *ToolRegistry
-	mu            sync.Mutex
-	activated     map[string]bool
-	writablePaths []string // sandbox writable paths to communicate to the skill
+	catalog   *skills.Catalog
+	registry  *ToolRegistry
+	mu        sync.Mutex
+	activated map[string]bool
 }
 
 // NewSkillActivateTool creates the skill activation tool.
@@ -48,6 +47,21 @@ func (t *SkillActivateTool) GetSchema() *schema.ToolSchema {
 		schema.Params{"name": schema.S("The skill name from the available_skills list.")},
 		"name",
 	)
+}
+
+func (t *SkillActivateTool) bashWritablePaths() []string {
+	if t.registry == nil {
+		return nil
+	}
+	bash, ok := t.registry.registeredTool("bash")
+	if !ok {
+		return nil
+	}
+	info := SandboxDetails(bash)
+	if !info.Active || info.Config == nil {
+		return nil
+	}
+	return append([]string(nil), info.Config.WritablePaths...)
 }
 
 func (t *SkillActivateTool) activate(name string) (string, error) {
@@ -201,9 +215,9 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 		}
 	}
 
-	if len(t.writablePaths) > 0 {
+	if writablePaths := t.bashWritablePaths(); len(writablePaths) > 0 {
 		b.WriteString("Sandbox: bash commands can only write to: ")
-		b.WriteString(strings.Join(t.writablePaths, ", "))
+		b.WriteString(strings.Join(writablePaths, ", "))
 		b.WriteString("\n")
 	}
 

@@ -14,14 +14,15 @@ import (
 	"syscall"
 )
 
-// Sandbox wraps an exec.Cmd to apply platform-specific restrictions. Built-in
-// backends own descriptors needed until process start and therefore reject raw
-// Wrap calls with ErrManagedWrapRequired; execution call sites must use
-// WrapCmdManaged so those descriptors are closed after Start/Run.
+// Sandbox wraps an exec.Cmd to apply platform-specific restrictions.
+// Descriptor-owning built-in backends reject raw Wrap calls with
+// ErrManagedWrapRequired; execution call sites must use WrapCmdManaged so those
+// descriptors are closed after Start/Run.
 type Sandbox interface {
 	// Wrap modifies cmd so it runs inside the sandbox.
 	// The original command and args are preserved semantically;
-	// the implementation may prepend a wrapper binary.
+	// the implementation may prepend a wrapper binary. Implementations retain
+	// ownership of descriptors they place in cmd.ExtraFiles.
 	Wrap(cmd *exec.Cmd) error
 }
 
@@ -58,14 +59,16 @@ func WrapCmd(sb Sandbox, cmd *exec.Cmd) error {
 }
 
 // WrapCmdManaged applies a sandbox and returns an idempotent cleanup for only
-// the descriptors appended by that Wrap call. Invoke cleanup after cmd.Start
-// returns (or after Run/Output/CombinedOutput). Caller-owned ExtraFiles are
-// never closed, including files appended by the caller after wrapping.
+// the descriptors appended by a managed built-in backend's wrap. Invoke
+// cleanup after cmd.Start returns (or after Run/Output/CombinedOutput).
+// Caller-owned ExtraFiles are never closed, including files appended by the
+// caller after wrapping. Legacy Sandbox implementations retain ownership of
+// every descriptor they place in ExtraFiles and receive a no-op cleanup.
 func WrapCmdManaged(sb Sandbox, cmd *exec.Cmd) (func() error, error) {
 	if managed, ok := sb.(managedCommandSandbox); ok {
 		return wrapCmdManaged(cmd, func() error { return managed.wrapManaged(cmd, nil) })
 	}
-	return wrapCmdManaged(cmd, func() error { return WrapCmd(sb, cmd) })
+	return noSandboxFileCleanup, WrapCmd(sb, cmd)
 }
 
 // WrapCmdWithEnv applies sandbox restrictions and adds environment variables
@@ -96,12 +99,12 @@ func WrapCmdWithEnvManaged(sb Sandbox, cmd *exec.Cmd, explicitEnv map[string]str
 		return WrapCmdManaged(sb, cmd)
 	}
 	if err := validateExplicitEnv(explicitEnv); err != nil {
-		return func() error { return nil }, err
+		return noSandboxFileCleanup, err
 	}
 	if managed, ok := sb.(managedCommandSandbox); ok {
 		return wrapCmdManaged(cmd, func() error { return managed.wrapManaged(cmd, explicitEnv) })
 	}
-	return wrapCmdManaged(cmd, func() error { return WrapCmdWithEnv(sb, cmd, explicitEnv) })
+	return noSandboxFileCleanup, WrapCmdWithEnv(sb, cmd, explicitEnv)
 }
 
 func wrapCmdManaged(cmd *exec.Cmd, wrap func() error) (func() error, error) {
@@ -113,11 +116,12 @@ func wrapCmdManaged(cmd *exec.Cmd, wrap func() error) (func() error, error) {
 	}
 	cleanup := sandboxFileCleanup(cmd, owned)
 	if err != nil {
-		_ = cleanup()
-		return func() error { return nil }, err
+		return noSandboxFileCleanup, errors.Join(err, cleanup())
 	}
 	return cleanup, nil
 }
+
+func noSandboxFileCleanup() error { return nil }
 
 func sandboxFileCleanup(cmd *exec.Cmd, owned []*os.File) func() error {
 	var once sync.Once
@@ -127,6 +131,9 @@ func sandboxFileCleanup(cmd *exec.Cmd, owned []*os.File) func() error {
 			ownedSet := make(map[*os.File]bool, len(owned))
 			var closeErrors []error
 			for _, file := range owned {
+				if file == nil || ownedSet[file] {
+					continue
+				}
 				ownedSet[file] = true
 				if err := file.Close(); err != nil && !errors.Is(err, os.ErrInvalid) {
 					closeErrors = append(closeErrors, err)
@@ -1027,6 +1034,26 @@ func concatGitWorkspacePolicies(a, b []gitWorkspacePolicy) []gitWorkspacePolicy 
 // they belong to. AllowEnv passes any of these through explicitly.
 var (
 	sensitiveEnvNames = map[string]bool{
+		// Bare credential names do not match the suffix rules below because
+		// those rules deliberately require a separating underscore.
+		"API_KEY":     true,
+		"APIKEY":      true,
+		"TOKEN":       true,
+		"SECRET":      true,
+		"SECRET_KEY":  true,
+		"ACCESS_KEY":  true,
+		"PASSWORD":    true,
+		"PASSPHRASE":  true,
+		"CREDENTIALS": true,
+		"PRIVATE_KEY": true,
+		// Common database clients use historical names that are not
+		// credential-shaped according to the generic suffix rules. Database
+		// URLs commonly carry credentials in their user-info component.
+		"PGPASSWORD":               true,
+		"PGPASSFILE":               true,
+		"MYSQL_PWD":                true,
+		"REDISCLI_AUTH":            true,
+		"DATABASE_URL":             true,
 		"SSH_AUTH_SOCK":            true,
 		"SSH_AGENT_PID":            true,
 		"GPG_AGENT_INFO":           true,
