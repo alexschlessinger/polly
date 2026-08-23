@@ -405,12 +405,19 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 			// Check if we have preserved thinking blocks in metadata
 			if msg.Metadata != nil {
 				if thinkingBlocksData, ok := msg.Metadata["anthropic_thinking_blocks"]; ok {
-					// Restore thinking blocks with their signatures
-					// Handle both []map[string]any and []interface{} types
+					// Restore thinking blocks with their signatures. In-process
+					// the adapter stores []map[string]any; after a JSON session
+					// reload the value comes back as []any.
 					var thinkingBlocksList []map[string]any
 					switch v := thinkingBlocksData.(type) {
 					case []map[string]any:
 						thinkingBlocksList = v
+					case []any:
+						for _, item := range v {
+							if m, ok := item.(map[string]any); ok {
+								thinkingBlocksList = append(thinkingBlocksList, m)
+							}
+						}
 					}
 
 					for _, block := range thinkingBlocksList {
