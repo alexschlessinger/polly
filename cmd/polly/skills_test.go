@@ -71,7 +71,7 @@ func TestPersistActiveSkillsStoresMetadata(t *testing.T) {
 		t.Fatalf("Get() error = %v", err)
 	}
 
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
 	skillRuntime, err := newSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("newSkillRuntime() error = %v", err)
@@ -100,7 +100,7 @@ func TestRestoreActiveSkillsReloadsSkillTools(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
 	skillRuntime, err := newSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("newSkillRuntime() error = %v", err)
@@ -131,7 +131,6 @@ func TestLoadSkillCatalogWithSkillFlag(t *testing.T) {
 		t.Fatalf("loadSkillCatalog() error = %v", err)
 	}
 
-
 	if result.catalog == nil {
 		t.Fatal("expected catalog to be non-nil")
 	}
@@ -158,7 +157,6 @@ func TestLoadSkillCatalogCombinesSkillDirAndSkill(t *testing.T) {
 		t.Fatalf("loadSkillCatalog() error = %v", err)
 	}
 
-
 	if result.catalog == nil {
 		t.Fatal("expected catalog to be non-nil")
 	}
@@ -182,7 +180,7 @@ func TestAutoActivateSkills(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
 	runtime, err := newSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("newSkillRuntime() error = %v", err)

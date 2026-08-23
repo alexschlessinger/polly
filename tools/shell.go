@@ -18,6 +18,7 @@ type ShellTool struct {
 	schema        *schema.ToolSchema
 	sandbox       sandbox.Sandbox
 	sandboxCfg    *sandbox.Config // parsed from the script's schema "sandbox" field
+	effectiveCfg  *sandbox.Config // merged config used for the sandbox, when known
 	sandboxOptOut bool            // user set "sandbox": false
 }
 
@@ -25,23 +26,46 @@ type ShellTool struct {
 // or nil if the tool didn't declare any overrides.
 func (s *ShellTool) SandboxConfig() *sandbox.Config { return s.sandboxCfg }
 
-// SandboxOptOut reports whether the script explicitly disabled sandboxing
-// by setting "sandbox": false in its schema.
+// SandboxOptOut reports whether the script requested sandbox:false. The
+// registry honors that request only after an explicit WithUnsafeNoSandbox.
 func (s *ShellTool) SandboxOptOut() bool { return s.sandboxOptOut }
 
 // WantsSandbox reports whether the script's schema declared sandbox overrides.
 func (s *ShellTool) WantsSandbox() bool { return s.sandboxCfg != nil }
 
+// Sandboxed reports whether commands run inside a sandbox.
+func (s *ShellTool) Sandboxed() bool { return s.sandbox != nil }
+
 // WithSandbox returns a copy with sandboxing enabled.
-func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
-	return &ShellTool{Command: s.Command, schema: s.schema, sandbox: sb, sandboxCfg: s.sandboxCfg, sandboxOptOut: s.sandboxOptOut}
+func (s *ShellTool) WithSandbox(sb sandbox.Sandbox, cfg ...sandbox.Config) *ShellTool {
+	out := &ShellTool{
+		Command:       s.Command,
+		schema:        s.schema,
+		sandbox:       sb,
+		sandboxCfg:    copySandboxConfig(s.sandboxCfg),
+		effectiveCfg:  copySandboxConfig(s.effectiveCfg),
+		sandboxOptOut: s.sandboxOptOut,
+	}
+	if len(cfg) > 0 {
+		out.effectiveCfg = copySandboxConfig(&cfg[0])
+	}
+	return out
 }
 
-// NewShellTool creates a new shell tool from a command.
-// An optional sandbox.Sandbox can be provided to run the --schema
-// invocation inside a sandbox, preventing untrusted scripts from
-// executing side effects during schema loading.
-func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
+// SandboxDetails reports shell tool sandbox posture and the effective config if known.
+func (s *ShellTool) SandboxDetails() SandboxInfo {
+	return SandboxInfo{
+		Capable:  true,
+		Active:   s.sandbox != nil,
+		OptedOut: s.sandboxOptOut,
+		Config:   copySandboxConfig(s.effectiveCfg),
+	}
+}
+
+// newShellTool creates a shell tool and optionally contains its schema command.
+// Public callers should load process-backed tools through ToolRegistry, which
+// enforces either a sandbox factory or an explicit unsafe opt-out.
+func newShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
 	tool := &ShellTool{Command: command}
 
 	// Load schema from the tool, sandboxed if a sandbox is provided.
@@ -73,6 +97,21 @@ func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool,
 	}
 
 	return tool, nil
+}
+
+// NewShellTool loads a shell tool and optionally contains its --schema command.
+// Executions remain unsandboxed unless the returned tool is given a sandbox.
+//
+// Deprecated: use NewUnsafeShellTool for an explicitly unsandboxed tool, or
+// ToolRegistry.LoadShellTool to enforce the registry's sandbox policy.
+func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
+	return newShellTool(command, schemaSandbox...)
+}
+
+// NewUnsafeShellTool loads a shell tool without containing its --schema
+// command or future executions. Prefer ToolRegistry.LoadShellTool.
+func NewUnsafeShellTool(command string) (*ShellTool, error) {
+	return newShellTool(command)
 }
 
 // GetSchema returns the tool's schema, annotated with [sandboxed] if applicable
@@ -170,20 +209,50 @@ func (s *ShellTool) runCommandSandboxed(arg string, sb sandbox.Sandbox) (string,
 	return strings.TrimSpace(string(output)), nil
 }
 
-// LoadShellTools loads shell tools from the given file paths
+// LoadShellTools loads unsandboxed shell tools using the legacy best-effort
+// behavior: invalid paths are skipped and successfully loaded tools are
+// returned with a nil error. Prefer LoadShellToolsWithRegistry so discovery and
+// later executions are contained and the batch leaves no partial registry state.
+//
+// Deprecated: use LoadShellToolsWithRegistry.
 func LoadShellTools(paths []string) ([]Tool, error) {
-	var tools []Tool
-
+	loaded := make([]Tool, 0, len(paths))
 	for _, path := range paths {
 		slog.Debug("tool_loading", "path", path)
-		shellTool, err := NewShellTool(path)
+		tool, err := NewUnsafeShellTool(path)
 		if err != nil {
 			slog.Debug("tool_load_failed", "path", path, "error", err)
-			// Continue loading other tools even if one fails
 			continue
 		}
-		tools = append(tools, shellTool)
+		loaded = append(loaded, tool)
+	}
+	return loaded, nil
+}
+
+// LoadShellToolsWithRegistry prepares every shell tool under registry policy,
+// then registers the whole batch under one lock. A preparation failure leaves
+// the registry unchanged.
+func LoadShellToolsWithRegistry(registry *ToolRegistry, paths []string) ([]Tool, error) {
+	if registry == nil {
+		return nil, fmt.Errorf("tool registry is nil")
+	}
+	records := make([]stagedToolRecord, 0, len(paths))
+	for _, path := range paths {
+		prepared, _, err := registry.prepareShellToolWithNamespace(path, extractNamespace(path))
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, prepared...)
 	}
 
-	return tools, nil
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	loaded := make([]Tool, 0, len(records))
+	for _, record := range records {
+		registry.tools[record.name] = record.tool
+		loaded = append(loaded, record.tool)
+		slog.Debug("shell_tool_registered", "tool_name", record.name)
+	}
+	return loaded, nil
 }

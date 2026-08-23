@@ -13,19 +13,46 @@ import (
 
 // BashTool executes shell commands via bash -c.
 type BashTool struct {
-	workDir string
-	sandbox sandbox.Sandbox
+	workDir    string
+	sandbox    sandbox.Sandbox
+	sandboxCfg *sandbox.Config
 }
 
-// NewBashTool creates a bash tool that runs commands in the given working directory.
-// If workDir is empty, commands run in the current process directory.
-func NewBashTool(workDir string) *BashTool {
+func newBashTool(workDir string) *BashTool {
 	return &BashTool{workDir: workDir}
 }
 
+// NewBashTool creates an unsandboxed bash tool.
+//
+// Deprecated: use NewUnsafeBashTool to make the lack of containment explicit,
+// or load "bash" through a ToolRegistry configured with WithSandboxFactory.
+func NewBashTool(workDir string) *BashTool { return NewUnsafeBashTool(workDir) }
+
+// NewUnsafeBashTool creates an unsandboxed bash tool. Prefer loading "bash"
+// through a ToolRegistry configured with WithSandboxFactory. This constructor
+// is intentionally explicit because executing model-authored commands without
+// containment grants them the caller's ambient host access.
+func NewUnsafeBashTool(workDir string) *BashTool { return newBashTool(workDir) }
+
 // WithSandbox returns a copy with sandboxing enabled.
-func (t *BashTool) WithSandbox(sb sandbox.Sandbox) *BashTool {
-	return &BashTool{workDir: t.workDir, sandbox: sb}
+func (t *BashTool) WithSandbox(sb sandbox.Sandbox, cfg ...sandbox.Config) *BashTool {
+	out := &BashTool{workDir: t.workDir, sandbox: sb, sandboxCfg: copySandboxConfig(t.sandboxCfg)}
+	if len(cfg) > 0 {
+		out.sandboxCfg = copySandboxConfig(&cfg[0])
+	}
+	return out
+}
+
+// Sandboxed reports whether commands run inside a sandbox.
+func (t *BashTool) Sandboxed() bool { return t.sandbox != nil }
+
+// SandboxDetails reports bash sandbox posture and the effective config if known.
+func (t *BashTool) SandboxDetails() SandboxInfo {
+	return SandboxInfo{
+		Capable: true,
+		Active:  t.sandbox != nil,
+		Config:  copySandboxConfig(t.sandboxCfg),
+	}
 }
 
 func (t *BashTool) GetName() string   { return "bash" }

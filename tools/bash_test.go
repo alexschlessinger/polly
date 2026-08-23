@@ -23,7 +23,7 @@ func TestBashToolSchema(t *testing.T) {
 }
 
 func TestBashToolMetadata(t *testing.T) {
-	tool := NewBashTool("")
+	tool := newBashTool("")
 	if tool.GetName() != "bash" {
 		t.Fatalf("GetName() = %q, want %q", tool.GetName(), "bash")
 	}
@@ -36,7 +36,7 @@ func TestBashToolMetadata(t *testing.T) {
 }
 
 func TestBashToolExecutesCommand(t *testing.T) {
-	tool := NewBashTool("")
+	tool := newBashTool("")
 	result, err := tool.Execute(context.Background(), map[string]any{
 		"command": "echo hello",
 	})
@@ -48,9 +48,23 @@ func TestBashToolExecutesCommand(t *testing.T) {
 	}
 }
 
+func TestBashToolClosesSandboxFilesAfterExecution(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "bash-sandbox-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := newBashTool("").WithSandbox(&mockSandbox{file: file})
+	if _, err := tool.Execute(context.Background(), map[string]any{"command": "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Stat(); err == nil {
+		t.Fatal("sandbox-added descriptor remains open after bash execution")
+	}
+}
+
 func TestBashToolWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewBashTool(dir)
+	tool := newBashTool(dir)
 	result, err := tool.Execute(context.Background(), map[string]any{
 		"command": "pwd",
 	})
@@ -65,7 +79,7 @@ func TestBashToolWorkingDirectory(t *testing.T) {
 }
 
 func TestBashToolReturnsStderr(t *testing.T) {
-	tool := NewBashTool("")
+	tool := newBashTool("")
 	result, err := tool.Execute(context.Background(), map[string]any{
 		"command": "echo out && echo err >&2",
 	})
@@ -81,7 +95,7 @@ func TestBashToolReturnsStderr(t *testing.T) {
 }
 
 func TestBashToolReturnsErrorOnFailure(t *testing.T) {
-	tool := NewBashTool("")
+	tool := newBashTool("")
 	_, err := tool.Execute(context.Background(), map[string]any{
 		"command": "exit 42",
 	})
@@ -94,7 +108,7 @@ func TestBashToolReturnsErrorOnFailure(t *testing.T) {
 }
 
 func TestBashToolRejectsEmptyCommand(t *testing.T) {
-	tool := NewBashTool("")
+	tool := newBashTool("")
 	_, err := tool.Execute(context.Background(), map[string]any{
 		"command": "",
 	})
@@ -104,7 +118,7 @@ func TestBashToolRejectsEmptyCommand(t *testing.T) {
 }
 
 func TestBashToolRejectsMissingCommand(t *testing.T) {
-	tool := NewBashTool("")
+	tool := newBashTool("")
 	_, err := tool.Execute(context.Background(), map[string]any{})
 	if err == nil {
 		t.Fatal("Execute() expected error for missing command")
@@ -112,7 +126,7 @@ func TestBashToolRejectsMissingCommand(t *testing.T) {
 }
 
 func TestBashToolRegisteredAsNativeFactory(t *testing.T) {
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	result, err := registry.LoadToolAuto("bash")
 	if err != nil {
 		t.Fatalf("LoadToolAuto('bash') error = %v", err)
@@ -136,7 +150,7 @@ func TestBashToolRunsScriptByAbsolutePath(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	tool := NewBashTool("")
+	tool := newBashTool("")
 	result, err := tool.Execute(context.Background(), map[string]any{
 		"command": script + " world",
 	})

@@ -35,16 +35,28 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 	runtime.activateTool = NewSkillActivateTool(catalog, registry)
 	registry.Register(runtime.activateTool)
 	registry.Register(NewSkillReadFileTool(catalog))
-	bt := NewBashTool("")
 	cfg := sandbox.DefaultConfig()
-	cfg.AllowNetwork = true
-	if registry.HasSandbox() {
-		if sb, err := registry.NewSandboxDirect(cfg); err == nil {
-			bt = bt.WithSandbox(sb)
+	if existing, ok := registry.registeredTool("bash"); ok {
+		if info := SandboxDetails(existing); info.Config != nil {
+			cfg = *copySandboxConfig(info.Config)
 		}
+	} else {
+		bt := newBashTool("")
+		if registry.HasSandbox() {
+			// Fail closed: the skill bash tool must inherit the registry's base
+			// policy and must not fall back to an independently weaker config.
+			sb, effectiveCfg, err := registry.newSandboxFor("skill bash", nil)
+			if err != nil {
+				return nil, fmt.Errorf("sandbox for skill bash tool: %w", err)
+			}
+			cfg = effectiveCfg
+			bt = bt.WithSandbox(sb, cfg)
+		} else if err := registry.requireProcessSandbox("skill bash tool"); err != nil {
+			return nil, err
+		}
+		registry.registerIfAbsent(bt)
 	}
 	runtime.activateTool.writablePaths = cfg.WritablePaths
-	registry.Register(bt)
 	registry.MarkAlwaysAllowed("activate_skill")
 	registry.MarkAlwaysAllowed("read_skill_file")
 
