@@ -103,18 +103,20 @@ func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatM
 	return result
 }
 
-// GetMessageTokens returns the token count of a single message as it sits in
-// history. Assistant messages prefer their actual output token count from
-// provider metadata; input_tokens is deliberately never used, because
-// providers report it cumulatively (the entire prompt of the request that
-// produced the message), not as this message's own size. Everything else
-// falls back to estimation.
+// GetMessageTokens returns the token count of a single message as it would be
+// replayed to a provider. Provider-reported counts are deliberately not used:
+// input_tokens is cumulative (the entire request prompt), and output_tokens
+// includes reasoning tokens that are not replayed from history, so both
+// misstate the message's retained size.
 func GetMessageTokens(msg messages.ChatMessage) int {
-	if output := msg.GetOutputTokens(); output > 0 {
-		return output
-	}
 	return EstimateTokens(msg)
 }
+
+// imageTokenEstimate is the flat per-image cost used when estimating history
+// size. Providers charge roughly 250-1600 tokens per image depending on
+// dimensions and tiling; without dimensions available, charge the high end so
+// trimming evicts old images before they can overflow a provider window.
+const imageTokenEstimate = 1600
 
 // EstimateTokens provides a rough estimate of tokens in a message.
 // It uses a simple heuristic: 1 token ≈ 4 characters.
@@ -126,10 +128,12 @@ func EstimateTokens(msg messages.ChatMessage) int {
 
 	// Multimodal parts
 	for _, part := range msg.Parts {
-		if part.Type == "text" {
+		switch part.Type {
+		case "text":
 			count += len(part.Text) / 4
+		case "image_base64", "image_url":
+			count += imageTokenEstimate
 		}
-		// TODO: Add estimation for images if needed
 	}
 
 	// Tool calls

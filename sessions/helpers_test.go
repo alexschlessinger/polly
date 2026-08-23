@@ -302,19 +302,75 @@ func TestTrimHistoryIgnoresCumulativeInputTokens(t *testing.T) {
 	}
 }
 
-// TestGetMessageTokensIgnoresInputTokens pins GetMessageTokens to per-message
-// sizes: output tokens when reported, estimate otherwise, never input_tokens.
-func TestGetMessageTokensIgnoresInputTokens(t *testing.T) {
+// TestGetMessageTokensIgnoresProviderUsage pins GetMessageTokens to the
+// replay estimate: input_tokens is cumulative (whole request prompt) and
+// output_tokens includes reasoning tokens that are never replayed, so neither
+// measures the message's retained size.
+func TestGetMessageTokensIgnoresProviderUsage(t *testing.T) {
 	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello world"}
-	msg.SetTokenUsage(50000, 12)
-	if got := GetMessageTokens(msg); got != 12 {
-		t.Errorf("GetMessageTokens() = %d, want 12 (output tokens)", got)
+	msg.SetTokenUsage(50000, 12000) // reasoning-heavy turn: huge billed output, tiny answer
+	if got, want := GetMessageTokens(msg), EstimateTokens(msg); got != want {
+		t.Errorf("GetMessageTokens() = %d, want replay estimate %d", got, want)
+	}
+}
+
+// TestTrimHistoryIgnoresReasoningHeavyOutput is a regression test: a short
+// answer produced with heavy hidden reasoning (billed output_tokens far above
+// the replayed size) must not evict the surrounding exchanges.
+func TestTrimHistoryIgnoresReasoningHeavyOutput(t *testing.T) {
+	heavy := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "short answer"}
+	heavy.SetTokenUsage(4000, 3000) // billed output includes ~3k hidden reasoning tokens
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleSystem, Content: "sys"},
+		{Role: messages.MessageRoleUser, Content: "first question"},
+		{Role: messages.MessageRoleAssistant, Content: "first answer"},
+		{Role: messages.MessageRoleUser, Content: "second question"},
+		heavy,
 	}
 
-	noUsage := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello world"}
-	noUsage.SetTokenUsage(50000, 0)
-	if got, want := GetMessageTokens(noUsage), EstimateTokens(noUsage); got != want {
-		t.Errorf("GetMessageTokens() = %d, want estimate %d when no output tokens", got, want)
+	result := TrimHistory(history, 2000)
+	if len(result) != len(history) {
+		t.Errorf("TrimHistory() got %d messages, want %d (billed output tokens must not evict history)", len(result), len(history))
+	}
+}
+
+// TestTrimHistoryCountsImages verifies image parts carry a real token cost so
+// maxcontext cannot retain unbounded images at ~4 tokens each.
+func TestTrimHistoryCountsImages(t *testing.T) {
+	imageMsg := func(q string) messages.ChatMessage {
+		return messages.ChatMessage{
+			Role: messages.MessageRoleUser,
+			Parts: []messages.ContentPart{
+				{Type: "text", Text: q},
+				{Type: "image_base64", ImageData: "aGVsbG8=", MimeType: "image/png"},
+			},
+		}
+	}
+	if got := EstimateTokens(imageMsg("look")); got < imageTokenEstimate {
+		t.Fatalf("EstimateTokens(image msg) = %d, want >= %d", got, imageTokenEstimate)
+	}
+
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleSystem, Content: "sys"},
+		imageMsg("image one"),
+		{Role: messages.MessageRoleAssistant, Content: "about image one"},
+		imageMsg("image two"),
+		{Role: messages.MessageRoleAssistant, Content: "about image two"},
+		{Role: messages.MessageRoleUser, Content: "final question"},
+	}
+
+	// Budget fits one image exchange, not two.
+	result := TrimHistory(history, 2000)
+	images := 0
+	for _, m := range result {
+		for _, p := range m.Parts {
+			if p.Type == "image_base64" {
+				images++
+			}
+		}
+	}
+	if images > 1 {
+		t.Errorf("TrimHistory() kept %d images, want <= 1 within a 2000-token budget", images)
 	}
 }
 
