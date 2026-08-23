@@ -7,16 +7,39 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.2'
+          go-version-file: go.mod
+
+      - name: Install Linux sandbox backend
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # Ubuntu's AppArmor policy can restrict unprivileged user namespaces.
+          # Modern bubblewrap intentionally has no setuid mode, so enable the
+          # kernel facility it uses and prove the fixed backend works here.
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          /usr/bin/bwrap --ro-bind / / --dev /dev --proc /proc \
+            --unshare-pid --die-with-parent /usr/bin/true
 
       - run: go build ./...
 
       - run: go vet ./...
+
+      - name: Sandbox security tests
+        run: go test ./tools/sandbox
+        env:
+          POLLYTOOL_REQUIRE_SANDBOX_TESTS: '1'
 
       - run: go test ./...
