@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -25,6 +26,14 @@ type Sandbox interface {
 	Wrap(cmd *exec.Cmd) error
 }
 
+// ExplicitEnvSandbox can distinguish environment variables explicitly chosen
+// for one tool from ambient variables inherited by the parent process. Built-in
+// sandboxes implement this so credential-shaped explicit values can reach only
+// the target process without being exposed to a wrapper such as bwrap.
+type ExplicitEnvSandbox interface {
+	WrapWithEnv(cmd *exec.Cmd, explicitEnv map[string]string) error
+}
+
 // managedCommandSandbox is implemented by built-in backends whose wrapping
 // allocates parent-owned descriptors. Keeping this method private prevents
 // external Sandbox implementations from accidentally opting into lifecycle
@@ -35,9 +44,9 @@ type managedCommandSandbox interface {
 
 // ErrManagedWrapRequired is returned when a descriptor-owning built-in backend
 // is invoked through the legacy cleanup-less Wrap or WrapCmd API. Use
-// WrapCmdManaged and invoke its cleanup after Start, Run, Output, or
-// CombinedOutput returns.
-var ErrManagedWrapRequired = errors.New("sandbox backend requires WrapCmdManaged for deterministic descriptor cleanup")
+// WrapCmdManaged (or WrapCmdWithEnvManaged) and invoke its cleanup after Start,
+// Run, Output, or CombinedOutput returns.
+var ErrManagedWrapRequired = errors.New("sandbox backend requires WrapCmdManaged or WrapCmdWithEnvManaged for deterministic descriptor cleanup")
 
 // WrapCmd applies sandbox restrictions to cmd if sb is non-nil. Returns nil
 // when sb is nil (no sandbox available). Built-in backends return
@@ -58,6 +67,42 @@ func WrapCmdManaged(sb Sandbox, cmd *exec.Cmd) (func() error, error) {
 		return wrapCmdManaged(cmd, func() error { return managed.wrapManaged(cmd, nil) })
 	}
 	return wrapCmdManaged(cmd, func() error { return WrapCmd(sb, cmd) })
+}
+
+// WrapCmdWithEnv applies sandbox restrictions and adds environment variables
+// explicitly configured for the target. Explicit values override inherited
+// values and are merged after ambient-secret filtering by built-in sandboxes.
+// Built-in backends return ErrManagedWrapRequired before mutating cmd; use
+// WrapCmdWithEnvManaged for them.
+func WrapCmdWithEnv(sb Sandbox, cmd *exec.Cmd, explicitEnv map[string]string) error {
+	if len(explicitEnv) == 0 {
+		return WrapCmd(sb, cmd)
+	}
+	if err := validateExplicitEnv(explicitEnv); err != nil {
+		return err
+	}
+	if sb == nil {
+		cmd.Env = mergeExplicitEnv(cmd.Env, explicitEnv)
+		return nil
+	}
+	if explicitSandbox, ok := sb.(ExplicitEnvSandbox); ok {
+		return explicitSandbox.WrapWithEnv(cmd, explicitEnv)
+	}
+	return fmt.Errorf("sandbox %T cannot safely pass explicit target environment", sb)
+}
+
+// WrapCmdWithEnvManaged is WrapCmdWithEnv with descriptor lifecycle cleanup.
+func WrapCmdWithEnvManaged(sb Sandbox, cmd *exec.Cmd, explicitEnv map[string]string) (func() error, error) {
+	if len(explicitEnv) == 0 {
+		return WrapCmdManaged(sb, cmd)
+	}
+	if err := validateExplicitEnv(explicitEnv); err != nil {
+		return func() error { return nil }, err
+	}
+	if managed, ok := sb.(managedCommandSandbox); ok {
+		return wrapCmdManaged(cmd, func() error { return managed.wrapManaged(cmd, explicitEnv) })
+	}
+	return wrapCmdManaged(cmd, func() error { return WrapCmdWithEnv(sb, cmd, explicitEnv) })
 }
 
 func wrapCmdManaged(cmd *exec.Cmd, wrap func() error) (func() error, error) {
@@ -99,6 +144,40 @@ func sandboxFileCleanup(cmd *exec.Cmd, owned []*os.File) func() error {
 		})
 		return result
 	}
+}
+
+func validateExplicitEnv(explicitEnv map[string]string) error {
+	for name, value := range explicitEnv {
+		if name == "" || strings.ContainsRune(name, '=') || strings.IndexByte(name, 0) >= 0 {
+			return fmt.Errorf("invalid explicit target environment name %q", name)
+		}
+		if strings.IndexByte(value, 0) >= 0 {
+			return fmt.Errorf("explicit target environment value for %q contains NUL", name)
+		}
+	}
+	return nil
+}
+
+func mergeExplicitEnv(env []string, explicitEnv map[string]string) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	merged := make([]string, 0, len(env)+len(explicitEnv))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, overridden := explicitEnv[name]; !overridden {
+			merged = append(merged, entry)
+		}
+	}
+	keys := make([]string, 0, len(explicitEnv))
+	for name := range explicitEnv {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		merged = append(merged, name+"="+explicitEnv[name])
+	}
+	return merged
 }
 
 // resolveDenyWritePaths validates and resolves every write-denied path at the
@@ -1012,6 +1091,84 @@ func concatStrings(a, b []string) []string {
 	out = append(out, a...)
 	out = append(out, b...)
 	return out
+}
+
+// Default-stripped env vars: agent sockets give a sandboxed process use of the
+// user's keys even with ~/.ssh and ~/.gnupg masked, and credential-shaped
+// names (FOO_API_KEY, FOO_TOKEN, ...) are secrets regardless of which tool
+// they belong to. AllowEnv passes any of these through explicitly.
+var (
+	sensitiveEnvNames = map[string]bool{
+		"SSH_AUTH_SOCK":            true,
+		"SSH_AGENT_PID":            true,
+		"GPG_AGENT_INFO":           true,
+		"DBUS_SESSION_BUS_ADDRESS": true,
+		"DBUS_SYSTEM_BUS_ADDRESS":  true,
+		"DOCKER_HOST":              true,
+		"CONTAINER_HOST":           true,
+		"XDG_RUNTIME_DIR":          true,
+		"WAYLAND_DISPLAY":          true,
+		"PULSE_SERVER":             true,
+	}
+	sensitiveEnvPrefixes = []string{"POLLYTOOL_", "AWS_"}
+	sensitiveEnvSuffixes = []string{
+		"_API_KEY", "_APIKEY", "_TOKEN", "_SECRET", "_SECRET_KEY",
+		"_ACCESS_KEY", "_PASSWORD", "_PASSPHRASE", "_CREDENTIALS", "_PRIVATE_KEY",
+	}
+)
+
+func isSensitiveEnv(name string) bool {
+	upper := strings.ToUpper(name)
+	if sensitiveEnvNames[upper] {
+		return true
+	}
+	for _, p := range sensitiveEnvPrefixes {
+		if strings.HasPrefix(upper, p) {
+			return true
+		}
+	}
+	for _, s := range sensitiveEnvSuffixes {
+		if strings.HasSuffix(upper, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// filterEnv returns the env vars a sandboxed process should receive, plus the
+// names (never values) of the vars it removed, for debug logging.
+// With allowEnv set, only those names pass (an explicit allowlist wins over
+// the sensitivity heuristics). Otherwise everything passes except
+// sensitive-looking vars — see isSensitiveEnv.
+func filterEnv(env, allowEnv []string) (filtered, stripped []string) {
+	// Never leave filtered nil: os/exec treats a nil Env as "inherit the full
+	// parent environment", so a config that strips every var (e.g. an allowEnv
+	// listing only names absent from the environment) would hand the sandboxed
+	// process every secret this function exists to remove. A non-nil empty
+	// slice means "no environment", which is the fail-closed behavior we want.
+	filtered = make([]string, 0, len(env))
+	if len(allowEnv) > 0 {
+		allowed := make(map[string]bool, len(allowEnv))
+		for _, k := range allowEnv {
+			allowed[k] = true
+		}
+		for _, e := range env {
+			if k, _, _ := strings.Cut(e, "="); allowed[k] {
+				filtered = append(filtered, e)
+			} else {
+				stripped = append(stripped, k)
+			}
+		}
+		return filtered, stripped
+	}
+	for _, e := range env {
+		if k, _, _ := strings.Cut(e, "="); !isSensitiveEnv(k) {
+			filtered = append(filtered, e)
+		} else {
+			stripped = append(stripped, k)
+		}
+	}
+	return filtered, stripped
 }
 
 // commandSummary returns the first two argv entries — enough to identify the

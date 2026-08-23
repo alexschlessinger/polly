@@ -3,16 +3,21 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func skipIfNoSandboxExec(t *testing.T) {
@@ -121,17 +126,24 @@ func TestWrapCmd(t *testing.T) {
 	if cmd.Path != "/usr/bin/sandbox-exec" {
 		t.Fatalf("cmd.Path = %q, want /usr/bin/sandbox-exec", cmd.Path)
 	}
-	if len(cmd.Args) < 6 {
+	if len(cmd.Args) < 11 {
 		t.Fatalf("cmd.Args too short: %v", cmd.Args)
 	}
 	if cmd.Args[0] != "sandbox-exec" || cmd.Args[1] != "-p" {
 		t.Fatalf("cmd.Args prefix = %v, want [sandbox-exec -p ...]", cmd.Args[:2])
 	}
-	if len(cmd.ExtraFiles) != 0 {
-		t.Fatalf("cmd.ExtraFiles = %d, want none", len(cmd.ExtraFiles))
+	pipeCount, err := strconv.Atoi(cmd.Args[6])
+	if err != nil || pipeCount < 1 || cmd.Args[7] != "3" {
+		t.Fatalf("cmd.Args bootstrap = %v, want fixed Perl bootstrap and anonymous pipes from fd 3", cmd.Args[3:8])
 	}
-	if tail := cmd.Args[len(cmd.Args)-3:]; tail[0] != origPath || tail[1] != "-c" || tail[2] != "echo hello" {
-		t.Fatalf("cmd.Args tail = %v, want [%s -c echo hello]", tail, origPath)
+	if cmd.Env == nil || len(cmd.Env) != 0 {
+		t.Fatalf("sandbox-exec Env = %v, want non-nil empty wrapper environment", cmd.Env)
+	}
+	if len(cmd.ExtraFiles) != pipeCount {
+		t.Fatalf("cmd.ExtraFiles = %d, want %d environment pipe readers", len(cmd.ExtraFiles), pipeCount)
+	}
+	if tail := cmd.Args[len(cmd.Args)-4:]; tail[0] != origPath || tail[1] != "bash" || tail[2] != "-c" || tail[3] != "echo hello" {
+		t.Fatalf("cmd.Args tail = %v, want [%s bash -c echo hello]", tail, origPath)
 	}
 }
 
@@ -147,6 +159,450 @@ func TestDarwinLegacyWrapFailsBeforeAllocatingDescriptors(t *testing.T) {
 	}
 	if len(cmd.ExtraFiles) != 0 {
 		t.Fatalf("legacy WrapCmd allocated descriptors before failing: %v", cmd.ExtraFiles)
+	}
+	cmd = exec.Command("true")
+	if err := WrapCmdWithEnv(sb, cmd, map[string]string{"EXPLICIT": "value"}); err != ErrManagedWrapRequired {
+		t.Fatalf("WrapCmdWithEnv error = %v, want managed-cleanup requirement", err)
+	}
+	if len(cmd.ExtraFiles) != 0 {
+		t.Fatalf("legacy WrapCmdWithEnv allocated descriptors before failing: %v", cmd.ExtraFiles)
+	}
+}
+
+func TestDarwinTargetEnvironmentIsOnlyInAnonymousPipes(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerFile, err := os.CreateTemp(t.TempDir(), "caller-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callerFile.Close()
+	cmd := exec.Command("/usr/bin/true")
+	cmd.Env = []string{"SAFE_VAR=ambient-visible-value"}
+	cmd.ExtraFiles = []*os.File{callerFile}
+	cleanup, err := WrapCmdWithEnvManaged(sb, cmd, map[string]string{
+		"GITHUB_TOKEN": "explicit-wrapper-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeCount, parseErr := strconv.Atoi(cmd.Args[6])
+	if parseErr != nil || pipeCount < 1 || len(cmd.ExtraFiles) != 1+pipeCount || cmd.Args[3] != darwinEnvBootstrapPath || cmd.Args[4] != "-e" || cmd.Args[5] != darwinEnvBootstrapCode || cmd.Args[7] != "4" {
+		t.Fatalf("caller/bootstrap descriptors = %d, argv = %v", len(cmd.ExtraFiles), cmd.Args)
+	}
+	bootstrapPipes := append([]*os.File(nil), cmd.ExtraFiles[1:]...)
+	defer func() { _ = cleanup() }()
+
+	if cmd.Env == nil || len(cmd.Env) != 0 {
+		t.Fatalf("sandbox-exec Env = %v, want non-nil empty", cmd.Env)
+	}
+	joined := strings.Join(cmd.Args, "\x00")
+	for _, value := range []string{"ambient-visible-value", "explicit-wrapper-secret"} {
+		if strings.Contains(joined, value) {
+			t.Fatalf("wrapper argv exposes target environment value %q: %v", value, cmd.Args)
+		}
+	}
+	var data []byte
+	for _, pipe := range bootstrapPipes {
+		info, err := pipe.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeNamedPipe == 0 || info.Mode().IsRegular() {
+			t.Fatalf("environment transport %q mode = %v, want anonymous pipe", pipe.Name(), info.Mode())
+		}
+		flags, err := unix.FcntlInt(pipe.Fd(), unix.F_GETFL, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if flags&unix.O_ACCMODE != unix.O_RDONLY {
+			t.Fatalf("environment transport %q flags = %#x, want read-only", pipe.Name(), flags)
+		}
+		chunk, err := io.ReadAll(pipe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, chunk...)
+	}
+	wantPayload, err := darwinEnvBootstrapPayload([]string{
+		"SAFE_VAR=ambient-visible-value",
+		"GITHUB_TOKEN=explicit-wrapper-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, wantPayload) {
+		t.Fatalf("anonymous environment payload = %q, want %q", data, wantPayload)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	for _, pipe := range bootstrapPipes {
+		if _, err := pipe.Stat(); err == nil {
+			t.Fatal("managed cleanup left environment pipe open")
+		}
+	}
+	if len(cmd.ExtraFiles) != 1 || cmd.ExtraFiles[0] != callerFile {
+		t.Fatalf("managed cleanup removed caller descriptor: %v", cmd.ExtraFiles)
+	}
+	if _, err := callerFile.Stat(); err != nil {
+		t.Fatalf("managed cleanup closed caller descriptor: %v", err)
+	}
+}
+
+func TestDarwinEnvBootstrapPayloadRoundTrip(t *testing.T) {
+	want := []string{
+		"PLAIN=value",
+		"NOT-POSIX=still valid to execve",
+		"QUOTED=$(printf injected) `printf injected` $HOME; exit 91",
+		"MULTILINE=line one\nline two",
+	}
+	payload, err := darwinEnvBootstrapPayload(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := parseDarwinEnvBootstrapPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("payload round trip = %q, want %q", got, want)
+	}
+}
+
+func TestDarwinEnvBootstrapPayloadRejectsTruncation(t *testing.T) {
+	payload, err := darwinEnvBootstrapPayload([]string{"FIRST=one", "SECOND=two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseDarwinEnvBootstrapPayload(payload[:len(payload)-len("SECOND=two\x00")]); err == nil {
+		t.Fatal("length-framed payload accepted entry-boundary truncation")
+	}
+}
+
+func TestDarwinEnvBootstrapPayloadLimitLeavesCommandUntouched(t *testing.T) {
+	callerFile, err := os.CreateTemp(t.TempDir(), "caller-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callerFile.Close()
+	cmd := exec.Command("/usr/bin/true")
+	cmd.ExtraFiles = []*os.File{callerFile}
+	_, _, err = attachDarwinEnvBootstrap(cmd, []string{
+		"SAFE_LARGE_ENV=" + strings.Repeat("x", darwinEnvBootstrapMaxPayload),
+	})
+	if err == nil {
+		t.Fatal("oversized environment payload was accepted")
+	}
+	if len(cmd.ExtraFiles) != 1 || cmd.ExtraFiles[0] != callerFile {
+		t.Fatalf("failed environment setup changed caller descriptors: %v", cmd.ExtraFiles)
+	}
+}
+
+func TestDarwinEnvBootstrapExecutableIsTrusted(t *testing.T) {
+	if err := validateDarwinSandboxExecExecutable(darwinSandboxExecPath); err != nil {
+		t.Fatalf("system sandbox-exec rejected: %v", err)
+	}
+	if err := validateDarwinEnvBootstrapExecutable(darwinEnvBootstrapPath); err != nil {
+		t.Fatalf("system bootstrap rejected: %v", err)
+	}
+	if err := validateDarwinEnvBootstrapExecutable(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("missing bootstrap executable was accepted")
+	}
+	notExecutable := filepath.Join(t.TempDir(), "bootstrap")
+	if err := os.WriteFile(notExecutable, []byte("not executable"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDarwinEnvBootstrapExecutable(notExecutable); err == nil {
+		t.Fatal("non-executable bootstrap was accepted")
+	}
+}
+
+func TestDarwinExplicitTargetEnvStartsInsideSandbox(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-c", `IFS= read -r line; fd=closed; test -e /dev/fd/3 && fd=open; printf '%s|%s|%s|%s|%s' "$GITHUB_TOKEN" "$SAFE_VAR" "$1" "$line" "$fd"`, "bash", "argument with spaces")
+	cmd.Stdin = strings.NewReader("stdin delivery\n")
+	cmd.Env = []string{"GITHUB_TOKEN=ambient-secret", "SAFE_VAR=kept"}
+	cleanup, err := WrapCmdWithEnvManaged(sb, cmd, map[string]string{"GITHUB_TOKEN": "explicit-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	if cmd.Env == nil || len(cmd.Env) != 0 {
+		t.Fatalf("sandbox-exec Env = %v, want non-nil empty", cmd.Env)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	for _, value := range []string{"ambient-secret", "explicit-secret", "kept"} {
+		if strings.Contains(joined, value) {
+			t.Fatalf("wrapper argv exposes target environment value %q: %v", value, cmd.Args)
+		}
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandboxed target failed: %v (%s)", err, out)
+	}
+	if string(out) != "explicit-secret|kept|argument with spaces|stdin delivery|closed" {
+		t.Fatalf("target environment/argv/stdin = %q", out)
+	}
+}
+
+func TestDarwinLargeTargetEnvironmentUsesMultipleAnonymousPipes(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const valueSize = 96 << 10
+	value := strings.Repeat("x", valueSize)
+	callerBefore, err := os.CreateTemp(t.TempDir(), "caller-before-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callerBefore.Close()
+	if _, err := callerBefore.WriteString("before"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callerBefore.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	callerAfter, err := os.CreateTemp(t.TempDir(), "caller-after-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callerAfter.Close()
+	if _, err := callerAfter.WriteString("after"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callerAfter.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/bin/perl", "-e", `
+my ($first_fd, $pipe_count, $before_fd, $after_fd, @transport_specs) = @ARGV;
+@transport_specs == 3 * $pipe_count or die "invalid transport descriptor specifications";
+sub fd_identity {
+    my ($fd) = @_;
+    open(my $fh, "<&", $fd) or return "";
+    my @identity = stat($fh);
+    close($fh) or die "close descriptor probe $fd: $!";
+    return @identity ? join(":", @identity[0, 1, 2, 6]) : "";
+}
+my @open = ();
+for (my $offset = 0; $offset < $pipe_count; $offset++) {
+    my ($duplicate_fd, $high_duplicate_fd, $transport_identity) = splice(@transport_specs, 0, 3);
+    push @open, grep { fd_identity($_) eq $transport_identity }
+        ($first_fd + $offset, $duplicate_fd, $high_duplicate_fd);
+}
+die "bootstrap transport descriptors survived exec: @open" if @open;
+sub read_fd {
+    my ($fd) = @_;
+    open(my $fh, "<&", $fd) or die "open caller descriptor $fd: $!";
+    local $/;
+    return scalar(<$fh>) // "";
+}
+die "caller descriptor before transport was closed" unless read_fd($before_fd) eq "before";
+die "caller descriptor after transport was closed" unless read_fd($after_fd) eq "after";
+print length($ENV{"SAFE_LARGE_ENV"} // "");
+`)
+	cmd.Env = []string{"SAFE_LARGE_ENV=" + value}
+	cmd.ExtraFiles = []*os.File{callerBefore}
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	pipeCount, err := strconv.Atoi(cmd.Args[6])
+	if err != nil || pipeCount < 2 || len(cmd.ExtraFiles) != 1+pipeCount {
+		t.Fatalf("large environment used %d descriptors, argv = %v", len(cmd.ExtraFiles)-1, cmd.Args[:8])
+	}
+	firstFD, err := strconv.Atoi(cmd.Args[7])
+	if err != nil || firstFD != 4 {
+		t.Fatalf("first bootstrap descriptor = %q, want 4", cmd.Args[7])
+	}
+	duplicateChildStart := 3 + len(cmd.ExtraFiles)
+	transportDuplicates := make([]*os.File, 0, pipeCount)
+	transportSpecs := make([]string, 0, 3*pipeCount)
+	// F_DUPFD intentionally leaves high, non-close-on-exec aliases in addition
+	// to the contiguous ExtraFiles mappings. This reproduces the several
+	// scattered transport descriptors seen under sandbox-exec on CI.
+	for offset, transport := range cmd.ExtraFiles[1:] {
+		var transportStat unix.Stat_t
+		if err := unix.Fstat(int(transport.Fd()), &transportStat); err != nil {
+			t.Fatal(err)
+		}
+		transportIdentity := fmt.Sprintf("%d:%d:%d:%d", transportStat.Dev, transportStat.Ino, transportStat.Mode, transportStat.Rdev)
+		duplicateFD, err := unix.FcntlInt(transport.Fd(), unix.F_DUPFD, 128)
+		if err != nil {
+			t.Fatal(err)
+		}
+		transportDuplicate := os.NewFile(uintptr(duplicateFD), fmt.Sprintf("bootstrap-transport-duplicate-%d", offset))
+		defer transportDuplicate.Close()
+		transportDuplicates = append(transportDuplicates, transportDuplicate)
+		transportSpecs = append(transportSpecs,
+			strconv.Itoa(duplicateChildStart+offset),
+			strconv.Itoa(duplicateFD),
+			transportIdentity,
+		)
+	}
+	cmd.ExtraFiles = append(cmd.ExtraFiles, transportDuplicates...)
+	afterChildFD := 3 + len(cmd.ExtraFiles)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, callerAfter)
+	cmd.Args = append(cmd.Args,
+		strconv.Itoa(firstFD),
+		strconv.Itoa(pipeCount),
+		"3",
+		strconv.Itoa(afterChildFD),
+	)
+	cmd.Args = append(cmd.Args, transportSpecs...)
+	if strings.Contains(strings.Join(cmd.Args, "\x00"), value) {
+		t.Fatal("large target environment leaked into wrapper argv")
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("large environment target failed: %v (%s)", err, out)
+	}
+	if string(out) != strconv.Itoa(valueSize) {
+		t.Fatalf("large target environment length = %q, want %d", out, valueSize)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	wantCallerFiles := append([]*os.File{callerBefore}, transportDuplicates...)
+	wantCallerFiles = append(wantCallerFiles, callerAfter)
+	if !slices.Equal(cmd.ExtraFiles, wantCallerFiles) {
+		t.Fatalf("managed cleanup removed caller descriptors: %v", cmd.ExtraFiles)
+	}
+	for _, file := range cmd.ExtraFiles {
+		if _, err := file.Stat(); err != nil {
+			t.Fatalf("managed cleanup closed caller descriptor %q: %v", file.Name(), err)
+		}
+	}
+}
+
+func TestDarwinAnonymousEnvPipesManagedCleanupWithoutSuccessfulStart(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	for _, tc := range []struct {
+		name      string
+		failStart bool
+	}{
+		{name: "without start"},
+		{name: "failed start", failStart: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sb, err := New(Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/usr/bin/true")
+			cmd.Env = []string{"SAFE_LARGE_ENV=" + strings.Repeat("x", 96<<10)}
+			cleanup, err := WrapCmdManaged(sb, cmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owned := append([]*os.File(nil), cmd.ExtraFiles...)
+			if len(owned) < 2 {
+				t.Fatalf("large environment used %d pipe shards, want multiple", len(owned))
+			}
+			if tc.failStart {
+				cmd.Path = filepath.Join(t.TempDir(), "missing-sandbox-exec")
+				if err := cmd.Start(); err == nil {
+					t.Fatal("command unexpectedly started")
+				}
+			}
+			if err := cleanup(); err != nil {
+				t.Fatal(err)
+			}
+			if len(cmd.ExtraFiles) != 0 {
+				t.Fatalf("managed cleanup retained descriptors: %v", cmd.ExtraFiles)
+			}
+			for _, pipe := range owned {
+				if _, err := pipe.Stat(); err == nil {
+					t.Fatalf("managed cleanup left pipe %q open", pipe.Name())
+				}
+			}
+		})
+	}
+}
+
+func TestDarwinTruncatedAnonymousEnvironmentNeverExecutesTarget(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "target-ran")
+	cmd := exec.Command("/bin/sh", "-c", `printf ran > "$1"`, "sh", marker)
+	cmd.Env = []string{"SAFE_VAR=value"}
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	one := []byte{0}
+	if _, err := io.ReadFull(cmd.ExtraFiles[0], one); err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("bootstrap accepted truncated environment: %s", out)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("target ran after truncated environment: %v", err)
+	}
+}
+
+func TestDarwinStrictAllowEnvReachesTargetExactly(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{AllowEnv: []string{"ONLY"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/usr/bin/env")
+	cmd.Env = []string{
+		"ONLY=kept",
+		"OMIT=blocked",
+		"PWD=/must-not-reappear",
+		"SHLVL=99",
+	}
+	cleanup, err := WrapCmdWithEnvManaged(sb, cmd, map[string]string{
+		"EXPLICIT":  "given",
+		"NOT-POSIX": "execve-valid",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandboxed env target failed: %v (%s)", err, out)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	want := map[string]bool{
+		"ONLY=kept":              true,
+		"EXPLICIT=given":         true,
+		"NOT-POSIX=execve-valid": true,
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("target environment = %q, want exactly %v", lines, want)
+	}
+	for _, line := range lines {
+		if !want[line] {
+			t.Fatalf("target environment contains unexpected entry %q: %q", line, lines)
+		}
 	}
 }
 
@@ -173,7 +629,7 @@ func TestSandboxPreservesExecutableResolvedBeforeEnvFiltering(t *testing.T) {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	foundResolved := false
-	for _, arg := range cmd.Args {
+	for _, arg := range cmd.Args[5:] {
 		if arg == resolvedPath {
 			foundResolved = true
 			break
@@ -1091,6 +1547,36 @@ func TestSandboxBlocksSymlinkedDenyPath(t *testing.T) {
 	}
 }
 
+func TestWrapStripsSensitiveEnvByDefault(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", `printf '%s|%s|%s|%s' "$SSH_AUTH_SOCK" "$GITHUB_TOKEN" "$MY_API_KEY" "$OTHER_VAR"`)
+	cmd.Env = []string{
+		"SSH_AUTH_SOCK=/run/agent.sock",
+		"GITHUB_TOKEN=ghp",
+		"MY_API_KEY=sk",
+		"OTHER_VAR=kept",
+	}
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if cmd.Env == nil || len(cmd.Env) != 0 {
+		t.Fatalf("sandbox-exec Env = %v, want non-nil empty wrapper environment", cmd.Env)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandboxed target failed: %v (%s)", err, out)
+	}
+	if string(out) != "|||kept" {
+		t.Fatalf("target environment = %q, want only OTHER_VAR=kept", out)
+	}
+}
+
 func TestBuildProfileDeniesSignal(t *testing.T) {
 	profile := buildProfile(Config{})
 	for _, rule := range []string{
@@ -1532,6 +2018,40 @@ func TestDarwinWritablePathCannotHardlinkExternalFile(t *testing.T) {
 		if !os.SameFile(before, after) {
 			t.Fatal("external file identity changed during hardlink probe")
 		}
+	}
+}
+
+func TestDarwinPreservesCustomAndEmptyArgumentVectors(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	custom := exec.Command("/bin/sh", "-c", `printf '%s' "$0"`)
+	custom.Args[0] = "custom-argv-zero"
+	cleanup, err := WrapCmdManaged(sb, custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := custom.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil {
+		t.Fatalf("custom argv0 target failed: %v (%s)", runErr, out)
+	}
+	if string(out) != "custom-argv-zero" {
+		t.Fatalf("target argv0 = %q, want custom-argv-zero", out)
+	}
+
+	empty := &exec.Cmd{Path: "/usr/bin/true"}
+	cleanup, err = WrapCmdManaged(sb, empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runErr = empty.Run()
+	_ = cleanup()
+	if runErr != nil {
+		t.Fatalf("empty Args target failed: %v", runErr)
 	}
 }
 

@@ -8,11 +8,82 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
-const darwinSandboxExecPath = "/usr/bin/sandbox-exec"
+const (
+	darwinSandboxExecPath          = "/usr/bin/sandbox-exec"
+	darwinEnvBootstrapPath         = "/usr/bin/perl"
+	darwinEnvBootstrapMagic        = "pollytool-darwin-env-v2"
+	darwinEnvBootstrapMaxPayload   = 1 << 20
+	darwinEnvBootstrapMaxPipeCount = 512
+	darwinEnvBootstrapCode         = `use strict;
+use warnings;
+use POSIX ();
+my $pipe_count = shift @ARGV;
+my $first_fd = shift @ARGV;
+defined($pipe_count) && defined($first_fd) or die "missing environment descriptors";
+$pipe_count =~ /\A[1-9][0-9]*\z/ && $pipe_count <= 512 or die "invalid environment descriptor count";
+$first_fd =~ /\A(?:0|[1-9][0-9]*)\z/ && $first_fd >= 3 or die "invalid environment descriptor";
+my $framed = "";
+my %transport_identities = ();
+for (my $offset = 0; $offset < $pipe_count; $offset++) {
+    my $fd = $first_fd + $offset;
+    open(my $fh, "<&=$fd") or die "open environment descriptor: $!";
+    my @identity = stat($fh);
+    @identity or die "stat environment descriptor: $!";
+    $transport_identities{join(":", @identity[0, 1, 2, 6])} = 1;
+    binmode($fh);
+    local $/;
+    my $chunk = <$fh>;
+    $chunk = "" unless defined($chunk);
+    close($fh) or die "close environment descriptor: $!";
+    $framed .= $chunk;
+}
+opendir(my $fd_dir, "/dev/fd") or die "open descriptor directory: $!";
+my @open_fds = grep { /\A(?:0|[1-9][0-9]*)\z/ } readdir($fd_dir);
+closedir($fd_dir) or die "close descriptor directory: $!";
+my @transport_duplicates = ();
+for my $fd (@open_fds) {
+    open(my $candidate, "<&", $fd) or next;
+    my @identity = stat($candidate);
+    close($candidate) or die "close descriptor probe: $!";
+    next unless @identity;
+    push @transport_duplicates, 0 + $fd
+        if $transport_identities{join(":", @identity[0, 1, 2, 6])};
+}
+for my $fd (@transport_duplicates) {
+    defined(POSIX::close($fd)) or die "close duplicate environment descriptor: $!";
+}
+my ($magic, $length_field, $data) = split(/\0/, $framed, 3);
+defined($magic) && defined($length_field) && defined($data) or die "invalid environment payload";
+$magic eq "pollytool-darwin-env-v2" or die "invalid environment payload";
+$length_field =~ /\A(?:0|[1-9][0-9]*)\z/ or die "invalid environment payload";
+my $expected = 0 + $length_field;
+length($data) == $expected or die "truncated environment payload";
+my @parts = ();
+if (length($data)) {
+    @parts = split(/\0/, $data, -1);
+    my $tail = pop @parts;
+    defined($tail) && $tail eq "" or die "invalid environment payload";
+}
+%ENV = ();
+for my $entry (@parts) {
+    my ($name, $value) = split(/=/, $entry, 2);
+    die "invalid environment entry" unless defined($value) && length($name);
+    $ENV{$name} = $value;
+}
+die "missing target" unless @ARGV;
+my $target = shift @ARGV;
+die "missing target argument vector" unless @ARGV;
+exec {$target} @ARGV;
+die "exec target: $!";
+`
+)
 
 type darwinSandbox struct {
 	cfg             Config
@@ -24,6 +95,9 @@ type darwinSandbox struct {
 // New creates a Sandbox for macOS using sandbox-exec with Seatbelt profiles.
 func New(cfg Config) (Sandbox, error) {
 	if err := validateDarwinSandboxExecExecutable(darwinSandboxExecPath); err != nil {
+		return nil, err
+	}
+	if err := validateDarwinEnvBootstrapExecutable(darwinEnvBootstrapPath); err != nil {
 		return nil, err
 	}
 	var err error
@@ -64,9 +138,16 @@ func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
 	return ErrManagedWrapRequired
 }
 
+func (s *darwinSandbox) WrapWithEnv(cmd *exec.Cmd, explicitEnv map[string]string) error {
+	if err := validateExplicitEnv(explicitEnv); err != nil {
+		return err
+	}
+	return ErrManagedWrapRequired
+}
+
 func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string) error {
-	if len(explicitEnv) > 0 {
-		return fmt.Errorf("sandbox backend does not support explicit target environment")
+	if err := validateExplicitEnv(explicitEnv); err != nil {
+		return err
 	}
 	if err := validateAuthorityPathIdentities(s.authorityPaths); err != nil {
 		return err
@@ -83,7 +164,8 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 	if env == nil {
 		env = os.Environ()
 	}
-	filtered, stripped := filterDarwinEnv(env, s.cfg.AllowEnv)
+	filtered, stripped := filterEnv(env, s.cfg.AllowEnv)
+	filtered = mergeExplicitEnv(filtered, explicitEnv)
 
 	origArgs := cmd.Args
 	origPath, err := resolvedExecutablePath(cmd)
@@ -98,19 +180,31 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 		"writable_paths", s.cfg.WritablePaths,
 		"env_stripped", stripped,
 		"denied_paths", len(denied))
+	bootstrapFD, bootstrapPipeCount, err := attachDarwinEnvBootstrap(cmd, filtered)
+	if err != nil {
+		return fmt.Errorf("prepare target environment: %w", err)
+	}
 	cmd.Path = s.sandboxExecPath
 	// The deny profile is rebuilt on every wrap so newly created credential
 	// paths are covered. Approved write roots remain the construction-time set.
-	// Execute the already-resolved target directly so no PATH lookup happens
-	// inside the sandbox. The env-delivery bootstrap later restores the exact
-	// original argv; until then argv[0] is the resolved executable path.
-	targetArgs := []string{origPath}
-	if len(origArgs) > 1 {
-		targetArgs = append(targetArgs, origArgs[1:]...)
+	targetArgs := origArgs
+	if len(targetArgs) == 0 {
+		targetArgs = []string{origPath}
 	}
-	cmd.Args = []string{"sandbox-exec", "-p", buildProfileWithWritePaths(s.cfg, s.writePaths, denied)}
+	cmd.Args = []string{
+		"sandbox-exec", "-p", buildProfileWithWritePaths(s.cfg, s.writePaths, denied), darwinEnvBootstrapPath,
+		"-e", darwinEnvBootstrapCode, strconv.Itoa(bootstrapPipeCount), strconv.Itoa(bootstrapFD), origPath,
+	}
 	cmd.Args = append(cmd.Args, targetArgs...)
-	cmd.Env = filtered
+	// sandbox-exec and the fixed, root-owned bootstrap receive no target
+	// environment. Perl concatenates the anonymous, prefilled pipe shards and
+	// validates their length-framed payload only after Seatbelt is active, then
+	// closes every reader and any inherited duplicate that still identifies the
+	// same pipe, clears its own environment, and uses its builtin exec to launch
+	// the target with the exact filtered environment, resolved executable,
+	// original argv, inherited stdin, and unrelated caller-owned ExtraFiles. No
+	// intermediate exec argv contains a target value.
+	cmd.Env = []string{}
 
 	// Run in a new session, detaching the controlling terminal. This is the
 	// macOS counterpart to bwrap's --new-session on Linux: it closes terminal
@@ -125,33 +219,8 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 	return nil
 }
 
-// filterDarwinEnv applies the allowEnv allowlist, or strips POLLYTOOL_-prefixed
-// variables when no allowlist is configured, and reports the stripped names
-// (never values) for debug logging.
-func filterDarwinEnv(env, allowEnv []string) (filtered, stripped []string) {
-	filtered = make([]string, 0, len(env))
-	if len(allowEnv) > 0 {
-		allowed := make(map[string]bool, len(allowEnv))
-		for _, k := range allowEnv {
-			allowed[k] = true
-		}
-		for _, e := range env {
-			if k, _, _ := strings.Cut(e, "="); allowed[k] {
-				filtered = append(filtered, e)
-			} else {
-				stripped = append(stripped, k)
-			}
-		}
-		return filtered, stripped
-	}
-	for _, e := range env {
-		if k, _, _ := strings.Cut(e, "="); !strings.HasPrefix(k, "POLLYTOOL_") {
-			filtered = append(filtered, e)
-		} else {
-			stripped = append(stripped, k)
-		}
-	}
-	return filtered, stripped
+func validateDarwinEnvBootstrapExecutable(path string) error {
+	return validateDarwinTrustedExecutable(path, "environment bootstrap")
 }
 
 func validateDarwinSandboxExecExecutable(path string) error {
@@ -171,6 +240,151 @@ func validateDarwinTrustedExecutable(path, description string) error {
 		return fmt.Errorf("Darwin sandbox %s %q is not root-owned and immutable to non-root users", description, path)
 	}
 	return nil
+}
+
+// attachDarwinEnvBootstrap transports the target environment through
+// anonymous, prefilled pipe shards. Each writer is nonblocking and closed
+// before Wrap returns; when one pipe fills, the remainder goes into another.
+// This handles payloads larger than a pipe buffer without a named object,
+// target-visible writer, or goroutine that could outlive an abandoned raw Wrap.
+// On any setup error cmd.ExtraFiles is left unchanged.
+func attachDarwinEnvBootstrap(cmd *exec.Cmd, env []string) (int, int, error) {
+	payload, err := darwinEnvBootstrapPayload(env)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(payload) > darwinEnvBootstrapMaxPayload {
+		return 0, 0, fmt.Errorf("target environment payload is %d bytes; maximum is %d", len(payload), darwinEnvBootstrapMaxPayload)
+	}
+	readers, err := prefillDarwinEnvPipes(payload)
+	if err != nil {
+		return 0, 0, err
+	}
+	firstFD := 3 + len(cmd.ExtraFiles)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, readers...)
+	return firstFD, len(readers), nil
+}
+
+func prefillDarwinEnvPipes(payload []byte) ([]*os.File, error) {
+	readers := make([]*os.File, 0, 1)
+	closeReaders := func() {
+		for _, reader := range readers {
+			_ = reader.Close()
+		}
+	}
+	for len(payload) > 0 {
+		if len(readers) >= darwinEnvBootstrapMaxPipeCount {
+			closeReaders()
+			return nil, fmt.Errorf("target environment requires more than %d anonymous pipe shards", darwinEnvBootstrapMaxPipeCount)
+		}
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			closeReaders()
+			return nil, fmt.Errorf("create anonymous environment pipe: %w", err)
+		}
+		// Cache Fd once: os.File.Fd may restore blocking mode for descriptors
+		// managed by the runtime poller, which would defeat the shard boundary.
+		writerFD := int(writer.Fd())
+		if err := unix.SetNonblock(writerFD, true); err != nil {
+			_ = reader.Close()
+			_ = writer.Close()
+			closeReaders()
+			return nil, fmt.Errorf("make anonymous environment pipe nonblocking: %w", err)
+		}
+		writtenTotal := 0
+		for len(payload) > 0 {
+			written, writeErr := unix.Write(writerFD, payload)
+			if written > 0 {
+				payload = payload[written:]
+				writtenTotal += written
+			}
+			if writeErr == nil {
+				if written == 0 {
+					_ = reader.Close()
+					_ = writer.Close()
+					closeReaders()
+					return nil, fmt.Errorf("prefill anonymous environment pipe: zero-byte write")
+				}
+				continue
+			}
+			if writeErr == unix.EINTR {
+				continue
+			}
+			if writeErr == unix.EAGAIN || writeErr == unix.EWOULDBLOCK {
+				break
+			}
+			_ = reader.Close()
+			_ = writer.Close()
+			closeReaders()
+			return nil, fmt.Errorf("prefill anonymous environment pipe: %w", writeErr)
+		}
+		if closeErr := writer.Close(); closeErr != nil {
+			_ = reader.Close()
+			closeReaders()
+			return nil, fmt.Errorf("close anonymous environment pipe writer: %w", closeErr)
+		}
+		if writtenTotal == 0 {
+			_ = reader.Close()
+			closeReaders()
+			return nil, fmt.Errorf("anonymous environment pipe accepted no payload")
+		}
+		readers = append(readers, reader)
+	}
+	return readers, nil
+}
+
+func darwinEnvBootstrapPayload(env []string) ([]byte, error) {
+	var body strings.Builder
+	for _, entry := range env {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || name == "" || strings.ContainsRune(name, '=') || strings.IndexByte(name, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
+			return nil, fmt.Errorf("invalid target environment entry for %q", name)
+		}
+		if len(entry)+1 > darwinEnvBootstrapMaxPayload-body.Len() {
+			return nil, fmt.Errorf("target environment payload exceeds %d bytes", darwinEnvBootstrapMaxPayload)
+		}
+		bodyLen := body.Len() + len(entry) + 1
+		framedLen := len(darwinEnvBootstrapMagic) + 1 + len(strconv.Itoa(bodyLen)) + 1 + bodyLen
+		if framedLen > darwinEnvBootstrapMaxPayload {
+			return nil, fmt.Errorf("target environment payload exceeds %d bytes", darwinEnvBootstrapMaxPayload)
+		}
+		body.WriteString(entry)
+		body.WriteByte(0)
+	}
+	var payload strings.Builder
+	payload.WriteString(darwinEnvBootstrapMagic)
+	payload.WriteByte(0)
+	payload.WriteString(strconv.Itoa(body.Len()))
+	payload.WriteByte(0)
+	payload.WriteString(body.String())
+	return []byte(payload.String()), nil
+}
+
+func parseDarwinEnvBootstrapPayload(data []byte) ([]string, error) {
+	magic, rest, found := strings.Cut(string(data), "\x00")
+	if !found || magic != darwinEnvBootstrapMagic {
+		return nil, fmt.Errorf("invalid bootstrap environment payload")
+	}
+	lengthField, body, found := strings.Cut(rest, "\x00")
+	expected, err := strconv.Atoi(lengthField)
+	if !found || err != nil || expected < 0 || strconv.Itoa(expected) != lengthField || len(body) != expected {
+		return nil, fmt.Errorf("invalid bootstrap environment payload")
+	}
+	if body == "" {
+		return nil, nil
+	}
+	parts := strings.Split(body, "\x00")
+	if parts[len(parts)-1] != "" {
+		return nil, fmt.Errorf("invalid bootstrap environment payload")
+	}
+	env := append([]string(nil), parts[:len(parts)-1]...)
+	for _, entry := range env {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || name == "" || strings.ContainsRune(name, '=') || strings.IndexByte(name, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
+			return nil, fmt.Errorf("invalid bootstrap environment entry for %q", name)
+		}
+	}
+	return env, nil
 }
 
 // pathAndResolved returns path plus its symlink-resolved target when that

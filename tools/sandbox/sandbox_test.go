@@ -518,6 +518,48 @@ func TestWrapCmdApplied(t *testing.T) {
 	}
 }
 
+func TestWrapCmdWithEnvRejectsSandboxWithoutExplicitEnvSupport(t *testing.T) {
+	sb := &mockSandbox{}
+	cmd := exec.Command("echo", "hello")
+	err := WrapCmdWithEnv(sb, cmd, map[string]string{"LD_PRELOAD": "/tmp/inject.so"})
+	if err == nil || !strings.Contains(err.Error(), "cannot safely pass explicit target environment") {
+		t.Fatalf("WrapCmdWithEnv error = %v, want fail-closed unsupported-sandbox error", err)
+	}
+	if sb.called {
+		t.Fatal("unsupported sandbox was called after explicit environment validation failed")
+	}
+}
+
+func TestWrapCmdWithEnvNilSandboxOverridesInheritedValue(t *testing.T) {
+	cmd := exec.Command("echo", "hello")
+	cmd.Env = []string{"TOKEN=ambient", "SAFE=kept"}
+	if err := WrapCmdWithEnv(nil, cmd, map[string]string{"TOKEN": "explicit"}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(cmd.Env, " ")
+	if joined != "SAFE=kept TOKEN=explicit" {
+		t.Fatalf("merged Env = %q, want %q", joined, "SAFE=kept TOKEN=explicit")
+	}
+}
+
+func TestWrapCmdWithEnvRejectsInvalidExplicitEntries(t *testing.T) {
+	tests := []map[string]string{
+		{"": "value"},
+		{"BAD=NAME": "value"},
+		{"BAD\x00NAME": "value"},
+		{"NAME": "bad\x00value"},
+	}
+	for _, explicitEnv := range tests {
+		cmd := exec.Command("true")
+		if err := WrapCmdWithEnv(nil, cmd, explicitEnv); err == nil {
+			t.Fatalf("WrapCmdWithEnv accepted invalid environment %q", explicitEnv)
+		}
+		if cmd.Env != nil {
+			t.Fatalf("invalid environment mutated command Env: %v", cmd.Env)
+		}
+	}
+}
+
 func TestWrapCmdManagedCleanupPreservesCallerExtraFiles(t *testing.T) {
 	callerFile, err := os.CreateTemp(t.TempDir(), "caller-extra-*")
 	if err != nil {
@@ -979,6 +1021,105 @@ func TestResolvedExecutablePathUsesAbsoluteBaseForRelativeDir(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("resolvedExecutablePath() = %q, want %q", got, want)
+	}
+}
+
+func TestFilterEnvStripsSensitiveByDefault(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/user",
+		"EDITOR=vi",
+		"POLLYTOOL_ANTHROPICKEY=sk-1",
+		"SSH_AUTH_SOCK=/run/agent.sock",
+		"GPG_AGENT_INFO=/run/gpg",
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+		"DOCKER_HOST=unix:///var/run/docker.sock",
+		"XDG_RUNTIME_DIR=/run/user/1000",
+		"AWS_SECRET_ACCESS_KEY=aws-secret",
+		"AWS_REGION=us-east-1",
+		"GITHUB_TOKEN=ghp",
+		"OPENAI_API_KEY=sk-2",
+		"DB_PASSWORD=hunter2",
+		"GOOGLE_APPLICATION_CREDENTIALS=/creds.json",
+	}
+	got, stripped := filterEnv(env, nil)
+
+	want := map[string]bool{"PATH=/usr/bin": true, "HOME=/home/user": true, "EDITOR=vi": true}
+	if len(got) != len(want) {
+		t.Fatalf("filterEnv = %v, want only %v", got, want)
+	}
+	for _, e := range got {
+		if !want[e] {
+			t.Fatalf("sensitive var %q survived default filtering: %v", e, got)
+		}
+	}
+
+	// Stripped reports names only — a value leaking into it would end up in
+	// debug logs.
+	if len(stripped) != len(env)-len(want) {
+		t.Fatalf("stripped = %v, want %d names", stripped, len(env)-len(want))
+	}
+	for _, name := range stripped {
+		if strings.ContainsAny(name, "=/") {
+			t.Fatalf("stripped entry %q looks like more than a var name", name)
+		}
+	}
+}
+
+func TestFilterEnvAllowEnvOverridesSensitivity(t *testing.T) {
+	// An explicit allowlist wins, even for vars the heuristics call sensitive.
+	env := []string{"GITHUB_TOKEN=ghp", "PATH=/usr/bin", "HOME=/home/user"}
+	got, stripped := filterEnv(env, []string{"GITHUB_TOKEN"})
+	if len(got) != 1 || got[0] != "GITHUB_TOKEN=ghp" {
+		t.Fatalf("filterEnv with allowEnv = %v, want only the explicitly allowed GITHUB_TOKEN", got)
+	}
+	if len(stripped) != 2 {
+		t.Fatalf("stripped = %v, want the two non-allowlisted names", stripped)
+	}
+}
+
+// filterEnv must never return a nil slice: callers assign it to cmd.Env, and
+// os/exec treats a nil Env as "inherit the full parent environment" — which
+// would defeat the filtering entirely. The dangerous case is an allowlist whose
+// names are all absent from the environment.
+func TestFilterEnvNeverReturnsNil(t *testing.T) {
+	cases := []struct {
+		name     string
+		env      []string
+		allowEnv []string
+	}{
+		{"allowlist matches nothing", []string{"PATH=/usr/bin", "MY_API_KEY=sk"}, []string{"GITHUB_TOKEN"}},
+		{"empty env with allowlist", nil, []string{"GITHUB_TOKEN"}},
+		{"all vars sensitive, no allowlist", []string{"AWS_SECRET=x", "FOO_TOKEN=y"}, nil},
+		{"empty env, no allowlist", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			filtered, _ := filterEnv(tc.env, tc.allowEnv)
+			if filtered == nil {
+				t.Fatalf("filterEnv returned a nil slice; cmd.Env=nil makes exec inherit the full parent environment")
+			}
+			if len(filtered) != 0 {
+				t.Fatalf("expected an empty (but non-nil) env, got %v", filtered)
+			}
+		})
+	}
+}
+
+func TestCommandSummary(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{nil, ""},
+		{[]string{"bash"}, "bash"},
+		{[]string{"bash", "-c"}, "bash -c"},
+		{[]string{"bash", "-c", "echo secret-payload"}, "bash -c"},
+	}
+	for _, tt := range tests {
+		if got := commandSummary(tt.args); got != tt.want {
+			t.Fatalf("commandSummary(%v) = %q, want %q", tt.args, got, tt.want)
+		}
 	}
 }
 

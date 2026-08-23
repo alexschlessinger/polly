@@ -390,20 +390,13 @@ func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, 
 		// Create the command with arguments
 		cmd := exec.Command(config.Command, config.Args...)
 
-		// Set environment variables if provided
-		if len(config.Env) > 0 {
-			// Start with current environment
-			cmd.Env = os.Environ()
-			// Add/override with config environment variables
-			for key, value := range config.Env {
-				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
-			}
-		}
-
 		// Set up stderr to see any error output from the server
 		cmd.Stderr = os.Stderr
 
-		closeSandboxFiles, err := sandbox.WrapCmdManaged(sb, cmd)
+		// Treat config.Env as an explicit target-process grant. The sandbox
+		// filters inherited variables, merges these configured values into the
+		// target environment, and keeps them out of any pre-containment wrapper.
+		closeSandboxFiles, err := sandbox.WrapCmdWithEnvManaged(sb, cmd, config.Env)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}

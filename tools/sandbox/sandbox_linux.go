@@ -14,15 +14,18 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 const linuxBwrapPath = "/usr/bin/bwrap"
 
 type linuxSandbox struct {
-	cfg       Config
-	bwrapPath string
-	tempRoots []string
-	runRoots  []string
+	cfg            Config
+	bwrapPath      string
+	tempRoots      []string
+	runRoots       []string
+	authorityPaths []authorityPathIdentity
 }
 
 type deniedReservationEntry struct {
@@ -61,11 +64,17 @@ func New(cfg Config) (Sandbox, error) {
 	if _, _, err := nativeAuditArch(); err != nil {
 		return nil, err
 	}
+	privateRoots := append(append([]string{}, tempRoots...), runRoots...)
+	authorityPaths, err := captureAuthorityPathIdentities(linuxAuthoritySourcePaths(cfg, privateRoots))
+	if err != nil {
+		return nil, err
+	}
 	return &linuxSandbox{
-		cfg:       cfg,
-		bwrapPath: linuxBwrapPath,
-		tempRoots: append([]string(nil), tempRoots...),
-		runRoots:  append([]string(nil), runRoots...),
+		cfg:            cfg,
+		bwrapPath:      linuxBwrapPath,
+		tempRoots:      append([]string(nil), tempRoots...),
+		runRoots:       append([]string(nil), runRoots...),
+		authorityPaths: authorityPaths,
 	}, nil
 }
 
@@ -381,21 +390,26 @@ func (s *linuxSandbox) Wrap(cmd *exec.Cmd) error {
 	return ErrManagedWrapRequired
 }
 
-func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string) error {
-	if len(explicitEnv) > 0 {
-		return fmt.Errorf("sandbox backend does not support explicit target environment")
-	}
-	if err := validateReadPathAliasIdentities(s.cfg.readPathAliases); err != nil {
+func (s *linuxSandbox) WrapWithEnv(cmd *exec.Cmd, explicitEnv map[string]string) error {
+	if err := validateExplicitEnv(explicitEnv); err != nil {
 		return err
 	}
-	if err := validateAuthorityPathIdentities(s.cfg.authorityPaths); err != nil {
+	return ErrManagedWrapRequired
+}
+
+func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string) error {
+	if err := validateExplicitEnv(explicitEnv); err != nil {
+		return err
+	}
+	if err := validateReadPathAliasIdentities(s.cfg.readPathAliases); err != nil {
 		return err
 	}
 	env := cmd.Env
 	if env == nil {
 		env = os.Environ()
 	}
-	filtered, stripped := filterLinuxEnv(env, s.cfg.AllowEnv)
+	filtered, stripped := filterEnv(env, s.cfg.AllowEnv)
+	filtered = mergeExplicitEnv(filtered, explicitEnv)
 	for i, entry := range filtered {
 		name, _, _ := strings.Cut(entry, "=")
 		switch name {
@@ -461,63 +475,143 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 		}
 		cmd.ExtraFiles = cmd.ExtraFiles[:extraFilesStart]
 	}
+	bootstrapFD, err := attachLinuxBootstrapExecutable(cmd)
+	if err != nil {
+		closeAddedFiles()
+		return fmt.Errorf("prepare target environment bootstrap: %w", err)
+	}
+	targetEnvFD, err := attachLinuxTargetEnvironment(cmd, filtered)
+	if err != nil {
+		closeAddedFiles()
+		return fmt.Errorf("prepare target environment: %w", err)
+	}
+	pinnedIdentities := cloneAuthorityPathIdentities(s.authorityPaths)
+	pinnedIdentities = append(pinnedIdentities, reservationSourceIdentities(reservations)...)
+	pinnedIdentities = append(pinnedIdentities, denyWritePlan.ancestors...)
+	pinnedIdentities = append(pinnedIdentities, denyWritePlan.protected...)
+	pinnedIdentities = append(pinnedIdentities, readExemptionSourceIdentities(readExemptionBinds)...)
+	authoritySources, authorityFDs, err := attachLinuxAuthorityPaths(cmd, pinnedIdentities)
+	if err != nil {
+		closeAddedFiles()
+		return err
+	}
 	seccompFD, err := attachUnixSocketFilter(cmd, cfg.AllowNetwork)
 	if err != nil {
 		closeAddedFiles()
 		return fmt.Errorf("prepare seccomp filter: %w", err)
 	}
-	args, err := buildBwrapArgsCheckedWithSourcesAndRoots(cfg, deniedMounts, reservations, &denyWritePlan, readExemptionBinds, nil, tempRoots, runRoots, origPath)
+	args, err := buildBwrapArgsCheckedWithSourcesAndRoots(cfg, deniedMounts, reservations, &denyWritePlan, readExemptionBinds, authoritySources, tempRoots, runRoots, origPath)
 	if err != nil {
 		closeAddedFiles()
 		return err
 	}
 	args = append(args, "--chdir", targetWorkingDir)
 	args = append(args, "--seccomp", strconv.Itoa(seccompFD))
-	// Execute the already-resolved target directly so no PATH lookup happens
-	// inside the sandbox. The env-delivery bootstrap later restores the exact
-	// original argv; until then argv[0] is the resolved executable path.
-	targetArgs := []string{origPath}
-	if len(origArgs) > 1 {
-		targetArgs = append(targetArgs, origArgs[1:]...)
+	targetArgs := origArgs
+	if len(targetArgs) == 0 {
+		targetArgs = []string{origPath}
 	}
-	cmd.Args = make([]string, 0, len(args)+2+len(targetArgs))
+	bootstrapPath := "/proc/self/fd/" + strconv.Itoa(bootstrapFD)
+	cmd.Args = make([]string, 0, len(args)+8+len(targetArgs))
 	cmd.Args = append(cmd.Args, args...)
 	cmd.Args = append(cmd.Args, "--")
+	cmd.Args = append(cmd.Args, bootstrapPath, linuxEnvBootstrapArg,
+		strconv.Itoa(bootstrapFD), strconv.Itoa(targetEnvFD), formatLinuxFDList(authorityFDs), origPath)
 	cmd.Args = append(cmd.Args, targetArgs...)
-	cmd.Env = filtered
+
+	// bwrap itself receives no target environment values in its environment or
+	// argv. The original target argv is intentionally forwarded unchanged. It
+	// transports an opaque, unlinked payload FD and executes the current process
+	// through its pinned /proc/self/exe descriptor only after namespaces, mounts,
+	// and seccomp are active. The internal bootstrap then closes the sandbox FDs
+	// and execs the already-resolved target with the exact filtered environment.
+	cmd.Env = []string{}
 	// Do not let bwrap inherit a host cwd that a later private mount covers;
 	// the target cwd is selected explicitly with --chdir above.
 	cmd.Dir = "/"
 	return nil
 }
 
-// filterLinuxEnv applies the allowEnv allowlist, or strips POLLYTOOL_-prefixed
-// variables when no allowlist is configured, and reports the stripped names
-// (never values) for debug logging.
-func filterLinuxEnv(env, allowEnv []string) (filtered, stripped []string) {
-	filtered = make([]string, 0, len(env))
-	if len(allowEnv) > 0 {
-		allowed := make(map[string]bool, len(allowEnv))
-		for _, k := range allowEnv {
-			allowed[k] = true
-		}
-		for _, e := range env {
-			if k, _, _ := strings.Cut(e, "="); allowed[k] {
-				filtered = append(filtered, e)
-			} else {
-				stripped = append(stripped, k)
+func attachLinuxBootstrapExecutable(cmd *exec.Cmd) (int, error) {
+	f, err := os.Open("/proc/self/exe")
+	if err != nil {
+		return 0, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return 0, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		_ = f.Close()
+		return 0, fmt.Errorf("/proc/self/exe is not a regular executable")
+	}
+	fd := 3 + len(cmd.ExtraFiles)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, f)
+	return fd, nil
+}
+
+func attachLinuxAuthorityPaths(cmd *exec.Cmd, identities []authorityPathIdentity) (map[string]string, []int, error) {
+	sources := make(map[string]string, len(identities))
+	fds := make([]int, 0, len(identities))
+	seen := make(map[string]authorityPathIdentity, len(identities))
+	for _, identity := range identities {
+		identity.path = filepath.Clean(identity.path)
+		if prior, exists := seen[identity.path]; exists {
+			if !os.SameFile(prior.info, identity.info) {
+				return nil, nil, fmt.Errorf("conflicting sandbox mount source identities for %q", identity.path)
 			}
+			continue
 		}
-		return filtered, stripped
+		seen[identity.path] = identity
+		real, err := filepath.EvalSymlinks(identity.path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve frozen sandbox authority path %q: %w", identity.path, err)
+		}
+		if filepath.Clean(real) != identity.path {
+			return nil, nil, fmt.Errorf("frozen sandbox authority path %q was rerouted", identity.path)
+		}
+		rawFD, err := unix.Open(identity.path, unix.O_PATH|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open frozen sandbox authority path %q: %w", identity.path, err)
+		}
+		file := os.NewFile(uintptr(rawFD), identity.path)
+		if file == nil {
+			_ = unix.Close(rawFD)
+			return nil, nil, fmt.Errorf("open frozen sandbox authority path %q: invalid descriptor", identity.path)
+		}
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			return nil, nil, fmt.Errorf("inspect frozen sandbox authority path %q: %w", identity.path, err)
+		}
+		if !os.SameFile(identity.info, info) {
+			_ = file.Close()
+			return nil, nil, fmt.Errorf("frozen sandbox authority path %q was replaced", identity.path)
+		}
+		fd := 3 + len(cmd.ExtraFiles)
+		cmd.ExtraFiles = append(cmd.ExtraFiles, file)
+		fds = append(fds, fd)
+		sources[identity.path] = "/proc/self/fd/" + strconv.Itoa(fd)
 	}
-	for _, e := range env {
-		if k, _, _ := strings.Cut(e, "="); !strings.HasPrefix(k, "POLLYTOOL_") {
-			filtered = append(filtered, e)
-		} else {
-			stripped = append(stripped, k)
+	return sources, fds, nil
+}
+
+func reservationSourceIdentities(reservations []deniedReservation) []authorityPathIdentity {
+	var identities []authorityPathIdentity
+	for _, reservation := range reservations {
+		identities = append(identities, reservation.ancestors...)
+		for _, entry := range reservation.entries {
+			if entry.symlink || entry.info == nil {
+				continue
+			}
+			identities = append(identities, authorityPathIdentity{
+				path: filepath.Join(reservation.root, entry.name),
+				info: entry.info,
+			})
 		}
 	}
-	return filtered, stripped
+	return identities
 }
 
 type linuxReadExemptionBind struct {
@@ -559,6 +653,14 @@ func planLinuxReadExemptionBinds(cfg Config, deniedPaths []DeniedPath, strict bo
 		}
 	}
 	return binds, nil
+}
+
+func readExemptionSourceIdentities(binds []linuxReadExemptionBind) []authorityPathIdentity {
+	identities := make([]authorityPathIdentity, 0, len(binds))
+	for _, bind := range binds {
+		identities = append(identities, authorityPathIdentity{path: bind.source, info: bind.info})
+	}
+	return identities
 }
 
 func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath, commandPaths ...string) []string {
