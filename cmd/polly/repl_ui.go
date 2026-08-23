@@ -113,6 +113,39 @@ func styled(text, fg, modifier string) string {
 	return "[" + text + "](" + strings.Join(parts, ",") + ")"
 }
 
+// Chroma can split source punctuation into individual tokens. A token that is
+// literally "[" or "]" cannot be nested safely inside gotui's own
+// [text](style) syntax, so code rendering substitutes private runes until after
+// ParseStyles has assigned cell styles. The transcript parser restores the
+// original source characters before wrapping or drawing.
+const (
+	styledLiteralOpenBracket  rune = '\ue100'
+	styledLiteralCloseBracket rune = '\ue101'
+)
+
+var styledLiteralBracketReplacer = strings.NewReplacer(
+	"[", string(styledLiteralOpenBracket),
+	"]", string(styledLiteralCloseBracket),
+)
+
+func styledCodeLiteral(text, fg, modifier string) string {
+	text = styledLiteralBracketReplacer.Replace(text)
+	return styled(text, fg, modifier)
+}
+
+func parseStyledCells(text string, defaultStyle ui.Style) []ui.Cell {
+	cells := ui.ParseStyles(text, defaultStyle)
+	for i := range cells {
+		switch cells[i].Rune {
+		case styledLiteralOpenBracket:
+			cells[i].Rune = '['
+		case styledLiteralCloseBracket:
+			cells[i].Rune = ']'
+		}
+	}
+	return cells
+}
+
 // lineEditor is a single-line rune buffer with a cursor and readline-style
 // editing operations. It owns no terminal state and performs no rendering —
 // the REPL feeds it discrete key events and reads back text/cursor for display.
@@ -317,6 +350,14 @@ type replModel struct {
 	// tool line) and may contain inline style markup. They get joined with
 	// "\n" at render time.
 	transcript []string
+	// transcriptImages is a private sidecar keyed by transcript entry. String
+	// interfaces stay unchanged while the managed TUI can give explicit local
+	// image references stable slots in scrollback.
+	transcriptImages map[int][]transcriptImage
+	imageBaseDir     string
+	nativeImages     bool
+	imageCellWidth   int
+	imageCellHeight  int
 
 	// currentAssistant points at the entry that the agent is currently
 	// streaming into, or -1 when no streaming entry exists.
@@ -340,10 +381,13 @@ type replModel struct {
 	// visualCache keeps the fully styled/wrapped transcript for the current
 	// terminal width. Busy spinner ticks can then redraw only visible rows
 	// without reparsing a long, unchanged context 20 times per second.
-	visualCache      [][]ui.Cell
-	visualCacheWidth int
-	visualCacheValid bool
-	visualBlocks     []transcriptVisualBlock
+	visualCache             [][]ui.Cell
+	visualCacheWidth        int
+	visualCacheValid        bool
+	visualCacheNativeImages bool
+	visualCacheCellWidth    int
+	visualCacheCellHeight   int
+	visualBlocks            []transcriptVisualBlock
 
 	// slashHints is a transient command-completion hint. It renders near the
 	// transcript but is not part of the transcript or persistent history.
@@ -453,9 +497,12 @@ type replModel struct {
 }
 
 type transcriptVisualBlock struct {
-	text     string
-	followed bool
-	rows     [][]ui.Cell
+	key        string
+	text       string
+	followed   bool
+	rows       [][]ui.Cell
+	images     []transcriptImage
+	imageSpans []transcriptImageSpan
 }
 
 type approvalState struct {
@@ -469,8 +516,11 @@ type approvalState struct {
 }
 
 func newReplModel() *replModel {
+	baseDir, _ := os.Getwd()
 	m := &replModel{
 		currentAssistant: -1,
+		transcriptImages: make(map[int][]transcriptImage),
+		imageBaseDir:     baseDir,
 		historyIdx:       -1,
 		state:            turnStateIdle,
 		followBottom:     true,
@@ -852,6 +902,25 @@ func (m *replModel) invalidateFlat() {
 
 func (m *replModel) invalidateVisual() { m.visualCacheValid = false }
 
+func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
+	if len(images) == 0 {
+		delete(m.transcriptImages, index)
+		return
+	}
+	m.transcriptImages[index] = append([]transcriptImage(nil), images...)
+}
+
+func (m *replModel) deleteTranscriptEntry(index int) {
+	m.transcript = append(m.transcript[:index], m.transcript[index+1:]...)
+	delete(m.transcriptImages, index)
+	for i := index + 1; i <= len(m.transcript); i++ {
+		if images, ok := m.transcriptImages[i]; ok {
+			m.transcriptImages[i-1] = images
+			delete(m.transcriptImages, i)
+		}
+	}
+}
+
 // appendLine appends a pre-rendered transcript entry (may contain inline
 // style markup). A non-assistant boundary first settles any active assistant
 // block so pending fence text and provider terminal newlines cannot leak across
@@ -894,7 +963,9 @@ func (m *replModel) appendAssistant(text string) {
 		return
 	}
 	m.streamShown = len(visible)
-	m.transcript[m.currentAssistant] = renderMarkdown(visible)
+	rendered, images := renderMarkdownWithLocalImages(visible, m.imageBaseDir)
+	m.transcript[m.currentAssistant] = rendered
+	m.setTranscriptImages(m.currentAssistant, images)
 	m.invalidateFlat()
 }
 
@@ -909,7 +980,9 @@ func (m *replModel) finishAssistantStream() {
 		return
 	}
 	m.streamShown = len(raw)
-	m.transcript[m.currentAssistant] = renderMarkdown(raw)
+	rendered, images := renderMarkdownWithLocalImages(raw, m.imageBaseDir)
+	m.transcript[m.currentAssistant] = rendered
+	m.setTranscriptImages(m.currentAssistant, images)
 	m.invalidateFlat()
 }
 
@@ -926,7 +999,7 @@ func (m *replModel) finishAssistantBlock(label string) bool {
 	idx := m.currentAssistant
 	content := strings.TrimRight(m.transcript[idx], "\r\n")
 	if content == "" {
-		m.transcript = append(m.transcript[:idx], m.transcript[idx+1:]...)
+		m.deleteTranscriptEntry(idx)
 	} else {
 		m.transcript[idx] = content
 	}
@@ -1152,6 +1225,7 @@ func (m *replModel) appendNoticeLine(text string) {
 
 func (m *replModel) clearDisplay() {
 	m.transcript = nil
+	m.transcriptImages = make(map[int][]transcriptImage)
 	m.currentAssistant = -1
 	m.activeTools = nil
 	if !m.busy {
@@ -1892,6 +1966,8 @@ type managedREPL struct {
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
 	fx *terminalFX
+	// images owns native Kitty/Sixel placements. Nil means captions/paths only.
+	images *terminalImageManager
 
 	// startupLogoVisible reserves a small header above the transcript until the
 	// first real turn starts. The composer and status remain live from frame one.
@@ -2164,12 +2240,21 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	// flip the gate open.
 	ui.DefaultBackend.Screen.EnableFocus()
 	r.fx = newTerminalFX(ui.DefaultBackend.Screen)
+	r.images = newTerminalImageManager(ui.DefaultBackend.Screen)
+	r.model.mu.Lock()
+	r.model.nativeImages = r.images != nil
+	r.model.invalidateVisual()
+	r.model.mu.Unlock()
 	// Restore the terminal exactly once, whether we return normally or a
 	// signal short-circuits to os.Exit (which skips deferred calls). Terminal
 	// effects clear first: the progress OSC must go out while the screen is up.
 	var closeOnce sync.Once
 	closeUI := func() {
 		closeOnce.Do(func() {
+			if r.images != nil {
+				r.images.shutdown()
+				r.images = nil
+			}
 			r.fx.shutdown()
 			ui.Close()
 		})
@@ -2733,7 +2818,10 @@ func (r *managedREPL) render() {
 	if w < 1 || h < 2 {
 		return
 	}
-
+	imageCellWidth, imageCellHeight := 0, 0
+	if r.images != nil {
+		imageCellWidth, imageCellHeight = r.images.cellDimensions()
+	}
 	showStatus := !r.model.quiet
 	statusRows := 0
 	if showStatus {
@@ -2741,6 +2829,11 @@ func (r *managedREPL) render() {
 	}
 
 	r.model.mu.Lock()
+	if r.model.imageCellWidth != imageCellWidth || r.model.imageCellHeight != imageCellHeight {
+		r.model.imageCellWidth = imageCellWidth
+		r.model.imageCellHeight = imageCellHeight
+		r.model.invalidateVisual()
+	}
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
 	r.model.refreshThinkingGhost()
@@ -2781,7 +2874,16 @@ func (r *managedREPL) render() {
 	progress := r.model.frameProgress()
 	notices := r.model.takeNotices()
 	ticker := r.model.activityTicker(len(transcriptRows), topRow, transcriptHeight)
+	imagePlacements := r.model.visibleImagePlacements(
+		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
+		pinTranscriptBottom, ticker != "",
+	)
 	r.model.mu.Unlock()
+
+	imagesChanged := false
+	if r.images != nil {
+		imagesChanged = r.images.prepare(imagePlacements)
+	}
 
 	var overlay []ui.Cell
 	if ticker != "" {
@@ -2806,6 +2908,9 @@ func (r *managedREPL) render() {
 	ui.Clear()
 	r.placeCursor(editable, curCol, logoRows+transcriptHeight+dividerRows+curRow, w)
 	ui.Render(r.rootFlex)
+	if r.images != nil {
+		r.images.commit(imagesChanged)
+	}
 
 	// Window-level effects go out after the frame, on this same goroutine, so
 	// their escapes serialize with tcell's own writes.
@@ -2909,13 +3014,16 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	if width < 1 {
 		width = 1
 	}
-	if m.visualCacheValid && m.visualCacheWidth == width {
+	if m.visualCacheValid && m.visualCacheWidth == width &&
+		m.visualCacheCellWidth == m.imageCellWidth && m.visualCacheCellHeight == m.imageCellHeight {
 		return m.visualCache
 	}
 
-	sources := m.transcriptDisplayBlocks()
+	sources := m.transcriptDisplayEntries()
 	oldBlocks := m.visualBlocks
-	canPatch := m.visualCacheWidth == width && len(oldBlocks) == len(sources)
+	canPatch := m.visualCacheWidth == width && m.visualCacheNativeImages == m.nativeImages &&
+		m.visualCacheCellWidth == m.imageCellWidth && m.visualCacheCellHeight == m.imageCellHeight &&
+		len(oldBlocks) == len(sources)
 	if len(oldBlocks) != len(sources) {
 		m.visualBlocks = make([]transcriptVisualBlock, len(sources))
 	}
@@ -2928,9 +3036,16 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			old = oldBlocks[i]
 		}
 		rows := old.rows
-		changed := m.visualCacheWidth != width || old.text != source || old.followed != followed
+		imageSpans := old.imageSpans
+		changed := m.visualCacheWidth != width || m.visualCacheNativeImages != m.nativeImages ||
+			m.visualCacheCellWidth != m.imageCellWidth || m.visualCacheCellHeight != m.imageCellHeight ||
+			old.key != source.key || old.text != source.text || old.followed != followed || !transcriptImagesEqual(old.images, source.images)
 		if changed {
-			rows = transcriptBlockRows(source, followed, width)
+			nativeSlots := m.nativeImages && width >= minimumImageThumbnailCols
+			rows, imageSpans = transcriptBlockRowsWithImages(
+				source.text, followed, width, source.images, nativeSlots,
+				m.imageCellWidth, m.imageCellHeight,
+			)
 		}
 		if canPatch && len(rows) != len(old.rows) {
 			canPatch = false
@@ -2938,7 +3053,14 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		if canPatch && changed {
 			copy(m.visualCache[offset:offset+len(rows)], rows)
 		}
-		m.visualBlocks[i] = transcriptVisualBlock{text: source, followed: followed, rows: rows}
+		m.visualBlocks[i] = transcriptVisualBlock{
+			key:        source.key,
+			text:       source.text,
+			followed:   followed,
+			rows:       rows,
+			images:     append([]transcriptImage(nil), source.images...),
+			imageSpans: imageSpans,
+		}
 		offset += len(old.rows)
 	}
 
@@ -2954,36 +3076,65 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		m.visualCache = rows
 	}
 	m.visualCacheWidth = width
+	m.visualCacheNativeImages = m.nativeImages
+	m.visualCacheCellWidth = m.imageCellWidth
+	m.visualCacheCellHeight = m.imageCellHeight
 	m.visualCacheValid = true
 	return m.visualCache
 }
 
 func (m *replModel) transcriptDisplayBlocks() []string {
-	blocks := make([]string, 0, len(m.transcript)+1)
+	entries := m.transcriptDisplayEntries()
+	blocks := make([]string, len(entries))
+	for i, entry := range entries {
+		blocks[i] = entry.text
+	}
+	return blocks
+}
+
+func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
+	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+1)
 	for i, entry := range m.transcript {
 		if i == m.currentAssistant {
 			entry = strings.TrimRight(entry, "\r\n")
 			if entry == "" {
 				continue
 			}
-			entry += m.streamCursorFrame
+			images := m.transcriptImages[i]
+			if len(images) > 0 && strings.HasSuffix(entry, string(transcriptImageMarker(len(images)-1))) {
+				// Keep the pulsing stream caret out of the final reserved image
+				// row. The newline is stable even on the caret's hidden frame, so
+				// follow-bottom does not oscillate by one row.
+				entry += "\n" + m.streamCursorFrame
+			} else {
+				entry += m.streamCursorFrame
+			}
 		}
-		blocks = append(blocks, entry)
+		blocks = append(blocks, transcriptDisplayBlock{
+			key:    fmt.Sprintf("transcript:%d", i),
+			text:   entry,
+			images: m.transcriptImages[i],
+		})
 	}
 	if m.thinkingGhostFrame != "" {
-		blocks = append(blocks, m.thinkingGhostFrame)
+		blocks = append(blocks, transcriptDisplayBlock{key: "thinking", text: m.thinkingGhostFrame})
 	}
 	if m.queueHint != "" {
-		blocks = append(blocks, styled(m.queueHint, "active", "bold"))
+		blocks = append(blocks, transcriptDisplayBlock{key: "queue", text: styled(m.queueHint, "active", "bold")})
 	}
 	if m.slashHints != "" {
-		blocks = append(blocks, styled(m.slashHints, "muted", ""))
+		blocks = append(blocks, transcriptDisplayBlock{key: "slash", text: styled(m.slashHints, "muted", "")})
 	}
 	return blocks
 }
 
 func transcriptBlockRows(text string, followed bool, width int) [][]ui.Cell {
-	cells := ui.ParseStyles(text, ui.NewStyle(ui.ColorClear))
+	rows, _ := transcriptBlockRowsWithImages(text, followed, width, nil, false, 0, 0)
+	return rows
+}
+
+func transcriptBlockRowsWithImages(text string, followed bool, width int, images []transcriptImage, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
+	cells := parseStyledCells(text, ui.NewStyle(ui.ColorClear))
 	if followed {
 		// The joined renderer places one newline between transcript blocks. Add
 		// that separator before splitting: a normal separator is absorbed by the
@@ -2991,7 +3142,8 @@ func transcriptBlockRows(text string, followed bool, width int) [][]ui.Cell {
 		// newline correctly produces an interior blank row.
 		cells = append(cells, ui.Cell{Rune: '\n', Style: ui.StyleClear})
 	}
-	return ui.SplitCells(wrapTranscriptCells(cells, width), '\n')
+	rows := ui.SplitCells(wrapTranscriptCells(cells, width), '\n')
+	return locateTranscriptImages(rows, images, native, width, cellWidth, cellHeight)
 }
 
 // flattenTranscript expands embedded "\n" within entries into separate lines
@@ -3452,6 +3604,14 @@ func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 
 func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 	label := toolLabel(call)
+	denied := toolWasDenied(result)
+	var discoveredImages []transcriptImage
+	if toolDisplayEnabled(t.config) && !denied {
+		// Tool output can be large. Discovery touches only Markdown/path syntax
+		// and the filesystem, so keep it outside the model lock and let the TUI
+		// continue painting while it runs.
+		discoveredImages = discoverToolOutputImages(result, t.repl.model.imageBaseDir)
+	}
 	t.repl.model.mu.Lock()
 	defer t.repl.model.mu.Unlock()
 	m := t.repl.model
@@ -3474,21 +3634,30 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	}
 	var final string
 	switch {
-	case toolWasDenied(result):
+	case denied:
 		final = toolDeniedLine(label)
 	case err != nil:
 		final = toolErrorLine(label, formatElapsed(duration), toolFailureMeta(err))
 	default:
 		final = toolOKLine(label, formatElapsed(duration), resultLineMeta(result))
 	}
+	images := discoveredImages
+	if len(images) > 0 {
+		// Tool-produced media stays visibly subordinate to the compact tool row;
+		// assistant-authored images remain flush with the transcript body.
+		final += "\n" + renderTranscriptImages(images, "    ")
+	}
 	// Freeze the final line over the running (breathing) one in place, so a tool
 	// is a single transcript line from start to finish. Falls back to appending
 	// if the start line wasn't tracked (shouldn't happen when display is on).
 	if idx, ok := m.takeActiveTool(call.ID); ok {
 		m.transcript[idx] = final
+		m.setTranscriptImages(idx, images)
 		m.invalidateFlat()
 	} else {
 		m.appendLine(final)
+		m.setTranscriptImages(len(m.transcript)-1, images)
+		m.invalidateFlat()
 	}
 }
 

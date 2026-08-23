@@ -1308,7 +1308,7 @@ func TestAppendAssistantRendersStreamedLink(t *testing.T) {
 
 func plainStyledText(s string) string {
 	var rendered strings.Builder
-	for _, c := range ui.ParseStyles(s, ui.NewStyle(ui.ColorWhite)) {
+	for _, c := range parseStyledCells(s, ui.NewStyle(ui.ColorWhite)) {
 		if c.Rune != '\u200b' {
 			rendered.WriteRune(c.Rune)
 		}

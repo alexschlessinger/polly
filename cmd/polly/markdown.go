@@ -23,21 +23,35 @@ var mdParser = goldmark.New(goldmark.WithExtensions(extension.Strikethrough))
 // palette the rest of the REPL uses. The result contains real newlines;
 // width-aware wrapping stays downstream in the cell layer.
 func renderMarkdown(src string) string {
+	return renderMarkdownDocument(src, nil)
+}
+
+// renderMarkdownWithLocalImages keeps the ordinary Markdown surface while
+// replacing explicit, existing local image references with private transcript
+// slots. The slots are consumed only by the managed TUI; callers that just
+// need text continue to use renderMarkdown unchanged.
+func renderMarkdownWithLocalImages(src, baseDir string) (string, []transcriptImage) {
+	state := &markdownRenderState{baseDir: baseDir}
+	rendered := renderMarkdownDocument(src, state)
+	return rendered, state.images
+}
+
+func renderMarkdownDocument(src string, state *markdownRenderState) string {
 	if strings.TrimSpace(src) == "" {
 		return ""
 	}
 	source := []byte(src)
 	doc := mdParser.Parser().Parse(text.NewReader(source))
-	lines := renderBlocks(doc, source, "")
+	lines := renderBlocks(doc, source, "", state)
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 }
 
 // renderBlocks renders a parent's block children, separating siblings with a
 // prefix-bearing blank line so quoted blocks keep their gutter.
-func renderBlocks(parent ast.Node, source []byte, prefix string) []string {
+func renderBlocks(parent ast.Node, source []byte, prefix string, state *markdownRenderState) []string {
 	var out []string
 	for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
-		lines := renderBlock(child, source, prefix, prefix)
+		lines := renderBlock(child, source, prefix, prefix, state)
 		if len(lines) == 0 {
 			continue
 		}
@@ -49,13 +63,13 @@ func renderBlocks(parent ast.Node, source []byte, prefix string) []string {
 	return out
 }
 
-func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string) []string {
+func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, state *markdownRenderState) []string {
 	switch b := n.(type) {
 	case *ast.Paragraph, *ast.TextBlock:
-		return prefixLines(splitInline(renderInlineChildren(n, source, "", "")), firstPrefix, contPrefix)
+		return prefixLines(splitInline(renderInlineChildren(n, source, "", "", state)), firstPrefix, contPrefix)
 	case *ast.Heading:
 		marker := styled(strings.Repeat("#", b.Level)+" ", "muted", "")
-		title := renderInlineChildren(n, source, "", "bold")
+		title := renderInlineChildren(n, source, "", "bold", state)
 		return prefixLines([]string{marker + title}, firstPrefix, contPrefix)
 	case *ast.FencedCodeBlock:
 		lang := string(b.Language(source))
@@ -64,14 +78,14 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string) []st
 		return prefixLines(renderCodeBlock(codeBlockText(b.Lines(), source), ""), firstPrefix, contPrefix)
 	case *ast.Blockquote:
 		gutter := styled("▏ ", "muted", "")
-		inner := renderBlocks(n, source, "")
+		inner := renderBlocks(n, source, "", state)
 		lines := make([]string, len(inner))
 		for i, l := range inner {
 			lines[i] = gutter + l
 		}
 		return prefixLines(lines, firstPrefix, contPrefix)
 	case *ast.List:
-		return renderList(b, source, firstPrefix, contPrefix)
+		return renderList(b, source, firstPrefix, contPrefix, state)
 	case *ast.ThematicBreak:
 		return prefixLines([]string{styled(strings.Repeat("─", 12), "muted", "")}, firstPrefix, contPrefix)
 	case *ast.HTMLBlock:
@@ -84,7 +98,7 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string) []st
 	}
 }
 
-func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string) []string {
+func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string, state *markdownRenderState) []string {
 	var out []string
 	num := list.Start
 	if num == 0 {
@@ -102,7 +116,7 @@ func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string) [
 		if !first {
 			lead = contPrefix
 		}
-		inner := renderBlocks(item, source, "")
+		inner := renderBlocks(item, source, "", state)
 		for i, l := range inner {
 			if i == 0 {
 				out = append(out, lead+styled(marker, "muted", "")+l)
@@ -134,15 +148,15 @@ func splitInline(s string) []string {
 // renderInlineChildren walks inline nodes, threading the current color and
 // modifier. Inner spans override outer ones (gotui markup can't combine
 // modifiers), which is the right reading for nested emphasis.
-func renderInlineChildren(n ast.Node, source []byte, fg, mod string) string {
+func renderInlineChildren(n ast.Node, source []byte, fg, mod string, state *markdownRenderState) string {
 	var b strings.Builder
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
-		b.WriteString(renderInline(c, source, fg, mod))
+		b.WriteString(renderInline(c, source, fg, mod, state))
 	}
 	return b.String()
 }
 
-func renderInline(n ast.Node, source []byte, fg, mod string) string {
+func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRenderState) string {
 	switch i := n.(type) {
 	case *ast.Text:
 		s := styled(string(i.Segment.Value(source)), fg, mod)
@@ -156,15 +170,22 @@ func renderInline(n ast.Node, source []byte, fg, mod string) string {
 		return styled(nodeText(n, source), "code", mod)
 	case *ast.Emphasis:
 		if i.Level >= 2 {
-			return renderInlineChildren(n, source, fg, "bold")
+			return renderInlineChildren(n, source, fg, "bold", state)
 		}
-		return renderInlineChildren(n, source, fg, "italic")
+		return renderInlineChildren(n, source, fg, "italic", state)
 	case *east.Strikethrough:
-		return renderInlineChildren(n, source, fg, "strike")
+		return renderInlineChildren(n, source, fg, "strike", state)
 	case *ast.Link:
-		return renderLink(renderInlineChildren(n, source, "accent", mod), nodeText(n, source), string(i.Destination))
+		return renderLink(renderInlineChildren(n, source, "accent", mod, state), nodeText(n, source), string(i.Destination))
 	case *ast.Image:
-		return renderLink(renderInlineChildren(n, source, "accent", mod), nodeText(n, source), string(i.Destination))
+		if state != nil && len(state.images) < maxTranscriptImagesPerBlock {
+			if img, ok := resolveLocalTranscriptImage(string(i.Destination), nodeText(n, source), state.baseDir); ok {
+				index := len(state.images)
+				state.images = append(state.images, img)
+				return renderTranscriptImage(index, img, "", n.PreviousSibling() != nil, n.NextSibling() != nil)
+			}
+		}
+		return renderLink(renderInlineChildren(n, source, "accent", mod, state), nodeText(n, source), string(i.Destination))
 	case *ast.AutoLink:
 		return styled(string(i.URL(source)), "accent", mod)
 	case *ast.RawHTML:
@@ -257,7 +278,7 @@ func highlightCodeLines(code, lang string) []string {
 				cur.Reset()
 			}
 			if part != "" {
-				cur.WriteString(styled(part, fg, mod))
+				cur.WriteString(styledCodeLiteral(part, fg, mod))
 			}
 		}
 	}
@@ -269,7 +290,7 @@ func styledLines(s, fg, mod string) []string {
 	raw := strings.Split(s, "\n")
 	out := make([]string, len(raw))
 	for i, l := range raw {
-		out[i] = styled(l, fg, mod)
+		out[i] = styledCodeLiteral(l, fg, mod)
 	}
 	return out
 }

@@ -39,7 +39,7 @@ func wrapTranscriptCells(cells []ui.Cell, width int) []ui.Cell {
 // transcriptVisualRows parses gotui inline styles, wraps the resulting cells,
 // and returns the terminal rows ready for drawing or visual-row scroll math.
 func transcriptVisualRows(text string, style ui.Style, width int) [][]ui.Cell {
-	cells := ui.ParseStyles(text, style)
+	cells := parseStyledCells(text, style)
 	return ui.SplitCells(wrapTranscriptCells(cells, width), '\n')
 }
 

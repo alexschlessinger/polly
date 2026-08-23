@@ -115,6 +115,18 @@ reverse history search (Ctrl-R), bracketed paste, and tool/skill display. If the
 terminal isn't a TTY (e.g. `TERM=dumb` or redirected I/O), polly falls back to
 plain one-shot mode.
 
+The TUI shows static local image thumbnails when assistant Markdown contains
+`![alt](./path.png)`. Tool results may use the same Markdown form or emit a local
+image path on a line by itself; relative paths resolve from Polly's working
+directory. Kitty graphics are selected for Kitty, Ghostty, and WezTerm; Sixel
+is selected for Windows Terminal 1.22+ and foot. Other terminals keep a compact
+caption/path fallback. Thumbnails preserve the source aspect ratio inside a
+maximum 50-column by 10-row box, accounting for rectangular terminal cells. Set
+`POLLYTOOL_IMAGE_PROTOCOL=kitty`, `sixel`, or `none` to override auto-detection.
+Remote images, paths buried in prose/JSON, and paths inside code blocks are not
+opened. tmux and Zellij currently use the caption/path fallback unless the
+protocol is explicitly overridden.
+
 Slash commands inside the TUI:
 
 ```
