@@ -10,13 +10,13 @@ import (
 	"net/url"
 
 	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	ollamaapi "github.com/ollama/ollama/api"
 )
 
 type OllamaClient struct {
-	client *ollamaapi.Client
+	client *ollama.Client
 }
 
 // authTransport adds Bearer token authentication to HTTP requests
@@ -51,7 +51,7 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 		slog.Debug("ollama_bearer_auth_enabled")
 	}
 
-	client := ollamaapi.NewClient(u, httpClient)
+	client := ollama.NewClient(u, httpClient)
 
 	return &OllamaClient{
 		client: client,
@@ -78,7 +78,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			}
 			if !found {
 				// Add as first message
-				ollamaMessages = append([]ollamaapi.Message{{
+				ollamaMessages = append([]ollama.Message{{
 					Role:    "system",
 					Content: schemaPrompt,
 				}}, ollamaMessages...)
@@ -98,7 +98,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		if req.Temperature != nil {
 			options["temperature"] = *req.Temperature
 		}
-		chatReq := &ollamaapi.ChatRequest{
+		chatReq := &ollama.ChatRequest{
 			Model:    req.Model,
 			Messages: ollamaMessages,
 			Stream:   stream,
@@ -107,11 +107,10 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 
 		// Enable thinking for supported models if requested
 		if req.ThinkingEffort.IsEnabled() {
-			// Ollama's ThinkValue can be bool or string
+			// Ollama's think field can be bool or string
 			// For now, we'll use boolean true for any effort level
 			// Some models may support string values like "low", "medium", "high"
-			thinkValue := ollamaapi.ThinkValue{Value: true}
-			chatReq.Think = &thinkValue
+			chatReq.Think = true
 		}
 
 		// Set JSON format if schema is specified
@@ -121,7 +120,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 
 		// Add tool support if available
 		if len(req.Tools) > 0 {
-			var ollamaTools []ollamaapi.Tool
+			var ollamaTools []ollama.Tool
 			for _, tool := range req.Tools {
 				ollamaTools = append(ollamaTools, ConvertToolToOllama(tool.GetSchema()))
 			}
@@ -139,7 +138,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		thinkingEnabled := req.ThinkingEffort.IsEnabled()
 
 		// Execute chat - the callback is called for each streamed chunk (or once if non-streaming).
-		err := o.client.Chat(ctx, chatReq, func(resp ollamaapi.ChatResponse) error {
+		err := o.client.Chat(ctx, chatReq, func(resp ollama.ChatResponse) error {
 			// Process the chunk through the adapter
 			if err := streamCore.ProcessChunk(&resp); err != nil {
 				return err
@@ -195,24 +194,15 @@ func ConvertToOllamaFormat(schema *Schema) string {
 }
 
 // ConvertToolToOllama converts a tool schema to Ollama native format.
-// We unmarshal only the properties into ToolPropertiesMap (which uses an
-// ordered map internally) and set the remaining fields directly.
-func ConvertToolToOllama(schema *ToolSchema) ollamaapi.Tool {
-	var params ollamaapi.ToolFunctionParameters
+func ConvertToolToOllama(schema *ToolSchema) ollama.Tool {
+	var params ollama.ToolParameters
 	if schema != nil {
 		params.Type = "object"
 		if t, ok := schema.Raw["type"].(string); ok && t != "" {
 			params.Type = t
 		}
 		params.Required = schema.Required()
-		// Unmarshal just the properties into the SDK's ordered map.
-		if props := schema.Properties(); props != nil {
-			if b, err := json.Marshal(props); err == nil {
-				propsMap := ollamaapi.NewToolPropertiesMap()
-				json.Unmarshal(b, propsMap)
-				params.Properties = propsMap
-			}
-		}
+		params.Properties = schema.Properties()
 	}
 
 	name, description := "", ""
@@ -221,9 +211,9 @@ func ConvertToolToOllama(schema *ToolSchema) ollamaapi.Tool {
 		description = schema.Description()
 	}
 
-	return ollamaapi.Tool{
+	return ollama.Tool{
 		Type: "function",
-		Function: ollamaapi.ToolFunction{
+		Function: ollama.ToolFunction{
 			Name:        name,
 			Description: description,
 			Parameters:  params,
@@ -232,18 +222,18 @@ func ConvertToolToOllama(schema *ToolSchema) ollamaapi.Tool {
 }
 
 // MessagesToOllama converts messages to Ollama format
-func MessagesToOllama(msgs []messages.ChatMessage) []ollamaapi.Message {
-	var ollamaMessages []ollamaapi.Message
+func MessagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
+	var ollamaMessages []ollama.Message
 
 	for _, msg := range msgs {
-		ollamaMsg := ollamaapi.Message{
+		ollamaMsg := ollama.Message{
 			Role: msg.Role,
 		}
 
 		// Handle multimodal content
 		if len(msg.Parts) > 0 {
 			var textContent string
-			var imageData []ollamaapi.ImageData
+			var imageData []ollama.ImageData
 
 			for _, part := range msg.Parts {
 				switch part.Type {
@@ -253,7 +243,7 @@ func MessagesToOllama(msgs []messages.ChatMessage) []ollamaapi.Message {
 					// Ollama expects raw bytes, not base64
 					decoded, err := base64.StdEncoding.DecodeString(part.ImageData)
 					if err == nil {
-						imageData = append(imageData, ollamaapi.ImageData(decoded))
+						imageData = append(imageData, ollama.ImageData(decoded))
 					}
 				case "image_url":
 					// Ollama doesn't support URLs directly
@@ -271,18 +261,14 @@ func MessagesToOllama(msgs []messages.ChatMessage) []ollamaapi.Message {
 		}
 
 		if msg.Role == messages.MessageRoleAssistant && len(msg.ToolCalls) > 0 {
-			var ollamaToolCalls []ollamaapi.ToolCall
+			var ollamaToolCalls []ollama.ToolCall
 			for _, tc := range msg.ToolCalls {
 				var args map[string]any
 				if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
-					tcArgs := ollamaapi.NewToolCallFunctionArguments()
-					for k, v := range args {
-						tcArgs.Set(k, v)
-					}
-					ollamaToolCalls = append(ollamaToolCalls, ollamaapi.ToolCall{
-						Function: ollamaapi.ToolCallFunction{
+					ollamaToolCalls = append(ollamaToolCalls, ollama.ToolCall{
+						Function: ollama.ToolCallFunction{
 							Name:      tc.Name,
-							Arguments: tcArgs,
+							Arguments: args,
 						},
 					})
 				}
