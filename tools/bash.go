@@ -50,15 +50,17 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) (string, er
 		cmd.Dir = t.workDir
 	}
 
-	if err := sandbox.WrapCmd(t.sandbox, cmd); err != nil {
+	closeSandboxFiles, err := sandbox.WrapCmdManaged(t.sandbox, cmd)
+	if err != nil {
 		return "", fmt.Errorf("sandbox: %w", err)
 	}
+	defer func() { _ = closeSandboxFiles() }()
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 
 	result := stdout.String()
 	if stderr.Len() > 0 {

@@ -403,9 +403,11 @@ func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, 
 		// Set up stderr to see any error output from the server
 		cmd.Stderr = os.Stderr
 
-		if err := sandbox.WrapCmd(sb, cmd); err != nil {
+		closeSandboxFiles, err := sandbox.WrapCmdManaged(sb, cmd)
+		if err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
+		defer func() { _ = closeSandboxFiles() }()
 
 		slog.Debug("mcp_stdio_connecting", "command", config.Command, "arguments", config.Args)
 		transport = &mcp.CommandTransport{Command: cmd}

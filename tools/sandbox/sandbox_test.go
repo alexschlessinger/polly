@@ -475,7 +475,11 @@ type extraFileSandbox struct {
 
 func wrapCmdForTest(t *testing.T, sb Sandbox, cmd *exec.Cmd) error {
 	t.Helper()
-	return WrapCmd(sb, cmd)
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err == nil {
+		t.Cleanup(func() { _ = cleanup() })
+	}
+	return err
 }
 
 func (s extraFileSandbox) Wrap(cmd *exec.Cmd) error {
@@ -503,6 +507,63 @@ func TestWrapCmdApplied(t *testing.T) {
 	}
 	if !sb.called {
 		t.Fatal("expected Wrap to be called")
+	}
+}
+
+func TestWrapCmdManagedCleanupPreservesCallerExtraFiles(t *testing.T) {
+	callerFile, err := os.CreateTemp(t.TempDir(), "caller-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callerFile.Close()
+	ownedFile, err := os.CreateTemp(t.TempDir(), "sandbox-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	laterCallerFile, err := os.CreateTemp(t.TempDir(), "later-caller-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer laterCallerFile.Close()
+	cmd := exec.Command("true")
+	cmd.ExtraFiles = []*os.File{callerFile}
+	cleanup, err := WrapCmdManaged(extraFileSandbox{file: ownedFile}, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.ExtraFiles = append(cmd.ExtraFiles, laterCallerFile)
+
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if len(cmd.ExtraFiles) != 2 || cmd.ExtraFiles[0] != callerFile || cmd.ExtraFiles[1] != laterCallerFile {
+		t.Fatalf("ExtraFiles = %v, want both caller-owned files", cmd.ExtraFiles)
+	}
+	if _, err := callerFile.Stat(); err != nil {
+		t.Fatalf("caller-owned descriptor was closed: %v", err)
+	}
+	if _, err := ownedFile.Stat(); err == nil {
+		t.Fatal("sandbox-owned descriptor remains open")
+	}
+	if _, err := laterCallerFile.Stat(); err != nil {
+		t.Fatalf("later caller-owned descriptor was closed: %v", err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("second cleanup call = %v", err)
+	}
+}
+
+func TestWrapCmdManagedClosesAppendedFilesOnWrapError(t *testing.T) {
+	ownedFile, err := os.CreateTemp(t.TempDir(), "sandbox-error-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("true")
+	if _, err := WrapCmdManaged(extraFileSandbox{file: ownedFile, err: fmt.Errorf("wrap failed")}, cmd); err == nil {
+		t.Fatal("WrapCmdManaged returned nil error")
+	}
+	if _, err := ownedFile.Stat(); err == nil {
+		t.Fatal("sandbox-owned descriptor remains open after Wrap error")
 	}
 }
 
