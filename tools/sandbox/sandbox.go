@@ -10,24 +10,99 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 )
 
 // Sandbox wraps an exec.Cmd to apply platform-specific restrictions.
+// Descriptor-owning built-in backends reject raw Wrap calls with
+// ErrManagedWrapRequired; execution call sites must use WrapCmdManaged so those
+// descriptors are closed after Start/Run.
 type Sandbox interface {
 	// Wrap modifies cmd so it runs inside the sandbox.
 	// The original command and args are preserved semantically;
-	// the implementation may prepend a wrapper binary.
+	// the implementation may prepend a wrapper binary. Implementations retain
+	// ownership of descriptors they place in cmd.ExtraFiles.
 	Wrap(cmd *exec.Cmd) error
 }
 
-// WrapCmd applies sandbox restrictions to cmd if sb is non-nil.
-// Returns nil when sb is nil (no sandbox available).
+// managedCommandSandbox is implemented by built-in backends whose wrapping
+// allocates parent-owned descriptors. wrapManaged returns the exact descriptors
+// owned by the backend, including descriptors that still need cleanup when it
+// also returns an error. Returned descriptors may appear anywhere in
+// cmd.ExtraFiles; borrowed and caller-owned descriptors must not be returned.
+// Keeping this method private prevents external Sandbox implementations from
+// accidentally opting into lifecycle semantics they cannot satisfy.
+type managedCommandSandbox interface {
+	wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string) ([]*os.File, error)
+}
+
+// ErrManagedWrapRequired is returned when a descriptor-owning built-in backend
+// is invoked through the legacy cleanup-less Wrap or WrapCmd API. Use
+// WrapCmdManaged and invoke its cleanup after Start, Run, Output, or
+// CombinedOutput returns.
+var ErrManagedWrapRequired = errors.New("sandbox backend requires WrapCmdManaged for deterministic descriptor cleanup")
+
+// WrapCmd applies sandbox restrictions to cmd if sb is non-nil. Returns nil
+// when sb is nil (no sandbox available). Built-in backends return
+// ErrManagedWrapRequired before mutating cmd; use WrapCmdManaged for them.
 func WrapCmd(sb Sandbox, cmd *exec.Cmd) error {
 	if sb == nil {
 		return nil
 	}
 	return sb.Wrap(cmd)
+}
+
+// WrapCmdManaged applies a sandbox and returns an idempotent cleanup for only
+// the descriptors explicitly owned by a managed built-in backend. Invoke
+// cleanup after cmd.Start returns (or after Run/Output/CombinedOutput).
+// Legacy Sandbox implementations retain ownership of every descriptor they
+// place in ExtraFiles and receive a no-op cleanup.
+func WrapCmdManaged(sb Sandbox, cmd *exec.Cmd) (func() error, error) {
+	if managed, ok := sb.(managedCommandSandbox); ok {
+		return wrapCmdManaged(cmd, func() ([]*os.File, error) { return managed.wrapManaged(cmd, nil) })
+	}
+	return noSandboxFileCleanup, WrapCmd(sb, cmd)
+}
+
+func wrapCmdManaged(cmd *exec.Cmd, wrap func() ([]*os.File, error)) (func() error, error) {
+	owned, err := wrap()
+	cleanup := sandboxFileCleanup(cmd, owned)
+	if err != nil {
+		return noSandboxFileCleanup, errors.Join(err, cleanup())
+	}
+	return cleanup, nil
+}
+
+func noSandboxFileCleanup() error { return nil }
+
+func sandboxFileCleanup(cmd *exec.Cmd, owned []*os.File) func() error {
+	var once sync.Once
+	var result error
+	return func() error {
+		once.Do(func() {
+			ownedSet := make(map[*os.File]bool, len(owned))
+			var closeErrors []error
+			for _, file := range owned {
+				if file == nil || ownedSet[file] {
+					continue
+				}
+				ownedSet[file] = true
+				if err := file.Close(); err != nil && !errors.Is(err, os.ErrInvalid) {
+					closeErrors = append(closeErrors, err)
+				}
+			}
+			kept := cmd.ExtraFiles[:0]
+			for _, file := range cmd.ExtraFiles {
+				if !ownedSet[file] {
+					kept = append(kept, file)
+				}
+			}
+			cmd.ExtraFiles = kept
+			result = errors.Join(closeErrors...)
+		})
+		return result
+	}
 }
 
 // Probe runs a trivial command through the sandbox to confirm it can actually
@@ -41,9 +116,11 @@ func Probe(sb Sandbox) error {
 		return nil
 	}
 	cmd := exec.Command("true")
-	if err := sb.Wrap(cmd); err != nil {
+	closeSandboxFiles, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
 		return err
 	}
+	defer func() { _ = closeSandboxFiles() }()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
