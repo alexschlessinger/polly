@@ -290,6 +290,9 @@ func (a *AnthropicClient) processNonStreaming(ctx context.Context, params anthro
 			streamCore.EmitReasoning(block.Thinking)
 			// Add thinking block to adapter for metadata preservation
 			adapter.AddThinkingBlock(block.Thinking, block.Signature)
+		case "redacted_thinking":
+			// Preserve verbatim; must be replayed unchanged in tool loops
+			adapter.AddRedactedThinkingBlock(block.Data)
 		case "text":
 			streamCore.EmitContent(block.Text)
 		case "tool_use":
@@ -421,11 +424,17 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 					}
 
 					for _, block := range thinkingBlocksList {
-						if blockType, _ := block["type"].(string); blockType == string(constant.ValueOf[constant.Thinking]()) {
+						blockType, _ := block["type"].(string)
+						switch blockType {
+						case string(constant.ValueOf[constant.Thinking]()):
 							thinking, _ := block["thinking"].(string)
 							signature, _ := block["signature"].(string)
 							if signature != "" && thinking != "" {
 								blocks = append(blocks, anthropic.NewThinkingBlock(signature, thinking))
+							}
+						case string(constant.ValueOf[constant.RedactedThinking]()):
+							if data, _ := block["data"].(string); data != "" {
+								blocks = append(blocks, anthropic.NewRedactedThinkingBlock(data))
 							}
 						}
 					}

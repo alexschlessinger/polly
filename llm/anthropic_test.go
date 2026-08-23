@@ -375,3 +375,45 @@ func TestMessagesToAnthropicParamsThinkingBlocksAfterReload(t *testing.T) {
 		})
 	}
 }
+
+// TestMessagesToAnthropicParamsRedactedThinking verifies redacted thinking
+// blocks are replayed verbatim, in both the in-process and JSON-reloaded
+// metadata shapes.
+func TestMessagesToAnthropicParamsRedactedThinking(t *testing.T) {
+	block := map[string]any{"type": "redacted_thinking", "data": "opaque-blob"}
+
+	cases := []struct {
+		name   string
+		blocks any
+	}{
+		{"in-process []map[string]any", []map[string]any{block}},
+		{"JSON-reloaded []any", []any{block}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := []messages.ChatMessage{{
+				Role:     messages.MessageRoleAssistant,
+				Content:  "answer",
+				Metadata: map[string]any{"anthropic_thinking_blocks": tc.blocks},
+			}}
+
+			params, _ := MessagesToAnthropicParams(msgs)
+			if len(params) != 1 {
+				t.Fatalf("param count = %d, want 1", len(params))
+			}
+			var sawRedacted bool
+			for _, b := range params[0].Content {
+				if b.OfRedactedThinking != nil {
+					sawRedacted = true
+					if b.OfRedactedThinking.Data != "opaque-blob" {
+						t.Errorf("redacted data = %q, want opaque-blob", b.OfRedactedThinking.Data)
+					}
+				}
+			}
+			if !sawRedacted {
+				t.Errorf("redacted thinking block was dropped")
+			}
+		})
+	}
+}
