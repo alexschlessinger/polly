@@ -1374,25 +1374,6 @@ func TestBuildProfilePinsMutableDenyWriteAncestors(t *testing.T) {
 	}
 }
 
-func caseVariedWorkspace(t *testing.T) (string, string) {
-	t.Helper()
-	parent := t.TempDir()
-	root := filepath.Join(parent, "CaseWorkspace")
-	if err := os.Mkdir(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	variant := filepath.Join(parent, "caseworkspace")
-	rootInfo, err := os.Stat(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	variantInfo, err := os.Stat(variant)
-	if err != nil || !os.SameFile(rootInfo, variantInfo) {
-		t.Skip("test volume is case-sensitive")
-	}
-	return root, variant
-}
-
 func TestDenyWriteAncestorsMatchesCaseVariedWritableRoot(t *testing.T) {
 	work, caseVariant := caseVariedWorkspace(t)
 	protected := filepath.Join(work, "packages", "nested", ".git")
@@ -1483,6 +1464,80 @@ func TestDarwinWrapRejectsDenyWritePathRemovedAfterConstruction(t *testing.T) {
 	cmd := exec.CommandContext(context.Background(), "true")
 	if err := wrapCmdForTest(t, sb, cmd); err == nil {
 		t.Fatal("Wrap() error = nil after protected entry removal, want fail-closed error")
+	}
+}
+
+func TestSandboxWorkspacePresetPinsGitRoutingAndAncestors(t *testing.T) {
+	skipIfNoSandboxExec(t)
+
+	work := t.TempDir()
+	rootGit := filepath.Join(work, ".git")
+	nestedRoot := filepath.Join(work, "packages", "nested")
+	nestedGit := filepath.Join(nestedRoot, ".git")
+	for _, dir := range []string{rootGit, nestedGit} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(work)
+	cfg, err := ParsePreset("workspace")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace) error = %v", err)
+	}
+	sb, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	tests := []struct {
+		name string
+		cmd  *exec.Cmd
+	}{
+		{
+			name: "relocate root routing directory",
+			cmd:  exec.CommandContext(context.Background(), "mv", rootGit, filepath.Join(work, ".git-old")),
+		},
+		{
+			name: "create absent config.worktree",
+			cmd: exec.CommandContext(context.Background(), "bash", "-c", `: > "$1"`, "bash",
+				filepath.Join(rootGit, "config.worktree")),
+		},
+		{
+			name: "relocate mutable nested ancestor",
+			cmd: exec.CommandContext(context.Background(), "mv", filepath.Join(work, "packages"),
+				filepath.Join(work, "packages-old")),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := wrapCmdForTest(t, sb, tt.cmd); err != nil {
+				t.Fatalf("Wrap() error = %v", err)
+			}
+			if out, err := tt.cmd.CombinedOutput(); err == nil {
+				t.Fatalf("guarded mutation succeeded, output: %s", out)
+			}
+		})
+	}
+
+	if _, err := os.Stat(rootGit); err != nil {
+		t.Fatalf("root Git routing entry moved or removed: %v", err)
+	}
+	if _, err := os.Stat(nestedGit); err != nil {
+		t.Fatalf("nested Git routing entry moved or removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootGit, "config.worktree")); !os.IsNotExist(err) {
+		t.Fatalf("config.worktree was created despite read-only gitdir: %v", err)
+	}
+
+	// Pinning ancestors is structural only; normal working-tree content remains
+	// writable within the nested repository.
+	note := filepath.Join(nestedRoot, "note.txt")
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", `echo ok > "$1"`, "bash", note)
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() safe workspace write error = %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("safe nested working-tree write failed: %v (%s)", err, out)
 	}
 }
 

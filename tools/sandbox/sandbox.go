@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -286,6 +285,12 @@ type Config struct {
 	// Deny all file writes, including to temp directories.
 	DenyWrite bool `json:"denyWrite,omitempty"`
 
+	// gitPolicies records the workspace Git repositories discovered by the
+	// workspace preset. It is intentionally private: callers may add grants via
+	// Merge, but only preset discovery can establish the metadata that must be
+	// re-audited after all CLI and per-tool writable paths have been merged.
+	gitPolicies []gitWorkspacePolicy
+
 	// authorityPaths records the filesystem objects selected by a prior
 	// PrepareConfig call. The metadata is deliberately private but survives
 	// Config.Merge so a registry can reuse one approved base policy without a
@@ -313,6 +318,7 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 	// Config is a value, but its slices are not. Keep the private policy record
 	// isolated just like the public path slices below so backend-local
 	// normalization and validation cannot mutate a registry's reusable base.
+	cfg.gitPolicies = cloneGitWorkspacePolicies(cfg.gitPolicies)
 	cfg.authorityPaths = cloneAuthorityPathIdentities(cfg.authorityPaths)
 	cfg.readPathAliases = cloneReadPathAliasIdentities(cfg.readPathAliases)
 	cfg.AllowEnv = append([]string(nil), cfg.AllowEnv...)
@@ -363,14 +369,19 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 // retained for later sandbox construction. It is safe to call repeatedly: a
 // prepared grant keeps its original filesystem identity, and a later route or
 // inode replacement fails closed instead of being re-resolved. Missing grants
-// are dropped.
+// are dropped, and the workspace Git policy is re-audited against the final
+// canonical writable roots.
 func PrepareConfig(cfg Config) (Config, error) {
 	var err error
 	cfg, err = normalizeConfigPaths(cfg)
 	if err != nil {
 		return Config{}, err
 	}
-	return freezeAuthorityPathsForPlatform(cfg)
+	cfg, err = freezeAuthorityPathsForPlatform(cfg)
+	if err != nil {
+		return Config{}, err
+	}
+	return applyFinalGitPolicy(cfg)
 }
 
 // freezeAuthorityPaths turns path-based authority grants into the canonical
@@ -876,113 +887,6 @@ func validateAuthorityPathIdentities(identities []authorityPathIdentity) error {
 	return nil
 }
 
-func pathWithinPolicy(path, parent string) bool {
-	if pathLexicallyWithinPolicy(path, parent) {
-		return true
-	}
-	parentInfo, err := os.Stat(filepath.Clean(parent))
-	if err != nil {
-		return false
-	}
-	if existingAncestorHasIdentity(path, parentInfo) {
-		return true
-	}
-	// Resolve an existing symlink prefix as well. This catches a missing path
-	// reached through an external symlink into the workspace, while SameFile
-	// makes case-varied spellings work only on filesystems that actually alias
-	// those names (for example default APFS, but not a case-sensitive volume).
-	resolved, err := resolveExistingPathPrefix(path)
-	return err == nil && resolved != filepath.Clean(path) && existingAncestorHasIdentity(resolved, parentInfo)
-}
-
-func pathLexicallyWithinPolicy(path, parent string) bool {
-	rel, err := filepath.Rel(parent, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-func existingAncestorHasIdentity(path string, parentInfo fs.FileInfo) bool {
-	current := filepath.Clean(path)
-	for {
-		info, err := os.Stat(current)
-		if err == nil {
-			if os.SameFile(info, parentInfo) {
-				return true
-			}
-		} else if !os.IsNotExist(err) && !errors.Is(err, syscall.ENOTDIR) {
-			return false
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return false
-		}
-		current = parent
-	}
-}
-
-// resolveExistingPathPrefix resolves symlinks component by component while
-// preserving missing trailing entries. Reading link targets directly matters
-// for a dangling external link into the workspace: EvalSymlinks alone loses
-// that target precisely until a sandboxed tool creates it.
-func resolveExistingPathPrefix(path string) (string, error) {
-	path = filepath.Clean(path)
-	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("path %q is not absolute", path)
-	}
-	root, pending := absolutePathComponents(path)
-	resolved := root
-	symlinks := 0
-	for len(pending) > 0 {
-		component := pending[0]
-		pending = pending[1:]
-		candidate := filepath.Join(resolved, component)
-		info, err := os.Lstat(candidate)
-		if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
-			for _, trailing := range pending {
-				candidate = filepath.Join(candidate, trailing)
-			}
-			return filepath.Clean(candidate), nil
-		}
-		if err != nil {
-			return "", err
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			resolved = candidate
-			continue
-		}
-		symlinks++
-		if symlinks > 255 {
-			return "", fmt.Errorf("too many symlinks while resolving %q", path)
-		}
-		target, err := os.Readlink(candidate)
-		if err != nil {
-			return "", err
-		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(candidate), target)
-		}
-		for _, trailing := range pending {
-			target = filepath.Join(target, trailing)
-		}
-		root, pending = absolutePathComponents(filepath.Clean(target))
-		resolved = root
-	}
-	return filepath.Clean(resolved), nil
-}
-
-func absolutePathComponents(path string) (string, []string) {
-	volume := filepath.VolumeName(path)
-	root := volume + string(filepath.Separator)
-	rel := strings.TrimPrefix(path, root)
-	components := strings.Split(rel, string(filepath.Separator))
-	filtered := components[:0]
-	for _, component := range components {
-		if component != "" && component != "." {
-			filtered = append(filtered, component)
-		}
-	}
-	return root, filtered
-}
-
 // validateConfig rejects only configs the sandbox fundamentally cannot honor.
 // It deliberately does NOT reject a missing writablePaths entry: a path that
 // doesn't exist yet (or was removed since the config was saved) must not brick
@@ -1073,6 +977,7 @@ func (c Config) Merge(overlay Config) Config {
 	c.DenyWritePaths = concatStrings(c.DenyWritePaths, overlay.DenyWritePaths)
 	c.AllowEnv = concatStrings(c.AllowEnv, overlay.AllowEnv)
 	c.DenyWrite = c.DenyWrite || overlay.DenyWrite
+	c.gitPolicies = concatGitWorkspacePolicies(c.gitPolicies, overlay.gitPolicies)
 	c.authorityPaths = append(cloneAuthorityPathIdentities(c.authorityPaths), overlay.authorityPaths...)
 	c.readPathAliases = append(cloneReadPathAliasIdentities(c.readPathAliases), cloneReadPathAliasIdentities(overlay.readPathAliases)...)
 	return c
@@ -1090,6 +995,29 @@ func concatStrings(a, b []string) []string {
 	out := make([]string, 0, len(a)+len(b))
 	out = append(out, a...)
 	out = append(out, b...)
+	return out
+}
+
+func cloneGitWorkspacePolicies(policies []gitWorkspacePolicy) []gitWorkspacePolicy {
+	if len(policies) == 0 {
+		return nil
+	}
+	out := make([]gitWorkspacePolicy, len(policies))
+	for i, policy := range policies {
+		out[i] = policy
+		out[i].repositories = append([]gitRepositoryContext(nil), policy.repositories...)
+		out[i].protected = append([]string(nil), policy.protected...)
+	}
+	return out
+}
+
+func concatGitWorkspacePolicies(a, b []gitWorkspacePolicy) []gitWorkspacePolicy {
+	out := make([]gitWorkspacePolicy, 0, len(a)+len(b))
+	out = append(out, cloneGitWorkspacePolicies(a)...)
+	out = append(out, cloneGitWorkspacePolicies(b)...)
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
 

@@ -80,6 +80,34 @@ func TestNormalizeConfigPathsCopiesAllowEnv(t *testing.T) {
 	}
 }
 
+func TestResolvedExecutablePathUsesAbsoluteBaseForRelativeDir(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "tool")
+	if err := os.WriteFile(tool, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	relativeDir, err := filepath.Rel(cwd, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := &exec.Cmd{Path: "./tool", Dir: relativeDir}
+	got, err := resolvedExecutablePath(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("resolvedExecutablePath() = %q, want %q", got, want)
+	}
+}
+
 func TestFreezeAuthorityPathsCanonicalizesDropsAndMinimizes(t *testing.T) {
 	root := t.TempDir()
 	writable := filepath.Join(root, "writable")
@@ -518,6 +546,14 @@ func TestWrapCmdApplied(t *testing.T) {
 	}
 }
 
+func TestWrapCmdError(t *testing.T) {
+	sb := &mockSandbox{err: fmt.Errorf("denied")}
+	cmd := exec.Command("echo", "hello")
+	if err := WrapCmd(sb, cmd); err == nil {
+		t.Fatal("expected error from WrapCmd")
+	}
+}
+
 func TestWrapCmdWithEnvRejectsSandboxWithoutExplicitEnvSupport(t *testing.T) {
 	sb := &mockSandbox{}
 	cmd := exec.Command("echo", "hello")
@@ -614,14 +650,6 @@ func TestWrapCmdManagedClosesAppendedFilesOnWrapError(t *testing.T) {
 	}
 	if _, err := ownedFile.Stat(); err == nil {
 		t.Fatal("sandbox-owned descriptor remains open after Wrap error")
-	}
-}
-
-func TestWrapCmdError(t *testing.T) {
-	sb := &mockSandbox{err: fmt.Errorf("denied")}
-	cmd := exec.Command("echo", "hello")
-	if err := WrapCmd(sb, cmd); err == nil {
-		t.Fatal("expected error from WrapCmd")
 	}
 }
 
@@ -969,61 +997,6 @@ func TestPrepareConfigNarrowedReadAliasRejectsParentTargetReplacement(t *testing
 	}
 }
 
-// Merging two overlays onto the same base must not alias: the registry reuses
-// one baseSandboxCfg for every tool, so if Merge appended into the base's spare
-// capacity, one tool's deny path would overwrite another's. The base slice here
-// has cap > len to expose the aliasing if it regresses.
-// Merging two overlays onto the same base must not alias: the registry reuses
-// one baseSandboxCfg for every tool, so if Merge appended into the base's spare
-// capacity, one tool's deny path would overwrite another's. The base slice here
-// has cap > len to expose the aliasing if it regresses.
-func TestMergeDoesNotAliasBase(t *testing.T) {
-	base := Config{DenyPaths: make([]string, 1, 8)}
-	base.DenyPaths[0] = "/base"
-
-	mergedA := base.Merge(Config{DenyPaths: []string{"/toolA"}})
-	mergedB := base.Merge(Config{DenyPaths: []string{"/toolB"}})
-
-	if got := mergedA.DenyPaths; len(got) != 2 || got[1] != "/toolA" {
-		t.Fatalf("mergedA.DenyPaths = %v, want [/base /toolA] — tool B's merge contaminated tool A", got)
-	}
-	if got := mergedB.DenyPaths; len(got) != 2 || got[1] != "/toolB" {
-		t.Fatalf("mergedB.DenyPaths = %v, want [/base /toolB]", got)
-	}
-	// The base itself must be untouched.
-	if len(base.DenyPaths) != 1 || base.DenyPaths[0] != "/base" {
-		t.Fatalf("base mutated by Merge: %v", base.DenyPaths)
-	}
-}
-
-func TestResolvedExecutablePathUsesAbsoluteBaseForRelativeDir(t *testing.T) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	tool := filepath.Join(dir, "tool")
-	if err := os.WriteFile(tool, []byte("fixture"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	relativeDir, err := filepath.Rel(cwd, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := &exec.Cmd{Path: "./tool", Dir: relativeDir}
-	got, err := resolvedExecutablePath(cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := filepath.EvalSymlinks(tool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Fatalf("resolvedExecutablePath() = %q, want %q", got, want)
-	}
-}
-
 func TestFilterEnvStripsSensitiveByDefault(t *testing.T) {
 	env := []string{
 		"PATH=/usr/bin",
@@ -1169,6 +1142,97 @@ func TestMergeDenyPaths(t *testing.T) {
 	merged := Config{DenyPaths: []string{"/a"}}.Merge(Config{DenyPaths: []string{"/b"}})
 	if len(merged.DenyPaths) != 2 || merged.DenyPaths[0] != "/a" || merged.DenyPaths[1] != "/b" {
 		t.Fatalf("DenyPaths = %v, want [/a /b]", merged.DenyPaths)
+	}
+}
+
+// Merging two overlays onto the same base must not alias: the registry reuses
+// one baseSandboxCfg for every tool, so if Merge appended into the base's spare
+// capacity, one tool's deny path would overwrite another's. The base slice here
+// has cap > len to expose the aliasing if it regresses.
+func TestMergeDoesNotAliasBase(t *testing.T) {
+	base := Config{DenyPaths: make([]string, 1, 8)}
+	base.DenyPaths[0] = "/base"
+
+	mergedA := base.Merge(Config{DenyPaths: []string{"/toolA"}})
+	mergedB := base.Merge(Config{DenyPaths: []string{"/toolB"}})
+
+	if got := mergedA.DenyPaths; len(got) != 2 || got[1] != "/toolA" {
+		t.Fatalf("mergedA.DenyPaths = %v, want [/base /toolA] — tool B's merge contaminated tool A", got)
+	}
+	if got := mergedB.DenyPaths; len(got) != 2 || got[1] != "/toolB" {
+		t.Fatalf("mergedB.DenyPaths = %v, want [/base /toolB]", got)
+	}
+	// The base itself must be untouched.
+	if len(base.DenyPaths) != 1 || base.DenyPaths[0] != "/base" {
+		t.Fatalf("base mutated by Merge: %v", base.DenyPaths)
+	}
+}
+
+func TestMergeCarriesAndCopiesGitPoliciesFromBothOperands(t *testing.T) {
+	base := Config{gitPolicies: []gitWorkspacePolicy{{
+		workspace: "/base",
+		repositories: []gitRepositoryContext{{
+			workTree: "/base",
+			gitDir:   "/base/.git",
+		}},
+		protected: []string{"/base/.git"},
+	}}}
+	overlay := Config{gitPolicies: []gitWorkspacePolicy{{
+		workspace: "/overlay",
+		repositories: []gitRepositoryContext{{
+			workTree: "/overlay",
+			gitDir:   "/overlay/.git",
+		}},
+		protected: []string{"/overlay/.git"},
+	}}}
+
+	merged := base.Merge(overlay)
+	if len(merged.gitPolicies) != 2 {
+		t.Fatalf("merged Git policies = %d, want both operands", len(merged.gitPolicies))
+	}
+	if merged.gitPolicies[0].workspace != "/base" || merged.gitPolicies[1].workspace != "/overlay" {
+		t.Fatalf("merged Git workspaces = %q, %q", merged.gitPolicies[0].workspace, merged.gitPolicies[1].workspace)
+	}
+
+	base.gitPolicies[0].repositories[0].gitDir = "/mutated-base"
+	overlay.gitPolicies[0].protected[0] = "/mutated-overlay"
+	if got := merged.gitPolicies[0].repositories[0].gitDir; got != "/base/.git" {
+		t.Fatalf("base repository slice aliases merged policy: %q", got)
+	}
+	if got := merged.gitPolicies[1].protected[0]; got != "/overlay/.git" {
+		t.Fatalf("overlay protected slice aliases merged policy: %q", got)
+	}
+
+	merged.gitPolicies[0].protected[0] = "/mutated-merged"
+	if got := base.gitPolicies[0].protected[0]; got != "/base/.git" {
+		t.Fatalf("merged policy aliases base protected slice: %q", got)
+	}
+}
+
+func TestNormalizeConfigPathsRetainsAndCopiesGitPolicies(t *testing.T) {
+	original := Config{gitPolicies: []gitWorkspacePolicy{{
+		workspace: "/workspace",
+		repositories: []gitRepositoryContext{{
+			workTree: "/workspace",
+			gitDir:   "/workspace/.git",
+		}},
+		protected: []string{"/workspace/.git"},
+	}}}
+
+	normalized, err := normalizeConfigPaths(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(normalized.gitPolicies) != 1 || normalized.gitPolicies[0].workspace != "/workspace" {
+		t.Fatalf("normalized Git policies = %+v", normalized.gitPolicies)
+	}
+	normalized.gitPolicies[0].repositories[0].gitDir = "/mutated"
+	normalized.gitPolicies[0].protected[0] = "/mutated"
+	if got := original.gitPolicies[0].repositories[0].gitDir; got != "/workspace/.git" {
+		t.Fatalf("normalization aliases repository policy: %q", got)
+	}
+	if got := original.gitPolicies[0].protected[0]; got != "/workspace/.git" {
+		t.Fatalf("normalization aliases protected policy: %q", got)
 	}
 }
 
