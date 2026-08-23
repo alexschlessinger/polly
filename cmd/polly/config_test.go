@@ -93,9 +93,27 @@ func TestConfigFlagsRejectPromptAndFileOnManagementCommands(t *testing.T) {
 }
 
 func TestConfigFlagsRejectPurgeWithOtherFlags(t *testing.T) {
-	err := runConfigValidationCommand("--purge", "--model", "openai/gpt-5.4")
-	if err == nil || !strings.Contains(err.Error(), "--purge must be used alone") {
-		t.Fatalf("run error = %v, want purge validation error", err)
+	tests := [][]string{
+		{"--purge", "--model", "openai/gpt-5.4"},
+		{"--purge", "--confirm"},
+		{"--purge", "--meta"},
+		{"--purge", "--sandbox", "base"},
+		{"--purge", "--nosandbox"},
+		{"--purge", "--denypath", "/secrets"},
+		{"--purge", "--writepath", "/output"},
+		{"--purge", "--allownet"},
+	}
+	for _, args := range tests {
+		err := runConfigValidationCommand(args...)
+		if err == nil || !strings.Contains(err.Error(), "--purge must be used alone") {
+			t.Errorf("run(%v) error = %v, want purge validation error", args, err)
+		}
+	}
+
+	for _, args := range [][]string{{"--purge", "--quiet"}, {"--purge", "--debug"}} {
+		if err := runConfigValidationCommand(args...); err != nil {
+			t.Errorf("run(%v) error = %v, want quiet/debug allowed with purge", args, err)
+		}
 	}
 }
 
@@ -175,6 +193,89 @@ func TestSandboxPresetFlagDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestSandboxPresetFlagValidationDoesNotInspectWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("POLLYTOOL_SANDBOX", "workspace+net")
+	t.Chdir(home)
+
+	// This command never constructs a sandbox. Supplying the documented default
+	// through the environment must not turn flag validation into a workspace
+	// scan (which rejects a home-directory cwd).
+	if err := runConfigValidationCommand("--list"); err != nil {
+		t.Fatalf("run error = %v, want syntax-only preset validation", err)
+	}
+
+	// Subcommands inherit root flag parsing but do not use the chat sandbox.
+	// Reaching embed's own input validation proves the preset validator did not
+	// inspect (and reject) the home-directory workspace first.
+	err := getCommand().Run(context.Background(), []string{"polly", "embed"})
+	if err == nil || !strings.Contains(err.Error(), "no input provided") {
+		t.Fatalf("polly embed error = %v, want embed input validation after syntax-only root parsing", err)
+	}
+}
+
+func TestSandboxFlagsConflictWithEffectiveNoSandbox(t *testing.T) {
+	for _, args := range [][]string{
+		{"--sandbox", "readonly"},
+		{"--denypath", "/secrets"},
+		{"--writepath", "/output"},
+		{"--allownet"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			t.Setenv("POLLYTOOL_NOSANDBOX", "true")
+			err := runConfigValidationCommand(args...)
+			if err == nil || !strings.Contains(err.Error(), "--nosandbox cannot be enabled with") {
+				t.Errorf("run(%v) error = %v, want nosandbox conflict", args, err)
+			}
+		})
+	}
+}
+
+func TestSandboxFlagsFromEnvConflictWithCLINoSandbox(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		env   string
+		value string
+	}{
+		{name: "sandbox", env: "POLLYTOOL_SANDBOX", value: "readonly"},
+		{name: "denypath", env: "POLLYTOOL_DENYPATHS", value: "/secrets"},
+		{name: "writepath", env: "POLLYTOOL_WRITEPATHS", value: "/output"},
+		{name: "allownet", env: "POLLYTOOL_ALLOWNET", value: "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			err := runConfigValidationCommand("--nosandbox")
+			if err == nil || !strings.Contains(err.Error(), "--"+tc.name) {
+				t.Fatalf("run error = %v, want env-sourced --%s conflict", err, tc.name)
+			}
+		})
+	}
+}
+
+func TestNoSandboxDoesNotConflictWithDefaultPreset(t *testing.T) {
+	if err := runConfigValidationCommand("--nosandbox"); err != nil {
+		t.Fatalf("run error = %v, default --sandbox value must not count as explicitly set", err)
+	}
+}
+
+func TestSandboxFlagsAllowExplicitNoSandboxFalse(t *testing.T) {
+	t.Setenv("POLLYTOOL_NOSANDBOX", "true")
+	if err := runConfigValidationCommand("--nosandbox=false", "--sandbox", "readonly", "--denypath", "/secrets"); err != nil {
+		t.Fatalf("run error = %v, want explicit --nosandbox=false to restore sandboxing", err)
+	}
+}
+
+func TestManagementCommandIgnoresAmbientNoSandboxPolicyConflict(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("POLLYTOOL_NOSANDBOX", "true")
+	t.Setenv("POLLYTOOL_SANDBOX", "readonly")
+
+	if err := getCommand().Run(context.Background(), []string{"polly", "--list"}); err != nil {
+		t.Fatalf("polly --list error = %v, management command must not validate unused sandbox policy", err)
+	}
+}
+
 func runConfigValidationCommand(args ...string) error {
 	flags, groups := defineFlagsWithGroups()
 	cmd := &cli.Command{
@@ -182,7 +283,7 @@ func runConfigValidationCommand(args ...string) error {
 		Flags:                  flags,
 		MutuallyExclusiveFlags: groups,
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			return nil
+			return validateSandboxFlagCombination(cmd, parseConfig(cmd))
 		},
 	}
 

@@ -352,9 +352,11 @@ The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by d
 | `workspace` | the working directory is writable; discovered Git routing entries and metadata trees stay read-only so a tool cannot replace `.git` or alter repository-local hook/config entry points |
 | `net` | outbound network allowed |
 
-The default is **`workspace+net`**: tools can edit the project and reach the network, but credentials stay masked and everything outside the workspace is read-only. `workspace` refuses to run from the home directory or filesystem root because recursively protecting Git metadata there cannot safely use a partial scan; change into a project directory or use `--sandbox base`. Tighten with `--sandbox base` or `--sandbox readonly` when tools only need to compute or inspect. Granular additions: `--writepath <dir>` (repeatable, env `POLLYTOOL_WRITEPATHS`) grants extra writable paths and `--allownet` (env `POLLYTOOL_ALLOWNET`) grants network on top of any preset.
+The default is **`workspace+net`**: tools can edit the project and reach the network, but credentials stay masked and everything outside the workspace is read-only. `workspace` canonicalizes the working directory and refuses the filesystem root, the user's home directory, exact mounted-volume roots on Linux and macOS, and exact Linux private temp/runtime roots because recursively protecting Git metadata there cannot safely use a partial scan. Descendants of mounted volumes remain valid bounded workspaces; otherwise change into a project directory or use `--sandbox base`. Tighten with `--sandbox base` or `--sandbox readonly` when tools only need to compute or inspect. Granular additions: `--writepath <dir>` (repeatable, env `POLLYTOOL_WRITEPATHS`) grants extra writable paths and `--allownet` (env `POLLYTOOL_ALLOWNET`) grants network on top of any preset.
 
-Sandboxing requires the fixed system `/usr/bin/bwrap` (Linux), or fixed system `/usr/bin/sandbox-exec` plus `/usr/bin/perl` (macOS). If the required trusted backend is unavailable, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. See [API.md](API.md) for the full spec and [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
+If a global flag or per-tool overlay leaves a home directory or filesystem root as a broad writable grant, Polly emits a visible warning pointing to the global and per-tool settings to inspect. Repeated effective configs do not repeat the same warning.
+
+Sandboxing requires the fixed system `/usr/bin/bwrap` (Linux), or fixed system `/usr/bin/sandbox-exec` plus `/usr/bin/perl` (macOS). If the required trusted backend is unavailable, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. For a conversation run, explicitly supplying `--sandbox`, `--denypath`, `--writepath`, or `--allownet` while no-sandbox mode is effective is an error rather than a silently ignored policy; use `--nosandbox=false` to override an ambient opt-out. See [API.md](API.md) for the full spec and [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
 
 **Full example** — `"sandbox": true` inherits the CLI preset; add `--sandbox base` to limit writes to `$TMPDIR` with no network:
 
@@ -387,7 +389,8 @@ polly -t ./sandboxed_uppercase.sh -p "uppercase 'hello world' using the tool"
 // Grant network + extra writable path
 "sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/data"] }
 
-// Allow network but block DNS (IP-only connections)
+// Allow network; block DNS on macOS and the default resolver on Linux
+// (Linux remains best-effort: a hard-coded resolver can still be reached.)
 "sandbox": { "allowNetwork": true, "denyDNS": true }
 
 // Unmask specific sensitive paths and pass through selected env vars
@@ -459,7 +462,7 @@ is loaded fails closed instead of silently widening that later sandbox.
 }
 ```
 
-Tools and servers without a `sandbox` field get the CLI preset (`workspace+net` unless `--sandbox` says otherwise). A tool's own `sandbox` config merges on top of the preset and can widen it, never narrow it. A `"sandbox": false` request is refused unless the caller also made the explicit global unsafe choice with `--nosandbox`.
+Tools and servers without a `sandbox` field get the CLI preset (`workspace+net` unless `--sandbox` says otherwise). A tool's own `sandbox` config merges monotonically on top of the preset: it may add grants or restrictions, but cannot remove an earlier entry. A `"sandbox": false` request is refused unless the caller also made the explicit global unsafe choice with `--nosandbox`.
 
 ### MCP Servers
 

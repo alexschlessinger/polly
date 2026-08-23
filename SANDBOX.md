@@ -12,21 +12,26 @@ shell-tool walkthrough, see [README.md](README.md#sandboxing).
 The commands polly executes are chosen by a language model, often steered by
 untrusted input (web pages, file contents, MCP tool output). The sandbox limits
 the blast radius of a hallucinated, prompt-injected, or simply buggy command.
-Concretely, a sandboxed process cannot:
+By default, it enforces these boundaries; explicit policy grants can widen
+them as described below:
 
 - **Read credentials.** `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.netrc`,
   `~/.config/gh`, `~/Library/Keychains`, and the rest of the built-in deny
   list (17 paths) are blocked from reads, plus anything added with
-  `--denypath`.
+  `--denypath`, unless an effective `readPaths` grant exempts an entry.
 - **See secrets in the environment.** Credential-shaped variables
   (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`,
   ...) and agent sockets (`SSH_AUTH_SOCK`, `GPG_AGENT_INFO`) are stripped
-  before exec. Agent sockets matter: with `SSH_AUTH_SOCK` intact, a process
-  can use your SSH keys without ever reading `~/.ssh`.
-- **Write outside temp directories.** The filesystem is read-only except the
-  OS temp dir and any configured `writablePaths`.
-- **Reach the network or host IPC.** TCP/UDP network access is denied unless the
-  tool opts into `allowNetwork`. On Linux, host filesystem Unix sockets remain
+  before exec unless explicitly delivered or allowlisted. Agent sockets matter:
+  with `SSH_AUTH_SOCK` intact, a process can use your SSH keys without ever
+  reading `~/.ssh`.
+- **Write beyond the effective writable set.** The filesystem is read-only
+  except the OS temp dir and configured `writablePaths`. The CLI default adds
+  the current workspace; the library `DefaultConfig` does not.
+- **Reach TCP/UDP unless the effective policy allows it.** Library
+  `DefaultConfig` denies network access. The CLI deliberately defaults to
+  `workspace+net`, so CLI tools can use outbound TCP/UDP unless the operator
+  selects a tighter preset. On Linux, host filesystem Unix sockets remain
   blocked even when TCP/UDP is enabled.
 
 Design principles:
@@ -60,11 +65,15 @@ the process runs as your user on a shared kernel. See
 | Remote MCP servers (HTTP/SSE) | no — the process runs elsewhere | n/a |
 | Skill helper / function tools | no — in-process, nothing to wrap | n/a |
 
-The effective config for a tool is the **base config** (temp-dir writes, plus
-any `--denypath` entries) **merged** with the tool's own `sandbox` object.
-Merging only widens: booleans OR, path lists append. A tool can grant itself
-network access; nothing can un-deny a credential path except an explicit
-`readPaths` exemption in its own config.
+The effective config for a tool is the caller's **base config** merged with
+global overlays and the tool's own `sandbox` object. Library callers commonly
+start with `DefaultConfig` (temp writes, no network); the CLI starts with its
+selected preset (`workspace+net` by default), then adds `--denypath`,
+`--writepath`, and `--allownet` overlays. Merging is monotonic: booleans OR and
+path lists append, so an overlay cannot remove an earlier choice. Grant fields
+such as `allowNetwork`, `writablePaths`, and `readPaths` can widen access, while
+`denyWrite`, `denyDNS`, `denyPaths`, `denyWritePaths`, and a strict `allowEnv`
+can add restrictions.
 
 Shell-tool `--schema` discovery is deliberately stricter than execution. Before
 the schema can be trusted, discovery runs with private-temp writes only and no
@@ -315,20 +324,24 @@ tool starts from. A spec is one or more preset names joined with `+`:
 
 The default is **`workspace+net`** — agentic work on the current project with
 network access, while credentials stay masked and the rest of the filesystem
-stays read-only. `workspace` resolves the working directory *at startup*, and
-follows `.git` and `commondir` pointer files to pin the complete resolved Git
-metadata trees. Because that protection cannot safely use a partial recursive
-scan, `workspace` refuses the home directory and filesystem root; change into a
-bounded project directory or select `--sandbox base` there.
+stays read-only. `workspace` canonicalizes the working directory *at startup*,
+then follows `.git` and `commondir` pointer files to pin the complete resolved
+Git metadata trees. Because that protection cannot safely use a partial
+recursive scan, `workspace` refuses the filesystem root, the user's home
+directory, and exact mounted-volume roots on Linux and macOS. Linux also
+refuses its exact private temp/runtime sandbox roots. Descendants of those
+mounts remain valid bounded workspaces; otherwise change into a project
+directory or select `--sandbox base`.
 
 Per-tool knobs (schema `"sandbox"` object, MCP server entry) merge on top of
-the base policy — merging widens, never narrows:
+the base policy. Entries are monotonic: overlays may add grants or restrictions
+but cannot remove an earlier entry:
 
 | Field | Default | Effect |
 |---|---|---|
 | `writablePaths` | `[]` (temp only) | extra write-allowed directories (`~` ok) |
 | `allowNetwork` | `false` | permit outbound network |
-| `denyDNS` | `false` | with `allowNetwork`: block name resolution |
+| `denyDNS` | `false` | with `allowNetwork`: block DNS on macOS; suppress the default resolver on Linux (best effort) |
 | `readPaths` | `[]` | exempt entries from the deny list |
 | `denyPaths` | `[]` | extra read-blocked paths (`~` ok) |
 | `denyWritePaths` | `[]` | read-only islands inside writable trees (`~` ok) |
@@ -339,10 +352,21 @@ Global flags: `--nosandbox` (`POLLYTOOL_NOSANDBOX`) disables everything;
 `--denypath` (`POLLYTOOL_DENYPATHS`, repeatable) adds read-blocked paths,
 `--writepath` (`POLLYTOOL_WRITEPATHS`, repeatable) adds writable paths, and
 `--allownet` (`POLLYTOOL_ALLOWNET`) enables network for all sandboxed tools.
+For a conversation run, when no-sandbox mode is effective, Polly rejects an
+explicitly supplied `--sandbox`, `--denypath`, `--writepath`, or `--allownet`
+instead of silently ignoring that policy. Pass `--nosandbox=false` to override
+an ambient `POLLYTOOL_NOSANDBOX=true` and restore sandboxing.
+
+After global and per-tool policies are merged, Polly visibly warns once for
+each home directory or filesystem root that remains a broad writable grant. The
+warning points to the global and per-tool settings to inspect; read-only policies
+and matching `denyWritePaths` do not trigger it.
 
 Three interactions to keep in mind:
 
 - `denyDNS` only matters when `allowNetwork` is true (no network ⊃ no DNS).
+  macOS blocks the resolver service and direct port 53; Linux masks the default
+  resolver configuration, but a process can still contact a hard-coded resolver.
 - `allowEnv` is a mode switch, not an addition: when set, *only* those
   variables pass through. Use it to hand a tool one specific token —
   `"allowEnv": ["GITHUB_TOKEN"]` — that the heuristics would otherwise strip.
@@ -412,8 +436,8 @@ sandbox factory is called.
 
 ### Examples
 
-Shell tool that fetches URLs but can't resolve arbitrary hostnames or write
-outside its cache:
+Shell tool that fetches URLs and adds a cache directory to the writable paths
+it inherits from the caller's base policy:
 
 ```json
 {
@@ -425,6 +449,10 @@ outside its cache:
   }
 }
 ```
+
+The overlay does not remove base permissions. With CLI `--sandbox base`, the
+effective writable set is temp plus this cache; with the CLI default it also
+includes the workspace.
 
 Stdio MCP server with one credential explicitly passed through:
 

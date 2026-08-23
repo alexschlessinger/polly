@@ -34,6 +34,7 @@ var (
 		"maxtokens", "maxiterations", "timeout", "tool", "mcp", "system", "schema",
 		"tooltimeout", "maxcontext", "thinking", "baseurl",
 		"skilldir", "skill", "noskills", "listskills",
+		"confirm", "meta", "sandbox", "nosandbox", "denypath", "writepath", "allownet",
 	}
 )
 
@@ -324,8 +325,7 @@ func sandboxConfigFlags() []cli.Flag {
 			Value:   defaultSandboxPreset,
 			Sources: cli.EnvVars("POLLYTOOL_SANDBOX"),
 			Validator: func(spec string) error {
-				_, err := sandbox.ParsePreset(spec)
-				return err
+				return validateSandboxPresetSpec(spec)
 			},
 		},
 		&cli.BoolFlag{
@@ -349,6 +349,42 @@ func sandboxConfigFlags() []cli.Flag {
 			Sources: cli.EnvVars("POLLYTOOL_ALLOWNET"),
 		},
 	}
+}
+
+// validateSandboxPresetSpec validates only the user-facing preset syntax.
+// Building a workspace policy resolves and scans the filesystem, which belongs
+// at sandbox startup rather than flag parsing: management commands, embed, and
+// --nosandbox do not construct a sandbox at all.
+func validateSandboxPresetSpec(spec string) error {
+	if strings.TrimSpace(spec) == "" {
+		return nil
+	}
+	for _, part := range strings.Split(spec, "+") {
+		name := strings.TrimSpace(part)
+		if !slices.Contains(sandbox.PresetNames, name) {
+			return fmt.Errorf("unknown sandbox preset %q (valid: %s, joined with +)",
+				name, strings.Join(sandbox.PresetNames, ", "))
+		}
+	}
+	return nil
+}
+
+func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
+	if config == nil || !config.NoSandbox {
+		return nil
+	}
+
+	var conflicts []string
+	for _, name := range []string{"sandbox", "denypath", "writepath", "allownet"} {
+		if cmd.IsSet(name) {
+			conflicts = append(conflicts, "--"+name)
+		}
+	}
+	if len(conflicts) == 0 {
+		return nil
+	}
+	return fmt.Errorf("--nosandbox cannot be enabled with %s; pass --nosandbox=false to re-enable sandboxing or remove the sandbox policy flags",
+		strings.Join(conflicts, ", "))
 }
 
 func outputConfigFlags() []cli.Flag {

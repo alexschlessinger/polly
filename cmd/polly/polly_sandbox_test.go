@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
@@ -160,6 +162,156 @@ func TestSandboxRegistryOptionsRejectsUnknownPreset(t *testing.T) {
 	}
 }
 
+func TestSandboxRegistryOptionsWarnsBroadBaseOnce(t *testing.T) {
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return passthroughSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	warnings := newBroadWritablePathWarner()
+	opts, err := sandboxRegistryOptionsWithWarnings(&Config{
+		SandboxPreset: "base",
+		WritePaths:    []string{string(filepath.Separator)},
+	}, warnings)
+	if err != nil {
+		t.Fatalf("sandboxRegistryOptions() error = %v", err)
+	}
+	registry := tools.NewToolRegistry(nil, opts...)
+	t.Cleanup(func() { _ = registry.Close() })
+	if _, err := registry.NewSandbox(nil); err != nil {
+		t.Fatalf("NewSandbox() error = %v", err)
+	}
+
+	got := strings.Join(warnings.Drain(), "\n")
+	if strings.Count(got, "sandbox writable path") != 1 {
+		t.Fatalf("warning output = %q, want exactly one broad-path warning", got)
+	}
+	if !strings.Contains(got, "filesystem root") || !strings.Contains(got, "remove or narrow the originating --writepath/POLLYTOOL_WRITEPATHS or tool writablePaths setting") {
+		t.Fatalf("warning output = %q, want scope and actionable remediation", got)
+	}
+}
+
+func TestSandboxRegistryOptionsWarnsBroadPerToolOverlay(t *testing.T) {
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return passthroughSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	warnings := newBroadWritablePathWarner()
+	opts, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings)
+	if err != nil {
+		t.Fatalf("sandboxRegistryOptions() error = %v", err)
+	}
+	registry := tools.NewToolRegistry(nil, opts...)
+	t.Cleanup(func() { _ = registry.Close() })
+	if got := warnings.Drain(); len(got) != 0 {
+		t.Fatalf("base startup warnings = %q, want none", got)
+	}
+
+	root := string(filepath.Separator)
+	if _, err := registry.NewSandbox(&sandbox.Config{WritablePaths: []string{root}}); err != nil {
+		t.Fatalf("NewSandbox(per-tool overlay) error = %v", err)
+	}
+	select {
+	case <-warnings.Notify():
+	default:
+		t.Fatal("per-tool warning did not signal Notify")
+	}
+	got := strings.Join(warnings.Drain(), "\n")
+	if !strings.Contains(got, "sandbox writable path") || !strings.Contains(got, "filesystem root") {
+		t.Fatalf("per-tool warning output = %q, want broad-path warning", got)
+	}
+	if _, err := registry.NewSandbox(&sandbox.Config{WritablePaths: []string{root}}); err != nil {
+		t.Fatalf("NewSandbox(repeated overlay) error = %v", err)
+	}
+	select {
+	case <-warnings.Notify():
+		t.Fatal("deduplicated warning unexpectedly signaled Notify again")
+	default:
+	}
+	if got := warnings.Drain(); len(got) != 0 {
+		t.Fatalf("deduplicated warning drain = %q, want empty", got)
+	}
+}
+
+func TestSandboxRegistryOptionsDoesNotWarnForIneffectiveBroadWrite(t *testing.T) {
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return passthroughSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	root := string(filepath.Separator)
+	for _, overlay := range []sandbox.Config{
+		{WritablePaths: []string{root}, DenyWrite: true},
+		{WritablePaths: []string{root}, DenyWritePaths: []string{root}},
+	} {
+		warnings := newBroadWritablePathWarner()
+		opts, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings)
+		if err != nil {
+			t.Fatalf("sandboxRegistryOptions() error = %v", err)
+		}
+		registry := tools.NewToolRegistry(nil, opts...)
+		if _, err := registry.NewSandbox(&overlay); err != nil {
+			_ = registry.Close()
+			t.Fatalf("NewSandbox(ineffective overlay) error = %v", err)
+		}
+		_ = registry.Close()
+		if got := warnings.Drain(); len(got) != 0 {
+			t.Fatalf("ineffective broad write warning = %q, want none", got)
+		}
+	}
+}
+
+func TestSandboxRegistryOptionsDoesNotWarnWhenFactoryFails(t *testing.T) {
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return nil, errors.New("backend unavailable")
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	warnings := newBroadWritablePathWarner()
+	_, err := sandboxRegistryOptionsWithWarnings(&Config{
+		SandboxPreset: "base",
+		WritePaths:    []string{string(filepath.Separator)},
+	}, warnings)
+	if err == nil {
+		t.Fatal("sandboxRegistryOptionsWithWarnings() error = nil, want factory failure")
+	}
+	if got := warnings.Drain(); len(got) != 0 {
+		t.Fatalf("failed factory warnings = %q, want none", got)
+	}
+}
+
+func TestBroadWritablePathWarnerConcurrentWarnAndDrain(t *testing.T) {
+	warnings := newBroadWritablePathWarner()
+	cfg := sandbox.Config{WritablePaths: []string{string(filepath.Separator)}}
+	var wg sync.WaitGroup
+	var collectedMu sync.Mutex
+	var collected []string
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				warnings.Warn(cfg)
+				return
+			}
+			got := warnings.Drain()
+			collectedMu.Lock()
+			collected = append(collected, got...)
+			collectedMu.Unlock()
+		}(i)
+	}
+	wg.Wait()
+	collected = append(collected, warnings.Drain()...)
+	if len(collected) != 1 {
+		t.Fatalf("concurrent warning count = %d (%q), want exactly one", len(collected), collected)
+	}
+}
+
 func TestInitializeSessionFailsWhenSandboxRequestedButUnavailable(t *testing.T) {
 	originalNewSandbox := newSandbox
 	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
@@ -172,7 +324,7 @@ func TestInitializeSessionFailsWhenSandboxRequestedButUnavailable(t *testing.T) 
 	store := sessions.NewSyncMapSessionStore(nil)
 	_, session, _, registry, _, _, _, err := initializeSession(&Config{
 		NoSkills: true,
-	}, store, "", getCommand())
+	}, store, "", getCommand(), nil)
 	if err == nil {
 		t.Fatal("initializeSession() error = nil, want sandbox startup failure")
 	}
@@ -202,7 +354,7 @@ func TestInitializeSessionSucceedsWithoutSandboxWhenBackendUnavailable(t *testin
 	_, session, agent, registry, _, _, _, err := initializeSession(&Config{
 		NoSandbox: true,
 		NoSkills:  true,
-	}, store, "", getCommand())
+	}, store, "", getCommand(), nil)
 	if err != nil {
 		t.Fatalf("initializeSession() error = %v", err)
 	}

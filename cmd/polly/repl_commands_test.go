@@ -271,6 +271,59 @@ func TestToolsSandboxBadges(t *testing.T) {
 	}
 }
 
+func TestPreparedDefaultSandboxTempPathsAreNotCustom(t *testing.T) {
+	root := t.TempDir()
+	realTemp := filepath.Join(root, "real-temp")
+	if err := os.Mkdir(realTemp, 0700); err != nil {
+		t.Fatalf("create real temp: %v", err)
+	}
+	tempAlias := filepath.Join(root, "temp-alias")
+	if err := os.Symlink(realTemp, tempAlias); err != nil {
+		t.Skipf("create temp symlink: %v", err)
+	}
+	t.Setenv("TMPDIR", tempAlias)
+
+	prepared, err := sandbox.PrepareConfig(sandbox.DefaultConfig())
+	if err != nil {
+		t.Fatalf("PrepareConfig(DefaultConfig()) error = %v", err)
+	}
+	if len(prepared.WritablePaths) == 0 {
+		t.Fatal("prepared default config has no temp writable path")
+	}
+
+	tests := []struct {
+		name        string
+		allowNet    bool
+		wantCompact string
+		wantDetail  string
+	}{
+		{
+			name:        "base",
+			wantCompact: "net off, temp writes, env filtered",
+			wantDetail:  "network off; writes limited to temp; env filters credential-like variables",
+		},
+		{
+			name:        "net",
+			allowNet:    true,
+			wantCompact: "net on, temp writes, env filtered",
+			wantDetail:  "network on; writes limited to temp; env filters credential-like variables",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := prepared
+			cfg.AllowNetwork = tt.allowNet
+			info := tools.SandboxInfo{Capable: true, Active: true, Config: &cfg}
+			if got := sandboxCompactSummary(info); got != tt.wantCompact {
+				t.Fatalf("sandboxCompactSummary() = %q, want %q", got, tt.wantCompact)
+			}
+			if got := sandboxShowDetail(info); got != tt.wantDetail {
+				t.Fatalf("sandboxShowDetail() = %q, want %q", got, tt.wantDetail)
+			}
+		})
+	}
+}
+
 func TestToolsSandboxOptOutAndFallbackBadges(t *testing.T) {
 	dir := t.TempDir()
 	script := `#!/bin/bash

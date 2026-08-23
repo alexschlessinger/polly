@@ -943,7 +943,18 @@ func hasCustomWritablePaths(paths []string) bool {
 func isTempWritablePath(path string) bool {
 	clean := filepath.Clean(path)
 	for _, candidate := range []string{os.TempDir(), "/tmp", "/private/tmp"} {
-		if clean == filepath.Clean(candidate) {
+		if candidate == "" {
+			continue
+		}
+		candidate = filepath.Clean(candidate)
+		if clean == candidate {
+			return true
+		}
+		// Effective sandbox configs are prepared before tools are loaded, which
+		// canonicalizes writable grants. Match the canonical form of known temp
+		// roots too (notably /var/... -> /private/var/... on macOS) without
+		// resolving arbitrary writable paths during display.
+		if real, err := filepath.EvalSymlinks(candidate); err == nil && clean == filepath.Clean(real) {
 			return true
 		}
 	}

@@ -687,7 +687,7 @@ Shell scripts used as tools must:
 3. Return results as plain text to stdout
 4. Exit with code 0 on success, non-zero on error
 
-Shell tools run sandboxed by default. The schema may include `"sandbox"` at the top level to customize permissions. When the sandbox is applied, `[sandboxed]` is appended to the shell tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable globally with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
+Shell tools run sandboxed by default. The schema may include `"sandbox"` at the top level to customize permissions. When the sandbox is applied, `[sandboxed]` is appended to the shell tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable globally with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. For a conversation run, explicitly supplied sandbox-policy flags are rejected rather than ignored while no-sandbox mode is effective; pass `--nosandbox=false` to override an ambient opt-out.
 
 Tools that omit `"sandbox"` get the defaults below. Tool-controlled metadata cannot silently disable containment: `"sandbox": false` is refused unless the registry was constructed with the deliberately named `tools.WithUnsafeNoSandbox()` option (the CLI equivalent is `--nosandbox`). See [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
 
@@ -710,7 +710,7 @@ the legacy behavior.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `allowNetwork` | bool | `false` | Allow outbound network access |
-| `denyDNS` | bool | `false` | Block DNS resolution. Only effective when `allowNetwork` is `true`. |
+| `denyDNS` | bool | `false` | With `allowNetwork`, block DNS on macOS; on Linux, suppress the default resolver only (best effort). |
 | `writablePaths` | string[] | `[]` | Directories where writes are allowed (supports `~`) |
 | `readPaths` | string[] | `[]` | Paths exempted from the credential deny list (supports `~`) |
 | `denyPaths` | string[] | `[]` | Extra paths blocked from reads, in addition to the built-in deny list (supports `~`) |
@@ -725,7 +725,51 @@ the legacy behavior.
 - Env: all vars passed through except sensitive ones (see below)
 - Linux: private `/tmp` and `/run`, inherited capabilities dropped, filesystem Unix sockets denied, own PID and IPC namespaces, and own session
 
-**CLI presets:** the `polly` CLI selects its base config with `--sandbox <preset>` (components `base`, `readonly`, `workspace`, `net` joined with `+`; library equivalent `sandbox.ParsePreset`). The CLI default is `workspace+net`: the working directory is added to `writablePaths`, while recursively discovered `.git` routing entries and their resolved per-worktree/common metadata directories are added to `denyWritePaths`; `allowNetwork` is enabled. Git metadata is therefore read-only (including missing leaves such as `config.worktree`) while working-tree files remain writable. The `workspace` component refuses a working directory equal to the user's home directory or the filesystem root before recursive discovery, because accepting an incomplete scan would leave undiscovered Git metadata writable; change into a bounded project directory or select `--sandbox base`. Bare-repository working directories; symlinked or hard-linked Git routing/config/hook metadata; repository-local `core.hooksPath`; and config includes are refused because their effective identity or target cannot be pinned portably. Polly accepts PATH-selected Git when it reaches fixed `/usr/bin/git` through a stable non-symlink route outside writable paths. On Darwin it also accepts the standard Homebrew `/opt/homebrew/bin/git` and `/usr/local/bin/git` leaf symlinks when they resolve directly to a non-writable, single-link `Cellar/git/<version>/bin/git` target outside writable paths. Polly executes the resolved selected Git so its compiled config-prefix semantics are preserved while resolving effective and overridden global/system `core.hooksPath` values and recursively inspecting config includes regardless of current `includeIf` conditions. The workspace preset is refused when a hook, config source, or include path lands in host-visible writable content outside protected metadata (including macOS host temp trees), when an existing config source has hard-link aliases, or when a configured hook entry is symlinked or hard-linked; `/dev/null` is accepted as an immutable hook-disabling target. A tool's own `sandbox` object merges on top of the base config and can only widen it. `--writepath` and `--allownet` add to any preset. Before each final sandbox is constructed, Polly re-runs the stored workspace config/include/hook audit against all merged host-visible writable roots, so a CLI or per-tool overlay cannot reopen one of those persistence routes (Linux's exact private temp/runtime mounts remain non-host-visible). Effective configs are prepared with canonical writable/read paths and private filesystem identities; the CLI and tool registry retain those identities across later lazy sandbox construction, rejecting a replaced or rerouted approved path before the backend runs.
+**CLI presets:** the `polly` CLI selects its base config with
+`--sandbox <preset>` (components `base`, `readonly`, `workspace`, and `net`
+joined with `+`; library equivalent `sandbox.ParsePreset`). The CLI default is
+`workspace+net`: the canonical working directory is added to `writablePaths`,
+recursively discovered `.git` routing entries and resolved per-worktree/common
+metadata directories are added to `denyWritePaths`, and `allowNetwork` is
+enabled. Git metadata is therefore read-only (including missing leaves such as
+`config.worktree`) while working-tree files remain writable.
+
+The `workspace` component refuses the filesystem root, the user's home
+directory, exact mounted-volume roots on Linux and macOS, and exact Linux
+private temp/runtime roots before recursive discovery. Descendants of mounted
+volumes remain valid bounded workspaces; otherwise change into a project
+directory or select `--sandbox base`. Bare-repository working directories;
+symlinked or hard-linked Git routing/config/hook metadata; repository-local
+`core.hooksPath`; and config includes are refused when their effective identity
+or target cannot be pinned portably.
+
+Polly accepts PATH-selected Git when it reaches fixed `/usr/bin/git` through a
+stable non-symlink route outside writable paths. On Darwin it also accepts the
+standard Homebrew `/opt/homebrew/bin/git` and `/usr/local/bin/git` leaf
+symlinks when they resolve directly to a non-writable, single-link
+`Cellar/git/<version>/bin/git` target outside writable paths. Polly executes
+the resolved selected Git so its compiled config-prefix semantics are preserved
+while resolving effective and overridden global/system `core.hooksPath` values
+and recursively inspecting config includes regardless of current `includeIf`
+conditions. The workspace preset is refused when a hook, config source, or
+include path lands in host-visible writable content outside protected metadata
+(including macOS host temp trees), when an existing config source has hard-link
+aliases, or when a configured hook entry is symlinked or hard-linked;
+`/dev/null` is accepted as an immutable hook-disabling target.
+
+A tool's own `sandbox` object merges monotonically on top of the base config:
+it may add grants or restrictions, but cannot remove an earlier entry.
+`--writepath` and `--allownet` add to any preset. Before each final sandbox is
+constructed, Polly re-runs the stored workspace config/include/hook audit
+against all merged host-visible writable roots, so a CLI or per-tool overlay
+cannot reopen one of those persistence routes (Linux's exact private
+temp/runtime mounts remain non-host-visible). Effective configs are prepared
+with canonical writable/read paths and private filesystem identities; the CLI
+and tool registry retain those identities across later lazy sandbox
+construction, rejecting a replaced or rerouted approved path before the
+backend runs. Polly also emits a visible, deduplicated warning when an effective
+global or per-tool policy leaves a home directory or filesystem root as a broad
+writable grant.
 
 **Credential paths denied by default:**
 `~/.ssh`, `~/.gnupg`, `~/.gpg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.npmrc`, `~/.pypirc`, `~/.gem/credentials`, `~/.cargo/credentials`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`
@@ -766,7 +810,8 @@ Network access and extra write paths:
 }
 ```
 
-Network access without DNS (connect by IP only):
+Network access with DNS blocked on macOS and the default resolver suppressed on
+Linux (best effort; a hard-coded resolver remains reachable on Linux):
 ```json
 {
   "title": "ip_only_tool",
