@@ -85,10 +85,10 @@ func TestTrimHistory(t *testing.T) {
 			wantFirst: messages.MessageRoleSystem,
 		},
 		{
-			name:      "Token limit - trim oldest user msg",
+			name:      "Token limit - trim realigns to user boundary",
 			history:   []messages.ChatMessage{systemMsg, msg1, msg2, msg3}, // Tokens: Sys(ignored), 5, 5, 6. Total non-sys: 16
-			maxTokens: 12,                                                  // Should keep msg3(6) and msg2(5) -> total 11. msg1 dropped.
-			wantLen:   3,                                                   // System + msg2 + msg3
+			maxTokens: 12,                                                  // Budget keeps msg3(6)+msg2(5), then the suffix realigns to start at msg3 (user).
+			wantLen:   2,                                                   // System + msg3
 			wantFirst: messages.MessageRoleSystem,
 		},
 		{
@@ -217,12 +217,13 @@ func TestTrimHistoryPathological(t *testing.T) {
 			toolResponse("big", giantContent),
 		}
 
-		// Token budget of 100 can't fit the giant response
+		// The whole history is one exchange (starts at the most recent user
+		// message), which is always kept — even over budget — so the session
+		// is never wiped down to just the system prompt.
 		result := TrimHistory(history, 100)
 
-		// Should only have system prompt when everything is too big
-		if len(result) != 1 {
-			t.Errorf("TrimHistory() got %d messages, want 1 (only system)", len(result))
+		if len(result) != len(history) {
+			t.Errorf("TrimHistory() got %d messages, want %d (current exchange must survive)", len(result), len(history))
 		}
 		if hasOrphanedToolResponse(result) {
 			t.Errorf("TrimHistory() left orphaned tool response")
@@ -277,6 +278,109 @@ func TestTrimHistoryPathological(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestTrimHistoryIgnoresCumulativeInputTokens is a regression test: providers
+// stamp assistant messages with input_tokens equal to the full prompt of the
+// request that produced them. Counting that against the budget used to
+// collapse whole sessions to the system prompt.
+func TestTrimHistoryIgnoresCumulativeInputTokens(t *testing.T) {
+	history := []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: "sys"}}
+	promptTokens := 500
+	for turn := 0; turn < 10; turn++ {
+		user := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "a question of moderate length"}
+		asst := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "an answer of moderate length"}
+		asst.SetTokenUsage(promptTokens, 20) // input_tokens = full prompt at that turn
+		promptTokens += 600
+		history = append(history, user, asst)
+	}
+
+	// Real per-message size is ~10 turns * ~30 tokens, far under the budget.
+	result := TrimHistory(history, 4000)
+	if len(result) != len(history) {
+		t.Errorf("TrimHistory() got %d messages, want %d (cumulative input_tokens must not count)", len(result), len(history))
+	}
+}
+
+// TestGetMessageTokensIgnoresInputTokens pins GetMessageTokens to per-message
+// sizes: output tokens when reported, estimate otherwise, never input_tokens.
+func TestGetMessageTokensIgnoresInputTokens(t *testing.T) {
+	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello world"}
+	msg.SetTokenUsage(50000, 12)
+	if got := GetMessageTokens(msg); got != 12 {
+		t.Errorf("GetMessageTokens() = %d, want 12 (output tokens)", got)
+	}
+
+	noUsage := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello world"}
+	noUsage.SetTokenUsage(50000, 0)
+	if got, want := GetMessageTokens(noUsage), EstimateTokens(noUsage); got != want {
+		t.Errorf("GetMessageTokens() = %d, want estimate %d when no output tokens", got, want)
+	}
+}
+
+// TestTrimHistoryRealignsToUserBoundary verifies a trim that cuts into the
+// middle of an old exchange drops the exchange's tail instead of sending a
+// history that opens with an unanchored assistant tool-call turn (rejected by
+// Gemini and Anthropic).
+func TestTrimHistoryRealignsToUserBoundary(t *testing.T) {
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleSystem, Content: "sys"},
+		{Role: messages.MessageRoleUser, Content: string(make([]byte, 400))}, // ~104 tokens, gets trimmed
+		assistantWithToolCalls("a"),
+		toolResponse("a", "result"),
+		{Role: messages.MessageRoleAssistant, Content: "answer1"},
+		{Role: messages.MessageRoleUser, Content: "next question"},
+		{Role: messages.MessageRoleAssistant, Content: "answer2"},
+	}
+
+	// Budget fits everything except the oldest user message, so the raw cut
+	// lands on the assistant tool-call turn.
+	result := TrimHistory(history, 40)
+
+	if len(result) < 2 || result[0].Role != messages.MessageRoleSystem {
+		t.Fatalf("TrimHistory() unexpected shape: %d messages", len(result))
+	}
+	if result[1].Role != messages.MessageRoleUser {
+		t.Errorf("TrimHistory() first non-system role = %s, want user", result[1].Role)
+	}
+	for _, m := range result {
+		if m.Role == messages.MessageRoleUser && m.Content == "next question" {
+			return
+		}
+	}
+	t.Errorf("TrimHistory() dropped the newest user message")
+}
+
+// TestTrimHistoryKeepsCurrentExchange verifies the suffix from the most
+// recent user message survives even when it alone exceeds the budget.
+func TestTrimHistoryKeepsCurrentExchange(t *testing.T) {
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleSystem, Content: "sys"},
+		{Role: messages.MessageRoleUser, Content: "old exchange"},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleUser, Content: "current question"},
+		assistantWithToolCalls("x"),
+		toolResponse("x", string(make([]byte, 10000))), // ~2500 tokens, over budget alone
+		{Role: messages.MessageRoleAssistant, Content: "final answer"},
+	}
+
+	result := TrimHistory(history, 100)
+
+	var sawCurrent, sawFinal bool
+	for _, m := range result {
+		if m.Content == "current question" {
+			sawCurrent = true
+		}
+		if m.Content == "final answer" {
+			sawFinal = true
+		}
+		if m.Content == "old exchange" || m.Content == "old answer" {
+			t.Errorf("TrimHistory() kept old exchange despite budget")
+		}
+	}
+	if !sawCurrent || !sawFinal {
+		t.Errorf("TrimHistory() dropped part of the current exchange (user=%v final=%v)", sawCurrent, sawFinal)
+	}
 }
 
 func TestValidateContextName(t *testing.T) {

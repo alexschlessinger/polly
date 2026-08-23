@@ -9,7 +9,14 @@ import (
 )
 
 // TrimHistory applies smart trimming to a message history slice.
-// It keeps the system prompt (first message) and the most recent messages that fit within the token limit.
+// It keeps the system prompt (first message) plus the newest messages that
+// fit within the token limit, with two guarantees:
+//   - the suffix starting at the most recent user message always survives,
+//     so a single oversized exchange can never wipe the whole session
+//   - when a trim cuts mid-exchange, the kept suffix is realigned to start
+//     at a user message, since providers reject histories that open with
+//     tool responses or unanchored assistant tool-call turns
+//
 // maxTokens: maximum tokens to keep (0 = unlimited).
 func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatMessage {
 	if len(history) == 0 {
@@ -33,6 +40,7 @@ func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatM
 	msgs := history[startIdx:]
 
 	// Apply token limit (if set)
+	trimmed := false
 	if maxTokens > 0 {
 		currentTokens := 0
 		// Calculate tokens from newest to oldest
@@ -45,8 +53,21 @@ func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatM
 			currentTokens += tokens
 			keepCount++
 		}
+		// The current exchange is never trimmed: everything from the most
+		// recent user message on is kept even when it exceeds the budget.
+		lastUser := -1
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == messages.MessageRoleUser {
+				lastUser = i
+				break
+			}
+		}
+		if lastUser >= 0 && keepCount < len(msgs)-lastUser {
+			keepCount = len(msgs) - lastUser
+		}
 		if keepCount < len(msgs) {
 			msgs = msgs[len(msgs)-keepCount:]
+			trimmed = true
 		}
 	}
 
@@ -57,13 +78,24 @@ func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatM
 	}
 	result = append(result, msgs...)
 
-	// Handle the API constraint: tool responses must follow tool_calls
-	// Remove all orphaned tool responses at the start (after system prompt)
 	checkIdx := 0
 	if systemPrompt != nil {
 		checkIdx = 1
 	}
 
+	// A trim can cut mid-exchange, leaving the suffix opening with tool
+	// responses or an assistant turn; realign it to the next user message.
+	if trimmed {
+		firstUser := slices.IndexFunc(result[checkIdx:], func(m messages.ChatMessage) bool {
+			return m.Role == messages.MessageRoleUser
+		})
+		if firstUser > 0 {
+			result = slices.Delete(result, checkIdx, checkIdx+firstUser)
+		}
+	}
+
+	// Handle the API constraint: tool responses must follow tool_calls
+	// Remove all orphaned tool responses at the start (after system prompt)
 	for len(result) > checkIdx && result[checkIdx].Role == messages.MessageRoleTool {
 		result = slices.Delete(result, checkIdx, checkIdx+1)
 	}
@@ -71,18 +103,16 @@ func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatM
 	return result
 }
 
-// GetMessageTokens returns the token count for a message.
-// It prefers actual token counts from provider metadata if available,
-// otherwise falls back to estimation.
+// GetMessageTokens returns the token count of a single message as it sits in
+// history. Assistant messages prefer their actual output token count from
+// provider metadata; input_tokens is deliberately never used, because
+// providers report it cumulatively (the entire prompt of the request that
+// produced the message), not as this message's own size. Everything else
+// falls back to estimation.
 func GetMessageTokens(msg messages.ChatMessage) int {
-	// Prefer actual tokens from metadata
-	if input := msg.GetInputTokens(); input > 0 {
-		return input
-	}
 	if output := msg.GetOutputTokens(); output > 0 {
 		return output
 	}
-	// Fall back to estimate
 	return EstimateTokens(msg)
 }
 
