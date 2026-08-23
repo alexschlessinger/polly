@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,37 @@ import (
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// sandboxCleanupTransport releases parent-owned sandbox descriptors as soon
+// as the stdio command has started. mcp.CommandTransport.Connect returns
+// immediately after exec.Cmd.Start; the MCP discover/initialize handshake
+// happens later in mcp.Client.Connect.
+type sandboxCleanupTransport struct {
+	transport mcp.Transport
+	cleanup   func() error
+}
+
+func (t *sandboxCleanupTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	conn, connectErr := t.transport.Connect(ctx)
+	cleanupErr := t.cleanup()
+	if cleanupErr == nil {
+		return conn, connectErr
+	}
+
+	cleanupErr = fmt.Errorf("release sandbox descriptors after command start: %w", cleanupErr)
+	if conn == nil {
+		return nil, errors.Join(connectErr, cleanupErr)
+	}
+
+	// Do not begin an MCP session while parent-owned sandbox descriptors may
+	// still be open. Close a successfully started subprocess connection before
+	// reporting the cleanup failure so the child is not orphaned.
+	closeErr := conn.Close()
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close MCP connection after sandbox cleanup failure: %w", closeErr)
+	}
+	return nil, errors.Join(connectErr, cleanupErr, closeErr)
+}
 
 // MCPTool wraps an MCP tool to implement the Tool interface
 type MCPTool struct {
@@ -403,7 +435,10 @@ func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, 
 		defer func() { _ = closeSandboxFiles() }()
 
 		slog.Debug("mcp_stdio_connecting", "command", config.Command, "arguments", config.Args)
-		transport = &mcp.CommandTransport{Command: cmd}
+		transport = &sandboxCleanupTransport{
+			transport: &mcp.CommandTransport{Command: cmd},
+			cleanup:   closeSandboxFiles,
+		}
 
 	default:
 		return nil, fmt.Errorf("unknown transport type: %s (supported: stdio, sse, streamable)", config.Transport)
