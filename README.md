@@ -45,7 +45,7 @@ GLOBAL OPTIONS:
    --purge                                                  Delete all sessions and index (requires confirmation)
    --create string                                          Create a new context with specified name and configuration
    --show string                                            Show configuration for the specified context
-   --maxcontext int                                         Maximum tokens to keep in history (0 = unlimited) (default: 100000)
+   --maxcontext int                                         Maximum tokens to keep in history (0 = unlimited) (default: 256000)
    --confirm                                                Require confirmation before each tool call
    --sandbox string                                         Sandbox preset: base, readonly, workspace, net — join with + (e.g. workspace+net) (default: "workspace+net") [$POLLYTOOL_SANDBOX]
    --nosandbox                                              Disable sandboxing of tool commands [$POLLYTOOL_NOSANDBOX]
