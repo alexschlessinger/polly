@@ -89,7 +89,13 @@ func prepareLinuxConfig(cfg Config, tempRoots, runRoots []string) (Config, error
 		return Config{}, err
 	}
 	privateRoots := append(append([]string(nil), tempRoots...), runRoots...)
-	return freezeAuthorityPaths(cfg, privateRoots...)
+	cfg, err = freezeAuthorityPaths(cfg, privateRoots...)
+	if err != nil {
+		return Config{}, err
+	}
+	return applyFinalGitPolicyWithHostWritable(cfg, func(path string) bool {
+		return !pathEqualsAny(path, privateRoots)
+	})
 }
 
 func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
