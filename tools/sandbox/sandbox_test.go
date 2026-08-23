@@ -3,7 +3,9 @@ package sandbox
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -28,6 +30,254 @@ func TestProbePassesWhenCommandSucceeds(t *testing.T) {
 	// stub leaves the probe command (true) intact -> it should exit 0.
 	if err := Probe(stubSandbox{}); err != nil {
 		t.Fatalf("Probe() = %v, want nil when the sandboxed command succeeds", err)
+	}
+}
+
+func TestNormalizeConfigPathsMakesRelativePolicyPathsAbsolute(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := Config{
+		WritablePaths: []string{"build/output"},
+		ReadPaths:     []string{"secrets/readable"},
+	}
+
+	got, err := normalizeConfigPaths(original)
+	if err != nil {
+		t.Fatalf("normalizeConfigPaths() error = %v", err)
+	}
+	if want := filepath.Join(cwd, "build/output"); got.WritablePaths[0] != want {
+		t.Fatalf("WritablePaths[0] = %q, want %q", got.WritablePaths[0], want)
+	}
+	if want := filepath.Join(cwd, "secrets/readable"); got.ReadPaths[0] != want {
+		t.Fatalf("ReadPaths[0] = %q, want %q", got.ReadPaths[0], want)
+	}
+	if original.ReadPaths[0] != "secrets/readable" {
+		t.Fatalf("normalizeConfigPaths mutated its input: %+v", original)
+	}
+}
+
+func TestNormalizeConfigPathsRejectsEmptyPath(t *testing.T) {
+	if _, err := normalizeConfigPaths(Config{ReadPaths: []string{""}}); err == nil {
+		t.Fatal("normalizeConfigPaths() accepted an empty read path")
+	}
+}
+
+func TestNormalizeConfigPathsCopiesAllowEnv(t *testing.T) {
+	allow := []string{"SAFE_NAME"}
+	prepared, err := PrepareConfig(Config{AllowEnv: allow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow[0] = "AWS_SECRET_ACCESS_KEY"
+	if len(prepared.AllowEnv) != 1 || prepared.AllowEnv[0] != "SAFE_NAME" {
+		t.Fatalf("prepared AllowEnv aliases caller slice: %v", prepared.AllowEnv)
+	}
+}
+
+func TestFreezeAuthorityPathsCanonicalizesDropsAndMinimizes(t *testing.T) {
+	root := t.TempDir()
+	writable := filepath.Join(root, "writable")
+	nestedWritable := filepath.Join(writable, "nested")
+	readable := filepath.Join(root, "readable")
+	nestedReadable := filepath.Join(readable, "nested")
+	symlinkTarget := filepath.Join(root, "symlink-target")
+	for _, path := range []string{nestedWritable, nestedReadable, symlinkTarget} {
+		if err := os.MkdirAll(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writableLink := filepath.Join(root, "writable-link")
+	readLink := filepath.Join(root, "read-link")
+	if err := os.Symlink(nestedWritable, writableLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(symlinkTarget, readLink); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := freezeAuthorityPaths(Config{
+		WritablePaths: []string{writable, nestedWritable, writableLink, filepath.Join(root, "missing-write")},
+		ReadPaths:     []string{readable, nestedReadable, readLink, filepath.Join(root, "missing-read")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writableReal, _ := filepath.EvalSymlinks(writable)
+	readableReal, _ := filepath.EvalSymlinks(readable)
+	symlinkTargetReal, _ := filepath.EvalSymlinks(symlinkTarget)
+	if len(cfg.WritablePaths) != 1 || cfg.WritablePaths[0] != writableReal {
+		t.Fatalf("frozen writablePaths = %v, want only canonical parent %q", cfg.WritablePaths, writableReal)
+	}
+	wantReads := map[string]bool{readableReal: true, symlinkTargetReal: true}
+	if len(cfg.ReadPaths) != len(wantReads) {
+		t.Fatalf("frozen readPaths = %v, want %v", cfg.ReadPaths, wantReads)
+	}
+	for _, path := range cfg.ReadPaths {
+		if !wantReads[path] {
+			t.Fatalf("unexpected frozen readPath %q in %v", path, cfg.ReadPaths)
+		}
+	}
+
+	// Linux private roots are not host-backed when named exactly. Their
+	// descendants therefore remain effective explicit grants.
+	nonCovering, err := freezeAuthorityPaths(Config{WritablePaths: []string{writable, nestedWritable}}, writableReal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nonCovering.WritablePaths) != 2 {
+		t.Fatalf("non-covering root removed nested grant: %v", nonCovering.WritablePaths)
+	}
+}
+
+func TestPrepareConfigPreservesAndValidatesReadPathAlias(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	for _, path := range []string{first, second} {
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(root, "read-alias")
+	if err := os.Symlink(first, alias); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(Config{ReadPaths: []string{alias}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.ReadPaths) != 1 || prepared.ReadPaths[0] != first {
+		t.Fatalf("prepared ReadPaths = %v, want canonical target %q", prepared.ReadPaths, first)
+	}
+	if len(prepared.readPathAliases) != 1 || prepared.readPathAliases[0].path != alias || prepared.readPathAliases[0].target != first {
+		t.Fatalf("prepared read alias metadata = %+v", prepared.readPathAliases)
+	}
+	foundLeaf := false
+	for _, symlink := range prepared.readPathAliases[0].symlinks {
+		if symlink.path == alias {
+			foundLeaf = true
+		}
+	}
+	if !foundLeaf {
+		t.Fatalf("prepared alias route omits lexical symlink %q: %+v", alias, prepared.readPathAliases[0].symlinks)
+	}
+	if _, err := PrepareConfig(prepared); err != nil {
+		t.Fatalf("repeated PrepareConfig rejected unchanged alias: %v", err)
+	}
+	broader, err := PrepareConfig(prepared.Merge(Config{ReadPaths: []string{root}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(broader.readPathAliases) != 1 {
+		t.Fatalf("broader merged read grant dropped covered alias metadata: %+v", broader.readPathAliases)
+	}
+	deepCopy := prepared.Merge(Config{})
+	deepCopy.readPathAliases[0].path = second
+	deepCopy.readPathAliases[0].symlinks[0].path = second
+	if prepared.readPathAliases[0].path != alias || prepared.readPathAliases[0].symlinks[0].path == second {
+		t.Fatal("Config.Merge aliased private read-path metadata")
+	}
+	disjoint := prepared.Merge(Config{})
+	disjoint.ReadPaths = []string{second}
+	disjoint, err = PrepareConfig(disjoint)
+	if err != nil {
+		t.Fatalf("PrepareConfig rejected a disjoint replacement read grant: %v", err)
+	}
+	if len(disjoint.readPathAliases) != 0 {
+		t.Fatalf("disjoint ReadPaths retained private alias authority: %+v", disjoint.readPathAliases)
+	}
+	cleared := prepared
+	cleared.ReadPaths = nil
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(second, alias); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareConfig(prepared); err == nil {
+		t.Fatal("PrepareConfig accepted a replaced and retargeted read-path alias")
+	}
+	cleared, err = PrepareConfig(cleared)
+	if err != nil {
+		t.Fatalf("PrepareConfig validated an alias after its public grant was removed: %v", err)
+	}
+	if len(cleared.readPathAliases) != 0 {
+		t.Fatalf("cleared ReadPaths retained private alias authority: %+v", cleared.readPathAliases)
+	}
+}
+
+func TestPrepareConfigRejectsReplacementAcrossMergeAndLaterConstruction(t *testing.T) {
+	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted := filepath.Join(root, "granted")
+	external := filepath.Join(root, "external")
+	for _, path := range []string{granted, external} {
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	prepared, err := PrepareConfig(Config{WritablePaths: []string{granted}})
+	if err != nil {
+		t.Fatalf("PrepareConfig() error = %v", err)
+	}
+	if len(prepared.authorityPaths) != 1 || prepared.authorityPaths[0].path != granted {
+		t.Fatalf("prepared authority identities = %+v, want %q", prepared.authorityPaths, granted)
+	}
+	merged, err := PrepareConfig(prepared.Merge(Config{
+		AllowNetwork:  true,
+		WritablePaths: []string{root},
+	}))
+	if err != nil {
+		t.Fatalf("PrepareConfig(merged parent) error = %v", err)
+	}
+	if len(merged.WritablePaths) == 0 || merged.WritablePaths[len(merged.WritablePaths)-1] != root {
+		t.Fatalf("merged writable paths = %v, want broader parent %q", merged.WritablePaths, root)
+	}
+	if len(merged.authorityPaths) != 2 {
+		t.Fatalf("broader merge dropped prepared child identity: %+v", merged.authorityPaths)
+	}
+
+	original := filepath.Join(root, "granted-original")
+	if err := os.Rename(granted, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, granted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareConfig(merged); err == nil {
+		t.Fatal("PrepareConfig() accepted a prepared authority path rerouted before later construction")
+	}
+}
+
+func TestNormalizeAndMergeCopyPreparedAuthorityIdentities(t *testing.T) {
+	path := t.TempDir()
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(Config{ReadPaths: []string{path}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := normalizeConfigPaths(prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := prepared.Merge(Config{})
+
+	normalized.authorityPaths[0].path = "/mutated-normalized"
+	merged.authorityPaths[0].path = "/mutated-merged"
+	if got := prepared.authorityPaths[0].path; got != path {
+		t.Fatalf("prepared authority metadata was aliased: %q", got)
 	}
 }
 
@@ -218,6 +468,21 @@ type mockSandbox struct {
 	err    error
 }
 
+type extraFileSandbox struct {
+	file *os.File
+	err  error
+}
+
+func wrapCmdForTest(t *testing.T, sb Sandbox, cmd *exec.Cmd) error {
+	t.Helper()
+	return WrapCmd(sb, cmd)
+}
+
+func (s extraFileSandbox) Wrap(cmd *exec.Cmd) error {
+	cmd.ExtraFiles = append(cmd.ExtraFiles, s.file)
+	return s.err
+}
+
 func (m *mockSandbox) Wrap(cmd *exec.Cmd) error {
 	m.called = true
 	return m.err
@@ -246,6 +511,373 @@ func TestWrapCmdError(t *testing.T) {
 	cmd := exec.Command("echo", "hello")
 	if err := WrapCmd(sb, cmd); err == nil {
 		t.Fatal("expected error from WrapCmd")
+	}
+}
+
+func TestPrepareConfigDenyWriteDropsObsoleteWritableIdentity(t *testing.T) {
+	root := t.TempDir()
+	writable := filepath.Join(root, "writable")
+	if err := os.Mkdir(writable, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(Config{WritablePaths: []string{writable}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(writable); err != nil {
+		t.Fatal(err)
+	}
+
+	readOnly, err := PrepareConfig(prepared.Merge(Config{DenyWrite: true}))
+	if err != nil {
+		t.Fatalf("DenyWrite retained obsolete writable identity: %v", err)
+	}
+	if len(readOnly.WritablePaths) != 0 || len(readOnly.authorityPaths) != 0 {
+		t.Fatalf("DenyWrite config retained writable authority: paths=%v identities=%v", readOnly.WritablePaths, readOnly.authorityPaths)
+	}
+}
+
+func TestPrepareConfigDenyWriteRetainsCurrentReadIdentity(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(Config{WritablePaths: []string{shared}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err = PrepareConfig(prepared.Merge(Config{ReadPaths: []string{shared}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(shared, shared+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := PrepareConfig(prepared.Merge(Config{DenyWrite: true})); err == nil {
+		t.Fatal("DenyWrite dropped identity still required by ReadPaths")
+	}
+}
+
+func TestPrepareConfigDenyWriteCanonicalizesRestoredReadAliasBeforeIdentityFiltering(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	target2 := filepath.Join(root, "target2")
+	alias := filepath.Join(root, "alias")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target2, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(Config{ReadPaths: []string{alias}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unchanged := prepared.Merge(Config{})
+	unchanged.ReadPaths = []string{alias}
+	unchanged.DenyWrite = true
+	unchanged, err = PrepareConfig(unchanged)
+	if err != nil {
+		t.Fatalf("unchanged prepared alias was rejected under DenyWrite: %v", err)
+	}
+	canonicalTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unchanged.ReadPaths) != 1 || unchanged.ReadPaths[0] != canonicalTarget {
+		t.Fatalf("canonical ReadPaths = %v, want [%s]", unchanged.ReadPaths, canonicalTarget)
+	}
+
+	if err := os.Rename(target, target+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	replaced := prepared.Merge(Config{})
+	replaced.ReadPaths = []string{alias}
+	replaced.DenyWrite = true
+	if _, err := PrepareConfig(replaced); err == nil {
+		t.Fatal("DenyWrite accepted replaced canonical target through restored ReadPaths alias")
+	}
+
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(target+"-old", target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target2, alias); err != nil {
+		t.Fatal(err)
+	}
+	retargeted := prepared.Merge(Config{})
+	retargeted.ReadPaths = []string{alias}
+	retargeted.DenyWrite = true
+	if _, err := PrepareConfig(retargeted); err == nil {
+		t.Fatal("DenyWrite accepted retargeted restored ReadPaths alias")
+	}
+}
+
+func TestPrepareConfigNarrowedReadAliasDropsBroaderAliasMetadata(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	alias := filepath.Join(root, "alias")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	allowedTarget := filepath.Join(target, "allowed.txt")
+	if err := os.WriteFile(allowedTarget, []byte("allowed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "other.txt"), []byte("other"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(Config{ReadPaths: []string{alias}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	narrowed := prepared.Merge(Config{})
+	allowedAlias := filepath.Join(alias, "allowed.txt")
+	narrowed.ReadPaths = []string{allowedAlias}
+	narrowed.DenyWrite = true
+	narrowed, err = PrepareConfig(narrowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrowed.readPathAliases) != 1 {
+		t.Fatalf("narrowed alias metadata = %v, want one child alias", narrowed.readPathAliases)
+	}
+	got := narrowed.readPathAliases[0]
+	if got.path != allowedAlias {
+		t.Fatalf("narrowed alias path = %q, want %q", got.path, allowedAlias)
+	}
+	canonicalTarget, err := filepath.EvalSymlinks(allowedTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.target != canonicalTarget {
+		t.Fatalf("narrowed alias target = %q, want %q", got.target, canonicalTarget)
+	}
+	foundParentRoute := false
+	for _, symlink := range got.symlinks {
+		if symlink.path == alias {
+			foundParentRoute = true
+			break
+		}
+	}
+	if !foundParentRoute {
+		t.Fatalf("narrowed alias route omitted prepared parent %q: %+v", alias, got.symlinks)
+	}
+}
+
+func TestPrepareConfigNarrowedReadAliasRejectsParentRetarget(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	target2 := filepath.Join(root, "target2")
+	alias := filepath.Join(root, "alias")
+	for _, path := range []string{target, target2} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "allowed.txt"), []byte("allowed"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(Config{ReadPaths: []string{alias}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target2, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	narrowed := prepared.Merge(Config{})
+	narrowed.ReadPaths = []string{filepath.Join(alias, "allowed.txt")}
+	narrowed.DenyWrite = true
+	if _, err := PrepareConfig(narrowed); err == nil {
+		t.Fatal("PrepareConfig accepted a narrowed child through a retargeted prepared parent alias")
+	}
+}
+
+func TestPrepareConfigNarrowedReadAliasRejectsCaseEquivalentParentRetarget(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	target2 := filepath.Join(root, "target2")
+	alias := filepath.Join(root, "read-alias")
+	caseEquivalentAlias := filepath.Join(root, "READ-ALIAS")
+	for _, path := range []string{target, target2} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "allowed.txt"), []byte("allowed"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	aliasInfo, err := os.Lstat(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caseEquivalentInfo, err := os.Lstat(caseEquivalentAlias)
+	if err != nil || !os.SameFile(aliasInfo, caseEquivalentInfo) {
+		t.Skip("test filesystem is case-sensitive")
+	}
+	prepared, err := PrepareConfig(Config{ReadPaths: []string{alias}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unchanged := prepared.Merge(Config{})
+	unchanged.ReadPaths = []string{filepath.Join(caseEquivalentAlias, "allowed.txt")}
+	unchanged.DenyWrite = true
+	unchanged, err = PrepareConfig(unchanged)
+	if err != nil {
+		t.Fatalf("PrepareConfig rejected an unchanged case-equivalent child route: %v", err)
+	}
+	if len(unchanged.readPathAliases) != 1 || unchanged.readPathAliases[0].path != filepath.Join(caseEquivalentAlias, "allowed.txt") {
+		t.Fatalf("case-equivalent child alias metadata = %+v", unchanged.readPathAliases)
+	}
+
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target2, alias); err != nil {
+		t.Fatal(err)
+	}
+	retargeted := prepared.Merge(Config{})
+	retargeted.ReadPaths = []string{filepath.Join(caseEquivalentAlias, "allowed.txt")}
+	retargeted.DenyWrite = true
+	if _, err := PrepareConfig(retargeted); err == nil {
+		t.Fatal("PrepareConfig accepted a case-equivalent child through a retargeted prepared parent alias")
+	}
+}
+
+func TestPrepareConfigNarrowedReadAliasDoesNotConflateDistinctAlias(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	firstAlias := filepath.Join(root, "first-alias")
+	secondAlias := filepath.Join(root, "second-alias")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "allowed.txt"), []byte("allowed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, firstAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, secondAlias); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(Config{ReadPaths: []string{firstAlias}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	narrowed := prepared.Merge(Config{})
+	allowedSecondAlias := filepath.Join(secondAlias, "allowed.txt")
+	narrowed.ReadPaths = []string{allowedSecondAlias}
+	narrowed.DenyWrite = true
+	narrowed, err = PrepareConfig(narrowed)
+	if err != nil {
+		t.Fatalf("PrepareConfig conflated distinct aliases to the same target: %v", err)
+	}
+	if len(narrowed.readPathAliases) != 1 || narrowed.readPathAliases[0].path != allowedSecondAlias {
+		t.Fatalf("distinct child alias metadata = %+v, want only %q", narrowed.readPathAliases, allowedSecondAlias)
+	}
+}
+
+func TestPrepareConfigNarrowedReadAliasRejectsParentTargetReplacement(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	alias := filepath.Join(root, "alias")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "allowed.txt"), []byte("allowed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareConfig(Config{ReadPaths: []string{alias}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(target, target+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "allowed.txt"), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	narrowed := prepared.Merge(Config{})
+	narrowed.ReadPaths = []string{filepath.Join(alias, "allowed.txt")}
+	narrowed.DenyWrite = true
+	if _, err := PrepareConfig(narrowed); err == nil {
+		t.Fatal("PrepareConfig accepted a narrowed child after its prepared target directory was replaced")
+	}
+}
+
+// Merging two overlays onto the same base must not alias: the registry reuses
+// one baseSandboxCfg for every tool, so if Merge appended into the base's spare
+// capacity, one tool's deny path would overwrite another's. The base slice here
+// has cap > len to expose the aliasing if it regresses.
+func TestMergeDoesNotAliasBase(t *testing.T) {
+	base := Config{ReadPaths: make([]string, 1, 8)}
+	base.ReadPaths[0] = "/base"
+
+	mergedA := base.Merge(Config{ReadPaths: []string{"/toolA"}})
+	mergedB := base.Merge(Config{ReadPaths: []string{"/toolB"}})
+
+	if got := mergedA.ReadPaths; len(got) != 2 || got[1] != "/toolA" {
+		t.Fatalf("mergedA.ReadPaths = %v, want [/base /toolA] — tool B's merge contaminated tool A", got)
+	}
+	if got := mergedB.ReadPaths; len(got) != 2 || got[1] != "/toolB" {
+		t.Fatalf("mergedB.ReadPaths = %v, want [/base /toolB]", got)
+	}
+	// The base itself must be untouched.
+	if len(base.ReadPaths) != 1 || base.ReadPaths[0] != "/base" {
+		t.Fatalf("base mutated by Merge: %v", base.ReadPaths)
 	}
 }
 

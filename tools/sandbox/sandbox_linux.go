@@ -21,6 +21,13 @@ func New(cfg Config) (Sandbox, error) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		return nil, fmt.Errorf("bwrap not available: %w", err)
 	}
+	cfg, err := PrepareConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
 	placeholderFile, err := ensurePlaceholderFile()
 	if err != nil {
 		return nil, fmt.Errorf("prepare placeholder file: %w", err)
@@ -166,4 +173,8 @@ func ensurePlaceholderFile() (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
+	return freezeAuthorityPaths(cfg)
 }

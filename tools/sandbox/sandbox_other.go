@@ -11,3 +11,7 @@ import (
 func New(cfg Config) (Sandbox, error) {
 	return nil, fmt.Errorf("sandboxing is unsupported on %s", runtime.GOOS)
 }
+
+func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
+	return freezeAuthorityPaths(cfg)
+}
