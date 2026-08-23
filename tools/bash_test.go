@@ -48,17 +48,20 @@ func TestBashToolExecutesCommand(t *testing.T) {
 	}
 }
 
-func TestBashToolClosesSandboxFilesAfterExecution(t *testing.T) {
+func TestBashToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
 	file, err := os.CreateTemp(t.TempDir(), "bash-sandbox-extra-*")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer file.Close()
 	tool := newBashTool("").WithSandbox(&mockSandbox{file: file})
 	if _, err := tool.Execute(context.Background(), map[string]any{"command": "true"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := file.Stat(); err == nil {
-		t.Fatal("sandbox-added descriptor remains open after bash execution")
+	// Legacy Sandbox implementations retain ownership of descriptors they
+	// place in ExtraFiles; execution must not close them.
+	if _, err := file.Stat(); err != nil {
+		t.Fatalf("legacy sandbox descriptor was closed after bash execution: %v", err)
 	}
 }
 

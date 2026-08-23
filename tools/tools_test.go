@@ -785,7 +785,7 @@ func TestShellToolSandboxExecution(t *testing.T) {
 	}
 }
 
-func TestShellToolClosesSandboxFilesAfterExecution(t *testing.T) {
+func TestShellToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
 	dir := t.TempDir()
 	tool, err := newShellTool(createSandboxedTestScript(t, dir))
 	if err != nil {
@@ -795,12 +795,15 @@ func TestShellToolClosesSandboxFilesAfterExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer file.Close()
 	sandboxed := tool.WithSandbox(&mockSandbox{file: file})
 	if _, err := sandboxed.Execute(context.Background(), map[string]any{"message": "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := file.Stat(); err == nil {
-		t.Fatal("sandbox-added descriptor remains open after shell execution")
+	// Legacy Sandbox implementations retain ownership of descriptors they
+	// place in ExtraFiles; execution must not close them.
+	if _, err := file.Stat(); err != nil {
+		t.Fatalf("legacy sandbox descriptor was closed after shell execution: %v", err)
 	}
 }
 
@@ -1333,11 +1336,12 @@ func TestMCPConfiguredEnvUsesExplicitTargetChannel(t *testing.T) {
 	}
 }
 
-func TestMCPConnectFailureClosesSandboxFiles(t *testing.T) {
+func TestMCPConnectFailureLeavesLegacySandboxFilesOpen(t *testing.T) {
 	file, err := os.CreateTemp(t.TempDir(), "mcp-sandbox-extra-*")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer file.Close()
 	config := &MCPConfig{
 		Command: "/bin/true",
 		Env:     map[string]string{"TARGET_ONLY": "value"},
@@ -1345,8 +1349,10 @@ func TestMCPConnectFailureClosesSandboxFiles(t *testing.T) {
 	if _, err := NewMCPClientFromConfig(config, &mcpExtraFileSandbox{file: file}); err == nil {
 		t.Fatal("MCP connection unexpectedly succeeded")
 	}
-	if _, err := file.Stat(); err == nil {
-		t.Fatal("sandbox-added descriptor remains open after MCP Connect failure")
+	// Legacy Sandbox implementations retain ownership of descriptors they
+	// place in ExtraFiles; a failed connect must not close them.
+	if _, err := file.Stat(); err != nil {
+		t.Fatalf("legacy sandbox descriptor was closed after MCP Connect failure: %v", err)
 	}
 }
 

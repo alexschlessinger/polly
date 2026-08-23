@@ -37,6 +37,7 @@ type deniedReservationEntry struct {
 
 type deniedReservation struct {
 	root      string
+	rootInfo  os.FileInfo
 	omitted   map[string]bool
 	entries   []deniedReservationEntry
 	ancestors []authorityPathIdentity
@@ -54,6 +55,9 @@ func New(cfg Config) (Sandbox, error) {
 		return nil, err
 	}
 	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
+	if err := validateLinuxSpecialMountRestrictions(cfg); err != nil {
 		return nil, err
 	}
 	if !cfg.DenyWrite {
@@ -113,6 +117,62 @@ func validateLinuxBwrapExecutable(path string) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != 0 || info.Mode().Perm()&0022 != 0 {
 		return fmt.Errorf("Linux sandbox backend %q is not root-owned and immutable to non-root users", path)
+	}
+	return nil
+}
+
+// validateLinuxSpecialMountRestrictions rejects deny rules that bubblewrap
+// cannot preserve. The backend mounts fresh /dev and /proc filesystems after
+// constructing the ordinary path policy; either mount would cover a deny mask
+// on one of its descendants. Rejecting intersecting rules is safer than
+// accepting a configuration that silently runs with less protection.
+func validateLinuxSpecialMountRestrictions(cfg Config) error {
+	validate := func(field, path string) error {
+		path = filepath.Clean(expandTilde(path))
+		intersectionError := func(root string) error {
+			return fmt.Errorf("sandbox %s entry %q intersects Linux special mount %q and cannot be enforced", field, path, root)
+		}
+		checkRoute := func(candidate string) error {
+			for _, root := range []string{"/dev", "/proc"} {
+				if isPathWithin(candidate, root) || isPathWithin(root, candidate) {
+					return intersectionError(root)
+				}
+			}
+			return nil
+		}
+		checkTraversal := func(candidate string) error {
+			for _, root := range []string{"/dev", "/proc"} {
+				if isPathWithin(candidate, root) {
+					return intersectionError(root)
+				}
+			}
+			return nil
+		}
+		// Check the lexical route as well as its current target. Procfs magic
+		// links such as /proc/self/cwd can resolve outside /proc in the parent
+		// while pointing somewhere else in the sandboxed process.
+		if err := checkRoute(path); err != nil {
+			return err
+		}
+		resolved, err := resolveExistingPathPrefixObserved(path, checkTraversal)
+		if err != nil {
+			return fmt.Errorf("resolve sandbox %s entry %q for Linux special mounts: %w", field, path, err)
+		}
+		if err := checkRoute(resolved); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	for _, denied := range allDeniedPaths(cfg) {
+		if err := validate("denyPaths", denied.Path); err != nil {
+			return err
+		}
+	}
+	for _, path := range cfg.DenyWritePaths {
+		if err := validate("denyWritePaths", path); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -321,6 +381,14 @@ func planDeniedReservations(paths []DeniedPath, _ map[string]bool, cfg Config, p
 
 	plans := make([]deniedReservation, 0, len(plansByRoot))
 	for _, plan := range plansByRoot {
+		rootInfo, err := os.Stat(plan.root)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot denied path parent %q: %w", plan.root, err)
+		}
+		if !rootInfo.IsDir() {
+			return nil, fmt.Errorf("snapshot denied path parent %q: not a directory", plan.root)
+		}
+		plan.rootInfo = rootInfo
 		entries, err := os.ReadDir(plan.root)
 		if err != nil {
 			return nil, fmt.Errorf("snapshot denied path parent %q: %w", plan.root, err)
@@ -404,6 +472,9 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	if err := validateReadPathAliasIdentities(s.cfg.readPathAliases); err != nil {
 		return err
 	}
+	if err := validateLinuxSpecialMountRestrictions(s.cfg); err != nil {
+		return err
+	}
 	env := cmd.Env
 	if env == nil {
 		env = os.Environ()
@@ -485,6 +556,18 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 		closeAddedFiles()
 		return fmt.Errorf("prepare target environment: %w", err)
 	}
+	reservationValidationOvermounts := make([]string, 0, len(deniedMounts)+len(readExemptionBinds))
+	for _, denied := range deniedMounts {
+		reservationValidationOvermounts = append(reservationValidationOvermounts, denied.Path)
+	}
+	for _, bind := range readExemptionBinds {
+		reservationValidationOvermounts = append(reservationValidationOvermounts, bind.destination)
+	}
+	reservationValidationFD, err := attachLinuxReservationValidation(cmd, reservations, reservationValidationOvermounts)
+	if err != nil {
+		closeAddedFiles()
+		return fmt.Errorf("prepare denied reservation validation: %w", err)
+	}
 	pinnedIdentities := cloneAuthorityPathIdentities(s.authorityPaths)
 	pinnedIdentities = append(pinnedIdentities, reservationSourceIdentities(reservations)...)
 	pinnedIdentities = append(pinnedIdentities, denyWritePlan.ancestors...)
@@ -492,6 +575,10 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	pinnedIdentities = append(pinnedIdentities, readExemptionSourceIdentities(readExemptionBinds)...)
 	authoritySources, authorityFDs, err := attachLinuxAuthorityPaths(cmd, pinnedIdentities)
 	if err != nil {
+		closeAddedFiles()
+		return err
+	}
+	if err := addLinuxReservationSources(reservations, authoritySources); err != nil {
 		closeAddedFiles()
 		return err
 	}
@@ -516,7 +603,8 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	cmd.Args = append(cmd.Args, args...)
 	cmd.Args = append(cmd.Args, "--")
 	cmd.Args = append(cmd.Args, bootstrapPath, linuxEnvBootstrapArg,
-		strconv.Itoa(bootstrapFD), strconv.Itoa(targetEnvFD), formatLinuxFDList(authorityFDs), origPath)
+		strconv.Itoa(bootstrapFD), strconv.Itoa(targetEnvFD), formatLinuxOptionalFD(reservationValidationFD),
+		formatLinuxFDList(authorityFDs), origPath)
 	cmd.Args = append(cmd.Args, targetArgs...)
 
 	// bwrap itself receives no target environment values in its environment or
@@ -598,20 +686,40 @@ func attachLinuxAuthorityPaths(cmd *exec.Cmd, identities []authorityPathIdentity
 }
 
 func reservationSourceIdentities(reservations []deniedReservation) []authorityPathIdentity {
-	var identities []authorityPathIdentity
+	identities := make([]authorityPathIdentity, 0, len(reservations))
 	for _, reservation := range reservations {
 		identities = append(identities, reservation.ancestors...)
-		for _, entry := range reservation.entries {
-			if entry.symlink || entry.info == nil {
-				continue
-			}
+		if reservation.rootInfo != nil {
 			identities = append(identities, authorityPathIdentity{
-				path: filepath.Join(reservation.root, entry.name),
-				info: entry.info,
+				path: reservation.root,
+				info: reservation.rootInfo,
 			})
 		}
 	}
 	return identities
+}
+
+// addLinuxReservationSources routes every restored sibling through the one
+// pinned descriptor for its reservation root. The path lookup can still race a
+// host-side replacement, so the post-containment bootstrap verifies the final
+// bind mount identities before the target is allowed to start.
+func addLinuxReservationSources(reservations []deniedReservation, sources map[string]string) error {
+	for _, reservation := range reservations {
+		rootSource, err := linuxPinnedSource(reservation.root, sources)
+		if err != nil {
+			return err
+		}
+		for _, entry := range reservation.entries {
+			if entry.symlink || entry.info == nil {
+				continue
+			}
+			destination := filepath.Join(reservation.root, entry.name)
+			if sources[destination] == "" {
+				sources[destination] = filepath.Join(rootSource, entry.name)
+			}
+		}
+	}
+	return nil
 }
 
 type linuxReadExemptionBind struct {
@@ -869,7 +977,14 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 		}
 	}
 
-	args = append(args, "--dev", "/dev", "--proc", "/proc", "--unshare-pid", "--unshare-ipc")
+	args = append(args, "--dev", "/dev", "--proc", "/proc")
+	if cfg.DenyWrite {
+		// Fresh special filesystems are mounted after the read-only root. Keep
+		// their directory trees and procfs controls read-only too; character
+		// devices such as /dev/null remain usable through a read-only devtmpfs.
+		args = append(args, "--remount-ro", "/dev", "--remount-ro", "/proc")
+	}
+	args = append(args, "--unshare-pid", "--unshare-ipc")
 	if !cfg.AllowNetwork {
 		args = append(args, "--unshare-net")
 	} else if cfg.DenyDNS && !resolvInPrivateRun {
