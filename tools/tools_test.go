@@ -22,6 +22,8 @@ var (
 	_ func(string) (*MCPClient, error)                      = NewMCPClient
 	_ func(*MCPConfig, sandbox.Sandbox) (*MCPClient, error) = NewMCPClientFromConfig
 	_ func([]string) ([]Tool, error)                        = LoadShellTools
+	_ func(*BashTool, sandbox.Sandbox) *BashTool            = (*BashTool).WithSandbox
+	_ func(*ShellTool, sandbox.Sandbox) *ShellTool          = (*ShellTool).WithSandbox
 )
 
 // checkUvxAvailable checks if uvx is available on the system
@@ -1468,7 +1470,7 @@ func TestSandboxDetailsIncludesEffectiveConfigAndOptOut(t *testing.T) {
 		DenyWritePaths: []string{"/tmp/work/.git"},
 		AllowEnv:       []string{"PATH"},
 	}
-	bash := newBashTool("").WithSandbox(&mockSandbox{}, cfg)
+	bash := newBashTool("").withSandboxConfig(&mockSandbox{}, cfg)
 	info := SandboxDetails(bash)
 	if !info.Capable || !info.Active {
 		t.Fatalf("SandboxDetails(bash) = %+v, want capable active", info)
@@ -1508,6 +1510,25 @@ fi
 	info = SandboxDetails(shell)
 	if !info.Capable || info.Active || !info.OptedOut {
 		t.Fatalf("SandboxDetails(opt-out shell) = %+v, want capable inactive opted out", info)
+	}
+}
+
+func TestWithSandboxClearsUnknownEffectiveConfig(t *testing.T) {
+	cfg := sandbox.Config{WritablePaths: []string{"/tmp/work"}}
+	bash := newBashTool("").withSandboxConfig(&mockSandbox{}, cfg)
+	bash = bash.WithSandbox(&mockSandbox{})
+	if info := SandboxDetails(bash); !info.Active || info.Config != nil {
+		t.Fatalf("SandboxDetails(rewrapped bash) = %+v, want active with unknown config", info)
+	}
+
+	shell, err := newShellTool(createTestScript(t, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell = shell.withSandboxConfig(&mockSandbox{}, cfg)
+	shell = shell.WithSandbox(&mockSandbox{})
+	if info := SandboxDetails(shell); !info.Active || info.Config != nil {
+		t.Fatalf("SandboxDetails(rewrapped shell) = %+v, want active with unknown config", info)
 	}
 }
 

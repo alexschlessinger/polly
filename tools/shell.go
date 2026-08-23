@@ -37,18 +37,19 @@ func (s *ShellTool) WantsSandbox() bool { return s.sandboxCfg != nil }
 func (s *ShellTool) Sandboxed() bool { return s.sandbox != nil }
 
 // WithSandbox returns a copy with sandboxing enabled.
-func (s *ShellTool) WithSandbox(sb sandbox.Sandbox, cfg ...sandbox.Config) *ShellTool {
-	out := &ShellTool{
+func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
+	return &ShellTool{
 		Command:       s.Command,
 		schema:        s.schema,
 		sandbox:       sb,
 		sandboxCfg:    copySandboxConfig(s.sandboxCfg),
-		effectiveCfg:  copySandboxConfig(s.effectiveCfg),
 		sandboxOptOut: s.sandboxOptOut,
 	}
-	if len(cfg) > 0 {
-		out.effectiveCfg = copySandboxConfig(&cfg[0])
-	}
+}
+
+func (s *ShellTool) withSandboxConfig(sb sandbox.Sandbox, cfg sandbox.Config) *ShellTool {
+	out := s.WithSandbox(sb)
+	out.effectiveCfg = copySandboxConfig(&cfg)
 	return out
 }
 

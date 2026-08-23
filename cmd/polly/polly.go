@@ -244,6 +244,9 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 	}
 	skillRuntime, err := newSkillRuntime(skillCatalog, toolRegistry)
 	if err != nil {
+		if toolRegistry != nil {
+			_ = toolRegistry.Close()
+		}
 		session.Close()
 		return "", nil, nil, nil, nil, nil, nil, err
 	}
