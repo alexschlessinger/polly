@@ -1041,6 +1041,21 @@ func TestFilterEnvStripsSensitiveByDefault(t *testing.T) {
 		"OPENAI_API_KEY=sk-2",
 		"DB_PASSWORD=hunter2",
 		"GOOGLE_APPLICATION_CREDENTIALS=/creds.json",
+		"PASSWORD=bare-password",
+		"TOKEN=bare-token",
+		"API_KEY=bare-api-key",
+		"APIKEY=bare-api-key",
+		"SECRET=bare-secret",
+		"SECRET_KEY=bare-secret-key",
+		"ACCESS_KEY=bare-access-key",
+		"PASSPHRASE=bare-passphrase",
+		"CREDENTIALS=/creds.json",
+		"PRIVATE_KEY=private-key",
+		"PGPASSWORD=postgres-password",
+		"PGPASSFILE=/home/user/.pgpass",
+		"MYSQL_PWD=mysql-password",
+		"REDISCLI_AUTH=redis-password",
+		"DATABASE_URL=postgres://user:password@db.example/app",
 	}
 	got, stripped := filterEnv(env, nil)
 
@@ -1068,13 +1083,13 @@ func TestFilterEnvStripsSensitiveByDefault(t *testing.T) {
 
 func TestFilterEnvAllowEnvOverridesSensitivity(t *testing.T) {
 	// An explicit allowlist wins, even for vars the heuristics call sensitive.
-	env := []string{"GITHUB_TOKEN=ghp", "PATH=/usr/bin", "HOME=/home/user"}
-	got, stripped := filterEnv(env, []string{"GITHUB_TOKEN"})
-	if len(got) != 1 || got[0] != "GITHUB_TOKEN=ghp" {
-		t.Fatalf("filterEnv with allowEnv = %v, want only the explicitly allowed GITHUB_TOKEN", got)
+	env := []string{"GITHUB_TOKEN=ghp", "PGPASSWORD=postgres-password", "PATH=/usr/bin", "HOME=/home/user"}
+	got, stripped := filterEnv(env, []string{"PGPASSWORD"})
+	if len(got) != 1 || got[0] != "PGPASSWORD=postgres-password" {
+		t.Fatalf("filterEnv with allowEnv = %v, want only the explicitly allowed PGPASSWORD", got)
 	}
-	if len(stripped) != 2 {
-		t.Fatalf("stripped = %v, want the two non-allowlisted names", stripped)
+	if len(stripped) != 3 {
+		t.Fatalf("stripped = %v, want the three non-allowlisted names", stripped)
 	}
 }
 

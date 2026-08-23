@@ -1099,6 +1099,26 @@ func concatStrings(a, b []string) []string {
 // they belong to. AllowEnv passes any of these through explicitly.
 var (
 	sensitiveEnvNames = map[string]bool{
+		// Bare credential names do not match the suffix rules below because
+		// those rules deliberately require a separating underscore.
+		"API_KEY":     true,
+		"APIKEY":      true,
+		"TOKEN":       true,
+		"SECRET":      true,
+		"SECRET_KEY":  true,
+		"ACCESS_KEY":  true,
+		"PASSWORD":    true,
+		"PASSPHRASE":  true,
+		"CREDENTIALS": true,
+		"PRIVATE_KEY": true,
+		// Common database clients use historical names that are not
+		// credential-shaped according to the generic suffix rules. Database
+		// URLs commonly carry credentials in their user-info component.
+		"PGPASSWORD":               true,
+		"PGPASSFILE":               true,
+		"MYSQL_PWD":                true,
+		"REDISCLI_AUTH":            true,
+		"DATABASE_URL":             true,
 		"SSH_AUTH_SOCK":            true,
 		"SSH_AGENT_PID":            true,
 		"GPG_AGENT_INFO":           true,
