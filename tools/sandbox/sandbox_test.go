@@ -469,8 +469,16 @@ type mockSandbox struct {
 }
 
 type extraFileSandbox struct {
-	file *os.File
-	err  error
+	file    *os.File
+	prepend bool
+	err     error
+}
+
+type managedExtraFileSandbox struct {
+	extraFiles []*os.File
+	ownedFiles []*os.File
+	prepend    bool
+	err        error
 }
 
 func wrapCmdForTest(t *testing.T, sb Sandbox, cmd *exec.Cmd) error {
@@ -483,8 +491,26 @@ func wrapCmdForTest(t *testing.T, sb Sandbox, cmd *exec.Cmd) error {
 }
 
 func (s extraFileSandbox) Wrap(cmd *exec.Cmd) error {
-	cmd.ExtraFiles = append(cmd.ExtraFiles, s.file)
+	if s.prepend {
+		cmd.ExtraFiles = append([]*os.File{s.file}, cmd.ExtraFiles...)
+	} else {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, s.file)
+	}
 	return s.err
+}
+
+func (s managedExtraFileSandbox) Wrap(cmd *exec.Cmd) error {
+	return ErrManagedWrapRequired
+}
+
+func (s managedExtraFileSandbox) wrapManaged(cmd *exec.Cmd, _ map[string]string) ([]*os.File, error) {
+	if s.prepend {
+		extraFiles := append([]*os.File(nil), s.extraFiles...)
+		cmd.ExtraFiles = append(extraFiles, cmd.ExtraFiles...)
+	} else {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, s.extraFiles...)
+	}
+	return append([]*os.File(nil), s.ownedFiles...), s.err
 }
 
 func (m *mockSandbox) Wrap(cmd *exec.Cmd) error {
@@ -510,7 +536,83 @@ func TestWrapCmdApplied(t *testing.T) {
 	}
 }
 
-func TestWrapCmdManagedCleanupPreservesCallerExtraFiles(t *testing.T) {
+func TestWrapCmdManagedLeavesLegacySandboxExtraFilesOwnedBySandbox(t *testing.T) {
+	borrowedFile, err := os.CreateTemp(t.TempDir(), "legacy-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer borrowedFile.Close()
+	sb := extraFileSandbox{file: borrowedFile}
+
+	for i := 0; i < 2; i++ {
+		cmd := exec.Command("true")
+		cleanup, err := WrapCmdManaged(sb, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cleanup(); err != nil {
+			t.Fatal(err)
+		}
+		if len(cmd.ExtraFiles) != 1 || cmd.ExtraFiles[0] != borrowedFile {
+			t.Fatalf("ExtraFiles = %v, want legacy sandbox file", cmd.ExtraFiles)
+		}
+		if _, err := borrowedFile.Stat(); err != nil {
+			t.Fatalf("legacy sandbox descriptor was closed after wrap %d: %v", i+1, err)
+		}
+	}
+}
+
+func TestWrapCmdManagedLeavesLegacySandboxExtraFilesOwnedOnError(t *testing.T) {
+	borrowedFile, err := os.CreateTemp(t.TempDir(), "legacy-error-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer borrowedFile.Close()
+	cmd := exec.Command("true")
+	cleanup, err := WrapCmdManaged(extraFileSandbox{file: borrowedFile, err: fmt.Errorf("wrap failed")}, cmd)
+	if err == nil {
+		t.Fatal("WrapCmdManaged returned nil error")
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := borrowedFile.Stat(); err != nil {
+		t.Fatalf("legacy sandbox descriptor was closed on Wrap error: %v", err)
+	}
+}
+
+func TestWrapCmdManagedLeavesLegacySandboxExtraFileOrderUntouched(t *testing.T) {
+	callerFile, err := os.CreateTemp(t.TempDir(), "legacy-caller-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callerFile.Close()
+	borrowedFile, err := os.CreateTemp(t.TempDir(), "legacy-prepended-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer borrowedFile.Close()
+	cmd := exec.Command("true")
+	cmd.ExtraFiles = []*os.File{callerFile}
+	cleanup, err := WrapCmdManaged(extraFileSandbox{file: borrowedFile, prepend: true}, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if len(cmd.ExtraFiles) != 2 || cmd.ExtraFiles[0] != borrowedFile || cmd.ExtraFiles[1] != callerFile {
+		t.Fatalf("ExtraFiles = %v, want legacy sandbox order", cmd.ExtraFiles)
+	}
+	if _, err := callerFile.Stat(); err != nil {
+		t.Fatalf("caller-owned descriptor was closed: %v", err)
+	}
+	if _, err := borrowedFile.Stat(); err != nil {
+		t.Fatalf("legacy sandbox descriptor was closed: %v", err)
+	}
+}
+
+func TestWrapCmdManagedCleanupUsesExplicitOwnership(t *testing.T) {
 	callerFile, err := os.CreateTemp(t.TempDir(), "caller-extra-*")
 	if err != nil {
 		t.Fatal(err)
@@ -520,6 +622,11 @@ func TestWrapCmdManagedCleanupPreservesCallerExtraFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	borrowedFile, err := os.CreateTemp(t.TempDir(), "borrowed-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer borrowedFile.Close()
 	laterCallerFile, err := os.CreateTemp(t.TempDir(), "later-caller-extra-*")
 	if err != nil {
 		t.Fatal(err)
@@ -527,7 +634,11 @@ func TestWrapCmdManagedCleanupPreservesCallerExtraFiles(t *testing.T) {
 	defer laterCallerFile.Close()
 	cmd := exec.Command("true")
 	cmd.ExtraFiles = []*os.File{callerFile}
-	cleanup, err := WrapCmdManaged(extraFileSandbox{file: ownedFile}, cmd)
+	cleanup, err := WrapCmdManaged(managedExtraFileSandbox{
+		extraFiles: []*os.File{ownedFile, borrowedFile},
+		ownedFiles: []*os.File{ownedFile},
+		prepend:    true,
+	}, cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,14 +647,17 @@ func TestWrapCmdManagedCleanupPreservesCallerExtraFiles(t *testing.T) {
 	if err := cleanup(); err != nil {
 		t.Fatal(err)
 	}
-	if len(cmd.ExtraFiles) != 2 || cmd.ExtraFiles[0] != callerFile || cmd.ExtraFiles[1] != laterCallerFile {
-		t.Fatalf("ExtraFiles = %v, want both caller-owned files", cmd.ExtraFiles)
+	if len(cmd.ExtraFiles) != 3 || cmd.ExtraFiles[0] != borrowedFile || cmd.ExtraFiles[1] != callerFile || cmd.ExtraFiles[2] != laterCallerFile {
+		t.Fatalf("ExtraFiles = %v, want borrowed and caller-owned files", cmd.ExtraFiles)
 	}
 	if _, err := callerFile.Stat(); err != nil {
 		t.Fatalf("caller-owned descriptor was closed: %v", err)
 	}
 	if _, err := ownedFile.Stat(); err == nil {
 		t.Fatal("sandbox-owned descriptor remains open")
+	}
+	if _, err := borrowedFile.Stat(); err != nil {
+		t.Fatalf("borrowed descriptor was closed: %v", err)
 	}
 	if _, err := laterCallerFile.Stat(); err != nil {
 		t.Fatalf("later caller-owned descriptor was closed: %v", err)
@@ -559,11 +673,42 @@ func TestWrapCmdManagedClosesAppendedFilesOnWrapError(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("true")
-	if _, err := WrapCmdManaged(extraFileSandbox{file: ownedFile, err: fmt.Errorf("wrap failed")}, cmd); err == nil {
+	if _, err := WrapCmdManaged(managedExtraFileSandbox{
+		extraFiles: []*os.File{ownedFile},
+		ownedFiles: []*os.File{ownedFile},
+		err:        fmt.Errorf("wrap failed"),
+	}, cmd); err == nil {
 		t.Fatal("WrapCmdManaged returned nil error")
 	}
 	if _, err := ownedFile.Stat(); err == nil {
 		t.Fatal("sandbox-owned descriptor remains open after Wrap error")
+	}
+}
+
+func TestWrapCmdManagedClosesDuplicateOwnedFileOnce(t *testing.T) {
+	ownedFile, err := os.CreateTemp(t.TempDir(), "sandbox-duplicate-extra-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("true")
+	cleanup, err := WrapCmdManaged(managedExtraFileSandbox{
+		extraFiles: []*os.File{ownedFile, ownedFile},
+		ownedFiles: []*os.File{ownedFile, ownedFile},
+	}, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup duplicate descriptor: %v", err)
+	}
+	if len(cmd.ExtraFiles) != 0 {
+		t.Fatalf("ExtraFiles = %v, want empty", cmd.ExtraFiles)
+	}
+	if _, err := ownedFile.Stat(); err == nil {
+		t.Fatal("sandbox-owned descriptor remains open")
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("second cleanup call = %v", err)
 	}
 }
 

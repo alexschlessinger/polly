@@ -277,6 +277,19 @@ type MCPClient struct {
 	serverSpec string // The server spec (JSON file path) for this client
 }
 
+// cleanupAfterConnectTransport releases parent-owned sandbox descriptors at
+// the transport boundary. CommandTransport.Connect returns immediately after
+// cmd.Start, before Client.Connect begins the MCP initialization handshake.
+type cleanupAfterConnectTransport struct {
+	transport mcp.Transport
+	cleanup   func() error
+}
+
+func (t *cleanupAfterConnectTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	defer func() { _ = t.cleanup() }()
+	return t.transport.Connect(ctx)
+}
+
 // NewMCPClient creates a new MCP client from a server spec
 // Format: "path/to/config.json" or "path/to/config.json#servername"
 func NewMCPClient(serverSpec string) (*MCPClient, error) {
@@ -407,10 +420,12 @@ func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, 
 		if err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
-		defer func() { _ = closeSandboxFiles() }()
 
 		slog.Debug("mcp_stdio_connecting", "command", config.Command, "arguments", config.Args)
-		transport = &mcp.CommandTransport{Command: cmd}
+		transport = &cleanupAfterConnectTransport{
+			transport: &mcp.CommandTransport{Command: cmd},
+			cleanup:   closeSandboxFiles,
+		}
 
 	default:
 		return nil, fmt.Errorf("unknown transport type: %s (supported: stdio, sse, streamable)", config.Transport)

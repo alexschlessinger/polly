@@ -14,23 +14,27 @@ import (
 	"syscall"
 )
 
-// Sandbox wraps an exec.Cmd to apply platform-specific restrictions. Built-in
-// backends own descriptors needed until process start and therefore reject raw
-// Wrap calls with ErrManagedWrapRequired; execution call sites must use
-// WrapCmdManaged so those descriptors are closed after Start/Run.
+// Sandbox wraps an exec.Cmd to apply platform-specific restrictions.
+// Descriptor-owning built-in backends reject raw Wrap calls with
+// ErrManagedWrapRequired; execution call sites must use WrapCmdManaged so those
+// descriptors are closed after Start/Run.
 type Sandbox interface {
 	// Wrap modifies cmd so it runs inside the sandbox.
 	// The original command and args are preserved semantically;
-	// the implementation may prepend a wrapper binary.
+	// the implementation may prepend a wrapper binary. Implementations retain
+	// ownership of descriptors they place in cmd.ExtraFiles.
 	Wrap(cmd *exec.Cmd) error
 }
 
 // managedCommandSandbox is implemented by built-in backends whose wrapping
-// allocates parent-owned descriptors. Keeping this method private prevents
-// external Sandbox implementations from accidentally opting into lifecycle
-// semantics they cannot satisfy.
+// allocates parent-owned descriptors. wrapManaged returns the exact descriptors
+// owned by the backend, including descriptors that still need cleanup when it
+// also returns an error. Returned descriptors may appear anywhere in
+// cmd.ExtraFiles; borrowed and caller-owned descriptors must not be returned.
+// Keeping this method private prevents external Sandbox implementations from
+// accidentally opting into lifecycle semantics they cannot satisfy.
 type managedCommandSandbox interface {
-	wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string) error
+	wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string) ([]*os.File, error)
 }
 
 // ErrManagedWrapRequired is returned when a descriptor-owning built-in backend
@@ -50,30 +54,27 @@ func WrapCmd(sb Sandbox, cmd *exec.Cmd) error {
 }
 
 // WrapCmdManaged applies a sandbox and returns an idempotent cleanup for only
-// the descriptors appended by that Wrap call. Invoke cleanup after cmd.Start
-// returns (or after Run/Output/CombinedOutput). Caller-owned ExtraFiles are
-// never closed, including files appended by the caller after wrapping.
+// the descriptors explicitly owned by a managed built-in backend. Invoke
+// cleanup after cmd.Start returns (or after Run/Output/CombinedOutput).
+// Legacy Sandbox implementations retain ownership of every descriptor they
+// place in ExtraFiles and receive a no-op cleanup.
 func WrapCmdManaged(sb Sandbox, cmd *exec.Cmd) (func() error, error) {
 	if managed, ok := sb.(managedCommandSandbox); ok {
-		return wrapCmdManaged(cmd, func() error { return managed.wrapManaged(cmd, nil) })
+		return wrapCmdManaged(cmd, func() ([]*os.File, error) { return managed.wrapManaged(cmd, nil) })
 	}
-	return wrapCmdManaged(cmd, func() error { return WrapCmd(sb, cmd) })
+	return noSandboxFileCleanup, WrapCmd(sb, cmd)
 }
 
-func wrapCmdManaged(cmd *exec.Cmd, wrap func() error) (func() error, error) {
-	start := len(cmd.ExtraFiles)
-	err := wrap()
-	var owned []*os.File
-	if len(cmd.ExtraFiles) >= start {
-		owned = append(owned, cmd.ExtraFiles[start:]...)
-	}
+func wrapCmdManaged(cmd *exec.Cmd, wrap func() ([]*os.File, error)) (func() error, error) {
+	owned, err := wrap()
 	cleanup := sandboxFileCleanup(cmd, owned)
 	if err != nil {
-		_ = cleanup()
-		return func() error { return nil }, err
+		return noSandboxFileCleanup, errors.Join(err, cleanup())
 	}
 	return cleanup, nil
 }
+
+func noSandboxFileCleanup() error { return nil }
 
 func sandboxFileCleanup(cmd *exec.Cmd, owned []*os.File) func() error {
 	var once sync.Once
@@ -83,6 +84,9 @@ func sandboxFileCleanup(cmd *exec.Cmd, owned []*os.File) func() error {
 			ownedSet := make(map[*os.File]bool, len(owned))
 			var closeErrors []error
 			for _, file := range owned {
+				if file == nil || ownedSet[file] {
+					continue
+				}
 				ownedSet[file] = true
 				if err := file.Close(); err != nil && !errors.Is(err, os.ErrInvalid) {
 					closeErrors = append(closeErrors, err)
