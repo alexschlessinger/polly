@@ -35,11 +35,13 @@ func NewBashTool(workDir string) *BashTool { return NewUnsafeBashTool(workDir) }
 func NewUnsafeBashTool(workDir string) *BashTool { return newBashTool(workDir) }
 
 // WithSandbox returns a copy with sandboxing enabled.
-func (t *BashTool) WithSandbox(sb sandbox.Sandbox, cfg ...sandbox.Config) *BashTool {
-	out := &BashTool{workDir: t.workDir, sandbox: sb, sandboxCfg: copySandboxConfig(t.sandboxCfg)}
-	if len(cfg) > 0 {
-		out.sandboxCfg = copySandboxConfig(&cfg[0])
-	}
+func (t *BashTool) WithSandbox(sb sandbox.Sandbox) *BashTool {
+	return &BashTool{workDir: t.workDir, sandbox: sb}
+}
+
+func (t *BashTool) withSandboxConfig(sb sandbox.Sandbox, cfg sandbox.Config) *BashTool {
+	out := t.WithSandbox(sb)
+	out.sandboxCfg = copySandboxConfig(&cfg)
 	return out
 }
 

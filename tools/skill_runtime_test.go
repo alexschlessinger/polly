@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -46,6 +47,40 @@ func TestNewSkillRuntimeSandboxFailureFailsClosed(t *testing.T) {
 	if _, err := NewSkillRuntime(catalog, registry); err == nil {
 		t.Fatal("expected NewSkillRuntime to fail when the skill bash sandbox can't be constructed")
 	}
+	for _, name := range []string{"activate_skill", "read_skill_file", "bash"} {
+		if _, ok := registry.Get(name); ok {
+			t.Fatalf("%s registered after NewSkillRuntime failed", name)
+		}
+	}
+}
+
+func TestNewSkillRuntimeFailurePreservesCollidingTools(t *testing.T) {
+	root := t.TempDir()
+	createSkillWithScript(t, root, "runtime-skill")
+	catalog, err := skills.Discover([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	activate := &testTool{name: "activate_skill"}
+	readFile := &testTool{name: "read_skill_file"}
+	registry := NewToolRegistry([]Tool{activate, readFile},
+		WithSandboxFactory(failingSandboxFactory(), sandbox.Config{}))
+	if _, err := NewSkillRuntime(catalog, registry); err == nil {
+		t.Fatal("expected NewSkillRuntime to fail")
+	}
+	for name, want := range map[string]Tool{
+		"activate_skill":  activate,
+		"read_skill_file": readFile,
+	} {
+		got, ok := registry.registeredTool(name)
+		if !ok || got != want {
+			t.Fatalf("registeredTool(%q) = %v, %v; want original %v", name, got, ok, want)
+		}
+	}
+	if _, ok := registry.registeredTool("bash"); ok {
+		t.Fatal("bash registered after NewSkillRuntime failed")
+	}
 }
 
 func TestNewSkillRuntimeRequiresExplicitProcessPolicy(t *testing.T) {
@@ -59,6 +94,11 @@ func TestNewSkillRuntimeRequiresExplicitProcessPolicy(t *testing.T) {
 	registry := NewToolRegistry(nil)
 	if _, err := NewSkillRuntime(catalog, registry); err == nil || !strings.Contains(err.Error(), "requires sandboxing") {
 		t.Fatalf("NewSkillRuntime() error = %v, want secure-default refusal", err)
+	}
+	for _, name := range []string{"activate_skill", "read_skill_file", "bash"} {
+		if _, ok := registry.Get(name); ok {
+			t.Fatalf("%s registered after NewSkillRuntime failed", name)
+		}
 	}
 }
 
@@ -103,6 +143,54 @@ func TestNewSkillRuntimeInheritsBaseSandboxPolicy(t *testing.T) {
 	}
 }
 
+func TestSkillRuntimeReportsOnlyCurrentKnownBashLimits(t *testing.T) {
+	root := t.TempDir()
+	createSkillWithScript(t, root, "runtime-skill")
+	catalog, err := skills.Discover([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeDir := t.TempDir()
+	registry := NewToolRegistry(nil, WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
+		return &mockSandbox{}, nil
+	}, sandbox.Config{WritablePaths: []string{writeDir}}))
+	runtime, err := NewSkillRuntime(catalog, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	realWriteDir, err := filepath.EvalSymlinks(writeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runtime.Activate("runtime-skill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "Sandbox: bash commands can only write to: "+realWriteDir) {
+		t.Fatalf("sandboxed skill bash omitted effective writable path: %s", result)
+	}
+
+	registry.Register(newBashTool("").WithSandbox(&mockSandbox{}))
+	result, err = runtime.Activate("runtime-skill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, "Sandbox: bash commands can only write to:") {
+		t.Fatalf("active bash with unknown config reported invented write restrictions: %s", result)
+	}
+
+	registry.Register(NewUnsafeBashTool(""))
+	result, err = runtime.Activate("runtime-skill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, "Sandbox: bash commands can only write to:") {
+		t.Fatalf("replaced unsafe bash retained stale write restrictions: %s", result)
+	}
+}
+
 func TestSkillRuntimeActivateCommitsTools(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
@@ -127,6 +215,9 @@ func TestSkillRuntimeActivateCommitsTools(t *testing.T) {
 	}
 	if !strings.Contains(result, "Available scripts") {
 		t.Fatalf("Activate() result missing 'Available scripts': %s", result)
+	}
+	if strings.Contains(result, "Sandbox: bash commands can only write to:") {
+		t.Fatalf("unsandboxed skill bash reported nonexistent write restrictions: %s", result)
 	}
 	// Scripts are listed as paths, not registered as tools
 	for _, tool := range registry.All() {

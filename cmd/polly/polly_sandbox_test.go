@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -375,4 +376,37 @@ func TestInitializeSessionSucceedsWithoutSandboxWhenBackendUnavailable(t *testin
 		_ = registry.Close()
 		session.Close()
 	})
+}
+
+func TestInitializeSessionClosesRegistryWhenSkillRuntimeFails(t *testing.T) {
+	wantErr := errors.New("skill runtime failed")
+	originalNewSkillRuntime := newSkillRuntimeImpl
+	var captured *tools.ToolRegistry
+	newSkillRuntimeImpl = func(_ *skills.Catalog, registry *tools.ToolRegistry) (*tools.SkillRuntime, error) {
+		captured = registry
+		if _, ok := registry.Get("bash"); !ok {
+			t.Fatal("test setup did not load bash before skill runtime construction")
+		}
+		return nil, wantErr
+	}
+	t.Cleanup(func() { newSkillRuntimeImpl = originalNewSkillRuntime })
+
+	store := sessions.NewSyncMapSessionStore(nil)
+	_, session, _, registry, _, _, _, err := initializeSession(&Config{
+		NoSandbox: true,
+		NoSkills:  true,
+		Tools:     []string{"bash"},
+	}, store, "", getCommand(), nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("initializeSession() error = %v, want %v", err, wantErr)
+	}
+	if session != nil || registry != nil {
+		t.Fatalf("initializeSession() returned session=%v registry=%v after failure", session, registry)
+	}
+	if captured == nil {
+		t.Fatal("skill runtime constructor was not called")
+	}
+	if got := len(captured.All()); got != 0 {
+		t.Fatalf("registry retained %d tools after initialization failure", got)
+	}
 }
