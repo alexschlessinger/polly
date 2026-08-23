@@ -1,6 +1,8 @@
-# Pollytool API Documentation
+# Pollytool as a Library
 
-This document describes how to use the pollytool package as a library to interact with various LLM providers.
+Pollytool's CLI is a thin layer over a set of Go packages you can use directly:
+one streaming interface over seven LLM providers, plus tools, sandboxing,
+skills, sessions, and structured output. This document is the tour.
 
 ## Installation
 
@@ -8,18 +10,21 @@ This document describes how to use the pollytool package as a library to interac
 go get github.com/alexschlessinger/pollytool
 ```
 
-## Environment Variables
+## API Keys
 
-Set these for API authentication:
+Set the keys for whichever providers you use. `llm.GetDefaultClient()` reads:
 
-- `POLLYTOOL_OPENAIKEY` - OpenAI API key
-- `POLLYTOOL_ANTHROPICKEY` - Anthropic API key
-- `POLLYTOOL_GEMINIKEY` - Google Gemini API key
-- `POLLYTOOL_OLLAMAKEY` - Ollama API key (optional for local)
+- `POLLYTOOL_OPENAIKEY`
+- `POLLYTOOL_ANTHROPICKEY`
+- `POLLYTOOL_GEMINIKEY`
+- `POLLYTOOL_OLLAMAKEY` (optional for a local Ollama)
+- `POLLYTOOL_HUGGINGFACEKEY`
+
+The `polly` CLI additionally reads `POLLYTOOL_DEEPSEEKKEY` and
+`POLLYTOOL_OPENROUTERKEY`. In a library you reach those providers by passing
+`deepseek` / `openrouter` keys to `llm.NewMultiPass` yourself.
 
 ## Quick Start
-
-### Simple Example Using Helpers
 
 ```go
 package main
@@ -27,24 +32,23 @@ package main
 import (
     "context"
     "fmt"
-    
+
     "github.com/alexschlessinger/pollytool/llm"
 )
 
 func main() {
     ctx := context.Background()
-    
-    // Set environment variable: export POLLYTOOL_OPENAIKEY="your-key"
-    
-    // Simple completion
+
+    // export POLLYTOOL_OPENAIKEY="your-key" first
+
+    // One-shot completion
     joke, err := llm.QuickComplete(ctx, "openai/gpt-5.4", "Tell me a joke", 500)
     if err != nil {
         panic(err)
     }
     fmt.Println(joke)
-    
+
     // Streaming completion
-    fmt.Println("\nWriting a story:")
     err = llm.StreamComplete(ctx, "openai/gpt-5.4", "Write a short story", 500, func(chunk string) {
         fmt.Print(chunk)
     })
@@ -54,90 +58,80 @@ func main() {
 }
 ```
 
-## Helper Functions
+## Helpers
 
-The `llm/helpers` package provides convenience functions to simplify common LLM operations. These functions create a fresh router from environment variables on each call. If your application makes many requests, create one client with `GetDefaultClient` or `NewMultiPass` and reuse it explicitly.
+The `llm` package ships convenience functions for the common cases. Each one
+builds a fresh router from environment variables, which is fine for scripts;
+if you're making lots of calls, create one client with `llm.GetDefaultClient()`
+(or `llm.NewMultiPass`) and reuse it.
 
-### One-line Completions
+### One-liners
 
 ```go
-import "github.com/alexschlessinger/pollytool/llm"
-
-// Quick completion - just pass the model and prompt
-// API keys are loaded from POLLYTOOL_*KEY environment variables
+// Model + prompt + token budget. Keys come from POLLYTOOL_*KEY env vars.
 response, err := llm.QuickComplete(ctx, "openai/gpt-5.4", "Tell me a joke", 1000)
 
-// Or with more tokens for longer output
-response, err := llm.QuickComplete(ctx, "anthropic/claude-opus-4-7", "Write a story", 4000)
+// More budget for longer output
+response, err = llm.QuickComplete(ctx, "anthropic/claude-opus-4-7", "Write a story", 4000)
 ```
 
-### Streaming with Callback
+### Conversation with history
 
 ```go
-// Stream completion with real-time output
-err := llm.StreamComplete(ctx, "openai/gpt-5.4", "Write a story", 2000, func(chunk string) {
-    fmt.Print(chunk) // Print each chunk as it arrives
-})
-```
-
-### Conversation with History
-
-```go
-// Maintain conversation context
 history := []messages.ChatMessage{
     {Role: messages.MessageRoleSystem, Content: "You are helpful"},
     {Role: messages.MessageRoleUser, Content: "Hi"},
     {Role: messages.MessageRoleAssistant, Content: "Hello! How can I help?"},
 }
 
-response, err := llm.ChatWithHistory(ctx, "openai/gpt-5.4", history, "What did I just say?", 1000)
+// Appends your new message and returns the assistant's reply
+reply, err := llm.ChatWithHistory(ctx, "openai/gpt-5.4", history, "What did I just say?", 1000)
+fmt.Println(reply.Content)
 ```
 
-### Structured JSON Output
+### Structured output, the easy way
+
+`llm.SchemaFor` builds a JSON schema from a Go struct by reflection, and
+`StructuredComplete` unmarshals the model's answer straight back into it:
 
 ```go
-// Define your result struct
 type UserInfo struct {
     Name  string `json:"name"`
-    Age   int    `json:"age"`
+    Age   int    `json:"age,omitempty"`
     Email string `json:"email"`
 }
 
-// Define schema
-schema := &llm.Schema{
-    Raw: map[string]any{
-        "type": "object",
-        "properties": map[string]any{
-            "name":  map[string]any{"type": "string"},
-            "age":   map[string]any{"type": "integer"},
-            "email": map[string]any{"type": "string"},
-        },
-        "required": []string{"name", "email"},
-    },
-}
-
-// Get structured response
 var user UserInfo
-err := llm.StructuredComplete(ctx, "openai/gpt-5.4", 
-    "Extract: John Doe, 30, john@example.com", schema, 500, &user)
-// user now contains: {Name: "John Doe", Age: 30, Email: "john@example.com"}
+err := llm.StructuredComplete(ctx, "openai/gpt-5.4",
+    "Extract: John Doe, 30, john@example.com",
+    llm.SchemaFor(UserInfo{}), 500, &user)
+// user == UserInfo{Name: "John Doe", Age: 30, Email: "john@example.com"}
 ```
 
-### Builder Pattern for Complex Requests
+Prefer writing the schema yourself? `llm.SchemaFromJSON(jsonString)` parses
+one, and `&llm.Schema{Raw: map[string]any{...}}` builds one literally. See
+[Structured Output](#structured-output) below.
+
+### The builder
+
+For anything past a one-liner, `CompletionBuilder` gives you a fluent API:
 
 ```go
 client := llm.GetDefaultClient()
 
-// Fluent API for building requests
 result, err := llm.NewCompletionBuilder("openai/gpt-5.4").
     WithSystemPrompt("You are a helpful assistant").
     WithUserMessage("Tell me about Go").
     WithTemperature(0.8).
     WithMaxTokens(500).
     Execute(ctx, client)
+if err != nil {
+    panic(err)
+}
+fmt.Println(result)
 
-// Or with streaming
-err := llm.NewCompletionBuilder("openai/gpt-5.4").
+// Streaming variant
+err = llm.NewCompletionBuilder("openai/gpt-5.4").
     WithSystemPrompt("You are a creative writer").
     WithUserMessage("Write a haiku").
     ExecuteStreaming(ctx, client, func(chunk string) {
@@ -145,21 +139,20 @@ err := llm.NewCompletionBuilder("openai/gpt-5.4").
     })
 ```
 
-### Automatic Tool Handling
+### Automatic tool handling
+
+`ExecuteWithTools` runs the whole tool loop for you — it executes each call
+the model makes, feeds results back, and returns the model's final answer:
 
 ```go
-// Setup tools
-weatherTool := &WeatherTool{}
-registry := tools.NewToolRegistry([]tools.Tool{weatherTool})
+registry := tools.NewToolRegistry([]tools.Tool{&WeatherTool{}})
 
-// Execute with automatic tool handling
 response, err := llm.NewCompletionBuilder("openai/gpt-5.4").
     WithUserMessage("What's the weather in NYC?").
-    WithTools(registry.All()).
     ExecuteWithTools(ctx, client, registry)
-// Automatically calls weather tool and returns final response
+// response.Content holds the final answer, tools already called
 
-// Skills are also supported on the builder
+// Skills work on the builder too
 result, err := llm.NewCompletionBuilder("openai/gpt-5.4").
     WithSystemPrompt("You are a helpful assistant").
     WithSkills(catalog).
@@ -167,280 +160,232 @@ result, err := llm.NewCompletionBuilder("openai/gpt-5.4").
     Execute(ctx, client)
 ```
 
-### Skills Runtime
+## Core Types
+
+### The LLM interface
+
+Every provider implements one method:
 
 ```go
-import (
-    "github.com/alexschlessinger/pollytool/skills"
-    "github.com/alexschlessinger/pollytool/tools"
-    "github.com/alexschlessinger/pollytool/tools/sandbox"
-)
-
-// Resolve skill directories (expands ~, deduplicates, validates).
-// Falls back to ~/.pollytool/skills when dirs is empty.
-dirs, err := skills.ResolveDirs([]string{"~/my-skills", "./local-skills"})
-
-// Or load a ready-to-use catalog in one step:
-catalog, err := skills.LoadCatalog([]string{"~/my-skills"})
-if err != nil {
-    panic(err)
-}
-
-// LoadCatalog returns nil when no skills are found.
-if catalog == nil {
-    // no skills available — proceed without them
-}
-
-sandboxConfig := sandbox.DefaultConfig()
-registry := tools.NewToolRegistry(nil,
-    tools.WithSandboxFactory(sandbox.New, sandboxConfig),
-)
-skillRuntime, err := tools.NewSkillRuntime(catalog, registry)
-if err != nil {
-    panic(err)
-}
-
-// Set Skills on CompletionRequest for automatic system prompt augmentation.
-// Skill prompt injection happens transparently during completion.
-req := &llm.CompletionRequest{
-    Model:    "openai/gpt-5.4",
-    Messages: history,
-    Skills:   catalog,
-}
-
-// Or use RuntimeSystemPrompt / BuildMessages for manual control:
-systemPrompt := catalog.RuntimeSystemPrompt("You are a helpful assistant")
-
-// Activate directly from application code
-_, err = skillRuntime.Activate("code-reviewer")
-if err != nil {
-    panic(err)
-}
-
-// Persist and restore active skills across runs
-savedSkills := skillRuntime.ActivatedSkills()
-err = skillRuntime.Restore(savedSkills)
-if err != nil {
-    panic(err)
-}
-
-_ = systemPrompt
-_ = msgs
-_ = dirs
-_ = registry
-```
-
-## Core Interfaces
-
-### LLM Interface
-
-The main interface for interacting with language models:
-
-```go
-import "github.com/alexschlessinger/pollytool/llm"
-
 type LLM interface {
-    ChatCompletionStream(
-        ctx context.Context,
-        req *CompletionRequest,
-        processor StreamProcessor,
-    ) <-chan *messages.StreamEvent
+    ChatCompletionStream(context.Context, *CompletionRequest, EventStreamProcessor) <-chan *messages.StreamEvent
 }
 ```
+
+The processor turns raw message chunks into stream events;
+`messages.NewStreamProcessor()` is the standard implementation.
 
 ### CompletionRequest
 
-Configuration for LLM requests:
-
 ```go
 type CompletionRequest struct {
-    Model          string                   // Model identifier (e.g., "gpt-5.4", "claude-opus-4-7")
-    Messages       []messages.ChatMessage   // Conversation history
-    Temperature    float32                  // Sampling temperature (0.0-1.0)
-    MaxTokens      int                      // Maximum tokens to generate
-    Tools          []tools.Tool             // Available tools for function calling
-    ResponseSchema *Schema                  // JSON schema for structured output
-    Timeout        time.Duration            // Request timeout
-    BaseURL        string                   // Custom API endpoint (for OpenAI-compatible)
-    Skills         *skills.Catalog          // Optional skill catalog for system prompt augmentation
+    APIKey  string
+    BaseURL string        // Custom endpoint (OpenAI-compatible providers)
+    Timeout time.Duration
+
+    // nil means "don't send temperature" — required for reasoning models
+    // (o1, o3, gpt-5.x), which reject the parameter outright.
+    // Use llm.Float32Ptr(0.7) to set it.
+    Temperature *float32
+
+    Model          string
+    MaxTokens      int
+    Messages       []messages.ChatMessage
+    Tools          []tools.Tool
+    ResponseSchema *Schema         // JSON schema for structured output
+    ThinkingEffort ThinkingEffort  // Reasoning effort (see below)
+    Stream         *bool           // nil = streaming (default), false = non-streaming
+    Skills         *skills.Catalog // Skill catalog for system prompt augmentation
 }
 ```
 
-## Message Types
+Two fields deserve a note:
 
-### ChatMessage
+- **Temperature is a pointer.** `Temperature: 0.7` won't compile — write
+  `Temperature: llm.Float32Ptr(0.7)`, or leave it nil to let the provider
+  default apply (and to keep reasoning models happy).
+- **ThinkingEffort** controls reasoning depth: `llm.EffortOff()`,
+  `llm.EffortLevel(llm.LevelHigh)` (levels `LevelMinimal` through `LevelMax`),
+  `llm.EffortBudget(tokens)`, or `llm.EffortDynamic()`.
+
+### Messages
 
 ```go
 type ChatMessage struct {
-    Role       MessageRole              // "system", "user", "assistant", or "tool"
-    Content    string                   // Text content
-    ToolCalls  []ChatMessageToolCall    // Tool/function calls from assistant
-    ToolCallID string                   // ID for tool response messages
+    Role       string                // "system", "user", "assistant", "tool", "internal"
+    Content    string                // Text content
+    Parts      []ContentPart         // Multimodal content (images, files)
+    ToolCalls  []ChatMessageToolCall // Tool calls made by the assistant
+    ToolCallID string                // Set on tool-role replies
+    ToolName   string                // Tool name on tool-role replies
+    Reasoning  string                // Model reasoning, when the provider exposes it
+    Metadata   map[string]any        // Token counts, error flags, etc.
+    StopReason StopReason
 }
 
 type ChatMessageToolCall struct {
-    ID        string   // Unique identifier for this tool call
-    Name      string   // Name of the tool to call
-    Arguments string   // JSON string of arguments
+    ID        string // Unique identifier for this call
+    Name      string // Tool to call
+    Arguments string // JSON-encoded arguments
 }
 ```
 
-### Message Roles
+Roles are plain string constants:
 
 ```go
 const (
-    MessageRoleSystem    MessageRole = "system"
-    MessageRoleUser      MessageRole = "user"
-    MessageRoleAssistant MessageRole = "assistant"
-    MessageRoleTool      MessageRole = "tool"
+    MessageRoleSystem    = "system"
+    MessageRoleUser      = "user"
+    MessageRoleAssistant = "assistant"
+    MessageRoleTool      = "tool"
+    MessageRoleInternal  = "internal" // app state; filter before sending upstream
 )
 ```
 
-## Streaming Events
+`messages.User("hello")` is a handy shortcut for a one-message user history.
 
-The streaming API returns events through a channel:
+### Stream events
+
+`ChatCompletionStream` sends events on a channel as the response arrives:
 
 ```go
 type StreamEvent struct {
-    Type    EventType
-    Content string           // For EventTypeContent
-    Message *ChatMessage     // For EventTypeComplete
-    Error   error           // For EventTypeError
+    Type     StreamEventType
+    Content  string          // Incremental text (content and reasoning chunks)
+    ToolCall *tools.ToolCall // For tool_call events
+    Message  *ChatMessage    // For the final complete event
+    Error    error           // For error events
 }
 
-type EventType string
-
 const (
-    EventTypeContent  EventType = "content"   // Streaming text chunk
-    EventTypeToolCall EventType = "tool_call" // Tool call in progress
-    EventTypeComplete EventType = "complete"  // Final message with all content
-    EventTypeError    EventType = "error"     // Error occurred
+    EventTypeContent   StreamEventType = "content"   // Text chunk
+    EventTypeReasoning StreamEventType = "reasoning" // Reasoning chunk (also in Content)
+    EventTypeToolCall  StreamEventType = "tool_call" // A tool call was parsed
+    EventTypeComplete  StreamEventType = "complete"  // Final assembled message
+    EventTypeError     StreamEventType = "error"     // Something went wrong
 )
 ```
 
-## Provider Support
+## Providers
 
-### Model Identifiers
+### Model identifiers
 
-Use the format `provider/model`:
+MultiPass routes on a `provider/model` prefix:
 
 - OpenAI: `openai/gpt-5.4`, `openai/gpt-5.4-mini`
 - Anthropic: `anthropic/claude-opus-4-7`, `anthropic/claude-sonnet-4-6`
 - Gemini: `gemini/gemini-3.1-pro-preview`, `gemini/gemini-3.1-flash-lite-preview`
 - Ollama: `ollama/gpt-oss`
+- Hugging Face: `huggingface/...`, DeepSeek: `deepseek/...`, OpenRouter: `openrouter/...`
 
-### MultiPass Provider
+The prefix belongs to MultiPass. Direct provider clients take bare model
+names (`"gpt-5.4"`, not `"openai/gpt-5.4"`) — they send whatever you give
+them verbatim.
 
-The recommended way to use multiple providers:
+### MultiPass
+
+`MultiPass` is the multi-provider router — a stateless one; it constructs
+provider clients per call rather than memoizing them:
 
 ```go
+package main
+
 import (
+    "context"
+    "fmt"
+    "os"
+    "time"
+
     "github.com/alexschlessinger/pollytool/llm"
     "github.com/alexschlessinger/pollytool/messages"
 )
 
-// Create MultiPass with API keys
-apiKeys := map[string]string{
-    "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
-    "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
-    "gemini":    os.Getenv("POLLYTOOL_GEMINIKEY"),
-    "ollama":    os.Getenv("POLLYTOOL_OLLAMAKEY"),
-}
+func main() {
+    ctx := context.Background()
 
-multipass := llm.NewMultiPass(apiKeys)
-// or use 
-// multipass:= llm.GetDefaultClient()
+    multipass := llm.NewMultiPass(map[string]string{
+        "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
+        "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
+    })
+    // or: multipass := llm.GetDefaultClient() to load every key from the env
 
-// MultiPass is a stateless router. It does not memoize provider clients internally.
-
-// Create request
-req := &llm.CompletionRequest{
-    Model: "anthropic/claude-opus-4-7",
-    Messages: []messages.ChatMessage{
-        {
-            Role:    messages.MessageRoleSystem,
-            Content: "You are a helpful assistant.",
+    req := &llm.CompletionRequest{
+        Model: "anthropic/claude-opus-4-7",
+        Messages: []messages.ChatMessage{
+            {Role: messages.MessageRoleSystem, Content: "You are a helpful assistant."},
+            {Role: messages.MessageRoleUser, Content: "Hello, how are you?"},
         },
-        {
-            Role:    messages.MessageRoleUser,
-            Content: "Hello, how are you?",
-        },
-    },
-    Temperature: 0.7,
-    MaxTokens:   1000,
-    Timeout:     30 * time.Second,
-}
+        Temperature: llm.Float32Ptr(0.7),
+        MaxTokens:   1000,
+        Timeout:     30 * time.Second,
+    }
 
-// Stream response
-processor := messages.NewStreamProcessor()
-eventChan := multipass.ChatCompletionStream(ctx, req, processor)
-
-for event := range eventChan {
-    switch event.Type {
-    case messages.EventTypeContent:
-        fmt.Print(event.Content)
-    case messages.EventTypeComplete:
-        fmt.Printf("\nComplete: %+v\n", event.Message)
-    case messages.EventTypeError:
-        fmt.Printf("Error: %v\n", event.Error)
+    processor := messages.NewStreamProcessor()
+    for event := range multipass.ChatCompletionStream(ctx, req, processor) {
+        switch event.Type {
+        case messages.EventTypeContent:
+            fmt.Print(event.Content)
+        case messages.EventTypeComplete:
+            fmt.Printf("\nComplete: %+v\n", event.Message)
+        case messages.EventTypeError:
+            fmt.Printf("Error: %v\n", event.Error)
+        }
     }
 }
 ```
 
-### Direct Provider Usage
+### Direct provider clients
 
-You can also use providers directly:
+You can skip the router and talk to one provider. Note the differing shapes —
+and remember: bare model names here.
 
 ```go
-// OpenAI
-client := llm.NewOpenAIClient(apiKey, "")
-
-// Anthropic  
-client := llm.NewAnthropicClient(apiKey)
-
-// Gemini
-client := llm.NewGeminiClient(apiKey)
-
-// Ollama (local)
-client := llm.NewOllamaClient(apiKey) // apiKey can be empty for local
+openai := llm.NewOpenAIClient(apiKey, "")          // second arg = optional base URL
+anthropic := llm.NewAnthropicClient(apiKey)
+gemini, err := llm.NewGeminiClient(apiKey)         // returns (client, error)
+ollama := llm.NewOllamaClient("http://localhost:11434", "") // baseURL first; key optional
 ```
 
-## Tool Integration
+## Tools
 
-### Defining Tools
+### The Tool interface
 
-Tools allow LLMs to call functions. Implement the Tool interface:
+```go
+type Tool interface {
+    GetSchema() *schema.ToolSchema
+    Execute(ctx context.Context, args map[string]any) (string, error)
+
+    GetName() string   // Namespaced name, e.g. "script__toolname"
+    GetType() string   // "shell", "mcp", or "native"
+    GetSource() string // Where it came from, e.g. "/path/to/script.sh"
+}
+```
+
+Schemas are built with the `schema` package. `schema.Tool` assembles an
+object schema, and there are small helpers for common parameter shapes:
+`schema.S` (string), `schema.Int`, `schema.Bool`, `schema.Enum`,
+`schema.Array`. If you already have schema JSON, `schema.ToolSchemaFromJSON`
+parses it.
+
+### Writing a tool
 
 ```go
 import (
-    "github.com/alexschlessinger/pollytool/tools"
-    "github.com/modelcontextprotocol/go-sdk/jsonschema"
+    "context"
+    "fmt"
+
+    "github.com/alexschlessinger/pollytool/schema"
 )
 
-type Tool interface {
-    GetSchema() *jsonschema.Schema
-    Execute(ctx context.Context, args map[string]any) (string, error)
-}
-```
-
-### Example Tool Implementation
-
-```go
 type WeatherTool struct{}
 
-func (w *WeatherTool) GetSchema() *jsonschema.Schema {
-    return &jsonschema.Schema{
-        Title:       "get_weather",
-        Description: "Get the current weather for a location",
-        Type:        "object",
-        Properties: map[string]*jsonschema.Schema{
-            "location": {
-                Type:        "string",
-                Description: "The city and state, e.g. San Francisco, CA",
-            },
+func (w *WeatherTool) GetSchema() *schema.ToolSchema {
+    return schema.Tool("get_weather", "Get the current weather for a location",
+        schema.Params{
+            "location": schema.S("The city and state, e.g. San Francisco, CA"),
         },
-        Required: []string{"location"},
-    }
+        "location", // required
+    )
 }
 
 func (w *WeatherTool) Execute(ctx context.Context, args map[string]any) (string, error) {
@@ -448,72 +393,91 @@ func (w *WeatherTool) Execute(ctx context.Context, args map[string]any) (string,
     if !ok {
         return "", fmt.Errorf("location is required")
     }
-    
-    // Implementation here
     return fmt.Sprintf("The weather in %s is sunny and 72°F", location), nil
 }
+
+func (w *WeatherTool) GetName() string   { return "get_weather" }
+func (w *WeatherTool) GetType() string   { return "native" }
+func (w *WeatherTool) GetSource() string { return "builtin" }
 ```
 
-### Using Tools with LLM
+### Running the tool loop
+
+The easy path is the builder's `ExecuteWithTools` (shown earlier). If you
+want the loop in your own hands — custom logging, approval gates, whatever —
+here's the correct shape. Note that each round makes a *new*
+`ChatCompletionStream` call: `for range` latches onto one channel, so you
+need an outer loop, not a channel reassignment.
 
 ```go
-// Create tool registry
-registry := tools.NewToolRegistry([]tools.Tool{
-    &WeatherTool{},
-})
+registry := tools.NewToolRegistry([]tools.Tool{&WeatherTool{}})
+processor := messages.NewStreamProcessor()
 
-// Include tools in request
-req := &llm.CompletionRequest{
-    Model: "openai/gpt-5.4",
-    Messages: []messages.ChatMessage{
-        {
-            Role:    messages.MessageRoleUser,
-            Content: "What's the weather in San Francisco?",
-        },
-    },
-    Tools: registry.All(),
+history := []messages.ChatMessage{
+    {Role: messages.MessageRoleUser, Content: "What's the weather in San Francisco?"},
 }
 
-// Process response with tool calls
-eventChan := client.ChatCompletionStream(ctx, req, processor)
+for {
+    req := &llm.CompletionRequest{
+        Model:    "openai/gpt-5.4",
+        Messages: history,
+        Tools:    registry.All(),
+    }
 
-for event := range eventChan {
-    if event.Type == messages.EventTypeComplete && len(event.Message.ToolCalls) > 0 {
-        // Execute tool calls
-        for _, toolCall := range event.Message.ToolCalls {
-            var args map[string]any
-            json.Unmarshal([]byte(toolCall.Arguments), &args)
-            
-            tool, _ := registry.Get(toolCall.Name)
-            result, err := tool.Execute(ctx, args)
-            
-            // Add tool result to conversation
-            messages = append(messages, messages.ChatMessage{
-                Role:       messages.MessageRoleTool,
-                Content:    result,
-                ToolCallID: toolCall.ID,
-            })
+    var final *messages.ChatMessage
+    for event := range client.ChatCompletionStream(ctx, req, processor) {
+        switch event.Type {
+        case messages.EventTypeContent:
+            fmt.Print(event.Content)
+        case messages.EventTypeComplete:
+            final = event.Message
+        case messages.EventTypeError:
+            log.Fatal(event.Error)
         }
-        
-        // Continue conversation with tool results
-        req.Messages = messages
-        eventChan = client.ChatCompletionStream(ctx, req, processor)
+    }
+
+    if final == nil || len(final.ToolCalls) == 0 {
+        break // a normal answer — we're done
+    }
+
+    // Keep the assistant turn that made the calls, then answer each call.
+    history = append(history, *final)
+    for _, call := range final.ToolCalls {
+        var args map[string]any
+        if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+            log.Fatal(err)
+        }
+        tool, ok := registry.Get(call.Name)
+        if !ok {
+            log.Fatalf("model asked for unknown tool %q", call.Name)
+        }
+        result, err := tool.Execute(ctx, args)
+        if err != nil {
+            result = fmt.Sprintf("error: %v", err) // feed errors back to the model
+        }
+        history = append(history, messages.ChatMessage{
+            Role:       messages.MessageRoleTool,
+            Content:    result,
+            ToolCallID: call.ID,
+            ToolName:   call.Name,
+        })
     }
 }
 ```
 
-## Shell Tool Integration
+The ordering matters to providers: the assistant message carrying `ToolCalls`
+must precede the tool-role replies, and it goes into history exactly once.
 
-Pollytool includes a `ShellTool` that allows you to wrap shell scripts as LLM tools. The scripts must implement a simple protocol with `--schema` and `--execute` flags.
+## Shell Tools
 
-### Example: Weather Script Tool
+Any executable that speaks a two-flag protocol can be a tool: `--schema`
+prints a JSON Schema, `--execute <json-args>` does the work.
 
-Create a `weather.sh` script:
+### Example: weather.sh
 
 ```bash
 #!/bin/bash
-
-# weather.sh - A simple weather tool for LLMs
+# weather.sh - a simple weather tool
 
 if [ "$1" = "--schema" ]; then
     cat <<EOF
@@ -540,42 +504,15 @@ EOF
 fi
 
 if [ "$1" = "--execute" ]; then
-    # Parse JSON arguments
     LOCATION=$(echo "$2" | jq -r '.location')
     UNITS=$(echo "$2" | jq -r '.units // "fahrenheit"')
-    
+
     # In production, call a real weather API
-    # For demo, return mock data based on location
-    case "$LOCATION" in
-        "San Francisco, CA")
-            if [ "$UNITS" = "celsius" ]; then
-                echo "18°C, foggy with moderate winds"
-            else
-                echo "65°F, foggy with moderate winds"
-            fi
-            ;;
-        "New York, NY")
-            if [ "$UNITS" = "celsius" ]; then
-                echo "7°C, partly cloudy"
-            else
-                echo "45°F, partly cloudy"
-            fi
-            ;;
-        "Miami, FL")
-            if [ "$UNITS" = "celsius" ]; then
-                echo "28°C, sunny and humid"
-            else
-                echo "82°F, sunny and humid"
-            fi
-            ;;
-        *)
-            if [ "$UNITS" = "celsius" ]; then
-                echo "21°C, mild weather"
-            else
-                echo "70°F, mild weather"
-            fi
-            ;;
-    esac
+    if [ "$UNITS" = "celsius" ]; then
+        echo "18°C and foggy in $LOCATION"
+    else
+        echo "65°F and foggy in $LOCATION"
+    fi
     exit 0
 fi
 
@@ -583,12 +520,12 @@ echo "Usage: $0 [--schema | --execute <json-args>]"
 exit 1
 ```
 
-Make it executable:
-```bash
-chmod +x weather.sh
-```
+Make it executable with `chmod +x weather.sh`.
 
-### Using Shell Tools in Go
+### Loading shell tools
+
+Process-backed tools need an explicit sandbox policy — a registry without one
+refuses to load shell tools (it won't even run their `--schema` command):
 
 ```go
 package main
@@ -596,96 +533,47 @@ package main
 import (
     "context"
     "fmt"
-    "os"
-    
+
     "github.com/alexschlessinger/pollytool/llm"
-    "github.com/alexschlessinger/pollytool/messages"
     "github.com/alexschlessinger/pollytool/tools"
     "github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 func main() {
     ctx := context.Background()
-    
-    // Process-backed tools require an explicit sandbox policy. Registries
-    // without one reject shell tools before executing their --schema command.
-    sandboxConfig := sandbox.DefaultConfig()
+
     registry := tools.NewToolRegistry(nil,
-        tools.WithSandboxFactory(sandbox.New, sandboxConfig),
+        tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()),
     )
 
-    _, err := tools.LoadShellToolsWithRegistry(registry, []string{
+    if _, err := tools.LoadShellToolsWithRegistry(registry, []string{
         "./weather.sh",
-        "./calculator.sh",  // You can load multiple scripts
-    })
-    if err != nil {
+        "./calculator.sh", // load as many as you like
+    }); err != nil {
         fmt.Printf("Warning: %v\n", err)
     }
-    
+
     client := llm.GetDefaultClient()
-    
-    // Create request with tools
-    req := &llm.CompletionRequest{
-        Model: "openai/gpt-5.4",
-        Messages: []messages.ChatMessage{
-            {
-                Role:    messages.MessageRoleUser,
-                Content: "What's the weather in San Francisco and New York?",
-            },
-        },
-        Tools:     registry.All(),
-        MaxTokens: 1000,
+
+    response, err := llm.NewCompletionBuilder("openai/gpt-5.4").
+        WithUserMessage("What's the weather in San Francisco and New York?").
+        WithMaxTokens(1000).
+        ExecuteWithTools(ctx, client, registry)
+    if err != nil {
+        panic(err)
     }
-    
-    // Process with automatic tool handling
-    processor := messages.NewStreamProcessor()
-    eventChan := client.ChatCompletionStream(ctx, req, processor)
-    
-    for event := range eventChan {
-        switch event.Type {
-        case messages.EventTypeContent:
-            fmt.Print(event.Content)
-            
-        case messages.EventTypeComplete:
-            if len(event.Message.ToolCalls) > 0 {
-                // Execute tool calls
-                for _, toolCall := range event.Message.ToolCalls {
-                    var args map[string]any
-                    json.Unmarshal([]byte(toolCall.Arguments), &args)
-                    
-                    tool, _ := registry.Get(toolCall.Name)
-                    result, err := tool.Execute(ctx, args)
-                    
-                    // Add tool response to conversation
-                    req.Messages = append(req.Messages,
-                        *event.Message,
-                        messages.ChatMessage{
-                            Role:       messages.MessageRoleTool,
-                            Content:    result,
-                            ToolCallID: toolCall.ID,
-                        },
-                    )
-                }
-                
-                // Continue conversation
-                eventChan = client.ChatCompletionStream(ctx, req, processor)
-            }
-            
-        case messages.EventTypeError:
-            fmt.Printf("Error: %v\n", event.Error)
-        }
-    }
+    fmt.Println(response.Content)
 }
 ```
 
-### Script Protocol Requirements
+### Script protocol requirements
 
 Shell scripts used as tools must:
 
-1. Accept `--schema` flag and output a JSON Schema describing the tool
+1. Accept `--schema` and print a JSON Schema describing the tool
 2. Accept `--execute <json-args>` and process the JSON arguments
-3. Return results as plain text to stdout
-4. Exit with code 0 on success, non-zero on error
+3. Return results as plain text on stdout
+4. Exit 0 on success, non-zero on error
 
 Shell tools run sandboxed by default. The schema may include `"sandbox"` at the top level to customize permissions. When the sandbox is applied, `[sandboxed]` is appended to the shell tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable globally with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. For a conversation run, explicitly supplied sandbox-policy flags are rejected rather than ignored while no-sandbox mode is effective; pass `--nosandbox=false` to override an ambient opt-out.
 
@@ -784,7 +672,21 @@ restored read-only while its siblings remain masked. A symlinked `readPaths`
 entry keeps its approved lexical route, but both the route and canonical target
 are frozen and revalidated so a later replacement or retarget fails closed.
 
-**Sensitive env vars** are always stripped, even without `allowEnv`: `POLLYTOOL_*` and `AWS_*` prefixes; names ending in `_API_KEY`, `_APIKEY`, `_TOKEN`, `_SECRET`, `_SECRET_KEY`, `_ACCESS_KEY`, `_PASSWORD`, `_PASSPHRASE`, `_CREDENTIALS`, `_PRIVATE_KEY`; and the agent sockets `SSH_AUTH_SOCK` / `GPG_AGENT_INFO`. To pass one through, include it in `allowEnv`.
+**Sensitive env vars** are always stripped, even without `allowEnv`, matched
+case-insensitively:
+
+- the prefixes `POLLYTOOL_*` and `AWS_*`;
+- names ending in `_API_KEY`, `_APIKEY`, `_TOKEN`, `_SECRET`, `_SECRET_KEY`,
+  `_ACCESS_KEY`, `_PASSWORD`, `_PASSPHRASE`, `_CREDENTIALS`, `_PRIVATE_KEY` —
+  and those same names bare (`TOKEN`, `PASSWORD`, `API_KEY`, ...);
+- database credential carriers: `PGPASSWORD`, `PGPASSFILE`, `MYSQL_PWD`,
+  `REDISCLI_AUTH`, `DATABASE_URL`;
+- agent sockets and host runtime handles: `SSH_AUTH_SOCK`, `SSH_AGENT_PID`,
+  `GPG_AGENT_INFO`, `DBUS_SESSION_BUS_ADDRESS`, `DBUS_SYSTEM_BUS_ADDRESS`,
+  `DOCKER_HOST`, `CONTAINER_HOST`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`,
+  `PULSE_SERVER`.
+
+To pass one through, include it in `allowEnv`.
 
 **Conflict resolution:** `denyWrite: true` silently overrides `writablePaths` (and makes `denyWritePaths` redundant). `denyDNS: true` has no additional effect when `allowNetwork` is `false`. A missing or unresolvable `denyWritePaths` entry fails sandbox construction and is checked again before every command; neither backend can reliably reserve a nonexistent protected object. On both platforms, writable ancestors of a protected entry are pinned against relocation so moving an ancestor cannot expose a replacement at the original path.
 
@@ -846,226 +748,243 @@ Fully read-only sandbox (no writes anywhere, not even temp):
 }
 ```
 
-### More Complex Example: Database Query Tool
+## MCP Servers
 
-```bash
-#!/bin/bash
-# dbquery.sh - Query database tool
+Pollytool speaks the Model Context Protocol. Servers are declared in a JSON
+config file (the Claude Desktop format), and a *server spec* names the file
+plus, optionally, one server in it: `"mcp.json"` or `"mcp.json#filesystem"`.
 
-if [ "$1" = "--schema" ]; then
-    cat <<EOF
+```json
 {
-  "title": "query_database",
-  "description": "Execute SQL queries on the application database",
-  "type": "object",
-  "properties": {
-    "query": {
-      "type": "string",
-      "description": "SQL query to execute"
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
     },
-    "database": {
-      "type": "string",
-      "enum": ["users", "products", "orders"],
-      "description": "Target database"
-    },
-    "limit": {
-      "type": "integer",
-      "default": 10,
-      "description": "Maximum rows to return"
+    "remote": {
+      "url": "https://example.com/mcp",
+      "transport": "streamable"
     }
-  },
-  "required": ["query", "database"]
+  }
 }
-EOF
-    exit 0
-fi
-
-if [ "$1" = "--execute" ]; then
-    QUERY=$(echo "$2" | jq -r '.query')
-    DATABASE=$(echo "$2" | jq -r '.database')
-    LIMIT=$(echo "$2" | jq -r '.limit // 10')
-    
-    # Add LIMIT clause if not present
-    if ! echo "$QUERY" | grep -qi "limit"; then
-        QUERY="$QUERY LIMIT $LIMIT"
-    fi
-    
-    # Execute query (example using sqlite)
-    sqlite3 "/data/${DATABASE}.db" "$QUERY" 2>&1
-    exit $?
-fi
 ```
 
-## MCP Server Integration
+### Loading through the registry (recommended)
 
-Pollytool supports Model Context Protocol (MCP) servers, allowing you to use remote tools and resources:
-
-### Connecting to MCP Servers
+`ToolRegistry.LoadMCPServer` applies the registry's sandbox policy before
+starting local stdio servers, and namespaces the tools it finds:
 
 ```go
-import (
-    "github.com/alexschlessinger/pollytool/mcp"
-    "github.com/alexschlessinger/pollytool/tools"
+registry := tools.NewToolRegistry(nil,
+    tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()),
 )
 
-// Connect to an MCP server
-mcpClient, err := mcp.NewClient("stdio", []string{"npx", "-y", "@modelcontextprotocol/server-filesystem"})
+result, err := registry.LoadMCPServer("./mcp.json#filesystem")
+if err != nil {
+    panic(err)
+}
+for _, server := range result.Servers {
+    fmt.Printf("%s: %v\n", server.Name, server.ToolNames)
+}
+
+// MCP tools now sit in the registry next to everything else
+req := &llm.CompletionRequest{
+    Model:    "openai/gpt-5.4",
+    Messages: messages.User("List files in the current directory"),
+    Tools:    registry.All(),
+}
+```
+
+A server config may include `"sandbox"` overrides just like a shell tool
+schema, and `"sandbox": false` is refused unless the registry opted in with
+`tools.WithUnsafeNoSandbox()`.
+
+### Direct client
+
+If you're not using a registry, `NewUnsafeMCPClient` connects without any
+sandboxing (the name is the warning):
+
+```go
+mcpClient, err := tools.NewUnsafeMCPClient("./mcp.json#filesystem")
 if err != nil {
     panic(err)
 }
 defer mcpClient.Close()
 
-// Get tools from MCP server
-mcpTools, err := mcpClient.GetTools()
+mcpTools, err := mcpClient.ListTools()
+if err != nil {
+    panic(err)
+}
+registry := tools.NewToolRegistry(mcpTools)
+```
+
+Some servers worth knowing about: `@modelcontextprotocol/server-filesystem`,
+`server-github`, `server-gitlab`, `server-postgres`, `server-sqlite`.
+
+## Skills
+
+Skills are directories of model instructions that can be activated on demand.
+Load a catalog, wire it into a registry-backed runtime, and set it on requests:
+
+```go
+package main
+
+import (
+    "fmt"
+
+    "github.com/alexschlessinger/pollytool/llm"
+    "github.com/alexschlessinger/pollytool/messages"
+    "github.com/alexschlessinger/pollytool/skills"
+    "github.com/alexschlessinger/pollytool/tools"
+    "github.com/alexschlessinger/pollytool/tools/sandbox"
+)
+
+func main() {
+    // Expands ~, dedupes, validates. Empty input falls back to ~/.pollytool/skills.
+    catalog, err := skills.LoadCatalog([]string{"~/my-skills"})
+    if err != nil {
+        panic(err)
+    }
+    if catalog == nil {
+        fmt.Println("no skills found — carrying on without them")
+        return
+    }
+
+    registry := tools.NewToolRegistry(nil,
+        tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()),
+    )
+    skillRuntime, err := tools.NewSkillRuntime(catalog, registry)
+    if err != nil {
+        panic(err)
+    }
+
+    // Set Skills on a request and the skill prompt is injected automatically.
+    req := &llm.CompletionRequest{
+        Model:    "openai/gpt-5.4",
+        Messages: messages.User("hi"),
+        Skills:   catalog,
+    }
+    _ = req // pass it to ChatCompletionStream as usual
+
+    // Or take manual control of the system prompt:
+    systemPrompt := catalog.RuntimeSystemPrompt("You are a helpful assistant")
+    _ = systemPrompt
+
+    // Activate a skill from application code
+    if _, err := skillRuntime.Activate("code-reviewer"); err != nil {
+        panic(err)
+    }
+
+    // Persist active skills across runs
+    saved := skillRuntime.ActivatedSkills()
+    if err := skillRuntime.Restore(saved); err != nil {
+        panic(err)
+    }
+}
+```
+
+`skills.ResolveDirs` is the standalone directory-resolution step if you want
+it separately; `LoadCatalog` already calls it for you.
+
+## Sessions
+
+Sessions persist conversation history between runs:
+
+```go
+// "" uses the default directory, ~/.pollytool/contexts
+store, err := sessions.NewFileSessionStore("", nil)
 if err != nil {
     panic(err)
 }
 
-// Create tool registry with MCP tools
-registry := tools.NewToolRegistry(mcpTools)
-```
-
-### Using MCP Tools with LLM
-
-```go
-// Create request with MCP tools
-req := &llm.CompletionRequest{
-    Model: "openai/gpt-5.4",
-    Messages: []messages.ChatMessage{
-        {
-            Role:    messages.MessageRoleUser,
-            Content: "List files in the current directory",
-        },
-    },
-    Tools: registry.All(),
+session, err := store.Get("my-session-id")
+if err != nil {
+    panic(err)
 }
+defer session.Close() // releases the file lock
 
-// Process as usual - MCP tools work just like local tools
-eventChan := client.ChatCompletionStream(ctx, req, processor)
-```
-
-### Available MCP Servers
-
-Common MCP servers you can connect to:
-
-- `@modelcontextprotocol/server-filesystem` - File system operations
-- `@modelcontextprotocol/server-github` - GitHub API access
-- `@modelcontextprotocol/server-gitlab` - GitLab API access
-- `@modelcontextprotocol/server-postgres` - PostgreSQL database access
-- `@modelcontextprotocol/server-sqlite` - SQLite database access
-
-### Combining Local and MCP Tools
-
-```go
-// Load local tools
-localTools := []tools.Tool{
-    &WeatherTool{},
-    &CalculatorTool{},
-}
-
-// Get MCP tools
-mcpClient, _ := mcp.NewClient("stdio", []string{"npx", "-y", "@modelcontextprotocol/server-filesystem"})
-mcpTools, _ := mcpClient.GetTools()
-
-// Combine all tools
-allTools := append(localTools, mcpTools...)
-registry := tools.NewToolRegistry(allTools)
-```
-
-## Session Management
-
-For persistent conversations:
-
-```go
-import "github.com/alexschlessinger/pollytool/sessions"
-
-// Create file-based session store
-store, err := sessions.NewFileSessionStore("~/.pollytool/contexts")
-
-// Get or create session
-session := store.Get("my-session-id")
-
-// Add messages
-session.AddMessage(messages.ChatMessage{
+if err := session.AddMessage(messages.ChatMessage{
     Role:    messages.MessageRoleUser,
     Content: "Hello!",
-})
-
-// Get history for requests
-history := session.GetHistory()
-
-// Clear session
-session.Clear()
-
-// Close session (releases locks)
-if fileSession, ok := session.(*sessions.FileSession); ok {
-    defer fileSession.Close()
+}); err != nil {
+    panic(err)
 }
+
+history := session.GetHistory() // feed this to CompletionRequest.Messages
+
+_ = session.Clear() // wipe the history
 ```
+
+Notes:
+
+- `NewFileSessionStore(baseDir, defaultMetadata)` takes two arguments; pass
+  `nil` metadata for defaults. The path is used literally — `~` is not
+  expanded, so pass `""` for the home-relative default.
+- `Close()` is part of the `Session` interface; no type assertion needed.
+- For tests or ephemeral use, `sessions.NewSyncMapSessionStore(nil)` keeps
+  everything in memory with the same interface.
 
 ## Structured Output
 
-Use JSON Schema for structured responses:
+Three ways to get a schema, in decreasing order of convenience:
 
 ```go
-schema := &llm.Schema{
-    Name: "UserInfo",
-    Schema: &jsonschema.Schema{
-        Type: "object",
-        Properties: map[string]*jsonschema.Schema{
-            "name": {
-                Type:        "string",
-                Description: "User's full name",
-            },
-            "age": {
-                Type:        "integer",
-                Description: "User's age",
-            },
-            "email": {
-                Type:        "string",
-                Format:      "email",
-                Description: "User's email address",
-            },
+// 1. Reflect it from a struct (strict mode, required = non-omitempty fields)
+schema1 := llm.SchemaFor(UserInfo{})
+
+// 2. Parse schema JSON you already have
+schema2 := llm.SchemaFromJSON(`{
+    "type": "object",
+    "properties": {"name": {"type": "string"}},
+    "required": ["name"]
+}`)
+
+// 3. Build the raw map yourself
+schema3 := &llm.Schema{
+    Raw: map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "name":  map[string]any{"type": "string"},
+            "age":   map[string]any{"type": "integer"},
+            "email": map[string]any{"type": "string"},
         },
-        Required: []string{"name", "email"},
+        "required": []string{"name", "email"},
     },
 }
+```
 
+Set one on a request via `ResponseSchema`, or let `llm.StructuredComplete`
+handle the request *and* the unmarshaling in one call (see
+[Helpers](#structured-output-the-easy-way)).
+
+```go
 req := &llm.CompletionRequest{
-    Model: "openai/gpt-5.4",
-    Messages: []messages.ChatMessage{
-        {
-            Role:    messages.MessageRoleUser,
-            Content: "Extract user info from: John Doe, 30 years old, john@example.com",
-        },
-    },
-    ResponseSchema: schema,
+    Model:          "openai/gpt-5.4",
+    Messages:       messages.User("Extract user info from: John Doe, 30, john@example.com"),
+    ResponseSchema: schema1,
 }
 ```
 
 ## Error Handling
 
-```go
-eventChan := client.ChatCompletionStream(ctx, req, processor)
+Errors arrive as events on the same channel as everything else:
 
-for event := range eventChan {
+```go
+for event := range client.ChatCompletionStream(ctx, req, processor) {
     switch event.Type {
     case messages.EventTypeError:
-        // Handle errors
         if strings.Contains(event.Error.Error(), "rate limit") {
-            // Implement backoff
-            time.Sleep(time.Second * 5)
+            time.Sleep(5 * time.Second) // back off and retry
         } else if strings.Contains(event.Error.Error(), "context length") {
-            // Truncate conversation history
-            req.Messages = req.Messages[len(req.Messages)-5:]
+            req.Messages = req.Messages[len(req.Messages)-5:] // truncate history
         }
     }
 }
 ```
 
-## Advanced Examples
+## A Complete Example
 
-### Example with Sessions
+Everything together — a session-backed streaming chat:
 
 ```go
 package main
@@ -1073,9 +992,8 @@ package main
 import (
     "context"
     "fmt"
-    "os"
     "time"
-    
+
     "github.com/alexschlessinger/pollytool/llm"
     "github.com/alexschlessinger/pollytool/messages"
     "github.com/alexschlessinger/pollytool/sessions"
@@ -1083,56 +1001,55 @@ import (
 
 func main() {
     ctx := context.Background()
-    
-    // you can create a specific client if you wish
-    client := llm.NewOpenAIClient(os.Getenv("OPENAIKEY"), "")
-    
-    // Create session
-    store, _ := sessions.NewFileSessionStore("")
-    session := store.Get("example-session")
-    defer func() {
-        if fs, ok := session.(*sessions.FileSession); ok {
-            fs.Close()
-        }
-    }()
-    
-    // Add system prompt if new session
+
+    client := llm.GetDefaultClient()
+
+    store, err := sessions.NewFileSessionStore("", nil)
+    if err != nil {
+        panic(err)
+    }
+    session, err := store.Get("example-session")
+    if err != nil {
+        panic(err)
+    }
+    defer session.Close()
+
+    // Seed the system prompt on first run
     if len(session.GetHistory()) == 0 {
-        session.AddMessage(messages.ChatMessage{
+        if err := session.AddMessage(messages.ChatMessage{
             Role:    messages.MessageRoleSystem,
             Content: "You are a helpful AI assistant.",
-        })
+        }); err != nil {
+            panic(err)
+        }
     }
-    
-    // Add user message
-    session.AddMessage(messages.ChatMessage{
+
+    if err := session.AddMessage(messages.ChatMessage{
         Role:    messages.MessageRoleUser,
         Content: "Tell me a joke",
-    })
-    
-    // Create request
+    }); err != nil {
+        panic(err)
+    }
+
     req := &llm.CompletionRequest{
         Model:       "openai/gpt-5.4",
         Messages:    session.GetHistory(),
-        Temperature: 0.7,
+        Temperature: llm.Float32Ptr(0.7),
         MaxTokens:   500,
         Timeout:     30 * time.Second,
     }
-    
-    // Stream response
+
     processor := messages.NewStreamProcessor()
-    eventChan := client.ChatCompletionStream(ctx, req, processor)
-    
-    var response messages.ChatMessage
     fmt.Print("Assistant: ")
-    
-    for event := range eventChan {
+
+    for event := range client.ChatCompletionStream(ctx, req, processor) {
         switch event.Type {
         case messages.EventTypeContent:
             fmt.Print(event.Content)
         case messages.EventTypeComplete:
-            response = *event.Message
-            session.AddMessage(response)
+            if err := session.AddMessage(*event.Message); err != nil {
+                panic(err)
+            }
             fmt.Println()
         case messages.EventTypeError:
             fmt.Printf("\nError: %v\n", event.Error)
@@ -1144,7 +1061,11 @@ func main() {
 
 ## Thread Safety
 
-- The `MultiPass` provider is thread-safe
-- Session stores use mutexes for concurrent access
-- Individual sessions should not be accessed concurrently
-- Tool execution should be thread-safe in your implementation
+- `MultiPass` is stateless and safe for concurrent use.
+- Session stores are safe for concurrent use: `SyncMapSessionStore` is built
+  on `sync.Map`, and `FileSessionStore` serializes access with file locks.
+- Individual sessions synchronize their own methods internally (`GetHistory`
+  returns a copy). Compound read-modify-write sequences across multiple calls
+  still need your own coordination.
+- Tool `Execute` implementations should be safe to call concurrently — the
+  library doesn't serialize them for you.
