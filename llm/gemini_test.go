@@ -1,8 +1,10 @@
 package llm
 
 import (
+	"encoding/base64"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 )
 
@@ -50,5 +52,51 @@ func TestConvertToolToGemini_PreservesRequiredFromSchemaTool(t *testing.T) {
 	}
 	if len(req) != 1 || req[0] != "query" {
 		t.Fatalf("required = %v, want [query]", req)
+	}
+}
+
+// TestMessagesToGeminiContentThoughtSignatures verifies signatures are
+// restored onto replayed function calls both in-process (map[string]string)
+// and after a JSON session reload (map[string]any).
+func TestMessagesToGeminiContentThoughtSignatures(t *testing.T) {
+	sig := []byte("thought-sig-bytes")
+	encoded := base64.StdEncoding.EncodeToString(sig)
+
+	cases := []struct {
+		name     string
+		metadata map[string]any
+	}{
+		{
+			name:     "in-process map[string]string",
+			metadata: map[string]any{"gemini_thought_signatures": map[string]string{"gemini-ab-0": encoded}},
+		},
+		{
+			name:     "JSON-reloaded map[string]any",
+			metadata: map[string]any{"gemini_thought_signatures": map[string]any{"gemini-ab-0": encoded}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := []messages.ChatMessage{{
+				Role: messages.MessageRoleAssistant,
+				ToolCalls: []messages.ChatMessageToolCall{
+					{ID: "gemini-ab-0", Name: "search", Arguments: "{}"},
+				},
+				Metadata: tc.metadata,
+			}}
+
+			contents, _, _ := MessagesToGeminiContent(msgs)
+			if len(contents) != 1 || len(contents[0].Parts) != 1 {
+				t.Fatalf("unexpected content shape: %+v", contents)
+			}
+			part := contents[0].Parts[0]
+			if part.FunctionCall == nil {
+				t.Fatal("expected a function call part")
+			}
+			if string(part.ThoughtSignature) != string(sig) {
+				t.Errorf("ThoughtSignature = %q, want %q", part.ThoughtSignature, sig)
+			}
+		})
 	}
 }

@@ -380,13 +380,20 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 							},
 						}
 
-						// Check metadata for thought signature
+						// Check metadata for thought signature. In-process the
+						// adapter stores map[string]string; after a JSON
+						// session reload it comes back as map[string]any.
 						if msg.Metadata != nil {
-							if signatures, ok := msg.Metadata["gemini_thought_signatures"].(map[string]string); ok {
-								if sigStr, exists := signatures[tc.ID]; exists {
-									if sig, err := base64.StdEncoding.DecodeString(sigStr); err == nil {
-										part.ThoughtSignature = sig
-									}
+							var sigStr string
+							switch signatures := msg.Metadata["gemini_thought_signatures"].(type) {
+							case map[string]string:
+								sigStr = signatures[tc.ID]
+							case map[string]any:
+								sigStr, _ = signatures[tc.ID].(string)
+							}
+							if sigStr != "" {
+								if sig, err := base64.StdEncoding.DecodeString(sigStr); err == nil {
+									part.ThoughtSignature = sig
 								}
 							}
 						}
