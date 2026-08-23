@@ -405,6 +405,184 @@ func TestLinuxSandboxRunsWhenCredentialPathsMissing(t *testing.T) {
 	}
 }
 
+func TestLinuxSpecialMountRestrictionsFailClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	parentRoot := t.TempDir()
+	parentCWD := filepath.Join(parentRoot, "one", "two", "three", "four")
+	if err := os.MkdirAll(parentCWD, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parentCWD)
+	procAlias := filepath.Join(home, "proc-alias")
+	if err := os.Symlink("/proc", procAlias); err != nil {
+		t.Fatal(err)
+	}
+	procCwdAlias := filepath.Join(home, "proc-cwd-alias")
+	if err := os.Symlink("/proc/self/cwd", procCwdAlias); err != nil {
+		t.Fatal(err)
+	}
+	procCwdDotDotAlias := filepath.Join(home, "proc-cwd-dot-dot-alias")
+	if err := os.Symlink("/proc/self/cwd/../../../protected", procCwdDotDotAlias); err != nil {
+		t.Fatal(err)
+	}
+	dotDotPath := filepath.Join(procCwdDotDotAlias, "missing")
+	resolvedDotDotPath, err := resolveExistingPathPrefix(dotDotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDotDotPath := filepath.Join(parentRoot, "one", "protected", "missing")
+	if resolvedDotDotPath != wantDotDotPath {
+		t.Fatalf("dot-dot after proc cwd resolved to %q, want %q", resolvedDotDotPath, wantDotDotPath)
+	}
+	ordinaryProtected := filepath.Join(home, "ordinary-protected")
+	if err := os.Mkdir(ordinaryProtected, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		cfg       Config
+		wantField string
+		wantRoot  string
+	}{
+		{
+			name:      "proc deny path",
+			cfg:       Config{DenyPaths: []string{"/proc/sys/kernel/hostname"}},
+			wantField: "denyPaths",
+			wantRoot:  "/proc",
+		},
+		{
+			name:      "dev deny path",
+			cfg:       Config{DenyPaths: []string{"/dev/null"}},
+			wantField: "denyPaths",
+			wantRoot:  "/dev",
+		},
+		{
+			name:      "symlink into proc",
+			cfg:       Config{DenyPaths: []string{filepath.Join(procAlias, "missing")}},
+			wantField: "denyPaths",
+			wantRoot:  "/proc",
+		},
+		{
+			name:      "proc magic link out of proc",
+			cfg:       Config{DenyPaths: []string{"/proc/self/cwd/missing"}},
+			wantField: "denyPaths",
+			wantRoot:  "/proc",
+		},
+		{
+			name:      "outside alias through proc magic link",
+			cfg:       Config{DenyPaths: []string{filepath.Join(procCwdAlias, "missing")}},
+			wantField: "denyPaths",
+			wantRoot:  "/proc",
+		},
+		{
+			name:      "outside alias traverses proc before dot-dot",
+			cfg:       Config{DenyPaths: []string{dotDotPath}},
+			wantField: "denyPaths",
+			wantRoot:  "/proc",
+		},
+		{
+			name:      "ancestor of special mounts",
+			cfg:       Config{DenyPaths: []string{"/"}},
+			wantField: "denyPaths",
+			wantRoot:  "/dev",
+		},
+		{
+			name:      "proc deny-write path",
+			cfg:       Config{DenyWritePaths: []string{"/proc/sys/kernel"}},
+			wantField: "denyWritePaths",
+			wantRoot:  "/proc",
+		},
+		{
+			name: "ordinary restrictions",
+			cfg: Config{
+				DenyPaths:      []string{filepath.Join(home, "ordinary-denied")},
+				DenyWritePaths: []string{ordinaryProtected},
+			},
+		},
+		{
+			name: "proc deny-write path under global deny-write",
+			cfg: Config{
+				DenyWrite:      true,
+				DenyWritePaths: []string{"/proc/sys/kernel"},
+			},
+			wantField: "denyWritePaths",
+			wantRoot:  "/proc",
+		},
+		{
+			name: "device deny-write path under global deny-write",
+			cfg: Config{
+				DenyWrite:      true,
+				DenyWritePaths: []string{"/dev/null"},
+			},
+			wantField: "denyWritePaths",
+			wantRoot:  "/dev",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateLinuxSpecialMountRestrictions(test.cfg)
+			if test.wantRoot == "" {
+				if err != nil {
+					t.Fatalf("validateLinuxSpecialMountRestrictions() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("validateLinuxSpecialMountRestrictions() accepted an unenforceable restriction")
+			}
+			if !strings.Contains(err.Error(), test.wantField) || !strings.Contains(err.Error(), test.wantRoot) {
+				t.Fatalf("validateLinuxSpecialMountRestrictions() error = %q, want field %q and root %q", err, test.wantField, test.wantRoot)
+			}
+		})
+	}
+}
+
+func TestLinuxNewRejectsSpecialMountDenyPath(t *testing.T) {
+	skipIfNoBwrap(t)
+	t.Setenv("HOME", t.TempDir())
+	if _, err := New(Config{DenyPaths: []string{"/proc/sys/kernel/hostname"}}); err == nil {
+		t.Fatal("New() accepted a deny path that the final procfs mount would cover")
+	} else if !strings.Contains(err.Error(), "Linux special mount \"/proc\"") {
+		t.Fatalf("New() error = %q, want Linux special-mount refusal", err)
+	}
+}
+
+func TestLinuxWrapRejectsDenyPathRetargetedIntoSpecialMount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	safeTarget := t.TempDir()
+	alias := filepath.Join(home, "deny-route")
+	if err := os.Symlink(safeTarget, alias); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := normalizeConfigPaths(Config{DenyPaths: []string{filepath.Join(alias, "credential")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateLinuxSpecialMountRestrictions(cfg); err != nil {
+		t.Fatalf("initial deny route was rejected: %v", err)
+	}
+
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/proc", alias); err != nil {
+		t.Fatal(err)
+	}
+	sb := &linuxSandbox{cfg: cfg, bwrapPath: linuxBwrapPath, tempRoots: []string{"/tmp"}, runRoots: []string{"/run"}}
+	cmd := exec.Command("/usr/bin/true")
+	if err := sb.wrapManaged(cmd, nil); err == nil {
+		t.Fatal("wrapManaged() accepted a deny route retargeted below /proc")
+	} else if !strings.Contains(err.Error(), "Linux special mount \"/proc\"") {
+		t.Fatalf("wrapManaged() error = %q, want Linux special-mount refusal", err)
+	}
+	if cmd.Path != "/usr/bin/true" || len(cmd.ExtraFiles) != 0 {
+		t.Fatalf("failed wrap mutated command: Path=%q ExtraFiles=%d", cmd.Path, len(cmd.ExtraFiles))
+	}
+}
+
 func TestLinuxBuildBwrapArgs(t *testing.T) {
 	// The writable path must exist: buildBwrapArgs skips missing bind sources
 	// (bwrap would abort on them). Denied paths need no existence check here —
@@ -1000,6 +1178,37 @@ func TestLinuxBuildBwrapArgsDenyWrite(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--tmpfs /tmp --tmpfs /run") || !strings.Contains(joined, "--remount-ro /tmp") {
 		t.Fatalf("private temp must be remounted read-only under DenyWrite:\n%s", joined)
+	}
+	for _, root := range []string{"/dev", "/proc"} {
+		mountIndex := linuxMountIndex(args, "--"+strings.TrimPrefix(root, "/"), root)
+		readOnlyIndex := linuxMountIndex(args, "--remount-ro", root)
+		if mountIndex < 0 || readOnlyIndex <= mountIndex {
+			t.Fatalf("special mount %s must be remounted read-only under DenyWrite:\n%s", root, joined)
+		}
+	}
+}
+
+func TestLinuxSandboxDenyWriteProtectsSpecialMounts(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	sb, err := New(Config{DenyWrite: true})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	cmd := exec.Command("/usr/bin/bash", "-c", `
+if : 2>/dev/null > /dev/polly-deny-write-test; then exit 10; fi
+if printf changed 2>/dev/null > /proc/self/comm; then exit 11; fi
+printf ok > /dev/null
+`)
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "Operation not permitted") || strings.Contains(string(out), "Permission denied") {
+			skipOrFailBwrapUnavailable(t, err, out)
+		}
+		t.Fatalf("DenyWrite special-mount probe failed: %v (%s)", err, out)
 	}
 }
 
