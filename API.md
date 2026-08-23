@@ -173,6 +173,7 @@ result, err := llm.NewCompletionBuilder("openai/gpt-5.4").
 import (
     "github.com/alexschlessinger/pollytool/skills"
     "github.com/alexschlessinger/pollytool/tools"
+    "github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // Resolve skill directories (expands ~, deduplicates, validates).
@@ -190,7 +191,10 @@ if catalog == nil {
     // no skills available — proceed without them
 }
 
-registry := tools.NewToolRegistry(nil)
+sandboxConfig := sandbox.DefaultConfig()
+registry := tools.NewToolRegistry(nil,
+    tools.WithSandboxFactory(sandbox.New, sandboxConfig),
+)
 skillRuntime, err := tools.NewSkillRuntime(catalog, registry)
 if err != nil {
     panic(err)
@@ -597,22 +601,26 @@ import (
     "github.com/alexschlessinger/pollytool/llm"
     "github.com/alexschlessinger/pollytool/messages"
     "github.com/alexschlessinger/pollytool/tools"
+    "github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 func main() {
     ctx := context.Background()
     
-    // Load shell tools
-    shellTools, err := tools.LoadShellTools([]string{
+    // Process-backed tools require an explicit sandbox policy. Registries
+    // without one reject shell tools before executing their --schema command.
+    sandboxConfig := sandbox.DefaultConfig()
+    registry := tools.NewToolRegistry(nil,
+        tools.WithSandboxFactory(sandbox.New, sandboxConfig),
+    )
+
+    _, err := tools.LoadShellToolsWithRegistry(registry, []string{
         "./weather.sh",
         "./calculator.sh",  // You can load multiple scripts
     })
     if err != nil {
         fmt.Printf("Warning: %v\n", err)
     }
-    
-    // Create tool registry
-    registry := tools.NewToolRegistry(shellTools)
     
     client := llm.GetDefaultClient()
     
@@ -679,35 +687,106 @@ Shell scripts used as tools must:
 3. Return results as plain text to stdout
 4. Exit with code 0 on success, non-zero on error
 
-The schema may include `"sandbox"` at the top level to opt a tool into sandboxing. When sandbox is applied, `[sandboxed]` is appended to the tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`.
+Shell tools run sandboxed by default. The schema may include `"sandbox"` at the top level to customize permissions. When the sandbox is applied, `[sandboxed]` is appended to the shell tool's description in the LLM-facing schema. If no supported sandbox backend is available, Polly exits with an error instead of running unsandboxed. Disable globally with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. For a conversation run, explicitly supplied sandbox-policy flags are rejected rather than ignored while no-sandbox mode is effective; pass `--nosandbox=false` to override an ambient opt-out.
 
-Tools that omit `"sandbox"` or set it to `false` run without restrictions, even when sandboxing is active.
+Tools that omit `"sandbox"` get the defaults below. Tool-controlled metadata cannot silently disable containment: `"sandbox": false` is refused unless the registry was constructed with the deliberately named `tools.WithUnsafeNoSandbox()` option (the CLI equivalent is `--nosandbox`). See [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
 
 #### Sandbox Spec Reference
+
+Library callers executing an `exec.Cmd` through a built-in sandbox must use
+`sandbox.WrapCmdManaged` (or `sandbox.WrapCmdWithEnvManaged`) and invoke the
+returned idempotent cleanup after `Start`, `Run`, `Output`, or `CombinedOutput`
+returns. Linux and macOS backends keep bootstrap, policy, and environment file
+descriptors open until process start; the managed helpers close only those
+backend-owned descriptors while preserving caller-owned `ExtraFiles`. The
+legacy cleanup-less `Sandbox.Wrap`, `WrapCmd`, and `WrapCmdWithEnv` entry points
+remain source-compatible but fail closed with `sandbox.ErrManagedWrapRequired`
+before mutating the command when used with a built-in backend. Custom sandbox
+implementations that do not opt into the built-in managed capability retain
+the legacy behavior.
 
 `"sandbox"` can be `true` (use defaults) or an object:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `allowNetwork` | bool | `false` | Allow outbound network access |
-| `denyDNS` | bool | `false` | Block DNS resolution. Only effective when `allowNetwork` is `true`. |
+| `denyDNS` | bool | `false` | With `allowNetwork`, block DNS on macOS; on Linux, suppress the default resolver only (best effort). |
 | `writablePaths` | string[] | `[]` | Directories where writes are allowed (supports `~`) |
 | `readPaths` | string[] | `[]` | Paths exempted from the credential deny list (supports `~`) |
-| `allowEnv` | string[] | all | If set, only these env vars are passed through |
+| `denyPaths` | string[] | `[]` | Extra paths blocked from reads, in addition to the built-in deny list (supports `~`) |
+| `denyWritePaths` | string[] | `[]` | Paths kept read-only even inside a `writablePaths` entry (supports `~`). Mutable writable ancestors are pinned so the protected path cannot be bypassed by relocation. |
+| `allowEnv` | string[] | all non-sensitive | If set, only these env vars are passed through (overrides the sensitive-var stripping) |
 | `denyWrite` | bool | `false` | Deny all file writes, including temp. Overrides `writablePaths`. |
 
-**Defaults** (when `"sandbox": true`):
-- Writes: denied everywhere except OS temp dir (`/tmp`)
+**Base policy** (when `"sandbox": true` and the registry's base config is `sandbox.DefaultConfig()`):
+- Writes: denied everywhere except the sandbox temp dir (`/tmp` is a private tmpfs on Linux)
 - Network: denied
 - Reads: all files accessible except credential paths (see below)
-- Env: all vars passed through, except `POLLYTOOL_*` which are always stripped
+- Env: all vars passed through except sensitive ones (see below)
+- Linux: private `/tmp` and `/run`, inherited capabilities dropped, filesystem Unix sockets denied, own PID and IPC namespaces, and own session
+
+**CLI presets:** the `polly` CLI selects its base config with
+`--sandbox <preset>` (components `base`, `readonly`, `workspace`, and `net`
+joined with `+`; library equivalent `sandbox.ParsePreset`). The CLI default is
+`workspace+net`: the canonical working directory is added to `writablePaths`,
+recursively discovered `.git` routing entries and resolved per-worktree/common
+metadata directories are added to `denyWritePaths`, and `allowNetwork` is
+enabled. Git metadata is therefore read-only (including missing leaves such as
+`config.worktree`) while working-tree files remain writable.
+
+The `workspace` component refuses the filesystem root, the user's home
+directory, exact mounted-volume roots on Linux and macOS, and exact Linux
+private temp/runtime roots before recursive discovery. Descendants of mounted
+volumes remain valid bounded workspaces; otherwise change into a project
+directory or select `--sandbox base`. Bare-repository working directories;
+symlinked or hard-linked Git routing/config/hook metadata; repository-local
+`core.hooksPath`; and config includes are refused when their effective identity
+or target cannot be pinned portably.
+
+Polly accepts PATH-selected Git when it reaches fixed `/usr/bin/git` through a
+stable non-symlink route outside writable paths. On Darwin it also accepts the
+standard Homebrew `/opt/homebrew/bin/git` and `/usr/local/bin/git` leaf
+symlinks when they resolve directly to a non-writable, single-link
+`Cellar/git/<version>/bin/git` target outside writable paths. Polly executes
+the resolved selected Git so its compiled config-prefix semantics are preserved
+while resolving effective and overridden global/system `core.hooksPath` values
+and recursively inspecting config includes regardless of current `includeIf`
+conditions. The workspace preset is refused when a hook, config source, or
+include path lands in host-visible writable content outside protected metadata
+(including macOS host temp trees), when an existing config source has hard-link
+aliases, or when a configured hook entry is symlinked or hard-linked;
+`/dev/null` is accepted as an immutable hook-disabling target.
+
+A tool's own `sandbox` object merges monotonically on top of the base config:
+it may add grants or restrictions, but cannot remove an earlier entry.
+`--writepath` and `--allownet` add to any preset. Before each final sandbox is
+constructed, Polly re-runs the stored workspace config/include/hook audit
+against all merged host-visible writable roots, so a CLI or per-tool overlay
+cannot reopen one of those persistence routes (Linux's exact private
+temp/runtime mounts remain non-host-visible). Effective configs are prepared
+with canonical writable/read paths and private filesystem identities; the CLI
+and tool registry retain those identities across later lazy sandbox
+construction, rejecting a replaced or rerouted approved path before the
+backend runs. Polly also emits a visible, deduplicated warning when an effective
+global or per-tool policy leaves a home directory or filesystem root as a broad
+writable grant.
 
 **Credential paths denied by default:**
 `~/.ssh`, `~/.gnupg`, `~/.gpg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.npmrc`, `~/.pypirc`, `~/.gem/credentials`, `~/.cargo/credentials`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`
 
-**`POLLYTOOL_*` env vars** (API keys) are always stripped from sandboxed processes, even without `allowEnv`. To explicitly pass one through, include it in `allowEnv`.
+Deny paths are re-checked on every command, and symlinked entries are resolved to their real targets. The `--denypath` flag (env `POLLYTOOL_DENYPATHS`) adds global entries for all sandboxed tools.
 
-**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths`. `denyDNS: true` has no additional effect when `allowNetwork` is `false`.
+Relative `writablePaths`, `readPaths`, `denyPaths`, and `denyWritePaths`
+entries are resolved against the process working directory when the sandbox is
+constructed. Empty path entries are rejected. On Linux, a `readPaths` entry may
+name a child of a denied directory (for example `~/.ssh/config`); that child is
+restored read-only while its siblings remain masked. A symlinked `readPaths`
+entry keeps its approved lexical route, but both the route and canonical target
+are frozen and revalidated so a later replacement or retarget fails closed.
+
+**Sensitive env vars** are always stripped, even without `allowEnv`: `POLLYTOOL_*` and `AWS_*` prefixes; names ending in `_API_KEY`, `_APIKEY`, `_TOKEN`, `_SECRET`, `_SECRET_KEY`, `_ACCESS_KEY`, `_PASSWORD`, `_PASSPHRASE`, `_CREDENTIALS`, `_PRIVATE_KEY`; and the agent sockets `SSH_AUTH_SOCK` / `GPG_AGENT_INFO`. To pass one through, include it in `allowEnv`.
+
+**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths` (and makes `denyWritePaths` redundant). `denyDNS: true` has no additional effect when `allowNetwork` is `false`. A missing or unresolvable `denyWritePaths` entry fails sandbox construction and is checked again before every command; neither backend can reliably reserve a nonexistent protected object. On both platforms, writable ancestors of a protected entry are pinned against relocation so moving an ancestor cannot expose a replacement at the original path.
 
 #### Examples
 
@@ -731,7 +810,8 @@ Network access and extra write paths:
 }
 ```
 
-Network access without DNS (connect by IP only):
+Network access with DNS blocked on macOS and the default resolver suppressed on
+Linux (best effort; a hard-coded resolver remains reachable on Linux):
 ```json
 {
   "title": "ip_only_tool",

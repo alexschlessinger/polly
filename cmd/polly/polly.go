@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -62,12 +63,13 @@ type conversationInput struct {
 }
 
 type conversationState struct {
-	session      sessions.Session
-	agent        *llm.Agent
-	toolRegistry *tools.ToolRegistry
-	skillCatalog *skills.Catalog
-	skillRuntime *tools.SkillRuntime
-	skillSources []string
+	session         sessions.Session
+	agent           *llm.Agent
+	toolRegistry    *tools.ToolRegistry
+	skillCatalog    *skills.Catalog
+	skillRuntime    *tools.SkillRuntime
+	skillSources    []string
+	sandboxWarnings *broadWritablePathWarner
 }
 
 func (s *conversationState) Close() {
@@ -77,6 +79,20 @@ func (s *conversationState) Close() {
 	if s.session != nil {
 		s.session.Close()
 	}
+}
+
+func (s *conversationState) drainSandboxWarnings() []string {
+	if s == nil || s.sandboxWarnings == nil {
+		return nil
+	}
+	return s.sandboxWarnings.Drain()
+}
+
+func (s *conversationState) sandboxWarningNotify() <-chan struct{} {
+	if s == nil || s.sandboxWarnings == nil {
+		return nil
+	}
+	return s.sandboxWarnings.Notify()
 }
 
 func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, error) {
@@ -117,6 +133,9 @@ func (r *commandRunner) Run() error {
 	}
 	if handled {
 		return nil
+	}
+	if err := validateSandboxFlagCombination(r.cmd, r.config); err != nil {
+		return err
 	}
 
 	if r.contextID != "" {
@@ -172,7 +191,7 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 }
 
 // initializeSession sets up everything needed for a conversation session
-func initializeSession(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, *skills.Catalog, *tools.SkillRuntime, *skillCatalogResult, error) {
+func initializeSession(config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, *skills.Catalog, *tools.SkillRuntime, *skillCatalogResult, error) {
 	// Initialize conversation using helper function
 	var err error
 	contextID, _, err = initializeConversation(config, sessionStore, contextID, cmd)
@@ -209,7 +228,7 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 		}
 	}
 
-	registryOpts, err := sandboxRegistryOptions(config)
+	registryOpts, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings)
 	if err != nil {
 		session.Close()
 		return "", nil, nil, nil, nil, nil, nil, err
@@ -278,14 +297,45 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 }
 
 func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
+	return sandboxRegistryOptionsWithWarnings(config, newBroadWritablePathWarner())
+}
+
+func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner) ([]tools.RegistryOption, error) {
 	if config.NoSandbox {
 		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil
 	}
+	if warnings == nil {
+		warnings = newBroadWritablePathWarner()
+	}
 
-	baseCfg := sandbox.DefaultConfig()
+	baseCfg, err := sandbox.ParsePreset(config.SandboxPreset)
+	if err != nil {
+		return nil, err
+	}
+	baseCfg = baseCfg.Merge(sandbox.Config{
+		WritablePaths: config.WritePaths,
+		DenyPaths:     config.DenyPaths,
+		AllowNetwork:  config.AllowNet,
+	})
+	baseCfg, err = sandbox.PrepareConfig(baseCfg)
+	if err != nil {
+		return nil, fmt.Errorf("prepare sandbox config: %w", err)
+	}
+
+	// The same warning-aware factory handles the startup probe and every final
+	// per-tool config produced later by the registry. One shared state suppresses
+	// repeats when the base grant appears in several effective configs.
+	factory := newSandbox
+	warningFactory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		sb, err := factory(cfg)
+		if err == nil && sb != nil {
+			warnings.Warn(cfg)
+		}
+		return sb, err
+	}
 
 	// Validate that the backend constructs (e.g. the binary exists)...
-	sb, err := newSandbox(baseCfg)
+	sb, err := warningFactory(baseCfg)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox requested but unavailable: %w", err)
 	}
@@ -298,7 +348,120 @@ func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
 			"Set POLLYTOOL_NOSANDBOX=1 (or pass --nosandbox) to run without the sandbox", err)
 	}
 
-	return []tools.RegistryOption{tools.WithSandboxFactory(newSandbox, baseCfg)}, nil
+	return []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}, nil
+}
+
+type broadWritablePathWarner struct {
+	mu      sync.Mutex
+	seen    map[string]bool
+	pending []string
+	notify  chan struct{}
+	home    string
+}
+
+func newBroadWritablePathWarner() *broadWritablePathWarner {
+	home, _ := os.UserHomeDir()
+	home = canonicalWarningPath(home)
+	return &broadWritablePathWarner{
+		seen:   make(map[string]bool),
+		notify: make(chan struct{}, 1),
+		home:   home,
+	}
+}
+
+func (w *broadWritablePathWarner) Notify() <-chan struct{} {
+	if w == nil {
+		return nil
+	}
+	return w.notify
+}
+
+// Drain atomically takes all pending warning bodies. Consuming the coalesced
+// notification under the same lock as the queue prevents a concurrent enqueue
+// from losing its wakeup.
+func (w *broadWritablePathWarner) Drain() []string {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	select {
+	case <-w.notify:
+	default:
+	}
+	pending := append([]string(nil), w.pending...)
+	w.pending = nil
+	w.mu.Unlock()
+	return pending
+}
+
+// Warn reports explicit writable grants for the whole home directory or a
+// filesystem root. The workspace preset rejects those roots before discovery,
+// but --writepath and per-tool overlays can still add them. The credential deny
+// list still applies; this is a user-visible heads-up, not a refusal.
+func (w *broadWritablePathWarner) Warn(cfg sandbox.Config) {
+	if w == nil || cfg.DenyWrite {
+		return
+	}
+	for _, path := range cfg.WritablePaths {
+		path = filepath.Clean(path)
+		if broadWritablePathDenied(path, cfg.DenyWritePaths) {
+			continue
+		}
+		scope := ""
+		switch {
+		case path != "" && filepath.IsAbs(path) && filepath.Dir(path) == path:
+			scope = "a filesystem root"
+		case w.home != "" && path == w.home:
+			scope = "the whole home directory"
+		default:
+			continue
+		}
+
+		body := fmt.Sprintf("sandbox writable path %q grants write access to %s; remove or narrow the originating --writepath/POLLYTOOL_WRITEPATHS or tool writablePaths setting unless this broad access is intentional", path, scope)
+		w.emit(path, body)
+	}
+}
+
+func (w *broadWritablePathWarner) emit(path, body string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.seen[path] {
+		return
+	}
+	w.seen[path] = true
+	w.pending = append(w.pending, body)
+	select {
+	case w.notify <- struct{}{}:
+	default:
+	}
+}
+
+func canonicalWarningPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	path = filepath.Clean(path)
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(real)
+	}
+	return path
+}
+
+func broadWritablePathDenied(path string, denyWritePaths []string) bool {
+	if path == "" {
+		return false
+	}
+	for _, denied := range denyWritePaths {
+		denied = filepath.Clean(denied)
+		if denied == "" {
+			continue
+		}
+		rel, err := filepath.Rel(denied, path)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) error {
@@ -315,17 +478,19 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	}
 
 	// Initialize session state once so one-shot and REPL share the same runtime.
-	_, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSession(config, sessionStore, contextID, cmd)
+	sandboxWarnings := newBroadWritablePathWarner()
+	_, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSession(config, sessionStore, contextID, cmd, sandboxWarnings)
 	if err != nil {
 		return err
 	}
 	state := &conversationState{
-		session:      session,
-		agent:        agent,
-		toolRegistry: toolRegistry,
-		skillCatalog: skillCatalog,
-		skillRuntime: skillRuntime,
-		skillSources: skillResult.sources,
+		session:         session,
+		agent:           agent,
+		toolRegistry:    toolRegistry,
+		skillCatalog:    skillCatalog,
+		skillRuntime:    skillRuntime,
+		skillSources:    skillResult.sources,
+		sandboxWarnings: sandboxWarnings,
 	}
 	defer state.Close()
 
@@ -335,6 +500,8 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 
 	switch input.mode {
 	case conversationModeOneShot:
+		drainSandboxWarningsToWriter(os.Stderr, state)
+		defer drainSandboxWarningsToWriter(os.Stderr, state)
 		var schema *llm.Schema
 		if config.SchemaPath != "" {
 			schema, err = loadSchemaFile(config.SchemaPath)

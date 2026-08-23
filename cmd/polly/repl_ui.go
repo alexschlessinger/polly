@@ -2106,6 +2106,12 @@ func (r *managedREPL) recordAcceptedInput(input string) {
 	r.appendHistory(input)
 }
 
+// sandboxNoticeLine summarizes the sandbox posture for the REPL startup
+// notice, so the operator can see at a glance which tools run restricted.
+func sandboxNoticeLine(config *Config, state *conversationState) string {
+	return currentSandboxPosture(config, state).noticeString()
+}
+
 func newManagedREPL(config *Config, contextName string, toolCount, skillCount int) *managedREPL {
 	m := newReplModel()
 	m.modelName = stripProviderPrefix(config.Model)
@@ -2176,6 +2182,12 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 
 	r.setupWidgets()
 	r.startupLogoVisible = true
+	if !r.model.quiet {
+		r.model.appendNoticeLine(sandboxNoticeLine(r.config, r.state))
+	}
+	r.model.mu.Lock()
+	r.appendPendingSandboxWarningsLocked()
+	r.model.mu.Unlock()
 	r.render()
 
 	events := pollManagedEvents(ui.DefaultBackend.Screen)
@@ -2195,6 +2207,13 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			r.cancelTurn()
 			r.releaseApproval()
 			return nil
+		case <-r.state.sandboxWarningNotify():
+			r.model.mu.Lock()
+			appended := r.appendPendingSandboxWarningsLocked()
+			r.model.mu.Unlock()
+			if appended {
+				r.render()
+			}
 		case <-ticker.C:
 			if r.needsTick() {
 				r.render()
@@ -2236,6 +2255,21 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			r.render()
 		}
 	}
+}
+
+// appendPendingSandboxWarningsLocked moves every queued sandbox warning into
+// the transcript. The managed event loop owns this drain so warnings found by
+// background tool activation cannot mutate the model or terminal directly.
+// Caller must hold r.model.mu.
+func (r *managedREPL) appendPendingSandboxWarningsLocked() bool {
+	if r == nil || r.state == nil {
+		return false
+	}
+	warnings := r.state.drainSandboxWarnings()
+	for _, body := range warnings {
+		r.model.appendNoticeLine("Warning: " + body)
+	}
+	return len(warnings) > 0
 }
 
 // needsTick reports whether the periodic render tick should repaint. Only a
@@ -3491,6 +3525,8 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 
 func runFallbackREPL(ctx context.Context, config *Config, state *conversationState) error {
 	reader := bufio.NewReader(os.Stdin)
+	drainSandboxWarningsToWriter(os.Stderr, state)
+	writeFallbackSandboxNotice(os.Stderr, config, state)
 	commandCtx := newWriterReplCommandContext(config, state, os.Stderr)
 	return runREPLLoopWithCommands(reader, os.Stderr, commandCtx, func(prompt string) error {
 		turnCtx, cancel := context.WithCancel(ctx)
@@ -3498,6 +3534,7 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 		// The exit code is a one-shot concern; the REPL already rendered
 		// any warning.
 		_, err := executeTurn(turnCtx, config, state, prompt, nil, reader, nil)
+		drainSandboxWarningsToWriter(os.Stderr, state)
 		// If the turn was cancelled but the parent context is still alive
 		// (not a shutdown signal), treat it as a recoverable per-turn
 		// cancellation and let the loop continue.
@@ -3506,6 +3543,22 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 		}
 		return err
 	})
+}
+
+func drainSandboxWarningsToWriter(w io.Writer, state *conversationState) {
+	if w == nil || state == nil {
+		return
+	}
+	for _, body := range state.drainSandboxWarnings() {
+		fmt.Fprintln(w, "Warning: "+body)
+	}
+}
+
+func writeFallbackSandboxNotice(w io.Writer, config *Config, state *conversationState) {
+	if config == nil || config.Quiet {
+		return
+	}
+	fmt.Fprintln(w, sandboxNoticeLine(config, state))
 }
 
 func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {

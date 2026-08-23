@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
 )
 
@@ -20,6 +21,11 @@ const (
 	defaultREPLSystemPrompt = "Your output will be displayed in a unix terminal with markdown rendering. Be terse. Use markdown where it aids readability."
 )
 
+// defaultSandboxPreset is the sandbox policy when --sandbox is not given:
+// the working directory is writable (with .git guardrails) and outbound
+// network is allowed. Tighten with e.g. --sandbox base or --sandbox readonly.
+const defaultSandboxPreset = "workspace+net"
+
 var (
 	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
 	validEmbedProviders  = []string{"openai", "gemini"}
@@ -28,6 +34,7 @@ var (
 		"maxtokens", "maxiterations", "timeout", "tool", "mcp", "system", "schema",
 		"tooltimeout", "maxcontext", "thinking", "baseurl",
 		"skilldir", "skill", "noskills", "listskills",
+		"confirm", "meta", "sandbox", "nosandbox", "denypath", "writepath", "allownet",
 	}
 )
 
@@ -71,6 +78,10 @@ func parseConfig(cmd *cli.Command) *Config {
 		BaseURL:       cmd.String("baseurl"),
 		Confirm:       cmd.Bool("confirm"),
 		NoSandbox:     cmd.Bool("nosandbox"),
+		SandboxPreset: cmd.String("sandbox"),
+		DenyPaths:     cmd.StringSlice("denypath"),
+		WritePaths:    cmd.StringSlice("writepath"),
+		AllowNet:      cmd.Bool("allownet"),
 
 		// Skill configuration
 		NoSkills:   cmd.Bool("noskills"),
@@ -308,12 +319,72 @@ func approvalConfigFlags() []cli.Flag {
 
 func sandboxConfigFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{
+			Name:    "sandbox",
+			Usage:   "Sandbox preset: base, readonly, workspace, net — join with + (e.g. workspace+net)",
+			Value:   defaultSandboxPreset,
+			Sources: cli.EnvVars("POLLYTOOL_SANDBOX"),
+			Validator: func(spec string) error {
+				return validateSandboxPresetSpec(spec)
+			},
+		},
 		&cli.BoolFlag{
 			Name:    "nosandbox",
-			Usage:   "Disable sandboxing of bash commands",
+			Usage:   "Disable sandboxing of tool commands",
 			Sources: cli.EnvVars("POLLYTOOL_NOSANDBOX"),
 		},
+		&cli.StringSliceFlag{
+			Name:    "denypath",
+			Usage:   "Additional path blocked from sandboxed reads (repeatable, supports ~)",
+			Sources: cli.EnvVars("POLLYTOOL_DENYPATHS"),
+		},
+		&cli.StringSliceFlag{
+			Name:    "writepath",
+			Usage:   "Additional path sandboxed tools may write to (repeatable, supports ~)",
+			Sources: cli.EnvVars("POLLYTOOL_WRITEPATHS"),
+		},
+		&cli.BoolFlag{
+			Name:    "allownet",
+			Usage:   "Allow sandboxed tools outbound network access",
+			Sources: cli.EnvVars("POLLYTOOL_ALLOWNET"),
+		},
 	}
+}
+
+// validateSandboxPresetSpec validates only the user-facing preset syntax.
+// Building a workspace policy resolves and scans the filesystem, which belongs
+// at sandbox startup rather than flag parsing: management commands, embed, and
+// --nosandbox do not construct a sandbox at all.
+func validateSandboxPresetSpec(spec string) error {
+	if strings.TrimSpace(spec) == "" {
+		return nil
+	}
+	for _, part := range strings.Split(spec, "+") {
+		name := strings.TrimSpace(part)
+		if !slices.Contains(sandbox.PresetNames, name) {
+			return fmt.Errorf("unknown sandbox preset %q (valid: %s, joined with +)",
+				name, strings.Join(sandbox.PresetNames, ", "))
+		}
+	}
+	return nil
+}
+
+func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
+	if config == nil || !config.NoSandbox {
+		return nil
+	}
+
+	var conflicts []string
+	for _, name := range []string{"sandbox", "denypath", "writepath", "allownet"} {
+		if cmd.IsSet(name) {
+			conflicts = append(conflicts, "--"+name)
+		}
+	}
+	if len(conflicts) == 0 {
+		return nil
+	}
+	return fmt.Errorf("--nosandbox cannot be enabled with %s; pass --nosandbox=false to re-enable sandboxing or remove the sandbox policy flags",
+		strings.Join(conflicts, ", "))
 }
 
 func outputConfigFlags() []cli.Flag {

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,9 +14,94 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
+
+func TestManagedSandboxWarningsDrainIntoQuietTranscriptOnce(t *testing.T) {
+	home, root := broadWarningTestPaths(t)
+	warnings := newBroadWritablePathWarner()
+	warnings.Warn(sandbox.Config{WritablePaths: []string{home}})
+
+	r := newManagedREPL(&Config{Quiet: true}, "ctx", 0, 0)
+	r.state = &conversationState{sandboxWarnings: warnings}
+	r.model.mu.Lock()
+	appended := r.appendPendingSandboxWarningsLocked()
+	r.model.mu.Unlock()
+	if !appended {
+		t.Fatal("buffered sandbox warning was not appended")
+	}
+
+	joined := plainStyledText(strings.Join(r.model.flattenTranscript(), "\n"))
+	if strings.Count(joined, "Warning: sandbox writable path") != 1 || !strings.Contains(joined, "whole home directory") {
+		t.Fatalf("buffered warning transcript = %q, want one visible home warning in quiet mode", joined)
+	}
+	if r.model.turnHasOutput {
+		t.Fatal("startup sandbox warning marked the assistant turn as having output")
+	}
+	r.model.mu.Lock()
+	appended = r.appendPendingSandboxWarningsLocked()
+	r.model.mu.Unlock()
+	if appended {
+		t.Fatal("empty second drain reported an appended warning")
+	}
+
+	warnings.Warn(sandbox.Config{WritablePaths: []string{root}})
+	warnings.Warn(sandbox.Config{WritablePaths: []string{home, root}})
+	r.model.mu.Lock()
+	appended = r.appendPendingSandboxWarningsLocked()
+	r.model.mu.Unlock()
+	if !appended {
+		t.Fatal("late sandbox warning was not appended")
+	}
+
+	joined = plainStyledText(strings.Join(r.model.flattenTranscript(), "\n"))
+	if strings.Count(joined, "Warning: sandbox writable path") != 2 || !strings.Contains(joined, "filesystem root") {
+		t.Fatalf("live warning transcript = %q, want one late root warning with duplicates suppressed", joined)
+	}
+}
+
+func TestDrainSandboxWarningsToWriterEmptiesQueue(t *testing.T) {
+	home, root := broadWarningTestPaths(t)
+	warnings := newBroadWritablePathWarner()
+	warnings.Warn(sandbox.Config{WritablePaths: []string{home}})
+	state := &conversationState{sandboxWarnings: warnings}
+
+	var out bytes.Buffer
+	drainSandboxWarningsToWriter(&out, state)
+	got := out.String()
+	if strings.Count(got, "Warning: sandbox writable path") != 1 || !strings.Contains(got, "whole home directory") {
+		t.Fatalf("line warning output = %q, want the buffered home warning", got)
+	}
+
+	out.Reset()
+	drainSandboxWarningsToWriter(&out, state)
+	if out.Len() != 0 {
+		t.Fatalf("second drain output = %q, want empty", out.String())
+	}
+
+	warnings.Warn(sandbox.Config{WritablePaths: []string{root}})
+	drainSandboxWarningsToWriter(&out, state)
+	if got := out.String(); strings.Count(got, "Warning: sandbox writable path") != 1 || !strings.Contains(got, "filesystem root") {
+		t.Fatalf("late line warning output = %q, want one root warning", got)
+	}
+}
+
+func broadWarningTestPaths(t *testing.T) (home, root string) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home = canonicalWarningPath(home)
+	root = filepath.VolumeName(home) + string(filepath.Separator)
+	root = canonicalWarningPath(root)
+	if home == "" || root == "" || home == root {
+		t.Skipf("need distinct home and filesystem root, got home=%q root=%q", home, root)
+	}
+	return home, root
+}
 
 func TestAssistantTerminalNewlinesDoNotOwnTurnSpacing(t *testing.T) {
 	for _, terminalNewlines := range []string{"", "\n", "\n\n"} {
