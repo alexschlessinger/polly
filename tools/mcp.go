@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,37 @@ import (
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// sandboxCleanupTransport releases parent-owned sandbox descriptors as soon
+// as the stdio command has started. mcp.CommandTransport.Connect returns
+// immediately after exec.Cmd.Start; the MCP discover/initialize handshake
+// happens later in mcp.Client.Connect.
+type sandboxCleanupTransport struct {
+	transport mcp.Transport
+	cleanup   func() error
+}
+
+func (t *sandboxCleanupTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	conn, connectErr := t.transport.Connect(ctx)
+	cleanupErr := t.cleanup()
+	if cleanupErr == nil {
+		return conn, connectErr
+	}
+
+	cleanupErr = fmt.Errorf("release sandbox descriptors after command start: %w", cleanupErr)
+	if conn == nil {
+		return nil, errors.Join(connectErr, cleanupErr)
+	}
+
+	// Do not begin an MCP session while parent-owned sandbox descriptors may
+	// still be open. Close a successfully started subprocess connection before
+	// reporting the cleanup failure so the child is not orphaned.
+	closeErr := conn.Close()
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close MCP connection after sandbox cleanup failure: %w", closeErr)
+	}
+	return nil, errors.Join(connectErr, cleanupErr, closeErr)
+}
 
 // MCPTool wraps an MCP tool to implement the Tool interface
 type MCPTool struct {
@@ -277,19 +309,6 @@ type MCPClient struct {
 	serverSpec string // The server spec (JSON file path) for this client
 }
 
-// cleanupAfterConnectTransport releases parent-owned sandbox descriptors at
-// the transport boundary. CommandTransport.Connect returns immediately after
-// cmd.Start, before Client.Connect begins the MCP initialization handshake.
-type cleanupAfterConnectTransport struct {
-	transport mcp.Transport
-	cleanup   func() error
-}
-
-func (t *cleanupAfterConnectTransport) Connect(ctx context.Context) (mcp.Connection, error) {
-	defer func() { _ = t.cleanup() }()
-	return t.transport.Connect(ctx)
-}
-
 // NewMCPClient creates a new MCP client from a server spec
 // Format: "path/to/config.json" or "path/to/config.json#servername"
 func NewMCPClient(serverSpec string) (*MCPClient, error) {
@@ -403,26 +422,19 @@ func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, 
 		// Create the command with arguments
 		cmd := exec.Command(config.Command, config.Args...)
 
-		// Set environment variables if provided
-		if len(config.Env) > 0 {
-			// Start with current environment
-			cmd.Env = os.Environ()
-			// Add/override with config environment variables
-			for key, value := range config.Env {
-				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
-			}
-		}
-
 		// Set up stderr to see any error output from the server
 		cmd.Stderr = os.Stderr
 
-		closeSandboxFiles, err := sandbox.WrapCmdManaged(sb, cmd)
+		// Treat config.Env as an explicit target-process grant. The sandbox
+		// filters inherited variables, merges these configured values into the
+		// target environment, and keeps them out of any pre-containment wrapper.
+		closeSandboxFiles, err := sandbox.WrapCmdWithEnvManaged(sb, cmd, config.Env)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
 
 		slog.Debug("mcp_stdio_connecting", "command", config.Command, "arguments", config.Args)
-		transport = &cleanupAfterConnectTransport{
+		transport = &sandboxCleanupTransport{
 			transport: &mcp.CommandTransport{Command: cmd},
 			cleanup:   closeSandboxFiles,
 		}
