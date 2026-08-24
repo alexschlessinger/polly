@@ -9,50 +9,41 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	"google.golang.org/genai"
 )
 
 type GeminiClient struct {
-	client *genai.Client
+	client *gemini.Client
 }
 
 func NewGeminiClient(apiKey string) (*GeminiClient, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("gemini API key not configured")
 	}
-
-	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating gemini client: %w", err)
-	}
-
-	return &GeminiClient{client: client}, nil
+	return &GeminiClient{client: gemini.NewClient(apiKey)}, nil
 }
 
 // geminiThinkingConfig builds Gemini's thinking configuration from a
 // provider-agnostic effort. Gemini 3.x uses a ThinkingLevel enum (no xhigh/max,
 // so those clamp to high); Gemini 2.5 uses an integer ThinkingBudget where -1
 // means dynamic. Callers must guard with ThinkingEffort.IsEnabled().
-func geminiThinkingConfig(effort ThinkingEffort, model string) *genai.ThinkingConfig {
-	cfg := &genai.ThinkingConfig{IncludeThoughts: true}
+func geminiThinkingConfig(effort ThinkingEffort, model string) *gemini.ThinkingConfig {
+	cfg := &gemini.ThinkingConfig{IncludeThoughts: true}
 
 	if strings.HasPrefix(model, "gemini-3") {
 		// 3.x: enum levels. Dynamic leaves the level unset (model default).
 		if !effort.IsDynamic() {
 			switch effort.AsLevel(LevelMedium) {
 			case LevelMinimal:
-				cfg.ThinkingLevel = genai.ThinkingLevelMinimal
+				cfg.ThinkingLevel = gemini.ThinkingLevelMinimal
 			case LevelLow:
-				cfg.ThinkingLevel = genai.ThinkingLevelLow
+				cfg.ThinkingLevel = gemini.ThinkingLevelLow
 			case LevelMedium:
-				cfg.ThinkingLevel = genai.ThinkingLevelMedium
+				cfg.ThinkingLevel = gemini.ThinkingLevelMedium
 			default: // high, xhigh, max all clamp to high (Gemini's ceiling)
-				cfg.ThinkingLevel = genai.ThinkingLevelHigh
+				cfg.ThinkingLevel = gemini.ThinkingLevelHigh
 			}
 		}
 		return cfg
@@ -88,16 +79,12 @@ func clampGeminiBudget(budget int32, model string) int32 {
 // ChatCompletionStream implements the event-based streaming interface
 func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	return runStream(ctx, processor, adapters.NewGeminiAdapter(), func(streamCore *streaming.StreamingCore) {
-		client := g.client
-
 		// Convert session history to Gemini chat history
 		contents, systemInstruction, _ := MessagesToGeminiContent(req.Messages)
 
 		// Configure model parameters
-		maxTokens := int32(req.MaxTokens)
-
-		config := &genai.GenerateContentConfig{
-			MaxOutputTokens: maxTokens,
+		config := &gemini.GenerationConfig{
+			MaxOutputTokens: int32(req.MaxTokens),
 		}
 		if req.Temperature != nil {
 			temp := *req.Temperature
@@ -113,30 +100,36 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		}
 
 		// Add structured output support. Preview models (3.x) silently ignore
-		// ResponseJsonSchema, so route through the typed ResponseSchema path
-		// (the SDK's canonical structured-output mechanism) instead.
+		// the responseJsonSchema field, so route through the typed
+		// responseSchema path (the API's canonical structured-output
+		// mechanism) instead.
 		if req.ResponseSchema != nil {
 			config.ResponseMIMEType = "application/json"
 			config.ResponseSchema = jsonSchemaToGeminiSchema(req.ResponseSchema.Raw)
 		}
 
+		genReq := &gemini.GenerateContentRequest{
+			Contents:         contents,
+			GenerationConfig: config,
+		}
+
 		// System instruction
 		if systemInstruction != "" {
-			config.SystemInstruction = &genai.Content{
-				Parts: []*genai.Part{{Text: systemInstruction}},
+			genReq.SystemInstruction = &gemini.Content{
+				Parts: []*gemini.Part{{Text: systemInstruction}},
 			}
 		}
 
 		// Add tool support if available
 		if len(req.Tools) > 0 {
-			var geminiFuncs []*genai.FunctionDeclaration
+			var geminiFuncs []*gemini.FunctionDeclaration
 			for _, tool := range req.Tools {
 				geminiTool := ConvertToolToGemini(tool.GetSchema())
 				if geminiTool != nil && len(geminiTool.FunctionDeclarations) > 0 {
 					geminiFuncs = append(geminiFuncs, geminiTool.FunctionDeclarations...)
 				}
 			}
-			config.Tools = []*genai.Tool{
+			genReq.Tools = []*gemini.Tool{
 				{FunctionDeclarations: geminiFuncs},
 			}
 		}
@@ -153,16 +146,16 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		slog.Debug("gemini_completion_started", "model", req.Model, "stream", isStreaming)
 
 		if isStreaming {
-			g.handleStreamingCompletion(ctx, client, req, contents, config, streamCore)
+			g.handleStreamingCompletion(ctx, req, genReq, streamCore)
 		} else {
-			g.handleNonStreamingCompletion(ctx, client, req, contents, config, streamCore)
+			g.handleNonStreamingCompletion(ctx, req, genReq, streamCore)
 		}
 	})
 }
 
 // handleStreamingCompletion handles streaming Gemini API requests
-func (g *GeminiClient) handleStreamingCompletion(ctx context.Context, client *genai.Client, req *CompletionRequest, contents []*genai.Content, config *genai.GenerateContentConfig, streamCore *streaming.StreamingCore) {
-	iter := client.Models.GenerateContentStream(ctx, req.Model, contents, config)
+func (g *GeminiClient) handleStreamingCompletion(ctx context.Context, req *CompletionRequest, genReq *gemini.GenerateContentRequest, streamCore *streaming.StreamingCore) {
+	iter := g.client.GenerateContentStream(ctx, req.Model, genReq)
 
 	for resp, err := range iter {
 		if err != nil {
@@ -187,7 +180,7 @@ func (g *GeminiClient) handleStreamingCompletion(ctx context.Context, client *ge
 // Thought are thought summaries (present when IncludeThoughts is on) and
 // stream as reasoning; everything else is answer content. Without the split,
 // thinking text would leak into the visible response.
-func emitGeminiParts(streamCore *streaming.StreamingCore, resp *genai.GenerateContentResponse) {
+func emitGeminiParts(streamCore *streaming.StreamingCore, resp *gemini.GenerateContentResponse) {
 	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
 		return
 	}
@@ -204,8 +197,8 @@ func emitGeminiParts(streamCore *streaming.StreamingCore, resp *genai.GenerateCo
 }
 
 // handleNonStreamingCompletion handles non-streaming Gemini API requests
-func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, client *genai.Client, req *CompletionRequest, contents []*genai.Content, config *genai.GenerateContentConfig, streamCore *streaming.StreamingCore) {
-	resp, err := client.Models.GenerateContent(ctx, req.Model, contents, config)
+func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, req *CompletionRequest, genReq *gemini.GenerateContentRequest, streamCore *streaming.StreamingCore) {
+	resp, err := g.client.GenerateContent(ctx, req.Model, genReq)
 	if err != nil {
 		slog.Debug("gemini_completion_failed", "error", err)
 		streamCore.EmitError(err)
@@ -224,32 +217,32 @@ func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, client 
 }
 
 // jsonSchemaToGeminiSchema converts a JSON Schema map (as parsed from a
-// user-supplied schema file) to the genai SDK's typed Schema. The typed path
+// user-supplied schema file) to the API's typed Schema. The typed path
 // is enforced by Gemini's structured-output backend; the JSON-schema-shaped
-// alternative ResponseJsonSchema is silently ignored on preview models.
-// Only the subset of JSON Schema that maps cleanly to genai.Schema is handled
+// alternative responseJsonSchema is silently ignored on preview models.
+// Only the subset of JSON Schema that maps cleanly to gemini.Schema is handled
 // — that's enough for the structured-output feature polly exposes.
-func jsonSchemaToGeminiSchema(raw map[string]any) *genai.Schema {
+func jsonSchemaToGeminiSchema(raw map[string]any) *gemini.Schema {
 	if raw == nil {
 		return nil
 	}
-	out := &genai.Schema{}
+	out := &gemini.Schema{}
 	if t, ok := raw["type"].(string); ok {
 		switch t {
 		case "string":
-			out.Type = genai.TypeString
+			out.Type = gemini.TypeString
 		case "number":
-			out.Type = genai.TypeNumber
+			out.Type = gemini.TypeNumber
 		case "integer":
-			out.Type = genai.TypeInteger
+			out.Type = gemini.TypeInteger
 		case "boolean":
-			out.Type = genai.TypeBoolean
+			out.Type = gemini.TypeBoolean
 		case "array":
-			out.Type = genai.TypeArray
+			out.Type = gemini.TypeArray
 		case "object":
-			out.Type = genai.TypeObject
+			out.Type = gemini.TypeObject
 		case "null":
-			out.Type = genai.TypeNULL
+			out.Type = gemini.TypeNULL
 		}
 	}
 	if d, ok := raw["description"].(string); ok {
@@ -272,7 +265,7 @@ func jsonSchemaToGeminiSchema(raw map[string]any) *genai.Schema {
 		out.Items = jsonSchemaToGeminiSchema(items)
 	}
 	if props, ok := raw["properties"].(map[string]any); ok {
-		out.Properties = make(map[string]*genai.Schema, len(props))
+		out.Properties = make(map[string]*gemini.Schema, len(props))
 		for name, p := range props {
 			if pm, ok := p.(map[string]any); ok {
 				out.Properties[name] = jsonSchemaToGeminiSchema(pm)
@@ -294,17 +287,17 @@ func jsonSchemaToGeminiSchema(raw map[string]any) *genai.Schema {
 // ConvertToolToGemini converts a tool schema to Gemini format.
 // Gemini's FunctionDeclaration.ParametersJsonSchema accepts any, so we pass a raw map.
 // We strip title/description since those are set on the FunctionDeclaration itself.
-func ConvertToolToGemini(schema *ToolSchema) *genai.Tool {
+func ConvertToolToGemini(schema *ToolSchema) *gemini.Tool {
 	if schema == nil {
-		return &genai.Tool{FunctionDeclarations: []*genai.FunctionDeclaration{{}}}
+		return &gemini.Tool{FunctionDeclarations: []*gemini.FunctionDeclaration{{}}}
 	}
 	// Build a parameters-only schema without title/description metadata.
 	params := map[string]any{"type": "object", "properties": schema.Properties()}
 	if req := schema.Required(); len(req) > 0 {
 		params["required"] = req
 	}
-	return &genai.Tool{
-		FunctionDeclarations: []*genai.FunctionDeclaration{{
+	return &gemini.Tool{
+		FunctionDeclarations: []*gemini.FunctionDeclaration{{
 			Name:                 schema.Title(),
 			Description:          schema.Description(),
 			ParametersJsonSchema: params,
@@ -313,8 +306,8 @@ func ConvertToolToGemini(schema *ToolSchema) *genai.Tool {
 }
 
 // MessagesToGeminiContent converts messages to Gemini content format
-func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, string, map[string]string) {
-	var history []*genai.Content
+func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, string, map[string]string) {
+	var history []*gemini.Content
 	var systemInstruction string
 	callIDToName := make(map[string]string)
 
@@ -326,17 +319,17 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 		case messages.MessageRoleUser:
 			// Handle multimodal content
 			if len(msg.Parts) > 0 {
-				var parts []*genai.Part
+				var parts []*gemini.Part
 				for _, part := range msg.Parts {
 					switch part.Type {
 					case "text":
-						parts = append(parts, &genai.Part{Text: part.Text})
+						parts = append(parts, &gemini.Part{Text: part.Text})
 					case "image_base64":
 						// Decode base64 to bytes
 						imageData, err := base64.StdEncoding.DecodeString(part.ImageData)
 						if err == nil {
-							parts = append(parts, &genai.Part{
-								InlineData: &genai.Blob{
+							parts = append(parts, &gemini.Part{
+								InlineData: &gemini.Blob{
 									MIMEType: part.MimeType,
 									Data:     imageData,
 								},
@@ -348,23 +341,23 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 					}
 				}
 				if len(parts) > 0 {
-					history = append(history, &genai.Content{
+					history = append(history, &gemini.Content{
 						Role:  "user",
 						Parts: parts,
 					})
 				}
 			} else if msg.Content != "" {
 				// Backward compatibility: simple text content
-				history = append(history, &genai.Content{
+				history = append(history, &gemini.Content{
 					Role:  "user",
-					Parts: []*genai.Part{{Text: msg.Content}},
+					Parts: []*gemini.Part{{Text: msg.Content}},
 				})
 			}
 
 		case messages.MessageRoleAssistant:
-			var parts []*genai.Part
+			var parts []*gemini.Part
 			if msg.Content != "" {
-				parts = append(parts, &genai.Part{Text: msg.Content})
+				parts = append(parts, &gemini.Part{Text: msg.Content})
 			}
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
@@ -373,8 +366,8 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 					}
 					var args map[string]any
 					if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
-						part := &genai.Part{
-							FunctionCall: &genai.FunctionCall{
+						part := &gemini.Part{
+							FunctionCall: &gemini.FunctionCall{
 								Name: tc.Name,
 								Args: args,
 							},
@@ -396,7 +389,7 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 				}
 			}
 			if len(parts) > 0 {
-				history = append(history, &genai.Content{
+				history = append(history, &gemini.Content{
 					Role:  "model",
 					Parts: parts,
 				})
@@ -414,17 +407,17 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*genai.Content, str
 				output = msg.Content
 			}
 
-			// Ensure output is a map[string]any as required by genai
+			// Ensure output is a map[string]any as the API requires
 			var response map[string]any
 			if m, ok := output.(map[string]any); ok {
 				response = m
 			} else {
 				response = map[string]any{"result": output}
 			}
-			history = append(history, &genai.Content{
+			history = append(history, &gemini.Content{
 				Role: "user",
-				Parts: []*genai.Part{{
-					FunctionResponse: &genai.FunctionResponse{
+				Parts: []*gemini.Part{{
+					FunctionResponse: &gemini.FunctionResponse{
 						Name:     funcName,
 						Response: response,
 					},

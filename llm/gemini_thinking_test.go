@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	"google.golang.org/genai"
 )
 
 // TestGeminiThinkingConfig3x verifies that Gemini 3.x models receive a
@@ -16,14 +16,14 @@ func TestGeminiThinkingConfig3x(t *testing.T) {
 	tests := []struct {
 		name   string
 		effort ThinkingEffort
-		want   genai.ThinkingLevel
+		want   gemini.ThinkingLevel
 	}{
-		{"minimal", EffortLevel(LevelMinimal), genai.ThinkingLevelMinimal},
-		{"low", EffortLevel(LevelLow), genai.ThinkingLevelLow},
-		{"medium", EffortLevel(LevelMedium), genai.ThinkingLevelMedium},
-		{"high", EffortLevel(LevelHigh), genai.ThinkingLevelHigh},
-		{"xhigh clamps to high", EffortLevel(LevelXHigh), genai.ThinkingLevelHigh},
-		{"max clamps to high", EffortLevel(LevelMax), genai.ThinkingLevelHigh},
+		{"minimal", EffortLevel(LevelMinimal), gemini.ThinkingLevelMinimal},
+		{"low", EffortLevel(LevelLow), gemini.ThinkingLevelLow},
+		{"medium", EffortLevel(LevelMedium), gemini.ThinkingLevelMedium},
+		{"high", EffortLevel(LevelHigh), gemini.ThinkingLevelHigh},
+		{"xhigh clamps to high", EffortLevel(LevelXHigh), gemini.ThinkingLevelHigh},
+		{"max clamps to high", EffortLevel(LevelMax), gemini.ThinkingLevelHigh},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,9 +95,9 @@ func TestEmitGeminiPartsRoutesThoughtsToReasoning(t *testing.T) {
 	ch := make(chan messages.ChatMessage, 10)
 	core := streaming.NewStreamingCore(context.Background(), ch, adapters.NewGeminiAdapter())
 
-	emitGeminiParts(core, &genai.GenerateContentResponse{
-		Candidates: []*genai.Candidate{{
-			Content: &genai.Content{Parts: []*genai.Part{
+	emitGeminiParts(core, &gemini.GenerateContentResponse{
+		Candidates: []*gemini.Candidate{{
+			Content: &gemini.Content{Parts: []*gemini.Part{
 				{Text: "planning the answer", Thought: true},
 				{Text: "the actual answer"},
 				{Text: ""}, // empty parts are skipped entirely
@@ -127,8 +127,8 @@ func TestEmitGeminiPartsRoutesThoughtsToReasoning(t *testing.T) {
 func TestEmitGeminiPartsHandlesEmptyCandidates(t *testing.T) {
 	ch := make(chan messages.ChatMessage, 1)
 	core := streaming.NewStreamingCore(context.Background(), ch, adapters.NewGeminiAdapter())
-	emitGeminiParts(core, &genai.GenerateContentResponse{})
-	emitGeminiParts(core, &genai.GenerateContentResponse{Candidates: []*genai.Candidate{{}}})
+	emitGeminiParts(core, &gemini.GenerateContentResponse{})
+	emitGeminiParts(core, &gemini.GenerateContentResponse{Candidates: []*gemini.Candidate{{}}})
 	close(ch)
 	if msg, ok := <-ch; ok {
 		t.Fatalf("empty responses should emit nothing, got %#v", msg)

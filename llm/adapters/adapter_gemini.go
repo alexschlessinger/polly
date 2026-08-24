@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	"google.golang.org/genai"
 )
 
 // GeminiAdapter handles Gemini-specific streaming patterns.
@@ -25,7 +25,7 @@ func NewGeminiAdapter() *GeminiAdapter {
 
 // ProcessChunk handles Gemini streaming chunks
 func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	resp, ok := chunk.(*genai.GenerateContentResponse)
+	resp, ok := chunk.(*gemini.GenerateContentResponse)
 	if !ok {
 		return nil
 	}
@@ -73,7 +73,7 @@ func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 }
 
 // handleFunctionCall processes Gemini function calls
-func (a *GeminiAdapter) handleFunctionCall(part *genai.Part, state streaming.StreamStateInterface) {
+func (a *GeminiAdapter) handleFunctionCall(part *gemini.Part, state streaming.StreamStateInterface) {
 	if part.FunctionCall == nil {
 		return
 	}
@@ -119,18 +119,18 @@ func (a *GeminiAdapter) HandleToolCall(toolData any, state streaming.StreamState
 }
 
 // mapGeminiFinishReason converts Gemini's finish reason to our normalized type
-func mapGeminiFinishReason(fr genai.FinishReason) messages.StopReason {
+func mapGeminiFinishReason(fr gemini.FinishReason) messages.StopReason {
 	switch fr {
-	case genai.FinishReasonStop:
+	case gemini.FinishReasonStop:
 		return messages.StopReasonEndTurn
-	case genai.FinishReasonMaxTokens:
+	case gemini.FinishReasonMaxTokens:
 		return messages.StopReasonMaxTokens
-	case genai.FinishReasonSafety, genai.FinishReasonRecitation,
-		genai.FinishReasonBlocklist, genai.FinishReasonProhibitedContent,
-		genai.FinishReasonSPII, genai.FinishReasonImageSafety,
-		genai.FinishReasonImageProhibitedContent:
+	case gemini.FinishReasonSafety, gemini.FinishReasonRecitation,
+		gemini.FinishReasonBlocklist, gemini.FinishReasonProhibitedContent,
+		gemini.FinishReasonSPII, gemini.FinishReasonImageSafety,
+		gemini.FinishReasonImageProhibitedContent:
 		return messages.StopReasonContentFilter
-	case genai.FinishReasonMalformedFunctionCall:
+	case gemini.FinishReasonMalformedFunctionCall:
 		return messages.StopReasonError
 	default:
 		return messages.StopReasonEndTurn
