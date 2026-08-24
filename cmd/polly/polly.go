@@ -680,7 +680,13 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 	if err != nil {
 		return 1, fmt.Errorf("error processing files: %w", err)
 	}
+	return executeTurnWithUserMessage(ctx, config, state, userMsg, schema, inputReader, turnUI, reuseUser)
+}
 
+// executeTurnWithUserMessage is the shared turn body behind a caller-built
+// user message. The one-shot and fallback paths build theirs from --file;
+// the managed REPL builds a multimodal message from composer attachments.
+func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (int, error) {
 	// Persist the user message before spending API tokens. If the session store
 	// is broken (e.g. disk full), fail fast rather than make a call whose result
 	// can't be saved either. In-memory sessions never error here.

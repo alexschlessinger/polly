@@ -54,6 +54,9 @@ type replCommandContext struct {
 	clearQueue    func() int
 	continueQueue func() error
 	retryTurn     func() error
+	// attachImage validates a local image, registers it, and inserts its
+	// "[image #N]" token into the composer, returning the token.
+	attachImage func(path string) (string, error)
 	// setContextName updates the UI's displayed context name after /rename.
 	setContextName func(name string)
 }
@@ -65,6 +68,12 @@ var (
 
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
+	r.register(replCommand{
+		name:    "/attach",
+		usage:   "/attach <image-path>",
+		summary: "attach a local image to the next prompt",
+		run:     replAttachCommand,
+	})
 	r.register(replCommand{
 		name:    "/clear",
 		usage:   "/clear",
@@ -235,6 +244,7 @@ func keyHelpLines() []string {
 		"  Ctrl-C / Esc      interrupt turn (Ctrl-C twice to quit)",
 		"  Up / Down         move line; recall history at top/bottom",
 		"  Ctrl-R            reverse-search history",
+		"  Ctrl-V            attach an image from the clipboard",
 		"  PgUp / PgDn       scroll transcript",
 		"  Ctrl-A / Ctrl-E   line start / end",
 		"  Delete / Ctrl-D   delete next char (Ctrl-D exits when empty)",
@@ -347,6 +357,15 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			}
 			r.model.updateQueueHint()
 			return nil
+		},
+		attachImage: func(path string) (string, error) {
+			img, ok := resolveLocalTranscriptImage(path, "", r.model.imageBaseDir)
+			if !ok {
+				return "", fmt.Errorf("not a readable local image")
+			}
+			token := r.model.registerAttachment(img.Path, filepath.Base(img.Path))
+			r.model.insertEditorText(token + " ")
+			return token, nil
 		},
 		retryTurn: func() error {
 			m := r.model
@@ -488,6 +507,32 @@ func replHelpCommand(ctx *replCommandContext, args []string) replCommandResult {
 		return replCommandResult{err: ctx.replyLines(ctx.registry.helpFor(args[1]))}
 	}
 	return replCommandResult{err: ctx.replyLines(ctx.registry.helpLines())}
+}
+
+func replAttachCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) < 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /attach <image-path>")}
+	}
+	if ctx == nil || ctx.attachImage == nil {
+		return replCommandResult{err: ctx.replyLine("attachments require the managed REPL")}
+	}
+	// Fields-split args lose original spacing; rejoining and reusing the
+	// drag-drop splitter recovers quoted and escaped paths with spaces.
+	raw := strings.Join(args[1:], " ")
+	paths := splitDroppedPaths(raw)
+	if len(paths) == 0 {
+		paths = []string{raw}
+	}
+	var lines []string
+	for _, path := range paths {
+		token, err := ctx.attachImage(path)
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("attach %s: %v", path, err))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("attached %s as %s", filepath.Base(path), token))
+	}
+	return replCommandResult{err: ctx.replyLines(lines)}
 }
 
 func replClearCommand(ctx *replCommandContext, args []string) replCommandResult {

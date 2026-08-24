@@ -127,10 +127,24 @@ Remote images, paths buried in prose/JSON, and paths inside code blocks are not
 opened. tmux and Zellij currently use the caption/path fallback unless the
 protocol is explicitly overridden.
 
+You can also send images *to* the model from the composer. Ctrl-V grabs an
+image off the system clipboard (macOS built-in `osascript` or `pngpaste` if
+installed; Linux `wl-paste`/`xclip`; Windows PowerShell), drag-and-dropping an
+image file onto the terminal attaches it (a paste consisting only of image
+paths is treated as a drop), and `/attach <path>` does the same explicitly.
+Each attachment appears as a literal `[image #N]` token at the cursor — delete
+the token to drop the attachment, reorder or reuse it freely; the numbering is
+stable for the whole session, so a recalled or retried prompt re-sends the same
+image. On submit the prompt echoes with thumbnails and the images are sent to
+the model as native image blocks (downscaled to at most 1568px on the long
+edge before upload). Clipboard captures are stored under the user cache
+directory (`pollytool/attachments`) and swept after two weeks.
+
 Slash commands inside the TUI:
 
 ```
 /help [command]              Show help
+/attach <image-path>         Attach a local image to the next prompt
 /clear                       Clear the conversation
 /context  (/stats)           Show context info and token stats
 /get <key|all>               Inspect current settings

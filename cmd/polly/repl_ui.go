@@ -359,6 +359,19 @@ type replModel struct {
 	imageCellWidth   int
 	imageCellHeight  int
 
+	// attachments maps "[image #N]" composer tokens to validated local image
+	// paths for this session. Prompts remain plain strings everywhere; a
+	// token's number is resolved through this registry when a turn starts.
+	attachments   map[int]composerAttachment
+	attachmentSeq int
+	// clipboardCapture serializes Ctrl+V: one platform clipboard read may be
+	// in flight at a time.
+	clipboardCapture bool
+	// pasteBuf accumulates one bracketed paste so its complete text can be
+	// inspected (drag-dropped image paths become attachments) before anything
+	// reaches the editor.
+	pasteBuf []rune
+
 	// currentAssistant points at the entry that the agent is currently
 	// streaming into, or -1 when no streaming entry exists.
 	currentAssistant int
@@ -1512,6 +1525,16 @@ func (m *replModel) submitPrompt() string {
 func (m *replModel) beginTurn(prompt string) {
 	m.appendTurnSeparator()
 	m.appendUserPrompt(prompt)
+	if images := m.promptAttachmentImages(prompt); len(images) > 0 {
+		// The echoed prompt gains thumbnail slots for its attachments. Pasted
+		// private-use runes are stripped first so they cannot pose as slot
+		// anchors in an entry that now carries real ones.
+		idx := len(m.transcript) - 1
+		m.transcript[idx] = stripTranscriptImageMarkers(m.transcript[idx]) +
+			"\n" + renderTranscriptImages(images, "  ")
+		m.setTranscriptImages(idx, images)
+		m.invalidateFlat()
+	}
 	m.busy = true
 	m.canceling = false
 	m.state = turnStateWaiting
@@ -1963,6 +1986,11 @@ type managedREPL struct {
 	pending    chan string
 	turnCancel context.CancelFunc
 
+	// uiTasks carries deferred UI mutations (e.g. a finished clipboard read)
+	// onto the event loop, which repaints after running each one. Tasks take
+	// the model lock themselves.
+	uiTasks chan func()
+
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
 	fx *terminalFX
@@ -2203,6 +2231,7 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 		model:   m,
 		quit:    make(chan struct{}, 1),
 		pending: make(chan string, 1),
+		uiTasks: make(chan func(), 8),
 	}
 }
 
@@ -2267,6 +2296,13 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 
 	r.initHistory()
 	defer r.closeHistory()
+
+	// Old clipboard captures serve no one once their transcripts are gone.
+	go func() {
+		if dir, err := attachmentCacheDir(); err == nil {
+			sweepAttachmentCache(dir, time.Now())
+		}
+	}()
 
 	r.setupWidgets()
 	r.startupLogoVisible = true
@@ -2341,7 +2377,20 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			turnDone = r.startTurn(ctx, prompt, runTurn)
 			cancelDetach = nil
 			r.render()
+		case task := <-r.uiTasks:
+			task()
+			r.render()
 		}
+	}
+}
+
+// postUITask hands a completed background result to the event loop. Dropping
+// on a full buffer is deliberate: a task that cannot land immediately after
+// shutdown has nobody to land for.
+func (r *managedREPL) postUITask(task func()) {
+	select {
+	case r.uiTasks <- task:
+	default:
 	}
 }
 
@@ -2669,28 +2718,84 @@ func (r *managedREPL) handleSearchKey(e ui.Event) bool {
 	return false
 }
 
-// insertPasted adds one key from a bracketed paste to the editor as literal
-// text, mapping newline keys to '\n'. The composer remains available while a
-// turn runs, so busy paste behaves exactly like busy typing.
-func (r *managedREPL) insertPasted(e ui.Event) {
-	m := r.model
-	if m.approval != nil || m.searching {
-		return
-	}
+// bufferPasted adds one key from a bracketed paste to the paste buffer as
+// literal text, mapping newline keys to '\n'. The composer remains available
+// while a turn runs, so busy paste behaves exactly like busy typing.
+func (m *replModel) bufferPasted(e ui.Event) {
 	switch e.ID {
 	case "<Enter>", "<C-j>":
-		m.ed.insert('\n')
+		m.pasteBuf = append(m.pasteBuf, '\n')
 	case "<Space>":
-		m.ed.insert(' ')
+		m.pasteBuf = append(m.pasteBuf, ' ')
 	case "<Tab>":
-		m.ed.insert('\t')
+		m.pasteBuf = append(m.pasteBuf, '\t')
 	default:
 		if e.Type == ui.KeyboardEvent {
 			if runes := []rune(e.ID); len(runes) == 1 && runes[0] >= 0x20 {
-				m.ed.insert(runes[0])
+				m.pasteBuf = append(m.pasteBuf, runes[0])
 			}
 		}
 	}
+}
+
+// flushPasteBuffer lands a completed bracketed paste. A paste that is nothing
+// but existing local image paths — the terminal drag-drop signature — attaches
+// those images and leaves "[image #N]" tokens in the composer; any other paste
+// is inserted verbatim. Search and approval modes swallow pastes, as they
+// swallowed each key before buffering existed.
+func (m *replModel) flushPasteBuffer() {
+	text := string(m.pasteBuf)
+	m.pasteBuf = m.pasteBuf[:0]
+	if text == "" || m.approval != nil || m.searching {
+		return
+	}
+	if images := m.pastedImageAttachments(text); len(images) > 0 {
+		for _, img := range images {
+			m.insertEditorText(m.registerAttachment(img.Path, filepath.Base(img.Path)) + " ")
+		}
+		return
+	}
+	m.insertEditorText(text)
+}
+
+func (m *replModel) insertEditorText(s string) {
+	for _, r := range s {
+		m.ed.insert(r)
+	}
+}
+
+// captureClipboardToComposer reads an image from the system clipboard in the
+// background and, on success, attaches it and leaves its "[image #N]" token at
+// the cursor. The read happens off the event loop — osascript and friends can
+// take a beat — and lands via a UI task. Caller must hold r.model.mu.
+func (r *managedREPL) captureClipboardToComposer() {
+	if r.model.clipboardCapture {
+		return
+	}
+	r.model.clipboardCapture = true
+	go func() {
+		dir, err := attachmentCacheDir()
+		var path string
+		if err == nil {
+			path, err = captureClipboardImage(context.Background(), dir)
+		}
+		r.postUITask(func() {
+			m := r.model
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			m.clipboardCapture = false
+			if err != nil {
+				m.appendNoticeLine("clipboard: " + err.Error())
+				return
+			}
+			img, ok := resolveLocalTranscriptImage(path, "clipboard image", m.imageBaseDir)
+			if !ok {
+				m.appendNoticeLine("clipboard: captured image could not be used")
+				return
+			}
+			m.insertEditorText(m.registerAttachment(img.Path, "clipboard image") + " ")
+		})
+	}()
 }
 
 func (r *managedREPL) releaseApproval() {
@@ -3264,17 +3369,25 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	}
 
 	// Bracketed-paste markers bound a run of literal input. While pasting, keys
-	// are inserted verbatim — newlines included — instead of triggering actions,
-	// so a multi-line paste lands as one prompt rather than firing a submit per
-	// line. (gotui drops these markers; our own event pump surfaces them.)
+	// are buffered verbatim — newlines included — instead of triggering
+	// actions, so a multi-line paste lands as one prompt rather than firing a
+	// submit per line. The buffer is inspected once at the closing marker:
+	// terminal drag-drops (a paste that is purely image paths) become
+	// attachment tokens; everything else enters the editor as literal text.
+	// (gotui drops these markers; our own event pump surfaces them.)
 	if e.ID == pasteStartID || e.ID == pasteEndID {
 		m.clearSlashHints()
 		m.pasting = e.ID == pasteStartID
+		if m.pasting {
+			m.pasteBuf = m.pasteBuf[:0]
+		} else {
+			m.flushPasteBuffer()
+		}
 		return false
 	}
 	if m.pasting {
 		m.clearSlashHints()
-		r.insertPasted(e)
+		m.bufferPasted(e)
 		return false
 	}
 
@@ -3427,6 +3540,9 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	case "<C-k>":
 		m.clearSlashHints()
 		m.ed.killToEnd()
+	case "<C-v>":
+		m.clearSlashHints()
+		r.captureClipboardToComposer()
 	case "<C-l>":
 		m.clearDisplay()
 	case "<C-r>":
@@ -3707,9 +3823,19 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 		if tui, ok := turnUI.(*gotuiTurnUI); ok {
 			reuseUser = tui.reuseUser
 		}
+		// "[image #N]" tokens resolve against the composer registry at turn
+		// start, so queued and retried prompts pick up their attachments no
+		// matter how long they waited.
+		repl.model.mu.Lock()
+		attachments := repl.model.promptAttachments(prompt)
+		repl.model.mu.Unlock()
+		userMsg, err := buildREPLUserMessage(prompt, attachments)
+		if err != nil {
+			return fmt.Errorf("error processing attachments: %w", err)
+		}
 		// The exit code is a one-shot concern; the REPL already rendered
 		// any warning.
-		_, err := executeTurnWithExistingUser(turnCtx, config, state, prompt, nil, nil, turnUI, reuseUser)
+		_, err = executeTurnWithUserMessage(turnCtx, config, state, userMsg, nil, nil, turnUI, reuseUser)
 		return err
 	})
 }

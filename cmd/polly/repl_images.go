@@ -94,6 +94,18 @@ func transcriptImageMarkerIndex(r rune) (int, bool) {
 	return index, index >= 0 && index < maxTranscriptImagesPerBlock
 }
 
+// stripTranscriptImageMarkers removes private marker runes from text that is
+// about to share a transcript entry with real image slots, so pasted
+// private-use characters cannot pose as slot anchors.
+func stripTranscriptImageMarkers(s string) string {
+	return strings.Map(func(r rune) rune {
+		if _, ok := transcriptImageMarkerIndex(r); ok {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func transcriptImageSlot(index int, prefix string) string {
 	line := prefix + string(transcriptImageMarker(index))
 	return strings.Repeat(line+"\n", transcriptImageThumbnailRows-1) + line
