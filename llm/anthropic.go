@@ -272,6 +272,9 @@ func (a *AnthropicClient) processNonStreaming(ctx context.Context, params *anthr
 			streamCore.EmitReasoning(block.Thinking)
 			// Add thinking block to adapter for metadata preservation
 			adapter.AddThinkingBlock(block.Thinking, block.Signature)
+		case "redacted_thinking":
+			// Preserve verbatim; must be replayed unchanged in tool loops
+			adapter.AddRedactedThinkingBlock(block.Data)
 		case "text":
 			streamCore.EmitContent(block.Text)
 		case "tool_use":
@@ -393,16 +396,25 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 			// Check if we have preserved thinking blocks in metadata
 			if msg.Metadata != nil {
 				if thinkingBlocksData, ok := msg.Metadata["anthropic_thinking_blocks"]; ok {
-					// Restore thinking blocks with their signatures
-					// Handle both []map[string]any and []interface{} types
+					// Restore thinking blocks with their signatures. In-process
+					// the adapter stores []map[string]any; after a JSON session
+					// reload the value comes back as []any.
 					var thinkingBlocksList []map[string]any
 					switch v := thinkingBlocksData.(type) {
 					case []map[string]any:
 						thinkingBlocksList = v
+					case []any:
+						for _, item := range v {
+							if m, ok := item.(map[string]any); ok {
+								thinkingBlocksList = append(thinkingBlocksList, m)
+							}
+						}
 					}
 
 					for _, block := range thinkingBlocksList {
-						if blockType, _ := block["type"].(string); blockType == "thinking" {
+						blockType, _ := block["type"].(string)
+						switch blockType {
+						case "thinking":
 							thinking, _ := block["thinking"].(string)
 							signature, _ := block["signature"].(string)
 							if signature != "" && thinking != "" {
@@ -410,6 +422,13 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 									Type:      "thinking",
 									Thinking:  thinking,
 									Signature: signature,
+								})
+							}
+						case "redacted_thinking":
+							if data, _ := block["data"].(string); data != "" {
+								blocks = append(blocks, &anthropic.ContentBlock{
+									Type: "redacted_thinking",
+									Data: data,
 								})
 							}
 						}

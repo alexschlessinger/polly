@@ -176,7 +176,7 @@ to stderr, so `out/<id>.txt` stays clean.
 | `--maxtokens` | `64000` | Max output tokens |
 | `--maxiterations` | `250` | Max agent iterations (LLM calls) |
 | `--timeout` | `2m` | Per-request timeout |
-| `--maxcontext` | `100000` | Max history tokens (0 = unlimited) |
+| `--maxcontext` | `256000` | Max history tokens (0 = unlimited) |
 | `--thinkingeffort` | `off` | `off`/`low`/`medium`/`high` |
 | `--schema` | — | Path to JSON Schema file → structured JSON output |
 | `--skilldir` | — | Skill directory (repeatable) |

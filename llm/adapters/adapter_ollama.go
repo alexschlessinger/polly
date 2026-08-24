@@ -12,12 +12,13 @@ import (
 // OllamaAdapter handles Ollama-specific streaming patterns.
 // Ollama sends complete tool calls on each update (reset pattern).
 type OllamaAdapter struct {
-	isDone bool // Track if we've received the final chunk
+	isDone   bool   // Track if we've received the final chunk
+	idPrefix string // random per-stream namespace for synthetic tool call IDs
 }
 
 // NewOllamaAdapter creates a new Ollama streaming adapter
 func NewOllamaAdapter() *OllamaAdapter {
-	return &OllamaAdapter{}
+	return &OllamaAdapter{idPrefix: randomIDPrefix()}
 }
 
 // ProcessChunk handles Ollama streaming chunks
@@ -74,9 +75,13 @@ func (a *OllamaAdapter) handleToolCalls(toolCalls []ollama.ToolCall, state strea
 			tcArgStr = []byte("{}")
 		}
 
-		// Add the tool call with a generated ID
+		// Prefer the native call ID when provided; synthesize one otherwise
+		id := tc.ID
+		if id == "" {
+			id = fmt.Sprintf("call_%s_%d", a.idPrefix, i)
+		}
 		state.AddToolCall(messages.ChatMessageToolCall{
-			ID:        fmt.Sprintf("call_%d", i),
+			ID:        id,
 			Name:      tc.Function.Name,
 			Arguments: string(tcArgStr),
 		})

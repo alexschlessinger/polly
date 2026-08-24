@@ -76,6 +76,14 @@ func (a *AnthropicAdapter) handleContentBlockStart(event *anthropic.StreamEvent,
 			"thinking": "", // Will be filled by deltas
 		}
 
+	case "redacted_thinking":
+		// Redacted thinking arrives complete in the start event (no
+		// deltas); preserve it verbatim — it must be replayed unchanged
+		// during tool loops.
+		if event.ContentBlock.Data != "" {
+			a.AddRedactedThinkingBlock(event.ContentBlock.Data)
+		}
+
 	case "tool_use":
 		// Initialize a new tool call
 		state.AddToolCall(messages.ChatMessageToolCall{
@@ -169,6 +177,15 @@ func (a *AnthropicAdapter) AddThinkingBlock(thinking, signature string) {
 		"type":      "thinking",
 		"thinking":  thinking,
 		"signature": signature,
+	})
+}
+
+// AddRedactedThinkingBlock preserves a redacted thinking block so it can be
+// replayed unchanged
+func (a *AnthropicAdapter) AddRedactedThinkingBlock(data string) {
+	a.thinkingBlocks = append(a.thinkingBlocks, map[string]any{
+		"type": "redacted_thinking",
+		"data": data,
 	})
 }
 

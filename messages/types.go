@@ -105,27 +105,23 @@ const (
 
 // GetInputTokens returns the input token count from metadata, or 0 if not set
 func (m *ChatMessage) GetInputTokens() int {
-	if m.Metadata == nil {
-		return 0
-	}
-	if v, ok := m.Metadata[MetadataKeyInputTokens].(int); ok {
-		return v
-	}
-	if v, ok := m.Metadata[MetadataKeyInputTokens].(int64); ok {
-		return int(v)
-	}
-	return 0
+	return metadataInt(m.Metadata, MetadataKeyInputTokens)
 }
 
 // GetOutputTokens returns the output token count from metadata, or 0 if not set
 func (m *ChatMessage) GetOutputTokens() int {
-	if m.Metadata == nil {
-		return 0
-	}
-	if v, ok := m.Metadata[MetadataKeyOutputTokens].(int); ok {
+	return metadataInt(m.Metadata, MetadataKeyOutputTokens)
+}
+
+// metadataInt reads a numeric metadata value. Values set in-process are int;
+// after a JSON round-trip (session persistence) they come back as float64.
+func metadataInt(metadata map[string]any, key string) int {
+	switch v := metadata[key].(type) {
+	case int:
 		return v
-	}
-	if v, ok := m.Metadata[MetadataKeyOutputTokens].(int64); ok {
+	case int64:
+		return int(v)
+	case float64:
 		return int(v)
 	}
 	return 0

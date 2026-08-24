@@ -11,8 +11,8 @@ package anthropic
 import "encoding/json"
 
 // ContentBlock is a message content block in either direction. Type selects
-// which fields are meaningful: "text", "image", "thinking", "tool_use", or
-// "tool_result".
+// which fields are meaningful: "text", "image", "thinking",
+// "redacted_thinking", "tool_use", or "tool_result".
 type ContentBlock struct {
 	Type string `json:"type"`
 
@@ -27,6 +27,10 @@ type ContentBlock struct {
 	// the API rejects the conversation on later turns.
 	Thinking  string `json:"thinking,omitempty"`
 	Signature string `json:"signature,omitempty"`
+
+	// Data carries "redacted_thinking" blocks: an opaque encrypted payload
+	// that must be replayed unchanged during tool loops.
+	Data string `json:"data,omitempty"`
 
 	// ID, Name, and Input carry "tool_use" blocks. Input must always be
 	// present on the wire, so senders use "{}" for parameterless calls.

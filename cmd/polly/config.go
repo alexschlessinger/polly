@@ -302,7 +302,7 @@ func historyConfigFlags() []cli.Flag {
 		&cli.IntFlag{
 			Name:  "maxcontext",
 			Usage: "Maximum tokens to keep in history (0 = unlimited)",
-			Value: 100000,
+			Value: 256000,
 		},
 	}
 }

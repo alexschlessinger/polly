@@ -26,6 +26,9 @@ type Message struct {
 
 // ToolCall is a tool invocation requested by the model.
 type ToolCall struct {
+	// ID is set by some models/servers; when present it must be echoed back
+	// on the matching tool response.
+	ID       string           `json:"id,omitempty"`
 	Function ToolCallFunction `json:"function"`
 }
 

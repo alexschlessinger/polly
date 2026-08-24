@@ -1,8 +1,10 @@
 package llm
 
 import (
+	"encoding/base64"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 )
 
@@ -50,5 +52,91 @@ func TestConvertToolToGemini_PreservesRequiredFromSchemaTool(t *testing.T) {
 	}
 	if len(req) != 1 || req[0] != "query" {
 		t.Fatalf("required = %v, want [query]", req)
+	}
+}
+
+// TestMessagesToGeminiContentThoughtSignatures verifies signatures are
+// restored onto replayed function calls both in-process (map[string]string)
+// and after a JSON session reload (map[string]any).
+func TestMessagesToGeminiContentThoughtSignatures(t *testing.T) {
+	sig := []byte("thought-sig-bytes")
+	encoded := base64.StdEncoding.EncodeToString(sig)
+
+	cases := []struct {
+		name     string
+		metadata map[string]any
+	}{
+		{
+			name:     "in-process map[string]string",
+			metadata: map[string]any{"gemini_thought_signatures": map[string]string{"gemini-ab-0": encoded}},
+		},
+		{
+			name:     "JSON-reloaded map[string]any",
+			metadata: map[string]any{"gemini_thought_signatures": map[string]any{"gemini-ab-0": encoded}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := []messages.ChatMessage{{
+				Role: messages.MessageRoleAssistant,
+				ToolCalls: []messages.ChatMessageToolCall{
+					{ID: "gemini-ab-0", Name: "search", Arguments: "{}"},
+				},
+				Metadata: tc.metadata,
+			}}
+
+			contents, _, _ := MessagesToGeminiContent(msgs)
+			if len(contents) != 1 || len(contents[0].Parts) != 1 {
+				t.Fatalf("unexpected content shape: %+v", contents)
+			}
+			part := contents[0].Parts[0]
+			if part.FunctionCall == nil {
+				t.Fatal("expected a function call part")
+			}
+			if string(part.ThoughtSignature) != string(sig) {
+				t.Errorf("ThoughtSignature = %q, want %q", part.ThoughtSignature, sig)
+			}
+		})
+	}
+}
+
+// TestMessagesToGeminiContentNativeCallIDs verifies provider-issued function
+// call IDs are echoed back on both the replayed call and its response, while
+// polly-synthesized IDs (gemini-<nonce>-<n>) are kept internal.
+func TestMessagesToGeminiContentNativeCallIDs(t *testing.T) {
+	msgs := []messages.ChatMessage{
+		{
+			Role: messages.MessageRoleAssistant,
+			ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "native-id-1", Name: "search", Arguments: "{}"},
+			},
+		},
+		{Role: messages.MessageRoleTool, ToolCallID: "native-id-1", ToolName: "search", Content: `{"ok":true}`},
+		{
+			Role: messages.MessageRoleAssistant,
+			ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "gemini-ab12cd34-0", Name: "search", Arguments: "{}"},
+			},
+		},
+		{Role: messages.MessageRoleTool, ToolCallID: "gemini-ab12cd34-0", ToolName: "search", Content: `{"ok":true}`},
+	}
+
+	contents, _, _ := MessagesToGeminiContent(msgs)
+	if len(contents) != 4 {
+		t.Fatalf("content count = %d, want 4", len(contents))
+	}
+
+	if id := contents[0].Parts[0].FunctionCall.ID; id != "native-id-1" {
+		t.Errorf("native FunctionCall.ID = %q, want native-id-1", id)
+	}
+	if id := contents[1].Parts[0].FunctionResponse.ID; id != "native-id-1" {
+		t.Errorf("native FunctionResponse.ID = %q, want native-id-1", id)
+	}
+	if id := contents[2].Parts[0].FunctionCall.ID; id != "" {
+		t.Errorf("synthetic FunctionCall.ID = %q, want empty", id)
+	}
+	if id := contents[3].Parts[0].FunctionResponse.ID; id != "" {
+		t.Errorf("synthetic FunctionResponse.ID = %q, want empty", id)
 	}
 }

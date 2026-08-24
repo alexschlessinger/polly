@@ -305,6 +305,16 @@ func ConvertToolToGemini(schema *ToolSchema) *gemini.Tool {
 	}
 }
 
+// nativeGeminiCallID returns the provider-issued function call ID, or "" when
+// the ID is one polly synthesized (gemini-<nonce>-<n>) for internal pairing
+// and must not be echoed back to the API.
+func nativeGeminiCallID(id string) string {
+	if strings.HasPrefix(id, "gemini-") {
+		return ""
+	}
+	return id
+}
+
 // MessagesToGeminiContent converts messages to Gemini content format
 func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, string, map[string]string) {
 	var history []*gemini.Content
@@ -368,18 +378,26 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, st
 					if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
 						part := &gemini.Part{
 							FunctionCall: &gemini.FunctionCall{
+								ID:   nativeGeminiCallID(tc.ID),
 								Name: tc.Name,
 								Args: args,
 							},
 						}
 
-						// Check metadata for thought signature
+						// Check metadata for thought signature. In-process the
+						// adapter stores map[string]string; after a JSON
+						// session reload it comes back as map[string]any.
 						if msg.Metadata != nil {
-							if signatures, ok := msg.Metadata["gemini_thought_signatures"].(map[string]string); ok {
-								if sigStr, exists := signatures[tc.ID]; exists {
-									if sig, err := base64.StdEncoding.DecodeString(sigStr); err == nil {
-										part.ThoughtSignature = sig
-									}
+							var sigStr string
+							switch signatures := msg.Metadata["gemini_thought_signatures"].(type) {
+							case map[string]string:
+								sigStr = signatures[tc.ID]
+							case map[string]any:
+								sigStr, _ = signatures[tc.ID].(string)
+							}
+							if sigStr != "" {
+								if sig, err := base64.StdEncoding.DecodeString(sigStr); err == nil {
+									part.ThoughtSignature = sig
 								}
 							}
 						}
@@ -418,6 +436,7 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, st
 				Role: "user",
 				Parts: []*gemini.Part{{
 					FunctionResponse: &gemini.FunctionResponse{
+						ID:       nativeGeminiCallID(msg.ToolCallID),
 						Name:     funcName,
 						Response: response,
 					},

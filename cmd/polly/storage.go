@@ -7,6 +7,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/urfave/cli/v3"
 )
 
 // needsFileStore determines if we need a file-based session store
@@ -334,7 +335,7 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 }
 
 // handleResetContext resets a context (clears conversation, keeps settings)
-func handleResetContext(store sessions.SessionStore, config *Config, contextID string) error {
+func handleResetContext(store sessions.SessionStore, config *Config, cmd *cli.Command, contextID string) error {
 	if contextID == "" {
 		return fmt.Errorf("--reset requires a context name")
 	}
@@ -361,15 +362,17 @@ func handleResetContext(store sessions.SessionStore, config *Config, contextID s
 	}
 	defer session.Close()
 
-	// Build update with all config values (mergo will skip zeros/defaults)
-	update := &sessions.Metadata{
-		Name:     contextID,
-		LastUsed: time.Now(),
+	// Apply only explicitly-set command-line flags: a plain --reset must not
+	// replace stored settings with CLI defaults, and explicit zeros
+	// (--maxcontext 0 = unlimited) must stick.
+	md := session.GetMetadata()
+	if md == nil {
+		md = &sessions.Metadata{Name: contextID}
 	}
-	// Copy settings from config
-	config.Settings.ToMetadataSettings(update)
+	md.LastUsed = time.Now()
+	applyFlagSettings(md, config, cmd)
 
-	if err := session.UpdateMetadata(update); err != nil {
+	if err := session.SetMetadata(md); err != nil {
 		return fmt.Errorf("failed to update context info: %w", err)
 	}
 

@@ -42,6 +42,9 @@ type Blob struct {
 // FunctionCall is a tool invocation requested by the model. The API assigns
 // no call IDs; callers correlate calls positionally.
 type FunctionCall struct {
+	// ID is set by the API on some models; when present it must be echoed
+	// back on the matching FunctionResponse.
+	ID   string         `json:"id,omitempty"`
 	Name string         `json:"name,omitempty"`
 	Args map[string]any `json:"args,omitempty"`
 }
@@ -49,6 +52,7 @@ type FunctionCall struct {
 // FunctionResponse returns a tool result to the model. Response must be an
 // object; wrap bare values before sending.
 type FunctionResponse struct {
+	ID       string         `json:"id,omitempty"`
 	Name     string         `json:"name,omitempty"`
 	Response map[string]any `json:"response,omitempty"`
 }
