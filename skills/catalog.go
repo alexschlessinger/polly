@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // Message is a minimal chat message used by BuildMessages to avoid a circular
