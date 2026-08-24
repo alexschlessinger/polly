@@ -5,8 +5,8 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm/anthropic"
 	"github.com/alexschlessinger/pollytool/llm/gemini"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/openai/openai-go/v3/responses"
 )
 
 func TestMapAnthropicStopReason(t *testing.T) {
@@ -58,43 +58,43 @@ func TestMapOpenAIFinishReason(t *testing.T) {
 func TestMapResponsesStopReason(t *testing.T) {
 	tests := []struct {
 		name             string
-		status           responses.ResponseStatus
+		status           openai.ResponseStatus
 		incompleteReason string
 		hasToolCalls     bool
 		want             messages.StopReason
 	}{
 		{
 			name:         "completed_end_turn",
-			status:       responses.ResponseStatusCompleted,
+			status:       openai.ResponseStatusCompleted,
 			hasToolCalls: false,
 			want:         messages.StopReasonEndTurn,
 		},
 		{
 			name:         "completed_tool_use",
-			status:       responses.ResponseStatusCompleted,
+			status:       openai.ResponseStatusCompleted,
 			hasToolCalls: true,
 			want:         messages.StopReasonToolUse,
 		},
 		{
 			name:             "incomplete_max_output_tokens",
-			status:           responses.ResponseStatusIncomplete,
+			status:           openai.ResponseStatusIncomplete,
 			incompleteReason: "max_output_tokens",
 			want:             messages.StopReasonMaxTokens,
 		},
 		{
 			name:             "incomplete_content_filter",
-			status:           responses.ResponseStatusIncomplete,
+			status:           openai.ResponseStatusIncomplete,
 			incompleteReason: "content_filter",
 			want:             messages.StopReasonContentFilter,
 		},
 		{
 			name:   "failed",
-			status: responses.ResponseStatusFailed,
+			status: openai.ResponseStatusFailed,
 			want:   messages.StopReasonError,
 		},
 		{
 			name:   "cancelled",
-			status: responses.ResponseStatusCancelled,
+			status: openai.ResponseStatusCancelled,
 			want:   messages.StopReasonError,
 		},
 	}

@@ -1,47 +1,48 @@
 package llm
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
-	openai "github.com/openai/openai-go/v3"
 )
 
-func TestBuildDeepSeekReasoningReplayOptions(t *testing.T) {
+func TestApplyDeepSeekReasoningReplay(t *testing.T) {
 	tests := []struct {
-		name     string
-		msgs     []messages.ChatMessage
-		wantOpts int
+		name         string
+		msgs         []messages.ChatMessage
+		wantReplayed int
 	}{
 		{
-			name:     "empty",
-			msgs:     nil,
-			wantOpts: 0,
+			name:         "empty",
+			msgs:         nil,
+			wantReplayed: 0,
 		},
 		{
 			name: "user message with reasoning is ignored",
 			msgs: []messages.ChatMessage{
 				{Role: messages.MessageRoleUser, Content: "hi", Reasoning: "should not be sent"},
 			},
-			wantOpts: 0,
+			wantReplayed: 0,
 		},
 		{
 			name: "assistant message without reasoning is ignored",
 			msgs: []messages.ChatMessage{
 				{Role: messages.MessageRoleAssistant, Content: "hello"},
 			},
-			wantOpts: 0,
+			wantReplayed: 0,
 		},
 		{
-			name: "single assistant message with reasoning produces one option",
+			name: "single assistant message with reasoning is annotated",
 			msgs: []messages.ChatMessage{
 				{Role: messages.MessageRoleUser, Content: "hi"},
 				{Role: messages.MessageRoleAssistant, Content: "hello", Reasoning: "user greeted me"},
 			},
-			wantOpts: 1,
+			wantReplayed: 1,
 		},
 		{
-			name: "multiple assistant messages produce one option each",
+			name: "multiple assistant messages are each annotated",
 			msgs: []messages.ChatMessage{
 				{Role: messages.MessageRoleSystem, Content: "sys"},
 				{Role: messages.MessageRoleUser, Content: "q1"},
@@ -49,24 +50,36 @@ func TestBuildDeepSeekReasoningReplayOptions(t *testing.T) {
 				{Role: messages.MessageRoleUser, Content: "q2"},
 				{Role: messages.MessageRoleAssistant, Content: "a2", Reasoning: "r2"},
 			},
-			wantOpts: 2,
+			wantReplayed: 2,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			opts := buildDeepSeekReasoningReplayOptions(tc.msgs)
-			if len(opts) != tc.wantOpts {
-				t.Fatalf("got %d options, want %d", len(opts), tc.wantOpts)
+			params := buildChatCompletionRequestParams(&CompletionRequest{
+				Model:    "deepseek-reasoner",
+				Messages: tc.msgs,
+			})
+			got := applyDeepSeekReasoningReplay(params, tc.msgs)
+			if got != tc.wantReplayed {
+				t.Fatalf("replayed %d messages, want %d", got, tc.wantReplayed)
+			}
+			for i, msg := range tc.msgs {
+				want := ""
+				if msg.Role == messages.MessageRoleAssistant {
+					want = msg.Reasoning
+				}
+				if params.Messages[i].ReasoningContent != want {
+					t.Fatalf("message %d reasoning_content = %q, want %q", i, params.Messages[i].ReasoningContent, want)
+				}
 			}
 		})
 	}
 }
 
-func TestExtractReasoningContentDelta(t *testing.T) {
-	// The openai-go SDK stuffs unknown fields like `reasoning_content` into the
-	// per-chunk delta by unmarshaling the raw stream chunk. Decode a raw chunk
-	// so the ExtraFields metadata is populated the same way it is in production.
+func TestChatDeltaReasoningContent(t *testing.T) {
+	// DeepSeek streams a non-standard `reasoning_content` field in deltas;
+	// the wire type must decode all the shapes servers produce.
 	tests := []struct {
 		name string
 		raw  string
@@ -101,13 +114,12 @@ func TestExtractReasoningContentDelta(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var delta openai.ChatCompletionChunkChoiceDelta
-			if err := delta.UnmarshalJSON([]byte(tc.raw)); err != nil {
+			var delta openai.ChatDelta
+			if err := json.Unmarshal([]byte(tc.raw), &delta); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			got := extractReasoningContentDelta(delta)
-			if got != tc.want {
-				t.Fatalf("got %q, want %q", got, tc.want)
+			if delta.ReasoningContent != tc.want {
+				t.Fatalf("got %q, want %q", delta.ReasoningContent, tc.want)
 			}
 		})
 	}

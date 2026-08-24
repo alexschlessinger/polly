@@ -10,9 +10,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm/gemini"
-	openai "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
-	"github.com/openai/openai-go/v3/packages/param"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 )
 
 const defaultEmbeddingTimeout = 120 * time.Second
@@ -118,14 +116,7 @@ func resolveEmbeddingAPIKey(provider, explicit, baseURL string) (string, error) 
 }
 
 func embedOpenAI(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error) {
-	baseURL := defaultOpenAIBaseURL
-	if strings.TrimSpace(req.BaseURL) != "" {
-		baseURL = strings.TrimSpace(req.BaseURL)
-	}
-	client := openai.NewClient(
-		option.WithAPIKey(apiKey),
-		option.WithBaseURL(baseURL),
-	)
+	client := openai.NewClient(apiKey, strings.TrimSpace(req.BaseURL))
 
 	timeout := req.Timeout
 	if timeout <= 0 {
@@ -134,17 +125,16 @@ func embedOpenAI(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	openAIReq := openai.EmbeddingNewParams{
-		Input: openai.EmbeddingNewParamsInputUnion{
-			OfArrayOfStrings: req.Input,
-		},
-		Model: openai.EmbeddingModel(model),
+	openAIReq := &openai.EmbeddingRequest{
+		Model: model,
+		Input: req.Input,
 	}
 	if req.Dimensions > 0 {
-		openAIReq.Dimensions = param.NewOpt(int64(req.Dimensions))
+		dim := int64(req.Dimensions)
+		openAIReq.Dimensions = &dim
 	}
 
-	resp, err := client.Embeddings.New(requestCtx, openAIReq)
+	resp, err := client.CreateEmbeddings(requestCtx, openAIReq)
 	if err != nil {
 		return nil, fmt.Errorf("openai embedding request failed: %w", err)
 	}
@@ -154,17 +144,17 @@ func embedOpenAI(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 
 	embeddings := make([][]float64, len(resp.Data))
 	for i, item := range resp.Data {
-		vector := make([]float64, len(item.Embedding))
-		for j, value := range item.Embedding {
-			vector[j] = float64(value)
-		}
-		embeddings[i] = vector
+		embeddings[i] = item.Embedding
 	}
 
+	inputTokens := 0
+	if resp.Usage != nil {
+		inputTokens = int(resp.Usage.TotalTokens)
+	}
 	return &EmbeddingResponse{
-		Model:       string(resp.Model),
+		Model:       resp.Model,
 		Embeddings:  embeddings,
-		InputTokens: int(resp.Usage.TotalTokens),
+		InputTokens: inputTokens,
 	}, nil
 }
 
