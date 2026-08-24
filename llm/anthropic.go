@@ -7,21 +7,18 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
-	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 )
 
 const structuredOutputToolName = "extract_structured_data"
 
 // legacyThinkingPrefixes enumerates the closed set of models that still use the
 // legacy enabled/budget_tokens thinking mode. Everything from the 4.6 family
-// onward uses adaptive thinking (type:"adaptive" + OutputConfig.Effort), and all
-// future models will too, so unknown models default to adaptive. This list can
-// only shrink (as legacy models retire), never grow.
+// onward uses adaptive thinking (type:"adaptive" + output_config effort), and
+// all future models will too, so unknown models default to adaptive. This list
+// can only shrink (as legacy models retire), never grow.
 var legacyThinkingPrefixes = [...]string{
 	"claude-2",
 	"claude-3", // all 3.x, including claude-3-5-* and claude-3-7-*
@@ -37,7 +34,7 @@ var legacyThinkingPrefixes = [...]string{
 }
 
 // supportsAdaptiveThinking reports whether the model expects adaptive thinking
-// (type:"adaptive" + OutputConfig.Effort) rather than legacy enabled/budget_tokens.
+// (type:"adaptive" + output_config effort) rather than legacy enabled/budget_tokens.
 // Everything past the 4.5 generation *rejects* the legacy enabled mode with a
 // 400, so adaptive is the default and legacy models are the exception.
 func supportsAdaptiveThinking(model string) bool {
@@ -60,29 +57,29 @@ func rejectsSamplingParams(model string) bool {
 		!strings.HasPrefix(model, "claude-sonnet-4-6")
 }
 
-// mapEffort converts a ThinkingEffort to the Anthropic OutputConfig effort level
-// used with adaptive thinking. Callers must guard with ThinkingEffort.IsEnabled()
-// and skip Dynamic (which uses adaptive thinking with no effort). Anthropic has
-// no "minimal" tier, so minimal clamps to low.
-func mapEffort(effort ThinkingEffort) anthropic.OutputConfigEffort {
+// mapEffort converts a ThinkingEffort to the Anthropic output_config effort
+// level used with adaptive thinking. Callers must guard with
+// ThinkingEffort.IsEnabled() and skip Dynamic (which uses adaptive thinking
+// with no effort). Anthropic has no "minimal" tier, so minimal clamps to low.
+func mapEffort(effort ThinkingEffort) anthropic.Effort {
 	switch effort.AsLevel(LevelMedium) {
 	case LevelMinimal, LevelLow:
-		return anthropic.OutputConfigEffortLow
+		return anthropic.EffortLow
 	case LevelMedium:
-		return anthropic.OutputConfigEffortMedium
+		return anthropic.EffortMedium
 	case LevelHigh:
-		return anthropic.OutputConfigEffortHigh
+		return anthropic.EffortHigh
 	case LevelXHigh:
-		return anthropic.OutputConfigEffortXhigh
+		return anthropic.EffortXHigh
 	case LevelMax:
-		return anthropic.OutputConfigEffortMax
+		return anthropic.EffortMax
 	default:
-		return anthropic.OutputConfigEffortMedium
+		return anthropic.EffortMedium
 	}
 }
 
 type AnthropicClient struct {
-	client anthropic.Client
+	client *anthropic.Client
 }
 
 func NewAnthropicClient(apiKey string) *AnthropicClient {
@@ -90,26 +87,21 @@ func NewAnthropicClient(apiKey string) *AnthropicClient {
 		slog.Debug("anthropic_missing_api_key")
 	}
 
-	client := anthropic.NewClient(
-		option.WithAPIKey(apiKey),
-	)
-
 	return &AnthropicClient{
-		client: client,
+		client: anthropic.NewClient(apiKey),
 	}
 }
 
 // getThinkingConfig returns the thinking configuration based on effort level and
 // the target model. Opus 4.7 rejects the legacy enabled/budget_tokens mode, and
 // Anthropic recommends adaptive thinking for all 4.6+ family models.
-func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string, maxTokens int) anthropic.ThinkingConfigParamUnion {
+func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string, maxTokens int) *anthropic.ThinkingConfig {
 	if supportsAdaptiveThinking(model) {
-		return anthropic.ThinkingConfigParamUnion{
-			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
-				// "summarized" keeps thinking text flowing through the stream;
-				// the default "omitted" would make reasoning render as a long pause.
-				Display: anthropic.ThinkingConfigAdaptiveDisplaySummarized,
-			},
+		return &anthropic.ThinkingConfig{
+			Type: anthropic.ThinkingTypeAdaptive,
+			// "summarized" keeps thinking text flowing through the stream;
+			// the default "omitted" would make reasoning render as a long pause.
+			Display: anthropic.DisplaySummarized,
 		}
 	}
 
@@ -120,7 +112,10 @@ func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string,
 	if !ok {
 		budget = levelBudgets[LevelMedium]
 	}
-	return anthropic.ThinkingConfigParamOfEnabled(int64(clampThinkingBudget(budget, maxTokens)))
+	return &anthropic.ThinkingConfig{
+		Type:         anthropic.ThinkingTypeEnabled,
+		BudgetTokens: int64(clampThinkingBudget(budget, maxTokens)),
+	}
 }
 
 // clampThinkingBudget keeps a legacy thinking budget within Anthropic's limits:
@@ -138,30 +133,31 @@ func clampThinkingBudget(budget, maxTokens int) int {
 }
 
 // buildRequestParams creates the Anthropic API request parameters
-func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.MessageNewParams {
+func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.MessageRequest {
 	// Convert messages to Anthropic format
 	anthropicMessages, systemPrompt := MessagesToAnthropicParams(req.Messages)
 
 	// Create the request
-	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(req.Model),
+	params := &anthropic.MessageRequest{
+		Model:     req.Model,
 		MaxTokens: int64(req.MaxTokens),
 		Messages:  anthropicMessages,
 	}
 
 	// Opus 4.7 rejects temperature/top_p/top_k with a 400.
 	if req.Temperature != nil && !rejectsSamplingParams(req.Model) {
-		params.Temperature = anthropic.Float(float64(*req.Temperature))
+		temp := float64(*req.Temperature)
+		params.Temperature = &temp
 	}
 
 	// Enable thinking for supported models if requested
 	if req.ThinkingEffort.IsEnabled() {
 		params.Thinking = a.getThinkingConfig(req.ThinkingEffort, req.Model, req.MaxTokens)
-		// Adaptive thinking pairs with OutputConfig.Effort to control depth,
+		// Adaptive thinking pairs with output_config effort to control depth,
 		// replacing the legacy budget_tokens knob. Dynamic effort means "let the
 		// model decide", so we send adaptive thinking with no explicit effort.
 		if supportsAdaptiveThinking(req.Model) && !req.ThinkingEffort.IsDynamic() {
-			params.OutputConfig = anthropic.OutputConfigParam{
+			params.OutputConfig = &anthropic.OutputConfig{
 				Effort: mapEffort(req.ThinkingEffort),
 			}
 		}
@@ -169,16 +165,13 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 
 	// Add system prompt if present
 	if systemPrompt != "" {
-		params.System = []anthropic.TextBlockParam{
-			{
-				Type: "text",
-				Text: systemPrompt,
-			},
+		params.System = []*anthropic.ContentBlock{
+			{Type: "text", Text: systemPrompt},
 		}
 	}
 
 	// Add tools and/or structured output support
-	var anthropicTools []anthropic.ToolUnionParam
+	var anthropicTools []*anthropic.Tool
 
 	// Add structured output tool if schema is provided
 	if req.ResponseSchema != nil {
@@ -201,11 +194,7 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) anthropic.M
 		// force when thinking is enabled — the schema tool is still available,
 		// the model just isn't compelled to call it.
 		if req.ResponseSchema != nil && len(req.Tools) == 0 && !req.ThinkingEffort.IsEnabled() {
-			params.ToolChoice = anthropic.ToolChoiceUnionParam{
-				OfAny: &anthropic.ToolChoiceAnyParam{
-					Type: "any",
-				},
-			}
+			params.ToolChoice = &anthropic.ToolChoice{Type: "any"}
 		}
 	}
 
@@ -221,8 +210,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 		slog.Debug("anthropic_completion_started", "model", req.Model, "stream", isStreaming)
 
 		if isStreaming {
-			stream := a.client.Messages.NewStreaming(ctx, params)
-			a.processStream(stream, req, streamCore)
+			a.processStream(ctx, params, req, streamCore)
 		} else {
 			a.processNonStreaming(ctx, params, req, streamCore, adapter)
 		}
@@ -230,9 +218,12 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 }
 
 // processStream handles the main stream processing logic
-func (a *AnthropicClient) processStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion], req *CompletionRequest, streamCore *streaming.StreamingCore) {
-	for stream.Next() {
-		event := stream.Current()
+func (a *AnthropicClient) processStream(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore) {
+	for event, err := range a.client.CreateMessageStream(ctx, params) {
+		if err != nil {
+			streamCore.EmitError(err)
+			return
+		}
 
 		// Process the event through the adapter
 		if err := streamCore.ProcessChunk(event); err != nil {
@@ -241,26 +232,17 @@ func (a *AnthropicClient) processStream(stream *ssestream.Stream[anthropic.Messa
 		}
 
 		// Handle content and reasoning streaming
-		switch event.Type {
-		case string(constant.ValueOf[constant.ContentBlockDelta]()):
-			blockDelta := event.AsContentBlockDelta()
-
+		if event.Type == anthropic.EventContentBlockDelta && event.Delta != nil {
 			// Stream thinking content
-			if thinking := blockDelta.Delta.Thinking; thinking != "" {
+			if thinking := event.Delta.Thinking; thinking != "" {
 				streamCore.EmitReasoning(thinking)
 			}
 
 			// Stream regular content
-			if text := blockDelta.Delta.Text; text != "" {
+			if text := event.Delta.Text; text != "" {
 				streamCore.EmitContent(text)
 			}
 		}
-	}
-
-	// Check for stream error
-	if err := stream.Err(); err != nil {
-		streamCore.EmitError(err)
-		return
 	}
 
 	// Handle structured output response
@@ -275,8 +257,8 @@ func (a *AnthropicClient) processStream(stream *ssestream.Stream[anthropic.Messa
 }
 
 // processNonStreaming handles non-streaming API requests
-func (a *AnthropicClient) processNonStreaming(ctx context.Context, params anthropic.MessageNewParams, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *adapters.AnthropicAdapter) {
-	resp, err := a.client.Messages.New(ctx, params)
+func (a *AnthropicClient) processNonStreaming(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *adapters.AnthropicAdapter) {
+	resp, err := a.client.CreateMessage(ctx, params)
 	if err != nil {
 		slog.Debug("anthropic_completion_failed", "error", err)
 		streamCore.EmitError(err)
@@ -308,7 +290,9 @@ func (a *AnthropicClient) processNonStreaming(ctx context.Context, params anthro
 	streamCore.SetStopReason(adapters.MapAnthropicStopReason(resp.StopReason))
 
 	// Set token usage
-	streamCore.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
+	if resp.Usage != nil {
+		streamCore.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
+	}
 
 	// Handle structured output if needed
 	if req.ResponseSchema != nil {
@@ -321,47 +305,42 @@ func (a *AnthropicClient) processNonStreaming(ctx context.Context, params anthro
 }
 
 // ConvertToAnthropicTool creates a synthetic tool for structured output with Anthropic
-func ConvertToAnthropicTool(schema *Schema) anthropic.ToolUnionParam {
+func ConvertToAnthropicTool(schema *Schema) *anthropic.Tool {
 	if schema == nil {
-		return anthropic.ToolUnionParam{}
+		return &anthropic.Tool{}
 	}
 
-	properties := map[string]any{"data": schema.Raw}
-	required := []string{"data"}
-
-	toolParam := anthropic.ToolParam{
+	return &anthropic.Tool{
 		Name:        structuredOutputToolName,
-		Description: anthropic.String("Extract and structure data according to the specified schema"),
-		InputSchema: anthropic.ToolInputSchemaParam{
+		Description: "Extract and structure data according to the specified schema",
+		InputSchema: anthropic.InputSchema{
 			Type:       "object",
-			Properties: properties,
-			Required:   required,
+			Properties: map[string]any{"data": schema.Raw},
+			Required:   []string{"data"},
 		},
-	}
-
-	return anthropic.ToolUnionParam{
-		OfTool: &toolParam,
 	}
 }
 
 // ConvertToolToAnthropic converts a tool schema to Anthropic format.
-// Anthropic's InputSchema.Properties accepts any, so we pass the raw map directly.
-func ConvertToolToAnthropic(schema *ToolSchema) anthropic.ToolUnionParam {
+// InputSchema.Properties accepts a raw map, so we pass it directly.
+func ConvertToolToAnthropic(schema *ToolSchema) *anthropic.Tool {
 	if schema == nil {
-		return anthropic.ToolUnionParam{}
+		return &anthropic.Tool{}
 	}
-	inputSchema := anthropic.ToolInputSchemaParam{
-		Type:       "object",
-		Properties: schema.Properties(),
-		Required:   schema.Required(),
-	}
-	return anthropic.ToolUnionParam{
-		OfTool: &anthropic.ToolParam{
-			Name:        schema.Title(),
-			Description: anthropic.String(schema.Description()),
-			InputSchema: inputSchema,
+	return &anthropic.Tool{
+		Name:        schema.Title(),
+		Description: schema.Description(),
+		InputSchema: anthropic.InputSchema{
+			Type:       "object",
+			Properties: schema.Properties(),
+			Required:   schema.Required(),
 		},
 	}
+}
+
+// anthropicTextBlock builds a "text" content block.
+func anthropicTextBlock(text string) *anthropic.ContentBlock {
+	return &anthropic.ContentBlock{Type: "text", Text: text}
 }
 
 // MessagesToAnthropicParams converts messages to Anthropic message parameters
@@ -377,33 +356,42 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 		case messages.MessageRoleUser:
 			// Handle multimodal content
 			if len(msg.Parts) > 0 {
-				var blocks []anthropic.ContentBlockParamUnion
+				var blocks []*anthropic.ContentBlock
 				for _, part := range msg.Parts {
 					switch part.Type {
 					case "text":
 						if strings.TrimSpace(part.Text) != "" {
-							blocks = append(blocks, anthropic.NewTextBlock(part.Text))
+							blocks = append(blocks, anthropicTextBlock(part.Text))
 						}
 					case "image_base64":
 						// Anthropic expects base64 images with media type
-						blocks = append(blocks, anthropic.NewImageBlockBase64(part.MimeType, part.ImageData))
+						blocks = append(blocks, &anthropic.ContentBlock{
+							Type: "image",
+							Source: &anthropic.ImageSource{
+								Type:      "base64",
+								MediaType: part.MimeType,
+								Data:      part.ImageData,
+							},
+						})
 					case "image_url":
 						// For URL images, we'd need to download and convert to base64
 						// For now, skip URL images for Anthropic
 					}
 				}
 				if len(blocks) > 0 {
-					anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(blocks...))
+					anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+						Role: "user", Content: blocks,
+					})
 				}
 			} else if strings.TrimSpace(msg.Content) != "" {
 				// Backward compatibility: simple text content
-				anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(
-					anthropic.NewTextBlock(msg.Content),
-				))
+				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+					Role: "user", Content: []*anthropic.ContentBlock{anthropicTextBlock(msg.Content)},
+				})
 			}
 
 		case messages.MessageRoleAssistant:
-			var blocks []anthropic.ContentBlockParamUnion
+			var blocks []*anthropic.ContentBlock
 
 			// Check if we have preserved thinking blocks in metadata
 			if msg.Metadata != nil {
@@ -426,15 +414,22 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 					for _, block := range thinkingBlocksList {
 						blockType, _ := block["type"].(string)
 						switch blockType {
-						case string(constant.ValueOf[constant.Thinking]()):
+						case "thinking":
 							thinking, _ := block["thinking"].(string)
 							signature, _ := block["signature"].(string)
 							if signature != "" && thinking != "" {
-								blocks = append(blocks, anthropic.NewThinkingBlock(signature, thinking))
+								blocks = append(blocks, &anthropic.ContentBlock{
+									Type:      "thinking",
+									Thinking:  thinking,
+									Signature: signature,
+								})
 							}
-						case string(constant.ValueOf[constant.RedactedThinking]()):
+						case "redacted_thinking":
 							if data, _ := block["data"].(string); data != "" {
-								blocks = append(blocks, anthropic.NewRedactedThinkingBlock(data))
+								blocks = append(blocks, &anthropic.ContentBlock{
+									Type: "redacted_thinking",
+									Data: data,
+								})
 							}
 						}
 					}
@@ -442,36 +437,48 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 			}
 
 			if strings.TrimSpace(msg.Content) != "" {
-				blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+				blocks = append(blocks, anthropicTextBlock(msg.Content))
 			}
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					var input any
+					// Anthropic requires the input field even for tools with
+					// no parameters; invalid argument JSON degrades to {}.
+					input := json.RawMessage("{}")
 					if argStr := strings.TrimSpace(tc.Arguments); argStr != "" {
-						var tmp any
-						if err := json.Unmarshal([]byte(argStr), &tmp); err == nil {
-							input = tmp
+						if json.Valid([]byte(argStr)) {
+							input = json.RawMessage(argStr)
 						}
-					} else {
-						// Anthropic requires input field even for tools with no parameters
-						input = make(map[string]any)
 					}
-					blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, input, tc.Name))
+					blocks = append(blocks, &anthropic.ContentBlock{
+						Type:  "tool_use",
+						ID:    tc.ID,
+						Name:  tc.Name,
+						Input: input,
+					})
 				}
 			}
 			if len(blocks) > 0 {
-				anthropicMessages = append(anthropicMessages, anthropic.NewAssistantMessage(blocks...))
+				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+					Role: "assistant", Content: blocks,
+				})
 			}
 
 		case messages.MessageRoleTool:
 			if strings.TrimSpace(msg.ToolCallID) != "" {
-				anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(
-					anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false),
-				))
+				isError := false
+				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+					Role: "user",
+					Content: []*anthropic.ContentBlock{{
+						Type:      "tool_result",
+						ToolUseID: msg.ToolCallID,
+						Content:   []*anthropic.ContentBlock{anthropicTextBlock(msg.Content)},
+						IsError:   &isError,
+					}},
+				})
 			} else if strings.TrimSpace(msg.Content) != "" {
-				anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(
-					anthropic.NewTextBlock(msg.Content),
-				))
+				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+					Role: "user", Content: []*anthropic.ContentBlock{anthropicTextBlock(msg.Content)},
+				})
 			}
 		}
 	}

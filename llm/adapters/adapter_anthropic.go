@@ -1,12 +1,9 @@
 package adapters
 
 import (
-	"encoding/json"
-
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 )
 
 // AnthropicAdapter handles Anthropic-specific streaming patterns.
@@ -27,33 +24,37 @@ func NewAnthropicAdapter() *AnthropicAdapter {
 
 // ProcessChunk handles Anthropic streaming events
 func (a *AnthropicAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	event, ok := chunk.(anthropic.MessageStreamEventUnion)
+	event, ok := chunk.(*anthropic.StreamEvent)
 	if !ok {
 		return nil
 	}
 
 	switch event.Type {
-	case string(constant.ValueOf[constant.MessageStart]()):
+	case anthropic.EventMessageStart:
 		// Message started - capture input tokens
-		msgStart := event.AsMessageStart()
-		state.SetTokenUsage(int(msgStart.Message.Usage.InputTokens), state.GetOutputTokens())
+		if event.Message != nil && event.Message.Usage != nil {
+			state.SetTokenUsage(int(event.Message.Usage.InputTokens), state.GetOutputTokens())
+		}
 
-	case string(constant.ValueOf[constant.ContentBlockStart]()):
+	case anthropic.EventContentBlockStart:
 		a.handleContentBlockStart(event, state)
 
-	case string(constant.ValueOf[constant.ContentBlockDelta]()):
+	case anthropic.EventContentBlockDelta:
 		a.handleContentBlockDelta(event, state)
 
-	case string(constant.ValueOf[constant.ContentBlockStop]()):
+	case anthropic.EventContentBlockStop:
 		a.handleContentBlockStop(state)
 
-	case string(constant.ValueOf[constant.MessageDelta]()):
+	case anthropic.EventMessageDelta:
 		// Message delta contains stop_reason and usage stats
-		msgDelta := event.AsMessageDelta()
-		state.SetStopReason(MapAnthropicStopReason(msgDelta.Delta.StopReason))
-		state.SetTokenUsage(state.GetInputTokens(), int(msgDelta.Usage.OutputTokens))
+		if event.Delta != nil {
+			state.SetStopReason(MapAnthropicStopReason(event.Delta.StopReason))
+		}
+		if event.Usage != nil {
+			state.SetTokenUsage(state.GetInputTokens(), int(event.Usage.OutputTokens))
+		}
 
-	case string(constant.ValueOf[constant.MessageStop]()):
+	case anthropic.EventMessageStop:
 		// Message complete - nothing to do here
 	}
 
@@ -61,55 +62,48 @@ func (a *AnthropicAdapter) ProcessChunk(chunk any, state streaming.StreamStateIn
 }
 
 // handleContentBlockStart processes content block start events
-func (a *AnthropicAdapter) handleContentBlockStart(event anthropic.MessageStreamEventUnion, state streaming.StreamStateInterface) {
-	blockStart := event.AsContentBlockStart()
+func (a *AnthropicAdapter) handleContentBlockStart(event *anthropic.StreamEvent, state streaming.StreamStateInterface) {
+	if event.ContentBlock == nil {
+		return
+	}
+	a.currentBlockType = event.ContentBlock.Type
 
-	// Marshal to JSON to inspect the type
-	b, _ := json.Marshal(blockStart.ContentBlock)
-	var block map[string]any
-	if json.Unmarshal(b, &block) == nil {
-		blockType, _ := block["type"].(string)
-		a.currentBlockType = blockType
-
-		switch blockType {
-		case string(constant.ValueOf[constant.Thinking]()):
-			// Start capturing a thinking block
-			a.currentThinkingBlock = map[string]any{
-				"type":     string(constant.ValueOf[constant.Thinking]()),
-				"thinking": "", // Will be filled by deltas
-			}
-
-		case string(constant.ValueOf[constant.RedactedThinking]()):
-			// Redacted thinking arrives complete in the start event (no
-			// deltas); preserve it verbatim — it must be replayed unchanged
-			// during tool loops.
-			if data, _ := block["data"].(string); data != "" {
-				a.AddRedactedThinkingBlock(data)
-			}
-
-		case string(constant.ValueOf[constant.ToolUse]()):
-			// Initialize a new tool call
-			id, _ := block["id"].(string)
-			name, _ := block["name"].(string)
-
-			// Add tool call to state
-			state.AddToolCall(messages.ChatMessageToolCall{
-				ID:        id,
-				Name:      name,
-				Arguments: "{}", // Default to empty JSON object
-			})
-			toolCalls := state.GetToolCalls()
-			a.currentBlockIndex = len(toolCalls) - 1
+	switch event.ContentBlock.Type {
+	case "thinking":
+		// Start capturing a thinking block
+		a.currentThinkingBlock = map[string]any{
+			"type":     "thinking",
+			"thinking": "", // Will be filled by deltas
 		}
+
+	case "redacted_thinking":
+		// Redacted thinking arrives complete in the start event (no
+		// deltas); preserve it verbatim — it must be replayed unchanged
+		// during tool loops.
+		if event.ContentBlock.Data != "" {
+			a.AddRedactedThinkingBlock(event.ContentBlock.Data)
+		}
+
+	case "tool_use":
+		// Initialize a new tool call
+		state.AddToolCall(messages.ChatMessageToolCall{
+			ID:        event.ContentBlock.ID,
+			Name:      event.ContentBlock.Name,
+			Arguments: "{}", // Default to empty JSON object
+		})
+		toolCalls := state.GetToolCalls()
+		a.currentBlockIndex = len(toolCalls) - 1
 	}
 }
 
 // handleContentBlockDelta processes content block delta events
-func (a *AnthropicAdapter) handleContentBlockDelta(event anthropic.MessageStreamEventUnion, state streaming.StreamStateInterface) {
-	blockDelta := event.AsContentBlockDelta()
+func (a *AnthropicAdapter) handleContentBlockDelta(event *anthropic.StreamEvent, state streaming.StreamStateInterface) {
+	if event.Delta == nil {
+		return
+	}
 
 	// Check for thinking delta
-	if thinking := blockDelta.Delta.Thinking; thinking != "" {
+	if thinking := event.Delta.Thinking; thinking != "" {
 		// Add to current thinking block if we're capturing one
 		if a.currentThinkingBlock != nil {
 			if existingThinking, ok := a.currentThinkingBlock["thinking"].(string); ok {
@@ -122,7 +116,7 @@ func (a *AnthropicAdapter) handleContentBlockDelta(event anthropic.MessageStream
 	}
 
 	// Check for signature delta (comes after thinking content)
-	if signature := blockDelta.Delta.Signature; signature != "" {
+	if signature := event.Delta.Signature; signature != "" {
 		if a.currentThinkingBlock != nil {
 			a.currentThinkingBlock["signature"] = signature
 		}
@@ -132,17 +126,17 @@ func (a *AnthropicAdapter) handleContentBlockDelta(event anthropic.MessageStream
 	// Note: Content emission is handled by the main streaming loop
 
 	// Check if it's tool use input delta
-	if blockDelta.Delta.PartialJSON != "" && a.currentBlockType == string(constant.ValueOf[constant.ToolUse]()) {
+	if event.Delta.PartialJSON != "" && a.currentBlockType == "tool_use" {
 		// Update the last tool call's arguments
 		toolCalls := state.GetToolCalls()
 		if a.currentBlockIndex >= 0 && a.currentBlockIndex < len(toolCalls) {
 			state.UpdateToolCallAtIndex(a.currentBlockIndex, func(tc *messages.ChatMessageToolCall) {
 				if tc.Arguments == "{}" {
 					// First content, replace the default empty object
-					tc.Arguments = blockDelta.Delta.PartialJSON
+					tc.Arguments = event.Delta.PartialJSON
 				} else {
 					// Append to existing content
-					tc.Arguments += blockDelta.Delta.PartialJSON
+					tc.Arguments += event.Delta.PartialJSON
 				}
 			})
 		}
@@ -151,7 +145,7 @@ func (a *AnthropicAdapter) handleContentBlockDelta(event anthropic.MessageStream
 
 // handleContentBlockStop processes content block stop events
 func (a *AnthropicAdapter) handleContentBlockStop(state streaming.StreamStateInterface) {
-	if a.currentBlockType == string(constant.ValueOf[constant.Thinking]()) && a.currentThinkingBlock != nil {
+	if a.currentBlockType == "thinking" && a.currentThinkingBlock != nil {
 		// Save completed thinking block
 		a.thinkingBlocks = append(a.thinkingBlocks, a.currentThinkingBlock)
 		a.currentThinkingBlock = nil
@@ -190,7 +184,7 @@ func (a *AnthropicAdapter) AddThinkingBlock(thinking, signature string) {
 // replayed unchanged
 func (a *AnthropicAdapter) AddRedactedThinkingBlock(data string) {
 	a.thinkingBlocks = append(a.thinkingBlocks, map[string]any{
-		"type": string(constant.ValueOf[constant.RedactedThinking]()),
+		"type": "redacted_thinking",
 		"data": data,
 	})
 }

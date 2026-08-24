@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
-	ollamaapi "github.com/ollama/ollama/api"
 )
 
 // OllamaAdapter handles Ollama-specific streaming patterns.
@@ -23,7 +23,7 @@ func NewOllamaAdapter() *OllamaAdapter {
 
 // ProcessChunk handles Ollama streaming chunks
 func (a *OllamaAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	resp, ok := chunk.(*ollamaapi.ChatResponse)
+	resp, ok := chunk.(*ollama.ChatResponse)
 	if !ok {
 		return nil
 	}
@@ -63,7 +63,7 @@ func (a *OllamaAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 }
 
 // handleToolCalls processes Ollama's complete tool call updates
-func (a *OllamaAdapter) handleToolCalls(toolCalls []ollamaapi.ToolCall, state streaming.StreamStateInterface) {
+func (a *OllamaAdapter) handleToolCalls(toolCalls []ollama.ToolCall, state streaming.StreamStateInterface) {
 	// Ollama sends the complete set of tool calls on each update
 	// Reset and replace with the new set
 	state.ResetToolCalls()
