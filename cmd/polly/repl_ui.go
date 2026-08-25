@@ -3187,7 +3187,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		if trimmed == "" {
 			return false
 		}
-		if m.busy && immediateBusyCommand(trimmed) {
+		if m.busy && defaultReplCommands.busySafeCommand(trimmed) {
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
 			m.followBottom = true
@@ -3310,17 +3310,6 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		}
 	}
 	return false
-}
-
-func immediateBusyCommand(input string) bool {
-	if strings.Contains(input, "\n") {
-		return false
-	}
-	fields := strings.Fields(input)
-	if len(fields) == 0 {
-		return false
-	}
-	return fields[0] == "/queue" || fields[0] == "/clear"
 }
 
 // ---------------------------------------------------------------------------

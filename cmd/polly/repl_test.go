@@ -1205,17 +1205,19 @@ func TestEnterWhileBusyQueuesSlashCommandInHistory(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
 
+	// A mutating command queues behind the running turn (busy-safe read-only
+	// commands run immediately instead; see TestBusyReadOnlyCommandsRunImmediately).
 	r.model.busy = true
-	r.model.ed.setText("/help")
+	r.model.ed.setText("/retry")
 	send("<Enter>")
 
 	if r.model.ed.text() != "" {
 		t.Fatalf("editor should clear after queueing, got %q", r.model.ed.text())
 	}
-	if len(r.model.queue) != 1 || r.model.queue[0] != "/help" {
-		t.Fatalf("queue = %v, want [/help]", r.model.queue)
+	if len(r.model.queue) != 1 || r.model.queue[0] != "/retry" {
+		t.Fatalf("queue = %v, want [/retry]", r.model.queue)
 	}
-	if len(r.model.history) != 1 || r.model.history[0] != "/help" {
+	if len(r.model.history) != 1 || r.model.history[0] != "/retry" {
 		t.Fatalf("history should record the queued slash command, got %v", r.model.history)
 	}
 	select {

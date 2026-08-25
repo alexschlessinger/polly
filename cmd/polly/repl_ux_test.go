@@ -342,6 +342,28 @@ func TestBusyQueueCommandsRunImmediately(t *testing.T) {
 	}
 }
 
+func TestBusyReadOnlyCommandsRunImmediately(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.busy = true
+
+	// Read-only inspection runs right away instead of queueing.
+	r.model.ed.setText("/help")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	if len(r.model.queue) != 0 {
+		t.Fatalf("busy /help was queued instead of executed: %v", r.model.queue)
+	}
+	if joined := strings.Join(r.model.flattenTranscript(), "\n"); !strings.Contains(joined, "commands:") {
+		t.Fatalf("busy /help output missing: %q", joined)
+	}
+
+	// Mutating commands still queue behind the running turn.
+	r.model.ed.setText("/reset confirm")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	if got := r.model.queue; len(got) != 1 || got[0] != "/reset confirm" {
+		t.Fatalf("busy /reset should queue, got %v", got)
+	}
+}
+
 func TestQuietQueueSubmissionGetsVisibleAcknowledgement(t *testing.T) {
 	r := newManagedREPL(&Config{Quiet: true}, "ctx", 0, 0)
 	r.model.busy = true

@@ -22,10 +22,14 @@ type replCommandFunc func(*replCommandContext, []string) replCommandResult
 type replCommandCompleteFunc func(*replCommandContext, []string, string) []string
 
 type replCommand struct {
-	name     string
-	aliases  []string
-	usage    string
-	summary  string
+	name    string
+	aliases []string
+	usage   string
+	summary string
+	// busySafe commands run immediately while a turn is in flight instead of
+	// queueing behind it; their output may interleave with streaming assistant
+	// text. Reserve it for read-only inspection and queue management.
+	busySafe bool
 	run      replCommandFunc
 	complete replCommandCompleteFunc
 }
@@ -63,17 +67,19 @@ var (
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
 	r.register(replCommand{
-		name:    "/clear",
-		usage:   "/clear",
-		summary: "clear the display (keep conversation history)",
-		run:     replClearCommand,
+		name:     "/clear",
+		usage:    "/clear",
+		summary:  "clear the display (keep conversation history)",
+		busySafe: true,
+		run:      replClearCommand,
 	})
 	r.register(replCommand{
-		name:    "/context",
-		aliases: []string{"/stats"},
-		usage:   "/context",
-		summary: "session tokens, capacity, counts",
-		run:     replContextCommand,
+		name:     "/context",
+		aliases:  []string{"/stats"},
+		usage:    "/context",
+		summary:  "session tokens, capacity, counts",
+		busySafe: true,
+		run:      replContextCommand,
 	})
 	r.register(replCommand{
 		name:    "/exit",
@@ -88,19 +94,22 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		name:     "/get",
 		usage:    "/get <key|all>",
 		summary:  "show effective settings",
+		busySafe: true,
 		run:      replGetCommand,
 		complete: completeGetCommand,
 	})
 	r.register(replCommand{
-		name:    "/help",
-		usage:   "/help [command]",
-		summary: "show this help",
-		run:     replHelpCommand,
+		name:     "/help",
+		usage:    "/help [command]",
+		summary:  "show this help",
+		busySafe: true,
+		run:      replHelpCommand,
 	})
 	r.register(replCommand{
 		name:     "/queue",
 		usage:    "/queue [list|drop|clear|continue]",
 		summary:  "inspect or manage queued input",
+		busySafe: true,
 		run:      replQueueCommand,
 		complete: completeQueueCommand,
 	})
@@ -117,15 +126,17 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:     replRetryCommand,
 	})
 	r.register(replCommand{
-		name:    "/skills",
-		usage:   "/skills",
-		summary: "list loaded skills",
-		run:     replSkillsCommand,
+		name:     "/skills",
+		usage:    "/skills",
+		summary:  "list loaded skills",
+		busySafe: true,
+		run:      replSkillsCommand,
 	})
 	r.register(replCommand{
 		name:     "/tools",
 		usage:    "/tools [list [namespace]|show <name>]",
 		summary:  "inspect loaded tools",
+		busySafe: true,
 		run:      replToolsCommand,
 		complete: completeToolsCommand,
 	})
@@ -170,6 +181,20 @@ func (r *replCommandRegistry) dispatch(line string, ctx *replCommandContext) (ha
 	}
 	res := cmd.run(ctx, args)
 	return true, res.quit, res.err
+}
+
+// busySafeCommand reports whether input is a single-line command marked safe
+// to run while a turn is in flight (instead of queueing behind it).
+func (r *replCommandRegistry) busySafeCommand(input string) bool {
+	if strings.Contains(input, "\n") {
+		return false
+	}
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return false
+	}
+	cmd, ok := r.get(fields[0])
+	return ok && cmd.busySafe
 }
 
 func (r *replCommandRegistry) commandNames() []string {
