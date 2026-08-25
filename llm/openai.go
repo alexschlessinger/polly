@@ -495,11 +495,17 @@ func messageToResponsesInputItems(msg messages.ChatMessage, messageIndex int, re
 			}
 			callID := responseReplayToolCallID(toolCall.ID, messageIndex, toolIndex)
 			replayedToolCallIDs[callID] = struct{}{}
+			// arguments is required on the wire; parameterless calls replay
+			// as "{}".
+			arguments := toolCall.Arguments
+			if strings.TrimSpace(arguments) == "" {
+				arguments = "{}"
+			}
 			items = append(items, openai.ResponseInputItem{
 				Type:      "function_call",
 				CallID:    callID,
 				Name:      toolCall.Name,
-				Arguments: toolCall.Arguments,
+				Arguments: arguments,
 				Status:    "completed",
 			})
 		}
@@ -509,11 +515,12 @@ func messageToResponsesInputItems(msg messages.ChatMessage, messageIndex int, re
 		if _, ok := replayedToolCallIDs[callID]; !ok {
 			return nil
 		}
+		output := msg.GetContent()
 		return []openai.ResponseInputItem{
 			{
 				Type:   "function_call_output",
 				CallID: callID,
-				Output: msg.GetContent(),
+				Output: &output,
 				Status: "completed",
 			},
 		}

@@ -207,7 +207,10 @@ type ResponseInputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
-	Output    string `json:"output,omitempty"`
+	// Output is required on function_call_output items even when the tool
+	// produced nothing — a pointer so the empty string still serializes
+	// while every other item type omits the key.
+	Output *string `json:"output,omitempty"`
 }
 
 // ResponseInputContent is one part of a user message: input_text or

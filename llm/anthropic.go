@@ -466,14 +466,19 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 		case messages.MessageRoleTool:
 			if strings.TrimSpace(msg.ToolCallID) != "" {
 				isError := false
+				result := &anthropic.ContentBlock{
+					Type:      "tool_result",
+					ToolUseID: msg.ToolCallID,
+					IsError:   &isError,
+				}
+				// The API rejects empty text blocks; a tool that produced no
+				// output sends a bare tool_result (content is optional there).
+				if strings.TrimSpace(msg.Content) != "" {
+					result.Content = []*anthropic.ContentBlock{anthropicTextBlock(msg.Content)}
+				}
 				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
-					Role: "user",
-					Content: []*anthropic.ContentBlock{{
-						Type:      "tool_result",
-						ToolUseID: msg.ToolCallID,
-						Content:   []*anthropic.ContentBlock{anthropicTextBlock(msg.Content)},
-						IsError:   &isError,
-					}},
+					Role:    "user",
+					Content: []*anthropic.ContentBlock{result},
 				})
 			} else if strings.TrimSpace(msg.Content) != "" {
 				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{

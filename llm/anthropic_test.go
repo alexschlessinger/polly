@@ -421,3 +421,32 @@ func TestMessagesToAnthropicParamsRedactedThinking(t *testing.T) {
 		})
 	}
 }
+
+// TestAnthropicEmptyToolResultOmitsContent is a regression test: the API
+// rejects empty text blocks, so a tool that produced no output must send a
+// bare tool_result (content is optional there) instead of nesting one.
+func TestAnthropicEmptyToolResultOmitsContent(t *testing.T) {
+	params, _ := MessagesToAnthropicParams([]messages.ChatMessage{
+		{
+			Role: messages.MessageRoleAssistant,
+			ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "toolu_1", Name: "bash", Arguments: "{}"},
+			},
+		},
+		{Role: messages.MessageRoleTool, ToolCallID: "toolu_1", Content: "  \n"},
+	})
+	var result *anthropic.ContentBlock
+	for _, param := range params {
+		for _, block := range param.Content {
+			if block.Type == "tool_result" {
+				result = block
+			}
+		}
+	}
+	if result == nil {
+		t.Fatal("no tool_result block produced")
+	}
+	if len(result.Content) != 0 {
+		t.Fatalf("empty tool result content = %#v, want none", result.Content)
+	}
+}

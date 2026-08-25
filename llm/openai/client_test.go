@@ -164,6 +164,7 @@ func TestResponsesGoldenRequest(t *testing.T) {
 
 	maxTokens := int64(512)
 	strict := false
+	toolOutput := "y"
 	_, err := client.CreateResponse(context.Background(), &ResponsesRequest{
 		Model:        "gpt-5.4",
 		Instructions: "be brief",
@@ -175,7 +176,7 @@ func TestResponsesGoldenRequest(t *testing.T) {
 			{Type: "message", Role: "assistant", ID: "msg_1", Status: "completed",
 				Content: []ResponseOutputContent{{Type: "output_text", Text: "calling", Annotations: []any{}}}},
 			{Type: "function_call", CallID: "call_1", Name: "lookup", Arguments: `{"q":"x"}`, Status: "completed"},
-			{Type: "function_call_output", CallID: "call_1", Output: "y", Status: "completed"},
+			{Type: "function_call_output", CallID: "call_1", Output: &toolOutput, Status: "completed"},
 		},
 		MaxOutputTokens: &maxTokens,
 		Reasoning:       &ReasoningParam{Effort: ReasoningEffortHigh, Summary: "auto"},

@@ -2,7 +2,9 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm/openai"
@@ -276,8 +278,8 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 	if got := toolOutputItem.CallID; got != "call_123" {
 		t.Fatalf("function call output ID = %q, want %q", got, "call_123")
 	}
-	if got := toolOutputItem.Output; got != `{"temp_f":65}` {
-		t.Fatalf("function call output = %q, want %q", got, `{"temp_f":65}`)
+	if got := toolOutputItem.Output; got == nil || *got != `{"temp_f":65}` {
+		t.Fatalf("function call output = %v, want %q", got, `{"temp_f":65}`)
 	}
 
 	if params.Text == nil || params.Text.Format == nil || params.Text.Format.Type != "json_schema" {
@@ -659,5 +661,39 @@ func TestToolToResponsesFunctionToolStrictModeDowngradesOptionalNestedField(t *t
 	originalFilters := toolSchema.Properties()["filters"].(map[string]any)
 	if _, mutated := originalFilters["additionalProperties"]; mutated {
 		t.Fatalf("expected original nested schema to remain unmodified, got %#v", originalFilters["additionalProperties"])
+	}
+}
+
+// TestResponsesReplayEmptyToolOutput is a regression test: an empty tool
+// result must still serialize an "output" key on its function_call_output
+// item (the API 400s with "Missing required parameter: 'input[N].output'"
+// when omitempty drops it), and a parameterless call replays with "{}".
+func TestResponsesReplayEmptyToolOutput(t *testing.T) {
+	msgs := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "what images are in assets"},
+		{
+			Role: messages.MessageRoleAssistant,
+			ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "call_1", Name: "bash", Arguments: ""},
+			},
+		},
+		{Role: messages.MessageRoleTool, ToolCallID: "call_1", Content: ""},
+	}
+	items, _ := messagesToResponsesInput(msgs)
+	if len(items) != 3 {
+		t.Fatalf("item count = %d, want 3", len(items))
+	}
+	if got := items[1].Arguments; got != "{}" {
+		t.Fatalf("empty arguments replay = %q, want {}", got)
+	}
+	if items[2].Type != "function_call_output" || items[2].Output == nil || *items[2].Output != "" {
+		t.Fatalf("empty tool output item = %#v, want output pointer to empty string", items[2])
+	}
+	wire, err := json.Marshal(items[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"output":""`) {
+		t.Fatalf("serialized item %s must carry an explicit empty output", wire)
 	}
 }
