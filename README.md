@@ -127,8 +127,8 @@ Slash commands inside the TUI:
 /exit  (/quit)               Leave the TUI
 ```
 
-Ctrl-C interrupts an in-flight turn; pressing it again (or at an idle prompt)
-quits.
+Ctrl-C or Esc interrupts an in-flight turn; pressing Ctrl-C again (or at an
+idle prompt) quits.
 
 ### Model Selection
 

@@ -1023,6 +1023,42 @@ func TestHandleInterruptCancelsThenQuits(t *testing.T) {
 	}
 }
 
+func TestEscapeCancelsTurnButNeverQuits(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	canceled := false
+	r.turnCancel = func() { canceled = true }
+	r.model.busy = true
+	r.model.state = turnStateStreaming
+	esc := ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"}
+
+	// Escape during a turn cancels it like Ctrl-C.
+	if quit := r.handleEvent(esc); quit {
+		t.Fatal("escape should not quit")
+	}
+	if !canceled {
+		t.Fatal("escape should cancel the turn context")
+	}
+	if !r.model.canceling {
+		t.Fatal("escape should mark canceling")
+	}
+
+	// A second Escape while winding down is a no-op, never a quit.
+	if quit := r.handleEvent(esc); quit {
+		t.Fatal("second escape should not quit")
+	}
+
+	// Escape at an idle prompt does nothing.
+	r.model.busy = false
+	r.model.canceling = false
+	r.model.ed.setText("draft")
+	if quit := r.handleEvent(esc); quit {
+		t.Fatal("escape at idle should not quit")
+	}
+	if got := r.model.ed.text(); got != "draft" {
+		t.Fatalf("escape at idle should keep the draft, got %q", got)
+	}
+}
+
 func TestAbandonCanceledTurnRestoresPromptAndInvalidatesCallbacks(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model

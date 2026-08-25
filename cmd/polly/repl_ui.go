@@ -2528,9 +2528,19 @@ func (r *managedREPL) handleInterrupt() bool {
 		r.requestQuit()
 		return true
 	}
+	r.cancelBusyTurn("^C cancel requested")
+	return false
+}
+
+// cancelBusyTurn cancels the in-flight turn: freezes the visible partial,
+// pauses the queue, cancels the turn context, and denies any pending approval
+// so the turn goroutine isn't parked on the reply channel. Caller must hold
+// m.mu and ensure m.busy && !m.canceling.
+func (r *managedREPL) cancelBusyTurn(notice string) {
+	m := r.model
 	m.canceling = true
 	// Freeze the visible partial immediately, but do not label it unsaved until
-	// the turn actually settles as canceled. Completion and Ctrl-C can race; a
+	// the turn actually settles as canceled. Completion and cancel can race; a
 	// successful result must never retain a false "not saved" label.
 	m.finishAssistantBlock("")
 	m.queueResumeAfterTurn = false
@@ -2538,8 +2548,7 @@ func (r *managedREPL) handleInterrupt() bool {
 	m.updateQueueHint()
 	r.cancelTurn()
 	m.denyApprovalLocked()
-	m.appendNoticeLine("^C cancel requested")
-	return false
+	m.appendNoticeLine(notice)
 }
 
 // handleSearchKey processes one key while reverse-i-search is active. Enter (or
@@ -3146,6 +3155,13 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	// submitting immediately. Editing/history/search keys all work as usual.
 
 	switch e.ID {
+	case "<Escape>":
+		// Escape cancels an in-flight turn like Ctrl-C, but never quits: at
+		// idle (or while already canceling) it just dismisses slash hints.
+		m.clearSlashHints()
+		if m.busy && !m.canceling {
+			r.cancelBusyTurn("esc cancel requested")
+		}
 	case "<C-d>":
 		if m.ed.empty() && !m.busy {
 			m.clearSlashHints()

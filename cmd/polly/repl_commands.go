@@ -223,7 +223,7 @@ func keyHelpLines() []string {
 		"  Enter             send message",
 		"  Ctrl-J            newline (multi-line input)",
 		"  Type /            list commands; Tab completes",
-		"  Ctrl-C            interrupt turn (twice to quit)",
+		"  Ctrl-C / Esc      interrupt turn (Ctrl-C twice to quit)",
 		"  Up / Down         move line; recall history at top/bottom",
 		"  Ctrl-R            reverse-search history",
 		"  PgUp / PgDn       scroll transcript",
