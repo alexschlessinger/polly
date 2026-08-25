@@ -2829,7 +2829,7 @@ func (r *managedREPL) transcriptHeight() int {
 	inputRows := r.model.inputRows()
 	dividerRows := dividerRowCount(h, inputRows, statusRows, r.model.quiet)
 	contentHeight := h - inputRows - statusRows - dividerRows
-	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible)
+	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible, r.images != nil)
 	height := contentHeight - logoRows
 	if height < 1 {
 		return 1
@@ -2951,7 +2951,7 @@ func (r *managedREPL) render() {
 	input, inputRows, curRow, curCol, editable := r.model.renderInputForTerminal(inputMaxRows, w)
 	dividerRows := dividerRowCount(h, inputRows, statusRows, r.model.quiet)
 	contentHeight := h - inputRows - statusRows - dividerRows
-	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible)
+	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible, r.images != nil)
 	transcriptHeight := contentHeight - logoRows
 	if transcriptHeight < 0 {
 		transcriptHeight = 0
@@ -2985,6 +2985,15 @@ func (r *managedREPL) render() {
 	)
 	r.model.mu.Unlock()
 
+	if logoRows == imageLogoHeight && r.images != nil {
+		// The image splash rides the same placement pipeline as thumbnails:
+		// its band is blank in the text layer and the manager draws, diffs,
+		// and releases it like any other placement.
+		if logo, ok := startupLogoPlacement(w, imageCellWidth, imageCellHeight); ok {
+			imagePlacements = append([]terminalImagePlacement{logo}, imagePlacements...)
+		}
+	}
+
 	imagesChanged := false
 	if r.images != nil {
 		imagesChanged = r.images.prepare(imagePlacements)
@@ -3000,7 +3009,11 @@ func (r *managedREPL) render() {
 	r.transcriptW.PinBottom = pinTranscriptBottom
 	r.transcriptW.TopRow = topRow
 	r.transcriptW.OverlayBottom = overlay
-	r.logoW.Rows = pollyLogoRows(w)
+	if logoRows == imageLogoHeight {
+		r.logoW.Rows = make([][]ui.Cell, logoRows)
+	} else {
+		r.logoW.Rows = pollyLogoRows(w)
+	}
 	r.logoW.TopRow = 0
 	r.logoW.OverlayBottom = nil
 	r.inputW.Text = input

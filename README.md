@@ -125,7 +125,9 @@ maximum 50-column by 10-row box, accounting for rectangular terminal cells. Set
 `POLLYTOOL_IMAGE_PROTOCOL=kitty`, `sixel`, or `none` to override auto-detection.
 Remote images, paths buried in prose/JSON, and paths inside code blocks are not
 opened. tmux and Zellij currently use the caption/path fallback unless the
-protocol is explicitly overridden.
+protocol is explicitly overridden. On image-capable terminals the startup
+splash also draws the polly logo as a native image (embedded in the binary);
+elsewhere, and on short terminals, it keeps the half-block ANSI bird.
 
 You can also send images *to* the model from the composer. Typing a path to an
 existing local image (relative paths resolve from Polly's working directory)

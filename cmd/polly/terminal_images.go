@@ -121,13 +121,14 @@ func (m *terminalImageManager) prepare(placements []terminalImagePlacement) bool
 	desired := make([]desiredTerminalImage, 0, len(placements))
 	geometry := m.geometryVersion()
 	for _, placement := range placements {
-		if placement.Path == "" || placement.Cols <= 0 || placement.Rows <= 0 || placement.X < 0 || placement.Y < 0 {
+		if (placement.Path == "" && placement.Embedded == "") ||
+			placement.Cols <= 0 || placement.Rows <= 0 || placement.X < 0 || placement.Y < 0 {
 			continue
 		}
 		desired = append(desired, desiredTerminalImage{
 			terminalImagePlacement: placement,
 			version: fmt.Sprintf("%s%s:thumb:%dx%d:%t",
-				localImageVersion(placement.Path), geometry,
+				placementImageVersion(placement), geometry,
 				placement.Cols, placement.Rows, placement.FitByRows),
 		})
 	}
@@ -169,6 +170,29 @@ func localImageVersion(path string) string {
 		return path + ":missing"
 	}
 	return fmt.Sprintf("%s:%d:%d", path, info.Size(), info.ModTime().UnixNano())
+}
+
+// placementImageVersion identifies the pixel source of a placement. Embedded
+// assets are fixed at compile time, so their name and length suffice.
+func placementImageVersion(placement terminalImagePlacement) string {
+	if placement.Embedded != "" {
+		return fmt.Sprintf("embedded:%s:%d", placement.Embedded, len(embeddedTerminalImages[placement.Embedded]))
+	}
+	return localImageVersion(placement.Path)
+}
+
+// loadPlacementImage decodes a placement's pixels from its embedded asset or
+// its file on disk.
+func loadPlacementImage(placement terminalImagePlacement) (image.Image, error) {
+	if placement.Embedded != "" {
+		data, ok := embeddedTerminalImages[placement.Embedded]
+		if !ok || len(data) == 0 {
+			return nil, fmt.Errorf("unknown embedded image %q", placement.Embedded)
+		}
+		img, _, err := image.Decode(bytes.NewReader(data))
+		return img, err
+	}
+	return loadLocalImage(placement.Path)
 }
 
 func desiredTerminalImagesEqual(a, b []desiredTerminalImage) bool {
@@ -231,7 +255,7 @@ func (m *terminalImageManager) commitKitty() {
 	for _, desired := range m.desired {
 		imageID, ok := m.kittyUploads[desired.version]
 		if !ok {
-			img, err := loadLocalImage(desired.Path)
+			img, err := loadPlacementImage(desired.terminalImagePlacement)
 			if err != nil {
 				continue
 			}
@@ -275,7 +299,7 @@ func (m *terminalImageManager) commitSixel() {
 		cacheKey := fmt.Sprintf("%s:%dx%d", desired.version, desired.Cols*cw, desired.Rows*ch)
 		data, ok := m.sixelCache[cacheKey]
 		if !ok {
-			img, err := loadLocalImage(desired.Path)
+			img, err := loadPlacementImage(desired.terminalImagePlacement)
 			if err != nil {
 				continue
 			}

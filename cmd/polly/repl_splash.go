@@ -103,9 +103,17 @@ func pollyLogoRows(width int) [][]ui.Cell {
 }
 
 // startupLogoRowCount preserves at least one transcript row. This keeps the
-// normal TUI usable immediately even when the terminal is short.
-func startupLogoRowCount(contentHeight int, visible bool) int {
-	if !visible || contentHeight <= startupLogoHeight {
+// normal TUI usable immediately even when the terminal is short. Terminals
+// with native graphics get the taller image splash; when they are too short
+// for it they degrade to the half-block art, then to nothing.
+func startupLogoRowCount(contentHeight int, visible, nativeImages bool) int {
+	if !visible {
+		return 0
+	}
+	if nativeImages && contentHeight > imageLogoHeight {
+		return imageLogoHeight
+	}
+	if contentHeight <= startupLogoHeight {
 		return 0
 	}
 	return startupLogoHeight

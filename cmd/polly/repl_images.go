@@ -66,8 +66,11 @@ type transcriptImageSpan struct {
 }
 
 type terminalImagePlacement struct {
-	Key        string
-	Path       string
+	Key  string
+	Path string
+	// Embedded names a compile-time asset in embeddedTerminalImages instead
+	// of a file on disk. A string key keeps the struct comparable.
+	Embedded   string
 	X, Y       int
 	Cols, Rows int
 	FitByRows  bool
