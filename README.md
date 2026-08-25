@@ -138,12 +138,30 @@ image file onto the terminal attaches it (a paste consisting only of image
 paths is treated as a drop), and `/attach <path>` does the same explicitly —
 use `/attach` for paths containing spaces.
 Each attachment appears as a literal `[image #N]` token at the cursor — delete
-the token to drop the attachment, reorder or reuse it freely; the numbering is
-stable for the whole session, so a recalled or retried prompt re-sends the same
-image. On submit the prompt echoes with thumbnails and the images are sent to
-the model as native image blocks (downscaled to at most 1568px on the long
-edge before upload). Clipboard captures are stored under the user cache
-directory (`pollytool/attachments`) and swept after two weeks.
+the token to drop the attachment, or reorder and reuse it freely. When input is
+accepted, Polly prepares the exact image payload; queued turns and `/retry`
+reuse those bytes even if the source file changes or disappears. File-backed
+sessions persist prepared images; if the last image turn is incomplete after a
+reload, `/retry` replays those exact bytes. Attached text bodies and context
+imports remain non-retryable because they cannot be reconstructed safely from
+prompt text.
+
+A composer prompt may reference at most 16 unique images, and every
+model-visible message is limited to 16 image parts. Each base64-encoded image
+is limited to 10,000,000 bytes (10 MB), and image data in the model-visible
+history plus the candidate prompt is limited to 16 MiB in total, leaving
+request headroom under the documented Gemini and Anthropic inline limits.
+Images are downscaled to at most 1568px on the long edge before upload; PNG,
+JPEG, and WebP pass through when already within the upload limits, while
+animated GIFs are reduced to their first frame and normalized to PNG, and BMP
+images are normalized to PNG.
+Those formats are the portable intersection documented by
+[OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision),
+[Anthropic vision](https://platform.claude.com/docs/en/build-with-claude/vision),
+and [Gemini image understanding](https://ai.google.dev/gemini-api/docs/image-understanding).
+Clipboard captures and exact prepared-preview files are stored under the user
+cache directory (`pollytool/attachments`) and swept after two weeks. Durable
+retry and reload data lives in the session, not this preview cache.
 
 Slash commands inside the TUI:
 
