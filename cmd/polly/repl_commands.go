@@ -157,11 +157,71 @@ func (r *replCommandRegistry) register(cmd replCommand) {
 }
 
 func (r *replCommandRegistry) get(name string) (replCommand, bool) {
-	idx, ok := r.byName[name]
+	idx, ok := r.byName[strings.ToLower(name)]
 	if !ok {
 		return replCommand{}, false
 	}
 	return r.commands[idx], true
+}
+
+// unknownCommandNotice builds the notice for input whose first field is not a
+// registered command, suggesting the closest name for near misses.
+func (r *replCommandRegistry) unknownCommandNotice(input string) string {
+	name := input
+	if fields := strings.Fields(input); len(fields) > 0 {
+		name = fields[0]
+	}
+	if suggestion := r.closestCommand(name); suggestion != "" {
+		return "unknown command: " + name + " — did you mean " + suggestion + "?"
+	}
+	return "unknown command: " + name + " (try /help)"
+}
+
+// closestCommand returns the registered command or alias nearest to name — a
+// unique prefix extension, or the closest name within edit distance 2 — or ""
+// when nothing is near enough to suggest. Suggestions are display-only; a near
+// miss never dispatches.
+func (r *replCommandRegistry) closestCommand(name string) string {
+	name = strings.ToLower(name)
+	names := r.commandNames()
+	var prefixed []string
+	for _, cand := range names {
+		if strings.HasPrefix(cand, name) {
+			prefixed = append(prefixed, cand)
+		}
+	}
+	if len(prefixed) == 1 {
+		return prefixed[0]
+	}
+	best, bestDist := "", 3
+	for _, cand := range names {
+		if d := editDistance(name, cand); d < bestDist {
+			best, bestDist = cand, d
+		}
+	}
+	return best
+}
+
+// editDistance is the Levenshtein distance between two short strings.
+func editDistance(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	cur := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			cur[j] = min(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(rb)]
 }
 
 func (r *replCommandRegistry) dispatch(line string, ctx *replCommandContext) (handled, quit bool, err error) {
@@ -232,7 +292,7 @@ func (r *replCommandRegistry) helpLines() []string {
 func (r *replCommandRegistry) helpFor(name string) []string {
 	cmd, ok := r.get(name)
 	if !ok {
-		return []string{"unknown command: " + name + " (try /help)"}
+		return []string{r.unknownCommandNotice(name)}
 	}
 	names := append([]string{cmd.name}, cmd.aliases...)
 	return []string{

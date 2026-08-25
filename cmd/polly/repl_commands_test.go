@@ -442,6 +442,46 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 	}
 }
 
+func TestUnknownCommandNotice(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// Near misses by edit distance.
+		{"/hlep", "unknown command: /hlep — did you mean /help?"},
+		{"/quti", "unknown command: /quti — did you mean /quit?"},
+		// Unique prefixes.
+		{"/con", "unknown command: /con — did you mean /context?"},
+		{"/stat", "unknown command: /stat — did you mean /stats?"},
+		// Only the command token is named, not the arguments.
+		{"/hlep me now", "unknown command: /hlep — did you mean /help?"},
+		// Ambiguous prefix or nothing close: fall back to /help.
+		{"/q", "unknown command: /q (try /help)"},
+		{"/bogus", "unknown command: /bogus (try /help)"},
+	}
+	for _, c := range cases {
+		if got := defaultReplCommands.unknownCommandNotice(c.in); got != c.want {
+			t.Errorf("unknownCommandNotice(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestDispatchIsCaseInsensitive(t *testing.T) {
+	ctx := &replCommandContext{}
+	var replies []string
+	ctx.reply = func(line string) error {
+		replies = append(replies, line)
+		return nil
+	}
+	handled, quit, err := defaultReplCommands.dispatch("/HELP", ctx)
+	if err != nil || !handled || quit {
+		t.Fatalf("dispatch(/HELP) handled=%v quit=%v err=%v", handled, quit, err)
+	}
+	if len(replies) == 0 || replies[0] != "commands:" {
+		t.Fatalf("dispatch(/HELP) replies = %v", replies)
+	}
+}
+
 func TestHintFor(t *testing.T) {
 	cases := []struct {
 		in   string

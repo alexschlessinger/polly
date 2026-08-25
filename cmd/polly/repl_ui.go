@@ -2343,7 +2343,7 @@ func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.
 		// handleEvent); requestQuit does not, so release before quitting.
 		handled, quit := r.runCommand(text)
 		if !handled {
-			r.model.appendNoticeLine("unknown command: " + text + " (try /help)")
+			r.model.appendNoticeLine(defaultReplCommands.unknownCommandNotice(text))
 		}
 		// /retry is a command that starts a turn. Consume the prompt it placed on
 		// pending before looking at later queue entries; otherwise a following
@@ -3197,7 +3197,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				return true
 			}
 			if !handled {
-				m.appendNoticeLine("unknown command: " + trimmed + " (try /help)")
+				m.appendNoticeLine(defaultReplCommands.unknownCommandNotice(trimmed))
 			}
 			return false
 		}
@@ -3226,7 +3226,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				return true
 			}
 			if !handled {
-				m.appendNoticeLine("unknown command: " + trimmed + " (try /help)")
+				m.appendNoticeLine(defaultReplCommands.unknownCommandNotice(trimmed))
 			}
 			return false
 		}
@@ -3584,7 +3584,7 @@ func runREPLLoopWithCommands(reader *bufio.Reader, promptWriter io.Writer, comma
 			if handled {
 				continue
 			}
-			if _, err := fmt.Fprintf(promptWriter, "unknown command: %s (try /help)\n", trimmed); err != nil {
+			if _, err := fmt.Fprintln(promptWriter, defaultReplCommands.unknownCommandNotice(trimmed)); err != nil {
 				return err
 			}
 			continue
