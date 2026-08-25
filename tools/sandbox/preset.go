@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -299,14 +301,22 @@ func gitWorkspaceGuardrailPolicy(dir string) (gitWorkspacePolicy, error) {
 		return gitWorkspacePolicy{}, err
 	}
 	protected := minimalGitGuardrailPaths(paths)
-	if err := rejectEffectiveHooksPaths(dir, repositories, protected); err != nil {
-		return gitWorkspacePolicy{}, err
-	}
-	return gitWorkspacePolicy{
+	policy := gitWorkspacePolicy{
 		workspace:    filepath.Clean(dir),
 		repositories: repositories,
 		protected:    protected,
-	}, nil
+		audited:      &gitAuditMemo{},
+	}
+	if len(repositories) != 0 {
+		writableRoots, err := gitAuditWritableRoots(dir)
+		if err != nil {
+			return gitWorkspacePolicy{}, err
+		}
+		if err := policy.auditHooksAndConfig(protected, writableRoots); err != nil {
+			return gitWorkspacePolicy{}, err
+		}
+	}
+	return policy, nil
 }
 
 type gitRepositoryContext struct {
@@ -317,31 +327,86 @@ type gitRepositoryContext struct {
 
 // gitWorkspacePolicy is the immutable result of the workspace preset's Git
 // discovery pass. Config keeps it private and carries it through Merge so New
-// can re-run the comparatively cheap config/hook audit after all writable path
-// overlays are known, without walking every repository once per tool.
+// can re-run the config/hook audit after all writable path overlays are known,
+// without walking every repository once per tool.
 type gitWorkspacePolicy struct {
 	workspace    string
 	repositories []gitRepositoryContext
 	protected    []string
+	// audited is shared by every clone of this policy so the subprocess-heavy
+	// config/hook audit runs once per distinct writable-root/protected input,
+	// not once per PrepareConfig/New call. Test-constructed policies leave it
+	// nil and re-audit on every call.
+	audited *gitAuditMemo
 }
 
-// rejectEffectiveHooksPaths closes the remaining hook-planting route from
-// trusted global/system Git config. Protecting repository-local config and
-// .git/hooks is not enough when an existing core.hooksPath redirects Git to a
-// writable worktree directory such as .githooks. Git itself is used only as a
-// config resolver here so conditional includes and precedence match the host's
-// next Git invocation; no repository hook or worktree command is executed.
-func rejectEffectiveHooksPaths(workspace string, repositories []gitRepositoryContext, protected []string) error {
-	if len(repositories) == 0 {
+// gitAuditMemo records audit inputs that already passed for a policy's
+// repositories. The audit's verdict is a function of the repository set, the
+// writable roots, the protected paths, and on-disk Git config; repeating it
+// with an identical fingerprint (e.g. PrepareConfig followed by New during one
+// startup) re-reads the same config to reach the same verdict, so a recorded
+// pass is skipped. A merge that widens the writable roots produces a new
+// fingerprint and still triggers a full re-audit.
+type gitAuditMemo struct {
+	mu     sync.Mutex
+	passed map[string]bool
+}
+
+func (m *gitAuditMemo) alreadyPassed(fingerprint string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.passed[fingerprint]
+}
+
+func (m *gitAuditMemo) recordPass(fingerprint string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.passed == nil {
+		m.passed = make(map[string]bool)
+	}
+	m.passed[fingerprint] = true
+}
+
+// auditFingerprint canonicalizes the audit inputs: order and duplicates do not
+// affect the verdict (both slices are matched any-of), so sorted deduplicated
+// sets keep e.g. ParsePreset's protected list and the merged
+// protected+DenyWritePaths list from reading as different audits.
+func auditFingerprint(protected, writableRoots []string) string {
+	canonical := func(values []string) []string {
+		out := slices.Clone(values)
+		slices.Sort(out)
+		return slices.Compact(out)
+	}
+	return strings.Join(canonical(writableRoots), "\x00") + "\x01" + strings.Join(canonical(protected), "\x00")
+}
+
+// auditHooksAndConfig runs the config/hook audit for this policy's
+// repositories unless an identical audit already passed.
+func (p *gitWorkspacePolicy) auditHooksAndConfig(protected, writableRoots []string) error {
+	fingerprint := auditFingerprint(protected, writableRoots)
+	if p.audited.alreadyPassed(fingerprint) {
 		return nil
 	}
-	writableRoots, err := gitAuditWritableRoots(workspace)
-	if err != nil {
+	if err := rejectEffectiveHooksPathsWithWritableRoots(p.repositories, protected, writableRoots); err != nil {
 		return err
 	}
-	return rejectEffectiveHooksPathsWithWritableRoots(repositories, protected, writableRoots)
+	p.audited.recordPass(fingerprint)
+	return nil
 }
 
+// rejectEffectiveHooksPathsWithWritableRoots closes the remaining
+// hook-planting route from trusted global/system Git config. Protecting
+// repository-local config and .git/hooks is not enough when an existing
+// core.hooksPath redirects Git to a writable worktree directory such as
+// .githooks. Git itself is used only as a config resolver here so conditional
+// includes and precedence match the host's next Git invocation; no repository
+// hook or worktree command is executed.
 func rejectEffectiveHooksPathsWithWritableRoots(repositories []gitRepositoryContext, protected, writableRoots []string) error {
 	if len(repositories) == 0 {
 		return nil
@@ -351,23 +416,83 @@ func rejectEffectiveHooksPathsWithWritableRoots(repositories []gitRepositoryCont
 		return err
 	}
 
-	for _, repository := range repositories {
-		if err := rejectWritableGitConfigSources(gitPath, repository, writableRoots, protected); err != nil {
-			return err
-		}
-
-		hooksPath, configured, err := effectiveHooksPath(gitPath, repository)
+	// Repositories are audited concurrently: the audit is dominated by git
+	// subprocess round-trips, and repositories in one workspace share most of
+	// their config sources through the query cache. Errors keep repository
+	// order so a multi-repository failure reports deterministically.
+	cache := newGitAuditQueryCache()
+	auditErrs := make([]error, len(repositories))
+	var wg sync.WaitGroup
+	for i, repository := range repositories {
+		wg.Add(1)
+		go func(i int, repository gitRepositoryContext) {
+			defer wg.Done()
+			auditErrs[i] = auditRepositoryHooksAndConfig(gitPath, repository, writableRoots, protected, cache)
+		}(i, repository)
+	}
+	wg.Wait()
+	for _, err := range auditErrs {
 		if err != nil {
 			return err
 		}
-		if !configured {
-			continue
-		}
-		if err := validateConfiguredHooksPath(hooksPath, "effective core.hooksPath", writableRoots, protected); err != nil {
-			return fmt.Errorf("repository %q: %w", repository.workTree, err)
-		}
 	}
 	return nil
+}
+
+func auditRepositoryHooksAndConfig(gitPath string, repository gitRepositoryContext, writableRoots, protected []string, cache *gitAuditQueryCache) error {
+	if err := rejectWritableGitConfigSources(gitPath, repository, writableRoots, protected, cache); err != nil {
+		return err
+	}
+
+	hooksPath, configured, err := effectiveHooksPath(gitPath, repository)
+	if err != nil {
+		return err
+	}
+	if !configured {
+		return nil
+	}
+	if err := validateConfiguredHooksPath(hooksPath, "effective core.hooksPath", writableRoots, protected); err != nil {
+		return fmt.Errorf("repository %q: %w", repository.workTree, err)
+	}
+	return nil
+}
+
+// gitAuditQueryCache deduplicates git subprocess queries whose result does not
+// depend on the repository being audited, keyed by the full command identity.
+// Config files shared by several repositories in one workspace (the global and
+// system configs, at minimum) are then read once per audit instead of once per
+// repository.
+type gitAuditQueryCache struct {
+	mu      sync.Mutex
+	entries map[string]*gitAuditQueryEntry
+}
+
+type gitAuditQueryEntry struct {
+	once   sync.Once
+	output []byte
+	found  bool
+	err    error
+}
+
+func newGitAuditQueryCache() *gitAuditQueryCache {
+	return &gitAuditQueryCache{entries: make(map[string]*gitAuditQueryEntry)}
+}
+
+func (c *gitAuditQueryCache) do(key string, run func() ([]byte, bool, error)) ([]byte, bool, error) {
+	if c == nil {
+		return run()
+	}
+	c.mu.Lock()
+	entry := c.entries[key]
+	if entry == nil {
+		entry = &gitAuditQueryEntry{}
+		c.entries[key] = entry
+	}
+	c.mu.Unlock()
+	entry.once.Do(func() {
+		entry.output, entry.found, entry.err = run()
+	})
+	return entry.output, entry.found, entry.err
 }
 
 // trustedGitExecutable resolves PATH without executing it, then accepts only
@@ -621,6 +746,13 @@ func gitAuditWritableRoots(workspace string) ([]string, error) {
 	if runtime.GOOS == "darwin" {
 		roots = append(roots, "/private/tmp")
 		if temp := os.TempDir(); temp != "" {
+			// Canonicalize like the workspace above. Path checks match by
+			// filesystem identity either way, but the audit memo fingerprints
+			// roots by string, and PrepareConfig contributes this same grant
+			// in canonical form after freezing authority paths.
+			if real, err := filepath.EvalSymlinks(temp); err == nil {
+				temp = real
+			}
 			roots = append(roots, temp)
 		}
 	}
@@ -645,13 +777,14 @@ func applyFinalGitPolicyWithHostWritable(cfg Config, hostWritable func(string) b
 	if cfg.DenyWrite || len(cfg.gitPolicies) == 0 {
 		return cfg, nil
 	}
-	for _, policy := range cfg.gitPolicies {
+	for i := range cfg.gitPolicies {
+		policy := &cfg.gitPolicies[i]
 		writableRoots, err := gitAuditWritableRootsForConfig(policy.workspace, cfg.WritablePaths, hostWritable)
 		if err != nil {
 			return Config{}, fmt.Errorf("revalidate workspace Git policy for %q: %w", policy.workspace, err)
 		}
 		protected := concatStrings(policy.protected, cfg.DenyWritePaths)
-		if err := rejectEffectiveHooksPathsWithWritableRoots(policy.repositories, protected, writableRoots); err != nil {
+		if err := policy.auditHooksAndConfig(protected, writableRoots); err != nil {
 			return Config{}, fmt.Errorf("revalidate workspace Git policy for %q after sandbox config merge: %w", policy.workspace, err)
 		}
 	}
@@ -681,9 +814,9 @@ func gitAuditWritableRootsForConfig(workspace string, configured []string, hostW
 	return roots, nil
 }
 
-func rejectWritableGitConfigSources(gitPath string, repository gitRepositoryContext, writableRoots, protected []string) error {
+func rejectWritableGitConfigSources(gitPath string, repository gitRepositoryContext, writableRoots, protected []string, cache *gitAuditQueryCache) error {
 	base := gitRepositoryBase(repository)
-	selectors, err := gitConfigSelectorPaths(gitPath, base)
+	selectors, err := gitConfigSelectorPaths(gitPath, base, cache)
 	if err != nil {
 		return fmt.Errorf("resolve Git config selectors for repository %q: %w", repository.workTree, err)
 	}
@@ -752,7 +885,7 @@ func rejectWritableGitConfigSources(gitPath string, repository gitRepositoryCont
 			configFiles = append(configFiles, includePath)
 		}
 	}
-	if err := inspectGitConfigFiles(gitPath, repository, configFiles, writableRoots, protected); err != nil {
+	if err := inspectGitConfigFiles(gitPath, repository, configFiles, writableRoots, protected, cache); err != nil {
 		return fmt.Errorf("repository %q: %w", repository.workTree, err)
 	}
 	return nil
@@ -763,7 +896,7 @@ type namedGitConfigPath struct {
 	path string
 }
 
-func gitConfigSelectorPaths(gitPath, base string) ([]namedGitConfigPath, error) {
+func gitConfigSelectorPaths(gitPath, base string, cache *gitAuditQueryCache) ([]namedGitConfigPath, error) {
 	var paths []namedGitConfigPath
 	global, globalSet := os.LookupEnv("GIT_CONFIG_GLOBAL")
 	if globalSet {
@@ -807,7 +940,7 @@ func gitConfigSelectorPaths(gitPath, base string) ([]namedGitConfigPath, error) 
 	} else {
 		noSystem, noSystemSet := os.LookupEnv("GIT_CONFIG_NOSYSTEM")
 		if !noSystemSet || !gitConfigBooleanTrue(noSystem) {
-			path, err := compiledSystemGitConfigPath(gitPath)
+			path, err := compiledSystemGitConfigPath(gitPath, cache)
 			if err != nil {
 				return nil, err
 			}
@@ -819,11 +952,14 @@ func gitConfigSelectorPaths(gitPath, base string) ([]namedGitConfigPath, error) 
 	return paths, nil
 }
 
-func compiledSystemGitConfigPath(gitPath string) (string, error) {
-	cmd := exec.Command(gitPath, "var", "GIT_CONFIG_SYSTEM")
-	cmd.Dir = string(filepath.Separator)
-	cmd.Env = gitFileAuditEnvironment()
-	output, err := cmd.Output()
+func compiledSystemGitConfigPath(gitPath string, cache *gitAuditQueryCache) (string, error) {
+	output, _, err := cache.do("var\x00"+gitPath, func() ([]byte, bool, error) {
+		cmd := exec.Command(gitPath, "var", "GIT_CONFIG_SYSTEM")
+		cmd.Dir = string(filepath.Separator)
+		cmd.Env = gitFileAuditEnvironment()
+		out, runErr := cmd.Output()
+		return out, runErr == nil, runErr
+	})
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -899,7 +1035,7 @@ func parseNULPairs(output []byte, description string) ([]gitConfigPair, error) {
 // itself. This intentionally ignores includeIf conditions: a currently
 // inactive file may become active after the user changes branch or worktree,
 // so its hook path must be safe before the sandbox can start.
-func inspectGitConfigFiles(gitPath string, repository gitRepositoryContext, initial []string, writableRoots, protected []string) error {
+func inspectGitConfigFiles(gitPath string, repository gitRepositoryContext, initial []string, writableRoots, protected []string, cache *gitAuditQueryCache) error {
 	queue := append([]string(nil), initial...)
 	seen := make(map[string]bool)
 	devNullInfo, _ := os.Stat("/dev/null")
@@ -934,17 +1070,26 @@ func inspectGitConfigFiles(gitPath string, repository gitRepositoryContext, init
 		if hasMultipleLinks(info) {
 			return fmt.Errorf("Git config source %q has multiple hard links and cannot be pinned safely", configPath)
 		}
-		output, found, err := runGitFileConfigQuery(gitPath, repository, configPath,
-			"--path", "--null", "--get-all", "core.hooksPath")
+		// One query fetches both audited key families; records carry the
+		// canonical (lowercased) key name so they dispatch below.
+		output, found, err := runGitFileConfigQuery(gitPath, cache, configPath,
+			"--path", "--null", "--get-regexp", `^(core\.hookspath|include(if\..*)?\.path)$`)
 		if err != nil {
-			return fmt.Errorf("inspect core.hooksPath in Git config %q: %w", configPath, err)
+			return fmt.Errorf("inspect hook and include keys in Git config %q: %w", configPath, err)
 		}
-		if found {
-			values, err := parseNULRecords(output, "core.hooksPath values", true)
-			if err != nil {
-				return fmt.Errorf("Git config %q: %w", configPath, err)
+		if !found {
+			continue
+		}
+		records, err := parseNULRecords(output, "Git config hook and include records", false)
+		if err != nil {
+			return fmt.Errorf("Git config %q: %w", configPath, err)
+		}
+		for _, record := range records {
+			name, value, ok := strings.Cut(record, "\n")
+			if !ok {
+				return fmt.Errorf("Git config %q has a malformed audit record", configPath)
 			}
-			for _, value := range values {
+			if name == "core.hookspath" {
 				if strings.ContainsAny(value, "\r\n") {
 					return fmt.Errorf("Git config %q has a multiline core.hooksPath", configPath)
 				}
@@ -955,24 +1100,10 @@ func inspectGitConfigFiles(gitPath string, repository gitRepositoryContext, init
 				if err := validateConfiguredHooksPath(filepath.Clean(hooksPath), "possible core.hooksPath", writableRoots, protected); err != nil {
 					return fmt.Errorf("Git config %q: %w", configPath, err)
 				}
+				continue
 			}
-		}
-
-		output, found, err = runGitFileConfigQuery(gitPath, repository, configPath,
-			"--path", "--null", "--get-regexp", `^include(if\..*)?\.path$`)
-		if err != nil {
-			return fmt.Errorf("inspect includes in Git config %q: %w", configPath, err)
-		}
-		if !found {
-			continue
-		}
-		records, err := parseNULRecords(output, "Git config include values", false)
-		if err != nil {
-			return fmt.Errorf("Git config %q: %w", configPath, err)
-		}
-		for _, record := range records {
-			_, includePath, ok := strings.Cut(record, "\n")
-			if !ok || includePath == "" || strings.ContainsAny(includePath, "\r\n") {
+			includePath := value
+			if includePath == "" || strings.ContainsAny(includePath, "\r\n") {
 				return fmt.Errorf("Git config %q has a malformed include record", configPath)
 			}
 			includePath, err = resolveGitConfigPath(includePath, filepath.Dir(configPath))
@@ -988,30 +1119,36 @@ func inspectGitConfigFiles(gitPath string, repository gitRepositoryContext, init
 	return nil
 }
 
-func runGitFileConfigQuery(gitPath string, repository gitRepositoryContext, configPath string, args ...string) ([]byte, bool, error) {
-	gitArgs := []string{"config", "--file", configPath, "--no-includes"}
-	gitArgs = append(gitArgs, args...)
-	cmd := exec.Command(gitPath, gitArgs...)
-	// An explicit --file query does not need repository discovery. Run from
-	// the filesystem root so a deliberately minimal/fake .git entry in a unit
-	// fixture (or a damaged worktree in real use) cannot affect direct parsing.
-	cmd.Dir = filepath.VolumeName(configPath) + string(filepath.Separator)
-	cmd.Env = gitFileAuditEnvironment()
-	output, err := cmd.Output()
-	if err == nil {
-		return output, true, nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		if exitErr.ExitCode() == 1 {
-			return nil, false, nil
+// runGitFileConfigQuery reads one config file directly; the result depends
+// only on the file and the query, so it is shared through the audit cache when
+// several repositories select the same file.
+func runGitFileConfigQuery(gitPath string, cache *gitAuditQueryCache, configPath string, args ...string) ([]byte, bool, error) {
+	key := strings.Join(append([]string{"file", gitPath, configPath}, args...), "\x00")
+	return cache.do(key, func() ([]byte, bool, error) {
+		gitArgs := []string{"config", "--file", configPath, "--no-includes"}
+		gitArgs = append(gitArgs, args...)
+		cmd := exec.Command(gitPath, gitArgs...)
+		// An explicit --file query does not need repository discovery. Run from
+		// the filesystem root so a deliberately minimal/fake .git entry in a unit
+		// fixture (or a damaged worktree in real use) cannot affect direct parsing.
+		cmd.Dir = filepath.VolumeName(configPath) + string(filepath.Separator)
+		cmd.Env = gitFileAuditEnvironment()
+		output, err := cmd.Output()
+		if err == nil {
+			return output, true, nil
 		}
-		stderr := strings.TrimSpace(string(exitErr.Stderr))
-		if stderr != "" {
-			return nil, false, fmt.Errorf("%w: %s", err, stderr)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if exitErr.ExitCode() == 1 {
+				return nil, false, nil
+			}
+			stderr := strings.TrimSpace(string(exitErr.Stderr))
+			if stderr != "" {
+				return nil, false, fmt.Errorf("%w: %s", err, stderr)
+			}
 		}
-	}
-	return nil, false, err
+		return nil, false, err
+	})
 }
 
 func gitFileAuditEnvironment() []string {
