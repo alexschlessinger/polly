@@ -3288,8 +3288,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	case "<Space>":
 		m.ed.insert(' ')
 	case "<Tab>":
+		// Complete with the live command context so completers can see
+		// session state (e.g. loaded tool names for "/tools show").
 		cur := m.ed.text()
-		if completed, _, ok := completeSlash(cur); ok {
+		if completed, _, ok := defaultReplCommands.complete(cur, newManagedReplCommandContext(r)); ok {
 			if completed != cur {
 				m.ed.setText(completed)
 			}

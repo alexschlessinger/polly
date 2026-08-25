@@ -110,6 +110,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "show this help",
 		busySafe: true,
 		run:      replHelpCommand,
+		complete: completeHelpCommand,
 	})
 	r.register(replCommand{
 		name:     "/queue",
@@ -515,7 +516,10 @@ func (r *replCommandRegistry) complete(input string, ctx *replCommandContext) (c
 		return "", nil, false
 	}
 	if ctx == nil {
-		ctx = &replCommandContext{registry: r}
+		ctx = &replCommandContext{}
+	}
+	if ctx.registry == nil {
+		ctx.registry = r
 	}
 	endsSpace := strings.HasSuffix(input, " ")
 	fields := strings.Fields(input)
@@ -533,25 +537,38 @@ func (r *replCommandRegistry) complete(input string, ctx *replCommandContext) (c
 		}
 		return longestCommonPrefix(matches), matches, true
 	}
-	if len(fields) > 2 || (len(fields) == 1 && !endsSpace) {
-		return "", nil, false
-	}
-	cmd, ok := r.get(fields[0])
-	if !ok || cmd.complete == nil {
+	// Completing an argument: the trailing partial field, or a fresh one right
+	// after a space. Completers see all typed fields so they can complete
+	// positionally (e.g. tool names only after "/tools show").
+	cmd, okCmd := r.get(fields[0])
+	if !okCmd || cmd.complete == nil {
 		return "", nil, false
 	}
 	prefix := ""
-	if !endsSpace && len(fields) == 2 {
-		prefix = fields[1]
+	base := fields
+	if !endsSpace {
+		prefix = fields[len(fields)-1]
+		base = fields[:len(fields)-1]
 	}
 	matches = cmd.complete(ctx, fields, prefix)
 	if len(matches) == 0 {
 		return "", nil, false
 	}
+	head := strings.Join(base, " ") + " "
 	for i, match := range matches {
-		matches[i] = fields[0] + " " + match
+		matches[i] = head + match
 	}
 	return longestCommonPrefix(matches), matches, true
+}
+
+// completionArgPos returns which argument (1-based) of a command is being
+// completed: fields holds the command name plus any typed fields, prefix the
+// partial argument ("" right after a space).
+func completionArgPos(fields []string, prefix string) int {
+	if prefix != "" {
+		return len(fields) - 1
+	}
+	return len(fields)
 }
 
 // slashHintSummaryMax caps how many name matches render with their summaries;
@@ -568,7 +585,10 @@ func (r *replCommandRegistry) hintFor(ctx *replCommandContext, input string) str
 		return ""
 	}
 	if ctx == nil {
-		ctx = &replCommandContext{registry: r}
+		ctx = &replCommandContext{}
+	}
+	if ctx.registry == nil {
+		ctx.registry = r
 	}
 	endsSpace := strings.HasSuffix(input, " ")
 	fields := strings.Fields(input)
@@ -675,7 +695,10 @@ func replResetCommand(ctx *replCommandContext, args []string) replCommandResult 
 	return replCommandResult{err: ctx.replyLine("conversation reset")}
 }
 
-func completeQueueCommand(_ *replCommandContext, _ []string, prefix string) []string {
+func completeQueueCommand(_ *replCommandContext, fields []string, prefix string) []string {
+	if completionArgPos(fields, prefix) != 1 {
+		return nil
+	}
 	return matchingWords([]string{"list", "drop", "clear", "continue"}, prefix)
 }
 
@@ -778,7 +801,10 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 
 var replSettingKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir", "sandbox"}
 
-func completeGetCommand(_ *replCommandContext, _ []string, prefix string) []string {
+func completeGetCommand(_ *replCommandContext, fields []string, prefix string) []string {
+	if completionArgPos(fields, prefix) != 1 {
+		return nil
+	}
 	return matchingWords(append([]string{"all"}, replSettingKeys...), prefix)
 }
 
@@ -812,12 +838,7 @@ var replSettableKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thi
 var thinkingEffortWords = []string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 func completeSetCommand(_ *replCommandContext, fields []string, prefix string) []string {
-	// fields includes the command name and any partial argument (== prefix).
-	argPos := len(fields)
-	if prefix != "" {
-		argPos--
-	}
-	switch argPos {
+	switch completionArgPos(fields, prefix) {
 	case 1:
 		return matchingWords(replSettableKeys, prefix)
 	case 2:
@@ -1081,8 +1102,49 @@ func replToolsCommand(ctx *replCommandContext, args []string) replCommandResult 
 	}
 }
 
-func completeToolsCommand(_ *replCommandContext, _ []string, prefix string) []string {
-	return matchingWords([]string{"list", "show"}, prefix)
+func completeToolsCommand(ctx *replCommandContext, fields []string, prefix string) []string {
+	switch completionArgPos(fields, prefix) {
+	case 1:
+		return matchingWords([]string{"list", "show"}, prefix)
+	case 2:
+		switch fields[1] {
+		case "show":
+			return matchingWords(loadedToolNames(ctx), prefix)
+		case "list":
+			return matchingWords(loadedToolNamespaces(ctx), prefix)
+		}
+	}
+	return nil
+}
+
+func loadedToolNames(ctx *replCommandContext) []string {
+	if ctx == nil || ctx.state == nil || ctx.state.toolRegistry == nil {
+		return nil
+	}
+	var names []string
+	for _, t := range ctx.state.toolRegistry.All() {
+		names = append(names, t.GetName())
+	}
+	return names
+}
+
+func loadedToolNamespaces(ctx *replCommandContext) []string {
+	seen := make(map[string]bool)
+	var namespaces []string
+	for _, name := range loadedToolNames(ctx) {
+		if ns, _, ok := strings.Cut(name, "__"); ok && !seen[ns] {
+			seen[ns] = true
+			namespaces = append(namespaces, ns)
+		}
+	}
+	return namespaces
+}
+
+func completeHelpCommand(ctx *replCommandContext, fields []string, prefix string) []string {
+	if completionArgPos(fields, prefix) != 1 || ctx == nil || ctx.registry == nil {
+		return nil
+	}
+	return matchingWords(ctx.registry.commandNames(), prefix)
 }
 
 func replListTools(ctx *replCommandContext, namespace string) replCommandResult {

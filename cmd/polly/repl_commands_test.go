@@ -427,6 +427,11 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		{"/tools s", true, "/tools show", []string{"/tools show"}},
 		{"/set th", true, "/set thinking", []string{"/set thinking"}},
 		{"/set max", true, "/set max", []string{"/set maxcontext", "/set maxtokens"}},
+		// Second arguments complete positionally.
+		{"/set thinking m", true, "/set thinking m", []string{"/set thinking max", "/set thinking medium", "/set thinking minimal"}},
+		{"/help /cl", true, "/help /clear", []string{"/help /clear"}},
+		// Keywords don't leak past their position.
+		{"/queue drop x", false, "", nil},
 		{"/help me", false, "", nil},
 	}
 	for _, c := range cases {
@@ -522,6 +527,38 @@ func TestHintFor(t *testing.T) {
 	}
 	if strings.Contains(bare, "—") {
 		t.Fatalf("hintFor(/) should omit summaries when many commands match, got %q", bare)
+	}
+}
+
+func TestCompleteToolNamesAndNamespaces(t *testing.T) {
+	registry := tools.NewToolRegistry([]tools.Tool{
+		&tools.Func{Name: "git__status", Desc: "Show git status"},
+		&tools.Func{Name: "git__diff", Desc: "Show git diff"},
+		tools.NewUnsafeBashTool(""),
+	})
+	ctx := &replCommandContext{state: &conversationState{toolRegistry: registry}}
+
+	completed, matches, ok := defaultReplCommands.complete("/tools show git__", ctx)
+	if !ok || completed != "/tools show git__" {
+		t.Fatalf("complete(/tools show git__) = %q %v ok=%v", completed, matches, ok)
+	}
+	if strings.Join(matches, ",") != "/tools show git__diff,/tools show git__status" {
+		t.Fatalf("tool name matches = %v", matches)
+	}
+
+	completed, _, ok = defaultReplCommands.complete("/tools show git__s", ctx)
+	if !ok || completed != "/tools show git__status" {
+		t.Fatalf("complete(/tools show git__s) = %q ok=%v", completed, ok)
+	}
+
+	completed, _, ok = defaultReplCommands.complete("/tools list g", ctx)
+	if !ok || completed != "/tools list git" {
+		t.Fatalf("complete(/tools list g) = %q ok=%v", completed, ok)
+	}
+
+	// Without a registry there is nothing to offer.
+	if _, _, ok := defaultReplCommands.complete("/tools show git__", &replCommandContext{}); ok {
+		t.Fatal("tool name completion without a registry should not match")
 	}
 }
 
