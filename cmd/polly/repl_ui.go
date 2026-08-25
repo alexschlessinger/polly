@@ -2152,10 +2152,13 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	// default to all-defaults so unstyled text emits the terminal's own
 	// foreground (SGR 39) and follows the theme instead of being forced white.
 	ui.DefaultBackend.Screen.SetStyle(tcell.StyleDefault)
-	// gotui enables full mouse-motion tracking during Init. The REPL has no
-	// mouse UI beyond scrollback, and consuming motion/drag events prevents the
-	// terminal's native selection and copy behavior. PgUp/PgDn remain available.
-	ui.DefaultBackend.Screen.DisableMouse()
+	// gotui enables full mouse-motion tracking during Init. Trim that to
+	// button-level tracking: with tracking fully off, terminals translate the
+	// wheel into arrow keys on the alt screen (alternate scroll mode), which
+	// lands in history recall instead of scrolling the transcript. Button
+	// tracking delivers real wheel events while leaving motion/drag alone;
+	// clicks are captured but dropped (native selection needs shift/option).
+	ui.DefaultBackend.Screen.EnableMouse(tcell.MouseButtonEvents)
 	// Focus reports gate desktop notifications (notify only when the user is
 	// known to be elsewhere); terminals without focus reporting simply never
 	// flip the gate open.
