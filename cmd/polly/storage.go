@@ -23,8 +23,10 @@ func needsFileStore(config *Config, contextID string) bool {
 		config.ShowContext != ""
 }
 
-// setupSessionStore creates the appropriate session store based on configuration
-func setupSessionStore(config *Config, contextID string) (sessions.SessionStore, error) {
+// setupSessionStore creates the appropriate session store based on
+// configuration. forceFile selects the file store even when no flag demands
+// one (used for auto-named REPL contexts).
+func setupSessionStore(config *Config, contextID string, forceFile bool) (sessions.SessionStore, error) {
 	// Create default context info with initial settings
 	defaultInfo := &sessions.Metadata{
 		TTL:              0,
@@ -32,7 +34,7 @@ func setupSessionStore(config *Config, contextID string) (sessions.SessionStore,
 		MaxHistoryTokens: config.MaxHistoryTokens,
 	}
 
-	if needsFileStore(config, contextID) {
+	if forceFile || needsFileStore(config, contextID) {
 		return sessions.NewFileSessionStore("", defaultInfo) // Uses default ~/.pollytool/contexts
 	}
 	return sessions.NewSyncMapSessionStore(defaultInfo), nil

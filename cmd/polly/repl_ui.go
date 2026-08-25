@@ -3530,6 +3530,9 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 	repl := newManagedREPL(config, state.session.GetName(), toolCount(state.toolRegistry), skillCount(state.skillCatalog))
 	repl.state = state
 	repl.model.hydrateHistory(state.session.GetHistory(), state.session.GetName())
+	if state.autoNamedContext {
+		repl.model.appendNoticeLine("session '" + state.session.GetName() + "' · /rename to keep a name · resume later with polly -L")
+	}
 	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
 		reuseUser := false
 		if tui, ok := turnUI.(*gotuiTurnUI); ok {
@@ -3546,6 +3549,9 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 	reader := bufio.NewReader(os.Stdin)
 	drainSandboxWarningsToWriter(os.Stderr, state)
 	writeFallbackSandboxNotice(os.Stderr, config, state)
+	if state.autoNamedContext && !config.Quiet {
+		fmt.Fprintf(os.Stderr, "session '%s' · /rename to keep a name · resume later with polly -L\n", state.session.GetName())
+	}
 	commandCtx := newWriterReplCommandContext(config, state, os.Stderr)
 	return runREPLLoopWithCommands(reader, os.Stderr, commandCtx, func(prompt string) error {
 		turnCtx, cancel := context.WithCancel(ctx)

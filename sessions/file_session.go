@@ -620,6 +620,65 @@ func lockPath(sessionPath string) string {
 	return sessionPath + ".lock"
 }
 
+// Rename moves the session's backing file to a new context name. The new
+// name's lock is acquired before the old one is released, so no concurrent
+// open can observe a gap. The old data file is removed; both lock files stay
+// behind (matching Delete) so future sessions keep coordinating on the same
+// filesystem paths.
+func (s *FileSession) Rename(newName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := validateContextName(newName); err != nil {
+		return fmt.Errorf("invalid context name '%s': %w", newName, err)
+	}
+	if s.path == "" || s.lock == nil {
+		return fmt.Errorf("session has no backing file")
+	}
+	if newName == s.ID {
+		return nil
+	}
+	newPath := filepath.Join(filepath.Dir(s.path), newName+".json")
+
+	newLock := flock.New(lockPath(newPath))
+	locked, err := newLock.TryLock()
+	if err != nil || !locked {
+		return fmt.Errorf("context '%s' is locked by another process", newName)
+	}
+	// Existence is checked under the new lock so a concurrent create can't
+	// slip in between check and write.
+	if _, err := os.Lstat(newPath); err == nil {
+		newLock.Unlock()
+		return fmt.Errorf("context '%s' already exists", newName)
+	} else if !os.IsNotExist(err) {
+		newLock.Unlock()
+		return err
+	}
+
+	oldPath, oldLock, oldID := s.path, s.lock, s.ID
+	oldName := ""
+	if s.Metadata != nil {
+		oldName = s.Metadata.Name
+		s.Metadata.Name = newName
+	}
+	s.ID = newName
+	s.path = newPath
+	s.Updated = time.Now()
+	s.touchMetadata(s.Updated)
+	if err := s.save(); err != nil {
+		s.ID, s.path = oldID, oldPath
+		if s.Metadata != nil {
+			s.Metadata.Name = oldName
+		}
+		newLock.Unlock()
+		return fmt.Errorf("failed to write renamed context: %w", err)
+	}
+	s.lock = newLock
+	_ = os.Remove(oldPath)
+	oldLock.Unlock()
+	return nil
+}
+
 // Close releases the file lock on the session file.
 // No files are removed here; the lock is ephemeral.
 func (s *FileSession) Close() {

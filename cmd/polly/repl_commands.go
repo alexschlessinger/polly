@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -53,6 +54,8 @@ type replCommandContext struct {
 	clearQueue    func() int
 	continueQueue func() error
 	retryTurn     func() error
+	// setContextName updates the UI's displayed context name after /rename.
+	setContextName func(name string)
 }
 
 var (
@@ -103,6 +106,12 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "inspect or manage queued input",
 		run:      replQueueCommand,
 		complete: completeQueueCommand,
+	})
+	r.register(replCommand{
+		name:    "/rename",
+		usage:   "/rename <name>",
+		summary: "rename the current context",
+		run:     replRenameCommand,
 	})
 	r.register(replCommand{
 		name:    "/reset",
@@ -277,6 +286,11 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		clearTranscript: func() error {
 			r.model.clearDisplay()
 			return nil
+		},
+		// Commands run on the event loop with the model lock held, so this
+		// mutates the model directly like reply/clearTranscript do.
+		setContextName: func(name string) {
+			r.model.contextName = name
 		},
 		resetConversation: func() error {
 			if r.state == nil || r.state.session == nil {
@@ -487,6 +501,28 @@ func replClearCommand(ctx *replCommandContext, args []string) replCommandResult 
 		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("failed to clear display: %v", err))}
 	}
 	return replCommandResult{err: ctx.replyLine("display cleared")}
+}
+
+func replRenameCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /rename <name>")}
+	}
+	if ctx.state == nil || ctx.state.session == nil {
+		return replCommandResult{err: ctx.replyLine("no active session")}
+	}
+	fs, ok := ctx.state.session.(*sessions.FileSession)
+	if !ok {
+		return replCommandResult{err: ctx.replyLine("this session is in-memory; renaming requires a file-backed context")}
+	}
+	oldName := fs.GetName()
+	newName := args[1]
+	if err := fs.Rename(newName); err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("rename failed: %v", err))}
+	}
+	if ctx.setContextName != nil {
+		ctx.setContextName(newName)
+	}
+	return replCommandResult{err: ctx.replyLine(fmt.Sprintf("renamed context '%s' to '%s'", oldName, newName))}
 }
 
 func replResetCommand(ctx *replCommandContext, args []string) replCommandResult {
