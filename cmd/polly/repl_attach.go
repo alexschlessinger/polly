@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"image"
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,9 +24,9 @@ import (
 
 // Composer attachments follow the token-in-text model: attaching an image
 // inserts a literal "[image #N]" token at the cursor and records N → path in a
-// session-scoped registry. The prompt stays an ordinary string through history,
-// the queue, and /retry; tokens resolve to files only when a turn starts.
-// Deleting a token from the composer is how an attachment is dropped.
+// session-scoped registry. Accepting the prompt resolves those tokens into one
+// durable message; queues and retries carry that prepared payload, never the
+// source path. Deleting a token from the composer drops the attachment.
 
 const (
 	// maxPromptAttachments bounds how many images one prompt can carry. It is a
@@ -67,10 +69,11 @@ func (m *replModel) registerAttachment(path, label string) string {
 // promptAttachments resolves everything a prompt references, in appearance
 // order, deduplicated by path: "[image #N]" tokens through the session
 // registry, and bare typed paths — any whitespace-delimited word with an image
-// extension that resolves to an existing local file. Tokens that were never
-// registered in this session stay ordinary text, as does prose that merely
-// looks path-shaped. Caller must hold m.mu.
-func (m *replModel) promptAttachments(prompt string) []composerAttachment {
+// extension that resolves to an existing local file. A token that was never
+// registered in this session is an error: silently sending its placeholder as
+// text would drop an attachment the user explicitly asked to include. Caller
+// must hold m.mu.
+func (m *replModel) promptAttachments(prompt string) ([]composerAttachment, error) {
 	type ref struct {
 		pos int
 		att composerAttachment
@@ -78,15 +81,15 @@ func (m *replModel) promptAttachments(prompt string) []composerAttachment {
 	var refs []ref
 
 	var tokenSpans [][2]int
-	if len(m.attachments) > 0 && strings.Contains(prompt, "[image #") {
+	if strings.Contains(prompt, "[image #") {
 		for _, loc := range attachmentTokenPattern.FindAllStringSubmatchIndex(prompt, -1) {
 			n, err := strconv.Atoi(prompt[loc[2]:loc[3]])
 			if err != nil {
-				continue
+				return nil, fmt.Errorf("invalid attachment token %s", prompt[loc[0]:loc[1]])
 			}
 			att, ok := m.attachments[n]
 			if !ok {
-				continue
+				return nil, fmt.Errorf("unknown attachment token %s", prompt[loc[0]:loc[1]])
 			}
 			tokenSpans = append(tokenSpans, [2]int{loc[0], loc[1]})
 			refs = append(refs, ref{pos: loc[0], att: att})
@@ -118,7 +121,7 @@ func (m *replModel) promptAttachments(prompt string) []composerAttachment {
 	}
 
 	if len(refs) == 0 {
-		return nil
+		return nil, nil
 	}
 	sort.SliceStable(refs, func(i, j int) bool { return refs[i].pos < refs[j].pos })
 	var out []composerAttachment
@@ -129,11 +132,11 @@ func (m *replModel) promptAttachments(prompt string) []composerAttachment {
 		}
 		seen[r.att.Path] = struct{}{}
 		out = append(out, r.att)
-		if len(out) >= maxPromptAttachments {
-			break
-		}
 	}
-	return out
+	if len(out) > maxPromptAttachments {
+		return nil, fmt.Errorf("prompt has %d unique image attachments; maximum is %d", len(out), maxPromptAttachments)
+	}
+	return out, nil
 }
 
 type promptWord struct {
@@ -166,24 +169,6 @@ func splitPromptWords(s string) []promptWord {
 // path — "(.assets/polly.png)," — without touching the path's own characters.
 func trimPromptPathPunctuation(word string) string {
 	return strings.TrimLeft(strings.TrimRight(word, ".,;:!?)]}>\"'`"), "([{<\"'`")
-}
-
-// promptAttachmentImages projects a prompt's attachments into transcript
-// sidecar images for the user-echo thumbnail. Files that vanished since attach
-// are skipped here; the turn itself still fails loudly when it cannot read
-// them. Caller must hold m.mu.
-func (m *replModel) promptAttachmentImages(prompt string) []transcriptImage {
-	attachments := m.promptAttachments(prompt)
-	if len(attachments) == 0 {
-		return nil
-	}
-	images := make([]transcriptImage, 0, len(attachments))
-	for _, att := range attachments {
-		if img, ok := resolveLocalTranscriptImage(att.Path, att.Label, m.imageBaseDir); ok {
-			images = append(images, img)
-		}
-	}
-	return images
 }
 
 // splitDroppedPaths splits text into the path tokens a terminal drag-drop
@@ -255,13 +240,18 @@ func (m *replModel) pastedImageAttachments(text string) []transcriptImage {
 	return images
 }
 
-// attachmentCacheDir is where clipboard captures land. Files must outlive the
-// paste (scrollback thumbnails read them on every draw) but not the machine;
-// stale captures are swept on REPL start.
+// attachmentCacheDir holds clipboard captures and exact-byte prepared-message
+// previews. Files must outlive the turn that created them (scrollback
+// thumbnails read them on every draw) but not the machine; stale cache entries
+// are swept on REPL start.
 func attachmentCacheDir() (string, error) {
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
+	base := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME"))
+	if base == "" {
+		var err error
+		base, err = os.UserCacheDir()
+		if err != nil {
+			return "", err
+		}
 	}
 	dir := filepath.Join(base, "pollytool", "attachments")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -289,53 +279,192 @@ func sweepAttachmentCache(dir string, now time.Time) {
 }
 
 // prepareImageForUpload converts a local image file into a provider-ready
-// content part. Images already inside the size caps ship byte-for-byte
-// (animated GIFs survive); oversized ones are downscaled and re-encoded, JPEG
-// staying JPEG and everything else becoming PNG.
+// content part. Eligible PNG, JPEG, and WebP images ship byte-for-byte. An
+// animated GIF is reduced to its first frame, and GIF/BMP rasters are normalized
+// to PNG so the durable message can be replayed through every native provider.
+// They remain PNG after any size-driven downscaling; other oversized formats
+// may be re-encoded as JPEG to meet the upload byte cap.
 func prepareImageForUpload(path string) (*messages.ContentPart, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	return prepareImageBytesForUpload(data, filepath.Base(path))
+}
+
+// prepareImageBytesForUpload applies the portable image contract at every
+// ingestion boundary, before bytes enter durable history. fileName is display
+// metadata only; the format is always detected from the bytes.
+func prepareImageBytesForUpload(data []byte, fileName string) (*messages.ContentPart, error) {
+	fileName = filepath.Base(strings.TrimSpace(fileName))
+	if fileName == "" || fileName == "." || fileName == string(filepath.Separator) {
+		fileName = "attachment"
+	}
 	if len(data) == 0 || len(data) > maxLocalImageBytes {
-		return nil, fmt.Errorf("%s: image size is outside the supported range", filepath.Base(path))
+		return nil, fmt.Errorf("%s: image size is outside the supported range", fileName)
 	}
 	config, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+		return nil, fmt.Errorf("%s: unsupported image format or invalid image data", fileName)
 	}
 	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxLocalImagePixels {
-		return nil, fmt.Errorf("%s: image dimensions are outside the supported range", filepath.Base(path))
+		return nil, fmt.Errorf("%s: image dimensions are outside the supported range", fileName)
+	}
+
+	mimeType, passthrough := uploadImageFormat(format)
+	var src image.Image
+	if !passthrough {
+		switch format {
+		case "gif", "bmp":
+			src, _, err = image.Decode(bytes.NewReader(data))
+			if err != nil {
+				return nil, fmt.Errorf("%s: invalid %s image data", fileName, format)
+			}
+			var normalized bytes.Buffer
+			if err := png.Encode(&normalized, src); err != nil {
+				return nil, fmt.Errorf("%s: encode normalized PNG: %w", fileName, err)
+			}
+			data = normalized.Bytes()
+			mimeType = "image/png"
+		default:
+			return nil, fmt.Errorf("%s: unsupported image format %q", fileName, format)
+		}
 	}
 
 	if max(config.Width, config.Height) <= uploadMaxLongEdge && len(data) <= uploadMaxBytes {
 		return &messages.ContentPart{
 			Type:      "image_base64",
 			ImageData: base64.StdEncoding.EncodeToString(data),
-			MimeType:  imageFormatMimeType(format),
-			FileName:  filepath.Base(path),
+			MimeType:  mimeType,
+			FileName:  fileName,
 		}, nil
 	}
 
-	src, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+	if src == nil {
+		src, _, err = image.Decode(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid image data: %w", fileName, err)
+		}
 	}
 	scaled := fitImage(src, uploadMaxLongEdge, uploadMaxLongEdge)
 
 	encoded, mimeType, err := encodeUploadImage(scaled, format)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+		return nil, fmt.Errorf("%s: encode image: %w", fileName, err)
 	}
 	return &messages.ContentPart{
 		Type:      "image_base64",
 		ImageData: base64.StdEncoding.EncodeToString(encoded),
 		MimeType:  mimeType,
-		FileName:  filepath.Base(path),
+		FileName:  fileName,
 	}, nil
 }
 
+// preparedMessageTranscriptImages materializes the exact portable image bytes
+// accepted into a durable message. Transcript thumbnails then remain faithful
+// if the original path is changed or removed before the turn is rendered.
+func preparedMessageTranscriptImages(msg messages.ChatMessage) []transcriptImage {
+	dir, err := attachmentCacheDir()
+	if err != nil {
+		return nil
+	}
+	return preparedMessageTranscriptImagesInDir(msg, dir)
+}
+
+func preparedMessageTranscriptImagesInDir(msg messages.ChatMessage, dir string) []transcriptImage {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil
+	}
+	images := make([]transcriptImage, 0, len(msg.Parts))
+	for _, part := range msg.Parts {
+		if part.Type != "image_base64" {
+			continue
+		}
+		ext, ok := portableImageExtension(part.MimeType)
+		if !ok {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(part.ImageData)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		digest := sha256.Sum256(data)
+		path := filepath.Join(dir, fmt.Sprintf("prepared-%x%s", digest, ext))
+		if existing, err := os.ReadFile(path); err != nil || !bytes.Equal(existing, data) {
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				continue
+			}
+		}
+		label := strings.TrimSpace(part.FileName)
+		if label == "" {
+			label = "attachment" + ext
+		}
+		img, ok := resolveLocalTranscriptImage(path, label, dir)
+		if !ok {
+			continue
+		}
+		img.DisplayPath = label
+		images = append(images, img)
+	}
+	return images
+}
+
+func portableImageExtension(mimeType string) (string, bool) {
+	if idx := strings.IndexByte(mimeType, ';'); idx >= 0 {
+		mimeType = mimeType[:idx]
+	}
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/png":
+		return ".png", true
+	case "image/jpeg", "image/jpg":
+		return ".jpg", true
+	case "image/webp":
+		return ".webp", true
+	default:
+		return "", false
+	}
+}
+
 func encodeUploadImage(img image.Image, sourceFormat string) ([]byte, string, error) {
+	pngOnly := sourceFormat == "gif" || sourceFormat == "bmp"
+	current := img
+	for {
+		data, mimeType, err := encodeUploadImageAttempt(current, sourceFormat, pngOnly)
+		if err != nil {
+			return nil, "", err
+		}
+		if len(data) <= uploadMaxBytes {
+			return data, mimeType, nil
+		}
+
+		bounds := current.Bounds()
+		width, height := bounds.Dx(), bounds.Dy()
+		if width <= 1 && height <= 1 {
+			return nil, "", fmt.Errorf("image cannot be encoded within the %d-byte upload limit", uploadMaxBytes)
+		}
+		// Encoded size is approximately proportional to pixel area. Leave a
+		// little margin so incompressible PNGs normally converge in one pass,
+		// while the 0.9 ceiling guarantees progress for a near-limit image.
+		scale := math.Sqrt(float64(uploadMaxBytes)/float64(len(data))) * 0.95
+		if scale > 0.9 {
+			scale = 0.9
+		}
+		if scale <= 0 || math.IsNaN(scale) || math.IsInf(scale, 0) {
+			scale = 0.5
+		}
+		targetWidth := max(1, int(math.Floor(float64(width)*scale)))
+		targetHeight := max(1, int(math.Floor(float64(height)*scale)))
+		if targetWidth == width && width > 1 {
+			targetWidth--
+		}
+		if targetHeight == height && height > 1 {
+			targetHeight--
+		}
+		current = fitImage(current, targetWidth, targetHeight)
+	}
+}
+
+func encodeUploadImageAttempt(img image.Image, sourceFormat string, pngOnly bool) ([]byte, string, error) {
 	if sourceFormat == "jpeg" {
 		data, err := encodeJPEG(img)
 		return data, "image/jpeg", err
@@ -345,8 +474,9 @@ func encodeUploadImage(img image.Image, sourceFormat string) ([]byte, string, er
 		return nil, "", err
 	}
 	// A photographic PNG can stay huge after downscaling; JPEG is the only
-	// remaining lever. Transparency is flattened onto white.
-	if buf.Len() > uploadMaxBytes {
+	// remaining lever for native PNG/WebP input. Normalized GIF/BMP payloads
+	// deliberately stay PNG and instead shrink further until they fit.
+	if buf.Len() > uploadMaxBytes && !pngOnly {
 		data, err := encodeJPEG(img)
 		return data, "image/jpeg", err
 	}
@@ -365,18 +495,16 @@ func encodeJPEG(img image.Image) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func imageFormatMimeType(format string) string {
+func uploadImageFormat(format string) (mimeType string, passthrough bool) {
 	switch format {
+	case "png":
+		return "image/png", true
 	case "jpeg":
-		return "image/jpeg"
-	case "gif":
-		return "image/gif"
+		return "image/jpeg", true
 	case "webp":
-		return "image/webp"
-	case "bmp":
-		return "image/bmp"
+		return "image/webp", true
 	default:
-		return "image/png"
+		return "", false
 	}
 }
 

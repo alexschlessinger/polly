@@ -60,34 +60,6 @@ func TestValidateREPLConfigRejectsBoth(t *testing.T) {
 	}
 }
 
-func TestReplModelSubmitAndHistory(t *testing.T) {
-	m := newReplModel()
-	m.ed.setText("hello")
-	got := m.submitPrompt()
-	if got != "hello" {
-		t.Fatalf("submit returned %q", got)
-	}
-	if !m.busy {
-		t.Fatal("submit should mark busy")
-	}
-	if len(m.transcript) != 1 || !strings.Contains(m.transcript[0], "hello") {
-		t.Fatalf("expected one transcript entry containing 'hello', got %+v", m.transcript)
-	}
-	if len(m.history) != 1 || m.history[0] != "hello" {
-		t.Fatalf("history not recorded: %+v", m.history)
-	}
-
-	m.busy = false
-	m.ed.clear()
-	got = m.submitPrompt()
-	if got != "" {
-		t.Fatalf("empty submit returned %q", got)
-	}
-	if len(m.history) != 1 {
-		t.Fatalf("empty submit should not extend history, got %d", len(m.history))
-	}
-}
-
 func TestReplModelHistoryNavigation(t *testing.T) {
 	m := newReplModel()
 	m.history = []string{"first", "second"}
@@ -661,7 +633,7 @@ func TestBracketedPasteInsertsMultiLine(t *testing.T) {
 	}
 	select {
 	case p := <-r.pending:
-		t.Fatalf("paste should not submit, got %q", p)
+		t.Fatalf("paste should not submit, got %q", p.displayText)
 	default:
 	}
 
@@ -669,8 +641,8 @@ func TestBracketedPasteInsertsMultiLine(t *testing.T) {
 	send("<Enter>")
 	select {
 	case p := <-r.pending:
-		if p != "a\nb" {
-			t.Fatalf("submitted %q, want \"a\\nb\"", p)
+		if p.displayText != "a\nb" {
+			t.Fatalf("submitted %q, want \"a\\nb\"", p.displayText)
 		}
 	default:
 		t.Fatal("Enter after paste should submit")
@@ -862,6 +834,35 @@ func TestLoadHistory(t *testing.T) {
 	// A missing file loads nil, not an error.
 	if loadHistory(filepath.Join(dir, "nope")) != nil {
 		t.Fatal("missing file should load nil")
+	}
+}
+
+func TestPersistentHistoryFiltersAttachmentTokens(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "legacy")
+	if err := os.WriteFile(legacy, []byte("safe\ninspect [image #7]\nafter\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadHistory(legacy); strings.Join(got, ",") != "safe,after" {
+		t.Fatalf("legacy tokenized history was not filtered: %v", got)
+	}
+
+	path := filepath.Join(dir, "current")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.histFile = file
+	r.recordAcceptedInput("inspect [image #1]")
+	r.recordAcceptedInput("plain prompt")
+	r.closeHistory()
+
+	if got := r.model.history; len(got) != 2 || got[0] != "inspect [image #1]" {
+		t.Fatalf("same-process recall lost tokenized input: %v", got)
+	}
+	if got := loadHistory(path); len(got) != 1 || got[0] != "plain prompt" {
+		t.Fatalf("tokenized input leaked into persistent history: %v", got)
 	}
 }
 
@@ -1144,7 +1145,7 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	if r.model.ed.text() != "" {
 		t.Fatalf("editor should clear after queueing, got %q", r.model.ed.text())
 	}
-	if len(r.model.queue) != 1 || r.model.queue[0] != "queued one" {
+	if len(r.model.queue) != 1 || r.model.queue[0].text != "queued one" || r.model.queue[0].turn == nil {
 		t.Fatalf("queue = %v, want [\"queued one\"]", r.model.queue)
 	}
 	if len(r.model.history) != 1 || r.model.history[0] != "queued one" {
@@ -1153,7 +1154,7 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	// Queueing must not start a turn.
 	select {
 	case p := <-r.pending:
-		t.Fatalf("queueing should not submit, got %q", p)
+		t.Fatalf("queueing should not submit, got %q", p.displayText)
 	default:
 	}
 
@@ -1175,7 +1176,7 @@ func TestEnterWhileBusyQueuesSlashCommandInHistory(t *testing.T) {
 	if r.model.ed.text() != "" {
 		t.Fatalf("editor should clear after queueing, got %q", r.model.ed.text())
 	}
-	if len(r.model.queue) != 1 || r.model.queue[0] != "/help" {
+	if len(r.model.queue) != 1 || r.model.queue[0].text != "/help" || r.model.queue[0].turn != nil {
 		t.Fatalf("queue = %v, want [/help]", r.model.queue)
 	}
 	if len(r.model.history) != 1 || r.model.history[0] != "/help" {
@@ -1183,14 +1184,14 @@ func TestEnterWhileBusyQueuesSlashCommandInHistory(t *testing.T) {
 	}
 	select {
 	case p := <-r.pending:
-		t.Fatalf("queueing slash command should not submit, got %q", p)
+		t.Fatalf("queueing slash command should not submit, got %q", p.displayText)
 	default:
 	}
 }
 
 func TestStartNextQueuedRunsPromptAfterCommand(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.queue = []string{"/help", "hello"}
+	r.model.queue = queuedTextInputs("/help", "hello")
 
 	ran := make(chan string, 1)
 	runTurn := func(ctx context.Context, prompt string, _ TurnUI) error {

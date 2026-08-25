@@ -2,9 +2,16 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/binary"
+	"hash/crc32"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -119,6 +126,242 @@ func TestPersistUserMessageForTurnComparesAttachedParts(t *testing.T) {
 			t.Fatalf("changed attached payload must be persisted, history length = %d", got)
 		}
 	})
+}
+
+func TestValidateSessionImageBudgetCountsEncodedHistoryAndDoesNotDoubleCountRetry(t *testing.T) {
+	session := newTurnPersistenceTestSession(t)
+	imageData := portablePNGBase64Size(t, 9<<20)
+	userMsg := messages.ChatMessage{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{{
+			Type:      "image_base64",
+			ImageData: imageData,
+			MimeType:  "image/png",
+		}},
+	}
+	if err := session.AddMessage(userMsg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := validateSessionImageBudget(session, userMsg, true); err != nil {
+		t.Fatalf("exact retry was double-counted: %v", err)
+	}
+	if err := validateSessionImageBudget(session, userMsg, false); err == nil {
+		t.Fatal("ordinary duplicate image turn should exceed aggregate budget")
+	}
+}
+
+func TestValidateEncodedImageBudgetIncludesDataURLs(t *testing.T) {
+	history := []messages.ChatMessage{{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{
+			{Type: "image_base64", ImageData: strings.Repeat("A", 8<<20)},
+			{Type: "image_url", ImageURL: "data:image/png;base64," + strings.Repeat("B", (8<<20)+1)},
+		},
+	}}
+	if err := validateEncodedImageBudget(history); err == nil || !strings.Contains(err.Error(), "portable limit is 16 MiB") {
+		t.Fatalf("aggregate encoded-image overflow = %v", err)
+	}
+}
+
+func TestValidateSessionImageBudgetProjectsConfiguredHistoryTrim(t *testing.T) {
+	store := sessions.NewSyncMapSessionStore(&sessions.Metadata{MaxHistoryTokens: 2000})
+	session, err := store.Get("trimmed-budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldImage := messages.ChatMessage{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{{
+			Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes), MimeType: "image/png",
+		}},
+	}
+	if err := session.AddMessages([]messages.ChatMessage{
+		oldImage,
+		{Role: messages.MessageRoleAssistant, Content: "completed old turn"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	candidate := messages.ChatMessage{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{{
+			Type: "image_base64", ImageData: portablePNGBase64Size(t, 400), MimeType: "image/png",
+		}},
+	}
+
+	if err := validateSessionImageBudget(session, candidate, false); err != nil {
+		t.Fatalf("budget counted image history that configured trimming evicts: %v", err)
+	}
+}
+
+func TestValidateSessionImageBudgetExactReuseChecksUntrimmedRequest(t *testing.T) {
+	session := newTurnPersistenceTestSession(t)
+	trailing := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "retry me"}
+	if err := session.AddMessages([]messages.ChatMessage{
+		{
+			Role: messages.MessageRoleUser,
+			Parts: []messages.ContentPart{{
+				Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes+1), MimeType: "image/png",
+			}},
+		},
+		{Role: messages.MessageRoleAssistant, Content: "completed old turn"},
+		trailing,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	metadata := session.GetMetadata()
+	metadata.MaxHistoryTokens = 1
+	if err := session.SetMetadata(metadata); err != nil {
+		t.Fatal(err)
+	}
+
+	err := validateSessionImageBudget(session, trailing, true)
+	if err == nil || !strings.Contains(err.Error(), "portable limit is 16 MiB") {
+		t.Fatalf("exact reuse validated a hypothetical trim instead of the actual request: %v", err)
+	}
+}
+
+func TestValidateSessionImageBudgetRejectsPoisonedEarlierImage(t *testing.T) {
+	session := newTurnPersistenceTestSession(t)
+	if err := session.AddMessages([]messages.ChatMessage{
+		{
+			Role: messages.MessageRoleUser,
+			Parts: []messages.ContentPart{{
+				Type: "image_base64", ImageData: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", MimeType: "image/gif",
+			}},
+		},
+		{Role: messages.MessageRoleAssistant, Content: "legacy response"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := validateSessionImageBudget(session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "next"}, false)
+	if err == nil || !strings.Contains(err.Error(), "nonportable image") {
+		t.Fatalf("earlier legacy image was not rejected before the model call: %v", err)
+	}
+}
+
+func TestValidatePortableImageRequestPerImageEncodedLimit(t *testing.T) {
+	atLimit := messages.ChatMessage{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{{
+			Type: "image_base64", ImageData: portablePNGBase64Size(t, maxPortableEncodedImageBytes), MimeType: "image/png",
+		}},
+	}
+	if err := validatePortableImageRequest([]messages.ChatMessage{atLimit}); err != nil {
+		t.Fatalf("10,000,000-byte image rejected: %v", err)
+	}
+
+	overLimit := atLimit
+	overLimit.Parts = slices.Clone(atLimit.Parts)
+	overLimit.Parts[0].ImageData = portablePNGBase64Size(t, maxPortableEncodedImageBytes+4)
+	err := validatePortableImageRequest([]messages.ChatMessage{overLimit})
+	if err == nil || !strings.Contains(err.Error(), "per-image portable limit is 10,000,000 bytes") {
+		t.Fatalf("10,000,004-byte image limit error = %v", err)
+	}
+}
+
+func TestTurnPersistenceAckSerializesDetachedExactRetry(t *testing.T) {
+	base := newTurnPersistenceTestSession(t)
+	session := &blockingFirstAddSession{
+		Session:      base,
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	ack := newTurnPersistenceAck(false)
+	userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "same detached turn"}
+
+	runAttempt := func(done chan<- error) {
+		ack.beginPersistence()
+		err := persistUserMessageForTurn(session, userMsg, true)
+		ack.finishPersistence(err == nil)
+		done <- err
+	}
+	firstDone := make(chan error, 1)
+	go runAttempt(firstDone)
+	<-session.firstStarted
+
+	secondAcquired := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		ack.beginPersistence()
+		close(secondAcquired)
+		err := persistUserMessageForTurn(session, userMsg, true)
+		ack.finishPersistence(err == nil)
+		secondDone <- err
+	}()
+	select {
+	case <-secondAcquired:
+		close(session.releaseFirst)
+		t.Fatal("exact retry acquired persistence while detached attempt was active")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(session.releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	<-secondAcquired
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if calls := session.addCalls.Load(); calls != 1 {
+		t.Fatalf("serialized exact retry called AddMessage %d times, want 1", calls)
+	}
+	if history := session.GetHistory(); len(history) != 1 || !equivalentUserMessage(history[0], userMsg) {
+		t.Fatalf("serialized exact retry history = %#v", history)
+	}
+}
+
+type blockingFirstAddSession struct {
+	sessions.Session
+	addCalls     atomic.Int32
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+}
+
+func (s *blockingFirstAddSession) AddMessage(msg messages.ChatMessage) error {
+	if s.addCalls.Add(1) == 1 {
+		close(s.firstStarted)
+		<-s.releaseFirst
+	}
+	return s.Session.AddMessage(msg)
+}
+
+// portablePNGBase64Size returns a fully decodable 2x2 PNG whose encoded text
+// has exactly encodedSize bytes. A private ancillary chunk supplies inert
+// padding without changing the pixels or prepared-image dimensions.
+func portablePNGBase64Size(t *testing.T, encodedSize int) string {
+	t.Helper()
+	if encodedSize%4 != 0 {
+		t.Fatalf("encoded PNG fixture size %d is not a base64 quantum", encodedSize)
+	}
+	path := filepath.Join(t.TempDir(), "portable.png")
+	writeImageFixture(t, path, 2, 2)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const chunkOverhead = 12
+	rawSize := encodedSize / 4 * 3
+	payloadSize := rawSize - len(original) - chunkOverhead
+	if payloadSize < 0 || len(original) < 12 {
+		t.Fatalf("encoded PNG fixture size %d is too small", encodedSize)
+	}
+
+	chunk := make([]byte, chunkOverhead+payloadSize)
+	binary.BigEndian.PutUint32(chunk[:4], uint32(payloadSize))
+	copy(chunk[4:8], "ppLy")
+	binary.BigEndian.PutUint32(chunk[8+payloadSize:], crc32.ChecksumIEEE(chunk[4:8+payloadSize]))
+
+	data := make([]byte, 0, rawSize)
+	data = append(data, original[:len(original)-12]...)
+	data = append(data, chunk...)
+	data = append(data, original[len(original)-12:]...)
+	encoded := base64.StdEncoding.EncodeToString(data)
+	if len(encoded) != encodedSize {
+		t.Fatalf("encoded PNG fixture length = %d, want %d", len(encoded), encodedSize)
+	}
+	return encoded
 }
 
 func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testing.T) {

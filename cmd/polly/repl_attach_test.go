@@ -1,16 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"image"
+	"image/color"
+	"image/gif"
 	"image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	ui "github.com/metaspartan/gotui/v5"
+	"golang.org/x/image/bmp"
 )
 
 func TestSplitDroppedPaths(t *testing.T) {
@@ -119,12 +125,18 @@ func TestPromptAttachmentsResolveInTokenOrder(t *testing.T) {
 		t.Fatalf("tokens = %q, %q", tokenA, tokenB)
 	}
 
-	got := m.promptAttachments("compare [image #2] with [image #1], again [image #2], and [image #9]")
+	got, err := m.promptAttachments("compare [image #2] with [image #1], again [image #2]")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 || got[0].Path != second || got[1].Path != first {
 		t.Fatalf("promptAttachments = %+v, want [%s %s]", got, second, first)
 	}
-	if atts := m.promptAttachments("no tokens here"); atts != nil {
+	if atts, err := m.promptAttachments("no tokens here"); err != nil || atts != nil {
 		t.Fatalf("expected nil for token-free prompt, got %+v", atts)
+	}
+	if atts, err := m.promptAttachments("compare [image #2] with [image #9]"); err == nil || atts != nil || !strings.Contains(err.Error(), "[image #9]") {
+		t.Fatalf("unknown token result = %+v, %v", atts, err)
 	}
 }
 
@@ -139,15 +151,18 @@ func TestPromptAttachmentsBareTypedPaths(t *testing.T) {
 	m := newReplModel()
 	m.imageBaseDir = dir
 
-	got := m.promptAttachments("what is (" + rel + "), exactly?")
+	got, err := m.promptAttachments("what is (" + rel + "), exactly?")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 || got[0].Path != filepath.Join(dir, rel) {
 		t.Fatalf("typed path attachments = %+v", got)
 	}
 
-	if atts := m.promptAttachments("styles.png is mentioned but does not exist"); atts != nil {
+	if atts, err := m.promptAttachments("styles.png is mentioned but does not exist"); err != nil || atts != nil {
 		t.Fatalf("missing file should stay prose, got %+v", atts)
 	}
-	if atts := m.promptAttachments("plain words only"); atts != nil {
+	if atts, err := m.promptAttachments("plain words only"); err != nil || atts != nil {
 		t.Fatalf("prose should never resolve, got %+v", atts)
 	}
 
@@ -155,9 +170,34 @@ func TestPromptAttachmentsBareTypedPaths(t *testing.T) {
 	other := filepath.Join(dir, "clip.png")
 	writeImageFixture(t, other, 4, 4)
 	token := m.registerAttachment(other, "clipboard image")
-	got = m.promptAttachments("compare " + rel + " with " + token + " and " + rel)
+	got, err = m.promptAttachments("compare " + rel + " with " + token + " and " + rel)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 || got[0].Path != filepath.Join(dir, rel) || got[1].Path != other {
 		t.Fatalf("merged attachments = %+v", got)
+	}
+}
+
+func TestPromptAttachmentsRejectsMoreThanMaximumUniqueImages(t *testing.T) {
+	dir := t.TempDir()
+	m := newReplModel()
+	var prompt strings.Builder
+	for i := 0; i <= maxPromptAttachments; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("%02d.png", i))
+		writeImageFixture(t, path, 2, 2)
+		if i > 0 {
+			prompt.WriteByte(' ')
+		}
+		prompt.WriteString(m.registerAttachment(path, filepath.Base(path)))
+	}
+
+	got, err := m.promptAttachments(prompt.String())
+	if err == nil || got != nil {
+		t.Fatalf("17-image result = %+v, %v; want rejection", got, err)
+	}
+	if !strings.Contains(err.Error(), "17 unique image attachments") || !strings.Contains(err.Error(), "maximum is 16") {
+		t.Fatalf("17-image error = %q", err)
 	}
 }
 
@@ -176,6 +216,22 @@ func TestPrepareImageForUploadPassthroughAndDownscale(t *testing.T) {
 	}
 	if part.FileName != "small.png" {
 		t.Fatalf("FileName = %q", part.FileName)
+	}
+
+	webpPath := filepath.Join(dir, "small.webp")
+	webpData, err := base64.StdEncoding.DecodeString("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(webpPath, webpData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	part, err = prepareImageForUpload(webpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.MimeType != "image/webp" || part.ImageData != base64.StdEncoding.EncodeToString(webpData) {
+		t.Fatalf("small WebP was not passed through byte-for-byte: mime=%q", part.MimeType)
 	}
 
 	big := filepath.Join(dir, "big.png")
@@ -212,8 +268,233 @@ func TestPrepareImageForUploadPassthroughAndDownscale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if part.MimeType != "image/jpeg" {
-		t.Fatalf("jpeg mime = %q", part.MimeType)
+	photoData, err := os.ReadFile(photo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.MimeType != "image/jpeg" || part.ImageData != base64.StdEncoding.EncodeToString(photoData) {
+		t.Fatalf("small JPEG was not passed through byte-for-byte: mime=%q", part.MimeType)
+	}
+}
+
+func TestPrepareImageForUploadNormalizesGIFAndBMPToPNG(t *testing.T) {
+	dir := t.TempDir()
+	palette := color.Palette{
+		color.RGBA{R: 255, A: 255},
+		color.RGBA{B: 255, A: 255},
+	}
+	first := image.NewPaletted(image.Rect(0, 0, 3, 2), palette)
+	second := image.NewPaletted(image.Rect(0, 0, 3, 2), palette)
+	for i := range second.Pix {
+		second.Pix[i] = 1
+	}
+
+	gifPath := filepath.Join(dir, "animated.gif")
+	gifFile, err := os.Create(gifPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gif.EncodeAll(gifFile, &gif.GIF{Image: []*image.Paletted{first, second}, Delay: []int{1, 1}}); err != nil {
+		gifFile.Close()
+		t.Fatal(err)
+	}
+	if err := gifFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	bmpPath := filepath.Join(dir, "still.bmp")
+	bmpImage := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 3; x++ {
+			bmpImage.Set(x, y, color.RGBA{G: 255, A: 255})
+		}
+	}
+	bmpFile, err := os.Create(bmpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bmp.Encode(bmpFile, bmpImage); err != nil {
+		bmpFile.Close()
+		t.Fatal(err)
+	}
+	if err := bmpFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want color.RGBA
+	}{
+		{name: "GIF first frame", path: gifPath, want: color.RGBA{R: 255, A: 255}},
+		{name: "BMP", path: bmpPath, want: color.RGBA{G: 255, A: 255}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			part, err := prepareImageForUpload(tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if part.MimeType != "image/png" {
+				t.Fatalf("normalized MIME = %q, want image/png", part.MimeType)
+			}
+			data, err := base64.StdEncoding.DecodeString(part.ImageData)
+			if err != nil {
+				t.Fatal(err)
+			}
+			img, format, err := image.Decode(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if format != "png" {
+				t.Fatalf("normalized format = %q, want png", format)
+			}
+			got := color.RGBAModel.Convert(img.At(0, 0)).(color.RGBA)
+			if got != tc.want {
+				t.Fatalf("normalized first pixel = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrepareImageForUploadKeepsDownscaledGIFAsPNG(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wide.gif")
+	palette := color.Palette{color.RGBA{R: 255, A: 255}, color.RGBA{B: 255, A: 255}}
+	frame := image.NewPaletted(image.Rect(0, 0, 2000, 500), palette)
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gif.Encode(file, frame, nil); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	part, err := prepareImageForUpload(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := base64.StdEncoding.DecodeString(part.ImageData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.MimeType != "image/png" || format != "png" || config.Width != uploadMaxLongEdge || config.Height != 392 {
+		t.Fatalf("downscaled GIF = mime %q format %q %dx%d", part.MimeType, format, config.Width, config.Height)
+	}
+}
+
+func TestPrepareImageForUploadShrinksBMPWithoutJPEGFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "noisy.bmp")
+	const size = 1400
+	img := image.NewRGBA(image.Rect(0, 0, size, size))
+	state := uint32(0x12345678)
+	for i := 0; i < len(img.Pix); i += 4 {
+		state ^= state << 13
+		state ^= state >> 17
+		state ^= state << 5
+		img.Pix[i+0] = byte(state)
+		img.Pix[i+1] = byte(state >> 8)
+		img.Pix[i+2] = byte(state >> 16)
+		img.Pix[i+3] = 0xff
+	}
+	var originalPNG bytes.Buffer
+	if err := png.Encode(&originalPNG, img); err != nil {
+		t.Fatal(err)
+	}
+	if originalPNG.Len() <= uploadMaxBytes {
+		t.Fatalf("fixture PNG is %d bytes; want more than %d to exercise iterative shrinking", originalPNG.Len(), uploadMaxBytes)
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bmp.Encode(file, img); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	part, err := prepareImageForUpload(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := base64.StdEncoding.DecodeString(part.ImageData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.MimeType != "image/png" || format != "png" {
+		t.Fatalf("size-limited BMP = mime %q format %q, want PNG", part.MimeType, format)
+	}
+	if len(data) > uploadMaxBytes {
+		t.Fatalf("size-limited BMP is %d bytes, want at most %d", len(data), uploadMaxBytes)
+	}
+	if config.Width >= size || config.Height >= size {
+		t.Fatalf("size-limited BMP stayed %dx%d; iterative shrinking did not run", config.Width, config.Height)
+	}
+}
+
+func TestPreparedMessageTranscriptImagesCacheAcceptedBytes(t *testing.T) {
+	cacheRoot := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "accepted.png")
+	writeImageFixture(t, source, 7, 5)
+	msg, err := buildREPLUserMessage("inspect", []composerAttachment{{Path: source, Label: "accepted.png"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.Parts) != 2 {
+		t.Fatalf("prepared parts = %+v", msg.Parts)
+	}
+	wantBytes, err := base64.StdEncoding.DecodeString(msg.Parts[1].ImageData)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := preparedMessageTranscriptImages(msg)
+	if len(first) != 1 {
+		t.Fatalf("first materialization = %+v", first)
+	}
+	wantDir := filepath.Join(cacheRoot, "pollytool", "attachments")
+	if filepath.Dir(first[0].Path) != wantDir || filepath.Ext(first[0].Path) != ".png" {
+		t.Fatalf("materialized path = %q, want PNG under %q", first[0].Path, wantDir)
+	}
+	gotBytes, err := os.ReadFile(first[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotBytes, wantBytes) {
+		t.Fatal("cached preview bytes differ from the accepted message payload")
+	}
+
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	second := preparedMessageTranscriptImages(msg)
+	if len(second) != 1 || second[0].Path != first[0].Path {
+		t.Fatalf("reused materialization = %+v, want path %q", second, first[0].Path)
+	}
+	gotBytes, err = os.ReadFile(second[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotBytes, wantBytes) {
+		t.Fatal("reused cache entry no longer matches the accepted bytes")
 	}
 }
 
@@ -243,12 +524,24 @@ func TestBuildREPLUserMessage(t *testing.T) {
 		t.Fatalf("image part = %+v", msg.Parts[1])
 	}
 
-	if _, err := buildREPLUserMessage("x", []composerAttachment{{Path: filepath.Join(dir, "gone.png")}}); err == nil {
-		t.Fatal("missing attachment file should fail the build")
+	gone := filepath.Join(dir, "gone.png")
+	writeImageFixture(t, gone, 8, 8)
+	m := newReplModel()
+	goneToken := m.registerAttachment(gone, "gone.png")
+	attachments, err := m.promptAttachments("inspect " + goneToken)
+	if err != nil || len(attachments) != 1 {
+		t.Fatalf("resolved attachment = %+v, %v", attachments, err)
+	}
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildREPLUserMessage("inspect "+goneToken, attachments); err == nil {
+		t.Fatal("attachment removed after resolution should fail the build")
 	}
 }
 
-func TestBeginTurnEchoesAttachmentThumbnails(t *testing.T) {
+func TestBeginManagedTurnEchoesPreparedAttachmentThumbnails(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	dir := t.TempDir()
 	path := filepath.Join(dir, "shot.png")
 	writeImageFixture(t, path, 8, 8)
@@ -256,7 +549,15 @@ func TestBeginTurnEchoesAttachmentThumbnails(t *testing.T) {
 	m := newReplModel()
 	token := m.registerAttachment(path, "shot.png")
 	prompt := "describe " + token + " " + string(transcriptImageMarker(0))
-	m.beginTurn(prompt)
+	attachments, err := m.promptAttachments(prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := buildREPLUserMessage(prompt, attachments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.beginManagedTurn(managedTurnInput{displayText: prompt, userMessage: msg})
 
 	idx := len(m.transcript) - 1
 	entry := m.transcript[idx]
@@ -271,8 +572,20 @@ func TestBeginTurnEchoesAttachmentThumbnails(t *testing.T) {
 	if strings.ContainsRune(strings.SplitN(entry, "\n", 2)[0], transcriptImageMarker(0)) {
 		t.Fatal("pasted marker rune survived in the echoed prompt line")
 	}
-	if imgs := m.transcriptImages[idx]; len(imgs) != 1 || imgs[0].Path != path {
-		t.Fatalf("sidecar images = %+v", m.transcriptImages[idx])
+	imgs := m.transcriptImages[idx]
+	if len(imgs) != 1 || imgs[0].DisplayPath != "shot.png" || imgs[0].Path == path {
+		t.Fatalf("sidecar images = %+v", imgs)
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(imgs[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("rendered preview does not use the prepared attachment bytes")
 	}
 }
 

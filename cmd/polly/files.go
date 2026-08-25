@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,17 +12,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
-
-// supportedImageTypes lists common image MIME types
-var supportedImageTypes = map[string]bool{
-	"image/jpeg":    true,
-	"image/jpg":     true,
-	"image/png":     true,
-	"image/gif":     true,
-	"image/webp":    true,
-	"image/bmp":     true,
-	"image/svg+xml": true,
-}
 
 // readFile reads a file and returns its content as base64 if it's an image
 func readFile(path string) (*messages.ContentPart, error) {
@@ -45,15 +33,8 @@ func readFile(path string) (*messages.ContentPart, error) {
 	// Detect MIME type
 	mimeType := detectMimeType(path, data)
 
-	// Check if it's an image
-	if isImageType(mimeType) {
-		// Return as base64 encoded image
-		return &messages.ContentPart{
-			Type:      "image_base64",
-			ImageData: base64.StdEncoding.EncodeToString(data),
-			MimeType:  mimeType,
-			FileName:  filepath.Base(path),
-		}, nil
+	if looksLikeImageInput(path, mimeType) {
+		return prepareImageBytesForUpload(data, filepath.Base(path))
 	}
 
 	// Return as text content
@@ -119,13 +100,25 @@ func detectMimeType(path string, data []byte) string {
 	return mimeType
 }
 
-// isImageType checks if a MIME type is a supported image type
-func isImageType(mimeType string) bool {
-	// Remove parameters from MIME type (e.g., "image/jpeg; charset=utf-8" -> "image/jpeg")
-	if idx := strings.Index(mimeType, ";"); idx != -1 {
-		mimeType = strings.TrimSpace(mimeType[:idx])
+// looksLikeImageInput routes anything identified as an image through the
+// portable raster validator. Common image extensions are also recognized when
+// a server or local MIME detector labels the bytes generically. Unsupported
+// formats such as SVG then fail explicitly instead of entering durable history
+// as either base64 image data or misleading text.
+func looksLikeImageInput(fileName, mimeType string) bool {
+	if idx := strings.IndexByte(mimeType, ';'); idx >= 0 {
+		mimeType = mimeType[:idx]
 	}
-	return supportedImageTypes[mimeType]
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "image/") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(fileName)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+		".svg", ".tif", ".tiff", ".heic", ".heif", ".avif", ".ico":
+		return true
+	default:
+		return false
+	}
 }
 
 // isURL checks if a string is a valid HTTP/HTTPS URL
@@ -156,22 +149,30 @@ func fetchURL(urlStr string) (*messages.ContentPart, error) {
 		return nil, fmt.Errorf("failed to fetch URL %s: HTTP %d %s", urlStr, resp.StatusCode, resp.Status)
 	}
 
-	// Read body
-	data, err := io.ReadAll(resp.Body)
+	if resp.ContentLength > maxLocalImageBytes {
+		return nil, fmt.Errorf("failed to fetch URL %s: response exceeds the %d MiB download limit", urlStr, maxLocalImageBytes>>20)
+	}
+
+	// Bound even chunked or dishonest responses before buffering them. The
+	// extra byte distinguishes an exactly-full response from an oversized one.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxLocalImageBytes)+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response from %s: %w", urlStr, err)
+	}
+	if len(data) > maxLocalImageBytes {
+		return nil, fmt.Errorf("failed to fetch URL %s: response exceeds the %d MiB download limit", urlStr, maxLocalImageBytes>>20)
 	}
 
 	// Get MIME type from Content-Type header
 	mimeType := resp.Header.Get("Content-Type")
-	if mimeType == "" {
-		// Fallback to content detection
-		mimeType = http.DetectContentType(data)
-	}
-
-	// Clean up MIME type (remove parameters)
 	if idx := strings.Index(mimeType, ";"); idx != -1 {
 		mimeType = strings.TrimSpace(mimeType[:idx])
+	}
+	// A generic or non-image response type is not authoritative for image
+	// ingestion. Sniff the bytes so extensionless CDN/download URLs still enter
+	// the portable raster preparation path.
+	if mimeType == "" || !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		mimeType = http.DetectContentType(data)
 	}
 
 	// Extract filename from URL
@@ -181,15 +182,8 @@ func fetchURL(urlStr string) (*messages.ContentPart, error) {
 		fileName = "downloaded-file"
 	}
 
-	// Check if it's an image
-	if isImageType(mimeType) {
-		// Return as base64 encoded image
-		return &messages.ContentPart{
-			Type:      "image_base64",
-			ImageData: base64.StdEncoding.EncodeToString(data),
-			MimeType:  mimeType,
-			FileName:  fileName,
-		}, nil
+	if looksLikeImageInput(fileName, mimeType) {
+		return prepareImageBytesForUpload(data, fileName)
 	}
 
 	// Return as text content

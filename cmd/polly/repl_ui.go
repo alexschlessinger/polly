@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"image"
@@ -15,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	tcell "github.com/gdamore/tcell/v3"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -339,6 +342,122 @@ func (e *lineEditor) displayWidthToCursor() int {
 	return rw.StringWidth(string(e.buf[:e.cursor]))
 }
 
+// managedTurnInput is the immutable boundary between accepting composer input
+// and running a model turn. displayText is UI-only; userMessage is the exact
+// normalized payload carried through queues, retries, and session hydration.
+type managedTurnInput struct {
+	displayText string
+	userMessage messages.ChatMessage
+}
+
+// turnPersistenceAck belongs to one logical user turn. Provider goroutines can
+// mark it without taking the model lock, so queue projection never observes a
+// persisted session message while its acknowledgement is blocked behind the
+// event loop. Keeping the pointer turn-owned makes late callbacks harmless: an
+// old callback can only update the old turn (or its exact retry), never a newer
+// prompt.
+type turnPersistenceAck struct {
+	mu        sync.Mutex
+	active    int
+	persisted bool
+	settled   chan struct{}
+}
+
+func newTurnPersistenceAck(persisted bool) *turnPersistenceAck {
+	return &turnPersistenceAck{persisted: persisted}
+}
+
+func (a *turnPersistenceAck) beginPersistence() {
+	if a == nil {
+		return
+	}
+	for {
+		a.mu.Lock()
+		if a.active > 0 {
+			settled := a.settled
+			a.mu.Unlock()
+			<-settled
+			continue
+		}
+		a.settled = make(chan struct{})
+		a.active = 1
+		a.mu.Unlock()
+		return
+	}
+}
+
+func (a *turnPersistenceAck) finishPersistence(persisted bool) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if persisted {
+		a.persisted = true
+	}
+	if a.active > 0 {
+		a.active--
+		if a.active == 0 {
+			close(a.settled)
+		}
+	}
+	a.mu.Unlock()
+}
+
+// snapshotSessionHistory returns a session snapshot consistent with the turn's
+// persistence state. Persistence begins under this same turn-local lock before
+// AddMessage and ends after it returns. Projection either snapshots before that
+// interval (and includes the not-yet-persisted user itself) or waits until the
+// interval is over and observes the stored user; it can never see the session
+// write without its acknowledgement.
+func (a *turnPersistenceAck) snapshotSessionHistory(session sessions.Session) ([]messages.ChatMessage, bool) {
+	if a == nil {
+		return session.GetHistory(), false
+	}
+	for {
+		a.mu.Lock()
+		if a.active > 0 {
+			settled := a.settled
+			a.mu.Unlock()
+			<-settled
+			continue
+		}
+		history := session.GetHistory()
+		persisted := a.persisted
+		a.mu.Unlock()
+		return history, persisted
+	}
+}
+
+type queuedREPLInput struct {
+	text string
+	turn *managedTurnInput
+}
+
+func textManagedTurn(prompt string) managedTurnInput {
+	return managedTurnInput{
+		displayText: prompt,
+		userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: prompt},
+	}
+}
+
+func cloneManagedTurn(turn managedTurnInput) managedTurnInput {
+	turn.userMessage = cloneChatMessage(turn.userMessage)
+	return turn
+}
+
+func cloneChatMessage(msg messages.ChatMessage) messages.ChatMessage {
+	msg.Parts = append([]messages.ContentPart(nil), msg.Parts...)
+	msg.ToolCalls = append([]messages.ChatMessageToolCall(nil), msg.ToolCalls...)
+	if msg.Metadata != nil {
+		metadata := make(map[string]any, len(msg.Metadata))
+		for key, value := range msg.Metadata {
+			metadata[key] = value
+		}
+		msg.Metadata = metadata
+	}
+	return msg
+}
+
 // replModel is the mutex-protected state for the MVP TUI. Mutated from both
 // the main event loop and any in-flight turn goroutine, so every read/write
 // holds mu.
@@ -360,8 +479,8 @@ type replModel struct {
 	imageCellHeight  int
 
 	// attachments maps "[image #N]" composer tokens to validated local image
-	// paths for this session. Prompts remain plain strings everywhere; a
-	// token's number is resolved through this registry when a turn starts.
+	// paths for this session. Tokens resolve once when the composer accepts a
+	// prompt; queues and retries retain only the prepared message bytes.
 	attachments   map[int]composerAttachment
 	attachmentSeq int
 	// clipboardCapture serializes Ctrl+V: one platform clipboard read may be
@@ -428,9 +547,9 @@ type replModel struct {
 	historyDraft string
 
 	// queue holds inputs submitted while a turn is in flight (the prompt stays
-	// editable during a turn). They run in order once the current turn ends;
-	// each entry is raw trimmed text routed to a command or a prompt at dequeue.
-	queue                []string
+	// editable during a turn). Commands remain text-only; prompts carry the
+	// exact prepared message accepted from the composer.
+	queue                []queuedREPLInput
 	queuePaused          bool
 	queueResumeAfterTurn bool
 
@@ -495,12 +614,16 @@ type replModel struct {
 	// currentPrompt identifies the user turn in flight. Failed/canceled turns
 	// retain it for /retry; retryingNext tells startTurn to reuse the already
 	// persisted user message instead of appending a duplicate.
-	currentPrompt   string
-	retryPrompt     string
-	retryingNext    bool
-	currentWasRetry bool
-	turnHasOutput   bool
-	unsavedLabeled  bool
+	currentPrompt      string
+	retryPrompt        string
+	currentTurn        managedTurnInput
+	retryTurn          *managedTurnInput
+	currentPersistence *turnPersistenceAck
+	retryPersistence   *turnPersistenceAck
+	retryingNext       bool
+	currentWasRetry    bool
+	turnHasOutput      bool
+	unsavedLabeled     bool
 
 	// runningTools counts tool calls currently in flight this turn. A parallel
 	// batch starts several at once; the status only returns to "waiting" when
@@ -560,7 +683,7 @@ func (m *replModel) statusRow(width int) string {
 		if m.queuePaused {
 			queueRaw += " paused"
 		}
-		if preview := compactQueuePreview(m.queue[len(m.queue)-1]); preview != "" {
+		if preview := compactQueuePreview(m.queue[len(m.queue)-1].text); preview != "" {
 			queueRaw += " › " + preview
 		}
 		queueStyled := styled(queueRaw, "active", "bold")
@@ -1325,18 +1448,20 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	}
 
 	lastRole := ""
-	lastUserPrompt := ""
-	lastUserRetryable := false
+	var lastUserTurn *managedTurnInput
 	lastUserContextOnly := false
+	historyRequestOK := validatePortableImageRequest(modelVisibleHistory(history)) == nil
 	for _, msg := range history[start:] {
 		switch msg.Role {
 		case messages.MessageRoleUser:
 			flushTools()
 			m.appendTurnSeparator()
-			content, retryPrompt, retryable, contextOnly := historyUserSummary(msg)
+			content, _, retryable, contextOnly := historyUserSummary(msg)
 			m.appendUserPrompt(content)
-			lastUserPrompt = retryPrompt
-			lastUserRetryable = retryable
+			lastUserTurn = nil
+			if turn, ok := retryableHistoryTurn(msg, content, retryable, historyRequestOK); ok {
+				lastUserTurn = &turn
+			}
 			lastUserContextOnly = contextOnly
 			lastRole = msg.Role
 		case messages.MessageRoleAssistant:
@@ -1384,14 +1509,96 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	}
 	flushTools()
 	if lastRole == messages.MessageRoleUser && !lastUserContextOnly {
-		if lastUserRetryable && lastUserPrompt != "" {
-			m.retryPrompt = lastUserPrompt
+		if lastUserTurn != nil {
+			turn := cloneManagedTurn(*lastUserTurn)
+			m.retryTurn = &turn
+			m.retryPersistence = newTurnPersistenceAck(true)
+			m.retryPrompt = turn.userMessage.GetContent()
+			if m.retryPrompt == "" {
+				m.retryPrompt = turn.displayText
+			}
 			m.appendLine("  " + styled("incomplete · /retry available", "muted", ""))
 		} else {
 			m.appendLine("  " + styled("incomplete", "muted", ""))
 		}
 	}
 	m.followBottom = true
+}
+
+func retryableHistoryTurn(msg messages.ChatMessage, display string, simpleContent, historyRequestOK bool) (managedTurnInput, bool) {
+	contextOnly, _ := msg.Metadata[messages.MetadataKeyContextImport].(bool)
+	if contextOnly || msg.Role != messages.MessageRoleUser {
+		return managedTurnInput{}, false
+	}
+	if !historyRequestOK {
+		return managedTurnInput{}, false
+	}
+	if simpleContent {
+		return cloneManagedTurn(managedTurnInput{displayText: display, userMessage: msg}), true
+	}
+	imageCount := 0
+	for _, part := range msg.Parts {
+		switch part.Type {
+		case "text":
+			if part.FileName != "" {
+				return managedTurnInput{}, false
+			}
+		case "image_base64":
+			if !portablePersistedImagePart(part) {
+				return managedTurnInput{}, false
+			}
+			imageCount++
+			if imageCount > maxPromptAttachments {
+				return managedTurnInput{}, false
+			}
+		default:
+			return managedTurnInput{}, false
+		}
+	}
+	if imageCount == 0 {
+		return managedTurnInput{}, false
+	}
+	return cloneManagedTurn(managedTurnInput{displayText: display, userMessage: msg}), true
+}
+
+func portablePersistedImagePart(part messages.ContentPart) bool {
+	return validatePortablePersistedImagePart(part) == nil
+}
+
+func validatePortablePersistedImagePart(part messages.ContentPart) error {
+	if len(part.ImageData) > maxPortableEncodedImageBytes {
+		return fmt.Errorf("encoded image uses %d bytes; per-image portable limit is 10,000,000 bytes (10 MB)", len(part.ImageData))
+	}
+	data, err := base64.StdEncoding.DecodeString(part.ImageData)
+	if err != nil || len(data) == 0 {
+		return fmt.Errorf("invalid or empty base64 data")
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || config.Width <= 0 || config.Height <= 0 {
+		return fmt.Errorf("invalid raster image data")
+	}
+	if max(config.Width, config.Height) > uploadMaxLongEdge ||
+		int64(config.Width)*int64(config.Height) > maxLocalImagePixels {
+		return fmt.Errorf("image dimensions %dx%d exceed the prepared-image bounds", config.Width, config.Height)
+	}
+	if _, decodedFormat, err := image.Decode(bytes.NewReader(data)); err != nil || decodedFormat != format {
+		return fmt.Errorf("invalid %s image data", format)
+	}
+	wantMIME := ""
+	switch format {
+	case "png":
+		wantMIME = "image/png"
+	case "jpeg":
+		wantMIME = "image/jpeg"
+	case "webp":
+		wantMIME = "image/webp"
+	default:
+		return fmt.Errorf("unsupported image format %q", format)
+	}
+	if part.MimeType != wantMIME {
+		return fmt.Errorf("image MIME %q does not match %q bytes", part.MimeType, format)
+	}
+	return nil
 }
 
 func historyUserSummary(msg messages.ChatMessage) (display, retryPrompt string, retryable, contextOnly bool) {
@@ -1430,9 +1637,9 @@ func historyUserSummary(msg messages.ChatMessage) (display, retryPrompt string, 
 	if display == "" {
 		display = "[empty message]"
 	}
-	// Parts-based messages may include file bodies even when their Type is
-	// "text". The original payload cannot be faithfully rebuilt from a prompt
-	// string, so only simple Content messages are safe to retry.
+	// This summary only identifies simple Content retries. retryableHistoryTurn
+	// separately recognizes persisted image_base64 parts while rejecting text
+	// file bodies and context imports that cannot be reconstructed safely.
 	retryable = len(msg.Parts) == 0 && msg.Content != ""
 	if retryable {
 		retryPrompt = msg.Content
@@ -1493,7 +1700,7 @@ func (m *replModel) updateQueueHint() {
 		if m.queuePaused {
 			next += " paused"
 		}
-		if preview := compactQueuePreview(m.queue[len(m.queue)-1]); preview != "" {
+		if preview := compactQueuePreview(m.queue[len(m.queue)-1].text); preview != "" {
 			next += " › " + preview
 		}
 	}
@@ -1503,29 +1710,18 @@ func (m *replModel) updateQueueHint() {
 	}
 }
 
-// submitPrompt finalizes the current input as a user turn. Returns the prompt
-// string (possibly empty if input was blank).
-func (m *replModel) submitPrompt() string {
-	prompt := strings.TrimSpace(m.ed.text())
-	m.ed.clear()
-	m.clearSlashHints()
-	m.historyIdx = -1
-	m.historyDraft = ""
-	if prompt == "" {
-		return ""
-	}
-	m.history = append(m.history, prompt)
-	m.beginTurn(prompt)
-	return prompt
-}
-
 // beginTurn echoes a user prompt and marks a turn in flight. Shared by the idle
 // submit path and the queued-prompt drain; neither records history here (callers
 // do that when the text is first accepted). Caller must hold m.mu.
 func (m *replModel) beginTurn(prompt string) {
+	m.beginManagedTurn(textManagedTurn(prompt))
+}
+
+func (m *replModel) beginManagedTurn(turn managedTurnInput) {
+	prompt := turn.displayText
 	m.appendTurnSeparator()
 	m.appendUserPrompt(prompt)
-	if images := m.promptAttachmentImages(prompt); len(images) > 0 {
+	if images := preparedMessageTranscriptImages(turn.userMessage); len(images) > 0 {
 		// The echoed prompt gains thumbnail slots for its attachments. Pasted
 		// private-use runes are stripped first so they cannot pose as slot
 		// anchors in an entry that now carries real ones.
@@ -1543,6 +1739,8 @@ func (m *replModel) beginTurn(prompt string) {
 	m.thinkingTail = nil
 	m.turnStarted = time.Now()
 	m.currentPrompt = prompt
+	m.currentTurn = cloneManagedTurn(turn)
+	m.currentPersistence = newTurnPersistenceAck(false)
 	m.turnHasOutput = false
 	m.unsavedLabeled = false
 	m.lastOutcome = turnOutcomeNone
@@ -1983,7 +2181,7 @@ type managedREPL struct {
 	rootFlex    *widgets.Flex
 
 	quit       chan struct{}
-	pending    chan string
+	pending    chan managedTurnInput
 	turnCancel context.CancelFunc
 
 	// uiTasks carries deferred UI mutations (e.g. a finished clipboard read)
@@ -2149,7 +2347,7 @@ func loadHistory(path string) []string {
 	}
 	var lines []string
 	for _, l := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(l) != "" {
+		if strings.TrimSpace(l) != "" && !attachmentTokenPattern.MatchString(l) {
 			lines = append(lines, l)
 		}
 	}
@@ -2191,7 +2389,7 @@ func (r *managedREPL) closeHistory() {
 // appendHistory persists one submitted prompt. Single-line only — multi-line
 // prompts would break the line-per-entry format and are not stored.
 func (r *managedREPL) appendHistory(prompt string) {
-	if r.histFile == nil || strings.ContainsRune(prompt, '\n') {
+	if r.histFile == nil || strings.ContainsRune(prompt, '\n') || attachmentTokenPattern.MatchString(prompt) {
 		return
 	}
 	fmt.Fprintln(r.histFile, prompt)
@@ -2208,6 +2406,63 @@ func (r *managedREPL) recordAcceptedInput(input string) {
 	r.model.historyDraft = ""
 	r.model.history = append(r.model.history, input)
 	r.appendHistory(input)
+}
+
+// prepareManagedTurnLocked resolves every attachment and enforces the portable
+// inline-image budget before the editor is cleared or a prompt is queued.
+// Caller must hold r.model.mu.
+func (r *managedREPL) prepareManagedTurnLocked(prompt string) (managedTurnInput, error) {
+	attachments, err := r.model.promptAttachments(prompt)
+	if err != nil {
+		return managedTurnInput{}, fmt.Errorf("error processing attachments: %w", err)
+	}
+	userMessage, err := buildREPLUserMessage(prompt, attachments)
+	if err != nil {
+		return managedTurnInput{}, fmt.Errorf("error processing attachments: %w", err)
+	}
+	turn := cloneManagedTurn(managedTurnInput{displayText: prompt, userMessage: userMessage})
+
+	var projected []messages.ChatMessage
+	var metadata *sessions.Metadata
+	currentPersisted := false
+	if r.state != nil && r.state.session != nil {
+		if r.model.busy && r.model.currentTurn.userMessage.Role == messages.MessageRoleUser {
+			projected, currentPersisted = r.model.currentPersistence.snapshotSessionHistory(r.state.session)
+		} else {
+			projected = r.state.session.GetHistory()
+		}
+		metadata = r.state.session.GetMetadata()
+	}
+	if r.model.busy && !currentPersisted && r.model.currentTurn.userMessage.Role == messages.MessageRoleUser {
+		projected = appendProjectedUserMessage(projected, r.model.currentTurn.userMessage, metadata)
+	}
+	for _, queued := range r.model.queue {
+		if queued.turn != nil {
+			projected = appendProjectedUserMessage(projected, queued.turn.userMessage, metadata)
+		} else if queued.text == "/reset confirm" {
+			projected = resetProjectedHistory(metadata)
+		}
+	}
+	projected = appendProjectedUserMessage(projected, turn.userMessage, metadata)
+	if err := validatePortableImageRequest(modelVisibleHistory(projected)); err != nil {
+		return managedTurnInput{}, err
+	}
+	return turn, nil
+}
+
+func appendProjectedUserMessage(history []messages.ChatMessage, msg messages.ChatMessage, metadata *sessions.Metadata) []messages.ChatMessage {
+	history = append(history, msg)
+	if metadata != nil && metadata.MaxHistoryTokens > 0 {
+		history = sessions.TrimHistory(history, metadata.MaxHistoryTokens)
+	}
+	return history
+}
+
+func resetProjectedHistory(metadata *sessions.Metadata) []messages.ChatMessage {
+	if metadata == nil || metadata.SystemPrompt == "" {
+		return nil
+	}
+	return []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: metadata.SystemPrompt}}
 }
 
 // sandboxNoticeLine summarizes the sandbox posture for the REPL startup
@@ -2230,7 +2485,7 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 		config:  config,
 		model:   m,
 		quit:    make(chan struct{}, 1),
-		pending: make(chan string, 1),
+		pending: make(chan managedTurnInput, 1),
 		uiTasks: make(chan func(), 8),
 	}
 }
@@ -2297,7 +2552,8 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	r.initHistory()
 	defer r.closeHistory()
 
-	// Old clipboard captures serve no one once their transcripts are gone.
+	// Clipboard captures and materialized prepared-payload previews share this
+	// cache; once their transcripts are gone, stale files serve no one.
 	go func() {
 		if dir, err := attachmentCacheDir(); err == nil {
 			sweepAttachmentCache(dir, time.Now())
@@ -2360,8 +2616,8 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 				r.releaseApproval()
 				return nil
 			}
-			if prompt := r.takePending(); prompt != "" {
-				turnDone = r.startTurn(ctx, prompt, runTurn)
+			if turn, ok := r.takePending(); ok {
+				turnDone = r.startManagedTurn(ctx, turn, runTurn)
 				cancelDetach = nil
 			}
 			if turnDone == nil {
@@ -2373,8 +2629,8 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			if r.wantsRenderForEvent(ev) {
 				r.render()
 			}
-		case prompt := <-r.pending:
-			turnDone = r.startTurn(ctx, prompt, runTurn)
+		case turn := <-r.pending:
+			turnDone = r.startManagedTurn(ctx, turn, runTurn)
 			cancelDetach = nil
 			r.render()
 		case task := <-r.uiTasks:
@@ -2432,16 +2688,20 @@ func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
 	return !r.model.pasting
 }
 
-func (r *managedREPL) takePending() string {
+func (r *managedREPL) takePending() (managedTurnInput, bool) {
 	select {
 	case p := <-r.pending:
-		return p
+		return p, true
 	default:
-		return ""
+		return managedTurnInput{}, false
 	}
 }
 
 func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func(context.Context, string, TurnUI) error) chan error {
+	return r.startManagedTurn(ctx, textManagedTurn(prompt), runTurn)
+}
+
+func (r *managedREPL) startManagedTurn(ctx context.Context, turn managedTurnInput, runTurn func(context.Context, string, TurnUI) error) chan error {
 	r.startupLogoVisible = false
 	r.model.mu.Lock()
 	r.model.turnID++
@@ -2449,14 +2709,19 @@ func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func
 	reuseUser := r.model.retryingNext
 	r.model.retryingNext = false
 	r.model.currentWasRetry = reuseUser
+	persistence := r.model.currentPersistence
+	if persistence == nil {
+		persistence = newTurnPersistenceAck(false)
+		r.model.currentPersistence = persistence
+	}
 	r.model.mu.Unlock()
 
 	turnCtx, cancel := context.WithCancel(ctx)
 	r.turnCancel = cancel
 	done := make(chan error, 1)
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: turnID, reuseUser: reuseUser}
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: turnID, reuseUser: reuseUser, turn: cloneManagedTurn(turn), persistence: persistence}
 	go func() {
-		done <- runTurn(turnCtx, prompt, tui)
+		done <- runTurn(turnCtx, turn.displayText, tui)
 	}()
 	return done
 }
@@ -2474,15 +2739,16 @@ func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.
 			r.model.mu.Unlock()
 			return nil
 		}
-		text := r.model.queue[0]
+		item := r.model.queue[0]
 		r.model.queue = r.model.queue[1:]
 		r.model.updateQueueHint()
+		text := item.text
 
-		// A single-line "/…" is a command; multi-line input is always a prompt.
-		if strings.Contains(text, "\n") || !strings.HasPrefix(text, "/") {
-			r.model.beginTurn(text)
+		if item.turn != nil {
+			turn := cloneManagedTurn(*item.turn)
+			r.model.beginManagedTurn(turn)
 			r.model.mu.Unlock()
-			return r.startTurn(ctx, text, runTurn)
+			return r.startManagedTurn(ctx, turn, runTurn)
 		}
 
 		// runCommand and its helpers expect the model lock held (as in
@@ -2495,12 +2761,12 @@ func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.
 		// pending before looking at later queue entries; otherwise a following
 		// prompt could leapfrog it and inherit its reuse-user flag.
 		if r.model.busy {
-			prompt := r.takePending()
+			turn, ok := r.takePending()
 			r.model.mu.Unlock()
-			if prompt == "" {
+			if !ok {
 				return nil
 			}
-			return r.startTurn(ctx, prompt, runTurn)
+			return r.startManagedTurn(ctx, turn, runTurn)
 		}
 		r.model.mu.Unlock()
 		if quit {
@@ -2543,12 +2809,17 @@ func (r *managedREPL) endTurn(err error) {
 		}
 		m.lastOutcome = turnOutcomeDone
 		m.retryPrompt = ""
+		m.retryTurn = nil
+		m.retryPersistence = nil
 		m.queuePaused = false
 	case errors.Is(err, context.Canceled):
 		m.finishAssistantBlock("canceled · not saved")
 		m.labelTurnUnsaved("canceled · not saved")
 		m.lastOutcome = turnOutcomeCanceled
 		m.retryPrompt = m.currentPrompt
+		retry := cloneManagedTurn(m.currentTurn)
+		m.retryTurn = &retry
+		m.retryPersistence = m.currentPersistence
 		m.queuePaused = len(m.queue) > 0 && !resumeQueue
 		if !wasCanceling {
 			m.appendNoticeLine("turn canceled")
@@ -2559,6 +2830,9 @@ func (r *managedREPL) endTurn(err error) {
 		m.appendLine(styled("Error: "+err.Error(), "err", ""))
 		m.lastOutcome = turnOutcomeFailed
 		m.retryPrompt = m.currentPrompt
+		retry := cloneManagedTurn(m.currentTurn)
+		m.retryTurn = &retry
+		m.retryPersistence = m.currentPersistence
 		m.queuePaused = len(m.queue) > 0 && !resumeQueue
 	}
 	// A long turn settling is the "walk away and get pinged" moment; a quick
@@ -2580,6 +2854,8 @@ func (r *managedREPL) endTurn(err error) {
 	m.turnStarted = time.Time{}
 	m.state = turnStateIdle
 	m.currentPrompt = ""
+	m.currentTurn = managedTurnInput{}
+	m.currentPersistence = nil
 	m.currentWasRetry = false
 	m.updateQueueHint()
 	// A settled turn owns no callbacks. Advance the generation before exposing
@@ -2628,7 +2904,12 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.state = turnStateIdle
 	m.lastOutcome = turnOutcomeCanceled
 	m.retryPrompt = m.currentPrompt
+	retry := cloneManagedTurn(m.currentTurn)
+	m.retryTurn = &retry
+	m.retryPersistence = m.currentPersistence
 	m.currentPrompt = ""
+	m.currentTurn = managedTurnInput{}
+	m.currentPersistence = nil
 	resumeQueue := m.queueResumeAfterTurn || queuedRetryAtFront(m.queue)
 	m.queueResumeAfterTurn = false
 	m.queuePaused = len(m.queue) > 0 && !resumeQueue
@@ -2641,8 +2922,8 @@ func (r *managedREPL) detachCanceledTurn(ctx context.Context, runTurn func(conte
 	return r.startNextQueued(ctx, runTurn)
 }
 
-func queuedRetryAtFront(queue []string) bool {
-	return len(queue) > 0 && queue[0] == "/retry"
+func queuedRetryAtFront(queue []queuedREPLInput) bool {
+	return len(queue) > 0 && queue[0].text == "/retry"
 }
 
 // handleInterrupt processes Ctrl-C. While a turn is in flight the first press
@@ -3470,13 +3751,23 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			}
 			return false
 		}
+		isCommand := !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/")
 		if m.busy {
-			// A turn is running — queue this input to run when it ends instead
-			// of interrupting. Routing (command vs prompt) happens at dequeue;
-			// mirror the idle path's history handling here.
+			// A turn is running — commands remain text-only, while prompts are
+			// fully prepared before joining the queue.
+			queued := queuedREPLInput{text: trimmed}
+			if !isCommand {
+				turn, err := r.prepareManagedTurnLocked(trimmed)
+				if err != nil {
+					m.appendLine(styled("Error: "+err.Error(), "err", ""))
+					m.followBottom = true
+					return false
+				}
+				queued.turn = &turn
+			}
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
-			m.queue = append(m.queue, trimmed)
+			m.queue = append(m.queue, queued)
 			if m.canceling {
 				m.queuePaused = true
 			}
@@ -3485,7 +3776,7 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		}
 		// Only a single-line "/…" is a command; a multi-line prompt that happens
 		// to start with "/" is real input.
-		if !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/") {
+		if isCommand {
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
 			m.followBottom = true
@@ -3499,18 +3790,27 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			}
 			return false
 		}
+		turn, err := r.prepareManagedTurnLocked(trimmed)
+		if err != nil {
+			m.appendLine(styled("Error: "+err.Error(), "err", ""))
+			m.followBottom = true
+			return false
+		}
 		if m.queuePaused {
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
-			m.queue = append(m.queue, trimmed)
+			m.queue = append(m.queue, queuedREPLInput{text: trimmed, turn: &turn})
 			m.updateQueueHint()
 			return false
 		}
-		prompt := m.submitPrompt()
-		r.appendHistory(prompt)
 		select {
-		case r.pending <- prompt:
+		case r.pending <- turn:
+			m.ed.clear()
+			r.recordAcceptedInput(trimmed)
+			m.beginManagedTurn(turn)
 		default:
+			m.appendLine(styled("Error: turn queue is unavailable", "err", ""))
+			m.followBottom = true
 		}
 	case "<C-j>":
 		// Ctrl-J inserts a newline for composing multi-line prompts; Enter sends.
@@ -3625,14 +3925,24 @@ func immediateBusyCommand(input string) bool {
 // ---------------------------------------------------------------------------
 
 type gotuiTurnUI struct {
-	repl      *managedREPL
-	config    *Config
-	turnID    int64
-	reuseUser bool
+	repl        *managedREPL
+	config      *Config
+	turnID      int64
+	reuseUser   bool
+	turn        managedTurnInput
+	persistence *turnPersistenceAck
 }
 
 func (t *gotuiTurnUI) Start() {}
 func (t *gotuiTurnUI) Stop()  {}
+
+func (t *gotuiTurnUI) UserMessagePersistenceStarted() {
+	t.persistence.beginPersistence()
+}
+
+func (t *gotuiTurnUI) UserMessagePersistenceFinished(persisted bool) {
+	t.persistence.finishPersistence(persisted)
+}
 
 func (t *gotuiTurnUI) activeLocked() bool {
 	return t.turnID == 0 || t.repl.model.turnID == t.turnID
@@ -3833,22 +4143,14 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 	}
 	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
 		reuseUser := false
+		userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: prompt}
 		if tui, ok := turnUI.(*gotuiTurnUI); ok {
 			reuseUser = tui.reuseUser
-		}
-		// "[image #N]" tokens resolve against the composer registry at turn
-		// start, so queued and retried prompts pick up their attachments no
-		// matter how long they waited.
-		repl.model.mu.Lock()
-		attachments := repl.model.promptAttachments(prompt)
-		repl.model.mu.Unlock()
-		userMsg, err := buildREPLUserMessage(prompt, attachments)
-		if err != nil {
-			return fmt.Errorf("error processing attachments: %w", err)
+			userMsg = cloneChatMessage(tui.turn.userMessage)
 		}
 		// The exit code is a one-shot concern; the REPL already rendered
 		// any warning.
-		_, err = executeTurnWithUserMessage(turnCtx, config, state, userMsg, nil, nil, turnUI, reuseUser)
+		_, err := executeTurnWithUserMessage(turnCtx, config, state, userMsg, nil, nil, turnUI, reuseUser)
 		return err
 	})
 }

@@ -317,6 +317,8 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			}
 			r.model.clearDisplay()
 			r.model.retryPrompt = ""
+			r.model.retryTurn = nil
+			r.model.retryPersistence = nil
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
@@ -326,14 +328,18 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			return nil
 		},
 		queueLines: func() []string {
-			return append([]string(nil), r.model.queue...)
+			lines := make([]string, len(r.model.queue))
+			for i, queued := range r.model.queue {
+				lines[i] = queued.text
+			}
+			return lines
 		},
 		dropQueued: func() (string, bool) {
 			if len(r.model.queue) == 0 {
 				return "", false
 			}
 			last := len(r.model.queue) - 1
-			line := r.model.queue[last]
+			line := r.model.queue[last].text
 			r.model.queue = r.model.queue[:last]
 			if len(r.model.queue) == 0 {
 				r.model.queuePaused = false
@@ -372,10 +378,18 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			if m.busy {
 				return fmt.Errorf("a turn is already running")
 			}
-			if m.retryPrompt == "" {
+			if m.retryTurn == nil && m.retryPrompt == "" {
 				return fmt.Errorf("no failed or canceled turn")
 			}
-			prompt := m.retryPrompt
+			turn := textManagedTurn(m.retryPrompt)
+			if m.retryTurn != nil {
+				turn = cloneManagedTurn(*m.retryTurn)
+			}
+			prompt := turn.displayText
+			if prompt == "" {
+				prompt = m.retryPrompt
+				turn.displayText = prompt
+			}
 			m.appendTurnSeparator()
 			m.busy = true
 			m.canceling = false
@@ -383,6 +397,11 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			m.runningTools = 0
 			m.turnStarted = time.Now()
 			m.currentPrompt = prompt
+			m.currentTurn = cloneManagedTurn(turn)
+			m.currentPersistence = m.retryPersistence
+			if m.currentPersistence == nil {
+				m.currentPersistence = newTurnPersistenceAck(false)
+			}
 			m.turnHasOutput = false
 			m.unsavedLabeled = false
 			m.lastOutcome = turnOutcomeNone
@@ -391,11 +410,14 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			m.retryingNext = true
 			m.followBottom = true
 			select {
-			case r.pending <- prompt:
+			case r.pending <- turn:
 				return nil
 			default:
 				m.busy = false
 				m.state = turnStateIdle
+				m.currentPrompt = ""
+				m.currentTurn = managedTurnInput{}
+				m.currentPersistence = nil
 				m.retryingNext = false
 				return fmt.Errorf("turn queue is unavailable")
 			}
