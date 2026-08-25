@@ -46,6 +46,9 @@ type commandRunner struct {
 	config       *Config
 	sessionStore sessions.SessionStore
 	contextID    string
+	// autoContext marks a generated REPL context name (no -c given): its
+	// creation is silent and it is discarded on exit if no turn ever ran.
+	autoContext bool
 }
 
 var newSandbox = sandbox.New
@@ -70,6 +73,9 @@ type conversationState struct {
 	skillRuntime    *tools.SkillRuntime
 	skillSources    []string
 	sandboxWarnings *broadWritablePathWarner
+	// autoNamedContext marks a session under a generated name, so the REPL
+	// can mention the name and how to keep or resume it.
+	autoNamedContext bool
 }
 
 func (s *conversationState) Close() {
@@ -105,7 +111,12 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 		contextID = ""
 	}
 
-	sessionStore, err := setupSessionStore(config, contextID)
+	// An interactive REPL with no context gets a generated, file-backed one so
+	// the conversation survives exit (resume with -L or -c <name>). Contexts
+	// that never see a turn are discarded on exit.
+	autoContext := contextID == "" && wantsAutoREPLContext(config)
+
+	sessionStore, err := setupSessionStore(config, contextID, autoContext)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create context store: %w", err)
 	}
@@ -116,6 +127,9 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 			return nil, fmt.Errorf("no last context found")
 		}
 	}
+	if autoContext {
+		contextID = generateContextName(sessionStore.Exists)
+	}
 
 	return &commandRunner{
 		ctx:          ctx,
@@ -123,7 +137,19 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 		config:       config,
 		sessionStore: sessionStore,
 		contextID:    contextID,
+		autoContext:  autoContext,
 	}, nil
+}
+
+// wantsAutoREPLContext reports whether this invocation will land in the
+// interactive REPL with no context of its own: no prompt or piped stdin, no
+// context-management flag, and a REPL-compatible flag set. Only those runs
+// get an auto-generated persistent context.
+func wantsAutoREPLContext(config *Config) bool {
+	return !config.PromptSet &&
+		!hasStdinData() &&
+		!needsFileStore(config, "") &&
+		validateREPLConfig(config) == nil
 }
 
 func (r *commandRunner) Run() error {
@@ -138,7 +164,9 @@ func (r *commandRunner) Run() error {
 		return err
 	}
 
-	if r.contextID != "" {
+	// Auto-generated contexts are created silently inside initializeSession;
+	// the "Created new context" stderr notice would garble the TUI splash.
+	if r.contextID != "" && !r.autoContext {
 		contextID := checkAndPromptForMissingContext(r.sessionStore, r.contextID)
 		if contextID == "" {
 			return nil
@@ -146,7 +174,7 @@ func (r *commandRunner) Run() error {
 		r.contextID = contextID
 	}
 
-	return runConversation(r.ctx, r.config, r.sessionStore, r.contextID, r.cmd)
+	return runConversation(r.ctx, r.config, r.sessionStore, r.contextID, r.autoContext, r.cmd)
 }
 
 func (r *commandRunner) handleManagementFlags() (bool, error) {
@@ -470,7 +498,7 @@ func broadWritablePathDenied(path string, denyWritePaths []string) bool {
 	return false
 }
 
-func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) error {
+func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command) error {
 	input, err := resolveConversationInput(config)
 	if err != nil {
 		return err
@@ -490,13 +518,14 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		return err
 	}
 	state := &conversationState{
-		session:         session,
-		agent:           agent,
-		toolRegistry:    toolRegistry,
-		skillCatalog:    skillCatalog,
-		skillRuntime:    skillRuntime,
-		skillSources:    skillResult.sources,
-		sandboxWarnings: sandboxWarnings,
+		session:          session,
+		agent:            agent,
+		toolRegistry:     toolRegistry,
+		skillCatalog:     skillCatalog,
+		skillRuntime:     skillRuntime,
+		skillSources:     skillResult.sources,
+		sandboxWarnings:  sandboxWarnings,
+		autoNamedContext: autoContext,
 	}
 	defer state.Close()
 
@@ -526,10 +555,31 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		}
 		return nil
 	case conversationModeREPL:
-		return runREPL(ctx, config, state)
+		replErr := runREPL(ctx, config, state)
+		if autoContext {
+			discardUnusedAutoContext(state, sessionStore, contextID)
+		}
+		return replErr
 	default:
 		return fmt.Errorf("unknown conversation mode")
 	}
+}
+
+// discardUnusedAutoContext deletes a generated context that never saw a turn,
+// so launch-and-quit REPL runs leave no file behind. The session's own lock
+// must be released first — Delete skips locked sessions. A context renamed via
+// /rename is untouched: its file no longer lives under the generated name.
+func discardUnusedAutoContext(state *conversationState, store sessions.SessionStore, contextID string) {
+	if state.session == nil {
+		return
+	}
+	for _, msg := range state.session.GetHistory() {
+		if msg.Role != messages.MessageRoleSystem {
+			return
+		}
+	}
+	state.session.Close()
+	store.Delete(contextID)
 }
 
 func selectConversationMode(config *Config, stdinAvailable bool) (conversationMode, error) {

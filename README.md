@@ -124,11 +124,17 @@ Slash commands inside the TUI:
 /get <key|all>               Inspect current settings
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills
+/rename <name>               Rename the current context
 /exit  (/quit)               Leave the TUI
 ```
 
 Ctrl-C or Esc interrupts an in-flight turn; pressing Ctrl-C again (or at an
 idle prompt) quits.
+
+Launching the TUI without `-c` starts a persistent session under a generated
+name (e.g. `quiet-otter`). Resume it later with `polly -L` or `polly -c
+quiet-otter`, or give it a permanent name with `/rename`. A session where no
+turn ever ran is discarded on exit, and unused contexts expire after 7 days.
 
 ### Model Selection
 
