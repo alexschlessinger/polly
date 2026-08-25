@@ -442,6 +442,44 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 	}
 }
 
+func TestHintFor(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// Not a slash command in progress.
+		{"", ""},
+		{"hello", ""},
+		{"ask/", ""},
+		{"/he\nlp", ""},
+		{"/zzz", ""},
+		// Typing the name: many matches list bare names, few include summaries.
+		{"/t", "/tools — inspect loaded tools"},
+		{"/q", "/queue — inspect or manage queued input   /quit — leave the REPL"},
+		// Typing arguments: keyword matches from the command's completer.
+		{"/queue d", "drop"},
+		{"/get max", "maxcontext  maxtokens"},
+		// A fully typed keyword or a command without a completer falls back to
+		// the usage reminder.
+		{"/queue drop", "usage: /queue [list|drop|clear|continue]"},
+		{"/reset ", "usage: /reset confirm"},
+		{"/help me", "usage: /help [command]"},
+	}
+	for _, c := range cases {
+		if got := defaultReplCommands.hintFor(nil, c.in); got != c.want {
+			t.Errorf("hintFor(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+
+	bare := defaultReplCommands.hintFor(nil, "/")
+	if !strings.Contains(bare, "/help") || !strings.Contains(bare, "/tools") {
+		t.Fatalf("hintFor(/) should list all commands, got %q", bare)
+	}
+	if strings.Contains(bare, "—") {
+		t.Fatalf("hintFor(/) should omit summaries when many commands match, got %q", bare)
+	}
+}
+
 func dispatchDefaultCommandForTest(t *testing.T, line string, ctx *replCommandContext) []string {
 	t.Helper()
 	var replies []string

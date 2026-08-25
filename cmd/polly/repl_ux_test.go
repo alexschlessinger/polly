@@ -622,12 +622,12 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 		t.Fatal("same-row-count tool update rebuilt the full visual row index")
 	}
 
-	m.setSlashHints([]string{"/help", "/history"})
+	m.setSlashHintLine("/help  /history")
 	withHints := len(m.transcriptRows(80))
 	if withHints <= len(rows2) {
 		t.Fatal("slash hints did not invalidate the visual row cache")
 	}
-	m.clearSlashHints()
+	m.setSlashHintLine("")
 	if got := len(m.transcriptRows(80)); got != len(rows2) {
 		t.Fatalf("clearing slash hints left stale cached rows: %d, want %d", got, len(rows2))
 	}
@@ -641,7 +641,7 @@ func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 		styled("> ", "accent", "bold") + "a prompt that wraps across rows",
 	}
 	m.invalidateFlat()
-	m.setSlashHints([]string{"/help", "/tools"})
+	m.setSlashHintLine("/help  /tools")
 	for _, width := range []int{4, 12, 40} {
 		got := m.transcriptRows(width)
 		want := transcriptVisualRows(m.fullTranscript(), ui.NewStyle(ui.ColorClear), width)

@@ -640,6 +640,43 @@ func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
 	}
 }
 
+func TestSlashHintsLiveFilterAndEscape(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	// Hints narrow with each typed rune, no Tab required.
+	send("/")
+	if r.model.slashHints == "" || !strings.Contains(r.model.slashHints, "/help") {
+		t.Fatalf("typing / should show all commands, got %q", r.model.slashHints)
+	}
+	send("t")
+	if got := r.model.slashHints; !strings.Contains(got, "/tools — ") {
+		t.Fatalf("typing /t should narrow hints to /tools with summary, got %q", got)
+	}
+
+	// Escape hides the line without touching the input…
+	send("<Escape>")
+	if got := r.model.ed.text(); got != "/t" {
+		t.Fatalf("escape changed input to %q", got)
+	}
+	if r.model.slashHints != "" {
+		t.Fatalf("escape should hide slash hints, got %q", r.model.slashHints)
+	}
+
+	// …and the next edit brings it back.
+	send("o")
+	if got := r.model.slashHints; !strings.Contains(got, "/tools") {
+		t.Fatalf("typing after escape should re-show hints, got %q", got)
+	}
+
+	// Argument keywords hint once the command name is complete.
+	r.model.ed.setText("/queue")
+	send(" ")
+	if got := r.model.slashHints; !strings.Contains(got, "drop") || !strings.Contains(got, "continue") {
+		t.Fatalf("/queue␣ should hint subcommands, got %q", got)
+	}
+}
+
 func TestBracketedPasteInsertsMultiLine(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
