@@ -221,7 +221,7 @@ func TestValidateSessionImageBudgetExactReuseChecksUntrimmedRequest(t *testing.T
 	}
 }
 
-func TestValidateSessionImageBudgetRejectsPoisonedEarlierImage(t *testing.T) {
+func TestPrepareSessionImageRequestUpgradesLegacyImage(t *testing.T) {
 	session := newTurnPersistenceTestSession(t)
 	if err := session.AddMessages([]messages.ChatMessage{
 		{
@@ -235,9 +235,45 @@ func TestValidateSessionImageBudgetRejectsPoisonedEarlierImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := validateSessionImageBudget(session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "next"}, false)
-	if err == nil || !strings.Contains(err.Error(), "nonportable image") {
-		t.Fatalf("earlier legacy image was not rejected before the model call: %v", err)
+	prepared, err := prepareSessionImageRequest(session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "next"}, false)
+	if err != nil {
+		t.Fatalf("legacy GIF poisoned the upgraded request: %v", err)
+	}
+	if len(prepared) != 3 || len(prepared[0].Parts) != 1 || prepared[0].Parts[0].MimeType != "image/png" {
+		t.Fatalf("legacy GIF was not normalized in the request: %#v", prepared)
+	}
+	if got := session.GetHistory()[0].Parts[0].MimeType; got != "image/gif" {
+		t.Fatalf("request-only migration rewrote durable history MIME to %q", got)
+	}
+}
+
+func TestValidatePortableImageRequestEnforcesRequestWideImageLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tiny.png")
+	writeImageFixture(t, path, 1, 1)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := messages.ContentPart{Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(data), MimeType: "image/png"}
+	makeHistory := func(count int) []messages.ChatMessage {
+		var history []messages.ChatMessage
+		for count > 0 {
+			n := min(count, maxPromptAttachments)
+			parts := make([]messages.ContentPart, n)
+			for i := range parts {
+				parts[i] = part
+			}
+			history = append(history, messages.ChatMessage{Role: messages.MessageRoleUser, Parts: parts})
+			count -= n
+		}
+		return history
+	}
+	if err := validatePortableImageRequest(makeHistory(maxPortableRequestImages)); err != nil {
+		t.Fatalf("request-wide image limit rejected: %v", err)
+	}
+	err = validatePortableImageRequest(makeHistory(maxPortableRequestImages + 1))
+	if err == nil || !strings.Contains(err.Error(), "portable request maximum is 100") {
+		t.Fatalf("request-wide image overflow = %v", err)
 	}
 }
 

@@ -44,18 +44,22 @@ func (p terminalImageProtocol) String() string {
 // protocol can put escape payloads into the terminal. POLLYTOOL_IMAGE_PROTOCOL
 // is an escape hatch for compatible terminals that do not identify themselves.
 func detectTerminalImageProtocol(getenv func(string) string) terminalImageProtocol {
-	switch strings.ToLower(strings.TrimSpace(getenv("POLLYTOOL_IMAGE_PROTOCOL"))) {
-	case "kitty":
-		return terminalImageKitty
-	case "sixel":
-		return terminalImageSixel
+	override := strings.ToLower(strings.TrimSpace(getenv("POLLYTOOL_IMAGE_PROTOCOL")))
+	switch override {
 	case "none", "off", "0":
 		return terminalImageNone
 	}
 	// Multiplexer passthrough and placement ownership need a separate design.
-	// Keep the first slice honest and fall back to captions inside them.
+	// Keep the first slice honest and fall back to captions inside them even
+	// when a native protocol was explicitly requested.
 	if getenv("TMUX") != "" || getenv("ZELLIJ") != "" || getenv("ZELLIJ_SESSION_NAME") != "" {
 		return terminalImageNone
+	}
+	switch override {
+	case "kitty":
+		return terminalImageKitty
+	case "sixel":
+		return terminalImageSixel
 	}
 
 	if getenv("WT_SESSION") != "" {
@@ -89,6 +93,11 @@ type activeTerminalImage struct {
 	placementID uint32
 }
 
+type kittyUpload struct {
+	imageID   uint32
+	fitByRows bool
+}
+
 // terminalImageManager is the only component allowed to write graphics
 // escapes. It runs on the gotui event/render goroutine, locks image cells in
 // tcell, and redraws only when the visible placement set changes.
@@ -99,7 +108,7 @@ type terminalImageManager struct {
 
 	desired      []desiredTerminalImage
 	active       []activeTerminalImage
-	kittyUploads map[string]uint32
+	kittyUploads map[string]kittyUpload
 	sixelCache   map[string][]byte
 }
 
@@ -216,8 +225,8 @@ func (m *terminalImageManager) releaseActive(freeImages bool) {
 			_ = writeFull(m.tty, kittyDeletePlacement(active.imageID, active.placementID))
 		}
 		if freeImages {
-			for _, imageID := range m.kittyUploads {
-				_ = writeFull(m.tty, kittyDeleteImage(imageID))
+			for _, upload := range m.kittyUploads {
+				_ = writeFull(m.tty, kittyDeleteImage(upload.imageID))
 			}
 			m.kittyUploads = nil
 		}
@@ -236,52 +245,56 @@ func (m *terminalImageManager) pruneKittyUploads() {
 	for _, desired := range m.desired {
 		keep[desired.version] = struct{}{}
 	}
-	for version, imageID := range m.kittyUploads {
+	for version, upload := range m.kittyUploads {
 		if _, ok := keep[version]; ok {
 			continue
 		}
-		_ = writeFull(m.tty, kittyDeleteImage(imageID))
+		_ = writeFull(m.tty, kittyDeleteImage(upload.imageID))
 		delete(m.kittyUploads, version)
 	}
 }
 
 func (m *terminalImageManager) commitKitty() {
 	usedIDs := make(map[uint32]string)
-	for version, imageID := range m.kittyUploads {
-		usedIDs[imageID] = "image:" + version
+	for version, upload := range m.kittyUploads {
+		usedIDs[upload.imageID] = "image:" + version
 	}
 	cw, ch := m.cellDimensions()
 
 	for _, desired := range m.desired {
-		imageID, ok := m.kittyUploads[desired.version]
+		upload, ok := m.kittyUploads[desired.version]
 		if !ok {
 			img, err := loadPlacementImage(desired.terminalImagePlacement)
 			if err != nil {
 				continue
 			}
+			bounds := img.Bounds()
+			upload.fitByRows = imageFitsByRows(bounds.Dx(), bounds.Dy(), desired.Cols*cw, desired.Rows*ch)
 			img = fitImage(img, desired.Cols*cw, desired.Rows*ch)
 			var pngData bytes.Buffer
 			if err := png.Encode(&pngData, img); err != nil {
 				continue
 			}
-			imageID = uniqueTerminalImageID("image:"+desired.version, usedIDs)
-			if err := writeFull(m.tty, kittyTransmitPNG(imageID, pngData.Bytes())); err != nil {
+			upload.imageID = uniqueTerminalImageID("image:"+desired.version, usedIDs)
+			if err := writeFull(m.tty, kittyTransmitPNG(upload.imageID, pngData.Bytes())); err != nil {
 				continue
 			}
 			if m.kittyUploads == nil {
-				m.kittyUploads = make(map[string]uint32)
+				m.kittyUploads = make(map[string]kittyUpload)
 			}
-			m.kittyUploads[desired.version] = imageID
+			m.kittyUploads[desired.version] = upload
 		}
 
+		placement := desired.terminalImagePlacement
+		placement.FitByRows = upload.fitByRows
 		placementID := stableTerminalImageID("placement:" + desired.Key)
-		if err := writeFull(m.tty, kittyPlaceImage(imageID, placementID, desired.terminalImagePlacement)); err != nil {
+		if err := writeFull(m.tty, kittyPlaceImage(upload.imageID, placementID, placement)); err != nil {
 			continue
 		}
 		m.screen.LockRegion(desired.X, desired.Y, desired.Cols, desired.Rows, true)
 		m.active = append(m.active, activeTerminalImage{
 			desiredTerminalImage: desired,
-			imageID:              imageID,
+			imageID:              upload.imageID,
 			placementID:          placementID,
 		})
 	}
@@ -347,7 +360,7 @@ func (m *terminalImageManager) geometryVersion() string {
 }
 
 func loadLocalImage(path string) (image.Image, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedRegularFile(path, maxLocalImageBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -386,6 +399,11 @@ func fitPixelDimensions(width, height, maxWidth, maxHeight int) (int, int) {
 	}
 	scale := math.Min(float64(maxWidth)/float64(width), float64(maxHeight)/float64(height))
 	return max(1, int(math.Round(float64(width)*scale))), max(1, int(math.Round(float64(height)*scale)))
+}
+
+func imageFitsByRows(width, height, maxWidth, maxHeight int) bool {
+	return width > 0 && height > 0 && maxWidth > 0 && maxHeight > 0 &&
+		int64(maxHeight)*int64(width) < int64(maxWidth)*int64(height)
 }
 
 func stableTerminalImageID(key string) uint32 {

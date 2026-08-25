@@ -539,9 +539,9 @@ func TestHydrateHistoryOnlyRetriesPortablePersistedImages(t *testing.T) {
 	}{
 		{name: "portable PNG", msg: validMessage, retryable: true},
 		{name: "invalid base64", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: "%%%", MimeType: "image/png"}}}},
-		{name: "GIF", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", MimeType: "image/gif"}}}},
+		{name: "GIF", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", MimeType: "image/gif"}}}, retryable: true},
 		{name: "SVG", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString([]byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)), MimeType: "image/svg+xml"}}}},
-		{name: "MIME mismatch", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: validPart.ImageData, MimeType: "image/jpeg"}}}},
+		{name: "MIME mismatch", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: validPart.ImageData, MimeType: "image/jpeg"}}}, retryable: true},
 		{name: "17 images", msg: tooMany},
 		{name: "over aggregate budget", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes+1), MimeType: "image/png"}}}},
 	} {
@@ -559,7 +559,7 @@ func TestHydrateHistoryOnlyRetriesPortablePersistedImages(t *testing.T) {
 	}
 }
 
-func TestHydrateHistoryDoesNotRetryThroughPoisonedEarlierImage(t *testing.T) {
+func TestHydrateHistoryRetriesThroughNormalizedEarlierImage(t *testing.T) {
 	history := []messages.ChatMessage{
 		{
 			Role: messages.MessageRoleUser,
@@ -573,8 +573,8 @@ func TestHydrateHistoryDoesNotRetryThroughPoisonedEarlierImage(t *testing.T) {
 	m := newReplModel()
 	m.hydrateHistory(history, "poisoned")
 	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
-	if m.retryTurn != nil || strings.Contains(plain, "/retry available") {
-		t.Fatalf("nonportable earlier image poisoned an advertised retry: %q", plain)
+	if m.retryTurn == nil || !strings.Contains(plain, "/retry available") {
+		t.Fatalf("normalized earlier image suppressed an exact retry: %q", plain)
 	}
 }
 

@@ -172,6 +172,35 @@ func TestImageCellGeometryPreservesAspectRatio(t *testing.T) {
 	}
 }
 
+func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "changing.png")
+	writeImageFixture(t, path, 2400, 270)
+	img, ok := resolveLocalTranscriptImage(path, "changing", "")
+	if !ok {
+		t.Fatal("wide image did not resolve")
+	}
+	m := newReplModel()
+	m.nativeImages = true
+	m.imageCellWidth = 10
+	m.imageCellHeight = 20
+	m.transcript = []string{renderTranscriptImages([]transcriptImage{img}, "")}
+	m.transcriptImages[0] = []transcriptImage{img}
+	m.transcriptRows(80)
+	if spans := m.visualBlocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 50 || spans[0].rows != 3 || spans[0].fitByRows {
+		t.Fatalf("initial wide spans = %#v", spans)
+	}
+
+	writeImageFixture(t, path, 270, 2400)
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	m.transcriptRows(80)
+	if spans := m.visualBlocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 3 || spans[0].rows != 10 || !spans[0].fitByRows {
+		t.Fatalf("changed tall spans = %#v", spans)
+	}
+}
+
 func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 	m := newReplModel()
 	m.nativeImages = true
@@ -209,6 +238,8 @@ func TestDetectTerminalImageProtocol(t *testing.T) {
 		{name: "override", env: map[string]string{"POLLYTOOL_IMAGE_PROTOCOL": "sixel", "KITTY_WINDOW_ID": "1"}, want: terminalImageSixel},
 		{name: "disabled", env: map[string]string{"POLLYTOOL_IMAGE_PROTOCOL": "none", "KITTY_WINDOW_ID": "1"}, want: terminalImageNone},
 		{name: "tmux fallback", env: map[string]string{"TMUX": "/tmp/tmux", "KITTY_WINDOW_ID": "1"}, want: terminalImageNone},
+		{name: "tmux ignores forced kitty", env: map[string]string{"TMUX": "/tmp/tmux", "POLLYTOOL_IMAGE_PROTOCOL": "kitty"}, want: terminalImageNone},
+		{name: "tmux ignores forced sixel", env: map[string]string{"TMUX": "/tmp/tmux", "POLLYTOOL_IMAGE_PROTOCOL": "sixel"}, want: terminalImageNone},
 		{name: "zellij fallback", env: map[string]string{"ZELLIJ": "0", "TERM_PROGRAM": "ghostty"}, want: terminalImageNone},
 		{name: "unknown", env: map[string]string{"TERM": "xterm-256color"}, want: terminalImageNone},
 	}
@@ -299,6 +330,35 @@ func TestTerminalImageManagerDrawsKittyAndSixel(t *testing.T) {
 				t.Fatalf("clearing placements did not release the active image: %#v", manager.active)
 			}
 		})
+	}
+}
+
+func TestKittyReloadConstrainsChangedAspectToReservedRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "changing.png")
+	writeImageFixture(t, path, 2400, 270)
+	placement := terminalImagePlacement{Key: "transcript:1:image:0", Path: path, Cols: 50, Rows: 3}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
+	manager := &terminalImageManager{screen: screen, tty: tty, protocol: terminalImageKitty}
+	manager.commit(manager.prepare([]terminalImagePlacement{placement}))
+
+	writeImageFixture(t, path, 270, 2400)
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	tty.Reset()
+	if !manager.prepare([]terminalImagePlacement{placement}) {
+		t.Fatal("changed image version did not request a redraw")
+	}
+	manager.commit(true)
+	command := tty.String()
+	if !strings.Contains(command, ",r=3,C=1") || strings.Contains(command, ",c=50,C=1") {
+		t.Fatalf("changed tall image was not height-constrained: %q", command)
 	}
 }
 

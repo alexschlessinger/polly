@@ -1453,7 +1453,8 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	lastRole := ""
 	var lastUserTurn *managedTurnInput
 	lastUserContextOnly := false
-	historyRequestOK := validatePortableImageRequest(modelVisibleHistory(history)) == nil
+	_, historyRequestErr := preparePortableImageRequest(modelVisibleHistory(history))
+	historyRequestOK := historyRequestErr == nil
 	for _, msg := range history[start:] {
 		switch msg.Role {
 		case messages.MessageRoleUser:
@@ -1536,11 +1537,16 @@ func retryableHistoryTurn(msg messages.ChatMessage, display string, simpleConten
 	if !historyRequestOK {
 		return managedTurnInput{}, false
 	}
+	prepared, err := preparePortableImageRequest([]messages.ChatMessage{msg})
+	if err != nil || len(prepared) != 1 {
+		return managedTurnInput{}, false
+	}
+	requestMessage := prepared[0]
 	if simpleContent {
 		return cloneManagedTurn(managedTurnInput{displayText: display, userMessage: msg}), true
 	}
 	imageCount := 0
-	for _, part := range msg.Parts {
+	for _, part := range requestMessage.Parts {
 		switch part.Type {
 		case "text":
 			if part.FileName != "" {
@@ -2451,7 +2457,7 @@ func (r *managedREPL) prepareManagedTurnLocked(prompt string) (managedTurnInput,
 		}
 	}
 	projected = appendProjectedUserMessage(projected, turn.userMessage, metadata)
-	if err := validatePortableImageRequest(modelVisibleHistory(projected)); err != nil {
+	if _, err := preparePortableImageRequest(modelVisibleHistory(projected)); err != nil {
 		return managedTurnInput{}, err
 	}
 	return turn, nil
@@ -3422,6 +3428,9 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	if width < 1 {
 		width = 1
 	}
+	if m.nativeImages && m.refreshTranscriptImageSources() {
+		m.invalidateVisual()
+	}
 	if m.visualCacheValid && m.visualCacheWidth == width &&
 		m.visualCacheCellWidth == m.imageCellWidth && m.visualCacheCellHeight == m.imageCellHeight {
 		return m.visualCache
@@ -3769,6 +3778,11 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		if trimmed == "" {
 			return false
 		}
+		if m.clipboardCapture {
+			m.appendNoticeLine("clipboard: waiting for image capture")
+			m.followBottom = true
+			return false
+		}
 		if m.busy && immediateBusyCommand(trimmed) {
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
@@ -3949,7 +3963,7 @@ func immediateBusyCommand(input string) bool {
 	if len(fields) == 0 {
 		return false
 	}
-	return fields[0] == "/queue" || fields[0] == "/clear"
+	return fields[0] == "/queue" || fields[0] == "/clear" || fields[0] == "/attach"
 }
 
 // ---------------------------------------------------------------------------

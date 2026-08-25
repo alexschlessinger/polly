@@ -124,8 +124,9 @@ caption/path fallback. Thumbnails preserve the source aspect ratio inside a
 maximum 50-column by 10-row box, accounting for rectangular terminal cells. Set
 `POLLYTOOL_IMAGE_PROTOCOL=kitty`, `sixel`, or `none` to override auto-detection.
 Remote images, paths buried in prose/JSON, and paths inside code blocks are not
-opened. tmux and Zellij currently use the caption/path fallback unless the
-protocol is explicitly overridden. On image-capable terminals the startup
+opened. tmux and Zellij currently always use the caption/path fallback; native
+placement there needs explicit multiplexer passthrough support. On image-capable
+terminals the startup
 splash also draws the polly logo as a native image (embedded in the binary);
 elsewhere, and on short terminals, it keeps the half-block ANSI bird.
 
@@ -146,15 +147,19 @@ reload, `/retry` replays those exact bytes. Attached text bodies and context
 imports remain non-retryable because they cannot be reconstructed safely from
 prompt text.
 
-A composer prompt may reference at most 16 unique images, and every
-model-visible message is limited to 16 image parts. Each base64-encoded image
-is limited to 10,000,000 bytes (10 MB), and image data in the model-visible
-history plus the candidate prompt is limited to 16 MiB in total, leaving
-request headroom under the documented Gemini and Anthropic inline limits.
+A composer prompt may reference at most 16 unique images, every model-visible
+message is limited to 16 image parts, and a complete request is limited to 100
+images across all retained turns. Each base64-encoded image is limited to
+10,000,000 bytes (10 MB), and image data in the model-visible history plus the
+candidate prompt is limited to 16 MiB in total, leaving request headroom under
+the documented Gemini and Anthropic inline limits.
 Images are downscaled to at most 1568px on the long edge before upload; PNG,
 JPEG, and WebP pass through when already within the upload limits, while
 animated GIFs are reduced to their first frame and normalized to PNG, and BMP
-images are normalized to PNG.
+images are normalized to PNG. JPEG orientation metadata is applied whenever an
+image is resized or re-encoded. Older persisted raster parts are normalized in
+the request without rewriting session history; legacy SVG image parts become a
+short omission marker instead of blocking the context.
 Those formats are the portable intersection documented by
 [OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision),
 [Anthropic vision](https://platform.claude.com/docs/en/build-with-claude/vision),

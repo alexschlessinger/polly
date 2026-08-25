@@ -44,6 +44,7 @@ type transcriptImage struct {
 	Alt         string
 	Width       int
 	Height      int
+	Version     string
 }
 
 type markdownRenderState struct {
@@ -217,11 +218,12 @@ func resolveLocalTranscriptImage(ref, alt, baseDir string) (transcriptImage, boo
 		Alt:         strings.TrimSpace(alt),
 		Width:       width,
 		Height:      height,
+		Version:     localImageVersion(abs),
 	}, true
 }
 
 func localImageDimensions(path string) (int, int, bool) {
-	file, err := os.Open(path)
+	file, err := openBoundedRegularFile(path, maxLocalImageBytes)
 	if err != nil {
 		return 0, 0, false
 	}
@@ -232,6 +234,37 @@ func localImageDimensions(path string) (int, int, bool) {
 		return 0, 0, false
 	}
 	return config.Width, config.Height, true
+}
+
+// refreshTranscriptImageSources updates dimensions when a referenced file is
+// regenerated in place. This lets the transcript reflow its reserved slot
+// before the terminal protocol sees the new aspect ratio.
+func (m *replModel) refreshTranscriptImageSources() bool {
+	changed := false
+	for transcriptIndex, images := range m.transcriptImages {
+		updated := images
+		copied := false
+		for imageIndex, img := range images {
+			version := localImageVersion(img.Path)
+			if version == img.Version {
+				continue
+			}
+			if !copied {
+				updated = append([]transcriptImage(nil), images...)
+				copied = true
+			}
+			updated[imageIndex].Version = version
+			if width, height, ok := localImageDimensions(img.Path); ok {
+				updated[imageIndex].Width = width
+				updated[imageIndex].Height = height
+			}
+			changed = true
+		}
+		if copied {
+			m.transcriptImages[transcriptIndex] = updated
+		}
+	}
+	return changed
 }
 
 func supportedLocalImageExtension(path string) bool {
@@ -433,7 +466,7 @@ func imageCellGeometry(img transcriptImage, maxCols, maxRows, cellWidth, cellHei
 	}
 	cols = min(maxCols, max(1, (pixelWidth+cellWidth-1)/cellWidth))
 	rows = min(maxRows, max(1, (pixelHeight+cellHeight-1)/cellHeight))
-	fitByRows = int64(maxPixelHeight)*int64(img.Width) < int64(maxPixelWidth)*int64(img.Height)
+	fitByRows = imageFitsByRows(img.Width, img.Height, maxPixelWidth, maxPixelHeight)
 	return cols, rows, fitByRows
 }
 

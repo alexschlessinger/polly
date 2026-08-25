@@ -17,6 +17,58 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
+func TestEnterWaitsForClipboardCapture(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.ed.setText("describe the clipboard image")
+	r.model.clipboardCapture = true
+
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	if got := r.model.ed.text(); got != "describe the clipboard image" {
+		t.Fatalf("draft changed while clipboard capture was pending: %q", got)
+	}
+	if r.model.busy {
+		t.Fatal("turn started before clipboard capture completed")
+	}
+	if _, ok := r.takePending(); ok {
+		t.Fatal("turn reached pending before clipboard capture completed")
+	}
+	if got := r.model.transcript[len(r.model.transcript)-1]; !strings.Contains(got, "waiting for image capture") {
+		t.Fatalf("missing clipboard wait notice: %q", got)
+	}
+
+	r.model.clipboardCapture = false
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	turn, ok := r.takePending()
+	if !ok || turn.displayText != "describe the clipboard image" {
+		t.Fatalf("completed clipboard draft did not start: %#v, ok=%t", turn, ok)
+	}
+}
+
+func TestBusyAttachAppliesBeforeFollowingQueuedPrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queued-attach.png")
+	writeImageFixture(t, path, 8, 8)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.beginTurn("current turn")
+
+	r.model.ed.setText("/attach " + path)
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	if len(r.model.queue) != 0 {
+		t.Fatalf("busy /attach was queued instead of applied: %#v", r.model.queue)
+	}
+	if got := r.model.ed.text(); got != "[image #1] " {
+		t.Fatalf("busy /attach composer = %q, want attachment token", got)
+	}
+
+	r.model.ed.setText("describe it " + r.model.ed.text())
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	if len(r.model.queue) != 1 || r.model.queue[0].turn == nil {
+		t.Fatalf("following prompt was not queued as a prepared turn: %#v", r.model.queue)
+	}
+	if got := managedImageData(t, r.model.queue[0].turn.userMessage); got == "" {
+		t.Fatal("following queued prompt did not receive the busy /attach image")
+	}
+}
+
 func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T) {
 	for _, mutation := range []string{"delete", "overwrite"} {
 		t.Run(mutation, func(t *testing.T) {

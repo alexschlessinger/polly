@@ -138,7 +138,7 @@ func captureClipboardImage(ctx context.Context, dir string) (string, error) {
 // and rewrites non-PNG payloads (macOS TIFF clipboards) as PNG so the rest of
 // the pipeline sees one format.
 func normalizeCapturedImage(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedRegularFile(path, maxLocalImageBytes)
 	if err != nil {
 		return err
 	}
