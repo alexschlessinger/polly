@@ -54,6 +54,9 @@ type replCommandContext struct {
 	clearQueue    func() int
 	continueQueue func() error
 	retryTurn     func() error
+	// attachImage validates a local image, registers it, and inserts its
+	// "[image #N]" token into the composer, returning the token.
+	attachImage func(path string) (string, error)
 	// setContextName updates the UI's displayed context name after /rename.
 	setContextName func(name string)
 }
@@ -65,6 +68,12 @@ var (
 
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
+	r.register(replCommand{
+		name:    "/attach",
+		usage:   "/attach <image-path>",
+		summary: "attach a local image to the next prompt",
+		run:     replAttachCommand,
+	})
 	r.register(replCommand{
 		name:    "/clear",
 		usage:   "/clear",
@@ -235,7 +244,9 @@ func keyHelpLines() []string {
 		"  Ctrl-C / Esc      interrupt turn (Ctrl-C twice to quit)",
 		"  Up / Down         move line; recall history at top/bottom",
 		"  Ctrl-R            reverse-search history",
+		"  Ctrl-V            attach an image from the clipboard",
 		"  PgUp / PgDn       scroll transcript",
+		"  Click thumbnail   open image in the OS viewer",
 		"  Ctrl-A / Ctrl-E   line start / end",
 		"  Delete / Ctrl-D   delete next char (Ctrl-D exits when empty)",
 		"  Ctrl-U / Ctrl-K   clear before / after cursor",
@@ -307,6 +318,8 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			}
 			r.model.clearDisplay()
 			r.model.retryPrompt = ""
+			r.model.retryTurn = nil
+			r.model.retryPersistence = nil
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
@@ -316,14 +329,18 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			return nil
 		},
 		queueLines: func() []string {
-			return append([]string(nil), r.model.queue...)
+			lines := make([]string, len(r.model.queue))
+			for i, queued := range r.model.queue {
+				lines[i] = queued.text
+			}
+			return lines
 		},
 		dropQueued: func() (string, bool) {
 			if len(r.model.queue) == 0 {
 				return "", false
 			}
 			last := len(r.model.queue) - 1
-			line := r.model.queue[last]
+			line := r.model.queue[last].text
 			r.model.queue = r.model.queue[:last]
 			if len(r.model.queue) == 0 {
 				r.model.queuePaused = false
@@ -348,15 +365,32 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.updateQueueHint()
 			return nil
 		},
+		attachImage: func(path string) (string, error) {
+			img, ok := resolveLocalTranscriptImage(path, "", r.model.imageBaseDir)
+			if !ok {
+				return "", fmt.Errorf("not a readable local image")
+			}
+			token := r.model.registerAttachment(img.Path, filepath.Base(img.Path))
+			r.model.insertEditorText(token + " ")
+			return token, nil
+		},
 		retryTurn: func() error {
 			m := r.model
 			if m.busy {
 				return fmt.Errorf("a turn is already running")
 			}
-			if m.retryPrompt == "" {
+			if m.retryTurn == nil && m.retryPrompt == "" {
 				return fmt.Errorf("no failed or canceled turn")
 			}
-			prompt := m.retryPrompt
+			turn := textManagedTurn(m.retryPrompt)
+			if m.retryTurn != nil {
+				turn = cloneManagedTurn(*m.retryTurn)
+			}
+			prompt := turn.displayText
+			if prompt == "" {
+				prompt = m.retryPrompt
+				turn.displayText = prompt
+			}
 			m.appendTurnSeparator()
 			m.busy = true
 			m.canceling = false
@@ -364,6 +398,11 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			m.runningTools = 0
 			m.turnStarted = time.Now()
 			m.currentPrompt = prompt
+			m.currentTurn = cloneManagedTurn(turn)
+			m.currentPersistence = m.retryPersistence
+			if m.currentPersistence == nil {
+				m.currentPersistence = newTurnPersistenceAck(false)
+			}
 			m.turnHasOutput = false
 			m.unsavedLabeled = false
 			m.lastOutcome = turnOutcomeNone
@@ -372,11 +411,14 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			m.retryingNext = true
 			m.followBottom = true
 			select {
-			case r.pending <- prompt:
+			case r.pending <- turn:
 				return nil
 			default:
 				m.busy = false
 				m.state = turnStateIdle
+				m.currentPrompt = ""
+				m.currentTurn = managedTurnInput{}
+				m.currentPersistence = nil
 				m.retryingNext = false
 				return fmt.Errorf("turn queue is unavailable")
 			}
@@ -488,6 +530,32 @@ func replHelpCommand(ctx *replCommandContext, args []string) replCommandResult {
 		return replCommandResult{err: ctx.replyLines(ctx.registry.helpFor(args[1]))}
 	}
 	return replCommandResult{err: ctx.replyLines(ctx.registry.helpLines())}
+}
+
+func replAttachCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) < 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /attach <image-path>")}
+	}
+	if ctx == nil || ctx.attachImage == nil {
+		return replCommandResult{err: ctx.replyLine("attachments require the managed REPL")}
+	}
+	// Fields-split args lose original spacing; rejoining and reusing the
+	// drag-drop splitter recovers quoted and escaped paths with spaces.
+	raw := strings.Join(args[1:], " ")
+	paths := splitDroppedPaths(raw)
+	if len(paths) == 0 {
+		paths = []string{raw}
+	}
+	var lines []string
+	for _, path := range paths {
+		token, err := ctx.attachImage(path)
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("attach %s: %v", path, err))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("attached %s as %s", filepath.Base(path), token))
+	}
+	return replCommandResult{err: ctx.replyLines(lines)}
 }
 
 func replClearCommand(ctx *replCommandContext, args []string) replCommandResult {

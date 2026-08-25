@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -680,12 +682,34 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 	if err != nil {
 		return 1, fmt.Errorf("error processing files: %w", err)
 	}
+	return executeTurnWithUserMessage(ctx, config, state, userMsg, schema, inputReader, turnUI, reuseUser)
+}
+
+// executeTurnWithUserMessage is the shared turn body behind a caller-built
+// user message. The one-shot and fallback paths build theirs from --file;
+// the managed REPL builds a multimodal message from composer attachments.
+func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (int, error) {
+	requestMessages, err := prepareSessionImageRequest(state.session, userMsg, reuseUser)
+	if err != nil {
+		return 1, err
+	}
 
 	// Persist the user message before spending API tokens. If the session store
 	// is broken (e.g. disk full), fail fast rather than make a call whose result
 	// can't be saved either. In-memory sessions never error here.
-	if err := persistUserMessageForTurn(state.session, userMsg, reuseUser); err != nil {
-		return 1, fmt.Errorf("failed to persist user message: %w", err)
+	observer, _ := turnUI.(interface {
+		UserMessagePersistenceStarted()
+		UserMessagePersistenceFinished(bool)
+	})
+	if observer != nil {
+		observer.UserMessagePersistenceStarted()
+	}
+	persistErr := persistUserMessageForTurn(state.session, userMsg, reuseUser)
+	if observer != nil {
+		observer.UserMessagePersistenceFinished(persistErr == nil)
+	}
+	if persistErr != nil {
+		return 1, fmt.Errorf("failed to persist user message: %w", persistErr)
 	}
 
 	if turnUI == nil {
@@ -694,7 +718,7 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 	turnUI.Start()
 	defer turnUI.Stop()
 
-	req := createCompletionRequest(config, state.session, state.toolRegistry, state.skillCatalog, schema)
+	req := createCompletionRequest(config, requestMessages, state.toolRegistry, state.skillCatalog, schema)
 
 	// trimLeadingNL strips leading newlines from the next content burst.
 	// Armed only after a reasoning event fires — models with thinking enabled
@@ -849,15 +873,164 @@ func persistUserMessageForTurn(session sessions.Session, userMsg messages.ChatMe
 }
 
 func sessionEndsWithEquivalentUserMessage(session sessions.Session, userMsg messages.ChatMessage) bool {
-	history := session.GetHistory()
+	return historyEndsWithEquivalentUserMessage(session.GetHistory(), userMsg)
+}
+
+func historyEndsWithEquivalentUserMessage(history []messages.ChatMessage, userMsg messages.ChatMessage) bool {
 	if len(history) == 0 {
 		return false
 	}
-	last := history[len(history)-1]
-	return last.Role == messages.MessageRoleUser &&
-		userMsg.Role == messages.MessageRoleUser &&
-		last.Content == userMsg.Content &&
-		slices.Equal(last.Parts, userMsg.Parts)
+	return equivalentUserMessage(history[len(history)-1], userMsg)
+}
+
+func equivalentUserMessage(left, right messages.ChatMessage) bool {
+	return left.Role == messages.MessageRoleUser &&
+		right.Role == messages.MessageRoleUser &&
+		left.Content == right.Content &&
+		slices.Equal(left.Parts, right.Parts)
+}
+
+// maxEncodedImageHistoryBytes is a portable request budget, not a provider
+// maximum. Counting the persisted base64 text (rather than decoded bytes)
+// keeps the projected inline request safely below the tightest native-client
+// request ceiling while leaving room for JSON and conversation text.
+const (
+	maxEncodedImageHistoryBytes = 16 << 20
+	// Anthropic's direct API caps each base64-encoded image at 10 MB. Keep the
+	// decimal byte limit here (not 10 MiB) so the shared request shape remains
+	// portable across direct and compatible endpoints.
+	maxPortableEncodedImageBytes = 10_000_000
+	// Anthropic's 200k-context models have the smallest native-client request
+	// limit: 100 images across the entire request, including earlier turns.
+	maxPortableRequestImages = 100
+)
+
+func validateSessionImageBudget(session sessions.Session, userMsg messages.ChatMessage, reuseUser bool) error {
+	_, err := prepareSessionImageRequest(session, userMsg, reuseUser)
+	return err
+}
+
+// prepareSessionImageRequest projects the exact history that AddMessage will
+// expose to the provider, upgrades legacy raster parts into today's portable
+// representation without rewriting durable history, and validates the whole
+// request before the new user message is persisted.
+func prepareSessionImageRequest(session sessions.Session, userMsg messages.ChatMessage, reuseUser bool) ([]messages.ChatMessage, error) {
+	history := session.GetHistory()
+	reusingTerminalUser := reuseUser && historyEndsWithEquivalentUserMessage(history, userMsg)
+	if !reusingTerminalUser {
+		history = append(history, userMsg)
+		// AddMessage applies this trim before createCompletionRequest reads the
+		// session. An exact retry skips AddMessage, so validating a hypothetical
+		// trim on the reuse path would undercount the request actually sent.
+		if metadata := session.GetMetadata(); metadata != nil && metadata.MaxHistoryTokens > 0 {
+			history = sessions.TrimHistory(history, metadata.MaxHistoryTokens)
+		}
+	}
+	return preparePortableImageRequest(modelVisibleHistory(history))
+}
+
+func preparePortableImageRequest(history []messages.ChatMessage) ([]messages.ChatMessage, error) {
+	// Reject an oversized persisted request before decoding legacy base64 into a
+	// second in-memory copy.
+	if err := validateEncodedImageBudget(history); err != nil {
+		return nil, err
+	}
+	normalized := make([]messages.ChatMessage, len(history))
+	for messageIndex, msg := range history {
+		normalized[messageIndex] = cloneChatMessage(msg)
+		for partIndex, part := range normalized[messageIndex].Parts {
+			if part.Type != "image_base64" || portablePersistedImagePart(part) {
+				continue
+			}
+			upgraded, err := upgradeLegacyImagePart(part)
+			if err != nil {
+				return nil, fmt.Errorf("model-visible message %d has a legacy image that cannot be normalized: %w", messageIndex+1, err)
+			}
+			normalized[messageIndex].Parts[partIndex] = upgraded
+		}
+	}
+	if err := validatePortableImageRequest(normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+func upgradeLegacyImagePart(part messages.ContentPart) (messages.ContentPart, error) {
+	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(part.ImageData))
+	data, err := io.ReadAll(io.LimitReader(decoder, int64(maxLocalImageBytes)+1))
+	if err != nil || len(data) == 0 {
+		return messages.ContentPart{}, fmt.Errorf("invalid or empty base64 data")
+	}
+	if len(data) > maxLocalImageBytes {
+		return messages.ContentPart{}, fmt.Errorf("decoded image exceeds the %d MiB preparation limit", maxLocalImageBytes>>20)
+	}
+	if strings.EqualFold(strings.TrimSpace(part.MimeType), "image/svg+xml") || strings.EqualFold(filepath.Ext(part.FileName), ".svg") {
+		label := strings.TrimSpace(part.FileName)
+		if label == "" {
+			label = "legacy.svg"
+		}
+		return messages.ContentPart{Type: "text", Text: "[legacy SVG image omitted: " + label + "]", FileName: part.FileName}, nil
+	}
+	upgraded, err := prepareImageBytesForUpload(data, part.FileName)
+	if err != nil {
+		return messages.ContentPart{}, err
+	}
+	return *upgraded, nil
+}
+
+// validatePortableImageRequest enforces the common request shape accepted by
+// every native multimodal client. It deliberately validates the whole visible
+// history, not only the candidate: a legacy image in an earlier turn is replayed
+// to the provider too and can otherwise poison an exact retry or a new prompt.
+func validatePortableImageRequest(history []messages.ChatMessage) error {
+	if err := validateEncodedImageBudget(history); err != nil {
+		return err
+	}
+	totalImages := 0
+	for messageIndex, msg := range history {
+		imageCount := 0
+		for _, part := range msg.Parts {
+			switch part.Type {
+			case "image_base64":
+				imageCount++
+				totalImages++
+				if imageCount > maxPromptAttachments {
+					return fmt.Errorf("model-visible message %d has %d images; portable maximum is %d", messageIndex+1, imageCount, maxPromptAttachments)
+				}
+				if totalImages > maxPortableRequestImages {
+					return fmt.Errorf("model-visible history has %d images; portable request maximum is %d", totalImages, maxPortableRequestImages)
+				}
+				if err := validatePortablePersistedImagePart(part); err != nil {
+					return fmt.Errorf("model-visible message %d has a nonportable image: %w", messageIndex+1, err)
+				}
+			case "image_url":
+				return fmt.Errorf("model-visible message %d has an image URL; portable requests require prepared PNG, JPEG, or WebP bytes", messageIndex+1)
+			}
+		}
+	}
+	return nil
+}
+
+func validateEncodedImageBudget(history []messages.ChatMessage) error {
+	total := 0
+	for _, msg := range history {
+		for _, part := range msg.Parts {
+			switch part.Type {
+			case "image_base64":
+				total += len(part.ImageData)
+			case "image_url":
+				if strings.HasPrefix(part.ImageURL, "data:") {
+					if comma := strings.IndexByte(part.ImageURL, ','); comma >= 0 {
+						total += len(part.ImageURL) - comma - 1
+					}
+				}
+			}
+			if total > maxEncodedImageHistoryBytes {
+				return fmt.Errorf("encoded images in model-visible history would use %d bytes; portable limit is %d MiB", total, maxEncodedImageHistoryBytes>>20)
+			}
+		}
+	}
+	return nil
 }
 
 func modelVisibleHistory(history []messages.ChatMessage) []messages.ChatMessage {
@@ -870,8 +1043,8 @@ func modelVisibleHistory(history []messages.ChatMessage) []messages.ChatMessage 
 	return visible
 }
 
-// createCompletionRequest builds an LLM completion request from config
-func createCompletionRequest(config *Config, session sessions.Session, registry *tools.ToolRegistry, skillCatalog *skills.Catalog, schema *llm.Schema) *llm.CompletionRequest {
+// createCompletionRequest builds an LLM completion request from config.
+func createCompletionRequest(config *Config, history []messages.ChatMessage, registry *tools.ToolRegistry, skillCatalog *skills.Catalog, schema *llm.Schema) *llm.CompletionRequest {
 	// Parse thinking effort - already validated at config parsing time
 	thinkingEffort, _ := llm.ParseThinkingEffort(config.ThinkingEffort)
 
@@ -881,7 +1054,7 @@ func createCompletionRequest(config *Config, session sessions.Session, registry 
 		Temperature:    llm.Float32Ptr(float32(config.Temperature)),
 		Model:          config.Model,
 		MaxTokens:      config.MaxTokens,
-		Messages:       modelVisibleHistory(session.GetHistory()),
+		Messages:       history,
 		Skills:         skillCatalog,
 		Tools:          registry.All(),
 		ResponseSchema: schema,

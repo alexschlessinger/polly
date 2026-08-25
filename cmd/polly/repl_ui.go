@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"image"
@@ -15,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	tcell "github.com/gdamore/tcell/v3"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -111,6 +114,39 @@ func styled(text, fg, modifier string) string {
 		return text
 	}
 	return "[" + text + "](" + strings.Join(parts, ",") + ")"
+}
+
+// Chroma can split source punctuation into individual tokens. A token that is
+// literally "[" or "]" cannot be nested safely inside gotui's own
+// [text](style) syntax, so code rendering substitutes private runes until after
+// ParseStyles has assigned cell styles. The transcript parser restores the
+// original source characters before wrapping or drawing.
+const (
+	styledLiteralOpenBracket  rune = '\ue100'
+	styledLiteralCloseBracket rune = '\ue101'
+)
+
+var styledLiteralBracketReplacer = strings.NewReplacer(
+	"[", string(styledLiteralOpenBracket),
+	"]", string(styledLiteralCloseBracket),
+)
+
+func styledCodeLiteral(text, fg, modifier string) string {
+	text = styledLiteralBracketReplacer.Replace(text)
+	return styled(text, fg, modifier)
+}
+
+func parseStyledCells(text string, defaultStyle ui.Style) []ui.Cell {
+	cells := ui.ParseStyles(text, defaultStyle)
+	for i := range cells {
+		switch cells[i].Rune {
+		case styledLiteralOpenBracket:
+			cells[i].Rune = '['
+		case styledLiteralCloseBracket:
+			cells[i].Rune = ']'
+		}
+	}
+	return cells
 }
 
 // lineEditor is a single-line rune buffer with a cursor and readline-style
@@ -306,6 +342,122 @@ func (e *lineEditor) displayWidthToCursor() int {
 	return rw.StringWidth(string(e.buf[:e.cursor]))
 }
 
+// managedTurnInput is the immutable boundary between accepting composer input
+// and running a model turn. displayText is UI-only; userMessage is the exact
+// normalized payload carried through queues, retries, and session hydration.
+type managedTurnInput struct {
+	displayText string
+	userMessage messages.ChatMessage
+}
+
+// turnPersistenceAck belongs to one logical user turn. Provider goroutines can
+// mark it without taking the model lock, so queue projection never observes a
+// persisted session message while its acknowledgement is blocked behind the
+// event loop. Keeping the pointer turn-owned makes late callbacks harmless: an
+// old callback can only update the old turn (or its exact retry), never a newer
+// prompt.
+type turnPersistenceAck struct {
+	mu        sync.Mutex
+	active    int
+	persisted bool
+	settled   chan struct{}
+}
+
+func newTurnPersistenceAck(persisted bool) *turnPersistenceAck {
+	return &turnPersistenceAck{persisted: persisted}
+}
+
+func (a *turnPersistenceAck) beginPersistence() {
+	if a == nil {
+		return
+	}
+	for {
+		a.mu.Lock()
+		if a.active > 0 {
+			settled := a.settled
+			a.mu.Unlock()
+			<-settled
+			continue
+		}
+		a.settled = make(chan struct{})
+		a.active = 1
+		a.mu.Unlock()
+		return
+	}
+}
+
+func (a *turnPersistenceAck) finishPersistence(persisted bool) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if persisted {
+		a.persisted = true
+	}
+	if a.active > 0 {
+		a.active--
+		if a.active == 0 {
+			close(a.settled)
+		}
+	}
+	a.mu.Unlock()
+}
+
+// snapshotSessionHistory returns a session snapshot consistent with the turn's
+// persistence state. Persistence begins under this same turn-local lock before
+// AddMessage and ends after it returns. Projection either snapshots before that
+// interval (and includes the not-yet-persisted user itself) or waits until the
+// interval is over and observes the stored user; it can never see the session
+// write without its acknowledgement.
+func (a *turnPersistenceAck) snapshotSessionHistory(session sessions.Session) ([]messages.ChatMessage, bool) {
+	if a == nil {
+		return session.GetHistory(), false
+	}
+	for {
+		a.mu.Lock()
+		if a.active > 0 {
+			settled := a.settled
+			a.mu.Unlock()
+			<-settled
+			continue
+		}
+		history := session.GetHistory()
+		persisted := a.persisted
+		a.mu.Unlock()
+		return history, persisted
+	}
+}
+
+type queuedREPLInput struct {
+	text string
+	turn *managedTurnInput
+}
+
+func textManagedTurn(prompt string) managedTurnInput {
+	return managedTurnInput{
+		displayText: prompt,
+		userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: prompt},
+	}
+}
+
+func cloneManagedTurn(turn managedTurnInput) managedTurnInput {
+	turn.userMessage = cloneChatMessage(turn.userMessage)
+	return turn
+}
+
+func cloneChatMessage(msg messages.ChatMessage) messages.ChatMessage {
+	msg.Parts = append([]messages.ContentPart(nil), msg.Parts...)
+	msg.ToolCalls = append([]messages.ChatMessageToolCall(nil), msg.ToolCalls...)
+	if msg.Metadata != nil {
+		metadata := make(map[string]any, len(msg.Metadata))
+		for key, value := range msg.Metadata {
+			metadata[key] = value
+		}
+		msg.Metadata = metadata
+	}
+	return msg
+}
+
 // replModel is the mutex-protected state for the MVP TUI. Mutated from both
 // the main event loop and any in-flight turn goroutine, so every read/write
 // holds mu.
@@ -317,6 +469,30 @@ type replModel struct {
 	// tool line) and may contain inline style markup. They get joined with
 	// "\n" at render time.
 	transcript []string
+	// transcriptImages is a private sidecar keyed by transcript entry. String
+	// interfaces stay unchanged while the managed TUI can give explicit local
+	// image references stable slots in scrollback.
+	transcriptImages map[int][]transcriptImage
+	imageBaseDir     string
+	nativeImages     bool
+	imageCellWidth   int
+	imageCellHeight  int
+	// imagePlacements is the last rendered frame's native thumbnail geometry,
+	// in absolute screen cells, kept for mouse-click hit-testing.
+	imagePlacements []terminalImagePlacement
+
+	// attachments maps "[image #N]" composer tokens to validated local image
+	// paths for this session. Tokens resolve once when the composer accepts a
+	// prompt; queues and retries retain only the prepared message bytes.
+	attachments   map[int]composerAttachment
+	attachmentSeq int
+	// clipboardCapture serializes Ctrl+V: one platform clipboard read may be
+	// in flight at a time.
+	clipboardCapture bool
+	// pasteBuf accumulates one bracketed paste so its complete text can be
+	// inspected (drag-dropped image paths become attachments) before anything
+	// reaches the editor.
+	pasteBuf []rune
 
 	// currentAssistant points at the entry that the agent is currently
 	// streaming into, or -1 when no streaming entry exists.
@@ -340,10 +516,13 @@ type replModel struct {
 	// visualCache keeps the fully styled/wrapped transcript for the current
 	// terminal width. Busy spinner ticks can then redraw only visible rows
 	// without reparsing a long, unchanged context 20 times per second.
-	visualCache      [][]ui.Cell
-	visualCacheWidth int
-	visualCacheValid bool
-	visualBlocks     []transcriptVisualBlock
+	visualCache             [][]ui.Cell
+	visualCacheWidth        int
+	visualCacheValid        bool
+	visualCacheNativeImages bool
+	visualCacheCellWidth    int
+	visualCacheCellHeight   int
+	visualBlocks            []transcriptVisualBlock
 
 	// slashHints is a transient command-completion hint. It renders near the
 	// transcript but is not part of the transcript or persistent history.
@@ -371,9 +550,9 @@ type replModel struct {
 	historyDraft string
 
 	// queue holds inputs submitted while a turn is in flight (the prompt stays
-	// editable during a turn). They run in order once the current turn ends;
-	// each entry is raw trimmed text routed to a command or a prompt at dequeue.
-	queue                []string
+	// editable during a turn). Commands remain text-only; prompts carry the
+	// exact prepared message accepted from the composer.
+	queue                []queuedREPLInput
 	queuePaused          bool
 	queueResumeAfterTurn bool
 
@@ -438,12 +617,16 @@ type replModel struct {
 	// currentPrompt identifies the user turn in flight. Failed/canceled turns
 	// retain it for /retry; retryingNext tells startTurn to reuse the already
 	// persisted user message instead of appending a duplicate.
-	currentPrompt   string
-	retryPrompt     string
-	retryingNext    bool
-	currentWasRetry bool
-	turnHasOutput   bool
-	unsavedLabeled  bool
+	currentPrompt      string
+	retryPrompt        string
+	currentTurn        managedTurnInput
+	retryTurn          *managedTurnInput
+	currentPersistence *turnPersistenceAck
+	retryPersistence   *turnPersistenceAck
+	retryingNext       bool
+	currentWasRetry    bool
+	turnHasOutput      bool
+	unsavedLabeled     bool
 
 	// runningTools counts tool calls currently in flight this turn. A parallel
 	// batch starts several at once; the status only returns to "waiting" when
@@ -453,9 +636,12 @@ type replModel struct {
 }
 
 type transcriptVisualBlock struct {
-	text     string
-	followed bool
-	rows     [][]ui.Cell
+	key        string
+	text       string
+	followed   bool
+	rows       [][]ui.Cell
+	images     []transcriptImage
+	imageSpans []transcriptImageSpan
 }
 
 type approvalState struct {
@@ -469,8 +655,11 @@ type approvalState struct {
 }
 
 func newReplModel() *replModel {
+	baseDir, _ := os.Getwd()
 	m := &replModel{
 		currentAssistant: -1,
+		transcriptImages: make(map[int][]transcriptImage),
+		imageBaseDir:     baseDir,
 		historyIdx:       -1,
 		state:            turnStateIdle,
 		followBottom:     true,
@@ -497,7 +686,7 @@ func (m *replModel) statusRow(width int) string {
 		if m.queuePaused {
 			queueRaw += " paused"
 		}
-		if preview := compactQueuePreview(m.queue[len(m.queue)-1]); preview != "" {
+		if preview := compactQueuePreview(m.queue[len(m.queue)-1].text); preview != "" {
 			queueRaw += " › " + preview
 		}
 		queueStyled := styled(queueRaw, "active", "bold")
@@ -852,6 +1041,25 @@ func (m *replModel) invalidateFlat() {
 
 func (m *replModel) invalidateVisual() { m.visualCacheValid = false }
 
+func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
+	if len(images) == 0 {
+		delete(m.transcriptImages, index)
+		return
+	}
+	m.transcriptImages[index] = append([]transcriptImage(nil), images...)
+}
+
+func (m *replModel) deleteTranscriptEntry(index int) {
+	m.transcript = append(m.transcript[:index], m.transcript[index+1:]...)
+	delete(m.transcriptImages, index)
+	for i := index + 1; i <= len(m.transcript); i++ {
+		if images, ok := m.transcriptImages[i]; ok {
+			m.transcriptImages[i-1] = images
+			delete(m.transcriptImages, i)
+		}
+	}
+}
+
 // appendLine appends a pre-rendered transcript entry (may contain inline
 // style markup). A non-assistant boundary first settles any active assistant
 // block so pending fence text and provider terminal newlines cannot leak across
@@ -894,7 +1102,9 @@ func (m *replModel) appendAssistant(text string) {
 		return
 	}
 	m.streamShown = len(visible)
-	m.transcript[m.currentAssistant] = renderMarkdown(visible)
+	rendered, images := renderMarkdownWithLocalImages(visible, m.imageBaseDir)
+	m.transcript[m.currentAssistant] = rendered
+	m.setTranscriptImages(m.currentAssistant, images)
 	m.invalidateFlat()
 }
 
@@ -909,7 +1119,9 @@ func (m *replModel) finishAssistantStream() {
 		return
 	}
 	m.streamShown = len(raw)
-	m.transcript[m.currentAssistant] = renderMarkdown(raw)
+	rendered, images := renderMarkdownWithLocalImages(raw, m.imageBaseDir)
+	m.transcript[m.currentAssistant] = rendered
+	m.setTranscriptImages(m.currentAssistant, images)
 	m.invalidateFlat()
 }
 
@@ -926,7 +1138,7 @@ func (m *replModel) finishAssistantBlock(label string) bool {
 	idx := m.currentAssistant
 	content := strings.TrimRight(m.transcript[idx], "\r\n")
 	if content == "" {
-		m.transcript = append(m.transcript[:idx], m.transcript[idx+1:]...)
+		m.deleteTranscriptEntry(idx)
 	} else {
 		m.transcript[idx] = content
 	}
@@ -1152,6 +1364,7 @@ func (m *replModel) appendNoticeLine(text string) {
 
 func (m *replModel) clearDisplay() {
 	m.transcript = nil
+	m.transcriptImages = make(map[int][]transcriptImage)
 	m.currentAssistant = -1
 	m.activeTools = nil
 	if !m.busy {
@@ -1238,18 +1451,21 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	}
 
 	lastRole := ""
-	lastUserPrompt := ""
-	lastUserRetryable := false
+	var lastUserTurn *managedTurnInput
 	lastUserContextOnly := false
+	_, historyRequestErr := preparePortableImageRequest(modelVisibleHistory(history))
+	historyRequestOK := historyRequestErr == nil
 	for _, msg := range history[start:] {
 		switch msg.Role {
 		case messages.MessageRoleUser:
 			flushTools()
 			m.appendTurnSeparator()
-			content, retryPrompt, retryable, contextOnly := historyUserSummary(msg)
+			content, _, retryable, contextOnly := historyUserSummary(msg)
 			m.appendUserPrompt(content)
-			lastUserPrompt = retryPrompt
-			lastUserRetryable = retryable
+			lastUserTurn = nil
+			if turn, ok := retryableHistoryTurn(msg, content, retryable, historyRequestOK); ok {
+				lastUserTurn = &turn
+			}
 			lastUserContextOnly = contextOnly
 			lastRole = msg.Role
 		case messages.MessageRoleAssistant:
@@ -1297,14 +1513,101 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	}
 	flushTools()
 	if lastRole == messages.MessageRoleUser && !lastUserContextOnly {
-		if lastUserRetryable && lastUserPrompt != "" {
-			m.retryPrompt = lastUserPrompt
+		if lastUserTurn != nil {
+			turn := cloneManagedTurn(*lastUserTurn)
+			m.retryTurn = &turn
+			m.retryPersistence = newTurnPersistenceAck(true)
+			m.retryPrompt = turn.userMessage.GetContent()
+			if m.retryPrompt == "" {
+				m.retryPrompt = turn.displayText
+			}
 			m.appendLine("  " + styled("incomplete · /retry available", "muted", ""))
 		} else {
 			m.appendLine("  " + styled("incomplete", "muted", ""))
 		}
 	}
 	m.followBottom = true
+}
+
+func retryableHistoryTurn(msg messages.ChatMessage, display string, simpleContent, historyRequestOK bool) (managedTurnInput, bool) {
+	contextOnly, _ := msg.Metadata[messages.MetadataKeyContextImport].(bool)
+	if contextOnly || msg.Role != messages.MessageRoleUser {
+		return managedTurnInput{}, false
+	}
+	if !historyRequestOK {
+		return managedTurnInput{}, false
+	}
+	prepared, err := preparePortableImageRequest([]messages.ChatMessage{msg})
+	if err != nil || len(prepared) != 1 {
+		return managedTurnInput{}, false
+	}
+	requestMessage := prepared[0]
+	if simpleContent {
+		return cloneManagedTurn(managedTurnInput{displayText: display, userMessage: msg}), true
+	}
+	imageCount := 0
+	for _, part := range requestMessage.Parts {
+		switch part.Type {
+		case "text":
+			if part.FileName != "" {
+				return managedTurnInput{}, false
+			}
+		case "image_base64":
+			if !portablePersistedImagePart(part) {
+				return managedTurnInput{}, false
+			}
+			imageCount++
+			if imageCount > maxPromptAttachments {
+				return managedTurnInput{}, false
+			}
+		default:
+			return managedTurnInput{}, false
+		}
+	}
+	if imageCount == 0 {
+		return managedTurnInput{}, false
+	}
+	return cloneManagedTurn(managedTurnInput{displayText: display, userMessage: msg}), true
+}
+
+func portablePersistedImagePart(part messages.ContentPart) bool {
+	return validatePortablePersistedImagePart(part) == nil
+}
+
+func validatePortablePersistedImagePart(part messages.ContentPart) error {
+	if len(part.ImageData) > maxPortableEncodedImageBytes {
+		return fmt.Errorf("encoded image uses %d bytes; per-image portable limit is 10,000,000 bytes (10 MB)", len(part.ImageData))
+	}
+	data, err := base64.StdEncoding.DecodeString(part.ImageData)
+	if err != nil || len(data) == 0 {
+		return fmt.Errorf("invalid or empty base64 data")
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || config.Width <= 0 || config.Height <= 0 {
+		return fmt.Errorf("invalid raster image data")
+	}
+	if max(config.Width, config.Height) > uploadMaxLongEdge ||
+		int64(config.Width)*int64(config.Height) > maxLocalImagePixels {
+		return fmt.Errorf("image dimensions %dx%d exceed the prepared-image bounds", config.Width, config.Height)
+	}
+	if _, decodedFormat, err := image.Decode(bytes.NewReader(data)); err != nil || decodedFormat != format {
+		return fmt.Errorf("invalid %s image data", format)
+	}
+	wantMIME := ""
+	switch format {
+	case "png":
+		wantMIME = "image/png"
+	case "jpeg":
+		wantMIME = "image/jpeg"
+	case "webp":
+		wantMIME = "image/webp"
+	default:
+		return fmt.Errorf("unsupported image format %q", format)
+	}
+	if part.MimeType != wantMIME {
+		return fmt.Errorf("image MIME %q does not match %q bytes", part.MimeType, format)
+	}
+	return nil
 }
 
 func historyUserSummary(msg messages.ChatMessage) (display, retryPrompt string, retryable, contextOnly bool) {
@@ -1343,9 +1646,9 @@ func historyUserSummary(msg messages.ChatMessage) (display, retryPrompt string, 
 	if display == "" {
 		display = "[empty message]"
 	}
-	// Parts-based messages may include file bodies even when their Type is
-	// "text". The original payload cannot be faithfully rebuilt from a prompt
-	// string, so only simple Content messages are safe to retry.
+	// This summary only identifies simple Content retries. retryableHistoryTurn
+	// separately recognizes persisted image_base64 parts while rejecting text
+	// file bodies and context imports that cannot be reconstructed safely.
 	retryable = len(msg.Parts) == 0 && msg.Content != ""
 	if retryable {
 		retryPrompt = msg.Content
@@ -1406,7 +1709,7 @@ func (m *replModel) updateQueueHint() {
 		if m.queuePaused {
 			next += " paused"
 		}
-		if preview := compactQueuePreview(m.queue[len(m.queue)-1]); preview != "" {
+		if preview := compactQueuePreview(m.queue[len(m.queue)-1].text); preview != "" {
 			next += " › " + preview
 		}
 	}
@@ -1416,28 +1719,27 @@ func (m *replModel) updateQueueHint() {
 	}
 }
 
-// submitPrompt finalizes the current input as a user turn. Returns the prompt
-// string (possibly empty if input was blank).
-func (m *replModel) submitPrompt() string {
-	prompt := strings.TrimSpace(m.ed.text())
-	m.ed.clear()
-	m.clearSlashHints()
-	m.historyIdx = -1
-	m.historyDraft = ""
-	if prompt == "" {
-		return ""
-	}
-	m.history = append(m.history, prompt)
-	m.beginTurn(prompt)
-	return prompt
-}
-
 // beginTurn echoes a user prompt and marks a turn in flight. Shared by the idle
 // submit path and the queued-prompt drain; neither records history here (callers
 // do that when the text is first accepted). Caller must hold m.mu.
 func (m *replModel) beginTurn(prompt string) {
+	m.beginManagedTurn(textManagedTurn(prompt))
+}
+
+func (m *replModel) beginManagedTurn(turn managedTurnInput) {
+	prompt := turn.displayText
 	m.appendTurnSeparator()
 	m.appendUserPrompt(prompt)
+	if images := preparedMessageTranscriptImages(turn.userMessage); len(images) > 0 {
+		// The echoed prompt gains thumbnail slots for its attachments. Pasted
+		// private-use runes are stripped first so they cannot pose as slot
+		// anchors in an entry that now carries real ones.
+		idx := len(m.transcript) - 1
+		m.transcript[idx] = stripTranscriptImageMarkers(m.transcript[idx]) +
+			"\n" + renderTranscriptImages(images, "  ")
+		m.setTranscriptImages(idx, images)
+		m.invalidateFlat()
+	}
 	m.busy = true
 	m.canceling = false
 	m.state = turnStateWaiting
@@ -1446,6 +1748,8 @@ func (m *replModel) beginTurn(prompt string) {
 	m.thinkingTail = nil
 	m.turnStarted = time.Now()
 	m.currentPrompt = prompt
+	m.currentTurn = cloneManagedTurn(turn)
+	m.currentPersistence = newTurnPersistenceAck(false)
 	m.turnHasOutput = false
 	m.unsavedLabeled = false
 	m.lastOutcome = turnOutcomeNone
@@ -1886,12 +2190,23 @@ type managedREPL struct {
 	rootFlex    *widgets.Flex
 
 	quit       chan struct{}
-	pending    chan string
+	pending    chan managedTurnInput
 	turnCancel context.CancelFunc
+
+	// openImage launches the OS viewer for a clicked transcript thumbnail;
+	// swappable in tests.
+	openImage func(path string) error
+
+	// uiTasks carries deferred UI mutations (e.g. a finished clipboard read)
+	// onto the event loop, which repaints after running each one. Tasks take
+	// the model lock themselves.
+	uiTasks chan func()
 
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
 	fx *terminalFX
+	// images owns native Kitty/Sixel placements. Nil means captions/paths only.
+	images *terminalImageManager
 
 	// startupLogoVisible reserves a small header above the transcript until the
 	// first real turn starts. The composer and status remain live from frame one.
@@ -2045,7 +2360,7 @@ func loadHistory(path string) []string {
 	}
 	var lines []string
 	for _, l := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(l) != "" {
+		if strings.TrimSpace(l) != "" && !attachmentTokenPattern.MatchString(l) {
 			lines = append(lines, l)
 		}
 	}
@@ -2087,7 +2402,7 @@ func (r *managedREPL) closeHistory() {
 // appendHistory persists one submitted prompt. Single-line only — multi-line
 // prompts would break the line-per-entry format and are not stored.
 func (r *managedREPL) appendHistory(prompt string) {
-	if r.histFile == nil || strings.ContainsRune(prompt, '\n') {
+	if r.histFile == nil || strings.ContainsRune(prompt, '\n') || attachmentTokenPattern.MatchString(prompt) {
 		return
 	}
 	fmt.Fprintln(r.histFile, prompt)
@@ -2104,6 +2419,63 @@ func (r *managedREPL) recordAcceptedInput(input string) {
 	r.model.historyDraft = ""
 	r.model.history = append(r.model.history, input)
 	r.appendHistory(input)
+}
+
+// prepareManagedTurnLocked resolves every attachment and enforces the portable
+// inline-image budget before the editor is cleared or a prompt is queued.
+// Caller must hold r.model.mu.
+func (r *managedREPL) prepareManagedTurnLocked(prompt string) (managedTurnInput, error) {
+	attachments, err := r.model.promptAttachments(prompt)
+	if err != nil {
+		return managedTurnInput{}, fmt.Errorf("error processing attachments: %w", err)
+	}
+	userMessage, err := buildREPLUserMessage(prompt, attachments)
+	if err != nil {
+		return managedTurnInput{}, fmt.Errorf("error processing attachments: %w", err)
+	}
+	turn := cloneManagedTurn(managedTurnInput{displayText: prompt, userMessage: userMessage})
+
+	var projected []messages.ChatMessage
+	var metadata *sessions.Metadata
+	currentPersisted := false
+	if r.state != nil && r.state.session != nil {
+		if r.model.busy && r.model.currentTurn.userMessage.Role == messages.MessageRoleUser {
+			projected, currentPersisted = r.model.currentPersistence.snapshotSessionHistory(r.state.session)
+		} else {
+			projected = r.state.session.GetHistory()
+		}
+		metadata = r.state.session.GetMetadata()
+	}
+	if r.model.busy && !currentPersisted && r.model.currentTurn.userMessage.Role == messages.MessageRoleUser {
+		projected = appendProjectedUserMessage(projected, r.model.currentTurn.userMessage, metadata)
+	}
+	for _, queued := range r.model.queue {
+		if queued.turn != nil {
+			projected = appendProjectedUserMessage(projected, queued.turn.userMessage, metadata)
+		} else if queued.text == "/reset confirm" {
+			projected = resetProjectedHistory(metadata)
+		}
+	}
+	projected = appendProjectedUserMessage(projected, turn.userMessage, metadata)
+	if _, err := preparePortableImageRequest(modelVisibleHistory(projected)); err != nil {
+		return managedTurnInput{}, err
+	}
+	return turn, nil
+}
+
+func appendProjectedUserMessage(history []messages.ChatMessage, msg messages.ChatMessage, metadata *sessions.Metadata) []messages.ChatMessage {
+	history = append(history, msg)
+	if metadata != nil && metadata.MaxHistoryTokens > 0 {
+		history = sessions.TrimHistory(history, metadata.MaxHistoryTokens)
+	}
+	return history
+}
+
+func resetProjectedHistory(metadata *sessions.Metadata) []messages.ChatMessage {
+	if metadata == nil || metadata.SystemPrompt == "" {
+		return nil
+	}
+	return []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: metadata.SystemPrompt}}
 }
 
 // sandboxNoticeLine summarizes the sandbox posture for the REPL startup
@@ -2123,10 +2495,12 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 	m.skillCount = skillCount
 	m.quiet = config.Quiet
 	return &managedREPL{
-		config:  config,
-		model:   m,
-		quit:    make(chan struct{}, 1),
-		pending: make(chan string, 1),
+		config:    config,
+		model:     m,
+		quit:      make(chan struct{}, 1),
+		pending:   make(chan managedTurnInput, 1),
+		uiTasks:   make(chan func(), 8),
+		openImage: openImageInViewer,
 	}
 }
 
@@ -2164,12 +2538,21 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	// flip the gate open.
 	ui.DefaultBackend.Screen.EnableFocus()
 	r.fx = newTerminalFX(ui.DefaultBackend.Screen)
+	r.images = newTerminalImageManager(ui.DefaultBackend.Screen)
+	r.model.mu.Lock()
+	r.model.nativeImages = r.images != nil
+	r.model.invalidateVisual()
+	r.model.mu.Unlock()
 	// Restore the terminal exactly once, whether we return normally or a
 	// signal short-circuits to os.Exit (which skips deferred calls). Terminal
 	// effects clear first: the progress OSC must go out while the screen is up.
 	var closeOnce sync.Once
 	closeUI := func() {
 		closeOnce.Do(func() {
+			if r.images != nil {
+				r.images.shutdown()
+				r.images = nil
+			}
 			r.fx.shutdown()
 			ui.Close()
 		})
@@ -2182,6 +2565,14 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 
 	r.initHistory()
 	defer r.closeHistory()
+
+	// Clipboard captures and materialized prepared-payload previews share this
+	// cache; once their transcripts are gone, stale files serve no one.
+	go func() {
+		if dir, err := attachmentCacheDir(); err == nil {
+			sweepAttachmentCache(dir, time.Now())
+		}
+	}()
 
 	r.setupWidgets()
 	r.startupLogoVisible = true
@@ -2239,8 +2630,8 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 				r.releaseApproval()
 				return nil
 			}
-			if prompt := r.takePending(); prompt != "" {
-				turnDone = r.startTurn(ctx, prompt, runTurn)
+			if turn, ok := r.takePending(); ok {
+				turnDone = r.startManagedTurn(ctx, turn, runTurn)
 				cancelDetach = nil
 			}
 			if turnDone == nil {
@@ -2252,11 +2643,24 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			if r.wantsRenderForEvent(ev) {
 				r.render()
 			}
-		case prompt := <-r.pending:
-			turnDone = r.startTurn(ctx, prompt, runTurn)
+		case turn := <-r.pending:
+			turnDone = r.startManagedTurn(ctx, turn, runTurn)
 			cancelDetach = nil
 			r.render()
+		case task := <-r.uiTasks:
+			task()
+			r.render()
 		}
+	}
+}
+
+// postUITask hands a completed background result to the event loop. Dropping
+// on a full buffer is deliberate: a task that cannot land immediately after
+// shutdown has nobody to land for.
+func (r *managedREPL) postUITask(task func()) {
+	select {
+	case r.uiTasks <- task:
+	default:
 	}
 }
 
@@ -2298,16 +2702,20 @@ func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
 	return !r.model.pasting
 }
 
-func (r *managedREPL) takePending() string {
+func (r *managedREPL) takePending() (managedTurnInput, bool) {
 	select {
 	case p := <-r.pending:
-		return p
+		return p, true
 	default:
-		return ""
+		return managedTurnInput{}, false
 	}
 }
 
 func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func(context.Context, string, TurnUI) error) chan error {
+	return r.startManagedTurn(ctx, textManagedTurn(prompt), runTurn)
+}
+
+func (r *managedREPL) startManagedTurn(ctx context.Context, turn managedTurnInput, runTurn func(context.Context, string, TurnUI) error) chan error {
 	r.startupLogoVisible = false
 	r.model.mu.Lock()
 	r.model.turnID++
@@ -2315,14 +2723,19 @@ func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func
 	reuseUser := r.model.retryingNext
 	r.model.retryingNext = false
 	r.model.currentWasRetry = reuseUser
+	persistence := r.model.currentPersistence
+	if persistence == nil {
+		persistence = newTurnPersistenceAck(false)
+		r.model.currentPersistence = persistence
+	}
 	r.model.mu.Unlock()
 
 	turnCtx, cancel := context.WithCancel(ctx)
 	r.turnCancel = cancel
 	done := make(chan error, 1)
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: turnID, reuseUser: reuseUser}
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: turnID, reuseUser: reuseUser, turn: cloneManagedTurn(turn), persistence: persistence}
 	go func() {
-		done <- runTurn(turnCtx, prompt, tui)
+		done <- runTurn(turnCtx, turn.displayText, tui)
 	}()
 	return done
 }
@@ -2340,15 +2753,16 @@ func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.
 			r.model.mu.Unlock()
 			return nil
 		}
-		text := r.model.queue[0]
+		item := r.model.queue[0]
 		r.model.queue = r.model.queue[1:]
 		r.model.updateQueueHint()
+		text := item.text
 
-		// A single-line "/…" is a command; multi-line input is always a prompt.
-		if strings.Contains(text, "\n") || !strings.HasPrefix(text, "/") {
-			r.model.beginTurn(text)
+		if item.turn != nil {
+			turn := cloneManagedTurn(*item.turn)
+			r.model.beginManagedTurn(turn)
 			r.model.mu.Unlock()
-			return r.startTurn(ctx, text, runTurn)
+			return r.startManagedTurn(ctx, turn, runTurn)
 		}
 
 		// runCommand and its helpers expect the model lock held (as in
@@ -2361,12 +2775,12 @@ func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.
 		// pending before looking at later queue entries; otherwise a following
 		// prompt could leapfrog it and inherit its reuse-user flag.
 		if r.model.busy {
-			prompt := r.takePending()
+			turn, ok := r.takePending()
 			r.model.mu.Unlock()
-			if prompt == "" {
+			if !ok {
 				return nil
 			}
-			return r.startTurn(ctx, prompt, runTurn)
+			return r.startManagedTurn(ctx, turn, runTurn)
 		}
 		r.model.mu.Unlock()
 		if quit {
@@ -2409,12 +2823,17 @@ func (r *managedREPL) endTurn(err error) {
 		}
 		m.lastOutcome = turnOutcomeDone
 		m.retryPrompt = ""
+		m.retryTurn = nil
+		m.retryPersistence = nil
 		m.queuePaused = false
 	case errors.Is(err, context.Canceled):
 		m.finishAssistantBlock("canceled · not saved")
 		m.labelTurnUnsaved("canceled · not saved")
 		m.lastOutcome = turnOutcomeCanceled
 		m.retryPrompt = m.currentPrompt
+		retry := cloneManagedTurn(m.currentTurn)
+		m.retryTurn = &retry
+		m.retryPersistence = m.currentPersistence
 		m.queuePaused = len(m.queue) > 0 && !resumeQueue
 		if !wasCanceling {
 			m.appendNoticeLine("turn canceled")
@@ -2425,6 +2844,9 @@ func (r *managedREPL) endTurn(err error) {
 		m.appendLine(styled("Error: "+err.Error(), "err", ""))
 		m.lastOutcome = turnOutcomeFailed
 		m.retryPrompt = m.currentPrompt
+		retry := cloneManagedTurn(m.currentTurn)
+		m.retryTurn = &retry
+		m.retryPersistence = m.currentPersistence
 		m.queuePaused = len(m.queue) > 0 && !resumeQueue
 	}
 	// A long turn settling is the "walk away and get pinged" moment; a quick
@@ -2446,6 +2868,8 @@ func (r *managedREPL) endTurn(err error) {
 	m.turnStarted = time.Time{}
 	m.state = turnStateIdle
 	m.currentPrompt = ""
+	m.currentTurn = managedTurnInput{}
+	m.currentPersistence = nil
 	m.currentWasRetry = false
 	m.updateQueueHint()
 	// A settled turn owns no callbacks. Advance the generation before exposing
@@ -2494,7 +2918,12 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.state = turnStateIdle
 	m.lastOutcome = turnOutcomeCanceled
 	m.retryPrompt = m.currentPrompt
+	retry := cloneManagedTurn(m.currentTurn)
+	m.retryTurn = &retry
+	m.retryPersistence = m.currentPersistence
 	m.currentPrompt = ""
+	m.currentTurn = managedTurnInput{}
+	m.currentPersistence = nil
 	resumeQueue := m.queueResumeAfterTurn || queuedRetryAtFront(m.queue)
 	m.queueResumeAfterTurn = false
 	m.queuePaused = len(m.queue) > 0 && !resumeQueue
@@ -2507,8 +2936,8 @@ func (r *managedREPL) detachCanceledTurn(ctx context.Context, runTurn func(conte
 	return r.startNextQueued(ctx, runTurn)
 }
 
-func queuedRetryAtFront(queue []string) bool {
-	return len(queue) > 0 && queue[0] == "/retry"
+func queuedRetryAtFront(queue []queuedREPLInput) bool {
+	return len(queue) > 0 && queue[0].text == "/retry"
 }
 
 // handleInterrupt processes Ctrl-C. While a turn is in flight the first press
@@ -2584,28 +3013,84 @@ func (r *managedREPL) handleSearchKey(e ui.Event) bool {
 	return false
 }
 
-// insertPasted adds one key from a bracketed paste to the editor as literal
-// text, mapping newline keys to '\n'. The composer remains available while a
-// turn runs, so busy paste behaves exactly like busy typing.
-func (r *managedREPL) insertPasted(e ui.Event) {
-	m := r.model
-	if m.approval != nil || m.searching {
-		return
-	}
+// bufferPasted adds one key from a bracketed paste to the paste buffer as
+// literal text, mapping newline keys to '\n'. The composer remains available
+// while a turn runs, so busy paste behaves exactly like busy typing.
+func (m *replModel) bufferPasted(e ui.Event) {
 	switch e.ID {
 	case "<Enter>", "<C-j>":
-		m.ed.insert('\n')
+		m.pasteBuf = append(m.pasteBuf, '\n')
 	case "<Space>":
-		m.ed.insert(' ')
+		m.pasteBuf = append(m.pasteBuf, ' ')
 	case "<Tab>":
-		m.ed.insert('\t')
+		m.pasteBuf = append(m.pasteBuf, '\t')
 	default:
 		if e.Type == ui.KeyboardEvent {
 			if runes := []rune(e.ID); len(runes) == 1 && runes[0] >= 0x20 {
-				m.ed.insert(runes[0])
+				m.pasteBuf = append(m.pasteBuf, runes[0])
 			}
 		}
 	}
+}
+
+// flushPasteBuffer lands a completed bracketed paste. A paste that is nothing
+// but existing local image paths — the terminal drag-drop signature — attaches
+// those images and leaves "[image #N]" tokens in the composer; any other paste
+// is inserted verbatim. Search and approval modes swallow pastes, as they
+// swallowed each key before buffering existed.
+func (m *replModel) flushPasteBuffer() {
+	text := string(m.pasteBuf)
+	m.pasteBuf = m.pasteBuf[:0]
+	if text == "" || m.approval != nil || m.searching {
+		return
+	}
+	if images := m.pastedImageAttachments(text); len(images) > 0 {
+		for _, img := range images {
+			m.insertEditorText(m.registerAttachment(img.Path, filepath.Base(img.Path)) + " ")
+		}
+		return
+	}
+	m.insertEditorText(text)
+}
+
+func (m *replModel) insertEditorText(s string) {
+	for _, r := range s {
+		m.ed.insert(r)
+	}
+}
+
+// captureClipboardToComposer reads an image from the system clipboard in the
+// background and, on success, attaches it and leaves its "[image #N]" token at
+// the cursor. The read happens off the event loop — osascript and friends can
+// take a beat — and lands via a UI task. Caller must hold r.model.mu.
+func (r *managedREPL) captureClipboardToComposer() {
+	if r.model.clipboardCapture {
+		return
+	}
+	r.model.clipboardCapture = true
+	go func() {
+		dir, err := attachmentCacheDir()
+		var path string
+		if err == nil {
+			path, err = captureClipboardImage(context.Background(), dir)
+		}
+		r.postUITask(func() {
+			m := r.model
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			m.clipboardCapture = false
+			if err != nil {
+				m.appendNoticeLine("clipboard: " + err.Error())
+				return
+			}
+			img, ok := resolveLocalTranscriptImage(path, "clipboard image", m.imageBaseDir)
+			if !ok {
+				m.appendNoticeLine("clipboard: captured image could not be used")
+				return
+			}
+			m.insertEditorText(m.registerAttachment(img.Path, "clipboard image") + " ")
+		})
+	}()
 }
 
 func (r *managedREPL) releaseApproval() {
@@ -2639,7 +3124,7 @@ func (r *managedREPL) transcriptHeight() int {
 	inputRows := r.model.inputRows()
 	dividerRows := dividerRowCount(h, inputRows, statusRows, r.model.quiet)
 	contentHeight := h - inputRows - statusRows - dividerRows
-	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible)
+	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible, r.images != nil)
 	height := contentHeight - logoRows
 	if height < 1 {
 		return 1
@@ -2733,7 +3218,10 @@ func (r *managedREPL) render() {
 	if w < 1 || h < 2 {
 		return
 	}
-
+	imageCellWidth, imageCellHeight := 0, 0
+	if r.images != nil {
+		imageCellWidth, imageCellHeight = r.images.cellDimensions()
+	}
 	showStatus := !r.model.quiet
 	statusRows := 0
 	if showStatus {
@@ -2741,6 +3229,11 @@ func (r *managedREPL) render() {
 	}
 
 	r.model.mu.Lock()
+	if r.model.imageCellWidth != imageCellWidth || r.model.imageCellHeight != imageCellHeight {
+		r.model.imageCellWidth = imageCellWidth
+		r.model.imageCellHeight = imageCellHeight
+		r.model.invalidateVisual()
+	}
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
 	r.model.refreshThinkingGhost()
@@ -2753,7 +3246,7 @@ func (r *managedREPL) render() {
 	input, inputRows, curRow, curCol, editable := r.model.renderInputForTerminal(inputMaxRows, w)
 	dividerRows := dividerRowCount(h, inputRows, statusRows, r.model.quiet)
 	contentHeight := h - inputRows - statusRows - dividerRows
-	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible)
+	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible, r.images != nil)
 	transcriptHeight := contentHeight - logoRows
 	if transcriptHeight < 0 {
 		transcriptHeight = 0
@@ -2781,7 +3274,26 @@ func (r *managedREPL) render() {
 	progress := r.model.frameProgress()
 	notices := r.model.takeNotices()
 	ticker := r.model.activityTicker(len(transcriptRows), topRow, transcriptHeight)
+	imagePlacements := r.model.visibleImagePlacements(
+		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
+		pinTranscriptBottom, ticker != "",
+	)
+	r.model.imagePlacements = imagePlacements
 	r.model.mu.Unlock()
+
+	if logoRows == imageLogoHeight && r.images != nil {
+		// The image splash rides the same placement pipeline as thumbnails:
+		// its band is blank in the text layer and the manager draws, diffs,
+		// and releases it like any other placement.
+		if logo, ok := startupLogoPlacement(w, imageCellWidth, imageCellHeight); ok {
+			imagePlacements = append([]terminalImagePlacement{logo}, imagePlacements...)
+		}
+	}
+
+	imagesChanged := false
+	if r.images != nil {
+		imagesChanged = r.images.prepare(imagePlacements)
+	}
 
 	var overlay []ui.Cell
 	if ticker != "" {
@@ -2793,7 +3305,11 @@ func (r *managedREPL) render() {
 	r.transcriptW.PinBottom = pinTranscriptBottom
 	r.transcriptW.TopRow = topRow
 	r.transcriptW.OverlayBottom = overlay
-	r.logoW.Rows = pollyLogoRows(w)
+	if logoRows == imageLogoHeight {
+		r.logoW.Rows = make([][]ui.Cell, logoRows)
+	} else {
+		r.logoW.Rows = pollyLogoRows(w)
+	}
 	r.logoW.TopRow = 0
 	r.logoW.OverlayBottom = nil
 	r.inputW.Text = input
@@ -2806,6 +3322,9 @@ func (r *managedREPL) render() {
 	ui.Clear()
 	r.placeCursor(editable, curCol, logoRows+transcriptHeight+dividerRows+curRow, w)
 	ui.Render(r.rootFlex)
+	if r.images != nil {
+		r.images.commit(imagesChanged)
+	}
 
 	// Window-level effects go out after the frame, on this same goroutine, so
 	// their escapes serialize with tcell's own writes.
@@ -2909,13 +3428,19 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	if width < 1 {
 		width = 1
 	}
-	if m.visualCacheValid && m.visualCacheWidth == width {
+	if m.nativeImages && m.refreshTranscriptImageSources() {
+		m.invalidateVisual()
+	}
+	if m.visualCacheValid && m.visualCacheWidth == width &&
+		m.visualCacheCellWidth == m.imageCellWidth && m.visualCacheCellHeight == m.imageCellHeight {
 		return m.visualCache
 	}
 
-	sources := m.transcriptDisplayBlocks()
+	sources := m.transcriptDisplayEntries()
 	oldBlocks := m.visualBlocks
-	canPatch := m.visualCacheWidth == width && len(oldBlocks) == len(sources)
+	canPatch := m.visualCacheWidth == width && m.visualCacheNativeImages == m.nativeImages &&
+		m.visualCacheCellWidth == m.imageCellWidth && m.visualCacheCellHeight == m.imageCellHeight &&
+		len(oldBlocks) == len(sources)
 	if len(oldBlocks) != len(sources) {
 		m.visualBlocks = make([]transcriptVisualBlock, len(sources))
 	}
@@ -2928,9 +3453,16 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			old = oldBlocks[i]
 		}
 		rows := old.rows
-		changed := m.visualCacheWidth != width || old.text != source || old.followed != followed
+		imageSpans := old.imageSpans
+		changed := m.visualCacheWidth != width || m.visualCacheNativeImages != m.nativeImages ||
+			m.visualCacheCellWidth != m.imageCellWidth || m.visualCacheCellHeight != m.imageCellHeight ||
+			old.key != source.key || old.text != source.text || old.followed != followed || !transcriptImagesEqual(old.images, source.images)
 		if changed {
-			rows = transcriptBlockRows(source, followed, width)
+			nativeSlots := m.nativeImages && width >= minimumImageThumbnailCols
+			rows, imageSpans = transcriptBlockRowsWithImages(
+				source.text, followed, width, source.images, nativeSlots,
+				m.imageCellWidth, m.imageCellHeight,
+			)
 		}
 		if canPatch && len(rows) != len(old.rows) {
 			canPatch = false
@@ -2938,7 +3470,14 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		if canPatch && changed {
 			copy(m.visualCache[offset:offset+len(rows)], rows)
 		}
-		m.visualBlocks[i] = transcriptVisualBlock{text: source, followed: followed, rows: rows}
+		m.visualBlocks[i] = transcriptVisualBlock{
+			key:        source.key,
+			text:       source.text,
+			followed:   followed,
+			rows:       rows,
+			images:     append([]transcriptImage(nil), source.images...),
+			imageSpans: imageSpans,
+		}
 		offset += len(old.rows)
 	}
 
@@ -2954,36 +3493,65 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		m.visualCache = rows
 	}
 	m.visualCacheWidth = width
+	m.visualCacheNativeImages = m.nativeImages
+	m.visualCacheCellWidth = m.imageCellWidth
+	m.visualCacheCellHeight = m.imageCellHeight
 	m.visualCacheValid = true
 	return m.visualCache
 }
 
 func (m *replModel) transcriptDisplayBlocks() []string {
-	blocks := make([]string, 0, len(m.transcript)+1)
+	entries := m.transcriptDisplayEntries()
+	blocks := make([]string, len(entries))
+	for i, entry := range entries {
+		blocks[i] = entry.text
+	}
+	return blocks
+}
+
+func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
+	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+1)
 	for i, entry := range m.transcript {
 		if i == m.currentAssistant {
 			entry = strings.TrimRight(entry, "\r\n")
 			if entry == "" {
 				continue
 			}
-			entry += m.streamCursorFrame
+			images := m.transcriptImages[i]
+			if len(images) > 0 && strings.HasSuffix(entry, string(transcriptImageMarker(len(images)-1))) {
+				// Keep the pulsing stream caret out of the final reserved image
+				// row. The newline is stable even on the caret's hidden frame, so
+				// follow-bottom does not oscillate by one row.
+				entry += "\n" + m.streamCursorFrame
+			} else {
+				entry += m.streamCursorFrame
+			}
 		}
-		blocks = append(blocks, entry)
+		blocks = append(blocks, transcriptDisplayBlock{
+			key:    fmt.Sprintf("transcript:%d", i),
+			text:   entry,
+			images: m.transcriptImages[i],
+		})
 	}
 	if m.thinkingGhostFrame != "" {
-		blocks = append(blocks, m.thinkingGhostFrame)
+		blocks = append(blocks, transcriptDisplayBlock{key: "thinking", text: m.thinkingGhostFrame})
 	}
 	if m.queueHint != "" {
-		blocks = append(blocks, styled(m.queueHint, "active", "bold"))
+		blocks = append(blocks, transcriptDisplayBlock{key: "queue", text: styled(m.queueHint, "active", "bold")})
 	}
 	if m.slashHints != "" {
-		blocks = append(blocks, styled(m.slashHints, "muted", ""))
+		blocks = append(blocks, transcriptDisplayBlock{key: "slash", text: styled(m.slashHints, "muted", "")})
 	}
 	return blocks
 }
 
 func transcriptBlockRows(text string, followed bool, width int) [][]ui.Cell {
-	cells := ui.ParseStyles(text, ui.NewStyle(ui.ColorClear))
+	rows, _ := transcriptBlockRowsWithImages(text, followed, width, nil, false, 0, 0)
+	return rows
+}
+
+func transcriptBlockRowsWithImages(text string, followed bool, width int, images []transcriptImage, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
+	cells := parseStyledCells(text, ui.NewStyle(ui.ColorClear))
 	if followed {
 		// The joined renderer places one newline between transcript blocks. Add
 		// that separator before splitting: a normal separator is absorbed by the
@@ -2991,7 +3559,8 @@ func transcriptBlockRows(text string, followed bool, width int) [][]ui.Cell {
 		// newline correctly produces an interior blank row.
 		cells = append(cells, ui.Cell{Rune: '\n', Style: ui.StyleClear})
 	}
-	return ui.SplitCells(wrapTranscriptCells(cells, width), '\n')
+	rows := ui.SplitCells(wrapTranscriptCells(cells, width), '\n')
+	return locateTranscriptImages(rows, images, native, width, cellWidth, cellHeight)
 }
 
 // flattenTranscript expands embedded "\n" within entries into separate lines
@@ -3058,6 +3627,24 @@ func (m *replModel) scrollToBottom() {
 	m.followBottom = true
 }
 
+// openImageAt opens the transcript thumbnail under the given screen cell, if
+// any, in the OS image viewer. Placements come from the last rendered frame;
+// the embedded splash logo (no backing file) is skipped. Caller must hold m.mu.
+func (r *managedREPL) openImageAt(x, y int) {
+	if r.openImage == nil {
+		return
+	}
+	for _, p := range r.model.imagePlacements {
+		if p.Path == "" || x < p.X || x >= p.X+p.Cols || y < p.Y || y >= p.Y+p.Rows {
+			continue
+		}
+		if err := r.openImage(p.Path); err != nil {
+			r.model.appendNoticeLine("open failed: " + err.Error())
+		}
+		return
+	}
+}
+
 // handleEvent mutates the model in response to a UI event. Returns true on
 // quit.
 func (r *managedREPL) handleEvent(e ui.Event) bool {
@@ -3101,6 +3688,11 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	case "<MouseWheelDown>":
 		m.scrollByWidth(3, viewport, terminalWidth)
 		return false
+	case "<MouseLeft>":
+		if mouse, ok := e.Payload.(ui.Mouse); ok {
+			r.openImageAt(mouse.X, mouse.Y)
+		}
+		return false
 	}
 
 	// Drop any other mouse events (release, drag, unknown buttons). gotui
@@ -3112,17 +3704,25 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	}
 
 	// Bracketed-paste markers bound a run of literal input. While pasting, keys
-	// are inserted verbatim — newlines included — instead of triggering actions,
-	// so a multi-line paste lands as one prompt rather than firing a submit per
-	// line. (gotui drops these markers; our own event pump surfaces them.)
+	// are buffered verbatim — newlines included — instead of triggering
+	// actions, so a multi-line paste lands as one prompt rather than firing a
+	// submit per line. The buffer is inspected once at the closing marker:
+	// terminal drag-drops (a paste that is purely image paths) become
+	// attachment tokens; everything else enters the editor as literal text.
+	// (gotui drops these markers; our own event pump surfaces them.)
 	if e.ID == pasteStartID || e.ID == pasteEndID {
 		m.clearSlashHints()
 		m.pasting = e.ID == pasteStartID
+		if m.pasting {
+			m.pasteBuf = m.pasteBuf[:0]
+		} else {
+			m.flushPasteBuffer()
+		}
 		return false
 	}
 	if m.pasting {
 		m.clearSlashHints()
-		r.insertPasted(e)
+		m.bufferPasted(e)
 		return false
 	}
 
@@ -3178,6 +3778,11 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		if trimmed == "" {
 			return false
 		}
+		if m.clipboardCapture {
+			m.appendNoticeLine("clipboard: waiting for image capture")
+			m.followBottom = true
+			return false
+		}
 		if m.busy && immediateBusyCommand(trimmed) {
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
@@ -3192,13 +3797,23 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			}
 			return false
 		}
+		isCommand := !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/")
 		if m.busy {
-			// A turn is running — queue this input to run when it ends instead
-			// of interrupting. Routing (command vs prompt) happens at dequeue;
-			// mirror the idle path's history handling here.
+			// A turn is running — commands remain text-only, while prompts are
+			// fully prepared before joining the queue.
+			queued := queuedREPLInput{text: trimmed}
+			if !isCommand {
+				turn, err := r.prepareManagedTurnLocked(trimmed)
+				if err != nil {
+					m.appendLine(styled("Error: "+err.Error(), "err", ""))
+					m.followBottom = true
+					return false
+				}
+				queued.turn = &turn
+			}
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
-			m.queue = append(m.queue, trimmed)
+			m.queue = append(m.queue, queued)
 			if m.canceling {
 				m.queuePaused = true
 			}
@@ -3207,7 +3822,7 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		}
 		// Only a single-line "/…" is a command; a multi-line prompt that happens
 		// to start with "/" is real input.
-		if !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/") {
+		if isCommand {
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
 			m.followBottom = true
@@ -3221,18 +3836,27 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			}
 			return false
 		}
+		turn, err := r.prepareManagedTurnLocked(trimmed)
+		if err != nil {
+			m.appendLine(styled("Error: "+err.Error(), "err", ""))
+			m.followBottom = true
+			return false
+		}
 		if m.queuePaused {
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
-			m.queue = append(m.queue, trimmed)
+			m.queue = append(m.queue, queuedREPLInput{text: trimmed, turn: &turn})
 			m.updateQueueHint()
 			return false
 		}
-		prompt := m.submitPrompt()
-		r.appendHistory(prompt)
 		select {
-		case r.pending <- prompt:
+		case r.pending <- turn:
+			m.ed.clear()
+			r.recordAcceptedInput(trimmed)
+			m.beginManagedTurn(turn)
 		default:
+			m.appendLine(styled("Error: turn queue is unavailable", "err", ""))
+			m.followBottom = true
 		}
 	case "<C-j>":
 		// Ctrl-J inserts a newline for composing multi-line prompts; Enter sends.
@@ -3275,6 +3899,9 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	case "<C-k>":
 		m.clearSlashHints()
 		m.ed.killToEnd()
+	case "<C-v>":
+		m.clearSlashHints()
+		r.captureClipboardToComposer()
 	case "<C-l>":
 		m.clearDisplay()
 	case "<C-r>":
@@ -3336,7 +3963,7 @@ func immediateBusyCommand(input string) bool {
 	if len(fields) == 0 {
 		return false
 	}
-	return fields[0] == "/queue" || fields[0] == "/clear"
+	return fields[0] == "/queue" || fields[0] == "/clear" || fields[0] == "/attach"
 }
 
 // ---------------------------------------------------------------------------
@@ -3344,14 +3971,24 @@ func immediateBusyCommand(input string) bool {
 // ---------------------------------------------------------------------------
 
 type gotuiTurnUI struct {
-	repl      *managedREPL
-	config    *Config
-	turnID    int64
-	reuseUser bool
+	repl        *managedREPL
+	config      *Config
+	turnID      int64
+	reuseUser   bool
+	turn        managedTurnInput
+	persistence *turnPersistenceAck
 }
 
 func (t *gotuiTurnUI) Start() {}
 func (t *gotuiTurnUI) Stop()  {}
+
+func (t *gotuiTurnUI) UserMessagePersistenceStarted() {
+	t.persistence.beginPersistence()
+}
+
+func (t *gotuiTurnUI) UserMessagePersistenceFinished(persisted bool) {
+	t.persistence.finishPersistence(persisted)
+}
 
 func (t *gotuiTurnUI) activeLocked() bool {
 	return t.turnID == 0 || t.repl.model.turnID == t.turnID
@@ -3452,6 +4089,14 @@ func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 
 func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 	label := toolLabel(call)
+	denied := toolWasDenied(result)
+	var discoveredImages []transcriptImage
+	if toolDisplayEnabled(t.config) && !denied {
+		// Tool output can be large. Discovery touches only Markdown/path syntax
+		// and the filesystem, so keep it outside the model lock and let the TUI
+		// continue painting while it runs.
+		discoveredImages = discoverToolOutputImages(result, t.repl.model.imageBaseDir)
+	}
 	t.repl.model.mu.Lock()
 	defer t.repl.model.mu.Unlock()
 	m := t.repl.model
@@ -3474,21 +4119,30 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	}
 	var final string
 	switch {
-	case toolWasDenied(result):
+	case denied:
 		final = toolDeniedLine(label)
 	case err != nil:
 		final = toolErrorLine(label, formatElapsed(duration), toolFailureMeta(err))
 	default:
 		final = toolOKLine(label, formatElapsed(duration), resultLineMeta(result))
 	}
+	images := discoveredImages
+	if len(images) > 0 {
+		// Tool-produced media stays visibly subordinate to the compact tool row;
+		// assistant-authored images remain flush with the transcript body.
+		final += "\n" + renderTranscriptImages(images, "    ")
+	}
 	// Freeze the final line over the running (breathing) one in place, so a tool
 	// is a single transcript line from start to finish. Falls back to appending
 	// if the start line wasn't tracked (shouldn't happen when display is on).
 	if idx, ok := m.takeActiveTool(call.ID); ok {
 		m.transcript[idx] = final
+		m.setTranscriptImages(idx, images)
 		m.invalidateFlat()
 	} else {
 		m.appendLine(final)
+		m.setTranscriptImages(len(m.transcript)-1, images)
+		m.invalidateFlat()
 	}
 }
 
@@ -3535,12 +4189,14 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 	}
 	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
 		reuseUser := false
+		userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: prompt}
 		if tui, ok := turnUI.(*gotuiTurnUI); ok {
 			reuseUser = tui.reuseUser
+			userMsg = cloneChatMessage(tui.turn.userMessage)
 		}
 		// The exit code is a one-shot concern; the REPL already rendered
 		// any warning.
-		_, err := executeTurnWithExistingUser(turnCtx, config, state, prompt, nil, nil, turnUI, reuseUser)
+		_, err := executeTurnWithUserMessage(turnCtx, config, state, userMsg, nil, nil, turnUI, reuseUser)
 		return err
 	})
 }

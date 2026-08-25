@@ -115,10 +115,64 @@ reverse history search (Ctrl-R), bracketed paste, and tool/skill display. If the
 terminal isn't a TTY (e.g. `TERM=dumb` or redirected I/O), polly falls back to
 plain one-shot mode.
 
+The TUI shows static local image thumbnails when assistant Markdown contains
+`![alt](./path.png)`. Tool results may use the same Markdown form or emit a local
+image path on a line by itself; relative paths resolve from Polly's working
+directory. Kitty graphics are selected for Kitty, Ghostty, and WezTerm; Sixel
+is selected for Windows Terminal 1.22+ and foot. Other terminals keep a compact
+caption/path fallback. Thumbnails preserve the source aspect ratio inside a
+maximum 50-column by 10-row box, accounting for rectangular terminal cells. Set
+`POLLYTOOL_IMAGE_PROTOCOL=kitty`, `sixel`, or `none` to override auto-detection.
+Remote images, paths buried in prose/JSON, and paths inside code blocks are not
+opened. tmux and Zellij currently always use the caption/path fallback; native
+placement there needs explicit multiplexer passthrough support. On image-capable
+terminals the startup
+splash also draws the polly logo as a native image (embedded in the binary);
+elsewhere, and on short terminals, it keeps the half-block ANSI bird.
+
+You can also send images *to* the model from the composer. Typing a path to an
+existing local image (relative paths resolve from Polly's working directory)
+attaches it on submit — `describe .assets/polly.png` just works. Ctrl-V grabs
+an image off the system clipboard (macOS built-in `osascript` or `pngpaste` if
+installed; Linux `wl-paste`/`xclip`; Windows PowerShell), drag-and-dropping an
+image file onto the terminal attaches it (a paste consisting only of image
+paths is treated as a drop), and `/attach <path>` does the same explicitly —
+use `/attach` for paths containing spaces.
+Each attachment appears as a literal `[image #N]` token at the cursor — delete
+the token to drop the attachment, or reorder and reuse it freely. When input is
+accepted, Polly prepares the exact image payload; queued turns and `/retry`
+reuse those bytes even if the source file changes or disappears. File-backed
+sessions persist prepared images; if the last image turn is incomplete after a
+reload, `/retry` replays those exact bytes. Attached text bodies and context
+imports remain non-retryable because they cannot be reconstructed safely from
+prompt text.
+
+A composer prompt may reference at most 16 unique images, every model-visible
+message is limited to 16 image parts, and a complete request is limited to 100
+images across all retained turns. Each base64-encoded image is limited to
+10,000,000 bytes (10 MB), and image data in the model-visible history plus the
+candidate prompt is limited to 16 MiB in total, leaving request headroom under
+the documented Gemini and Anthropic inline limits.
+Images are downscaled to at most 1568px on the long edge before upload; PNG,
+JPEG, and WebP pass through when already within the upload limits, while
+animated GIFs are reduced to their first frame and normalized to PNG, and BMP
+images are normalized to PNG. JPEG orientation metadata is applied whenever an
+image is resized or re-encoded. Older persisted raster parts are normalized in
+the request without rewriting session history; legacy SVG image parts become a
+short omission marker instead of blocking the context.
+Those formats are the portable intersection documented by
+[OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision),
+[Anthropic vision](https://platform.claude.com/docs/en/build-with-claude/vision),
+and [Gemini image understanding](https://ai.google.dev/gemini-api/docs/image-understanding).
+Clipboard captures and exact prepared-preview files are stored under the user
+cache directory (`pollytool/attachments`) and swept after two weeks. Durable
+retry and reload data lives in the session, not this preview cache.
+
 Slash commands inside the TUI:
 
 ```
 /help [command]              Show help
+/attach <image-path>         Attach a local image to the next prompt
 /clear                       Clear the conversation
 /context  (/stats)           Show context info and token stats
 /get <key|all>               Inspect current settings
