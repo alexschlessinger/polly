@@ -1024,6 +1024,34 @@ func TestHandleInterruptCancelsThenQuits(t *testing.T) {
 	}
 }
 
+func TestMouseLeftOpensThumbnailUnderCursor(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	var opened []string
+	r.openImage = func(path string) error { opened = append(opened, path); return nil }
+	r.model.imagePlacements = []terminalImagePlacement{
+		{Key: "logo", Embedded: "logo", X: 0, Y: 0, Cols: 10, Rows: 5},
+		{Key: "b:image:0", Path: "/tmp/pic.png", X: 4, Y: 6, Cols: 20, Rows: 8},
+	}
+	click := func(x, y int) {
+		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: x, Y: y}})
+	}
+
+	click(3, 6)  // left of the thumbnail
+	click(4, 14) // one row below it (Y+Rows is exclusive)
+	if len(opened) != 0 {
+		t.Fatalf("misses should not open anything, got %v", opened)
+	}
+	click(2, 2) // splash logo has no backing file
+	if len(opened) != 0 {
+		t.Fatalf("logo click should not open anything, got %v", opened)
+	}
+	click(4, 6)   // top-left corner
+	click(23, 13) // bottom-right corner
+	if len(opened) != 2 || opened[0] != "/tmp/pic.png" || opened[1] != "/tmp/pic.png" {
+		t.Fatalf("clicks inside the thumbnail should open it, got %v", opened)
+	}
+}
+
 func TestEscapeCancelsTurnButNeverQuits(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	canceled := false

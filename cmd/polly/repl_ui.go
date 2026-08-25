@@ -477,6 +477,9 @@ type replModel struct {
 	nativeImages     bool
 	imageCellWidth   int
 	imageCellHeight  int
+	// imagePlacements is the last rendered frame's native thumbnail geometry,
+	// in absolute screen cells, kept for mouse-click hit-testing.
+	imagePlacements []terminalImagePlacement
 
 	// attachments maps "[image #N]" composer tokens to validated local image
 	// paths for this session. Tokens resolve once when the composer accepts a
@@ -2184,6 +2187,10 @@ type managedREPL struct {
 	pending    chan managedTurnInput
 	turnCancel context.CancelFunc
 
+	// openImage launches the OS viewer for a clicked transcript thumbnail;
+	// swappable in tests.
+	openImage func(path string) error
+
 	// uiTasks carries deferred UI mutations (e.g. a finished clipboard read)
 	// onto the event loop, which repaints after running each one. Tasks take
 	// the model lock themselves.
@@ -2482,11 +2489,12 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 	m.skillCount = skillCount
 	m.quiet = config.Quiet
 	return &managedREPL{
-		config:  config,
-		model:   m,
-		quit:    make(chan struct{}, 1),
-		pending: make(chan managedTurnInput, 1),
-		uiTasks: make(chan func(), 8),
+		config:    config,
+		model:     m,
+		quit:      make(chan struct{}, 1),
+		pending:   make(chan managedTurnInput, 1),
+		uiTasks:   make(chan func(), 8),
+		openImage: openImageInViewer,
 	}
 }
 
@@ -3264,6 +3272,7 @@ func (r *managedREPL) render() {
 		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
 		pinTranscriptBottom, ticker != "",
 	)
+	r.model.imagePlacements = imagePlacements
 	r.model.mu.Unlock()
 
 	if logoRows == imageLogoHeight && r.images != nil {
@@ -3609,6 +3618,24 @@ func (m *replModel) scrollToBottom() {
 	m.followBottom = true
 }
 
+// openImageAt opens the transcript thumbnail under the given screen cell, if
+// any, in the OS image viewer. Placements come from the last rendered frame;
+// the embedded splash logo (no backing file) is skipped. Caller must hold m.mu.
+func (r *managedREPL) openImageAt(x, y int) {
+	if r.openImage == nil {
+		return
+	}
+	for _, p := range r.model.imagePlacements {
+		if p.Path == "" || x < p.X || x >= p.X+p.Cols || y < p.Y || y >= p.Y+p.Rows {
+			continue
+		}
+		if err := r.openImage(p.Path); err != nil {
+			r.model.appendNoticeLine("open failed: " + err.Error())
+		}
+		return
+	}
+}
+
 // handleEvent mutates the model in response to a UI event. Returns true on
 // quit.
 func (r *managedREPL) handleEvent(e ui.Event) bool {
@@ -3651,6 +3678,11 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		return false
 	case "<MouseWheelDown>":
 		m.scrollByWidth(3, viewport, terminalWidth)
+		return false
+	case "<MouseLeft>":
+		if mouse, ok := e.Payload.(ui.Mouse); ok {
+			r.openImageAt(mouse.X, mouse.Y)
+		}
 		return false
 	}
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -484,4 +485,20 @@ func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, lo
 		rowOffset += len(block.rows)
 	}
 	return placements
+}
+
+// openImageInViewer hands a local image to the OS default viewer, detached
+// from the TUI. The reap goroutine keeps the exited launcher from lingering
+// as a zombie.
+func openImageInViewer(path string) error {
+	opener := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		opener = "open"
+	}
+	cmd := exec.Command(opener, path)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }

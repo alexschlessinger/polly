@@ -246,6 +246,7 @@ func keyHelpLines() []string {
 		"  Ctrl-R            reverse-search history",
 		"  Ctrl-V            attach an image from the clipboard",
 		"  PgUp / PgDn       scroll transcript",
+		"  Click thumbnail   open image in the OS viewer",
 		"  Ctrl-A / Ctrl-E   line start / end",
 		"  Delete / Ctrl-D   delete next char (Ctrl-D exits when empty)",
 		"  Ctrl-U / Ctrl-K   clear before / after cursor",
