@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -62,35 +64,108 @@ func (m *replModel) registerAttachment(path, label string) string {
 	return attachmentToken(m.attachmentSeq)
 }
 
-// promptAttachments resolves the registered attachments a prompt references, in
-// token order, deduplicated by path. Tokens that were never registered in this
-// session (typed by hand, or recalled from an old session's history) stay
-// ordinary text. Caller must hold m.mu.
+// promptAttachments resolves everything a prompt references, in appearance
+// order, deduplicated by path: "[image #N]" tokens through the session
+// registry, and bare typed paths — any whitespace-delimited word with an image
+// extension that resolves to an existing local file. Tokens that were never
+// registered in this session stay ordinary text, as does prose that merely
+// looks path-shaped. Caller must hold m.mu.
 func (m *replModel) promptAttachments(prompt string) []composerAttachment {
-	if len(m.attachments) == 0 || !strings.Contains(prompt, "[image #") {
-		return nil
+	type ref struct {
+		pos int
+		att composerAttachment
 	}
-	var out []composerAttachment
-	seen := make(map[string]struct{})
-	for _, match := range attachmentTokenPattern.FindAllStringSubmatch(prompt, -1) {
-		n, err := strconv.Atoi(match[1])
-		if err != nil {
+	var refs []ref
+
+	var tokenSpans [][2]int
+	if len(m.attachments) > 0 && strings.Contains(prompt, "[image #") {
+		for _, loc := range attachmentTokenPattern.FindAllStringSubmatchIndex(prompt, -1) {
+			n, err := strconv.Atoi(prompt[loc[2]:loc[3]])
+			if err != nil {
+				continue
+			}
+			att, ok := m.attachments[n]
+			if !ok {
+				continue
+			}
+			tokenSpans = append(tokenSpans, [2]int{loc[0], loc[1]})
+			refs = append(refs, ref{pos: loc[0], att: att})
+		}
+	}
+
+	for _, word := range splitPromptWords(prompt) {
+		inToken := false
+		for _, span := range tokenSpans {
+			if word.pos >= span[0] && word.pos < span[1] {
+				inToken = true
+				break
+			}
+		}
+		if inToken {
 			continue
 		}
-		att, ok := m.attachments[n]
+		candidate := trimPromptPathPunctuation(word.text)
+		// The extension check is a cheap prefilter so ordinary prose never
+		// touches the filesystem.
+		if candidate == "" || !supportedLocalImageExtension(candidate) {
+			continue
+		}
+		img, ok := resolveLocalTranscriptImage(candidate, "", m.imageBaseDir)
 		if !ok {
 			continue
 		}
-		if _, dup := seen[att.Path]; dup {
+		refs = append(refs, ref{pos: word.pos, att: composerAttachment{Path: img.Path, Label: filepath.Base(img.Path)}})
+	}
+
+	if len(refs) == 0 {
+		return nil
+	}
+	sort.SliceStable(refs, func(i, j int) bool { return refs[i].pos < refs[j].pos })
+	var out []composerAttachment
+	seen := make(map[string]struct{}, len(refs))
+	for _, r := range refs {
+		if _, dup := seen[r.att.Path]; dup {
 			continue
 		}
-		seen[att.Path] = struct{}{}
-		out = append(out, att)
+		seen[r.att.Path] = struct{}{}
+		out = append(out, r.att)
 		if len(out) >= maxPromptAttachments {
 			break
 		}
 	}
 	return out
+}
+
+type promptWord struct {
+	pos  int
+	text string
+}
+
+func splitPromptWords(s string) []promptWord {
+	var words []promptWord
+	start := -1
+	for i, r := range s {
+		if unicode.IsSpace(r) {
+			if start >= 0 {
+				words = append(words, promptWord{pos: start, text: s[start:i]})
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = i
+		}
+	}
+	if start >= 0 {
+		words = append(words, promptWord{pos: start, text: s[start:]})
+	}
+	return words
+}
+
+// trimPromptPathPunctuation peels the punctuation prose hangs on a mentioned
+// path — "(.assets/polly.png)," — without touching the path's own characters.
+func trimPromptPathPunctuation(word string) string {
+	return strings.TrimLeft(strings.TrimRight(word, ".,;:!?)]}>\"'`"), "([{<\"'`")
 }
 
 // promptAttachmentImages projects a prompt's attachments into transcript

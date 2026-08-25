@@ -128,6 +128,39 @@ func TestPromptAttachmentsResolveInTokenOrder(t *testing.T) {
 	}
 }
 
+func TestPromptAttachmentsBareTypedPaths(t *testing.T) {
+	dir := t.TempDir()
+	rel := filepath.Join(".assets", "polly.png")
+	if err := os.MkdirAll(filepath.Join(dir, ".assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeImageFixture(t, filepath.Join(dir, rel), 6, 6)
+
+	m := newReplModel()
+	m.imageBaseDir = dir
+
+	got := m.promptAttachments("what is (" + rel + "), exactly?")
+	if len(got) != 1 || got[0].Path != filepath.Join(dir, rel) {
+		t.Fatalf("typed path attachments = %+v", got)
+	}
+
+	if atts := m.promptAttachments("styles.png is mentioned but does not exist"); atts != nil {
+		t.Fatalf("missing file should stay prose, got %+v", atts)
+	}
+	if atts := m.promptAttachments("plain words only"); atts != nil {
+		t.Fatalf("prose should never resolve, got %+v", atts)
+	}
+
+	// Typed paths and registry tokens merge in appearance order, deduped.
+	other := filepath.Join(dir, "clip.png")
+	writeImageFixture(t, other, 4, 4)
+	token := m.registerAttachment(other, "clipboard image")
+	got = m.promptAttachments("compare " + rel + " with " + token + " and " + rel)
+	if len(got) != 2 || got[0].Path != filepath.Join(dir, rel) || got[1].Path != other {
+		t.Fatalf("merged attachments = %+v", got)
+	}
+}
+
 func TestPrepareImageForUploadPassthroughAndDownscale(t *testing.T) {
 	dir := t.TempDir()
 

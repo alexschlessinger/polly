@@ -127,11 +127,14 @@ Remote images, paths buried in prose/JSON, and paths inside code blocks are not
 opened. tmux and Zellij currently use the caption/path fallback unless the
 protocol is explicitly overridden.
 
-You can also send images *to* the model from the composer. Ctrl-V grabs an
-image off the system clipboard (macOS built-in `osascript` or `pngpaste` if
+You can also send images *to* the model from the composer. Typing a path to an
+existing local image (relative paths resolve from Polly's working directory)
+attaches it on submit — `describe .assets/polly.png` just works. Ctrl-V grabs
+an image off the system clipboard (macOS built-in `osascript` or `pngpaste` if
 installed; Linux `wl-paste`/`xclip`; Windows PowerShell), drag-and-dropping an
 image file onto the terminal attaches it (a paste consisting only of image
-paths is treated as a drop), and `/attach <path>` does the same explicitly.
+paths is treated as a drop), and `/attach <path>` does the same explicitly —
+use `/attach` for paths containing spaces.
 Each attachment appears as a literal `[image #N]` token at the cursor — delete
 the token to drop the attachment, reorder or reuse it freely; the numbering is
 stable for the whole session, so a recalled or retried prompt re-sends the same
