@@ -119,11 +119,16 @@ Slash commands inside the TUI:
 
 ```
 /help [command]              Show help
-/clear                       Clear the conversation
+/clear                       Clear the display (history kept)
 /context  (/stats)           Show context info and token stats
 /get <key|all>               Inspect current settings
+/set <key> <value>           Change a setting for this session
+                             (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills
+/queue [list|drop|clear|continue]  Manage input queued during a turn
+/retry                       Retry the last failed or canceled turn
+/reset confirm               Clear durable conversation history
 /exit  (/quit)               Leave the TUI
 ```
 
