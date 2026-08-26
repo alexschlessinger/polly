@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	tcell "github.com/gdamore/tcell/v3"
@@ -433,6 +434,94 @@ type queuedREPLInput struct {
 	turn *managedTurnInput
 }
 
+// materializeQueuedImagesForReset snapshots prepared queued images before the
+// session namespace is cleared. The returned queue is self-contained: callers
+// may safely remove every artifact and then externalize these exact bytes into
+// the fresh namespace. Caller must hold m.mu.
+func (m *replModel) materializeQueuedImagesForReset(ctx context.Context) ([]queuedREPLInput, error) {
+	queue := make([]queuedREPLInput, len(m.queue))
+	copy(queue, m.queue)
+	for i := range queue {
+		if queue[i].turn == nil {
+			continue
+		}
+		turn := cloneManagedTurn(*queue[i].turn)
+		message, err := materializeArtifactImageParts(ctx, turn.userMessage, m.artifactStore)
+		if err != nil {
+			return nil, err
+		}
+		turn.userMessage = message
+		queue[i].turn = &turn
+	}
+	return queue, nil
+}
+
+func materializeArtifactImageParts(ctx context.Context, msg messages.ChatMessage, store artifacts.Store) (messages.ChatMessage, error) {
+	msg = cloneChatMessage(msg)
+	for i, part := range msg.Parts {
+		if part.Artifact == nil || part.Artifact.Kind != artifacts.KindImage {
+			continue
+		}
+		ref := part.Artifact
+		if store == nil {
+			return messages.ChatMessage{}, fmt.Errorf("image artifact %s has no session store", ref.ID)
+		}
+		if !artifacts.ValidID(ref.ID) || ref.Bytes < 0 || ref.Bytes > int64(maxLocalImageBytes) {
+			return messages.ChatMessage{}, fmt.Errorf("image artifact %s has invalid metadata", ref.ID)
+		}
+		r, err := store.Open(ctx, ref.ID)
+		if err != nil {
+			return messages.ChatMessage{}, fmt.Errorf("read queued image artifact %s: %w", ref.ID, err)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(r, ref.Bytes+1))
+		closeErr := r.Close()
+		if readErr != nil {
+			return messages.ChatMessage{}, fmt.Errorf("read queued image artifact %s: %w", ref.ID, readErr)
+		}
+		if closeErr != nil {
+			return messages.ChatMessage{}, fmt.Errorf("close queued image artifact %s: %w", ref.ID, closeErr)
+		}
+		if int64(len(data)) != ref.Bytes {
+			return messages.ChatMessage{}, fmt.Errorf("queued image artifact %s size changed", ref.ID)
+		}
+		reference := part.Reference
+		if reference == "" {
+			reference = ref.ImageToken
+		}
+		if reference == "" {
+			reference = ref.Reference
+		}
+		msg.Parts[i] = messages.ContentPart{
+			Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(data),
+			MimeType: ref.MIMEType, FileName: ref.Name, Reference: reference,
+		}
+	}
+	return msg, nil
+}
+
+// restoreQueuedImagesAfterReset repopulates only artifacts referenced by
+// future queued turns and rebuilds their stable-token registry. Store failures
+// deliberately leave exact prepared bytes inline in the queued message.
+// Caller must hold m.mu.
+func (m *replModel) restoreQueuedImagesAfterReset(ctx context.Context, queue []queuedREPLInput) {
+	m.queue = queue
+	m.attachments = make(map[int]composerAttachment)
+	m.ambiguousAttachments = make(map[int]bool)
+	// attachmentSeq stays monotonic across the reset: input-recall history and
+	// unsubmitted drafts survive it carrying old tokens, and reusing a number
+	// would silently rebind such a token to a different file. A cleared token
+	// now fails as unknown instead.
+	for i := range m.queue {
+		if m.queue[i].turn == nil {
+			continue
+		}
+		turn := cloneManagedTurn(*m.queue[i].turn)
+		turn.userMessage = externalizeMessageImages(ctx, turn.userMessage, m.artifactStore)
+		m.rememberArtifactAttachments(turn.userMessage)
+		m.queue[i].turn = &turn
+	}
+}
+
 func textManagedTurn(prompt string) managedTurnInput {
 	return managedTurnInput{
 		displayText: prompt,
@@ -447,6 +536,12 @@ func cloneManagedTurn(turn managedTurnInput) managedTurnInput {
 
 func cloneChatMessage(msg messages.ChatMessage) messages.ChatMessage {
 	msg.Parts = append([]messages.ContentPart(nil), msg.Parts...)
+	for i := range msg.Parts {
+		if msg.Parts[i].Artifact != nil {
+			ref := *msg.Parts[i].Artifact
+			msg.Parts[i].Artifact = &ref
+		}
+	}
 	msg.ToolCalls = append([]messages.ChatMessageToolCall(nil), msg.ToolCalls...)
 	if msg.Metadata != nil {
 		metadata := make(map[string]any, len(msg.Metadata))
@@ -477,15 +572,17 @@ type replModel struct {
 	nativeImages     bool
 	imageCellWidth   int
 	imageCellHeight  int
+	artifactStore    artifacts.Store
 	// imagePlacements is the last rendered frame's native thumbnail geometry,
 	// in absolute screen cells, kept for mouse-click hit-testing.
 	imagePlacements []terminalImagePlacement
 
-	// attachments maps "[image #N]" composer tokens to validated local image
-	// paths for this session. Tokens resolve once when the composer accepts a
-	// prompt; queues and retries retain only the prepared message bytes.
-	attachments   map[int]composerAttachment
-	attachmentSeq int
+	// attachments maps "[image #N]" composer tokens to validated local images
+	// or durable image artifacts for this session. Tokens resolve once when the
+	// composer accepts a prompt; queues and retries retain prepared references.
+	attachments          map[int]composerAttachment
+	ambiguousAttachments map[int]bool
+	attachmentSeq        int
 	// clipboardCapture serializes Ctrl+V: one platform clipboard read may be
 	// in flight at a time.
 	clipboardCapture bool
@@ -581,6 +678,8 @@ type replModel struct {
 	turnStarted time.Time
 	lastIn      int
 	lastOut     int
+	totalIn     int
+	totalOut    int
 	lastElapsed time.Duration
 	lastOutcome turnOutcome
 
@@ -826,8 +925,8 @@ func (m *replModel) statusActivity() (raw, rendered string) {
 	switch m.lastOutcome {
 	case turnOutcomeDone:
 		meta := formatElapsed(m.lastElapsed)
-		if m.lastIn > 0 || m.lastOut > 0 {
-			meta += fmt.Sprintf(" · %s/%s tok", humanizeTokens(m.lastIn), humanizeTokens(m.lastOut))
+		if m.totalIn > 0 || m.totalOut > 0 {
+			meta += fmt.Sprintf(" · %s/%s tok", humanizeTokens(m.totalIn), humanizeTokens(m.totalOut))
 		}
 		raw = "done " + meta
 		rendered = styled("done", "ok", "bold") + " " + styled(meta, "muted", "")
@@ -1382,9 +1481,12 @@ const resumedTurnLimit = 5
 // remembers. It shows only recent user turns, keeps assistant prose, and folds
 // raw tool exchanges into compact activity rows.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
+	for _, msg := range history {
+		m.rememberArtifactAttachments(msg)
+	}
 	totalTurns := 0
 	for _, msg := range history {
-		if msg.Role == messages.MessageRoleUser {
+		if msg.Role == messages.MessageRoleUser && !agentSyntheticMessage(msg) {
 			totalTurns++
 		}
 	}
@@ -1397,7 +1499,7 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	start := 0
 	seen := 0
 	for i, msg := range history {
-		if msg.Role != messages.MessageRoleUser {
+		if msg.Role != messages.MessageRoleUser || agentSyntheticMessage(msg) {
 			continue
 		}
 		if seen == skipTurns {
@@ -1453,17 +1555,18 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	lastRole := ""
 	var lastUserTurn *managedTurnInput
 	lastUserContextOnly := false
-	_, historyRequestErr := preparePortableImageRequest(modelVisibleHistory(history))
-	historyRequestOK := historyRequestErr == nil
 	for _, msg := range history[start:] {
 		switch msg.Role {
 		case messages.MessageRoleUser:
+			if agentSyntheticMessage(msg) {
+				continue
+			}
 			flushTools()
 			m.appendTurnSeparator()
 			content, _, retryable, contextOnly := historyUserSummary(msg)
 			m.appendUserPrompt(content)
 			lastUserTurn = nil
-			if turn, ok := retryableHistoryTurn(msg, content, retryable, historyRequestOK); ok {
+			if turn, ok := retryableHistoryTurn(msg, content, retryable, m.artifactStore); ok {
 				lastUserTurn = &turn
 			}
 			lastUserContextOnly = contextOnly
@@ -1529,24 +1632,21 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	m.followBottom = true
 }
 
-func retryableHistoryTurn(msg messages.ChatMessage, display string, simpleContent, historyRequestOK bool) (managedTurnInput, bool) {
+func agentSyntheticMessage(msg messages.ChatMessage) bool {
+	synthetic, _ := msg.Metadata[messages.MetadataKeyAgentSynthetic].(bool)
+	return synthetic
+}
+
+func retryableHistoryTurn(msg messages.ChatMessage, display string, simpleContent bool, store artifacts.Store) (managedTurnInput, bool) {
 	contextOnly, _ := msg.Metadata[messages.MetadataKeyContextImport].(bool)
 	if contextOnly || msg.Role != messages.MessageRoleUser {
 		return managedTurnInput{}, false
 	}
-	if !historyRequestOK {
-		return managedTurnInput{}, false
-	}
-	prepared, err := preparePortableImageRequest([]messages.ChatMessage{msg})
-	if err != nil || len(prepared) != 1 {
-		return managedTurnInput{}, false
-	}
-	requestMessage := prepared[0]
 	if simpleContent {
 		return cloneManagedTurn(managedTurnInput{displayText: display, userMessage: msg}), true
 	}
 	imageCount := 0
-	for _, part := range requestMessage.Parts {
+	for _, part := range msg.Parts {
 		switch part.Type {
 		case "text":
 			if part.FileName != "" {
@@ -1554,13 +1654,21 @@ func retryableHistoryTurn(msg messages.ChatMessage, display string, simpleConten
 			}
 		case "image_base64":
 			if !portablePersistedImagePart(part) {
+				upgraded, err := upgradeLegacyImagePart(part)
+				if err != nil || upgraded.Type != "image_base64" || !portablePersistedImagePart(upgraded) {
+					return managedTurnInput{}, false
+				}
+			}
+			imageCount++
+		case "image_artifact":
+			if !availableImageArtifact(store, part.Artifact) {
 				return managedTurnInput{}, false
 			}
 			imageCount++
-			if imageCount > maxPromptAttachments {
-				return managedTurnInput{}, false
-			}
 		default:
+			return managedTurnInput{}, false
+		}
+		if imageCount > maxPromptAttachments {
 			return managedTurnInput{}, false
 		}
 	}
@@ -1730,7 +1838,7 @@ func (m *replModel) beginManagedTurn(turn managedTurnInput) {
 	prompt := turn.displayText
 	m.appendTurnSeparator()
 	m.appendUserPrompt(prompt)
-	if images := preparedMessageTranscriptImages(turn.userMessage); len(images) > 0 {
+	if images := preparedMessageTranscriptImagesWithStore(turn.userMessage, m.artifactStore); len(images) > 0 {
 		// The echoed prompt gains thumbnail slots for its attachments. Pasted
 		// private-use runes are stripped first so they cannot pose as slot
 		// anchors in an entry that now carries real ones.
@@ -2421,8 +2529,9 @@ func (r *managedREPL) recordAcceptedInput(input string) {
 	r.appendHistory(input)
 }
 
-// prepareManagedTurnLocked resolves every attachment and enforces the portable
-// inline-image budget before the editor is cleared or a prompt is queued.
+// prepareManagedTurnLocked resolves every attachment, externalizes prepared
+// bytes when possible, and validates only this immutable queued turn. Earlier
+// images are selected later by llm.Agent's model projection.
 // Caller must hold r.model.mu.
 func (r *managedREPL) prepareManagedTurnLocked(prompt string) (managedTurnInput, error) {
 	attachments, err := r.model.promptAttachments(prompt)
@@ -2433,49 +2542,15 @@ func (r *managedREPL) prepareManagedTurnLocked(prompt string) (managedTurnInput,
 	if err != nil {
 		return managedTurnInput{}, fmt.Errorf("error processing attachments: %w", err)
 	}
+	if r.state != nil {
+		userMessage = externalizeMessageImages(context.Background(), userMessage, r.state.artifactStore)
+	}
+	r.model.rememberArtifactAttachments(userMessage)
 	turn := cloneManagedTurn(managedTurnInput{displayText: prompt, userMessage: userMessage})
-
-	var projected []messages.ChatMessage
-	var metadata *sessions.Metadata
-	currentPersisted := false
-	if r.state != nil && r.state.session != nil {
-		if r.model.busy && r.model.currentTurn.userMessage.Role == messages.MessageRoleUser {
-			projected, currentPersisted = r.model.currentPersistence.snapshotSessionHistory(r.state.session)
-		} else {
-			projected = r.state.session.GetHistory()
-		}
-		metadata = r.state.session.GetMetadata()
-	}
-	if r.model.busy && !currentPersisted && r.model.currentTurn.userMessage.Role == messages.MessageRoleUser {
-		projected = appendProjectedUserMessage(projected, r.model.currentTurn.userMessage, metadata)
-	}
-	for _, queued := range r.model.queue {
-		if queued.turn != nil {
-			projected = appendProjectedUserMessage(projected, queued.turn.userMessage, metadata)
-		} else if queued.text == "/reset confirm" {
-			projected = resetProjectedHistory(metadata)
-		}
-	}
-	projected = appendProjectedUserMessage(projected, turn.userMessage, metadata)
-	if _, err := preparePortableImageRequest(modelVisibleHistory(projected)); err != nil {
+	if err := validatePreparedUserMessage(turn.userMessage); err != nil {
 		return managedTurnInput{}, err
 	}
 	return turn, nil
-}
-
-func appendProjectedUserMessage(history []messages.ChatMessage, msg messages.ChatMessage, metadata *sessions.Metadata) []messages.ChatMessage {
-	history = append(history, msg)
-	if metadata != nil && metadata.MaxHistoryTokens > 0 {
-		history = sessions.TrimHistory(history, metadata.MaxHistoryTokens)
-	}
-	return history
-}
-
-func resetProjectedHistory(metadata *sessions.Metadata) []messages.ChatMessage {
-	if metadata == nil || metadata.SystemPrompt == "" {
-		return nil
-	}
-	return []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: metadata.SystemPrompt}}
 }
 
 // sandboxNoticeLine summarizes the sandbox posture for the REPL startup
@@ -4163,6 +4238,10 @@ func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 		t.repl.model.mu.Unlock()
 		return
 	}
+	// Replace this turn's contribution so the callback remains safe if a
+	// provider reports updated usage more than once.
+	t.repl.model.totalIn += in - t.repl.model.lastIn
+	t.repl.model.totalOut += out - t.repl.model.lastOut
 	t.repl.model.lastIn = in
 	t.repl.model.lastOut = out
 	t.repl.model.mu.Unlock()
@@ -4183,6 +4262,7 @@ func (t *gotuiTurnUI) FinishTextTurn() {
 func runManagedREPL(ctx context.Context, config *Config, state *conversationState) error {
 	repl := newManagedREPL(config, state.session.GetName(), toolCount(state.toolRegistry), skillCount(state.skillCatalog))
 	repl.state = state
+	repl.model.artifactStore = state.artifactStore
 	repl.model.hydrateHistory(state.session.GetHistory(), state.session.GetName())
 	if state.autoNamedContext {
 		repl.model.appendNoticeLine("session '" + state.session.GetName() + "' · /rename to keep a name · resume later with polly -L")

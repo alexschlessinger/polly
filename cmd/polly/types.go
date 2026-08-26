@@ -12,7 +12,7 @@ type Settings struct {
 	Model            string  `json:"model,omitempty"`
 	Temperature      float64 `json:"temperature,omitempty"`
 	MaxTokens        int     `json:"maxTokens,omitempty"`
-	MaxHistoryTokens int     `json:"maxHistoryTokens,omitempty"` // max tokens for context history
+	MaxHistoryTokens int     `json:"maxHistoryTokens,omitempty"` // provider-visible model projection budget
 	ThinkingEffort   string  `json:"thinkingEffort,omitempty"`
 	SystemPrompt     string  `json:"systemPrompt,omitempty"`
 

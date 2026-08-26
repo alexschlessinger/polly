@@ -11,12 +11,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/internal/log"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -70,6 +70,7 @@ type conversationInput struct {
 type conversationState struct {
 	session         sessions.Session
 	agent           *llm.Agent
+	artifactStore   artifacts.Store
 	toolRegistry    *tools.ToolRegistry
 	skillCatalog    *skills.Catalog
 	skillRuntime    *tools.SkillRuntime
@@ -323,10 +324,13 @@ func initializeSession(config *Config, sessionStore sessions.SessionStore, conte
 		return "", nil, nil, nil, nil, nil, nil, err
 	}
 
-	// Create the agent with the tool registry
+	// Create the agent with the tool registry. Artifact setup is optional: an
+	// unavailable store falls back to today's inline durable representation.
+	artifactStore := artifactStoreForSession(session)
 	agent := llm.NewAgent(llmClient, toolRegistry, llm.AgentConfig{
 		MaxIterations: config.MaxIterations,
 		ToolTimeout:   config.ToolTimeout,
+		ArtifactStore: artifactStore,
 	})
 
 	return contextID, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, nil
@@ -522,6 +526,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	state := &conversationState{
 		session:          session,
 		agent:            agent,
+		artifactStore:    artifactStoreForSession(session),
 		toolRegistry:     toolRegistry,
 		skillCatalog:     skillCatalog,
 		skillRuntime:     skillRuntime,
@@ -565,6 +570,15 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	default:
 		return fmt.Errorf("unknown conversation mode")
 	}
+}
+
+func artifactStoreForSession(session sessions.Session) artifacts.Store {
+	artifactSession, ok := session.(sessions.ArtifactSession)
+	if !ok {
+		return nil
+	}
+	store, _ := artifactSession.ArtifactStore()
+	return store
 }
 
 // discardUnusedAutoContext deletes a generated context that never saw a turn,
@@ -689,9 +703,31 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 // user message. The one-shot and fallback paths build theirs from --file;
 // the managed REPL builds a multimodal message from composer attachments.
 func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (int, error) {
+	// An exact retry must reuse the representation already persisted. If a
+	// prior storage failure left prepared bytes inline and the store later
+	// recovers, rewriting only the retry candidate to an artifact would make it
+	// look like a different user turn and persist a duplicate.
+	reusingPersistedUser := reuseUser && historyEndsWithEquivalentUserMessage(state.session.GetHistory(), userMsg)
+	if !reusingPersistedUser {
+		userMsg = externalizeMessageImages(ctx, userMsg, state.artifactStore)
+	}
 	requestMessages, err := prepareSessionImageRequest(state.session, userMsg, reuseUser)
 	if err != nil {
 		return 1, err
+	}
+
+	// Reject turns projection would deterministically fail before the user
+	// message is durably persisted: a persisted-then-unsendable message would
+	// make the same failure permanent for exact retries. This covers image
+	// references that resolve to nothing (or ambiguously) and a single prompt
+	// that alone exceeds the context budget.
+	if err := llm.ValidateImageProjection(requestMessages); err != nil {
+		return 1, err
+	}
+	if !reusingPersistedUser && config.MaxHistoryTokens > 0 {
+		if tokens := llm.EstimateMessageTokens(userMsg); tokens > config.MaxHistoryTokens {
+			return 1, fmt.Errorf("prompt needs about %d tokens, exceeding the %d-token context budget; it was not added to the conversation", tokens, config.MaxHistoryTokens)
+		}
 	}
 
 	// Persist the user message before spending API tokens. If the session store
@@ -802,6 +838,14 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 				return fmt.Errorf("failed to persist turn: %w", perr)
 			}
 
+			if resp.Projection.OmittedExchanges > 0 {
+				word := "exchanges"
+				if resp.Projection.OmittedExchanges == 1 {
+					word = "exchange"
+				}
+				turnUI.AppendWarning(fmt.Sprintf("model context omitted %d earlier %s; full transcript retained", resp.Projection.OmittedExchanges, word))
+			}
+
 			if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
 				turnUI.AppendWarning(fmt.Sprintf("response truncated (hit %d token limit, use --maxtokens to increase)", config.MaxTokens))
 			}
@@ -823,6 +867,52 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, config.Model, stats, in, out, time.Since(turnStart).Milliseconds()))
 	}
 	return code, runErr
+}
+
+// externalizeMessageImages replaces prepared base64 image parts with private
+// content-addressed references. Any store/decode failure leaves that part
+// inline, preserving the durable retry contract.
+func externalizeMessageImages(ctx context.Context, msg messages.ChatMessage, store artifacts.Store) messages.ChatMessage {
+	if store == nil {
+		return msg
+	}
+	msg = cloneChatMessage(msg)
+	for i, part := range msg.Parts {
+		if part.Type != "image_base64" || part.ImageData == "" {
+			continue
+		}
+		// A nonportable part (legacy GIF/BMP bytes, mismatched MIME) must be
+		// normalized before its bytes become an immutable artifact: once
+		// externalized, the base64-only portability validation never sees it
+		// again and hydration would replay the bad MIME to providers forever.
+		if !portablePersistedImagePart(part) {
+			upgraded, err := upgradeLegacyImagePart(part)
+			if err != nil {
+				continue
+			}
+			upgraded.Reference = part.Reference
+			msg.Parts[i] = upgraded
+			if upgraded.Type != "image_base64" {
+				continue
+			}
+			part = upgraded
+		}
+		data, err := base64.StdEncoding.DecodeString(part.ImageData)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		ref, err := store.Put(ctx, artifacts.Blob{
+			Kind: artifacts.KindImage, MIMEType: part.MimeType, Name: part.FileName,
+			ImageToken: part.Reference, Reference: part.Reference, Data: data,
+		})
+		if err != nil {
+			continue
+		}
+		msg.Parts[i] = messages.ContentPart{
+			Type: "image_artifact", MimeType: ref.MIMEType, FileName: ref.Name, Reference: ref.ImageToken, Artifact: &ref,
+		}
+	}
+	return msg
 }
 
 // durableTurnMessages removes provider-protocol denial exchanges while still
@@ -887,7 +977,28 @@ func equivalentUserMessage(left, right messages.ChatMessage) bool {
 	return left.Role == messages.MessageRoleUser &&
 		right.Role == messages.MessageRoleUser &&
 		left.Content == right.Content &&
-		slices.Equal(left.Parts, right.Parts)
+		equalContentParts(left.Parts, right.Parts)
+}
+
+func equalContentParts(left, right []messages.ContentPart) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		l, r := left[i], right[i]
+		lRef, rRef := l.Artifact, r.Artifact
+		l.Artifact, r.Artifact = nil, nil
+		if l != r {
+			return false
+		}
+		if (lRef == nil) != (rRef == nil) {
+			return false
+		}
+		if lRef != nil && *lRef != *rRef {
+			return false
+		}
+	}
+	return true
 }
 
 // maxEncodedImageHistoryBytes is a portable request budget, not a provider
@@ -905,28 +1016,55 @@ const (
 	maxPortableRequestImages = 100
 )
 
-func validateSessionImageBudget(session sessions.Session, userMsg messages.ChatMessage, reuseUser bool) error {
-	_, err := prepareSessionImageRequest(session, userMsg, reuseUser)
-	return err
-}
-
 // prepareSessionImageRequest projects the exact history that AddMessage will
-// expose to the provider, upgrades legacy raster parts into today's portable
-// representation without rewriting durable history, and validates the whole
-// request before the new user message is persisted.
+// expose to llm.Agent. Image hydration and context budgeting happen inside the
+// agent; this boundary only avoids duplicating an exact persisted retry.
 func prepareSessionImageRequest(session sessions.Session, userMsg messages.ChatMessage, reuseUser bool) ([]messages.ChatMessage, error) {
+	if err := validatePreparedUserMessage(userMsg); err != nil {
+		return nil, err
+	}
 	history := session.GetHistory()
 	reusingTerminalUser := reuseUser && historyEndsWithEquivalentUserMessage(history, userMsg)
 	if !reusingTerminalUser {
 		history = append(history, userMsg)
-		// AddMessage applies this trim before createCompletionRequest reads the
-		// session. An exact retry skips AddMessage, so validating a hypothetical
-		// trim on the reuse path would undercount the request actually sent.
-		if metadata := session.GetMetadata(); metadata != nil && metadata.MaxHistoryTokens > 0 {
-			history = sessions.TrimHistory(history, metadata.MaxHistoryTokens)
+	}
+	// llm.Agent now owns provider-visible image selection and context
+	// projection. The canonical transcript remains complete here.
+	return normalizeLegacyImagesForProjection(modelVisibleHistory(history)), nil
+}
+
+func normalizeLegacyImagesForProjection(history []messages.ChatMessage) []messages.ChatMessage {
+	normalized := make([]messages.ChatMessage, len(history))
+	for i, msg := range history {
+		normalized[i] = cloneChatMessage(msg)
+		for j, part := range normalized[i].Parts {
+			if part.Type != "image_base64" || portablePersistedImagePart(part) {
+				continue
+			}
+			if upgraded, err := upgradeLegacyImagePart(part); err == nil {
+				upgraded.Reference = part.Reference
+				normalized[i].Parts[j] = upgraded
+			}
 		}
 	}
-	return preparePortableImageRequest(modelVisibleHistory(history))
+	return normalized
+}
+
+func validatePreparedUserMessage(msg messages.ChatMessage) error {
+	if _, err := preparePortableImageRequest([]messages.ChatMessage{msg}); err != nil {
+		return err
+	}
+	images := 0
+	for _, part := range msg.Parts {
+		if part.Type == "image_base64" || part.Type == "image_url" ||
+			(part.Artifact != nil && part.Artifact.Kind == artifacts.KindImage) {
+			images++
+		}
+	}
+	if images > maxPromptAttachments {
+		return fmt.Errorf("model-visible message 1 has %d images; portable maximum is %d", images, maxPromptAttachments)
+	}
+	return nil
 }
 
 func preparePortableImageRequest(history []messages.ChatMessage) ([]messages.ChatMessage, error) {
@@ -1049,16 +1187,17 @@ func createCompletionRequest(config *Config, history []messages.ChatMessage, reg
 	thinkingEffort, _ := llm.ParseThinkingEffort(config.ThinkingEffort)
 
 	return &llm.CompletionRequest{
-		BaseURL:        config.BaseURL,
-		Timeout:        config.Timeout,
-		Temperature:    llm.Float32Ptr(float32(config.Temperature)),
-		Model:          config.Model,
-		MaxTokens:      config.MaxTokens,
-		Messages:       history,
-		Skills:         skillCatalog,
-		Tools:          registry.All(),
-		ResponseSchema: schema,
-		ThinkingEffort: thinkingEffort,
+		BaseURL:          config.BaseURL,
+		Timeout:          config.Timeout,
+		Temperature:      llm.Float32Ptr(float32(config.Temperature)),
+		Model:            config.Model,
+		MaxTokens:        config.MaxTokens,
+		MaxContextTokens: config.MaxHistoryTokens,
+		Messages:         history,
+		Skills:           skillCatalog,
+		Tools:            registry.All(),
+		ResponseSchema:   schema,
+		ThinkingEffort:   thinkingEffort,
 	}
 }
 

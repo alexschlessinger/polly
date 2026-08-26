@@ -20,7 +20,7 @@ func plainLogo(rows [][]ui.Cell) string {
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 }
 
-func TestStartupLogoIsSmallTopLeftAndTextFree(t *testing.T) {
+func TestStartupLogoIsSmallCenteredAndTextFree(t *testing.T) {
 	for _, width := range []int{120, 80, 20, 13, 8, 1} {
 		rows := pollyLogoRows(width)
 		if len(rows) != startupLogoHeight {
@@ -55,8 +55,8 @@ func TestStartupLogoIsSmallTopLeftAndTextFree(t *testing.T) {
 			}
 		}
 	}
-	if left != 0 {
-		t.Fatalf("80-column logo begins at column %d, want 0", left)
+	if left != 33 {
+		t.Fatalf("80-column logo begins at column %d, want 33", left)
 	}
 }
 
@@ -119,8 +119,8 @@ func TestStartupLogoPlacementGeometry(t *testing.T) {
 		t.Fatal("no placement on a roomy terminal")
 	}
 	// A square source in 12 rows of 10x20 cells fits by height: 240px tall,
-	// so 240px ≈ 24 columns wide, anchored at the top-left corner.
-	if logo.Embedded != embeddedLogoAsset || logo.X != 0 || logo.Y != 0 {
+	// so 240px ≈ 24 columns wide, horizontally centered in 80 columns.
+	if logo.Embedded != embeddedLogoAsset || logo.X != 28 || logo.Y != 0 {
 		t.Fatalf("placement anchor = %+v", logo)
 	}
 	if logo.Rows != imageLogoArtRows || logo.Cols != 24 || !logo.FitByRows {

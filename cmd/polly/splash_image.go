@@ -37,9 +37,9 @@ var embeddedLogoDims = sync.OnceValues(func() (int, int) {
 	return config.Width, config.Height
 })
 
-// startupLogoPlacement fits the embedded logo into the reserved splash band,
-// top-left aligned like the half-block art. ok is false when the terminal is
-// too narrow for a legible image; the band then simply stays blank.
+// startupLogoPlacement fits and horizontally centers the embedded logo in the
+// reserved splash band. ok is false when the terminal is too narrow for a
+// legible image; the band then simply stays blank.
 func startupLogoPlacement(width, cellWidth, cellHeight int) (terminalImagePlacement, bool) {
 	logoWidth, logoHeight := embeddedLogoDims()
 	if logoWidth <= 0 || logoHeight <= 0 {
@@ -55,7 +55,7 @@ func startupLogoPlacement(width, cellWidth, cellHeight int) (terminalImagePlacem
 	return terminalImagePlacement{
 		Key:       "logo",
 		Embedded:  embeddedLogoAsset,
-		X:         0,
+		X:         (width - cols) / 2,
 		Y:         0,
 		Cols:      cols,
 		Rows:      rows,

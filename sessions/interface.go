@@ -3,9 +3,17 @@ package sessions
 import (
 	"time"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
+
+// ArtifactSession is an optional extension implemented by Polly's built-in
+// sessions. Keeping it separate preserves the Session interface for external
+// stores that do not need model-context artifacts.
+type ArtifactSession interface {
+	ArtifactStore() (artifacts.Store, error)
+}
 
 // Session interface defines the contract for session implementations
 type Session interface {
@@ -24,7 +32,7 @@ type Session interface {
 
 	// Capacity tracking
 	GetTotalTokens() int            // Sum of all message tokens in history
-	GetCapacityPercentage() float64 // 0-100, or 0 if no limit set
+	GetCapacityPercentage() float64 // Durable estimate / model budget; may exceed 100, or 0 if unlimited
 
 	// Session statistics
 	GetTimeToExpiry() time.Duration   // Time until TTL expiry (0 if no TTL or expired)
@@ -59,7 +67,7 @@ type Metadata struct {
 	Model            string                 `json:"model,omitempty"`
 	Temperature      float64                `json:"temperature,omitempty"`
 	MaxTokens        int                    `json:"maxTokens,omitempty"`
-	MaxHistoryTokens int                    `json:"maxHistoryTokens,omitempty"`
+	MaxHistoryTokens int                    `json:"maxHistoryTokens,omitempty"` // Provider-visible model projection budget
 	ThinkingEffort   string                 `json:"thinkingEffort,omitempty"`
 	SystemPrompt     string                 `json:"systemPrompt,omitempty"`
 	ActiveTools      []tools.ToolLoaderInfo `json:"activeTools,omitempty"`

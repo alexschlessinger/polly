@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -307,9 +308,20 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			if r.state == nil || r.state.session == nil {
 				return fmt.Errorf("no active session")
 			}
+			queued, err := r.model.materializeQueuedImagesForReset(context.Background())
+			if err != nil {
+				if len(r.model.queue) > 0 {
+					r.model.queuePaused = true
+					r.model.updateQueueHint()
+				}
+				return fmt.Errorf("preserve queued images: %w", err)
+			}
 			if err := r.state.session.Clear(); err != nil {
-				// A queued reset is a barrier. If it fails, keep later prompts
-				// paused against the old history instead of running them silently.
+				// A queued reset is a barrier. A Clear error means the history
+				// was not cleared, so keep later prompts paused against the old
+				// history instead of running them silently, and retain the
+				// pre-clear inline queue snapshot.
+				r.model.queue = queued
 				if len(r.model.queue) > 0 {
 					r.model.queuePaused = true
 					r.model.updateQueueHint()
@@ -323,9 +335,12 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
+			r.model.totalIn = 0
+			r.model.totalOut = 0
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
 			r.model.unsavedLabeled = false
+			r.model.restoreQueuedImagesAfterReset(context.Background(), queued)
 			return nil
 		},
 		queueLines: func() []string {
@@ -695,10 +710,11 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	if cfg.Model != "" {
 		lines = append(lines, "model: "+stripProviderPrefix(cfg.Model))
 	}
-	if pct := s.GetCapacityPercentage(); pct > 0 {
-		lines = append(lines, fmt.Sprintf("tokens: %s (%.0f%% of capacity)", humanizeTokens(s.GetTotalTokens()), pct))
+	lines = append(lines, "transcript: "+humanizeTokens(s.GetTotalTokens())+" estimated tokens (durable)")
+	if cfg.MaxHistoryTokens > 0 {
+		lines = append(lines, "model budget: "+humanizeTokens(cfg.MaxHistoryTokens)+" estimated tokens")
 	} else {
-		lines = append(lines, "tokens: "+humanizeTokens(s.GetTotalTokens()))
+		lines = append(lines, "model budget: unlimited")
 	}
 	c := s.GetMessageCounts()
 	lines = append(lines, fmt.Sprintf("messages: user %d · assistant %d · tool %d · system %d",

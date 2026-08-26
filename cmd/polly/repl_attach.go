@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -10,6 +11,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -44,8 +47,10 @@ const (
 )
 
 type composerAttachment struct {
-	Path  string
-	Label string
+	Path      string
+	Label     string
+	Reference string
+	Artifact  *artifacts.Ref
 }
 
 var attachmentTokenPattern = regexp.MustCompile(`\[image #([0-9]+)\]`)
@@ -65,6 +70,83 @@ func (m *replModel) registerAttachment(path, label string) string {
 	m.attachmentSeq++
 	m.attachments[m.attachmentSeq] = composerAttachment{Path: path, Label: label}
 	return attachmentToken(m.attachmentSeq)
+}
+
+// rememberArtifactAttachments rebuilds the session-stable token registry from
+// durable message references. New token numbers therefore never collide after
+// a restart, and an old token can attach the exact immutable bytes again.
+func (m *replModel) rememberArtifactAttachments(msg messages.ChatMessage) {
+	if m.attachments == nil {
+		m.attachments = make(map[int]composerAttachment)
+	}
+	if m.ambiguousAttachments == nil {
+		m.ambiguousAttachments = make(map[int]bool)
+	}
+	for _, part := range msg.Parts {
+		var imageRef *artifacts.Ref
+		if part.Artifact != nil && part.Artifact.Kind == artifacts.KindImage {
+			ref := *part.Artifact
+			imageRef = &ref
+		} else if part.Type == "image_base64" && part.ImageData != "" && m.artifactStore != nil {
+			data, err := base64.StdEncoding.DecodeString(part.ImageData)
+			if err == nil && len(data) > 0 {
+				ref, putErr := m.artifactStore.Put(context.Background(), artifacts.Blob{
+					Kind: artifacts.KindImage, MIMEType: part.MimeType, Name: part.FileName,
+					ImageToken: part.Reference, Reference: part.Reference, Data: data,
+				})
+				if putErr == nil {
+					imageRef = &ref
+				}
+			}
+		}
+		if imageRef == nil {
+			continue
+		}
+		reference := strings.TrimSpace(part.Reference)
+		if reference == "" {
+			reference = strings.TrimSpace(imageRef.ImageToken)
+		}
+		if reference == "" {
+			reference = strings.TrimSpace(imageRef.Reference)
+		}
+		match := attachmentTokenPattern.FindStringSubmatch(reference)
+		if len(match) != 2 || match[0] != reference {
+			continue
+		}
+		n, err := strconv.Atoi(match[1])
+		if err != nil || n <= 0 {
+			continue
+		}
+		if n > m.attachmentSeq {
+			m.attachmentSeq = n
+		}
+		if m.ambiguousAttachments[n] {
+			continue
+		}
+		ref := *imageRef
+		ref.ImageToken = reference
+		if previous, exists := m.attachments[n]; exists && previous.Artifact != nil && previous.Artifact.ID != ref.ID {
+			// A legacy collision is ambiguous. Keep the number retired, but do
+			// not silently point it at either payload.
+			delete(m.attachments, n)
+			m.ambiguousAttachments[n] = true
+			continue
+		}
+		m.attachments[n] = composerAttachment{Label: ref.Name, Reference: reference, Artifact: &ref}
+	}
+}
+
+func availableImageArtifact(store artifacts.Store, ref *artifacts.Ref) bool {
+	if store == nil || ref == nil || ref.Kind != artifacts.KindImage || !artifacts.ValidID(ref.ID) || ref.Bytes < 0 || ref.Bytes > int64(maxLocalImageBytes) {
+		return false
+	}
+	r, err := store.Open(context.Background(), ref.ID)
+	if err != nil {
+		return false
+	}
+	n, readErr := io.Copy(io.Discard, io.LimitReader(r, ref.Bytes+1))
+	closeErr := r.Close()
+	return readErr == nil && closeErr == nil && n == ref.Bytes
 }
 
 // promptAttachments resolves everything a prompt references, in appearance
@@ -90,9 +172,13 @@ func (m *replModel) promptAttachments(prompt string) ([]composerAttachment, erro
 			}
 			att, ok := m.attachments[n]
 			if !ok {
+				if m.ambiguousAttachments[n] {
+					return nil, fmt.Errorf("attachment token %s is ambiguous in this session", prompt[loc[0]:loc[1]])
+				}
 				return nil, fmt.Errorf("unknown attachment token %s", prompt[loc[0]:loc[1]])
 			}
 			tokenSpans = append(tokenSpans, [2]int{loc[0], loc[1]})
+			att.Reference = prompt[loc[0]:loc[1]]
 			refs = append(refs, ref{pos: loc[0], att: att})
 		}
 	}
@@ -128,10 +214,14 @@ func (m *replModel) promptAttachments(prompt string) ([]composerAttachment, erro
 	var out []composerAttachment
 	seen := make(map[string]struct{}, len(refs))
 	for _, r := range refs {
-		if _, dup := seen[r.att.Path]; dup {
+		identity := r.att.Path
+		if r.att.Artifact != nil {
+			identity = r.att.Artifact.ID
+		}
+		if _, dup := seen[identity]; dup {
 			continue
 		}
-		seen[r.att.Path] = struct{}{}
+		seen[identity] = struct{}{}
 		out = append(out, r.att)
 	}
 	if len(out) > maxPromptAttachments {
@@ -485,6 +575,33 @@ func applyEXIFOrientation(src image.Image, orientation int) image.Image {
 // accepted into a durable message. Transcript thumbnails then remain faithful
 // if the original path is changed or removed before the turn is rendered.
 func preparedMessageTranscriptImages(msg messages.ChatMessage) []transcriptImage {
+	return preparedMessageTranscriptImagesWithStore(msg, nil)
+}
+
+func preparedMessageTranscriptImagesWithStore(msg messages.ChatMessage, store artifacts.Store) []transcriptImage {
+	if store != nil {
+		msg = cloneChatMessage(msg)
+		for i, part := range msg.Parts {
+			if part.Artifact == nil || part.Artifact.Kind != artifacts.KindImage {
+				continue
+			}
+			if part.Artifact.Bytes < 0 || part.Artifact.Bytes > int64(maxLocalImageBytes) {
+				continue
+			}
+			r, err := store.Open(context.Background(), part.Artifact.ID)
+			if err != nil {
+				continue
+			}
+			data, readErr := io.ReadAll(io.LimitReader(r, part.Artifact.Bytes+1))
+			_ = r.Close()
+			if readErr != nil || int64(len(data)) != part.Artifact.Bytes {
+				continue
+			}
+			msg.Parts[i] = messages.ContentPart{
+				Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(data), MimeType: part.Artifact.MIMEType, FileName: part.Artifact.Name, Reference: part.Artifact.ImageToken,
+			}
+		}
+	}
 	dir, err := attachmentCacheDir()
 	if err != nil {
 		return nil
@@ -643,10 +760,21 @@ func buildREPLUserMessage(prompt string, attachments []composerAttachment) (mess
 		parts = append(parts, messages.ContentPart{Type: "text", Text: prompt})
 	}
 	for _, att := range attachments {
+		if att.Artifact != nil {
+			ref := *att.Artifact
+			if att.Reference != "" {
+				ref.ImageToken = att.Reference
+			}
+			parts = append(parts, messages.ContentPart{
+				Type: "image_artifact", MimeType: ref.MIMEType, FileName: ref.Name, Reference: ref.ImageToken, Artifact: &ref,
+			})
+			continue
+		}
 		part, err := prepareImageForUpload(att.Path)
 		if err != nil {
 			return messages.ChatMessage{}, err
 		}
+		part.Reference = att.Reference
 		parts = append(parts, *part)
 	}
 	return messages.ChatMessage{Role: messages.MessageRoleUser, Parts: parts}, nil

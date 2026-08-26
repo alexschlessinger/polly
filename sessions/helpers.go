@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"dario.cat/mergo"
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -134,6 +135,14 @@ func EstimateTokens(msg messages.ChatMessage) int {
 		case "image_base64", "image_url":
 			count += imageTokenEstimate
 		}
+		if part.Artifact != nil {
+			switch part.Artifact.Kind {
+			case artifacts.KindImage:
+				count += imageTokenEstimate
+			case artifacts.KindText:
+				count += int(part.Artifact.Bytes / 4)
+			}
+		}
 	}
 
 	// Tool calls
@@ -157,7 +166,23 @@ func EstimateTokens(msg messages.ChatMessage) int {
 // CopyHistory creates a defensive copy of the history slice
 func CopyHistory(history []messages.ChatMessage) []messages.ChatMessage {
 	result := make([]messages.ChatMessage, len(history))
-	copy(result, history)
+	for i, msg := range history {
+		result[i] = msg
+		result[i].Parts = append([]messages.ContentPart(nil), msg.Parts...)
+		for j := range result[i].Parts {
+			if msg.Parts[j].Artifact != nil {
+				ref := *msg.Parts[j].Artifact
+				result[i].Parts[j].Artifact = &ref
+			}
+		}
+		result[i].ToolCalls = append([]messages.ChatMessageToolCall(nil), msg.ToolCalls...)
+		if msg.Metadata != nil {
+			result[i].Metadata = make(map[string]any, len(msg.Metadata))
+			for key, value := range msg.Metadata {
+				result[i].Metadata[key] = value
+			}
+		}
+	}
 	return result
 }
 

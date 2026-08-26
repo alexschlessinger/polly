@@ -107,6 +107,76 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 	})
 }
 
+func TestUnreferencedHistoricalImageIsAbsentFromNativeProviderRequests(t *testing.T) {
+	imageBase64 := base64.StdEncoding.EncodeToString([]byte("historical image bytes that must not be replayed"))
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{
+			{Type: "text", Text: "old image turn"},
+			{Type: "image_base64", ImageData: imageBase64, MimeType: "image/png", FileName: "old.png"},
+		}},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleUser, Content: "new unrelated question"},
+	}
+	projected, stats, err := projectMessages(context.Background(), history, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.HydratedImages != 0 || len(projectedImageParts(projected)) != 0 {
+		t.Fatalf("unreferenced image survived projection: stats=%+v messages=%#v", stats, projected)
+	}
+
+	tests := []struct {
+		name     string
+		model    string
+		response string
+		client   func(string) LLM
+		path     string
+		route    bool
+	}{
+		{
+			name: "openai", model: "gpt-5.4", response: `{}`, path: "/v1/responses",
+			client: func(serverURL string) LLM {
+				client := NewOpenAIClient("test-key", "")
+				client.client = openai.NewClient("test-key", serverURL+"/v1")
+				return client
+			},
+		},
+		{
+			name: "anthropic", model: "claude-sonnet-4-6", response: `{}`, path: "/v1/messages", route: true,
+			client: func(string) LLM { return NewAnthropicClient("test-key") },
+		},
+		{
+			name: "gemini", model: "gemini-2.5-flash", response: `{}`, path: "/v1beta/models/gemini-2.5-flash:generateContent", route: true,
+			client: func(string) LLM {
+				client, err := NewGeminiClient("test-key")
+				if err != nil {
+					t.Fatalf("NewGeminiClient: %v", err)
+				}
+				return client
+			},
+		},
+		{
+			name: "ollama", model: "llava", response: `{"done":true}`, path: "/api/chat",
+			client: func(serverURL string) LLM { return NewOllamaClient(serverURL, "") },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			serverURL, captured := newNativeRequestCaptureServer(t, tc.response)
+			if tc.route {
+				routeDefaultTransportTo(t, serverURL)
+			}
+			got := captureNativeCompletionMessages(t, tc.client(serverURL), tc.model, projected, captured)
+			if got.path != tc.path {
+				t.Fatalf("request path = %q, want %q", got.path, tc.path)
+			}
+			if strings.Contains(string(got.body), imageBase64) {
+				t.Fatalf("unreferenced base64 leaked into %s request: %s", tc.name, got.body)
+			}
+		})
+	}
+}
+
 type capturedNativeRequest struct {
 	method string
 	path   string
@@ -167,12 +237,22 @@ func captureNativeCompletionRequest(
 	message messages.ChatMessage,
 	captured <-chan capturedNativeRequest,
 ) capturedNativeRequest {
+	return captureNativeCompletionMessages(t, client, model, []messages.ChatMessage{message}, captured)
+}
+
+func captureNativeCompletionMessages(
+	t *testing.T,
+	client LLM,
+	model string,
+	history []messages.ChatMessage,
+	captured <-chan capturedNativeRequest,
+) capturedNativeRequest {
 	t.Helper()
 	stream := false
 	events := client.ChatCompletionStream(context.Background(), &CompletionRequest{
 		Model:     model,
 		MaxTokens: 128,
-		Messages:  []messages.ChatMessage{message},
+		Messages:  history,
 		Stream:    &stream,
 		Timeout:   5 * time.Second,
 	}, &SimpleProcessor{})

@@ -88,12 +88,17 @@ func pollyLogoRows(width int) [][]ui.Cell {
 		return rows
 	}
 	logoWidth := len([]rune(pollyLogoPixels[0]))
-	sourceLeft := max(0, (logoWidth-width)/2)
+	visibleWidth := min(width, logoWidth)
+	sourceLeft := (logoWidth - visibleWidth) / 2
+	destinationLeft := (width - visibleWidth) / 2
 
 	for sourceRow := 0; sourceRow < len(pollyLogoPixels); sourceRow += 2 {
 		top := []rune(pollyLogoPixels[sourceRow])
 		bottom := []rune(pollyLogoPixels[sourceRow+1])
-		row := make([]ui.Cell, 0, min(width, logoWidth))
+		row := make([]ui.Cell, destinationLeft, destinationLeft+visibleWidth)
+		for column := range row {
+			row[column] = ui.Cell{Rune: ' ', Style: ui.StyleClear}
+		}
 		for column := sourceLeft; column < logoWidth && len(row) < width; column++ {
 			row = append(row, pollyHalfBlock(top[column], bottom[column]))
 		}

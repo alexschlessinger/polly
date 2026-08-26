@@ -47,15 +47,18 @@ type CompletionRequest struct {
 	// Temperature controls sampling when non-nil. Leave nil to omit the
 	// parameter from the upstream request — required for reasoning models
 	// (o1, o3, gpt-5.x) which 400 if temperature is supplied at all.
-	Temperature    *float32
-	Model          string
-	MaxTokens      int
-	Messages       []messages.ChatMessage // Message history
-	Tools          []tools.Tool           // Available tools
-	ResponseSchema *Schema                // Optional schema for structured output
-	ThinkingEffort ThinkingEffort         // Reasoning effort: Off, a named Level, a raw token Budget, or Dynamic
-	Stream         *bool                  // nil = streaming (default), false = non-streaming
-	Skills         *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
+	Temperature *float32
+	Model       string
+	MaxTokens   int
+	// MaxContextTokens limits the deterministic provider-visible projection
+	// used by Agent. Direct provider clients ignore it. Zero is unlimited.
+	MaxContextTokens int
+	Messages         []messages.ChatMessage // Message history
+	Tools            []tools.Tool           // Available tools
+	ResponseSchema   *Schema                // Optional schema for structured output
+	ThinkingEffort   ThinkingEffort         // Reasoning effort: Off, a named Level, a raw token Budget, or Dynamic
+	Stream           *bool                  // nil = streaming (default), false = non-streaming
+	Skills           *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
 }
 
 // ResolvedMessages returns a copy of Messages with skill prompt injected.

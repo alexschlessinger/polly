@@ -128,14 +128,13 @@ func TestPersistUserMessageForTurnComparesAttachedParts(t *testing.T) {
 	})
 }
 
-func TestValidateSessionImageBudgetCountsEncodedHistoryAndDoesNotDoubleCountRetry(t *testing.T) {
+func TestPrepareSessionImageRequestDoesNotDuplicateExactRetry(t *testing.T) {
 	session := newTurnPersistenceTestSession(t)
-	imageData := portablePNGBase64Size(t, 9<<20)
 	userMsg := messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{{
 			Type:      "image_base64",
-			ImageData: imageData,
+			ImageData: portablePNGBase64Size(t, 400),
 			MimeType:  "image/png",
 		}},
 	}
@@ -143,11 +142,13 @@ func TestValidateSessionImageBudgetCountsEncodedHistoryAndDoesNotDoubleCountRetr
 		t.Fatal(err)
 	}
 
-	if err := validateSessionImageBudget(session, userMsg, true); err != nil {
-		t.Fatalf("exact retry was double-counted: %v", err)
+	retry, err := prepareSessionImageRequest(session, userMsg, true)
+	if err != nil || len(retry) != 1 {
+		t.Fatalf("exact retry projection = (%d, %v), want one message", len(retry), err)
 	}
-	if err := validateSessionImageBudget(session, userMsg, false); err == nil {
-		t.Fatal("ordinary duplicate image turn should exceed aggregate budget")
+	ordinary, err := prepareSessionImageRequest(session, userMsg, false)
+	if err != nil || len(ordinary) != 2 {
+		t.Fatalf("ordinary duplicate projection = (%d, %v), want two messages", len(ordinary), err)
 	}
 }
 
@@ -164,7 +165,7 @@ func TestValidateEncodedImageBudgetIncludesDataURLs(t *testing.T) {
 	}
 }
 
-func TestValidateSessionImageBudgetProjectsConfiguredHistoryTrim(t *testing.T) {
+func TestPrepareSessionImageRequestRetainsHistoryBeyondModelBudget(t *testing.T) {
 	store := sessions.NewSyncMapSessionStore(&sessions.Metadata{MaxHistoryTokens: 2000})
 	session, err := store.Get("trimmed-budget")
 	if err != nil {
@@ -189,39 +190,16 @@ func TestValidateSessionImageBudgetProjectsConfiguredHistoryTrim(t *testing.T) {
 		}},
 	}
 
-	if err := validateSessionImageBudget(session, candidate, false); err != nil {
-		t.Fatalf("budget counted image history that configured trimming evicts: %v", err)
+	prepared, err := prepareSessionImageRequest(session, candidate, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared) != 3 || prepared[0].Parts[0].ImageData != oldImage.Parts[0].ImageData {
+		t.Fatalf("durable history was trimmed before agent projection: %#v", prepared)
 	}
 }
 
-func TestValidateSessionImageBudgetExactReuseChecksUntrimmedRequest(t *testing.T) {
-	session := newTurnPersistenceTestSession(t)
-	trailing := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "retry me"}
-	if err := session.AddMessages([]messages.ChatMessage{
-		{
-			Role: messages.MessageRoleUser,
-			Parts: []messages.ContentPart{{
-				Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes+1), MimeType: "image/png",
-			}},
-		},
-		{Role: messages.MessageRoleAssistant, Content: "completed old turn"},
-		trailing,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	metadata := session.GetMetadata()
-	metadata.MaxHistoryTokens = 1
-	if err := session.SetMetadata(metadata); err != nil {
-		t.Fatal(err)
-	}
-
-	err := validateSessionImageBudget(session, trailing, true)
-	if err == nil || !strings.Contains(err.Error(), "portable limit is 16 MiB") {
-		t.Fatalf("exact reuse validated a hypothetical trim instead of the actual request: %v", err)
-	}
-}
-
-func TestPrepareSessionImageRequestUpgradesLegacyImage(t *testing.T) {
+func TestPrepareSessionImageRequestNormalizesLegacyImageWithoutRewriting(t *testing.T) {
 	session := newTurnPersistenceTestSession(t)
 	if err := session.AddMessages([]messages.ChatMessage{
 		{
@@ -240,7 +218,7 @@ func TestPrepareSessionImageRequestUpgradesLegacyImage(t *testing.T) {
 		t.Fatalf("legacy GIF poisoned the upgraded request: %v", err)
 	}
 	if len(prepared) != 3 || len(prepared[0].Parts) != 1 || prepared[0].Parts[0].MimeType != "image/png" {
-		t.Fatalf("legacy GIF was not normalized in the request: %#v", prepared)
+		t.Fatalf("legacy image was not normalized for agent projection: %#v", prepared)
 	}
 	if got := session.GetHistory()[0].Parts[0].MimeType; got != "image/gif" {
 		t.Fatalf("request-only migration rewrote durable history MIME to %q", got)

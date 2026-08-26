@@ -913,14 +913,15 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
 	session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello"})
 
-	r := newManagedREPL(&Config{}, "ctx-test", 0, 0)
+	r := newManagedREPL(&Config{Settings: Settings{MaxHistoryTokens: 5678}}, "ctx-test", 0, 0)
 	r.state = &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil)}
 
 	// /context reports the session name and message stats.
 	if handled, quit := r.runCommand("/context"); !handled || quit {
 		t.Fatalf("/context handled=%v quit=%v", handled, quit)
 	}
-	if joined := strings.Join(r.model.transcript, "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "messages:") {
+	if joined := strings.Join(r.model.transcript, "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "messages:") ||
+		!strings.Contains(joined, "transcript:") || !strings.Contains(joined, "(durable)") || !strings.Contains(joined, "model budget: 5.6k") {
 		t.Fatalf("/context output missing fields: %q", joined)
 	}
 
@@ -1509,8 +1510,8 @@ func TestCompletedTurnMetricsStayInStatus(t *testing.T) {
 	m.contextName = "ctx"
 	m.lastOutcome = turnOutcomeDone
 	m.lastElapsed = 15500 * time.Millisecond
-	m.lastIn = 1234
-	m.lastOut = 567
+	m.totalIn = 1234
+	m.totalOut = 567
 	line := m.statusRow(200)
 	for _, want := range []string{"done", "15.5s", "1.2k/567 tok"} {
 		if !strings.Contains(line, want) {
@@ -1519,6 +1520,30 @@ func TestCompletedTurnMetricsStayInStatus(t *testing.T) {
 	}
 	if len(m.transcript) != 0 {
 		t.Fatalf("status metrics must not add transcript rows: %v", m.transcript)
+	}
+}
+
+func TestTurnTokensAggregateInStatus(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+
+	m.beginTurn("first")
+	first := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	first.RecordTurnTokens(1000, 250)
+	first.RecordTurnTokens(1200, 300)
+	r.endTurn(nil)
+
+	m.beginTurn("second")
+	second := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	second.RecordTurnTokens(800, 200)
+	r.endTurn(nil)
+
+	line := plainStyledText(m.statusRow(200))
+	if !strings.Contains(line, "2.0k/500 tok") {
+		t.Fatalf("completed status should show aggregate tokens, got %q", line)
+	}
+	if m.lastIn != 800 || m.lastOut != 200 {
+		t.Fatalf("last turn tokens = %d/%d, want 800/200", m.lastIn, m.lastOut)
 	}
 }
 

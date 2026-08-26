@@ -2,6 +2,8 @@ package sessions
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/gofrs/flock"
@@ -17,14 +20,16 @@ import (
 
 // FileSession implements a file-based persistent session
 type FileSession struct {
-	ID       string                 `json:"id"`
-	History  []messages.ChatMessage `json:"history"`
-	Created  time.Time              `json:"created"`
-	Updated  time.Time              `json:"updated"`
-	Metadata *Metadata              `json:"metadata"`
-	path     string
-	lock     *flock.Flock // File lock using flock
-	mu       sync.RWMutex
+	ID                string                 `json:"id"`
+	History           []messages.ChatMessage `json:"history"`
+	Created           time.Time              `json:"created"`
+	Updated           time.Time              `json:"updated"`
+	Metadata          *Metadata              `json:"metadata"`
+	ArtifactNamespace string                 `json:"artifactNamespace,omitempty"`
+	path              string
+	lock              *flock.Flock // File lock using flock
+	artifactStore     artifacts.Store
+	mu                sync.RWMutex
 }
 
 // FileSessionStore implements a file-based session store
@@ -157,10 +162,11 @@ func (s *FileSessionStore) Get(name string) (Session, error) {
 
 	// File absent, empty, or corrupt-and-backed-up: create a new session.
 	session := &FileSession{
-		ID:      name,
-		History: []messages.ChatMessage{},
-		Created: time.Now(),
-		Updated: time.Now(),
+		ID:                name,
+		History:           []messages.ChatMessage{},
+		Created:           time.Now(),
+		Updated:           time.Now(),
+		ArtifactNamespace: newArtifactNamespace(),
 		Metadata: &Metadata{
 			Name:             name,
 			Created:          time.Now(),
@@ -202,9 +208,13 @@ func (s *FileSessionStore) Delete(name string) {
 	}
 	defer fileLock.Unlock()
 
+	namespace := artifactNamespaceFromFile(sessionPath)
+
 	// Leave the dedicated lock file in place so future sessions keep
 	// coordinating on the same filesystem path.
-	_ = os.Remove(sessionPath)
+	if err := os.Remove(sessionPath); err == nil || os.IsNotExist(err) {
+		_ = removeArtifactNamespace(s.baseDir, namespace)
+	}
 }
 
 // Range iterates over all sessions. It is read-only: each session is loaded
@@ -285,7 +295,9 @@ func (s *FileSessionStore) Expire() {
 		}
 
 		if now.Sub(session.Updated) > expiry {
-			os.Remove(filePath)
+			if err := os.Remove(filePath); err == nil || os.IsNotExist(err) {
+				_ = removeArtifactNamespace(s.baseDir, session.ArtifactNamespace)
+			}
 		}
 
 		fileLock.Unlock()
@@ -344,20 +356,12 @@ func (s *FileSession) AddMessages(msgs []messages.ChatMessage) error {
 	candidate.History = append(candidate.History, msgs...)
 	candidate.Updated = now
 	candidate.touchMetadata(now)
-	candidate.trimHistory()
 	if err := candidate.save(); err != nil {
 		return err
 	}
 
 	s.commitCandidateLocked(candidate)
 	return nil
-}
-
-// trimHistory limits the session history to MaxHistoryTokens
-func (s *FileSession) trimHistory() {
-	if s.Metadata != nil && s.Metadata.MaxHistoryTokens > 0 {
-		s.History = TrimHistory(s.History, s.Metadata.MaxHistoryTokens)
-	}
 }
 
 // Clear clears the session history
@@ -386,7 +390,50 @@ func (s *FileSession) Clear() error {
 	}
 
 	s.commitCandidateLocked(candidate)
+	// The clear is durably committed above, so a Clear error must mean the
+	// reset did not happen. Artifact removal is best-effort cleanup: reporting
+	// its failure here would leave callers showing the old transcript against
+	// an already-emptied history, which is worse than orphaned blobs on disk.
+	if s.artifactStore != nil {
+		_ = s.artifactStore.RemoveAll()
+	} else {
+		_ = removeArtifactNamespace(filepath.Dir(s.path), s.ArtifactNamespace)
+	}
 	return nil
+}
+
+// ArtifactStore returns a private content-addressed store whose immutable
+// namespace survives context renames. Legacy sessions acquire a namespace on
+// first use and persist it before any artifact bytes are written.
+func (s *FileSession) ArtifactStore() (artifacts.Store, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.artifactStore != nil {
+		return s.artifactStore, nil
+	}
+	if s.path == "" {
+		return nil, fmt.Errorf("session has no backing file")
+	}
+	if !validArtifactNamespace(s.ArtifactNamespace) {
+		candidate, err := s.metadataCandidateLocked()
+		if err != nil {
+			return nil, err
+		}
+		candidate.ArtifactNamespace = newArtifactNamespace()
+		if candidate.ArtifactNamespace == "" {
+			return nil, fmt.Errorf("generate artifact namespace")
+		}
+		if err := candidate.save(); err != nil {
+			return nil, fmt.Errorf("persist artifact namespace: %w", err)
+		}
+		s.commitCandidateLocked(candidate)
+	}
+	store, err := artifacts.NewFileStore(artifactNamespacePath(filepath.Dir(s.path), s.ArtifactNamespace))
+	if err != nil {
+		return nil, err
+	}
+	s.artifactStore = store
+	return store, nil
 }
 
 // GetName returns the session name
@@ -490,12 +537,14 @@ func (s *FileSession) metadataCandidateLocked() (*FileSession, error) {
 	}
 
 	candidate := &FileSession{
-		ID:       s.ID,
-		History:  s.History,
-		Created:  s.Created,
-		Updated:  s.Updated,
-		Metadata: cloneMetadata(s.Metadata),
-		path:     s.path,
+		ID:                s.ID,
+		History:           s.History,
+		Created:           s.Created,
+		Updated:           s.Updated,
+		Metadata:          cloneMetadata(s.Metadata),
+		ArtifactNamespace: s.ArtifactNamespace,
+		path:              s.path,
+		artifactStore:     s.artifactStore,
 	}
 	return candidate, nil
 }
@@ -504,6 +553,49 @@ func (s *FileSession) commitCandidateLocked(candidate *FileSession) {
 	s.History = candidate.History
 	s.Updated = candidate.Updated
 	s.Metadata = candidate.Metadata
+	s.ArtifactNamespace = candidate.ArtifactNamespace
+	s.artifactStore = candidate.artifactStore
+}
+
+func newArtifactNamespace() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(raw[:])
+}
+
+func validArtifactNamespace(namespace string) bool {
+	if len(namespace) != 32 || namespace != strings.ToLower(namespace) {
+		return false
+	}
+	_, err := hex.DecodeString(namespace)
+	return err == nil
+}
+
+func artifactNamespacePath(baseDir, namespace string) string {
+	return filepath.Join(baseDir, ".artifacts", namespace)
+}
+
+func artifactNamespaceFromFile(sessionPath string) string {
+	data, err := os.ReadFile(sessionPath)
+	if err != nil {
+		return ""
+	}
+	var stored struct {
+		ArtifactNamespace string `json:"artifactNamespace"`
+	}
+	if json.Unmarshal(data, &stored) != nil {
+		return ""
+	}
+	return stored.ArtifactNamespace
+}
+
+func removeArtifactNamespace(baseDir, namespace string) error {
+	if !validArtifactNamespace(namespace) {
+		return nil
+	}
+	return os.RemoveAll(artifactNamespacePath(baseDir, namespace))
 }
 
 func (s *FileSession) touchMetadata(now time.Time) {
@@ -773,8 +865,8 @@ func (s *FileSession) GetTotalTokens() int {
 	return total
 }
 
-// GetCapacityPercentage returns the percentage of capacity used (0-100)
-// Returns 0 if no limit is set
+// GetCapacityPercentage compares durable transcript size with the model
+// projection budget. It may exceed 100 because persistence is never trimmed.
 func (s *FileSession) GetCapacityPercentage() float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

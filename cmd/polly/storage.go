@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -219,6 +220,10 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 			msgs[i].Metadata = make(map[string]any)
 		}
 		msgs[i].Metadata[messages.MetadataKeyContextImport] = true
+	}
+	artifactStore := artifactStoreForSession(session)
+	for i := range msgs {
+		msgs[i] = externalizeMessageImages(context.Background(), msgs[i], artifactStore)
 	}
 
 	if err := session.AddMessages(msgs); err != nil {

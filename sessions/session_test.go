@@ -123,8 +123,9 @@ func TestDelete(t *testing.T) {
 	}
 }
 
-// TestTrimKeepsSystemPrompt verifies system prompt is never removed
-func TestTrimKeepsSystemPrompt(t *testing.T) {
+// TestPersistenceKeepsFullTranscript verifies the model projection budget does
+// not destructively trim durable session history.
+func TestPersistenceKeepsFullTranscript(t *testing.T) {
 	for name, store := range testStores(t) {
 		t.Run(name, func(t *testing.T) {
 			session, err := store.Get("test")
@@ -132,7 +133,7 @@ func TestTrimKeepsSystemPrompt(t *testing.T) {
 				t.Fatalf("Failed to get session: %v", err)
 			}
 
-			// Add enough messages to trigger token-based trimming
+			// Add enough messages to exceed the configured model budget.
 			for i := range 15 {
 				session.AddMessage(messages.ChatMessage{
 					Role:    messages.MessageRoleUser,
@@ -151,9 +152,8 @@ func TestTrimKeepsSystemPrompt(t *testing.T) {
 				t.Errorf("System prompt content changed: %s", history[0].Content)
 			}
 
-			// Should have fewer than 16 messages due to token limit
-			if len(history) >= 16 {
-				t.Errorf("History too long (not trimmed): %d messages", len(history))
+			if len(history) != 16 {
+				t.Errorf("durable history has %d messages, want all 16", len(history))
 			}
 		})
 	}
@@ -210,9 +210,10 @@ func TestTrimRemovesOrphanedToolResponse(t *testing.T) {
 	}
 }
 
-// TestTrimKeepsWithinTokenLimit verifies history is trimmed to token limit
-func TestTrimKeepsWithinTokenLimit(t *testing.T) {
-	// Each message is ~5-6 tokens (content + overhead), so 30 tokens should keep ~5-6 messages
+// TestPersistenceIgnoresProjectionBudget verifies MaxHistoryTokens is now a
+// provider-view budget rather than a persistence limit.
+func TestPersistenceIgnoresProjectionBudget(t *testing.T) {
+	// This is intentionally much smaller than the durable transcript.
 	defaultInfo := &Metadata{
 		MaxHistoryTokens: 30,
 		TTL:              0,
@@ -246,9 +247,8 @@ func TestTrimKeepsWithinTokenLimit(t *testing.T) {
 
 			history := session.GetHistory()
 
-			// Should have less than 10 messages due to token limit
-			if len(history) >= 11 { // system + 10
-				t.Errorf("Expected trimming to occur, got %d messages", len(history))
+			if len(history) != 11 { // system + 10
+				t.Errorf("durable history has %d messages, want all 11", len(history))
 			}
 
 			// Verify we kept the most recent messages
@@ -300,10 +300,10 @@ func TestConcurrentAddMessage(t *testing.T) {
 
 			history := session.GetHistory()
 
-			// Should have system prompt + messages (limited by token budget)
-			// With token limit, we should have at least a few messages
-			if len(history) < 2 {
-				t.Errorf("Expected at least 2 messages (system + user), got %d", len(history))
+			// Persistence retains every concurrent append regardless of the
+			// provider projection budget.
+			if len(history) != 1+numGoroutines*messagesPerGoroutine {
+				t.Errorf("expected %d durable messages, got %d", 1+numGoroutines*messagesPerGoroutine, len(history))
 			}
 
 			// Verify system prompt is still first
