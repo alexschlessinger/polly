@@ -62,7 +62,20 @@ func (t *BashTool) GetType() string   { return "native" }
 func (t *BashTool) GetSource() string { return "builtin" }
 
 func (t *BashTool) GetSchema() *schema.ToolSchema {
-	return schema.Tool("bash", "Execute a shell command and return its output",
+	// Mirror the shell-tool annotation so the model knows writes and network
+	// may be restricted; call out a read-only .git specifically, since a
+	// failing commit otherwise surfaces as an unexplained EPERM the model
+	// will retry.
+	description := "Execute a shell command and return its output"
+	if t.sandbox != nil {
+		switch {
+		case t.sandboxCfg != nil && t.sandboxCfg.GitMetadataReadOnly():
+			description += " [sandboxed: .git is read-only, git commit will fail]"
+		default:
+			description += " [sandboxed]"
+		}
+	}
+	return schema.Tool("bash", description,
 		schema.Params{"command": schema.S("The shell command to execute")},
 		"command",
 	)

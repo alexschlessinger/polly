@@ -418,6 +418,19 @@ type gitRepositoryContext struct {
 	bare      bool
 }
 
+// GitMetadataReadOnly reports whether a workspace Git policy in this config
+// pins whole metadata trees (the workspace preset without the git component),
+// meaning ordinary Git write operations such as commit fail inside the
+// sandbox. Callers use it to say so up front instead of surfacing EPERM.
+func (c Config) GitMetadataReadOnly() bool {
+	for _, policy := range c.gitPolicies {
+		if len(policy.repositories) != 0 && policy.mode == gitProtectWholeTree {
+			return true
+		}
+	}
+	return false
+}
+
 // materializeGitLeafProtections adds leaf-mode protections for every
 // discovered repository context: the dangerous metadata leaves for in-workspace
 // gitdirs (created when missing so every pinned name exists), whole-tree pins
