@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -521,12 +521,9 @@ func dispatchDefaultCommandForTest(t *testing.T, line string, ctx *replCommandCo
 }
 
 func TestClearCommandOnlyClearsDisplay(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("clear-display")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if err := session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "keep me"}); err != nil {
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "clear-display")
+	if err := session.AddMessage(context.Background(), messages.ChatMessage{Role: messages.MessageRoleUser, Content: "keep me"}); err != nil {
 		t.Fatalf("AddMessage() error = %v", err)
 	}
 
@@ -542,7 +539,7 @@ func TestClearCommandOnlyClearsDisplay(t *testing.T) {
 	if !cleared {
 		t.Fatal("/clear did not invoke clearTranscript")
 	}
-	if got := len(session.GetHistory()); got != 1 {
+	if got := len(testSessionHistory(t, session)); got != 1 {
 		t.Fatalf("/clear changed durable history; got %d messages, want 1", got)
 	}
 	if got := strings.Join(replies, "\n"); got != "display cleared" {
@@ -724,17 +721,14 @@ func TestLifecycleCommandsAppearInHelp(t *testing.T) {
 }
 
 func TestFallbackREPLDispatchesRegistryCommands(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("fallback")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "fallback")
+	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
 	state := &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil)}
 	config := &Config{Settings: Settings{Model: "anthropic/claude-sonnet-4-6"}}
 	var out bytes.Buffer
 	reader := bufio.NewReader(strings.NewReader("/get model\n/context\n/reset confirm\n/exit\n"))
-	err = runREPLLoopWithCommands(reader, &out, newWriterReplCommandContext(config, state, &out), func(prompt string) error {
+	err := runREPLLoopWithCommands(context.Background(), reader, &out, newWriterReplCommandContext(config, state, &out), func(prompt string) error {
 		t.Fatalf("runTurn should not be called for command %q", prompt)
 		return nil
 	})
@@ -745,15 +739,15 @@ func TestFallbackREPLDispatchesRegistryCommands(t *testing.T) {
 	if !strings.Contains(got, "model: anthropic/claude-sonnet-4-6") || !strings.Contains(got, "context: fallback") || !strings.Contains(got, "conversation reset") {
 		t.Fatalf("fallback command output = %q", got)
 	}
-	if len(session.GetHistory()) != 0 {
-		t.Fatalf("fallback /reset confirm did not clear durable history: %#v", session.GetHistory())
+	if history := testSessionHistory(t, session); len(history) != 0 {
+		t.Fatalf("fallback /reset confirm did not clear durable history: %#v", history)
 	}
 }
 
 func TestFallbackREPLReportsUnknownSlashCommand(t *testing.T) {
 	var out bytes.Buffer
 	reader := bufio.NewReader(strings.NewReader("/bogus\n"))
-	err := runREPLLoopWithCommands(reader, &out, newWriterReplCommandContext(nil, nil, &out), func(prompt string) error {
+	err := runREPLLoopWithCommands(context.Background(), reader, &out, newWriterReplCommandContext(nil, nil, &out), func(prompt string) error {
 		t.Fatalf("runTurn should not be called for unknown slash command %q", prompt)
 		return nil
 	})
@@ -772,7 +766,7 @@ func TestFallbackREPLRecoversFromCancelledTurn(t *testing.T) {
 	var out bytes.Buffer
 	reader := bufio.NewReader(strings.NewReader("prompt1\nprompt2\n/exit\n"))
 	callCount := 0
-	err := runREPLLoopWithCommands(reader, &out, newWriterReplCommandContext(nil, nil, &out), func(prompt string) error {
+	err := runREPLLoopWithCommands(context.Background(), reader, &out, newWriterReplCommandContext(nil, nil, &out), func(prompt string) error {
 		callCount++
 		if callCount == 1 {
 			return fmt.Errorf("cancelled")

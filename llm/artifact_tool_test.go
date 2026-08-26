@@ -10,7 +10,7 @@ import (
 )
 
 func TestReadArtifactToolBoundsAndNumbersText(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	var content strings.Builder
 	for i := 1; i <= 600; i++ {
 		fmt.Fprintf(&content, "line %03d\n", i)
@@ -39,7 +39,7 @@ func TestReadArtifactToolBoundsAndNumbersText(t *testing.T) {
 }
 
 func TestReadArtifactToolLiteralSearchIsCaseSensitive(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, Data: []byte("Alpha\nalpha\nAlpha beta\n")})
 	tool := testReadArtifactTool(store, ref)
 
@@ -58,7 +58,7 @@ func TestReadArtifactToolLiteralSearchIsCaseSensitive(t *testing.T) {
 }
 
 func TestReadArtifactToolEnforcesLineAndByteCaps(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, Data: []byte(strings.Repeat("x", 100_000) + "\n")})
 	tool := testReadArtifactTool(store, ref)
 
@@ -91,7 +91,7 @@ func TestReadArtifactToolEnforcesLineAndByteCaps(t *testing.T) {
 }
 
 func TestReadArtifactToolReturnsTypedImageAndBinaryDescriptor(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	imageRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "pixel.png", Reference: "[image #7]", Data: []byte("image bytes")})
 	binaryRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindBinary, MIMEType: "application/octet-stream", Name: "data.bin", Data: []byte("binary bytes")})
 	refs := map[string]artifacts.Ref{imageRef.ID: imageRef, binaryRef.ID: binaryRef}

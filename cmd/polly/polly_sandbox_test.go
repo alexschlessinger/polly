@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -10,7 +11,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -368,10 +368,10 @@ func TestInitializeSessionFailsWhenSandboxRequestedButUnavailable(t *testing.T) 
 		newSandbox = originalNewSandbox
 	})
 
-	store := sessions.NewSyncMapSessionStore(nil)
-	_, session, _, registry, _, _, _, err := initializeSession(&Config{
+	store := testOpenMemoryStore(t, nil)
+	_, session, _, registry, _, _, _, err := initializeSession(context.Background(), &Config{
 		NoSkills: true,
-	}, store, "", getCommand(), nil)
+	}, store, "", false, getCommand(), nil)
 	if err == nil {
 		t.Fatal("initializeSession() error = nil, want sandbox startup failure")
 	}
@@ -397,11 +397,11 @@ func TestInitializeSessionSucceedsWithoutSandboxWhenBackendUnavailable(t *testin
 		newSandbox = originalNewSandbox
 	})
 
-	store := sessions.NewSyncMapSessionStore(nil)
-	_, session, agent, registry, _, _, _, err := initializeSession(&Config{
+	store := testOpenMemoryStore(t, nil)
+	_, session, agent, registry, _, _, _, err := initializeSession(context.Background(), &Config{
 		NoSandbox: true,
 		NoSkills:  true,
-	}, store, "", getCommand(), nil)
+	}, store, "", false, getCommand(), nil)
 	if err != nil {
 		t.Fatalf("initializeSession() error = %v", err)
 	}
@@ -420,7 +420,7 @@ func TestInitializeSessionSucceedsWithoutSandboxWhenBackendUnavailable(t *testin
 
 	t.Cleanup(func() {
 		_ = registry.Close()
-		session.Close()
+		_ = session.Close()
 	})
 }
 
@@ -437,12 +437,12 @@ func TestInitializeSessionClosesRegistryWhenSkillRuntimeFails(t *testing.T) {
 	}
 	t.Cleanup(func() { newSkillRuntimeImpl = originalNewSkillRuntime })
 
-	store := sessions.NewSyncMapSessionStore(nil)
-	_, session, _, registry, _, _, _, err := initializeSession(&Config{
+	store := testOpenMemoryStore(t, nil)
+	_, session, _, registry, _, _, _, err := initializeSession(context.Background(), &Config{
 		NoSandbox: true,
 		NoSkills:  true,
 		Tools:     []string{"bash"},
-	}, store, "", getCommand(), nil)
+	}, store, "", false, getCommand(), nil)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("initializeSession() error = %v, want %v", err, wantErr)
 	}

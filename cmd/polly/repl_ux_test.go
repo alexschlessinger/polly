@@ -878,15 +878,12 @@ type failingClearSession struct {
 	sessions.Session
 }
 
-func (failingClearSession) Clear() error { return errors.New("clear failed") }
+func (failingClearSession) Clear(context.Context) error { return errors.New("clear failed") }
 
 func TestQueuedResetIsAConsistentBarrier(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("queued-reset")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "old"}); err != nil {
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "queued-reset")
+	if err := session.AddMessage(context.Background(), messages.ChatMessage{Role: messages.MessageRoleUser, Content: "old"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -902,7 +899,7 @@ func TestQueuedResetIsAConsistentBarrier(t *testing.T) {
 		if done == nil || <-started != "fresh" {
 			t.Fatal("successful queued reset dropped or failed to start following input")
 		}
-		if got := len(session.GetHistory()); got != 0 {
+		if got := len(testSessionHistory(t, session)); got != 0 {
 			t.Fatalf("reset left %d durable messages", got)
 		}
 		if err := <-done; err != nil {

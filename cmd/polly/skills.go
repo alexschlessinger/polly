@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -86,7 +87,7 @@ func autoActivateSkills(names []string, skillRuntime *tools.SkillRuntime) error 
 	return nil
 }
 
-func persistActiveSkills(session sessions.Session, skillRuntime *tools.SkillRuntime, skillSources []string) error {
+func persistActiveSkills(ctx context.Context, session sessions.Session, skillRuntime *tools.SkillRuntime, skillSources []string) error {
 	if session == nil || skillRuntime == nil {
 		return nil
 	}
@@ -96,10 +97,13 @@ func persistActiveSkills(session sessions.Session, skillRuntime *tools.SkillRunt
 		return nil
 	}
 
-	return session.UpdateMetadata(&sessions.Metadata{
-		ActiveSkills: activeSkills,
-		SkillSources: skillSources,
-	})
+	metadata, err := session.GetMetadata(ctx)
+	if err != nil {
+		return err
+	}
+	metadata.ActiveSkills = activeSkills
+	metadata.SkillSources = skillSources
+	return session.SetMetadata(ctx, metadata)
 }
 
 func handleListSkills(config *Config) error {

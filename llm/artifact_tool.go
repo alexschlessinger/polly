@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -83,10 +84,10 @@ func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any
 	if err != nil {
 		return tools.ToolOutput{}, err
 	}
-	defer r.Close()
-	text, err := boundedArtifactText(ctx, r, offset, limit, args.String("query"))
-	if err != nil {
-		return tools.ToolOutput{}, err
+	text, readErr := boundedArtifactText(ctx, r, offset, limit, args.String("query"))
+	closeErr := r.Close()
+	if readErr != nil || closeErr != nil {
+		return tools.ToolOutput{}, errors.Join(readErr, closeErr)
 	}
 	return tools.ToolOutput{Text: capArtifactReadText(text)}, nil
 }

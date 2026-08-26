@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/sessions"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -75,14 +75,13 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 			t.Setenv("XDG_CACHE_HOME", t.TempDir())
 			path := filepath.Join(t.TempDir(), "queued.png")
 			writeImageFixture(t, path, 8, 8)
-			store := sessions.NewSyncMapSessionStore(nil)
-			session, err := store.Get("queued-" + mutation)
-			if err != nil {
-				t.Fatal(err)
-			}
+			store := testOpenMemoryStore(t, nil)
+			session := testAcquireSession(t, store, "queued-"+mutation)
+			artifactStore := session.ArtifactStore()
 
 			r := newManagedREPL(&Config{}, "ctx", 0, 0)
-			r.state = &conversationState{session: session}
+			r.state = &conversationState{session: session, artifactStore: artifactStore}
+			r.model.artifactStore = artifactStore
 			r.model.beginTurn("current turn")
 			token := r.model.registerAttachment(path, "queued.png")
 			r.model.ed.setText("inspect " + token)
@@ -92,7 +91,7 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 				t.Fatalf("queued prompt was not prepared: %#v", r.model.queue)
 			}
 			prepared := cloneChatMessage(r.model.queue[0].turn.userMessage)
-			if managedImageData(t, prepared) == "" {
+			if len(managedImageBytes(t, prepared, artifactStore)) == 0 {
 				t.Fatal("prepared turn has no persisted image bytes")
 			}
 
@@ -112,7 +111,7 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 				if !reflect.DeepEqual(got, prepared) {
 					t.Fatalf("queued payload changed after %s:\n got %#v\nwant %#v", mutation, got, prepared)
 				}
-				if err := persistUserMessageForTurn(session, got, false); err != nil {
+				if err := persistUserMessageForTurn(context.Background(), session, got, false); err != nil {
 					t.Fatal(err)
 				}
 			case <-time.After(time.Second):
@@ -127,17 +126,14 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			preparedBytes, err := base64.StdEncoding.DecodeString(managedImageData(t, prepared))
-			if err != nil {
-				t.Fatal(err)
-			}
+			preparedBytes := managedImageBytes(t, prepared, artifactStore)
 			if !bytes.Equal(previewBytes, preparedBytes) {
 				t.Fatalf("queued preview changed after source %s", mutation)
 			}
 			if err := <-done; err != nil {
 				t.Fatal(err)
 			}
-			if history := session.GetHistory(); len(history) != 1 || !reflect.DeepEqual(history[0], prepared) {
+			if history := testSessionHistory(t, session); len(history) != 1 || !reflect.DeepEqual(history[0], prepared) {
 				t.Fatalf("queued attachment produced non-durable or duplicate user turns: %#v", history)
 			}
 		})
@@ -156,14 +152,13 @@ func TestAttachmentRetryReusesExactPreparedMessageAfterSourceMutation(t *testing
 			t.Run(mutation+"/"+outcome.name, func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "retry.png")
 				writeImageFixture(t, path, 8, 8)
-				store := sessions.NewSyncMapSessionStore(nil)
-				session, err := store.Get("retry")
-				if err != nil {
-					t.Fatal(err)
-				}
+				store := testOpenMemoryStore(t, nil)
+				session := testAcquireSession(t, store, "retry")
+				artifactStore := session.ArtifactStore()
 
 				r := newManagedREPL(&Config{}, "ctx", 0, 0)
-				r.state = &conversationState{session: session}
+				r.state = &conversationState{session: session, artifactStore: artifactStore}
+				r.model.artifactStore = artifactStore
 				token := r.model.registerAttachment(path, "retry.png")
 				r.model.ed.setText("inspect " + token)
 				r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
@@ -171,7 +166,7 @@ func TestAttachmentRetryReusesExactPreparedMessageAfterSourceMutation(t *testing
 				if !ok {
 					t.Fatal("accepted attachment turn was not pending")
 				}
-				if err := persistUserMessageForTurn(session, prepared.userMessage, false); err != nil {
+				if err := persistUserMessageForTurn(context.Background(), session, prepared.userMessage, false); err != nil {
 					t.Fatal(err)
 				}
 				r.endTurn(outcome.err)
@@ -187,10 +182,10 @@ func TestAttachmentRetryReusesExactPreparedMessageAfterSourceMutation(t *testing
 				if !reflect.DeepEqual(retried.userMessage, prepared.userMessage) {
 					t.Fatalf("retry payload changed after %s", mutation)
 				}
-				if err := persistUserMessageForTurn(session, retried.userMessage, true); err != nil {
+				if err := persistUserMessageForTurn(context.Background(), session, retried.userMessage, true); err != nil {
 					t.Fatal(err)
 				}
-				if got := session.GetHistory(); len(got) != 1 || !reflect.DeepEqual(got[0], prepared.userMessage) {
+				if got := testSessionHistory(t, session); len(got) != 1 || !reflect.DeepEqual(got[0], prepared.userMessage) {
 					t.Fatalf("retry created non-durable or duplicate user turns: %#v", got)
 				}
 			})
@@ -198,7 +193,7 @@ func TestAttachmentRetryReusesExactPreparedMessageAfterSourceMutation(t *testing
 	}
 }
 
-func TestFileSessionReloadRetriesPersistedImageWithoutSource(t *testing.T) {
+func TestDiskSessionReloadRetriesPersistedImageWithoutSource(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "reload.png")
 	writeImageFixture(t, path, 8, 8)
@@ -207,35 +202,32 @@ func TestFileSessionReloadRetriesPersistedImageWithoutSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err := sessions.NewFileSessionStore(filepath.Join(dir, "sessions"), nil)
+	dbPath := filepath.Join(dir, "polly.db")
+	store := testOpenDiskStore(t, dbPath, nil)
+	session := testAcquireSession(t, store, "image-reload")
+	prepared, err = externalizeMessageImages(context.Background(), prepared, session.ArtifactStore())
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := store.Get("image-reload")
-	if err != nil {
+	if err := session.AddMessage(context.Background(), prepared); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.AddMessage(prepared); err != nil {
+	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if fileSession, ok := session.(*sessions.FileSession); ok {
-		fileSession.Close()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 
-	reopenedStore, err := sessions.NewFileSessionStore(filepath.Join(dir, "sessions"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := reopenedStore.Get("image-reload")
-	if err != nil {
-		t.Fatal(err)
-	}
+	reopenedStore := testOpenDiskStore(t, dbPath, nil)
+	reopened := testAcquireSession(t, reopenedStore, "image-reload")
 	r := newManagedREPL(&Config{}, "image-reload", 0, 0)
-	r.state = &conversationState{session: reopened}
-	r.model.hydrateHistory(reopened.GetHistory(), "image-reload")
+	r.state = &conversationState{session: reopened, artifactStore: reopened.ArtifactStore()}
+	r.model.artifactStore = reopened.ArtifactStore()
+	r.model.hydrateHistory(testSessionHistory(t, reopened), "image-reload")
 	if r.model.retryTurn == nil {
 		t.Fatal("reloaded incomplete image turn did not offer exact retry")
 	}
@@ -246,21 +238,18 @@ func TestFileSessionReloadRetriesPersistedImageWithoutSource(t *testing.T) {
 	if !ok || !reflect.DeepEqual(retried.userMessage, prepared) {
 		t.Fatalf("reloaded retry payload = %#v, want exact persisted message", retried.userMessage)
 	}
-	if err := persistUserMessageForTurn(reopened, retried.userMessage, true); err != nil {
+	if err := persistUserMessageForTurn(context.Background(), reopened, retried.userMessage, true); err != nil {
 		t.Fatal(err)
 	}
-	if got := reopened.GetHistory(); len(got) != 1 {
+	if got := testSessionHistory(t, reopened); len(got) != 1 {
 		t.Fatalf("reloaded retry duplicated durable user turn: %#v", got)
 	}
 }
 
 func TestAttachmentProjectionDoesNotChargeHistoricalImages(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("budget")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := session.AddMessage(messages.ChatMessage{
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "budget")
+	if err := session.AddMessage(context.Background(), messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{{
 			Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes), MimeType: "image/png",
@@ -272,7 +261,8 @@ func TestAttachmentProjectionDoesNotChargeHistoricalImages(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "candidate.png")
 	writeImageFixture(t, path, 8, 8)
 	r := newManagedREPL(&Config{}, "budget", 0, 0)
-	r.state = &conversationState{session: session}
+	r.state = &conversationState{session: session, artifactStore: session.ArtifactStore()}
+	r.model.artifactStore = session.ArtifactStore()
 	token := r.model.registerAttachment(path, "candidate.png")
 	draft := "inspect " + token
 	r.model.ed.setText(draft)
@@ -365,12 +355,9 @@ func TestManagedTurnPreparationDoesNotReplayUnpersistedCurrentImages(t *testing.
 			Type: "image_base64", ImageData: data, MimeType: "image/png",
 		}},
 	}
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("identical-current")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := session.AddMessages([]messages.ChatMessage{
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "identical-current")
+	if err := session.AddMessages(context.Background(), []messages.ChatMessage{
 		imageMessage,
 		{Role: messages.MessageRoleAssistant, Content: "completed earlier"},
 	}); err != nil {
@@ -378,7 +365,8 @@ func TestManagedTurnPreparationDoesNotReplayUnpersistedCurrentImages(t *testing.
 	}
 
 	r := newManagedREPL(&Config{}, "identical-current", 0, 0)
-	r.state = &conversationState{session: session}
+	r.state = &conversationState{session: session, artifactStore: session.ArtifactStore()}
+	r.model.artifactStore = session.ArtifactStore()
 	r.model.beginManagedTurn(managedTurnInput{displayText: "same image again", userMessage: imageMessage})
 	path := filepath.Join(t.TempDir(), "candidate.png")
 	writeImageFixture(t, path, 2, 2)
@@ -390,12 +378,9 @@ func TestManagedTurnPreparationDoesNotReplayUnpersistedCurrentImages(t *testing.
 }
 
 func TestProjectedBudgetHonorsQueuedResetBarrier(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("reset-budget")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := session.AddMessage(messages.ChatMessage{
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "reset-budget")
+	if err := session.AddMessage(context.Background(), messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{{
 			Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes), MimeType: "image/png",
@@ -405,7 +390,8 @@ func TestProjectedBudgetHonorsQueuedResetBarrier(t *testing.T) {
 	}
 
 	r := newManagedREPL(&Config{}, "reset-budget", 0, 0)
-	r.state = &conversationState{session: session}
+	r.state = &conversationState{session: session, artifactStore: session.ArtifactStore()}
+	r.model.artifactStore = session.ArtifactStore()
 	r.model.beginTurn("current")
 	r.model.queue = []queuedREPLInput{{text: "/reset confirm"}}
 	path := filepath.Join(t.TempDir(), "after-reset.png")
@@ -424,17 +410,15 @@ func TestManagedTurnPreparationDoesNotWaitForPersistenceAck(t *testing.T) {
 			Type: "image_base64", ImageData: portablePNGBase64Size(t, 9<<20), MimeType: "image/png",
 		}},
 	}
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("persistence-ack")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "persistence-ack")
 	r := newManagedREPL(&Config{}, "persistence-ack", 0, 0)
-	r.state = &conversationState{session: session}
+	r.state = &conversationState{session: session, artifactStore: session.ArtifactStore()}
+	r.model.artifactStore = session.ArtifactStore()
 	r.model.beginManagedTurn(managedTurnInput{displayText: "current image", userMessage: imageMessage})
 	tui := &gotuiTurnUI{repl: r, persistence: r.model.currentPersistence}
 	tui.UserMessagePersistenceStarted()
-	if err := session.AddMessage(imageMessage); err != nil {
+	if err := session.AddMessage(context.Background(), imageMessage); err != nil {
 		t.Fatal(err)
 	}
 
@@ -472,6 +456,37 @@ func managedImageData(t *testing.T, msg messages.ChatMessage) string {
 	}
 	t.Fatal("message has no image_base64 part")
 	return ""
+}
+
+func managedImageBytes(t *testing.T, msg messages.ChatMessage, store interface {
+	Open(context.Context, string) (io.ReadCloser, error)
+}) []byte {
+	t.Helper()
+	for _, part := range msg.Parts {
+		if part.Type == "image_base64" {
+			data, err := base64.StdEncoding.DecodeString(part.ImageData)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return data
+		}
+		if part.Artifact != nil {
+			reader, err := store.Open(context.Background(), part.Artifact.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := io.ReadAll(reader)
+			closeErr := reader.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			return data
+		}
+	}
+	return nil
 }
 
 func mutateAttachmentSource(t *testing.T, path, mutation string) {

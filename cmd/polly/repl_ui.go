@@ -410,9 +410,10 @@ func (a *turnPersistenceAck) finishPersistence(persisted bool) {
 // interval (and includes the not-yet-persisted user itself) or waits until the
 // interval is over and observes the stored user; it can never see the session
 // write without its acknowledgement.
-func (a *turnPersistenceAck) snapshotSessionHistory(session sessions.Session) ([]messages.ChatMessage, bool) {
+func (a *turnPersistenceAck) snapshotSessionHistory(ctx context.Context, session sessions.Session) ([]messages.ChatMessage, bool, error) {
 	if a == nil {
-		return session.GetHistory(), false
+		history, err := session.GetHistory(ctx)
+		return history, false, err
 	}
 	for {
 		a.mu.Lock()
@@ -422,10 +423,10 @@ func (a *turnPersistenceAck) snapshotSessionHistory(session sessions.Session) ([
 			<-settled
 			continue
 		}
-		history := session.GetHistory()
+		history, err := session.GetHistory(ctx)
 		persisted := a.persisted
 		a.mu.Unlock()
-		return history, persisted
+		return history, persisted, err
 	}
 }
 
@@ -500,10 +501,10 @@ func materializeArtifactImageParts(ctx context.Context, msg messages.ChatMessage
 }
 
 // restoreQueuedImagesAfterReset repopulates only artifacts referenced by
-// future queued turns and rebuilds their stable-token registry. Store failures
-// deliberately leave exact prepared bytes inline in the queued message.
+// future queued turns and rebuilds their stable-token registry. On failure the
+// remaining prepared bytes stay inline so the paused queue can be retried.
 // Caller must hold m.mu.
-func (m *replModel) restoreQueuedImagesAfterReset(ctx context.Context, queue []queuedREPLInput) {
+func (m *replModel) restoreQueuedImagesAfterReset(ctx context.Context, queue []queuedREPLInput) error {
 	m.queue = queue
 	m.attachments = make(map[int]composerAttachment)
 	m.ambiguousAttachments = make(map[int]bool)
@@ -516,10 +517,16 @@ func (m *replModel) restoreQueuedImagesAfterReset(ctx context.Context, queue []q
 			continue
 		}
 		turn := cloneManagedTurn(*m.queue[i].turn)
-		turn.userMessage = externalizeMessageImages(ctx, turn.userMessage, m.artifactStore)
+		externalized, err := externalizeMessageImages(ctx, turn.userMessage, m.artifactStore)
+		if err != nil {
+			m.queue[i].turn = &turn
+			return err
+		}
+		turn.userMessage = externalized
 		m.rememberArtifactAttachments(turn.userMessage)
 		m.queue[i].turn = &turn
 	}
+	return nil
 }
 
 func textManagedTurn(prompt string) managedTurnInput {
@@ -2549,7 +2556,10 @@ func (r *managedREPL) prepareManagedTurnLocked(prompt string) (managedTurnInput,
 		return managedTurnInput{}, fmt.Errorf("error processing attachments: %w", err)
 	}
 	if r.state != nil {
-		userMessage = externalizeMessageImages(context.Background(), userMessage, r.state.artifactStore)
+		userMessage, err = externalizeMessageImages(r.state.session.Context(), userMessage, r.state.artifactStore)
+		if err != nil {
+			return managedTurnInput{}, fmt.Errorf("persist attachment: %w", err)
+		}
 	}
 	r.model.rememberArtifactAttachments(userMessage)
 	turn := cloneManagedTurn(managedTurnInput{displayText: prompt, userMessage: userMessage})
@@ -2626,9 +2636,9 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	r.model.nativeImages = r.images != nil
 	r.model.invalidateVisual()
 	r.model.mu.Unlock()
-	// Restore the terminal exactly once, whether we return normally or a
-	// signal short-circuits to os.Exit (which skips deferred calls). Terminal
-	// effects clear first: the progress OSC must go out while the screen is up.
+	// Restore the terminal exactly once. Signal cancellation unwinds through
+	// this defer; terminal effects clear first so the progress OSC goes out
+	// while the screen is still up.
 	var closeOnce sync.Once
 	closeUI := func() {
 		closeOnce.Do(func() {
@@ -2679,7 +2689,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 		case <-ctx.Done():
 			r.cancelTurn()
 			r.releaseApproval()
-			return ctx.Err()
+			return context.Cause(ctx)
 		case <-r.quit:
 			r.cancelTurn()
 			r.releaseApproval()
@@ -4291,12 +4301,20 @@ func (t *gotuiTurnUI) FinishTextTurn() {
 // ---------------------------------------------------------------------------
 
 func runManagedREPL(ctx context.Context, config *Config, state *conversationState) error {
-	repl := newManagedREPL(config, state.session.GetName(), toolCount(state.toolRegistry), skillCount(state.skillCatalog))
+	name, err := state.session.GetName(ctx)
+	if err != nil {
+		return fmt.Errorf("read session name: %w", err)
+	}
+	history, err := state.session.GetHistory(ctx)
+	if err != nil {
+		return fmt.Errorf("read session history: %w", err)
+	}
+	repl := newManagedREPL(config, name, toolCount(state.toolRegistry), skillCount(state.skillCatalog))
 	repl.state = state
 	repl.model.artifactStore = state.artifactStore
-	repl.model.hydrateHistory(state.session.GetHistory(), state.session.GetName())
+	repl.model.hydrateHistory(history, name)
 	if state.autoNamedContext {
-		repl.model.appendNoticeLine("session '" + state.session.GetName() + "' · /rename to keep a name · resume later with polly -L")
+		repl.model.appendNoticeLine("session '" + name + "' · /rename to keep a name · resume later with polly -L")
 	}
 	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
 		reuseUser := false
@@ -4317,10 +4335,15 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 	drainSandboxWarningsToWriter(os.Stderr, state)
 	writeFallbackSandboxNotice(os.Stderr, config, state)
 	if state.autoNamedContext && !config.Quiet {
-		fmt.Fprintf(os.Stderr, "session '%s' · /rename to keep a name · resume later with polly -L\n", state.session.GetName())
+		name, err := state.session.GetName(ctx)
+		if err != nil {
+			return fmt.Errorf("read session name: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "session '%s' · /rename to keep a name · resume later with polly -L\n", name)
 	}
 	commandCtx := newWriterReplCommandContext(config, state, os.Stderr)
-	return runREPLLoopWithCommands(reader, os.Stderr, commandCtx, func(prompt string) error {
+	commandCtx.ctx = ctx
+	return runREPLLoopWithCommands(ctx, reader, os.Stderr, commandCtx, func(prompt string) error {
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		// The exit code is a one-shot concern; the REPL already rendered
@@ -4353,16 +4376,51 @@ func writeFallbackSandboxNotice(w io.Writer, config *Config, state *conversation
 	fmt.Fprintln(w, sandboxNoticeLine(config, state))
 }
 
-func runREPLLoop(reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {
-	return runREPLLoopWithCommands(reader, promptWriter, newWriterReplCommandContext(nil, nil, promptWriter), runTurn)
+func runREPLLoop(ctx context.Context, reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {
+	return runREPLLoopWithCommands(ctx, reader, promptWriter, newWriterReplCommandContext(nil, nil, promptWriter), runTurn)
 }
 
-func runREPLLoopWithCommands(reader *bufio.Reader, promptWriter io.Writer, commandCtx *replCommandContext, runTurn func(string) error) error {
+type fallbackLineResult struct {
+	line string
+	err  error
+}
+
+// readFallbackLine starts at most one blocked read while the fallback REPL is
+// idle. Cancellation can therefore release the session/store promptly without
+// racing a background stdin consumer against confirmation reads during turns.
+func readFallbackLine(ctx context.Context, reader *bufio.Reader) (string, error) {
+	result := make(chan fallbackLineResult, 1)
+	go func() {
+		line, err := readLine(reader)
+		result <- fallbackLineResult{line: line, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", context.Cause(ctx)
+	case read := <-result:
+		if err := context.Cause(ctx); err != nil {
+			return "", err
+		}
+		return read.line, read.err
+	}
+}
+
+func terminalSessionError(err error) bool {
+	return errors.Is(err, sessions.ErrSessionLeaseLost) || errors.Is(err, sessions.ErrStoreClosed)
+}
+
+func runREPLLoopWithCommands(ctx context.Context, reader *bufio.Reader, promptWriter io.Writer, commandCtx *replCommandContext, runTurn func(string) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	for {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
 		if _, err := fmt.Fprint(promptWriter, "> "); err != nil {
 			return err
 		}
-		line, err := readLine(reader)
+		line, err := readFallbackLine(ctx, reader)
 		if err == io.EOF {
 			return nil
 		}
@@ -4390,9 +4448,14 @@ func runREPLLoopWithCommands(reader *bufio.Reader, promptWriter io.Writer, comma
 			continue
 		}
 		if err := runTurn(line); err != nil {
-			// Context cancellation (shutdown) ends the loop cleanly; any other
-			// per-turn error is recoverable — show it and keep the session open,
-			// matching the managed REPL rather than dropping to the shell.
+			// Lease loss and store shutdown end the whole session. Other per-turn
+			// failures remain recoverable and are rendered inline.
+			if terminalSessionError(err) {
+				return err
+			}
+			if cause := context.Cause(ctx); cause != nil {
+				return cause
+			}
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}

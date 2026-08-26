@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -65,11 +66,8 @@ func TestPersistActiveSkillsStoresMetadata(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("test")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "test")
 
 	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
 	skillRuntime, err := newSkillRuntime(catalog, registry)
@@ -81,11 +79,14 @@ func TestPersistActiveSkillsStoresMetadata(t *testing.T) {
 		t.Fatalf("Activate() error = %v", err)
 	}
 
-	if err := persistActiveSkills(session, skillRuntime, nil); err != nil {
+	if err := persistActiveSkills(context.Background(), session, skillRuntime, nil); err != nil {
 		t.Fatalf("persistActiveSkills() error = %v", err)
 	}
 
-	metadata := session.GetMetadata()
+	metadata, err := session.GetMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
 	if len(metadata.ActiveSkills) != 1 || metadata.ActiveSkills[0] != "formatter" {
 		t.Fatalf("ActiveSkills = %v, want [formatter]", metadata.ActiveSkills)
 	}

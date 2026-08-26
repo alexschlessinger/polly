@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"hash/crc32"
@@ -21,14 +22,14 @@ import (
 func TestPersistUserMessageForTurnReusesMatchingFinalUser(t *testing.T) {
 	session := newTurnPersistenceTestSession(t)
 	userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "try this"}
-	if err := session.AddMessage(userMsg); err != nil {
+	if err := session.AddMessage(context.Background(), userMsg); err != nil {
 		t.Fatalf("AddMessage() error = %v", err)
 	}
 
-	if err := persistUserMessageForTurn(session, userMsg, true); err != nil {
+	if err := persistUserMessageForTurn(context.Background(), session, userMsg, true); err != nil {
 		t.Fatalf("persistUserMessageForTurn() error = %v", err)
 	}
-	if got := session.GetHistory(); !slices.EqualFunc(got, []messages.ChatMessage{userMsg}, equalTurnTestMessage) {
+	if got := testSessionHistory(t, session); !slices.EqualFunc(got, []messages.ChatMessage{userMsg}, equalTurnTestMessage) {
 		t.Fatalf("matching retry should reuse final user message, history = %#v", got)
 	}
 }
@@ -72,13 +73,13 @@ func TestPersistUserMessageForTurnOnlyReusesOnExplicitMatchingRetry(t *testing.T
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			session := newTurnPersistenceTestSession(t)
-			if err := session.AddMessages(tt.history); err != nil {
+			if err := session.AddMessages(context.Background(), tt.history); err != nil {
 				t.Fatalf("AddMessages() error = %v", err)
 			}
-			if err := persistUserMessageForTurn(session, userMsg, tt.reuse); err != nil {
+			if err := persistUserMessageForTurn(context.Background(), session, userMsg, tt.reuse); err != nil {
 				t.Fatalf("persistUserMessageForTurn() error = %v", err)
 			}
-			got := session.GetHistory()
+			got := testSessionHistory(t, session)
 			if len(got) != tt.wantSize {
 				t.Fatalf("history length = %d, want %d; history = %#v", len(got), tt.wantSize, got)
 			}
@@ -100,13 +101,13 @@ func TestPersistUserMessageForTurnComparesAttachedParts(t *testing.T) {
 
 	t.Run("same payload is reused", func(t *testing.T) {
 		session := newTurnPersistenceTestSession(t)
-		if err := session.AddMessage(userMsg); err != nil {
+		if err := session.AddMessage(context.Background(), userMsg); err != nil {
 			t.Fatalf("AddMessage() error = %v", err)
 		}
-		if err := persistUserMessageForTurn(session, userMsg, true); err != nil {
+		if err := persistUserMessageForTurn(context.Background(), session, userMsg, true); err != nil {
 			t.Fatalf("persistUserMessageForTurn() error = %v", err)
 		}
-		if got := len(session.GetHistory()); got != 1 {
+		if got := len(testSessionHistory(t, session)); got != 1 {
 			t.Fatalf("same attached payload should be reused, history length = %d", got)
 		}
 	})
@@ -116,13 +117,13 @@ func TestPersistUserMessageForTurnComparesAttachedParts(t *testing.T) {
 		oldMsg := userMsg
 		oldMsg.Parts = slices.Clone(userMsg.Parts)
 		oldMsg.Parts[1].Text = "older contents"
-		if err := session.AddMessage(oldMsg); err != nil {
+		if err := session.AddMessage(context.Background(), oldMsg); err != nil {
 			t.Fatalf("AddMessage() error = %v", err)
 		}
-		if err := persistUserMessageForTurn(session, userMsg, true); err != nil {
+		if err := persistUserMessageForTurn(context.Background(), session, userMsg, true); err != nil {
 			t.Fatalf("persistUserMessageForTurn() error = %v", err)
 		}
-		if got := len(session.GetHistory()); got != 2 {
+		if got := len(testSessionHistory(t, session)); got != 2 {
 			t.Fatalf("changed attached payload must be persisted, history length = %d", got)
 		}
 	})
@@ -138,15 +139,15 @@ func TestPrepareSessionImageRequestDoesNotDuplicateExactRetry(t *testing.T) {
 			MimeType:  "image/png",
 		}},
 	}
-	if err := session.AddMessage(userMsg); err != nil {
+	if err := session.AddMessage(context.Background(), userMsg); err != nil {
 		t.Fatal(err)
 	}
 
-	retry, err := prepareSessionImageRequest(session, userMsg, true)
+	retry, err := prepareSessionImageRequest(context.Background(), session, userMsg, true)
 	if err != nil || len(retry) != 1 {
 		t.Fatalf("exact retry projection = (%d, %v), want one message", len(retry), err)
 	}
-	ordinary, err := prepareSessionImageRequest(session, userMsg, false)
+	ordinary, err := prepareSessionImageRequest(context.Background(), session, userMsg, false)
 	if err != nil || len(ordinary) != 2 {
 		t.Fatalf("ordinary duplicate projection = (%d, %v), want two messages", len(ordinary), err)
 	}
@@ -166,18 +167,15 @@ func TestValidateEncodedImageBudgetIncludesDataURLs(t *testing.T) {
 }
 
 func TestPrepareSessionImageRequestRetainsHistoryBeyondModelBudget(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(&sessions.Metadata{MaxHistoryTokens: 2000})
-	session, err := store.Get("trimmed-budget")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := testOpenMemoryStore(t, &sessions.Metadata{MaxHistoryTokens: 2000})
+	session := testAcquireSession(t, store, "trimmed-budget")
 	oldImage := messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{{
 			Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes), MimeType: "image/png",
 		}},
 	}
-	if err := session.AddMessages([]messages.ChatMessage{
+	if err := session.AddMessages(context.Background(), []messages.ChatMessage{
 		oldImage,
 		{Role: messages.MessageRoleAssistant, Content: "completed old turn"},
 	}); err != nil {
@@ -190,7 +188,7 @@ func TestPrepareSessionImageRequestRetainsHistoryBeyondModelBudget(t *testing.T)
 		}},
 	}
 
-	prepared, err := prepareSessionImageRequest(session, candidate, false)
+	prepared, err := prepareSessionImageRequest(context.Background(), session, candidate, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +199,7 @@ func TestPrepareSessionImageRequestRetainsHistoryBeyondModelBudget(t *testing.T)
 
 func TestPrepareSessionImageRequestNormalizesLegacyImageWithoutRewriting(t *testing.T) {
 	session := newTurnPersistenceTestSession(t)
-	if err := session.AddMessages([]messages.ChatMessage{
+	if err := session.AddMessages(context.Background(), []messages.ChatMessage{
 		{
 			Role: messages.MessageRoleUser,
 			Parts: []messages.ContentPart{{
@@ -213,14 +211,14 @@ func TestPrepareSessionImageRequestNormalizesLegacyImageWithoutRewriting(t *test
 		t.Fatal(err)
 	}
 
-	prepared, err := prepareSessionImageRequest(session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "next"}, false)
+	prepared, err := prepareSessionImageRequest(context.Background(), session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "next"}, false)
 	if err != nil {
 		t.Fatalf("legacy GIF poisoned the upgraded request: %v", err)
 	}
 	if len(prepared) != 3 || len(prepared[0].Parts) != 1 || prepared[0].Parts[0].MimeType != "image/png" {
 		t.Fatalf("legacy image was not normalized for agent projection: %#v", prepared)
 	}
-	if got := session.GetHistory()[0].Parts[0].MimeType; got != "image/gif" {
+	if got := testSessionHistory(t, session)[0].Parts[0].MimeType; got != "image/gif" {
 		t.Fatalf("request-only migration rewrote durable history MIME to %q", got)
 	}
 }
@@ -287,7 +285,7 @@ func TestTurnPersistenceAckSerializesDetachedExactRetry(t *testing.T) {
 
 	runAttempt := func(done chan<- error) {
 		ack.beginPersistence()
-		err := persistUserMessageForTurn(session, userMsg, true)
+		err := persistUserMessageForTurn(context.Background(), session, userMsg, true)
 		ack.finishPersistence(err == nil)
 		done <- err
 	}
@@ -300,7 +298,7 @@ func TestTurnPersistenceAckSerializesDetachedExactRetry(t *testing.T) {
 	go func() {
 		ack.beginPersistence()
 		close(secondAcquired)
-		err := persistUserMessageForTurn(session, userMsg, true)
+		err := persistUserMessageForTurn(context.Background(), session, userMsg, true)
 		ack.finishPersistence(err == nil)
 		secondDone <- err
 	}()
@@ -321,7 +319,7 @@ func TestTurnPersistenceAckSerializesDetachedExactRetry(t *testing.T) {
 	if calls := session.addCalls.Load(); calls != 1 {
 		t.Fatalf("serialized exact retry called AddMessage %d times, want 1", calls)
 	}
-	if history := session.GetHistory(); len(history) != 1 || !equivalentUserMessage(history[0], userMsg) {
+	if history := testSessionHistory(t, session); len(history) != 1 || !equivalentUserMessage(history[0], userMsg) {
 		t.Fatalf("serialized exact retry history = %#v", history)
 	}
 }
@@ -333,12 +331,12 @@ type blockingFirstAddSession struct {
 	releaseFirst chan struct{}
 }
 
-func (s *blockingFirstAddSession) AddMessage(msg messages.ChatMessage) error {
+func (s *blockingFirstAddSession) AddMessage(ctx context.Context, msg messages.ChatMessage) error {
 	if s.addCalls.Add(1) == 1 {
 		close(s.firstStarted)
 		<-s.releaseFirst
 	}
-	return s.Session.AddMessage(msg)
+	return s.Session.AddMessage(ctx, msg)
 }
 
 // portablePNGBase64Size returns a fully decodable 2x2 PNG whose encoded text
@@ -503,13 +501,7 @@ func TestLineTurnUIWarningAlreadyTerminatesOutput(t *testing.T) {
 
 func newTurnPersistenceTestSession(t *testing.T) sessions.Session {
 	t.Helper()
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get(t.Name())
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	t.Cleanup(session.Close)
-	return session
+	return testAcquireSession(t, testOpenMemoryStore(t, nil), "test")
 }
 
 func equalTurnTestMessage(a, b messages.ChatMessage) bool {

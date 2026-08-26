@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -38,6 +37,7 @@ type replCommandRegistry struct {
 }
 
 type replCommandContext struct {
+	ctx      context.Context
 	config   *Config
 	state    *conversationState
 	registry *replCommandRegistry
@@ -60,6 +60,16 @@ type replCommandContext struct {
 	attachImage func(path string) (string, error)
 	// setContextName updates the UI's displayed context name after /rename.
 	setContextName func(name string)
+}
+
+func (c *replCommandContext) operationContext() context.Context {
+	if c != nil && c.ctx != nil {
+		return c.ctx
+	}
+	if c != nil && c.state != nil && c.state.session != nil {
+		return c.state.session.Context()
+	}
+	return context.Background()
 }
 
 var (
@@ -310,7 +320,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			if r.state == nil || r.state.session == nil {
 				return fmt.Errorf("no active session")
 			}
-			queued, err := r.model.materializeQueuedImagesForReset(context.Background())
+			queued, err := r.model.materializeQueuedImagesForReset(r.state.session.Context())
 			if err != nil {
 				if len(r.model.queue) > 0 {
 					r.model.queuePaused = true
@@ -318,7 +328,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 				}
 				return fmt.Errorf("preserve queued images: %w", err)
 			}
-			if err := r.state.session.Clear(); err != nil {
+			if err := r.state.session.Clear(r.state.session.Context()); err != nil {
 				// A queued reset is a barrier. A Clear error means the history
 				// was not cleared, so keep later prompts paused against the old
 				// history instead of running them silently, and retain the
@@ -342,7 +352,13 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
 			r.model.unsavedLabeled = false
-			r.model.restoreQueuedImagesAfterReset(context.Background(), queued)
+			if err := r.model.restoreQueuedImagesAfterReset(r.state.session.Context(), queued); err != nil {
+				if len(r.model.queue) > 0 {
+					r.model.queuePaused = true
+					r.model.updateQueueHint()
+				}
+				return fmt.Errorf("restore queued images: %w", err)
+			}
 			return nil
 		},
 		queueLines: func() []string {
@@ -445,6 +461,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 
 func newWriterReplCommandContext(config *Config, state *conversationState, w io.Writer) *replCommandContext {
 	ctx := &replCommandContext{
+		ctx:      context.Background(),
 		config:   config,
 		state:    state,
 		registry: defaultReplCommands,
@@ -454,7 +471,8 @@ func newWriterReplCommandContext(config *Config, state *conversationState, w io.
 		},
 	}
 	if state != nil && state.session != nil {
-		ctx.resetConversation = state.session.Clear
+		ctx.ctx = state.session.Context()
+		ctx.resetConversation = func() error { return state.session.Clear(ctx.ctx) }
 	}
 	return ctx
 }
@@ -595,13 +613,13 @@ func replRenameCommand(ctx *replCommandContext, args []string) replCommandResult
 	if ctx.state == nil || ctx.state.session == nil {
 		return replCommandResult{err: ctx.replyLine("no active session")}
 	}
-	fs, ok := ctx.state.session.(*sessions.FileSession)
-	if !ok {
-		return replCommandResult{err: ctx.replyLine("this session is in-memory; renaming requires a file-backed context")}
+	opCtx := ctx.operationContext()
+	oldName, err := ctx.state.session.GetName(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("rename failed: %v", err))}
 	}
-	oldName := fs.GetName()
 	newName := args[1]
-	if err := fs.Rename(newName); err != nil {
+	if err := ctx.state.session.Rename(opCtx, newName); err != nil {
 		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("rename failed: %v", err))}
 	}
 	if ctx.setContextName != nil {
@@ -708,20 +726,36 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	}
 	cfg := ctx.configOrDefault()
 	s := ctx.state.session
-	lines := []string{"context: " + s.GetName()}
+	opCtx := ctx.operationContext()
+	name, err := s.GetName(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+	}
+	lines := []string{"context: " + name}
 	if cfg.Model != "" {
 		lines = append(lines, "model: "+stripProviderPrefix(cfg.Model))
 	}
-	lines = append(lines, "transcript: "+humanizeTokens(s.GetTotalTokens())+" estimated tokens (durable)")
+	totalTokens, err := s.GetTotalTokens(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+	}
+	lines = append(lines, "transcript: "+humanizeTokens(totalTokens)+" estimated tokens (durable)")
 	if cfg.MaxHistoryTokens > 0 {
 		lines = append(lines, "model budget: "+humanizeTokens(cfg.MaxHistoryTokens)+" estimated tokens")
 	} else {
 		lines = append(lines, "model budget: unlimited")
 	}
-	c := s.GetMessageCounts()
+	c, err := s.GetMessageCounts(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+	}
 	lines = append(lines, fmt.Sprintf("messages: user %d · assistant %d · tool %d · system %d",
 		c["user"], c["assistant"], c["tool"], c["system"]))
-	lines = append(lines, fmt.Sprintf("tool calls: %d", s.GetToolCallCount()))
+	toolCalls, err := s.GetToolCallCount(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+	}
+	lines = append(lines, fmt.Sprintf("tool calls: %d", toolCalls))
 	return replCommandResult{err: ctx.replyLines(lines)}
 }
 

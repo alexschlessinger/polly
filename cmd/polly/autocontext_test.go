@@ -1,12 +1,13 @@
 package main
 
 import (
+	"context"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 func TestGenerateContextName(t *testing.T) {
@@ -43,43 +44,31 @@ func TestWantsAutoREPLContext(t *testing.T) {
 }
 
 func TestDiscardUnusedAutoContext(t *testing.T) {
-	store, err := sessions.NewFileSessionStore(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
+	store := testOpenDiskStore(t, filepath.Join(t.TempDir(), "polly.db"), nil)
 
-	idle, err := store.Get("idle-fox")
-	if err != nil {
-		t.Fatalf("get: %v", err)
+	idle := testAcquireAutoSession(t, store, "idle-fox")
+	if err := discardUnusedAutoContext(context.Background(), &conversationState{session: idle}, store, "idle-fox"); err != nil {
+		t.Fatalf("discard idle context: %v", err)
 	}
-	discardUnusedAutoContext(&conversationState{session: idle}, store, "idle-fox")
-	if store.Exists("idle-fox") {
+	if testStoreExists(t, store, "idle-fox") {
 		t.Fatal("turn-less auto context should be deleted on exit")
 	}
 
-	used, err := store.Get("busy-owl")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if err := used.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"}); err != nil {
+	used := testAcquireAutoSession(t, store, "busy-owl")
+	if err := used.AddMessage(context.Background(), messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"}); err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	discardUnusedAutoContext(&conversationState{session: used}, store, "busy-owl")
-	if !store.Exists("busy-owl") {
+	if err := discardUnusedAutoContext(context.Background(), &conversationState{session: used}, store, "busy-owl"); err != nil {
+		t.Fatalf("discard used context: %v", err)
+	}
+	if !testStoreExists(t, store, "busy-owl") {
 		t.Fatal("auto context with a turn must survive exit")
 	}
 }
 
 func TestReplRenameCommand(t *testing.T) {
-	store, err := sessions.NewFileSessionStore(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	session, err := store.Get("misty-vole")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	defer session.Close()
+	store := testOpenDiskStore(t, filepath.Join(t.TempDir(), "polly.db"), nil)
+	session := testAcquireAutoSession(t, store, "misty-vole")
 
 	var replies []string
 	var uiName string
@@ -95,31 +84,35 @@ func TestReplRenameCommand(t *testing.T) {
 	if !handled || quit || err != nil {
 		t.Fatalf("dispatch: handled=%v quit=%v err=%v", handled, quit, err)
 	}
-	if session.GetName() != "my-project" {
-		t.Fatalf("session name = %q, want my-project", session.GetName())
+	name, err := session.GetName(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "my-project" {
+		t.Fatalf("session name = %q, want my-project", name)
 	}
 	if uiName != "my-project" {
 		t.Fatalf("UI name = %q, want my-project", uiName)
 	}
-	if !store.Exists("my-project") || store.Exists("misty-vole") {
-		t.Fatal("rename should move the backing file")
+	if !testStoreExists(t, store, "my-project") || testStoreExists(t, store, "misty-vole") {
+		t.Fatal("rename should update the SQLite catalog")
 	}
 	if len(replies) == 0 || !strings.Contains(replies[len(replies)-1], "my-project") {
 		t.Fatalf("expected a confirmation reply, got %v", replies)
 	}
 
-	// Renaming an in-memory session reports the limitation instead of failing.
-	memStore := sessions.NewSyncMapSessionStore(nil)
-	memSession, err := memStore.Get("default")
-	if err != nil {
-		t.Fatalf("mem get: %v", err)
-	}
+	// Memory and disk sessions share the same rename behavior.
+	memStore := testOpenMemoryStore(t, nil)
+	memSession := testAcquireAutoSession(t, memStore, "default")
 	ctx.state = &conversationState{session: memSession}
 	replies = nil
-	if handled, _, err := defaultReplCommands.dispatch("/rename nope", ctx); !handled || err != nil {
+	if handled, _, err := defaultReplCommands.dispatch("/rename memory-name", ctx); !handled || err != nil {
 		t.Fatalf("mem dispatch: handled=%v err=%v", handled, err)
 	}
-	if len(replies) == 0 || !strings.Contains(replies[0], "in-memory") {
-		t.Fatalf("expected in-memory notice, got %v", replies)
+	if !testStoreExists(t, memStore, "memory-name") || testStoreExists(t, memStore, "default") {
+		t.Fatal("memory rename should update the same SQLite catalog")
+	}
+	if len(replies) == 0 || !strings.Contains(replies[0], "memory-name") {
+		t.Fatalf("expected rename confirmation, got %v", replies)
 	}
 }

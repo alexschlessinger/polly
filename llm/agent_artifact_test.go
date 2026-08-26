@@ -32,7 +32,7 @@ func TestAgentExternalizesRichToolImageAndAttachesItOnce(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "inspect-call", Name: "inspect", Arguments: `{}`}}},
 		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"},
 	}}
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	registry := tools.NewToolRegistry([]tools.Tool{rich, pathTool})
 	agent := NewAgent(model, registry, AgentConfig{ArtifactStore: store})
 
@@ -95,7 +95,7 @@ func TestAgentLargeToolResultKeepsFullArtifactAndSendsPreview(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "large-call", Name: "large", Arguments: `{}`}}},
 		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"},
 	}}
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	agent := NewAgent(model, tools.NewToolRegistry([]tools.Tool{tool}), AgentConfig{ArtifactStore: store})
 	var callbackResult string
 
@@ -144,7 +144,7 @@ func TestAgentPersistsCurrentTurnPressureSpills(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "second", Name: "second", Arguments: `{}`}}},
 		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"},
 	}}
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	agent := NewAgent(model, tools.NewToolRegistry([]tools.Tool{firstTool, secondTool}), AgentConfig{ArtifactStore: store})
 
 	response, err := agent.Run(context.Background(), &CompletionRequest{
@@ -174,34 +174,42 @@ func TestAgentPersistsCurrentTurnPressureSpills(t *testing.T) {
 	}
 }
 
-func TestAgentPreservesInlineAuditDataWhenArtifactStoreFails(t *testing.T) {
-	imageBytes := []byte("fallback image")
-	largeText := strings.Repeat("fallback text", 4_000)
-	rich := &testRichTool{name: "fallback", output: tools.ToolOutput{
-		Text: largeText, Media: []tools.ToolMedia{{Data: imageBytes, MIMEType: "image/png", Name: "fallback.png"}},
-	}}
-	model := &recordingSequentialLLM{responses: []messages.ChatMessage{
-		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "fallback-call", Name: "fallback", Arguments: `{}`}}},
-		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"},
-	}}
-	agent := NewAgent(model, tools.NewToolRegistry([]tools.Tool{rich}), AgentConfig{ArtifactStore: failingArtifactStore{}})
+func TestAgentSurfacesArtifactStoreFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output tools.ToolOutput
+	}{
+		{name: "large text", output: tools.ToolOutput{Text: strings.Repeat("failed text", 4_000)}},
+		{name: "image", output: tools.ToolOutput{Text: "image", Media: []tools.ToolMedia{{Data: []byte("image bytes"), MIMEType: "image/png", Name: "failed.png"}}}},
+		{name: "binary", output: tools.ToolOutput{Text: "binary", Media: []tools.ToolMedia{{Data: []byte("binary bytes"), MIMEType: "application/octet-stream", Name: "failed.bin"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rich := &testRichTool{name: "failing-store", output: tc.output}
+			model := &recordingSequentialLLM{responses: []messages.ChatMessage{
+				{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "failure-call", Name: "failing-store", Arguments: `{}`}}},
+				{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "must not run"},
+			}}
+			agent := NewAgent(model, tools.NewToolRegistry([]tools.Tool{rich}), AgentConfig{ArtifactStore: failingArtifactStore{}})
+			var callbackErr error
 
-	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: messages.User("run")}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var durable messages.ChatMessage
-	for _, msg := range response.AllMessages {
-		if msg.Role == messages.MessageRoleTool {
-			durable = msg
-		}
-	}
-	if durable.Content != largeText || len(durable.Parts) != 1 || durable.Parts[0].Type != "image_base64" {
-		t.Fatalf("storage failure discarded inline audit data: content=%d parts=%#v", len(durable.Content), durable.Parts)
-	}
-	decoded, err := base64.StdEncoding.DecodeString(durable.Parts[0].ImageData)
-	if err != nil || string(decoded) != string(imageBytes) {
-		t.Fatalf("fallback image = %q, %v", decoded, err)
+			response, err := agent.Run(context.Background(), &CompletionRequest{Messages: messages.User("run")}, &AgentCallbacks{
+				OnToolEnd: func(_ messages.ChatMessageToolCall, _ string, _ time.Duration, err error) {
+					callbackErr = err
+				},
+			})
+			if !errors.Is(err, errFailingArtifactStore) {
+				t.Fatalf("Run() error = %v, want artifact storage failure", err)
+			}
+			if !errors.Is(callbackErr, errFailingArtifactStore) {
+				t.Fatalf("OnToolEnd() error = %v, want artifact storage failure", callbackErr)
+			}
+			if len(model.requests) != 1 {
+				t.Fatalf("model requests = %d, want failure before follow-up call", len(model.requests))
+			}
+			if response == nil || len(messagesWithRole(response.AllMessages, messages.MessageRoleTool)) != 0 {
+				t.Fatalf("failed artifact result became durable: %#v", response)
+			}
+		})
 	}
 }
 
@@ -214,7 +222,7 @@ func TestAgentPreservesRichMediaReturnedWithToolError(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "call", Name: "failing-rich", Arguments: `{}`}}},
 		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "handled"},
 	}}
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	agent := NewAgent(model, tools.NewToolRegistry([]tools.Tool{rich}), AgentConfig{ArtifactStore: store})
 
 	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: messages.User("run")}, nil)
@@ -311,7 +319,7 @@ func TestAgentKeepsBinaryFallbackForAuditButSendsOnlyDescriptor(t *testing.T) {
 func TestAgentIndexesTransientLegacyToolArtifactForReadTool(t *testing.T) {
 	legacyOutput := "FIRST LINE\n" + strings.Repeat("legacy body\n", 5_000)
 	model := &legacyArtifactReaderLLM{}
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	agent := NewAgent(model, nil, AgentConfig{ArtifactStore: store})
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "old request"},
@@ -357,7 +365,7 @@ func TestAgentStopsBeforeProviderWhenActiveExchangeExceedsBudget(t *testing.T) {
 }
 
 func TestAgentArtifactAuthorizationResetsWithEachTranscript(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, Data: []byte("old private result")})
 	agent := NewAgent(&recordingSequentialLLM{}, nil, AgentConfig{ArtifactStore: store})
 	withArtifact := []messages.ChatMessage{{
@@ -453,15 +461,17 @@ func (r *recordingSequentialLLM) ChatCompletionStream(_ context.Context, req *Co
 
 type failingArtifactStore struct{}
 
+var errFailingArtifactStore = errors.New("store unavailable")
+
 func (failingArtifactStore) Put(context.Context, artifacts.Blob) (artifacts.Ref, error) {
-	return artifacts.Ref{}, errors.New("store unavailable")
+	return artifacts.Ref{}, errFailingArtifactStore
 }
 
 func (failingArtifactStore) Open(context.Context, string) (io.ReadCloser, error) {
-	return nil, errors.New("store unavailable")
+	return nil, errFailingArtifactStore
 }
 
-func (failingArtifactStore) RemoveAll() error { return nil }
+func (failingArtifactStore) RemoveAll(context.Context) error { return nil }
 
 func messagesContainEncodedImageInText(history []messages.ChatMessage, encoded string) bool {
 	for _, msg := range history {

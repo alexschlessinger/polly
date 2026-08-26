@@ -402,8 +402,10 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 	return response, nil
 }
 
-// executeTool executes a single tool call and returns the result message
-func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall, cb *AgentCallbacks) messages.ChatMessage {
+// executeTool executes a single tool call and returns the result message. Tool
+// execution failures remain durable tool outcomes, while artifact persistence
+// failures abort the turn because a configured store is authoritative.
+func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall, cb *AgentCallbacks) (messages.ChatMessage, error) {
 	// Parse args early so we can pass them to BeforeToolExecute
 	var args map[string]any
 	if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
@@ -424,16 +426,18 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 		result += fmt.Sprintf("\n[%s media: %s, %d bytes]", media.MIMEType, media.Name, len(media.Data))
 	}
 
+	msg, artifactErr := a.toolOutputMessage(execCtx, tc, output)
 	if cb != nil && cb.OnToolEnd != nil {
-		cb.OnToolEnd(tc, result, duration, err)
+		cb.OnToolEnd(tc, result, duration, errors.Join(err, artifactErr))
 	}
-
-	msg := a.toolOutputMessage(execCtx, tc, output)
+	if artifactErr != nil {
+		return messages.ChatMessage{}, artifactErr
+	}
 	// Record an explicit ordinary tool outcome so transcript hydration can
 	// distinguish it from older tool messages whose outcome is unknown. Tool
 	// failures must not use the terminal stream-error metadata.
 	msg.SetToolSucceeded(err == nil)
-	return msg
+	return msg, nil
 }
 
 // executeToolCall performs the actual tool execution
@@ -501,13 +505,15 @@ func mergeToolErrorText(errorText, resultText string) string {
 	return errorText + "\n" + resultText
 }
 
-func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageToolCall, output tools.ToolOutput) messages.ChatMessage {
+func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageToolCall, output tools.ToolOutput) (messages.ChatMessage, error) {
 	msg := messages.ChatMessage{Role: messages.MessageRoleTool, Content: output.Text, ToolCallID: tc.ID, ToolName: tc.Name}
 	if tc.Name != "read_artifact" && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
-		if ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)}); err == nil {
-			msg.Content = artifactReceipt(ref)
-			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
+		ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)})
+		if err != nil {
+			return messages.ChatMessage{}, fmt.Errorf("store text artifact for tool %q: %w", tc.Name, err)
 		}
+		msg.Content = artifactReceipt(ref)
+		msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
 	}
 	for _, media := range output.Media {
 		kind := artifacts.KindBinary
@@ -518,12 +524,13 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 		}
 		if a.artifactStore != nil {
 			ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: kind, MIMEType: media.MIMEType, Name: media.Name, Reference: media.Reference, Data: media.Data})
-			if err == nil {
-				msg.Parts = append(msg.Parts, messages.ContentPart{Type: partType, Artifact: &ref, MimeType: ref.MIMEType, FileName: ref.Name, Reference: ref.ImageToken})
-				descriptor := artifactMediaDescriptor(ref)
-				msg.Content = strings.TrimSpace(msg.Content + "\n" + descriptor)
-				continue
+			if err != nil {
+				return messages.ChatMessage{}, fmt.Errorf("store %s artifact %q for tool %q: %w", kind, media.Name, tc.Name, err)
 			}
+			msg.Parts = append(msg.Parts, messages.ContentPart{Type: partType, Artifact: &ref, MimeType: ref.MIMEType, FileName: ref.Name, Reference: ref.ImageToken})
+			descriptor := artifactMediaDescriptor(ref)
+			msg.Content = strings.TrimSpace(msg.Content + "\n" + descriptor)
+			continue
 		}
 		if kind == artifacts.KindImage {
 			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(media.Data), MimeType: media.MIMEType, FileName: media.Name})
@@ -532,7 +539,7 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 			msg.Content = strings.TrimSpace(msg.Content + "\n" + fmt.Sprintf("[binary media %s (%s), %d bytes; payload retained outside model text]", media.Name, media.MIMEType, len(media.Data)))
 		}
 	}
-	return msg
+	return msg, nil
 }
 
 func (a *Agent) indexArtifactMessages(history []messages.ChatMessage) {
@@ -660,7 +667,11 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 				return ctx.Err()
 			}
 
-			results[idx] = a.executeTool(ctx, tc, cb)
+			result, err := a.executeTool(ctx, tc, cb)
+			if err != nil {
+				return err
+			}
+			results[idx] = result
 			return nil
 		})
 	}

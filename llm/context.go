@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -172,13 +173,17 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 			stored, err := store.Put(ctx, artifacts.Blob{
 				Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(*msg), Data: []byte(msg.Content),
 			})
-			if err == nil {
-				msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
-				ref = &stored
+			if err != nil {
+				return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
 			}
+			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
+			ref = &stored
 		}
 		if ref == nil {
 			continue
+		}
+		if store == nil {
+			return nil, compacted, fmt.Errorf("tool artifact %s cannot be read without a store", ref.ID)
 		}
 
 		messageBatch := resultBatch[i]
@@ -188,36 +193,17 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 			compacted++
 			continue
 		}
-		// A blob that cannot be read (pruned artifacts dir, transcript copied
-		// without its store) degrades to an unavailability note instead of
-		// failing the turn: a recent batch only ages out after newer successful
-		// turns, so a hard error here would be permanent for the session.
-		if store == nil {
-			msg.Content = appendArtifactDescriptors(artifactUnavailableNote(*ref), *msg, ref.ID, " ")
-			compacted++
-			continue
-		}
 		if ref.Bytes <= toolInlineTokenLimit*4 {
 			data, err := readArtifactBytes(ctx, store, ref.ID, ref.Bytes)
 			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return nil, compacted, ctxErr
-				}
-				msg.Content = appendArtifactDescriptors(artifactUnavailableNote(*ref), *msg, ref.ID, " ")
-				compacted++
-				continue
+				return nil, compacted, fmt.Errorf("read tool artifact %s: %w", ref.ID, err)
 			}
 			msg.Content = appendArtifactDescriptors(string(data), *msg, ref.ID, "\n")
 			continue
 		}
 		head, tail, err := readArtifactPreview(ctx, store, *ref)
 		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, compacted, ctxErr
-			}
-			msg.Content = appendArtifactDescriptors(artifactUnavailableNote(*ref), *msg, ref.ID, " ")
-			compacted++
-			continue
+			return nil, compacted, fmt.Errorf("preview tool artifact %s: %w", ref.ID, err)
 		}
 		msg.Content = artifactPreviewWithDescriptors(*ref, head, tail, *msg)
 		compacted++
@@ -577,20 +563,20 @@ func hydrateImagePart(ctx context.Context, part messages.ContentPart, store arti
 }
 
 func readArtifactBytes(ctx context.Context, store artifacts.Store, id string, expected int64) ([]byte, error) {
-	r, err := store.Open(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
 	if expected < 0 {
 		return nil, fmt.Errorf("invalid artifact size")
 	}
 	if expected > maxHydratedArtifact {
 		return nil, fmt.Errorf("artifact is too large to hydrate (%d bytes)", expected)
 	}
-	data, err := io.ReadAll(io.LimitReader(r, expected+1))
+	r, err := store.Open(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(r, expected+1))
+	closeErr := r.Close()
+	if readErr != nil || closeErr != nil {
+		return nil, errors.Join(readErr, closeErr)
 	}
 	if int64(len(data)) != expected {
 		return nil, fmt.Errorf("stored size does not match transcript reference")
@@ -600,7 +586,7 @@ func readArtifactBytes(ctx context.Context, store artifacts.Store, id string, ex
 
 // readArtifactPreview retains only bounded head and tail windows while still
 // consuming the stream to verify the immutable reference's recorded size.
-func readArtifactPreview(ctx context.Context, store artifacts.Store, ref artifacts.Ref) ([]byte, []byte, error) {
+func readArtifactPreview(ctx context.Context, store artifacts.Store, ref artifacts.Ref) (headResult, tailResult []byte, retErr error) {
 	if ref.Bytes < 0 {
 		return nil, nil, fmt.Errorf("invalid artifact size")
 	}
@@ -608,7 +594,11 @@ func readArtifactPreview(ctx context.Context, store artifacts.Store, ref artifac
 	if err != nil {
 		return nil, nil, err
 	}
-	defer r.Close()
+	defer func() {
+		if err := r.Close(); err != nil {
+			retErr = errors.Join(retErr, err)
+		}
+	}()
 
 	window := toolPreviewTokenLimit*2 + utf8.UTFMax
 	head := make([]byte, 0, window)
@@ -668,10 +658,6 @@ func textArtifactRef(msg messages.ChatMessage) *artifacts.Ref {
 
 func artifactReceipt(ref artifacts.Ref) string {
 	return fmt.Sprintf("[tool output stored as artifact %s; %d bytes; %d lines. Use read_artifact to inspect it.]", ref.ID, ref.Bytes, ref.Lines)
-}
-
-func artifactUnavailableNote(ref artifacts.Ref) string {
-	return fmt.Sprintf("[tool output artifact %s (%d bytes) is no longer available in this session]", ref.ID, ref.Bytes)
 }
 
 func artifactMediaDescriptor(ref artifacts.Ref) string {
@@ -884,10 +870,7 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 				Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(history[i]), Data: []byte(originalContent),
 			})
 			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return newlyCompacted, spills, ctxErr
-				}
-				continue
+				return newlyCompacted, spills, fmt.Errorf("store active tool artifact for %q: %w", history[i].ToolName, err)
 			}
 			history[i].Parts = append(history[i].Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
 			ref = &stored
