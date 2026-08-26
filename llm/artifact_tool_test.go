@@ -1,10 +1,14 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 )
@@ -207,5 +211,136 @@ func TestListArtifactsEntryFormats(t *testing.T) {
 	}
 	if !strings.Contains(out, "2. "+binary.ID+"; binary; 9 bytes") || strings.Contains(out, "lines") {
 		t.Fatalf("binary entry = %q", out)
+	}
+}
+
+func TestReadArtifactOverlongLinePlaceholderAndBytePaging(t *testing.T) {
+	store := newTestArtifactStore()
+	long := strings.Repeat(`{"k":"v"},`, 300_000) // 3,000,000 bytes, one physical line
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(long)})
+	tool := testReadArtifactTool(store, ref)
+
+	lines, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID})
+	if err != nil {
+		t.Fatalf("line mode failed on overlong line: %v", err)
+	}
+	if !strings.HasPrefix(lines, "1: [line is 3000000 bytes; exceeds inline limit; read with byte_offset=0]") {
+		t.Fatalf("placeholder = %q", lines[:min(150, len(lines))])
+	}
+
+	var rebuilt strings.Builder
+	nextPattern := regexp.MustCompile(`next byte_offset=(\d+)\]$`)
+	offset := 0
+	for i := 0; i < 200; i++ {
+		out, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": offset})
+		if err != nil {
+			t.Fatal(err)
+		}
+		header, body, found := strings.Cut(out, "\n")
+		if !found || !strings.HasPrefix(header, fmt.Sprintf("[artifact %s; bytes %d-", ref.ID, offset)) {
+			t.Fatalf("window header = %q", header)
+		}
+		match := nextPattern.FindStringSubmatch(body)
+		if match == nil {
+			rebuilt.WriteString(body)
+			break
+		}
+		rebuilt.WriteString(strings.TrimSuffix(body, "\n[artifact continues; next byte_offset="+match[1]+"]"))
+		offset, _ = strconv.Atoi(match[1])
+	}
+	if rebuilt.String() != long {
+		t.Fatalf("byte paging rebuilt %d bytes, want %d", rebuilt.Len(), len(long))
+	}
+}
+
+func TestReadArtifactLinesAfterOverlongLineRemainReachable(t *testing.T) {
+	store := newTestArtifactStore()
+	content := "before\n" + strings.Repeat("x", 2<<20) + "\nafter overlong\nlast"
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(content)})
+	tool := testReadArtifactTool(store, ref)
+
+	out, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"1: before\n",
+		"2: [line is 2097152 bytes; exceeds inline limit; read with byte_offset=7]\n",
+		"3: after overlong\n",
+		"4: last",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("line view missing %q: %q", want, out)
+		}
+	}
+
+	paged, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "offset": 3})
+	if err != nil || !strings.HasPrefix(paged, "3: after overlong") {
+		t.Fatalf("offset paging past overlong line = %q, %v", paged[:min(80, len(paged))], err)
+	}
+}
+
+func TestReadArtifactQueryMatchesInsideOverlongLine(t *testing.T) {
+	store := newTestArtifactStore()
+	// The needle spans the 1MiB hold boundary, so only a full-line carry search finds it.
+	long := strings.Repeat("a", artifactScanMaxLine-3) + "NEEDLE" + strings.Repeat("b", 500)
+	content := "plain NEEDLE here\n" + long + "\nno hit line"
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(content)})
+	tool := testReadArtifactTool(store, ref)
+
+	out, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "query": "NEEDLE"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "1: plain NEEDLE here\n") {
+		t.Fatalf("normal query match missing: %q", out)
+	}
+	if !strings.Contains(out, "2: [query matches inside "+fmt.Sprint(len(long))+"-byte line; read with byte_offset=18]") {
+		t.Fatalf("overlong query match missing: %q", out)
+	}
+	if strings.Contains(out, "no hit line") {
+		t.Fatalf("non-matching line leaked into query output: %q", out)
+	}
+}
+
+func TestReadArtifactByteOffsetValidation(t *testing.T) {
+	store := newTestArtifactStore()
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte("tiny content")})
+	tool := testReadArtifactTool(store, ref)
+
+	if _, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 0, "query": "x"}); err == nil ||
+		!strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("mode mixing error = %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": -1}); err == nil {
+		t.Fatal("negative byte_offset was accepted")
+	}
+	past, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 100})
+	if err != nil || past != "Artifact has no content at or after byte 100." {
+		t.Fatalf("past-end byte read = %q, %v", past, err)
+	}
+	window, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 5})
+	if err != nil || !strings.Contains(window, "bytes 5-12 of 12; raw window]\ncontent") || strings.Contains(window, "continues") {
+		t.Fatalf("final window = %q, %v", window, err)
+	}
+}
+
+func TestReadArtifactByteWindowAdvancesOnBinaryContent(t *testing.T) {
+	store := newTestArtifactStore()
+	binary := bytes.Repeat([]byte{0x80, 0xff, 0x00}, 30_000) // 90,000 invalid-UTF8 bytes
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: binary})
+	tool := testReadArtifactTool(store, ref)
+
+	out, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`next byte_offset=(\d+)\]$`).FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("large binary window did not continue: %q", out[len(out)-min(100, len(out)):])
+	}
+	next, _ := strconv.Atoi(match[1])
+	if next < artifactReadMaxBytes-256-int(utf8.UTFMax) {
+		t.Fatalf("binary window advanced only to %d", next)
 	}
 }
