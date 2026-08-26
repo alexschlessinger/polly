@@ -183,7 +183,10 @@ Slash commands inside the TUI:
 ```
 
 Ctrl-C or Esc interrupts an in-flight turn; pressing Ctrl-C again (or at an
-idle prompt) quits.
+idle prompt) quits. Ctrl-Z suspends Polly and returns to the shell; `fg` resumes
+the same TUI state. Polly enables button-level mouse reporting for transcript
+scrolling and image clicks, so use the terminal's mouse override—usually
+Shift-drag, or Option-drag in some macOS terminals—to select text.
 
 Launching the TUI without `-c` starts a persistent session under a generated
 name (e.g. `quiet-otter`). Resume it later with `polly -L` or `polly -c

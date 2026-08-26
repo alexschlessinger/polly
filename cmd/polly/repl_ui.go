@@ -2298,8 +2298,14 @@ type managedREPL struct {
 	rootFlex    *widgets.Flex
 
 	quit       chan struct{}
+	suspend    chan struct{}
 	pending    chan managedTurnInput
 	turnCancel context.CancelFunc
+
+	// suspendProcess stops polly's foreground process group after tcell has
+	// restored the terminal. The shell resumes the group with SIGCONT on `fg`.
+	// It is replaceable in tests so event handling never stops the test process.
+	suspendProcess func() error
 
 	// openImage launches the OS viewer for a clicked transcript thumbnail;
 	// swappable in tests.
@@ -2570,12 +2576,14 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 	m.skillCount = skillCount
 	m.quiet = config.Quiet
 	return &managedREPL{
-		config:    config,
-		model:     m,
-		quit:      make(chan struct{}, 1),
-		pending:   make(chan managedTurnInput, 1),
-		uiTasks:   make(chan func(), 8),
-		openImage: openImageInViewer,
+		config:         config,
+		model:          m,
+		quit:           make(chan struct{}, 1),
+		suspend:        make(chan struct{}, 1),
+		pending:        make(chan managedTurnInput, 1),
+		uiTasks:        make(chan func(), 8),
+		openImage:      openImageInViewer,
+		suspendProcess: suspendCurrentProcessGroup,
 	}
 }
 
@@ -2676,6 +2684,13 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			r.cancelTurn()
 			r.releaseApproval()
 			return nil
+		case <-r.suspend:
+			if err := r.suspendUI(ui.DefaultBackend.Screen); err != nil {
+				r.model.mu.Lock()
+				r.model.appendNoticeLine("suspend failed: " + err.Error())
+				r.model.mu.Unlock()
+			}
+			r.render()
 		case <-r.state.sandboxWarningNotify():
 			r.model.mu.Lock()
 			appended := r.appendPendingSandboxWarningsLocked()
@@ -2683,6 +2698,10 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			if appended {
 				r.render()
 			}
+		case <-r.images.readyEvents():
+			// CPU-heavy image preparation finishes off-thread. The event loop
+			// remains the sole owner of terminal writes and cell locks.
+			r.render()
 		case <-ticker.C:
 			if r.needsTick() {
 				r.render()
@@ -3798,6 +3817,18 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	if m.pasting {
 		m.clearSlashHints()
 		m.bufferPasted(e)
+		return false
+	}
+
+	// tcell runs the terminal in raw mode, so the terminal driver cannot turn
+	// Ctrl-Z into SIGTSTP for us. Queue suspension on the UI loop, which first
+	// restores the terminal and then stops the foreground process group. This
+	// remains available during turns, searches, and approval prompts.
+	if e.ID == "<C-z>" {
+		select {
+		case r.suspend <- struct{}{}:
+		default:
+		}
 		return false
 	}
 
