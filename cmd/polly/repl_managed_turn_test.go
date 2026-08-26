@@ -254,7 +254,7 @@ func TestFileSessionReloadRetriesPersistedImageWithoutSource(t *testing.T) {
 	}
 }
 
-func TestAttachmentBudgetRejectionLeavesComposerDraft(t *testing.T) {
+func TestAttachmentProjectionDoesNotChargeHistoricalImages(t *testing.T) {
 	store := sessions.NewSyncMapSessionStore(nil)
 	session, err := store.Get("budget")
 	if err != nil {
@@ -278,17 +278,15 @@ func TestAttachmentBudgetRejectionLeavesComposerDraft(t *testing.T) {
 	r.model.ed.setText(draft)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 
-	if got := r.model.ed.text(); got != draft {
-		t.Fatalf("budget rejection cleared draft: %q", got)
+	if got := r.model.ed.text(); got != "" {
+		t.Fatalf("accepted image prompt left draft behind: %q", got)
 	}
-	if r.model.busy {
-		t.Fatal("budget rejection started a turn")
+	turn, ok := r.takePending()
+	if !ok || turn.displayText != draft {
+		t.Fatalf("historical image suppressed candidate turn: %#v, ok=%t", turn, ok)
 	}
-	if _, ok := r.takePending(); ok {
-		t.Fatal("budget rejection enqueued a turn")
-	}
-	if transcript := plainStyledText(strings.Join(r.model.flattenTranscript(), "\n")); !strings.Contains(transcript, "portable limit is 16 MiB") {
-		t.Fatalf("budget rejection did not show a local error: %q", transcript)
+	if transcript := plainStyledText(strings.Join(r.model.flattenTranscript(), "\n")); strings.Contains(transcript, "portable limit") {
+		t.Fatalf("historical image caused a local budget error: %q", transcript)
 	}
 }
 
@@ -359,7 +357,7 @@ func TestAttachmentPreparationFailuresLeaveComposerDraft(t *testing.T) {
 	}
 }
 
-func TestProjectedBudgetCountsUnpersistedIdenticalCurrentTurn(t *testing.T) {
+func TestManagedTurnPreparationDoesNotReplayUnpersistedCurrentImages(t *testing.T) {
 	data := strings.Repeat("A", (maxEncodedImageHistoryBytes/2)+1)
 	imageMessage := messages.ChatMessage{
 		Role: messages.MessageRoleUser,
@@ -386,8 +384,8 @@ func TestProjectedBudgetCountsUnpersistedIdenticalCurrentTurn(t *testing.T) {
 	writeImageFixture(t, path, 2, 2)
 	token := r.model.registerAttachment(path, "candidate.png")
 
-	if _, err := r.prepareManagedTurnLocked("inspect " + token); err == nil {
-		t.Fatal("unpersisted current image turn was mistaken for an earlier identical turn")
+	if _, err := r.prepareManagedTurnLocked("inspect " + token); err != nil {
+		t.Fatalf("candidate was incorrectly charged for a prior current-turn image: %v", err)
 	}
 }
 
@@ -419,7 +417,7 @@ func TestProjectedBudgetHonorsQueuedResetBarrier(t *testing.T) {
 	}
 }
 
-func TestProjectionWaitsForFinalAckAfterSessionAddIsVisible(t *testing.T) {
+func TestManagedTurnPreparationDoesNotWaitForPersistenceAck(t *testing.T) {
 	imageMessage := messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{{
@@ -456,21 +454,13 @@ func TestProjectionWaitsForFinalAckAfterSessionAddIsVisible(t *testing.T) {
 	<-started
 	select {
 	case err := <-result:
-		t.Fatalf("projection resolved before the visible Add received its final acknowledgement: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	// Completion must not need model.mu: the projection goroutine holds it while
-	// waiting on this turn-owned persistence phase.
-	tui.UserMessagePersistenceFinished(true)
-	select {
-	case err := <-result:
 		if err != nil {
-			t.Fatalf("acknowledged current image was double-counted: %v", err)
+			t.Fatalf("managed turn preparation failed: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("projection did not resume after final persistence acknowledgement")
+		t.Fatal("managed turn preparation waited on unrelated persistence")
 	}
+	tui.UserMessagePersistenceFinished(true)
 }
 
 func managedImageData(t *testing.T, msg messages.ChatMessage) string {

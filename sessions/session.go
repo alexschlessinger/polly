@@ -4,16 +4,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
 // LocalSession implements an in-memory session
 type LocalSession struct {
-	history  []messages.ChatMessage
-	last     time.Time
-	name     string
-	mu       sync.RWMutex
-	metadata *Metadata
+	history   []messages.ChatMessage
+	last      time.Time
+	name      string
+	mu        sync.RWMutex
+	metadata  *Metadata
+	artifacts *artifacts.MemoryStore
 }
 
 // SyncMapSessionStore implements a thread-safe in-memory session store
@@ -68,9 +70,10 @@ func (s *SyncMapSessionStore) Get(id string) (Session, error) {
 	}
 
 	session := &LocalSession{
-		name:     id,
-		last:     time.Now(),
-		metadata: contextInfo,
+		name:      id,
+		last:      time.Now(),
+		metadata:  contextInfo,
+		artifacts: artifacts.NewMemoryStore(),
 	}
 	_ = session.Clear() // in-memory; never fails
 	s.Store(id, session)
@@ -79,6 +82,9 @@ func (s *SyncMapSessionStore) Get(id string) (Session, error) {
 
 // Delete removes a session
 func (s *SyncMapSessionStore) Delete(id string) {
+	if value, ok := s.Load(id); ok {
+		_ = value.(*LocalSession).artifacts.RemoveAll()
+	}
 	s.Map.Delete(id)
 }
 
@@ -186,16 +192,7 @@ func (s *LocalSession) AddMessages(msgs []messages.ChatMessage) error {
 
 	s.history = append(s.history, msgs...)
 	s.last = time.Now()
-	s.trimHistory()
 	return nil
-}
-
-// trimHistory limits the session history to MaxHistoryTokens
-func (s *LocalSession) trimHistory() {
-	if s.metadata.MaxHistoryTokens == 0 {
-		return
-	}
-	s.history = TrimHistory(s.history, s.metadata.MaxHistoryTokens)
 }
 
 // Clear clears the session history
@@ -212,7 +209,23 @@ func (s *LocalSession) Clear() error {
 		})
 	}
 	s.last = time.Now()
+	if s.artifacts == nil {
+		s.artifacts = artifacts.NewMemoryStore()
+	} else {
+		_ = s.artifacts.RemoveAll()
+	}
 	return nil
+}
+
+// ArtifactStore returns the private in-memory store for this ephemeral
+// session. It is intentionally outside the Session interface.
+func (s *LocalSession) ArtifactStore() (artifacts.Store, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.artifacts == nil {
+		s.artifacts = artifacts.NewMemoryStore()
+	}
+	return s.artifacts, nil
 }
 
 // GetName returns the session name
@@ -272,8 +285,8 @@ func (s *LocalSession) GetTotalTokens() int {
 	return total
 }
 
-// GetCapacityPercentage returns the percentage of capacity used (0-100)
-// Returns 0 if no limit is set
+// GetCapacityPercentage compares durable transcript size with the model
+// projection budget. It may exceed 100 because persistence is never trimmed.
 func (s *LocalSession) GetCapacityPercentage() float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

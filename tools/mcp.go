@@ -126,6 +126,102 @@ func (m *MCPTool) GetSource() string {
 
 // Execute runs the MCP tool with the given arguments
 func (m *MCPTool) Execute(ctx context.Context, args map[string]any) (string, error) {
+	result, err := m.call(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	if len(result.Content) == 0 {
+		return "", nil
+	}
+
+	// Marshal the content as JSON for backward-compatible direct Tool callers.
+	output, err := json.Marshal(result.Content)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal tool result: %v", err)
+	}
+	return string(output), nil
+}
+
+// ExecuteOutput preserves MCP image/audio bytes as typed media so Agent can
+// externalize them rather than embedding base64 in a textual tool result.
+func (m *MCPTool) ExecuteOutput(ctx context.Context, args map[string]any) (ToolOutput, error) {
+	result, err := m.call(ctx, args)
+	if result == nil {
+		return ToolOutput{}, err
+	}
+	output, outputErr := mcpResultOutput(result)
+	if outputErr != nil {
+		return ToolOutput{}, outputErr
+	}
+	return output, err
+}
+
+func mcpResultOutput(result *mcp.CallToolResult) (ToolOutput, error) {
+	var textParts []string
+	var media []ToolMedia
+	for _, content := range result.Content {
+		if err := appendMCPContent(content, &textParts, &media); err != nil {
+			return ToolOutput{}, err
+		}
+	}
+	if result.StructuredContent != nil {
+		encoded, marshalErr := json.Marshal(result.StructuredContent)
+		if marshalErr != nil {
+			return ToolOutput{}, fmt.Errorf("failed to marshal structured tool result: %v", marshalErr)
+		}
+		textParts = append(textParts, string(encoded))
+	}
+	return ToolOutput{Text: strings.Join(textParts, "\n"), Media: media}, nil
+}
+
+func appendMCPContent(content mcp.Content, textParts *[]string, media *[]ToolMedia) error {
+	switch part := content.(type) {
+	case *mcp.TextContent:
+		*textParts = append(*textParts, part.Text)
+	case *mcp.ImageContent:
+		*media = append(*media, ToolMedia{Data: append([]byte(nil), part.Data...), MIMEType: part.MIMEType})
+	case *mcp.AudioContent:
+		*media = append(*media, ToolMedia{Data: append([]byte(nil), part.Data...), MIMEType: part.MIMEType})
+	case *mcp.EmbeddedResource:
+		if part.Resource == nil {
+			*textParts = append(*textParts, "[empty embedded MCP resource]")
+			return nil
+		}
+		if part.Resource.Text != "" {
+			*textParts = append(*textParts, part.Resource.Text)
+		}
+		if len(part.Resource.Blob) > 0 {
+			*media = append(*media, ToolMedia{
+				Data:      append([]byte(nil), part.Resource.Blob...),
+				MIMEType:  part.Resource.MIMEType,
+				Name:      part.Resource.URI,
+				Reference: part.Resource.URI,
+			})
+		}
+	case *mcp.ToolResultContent:
+		for _, nested := range part.Content {
+			if err := appendMCPContent(nested, textParts, media); err != nil {
+				return err
+			}
+		}
+		if part.StructuredContent != nil {
+			encoded, err := json.Marshal(part.StructuredContent)
+			if err != nil {
+				return fmt.Errorf("failed to marshal nested structured MCP content: %v", err)
+			}
+			*textParts = append(*textParts, string(encoded))
+		}
+	default:
+		encoded, err := json.Marshal(content)
+		if err != nil {
+			return fmt.Errorf("failed to marshal MCP content: %v", err)
+		}
+		*textParts = append(*textParts, string(encoded))
+	}
+	return nil
+}
+
+func (m *MCPTool) call(ctx context.Context, args map[string]any) (*mcp.CallToolResult, error) {
 	// Log the tool execution for debugging
 	slog.Debug("mcp_tool_executing", "tool_name", m.tool.Name, "arguments", args)
 
@@ -143,31 +239,44 @@ func (m *MCPTool) Execute(ctx context.Context, args map[string]any) (string, err
 	// Call the tool via MCP
 	result, err := m.session.CallTool(ctx, params)
 	if err != nil {
-		return "", fmt.Errorf("MCP tool execution failed: %v", err)
+		return nil, fmt.Errorf("MCP tool execution failed: %v", err)
 	}
 
 	// Handle the result
 	if result.IsError {
-		// If it's an error, return the error content
 		if len(result.Content) > 0 {
-			content, _ := json.Marshal(result.Content)
-			return "", fmt.Errorf("tool returned error: %s", string(content))
+			description, describeErr := mcpErrorDescription(result)
+			if describeErr != nil {
+				return result, fmt.Errorf("tool returned error (and its content could not be described): %v", describeErr)
+			}
+			return result, fmt.Errorf("tool returned error: %s", description)
 		}
-		return "", fmt.Errorf("tool returned error without content")
+		return result, fmt.Errorf("tool returned error without content")
 	}
 
 	// Convert the result content to a string
 	if len(result.Content) == 0 {
-		return "", nil
+		return result, nil
 	}
+	return result, nil
+}
 
-	// Marshal the content as JSON for consistent output
-	output, err := json.Marshal(result.Content)
+func mcpErrorDescription(result *mcp.CallToolResult) (string, error) {
+	output, err := mcpResultOutput(result)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal tool result: %v", err)
+		return "", err
 	}
-
-	return string(output), nil
+	parts := make([]string, 0, 1+len(output.Media))
+	if output.Text != "" {
+		parts = append(parts, output.Text)
+	}
+	for _, media := range output.Media {
+		parts = append(parts, fmt.Sprintf("[%s binary media, %d bytes]", media.MIMEType, len(media.Data)))
+	}
+	if len(parts) == 0 {
+		return "no textual error detail", nil
+	}
+	return strings.Join(parts, "\n"), nil
 }
 
 // MCPConfig represents the JSON configuration for an MCP server

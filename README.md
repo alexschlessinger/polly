@@ -45,7 +45,7 @@ GLOBAL OPTIONS:
    --purge                                                  Delete all sessions and index (requires confirmation)
    --create string                                          Create a new context with specified name and configuration
    --show string                                            Show configuration for the specified context
-   --maxcontext int                                         Maximum tokens to keep in history (0 = unlimited) (default: 256000)
+   --maxcontext int                                         Maximum estimated tokens sent to the model; full history is retained (0 = unlimited) (default: 256000)
    --confirm                                                Require confirmation before each tool call
    --sandbox string                                         Sandbox preset: base, readonly, workspace, net — join with + (e.g. workspace+net) (default: "workspace+net") [$POLLYTOOL_SANDBOX]
    --nosandbox                                              Disable sandboxing of tool commands [$POLLYTOOL_NOSANDBOX]
@@ -174,7 +174,7 @@ Slash commands inside the TUI:
 /help [command]              Show help
 /attach <image-path>         Attach a local image to the next prompt
 /clear                       Clear the conversation
-/context  (/stats)           Show context info and token stats
+/context  (/stats)           Show durable transcript size and model budget
 /get <key|all>               Inspect current settings
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills

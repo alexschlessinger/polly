@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,6 +29,17 @@ type ServerResult struct {
 type NamespacedTool struct {
 	Tool
 	namespacedName string
+}
+
+// ExecuteOutput preserves an optional rich result through the namespace
+// wrapper. Without this forwarding method, wrapping an MCP tool would narrow
+// it back to Tool and force image bytes through Execute's textual JSON path.
+func (n *NamespacedTool) ExecuteOutput(ctx context.Context, args map[string]any) (ToolOutput, error) {
+	if rich, ok := n.Tool.(OutputTool); ok {
+		return rich.ExecuteOutput(ctx, args)
+	}
+	text, err := n.Tool.Execute(ctx, args)
+	return ToolOutput{Text: text}, err
 }
 
 // GetSchema returns a schema with the namespaced title
