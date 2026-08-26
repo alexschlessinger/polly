@@ -2178,6 +2178,21 @@ func TestSandboxIgnoresPATHSandboxExec(t *testing.T) {
 	}
 }
 
+func TestSandboxWorkspaceGitPresetAllowsCommitBlocksConfig(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	exerciseWorkspaceGitLeafSandbox(t)
+}
+
+func TestSandboxWorkspaceGitPresetWorktreeCommit(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	exerciseWorkspaceGitWorktreeCommitSandbox(t)
+}
+
+func TestDarwinSandboxSSHAgentGrant(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	exerciseSSHAgentGrantSandbox(t)
+}
+
 func TestBuildProfileGrantedUnixSocket(t *testing.T) {
 	_, sock := listenUnixSocket(t)
 	allowLine := fmt.Sprintf("(allow network-outbound (remote unix-socket (path-literal %q)))", sock)

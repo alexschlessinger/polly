@@ -1,7 +1,9 @@
 package sandbox
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stubSandbox lets a test control how the probe command is wrapped.
@@ -1262,6 +1265,253 @@ func TestFilterEnvNeverReturnsNil(t *testing.T) {
 				t.Fatalf("expected an empty (but non-nil) env, got %v", filtered)
 			}
 		})
+	}
+}
+
+// exerciseWorkspaceGitLeafSandbox is the shared body of the Darwin and Linux
+// end-to-end tests: under workspace+git a real sandboxed `git commit`
+// succeeds, while the host-code-exec surface (config, hooks, routing) stays
+// unwritable and the host-visible bytes stay unchanged. The platform test has
+// already skipped when its backend is unavailable.
+func exerciseWorkspaceGitLeafSandbox(t *testing.T) {
+	t.Helper()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	isolateGitConfig(t)
+	work := t.TempDir()
+	hostGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(gitPath, append([]string{"-C", work}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("host git %v: %v (%s)", args, err, out)
+		}
+	}
+	hostGit("init", "--quiet")
+	if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hostGit("add", "file.txt")
+	t.Chdir(work)
+
+	cfg, err := ParsePreset("workspace+git")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace+git) error = %v", err)
+	}
+	sb, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	configPath := filepath.Join(work, ".git", "config")
+	originalConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	commit := exec.Command(gitPath, "-C", work,
+		"-c", "user.name=polly", "-c", "user.email=polly@example.invalid",
+		"-c", "commit.gpgsign=false",
+		"commit", "--quiet", "-m", "sandboxed commit")
+	if err := wrapCmdForTest(t, sb, commit); err != nil {
+		t.Fatalf("Wrap() commit error = %v", err)
+	}
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed git commit failed: %v (%s)", err, out)
+	}
+	verify := exec.Command(gitPath, "-C", work, "rev-parse", "--verify", "HEAD")
+	if out, err := verify.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed commit not visible on the host: %v (%s)", err, out)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  *exec.Cmd
+	}{
+		{
+			name: "write config through git",
+			cmd:  exec.Command(gitPath, "-C", work, "config", "core.fsmonitor", "/tmp/evil"),
+		},
+		{
+			name: "append to config",
+			cmd:  exec.Command("bash", "-c", `echo '[core]' >> "$1"`, "bash", configPath),
+		},
+		{
+			name: "plant hook",
+			cmd:  exec.Command("bash", "-c", `: > "$1"`, "bash", filepath.Join(work, ".git", "hooks", "pre-commit")),
+		},
+		{
+			name: "relocate routing directory",
+			cmd:  exec.Command("mv", filepath.Join(work, ".git"), filepath.Join(work, ".git-old")),
+		},
+	}
+	for _, tt := range blocked {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := wrapCmdForTest(t, sb, tt.cmd); err != nil {
+				t.Fatalf("Wrap() error = %v", err)
+			}
+			if out, err := tt.cmd.CombinedOutput(); err == nil {
+				t.Fatalf("guarded git mutation succeeded, output: %s", out)
+			}
+		})
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(originalConfig) {
+		t.Fatalf(".git/config bytes changed under the sandbox:\n%s", after)
+	}
+	if _, err := os.Stat(filepath.Join(work, ".git", "hooks", "pre-commit")); !os.IsNotExist(err) {
+		t.Fatalf("hook was planted despite the pin: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(work, ".git")); err != nil {
+		t.Fatalf("routing directory moved or removed: %v", err)
+	}
+}
+
+// exerciseWorkspaceGitWorktreeCommitSandbox verifies a linked worktree stays
+// commit-capable in leaf mode while its per-worktree pointers stay pinned.
+func exerciseWorkspaceGitWorktreeCommitSandbox(t *testing.T) {
+	t.Helper()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	isolateGitConfig(t)
+	root := t.TempDir()
+	mainDir := filepath.Join(root, "main")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostGit := func(dir string, args ...string) {
+		t.Helper()
+		full := append([]string{"-C", dir,
+			"-c", "user.name=polly", "-c", "user.email=polly@example.invalid",
+			"-c", "commit.gpgsign=false"}, args...)
+		cmd := exec.Command(gitPath, full...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("host git %v: %v (%s)", args, err, out)
+		}
+	}
+	hostGit(mainDir, "init", "--quiet")
+	if err := os.WriteFile(filepath.Join(mainDir, "file.txt"), []byte("content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hostGit(mainDir, "add", "file.txt")
+	hostGit(mainDir, "commit", "--quiet", "-m", "initial")
+	worktree := filepath.Join(root, "wt")
+	hostGit(mainDir, "worktree", "add", "--quiet", worktree)
+	t.Chdir(root)
+
+	cfg, err := ParsePreset("workspace+git")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace+git) error = %v", err)
+	}
+	sb, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "new.txt"), []byte("more\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	add := exec.Command(gitPath, "-C", worktree, "add", "new.txt")
+	if err := wrapCmdForTest(t, sb, add); err != nil {
+		t.Fatalf("Wrap() add error = %v", err)
+	}
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed git add in worktree failed: %v (%s)", err, out)
+	}
+	commit := exec.Command(gitPath, "-C", worktree,
+		"-c", "user.name=polly", "-c", "user.email=polly@example.invalid",
+		"-c", "commit.gpgsign=false",
+		"commit", "--quiet", "-m", "worktree commit")
+	if err := wrapCmdForTest(t, sb, commit); err != nil {
+		t.Fatalf("Wrap() commit error = %v", err)
+	}
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed git commit in worktree failed: %v (%s)", err, out)
+	}
+
+	pointer := filepath.Join(mainDir, ".git", "worktrees", "wt", "gitdir")
+	original, err := os.ReadFile(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retarget := exec.Command("bash", "-c", `echo /elsewhere > "$1"`, "bash", pointer)
+	if err := wrapCmdForTest(t, sb, retarget); err != nil {
+		t.Fatalf("Wrap() retarget error = %v", err)
+	}
+	if out, err := retarget.CombinedOutput(); err == nil {
+		t.Fatalf("worktree gitdir pointer retarget succeeded, output: %s", out)
+	}
+	if after, err := os.ReadFile(pointer); err != nil || string(after) != string(original) {
+		t.Fatalf("worktree gitdir pointer changed: %v", err)
+	}
+}
+
+// exerciseSSHAgentGrantSandbox proves the agent path end to end: a real
+// ssh-agent on the host, PassEnv delivering SSH_AUTH_SOCK, and the socket
+// grant making it connectable — ssh-add exits 0 or 1 (agent reached), never
+// 2 (agent unreachable).
+func exerciseSSHAgentGrantSandbox(t *testing.T) {
+	t.Helper()
+	agentPath, err := exec.LookPath("ssh-agent")
+	if err != nil {
+		t.Skipf("ssh-agent unavailable: %v", err)
+	}
+	sshAddPath, err := exec.LookPath("ssh-add")
+	if err != nil {
+		t.Skipf("ssh-add unavailable: %v", err)
+	}
+	dir, err := os.MkdirTemp("", "pagent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "agent.sock")
+	agent := exec.Command(agentPath, "-D", "-a", sock)
+	if err := agent.Start(); err != nil {
+		t.Skipf("start ssh-agent: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = agent.Process.Kill()
+		_, _ = agent.Process.Wait()
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if info, err := os.Lstat(sock); err == nil && info.Mode()&os.ModeSocket != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Skip("ssh-agent socket never appeared")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	sb, err := New(Config{
+		PassEnv:          []string{"SSH_AUTH_SOCK"},
+		AllowUnixSockets: []string{sock},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, sshAddPath, "-l")
+	cmd.Env = append(os.Environ(), "SSH_AUTH_SOCK="+sock)
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return // agent reached, no identities loaded — the grant works
+		}
+		t.Fatalf("sandboxed ssh-add could not reach the granted agent: %v (%s)", err, out)
 	}
 }
 
