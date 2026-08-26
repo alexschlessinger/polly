@@ -116,7 +116,7 @@ func TestAgentLargeToolResultKeepsFullArtifactAndSendsPreview(t *testing.T) {
 			durable = msg
 		}
 	}
-	if len(durable.Parts) != 1 || durable.Parts[0].Artifact == nil || durable.Content != artifactReceipt(*durable.Parts[0].Artifact) {
+	if len(durable.Parts) != 1 || durable.Parts[0].Artifact == nil || durable.Content != artifactBirthPreview(*durable.Parts[0].Artifact, []byte(full)) {
 		t.Fatalf("durable large tool result = %#v", durable)
 	}
 	r, err := store.Open(context.Background(), durable.Parts[0].Artifact.ID)
@@ -131,6 +131,11 @@ func TestAgentLargeToolResultKeepsFullArtifactAndSendsPreview(t *testing.T) {
 	projectedTools := messagesWithRole(model.requests[1], messages.MessageRoleTool)
 	if len(projectedTools) != 1 || !strings.Contains(projectedTools[0].Content, "head/tail preview") || estimatedStringTokens(projectedTools[0].Content) > toolPreviewTokenLimit {
 		t.Fatalf("provider tool projection = %#v", projectedTools)
+	}
+	// The provider-visible form equals the durable form: projection never
+	// rewrites a born preview, keeping the prompt prefix byte-stable.
+	if projectedTools[0].Content != durable.Content {
+		t.Fatalf("projected form diverged from durable form: %q", projectedTools[0].Content[:min(200, len(projectedTools[0].Content))])
 	}
 }
 

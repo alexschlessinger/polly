@@ -507,12 +507,12 @@ func mergeToolErrorText(errorText, resultText string) string {
 
 func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageToolCall, output tools.ToolOutput) (messages.ChatMessage, error) {
 	msg := messages.ChatMessage{Role: messages.MessageRoleTool, Content: output.Text, ToolCallID: tc.ID, ToolName: tc.Name}
-	if tc.Name != "read_artifact" && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
+	if !isRecallToolName(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
 		ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)})
 		if err != nil {
 			return messages.ChatMessage{}, fmt.Errorf("store text artifact for tool %q: %w", tc.Name, err)
 		}
-		msg.Content = artifactReceipt(ref)
+		msg.Content = artifactBirthPreview(ref, []byte(output.Text))
 		msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
 	}
 	for _, media := range output.Media {
