@@ -19,6 +19,13 @@ const (
 	artifactReadMaxLines     = 500
 	artifactReadMaxBytes     = 40 << 10
 	artifactScanMaxLine      = 1 << 20
+
+	artifactListPageEntries = 50
+	// artifactListMaxBytes plus the continuation footer must stay under
+	// toolInlineTokenLimit*4 bytes so a catalog page is never externalized to
+	// an artifact at birth; the 50-entry page keeps worst-case output well
+	// below this cap regardless.
+	artifactListMaxBytes = 36 << 10
 )
 
 type readArtifactTool struct {
@@ -143,6 +150,73 @@ func boundedArtifactText(ctx context.Context, r io.Reader, offset, limit int, qu
 		}
 	}
 	return capArtifactReadText(out.String()), nil
+}
+
+type listArtifactsTool struct {
+	tools.NativeTool
+	list func() []artifacts.Ref
+}
+
+func (t *listArtifactsTool) GetName() string { return "list_artifacts" }
+
+func (t *listArtifactsTool) GetSchema() *schema.ToolSchema {
+	return schema.Tool(
+		"list_artifacts",
+		"List the artifacts referenced by this conversation, in the order first referenced, including ones from context that is no longer shown. Read one with read_artifact.",
+		schema.Params{
+			"offset": schema.Int("1-based starting position in the list (default 1)"),
+		},
+	)
+}
+
+func (t *listArtifactsTool) Execute(ctx context.Context, raw map[string]any) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	offset := tools.Args(raw).Int("offset", 1)
+	if offset < 1 {
+		return "", fmt.Errorf("offset must be at least 1")
+	}
+	refs := t.list()
+	if len(refs) == 0 {
+		return "No artifacts are referenced by this conversation.", nil
+	}
+	if offset > len(refs) {
+		return fmt.Sprintf("Artifact list has no entries at or after offset %d (total %d).", offset, len(refs)), nil
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "%d artifact(s) referenced by this conversation, in the order first referenced:\n", len(refs))
+	next := 0
+	for i := offset - 1; i < len(refs); i++ {
+		entry := artifactListEntry(i+1, refs[i])
+		if i-(offset-1) >= artifactListPageEntries || out.Len()+len(entry) > artifactListMaxBytes {
+			next = i + 1
+			break
+		}
+		out.WriteString(entry)
+	}
+	if next > 0 {
+		fmt.Fprintf(&out, "[more entries; continue with offset=%d]", next)
+	}
+	return strings.TrimRight(out.String(), "\n"), nil
+}
+
+func artifactListEntry(position int, ref artifacts.Ref) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d. %s; %s; %d bytes", position, ref.ID, ref.Kind, ref.Bytes)
+	if ref.Kind == artifacts.KindText && ref.Lines > 0 {
+		fmt.Fprintf(&b, "; %d lines", ref.Lines)
+	}
+	if name := sanitizeArtifactDescriptor(ref.Name); name != "" {
+		b.WriteString("; " + name)
+	}
+	if ref.Kind == artifacts.KindImage {
+		if token := sanitizeArtifactDescriptor(ref.ImageToken); token != "" {
+			b.WriteString("; reference " + token)
+		}
+	}
+	b.WriteByte('\n')
+	return b.String()
 }
 
 func capArtifactReadText(text string) string {

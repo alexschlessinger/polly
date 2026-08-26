@@ -680,3 +680,60 @@ func TestValidateImageProjectionEnforcesAggregateImageCaps(t *testing.T) {
 		}
 	})
 }
+
+func TestProjectionMarkerAdvertisesArtifactRecallOnlyWithStore(t *testing.T) {
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleSystem, Content: "sys"},
+		{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 4_000)},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleUser, Content: "current"},
+	}
+
+	withStore, stats, err := projectMessages(context.Background(), cloneMessages(history), 250, newTestArtifactStore())
+	if err != nil || stats.OmittedExchanges == 0 {
+		t.Fatalf("omission projection failed: stats=%+v err=%v", stats, err)
+	}
+	if !strings.Contains(projectedText(withStore), "call list_artifacts to enumerate them") {
+		t.Fatalf("marker does not advertise recall: %q", projectedText(withStore))
+	}
+
+	without, stats, err := projectMessages(context.Background(), cloneMessages(history), 250, nil)
+	if err != nil || stats.OmittedExchanges == 0 {
+		t.Fatalf("nil-store omission projection failed: stats=%+v err=%v", stats, err)
+	}
+	if strings.Contains(projectedText(without), "list_artifacts") {
+		t.Fatalf("nil-store marker advertises an unavailable tool: %q", projectedText(without))
+	}
+}
+
+func TestProjectionCapturesRefsFromOmittedExchanges(t *testing.T) {
+	store := newTestArtifactStore()
+	legacy := strings.Repeat("legacy line\n", 4_000)
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "old request"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old", Name: "legacy_tool", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "old", ToolName: "legacy_tool", Content: legacy},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleUser, Content: "current"},
+	}
+
+	projected, stats, err := projectMessages(context.Background(), history, 300, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.OmittedExchanges == 0 {
+		t.Fatalf("legacy exchange was not omitted: %+v", stats)
+	}
+	var captured *artifacts.Ref
+	for i := range stats.artifactRefs {
+		if stats.artifactRefs[i].Bytes == int64(len(legacy)) {
+			captured = &stats.artifactRefs[i]
+		}
+	}
+	if captured == nil {
+		t.Fatalf("ref minted inside the omitted exchange was not captured: %#v", stats.artifactRefs)
+	}
+	if strings.Contains(projectedText(projected), captured.ID) {
+		t.Fatalf("omitted exchange leaked into the projection: %#v", projected)
+	}
+}

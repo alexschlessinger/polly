@@ -491,3 +491,79 @@ func messagesContainEncodedImageInText(history []messages.ChatMessage, encoded s
 	}
 	return false
 }
+
+// catalogReaderLLM plays the recovery loop for content hidden by exchange
+// omission: list the catalog, then read the artifact it names.
+type catalogReaderLLM struct{ calls int }
+
+func (l *catalogReaderLLM) ChatCompletionStream(_ context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+	var response messages.ChatMessage
+	switch l.calls {
+	case 0:
+		response = messages.ChatMessage{
+			Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse,
+			ToolCalls: []messages.ChatMessageToolCall{{ID: "list", Name: "list_artifacts", Arguments: `{}`}},
+		}
+	case 1:
+		var id string
+		for _, msg := range req.Messages {
+			if msg.Role == messages.MessageRoleTool && msg.ToolName == "list_artifacts" {
+				id = testArtifactIDPattern.FindString(msg.Content)
+			}
+		}
+		response = messages.ChatMessage{
+			Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse,
+			ToolCalls: []messages.ChatMessageToolCall{{
+				ID: "read", Name: "read_artifact", Arguments: fmt.Sprintf(`{"id":%q,"limit":1}`, id),
+			}},
+		}
+	default:
+		response = messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"}
+	}
+	l.calls++
+	input := make(chan messages.ChatMessage, 1)
+	input <- response
+	close(input)
+	return processor.ProcessMessagesToEvents(input)
+}
+
+func TestAgentListsAndReadsArtifactFromOmittedExchange(t *testing.T) {
+	store := newTestArtifactStore()
+	data := "NEEDLE LINE\n" + strings.Repeat("filler body\n", 4_000)
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "lookup.txt", Data: []byte(data)})
+	agent := NewAgent(&catalogReaderLLM{}, nil, AgentConfig{ArtifactStore: store})
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "old request " + strings.Repeat("x", 4_000)},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old", Name: "lookup", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "old", ToolName: "lookup", Content: artifactReceipt(ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleUser, Content: "what did that lookup return?"},
+	}
+
+	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 600}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Projection.OmittedExchanges == 0 {
+		t.Fatalf("old exchange was not omitted: %+v", response.Projection)
+	}
+	var listResult, readResult messages.ChatMessage
+	for _, msg := range response.AllMessages {
+		if msg.Role != messages.MessageRoleTool {
+			continue
+		}
+		switch msg.ToolName {
+		case "list_artifacts":
+			listResult = msg
+		case "read_artifact":
+			readResult = msg
+		}
+	}
+	if !strings.Contains(listResult.Content, ref.ID) || !strings.Contains(listResult.Content, "in the order first referenced") {
+		t.Fatalf("catalog result = %#v", listResult)
+	}
+	succeeded, known := readResult.ToolSucceeded()
+	if !known || !succeeded || !strings.HasPrefix(readResult.Content, "1: NEEDLE LINE") {
+		t.Fatalf("recovered read result = %#v", readResult)
+	}
+}

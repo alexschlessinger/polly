@@ -67,6 +67,9 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 	if err != nil {
 		return nil, stats, err
 	}
+	// Capture refs before omission and image selection can drop their parts, so
+	// artifacts referenced only by soon-to-be-omitted exchanges stay indexed.
+	stats.artifactRefs = artifactRefsInMessages(projected)
 	projected, stats.HydratedImages, err = projectImages(ctx, projected, store)
 	if err != nil {
 		return nil, stats, err
@@ -74,11 +77,10 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 
 	stats.EstimatedTokens = estimateProjectedTokens(projected)
 	if maxTokens <= 0 || stats.EstimatedTokens <= maxTokens {
-		stats.artifactRefs = artifactRefsInMessages(projected)
 		return stripArtifactParts(projected), stats, nil
 	}
 
-	marker := projectionMarker()
+	marker := projectionMarker(store != nil)
 	for {
 		users := realUserIndexes(projected)
 		if len(users) <= 1 {
@@ -109,8 +111,19 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 	if stats.EstimatedTokens > maxTokens {
 		return nil, stats, &ContextLimitError{EstimatedTokens: stats.EstimatedTokens, Limit: maxTokens}
 	}
-	stats.artifactRefs = artifactRefsInMessages(projected)
+	for _, spill := range stats.toolSpills {
+		stats.artifactRefs = appendArtifactRef(stats.artifactRefs, spill.Ref)
+	}
 	return stripArtifactParts(projected), stats, nil
+}
+
+func appendArtifactRef(refs []artifacts.Ref, ref artifacts.Ref) []artifacts.Ref {
+	for _, existing := range refs {
+		if existing.ID == ref.ID {
+			return refs
+		}
+	}
+	return append(refs, ref)
 }
 
 func artifactRefsInMessages(history []messages.ChatMessage) []artifacts.Ref {
@@ -130,8 +143,12 @@ func artifactRefsInMessages(history []messages.ChatMessage) []artifacts.Ref {
 
 // projectionMarker is constant text: a count would rewrite the system message
 // on every additional omission and invalidate the provider's cached prefix.
-func projectionMarker() string {
-	return "[Context projection: earlier completed exchanges omitted; the full transcript remains stored locally.]"
+func projectionMarker(artifactsListable bool) string {
+	marker := "[Context projection: earlier completed exchanges omitted; the full transcript remains stored locally."
+	if artifactsListable {
+		marker += " Artifacts referenced by omitted content remain readable: call list_artifacts to enumerate them and read_artifact to inspect one."
+	}
+	return marker + "]"
 }
 
 // projectToolResults leaves any message that already carries a text artifact
@@ -188,11 +205,14 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 }
 
 func isRecallToolName(name string) bool {
-	return name == "read_artifact"
+	return name == "read_artifact" || name == "list_artifacts"
 }
 
 func recallResultStub(toolName string) string {
-	return "[" + toolName + " result elided to save space; the call above shows its arguments. Call " + toolName + " again to re-read.]"
+	if toolName == "list_artifacts" {
+		return "[list_artifacts result elided; call list_artifacts again for the current catalog.]"
+	}
+	return "[read_artifact result elided to save space; the call above shows its arguments. Call read_artifact again to re-read.]"
 }
 
 // previewWindows bounds the head and tail slices fed to artifactPreview, which
