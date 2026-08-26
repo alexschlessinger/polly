@@ -44,6 +44,10 @@ type toolResultSpill struct {
 	ToolName   string
 	Content    string
 	Ref        artifacts.Ref
+	// Receipt is the exact provider-visible form the spilling projection sent;
+	// applyDurableToolSpills persists it verbatim so the durable final form and
+	// the sent form never diverge.
+	Receipt string
 }
 
 // ContextLimitError means the active exchange could not fit even after all
@@ -67,9 +71,12 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 	if err != nil {
 		return nil, stats, err
 	}
-	// Capture refs before omission and image selection can drop their parts, so
-	// artifacts referenced only by soon-to-be-omitted exchanges stay indexed.
+	// Capture refs and media descriptors before omission and image selection
+	// can drop their parts: refs keep omitted-exchange artifacts indexed, and
+	// the descriptors let a later spill build the same final form that
+	// applyDurableToolSpills persists.
 	stats.artifactRefs = artifactRefsInMessages(projected)
+	spillDescriptors := toolMediaDescriptorsByCall(projected)
 	projected, stats.HydratedImages, err = projectImages(ctx, projected, store)
 	if err != nil {
 		return nil, stats, err
@@ -100,7 +107,7 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 		stats.EstimatedTokens = estimateProjectedTokens(projected)
 	}
 	if stats.EstimatedTokens > maxTokens {
-		spilled, spills, spillErr := spillActiveToolResults(ctx, projected, maxTokens, store)
+		spilled, spills, spillErr := spillActiveToolResults(ctx, projected, maxTokens, store, spillDescriptors)
 		if spillErr != nil {
 			return nil, stats, spillErr
 		}
@@ -801,7 +808,34 @@ func omitExchangePreservingSystems(history []messages.ChatMessage, start, end in
 	return out
 }
 
-func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store) (int, []toolResultSpill, error) {
+// toolMediaDescriptorsByCall snapshots each tool result's media descriptors
+// keyed by tool-call ID, before projectImages moves or drops image parts.
+func toolMediaDescriptorsByCall(history []messages.ChatMessage) map[string][]string {
+	var out map[string][]string
+	for _, msg := range history {
+		if msg.Role != messages.MessageRoleTool || msg.ToolCallID == "" {
+			continue
+		}
+		if descriptors := artifactDescriptors(msg, ""); len(descriptors) > 0 {
+			if out == nil {
+				out = make(map[string][]string)
+			}
+			out[msg.ToolCallID] = descriptors
+		}
+	}
+	return out
+}
+
+// withDescriptorList mirrors appendArtifactDescriptors' byte layout for a
+// descriptor list captured earlier.
+func withDescriptorList(content string, descriptors []string) string {
+	if len(descriptors) == 0 {
+		return content
+	}
+	return strings.TrimSpace(content + " " + strings.Join(descriptors, " "))
+}
+
+func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, descriptors map[string][]string) (int, []toolResultSpill, error) {
 	users := realUserIndexes(history)
 	if len(users) == 0 {
 		return 0, nil, nil
@@ -827,16 +861,17 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 			if i > lastAssistant {
 				continue
 			}
-			stub := recallResultStub(history[i].ToolName)
+			stub := withDescriptorList(recallResultStub(history[i].ToolName), descriptors[history[i].ToolCallID])
 			if estimatedStringTokens(stub) < estimatedStringTokens(history[i].Content) {
-				history[i].Content = appendArtifactDescriptors(stub, history[i], "", " ")
+				history[i].Content = stub
 				newlyCompacted++
 			}
 			continue
 		}
 		ref := textArtifactRef(history[i])
-		if ref == nil && history[i].Content != "" && store != nil {
-			originalContent := history[i].Content
+		minted := false
+		originalContent := history[i].Content
+		if ref == nil && originalContent != "" && store != nil {
 			stored, err := store.Put(ctx, artifacts.Blob{
 				Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(history[i]), Data: []byte(originalContent),
 			})
@@ -845,18 +880,21 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 			}
 			history[i].Parts = append(history[i].Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
 			ref = &stored
-			spills = append(spills, toolResultSpill{
-				ToolCallID: history[i].ToolCallID, ToolName: history[i].ToolName, Content: originalContent, Ref: stored,
-			})
+			minted = true
 		}
 		if ref == nil {
 			continue
 		}
-		receipt := artifactReceipt(*ref)
-		if history[i].Content == receipt {
+		form := withDescriptorList(artifactReceipt(*ref), descriptors[history[i].ToolCallID])
+		if minted {
+			spills = append(spills, toolResultSpill{
+				ToolCallID: history[i].ToolCallID, ToolName: history[i].ToolName, Content: originalContent, Ref: *ref, Receipt: form,
+			})
+		}
+		if history[i].Content == form {
 			continue
 		}
-		history[i].Content = appendArtifactDescriptors(receipt, history[i], ref.ID, " ")
+		history[i].Content = form
 		newlyCompacted++
 	}
 	return newlyCompacted, spills, nil

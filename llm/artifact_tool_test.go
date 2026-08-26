@@ -344,3 +344,29 @@ func TestReadArtifactByteWindowAdvancesOnBinaryContent(t *testing.T) {
 		t.Fatalf("binary window advanced only to %d", next)
 	}
 }
+
+func TestReadArtifactCapCutPreservesRuneBoundary(t *testing.T) {
+	store := newTestArtifactStore()
+	content := strings.Repeat("a", 40_892) + "б" + strings.Repeat("z", 5_000) + "\nrest"
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(content)})
+	tool := testReadArtifactTool(store, ref)
+
+	page, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(page, "?") {
+		t.Fatalf("cap cut split a rune into replacement characters: %q", page[len(page)-120:])
+	}
+	match := regexp.MustCompile(`continue with byte_offset=(\d+)\]$`).FindStringSubmatch(page)
+	if match == nil || match[1] != "40892" {
+		t.Fatalf("continuation offset = %v, want rune boundary 40892", match)
+	}
+	window, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 40_892})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, body, _ := strings.Cut(window, "\n"); !strings.HasPrefix(body, "б") {
+		t.Fatalf("continuation page does not start with the split rune: %q", body[:min(40, len(body))])
+	}
+}

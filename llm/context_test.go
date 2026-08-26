@@ -737,3 +737,88 @@ func TestProjectionCapturesRefsFromOmittedExchanges(t *testing.T) {
 		t.Fatalf("omitted exchange leaked into the projection: %#v", projected)
 	}
 }
+
+func TestSpilledMediaResultKeepsOneFinalFormAcrossProjections(t *testing.T) {
+	store := newTestArtifactStore()
+	imageRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "shot.png", Reference: "[image #1]", Data: []byte("imgbytes")})
+	screenshot := strings.Repeat("pixel row\n", 2_000)
+	other := strings.Repeat("other-inline-", 1_500)
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "capture"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "shot", Name: "screenshot", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "shot", ToolName: "screenshot", Content: screenshot, Parts: []messages.ContentPart{imageArtifactPart(imageRef)}},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "other", Name: "other", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "other", ToolName: "other", Content: other},
+	}
+
+	shotContent := func(projected []messages.ChatMessage) string {
+		for _, msg := range projected {
+			if msg.Role == messages.MessageRoleTool && msg.ToolCallID == "shot" {
+				return msg.Content
+			}
+		}
+		t.Fatal("projected history lost the screenshot result")
+		return ""
+	}
+
+	first, stats, err := projectMessages(context.Background(), history, 6_000, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := shotContent(first)
+	if !strings.Contains(sent, "stored as artifact") || !strings.Contains(sent, "[image artifact "+imageRef.ID) {
+		t.Fatalf("spilled media form lost its descriptor: %q", sent)
+	}
+	if len(stats.toolSpills) != 1 || stats.toolSpills[0].Receipt != sent {
+		t.Fatalf("spill record form = %+v, sent %q", stats.toolSpills, sent)
+	}
+
+	(&Agent{}).applyDurableToolSpills(history, stats.toolSpills)
+	if history[2].Content != sent {
+		t.Fatalf("durable final form %q != sent form %q", history[2].Content[:min(200, len(history[2].Content))], sent[:min(200, len(sent))])
+	}
+	second, _, err := projectMessages(context.Background(), history, 6_000, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := shotContent(second); got != sent {
+		t.Fatalf("second projection diverged:\nfirst:  %q\nsecond: %q", sent, got)
+	}
+	if resent, _, err := projectMessages(context.Background(), history, 6_000, store); err != nil || shotContent(resent) != sent {
+		t.Fatalf("third projection diverged: %v", err)
+	}
+}
+
+func TestSpillSkipsByteIdenticalRewritesInStats(t *testing.T) {
+	store := newTestArtifactStore()
+	data := strings.Repeat("spilled once\n", 2_000)
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(data)})
+	binaryRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindBinary, MIMEType: "application/zip", Data: []byte("zip")})
+	spilledForm := withDescriptorList(artifactReceipt(ref), []string{artifactMediaDescriptor(binaryRef)})
+	fresh := strings.Repeat("fresh-inline-", 1_500)
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "go"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old", Name: "old", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "old", ToolName: "old", Content: spilledForm, Parts: []messages.ContentPart{
+			{Type: "artifact", Artifact: &ref},
+			{Type: "artifact", Artifact: &binaryRef},
+		}},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "new", Name: "new", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "new", ToolName: "new", Content: fresh},
+	}
+
+	projected, stats, err := projectMessages(context.Background(), history, 4_500, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := messagesWithRole(projected, messages.MessageRoleTool)
+	if tools[0].Content != spilledForm {
+		t.Fatalf("already-spilled media form was rewritten: %q", tools[0].Content)
+	}
+	if !strings.Contains(tools[1].Content, "stored as artifact") {
+		t.Fatalf("fresh result was not spilled: %q", tools[1].Content[:min(120, len(tools[1].Content))])
+	}
+	if stats.CompactedToolResults != 1 {
+		t.Fatalf("compacted results = %d, want 1 (byte-identical rewrite must not count)", stats.CompactedToolResults)
+	}
+}

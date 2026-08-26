@@ -624,7 +624,9 @@ func (a *Agent) applyDurableToolSpills(history []messages.ChatMessage, spills []
 			}
 			ref := spill.Ref
 			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
-			msg.Content = appendArtifactDescriptors(artifactReceipt(ref), *msg, ref.ID, " ")
+			// The durable final form is exactly what the spilling projection
+			// sent, so later pass-through projections stay byte-identical.
+			msg.Content = spill.Receipt
 			break
 		}
 	}

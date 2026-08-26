@@ -178,11 +178,20 @@ func boundedArtifactText(ctx context.Context, r io.Reader, offset, limit int, qu
 		}
 		if out.Len()+len(entry) > artifactReadMaxBytes-noteReserve {
 			prefix := len(fmt.Sprintf("%d: ", lineNumber))
+			continueAt = start
 			if room := artifactReadMaxBytes - noteReserve - out.Len(); partialAllowed && room > prefix {
-				out.WriteString(entry[:room])
-				continueAt = start + int64(room-prefix)
-			} else {
-				continueAt = start
+				// Back a cut that splits a rune up to its boundary so the
+				// character renders on the continuation page instead of as a
+				// replacement on both; binary content keeps the raw cut so
+				// paging still advances.
+				cut := safeUTF8Boundary(entry, room)
+				if room-cut >= utf8.UTFMax {
+					cut = room
+				}
+				if cut > prefix {
+					out.WriteString(entry[:cut])
+					continueAt = start + int64(cut-prefix)
+				}
 			}
 			truncated = true
 			break
