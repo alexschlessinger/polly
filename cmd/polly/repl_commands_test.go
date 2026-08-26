@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -305,6 +306,29 @@ func TestSandboxNoticeReportsMissingSSHAgent(t *testing.T) {
 	got = sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state)
 	if strings.Contains(got, "agent unavailable") {
 		t.Fatalf("sandboxNoticeLine = %q, hint must be scoped to the ssh component", got)
+	}
+
+	// A symlinked agent path is live for the sandbox (the grant resolves
+	// symlinks), so it must read as live here too.
+	dir, err := os.MkdirTemp("", "pagent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "agent.sock")
+	listener, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("bind test agent socket: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	alias := filepath.Join(dir, "alias.sock")
+	if err := os.Symlink(sock, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_AUTH_SOCK", alias)
+	got = sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git+ssh"}, state)
+	if strings.Contains(got, "agent unavailable") {
+		t.Fatalf("sandboxNoticeLine = %q, symlinked live agent socket must not read as unavailable", got)
 	}
 }
 

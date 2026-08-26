@@ -817,7 +817,10 @@ func sshAgentSocketLive() bool {
 	if sock == "" {
 		return false
 	}
-	info, err := os.Lstat(sock)
+	// Follow symlinks: the sandbox grant resolves SSH_AUTH_SOCK to its
+	// canonical target, so a symlinked agent path (launchd aliases, dotfile
+	// setups) is live for the sandbox and must read as live here too.
+	info, err := os.Stat(sock)
 	return err == nil && info.Mode()&os.ModeSocket != 0
 }
 
