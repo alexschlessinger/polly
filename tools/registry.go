@@ -197,7 +197,8 @@ func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sand
 		"writable_paths", cfg.WritablePaths,
 		"read_paths", cfg.ReadPaths,
 		"deny_paths", cfg.DenyPaths,
-		"allow_env", cfg.AllowEnv)
+		"allow_env", cfg.AllowEnv,
+		"pass_env", cfg.PassEnv)
 	sb, err := r.constructPreparedSandbox(cfg)
 	if err != nil {
 		return nil, cfg, err

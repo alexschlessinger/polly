@@ -289,6 +289,11 @@ type Config struct {
 	// If non-empty, only these env vars are passed through to the sandbox.
 	AllowEnv []string `json:"allowEnv,omitempty"`
 
+	// Names exempted from the default sensitive-env stripping (see
+	// isSensitiveEnv). Additive only: everything non-sensitive still passes.
+	// Ignored when AllowEnv is set — a strict allowlist stays strict.
+	PassEnv []string `json:"passEnv,omitempty"`
+
 	// Deny all file writes, including to temp directories.
 	DenyWrite bool `json:"denyWrite,omitempty"`
 
@@ -329,6 +334,7 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 	cfg.authorityPaths = cloneAuthorityPathIdentities(cfg.authorityPaths)
 	cfg.readPathAliases = cloneReadPathAliasIdentities(cfg.readPathAliases)
 	cfg.AllowEnv = append([]string(nil), cfg.AllowEnv...)
+	cfg.PassEnv = append([]string(nil), cfg.PassEnv...)
 
 	var cwd string
 	normalize := func(field string, paths []string) ([]string, error) {
@@ -983,6 +989,7 @@ func (c Config) Merge(overlay Config) Config {
 	c.DenyPaths = concatStrings(c.DenyPaths, overlay.DenyPaths)
 	c.DenyWritePaths = concatStrings(c.DenyWritePaths, overlay.DenyWritePaths)
 	c.AllowEnv = concatStrings(c.AllowEnv, overlay.AllowEnv)
+	c.PassEnv = concatStrings(c.PassEnv, overlay.PassEnv)
 	c.DenyWrite = c.DenyWrite || overlay.DenyWrite
 	c.gitPolicies = concatGitWorkspacePolicies(c.gitPolicies, overlay.gitPolicies)
 	c.authorityPaths = append(cloneAuthorityPathIdentities(c.authorityPaths), overlay.authorityPaths...)
@@ -1093,9 +1100,12 @@ func isSensitiveEnv(name string) bool {
 // filterEnv returns the env vars a sandboxed process should receive, plus the
 // names (never values) of the vars it removed, for debug logging.
 // With allowEnv set, only those names pass (an explicit allowlist wins over
-// the sensitivity heuristics). Otherwise everything passes except
-// sensitive-looking vars — see isSensitiveEnv.
-func filterEnv(env, allowEnv []string) (filtered, stripped []string) {
+// the sensitivity heuristics; passEnv is deliberately ignored so a strict
+// allowlist stays strict). Otherwise everything passes except
+// sensitive-looking vars — see isSensitiveEnv — minus the exact names in
+// passEnv, which are exempted. passEnv never injects a variable that is
+// absent from env.
+func filterEnv(env, allowEnv, passEnv []string) (filtered, stripped []string) {
 	// Never leave filtered nil: os/exec treats a nil Env as "inherit the full
 	// parent environment", so a config that strips every var (e.g. an allowEnv
 	// listing only names absent from the environment) would hand the sandboxed
@@ -1116,8 +1126,12 @@ func filterEnv(env, allowEnv []string) (filtered, stripped []string) {
 		}
 		return filtered, stripped
 	}
+	passed := make(map[string]bool, len(passEnv))
+	for _, k := range passEnv {
+		passed[k] = true
+	}
 	for _, e := range env {
-		if k, _, _ := strings.Cut(e, "="); !isSensitiveEnv(k) {
+		if k, _, _ := strings.Cut(e, "="); !isSensitiveEnv(k) || passed[k] {
 			filtered = append(filtered, e)
 		} else {
 			stripped = append(stripped, k)

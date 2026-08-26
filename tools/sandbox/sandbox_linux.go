@@ -485,7 +485,7 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	if env == nil {
 		env = os.Environ()
 	}
-	filtered, stripped := filterEnv(env, s.cfg.AllowEnv)
+	filtered, stripped := filterEnv(env, s.cfg.AllowEnv, s.cfg.PassEnv)
 	filtered = mergeExplicitEnv(filtered, explicitEnv)
 	for i, entry := range filtered {
 		name, _, _ := strings.Cut(entry, "=")

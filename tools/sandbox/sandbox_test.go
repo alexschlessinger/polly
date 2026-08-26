@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -65,6 +66,18 @@ func TestNormalizeConfigPathsMakesRelativePolicyPathsAbsolute(t *testing.T) {
 func TestNormalizeConfigPathsRejectsEmptyPath(t *testing.T) {
 	if _, err := normalizeConfigPaths(Config{DenyPaths: []string{""}}); err == nil {
 		t.Fatal("normalizeConfigPaths() accepted an empty deny path")
+	}
+}
+
+func TestNormalizeConfigPathsCopiesPassEnv(t *testing.T) {
+	pass := []string{"SSH_AUTH_SOCK"}
+	prepared, err := PrepareConfig(Config{PassEnv: pass})
+	if err != nil {
+		t.Fatalf("PrepareConfig() error = %v", err)
+	}
+	pass[0] = "MUTATED"
+	if len(prepared.PassEnv) != 1 || prepared.PassEnv[0] != "SSH_AUTH_SOCK" {
+		t.Fatalf("prepared PassEnv aliases caller slice: %v", prepared.PassEnv)
 	}
 }
 
@@ -444,6 +457,7 @@ func TestMerge(t *testing.T) {
 		AllowNetwork:  false,
 		ReadPaths:     []string{"~/.kube"},
 		AllowEnv:      []string{"HOME"},
+		PassEnv:       []string{"SSH_AUTH_SOCK"},
 	}
 	overlay := Config{
 		AllowNetwork:   true,
@@ -451,6 +465,7 @@ func TestMerge(t *testing.T) {
 		WritablePaths:  []string{"/extra"},
 		ReadPaths:      []string{"~/.aws"},
 		AllowEnv:       []string{"PATH"},
+		PassEnv:        []string{"GPG_AGENT_INFO"},
 		DenyWrite:      true,
 		DenyWritePaths: []string{"/work/.git/hooks"},
 	}
@@ -473,6 +488,9 @@ func TestMerge(t *testing.T) {
 	}
 	if len(merged.AllowEnv) != 2 || merged.AllowEnv[0] != "HOME" || merged.AllowEnv[1] != "PATH" {
 		t.Fatalf("AllowEnv = %v, want [HOME PATH]", merged.AllowEnv)
+	}
+	if len(merged.PassEnv) != 2 || merged.PassEnv[0] != "SSH_AUTH_SOCK" || merged.PassEnv[1] != "GPG_AGENT_INFO" {
+		t.Fatalf("PassEnv = %v, want [SSH_AUTH_SOCK GPG_AGENT_INFO]", merged.PassEnv)
 	}
 	if !merged.DenyWrite {
 		t.Fatal("Merge should set DenyWrite to true")
@@ -1153,7 +1171,7 @@ func TestFilterEnvStripsSensitiveByDefault(t *testing.T) {
 		"REDISCLI_AUTH=redis-password",
 		"DATABASE_URL=postgres://user:password@db.example/app",
 	}
-	got, stripped := filterEnv(env, nil)
+	got, stripped := filterEnv(env, nil, nil)
 
 	want := map[string]bool{"PATH=/usr/bin": true, "HOME=/home/user": true, "EDITOR=vi": true}
 	if len(got) != len(want) {
@@ -1180,12 +1198,41 @@ func TestFilterEnvStripsSensitiveByDefault(t *testing.T) {
 func TestFilterEnvAllowEnvOverridesSensitivity(t *testing.T) {
 	// An explicit allowlist wins, even for vars the heuristics call sensitive.
 	env := []string{"GITHUB_TOKEN=ghp", "PGPASSWORD=postgres-password", "PATH=/usr/bin", "HOME=/home/user"}
-	got, stripped := filterEnv(env, []string{"PGPASSWORD"})
+	got, stripped := filterEnv(env, []string{"PGPASSWORD"}, nil)
 	if len(got) != 1 || got[0] != "PGPASSWORD=postgres-password" {
 		t.Fatalf("filterEnv with allowEnv = %v, want only the explicitly allowed PGPASSWORD", got)
 	}
 	if len(stripped) != 3 {
 		t.Fatalf("stripped = %v, want the three non-allowlisted names", stripped)
+	}
+}
+
+func TestFilterEnvPassEnvExemptsSensitiveNames(t *testing.T) {
+	env := []string{"SSH_AUTH_SOCK=/tmp/agent.sock", "GITHUB_TOKEN=ghp", "PATH=/usr/bin"}
+	got, _ := filterEnv(env, nil, []string{"SSH_AUTH_SOCK"})
+	if !slices.Contains(got, "SSH_AUTH_SOCK=/tmp/agent.sock") {
+		t.Fatalf("filterEnv = %v, want passEnv to exempt SSH_AUTH_SOCK from stripping", got)
+	}
+	if slices.Contains(got, "GITHUB_TOKEN=ghp") {
+		t.Fatalf("filterEnv = %v, other sensitive names must still be stripped", got)
+	}
+	if !slices.Contains(got, "PATH=/usr/bin") {
+		t.Fatalf("filterEnv = %v, passEnv must remain additive over the default filtering", got)
+	}
+}
+
+func TestFilterEnvPassEnvIgnoredUnderAllowEnv(t *testing.T) {
+	env := []string{"SSH_AUTH_SOCK=/tmp/agent.sock", "PATH=/usr/bin"}
+	got, _ := filterEnv(env, []string{"PATH"}, []string{"SSH_AUTH_SOCK"})
+	if len(got) != 1 || got[0] != "PATH=/usr/bin" {
+		t.Fatalf("filterEnv = %v, want the strict allowlist to ignore passEnv", got)
+	}
+}
+
+func TestFilterEnvPassEnvDoesNotInjectMissingNames(t *testing.T) {
+	got, _ := filterEnv([]string{"PATH=/usr/bin"}, nil, []string{"SSH_AUTH_SOCK"})
+	if len(got) != 1 || got[0] != "PATH=/usr/bin" {
+		t.Fatalf("filterEnv = %v, passEnv must only exempt, never inject", got)
 	}
 }
 
@@ -1206,7 +1253,7 @@ func TestFilterEnvNeverReturnsNil(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			filtered, _ := filterEnv(tc.env, tc.allowEnv)
+			filtered, _ := filterEnv(tc.env, tc.allowEnv, nil)
 			if filtered == nil {
 				t.Fatalf("filterEnv returned a nil slice; cmd.Env=nil makes exec inherit the full parent environment")
 			}

@@ -175,7 +175,7 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 	if env == nil {
 		env = os.Environ()
 	}
-	filtered, stripped := filterEnv(env, s.cfg.AllowEnv)
+	filtered, stripped := filterEnv(env, s.cfg.AllowEnv, s.cfg.PassEnv)
 	filtered = mergeExplicitEnv(filtered, explicitEnv)
 
 	origArgs := cmd.Args
