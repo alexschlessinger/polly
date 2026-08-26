@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -466,11 +467,10 @@ func (r *ToolRegistry) All() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	tools := make([]Tool, 0, len(r.tools))
-	for name, tool := range r.tools {
-		if !r.isToolAllowedLocked(name) {
-			continue
-		}
+	names := r.allowedToolNamesLocked()
+	tools := make([]Tool, 0, len(names))
+	for _, name := range names {
+		tool := r.tools[name]
 		tools = append(tools, tool)
 	}
 	return tools
@@ -481,14 +481,24 @@ func (r *ToolRegistry) GetSchemas() []*schema.ToolSchema {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	schemas := make([]*schema.ToolSchema, 0, len(r.tools))
-	for name, tool := range r.tools {
-		if !r.isToolAllowedLocked(name) {
-			continue
-		}
+	names := r.allowedToolNamesLocked()
+	schemas := make([]*schema.ToolSchema, 0, len(names))
+	for _, name := range names {
+		tool := r.tools[name]
 		schemas = append(schemas, tool.GetSchema())
 	}
 	return schemas
+}
+
+func (r *ToolRegistry) allowedToolNamesLocked() []string {
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		if r.isToolAllowedLocked(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (r *ToolRegistry) isToolAllowedLocked(name string) bool {

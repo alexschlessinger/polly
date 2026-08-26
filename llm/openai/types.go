@@ -114,6 +114,7 @@ type ChatCompletionRequest struct {
 	Tools               []ChatTool      `json:"tools,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 	StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
+	SessionID           string          `json:"session_id,omitempty"`
 }
 
 // ReasoningEffort is OpenAI's reasoning depth enum, shared by Chat
@@ -131,9 +132,44 @@ const (
 // ChatUsage carries token accounting. Pointers to it preserve presence: a
 // compatible server that omits usage yields nil, not zeros.
 type ChatUsage struct {
-	PromptTokens     int64 `json:"prompt_tokens"`
-	CompletionTokens int64 `json:"completion_tokens"`
-	TotalTokens      int64 `json:"total_tokens"`
+	PromptTokens          int64               `json:"prompt_tokens"`
+	CompletionTokens      int64               `json:"completion_tokens"`
+	TotalTokens           int64               `json:"total_tokens"`
+	PromptTokensDetails   *PromptTokenDetails `json:"prompt_tokens_details,omitempty"`
+	PromptCacheHitTokens  *int64              `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens *int64              `json:"prompt_cache_miss_tokens,omitempty"`
+}
+
+// PromptTokenDetails carries prompt-cache accounting used by OpenAI and some
+// compatible providers.
+type PromptTokenDetails struct {
+	CachedTokens     *int64 `json:"cached_tokens,omitempty"`
+	CacheWriteTokens *int64 `json:"cache_write_tokens,omitempty"`
+}
+
+// PromptCacheUsage returns only explicit provider cache accounting. DeepSeek
+// reports a top-level hit count; misses are ordinary input, not cache writes.
+func (u *ChatUsage) PromptCacheUsage() (read, write int, reported bool) {
+	if u == nil {
+		return 0, 0, false
+	}
+	if u.PromptTokensDetails != nil &&
+		(u.PromptTokensDetails.CachedTokens != nil || u.PromptTokensDetails.CacheWriteTokens != nil) {
+		if u.PromptTokensDetails.CachedTokens != nil {
+			read = int(*u.PromptTokensDetails.CachedTokens)
+		}
+		if u.PromptTokensDetails.CacheWriteTokens != nil {
+			write = int(*u.PromptTokensDetails.CacheWriteTokens)
+		}
+		return read, write, true
+	}
+	if u.PromptCacheHitTokens != nil || u.PromptCacheMissTokens != nil {
+		if u.PromptCacheHitTokens != nil {
+			read = int(*u.PromptCacheHitTokens)
+		}
+		return read, 0, true
+	}
+	return 0, 0, false
 }
 
 // ChatResponseMessage is the message of a non-streaming choice.
@@ -272,6 +308,7 @@ type ResponsesRequest struct {
 	Text            *TextConfig         `json:"text,omitempty"`
 	Tools           []ResponsesTool     `json:"tools,omitempty"`
 	Stream          bool                `json:"stream,omitempty"`
+	PromptCacheKey  string              `json:"prompt_cache_key,omitempty"`
 }
 
 // ResponseStatus is the terminal (or in-progress) state of a Response.
@@ -287,9 +324,25 @@ const (
 
 // ResponseUsage carries Responses token accounting.
 type ResponseUsage struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
-	TotalTokens  int64 `json:"total_tokens"`
+	InputTokens        int64               `json:"input_tokens"`
+	OutputTokens       int64               `json:"output_tokens"`
+	TotalTokens        int64               `json:"total_tokens"`
+	InputTokensDetails *PromptTokenDetails `json:"input_tokens_details,omitempty"`
+}
+
+// PromptCacheUsage returns explicit Responses API cache accounting.
+func (u *ResponseUsage) PromptCacheUsage() (read, write int, reported bool) {
+	if u == nil || u.InputTokensDetails == nil ||
+		(u.InputTokensDetails.CachedTokens == nil && u.InputTokensDetails.CacheWriteTokens == nil) {
+		return 0, 0, false
+	}
+	if u.InputTokensDetails.CachedTokens != nil {
+		read = int(*u.InputTokensDetails.CachedTokens)
+	}
+	if u.InputTokensDetails.CacheWriteTokens != nil {
+		write = int(*u.InputTokensDetails.CacheWriteTokens)
+	}
+	return read, write, true
 }
 
 // IncompleteDetails says why a response stopped early.

@@ -82,6 +82,7 @@ func TestBuildMeta(t *testing.T) {
 	r := &llm.AgentResponse{
 		Message:        &messages.ChatMessage{StopReason: messages.StopReasonEndTurn},
 		IterationCount: 3,
+		PromptCache:    llm.PromptCacheStats{ReadInputTokens: 900, WriteInputTokens: 300},
 	}
 	stats := &turnToolStats{}
 	stats.record("read", nil)
@@ -92,7 +93,8 @@ func TestBuildMeta(t *testing.T) {
 	m := buildMeta(messages.StopReasonEndTurn, r, nil, "deepseek/deepseek-v4-flash", stats, 1200, 600, 8123)
 	if m.StopReason != messages.StopReasonEndTurn || m.Iterations != 3 ||
 		m.ToolCalls != 5 || m.ToolErrors != 1 || m.InputTokens != 1200 ||
-		m.OutputTokens != 600 || m.DurationMS != 8123 || m.Model != "deepseek/deepseek-v4-flash" {
+		m.OutputTokens != 600 || m.CacheReadTokens != 900 || m.CacheWriteTokens != 300 ||
+		m.DurationMS != 8123 || m.Model != "deepseek/deepseek-v4-flash" {
 		t.Fatalf("buildMeta produced %+v", m)
 	}
 	if m.LastTool != "bash" || len(m.ToolFailures) != 1 || m.ToolFailures[0] != "fetch: timeout" {
@@ -122,7 +124,8 @@ func trailer(m metaFields) string {
 func TestWriteMetaTrailerPrefixesEveryLine(t *testing.T) {
 	got := trailer(metaFields{
 		StopReason: messages.StopReasonMaxTokens, Model: "m", Iterations: 2,
-		ToolCalls: 4, ToolErrors: 0, InputTokens: 100, OutputTokens: 50, DurationMS: 99,
+		ToolCalls: 4, ToolErrors: 0, InputTokens: 100, OutputTokens: 50,
+		CacheReadTokens: 80, CacheWriteTokens: 20, DurationMS: 99,
 	})
 	for _, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
 		if !strings.HasPrefix(line, "polly-meta ") {
@@ -132,7 +135,8 @@ func TestWriteMetaTrailerPrefixesEveryLine(t *testing.T) {
 	for _, want := range []string{
 		"polly-meta stop_reason=max_tokens\n", "polly-meta model=m\n",
 		"polly-meta iterations=2\n", "polly-meta tool_calls=4\n",
-		"polly-meta input_tokens=100\n", "polly-meta duration_ms=99\n",
+		"polly-meta input_tokens=100\n", "polly-meta cache_read_tokens=80\n",
+		"polly-meta cache_write_tokens=20\n", "polly-meta duration_ms=99\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("trailer missing %q in:\n%s", want, got)

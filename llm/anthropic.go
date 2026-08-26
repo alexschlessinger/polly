@@ -143,6 +143,9 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 		MaxTokens: int64(req.MaxTokens),
 		Messages:  anthropicMessages,
 	}
+	if req.CacheSessionID != "" {
+		params.CacheControl = &anthropic.CacheControl{Type: "ephemeral"}
+	}
 
 	// Opus 4.7 rejects temperature/top_p/top_k with a 400.
 	if req.Temperature != nil && !rejectsSamplingParams(req.Model) {
@@ -291,7 +294,10 @@ func (a *AnthropicClient) processNonStreaming(ctx context.Context, params *anthr
 
 	// Set token usage
 	if resp.Usage != nil {
-		streamCore.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
+		streamCore.SetTokenUsage(int(resp.Usage.TotalInputTokens()), int(resp.Usage.OutputTokens))
+		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
+			streamCore.SetPromptCacheUsage(read, write)
+		}
 	}
 
 	// Handle structured output if needed

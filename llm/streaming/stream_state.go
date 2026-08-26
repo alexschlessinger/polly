@@ -15,6 +15,7 @@ type StreamStateInterface interface {
 	AppendReasoning(reasoning string)
 	AddToolCall(toolCall messages.ChatMessageToolCall)
 	SetTokenUsage(input, output int)
+	SetPromptCacheUsage(read, write int)
 	SetStopReason(reason messages.StopReason)
 	SetMetadata(key string, value any)
 	UpdateToolCallAtIndex(index int, updater func(*messages.ChatMessageToolCall))
@@ -25,18 +26,24 @@ type StreamStateInterface interface {
 	GetToolCalls() []messages.ChatMessageToolCall
 	GetInputTokens() int
 	GetOutputTokens() int
+	GetCacheReadInputTokens() int
+	GetCacheWriteInputTokens() int
+	HasPromptCacheUsage() bool
 }
 
 // StreamState holds the common state during streaming for all providers.
 // It provides thread-safe access to streaming state that accumulates across chunks.
 type StreamState struct {
 	// Common fields used by all providers
-	ResponseContent  string                         // Accumulated text content
-	ReasoningContent string                         // Accumulated thinking/reasoning content
-	ToolCalls        []messages.ChatMessageToolCall // Accumulated tool calls
-	StopReason       messages.StopReason            // Reason for completion
-	InputTokens      int                            // Token count for prompt
-	OutputTokens     int                            // Token count for completion
+	ResponseContent       string                         // Accumulated text content
+	ReasoningContent      string                         // Accumulated thinking/reasoning content
+	ToolCalls             []messages.ChatMessageToolCall // Accumulated tool calls
+	StopReason            messages.StopReason            // Reason for completion
+	InputTokens           int                            // Token count for prompt
+	OutputTokens          int                            // Token count for completion
+	CacheReadInputTokens  int                            // Provider-reported cache hits
+	CacheWriteInputTokens int                            // Provider-reported cache writes
+	PromptCacheUsageSet   bool                           // Whether the provider reported cache details
 
 	// Provider-specific metadata storage
 	// Used for things like Anthropic thinking blocks, Gemini signatures, etc.
@@ -81,6 +88,15 @@ func (s *StreamState) SetTokenUsage(input, output int) {
 	defer s.mu.Unlock()
 	s.InputTokens = input
 	s.OutputTokens = output
+}
+
+// SetPromptCacheUsage safely records provider-reported prompt cache usage.
+func (s *StreamState) SetPromptCacheUsage(read, write int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.CacheReadInputTokens = read
+	s.CacheWriteInputTokens = write
+	s.PromptCacheUsageSet = true
 }
 
 // SetStopReason safely sets the stop reason
@@ -157,19 +173,40 @@ func (s *StreamState) GetOutputTokens() int {
 	return s.OutputTokens
 }
 
+func (s *StreamState) GetCacheReadInputTokens() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.CacheReadInputTokens
+}
+
+func (s *StreamState) GetCacheWriteInputTokens() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.CacheWriteInputTokens
+}
+
+func (s *StreamState) HasPromptCacheUsage() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.PromptCacheUsageSet
+}
+
 // Clone creates a copy of the current state (for debugging/logging)
 func (s *StreamState) Clone() *StreamState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	clone := StreamState{
-		ResponseContent:  s.ResponseContent,
-		ReasoningContent: s.ReasoningContent,
-		StopReason:       s.StopReason,
-		InputTokens:      s.InputTokens,
-		OutputTokens:     s.OutputTokens,
-		ToolCalls:        make([]messages.ChatMessageToolCall, len(s.ToolCalls)),
-		Metadata:         make(map[string]any),
+		ResponseContent:       s.ResponseContent,
+		ReasoningContent:      s.ReasoningContent,
+		StopReason:            s.StopReason,
+		InputTokens:           s.InputTokens,
+		OutputTokens:          s.OutputTokens,
+		CacheReadInputTokens:  s.CacheReadInputTokens,
+		CacheWriteInputTokens: s.CacheWriteInputTokens,
+		PromptCacheUsageSet:   s.PromptCacheUsageSet,
+		ToolCalls:             make([]messages.ChatMessageToolCall, len(s.ToolCalls)),
+		Metadata:              make(map[string]any),
 	}
 
 	// Deep copy tool calls

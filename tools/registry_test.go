@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/schema"
@@ -10,6 +12,47 @@ import (
 type testTool struct {
 	name   string
 	source string
+}
+
+func TestRegistryReturnsToolsAndSchemasInLexicalOrder(t *testing.T) {
+	first := NewToolRegistry([]Tool{
+		&testTool{name: "zebra"},
+		&testTool{name: "alpha"},
+		&testTool{name: "middle"},
+	})
+	second := NewToolRegistry([]Tool{
+		&testTool{name: "middle"},
+		&testTool{name: "zebra"},
+		&testTool{name: "alpha"},
+	})
+
+	names := func(registry *ToolRegistry) []string {
+		all := registry.All()
+		out := make([]string, len(all))
+		for i, tool := range all {
+			out[i] = tool.GetName()
+		}
+		return out
+	}
+	want := []string{"alpha", "middle", "zebra"}
+	if got := names(first); !reflect.DeepEqual(got, want) {
+		t.Fatalf("All() names = %#v, want %#v", got, want)
+	}
+	if got := names(second); !reflect.DeepEqual(got, want) {
+		t.Fatalf("All() names after different registration order = %#v, want %#v", got, want)
+	}
+
+	firstJSON, err := json.Marshal(first.GetSchemas())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSON, err := json.Marshal(second.GetSchemas())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstJSON) != string(secondJSON) {
+		t.Fatalf("schema bytes differ by registration order:\n%s\n%s", firstJSON, secondJSON)
+	}
 }
 
 func (t *testTool) GetSchema() *schema.ToolSchema {

@@ -72,7 +72,7 @@ func defaultProviderFactories() map[string]providerFactory {
 			if baseURL == "" {
 				baseURL = "https://openrouter.ai/api/v1"
 			}
-			return NewOpenAIClient(apiKey, baseURL), nil
+			return newOpenRouterClient(apiKey, baseURL), nil
 		},
 	}
 }

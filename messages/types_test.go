@@ -10,6 +10,7 @@ import (
 func TestTokenAccessorsSurviveJSONRoundTrip(t *testing.T) {
 	msg := ChatMessage{Role: MessageRoleAssistant, Content: "hi"}
 	msg.SetTokenUsage(1234, 56)
+	msg.SetPromptCacheUsage(789, 321)
 
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -25,5 +26,11 @@ func TestTokenAccessorsSurviveJSONRoundTrip(t *testing.T) {
 	}
 	if got := loaded.GetOutputTokens(); got != 56 {
 		t.Errorf("GetOutputTokens() after round trip = %d, want 56", got)
+	}
+	if got := loaded.GetCacheReadInputTokens(); got != 789 {
+		t.Errorf("GetCacheReadInputTokens() after round trip = %d, want 789", got)
+	}
+	if got := loaded.GetCacheWriteInputTokens(); got != 321 {
+		t.Errorf("GetCacheWriteInputTokens() after round trip = %d, want 321", got)
 	}
 }

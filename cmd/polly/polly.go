@@ -581,6 +581,19 @@ func artifactStoreForSession(session sessions.Session) artifacts.Store {
 	return store
 }
 
+func cacheSessionIDForSession(session sessions.Session) string {
+	cacheSession, ok := session.(sessions.CacheSession)
+	if !ok {
+		return ""
+	}
+	id, err := cacheSession.CacheSessionID()
+	if err != nil {
+		log.GetLogger().Debug("cache_session_id_omitted", "error", err)
+		return ""
+	}
+	return id
+}
+
 // discardUnusedAutoContext deletes a generated context that never saw a turn,
 // so launch-and-quit REPL runs leave no file behind. The session's own lock
 // must be released first — Delete skips locked sessions. A context renamed via
@@ -755,6 +768,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	defer turnUI.Stop()
 
 	req := createCompletionRequest(config, requestMessages, state.toolRegistry, state.skillCatalog, schema)
+	req.CacheSessionID = cacheSessionIDForSession(state.session)
 
 	// trimLeadingNL strips leading newlines from the next content burst.
 	// Armed only after a reasoning event fires — models with thinking enabled

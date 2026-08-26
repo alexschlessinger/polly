@@ -128,6 +128,9 @@ func (sc *StreamingCore) Complete() {
 
 	// Set token usage
 	msg.SetTokenUsage(sc.state.InputTokens, sc.state.OutputTokens)
+	if sc.state.PromptCacheUsageSet {
+		msg.SetPromptCacheUsage(sc.state.CacheReadInputTokens, sc.state.CacheWriteInputTokens)
+	}
 
 	// Let the adapter enrich with provider-specific metadata
 	if sc.adapter != nil {
@@ -154,6 +157,9 @@ func (sc *StreamingCore) CompleteWithContent(content string) {
 
 	// Set token usage
 	msg.SetTokenUsage(sc.state.InputTokens, sc.state.OutputTokens)
+	if sc.state.PromptCacheUsageSet {
+		msg.SetPromptCacheUsage(sc.state.CacheReadInputTokens, sc.state.CacheWriteInputTokens)
+	}
 
 	// Let the adapter enrich if needed
 	if sc.adapter != nil {
@@ -164,12 +170,18 @@ func (sc *StreamingCore) CompleteWithContent(content string) {
 	case <-sc.ctx.Done():
 		return
 	case sc.messageChannel <- msg:
+		sc.logCompletionDetails()
 	}
 }
 
 // SetTokenUsage updates token counts in the state
 func (sc *StreamingCore) SetTokenUsage(input, output int) {
 	sc.state.SetTokenUsage(input, output)
+}
+
+// SetPromptCacheUsage records provider-reported cache token accounting.
+func (sc *StreamingCore) SetPromptCacheUsage(read, write int) {
+	sc.state.SetPromptCacheUsage(read, write)
 }
 
 // SetStopReason updates the stop reason in the state
@@ -236,6 +248,12 @@ func (sc *StreamingCore) logCompletionDetails() {
 		fields = append(fields,
 			"input_tokens", state.InputTokens,
 			"output_tokens", state.OutputTokens,
+		)
+	}
+	if state.PromptCacheUsageSet {
+		fields = append(fields,
+			"cache_read_tokens", state.CacheReadInputTokens,
+			"cache_write_tokens", state.CacheWriteInputTokens,
 		)
 	}
 

@@ -15,6 +15,13 @@ type ArtifactSession interface {
 	ArtifactStore() (artifacts.Store, error)
 }
 
+// CacheSession is an optional extension for sessions that can provide an
+// opaque, stable identity for provider-side session affinity. The identity is
+// not part of Session so external implementations remain source-compatible.
+type CacheSession interface {
+	CacheSessionID() (string, error)
+}
+
 // Session interface defines the contract for session implementations
 type Session interface {
 	GetHistory() []messages.ChatMessage

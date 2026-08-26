@@ -53,12 +53,18 @@ type CompletionRequest struct {
 	// MaxContextTokens limits the deterministic provider-visible projection
 	// used by Agent. Direct provider clients ignore it. Zero is unlimited.
 	MaxContextTokens int
-	Messages         []messages.ChatMessage // Message history
-	Tools            []tools.Tool           // Available tools
-	ResponseSchema   *Schema                // Optional schema for structured output
-	ThinkingEffort   ThinkingEffort         // Reasoning effort: Off, a named Level, a raw token Budget, or Dynamic
-	Stream           *bool                  // nil = streaming (default), false = non-streaming
-	Skills           *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
+	// PromptCacheKey groups requests with the same stable agent prefix for
+	// provider-side prompt caching. Agent derives one when this is empty.
+	PromptCacheKey string
+	// CacheSessionID is an opaque, stable per-session routing identity. It is
+	// currently used only by providers that support session affinity.
+	CacheSessionID string
+	Messages       []messages.ChatMessage // Message history
+	Tools          []tools.Tool           // Available tools
+	ResponseSchema *Schema                // Optional schema for structured output
+	ThinkingEffort ThinkingEffort         // Reasoning effort: Off, a named Level, a raw token Budget, or Dynamic
+	Stream         *bool                  // nil = streaming (default), false = non-streaming
+	Skills         *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
 }
 
 // ResolvedMessages returns a copy of Messages with skill prompt injected.
