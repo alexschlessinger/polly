@@ -604,6 +604,8 @@ the legacy behavior.
 | `denyPaths` | string[] | `[]` | Extra paths blocked from reads, in addition to the built-in deny list (supports `~`) |
 | `denyWritePaths` | string[] | `[]` | Paths kept read-only even inside a `writablePaths` entry (supports `~`). Mutable writable ancestors are pinned so the protected path cannot be bypassed by relocation. |
 | `allowEnv` | string[] | all non-sensitive | If set, only these env vars are passed through (overrides the sensitive-var stripping) |
+| `passEnv` | string[] | `[]` | Additively exempt these env vars from the sensitive-var stripping. Ignored when `allowEnv` is set. |
+| `allowUnixSockets` | string[] | `[]` | Absolute Unix-socket paths the process may connect to, even while broad Unix-socket access stays blocked (supports `~`). A grant is dropped for any command where its path is not a live socket. |
 | `denyWrite` | bool | `false` | Deny all file writes, including temp. Overrides `writablePaths`. |
 
 **Base policy** (when `"sandbox": true` and the registry's base config is `sandbox.DefaultConfig()`):
@@ -614,13 +616,24 @@ the legacy behavior.
 - Linux: private `/tmp` and `/run`, inherited capabilities dropped, filesystem Unix sockets denied, own PID and IPC namespaces, and own session
 
 **CLI presets:** the `polly` CLI selects its base config with
-`--sandbox <preset>` (components `base`, `readonly`, `workspace`, and `net`
-joined with `+`; library equivalent `sandbox.ParsePreset`). The CLI default is
-`workspace+net`: the canonical working directory is added to `writablePaths`,
-recursively discovered `.git` routing entries and resolved per-worktree/common
-metadata directories are added to `denyWritePaths`, and `allowNetwork` is
-enabled. Git metadata is therefore read-only (including missing leaves such as
-`config.worktree`) while working-tree files remain writable.
+`--sandbox <preset>` (components `base`, `readonly`, `workspace`, `git`, `net`,
+`ssh`, and `sshkeys` joined with `+`; library equivalent `sandbox.ParsePreset`).
+The CLI default is `workspace+net+git`: the canonical working directory is added
+to `writablePaths`, `allowNetwork` is enabled, and `git` selects **leaf mode**
+for the workspace's Git protection — only the dangerous metadata leaves
+(`config`, `config.worktree`, `hooks/`, routing and worktree pointers) are added
+to `denyWritePaths`, so `.git` stays writable and commit/rebase/fetch work while
+hook-planting and config rewrites stay blocked. Absent leaves are created inert
+(an empty `config`/`hooks/`, and `config.worktree` only when
+`extensions.worktreeConfig` is enabled); a leaf that cannot be created falls
+that one repository back to a whole-tree pin. Without `git`, `workspace` keeps
+whole Git metadata trees read-only (including missing leaves such as
+`config.worktree`), so `git commit` fails inside the sandbox. `git` requires
+`workspace` and is rejected on its own. The `ssh` component passes
+`SSH_AUTH_SOCK` through (`passEnv`), grants that one socket
+(`allowUnixSockets`), and exempts `~/.ssh/config` and `~/.ssh/known_hosts` from
+the deny list; `sshkeys` exempts all of `~/.ssh` (private keys included) for
+agentless setups.
 
 The `workspace` component refuses the filesystem root, the user's home
 directory, exact mounted-volume roots on Linux and macOS, and exact Linux
@@ -686,9 +699,12 @@ case-insensitively:
   `DOCKER_HOST`, `CONTAINER_HOST`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`,
   `PULSE_SERVER`.
 
-To pass one through, include it in `allowEnv`.
+To pass one through, add it to `passEnv` (additive — everything else still
+flows) or list it in `allowEnv` (strict — *only* the listed names flow, and
+`passEnv` is then ignored). The `ssh` preset uses `passEnv` for
+`SSH_AUTH_SOCK`.
 
-**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths` (and makes `denyWritePaths` redundant). `denyDNS: true` has no additional effect when `allowNetwork` is `false`. A missing or unresolvable `denyWritePaths` entry fails sandbox construction and is checked again before every command; neither backend can reliably reserve a nonexistent protected object. On both platforms, writable ancestors of a protected entry are pinned against relocation so moving an ancestor cannot expose a replacement at the original path.
+**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths` (and makes `denyWritePaths` redundant). `denyDNS: true` has no additional effect when `allowNetwork` is `false`. `passEnv` is ignored when `allowEnv` is set. An `allowUnixSockets` entry that is not a live socket at command time is dropped (never fails the command) and never lifts a credential deny that covers it. A missing or unresolvable `denyWritePaths` entry fails sandbox construction and is checked again before every command; neither backend can reliably reserve a nonexistent protected object. On both platforms, writable ancestors of a protected entry are pinned against relocation so moving an ancestor cannot expose a replacement at the original path.
 
 #### Examples
 

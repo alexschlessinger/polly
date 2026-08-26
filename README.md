@@ -47,7 +47,7 @@ GLOBAL OPTIONS:
    --show string                                            Show configuration for the specified context
    --maxcontext int                                         Maximum tokens to keep in history (0 = unlimited) (default: 256000)
    --confirm                                                Require confirmation before each tool call
-   --sandbox string                                         Sandbox preset: base, readonly, workspace, net — join with + (e.g. workspace+net) (default: "workspace+net") [$POLLYTOOL_SANDBOX]
+   --sandbox string                                         Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace (default: "workspace+net+git") [$POLLYTOOL_SANDBOX]
    --nosandbox                                              Disable sandboxing of tool commands [$POLLYTOOL_NOSANDBOX]
    --denypath string [ --denypath string ]                  Additional path blocked from sandboxed reads (repeatable, supports ~) [$POLLYTOOL_DENYPATHS]
    --writepath string [ --writepath string ]                Additional path sandboxed tools may write to (repeatable, supports ~) [$POLLYTOOL_WRITEPATHS]
@@ -401,7 +401,7 @@ polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 
 #### Sandboxing
 
-The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by default**. A sandboxed process runs with a read-only root filesystem, writes restricted to the policy's writable paths, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and credential/runtime env vars (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, ...) stripped. On Linux, `/tmp` and `/run` are private, filesystem Unix sockets are blocked, and the process gets private PID and IPC namespaces plus a detached session. Shell tools get a `[sandboxed]` suffix on their description so the LLM knows they're restricted. Extra paths can be blocked globally with `--denypath` (or `POLLYTOOL_DENYPATHS`).
+The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by default**. A sandboxed process runs with a read-only root filesystem, writes restricted to the policy's writable paths, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and credential/runtime env vars (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, ...) stripped. On Linux, `/tmp` and `/run` are private, filesystem Unix sockets are blocked, and the process gets private PID and IPC namespaces plus a detached session. Shell tools (and the builtin `bash` tool) get a `[sandboxed]` suffix on their description so the LLM knows they're restricted — with a `.git is read-only` note when Git metadata is fully pinned so a failing `git commit` isn't mistaken for a transient error. Extra paths can be blocked globally with `--denypath` (or `POLLYTOOL_DENYPATHS`).
 
 **Presets** — `--sandbox <preset>` (env `POLLYTOOL_SANDBOX`) selects the base policy for all sandboxed tools. Components join with `+`:
 
@@ -410,9 +410,12 @@ The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by d
 | `base` | temp-dir writes only, no network |
 | `readonly` | no writes at all, not even temp; no network |
 | `workspace` | the working directory is writable; discovered Git routing entries and metadata trees stay read-only so a tool cannot replace `.git` or alter repository-local hook/config entry points |
+| `git` | with `workspace`: keep `.git` writable but pin only its dangerous leaves (config, hooks, routing pointers), so `git commit`/rebase/fetch work; requires `workspace` |
 | `net` | outbound network allowed |
+| `ssh` | agent-based SSH: pass `SSH_AUTH_SOCK` and allow its socket, read `~/.ssh/config` and `known_hosts`; private keys stay masked |
+| `sshkeys` | read all of `~/.ssh` including private keys (agentless setups); `~/.ssh` stays unwritable |
 
-The default is **`workspace+net`**: tools can edit the project and reach the network, but credentials stay masked and everything outside the workspace is read-only. `workspace` canonicalizes the working directory and refuses the filesystem root, the user's home directory, exact mounted-volume roots on Linux and macOS, and exact Linux private temp/runtime roots because recursively protecting Git metadata there cannot safely use a partial scan. Descendants of mounted volumes remain valid bounded workspaces; otherwise change into a project directory or use `--sandbox base`. Tighten with `--sandbox base` or `--sandbox readonly` when tools only need to compute or inspect. Granular additions: `--writepath <dir>` (repeatable, env `POLLYTOOL_WRITEPATHS`) grants extra writable paths and `--allownet` (env `POLLYTOOL_ALLOWNET`) grants network on top of any preset.
+The default is **`workspace+net+git`**: tools can edit the project, reach the network, and use Git (commit, rebase, fetch), while credentials stay masked and everything outside the workspace is read-only. Without the `git` component, `workspace` keeps the whole `.git` tree read-only and `git commit` fails with `EPERM`; leaf mode instead pins only the metadata that can select host-executed code (config, hooks, routing/worktree pointers), creating those leaves inert when absent. `workspace` canonicalizes the working directory and refuses the filesystem root, the user's home directory, exact mounted-volume roots on Linux and macOS, and exact Linux private temp/runtime roots because recursively protecting Git metadata there cannot safely use a partial scan. Descendants of mounted volumes remain valid bounded workspaces; otherwise change into a project directory or use `--sandbox base`. Tighten with `--sandbox base` or `--sandbox readonly` when tools only need to compute or inspect. Granular additions: `--writepath <dir>` (repeatable, env `POLLYTOOL_WRITEPATHS`) grants extra writable paths and `--allownet` (env `POLLYTOOL_ALLOWNET`) grants network on top of any preset.
 
 If a global flag or per-tool overlay leaves a home directory or filesystem root as a broad writable grant, Polly emits a visible warning pointing to the global and per-tool settings to inspect. Repeated effective configs do not repeat the same warning.
 
@@ -459,6 +462,12 @@ polly -t ./sandboxed_uppercase.sh -p "uppercase 'hello world' using the tool"
   "allowEnv": ["AWS_PROFILE", "AWS_REGION", "HOME", "PATH"]
 }
 
+// Additively pass one variable through without a strict allowlist
+"sandbox": { "passEnv": ["GITHUB_TOKEN"] }
+
+// Let a tool reach one agent/service socket while others stay blocked
+"sandbox": { "passEnv": ["SSH_AUTH_SOCK"], "allowUnixSockets": ["~/.ssh/agent.sock"] }
+
 // Fully read-only — no writes, not even to temp
 "sandbox": { "denyWrite": true }
 
@@ -466,7 +475,7 @@ polly -t ./sandboxed_uppercase.sh -p "uppercase 'hello world' using the tool"
 // the explicit global unsafe choice with --nosandbox.
 ```
 
-Credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, names ending in `_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, ..., plus agent sockets like `SSH_AUTH_SOCK`) are stripped from sandboxed processes unless explicitly listed in `allowEnv`.
+Credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, names ending in `_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, ..., plus agent sockets like `SSH_AUTH_SOCK`) are stripped from sandboxed processes. Add one back with `passEnv` (additive — everything else still flows), or replace the heuristic entirely with a strict `allowEnv` allowlist (which then ignores `passEnv`).
 
 Relative `writablePaths`, `readPaths`, and `denyPaths` entries resolve against
 Polly's working directory when the sandbox is created. A child read exemption
@@ -522,7 +531,7 @@ is loaded fails closed instead of silently widening that later sandbox.
 }
 ```
 
-Tools and servers without a `sandbox` field get the CLI preset (`workspace+net` unless `--sandbox` says otherwise). A tool's own `sandbox` config merges monotonically on top of the preset: it may add grants or restrictions, but cannot remove an earlier entry. A `"sandbox": false` request is refused unless the caller also made the explicit global unsafe choice with `--nosandbox`.
+Tools and servers without a `sandbox` field get the CLI preset (`workspace+net+git` unless `--sandbox` says otherwise). A tool's own `sandbox` config merges monotonically on top of the preset: it may add grants or restrictions, but cannot remove an earlier entry. A `"sandbox": false` request is refused unless the caller also made the explicit global unsafe choice with `--nosandbox`.
 
 ### MCP Servers
 
