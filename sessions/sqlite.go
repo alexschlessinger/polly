@@ -293,22 +293,28 @@ func sqliteDataSource(mode StoreMode, path string) string {
 		query.Set("cache", "shared")
 	} else {
 		normalized := filepath.ToSlash(path)
-		// Keep drive letters in the URI path. Without the leading slash,
-		// net/url renders C:/... as file://C:/..., where SQLite interprets C:
-		// as a forbidden URI authority instead of a Windows volume.
-		if len(normalized) >= 3 && normalized[1] == ':' &&
-			(normalized[2] == '/' || normalized[2] == '\\') {
-			normalized = strings.ReplaceAll(normalized, "\\", "/")
-			normalized = "/" + normalized
-		} else if !filepath.IsAbs(path) {
+		if !isWindowsDrivePath(normalized) && !filepath.IsAbs(path) {
 			if absolute, err := filepath.Abs(path); err == nil {
 				normalized = filepath.ToSlash(absolute)
 			}
+		}
+		// Keep drive letters in the URI path. Without the leading slash,
+		// net/url renders C:/... as file://C:/..., where SQLite interprets C:
+		// as a forbidden URI authority instead of a Windows volume.
+		if isWindowsDrivePath(normalized) {
+			normalized = strings.ReplaceAll(normalized, "\\", "/")
+			normalized = "/" + normalized
 		}
 		uri.Path = normalized
 	}
 	uri.RawQuery = query.Encode()
 	return uri.String()
+}
+
+// isWindowsDrivePath reports whether path starts with a drive letter, either
+// as given or after filepath.Abs resolved a relative path on Windows.
+func isWindowsDrivePath(path string) bool {
+	return len(path) >= 3 && path[1] == ':' && (path[2] == '/' || path[2] == '\\')
 }
 
 func configureJournal(ctx context.Context, conn *sql.Conn, mode StoreMode) error {
