@@ -181,6 +181,7 @@ type capturedNativeRequest struct {
 	method string
 	path   string
 	body   []byte
+	header http.Header
 	err    error
 }
 
@@ -193,6 +194,7 @@ func newNativeRequestCaptureServer(t *testing.T, responseBody string) (string, <
 			method: r.Method,
 			path:   r.URL.Path,
 			body:   body,
+			header: r.Header.Clone(),
 			err:    err,
 		}
 		w.Header().Set("Content-Type", "application/json")

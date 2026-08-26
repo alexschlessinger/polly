@@ -162,10 +162,11 @@ type Candidate struct {
 // CandidatesTokenCount excludes thinking tokens, which the API reports
 // separately as ThoughtsTokenCount.
 type UsageMetadata struct {
-	PromptTokenCount     int32 `json:"promptTokenCount,omitempty"`
-	CandidatesTokenCount int32 `json:"candidatesTokenCount,omitempty"`
-	ThoughtsTokenCount   int32 `json:"thoughtsTokenCount,omitempty"`
-	TotalTokenCount      int32 `json:"totalTokenCount,omitempty"`
+	PromptTokenCount        int32  `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount    int32  `json:"candidatesTokenCount,omitempty"`
+	ThoughtsTokenCount      int32  `json:"thoughtsTokenCount,omitempty"`
+	TotalTokenCount         int32  `json:"totalTokenCount,omitempty"`
+	CachedContentTokenCount *int32 `json:"cachedContentTokenCount,omitempty"`
 }
 
 // GenerateContentResponse is a full response or one SSE chunk; the shapes

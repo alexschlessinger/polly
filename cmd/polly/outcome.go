@@ -84,17 +84,19 @@ func classifyOutcome(resp *llm.AgentResponse, err error) (messages.StopReason, i
 
 // metaFields is the flat run-outcome record emitted as the polly-meta trailer.
 type metaFields struct {
-	StopReason   messages.StopReason
-	Model        string
-	Iterations   int
-	ToolCalls    int
-	ToolErrors   int
-	LastTool     string   // last tool invoked this turn (empty if none)
-	ToolFailures []string // "name: message" per tool-runner failure; capped at write time
-	InputTokens  int
-	OutputTokens int
-	DurationMS   int64
-	Err          string // single-line; present only on hard error
+	StopReason       messages.StopReason
+	Model            string
+	Iterations       int
+	ToolCalls        int
+	ToolErrors       int
+	LastTool         string   // last tool invoked this turn (empty if none)
+	ToolFailures     []string // "name: message" per tool-runner failure; capped at write time
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	DurationMS       int64
+	Err              string // single-line; present only on hard error
 }
 
 // buildMeta assembles the trailer record from a turn's final state. stopReason
@@ -102,8 +104,11 @@ type metaFields struct {
 // code, so the trailer and the exit code cannot diverge.
 func buildMeta(stopReason messages.StopReason, resp *llm.AgentResponse, err error, model string, stats *turnToolStats, inTokens, outTokens int, durationMS int64) metaFields {
 	iterations := 0
+	cacheRead, cacheWrite := 0, 0
 	if resp != nil {
 		iterations = resp.IterationCount
+		cacheRead = resp.PromptCache.ReadInputTokens
+		cacheWrite = resp.PromptCache.WriteInputTokens
 	}
 	errStr := ""
 	if stopReason == messages.StopReasonError && err != nil {
@@ -111,17 +116,19 @@ func buildMeta(stopReason messages.StopReason, resp *llm.AgentResponse, err erro
 	}
 	toolCalls, toolErrors, lastTool, toolFailures := stats.snapshot()
 	return metaFields{
-		StopReason:   stopReason,
-		Model:        model,
-		Iterations:   iterations,
-		ToolCalls:    toolCalls,
-		ToolErrors:   toolErrors,
-		LastTool:     lastTool,
-		ToolFailures: toolFailures,
-		InputTokens:  inTokens,
-		OutputTokens: outTokens,
-		DurationMS:   durationMS,
-		Err:          errStr,
+		StopReason:       stopReason,
+		Model:            model,
+		Iterations:       iterations,
+		ToolCalls:        toolCalls,
+		ToolErrors:       toolErrors,
+		LastTool:         lastTool,
+		ToolFailures:     toolFailures,
+		InputTokens:      inTokens,
+		OutputTokens:     outTokens,
+		CacheReadTokens:  cacheRead,
+		CacheWriteTokens: cacheWrite,
+		DurationMS:       durationMS,
+		Err:              errStr,
 	}
 }
 
@@ -154,6 +161,8 @@ func writeMetaTrailer(w io.Writer, m metaFields) {
 	}
 	p("input_tokens=%d", m.InputTokens)
 	p("output_tokens=%d", m.OutputTokens)
+	p("cache_read_tokens=%d", m.CacheReadTokens)
+	p("cache_write_tokens=%d", m.CacheWriteTokens)
 	p("duration_ms=%d", m.DurationMS)
 	if m.Err != "" {
 		p("error=%s", oneLine(m.Err))

@@ -117,6 +117,9 @@ func (d DeepSeekClient) handleNonStreaming(ctx context.Context, params *openai.C
 
 	if resp.Usage != nil {
 		streamCore.SetTokenUsage(int(resp.Usage.PromptTokens), int(resp.Usage.CompletionTokens))
+		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
+			streamCore.SetPromptCacheUsage(read, write)
+		}
 	}
 
 	streamCore.Complete()

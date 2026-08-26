@@ -114,6 +114,13 @@ type ToolChoice struct {
 	Type string `json:"type"`
 }
 
+// CacheControl enables Anthropic's ephemeral prompt cache. Omitting TTL uses
+// the provider's default five-minute lifetime.
+type CacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
 // MessageRequest is the body for POST /v1/messages. System sits at the top
 // level as text blocks, not inside Messages.
 type MessageRequest struct {
@@ -127,6 +134,7 @@ type MessageRequest struct {
 	Tools        []*Tool         `json:"tools,omitempty"`
 	ToolChoice   *ToolChoice     `json:"tool_choice,omitempty"`
 	Stream       bool            `json:"stream,omitempty"`
+	CacheControl *CacheControl   `json:"cache_control,omitempty"`
 }
 
 // StopReason reports why the model stopped.
@@ -143,8 +151,40 @@ const (
 // Usage carries token accounting. In streams, input_tokens arrives on
 // message_start and output_tokens cumulatively on message_delta events.
 type Usage struct {
-	InputTokens  int64 `json:"input_tokens,omitempty"`
-	OutputTokens int64 `json:"output_tokens,omitempty"`
+	InputTokens              int64  `json:"input_tokens,omitempty"`
+	OutputTokens             int64  `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens,omitempty"`
+}
+
+// TotalInputTokens normalizes Anthropic's mutually separated regular, cache
+// read, and cache creation input counts into Polly's effective input total.
+func (u *Usage) TotalInputTokens() int64 {
+	if u == nil {
+		return 0
+	}
+	total := u.InputTokens
+	if u.CacheCreationInputTokens != nil {
+		total += *u.CacheCreationInputTokens
+	}
+	if u.CacheReadInputTokens != nil {
+		total += *u.CacheReadInputTokens
+	}
+	return total
+}
+
+// PromptCacheUsage returns only fields explicitly reported by Anthropic.
+func (u *Usage) PromptCacheUsage() (read, write int, reported bool) {
+	if u == nil || (u.CacheCreationInputTokens == nil && u.CacheReadInputTokens == nil) {
+		return 0, 0, false
+	}
+	if u.CacheReadInputTokens != nil {
+		read = int(*u.CacheReadInputTokens)
+	}
+	if u.CacheCreationInputTokens != nil {
+		write = int(*u.CacheCreationInputTokens)
+	}
+	return read, write, true
 }
 
 // Message is a complete (non-streaming) response, and the message_start

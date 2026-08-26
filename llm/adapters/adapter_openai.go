@@ -27,6 +27,7 @@ func (a *OpenAIAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 
 	if response.Usage != nil {
 		state.SetTokenUsage(int(response.Usage.PromptTokens), int(response.Usage.CompletionTokens))
+		applyOpenAIPromptCacheUsage(response.Usage, state)
 	}
 
 	if len(response.Choices) == 0 {
@@ -171,12 +172,21 @@ func (a *OpenAIResponsesAdapter) applyResponse(resp *openai.Response, state stre
 	}
 	if resp.Usage != nil {
 		state.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
+		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
+			state.SetPromptCacheUsage(read, write)
+		}
 	}
 	incompleteReason := ""
 	if resp.IncompleteDetails != nil {
 		incompleteReason = resp.IncompleteDetails.Reason
 	}
 	state.SetStopReason(MapResponsesStopReason(resp.Status, incompleteReason, len(state.GetToolCalls()) > 0))
+}
+
+func applyOpenAIPromptCacheUsage(usage *openai.ChatUsage, state streaming.StreamStateInterface) {
+	if read, write, reported := usage.PromptCacheUsage(); reported {
+		state.SetPromptCacheUsage(read, write)
+	}
 }
 
 func (a *OpenAIResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {

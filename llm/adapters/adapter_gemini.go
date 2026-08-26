@@ -38,6 +38,9 @@ func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 			int(resp.UsageMetadata.PromptTokenCount),
 			int(resp.UsageMetadata.CandidatesTokenCount),
 		)
+		if resp.UsageMetadata.CachedContentTokenCount != nil {
+			state.SetPromptCacheUsage(int(*resp.UsageMetadata.CachedContentTokenCount), 0)
+		}
 	}
 
 	// Process each candidate's parts

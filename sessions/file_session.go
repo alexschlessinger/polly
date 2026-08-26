@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -436,6 +437,18 @@ func (s *FileSession) ArtifactStore() (artifacts.Store, error) {
 	return store, nil
 }
 
+// CacheSessionID returns an opaque hash of the immutable artifact namespace.
+// ArtifactStore performs the lazy legacy-session migration before the ID is
+// derived, so reloads and renames retain the same value.
+func (s *FileSession) CacheSessionID() (string, error) {
+	if _, err := s.ArtifactStore(); err != nil {
+		return "", err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cacheSessionID(s.ArtifactNamespace), nil
+}
+
 // GetName returns the session name
 func (s *FileSession) GetName() string {
 	s.mu.RLock()
@@ -571,6 +584,11 @@ func validArtifactNamespace(namespace string) bool {
 	}
 	_, err := hex.DecodeString(namespace)
 	return err == nil
+}
+
+func cacheSessionID(namespace string) string {
+	digest := sha256.Sum256([]byte("polly-cache-session-v1\x00" + namespace))
+	return hex.EncodeToString(digest[:])
 }
 
 func artifactNamespacePath(baseDir, namespace string) string {

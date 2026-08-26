@@ -85,6 +85,15 @@ type AgentResponse struct {
 	AllMessages    []messages.ChatMessage // All messages generated (assistant + tool results)
 	IterationCount int                    // Number of LLM calls made
 	Projection     ProjectionStats        // Final provider-visible context projection
+	PromptCache    PromptCacheStats       // Provider-reported cache use across all LLM calls
+}
+
+// PromptCacheStats is provider-reported prompt-cache accounting. Zero values
+// mean either no cache activity or that the provider did not report details;
+// Polly never estimates cache hits.
+type PromptCacheStats struct {
+	ReadInputTokens  int
+	WriteInputTokens int
 }
 
 func hasToolCall(msg *messages.ChatMessage, name string) bool {
@@ -149,9 +158,13 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	var nudgedResponseTool bool
 	var responseToolCalled bool
 	var lastProjection ProjectionStats
+	var promptCache PromptCacheStats
 	a.resetArtifactIndex(msgs)
 	responseFor := func(message *messages.ChatMessage, iterations int) *AgentResponse {
-		return &AgentResponse{Message: message, AllMessages: allGenerated, IterationCount: iterations, Projection: lastProjection}
+		return &AgentResponse{
+			Message: message, AllMessages: allGenerated, IterationCount: iterations,
+			Projection: lastProjection, PromptCache: promptCache,
+		}
 	}
 
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
@@ -184,6 +197,13 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		if a.tools != nil {
 			iterReq.Tools = a.tools.All()
 		}
+		if iterReq.PromptCacheKey == "" {
+			if key, keyErr := derivePromptCacheKey(&iterReq, msgs); keyErr == nil {
+				iterReq.PromptCacheKey = key
+			} else {
+				slog.Debug("prompt_cache_key_omitted", "error", keyErr)
+			}
+		}
 
 		// Stream completion
 		processor := messages.NewStreamProcessor()
@@ -195,6 +215,8 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		if err != nil {
 			return responseFor(nil, iteration+1), err
 		}
+		promptCache.ReadInputTokens += response.GetCacheReadInputTokens()
+		promptCache.WriteInputTokens += response.GetCacheWriteInputTokens()
 
 		// Ensure content is never null — some providers reject null content in history
 		if response.Content == "" && len(response.ToolCalls) == 0 {

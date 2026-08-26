@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -10,12 +11,13 @@ import (
 
 // LocalSession implements an in-memory session
 type LocalSession struct {
-	history   []messages.ChatMessage
-	last      time.Time
-	name      string
-	mu        sync.RWMutex
-	metadata  *Metadata
-	artifacts *artifacts.MemoryStore
+	history           []messages.ChatMessage
+	last              time.Time
+	name              string
+	mu                sync.RWMutex
+	metadata          *Metadata
+	artifacts         *artifacts.MemoryStore
+	artifactNamespace string
 }
 
 // SyncMapSessionStore implements a thread-safe in-memory session store
@@ -70,10 +72,11 @@ func (s *SyncMapSessionStore) Get(id string) (Session, error) {
 	}
 
 	session := &LocalSession{
-		name:      id,
-		last:      time.Now(),
-		metadata:  contextInfo,
-		artifacts: artifacts.NewMemoryStore(),
+		name:              id,
+		last:              time.Now(),
+		metadata:          contextInfo,
+		artifacts:         artifacts.NewMemoryStore(),
+		artifactNamespace: newArtifactNamespace(),
 	}
 	_ = session.Clear() // in-memory; never fails
 	s.Store(id, session)
@@ -226,6 +229,21 @@ func (s *LocalSession) ArtifactStore() (artifacts.Store, error) {
 		s.artifacts = artifacts.NewMemoryStore()
 	}
 	return s.artifacts, nil
+}
+
+// CacheSessionID returns the hash-derived identity for this session's
+// immutable artifact namespace. Clear removes artifacts but keeps the
+// namespace, so affinity survives a transcript reset.
+func (s *LocalSession) CacheSessionID() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !validArtifactNamespace(s.artifactNamespace) {
+		s.artifactNamespace = newArtifactNamespace()
+	}
+	if !validArtifactNamespace(s.artifactNamespace) {
+		return "", fmt.Errorf("generate artifact namespace")
+	}
+	return cacheSessionID(s.artifactNamespace), nil
 }
 
 // GetName returns the session name
