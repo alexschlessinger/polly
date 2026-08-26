@@ -129,6 +129,26 @@ func TestReadFileRejectsSVGImage(t *testing.T) {
 	}
 }
 
+func TestReadFileRejectsOversizeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "too-large.txt")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(int64(maxLocalImageBytes) + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	part, err := readFile(path)
+	if err == nil || part != nil || !strings.Contains(err.Error(), "file exceeds the 32 MiB limit") {
+		t.Fatalf("oversize local file = %+v, %v", part, err)
+	}
+}
+
 func TestFetchURLNormalizesRasterAndRejectsSVG(t *testing.T) {
 	dir := t.TempDir()
 	gifPath := filepath.Join(dir, "animated.gif")

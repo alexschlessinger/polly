@@ -24,8 +24,10 @@ func readFile(path string) (*messages.ContentPart, error) {
 		return nil, fmt.Errorf("%s is a directory", path)
 	}
 
-	// Read file content
-	data, err := os.ReadFile(path)
+	// Bound local reads just like URL downloads. The helper checks both the
+	// opened file's size and the bytes read, so a large or concurrently growing
+	// file cannot be buffered without limit.
+	data, err := readBoundedRegularFile(path, maxLocalImageBytes)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read file %s: %w", path, err)
 	}

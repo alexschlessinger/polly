@@ -391,15 +391,9 @@ func prepareImageBytesForUpload(data []byte, fileName string) (*messages.Content
 	if fileName == "" || fileName == "." || fileName == string(filepath.Separator) {
 		fileName = "attachment"
 	}
-	if len(data) == 0 || len(data) > maxLocalImageBytes {
-		return nil, fmt.Errorf("%s: image size is outside the supported range", fileName)
-	}
-	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	config, format, err := validateImageBytes(data)
 	if err != nil {
-		return nil, fmt.Errorf("%s: unsupported image format or invalid image data", fileName)
-	}
-	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxLocalImagePixels {
-		return nil, fmt.Errorf("%s: image dimensions are outside the supported range", fileName)
+		return nil, fmt.Errorf("%s: %w", fileName, err)
 	}
 
 	mimeType, passthrough := uploadImageFormat(format)
@@ -545,30 +539,53 @@ func applyEXIFOrientation(src image.Image, orientation int) image.Image {
 	if orientation >= 5 {
 		dstWidth, dstHeight = height, width
 	}
+	if nrgba, ok := src.(*image.NRGBA); ok {
+		return applyEXIFOrientationNRGBA(nrgba, orientation, dstWidth, dstHeight)
+	}
 	dst := image.NewNRGBA(image.Rect(0, 0, dstWidth, dstHeight))
 	for y := 0; y < dstHeight; y++ {
 		for x := 0; x < dstWidth; x++ {
-			var srcX, srcY int
-			switch orientation {
-			case 2:
-				srcX, srcY = width-1-x, y
-			case 3:
-				srcX, srcY = width-1-x, height-1-y
-			case 4:
-				srcX, srcY = x, height-1-y
-			case 5:
-				srcX, srcY = y, x
-			case 6:
-				srcX, srcY = y, height-1-x
-			case 7:
-				srcX, srcY = width-1-y, height-1-x
-			case 8:
-				srcX, srcY = width-1-y, x
-			}
+			srcX, srcY := exifSourcePoint(orientation, width, height, x, y)
 			dst.Set(x, y, src.At(bounds.Min.X+srcX, bounds.Min.Y+srcY))
 		}
 	}
 	return dst
+}
+
+func applyEXIFOrientationNRGBA(src *image.NRGBA, orientation, dstWidth, dstHeight int) *image.NRGBA {
+	bounds := src.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, dstWidth, dstHeight))
+	for y := 0; y < dstHeight; y++ {
+		for x := 0; x < dstWidth; x++ {
+			srcX, srcY := exifSourcePoint(orientation, width, height, x, y)
+			srcOffset := src.PixOffset(bounds.Min.X+srcX, bounds.Min.Y+srcY)
+			dstOffset := dst.PixOffset(x, y)
+			copy(dst.Pix[dstOffset:dstOffset+4], src.Pix[srcOffset:srcOffset+4])
+		}
+	}
+	return dst
+}
+
+func exifSourcePoint(orientation, width, height, x, y int) (int, int) {
+	switch orientation {
+	case 2:
+		return width - 1 - x, y
+	case 3:
+		return width - 1 - x, height - 1 - y
+	case 4:
+		return x, height - 1 - y
+	case 5:
+		return y, x
+	case 6:
+		return y, height - 1 - x
+	case 7:
+		return width - 1 - y, height - 1 - x
+	case 8:
+		return width - 1 - y, x
+	default:
+		return x, y
+	}
 }
 
 // preparedMessageTranscriptImages materializes the exact portable image bytes

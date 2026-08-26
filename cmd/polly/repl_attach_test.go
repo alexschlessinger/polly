@@ -21,6 +21,10 @@ import (
 	"golang.org/x/image/bmp"
 )
 
+type wrappedImage struct {
+	image.Image
+}
+
 func TestSplitDroppedPaths(t *testing.T) {
 	cases := []struct {
 		name string
@@ -316,6 +320,36 @@ func TestPrepareImageForUploadAppliesEXIFOrientationWhenResizing(t *testing.T) {
 	}
 	if got := jpegEXIFOrientation(data); got != 1 {
 		t.Fatalf("resized JPEG retained stale EXIF orientation %d", got)
+	}
+}
+
+func TestApplyEXIFOrientationNRGBAFastPathMatchesGenericPath(t *testing.T) {
+	bounds := image.Rect(2, 3, 5, 5)
+	src := image.NewNRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			src.SetNRGBA(x, y, color.NRGBA{R: uint8(x * 31), G: uint8(y * 37), B: uint8(x + y), A: 255})
+		}
+	}
+
+	for orientation := 2; orientation <= 8; orientation++ {
+		fast, ok := applyEXIFOrientation(src, orientation).(*image.NRGBA)
+		if !ok {
+			t.Fatalf("orientation %d did not use NRGBA destination", orientation)
+		}
+		generic := applyEXIFOrientation(wrappedImage{Image: src}, orientation)
+		if fast.Bounds() != generic.Bounds() {
+			t.Fatalf("orientation %d bounds = %v, want %v", orientation, fast.Bounds(), generic.Bounds())
+		}
+		for y := fast.Bounds().Min.Y; y < fast.Bounds().Max.Y; y++ {
+			for x := fast.Bounds().Min.X; x < fast.Bounds().Max.X; x++ {
+				got := fast.NRGBAAt(x, y)
+				want := color.NRGBAModel.Convert(generic.At(x, y)).(color.NRGBA)
+				if got != want {
+					t.Fatalf("orientation %d pixel (%d,%d) = %#v, want %#v", orientation, x, y, got, want)
+				}
+			}
+		}
 	}
 }
 

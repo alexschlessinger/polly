@@ -142,15 +142,9 @@ func normalizeCapturedImage(path string) error {
 	if err != nil {
 		return err
 	}
-	if len(data) == 0 || len(data) > maxLocalImageBytes {
-		return fmt.Errorf("captured image size is outside the supported range")
-	}
-	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	_, format, err := validateImageBytes(data)
 	if err != nil {
-		return err
-	}
-	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxLocalImagePixels {
-		return fmt.Errorf("captured image dimensions are outside the supported range")
+		return fmt.Errorf("captured %w", err)
 	}
 	if format == "png" {
 		return nil
