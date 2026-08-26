@@ -700,6 +700,7 @@ func TestLinuxBuildBwrapArgsMountsNestedPrivateRootsAfterWritableAncestor(t *tes
 		nil,
 		nil,
 		nil,
+		nil,
 		[]string{tempRoot},
 		[]string{runRoot},
 	)
@@ -3149,4 +3150,260 @@ func TestLinuxSandboxBlocksAllExistingCredentialPaths(t *testing.T) {
 		t.Skip("no denied credential paths exist on this machine")
 	}
 	t.Logf("tested %d/%d credential paths that exist on this machine", tested, len(denied))
+}
+
+// Linux twin of the Darwin whole-tree workspace E2E: without the git
+// component the whole metadata tree stays unwritable, including the names
+// that do not exist yet.
+func TestLinuxSandboxWorkspacePresetPinsGitRoutingAndAncestors(t *testing.T) {
+	skipIfNoBwrap(t)
+	isolateGitConfig(t)
+
+	work := t.TempDir()
+	rootGit := filepath.Join(work, ".git")
+	nestedRoot := filepath.Join(work, "packages", "nested")
+	nestedGit := filepath.Join(nestedRoot, ".git")
+	for _, dir := range []string{rootGit, nestedGit} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(work)
+	cfg, err := ParsePreset("workspace")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace) error = %v", err)
+	}
+	sb, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	tests := []struct {
+		name string
+		cmd  *exec.Cmd
+	}{
+		{
+			name: "relocate root routing directory",
+			cmd:  exec.Command("mv", rootGit, filepath.Join(work, ".git-old")),
+		},
+		{
+			name: "create absent config.worktree",
+			cmd: exec.Command("bash", "-c", `: > "$1"`, "bash",
+				filepath.Join(rootGit, "config.worktree")),
+		},
+		{
+			name: "relocate mutable nested ancestor",
+			cmd: exec.Command("mv", filepath.Join(work, "packages"),
+				filepath.Join(work, "packages-old")),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := wrapCmdForTest(t, sb, tt.cmd); err != nil {
+				t.Fatalf("Wrap() error = %v", err)
+			}
+			if out, err := tt.cmd.CombinedOutput(); err == nil {
+				t.Fatalf("guarded mutation succeeded, output: %s", out)
+			}
+		})
+	}
+	if _, err := os.Stat(rootGit); err != nil {
+		t.Fatalf("root Git routing entry moved or removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootGit, "config.worktree")); !os.IsNotExist(err) {
+		t.Fatalf("config.worktree was created despite the whole-tree pin: %v", err)
+	}
+
+	note := filepath.Join(nestedRoot, "note.txt")
+	cmd := exec.Command("bash", "-c", `echo ok > "$1"`, "bash", note)
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() safe workspace write error = %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("safe nested working-tree write failed: %v (%s)", err, out)
+	}
+}
+
+func TestLinuxSandboxWorkspaceGitPresetAllowsCommitBlocksConfig(t *testing.T) {
+	skipIfNoBwrap(t)
+	exerciseWorkspaceGitLeafSandbox(t)
+}
+
+func TestLinuxSandboxWorkspaceGitPresetWorktreeCommit(t *testing.T) {
+	skipIfNoBwrap(t)
+	exerciseWorkspaceGitWorktreeCommitSandbox(t)
+}
+
+func TestLinuxSandboxSSHAgentGrant(t *testing.T) {
+	skipIfNoBwrap(t)
+	exerciseSSHAgentGrantSandbox(t)
+}
+
+func TestLinuxSandboxAllowsGrantedUnixSocket(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	// t.TempDir sits under os.TempDir, one of the private roots, so this
+	// exercises the socket bind into the private tmpfs.
+	dir := t.TempDir()
+	granted := filepath.Join(dir, "granted.sock")
+	sibling := filepath.Join(dir, "sibling.sock")
+	for _, path := range []string{granted, sibling} {
+		listener, err := net.Listen("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+	}
+
+	sb, err := New(Config{AllowUnixSockets: []string{granted}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	dial := func(t *testing.T, target, expect string) {
+		t.Helper()
+		cmd := exec.Command(os.Args[0], "-test.run=^TestLinuxGrantedUnixSocketHelper$")
+		cmd.Env = append(os.Environ(),
+			"POLLY_TEST_GRANTED_SOCKET="+target,
+			"POLLY_TEST_EXPECT="+expect)
+		if err := wrapCmdForTest(t, sb, cmd); err != nil {
+			t.Fatalf("Wrap() error = %v", err)
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			if strings.Contains(string(out), "Operation not permitted") || strings.Contains(string(out), "Permission denied") {
+				skipOrFailBwrapUnavailable(t, err, out)
+			}
+			t.Fatalf("socket grant probe failed: %v (%s)", err, out)
+		}
+	}
+	t.Run("granted socket connects", func(t *testing.T) { dial(t, granted, "ok") })
+	t.Run("sibling stays hidden", func(t *testing.T) { dial(t, sibling, "fail") })
+}
+
+func TestLinuxSandboxGrantedSocketOutsidePrivateRoots(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	// A socket under $HOME is visible through the read-only root bind; only
+	// the seccomp AF_UNIX allowance separates reachable from not.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home: %v", err)
+	}
+	dir, err := os.MkdirTemp(home, ".polly-unix-grant-")
+	if err != nil {
+		t.Fatalf("create host socket directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	sock := filepath.Join(dir, "granted.sock")
+	listener, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	sb, err := New(Config{AllowUnixSockets: []string{sock}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLinuxGrantedUnixSocketHelper$")
+	cmd.Env = append(os.Environ(),
+		"POLLY_TEST_GRANTED_SOCKET="+sock,
+		"POLLY_TEST_EXPECT=ok")
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if strings.Contains(string(out), "Operation not permitted") || strings.Contains(string(out), "Permission denied") {
+			skipOrFailBwrapUnavailable(t, err, out)
+		}
+		t.Fatalf("home-dir socket grant probe failed: %v (%s)", err, out)
+	}
+}
+
+func TestLinuxSandboxDropsVanishedSocketGrant(t *testing.T) {
+	skipIfNoBwrap(t)
+
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "granted.sock")
+	listener, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{AllowUnixSockets: []string{sock}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	_ = listener.Close()
+	if err := os.Remove(sock); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	// The command still runs; the dead grant is dropped, so the dial fails.
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLinuxGrantedUnixSocketHelper$")
+	cmd.Env = append(os.Environ(),
+		"POLLY_TEST_GRANTED_SOCKET="+sock,
+		"POLLY_TEST_EXPECT=fail")
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if strings.Contains(string(out), "Operation not permitted") || strings.Contains(string(out), "Permission denied") {
+			skipOrFailBwrapUnavailable(t, err, out)
+		}
+		t.Fatalf("vanished-grant probe failed: %v (%s)", err, out)
+	}
+}
+
+func TestLinuxGrantedUnixSocketHelper(t *testing.T) {
+	path := os.Getenv("POLLY_TEST_GRANTED_SOCKET")
+	if path == "" {
+		return
+	}
+	conn, err := net.Dial("unix", path)
+	switch os.Getenv("POLLY_TEST_EXPECT") {
+	case "ok":
+		if err != nil {
+			t.Fatalf("dial granted socket: %v", err)
+		}
+		_ = conn.Close()
+	case "fail":
+		if err == nil {
+			_ = conn.Close()
+			t.Fatal("dialed a socket that should be unreachable")
+		}
+	}
+}
+
+func TestLinuxBuildBwrapArgsGrantedSocketBindOrdering(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "g.sock")
+	listener, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	args := buildBwrapArgs(Config{AllowUnixSockets: []string{sock}}, nil)
+	joined := strings.Join(args, "\x00")
+	bindNeedle := strings.Join([]string{"--ro-bind", sock, sock}, "\x00")
+	bindAt := strings.Index(joined, bindNeedle)
+	if bindAt < 0 {
+		t.Fatalf("bwrap args missing the socket bind: %v", args)
+	}
+	tempRoots, _ := privateLinuxRoots()
+	coveringAt := -1
+	for _, root := range tempRoots {
+		if !isPathWithin(sock, root) {
+			continue
+		}
+		if at := strings.Index(joined, strings.Join([]string{"--tmpfs", root}, "\x00")); at >= 0 {
+			coveringAt = at
+		}
+	}
+	if coveringAt < 0 {
+		t.Fatalf("no private root tmpfs covers %q in args %v", sock, args)
+	}
+	if bindAt < coveringAt {
+		t.Fatalf("socket bind emitted before its covering private tmpfs (bind at %d, tmpfs at %d): %v", bindAt, coveringAt, args)
+	}
 }

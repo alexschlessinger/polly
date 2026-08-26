@@ -22,9 +22,11 @@ const (
 )
 
 // defaultSandboxPreset is the sandbox policy when --sandbox is not given:
-// the working directory is writable (with .git guardrails) and outbound
-// network is allowed. Tighten with e.g. --sandbox base or --sandbox readonly.
-const defaultSandboxPreset = "workspace+net"
+// the working directory is writable, outbound network is allowed, and Git
+// works — .git stays writable with only its dangerous leaves (config, hooks,
+// routing pointers) pinned read-only. Tighten with e.g. --sandbox
+// workspace+net (whole .git read-only) or --sandbox base.
+const defaultSandboxPreset = "workspace+net+git"
 
 var (
 	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
@@ -321,7 +323,7 @@ func sandboxConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
 			Name:    "sandbox",
-			Usage:   "Sandbox preset: base, readonly, workspace, net — join with + (e.g. workspace+net)",
+			Usage:   "Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace",
 			Value:   defaultSandboxPreset,
 			Sources: cli.EnvVars("POLLYTOOL_SANDBOX"),
 			Validator: func(spec string) error {
@@ -359,12 +361,20 @@ func validateSandboxPresetSpec(spec string) error {
 	if strings.TrimSpace(spec) == "" {
 		return nil
 	}
+	var workspaceSelected, gitSelected bool
 	for _, part := range strings.Split(spec, "+") {
 		name := strings.TrimSpace(part)
 		if !slices.Contains(sandbox.PresetNames, name) {
 			return fmt.Errorf("unknown sandbox preset %q (valid: %s, joined with +)",
 				name, strings.Join(sandbox.PresetNames, ", "))
 		}
+		workspaceSelected = workspaceSelected || name == "workspace"
+		gitSelected = gitSelected || name == "git"
+	}
+	// Pure spec-level pairing check, mirrored from sandbox.ParsePreset so the
+	// mistake surfaces at flag parsing instead of sandbox startup.
+	if gitSelected && !workspaceSelected {
+		return fmt.Errorf("sandbox preset %q requires %q (e.g. workspace+git): it selects how workspace Git metadata is protected", "git", "workspace")
 	}
 	return nil
 }

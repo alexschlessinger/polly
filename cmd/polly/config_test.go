@@ -196,7 +196,7 @@ func TestSandboxPresetFlagDefaultsAndValidation(t *testing.T) {
 func TestSandboxPresetFlagValidationDoesNotInspectWorkspace(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("POLLYTOOL_SANDBOX", "workspace+net")
+	t.Setenv("POLLYTOOL_SANDBOX", defaultSandboxPreset)
 	t.Chdir(home)
 
 	// This command never constructs a sandbox. Supplying the documented default

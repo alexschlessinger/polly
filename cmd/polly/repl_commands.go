@@ -783,6 +783,10 @@ type sandboxPosture struct {
 	denyPaths   int
 	sandboxed   []string
 	unsandboxed []string
+	// sshAgentUnavailable notes an ssh preset without a live agent socket, so
+	// the inevitable auth failures surface at startup instead of as cryptic
+	// ssh errors mid-conversation.
+	sshAgentUnavailable bool
 }
 
 func currentSandboxPosture(config *Config, state *conversationState) sandboxPosture {
@@ -806,12 +810,34 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 		preset = "base"
 	}
 	return sandboxPosture{
-		state:       sandboxPostureActive,
-		preset:      preset,
-		denyPaths:   len(cfg.DenyPaths),
-		sandboxed:   sandboxed,
-		unsandboxed: unsandboxed,
+		state:               sandboxPostureActive,
+		preset:              preset,
+		denyPaths:           len(cfg.DenyPaths),
+		sandboxed:           sandboxed,
+		unsandboxed:         unsandboxed,
+		sshAgentUnavailable: presetSpecContains(preset, "ssh") && !sshAgentSocketLive(),
 	}
+}
+
+func presetSpecContains(spec, name string) bool {
+	for _, part := range strings.Split(spec, "+") {
+		if strings.TrimSpace(part) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func sshAgentSocketLive() bool {
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if sock == "" {
+		return false
+	}
+	// Follow symlinks: the sandbox grant resolves SSH_AUTH_SOCK to its
+	// canonical target, so a symlinked agent path (launchd aliases, dotfile
+	// setups) is live for the sandbox and must read as live here too.
+	info, err := os.Stat(sock)
+	return err == nil && info.Mode()&os.ModeSocket != 0
 }
 
 func sandboxPostureForContext(ctx *replCommandContext) sandboxPosture {
@@ -832,6 +858,9 @@ func (p sandboxPosture) settingString() string {
 		if len(p.unsandboxed) > 0 {
 			line += ": " + strings.Join(p.unsandboxed, ", ")
 		}
+		if p.sshAgentUnavailable {
+			line += "; ssh: agent unavailable"
+		}
 		return line + ")"
 	}
 }
@@ -846,6 +875,9 @@ func (p sandboxPosture) noticeString() string {
 		line := fmt.Sprintf("sandbox: active (%s; %d tools sandboxed", p.preset, len(p.sandboxed))
 		if len(p.unsandboxed) > 0 {
 			line += "; not sandboxed: " + strings.Join(p.unsandboxed, ", ")
+		}
+		if p.sshAgentUnavailable {
+			line += "; ssh: agent unavailable"
 		}
 		return line + ")"
 	}
@@ -1003,10 +1035,16 @@ func sandboxCompactSummary(info tools.SandboxInfo) string {
 	default:
 		parts = append(parts, "temp writes")
 	}
-	if len(cfg.AllowEnv) > 0 {
+	switch {
+	case len(cfg.AllowEnv) > 0:
 		parts = append(parts, "env allowlist")
-	} else {
+	case len(cfg.PassEnv) > 0:
+		parts = append(parts, "env filtered+pass")
+	default:
 		parts = append(parts, "env filtered")
+	}
+	if len(cfg.AllowUnixSockets) > 0 {
+		parts = append(parts, fmt.Sprintf("%d unix socket(s)", len(cfg.AllowUnixSockets)))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -1040,10 +1078,16 @@ func sandboxShowDetail(info tools.SandboxInfo) string {
 	default:
 		parts = append(parts, "writes limited to temp")
 	}
-	if len(cfg.AllowEnv) > 0 {
+	switch {
+	case len(cfg.AllowEnv) > 0:
 		parts = append(parts, "env allowlist active")
-	} else {
+	case len(cfg.PassEnv) > 0:
+		parts = append(parts, "env filters credential-like variables (passing: "+strings.Join(cfg.PassEnv, ", ")+")")
+	default:
 		parts = append(parts, "env filters credential-like variables")
+	}
+	if len(cfg.AllowUnixSockets) > 0 {
+		parts = append(parts, fmt.Sprintf("Unix sockets: %d granted", len(cfg.AllowUnixSockets)))
 	}
 	return strings.Join(parts, "; ")
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,6 +243,11 @@ func TestToolsSandboxBadges(t *testing.T) {
 			cfg:  sandbox.Config{AllowEnv: []string{"PATH"}},
 			want: "bash [sandboxed: net off, temp writes, env allowlist]",
 		},
+		{
+			name: "env passthrough",
+			cfg:  sandbox.Config{PassEnv: []string{"SSH_AUTH_SOCK"}},
+			want: "bash [sandboxed: net off, temp writes, env filtered+pass]",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -268,6 +274,61 @@ func TestToolsSandboxBadges(t *testing.T) {
 				t.Fatalf("/tools list missing %q in %q", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestSandboxSummariesReportUnixSocketGrants(t *testing.T) {
+	info := tools.SandboxInfo{
+		Capable: true,
+		Active:  true,
+		Config:  &sandbox.Config{AllowUnixSockets: []string{"/tmp/agent.sock"}},
+	}
+	if got := sandboxCompactSummary(info); !strings.Contains(got, "1 unix socket(s)") {
+		t.Fatalf("sandboxCompactSummary = %q, want a unix-socket token", got)
+	}
+	if got := sandboxShowDetail(info); !strings.Contains(got, "Unix sockets: 1 granted") {
+		t.Fatalf("sandboxShowDetail = %q, want a unix-socket line", got)
+	}
+	info.Config = &sandbox.Config{PassEnv: []string{"SSH_AUTH_SOCK"}}
+	if got := sandboxShowDetail(info); !strings.Contains(got, "passing: SSH_AUTH_SOCK") {
+		t.Fatalf("sandboxShowDetail = %q, want the passed names listed", got)
+	}
+}
+
+func TestSandboxNoticeReportsMissingSSHAgent(t *testing.T) {
+	state := &conversationState{toolRegistry: stubSandboxRegistry(t)}
+	t.Setenv("SSH_AUTH_SOCK", "/nonexistent/agent.sock")
+	got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git+ssh"}, state)
+	if !strings.Contains(got, "ssh: agent unavailable") {
+		t.Fatalf("sandboxNoticeLine = %q, want an agent-unavailable hint", got)
+	}
+	// Without the ssh component the hint must not appear.
+	got = sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state)
+	if strings.Contains(got, "agent unavailable") {
+		t.Fatalf("sandboxNoticeLine = %q, hint must be scoped to the ssh component", got)
+	}
+
+	// A symlinked agent path is live for the sandbox (the grant resolves
+	// symlinks), so it must read as live here too.
+	dir, err := os.MkdirTemp("", "pagent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "agent.sock")
+	listener, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("bind test agent socket: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	alias := filepath.Join(dir, "alias.sock")
+	if err := os.Symlink(sock, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_AUTH_SOCK", alias)
+	got = sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git+ssh"}, state)
+	if strings.Contains(got, "agent unavailable") {
+		t.Fatalf("sandboxNoticeLine = %q, symlinked live agent socket must not read as unavailable", got)
 	}
 }
 
@@ -381,7 +442,7 @@ func TestSandboxNoticeLine(t *testing.T) {
 	if got := sandboxNoticeLine(&Config{}, state); got != "sandbox: active (base; 1 tools sandboxed)" {
 		t.Fatalf("active notice = %q", got)
 	}
-	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net"}, state); got != "sandbox: active (workspace+net; 1 tools sandboxed)" {
+	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state); got != "sandbox: active (workspace+net+git; 1 tools sandboxed)" {
 		t.Fatalf("preset notice = %q", got)
 	}
 

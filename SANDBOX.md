@@ -24,15 +24,21 @@ them as described below:
   ...) and agent sockets (`SSH_AUTH_SOCK`, `GPG_AGENT_INFO`) are stripped
   before exec unless explicitly delivered or allowlisted. Agent sockets matter:
   with `SSH_AUTH_SOCK` intact, a process can use your SSH keys without ever
-  reading `~/.ssh`.
+  reading `~/.ssh`. The `ssh` preset re-admits exactly `SSH_AUTH_SOCK` (via
+  `passEnv`) and the one agent socket it names (via `allowUnixSockets`), so
+  agent-based SSH works while private keys stay masked.
 - **Write beyond the effective writable set.** The filesystem is read-only
   except the OS temp dir and configured `writablePaths`. The CLI default adds
-  the current workspace; the library `DefaultConfig` does not.
+  the current workspace; the library `DefaultConfig` does not. Git metadata
+  under a writable workspace is carved back out: whole trees read-only by
+  default, or only the dangerous leaves with the `git` component (see the
+  workspace/Git section).
 - **Reach TCP/UDP unless the effective policy allows it.** Library
   `DefaultConfig` denies network access. The CLI deliberately defaults to
-  `workspace+net`, so CLI tools can use outbound TCP/UDP unless the operator
-  selects a tighter preset. On Linux, host filesystem Unix sockets remain
-  blocked even when TCP/UDP is enabled.
+  `workspace+net+git`, so CLI tools can use outbound TCP/UDP unless the
+  operator selects a tighter preset. Host filesystem Unix sockets remain
+  blocked even when TCP/UDP is enabled, except any socket an
+  `allowUnixSockets` grant names.
 
 Design principles:
 
@@ -68,7 +74,7 @@ the process runs as your user on a shared kernel. See
 The effective config for a tool is the caller's **base config** merged with
 global overlays and the tool's own `sandbox` object. Library callers commonly
 start with `DefaultConfig` (temp writes, no network); the CLI starts with its
-selected preset (`workspace+net` by default), then adds `--denypath`,
+selected preset (`workspace+net+git` by default), then adds `--denypath`,
 `--writepath`, and `--allownet` overlays. Merging is monotonic: booleans OR and
 path lists append, so an overlay cannot remove an earlier choice. Grant fields
 such as `allowNetwork`, `writablePaths`, and `readPaths` can widen access, while
@@ -288,6 +294,7 @@ Properties worth knowing:
 | Signal other processes | invisible, can't signal | `deny signal` + self/same-sandbox re-allow | ✅ effect matches |
 | Controlling terminal | detached (`--new-session`) | detached (`setsid()`) | ✅ effect matches |
 | Missing `writablePaths` | dropped at construction | dropped at construction | ✅ tolerated, cannot activate later |
+| Granted Unix socket (`allowUnixSockets`) | seccomp admits `AF_UNIX` stream + bind into private root; sockets outside private roots also become reachable | profile authorizes the exact socket path only | ⚠️ effect matches for the grant; Linux is broader (see below) |
 | **Denied-read failure mode** | reads as empty | `Operation not permitted` | ❌ inherent (masking vs policy) |
 | **Process enumeration** | invisible (PID namespace) | visible (`KERN_PROC` sysctl, ungated) | ❌ inherent |
 | **Host IPC** | private IPC namespace; host Unix sockets blocked | host Unix sockets blocked; Mach services allowed (allow-default) | ❌ platform gap |
@@ -320,18 +327,25 @@ tool starts from. A spec is one or more preset names joined with `+`:
 | `base` | temp-dir writes only, no network |
 | `readonly` | `denyWrite` — nothing writable, not even temp |
 | `workspace` | working directory writable; discovered Git routing entries and metadata trees pinned read-only |
+| `git` | with `workspace`: pin only the dangerous Git metadata leaves instead of whole trees, so commit/rebase/fetch work; requires `workspace` |
 | `net` | `allowNetwork` |
+| `ssh` | agent-based SSH: pass `SSH_AUTH_SOCK`, allow connecting to that socket, read `~/.ssh/config` and `~/.ssh/known_hosts`; private keys stay masked |
+| `sshkeys` | read all of `~/.ssh`, private keys included (agentless setups); `~/.ssh` writes stay denied |
 
-The default is **`workspace+net`** — agentic work on the current project with
-network access, while credentials stay masked and the rest of the filesystem
-stays read-only. `workspace` canonicalizes the working directory *at startup*,
-then follows `.git` and `commondir` pointer files to pin the complete resolved
-Git metadata trees. Because that protection cannot safely use a partial
-recursive scan, `workspace` refuses the filesystem root, the user's home
-directory, and exact mounted-volume roots on Linux and macOS. Linux also
-refuses its exact private temp/runtime sandbox roots. Descendants of those
-mounts remain valid bounded workspaces; otherwise change into a project
-directory or select `--sandbox base`.
+The default is **`workspace+net+git`** — agentic work on the current project
+with network access and working Git, while credentials stay masked and the
+rest of the filesystem stays read-only. `workspace` canonicalizes the working
+directory *at startup*, then follows `.git` and `commondir` pointer files to
+pin the resolved Git metadata (whole trees on its own; only the dangerous
+leaves when combined with `git` — see the workspace/Git section). Because that
+protection cannot safely use a partial recursive scan, `workspace` refuses the
+filesystem root, the user's home directory, and exact mounted-volume roots on
+Linux and macOS. Linux also refuses its exact private temp/runtime sandbox
+roots. Descendants of those mounts remain valid bounded workspaces; otherwise
+change into a project directory or select `--sandbox base`.
+
+`git` selects *how* the workspace protects Git metadata and does nothing on its
+own — `--sandbox git` is rejected with a pointer to `workspace+git`.
 
 Per-tool knobs (schema `"sandbox"` object, MCP server entry) merge on top of
 the base policy. Entries are monotonic: overlays may add grants or restrictions
@@ -346,6 +360,8 @@ but cannot remove an earlier entry:
 | `denyPaths` | `[]` | extra read-blocked paths (`~` ok) |
 | `denyWritePaths` | `[]` | read-only islands inside writable trees (`~` ok) |
 | `allowEnv` | `[]` | strict env allowlist — replaces the heuristic stripping |
+| `passEnv` | `[]` | additive exemption from heuristic stripping (ignored under `allowEnv`) |
+| `allowUnixSockets` | `[]` | absolute Unix-socket paths the process may connect to (`~` ok) |
 | `denyWrite` | `false` | no writes anywhere, not even temp |
 
 Global flags: `--nosandbox` (`POLLYTOOL_NOSANDBOX`) disables everything;
@@ -370,20 +386,85 @@ Three interactions to keep in mind:
 - `allowEnv` is a mode switch, not an addition: when set, *only* those
   variables pass through. Use it to hand a tool one specific token —
   `"allowEnv": ["GITHUB_TOKEN"]` — that the heuristics would otherwise strip.
+  `passEnv` is the additive counterpart: it exempts named variables from the
+  credential-shaped stripping while everything else still flows through, and
+  it is ignored when `allowEnv` is set so a strict allowlist stays strict.
+  Prefer `passEnv` when you only want to add one variable (e.g. `passEnv:
+  ["SSH_AUTH_SOCK"]`) rather than re-enumerating `HOME`/`PATH` under `allowEnv`.
+- `allowUnixSockets` grants outbound access to specific Unix-domain sockets by
+  path, even while broad Unix-socket access stays blocked. A grant is dropped
+  for any command where its path is no longer a live socket (a dead agent
+  degrades to "cannot reach the agent", not a broken sandbox) and never lifts
+  a credential deny that covers it. On macOS the profile authorizes exactly
+  that socket path; on Linux the socket is bound into the private mount view
+  when it lives under a private root, and a seccomp relaxation admits
+  `socket(AF_UNIX, SOCK_STREAM)` — which, because `connect()` cannot be
+  path-filtered, also makes other host sockets *outside* the private roots
+  reachable while any grant is active (see Limitations).
 - `denyWritePaths` blocks writes but leaves reads alone (unlike `denyPaths`,
   which blocks both). Mutable ancestors inside a writable tree are pinned so a
   process cannot rename an ancestor and rebuild a replacement at the guarded
   pathname. A missing or unresolvable entry fails sandbox construction (and is
   checked again before every command) because neither backend can reliably
-  reserve a nonexistent protected object. The `workspace` preset avoids
-  missing Git leaves by protecting whole metadata directories, including a
-  not-yet-created `config.worktree`.
+  reserve a nonexistent protected object. The `workspace` preset (without
+  `git`) avoids missing Git leaves by protecting whole metadata directories,
+  including a not-yet-created `config.worktree`; the `git` component instead
+  creates the inert leaves it pins (see the workspace/Git section).
 
 The `workspace` preset recursively discovers regular and nested repositories,
-submodules, and linked worktrees. It makes each `.git` routing entry, resolved
-per-worktree gitdir, `commondir` pointer, and common gitdir read-only. This
-closes replacement and alternate-config paths at the cost of blocking all Git
-metadata-tree writes inside the sandbox (working-tree content remains writable).
+submodules, and linked worktrees. Without the `git` component it makes each
+`.git` routing entry, resolved per-worktree gitdir, `commondir` pointer, and
+common gitdir read-only. This closes replacement and alternate-config paths at
+the cost of blocking all Git metadata-tree writes inside the sandbox
+(working-tree content remains writable), so `git commit` and friends fail with
+`EPERM` — the LLM-facing bash description says so, and `--sandbox
+workspace+net+git` (the default) is the way to get working Git.
+
+The `git` component switches this to **leaf mode**: instead of the whole `.git`
+tree, it pins only the metadata that can select host-executed code or reroute
+the repository — `config`, `config.worktree`, `hooks/`, the `.git` routing
+file, and the `commondir`/`gitdir` pointers — per repository, submodule gitdir,
+and linked worktree. `.git` itself stays writable, so `index`, `objects/`,
+`refs/`, `logs/`, and `COMMIT_EDITMSG` are writable and commit/rebase/fetch
+work; the pinned leaves keep an injected command from planting a hook or
+rewriting `core.hooksPath`/`core.fsmonitor`. Because `denyWritePaths` entries
+must exist on disk, leaf mode **creates the inert leaves it pins when they are
+absent**: an empty `.git/config` and `.git/hooks/` (exactly what `git init`
+leaves), and an empty `.git/config.worktree` only when
+`extensions.worktreeConfig` is effectively enabled (git ignores that file
+otherwise). If a leaf cannot be created — a read-only `.git`, for instance —
+that one repository falls back to the whole-tree pin and logs
+`sandbox_git_leaf_fallback`; the sandbox still starts and is never weaker than
+whole-tree mode. Metadata the workspace walk never enters — dormant (registered
+but not checked-out) submodule gitdirs under `modules/`, stale or external
+`worktrees/<id>` entries, and a common gitdir outside the workspace — stays
+whole-tree pinned, and bare repositories inside the workspace are always
+whole-tree pinned. Ancestor pinning makes the pinned leaves freeze `.git`
+itself against rename or recreation on both platforms.
+
+Leaf mode's honest residuals: the `modules/` and `worktrees/` container
+directories stay writable so `git worktree add` and `git submodule update`
+work, so a sandboxed command can create *new* metadata subtrees there (as it
+already can create a fake `anydir/.git/` in the writable worktree) — a host
+user should not run Git inside a directory a sandboxed tool created without
+inspecting it. Data-level paths (`objects/`, `refs/`, `packed-refs`, `logs/`,
+`HEAD`, `index`, `info/attributes`, `objects/info/alternates`) are unpinned:
+tampering there corrupts history or content but cannot execute host code, and
+the equivalent is already reachable through writable worktree files such as
+`.gitattributes`. The reverse `worktrees/<id>/gitdir` pointer *is* pinned
+because a legitimate `git worktree repair` writes through it; a retargeted
+pointer does not yield an arbitrary-file clobber in current Git (repair
+validates the pointer and refuses), so the pin is defense-in-depth against
+routing corruption rather than a known write primitive. Config-writing commands
+(`git config`, `git remote add`, `git submodule init/deinit`, `git maintenance
+start`) are blocked by the `config` pin **by design**. And an existing
+effective `core.hooksPath` or config include that targets an unpinned location
+*inside* `.git` fails closed under leaf mode where whole-tree mode accepted it
+(the target is no longer covered) — drop the `git` component to fall back to
+`workspace+net`.
+
+The rest of this section describes the discovery and audit that both modes
+share.
 Bare-repository working directories are rejected, as are symlinked `.git`,
 config, `config.worktree`, hooks directories, and hook files: neither backend
 can portably pin those links if a merged policy later makes their targets
@@ -496,10 +577,14 @@ merged config) and one `sandbox_wrap` line per command:
 ```
 ... DBG sandbox_config tool=bash network=false deny_dns=false deny_write=false
         writable_paths="[/tmp]" read_paths=[] deny_paths=[] allow_env=[]
+        pass_env=[] allow_unix_sockets=[]
 ... DBG sandbox_wrap command="bash -c" network=false deny_write=false
         writable_paths="[/tmp]" env_stripped="[OPENAI_API_KEY SSH_AUTH_SOCK]"
-        denied_paths=17
+        denied_paths=17 unix_sockets=0
 ```
+
+A dropped socket grant (dead or replaced agent) logs a
+`sandbox_unix_socket_grant_dropped` line naming the path and reason.
 
 `env_stripped` and all path fields log **names only, never values**. Linux also
 strips host-runtime hints such as `DBUS_SESSION_BUS_ADDRESS`, `DOCKER_HOST`, and
@@ -543,3 +628,21 @@ Know what this does *not* do:
 - **Env heuristics are heuristics.** A secret in a variable named `CREDS`
   passes the suffix patterns. Use `allowEnv` for tools that should see almost
   nothing.
+- **A granted agent socket is a signing oracle.** `allowUnixSockets` (and the
+  `ssh` preset) let a sandboxed process *use* your SSH agent while it runs — it
+  never reads the key, but a prompt-injected command can sign with it. Prefer
+  `ssh-add -c` (per-use confirmation) if that matters, and remember the grant
+  only exists while an agent is running.
+- **Linux socket grants are broader than macOS.** `connect()` cannot be
+  path-filtered in seccomp, so once any `allowUnixSockets` grant is active,
+  Unix sockets that sit *outside* the private `/tmp`//`run` roots (e.g. a
+  Docker socket under `~/.docker/run`) also become connectable. macOS
+  authorizes only the exact granted path. Grant sockets deliberately.
+- **The `ssh` preset does not grant `known_hosts` writes.** First contact with
+  an unknown host fails host-key verification inside the sandbox; connect once
+  outside, or manage `known_hosts` on the host. `ControlMaster` sockets and
+  other `~/.ssh` writes are likewise denied.
+- **`git commit` needs the `git` component.** Under plain `workspace` the whole
+  `.git` tree is read-only and commits fail with `EPERM`; the default
+  `workspace+net+git` fixes this. GPG-signed commits still fail (no gpg-agent
+  socket is granted) — disable signing in the sandbox or sign on the host.
