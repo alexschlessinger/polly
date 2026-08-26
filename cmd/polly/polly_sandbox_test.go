@@ -123,6 +123,52 @@ func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
 	}
 }
 
+func TestSandboxRegistryOptionsDefaultPresetUsesGitLeafMode(t *testing.T) {
+	var captured sandbox.Config
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		captured = cfg
+		return passthroughSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, ".git", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, ".git", "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "")
+	t.Chdir(work)
+
+	if _, err := sandboxRegistryOptions(&Config{SandboxPreset: defaultSandboxPreset}); err != nil {
+		t.Fatalf("sandboxRegistryOptions() error = %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	realGitDir, err := filepath.EvalSymlinks(filepath.Join(cwd, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(captured.DenyWritePaths, realGitDir) {
+		t.Fatalf("DenyWritePaths = %v, default preset must not pin the whole gitdir", captured.DenyWritePaths)
+	}
+	for _, want := range []string{
+		filepath.Join(realGitDir, "config"),
+		filepath.Join(realGitDir, "hooks"),
+	} {
+		if !slices.Contains(captured.DenyWritePaths, want) {
+			t.Fatalf("DenyWritePaths = %v, want git leaf %q under the default preset", captured.DenyWritePaths, want)
+		}
+	}
+}
+
 func TestSandboxRegistryOptionsRevalidatesGitPolicyAfterWritePath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

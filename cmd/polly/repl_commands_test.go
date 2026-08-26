@@ -381,7 +381,7 @@ func TestSandboxNoticeLine(t *testing.T) {
 	if got := sandboxNoticeLine(&Config{}, state); got != "sandbox: active (base; 1 tools sandboxed)" {
 		t.Fatalf("active notice = %q", got)
 	}
-	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net"}, state); got != "sandbox: active (workspace+net; 1 tools sandboxed)" {
+	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state); got != "sandbox: active (workspace+net+git; 1 tools sandboxed)" {
 		t.Fatalf("preset notice = %q", got)
 	}
 
