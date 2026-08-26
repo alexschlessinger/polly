@@ -296,6 +296,7 @@ func TestSandboxSummariesReportUnixSocketGrants(t *testing.T) {
 }
 
 func TestSandboxNoticeReportsMissingSSHAgent(t *testing.T) {
+	skipIfWindows(t)
 	state := &conversationState{toolRegistry: stubSandboxRegistry(t)}
 	t.Setenv("SSH_AUTH_SOCK", "/nonexistent/agent.sock")
 	got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git+ssh"}, state)
@@ -386,6 +387,7 @@ func TestPreparedDefaultSandboxTempPathsAreNotCustom(t *testing.T) {
 }
 
 func TestToolsSandboxOptOutAndFallbackBadges(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	script := `#!/bin/bash
 if [ "$1" = "--schema" ]; then

@@ -103,6 +103,7 @@ func TestNewSkillRuntimeRequiresExplicitProcessPolicy(t *testing.T) {
 }
 
 func TestNewSkillRuntimeInheritsBaseSandboxPolicy(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
 	catalog, err := skills.Discover([]string{root})

@@ -44,6 +44,7 @@ func TestParsePresetUnknownName(t *testing.T) {
 }
 
 func TestParsePresetWorkspace(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".git", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -273,6 +274,7 @@ func TestRejectBroadWorkspaceRejectsFilesystemRoot(t *testing.T) {
 }
 
 func TestGitGuardrailPathsWorktreePointer(t *testing.T) {
+	skipIfWindows(t)
 	// Layout: main repo at main/.git with a linked worktree at wt/ whose
 	// .git file points at main/.git/worktrees/wt, which in turn has a
 	// commondir pointer back to main/.git.
@@ -309,6 +311,7 @@ func TestGitGuardrailPathsWorktreePointer(t *testing.T) {
 }
 
 func TestGitGuardrailPathsFindsNestedRepositoriesAndSubmodules(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	rootGit := filepath.Join(root, ".git")
 	nestedGit := filepath.Join(root, "packages", "nested", ".git")
@@ -340,6 +343,7 @@ func TestGitGuardrailPathsFindsNestedRepositoriesAndSubmodules(t *testing.T) {
 }
 
 func TestGitGuardrailPathsMatchesCaseFoldedGitEntry(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".GIT")
 	if err := os.MkdirAll(gitDir, 0o755); err != nil {
@@ -357,6 +361,7 @@ func TestGitGuardrailPathsMatchesCaseFoldedGitEntry(t *testing.T) {
 }
 
 func TestGitGuardrailPathsProtectsConfigWorktreeByProtectingGitDir(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
 	if err := os.MkdirAll(gitDir, 0o755); err != nil {
@@ -564,6 +569,7 @@ func TestGitGuardrailPathsRejectsConfigIndirection(t *testing.T) {
 }
 
 func TestGitGuardrailPathsRejectsEffectiveGlobalHooksPathInWorkspace(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -583,6 +589,7 @@ func TestGitGuardrailPathsRejectsEffectiveGlobalHooksPathInWorkspace(t *testing.
 }
 
 func TestGitGuardrailPathsRejectsEmptyEffectiveGlobalHooksPath(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -597,6 +604,7 @@ func TestGitGuardrailPathsRejectsEmptyEffectiveGlobalHooksPath(t *testing.T) {
 }
 
 func TestGitGuardrailPathsAllowsEffectiveHooksPathInsideProtectedMetadata(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
 	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755); err != nil {
@@ -614,6 +622,7 @@ func TestGitGuardrailPathsAllowsEffectiveHooksPathInsideProtectedMetadata(t *tes
 }
 
 func TestGitGuardrailPathsRejectsAliasedConfiguredHooks(t *testing.T) {
+	skipIfWindows(t)
 	for _, tc := range []struct {
 		alias string
 		want  string
@@ -646,6 +655,7 @@ func TestGitGuardrailPathsRejectsAliasedConfiguredHooks(t *testing.T) {
 }
 
 func TestValidateConfiguredHooksPathRejectsExternalAliases(t *testing.T) {
+	skipIfWindows(t)
 	for _, tc := range []struct {
 		alias string
 		want  string
@@ -682,6 +692,7 @@ func TestValidateConfiguredHooksPathRejectsExternalAliases(t *testing.T) {
 }
 
 func TestValidateTrustedGitExecutableAcceptsStandardHomebrewRoute(t *testing.T) {
+	skipIfWindows(t)
 	selected, systemGit, target, prefix := homebrewGitFixture(t)
 	workspace := filepath.Join(filepath.Dir(prefix), "workspace")
 	if err := os.Mkdir(workspace, 0o755); err != nil {
@@ -704,6 +715,7 @@ func TestValidateTrustedGitExecutableAcceptsStandardHomebrewRoute(t *testing.T) 
 }
 
 func TestValidateTrustedGitExecutableRejectsUnsafeHomebrewRoutes(t *testing.T) {
+	skipIfWindows(t)
 	t.Run("writable target", func(t *testing.T) {
 		selected, systemGit, target, prefix := homebrewGitFixture(t)
 		if err := os.Chmod(target, 0o755); err != nil {
@@ -800,6 +812,7 @@ func homebrewGitFixture(t *testing.T) (selected, systemGit, target, prefix strin
 }
 
 func TestGitGuardrailPathsDoesNotExecuteWorkspaceGitBinary(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -826,6 +839,7 @@ func TestGitGuardrailPathsDoesNotExecuteWorkspaceGitBinary(t *testing.T) {
 }
 
 func TestGitGuardrailPathsRejectsCaseVariedHooksPathOnCaseInsensitiveVolume(t *testing.T) {
+	skipIfWindows(t)
 	root, caseVariant := caseVariedWorkspace(t)
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -840,6 +854,7 @@ func TestGitGuardrailPathsRejectsCaseVariedHooksPathOnCaseInsensitiveVolume(t *t
 }
 
 func TestGitGuardrailPathsDoesNotExecuteCaseVariedWorkspaceGitBinary(t *testing.T) {
+	skipIfWindows(t)
 	root, caseVariant := caseVariedWorkspace(t)
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -865,6 +880,7 @@ func TestGitGuardrailPathsDoesNotExecuteCaseVariedWorkspaceGitBinary(t *testing.
 }
 
 func TestGitGuardrailPathsRejectsWorkspaceRouteToTrustedGit(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -885,6 +901,7 @@ func TestGitGuardrailPathsRejectsWorkspaceRouteToTrustedGit(t *testing.T) {
 }
 
 func TestGitGuardrailPathsRejectsWritableConfigSelectors(t *testing.T) {
+	skipIfWindows(t)
 	for _, selector := range []string{"global", "system"} {
 		t.Run(selector, func(t *testing.T) {
 			root := t.TempDir()
@@ -911,6 +928,7 @@ func TestGitGuardrailPathsRejectsWritableConfigSelectors(t *testing.T) {
 }
 
 func TestGitGuardrailPathsAuditsSystemSelectorWhenNoSystemIsFalse(t *testing.T) {
+	skipIfWindows(t)
 	for _, value := range []string{"0", "false", "no", "off"} {
 		t.Run(value, func(t *testing.T) {
 			root := t.TempDir()
@@ -929,6 +947,7 @@ func TestGitGuardrailPathsAuditsSystemSelectorWhenNoSystemIsFalse(t *testing.T) 
 }
 
 func TestGitGuardrailPathsAuditsExplicitSystemSelectorWhenNoSystemIsTrue(t *testing.T) {
+	skipIfWindows(t)
 	for _, value := range []string{"1", "true", "yes", "on"} {
 		t.Run(value, func(t *testing.T) {
 			root := t.TempDir()
@@ -947,6 +966,7 @@ func TestGitGuardrailPathsAuditsExplicitSystemSelectorWhenNoSystemIsTrue(t *test
 }
 
 func TestGitGuardrailPathsRejectsMissingWorkspaceConfigInclude(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -959,6 +979,7 @@ func TestGitGuardrailPathsRejectsMissingWorkspaceConfigInclude(t *testing.T) {
 }
 
 func TestGitGuardrailPathsResolvesIncludeRelativeToConfigOrigin(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
 	if err := os.Mkdir(gitDir, 0o755); err != nil {
@@ -977,6 +998,7 @@ func TestGitGuardrailPathsResolvesIncludeRelativeToConfigOrigin(t *testing.T) {
 }
 
 func TestGitGuardrailPathsRejectsDanglingIncludeSymlinkIntoWorkspace(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
 	if err := os.Mkdir(gitDir, 0o755); err != nil {
@@ -998,6 +1020,7 @@ func TestGitGuardrailPathsRejectsDanglingIncludeSymlinkIntoWorkspace(t *testing.
 }
 
 func TestGitGuardrailPathsRejectsHooksPathInNestedInactiveInclude(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
 	if err := os.Mkdir(gitDir, 0o755); err != nil {
@@ -1024,6 +1047,7 @@ func TestGitGuardrailPathsRejectsHooksPathInNestedInactiveInclude(t *testing.T) 
 }
 
 func TestGitGuardrailPathsRejectsOverriddenGlobalHooksPath(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
 	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755); err != nil {
@@ -1045,6 +1069,7 @@ func TestGitGuardrailPathsRejectsOverriddenGlobalHooksPath(t *testing.T) {
 }
 
 func TestGitGuardrailPathsRejectsHardlinkedGlobalConfigSource(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
 	if err := os.Mkdir(gitDir, 0o755); err != nil {
@@ -1111,6 +1136,7 @@ func TestGitGuardrailPathsRejectsDarwinTempConfigSource(t *testing.T) {
 }
 
 func TestNewRevalidatesGitPolicyAfterWritablePathMerge(t *testing.T) {
+	skipIfWindows(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -1211,12 +1237,14 @@ func TestGitHostWritablePathMatchesBackendTempSemantics(t *testing.T) {
 }
 
 func TestValidateConfiguredHooksPathAcceptsDevNull(t *testing.T) {
+	skipIfWindows(t)
 	if err := validateConfiguredHooksPath("/dev/null", "effective core.hooksPath", []string{t.TempDir()}, nil); err != nil {
 		t.Fatalf("validateConfiguredHooksPath(/dev/null) error = %v", err)
 	}
 }
 
 func TestGitGuardrailPathsAcceptsDevNullHooksPath(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1279,6 +1307,7 @@ func caseVariedWorkspace(t *testing.T) (string, string) {
 }
 
 func TestGitGuardrailPathsRejectsHardlinkedProtectedFiles(t *testing.T) {
+	skipIfWindows(t)
 	t.Run("routing file", func(t *testing.T) {
 		root := t.TempDir()
 		worktree := filepath.Join(root, "worktree")
@@ -1369,6 +1398,7 @@ func TestGitGuardrailPathsRejectsBareRepositoryRoot(t *testing.T) {
 }
 
 func TestGitGuardrailPathsProtectsNestedBareRepository(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	bare := filepath.Join(root, "mirrors", "project.git")
 	makeBareGitRepository(t, bare)
@@ -1448,6 +1478,7 @@ func TestParsePresetGitRequiresWorkspace(t *testing.T) {
 }
 
 func TestParsePresetGitOrderIndependent(t *testing.T) {
+	skipIfWindows(t)
 	isolateGitConfig(t)
 	root := t.TempDir()
 	makeLeafTestRepo(t, root)
@@ -1478,6 +1509,7 @@ func TestParsePresetGitOrderIndependent(t *testing.T) {
 }
 
 func TestParsePresetWorkspaceGitPinsLeavesNotGitDir(t *testing.T) {
+	skipIfWindows(t)
 	isolateGitConfig(t)
 	root := t.TempDir()
 	gitDir := makeLeafTestRepo(t, root)
@@ -1502,6 +1534,7 @@ func TestParsePresetWorkspaceGitPinsLeavesNotGitDir(t *testing.T) {
 }
 
 func TestParsePresetWorkspaceGitDuplicateComponents(t *testing.T) {
+	skipIfWindows(t)
 	isolateGitConfig(t)
 	root := t.TempDir()
 	makeLeafTestRepo(t, root)
@@ -1520,6 +1553,7 @@ func TestParsePresetWorkspaceGitDuplicateComponents(t *testing.T) {
 }
 
 func TestParsePresetReadonlyWorkspaceGitSkipsEnsure(t *testing.T) {
+	skipIfWindows(t)
 	isolateGitConfig(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
@@ -1545,6 +1579,7 @@ func TestParsePresetReadonlyWorkspaceGitSkipsEnsure(t *testing.T) {
 }
 
 func TestGitLeafGuardrailEnsuresMissingLeaves(t *testing.T) {
+	skipIfWindows(t)
 	isolateGitConfig(t)
 	root := t.TempDir()
 	gitDir := filepath.Join(root, ".git")
@@ -1583,6 +1618,7 @@ func TestGitLeafGuardrailEnsuresMissingLeaves(t *testing.T) {
 }
 
 func TestGitLeafGuardrailConfigWorktree(t *testing.T) {
+	skipIfWindows(t)
 	t.Run("repo config enables extension", func(t *testing.T) {
 		isolateGitConfig(t)
 		root := t.TempDir()
@@ -1680,6 +1716,7 @@ func makeLeafTestWorktree(t *testing.T, root, mainGit string) (worktree, worktre
 }
 
 func TestGitLeafGuardrailWorktreeContext(t *testing.T) {
+	skipIfWindows(t)
 	isolateGitConfig(t)
 	root := t.TempDir()
 	mainGit := makeLeafTestRepo(t, filepath.Join(root, "main"))
@@ -1710,6 +1747,7 @@ func TestGitLeafGuardrailWorktreeContext(t *testing.T) {
 }
 
 func TestGitLeafGuardrailExternalCommonWholePinned(t *testing.T) {
+	skipIfWindows(t)
 	// The workspace is only the linked worktree; the main repository (and the
 	// per-worktree gitdir inside it) sit outside. Leaf mode must keep
 	// whole-tree parity there and never create files outside the workspace.
@@ -1738,6 +1776,7 @@ func TestGitLeafGuardrailExternalCommonWholePinned(t *testing.T) {
 }
 
 func TestGitLeafGuardrailPinsUndiscoveredModulesAndWorktrees(t *testing.T) {
+	skipIfWindows(t)
 	isolateGitConfig(t)
 	root := t.TempDir()
 	gitDir := makeLeafTestRepo(t, root)
@@ -1791,6 +1830,7 @@ func TestGitLeafGuardrailPinsUndiscoveredModulesAndWorktrees(t *testing.T) {
 }
 
 func TestGitLeafGuardrailWorktreePointerShapes(t *testing.T) {
+	skipIfWindows(t)
 	t.Run("symlinked pointer rejected", func(t *testing.T) {
 		isolateGitConfig(t)
 		root := t.TempDir()
@@ -1847,6 +1887,7 @@ func TestGitLeafGuardrailWorktreePointerShapes(t *testing.T) {
 }
 
 func TestGitLeafGuardrailFallsBackWholeTreeWhenLeafCreationFails(t *testing.T) {
+	skipIfWindows(t)
 	if os.Geteuid() == 0 {
 		t.Skip("permission failures are not enforceable as root")
 	}
@@ -1876,6 +1917,7 @@ func TestGitLeafGuardrailFallsBackWholeTreeWhenLeafCreationFails(t *testing.T) {
 }
 
 func TestGitLeafGuardrailAuditUsesLeafProtectedSet(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	gitDir := makeLeafTestRepo(t, root)
 	customHooks := filepath.Join(gitDir, "custom-hooks")
@@ -1893,6 +1935,7 @@ func TestGitLeafGuardrailAuditUsesLeafProtectedSet(t *testing.T) {
 }
 
 func TestParsePresetSSH(t *testing.T) {
+	skipIfWindows(t)
 	t.Run("agent socket granted", func(t *testing.T) {
 		t.Setenv("SSH_AUTH_SOCK", "/tmp/test-agent.sock")
 		cfg, err := ParsePreset("ssh")
@@ -1953,6 +1996,7 @@ func TestParsePresetSSHKeys(t *testing.T) {
 }
 
 func TestParsePresetSSHComposesWithWorkspaceGit(t *testing.T) {
+	skipIfWindows(t)
 	isolateGitConfig(t)
 	t.Setenv("SSH_AUTH_SOCK", "/tmp/test-agent.sock")
 	root := t.TempDir()
@@ -1972,6 +2016,7 @@ func TestParsePresetSSHComposesWithWorkspaceGit(t *testing.T) {
 }
 
 func TestGitLeafGuardrailAcceptsDefaultHooksPathTarget(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	gitDir := makeLeafTestRepo(t, root)
 	setIsolatedGitConfigValue(t, "core.hooksPath", filepath.Join(gitDir, "hooks"))

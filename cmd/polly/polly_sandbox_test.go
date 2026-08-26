@@ -47,6 +47,7 @@ func TestSandboxRegistryOptionsFailsWhenProbeFails(t *testing.T) {
 }
 
 func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
+	skipIfWindows(t)
 	var captured sandbox.Config
 	originalNewSandbox := newSandbox
 	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
@@ -124,6 +125,7 @@ func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
 }
 
 func TestSandboxRegistryOptionsDefaultPresetUsesGitLeafMode(t *testing.T) {
+	skipIfWindows(t)
 	var captured sandbox.Config
 	originalNewSandbox := newSandbox
 	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
@@ -170,6 +172,7 @@ func TestSandboxRegistryOptionsDefaultPresetUsesGitLeafMode(t *testing.T) {
 }
 
 func TestSandboxRegistryOptionsRevalidatesGitPolicyAfterWritePath(t *testing.T) {
+	skipIfWindows(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -210,6 +213,7 @@ func TestSandboxRegistryOptionsRejectsUnknownPreset(t *testing.T) {
 }
 
 func TestSandboxRegistryOptionsWarnsBroadBaseOnce(t *testing.T) {
+	skipIfWindows(t)
 	originalNewSandbox := newSandbox
 	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return passthroughSandbox{}, nil
@@ -240,6 +244,7 @@ func TestSandboxRegistryOptionsWarnsBroadBaseOnce(t *testing.T) {
 }
 
 func TestSandboxRegistryOptionsWarnsBroadPerToolOverlay(t *testing.T) {
+	skipIfWindows(t)
 	originalNewSandbox := newSandbox
 	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return passthroughSandbox{}, nil
@@ -333,6 +338,7 @@ func TestSandboxRegistryOptionsDoesNotWarnWhenFactoryFails(t *testing.T) {
 }
 
 func TestBroadWritablePathWarnerConcurrentWarnAndDrain(t *testing.T) {
+	skipIfWindows(t)
 	warnings := newBroadWritablePathWarner()
 	cfg := sandbox.Config{WritablePaths: []string{string(filepath.Separator)}}
 	var wg sync.WaitGroup
