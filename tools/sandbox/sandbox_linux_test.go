@@ -700,6 +700,7 @@ func TestLinuxBuildBwrapArgsMountsNestedPrivateRootsAfterWritableAncestor(t *tes
 		nil,
 		nil,
 		nil,
+		nil,
 		[]string{tempRoot},
 		[]string{runRoot},
 	)

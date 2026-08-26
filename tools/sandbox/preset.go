@@ -18,7 +18,7 @@ import (
 
 // PresetNames lists the valid components of a sandbox preset spec, for help
 // text and error messages.
-var PresetNames = []string{"base", "readonly", "workspace", "git", "net"}
+var PresetNames = []string{"base", "readonly", "workspace", "git", "net", "ssh", "sshkeys"}
 
 // gitProtectMode selects how the workspace preset protects discovered Git
 // metadata: the whole metadata tree read-only (the historical default), or
@@ -47,6 +47,12 @@ const (
 //	            pointers) instead of whole metadata trees, so commit, rebase,
 //	            and fetch work inside the sandbox; requires workspace
 //	net       — allow outbound network
+//	ssh       — agent-based SSH: pass SSH_AUTH_SOCK through, allow connecting
+//	            to exactly that socket, and exempt ~/.ssh/config and
+//	            ~/.ssh/known_hosts from the credential deny list; private
+//	            keys stay masked and ~/.ssh stays unwritable
+//	sshkeys   — exempt all of ~/.ssh from the credential deny list, private
+//	            keys included, for agentless setups; writes stay denied
 //
 // An empty spec is the base config. Unknown names error so a typo fails
 // closed instead of silently running with a different policy.
@@ -73,6 +79,18 @@ func ParsePreset(spec string) (Config, error) {
 			workspaceSelected = true
 		case "git":
 			gitSelected = true
+		case "ssh":
+			cfg.ReadPaths = append(cfg.ReadPaths, "~/.ssh/config", "~/.ssh/known_hosts")
+			// Passing the name through is harmless when the variable is unset;
+			// the socket grant itself requires a live socket at construction.
+			cfg.PassEnv = append(cfg.PassEnv, "SSH_AUTH_SOCK")
+			if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" && filepath.IsAbs(sock) {
+				// A relative value is skipped: normalization would cwd-join it
+				// into an unintended grant.
+				cfg.AllowUnixSockets = append(cfg.AllowUnixSockets, sock)
+			}
+		case "sshkeys":
+			cfg.ReadPaths = append(cfg.ReadPaths, "~/.ssh")
 		default:
 			return Config{}, fmt.Errorf("unknown sandbox preset %q (valid: %s, joined with +)",
 				strings.TrimSpace(part), strings.Join(PresetNames, ", "))

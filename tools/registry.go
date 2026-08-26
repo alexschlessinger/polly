@@ -198,7 +198,8 @@ func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sand
 		"read_paths", cfg.ReadPaths,
 		"deny_paths", cfg.DenyPaths,
 		"allow_env", cfg.AllowEnv,
-		"pass_env", cfg.PassEnv)
+		"pass_env", cfg.PassEnv,
+		"allow_unix_sockets", cfg.AllowUnixSockets)
 	sb, err := r.constructPreparedSandbox(cfg)
 	if err != nil {
 		return nil, cfg, err
@@ -216,9 +217,9 @@ func (r *ToolRegistry) NewSandboxDirect(cfg sandbox.Config) (sandbox.Sandbox, er
 
 // newSchemaSandbox constructs a deliberately narrower policy for executable
 // --schema discovery. Discovery never inherits workspace writes, network, read
-// exceptions, or environment allowances from the normal execution policy. It
-// does retain deny rules so a policy cannot become weaker while metadata is
-// being inspected.
+// exceptions, environment allowances or passthroughs, or Unix-socket grants
+// from the normal execution policy. It does retain deny rules so a policy
+// cannot become weaker while metadata is being inspected.
 func (r *ToolRegistry) newSchemaSandbox() (sandbox.Sandbox, error) {
 	baseCfg, err := r.preparedBaseSandboxConfig()
 	if err != nil {

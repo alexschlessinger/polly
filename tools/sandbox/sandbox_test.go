@@ -3,6 +3,7 @@ package sandbox
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1261,6 +1262,88 @@ func TestFilterEnvNeverReturnsNil(t *testing.T) {
 				t.Fatalf("expected an empty (but non-nil) env, got %v", filtered)
 			}
 		})
+	}
+}
+
+// listenUnixSocket binds a short-lived Unix socket in its own short-named
+// temp directory: sockaddr_un paths are limited to ~104 bytes on Darwin and
+// t.TempDir paths (which embed the test name) can exceed that.
+func listenUnixSocket(t *testing.T) (dir, path string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "psock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path = filepath.Join(dir, "a.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("bind test Unix socket at %q: %v", path, err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return dir, path
+}
+
+func TestPrepareConfigFreezesAllowUnixSockets(t *testing.T) {
+	dir, sock := listenUnixSocket(t)
+	alias := filepath.Join(dir, "alias.sock")
+	if err := os.Symlink(sock, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := PrepareConfig(Config{AllowUnixSockets: []string{
+		alias,
+		sock,
+		filepath.Join(dir, "missing.sock"),
+	}})
+	if err != nil {
+		t.Fatalf("PrepareConfig() error = %v", err)
+	}
+	realSock, err := filepath.EvalSymlinks(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.AllowUnixSockets) != 1 || prepared.AllowUnixSockets[0] != realSock {
+		t.Fatalf("AllowUnixSockets = %v, want the deduped canonical socket %q with the missing entry dropped", prepared.AllowUnixSockets, realSock)
+	}
+}
+
+func TestEffectiveUnixSocketGrants(t *testing.T) {
+	dir, sock := listenUnixSocket(t)
+	file := filepath.Join(dir, "plain")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	grants := effectiveUnixSocketGrants(Config{AllowUnixSockets: []string{
+		sock,
+		file,
+		filepath.Join(dir, "missing.sock"),
+	}}, nil)
+	if len(grants) != 1 || grants[0].path != sock {
+		t.Fatalf("grants = %+v, want only the live socket %q", grants, sock)
+	}
+
+	denied := []DeniedPath{{Path: dir, Kind: DeniedPathDir}}
+	if grants := effectiveUnixSocketGrants(Config{AllowUnixSockets: []string{sock}}, denied); len(grants) != 0 {
+		t.Fatalf("grants = %+v, want a socket under a denied path dropped", grants)
+	}
+	exempt := Config{AllowUnixSockets: []string{sock}, ReadPaths: []string{dir}}
+	if grants := effectiveUnixSocketGrants(exempt, denied); len(grants) != 1 {
+		t.Fatalf("grants = %+v, want the denied-path drop lifted by a covering ReadPaths exemption", grants)
+	}
+}
+
+func TestParseConfigPassEnvAndAllowUnixSockets(t *testing.T) {
+	cfg, err := ParseConfig(json.RawMessage(`{"passEnv":["SSH_AUTH_SOCK"],"allowUnixSockets":["/tmp/agent.sock"]}`))
+	if err != nil {
+		t.Fatalf("ParseConfig() error = %v", err)
+	}
+	if cfg == nil || len(cfg.PassEnv) != 1 || cfg.PassEnv[0] != "SSH_AUTH_SOCK" {
+		t.Fatalf("PassEnv = %+v, want [SSH_AUTH_SOCK]", cfg)
+	}
+	if len(cfg.AllowUnixSockets) != 1 || cfg.AllowUnixSockets[0] != "/tmp/agent.sock" {
+		t.Fatalf("AllowUnixSockets = %+v, want [/tmp/agent.sock]", cfg)
 	}
 }
 

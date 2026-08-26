@@ -26,12 +26,16 @@ const (
 // are denied even when ordinary network access is enabled. When networking is
 // disabled, all socket creation is denied as a defense in depth against address
 // families such as AF_VSOCK that are not isolated by a network namespace.
-func attachUnixSocketFilter(cmd *exec.Cmd, allowNetwork bool) (int, error) {
+// allowUnixStream (set when the config grants Unix sockets) additionally
+// permits socket(AF_UNIX, SOCK_STREAM); which endpoints are then reachable is
+// bounded by the mount namespace, since seccomp cannot inspect connect()'s
+// sockaddr path.
+func attachUnixSocketFilter(cmd *exec.Cmd, allowNetwork, allowUnixStream bool) (int, error) {
 	arch, byteOrder, err := nativeAuditArch()
 	if err != nil {
 		return 0, err
 	}
-	filters := socketFilterProgram(arch, allowNetwork)
+	filters := socketFilterProgram(arch, allowNetwork, allowUnixStream)
 
 	f, err := os.CreateTemp("", "pollytool-seccomp-*")
 	if err != nil {
@@ -56,7 +60,7 @@ func attachUnixSocketFilter(cmd *exec.Cmd, allowNetwork bool) (int, error) {
 	return fd, nil
 }
 
-func socketFilterProgram(arch uint32, allowNetwork bool) []unix.SockFilter {
+func socketFilterProgram(arch uint32, allowNetwork, allowUnixStream bool) []unix.SockFilter {
 	deny := uint32(unix.SECCOMP_RET_ERRNO | uint32(unix.EACCES))
 	filters := []unix.SockFilter{
 		// Reject attempts to switch to an ABI this filter did not audit.
@@ -80,12 +84,47 @@ func socketFilterProgram(arch uint32, allowNetwork bool) []unix.SockFilter {
 		unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny})
 
 	if !allowNetwork {
+		if allowUnixStream {
+			// socket and socketpair share one policy here: allowed only for
+			// AF_UNIX SOCK_STREAM (after masking the type flags); every other
+			// family and type is denied. Everything else falls through to
+			// allow.
+			return append(filters,
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: uint32(unix.SYS_SOCKET)},
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 6, K: uint32(unix.SYS_SOCKETPAIR)},
+				unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: seccompDataFirstArg},
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 3, K: unix.AF_UNIX},
+				unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: seccompDataSecondArg},
+				unix.SockFilter{Code: unix.BPF_ALU | unix.BPF_AND | unix.BPF_K, K: socketTypeMask},
+				unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: unix.SOCK_STREAM},
+				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
+				unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW})
+		}
 		return append(filters,
 			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 1, K: uint32(unix.SYS_SOCKET)},
 			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
 			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 6, K: uint32(unix.SYS_SOCKETPAIR)},
 			unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: seccompDataFirstArg},
 			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 3, K: unix.AF_UNIX},
+			unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: seccompDataSecondArg},
+			unix.SockFilter{Code: unix.BPF_ALU | unix.BPF_AND | unix.BPF_K, K: socketTypeMask},
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: unix.SOCK_STREAM},
+			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
+			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW})
+	}
+
+	if allowUnixStream {
+		// With a Unix-socket grant, socket() and socketpair() coincide:
+		// AF_VSOCK denied, AF_UNIX allowed only as SOCK_STREAM, every other
+		// family allowed. Route both syscalls into the shared family/type
+		// check, which is the unchanged socketpair block below.
+		return append(filters,
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: uint32(unix.SYS_SOCKET)},
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 8, K: uint32(unix.SYS_SOCKETPAIR)},
+			unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: seccompDataFirstArg},
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 1, K: unix.AF_VSOCK},
+			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny},
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 4, K: unix.AF_UNIX},
 			unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: seccompDataSecondArg},
 			unix.SockFilter{Code: unix.BPF_ALU | unix.BPF_AND | unix.BPF_K, K: socketTypeMask},
 			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: unix.SOCK_STREAM},

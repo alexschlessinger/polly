@@ -1077,12 +1077,14 @@ func TestRegistryShellSchemaUsesStrictDiscoveryConfig(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 	base := sandbox.Config{
-		AllowNetwork:   true,
-		WritablePaths:  []string{dir},
-		ReadPaths:      []string{"/read-exception"},
-		DenyPaths:      []string{"/blocked-secret"},
-		DenyWritePaths: []string{"/protected-write"},
-		AllowEnv:       []string{"SECRET_TOKEN"},
+		AllowNetwork:     true,
+		WritablePaths:    []string{dir},
+		ReadPaths:        []string{"/read-exception"},
+		DenyPaths:        []string{"/blocked-secret"},
+		DenyWritePaths:   []string{"/protected-write"},
+		AllowEnv:         []string{"SECRET_TOKEN"},
+		PassEnv:          []string{"SSH_AUTH_SOCK"},
+		AllowUnixSockets: []string{"/tmp/agent.sock"},
 	}
 	var configs []sandbox.Config
 	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
@@ -1111,6 +1113,9 @@ func TestRegistryShellSchemaUsesStrictDiscoveryConfig(t *testing.T) {
 	}
 	if len(discovery.ReadPaths) != 0 || len(discovery.AllowEnv) != 0 {
 		t.Fatalf("schema discovery inherited allowances: read=%v env=%v", discovery.ReadPaths, discovery.AllowEnv)
+	}
+	if len(discovery.PassEnv) != 0 || len(discovery.AllowUnixSockets) != 0 {
+		t.Fatalf("schema discovery inherited grants: passEnv=%v sockets=%v", discovery.PassEnv, discovery.AllowUnixSockets)
 	}
 	if len(discovery.DenyPaths) != 1 || discovery.DenyPaths[0] != "/blocked-secret" {
 		t.Fatalf("schema discovery deny paths = %v", discovery.DenyPaths)

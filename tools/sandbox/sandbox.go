@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -294,6 +295,12 @@ type Config struct {
 	// Ignored when AllowEnv is set — a strict allowlist stays strict.
 	PassEnv []string `json:"passEnv,omitempty"`
 
+	// Absolute Unix-socket paths a sandboxed process may connect to (supports
+	// ~ expansion). Paths are resolved once at construction; missing grants
+	// are dropped. A grant whose path is no longer a live socket is dropped
+	// per command rather than failing the command.
+	AllowUnixSockets []string `json:"allowUnixSockets,omitempty"`
+
 	// Deny all file writes, including to temp directories.
 	DenyWrite bool `json:"denyWrite,omitempty"`
 
@@ -373,6 +380,9 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.DenyWritePaths, err = normalize("denyWritePaths", cfg.DenyWritePaths); err != nil {
+		return Config{}, err
+	}
+	if cfg.AllowUnixSockets, err = normalize("allowUnixSockets", cfg.AllowUnixSockets); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -487,6 +497,9 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 		return Config{}, err
 	}
 	if cfg.ReadPaths, err = freeze("readPaths", cfg.ReadPaths); err != nil {
+		return Config{}, err
+	}
+	if cfg.AllowUnixSockets, err = freezeUnixSocketGrants(cfg.AllowUnixSockets); err != nil {
 		return Config{}, err
 	}
 	minimize := func(paths []string, nonCovering map[string]bool) []string {
@@ -990,6 +1003,7 @@ func (c Config) Merge(overlay Config) Config {
 	c.DenyWritePaths = concatStrings(c.DenyWritePaths, overlay.DenyWritePaths)
 	c.AllowEnv = concatStrings(c.AllowEnv, overlay.AllowEnv)
 	c.PassEnv = concatStrings(c.PassEnv, overlay.PassEnv)
+	c.AllowUnixSockets = concatStrings(c.AllowUnixSockets, overlay.AllowUnixSockets)
 	c.DenyWrite = c.DenyWrite || overlay.DenyWrite
 	c.gitPolicies = concatGitWorkspacePolicies(c.gitPolicies, overlay.gitPolicies)
 	c.authorityPaths = append(cloneAuthorityPathIdentities(c.authorityPaths), overlay.authorityPaths...)
@@ -1163,6 +1177,87 @@ func allDeniedPaths(cfg Config) []DeniedPath {
 		paths = append(paths, DeniedPath{Path: expanded, Kind: kind})
 	}
 	return paths
+}
+
+// freezeUnixSocketGrants canonicalizes socket grants like other frozen
+// grants: symlinks resolve once, duplicates collapse, and missing paths are
+// dropped so a grant can never activate through a later creation. Socket
+// grants deliberately carry no filesystem authority identity — a socket that
+// vanishes later drops the grant for that command instead of failing it.
+func freezeUnixSocketGrants(paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	frozen := make([]string, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		real, err := filepath.EvalSymlinks(filepath.Clean(path))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+				continue
+			}
+			return nil, fmt.Errorf("resolve sandbox allowUnixSockets entry %q: %w", path, err)
+		}
+		real = filepath.Clean(real)
+		if !seen[real] {
+			seen[real] = true
+			frozen = append(frozen, real)
+		}
+	}
+	if len(frozen) == 0 {
+		return nil, nil
+	}
+	return frozen, nil
+}
+
+// unixSocketGrant is one AllowUnixSockets entry that survived wrap-time
+// revalidation.
+type unixSocketGrant struct {
+	path string
+	info os.FileInfo
+}
+
+// effectiveUnixSocketGrants revalidates frozen socket grants for one command.
+// A grant survives only while its canonical path is still a live Unix socket
+// (a symlink or regular file now sitting there is a replacement) and it is
+// not hidden under a denied path without a covering ReadPaths exemption —
+// without that check a grant under e.g. ~/.gnupg would punch through the
+// credential mask on Darwin, where network-outbound rules are authorized
+// independently of file-read denies. Dropped grants never fail the command:
+// a dead agent should degrade to "cannot reach the agent", not break every
+// sandboxed tool.
+func effectiveUnixSocketGrants(cfg Config, denied []DeniedPath) []unixSocketGrant {
+	var grants []unixSocketGrant
+	for _, path := range cfg.AllowUnixSockets {
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSocket == 0 {
+			slog.Debug("sandbox_unix_socket_grant_dropped", "path", path, "reason", "not a live socket")
+			continue
+		}
+		hidden := false
+		for _, deny := range denied {
+			if !pathLexicallyWithinPolicy(path, deny.Path) {
+				continue
+			}
+			exempt := false
+			for _, readPath := range cfg.ReadPaths {
+				if pathLexicallyWithinPolicy(path, readPath) {
+					exempt = true
+					break
+				}
+			}
+			if !exempt {
+				hidden = true
+				break
+			}
+		}
+		if hidden {
+			slog.Debug("sandbox_unix_socket_grant_dropped", "path", path, "reason", "inside denied path")
+			continue
+		}
+		grants = append(grants, unixSocketGrant{path: path, info: info})
+	}
+	return grants
 }
 
 // expandTilde resolves a ~ prefix to the user's home directory for a single path.

@@ -2177,3 +2177,122 @@ func TestSandboxIgnoresPATHSandboxExec(t *testing.T) {
 		t.Fatalf("PATH-selected fake sandbox-exec executed: %v", err)
 	}
 }
+
+func TestBuildProfileGrantedUnixSocket(t *testing.T) {
+	_, sock := listenUnixSocket(t)
+	allowLine := fmt.Sprintf("(allow network-outbound (remote unix-socket (path-literal %q)))", sock)
+
+	// Network off: the grant must land after the blanket (deny network*) so
+	// last-match-wins re-allows exactly this endpoint.
+	profile := buildProfile(Config{AllowUnixSockets: []string{sock}})
+	denyAll := strings.Index(profile, "(deny network*)")
+	grantAt := strings.Index(profile, allowLine)
+	if denyAll < 0 || grantAt < 0 || grantAt < denyAll {
+		t.Fatalf("network-off profile ordering wrong (deny at %d, grant at %d):\n%s", denyAll, grantAt, profile)
+	}
+
+	// Network on: after the blanket outbound unix-socket deny.
+	profile = buildProfile(Config{AllowNetwork: true, AllowUnixSockets: []string{sock}})
+	denyUnix := strings.Index(profile, "(deny network-outbound (remote unix-socket))")
+	grantAt = strings.Index(profile, allowLine)
+	if denyUnix < 0 || grantAt < 0 || grantAt < denyUnix {
+		t.Fatalf("network-on profile ordering wrong (deny at %d, grant at %d):\n%s", denyUnix, grantAt, profile)
+	}
+
+	// DenyWrite must not suppress the socket grant.
+	profile = buildProfile(Config{DenyWrite: true, AllowUnixSockets: []string{sock}})
+	if !strings.Contains(profile, allowLine) {
+		t.Fatalf("readonly profile lost the socket grant:\n%s", profile)
+	}
+}
+
+func TestBuildProfileDropsNonSocketGrant(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "plain")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := buildProfile(Config{AllowNetwork: true, AllowUnixSockets: []string{file, filepath.Join(dir, "missing.sock")}})
+	if strings.Contains(profile, "path-literal \""+file) {
+		t.Fatalf("profile granted a non-socket path:\n%s", profile)
+	}
+}
+
+func TestDarwinSandboxAllowsGrantedUnixSocket(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home: %v", err)
+	}
+	hostDir, err := os.MkdirTemp(home, ".polly-unix-grant-")
+	if err != nil {
+		t.Fatalf("create host socket directory: %v", err)
+	}
+	defer os.RemoveAll(hostDir)
+
+	granted := filepath.Join(hostDir, "granted.sock")
+	sibling := filepath.Join(hostDir, "sibling.sock")
+	listeners := make(map[string]*net.UnixListener)
+	for _, path := range []string{granted, sibling} {
+		listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+		if err != nil {
+			t.Fatalf("listen on %q: %v", path, err)
+		}
+		defer listener.Close()
+		listeners[path] = listener
+	}
+
+	dial := func(t *testing.T, cfg Config, path string) error {
+		t.Helper()
+		listener := listeners[path]
+		if err := listener.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		accepted := make(chan error, 1)
+		go func() {
+			conn, acceptErr := listener.AcceptUnix()
+			if acceptErr == nil {
+				_ = conn.Close()
+			}
+			accepted <- acceptErr
+		}()
+		sb, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "/usr/bin/nc", "-U", path)
+		cmd.Stdin = strings.NewReader("probe")
+		cleanup, err := WrapCmdManaged(sb, cmd)
+		if err != nil {
+			t.Fatalf("Wrap() error = %v", err)
+		}
+		runErr := cmd.Run()
+		if err := cleanup(); err != nil {
+			t.Fatalf("close sandbox files: %v", err)
+		}
+		if acceptErr := <-accepted; acceptErr != nil && runErr == nil {
+			runErr = acceptErr
+		}
+		return runErr
+	}
+
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"network off", Config{AllowUnixSockets: []string{granted}}},
+		{"network on", Config{AllowNetwork: true, AllowUnixSockets: []string{granted}}},
+		{"readonly", Config{DenyWrite: true, AllowUnixSockets: []string{granted}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := dial(t, tc.cfg, granted); err != nil {
+				t.Fatalf("sandboxed connect to granted socket failed: %v", err)
+			}
+			if err := dial(t, tc.cfg, sibling); err == nil {
+				t.Fatal("sandboxed connect reached a non-granted sibling socket")
+			}
+		})
+	}
+}

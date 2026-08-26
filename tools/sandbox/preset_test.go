@@ -1892,6 +1892,85 @@ func TestGitLeafGuardrailAuditUsesLeafProtectedSet(t *testing.T) {
 	}
 }
 
+func TestParsePresetSSH(t *testing.T) {
+	t.Run("agent socket granted", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", "/tmp/test-agent.sock")
+		cfg, err := ParsePreset("ssh")
+		if err != nil {
+			t.Fatalf("ParsePreset(ssh) error = %v", err)
+		}
+		for _, want := range []string{"~/.ssh/config", "~/.ssh/known_hosts"} {
+			if !slices.Contains(cfg.ReadPaths, want) {
+				t.Fatalf("ReadPaths = %v, want %q", cfg.ReadPaths, want)
+			}
+		}
+		if !slices.Contains(cfg.PassEnv, "SSH_AUTH_SOCK") {
+			t.Fatalf("PassEnv = %v, want SSH_AUTH_SOCK", cfg.PassEnv)
+		}
+		if !slices.Contains(cfg.AllowUnixSockets, "/tmp/test-agent.sock") {
+			t.Fatalf("AllowUnixSockets = %v, want the agent socket", cfg.AllowUnixSockets)
+		}
+		if slices.Contains(cfg.ReadPaths, "~/.ssh") {
+			t.Fatalf("ReadPaths = %v, ssh must not expose private keys", cfg.ReadPaths)
+		}
+	})
+	t.Run("no agent", func(t *testing.T) {
+		unsetTestEnv(t, "SSH_AUTH_SOCK")
+		cfg, err := ParsePreset("ssh")
+		if err != nil {
+			t.Fatalf("ParsePreset(ssh) error = %v", err)
+		}
+		if len(cfg.AllowUnixSockets) != 0 {
+			t.Fatalf("AllowUnixSockets = %v, want none without an agent", cfg.AllowUnixSockets)
+		}
+		if !slices.Contains(cfg.PassEnv, "SSH_AUTH_SOCK") {
+			t.Fatalf("PassEnv = %v, want SSH_AUTH_SOCK even without an agent", cfg.PassEnv)
+		}
+	})
+	t.Run("relative socket skipped", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", "relative/agent.sock")
+		cfg, err := ParsePreset("ssh")
+		if err != nil {
+			t.Fatalf("ParsePreset(ssh) error = %v", err)
+		}
+		if len(cfg.AllowUnixSockets) != 0 {
+			t.Fatalf("AllowUnixSockets = %v, a relative agent value must not become a grant", cfg.AllowUnixSockets)
+		}
+	})
+}
+
+func TestParsePresetSSHKeys(t *testing.T) {
+	cfg, err := ParsePreset("sshkeys")
+	if err != nil {
+		t.Fatalf("ParsePreset(sshkeys) error = %v", err)
+	}
+	if !slices.Contains(cfg.ReadPaths, "~/.ssh") {
+		t.Fatalf("ReadPaths = %v, want the full ~/.ssh exemption", cfg.ReadPaths)
+	}
+	if len(cfg.AllowUnixSockets) != 0 || len(cfg.PassEnv) != 0 {
+		t.Fatalf("sshkeys must not grant the agent: sockets=%v passEnv=%v", cfg.AllowUnixSockets, cfg.PassEnv)
+	}
+}
+
+func TestParsePresetSSHComposesWithWorkspaceGit(t *testing.T) {
+	isolateGitConfig(t)
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/test-agent.sock")
+	root := t.TempDir()
+	makeLeafTestRepo(t, root)
+	t.Chdir(root)
+
+	cfg, err := ParsePreset("workspace+net+git+ssh")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace+net+git+ssh) error = %v", err)
+	}
+	if !cfg.AllowNetwork || len(cfg.gitPolicies) != 1 || cfg.gitPolicies[0].mode != gitProtectLeaves {
+		t.Fatalf("composed config = %+v, want net + leaf-mode git policy", cfg)
+	}
+	if !slices.Contains(cfg.AllowUnixSockets, "/tmp/test-agent.sock") {
+		t.Fatalf("AllowUnixSockets = %v, want the agent socket to survive composition", cfg.AllowUnixSockets)
+	}
+}
+
 func TestGitLeafGuardrailAcceptsDefaultHooksPathTarget(t *testing.T) {
 	root := t.TempDir()
 	gitDir := makeLeafTestRepo(t, root)

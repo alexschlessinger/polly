@@ -501,6 +501,8 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	tempRoots := s.tempRoots
 	runRoots := s.runRoots
 	privateRoots := append(append([]string{}, tempRoots...), runRoots...)
+	socketGrants := effectiveUnixSocketGrants(s.cfg, allDenied)
+	socketBinds := planLinuxUnixSocketBinds(socketGrants, privateRoots)
 	readSet := deniedReadSet(s.cfg)
 	reservations, err := planDeniedReservations(allDenied, readSet, s.cfg, privateRoots)
 	if err != nil {
@@ -535,7 +537,8 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 		"writable_paths", s.cfg.WritablePaths,
 		"env_stripped", stripped,
 		"denied_paths", len(denied),
-		"denied_reservations", len(reservations))
+		"denied_reservations", len(reservations),
+		"unix_sockets", len(socketGrants))
 	cmd.Path = s.bwrapPath
 	workingDir, err := resolvedCommandDir(cmd.Dir)
 	if err != nil {
@@ -579,6 +582,7 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	pinnedIdentities = append(pinnedIdentities, denyWritePlan.ancestors...)
 	pinnedIdentities = append(pinnedIdentities, denyWritePlan.protected...)
 	pinnedIdentities = append(pinnedIdentities, readExemptionSourceIdentities(readExemptionBinds)...)
+	pinnedIdentities = append(pinnedIdentities, unixSocketBindIdentities(socketBinds)...)
 	authoritySources, authorityFDs, err := attachLinuxAuthorityPaths(cmd, pinnedIdentities)
 	if err != nil {
 		closeAddedFiles()
@@ -588,12 +592,12 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 		closeAddedFiles()
 		return err
 	}
-	seccompFD, err := attachUnixSocketFilter(cmd, cfg.AllowNetwork)
+	seccompFD, err := attachUnixSocketFilter(cmd, cfg.AllowNetwork, len(socketGrants) > 0)
 	if err != nil {
 		closeAddedFiles()
 		return fmt.Errorf("prepare seccomp filter: %w", err)
 	}
-	args, err := buildBwrapArgsCheckedWithSourcesAndRoots(cfg, deniedMounts, reservations, &denyWritePlan, readExemptionBinds, authoritySources, tempRoots, runRoots, origPath)
+	args, err := buildBwrapArgsCheckedWithSourcesAndRoots(cfg, deniedMounts, reservations, &denyWritePlan, readExemptionBinds, socketBinds, authoritySources, tempRoots, runRoots, origPath)
 	if err != nil {
 		closeAddedFiles()
 		return err
@@ -777,6 +781,33 @@ func readExemptionSourceIdentities(binds []linuxReadExemptionBind) []authorityPa
 	return identities
 }
 
+// linuxUnixSocketBind re-exposes one granted Unix socket at its own path
+// inside a private root. Sockets outside the private roots need no bind: the
+// read-only root already makes them visible (connect() is exempt from the
+// read-only mount check for sockets), and only seccomp gated them.
+type linuxUnixSocketBind struct {
+	path string
+	info os.FileInfo
+}
+
+func planLinuxUnixSocketBinds(grants []unixSocketGrant, privateRoots []string) []linuxUnixSocketBind {
+	binds := make([]linuxUnixSocketBind, 0, len(grants))
+	for _, grant := range grants {
+		if isWithinAny(grant.path, privateRoots) {
+			binds = append(binds, linuxUnixSocketBind{path: grant.path, info: grant.info})
+		}
+	}
+	return binds
+}
+
+func unixSocketBindIdentities(binds []linuxUnixSocketBind) []authorityPathIdentity {
+	identities := make([]authorityPathIdentity, 0, len(binds))
+	for _, bind := range binds {
+		identities = append(identities, authorityPathIdentity{path: bind.path, info: bind.info})
+	}
+	return identities
+}
+
 func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath, commandPaths ...string) []string {
 	args, _ := buildBwrapArgsInternal(cfg, deniedPaths, nil, false, nil, commandPaths...)
 	return args
@@ -790,8 +821,8 @@ func buildBwrapArgsCheckedWithSources(cfg Config, deniedPaths []DeniedPath, rese
 	return buildBwrapArgsInternalWithPlan(cfg, deniedPaths, reservations, true, denyWritePlan, authoritySources, commandPaths...)
 }
 
-func buildBwrapArgsCheckedWithSourcesAndRoots(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, denyWritePlan *denyWriteMountPlan, readExemptionBinds []linuxReadExemptionBind, authoritySources map[string]string, tempRoots, runRoots []string, commandPaths ...string) ([]string, error) {
-	return buildBwrapArgsInternalWithPlanAndRoots(cfg, deniedPaths, reservations, true, denyWritePlan, readExemptionBinds, authoritySources, tempRoots, runRoots, commandPaths...)
+func buildBwrapArgsCheckedWithSourcesAndRoots(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, denyWritePlan *denyWriteMountPlan, readExemptionBinds []linuxReadExemptionBind, socketBinds []linuxUnixSocketBind, authoritySources map[string]string, tempRoots, runRoots []string, commandPaths ...string) ([]string, error) {
+	return buildBwrapArgsInternalWithPlanAndRoots(cfg, deniedPaths, reservations, true, denyWritePlan, readExemptionBinds, socketBinds, authoritySources, tempRoots, runRoots, commandPaths...)
 }
 
 func buildBwrapArgsInternal(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, strict bool, authoritySources map[string]string, commandPaths ...string) ([]string, error) {
@@ -800,10 +831,10 @@ func buildBwrapArgsInternal(cfg Config, deniedPaths []DeniedPath, reservations [
 
 func buildBwrapArgsInternalWithPlan(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, strict bool, denyWritePlan *denyWriteMountPlan, authoritySources map[string]string, commandPaths ...string) ([]string, error) {
 	tempRoots, runRoots := privateLinuxRoots()
-	return buildBwrapArgsInternalWithPlanAndRoots(cfg, deniedPaths, reservations, strict, denyWritePlan, nil, authoritySources, tempRoots, runRoots, commandPaths...)
+	return buildBwrapArgsInternalWithPlanAndRoots(cfg, deniedPaths, reservations, strict, denyWritePlan, nil, nil, authoritySources, tempRoots, runRoots, commandPaths...)
 }
 
-func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, strict bool, denyWritePlan *denyWriteMountPlan, readExemptionBinds []linuxReadExemptionBind, authoritySources map[string]string, tempRoots, runRoots []string, commandPaths ...string) ([]string, error) {
+func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, strict bool, denyWritePlan *denyWriteMountPlan, readExemptionBinds []linuxReadExemptionBind, socketBinds []linuxUnixSocketBind, authoritySources map[string]string, tempRoots, runRoots []string, commandPaths ...string) ([]string, error) {
 	args := []string{"bwrap", "--ro-bind", "/", "/"}
 	privateRoots := append(append([]string{}, tempRoots...), runRoots...)
 	privateRun := runRoots[0]
@@ -874,6 +905,18 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 				args = append(args, "--ro-bind", linuxAuthoritySource(readPath, authoritySources), readPath)
 			}
 		}
+	}
+
+	// Re-expose granted Unix sockets hidden by the private roots at their own
+	// paths, so e.g. SSH_AUTH_SOCK's host value stays valid inside the
+	// sandbox with no env rewriting. The bind lands after the private tmpfs
+	// mounts and before their --remount-ro; connect() through a read-only
+	// mount works because the kernel's EROFS check does not apply to sockets.
+	if socketBinds == nil {
+		socketBinds = planLinuxUnixSocketBinds(effectiveUnixSocketGrants(cfg, allDeniedPaths(cfg)), privateRoots)
+	}
+	for _, bind := range socketBinds {
+		args = append(args, "--ro-bind", linuxAuthoritySource(bind.path, authoritySources), bind.path)
 	}
 
 	args = append(args, routingAfterPrivateRoots...)
