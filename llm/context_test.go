@@ -25,8 +25,11 @@ func TestProjectToolResultThreshold(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newTestArtifactStore()
 			data := strings.Repeat("x", tc.size)
-			ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(data)})
-			history := testToolHistory(ref)
+			history := []messages.ChatMessage{
+				{Role: messages.MessageRoleUser, Content: "run"},
+				{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "call", Name: "tool", Arguments: `{}`}}},
+				{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "tool", Content: data},
+			}
 
 			projected, stats, err := projectMessages(context.Background(), history, 0, store)
 			if err != nil {
@@ -41,10 +44,13 @@ func TestProjectToolResultThreshold(t *testing.T) {
 					t.Fatalf("compacted results = %d, want 1", stats.CompactedToolResults)
 				}
 			} else if toolMessage.Content != data {
-				t.Fatalf("threshold-sized result was not restored inline: got %d bytes", len(toolMessage.Content))
+				t.Fatalf("threshold-sized result was not kept inline: got %d bytes", len(toolMessage.Content))
 			}
 			if len(toolMessage.Parts) != 0 {
 				t.Fatalf("provider projection retained artifact parts: %#v", toolMessage.Parts)
+			}
+			if history[len(history)-1].Content != data {
+				t.Fatalf("projection mutated durable inline result")
 			}
 		})
 	}
@@ -67,21 +73,28 @@ func TestProjectKeepsBoundedReadArtifactResultInline(t *testing.T) {
 	}
 }
 
-func TestProjectToolResultsKeepsThreeNewestBatchPreviews(t *testing.T) {
-	store := newTestArtifactStore()
+func TestProjectToolResultsPassesThroughDurableFormsWithoutStoreReads(t *testing.T) {
+	mintStore := newTestArtifactStore()
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "run all"}}
-	refs := make([]artifacts.Ref, 4)
+	contents := make([]string, 4)
 	for i, label := range []string{"one", "two", "three", "four"} {
 		data := "HEAD-" + label + "\n" + strings.Repeat(label+" body line\n", 5000) + "TAIL-" + label
-		refs[i] = putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: label + ".txt", Data: []byte(data)})
+		ref := putTestArtifact(t, mintStore, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: label + ".txt", Data: []byte(data)})
+		if i%2 == 0 {
+			contents[i] = artifactReceipt(ref)
+		} else {
+			contents[i] = artifactBirthPreview(ref, []byte(data))
+		}
 		id := "call-" + label
 		history = append(history,
 			messages.ChatMessage{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: id, Name: "tool_" + label, Arguments: `{}`}}},
-			messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: id, ToolName: "tool_" + label, Content: artifactReceipt(refs[i]), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &refs[i]}}},
+			messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: id, ToolName: "tool_" + label, Content: contents[i], Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
 		)
 	}
 
-	projected, stats, err := projectMessages(context.Background(), history, 0, store)
+	// The projection store fails every Open and Put: receipts and born previews
+	// must project byte-identically with zero store I/O.
+	projected, stats, err := projectMessages(context.Background(), history, 0, failingArtifactStore{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,45 +102,62 @@ func TestProjectToolResultsKeepsThreeNewestBatchPreviews(t *testing.T) {
 	if len(toolMessages) != 4 {
 		t.Fatalf("tool messages = %d, want 4", len(toolMessages))
 	}
-	if toolMessages[0].Content != artifactReceipt(refs[0]) {
-		t.Fatalf("oldest batch was not collapsed to receipt: %q", toolMessages[0].Content)
-	}
-	for i := 1; i < len(toolMessages); i++ {
-		if !strings.Contains(toolMessages[i].Content, "head/tail preview") || !strings.Contains(toolMessages[i].Content, refs[i].ID) {
-			t.Fatalf("batch %d preview = %q", i+1, toolMessages[i].Content[:min(200, len(toolMessages[i].Content))])
-		}
-		if estimatedStringTokens(toolMessages[i].Content) > toolPreviewTokenLimit {
-			t.Fatalf("batch %d preview exceeded %d tokens", i+1, toolPreviewTokenLimit)
+	for i, msg := range toolMessages {
+		if msg.Content != contents[i] {
+			t.Fatalf("durable form %d was rewritten: %q", i, msg.Content[:min(200, len(msg.Content))])
 		}
 	}
-	if stats.CompactedToolResults != 4 {
-		t.Fatalf("compacted tool results = %d, want 4", stats.CompactedToolResults)
+	if stats.CompactedToolResults != 0 {
+		t.Fatalf("compacted tool results = %d, want 0", stats.CompactedToolResults)
+	}
+}
+
+func TestProjectStubsCompletedExchangeRecallResults(t *testing.T) {
+	recalled := strings.Repeat("recalled line\n", 500)
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "read it"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old-read", Name: "read_artifact", Arguments: `{"id":"sha256:abc"}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "old-read", ToolName: "read_artifact", Content: recalled},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old-tiny", Name: "read_artifact", Arguments: `{"id":"sha256:def"}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "old-tiny", ToolName: "read_artifact", Content: "No matches."},
+		{Role: messages.MessageRoleAssistant, Content: "summarized"},
+		{Role: messages.MessageRoleUser, Content: "next question"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "new-read", Name: "read_artifact", Arguments: `{"id":"sha256:abc"}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "new-read", ToolName: "read_artifact", Content: recalled},
 	}
 
-	// Projection is copy-on-write and every durable artifact still holds the
-	// complete result bytes.
-	if history[2].Content != artifactReceipt(refs[0]) || len(history[2].Parts) != 1 {
-		t.Fatalf("projection mutated durable history: %#v", history[2])
+	projected, stats, err := projectMessages(context.Background(), history, 0, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for i, ref := range refs {
-		r, err := store.Open(context.Background(), ref.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := io.ReadAll(r)
-		_ = r.Close()
-		if err != nil || !strings.Contains(string(data), "TAIL-"+[]string{"one", "two", "three", "four"}[i]) {
-			t.Fatalf("artifact %d was incomplete: bytes=%d err=%v", i, len(data), err)
-		}
+	toolMessages := messagesWithRole(projected, messages.MessageRoleTool)
+	if toolMessages[0].Content != recallResultStub("read_artifact") {
+		t.Fatalf("completed-exchange recall was not stubbed: %q", toolMessages[0].Content[:min(200, len(toolMessages[0].Content))])
+	}
+	if toolMessages[1].Content != "No matches." {
+		t.Fatalf("tiny recall result was inflated: %q", toolMessages[1].Content)
+	}
+	if toolMessages[2].Content != recalled {
+		t.Fatalf("active-exchange recall was stubbed: %q", toolMessages[2].Content[:min(200, len(toolMessages[2].Content))])
+	}
+	if stats.CompactedToolResults != 1 {
+		t.Fatalf("compacted tool results = %d, want 1", stats.CompactedToolResults)
+	}
+	if history[2].Content != recalled {
+		t.Fatalf("projection mutated durable recall result")
 	}
 }
 
 func TestLargeTextPreviewRetainsTypedMediaDescriptorWithinBound(t *testing.T) {
 	store := newTestArtifactStore()
-	textRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, Data: []byte(strings.Repeat("large text\n", 5_000))})
 	imageRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Data: []byte("image")})
-	history := testToolHistory(textRef)
-	history[len(history)-1].Parts = append(history[len(history)-1].Parts, imageArtifactPart(imageRef))
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "run"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "call", Name: "tool", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "tool",
+			Content: strings.Repeat("large text\n", 5_000),
+			Parts:   []messages.ContentPart{imageArtifactPart(imageRef)}},
+	}
 
 	projected, _, err := projectMessages(context.Background(), history, 0, store)
 	if err != nil {
@@ -147,27 +177,31 @@ func TestProjectSpillsOlderActiveToolPreviewsUnderPressure(t *testing.T) {
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "active turn"}}
 	refs := make([]artifacts.Ref, 3)
 	for i, label := range []string{"first", "second", "third"} {
-		refs[i] = putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, Data: []byte(strings.Repeat(label, 20_000))})
+		data := []byte(strings.Repeat(label, 20_000))
+		refs[i] = putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, Data: data})
 		id := "active-" + label
 		history = append(history,
 			messages.ChatMessage{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: id, Name: label, Arguments: `{}`}}},
-			messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: id, ToolName: label, Content: artifactReceipt(refs[i]), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &refs[i]}}},
+			messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: id, ToolName: label, Content: artifactBirthPreview(refs[i], data), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &refs[i]}}},
 		)
 	}
 
-	projected, stats, err := projectMessages(context.Background(), history, 5_300, store)
+	projected, stats, err := projectMessages(context.Background(), history, 1_200, store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	toolMessages := messagesWithRole(projected, messages.MessageRoleTool)
 	if toolMessages[0].Content != artifactReceipt(refs[0]) {
-		t.Fatalf("oldest active result was not spilled first: %q", toolMessages[0].Content[:min(200, len(toolMessages[0].Content))])
+		t.Fatalf("oldest active preview was not demoted first: %q", toolMessages[0].Content[:min(200, len(toolMessages[0].Content))])
 	}
 	if !strings.Contains(toolMessages[len(toolMessages)-1].Content, "head/tail preview") {
 		t.Fatalf("newest active result lost its preview: %q", toolMessages[len(toolMessages)-1].Content)
 	}
-	if stats.EstimatedTokens > 5_300 {
-		t.Fatalf("projected tokens = %d, want <= 5300", stats.EstimatedTokens)
+	if stats.EstimatedTokens > 1_200 {
+		t.Fatalf("projected tokens = %d, want <= 1200", stats.EstimatedTokens)
+	}
+	if stats.CompactedToolResults == 0 {
+		t.Fatal("preview demotion was not counted")
 	}
 }
 
@@ -257,7 +291,7 @@ func TestProjectOmitsCompleteExchangesAndPreservesSystemContext(t *testing.T) {
 		t.Fatalf("omitted exchanges = %d, want 1", stats.OmittedExchanges)
 	}
 	joined := projectedText(projected)
-	for _, want := range []string{"primary system", "later system invariant", "current question", "1 earlier completed exchange"} {
+	for _, want := range []string{"primary system", "later system invariant", "current question", "earlier completed exchanges omitted"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("projection missing %q: %#v", want, projected)
 		}
@@ -533,56 +567,86 @@ func projectedText(history []messages.ChatMessage) string {
 	return b.String()
 }
 
-func TestSpillActiveToolResultsExemptsReadArtifact(t *testing.T) {
-	store := newTestArtifactStore()
+func TestSpillActiveToolResultsRecallHandling(t *testing.T) {
 	readContent := strings.Repeat("r", 20_000)
 	bashContent := strings.Repeat("b", 36_000)
+
+	t.Run("newest unseen recall survives", func(t *testing.T) {
+		store := newTestArtifactStore()
+		history := []messages.ChatMessage{
+			{Role: messages.MessageRoleUser, Content: "go"},
+			{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "read", Name: "read_artifact", Arguments: `{}`},
+				{ID: "bash", Name: "bash", Arguments: `{}`},
+			}},
+			{Role: messages.MessageRoleTool, ToolCallID: "read", ToolName: "read_artifact", Content: readContent},
+			{Role: messages.MessageRoleTool, ToolCallID: "bash", ToolName: "bash", Content: bashContent},
+		}
+		projected, _, err := projectMessages(context.Background(), history, 9_000, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		toolMessages := messagesWithRole(projected, messages.MessageRoleTool)
+		if toolMessages[0].Content != readContent {
+			t.Fatalf("unseen read_artifact result was stubbed: %q", toolMessages[0].Content[:min(200, len(toolMessages[0].Content))])
+		}
+		if !strings.Contains(toolMessages[1].Content, "stored as artifact") {
+			t.Fatalf("other tool result was not spilled: %q", toolMessages[1].Content[:min(200, len(toolMessages[1].Content))])
+		}
+	})
+
+	t.Run("acted-on recall is stubbed without minting", func(t *testing.T) {
+		store := newTestArtifactStore()
+		history := []messages.ChatMessage{
+			{Role: messages.MessageRoleUser, Content: "go"},
+			{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "read", Name: "read_artifact", Arguments: `{}`}}},
+			{Role: messages.MessageRoleTool, ToolCallID: "read", ToolName: "read_artifact", Content: readContent},
+			{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "bash", Name: "bash", Arguments: `{}`}}},
+			{Role: messages.MessageRoleTool, ToolCallID: "bash", ToolName: "bash", Content: bashContent},
+		}
+		projected, _, err := projectMessages(context.Background(), history, 9_000, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		toolMessages := messagesWithRole(projected, messages.MessageRoleTool)
+		if toolMessages[0].Content != recallResultStub("read_artifact") {
+			t.Fatalf("acted-on read_artifact result was not stubbed: %q", toolMessages[0].Content[:min(200, len(toolMessages[0].Content))])
+		}
+		if len(toolMessages[0].Parts) != 0 {
+			t.Fatalf("stubbing a recall minted an artifact: %#v", toolMessages[0].Parts)
+		}
+		if !strings.Contains(toolMessages[1].Content, "stored as artifact") {
+			t.Fatalf("other tool result was not spilled: %q", toolMessages[1].Content[:min(200, len(toolMessages[1].Content))])
+		}
+	})
+}
+
+func TestProjectToolResultsRequireStoreForArtifactRefs(t *testing.T) {
+	mintStore := newTestArtifactStore()
+	ref := putTestArtifact(t, mintStore, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "bash.txt", Data: []byte("lost output")})
 	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "go"},
-		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{
-			{ID: "read", Name: "read_artifact", Arguments: `{}`},
-			{ID: "bash", Name: "bash", Arguments: `{}`},
-		}},
-		{Role: messages.MessageRoleTool, ToolCallID: "read", ToolName: "read_artifact", Content: readContent},
-		{Role: messages.MessageRoleTool, ToolCallID: "bash", ToolName: "bash", Content: bashContent},
+		{Role: messages.MessageRoleUser, Content: "run"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "call", Name: "bash", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "bash", Content: artifactReceipt(ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
 	}
-	projected, _, err := projectMessages(context.Background(), history, 9_000, store)
+
+	// A transcript with artifact refs but no configured store is a hard error.
+	_, _, err := projectMessages(context.Background(), history, 0, nil)
+	if err == nil || !strings.Contains(err.Error(), ref.ID) {
+		t.Fatalf("projectMessages() error = %v, want failure for artifact %s", err, ref.ID)
+	}
+
+	// A store missing the blob is fine at projection time: the receipt passes
+	// through without any store read, and read_artifact reports the miss.
+	projected, stats, err := projectMessages(context.Background(), history, 0, newTestArtifactStore())
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolMessages := messagesWithRole(projected, messages.MessageRoleTool)
-	if toolMessages[0].Content != readContent {
-		t.Fatalf("read_artifact result was spilled: %q", toolMessages[0].Content[:min(200, len(toolMessages[0].Content))])
+	if got := projected[len(projected)-1].Content; got != artifactReceipt(ref) {
+		t.Fatalf("receipt was rewritten: %q", got)
 	}
-	if !strings.Contains(toolMessages[1].Content, "stored as artifact") {
-		t.Fatalf("other tool result was not spilled: %q", toolMessages[1].Content[:min(200, len(toolMessages[1].Content))])
-	}
-}
-
-func TestProjectToolResultsFailWhenArtifactCannotBeRead(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		data []byte
-	}{
-		{name: "full read", data: []byte("lost output")},
-		{name: "preview read", data: []byte(strings.Repeat("lost output", toolInlineTokenLimit))},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			mintStore := newTestArtifactStore()
-			ref := putTestArtifact(t, mintStore, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "bash.txt", Data: tc.data})
-			history := []messages.ChatMessage{
-				{Role: messages.MessageRoleUser, Content: "run"},
-				{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "call", Name: "bash", Arguments: `{}`}}},
-				{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "bash", Content: artifactReceipt(ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
-			}
-
-			for _, store := range []artifacts.Store{newTestArtifactStore(), nil} {
-				_, _, err := projectMessages(context.Background(), history, 0, store)
-				if err == nil || !strings.Contains(err.Error(), ref.ID) {
-					t.Fatalf("projectMessages() error = %v, want failure for artifact %s", err, ref.ID)
-				}
-			}
-		})
+	if stats.CompactedToolResults != 0 {
+		t.Fatalf("compacted tool results = %d, want 0", stats.CompactedToolResults)
 	}
 }
 
@@ -615,4 +679,146 @@ func TestValidateImageProjectionEnforcesAggregateImageCaps(t *testing.T) {
 			t.Fatalf("error = %v, want unavailable image reference", err)
 		}
 	})
+}
+
+func TestProjectionMarkerAdvertisesArtifactRecallOnlyWithStore(t *testing.T) {
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleSystem, Content: "sys"},
+		{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 4_000)},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleUser, Content: "current"},
+	}
+
+	withStore, stats, err := projectMessages(context.Background(), cloneMessages(history), 250, newTestArtifactStore())
+	if err != nil || stats.OmittedExchanges == 0 {
+		t.Fatalf("omission projection failed: stats=%+v err=%v", stats, err)
+	}
+	if !strings.Contains(projectedText(withStore), "call list_artifacts to enumerate them") {
+		t.Fatalf("marker does not advertise recall: %q", projectedText(withStore))
+	}
+
+	without, stats, err := projectMessages(context.Background(), cloneMessages(history), 250, nil)
+	if err != nil || stats.OmittedExchanges == 0 {
+		t.Fatalf("nil-store omission projection failed: stats=%+v err=%v", stats, err)
+	}
+	if strings.Contains(projectedText(without), "list_artifacts") {
+		t.Fatalf("nil-store marker advertises an unavailable tool: %q", projectedText(without))
+	}
+}
+
+func TestProjectionCapturesRefsFromOmittedExchanges(t *testing.T) {
+	store := newTestArtifactStore()
+	legacy := strings.Repeat("legacy line\n", 4_000)
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "old request"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old", Name: "legacy_tool", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "old", ToolName: "legacy_tool", Content: legacy},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleUser, Content: "current"},
+	}
+
+	projected, stats, err := projectMessages(context.Background(), history, 300, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.OmittedExchanges == 0 {
+		t.Fatalf("legacy exchange was not omitted: %+v", stats)
+	}
+	var captured *artifacts.Ref
+	for i := range stats.artifactRefs {
+		if stats.artifactRefs[i].Bytes == int64(len(legacy)) {
+			captured = &stats.artifactRefs[i]
+		}
+	}
+	if captured == nil {
+		t.Fatalf("ref minted inside the omitted exchange was not captured: %#v", stats.artifactRefs)
+	}
+	if strings.Contains(projectedText(projected), captured.ID) {
+		t.Fatalf("omitted exchange leaked into the projection: %#v", projected)
+	}
+}
+
+func TestSpilledMediaResultKeepsOneFinalFormAcrossProjections(t *testing.T) {
+	store := newTestArtifactStore()
+	imageRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "shot.png", Reference: "[image #1]", Data: []byte("imgbytes")})
+	screenshot := strings.Repeat("pixel row\n", 2_000)
+	other := strings.Repeat("other-inline-", 1_500)
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "capture"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "shot", Name: "screenshot", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "shot", ToolName: "screenshot", Content: screenshot, Parts: []messages.ContentPart{imageArtifactPart(imageRef)}},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "other", Name: "other", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "other", ToolName: "other", Content: other},
+	}
+
+	shotContent := func(projected []messages.ChatMessage) string {
+		for _, msg := range projected {
+			if msg.Role == messages.MessageRoleTool && msg.ToolCallID == "shot" {
+				return msg.Content
+			}
+		}
+		t.Fatal("projected history lost the screenshot result")
+		return ""
+	}
+
+	first, stats, err := projectMessages(context.Background(), history, 6_000, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := shotContent(first)
+	if !strings.Contains(sent, "stored as artifact") || !strings.Contains(sent, "[image artifact "+imageRef.ID) {
+		t.Fatalf("spilled media form lost its descriptor: %q", sent)
+	}
+	if len(stats.toolSpills) != 1 || stats.toolSpills[0].Receipt != sent {
+		t.Fatalf("spill record form = %+v, sent %q", stats.toolSpills, sent)
+	}
+
+	(&Agent{}).applyDurableToolSpills(history, stats.toolSpills)
+	if history[2].Content != sent {
+		t.Fatalf("durable final form %q != sent form %q", history[2].Content[:min(200, len(history[2].Content))], sent[:min(200, len(sent))])
+	}
+	second, _, err := projectMessages(context.Background(), history, 6_000, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := shotContent(second); got != sent {
+		t.Fatalf("second projection diverged:\nfirst:  %q\nsecond: %q", sent, got)
+	}
+	if resent, _, err := projectMessages(context.Background(), history, 6_000, store); err != nil || shotContent(resent) != sent {
+		t.Fatalf("third projection diverged: %v", err)
+	}
+}
+
+func TestSpillSkipsByteIdenticalRewritesInStats(t *testing.T) {
+	store := newTestArtifactStore()
+	data := strings.Repeat("spilled once\n", 2_000)
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(data)})
+	binaryRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindBinary, MIMEType: "application/zip", Data: []byte("zip")})
+	spilledForm := withDescriptorList(artifactReceipt(ref), []string{artifactMediaDescriptor(binaryRef)})
+	fresh := strings.Repeat("fresh-inline-", 1_500)
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "go"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old", Name: "old", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "old", ToolName: "old", Content: spilledForm, Parts: []messages.ContentPart{
+			{Type: "artifact", Artifact: &ref},
+			{Type: "artifact", Artifact: &binaryRef},
+		}},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "new", Name: "new", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "new", ToolName: "new", Content: fresh},
+	}
+
+	projected, stats, err := projectMessages(context.Background(), history, 4_500, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := messagesWithRole(projected, messages.MessageRoleTool)
+	if tools[0].Content != spilledForm {
+		t.Fatalf("already-spilled media form was rewritten: %q", tools[0].Content)
+	}
+	if !strings.Contains(tools[1].Content, "stored as artifact") {
+		t.Fatalf("fresh result was not spilled: %q", tools[1].Content[:min(120, len(tools[1].Content))])
+	}
+	if stats.CompactedToolResults != 1 {
+		t.Fatalf("compacted results = %d, want 1 (byte-identical rewrite must not count)", stats.CompactedToolResults)
+	}
 }

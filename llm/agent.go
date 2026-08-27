@@ -36,6 +36,7 @@ type Agent struct {
 	artifactStore artifacts.Store
 	artifactMu    sync.RWMutex
 	artifactRefs  map[string]artifacts.Ref
+	artifactOrder []string
 }
 
 // AgentConfig configures agent behavior
@@ -124,6 +125,9 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		reader := &readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact}
 		registry.Register(reader)
 		registry.MarkAlwaysAllowed(reader.GetName())
+		lister := &listArtifactsTool{list: agent.listArtifacts}
+		registry.Register(lister)
+		registry.MarkAlwaysAllowed(lister.GetName())
 	}
 	return agent
 }
@@ -507,12 +511,12 @@ func mergeToolErrorText(errorText, resultText string) string {
 
 func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageToolCall, output tools.ToolOutput) (messages.ChatMessage, error) {
 	msg := messages.ChatMessage{Role: messages.MessageRoleTool, Content: output.Text, ToolCallID: tc.ID, ToolName: tc.Name}
-	if tc.Name != "read_artifact" && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
+	if !isRecallToolName(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
 		ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)})
 		if err != nil {
 			return messages.ChatMessage{}, fmt.Errorf("store text artifact for tool %q: %w", tc.Name, err)
 		}
-		msg.Content = artifactReceipt(ref)
+		msg.Content = artifactBirthPreview(ref, []byte(output.Text))
 		msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
 	}
 	for _, media := range output.Media {
@@ -559,6 +563,7 @@ func (a *Agent) indexArtifactMessages(history []messages.ChatMessage) {
 func (a *Agent) resetArtifactIndex(history []messages.ChatMessage) {
 	a.artifactMu.Lock()
 	a.artifactRefs = make(map[string]artifacts.Ref)
+	a.artifactOrder = nil
 	a.artifactMu.Unlock()
 	a.indexArtifactMessages(history)
 }
@@ -569,10 +574,25 @@ func (a *Agent) indexArtifact(ref artifacts.Ref) {
 	}
 	a.artifactMu.Lock()
 	current, exists := a.artifactRefs[ref.ID]
+	if !exists {
+		a.artifactOrder = append(a.artifactOrder, ref.ID)
+	}
 	if !exists || artifactKindPriority(ref.Kind) > artifactKindPriority(current.Kind) {
 		a.artifactRefs[ref.ID] = ref
 	}
 	a.artifactMu.Unlock()
+}
+
+// listArtifacts returns the run's authorized refs in first-reference order:
+// durable-transcript order at run start, then in-run discovery order.
+func (a *Agent) listArtifacts() []artifacts.Ref {
+	a.artifactMu.RLock()
+	defer a.artifactMu.RUnlock()
+	refs := make([]artifacts.Ref, 0, len(a.artifactOrder))
+	for _, id := range a.artifactOrder {
+		refs = append(refs, a.artifactRefs[id])
+	}
+	return refs
 }
 
 func artifactKindPriority(kind artifacts.Kind) int {
@@ -604,7 +624,9 @@ func (a *Agent) applyDurableToolSpills(history []messages.ChatMessage, spills []
 			}
 			ref := spill.Ref
 			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
-			msg.Content = appendArtifactDescriptors(artifactReceipt(ref), *msg, ref.ID, " ")
+			// The durable final form is exactly what the spilling projection
+			// sent, so later pass-through projections stay byte-identical.
+			msg.Content = spill.Receipt
 			break
 		}
 	}

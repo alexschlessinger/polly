@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -17,8 +16,7 @@ import (
 
 const (
 	toolInlineTokenLimit  = 10_000
-	toolPreviewTokenLimit = 2_500
-	recentToolBatchCount  = 3
+	toolPreviewTokenLimit = 500
 	maxHydratedArtifact   = 64 << 20
 
 	// Aggregate caps on the images one projected request may carry, mirroring
@@ -46,6 +44,10 @@ type toolResultSpill struct {
 	ToolName   string
 	Content    string
 	Ref        artifacts.Ref
+	// Receipt is the exact provider-visible form the spilling projection sent;
+	// applyDurableToolSpills persists it verbatim so the durable final form and
+	// the sent form never diverge.
+	Receipt string
 }
 
 // ContextLimitError means the active exchange could not fit even after all
@@ -69,6 +71,12 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 	if err != nil {
 		return nil, stats, err
 	}
+	// Capture refs and media descriptors before omission and image selection
+	// can drop their parts: refs keep omitted-exchange artifacts indexed, and
+	// the descriptors let a later spill build the same final form that
+	// applyDurableToolSpills persists.
+	stats.artifactRefs = artifactRefsInMessages(projected)
+	spillDescriptors := toolMediaDescriptorsByCall(projected)
 	projected, stats.HydratedImages, err = projectImages(ctx, projected, store)
 	if err != nil {
 		return nil, stats, err
@@ -76,10 +84,10 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 
 	stats.EstimatedTokens = estimateProjectedTokens(projected)
 	if maxTokens <= 0 || stats.EstimatedTokens <= maxTokens {
-		stats.artifactRefs = artifactRefsInMessages(projected)
 		return stripArtifactParts(projected), stats, nil
 	}
 
+	marker := projectionMarker(store != nil)
 	for {
 		users := realUserIndexes(projected)
 		if len(users) <= 1 {
@@ -88,18 +96,18 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 		projected = omitExchangePreservingSystems(projected, users[0], users[1])
 		stats.OmittedExchanges++
 		stats.EstimatedTokens = estimateProjectedTokens(projected)
-		withMarker := addProjectionMarker(cloneMessages(projected), projectionMarker(stats.OmittedExchanges))
+		withMarker := addProjectionMarker(cloneMessages(projected), marker)
 		if estimateProjectedTokens(withMarker) <= maxTokens {
 			break
 		}
 	}
 
 	if stats.OmittedExchanges > 0 {
-		projected = addProjectionMarker(projected, projectionMarker(stats.OmittedExchanges))
+		projected = addProjectionMarker(projected, marker)
 		stats.EstimatedTokens = estimateProjectedTokens(projected)
 	}
 	if stats.EstimatedTokens > maxTokens {
-		spilled, spills, spillErr := spillActiveToolResults(ctx, projected, maxTokens, store)
+		spilled, spills, spillErr := spillActiveToolResults(ctx, projected, maxTokens, store, spillDescriptors)
 		if spillErr != nil {
 			return nil, stats, spillErr
 		}
@@ -110,8 +118,19 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 	if stats.EstimatedTokens > maxTokens {
 		return nil, stats, &ContextLimitError{EstimatedTokens: stats.EstimatedTokens, Limit: maxTokens}
 	}
-	stats.artifactRefs = artifactRefsInMessages(projected)
+	for _, spill := range stats.toolSpills {
+		stats.artifactRefs = appendArtifactRef(stats.artifactRefs, spill.Ref)
+	}
 	return stripArtifactParts(projected), stats, nil
+}
+
+func appendArtifactRef(refs []artifacts.Ref, ref artifacts.Ref) []artifacts.Ref {
+	for _, existing := range refs {
+		if existing.ID == ref.ID {
+			return refs
+		}
+	}
+	return append(refs, ref)
 }
 
 func artifactRefsInMessages(history []messages.ChatMessage) []artifacts.Ref {
@@ -129,37 +148,28 @@ func artifactRefsInMessages(history []messages.ChatMessage) []artifacts.Ref {
 	return refs
 }
 
-func projectionMarker(omitted int) string {
-	return fmt.Sprintf("[Context projection: %d earlier completed exchange(s) omitted; the full transcript remains stored locally.]", omitted)
+// projectionMarker is constant text: a count would rewrite the system message
+// on every additional omission and invalidate the provider's cached prefix.
+func projectionMarker(artifactsListable bool) string {
+	marker := "[Context projection: earlier completed exchanges omitted; the full transcript remains stored locally."
+	if artifactsListable {
+		marker += " Artifacts referenced by omitted content remain readable: call list_artifacts to enumerate them and read_artifact to inspect one."
+	}
+	return marker + "]"
 }
 
+// projectToolResults leaves any message that already carries a text artifact
+// ref byte-identical (its form was final at birth or at spill time), so the
+// provider-visible prefix stays stable across iterations. The only rewrites are
+// one-time: recall results from completed exchanges collapse to a constant stub
+// (their content is reproducible from the original artifact), and legacy
+// transcripts' oversized inline results are externalized with a preview built
+// from the in-hand bytes.
 func projectToolResults(ctx context.Context, history []messages.ChatMessage, store artifacts.Store) ([]messages.ChatMessage, int, error) {
-	callBatch := make(map[string]int)
-	resultBatch := make([]int, len(history))
-	batch := 0
-	currentBatch := 0
-	for i, msg := range history {
-		switch msg.Role {
-		case messages.MessageRoleAssistant:
-			if len(msg.ToolCalls) == 0 {
-				currentBatch = 0
-				continue
-			}
-			batch++
-			currentBatch = batch
-			for _, call := range msg.ToolCalls {
-				if call.ID != "" {
-					callBatch[call.ID] = batch
-				}
-			}
-		case messages.MessageRoleTool:
-			resultBatch[i] = callBatch[msg.ToolCallID]
-			if resultBatch[i] == 0 {
-				resultBatch[i] = currentBatch
-			}
-		case messages.MessageRoleUser, messages.MessageRoleSystem:
-			currentBatch = 0
-		}
+	users := realUserIndexes(history)
+	lastUser := -1
+	if len(users) > 0 {
+		lastUser = users[len(users)-1]
 	}
 
 	compacted := 0
@@ -168,47 +178,62 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 		if msg.Role != messages.MessageRoleTool || msg.Content == ToolDeniedContent {
 			continue
 		}
-		ref := textArtifactRef(*msg)
-		if ref == nil && msg.ToolName != "read_artifact" && estimatedStringTokens(msg.Content) > toolInlineTokenLimit && store != nil {
-			stored, err := store.Put(ctx, artifacts.Blob{
-				Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(*msg), Data: []byte(msg.Content),
-			})
-			if err != nil {
-				return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
+		if isRecallToolName(msg.ToolName) {
+			if i < lastUser {
+				stub := recallResultStub(msg.ToolName)
+				if estimatedStringTokens(stub) < estimatedStringTokens(msg.Content) {
+					msg.Content = appendArtifactDescriptors(stub, *msg, "", " ")
+					compacted++
+				}
 			}
-			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
-			ref = &stored
+			continue
 		}
+		ref := textArtifactRef(*msg)
 		if ref == nil {
+			if estimatedStringTokens(msg.Content) > toolInlineTokenLimit && store != nil {
+				stored, err := store.Put(ctx, artifacts.Blob{
+					Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(*msg), Data: []byte(msg.Content),
+				})
+				if err != nil {
+					return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
+				}
+				head, tail := previewWindows([]byte(msg.Content))
+				msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
+				msg.Content = artifactPreviewWithDescriptors(stored, head, tail, *msg)
+				compacted++
+			}
 			continue
 		}
 		if store == nil {
 			return nil, compacted, fmt.Errorf("tool artifact %s cannot be read without a store", ref.ID)
 		}
-
-		messageBatch := resultBatch[i]
-		recent := messageBatch > 0 && messageBatch > batch-recentToolBatchCount
-		if !recent {
-			msg.Content = appendArtifactDescriptors(artifactReceipt(*ref), *msg, ref.ID, " ")
-			compacted++
-			continue
-		}
-		if ref.Bytes <= toolInlineTokenLimit*4 {
-			data, err := readArtifactBytes(ctx, store, ref.ID, ref.Bytes)
-			if err != nil {
-				return nil, compacted, fmt.Errorf("read tool artifact %s: %w", ref.ID, err)
-			}
-			msg.Content = appendArtifactDescriptors(string(data), *msg, ref.ID, "\n")
-			continue
-		}
-		head, tail, err := readArtifactPreview(ctx, store, *ref)
-		if err != nil {
-			return nil, compacted, fmt.Errorf("preview tool artifact %s: %w", ref.ID, err)
-		}
-		msg.Content = artifactPreviewWithDescriptors(*ref, head, tail, *msg)
-		compacted++
 	}
 	return history, compacted, nil
+}
+
+func isRecallToolName(name string) bool {
+	return name == "read_artifact" || name == "list_artifacts"
+}
+
+func recallResultStub(toolName string) string {
+	if toolName == "list_artifacts" {
+		return "[list_artifacts result elided; call list_artifacts again for the current catalog.]"
+	}
+	return "[read_artifact result elided to save space; the call above shows its arguments. Call read_artifact again to re-read.]"
+}
+
+// previewWindows bounds the head and tail slices fed to artifactPreview, which
+// trims them to the token budget on UTF-8-safe boundaries.
+func previewWindows(data []byte) ([]byte, []byte) {
+	window := min(len(data), toolPreviewTokenLimit*4)
+	return data[:window], data[len(data)-window:]
+}
+
+// artifactBirthPreview is a stored tool result's permanent provider-visible
+// form, computed once from the bytes in hand.
+func artifactBirthPreview(ref artifacts.Ref, data []byte) string {
+	head, tail := previewWindows(data)
+	return artifactPreview(ref, head, tail, toolPreviewTokenLimit*4)
 }
 
 // ValidateImageProjection runs the deterministic image-selection phase of the
@@ -584,68 +609,6 @@ func readArtifactBytes(ctx context.Context, store artifacts.Store, id string, ex
 	return data, nil
 }
 
-// readArtifactPreview retains only bounded head and tail windows while still
-// consuming the stream to verify the immutable reference's recorded size.
-func readArtifactPreview(ctx context.Context, store artifacts.Store, ref artifacts.Ref) (headResult, tailResult []byte, retErr error) {
-	if ref.Bytes < 0 {
-		return nil, nil, fmt.Errorf("invalid artifact size")
-	}
-	r, err := store.Open(ctx, ref.ID)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer func() {
-		if err := r.Close(); err != nil {
-			retErr = errors.Join(retErr, err)
-		}
-	}()
-
-	window := toolPreviewTokenLimit*2 + utf8.UTFMax
-	head := make([]byte, 0, window)
-	tail := make([]byte, 0, window)
-	buf := make([]byte, 32<<10)
-	var total int64
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
-		}
-		n, readErr := r.Read(buf)
-		if n > 0 {
-			chunk := buf[:n]
-			total += int64(n)
-			if total > ref.Bytes {
-				return nil, nil, fmt.Errorf("stored size does not match transcript reference")
-			}
-			if len(head) < window {
-				take := min(window-len(head), len(chunk))
-				head = append(head, chunk[:take]...)
-			}
-			tail = appendTailWindow(tail, chunk, window)
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return nil, nil, readErr
-		}
-	}
-	if total != ref.Bytes {
-		return nil, nil, fmt.Errorf("stored size does not match transcript reference")
-	}
-	return head, tail, nil
-}
-
-func appendTailWindow(tail, chunk []byte, limit int) []byte {
-	if len(chunk) >= limit {
-		return append(tail[:0], chunk[len(chunk)-limit:]...)
-	}
-	if excess := len(tail) + len(chunk) - limit; excess > 0 {
-		copy(tail, tail[excess:])
-		tail = tail[:len(tail)-excess]
-	}
-	return append(tail, chunk...)
-}
-
 func textArtifactRef(msg messages.ChatMessage) *artifacts.Ref {
 	for _, part := range msg.Parts {
 		if part.Artifact != nil && part.Artifact.Kind == artifacts.KindText {
@@ -750,7 +713,7 @@ func boundedArtifactDescriptors(descriptors []string, limit int) string {
 
 func artifactPreview(ref artifacts.Ref, headData, tailData []byte, maxBytes int) string {
 	header := fmt.Sprintf("[artifact %s; %d bytes; %d lines; head/tail preview]\n", ref.ID, ref.Bytes, ref.Lines)
-	gap := "\n\n[... omitted; use read_artifact ...]\n\n"
+	gap := "\n\n[... middle omitted; use read_artifact (offset/limit/query) to read the rest ...]\n\n"
 	available := maxBytes - len(header) - len(gap)
 	if available <= 0 {
 		return header[:min(len(header), maxBytes)]
@@ -845,27 +808,70 @@ func omitExchangePreservingSystems(history []messages.ChatMessage, start, end in
 	return out
 }
 
-func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store) (int, []toolResultSpill, error) {
+// toolMediaDescriptorsByCall snapshots each tool result's media descriptors
+// keyed by tool-call ID, before projectImages moves or drops image parts.
+func toolMediaDescriptorsByCall(history []messages.ChatMessage) map[string][]string {
+	var out map[string][]string
+	for _, msg := range history {
+		if msg.Role != messages.MessageRoleTool || msg.ToolCallID == "" {
+			continue
+		}
+		if descriptors := artifactDescriptors(msg, ""); len(descriptors) > 0 {
+			if out == nil {
+				out = make(map[string][]string)
+			}
+			out[msg.ToolCallID] = descriptors
+		}
+	}
+	return out
+}
+
+// withDescriptorList mirrors appendArtifactDescriptors' byte layout for a
+// descriptor list captured earlier.
+func withDescriptorList(content string, descriptors []string) string {
+	if len(descriptors) == 0 {
+		return content
+	}
+	return strings.TrimSpace(content + " " + strings.Join(descriptors, " "))
+}
+
+func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, descriptors map[string][]string) (int, []toolResultSpill, error) {
 	users := realUserIndexes(history)
 	if len(users) == 0 {
 		return 0, nil, nil
 	}
 	start := users[len(users)-1]
+	lastAssistant := -1
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == messages.MessageRoleAssistant {
+			lastAssistant = i
+			break
+		}
+	}
 	newlyCompacted := 0
 	var spills []toolResultSpill
 	for i := start; i < len(history) && estimateProjectedTokens(history) > maxTokens; i++ {
-		// read_artifact results are exempt (as in projectToolResults and
-		// toolOutputMessage): spilling one durably replaces the excerpt with a
-		// receipt telling the model to call read_artifact again, which would
-		// spill too — the model could never see artifact content while over
-		// budget, minting a duplicate artifact per read.
-		if history[i].Role != messages.MessageRoleTool || history[i].Content == ToolDeniedContent ||
-			history[i].ToolName == "read_artifact" {
+		if history[i].Role != messages.MessageRoleTool || history[i].Content == ToolDeniedContent {
+			continue
+		}
+		if isRecallToolName(history[i].ToolName) {
+			// Stubbing a recall the model has not yet acted on would instruct it
+			// to re-read under a budget that can never fit the result; leave the
+			// newest unseen recall verbatim and fail over to ContextLimitError.
+			if i > lastAssistant {
+				continue
+			}
+			stub := withDescriptorList(recallResultStub(history[i].ToolName), descriptors[history[i].ToolCallID])
+			if estimatedStringTokens(stub) < estimatedStringTokens(history[i].Content) {
+				history[i].Content = stub
+				newlyCompacted++
+			}
 			continue
 		}
 		ref := textArtifactRef(history[i])
-		if ref == nil && history[i].Content != "" && store != nil {
-			originalContent := history[i].Content
+		minted := false
+		originalContent := history[i].Content
+		if ref == nil && originalContent != "" && store != nil {
 			stored, err := store.Put(ctx, artifacts.Blob{
 				Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(history[i]), Data: []byte(originalContent),
 			})
@@ -874,21 +880,22 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 			}
 			history[i].Parts = append(history[i].Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
 			ref = &stored
-			spills = append(spills, toolResultSpill{
-				ToolCallID: history[i].ToolCallID, ToolName: history[i].ToolName, Content: originalContent, Ref: stored,
-			})
+			minted = true
 		}
 		if ref == nil {
 			continue
 		}
-		receipt := artifactReceipt(*ref)
-		if history[i].Content == receipt {
+		form := withDescriptorList(artifactReceipt(*ref), descriptors[history[i].ToolCallID])
+		if minted {
+			spills = append(spills, toolResultSpill{
+				ToolCallID: history[i].ToolCallID, ToolName: history[i].ToolName, Content: originalContent, Ref: *ref, Receipt: form,
+			})
+		}
+		if history[i].Content == form {
 			continue
 		}
-		if !strings.HasPrefix(history[i].Content, "[artifact "+ref.ID+";") {
-			newlyCompacted++
-		}
-		history[i].Content = appendArtifactDescriptors(receipt, history[i], ref.ID, " ")
+		history[i].Content = form
+		newlyCompacted++
 	}
 	return newlyCompacted, spills, nil
 }
