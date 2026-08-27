@@ -47,9 +47,18 @@ type CompletionRequest struct {
 	// Temperature controls sampling when non-nil. Leave nil to omit the
 	// parameter from the upstream request — required for reasoning models
 	// (o1, o3, gpt-5.x) which 400 if temperature is supplied at all.
-	Temperature    *float32
-	Model          string
-	MaxTokens      int
+	Temperature *float32
+	Model       string
+	MaxTokens   int
+	// MaxContextTokens limits the deterministic provider-visible projection
+	// used by Agent. Direct provider clients ignore it. Zero is unlimited.
+	MaxContextTokens int
+	// PromptCacheKey groups requests with the same stable agent prefix for
+	// provider-side prompt caching. Agent derives one when this is empty.
+	PromptCacheKey string
+	// CacheSessionID is an opaque, stable per-session routing identity. It is
+	// currently used only by providers that support session affinity.
+	CacheSessionID string
 	Messages       []messages.ChatMessage // Message history
 	Tools          []tools.Tool           // Available tools
 	ResponseSchema *Schema                // Optional schema for structured output

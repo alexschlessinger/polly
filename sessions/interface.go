@@ -1,61 +1,87 @@
 package sessions
 
 import (
+	"context"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
-// Session interface defines the contract for session implementations
+// StoreMode selects only the SQLite database location. Memory and disk stores
+// otherwise share the same schema and behavior.
+type StoreMode uint8
+
+const (
+	ModeMemory StoreMode = iota + 1
+	ModeDisk
+)
+
+// StoreConfig configures a unified SQLite session store.
+type StoreConfig struct {
+	Mode            StoreMode
+	Path            string
+	DefaultMetadata *Metadata
+	AutoSessionTTL  time.Duration
+}
+
+// AcquireOptions describe a newly created session. They never alter the
+// retention class of an existing session.
+type AcquireOptions struct {
+	Auto bool
+}
+
+// Session is an exclusively leased, database-backed conversation. Context is
+// canceled if the lease is lost, the session is closed, or its store closes.
 type Session interface {
-	GetHistory() []messages.ChatMessage
-	AddMessage(messages.ChatMessage) error
-	AddMessages([]messages.ChatMessage) error // Append a batch with a single persist
-	Clear() error
-	Close() // Clean up resources (file locks, etc.)
+	Context() context.Context
 
-	// Session metadata
-	GetName() string
-	GetMetadata() *Metadata
-	SetMetadata(*Metadata) error
-	UpdateMetadata(*Metadata) error // Apply partial updates (only non-zero values)
-	GetLastUsed() time.Time
+	GetHistory(context.Context) ([]messages.ChatMessage, error)
+	AddMessage(context.Context, messages.ChatMessage) error
+	AddMessages(context.Context, []messages.ChatMessage) error
+	// Clear removes the transcript and artifacts while preserving metadata.
+	Clear(context.Context) error
+	// Reset atomically replaces metadata and clears the transcript and artifacts.
+	Reset(context.Context, *Metadata) error
+	Close() error
 
-	// Capacity tracking
-	GetTotalTokens() int            // Sum of all message tokens in history
-	GetCapacityPercentage() float64 // 0-100, or 0 if no limit set
+	GetName(context.Context) (string, error)
+	Rename(context.Context, string) error
+	GetMetadata(context.Context) (*Metadata, error)
+	SetMetadata(context.Context, *Metadata) error
+	GetLastUsed(context.Context) (time.Time, error)
+	CacheSessionID(context.Context) (string, error)
+	ArtifactStore() artifacts.Store
 
-	// Session statistics
-	GetTimeToExpiry() time.Duration   // Time until TTL expiry (0 if no TTL or expired)
-	GetMessageCounts() map[string]int // Counts by role (user, assistant, tool, system)
-	GetToolCallCount() int            // Total tool calls in session
+	GetTotalTokens(context.Context) (int, error)
+	GetCapacityPercentage(context.Context) (float64, error)
+	GetTimeToExpiry(context.Context) (time.Duration, error)
+	GetMessageCounts(context.Context) (map[string]int, error)
+	GetToolCallCount(context.Context) (int, error)
 }
 
-// SessionStore manages multiple sessions
+// SessionStore manages sessions in one SQLite database.
 type SessionStore interface {
-	Get(string) (Session, error)
-	Delete(string)
-	Range(func(key, value any) bool)
-	Expire()
-
-	// Session discovery and metadata
-	List() ([]string, error)
-	Exists(string) bool
-	GetAllMetadata() map[string]*Metadata // Read-only bulk operation
-	GetLast() string                      // Returns name of most recently used session
+	Acquire(context.Context, string, AcquireOptions) (Session, error)
+	Delete(context.Context, string) error
+	List(context.Context) ([]string, error)
+	Exists(context.Context, string) (bool, error)
+	GetAllMetadata(context.Context) (map[string]*Metadata, error)
+	GetLast(context.Context) (string, error)
+	Expire(context.Context) error
+	Close() error
 }
 
-// Metadata stores metadata about a context
+// Metadata stores session metadata and persisted runtime settings. Name,
+// Created, LastUsed, and TTL are canonicalized from indexed session columns.
 type Metadata struct {
-	// Persistence-specific fields
 	Name        string        `json:"name"`
 	Created     time.Time     `json:"created"`
 	LastUsed    time.Time     `json:"lastUsed"`
 	Description string        `json:"description,omitempty"`
-	TTL         time.Duration `json:"ttl,omitempty"` // Time before context expires (0 = never)
+	TTL         time.Duration `json:"ttl,omitempty"`
 
-	// Settings that can be persisted
 	Model            string                 `json:"model,omitempty"`
 	Temperature      float64                `json:"temperature,omitempty"`
 	MaxTokens        int                    `json:"maxTokens,omitempty"`

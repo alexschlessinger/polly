@@ -2,9 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"hash/crc32"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -14,14 +22,14 @@ import (
 func TestPersistUserMessageForTurnReusesMatchingFinalUser(t *testing.T) {
 	session := newTurnPersistenceTestSession(t)
 	userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "try this"}
-	if err := session.AddMessage(userMsg); err != nil {
+	if err := session.AddMessage(context.Background(), userMsg); err != nil {
 		t.Fatalf("AddMessage() error = %v", err)
 	}
 
-	if err := persistUserMessageForTurn(session, userMsg, true); err != nil {
+	if err := persistUserMessageForTurn(context.Background(), session, userMsg, true); err != nil {
 		t.Fatalf("persistUserMessageForTurn() error = %v", err)
 	}
-	if got := session.GetHistory(); !slices.EqualFunc(got, []messages.ChatMessage{userMsg}, equalTurnTestMessage) {
+	if got := testSessionHistory(t, session); !slices.EqualFunc(got, []messages.ChatMessage{userMsg}, equalTurnTestMessage) {
 		t.Fatalf("matching retry should reuse final user message, history = %#v", got)
 	}
 }
@@ -65,13 +73,13 @@ func TestPersistUserMessageForTurnOnlyReusesOnExplicitMatchingRetry(t *testing.T
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			session := newTurnPersistenceTestSession(t)
-			if err := session.AddMessages(tt.history); err != nil {
+			if err := session.AddMessages(context.Background(), tt.history); err != nil {
 				t.Fatalf("AddMessages() error = %v", err)
 			}
-			if err := persistUserMessageForTurn(session, userMsg, tt.reuse); err != nil {
+			if err := persistUserMessageForTurn(context.Background(), session, userMsg, tt.reuse); err != nil {
 				t.Fatalf("persistUserMessageForTurn() error = %v", err)
 			}
-			got := session.GetHistory()
+			got := testSessionHistory(t, session)
 			if len(got) != tt.wantSize {
 				t.Fatalf("history length = %d, want %d; history = %#v", len(got), tt.wantSize, got)
 			}
@@ -93,13 +101,13 @@ func TestPersistUserMessageForTurnComparesAttachedParts(t *testing.T) {
 
 	t.Run("same payload is reused", func(t *testing.T) {
 		session := newTurnPersistenceTestSession(t)
-		if err := session.AddMessage(userMsg); err != nil {
+		if err := session.AddMessage(context.Background(), userMsg); err != nil {
 			t.Fatalf("AddMessage() error = %v", err)
 		}
-		if err := persistUserMessageForTurn(session, userMsg, true); err != nil {
+		if err := persistUserMessageForTurn(context.Background(), session, userMsg, true); err != nil {
 			t.Fatalf("persistUserMessageForTurn() error = %v", err)
 		}
-		if got := len(session.GetHistory()); got != 1 {
+		if got := len(testSessionHistory(t, session)); got != 1 {
 			t.Fatalf("same attached payload should be reused, history length = %d", got)
 		}
 	})
@@ -109,16 +117,263 @@ func TestPersistUserMessageForTurnComparesAttachedParts(t *testing.T) {
 		oldMsg := userMsg
 		oldMsg.Parts = slices.Clone(userMsg.Parts)
 		oldMsg.Parts[1].Text = "older contents"
-		if err := session.AddMessage(oldMsg); err != nil {
+		if err := session.AddMessage(context.Background(), oldMsg); err != nil {
 			t.Fatalf("AddMessage() error = %v", err)
 		}
-		if err := persistUserMessageForTurn(session, userMsg, true); err != nil {
+		if err := persistUserMessageForTurn(context.Background(), session, userMsg, true); err != nil {
 			t.Fatalf("persistUserMessageForTurn() error = %v", err)
 		}
-		if got := len(session.GetHistory()); got != 2 {
+		if got := len(testSessionHistory(t, session)); got != 2 {
 			t.Fatalf("changed attached payload must be persisted, history length = %d", got)
 		}
 	})
+}
+
+func TestPrepareSessionImageRequestDoesNotDuplicateExactRetry(t *testing.T) {
+	session := newTurnPersistenceTestSession(t)
+	userMsg := messages.ChatMessage{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{{
+			Type:      "image_base64",
+			ImageData: portablePNGBase64Size(t, 400),
+			MimeType:  "image/png",
+		}},
+	}
+	if err := session.AddMessage(context.Background(), userMsg); err != nil {
+		t.Fatal(err)
+	}
+
+	retry, err := prepareSessionImageRequest(context.Background(), session, userMsg, true)
+	if err != nil || len(retry) != 1 {
+		t.Fatalf("exact retry projection = (%d, %v), want one message", len(retry), err)
+	}
+	ordinary, err := prepareSessionImageRequest(context.Background(), session, userMsg, false)
+	if err != nil || len(ordinary) != 2 {
+		t.Fatalf("ordinary duplicate projection = (%d, %v), want two messages", len(ordinary), err)
+	}
+}
+
+func TestValidateEncodedImageBudgetIncludesDataURLs(t *testing.T) {
+	history := []messages.ChatMessage{{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{
+			{Type: "image_base64", ImageData: strings.Repeat("A", 8<<20)},
+			{Type: "image_url", ImageURL: "data:image/png;base64," + strings.Repeat("B", (8<<20)+1)},
+		},
+	}}
+	if err := validateEncodedImageBudget(history); err == nil || !strings.Contains(err.Error(), "portable limit is 16 MiB") {
+		t.Fatalf("aggregate encoded-image overflow = %v", err)
+	}
+}
+
+func TestPrepareSessionImageRequestRetainsHistoryBeyondModelBudget(t *testing.T) {
+	store := testOpenMemoryStore(t, &sessions.Metadata{MaxHistoryTokens: 2000})
+	session := testAcquireSession(t, store, "trimmed-budget")
+	oldImage := messages.ChatMessage{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{{
+			Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes), MimeType: "image/png",
+		}},
+	}
+	if err := session.AddMessages(context.Background(), []messages.ChatMessage{
+		oldImage,
+		{Role: messages.MessageRoleAssistant, Content: "completed old turn"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	candidate := messages.ChatMessage{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{{
+			Type: "image_base64", ImageData: portablePNGBase64Size(t, 400), MimeType: "image/png",
+		}},
+	}
+
+	prepared, err := prepareSessionImageRequest(context.Background(), session, candidate, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared) != 3 || prepared[0].Parts[0].ImageData != oldImage.Parts[0].ImageData {
+		t.Fatalf("durable history was trimmed before agent projection: %#v", prepared)
+	}
+}
+
+func TestPrepareSessionImageRequestNormalizesLegacyImageWithoutRewriting(t *testing.T) {
+	session := newTurnPersistenceTestSession(t)
+	if err := session.AddMessages(context.Background(), []messages.ChatMessage{
+		{
+			Role: messages.MessageRoleUser,
+			Parts: []messages.ContentPart{{
+				Type: "image_base64", ImageData: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", MimeType: "image/gif",
+			}},
+		},
+		{Role: messages.MessageRoleAssistant, Content: "legacy response"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := prepareSessionImageRequest(context.Background(), session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "next"}, false)
+	if err != nil {
+		t.Fatalf("legacy GIF poisoned the upgraded request: %v", err)
+	}
+	if len(prepared) != 3 || len(prepared[0].Parts) != 1 || prepared[0].Parts[0].MimeType != "image/png" {
+		t.Fatalf("legacy image was not normalized for agent projection: %#v", prepared)
+	}
+	if got := testSessionHistory(t, session)[0].Parts[0].MimeType; got != "image/gif" {
+		t.Fatalf("request-only migration rewrote durable history MIME to %q", got)
+	}
+}
+
+func TestValidatePortableImageRequestEnforcesRequestWideImageLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tiny.png")
+	writeImageFixture(t, path, 1, 1)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := messages.ContentPart{Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(data), MimeType: "image/png"}
+	makeHistory := func(count int) []messages.ChatMessage {
+		var history []messages.ChatMessage
+		for count > 0 {
+			n := min(count, maxPromptAttachments)
+			parts := make([]messages.ContentPart, n)
+			for i := range parts {
+				parts[i] = part
+			}
+			history = append(history, messages.ChatMessage{Role: messages.MessageRoleUser, Parts: parts})
+			count -= n
+		}
+		return history
+	}
+	if err := validatePortableImageRequest(makeHistory(maxPortableRequestImages)); err != nil {
+		t.Fatalf("request-wide image limit rejected: %v", err)
+	}
+	err = validatePortableImageRequest(makeHistory(maxPortableRequestImages + 1))
+	if err == nil || !strings.Contains(err.Error(), "portable request maximum is 100") {
+		t.Fatalf("request-wide image overflow = %v", err)
+	}
+}
+
+func TestValidatePortableImageRequestPerImageEncodedLimit(t *testing.T) {
+	atLimit := messages.ChatMessage{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{{
+			Type: "image_base64", ImageData: portablePNGBase64Size(t, maxPortableEncodedImageBytes), MimeType: "image/png",
+		}},
+	}
+	if err := validatePortableImageRequest([]messages.ChatMessage{atLimit}); err != nil {
+		t.Fatalf("10,000,000-byte image rejected: %v", err)
+	}
+
+	overLimit := atLimit
+	overLimit.Parts = slices.Clone(atLimit.Parts)
+	overLimit.Parts[0].ImageData = portablePNGBase64Size(t, maxPortableEncodedImageBytes+4)
+	err := validatePortableImageRequest([]messages.ChatMessage{overLimit})
+	if err == nil || !strings.Contains(err.Error(), "per-image portable limit is 10,000,000 bytes") {
+		t.Fatalf("10,000,004-byte image limit error = %v", err)
+	}
+}
+
+func TestTurnPersistenceAckSerializesDetachedExactRetry(t *testing.T) {
+	base := newTurnPersistenceTestSession(t)
+	session := &blockingFirstAddSession{
+		Session:      base,
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	ack := newTurnPersistenceAck(false)
+	userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "same detached turn"}
+
+	runAttempt := func(done chan<- error) {
+		ack.beginPersistence()
+		err := persistUserMessageForTurn(context.Background(), session, userMsg, true)
+		ack.finishPersistence(err == nil)
+		done <- err
+	}
+	firstDone := make(chan error, 1)
+	go runAttempt(firstDone)
+	<-session.firstStarted
+
+	secondAcquired := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		ack.beginPersistence()
+		close(secondAcquired)
+		err := persistUserMessageForTurn(context.Background(), session, userMsg, true)
+		ack.finishPersistence(err == nil)
+		secondDone <- err
+	}()
+	select {
+	case <-secondAcquired:
+		close(session.releaseFirst)
+		t.Fatal("exact retry acquired persistence while detached attempt was active")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(session.releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	<-secondAcquired
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if calls := session.addCalls.Load(); calls != 1 {
+		t.Fatalf("serialized exact retry called AddMessage %d times, want 1", calls)
+	}
+	if history := testSessionHistory(t, session); len(history) != 1 || !equivalentUserMessage(history[0], userMsg) {
+		t.Fatalf("serialized exact retry history = %#v", history)
+	}
+}
+
+type blockingFirstAddSession struct {
+	sessions.Session
+	addCalls     atomic.Int32
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+}
+
+func (s *blockingFirstAddSession) AddMessage(ctx context.Context, msg messages.ChatMessage) error {
+	if s.addCalls.Add(1) == 1 {
+		close(s.firstStarted)
+		<-s.releaseFirst
+	}
+	return s.Session.AddMessage(ctx, msg)
+}
+
+// portablePNGBase64Size returns a fully decodable 2x2 PNG whose encoded text
+// has exactly encodedSize bytes. A private ancillary chunk supplies inert
+// padding without changing the pixels or prepared-image dimensions.
+func portablePNGBase64Size(t *testing.T, encodedSize int) string {
+	t.Helper()
+	if encodedSize%4 != 0 {
+		t.Fatalf("encoded PNG fixture size %d is not a base64 quantum", encodedSize)
+	}
+	path := filepath.Join(t.TempDir(), "portable.png")
+	writeImageFixture(t, path, 2, 2)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const chunkOverhead = 12
+	rawSize := encodedSize / 4 * 3
+	payloadSize := rawSize - len(original) - chunkOverhead
+	if payloadSize < 0 || len(original) < 12 {
+		t.Fatalf("encoded PNG fixture size %d is too small", encodedSize)
+	}
+
+	chunk := make([]byte, chunkOverhead+payloadSize)
+	binary.BigEndian.PutUint32(chunk[:4], uint32(payloadSize))
+	copy(chunk[4:8], "ppLy")
+	binary.BigEndian.PutUint32(chunk[8+payloadSize:], crc32.ChecksumIEEE(chunk[4:8+payloadSize]))
+
+	data := make([]byte, 0, rawSize)
+	data = append(data, original[:len(original)-12]...)
+	data = append(data, chunk...)
+	data = append(data, original[len(original)-12:]...)
+	encoded := base64.StdEncoding.EncodeToString(data)
+	if len(encoded) != encodedSize {
+		t.Fatalf("encoded PNG fixture length = %d, want %d", len(encoded), encodedSize)
+	}
+	return encoded
 }
 
 func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testing.T) {
@@ -246,13 +501,7 @@ func TestLineTurnUIWarningAlreadyTerminatesOutput(t *testing.T) {
 
 func newTurnPersistenceTestSession(t *testing.T) sessions.Session {
 	t.Helper()
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get(t.Name())
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	t.Cleanup(session.Close)
-	return session
+	return testAcquireSession(t, testOpenMemoryStore(t, nil), "test")
 }
 
 func equalTurnTestMessage(a, b messages.ChatMessage) bool {

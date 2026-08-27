@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 func TestBashToolSchema(t *testing.T) {
@@ -19,6 +21,48 @@ func TestBashToolSchema(t *testing.T) {
 	}
 	if req := s.Required(); len(req) != 1 || req[0] != "command" {
 		t.Fatalf("schema required = %v, want [command]", req)
+	}
+}
+
+func TestBashToolSchemaAnnotatesSandboxPosture(t *testing.T) {
+	skipIfWindows(t)
+	unsandboxed := newBashTool("")
+	if desc := unsandboxed.GetSchema().Description(); strings.Contains(desc, "[sandboxed") {
+		t.Fatalf("unsandboxed description = %q, must not claim sandboxing", desc)
+	}
+
+	sandboxed := newBashTool("").withSandboxConfig(&mockSandbox{}, sandbox.Config{})
+	if desc := sandboxed.GetSchema().Description(); !strings.HasSuffix(desc, "[sandboxed]") {
+		t.Fatalf("sandboxed description = %q, want the [sandboxed] suffix", desc)
+	}
+
+	// A whole-tree git policy (workspace preset without the git component)
+	// must warn the model that commits will fail.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "")
+	t.Chdir(root)
+	cfg, err := sandbox.ParsePreset("workspace")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace) error = %v", err)
+	}
+	wholeTree := newBashTool("").withSandboxConfig(&mockSandbox{}, cfg)
+	if desc := wholeTree.GetSchema().Description(); !strings.Contains(desc, ".git is read-only") {
+		t.Fatalf("whole-tree description = %q, want the read-only .git warning", desc)
+	}
+
+	leaf, err := sandbox.ParsePreset("workspace+git")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace+git) error = %v", err)
+	}
+	leafMode := newBashTool("").withSandboxConfig(&mockSandbox{}, leaf)
+	if desc := leafMode.GetSchema().Description(); strings.Contains(desc, ".git is read-only") {
+		t.Fatalf("leaf-mode description = %q, must not warn when commits work", desc)
 	}
 }
 
@@ -49,6 +93,7 @@ func TestBashToolExecutesCommand(t *testing.T) {
 }
 
 func TestBashToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
+	skipIfWindows(t)
 	file, err := os.CreateTemp(t.TempDir(), "bash-sandbox-extra-*")
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +111,7 @@ func TestBashToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
 }
 
 func TestBashToolWorkingDirectory(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	tool := newBashTool(dir)
 	result, err := tool.Execute(context.Background(), map[string]any{
@@ -147,6 +193,7 @@ func TestBashToolRegisteredAsNativeFactory(t *testing.T) {
 }
 
 func TestBashToolRunsScriptByAbsolutePath(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	script := filepath.Join(dir, "greet.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"hello $1\"\n"), 0755); err != nil {

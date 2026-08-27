@@ -1,13 +1,18 @@
 package sandbox
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stubSandbox lets a test control how the probe command is wrapped.
@@ -68,6 +73,18 @@ func TestNormalizeConfigPathsRejectsEmptyPath(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigPathsCopiesPassEnv(t *testing.T) {
+	pass := []string{"SSH_AUTH_SOCK"}
+	prepared, err := PrepareConfig(Config{PassEnv: pass})
+	if err != nil {
+		t.Fatalf("PrepareConfig() error = %v", err)
+	}
+	pass[0] = "MUTATED"
+	if len(prepared.PassEnv) != 1 || prepared.PassEnv[0] != "SSH_AUTH_SOCK" {
+		t.Fatalf("prepared PassEnv aliases caller slice: %v", prepared.PassEnv)
+	}
+}
+
 func TestNormalizeConfigPathsCopiesAllowEnv(t *testing.T) {
 	allow := []string{"SAFE_NAME"}
 	prepared, err := PrepareConfig(Config{AllowEnv: allow})
@@ -81,6 +98,7 @@ func TestNormalizeConfigPathsCopiesAllowEnv(t *testing.T) {
 }
 
 func TestResolvedExecutablePathUsesAbsoluteBaseForRelativeDir(t *testing.T) {
+	skipIfWindows(t)
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +127,7 @@ func TestResolvedExecutablePathUsesAbsoluteBaseForRelativeDir(t *testing.T) {
 }
 
 func TestFreezeAuthorityPathsCanonicalizesDropsAndMinimizes(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	writable := filepath.Join(root, "writable")
 	nestedWritable := filepath.Join(writable, "nested")
@@ -444,6 +463,7 @@ func TestMerge(t *testing.T) {
 		AllowNetwork:  false,
 		ReadPaths:     []string{"~/.kube"},
 		AllowEnv:      []string{"HOME"},
+		PassEnv:       []string{"SSH_AUTH_SOCK"},
 	}
 	overlay := Config{
 		AllowNetwork:   true,
@@ -451,6 +471,7 @@ func TestMerge(t *testing.T) {
 		WritablePaths:  []string{"/extra"},
 		ReadPaths:      []string{"~/.aws"},
 		AllowEnv:       []string{"PATH"},
+		PassEnv:        []string{"GPG_AGENT_INFO"},
 		DenyWrite:      true,
 		DenyWritePaths: []string{"/work/.git/hooks"},
 	}
@@ -473,6 +494,9 @@ func TestMerge(t *testing.T) {
 	}
 	if len(merged.AllowEnv) != 2 || merged.AllowEnv[0] != "HOME" || merged.AllowEnv[1] != "PATH" {
 		t.Fatalf("AllowEnv = %v, want [HOME PATH]", merged.AllowEnv)
+	}
+	if len(merged.PassEnv) != 2 || merged.PassEnv[0] != "SSH_AUTH_SOCK" || merged.PassEnv[1] != "GPG_AGENT_INFO" {
+		t.Fatalf("PassEnv = %v, want [SSH_AUTH_SOCK GPG_AGENT_INFO]", merged.PassEnv)
 	}
 	if !merged.DenyWrite {
 		t.Fatal("Merge should set DenyWrite to true")
@@ -800,6 +824,7 @@ func TestPrepareConfigDenyWriteDropsObsoleteWritableIdentity(t *testing.T) {
 }
 
 func TestPrepareConfigDenyWriteRetainsCurrentReadIdentity(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	shared := filepath.Join(root, "shared")
 	if err := os.Mkdir(shared, 0o700); err != nil {
@@ -1083,6 +1108,7 @@ func TestPrepareConfigNarrowedReadAliasDoesNotConflateDistinctAlias(t *testing.T
 }
 
 func TestPrepareConfigNarrowedReadAliasRejectsParentTargetReplacement(t *testing.T) {
+	skipIfWindows(t)
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1153,7 +1179,7 @@ func TestFilterEnvStripsSensitiveByDefault(t *testing.T) {
 		"REDISCLI_AUTH=redis-password",
 		"DATABASE_URL=postgres://user:password@db.example/app",
 	}
-	got, stripped := filterEnv(env, nil)
+	got, stripped := filterEnv(env, nil, nil)
 
 	want := map[string]bool{"PATH=/usr/bin": true, "HOME=/home/user": true, "EDITOR=vi": true}
 	if len(got) != len(want) {
@@ -1180,12 +1206,41 @@ func TestFilterEnvStripsSensitiveByDefault(t *testing.T) {
 func TestFilterEnvAllowEnvOverridesSensitivity(t *testing.T) {
 	// An explicit allowlist wins, even for vars the heuristics call sensitive.
 	env := []string{"GITHUB_TOKEN=ghp", "PGPASSWORD=postgres-password", "PATH=/usr/bin", "HOME=/home/user"}
-	got, stripped := filterEnv(env, []string{"PGPASSWORD"})
+	got, stripped := filterEnv(env, []string{"PGPASSWORD"}, nil)
 	if len(got) != 1 || got[0] != "PGPASSWORD=postgres-password" {
 		t.Fatalf("filterEnv with allowEnv = %v, want only the explicitly allowed PGPASSWORD", got)
 	}
 	if len(stripped) != 3 {
 		t.Fatalf("stripped = %v, want the three non-allowlisted names", stripped)
+	}
+}
+
+func TestFilterEnvPassEnvExemptsSensitiveNames(t *testing.T) {
+	env := []string{"SSH_AUTH_SOCK=/tmp/agent.sock", "GITHUB_TOKEN=ghp", "PATH=/usr/bin"}
+	got, _ := filterEnv(env, nil, []string{"SSH_AUTH_SOCK"})
+	if !slices.Contains(got, "SSH_AUTH_SOCK=/tmp/agent.sock") {
+		t.Fatalf("filterEnv = %v, want passEnv to exempt SSH_AUTH_SOCK from stripping", got)
+	}
+	if slices.Contains(got, "GITHUB_TOKEN=ghp") {
+		t.Fatalf("filterEnv = %v, other sensitive names must still be stripped", got)
+	}
+	if !slices.Contains(got, "PATH=/usr/bin") {
+		t.Fatalf("filterEnv = %v, passEnv must remain additive over the default filtering", got)
+	}
+}
+
+func TestFilterEnvPassEnvIgnoredUnderAllowEnv(t *testing.T) {
+	env := []string{"SSH_AUTH_SOCK=/tmp/agent.sock", "PATH=/usr/bin"}
+	got, _ := filterEnv(env, []string{"PATH"}, []string{"SSH_AUTH_SOCK"})
+	if len(got) != 1 || got[0] != "PATH=/usr/bin" {
+		t.Fatalf("filterEnv = %v, want the strict allowlist to ignore passEnv", got)
+	}
+}
+
+func TestFilterEnvPassEnvDoesNotInjectMissingNames(t *testing.T) {
+	got, _ := filterEnv([]string{"PATH=/usr/bin"}, nil, []string{"SSH_AUTH_SOCK"})
+	if len(got) != 1 || got[0] != "PATH=/usr/bin" {
+		t.Fatalf("filterEnv = %v, passEnv must only exempt, never inject", got)
 	}
 }
 
@@ -1206,7 +1261,7 @@ func TestFilterEnvNeverReturnsNil(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			filtered, _ := filterEnv(tc.env, tc.allowEnv)
+			filtered, _ := filterEnv(tc.env, tc.allowEnv, nil)
 			if filtered == nil {
 				t.Fatalf("filterEnv returned a nil slice; cmd.Env=nil makes exec inherit the full parent environment")
 			}
@@ -1214,6 +1269,335 @@ func TestFilterEnvNeverReturnsNil(t *testing.T) {
 				t.Fatalf("expected an empty (but non-nil) env, got %v", filtered)
 			}
 		})
+	}
+}
+
+// exerciseWorkspaceGitLeafSandbox is the shared body of the Darwin and Linux
+// end-to-end tests: under workspace+git a real sandboxed `git commit`
+// succeeds, while the host-code-exec surface (config, hooks, routing) stays
+// unwritable and the host-visible bytes stay unchanged. The platform test has
+// already skipped when its backend is unavailable.
+func exerciseWorkspaceGitLeafSandbox(t *testing.T) {
+	t.Helper()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	isolateGitConfig(t)
+	work := t.TempDir()
+	hostGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(gitPath, append([]string{"-C", work}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("host git %v: %v (%s)", args, err, out)
+		}
+	}
+	hostGit("init", "--quiet")
+	if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hostGit("add", "file.txt")
+	t.Chdir(work)
+
+	cfg, err := ParsePreset("workspace+git")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace+git) error = %v", err)
+	}
+	sb, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	configPath := filepath.Join(work, ".git", "config")
+	originalConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	commit := exec.Command(gitPath, "-C", work,
+		"-c", "user.name=polly", "-c", "user.email=polly@example.invalid",
+		"-c", "commit.gpgsign=false",
+		"commit", "--quiet", "-m", "sandboxed commit")
+	if err := wrapCmdForTest(t, sb, commit); err != nil {
+		t.Fatalf("Wrap() commit error = %v", err)
+	}
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed git commit failed: %v (%s)", err, out)
+	}
+	verify := exec.Command(gitPath, "-C", work, "rev-parse", "--verify", "HEAD")
+	if out, err := verify.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed commit not visible on the host: %v (%s)", err, out)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  *exec.Cmd
+	}{
+		{
+			name: "write config through git",
+			cmd:  exec.Command(gitPath, "-C", work, "config", "core.fsmonitor", "/tmp/evil"),
+		},
+		{
+			name: "append to config",
+			cmd:  exec.Command("bash", "-c", `echo '[core]' >> "$1"`, "bash", configPath),
+		},
+		{
+			name: "plant hook",
+			cmd:  exec.Command("bash", "-c", `: > "$1"`, "bash", filepath.Join(work, ".git", "hooks", "pre-commit")),
+		},
+		{
+			name: "relocate routing directory",
+			cmd:  exec.Command("mv", filepath.Join(work, ".git"), filepath.Join(work, ".git-old")),
+		},
+	}
+	for _, tt := range blocked {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := wrapCmdForTest(t, sb, tt.cmd); err != nil {
+				t.Fatalf("Wrap() error = %v", err)
+			}
+			if out, err := tt.cmd.CombinedOutput(); err == nil {
+				t.Fatalf("guarded git mutation succeeded, output: %s", out)
+			}
+		})
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(originalConfig) {
+		t.Fatalf(".git/config bytes changed under the sandbox:\n%s", after)
+	}
+	if _, err := os.Stat(filepath.Join(work, ".git", "hooks", "pre-commit")); !os.IsNotExist(err) {
+		t.Fatalf("hook was planted despite the pin: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(work, ".git")); err != nil {
+		t.Fatalf("routing directory moved or removed: %v", err)
+	}
+}
+
+// exerciseWorkspaceGitWorktreeCommitSandbox verifies a linked worktree stays
+// commit-capable in leaf mode while its per-worktree pointers stay pinned.
+func exerciseWorkspaceGitWorktreeCommitSandbox(t *testing.T) {
+	t.Helper()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	isolateGitConfig(t)
+	root := t.TempDir()
+	mainDir := filepath.Join(root, "main")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostGit := func(dir string, args ...string) {
+		t.Helper()
+		full := append([]string{"-C", dir,
+			"-c", "user.name=polly", "-c", "user.email=polly@example.invalid",
+			"-c", "commit.gpgsign=false"}, args...)
+		cmd := exec.Command(gitPath, full...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("host git %v: %v (%s)", args, err, out)
+		}
+	}
+	hostGit(mainDir, "init", "--quiet")
+	if err := os.WriteFile(filepath.Join(mainDir, "file.txt"), []byte("content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hostGit(mainDir, "add", "file.txt")
+	hostGit(mainDir, "commit", "--quiet", "-m", "initial")
+	worktree := filepath.Join(root, "wt")
+	hostGit(mainDir, "worktree", "add", "--quiet", worktree)
+	t.Chdir(root)
+
+	cfg, err := ParsePreset("workspace+git")
+	if err != nil {
+		t.Fatalf("ParsePreset(workspace+git) error = %v", err)
+	}
+	sb, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "new.txt"), []byte("more\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	add := exec.Command(gitPath, "-C", worktree, "add", "new.txt")
+	if err := wrapCmdForTest(t, sb, add); err != nil {
+		t.Fatalf("Wrap() add error = %v", err)
+	}
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed git add in worktree failed: %v (%s)", err, out)
+	}
+	commit := exec.Command(gitPath, "-C", worktree,
+		"-c", "user.name=polly", "-c", "user.email=polly@example.invalid",
+		"-c", "commit.gpgsign=false",
+		"commit", "--quiet", "-m", "worktree commit")
+	if err := wrapCmdForTest(t, sb, commit); err != nil {
+		t.Fatalf("Wrap() commit error = %v", err)
+	}
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed git commit in worktree failed: %v (%s)", err, out)
+	}
+
+	pointer := filepath.Join(mainDir, ".git", "worktrees", "wt", "gitdir")
+	original, err := os.ReadFile(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retarget := exec.Command("bash", "-c", `echo /elsewhere > "$1"`, "bash", pointer)
+	if err := wrapCmdForTest(t, sb, retarget); err != nil {
+		t.Fatalf("Wrap() retarget error = %v", err)
+	}
+	if out, err := retarget.CombinedOutput(); err == nil {
+		t.Fatalf("worktree gitdir pointer retarget succeeded, output: %s", out)
+	}
+	if after, err := os.ReadFile(pointer); err != nil || string(after) != string(original) {
+		t.Fatalf("worktree gitdir pointer changed: %v", err)
+	}
+}
+
+// exerciseSSHAgentGrantSandbox proves the agent path end to end: a real
+// ssh-agent on the host, PassEnv delivering SSH_AUTH_SOCK, and the socket
+// grant making it connectable — ssh-add exits 0 or 1 (agent reached), never
+// 2 (agent unreachable).
+func exerciseSSHAgentGrantSandbox(t *testing.T) {
+	t.Helper()
+	agentPath, err := exec.LookPath("ssh-agent")
+	if err != nil {
+		t.Skipf("ssh-agent unavailable: %v", err)
+	}
+	sshAddPath, err := exec.LookPath("ssh-add")
+	if err != nil {
+		t.Skipf("ssh-add unavailable: %v", err)
+	}
+	dir, err := os.MkdirTemp("", "pagent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "agent.sock")
+	agent := exec.Command(agentPath, "-D", "-a", sock)
+	if err := agent.Start(); err != nil {
+		t.Skipf("start ssh-agent: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = agent.Process.Kill()
+		_, _ = agent.Process.Wait()
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if info, err := os.Lstat(sock); err == nil && info.Mode()&os.ModeSocket != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Skip("ssh-agent socket never appeared")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	sb, err := New(Config{
+		PassEnv:          []string{"SSH_AUTH_SOCK"},
+		AllowUnixSockets: []string{sock},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, sshAddPath, "-l")
+	cmd.Env = append(os.Environ(), "SSH_AUTH_SOCK="+sock)
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatalf("Wrap() error = %v", err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return // agent reached, no identities loaded — the grant works
+		}
+		t.Fatalf("sandboxed ssh-add could not reach the granted agent: %v (%s)", err, out)
+	}
+}
+
+// listenUnixSocket binds a short-lived Unix socket in its own short-named
+// temp directory: sockaddr_un paths are limited to ~104 bytes on Darwin and
+// t.TempDir paths (which embed the test name) can exceed that.
+func listenUnixSocket(t *testing.T) (dir, path string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "psock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path = filepath.Join(dir, "a.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("bind test Unix socket at %q: %v", path, err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return dir, path
+}
+
+func TestPrepareConfigFreezesAllowUnixSockets(t *testing.T) {
+	dir, sock := listenUnixSocket(t)
+	alias := filepath.Join(dir, "alias.sock")
+	if err := os.Symlink(sock, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := PrepareConfig(Config{AllowUnixSockets: []string{
+		alias,
+		sock,
+		filepath.Join(dir, "missing.sock"),
+	}})
+	if err != nil {
+		t.Fatalf("PrepareConfig() error = %v", err)
+	}
+	realSock, err := filepath.EvalSymlinks(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.AllowUnixSockets) != 1 || prepared.AllowUnixSockets[0] != realSock {
+		t.Fatalf("AllowUnixSockets = %v, want the deduped canonical socket %q with the missing entry dropped", prepared.AllowUnixSockets, realSock)
+	}
+}
+
+func TestEffectiveUnixSocketGrants(t *testing.T) {
+	dir, sock := listenUnixSocket(t)
+	file := filepath.Join(dir, "plain")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	grants := effectiveUnixSocketGrants(Config{AllowUnixSockets: []string{
+		sock,
+		file,
+		filepath.Join(dir, "missing.sock"),
+	}}, nil)
+	if len(grants) != 1 || grants[0].path != sock {
+		t.Fatalf("grants = %+v, want only the live socket %q", grants, sock)
+	}
+
+	denied := []DeniedPath{{Path: dir, Kind: DeniedPathDir}}
+	if grants := effectiveUnixSocketGrants(Config{AllowUnixSockets: []string{sock}}, denied); len(grants) != 0 {
+		t.Fatalf("grants = %+v, want a socket under a denied path dropped", grants)
+	}
+	exempt := Config{AllowUnixSockets: []string{sock}, ReadPaths: []string{dir}}
+	if grants := effectiveUnixSocketGrants(exempt, denied); len(grants) != 1 {
+		t.Fatalf("grants = %+v, want the denied-path drop lifted by a covering ReadPaths exemption", grants)
+	}
+}
+
+func TestParseConfigPassEnvAndAllowUnixSockets(t *testing.T) {
+	cfg, err := ParseConfig(json.RawMessage(`{"passEnv":["SSH_AUTH_SOCK"],"allowUnixSockets":["/tmp/agent.sock"]}`))
+	if err != nil {
+		t.Fatalf("ParseConfig() error = %v", err)
+	}
+	if cfg == nil || len(cfg.PassEnv) != 1 || cfg.PassEnv[0] != "SSH_AUTH_SOCK" {
+		t.Fatalf("PassEnv = %+v, want [SSH_AUTH_SOCK]", cfg)
+	}
+	if len(cfg.AllowUnixSockets) != 1 || cfg.AllowUnixSockets[0] != "/tmp/agent.sock" {
+		t.Fatalf("AllowUnixSockets = %+v, want [/tmp/agent.sock]", cfg)
 	}
 }
 

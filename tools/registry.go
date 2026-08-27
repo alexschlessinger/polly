@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -28,6 +30,17 @@ type ServerResult struct {
 type NamespacedTool struct {
 	Tool
 	namespacedName string
+}
+
+// ExecuteOutput preserves an optional rich result through the namespace
+// wrapper. Without this forwarding method, wrapping an MCP tool would narrow
+// it back to Tool and force image bytes through Execute's textual JSON path.
+func (n *NamespacedTool) ExecuteOutput(ctx context.Context, args map[string]any) (ToolOutput, error) {
+	if rich, ok := n.Tool.(OutputTool); ok {
+		return rich.ExecuteOutput(ctx, args)
+	}
+	text, err := n.Tool.Execute(ctx, args)
+	return ToolOutput{Text: text}, err
 }
 
 // GetSchema returns a schema with the namespaced title
@@ -197,7 +210,9 @@ func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sand
 		"writable_paths", cfg.WritablePaths,
 		"read_paths", cfg.ReadPaths,
 		"deny_paths", cfg.DenyPaths,
-		"allow_env", cfg.AllowEnv)
+		"allow_env", cfg.AllowEnv,
+		"pass_env", cfg.PassEnv,
+		"allow_unix_sockets", cfg.AllowUnixSockets)
 	sb, err := r.constructPreparedSandbox(cfg)
 	if err != nil {
 		return nil, cfg, err
@@ -215,9 +230,9 @@ func (r *ToolRegistry) NewSandboxDirect(cfg sandbox.Config) (sandbox.Sandbox, er
 
 // newSchemaSandbox constructs a deliberately narrower policy for executable
 // --schema discovery. Discovery never inherits workspace writes, network, read
-// exceptions, or environment allowances from the normal execution policy. It
-// does retain deny rules so a policy cannot become weaker while metadata is
-// being inspected.
+// exceptions, environment allowances or passthroughs, or Unix-socket grants
+// from the normal execution policy. It does retain deny rules so a policy
+// cannot become weaker while metadata is being inspected.
 func (r *ToolRegistry) newSchemaSandbox() (sandbox.Sandbox, error) {
 	baseCfg, err := r.preparedBaseSandboxConfig()
 	if err != nil {
@@ -454,11 +469,10 @@ func (r *ToolRegistry) All() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	tools := make([]Tool, 0, len(r.tools))
-	for name, tool := range r.tools {
-		if !r.isToolAllowedLocked(name) {
-			continue
-		}
+	names := r.allowedToolNamesLocked()
+	tools := make([]Tool, 0, len(names))
+	for _, name := range names {
+		tool := r.tools[name]
 		tools = append(tools, tool)
 	}
 	return tools
@@ -469,14 +483,24 @@ func (r *ToolRegistry) GetSchemas() []*schema.ToolSchema {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	schemas := make([]*schema.ToolSchema, 0, len(r.tools))
-	for name, tool := range r.tools {
-		if !r.isToolAllowedLocked(name) {
-			continue
-		}
+	names := r.allowedToolNamesLocked()
+	schemas := make([]*schema.ToolSchema, 0, len(names))
+	for _, name := range names {
+		tool := r.tools[name]
 		schemas = append(schemas, tool.GetSchema())
 	}
 	return schemas
+}
+
+func (r *ToolRegistry) allowedToolNamesLocked() []string {
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		if r.isToolAllowedLocked(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (r *ToolRegistry) isToolAllowedLocked(name string) bool {

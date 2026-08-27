@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +15,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -242,6 +243,11 @@ func TestToolsSandboxBadges(t *testing.T) {
 			cfg:  sandbox.Config{AllowEnv: []string{"PATH"}},
 			want: "bash [sandboxed: net off, temp writes, env allowlist]",
 		},
+		{
+			name: "env passthrough",
+			cfg:  sandbox.Config{PassEnv: []string{"SSH_AUTH_SOCK"}},
+			want: "bash [sandboxed: net off, temp writes, env filtered+pass]",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -268,6 +274,62 @@ func TestToolsSandboxBadges(t *testing.T) {
 				t.Fatalf("/tools list missing %q in %q", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestSandboxSummariesReportUnixSocketGrants(t *testing.T) {
+	info := tools.SandboxInfo{
+		Capable: true,
+		Active:  true,
+		Config:  &sandbox.Config{AllowUnixSockets: []string{"/tmp/agent.sock"}},
+	}
+	if got := sandboxCompactSummary(info); !strings.Contains(got, "1 unix socket(s)") {
+		t.Fatalf("sandboxCompactSummary = %q, want a unix-socket token", got)
+	}
+	if got := sandboxShowDetail(info); !strings.Contains(got, "Unix sockets: 1 granted") {
+		t.Fatalf("sandboxShowDetail = %q, want a unix-socket line", got)
+	}
+	info.Config = &sandbox.Config{PassEnv: []string{"SSH_AUTH_SOCK"}}
+	if got := sandboxShowDetail(info); !strings.Contains(got, "passing: SSH_AUTH_SOCK") {
+		t.Fatalf("sandboxShowDetail = %q, want the passed names listed", got)
+	}
+}
+
+func TestSandboxNoticeReportsMissingSSHAgent(t *testing.T) {
+	skipIfWindows(t)
+	state := &conversationState{toolRegistry: stubSandboxRegistry(t)}
+	t.Setenv("SSH_AUTH_SOCK", "/nonexistent/agent.sock")
+	got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git+ssh"}, state)
+	if !strings.Contains(got, "ssh: agent unavailable") {
+		t.Fatalf("sandboxNoticeLine = %q, want an agent-unavailable hint", got)
+	}
+	// Without the ssh component the hint must not appear.
+	got = sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state)
+	if strings.Contains(got, "agent unavailable") {
+		t.Fatalf("sandboxNoticeLine = %q, hint must be scoped to the ssh component", got)
+	}
+
+	// A symlinked agent path is live for the sandbox (the grant resolves
+	// symlinks), so it must read as live here too.
+	dir, err := os.MkdirTemp("", "pagent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "agent.sock")
+	listener, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("bind test agent socket: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	alias := filepath.Join(dir, "alias.sock")
+	if err := os.Symlink(sock, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_AUTH_SOCK", alias)
+	got = sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git+ssh"}, state)
+	if strings.Contains(got, "agent unavailable") {
+		t.Fatalf("sandboxNoticeLine = %q, symlinked live agent socket must not read as unavailable", got)
 	}
 }
 
@@ -325,6 +387,7 @@ func TestPreparedDefaultSandboxTempPathsAreNotCustom(t *testing.T) {
 }
 
 func TestToolsSandboxOptOutAndFallbackBadges(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	script := `#!/bin/bash
 if [ "$1" = "--schema" ]; then
@@ -381,7 +444,7 @@ func TestSandboxNoticeLine(t *testing.T) {
 	if got := sandboxNoticeLine(&Config{}, state); got != "sandbox: active (base; 1 tools sandboxed)" {
 		t.Fatalf("active notice = %q", got)
 	}
-	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net"}, state); got != "sandbox: active (workspace+net; 1 tools sandboxed)" {
+	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state); got != "sandbox: active (workspace+net+git; 1 tools sandboxed)" {
 		t.Fatalf("preset notice = %q", got)
 	}
 
@@ -580,11 +643,8 @@ func dispatchDefaultCommandForTest(t *testing.T, line string, ctx *replCommandCo
 }
 
 func TestSetCommand(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("set-test")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "set-test")
 	cfg := &Config{}
 	cfg.Model = "anthropic/claude-sonnet-4-6"
 	applied := 0
@@ -619,7 +679,10 @@ func TestSetCommand(t *testing.T) {
 	}
 
 	// Settings persist to session metadata so they survive relaunch.
-	md := session.GetMetadata()
+	md, err := session.GetMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
 	if md == nil || md.Model != "openai/gpt-5.4" || md.Temperature != 1.5 || md.ToolTimeout != 45*time.Second {
 		t.Fatalf("metadata not persisted: %+v", md)
 	}
@@ -652,12 +715,9 @@ func TestSetCommand(t *testing.T) {
 }
 
 func TestClearCommandOnlyClearsDisplay(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("clear-display")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if err := session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "keep me"}); err != nil {
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "clear-display")
+	if err := session.AddMessage(context.Background(), messages.ChatMessage{Role: messages.MessageRoleUser, Content: "keep me"}); err != nil {
 		t.Fatalf("AddMessage() error = %v", err)
 	}
 
@@ -673,7 +733,7 @@ func TestClearCommandOnlyClearsDisplay(t *testing.T) {
 	if !cleared {
 		t.Fatal("/clear did not invoke clearTranscript")
 	}
-	if got := len(session.GetHistory()); got != 1 {
+	if got := len(testSessionHistory(t, session)); got != 1 {
 		t.Fatalf("/clear changed durable history; got %d messages, want 1", got)
 	}
 	if got := strings.Join(replies, "\n"); got != "display cleared" {
@@ -855,17 +915,14 @@ func TestLifecycleCommandsAppearInHelp(t *testing.T) {
 }
 
 func TestFallbackREPLDispatchesRegistryCommands(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("fallback")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "fallback")
+	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
 	state := &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil)}
 	config := &Config{Settings: Settings{Model: "anthropic/claude-sonnet-4-6"}}
 	var out bytes.Buffer
 	reader := bufio.NewReader(strings.NewReader("/get model\n/context\n/reset confirm\n/exit\n"))
-	err = runREPLLoopWithCommands(reader, &out, newWriterReplCommandContext(config, state, &out), func(prompt string) error {
+	err := runREPLLoopWithCommands(context.Background(), reader, &out, newWriterReplCommandContext(config, state, &out), func(prompt string) error {
 		t.Fatalf("runTurn should not be called for command %q", prompt)
 		return nil
 	})
@@ -876,15 +933,15 @@ func TestFallbackREPLDispatchesRegistryCommands(t *testing.T) {
 	if !strings.Contains(got, "model: anthropic/claude-sonnet-4-6") || !strings.Contains(got, "context: fallback") || !strings.Contains(got, "conversation reset") {
 		t.Fatalf("fallback command output = %q", got)
 	}
-	if len(session.GetHistory()) != 0 {
-		t.Fatalf("fallback /reset confirm did not clear durable history: %#v", session.GetHistory())
+	if history := testSessionHistory(t, session); len(history) != 0 {
+		t.Fatalf("fallback /reset confirm did not clear durable history: %#v", history)
 	}
 }
 
 func TestFallbackREPLReportsUnknownSlashCommand(t *testing.T) {
 	var out bytes.Buffer
 	reader := bufio.NewReader(strings.NewReader("/bogus\n"))
-	err := runREPLLoopWithCommands(reader, &out, newWriterReplCommandContext(nil, nil, &out), func(prompt string) error {
+	err := runREPLLoopWithCommands(context.Background(), reader, &out, newWriterReplCommandContext(nil, nil, &out), func(prompt string) error {
 		t.Fatalf("runTurn should not be called for unknown slash command %q", prompt)
 		return nil
 	})
@@ -903,7 +960,7 @@ func TestFallbackREPLRecoversFromCancelledTurn(t *testing.T) {
 	var out bytes.Buffer
 	reader := bufio.NewReader(strings.NewReader("prompt1\nprompt2\n/exit\n"))
 	callCount := 0
-	err := runREPLLoopWithCommands(reader, &out, newWriterReplCommandContext(nil, nil, &out), func(prompt string) error {
+	err := runREPLLoopWithCommands(context.Background(), reader, &out, newWriterReplCommandContext(nil, nil, &out), func(prompt string) error {
 		callCount++
 		if callCount == 1 {
 			return fmt.Errorf("cancelled")

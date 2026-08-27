@@ -28,6 +28,7 @@ func TestConvertTcellEvent(t *testing.T) {
 		tcell.KeyEnter: "<Enter>",
 		tcell.KeyCtrlW: "<C-w>",
 		tcell.KeyCtrlR: "<C-r>",
+		tcell.KeyCtrlZ: "<C-z>",
 		tcell.KeyLeft:  "<Left>",
 	} {
 		if ev := convertTcellKey(tcell.NewEventKey(key, "", tcell.ModNone)); ev.ID != want {

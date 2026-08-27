@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -43,6 +44,7 @@ type replCommandRegistry struct {
 }
 
 type replCommandContext struct {
+	ctx      context.Context
 	config   *Config
 	state    *conversationState
 	registry *replCommandRegistry
@@ -63,6 +65,21 @@ type replCommandContext struct {
 	// settingsApplied lets the interactive REPL refresh UI derived from config
 	// (e.g. the status-row model name) after /set mutates it.
 	settingsApplied func()
+	// attachImage validates a local image, registers it, and inserts its
+	// "[image #N]" token into the composer, returning the token.
+	attachImage func(path string) (string, error)
+	// setContextName updates the UI's displayed context name after /rename.
+	setContextName func(name string)
+}
+
+func (c *replCommandContext) operationContext() context.Context {
+	if c != nil && c.ctx != nil {
+		return c.ctx
+	}
+	if c != nil && c.state != nil && c.state.session != nil {
+		return c.state.session.Context()
+	}
+	return context.Background()
 }
 
 var (
@@ -72,6 +89,13 @@ var (
 
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
+	r.register(replCommand{
+		name:     "/attach",
+		usage:    "/attach <image-path>",
+		summary:  "attach a local image to the next prompt",
+		busySafe: true,
+		run:      replAttachCommand,
+	})
 	r.register(replCommand{
 		name:     "/clear",
 		usage:    "/clear",
@@ -119,6 +143,12 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		busySafe: true,
 		run:      replQueueCommand,
 		complete: completeQueueCommand,
+	})
+	r.register(replCommand{
+		name:    "/rename",
+		usage:   "/rename <name>",
+		summary: "rename the current context",
+		run:     replRenameCommand,
 	})
 	r.register(replCommand{
 		name:    "/reset",
@@ -323,9 +353,13 @@ func keyHelpLines() []string {
 		"  Ctrl-J            newline (multi-line input)",
 		"  Type /            list commands; Tab completes",
 		"  Ctrl-C / Esc      interrupt turn (Ctrl-C twice to quit)",
+		"  Ctrl-Z            suspend to shell (`fg` resumes)",
 		"  Up / Down         move line; recall history at top/bottom",
 		"  Ctrl-R            reverse-search history",
+		"  Ctrl-V            attach an image from the clipboard",
 		"  PgUp / PgDn       scroll transcript",
+		"  Click thumbnail   open image in the OS viewer",
+		"  Shift-drag        select terminal text (terminal override)",
 		"  Ctrl-A / Ctrl-E   line start / end",
 		"  Delete / Ctrl-D   delete next char (Ctrl-D exits when empty)",
 		"  Ctrl-U / Ctrl-K   clear before / after cursor",
@@ -377,13 +411,29 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.clearDisplay()
 			return nil
 		},
+		// Commands run on the event loop with the model lock held, so this
+		// mutates the model directly like reply/clearTranscript do.
+		setContextName: func(name string) {
+			r.model.contextName = name
+		},
 		resetConversation: func() error {
 			if r.state == nil || r.state.session == nil {
 				return fmt.Errorf("no active session")
 			}
-			if err := r.state.session.Clear(); err != nil {
-				// A queued reset is a barrier. If it fails, keep later prompts
-				// paused against the old history instead of running them silently.
+			queued, err := r.model.materializeQueuedImagesForReset(r.state.session.Context())
+			if err != nil {
+				if len(r.model.queue) > 0 {
+					r.model.queuePaused = true
+					r.model.updateQueueHint()
+				}
+				return fmt.Errorf("preserve queued images: %w", err)
+			}
+			if err := r.state.session.Clear(r.state.session.Context()); err != nil {
+				// A queued reset is a barrier. A Clear error means the history
+				// was not cleared, so keep later prompts paused against the old
+				// history instead of running them silently, and retain the
+				// pre-clear inline queue snapshot.
+				r.model.queue = queued
 				if len(r.model.queue) > 0 {
 					r.model.queuePaused = true
 					r.model.updateQueueHint()
@@ -392,23 +442,38 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			}
 			r.model.clearDisplay()
 			r.model.retryPrompt = ""
+			r.model.retryTurn = nil
+			r.model.retryPersistence = nil
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
+			r.model.totalIn = 0
+			r.model.totalOut = 0
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
 			r.model.unsavedLabeled = false
+			if err := r.model.restoreQueuedImagesAfterReset(r.state.session.Context(), queued); err != nil {
+				if len(r.model.queue) > 0 {
+					r.model.queuePaused = true
+					r.model.updateQueueHint()
+				}
+				return fmt.Errorf("restore queued images: %w", err)
+			}
 			return nil
 		},
 		queueLines: func() []string {
-			return append([]string(nil), r.model.queue...)
+			lines := make([]string, len(r.model.queue))
+			for i, queued := range r.model.queue {
+				lines[i] = queued.text
+			}
+			return lines
 		},
 		dropQueued: func() (string, bool) {
 			if len(r.model.queue) == 0 {
 				return "", false
 			}
 			last := len(r.model.queue) - 1
-			line := r.model.queue[last]
+			line := r.model.queue[last].text
 			r.model.queue = r.model.queue[:last]
 			if len(r.model.queue) == 0 {
 				r.model.queuePaused = false
@@ -433,15 +498,32 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.updateQueueHint()
 			return nil
 		},
+		attachImage: func(path string) (string, error) {
+			img, ok := resolveLocalTranscriptImage(path, "", r.model.imageBaseDir)
+			if !ok {
+				return "", fmt.Errorf("not a readable local image")
+			}
+			token := r.model.registerAttachment(img.Path, filepath.Base(img.Path))
+			r.model.insertEditorText(token + " ")
+			return token, nil
+		},
 		retryTurn: func() error {
 			m := r.model
 			if m.busy {
 				return fmt.Errorf("a turn is already running")
 			}
-			if m.retryPrompt == "" {
+			if m.retryTurn == nil && m.retryPrompt == "" {
 				return fmt.Errorf("no failed or canceled turn")
 			}
-			prompt := m.retryPrompt
+			turn := textManagedTurn(m.retryPrompt)
+			if m.retryTurn != nil {
+				turn = cloneManagedTurn(*m.retryTurn)
+			}
+			prompt := turn.displayText
+			if prompt == "" {
+				prompt = m.retryPrompt
+				turn.displayText = prompt
+			}
 			m.appendTurnSeparator()
 			m.busy = true
 			m.canceling = false
@@ -449,6 +531,11 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			m.runningTools = 0
 			m.turnStarted = time.Now()
 			m.currentPrompt = prompt
+			m.currentTurn = cloneManagedTurn(turn)
+			m.currentPersistence = m.retryPersistence
+			if m.currentPersistence == nil {
+				m.currentPersistence = newTurnPersistenceAck(false)
+			}
 			m.turnHasOutput = false
 			m.unsavedLabeled = false
 			m.lastOutcome = turnOutcomeNone
@@ -457,11 +544,14 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			m.retryingNext = true
 			m.followBottom = true
 			select {
-			case r.pending <- prompt:
+			case r.pending <- turn:
 				return nil
 			default:
 				m.busy = false
 				m.state = turnStateIdle
+				m.currentPrompt = ""
+				m.currentTurn = managedTurnInput{}
+				m.currentPersistence = nil
 				m.retryingNext = false
 				return fmt.Errorf("turn queue is unavailable")
 			}
@@ -474,6 +564,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 
 func newWriterReplCommandContext(config *Config, state *conversationState, w io.Writer) *replCommandContext {
 	ctx := &replCommandContext{
+		ctx:      context.Background(),
 		config:   config,
 		state:    state,
 		registry: defaultReplCommands,
@@ -483,7 +574,8 @@ func newWriterReplCommandContext(config *Config, state *conversationState, w io.
 		},
 	}
 	if state != nil && state.session != nil {
-		ctx.resetConversation = state.session.Clear
+		ctx.ctx = state.session.Context()
+		ctx.resetConversation = func() error { return state.session.Clear(ctx.ctx) }
 	}
 	return ctx
 }
@@ -669,6 +761,32 @@ func replHelpCommand(ctx *replCommandContext, args []string) replCommandResult {
 	return replCommandResult{err: ctx.replyLines(ctx.registry.helpLines())}
 }
 
+func replAttachCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) < 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /attach <image-path>")}
+	}
+	if ctx == nil || ctx.attachImage == nil {
+		return replCommandResult{err: ctx.replyLine("attachments require the managed REPL")}
+	}
+	// Fields-split args lose original spacing; rejoining and reusing the
+	// drag-drop splitter recovers quoted and escaped paths with spaces.
+	raw := strings.Join(args[1:], " ")
+	paths := splitDroppedPaths(raw)
+	if len(paths) == 0 {
+		paths = []string{raw}
+	}
+	var lines []string
+	for _, path := range paths {
+		token, err := ctx.attachImage(path)
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("attach %s: %v", path, err))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("attached %s as %s", filepath.Base(path), token))
+	}
+	return replCommandResult{err: ctx.replyLines(lines)}
+}
+
 func replClearCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if len(args) != 1 {
 		return replCommandResult{err: ctx.replyLine("usage: /clear")}
@@ -680,6 +798,28 @@ func replClearCommand(ctx *replCommandContext, args []string) replCommandResult 
 		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("failed to clear display: %v", err))}
 	}
 	return replCommandResult{err: ctx.replyLine("display cleared")}
+}
+
+func replRenameCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /rename <name>")}
+	}
+	if ctx.state == nil || ctx.state.session == nil {
+		return replCommandResult{err: ctx.replyLine("no active session")}
+	}
+	opCtx := ctx.operationContext()
+	oldName, err := ctx.state.session.GetName(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("rename failed: %v", err))}
+	}
+	newName := args[1]
+	if err := ctx.state.session.Rename(opCtx, newName); err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("rename failed: %v", err))}
+	}
+	if ctx.setContextName != nil {
+		ctx.setContextName(newName)
+	}
+	return replCommandResult{err: ctx.replyLine(fmt.Sprintf("renamed context '%s' to '%s'", oldName, newName))}
 }
 
 func replResetCommand(ctx *replCommandContext, args []string) replCommandResult {
@@ -783,19 +923,36 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	}
 	cfg := ctx.configOrDefault()
 	s := ctx.state.session
-	lines := []string{"context: " + s.GetName()}
+	opCtx := ctx.operationContext()
+	name, err := s.GetName(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+	}
+	lines := []string{"context: " + name}
 	if cfg.Model != "" {
 		lines = append(lines, "model: "+stripProviderPrefix(cfg.Model))
 	}
-	if pct := s.GetCapacityPercentage(); pct > 0 {
-		lines = append(lines, fmt.Sprintf("tokens: %s (%.0f%% of capacity)", humanizeTokens(s.GetTotalTokens()), pct))
-	} else {
-		lines = append(lines, "tokens: "+humanizeTokens(s.GetTotalTokens()))
+	totalTokens, err := s.GetTotalTokens(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
 	}
-	c := s.GetMessageCounts()
+	lines = append(lines, "transcript: "+humanizeTokens(totalTokens)+" estimated tokens (durable)")
+	if cfg.MaxHistoryTokens > 0 {
+		lines = append(lines, "model budget: "+humanizeTokens(cfg.MaxHistoryTokens)+" estimated tokens")
+	} else {
+		lines = append(lines, "model budget: unlimited")
+	}
+	c, err := s.GetMessageCounts(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+	}
 	lines = append(lines, fmt.Sprintf("messages: user %d · assistant %d · tool %d · system %d",
 		c["user"], c["assistant"], c["tool"], c["system"]))
-	lines = append(lines, fmt.Sprintf("tool calls: %d", s.GetToolCallCount()))
+	toolCalls, err := s.GetToolCallCount(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+	}
+	lines = append(lines, fmt.Sprintf("tool calls: %d", toolCalls))
 	return replCommandResult{err: ctx.replyLines(lines)}
 }
 
@@ -936,18 +1093,26 @@ func persistReplSettings(ctx *replCommandContext) error {
 	}
 	cfg := ctx.configOrDefault()
 	s := ctx.state.session
-	md := s.GetMetadata()
+	opCtx := ctx.operationContext()
+	md, err := s.GetMetadata(opCtx)
+	if err != nil {
+		return err
+	}
 	if md == nil {
 		md = &sessions.Metadata{}
 	}
-	md.Name = s.GetName()
+	name, err := s.GetName(opCtx)
+	if err != nil {
+		return err
+	}
+	md.Name = name
 	md.Model = cfg.Model
 	md.Temperature = cfg.Temperature
 	md.MaxTokens = cfg.MaxTokens
 	md.MaxHistoryTokens = cfg.MaxHistoryTokens
 	md.ThinkingEffort = cfg.ThinkingEffort
 	md.ToolTimeout = cfg.ToolTimeout
-	return s.SetMetadata(md)
+	return s.SetMetadata(opCtx, md)
 }
 
 // sandboxToolSplit partitions sandbox-capable tools by whether they run
@@ -984,6 +1149,10 @@ type sandboxPosture struct {
 	denyPaths   int
 	sandboxed   []string
 	unsandboxed []string
+	// sshAgentUnavailable notes an ssh preset without a live agent socket, so
+	// the inevitable auth failures surface at startup instead of as cryptic
+	// ssh errors mid-conversation.
+	sshAgentUnavailable bool
 }
 
 func currentSandboxPosture(config *Config, state *conversationState) sandboxPosture {
@@ -1007,12 +1176,34 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 		preset = "base"
 	}
 	return sandboxPosture{
-		state:       sandboxPostureActive,
-		preset:      preset,
-		denyPaths:   len(cfg.DenyPaths),
-		sandboxed:   sandboxed,
-		unsandboxed: unsandboxed,
+		state:               sandboxPostureActive,
+		preset:              preset,
+		denyPaths:           len(cfg.DenyPaths),
+		sandboxed:           sandboxed,
+		unsandboxed:         unsandboxed,
+		sshAgentUnavailable: presetSpecContains(preset, "ssh") && !sshAgentSocketLive(),
 	}
+}
+
+func presetSpecContains(spec, name string) bool {
+	for _, part := range strings.Split(spec, "+") {
+		if strings.TrimSpace(part) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func sshAgentSocketLive() bool {
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if sock == "" {
+		return false
+	}
+	// Follow symlinks: the sandbox grant resolves SSH_AUTH_SOCK to its
+	// canonical target, so a symlinked agent path (launchd aliases, dotfile
+	// setups) is live for the sandbox and must read as live here too.
+	info, err := os.Stat(sock)
+	return err == nil && info.Mode()&os.ModeSocket != 0
 }
 
 func sandboxPostureForContext(ctx *replCommandContext) sandboxPosture {
@@ -1033,6 +1224,9 @@ func (p sandboxPosture) settingString() string {
 		if len(p.unsandboxed) > 0 {
 			line += ": " + strings.Join(p.unsandboxed, ", ")
 		}
+		if p.sshAgentUnavailable {
+			line += "; ssh: agent unavailable"
+		}
 		return line + ")"
 	}
 }
@@ -1047,6 +1241,9 @@ func (p sandboxPosture) noticeString() string {
 		line := fmt.Sprintf("sandbox: active (%s; %d tools sandboxed", p.preset, len(p.sandboxed))
 		if len(p.unsandboxed) > 0 {
 			line += "; not sandboxed: " + strings.Join(p.unsandboxed, ", ")
+		}
+		if p.sshAgentUnavailable {
+			line += "; ssh: agent unavailable"
 		}
 		return line + ")"
 	}
@@ -1245,10 +1442,16 @@ func sandboxCompactSummary(info tools.SandboxInfo) string {
 	default:
 		parts = append(parts, "temp writes")
 	}
-	if len(cfg.AllowEnv) > 0 {
+	switch {
+	case len(cfg.AllowEnv) > 0:
 		parts = append(parts, "env allowlist")
-	} else {
+	case len(cfg.PassEnv) > 0:
+		parts = append(parts, "env filtered+pass")
+	default:
 		parts = append(parts, "env filtered")
+	}
+	if len(cfg.AllowUnixSockets) > 0 {
+		parts = append(parts, fmt.Sprintf("%d unix socket(s)", len(cfg.AllowUnixSockets)))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -1282,10 +1485,16 @@ func sandboxShowDetail(info tools.SandboxInfo) string {
 	default:
 		parts = append(parts, "writes limited to temp")
 	}
-	if len(cfg.AllowEnv) > 0 {
+	switch {
+	case len(cfg.AllowEnv) > 0:
 		parts = append(parts, "env allowlist active")
-	} else {
+	case len(cfg.PassEnv) > 0:
+		parts = append(parts, "env filters credential-like variables (passing: "+strings.Join(cfg.PassEnv, ", ")+")")
+	default:
 		parts = append(parts, "env filters credential-like variables")
+	}
+	if len(cfg.AllowUnixSockets) > 0 {
+		parts = append(parts, fmt.Sprintf("Unix sockets: %d granted", len(cfg.AllowUnixSockets)))
 	}
 	return strings.Join(parts, "; ")
 }

@@ -12,7 +12,7 @@ type Settings struct {
 	Model            string  `json:"model,omitempty"`
 	Temperature      float64 `json:"temperature,omitempty"`
 	MaxTokens        int     `json:"maxTokens,omitempty"`
-	MaxHistoryTokens int     `json:"maxHistoryTokens,omitempty"` // max tokens for context history
+	MaxHistoryTokens int     `json:"maxHistoryTokens,omitempty"` // provider-visible model projection budget
 	ThinkingEffort   string  `json:"thinkingEffort,omitempty"`
 	SystemPrompt     string  `json:"systemPrompt,omitempty"`
 
@@ -50,7 +50,7 @@ type Config struct {
 	ListContexts   bool
 	DeleteContext  string
 	AddToContext   bool
-	PurgeAll       bool   // Delete all sessions and index
+	PurgeAll       bool   // Delete all sessions
 	CreateContext  string // Create a new context with this name
 	ShowContext    string // Show configuration for this context
 

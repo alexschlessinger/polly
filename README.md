@@ -42,12 +42,12 @@ GLOBAL OPTIONS:
    --list                                                   List all available context IDs
    --delete string                                          Delete the specified context
    --add                                                    Add stdin content to context without making an API call
-   --purge                                                  Delete all sessions and index (requires confirmation)
+   --purge                                                  Delete all sessions (requires confirmation)
    --create string                                          Create a new context with specified name and configuration
    --show string                                            Show configuration for the specified context
-   --maxcontext int                                         Maximum tokens to keep in history (0 = unlimited) (default: 256000)
+   --maxcontext int                                         Maximum estimated tokens sent to the model; full history is retained (0 = unlimited) (default: 256000)
    --confirm                                                Require confirmation before each tool call
-   --sandbox string                                         Sandbox preset: base, readonly, workspace, net — join with + (e.g. workspace+net) (default: "workspace+net") [$POLLYTOOL_SANDBOX]
+   --sandbox string                                         Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace (default: "workspace+net+git") [$POLLYTOOL_SANDBOX]
    --nosandbox                                              Disable sandboxing of tool commands [$POLLYTOOL_NOSANDBOX]
    --denypath string [ --denypath string ]                  Additional path blocked from sandboxed reads (repeatable, supports ~) [$POLLYTOOL_DENYPATHS]
    --writepath string [ --writepath string ]                Additional path sandboxed tools may write to (repeatable, supports ~) [$POLLYTOOL_WRITEPATHS]
@@ -115,25 +115,90 @@ reverse history search (Ctrl-R), bracketed paste, and tool/skill display. If the
 terminal isn't a TTY (e.g. `TERM=dumb` or redirected I/O), polly falls back to
 plain one-shot mode.
 
+The TUI shows static local image thumbnails when assistant Markdown contains
+`![alt](./path.png)`. Tool results may use the same Markdown form or emit a local
+image path on a line by itself; relative paths resolve from Polly's working
+directory. Kitty graphics are selected for Kitty, Ghostty, and WezTerm; Sixel
+is selected for Windows Terminal 1.22+ and foot. Other terminals keep a compact
+caption/path fallback. Thumbnails preserve the source aspect ratio inside a
+maximum 50-column by 10-row box, accounting for rectangular terminal cells. Set
+`POLLYTOOL_IMAGE_PROTOCOL=kitty`, `sixel`, or `none` to override auto-detection.
+Remote images, paths buried in prose/JSON, and paths inside code blocks are not
+opened. tmux and Zellij currently always use the caption/path fallback; native
+placement there needs explicit multiplexer passthrough support. On image-capable
+terminals the startup
+splash also draws the polly logo as a native image (embedded in the binary);
+elsewhere, and on short terminals, it keeps the half-block ANSI bird.
+
+You can also send images *to* the model from the composer. Typing a path to an
+existing local image (relative paths resolve from Polly's working directory)
+attaches it on submit — `describe .assets/polly.png` just works. Ctrl-V grabs
+an image off the system clipboard (macOS built-in `osascript` or `pngpaste` if
+installed; Linux `wl-paste`/`xclip`; Windows PowerShell), drag-and-dropping an
+image file onto the terminal attaches it (a paste consisting only of image
+paths is treated as a drop), and `/attach <path>` does the same explicitly —
+use `/attach` for paths containing spaces.
+Each attachment appears as a literal `[image #N]` token at the cursor — delete
+the token to drop the attachment, or reorder and reuse it freely. When input is
+accepted, Polly prepares the exact image payload; queued turns and `/retry`
+reuse those bytes even if the source file changes or disappears. SQLite-backed
+sessions persist prepared images; if the last image turn is incomplete after a
+reload, `/retry` replays those exact bytes. Attached text bodies and context
+imports remain non-retryable because they cannot be reconstructed safely from
+prompt text.
+
+A composer prompt may reference at most 16 unique images, every model-visible
+message is limited to 16 image parts, and a complete request is limited to 100
+images across all retained turns. Each base64-encoded image is limited to
+10,000,000 bytes (10 MB), and image data in the model-visible history plus the
+candidate prompt is limited to 16 MiB in total, leaving request headroom under
+the documented Gemini and Anthropic inline limits.
+Images are downscaled to at most 1568px on the long edge before upload; PNG,
+JPEG, and WebP pass through when already within the upload limits, while
+animated GIFs are reduced to their first frame and normalized to PNG, and BMP
+images are normalized to PNG. JPEG orientation metadata is applied whenever an
+image is resized or re-encoded. Older persisted raster parts are normalized in
+the request without rewriting session history; legacy SVG image parts become a
+short omission marker instead of blocking the context.
+Those formats are the portable intersection documented by
+[OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision),
+[Anthropic vision](https://platform.claude.com/docs/en/build-with-claude/vision),
+and [Gemini image understanding](https://ai.google.dev/gemini-api/docs/image-understanding).
+Clipboard captures and exact prepared-preview files are stored under the user
+cache directory (`pollytool/attachments`) and swept after two weeks. Durable
+retry and reload data lives in the SQLite session database, not this preview
+cache.
+
 Slash commands inside the TUI:
 
 ```
 /help [command]              Show help
+/attach <image-path>         Attach a local image to the next prompt
 /clear                       Clear the display (history kept)
-/context  (/stats)           Show context info and token stats
+/context  (/stats)           Show durable transcript size and model budget
 /get <key|all>               Inspect current settings
 /set <key> <value>           Change a setting for this session
                              (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills
 /queue [list|drop|clear|continue]  Manage input queued during a turn
+/rename <name>               Rename the current context
 /retry                       Retry the last failed or canceled turn
 /reset confirm               Clear durable conversation history
 /exit  (/quit)               Leave the TUI
 ```
 
 Ctrl-C or Esc interrupts an in-flight turn; pressing Ctrl-C again (or at an
-idle prompt) quits.
+idle prompt) quits. Ctrl-Z suspends Polly and returns to the shell; `fg` resumes
+the same TUI state. Polly enables button-level mouse reporting for transcript
+scrolling and image clicks, so use the terminal's mouse override—usually
+Shift-drag, or Option-drag in some macOS terminals—to select text.
+
+Launching the TUI without `-c` starts a persistent session under a generated
+name (e.g. `quiet-otter`). Resume it later with `polly -L` or `polly -c
+quiet-otter`, or give it a permanent name with `/rename`. A session where no
+turn ever ran is discarded on exit. Generated sessions expire after 7 days of
+inactivity; explicitly named and renamed contexts do not expire automatically.
 
 ### Model Selection
 
@@ -170,6 +235,21 @@ polly --delete project
 # Delete all contexts (requires confirmation)
 polly --purge
 ```
+
+### Session Storage and Backups
+
+Polly stores session history, settings, and durable artifact bytes in one
+SQLite database at `~/.pollytool/polly.db`. This is a clean break from the old
+per-context JSON format: files under `~/.pollytool/contexts` are left untouched,
+are not imported, and are ignored by current versions of Polly. On the first
+run after this cutover, the SQLite session catalog therefore starts empty.
+
+For a simple backup, first quit every Polly process and then copy
+`~/.pollytool/polly.db`. While Polly is running, use SQLite's
+[online backup API](https://www.sqlite.org/backup.html) or
+[`VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html#vacuuminto) to create a
+consistent snapshot. Do not copy only `polly.db` while a process has it open:
+committed data may still be in the write-ahead log.
 
 ### Context Settings Persistence
 
@@ -346,7 +426,7 @@ polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
 
 #### Sandboxing
 
-The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by default**. A sandboxed process runs with a read-only root filesystem, writes restricted to the policy's writable paths, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and credential/runtime env vars (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, ...) stripped. On Linux, `/tmp` and `/run` are private, filesystem Unix sockets are blocked, and the process gets private PID and IPC namespaces plus a detached session. Shell tools get a `[sandboxed]` suffix on their description so the LLM knows they're restricted. Extra paths can be blocked globally with `--denypath` (or `POLLYTOOL_DENYPATHS`).
+The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by default**. A sandboxed process runs with a read-only root filesystem, writes restricted to the policy's writable paths, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and credential/runtime env vars (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, ...) stripped. On Linux, `/tmp` and `/run` are private, filesystem Unix sockets are blocked, and the process gets private PID and IPC namespaces plus a detached session. Shell tools (and the builtin `bash` tool) get a `[sandboxed]` suffix on their description so the LLM knows they're restricted — with a `.git is read-only` note when Git metadata is fully pinned so a failing `git commit` isn't mistaken for a transient error. Extra paths can be blocked globally with `--denypath` (or `POLLYTOOL_DENYPATHS`).
 
 **Presets** — `--sandbox <preset>` (env `POLLYTOOL_SANDBOX`) selects the base policy for all sandboxed tools. Components join with `+`:
 
@@ -355,9 +435,12 @@ The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by d
 | `base` | temp-dir writes only, no network |
 | `readonly` | no writes at all, not even temp; no network |
 | `workspace` | the working directory is writable; discovered Git routing entries and metadata trees stay read-only so a tool cannot replace `.git` or alter repository-local hook/config entry points |
+| `git` | with `workspace`: keep `.git` writable but pin only its dangerous leaves (config, hooks, routing pointers), so `git commit`/rebase/fetch work; requires `workspace` |
 | `net` | outbound network allowed |
+| `ssh` | agent-based SSH: pass `SSH_AUTH_SOCK` and allow its socket, read `~/.ssh/config` and `known_hosts`; private keys stay masked |
+| `sshkeys` | read all of `~/.ssh` including private keys (agentless setups); `~/.ssh` stays unwritable |
 
-The default is **`workspace+net`**: tools can edit the project and reach the network, but credentials stay masked and everything outside the workspace is read-only. `workspace` canonicalizes the working directory and refuses the filesystem root, the user's home directory, exact mounted-volume roots on Linux and macOS, and exact Linux private temp/runtime roots because recursively protecting Git metadata there cannot safely use a partial scan. Descendants of mounted volumes remain valid bounded workspaces; otherwise change into a project directory or use `--sandbox base`. Tighten with `--sandbox base` or `--sandbox readonly` when tools only need to compute or inspect. Granular additions: `--writepath <dir>` (repeatable, env `POLLYTOOL_WRITEPATHS`) grants extra writable paths and `--allownet` (env `POLLYTOOL_ALLOWNET`) grants network on top of any preset.
+The default is **`workspace+net+git`**: tools can edit the project, reach the network, and use Git (commit, rebase, fetch), while credentials stay masked and everything outside the workspace is read-only. Without the `git` component, `workspace` keeps the whole `.git` tree read-only and `git commit` fails with `EPERM`; leaf mode instead pins only the metadata that can select host-executed code (config, hooks, routing/worktree pointers), creating those leaves inert when absent. `workspace` canonicalizes the working directory and refuses the filesystem root, the user's home directory, exact mounted-volume roots on Linux and macOS, and exact Linux private temp/runtime roots because recursively protecting Git metadata there cannot safely use a partial scan. Descendants of mounted volumes remain valid bounded workspaces; otherwise change into a project directory or use `--sandbox base`. Tighten with `--sandbox base` or `--sandbox readonly` when tools only need to compute or inspect. Granular additions: `--writepath <dir>` (repeatable, env `POLLYTOOL_WRITEPATHS`) grants extra writable paths and `--allownet` (env `POLLYTOOL_ALLOWNET`) grants network on top of any preset.
 
 If a global flag or per-tool overlay leaves a home directory or filesystem root as a broad writable grant, Polly emits a visible warning pointing to the global and per-tool settings to inspect. Repeated effective configs do not repeat the same warning.
 
@@ -404,6 +487,12 @@ polly -t ./sandboxed_uppercase.sh -p "uppercase 'hello world' using the tool"
   "allowEnv": ["AWS_PROFILE", "AWS_REGION", "HOME", "PATH"]
 }
 
+// Additively pass one variable through without a strict allowlist
+"sandbox": { "passEnv": ["GITHUB_TOKEN"] }
+
+// Let a tool reach one agent/service socket while others stay blocked
+"sandbox": { "passEnv": ["SSH_AUTH_SOCK"], "allowUnixSockets": ["~/.ssh/agent.sock"] }
+
 // Fully read-only — no writes, not even to temp
 "sandbox": { "denyWrite": true }
 
@@ -411,7 +500,7 @@ polly -t ./sandboxed_uppercase.sh -p "uppercase 'hello world' using the tool"
 // the explicit global unsafe choice with --nosandbox.
 ```
 
-Credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, names ending in `_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, ..., plus agent sockets like `SSH_AUTH_SOCK`) are stripped from sandboxed processes unless explicitly listed in `allowEnv`.
+Credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, names ending in `_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, ..., plus agent sockets like `SSH_AUTH_SOCK`) are stripped from sandboxed processes. Add one back with `passEnv` (additive — everything else still flows), or replace the heuristic entirely with a strict `allowEnv` allowlist (which then ignores `passEnv`).
 
 Relative `writablePaths`, `readPaths`, and `denyPaths` entries resolve against
 Polly's working directory when the sandbox is created. A child read exemption
@@ -467,7 +556,7 @@ is loaded fails closed instead of silently widening that later sandbox.
 }
 ```
 
-Tools and servers without a `sandbox` field get the CLI preset (`workspace+net` unless `--sandbox` says otherwise). A tool's own `sandbox` config merges monotonically on top of the preset: it may add grants or restrictions, but cannot remove an earlier entry. A `"sandbox": false` request is refused unless the caller also made the explicit global unsafe choice with `--nosandbox`.
+Tools and servers without a `sandbox` field get the CLI preset (`workspace+net+git` unless `--sandbox` says otherwise). A tool's own `sandbox` config merges monotonically on top of the preset: it may add grants or restrictions, but cannot remove an earlier entry. A `"sandbox": false` request is refused unless the caller also made the explicit global unsafe choice with `--nosandbox`.
 
 ### MCP Servers
 

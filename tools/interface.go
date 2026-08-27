@@ -19,6 +19,28 @@ type Tool interface {
 	GetSource() string // Returns the source path/spec (e.g., "/path/to/script.sh")
 }
 
+// ToolOutput preserves typed media without forcing it through a base64 JSON
+// string. Agent callers use OutputTool when available; ordinary Tool callers
+// remain source-compatible with Execute's string result.
+type ToolOutput struct {
+	Text  string
+	Media []ToolMedia
+}
+
+type ToolMedia struct {
+	Data      []byte
+	MIMEType  string
+	Name      string
+	Reference string
+}
+
+// OutputTool is the optional rich-result extension implemented by tools such
+// as MCP. Tool itself intentionally remains unchanged.
+type OutputTool interface {
+	Tool
+	ExecuteOutput(ctx context.Context, args map[string]any) (ToolOutput, error)
+}
+
 // sandboxedTool is implemented by tool types whose commands can run sandboxed.
 type sandboxedTool interface {
 	Sandboxed() bool
@@ -47,6 +69,8 @@ func copySandboxConfig(cfg *sandbox.Config) *sandbox.Config {
 	c.DenyPaths = append([]string(nil), cfg.DenyPaths...)
 	c.DenyWritePaths = append([]string(nil), cfg.DenyWritePaths...)
 	c.AllowEnv = append([]string(nil), cfg.AllowEnv...)
+	c.PassEnv = append([]string(nil), cfg.PassEnv...)
+	c.AllowUnixSockets = append([]string(nil), cfg.AllowUnixSockets...)
 	return &c
 }
 

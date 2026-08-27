@@ -2,12 +2,16 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 	"golang.org/x/sync/errgroup"
@@ -26,17 +30,21 @@ var ErrMaxIterations = errors.New("max iterations exceeded")
 // Agent handles the agentic loop without owning session state.
 // It executes completions with automatic tool call handling.
 type Agent struct {
-	client LLM
-	tools  *tools.ToolRegistry
-	config AgentConfig
+	client        LLM
+	tools         *tools.ToolRegistry
+	config        AgentConfig
+	artifactStore artifacts.Store
+	artifactMu    sync.RWMutex
+	artifactRefs  map[string]artifacts.Ref
 }
 
 // AgentConfig configures agent behavior
 type AgentConfig struct {
-	MaxIterations    int           // Maximum LLM calls before giving up (default: 250)
-	ToolTimeout      time.Duration // Per-tool execution timeout (0 = no timeout)
-	MaxParallelTools int           // Maximum parallel tool executions (0 = unlimited)
-	ResponseTool     string        // If set, require final response via this tool
+	MaxIterations    int             // Maximum LLM calls before giving up (default: 250)
+	ToolTimeout      time.Duration   // Per-tool execution timeout (0 = no timeout)
+	MaxParallelTools int             // Maximum parallel tool executions (0 = unlimited)
+	ResponseTool     string          // If set, require final response via this tool
+	ArtifactStore    artifacts.Store // Optional private store for context artifacts
 }
 
 // AgentCallbacks provides hooks for observing and customizing agent execution
@@ -76,6 +84,16 @@ type AgentResponse struct {
 	Message        *messages.ChatMessage  // Final assistant message (no tool calls)
 	AllMessages    []messages.ChatMessage // All messages generated (assistant + tool results)
 	IterationCount int                    // Number of LLM calls made
+	Projection     ProjectionStats        // Final provider-visible context projection
+	PromptCache    PromptCacheStats       // Provider-reported cache use across all LLM calls
+}
+
+// PromptCacheStats is provider-reported prompt-cache accounting. Zero values
+// mean either no cache activity or that the provider did not report details;
+// Polly never estimates cache hits.
+type PromptCacheStats struct {
+	ReadInputTokens  int
+	WriteInputTokens int
 }
 
 func hasToolCall(msg *messages.ChatMessage, name string) bool {
@@ -87,18 +105,27 @@ func hasToolCall(msg *messages.ChatMessage, name string) bool {
 	return false
 }
 
-// NewAgent creates a stateless agent that handles the agentic loop.
-// The agent does not own session state - callers provide messages and
-// receive back all generated messages to add to their own session.
+// NewAgent creates an agent that handles the agentic loop and its compact,
+// session-scoped model projection. The agent does not own transcript state:
+// callers provide messages and persist the generated messages themselves.
 func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
 	if config.MaxIterations <= 0 {
 		config.MaxIterations = 250
 	}
-	return &Agent{
-		client: client,
-		tools:  registry,
-		config: config,
+	if registry == nil && config.ArtifactStore != nil {
+		registry = tools.NewToolRegistry(nil)
 	}
+	agent := &Agent{
+		client: client, tools: registry, config: config,
+		artifactStore: config.ArtifactStore,
+		artifactRefs:  make(map[string]artifacts.Ref),
+	}
+	if config.ArtifactStore != nil {
+		reader := &readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact}
+		registry.Register(reader)
+		registry.MarkAlwaysAllowed(reader.GetName())
+	}
+	return agent
 }
 
 // SetToolTimeout updates the per-tool-call timeout for subsequent runs. Not
@@ -136,20 +163,52 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	var allGenerated []messages.ChatMessage
 	var nudgedResponseTool bool
 	var responseToolCalled bool
+	var lastProjection ProjectionStats
+	var promptCache PromptCacheStats
+	a.resetArtifactIndex(msgs)
+	responseFor := func(message *messages.ChatMessage, iterations int) *AgentResponse {
+		return &AgentResponse{
+			Message: message, AllMessages: allGenerated, IterationCount: iterations,
+			Projection: lastProjection, PromptCache: promptCache,
+		}
+	}
 
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
-			return &AgentResponse{AllMessages: allGenerated, IterationCount: iteration}, ctx.Err()
+			return responseFor(nil, iteration), ctx.Err()
 		default:
 		}
 
 		// Build request with accumulated messages
 		iterReq := loopReq
-		iterReq.Messages = msgs
+		projected, projection, err := projectMessages(ctx, msgs, req.MaxContextTokens, a.artifactStore)
+		a.applyDurableToolSpills(msgs, projection.toolSpills)
+		a.applyDurableToolSpills(allGenerated, projection.toolSpills)
+		for _, ref := range projection.artifactRefs {
+			a.indexArtifact(ref)
+		}
+		projection.artifactRefs = nil
+		projection.toolSpills = nil
+		lastProjection = projection
+		if err != nil {
+			if cb != nil && cb.OnError != nil {
+				cb.OnError(err)
+			}
+			return responseFor(nil, iteration), err
+		}
+		a.indexArtifactMessages(projected)
+		iterReq.Messages = projected
 		if a.tools != nil {
 			iterReq.Tools = a.tools.All()
+		}
+		if iterReq.PromptCacheKey == "" {
+			if key, keyErr := derivePromptCacheKey(&iterReq, msgs); keyErr == nil {
+				iterReq.PromptCacheKey = key
+			} else {
+				slog.Debug("prompt_cache_key_omitted", "error", keyErr)
+			}
 		}
 
 		// Stream completion
@@ -160,8 +219,10 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// Process events
 		response, err := a.processEvents(ctx, events, cb)
 		if err != nil {
-			return &AgentResponse{AllMessages: allGenerated, IterationCount: iteration + 1}, err
+			return responseFor(nil, iteration+1), err
 		}
+		promptCache.ReadInputTokens += response.GetCacheReadInputTokens()
+		promptCache.WriteInputTokens += response.GetCacheWriteInputTokens()
 
 		// Ensure content is never null — some providers reject null content in history
 		if response.Content == "" && len(response.ToolCalls) == 0 {
@@ -176,8 +237,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			if a.config.ResponseTool != "" && !responseToolCalled && !nudgedResponseTool {
 				nudgedResponseTool = true
 				nudge := messages.ChatMessage{
-					Role:    messages.MessageRoleUser,
-					Content: "Respond using the " + a.config.ResponseTool + " tool.",
+					Role:     messages.MessageRoleUser,
+					Content:  "Respond using the " + a.config.ResponseTool + " tool.",
+					Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true},
 				}
 				msgs = append(msgs, nudge)
 				allGenerated = append(allGenerated, nudge)
@@ -187,11 +249,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
 			}
-			return &AgentResponse{
-				Message:        response,
-				AllMessages:    allGenerated,
-				IterationCount: iteration + 1,
-			}, nil
+			return responseFor(response, iteration+1), nil
 
 		case messages.StopReasonMaxTokens:
 			// Response truncated - warn and return
@@ -199,11 +257,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
 			}
-			return &AgentResponse{
-				Message:        response,
-				AllMessages:    allGenerated,
-				IterationCount: iteration + 1,
-			}, nil
+			return responseFor(response, iteration+1), nil
 
 		case messages.StopReasonContentFilter:
 			// Response blocked by safety/policy
@@ -211,7 +265,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			if cb != nil && cb.OnError != nil {
 				cb.OnError(err)
 			}
-			return &AgentResponse{Message: response, AllMessages: allGenerated, IterationCount: iteration + 1}, err
+			return responseFor(response, iteration+1), err
 
 		case messages.StopReasonError:
 			// Model produced malformed output
@@ -219,7 +273,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			if cb != nil && cb.OnError != nil {
 				cb.OnError(err)
 			}
-			return &AgentResponse{Message: response, AllMessages: allGenerated, IterationCount: iteration + 1}, err
+			return responseFor(response, iteration+1), err
 
 		case messages.StopReasonToolUse:
 			if len(response.ToolCalls) == 0 {
@@ -227,7 +281,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 				if cb != nil && cb.OnError != nil {
 					cb.OnError(err)
 				}
-				return &AgentResponse{Message: response, AllMessages: allGenerated, IterationCount: iteration + 1}, err
+				return responseFor(response, iteration+1), err
 			}
 			// Continue to execute tool calls below
 
@@ -237,8 +291,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 				if a.config.ResponseTool != "" && !responseToolCalled && !nudgedResponseTool {
 					nudgedResponseTool = true
 					nudge := messages.ChatMessage{
-						Role:    messages.MessageRoleUser,
-						Content: "Respond using the " + a.config.ResponseTool + " tool.",
+						Role:     messages.MessageRoleUser,
+						Content:  "Respond using the " + a.config.ResponseTool + " tool.",
+						Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true},
 					}
 					msgs = append(msgs, nudge)
 					allGenerated = append(allGenerated, nudge)
@@ -247,11 +302,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 				if cb != nil && cb.OnComplete != nil {
 					cb.OnComplete(response)
 				}
-				return &AgentResponse{
-					Message:        response,
-					AllMessages:    allGenerated,
-					IterationCount: iteration + 1,
-				}, nil
+				return responseFor(response, iteration+1), nil
 			}
 			// Has tool calls, continue to execute them
 		}
@@ -269,11 +320,12 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// Execute tool calls in parallel
 		toolMsgs, err := a.executeToolsParallel(ctx, response.ToolCalls, cb)
 		if err != nil {
-			return &AgentResponse{Message: response, AllMessages: allGenerated, IterationCount: iteration + 1}, err
+			return responseFor(response, iteration+1), err
 		}
 		if a.tools != nil {
 			a.tools.CommitPendingChanges()
 		}
+		a.indexArtifactMessages(toolMsgs)
 		msgs = append(msgs, toolMsgs...)
 		allGenerated = append(allGenerated, toolMsgs...)
 
@@ -285,11 +337,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
 			}
-			return &AgentResponse{
-				Message:        response,
-				AllMessages:    allGenerated,
-				IterationCount: iteration + 1,
-			}, nil
+			return responseFor(response, iteration+1), nil
 		}
 
 		// Short-circuit when the response tool was called: the caller
@@ -300,11 +348,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
 			}
-			return &AgentResponse{
-				Message:        response,
-				AllMessages:    allGenerated,
-				IterationCount: iteration + 1,
-			}, nil
+			return responseFor(response, iteration+1), nil
 		}
 	}
 
@@ -324,11 +368,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		cb.OnError(ErrMaxIterations)
 	}
 	// Return the partial response so the caller can save the history
-	return &AgentResponse{
-		Message:        last,
-		AllMessages:    allGenerated,
-		IterationCount: a.config.MaxIterations,
-	}, ErrMaxIterations
+	return responseFor(last, a.config.MaxIterations), ErrMaxIterations
 }
 
 // processEvents processes the event stream and returns the final message
@@ -368,8 +408,10 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 	return response, nil
 }
 
-// executeTool executes a single tool call and returns the result message
-func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall, cb *AgentCallbacks) messages.ChatMessage {
+// executeTool executes a single tool call and returns the result message. Tool
+// execution failures remain durable tool outcomes, while artifact persistence
+// failures abort the turn because a configured store is authoritative.
+func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall, cb *AgentCallbacks) (messages.ChatMessage, error) {
 	// Parse args early so we can pass them to BeforeToolExecute
 	var args map[string]any
 	if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
@@ -383,28 +425,29 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 	}
 
 	start := time.Now()
-	result, err := a.executeToolCall(execCtx, tc, args)
+	output, err := a.executeToolCall(execCtx, tc, args)
 	duration := time.Since(start)
-
-	if cb != nil && cb.OnToolEnd != nil {
-		cb.OnToolEnd(tc, result, duration, err)
+	result := output.Text
+	for _, media := range output.Media {
+		result += fmt.Sprintf("\n[%s media: %s, %d bytes]", media.MIMEType, media.Name, len(media.Data))
 	}
 
-	msg := messages.ChatMessage{
-		Role:       messages.MessageRoleTool,
-		Content:    result,
-		ToolCallID: tc.ID,
-		ToolName:   tc.Name,
+	msg, artifactErr := a.toolOutputMessage(execCtx, tc, output)
+	if cb != nil && cb.OnToolEnd != nil {
+		cb.OnToolEnd(tc, result, duration, errors.Join(err, artifactErr))
+	}
+	if artifactErr != nil {
+		return messages.ChatMessage{}, artifactErr
 	}
 	// Record an explicit ordinary tool outcome so transcript hydration can
 	// distinguish it from older tool messages whose outcome is unknown. Tool
 	// failures must not use the terminal stream-error metadata.
 	msg.SetToolSucceeded(err == nil)
-	return msg
+	return msg, nil
 }
 
 // executeToolCall performs the actual tool execution
-func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageToolCall, args map[string]any) (string, error) {
+func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageToolCall, args map[string]any) (tools.ToolOutput, error) {
 	// Apply timeout
 	if a.config.ToolTimeout > 0 {
 		var cancel context.CancelFunc
@@ -416,39 +459,161 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 	if args == nil {
 		if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
 			errMsg := fmt.Sprintf("Error parsing arguments: %v", err)
-			return errMsg, err
+			return tools.ToolOutput{Text: errMsg}, err
 		}
 	}
 
 	// Get tool from registry
 	if a.tools == nil {
 		errMsg := fmt.Sprintf("Tool not found: %s (no registry)", tc.Name)
-		return errMsg, errors.New("no tool registry")
+		return tools.ToolOutput{Text: errMsg}, errors.New("no tool registry")
 	}
 
 	tool, exists, allowed := a.tools.GetIfAllowed(tc.Name)
 	if !exists {
 		errMsg := fmt.Sprintf("Tool not found: %s", tc.Name)
-		return errMsg, errors.New("tool not found: " + tc.Name)
+		return tools.ToolOutput{Text: errMsg}, errors.New("tool not found: " + tc.Name)
 	}
 	if !allowed {
 		errMsg := fmt.Sprintf("Tool not allowed by active skill policy: %s", tc.Name)
-		return errMsg, errors.New("tool not allowed: " + tc.Name)
+		return tools.ToolOutput{Text: errMsg}, errors.New("tool not allowed: " + tc.Name)
 	}
 
 	// Execute
-	result, err := tool.Execute(ctx, args)
+	var output tools.ToolOutput
+	var err error
+	if rich, ok := tool.(tools.OutputTool); ok {
+		output, err = rich.ExecuteOutput(ctx, args)
+	} else {
+		output.Text, err = tool.Execute(ctx, args)
+	}
 	if err != nil {
 		if msg, ok := tools.FormatToolError(err); ok {
-			return msg, err
+			output.Text = mergeToolErrorText(msg, output.Text)
+			return output, err
 		}
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("Error: tool execution timed out after %v", a.config.ToolTimeout), err
+			output.Text = mergeToolErrorText(fmt.Sprintf("Error: tool execution timed out after %v", a.config.ToolTimeout), output.Text)
+			return output, err
 		}
-		return fmt.Sprintf("Error: %v", err), err
+		output.Text = mergeToolErrorText(fmt.Sprintf("Error: %v", err), output.Text)
+		return output, err
 	}
 
-	return result, nil
+	return output, nil
+}
+
+func mergeToolErrorText(errorText, resultText string) string {
+	resultText = strings.TrimSpace(resultText)
+	if resultText == "" || strings.Contains(errorText, resultText) {
+		return errorText
+	}
+	return errorText + "\n" + resultText
+}
+
+func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageToolCall, output tools.ToolOutput) (messages.ChatMessage, error) {
+	msg := messages.ChatMessage{Role: messages.MessageRoleTool, Content: output.Text, ToolCallID: tc.ID, ToolName: tc.Name}
+	if tc.Name != "read_artifact" && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
+		ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)})
+		if err != nil {
+			return messages.ChatMessage{}, fmt.Errorf("store text artifact for tool %q: %w", tc.Name, err)
+		}
+		msg.Content = artifactReceipt(ref)
+		msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
+	}
+	for _, media := range output.Media {
+		kind := artifacts.KindBinary
+		partType := "artifact"
+		if strings.HasPrefix(strings.ToLower(media.MIMEType), "image/") {
+			kind = artifacts.KindImage
+			partType = "image_artifact"
+		}
+		if a.artifactStore != nil {
+			ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: kind, MIMEType: media.MIMEType, Name: media.Name, Reference: media.Reference, Data: media.Data})
+			if err != nil {
+				return messages.ChatMessage{}, fmt.Errorf("store %s artifact %q for tool %q: %w", kind, media.Name, tc.Name, err)
+			}
+			msg.Parts = append(msg.Parts, messages.ContentPart{Type: partType, Artifact: &ref, MimeType: ref.MIMEType, FileName: ref.Name, Reference: ref.ImageToken})
+			descriptor := artifactMediaDescriptor(ref)
+			msg.Content = strings.TrimSpace(msg.Content + "\n" + descriptor)
+			continue
+		}
+		if kind == artifacts.KindImage {
+			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(media.Data), MimeType: media.MIMEType, FileName: media.Name})
+		} else {
+			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "file", Text: base64.StdEncoding.EncodeToString(media.Data), MimeType: media.MIMEType, FileName: media.Name})
+			msg.Content = strings.TrimSpace(msg.Content + "\n" + fmt.Sprintf("[binary media %s (%s), %d bytes; payload retained outside model text]", media.Name, media.MIMEType, len(media.Data)))
+		}
+	}
+	return msg, nil
+}
+
+func (a *Agent) indexArtifactMessages(history []messages.ChatMessage) {
+	for _, msg := range history {
+		for _, part := range msg.Parts {
+			if part.Artifact != nil {
+				a.indexArtifact(*part.Artifact)
+			}
+		}
+	}
+}
+
+// resetArtifactIndex scopes read_artifact authorization to the transcript
+// supplied for this run. An Agent can outlive /reset, but references from the
+// cleared conversation must not remain authorized merely because a prior run
+// indexed them.
+func (a *Agent) resetArtifactIndex(history []messages.ChatMessage) {
+	a.artifactMu.Lock()
+	a.artifactRefs = make(map[string]artifacts.Ref)
+	a.artifactMu.Unlock()
+	a.indexArtifactMessages(history)
+}
+
+func (a *Agent) indexArtifact(ref artifacts.Ref) {
+	if !artifacts.ValidID(ref.ID) {
+		return
+	}
+	a.artifactMu.Lock()
+	current, exists := a.artifactRefs[ref.ID]
+	if !exists || artifactKindPriority(ref.Kind) > artifactKindPriority(current.Kind) {
+		a.artifactRefs[ref.ID] = ref
+	}
+	a.artifactMu.Unlock()
+}
+
+func artifactKindPriority(kind artifacts.Kind) int {
+	switch kind {
+	case artifacts.KindText:
+		return 3
+	case artifacts.KindImage:
+		return 2
+	case artifacts.KindBinary:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (a *Agent) lookupArtifact(id string) (artifacts.Ref, bool) {
+	a.artifactMu.RLock()
+	ref, ok := a.artifactRefs[id]
+	a.artifactMu.RUnlock()
+	return ref, ok
+}
+
+func (a *Agent) applyDurableToolSpills(history []messages.ChatMessage, spills []toolResultSpill) {
+	for _, spill := range spills {
+		for i := len(history) - 1; i >= 0; i-- {
+			msg := &history[i]
+			if msg.Role != messages.MessageRoleTool || msg.ToolCallID != spill.ToolCallID || msg.ToolName != spill.ToolName || msg.Content != spill.Content || textArtifactRef(*msg) != nil {
+				continue
+			}
+			ref := spill.Ref
+			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
+			msg.Content = appendArtifactDescriptors(artifactReceipt(ref), *msg, ref.ID, " ")
+			break
+		}
+	}
 }
 
 // executeToolsParallel executes multiple tool calls concurrently and returns results in order.
@@ -508,7 +673,11 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 				return ctx.Err()
 			}
 
-			results[idx] = a.executeTool(ctx, tc, cb)
+			result, err := a.executeTool(ctx, tc, cb)
+			if err != nil {
+				return err
+			}
+			results[idx] = result
 			return nil
 		})
 	}

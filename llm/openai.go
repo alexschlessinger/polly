@@ -18,17 +18,22 @@ const openAIResponsesReasoningSummaryKey = "openai_responses_reasoning_summary_s
 
 type openAIAPIMode string
 
+type openAICompatibleProvider string
+
 const (
-	openAIAPIModeChat      openAIAPIMode = "chat"
-	openAIAPIModeResponses openAIAPIMode = "responses"
+	openAIAPIModeChat          openAIAPIMode            = "chat"
+	openAIAPIModeResponses     openAIAPIMode            = "responses"
+	openAICompatibleGeneric    openAICompatibleProvider = "generic"
+	openAICompatibleOpenRouter openAICompatibleProvider = "openrouter"
 )
 
 var _ LLM = (*OpenAIClient)(nil)
 
 type OpenAIClient struct {
-	client  *openai.Client
-	baseURL string
-	apiMode openAIAPIMode
+	client             *openai.Client
+	baseURL            string
+	apiMode            openAIAPIMode
+	compatibleProvider openAICompatibleProvider
 }
 
 func NewOpenAIClient(apiKey string, baseURL string) *OpenAIClient {
@@ -39,10 +44,17 @@ func NewOpenAIClient(apiKey string, baseURL string) *OpenAIClient {
 	}
 
 	return &OpenAIClient{
-		client:  openai.NewClient(apiKey, trimmedBaseURL),
-		baseURL: trimmedBaseURL,
-		apiMode: mode,
+		client:             openai.NewClient(apiKey, trimmedBaseURL),
+		baseURL:            trimmedBaseURL,
+		apiMode:            mode,
+		compatibleProvider: openAICompatibleGeneric,
 	}
+}
+
+func newOpenRouterClient(apiKey, baseURL string) *OpenAIClient {
+	client := NewOpenAIClient(apiKey, baseURL)
+	client.compatibleProvider = openAICompatibleOpenRouter
+	return client
 }
 
 // ChatCompletionStream implements the event-based streaming interface.
@@ -73,6 +85,9 @@ func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionReque
 
 func (o OpenAIClient) streamChatCompletions(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := buildChatCompletionRequestParams(req)
+	if o.compatibleProvider == openAICompatibleOpenRouter {
+		params.SessionID = req.CacheSessionID
+	}
 	isStreaming := req.Stream == nil || *req.Stream
 	slog.Debug("openai_chat_completion_started", "stream", isStreaming, "base_url", o.baseURL)
 
@@ -131,6 +146,9 @@ func (o OpenAIClient) handleNonStreamingChatCompletion(ctx context.Context, para
 
 	if resp.Usage != nil {
 		streamCore.SetTokenUsage(int(resp.Usage.PromptTokens), int(resp.Usage.CompletionTokens))
+		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
+			streamCore.SetPromptCacheUsage(read, write)
+		}
 	}
 
 	streamCore.Complete()
@@ -202,6 +220,9 @@ func (o OpenAIClient) handleNonStreamingResponse(ctx context.Context, params *op
 
 	if resp.Usage != nil {
 		streamCore.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
+		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
+			streamCore.SetPromptCacheUsage(read, write)
+		}
 	}
 	incompleteReason := ""
 	if resp.IncompleteDetails != nil {
@@ -291,9 +312,10 @@ func buildResponsesRequestParams(req *CompletionRequest) *openai.ResponsesReques
 	inputItems, instructions := messagesToResponsesInput(req.Messages)
 
 	params := &openai.ResponsesRequest{
-		Input:        inputItems,
-		Model:        req.Model,
-		Instructions: instructions,
+		Input:          inputItems,
+		Model:          req.Model,
+		Instructions:   instructions,
+		PromptCacheKey: req.PromptCacheKey,
 	}
 	if req.Temperature != nil {
 		temp := float64(*req.Temperature)

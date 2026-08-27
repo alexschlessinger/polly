@@ -2,9 +2,8 @@ package sessions
 
 import (
 	"slices"
-	"time"
 
-	"dario.cat/mergo"
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -134,6 +133,14 @@ func EstimateTokens(msg messages.ChatMessage) int {
 		case "image_base64", "image_url":
 			count += imageTokenEstimate
 		}
+		if part.Artifact != nil {
+			switch part.Artifact.Kind {
+			case artifacts.KindImage:
+				count += imageTokenEstimate
+			case artifacts.KindText:
+				count += int(part.Artifact.Bytes / 4)
+			}
+		}
 	}
 
 	// Tool calls
@@ -157,34 +164,22 @@ func EstimateTokens(msg messages.ChatMessage) int {
 // CopyHistory creates a defensive copy of the history slice
 func CopyHistory(history []messages.ChatMessage) []messages.ChatMessage {
 	result := make([]messages.ChatMessage, len(history))
-	copy(result, history)
+	for i, msg := range history {
+		result[i] = msg
+		result[i].Parts = append([]messages.ContentPart(nil), msg.Parts...)
+		for j := range result[i].Parts {
+			if msg.Parts[j].Artifact != nil {
+				ref := *msg.Parts[j].Artifact
+				result[i].Parts[j].Artifact = &ref
+			}
+		}
+		result[i].ToolCalls = append([]messages.ChatMessageToolCall(nil), msg.ToolCalls...)
+		if msg.Metadata != nil {
+			result[i].Metadata = make(map[string]any, len(msg.Metadata))
+			for key, value := range msg.Metadata {
+				result[i].Metadata[key] = value
+			}
+		}
+	}
 	return result
-}
-
-// MergeMetadata merges non-zero fields from 'update' into 'existing'.
-// Zero values (empty strings, 0 numbers, nil slices) in 'update' do not overwrite existing values.
-func MergeMetadata(existing *Metadata, update *Metadata) *Metadata {
-	if existing == nil {
-		existing = &Metadata{}
-	}
-	if update == nil {
-		out := *existing
-		return &out
-	}
-
-	// Create a copy to avoid modifying the original
-	out := *existing
-
-	// Use mergo with WithOverride to merge non-zero values from 'update' into 'out'
-	if err := mergo.Merge(&out, update, mergo.WithOverride); err != nil {
-		// If merge fails for some reason, fall back to the original
-		return existing
-	}
-
-	// Handle special case: set LastUsed to now if it's still zero
-	if out.LastUsed.IsZero() {
-		out.LastUsed = time.Now()
-	}
-
-	return &out
 }

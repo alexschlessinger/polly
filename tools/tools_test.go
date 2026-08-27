@@ -294,6 +294,7 @@ fi
 }
 
 func TestNewShellTool(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
@@ -317,6 +318,7 @@ func TestNewShellTool(t *testing.T) {
 }
 
 func TestNewShellToolParsesStrictMetadata(t *testing.T) {
+	skipIfWindows(t)
 	script := `#!/bin/bash
 if [ "$1" = "--schema" ]; then
 	echo '{
@@ -358,6 +360,7 @@ fi
 }
 
 func TestShellToolExecute(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
@@ -382,6 +385,7 @@ func TestShellToolExecute(t *testing.T) {
 }
 
 func TestShellToolExecuteWithCancel(t *testing.T) {
+	skipIfWindows(t)
 	// Create a script that sleeps to test cancellation
 	script := `#!/bin/bash
 if [ "$1" = "--schema" ]; then
@@ -413,6 +417,7 @@ fi
 }
 
 func TestLoadShellTools(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 
 	// Create multiple test scripts
@@ -464,6 +469,7 @@ fi
 }
 
 func TestShellToolExecuteError(t *testing.T) {
+	skipIfWindows(t)
 	// Create a script that exits with error during execution
 	script := `#!/bin/bash
 if [ "$1" = "--schema" ]; then
@@ -492,6 +498,7 @@ fi
 }
 
 func TestShellToolMarshalArgsError(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
@@ -512,6 +519,7 @@ func TestShellToolMarshalArgsError(t *testing.T) {
 }
 
 func TestShellToolComplexArgs(t *testing.T) {
+	skipIfWindows(t)
 	// Create a script that handles complex JSON arguments
 	script := `#!/bin/bash
 if [ "$1" = "--schema" ]; then
@@ -621,6 +629,7 @@ fi
 }
 
 func TestShellToolSandboxConfigObject(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScriptWithSpec(t, dir)
 
@@ -675,6 +684,7 @@ fi
 }
 
 func TestShellToolSandboxConfigWithReadPathsAndEnv(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScriptWithFullSpec(t, dir)
 
@@ -712,6 +722,7 @@ func TestShellToolSandboxConfigWithReadPathsAndEnv(t *testing.T) {
 }
 
 func TestShellToolWantsSandbox(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 
 	// Script without sandbox flag
@@ -734,6 +745,7 @@ func TestShellToolWantsSandbox(t *testing.T) {
 }
 
 func TestShellToolWithSandbox(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
@@ -768,6 +780,7 @@ func TestShellToolWithSandbox(t *testing.T) {
 }
 
 func TestShellToolSandboxExecution(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
@@ -786,6 +799,7 @@ func TestShellToolSandboxExecution(t *testing.T) {
 }
 
 func TestShellToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	tool, err := newShellTool(createSandboxedTestScript(t, dir))
 	if err != nil {
@@ -808,6 +822,7 @@ func TestShellToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
 }
 
 func TestShellToolSandboxWrapError(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
@@ -875,6 +890,7 @@ func TestMCPConfigSandboxConfig(t *testing.T) {
 }
 
 func TestRegistryAppliesSandboxToOptInShellTools(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	sandboxedScript := createSandboxedTestScript(t, dir)
 
@@ -897,6 +913,7 @@ func TestRegistryAppliesSandboxToOptInShellTools(t *testing.T) {
 }
 
 func TestRegistrySandboxesNonOptInShellTools(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
@@ -922,6 +939,7 @@ func TestRegistrySandboxesNonOptInShellTools(t *testing.T) {
 }
 
 func TestShellToolSandboxFalseOptOut(t *testing.T) {
+	skipIfWindows(t)
 	// A shell tool may opt out only when the registry owner also made the
 	// explicit unsafe choice; tool-controlled schema metadata is not authority
 	// to silently disable containment by itself.
@@ -1074,15 +1092,18 @@ func TestRegistryShellToolSchemaSandboxFailureFailsClosed(t *testing.T) {
 }
 
 func TestRegistryShellSchemaUsesStrictDiscoveryConfig(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 	base := sandbox.Config{
-		AllowNetwork:   true,
-		WritablePaths:  []string{dir},
-		ReadPaths:      []string{"/read-exception"},
-		DenyPaths:      []string{"/blocked-secret"},
-		DenyWritePaths: []string{"/protected-write"},
-		AllowEnv:       []string{"SECRET_TOKEN"},
+		AllowNetwork:     true,
+		WritablePaths:    []string{dir},
+		ReadPaths:        []string{"/read-exception"},
+		DenyPaths:        []string{"/blocked-secret"},
+		DenyWritePaths:   []string{"/protected-write"},
+		AllowEnv:         []string{"SECRET_TOKEN"},
+		PassEnv:          []string{"SSH_AUTH_SOCK"},
+		AllowUnixSockets: []string{"/tmp/agent.sock"},
 	}
 	var configs []sandbox.Config
 	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
@@ -1111,6 +1132,9 @@ func TestRegistryShellSchemaUsesStrictDiscoveryConfig(t *testing.T) {
 	}
 	if len(discovery.ReadPaths) != 0 || len(discovery.AllowEnv) != 0 {
 		t.Fatalf("schema discovery inherited allowances: read=%v env=%v", discovery.ReadPaths, discovery.AllowEnv)
+	}
+	if len(discovery.PassEnv) != 0 || len(discovery.AllowUnixSockets) != 0 {
+		t.Fatalf("schema discovery inherited grants: passEnv=%v sockets=%v", discovery.PassEnv, discovery.AllowUnixSockets)
 	}
 	if len(discovery.DenyPaths) != 1 || discovery.DenyPaths[0] != "/blocked-secret" {
 		t.Fatalf("schema discovery deny paths = %v", discovery.DenyPaths)
@@ -1394,6 +1418,7 @@ func TestRegistryRefusesStdioMCPWithoutSandbox(t *testing.T) {
 }
 
 func TestRegistryShellToolSandboxFailureFailsClosed(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
@@ -1437,6 +1462,7 @@ func TestLoadToolAutoBashSandboxFailureFailsClosed(t *testing.T) {
 }
 
 func TestSandboxState(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	shell, err := newShellTool(createTestScript(t, dir))
 	if err != nil {
@@ -1470,6 +1496,7 @@ func TestSandboxState(t *testing.T) {
 }
 
 func TestSandboxDetailsIncludesEffectiveConfigAndOptOut(t *testing.T) {
+	skipIfWindows(t)
 	cfg := sandbox.Config{
 		AllowNetwork:   true,
 		WritablePaths:  []string{"/tmp/work"},
@@ -1520,6 +1547,7 @@ fi
 }
 
 func TestWithSandboxClearsUnknownEffectiveConfig(t *testing.T) {
+	skipIfWindows(t)
 	cfg := sandbox.Config{WritablePaths: []string{"/tmp/work"}}
 	bash := newBashTool("").withSandboxConfig(&mockSandbox{}, cfg)
 	bash = bash.WithSandbox(&mockSandbox{})
@@ -1602,6 +1630,7 @@ fi
 }
 
 func TestLoadShellToolsLegacyBestEffortCompatibility(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	validPath := createTestScript(t, dir)
 	invalidPath := filepath.Join(dir, "not-executable")

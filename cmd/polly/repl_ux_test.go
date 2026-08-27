@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -142,7 +143,7 @@ func TestFailedTurnLabelsPartialAndPausesQueue(t *testing.T) {
 	m.beginTurn("explain")
 	m.appendToolStartLine("call-1", "bash sleep 30")
 	m.appendAssistant("partial answer\n")
-	m.queue = []string{"next question"}
+	m.queue = queuedTextInputs("next question")
 	r.endTurn(errors.New("provider unavailable"))
 
 	joined := strings.Join(m.flattenTranscript(), "\n")
@@ -183,7 +184,7 @@ func TestCancelFreezesPartialAndRejectsLateCallbacks(t *testing.T) {
 	m := r.model
 	m.beginTurn("question")
 	m.turnID = 9
-	m.queue = []string{"queued"}
+	m.queue = queuedTextInputs("queued")
 	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 9}
 	tui.AppendAssistantText("visible partial")
 
@@ -289,7 +290,7 @@ func TestStatusAndApprovalNeverExceedTerminalWidth(t *testing.T) {
 	m.contextName = "context-with-a-long-name"
 	m.toolCount = 12
 	m.skillCount = 8
-	m.queue = []string{"a long queued message preview that must truncate"}
+	m.queue = queuedTextInputs("a long queued message preview that must truncate")
 	for width := 1; width <= 80; width++ {
 		if got := rw.StringWidth(plainStyledText(m.statusRow(width))); got > width {
 			t.Fatalf("status width %d exceeds terminal %d: %q", got, width, plainStyledText(m.statusRow(width)))
@@ -331,10 +332,10 @@ func TestBusyQuietModeAcceptsPaste(t *testing.T) {
 func TestBusyQueueCommandsRunImmediately(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.busy = true
-	r.model.queue = []string{"first", "newest"}
+	r.model.queue = queuedTextInputs("first", "newest")
 	r.model.ed.setText("/queue drop")
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if got := r.model.queue; len(got) != 1 || got[0] != "first" {
+	if got := r.model.queue; len(got) != 1 || got[0].text != "first" {
 		t.Fatalf("busy /queue drop was queued instead of executed: %v", got)
 	}
 	if joined := strings.Join(r.model.flattenTranscript(), "\n"); !strings.Contains(joined, "dropped newest queued input: newest") {
@@ -359,7 +360,7 @@ func TestBusyReadOnlyCommandsRunImmediately(t *testing.T) {
 	// Mutating commands still queue behind the running turn.
 	r.model.ed.setText("/reset confirm")
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if got := r.model.queue; len(got) != 1 || got[0] != "/reset confirm" {
+	if got := r.model.queue; len(got) != 1 || got[0].text != "/reset confirm" {
 		t.Fatalf("busy /reset should queue, got %v", got)
 	}
 }
@@ -503,7 +504,7 @@ func TestHydrateHistoryShowsDurableToolFailure(t *testing.T) {
 func TestHydrateHistoryOffersRetryForTrailingUser(t *testing.T) {
 	m := newReplModel()
 	m.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "unanswered"}}, "ctx")
-	if m.retryPrompt != "unanswered" {
+	if m.retryPrompt != "unanswered" || m.retryTurn == nil {
 		t.Fatalf("retry prompt = %q", m.retryPrompt)
 	}
 	if joined := strings.Join(m.flattenTranscript(), "\n"); !strings.Contains(joined, "incomplete · /retry available") {
@@ -528,8 +529,74 @@ func TestHydrateHistoryDoesNotExposeOrRetryAttachedTextBodies(t *testing.T) {
 	if strings.Contains(plain, "TOP SECRET FILE BODY") {
 		t.Fatalf("attachment body leaked into resumed transcript: %q", plain)
 	}
-	if m.retryPrompt != "" || strings.Contains(plain, "/retry available") {
+	if m.retryPrompt != "" || m.retryTurn != nil || strings.Contains(plain, "/retry available") {
 		t.Fatalf("parts-based message should not offer lossy retry: prompt=%q transcript=%q", m.retryPrompt, plain)
+	}
+}
+
+func TestHydrateHistoryOnlyRetriesPortablePersistedImages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "valid.png")
+	writeImageFixture(t, path, 2, 2)
+	validPart, err := prepareImageForUpload(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validMessage := messages.ChatMessage{
+		Role: messages.MessageRoleUser,
+		Parts: []messages.ContentPart{
+			{Type: "text", Text: "inspect"},
+			*validPart,
+		},
+	}
+	tooMany := validMessage
+	tooMany.Parts = []messages.ContentPart{{Type: "text", Text: "inspect"}}
+	for i := 0; i <= maxPromptAttachments; i++ {
+		tooMany.Parts = append(tooMany.Parts, *validPart)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		msg       messages.ChatMessage
+		retryable bool
+	}{
+		{name: "portable PNG", msg: validMessage, retryable: true},
+		{name: "invalid base64", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: "%%%", MimeType: "image/png"}}}},
+		{name: "GIF", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", MimeType: "image/gif"}}}, retryable: true},
+		{name: "SVG", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString([]byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)), MimeType: "image/svg+xml"}}}},
+		{name: "MIME mismatch", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: validPart.ImageData, MimeType: "image/jpeg"}}}, retryable: true},
+		{name: "17 images", msg: tooMany},
+		{name: "over aggregate budget", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes+1), MimeType: "image/png"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newReplModel()
+			m.hydrateHistory([]messages.ChatMessage{tc.msg}, "ctx")
+			plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
+			if got := m.retryTurn != nil; got != tc.retryable {
+				t.Fatalf("retryable=%v, want %v; transcript=%q", got, tc.retryable, plain)
+			}
+			if got := strings.Contains(plain, "/retry available"); got != tc.retryable {
+				t.Fatalf("retry marker=%v, want %v; transcript=%q", got, tc.retryable, plain)
+			}
+		})
+	}
+}
+
+func TestHydrateHistoryRetriesThroughNormalizedEarlierImage(t *testing.T) {
+	history := []messages.ChatMessage{
+		{
+			Role: messages.MessageRoleUser,
+			Parts: []messages.ContentPart{{
+				Type: "image_base64", ImageData: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", MimeType: "image/gif",
+			}},
+		},
+		{Role: messages.MessageRoleAssistant, Content: "old response"},
+		{Role: messages.MessageRoleUser, Content: "retry this text"},
+	}
+	m := newReplModel()
+	m.hydrateHistory(history, "poisoned")
+	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
+	if m.retryTurn == nil || !strings.Contains(plain, "/retry available") {
+		t.Fatalf("normalized earlier image suppressed an exact retry: %q", plain)
 	}
 }
 
@@ -561,7 +628,7 @@ func TestHydrateHistoryCompactsContextImportedFiles(t *testing.T) {
 		if !strings.Contains(plain, tc.want) || strings.Contains(plain, "SECRET BODY") {
 			t.Fatalf("context import was not compacted: %q", plain)
 		}
-		if strings.Contains(plain, "incomplete") || strings.Contains(plain, "/retry") || m.retryPrompt != "" {
+		if strings.Contains(plain, "incomplete") || strings.Contains(plain, "/retry") || m.retryPrompt != "" || m.retryTurn != nil {
 			t.Fatalf("context import was treated as a failed turn: %q retry=%q", plain, m.retryPrompt)
 		}
 	}
@@ -580,7 +647,7 @@ func TestHydrateHistoryTreatsDeniedTurnMarkerAsCompleted(t *testing.T) {
 	m := newReplModel()
 	m.hydrateHistory(history, "ctx")
 	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
-	if !strings.Contains(plain, "tool request denied") || strings.Contains(plain, "incomplete") || m.retryPrompt != "" {
+	if !strings.Contains(plain, "tool request denied") || strings.Contains(plain, "incomplete") || m.retryPrompt != "" || m.retryTurn != nil {
 		t.Fatalf("denied completion hydration = %q retry=%q", plain, m.retryPrompt)
 	}
 }
@@ -677,15 +744,15 @@ func TestRetryCommandQueuesExistingUserAttempt(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.appendLine("previous failed turn")
 	r.model.retryPrompt = "same prompt"
-	r.model.queue = []string{"after retry"}
+	r.model.queue = queuedTextInputs("after retry")
 	r.model.queuePaused = true
 
 	if handled, quit := r.runCommand("/retry"); !handled || quit {
 		t.Fatalf("/retry handled=%v quit=%v", handled, quit)
 	}
-	prompt := r.takePending()
-	if prompt != "same prompt" || !r.model.busy || !r.model.retryingNext {
-		t.Fatalf("retry state prompt=%q busy=%v retrying=%v", prompt, r.model.busy, r.model.retryingNext)
+	turn, ok := r.takePending()
+	if !ok || turn.displayText != "same prompt" || !r.model.busy || !r.model.retryingNext {
+		t.Fatalf("retry state prompt=%q busy=%v retrying=%v", turn.displayText, r.model.busy, r.model.retryingNext)
 	}
 	lines := r.model.flattenTranscript()
 	if len(lines) < 3 || lines[len(lines)-2] != "" || !strings.Contains(lines[len(lines)-1], "retrying last turn") {
@@ -693,7 +760,7 @@ func TestRetryCommandQueuesExistingUserAttempt(t *testing.T) {
 	}
 
 	reuseSeen := make(chan bool, 1)
-	done := r.startTurn(context.Background(), prompt, func(_ context.Context, _ string, turnUI TurnUI) error {
+	done := r.startManagedTurn(context.Background(), turn, func(_ context.Context, _ string, turnUI TurnUI) error {
 		reuseSeen <- turnUI.(*gotuiTurnUI).reuseUser
 		return nil
 	})
@@ -717,7 +784,7 @@ func TestRetryCommandQueuesExistingUserAttempt(t *testing.T) {
 func TestQueuedRetryStartsBeforeFollowingPrompt(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.retryPrompt = "failed prompt"
-	r.model.queue = []string{"/retry", "following prompt"}
+	r.model.queue = queuedTextInputs("/retry", "following prompt")
 
 	type startedTurn struct {
 		prompt string
@@ -739,11 +806,11 @@ func TestQueuedRetryStartsBeforeFollowingPrompt(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("queued retry did not run")
 	}
-	if len(r.model.queue) != 1 || r.model.queue[0] != "following prompt" {
+	if len(r.model.queue) != 1 || r.model.queue[0].text != "following prompt" {
 		t.Fatalf("following queue entry was reordered or consumed: %v", r.model.queue)
 	}
-	if pending := r.takePending(); pending != "" {
-		t.Fatalf("retry prompt remained buffered after turn start: %q", pending)
+	if pending, ok := r.takePending(); ok {
+		t.Fatalf("retry prompt remained buffered after turn start: %q", pending.displayText)
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
@@ -758,7 +825,7 @@ func TestRetryQueuedDuringCancellationRunsOnSettlement(t *testing.T) {
 	}
 	r.model.ed.setText("/retry")
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if len(r.model.queue) != 1 || r.model.queue[0] != "/retry" {
+	if len(r.model.queue) != 1 || r.model.queue[0].text != "/retry" {
 		t.Fatalf("retry intent was not queued during cancellation: %v", r.model.queue)
 	}
 	r.endTurn(context.Canceled)
@@ -789,7 +856,7 @@ func TestRetryQueuedDuringCancellationRunsAfterTimeoutDetach(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.beginTurn("stuck prompt")
 	r.model.canceling = true
-	r.model.queue = []string{"/retry"}
+	r.model.queue = queuedTextInputs("/retry")
 	r.model.queuePaused = true
 
 	started := make(chan string, 1)
@@ -814,7 +881,7 @@ func TestRetryQueuedDuringCancellationRunsAfterTimeoutDetach(t *testing.T) {
 func TestQueueContinueDuringCancellationSurvivesSettlement(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.beginTurn("current")
-	r.model.queue = []string{"next"}
+	r.model.queue = queuedTextInputs("next")
 	if quit := r.handleInterrupt(); quit {
 		t.Fatal("cancel request should keep REPL open")
 	}
@@ -833,22 +900,19 @@ type failingClearSession struct {
 	sessions.Session
 }
 
-func (failingClearSession) Clear() error { return errors.New("clear failed") }
+func (failingClearSession) Clear(context.Context) error { return errors.New("clear failed") }
 
 func TestQueuedResetIsAConsistentBarrier(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("queued-reset")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "old"}); err != nil {
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "queued-reset")
+	if err := session.AddMessage(context.Background(), messages.ChatMessage{Role: messages.MessageRoleUser, Content: "old"}); err != nil {
 		t.Fatal(err)
 	}
 
 	t.Run("success preserves and starts following input", func(t *testing.T) {
 		r := newManagedREPL(&Config{}, "ctx", 0, 0)
 		r.state = &conversationState{session: session}
-		r.model.queue = []string{"/reset confirm", "fresh"}
+		r.model.queue = queuedTextInputs("/reset confirm", "fresh")
 		started := make(chan string, 1)
 		done := r.startNextQueued(context.Background(), func(_ context.Context, prompt string, _ TurnUI) error {
 			started <- prompt
@@ -857,7 +921,7 @@ func TestQueuedResetIsAConsistentBarrier(t *testing.T) {
 		if done == nil || <-started != "fresh" {
 			t.Fatal("successful queued reset dropped or failed to start following input")
 		}
-		if got := len(session.GetHistory()); got != 0 {
+		if got := len(testSessionHistory(t, session)); got != 0 {
 			t.Fatalf("reset left %d durable messages", got)
 		}
 		if err := <-done; err != nil {
@@ -868,14 +932,14 @@ func TestQueuedResetIsAConsistentBarrier(t *testing.T) {
 	t.Run("failure pauses following input", func(t *testing.T) {
 		r := newManagedREPL(&Config{}, "ctx", 0, 0)
 		r.state = &conversationState{session: failingClearSession{Session: session}}
-		r.model.queue = []string{"/reset confirm", "must wait"}
+		r.model.queue = queuedTextInputs("/reset confirm", "must wait")
 		if done := r.startNextQueued(context.Background(), func(context.Context, string, TurnUI) error {
 			t.Fatal("following prompt ran after reset failure")
 			return nil
 		}); done != nil {
 			t.Fatal("reset failure unexpectedly started a turn")
 		}
-		if !r.model.queuePaused || len(r.model.queue) != 1 || r.model.queue[0] != "must wait" {
+		if !r.model.queuePaused || len(r.model.queue) != 1 || r.model.queue[0].text != "must wait" {
 			t.Fatalf("reset failure queue=%v paused=%v", r.model.queue, r.model.queuePaused)
 		}
 	})

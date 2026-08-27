@@ -139,6 +139,27 @@ func TestMultiPass_ClientFor_DoesNotCacheClients(t *testing.T) {
 	}
 }
 
+func TestDefaultFactoriesTagOnlyOpenRouterForSessionAffinity(t *testing.T) {
+	m := NewMultiPass(nil)
+	openRouter, err := m.clientFor("openrouter", "key", "http://example.test/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	openRouterClient, ok := openRouter.(*OpenAIClient)
+	if !ok || openRouterClient.compatibleProvider != openAICompatibleOpenRouter {
+		t.Fatalf("OpenRouter client = %#v, want explicitly tagged OpenAI-compatible client", openRouter)
+	}
+
+	huggingFace, err := m.clientFor("huggingface", "key", "http://example.test/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	huggingFaceClient, ok := huggingFace.(*OpenAIClient)
+	if !ok || huggingFaceClient.compatibleProvider != openAICompatibleGeneric {
+		t.Fatalf("Hugging Face client = %#v, want generic compatible client", huggingFace)
+	}
+}
+
 func TestMultiPass_UsesDefaultProviderConfig(t *testing.T) {
 	var gotAPIKey string
 	var gotBaseURL string

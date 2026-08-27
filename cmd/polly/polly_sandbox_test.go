@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -10,7 +11,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -47,6 +47,7 @@ func TestSandboxRegistryOptionsFailsWhenProbeFails(t *testing.T) {
 }
 
 func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
+	skipIfWindows(t)
 	var captured sandbox.Config
 	originalNewSandbox := newSandbox
 	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
@@ -123,7 +124,55 @@ func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
 	}
 }
 
+func TestSandboxRegistryOptionsDefaultPresetUsesGitLeafMode(t *testing.T) {
+	skipIfWindows(t)
+	var captured sandbox.Config
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		captured = cfg
+		return passthroughSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, ".git", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, ".git", "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "")
+	t.Chdir(work)
+
+	if _, err := sandboxRegistryOptions(&Config{SandboxPreset: defaultSandboxPreset}); err != nil {
+		t.Fatalf("sandboxRegistryOptions() error = %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	realGitDir, err := filepath.EvalSymlinks(filepath.Join(cwd, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(captured.DenyWritePaths, realGitDir) {
+		t.Fatalf("DenyWritePaths = %v, default preset must not pin the whole gitdir", captured.DenyWritePaths)
+	}
+	for _, want := range []string{
+		filepath.Join(realGitDir, "config"),
+		filepath.Join(realGitDir, "hooks"),
+	} {
+		if !slices.Contains(captured.DenyWritePaths, want) {
+			t.Fatalf("DenyWritePaths = %v, want git leaf %q under the default preset", captured.DenyWritePaths, want)
+		}
+	}
+}
+
 func TestSandboxRegistryOptionsRevalidatesGitPolicyAfterWritePath(t *testing.T) {
+	skipIfWindows(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -164,6 +213,7 @@ func TestSandboxRegistryOptionsRejectsUnknownPreset(t *testing.T) {
 }
 
 func TestSandboxRegistryOptionsWarnsBroadBaseOnce(t *testing.T) {
+	skipIfWindows(t)
 	originalNewSandbox := newSandbox
 	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return passthroughSandbox{}, nil
@@ -194,6 +244,7 @@ func TestSandboxRegistryOptionsWarnsBroadBaseOnce(t *testing.T) {
 }
 
 func TestSandboxRegistryOptionsWarnsBroadPerToolOverlay(t *testing.T) {
+	skipIfWindows(t)
 	originalNewSandbox := newSandbox
 	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return passthroughSandbox{}, nil
@@ -287,6 +338,7 @@ func TestSandboxRegistryOptionsDoesNotWarnWhenFactoryFails(t *testing.T) {
 }
 
 func TestBroadWritablePathWarnerConcurrentWarnAndDrain(t *testing.T) {
+	skipIfWindows(t)
 	warnings := newBroadWritablePathWarner()
 	cfg := sandbox.Config{WritablePaths: []string{string(filepath.Separator)}}
 	var wg sync.WaitGroup
@@ -322,10 +374,10 @@ func TestInitializeSessionFailsWhenSandboxRequestedButUnavailable(t *testing.T) 
 		newSandbox = originalNewSandbox
 	})
 
-	store := sessions.NewSyncMapSessionStore(nil)
-	_, session, _, registry, _, _, _, err := initializeSession(&Config{
+	store := testOpenMemoryStore(t, nil)
+	_, session, _, registry, _, _, _, err := initializeSession(context.Background(), &Config{
 		NoSkills: true,
-	}, store, "", getCommand(), nil)
+	}, store, "", false, getCommand(), nil)
 	if err == nil {
 		t.Fatal("initializeSession() error = nil, want sandbox startup failure")
 	}
@@ -351,11 +403,11 @@ func TestInitializeSessionSucceedsWithoutSandboxWhenBackendUnavailable(t *testin
 		newSandbox = originalNewSandbox
 	})
 
-	store := sessions.NewSyncMapSessionStore(nil)
-	_, session, agent, registry, _, _, _, err := initializeSession(&Config{
+	store := testOpenMemoryStore(t, nil)
+	_, session, agent, registry, _, _, _, err := initializeSession(context.Background(), &Config{
 		NoSandbox: true,
 		NoSkills:  true,
-	}, store, "", getCommand(), nil)
+	}, store, "", false, getCommand(), nil)
 	if err != nil {
 		t.Fatalf("initializeSession() error = %v", err)
 	}
@@ -374,7 +426,7 @@ func TestInitializeSessionSucceedsWithoutSandboxWhenBackendUnavailable(t *testin
 
 	t.Cleanup(func() {
 		_ = registry.Close()
-		session.Close()
+		_ = session.Close()
 	})
 }
 
@@ -391,12 +443,12 @@ func TestInitializeSessionClosesRegistryWhenSkillRuntimeFails(t *testing.T) {
 	}
 	t.Cleanup(func() { newSkillRuntimeImpl = originalNewSkillRuntime })
 
-	store := sessions.NewSyncMapSessionStore(nil)
-	_, session, _, registry, _, _, _, err := initializeSession(&Config{
+	store := testOpenMemoryStore(t, nil)
+	_, session, _, registry, _, _, _, err := initializeSession(context.Background(), &Config{
 		NoSandbox: true,
 		NoSkills:  true,
 		Tools:     []string{"bash"},
-	}, store, "", getCommand(), nil)
+	}, store, "", false, getCommand(), nil)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("initializeSession() error = %v, want %v", err, wantErr)
 	}

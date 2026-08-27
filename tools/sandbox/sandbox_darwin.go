@@ -175,7 +175,7 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 	if env == nil {
 		env = os.Environ()
 	}
-	filtered, stripped := filterEnv(env, s.cfg.AllowEnv)
+	filtered, stripped := filterEnv(env, s.cfg.AllowEnv, s.cfg.PassEnv)
 	filtered = mergeExplicitEnv(filtered, explicitEnv)
 
 	origArgs := cmd.Args
@@ -190,7 +190,8 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 		"deny_write", s.cfg.DenyWrite,
 		"writable_paths", s.cfg.WritablePaths,
 		"env_stripped", stripped,
-		"denied_paths", len(denied))
+		"denied_paths", len(denied),
+		"unix_sockets", len(s.cfg.AllowUnixSockets))
 	bootstrapFD, bootstrapPipeCount, err := attachDarwinEnvBootstrap(cmd, filtered)
 	if err != nil {
 		return fmt.Errorf("prepare target environment: %w", err)
@@ -631,6 +632,19 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedLists ...
 			// Block direct DNS queries (port 53) as a fallback.
 			sb.WriteString("(deny network-outbound (remote udp \"*:53\"))\n")
 			sb.WriteString("(deny network-outbound (remote tcp \"*:53\"))\n")
+		}
+	}
+
+	// Granted Unix sockets are re-allowed after both network deny variants
+	// (Seatbelt is last-match-wins), so an agent socket works with networking
+	// off as well. Both the frozen spelling and its ancestor-resolved form are
+	// emitted: Seatbelt matches resolved vnode paths, and macOS launchd agent
+	// sockets are usually reached through the /tmp -> /private/tmp alias.
+	// effectiveUnixSocketGrants already rejected symlinked leaves, so the
+	// resolved spelling can never name a retarget target.
+	for _, grant := range effectiveUnixSocketGrants(cfg, deniedPaths) {
+		for _, path := range pathAndResolved(grant.path) {
+			sb.WriteString(fmt.Sprintf("(allow network-outbound (remote unix-socket (path-literal %q)))\n", path))
 		}
 	}
 

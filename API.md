@@ -604,6 +604,8 @@ the legacy behavior.
 | `denyPaths` | string[] | `[]` | Extra paths blocked from reads, in addition to the built-in deny list (supports `~`) |
 | `denyWritePaths` | string[] | `[]` | Paths kept read-only even inside a `writablePaths` entry (supports `~`). Mutable writable ancestors are pinned so the protected path cannot be bypassed by relocation. |
 | `allowEnv` | string[] | all non-sensitive | If set, only these env vars are passed through (overrides the sensitive-var stripping) |
+| `passEnv` | string[] | `[]` | Additively exempt these env vars from the sensitive-var stripping. Ignored when `allowEnv` is set. |
+| `allowUnixSockets` | string[] | `[]` | Absolute Unix-socket paths the process may connect to, even while broad Unix-socket access stays blocked (supports `~`). A grant is dropped for any command where its path is not a live socket. |
 | `denyWrite` | bool | `false` | Deny all file writes, including temp. Overrides `writablePaths`. |
 
 **Base policy** (when `"sandbox": true` and the registry's base config is `sandbox.DefaultConfig()`):
@@ -614,13 +616,24 @@ the legacy behavior.
 - Linux: private `/tmp` and `/run`, inherited capabilities dropped, filesystem Unix sockets denied, own PID and IPC namespaces, and own session
 
 **CLI presets:** the `polly` CLI selects its base config with
-`--sandbox <preset>` (components `base`, `readonly`, `workspace`, and `net`
-joined with `+`; library equivalent `sandbox.ParsePreset`). The CLI default is
-`workspace+net`: the canonical working directory is added to `writablePaths`,
-recursively discovered `.git` routing entries and resolved per-worktree/common
-metadata directories are added to `denyWritePaths`, and `allowNetwork` is
-enabled. Git metadata is therefore read-only (including missing leaves such as
-`config.worktree`) while working-tree files remain writable.
+`--sandbox <preset>` (components `base`, `readonly`, `workspace`, `git`, `net`,
+`ssh`, and `sshkeys` joined with `+`; library equivalent `sandbox.ParsePreset`).
+The CLI default is `workspace+net+git`: the canonical working directory is added
+to `writablePaths`, `allowNetwork` is enabled, and `git` selects **leaf mode**
+for the workspace's Git protection — only the dangerous metadata leaves
+(`config`, `config.worktree`, `hooks/`, routing and worktree pointers) are added
+to `denyWritePaths`, so `.git` stays writable and commit/rebase/fetch work while
+hook-planting and config rewrites stay blocked. Absent leaves are created inert
+(an empty `config`/`hooks/`, and `config.worktree` only when
+`extensions.worktreeConfig` is enabled); a leaf that cannot be created falls
+that one repository back to a whole-tree pin. Without `git`, `workspace` keeps
+whole Git metadata trees read-only (including missing leaves such as
+`config.worktree`), so `git commit` fails inside the sandbox. `git` requires
+`workspace` and is rejected on its own. The `ssh` component passes
+`SSH_AUTH_SOCK` through (`passEnv`), grants that one socket
+(`allowUnixSockets`), and exempts `~/.ssh/config` and `~/.ssh/known_hosts` from
+the deny list; `sshkeys` exempts all of `~/.ssh` (private keys included) for
+agentless setups.
 
 The `workspace` component refuses the filesystem root, the user's home
 directory, exact mounted-volume roots on Linux and macOS, and exact Linux
@@ -686,9 +699,12 @@ case-insensitively:
   `DOCKER_HOST`, `CONTAINER_HOST`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`,
   `PULSE_SERVER`.
 
-To pass one through, include it in `allowEnv`.
+To pass one through, add it to `passEnv` (additive — everything else still
+flows) or list it in `allowEnv` (strict — *only* the listed names flow, and
+`passEnv` is then ignored). The `ssh` preset uses `passEnv` for
+`SSH_AUTH_SOCK`.
 
-**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths` (and makes `denyWritePaths` redundant). `denyDNS: true` has no additional effect when `allowNetwork` is `false`. A missing or unresolvable `denyWritePaths` entry fails sandbox construction and is checked again before every command; neither backend can reliably reserve a nonexistent protected object. On both platforms, writable ancestors of a protected entry are pinned against relocation so moving an ancestor cannot expose a replacement at the original path.
+**Conflict resolution:** `denyWrite: true` silently overrides `writablePaths` (and makes `denyWritePaths` redundant). `denyDNS: true` has no additional effect when `allowNetwork` is `false`. `passEnv` is ignored when `allowEnv` is set. An `allowUnixSockets` entry that is not a live socket at command time is dropped (never fails the command) and never lifts a credential deny that covers it. A missing or unresolvable `denyWritePaths` entry fails sandbox construction and is checked again before every command; neither backend can reliably reserve a nonexistent protected object. On both platforms, writable ancestors of a protected entry are pinned against relocation so moving an ancestor cannot expose a replacement at the original path.
 
 #### Examples
 
@@ -888,41 +904,85 @@ it separately; `LoadCatalog` already calls it for you.
 
 ## Sessions
 
-Sessions persist conversation history between runs:
+Sessions persist conversation history and artifacts. Disk-backed and ephemeral
+stores use the same SQLite implementation; only `StoreConfig` changes:
 
 ```go
-// "" uses the default directory, ~/.pollytool/contexts
-store, err := sessions.NewFileSessionStore("", nil)
+store, err := sessions.OpenStore(sessions.StoreConfig{
+    Mode:           sessions.ModeDisk,
+    Path:           "/path/to/polly.db",
+    AutoSessionTTL: 7 * 24 * time.Hour,
+})
 if err != nil {
     panic(err)
 }
+defer func() {
+    if err := store.Close(); err != nil {
+        panic(err)
+    }
+}()
 
-session, err := store.Get("my-session-id")
+session, err := store.Acquire(ctx, "my-session-id", sessions.AcquireOptions{})
 if err != nil {
     panic(err)
 }
-defer session.Close() // releases the file lock
+defer func() {
+    if err := session.Close(); err != nil {
+        panic(err)
+    }
+}() // releases this process's exclusive lease
 
-if err := session.AddMessage(messages.ChatMessage{
+sessionCtx := session.Context()
+if err := session.AddMessage(sessionCtx, messages.ChatMessage{
     Role:    messages.MessageRoleUser,
     Content: "Hello!",
 }); err != nil {
     panic(err)
 }
 
-history := session.GetHistory() // feed this to CompletionRequest.Messages
+history, err := session.GetHistory(sessionCtx)
+if err != nil {
+    panic(err)
+}
+_ = history // feed this to CompletionRequest.Messages
 
-_ = session.Clear() // wipe the history
+if err := session.Clear(sessionCtx); err != nil {
+    panic(err)
+}
+
+// Replace settings and clear transcript/artifacts in one transaction. Reset
+// preserves the session's canonical name and creation time.
+metadata, err := session.GetMetadata(sessionCtx)
+if err != nil {
+    panic(err)
+}
+metadata.SystemPrompt = "A new system prompt"
+if err := session.Reset(sessionCtx, metadata); err != nil {
+    panic(err)
+}
 ```
 
 Notes:
 
-- `NewFileSessionStore(baseDir, defaultMetadata)` takes two arguments; pass
-  `nil` metadata for defaults. The path is used literally — `~` is not
-  expanded, so pass `""` for the home-relative default.
-- `Close()` is part of the `Session` interface; no type assertion needed.
-- For tests or ephemeral use, `sessions.NewSyncMapSessionStore(nil)` keeps
-  everything in memory with the same interface.
+- `ModeDisk` requires an explicit database path. The Polly CLI uses
+  `~/.pollytool/polly.db`; paths are used literally, so library callers must
+  expand `~` themselves.
+- For tests or ephemeral use, select `ModeMemory` and omit `Path`. Schema,
+  transactions, artifacts, leases, and retention behavior are otherwise the
+  same.
+- `AcquireOptions{Auto: true}` marks a newly created generated session for
+  `AutoSessionTTL` retention. Explicitly named sessions do not expire by
+  default, and reopening an existing session never changes its retention
+  class.
+- `Acquire` holds an exclusive session lease. Always close both the session and
+  store, and use `session.Context()` for work that should stop if the lease is
+  lost. A competing owner eventually receives `sessions.ErrSessionInUse`.
+- `session.ArtifactStore()` is mandatory and scoped to the session. Artifact
+  bytes and their ownership links are committed in the same database as the
+  transcript.
+- The SQLite format is a clean break from the former per-context JSON store.
+  Legacy `~/.pollytool/contexts` files are neither imported nor removed, so the
+  first run after the cutover starts with an empty SQLite session catalog.
 
 ## Structured Output
 
@@ -992,6 +1052,8 @@ package main
 import (
     "context"
     "fmt"
+    "os"
+    "path/filepath"
     "time"
 
     "github.com/alexschlessinger/pollytool/llm"
@@ -1004,19 +1066,42 @@ func main() {
 
     client := llm.GetDefaultClient()
 
-    store, err := sessions.NewFileSessionStore("", nil)
+    home, err := os.UserHomeDir()
     if err != nil {
         panic(err)
     }
-    session, err := store.Get("example-session")
+    store, err := sessions.OpenStore(sessions.StoreConfig{
+        Mode:           sessions.ModeDisk,
+        Path:           filepath.Join(home, ".pollytool", "polly.db"),
+        AutoSessionTTL: 7 * 24 * time.Hour,
+    })
     if err != nil {
         panic(err)
     }
-    defer session.Close()
+    defer func() {
+        if err := store.Close(); err != nil {
+            panic(err)
+        }
+    }()
+
+    session, err := store.Acquire(ctx, "example-session", sessions.AcquireOptions{})
+    if err != nil {
+        panic(err)
+    }
+    defer func() {
+        if err := session.Close(); err != nil {
+            panic(err)
+        }
+    }()
+    sessionCtx := session.Context()
 
     // Seed the system prompt on first run
-    if len(session.GetHistory()) == 0 {
-        if err := session.AddMessage(messages.ChatMessage{
+    history, err := session.GetHistory(sessionCtx)
+    if err != nil {
+        panic(err)
+    }
+    if len(history) == 0 {
+        if err := session.AddMessage(sessionCtx, messages.ChatMessage{
             Role:    messages.MessageRoleSystem,
             Content: "You are a helpful AI assistant.",
         }); err != nil {
@@ -1024,16 +1109,20 @@ func main() {
         }
     }
 
-    if err := session.AddMessage(messages.ChatMessage{
+    if err := session.AddMessage(sessionCtx, messages.ChatMessage{
         Role:    messages.MessageRoleUser,
         Content: "Tell me a joke",
     }); err != nil {
         panic(err)
     }
+    history, err = session.GetHistory(sessionCtx)
+    if err != nil {
+        panic(err)
+    }
 
     req := &llm.CompletionRequest{
         Model:       "openai/gpt-5.4",
-        Messages:    session.GetHistory(),
+        Messages:    history,
         Temperature: llm.Float32Ptr(0.7),
         MaxTokens:   500,
         Timeout:     30 * time.Second,
@@ -1042,12 +1131,12 @@ func main() {
     processor := messages.NewStreamProcessor()
     fmt.Print("Assistant: ")
 
-    for event := range client.ChatCompletionStream(ctx, req, processor) {
+    for event := range client.ChatCompletionStream(sessionCtx, req, processor) {
         switch event.Type {
         case messages.EventTypeContent:
             fmt.Print(event.Content)
         case messages.EventTypeComplete:
-            if err := session.AddMessage(*event.Message); err != nil {
+            if err := session.AddMessage(sessionCtx, *event.Message); err != nil {
                 panic(err)
             }
             fmt.Println()
@@ -1062,10 +1151,11 @@ func main() {
 ## Thread Safety
 
 - `MultiPass` is stateless and safe for concurrent use.
-- Session stores are safe for concurrent use: `SyncMapSessionStore` is built
-  on `sync.Map`, and `FileSessionStore` serializes access with file locks.
-- Individual sessions synchronize their own methods internally (`GetHistory`
-  returns a copy). Compound read-modify-write sequences across multiple calls
-  still need your own coordination.
+- `SQLiteStore` is safe for concurrent use. Different sessions can be active
+  concurrently; acquiring the same session from another process or store waits
+  for its exclusive lease and then returns `ErrSessionInUse`.
+- `GetHistory` and `GetMetadata` return detached copies. Mutations are
+  transactional, but compound read-modify-write sequences across multiple
+  calls still need application-level coordination.
 - Tool `Execute` implementations should be safe to call concurrently — the
   library doesn't serialize them for you.

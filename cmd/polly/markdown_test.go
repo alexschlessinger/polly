@@ -79,6 +79,17 @@ func TestRenderMarkdownUnknownLanguageFallsBack(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownCodeBlockPreservesMarkdownImageLiteral(t *testing.T) {
+	got := renderMarkdown("```markdown\n![headcam-try5](/tmp/headcam-try5.png)\n```")
+	plain := plainStyledText(got)
+	if !strings.Contains(plain, "│ ![headcam-try5](/tmp/headcam-try5.png)") {
+		t.Fatalf("markdown code literal was mangled: %q", plain)
+	}
+	if strings.Contains(plain, "fg:code") {
+		t.Fatalf("gotui style markup leaked into code literal: %q", plain)
+	}
+}
+
 func TestRenderMarkdownEscapesStyleMarkup(t *testing.T) {
 	// Model text that looks like gotui markup but isn't a markdown link must
 	// not inject styles.

@@ -15,7 +15,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -57,34 +56,6 @@ func TestValidateREPLConfigRejectsBoth(t *testing.T) {
 	err := validateREPLConfig(&Config{Files: []string{"a"}, SchemaPath: "s.json"})
 	if err == nil || !strings.Contains(err.Error(), "--file") || !strings.Contains(err.Error(), "--schema") {
 		t.Fatalf("expected combined message, got %v", err)
-	}
-}
-
-func TestReplModelSubmitAndHistory(t *testing.T) {
-	m := newReplModel()
-	m.ed.setText("hello")
-	got := m.submitPrompt()
-	if got != "hello" {
-		t.Fatalf("submit returned %q", got)
-	}
-	if !m.busy {
-		t.Fatal("submit should mark busy")
-	}
-	if len(m.transcript) != 1 || !strings.Contains(m.transcript[0], "hello") {
-		t.Fatalf("expected one transcript entry containing 'hello', got %+v", m.transcript)
-	}
-	if len(m.history) != 1 || m.history[0] != "hello" {
-		t.Fatalf("history not recorded: %+v", m.history)
-	}
-
-	m.busy = false
-	m.ed.clear()
-	got = m.submitPrompt()
-	if got != "" {
-		t.Fatalf("empty submit returned %q", got)
-	}
-	if len(m.history) != 1 {
-		t.Fatalf("empty submit should not extend history, got %d", len(m.history))
 	}
 }
 
@@ -698,7 +669,7 @@ func TestBracketedPasteInsertsMultiLine(t *testing.T) {
 	}
 	select {
 	case p := <-r.pending:
-		t.Fatalf("paste should not submit, got %q", p)
+		t.Fatalf("paste should not submit, got %q", p.displayText)
 	default:
 	}
 
@@ -706,8 +677,8 @@ func TestBracketedPasteInsertsMultiLine(t *testing.T) {
 	send("<Enter>")
 	select {
 	case p := <-r.pending:
-		if p != "a\nb" {
-			t.Fatalf("submitted %q, want \"a\\nb\"", p)
+		if p.displayText != "a\nb" {
+			t.Fatalf("submitted %q, want \"a\\nb\"", p.displayText)
 		}
 	default:
 		t.Fatal("Enter after paste should submit")
@@ -902,6 +873,35 @@ func TestLoadHistory(t *testing.T) {
 	}
 }
 
+func TestPersistentHistoryFiltersAttachmentTokens(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "legacy")
+	if err := os.WriteFile(legacy, []byte("safe\ninspect [image #7]\nafter\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadHistory(legacy); strings.Join(got, ",") != "safe,after" {
+		t.Fatalf("legacy tokenized history was not filtered: %v", got)
+	}
+
+	path := filepath.Join(dir, "current")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.histFile = file
+	r.recordAcceptedInput("inspect [image #1]")
+	r.recordAcceptedInput("plain prompt")
+	r.closeHistory()
+
+	if got := r.model.history; len(got) != 2 || got[0] != "inspect [image #1]" {
+		t.Fatalf("same-process recall lost tokenized input: %v", got)
+	}
+	if got := loadHistory(path); len(got) != 1 || got[0] != "plain prompt" {
+		t.Fatalf("tokenized input leaked into persistent history: %v", got)
+	}
+}
+
 func TestInitHistoryTrimsAndPersists(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hist")
@@ -941,28 +941,26 @@ func TestInitHistoryTrimsAndPersists(t *testing.T) {
 }
 
 func TestRunCommandSessionCommands(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("ctx-test")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
-	session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello"})
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "ctx-test")
+	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
+	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello"})
 
-	r := newManagedREPL(&Config{}, "ctx-test", 0, 0)
+	r := newManagedREPL(&Config{Settings: Settings{MaxHistoryTokens: 5678}}, "ctx-test", 0, 0)
 	r.state = &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil)}
 
 	// /context reports the session name and message stats.
 	if handled, quit := r.runCommand("/context"); !handled || quit {
 		t.Fatalf("/context handled=%v quit=%v", handled, quit)
 	}
-	if joined := strings.Join(r.model.transcript, "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "messages:") {
+	if joined := strings.Join(r.model.transcript, "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "messages:") ||
+		!strings.Contains(joined, "transcript:") || !strings.Contains(joined, "(durable)") || !strings.Contains(joined, "model budget: 5.6k") {
 		t.Fatalf("/context output missing fields: %q", joined)
 	}
 
 	// /clear is display-only: durable history remains intact.
 	r.runCommand("/clear")
-	if got := len(session.GetHistory()); got != 2 {
+	if got := len(testSessionHistory(t, session)); got != 2 {
 		t.Fatalf("/clear changed durable history; got %d messages", got)
 	}
 	if len(r.model.transcript) != 1 || !strings.Contains(r.model.transcript[0], "cleared") {
@@ -971,11 +969,11 @@ func TestRunCommandSessionCommands(t *testing.T) {
 
 	// /reset requires the literal confirmation token, then clears persistence.
 	r.runCommand("/reset")
-	if got := len(session.GetHistory()); got != 2 {
+	if got := len(testSessionHistory(t, session)); got != 2 {
 		t.Fatalf("unconfirmed /reset changed history; got %d messages", got)
 	}
 	r.runCommand("/reset confirm")
-	if got := len(session.GetHistory()); got != 0 {
+	if got := len(testSessionHistory(t, session)); got != 0 {
 		t.Fatalf("/reset confirm left %d messages", got)
 	}
 
@@ -1009,7 +1007,7 @@ func TestAppendHelpPopulatesTranscript(t *testing.T) {
 func TestRunREPLLoopShowsHelp(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("/help\n"))
 	var out bytes.Buffer
-	err := runREPLLoop(reader, &out, func(prompt string) error {
+	err := runREPLLoop(context.Background(), reader, &out, func(prompt string) error {
 		t.Fatalf("runTurn should not be called for /help")
 		return nil
 	})
@@ -1057,6 +1055,34 @@ func TestHandleInterruptCancelsThenQuits(t *testing.T) {
 	// Second Ctrl-C while still winding down: force quit.
 	if quit := r.handleInterrupt(); !quit {
 		t.Fatal("second interrupt should quit")
+	}
+}
+
+func TestMouseLeftOpensThumbnailUnderCursor(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	var opened []string
+	r.openImage = func(path string) error { opened = append(opened, path); return nil }
+	r.model.imagePlacements = []terminalImagePlacement{
+		{Key: "logo", Embedded: "logo", X: 0, Y: 0, Cols: 10, Rows: 5},
+		{Key: "b:image:0", Path: "/tmp/pic.png", X: 4, Y: 6, Cols: 20, Rows: 8},
+	}
+	click := func(x, y int) {
+		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: x, Y: y}})
+	}
+
+	click(3, 6)  // left of the thumbnail
+	click(4, 14) // one row below it (Y+Rows is exclusive)
+	if len(opened) != 0 {
+		t.Fatalf("misses should not open anything, got %v", opened)
+	}
+	click(2, 2) // splash logo has no backing file
+	if len(opened) != 0 {
+		t.Fatalf("logo click should not open anything, got %v", opened)
+	}
+	click(4, 6)   // top-left corner
+	click(23, 13) // bottom-right corner
+	if len(opened) != 2 || opened[0] != "/tmp/pic.png" || opened[1] != "/tmp/pic.png" {
+		t.Fatalf("clicks inside the thumbnail should open it, got %v", opened)
 	}
 }
 
@@ -1181,7 +1207,7 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	if r.model.ed.text() != "" {
 		t.Fatalf("editor should clear after queueing, got %q", r.model.ed.text())
 	}
-	if len(r.model.queue) != 1 || r.model.queue[0] != "queued one" {
+	if len(r.model.queue) != 1 || r.model.queue[0].text != "queued one" || r.model.queue[0].turn == nil {
 		t.Fatalf("queue = %v, want [\"queued one\"]", r.model.queue)
 	}
 	if len(r.model.history) != 1 || r.model.history[0] != "queued one" {
@@ -1190,7 +1216,7 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	// Queueing must not start a turn.
 	select {
 	case p := <-r.pending:
-		t.Fatalf("queueing should not submit, got %q", p)
+		t.Fatalf("queueing should not submit, got %q", p.displayText)
 	default:
 	}
 
@@ -1214,7 +1240,7 @@ func TestEnterWhileBusyQueuesSlashCommandInHistory(t *testing.T) {
 	if r.model.ed.text() != "" {
 		t.Fatalf("editor should clear after queueing, got %q", r.model.ed.text())
 	}
-	if len(r.model.queue) != 1 || r.model.queue[0] != "/retry" {
+	if len(r.model.queue) != 1 || r.model.queue[0].text != "/retry" || r.model.queue[0].turn != nil {
 		t.Fatalf("queue = %v, want [/retry]", r.model.queue)
 	}
 	if len(r.model.history) != 1 || r.model.history[0] != "/retry" {
@@ -1222,14 +1248,14 @@ func TestEnterWhileBusyQueuesSlashCommandInHistory(t *testing.T) {
 	}
 	select {
 	case p := <-r.pending:
-		t.Fatalf("queueing slash command should not submit, got %q", p)
+		t.Fatalf("queueing slash command should not submit, got %q", p.displayText)
 	default:
 	}
 }
 
 func TestStartNextQueuedRunsPromptAfterCommand(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.queue = []string{"/help", "hello"}
+	r.model.queue = queuedTextInputs("/help", "hello")
 
 	ran := make(chan string, 1)
 	runTurn := func(ctx context.Context, prompt string, _ TurnUI) error {
@@ -1347,7 +1373,7 @@ func TestAppendAssistantRendersStreamedLink(t *testing.T) {
 
 func plainStyledText(s string) string {
 	var rendered strings.Builder
-	for _, c := range ui.ParseStyles(s, ui.NewStyle(ui.ColorWhite)) {
+	for _, c := range parseStyledCells(s, ui.NewStyle(ui.ColorWhite)) {
 		if c.Rune != '\u200b' {
 			rendered.WriteRune(c.Rune)
 		}
@@ -1519,8 +1545,8 @@ func TestCompletedTurnMetricsStayInStatus(t *testing.T) {
 	m.contextName = "ctx"
 	m.lastOutcome = turnOutcomeDone
 	m.lastElapsed = 15500 * time.Millisecond
-	m.lastIn = 1234
-	m.lastOut = 567
+	m.totalIn = 1234
+	m.totalOut = 567
 	line := m.statusRow(200)
 	for _, want := range []string{"done", "15.5s", "1.2k/567 tok"} {
 		if !strings.Contains(line, want) {
@@ -1529,6 +1555,30 @@ func TestCompletedTurnMetricsStayInStatus(t *testing.T) {
 	}
 	if len(m.transcript) != 0 {
 		t.Fatalf("status metrics must not add transcript rows: %v", m.transcript)
+	}
+}
+
+func TestTurnTokensAggregateInStatus(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+
+	m.beginTurn("first")
+	first := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	first.RecordTurnTokens(1000, 250)
+	first.RecordTurnTokens(1200, 300)
+	r.endTurn(nil)
+
+	m.beginTurn("second")
+	second := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	second.RecordTurnTokens(800, 200)
+	r.endTurn(nil)
+
+	line := plainStyledText(m.statusRow(200))
+	if !strings.Contains(line, "2.0k/500 tok") {
+		t.Fatalf("completed status should show aggregate tokens, got %q", line)
+	}
+	if m.lastIn != 800 || m.lastOut != 200 {
+		t.Fatalf("last turn tokens = %d/%d, want 800/200", m.lastIn, m.lastOut)
 	}
 }
 
@@ -1574,7 +1624,7 @@ func TestRunREPLLoopExitOnEOF(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("hi\n"))
 	var out bytes.Buffer
 	calls := 0
-	err := runREPLLoop(reader, &out, func(prompt string) error {
+	err := runREPLLoop(context.Background(), reader, &out, func(prompt string) error {
 		calls++
 		if prompt != "hi" {
 			return errors.New("unexpected prompt: " + prompt)
@@ -1594,7 +1644,7 @@ func TestRunREPLLoopExitOnEOF(t *testing.T) {
 
 func TestRunREPLLoopHandlesExitCommand(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("/exit\n"))
-	err := runREPLLoop(reader, &bytes.Buffer{}, func(prompt string) error {
+	err := runREPLLoop(context.Background(), reader, &bytes.Buffer{}, func(prompt string) error {
 		t.Fatalf("runTurn should not be called for /exit")
 		return nil
 	})
@@ -1606,7 +1656,7 @@ func TestRunREPLLoopHandlesExitCommand(t *testing.T) {
 func TestRunREPLLoopSkipsBlankLines(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("\n   \nask\n"))
 	calls := 0
-	err := runREPLLoop(reader, &bytes.Buffer{}, func(prompt string) error {
+	err := runREPLLoop(context.Background(), reader, &bytes.Buffer{}, func(prompt string) error {
 		calls++
 		return nil
 	})

@@ -88,12 +88,17 @@ func pollyLogoRows(width int) [][]ui.Cell {
 		return rows
 	}
 	logoWidth := len([]rune(pollyLogoPixels[0]))
-	sourceLeft := max(0, (logoWidth-width)/2)
+	visibleWidth := min(width, logoWidth)
+	sourceLeft := (logoWidth - visibleWidth) / 2
+	destinationLeft := (width - visibleWidth) / 2
 
 	for sourceRow := 0; sourceRow < len(pollyLogoPixels); sourceRow += 2 {
 		top := []rune(pollyLogoPixels[sourceRow])
 		bottom := []rune(pollyLogoPixels[sourceRow+1])
-		row := make([]ui.Cell, 0, min(width, logoWidth))
+		row := make([]ui.Cell, destinationLeft, destinationLeft+visibleWidth)
+		for column := range row {
+			row[column] = ui.Cell{Rune: ' ', Style: ui.StyleClear}
+		}
 		for column := sourceLeft; column < logoWidth && len(row) < width; column++ {
 			row = append(row, pollyHalfBlock(top[column], bottom[column]))
 		}
@@ -103,9 +108,17 @@ func pollyLogoRows(width int) [][]ui.Cell {
 }
 
 // startupLogoRowCount preserves at least one transcript row. This keeps the
-// normal TUI usable immediately even when the terminal is short.
-func startupLogoRowCount(contentHeight int, visible bool) int {
-	if !visible || contentHeight <= startupLogoHeight {
+// normal TUI usable immediately even when the terminal is short. Terminals
+// with native graphics get the taller image splash; when they are too short
+// for it they degrade to the half-block art, then to nothing.
+func startupLogoRowCount(contentHeight int, visible, nativeImages bool) int {
+	if !visible {
+		return 0
+	}
+	if nativeImages && contentHeight > imageLogoHeight {
+		return imageLogoHeight
+	}
+	if contentHeight <= startupLogoHeight {
 		return 0
 	}
 	return startupLogoHeight

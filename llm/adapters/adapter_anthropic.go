@@ -33,7 +33,7 @@ func (a *AnthropicAdapter) ProcessChunk(chunk any, state streaming.StreamStateIn
 	case anthropic.EventMessageStart:
 		// Message started - capture input tokens
 		if event.Message != nil && event.Message.Usage != nil {
-			state.SetTokenUsage(int(event.Message.Usage.InputTokens), state.GetOutputTokens())
+			applyAnthropicInputUsage(event.Message.Usage, state)
 		}
 
 	case anthropic.EventContentBlockStart:
@@ -52,6 +52,7 @@ func (a *AnthropicAdapter) ProcessChunk(chunk any, state streaming.StreamStateIn
 		}
 		if event.Usage != nil {
 			state.SetTokenUsage(state.GetInputTokens(), int(event.Usage.OutputTokens))
+			applyAnthropicPromptCacheUsage(event.Usage, state)
 		}
 
 	case anthropic.EventMessageStop:
@@ -59,6 +60,17 @@ func (a *AnthropicAdapter) ProcessChunk(chunk any, state streaming.StreamStateIn
 	}
 
 	return nil
+}
+
+func applyAnthropicInputUsage(usage *anthropic.Usage, state streaming.StreamStateInterface) {
+	state.SetTokenUsage(int(usage.TotalInputTokens()), state.GetOutputTokens())
+	applyAnthropicPromptCacheUsage(usage, state)
+}
+
+func applyAnthropicPromptCacheUsage(usage *anthropic.Usage, state streaming.StreamStateInterface) {
+	if read, write, reported := usage.PromptCacheUsage(); reported {
+		state.SetPromptCacheUsage(read, write)
+	}
 }
 
 // handleContentBlockStart processes content block start events

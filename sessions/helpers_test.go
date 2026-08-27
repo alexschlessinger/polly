@@ -2,7 +2,6 @@ package sessions
 
 import (
 	"testing"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -477,62 +476,4 @@ func TestValidateContextName(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestMergeMetadata(t *testing.T) {
-	t.Run("nil existing", func(t *testing.T) {
-		result := MergeMetadata(nil, &Metadata{Name: "new"})
-		if result.Name != "new" {
-			t.Errorf("Name = %q, want %q", result.Name, "new")
-		}
-	})
-
-	t.Run("nil update", func(t *testing.T) {
-		result := MergeMetadata(&Metadata{Name: "original"}, nil)
-		if result.Name != "original" {
-			t.Errorf("Name = %q, want %q", result.Name, "original")
-		}
-	})
-
-	t.Run("non-zero overrides", func(t *testing.T) {
-		existing := &Metadata{Name: "old", MaxTokens: 100}
-		update := &Metadata{Name: "new", Temperature: 0.7}
-		result := MergeMetadata(existing, update)
-		if result.Name != "new" {
-			t.Errorf("Name = %q, want %q", result.Name, "new")
-		}
-		if result.Temperature != 0.7 {
-			t.Errorf("Temperature = %f, want 0.7", result.Temperature)
-		}
-	})
-
-	t.Run("zero value does not override", func(t *testing.T) {
-		existing := &Metadata{MaxTokens: 8192}
-		update := &Metadata{MaxTokens: 0} // zero should not override
-		result := MergeMetadata(existing, update)
-		if result.MaxTokens != 8192 {
-			t.Errorf("MaxTokens = %d, want 8192", result.MaxTokens)
-		}
-	})
-
-	t.Run("zero LastUsed gets backfilled", func(t *testing.T) {
-		existing := &Metadata{Name: "test"}
-		update := &Metadata{}
-		result := MergeMetadata(existing, update)
-		if result.LastUsed.IsZero() {
-			t.Error("LastUsed should be backfilled when zero")
-		}
-		if time.Since(result.LastUsed) > time.Second {
-			t.Error("LastUsed should be approximately now")
-		}
-	})
-
-	t.Run("active skills override when provided", func(t *testing.T) {
-		existing := &Metadata{ActiveSkills: []string{"old-skill"}}
-		update := &Metadata{ActiveSkills: []string{"new-skill"}}
-		result := MergeMetadata(existing, update)
-		if len(result.ActiveSkills) != 1 || result.ActiveSkills[0] != "new-skill" {
-			t.Errorf("ActiveSkills = %v, want [new-skill]", result.ActiveSkills)
-		}
-	})
 }
