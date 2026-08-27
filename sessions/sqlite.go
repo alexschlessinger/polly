@@ -38,6 +38,8 @@ const (
 	defaultLeaseStaleAfter   = 20 * time.Second
 	defaultLeaseAcquireLimit = 10 * time.Second
 	defaultLeaseRetry        = 100 * time.Millisecond
+	journalConfigRetryLimit  = 10 * time.Second
+	journalConfigRetryDelay  = 10 * time.Millisecond
 )
 
 // Variables make the otherwise fixed production lease timings practical to
@@ -47,6 +49,7 @@ var (
 	leaseStaleAfter        = defaultLeaseStaleAfter
 	leaseAcquireTimeout    = defaultLeaseAcquireLimit
 	leaseRetryInterval     = defaultLeaseRetry
+	cleanupInterval        = defaultCleanupInterval
 )
 
 var (
@@ -64,6 +67,7 @@ type SQLiteStore struct {
 	path     string
 	defaults *Metadata
 	autoTTL  time.Duration
+	cleanup  time.Duration
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -125,9 +129,8 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 			return nil, fmt.Errorf("resolve session database path: %w", err)
 		}
 		dsnPath = absolutePath
-		dir := filepath.Dir(absolutePath)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("create session database directory: %w", err)
+		if err := prepareDiskStore(absolutePath); err != nil {
+			return nil, err
 		}
 	} else {
 		raw, err := randomBytes(16)
@@ -154,6 +157,7 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		path:     dsnPath,
 		defaults: cloneMetadata(config.DefaultMetadata),
 		autoTTL:  config.AutoSessionTTL,
+		cleanup:  cleanupInterval,
 		ctx:      ctx,
 		cancel:   cancel,
 		open:     make(map[*sqliteSession]struct{}),
@@ -168,20 +172,106 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		return nil, err
 	}
 	if config.Mode == ModeDisk {
-		if err := os.Chmod(dsnPath, 0o600); err != nil {
+		if err := protectSQLiteFiles(dsnPath); err != nil {
 			cancel(err)
 			_ = db.Close()
-			return nil, fmt.Errorf("protect session database: %w", err)
+			return nil, err
 		}
-		if err := store.Expire(ctx); err != nil {
-			cancel(err)
-			_ = db.Close()
-			return nil, fmt.Errorf("expire sessions at startup: %w", err)
-		}
-		store.wg.Add(1)
-		go store.cleanupLoop()
 	}
+	if err := store.Expire(ctx); err != nil {
+		cancel(err)
+		_ = db.Close()
+		return nil, fmt.Errorf("expire sessions at startup: %w", err)
+	}
+	store.wg.Add(1)
+	go store.cleanupLoop()
 	return store, nil
+}
+
+// prepareDiskStore closes the first-open exposure window without changing the
+// process-wide umask or the permissions of a caller-owned parent directory.
+// SQLite derives new WAL and SHM modes from the already-existing main database,
+// so that file must be private before SQLite is allowed to open it.
+func prepareDiskStore(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create session database directory: %w", err)
+	}
+	for {
+		file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			// O_EXCL reports an existing directory as ErrExist on POSIX but
+			// as an "is a directory" error on Windows; classify any existing
+			// path through the same refusal logic.
+			if !errors.Is(err, os.ErrExist) {
+				if _, statErr := os.Lstat(path); statErr != nil {
+					return fmt.Errorf("create session database securely: %w", err)
+				}
+			}
+			err = protectExistingSQLiteFile(path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			break
+		}
+		if err := file.Chmod(0o600); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("protect session database: %w", err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close session database after secure creation: %w", err)
+		}
+		break
+	}
+	// A process killed during an older vulnerable first open may have left
+	// permissive sidecars behind. Protect or reject them before SQLite can read,
+	// map, or follow any of those paths. The post-open pass still covers
+	// sidecars created by this process.
+	return protectSQLiteFiles(path)
+}
+
+func protectSQLiteFiles(path string) error {
+	for _, candidate := range []string{path, path + "-wal", path + "-shm", path + "-journal"} {
+		if err := protectExistingSQLiteFile(candidate); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func protectExistingSQLiteFile(path string) error {
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing symbolic-link SQLite file %q", path)
+	}
+	if !pathInfo.Mode().IsRegular() {
+		return fmt.Errorf("refusing non-regular SQLite file %q", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open SQLite file %q for protection: %w", path, err)
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect opened SQLite file %q: %w", path, err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return fmt.Errorf("SQLite file %q changed while opening", path)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return fmt.Errorf("protect SQLite file %q: %w", path, err)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) configureAndMigrate(ctx context.Context) error {
@@ -199,51 +289,21 @@ func (s *SQLiteStore) configureAndMigrate(ctx context.Context) error {
 		return fmt.Errorf("session database integrity check failed: %s", quickCheck)
 	}
 
-	var version int
-	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return fmt.Errorf("read session schema version: %w", err)
-	}
-	if version > schemaVersion {
-		return fmt.Errorf("session database schema version %d is newer than supported version %d", version, schemaVersion)
-	}
-	if version == 0 {
-		var tableCount int
-		if err := conn.QueryRowContext(ctx, `
-			SELECT count(*) FROM sqlite_master
-			WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&tableCount); err != nil {
-			return fmt.Errorf("inspect unversioned database: %w", err)
-		}
-		if tableCount != 0 {
-			return fmt.Errorf("refusing unrecognized unversioned session database")
-		}
-		if s.mode == ModeDisk {
-			if _, err := conn.ExecContext(ctx, "PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
-				return fmt.Errorf("configure incremental auto-vacuum: %w", err)
-			}
-		}
-		if err := configureJournal(ctx, conn, s.mode); err != nil {
-			return err
+	// Every would-be migrator configures auto-vacuum before competing for the
+	// schema write lock. Whichever connection wins therefore configures the
+	// empty database before creating its first table. On existing databases this
+	// is a no-op unless a VACUUM is run, so validation below still rejects an
+	// incompatible setting.
+	if s.mode == ModeDisk {
+		if _, err := conn.ExecContext(ctx, "PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+			return fmt.Errorf("configure incremental auto-vacuum: %w", err)
 		}
 	}
-	for version < schemaVersion {
-		previous := version
-		switch version {
-		case 0:
-			if err := migrateSchemaV1(ctx, conn); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("no session schema migration from version %d", version)
-		}
-		if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-			return fmt.Errorf("read migrated session schema version: %w", err)
-		}
-		if version <= previous {
-			return fmt.Errorf("session schema migration from version %d did not advance", previous)
-		}
+	if err := configureJournal(ctx, conn, s.mode); err != nil {
+		return err
 	}
-	if version != schemaVersion {
-		return fmt.Errorf("unsupported session database schema version %d", version)
+	if err := migrateSchema(ctx, conn); err != nil {
+		return err
 	}
 
 	if err := validateSchemaV1(ctx, conn); err != nil {
@@ -272,9 +332,6 @@ func (s *SQLiteStore) configureAndMigrate(ctx context.Context) error {
 		if autoVacuum != 2 {
 			return fmt.Errorf("session database auto-vacuum mode is %d, want incremental", autoVacuum)
 		}
-	}
-	if err := configureJournal(ctx, conn, s.mode); err != nil {
-		return err
 	}
 	return nil
 }
@@ -322,8 +379,24 @@ func configureJournal(ctx context.Context, conn *sql.Conn, mode StoreMode) error
 	if mode == ModeDisk {
 		journal = "WAL"
 	}
-	if _, err := conn.ExecContext(ctx, "PRAGMA journal_mode = "+journal); err != nil {
-		return fmt.Errorf("configure SQLite journal mode %s: %w", journal, err)
+	deadline := time.Now().Add(journalConfigRetryLimit)
+	for {
+		_, err := conn.ExecContext(ctx, "PRAGMA journal_mode = "+journal)
+		if err == nil {
+			break
+		}
+		if !isSQLiteBusy(err) || time.Now().After(deadline) {
+			return fmt.Errorf("configure SQLite journal mode %s: %w", journal, err)
+		}
+		timer := time.NewTimer(journalConfigRetryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("configure SQLite journal mode %s: %w", journal, context.Cause(ctx))
+		case <-timer.C:
+		}
 	}
 	if mode == ModeDisk {
 		if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA journal_size_limit = %d", journalSizeLimit)); err != nil {
@@ -333,7 +406,7 @@ func configureJournal(ctx context.Context, conn *sql.Conn, mode StoreMode) error
 	return nil
 }
 
-func migrateSchemaV1(ctx context.Context, conn *sql.Conn) error {
+func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return fmt.Errorf("begin session schema migration: %w", err)
 	}
@@ -344,6 +417,39 @@ func migrateSchemaV1(ctx context.Context, conn *sql.Conn) error {
 		}
 	}()
 
+	var version int
+	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read session schema version: %w", err)
+	}
+	if version > schemaVersion {
+		return fmt.Errorf("session database schema version %d is newer than supported version %d", version, schemaVersion)
+	}
+	if version == 0 {
+		var tableCount int
+		if err := conn.QueryRowContext(ctx, `
+			SELECT count(*) FROM sqlite_master
+			WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&tableCount); err != nil {
+			return fmt.Errorf("inspect unversioned database: %w", err)
+		}
+		if tableCount != 0 {
+			return fmt.Errorf("refusing unrecognized unversioned session database")
+		}
+		if err := applySchemaV1(ctx, conn); err != nil {
+			return err
+		}
+		version = schemaVersion
+	}
+	if version != schemaVersion {
+		return fmt.Errorf("no session schema migration from version %d", version)
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit session schema migration: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func applySchemaV1(ctx context.Context, conn *sql.Conn) error {
 	statements := []string{
 		`CREATE TABLE sessions (
 			id BLOB PRIMARY KEY NOT NULL CHECK(length(id) = 16),
@@ -395,10 +501,6 @@ func migrateSchemaV1(ctx context.Context, conn *sql.Conn) error {
 			return fmt.Errorf("apply session schema v1: %w", err)
 		}
 	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return fmt.Errorf("commit session schema v1: %w", err)
-	}
-	committed = true
 	return nil
 }
 
@@ -680,7 +782,7 @@ func validateForeignKeys(ctx context.Context, conn *sql.Conn, table string, expe
 
 func (s *SQLiteStore) cleanupLoop() {
 	defer s.wg.Done()
-	ticker := time.NewTicker(defaultCleanupInterval)
+	ticker := time.NewTicker(s.cleanup)
 	defer ticker.Stop()
 	for {
 		select {
@@ -817,7 +919,7 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 		}
 		if err != nil && !isSQLiteBusy(err) {
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return nil, context.Cause(ctx)
 			}
 			if cause := context.Cause(s.ctx); cause != nil {
 				return nil, cause
@@ -835,7 +937,7 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 				<-timer.C
 			}
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return nil, context.Cause(ctx)
 			}
 			if cause := context.Cause(s.ctx); cause != nil {
 				return nil, cause
@@ -1287,7 +1389,7 @@ func (s *sqliteSession) mapError(caller context.Context, err error) error {
 		return cause
 	}
 	if caller != nil && caller.Err() != nil {
-		return caller.Err()
+		return context.Cause(caller)
 	}
 	return err
 }
@@ -1396,13 +1498,13 @@ func (s *sqliteSession) AddMessages(ctx context.Context, messagesToAdd []message
 			return cause
 		}
 		if ctx != nil {
-			return ctx.Err()
+			return context.Cause(ctx)
 		}
 		return nil
 	}
 	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return err
+		if cause := context.Cause(ctx); cause != nil {
+			return cause
 		}
 	}
 	payloads := make([][]byte, len(messagesToAdd))
@@ -1464,35 +1566,103 @@ func (s *sqliteSession) Clear(ctx context.Context) error {
 		if err := json.Unmarshal(settings, &metadata); err != nil {
 			return fmt.Errorf("decode session metadata: %w", err)
 		}
-		if _, err := conn.ExecContext(opCtx, "DELETE FROM messages WHERE session_id = ?", s.id); err != nil {
+		next, err := replaceSessionContents(opCtx, conn, s.id, metadata.SystemPrompt)
+		if err != nil {
 			return err
-		}
-		next := int64(0)
-		if metadata.SystemPrompt != "" {
-			payload, err := json.Marshal(messages.ChatMessage{Role: messages.MessageRoleSystem, Content: metadata.SystemPrompt})
-			if err != nil {
-				return err
-			}
-			if _, err := conn.ExecContext(opCtx,
-				"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
-				s.id, 0, payload); err != nil {
-				return err
-			}
-			next = 1
 		}
 		if _, err := conn.ExecContext(opCtx,
 			"UPDATE sessions SET next_sequence = ?, updated_ns = ? WHERE id = ?", next, nowNS, s.id); err != nil {
 			return err
 		}
-		if _, err := conn.ExecContext(opCtx, "DELETE FROM session_artifacts WHERE session_id = ?", s.id); err != nil {
-			return err
-		}
-		return garbageCollectArtifacts(opCtx, conn)
+		return nil
 	})
 	if err == nil {
 		s.store.incrementalVacuum(opCtx)
 	}
 	return s.mapError(ctx, err)
+}
+
+// Reset atomically replaces the session settings and conversation contents.
+// Canonical identity and timestamps remain owned by the store; the supplied
+// metadata controls all other settings, including the rebuilt system message.
+func (s *sqliteSession) Reset(ctx context.Context, info *Metadata) error {
+	if info == nil {
+		return fmt.Errorf("metadata cannot be nil")
+	}
+	metadata := cloneMetadata(info)
+	opCtx, cleanup, err := s.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	now := time.Now().UTC()
+	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
+		if err := s.requireLease(opCtx, conn); err != nil {
+			return err
+		}
+		var snap sessionSnapshot
+		var ttlExplicit int
+		if err := conn.QueryRowContext(opCtx, `
+			SELECT name,created_ns,updated_ns,ttl_ns,retention,settings_json,next_sequence,ttl_explicit
+			FROM sessions WHERE id = ?`, s.id).Scan(
+			&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.retention,
+			&snap.settings, &snap.nextSeq, &ttlExplicit); err != nil {
+			return err
+		}
+		metadata.Name = snap.name
+		metadata.Created = time.Unix(0, snap.createdNS).UTC()
+		metadata.LastUsed = now
+		if metadata.TTL < 0 {
+			return fmt.Errorf("session TTL cannot be negative")
+		}
+		newTTLExplicit := ttlExplicit
+		if ttlExplicit == 0 && int64(metadata.TTL) != snap.ttlNS {
+			newTTLExplicit = 1
+		}
+		settings, err := json.Marshal(metadata)
+		if err != nil {
+			return fmt.Errorf("encode session metadata: %w", err)
+		}
+		next, err := replaceSessionContents(opCtx, conn, s.id, metadata.SystemPrompt)
+		if err != nil {
+			return err
+		}
+		_, err = conn.ExecContext(opCtx, `
+			UPDATE sessions
+			SET updated_ns = ?, ttl_ns = ?, ttl_explicit = ?, settings_json = ?, next_sequence = ?
+			WHERE id = ?`, now.UnixNano(), int64(metadata.TTL), newTTLExplicit, settings, next, s.id)
+		return err
+	})
+	if err == nil {
+		s.store.incrementalVacuum(opCtx)
+	}
+	return s.mapError(ctx, err)
+}
+
+func replaceSessionContents(ctx context.Context, conn *sql.Conn, sessionID []byte, systemPrompt string) (int64, error) {
+	if _, err := conn.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ?", sessionID); err != nil {
+		return 0, err
+	}
+	next := int64(0)
+	if systemPrompt != "" {
+		payload, err := json.Marshal(messages.ChatMessage{Role: messages.MessageRoleSystem, Content: systemPrompt})
+		if err != nil {
+			return 0, err
+		}
+		if _, err := conn.ExecContext(ctx,
+			"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
+			sessionID, 0, payload); err != nil {
+			return 0, err
+		}
+		next = 1
+	}
+	if _, err := conn.ExecContext(ctx, "DELETE FROM session_artifacts WHERE session_id = ?", sessionID); err != nil {
+		return 0, err
+	}
+	if err := garbageCollectArtifacts(ctx, conn); err != nil {
+		return 0, err
+	}
+	return next, nil
 }
 
 func (s *sqliteSession) GetName(ctx context.Context) (string, error) {
@@ -1528,16 +1698,15 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 			&snap.settings, &snap.nextSeq, &ttlExplicit); err != nil {
 			return err
 		}
-		if snap.name == newName {
-			return nil
-		}
-		var exists bool
-		if err := conn.QueryRowContext(opCtx,
-			"SELECT EXISTS(SELECT 1 FROM sessions WHERE name = ?)", newName).Scan(&exists); err != nil {
-			return err
-		}
-		if exists {
-			return fmt.Errorf("session %q already exists", newName)
+		if snap.name != newName {
+			var exists bool
+			if err := conn.QueryRowContext(opCtx,
+				"SELECT EXISTS(SELECT 1 FROM sessions WHERE name = ?)", newName).Scan(&exists); err != nil {
+				return err
+			}
+			if exists {
+				return fmt.Errorf("session %q already exists", newName)
+			}
 		}
 		metadata, err := metadataFromSnapshot(snap)
 		if err != nil {
@@ -1805,8 +1974,8 @@ type sqliteArtifactStore struct {
 
 func (s *sqliteArtifactStore) Put(ctx context.Context, blob artifacts.Blob) (artifacts.Ref, error) {
 	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return artifacts.Ref{}, err
+		if cause := context.Cause(ctx); cause != nil {
+			return artifacts.Ref{}, cause
 		}
 	}
 	ref := artifacts.RefForBlob(blob)
@@ -1902,8 +2071,8 @@ func verifyStoredArtifact(ctx context.Context, conn *sql.Conn, digest []byte, ex
 
 func (s *sqliteArtifactStore) Open(ctx context.Context, id string) (io.ReadCloser, error) {
 	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, cause
 		}
 	}
 	digest, err := artifactDigest(id)

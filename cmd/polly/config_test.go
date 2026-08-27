@@ -196,6 +196,7 @@ func TestSandboxPresetFlagDefaultsAndValidation(t *testing.T) {
 func TestSandboxPresetFlagValidationDoesNotInspectWorkspace(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows os.UserHomeDir
 	t.Setenv("POLLYTOOL_SANDBOX", defaultSandboxPreset)
 	t.Chdir(home)
 
@@ -267,7 +268,9 @@ func TestSandboxFlagsAllowExplicitNoSandboxFalse(t *testing.T) {
 }
 
 func TestManagementCommandIgnoresAmbientNoSandboxPolicyConflict(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows os.UserHomeDir
 	t.Setenv("POLLYTOOL_NOSANDBOX", "true")
 	t.Setenv("POLLYTOOL_SANDBOX", "readonly")
 

@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -527,6 +528,10 @@ func TestLeaseContentionTakeoverAndTypedLoss(t *testing.T) {
 		t.Fatalf("delete active session = %v", err)
 	}
 
+	// The contended probes above need the short budget; the takeover below
+	// must instead survive a slow CI disk committing its write transaction.
+	leaseAcquireTimeout = 5 * time.Second
+
 	if _, err := firstStore.db.ExecContext(ctx,
 		"UPDATE session_leases SET expires_ns = ? WHERE session_id = ?", time.Now().Add(-time.Second).UnixNano(), first.(*sqliteSession).id); err != nil {
 		t.Fatal(err)
@@ -721,6 +726,36 @@ func TestAutoRetentionMetadataRoundTripRenameAndEmptyClose(t *testing.T) {
 	}
 	if exists, err := store.Exists(ctx, "unused"); err != nil || exists {
 		t.Fatalf("unused auto exists = %v, %v", exists, err)
+	}
+}
+
+func TestSameNameRenamePromotesAutoRetention(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, nil, 7*24*time.Hour)
+	ctx := context.Background()
+	session, err := store.Acquire(ctx, "generated-name", AcquireOptions{Auto: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	concrete := session.(*sqliteSession)
+	if err := session.Rename(ctx, "generated-name"); err != nil {
+		t.Fatal(err)
+	}
+	var retention string
+	var ttlNS int64
+	var ttlExplicit int
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT retention,ttl_ns,ttl_explicit FROM sessions WHERE id = ?`, concrete.id).
+		Scan(&retention, &ttlNS, &ttlExplicit); err != nil {
+		t.Fatal(err)
+	}
+	if retention != retentionNamed || ttlNS != 0 || ttlExplicit != 0 {
+		t.Fatalf("same-name rename state = retention %q, TTL %v, explicit %d", retention, time.Duration(ttlNS), ttlExplicit)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := store.Exists(ctx, "generated-name"); err != nil || !exists {
+		t.Fatalf("same-name renamed session exists = %v, %v", exists, err)
 	}
 }
 
@@ -1114,6 +1149,357 @@ func TestSchemaConfigurationRejectionAndPermissions(t *testing.T) {
 	got, err := os.ReadFile(corruptPath)
 	if err != nil || !reflect.DeepEqual(got, original) {
 		t.Fatalf("corrupt database was replaced: %q, %v", got, err)
+	}
+}
+
+func TestDiskStoreProtectsLiveSQLiteFilesInExistingDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on Windows")
+	}
+	setPermissiveTestUmask(t)
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(root, "polly.db")
+	store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	session := acquireNamed(t, store, "private")
+	if err := session.AddMessage(context.Background(), messages.ChatMessage{
+		Role: messages.MessageRoleUser, Content: "secret transcript",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if info, err := os.Stat(root); err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("caller-owned directory mode = %v, %v; want 0755", info, err)
+	}
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat live SQLite file %q: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("live SQLite file %q mode = %04o, want 0600", path, got)
+		}
+	}
+	wal, err := os.ReadFile(dbPath + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(wal, []byte("secret transcript")) {
+		t.Fatal("live WAL did not contain the transcript fixture")
+	}
+}
+
+func TestDiskStoreRejectsNonRegularPathWithoutChangingIt(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "polly.db")
+	if err := os.Mkdir(dbPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dbPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Windows reports writable directories as 0777 regardless of Chmod, so
+	// compare against the observed pre-open mode instead of a literal.
+	before, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: dbPath}); err == nil || !strings.Contains(err.Error(), "non-regular") {
+		t.Fatalf("directory database path open = %v", err)
+	}
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != before.Mode().Perm() {
+		t.Fatalf("rejected directory mode changed to %04o", got)
+	}
+}
+
+func TestDiskStoreRejectsSymlinkWithoutChangingTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation commonly requires elevated privileges on Windows")
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "target.db")
+	if err := os.WriteFile(target, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(root, "polly.db")
+	if err := os.Symlink(target, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: dbPath}); err == nil || !strings.Contains(err.Error(), "symbolic-link") {
+		t.Fatalf("symlink database path open = %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("symlink target mode changed to %04o", got)
+	}
+}
+
+func TestDiskStoreProtectsOrRejectsExistingSidecarsBeforeOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits and symlinks are not reliable on Windows")
+	}
+	t.Run("permissive WAL", func(t *testing.T) {
+		root := t.TempDir()
+		dbPath := filepath.Join(root, "polly.db")
+		walPath := dbPath + "-wal"
+		if err := os.WriteFile(walPath, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := prepareDiskStore(dbPath); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(walPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("preexisting WAL mode = %04o, want 0600", got)
+		}
+	})
+
+	t.Run("WAL symlink", func(t *testing.T) {
+		root := t.TempDir()
+		dbPath := filepath.Join(root, "polly.db")
+		target := filepath.Join(root, "target")
+		if err := os.WriteFile(target, []byte("unchanged"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, dbPath+"-wal"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: dbPath})
+		if err == nil || !strings.Contains(err.Error(), "symbolic-link") {
+			t.Fatalf("OpenStore with WAL symlink error = %v", err)
+		}
+		contents, readErr := os.ReadFile(target)
+		if readErr != nil || string(contents) != "unchanged" {
+			t.Fatalf("sidecar symlink target changed: contents %q, error %v", contents, readErr)
+		}
+	})
+}
+
+func TestConcurrentFirstOpenSerializesSchemaMigration(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "polly.db")
+	const openers = 24
+	start := make(chan struct{})
+	errs := make(chan error, openers)
+	var wg sync.WaitGroup
+	for range openers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: dbPath})
+			if err == nil {
+				err = store.Close()
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent first open: %v", err)
+		}
+	}
+
+	store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: dbPath})
+	if err != nil {
+		t.Fatalf("open migrated database: %v", err)
+	}
+	defer store.Close()
+	var version int
+	if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != schemaVersion {
+		t.Fatalf("schema version after concurrent opens = %d, %v", version, err)
+	}
+}
+
+func TestMemoryStoreRunsAutomaticExpiry(t *testing.T) {
+	oldCleanupInterval := cleanupInterval
+	cleanupInterval = 5 * time.Millisecond
+	t.Cleanup(func() { cleanupInterval = oldCleanupInterval })
+
+	store, _ := openTestStore(t, ModeMemory, &Metadata{TTL: time.Second}, 0)
+	ctx := context.Background()
+	session := acquireNamed(t, store, "memory-expiry")
+	concrete := session.(*sqliteSession)
+	if _, err := store.db.ExecContext(ctx,
+		"UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), concrete.id); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		exists, err := store.Exists(ctx, "memory-expiry")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("memory store did not automatically expire the session")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestResetAtomicallyReplacesMetadataContentsAndArtifacts(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, &Metadata{
+		SystemPrompt: "old system",
+		Model:        "old-model",
+	}, 0)
+	ctx := context.Background()
+	session := acquireNamed(t, store, "resettable")
+	if err := session.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "old turn"}); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := session.ArtifactStore().Put(ctx, artifacts.Blob{Data: []byte("old artifact")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := session.GetMetadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := &Metadata{
+		Name:         "caller-controlled",
+		Created:      time.Unix(1, 0),
+		LastUsed:     time.Unix(2, 0),
+		SystemPrompt: "new system",
+		Model:        "new-model",
+		TTL:          2 * time.Hour,
+	}
+	if err := session.Reset(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+	after, err := session.GetMetadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows wall-clock granularity can leave LastUsed equal to the prior
+	// stamp, so only reject regressions and caller-controlled values.
+	if after.Name != "resettable" || !after.Created.Equal(before.Created) ||
+		after.LastUsed.Before(before.LastUsed) || after.LastUsed.Equal(replacement.LastUsed) {
+		t.Fatalf("canonical metadata after reset = %+v; before %+v", after, before)
+	}
+	if after.SystemPrompt != "new system" || after.Model != "new-model" || after.TTL != 2*time.Hour {
+		t.Fatalf("replacement metadata after reset = %+v", after)
+	}
+	history, err := session.GetHistory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Role != messages.MessageRoleSystem || history[0].Content != "new system" {
+		t.Fatalf("history after reset = %#v", history)
+	}
+	if _, err := session.ArtifactStore().Open(ctx, ref.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("artifact after reset = %v", err)
+	}
+}
+
+func TestResetRollsBackMetadataContentsAndArtifactsTogether(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, &Metadata{SystemPrompt: "old system", Model: "old-model"}, 0)
+	ctx := context.Background()
+	session := acquireNamed(t, store, "rollback")
+	if err := session.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "old turn"}); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := session.ArtifactStore().Put(ctx, artifacts.Blob{Data: []byte("keep me")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeMetadata, err := session.GetMetadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeHistory, err := session.GetHistory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_reset BEFORE INSERT ON messages
+		BEGIN SELECT RAISE(ABORT, 'blocked reset'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := cloneMetadata(beforeMetadata)
+	replacement.SystemPrompt = "new system"
+	replacement.Model = "new-model"
+	if err := session.Reset(ctx, replacement); err == nil || !strings.Contains(err.Error(), "blocked reset") {
+		t.Fatalf("blocked reset error = %v", err)
+	}
+	afterMetadata, err := session.GetMetadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterMetadata, beforeMetadata) {
+		t.Fatalf("metadata changed after rolled-back reset: got %+v, want %+v", afterMetadata, beforeMetadata)
+	}
+	afterHistory, err := session.GetHistory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterHistory, beforeHistory) {
+		t.Fatalf("history changed after rolled-back reset: got %#v, want %#v", afterHistory, beforeHistory)
+	}
+	if got := readArtifact(t, session.ArtifactStore(), ref.ID); string(got) != "keep me" {
+		t.Fatalf("artifact changed after rolled-back reset: %q", got)
+	}
+}
+
+func TestSessionOperationsPreserveCallerCancellationCause(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, nil, 0)
+	session := acquireNamed(t, store, "typed-cause")
+	want := errors.New("typed caller cancellation")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(want)
+
+	checks := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "history", run: func() error { _, err := session.GetHistory(ctx); return err }},
+		{name: "message", run: func() error {
+			return session.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "nope"})
+		}},
+		{name: "empty message batch", run: func() error { return session.AddMessages(ctx, nil) }},
+		{name: "artifact put", run: func() error {
+			_, err := session.ArtifactStore().Put(ctx, artifacts.Blob{Data: []byte("nope")})
+			return err
+		}},
+		{name: "artifact open", run: func() error {
+			_, err := session.ArtifactStore().Open(ctx, strings.Repeat("0", 64))
+			return err
+		}},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if err := check.run(); !errors.Is(err, want) {
+				t.Fatalf("operation error = %v, want caller cause %v", err, want)
+			}
+		})
 	}
 }
 

@@ -47,7 +47,10 @@ func TestDiscardUnusedAutoContext(t *testing.T) {
 	store := testOpenDiskStore(t, filepath.Join(t.TempDir(), "polly.db"), nil)
 
 	idle := testAcquireAutoSession(t, store, "idle-fox")
-	if err := discardUnusedAutoContext(context.Background(), &conversationState{session: idle}, store, "idle-fox"); err != nil {
+	// Production derives the run context from the session. Closing the session
+	// cancels that context, so cleanup must not attempt a subsequent store call
+	// with it.
+	if err := discardUnusedAutoContext(idle.Context(), &conversationState{session: idle}); err != nil {
 		t.Fatalf("discard idle context: %v", err)
 	}
 	if testStoreExists(t, store, "idle-fox") {
@@ -58,11 +61,22 @@ func TestDiscardUnusedAutoContext(t *testing.T) {
 	if err := used.AddMessage(context.Background(), messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"}); err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if err := discardUnusedAutoContext(context.Background(), &conversationState{session: used}, store, "busy-owl"); err != nil {
+	if err := discardUnusedAutoContext(used.Context(), &conversationState{session: used}); err != nil {
 		t.Fatalf("discard used context: %v", err)
 	}
 	if !testStoreExists(t, store, "busy-owl") {
 		t.Fatal("auto context with a turn must survive exit")
+	}
+
+	renamed := testAcquireAutoSession(t, store, "misty-vole")
+	if err := renamed.Rename(context.Background(), "kept-session"); err != nil {
+		t.Fatalf("rename idle auto context: %v", err)
+	}
+	if err := discardUnusedAutoContext(renamed.Context(), &conversationState{session: renamed}); err != nil {
+		t.Fatalf("close renamed context: %v", err)
+	}
+	if !testStoreExists(t, store, "kept-session") || testStoreExists(t, store, "misty-vole") {
+		t.Fatal("renaming must promote and preserve an otherwise-unused auto context")
 	}
 }
 
