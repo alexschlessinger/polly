@@ -949,6 +949,17 @@ _ = history // feed this to CompletionRequest.Messages
 if err := session.Clear(sessionCtx); err != nil {
     panic(err)
 }
+
+// Replace settings and clear transcript/artifacts in one transaction. Reset
+// preserves the session's canonical name and creation time.
+metadata, err := session.GetMetadata(sessionCtx)
+if err != nil {
+    panic(err)
+}
+metadata.SystemPrompt = "A new system prompt"
+if err := session.Reset(sessionCtx, metadata); err != nil {
+    panic(err)
+}
 ```
 
 Notes:

@@ -30,12 +30,11 @@ func needsFileStore(config *Config, contextID string) bool {
 // mode even when no flag demands persistence (used for auto-named REPL
 // contexts).
 func setupSessionStore(config *Config, contextID string, forceFile bool) (sessions.SessionStore, error) {
-	// Create default context info with initial settings
-	defaultInfo := &sessions.Metadata{
-		TTL:              0,
-		SystemPrompt:     config.SystemPrompt,
-		MaxHistoryTokens: config.MaxHistoryTokens,
-	}
+	// New sessions must start with the fully resolved invocation settings.
+	// Existing sessions restore every persisted value, including meaningful
+	// zeros, so a partial default would make a freshly named context look like
+	// an existing context whose model and limits were intentionally cleared.
+	defaultInfo := metadataFromConfig(config)
 
 	storeConfig := sessions.StoreConfig{
 		Mode:            sessions.ModeMemory,
@@ -51,6 +50,15 @@ func setupSessionStore(config *Config, contextID string, forceFile bool) (sessio
 		storeConfig.Path = filepath.Join(homeDir, ".pollytool", "polly.db")
 	}
 	return sessions.OpenStore(storeConfig)
+}
+
+func metadataFromConfig(config *Config) *sessions.Metadata {
+	metadata := &sessions.Metadata{}
+	config.Settings.ToMetadataSettings(metadata)
+	// Config.MaxIterations is the runtime value populated by parseConfig;
+	// Settings.MaxIterations is retained only for persisted-settings helpers.
+	metadata.MaxIterations = config.MaxIterations
+	return metadata
 }
 
 // handleListContexts lists all available contexts
@@ -295,14 +303,11 @@ func handleCreateContext(ctx context.Context, store sessions.SessionStore, confi
 		return fmt.Errorf("context '%s' already exists", contextID)
 	}
 
-	// Create context info with all settings
-	info := &sessions.Metadata{
-		Name:     contextID,
-		Created:  time.Now(),
-		LastUsed: time.Now(),
-	}
-	// Copy settings from config
-	config.Settings.ToMetadataSettings(info)
+	// Create context info with all resolved settings.
+	info := metadataFromConfig(config)
+	info.Name = contextID
+	info.Created = time.Now()
+	info.LastUsed = time.Now()
 
 	// Create session and set its context info
 	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{})
@@ -406,12 +411,9 @@ func handleResetContext(ctx context.Context, store sessions.SessionStore, config
 		return nil
 	}
 
-	// Reset the context using the resetContext helper
-	if err := resetContext(ctx, store, contextID); err != nil {
-		return fmt.Errorf("failed to reset context: %w", err)
-	}
-
-	// Apply any command-line overrides through the session
+	// Apply every explicit override and clear the conversation in one
+	// transaction. This keeps the rebuilt system message, settings, transcript,
+	// and artifact ownership consistent even if the reset fails partway through.
 	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -432,11 +434,10 @@ func handleResetContext(ctx context.Context, store sessions.SessionStore, config
 	if md == nil {
 		md = &sessions.Metadata{Name: contextID}
 	}
-	md.LastUsed = time.Now()
 	applyFlagSettings(md, config, cmd)
 
-	if err := session.SetMetadata(ctx, md); err != nil {
-		return fmt.Errorf("failed to update context info: %w", err)
+	if err := session.Reset(ctx, md); err != nil {
+		return fmt.Errorf("failed to reset context: %w", err)
 	}
 
 	fmt.Printf("Reset context '%s' (cleared conversation, kept settings)\n", contextID)
@@ -530,9 +531,10 @@ func resetContextWithOptionalSystemPrompt(ctx context.Context, sessionStore sess
 			metadata = &sessions.Metadata{}
 		}
 		metadata.SystemPrompt = *systemPrompt
-		if err := session.SetMetadata(ctx, metadata); err != nil {
-			return fmt.Errorf("failed to update context %s system prompt: %w", name, err)
+		if err := session.Reset(ctx, metadata); err != nil {
+			return fmt.Errorf("failed to reset context %s with system prompt: %w", name, err)
 		}
+		return nil
 	}
 
 	// Clear the session history

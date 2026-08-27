@@ -30,6 +30,15 @@ import (
 func main() {
 	command := getCommand()
 	if err := command.Run(context.Background(), os.Args); err != nil {
+		// Signal cancellation travels through the ordinary command return path so
+		// session, store, and terminal defers all run before the process exits.
+		// Do not render that expected shutdown as a generic command error.
+		if code, remaining, ok := splitSignalError(err); ok {
+			if remaining != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", remaining)
+			}
+			cleanupAndExit(code)
+		}
 		var ee *exitError
 		if errors.As(err, &ee) {
 			if ee.err != nil {
@@ -145,6 +154,17 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 	// that never see a turn are discarded on exit.
 	autoContext := contextID == "" && wantsAutoREPLContext(config)
 
+	// Session-store defaults are snapshotted when the store opens. Resolve the
+	// mode-specific prompt first so a newly created named or auto REPL session
+	// starts with the markdown-aware prompt rather than persisting the one-shot
+	// default. Management commands retain their existing explicit/default
+	// settings because they do not select a conversation surface.
+	if !hasManagementAction(config) {
+		if mode, modeErr := selectConversationMode(config, hasStdinData()); modeErr == nil {
+			applyConversationModeDefaults(config, mode, cmd.IsSet("system"), supportsManagedREPL())
+		}
+	}
+
 	sessionStore, err := setupSessionStore(config, contextID, autoContext)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create context store: %w", err)
@@ -193,6 +213,17 @@ func wantsAutoREPLContext(config *Config) bool {
 		!hasStdinData() &&
 		!needsFileStore(config, "") &&
 		validateREPLConfig(config) == nil
+}
+
+func hasManagementAction(config *Config) bool {
+	return config.ResetContext != "" ||
+		config.ListContexts ||
+		config.ListSkills ||
+		config.DeleteContext != "" ||
+		config.AddToContext ||
+		config.PurgeAll ||
+		config.CreateContext != "" ||
+		config.ShowContext != ""
 }
 
 func (r *commandRunner) Run() (retErr error) {
@@ -554,10 +585,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 
 	// Applies before initializeSession so a context's stored prompt still
 	// overrides the effective default.
-	if input.mode == conversationModeREPL {
-		config.Settings.SystemPrompt = effectiveDefaultSystemPrompt(
-			config.Settings.SystemPrompt, cmd.IsSet("system"), supportsManagedREPL())
-	}
+	applyConversationModeDefaults(config, input.mode, cmd.IsSet("system"), supportsManagedREPL())
 
 	// Initialize session state once so one-shot and REPL share the same runtime.
 	sandboxWarnings := newBroadWritablePathWarner()
@@ -621,7 +649,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	case conversationModeREPL:
 		replErr := runREPL(ctx, config, state)
 		if autoContext {
-			if err := discardUnusedAutoContext(ctx, state, sessionStore, contextID); replErr == nil && err != nil {
+			if err := discardUnusedAutoContext(ctx, state); replErr == nil && err != nil {
 				replErr = err
 			}
 		}
@@ -639,11 +667,13 @@ func cacheSessionIDForSession(ctx context.Context, session sessions.Session) (st
 	return id, nil
 }
 
-// discardUnusedAutoContext deletes a generated context that never saw a turn,
-// so launch-and-quit REPL runs leave no file behind. The session's own lock
-// must be released first — Delete skips locked sessions. A context renamed via
-// /rename is untouched: its file no longer lives under the generated name.
-func discardUnusedAutoContext(ctx context.Context, state *conversationState, store sessions.SessionStore, contextID string) error {
+// discardUnusedAutoContext closes a generated context that never saw a turn,
+// so launch-and-quit REPL runs leave no durable session behind. SQLite session
+// close owns this retention transition: it atomically removes an unused auto
+// session while preserving one promoted to named via /rename. In particular,
+// there must be no follow-up store operation using the now-cancelled session
+// context.
+func discardUnusedAutoContext(ctx context.Context, state *conversationState) error {
 	if state.session == nil {
 		return nil
 	}
@@ -658,9 +688,6 @@ func discardUnusedAutoContext(ctx context.Context, state *conversationState, sto
 	}
 	if err := state.session.Close(); err != nil {
 		return fmt.Errorf("close generated context: %w", err)
-	}
-	if err := store.Delete(ctx, contextID); err != nil {
-		return fmt.Errorf("discard generated context: %w", err)
 	}
 	return nil
 }
@@ -736,6 +763,14 @@ func effectiveDefaultSystemPrompt(current string, isSet, managedREPL bool) strin
 		return defaultREPLSystemPrompt
 	}
 	return current
+}
+
+func applyConversationModeDefaults(config *Config, mode conversationMode, systemPromptSet, managedREPL bool) {
+	if mode != conversationModeREPL {
+		return
+	}
+	config.Settings.SystemPrompt = effectiveDefaultSystemPrompt(
+		config.Settings.SystemPrompt, systemPromptSet, managedREPL)
 }
 
 func runREPL(ctx context.Context, config *Config, state *conversationState) error {
@@ -1482,9 +1517,90 @@ func hasStdinData() bool {
 	return (stat.Mode() & os.ModeCharDevice) == 0
 }
 
-// setupSignalHandling sets up signal handling for graceful shutdown
+// shutdownSignal is carried as the cancellation cause so main can distinguish
+// an expected process signal from an ordinary context cancellation after all
+// command defers have unwound.
+type shutdownSignal struct {
+	signal os.Signal
+}
+
+func (e *shutdownSignal) Error() string {
+	return e.signal.String()
+}
+
+func signalExitCode(err error) (int, bool) {
+	code, _, ok := splitSignalError(err)
+	return code, ok
+}
+
+// splitSignalError finds the process signal while retaining independent
+// cleanup failures joined during deferred unwinding. The expected signal branch
+// stays silent, but losing the session/store/tool cleanup error would hide
+// durable-state failures at exactly the point they matter most.
+func splitSignalError(err error) (int, error, bool) {
+	var shutdown *shutdownSignal
+	if !errors.As(err, &shutdown) {
+		return 0, nil, false
+	}
+	code := 1
+	switch shutdown.signal {
+	case os.Interrupt:
+		code = 130
+	case syscall.SIGTERM:
+		code = 143
+	}
+	return code, stripShutdownSignal(err), true
+}
+
+func stripShutdownSignal(err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := err.(*shutdownSignal); ok {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		remaining := make([]error, 0, len(children))
+		for _, child := range children {
+			if child = stripShutdownSignal(child); child != nil {
+				remaining = append(remaining, child)
+			}
+		}
+		return errors.Join(remaining...)
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		child := wrapped.Unwrap()
+		if child == nil {
+			return err
+		}
+		var shutdown *shutdownSignal
+		if !errors.As(child, &shutdown) {
+			return err
+		}
+		return stripShutdownSignal(child)
+	}
+	return err
+}
+
+// setupSignalHandling sets up signal handling for graceful shutdown. The
+// returned stop function unregisters the process handlers and cancels the
+// context when the caller finishes normally.
 func setupSignalHandling(ctx context.Context) (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancelCause(ctx)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case received := <-signals:
+			cancel(&shutdownSignal{signal: received})
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, func() {
+		signal.Stop(signals)
+		cancel(context.Canceled)
+	}
 }
 
 // outputStructured formats and outputs structured response

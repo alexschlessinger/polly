@@ -40,7 +40,10 @@ type Session interface {
 	GetHistory(context.Context) ([]messages.ChatMessage, error)
 	AddMessage(context.Context, messages.ChatMessage) error
 	AddMessages(context.Context, []messages.ChatMessage) error
+	// Clear removes the transcript and artifacts while preserving metadata.
 	Clear(context.Context) error
+	// Reset atomically replaces metadata and clears the transcript and artifacts.
+	Reset(context.Context, *Metadata) error
 	Close() error
 
 	GetName(context.Context) (string, error)
