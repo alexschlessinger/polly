@@ -139,6 +139,60 @@ func TestAgentLargeToolResultKeepsFullArtifactAndSendsPreview(t *testing.T) {
 	}
 }
 
+func TestAgentLargeRichToolResultBoundsBirthPreviewWithMediaDescriptors(t *testing.T) {
+	full := "HEAD\n" + strings.Repeat("large rich tool result line\n", 4_000) + "TAIL"
+	rich := &testRichTool{name: "large-rich", output: tools.ToolOutput{
+		Text: full,
+		Media: []tools.ToolMedia{
+			{Data: []byte("first image bytes"), MIMEType: "image/png", Name: "first.png", Reference: "[image #9]"},
+			{Data: []byte("binary report bytes"), MIMEType: "application/pdf", Name: "report.pdf"},
+			{Data: []byte("second image bytes"), MIMEType: "image/webp", Name: "second.webp", Reference: "[image #10]"},
+		},
+	}}
+	model := &recordingSequentialLLM{responses: []messages.ChatMessage{
+		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "large-rich-call", Name: "large-rich", Arguments: `{}`}}},
+		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"},
+	}}
+	store := newTestArtifactStore()
+	agent := NewAgent(model, tools.NewToolRegistry([]tools.Tool{rich}), AgentConfig{ArtifactStore: store})
+
+	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: messages.User("run")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durable messages.ChatMessage
+	for _, msg := range response.AllMessages {
+		if msg.Role == messages.MessageRoleTool && msg.ToolName == "large-rich" {
+			durable = msg
+			break
+		}
+	}
+	textRef := textArtifactRef(durable)
+	if textRef == nil {
+		t.Fatalf("durable rich tool result refs = %#v", durable.Parts)
+	}
+	descriptors := artifactDescriptors(durable, textRef.ID)
+	if len(descriptors) != len(rich.output.Media) {
+		t.Fatalf("durable media descriptors = %q, want %d", descriptors, len(rich.output.Media))
+	}
+	for _, descriptor := range descriptors {
+		if !strings.Contains(durable.Content, descriptor) {
+			t.Fatalf("durable preview omitted media descriptor %q: %q", descriptor, durable.Content)
+		}
+	}
+	if got := estimatedStringTokens(durable.Content); got > toolPreviewTokenLimit {
+		t.Fatalf("durable preview tokens = %d, want <= %d", got, toolPreviewTokenLimit)
+	}
+	head, tail := previewWindows([]byte(full))
+	if want := artifactPreviewWithDescriptors(*textRef, head, tail, durable); durable.Content != want {
+		t.Fatalf("durable preview differs from bounded descriptor-aware form")
+	}
+	projectedTools := messagesWithRole(model.requests[1], messages.MessageRoleTool)
+	if len(projectedTools) != 1 || projectedTools[0].Content != durable.Content {
+		t.Fatalf("provider and durable tool forms diverged: projected=%#v durable=%#v", projectedTools, durable)
+	}
+}
+
 func TestAgentPersistsCurrentTurnPressureSpills(t *testing.T) {
 	first := strings.Repeat("first-inline-", 1_600)
 	second := strings.Repeat("second-inline-", 1_500)
@@ -388,6 +442,55 @@ func TestAgentArtifactAuthorizationResetsWithEachTranscript(t *testing.T) {
 	}
 	if _, ok := agent.lookupArtifact(ref.ID); ok {
 		t.Fatal("artifact from replaced transcript remained authorized")
+	}
+}
+
+func TestAgentDoesNotAuthorizeInternalOnlyArtifacts(t *testing.T) {
+	store := newTestArtifactStore()
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "internal.txt", Data: []byte("provider-hidden internal data")})
+	model := &recordingSequentialLLM{responses: []messages.ChatMessage{
+		{
+			Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse,
+			ToolCalls: []messages.ChatMessageToolCall{{ID: "list", Name: "list_artifacts", Arguments: `{}`}},
+		},
+		{
+			Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse,
+			ToolCalls: []messages.ChatMessageToolCall{{
+				ID: "read", Name: "read_artifact", Arguments: fmt.Sprintf(`{"id":%q,"limit":1}`, ref.ID),
+			}},
+		},
+		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"},
+	}}
+	agent := NewAgent(model, nil, AgentConfig{ArtifactStore: store})
+	history := []messages.ChatMessage{
+		{
+			Role: messages.MessageRoleInternal, Content: artifactReceipt(ref),
+			Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}},
+		},
+		{Role: messages.MessageRoleUser, Content: "continue"},
+	}
+
+	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listResult, readResult messages.ChatMessage
+	for _, msg := range response.AllMessages {
+		if msg.Role != messages.MessageRoleTool {
+			continue
+		}
+		switch msg.ToolName {
+		case "list_artifacts":
+			listResult = msg
+		case "read_artifact":
+			readResult = msg
+		}
+	}
+	if strings.Contains(listResult.Content, ref.ID) || listResult.Content != "No artifacts are referenced by this conversation." {
+		t.Fatalf("internal-only artifact leaked through catalog: %#v", listResult)
+	}
+	if succeeded, known := readResult.ToolSucceeded(); !known || succeeded || !strings.Contains(readResult.Content, "is not referenced by this conversation") {
+		t.Fatalf("internal-only artifact remained readable: %#v", readResult)
 	}
 }
 

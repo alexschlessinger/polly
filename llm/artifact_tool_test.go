@@ -3,7 +3,9 @@ package llm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -323,6 +325,88 @@ func TestReadArtifactByteOffsetValidation(t *testing.T) {
 	if err != nil || !strings.Contains(window, "bytes 5-12 of 12; raw window]\ncontent") || strings.Contains(window, "continues") {
 		t.Fatalf("final window = %q, %v", window, err)
 	}
+}
+
+func TestReadArtifactByteWindowRejectsStoredSizeMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		stored   string
+		declared int64
+	}{
+		{name: "shorter", stored: "abc", declared: 6},
+		{name: "trailing", stored: "abcdef", declared: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestArtifactStore()
+			ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(tc.stored)})
+			ref.Bytes = tc.declared
+			tool := testReadArtifactTool(store, ref)
+
+			if _, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 0}); err == nil ||
+				!strings.Contains(err.Error(), "stored size does not match transcript reference") {
+				t.Fatalf("stored %d bytes with declared size %d: error = %v", len(tc.stored), tc.declared, err)
+			}
+		})
+	}
+}
+
+func TestReadArtifactByteWindowPropagatesCloseError(t *testing.T) {
+	store := newTestArtifactStore()
+	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte("content")})
+	wantErr := errors.New("close artifact")
+	tool := testReadArtifactTool(closeErrorArtifactStore{Store: store, err: wantErr}, ref)
+
+	if _, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 0}); !errors.Is(err, wantErr) {
+		t.Fatalf("close error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestBoundedArtifactTextPropagatesLookaheadError(t *testing.T) {
+	wantErr := errors.New("lookahead failed")
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "plain storage error", err: wantErr},
+		{name: "EOF joined with storage error", err: errors.Join(io.EOF, wantErr)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := io.MultiReader(strings.NewReader("first\n"), artifactToolErrorReader{err: tc.err})
+			if _, err := boundedArtifactText(context.Background(), r, 1, 1, ""); !errors.Is(err, wantErr) {
+				t.Fatalf("lookahead error = %v, want %v", err, wantErr)
+			}
+		})
+	}
+}
+
+type closeErrorArtifactStore struct {
+	artifacts.Store
+	err error
+}
+
+func (s closeErrorArtifactStore) Open(ctx context.Context, id string) (io.ReadCloser, error) {
+	r, err := s.Store.Open(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return closeErrorReadCloser{ReadCloser: r, err: s.err}, nil
+}
+
+type closeErrorReadCloser struct {
+	io.ReadCloser
+	err error
+}
+
+func (r closeErrorReadCloser) Close() error {
+	return errors.Join(r.ReadCloser.Close(), r.err)
+}
+
+type artifactToolErrorReader struct {
+	err error
+}
+
+func (r artifactToolErrorReader) Read([]byte) (int, error) {
+	return 0, r.err
 }
 
 func TestReadArtifactByteWindowAdvancesOnBinaryContent(t *testing.T) {

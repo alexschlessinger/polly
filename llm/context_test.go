@@ -242,6 +242,93 @@ func TestProjectSpillsOlderInlineActiveToolResultUnderPressure(t *testing.T) {
 	}
 }
 
+func TestAppendArtifactRefUpgradesKindInFirstReferenceOrder(t *testing.T) {
+	sharedData := []byte("shared artifact bytes")
+	binary := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindBinary, MIMEType: "application/octet-stream", Name: "shared.bin", Data: sharedData})
+	image := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "shared.png", Data: sharedData})
+	text := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "shared.txt", Data: sharedData})
+	other := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindBinary, Data: []byte("other")})
+
+	refs := []artifacts.Ref{binary, other}
+	refs = appendArtifactRef(refs, image)
+	refs = appendArtifactRef(refs, text)
+	refs = appendArtifactRef(refs, binary)
+
+	if len(refs) != 2 {
+		t.Fatalf("refs = %#v, want two unique IDs", refs)
+	}
+	if refs[0] != text {
+		t.Fatalf("shared ref = %#v, want richer text ref %#v", refs[0], text)
+	}
+	if refs[1] != other {
+		t.Fatalf("first-reference order changed: %#v", refs)
+	}
+}
+
+func TestAgentPressureSpillUpgradesEqualBinaryRefForImmediateRead(t *testing.T) {
+	content := "FIRST LINE\n" + strings.Repeat("shared pressure-spill bytes\n", 1_000)
+	if estimatedStringTokens(content) > toolInlineTokenLimit {
+		t.Fatalf("pressure-spill fixture uses %d tokens, want <= %d", estimatedStringTokens(content), toolInlineTokenLimit)
+	}
+	testAgentEqualBinaryRefImmediateRead(t, content, 1_200)
+}
+
+func TestAgentLegacyCompactionUpgradesEqualBinaryRefForImmediateRead(t *testing.T) {
+	content := "FIRST LINE\n" + strings.Repeat("shared legacy-compaction bytes\n", 2_000)
+	if estimatedStringTokens(content) <= toolInlineTokenLimit {
+		t.Fatalf("legacy-compaction fixture uses %d tokens, want > %d", estimatedStringTokens(content), toolInlineTokenLimit)
+	}
+	testAgentEqualBinaryRefImmediateRead(t, content, 0)
+}
+
+func testAgentEqualBinaryRefImmediateRead(t *testing.T, content string, maxContextTokens int) {
+	t.Helper()
+	store := newTestArtifactStore()
+	binaryRef := putTestArtifact(t, store, artifacts.Blob{
+		Kind: artifacts.KindBinary, MIMEType: "application/octet-stream", Name: "shared.bin", Data: []byte(content),
+	})
+	model := &recordingSequentialLLM{responses: []messages.ChatMessage{
+		{
+			Role:       messages.MessageRoleAssistant,
+			StopReason: messages.StopReasonToolUse,
+			ToolCalls: []messages.ChatMessageToolCall{{
+				ID: "read", Name: "read_artifact", Arguments: fmt.Sprintf(`{"id":%q,"limit":1}`, binaryRef.ID),
+			}},
+		},
+		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"},
+	}}
+	agent := NewAgent(model, nil, AgentConfig{ArtifactStore: store})
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "inspect this result"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "shared", Name: "shared", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "shared", ToolName: "shared", Content: content, Parts: []messages.ContentPart{
+			{Type: "artifact", Artifact: &binaryRef},
+		}},
+	}
+
+	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: maxContextTokens}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.requests) != 2 || !strings.Contains(projectedText(model.requests[0]), binaryRef.ID) {
+		t.Fatalf("compacted ref was not exposed to the model: %#v", model.requests)
+	}
+	var readResult messages.ChatMessage
+	for _, msg := range response.AllMessages {
+		if msg.Role == messages.MessageRoleTool && msg.ToolName == "read_artifact" {
+			readResult = msg
+			break
+		}
+	}
+	if !strings.HasPrefix(readResult.Content, "1: FIRST LINE") {
+		t.Fatalf("same-run read_artifact used the binary ref instead of spilled text: %#v", readResult)
+	}
+	refs := agent.listArtifacts()
+	if len(refs) != 1 || refs[0].ID != binaryRef.ID || refs[0].Kind != artifacts.KindText {
+		t.Fatalf("indexed refs = %#v, want one upgraded text ref", refs)
+	}
+}
+
 func TestProjectSurfacesArtifactPutFailures(t *testing.T) {
 	t.Run("initial large result", func(t *testing.T) {
 		history := []messages.ChatMessage{

@@ -98,10 +98,10 @@ func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any
 		if err != nil {
 			return tools.ToolOutput{}, err
 		}
-		defer r.Close()
-		text, err := byteWindowArtifactText(ctx, r, ref, byteOffset)
-		if err != nil {
-			return tools.ToolOutput{}, err
+		text, readErr := byteWindowArtifactText(ctx, r, ref, byteOffset)
+		closeErr := r.Close()
+		if readErr != nil || closeErr != nil {
+			return tools.ToolOutput{}, errors.Join(readErr, closeErr)
 		}
 		return tools.ToolOutput{Text: text}, nil
 	}
@@ -202,6 +202,8 @@ func boundedArtifactText(ctx context.Context, r io.Reader, offset, limit int, qu
 			if line.sawNewline {
 				if _, peekErr := br.Peek(1); peekErr == nil {
 					truncated = true
+				} else if peekErr != io.EOF {
+					return "", fmt.Errorf("scan artifact: %w", peekErr)
 				}
 			}
 			break
@@ -295,14 +297,18 @@ func byteWindowArtifactText(ctx context.Context, r io.Reader, ref artifacts.Ref,
 		return "", err
 	}
 	window := int64(artifactReadMaxBytes - 256)
-	data, err := io.ReadAll(io.LimitReader(r, window))
+	remaining := ref.Bytes - byteOffset
+	readLimit := min(window, remaining)
+	data, err := io.ReadAll(io.LimitReader(r, readLimit+1))
 	if err != nil {
 		return "", err
 	}
-	end := byteOffset + int64(len(data))
-	if end < ref.Bytes && int64(len(data)) < window {
+	hasSentinel := int64(len(data)) > readLimit
+	if int64(len(data)) < readLimit || (remaining > readLimit) != hasSentinel {
 		return "", fmt.Errorf("stored size does not match transcript reference")
 	}
+	data = data[:readLimit]
+	end := byteOffset + int64(len(data))
 	if end < ref.Bytes && len(data) > 0 {
 		// Trim a rune split by the window edge so text pages cleanly; binary
 		// content is left whole so paging always advances.

@@ -511,13 +511,14 @@ func mergeToolErrorText(errorText, resultText string) string {
 
 func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageToolCall, output tools.ToolOutput) (messages.ChatMessage, error) {
 	msg := messages.ChatMessage{Role: messages.MessageRoleTool, Content: output.Text, ToolCallID: tc.ID, ToolName: tc.Name}
+	var textArtifact *artifacts.Ref
 	if !isRecallToolName(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
 		ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)})
 		if err != nil {
 			return messages.ChatMessage{}, fmt.Errorf("store text artifact for tool %q: %w", tc.Name, err)
 		}
-		msg.Content = artifactBirthPreview(ref, []byte(output.Text))
 		msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
+		textArtifact = &ref
 	}
 	for _, media := range output.Media {
 		kind := artifacts.KindBinary
@@ -532,8 +533,10 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 				return messages.ChatMessage{}, fmt.Errorf("store %s artifact %q for tool %q: %w", kind, media.Name, tc.Name, err)
 			}
 			msg.Parts = append(msg.Parts, messages.ContentPart{Type: partType, Artifact: &ref, MimeType: ref.MIMEType, FileName: ref.Name, Reference: ref.ImageToken})
-			descriptor := artifactMediaDescriptor(ref)
-			msg.Content = strings.TrimSpace(msg.Content + "\n" + descriptor)
+			if textArtifact == nil {
+				descriptor := artifactMediaDescriptor(ref)
+				msg.Content = strings.TrimSpace(msg.Content + "\n" + descriptor)
+			}
 			continue
 		}
 		if kind == artifacts.KindImage {
@@ -543,11 +546,18 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 			msg.Content = strings.TrimSpace(msg.Content + "\n" + fmt.Sprintf("[binary media %s (%s), %d bytes; payload retained outside model text]", media.Name, media.MIMEType, len(media.Data)))
 		}
 	}
+	if textArtifact != nil {
+		head, tail := previewWindows([]byte(output.Text))
+		msg.Content = artifactPreviewWithDescriptors(*textArtifact, head, tail, msg)
+	}
 	return msg, nil
 }
 
 func (a *Agent) indexArtifactMessages(history []messages.ChatMessage) {
 	for _, msg := range history {
+		if msg.Role == messages.MessageRoleInternal {
+			continue
+		}
 		for _, part := range msg.Parts {
 			if part.Artifact != nil {
 				a.indexArtifact(*part.Artifact)

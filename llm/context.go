@@ -125,8 +125,11 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 }
 
 func appendArtifactRef(refs []artifacts.Ref, ref artifacts.Ref) []artifacts.Ref {
-	for _, existing := range refs {
-		if existing.ID == ref.ID {
+	for i := range refs {
+		if refs[i].ID == ref.ID {
+			if artifactKindPriority(ref.Kind) > artifactKindPriority(refs[i].Kind) {
+				refs[i] = ref
+			}
 			return refs
 		}
 	}
@@ -138,7 +141,11 @@ func artifactRefsInMessages(history []messages.ChatMessage) []artifacts.Ref {
 	var refs []artifacts.Ref
 	for _, msg := range history {
 		for _, part := range msg.Parts {
-			if part.Artifact == nil || seen[part.Artifact.ID] {
+			if part.Artifact == nil {
+				continue
+			}
+			if seen[part.Artifact.ID] {
+				refs = appendArtifactRef(refs, *part.Artifact)
 				continue
 			}
 			seen[part.Artifact.ID] = true
