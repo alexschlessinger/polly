@@ -528,6 +528,10 @@ func TestLeaseContentionTakeoverAndTypedLoss(t *testing.T) {
 		t.Fatalf("delete active session = %v", err)
 	}
 
+	// The contended probes above need the short budget; the takeover below
+	// must instead survive a slow CI disk committing its write transaction.
+	leaseAcquireTimeout = 5 * time.Second
+
 	if _, err := firstStore.db.ExecContext(ctx,
 		"UPDATE session_leases SET expires_ns = ? WHERE session_id = ?", time.Now().Add(-time.Second).UnixNano(), first.(*sqliteSession).id); err != nil {
 		t.Fatal(err)
@@ -1200,6 +1204,12 @@ func TestDiskStoreRejectsNonRegularPathWithoutChangingIt(t *testing.T) {
 	if err := os.Chmod(dbPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Windows reports writable directories as 0777 regardless of Chmod, so
+	// compare against the observed pre-open mode instead of a literal.
+	before, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: dbPath}); err == nil || !strings.Contains(err.Error(), "non-regular") {
 		t.Fatalf("directory database path open = %v", err)
 	}
@@ -1207,7 +1217,7 @@ func TestDiskStoreRejectsNonRegularPathWithoutChangingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o755 {
+	if got := info.Mode().Perm(); got != before.Mode().Perm() {
 		t.Fatalf("rejected directory mode changed to %04o", got)
 	}
 }
