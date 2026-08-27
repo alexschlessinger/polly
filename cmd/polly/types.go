@@ -50,7 +50,7 @@ type Config struct {
 	ListContexts   bool
 	DeleteContext  string
 	AddToContext   bool
-	PurgeAll       bool   // Delete all sessions and index
+	PurgeAll       bool   // Delete all sessions
 	CreateContext  string // Create a new context with this name
 	ShowContext    string // Show configuration for this context
 

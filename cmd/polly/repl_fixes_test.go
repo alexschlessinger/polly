@@ -4,15 +4,18 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -87,7 +90,7 @@ func TestRunREPLLoopContinuesAfterTurnError(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("first\nsecond\n"))
 	var out bytes.Buffer
 	var seen []string
-	err := runREPLLoop(reader, &out, func(prompt string) error {
+	err := runREPLLoop(context.Background(), reader, &out, func(prompt string) error {
 		seen = append(seen, prompt)
 		if prompt == "first" {
 			return fmt.Errorf("boom")
@@ -111,7 +114,7 @@ func TestRunREPLLoopStopsWhenContextCanceled(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("first\nsecond\n"))
 	var out bytes.Buffer
 	n := 0
-	err := runREPLLoop(reader, &out, func(prompt string) error {
+	err := runREPLLoop(context.Background(), reader, &out, func(prompt string) error {
 		n++
 		return context.Canceled
 	})
@@ -120,6 +123,87 @@ func TestRunREPLLoopStopsWhenContextCanceled(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("loop should stop after the cancelled turn, ran %d turns", n)
+	}
+}
+
+type blockingFallbackReader struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingFallbackReader) Read([]byte) (int, error) {
+	r.once.Do(func() { close(r.started) })
+	<-r.release
+	return 0, io.EOF
+}
+
+func TestRunREPLLoopReturnsTypedCauseWhileIdle(t *testing.T) {
+	for _, cause := range []error{sessions.ErrSessionLeaseLost, sessions.ErrStoreClosed} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			blocking := &blockingFallbackReader{started: make(chan struct{}), release: make(chan struct{})}
+			defer close(blocking.release)
+			done := make(chan error, 1)
+			go func() {
+				done <- runREPLLoop(ctx, bufio.NewReader(blocking), io.Discard, func(string) error {
+					return errors.New("idle fallback REPL unexpectedly ran a turn")
+				})
+			}()
+			<-blocking.started
+			cancel(cause)
+			select {
+			case err := <-done:
+				if !errors.Is(err, cause) {
+					t.Fatalf("idle fallback error = %v, want %v", err, cause)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("idle fallback REPL did not observe context cancellation")
+			}
+		})
+	}
+}
+
+func TestRunREPLLoopReturnsStoreClosureWhileIdle(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "idle-store-close")
+	blocking := &blockingFallbackReader{started: make(chan struct{}), release: make(chan struct{})}
+	defer close(blocking.release)
+	done := make(chan error, 1)
+	go func() {
+		done <- runREPLLoop(session.Context(), bufio.NewReader(blocking), io.Discard, func(string) error {
+			return errors.New("idle fallback REPL unexpectedly ran a turn")
+		})
+	}()
+	<-blocking.started
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, sessions.ErrStoreClosed) {
+			t.Fatalf("idle fallback error = %v, want ErrStoreClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("idle fallback REPL did not observe store closure")
+	}
+}
+
+func TestRunREPLLoopTreatsTerminalStorageErrorsAsFatal(t *testing.T) {
+	for _, cause := range []error{sessions.ErrSessionLeaseLost, sessions.ErrStoreClosed} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			calls := 0
+			err := runREPLLoop(context.Background(), bufio.NewReader(strings.NewReader("first\nsecond\n")), io.Discard, func(string) error {
+				calls++
+				return fmt.Errorf("persist turn: %w", cause)
+			})
+			if !errors.Is(err, cause) {
+				t.Fatalf("fallback error = %v, want %v", err, cause)
+			}
+			if calls != 1 {
+				t.Fatalf("terminal storage failure ran %d turns, want 1", calls)
+			}
+		})
 	}
 }
 

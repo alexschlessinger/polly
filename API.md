@@ -904,41 +904,85 @@ it separately; `LoadCatalog` already calls it for you.
 
 ## Sessions
 
-Sessions persist conversation history between runs:
+Sessions persist conversation history and artifacts. Disk-backed and ephemeral
+stores use the same SQLite implementation; only `StoreConfig` changes:
 
 ```go
-// "" uses the default directory, ~/.pollytool/contexts
-store, err := sessions.NewFileSessionStore("", nil)
+store, err := sessions.OpenStore(sessions.StoreConfig{
+    Mode:           sessions.ModeDisk,
+    Path:           "/path/to/polly.db",
+    AutoSessionTTL: 7 * 24 * time.Hour,
+})
 if err != nil {
     panic(err)
 }
+defer func() {
+    if err := store.Close(); err != nil {
+        panic(err)
+    }
+}()
 
-session, err := store.Get("my-session-id")
+session, err := store.Acquire(ctx, "my-session-id", sessions.AcquireOptions{})
 if err != nil {
     panic(err)
 }
-defer session.Close() // releases the file lock
+defer func() {
+    if err := session.Close(); err != nil {
+        panic(err)
+    }
+}() // releases this process's exclusive lease
 
-if err := session.AddMessage(messages.ChatMessage{
+sessionCtx := session.Context()
+if err := session.AddMessage(sessionCtx, messages.ChatMessage{
     Role:    messages.MessageRoleUser,
     Content: "Hello!",
 }); err != nil {
     panic(err)
 }
 
-history := session.GetHistory() // feed this to CompletionRequest.Messages
+history, err := session.GetHistory(sessionCtx)
+if err != nil {
+    panic(err)
+}
+_ = history // feed this to CompletionRequest.Messages
 
-_ = session.Clear() // wipe the history
+if err := session.Clear(sessionCtx); err != nil {
+    panic(err)
+}
+
+// Replace settings and clear transcript/artifacts in one transaction. Reset
+// preserves the session's canonical name and creation time.
+metadata, err := session.GetMetadata(sessionCtx)
+if err != nil {
+    panic(err)
+}
+metadata.SystemPrompt = "A new system prompt"
+if err := session.Reset(sessionCtx, metadata); err != nil {
+    panic(err)
+}
 ```
 
 Notes:
 
-- `NewFileSessionStore(baseDir, defaultMetadata)` takes two arguments; pass
-  `nil` metadata for defaults. The path is used literally — `~` is not
-  expanded, so pass `""` for the home-relative default.
-- `Close()` is part of the `Session` interface; no type assertion needed.
-- For tests or ephemeral use, `sessions.NewSyncMapSessionStore(nil)` keeps
-  everything in memory with the same interface.
+- `ModeDisk` requires an explicit database path. The Polly CLI uses
+  `~/.pollytool/polly.db`; paths are used literally, so library callers must
+  expand `~` themselves.
+- For tests or ephemeral use, select `ModeMemory` and omit `Path`. Schema,
+  transactions, artifacts, leases, and retention behavior are otherwise the
+  same.
+- `AcquireOptions{Auto: true}` marks a newly created generated session for
+  `AutoSessionTTL` retention. Explicitly named sessions do not expire by
+  default, and reopening an existing session never changes its retention
+  class.
+- `Acquire` holds an exclusive session lease. Always close both the session and
+  store, and use `session.Context()` for work that should stop if the lease is
+  lost. A competing owner eventually receives `sessions.ErrSessionInUse`.
+- `session.ArtifactStore()` is mandatory and scoped to the session. Artifact
+  bytes and their ownership links are committed in the same database as the
+  transcript.
+- The SQLite format is a clean break from the former per-context JSON store.
+  Legacy `~/.pollytool/contexts` files are neither imported nor removed, so the
+  first run after the cutover starts with an empty SQLite session catalog.
 
 ## Structured Output
 
@@ -1008,6 +1052,8 @@ package main
 import (
     "context"
     "fmt"
+    "os"
+    "path/filepath"
     "time"
 
     "github.com/alexschlessinger/pollytool/llm"
@@ -1020,19 +1066,42 @@ func main() {
 
     client := llm.GetDefaultClient()
 
-    store, err := sessions.NewFileSessionStore("", nil)
+    home, err := os.UserHomeDir()
     if err != nil {
         panic(err)
     }
-    session, err := store.Get("example-session")
+    store, err := sessions.OpenStore(sessions.StoreConfig{
+        Mode:           sessions.ModeDisk,
+        Path:           filepath.Join(home, ".pollytool", "polly.db"),
+        AutoSessionTTL: 7 * 24 * time.Hour,
+    })
     if err != nil {
         panic(err)
     }
-    defer session.Close()
+    defer func() {
+        if err := store.Close(); err != nil {
+            panic(err)
+        }
+    }()
+
+    session, err := store.Acquire(ctx, "example-session", sessions.AcquireOptions{})
+    if err != nil {
+        panic(err)
+    }
+    defer func() {
+        if err := session.Close(); err != nil {
+            panic(err)
+        }
+    }()
+    sessionCtx := session.Context()
 
     // Seed the system prompt on first run
-    if len(session.GetHistory()) == 0 {
-        if err := session.AddMessage(messages.ChatMessage{
+    history, err := session.GetHistory(sessionCtx)
+    if err != nil {
+        panic(err)
+    }
+    if len(history) == 0 {
+        if err := session.AddMessage(sessionCtx, messages.ChatMessage{
             Role:    messages.MessageRoleSystem,
             Content: "You are a helpful AI assistant.",
         }); err != nil {
@@ -1040,16 +1109,20 @@ func main() {
         }
     }
 
-    if err := session.AddMessage(messages.ChatMessage{
+    if err := session.AddMessage(sessionCtx, messages.ChatMessage{
         Role:    messages.MessageRoleUser,
         Content: "Tell me a joke",
     }); err != nil {
         panic(err)
     }
+    history, err = session.GetHistory(sessionCtx)
+    if err != nil {
+        panic(err)
+    }
 
     req := &llm.CompletionRequest{
         Model:       "openai/gpt-5.4",
-        Messages:    session.GetHistory(),
+        Messages:    history,
         Temperature: llm.Float32Ptr(0.7),
         MaxTokens:   500,
         Timeout:     30 * time.Second,
@@ -1058,12 +1131,12 @@ func main() {
     processor := messages.NewStreamProcessor()
     fmt.Print("Assistant: ")
 
-    for event := range client.ChatCompletionStream(ctx, req, processor) {
+    for event := range client.ChatCompletionStream(sessionCtx, req, processor) {
         switch event.Type {
         case messages.EventTypeContent:
             fmt.Print(event.Content)
         case messages.EventTypeComplete:
-            if err := session.AddMessage(*event.Message); err != nil {
+            if err := session.AddMessage(sessionCtx, *event.Message); err != nil {
                 panic(err)
             }
             fmt.Println()
@@ -1078,10 +1151,11 @@ func main() {
 ## Thread Safety
 
 - `MultiPass` is stateless and safe for concurrent use.
-- Session stores are safe for concurrent use: `SyncMapSessionStore` is built
-  on `sync.Map`, and `FileSessionStore` serializes access with file locks.
-- Individual sessions synchronize their own methods internally (`GetHistory`
-  returns a copy). Compound read-modify-write sequences across multiple calls
-  still need your own coordination.
+- `SQLiteStore` is safe for concurrent use. Different sessions can be active
+  concurrently; acquiring the same session from another process or store waits
+  for its exclusive lease and then returns `ErrSessionInUse`.
+- `GetHistory` and `GetMetadata` return detached copies. Mutations are
+  transactional, but compound read-modify-write sequences across multiple
+  calls still need application-level coordination.
 - Tool `Execute` implementations should be safe to call concurrently — the
   library doesn't serialize them for you.

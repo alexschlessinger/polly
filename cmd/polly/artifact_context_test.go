@@ -21,7 +21,7 @@ import (
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
-func TestExternalizeMessageImagesStoresExactBytesAndFallsBack(t *testing.T) {
+func TestExternalizeMessageImagesStoresExactBytesAndSurfacesFailure(t *testing.T) {
 	data, err := base64.StdEncoding.DecodeString(portablePNGBase64Size(t, 400))
 	if err != nil {
 		t.Fatal(err)
@@ -33,8 +33,11 @@ func TestExternalizeMessageImagesStoresExactBytesAndFallsBack(t *testing.T) {
 			{Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(data), MimeType: "image/png", FileName: "pixel.png", Reference: "[image #3]"},
 		},
 	}
-	store := artifacts.NewMemoryStore()
-	externalized := externalizeMessageImages(context.Background(), message, store)
+	store := testArtifactStore(t)
+	externalized, err := externalizeMessageImages(context.Background(), message, store)
+	if err != nil {
+		t.Fatal(err)
+	}
 	part := externalized.Parts[1]
 	if part.Type != "image_artifact" || part.Artifact == nil || part.ImageData != "" || part.Artifact.ImageToken != "[image #3]" {
 		t.Fatalf("externalized part = %#v", part)
@@ -52,9 +55,8 @@ func TestExternalizeMessageImagesStoresExactBytesAndFallsBack(t *testing.T) {
 		t.Fatalf("externalization mutated caller message: %#v", message)
 	}
 
-	fallback := externalizeMessageImages(context.Background(), message, failingContextArtifactStore{})
-	if !reflect.DeepEqual(fallback, message) {
-		t.Fatalf("storage failure discarded inline image:\n got %#v\nwant %#v", fallback, message)
+	if _, err := externalizeMessageImages(context.Background(), message, failingContextArtifactStore{}); err == nil || !strings.Contains(err.Error(), "artifact storage failed") {
+		t.Fatalf("storage failure = %v, want propagated artifact error", err)
 	}
 }
 
@@ -62,12 +64,9 @@ func TestManagedTurnCarriesArtifactAfterSourceDisappears(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	path := filepath.Join(t.TempDir(), "queued.png")
 	writeImageFixture(t, path, 8, 8)
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("artifact-queue")
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifactStore := artifactStoreForSession(session)
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "artifact-queue")
+	artifactStore := session.ArtifactStore()
 	r := newManagedREPL(&Config{}, "artifact-queue", 0, 0)
 	r.state = &conversationState{session: session, artifactStore: artifactStore}
 	r.model.artifactStore = artifactStore
@@ -102,16 +101,10 @@ func TestManagedTurnCarriesArtifactAfterSourceDisappears(t *testing.T) {
 }
 
 func TestReloadRestoresStableImageTokenAndExactRetry(t *testing.T) {
-	baseDir := t.TempDir()
-	store, err := sessions.NewFileSessionStore(baseDir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, err := store.Get("reload")
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifactStore := artifactStoreForSession(session)
+	dbPath := filepath.Join(t.TempDir(), "polly.db")
+	store := testOpenDiskStore(t, dbPath, nil)
+	session := testAcquireSession(t, store, "reload")
+	artifactStore := session.ArtifactStore()
 	path := filepath.Join(t.TempDir(), "reload.png")
 	writeImageFixture(t, path, 4, 4)
 	preparedPart, err := prepareImageForUpload(path)
@@ -119,31 +112,33 @@ func TestReloadRestoresStableImageTokenAndExactRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	preparedPart.Reference = "[image #1]"
-	prepared := externalizeMessageImages(context.Background(), messages.ChatMessage{
+	prepared, err := externalizeMessageImages(context.Background(), messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{
 			{Type: "text", Text: "inspect [image #1]"},
 			*preparedPart,
 		},
 	}, artifactStore)
-	if err := session.AddMessage(prepared); err != nil {
+	if err != nil {
 		t.Fatal(err)
 	}
-	session.Close()
+	if err := session.AddMessage(context.Background(), prepared); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
 
-	reopenedStore, err := sessions.NewFileSessionStore(baseDir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := reopenedStore.Get("reload")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reopenedArtifacts := artifactStoreForSession(reopened)
+	reopenedStore := testOpenDiskStore(t, dbPath, nil)
+	reopened := testAcquireSession(t, reopenedStore, "reload")
+	reopenedArtifacts := reopened.ArtifactStore()
 	r := newManagedREPL(&Config{}, "reload", 0, 0)
 	r.state = &conversationState{session: reopened, artifactStore: reopenedArtifacts}
 	r.model.artifactStore = reopenedArtifacts
-	r.model.hydrateHistory(reopened.GetHistory(), "reload")
+	r.model.hydrateHistory(testSessionHistory(t, reopened), "reload")
 
 	if r.model.retryTurn == nil || !reflect.DeepEqual(r.model.retryTurn.userMessage, prepared) {
 		t.Fatalf("reloaded exact retry = %#v, want %#v", r.model.retryTurn, prepared)
@@ -162,7 +157,7 @@ func TestReloadRestoresStableImageTokenAndExactRetry(t *testing.T) {
 }
 
 func TestReloadKeepsCollidingStableImageTokenAmbiguous(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := testArtifactStore(t)
 	first, err := store.Put(context.Background(), artifacts.Blob{
 		Kind: artifacts.KindImage, MIMEType: "image/png", ImageToken: "[image #1]", Data: []byte("first"),
 	})
@@ -189,17 +184,14 @@ func TestReloadKeepsCollidingStableImageTokenAmbiguous(t *testing.T) {
 }
 
 func TestQueuedImageSurvivesResetWhileClearedArtifactsDoNot(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("queued-reset-artifact")
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifactStore := artifactStoreForSession(session)
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "queued-reset-artifact")
+	artifactStore := session.ArtifactStore()
 	oldRef, err := artifactStore.Put(context.Background(), artifacts.Blob{Kind: artifacts.KindText, Data: []byte("old history")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := session.AddMessage(messages.ChatMessage{
+	if err := session.AddMessage(context.Background(), messages.ChatMessage{
 		Role: messages.MessageRoleTool, Content: "old", Parts: []messages.ContentPart{{Type: "artifact", Artifact: &oldRef}},
 	}); err != nil {
 		t.Fatal(err)
@@ -232,8 +224,8 @@ func TestQueuedImageSurvivesResetWhileClearedArtifactsDoNot(t *testing.T) {
 	if !handled || quit {
 		t.Fatalf("reset handled=%v quit=%v", handled, quit)
 	}
-	if len(session.GetHistory()) != 0 {
-		t.Fatalf("reset retained durable history: %#v", session.GetHistory())
+	if history := testSessionHistory(t, session); len(history) != 0 {
+		t.Fatalf("reset retained durable history: %#v", history)
 	}
 	if _, err := artifactStore.Open(context.Background(), oldRef.ID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cleared artifact still exists: %v", err)
@@ -260,18 +252,15 @@ func TestQueuedImageSurvivesResetWhileClearedArtifactsDoNot(t *testing.T) {
 }
 
 func TestExactInlineRetryDoesNotChangeRepresentationWhenStoreRecovers(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("inline-retry")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "inline-retry")
 	inline := messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{
 		Type: "image_base64", ImageData: portablePNGBase64Size(t, 400), MimeType: "image/png",
 	}}}
-	if err := session.AddMessage(inline); err != nil {
+	if err := session.AddMessage(context.Background(), inline); err != nil {
 		t.Fatal(err)
 	}
-	artifactStore := artifactStoreForSession(session)
+	artifactStore := session.ArtifactStore()
 	model := &captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}
 	registry := tools.NewToolRegistry(nil)
 	state := &conversationState{
@@ -287,19 +276,16 @@ func TestExactInlineRetryDoesNotChangeRepresentationWhenStoreRecovers(t *testing
 	if err != nil || code != 0 {
 		t.Fatalf("inline retry = code %d, err %v", code, err)
 	}
-	history := session.GetHistory()
+	history := testSessionHistory(t, session)
 	if len(history) != 2 || history[0].Parts[0].Type != "image_base64" || history[0].Parts[0].Artifact != nil {
 		t.Fatalf("exact retry duplicated or rewrote persisted user: %#v", history)
 	}
 }
 
 func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("omission-notice")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := session.AddMessages([]messages.ChatMessage{
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "omission-notice")
+	if err := session.AddMessages(context.Background(), []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 4_000)},
 		{Role: messages.MessageRoleAssistant, Content: "old answer"},
 	}); err != nil {
@@ -309,7 +295,7 @@ func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) 
 		Role: messages.MessageRoleAssistant, Content: "new answer", StopReason: messages.StopReasonEndTurn,
 	}}
 	registry := tools.NewToolRegistry(nil)
-	artifactStore := artifactStoreForSession(session)
+	artifactStore := session.ArtifactStore()
 	state := &conversationState{
 		session:       session,
 		agent:         llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
@@ -331,8 +317,8 @@ func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) 
 	if got := strings.Count(stderr.String(), "model context omitted 1 earlier exchange; full transcript retained"); got != 1 {
 		t.Fatalf("omission notices = %d, stderr=%q", got, stderr.String())
 	}
-	if len(session.GetHistory()) != 4 {
-		t.Fatalf("durable transcript was trimmed: %#v", session.GetHistory())
+	if history := testSessionHistory(t, session); len(history) != 4 {
+		t.Fatalf("durable transcript was trimmed: %#v", history)
 	}
 	joinedRequest := projectedRequestText(model.request)
 	if strings.Contains(joinedRequest, "old answer") || !strings.Contains(joinedRequest, "current question") || !strings.Contains(joinedRequest, "earlier completed exchange") {
@@ -350,7 +336,7 @@ func (failingContextArtifactStore) Open(context.Context, string) (io.ReadCloser,
 	return nil, errors.New("artifact storage failed")
 }
 
-func (failingContextArtifactStore) RemoveAll() error { return nil }
+func (failingContextArtifactStore) RemoveAll(context.Context) error { return nil }
 
 type captureCompletionLLM struct {
 	request  []messages.ChatMessage
@@ -377,13 +363,10 @@ func projectedRequestText(history []messages.ChatMessage) string {
 }
 
 func TestTurnRejectsPoisonPromptsBeforePersist(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("pre-persist")
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "pre-persist")
 	registry := tools.NewToolRegistry(nil)
-	artifactStore := artifactStoreForSession(session)
+	artifactStore := session.ArtifactStore()
 	model := &captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}
 	state := &conversationState{
 		session: session, artifactStore: artifactStore, toolRegistry: registry,
@@ -401,8 +384,8 @@ func TestTurnRejectsPoisonPromptsBeforePersist(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "not available") || code != 1 {
 			t.Fatalf("turn = code %d, err %v; want pre-persist rejection", code, err)
 		}
-		if got := len(session.GetHistory()); got != 0 {
-			t.Fatalf("orphaned user message persisted: %#v", session.GetHistory())
+		if history := testSessionHistory(t, session); len(history) != 0 {
+			t.Fatalf("orphaned user message persisted: %#v", history)
 		}
 	})
 
@@ -413,8 +396,8 @@ func TestTurnRejectsPoisonPromptsBeforePersist(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "context budget") || code != 1 {
 			t.Fatalf("turn = code %d, err %v; want pre-persist rejection", code, err)
 		}
-		if got := len(session.GetHistory()); got != 0 {
-			t.Fatalf("oversized prompt was persisted: %#v", session.GetHistory())
+		if history := testSessionHistory(t, session); len(history) != 0 {
+			t.Fatalf("oversized prompt was persisted: %#v", history)
 		}
 	})
 }
@@ -431,8 +414,11 @@ func TestExternalizeMessageImagesNormalizesLegacyGIF(t *testing.T) {
 			MimeType: "image/gif", FileName: "legacy.gif", Reference: "[image #1]",
 		}},
 	}
-	store := artifacts.NewMemoryStore()
-	externalized := externalizeMessageImages(context.Background(), message, store)
+	store := testArtifactStore(t)
+	externalized, err := externalizeMessageImages(context.Background(), message, store)
+	if err != nil {
+		t.Fatal(err)
+	}
 	part := externalized.Parts[0]
 	if part.Type != "image_artifact" || part.Artifact == nil || part.MimeType != "image/png" || part.Artifact.MIMEType != "image/png" {
 		t.Fatalf("legacy GIF was not normalized before storage: %#v", part)

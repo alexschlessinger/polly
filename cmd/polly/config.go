@@ -467,7 +467,7 @@ func newCreateFlag() *cli.StringFlag {
 func newPurgeFlag() *cli.BoolFlag {
 	return &cli.BoolFlag{
 		Name:  "purge",
-		Usage: "Delete all sessions and index (requires confirmation)",
+		Usage: "Delete all sessions (requires confirmation)",
 		Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
 			if !v {
 				return nil

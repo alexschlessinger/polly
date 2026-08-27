@@ -23,7 +23,7 @@ func TestProjectToolResultThreshold(t *testing.T) {
 		{name: "over threshold becomes preview", size: toolInlineTokenLimit*4 + 1, preview: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store := artifacts.NewMemoryStore()
+			store := newTestArtifactStore()
 			data := strings.Repeat("x", tc.size)
 			ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(data)})
 			history := testToolHistory(ref)
@@ -51,7 +51,7 @@ func TestProjectToolResultThreshold(t *testing.T) {
 }
 
 func TestProjectKeepsBoundedReadArtifactResultInline(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	content := strings.Repeat("x", artifactReadMaxBytes)
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "read it"},
@@ -68,7 +68,7 @@ func TestProjectKeepsBoundedReadArtifactResultInline(t *testing.T) {
 }
 
 func TestProjectToolResultsKeepsThreeNewestBatchPreviews(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "run all"}}
 	refs := make([]artifacts.Ref, 4)
 	for i, label := range []string{"one", "two", "three", "four"} {
@@ -123,7 +123,7 @@ func TestProjectToolResultsKeepsThreeNewestBatchPreviews(t *testing.T) {
 }
 
 func TestLargeTextPreviewRetainsTypedMediaDescriptorWithinBound(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	textRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, Data: []byte(strings.Repeat("large text\n", 5_000))})
 	imageRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Data: []byte("image")})
 	history := testToolHistory(textRef)
@@ -143,7 +143,7 @@ func TestLargeTextPreviewRetainsTypedMediaDescriptorWithinBound(t *testing.T) {
 }
 
 func TestProjectSpillsOlderActiveToolPreviewsUnderPressure(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "active turn"}}
 	refs := make([]artifacts.Ref, 3)
 	for i, label := range []string{"first", "second", "third"} {
@@ -172,7 +172,7 @@ func TestProjectSpillsOlderActiveToolPreviewsUnderPressure(t *testing.T) {
 }
 
 func TestProjectSpillsOlderInlineActiveToolResultUnderPressure(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	first := strings.Repeat("first-inline-", 1_600)   // below 10k estimated tokens
 	second := strings.Repeat("second-inline-", 1_500) // below 10k estimated tokens
 	history := []messages.ChatMessage{
@@ -206,6 +206,36 @@ func TestProjectSpillsOlderInlineActiveToolResultUnderPressure(t *testing.T) {
 	if history[2].Content != first || len(history[2].Parts) != 0 {
 		t.Fatalf("pressure projection mutated durable inline result: %#v", history[2])
 	}
+}
+
+func TestProjectSurfacesArtifactPutFailures(t *testing.T) {
+	t.Run("initial large result", func(t *testing.T) {
+		history := []messages.ChatMessage{
+			{Role: messages.MessageRoleUser, Content: "run"},
+			{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "large", Name: "large", Arguments: `{}`}}},
+			{Role: messages.MessageRoleTool, ToolCallID: "large", ToolName: "large", Content: strings.Repeat("large", toolInlineTokenLimit)},
+		}
+		_, _, err := projectMessages(context.Background(), history, 0, failingArtifactStore{})
+		if !errors.Is(err, errFailingArtifactStore) {
+			t.Fatalf("projectMessages() error = %v, want artifact storage failure", err)
+		}
+	})
+
+	t.Run("active pressure spill", func(t *testing.T) {
+		first := strings.Repeat("first-inline-", 1_600)
+		second := strings.Repeat("second-inline-", 1_500)
+		history := []messages.ChatMessage{
+			{Role: messages.MessageRoleUser, Content: "active"},
+			{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "first", Name: "first", Arguments: `{}`}}},
+			{Role: messages.MessageRoleTool, ToolCallID: "first", ToolName: "first", Content: first},
+			{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "second", Name: "second", Arguments: `{}`}}},
+			{Role: messages.MessageRoleTool, ToolCallID: "second", ToolName: "second", Content: second},
+		}
+		_, _, err := projectMessages(context.Background(), history, 6_000, failingArtifactStore{})
+		if !errors.Is(err, errFailingArtifactStore) {
+			t.Fatalf("projectMessages() error = %v, want pressure-spill storage failure", err)
+		}
+	})
 }
 
 func TestProjectOmitsCompleteExchangesAndPreservesSystemContext(t *testing.T) {
@@ -297,7 +327,7 @@ func TestProjectReturnsTypedContextLimitErrorForActiveExchange(t *testing.T) {
 }
 
 func TestProjectHydratesOnlyExplicitImageSelection(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	one := []byte("image-one")
 	two := []byte("image-two")
 	refOne := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "one.png", Reference: "[image #1]", Data: one})
@@ -332,7 +362,7 @@ func TestProjectHydratesOnlyExplicitImageSelection(t *testing.T) {
 }
 
 func TestProjectImageReferenceFailuresAreClear(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	first := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "same.png", Reference: "[image #1]", Data: []byte("first")})
 	second := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "same.png", Reference: "[image #2]", Data: []byte("second")})
 	base := []messages.ChatMessage{
@@ -360,7 +390,7 @@ func TestProjectImageReferenceFailuresAreClear(t *testing.T) {
 
 	t.Run("missing artifact bytes", func(t *testing.T) {
 		history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "text", Text: "inspect"}, imageArtifactPart(first)}}}
-		missingStore := artifacts.NewMemoryStore()
+		missingStore := newTestArtifactStore()
 		_, _, err := projectMessages(context.Background(), history, 0, missingStore)
 		if err == nil || !strings.Contains(err.Error(), "read image artifact") {
 			t.Fatalf("error = %v, want missing artifact failure", err)
@@ -369,7 +399,7 @@ func TestProjectImageReferenceFailuresAreClear(t *testing.T) {
 }
 
 func TestProjectImageFilenameMatchingIsCaseSensitive(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "Cat.PNG", Data: []byte("cat")})
 	base := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "text", Text: "old"}, imageArtifactPart(ref)}},
@@ -391,7 +421,7 @@ func TestProjectImageFilenameMatchingIsCaseSensitive(t *testing.T) {
 }
 
 func TestToolImageIsAttachedToExactlyFollowingRequest(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "tool.png", Data: []byte("tool-image")})
 	firstRequest := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "make an image"},
@@ -423,7 +453,7 @@ func TestToolImageIsAttachedToExactlyFollowingRequest(t *testing.T) {
 }
 
 func TestProjectDeduplicatesReadArtifactImageAlreadyReferencedByUser(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	ref := putTestArtifact(t, store, artifacts.Blob{
 		Kind: artifacts.KindImage, MIMEType: "image/png", Name: "again.png", Reference: "[image #1]", Data: []byte("same image"),
 	})
@@ -504,7 +534,7 @@ func projectedText(history []messages.ChatMessage) string {
 }
 
 func TestSpillActiveToolResultsExemptsReadArtifact(t *testing.T) {
-	store := artifacts.NewMemoryStore()
+	store := newTestArtifactStore()
 	readContent := strings.Repeat("r", 20_000)
 	bashContent := strings.Repeat("b", 36_000)
 	history := []messages.ChatMessage{
@@ -529,21 +559,30 @@ func TestSpillActiveToolResultsExemptsReadArtifact(t *testing.T) {
 	}
 }
 
-func TestProjectToolResultsDegradesMissingArtifactToNote(t *testing.T) {
-	mintStore := artifacts.NewMemoryStore()
-	ref := putTestArtifact(t, mintStore, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "bash.txt", Data: []byte("lost output")})
-	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "run"},
-		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "call", Name: "bash", Arguments: `{}`}}},
-		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "bash", Content: artifactReceipt(ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
-	}
-	projected, _, err := projectMessages(context.Background(), history, 0, artifacts.NewMemoryStore())
-	if err != nil {
-		t.Fatalf("missing blob failed the turn instead of degrading: %v", err)
-	}
-	last := projected[len(projected)-1]
-	if !strings.Contains(last.Content, "no longer available") || !strings.Contains(last.Content, ref.ID) {
-		t.Fatalf("missing blob note = %q", last.Content)
+func TestProjectToolResultsFailWhenArtifactCannotBeRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "full read", data: []byte("lost output")},
+		{name: "preview read", data: []byte(strings.Repeat("lost output", toolInlineTokenLimit))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mintStore := newTestArtifactStore()
+			ref := putTestArtifact(t, mintStore, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "bash.txt", Data: tc.data})
+			history := []messages.ChatMessage{
+				{Role: messages.MessageRoleUser, Content: "run"},
+				{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "call", Name: "bash", Arguments: `{}`}}},
+				{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "bash", Content: artifactReceipt(ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
+			}
+
+			for _, store := range []artifacts.Store{newTestArtifactStore(), nil} {
+				_, _, err := projectMessages(context.Background(), history, 0, store)
+				if err == nil || !strings.Contains(err.Error(), ref.ID) {
+					t.Fatalf("projectMessages() error = %v, want failure for artifact %s", err, ref.ID)
+				}
+			}
+		})
 	}
 }
 

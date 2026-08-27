@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -11,7 +13,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-// needsFileStore determines if we need a file-based session store
+// needsFileStore determines whether the unified store should use disk mode.
 func needsFileStore(config *Config, contextID string) bool {
 	return contextID != "" ||
 		config.ResetContext != "" ||
@@ -24,27 +26,51 @@ func needsFileStore(config *Config, contextID string) bool {
 		config.ShowContext != ""
 }
 
-// setupSessionStore creates the appropriate session store based on
-// configuration. forceFile selects the file store even when no flag demands
-// one (used for auto-named REPL contexts).
+// setupSessionStore opens the unified SQLite store. forceFile selects disk
+// mode even when no flag demands persistence (used for auto-named REPL
+// contexts).
 func setupSessionStore(config *Config, contextID string, forceFile bool) (sessions.SessionStore, error) {
-	// Create default context info with initial settings
-	defaultInfo := &sessions.Metadata{
-		TTL:              0,
-		SystemPrompt:     config.SystemPrompt,
-		MaxHistoryTokens: config.MaxHistoryTokens,
-	}
+	// New sessions must start with the fully resolved invocation settings.
+	// Existing sessions restore every persisted value, including meaningful
+	// zeros, so a partial default would make a freshly named context look like
+	// an existing context whose model and limits were intentionally cleared.
+	defaultInfo := metadataFromConfig(config)
 
-	if forceFile || needsFileStore(config, contextID) {
-		return sessions.NewFileSessionStore("", defaultInfo) // Uses default ~/.pollytool/contexts
+	storeConfig := sessions.StoreConfig{
+		Mode:            sessions.ModeMemory,
+		DefaultMetadata: defaultInfo,
+		AutoSessionTTL:  7 * 24 * time.Hour,
 	}
-	return sessions.NewSyncMapSessionStore(defaultInfo), nil
+	if forceFile || needsFileStore(config, contextID) {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve home directory: %w", err)
+		}
+		storeConfig.Mode = sessions.ModeDisk
+		storeConfig.Path = filepath.Join(homeDir, ".pollytool", "polly.db")
+	}
+	return sessions.OpenStore(storeConfig)
+}
+
+func metadataFromConfig(config *Config) *sessions.Metadata {
+	metadata := &sessions.Metadata{}
+	config.Settings.ToMetadataSettings(metadata)
+	// Config.MaxIterations is the runtime value populated by parseConfig;
+	// Settings.MaxIterations is retained only for persisted-settings helpers.
+	metadata.MaxIterations = config.MaxIterations
+	return metadata
 }
 
 // handleListContexts lists all available contexts
-func handleListContexts(store sessions.SessionStore) error {
-	contexts := store.GetAllMetadata()
-	lastContext := store.GetLast()
+func handleListContexts(ctx context.Context, store sessions.SessionStore) error {
+	contexts, err := store.GetAllMetadata(ctx)
+	if err != nil {
+		return fmt.Errorf("list context metadata: %w", err)
+	}
+	lastContext, err := store.GetLast(ctx)
+	if err != nil {
+		return fmt.Errorf("find last context: %w", err)
+	}
 
 	if len(contexts) == 0 {
 		fmt.Println("No contexts found")
@@ -86,9 +112,13 @@ func formatDuration(d time.Duration) string {
 }
 
 // handleDeleteContext deletes the specified context
-func handleDeleteContext(store sessions.SessionStore, contextID string) error {
+func handleDeleteContext(ctx context.Context, store sessions.SessionStore, contextID string) error {
 	// Check if context exists
-	if !store.Exists(contextID) {
+	exists, err := store.Exists(ctx, contextID)
+	if err != nil {
+		return fmt.Errorf("check context %q: %w", contextID, err)
+	}
+	if !exists {
 		return fmt.Errorf("context '%s' not found", contextID)
 	}
 
@@ -97,7 +127,7 @@ func handleDeleteContext(store sessions.SessionStore, contextID string) error {
 		return nil
 	}
 
-	return deleteContext(store, contextID)
+	return deleteContext(ctx, store, contextID)
 }
 
 // confirmDeletion prompts the user to confirm deletion
@@ -111,13 +141,9 @@ func confirmDeletion(contextID string) bool {
 }
 
 // deleteContext performs the actual deletion
-func deleteContext(store sessions.SessionStore, contextID string) error {
-	store.Delete(contextID)
-
-	// Reflect actual result: if still exists, it was likely in use and skipped
-	if store.Exists(contextID) {
-		fmt.Fprintf(os.Stderr, "Context '%s' is currently in use; deletion skipped\n", contextID)
-		return nil
+func deleteContext(ctx context.Context, store sessions.SessionStore, contextID string) error {
+	if err := store.Delete(ctx, contextID); err != nil {
+		return fmt.Errorf("delete context %q: %w", contextID, err)
 	}
 
 	fmt.Printf("Context '%s' deleted\n", contextID)
@@ -125,13 +151,20 @@ func deleteContext(store sessions.SessionStore, contextID string) error {
 }
 
 // handleAddToContext adds stdin content or file content to a context without making an API call
-func handleAddToContext(store sessions.SessionStore, config *Config, contextID string) error {
+func handleAddToContext(ctx context.Context, store sessions.SessionStore, config *Config, contextID string) (retErr error) {
 	if contextID == "" {
 		// Try to use last context if available
-		lastContext := store.GetLast()
+		lastContext, err := store.GetLast(ctx)
+		if err != nil {
+			return fmt.Errorf("find last context: %w", err)
+		}
 		if lastContext != "" {
 			contextDisplay := lastContext
-			if info := store.GetAllMetadata()[lastContext]; info != nil && info.Name != "" {
+			metadata, err := store.GetAllMetadata(ctx)
+			if err != nil {
+				return fmt.Errorf("list context metadata: %w", err)
+			}
+			if info := metadata[lastContext]; info != nil && info.Name != "" {
 				contextDisplay = info.Name
 			}
 			prompt := fmt.Sprintf("No context specified. Use last context '%s'?", contextDisplay)
@@ -145,11 +178,15 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 		}
 	}
 
-	session, err := store.Get(contextID)
+	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get session for context %s: %w", contextID, err)
 	}
-	defer session.Close()
+	defer func() {
+		if err := session.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close context %s: %w", contextID, err))
+		}
+	}()
 
 	// Collect the messages, then persist them all in a single write below.
 	var msgs []messages.ChatMessage
@@ -221,12 +258,15 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 		}
 		msgs[i].Metadata[messages.MetadataKeyContextImport] = true
 	}
-	artifactStore := artifactStoreForSession(session)
+	artifactStore := session.ArtifactStore()
 	for i := range msgs {
-		msgs[i] = externalizeMessageImages(context.Background(), msgs[i], artifactStore)
+		msgs[i], err = externalizeMessageImages(ctx, msgs[i], artifactStore)
+		if err != nil {
+			return fmt.Errorf("persist imported artifacts: %w", err)
+		}
 	}
 
-	if err := session.AddMessages(msgs); err != nil {
+	if err := session.AddMessages(ctx, msgs); err != nil {
 		return fmt.Errorf("failed to add to context %s: %w", contextID, err)
 	}
 
@@ -237,61 +277,71 @@ func handleAddToContext(store sessions.SessionStore, config *Config, contextID s
 }
 
 // getOrCreateSession gets an existing session or creates a new one
-func getOrCreateSession(store sessions.SessionStore, contextID string, needFileStore bool) sessions.Session {
+func getOrCreateSession(ctx context.Context, store sessions.SessionStore, contextID string, needFileStore, auto bool) (sessions.Session, error) {
 	if contextID == "" && !needFileStore {
 		contextID = "default" // Memory store context
 	}
-	session, err := store.Get(contextID)
+	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{Auto: auto})
 	if err != nil {
-		// Exit cleanly with error message instead of panic
-		fmt.Fprintf(os.Stderr, "Error: Failed to get session for context '%s': %v\n", contextID, err)
-		cleanupAndExit(1)
+		return nil, fmt.Errorf("get session for context %q: %w", contextID, err)
 	}
-	return session
+	return session, nil
 }
 
 // handleCreateContext creates a new context with the specified configuration
-func handleCreateContext(store sessions.SessionStore, config *Config, contextID string) error {
+func handleCreateContext(ctx context.Context, store sessions.SessionStore, config *Config, contextID string) (retErr error) {
 	if contextID == "" {
 		return fmt.Errorf("--create requires a context name (use -c or POLLYTOOL_CONTEXT)")
 	}
 
 	// Check if context already exists
-	if store.Exists(contextID) {
+	exists, err := store.Exists(ctx, contextID)
+	if err != nil {
+		return fmt.Errorf("check context %q: %w", contextID, err)
+	}
+	if exists {
 		return fmt.Errorf("context '%s' already exists", contextID)
 	}
 
-	// Create context info with all settings
-	info := &sessions.Metadata{
-		Name:     contextID,
-		Created:  time.Now(),
-		LastUsed: time.Now(),
-	}
-	// Copy settings from config
-	config.Settings.ToMetadataSettings(info)
+	// Create context info with all resolved settings.
+	info := metadataFromConfig(config)
+	info.Name = contextID
+	info.Created = time.Now()
+	info.LastUsed = time.Now()
 
 	// Create session and set its context info
-	session, err := store.Get(contextID)
+	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to create context: %w", err)
 	}
-	defer session.Close()
+	defer func() {
+		if err := session.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close context %s: %w", contextID, err))
+		}
+	}()
 
-	if err := session.SetMetadata(info); err != nil {
+	if err := session.SetMetadata(ctx, info); err != nil {
 		return fmt.Errorf("failed to create context '%s': %w", contextID, err)
 	}
 
-	handleShowContext(store, contextID) // Show the new context info
-	return nil
+	return showContext(ctx, store, contextID)
 }
 
 // handleShowContext shows the configuration for a context
-func handleShowContext(store sessions.SessionStore, contextID string) error {
+func handleShowContext(ctx context.Context, store sessions.SessionStore, contextID string) error {
 	if contextID == "" {
 		return fmt.Errorf("--show requires a context name")
 	}
 
-	info := store.GetAllMetadata()[contextID]
+	return showContext(ctx, store, contextID)
+}
+
+func showContext(ctx context.Context, store sessions.SessionStore, contextID string) error {
+	metadata, err := store.GetAllMetadata(ctx)
+	if err != nil {
+		return fmt.Errorf("list context metadata: %w", err)
+	}
+	info := metadata[contextID]
 	if info == nil {
 		return fmt.Errorf("context '%s' not found", contextID)
 	}
@@ -342,13 +392,17 @@ func handleShowContext(store sessions.SessionStore, contextID string) error {
 }
 
 // handleResetContext resets a context (clears conversation, keeps settings)
-func handleResetContext(store sessions.SessionStore, config *Config, cmd *cli.Command, contextID string) error {
+func handleResetContext(ctx context.Context, store sessions.SessionStore, config *Config, cmd *cli.Command, contextID string) (retErr error) {
 	if contextID == "" {
 		return fmt.Errorf("--reset requires a context name")
 	}
 
 	// Check if context exists
-	if !store.Exists(contextID) {
+	exists, err := store.Exists(ctx, contextID)
+	if err != nil {
+		return fmt.Errorf("check context %q: %w", contextID, err)
+	}
+	if !exists {
 		return fmt.Errorf("context '%s' does not exist", contextID)
 	}
 
@@ -357,30 +411,33 @@ func handleResetContext(store sessions.SessionStore, config *Config, cmd *cli.Co
 		return nil
 	}
 
-	// Reset the context using the resetContext helper
-	if err := resetContext(store, contextID); err != nil {
-		return fmt.Errorf("failed to reset context: %w", err)
-	}
-
-	// Apply any command-line overrides through the session
-	session, err := store.Get(contextID)
+	// Apply every explicit override and clear the conversation in one
+	// transaction. This keeps the rebuilt system message, settings, transcript,
+	// and artifact ownership consistent even if the reset fails partway through.
+	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
-	defer session.Close()
+	defer func() {
+		if err := session.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close context %s: %w", contextID, err))
+		}
+	}()
 
 	// Apply only explicitly-set command-line flags: a plain --reset must not
 	// replace stored settings with CLI defaults, and explicit zeros
 	// (--maxcontext 0 = unlimited) must stick.
-	md := session.GetMetadata()
+	md, err := session.GetMetadata(ctx)
+	if err != nil {
+		return fmt.Errorf("read context metadata: %w", err)
+	}
 	if md == nil {
 		md = &sessions.Metadata{Name: contextID}
 	}
-	md.LastUsed = time.Now()
 	applyFlagSettings(md, config, cmd)
 
-	if err := session.SetMetadata(md); err != nil {
-		return fmt.Errorf("failed to update context info: %w", err)
+	if err := session.Reset(ctx, md); err != nil {
+		return fmt.Errorf("failed to reset context: %w", err)
 	}
 
 	fmt.Printf("Reset context '%s' (cleared conversation, kept settings)\n", contextID)
@@ -397,10 +454,10 @@ func confirmReset(contextID string) bool {
 	return true
 }
 
-// handlePurgeAll deletes all sessions and the index
-func handlePurgeAll(store sessions.SessionStore) error {
+// handlePurgeAll deletes all sessions.
+func handlePurgeAll(ctx context.Context, store sessions.SessionStore) error {
 	// Get count of contexts for the confirmation message
-	contextIDs, err := store.List()
+	contextIDs, err := store.List(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list contexts: %w", err)
 	}
@@ -415,7 +472,7 @@ func handlePurgeAll(store sessions.SessionStore) error {
 		return nil
 	}
 
-	return purgeContexts(store, contextIDs)
+	return purgeContexts(ctx, store, contextIDs)
 }
 
 // confirmPurge prompts the user to confirm purge
@@ -429,37 +486,59 @@ func confirmPurge(count int) bool {
 }
 
 // purgeContexts performs the actual purge operation
-func purgeContexts(store sessions.SessionStore, contextIDs []string) error {
+func purgeContexts(ctx context.Context, store sessions.SessionStore, contextIDs []string) error {
 	deletedCount := 0
-	skippedCount := 0
+	var deleteErrors []error
 	for _, contextID := range contextIDs {
-		store.Delete(contextID)
-		if store.Exists(contextID) {
-			skippedCount++ // likely in use
+		if err := store.Delete(ctx, contextID); err != nil {
+			deleteErrors = append(deleteErrors, fmt.Errorf("delete context %q: %w", contextID, err))
 			continue
 		}
 		deletedCount++
 	}
 
 	fmt.Printf("Purged %d context(s)\n", deletedCount)
-	if skippedCount > 0 {
-		fmt.Fprintf(os.Stderr, "Skipped %d in-use context(s)\n", skippedCount)
-	}
-	return nil
+	return errors.Join(deleteErrors...)
 }
 
 // resetContext clears the conversation history but preserves the context settings
-func resetContext(sessionStore sessions.SessionStore, name string) error {
+func resetContext(ctx context.Context, sessionStore sessions.SessionStore, name string) (retErr error) {
+	return resetContextWithOptionalSystemPrompt(ctx, sessionStore, name, nil)
+}
+
+func resetContextWithSystemPrompt(ctx context.Context, sessionStore sessions.SessionStore, name, systemPrompt string) error {
+	return resetContextWithOptionalSystemPrompt(ctx, sessionStore, name, &systemPrompt)
+}
+
+func resetContextWithOptionalSystemPrompt(ctx context.Context, sessionStore sessions.SessionStore, name string, systemPrompt *string) (retErr error) {
 	// Get the session (creates if doesn't exist)
-	session, err := sessionStore.Get(name)
+	session, err := sessionStore.Acquire(ctx, name, sessions.AcquireOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get session for context %s: %w", name, err)
 	}
 	// Ensure we release the file lock
-	defer session.Close()
+	defer func() {
+		if err := session.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close context %s: %w", name, err))
+		}
+	}()
+	if systemPrompt != nil {
+		metadata, err := session.GetMetadata(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to read context %s metadata: %w", name, err)
+		}
+		if metadata == nil {
+			metadata = &sessions.Metadata{}
+		}
+		metadata.SystemPrompt = *systemPrompt
+		if err := session.Reset(ctx, metadata); err != nil {
+			return fmt.Errorf("failed to reset context %s with system prompt: %w", name, err)
+		}
+		return nil
+	}
 
 	// Clear the session history
-	if err := session.Clear(); err != nil {
+	if err := session.Clear(ctx); err != nil {
 		return fmt.Errorf("failed to clear context %s: %w", name, err)
 	}
 
@@ -468,14 +547,18 @@ func resetContext(sessionStore sessions.SessionStore, name string) error {
 
 // checkAndPromptForMissingContext checks if a context exists and creates it if missing
 // Returns the context name to use (existing or newly created)
-func checkAndPromptForMissingContext(sessionStore sessions.SessionStore, contextName string) string {
+func checkAndPromptForMissingContext(ctx context.Context, sessionStore sessions.SessionStore, contextName string) (string, error) {
 	if contextName == "" {
-		return contextName // No context specified
+		return contextName, nil // No context specified
 	}
 
 	// Check if context exists
-	if sessionStore.Exists(contextName) {
-		return contextName // Context exists, use it
+	exists, err := sessionStore.Exists(ctx, contextName)
+	if err != nil {
+		return "", fmt.Errorf("check context %q: %w", contextName, err)
+	}
+	if exists {
+		return contextName, nil // Context exists, use it
 	}
 
 	// Context doesn't exist, create it
@@ -486,13 +569,14 @@ func checkAndPromptForMissingContext(sessionStore sessions.SessionStore, context
 	}
 
 	// Get the session to create it (this will initialize the context)
-	if session, err := sessionStore.Get(contextName); err != nil {
-		// If we can't create the context, return empty string to signal cancellation
-		return ""
+	if session, err := sessionStore.Acquire(ctx, contextName, sessions.AcquireOptions{}); err != nil {
+		return "", fmt.Errorf("create context %q: %w", contextName, err)
 	} else {
-		session.Close() // Release the lock immediately
+		if err := session.Close(); err != nil {
+			return "", fmt.Errorf("close new context %q: %w", contextName, err)
+		}
 	}
 	fmt.Fprintf(os.Stderr, "Created new context '%s'\n", contextDisplay)
 
-	return contextName
+	return contextName, nil
 }

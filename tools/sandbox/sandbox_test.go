@@ -98,6 +98,7 @@ func TestNormalizeConfigPathsCopiesAllowEnv(t *testing.T) {
 }
 
 func TestResolvedExecutablePathUsesAbsoluteBaseForRelativeDir(t *testing.T) {
+	skipIfWindows(t)
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -126,6 +127,7 @@ func TestResolvedExecutablePathUsesAbsoluteBaseForRelativeDir(t *testing.T) {
 }
 
 func TestFreezeAuthorityPathsCanonicalizesDropsAndMinimizes(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	writable := filepath.Join(root, "writable")
 	nestedWritable := filepath.Join(writable, "nested")
@@ -822,6 +824,7 @@ func TestPrepareConfigDenyWriteDropsObsoleteWritableIdentity(t *testing.T) {
 }
 
 func TestPrepareConfigDenyWriteRetainsCurrentReadIdentity(t *testing.T) {
+	skipIfWindows(t)
 	root := t.TempDir()
 	shared := filepath.Join(root, "shared")
 	if err := os.Mkdir(shared, 0o700); err != nil {
@@ -1105,6 +1108,7 @@ func TestPrepareConfigNarrowedReadAliasDoesNotConflateDistinctAlias(t *testing.T
 }
 
 func TestPrepareConfigNarrowedReadAliasRejectsParentTargetReplacement(t *testing.T) {
+	skipIfWindows(t)
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

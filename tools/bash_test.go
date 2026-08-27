@@ -25,6 +25,7 @@ func TestBashToolSchema(t *testing.T) {
 }
 
 func TestBashToolSchemaAnnotatesSandboxPosture(t *testing.T) {
+	skipIfWindows(t)
 	unsandboxed := newBashTool("")
 	if desc := unsandboxed.GetSchema().Description(); strings.Contains(desc, "[sandboxed") {
 		t.Fatalf("unsandboxed description = %q, must not claim sandboxing", desc)
@@ -92,6 +93,7 @@ func TestBashToolExecutesCommand(t *testing.T) {
 }
 
 func TestBashToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
+	skipIfWindows(t)
 	file, err := os.CreateTemp(t.TempDir(), "bash-sandbox-extra-*")
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +111,7 @@ func TestBashToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
 }
 
 func TestBashToolWorkingDirectory(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	tool := newBashTool(dir)
 	result, err := tool.Execute(context.Background(), map[string]any{
@@ -190,6 +193,7 @@ func TestBashToolRegisteredAsNativeFactory(t *testing.T) {
 }
 
 func TestBashToolRunsScriptByAbsolutePath(t *testing.T) {
+	skipIfWindows(t)
 	dir := t.TempDir()
 	script := filepath.Join(dir, "greet.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"hello $1\"\n"), 0755); err != nil {

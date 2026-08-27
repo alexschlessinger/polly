@@ -2,9 +2,7 @@ package sessions
 
 import (
 	"slices"
-	"time"
 
-	"dario.cat/mergo"
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -184,32 +182,4 @@ func CopyHistory(history []messages.ChatMessage) []messages.ChatMessage {
 		}
 	}
 	return result
-}
-
-// MergeMetadata merges non-zero fields from 'update' into 'existing'.
-// Zero values (empty strings, 0 numbers, nil slices) in 'update' do not overwrite existing values.
-func MergeMetadata(existing *Metadata, update *Metadata) *Metadata {
-	if existing == nil {
-		existing = &Metadata{}
-	}
-	if update == nil {
-		out := *existing
-		return &out
-	}
-
-	// Create a copy to avoid modifying the original
-	out := *existing
-
-	// Use mergo with WithOverride to merge non-zero values from 'update' into 'out'
-	if err := mergo.Merge(&out, update, mergo.WithOverride); err != nil {
-		// If merge fails for some reason, fall back to the original
-		return existing
-	}
-
-	// Handle special case: set LastUsed to now if it's still zero
-	if out.LastUsed.IsZero() {
-		out.LastUsed = time.Now()
-	}
-
-	return &out
 }

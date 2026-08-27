@@ -42,7 +42,7 @@ GLOBAL OPTIONS:
    --list                                                   List all available context IDs
    --delete string                                          Delete the specified context
    --add                                                    Add stdin content to context without making an API call
-   --purge                                                  Delete all sessions and index (requires confirmation)
+   --purge                                                  Delete all sessions (requires confirmation)
    --create string                                          Create a new context with specified name and configuration
    --show string                                            Show configuration for the specified context
    --maxcontext int                                         Maximum estimated tokens sent to the model; full history is retained (0 = unlimited) (default: 256000)
@@ -141,7 +141,7 @@ use `/attach` for paths containing spaces.
 Each attachment appears as a literal `[image #N]` token at the cursor — delete
 the token to drop the attachment, or reorder and reuse it freely. When input is
 accepted, Polly prepares the exact image payload; queued turns and `/retry`
-reuse those bytes even if the source file changes or disappears. File-backed
+reuse those bytes even if the source file changes or disappears. SQLite-backed
 sessions persist prepared images; if the last image turn is incomplete after a
 reload, `/retry` replays those exact bytes. Attached text bodies and context
 imports remain non-retryable because they cannot be reconstructed safely from
@@ -166,7 +166,8 @@ Those formats are the portable intersection documented by
 and [Gemini image understanding](https://ai.google.dev/gemini-api/docs/image-understanding).
 Clipboard captures and exact prepared-preview files are stored under the user
 cache directory (`pollytool/attachments`) and swept after two weeks. Durable
-retry and reload data lives in the session, not this preview cache.
+retry and reload data lives in the SQLite session database, not this preview
+cache.
 
 Slash commands inside the TUI:
 
@@ -191,7 +192,8 @@ Shift-drag, or Option-drag in some macOS terminals—to select text.
 Launching the TUI without `-c` starts a persistent session under a generated
 name (e.g. `quiet-otter`). Resume it later with `polly -L` or `polly -c
 quiet-otter`, or give it a permanent name with `/rename`. A session where no
-turn ever ran is discarded on exit, and unused contexts expire after 7 days.
+turn ever ran is discarded on exit. Generated sessions expire after 7 days of
+inactivity; explicitly named and renamed contexts do not expire automatically.
 
 ### Model Selection
 
@@ -228,6 +230,21 @@ polly --delete project
 # Delete all contexts (requires confirmation)
 polly --purge
 ```
+
+### Session Storage and Backups
+
+Polly stores session history, settings, and durable artifact bytes in one
+SQLite database at `~/.pollytool/polly.db`. This is a clean break from the old
+per-context JSON format: files under `~/.pollytool/contexts` are left untouched,
+are not imported, and are ignored by current versions of Polly. On the first
+run after this cutover, the SQLite session catalog therefore starts empty.
+
+For a simple backup, first quit every Polly process and then copy
+`~/.pollytool/polly.db`. While Polly is running, use SQLite's
+[online backup API](https://www.sqlite.org/backup.html) or
+[`VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html#vacuuminto) to create a
+consistent snapshot. Do not copy only `polly.db` while a process has it open:
+committed data may still be in the write-ahead log.
 
 ### Context Settings Persistence
 

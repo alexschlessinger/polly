@@ -15,7 +15,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -905,13 +904,10 @@ func TestInitHistoryTrimsAndPersists(t *testing.T) {
 }
 
 func TestRunCommandSessionCommands(t *testing.T) {
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("ctx-test")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
-	session.AddMessage(messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello"})
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "ctx-test")
+	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
+	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello"})
 
 	r := newManagedREPL(&Config{Settings: Settings{MaxHistoryTokens: 5678}}, "ctx-test", 0, 0)
 	r.state = &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil)}
@@ -927,7 +923,7 @@ func TestRunCommandSessionCommands(t *testing.T) {
 
 	// /clear is display-only: durable history remains intact.
 	r.runCommand("/clear")
-	if got := len(session.GetHistory()); got != 2 {
+	if got := len(testSessionHistory(t, session)); got != 2 {
 		t.Fatalf("/clear changed durable history; got %d messages", got)
 	}
 	if len(r.model.transcript) != 1 || !strings.Contains(r.model.transcript[0], "cleared") {
@@ -936,11 +932,11 @@ func TestRunCommandSessionCommands(t *testing.T) {
 
 	// /reset requires the literal confirmation token, then clears persistence.
 	r.runCommand("/reset")
-	if got := len(session.GetHistory()); got != 2 {
+	if got := len(testSessionHistory(t, session)); got != 2 {
 		t.Fatalf("unconfirmed /reset changed history; got %d messages", got)
 	}
 	r.runCommand("/reset confirm")
-	if got := len(session.GetHistory()); got != 0 {
+	if got := len(testSessionHistory(t, session)); got != 0 {
 		t.Fatalf("/reset confirm left %d messages", got)
 	}
 
@@ -974,7 +970,7 @@ func TestAppendHelpPopulatesTranscript(t *testing.T) {
 func TestRunREPLLoopShowsHelp(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("/help\n"))
 	var out bytes.Buffer
-	err := runREPLLoop(reader, &out, func(prompt string) error {
+	err := runREPLLoop(context.Background(), reader, &out, func(prompt string) error {
 		t.Fatalf("runTurn should not be called for /help")
 		return nil
 	})
@@ -1589,7 +1585,7 @@ func TestRunREPLLoopExitOnEOF(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("hi\n"))
 	var out bytes.Buffer
 	calls := 0
-	err := runREPLLoop(reader, &out, func(prompt string) error {
+	err := runREPLLoop(context.Background(), reader, &out, func(prompt string) error {
 		calls++
 		if prompt != "hi" {
 			return errors.New("unexpected prompt: " + prompt)
@@ -1609,7 +1605,7 @@ func TestRunREPLLoopExitOnEOF(t *testing.T) {
 
 func TestRunREPLLoopHandlesExitCommand(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("/exit\n"))
-	err := runREPLLoop(reader, &bytes.Buffer{}, func(prompt string) error {
+	err := runREPLLoop(context.Background(), reader, &bytes.Buffer{}, func(prompt string) error {
 		t.Fatalf("runTurn should not be called for /exit")
 		return nil
 	})
@@ -1621,7 +1617,7 @@ func TestRunREPLLoopHandlesExitCommand(t *testing.T) {
 func TestRunREPLLoopSkipsBlankLines(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("\n   \nask\n"))
 	calls := 0
-	err := runREPLLoop(reader, &bytes.Buffer{}, func(prompt string) error {
+	err := runREPLLoop(context.Background(), reader, &bytes.Buffer{}, func(prompt string) error {
 		calls++
 		return nil
 	})

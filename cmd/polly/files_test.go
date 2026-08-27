@@ -17,7 +17,6 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"golang.org/x/image/bmp"
 )
 
@@ -262,17 +261,14 @@ func TestOneShotRejectsSeventeenImagesBeforeModelCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := sessions.NewSyncMapSessionStore(nil)
-	session, err := store.Get("seventeen-one-shot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := &conversationState{session: session}
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "seventeen-one-shot")
+	state := &conversationState{session: session, artifactStore: session.ArtifactStore()}
 	_, err = executeTurnWithUserMessage(context.Background(), &Config{}, state, msg, nil, nil, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "portable maximum is 16") {
 		t.Fatalf("17-image one-shot error = %v", err)
 	}
-	if history := session.GetHistory(); len(history) != 0 {
+	if history := testSessionHistory(t, session); len(history) != 0 {
 		t.Fatalf("rejected one-shot entered durable history: %#v", history)
 	}
 }
