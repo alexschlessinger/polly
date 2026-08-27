@@ -611,6 +611,43 @@ func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
 	}
 }
 
+func TestSlashHintsLiveFilterAndEscape(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	// Hints narrow with each typed rune, no Tab required.
+	send("/")
+	if r.model.slashHints == "" || !strings.Contains(r.model.slashHints, "/help") {
+		t.Fatalf("typing / should show all commands, got %q", r.model.slashHints)
+	}
+	send("t")
+	if got := r.model.slashHints; !strings.Contains(got, "/tools — ") {
+		t.Fatalf("typing /t should narrow hints to /tools with summary, got %q", got)
+	}
+
+	// Escape hides the line without touching the input…
+	send("<Escape>")
+	if got := r.model.ed.text(); got != "/t" {
+		t.Fatalf("escape changed input to %q", got)
+	}
+	if r.model.slashHints != "" {
+		t.Fatalf("escape should hide slash hints, got %q", r.model.slashHints)
+	}
+
+	// …and the next edit brings it back.
+	send("o")
+	if got := r.model.slashHints; !strings.Contains(got, "/tools") {
+		t.Fatalf("typing after escape should re-show hints, got %q", got)
+	}
+
+	// Argument keywords hint once the command name is complete.
+	r.model.ed.setText("/queue")
+	send(" ")
+	if got := r.model.slashHints; !strings.Contains(got, "drop") || !strings.Contains(got, "continue") {
+		t.Fatalf("/queue␣ should hint subcommands, got %q", got)
+	}
+}
+
 func TestBracketedPasteInsertsMultiLine(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
@@ -1194,17 +1231,19 @@ func TestEnterWhileBusyQueuesSlashCommandInHistory(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
 
+	// A mutating command queues behind the running turn (busy-safe read-only
+	// commands run immediately instead; see TestBusyReadOnlyCommandsRunImmediately).
 	r.model.busy = true
-	r.model.ed.setText("/help")
+	r.model.ed.setText("/retry")
 	send("<Enter>")
 
 	if r.model.ed.text() != "" {
 		t.Fatalf("editor should clear after queueing, got %q", r.model.ed.text())
 	}
-	if len(r.model.queue) != 1 || r.model.queue[0].text != "/help" || r.model.queue[0].turn != nil {
-		t.Fatalf("queue = %v, want [/help]", r.model.queue)
+	if len(r.model.queue) != 1 || r.model.queue[0].text != "/retry" || r.model.queue[0].turn != nil {
+		t.Fatalf("queue = %v, want [/retry]", r.model.queue)
 	}
-	if len(r.model.history) != 1 || r.model.history[0] != "/help" {
+	if len(r.model.history) != 1 || r.model.history[0] != "/retry" {
 		t.Fatalf("history should record the queued slash command, got %v", r.model.history)
 	}
 	select {

@@ -343,6 +343,28 @@ func TestBusyQueueCommandsRunImmediately(t *testing.T) {
 	}
 }
 
+func TestBusyReadOnlyCommandsRunImmediately(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.busy = true
+
+	// Read-only inspection runs right away instead of queueing.
+	r.model.ed.setText("/help")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	if len(r.model.queue) != 0 {
+		t.Fatalf("busy /help was queued instead of executed: %v", r.model.queue)
+	}
+	if joined := strings.Join(r.model.flattenTranscript(), "\n"); !strings.Contains(joined, "commands:") {
+		t.Fatalf("busy /help output missing: %q", joined)
+	}
+
+	// Mutating commands still queue behind the running turn.
+	r.model.ed.setText("/reset confirm")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	if got := r.model.queue; len(got) != 1 || got[0].text != "/reset confirm" {
+		t.Fatalf("busy /reset should queue, got %v", got)
+	}
+}
+
 func TestQuietQueueSubmissionGetsVisibleAcknowledgement(t *testing.T) {
 	r := newManagedREPL(&Config{Quiet: true}, "ctx", 0, 0)
 	r.model.busy = true
@@ -689,12 +711,12 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 		t.Fatal("same-row-count tool update rebuilt the full visual row index")
 	}
 
-	m.setSlashHints([]string{"/help", "/history"})
+	m.setSlashHintLine("/help  /history")
 	withHints := len(m.transcriptRows(80))
 	if withHints <= len(rows2) {
 		t.Fatal("slash hints did not invalidate the visual row cache")
 	}
-	m.clearSlashHints()
+	m.setSlashHintLine("")
 	if got := len(m.transcriptRows(80)); got != len(rows2) {
 		t.Fatalf("clearing slash hints left stale cached rows: %d, want %d", got, len(rows2))
 	}
@@ -708,7 +730,7 @@ func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 		styled("> ", "accent", "bold") + "a prompt that wraps across rows",
 	}
 	m.invalidateFlat()
-	m.setSlashHints([]string{"/help", "/tools"})
+	m.setSlashHintLine("/help  /tools")
 	for _, width := range []int{4, 12, 40} {
 		got := m.transcriptRows(width)
 		want := transcriptVisualRows(m.fullTranscript(), ui.NewStyle(ui.ColorClear), width)

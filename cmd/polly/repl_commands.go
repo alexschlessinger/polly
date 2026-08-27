@@ -7,9 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -23,10 +26,14 @@ type replCommandFunc func(*replCommandContext, []string) replCommandResult
 type replCommandCompleteFunc func(*replCommandContext, []string, string) []string
 
 type replCommand struct {
-	name     string
-	aliases  []string
-	usage    string
-	summary  string
+	name    string
+	aliases []string
+	usage   string
+	summary string
+	// busySafe commands run immediately while a turn is in flight instead of
+	// queueing behind it; their output may interleave with streaming assistant
+	// text. Reserve it for read-only inspection and queue management.
+	busySafe bool
 	run      replCommandFunc
 	complete replCommandCompleteFunc
 }
@@ -55,6 +62,9 @@ type replCommandContext struct {
 	clearQueue    func() int
 	continueQueue func() error
 	retryTurn     func() error
+	// settingsApplied lets the interactive REPL refresh UI derived from config
+	// (e.g. the status-row model name) after /set mutates it.
+	settingsApplied func()
 	// attachImage validates a local image, registers it, and inserts its
 	// "[image #N]" token into the composer, returning the token.
 	attachImage func(path string) (string, error)
@@ -80,23 +90,26 @@ var (
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
 	r.register(replCommand{
-		name:    "/attach",
-		usage:   "/attach <image-path>",
-		summary: "attach a local image to the next prompt",
-		run:     replAttachCommand,
+		name:     "/attach",
+		usage:    "/attach <image-path>",
+		summary:  "attach a local image to the next prompt",
+		busySafe: true,
+		run:      replAttachCommand,
 	})
 	r.register(replCommand{
-		name:    "/clear",
-		usage:   "/clear",
-		summary: "clear the display (keep conversation history)",
-		run:     replClearCommand,
+		name:     "/clear",
+		usage:    "/clear",
+		summary:  "clear the display (keep conversation history)",
+		busySafe: true,
+		run:      replClearCommand,
 	})
 	r.register(replCommand{
-		name:    "/context",
-		aliases: []string{"/stats"},
-		usage:   "/context",
-		summary: "session tokens, capacity, counts",
-		run:     replContextCommand,
+		name:     "/context",
+		aliases:  []string{"/stats"},
+		usage:    "/context",
+		summary:  "session tokens, capacity, counts",
+		busySafe: true,
+		run:      replContextCommand,
 	})
 	r.register(replCommand{
 		name:    "/exit",
@@ -111,19 +124,23 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		name:     "/get",
 		usage:    "/get <key|all>",
 		summary:  "show effective settings",
+		busySafe: true,
 		run:      replGetCommand,
 		complete: completeGetCommand,
 	})
 	r.register(replCommand{
-		name:    "/help",
-		usage:   "/help [command]",
-		summary: "show this help",
-		run:     replHelpCommand,
+		name:     "/help",
+		usage:    "/help [command]",
+		summary:  "show this help",
+		busySafe: true,
+		run:      replHelpCommand,
+		complete: completeHelpCommand,
 	})
 	r.register(replCommand{
 		name:     "/queue",
 		usage:    "/queue [list|drop|clear|continue]",
 		summary:  "inspect or manage queued input",
+		busySafe: true,
 		run:      replQueueCommand,
 		complete: completeQueueCommand,
 	})
@@ -146,15 +163,24 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:     replRetryCommand,
 	})
 	r.register(replCommand{
-		name:    "/skills",
-		usage:   "/skills",
-		summary: "list loaded skills",
-		run:     replSkillsCommand,
+		name:     "/set",
+		usage:    "/set <key> <value>",
+		summary:  "change a setting for this session",
+		run:      replSetCommand,
+		complete: completeSetCommand,
+	})
+	r.register(replCommand{
+		name:     "/skills",
+		usage:    "/skills",
+		summary:  "list loaded skills",
+		busySafe: true,
+		run:      replSkillsCommand,
 	})
 	r.register(replCommand{
 		name:     "/tools",
 		usage:    "/tools [list [namespace]|show <name>]",
 		summary:  "inspect loaded tools",
+		busySafe: true,
 		run:      replToolsCommand,
 		complete: completeToolsCommand,
 	})
@@ -175,11 +201,71 @@ func (r *replCommandRegistry) register(cmd replCommand) {
 }
 
 func (r *replCommandRegistry) get(name string) (replCommand, bool) {
-	idx, ok := r.byName[name]
+	idx, ok := r.byName[strings.ToLower(name)]
 	if !ok {
 		return replCommand{}, false
 	}
 	return r.commands[idx], true
+}
+
+// unknownCommandNotice builds the notice for input whose first field is not a
+// registered command, suggesting the closest name for near misses.
+func (r *replCommandRegistry) unknownCommandNotice(input string) string {
+	name := input
+	if fields := strings.Fields(input); len(fields) > 0 {
+		name = fields[0]
+	}
+	if suggestion := r.closestCommand(name); suggestion != "" {
+		return "unknown command: " + name + " — did you mean " + suggestion + "?"
+	}
+	return "unknown command: " + name + " (try /help)"
+}
+
+// closestCommand returns the registered command or alias nearest to name — a
+// unique prefix extension, or the closest name within edit distance 2 — or ""
+// when nothing is near enough to suggest. Suggestions are display-only; a near
+// miss never dispatches.
+func (r *replCommandRegistry) closestCommand(name string) string {
+	name = strings.ToLower(name)
+	names := r.commandNames()
+	var prefixed []string
+	for _, cand := range names {
+		if strings.HasPrefix(cand, name) {
+			prefixed = append(prefixed, cand)
+		}
+	}
+	if len(prefixed) == 1 {
+		return prefixed[0]
+	}
+	best, bestDist := "", 3
+	for _, cand := range names {
+		if d := editDistance(name, cand); d < bestDist {
+			best, bestDist = cand, d
+		}
+	}
+	return best
+}
+
+// editDistance is the Levenshtein distance between two short strings.
+func editDistance(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	cur := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			cur[j] = min(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(rb)]
 }
 
 func (r *replCommandRegistry) dispatch(line string, ctx *replCommandContext) (handled, quit bool, err error) {
@@ -199,6 +285,20 @@ func (r *replCommandRegistry) dispatch(line string, ctx *replCommandContext) (ha
 	}
 	res := cmd.run(ctx, args)
 	return true, res.quit, res.err
+}
+
+// busySafeCommand reports whether input is a single-line command marked safe
+// to run while a turn is in flight (instead of queueing behind it).
+func (r *replCommandRegistry) busySafeCommand(input string) bool {
+	if strings.Contains(input, "\n") {
+		return false
+	}
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return false
+	}
+	cmd, ok := r.get(fields[0])
+	return ok && cmd.busySafe
 }
 
 func (r *replCommandRegistry) commandNames() []string {
@@ -236,7 +336,7 @@ func (r *replCommandRegistry) helpLines() []string {
 func (r *replCommandRegistry) helpFor(name string) []string {
 	cmd, ok := r.get(name)
 	if !ok {
-		return []string{"unknown command: " + name + " (try /help)"}
+		return []string{r.unknownCommandNotice(name)}
 	}
 	names := append([]string{cmd.name}, cmd.aliases...)
 	return []string{
@@ -456,6 +556,9 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 				return fmt.Errorf("turn queue is unavailable")
 			}
 		},
+		settingsApplied: func() {
+			r.model.modelName = stripProviderPrefix(cfg.Model)
+		},
 	}
 }
 
@@ -505,7 +608,10 @@ func (r *replCommandRegistry) complete(input string, ctx *replCommandContext) (c
 		return "", nil, false
 	}
 	if ctx == nil {
-		ctx = &replCommandContext{registry: r}
+		ctx = &replCommandContext{}
+	}
+	if ctx.registry == nil {
+		ctx.registry = r
 	}
 	endsSpace := strings.HasSuffix(input, " ")
 	fields := strings.Fields(input)
@@ -523,25 +629,113 @@ func (r *replCommandRegistry) complete(input string, ctx *replCommandContext) (c
 		}
 		return longestCommonPrefix(matches), matches, true
 	}
-	if len(fields) > 2 || (len(fields) == 1 && !endsSpace) {
-		return "", nil, false
-	}
-	cmd, ok := r.get(fields[0])
-	if !ok || cmd.complete == nil {
+	// Completing an argument: the trailing partial field, or a fresh one right
+	// after a space. Completers see all typed fields so they can complete
+	// positionally (e.g. tool names only after "/tools show").
+	cmd, okCmd := r.get(fields[0])
+	if !okCmd || cmd.complete == nil {
 		return "", nil, false
 	}
 	prefix := ""
-	if !endsSpace && len(fields) == 2 {
-		prefix = fields[1]
+	base := fields
+	if !endsSpace {
+		prefix = fields[len(fields)-1]
+		base = fields[:len(fields)-1]
 	}
 	matches = cmd.complete(ctx, fields, prefix)
 	if len(matches) == 0 {
 		return "", nil, false
 	}
+	head := strings.Join(base, " ") + " "
 	for i, match := range matches {
-		matches[i] = fields[0] + " " + match
+		matches[i] = head + match
 	}
 	return longestCommonPrefix(matches), matches, true
+}
+
+// completionArgPos returns which argument (1-based) of a command is being
+// completed: fields holds the command name plus any typed fields, prefix the
+// partial argument ("" right after a space).
+func completionArgPos(fields []string, prefix string) int {
+	if prefix != "" {
+		return len(fields) - 1
+	}
+	return len(fields)
+}
+
+// slashHintSummaryMax caps how many name matches render with their summaries;
+// above it the hint falls back to bare names so the line stays scannable.
+const slashHintSummaryMax = 4
+
+// hintFor returns the transient hint line for a composer in the middle of a
+// slash command, or "" when the input isn't one. While the command name is
+// being typed it lists the matching commands (with summaries once the field
+// narrows); once a known command is entered it hints argument keywords via the
+// command's completer, falling back to the usage string.
+func (r *replCommandRegistry) hintFor(ctx *replCommandContext, input string) string {
+	if !strings.HasPrefix(input, "/") || strings.ContainsAny(input, "\n\t") {
+		return ""
+	}
+	if ctx == nil {
+		ctx = &replCommandContext{}
+	}
+	if ctx.registry == nil {
+		ctx.registry = r
+	}
+	endsSpace := strings.HasSuffix(input, " ")
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return ""
+	}
+	if len(fields) == 1 && !endsSpace {
+		return r.nameHint(fields[0])
+	}
+	cmd, ok := r.get(fields[0])
+	if !ok {
+		return ""
+	}
+	if cmd.complete != nil {
+		prefix := ""
+		if !endsSpace {
+			prefix = fields[len(fields)-1]
+		}
+		matches := cmd.complete(ctx, fields, prefix)
+		// A single match the user has already fully typed is noise; show the
+		// usage reminder instead.
+		if len(matches) == 1 && matches[0] == prefix {
+			matches = nil
+		}
+		if len(matches) > 0 {
+			return strings.Join(matches, "  ")
+		}
+	}
+	return "usage: " + cmd.usage
+}
+
+// nameHint lists commands (and aliases) matching a partial first field.
+func (r *replCommandRegistry) nameHint(prefix string) string {
+	type match struct{ name, summary string }
+	var matches []match
+	for _, cmd := range r.commands {
+		for _, name := range append([]string{cmd.name}, cmd.aliases...) {
+			if strings.HasPrefix(name, prefix) {
+				matches = append(matches, match{name, cmd.summary})
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return ""
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].name < matches[j].name })
+	parts := make([]string, len(matches))
+	for i, m := range matches {
+		if len(matches) > slashHintSummaryMax {
+			parts[i] = m.name
+		} else {
+			parts[i] = m.name + " — " + m.summary
+		}
+	}
+	return strings.Join(parts, "   ")
 }
 
 func longestCommonPrefix(ss []string) string {
@@ -641,7 +835,10 @@ func replResetCommand(ctx *replCommandContext, args []string) replCommandResult 
 	return replCommandResult{err: ctx.replyLine("conversation reset")}
 }
 
-func completeQueueCommand(_ *replCommandContext, _ []string, prefix string) []string {
+func completeQueueCommand(_ *replCommandContext, fields []string, prefix string) []string {
+	if completionArgPos(fields, prefix) != 1 {
+		return nil
+	}
 	return matchingWords([]string{"list", "drop", "clear", "continue"}, prefix)
 }
 
@@ -761,7 +958,10 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 
 var replSettingKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir", "sandbox"}
 
-func completeGetCommand(_ *replCommandContext, _ []string, prefix string) []string {
+func completeGetCommand(_ *replCommandContext, fields []string, prefix string) []string {
+	if completionArgPos(fields, prefix) != 1 {
+		return nil
+	}
 	return matchingWords(append([]string{"all"}, replSettingKeys...), prefix)
 }
 
@@ -783,6 +983,136 @@ func replGetCommand(ctx *replCommandContext, args []string) replCommandResult {
 		return replCommandResult{err: ctx.replyLine("unknown key: " + key + " (available: " + strings.Join(append([]string{"all"}, replSettingKeys...), ", ") + ")")}
 	}
 	return replCommandResult{err: ctx.replyLine(key + ": " + value)}
+}
+
+// replSettableKeys lists the /set-writable settings. system, skilldir, and
+// sandbox stay launch-time only: the system prompt is embedded in session
+// history at creation, and skill/sandbox wiring happens during tool loading.
+var replSettableKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"}
+
+// thinkingEffortWords are the named efforts accepted by llm.ParseThinkingEffort
+// (a raw token budget is also accepted).
+var thinkingEffortWords = []string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+func completeSetCommand(_ *replCommandContext, fields []string, prefix string) []string {
+	switch completionArgPos(fields, prefix) {
+	case 1:
+		return matchingWords(replSettableKeys, prefix)
+	case 2:
+		if fields[1] == "thinking" {
+			return matchingWords(thinkingEffortWords, prefix)
+		}
+	}
+	return nil
+}
+
+// applyReplSetting validates value for key and writes it onto cfg. Turns build
+// their completion request from cfg each time, so a change takes effect on the
+// next turn without reconnecting.
+func applyReplSetting(cfg *Config, key, value string) error {
+	switch key {
+	case "model":
+		if value == "" {
+			return fmt.Errorf("model requires a provider/model value")
+		}
+		if err := validateModel(value); err != nil {
+			return err
+		}
+		cfg.Model = value
+	case "temp":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return fmt.Errorf("temp must be a number, got %q", value)
+		}
+		if err := validateTemperature(f); err != nil {
+			return err
+		}
+		cfg.Temperature = f
+	case "maxtokens":
+		n, err := strconv.Atoi(value)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("maxtokens must be a positive integer, got %q", value)
+		}
+		cfg.MaxTokens = n
+	case "maxcontext":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("maxcontext must be a non-negative integer (0 = unlimited), got %q", value)
+		}
+		cfg.MaxHistoryTokens = n
+	case "thinking":
+		if _, err := llm.ParseThinkingEffort(value); err != nil {
+			return err
+		}
+		cfg.ThinkingEffort = value
+	case "tooltimeout":
+		d, err := time.ParseDuration(value)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("tooltimeout must be a positive duration (e.g. 45s), got %q", value)
+		}
+		cfg.ToolTimeout = d
+	default:
+		return fmt.Errorf("unknown or read-only key: %s (settable: %s)", key, strings.Join(replSettableKeys, ", "))
+	}
+	return nil
+}
+
+func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 3 {
+		return replCommandResult{err: ctx.replyLine("usage: /set <key> <value>. settable: " + strings.Join(replSettableKeys, ", "))}
+	}
+	if ctx == nil || ctx.config == nil {
+		return replCommandResult{err: ctx.replyLine("settings unavailable")}
+	}
+	key, value := args[1], args[2]
+	if err := applyReplSetting(ctx.config, key, value); err != nil {
+		return replCommandResult{err: ctx.replyLine(err.Error())}
+	}
+	// The agent captures the tool timeout at construction; push the change
+	// through so it applies to the next turn, not the next launch.
+	if key == "tooltimeout" && ctx.state != nil && ctx.state.agent != nil {
+		ctx.state.agent.SetToolTimeout(ctx.config.ToolTimeout)
+	}
+	if ctx.settingsApplied != nil {
+		ctx.settingsApplied()
+	}
+	display, _ := replSettingValue(ctx, key)
+	line := key + ": " + display
+	if err := persistReplSettings(ctx); err != nil {
+		line += " (applied for this run; persisting failed: " + err.Error() + ")"
+	}
+	return replCommandResult{err: ctx.replyLine(line)}
+}
+
+// persistReplSettings writes the resolved settings back to session metadata —
+// the same fields updateContextInfo records at startup — so a /set survives
+// into the next launch of this context.
+func persistReplSettings(ctx *replCommandContext) error {
+	if ctx.state == nil || ctx.state.session == nil {
+		return nil
+	}
+	cfg := ctx.configOrDefault()
+	s := ctx.state.session
+	opCtx := ctx.operationContext()
+	md, err := s.GetMetadata(opCtx)
+	if err != nil {
+		return err
+	}
+	if md == nil {
+		md = &sessions.Metadata{}
+	}
+	name, err := s.GetName(opCtx)
+	if err != nil {
+		return err
+	}
+	md.Name = name
+	md.Model = cfg.Model
+	md.Temperature = cfg.Temperature
+	md.MaxTokens = cfg.MaxTokens
+	md.MaxHistoryTokens = cfg.MaxHistoryTokens
+	md.ThinkingEffort = cfg.ThinkingEffort
+	md.ToolTimeout = cfg.ToolTimeout
+	return s.SetMetadata(opCtx, md)
 }
 
 // sandboxToolSplit partitions sandbox-capable tools by whether they run
@@ -969,8 +1299,49 @@ func replToolsCommand(ctx *replCommandContext, args []string) replCommandResult 
 	}
 }
 
-func completeToolsCommand(_ *replCommandContext, _ []string, prefix string) []string {
-	return matchingWords([]string{"list", "show"}, prefix)
+func completeToolsCommand(ctx *replCommandContext, fields []string, prefix string) []string {
+	switch completionArgPos(fields, prefix) {
+	case 1:
+		return matchingWords([]string{"list", "show"}, prefix)
+	case 2:
+		switch fields[1] {
+		case "show":
+			return matchingWords(loadedToolNames(ctx), prefix)
+		case "list":
+			return matchingWords(loadedToolNamespaces(ctx), prefix)
+		}
+	}
+	return nil
+}
+
+func loadedToolNames(ctx *replCommandContext) []string {
+	if ctx == nil || ctx.state == nil || ctx.state.toolRegistry == nil {
+		return nil
+	}
+	var names []string
+	for _, t := range ctx.state.toolRegistry.All() {
+		names = append(names, t.GetName())
+	}
+	return names
+}
+
+func loadedToolNamespaces(ctx *replCommandContext) []string {
+	seen := make(map[string]bool)
+	var namespaces []string
+	for _, name := range loadedToolNames(ctx) {
+		if ns, _, ok := strings.Cut(name, "__"); ok && !seen[ns] {
+			seen[ns] = true
+			namespaces = append(namespaces, ns)
+		}
+	}
+	return namespaces
+}
+
+func completeHelpCommand(ctx *replCommandContext, fields []string, prefix string) []string {
+	if completionArgPos(fields, prefix) != 1 || ctx == nil || ctx.registry == nil {
+		return nil
+	}
+	return matchingWords(ctx.registry.commandNames(), prefix)
 }
 
 func replListTools(ctx *replCommandContext, namespace string) replCommandResult {

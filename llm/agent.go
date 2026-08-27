@@ -132,6 +132,12 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 	return agent
 }
 
+// SetToolTimeout updates the per-tool-call timeout for subsequent runs. Not
+// safe to call while a Run is in flight.
+func (a *Agent) SetToolTimeout(d time.Duration) {
+	a.config.ToolTimeout = d
+}
+
 // Run executes a completion with automatic tool call handling.
 // It loops until the LLM returns a response with no tool calls,
 // or until MaxIterations is reached.

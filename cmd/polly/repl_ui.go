@@ -628,9 +628,15 @@ type replModel struct {
 	visualCacheCellHeight   int
 	visualBlocks            []transcriptVisualBlock
 
-	// slashHints is a transient command-completion hint. It renders near the
-	// transcript but is not part of the transcript or persistent history.
-	slashHints string
+	// slashHints is a transient command-completion hint derived from the
+	// composer: while a single-line input starts with "/", the matching
+	// commands (or the active command's argument keywords) render as a muted
+	// line near the transcript. It is not part of the transcript or persistent
+	// history. Esc hides the line until the input text next changes;
+	// slashHintSource tracks which text the hidden flag applies to.
+	slashHints       string
+	slashHintsHidden bool
+	slashHintSource  string
 	// queueHint is the quiet-mode equivalent of queue status. Keeping it as a
 	// transient render block avoids splitting an assistant stream just because
 	// the user accepted another input while generation was in flight.
@@ -1800,20 +1806,11 @@ func compactToolNames(names []string) string {
 	return truncate(text, 120)
 }
 
-func (m *replModel) setSlashHints(matches []string) {
-	if len(matches) > 1 {
-		m.slashHints = strings.Join(matches, "  ")
-		m.invalidateVisual()
+func (m *replModel) setSlashHintLine(hint string) {
+	if m.slashHints == hint {
 		return
 	}
-	m.clearSlashHints()
-}
-
-func (m *replModel) clearSlashHints() {
-	if m.slashHints == "" {
-		return
-	}
-	m.slashHints = ""
+	m.slashHints = hint
 	m.invalidateVisual()
 }
 
@@ -1875,7 +1872,6 @@ func (m *replModel) beginManagedTurn(turn managedTurnInput) {
 }
 
 func (m *replModel) historyUp() {
-	m.clearSlashHints()
 	if len(m.history) == 0 || m.approval != nil {
 		return
 	}
@@ -1889,7 +1885,6 @@ func (m *replModel) historyUp() {
 }
 
 func (m *replModel) historyDown() {
-	m.clearSlashHints()
 	if m.historyIdx == -1 || m.approval != nil {
 		return
 	}
@@ -1904,7 +1899,6 @@ func (m *replModel) historyDown() {
 
 // startSearch enters reverse-incremental history search with an empty query.
 func (m *replModel) startSearch() {
-	m.clearSlashHints()
 	m.searching = true
 	m.searchQuery = ""
 	m.searchMatch = -1
@@ -1961,7 +1955,6 @@ func (m *replModel) searchNext() {
 // acceptSearch places the current match into the editor and leaves search mode.
 // The text is not submitted — the user can edit it and press Enter.
 func (m *replModel) acceptSearch() {
-	m.clearSlashHints()
 	if m.searchMatch >= 0 && m.searchMatch < len(m.history) {
 		m.ed.setText(m.history[m.searchMatch])
 	}
@@ -2535,7 +2528,6 @@ func (r *managedREPL) recordAcceptedInput(input string) {
 	if input == "" {
 		return
 	}
-	r.model.clearSlashHints()
 	r.model.historyIdx = -1
 	r.model.historyDraft = ""
 	r.model.history = append(r.model.history, input)
@@ -2873,7 +2865,7 @@ func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.
 		// handleEvent); requestQuit does not, so release before quitting.
 		handled, quit := r.runCommand(text)
 		if !handled {
-			r.model.appendNoticeLine("unknown command: " + text + " (try /help)")
+			r.model.appendNoticeLine(defaultReplCommands.unknownCommandNotice(text))
 		}
 		// /retry is a command that starts a turn. Consume the prompt it placed on
 		// pending before looking at later queue entries; otherwise a following
@@ -3051,7 +3043,6 @@ func queuedRetryAtFront(queue []queuedREPLInput) bool {
 // empty prompt exits. Returns true to quit. Caller must hold m.mu.
 func (r *managedREPL) handleInterrupt() bool {
 	m := r.model
-	m.clearSlashHints()
 	if !m.busy {
 		if !m.ed.empty() {
 			m.ed.clear()
@@ -3759,6 +3750,31 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
 
+	quit := r.handleEventLocked(e)
+	if !quit {
+		r.refreshSlashHints()
+	}
+	return quit
+}
+
+// refreshSlashHints recomputes the transient hint line from the composer
+// state. Running once per input event (rather than inside each key handler)
+// keeps the hint a pure function of the current input. Caller must hold m.mu.
+func (r *managedREPL) refreshSlashHints() {
+	m := r.model
+	text := m.ed.text()
+	if text != m.slashHintSource {
+		m.slashHintSource = text
+		m.slashHintsHidden = false
+	}
+	hint := ""
+	if !m.slashHintsHidden && !m.pasting && !m.searching && m.approval == nil {
+		hint = defaultReplCommands.hintFor(newManagedReplCommandContext(r), text)
+	}
+	m.setSlashHintLine(hint)
+}
+
+func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	m := r.model
 	viewport := r.transcriptHeight()
 	terminalWidth, _ := ui.TerminalDimensions()
@@ -3815,7 +3831,6 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	// attachment tokens; everything else enters the editor as literal text.
 	// (gotui drops these markers; our own event pump surfaces them.)
 	if e.ID == pasteStartID || e.ID == pasteEndID {
-		m.clearSlashHints()
 		m.pasting = e.ID == pasteStartID
 		if m.pasting {
 			m.pasteBuf = m.pasteBuf[:0]
@@ -3825,7 +3840,6 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		return false
 	}
 	if m.pasting {
-		m.clearSlashHints()
 		m.bufferPasted(e)
 		return false
 	}
@@ -3876,18 +3890,17 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	switch e.ID {
 	case "<Escape>":
 		// Escape cancels an in-flight turn like Ctrl-C, but never quits: at
-		// idle (or while already canceling) it just dismisses slash hints.
-		m.clearSlashHints()
+		// idle (or while already canceling) it hides the slash hint line until
+		// the input next changes.
+		m.slashHintsHidden = true
 		if m.busy && !m.canceling {
 			r.cancelBusyTurn("esc cancel requested")
 		}
 	case "<C-d>":
 		if m.ed.empty() && !m.busy {
-			m.clearSlashHints()
 			r.requestQuit()
 			return true
 		}
-		m.clearSlashHints()
 		m.ed.deleteForward()
 	case "<Enter>":
 		trimmed := strings.TrimSpace(m.ed.text())
@@ -3899,7 +3912,7 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			m.followBottom = true
 			return false
 		}
-		if m.busy && immediateBusyCommand(trimmed) {
+		if m.busy && defaultReplCommands.busySafeCommand(trimmed) {
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
 			m.followBottom = true
@@ -3909,7 +3922,7 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 				return true
 			}
 			if !handled {
-				m.appendNoticeLine("unknown command: " + trimmed + " (try /help)")
+				m.appendNoticeLine(defaultReplCommands.unknownCommandNotice(trimmed))
 			}
 			return false
 		}
@@ -3948,7 +3961,7 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 				return true
 			}
 			if !handled {
-				m.appendNoticeLine("unknown command: " + trimmed + " (try /help)")
+				m.appendNoticeLine(defaultReplCommands.unknownCommandNotice(trimmed))
 			}
 			return false
 		}
@@ -3976,47 +3989,33 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		}
 	case "<C-j>":
 		// Ctrl-J inserts a newline for composing multi-line prompts; Enter sends.
-		m.clearSlashHints()
 		m.ed.insert('\n')
 	case "<Backspace>", "<C-h>":
-		m.clearSlashHints()
 		m.ed.backspace()
 	case "<Delete>":
-		m.clearSlashHints()
 		m.ed.deleteForward()
 	case "<C-w>":
-		m.clearSlashHints()
 		m.ed.deleteWordBackward()
 	case "<M-d>":
-		m.clearSlashHints()
 		m.ed.deleteWordForward()
 	case "<Left>":
-		m.clearSlashHints()
 		m.ed.left()
 	case "<Right>":
-		m.clearSlashHints()
 		m.ed.right()
 	case "<M-b>":
-		m.clearSlashHints()
 		m.ed.wordLeft()
 	case "<M-f>":
-		m.clearSlashHints()
 		m.ed.wordRight()
 	case "<Home>", "<C-a>":
-		m.clearSlashHints()
 		m.ed.home()
 	case "<End>", "<C-e>":
-		m.clearSlashHints()
 		m.ed.end()
 		m.scrollToBottom()
 	case "<C-u>":
-		m.clearSlashHints()
 		m.ed.killToStart()
 	case "<C-k>":
-		m.clearSlashHints()
 		m.ed.killToEnd()
 	case "<C-v>":
-		m.clearSlashHints()
 		r.captureClipboardToComposer()
 	case "<C-l>":
 		m.clearDisplay()
@@ -4033,20 +4032,17 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 			m.historyDown()
 		}
 	case "<Space>":
-		m.clearSlashHints()
 		m.ed.insert(' ')
 	case "<Tab>":
+		// Complete with the live command context so completers can see
+		// session state (e.g. loaded tool names for "/tools show").
 		cur := m.ed.text()
-		if completed, matches, ok := completeSlash(cur); ok {
+		if completed, _, ok := defaultReplCommands.complete(cur, newManagedReplCommandContext(r)); ok {
 			if completed != cur {
-				m.clearSlashHints()
 				m.ed.setText(completed)
-			} else if len(matches) > 1 {
-				m.setSlashHints(matches)
 			}
 			return false
 		}
-		m.clearSlashHints()
 		m.ed.insert('\t')
 	default:
 		// Only printable single-rune keyboard events become input. This
@@ -4059,27 +4055,9 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 		runes := []rune(e.ID)
 		if len(runes) == 1 && runes[0] >= 0x20 {
 			m.ed.insert(runes[0])
-			if runes[0] == '/' && m.ed.text() == "/" {
-				if _, matches, ok := completeSlash("/"); ok && len(matches) > 1 {
-					m.setSlashHints(matches)
-				}
-			} else {
-				m.clearSlashHints()
-			}
 		}
 	}
 	return false
-}
-
-func immediateBusyCommand(input string) bool {
-	if strings.Contains(input, "\n") {
-		return false
-	}
-	fields := strings.Fields(input)
-	if len(fields) == 0 {
-		return false
-	}
-	return fields[0] == "/queue" || fields[0] == "/clear" || fields[0] == "/attach"
 }
 
 // ---------------------------------------------------------------------------
@@ -4442,7 +4420,7 @@ func runREPLLoopWithCommands(ctx context.Context, reader *bufio.Reader, promptWr
 			if handled {
 				continue
 			}
-			if _, err := fmt.Fprintf(promptWriter, "unknown command: %s (try /help)\n", trimmed); err != nil {
+			if _, err := fmt.Fprintln(promptWriter, defaultReplCommands.unknownCommandNotice(trimmed)); err != nil {
 				return err
 			}
 			continue

@@ -488,6 +488,13 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		{"/queue d", true, "/queue drop", []string{"/queue drop"}},
 		{"/queue c", true, "/queue c", []string{"/queue clear", "/queue continue"}},
 		{"/tools s", true, "/tools show", []string{"/tools show"}},
+		{"/set th", true, "/set thinking", []string{"/set thinking"}},
+		{"/set max", true, "/set max", []string{"/set maxcontext", "/set maxtokens"}},
+		// Second arguments complete positionally.
+		{"/set thinking m", true, "/set thinking m", []string{"/set thinking max", "/set thinking medium", "/set thinking minimal"}},
+		{"/help /cl", true, "/help /clear", []string{"/help /clear"}},
+		// Keywords don't leak past their position.
+		{"/queue drop x", false, "", nil},
 		{"/help me", false, "", nil},
 	}
 	for _, c := range cases {
@@ -502,6 +509,119 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		if strings.Join(matches, ",") != strings.Join(c.wantMatches, ",") {
 			t.Errorf("completeSlash(%q) matches=%v, want %v", c.in, matches, c.wantMatches)
 		}
+	}
+}
+
+func TestUnknownCommandNotice(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// Near misses by edit distance.
+		{"/hlep", "unknown command: /hlep — did you mean /help?"},
+		{"/quti", "unknown command: /quti — did you mean /quit?"},
+		// Unique prefixes.
+		{"/con", "unknown command: /con — did you mean /context?"},
+		{"/stat", "unknown command: /stat — did you mean /stats?"},
+		// Only the command token is named, not the arguments.
+		{"/hlep me now", "unknown command: /hlep — did you mean /help?"},
+		// Ambiguous prefix or nothing close: fall back to /help.
+		{"/q", "unknown command: /q (try /help)"},
+		{"/bogus", "unknown command: /bogus (try /help)"},
+	}
+	for _, c := range cases {
+		if got := defaultReplCommands.unknownCommandNotice(c.in); got != c.want {
+			t.Errorf("unknownCommandNotice(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestDispatchIsCaseInsensitive(t *testing.T) {
+	ctx := &replCommandContext{}
+	var replies []string
+	ctx.reply = func(line string) error {
+		replies = append(replies, line)
+		return nil
+	}
+	handled, quit, err := defaultReplCommands.dispatch("/HELP", ctx)
+	if err != nil || !handled || quit {
+		t.Fatalf("dispatch(/HELP) handled=%v quit=%v err=%v", handled, quit, err)
+	}
+	if len(replies) == 0 || replies[0] != "commands:" {
+		t.Fatalf("dispatch(/HELP) replies = %v", replies)
+	}
+}
+
+func TestHintFor(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// Not a slash command in progress.
+		{"", ""},
+		{"hello", ""},
+		{"ask/", ""},
+		{"/he\nlp", ""},
+		{"/zzz", ""},
+		// Typing the name: many matches list bare names, few include summaries.
+		{"/t", "/tools — inspect loaded tools"},
+		{"/q", "/queue — inspect or manage queued input   /quit — leave the REPL"},
+		// Typing arguments: keyword matches from the command's completer.
+		{"/queue d", "drop"},
+		{"/get max", "maxcontext  maxtokens"},
+		// Value completion for keys with enumerable values.
+		{"/set thinking ", "dynamic  high  low  max  medium  minimal  off  xhigh"},
+		{"/set thinking hi", "high"},
+		// A fully typed keyword or a command without a completer falls back to
+		// the usage reminder.
+		{"/queue drop", "usage: /queue [list|drop|clear|continue]"},
+		{"/reset ", "usage: /reset confirm"},
+		{"/help me", "usage: /help [command]"},
+	}
+	for _, c := range cases {
+		if got := defaultReplCommands.hintFor(nil, c.in); got != c.want {
+			t.Errorf("hintFor(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+
+	bare := defaultReplCommands.hintFor(nil, "/")
+	if !strings.Contains(bare, "/help") || !strings.Contains(bare, "/tools") {
+		t.Fatalf("hintFor(/) should list all commands, got %q", bare)
+	}
+	if strings.Contains(bare, "—") {
+		t.Fatalf("hintFor(/) should omit summaries when many commands match, got %q", bare)
+	}
+}
+
+func TestCompleteToolNamesAndNamespaces(t *testing.T) {
+	registry := tools.NewToolRegistry([]tools.Tool{
+		&tools.Func{Name: "git__status", Desc: "Show git status"},
+		&tools.Func{Name: "git__diff", Desc: "Show git diff"},
+		tools.NewUnsafeBashTool(""),
+	})
+	ctx := &replCommandContext{state: &conversationState{toolRegistry: registry}}
+
+	completed, matches, ok := defaultReplCommands.complete("/tools show git__", ctx)
+	if !ok || completed != "/tools show git__" {
+		t.Fatalf("complete(/tools show git__) = %q %v ok=%v", completed, matches, ok)
+	}
+	if strings.Join(matches, ",") != "/tools show git__diff,/tools show git__status" {
+		t.Fatalf("tool name matches = %v", matches)
+	}
+
+	completed, _, ok = defaultReplCommands.complete("/tools show git__s", ctx)
+	if !ok || completed != "/tools show git__status" {
+		t.Fatalf("complete(/tools show git__s) = %q ok=%v", completed, ok)
+	}
+
+	completed, _, ok = defaultReplCommands.complete("/tools list g", ctx)
+	if !ok || completed != "/tools list git" {
+		t.Fatalf("complete(/tools list g) = %q ok=%v", completed, ok)
+	}
+
+	// Without a registry there is nothing to offer.
+	if _, _, ok := defaultReplCommands.complete("/tools show git__", &replCommandContext{}); ok {
+		t.Fatal("tool name completion without a registry should not match")
 	}
 }
 
@@ -520,6 +640,78 @@ func dispatchDefaultCommandForTest(t *testing.T, line string, ctx *replCommandCo
 		t.Fatalf("dispatch(%q) handled=%v quit=%v, want handled non-quit", line, handled, quit)
 	}
 	return replies
+}
+
+func TestSetCommand(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "set-test")
+	cfg := &Config{}
+	cfg.Model = "anthropic/claude-sonnet-4-6"
+	applied := 0
+	ctx := &replCommandContext{
+		config:          cfg,
+		state:           &conversationState{session: session},
+		settingsApplied: func() { applied++ },
+	}
+
+	replies := dispatchDefaultCommandForTest(t, "/set temp 1.5", ctx)
+	if cfg.Temperature != 1.5 {
+		t.Fatalf("temp = %v, want 1.5", cfg.Temperature)
+	}
+	if got := strings.Join(replies, "\n"); got != "temp: 1.50" {
+		t.Fatalf("/set temp replies = %q", got)
+	}
+
+	dispatchDefaultCommandForTest(t, "/set model openai/gpt-5.4", ctx)
+	if cfg.Model != "openai/gpt-5.4" {
+		t.Fatalf("model = %q, want openai/gpt-5.4", cfg.Model)
+	}
+	dispatchDefaultCommandForTest(t, "/set thinking high", ctx)
+	if cfg.ThinkingEffort != "high" {
+		t.Fatalf("thinking = %q, want high", cfg.ThinkingEffort)
+	}
+	dispatchDefaultCommandForTest(t, "/set tooltimeout 45s", ctx)
+	if cfg.ToolTimeout != 45*time.Second {
+		t.Fatalf("tooltimeout = %v, want 45s", cfg.ToolTimeout)
+	}
+	if applied != 4 {
+		t.Fatalf("settingsApplied ran %d times, want 4", applied)
+	}
+
+	// Settings persist to session metadata so they survive relaunch.
+	md, err := session.GetMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if md == nil || md.Model != "openai/gpt-5.4" || md.Temperature != 1.5 || md.ToolTimeout != 45*time.Second {
+		t.Fatalf("metadata not persisted: %+v", md)
+	}
+
+	// Invalid input explains the constraint and leaves config untouched.
+	for _, c := range []struct{ line, wantSub string }{
+		{"/set model gpt", "provider prefix"},
+		{"/set temp eleven", "must be a number"},
+		{"/set temp 9", "between 0.0 and 2.0"},
+		{"/set maxtokens zero", "positive integer"},
+		{"/set thinking sideways", "thinking"},
+		{"/set bogus 1", "unknown or read-only key"},
+		{"/set system terse", "unknown or read-only key"},
+		{"/set", "usage: /set"},
+	} {
+		replies := dispatchDefaultCommandForTest(t, c.line, ctx)
+		if got := strings.Join(replies, "\n"); !strings.Contains(got, c.wantSub) {
+			t.Errorf("%s replies = %q, want mention of %q", c.line, got, c.wantSub)
+		}
+	}
+	if cfg.Model != "openai/gpt-5.4" || cfg.Temperature != 1.5 || cfg.ThinkingEffort != "high" {
+		t.Fatalf("rejected /set mutated config: %+v", cfg.Settings)
+	}
+
+	// Without a config there is nothing to mutate.
+	replies = dispatchDefaultCommandForTest(t, "/set temp 1.0", &replCommandContext{})
+	if got := strings.Join(replies, "\n"); got != "settings unavailable" {
+		t.Fatalf("configless /set replies = %q", got)
+	}
 }
 
 func TestClearCommandOnlyClearsDisplay(t *testing.T) {
