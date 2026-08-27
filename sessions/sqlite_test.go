@@ -1388,7 +1388,10 @@ func TestResetAtomicallyReplacesMetadataContentsAndArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Name != "resettable" || !after.Created.Equal(before.Created) || !after.LastUsed.After(before.LastUsed) {
+	// Windows wall-clock granularity can leave LastUsed equal to the prior
+	// stamp, so only reject regressions and caller-controlled values.
+	if after.Name != "resettable" || !after.Created.Equal(before.Created) ||
+		after.LastUsed.Before(before.LastUsed) || after.LastUsed.Equal(replacement.LastUsed) {
 		t.Fatalf("canonical metadata after reset = %+v; before %+v", after, before)
 	}
 	if after.SystemPrompt != "new system" || after.Model != "new-model" || after.TTL != 2*time.Hour {

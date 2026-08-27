@@ -199,7 +199,15 @@ func prepareDiskStore(path string) error {
 	}
 	for {
 		file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
-		if errors.Is(err, os.ErrExist) {
+		if err != nil {
+			// O_EXCL reports an existing directory as ErrExist on POSIX but
+			// as an "is a directory" error on Windows; classify any existing
+			// path through the same refusal logic.
+			if !errors.Is(err, os.ErrExist) {
+				if _, statErr := os.Lstat(path); statErr != nil {
+					return fmt.Errorf("create session database securely: %w", err)
+				}
+			}
 			err = protectExistingSQLiteFile(path)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -208,9 +216,6 @@ func prepareDiskStore(path string) error {
 				return err
 			}
 			break
-		}
-		if err != nil {
-			return fmt.Errorf("create session database securely: %w", err)
 		}
 		if err := file.Chmod(0o600); err != nil {
 			_ = file.Close()

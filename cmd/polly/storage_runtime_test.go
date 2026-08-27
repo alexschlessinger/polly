@@ -105,7 +105,9 @@ func TestFreshNamedContextSeedsResolvedDefaults(t *testing.T) {
 		{name: "only model overridden", modelOverride: "openrouter/z-ai/glm-5.3-flash"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home) // Windows os.UserHomeDir
 			args := []string(nil)
 			if tt.modelOverride != "" {
 				args = []string{"--model", tt.modelOverride}
