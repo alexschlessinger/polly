@@ -185,6 +185,17 @@ func (r *ToolRegistry) preparedBaseSandboxConfig() (sandbox.Config, error) {
 	return r.baseSandboxCfg, r.baseSandboxPrepareErr
 }
 
+// SandboxReadPolicy returns the prepared base sandbox config when process
+// sandboxing is active. active is false when no sandbox factory is configured,
+// in which case in-process reads are unrestricted just like wrapped commands.
+func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err error) {
+	if r.sandboxFactory == nil {
+		return sandbox.Config{}, false, nil
+	}
+	cfg, err = r.preparedBaseSandboxConfig()
+	return cfg, true, err
+}
+
 // newSandboxFor is NewSandbox with a tool/server identity for debug logging
 // of the effective merged config (names and flags only, never env values).
 func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sandbox.Sandbox, sandbox.Config, error) {

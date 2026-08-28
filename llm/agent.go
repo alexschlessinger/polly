@@ -129,6 +129,11 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		registry.Register(lister)
 		registry.MarkAlwaysAllowed(lister.GetName())
 	}
+	if registry != nil {
+		viewer := tools.NewViewImageTool(registry)
+		registry.Register(viewer)
+		registry.MarkAlwaysAllowed(viewer.GetName())
+	}
 	return agent
 }
 

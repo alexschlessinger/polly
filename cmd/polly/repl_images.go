@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/images"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/yuin/goldmark/ast"
@@ -31,8 +32,8 @@ const (
 	transcriptImageThumbnailCols = 50
 	minimumImageThumbnailCols    = 8
 
-	maxLocalImageBytes  = 32 << 20
-	maxLocalImagePixels = 40_000_000
+	maxLocalImageBytes  = images.MaxSourceBytes
+	maxLocalImagePixels = images.MaxSourcePixels
 )
 
 // transcriptImage is deliberately a sidecar to transcript text. Tool and

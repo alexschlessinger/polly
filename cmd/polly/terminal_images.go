@@ -11,16 +11,14 @@ import (
 	_ "image/jpeg"
 	"image/png"
 	"io"
-	"math"
 	"os"
 	"strings"
 	"sync"
 
 	tcell "github.com/gdamore/tcell/v3"
 	"github.com/mattn/go-sixel"
-	_ "golang.org/x/image/bmp"
-	xdraw "golang.org/x/image/draw"
-	_ "golang.org/x/image/webp"
+
+	"github.com/alexschlessinger/pollytool/images"
 )
 
 type terminalImageProtocol uint8
@@ -650,26 +648,11 @@ func loadLocalImage(path string) (image.Image, error) {
 }
 
 func fitImage(src image.Image, maxWidth, maxHeight int) image.Image {
-	bounds := src.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-	if width <= 0 || height <= 0 || maxWidth <= 0 || maxHeight <= 0 {
-		return src
-	}
-	targetWidth, targetHeight := fitPixelDimensions(width, height, maxWidth, maxHeight)
-	if targetWidth == width && targetHeight == height && bounds.Min.X == 0 && bounds.Min.Y == 0 {
-		return src
-	}
-	dst := image.NewNRGBA(image.Rect(0, 0, targetWidth, targetHeight))
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, bounds, xdraw.Over, nil)
-	return dst
+	return images.Fit(src, maxWidth, maxHeight)
 }
 
 func fitPixelDimensions(width, height, maxWidth, maxHeight int) (int, int) {
-	if width <= 0 || height <= 0 || maxWidth <= 0 || maxHeight <= 0 {
-		return 0, 0
-	}
-	scale := math.Min(float64(maxWidth)/float64(width), float64(maxHeight)/float64(height))
-	return max(1, int(math.Round(float64(width)*scale))), max(1, int(math.Round(float64(height)*scale)))
+	return images.FitDimensions(width, height, maxWidth, maxHeight)
 }
 
 func imageFitsByRows(width, height, maxWidth, maxHeight int) bool {
