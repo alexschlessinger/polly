@@ -1,6 +1,6 @@
 //go:build plan9 || js || wasip1
 
-package main
+package images
 
 import "os"
 

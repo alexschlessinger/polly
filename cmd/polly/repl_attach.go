@@ -5,14 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"image"
-	"image/draw"
-	"image/jpeg"
-	"image/png"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -38,12 +34,10 @@ const (
 	// honor it.
 	maxPromptAttachments = 16
 
-	// Provider-bound images are downscaled so an offhand screenshot does not
-	// ship megabytes of pixels the model cannot use. 1568px is the largest
-	// useful long edge for current vision models; the byte cap stays under
-	// typical per-image API limits with room for base64 growth.
-	uploadMaxLongEdge = 1568
-	uploadMaxBytes    = 4 << 20
+	// Provider-bound images are downscaled per the portable image contract in
+	// the images package.
+	uploadMaxLongEdge = images.UploadMaxLongEdge
+	uploadMaxBytes    = images.UploadMaxBytes
 )
 
 type composerAttachment struct {
@@ -387,205 +381,24 @@ func prepareImageForUpload(path string) (*messages.ContentPart, error) {
 // ingestion boundary, before bytes enter durable history. fileName is display
 // metadata only; the format is always detected from the bytes.
 func prepareImageBytesForUpload(data []byte, fileName string) (*messages.ContentPart, error) {
-	fileName = filepath.Base(strings.TrimSpace(fileName))
-	if fileName == "" || fileName == "." || fileName == string(filepath.Separator) {
-		fileName = "attachment"
-	}
-	config, format, err := validateImageBytes(data)
+	norm, err := images.NormalizeForModel(data, fileName)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", fileName, err)
-	}
-
-	mimeType, passthrough := uploadImageFormat(format)
-	var src image.Image
-	if !passthrough {
-		switch format {
-		case "gif", "bmp":
-			src, _, err = image.Decode(bytes.NewReader(data))
-			if err != nil {
-				return nil, fmt.Errorf("%s: invalid %s image data", fileName, format)
-			}
-			var normalized bytes.Buffer
-			if err := png.Encode(&normalized, src); err != nil {
-				return nil, fmt.Errorf("%s: encode normalized PNG: %w", fileName, err)
-			}
-			data = normalized.Bytes()
-			mimeType = "image/png"
-		default:
-			return nil, fmt.Errorf("%s: unsupported image format %q", fileName, format)
-		}
-	}
-
-	if max(config.Width, config.Height) <= uploadMaxLongEdge && len(data) <= uploadMaxBytes {
-		return &messages.ContentPart{
-			Type:      "image_base64",
-			ImageData: base64.StdEncoding.EncodeToString(data),
-			MimeType:  mimeType,
-			FileName:  fileName,
-		}, nil
-	}
-
-	if src == nil {
-		src, _, err = image.Decode(bytes.NewReader(data))
-		if err != nil {
-			return nil, fmt.Errorf("%s: invalid image data: %w", fileName, err)
-		}
-	}
-	if format == "jpeg" {
-		src = applyEXIFOrientation(src, jpegEXIFOrientation(data))
-	}
-	scaled := fitImage(src, uploadMaxLongEdge, uploadMaxLongEdge)
-
-	encoded, mimeType, err := encodeUploadImage(scaled, format)
-	if err != nil {
-		return nil, fmt.Errorf("%s: encode image: %w", fileName, err)
+		return nil, err
 	}
 	return &messages.ContentPart{
 		Type:      "image_base64",
-		ImageData: base64.StdEncoding.EncodeToString(encoded),
-		MimeType:  mimeType,
-		FileName:  fileName,
+		ImageData: base64.StdEncoding.EncodeToString(norm.Data),
+		MimeType:  norm.MIMEType,
+		FileName:  norm.FileName,
 	}, nil
 }
 
-// jpegEXIFOrientation reads the TIFF orientation value from a JPEG APP1
-// segment. Missing or malformed metadata is treated as the normal orientation.
 func jpegEXIFOrientation(data []byte) int {
-	if len(data) < 4 || data[0] != 0xff || data[1] != 0xd8 {
-		return 1
-	}
-	for pos := 2; pos < len(data); {
-		if data[pos] != 0xff {
-			return 1
-		}
-		for pos < len(data) && data[pos] == 0xff {
-			pos++
-		}
-		if pos >= len(data) {
-			return 1
-		}
-		marker := data[pos]
-		pos++
-		if marker == 0xd9 || marker == 0xda {
-			return 1
-		}
-		if marker == 0x01 || marker >= 0xd0 && marker <= 0xd7 {
-			continue
-		}
-		if pos+2 > len(data) {
-			return 1
-		}
-		length := int(binary.BigEndian.Uint16(data[pos : pos+2]))
-		if length < 2 || pos+length > len(data) {
-			return 1
-		}
-		if marker == 0xe1 {
-			if orientation := tiffEXIFOrientation(data[pos+2 : pos+length]); orientation != 1 {
-				return orientation
-			}
-		}
-		pos += length
-	}
-	return 1
-}
-
-func tiffEXIFOrientation(payload []byte) int {
-	if len(payload) < 14 || !bytes.Equal(payload[:6], []byte{'E', 'x', 'i', 'f', 0, 0}) {
-		return 1
-	}
-	tiff := payload[6:]
-	var order binary.ByteOrder
-	switch string(tiff[:2]) {
-	case "II":
-		order = binary.LittleEndian
-	case "MM":
-		order = binary.BigEndian
-	default:
-		return 1
-	}
-	if order.Uint16(tiff[2:4]) != 42 {
-		return 1
-	}
-	ifdOffset := int(order.Uint32(tiff[4:8]))
-	if ifdOffset < 0 || ifdOffset+2 > len(tiff) {
-		return 1
-	}
-	entryCount := int(order.Uint16(tiff[ifdOffset : ifdOffset+2]))
-	entries := ifdOffset + 2
-	for i := 0; i < entryCount; i++ {
-		entry := entries + i*12
-		if entry+12 > len(tiff) {
-			return 1
-		}
-		if order.Uint16(tiff[entry:entry+2]) != 0x0112 || order.Uint16(tiff[entry+2:entry+4]) != 3 || order.Uint32(tiff[entry+4:entry+8]) < 1 {
-			continue
-		}
-		orientation := int(order.Uint16(tiff[entry+8 : entry+10]))
-		if orientation >= 1 && orientation <= 8 {
-			return orientation
-		}
-		return 1
-	}
-	return 1
+	return images.JPEGOrientation(data)
 }
 
 func applyEXIFOrientation(src image.Image, orientation int) image.Image {
-	if src == nil || orientation <= 1 || orientation > 8 {
-		return src
-	}
-	bounds := src.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-	dstWidth, dstHeight := width, height
-	if orientation >= 5 {
-		dstWidth, dstHeight = height, width
-	}
-	if nrgba, ok := src.(*image.NRGBA); ok {
-		return applyEXIFOrientationNRGBA(nrgba, orientation, dstWidth, dstHeight)
-	}
-	dst := image.NewNRGBA(image.Rect(0, 0, dstWidth, dstHeight))
-	for y := 0; y < dstHeight; y++ {
-		for x := 0; x < dstWidth; x++ {
-			srcX, srcY := exifSourcePoint(orientation, width, height, x, y)
-			dst.Set(x, y, src.At(bounds.Min.X+srcX, bounds.Min.Y+srcY))
-		}
-	}
-	return dst
-}
-
-func applyEXIFOrientationNRGBA(src *image.NRGBA, orientation, dstWidth, dstHeight int) *image.NRGBA {
-	bounds := src.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-	dst := image.NewNRGBA(image.Rect(0, 0, dstWidth, dstHeight))
-	for y := 0; y < dstHeight; y++ {
-		for x := 0; x < dstWidth; x++ {
-			srcX, srcY := exifSourcePoint(orientation, width, height, x, y)
-			srcOffset := src.PixOffset(bounds.Min.X+srcX, bounds.Min.Y+srcY)
-			dstOffset := dst.PixOffset(x, y)
-			copy(dst.Pix[dstOffset:dstOffset+4], src.Pix[srcOffset:srcOffset+4])
-		}
-	}
-	return dst
-}
-
-func exifSourcePoint(orientation, width, height, x, y int) (int, int) {
-	switch orientation {
-	case 2:
-		return width - 1 - x, y
-	case 3:
-		return width - 1 - x, height - 1 - y
-	case 4:
-		return x, height - 1 - y
-	case 5:
-		return y, x
-	case 6:
-		return y, height - 1 - x
-	case 7:
-		return width - 1 - y, height - 1 - x
-	case 8:
-		return width - 1 - y, x
-	default:
-		return x, y
-	}
+	return images.ApplyEXIFOrientation(src, orientation)
 }
 
 // preparedMessageTranscriptImages materializes the exact portable image bytes
@@ -675,89 +488,6 @@ func portableImageExtension(mimeType string) (string, bool) {
 		return ".jpg", true
 	case "image/webp":
 		return ".webp", true
-	default:
-		return "", false
-	}
-}
-
-func encodeUploadImage(img image.Image, sourceFormat string) ([]byte, string, error) {
-	pngOnly := sourceFormat == "gif" || sourceFormat == "bmp"
-	current := img
-	for {
-		data, mimeType, err := encodeUploadImageAttempt(current, sourceFormat, pngOnly)
-		if err != nil {
-			return nil, "", err
-		}
-		if len(data) <= uploadMaxBytes {
-			return data, mimeType, nil
-		}
-
-		bounds := current.Bounds()
-		width, height := bounds.Dx(), bounds.Dy()
-		if width <= 1 && height <= 1 {
-			return nil, "", fmt.Errorf("image cannot be encoded within the %d-byte upload limit", uploadMaxBytes)
-		}
-		// Encoded size is approximately proportional to pixel area. Leave a
-		// little margin so incompressible PNGs normally converge in one pass,
-		// while the 0.9 ceiling guarantees progress for a near-limit image.
-		scale := math.Sqrt(float64(uploadMaxBytes)/float64(len(data))) * 0.95
-		if scale > 0.9 {
-			scale = 0.9
-		}
-		if scale <= 0 || math.IsNaN(scale) || math.IsInf(scale, 0) {
-			scale = 0.5
-		}
-		targetWidth := max(1, int(math.Floor(float64(width)*scale)))
-		targetHeight := max(1, int(math.Floor(float64(height)*scale)))
-		if targetWidth == width && width > 1 {
-			targetWidth--
-		}
-		if targetHeight == height && height > 1 {
-			targetHeight--
-		}
-		current = fitImage(current, targetWidth, targetHeight)
-	}
-}
-
-func encodeUploadImageAttempt(img image.Image, sourceFormat string, pngOnly bool) ([]byte, string, error) {
-	if sourceFormat == "jpeg" {
-		data, err := encodeJPEG(img)
-		return data, "image/jpeg", err
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil, "", err
-	}
-	// A photographic PNG can stay huge after downscaling; JPEG is the only
-	// remaining lever for native PNG/WebP input. Normalized GIF/BMP payloads
-	// deliberately stay PNG and instead shrink further until they fit.
-	if buf.Len() > uploadMaxBytes && !pngOnly {
-		data, err := encodeJPEG(img)
-		return data, "image/jpeg", err
-	}
-	return buf.Bytes(), "image/png", nil
-}
-
-func encodeJPEG(img image.Image) ([]byte, error) {
-	bounds := img.Bounds()
-	flat := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
-	draw.Draw(flat, flat.Bounds(), image.White, image.Point{}, draw.Src)
-	draw.Draw(flat, flat.Bounds(), img, bounds.Min, draw.Over)
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, flat, &jpeg.Options{Quality: 85}); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func uploadImageFormat(format string) (mimeType string, passthrough bool) {
-	switch format {
-	case "png":
-		return "image/png", true
-	case "jpeg":
-		return "image/jpeg", true
-	case "webp":
-		return "image/webp", true
 	default:
 		return "", false
 	}
