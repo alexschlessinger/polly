@@ -481,7 +481,7 @@ func TestCompleteSlash(t *testing.T) {
 		// Unique prefix completes to the full command.
 		{"/h", true, "/help", []string{"/help"}},
 		{"/e", true, "/exit", []string{"/exit"}},
-		{"/q", true, "/qu", []string{"/queue", "/quit"}},
+		{"/q", true, "/quit", []string{"/quit"}},
 		// Bare "/" matches everything; common prefix is just "/" (no progress).
 		{"/", true, "/", slashCommands},
 		// "/c" matches /clear and /context; common prefix extends to "/c".
@@ -640,11 +640,11 @@ func TestSlashHintsLiveFilterAndEscape(t *testing.T) {
 		t.Fatalf("typing after escape should re-show hints, got %q", got)
 	}
 
-	// Argument keywords hint once the command name is complete.
-	r.model.ed.setText("/queue")
+	// Argument values hint once the command name is complete.
+	r.model.ed.setText("/set thinking")
 	send(" ")
-	if got := r.model.slashHints; !strings.Contains(got, "drop") || !strings.Contains(got, "continue") {
-		t.Fatalf("/queue␣ should hint subcommands, got %q", got)
+	if got := r.model.slashHints; !strings.Contains(got, "dynamic") || !strings.Contains(got, "medium") {
+		t.Fatalf("/set thinking␣ should hint values, got %q", got)
 	}
 }
 
@@ -1200,7 +1200,7 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
 
-	r.model.busy = true
+	r.model.beginTurn("current")
 	r.model.ed.setText("queued one")
 	send("<Enter>")
 
@@ -1220,10 +1220,15 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	default:
 	}
 
-	// Ctrl-C preserves the queue but pauses it until retry or explicit continue.
+	// A canceled turn leaves pending entries visibly unsent and clears the
+	// internal queue. The prompt remains recoverable from input history.
 	r.handleInterrupt()
-	if len(r.model.queue) != 1 || !r.model.queuePaused {
-		t.Fatalf("interrupt should preserve and pause queue, got %v paused=%v", r.model.queue, r.model.queuePaused)
+	r.endTurn(context.Canceled)
+	if len(r.model.queue) != 0 {
+		t.Fatalf("canceled turn should clear pending queue, got %v", r.model.queue)
+	}
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "> queued one\n  (not sent)") {
+		t.Fatalf("canceled queued entry was not marked unsent: %q", got)
 	}
 }
 
@@ -1234,16 +1239,16 @@ func TestEnterWhileBusyQueuesSlashCommandInHistory(t *testing.T) {
 	// A mutating command queues behind the running turn (busy-safe read-only
 	// commands run immediately instead; see TestBusyReadOnlyCommandsRunImmediately).
 	r.model.busy = true
-	r.model.ed.setText("/retry")
+	r.model.ed.setText("/reset confirm")
 	send("<Enter>")
 
 	if r.model.ed.text() != "" {
 		t.Fatalf("editor should clear after queueing, got %q", r.model.ed.text())
 	}
-	if len(r.model.queue) != 1 || r.model.queue[0].text != "/retry" || r.model.queue[0].turn != nil {
-		t.Fatalf("queue = %v, want [/retry]", r.model.queue)
+	if len(r.model.queue) != 1 || r.model.queue[0].text != "/reset confirm" || r.model.queue[0].turn != nil {
+		t.Fatalf("queue = %v, want [/reset confirm]", r.model.queue)
 	}
-	if len(r.model.history) != 1 || r.model.history[0] != "/retry" {
+	if len(r.model.history) != 1 || r.model.history[0] != "/reset confirm" {
 		t.Fatalf("history should record the queued slash command, got %v", r.model.history)
 	}
 	select {

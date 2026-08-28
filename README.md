@@ -140,12 +140,12 @@ paths is treated as a drop), and `/attach <path>` does the same explicitly —
 use `/attach` for paths containing spaces.
 Each attachment appears as a literal `[image #N]` token at the cursor — delete
 the token to drop the attachment, or reorder and reuse it freely. When input is
-accepted, Polly prepares the exact image payload; queued turns and `/retry`
-reuse those bytes even if the source file changes or disappears. SQLite-backed
-sessions persist prepared images; if the last image turn is incomplete after a
-reload, `/retry` replays those exact bytes. Attached text bodies and context
-imports remain non-retryable because they cannot be reconstructed safely from
-prompt text.
+accepted, Polly prepares the exact image payload; queued turns retain those
+bytes even if the source file changes or disappears. SQLite-backed sessions
+persist prepared images. If the last image turn is incomplete after a reload,
+Polly restores it to the composer; resubmitting the unchanged draft reuses those
+exact bytes. Attached text bodies and context imports are not restored because
+they cannot be reconstructed safely from prompt text.
 
 A composer prompt may reference at most 16 unique images, every model-visible
 message is limited to 16 image parts, and a complete request is limited to 100
@@ -166,8 +166,8 @@ Those formats are the portable intersection documented by
 and [Gemini image understanding](https://ai.google.dev/gemini-api/docs/image-understanding).
 Clipboard captures and exact prepared-preview files are stored under the user
 cache directory (`pollytool/attachments`) and swept after two weeks. Durable
-retry and reload data lives in the SQLite session database, not this preview
-cache.
+restored-draft and reload data lives in the SQLite session database, not this
+preview cache.
 
 Slash commands inside the TUI:
 
@@ -181,18 +181,21 @@ Slash commands inside the TUI:
                              (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills
-/queue [list|drop|clear|continue]  Manage input queued during a turn
 /rename <name>               Rename the current context
-/retry                       Retry the last failed or canceled turn
 /reset confirm               Clear durable conversation history
 /exit  (/quit)               Leave the TUI
 ```
 
 Ctrl-C or Esc interrupts an in-flight turn; pressing Ctrl-C again (or at an
 idle prompt) quits. Ctrl-Z suspends Polly and returns to the shell; `fg` resumes
-the same TUI state. Polly enables button-level mouse reporting for transcript
-scrolling and image clicks, so use the terminal's mouse override—usually
-Shift-drag, or Option-drag in some macOS terminals—to select text.
+the same TUI state. Input submitted while a turn is running appears immediately
+in the transcript with a `(queued)` marker; the marker disappears when that
+turn starts. Failed or canceled input returns to the composer as an editable
+draft; pending entries are marked `(not sent)` and remain available through
+input history. Polly enables button-level mouse reporting for
+transcript scrolling and image clicks, so use the terminal's mouse
+override—usually Shift-drag, or Option-drag in some macOS terminals—to select
+text.
 
 Launching the TUI without `-c` starts a persistent session under a generated
 name (e.g. `quiet-otter`). Resume it later with `polly -L` or `polly -c
