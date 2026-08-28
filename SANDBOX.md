@@ -70,7 +70,7 @@ the process runs as your user on a shared kernel. See
 | Stdio MCP servers | yes (the whole server process) | global `--nosandbox` only |
 | Remote MCP servers (HTTP/SSE) | no — the process runs elsewhere | n/a |
 | Skill helper / function tools | no — in-process, nothing to wrap | n/a |
-| Builtin file tools (`view_image`, `read_file`, `write_file`, `edit_file`) | policy-checked in-process | `--nosandbox` |
+| Builtin file tools (`view_image`, `read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`) | policy-checked in-process | `--nosandbox` |
 
 The builtin file tools run in-process, so there is no child to wrap; instead
 they check every path against the base sandbox config before touching it —

@@ -50,8 +50,10 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 		return summarizeReadArgs(args)
 	case "read_file":
 		return summarizeReadFileArgs(args)
-	case "write_file", "edit_file":
+	case "write_file", "edit_file", "list_dir":
 		return truncate(args.String("path"), 120)
+	case "search_files":
+		return summarizeSearchFilesArgs(args)
 	case "write":
 		return truncate(args.String("file_path"), 120)
 	case "edit":
@@ -188,6 +190,17 @@ func summarizeReadFileArgs(args tools.Args) string {
 		} else {
 			summary += fmt.Sprintf(" (from line %d)", offset)
 		}
+	}
+	return summary
+}
+
+func summarizeSearchFilesArgs(args tools.Args) string {
+	summary := truncate(args.String("pattern"), 60)
+	if path := args.String("path"); path != "" {
+		summary += " in " + truncate(path, 60)
+	}
+	if include := args.String("include"); include != "" {
+		summary += " (" + truncate(include, 30) + ")"
 	}
 	return summary
 }

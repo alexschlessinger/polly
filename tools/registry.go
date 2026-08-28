@@ -333,6 +333,12 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 	registry.nativeTools["read_file"] = func() (Tool, error) {
 		return NewReadFileTool(registry), nil
 	}
+	registry.nativeTools["list_dir"] = func() (Tool, error) {
+		return NewListDirTool(registry), nil
+	}
+	registry.nativeTools["search_files"] = func() (Tool, error) {
+		return NewSearchFilesTool(registry), nil
+	}
 	registry.nativeTools["write_file"] = func() (Tool, error) {
 		if err := registry.requireProcessSandbox("write_file"); err != nil {
 			return nil, err
