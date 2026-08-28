@@ -137,16 +137,18 @@ func TestAssistantInternalBlankLinesArePreserved(t *testing.T) {
 	}
 }
 
-func TestFailedTurnLabelsPartialAndPausesQueue(t *testing.T) {
+func TestFailedTurnLabelsPartialAndMarksQueueNotSent(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
 	m.appendToolStartLine("call-1", "bash sleep 30")
 	m.appendAssistant("partial answer\n")
-	m.queue = queuedTextInputs("next question")
+	m.ed.setText("next question")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	r.endTurn(errors.New("provider unavailable"))
 
 	joined := strings.Join(m.flattenTranscript(), "\n")
+	plain := plainStyledText(joined)
 	for _, want := range []string{"failed bash sleep 30", "partial answer", "failed · not saved", "provider unavailable"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("failed transcript %q missing %q", joined, want)
@@ -158,11 +160,11 @@ func TestFailedTurnLabelsPartialAndPausesQueue(t *testing.T) {
 	if m.busy || m.state != turnStateIdle || m.lastOutcome != turnOutcomeFailed {
 		t.Fatalf("failed turn did not settle idle: busy=%v state=%v outcome=%v", m.busy, m.state, m.lastOutcome)
 	}
-	if !m.queuePaused || len(m.queue) != 1 {
-		t.Fatalf("queue = %v paused=%v, want preserved and paused", m.queue, m.queuePaused)
+	if len(m.queue) != 0 || !strings.Contains(plain, "> next question\n  (not sent)") {
+		t.Fatalf("failed turn left pending input queued: queue=%v transcript=%q", m.queue, joined)
 	}
-	if m.retryPrompt != "explain" {
-		t.Fatalf("retry prompt = %q", m.retryPrompt)
+	if m.ed.text() != "explain" || m.restoredDraft == nil {
+		t.Fatalf("failed input was not restored: editor=%q draft=%#v", m.ed.text(), m.restoredDraft)
 	}
 }
 
@@ -184,7 +186,8 @@ func TestCancelFreezesPartialAndRejectsLateCallbacks(t *testing.T) {
 	m := r.model
 	m.beginTurn("question")
 	m.turnID = 9
-	m.queue = queuedTextInputs("queued")
+	m.ed.setText("queued")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 9}
 	tui.AppendAssistantText("visible partial")
 
@@ -200,14 +203,15 @@ func TestCancelFreezesPartialAndRejectsLateCallbacks(t *testing.T) {
 	tui.AppendWarning("after-settle warning")
 
 	joined := strings.Join(m.flattenTranscript(), "\n")
+	plain := plainStyledText(joined)
 	if !strings.Contains(joined, "visible partial") || !strings.Contains(joined, "canceled · not saved") {
 		t.Fatalf("canceled partial was not retained and labeled: %q", joined)
 	}
 	if strings.Contains(joined, "late") || strings.Contains(joined, "after settle") || strings.Contains(joined, "after-settle") || m.lastIn != 0 || m.lastOut != 0 {
 		t.Fatalf("post-cancel callback mutated settled state: transcript=%q tokens=%d/%d", joined, m.lastIn, m.lastOut)
 	}
-	if !m.queuePaused || len(m.queue) != 1 {
-		t.Fatalf("cancel should pause, not discard, queued input: %v paused=%v", m.queue, m.queuePaused)
+	if len(m.queue) != 0 || !strings.Contains(plain, "> queued\n  (not sent)") {
+		t.Fatalf("cancel left pending input queued: queue=%v transcript=%q", m.queue, joined)
 	}
 }
 
@@ -225,8 +229,8 @@ func TestCancelRequestLosingCompletionRaceDoesNotClaimUnsaved(t *testing.T) {
 	if strings.Contains(plain, "not saved") {
 		t.Fatalf("successful completion retained false unsaved label: %q", plain)
 	}
-	if r.model.lastOutcome != turnOutcomeDone || r.model.retryPrompt != "" {
-		t.Fatalf("race winner did not settle successful: outcome=%v retry=%q", r.model.lastOutcome, r.model.retryPrompt)
+	if r.model.lastOutcome != turnOutcomeDone || r.model.restoredDraft != nil || !r.model.ed.empty() {
+		t.Fatalf("race winner did not settle successful: outcome=%v draft=%#v editor=%q", r.model.lastOutcome, r.model.restoredDraft, r.model.ed.text())
 	}
 }
 
@@ -296,8 +300,8 @@ func TestStatusAndApprovalNeverExceedTerminalWidth(t *testing.T) {
 			t.Fatalf("status width %d exceeds terminal %d: %q", got, width, plainStyledText(m.statusRow(width)))
 		}
 	}
-	if narrow := plainStyledText(m.statusRow(18)); !strings.HasPrefix(narrow, "queued:1") {
-		t.Fatalf("narrow status hid accepted queue state behind activity: %q", narrow)
+	if status := plainStyledText(m.statusRow(80)); strings.Contains(status, "queued") || strings.Contains(status, "paused") {
+		t.Fatalf("status still exposes queue state: %q", status)
 	}
 
 	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "custom_tool_with_a_very_long_name"}}}
@@ -329,20 +333,6 @@ func TestBusyQuietModeAcceptsPaste(t *testing.T) {
 	}
 }
 
-func TestBusyQueueCommandsRunImmediately(t *testing.T) {
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.busy = true
-	r.model.queue = queuedTextInputs("first", "newest")
-	r.model.ed.setText("/queue drop")
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if got := r.model.queue; len(got) != 1 || got[0].text != "first" {
-		t.Fatalf("busy /queue drop was queued instead of executed: %v", got)
-	}
-	if joined := strings.Join(r.model.flattenTranscript(), "\n"); !strings.Contains(joined, "dropped newest queued input: newest") {
-		t.Fatalf("busy queue command confirmation missing: %q", joined)
-	}
-}
-
 func TestBusyReadOnlyCommandsRunImmediately(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.busy = true
@@ -365,18 +355,26 @@ func TestBusyReadOnlyCommandsRunImmediately(t *testing.T) {
 	}
 }
 
-func TestQuietQueueSubmissionGetsVisibleAcknowledgement(t *testing.T) {
-	r := newManagedREPL(&Config{Quiet: true}, "ctx", 0, 0)
-	r.model.busy = true
-	r.model.ed.setText("next message")
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if joined := r.model.fullTranscript(); !strings.Contains(joined, "queued:1 › next message") {
-		t.Fatalf("quiet queue acknowledgement missing: %q", joined)
+func TestQueueSubmissionAppearsInTranscript(t *testing.T) {
+	for _, quiet := range []bool{false, true} {
+		t.Run(fmt.Sprintf("quiet=%v", quiet), func(t *testing.T) {
+			r := newManagedREPL(&Config{Quiet: quiet}, "ctx", 0, 0)
+			r.model.busy = true
+			r.model.ed.setText("next message")
+			r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+			joined := plainStyledText(r.model.fullTranscript())
+			if !strings.Contains(joined, "> next message\n  (queued)") {
+				t.Fatalf("queued transcript entry missing: %q", joined)
+			}
+			if status := plainStyledText(r.model.statusRow(80)); strings.Contains(status, "queued") {
+				t.Fatalf("queue leaked into status bar: %q", status)
+			}
+		})
 	}
 }
 
-func TestQuietQueueAcknowledgementDoesNotSplitAssistantStream(t *testing.T) {
-	r := newManagedREPL(&Config{Quiet: true}, "ctx", 0, 0)
+func TestQueueTranscriptEntryDoesNotSplitAssistantStream(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.beginTurn("question")
 	tui := &gotuiTurnUI{repl: r, config: r.config}
 	tui.AppendAssistantText("hel")
@@ -384,8 +382,42 @@ func TestQuietQueueAcknowledgementDoesNotSplitAssistantStream(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	tui.AppendAssistantText("lo")
 	tui.FinishTextTurn()
-	if got := r.model.flattenTranscript(); len(got) != 2 || got[1] != "hello" {
-		t.Fatalf("quiet queue acknowledgement split assistant output: %#v", got)
+	got := r.model.flattenTranscript()
+	count := 0
+	for _, line := range got {
+		if line == "hello" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("queued entry split assistant output: %#v", got)
+	}
+	if joined := plainStyledText(strings.Join(got, "\n")); !strings.Contains(joined, "> next\n  (queued)") {
+		t.Fatalf("queued entry missing beside assistant stream: %#v", got)
+	}
+}
+
+func TestQueuedTranscriptEntryActivatesWithoutDuplicate(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.beginTurn("current")
+	r.model.ed.setText("next")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	r.endTurn(nil)
+
+	started := make(chan string, 1)
+	done := r.startNextQueued(context.Background(), func(_ context.Context, prompt string, _ TurnUI) error {
+		started <- prompt
+		return nil
+	})
+	if done == nil || <-started != "next" {
+		t.Fatal("queued turn did not start")
+	}
+	joined := plainStyledText(r.model.fullTranscript())
+	if strings.Count(joined, "> next") != 1 || strings.Contains(joined, "(queued)") {
+		t.Fatalf("queued entry was duplicated or left marked after activation: %q", joined)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -501,18 +533,18 @@ func TestHydrateHistoryShowsDurableToolFailure(t *testing.T) {
 	}
 }
 
-func TestHydrateHistoryOffersRetryForTrailingUser(t *testing.T) {
+func TestHydrateHistoryRestoresTrailingUserToComposer(t *testing.T) {
 	m := newReplModel()
 	m.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "unanswered"}}, "ctx")
-	if m.retryPrompt != "unanswered" || m.retryTurn == nil {
-		t.Fatalf("retry prompt = %q", m.retryPrompt)
+	if m.ed.text() != "unanswered" || m.restoredDraft == nil {
+		t.Fatalf("restored draft = %#v, editor=%q", m.restoredDraft, m.ed.text())
 	}
-	if joined := strings.Join(m.flattenTranscript(), "\n"); !strings.Contains(joined, "incomplete · /retry available") {
+	if joined := strings.Join(m.flattenTranscript(), "\n"); !strings.Contains(joined, "incomplete · restored to composer") {
 		t.Fatalf("incomplete resume marker missing: %q", joined)
 	}
 }
 
-func TestHydrateHistoryDoesNotExposeOrRetryAttachedTextBodies(t *testing.T) {
+func TestHydrateHistoryDoesNotExposeOrRestoreAttachedTextBodies(t *testing.T) {
 	history := []messages.ChatMessage{{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{
@@ -529,12 +561,12 @@ func TestHydrateHistoryDoesNotExposeOrRetryAttachedTextBodies(t *testing.T) {
 	if strings.Contains(plain, "TOP SECRET FILE BODY") {
 		t.Fatalf("attachment body leaked into resumed transcript: %q", plain)
 	}
-	if m.retryPrompt != "" || m.retryTurn != nil || strings.Contains(plain, "/retry available") {
-		t.Fatalf("parts-based message should not offer lossy retry: prompt=%q transcript=%q", m.retryPrompt, plain)
+	if m.restoredDraft != nil || !m.ed.empty() || strings.Contains(plain, "restored to composer") {
+		t.Fatalf("parts-based message should not restore a lossy draft: draft=%#v transcript=%q", m.restoredDraft, plain)
 	}
 }
 
-func TestHydrateHistoryOnlyRetriesPortablePersistedImages(t *testing.T) {
+func TestHydrateHistoryOnlyRestoresPortablePersistedImages(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "valid.png")
 	writeImageFixture(t, path, 2, 2)
 	validPart, err := prepareImageForUpload(path)
@@ -555,15 +587,15 @@ func TestHydrateHistoryOnlyRetriesPortablePersistedImages(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name      string
-		msg       messages.ChatMessage
-		retryable bool
+		name       string
+		msg        messages.ChatMessage
+		restorable bool
 	}{
-		{name: "portable PNG", msg: validMessage, retryable: true},
+		{name: "portable PNG", msg: validMessage, restorable: true},
 		{name: "invalid base64", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: "%%%", MimeType: "image/png"}}}},
-		{name: "GIF", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", MimeType: "image/gif"}}}, retryable: true},
+		{name: "GIF", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", MimeType: "image/gif"}}}, restorable: true},
 		{name: "SVG", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString([]byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)), MimeType: "image/svg+xml"}}}},
-		{name: "MIME mismatch", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: validPart.ImageData, MimeType: "image/jpeg"}}}, retryable: true},
+		{name: "MIME mismatch", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: validPart.ImageData, MimeType: "image/jpeg"}}}, restorable: true},
 		{name: "17 images", msg: tooMany},
 		{name: "over aggregate budget", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes+1), MimeType: "image/png"}}}},
 	} {
@@ -571,17 +603,17 @@ func TestHydrateHistoryOnlyRetriesPortablePersistedImages(t *testing.T) {
 			m := newReplModel()
 			m.hydrateHistory([]messages.ChatMessage{tc.msg}, "ctx")
 			plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
-			if got := m.retryTurn != nil; got != tc.retryable {
-				t.Fatalf("retryable=%v, want %v; transcript=%q", got, tc.retryable, plain)
+			if got := m.restoredDraft != nil; got != tc.restorable {
+				t.Fatalf("restorable=%v, want %v; transcript=%q", got, tc.restorable, plain)
 			}
-			if got := strings.Contains(plain, "/retry available"); got != tc.retryable {
-				t.Fatalf("retry marker=%v, want %v; transcript=%q", got, tc.retryable, plain)
+			if got := strings.Contains(plain, "restored to composer"); got != tc.restorable {
+				t.Fatalf("restore marker=%v, want %v; transcript=%q", got, tc.restorable, plain)
 			}
 		})
 	}
 }
 
-func TestHydrateHistoryRetriesThroughNormalizedEarlierImage(t *testing.T) {
+func TestHydrateHistoryRestoresThroughNormalizedEarlierImage(t *testing.T) {
 	history := []messages.ChatMessage{
 		{
 			Role: messages.MessageRoleUser,
@@ -590,13 +622,13 @@ func TestHydrateHistoryRetriesThroughNormalizedEarlierImage(t *testing.T) {
 			}},
 		},
 		{Role: messages.MessageRoleAssistant, Content: "old response"},
-		{Role: messages.MessageRoleUser, Content: "retry this text"},
+		{Role: messages.MessageRoleUser, Content: "restore this text"},
 	}
 	m := newReplModel()
 	m.hydrateHistory(history, "poisoned")
 	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
-	if m.retryTurn == nil || !strings.Contains(plain, "/retry available") {
-		t.Fatalf("normalized earlier image suppressed an exact retry: %q", plain)
+	if m.restoredDraft == nil || m.ed.text() != "restore this text" || !strings.Contains(plain, "restored to composer") {
+		t.Fatalf("normalized earlier image suppressed draft restoration: %q", plain)
 	}
 }
 
@@ -628,8 +660,8 @@ func TestHydrateHistoryCompactsContextImportedFiles(t *testing.T) {
 		if !strings.Contains(plain, tc.want) || strings.Contains(plain, "SECRET BODY") {
 			t.Fatalf("context import was not compacted: %q", plain)
 		}
-		if strings.Contains(plain, "incomplete") || strings.Contains(plain, "/retry") || m.retryPrompt != "" || m.retryTurn != nil {
-			t.Fatalf("context import was treated as a failed turn: %q retry=%q", plain, m.retryPrompt)
+		if strings.Contains(plain, "incomplete") || m.restoredDraft != nil || !m.ed.empty() {
+			t.Fatalf("context import was treated as a failed turn: %q draft=%#v", plain, m.restoredDraft)
 		}
 	}
 }
@@ -647,8 +679,8 @@ func TestHydrateHistoryTreatsDeniedTurnMarkerAsCompleted(t *testing.T) {
 	m := newReplModel()
 	m.hydrateHistory(history, "ctx")
 	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
-	if !strings.Contains(plain, "tool request denied") || strings.Contains(plain, "incomplete") || m.retryPrompt != "" || m.retryTurn != nil {
-		t.Fatalf("denied completion hydration = %q retry=%q", plain, m.retryPrompt)
+	if !strings.Contains(plain, "tool request denied") || strings.Contains(plain, "incomplete") || m.restoredDraft != nil || !m.ed.empty() {
+		t.Fatalf("denied completion hydration = %q draft=%#v", plain, m.restoredDraft)
 	}
 }
 
@@ -740,23 +772,23 @@ func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 	}
 }
 
-func TestRetryCommandQueuesExistingUserAttempt(t *testing.T) {
+func TestRestoredDraftResubmitsExactUserAfterDiscardingPendingInput(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.appendLine("previous failed turn")
-	r.model.retryPrompt = "same prompt"
-	r.model.queue = queuedTextInputs("after retry")
-	r.model.queuePaused = true
+	r.model.beginTurn("same prompt")
+	r.model.ed.setText("later")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	r.endTurn(errors.New("provider failed"))
+	if r.model.ed.text() != "same prompt" || len(r.model.queue) != 0 {
+		t.Fatalf("failure did not restore input and discard queue: editor=%q queue=%v", r.model.ed.text(), r.model.queue)
+	}
+	if joined := plainStyledText(r.model.fullTranscript()); !strings.Contains(joined, "> later\n  (not sent)") {
+		t.Fatalf("discarded pending input was not marked unsent: %q", joined)
+	}
 
-	if handled, quit := r.runCommand("/retry"); !handled || quit {
-		t.Fatalf("/retry handled=%v quit=%v", handled, quit)
-	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	turn, ok := r.takePending()
-	if !ok || turn.displayText != "same prompt" || !r.model.busy || !r.model.retryingNext {
-		t.Fatalf("retry state prompt=%q busy=%v retrying=%v", turn.displayText, r.model.busy, r.model.retryingNext)
-	}
-	lines := r.model.flattenTranscript()
-	if len(lines) < 3 || lines[len(lines)-2] != "" || !strings.Contains(lines[len(lines)-1], "retrying last turn") {
-		t.Fatalf("retry did not start after one renderer-owned blank row: %#v", lines)
+	if !ok || turn.displayText != "same prompt" || !r.model.busy || !r.model.restoreDraftNext {
+		t.Fatalf("restored submit state: turn=%#v busy=%v reuse=%v", turn, r.model.busy, r.model.restoreDraftNext)
 	}
 
 	reuseSeen := make(chan bool, 1)
@@ -764,135 +796,43 @@ func TestRetryCommandQueuesExistingUserAttempt(t *testing.T) {
 		reuseSeen <- turnUI.(*gotuiTurnUI).reuseUser
 		return nil
 	})
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("retry turn did not run")
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 	if !<-reuseSeen {
-		t.Fatal("retry did not request existing-user persistence semantics")
+		t.Fatal("unchanged restored draft did not reuse its persisted user")
 	}
 	r.endTurn(nil)
-	if r.model.queuePaused {
-		t.Fatal("successful retry should release paused queued input")
+	if len(r.model.queue) != 0 {
+		t.Fatalf("successful resubmission recreated discarded queue: %v", r.model.queue)
 	}
 }
 
-func TestQueuedRetryStartsBeforeFollowingPrompt(t *testing.T) {
+func TestEditedRestoredDraftIsOrdinaryNewTurn(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.retryPrompt = "failed prompt"
-	r.model.queue = queuedTextInputs("/retry", "following prompt")
-
-	type startedTurn struct {
-		prompt string
-		reuse  bool
-	}
-	started := make(chan startedTurn, 1)
-	done := r.startNextQueued(context.Background(), func(_ context.Context, prompt string, turnUI TurnUI) error {
-		started <- startedTurn{prompt: prompt, reuse: turnUI.(*gotuiTurnUI).reuseUser}
-		return nil
-	})
-	if done == nil {
-		t.Fatal("queued /retry did not start a turn")
-	}
-	select {
-	case got := <-started:
-		if got.prompt != "failed prompt" || !got.reuse {
-			t.Fatalf("first started turn = %+v, want existing failed prompt", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("queued retry did not run")
-	}
-	if len(r.model.queue) != 1 || r.model.queue[0].text != "following prompt" {
-		t.Fatalf("following queue entry was reordered or consumed: %v", r.model.queue)
-	}
-	if pending, ok := r.takePending(); ok {
-		t.Fatalf("retry prompt remained buffered after turn start: %q", pending.displayText)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRetryQueuedDuringCancellationRunsOnSettlement(t *testing.T) {
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.beginTurn("failed prompt")
-	if quit := r.handleInterrupt(); quit {
-		t.Fatal("cancel request should keep REPL open")
-	}
-	r.model.ed.setText("/retry")
+	r.model.beginTurn("original")
+	r.endTurn(errors.New("provider failed"))
+	r.model.ed.setText("edited")
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if len(r.model.queue) != 1 || r.model.queue[0].text != "/retry" {
-		t.Fatalf("retry intent was not queued during cancellation: %v", r.model.queue)
-	}
-	r.endTurn(context.Canceled)
-	if r.model.queuePaused {
-		t.Fatal("leading queued /retry should bypass cancellation pause")
-	}
-
-	started := make(chan string, 1)
-	done := r.startNextQueued(context.Background(), func(_ context.Context, prompt string, turnUI TurnUI) error {
-		if !turnUI.(*gotuiTurnUI).reuseUser {
-			t.Error("cancel retry did not reuse persisted user")
-		}
-		started <- prompt
-		return nil
-	})
-	if done == nil {
-		t.Fatal("settled cancellation did not start queued retry")
-	}
-	if got := <-started; got != "failed prompt" {
-		t.Fatalf("started prompt = %q, want failed prompt", got)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	turn, ok := r.takePending()
+	if !ok || turn.displayText != "edited" || r.model.restoreDraftNext {
+		t.Fatalf("edited draft was not a normal turn: turn=%#v reuse=%v", turn, r.model.restoreDraftNext)
 	}
 }
 
-func TestRetryQueuedDuringCancellationRunsAfterTimeoutDetach(t *testing.T) {
+func TestCancellationRestoresInputWithoutOverwritingNewerDraft(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.beginTurn("stuck prompt")
-	r.model.canceling = true
-	r.model.queue = queuedTextInputs("/retry")
-	r.model.queuePaused = true
-
-	started := make(chan string, 1)
-	done := r.detachCanceledTurn(context.Background(), func(_ context.Context, prompt string, turnUI TurnUI) error {
-		if !turnUI.(*gotuiTurnUI).reuseUser {
-			t.Error("detached retry did not reuse persisted user")
-		}
-		started <- prompt
-		return nil
-	})
-	if done == nil {
-		t.Fatal("timeout detach left leading retry unpaused but idle")
-	}
-	if got := <-started; got != "stuck prompt" {
-		t.Fatalf("detached retry prompt = %q", got)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestQueueContinueDuringCancellationSurvivesSettlement(t *testing.T) {
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.beginTurn("current")
-	r.model.queue = queuedTextInputs("next")
-	if quit := r.handleInterrupt(); quit {
-		t.Fatal("cancel request should keep REPL open")
-	}
-	r.model.ed.setText("/queue continue")
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if !r.model.queueResumeAfterTurn {
-		t.Fatal("continue intent was not retained while cancellation settled")
-	}
+	r.model.beginTurn("canceled prompt")
+	r.model.ed.setText("newer draft")
 	r.endTurn(context.Canceled)
-	if r.model.queuePaused {
-		t.Fatal("cancellation settlement overwrote explicit queue continue")
+	if got := r.model.ed.text(); got != "newer draft" {
+		t.Fatalf("cancellation overwrote newer draft: %q", got)
+	}
+	if r.model.restoredDraft == nil || r.model.restoredDraft.displayText != "canceled prompt" {
+		t.Fatalf("canceled input was not retained for history recall: %#v", r.model.restoredDraft)
+	}
+	if plain := plainStyledText(r.model.fullTranscript()); !strings.Contains(plain, "input available with ↑ · current draft preserved") {
+		t.Fatalf("preserved-draft notice missing: %q", plain)
 	}
 }
 
@@ -929,18 +869,24 @@ func TestQueuedResetIsAConsistentBarrier(t *testing.T) {
 		}
 	})
 
-	t.Run("failure pauses following input", func(t *testing.T) {
+	t.Run("failure marks following input not sent", func(t *testing.T) {
 		r := newManagedREPL(&Config{}, "ctx", 0, 0)
 		r.state = &conversationState{session: failingClearSession{Session: session}}
 		r.model.queue = queuedTextInputs("/reset confirm", "must wait")
+		for i := range r.model.queue {
+			r.model.appendQueuedInput(&r.model.queue[i])
+		}
 		if done := r.startNextQueued(context.Background(), func(context.Context, string, TurnUI) error {
 			t.Fatal("following prompt ran after reset failure")
 			return nil
 		}); done != nil {
 			t.Fatal("reset failure unexpectedly started a turn")
 		}
-		if !r.model.queuePaused || len(r.model.queue) != 1 || r.model.queue[0].text != "must wait" {
-			t.Fatalf("reset failure queue=%v paused=%v", r.model.queue, r.model.queuePaused)
+		if len(r.model.queue) != 0 {
+			t.Fatalf("reset failure left queue=%v", r.model.queue)
+		}
+		if joined := plainStyledText(r.model.fullTranscript()); !strings.Contains(joined, "> must wait\n  (not sent)") {
+			t.Fatalf("reset failure did not mark following input unsent: %q", joined)
 		}
 	})
 }

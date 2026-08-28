@@ -25,7 +25,7 @@ import (
 // Composer attachments follow the token-in-text model: attaching an image
 // inserts a literal "[image #N]" token at the cursor and records N → path in a
 // session-scoped registry. Accepting the prompt resolves those tokens into one
-// durable message; queues and retries carry that prepared payload, never the
+// durable message; queues and restored drafts carry that prepared payload, never the
 // source path. Deleting a token from the composer drops the attachment.
 
 const (
@@ -494,7 +494,7 @@ func portableImageExtension(mimeType string) (string, bool) {
 }
 
 // buildREPLUserMessage assembles the durable user message for a managed-REPL
-// turn. Text-only prompts stay simple Content strings — the shape /retry and
+// turn. Text-only prompts stay simple Content strings — the shape restored drafts and
 // resumed-session summaries already understand — and attachments make the
 // message multimodal with the prompt (tokens included) as its leading text
 // part.

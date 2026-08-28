@@ -345,7 +345,7 @@ func (e *lineEditor) displayWidthToCursor() int {
 
 // managedTurnInput is the immutable boundary between accepting composer input
 // and running a model turn. displayText is UI-only; userMessage is the exact
-// normalized payload carried through queues, retries, and session hydration.
+// normalized payload carried through queues and restored composer drafts.
 type managedTurnInput struct {
 	displayText string
 	userMessage messages.ChatMessage
@@ -355,8 +355,8 @@ type managedTurnInput struct {
 // mark it without taking the model lock, so queue projection never observes a
 // persisted session message while its acknowledgement is blocked behind the
 // event loop. Keeping the pointer turn-owned makes late callbacks harmless: an
-// old callback can only update the old turn (or its exact retry), never a newer
-// prompt.
+// old callback can only update the old turn (or an unchanged restored-draft
+// resubmission), never a newer prompt.
 type turnPersistenceAck struct {
 	mu        sync.Mutex
 	active    int
@@ -431,8 +431,10 @@ func (a *turnPersistenceAck) snapshotSessionHistory(ctx context.Context, session
 }
 
 type queuedREPLInput struct {
-	text string
-	turn *managedTurnInput
+	text            string
+	turn            *managedTurnInput
+	transcriptIndex int
+	transcriptShown bool
 }
 
 // materializeQueuedImagesForReset snapshots prepared queued images before the
@@ -502,7 +504,7 @@ func materializeArtifactImageParts(ctx context.Context, msg messages.ChatMessage
 
 // restoreQueuedImagesAfterReset repopulates only artifacts referenced by
 // future queued turns and rebuilds their stable-token registry. On failure the
-// remaining prepared bytes stay inline so the paused queue can be retried.
+// remaining prepared bytes stay inline until those turns are marked not sent.
 // Caller must hold m.mu.
 func (m *replModel) restoreQueuedImagesAfterReset(ctx context.Context, queue []queuedREPLInput) error {
 	m.queue = queue
@@ -586,7 +588,7 @@ type replModel struct {
 
 	// attachments maps "[image #N]" composer tokens to validated local images
 	// or durable image artifacts for this session. Tokens resolve once when the
-	// composer accepts a prompt; queues and retries retain prepared references.
+	// composer accepts a prompt; queues and restored drafts retain prepared references.
 	attachments          map[int]composerAttachment
 	ambiguousAttachments map[int]bool
 	attachmentSeq        int
@@ -637,11 +639,6 @@ type replModel struct {
 	slashHints       string
 	slashHintsHidden bool
 	slashHintSource  string
-	// queueHint is the quiet-mode equivalent of queue status. Keeping it as a
-	// transient render block avoids splitting an assistant stream just because
-	// the user accepted another input while generation was in flight.
-	queueHint string
-
 	// activeTools tracks tool calls currently executing, each pinned to the
 	// transcript entry that displays it. While a tool runs, render() rewrites
 	// that entry every frame with a breathing arrow and live elapsed time; when
@@ -662,9 +659,7 @@ type replModel struct {
 	// queue holds inputs submitted while a turn is in flight (the prompt stays
 	// editable during a turn). Commands remain text-only; prompts carry the
 	// exact prepared message accepted from the composer.
-	queue                []queuedREPLInput
-	queuePaused          bool
-	queueResumeAfterTurn bool
+	queue []queuedREPLInput
 
 	// Reverse-incremental history search (Ctrl-R). searchMatch is the index
 	// into history of the current hit, or -1 when the query matches nothing.
@@ -726,19 +721,17 @@ type replModel struct {
 	// stream caret; it never enters the transcript.
 	thinkingGhostFrame string
 
-	// currentPrompt identifies the user turn in flight. Failed/canceled turns
-	// retain it for /retry; retryingNext tells startTurn to reuse the already
-	// persisted user message instead of appending a duplicate.
-	currentPrompt      string
-	retryPrompt        string
-	currentTurn        managedTurnInput
-	retryTurn          *managedTurnInput
-	currentPersistence *turnPersistenceAck
-	retryPersistence   *turnPersistenceAck
-	retryingNext       bool
-	currentWasRetry    bool
-	turnHasOutput      bool
-	unsavedLabeled     bool
+	// Failed/canceled input is restored to the composer. When submitted again
+	// unchanged, restoreDraftNext reuses its already-persisted user message;
+	// edited drafts are ordinary new turns.
+	currentPrompt       string
+	currentTurn         managedTurnInput
+	currentPersistence  *turnPersistenceAck
+	restoredDraft       *managedTurnInput
+	restoredPersistence *turnPersistenceAck
+	restoreDraftNext    bool
+	turnHasOutput       bool
+	unsavedLabeled      bool
 
 	// runningTools counts tool calls currently in flight this turn. A parallel
 	// batch starts several at once; the status only returns to "waiting" when
@@ -784,8 +777,7 @@ const turnCancelDetachAfter = 2 * time.Second
 
 // statusRow renders live/last-turn state on the left and stable context on the
 // right. Right alignment means a completion can change "streaming" to
-// "done 1.8s" without moving the model/context horizontally. Operational queue
-// state outranks static metadata on narrow terminals.
+// "done 1.8s" without moving the model/context horizontally.
 func (m *replModel) statusRow(width int) string {
 	if m.quiet || width <= 0 {
 		return ""
@@ -793,25 +785,6 @@ func (m *replModel) statusRow(width int) string {
 	const sep = " · "
 
 	leftRaw, leftStyled := m.statusActivity()
-	if len(m.queue) > 0 {
-		queueRaw := fmt.Sprintf("queued:%d", len(m.queue))
-		if m.queuePaused {
-			queueRaw += " paused"
-		}
-		if preview := compactQueuePreview(m.queue[len(m.queue)-1].text); preview != "" {
-			queueRaw += " › " + preview
-		}
-		queueStyled := styled(queueRaw, "active", "bold")
-		if leftRaw != "" {
-			// Queue state leads the operational side so narrow truncation keeps
-			// the accepted next input visible ahead of transient spinner text.
-			leftRaw = queueRaw + sep + leftRaw
-			leftStyled = queueStyled + styled(sep, "muted", "") + leftStyled
-		} else {
-			leftRaw, leftStyled = queueRaw, queueStyled
-		}
-	}
-
 	type field struct {
 		drop int
 		text string
@@ -1170,6 +1143,17 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 			delete(m.transcriptImages, i)
 		}
 	}
+	for i := range m.queue {
+		if !m.queue[i].transcriptShown {
+			continue
+		}
+		switch {
+		case m.queue[i].transcriptIndex == index:
+			m.queue[i].transcriptShown = false
+		case m.queue[i].transcriptIndex > index:
+			m.queue[i].transcriptIndex--
+		}
+	}
 }
 
 // appendLine appends a pre-rendered transcript entry (may contain inline
@@ -1272,7 +1256,7 @@ func (m *replModel) labelTurnUnsaved(label string) {
 	m.unsavedLabeled = true
 }
 
-func (m *replModel) appendUserPrompt(p string) {
+func formattedUserPrompt(p string) string {
 	lines := strings.Split(p, "\n")
 	for i, line := range lines {
 		if i == 0 {
@@ -1281,7 +1265,11 @@ func (m *replModel) appendUserPrompt(p string) {
 			lines[i] = "  " + styleEscape(line)
 		}
 	}
-	m.appendLine(strings.Join(lines, "\n"))
+	return strings.Join(lines, "\n")
+}
+
+func (m *replModel) appendUserPrompt(p string) {
+	m.appendLine(formattedUserPrompt(p))
 }
 
 // appendTurnSeparator inserts the single renderer-owned blank row between
@@ -1479,6 +1467,9 @@ func (m *replModel) clearDisplay() {
 	m.transcriptImages = make(map[int][]transcriptImage)
 	m.currentAssistant = -1
 	m.activeTools = nil
+	for i := range m.queue {
+		m.queue[i].transcriptShown = false
+	}
 	if !m.busy {
 		m.runningTools = 0
 	}
@@ -1576,10 +1567,10 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 			}
 			flushTools()
 			m.appendTurnSeparator()
-			content, _, retryable, contextOnly := historyUserSummary(msg)
+			content, restorable, contextOnly := historyUserSummary(msg)
 			m.appendUserPrompt(content)
 			lastUserTurn = nil
-			if turn, ok := retryableHistoryTurn(msg, content, retryable, m.artifactStore); ok {
+			if turn, ok := restorableHistoryTurn(msg, content, restorable, m.artifactStore); ok {
 				lastUserTurn = &turn
 			}
 			lastUserContextOnly = contextOnly
@@ -1631,13 +1622,8 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	if lastRole == messages.MessageRoleUser && !lastUserContextOnly {
 		if lastUserTurn != nil {
 			turn := cloneManagedTurn(*lastUserTurn)
-			m.retryTurn = &turn
-			m.retryPersistence = newTurnPersistenceAck(true)
-			m.retryPrompt = turn.userMessage.GetContent()
-			if m.retryPrompt == "" {
-				m.retryPrompt = turn.displayText
-			}
-			m.appendLine("  " + styled("incomplete · /retry available", "muted", ""))
+			m.restoreTurnDraft(turn, newTurnPersistenceAck(true))
+			m.appendLine("  " + styled("incomplete · restored to composer", "muted", ""))
 		} else {
 			m.appendLine("  " + styled("incomplete", "muted", ""))
 		}
@@ -1650,7 +1636,7 @@ func agentSyntheticMessage(msg messages.ChatMessage) bool {
 	return synthetic
 }
 
-func retryableHistoryTurn(msg messages.ChatMessage, display string, simpleContent bool, store artifacts.Store) (managedTurnInput, bool) {
+func restorableHistoryTurn(msg messages.ChatMessage, display string, simpleContent bool, store artifacts.Store) (managedTurnInput, bool) {
 	contextOnly, _ := msg.Metadata[messages.MetadataKeyContextImport].(bool)
 	if contextOnly || msg.Role != messages.MessageRoleUser {
 		return managedTurnInput{}, false
@@ -1731,15 +1717,15 @@ func validatePortablePersistedImagePart(part messages.ContentPart) error {
 	return nil
 }
 
-func historyUserSummary(msg messages.ChatMessage) (display, retryPrompt string, retryable, contextOnly bool) {
+func historyUserSummary(msg messages.ChatMessage) (display string, restorable, contextOnly bool) {
 	display = msg.Content
 	contextOnly, _ = msg.Metadata[messages.MetadataKeyContextImport].(bool)
 	if name, ok := legacyImportedTextFile(msg); ok {
 		display = "[attached: " + name + "]"
-		return display, "", false, true
+		return display, false, true
 	}
 	if contextOnly && len(msg.Parts) == 0 {
-		return "[context added]", "", false, true
+		return "[context added]", false, true
 	}
 	var attachments []string
 	if display == "" {
@@ -1767,14 +1753,11 @@ func historyUserSummary(msg messages.ChatMessage) (display, retryPrompt string, 
 	if display == "" {
 		display = "[empty message]"
 	}
-	// This summary only identifies simple Content retries. retryableHistoryTurn
+	// This summary only identifies simple Content drafts. restorableHistoryTurn
 	// separately recognizes persisted image_base64 parts while rejecting text
 	// file bodies and context imports that cannot be reconstructed safely.
-	retryable = len(msg.Parts) == 0 && msg.Content != ""
-	if retryable {
-		retryPrompt = msg.Content
-	}
-	return display, retryPrompt, retryable, contextOnly
+	restorable = len(msg.Parts) == 0 && msg.Content != ""
+	return display, restorable, contextOnly
 }
 
 func legacyImportedTextFile(msg messages.ChatMessage) (string, bool) {
@@ -1814,23 +1797,6 @@ func (m *replModel) setSlashHintLine(hint string) {
 	m.invalidateVisual()
 }
 
-func (m *replModel) updateQueueHint() {
-	next := ""
-	if m.quiet && len(m.queue) > 0 {
-		next = fmt.Sprintf("queued:%d", len(m.queue))
-		if m.queuePaused {
-			next += " paused"
-		}
-		if preview := compactQueuePreview(m.queue[len(m.queue)-1].text); preview != "" {
-			next += " › " + preview
-		}
-	}
-	if m.queueHint != next {
-		m.queueHint = next
-		m.invalidateVisual()
-	}
-}
-
 // beginTurn echoes a user prompt and marks a turn in flight. Shared by the idle
 // submit path and the queued-prompt drain; neither records history here (callers
 // do that when the text is first accepted). Caller must hold m.mu.
@@ -1842,16 +1808,80 @@ func (m *replModel) beginManagedTurn(turn managedTurnInput) {
 	prompt := turn.displayText
 	m.appendTurnSeparator()
 	m.appendUserPrompt(prompt)
+	m.decorateUserPrompt(len(m.transcript)-1, turn)
+	m.beginManagedTurnState(turn)
+}
+
+func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
 	if images := preparedMessageTranscriptImagesWithStore(turn.userMessage, m.artifactStore); len(images) > 0 {
 		// The echoed prompt gains thumbnail slots for its attachments. Pasted
 		// private-use runes are stripped first so they cannot pose as slot
 		// anchors in an entry that now carries real ones.
-		idx := len(m.transcript) - 1
-		m.transcript[idx] = stripTranscriptImageMarkers(m.transcript[idx]) +
+		m.transcript[index] = stripTranscriptImageMarkers(m.transcript[index]) +
 			"\n" + renderTranscriptImages(images, "  ")
-		m.setTranscriptImages(idx, images)
+		m.setTranscriptImages(index, images)
 		m.invalidateFlat()
 	}
+}
+
+// appendQueuedInput echoes accepted input without settling the assistant block
+// that may still be streaming. The transcript, rather than the status bar, is
+// the visible acknowledgement that Polly retained the input.
+func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
+	if len(m.transcript) > 0 && m.transcript[len(m.transcript)-1] != "" {
+		m.transcript = append(m.transcript, "")
+	}
+	entry := formattedUserPrompt(item.text) + "\n  " + styled("(queued)", "muted", "")
+	m.transcript = append(m.transcript, entry)
+	item.transcriptIndex = len(m.transcript) - 1
+	item.transcriptShown = true
+	if item.turn != nil {
+		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
+	}
+	m.followBottom = true
+	m.invalidateFlat()
+}
+
+func (m *replModel) activateQueuedInput(item queuedREPLInput) {
+	if item.transcriptShown && item.transcriptIndex >= 0 && item.transcriptIndex < len(m.transcript) {
+		m.transcript[item.transcriptIndex] = formattedUserPrompt(item.text)
+		if item.turn != nil {
+			m.decorateUserPrompt(item.transcriptIndex, *item.turn)
+		} else {
+			m.invalidateFlat()
+		}
+		return
+	}
+	m.appendTurnSeparator()
+	m.appendUserPrompt(item.text)
+	if item.turn != nil {
+		m.decorateUserPrompt(len(m.transcript)-1, *item.turn)
+	}
+}
+
+func (m *replModel) markQueuedInputNotSent(item queuedREPLInput) {
+	if !item.transcriptShown || item.transcriptIndex < 0 || item.transcriptIndex >= len(m.transcript) {
+		return
+	}
+	m.transcript[item.transcriptIndex] = formattedUserPrompt(item.text) + "\n  " + styled("(not sent)", "muted", "")
+	if item.turn != nil {
+		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
+	} else {
+		m.invalidateFlat()
+	}
+}
+
+func (m *replModel) discardQueuedInputs() int {
+	count := len(m.queue)
+	for _, item := range m.queue {
+		m.markQueuedInputNotSent(item)
+	}
+	m.queue = nil
+	return count
+}
+
+func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
+	prompt := turn.displayText
 	m.busy = true
 	m.canceling = false
 	m.state = turnStateWaiting
@@ -1861,7 +1891,9 @@ func (m *replModel) beginManagedTurn(turn managedTurnInput) {
 	m.turnStarted = time.Now()
 	m.currentPrompt = prompt
 	m.currentTurn = cloneManagedTurn(turn)
-	m.currentPersistence = newTurnPersistenceAck(false)
+	if m.currentPersistence == nil {
+		m.currentPersistence = newTurnPersistenceAck(false)
+	}
 	m.turnHasOutput = false
 	m.unsavedLabeled = false
 	m.lastOutcome = turnOutcomeNone
@@ -1869,6 +1901,124 @@ func (m *replModel) beginManagedTurn(turn managedTurnInput) {
 	m.lastIn = 0
 	m.lastOut = 0
 	m.followBottom = true
+}
+
+func editableTurnPrompt(turn managedTurnInput) string {
+	if turn.userMessage.Content != "" {
+		return turn.userMessage.Content
+	}
+	var prompt strings.Builder
+	for _, part := range turn.userMessage.Parts {
+		if part.Type == "text" && part.FileName == "" {
+			prompt.WriteString(part.Text)
+		}
+	}
+	if prompt.Len() > 0 {
+		return prompt.String()
+	}
+	return turn.displayText
+}
+
+// restoreTurnDraft puts failed/canceled input back in the composer without
+// overwriting anything the user typed while the turn was running. The original
+// remains available through input history in that case.
+func (m *replModel) restoreTurnDraft(turn managedTurnInput, persistence *turnPersistenceAck) bool {
+	turn = cloneManagedTurn(turn)
+	originalDisplay := turn.displayText
+	turn.displayText = editableTurnPrompt(turn)
+	m.rememberArtifactAttachments(turn.userMessage)
+	for _, part := range turn.userMessage.Parts {
+		if part.Type != "image_base64" && part.Type != "image_artifact" {
+			continue
+		}
+		token := strings.TrimSpace(part.Reference)
+		match := attachmentTokenPattern.FindStringSubmatch(token)
+		validToken := len(match) == 2 && match[0] == token
+		if validToken {
+			attachments, err := m.promptAttachments(token)
+			validToken = err == nil && len(attachments) == 1
+		}
+		if !validToken {
+			token = m.bindRestoredImageAttachment(part)
+		}
+		if token != "" && !strings.Contains(turn.displayText, token) {
+			if replaced, ok := replaceRestoredImagePath(turn.displayText, part.FileName, token); ok {
+				turn.displayText = replaced
+			} else {
+				turn.displayText = strings.TrimSpace(turn.displayText + " " + token)
+			}
+		}
+	}
+	if turn.displayText != originalDisplay {
+		for i := len(m.history) - 1; i >= 0; i-- {
+			if m.history[i] == originalDisplay {
+				m.history[i] = turn.displayText
+				break
+			}
+		}
+	}
+	m.restoredDraft = &turn
+	m.restoredPersistence = persistence
+	if !m.ed.empty() {
+		return false
+	}
+	m.ed.setText(turn.displayText)
+	return true
+}
+
+func replaceRestoredImagePath(prompt, fileName, token string) (string, bool) {
+	if fileName == "" {
+		return prompt, false
+	}
+	for _, word := range splitPromptWords(prompt) {
+		path := trimPromptPathPunctuation(word.text)
+		if filepath.Base(path) != fileName {
+			continue
+		}
+		replacement := strings.Replace(word.text, path, token, 1)
+		return prompt[:word.pos] + replacement + prompt[word.pos+len(word.text):], true
+	}
+	return prompt, false
+}
+
+func (m *replModel) bindRestoredImageAttachment(part messages.ContentPart) string {
+	var ref *artifacts.Ref
+	if part.Artifact != nil && part.Artifact.Kind == artifacts.KindImage {
+		copy := *part.Artifact
+		ref = &copy
+	} else if part.Type == "image_base64" && part.ImageData != "" && m.artifactStore != nil {
+		data, err := base64.StdEncoding.DecodeString(part.ImageData)
+		if err != nil || len(data) == 0 {
+			return ""
+		}
+		stored, err := m.artifactStore.Put(context.Background(), artifacts.Blob{
+			Kind: artifacts.KindImage, MIMEType: part.MimeType, Name: part.FileName, Data: data,
+		})
+		if err != nil {
+			return ""
+		}
+		ref = &stored
+	}
+	if ref == nil {
+		return ""
+	}
+	m.attachmentSeq++
+	token := attachmentToken(m.attachmentSeq)
+	ref.ImageToken = token
+	m.attachments[m.attachmentSeq] = composerAttachment{Label: ref.Name, Reference: token, Artifact: ref}
+	return token
+}
+
+func (m *replModel) acceptedRestoredTurn(prompt string) (managedTurnInput, *turnPersistenceAck, bool) {
+	if m.restoredDraft == nil || prompt != m.restoredDraft.displayText {
+		return managedTurnInput{}, nil, false
+	}
+	return cloneManagedTurn(*m.restoredDraft), m.restoredPersistence, true
+}
+
+func (m *replModel) clearRestoredDraft() {
+	m.restoredDraft = nil
+	m.restoredPersistence = nil
 }
 
 func (m *replModel) historyUp() {
@@ -2816,9 +2966,8 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, turn managedTurnInpu
 	r.model.mu.Lock()
 	r.model.turnID++
 	turnID := r.model.turnID
-	reuseUser := r.model.retryingNext
-	r.model.retryingNext = false
-	r.model.currentWasRetry = reuseUser
+	reuseUser := r.model.restoreDraftNext
+	r.model.restoreDraftNext = false
 	persistence := r.model.currentPersistence
 	if persistence == nil {
 		persistence = newTurnPersistenceAck(false)
@@ -2840,23 +2989,23 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, turn managedTurnInpu
 // queued commands inline (honoring a quit) and starts a turn for the first
 // queued prompt, returning that turn's done channel — or nil when the queue
 // empties without a prompt. Called from the main loop after endTurn, the safe
-// point where currentAssistant is already reset so echoing a queued prompt or a
-// queued /clear can't corrupt the just-finished stream.
+// point where currentAssistant is already reset so activating a queued prompt
+// or a queued /clear can't corrupt the just-finished stream.
 func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) chan error {
 	for {
 		r.model.mu.Lock()
-		if r.model.queuePaused || len(r.model.queue) == 0 {
+		if len(r.model.queue) == 0 {
 			r.model.mu.Unlock()
 			return nil
 		}
 		item := r.model.queue[0]
 		r.model.queue = r.model.queue[1:]
-		r.model.updateQueueHint()
 		text := item.text
+		r.model.activateQueuedInput(item)
 
 		if item.turn != nil {
 			turn := cloneManagedTurn(*item.turn)
-			r.model.beginManagedTurn(turn)
+			r.model.beginManagedTurnState(turn)
 			r.model.mu.Unlock()
 			return r.startManagedTurn(ctx, turn, runTurn)
 		}
@@ -2867,9 +3016,6 @@ func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.
 		if !handled {
 			r.model.appendNoticeLine(defaultReplCommands.unknownCommandNotice(text))
 		}
-		// /retry is a command that starts a turn. Consume the prompt it placed on
-		// pending before looking at later queue entries; otherwise a following
-		// prompt could leapfrog it and inherit its reuse-user flag.
 		if r.model.busy {
 			turn, ok := r.takePending()
 			r.model.mu.Unlock()
@@ -2908,9 +3054,6 @@ func (r *managedREPL) endTurn(err error) {
 	m.settleActiveTools(activeToolReason)
 	m.activeTools = nil
 	m.runningTools = 0
-	resumeQueue := m.queueResumeAfterTurn || queuedRetryAtFront(m.queue)
-	m.queueResumeAfterTurn = false
-
 	switch {
 	case err == nil:
 		m.finishAssistantBlock("")
@@ -2918,19 +3061,16 @@ func (r *managedREPL) endTurn(err error) {
 			m.appendNoticeLine("(no response)")
 		}
 		m.lastOutcome = turnOutcomeDone
-		m.retryPrompt = ""
-		m.retryTurn = nil
-		m.retryPersistence = nil
-		m.queuePaused = false
 	case errors.Is(err, context.Canceled):
 		m.finishAssistantBlock("canceled · not saved")
 		m.labelTurnUnsaved("canceled · not saved")
 		m.lastOutcome = turnOutcomeCanceled
-		m.retryPrompt = m.currentPrompt
-		retry := cloneManagedTurn(m.currentTurn)
-		m.retryTurn = &retry
-		m.retryPersistence = m.currentPersistence
-		m.queuePaused = len(m.queue) > 0 && !resumeQueue
+		m.discardQueuedInputs()
+		if m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
+			m.appendNoticeLine("input restored to composer")
+		} else {
+			m.appendNoticeLine("input available with ↑ · current draft preserved")
+		}
 		if !wasCanceling {
 			m.appendNoticeLine("turn canceled")
 		}
@@ -2939,11 +3079,12 @@ func (r *managedREPL) endTurn(err error) {
 		m.labelTurnUnsaved("failed · not saved")
 		m.appendLine(styled("Error: "+err.Error(), "err", ""))
 		m.lastOutcome = turnOutcomeFailed
-		m.retryPrompt = m.currentPrompt
-		retry := cloneManagedTurn(m.currentTurn)
-		m.retryTurn = &retry
-		m.retryPersistence = m.currentPersistence
-		m.queuePaused = len(m.queue) > 0 && !resumeQueue
+		m.discardQueuedInputs()
+		if m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
+			m.appendNoticeLine("input restored to composer")
+		} else {
+			m.appendNoticeLine("input available with ↑ · current draft preserved")
+		}
 	}
 	// A long turn settling is the "walk away and get pinged" moment; a quick
 	// one never gave the user time to leave. Cancellation is user-initiated,
@@ -2966,8 +3107,6 @@ func (r *managedREPL) endTurn(err error) {
 	m.currentPrompt = ""
 	m.currentTurn = managedTurnInput{}
 	m.currentPersistence = nil
-	m.currentWasRetry = false
-	m.updateQueueHint()
 	// A settled turn owns no callbacks. Advance the generation before exposing
 	// the idle prompt so a provider goroutine that emits late cannot reopen the
 	// assistant block or move the status back to streaming.
@@ -3013,27 +3152,23 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.denyApprovalLocked()
 	m.state = turnStateIdle
 	m.lastOutcome = turnOutcomeCanceled
-	m.retryPrompt = m.currentPrompt
-	retry := cloneManagedTurn(m.currentTurn)
-	m.retryTurn = &retry
-	m.retryPersistence = m.currentPersistence
+	restored := cloneManagedTurn(m.currentTurn)
+	restoredPersistence := m.currentPersistence
 	m.currentPrompt = ""
 	m.currentTurn = managedTurnInput{}
 	m.currentPersistence = nil
-	resumeQueue := m.queueResumeAfterTurn || queuedRetryAtFront(m.queue)
-	m.queueResumeAfterTurn = false
-	m.queuePaused = len(m.queue) > 0 && !resumeQueue
-	m.updateQueueHint()
+	m.discardQueuedInputs()
+	if m.restoreTurnDraft(restored, restoredPersistence) {
+		m.appendNoticeLine("input restored to composer")
+	} else {
+		m.appendNoticeLine("input available with ↑ · current draft preserved")
+	}
 	m.appendNoticeLine("^C cancellation timed out; detached turn")
 }
 
 func (r *managedREPL) detachCanceledTurn(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) chan error {
 	r.abandonCanceledTurn()
 	return r.startNextQueued(ctx, runTurn)
-}
-
-func queuedRetryAtFront(queue []queuedREPLInput) bool {
-	return len(queue) > 0 && queue[0].text == "/retry"
 }
 
 // handleInterrupt processes Ctrl-C. While a turn is in flight the first press
@@ -3060,9 +3195,10 @@ func (r *managedREPL) handleInterrupt() bool {
 }
 
 // cancelBusyTurn cancels the in-flight turn: freezes the visible partial,
-// pauses the queue, cancels the turn context, and denies any pending approval
-// so the turn goroutine isn't parked on the reply channel. Caller must hold
-// m.mu and ensure m.busy && !m.canceling.
+// cancels the turn context, and denies any pending approval so the turn
+// goroutine isn't parked on the reply channel. Pending input is marked not sent
+// when cancellation settles. Caller must hold m.mu and ensure m.busy &&
+// !m.canceling.
 func (r *managedREPL) cancelBusyTurn(notice string) {
 	m := r.model
 	m.canceling = true
@@ -3070,9 +3206,6 @@ func (r *managedREPL) cancelBusyTurn(notice string) {
 	// the turn actually settles as canceled. Completion and cancel can race; a
 	// successful result must never retain a false "not saved" label.
 	m.finishAssistantBlock("")
-	m.queueResumeAfterTurn = false
-	m.queuePaused = len(m.queue) > 0
-	m.updateQueueHint()
 	r.cancelTurn()
 	m.denyApprovalLocked()
 	m.appendNoticeLine(notice)
@@ -3465,9 +3598,6 @@ func (r *managedREPL) placeCursor(editable bool, cursorCol, rowY, width int) {
 // inside the selected slice so follow-bottom still shows the newest rows.
 func (m *replModel) visibleTranscript(maxLines int) string {
 	lines := m.flattenTranscript()
-	if m.queueHint != "" {
-		lines = append(append([]string(nil), lines...), styled(m.queueHint, "active", "bold"))
-	}
 	if m.slashHints != "" {
 		withHints := make([]string, 0, len(lines)+1)
 		withHints = append(withHints, lines...)
@@ -3510,9 +3640,6 @@ func (m *replModel) visibleTranscript(maxLines int) string {
 // transcriptParagraph, so wrapped rows remain reachable through scrollback.
 func (m *replModel) fullTranscript() string {
 	lines := m.flattenTranscript()
-	if m.queueHint != "" {
-		lines = append(append([]string(nil), lines...), styled(m.queueHint, "active", "bold"))
-	}
 	if m.slashHints != "" {
 		lines = append(append([]string(nil), lines...), styled(m.slashHints, "muted", ""))
 	}
@@ -3630,9 +3757,6 @@ func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
 	}
 	if m.thinkingGhostFrame != "" {
 		blocks = append(blocks, transcriptDisplayBlock{key: "thinking", text: m.thinkingGhostFrame})
-	}
-	if m.queueHint != "" {
-		blocks = append(blocks, transcriptDisplayBlock{key: "queue", text: styled(m.queueHint, "active", "bold")})
 	}
 	if m.slashHints != "" {
 		blocks = append(blocks, transcriptDisplayBlock{key: "slash", text: styled(m.slashHints, "muted", "")})
@@ -3943,10 +4067,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
 			m.queue = append(m.queue, queued)
-			if m.canceling {
-				m.queuePaused = true
-			}
-			m.updateQueueHint()
+			m.appendQueuedInput(&m.queue[len(m.queue)-1])
 			return false
 		}
 		// Only a single-line "/…" is a command; a multi-line prompt that happens
@@ -3965,23 +4086,23 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			}
 			return false
 		}
-		turn, err := r.prepareManagedTurnLocked(trimmed)
-		if err != nil {
-			m.appendLine(styled("Error: "+err.Error(), "err", ""))
-			m.followBottom = true
-			return false
-		}
-		if m.queuePaused {
-			m.ed.clear()
-			r.recordAcceptedInput(trimmed)
-			m.queue = append(m.queue, queuedREPLInput{text: trimmed, turn: &turn})
-			m.updateQueueHint()
-			return false
+		turn, restoredPersistence, reuseRestored := m.acceptedRestoredTurn(trimmed)
+		if !reuseRestored {
+			var err error
+			turn, err = r.prepareManagedTurnLocked(trimmed)
+			if err != nil {
+				m.appendLine(styled("Error: "+err.Error(), "err", ""))
+				m.followBottom = true
+				return false
+			}
 		}
 		select {
 		case r.pending <- turn:
 			m.ed.clear()
 			r.recordAcceptedInput(trimmed)
+			m.currentPersistence = restoredPersistence
+			m.restoreDraftNext = reuseRestored
+			m.clearRestoredDraft()
 			m.beginManagedTurn(turn)
 		default:
 			m.appendLine(styled("Error: turn queue is unavailable", "err", ""))

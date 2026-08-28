@@ -140,8 +140,8 @@ func TestReloadRestoresStableImageTokenAndExactRetry(t *testing.T) {
 	r.model.artifactStore = reopenedArtifacts
 	r.model.hydrateHistory(testSessionHistory(t, reopened), "reload")
 
-	if r.model.retryTurn == nil || !reflect.DeepEqual(r.model.retryTurn.userMessage, prepared) {
-		t.Fatalf("reloaded exact retry = %#v, want %#v", r.model.retryTurn, prepared)
+	if r.model.restoredDraft == nil || !reflect.DeepEqual(r.model.restoredDraft.userMessage, prepared) {
+		t.Fatalf("reloaded exact draft = %#v, want %#v", r.model.restoredDraft, prepared)
 	}
 	attachments, err := r.model.promptAttachments("compare [image #1]")
 	if err != nil || len(attachments) != 1 || attachments[0].Artifact == nil || attachments[0].Artifact.ID != prepared.Parts[1].Artifact.ID {

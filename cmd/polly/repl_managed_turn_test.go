@@ -91,6 +91,7 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 				t.Fatalf("queued prompt was not prepared: %#v", r.model.queue)
 			}
 			prepared := cloneChatMessage(r.model.queue[0].turn.userMessage)
+			queuedTranscriptIndex := r.model.queue[0].transcriptIndex
 			if len(managedImageBytes(t, prepared, artifactStore)) == 0 {
 				t.Fatal("prepared turn has no persisted image bytes")
 			}
@@ -117,8 +118,7 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 			case <-time.After(time.Second):
 				t.Fatal("queued turn did not reach runner")
 			}
-			idx := len(r.model.transcript) - 1
-			images := r.model.transcriptImages[idx]
+			images := r.model.transcriptImages[queuedTranscriptIndex]
 			if len(images) != 1 {
 				t.Fatalf("queued prepared preview = %+v", images)
 			}
@@ -140,7 +140,7 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 	}
 }
 
-func TestAttachmentRetryReusesExactPreparedMessageAfterSourceMutation(t *testing.T) {
+func TestRestoredAttachmentDraftReusesExactPreparedMessageAfterSourceMutation(t *testing.T) {
 	for _, mutation := range []string{"delete", "overwrite"} {
 		for _, outcome := range []struct {
 			name string
@@ -172,28 +172,60 @@ func TestAttachmentRetryReusesExactPreparedMessageAfterSourceMutation(t *testing
 				r.endTurn(outcome.err)
 
 				mutateAttachmentSource(t, path, mutation)
-				if handled, quit := r.runCommand("/retry"); !handled || quit {
-					t.Fatalf("/retry handled=%v quit=%v", handled, quit)
-				}
+				r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 				retried, ok := r.takePending()
 				if !ok {
-					t.Fatal("retry did not enqueue an exact turn")
+					t.Fatal("restored draft did not enqueue an exact turn")
 				}
 				if !reflect.DeepEqual(retried.userMessage, prepared.userMessage) {
-					t.Fatalf("retry payload changed after %s", mutation)
+					t.Fatalf("restored payload changed after %s", mutation)
 				}
-				if err := persistUserMessageForTurn(context.Background(), session, retried.userMessage, true); err != nil {
+				if !r.model.restoreDraftNext {
+					t.Fatal("unchanged restored draft did not request persisted-user reuse")
+				}
+				if err := persistUserMessageForTurn(context.Background(), session, retried.userMessage, r.model.restoreDraftNext); err != nil {
 					t.Fatal(err)
 				}
 				if got := testSessionHistory(t, session); len(got) != 1 || !reflect.DeepEqual(got[0], prepared.userMessage) {
-					t.Fatalf("retry created non-durable or duplicate user turns: %#v", got)
+					t.Fatalf("restored submit created non-durable or duplicate user turns: %#v", got)
 				}
 			})
 		}
 	}
 }
 
-func TestDiskSessionReloadRetriesPersistedImageWithoutSource(t *testing.T) {
+func TestFailedBarePathAttachmentRestoresAsDurableToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bare.png")
+	writeImageFixture(t, path, 8, 8)
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "bare-restore")
+
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.state = &conversationState{session: session, artifactStore: session.ArtifactStore()}
+	r.model.artifactStore = session.ArtifactStore()
+	r.model.ed.setText("inspect " + path)
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	prepared, ok := r.takePending()
+	if !ok {
+		t.Fatal("bare-path turn was not accepted")
+	}
+	r.endTurn(errors.New("provider failed"))
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	draft := r.model.ed.text()
+	if strings.Contains(draft, path) || !strings.Contains(draft, "[image #1]") {
+		t.Fatalf("restored draft did not replace ephemeral path with durable token: %q", draft)
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	restored, ok := r.takePending()
+	if !ok || !reflect.DeepEqual(restored.userMessage, prepared.userMessage) {
+		t.Fatalf("restored bare-path payload changed: %#v", restored.userMessage)
+	}
+}
+
+func TestDiskSessionReloadRestoresPersistedImageWithoutSource(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "reload.png")
 	writeImageFixture(t, path, 8, 8)
@@ -228,21 +260,22 @@ func TestDiskSessionReloadRetriesPersistedImageWithoutSource(t *testing.T) {
 	r.state = &conversationState{session: reopened, artifactStore: reopened.ArtifactStore()}
 	r.model.artifactStore = reopened.ArtifactStore()
 	r.model.hydrateHistory(testSessionHistory(t, reopened), "image-reload")
-	if r.model.retryTurn == nil {
-		t.Fatal("reloaded incomplete image turn did not offer exact retry")
+	if r.model.restoredDraft == nil {
+		t.Fatal("reloaded incomplete image turn did not restore exact draft")
 	}
-	if handled, quit := r.runCommand("/retry"); !handled || quit {
-		t.Fatalf("reloaded /retry handled=%v quit=%v", handled, quit)
-	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	retried, ok := r.takePending()
 	if !ok || !reflect.DeepEqual(retried.userMessage, prepared) {
-		t.Fatalf("reloaded retry payload = %#v, want exact persisted message", retried.userMessage)
+		t.Fatalf("reloaded restored payload = %#v, want exact persisted message", retried.userMessage)
 	}
-	if err := persistUserMessageForTurn(context.Background(), reopened, retried.userMessage, true); err != nil {
+	if !r.model.restoreDraftNext {
+		t.Fatal("reloaded restored draft did not reuse persisted user")
+	}
+	if err := persistUserMessageForTurn(context.Background(), reopened, retried.userMessage, r.model.restoreDraftNext); err != nil {
 		t.Fatal(err)
 	}
 	if got := testSessionHistory(t, reopened); len(got) != 1 {
-		t.Fatalf("reloaded retry duplicated durable user turn: %#v", got)
+		t.Fatalf("reloaded restored draft duplicated durable user turn: %#v", got)
 	}
 }
 

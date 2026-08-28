@@ -789,8 +789,8 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 }
 
 // executeTurnWithExistingUser runs a turn and, when reuseUser is true, avoids
-// persisting the same user message twice. This is used when retrying a canceled
-// turn whose user message was already durably stored. Reuse is deliberately
+// persisting the same user message twice. This is used when resubmitting an
+// unchanged restored draft whose user message was already durably stored. Reuse is deliberately
 // conservative: only an equivalent user message at the very end of history is
 // reused, so a missing, changed, or non-terminal message is persisted normally.
 func executeTurnWithExistingUser(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (int, error) {
@@ -805,9 +805,9 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 // user message. The one-shot and fallback paths build theirs from --file;
 // the managed REPL builds a multimodal message from composer attachments.
 func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (int, error) {
-	// An exact retry must reuse the representation already persisted. If a
+	// An unchanged restored draft must reuse the representation already persisted. If a
 	// prior storage failure left prepared bytes inline and the store later
-	// recovers, rewriting only the retry candidate to an artifact would make it
+	// recovers, rewriting only the restored candidate to an artifact would make it
 	// look like a different user turn and persist a duplicate.
 	history, err := state.session.GetHistory(ctx)
 	if err != nil {
@@ -1031,7 +1031,7 @@ func externalizeMessageImages(ctx context.Context, msg messages.ChatMessage, sto
 // durableTurnMessages removes provider-protocol denial exchanges while still
 // recording that an all-denied turn completed. The internal marker is never
 // sent to a model; hydration folds it into one compact denied row instead of
-// resurrecting the completed prompt as an incomplete /retry candidate.
+// resurrecting the completed prompt as an incomplete composer draft.
 func durableTurnMessages(generated []messages.ChatMessage) []messages.ChatMessage {
 	stripped := llm.StripDeniedExchanges(generated)
 	if terminalToolBatchAllDenied(generated) {
@@ -1141,7 +1141,7 @@ const (
 
 // prepareSessionImageRequest projects the exact history that AddMessage will
 // expose to llm.Agent. Image hydration and context budgeting happen inside the
-// agent; this boundary only avoids duplicating an exact persisted retry.
+// agent; this boundary only avoids duplicating an unchanged persisted draft.
 func prepareSessionImageRequest(ctx context.Context, session sessions.Session, userMsg messages.ChatMessage, reuseUser bool) ([]messages.ChatMessage, error) {
 	if err := validatePreparedUserMessage(userMsg); err != nil {
 		return nil, err
@@ -1245,7 +1245,7 @@ func upgradeLegacyImagePart(part messages.ContentPart) (messages.ContentPart, er
 // validatePortableImageRequest enforces the common request shape accepted by
 // every native multimodal client. It deliberately validates the whole visible
 // history, not only the candidate: a legacy image in an earlier turn is replayed
-// to the provider too and can otherwise poison an exact retry or a new prompt.
+// to the provider too and can otherwise poison a restored draft or a new prompt.
 func validatePortableImageRequest(history []messages.ChatMessage) error {
 	if err := validateEncodedImageBudget(history); err != nil {
 		return err
