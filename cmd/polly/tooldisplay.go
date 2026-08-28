@@ -48,6 +48,10 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 		return summarizeBashCommand(args)
 	case "read":
 		return summarizeReadArgs(args)
+	case "read_file":
+		return summarizeReadFileArgs(args)
+	case "write_file", "edit_file":
+		return truncate(args.String("path"), 120)
 	case "write":
 		return truncate(args.String("file_path"), 120)
 	case "edit":
@@ -167,6 +171,20 @@ func summarizeReadArgs(args tools.Args) string {
 		limit := args.Int("limit", 0)
 		if limit > 0 {
 			summary += fmt.Sprintf(" (lines %d-%d)", offset, offset+limit)
+		} else {
+			summary += fmt.Sprintf(" (from line %d)", offset)
+		}
+	}
+	return summary
+}
+
+func summarizeReadFileArgs(args tools.Args) string {
+	summary := truncate(args.String("path"), 120)
+	if query := args.String("query"); query != "" {
+		summary += fmt.Sprintf(" (query %q)", truncate(query, 40))
+	} else if offset := args.Int("offset", 0); offset > 0 {
+		if limit := args.Int("limit", 0); limit > 0 {
+			summary += fmt.Sprintf(" (lines %d-%d)", offset, offset+limit-1)
 		} else {
 			summary += fmt.Sprintf(" (from line %d)", offset)
 		}

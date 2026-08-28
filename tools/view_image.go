@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -85,16 +84,9 @@ func (t *viewImageTool) ExecuteOutput(ctx context.Context, raw map[string]any) (
 }
 
 func readImageFile(path string, sandboxCfg sandbox.Config, sandboxActive bool) ([]byte, string, error) {
-	if strings.HasPrefix(path, "~/") || path == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		path = filepath.Join(home, strings.TrimPrefix(path[1:], "/"))
-	}
-	abs, err := filepath.Abs(path)
+	abs, err := resolveLocalPath(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("resolve path %s: %w", path, err)
+		return nil, "", err
 	}
 	if sandboxActive {
 		if err := sandbox.ReadAllowed(sandboxCfg, abs); err != nil {

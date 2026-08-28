@@ -196,6 +196,15 @@ func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err
 	return cfg, true, err
 }
 
+// SandboxWritePolicy returns the prepared base sandbox config when process
+// sandboxing is active, for checking in-process writes via
+// sandbox.WriteAllowed. active is false when no sandbox factory is
+// configured, in which case in-process writes are unrestricted just like
+// wrapped commands.
+func (r *ToolRegistry) SandboxWritePolicy() (cfg sandbox.Config, active bool, err error) {
+	return r.SandboxReadPolicy()
+}
+
 // newSandboxFor is NewSandbox with a tool/server identity for debug logging
 // of the effective merged config (names and flags only, never env values).
 func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sandbox.Sandbox, sandbox.Config, error) {
@@ -314,6 +323,27 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 			return nil, fmt.Errorf("sandbox for bash: %w", err)
 		}
 		return bt.withSandboxConfig(sb, cfg), nil
+	}
+
+	// read_file applies the base read policy in-process when sandboxing is
+	// active and reads unrestricted otherwise, like view_image. The writing
+	// tools fail closed without a sandbox: an in-process write grants the
+	// model the caller's ambient host access exactly like an unsandboxed
+	// command, so they require WithUnsafeNoSandbox to load without one.
+	registry.nativeTools["read_file"] = func() (Tool, error) {
+		return NewReadFileTool(registry), nil
+	}
+	registry.nativeTools["write_file"] = func() (Tool, error) {
+		if err := registry.requireProcessSandbox("write_file"); err != nil {
+			return nil, err
+		}
+		return NewWriteFileTool(registry), nil
+	}
+	registry.nativeTools["edit_file"] = func() (Tool, error) {
+		if err := registry.requireProcessSandbox("edit_file"); err != nil {
+			return nil, err
+		}
+		return NewEditFileTool(registry), nil
 	}
 
 	for _, tool := range tools {
