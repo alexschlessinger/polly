@@ -485,8 +485,6 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		{"/g", true, "/get", []string{"/get"}},
 		{"/get model", true, "/get model", []string{"/get model"}},
 		{"/get max", true, "/get max", []string{"/get maxcontext", "/get maxtokens"}},
-		{"/queue d", true, "/queue drop", []string{"/queue drop"}},
-		{"/queue c", true, "/queue c", []string{"/queue clear", "/queue continue"}},
 		{"/tools s", true, "/tools show", []string{"/tools show"}},
 		{"/set th", true, "/set thinking", []string{"/set thinking"}},
 		{"/set max", true, "/set max", []string{"/set maxcontext", "/set maxtokens"}},
@@ -494,7 +492,6 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		{"/set thinking m", true, "/set thinking m", []string{"/set thinking max", "/set thinking medium", "/set thinking minimal"}},
 		{"/help /cl", true, "/help /clear", []string{"/help /clear"}},
 		// Keywords don't leak past their position.
-		{"/queue drop x", false, "", nil},
 		{"/help me", false, "", nil},
 	}
 	for _, c := range cases {
@@ -526,7 +523,7 @@ func TestUnknownCommandNotice(t *testing.T) {
 		// Only the command token is named, not the arguments.
 		{"/hlep me now", "unknown command: /hlep — did you mean /help?"},
 		// Ambiguous prefix or nothing close: fall back to /help.
-		{"/q", "unknown command: /q (try /help)"},
+		{"/q", "unknown command: /q — did you mean /quit?"},
 		{"/bogus", "unknown command: /bogus (try /help)"},
 	}
 	for _, c := range cases {
@@ -565,16 +562,14 @@ func TestHintFor(t *testing.T) {
 		{"/zzz", ""},
 		// Typing the name: many matches list bare names, few include summaries.
 		{"/t", "/tools — inspect loaded tools"},
-		{"/q", "/queue — inspect or manage queued input   /quit — leave the REPL"},
+		{"/q", "/quit — leave the REPL"},
 		// Typing arguments: keyword matches from the command's completer.
-		{"/queue d", "drop"},
 		{"/get max", "maxcontext  maxtokens"},
 		// Value completion for keys with enumerable values.
 		{"/set thinking ", "dynamic  high  low  max  medium  minimal  off  xhigh"},
 		{"/set thinking hi", "high"},
 		// A fully typed keyword or a command without a completer falls back to
 		// the usage reminder.
-		{"/queue drop", "usage: /queue [list|drop|clear|continue]"},
 		{"/reset ", "usage: /reset confirm"},
 		{"/help me", "usage: /help [command]"},
 	}
@@ -778,138 +773,20 @@ func TestResetCommandRequiresLiteralConfirmation(t *testing.T) {
 	}
 }
 
-func TestQueueCommandLifecycle(t *testing.T) {
-	queue := []string{"first", "second\nline"}
-	continued := 0
-	ctx := &replCommandContext{
-		queueLines: func() []string {
-			return append([]string(nil), queue...)
-		},
-		// /queue drop intentionally removes the newest/last item, not the next
-		// item that would run from the front of the queue.
-		dropQueued: func() (string, bool) {
-			if len(queue) == 0 {
-				return "", false
-			}
-			last := len(queue) - 1
-			line := queue[last]
-			queue = queue[:last]
-			return line, true
-		},
-		clearQueue: func() int {
-			count := len(queue)
-			queue = nil
-			return count
-		},
-		continueQueue: func() error {
-			continued++
-			return nil
-		},
-	}
-
-	replies := dispatchDefaultCommandForTest(t, "/queue", ctx)
-	got := strings.Join(replies, "\n")
-	for _, want := range []string{"queue (2):", "1. first", "2. second ↵ line"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("/queue list missing %q in %q", want, got)
-		}
-	}
-
-	replies = dispatchDefaultCommandForTest(t, "/queue drop", ctx)
-	if len(queue) != 1 || queue[0] != "first" {
-		t.Fatalf("/queue drop removed wrong item; queue = %v", queue)
-	}
-	if got := strings.Join(replies, "\n"); !strings.Contains(got, "dropped newest queued input: second ↵ line") {
-		t.Fatalf("/queue drop reply = %q", got)
-	}
-
-	replies = dispatchDefaultCommandForTest(t, "/queue clear", ctx)
-	if len(queue) != 0 {
-		t.Fatalf("/queue clear left queue = %v", queue)
-	}
-	if got := strings.Join(replies, "\n"); got != "cleared 1 queued input(s)" {
-		t.Fatalf("/queue clear reply = %q", got)
-	}
-
-	replies = dispatchDefaultCommandForTest(t, "/queue list", ctx)
-	if got := strings.Join(replies, "\n"); got != "queue empty" {
-		t.Fatalf("empty /queue list reply = %q", got)
-	}
-	replies = dispatchDefaultCommandForTest(t, "/queue drop", ctx)
-	if got := strings.Join(replies, "\n"); got != "queue empty" {
-		t.Fatalf("empty /queue drop reply = %q", got)
-	}
-	replies = dispatchDefaultCommandForTest(t, "/queue clear", ctx)
-	if got := strings.Join(replies, "\n"); got != "queue already empty" {
-		t.Fatalf("empty /queue clear reply = %q", got)
-	}
-
-	replies = dispatchDefaultCommandForTest(t, "/queue continue", ctx)
-	if continued != 1 {
-		t.Fatalf("/queue continue calls = %d, want 1", continued)
-	}
-	if got := strings.Join(replies, "\n"); got != "queue continued" {
-		t.Fatalf("/queue continue reply = %q", got)
-	}
-
-	replies = dispatchDefaultCommandForTest(t, "/queue wat", ctx)
-	if got := strings.Join(replies, "\n"); !strings.HasPrefix(got, "usage: /queue") {
-		t.Fatalf("invalid /queue reply = %q", got)
-	}
-}
-
-func TestQueueCommandsGracefullyReportUnavailableCallbacks(t *testing.T) {
-	cases := map[string]string{
-		"/queue":          "queue unavailable",
-		"/queue drop":     "queue drop unavailable",
-		"/queue clear":    "queue clear unavailable",
-		"/queue continue": "queue continue unavailable",
-	}
-	for line, want := range cases {
-		replies := dispatchDefaultCommandForTest(t, line, &replCommandContext{})
-		if got := strings.Join(replies, "\n"); got != want {
-			t.Errorf("%s reply = %q, want %q", line, got, want)
-		}
-	}
-}
-
-func TestRetryCommandUsesCallbackAndReportsUnavailable(t *testing.T) {
-	retryCalls := 0
-	ctx := &replCommandContext{
-		retryTurn: func() error {
-			retryCalls++
-			return nil
-		},
-	}
-	replies := dispatchDefaultCommandForTest(t, "/retry", ctx)
-	if retryCalls != 1 {
-		t.Fatalf("/retry calls = %d, want 1", retryCalls)
-	}
-	if got := strings.Join(replies, "\n"); got != "retrying last turn" {
-		t.Fatalf("/retry reply = %q", got)
-	}
-
-	replies = dispatchDefaultCommandForTest(t, "/retry", &replCommandContext{})
-	if got := strings.Join(replies, "\n"); got != "retry unavailable" {
-		t.Fatalf("unavailable /retry reply = %q", got)
-	}
-	replies = dispatchDefaultCommandForTest(t, "/retry now", ctx)
-	if got := strings.Join(replies, "\n"); got != "usage: /retry" {
-		t.Fatalf("invalid /retry reply = %q", got)
-	}
-}
-
 func TestLifecycleCommandsAppearInHelp(t *testing.T) {
 	help := strings.Join(defaultReplCommands.helpLines(), "\n")
 	for _, want := range []string{
 		"/clear",
 		"clear the display (keep conversation history)",
-		"/queue",
 		"/reset",
-		"/retry",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q in %q", want, help)
+		}
+	}
+	for _, removed := range []string{"/queue", "/retry"} {
+		if strings.Contains(help, removed) {
+			t.Fatalf("help still exposes removed %s command: %q", removed, help)
 		}
 	}
 }
