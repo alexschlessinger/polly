@@ -24,8 +24,10 @@ func TestWriteAllowedWithinWritablePath(t *testing.T) {
 }
 
 func TestWriteAllowedOutsideWritablePaths(t *testing.T) {
-	cfg := Config{WritablePaths: []string{t.TempDir()}}
-	outside := filepath.Join(string(filepath.Separator), "nonexistent-root-for-write-policy", "f")
+	dir := t.TempDir()
+	cfg := Config{WritablePaths: []string{dir}}
+	// Anchor to the temp dir's volume so the path is absolute on windows too.
+	outside := filepath.Join(filepath.VolumeName(dir)+string(filepath.Separator), "nonexistent-root-for-write-policy", "f")
 	err := WriteAllowed(cfg, outside)
 	if err == nil || !strings.Contains(err.Error(), "writable paths") {
 		t.Fatalf("expected outside-writable denial, got %v", err)

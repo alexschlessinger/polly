@@ -107,6 +107,7 @@ func TestEditFileArgumentErrors(t *testing.T) {
 }
 
 func TestEditFilePreservesPermissions(t *testing.T) {
+	skipIfWindows(t) // POSIX permission bits don't round-trip on windows
 	path := writeTestFile(t, t.TempDir(), "f.txt", "alpha\n")
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatalf("chmod: %v", err)

@@ -97,7 +97,12 @@ func TestViewImageHonorsSandboxDenyPaths(t *testing.T) {
 }
 
 func TestViewImageSandboxReadPathExemption(t *testing.T) {
-	denied := t.TempDir()
+	// Canonicalize so the policy paths carry no non-symlink aliases (windows
+	// 8.3 short names), which the readPaths identity check rightly refuses.
+	denied, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp dir: %v", err)
+	}
 	allowed := filepath.Join(denied, "shared")
 	if err := os.Mkdir(allowed, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
