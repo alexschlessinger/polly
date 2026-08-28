@@ -16,6 +16,11 @@ type BashTool struct {
 	workDir    string
 	sandbox    sandbox.Sandbox
 	sandboxCfg *sandbox.Config
+	// siblingLoaded reports whether a named dedicated tool is visible to the
+	// model, so the schema can steer file work away from shell commands. It
+	// takes the registry lock: GetSchema must not run under it (see
+	// ToolRegistry.GetSchemas).
+	siblingLoaded func(name string) bool
 }
 
 func newBashTool(workDir string) *BashTool {
@@ -36,7 +41,7 @@ func NewUnsafeBashTool(workDir string) *BashTool { return newBashTool(workDir) }
 
 // WithSandbox returns a copy with sandboxing enabled.
 func (t *BashTool) WithSandbox(sb sandbox.Sandbox) *BashTool {
-	return &BashTool{workDir: t.workDir, sandbox: sb}
+	return &BashTool{workDir: t.workDir, sandbox: sb, siblingLoaded: t.siblingLoaded}
 }
 
 func (t *BashTool) withSandboxConfig(sb sandbox.Sandbox, cfg sandbox.Config) *BashTool {
@@ -61,6 +66,17 @@ func (t *BashTool) GetName() string   { return "bash" }
 func (t *BashTool) GetType() string   { return "native" }
 func (t *BashTool) GetSource() string { return "builtin" }
 
+// bashAlternatives names the shell commands each dedicated tool replaces.
+// Steering lives on bash — the tool the model is about to misuse — because
+// that is the description it attends to when reaching for cat or grep.
+var bashAlternatives = []struct{ name, replaces string }{
+	{"read_file", "cat/head/tail"},
+	{"search_files", "grep/rg"},
+	{"list_dir", "ls/find"},
+	{"write_file", "echo/tee redirection"},
+	{"edit_file", "sed/awk in-place edits"},
+}
+
 func (t *BashTool) GetSchema() *schema.ToolSchema {
 	// Mirror the shell-tool annotation so the model knows writes and network
 	// may be restricted; call out a read-only .git specifically, since a
@@ -73,6 +89,19 @@ func (t *BashTool) GetSchema() *schema.ToolSchema {
 			description += " [sandboxed: .git is read-only, git commit will fail]"
 		default:
 			description += " [sandboxed]"
+		}
+	}
+	if t.siblingLoaded != nil {
+		var prefer []string
+		for _, alt := range bashAlternatives {
+			if t.siblingLoaded(alt.name) {
+				prefer = append(prefer, alt.name+" instead of "+alt.replaces)
+			}
+		}
+		if len(prefer) > 0 {
+			description += ". IMPORTANT: for file work, use the dedicated tools: " +
+				strings.Join(prefer, ", ") +
+				". Reserve bash for what only a shell can do (pipelines, git, builds, running programs)"
 		}
 	}
 	return schema.Tool("bash", description,

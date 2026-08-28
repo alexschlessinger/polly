@@ -311,6 +311,7 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 
 	registry.nativeTools["bash"] = func() (Tool, error) {
 		bt := newBashTool("")
+		bt.siblingLoaded = registry.hasVisibleTool
 		if registry.sandboxFactory == nil {
 			if err := registry.requireProcessSandbox("bash"); err != nil {
 				return nil, err
@@ -407,6 +408,16 @@ func (r *ToolRegistry) registeredTool(name string) (Tool, bool) {
 	defer r.mu.RUnlock()
 	tool, ok := r.tools[name]
 	return tool, ok
+}
+
+// hasVisibleTool reports whether a tool is registered and allowed — i.e. the
+// model can see and call it. Bash consults this from GetSchema to steer file
+// work toward dedicated tools, so it must never be called with r.mu held.
+func (r *ToolRegistry) hasVisibleTool(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.tools[name]
+	return ok && r.isToolAllowedLocked(name)
 }
 
 // MarkAlwaysAllowed exempts a tool from active skill allowlist filtering.
@@ -525,15 +536,13 @@ func (r *ToolRegistry) All() []Tool {
 	return tools
 }
 
-// GetSchemas returns all tool schemas
+// GetSchemas returns all tool schemas. Schemas are built after the registry
+// lock is released: a tool's GetSchema may consult the registry (bash
+// cross-references the loaded file tools).
 func (r *ToolRegistry) GetSchemas() []*schema.ToolSchema {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := r.allowedToolNamesLocked()
-	schemas := make([]*schema.ToolSchema, 0, len(names))
-	for _, name := range names {
-		tool := r.tools[name]
+	tools := r.All()
+	schemas := make([]*schema.ToolSchema, 0, len(tools))
+	for _, tool := range tools {
 		schemas = append(schemas, tool.GetSchema())
 	}
 	return schemas

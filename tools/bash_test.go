@@ -66,6 +66,57 @@ func TestBashToolSchemaAnnotatesSandboxPosture(t *testing.T) {
 	}
 }
 
+func TestBashSchemaSteersTowardLoadedFileTools(t *testing.T) {
+	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	if _, err := registry.LoadToolAuto("bash"); err != nil {
+		t.Fatalf("load bash: %v", err)
+	}
+	bash, ok := registry.Get("bash")
+	if !ok {
+		t.Fatal("bash not registered")
+	}
+	if desc := bash.GetSchema().Description(); strings.Contains(desc, "instead of") {
+		t.Fatalf("description steers with no file tools loaded: %q", desc)
+	}
+
+	// Loading file tools after bash must still surface them: the schema is
+	// computed per call, not snapshotted at load time.
+	for _, name := range []string{"read_file", "search_files"} {
+		if _, err := registry.LoadToolAuto(name); err != nil {
+			t.Fatalf("load %s: %v", name, err)
+		}
+	}
+	desc := bash.GetSchema().Description()
+	for _, want := range []string{"read_file instead of cat/head/tail", "search_files instead of grep/rg"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q: %q", want, desc)
+		}
+	}
+	for _, absent := range []string{"write_file", "edit_file", "list_dir"} {
+		if strings.Contains(desc, absent) {
+			t.Fatalf("description mentions unloaded %s: %q", absent, desc)
+		}
+	}
+
+	// GetSchemas builds bash's schema through the registry; it must not
+	// deadlock on the registry lock and must carry the same steering.
+	found := false
+	for _, s := range registry.GetSchemas() {
+		if s.Title() == "bash" && strings.Contains(s.Description(), "read_file instead of") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("GetSchemas did not surface the steering bash description")
+	}
+
+	// Sandbox wrapping must preserve the cross-reference wiring.
+	wrapped := bash.(*BashTool).WithSandbox(&mockSandbox{})
+	if desc := wrapped.GetSchema().Description(); !strings.Contains(desc, "read_file instead of") {
+		t.Fatalf("WithSandbox dropped sibling steering: %q", desc)
+	}
+}
+
 func TestBashToolMetadata(t *testing.T) {
 	tool := newBashTool("")
 	if tool.GetName() != "bash" {
