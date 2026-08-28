@@ -645,6 +645,16 @@ type replModel struct {
 	// it finishes the entry is frozen into the final ✓/✗ line. Parallel calls
 	// finish out of order, so each is matched back to its line by call ID.
 	activeTools []activeTool
+	// toolWindow pins the transcript entries of the current turn's visible
+	// tool rows, oldest first. At most toolWindowSize rows stay visible;
+	// older rows fold into the turn's rollup line.
+	toolWindow []int
+	// toolRollupIndex is the transcript entry holding this turn's "… N tool
+	// calls" rollup, or -1 while every call is still visible.
+	toolRollupIndex int
+	// turnToolCalls counts every tool call started this turn, visible or
+	// folded — the total the rollup line reports.
+	turnToolCalls int
 
 	ed           lineEditor
 	busy         bool
@@ -768,6 +778,7 @@ func newReplModel() *replModel {
 		historyIdx:       -1,
 		state:            turnStateIdle,
 		followBottom:     true,
+		toolRollupIndex:  -1,
 	}
 	m.ed.goalCol = -1
 	return m
@@ -1302,6 +1313,164 @@ func (m *replModel) appendToolStartLine(id, label string) {
 		label:   label,
 		started: time.Now(),
 	})
+	m.turnToolCalls++
+	m.toolWindow = append(m.toolWindow, len(m.transcript)-1)
+	m.foldToolWindow()
+}
+
+// toolWindowSize is how many of the current turn's tool rows stay visible.
+// Older rows fold into a single rollup line stating the turn's running
+// total, so a long tool run cannot push the surrounding prose off-screen.
+const toolWindowSize = 3
+
+// toolRollupLine renders the stand-in for every folded tool row. total is
+// the whole turn's call count, visible rows included; the line only exists
+// once that count exceeds toolWindowSize.
+func toolRollupLine(total int) string {
+	return "  " + styled("…", "muted", "bold") + " " +
+		styled(fmt.Sprintf("%d tool calls", total), "muted", "")
+}
+
+// foldToolWindow enforces toolWindowSize over the current turn's tool rows.
+// The first fold converts the oldest row's slot into the rollup line; later
+// folds delete the oldest row outright. Rows fold in start order, and a
+// folded call survives only in the rollup's count.
+//
+// Folding pauses while any windowed call is still running, so a parallel
+// batch stays whole — every call in it shows its own outcome — and contracts
+// only once the batch has settled. The agent starts no new call while one is
+// in flight, so the window can outgrow the cap by at most the current batch
+// before folding resumes; it cannot accumulate across a turn.
+func (m *replModel) foldToolWindow() {
+	if m.toolWindowRunning() {
+		m.refreshToolRollup()
+		return
+	}
+	for len(m.toolWindow) > toolWindowSize {
+		idx := m.toolWindow[0]
+		m.toolWindow = m.toolWindow[1:]
+		if m.toolRollupIndex < 0 {
+			// The oldest row becomes the rollup in place. A row carrying tool
+			// output images is multi-line; it collapses to the single rollup
+			// line, and those images go with it.
+			m.anchorForRemovedLines(m.entryFlatStart(idx)+1, m.entryLineCount(idx)-1)
+			m.toolRollupIndex = idx
+			m.setTranscriptImages(idx, nil)
+			continue
+		}
+		m.anchorForRemovedLines(m.entryFlatStart(idx), m.entryLineCount(idx))
+		m.removeToolRow(idx)
+	}
+	m.refreshToolRollup()
+}
+
+// toolWindowRunning reports whether any visible tool row is still executing.
+// Membership is checked against the window rather than trusting activeTools
+// alone, so a stale pin left by an interrupted turn cannot stall folding for
+// the rest of the session. Caller must hold m.mu.
+func (m *replModel) toolWindowRunning() bool {
+	for _, at := range m.activeTools {
+		for _, idx := range m.toolWindow {
+			if at.index == idx {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// refreshToolRollup restates the rollup line with the turn's running total.
+// The count keeps climbing while folding is paused, so a bulging batch still
+// reports honestly. Caller must hold m.mu.
+func (m *replModel) refreshToolRollup() {
+	if m.toolRollupIndex < 0 || m.toolRollupIndex >= len(m.transcript) {
+		return
+	}
+	next := toolRollupLine(m.turnToolCalls)
+	if m.transcript[m.toolRollupIndex] != next {
+		m.transcript[m.toolRollupIndex] = next
+		m.invalidateFlat()
+	}
+}
+
+// entryLineCount reports how many flattened rows a transcript entry
+// occupies, mirroring flattenTranscript's treatment of the provisional
+// streaming entry. Caller must hold m.mu.
+func (m *replModel) entryLineCount(index int) int {
+	if index < 0 || index >= len(m.transcript) {
+		return 0
+	}
+	e := m.transcript[index]
+	if index == m.currentAssistant {
+		if e = strings.TrimRight(e, "\r\n"); e == "" {
+			return 0
+		}
+	}
+	return strings.Count(e, "\n") + 1
+}
+
+// entryFlatStart is a transcript entry's first row in flattened coordinates —
+// the space scrollAnchor is expressed in. Caller must hold m.mu.
+func (m *replModel) entryFlatStart(index int) int {
+	start := 0
+	for i := 0; i < index; i++ {
+		start += m.entryLineCount(i)
+	}
+	return start
+}
+
+// anchorForRemovedLines keeps a scrolled-away viewport visually still when
+// count rows disappear at flattened row `at`. Text above the anchor pulls it
+// up by as much as vanished; text below it never moves the anchor. While
+// following the bottom the render trims to the tail anyway, so there is
+// nothing to correct. Caller must hold m.mu.
+func (m *replModel) anchorForRemovedLines(at, count int) {
+	if m.followBottom || count <= 0 {
+		return
+	}
+	switch {
+	case at+count <= m.scrollAnchor:
+		m.scrollAnchor -= count
+	case at < m.scrollAnchor:
+		m.scrollAnchor = at
+	}
+	if m.scrollAnchor < 0 {
+		m.scrollAnchor = 0
+	}
+}
+
+// resetToolWindow drops the previous turn's window state. The rollup and its
+// visible rows stay in the transcript as scrollback; the next turn starts
+// counting from zero and folds into a rollup line of its own. Caller must
+// hold m.mu.
+func (m *replModel) resetToolWindow() {
+	m.toolWindow = nil
+	m.toolRollupIndex = -1
+	m.turnToolCalls = 0
+}
+
+// removeToolRow deletes a folded tool row and repoints every index-pinned
+// reference past it: deleteTranscriptEntry already shifts images and queue
+// echoes; the tool window, rollup slot, streaming block, and (defensively)
+// running-tool pins are fixed up here.
+func (m *replModel) removeToolRow(index int) {
+	m.deleteTranscriptEntry(index)
+	for i := range m.activeTools {
+		if m.activeTools[i].index > index {
+			m.activeTools[i].index--
+		}
+	}
+	for i := range m.toolWindow {
+		if m.toolWindow[i] > index {
+			m.toolWindow[i]--
+		}
+	}
+	if m.toolRollupIndex > index {
+		m.toolRollupIndex--
+	}
+	if m.currentAssistant > index {
+		m.currentAssistant--
+	}
 }
 
 // arrowPulse breathes the running-tool arrow between two brightnesses of one
@@ -1467,6 +1636,7 @@ func (m *replModel) clearDisplay() {
 	m.transcriptImages = make(map[int][]transcriptImage)
 	m.currentAssistant = -1
 	m.activeTools = nil
+	m.resetToolWindow()
 	for i := range m.queue {
 		m.queue[i].transcriptShown = false
 	}
@@ -1886,6 +2056,7 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	m.canceling = false
 	m.state = turnStateWaiting
 	m.runningTools = 0
+	m.resetToolWindow()
 	m.thinkingChars = 0
 	m.thinkingTail = nil
 	m.turnStarted = time.Now()
@@ -3054,6 +3225,9 @@ func (r *managedREPL) endTurn(err error) {
 	m.settleActiveTools(activeToolReason)
 	m.activeTools = nil
 	m.runningTools = 0
+	// Those rows are terminal now, so an interrupted batch contracts to the
+	// cap like any other.
+	m.foldToolWindow()
 	switch {
 	case err == nil:
 		m.finishAssistantBlock("")
@@ -3149,6 +3323,7 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.settleActiveTools("canceled")
 	m.activeTools = nil
 	m.runningTools = 0
+	m.foldToolWindow()
 	m.denyApprovalLocked()
 	m.state = turnStateIdle
 	m.lastOutcome = turnOutcomeCanceled
@@ -4350,15 +4525,19 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	// Freeze the final line over the running (breathing) one in place, so a tool
 	// is a single transcript line from start to finish. Falls back to appending
 	// if the start line wasn't tracked (shouldn't happen when display is on).
-	if idx, ok := m.takeActiveTool(call.ID); ok {
+	if idx, ok := m.takeActiveTool(call.ID); ok && idx >= 0 {
 		m.transcript[idx] = final
 		m.setTranscriptImages(idx, images)
 		m.invalidateFlat()
 	} else {
 		m.appendLine(final)
+		m.toolWindow = append(m.toolWindow, len(m.transcript)-1)
 		m.setTranscriptImages(len(m.transcript)-1, images)
 		m.invalidateFlat()
 	}
+	// This call settling may have released the last pin holding the window
+	// open, letting a bulged batch contract to the cap.
+	m.foldToolWindow()
 }
 
 func (t *gotuiTurnUI) AppendWarning(text string) {

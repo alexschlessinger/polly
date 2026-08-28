@@ -186,6 +186,16 @@ Slash commands inside the TUI:
 /exit  (/quit)               Leave the TUI
 ```
 
+Tool calls show as one line each, but only the three most recent stay on
+screen: older ones fold into a `… N tool calls` rollup that counts everything
+the turn ran. The window slides as the turn works, so a long tool run never
+pushes the model's prose off the screen, and it freezes as-is once the turn
+settles. Folding waits for calls that are still running, so a parallel batch
+stays whole — every call in it shows its own duration and outcome — and
+contracts once the batch is done. Folded rows are display-only: the model
+still receives every result, and the durable session history keeps the full
+exchange.
+
 Ctrl-C or Esc interrupts an in-flight turn; pressing Ctrl-C again (or at an
 idle prompt) quits. Ctrl-Z suspends Polly and returns to the shell; `fg` resumes
 the same TUI state. Input submitted while a turn is running appears immediately
