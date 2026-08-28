@@ -307,6 +307,23 @@ polly -t ./mytool.sh -t perplexity.json -p "search and process"
 ```
 
 
+### Built-in Tools
+
+Native tools are loaded by name with `-t`:
+
+```bash
+# Sandboxed shell execution
+polly -t bash -p "list the largest files in this directory"
+
+# Direct file access: paged reads, whole-file writes, exact string edits
+polly -t read_file -t write_file -t edit_file -p "fix the typo in README.md"
+
+# Discovery: directory listings and cross-file search, no shell required
+polly -t list_dir -t search_files -t read_file -p "where is retry handled?"
+```
+
+`read_file` pages a text file as numbered lines with literal search and raw byte windows, using the same bounded-read UX as `read_artifact`. `write_file` creates or replaces a file, creating missing parent directories. `edit_file` replaces an exact literal string that must be unique in the file (or pass `replace_all`). `list_dir` lists one directory (non-recursive). `search_files` reports matching lines as `path:line: text` — literal by default, RE2 with `regex`, filtered with an `include` glob — skipping `.git`, symlinks, binaries, and read-denied paths, with output bounded so one minified file can't flood context. All of them enforce the sandbox policy in-process: reads follow the read policy, and writes are confined to the policy's writable paths minus its write-denied islands (protected Git metadata included). `write_file` and `edit_file` refuse to load without sandboxing unless the registry explicitly opts out with `WithUnsafeNoSandbox`; the read-only tools load anywhere, so a session with no `bash` at all can still browse, search, and read.
+
 ### Tool Namespacing
 
 To avoid conflicts, tools are automatically namespaced:

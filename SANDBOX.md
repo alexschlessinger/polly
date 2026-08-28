@@ -70,6 +70,16 @@ the process runs as your user on a shared kernel. See
 | Stdio MCP servers | yes (the whole server process) | global `--nosandbox` only |
 | Remote MCP servers (HTTP/SSE) | no — the process runs elsewhere | n/a |
 | Skill helper / function tools | no — in-process, nothing to wrap | n/a |
+| Builtin file tools (`view_image`, `read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`) | policy-checked in-process | `--nosandbox` |
+
+The builtin file tools run in-process, so there is no child to wrap; instead
+they check every path against the base sandbox config before touching it —
+reads against the read policy (deny list minus `readPaths` exemptions), writes
+against the write policy (writable paths minus `denyWritePaths` islands and
+the credential deny list) — so they cannot see or change what a sandboxed
+command could not. `write_file` and `edit_file` refuse to load at all when
+sandboxing is unavailable unless the registry opts out with
+`WithUnsafeNoSandbox` (the CLI's `--nosandbox`).
 
 The effective config for a tool is the caller's **base config** merged with
 global overlays and the tool's own `sandbox` object. Library callers commonly

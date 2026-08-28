@@ -48,6 +48,12 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 		return summarizeBashCommand(args)
 	case "read":
 		return summarizeReadArgs(args)
+	case "read_file":
+		return summarizeReadFileArgs(args)
+	case "write_file", "edit_file", "list_dir":
+		return truncate(args.String("path"), 120)
+	case "search_files":
+		return summarizeSearchFilesArgs(args)
 	case "write":
 		return truncate(args.String("file_path"), 120)
 	case "edit":
@@ -170,6 +176,31 @@ func summarizeReadArgs(args tools.Args) string {
 		} else {
 			summary += fmt.Sprintf(" (from line %d)", offset)
 		}
+	}
+	return summary
+}
+
+func summarizeReadFileArgs(args tools.Args) string {
+	summary := truncate(args.String("path"), 120)
+	if query := args.String("query"); query != "" {
+		summary += fmt.Sprintf(" (query %q)", truncate(query, 40))
+	} else if offset := args.Int("offset", 0); offset > 0 {
+		if limit := args.Int("limit", 0); limit > 0 {
+			summary += fmt.Sprintf(" (lines %d-%d)", offset, offset+limit-1)
+		} else {
+			summary += fmt.Sprintf(" (from line %d)", offset)
+		}
+	}
+	return summary
+}
+
+func summarizeSearchFilesArgs(args tools.Args) string {
+	summary := truncate(args.String("pattern"), 60)
+	if path := args.String("path"); path != "" {
+		summary += " in " + truncate(path, 60)
+	}
+	if include := args.String("include"); include != "" {
+		summary += " (" + truncate(include, 30) + ")"
 	}
 	return summary
 }
