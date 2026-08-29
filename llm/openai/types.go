@@ -270,6 +270,12 @@ type ResponseInputItem struct {
 	// produced nothing — a pointer so the empty string still serializes
 	// while every other item type omits the key.
 	Output *string `json:"output,omitempty"`
+
+	// reasoning
+	EncryptedContent string `json:"encrypted_content,omitempty"`
+	// Summary is required on a replayed reasoning item even when the model
+	// produced no summary text — a pointer, for the same reason as Output.
+	Summary *[]ResponseReasoningSummary `json:"summary,omitempty"`
 }
 
 // ResponseInputContent is one part of a user message: input_text or
@@ -332,7 +338,18 @@ type ResponsesRequest struct {
 	Tools           []ResponsesTool     `json:"tools,omitempty"`
 	Stream          bool                `json:"stream,omitempty"`
 	PromptCacheKey  string              `json:"prompt_cache_key,omitempty"`
+	Include         []string            `json:"include,omitempty"`
+	// Store opts out of server-side response retention. Polly is a stateless
+	// client — it replays the whole conversation on every request rather than
+	// chaining previous_response_id — and stateless mode is what makes the API
+	// return encrypted_content on reasoning items. A pointer so an explicit
+	// false serializes instead of being dropped by omitempty.
+	Store *bool `json:"store,omitempty"`
 }
+
+// IncludeReasoningEncryptedContent asks the Responses API for the encrypted
+// reasoning state that a stateless client replays on its next request.
+const IncludeReasoningEncryptedContent = "reasoning.encrypted_content"
 
 // ResponseStatus is the terminal (or in-progress) state of a Response.
 type ResponseStatus string
@@ -395,6 +412,10 @@ type ResponseOutputItem struct {
 	Status  string                     `json:"status"`
 	Content []ResponseItemContent      `json:"content"`
 	Summary []ResponseReasoningSummary `json:"summary"`
+
+	// reasoning. EncryptedContent is the opaque reasoning state; it is the
+	// part that must be replayed, since Summary is only a human-readable gloss.
+	EncryptedContent string `json:"encrypted_content"`
 
 	// function_call
 	CallID    string     `json:"call_id"`

@@ -9,7 +9,7 @@ import (
 )
 
 func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
-	adapter := NewOpenAIResponsesAdapter()
+	adapter := NewOpenAIResponsesAdapter("gpt-5")
 	state := streaming.NewStreamState()
 
 	events := []*openai.ResponseStreamEvent{
@@ -77,7 +77,7 @@ func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
 }
 
 func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
-	adapter := NewOpenAIResponsesAdapter()
+	adapter := NewOpenAIResponsesAdapter("gpt-5")
 	state := streaming.NewStreamState()
 
 	events := []*openai.ResponseStreamEvent{
@@ -195,7 +195,7 @@ func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			adapter := NewOpenAIResponsesAdapter()
+			adapter := NewOpenAIResponsesAdapter("gpt-5")
 			state := streaming.NewStreamState()
 
 			if err := adapter.ProcessChunk(tt.event, state); err != nil {
@@ -220,5 +220,84 @@ func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 				t.Fatalf("error message = %q, want %q", got, tt.wantErrorMessage)
 			}
 		})
+	}
+}
+
+// TestOpenAIResponsesAdapterCapturesReasoningItems covers the capture half of
+// the reasoning replay: output_item.added arrives before the model has produced
+// any encrypted state, so the later .done event for the same id must win.
+func TestOpenAIResponsesAdapterCapturesReasoningItems(t *testing.T) {
+	adapter := NewOpenAIResponsesAdapter("gpt-5")
+	state := streaming.NewStreamState()
+
+	events := []*openai.ResponseStreamEvent{
+		{
+			Type:        "response.output_item.added",
+			OutputIndex: 0,
+			Item:        &openai.ResponseOutputItem{Type: "reasoning", ID: "rs_1"},
+		},
+		{
+			Type:        "response.output_item.done",
+			OutputIndex: 0,
+			Item: &openai.ResponseOutputItem{
+				Type:             "reasoning",
+				ID:               "rs_1",
+				EncryptedContent: "gAAAAA-payload",
+				Summary: []openai.ResponseReasoningSummary{
+					{Type: "summary_text", Text: "checking the weather"},
+				},
+			},
+		},
+	}
+	for _, event := range events {
+		if err := adapter.ProcessChunk(event, state); err != nil {
+			t.Fatalf("ProcessChunk(%s): %v", event.Type, err)
+		}
+	}
+
+	msg := &messages.ChatMessage{Role: messages.MessageRoleAssistant}
+	adapter.EnrichFinalMessage(msg, state)
+
+	items, ok := msg.Metadata[ResponsesReasoningItemsKey].([]map[string]any)
+	if !ok {
+		t.Fatalf("reasoning items metadata = %#v, want []map[string]any", msg.Metadata[ResponsesReasoningItemsKey])
+	}
+	if len(items) != 1 {
+		t.Fatalf("item count = %d, want 1 (added and done share an id)", len(items))
+	}
+	if got := items[0]["encrypted_content"]; got != "gAAAAA-payload" {
+		t.Fatalf("encrypted_content = %v, want the payload from the .done event", got)
+	}
+	if got := msg.Metadata[ResponsesReasoningModelKey]; got != "gpt-5" {
+		t.Fatalf("reasoning model = %v, want gpt-5", got)
+	}
+}
+
+// TestOpenAIResponsesAdapterHarvestsReasoningFromTerminalResponse covers models
+// that only attach encrypted_content to the final response object.
+func TestOpenAIResponsesAdapterHarvestsReasoningFromTerminalResponse(t *testing.T) {
+	adapter := NewOpenAIResponsesAdapter("gpt-5")
+	state := streaming.NewStreamState()
+
+	event := &openai.ResponseStreamEvent{
+		Type: "response.completed",
+		Response: &openai.Response{
+			Status: openai.ResponseStatusCompleted,
+			Output: []openai.ResponseOutputItem{
+				{Type: "reasoning", ID: "rs_1", EncryptedContent: "gAAAAA-payload"},
+				{Type: "message", ID: "msg_1"},
+			},
+		},
+	}
+	if err := adapter.ProcessChunk(event, state); err != nil {
+		t.Fatalf("ProcessChunk: %v", err)
+	}
+
+	msg := &messages.ChatMessage{Role: messages.MessageRoleAssistant}
+	adapter.EnrichFinalMessage(msg, state)
+
+	items, _ := msg.Metadata[ResponsesReasoningItemsKey].([]map[string]any)
+	if len(items) != 1 || items[0]["encrypted_content"] != "gAAAAA-payload" {
+		t.Fatalf("reasoning items = %#v, want one entry carrying the encrypted payload", items)
 	}
 }

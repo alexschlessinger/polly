@@ -26,7 +26,7 @@ func TestStreamingAdaptersParsePromptCacheUsage(t *testing.T) {
 
 	t.Run("OpenAI Responses", func(t *testing.T) {
 		state := streaming.NewStreamState()
-		adapter := NewOpenAIResponsesAdapter()
+		adapter := NewOpenAIResponsesAdapter("gpt-5")
 		err := adapter.ProcessChunk(&openai.ResponseStreamEvent{
 			Type: "response.completed",
 			Response: &openai.Response{Status: openai.ResponseStatusCompleted, Usage: &openai.ResponseUsage{

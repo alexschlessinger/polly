@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -31,8 +32,9 @@ func runToolCall(m *replModel, id, label string) {
 func toolRows(m *replModel) []string {
 	var rows []string
 	for _, e := range m.transcript {
+		// "tool call" matches the rollup in both its singular and plural forms.
 		if strings.Contains(e, "→") || strings.Contains(e, "✓") ||
-			strings.Contains(e, "✗") || strings.Contains(e, "tool calls") {
+			strings.Contains(e, "✗") || strings.Contains(e, "tool call") {
 			rows = append(rows, e)
 		}
 	}
@@ -243,6 +245,80 @@ func TestWindowContractsBetweenBatches(t *testing.T) {
 	}
 	if !strings.Contains(m.transcript[m.toolRollupIndex], "15 tool calls") {
 		t.Fatalf("rollup should total the whole turn: %q", m.transcript[m.toolRollupIndex])
+	}
+}
+
+// A completed turn keeps one line of tool activity: the live window exists to
+// show work in flight, and once the turn is done the rollup says all of it.
+func TestCompletedTurnCollapsesToASingleRollup(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	for i := 0; i < 7; i++ {
+		call := messages.ChatMessageToolCall{ID: fmt.Sprintf("c%d", i), Name: "bash"}
+		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+		tui.AppendToolEnd(call, "ok", time.Second, nil)
+	}
+	tui.AppendAssistantText("Done.")
+	// Mid-turn the window is still showing recent work.
+	if got := len(toolRows(m)); got != toolWindowSize+1 {
+		t.Fatalf("mid-turn rows = %d, want %d", got, toolWindowSize+1)
+	}
+
+	r.endTurn(nil)
+	rows := toolRows(m)
+	if len(rows) != 1 {
+		t.Fatalf("a completed turn should keep one tool line, got %d: %#v", len(rows), m.transcript)
+	}
+	if !strings.Contains(rows[0], "7 tool calls") {
+		t.Fatalf("rollup = %q", rows[0])
+	}
+	// The prose either side of the activity is untouched.
+	if !strings.Contains(strings.Join(m.transcript, "\n"), "Done.") {
+		t.Fatalf("collapse ate the answer: %#v", m.transcript)
+	}
+}
+
+// A single call collapses too, and reads as one rather than "1 tool calls".
+func TestSingleCallTurnCollapsesWithSingularWording(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("run the tests")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	call := messages.ChatMessageToolCall{ID: "only", Name: "bash"}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+	tui.AppendToolEnd(call, "ok", time.Second, nil)
+	r.endTurn(nil)
+
+	rows := toolRows(m)
+	if len(rows) != 1 || !strings.Contains(rows[0], "1 tool call") {
+		t.Fatalf("want a singular one-line rollup, got %#v", rows)
+	}
+	if strings.Contains(rows[0], "1 tool calls") {
+		t.Fatalf("plural wording for a single call: %q", rows[0])
+	}
+}
+
+// An interrupted turn is the exception: its rows carry the markers saying what
+// was in flight when it stopped, so they survive instead of becoming a count.
+func TestInterruptedTurnKeepsItsRows(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	m.appendToolStartLine("slow", "bash sleep 30")
+
+	r.endTurn(errors.New("provider unavailable"))
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "failed bash sleep 30") {
+		t.Fatalf("interrupted row should survive with its marker: %q", joined)
+	}
+	if strings.Contains(joined, "tool call") {
+		t.Fatalf("interrupted turn should not collapse to a count: %q", joined)
 	}
 }
 

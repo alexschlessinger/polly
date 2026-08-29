@@ -61,7 +61,7 @@ func newOpenRouterClient(apiKey, baseURL string) *OpenAIClient {
 func (o OpenAIClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	var adapter streaming.ProviderAdapter = adapters.NewOpenAIAdapter()
 	if o.apiMode == openAIAPIModeResponses {
-		adapter = adapters.NewOpenAIResponsesAdapter()
+		adapter = adapters.NewOpenAIResponsesAdapter(req.Model)
 	}
 
 	return runStream(ctx, processor, adapter, func(streamCore *streaming.StreamingCore) {
@@ -264,6 +264,7 @@ func (o OpenAIClient) emitResponseOutput(resp *openai.Response, streamCore *stre
 				}
 			}
 		case "reasoning":
+			adapters.AppendResponsesReasoningItem(streamCore.GetState(), &item)
 			if len(item.Summary) > 0 {
 				for _, summary := range item.Summary {
 					if summary.Text != "" {
@@ -318,13 +319,20 @@ func buildChatCompletionRequestParams(req *CompletionRequest) *openai.ChatComple
 }
 
 func buildResponsesRequestParams(req *CompletionRequest) *openai.ResponsesRequest {
-	inputItems, instructions := messagesToResponsesInput(req.Messages)
+	inputItems, instructions := messagesToResponsesInput(req.Messages, req.Model)
 
+	// Reasoning models emit reasoning items whether or not an effort was
+	// requested, so ask for the encrypted state unconditionally. Responses mode
+	// only ever talks to api.openai.com (any custom base URL falls back to chat
+	// completions), so there is no compatible-server risk here.
+	stateless := false
 	params := &openai.ResponsesRequest{
 		Input:          inputItems,
 		Model:          req.Model,
 		Instructions:   instructions,
 		PromptCacheKey: req.PromptCacheKey,
+		Include:        []string{openai.IncludeReasoningEncryptedContent},
+		Store:          &stateless,
 	}
 	if req.Temperature != nil {
 		temp := float64(*req.Temperature)
@@ -481,7 +489,7 @@ func messageToChatCompletionParam(msg messages.ChatMessage) openai.ChatMessage {
 	}
 }
 
-func messagesToResponsesInput(msgs []messages.ChatMessage) ([]openai.ResponseInputItem, string) {
+func messagesToResponsesInput(msgs []messages.ChatMessage, model string) ([]openai.ResponseInputItem, string) {
 	items := make([]openai.ResponseInputItem, 0, len(msgs))
 	systemParts := make([]string, 0, len(msgs))
 	replayedToolCallIDs := make(map[string]struct{})
@@ -493,13 +501,13 @@ func messagesToResponsesInput(msgs []messages.ChatMessage) ([]openai.ResponseInp
 			}
 			continue
 		}
-		items = append(items, messageToResponsesInputItems(msg, messageIndex, replayedToolCallIDs)...)
+		items = append(items, messageToResponsesInputItems(msg, model, messageIndex, replayedToolCallIDs)...)
 	}
 
 	return items, strings.Join(systemParts, "\n\n")
 }
 
-func messageToResponsesInputItems(msg messages.ChatMessage, messageIndex int, replayedToolCallIDs map[string]struct{}) []openai.ResponseInputItem {
+func messageToResponsesInputItems(msg messages.ChatMessage, model string, messageIndex int, replayedToolCallIDs map[string]struct{}) []openai.ResponseInputItem {
 	switch msg.Role {
 	case messages.MessageRoleUser:
 		content := responseInputContentFromMessage(msg)
@@ -510,7 +518,12 @@ func messageToResponsesInputItems(msg messages.ChatMessage, messageIndex int, re
 			{Role: "user", Content: content},
 		}
 	case messages.MessageRoleAssistant:
-		items := make([]openai.ResponseInputItem, 0, len(msg.ToolCalls)+1)
+		// Reasoning leads the turn: the API wants every item between the last
+		// user message and the function call output passed back untouched, in
+		// the order the model emitted them.
+		replayedReasoning := responsesReasoningReplayItems(msg, model)
+		items := make([]openai.ResponseInputItem, 0, len(replayedReasoning)+len(msg.ToolCalls)+1)
+		items = append(items, replayedReasoning...)
 		if content := responseOutputContentFromMessage(msg); len(content) > 0 {
 			items = append(items, openai.ResponseInputItem{
 				Type:    "message",
@@ -843,6 +856,84 @@ func responseReplayToolCallID(id string, messageIndex, toolIndex int) string {
 
 func responseReplayMessageID(messageIndex int) string {
 	return fmt.Sprintf("msg_%d", messageIndex)
+}
+
+// responsesReasoningReplayItems rebuilds the reasoning items captured from a
+// prior assistant turn. Encrypted reasoning is bound to the model that produced
+// it — replaying it after a model switch fails to decrypt — so the items are
+// dropped when the model no longer matches.
+func responsesReasoningReplayItems(msg messages.ChatMessage, model string) []openai.ResponseInputItem {
+	if msg.Metadata == nil {
+		return nil
+	}
+	if recorded, _ := msg.Metadata[adapters.ResponsesReasoningModelKey].(string); recorded != model {
+		return nil
+	}
+	// In-process the adapter stores []map[string]any; after a JSON session
+	// reload the value comes back as []any.
+	var entries []map[string]any
+	switch v := msg.Metadata[adapters.ResponsesReasoningItemsKey].(type) {
+	case []map[string]any:
+		entries = v
+	case []any:
+		for _, entry := range v {
+			if m, ok := entry.(map[string]any); ok {
+				entries = append(entries, m)
+			}
+		}
+	}
+
+	items := make([]openai.ResponseInputItem, 0, len(entries))
+	for _, entry := range entries {
+		id, _ := entry["id"].(string)
+		encrypted, _ := entry["encrypted_content"].(string)
+		// Without the encrypted state the item carries no reasoning at all, and
+		// a bare id points at a response that was never stored server-side.
+		if id == "" || encrypted == "" {
+			continue
+		}
+		summary := responsesReasoningSummary(entry["summary"])
+		items = append(items, openai.ResponseInputItem{
+			Type:             "reasoning",
+			ID:               id,
+			Summary:          &summary,
+			EncryptedContent: encrypted,
+		})
+	}
+	return items
+}
+
+// responsesReasoningSummary rebuilds the summary parts of a reasoning item.
+// The result is never nil: the API requires the key on a reasoning item even
+// when the model produced no summary text.
+func responsesReasoningSummary(raw any) []openai.ResponseReasoningSummary {
+	var parts []any
+	switch v := raw.(type) {
+	case []any:
+		parts = v
+	case []map[string]any:
+		for _, part := range v {
+			parts = append(parts, part)
+		}
+	}
+
+	summary := make([]openai.ResponseReasoningSummary, 0, len(parts))
+	for _, part := range parts {
+		m, ok := part.(map[string]any)
+		if !ok {
+			continue
+		}
+		text, _ := m["text"].(string)
+		if text == "" {
+			continue
+		}
+		partType, _ := m["type"].(string)
+		if partType == "" {
+			partType = "summary_text"
+		}
+		summary = append(summary, openai.ResponseReasoningSummary{Type: partType, Text: text})
+	}
+	return summary
 }
 
 func responseToolCallID(callID, itemID string) string {

@@ -11,6 +11,20 @@ import (
 
 const responsesErrorMetadataKey = "openai_responses_error"
 
+// responsesReasoningItemsStateKey accumulates reasoning items on the stream
+// state. The streaming adapter and the non-streaming response walk both write
+// here so EnrichFinalMessage has a single place to read from.
+const responsesReasoningItemsStateKey = "openai_responses_reasoning_items"
+
+// ResponsesReasoningItemsKey and ResponsesReasoningModelKey are where a
+// completed assistant message carries the reasoning items to replay on the next
+// request, and the model that produced them. Encrypted reasoning is decryptable
+// only by its own model, so the replay is dropped after a model switch.
+const (
+	ResponsesReasoningItemsKey = "openai_reasoning_items"
+	ResponsesReasoningModelKey = "openai_reasoning_model"
+)
+
 // OpenAIAdapter handles Chat Completions streaming patterns.
 // Chat Completions sends tool calls incrementally with index-based updates.
 type OpenAIAdapter struct{}
@@ -77,11 +91,15 @@ type OpenAIResponsesAdapter struct {
 	// OutputIndex is shared across reasoning/text/function_call items, so it
 	// can be sparse — map it to a dense tool-call index.
 	toolCallIndexByOutput map[int]int
+	// model stamps the reasoning items so a later turn can tell whether they
+	// are still replayable.
+	model string
 }
 
-func NewOpenAIResponsesAdapter() *OpenAIResponsesAdapter {
+func NewOpenAIResponsesAdapter(model string) *OpenAIResponsesAdapter {
 	return &OpenAIResponsesAdapter{
 		toolCallIndexByOutput: make(map[int]int),
+		model:                 model,
 	}
 }
 
@@ -139,7 +157,14 @@ func (a *OpenAIResponsesAdapter) handleFunctionCallDone(event *openai.ResponseSt
 }
 
 func (a *OpenAIResponsesAdapter) handleOutputItem(item *openai.ResponseOutputItem, index int, state streaming.StreamStateInterface) {
-	if item == nil || item.Type != "function_call" {
+	if item == nil {
+		return
+	}
+	if item.Type == "reasoning" {
+		AppendResponsesReasoningItem(state, item)
+		return
+	}
+	if item.Type != "function_call" {
 		return
 	}
 	a.updateToolCallAtOutputIndex(index, state, func(toolCall *messages.ChatMessageToolCall) {
@@ -176,11 +201,54 @@ func (a *OpenAIResponsesAdapter) applyResponse(resp *openai.Response, state stre
 			state.SetPromptCacheUsage(read, write)
 		}
 	}
+	// The terminal event carries the finished output items, so harvest
+	// reasoning again here: whether encrypted_content rides on
+	// output_item.done or only on the final response varies by model.
+	for i := range resp.Output {
+		if resp.Output[i].Type == "reasoning" {
+			AppendResponsesReasoningItem(state, &resp.Output[i])
+		}
+	}
 	incompleteReason := ""
 	if resp.IncompleteDetails != nil {
 		incompleteReason = resp.IncompleteDetails.Reason
 	}
 	state.SetStopReason(MapResponsesStopReason(resp.Status, incompleteReason, len(state.GetToolCalls()) > 0))
+}
+
+// AppendResponsesReasoningItem records a reasoning item so the next request can
+// replay it. The API treats encrypted_content as the reasoning state itself, so
+// the item is kept verbatim rather than reduced to its summary text. Items
+// arrive more than once — output_item.added, then .done, then the terminal
+// response — so a repeated id replaces the earlier entry.
+func AppendResponsesReasoningItem(state streaming.StreamStateInterface, item *openai.ResponseOutputItem) {
+	if item == nil || item.ID == "" {
+		return
+	}
+	summary := make([]any, 0, len(item.Summary))
+	for _, part := range item.Summary {
+		summary = append(summary, map[string]any{"type": part.Type, "text": part.Text})
+	}
+	entry := map[string]any{
+		"id":                item.ID,
+		"summary":           summary,
+		"encrypted_content": item.EncryptedContent,
+	}
+
+	existing, _ := state.GetMetadata(responsesReasoningItemsStateKey)
+	items, _ := existing.([]map[string]any)
+	for i, prior := range items {
+		if prior["id"] == item.ID {
+			// Only overwrite once the encrypted state has arrived; the early
+			// output_item.added carries an empty payload.
+			if item.EncryptedContent != "" {
+				items[i] = entry
+				state.SetMetadata(responsesReasoningItemsStateKey, items)
+			}
+			return
+		}
+	}
+	state.SetMetadata(responsesReasoningItemsStateKey, append(items, entry))
 }
 
 func applyOpenAIPromptCacheUsage(usage *openai.ChatUsage, state streaming.StreamStateInterface) {
@@ -190,6 +258,14 @@ func applyOpenAIPromptCacheUsage(usage *openai.ChatUsage, state streaming.Stream
 }
 
 func (a *OpenAIResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
+	if items, ok := state.GetMetadata(responsesReasoningItemsStateKey); ok {
+		if msg.Metadata == nil {
+			msg.Metadata = make(map[string]any)
+		}
+		msg.Metadata[ResponsesReasoningItemsKey] = items
+		msg.Metadata[ResponsesReasoningModelKey] = a.model
+	}
+
 	errValue, ok := state.GetMetadata(responsesErrorMetadataKey)
 	if !ok {
 		return

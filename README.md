@@ -187,15 +187,18 @@ Slash commands inside the TUI:
 /exit  (/quit)               Leave the TUI
 ```
 
-Tool calls show as one line each, but only the three most recent stay on
-screen: older ones fold into a `… N tool calls` rollup that counts everything
-the turn ran. The window slides as the turn works, so a long tool run never
-pushes the model's prose off the screen, and it freezes as-is once the turn
-settles. A call that is still running always keeps its row, so a parallel
-batch opens at full height and then drains a row at a time as its calls land,
-rather than standing tall and collapsing at the end. Folded rows are
-display-only: the model still receives every result, and the durable session
-history keeps the full exchange.
+While a turn runs, tool calls show as one line each, but only the three most
+recent stay on screen: older ones fold into a `… N tool calls` rollup that
+counts everything the turn ran. The window slides as work proceeds, so a long
+tool run never pushes the model's prose off the screen. A call that is still
+running always keeps its row, so a parallel batch opens at full height and then
+drains a row at a time as its calls land, rather than standing tall and
+collapsing at the end. When the turn completes the remaining rows fold in too,
+leaving one line of tool activity for the whole turn — except on an interrupted
+turn, which keeps its rows because their `canceled` and `failed` markers say
+what was in flight when it stopped. Folded rows are display-only: the model
+still receives every result, and the durable session history keeps the full
+exchange.
 
 Reasoning (with `--thinking` enabled) streams live into a block of the three
 most recent lines, wrapped and set in muted italics, with the oldest scrolling

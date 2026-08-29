@@ -1323,8 +1323,12 @@ const toolWindowSize = 3
 // the whole turn's call count, visible rows included; the line only exists
 // once that count exceeds toolWindowSize.
 func toolRollupLine(total int) string {
+	word := "tool calls"
+	if total == 1 {
+		word = "tool call"
+	}
 	return "  " + styled("…", "muted", "bold") + " " +
-		styled(fmt.Sprintf("%d tool calls", total), "muted", "")
+		styled(fmt.Sprintf("%d %s", total, word), "muted", "")
 }
 
 // foldToolWindow enforces toolWindowSize over the current turn's tool rows.
@@ -1341,7 +1345,20 @@ func toolRollupLine(total int) string {
 // row the rollup can briefly sit below it; that resolves when the call
 // settles and its row folds in turn.
 func (m *replModel) foldToolWindow() {
-	for len(m.toolWindow) > toolWindowSize {
+	m.foldToolWindowTo(toolWindowSize)
+}
+
+// collapseToolWindow folds every remaining row into the rollup, leaving a
+// settled turn one line of tool activity however much of it there was. Called
+// at turn end, where the rows have stopped changing and the live window has
+// served its purpose. Caller must hold m.mu.
+func (m *replModel) collapseToolWindow() {
+	m.foldToolWindowTo(0)
+}
+
+// foldToolWindowTo folds rows until at most limit remain visible.
+func (m *replModel) foldToolWindowTo(limit int) {
+	for len(m.toolWindow) > limit {
 		pos, ok := m.oldestSettledToolRow()
 		if !ok {
 			// Every visible row is still executing. Nothing may fold yet, so
@@ -3451,9 +3468,16 @@ func (r *managedREPL) endTurn(err error) {
 	m.settleActiveTools(activeToolReason)
 	m.activeTools = nil
 	m.runningTools = 0
-	// Those rows are terminal now, so an interrupted batch contracts to the
-	// cap like any other.
-	m.foldToolWindow()
+	if err == nil {
+		// A turn that completed carries one line of tool activity: the rows
+		// have stopped changing and the live window has served its purpose.
+		m.collapseToolWindow()
+	} else {
+		// An interrupted turn keeps its rows. They carry the "canceled" and
+		// "failed" markers that say what was in flight when it stopped, which
+		// a bare count would throw away exactly when it is worth reading.
+		m.foldToolWindow()
+	}
 	switch {
 	case err == nil:
 		m.finishAssistantBlock("")
@@ -3550,6 +3574,7 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.settleActiveTools("canceled")
 	m.activeTools = nil
 	m.runningTools = 0
+	// Canceled, so the interrupted rows stay visible; see endTurn.
 	m.foldToolWindow()
 	m.denyApprovalLocked()
 	m.state = turnStateIdle

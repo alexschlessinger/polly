@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
@@ -679,7 +681,7 @@ func TestResponsesReplayEmptyToolOutput(t *testing.T) {
 		},
 		{Role: messages.MessageRoleTool, ToolCallID: "call_1", Content: ""},
 	}
-	items, _ := messagesToResponsesInput(msgs)
+	items, _ := messagesToResponsesInput(msgs, "gpt-5")
 	if len(items) != 3 {
 		t.Fatalf("item count = %d, want 3", len(items))
 	}
@@ -695,5 +697,146 @@ func TestResponsesReplayEmptyToolOutput(t *testing.T) {
 	}
 	if !strings.Contains(string(wire), `"output":""`) {
 		t.Fatalf("serialized item %s must carry an explicit empty output", wire)
+	}
+}
+
+// reasoningMessage is an assistant turn carrying one captured reasoning item,
+// in the shape the adapter leaves behind in-process.
+func reasoningMessage(model string) messages.ChatMessage {
+	return messages.ChatMessage{
+		Role: messages.MessageRoleAssistant,
+		ToolCalls: []messages.ChatMessageToolCall{
+			{ID: "call_1", Name: "bash", Arguments: `{"cmd":"ls"}`},
+		},
+		Metadata: map[string]any{
+			adapters.ResponsesReasoningModelKey: model,
+			adapters.ResponsesReasoningItemsKey: []map[string]any{
+				{
+					"id":                "rs_1",
+					"encrypted_content": "gAAAAA-payload",
+					"summary":           []any{map[string]any{"type": "summary_text", "text": "listing files"}},
+				},
+			},
+		},
+	}
+}
+
+// TestResponsesReplaysReasoningItems checks that captured reasoning is replayed
+// ahead of the function call it produced. OpenAI asks for every item between
+// the last user message and the function call output to come back untouched.
+func TestResponsesReplaysReasoningItems(t *testing.T) {
+	msgs := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "list the files"},
+		reasoningMessage("gpt-5"),
+		{Role: messages.MessageRoleTool, ToolCallID: "call_1", Content: "README.md"},
+	}
+	items, _ := messagesToResponsesInput(msgs, "gpt-5")
+	if len(items) != 4 {
+		t.Fatalf("item count = %d, want 4 (user, reasoning, function_call, output)", len(items))
+	}
+	if items[1].Type != "reasoning" {
+		t.Fatalf("items[1].Type = %q, want reasoning to lead the assistant turn", items[1].Type)
+	}
+	if items[2].Type != "function_call" {
+		t.Fatalf("items[2].Type = %q, want the function call to follow its reasoning", items[2].Type)
+	}
+	if items[1].ID != "rs_1" || items[1].EncryptedContent != "gAAAAA-payload" {
+		t.Fatalf("reasoning item = %#v, want the captured id and encrypted state", items[1])
+	}
+	if items[1].Summary == nil || len(*items[1].Summary) != 1 || (*items[1].Summary)[0].Text != "listing files" {
+		t.Fatalf("reasoning summary = %#v, want the captured summary part", items[1].Summary)
+	}
+}
+
+// TestResponsesReasoningReplaySerializesSummary is a regression test: a
+// reasoning item needs an explicit "summary" key even when the model produced
+// no summary text, so the field is a pointer rather than an omitempty slice.
+func TestResponsesReasoningReplaySerializesSummary(t *testing.T) {
+	msg := reasoningMessage("gpt-5")
+	msg.Metadata[adapters.ResponsesReasoningItemsKey].([]map[string]any)[0]["summary"] = []any{}
+
+	items := responsesReasoningReplayItems(msg, "gpt-5")
+	if len(items) != 1 {
+		t.Fatalf("item count = %d, want 1", len(items))
+	}
+	wire, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"summary":[]`) {
+		t.Fatalf("serialized item %s must carry an explicit empty summary", wire)
+	}
+}
+
+// TestResponsesReasoningReplayDropsOnModelSwitch guards the failure mode where
+// encrypted reasoning is handed to a model that cannot decrypt it, which the
+// API rejects outright.
+func TestResponsesReasoningReplayDropsOnModelSwitch(t *testing.T) {
+	msg := reasoningMessage("gpt-5")
+	if items := responsesReasoningReplayItems(msg, "gpt-5.1"); len(items) != 0 {
+		t.Fatalf("replayed %d items after a model switch, want none", len(items))
+	}
+	if items := responsesReasoningReplayItems(msg, "gpt-5"); len(items) != 1 {
+		t.Fatalf("replayed %d items for the original model, want 1", len(items))
+	}
+}
+
+// TestResponsesReasoningReplaySurvivesSessionReload covers the shape the
+// metadata takes after a session round-trips through JSON, where the item list
+// comes back as []any rather than []map[string]any.
+func TestResponsesReasoningReplaySurvivesSessionReload(t *testing.T) {
+	original := reasoningMessage("gpt-5")
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloaded messages.ChatMessage
+	if err := json.Unmarshal(encoded, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+
+	items := responsesReasoningReplayItems(reloaded, "gpt-5")
+	if len(items) != 1 {
+		t.Fatalf("item count after reload = %d, want 1", len(items))
+	}
+	if items[0].EncryptedContent != "gAAAAA-payload" {
+		t.Fatalf("encrypted content after reload = %q, want the captured payload", items[0].EncryptedContent)
+	}
+	if items[0].Summary == nil || len(*items[0].Summary) != 1 {
+		t.Fatalf("summary after reload = %#v, want one part", items[0].Summary)
+	}
+}
+
+// TestResponsesReasoningReplaySkipsUnencryptedItems checks that an item without
+// encrypted state is dropped: it carries no reasoning, and its id refers to a
+// response that stateless mode never stored.
+func TestResponsesReasoningReplaySkipsUnencryptedItems(t *testing.T) {
+	msg := reasoningMessage("gpt-5")
+	msg.Metadata[adapters.ResponsesReasoningItemsKey].([]map[string]any)[0]["encrypted_content"] = ""
+
+	if items := responsesReasoningReplayItems(msg, "gpt-5"); len(items) != 0 {
+		t.Fatalf("replayed %d items without encrypted state, want none", len(items))
+	}
+}
+
+// TestResponsesRequestAsksForEncryptedReasoning checks the request side of the
+// round trip: encrypted reasoning is only returned to a stateless client.
+func TestResponsesRequestAsksForEncryptedReasoning(t *testing.T) {
+	params := buildResponsesRequestParams(&CompletionRequest{
+		Model:    "gpt-5",
+		Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "hi"}},
+	})
+	if params.Store == nil || *params.Store {
+		t.Fatalf("Store = %v, want an explicit false", params.Store)
+	}
+	if !slices.Contains(params.Include, openai.IncludeReasoningEncryptedContent) {
+		t.Fatalf("Include = %v, want it to request reasoning.encrypted_content", params.Include)
+	}
+	wire, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"store":false`) {
+		t.Fatalf("serialized request %s must carry an explicit store:false", wire)
 	}
 }
