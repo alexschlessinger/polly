@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,12 +13,22 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 const (
 	toolInlineTokenLimit  = 10_000
 	toolPreviewTokenLimit = 500
 	maxHydratedArtifact   = 64 << 20
+
+	// estimatedImageTokens is the flat per-image cost estimate. Polly caps
+	// uploads at 1568px on the long edge, and provider vision billing on an
+	// image that size commonly lands near 2000 tokens.
+	estimatedImageTokens = 2000
+
+	// omissionQuantumDivisor sets the omission batch size to a fifth of the
+	// budget; see omissionFront.
+	omissionQuantumDivisor = 5
 
 	// Aggregate caps on the images one projected request may carry, mirroring
 	// the tightest native-client request shape: 100 images per request and a
@@ -61,7 +72,7 @@ func (e *ContextLimitError) Error() string {
 	return fmt.Sprintf("active exchange needs about %d tokens, exceeding the %d-token context budget", e.EstimatedTokens, e.Limit)
 }
 
-func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store) ([]messages.ChatMessage, ProjectionStats, error) {
+func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, transcriptReadable bool) ([]messages.ChatMessage, ProjectionStats, error) {
 	projected := cloneMessages(history)
 	projected = filterInternalMessages(projected)
 	var stats ProjectionStats
@@ -87,23 +98,12 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 		return stripArtifactParts(projected), stats, nil
 	}
 
-	marker := projectionMarker(store != nil)
-	for {
+	marker := projectionMarker(store != nil, transcriptReadable)
+	if front := omissionFront(projected, marker, maxTokens); front > 0 {
 		users := realUserIndexes(projected)
-		if len(users) <= 1 {
-			break
-		}
-		projected = omitExchangePreservingSystems(projected, users[0], users[1])
-		stats.OmittedExchanges++
-		stats.EstimatedTokens = estimateProjectedTokens(projected)
-		withMarker := addProjectionMarker(cloneMessages(projected), marker)
-		if estimateProjectedTokens(withMarker) <= maxTokens {
-			break
-		}
-	}
-
-	if stats.OmittedExchanges > 0 {
+		projected = omitExchangePreservingSystems(projected, users[0], users[front])
 		projected = addProjectionMarker(projected, marker)
+		stats.OmittedExchanges = front
 		stats.EstimatedTokens = estimateProjectedTokens(projected)
 	}
 	if stats.EstimatedTokens > maxTokens {
@@ -155,23 +155,68 @@ func artifactRefsInMessages(history []messages.ChatMessage) []artifacts.Ref {
 	return refs
 }
 
+// omissionFront chooses how many leading completed exchanges to omit once the
+// projection exceeds the budget. The front may only land on quantized
+// candidates: exchange boundaries where the cumulative omittable size from the
+// transcript start has grown by at least a fifth of the budget since the
+// previous candidate. Each jump therefore frees at least one quantum, so a
+// saturated session re-omits in batches instead of sliding one exchange per
+// turn, and the provider-visible prefix stays byte-stable between jumps.
+// Candidates depend only on the transcript prefix, which is append-only, so
+// the front remains a pure function of (history, budget).
+func omissionFront(projected []messages.ChatMessage, marker string, maxTokens int) int {
+	users := realUserIndexes(projected)
+	if len(users) <= 1 {
+		return 0
+	}
+	withMarker := estimateProjectedTokens(addProjectionMarker(cloneMessages(projected), marker))
+	quantum := max(1, maxTokens/omissionQuantumDivisor)
+	cum := 0
+	lastCandidate := 0
+	for j := 0; j+1 < len(users); j++ {
+		for _, msg := range projected[users[j]:users[j+1]] {
+			if msg.Role != messages.MessageRoleSystem {
+				cum += estimateProjectedMessageTokens(msg)
+			}
+		}
+		// The maximal front is always a candidate so omission can reach it.
+		if cum-lastCandidate < quantum && j+2 < len(users) {
+			continue
+		}
+		lastCandidate = cum
+		if withMarker-cum <= maxTokens {
+			return j + 1
+		}
+	}
+	return len(users) - 1
+}
+
 // projectionMarker is constant text: a count would rewrite the system message
 // on every additional omission and invalidate the provider's cached prefix.
-func projectionMarker(artifactsListable bool) string {
-	marker := "[Context projection: earlier completed exchanges omitted; the full transcript remains stored locally."
+func projectionMarker(artifactsListable, transcriptReadable bool) string {
+	marker := "[Context projection: earlier completed exchanges omitted."
+	if transcriptReadable {
+		marker += " The full conversation, including omitted exchanges, remains readable: call read_transcript to page or search it."
+	} else {
+		marker += " The user's local transcript retains the omitted content."
+	}
 	if artifactsListable {
 		marker += " Artifacts referenced by omitted content remain readable: call list_artifacts to enumerate them and read_artifact to inspect one."
 	}
 	return marker + "]"
 }
 
-// projectToolResults leaves any message that already carries a text artifact
-// ref byte-identical (its form was final at birth or at spill time), so the
-// provider-visible prefix stays stable across iterations. The only rewrites are
-// one-time: recall results from completed exchanges collapse to a constant stub
-// (their content is reproducible from the original artifact), and legacy
-// transcripts' oversized inline results are externalized with a preview built
-// from the in-hand bytes.
+// projectToolResults is the completed-exchange compaction pass. Results in the
+// active exchange keep their birth forms byte-identical (inline bytes, or an
+// artifact preview minted when the tool ran); results in completed exchanges
+// demote to their most compact recoverable form. All rewrites are one-time,
+// anchored to the exchange-completion boundary, and recomputed identically on
+// every later projection: recall results collapse to a constant stub (their
+// content is reproducible on demand), artifact-backed results collapse from
+// preview to receipt, and large inline results are idempotently externalized
+// to a content-addressed artifact behind the same receipt. Legacy transcripts'
+// oversized inline results in the active exchange are externalized with a
+// preview built from the in-hand bytes, as birth would have done.
 func projectToolResults(ctx context.Context, history []messages.ChatMessage, store artifacts.Store) ([]messages.ChatMessage, int, error) {
 	users := realUserIndexes(history)
 	lastUser := -1
@@ -185,8 +230,9 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 		if msg.Role != messages.MessageRoleTool || msg.Content == ToolDeniedContent {
 			continue
 		}
+		completed := i < lastUser
 		if isRecallToolName(msg.ToolName) {
-			if i < lastUser {
+			if completed {
 				stub := recallResultStub(msg.ToolName)
 				if estimatedStringTokens(stub) < estimatedStringTokens(msg.Content) {
 					msg.Content = appendArtifactDescriptors(stub, *msg, "", " ")
@@ -196,35 +242,62 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 			continue
 		}
 		ref := textArtifactRef(*msg)
-		if ref == nil {
-			if estimatedStringTokens(msg.Content) > toolInlineTokenLimit && store != nil {
-				stored, err := store.Put(ctx, artifacts.Blob{
-					Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(*msg), Data: []byte(msg.Content),
-				})
+		if ref != nil && store == nil {
+			return nil, compacted, fmt.Errorf("tool artifact %s cannot be read without a store", ref.ID)
+		}
+		if completed && store != nil {
+			if ref == nil {
+				if msg.Content == "" || estimatedStringTokens(msg.Content) <= toolPreviewTokenLimit {
+					continue
+				}
+				blob := artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(*msg), Data: []byte(msg.Content)}
+				prospective := artifacts.RefForBlob(blob)
+				form := appendArtifactDescriptors(artifactReceipt(prospective), *msg, prospective.ID, " ")
+				if estimatedStringTokens(form) >= estimatedStringTokens(msg.Content) {
+					continue
+				}
+				stored, err := store.Put(ctx, blob)
 				if err != nil {
 					return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
 				}
-				head, tail := previewWindows([]byte(msg.Content))
 				msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
-				msg.Content = artifactPreviewWithDescriptors(stored, head, tail, *msg)
+				msg.Content = form
+				compacted++
+				continue
+			}
+			form := appendArtifactDescriptors(artifactReceipt(*ref), *msg, ref.ID, " ")
+			if estimatedStringTokens(form) < estimatedStringTokens(msg.Content) {
+				msg.Content = form
 				compacted++
 			}
 			continue
 		}
-		if store == nil {
-			return nil, compacted, fmt.Errorf("tool artifact %s cannot be read without a store", ref.ID)
+		if ref == nil && store != nil && estimatedStringTokens(msg.Content) > toolInlineTokenLimit {
+			stored, err := store.Put(ctx, artifacts.Blob{
+				Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(*msg), Data: []byte(msg.Content),
+			})
+			if err != nil {
+				return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
+			}
+			head, tail := previewWindows([]byte(msg.Content))
+			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
+			msg.Content = artifactPreviewWithDescriptors(stored, head, tail, *msg)
+			compacted++
 		}
 	}
 	return history, compacted, nil
 }
 
 func isRecallToolName(name string) bool {
-	return name == "read_artifact" || name == "list_artifacts"
+	return name == "read_artifact" || name == "list_artifacts" || name == "read_transcript"
 }
 
 func recallResultStub(toolName string) string {
-	if toolName == "list_artifacts" {
+	switch toolName {
+	case "list_artifacts":
 		return "[list_artifacts result elided; call list_artifacts again for the current catalog.]"
+	case "read_transcript":
+		return "[read_transcript result elided to save space; the call above shows its arguments. Call read_transcript again to re-read.]"
 	}
 	return "[read_artifact result elided to save space; the call above shows its arguments. Call read_artifact again to re-read.]"
 }
@@ -262,7 +335,7 @@ func ValidateImageProjection(history []messages.ChatMessage) error {
 // EstimateMessageTokens estimates the provider-visible token cost of a single
 // message with the same heuristic context projection uses for its budget.
 func EstimateMessageTokens(msg messages.ChatMessage) int {
-	return estimateProjectedTokens([]messages.ChatMessage{msg})
+	return estimateProjectedMessageTokens(msg)
 }
 
 type imageSelection struct {
@@ -876,30 +949,36 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 			continue
 		}
 		ref := textArtifactRef(history[i])
-		minted := false
 		originalContent := history[i].Content
-		if ref == nil && originalContent != "" && store != nil {
-			stored, err := store.Put(ctx, artifacts.Blob{
+		mint := false
+		var blob artifacts.Blob
+		if ref == nil {
+			if originalContent == "" || store == nil {
+				continue
+			}
+			blob = artifacts.Blob{
 				Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(history[i]), Data: []byte(originalContent),
-			})
+			}
+			prospective := artifacts.RefForBlob(blob)
+			ref = &prospective
+			mint = true
+		}
+		form := withDescriptorList(artifactReceipt(*ref), descriptors[history[i].ToolCallID])
+		// A receipt no smaller than the content it replaces cannot relieve
+		// pressure; leave the result inline rather than mint an artifact and
+		// durably degrade a small, legible result into a receipt.
+		if estimatedStringTokens(form) >= estimatedStringTokens(originalContent) {
+			continue
+		}
+		if mint {
+			stored, err := store.Put(ctx, blob)
 			if err != nil {
 				return newlyCompacted, spills, fmt.Errorf("store active tool artifact for %q: %w", history[i].ToolName, err)
 			}
 			history[i].Parts = append(history[i].Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
-			ref = &stored
-			minted = true
-		}
-		if ref == nil {
-			continue
-		}
-		form := withDescriptorList(artifactReceipt(*ref), descriptors[history[i].ToolCallID])
-		if minted {
 			spills = append(spills, toolResultSpill{
-				ToolCallID: history[i].ToolCallID, ToolName: history[i].ToolName, Content: originalContent, Ref: *ref, Receipt: form,
+				ToolCallID: history[i].ToolCallID, ToolName: history[i].ToolName, Content: originalContent, Ref: stored, Receipt: form,
 			})
-		}
-		if history[i].Content == form {
-			continue
 		}
 		history[i].Content = form
 		newlyCompacted++
@@ -955,17 +1034,40 @@ func cloneMessages(history []messages.ChatMessage) []messages.ChatMessage {
 func estimateProjectedTokens(history []messages.ChatMessage) int {
 	total := 0
 	for _, msg := range history {
-		total += 4 + estimatedStringTokens(msg.Content) + estimatedStringTokens(msg.Reasoning) + estimatedStringTokens(msg.ToolCallID)
-		for _, part := range msg.Parts {
-			switch part.Type {
-			case "text":
-				total += estimatedStringTokens(part.Text)
-			case "image_base64", "image_url":
-				total += 1600
-			}
+		total += estimateProjectedMessageTokens(msg)
+	}
+	return total
+}
+
+func estimateProjectedMessageTokens(msg messages.ChatMessage) int {
+	total := 4 + estimatedStringTokens(msg.Content) + estimatedStringTokens(msg.Reasoning) + estimatedStringTokens(msg.ToolCallID)
+	for _, part := range msg.Parts {
+		switch part.Type {
+		case "text":
+			total += estimatedStringTokens(part.Text)
+		case "image_base64", "image_url":
+			total += estimatedImageTokens
 		}
-		for _, call := range msg.ToolCalls {
-			total += estimatedStringTokens(call.Name) + estimatedStringTokens(call.Arguments)
+	}
+	for _, call := range msg.ToolCalls {
+		total += estimatedStringTokens(call.Name) + estimatedJSONTokens(call.Arguments)
+	}
+	return total
+}
+
+// estimateToolSchemaTokens estimates the request overhead of tool schemas,
+// which share the model's context with the projected messages but are not part
+// of them. Agent.Run subtracts this from the projection budget.
+func estimateToolSchemaTokens(list []tools.Tool) int {
+	total := 0
+	for _, tool := range list {
+		schema := tool.GetSchema()
+		if schema == nil {
+			continue
+		}
+		total += 8
+		if raw, err := json.Marshal(schema.Raw); err == nil {
+			total += estimatedJSONTokens(string(raw))
 		}
 	}
 	return total
@@ -976,4 +1078,13 @@ func estimatedStringTokens(s string) int {
 		return 0
 	}
 	return (len(s) + 3) / 4
+}
+
+// estimatedJSONTokens rates dense JSON at 3 bytes per token; the prose
+// heuristic's 4 bytes per token systematically undercounts it.
+func estimatedJSONTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	return (len(s) + 2) / 3
 }

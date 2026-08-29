@@ -636,14 +636,16 @@ func TestAgentListsAndReadsArtifactFromOmittedExchange(t *testing.T) {
 	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "lookup.txt", Data: []byte(data)})
 	agent := NewAgent(&catalogReaderLLM{}, nil, AgentConfig{ArtifactStore: store})
 	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "old request " + strings.Repeat("x", 4_000)},
+		{Role: messages.MessageRoleUser, Content: "old request " + strings.Repeat("x", 8_000)},
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old", Name: "lookup", Arguments: `{}`}}},
 		{Role: messages.MessageRoleTool, ToolCallID: "old", ToolName: "lookup", Content: artifactReceipt(ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
 		{Role: messages.MessageRoleAssistant, Content: "old answer"},
 		{Role: messages.MessageRoleUser, Content: "what did that lookup return?"},
 	}
 
-	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 600}, nil)
+	// The budget must cover the registered tool schemas' overhead while still
+	// forcing the fat old exchange out of the projection.
+	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 2_000}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

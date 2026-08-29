@@ -286,7 +286,7 @@ func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) 
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "omission-notice")
 	if err := session.AddMessages(context.Background(), []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 4_000)},
+		{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 8_000)},
 		{Role: messages.MessageRoleAssistant, Content: "old answer"},
 	}); err != nil {
 		t.Fatal(err)
@@ -302,7 +302,9 @@ func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) 
 		toolRegistry:  registry,
 		artifactStore: artifactStore,
 	}
-	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 200}}
+	// The budget must cover the agent's registered tool schemas while still
+	// forcing the fat old exchange out of the projection.
+	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 2_000}}
 	var stdout, stderr bytes.Buffer
 	ui := newLineTurnUI(config, nil)
 	ui.writer = &stdout

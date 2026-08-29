@@ -37,6 +37,12 @@ type Agent struct {
 	artifactMu    sync.RWMutex
 	artifactRefs  map[string]artifacts.Ref
 	artifactOrder []string
+
+	// transcript is the durable conversation snapshot served by
+	// read_transcript, refreshed as the run generates messages.
+	transcriptMu   sync.RWMutex
+	transcript     []messages.ChatMessage
+	transcriptTool bool
 }
 
 // AgentConfig configures agent behavior
@@ -133,8 +139,25 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		viewer := tools.NewViewImageTool(registry)
 		registry.Register(viewer)
 		registry.MarkAlwaysAllowed(viewer.GetName())
+		transcript := &readTranscriptTool{snapshot: agent.transcriptSnapshot}
+		registry.Register(transcript)
+		registry.MarkAlwaysAllowed(transcript.GetName())
+		agent.transcriptTool = true
 	}
 	return agent
+}
+
+func (a *Agent) setTranscript(history []messages.ChatMessage) {
+	snapshot := append([]messages.ChatMessage(nil), history...)
+	a.transcriptMu.Lock()
+	a.transcript = snapshot
+	a.transcriptMu.Unlock()
+}
+
+func (a *Agent) transcriptSnapshot() []messages.ChatMessage {
+	a.transcriptMu.RLock()
+	defer a.transcriptMu.RUnlock()
+	return a.transcript
 }
 
 // SetToolTimeout updates the per-tool-call timeout for subsequent runs. Not
@@ -175,6 +198,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	var lastProjection ProjectionStats
 	var promptCache PromptCacheStats
 	a.resetArtifactIndex(msgs)
+	a.setTranscript(msgs)
 	responseFor := func(message *messages.ChatMessage, iterations int) *AgentResponse {
 		return &AgentResponse{
 			Message: message, AllMessages: allGenerated, IterationCount: iterations,
@@ -192,7 +216,21 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 
 		// Build request with accumulated messages
 		iterReq := loopReq
-		projected, projection, err := projectMessages(ctx, msgs, req.MaxContextTokens, a.artifactStore)
+		// Tool schemas share the model's context with the projected messages;
+		// budget the projection for what remains after them.
+		budget := req.MaxContextTokens
+		if budget > 0 && a.tools != nil {
+			overhead := estimateToolSchemaTokens(a.tools.All())
+			if overhead >= budget {
+				err := fmt.Errorf("tool schemas alone need about %d tokens, exceeding the %d-token context budget", overhead, budget)
+				if cb != nil && cb.OnError != nil {
+					cb.OnError(err)
+				}
+				return responseFor(nil, iteration), err
+			}
+			budget -= overhead
+		}
+		projected, projection, err := projectMessages(ctx, msgs, budget, a.artifactStore, a.transcriptTool)
 		a.applyDurableToolSpills(msgs, projection.toolSpills)
 		a.applyDurableToolSpills(allGenerated, projection.toolSpills)
 		for _, ref := range projection.artifactRefs {
@@ -239,6 +277,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 		msgs = append(msgs, *response)
 		allGenerated = append(allGenerated, *response)
+		a.setTranscript(msgs)
 
 		// Check stop reason to determine next action
 		switch response.StopReason {
