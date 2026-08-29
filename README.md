@@ -180,36 +180,30 @@ Slash commands inside the TUI:
 /set <key> <value>           Change a setting for this session
                              (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /tools [list [ns]|show <n>]  List or inspect loaded tools
-/thinking [n]                Show a past reasoning segment in full
 /skills                      List discovered Agent Skills
 /rename <name>               Rename the current context
 /reset confirm               Clear durable conversation history
 /exit  (/quit)               Leave the TUI
 ```
 
-While a turn runs, tool calls show as one line each, but only the three most
-recent stay on screen: older ones fold into a `… N tool calls` rollup that
-counts everything the turn ran. The window slides as work proceeds, so a long
-tool run never pushes the model's prose off the screen. A call that is still
-running always keeps its row, so a parallel batch opens at full height and then
-drains a row at a time as its calls land, rather than standing tall and
-collapsing at the end. When the turn completes the remaining rows fold in too,
-leaving one line of tool activity for the whole turn — except on an interrupted
-turn, which keeps its rows because their `canceled` and `failed` markers say
-what was in flight when it stopped. Folded rows are display-only: the model
-still receives every result, and the durable session history keeps the full
-exchange.
+Tool activity appears once per turn as a collapsed `▸ N tool calls` disclosure
+from the first call onward. Click it to inspect every row; while open, running
+timers, outcomes, and tool-produced images update in place. Explicitly opened
+activity stays open across later calls, then auto-collapses when the turn ends,
+including failed or canceled turns. Completed disclosures can be reopened
+later or after a session reload. Hydrated details contain only safe call labels
+and outcomes, never raw result bodies; the model still receives every result
+and durable history retains the full exchange.
 
-Reasoning (with `--thinking` enabled) streams live into a block of the three
-most recent lines, wrapped and set in muted italics, with the oldest scrolling
-off the top as new text arrives. When the answer starts — or a tool runs, or the
-turn ends — the block collapses into a single `⋯ thought for 12s · ~1.4k tok`
-line. A turn keeps exactly one of those, at the position of its first thought,
-totalling every reasoning segment: an agentic turn can think dozens of times
-between tool calls, and a line each would bury the prose. The full text of every
-segment is kept for the session and `/thinking [n]` prints it back, newest
-first. That buffer is memory-only: providers stream reasoning once and it is not
-written to session history, so it does not survive restart.
+Reasoning (with `--thinking` enabled) appears once per turn as a quiet
+`Thinking…` disclosure, collapsed at the start of every turn. Click the label
+or press Ctrl-O to show or hide a bounded three-row live tail (at least two full
+rows when the terminal has room); the oldest text scrolls off the top as new
+reasoning arrives. The disclosure stays open across tool calls when explicitly
+opened, then collapses when the turn finishes. Completed disclosures remain
+expandable and summarize all reasoning segments from that turn. Reasoning from
+successful turns survives a session reload; failed or canceled turn reasoning
+is marked unsaved and remains available only for the current process.
 
 Ctrl-C or Esc interrupts an in-flight turn; pressing Ctrl-C again (or at an
 idle prompt) quits. Ctrl-Z suspends Polly and returns to the shell; `fg` resumes

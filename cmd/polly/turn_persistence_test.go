@@ -379,7 +379,8 @@ func portablePNGBase64Size(t *testing.T, encodedSize int) string {
 func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testing.T) {
 	generated := []messages.ChatMessage{
 		{
-			Role: messages.MessageRoleAssistant,
+			Role:      messages.MessageRoleAssistant,
+			Reasoning: "I should inspect the requested file before answering.",
 			ToolCalls: []messages.ChatMessageToolCall{
 				{ID: "1", Name: "bash", Arguments: `{}`},
 			},
@@ -398,19 +399,79 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	if status, _ := durable[0].Metadata[messages.MetadataKeyTurnStatus].(string); status != messages.TurnStatusToolDenied {
 		t.Fatalf("durable denied status = %q", status)
 	}
+	if reasoning, _ := durable[0].Metadata[messages.MetadataKeyDisplayReasoning].(string); reasoning != generated[0].Reasoning {
+		t.Fatalf("durable display reasoning = %q, want %q", reasoning, generated[0].Reasoning)
+	}
+	if durable[0].Reasoning != "" {
+		t.Fatalf("internal display reasoning must not be model reasoning: %#v", durable[0])
+	}
 
 	history := append([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "do it"}}, durable...)
 	visible := modelVisibleHistory(history)
 	if len(visible) != 1 || visible[0].Role != messages.MessageRoleUser {
 		t.Fatalf("model-visible history leaked internal marker: %#v", visible)
 	}
+
+	m := newReplModel()
+	m.hydrateHistory(history, "ctx")
+	if len(m.reasoningOrder) != 1 {
+		t.Fatalf("denied reasoning disclosures = %d, want 1", len(m.reasoningOrder))
+	}
+	record := m.reasoningRecords[m.reasoningOrder[0]]
+	if record == nil || !record.complete || record.unsaved || !strings.Contains(string(record.tail), "inspect the requested file") {
+		t.Fatalf("hydrated denied reasoning = %#v", record)
+	}
+	if len(m.toolDisclosures) != 1 {
+		t.Fatalf("denied tool disclosures = %d, want 1", len(m.toolDisclosures))
+	}
+	var tools *toolDisclosureRecord
+	for _, candidate := range m.toolDisclosures {
+		tools = candidate
+	}
+	if tools == nil || !tools.complete || len(tools.rows) != 1 || record.transcriptIndex >= tools.transcriptIndex {
+		t.Fatalf("hydrated denied tool disclosure/order = reasoning %#v tools %#v", record, tools)
+	}
+	if !m.toggleToolDisclosure(tools.id) || !strings.Contains(plainStyledText(m.transcript[tools.transcriptIndex]), "✗ denied bash") {
+		t.Fatalf("hydrated denied tool disclosure did not expand: %#v", tools)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "denied-reasoning.db")
+	store := testOpenDiskStore(t, dbPath, nil)
+	session := testAcquireSession(t, store, "denied-reasoning")
+	testAddMessages(t, session, history)
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopenedStore := testOpenDiskStore(t, dbPath, nil)
+	reopened := testAcquireSession(t, reopenedStore, "denied-reasoning")
+	reloadedHistory := testSessionHistory(t, reopened)
+	if visible := modelVisibleHistory(reloadedHistory); len(visible) != 1 || visible[0].Role != messages.MessageRoleUser {
+		t.Fatalf("reloaded model history leaked internal reasoning: %#v", visible)
+	}
+	reloaded := newReplModel()
+	reloaded.hydrateHistory(reloadedHistory, "denied-reasoning")
+	if len(reloaded.reasoningOrder) != 1 || !strings.Contains(string(reloaded.reasoningRecords[reloaded.reasoningOrder[0]].tail), "inspect the requested file") {
+		t.Fatalf("reloaded denied reasoning disclosure = %#v", reloaded.reasoningRecords)
+	}
+	var reloadedTools *toolDisclosureRecord
+	for _, candidate := range reloaded.toolDisclosures {
+		reloadedTools = candidate
+	}
+	reloadedReasoning := reloaded.reasoningRecords[reloaded.reasoningOrder[0]]
+	if reloadedTools == nil || len(reloadedTools.rows) != 1 || reloadedReasoning.transcriptIndex >= reloadedTools.transcriptIndex {
+		t.Fatalf("reloaded disclosure order = reasoning %#v tools %#v", reloadedReasoning, reloadedTools)
+	}
 }
 
 func TestDurableTurnMessagesKeepsProseAndDeniedOutcome(t *testing.T) {
 	generated := []messages.ChatMessage{
 		{
-			Role:    messages.MessageRoleAssistant,
-			Content: "I will inspect that.",
+			Role:      messages.MessageRoleAssistant,
+			Content:   "I will inspect that.",
+			Reasoning: "This reasoning stays on the surviving assistant message.",
 			ToolCalls: []messages.ChatMessageToolCall{
 				{ID: "1", Name: "bash", Arguments: `{}`},
 			},
@@ -421,12 +482,110 @@ func TestDurableTurnMessagesKeepsProseAndDeniedOutcome(t *testing.T) {
 	if len(durable) != 2 || durable[0].Content != "I will inspect that." || durable[1].Role != messages.MessageRoleInternal {
 		t.Fatalf("prose + denial durable messages = %#v", durable)
 	}
+	if display, _ := durable[1].Metadata[messages.MetadataKeyDisplayReasoning].(string); display != "" {
+		t.Fatalf("surviving assistant reasoning was duplicated on marker: %q", display)
+	}
 
 	m := newReplModel()
 	m.hydrateHistory(append([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "inspect"}}, durable...), "ctx")
 	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
-	if !strings.Contains(plain, "I will inspect that.") || !strings.Contains(plain, "tool request denied") || strings.Contains(plain, "incomplete") {
+	if !strings.Contains(plain, "I will inspect that.") || !strings.Contains(plain, "▸ 1 tool call") ||
+		strings.Contains(plain, "tool request denied") || strings.Contains(plain, "incomplete") {
 		t.Fatalf("prose + denial hydration = %q", plain)
+	}
+	var tools *toolDisclosureRecord
+	for _, candidate := range m.toolDisclosures {
+		tools = candidate
+	}
+	if tools == nil || !m.toggleToolDisclosure(tools.id) || !strings.Contains(plainStyledText(m.transcript[tools.transcriptIndex]), "✗ denied bash") {
+		t.Fatalf("prose + denial disclosure = %#v", tools)
+	}
+}
+
+func TestDurableMixedToolBatchReloadsOneOrderedDisclosure(t *testing.T) {
+	const (
+		deniedName  = "denied_a"
+		successName = "successful_b"
+		rawBody     = "RAW SUCCESS RESULT BODY"
+	)
+	success := messages.ChatMessage{
+		Role:       messages.MessageRoleTool,
+		Content:    rawBody,
+		ToolCallID: "b",
+		ToolName:   successName,
+	}
+	success.SetToolSucceeded(true)
+	generated := []messages.ChatMessage{
+		{
+			Role: messages.MessageRoleAssistant,
+			ToolCalls: []messages.ChatMessageToolCall{
+				{ID: "a", Name: deniedName, Arguments: `{}`},
+				{ID: "b", Name: successName, Arguments: `{}`},
+			},
+		},
+		{
+			Role:       messages.MessageRoleTool,
+			Content:    llm.ToolDeniedContent,
+			ToolCallID: "a",
+			ToolName:   deniedName,
+		},
+		success,
+		{Role: messages.MessageRoleAssistant, Content: "done"},
+	}
+	durable := durableTurnMessages(generated)
+	history := append([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "run mixed batch"}}, durable...)
+
+	dbPath := filepath.Join(t.TempDir(), "mixed-tools.db")
+	store := testOpenDiskStore(t, dbPath, nil)
+	session := testAcquireSession(t, store, "mixed-tools")
+	testAddMessages(t, session, history)
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedStore := testOpenDiskStore(t, dbPath, nil)
+	reopened := testAcquireSession(t, reopenedStore, "mixed-tools")
+	m := newReplModel()
+	m.hydrateHistory(testSessionHistory(t, reopened), "mixed-tools")
+	if len(m.toolDisclosures) != 1 {
+		t.Fatalf("reloaded tool disclosures = %d, want 1", len(m.toolDisclosures))
+	}
+	var record *toolDisclosureRecord
+	for _, candidate := range m.toolDisclosures {
+		record = candidate
+	}
+	if record == nil || !record.complete || record.expanded || len(record.rows) != 2 {
+		t.Fatalf("reloaded mixed disclosure = %#v, want two completed collapsed rows", record)
+	}
+	if record.rows[0].label != deniedName || record.rows[1].label != successName {
+		t.Fatalf("reloaded mixed row order = %#v, want %s then %s", record.rows, deniedName, successName)
+	}
+
+	collapsed := plainStyledText(strings.Join(m.transcript, "\n"))
+	if !strings.Contains(collapsed, "▸ 2 tool calls") {
+		t.Fatalf("reloaded collapsed header = %q", collapsed)
+	}
+	for _, hidden := range []string{deniedName, successName, rawBody, llm.ToolDeniedContent} {
+		if strings.Contains(collapsed, hidden) {
+			t.Fatalf("collapsed mixed disclosure leaked %q: %q", hidden, collapsed)
+		}
+	}
+	if !m.toggleToolDisclosure(record.id) {
+		t.Fatal("reloaded mixed disclosure did not expand")
+	}
+	expanded := plainStyledText(m.transcript[record.transcriptIndex])
+	deniedDetail := "✗ denied " + deniedName
+	successDetail := "✓ " + successName
+	deniedAt := strings.Index(expanded, deniedDetail)
+	successAt := strings.Index(expanded, successDetail)
+	if deniedAt < 0 || successAt <= deniedAt {
+		t.Fatalf("expanded mixed disclosure lost status or start order: %q", expanded)
+	}
+	if strings.Contains(expanded, rawBody) || strings.Contains(expanded, llm.ToolDeniedContent) {
+		t.Fatalf("expanded mixed disclosure leaked raw result content: %q", expanded)
 	}
 }
 

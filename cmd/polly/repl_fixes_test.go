@@ -256,11 +256,25 @@ func TestFlattenTranscriptReflectsMutations(t *testing.T) {
 	}
 
 	m.appendToolStartLine("id", "bash")
+	record := m.currentToolDisclosure()
+	if record == nil || record.expanded {
+		t.Fatalf("started tool disclosure = %#v", record)
+	}
 	m.activeTools[0].started = m.activeTools[0].started.Add(-2 * time.Second)
 	m.refreshActiveTools()
 	got = m.flattenTranscript()
+	if strings.Contains(got[len(got)-1], "2.0s") {
+		t.Fatalf("collapsed tool refresh leaked through cache: %q", got[len(got)-1])
+	}
+	if !strings.Contains(record.rows[0].line, "2.0s") {
+		t.Fatalf("hidden live row did not update: %q", record.rows[0].line)
+	}
+	if !m.toggleToolDisclosure(record.id) {
+		t.Fatal("tool disclosure did not expand")
+	}
+	got = m.flattenTranscript()
 	if !strings.Contains(got[len(got)-1], "2.0s") {
-		t.Fatalf("in-place tool refresh not reflected through cache: %q", got[len(got)-1])
+		t.Fatalf("expanded tool refresh not reflected through cache: %q", got[len(got)-1])
 	}
 }
 
@@ -313,9 +327,15 @@ func TestToolEndRendersDenialLine(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, llm.ToolDeniedContent, 0, nil)
 
-	last := r.model.transcript[len(r.model.transcript)-1]
-	if !strings.Contains(last, "denied") {
-		t.Fatalf("a denied tool should render a denied line, got %q", last)
+	record := r.model.currentToolDisclosure()
+	if record == nil || record.expanded || strings.Contains(r.model.transcript[record.transcriptIndex], "denied") {
+		t.Fatalf("denied tool should stay hidden while collapsed: record=%#v transcript=%q", record, r.model.transcript)
+	}
+	if !r.model.toggleToolDisclosure(record.id) {
+		t.Fatal("denied tool disclosure did not expand")
+	}
+	if expanded := r.model.transcript[record.transcriptIndex]; !strings.Contains(expanded, "denied") {
+		t.Fatalf("expanded denied tool should render a denied line, got %q", expanded)
 	}
 }
 
@@ -336,7 +356,11 @@ func TestToolEndDurationUsesFormatElapsed(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "ok", 90*time.Second, nil)
 
-	last := m.transcript[len(m.transcript)-1]
+	record := m.currentToolDisclosure()
+	if record == nil || !m.toggleToolDisclosure(record.id) {
+		t.Fatalf("duration disclosure did not expand: %#v", record)
+	}
+	last := m.transcript[record.transcriptIndex]
 	if !strings.Contains(last, "1m30s") {
 		t.Fatalf("ok tool line should use formatElapsed (1m30s), got %q", last)
 	}
@@ -358,7 +382,11 @@ func TestToolEndErrorDurationUsesFormatElapsed(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "boom", 90*time.Second, fmt.Errorf("boom"))
 
-	last := r.model.transcript[len(r.model.transcript)-1]
+	record := r.model.currentToolDisclosure()
+	if record == nil || !r.model.toggleToolDisclosure(record.id) {
+		t.Fatalf("failed duration disclosure did not expand: %#v", record)
+	}
+	last := r.model.transcript[record.transcriptIndex]
 	if !strings.Contains(last, "1m30s") {
 		t.Fatalf("failed tool line should use formatElapsed (1m30s), got %q", last)
 	}

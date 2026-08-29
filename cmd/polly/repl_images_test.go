@@ -45,6 +45,32 @@ func TestRenderMarkdownWithLocalImages(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownWithLocalImagesSanitizesPrivateMarkers(t *testing.T) {
+	dir := t.TempDir()
+	marker := string(transcriptImageMarker(0))
+	filename := "chart" + marker + ".png"
+	path := filepath.Join(dir, filename)
+	writeImageFixture(t, path, 8, 4)
+
+	rendered, images := renderMarkdownWithLocalImages(
+		"before"+marker+"\n\n`code"+marker+"`\n\n![ok]("+filename+")", dir,
+	)
+	if len(images) != 1 || images[0].Path != path {
+		t.Fatalf("resolved images = %#v", images)
+	}
+	if got := strings.Count(rendered, marker); got != transcriptImageThumbnailRows {
+		t.Fatalf("rendered Markdown contains %d marker runes, want %d generated slot rows", got, transcriptImageThumbnailRows)
+	}
+	plain := plainStyledText(stripTranscriptImageMarkers(rendered))
+	if !strings.Contains(plain, "before") || !strings.Contains(plain, "code") {
+		t.Fatalf("sanitizing markers damaged source text: %q", plain)
+	}
+	_, spans := transcriptBlockRowsWithImages(rendered, false, 80, images, true, 10, 20)
+	if len(spans) != 1 {
+		t.Fatalf("source marker produced %d image spans, want one: %#v", len(spans), spans)
+	}
+}
+
 func TestRenderMarkdownLeavesRemoteAndMissingImagesAsLinks(t *testing.T) {
 	dir := t.TempDir()
 	rendered, images := renderMarkdownWithLocalImages("![remote](https://example.com/a.png) ![missing](missing.png)", dir)
@@ -130,7 +156,17 @@ func TestAssistantAndToolResultsAttachImageSidecars(t *testing.T) {
 	call := messages.ChatMessageToolCall{ID: "image-call", Name: "screenshot"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, path, time.Millisecond, nil)
-	toolIndex := len(r.model.transcript) - 1
+	record := r.model.currentToolDisclosure()
+	if record == nil || record.expanded || len(record.rows) != 1 || len(record.rows[0].images) != 1 {
+		t.Fatalf("collapsed tool image record = %#v", record)
+	}
+	toolIndex := record.transcriptIndex
+	if len(r.model.transcriptImages[toolIndex]) != 0 || strings.Contains(r.model.transcript[toolIndex], "image: result.png") {
+		t.Fatalf("collapsed tool image leaked sidecar or caption: text=%q sidecars=%#v", r.model.transcript[toolIndex], r.model.transcriptImages)
+	}
+	if !r.model.toggleToolDisclosure(record.id) {
+		t.Fatal("tool image disclosure did not expand")
+	}
 	if len(r.model.transcriptImages[toolIndex]) != 1 {
 		t.Fatalf("tool sidecar = %#v", r.model.transcriptImages)
 	}

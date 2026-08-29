@@ -486,6 +486,7 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		{"/get model", true, "/get model", []string{"/get model"}},
 		{"/get max", true, "/get max", []string{"/get maxcontext", "/get maxtokens"}},
 		{"/tools s", true, "/tools show", []string{"/tools show"}},
+		{"/thi", false, "", nil},
 		{"/set th", true, "/set thinking", []string{"/set thinking"}},
 		{"/set max", true, "/set max", []string{"/set maxcontext", "/set maxtokens"}},
 		// Second arguments complete positionally.
@@ -561,8 +562,7 @@ func TestHintFor(t *testing.T) {
 		{"/he\nlp", ""},
 		{"/zzz", ""},
 		// Typing the name: many matches list bare names, few include summaries.
-		// Two commands start with "/t", so the hint lists both with summaries.
-		{"/t", "/thinking — show reasoning the transcript only summarized   /tools — inspect loaded tools"},
+		{"/t", "/tools — inspect loaded tools"},
 		{"/to", "/tools — inspect loaded tools"},
 		{"/q", "/quit — leave the REPL"},
 		// Typing arguments: keyword matches from the command's completer.

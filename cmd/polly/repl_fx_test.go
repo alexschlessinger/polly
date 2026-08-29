@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -297,6 +298,10 @@ func TestAppendToolEndAnnotatesLines(t *testing.T) {
 
 	// Success lines count the output the model ingested.
 	tui.AppendToolEnd(calls[0], "hit one\nhit two\nhit three", time.Second, nil)
+	record := m.currentToolDisclosure()
+	if record == nil || !m.toggleToolDisclosure(record.id) {
+		t.Fatalf("annotated tool disclosure did not expand: %#v", record)
+	}
 	if got := strings.Join(m.flattenTranscript(), "\n"); !strings.Contains(got, "3 lines") {
 		t.Fatalf("success line should carry the line count, got %q", got)
 	}
@@ -354,193 +359,344 @@ func TestApprovalViewExpandsArgsOncePerCall(t *testing.T) {
 
 const testThinkingWidth = 60
 
-func TestThinkingBlockShowsBoundedTailThenCollapsesToRollup(t *testing.T) {
+func TestThinkingDisclosureStartsCollapsedWithoutLeakingReasoning(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, config: r.config}
 
-	// Enough reasoning to settle well past the visible cap.
-	for i := 0; i < 12; i++ {
-		tui.ShowThinking(fmt.Sprintf("this is reasoning sentence number %d about the parse loop. ", i))
-	}
-	m.refreshThinkingBlock(testThinkingWidth)
+	const privateReasoning = "private chain about the parse loop"
+	tui.ShowThinking(privateReasoning)
+	m.refreshReasoningRecords(testThinkingWidth)
 
-	block := m.transcript[m.thinkingIndex]
-	if got := strings.Count(block, "\n") + 1; got != thinkingBlockLines {
-		t.Fatalf("block should hold %d lines, got %d: %q", thinkingBlockLines, got, block)
+	record := m.currentReasoningRecord()
+	if record == nil || len(m.reasoningRecords) != 1 || len(m.reasoningOrder) != 1 {
+		t.Fatalf("reasoning record = %#v, records/order = %d/%d", record, len(m.reasoningRecords), len(m.reasoningOrder))
 	}
-	if !strings.Contains(block, streamCursorGlyph) || !strings.Contains(block, "mod:italic") {
-		t.Fatalf("block should carry the caret and italic styling, got %q", block)
+	if record.expanded {
+		t.Fatal("a turn's reasoning disclosure should start collapsed")
 	}
-	// The window keeps the newest reasoning and drops the oldest.
-	if !strings.Contains(block, "number 11") || strings.Contains(block, "number 0 ") {
-		t.Fatalf("block should show the newest lines, got %q", block)
+	block := plainStyledText(m.transcript[record.transcriptIndex])
+	if !strings.Contains(block, "▸ Thinking") {
+		t.Fatalf("collapsed disclosure = %q, want a Thinking label", block)
 	}
-	// No settled line may exceed the width it was wrapped to.
-	for _, line := range m.thinkingWrapped {
-		if len(line) > testThinkingWidth {
-			t.Fatalf("line wider than the wrap width: %q", line)
-		}
+	if strings.Contains(block, privateReasoning) {
+		t.Fatalf("collapsed disclosure leaked reasoning: %q", block)
 	}
-
-	// The first content chunk closes the block into its permanent rollup.
-	tui.AppendAssistantText("Here is the answer")
-	joined := strings.Join(m.transcript, "\n")
-	if !strings.Contains(joined, "thought for") || !strings.Contains(joined, "tok") {
-		t.Fatalf("thinking should leave a rollup behind: %#v", m.transcript)
+	if strings.Contains(block, "tok") {
+		t.Fatalf("quiet disclosure should not show an approximate token count: %q", block)
 	}
-	if strings.Contains(joined, "parse loop") {
-		t.Fatalf("reasoning text should not survive in the transcript: %#v", m.transcript)
-	}
-	if m.thinkingIndex != -1 {
-		t.Fatalf("block should be closed, index = %d", m.thinkingIndex)
-	}
-	if !strings.Contains(m.transcript[len(m.transcript)-1], "Here is the answer") {
-		t.Fatalf("answer should follow the rollup: %#v", m.transcript)
-	}
-
-	// The full text stays available for /thinking even though the transcript
-	// only ever showed a window of it.
-	if len(m.thinkingLog) != 1 || !strings.Contains(m.thinkingLog[0], "number 0") {
-		t.Fatalf("reasoning log should keep the whole segment: %#v", m.thinkingLog)
-	}
-
-	// The next turn starts with a clean slate but keeps the log.
-	m.beginTurn("again")
-	if m.thinkingIndex != -1 || m.thinkingWrapped != nil || m.thinkingPending != nil {
-		t.Fatalf("thinking state should reset per turn: %d %v %q",
-			m.thinkingIndex, m.thinkingWrapped, string(m.thinkingPending))
-	}
-	if len(m.thinkingLog) != 1 {
-		t.Fatalf("log should survive the turn boundary: %#v", m.thinkingLog)
+	if tail := string(record.tail); tail != privateReasoning {
+		t.Fatalf("retained reasoning tail = %q, want %q", tail, privateReasoning)
 	}
 }
 
-// An agentic turn reasons repeatedly between tool calls. A rollup per segment
-// would bury the prose under a wall of "thought for" lines, so the turn gets
-// exactly one, accumulating every segment's time and size.
-func TestTurnKeepsOneAccumulatingThinkingRollup(t *testing.T) {
+func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	for i := 0; i < 16; i++ {
+		tui.ShowThinking(fmt.Sprintf("reasoning sentence number %d about the parse loop. ", i))
+	}
+	record := m.currentReasoningRecord()
+	if record == nil || !m.toggleReasoning(record.id, testThinkingWidth) {
+		t.Fatal("active reasoning disclosure did not expand")
+	}
+
+	block := plainStyledText(m.transcript[record.transcriptIndex])
+	lines := strings.Split(block, "\n")
+	if got := len(lines) - 1; got != reasoningPreviewLines {
+		t.Fatalf("expanded preview rows = %d, want %d: %q", got, reasoningPreviewLines, block)
+	}
+	if !strings.Contains(block, "number 15") || strings.Contains(block, "number 0 ") {
+		t.Fatalf("expanded disclosure should show only the newest tail: %q", block)
+	}
+	if !strings.Contains(block, "▾ Thinking") || !strings.Contains(m.transcript[record.transcriptIndex], "mod:italic") {
+		t.Fatalf("expanded disclosure lost its open label or preview styling: %q", m.transcript[record.transcriptIndex])
+	}
+
+	// New chunks repaint the open tail immediately without growing beyond the cap.
+	tui.ShowThinking(" newest-live-marker")
+	m.refreshReasoningRecord(record, testThinkingWidth)
+	block = plainStyledText(m.transcript[record.transcriptIndex])
+	if !strings.Contains(block, "newest-live-marker") {
+		t.Fatalf("open disclosure did not follow the live stream: %q", block)
+	}
+	if got := strings.Count(block, "\n"); got != reasoningPreviewLines {
+		t.Fatalf("live preview grew to %d rows, want %d: %q", got, reasoningPreviewLines, block)
+	}
+}
+
+func TestThinkingDisclosureAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui.ShowThinking(strings.Repeat("bounded reasoning tail ", 16))
+	record := m.currentReasoningRecord()
+	if record == nil || !m.toggleReasoning(record.id, testThinkingWidth) || !record.expanded {
+		t.Fatal("fixture reasoning disclosure did not expand")
+	}
+
+	r.endTurn(nil)
+	if record.expanded || !record.complete || record.active || m.currentReasoningRecord() != nil {
+		t.Fatalf("completed reasoning record did not settle collapsed: %#v", record)
+	}
+	collapsed := plainStyledText(m.transcript[record.transcriptIndex])
+	if !strings.Contains(collapsed, "▸ Thought") || strings.Contains(collapsed, "bounded reasoning") {
+		t.Fatalf("completed disclosure should be a collapsed Thought row: %q", collapsed)
+	}
+
+	// With no active turn, Ctrl-O targets the newest completed disclosure.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if !record.expanded {
+		t.Fatal("idle Ctrl-O did not reopen the newest completed disclosure")
+	}
+	opened := plainStyledText(m.transcript[record.transcriptIndex])
+	if !strings.Contains(opened, "▾ Thought") || !strings.Contains(opened, "bounded reasoning") {
+		t.Fatalf("reopened completed disclosure = %q", opened)
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if record.expanded {
+		t.Fatal("second idle Ctrl-O did not collapse the completed disclosure")
+	}
+}
+
+func TestCtrlOPrearmsActiveTurnBeforeFirstReasoningChunk(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("first")
+	firstUI := &gotuiTurnUI{repl: r, config: r.config}
+	firstUI.ShowThinking("older completed reasoning")
+	older := m.currentReasoningRecord()
+	r.endTurn(nil)
+
+	m.beginTurn("second")
+	if m.currentReasoningRecord() != nil {
+		t.Fatal("active turn unexpectedly had reasoning before its first chunk")
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if !m.turnReasoningOpen || older.expanded {
+		t.Fatalf("pre-arm targeted the wrong turn: pending=%v older=%#v", m.turnReasoningOpen, older)
+	}
+
+	secondUI := &gotuiTurnUI{repl: r, config: r.config}
+	secondUI.ShowThinking("new live reasoning")
+	active := m.currentReasoningRecord()
+	m.refreshReasoningRecords(testThinkingWidth)
+	if active == nil || !active.expanded {
+		t.Fatalf("first reasoning chunk did not honor the pre-armed disclosure: %#v", active)
+	}
+	if shown := plainStyledText(m.transcript[active.transcriptIndex]); !strings.Contains(shown, "new live reasoning") {
+		t.Fatalf("pre-armed disclosure did not show the live tail: %q", shown)
+	}
+}
+
+func TestFailedReasoningDisclosureIsLocalAndMarkedUnsaved(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui.ShowThinking("reasoning from a failed turn")
+	record := m.currentReasoningRecord()
+	r.endTurn(errors.New("provider failed"))
+	if record == nil || !record.complete || !record.unsaved || record.expanded {
+		t.Fatalf("failed reasoning disclosure = %#v", record)
+	}
+	if collapsed := plainStyledText(m.transcript[record.transcriptIndex]); !strings.Contains(collapsed, "not saved") || strings.Contains(collapsed, "reasoning from") {
+		t.Fatalf("failed collapsed disclosure = %q", collapsed)
+	}
+	if !m.toggleReasoning(record.id, testThinkingWidth) {
+		t.Fatal("failed reasoning disclosure did not expand locally")
+	}
+	if expanded := plainStyledText(m.transcript[record.transcriptIndex]); !strings.Contains(expanded, "reasoning from a failed turn") {
+		t.Fatalf("failed local reasoning tail = %q", expanded)
+	}
+}
+
+func TestClearDuringReasoningStartsOneCleanDisclosure(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui.ShowThinking("reasoning before clear")
+	m.reasoningPlacements = []disclosurePlacement{{recordID: m.turnReasoningID, Cols: 10}}
+	m.clearDisplay()
+	if len(m.reasoningRecords) != 0 || len(m.reasoningAt) != 0 || len(m.reasoningPlacements) != 0 || m.currentReasoningRecord() != nil {
+		t.Fatalf("clear retained reasoning state: records=%d at=%d placements=%d current=%#v",
+			len(m.reasoningRecords), len(m.reasoningAt), len(m.reasoningPlacements), m.currentReasoningRecord())
+	}
+
+	tui.ShowThinking("reasoning after clear")
+	record := m.currentReasoningRecord()
+	if record == nil || len(m.reasoningRecords) != 1 || len(m.reasoningOrder) != 1 || strings.Contains(string(record.tail), "before clear") {
+		t.Fatalf("post-clear reasoning disclosure = %#v records=%d order=%d", record, len(m.reasoningRecords), len(m.reasoningOrder))
+	}
+}
+
+func TestThinkingDisclosureAggregatesToolPhasesAndExpansionIsPerTurn(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.beginTurn("explain")
+	m.beginTurn("first")
 	tui := &gotuiTurnUI{repl: r, config: r.config}
 
-	// Six reasoning segments, each broken by a tool call.
-	for i := 0; i < 6; i++ {
-		tui.ShowThinking(fmt.Sprintf("segment %d reasoning about the file\n", i))
-		m.refreshThinkingBlock(testThinkingWidth)
-		call := messages.ChatMessageToolCall{ID: fmt.Sprintf("c%d", i), Name: "bash"}
-		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-		tui.AppendToolEnd(call, "ok", time.Second, nil)
+	tui.ShowThinking("first phase reasoning")
+	first := m.currentReasoningRecord()
+	if first == nil || !m.toggleReasoning(first.id, testThinkingWidth) {
+		t.Fatal("first disclosure did not expand")
 	}
-	tui.AppendAssistantText("Fixed.")
-
-	rollups := 0
-	for _, e := range m.transcript {
-		if strings.Contains(e, "thought for") {
-			rollups++
-		}
+	tui.AppendAssistantText("interim prose")
+	call := messages.ChatMessageToolCall{ID: "c1", Name: "bash"}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+	tui.AppendToolEnd(call, "ok", time.Second, nil)
+	if !first.expanded {
+		t.Fatal("assistant/tool phase collapsed an explicitly opened disclosure")
 	}
-	if rollups != 1 {
-		t.Fatalf("a turn should keep exactly one reasoning rollup, got %d: %#v", rollups, m.transcript)
+	tui.ShowThinking("second phase reasoning")
+	m.refreshReasoningRecord(first, testThinkingWidth)
+	if got := string(first.tail); !strings.Contains(got, "first phase reasoning\nsecond phase reasoning") {
+		t.Fatalf("tool-separated reasoning was not aggregated with a boundary: %q", got)
 	}
-	// It reports the whole turn's reasoning, not just the last segment's.
-	if m.thinkingTurnChars < 6*len("segment 0 reasoning about the file\n") {
-		t.Fatalf("rollup totals should accumulate, got %d chars", m.thinkingTurnChars)
-	}
-	// Every segment is still recoverable through /thinking.
-	if len(m.thinkingLog) != 6 {
-		t.Fatalf("log should hold every segment: %#v", m.thinkingLog)
-	}
-	// The rollup sits where the first segment was, above the activity.
-	if m.thinkingRollupIndex < 0 || m.thinkingRollupIndex > 1 {
-		t.Fatalf("rollup should stay at the first segment's position, got %d", m.thinkingRollupIndex)
+	if len(m.reasoningRecords) != 1 || m.currentReasoningRecord() != first || !first.expanded {
+		t.Fatalf("tool phase created or reset the per-turn disclosure: records=%d current=%#v first=%#v", len(m.reasoningRecords), m.currentReasoningRecord(), first)
 	}
 
-	// A new turn starts its own rollup rather than extending the last.
-	m.beginTurn("again")
-	if m.thinkingRollupIndex != -1 || m.thinkingTurnChars != 0 || m.thinkingTurnDur != 0 {
-		t.Fatalf("turn totals should reset: %d %d %v",
-			m.thinkingRollupIndex, m.thinkingTurnChars, m.thinkingTurnDur)
+	tui.AppendAssistantText("final prose")
+	r.endTurn(nil)
+	if first.expanded {
+		t.Fatal("first turn did not auto-collapse on completion")
+	}
+
+	m.beginTurn("second")
+	secondUI := &gotuiTurnUI{repl: r, config: r.config}
+	secondUI.ShowThinking("independent second-turn reasoning")
+	second := m.currentReasoningRecord()
+	if second == nil || second.id == first.id || second.expanded {
+		t.Fatalf("second turn did not start with an independent collapsed record: first=%#v second=%#v", first, second)
+	}
+	if !m.toggleReasoning(first.id, testThinkingWidth) || !first.expanded || second.expanded {
+		t.Fatalf("opening the older turn affected the active turn: first=%#v second=%#v", first, second)
+	}
+	if !m.toggleLatestReasoning(testThinkingWidth) || !second.expanded || !first.expanded {
+		t.Fatalf("active-turn toggle did not remain per-turn: first=%#v second=%#v", first, second)
 	}
 }
 
-// The block tracks the stream: the newest words show as they arrive instead of
-// waiting to fill a line, and the oldest scroll off the top.
-func TestThinkingBlockShowsUnsettledTailLive(t *testing.T) {
+func TestReasoningTailLinesUseDisplayWidthForCJK(t *testing.T) {
+	const width = 6
+	lines := reasoningTailLines("甲乙丙丁戊己庚辛壬癸子丑", width, reasoningPreviewLines)
+	if len(lines) != reasoningPreviewLines {
+		t.Fatalf("CJK preview rows = %#v, want %d", lines, reasoningPreviewLines)
+	}
+	for i, line := range lines {
+		if got := rw.StringWidth(line); got > width {
+			t.Fatalf("CJK row %d display width = %d, want <= %d: %q", i, got, width, line)
+		}
+	}
+	joined := strings.Join(lines, "")
+	if !strings.Contains(joined, "丑") || strings.Contains(joined, "甲") {
+		t.Fatalf("CJK preview should retain the newest bounded rows: %#v", lines)
+	}
+}
+
+func TestReasoningDisclosureStaysBoundedOnTinyTerminal(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, config: r.config}
-
-	// A partial line, far too short to settle, must still be visible.
-	tui.ShowThinking("just starting")
-	m.refreshThinkingBlock(testThinkingWidth)
-	if !strings.Contains(m.transcript[m.thinkingIndex], "just starting") {
-		t.Fatalf("partial text should render immediately: %q", m.transcript[m.thinkingIndex])
+	tui.ShowThinking("甲乙丙丁 lots of reasoning that would otherwise wrap")
+	record := m.currentReasoningRecord()
+	if record == nil {
+		t.Fatal("reasoning record was not created")
 	}
-
-	// Growing it word by word keeps the newest text on screen every frame.
-	for _, word := range []string{" and", " then", " continuing", " onward"} {
-		tui.ShowThinking(word)
-		m.refreshThinkingBlock(testThinkingWidth)
-		if !strings.Contains(plainStyledText(m.transcript[m.thinkingIndex]), strings.TrimSpace(word)) {
-			t.Fatalf("newest word %q missing: %q", word, m.transcript[m.thinkingIndex])
-		}
-	}
-
-	// Past the cap the block stays bounded and drops the oldest lines.
-	for i := 0; i < 40; i++ {
-		tui.ShowThinking(fmt.Sprintf("filler phrase %d ", i))
-		m.refreshThinkingBlock(testThinkingWidth)
-	}
-	block := m.transcript[m.thinkingIndex]
-	if got := strings.Count(block, "\n") + 1; got > thinkingBlockLines {
-		t.Fatalf("block grew past %d lines: %d", thinkingBlockLines, got)
-	}
-	if strings.Contains(block, "just starting") {
-		t.Fatalf("oldest text should have scrolled off: %q", block)
-	}
-	if !strings.Contains(block, "39") {
-		t.Fatalf("newest text should be visible: %q", block)
+	record.expanded = true
+	m.refreshReasoningRecord(record, rw.StringWidth(reasoningBlockIndent)+1)
+	if got := strings.Count(m.transcript[record.transcriptIndex], "\n"); got != 0 {
+		t.Fatalf("tiny terminal rendered wrapped preview rows: %q", m.transcript[record.transcriptIndex])
 	}
 }
 
-func TestThinkingLineSettlingBreaksOnWordBoundaries(t *testing.T) {
-	// A hard newline settles immediately, however short the line.
-	line, rest, ok := takeThinkingLine([]rune("short\nmore text"), 40)
-	if !ok || line != "short" || string(rest) != "more text" {
-		t.Fatalf("newline should settle a line: %q %q %v", line, string(rest), ok)
+func TestExpandedShortReasoningReservesTwoDetailRows(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui.ShowThinking("short")
+	record := m.currentReasoningRecord()
+	if record == nil || !m.toggleReasoning(record.id, testThinkingWidth) {
+		t.Fatal("short reasoning disclosure did not expand")
+	}
+	shown := m.transcript[record.transcriptIndex]
+	if got := strings.Count(shown, "\n"); got != 2 {
+		t.Fatalf("expanded short reasoning has %d detail rows, want 2: %q", got, shown)
+	}
+	if plain := plainStyledText(shown); !strings.Contains(plain, "short") {
+		t.Fatalf("expanded short reasoning lost its content: %q", plain)
+	}
+}
+
+func TestLiveReasoningResizePreservesScrolledVisualAnchor(t *testing.T) {
+	const width = 24
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui.ShowThinking("short")
+	record := m.currentReasoningRecord()
+	if record == nil || !m.toggleReasoning(record.id, width) {
+		t.Fatal("reasoning fixture did not expand")
+	}
+	for i := 0; i < 8; i++ {
+		m.appendLine(fmt.Sprintf("later %d", i))
+	}
+	oldCount := m.entryVisualLineCount(record.transcriptIndex, width)
+	m.followBottom = false
+	m.scrollAnchor = m.entryVisualStart(record.transcriptIndex, width) + oldCount + 2
+	before := m.scrollAnchor
+
+	tui.ShowThinking(strings.Repeat(" additional words", 20))
+	m.refreshReasoningRecords(width)
+	newCount := m.entryVisualLineCount(record.transcriptIndex, width)
+	if newCount <= oldCount {
+		t.Fatalf("fixture did not grow: %d -> %d", oldCount, newCount)
+	}
+	if want := before + newCount - oldCount; m.scrollAnchor != want {
+		t.Fatalf("live growth moved held viewport: anchor=%d, want %d", m.scrollAnchor, want)
+	}
+}
+
+func TestCompletedReasoningDisclosureMouseHitboxTracksViewport(t *testing.T) {
+	const width = 50
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui.ShowThinking("clickable completed reasoning")
+	record := m.currentReasoningRecord()
+	r.endTurn(nil)
+	for i := 0; i < 6; i++ {
+		m.appendLine(fmt.Sprintf("later row %d", i))
 	}
 
-	// Text that cannot fill a line is held back rather than shown partially.
-	if _, _, ok := takeThinkingLine([]rune("not yet wide"), 40); ok {
-		t.Fatal("short pending text should not settle")
+	rows := m.transcriptRows(width)
+	visible := m.visibleReasoningPlacements(len(rows), 3, 0, 0, width, false, false)
+	if len(visible) != 1 || visible[0].recordID != record.id {
+		t.Fatalf("visible completed disclosure placement = %#v", visible)
+	}
+	if hidden := m.visibleReasoningPlacements(len(rows), 3, 4, 0, width, false, false); len(hidden) != 0 {
+		t.Fatalf("offscreen disclosure retained a click target: %#v", hidden)
 	}
 
-	// A long run breaks at the last space that fits, never mid-word.
-	line, rest, ok = takeThinkingLine([]rune("alpha beta gamma delta epsilon zeta"), 20)
-	if !ok {
-		t.Fatal("long text should settle a line")
+	m.reasoningPlacements = visible
+	p := visible[0]
+	if !m.toggleReasoningAt(p.X+1, p.Y, width) || !record.expanded {
+		t.Fatal("clicking the completed disclosure label did not expand it")
 	}
-	if len(line) > 20 {
-		t.Fatalf("settled line too wide: %q", line)
-	}
-	if strings.HasSuffix(line, "gamm") || strings.HasPrefix(strings.TrimSpace(string(rest)), "amma") {
-		t.Fatalf("line broke mid-word: %q | %q", line, string(rest))
-	}
-	if !strings.HasPrefix(line, "alpha beta") {
-		t.Fatalf("line should start at the beginning: %q", line)
-	}
-
-	// A paragraph longer than the width must wrap to it rather than settling
-	// as one over-wide line just because a newline eventually follows.
-	long := strings.Repeat("word ", 30) + "\ntail"
-	line, _, ok = takeThinkingLine([]rune(long), 24)
-	if !ok || len(line) > 24 {
-		t.Fatalf("a long paragraph must wrap to the width, got %d chars: %q", len(line), line)
+	if m.toggleReasoningAt(p.X+p.Cols, p.Y, width) {
+		t.Fatal("click immediately outside the label hitbox toggled reasoning")
 	}
 }
 

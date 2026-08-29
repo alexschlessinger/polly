@@ -338,31 +338,40 @@ func TestRunningToolLine(t *testing.T) {
 func TestActiveToolLifecycle(t *testing.T) {
 	m := newReplModel()
 
-	// Starting a tool adds one transcript line and tracks it.
+	// Starting a tool adds one collapsed disclosure and tracks its semantic row.
 	m.appendToolStartLine("id1", "bash sleep 30")
 	if len(m.transcript) != 1 || len(m.activeTools) != 1 {
 		t.Fatalf("after start: %d transcript, %d active", len(m.transcript), len(m.activeTools))
 	}
-	if m.activeTools[0].index != 0 {
-		t.Fatalf("active tool index = %d, want 0", m.activeTools[0].index)
+	if m.activeTools[0].row != 0 {
+		t.Fatalf("active tool row = %d, want 0", m.activeTools[0].row)
+	}
+	record := m.currentToolDisclosure()
+	if record == nil || record.expanded || len(record.rows) != 1 || !strings.Contains(m.transcript[0], "1 tool call") {
+		t.Fatalf("started disclosure = %#v transcript=%#v", record, m.transcript)
 	}
 
-	// A render frame rewrites the line with live elapsed time.
+	// A render frame updates the hidden semantic row without leaking its timer.
 	m.activeTools[0].started = m.activeTools[0].started.Add(-15500 * time.Millisecond)
 	m.refreshActiveTools()
-	if !strings.Contains(m.transcript[0], "15.5s") {
-		t.Fatalf("refreshed line missing elapsed: %q", m.transcript[0])
+	if strings.Contains(m.transcript[0], "15.5s") || !strings.Contains(record.rows[0].line, "15.5s") {
+		t.Fatalf("collapsed timer update: row=%q transcript=%q", record.rows[0].line, m.transcript[0])
+	}
+	if !m.toggleToolDisclosure(record.id) || !strings.Contains(m.transcript[0], "15.5s") {
+		t.Fatalf("expanded disclosure missing elapsed: %q", m.transcript[0])
 	}
 
-	// Finishing it frees the slot and freezes the line in place — still one line.
-	idx, ok := m.takeActiveTool("id1")
-	if !ok || idx != 0 {
-		t.Fatalf("takeActiveTool = (%d, %v), want (0, true)", idx, ok)
+	// Finishing frees the active slot and freezes the same semantic row.
+	row, ok := m.takeActiveTool("id1")
+	if !ok || row != 0 {
+		t.Fatalf("takeActiveTool = (%d, %v), want (0, true)", row, ok)
 	}
 	if len(m.activeTools) != 0 {
 		t.Fatalf("active tools should be empty, got %d", len(m.activeTools))
 	}
-	m.transcript[idx] = toolOKLine("bash sleep 30", "30.0s", "")
+	record.rows[row].line = toolOKLine("bash sleep 30", "30.0s", "")
+	record.rows[row].settled = true
+	m.refreshToolDisclosure(record)
 	if len(m.transcript) != 1 || !strings.Contains(m.transcript[0], "✓") {
 		t.Fatalf("finalized transcript = %v", m.transcript)
 	}
@@ -370,10 +379,10 @@ func TestActiveToolLifecycle(t *testing.T) {
 
 func TestTakeActiveToolMatchesByIDWithFallback(t *testing.T) {
 	m := newReplModel()
-	m.appendToolStartLine("a", "bash one") // index 0
-	m.appendToolStartLine("b", "bash two") // index 1
+	m.appendToolStartLine("a", "bash one") // row 0
+	m.appendToolStartLine("b", "bash two") // row 1
 
-	// Out-of-order finish: the second tool's id resolves to its own line.
+	// Out-of-order finish: the second tool's id resolves to its own row.
 	if idx, ok := m.takeActiveTool("b"); !ok || idx != 1 {
 		t.Fatalf("take(b) = (%d, %v), want (1, true)", idx, ok)
 	}
@@ -487,8 +496,8 @@ func TestCompleteSlash(t *testing.T) {
 		// "/c" matches /clear and /context; common prefix extends to "/c".
 		{"/c", true, "/c", []string{"/clear", "/context"}},
 		{"/cl", true, "/clear", []string{"/clear"}},
-		// "/t" is ambiguous: it completes to the shared prefix and lists both.
-		{"/t", true, "/t", []string{"/thinking", "/tools"}},
+		// With /thinking removed, "/t" uniquely completes to /tools.
+		{"/t", true, "/tools", []string{"/tools"}},
 		{"/to", true, "/tools", []string{"/tools"}},
 		// Already complete stays put but still reports its single match.
 		{"/help", true, "/help", []string{"/help"}},
@@ -623,8 +632,8 @@ func TestSlashHintsLiveFilterAndEscape(t *testing.T) {
 		t.Fatalf("typing / should show all commands, got %q", r.model.slashHints)
 	}
 	send("t")
-	if got := r.model.slashHints; !strings.Contains(got, "/tools") || !strings.Contains(got, "/thinking") {
-		t.Fatalf("typing /t should narrow hints to the two /t commands, got %q", got)
+	if got := r.model.slashHints; !strings.Contains(got, "/tools") || strings.Contains(got, "/thinking") {
+		t.Fatalf("typing /t should narrow hints to /tools, got %q", got)
 	}
 
 	// Escape hides the line without touching the input…

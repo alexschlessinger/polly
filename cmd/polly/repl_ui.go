@@ -639,22 +639,18 @@ type replModel struct {
 	slashHints       string
 	slashHintsHidden bool
 	slashHintSource  string
-	// activeTools tracks tool calls currently executing, each pinned to the
-	// transcript entry that displays it. While a tool runs, render() rewrites
-	// that entry every frame with a breathing arrow and live elapsed time; when
-	// it finishes the entry is frozen into the final ✓/✗ line. Parallel calls
-	// finish out of order, so each is matched back to its line by call ID.
+	// activeTools tracks tool calls currently executing, each pinned to its row
+	// inside the current disclosure. While expanded, render() rewrites those
+	// rows with a breathing arrow and live elapsed time. Parallel calls finish
+	// out of order, so each is matched back to its row by call ID.
 	activeTools []activeTool
-	// toolWindow pins the transcript entries of the current turn's visible
-	// tool rows, oldest first. At most toolWindowSize rows stay visible;
-	// older rows fold into the turn's rollup line.
-	toolWindow []int
-	// toolRollupIndex is the transcript entry holding this turn's "… N tool
-	// calls" rollup, or -1 while every call is still visible.
-	toolRollupIndex int
-	// turnToolCalls counts every tool call started this turn, visible or
-	// folded — the total the rollup line reports.
-	turnToolCalls int
+	// Tool activity is a semantic disclosure from its first call. It defaults
+	// collapsed; deliberate expansion reveals every live or completed row.
+	toolDisclosures          map[int64]*toolDisclosureRecord
+	toolDisclosureAt         map[int]int64 // transcript index -> disclosure ID
+	toolDisclosureSeq        int64
+	turnToolDisclosureID     int64
+	toolDisclosurePlacements []disclosurePlacement
 
 	ed           lineEditor
 	busy         bool
@@ -705,34 +701,21 @@ type replModel struct {
 	// the status row shows a ~chars/4 token estimate while state is thinking.
 	thinkingChars int
 
-	// Live reasoning block. thinkingIndex is the transcript entry showing the
-	// current segment (-1 when none is open); thinkingWrapped holds the lines
-	// it has settled and thinkingPending the runes not yet wide enough to
-	// settle into one. Text is committed a whole line at a time so the block
-	// steps instead of reflowing on every chunk. thinkingStarted and
-	// thinkingSegChars back the rollup the segment collapses into.
-	thinkingIndex    int
-	thinkingWrapped  []string
-	thinkingPending  []rune
-	thinkingStarted  time.Time
-	thinkingSegChars int
-	// thinkingSegRaw accumulates the segment's reasoning verbatim, separate
-	// from the display window, which discards what scrolls past it.
-	thinkingSegRaw strings.Builder
-
-	// A turn gets one reasoning rollup, not one per segment: an agentic turn
-	// can think dozens of times between tool calls, and a line each would bury
-	// the prose. thinkingRollupIndex is that entry (-1 before the first
-	// segment closes); the totals it reports accumulate across the turn.
-	thinkingRollupIndex int
-	thinkingTurnDur     time.Duration
-	thinkingTurnChars   int
-
-	// thinkingLog keeps each completed segment's full reasoning for this
-	// session, so /thinking can show what the block only ever windowed. Not
-	// persisted — providers stream reasoning once and it is dropped from the
-	// assistant message, so this is the only copy and it dies with the process.
-	thinkingLog []string
+	// Reasoning disclosures are semantic per-turn records rather than free-form
+	// transcript strings. The UI retains only a bounded tail; successful turns
+	// already persist their complete provider reasoning on ChatMessage and
+	// hydrate it back into a fresh bounded record after restart.
+	reasoningRecords     map[int64]*reasoningRecord
+	reasoningAt          map[int]int64 // transcript index -> record ID
+	reasoningOrder       []int64       // creation order, for Ctrl-O
+	reasoningSeq         int64
+	turnReasoningID      int64
+	turnReasoningOpen    bool // Ctrl-O can pre-arm disclosure before the first chunk
+	thinkingIndex        int  // current turn's disclosure entry, or -1
+	thinkingSegmentOpen  bool
+	thinkingSegmentStart time.Time
+	reasoningPlacements  []disclosurePlacement
+	reasoningWidth       int // last renderer width; avoids terminal access from provider callbacks
 
 	// focusKnown/focused mirror the terminal's focus reports (tcell
 	// EnableFocus). Desktop notifications fire only when the terminal has
@@ -749,7 +732,6 @@ type replModel struct {
 	// streaming assistant block ("" when hidden). Tracked like the breathing
 	// tool arrows so a pulse flip invalidates the visual cache.
 	streamCursorFrame string
-
 
 	// Failed/canceled input is restored to the composer. When submitted again
 	// unchanged, restoreDraftNext reuses its already-persisted user message;
@@ -771,12 +753,58 @@ type replModel struct {
 }
 
 type transcriptVisualBlock struct {
-	key        string
-	text       string
-	followed   bool
-	rows       [][]ui.Cell
-	images     []transcriptImage
-	imageSpans []transcriptImageSpan
+	key              string
+	text             string
+	followed         bool
+	rows             [][]ui.Cell
+	images           []transcriptImage
+	imageSpans       []transcriptImageSpan
+	reasoningID      int64
+	toolDisclosureID int64
+}
+
+// reasoningRecord is the display projection of one user turn's provider
+// reasoning. tail is intentionally bounded; the durable ChatMessage remains
+// the authoritative complete copy for successful turns.
+type reasoningRecord struct {
+	id              int64
+	transcriptIndex int
+	tail            []rune
+	tailVersion     uint64
+	previewVersion  uint64
+	previewWidth    int
+	previewLines    []string
+	dirty           bool
+	expanded        bool
+	active          bool
+	complete        bool
+	unsaved         bool
+	elapsed         time.Duration
+}
+
+// disclosurePlacement is the last rendered header-row geometry for one
+// disclosure. Like native image placements, it is viewport-aware and exists
+// only for mouse hit-testing.
+type disclosurePlacement struct {
+	recordID int64
+	X, Y     int
+	Cols     int
+}
+
+type toolDisclosureRow struct {
+	callID  string
+	label   string
+	line    string
+	images  []transcriptImage
+	settled bool
+}
+
+type toolDisclosureRecord struct {
+	id              int64
+	transcriptIndex int
+	rows            []toolDisclosureRow
+	expanded        bool
+	complete        bool
 }
 
 type approvalState struct {
@@ -794,13 +822,16 @@ func newReplModel() *replModel {
 	m := &replModel{
 		currentAssistant: -1,
 		transcriptImages: make(map[int][]transcriptImage),
+		toolDisclosures:  make(map[int64]*toolDisclosureRecord),
+		toolDisclosureAt: make(map[int]int64),
+		reasoningRecords: make(map[int64]*reasoningRecord),
+		reasoningAt:      make(map[int]int64),
+		reasoningWidth:   80,
 		imageBaseDir:     baseDir,
 		historyIdx:       -1,
 		state:            turnStateIdle,
-		followBottom:        true,
-		toolRollupIndex:     -1,
-		thinkingIndex:       -1,
-		thinkingRollupIndex: -1,
+		followBottom:     true,
+		thinkingIndex:    -1,
 	}
 	m.ed.goalCol = -1
 	return m
@@ -963,17 +994,17 @@ func (m *replModel) statusActivity() (raw, rendered string) {
 // the live thinking counter; the value is presented with a "~".
 const thinkingCharsPerToken = 4
 
-// thinkingBlockLines is how many settled reasoning lines stay on screen, and
-// thinkingBlockMaxWidth caps how wide they wrap on a roomy terminal so the
-// block reads as a quoted aside rather than full-bleed body text.
+// reasoningPreviewLines is the bounded expanded tail. reasoningPreviewMaxWidth
+// keeps it readable on roomy terminals. The retained/limit pair bounds the
+// duplicate display copy while amortizing compaction of streamed chunks.
 const (
-	thinkingBlockLines    = 3
-	thinkingBlockMaxWidth = 78
+	reasoningPreviewLines    = 3
+	reasoningPreviewMaxWidth = 78
+	reasoningTailRetainRunes = 8192
+	reasoningTailLimitRunes  = 2 * reasoningTailRetainRunes
 )
 
-// thinkingBlockIndent is the gutter every reasoning line sits in; the first
-// line replaces its last two columns with the caret.
-const thinkingBlockIndent = "    "
+const reasoningBlockIndent = "    "
 
 // activityTicker is the pinned bottom-row notice shown while the user is
 // scrolled up: how much transcript lies below the viewport, what the agent is
@@ -1142,12 +1173,46 @@ func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
 }
 
 func (m *replModel) deleteTranscriptEntry(index int) {
+	if id, ok := m.reasoningAt[index]; ok {
+		delete(m.reasoningAt, index)
+		delete(m.reasoningRecords, id)
+		for i, orderedID := range m.reasoningOrder {
+			if orderedID == id {
+				m.reasoningOrder = append(m.reasoningOrder[:i], m.reasoningOrder[i+1:]...)
+				break
+			}
+		}
+		if m.turnReasoningID == id {
+			m.resetCurrentThinking()
+		}
+	}
+	if id, ok := m.toolDisclosureAt[index]; ok {
+		delete(m.toolDisclosureAt, index)
+		delete(m.toolDisclosures, id)
+		if m.turnToolDisclosureID == id {
+			m.turnToolDisclosureID = 0
+		}
+	}
 	m.transcript = append(m.transcript[:index], m.transcript[index+1:]...)
 	delete(m.transcriptImages, index)
 	for i := index + 1; i <= len(m.transcript); i++ {
 		if images, ok := m.transcriptImages[i]; ok {
 			m.transcriptImages[i-1] = images
 			delete(m.transcriptImages, i)
+		}
+		if id, ok := m.reasoningAt[i]; ok {
+			m.reasoningAt[i-1] = id
+			delete(m.reasoningAt, i)
+			if record := m.reasoningRecords[id]; record != nil {
+				record.transcriptIndex = i - 1
+			}
+		}
+		if id, ok := m.toolDisclosureAt[i]; ok {
+			m.toolDisclosureAt[i-1] = id
+			delete(m.toolDisclosureAt, i)
+			if record := m.toolDisclosures[id]; record != nil {
+				record.transcriptIndex = i - 1
+			}
 		}
 	}
 	for i := range m.queue {
@@ -1289,241 +1354,184 @@ func (m *replModel) appendTurnSeparator() {
 	m.appendLine("")
 }
 
-// activeTool is one still-executing tool call, pinned to the transcript entry
-// that displays it.
+// activeTool is one still-executing tool call, pinned to its disclosure row.
 type activeTool struct {
 	id      string
-	index   int
+	row     int
 	label   string
 	started time.Time
 }
 
-// appendToolStartLine adds a transcript entry for a tool that just began and
-// starts tracking it so render() can animate it. The placeholder text is
-// rewritten on the very next frame by refreshActiveTools.
+func (m *replModel) currentToolDisclosure() *toolDisclosureRecord {
+	if m.turnToolDisclosureID == 0 {
+		return nil
+	}
+	return m.toolDisclosures[m.turnToolDisclosureID]
+}
+
+func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
+	if record := m.currentToolDisclosure(); record != nil {
+		return record
+	}
+	m.toolDisclosureSeq++
+	record := &toolDisclosureRecord{id: m.toolDisclosureSeq, transcriptIndex: len(m.transcript)}
+	m.toolDisclosures[record.id] = record
+	m.turnToolDisclosureID = record.id
+	m.appendLine("")
+	record.transcriptIndex = len(m.transcript) - 1
+	m.toolDisclosureAt[record.transcriptIndex] = record.id
+	return record
+}
+
+// appendToolStartLine adds a live row inside the turn's disclosure. The
+// disclosure exists and is collapsed from the first call; render() animates
+// the row only when the user deliberately expands it.
 func (m *replModel) appendToolStartLine(id, label string) {
-	m.appendLine(runningToolLine(label, 0))
+	record := m.appendToolStartRow(id, label)
+	m.refreshToolDisclosure(record)
+}
+
+func (m *replModel) appendToolStartRow(id, label string) *toolDisclosureRecord {
+	label = stripTranscriptImageMarkers(label)
+	record := m.ensureToolDisclosure()
+	row := len(record.rows)
+	record.rows = append(record.rows, toolDisclosureRow{
+		callID: id,
+		label:  label,
+		line:   runningToolLine(label, 0),
+	})
 	m.activeTools = append(m.activeTools, activeTool{
 		id:      id,
-		index:   len(m.transcript) - 1,
+		row:     row,
 		label:   label,
 		started: time.Now(),
 	})
-	m.turnToolCalls++
-	m.toolWindow = append(m.toolWindow, len(m.transcript)-1)
-	m.foldToolWindow()
+	return record
 }
 
-// toolWindowSize is how many of the current turn's tool rows stay visible.
-// Older rows fold into a single rollup line stating the turn's running
-// total, so a long tool run cannot push the surrounding prose off-screen.
-const toolWindowSize = 3
-
-// toolRollupLine renders the stand-in for every folded tool row. total is
-// the whole turn's call count, visible rows included; the line only exists
-// once that count exceeds toolWindowSize.
-func toolRollupLine(total int) string {
+func toolDisclosureHeader(total int, expanded bool) string {
 	word := "tool calls"
 	if total == 1 {
 		word = "tool call"
 	}
-	return "  " + styled("…", "muted", "bold") + " " +
-		styled(fmt.Sprintf("%d %s", total, word), "muted", "")
-}
-
-// foldToolWindow enforces toolWindowSize over the current turn's tool rows.
-// The first fold converts a row's slot into the rollup line; later folds
-// delete their row outright. A folded call survives only in the rollup's
-// count.
-//
-// Rows fold oldest-first, but a still-running row is skipped rather than
-// blocking the ones behind it: a call in a parallel batch releases its row as
-// soon as it settles, so an oversized batch drains steadily instead of
-// standing at full height and collapsing in one step. What stays on screen is
-// therefore every in-flight call plus the most recent settled rows, and the
-// area shrinks as the batch completes. While folding is skipping a running
-// row the rollup can briefly sit below it; that resolves when the call
-// settles and its row folds in turn.
-func (m *replModel) foldToolWindow() {
-	m.foldToolWindowTo(toolWindowSize)
-}
-
-// collapseToolWindow folds every remaining row into the rollup, leaving a
-// settled turn one line of tool activity however much of it there was. Called
-// at turn end, where the rows have stopped changing and the live window has
-// served its purpose. Caller must hold m.mu.
-func (m *replModel) collapseToolWindow() {
-	m.foldToolWindowTo(0)
-}
-
-// foldToolWindowTo folds rows until at most limit remain visible.
-func (m *replModel) foldToolWindowTo(limit int) {
-	for len(m.toolWindow) > limit {
-		pos, ok := m.oldestSettledToolRow()
-		if !ok {
-			// Every visible row is still executing. Nothing may fold yet, so
-			// the window holds above the cap until calls start landing.
-			break
-		}
-		idx := m.toolWindow[pos]
-		m.toolWindow = append(m.toolWindow[:pos], m.toolWindow[pos+1:]...)
-		switch {
-		case m.toolRollupIndex < 0:
-			m.placeToolRollup(idx)
-		case idx < m.toolRollupIndex:
-			// Calls fold in completion order, so a row earlier than the rollup
-			// can fold after it was planted. Move the summary up into that slot
-			// and drop its old row, keeping it above every row it stands for
-			// rather than stranded among the survivors.
-			old := m.toolRollupIndex
-			m.placeToolRollup(idx)
-			m.anchorForRemovedLines(m.entryFlatStart(old), m.entryLineCount(old))
-			m.removeToolRow(old)
-		default:
-			m.anchorForRemovedLines(m.entryFlatStart(idx), m.entryLineCount(idx))
-			m.removeToolRow(idx)
-		}
+	glyph := "▸"
+	if expanded {
+		glyph = "▾"
 	}
-	m.refreshToolRollup()
+	return "  " + styled(glyph, "accent", "bold") + " " +
+		styled(fmt.Sprintf("%d %s", total, word), "muted", "bold")
 }
 
-// placeToolRollup turns a folded row's slot into the rollup line. A row
-// carrying tool output images is multi-line; it collapses to the single
-// rollup line, and those images go with it. Caller must hold m.mu.
-func (m *replModel) placeToolRollup(index int) {
-	m.anchorForRemovedLines(m.entryFlatStart(index)+1, m.entryLineCount(index)-1)
-	m.transcript[index] = toolRollupLine(m.turnToolCalls)
-	m.setTranscriptImages(index, nil)
-	m.toolRollupIndex = index
-	m.invalidateFlat()
-}
-
-// oldestSettledToolRow returns the window position of the earliest row whose
-// call has finished — the next one eligible to fold. Reports false when every
-// visible row is still executing. Caller must hold m.mu.
-func (m *replModel) oldestSettledToolRow() (int, bool) {
-	for pos, idx := range m.toolWindow {
-		if !m.toolRowRunning(idx) {
-			return pos, true
-		}
+func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage) {
+	if record == nil {
+		return "", nil
 	}
-	return 0, false
-}
-
-// toolRowRunning reports whether a transcript entry is a tool row whose call
-// is still executing. Pins are matched by transcript index, so a stale entry
-// left by an interrupted turn cannot hold a row open once its index is gone.
-// Caller must hold m.mu.
-func (m *replModel) toolRowRunning(index int) bool {
-	for _, at := range m.activeTools {
-		if at.index == index {
-			return true
-		}
+	header := toolDisclosureHeader(len(record.rows), record.expanded)
+	if !record.expanded {
+		return header, nil
 	}
-	return false
+	var b strings.Builder
+	b.WriteString(header)
+	var images []transcriptImage
+	for _, row := range record.rows {
+		if row.line == "" {
+			continue
+		}
+		line := row.line
+		if len(row.images) > 0 {
+			if len(images)+len(row.images) <= maxTranscriptImagesPerBlock {
+				line = offsetTranscriptImageMarkers(line, len(images))
+				images = append(images, row.images...)
+			} else {
+				line = stripTranscriptImageMarkers(line)
+			}
+		}
+		b.WriteByte('\n')
+		b.WriteString(line)
+	}
+	return b.String(), images
 }
 
-// refreshToolRollup restates the rollup line with the turn's running total.
-// The count keeps climbing as calls start, so a window held open by in-flight
-// calls still reports honestly. Caller must hold m.mu.
-func (m *replModel) refreshToolRollup() {
-	if m.toolRollupIndex < 0 || m.toolRollupIndex >= len(m.transcript) {
+func (m *replModel) refreshToolDisclosure(record *toolDisclosureRecord) {
+	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return
 	}
-	next := toolRollupLine(m.turnToolCalls)
-	if m.transcript[m.toolRollupIndex] != next {
-		m.transcript[m.toolRollupIndex] = next
-		m.invalidateFlat()
+	index := record.transcriptIndex
+	text, images := toolDisclosureText(record)
+	if m.transcript[index] == text && transcriptImagesEqual(m.transcriptImages[index], images) {
+		return
+	}
+	width := m.reasoningWidth
+	oldCount, start := 0, 0
+	if !m.followBottom {
+		oldCount = m.entryVisualLineCount(index, width)
+		start = m.entryVisualStart(index, width)
+	}
+	m.transcript[index] = text
+	m.setTranscriptImages(index, images)
+	m.invalidateFlat()
+	if !m.followBottom {
+		m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(index, width))
 	}
 }
 
-// entryLineCount reports how many flattened rows a transcript entry
-// occupies, mirroring flattenTranscript's treatment of the provisional
-// streaming entry. Caller must hold m.mu.
-func (m *replModel) entryLineCount(index int) int {
+// completeToolDisclosure settles and auto-collapses the turn's tool activity.
+// Its rows remain available for deliberate expansion. Caller must hold m.mu.
+func (m *replModel) completeToolDisclosure() {
+	if record := m.currentToolDisclosure(); record != nil {
+		record.complete = true
+		record.expanded = false
+		m.refreshToolDisclosure(record)
+	}
+}
+
+func (m *replModel) entryVisualLineCount(index, width int) int {
 	if index < 0 || index >= len(m.transcript) {
 		return 0
 	}
-	e := m.transcript[index]
+	if width < 1 {
+		width = 80
+	}
+	entry := m.transcript[index]
 	if index == m.currentAssistant {
-		if e = strings.TrimRight(e, "\r\n"); e == "" {
+		entry = strings.TrimRight(entry, "\r\n")
+		if entry == "" {
 			return 0
 		}
+		entry += m.streamCursorFrame
 	}
-	return strings.Count(e, "\n") + 1
+	followed := index < len(m.transcript)-1 || m.slashHints != ""
+	rows, _ := transcriptBlockRowsWithImages(
+		entry, followed, width, m.transcriptImages[index],
+		m.nativeImages && width >= minimumImageThumbnailCols,
+		m.imageCellWidth, m.imageCellHeight,
+	)
+	return len(rows)
 }
 
-// entryFlatStart is a transcript entry's first row in flattened coordinates —
-// the space scrollAnchor is expressed in. Caller must hold m.mu.
-func (m *replModel) entryFlatStart(index int) int {
+func (m *replModel) entryVisualStart(index, width int) int {
 	start := 0
 	for i := 0; i < index; i++ {
-		start += m.entryLineCount(i)
+		start += m.entryVisualLineCount(i, width)
 	}
 	return start
 }
 
-// anchorForRemovedLines keeps a scrolled-away viewport visually still when
-// count rows disappear at flattened row `at`. Text above the anchor pulls it
-// up by as much as vanished; text below it never moves the anchor. While
-// following the bottom the render trims to the tail anyway, so there is
-// nothing to correct. Caller must hold m.mu.
-func (m *replModel) anchorForRemovedLines(at, count int) {
-	if m.followBottom || count <= 0 {
-		return
+// resetToolDisclosure drops the active pointer while leaving the previous
+// turn's disclosure in scrollback. Caller must hold m.mu.
+func (m *replModel) resetToolDisclosure() {
+	if record := m.currentToolDisclosure(); record != nil && record.transcriptIndex < 0 {
+		delete(m.toolDisclosures, record.id)
 	}
-	switch {
-	case at+count <= m.scrollAnchor:
-		m.scrollAnchor -= count
-	case at < m.scrollAnchor:
-		m.scrollAnchor = at
-	}
-	if m.scrollAnchor < 0 {
-		m.scrollAnchor = 0
-	}
+	m.turnToolDisclosureID = 0
 }
 
-// resetToolWindow drops the previous turn's window state. The rollup and its
-// visible rows stay in the transcript as scrollback; the next turn starts
-// counting from zero and folds into a rollup line of its own. Caller must
-// hold m.mu.
-func (m *replModel) resetToolWindow() {
-	m.toolWindow = nil
-	m.toolRollupIndex = -1
-	m.turnToolCalls = 0
-}
-
-// removeToolRow deletes a folded tool row and repoints every index-pinned
-// reference past it: deleteTranscriptEntry already shifts images and queue
-// echoes; the tool window, rollup slot, streaming block, and (defensively)
-// running-tool pins are fixed up here.
-func (m *replModel) removeToolRow(index int) {
-	m.removeTranscriptRow(index)
-}
-
-// removeTranscriptRow deletes an entry and repoints every index-pinned
-// reference past it: deleteTranscriptEntry already shifts images and queue
-// echoes; the tool window, both rollup slots, the reasoning block, the
-// streaming block, and running-tool pins are fixed up here. Every folded row
-// goes through this, so a new pinned index only has to be added once.
-func (m *replModel) removeTranscriptRow(index int) {
-	m.deleteTranscriptEntry(index)
-	m.invalidateFlat()
-	for i := range m.activeTools {
-		if m.activeTools[i].index > index {
-			m.activeTools[i].index--
-		}
-	}
-	for i := range m.toolWindow {
-		if m.toolWindow[i] > index {
-			m.toolWindow[i]--
-		}
-	}
-	for _, pinned := range []*int{&m.toolRollupIndex, &m.thinkingIndex, &m.thinkingRollupIndex, &m.currentAssistant} {
-		if *pinned > index {
-			*pinned--
-		}
-	}
+func (m *replModel) clearToolDisclosures() {
+	m.toolDisclosures = make(map[int64]*toolDisclosureRecord)
+	m.toolDisclosureAt = make(map[int]int64)
+	m.toolDisclosureSeq = 0
+	m.turnToolDisclosureID = 0
+	m.toolDisclosurePlacements = nil
 }
 
 // arrowPulse breathes the running-tool arrow between two brightnesses of one
@@ -1538,6 +1546,7 @@ const arrowPulsePeriod = 500 * time.Millisecond
 // runningToolLine renders a still-executing tool entry: a breathing arrow whose
 // modifier is chosen from elapsed time, the label, and a live elapsed timer.
 func runningToolLine(label string, elapsed time.Duration) string {
+	label = stripTranscriptImageMarkers(label)
 	mod := arrowPulse[int(elapsed/arrowPulsePeriod)%len(arrowPulse)]
 	return "  " + styled("→", "run", mod) + " " +
 		styled(label, "muted", "") + " " +
@@ -1570,246 +1579,421 @@ func (m *replModel) refreshStreamCursor() {
 	}
 }
 
-// appendThinking takes one streamed reasoning chunk. It opens a block on the
-// first chunk of a segment and buffers the text; the wrapping into display
-// lines happens at render, where the terminal width is known. Caller must
-// hold m.mu.
+// newReasoningRecord appends one stable disclosure row for a turn. Later
+// reasoning segments update this record instead of adding more transcript
+// rows. Caller must hold m.mu.
+func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
+	m.reasoningSeq++
+	record := &reasoningRecord{id: m.reasoningSeq, complete: complete}
+	if !complete {
+		record.expanded = m.turnReasoningOpen
+	}
+	m.appendLine("")
+	record.transcriptIndex = len(m.transcript) - 1
+	m.reasoningRecords[record.id] = record
+	m.reasoningAt[record.transcriptIndex] = record.id
+	m.reasoningOrder = append(m.reasoningOrder, record.id)
+	m.refreshReasoningRecord(record, 80)
+	return record
+}
+
+func (m *replModel) currentReasoningRecord() *reasoningRecord {
+	if m.turnReasoningID == 0 {
+		return nil
+	}
+	return m.reasoningRecords[m.turnReasoningID]
+}
+
+// appendThinking adds one streamed provider chunk to this turn's bounded UI
+// tail. Complete reasoning remains on the assistant ChatMessage and is not
+// duplicated here. Caller must hold m.mu.
 func (m *replModel) appendThinking(chunk string) {
 	if chunk == "" {
 		return
 	}
-	if m.thinkingIndex < 0 {
-		m.appendLine(styled(thinkingBlockIndent+"…", "muted", "italic"))
-		m.thinkingIndex = len(m.transcript) - 1
-		m.thinkingStarted = time.Now()
-		m.thinkingWrapped = nil
-		m.thinkingPending = nil
-		m.thinkingSegChars = 0
-		m.thinkingSegRaw.Reset()
+	record := m.currentReasoningRecord()
+	if record == nil {
+		record = m.newReasoningRecord(false)
+		m.turnReasoningID = record.id
+		m.thinkingIndex = record.transcriptIndex
 	}
-	m.thinkingSegChars += len(chunk)
-	m.thinkingSegRaw.WriteString(chunk)
-	m.thinkingPending = append(m.thinkingPending, []rune(chunk)...)
+	if !m.thinkingSegmentOpen {
+		m.appendReasoningTail(record, "", len(record.tail) > 0)
+		m.thinkingSegmentOpen = true
+		m.thinkingSegmentStart = time.Now()
+		record.active = true
+	}
+	m.appendReasoningTail(record, chunk, false)
+	// Width-aware wrapping belongs to the render loop. Provider callbacks only
+	// mutate the bounded semantic tail under the model lock.
 }
 
-// refreshThinkingBlock settles buffered reasoning into display lines for the
-// current width and repaints the block. Called from render, which is the only
-// place the terminal width is known, so a resize simply re-wraps whatever has
-// not settled yet. Caller must hold m.mu.
-func (m *replModel) refreshThinkingBlock(width int) {
-	if m.thinkingIndex < 0 || m.thinkingIndex >= len(m.transcript) {
+// appendReasoningTail adds text to a bounded rune tail. segmentBreak inserts
+// one semantic newline between tool-separated assistant reasoning segments.
+func (m *replModel) appendReasoningTail(record *reasoningRecord, text string, segmentBreak bool) {
+	if record == nil {
 		return
 	}
-	content := min(width-len(thinkingBlockIndent), thinkingBlockMaxWidth)
-	if content < 16 {
-		content = 16
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	addition := []rune(text)
+	if segmentBreak && len(record.tail) > 0 && record.tail[len(record.tail)-1] != '\n' {
+		withBreak := make([]rune, 1, len(addition)+1)
+		withBreak[0] = '\n'
+		addition = append(withBreak, addition...)
 	}
-	settled := m.settleThinkingLines(content)
-	next := m.thinkingBlockText()
-	if settled || m.transcript[m.thinkingIndex] != next {
-		m.transcript[m.thinkingIndex] = next
-		m.invalidateFlat()
+	if len(addition) >= reasoningTailRetainRunes {
+		record.tail = append(record.tail[:0], addition[len(addition)-reasoningTailRetainRunes:]...)
+		record.tailVersion++
+		record.dirty = true
+		return
+	}
+	// Compact at the hard limit instead of copying the whole tail on every
+	// streamed token after the retained target first fills.
+	if len(record.tail)+len(addition) > reasoningTailLimitRunes {
+		keep := reasoningTailRetainRunes - len(addition)
+		next := make([]rune, 0, reasoningTailRetainRunes)
+		if keep > 0 && len(record.tail) > keep {
+			next = append(next, record.tail[len(record.tail)-keep:]...)
+		} else if keep > 0 {
+			next = append(next, record.tail...)
+		}
+		record.tail = append(next, addition...)
+		record.tailVersion++
+		record.dirty = true
+		return
+	}
+	record.tail = append(record.tail, addition...)
+	if len(addition) > 0 {
+		record.tailVersion++
+		record.dirty = true
 	}
 }
 
-// settleThinkingLines moves pending reasoning into finished lines, breaking on
-// word boundaries at the given width. The remainder keeps rendering as the
-// block's live last row, so the newest words appear as they arrive rather than
-// waiting to fill a line. Reports whether anything settled. Caller must hold
-// m.mu.
-func (m *replModel) settleThinkingLines(width int) bool {
-	settled := false
-	for {
-		line, rest, ok := takeThinkingLine(m.thinkingPending, width)
-		if !ok {
-			break
-		}
-		m.thinkingWrapped = append(m.thinkingWrapped, line)
-		m.thinkingPending = rest
-		settled = true
-		// Only the visible tail is kept for display; the full text lives in
-		// the segment's log entry when it closes.
-		if len(m.thinkingWrapped) > thinkingBlockLines {
-			m.thinkingWrapped = append([]string(nil), m.thinkingWrapped[len(m.thinkingWrapped)-thinkingBlockLines:]...)
-		}
+// finishThinkingSegment closes only the current provider segment. The turn's
+// disclosure and expansion choice remain intact across tools and later
+// reasoning. Caller must hold m.mu.
+func (m *replModel) finishThinkingSegment() {
+	if !m.thinkingSegmentOpen {
+		return
 	}
-	return settled
+	record := m.currentReasoningRecord()
+	if record != nil {
+		record.elapsed += time.Since(m.thinkingSegmentStart)
+		record.active = false
+		record.dirty = true
+	}
+	m.thinkingSegmentOpen = false
+	m.thinkingSegmentStart = time.Time{}
 }
 
-// takeThinkingLine peels one full display line off the pending reasoning,
-// breaking at the last word boundary that fits. Reports false when the text
-// cannot yet fill a line. Newlines in the reasoning end a line early, so the
-// model's own paragraphing survives.
-func takeThinkingLine(pending []rune, width int) (line string, rest []rune, ok bool) {
-	// A hard break settles the line early so the model's own paragraphing
-	// survives — but only when what precedes it actually fits, otherwise the
-	// paragraph is wrapped by width first and the break handled on a later pass.
-	for i, r := range pending {
-		if r != '\n' {
-			continue
-		}
-		if head := strings.TrimSpace(string(pending[:i])); rw.StringWidth(head) <= width {
-			return head, pending[i+1:], true
-		}
-		break
+// completeThinkingTurn auto-collapses this turn's disclosure and marks whether
+// the provider-generated messages were saved. Caller must hold m.mu.
+func (m *replModel) completeThinkingTurn(unsaved bool) {
+	m.finishThinkingSegment()
+	record := m.currentReasoningRecord()
+	if record == nil {
+		m.resetCurrentThinking()
+		return
 	}
-	if rw.StringWidth(strings.TrimSpace(string(pending))) <= width {
-		return "", pending, false
-	}
-	cut, lastSpace := 0, -1
-	for i, r := range pending {
-		if rw.StringWidth(string(pending[:i+1])) > width {
-			break
-		}
-		cut = i + 1
-		if r == ' ' || r == '\t' {
-			lastSpace = i
-		}
-	}
-	if lastSpace > 0 {
-		cut = lastSpace
-	}
-	return strings.TrimSpace(string(pending[:cut])), pending[cut:], true
+	record.active = false
+	record.complete = true
+	record.unsaved = unsaved
+	record.expanded = false
+	m.refreshReasoningRecord(record, m.reasoningWidth)
+	m.resetCurrentThinking()
 }
 
-// thinkingBlockText renders the block: the newest reasoning lines in their
-// gutter, oldest scrolling off the top, with the still-arriving remainder as
-// the live last row so the text tracks the stream instead of stalling at the
-// last completed line. Caller must hold m.mu.
-func (m *replModel) thinkingBlockText() string {
-	mod := "dim"
-	if !m.turnStarted.IsZero() {
-		mod = arrowPulse[int(time.Since(m.turnStarted)/arrowPulsePeriod)%len(arrowPulse)]
-	}
-	head := styled(streamCursorGlyph, "accent", mod) + " "
+func (m *replModel) resetCurrentThinking() {
+	m.turnReasoningID = 0
+	m.turnReasoningOpen = false
+	m.thinkingIndex = -1
+	m.thinkingSegmentOpen = false
+	m.thinkingSegmentStart = time.Time{}
+}
 
-	lines := m.thinkingWrapped
-	if live := strings.TrimSpace(string(m.thinkingPending)); live != "" {
-		lines = append(append([]string(nil), lines...), live)
+func (m *replModel) clearReasoningRecords() {
+	m.reasoningRecords = make(map[int64]*reasoningRecord)
+	m.reasoningAt = make(map[int]int64)
+	m.reasoningOrder = nil
+	m.reasoningPlacements = nil
+	m.reasoningSeq = 0
+	m.resetCurrentThinking()
+}
+
+func (m *replModel) refreshReasoningRecords(width int) {
+	widthChanged := width > 0 && width != m.reasoningWidth
+	if width > 0 {
+		m.reasoningWidth = width
 	}
-	if len(lines) > thinkingBlockLines {
-		lines = lines[len(lines)-thinkingBlockLines:]
+	if widthChanged {
+		for _, id := range m.reasoningOrder {
+			m.refreshReasoningRecord(m.reasoningRecords[id], width)
+		}
+		return
 	}
+	if record := m.currentReasoningRecord(); record != nil && (record.active || record.dirty) {
+		m.refreshReasoningRecord(record, width)
+	}
+}
+
+func (m *replModel) refreshReasoningRecord(record *reasoningRecord, width int) {
+	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
+		return
+	}
+	if width < 1 {
+		width = m.reasoningWidth
+	}
+	next := m.reasoningRecordText(record, width)
+	record.dirty = false
+	if m.transcript[record.transcriptIndex] == next {
+		return
+	}
+	oldCount, start := 0, 0
+	if !m.followBottom {
+		oldCount = m.entryVisualLineCount(record.transcriptIndex, width)
+		start = m.entryVisualStart(record.transcriptIndex, width)
+	}
+	m.transcript[record.transcriptIndex] = next
+	m.invalidateFlat()
+	if !m.followBottom {
+		m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(record.transcriptIndex, width))
+	}
+}
+
+func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) string {
+	glyph := "▸"
+	if record.expanded {
+		glyph = "▾"
+	}
+
+	elapsed := record.elapsed
+	if record.active && !m.thinkingSegmentStart.IsZero() && record.id == m.turnReasoningID {
+		elapsed += time.Since(m.thinkingSegmentStart)
+	}
+	label := "Thinking"
+	switch {
+	case record.active:
+		label = "Thinking…"
+		if elapsed > 0 {
+			label += " · " + formatElapsed(elapsed)
+		}
+	case record.complete:
+		label = "Thought"
+		if elapsed > 0 {
+			label += " for " + formatElapsed(elapsed)
+		}
+	case elapsed > 0:
+		label += " · " + formatElapsed(elapsed)
+	}
+	if record.unsaved {
+		label += " · not saved"
+	}
+	header := "  " + styled(glyph, "accent", "bold") + " " + styled(label, "muted", "bold")
+	if !record.expanded {
+		return header
+	}
+
+	contentWidth := min(reasoningPreviewMaxWidth, width-rw.StringWidth(reasoningBlockIndent))
+	if contentWidth < 2 {
+		return header
+	}
+	if record.previewWidth != contentWidth || record.previewVersion != record.tailVersion {
+		record.previewLines = reasoningTailLines(string(record.tail), contentWidth, reasoningPreviewLines)
+		record.previewWidth = contentWidth
+		record.previewVersion = record.tailVersion
+	}
+	lines := record.previewLines
 	if len(lines) == 0 {
-		return "  " + head + styled("thinking…", "muted", "italic")
+		return header
 	}
-
 	var b strings.Builder
-	for i, line := range lines {
-		if i > 0 {
-			b.WriteString("\n")
+	b.WriteString(header)
+	// Keep the disclosure visually stable and worth opening even for a short
+	// thought: when the terminal is wide enough for detail, reserve two rows.
+	detailRows := max(2, len(lines))
+	for i := 0; i < detailRows; i++ {
+		line := ""
+		if i < len(lines) {
+			line = lines[i]
 		}
-		if i == 0 {
-			b.WriteString("  " + head)
-		} else {
-			b.WriteString(thinkingBlockIndent)
-		}
+		b.WriteString("\n")
+		b.WriteString(reasoningBlockIndent)
 		b.WriteString(styled(line, "muted", "italic"))
 	}
 	return b.String()
 }
 
-// finishThinkingBlock collapses the open reasoning segment into its permanent
-// one-line rollup and files the full text for /thinking. Safe to call when no
-// segment is open. Caller must hold m.mu.
-func (m *replModel) finishThinkingBlock() {
-	if m.thinkingIndex < 0 {
+// reasoningTailLines wraps the retained text for the current terminal width,
+// then returns only its newest physical rows.
+func reasoningTailLines(text string, width, limit int) []string {
+	if width < 1 || limit < 1 {
+		return nil
+	}
+	lines := make([]string, 0, limit)
+	push := func(line string) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			return
+		}
+		if len(lines) == limit {
+			copy(lines, lines[1:])
+			lines[len(lines)-1] = line
+			return
+		}
+		lines = append(lines, line)
+	}
+
+	for _, paragraph := range strings.Split(strings.TrimSpace(text), "\n") {
+		current := ""
+		currentWidth := 0
+		flush := func() {
+			push(current)
+			current = ""
+			currentWidth = 0
+		}
+		for _, word := range strings.Fields(paragraph) {
+			wordWidth := rw.StringWidth(word)
+			if wordWidth > width {
+				flush()
+				pieces := splitReasoningWord(word, width)
+				for i, piece := range pieces {
+					if i < len(pieces)-1 {
+						push(piece)
+						continue
+					}
+					current = piece
+					currentWidth = rw.StringWidth(piece)
+				}
+				continue
+			}
+			if current == "" {
+				current, currentWidth = word, wordWidth
+				continue
+			}
+			if currentWidth+1+wordWidth <= width {
+				current += " " + word
+				currentWidth += 1 + wordWidth
+				continue
+			}
+			flush()
+			current, currentWidth = word, wordWidth
+		}
+		flush()
+	}
+	return lines
+}
+
+func splitReasoningWord(word string, width int) []string {
+	var pieces []string
+	var chunk []rune
+	chunkWidth := 0
+	for _, r := range word {
+		runeWidth := max(0, rw.RuneWidth(r))
+		if len(chunk) > 0 && chunkWidth+runeWidth > width {
+			pieces = append(pieces, string(chunk))
+			chunk = chunk[:0]
+			chunkWidth = 0
+		}
+		chunk = append(chunk, r)
+		chunkWidth += runeWidth
+	}
+	if len(chunk) > 0 {
+		pieces = append(pieces, string(chunk))
+	}
+	return pieces
+}
+
+func (m *replModel) anchorForResizedEntry(start, oldCount, newCount int) {
+	if m.followBottom || oldCount == newCount {
 		return
 	}
-	idx := m.thinkingIndex
-	m.thinkingIndex = -1
-	if full := strings.TrimSpace(m.thinkingSegRaw.String()); full != "" {
-		m.thinkingLog = append(m.thinkingLog, full)
+	delta := newCount - oldCount
+	if start+oldCount <= m.scrollAnchor {
+		m.scrollAnchor += delta
+	} else if start < m.scrollAnchor {
+		m.scrollAnchor = start
 	}
-	m.thinkingTurnDur += time.Since(m.thinkingStarted)
-	m.thinkingTurnChars += m.thinkingSegChars
-	m.thinkingWrapped = nil
-	m.thinkingPending = nil
-	m.thinkingSegChars = 0
-	m.thinkingSegRaw.Reset()
-	if idx >= len(m.transcript) {
-		return
-	}
-	if m.thinkingRollupIndex < 0 {
-		// First segment of the turn: its block becomes the rollup in place.
-		// The block may have grown past one row, so a scrolled-away viewport
-		// is held still as it shortens.
-		m.anchorForRemovedLines(m.entryFlatStart(idx)+1, m.entryLineCount(idx)-1)
-		m.thinkingRollupIndex = idx
-	} else {
-		// The turn already has a rollup earlier in the transcript; this block
-		// folds into its totals rather than adding a line of its own.
-		m.anchorForRemovedLines(m.entryFlatStart(idx), m.entryLineCount(idx))
-		m.removeTranscriptRow(idx)
-	}
-	m.refreshThinkingRollup()
-}
-
-// refreshThinkingRollup restates the turn's reasoning rollup with the totals
-// accumulated so far. Caller must hold m.mu.
-func (m *replModel) refreshThinkingRollup() {
-	if m.thinkingRollupIndex < 0 || m.thinkingRollupIndex >= len(m.transcript) {
-		return
-	}
-	next := thinkingRollupLine(m.thinkingTurnDur, m.thinkingTurnChars)
-	if m.transcript[m.thinkingRollupIndex] != next {
-		m.transcript[m.thinkingRollupIndex] = next
-		m.invalidateFlat()
+	if m.scrollAnchor < 0 {
+		m.scrollAnchor = 0
 	}
 }
 
-// resetThinkingBlock drops any open segment's state without leaving a rollup.
-// A new turn or a cleared display starts from nothing; the log of completed
-// segments survives, since it is the session's only copy. Caller must hold
-// m.mu.
-func (m *replModel) resetThinkingBlock() {
-	m.thinkingIndex = -1
-	m.thinkingRollupIndex = -1
-	m.thinkingTurnDur = 0
-	m.thinkingTurnChars = 0
-	m.thinkingWrapped = nil
-	m.thinkingPending = nil
-	m.thinkingSegChars = 0
-	m.thinkingSegRaw.Reset()
-	m.thinkingStarted = time.Time{}
-}
-
-// thinkingRollupLine is what a finished reasoning segment leaves behind: how
-// long the model thought and roughly how much it produced.
-func thinkingRollupLine(elapsed time.Duration, chars int) string {
-	body := "thought for " + formatElapsed(elapsed)
-	if est := chars / thinkingCharsPerToken; est > 0 {
-		body += " · ~" + humanizeTokens(est) + " tok"
+func (m *replModel) toggleReasoning(recordID int64, width int) bool {
+	record := m.reasoningRecords[recordID]
+	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
+		return false
 	}
-	return "  " + styled("⋯", "muted", "bold") + " " + styled(body, "muted", "")
+	if width > 0 {
+		m.reasoningWidth = width
+	}
+	record.expanded = !record.expanded
+	if record.id == m.turnReasoningID {
+		m.turnReasoningOpen = record.expanded
+	}
+	m.refreshReasoningRecord(record, width)
+	return true
 }
 
-// refreshActiveTools rewrites each running tool's transcript entry with the
-// current breathing-arrow frame and live elapsed time. Caller must hold m.mu.
+func (m *replModel) toggleLatestReasoning(width int) bool {
+	if record := m.currentReasoningRecord(); record != nil {
+		return m.toggleReasoning(record.id, width)
+	}
+	if m.busy {
+		// The active turn may not have emitted its first reasoning chunk yet.
+		// Remember the user's choice so that record opens immediately when it
+		// exists; never target an older turn while a newer one is running.
+		m.turnReasoningOpen = !m.turnReasoningOpen
+		return true
+	}
+	for i := len(m.reasoningOrder) - 1; i >= 0; i-- {
+		if m.toggleReasoning(m.reasoningOrder[i], width) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *replModel) toggleToolDisclosure(recordID int64) bool {
+	record := m.toolDisclosures[recordID]
+	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
+		return false
+	}
+	record.expanded = !record.expanded
+	m.refreshToolDisclosure(record)
+	return true
+}
+
+// refreshActiveTools updates each running disclosure row with the current
+// breathing-arrow frame and live elapsed time. A collapsed disclosure does
+// not repaint because its detail rows are intentionally hidden.
 func (m *replModel) refreshActiveTools() {
 	if len(m.activeTools) == 0 {
 		return
 	}
+	record := m.currentToolDisclosure()
+	if record == nil {
+		return
+	}
 	changed := false
 	for _, at := range m.activeTools {
-		if at.index >= 0 && at.index < len(m.transcript) {
-			next := runningToolLine(at.label, time.Since(at.started))
-			if m.transcript[at.index] != next {
-				m.transcript[at.index] = next
-				changed = true
-			}
+		if at.row < 0 || at.row >= len(record.rows) {
+			continue
+		}
+		next := runningToolLine(at.label, time.Since(at.started))
+		if record.rows[at.row].line != next {
+			record.rows[at.row].line = next
+			changed = true
 		}
 	}
-	if changed {
-		m.invalidateFlat()
+	if changed && record.expanded {
+		m.refreshToolDisclosure(record)
 	}
 }
 
-// takeActiveTool stops tracking a finished tool and returns the transcript index
-// of its line so the caller can freeze it into a final ✓/✗ entry. It matches by
-// call id, falling back to the oldest still-running entry (the only one in the
-// common sequential case, and a safe default if an id is missing). Returns false
-// when nothing is tracked. Caller must hold m.mu.
+// takeActiveTool stops tracking a finished tool and returns its disclosure row.
+// It matches by call ID, falling back to the oldest still-running row when an
+// ID is absent. Caller must hold m.mu.
 func (m *replModel) takeActiveTool(id string) (int, bool) {
 	if len(m.activeTools) == 0 {
 		return -1, false
@@ -1821,23 +2005,32 @@ func (m *replModel) takeActiveTool(id string) (int, bool) {
 			break
 		}
 	}
-	idx := m.activeTools[pick].index
+	row := m.activeTools[pick].row
 	m.activeTools = append(m.activeTools[:pick], m.activeTools[pick+1:]...)
-	return idx, true
+	return row, true
 }
 
 func (m *replModel) settleActiveTools(reason string) {
 	if len(m.activeTools) == 0 {
 		return
 	}
+	record := m.currentToolDisclosure()
+	if record == nil {
+		return
+	}
 	for _, at := range m.activeTools {
-		if at.index < 0 || at.index >= len(m.transcript) {
+		if at.row < 0 || at.row >= len(record.rows) {
 			continue
 		}
-		m.transcript[at.index] = "  " + styled("✗", "err", "bold") + " " +
+		row := &record.rows[at.row]
+		row.line = "  " + styled("✗", "err", "bold") + " " +
 			styled(strings.TrimSpace(reason+" "+at.label), "muted", "")
+		row.images = nil
+		row.settled = true
 	}
-	m.invalidateFlat()
+	if record.expanded {
+		m.refreshToolDisclosure(record)
+	}
 }
 
 // toolOKLine / toolDeniedLine / toolErrorLine build the final transcript entry
@@ -1845,15 +2038,15 @@ func (m *replModel) settleActiveTools(reason string) {
 // appending) so AppendToolEnd can freeze it over the running line in place.
 
 func toolOKLine(label, duration, meta string) string {
-	body := strings.TrimSpace(duration + " " + label)
+	body := strings.TrimSpace(duration + " " + stripTranscriptImageMarkers(label))
 	if meta != "" {
-		body += " · " + meta
+		body += " · " + stripTranscriptImageMarkers(meta)
 	}
 	return "  " + styled("✓", "ok", "bold") + " " + styled(body, "muted", "")
 }
 
 func toolDeniedLine(label string) string {
-	return "  " + styled("✗", "err", "bold") + " " + styled("denied "+label, "muted", "")
+	return "  " + styled("✗", "err", "bold") + " " + styled("denied "+stripTranscriptImageMarkers(label), "muted", "")
 }
 
 // toolErrorLine renders a failed tool call as a red ✗ plus the muted metadata
@@ -1861,11 +2054,56 @@ func toolDeniedLine(label string) string {
 // tool's own output/error text is deliberately not shown; the model still
 // receives the full output, this is display only.
 func toolErrorLine(label, duration, meta string) string {
-	body := strings.TrimSpace(duration + " " + label)
+	body := strings.TrimSpace(duration + " " + stripTranscriptImageMarkers(label))
 	if meta != "" {
-		body += " · " + meta
+		body += " · " + stripTranscriptImageMarkers(meta)
 	}
 	return "  " + styled("✗", "err", "bold") + " " + styled(body, "muted", "")
+}
+
+func hydratedToolLine(label string, msg messages.ChatMessage) string {
+	label = stripTranscriptImageMarkers(label)
+	if toolWasDenied(msg.Content) {
+		return toolDeniedLine(label)
+	}
+	if msg.IsError() {
+		return toolErrorLine(label, "", "failed")
+	}
+	if succeeded, known := msg.ToolSucceeded(); known {
+		if succeeded {
+			return toolOKLine(label, "", "")
+		}
+		return toolErrorLine(label, "", "failed")
+	}
+	return "  " + styled("·", "muted", "bold") + " " + styled(label, "muted", "")
+}
+
+func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *toolDisclosureRecord {
+	if len(rows) == 0 {
+		return nil
+	}
+	m.toolDisclosureSeq++
+	record := &toolDisclosureRecord{
+		id:              m.toolDisclosureSeq,
+		transcriptIndex: len(m.transcript),
+		rows:            append([]toolDisclosureRow(nil), rows...),
+		complete:        true,
+	}
+	for i := range record.rows {
+		record.rows[i].label = stripTranscriptImageMarkers(record.rows[i].label)
+		if len(record.rows[i].images) == 0 {
+			record.rows[i].line = stripTranscriptImageMarkers(record.rows[i].line)
+		}
+		if record.rows[i].line == "" {
+			record.rows[i].line = "  " + styled("·", "muted", "bold") + " " + styled(record.rows[i].label, "muted", "")
+		}
+	}
+	m.appendLine("")
+	record.transcriptIndex = len(m.transcript) - 1
+	m.toolDisclosures[record.id] = record
+	m.toolDisclosureAt[record.transcriptIndex] = record.id
+	m.refreshToolDisclosure(record)
+	return record
 }
 
 func (m *replModel) appendNoticeLine(text string) {
@@ -1877,8 +2115,9 @@ func (m *replModel) clearDisplay() {
 	m.transcriptImages = make(map[int][]transcriptImage)
 	m.currentAssistant = -1
 	m.activeTools = nil
-	m.resetToolWindow()
-	m.resetThinkingBlock()
+	m.resetToolDisclosure()
+	m.clearToolDisclosures()
+	m.clearReasoningRecords()
 	for i := range m.queue {
 		m.queue[i].transcriptShown = false
 	}
@@ -1939,38 +2178,99 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 		m.appendNoticeLine(fmt.Sprintf("resumed %s · %d %s", name, totalTurns, turnWord))
 	}
 
-	var toolNames []string
-	toolFailed := false
-	toolResults := 0
-	toolKnownSuccesses := 0
+	var hydratedToolRows []toolDisclosureRow
+	var hydratedToolDisclosure *toolDisclosureRecord
 	flushTools := func() {
-		if len(toolNames) == 0 {
+		if len(hydratedToolRows) == 0 {
 			return
 		}
-		glyph := "·"
-		color := "muted"
-		if toolFailed {
-			glyph = "✗"
-			color = "err"
-		} else if toolResults == len(toolNames) && toolKnownSuccesses == toolResults {
-			glyph = "✓"
-			color = "ok"
+		if hydratedToolDisclosure == nil {
+			hydratedToolDisclosure = m.appendCompletedToolDisclosure(hydratedToolRows)
+		} else {
+			for i := range hydratedToolRows {
+				if hydratedToolRows[i].line == "" {
+					hydratedToolRows[i].line = "  " + styled("·", "muted", "bold") + " " +
+						styled(hydratedToolRows[i].label, "muted", "")
+				}
+			}
+			hydratedToolDisclosure.rows = append(hydratedToolDisclosure.rows, hydratedToolRows...)
+			m.refreshToolDisclosure(hydratedToolDisclosure)
 		}
-		word := "tool"
-		if len(toolNames) != 1 {
-			word = "tools"
+		hydratedToolRows = nil
+	}
+	applyToolOrder := func(order []durableDisplayToolCall) {
+		if len(order) == 0 {
+			return
 		}
-		m.appendLine("  " + styled(glyph, color, "bold") + " " +
-			styled(fmt.Sprintf("%d %s · %s", len(toolNames), word, compactToolNames(toolNames)), "muted", ""))
-		toolNames = nil
-		toolFailed = false
-		toolResults = 0
-		toolKnownSuccesses = 0
+		var existing []toolDisclosureRow
+		if hydratedToolDisclosure != nil {
+			existing = hydratedToolDisclosure.rows
+		}
+		used := make([]bool, len(existing))
+		ordered := make([]toolDisclosureRow, 0, max(len(order), len(existing)))
+		for _, displayCall := range order {
+			name := displayCall.Name
+			if name == "" {
+				name = "tool"
+			}
+			pick := -1
+			for i := range existing {
+				if !used[i] && displayCall.ID != "" && existing[i].callID == displayCall.ID {
+					pick = i
+					break
+				}
+			}
+			if pick < 0 {
+				for i := range existing {
+					if !used[i] && existing[i].label == name {
+						pick = i
+						break
+					}
+				}
+			}
+			row := toolDisclosureRow{callID: displayCall.ID, label: name, settled: true}
+			if pick >= 0 {
+				used[pick] = true
+				row = existing[pick]
+			}
+			if displayCall.Denied {
+				row.line = toolDeniedLine(name)
+				row.images = nil
+				row.settled = true
+			} else if row.line == "" {
+				row.line = "  " + styled("·", "muted", "bold") + " " + styled(name, "muted", "")
+			}
+			ordered = append(ordered, row)
+		}
+		for i, row := range existing {
+			if !used[i] {
+				ordered = append(ordered, row)
+			}
+		}
+		if hydratedToolDisclosure == nil {
+			hydratedToolDisclosure = m.appendCompletedToolDisclosure(ordered)
+			return
+		}
+		hydratedToolDisclosure.rows = ordered
+		hydratedToolDisclosure.complete = true
+		hydratedToolDisclosure.expanded = false
+		m.refreshToolDisclosure(hydratedToolDisclosure)
 	}
 
 	lastRole := ""
 	var lastUserTurn *managedTurnInput
 	lastUserContextOnly := false
+	var hydratedReasoning *reasoningRecord
+	appendHydratedReasoning := func(text string) {
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		if hydratedReasoning == nil {
+			hydratedReasoning = m.newReasoningRecord(true)
+		}
+		m.appendReasoningTail(hydratedReasoning, text, len(hydratedReasoning.tail) > 0)
+		m.refreshReasoningRecord(hydratedReasoning, 80)
+	}
 	for _, msg := range history[start:] {
 		switch msg.Role {
 		case messages.MessageRoleUser:
@@ -1978,6 +2278,8 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 				continue
 			}
 			flushTools()
+			hydratedToolDisclosure = nil
+			hydratedReasoning = nil
 			m.appendTurnSeparator()
 			content, restorable, contextOnly := historyUserSummary(msg)
 			m.appendUserPrompt(content)
@@ -1989,6 +2291,7 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 			lastRole = msg.Role
 		case messages.MessageRoleAssistant:
 			flushTools()
+			appendHydratedReasoning(msg.Reasoning)
 			if content := msg.GetContent(); content != "" {
 				m.appendAssistant(content)
 				m.finishAssistantBlock("")
@@ -1998,34 +2301,58 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 				if name == "" {
 					name = "tool"
 				}
-				toolNames = append(toolNames, name)
+				hydratedToolRows = append(hydratedToolRows, toolDisclosureRow{
+					callID: call.ID,
+					label:  name,
+				})
 			}
 			lastRole = msg.Role
 		case messages.MessageRoleTool:
-			if len(toolNames) == 0 {
+			if len(hydratedToolRows) == 0 {
 				name := msg.ToolName
 				if name == "" {
 					name = "tool"
 				}
-				toolNames = append(toolNames, name)
+				hydratedToolRows = append(hydratedToolRows, toolDisclosureRow{
+					callID: msg.ToolCallID,
+					label:  name,
+				})
 			}
-			toolResults++
-			if toolWasDenied(msg.Content) || msg.IsError() {
-				toolFailed = true
-			} else if succeeded, known := msg.ToolSucceeded(); known {
-				if succeeded {
-					toolKnownSuccesses++
-				} else {
-					toolFailed = true
+			pick := -1
+			for i := range hydratedToolRows {
+				if hydratedToolRows[i].settled {
+					continue
 				}
+				if hydratedToolRows[i].callID == msg.ToolCallID {
+					pick = i
+					break
+				}
+				if pick < 0 {
+					pick = i
+				}
+			}
+			if pick >= 0 {
+				hydratedToolRows[pick].line = hydratedToolLine(hydratedToolRows[pick].label, msg)
+				hydratedToolRows[pick].settled = true
 			}
 			lastRole = msg.Role
 		case messages.MessageRoleInternal:
 			flushTools()
+			displayToolCalls := decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls])
+			if displayReasoning, _ := msg.Metadata[messages.MetadataKeyDisplayReasoning].(string); displayReasoning != "" {
+				appendHydratedReasoning(displayReasoning)
+			}
+			applyToolOrder(displayToolCalls)
 			if status, _ := msg.Metadata[messages.MetadataKeyTurnStatus].(string); status == messages.TurnStatusToolDenied {
-				m.appendLine("  " + styled("✗", "err", "bold") + " " + styled("tool request denied", "muted", ""))
+				if len(displayToolCalls) == 0 {
+					// Compatibility with sessions written before safe tool display
+					// metadata existed.
+					m.appendLine("  " + styled("✗", "err", "bold") + " " + styled("tool request denied", "muted", ""))
+				}
 				// A durable internal completion marker settles the preceding user
 				// turn without becoming model-visible assistant content.
+				lastRole = messages.MessageRoleAssistant
+			} else if len(displayToolCalls) > 0 {
 				lastRole = messages.MessageRoleAssistant
 			}
 		}
@@ -2298,9 +2625,9 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	m.canceling = false
 	m.state = turnStateWaiting
 	m.runningTools = 0
-	m.resetToolWindow()
+	m.resetToolDisclosure()
 	m.thinkingChars = 0
-	m.resetThinkingBlock()
+	m.resetCurrentThinking()
 	m.turnStarted = time.Now()
 	m.currentPrompt = prompt
 	m.currentTurn = cloneManagedTurn(turn)
@@ -3464,20 +3791,13 @@ func (r *managedREPL) endTurn(err error) {
 	} else if err != nil {
 		activeToolReason = "failed"
 	}
-	m.finishThinkingBlock()
+	m.completeThinkingTurn(err != nil)
 	m.settleActiveTools(activeToolReason)
 	m.activeTools = nil
 	m.runningTools = 0
-	if err == nil {
-		// A turn that completed carries one line of tool activity: the rows
-		// have stopped changing and the live window has served its purpose.
-		m.collapseToolWindow()
-	} else {
-		// An interrupted turn keeps its rows. They carry the "canceled" and
-		// "failed" markers that say what was in flight when it stopped, which
-		// a bare count would throw away exactly when it is worth reading.
-		m.foldToolWindow()
-	}
+	// Like reasoning, tool activity defaults closed and auto-collapses when the
+	// turn settles. Canceled/failed row details remain one click away.
+	m.completeToolDisclosure()
 	switch {
 	case err == nil:
 		m.finishAssistantBlock("")
@@ -3570,12 +3890,11 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.resetAssistantStream()
 	m.turnStarted = time.Time{}
 	m.toolName = ""
-	m.finishThinkingBlock()
+	m.completeThinkingTurn(true)
 	m.settleActiveTools("canceled")
 	m.activeTools = nil
 	m.runningTools = 0
-	// Canceled, so the interrupted rows stay visible; see endTurn.
-	m.foldToolWindow()
+	m.completeToolDisclosure()
 	m.denyApprovalLocked()
 	m.state = turnStateIdle
 	m.lastOutcome = turnOutcomeCanceled
@@ -3891,7 +4210,7 @@ func (r *managedREPL) render() {
 	}
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
-	r.model.refreshThinkingBlock(w)
+	r.model.refreshReasoningRecords(w)
 	inputMaxRows := maxInputRows
 	if h-statusRows > 1 {
 		inputMaxRows = min(inputMaxRows, h-statusRows-1)
@@ -3933,7 +4252,17 @@ func (r *managedREPL) render() {
 		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
 		pinTranscriptBottom, ticker != "",
 	)
+	reasoningPlacements := r.model.visibleReasoningPlacements(
+		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
+		pinTranscriptBottom, ticker != "",
+	)
+	toolDisclosurePlacements := r.model.visibleToolDisclosurePlacements(
+		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
+		pinTranscriptBottom, ticker != "",
+	)
 	r.model.imagePlacements = imagePlacements
+	r.model.reasoningPlacements = reasoningPlacements
+	r.model.toolDisclosurePlacements = toolDisclosurePlacements
 	r.model.mu.Unlock()
 
 	if logoRows == imageLogoHeight && r.images != nil {
@@ -4077,7 +4406,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	if width < 1 {
 		width = 1
 	}
-	if m.nativeImages && m.refreshTranscriptImageSources() {
+	if m.nativeImages && m.refreshTranscriptImageSources(width) {
 		m.invalidateVisual()
 	}
 	if m.visualCacheValid && m.visualCacheWidth == width &&
@@ -4105,7 +4434,9 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		imageSpans := old.imageSpans
 		changed := m.visualCacheWidth != width || m.visualCacheNativeImages != m.nativeImages ||
 			m.visualCacheCellWidth != m.imageCellWidth || m.visualCacheCellHeight != m.imageCellHeight ||
-			old.key != source.key || old.text != source.text || old.followed != followed || !transcriptImagesEqual(old.images, source.images)
+			old.key != source.key || old.text != source.text || old.followed != followed ||
+			old.reasoningID != source.reasoningID || old.toolDisclosureID != source.toolDisclosureID ||
+			!transcriptImagesEqual(old.images, source.images)
 		if changed {
 			nativeSlots := m.nativeImages && width >= minimumImageThumbnailCols
 			rows, imageSpans = transcriptBlockRowsWithImages(
@@ -4120,12 +4451,14 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			copy(m.visualCache[offset:offset+len(rows)], rows)
 		}
 		m.visualBlocks[i] = transcriptVisualBlock{
-			key:        source.key,
-			text:       source.text,
-			followed:   followed,
-			rows:       rows,
-			images:     append([]transcriptImage(nil), source.images...),
-			imageSpans: imageSpans,
+			key:              source.key,
+			text:             source.text,
+			followed:         followed,
+			rows:             rows,
+			images:           append([]transcriptImage(nil), source.images...),
+			imageSpans:       imageSpans,
+			reasoningID:      source.reasoningID,
+			toolDisclosureID: source.toolDisclosureID,
 		}
 		offset += len(old.rows)
 	}
@@ -4161,6 +4494,8 @@ func (m *replModel) transcriptDisplayBlocks() []string {
 func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
 	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+1)
 	for i, entry := range m.transcript {
+		reasoningID := m.reasoningAt[i]
+		toolDisclosureID := m.toolDisclosureAt[i]
 		if i == m.currentAssistant {
 			entry = strings.TrimRight(entry, "\r\n")
 			if entry == "" {
@@ -4176,10 +4511,18 @@ func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
 				entry += m.streamCursorFrame
 			}
 		}
+		key := fmt.Sprintf("transcript:%d", i)
+		if reasoningID != 0 {
+			key = fmt.Sprintf("reasoning:%d", reasoningID)
+		} else if toolDisclosureID != 0 {
+			key = fmt.Sprintf("tools:%d", toolDisclosureID)
+		}
 		blocks = append(blocks, transcriptDisplayBlock{
-			key:    fmt.Sprintf("transcript:%d", i),
-			text:   entry,
-			images: m.transcriptImages[i],
+			key:              key,
+			text:             entry,
+			images:           m.transcriptImages[i],
+			reasoningID:      reasoningID,
+			toolDisclosureID: toolDisclosureID,
 		})
 	}
 	if m.slashHints != "" {
@@ -4270,6 +4613,100 @@ func (m *replModel) scrollToBottom() {
 	m.followBottom = true
 }
 
+// visibleReasoningPlacements projects each disclosure header into absolute
+// screen cells. A narrow header may wrap, so every visible header fragment is
+// clickable while preview/detail rows remain inert.
+func (m *replModel) visibleReasoningPlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom, tickerVisible bool) []disclosurePlacement {
+	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, tickerVisible, false)
+}
+
+func (m *replModel) visibleToolDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom, tickerVisible bool) []disclosurePlacement {
+	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, tickerVisible, true)
+}
+
+func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom, tickerVisible, tools bool) []disclosurePlacement {
+	if viewportHeight <= 0 || width <= 0 {
+		return nil
+	}
+	viewStart := topRow
+	topPadding := 0
+	if pinBottom {
+		viewStart = max(0, totalRows-viewportHeight)
+		if totalRows < viewportHeight {
+			topPadding = viewportHeight - totalRows
+		}
+	}
+	viewEnd := viewStart + viewportHeight
+	if tickerVisible {
+		viewEnd--
+	}
+
+	var placements []disclosurePlacement
+	rowOffset := 0
+	for _, block := range m.visualBlocks {
+		recordID := block.reasoningID
+		if tools {
+			recordID = block.toolDisclosureID
+		}
+		if recordID != 0 && len(block.rows) > 0 {
+			header := strings.SplitN(block.text, "\n", 2)[0]
+			headerRows := len(transcriptBlockRows(header, false, width))
+			for headerRow := 0; headerRow < headerRows && headerRow < len(block.rows); headerRow++ {
+				row := rowOffset + headerRow
+				if row < viewStart || row >= viewEnd {
+					continue
+				}
+				cols := visualRowWidth(block.rows[headerRow])
+				if cols > width {
+					cols = width
+				}
+				if cols > 0 {
+					placements = append(placements, disclosurePlacement{
+						recordID: recordID,
+						X:        0,
+						Y:        logoRows + topPadding + row - viewStart,
+						Cols:     cols,
+					})
+				}
+			}
+		}
+		rowOffset += len(block.rows)
+	}
+	return placements
+}
+
+func visualRowWidth(row []ui.Cell) int {
+	width := 0
+	for _, cx := range ui.BuildCellWithXArray(row) {
+		cellWidth := rw.RuneWidth(cx.Cell.Rune)
+		if cellWidth < 1 {
+			continue
+		}
+		width = max(width, cx.X+cellWidth)
+	}
+	return width
+}
+
+func (m *replModel) toggleReasoningAt(x, y, width int) bool {
+	for _, placement := range m.reasoningPlacements {
+		if y != placement.Y || x < placement.X || x >= placement.X+placement.Cols {
+			continue
+		}
+		return m.toggleReasoning(placement.recordID, width)
+	}
+	return false
+}
+
+func (m *replModel) toggleToolDisclosureAt(x, y int) bool {
+	for _, placement := range m.toolDisclosurePlacements {
+		if y != placement.Y || x < placement.X || x >= placement.X+placement.Cols {
+			continue
+		}
+		return m.toggleToolDisclosure(placement.recordID)
+	}
+	return false
+}
+
 // openImageAt opens the transcript thumbnail under the given screen cell, if
 // any, in the OS image viewer. Placements come from the last rendered frame;
 // the embedded splash logo (no backing file) is skipped. Caller must hold m.mu.
@@ -4358,7 +4795,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	case "<MouseLeft>":
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
-			r.openImageAt(mouse.X, mouse.Y)
+			if !m.toggleReasoningAt(mouse.X, mouse.Y, terminalWidth) &&
+				!m.toggleToolDisclosureAt(mouse.X, mouse.Y) {
+				r.openImageAt(mouse.X, mouse.Y)
+			}
 		}
 		return false
 	}
@@ -4389,6 +4829,13 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	}
 	if m.pasting {
 		m.bufferPasted(e)
+		return false
+	}
+
+	// Ctrl-O toggles the active turn's reasoning disclosure, or the newest
+	// completed one while idle. It never moves focus away from the composer.
+	if e.ID == "<C-o>" {
+		m.toggleLatestReasoning(terminalWidth)
 		return false
 	}
 
@@ -4664,7 +5111,7 @@ func (t *gotuiTurnUI) AppendAssistantText(content string) {
 		t.repl.model.turnHasOutput = true
 		// The answer supersedes the reasoning that produced it: close the
 		// block before the first token lands so the rollup sits above it.
-		t.repl.model.finishThinkingBlock()
+		t.repl.model.finishThinkingSegment()
 	}
 	t.repl.model.appendAssistant(content)
 	t.repl.model.mu.Unlock()
@@ -4678,7 +5125,7 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	}
 	if len(calls) > 0 {
 		t.repl.model.turnHasOutput = true
-		t.repl.model.finishThinkingBlock()
+		t.repl.model.finishThinkingSegment()
 		t.repl.model.finishAssistantBlock("")
 		t.repl.model.runningTools += len(calls)
 		t.repl.model.state = turnStateTool
@@ -4687,9 +5134,11 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	if !toolDisplayEnabled(t.config) {
 		return
 	}
+	var record *toolDisclosureRecord
 	for _, c := range calls {
-		t.repl.model.appendToolStartLine(c.ID, toolLabel(c))
+		record = t.repl.model.appendToolStartRow(c.ID, toolLabel(c))
 	}
+	t.repl.model.refreshToolDisclosure(record)
 }
 
 func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
@@ -4731,7 +5180,7 @@ func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 }
 
 func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
-	label := toolLabel(call)
+	label := stripTranscriptImageMarkers(toolLabel(call))
 	denied := toolWasDenied(result)
 	var discoveredImages []transcriptImage
 	if toolDisplayEnabled(t.config) && !denied {
@@ -4769,28 +5218,32 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	default:
 		final = toolOKLine(label, formatElapsed(duration), resultLineMeta(result))
 	}
+	final = stripTranscriptImageMarkers(final)
 	images := discoveredImages
 	if len(images) > 0 {
 		// Tool-produced media stays visibly subordinate to the compact tool row;
 		// assistant-authored images remain flush with the transcript body.
 		final += "\n" + renderTranscriptImages(images, "    ")
 	}
-	// Freeze the final line over the running (breathing) one in place, so a tool
-	// is a single transcript line from start to finish. Falls back to appending
-	// if the start line wasn't tracked (shouldn't happen when display is on).
-	if idx, ok := m.takeActiveTool(call.ID); ok && idx >= 0 {
-		m.transcript[idx] = final
-		m.setTranscriptImages(idx, images)
-		m.invalidateFlat()
+	// Freeze the final line over its running disclosure row. Fall back to a new
+	// row if the display was cleared while the tool was in flight.
+	record := m.currentToolDisclosure()
+	if rowIndex, ok := m.takeActiveTool(call.ID); ok && record != nil && rowIndex >= 0 && rowIndex < len(record.rows) {
+		row := &record.rows[rowIndex]
+		row.line = final
+		row.images = append([]transcriptImage(nil), images...)
+		row.settled = true
 	} else {
-		m.appendLine(final)
-		m.toolWindow = append(m.toolWindow, len(m.transcript)-1)
-		m.setTranscriptImages(len(m.transcript)-1, images)
-		m.invalidateFlat()
+		record = m.ensureToolDisclosure()
+		record.rows = append(record.rows, toolDisclosureRow{
+			callID:  call.ID,
+			label:   label,
+			line:    final,
+			images:  append([]transcriptImage(nil), images...),
+			settled: true,
+		})
 	}
-	// This call settling may have released the last pin holding the window
-	// open, letting a bulged batch contract to the cap.
-	m.foldToolWindow()
+	m.refreshToolDisclosure(record)
 }
 
 func (t *gotuiTurnUI) AppendWarning(text string) {

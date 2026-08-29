@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/images"
@@ -54,9 +55,11 @@ type markdownRenderState struct {
 }
 
 type transcriptDisplayBlock struct {
-	key    string
-	text   string
-	images []transcriptImage
+	key              string
+	text             string
+	images           []transcriptImage
+	reasoningID      int64
+	toolDisclosureID int64
 }
 
 type transcriptImageSpan struct {
@@ -112,19 +115,36 @@ func stripTranscriptImageMarkers(s string) string {
 	}, s)
 }
 
+func offsetTranscriptImageMarkers(s string, offset int) string {
+	if offset == 0 {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		index, ok := transcriptImageMarkerIndex(r)
+		if !ok {
+			return r
+		}
+		index += offset
+		if index >= maxTranscriptImagesPerBlock {
+			return -1
+		}
+		return transcriptImageMarker(index)
+	}, s)
+}
+
 func transcriptImageSlot(index int, prefix string) string {
 	line := prefix + string(transcriptImageMarker(index))
 	return strings.Repeat(line+"\n", transcriptImageThumbnailRows-1) + line
 }
 
 func transcriptImageCaption(img transcriptImage) string {
-	label := strings.TrimSpace(img.Alt)
+	label := strings.TrimSpace(stripTranscriptImageMarkers(img.Alt))
 	if label == "" {
-		label = filepath.Base(img.Path)
+		label = stripTranscriptImageMarkers(filepath.Base(img.Path))
 	}
-	displayPath := img.DisplayPath
+	displayPath := stripTranscriptImageMarkers(img.DisplayPath)
 	if displayPath == "" {
-		displayPath = img.Path
+		displayPath = stripTranscriptImageMarkers(img.Path)
 	}
 	return styled("image: "+label+" · "+truncate(displayPath, 100), "muted", "")
 }
@@ -240,9 +260,9 @@ func localImageDimensions(path string) (int, int, bool) {
 // refreshTranscriptImageSources updates dimensions when a referenced file is
 // regenerated in place. This lets the transcript reflow its reserved slot
 // before the terminal protocol sees the new aspect ratio.
-func (m *replModel) refreshTranscriptImageSources() bool {
+func (m *replModel) refreshTranscriptImageSources(width int) bool {
 	changed := false
-	for transcriptIndex, images := range m.transcriptImages {
+	refresh := func(images []transcriptImage) ([]transcriptImage, bool) {
 		updated := images
 		copied := false
 		for imageIndex, img := range images {
@@ -259,10 +279,40 @@ func (m *replModel) refreshTranscriptImageSources() bool {
 				updated[imageIndex].Width = width
 				updated[imageIndex].Height = height
 			}
+		}
+		return updated, copied
+	}
+	indices := make([]int, 0, len(m.transcriptImages))
+	for transcriptIndex := range m.transcriptImages {
+		indices = append(indices, transcriptIndex)
+	}
+	sort.Ints(indices)
+	for _, transcriptIndex := range indices {
+		images := m.transcriptImages[transcriptIndex]
+		updated, copied := refresh(images)
+		if copied {
+			oldCount, start := 0, 0
+			if !m.followBottom {
+				oldCount = m.entryVisualLineCount(transcriptIndex, width)
+				start = m.entryVisualStart(transcriptIndex, width)
+			}
+			m.transcriptImages[transcriptIndex] = updated
+			if !m.followBottom {
+				m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(transcriptIndex, width))
+			}
 			changed = true
 		}
-		if copied {
-			m.transcriptImages[transcriptIndex] = updated
+	}
+	// Expanded tool rows project their canonical image sidecars onto the
+	// disclosure header. Keep the canonical copies fresh too, so collapsing and
+	// reopening cannot resurrect stale dimensions or file versions.
+	for _, record := range m.toolDisclosures {
+		for rowIndex := range record.rows {
+			updated, copied := refresh(record.rows[rowIndex].images)
+			if copied {
+				record.rows[rowIndex].images = updated
+				changed = true
+			}
 		}
 	}
 	return changed

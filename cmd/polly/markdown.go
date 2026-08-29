@@ -46,6 +46,17 @@ func renderMarkdownDocument(src string, state *markdownRenderState) string {
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 }
 
+// markdownSourceText strips the private runes reserved for terminal-image
+// slots whenever Markdown shares a transcript block with image sidecars.
+// Image destinations are resolved from the original AST value before display
+// text reaches this boundary, so paths containing those runes still work.
+func markdownSourceText(s string, state *markdownRenderState) string {
+	if state == nil {
+		return s
+	}
+	return stripTranscriptImageMarkers(s)
+}
+
 // renderBlocks renders a parent's block children, separating siblings with a
 // prefix-bearing blank line so quoted blocks keep their gutter.
 func renderBlocks(parent ast.Node, source []byte, prefix string, state *markdownRenderState) []string {
@@ -72,10 +83,12 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 		title := renderInlineChildren(n, source, "", "bold", state)
 		return prefixLines([]string{marker + title}, firstPrefix, contPrefix)
 	case *ast.FencedCodeBlock:
-		lang := string(b.Language(source))
-		return prefixLines(renderCodeBlock(codeBlockText(b.Lines(), source), lang), firstPrefix, contPrefix)
+		lang := markdownSourceText(string(b.Language(source)), state)
+		code := markdownSourceText(codeBlockText(b.Lines(), source), state)
+		return prefixLines(renderCodeBlock(code, lang), firstPrefix, contPrefix)
 	case *ast.CodeBlock:
-		return prefixLines(renderCodeBlock(codeBlockText(b.Lines(), source), ""), firstPrefix, contPrefix)
+		code := markdownSourceText(codeBlockText(b.Lines(), source), state)
+		return prefixLines(renderCodeBlock(code, ""), firstPrefix, contPrefix)
 	case *ast.Blockquote:
 		gutter := styled("▏ ", "muted", "")
 		inner := renderBlocks(n, source, "", state)
@@ -89,9 +102,11 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 	case *ast.ThematicBreak:
 		return prefixLines([]string{styled(strings.Repeat("─", 12), "muted", "")}, firstPrefix, contPrefix)
 	case *ast.HTMLBlock:
-		return prefixLines(splitInline(styleEscape(codeBlockText(b.Lines(), source))), firstPrefix, contPrefix)
+		html := markdownSourceText(codeBlockText(b.Lines(), source), state)
+		return prefixLines(splitInline(styleEscape(html)), firstPrefix, contPrefix)
 	default:
-		if raw := strings.TrimRight(styleEscape(nodeText(n, source)), "\n"); raw != "" {
+		raw := markdownSourceText(nodeText(n, source), state)
+		if raw = strings.TrimRight(styleEscape(raw), "\n"); raw != "" {
 			return prefixLines(strings.Split(raw, "\n"), firstPrefix, contPrefix)
 		}
 		return nil
@@ -159,15 +174,15 @@ func renderInlineChildren(n ast.Node, source []byte, fg, mod string, state *mark
 func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRenderState) string {
 	switch i := n.(type) {
 	case *ast.Text:
-		s := styled(string(i.Segment.Value(source)), fg, mod)
+		s := styled(markdownSourceText(string(i.Segment.Value(source)), state), fg, mod)
 		if i.SoftLineBreak() || i.HardLineBreak() {
 			s += "\n"
 		}
 		return s
 	case *ast.String:
-		return styled(string(i.Value), fg, mod)
+		return styled(markdownSourceText(string(i.Value), state), fg, mod)
 	case *ast.CodeSpan:
-		return styled(nodeText(n, source), "code", mod)
+		return styled(markdownSourceText(nodeText(n, source), state), "code", mod)
 	case *ast.Emphasis:
 		if i.Level >= 2 {
 			return renderInlineChildren(n, source, fg, "bold", state)
@@ -176,7 +191,11 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRend
 	case *east.Strikethrough:
 		return renderInlineChildren(n, source, fg, "strike", state)
 	case *ast.Link:
-		return renderLink(renderInlineChildren(n, source, "accent", mod, state), nodeText(n, source), string(i.Destination))
+		return renderLink(
+			renderInlineChildren(n, source, "accent", mod, state),
+			markdownSourceText(nodeText(n, source), state),
+			markdownSourceText(string(i.Destination), state),
+		)
 	case *ast.Image:
 		if state != nil && len(state.images) < maxTranscriptImagesPerBlock {
 			if img, ok := resolveLocalTranscriptImage(string(i.Destination), nodeText(n, source), state.baseDir); ok {
@@ -185,18 +204,22 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRend
 				return renderTranscriptImage(index, img, "", n.PreviousSibling() != nil, n.NextSibling() != nil)
 			}
 		}
-		return renderLink(renderInlineChildren(n, source, "accent", mod, state), nodeText(n, source), string(i.Destination))
+		return renderLink(
+			renderInlineChildren(n, source, "accent", mod, state),
+			markdownSourceText(nodeText(n, source), state),
+			markdownSourceText(string(i.Destination), state),
+		)
 	case *ast.AutoLink:
-		return styled(string(i.URL(source)), "accent", mod)
+		return styled(markdownSourceText(string(i.URL(source)), state), "accent", mod)
 	case *ast.RawHTML:
 		var b strings.Builder
 		for s := 0; s < i.Segments.Len(); s++ {
 			seg := i.Segments.At(s)
 			b.Write(seg.Value(source))
 		}
-		return styled(b.String(), fg, mod)
+		return styled(markdownSourceText(b.String(), state), fg, mod)
 	default:
-		return styled(nodeText(n, source), fg, mod)
+		return styled(markdownSourceText(nodeText(n, source), state), fg, mod)
 	}
 }
 

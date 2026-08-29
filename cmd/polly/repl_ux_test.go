@@ -149,13 +149,21 @@ func TestFailedTurnLabelsPartialAndMarksQueueNotSent(t *testing.T) {
 
 	joined := strings.Join(m.flattenTranscript(), "\n")
 	plain := plainStyledText(joined)
-	for _, want := range []string{"failed bash sleep 30", "partial answer", "failed · not saved", "provider unavailable"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("failed transcript %q missing %q", joined, want)
+	for _, want := range []string{"▸ 1 tool call", "partial answer", "failed · not saved", "provider unavailable"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("failed transcript %q missing %q", plain, want)
 		}
 	}
-	if strings.Contains(joined, "→") {
-		t.Fatalf("failed turn left a running tool arrow behind: %q", joined)
+	if strings.Contains(plain, "bash sleep 30") {
+		t.Fatalf("failed turn leaked collapsed tool detail: %q", plain)
+	}
+	record := m.currentToolDisclosure()
+	if record == nil || !record.complete || record.expanded || !m.toggleToolDisclosure(record.id) {
+		t.Fatalf("failed tool disclosure did not reopen: %#v", record)
+	}
+	expandedTools := plainStyledText(m.transcript[record.transcriptIndex])
+	if !strings.Contains(expandedTools, "failed bash sleep 30") || strings.Contains(expandedTools, "→") {
+		t.Fatalf("failed tool expansion = %q", expandedTools)
 	}
 	if m.busy || m.state != turnStateIdle || m.lastOutcome != turnOutcomeFailed {
 		t.Fatalf("failed turn did not settle idle: busy=%v state=%v outcome=%v", m.busy, m.state, m.lastOutcome)
@@ -436,6 +444,7 @@ func TestClearDisplayMidTurnDoesNotInventNoResponse(t *testing.T) {
 }
 
 func TestClearDisplayPreservesParallelToolState(t *testing.T) {
+	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.beginTurn("run both")
 	tui := &gotuiTurnUI{repl: r, config: r.config}
@@ -449,6 +458,10 @@ func TestClearDisplayPreservesParallelToolState(t *testing.T) {
 	tui.AppendToolEnd(calls[1], "ok", time.Millisecond, nil)
 	if r.model.runningTools != 0 || r.model.state != turnStateWaiting {
 		t.Fatalf("parallel tools did not settle after final completion: running=%d state=%v", r.model.runningTools, r.model.state)
+	}
+	record := r.model.currentToolDisclosure()
+	if record == nil || len(r.model.toolDisclosures) != 1 || len(record.rows) != 2 {
+		t.Fatalf("post-clear tool disclosure = %#v records=%d", record, len(r.model.toolDisclosures))
 	}
 }
 
@@ -507,12 +520,23 @@ func TestHydrateHistoryShowsFiveRecentTurnsAndCollapsesTools(t *testing.T) {
 			t.Fatalf("hydrated transcript leaked excluded/raw content %q: %q", absent, joined)
 		}
 	}
-	for _, present := range []string{"showing last 5 of 7 turns", "unique-question-2", "unique-question-6", "2 tools · bash, read_file", "tool work done"} {
+	for _, present := range []string{"showing last 5 of 7 turns", "unique-question-2", "unique-question-6", "2 tool calls", "tool work done"} {
 		if !strings.Contains(joined, present) {
 			t.Fatalf("hydrated transcript missing %q: %q", present, joined)
 		}
 	}
-	if plain := plainStyledText(joined); !strings.Contains(plain, "· 2 tools") || strings.Contains(plain, "✓ 2 tools") {
+	if len(m.toolDisclosures) != 1 {
+		t.Fatalf("hydrated tool disclosures = %d, want 1", len(m.toolDisclosures))
+	}
+	var tools *toolDisclosureRecord
+	for _, record := range m.toolDisclosures {
+		tools = record
+	}
+	if !m.toggleToolDisclosure(tools.id) {
+		t.Fatal("hydrated tool disclosure was not expandable")
+	}
+	if plain := plainStyledText(m.transcript[tools.transcriptIndex]); !strings.Contains(plain, "· bash") ||
+		!strings.Contains(plain, "· read_file") || strings.Contains(plain, "✓") {
 		t.Fatalf("legacy tool outcomes should hydrate neutrally, got %q", plain)
 	}
 }
@@ -528,8 +552,205 @@ func TestHydrateHistoryShowsDurableToolFailure(t *testing.T) {
 	}
 	m := newReplModel()
 	m.hydrateHistory(history, "ctx")
-	if plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n")); !strings.Contains(plain, "✗ 1 tool · bash") {
+	var tools *toolDisclosureRecord
+	for _, record := range m.toolDisclosures {
+		tools = record
+	}
+	if tools == nil || !m.toggleToolDisclosure(tools.id) {
+		t.Fatal("durable failed tool disclosure was not expandable")
+	}
+	if plain := plainStyledText(m.transcript[tools.transcriptIndex]); !strings.Contains(plain, "✗ bash") {
 		t.Fatalf("durable failed tool was not restored as failed: %q", plain)
+	}
+}
+
+func TestHydrateHistoryAggregatesToolBatchesPerRealUserTurn(t *testing.T) {
+	succeeded := func(id, name string) messages.ChatMessage {
+		msg := messages.ChatMessage{
+			Role:       messages.MessageRoleTool,
+			ToolCallID: id,
+			ToolName:   name,
+			Content:    "raw result for " + name,
+		}
+		msg.SetToolSucceeded(true)
+		return msg
+	}
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "first real turn"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "a", Name: "read_alpha"}}},
+		succeeded("a", "read_alpha"),
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "b", Name: "search_beta"}}},
+		succeeded("b", "search_beta"),
+		{Role: messages.MessageRoleUser, Content: "synthetic continuation", Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true}},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "fetch_gamma"}}},
+		succeeded("c", "fetch_gamma"),
+		{Role: messages.MessageRoleAssistant, Content: "first turn done"},
+		{Role: messages.MessageRoleUser, Content: "second real turn"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "d", Name: "write_delta"}}},
+		succeeded("d", "write_delta"),
+		{Role: messages.MessageRoleAssistant, Content: "second turn done"},
+	}
+
+	m := newReplModel()
+	m.hydrateHistory(history, "ctx")
+	var records []*toolDisclosureRecord
+	for index := range m.transcript {
+		if id := m.toolDisclosureAt[index]; id != 0 {
+			records = append(records, m.toolDisclosures[id])
+		}
+	}
+	if len(records) != 2 {
+		t.Fatalf("hydrated tool disclosures = %d, want one per real user turn: %#v", len(records), records)
+	}
+	wants := [][]string{{"read_alpha", "search_beta", "fetch_gamma"}, {"write_delta"}}
+	for i, record := range records {
+		if record == nil || !record.complete || record.expanded || len(record.rows) != len(wants[i]) {
+			t.Fatalf("hydrated disclosure %d = %#v, want %d completed collapsed rows", i, record, len(wants[i]))
+		}
+		for row, want := range wants[i] {
+			if got := record.rows[row].label; got != want {
+				t.Fatalf("hydrated disclosure %d row %d = %q, want %q", i, row, got, want)
+			}
+		}
+		if !m.toggleToolDisclosure(record.id) {
+			t.Fatalf("hydrated disclosure %d did not expand", i)
+		}
+		expanded := plainStyledText(m.transcript[record.transcriptIndex])
+		for _, want := range wants[i] {
+			if got := strings.Count(expanded, want); got != 1 {
+				t.Fatalf("hydrated disclosure %d contains %q %d times: %q", i, want, got, expanded)
+			}
+		}
+	}
+	firstExpanded := plainStyledText(m.transcript[records[0].transcriptIndex])
+	if strings.Contains(firstExpanded, "write_delta") {
+		t.Fatalf("next real user turn leaked into first disclosure: %q", firstExpanded)
+	}
+	if joined := plainStyledText(strings.Join(m.transcript, "\n")); strings.Contains(joined, "raw result for") || strings.Contains(joined, "synthetic continuation") {
+		t.Fatalf("hydration leaked raw or synthetic content: %q", joined)
+	}
+}
+
+func TestHydrateHistoryBuildsOneCompletedReasoningDisclosurePerTurn(t *testing.T) {
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "first"},
+		{Role: messages.MessageRoleAssistant, Reasoning: "inspect the inputs", ToolCalls: []messages.ChatMessageToolCall{{ID: "1", Name: "read_file"}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "1", ToolName: "read_file", Content: "ok"},
+		{Role: messages.MessageRoleUser, Content: "synthetic continuation", Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true}},
+		{Role: messages.MessageRoleAssistant, Reasoning: "compare the result", Content: "first answer"},
+		{Role: messages.MessageRoleUser, Content: "second"},
+		{Role: messages.MessageRoleAssistant, Reasoning: "answer directly", Content: "second answer"},
+	}
+
+	m := newReplModel()
+	m.hydrateHistory(history, "ctx")
+	if len(m.reasoningOrder) != 2 {
+		t.Fatalf("hydrated reasoning disclosures = %d, want one per real user turn", len(m.reasoningOrder))
+	}
+	first := m.reasoningRecords[m.reasoningOrder[0]]
+	second := m.reasoningRecords[m.reasoningOrder[1]]
+	for i, record := range []*reasoningRecord{first, second} {
+		if record == nil || !record.complete || record.active || record.unsaved || record.expanded {
+			t.Fatalf("hydrated record %d = %#v, want completed and collapsed", i, record)
+		}
+	}
+	collapsed := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
+	for _, hidden := range []string{"inspect the inputs", "compare the result", "answer directly"} {
+		if strings.Contains(collapsed, hidden) {
+			t.Fatalf("collapsed hydration leaked reasoning %q: %q", hidden, collapsed)
+		}
+	}
+	if !strings.Contains(string(first.tail), "inspect the inputs\ncompare the result") {
+		t.Fatalf("first turn did not aggregate tool-separated segments: %q", string(first.tail))
+	}
+	if !m.toggleReasoning(first.id, 80) {
+		t.Fatal("completed hydrated disclosure was not toggleable")
+	}
+	expanded := plainStyledText(m.transcript[first.transcriptIndex])
+	if !strings.Contains(expanded, "inspect the inputs") || !strings.Contains(expanded, "compare the result") {
+		t.Fatalf("expanded hydrated disclosure = %q", expanded)
+	}
+	if !m.toggleLatestReasoning(80) || !second.expanded {
+		t.Fatal("idle Ctrl-O target should be the newest completed turn")
+	}
+}
+
+func TestCompletedReasoningDisclosureSurvivesDiskReload(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "reasoning.db")
+	store := testOpenDiskStore(t, dbPath, nil)
+	session := testAcquireSession(t, store, "reasoning-reload")
+	testAddMessages(t, session, []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "explain"},
+		{Role: messages.MessageRoleAssistant, Reasoning: "durable chain of thought", Content: "answer"},
+	})
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedStore := testOpenDiskStore(t, dbPath, nil)
+	reopened := testAcquireSession(t, reopenedStore, "reasoning-reload")
+	m := newReplModel()
+	m.hydrateHistory(testSessionHistory(t, reopened), "reasoning-reload")
+	if len(m.reasoningOrder) != 1 {
+		t.Fatalf("reloaded reasoning disclosures = %d, want 1", len(m.reasoningOrder))
+	}
+	record := m.reasoningRecords[m.reasoningOrder[0]]
+	if record == nil || !record.complete || record.unsaved || record.expanded {
+		t.Fatalf("reloaded reasoning record = %#v", record)
+	}
+	if !m.toggleReasoning(record.id, 80) || !strings.Contains(plainStyledText(m.transcript[record.transcriptIndex]), "durable chain of thought") {
+		t.Fatalf("reloaded completed disclosure did not expand: %q", m.transcript[record.transcriptIndex])
+	}
+}
+
+func TestCompletedToolDisclosureSurvivesDiskReloadWithoutRawResults(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tools.db")
+	store := testOpenDiskStore(t, dbPath, nil)
+	session := testAcquireSession(t, store, "tools-reload")
+	toolResult := messages.ChatMessage{
+		Role:       messages.MessageRoleTool,
+		ToolCallID: "1",
+		ToolName:   "bash",
+		Content:    "RAW SECRET TOOL BODY",
+	}
+	toolResult.SetToolSucceeded(true)
+	testAddMessages(t, session, []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "run"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "1", Name: "bash"}}},
+		toolResult,
+		{Role: messages.MessageRoleAssistant, Content: "done"},
+	})
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedStore := testOpenDiskStore(t, dbPath, nil)
+	reopened := testAcquireSession(t, reopenedStore, "tools-reload")
+	m := newReplModel()
+	m.hydrateHistory(testSessionHistory(t, reopened), "tools-reload")
+	if len(m.toolDisclosures) != 1 {
+		t.Fatalf("reloaded tool disclosures = %d, want 1", len(m.toolDisclosures))
+	}
+	var record *toolDisclosureRecord
+	for _, candidate := range m.toolDisclosures {
+		record = candidate
+	}
+	collapsed := plainStyledText(strings.Join(m.transcript, "\n"))
+	if record == nil || !record.complete || record.expanded || !strings.Contains(collapsed, "▸ 1 tool call") || strings.Contains(collapsed, "RAW SECRET") {
+		t.Fatalf("reloaded collapsed tool disclosure = %#v transcript=%q", record, collapsed)
+	}
+	if !m.toggleToolDisclosure(record.id) {
+		t.Fatal("reloaded tool disclosure did not expand")
+	}
+	expanded := plainStyledText(m.transcript[record.transcriptIndex])
+	if !strings.Contains(expanded, "✓ bash") || strings.Contains(expanded, "RAW SECRET") {
+		t.Fatalf("reloaded tool detail = %q", expanded)
 	}
 }
 
@@ -735,6 +956,9 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 
 	m.activeTools[0].started = time.Now().Add(-2 * time.Second)
 	m.refreshActiveTools()
+	if !m.visualCacheValid {
+		t.Fatal("collapsed live timer invalidated the visual cache")
+	}
 	rows2 := m.transcriptRows(80)
 	if &m.visualBlocks[0].rows[0][0] != staticCell {
 		t.Fatal("unchanged transcript block was reparsed")
@@ -742,15 +966,29 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 	if &rows2[0] != cacheStart {
 		t.Fatal("same-row-count tool update rebuilt the full visual row index")
 	}
+	if shown := strings.Join(transcriptRowsText(rows2), "\n"); strings.Contains(shown, "2.0s") || strings.Contains(shown, "bash sleep 30") {
+		t.Fatalf("collapsed live detail reached visual rows: %q", shown)
+	}
+	record := m.currentToolDisclosure()
+	if record == nil || !m.toggleToolDisclosure(record.id) {
+		t.Fatalf("cached tool disclosure did not expand: %#v", record)
+	}
+	if m.visualCacheValid {
+		t.Fatal("expanding live detail did not invalidate the visual cache")
+	}
+	expandedRows := m.transcriptRows(80)
+	if shown := strings.Join(transcriptRowsText(expandedRows), "\n"); !strings.Contains(shown, "2.0s") || !strings.Contains(shown, "bash sleep 30") {
+		t.Fatalf("expanded live detail missing from visual rows: %q", shown)
+	}
 
 	m.setSlashHintLine("/help  /history")
 	withHints := len(m.transcriptRows(80))
-	if withHints <= len(rows2) {
+	if withHints <= len(expandedRows) {
 		t.Fatal("slash hints did not invalidate the visual row cache")
 	}
 	m.setSlashHintLine("")
-	if got := len(m.transcriptRows(80)); got != len(rows2) {
-		t.Fatalf("clearing slash hints left stale cached rows: %d, want %d", got, len(rows2))
+	if got := len(m.transcriptRows(80)); got != len(expandedRows) {
+		t.Fatalf("clearing slash hints left stale cached rows: %d, want %d", got, len(expandedRows))
 	}
 }
 
