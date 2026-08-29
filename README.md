@@ -2,11 +2,566 @@
 
 <img src=".assets/polly.png" width="128" height="128">
 
-https://en.wikipedia.org/wiki/Stochastic_parrot
+This is my [LLM](https://en.wikipedia.org/wiki/Stochastic_parrot) CLI tool.
+There are many like it, but this one is mine.
 
-This is my llm cli tool. There are many like it, but this one is mine.
+- **Many models** — OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Ollama,
+  Hugging Face. One interface.
+- **Interactive TUI** — a full-screen terminal UI with streaming, scrollback,
+  history search, and images.
+- **Multimodal** — text, pics, random files.
+- **Contexts** — memory, but opt-in. Conversations persist in SQLite.
+- **Tool calling** — bolt on shell scripts and MCP servers.
+- **Sandboxed by default** — tool commands run in an OS-level sandbox that
+  masks your credentials.
+- **Agent Skills** — discover `SKILL.md` bundles and activate them on demand.
+- **Structured output** — JSON on purpose, not by accident.
 
-## Command-Line Options
+**The docs:** this file covers the CLI and the TUI. [API.md](API.md) is the
+tour of the Go library. [SANDBOX.md](SANDBOX.md) is the sandbox reference.
+
+## Installation
+
+```bash
+go build -o polly ./cmd/polly/
+```
+
+## Quick Start
+
+```bash
+export POLLYTOOL_ANTHROPICKEY=...
+export POLLYTOOL_OPENAIKEY=...
+
+# Bare polly launches the interactive TUI
+polly
+
+# One-shot: pipe a prompt in, or pass it with -p
+echo "Hello?" | polly
+polly -p "Hello?"
+
+# Pick a model
+echo "Quantum computing in one breath" | polly -m openai/gpt-5.4
+
+# Attach files, images, URLs
+polly -f image.jpg -p "What's this?"
+polly -f https://example.com/image.png -p "Describe it"
+polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
+
+# Tools: shell scripts and MCP servers, auto-detected by file type
+polly -p "uppercase this: hello" --tool ./uppercase.sh
+polly -p "create news.txt with today's news" --tool perp.json --tool filesystem.json
+
+# Keep a conversation going
+polly -c project -p "I'm working on a Python web app"
+polly -c project -p "What database should I use?"
+
+# Agent Skills
+polly --skilldir ~/.pollytool/skills --listskills
+polly --skilldir ~/.pollytool/skills -p "review this patch for regressions"
+```
+
+The default model is `anthropic/claude-sonnet-4-6`; override it with `-m
+provider/model` or `POLLYTOOL_MODEL`.
+
+## The Interactive TUI
+
+Running `polly` with no `--prompt` and no piped stdin opens a full-screen
+terminal UI (built on tcell/gotui) with streaming responses, scrollback,
+reverse history search, and bracketed paste. If the terminal isn't a TTY
+(`TERM=dumb`, redirected I/O), polly falls back to plain one-shot mode.
+
+### Sessions
+
+Launching the TUI without `-c` starts a persistent session under a generated
+name like `quiet-otter`. Resume it later with `polly -L` (last active) or
+`polly -c quiet-otter`, or give it a permanent name with `/rename`. A session
+where no turn ever ran is discarded on exit. Generated sessions expire after
+7 days of inactivity; explicitly named and renamed contexts never expire
+automatically.
+
+### Keys and input
+
+| Key | Action |
+|---|---|
+| `Ctrl-C` / `Esc` | Interrupt the in-flight turn; `Ctrl-C` again (or at an idle prompt) quits |
+| `Ctrl-R` | Reverse history search |
+| `Ctrl-O` | Show or hide the reasoning disclosure |
+| `Ctrl-V` | Attach an image from the system clipboard |
+| `Ctrl-Z` | Suspend to the shell; `fg` resumes the same TUI state |
+
+Input submitted while a turn is running appears immediately in the transcript
+with a `(queued)` marker that disappears when its turn starts. Failed or
+canceled input returns to the composer as an editable draft; pending entries
+are marked `(not sent)` and stay available through input history.
+
+Polly enables button-level mouse reporting for transcript scrolling and image
+clicks, so use the terminal's mouse override — usually Shift-drag, or
+Option-drag in some macOS terminals — to select text.
+
+### Slash commands
+
+```
+/help [command]              Show help
+/attach <image-path>         Attach a local image to the next prompt
+/clear                       Clear the display (history kept)
+/context  (/stats)           Show durable transcript size and model budget
+/get <key|all>               Inspect current settings
+/set <key> <value>           Change a setting for this session
+                             (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
+/tools [list [ns]|show <n>]  List or inspect loaded tools
+/skills                      List discovered Agent Skills
+/rename <name>               Rename the current context
+/reset confirm               Clear durable conversation history
+/exit  (/quit)               Leave the TUI
+```
+
+### Tool calls and reasoning
+
+Tool activity appears once per turn as a collapsed `▸ N tool calls`
+disclosure, from the first call onward. Click it to inspect every row; while
+open, running timers, outcomes, and tool-produced images update in place.
+Explicitly opened activity stays open across later calls, then auto-collapses
+when the turn ends — including failed or canceled turns — and completed
+disclosures can be reopened later, even after a session reload. Hydrated
+details contain only safe call labels and outcomes, never raw result bodies;
+the model still receives every result, and durable history retains the full
+exchange.
+
+With `--thinking` enabled, reasoning appears once per turn as a quiet
+`Thinking…` disclosure, collapsed at the start of every turn. Click the label
+or press `Ctrl-O` for a bounded three-row live tail (at least two full rows
+when the terminal has room); the oldest text scrolls off the top as new
+reasoning arrives. The disclosure stays open across tool calls when
+explicitly opened, then collapses when the turn finishes. Completed
+disclosures remain expandable and summarize all reasoning segments from the
+turn. Reasoning from successful turns survives a session reload; reasoning
+from failed or canceled turns is marked unsaved and lasts only for the
+current process.
+
+### Images
+
+**Seeing them.** The TUI renders static thumbnails when assistant Markdown
+contains `![alt](./path.png)`; tool results may use the same form or emit a
+local image path on a line by itself. Relative paths resolve from polly's
+working directory. Remote images, paths buried in prose or JSON, and paths
+inside code blocks are not opened. Thumbnails preserve the source aspect
+ratio inside a maximum 50-column by 10-row box, accounting for rectangular
+terminal cells.
+
+Kitty graphics are used on Kitty, Ghostty, and WezTerm; Sixel on Windows
+Terminal 1.22+ and foot; other terminals get a compact caption/path fallback.
+tmux and Zellij currently always use the fallback — native placement there
+needs explicit multiplexer passthrough support. Override auto-detection with
+`POLLYTOOL_IMAGE_PROTOCOL=kitty`, `sixel`, or `none`. On image-capable
+terminals the startup splash draws the polly logo as a native image (embedded
+in the binary); elsewhere, and on short terminals, it keeps the half-block
+ANSI bird.
+
+**Sending them.** Typing a path to an existing local image attaches it on
+submit — `describe .assets/polly.png` just works. `Ctrl-V` grabs an image off
+the system clipboard (macOS built-in `osascript`, or `pngpaste` if installed;
+Linux `wl-paste`/`xclip`; Windows PowerShell). Drag-and-dropping an image
+file onto the terminal attaches it (a paste consisting only of image paths is
+treated as a drop), and `/attach <path>` does the same explicitly — use it
+for paths containing spaces.
+
+Each attachment appears as a literal `[image #N]` token at the cursor —
+delete the token to drop the attachment, or reorder and reuse it freely. When
+input is accepted, polly prepares the exact image payload; queued turns keep
+those bytes even if the source file changes or disappears. Sessions persist
+prepared images, and if the last image turn is incomplete after a reload the
+draft returns to the composer — resubmitting it unchanged reuses those exact
+bytes. (Attached text bodies and context imports are not restored; they
+cannot be reconstructed safely from prompt text.) Clipboard captures and
+prepared previews are stored under the user cache directory
+(`pollytool/attachments`) and swept after two weeks; durable data lives in
+the SQLite session database, not this preview cache.
+
+**Limits and formats.**
+
+- At most 16 unique images per composer prompt, 16 image parts per
+  model-visible message, and 100 images across all retained turns in a
+  request.
+- Each base64-encoded image is capped at 10 MB, and image data in the
+  model-visible history plus the candidate prompt at 16 MiB total — headroom
+  under the documented Gemini and Anthropic inline limits.
+- Images are downscaled to at most 1568px on the long edge before upload.
+  PNG, JPEG, and WebP pass through when already within limits; animated GIFs
+  are reduced to their first frame and normalized to PNG, as are BMPs. JPEG
+  orientation metadata is applied whenever an image is resized or re-encoded.
+- Older persisted raster parts are normalized in the request without
+  rewriting session history; legacy SVG parts become a short omission marker
+  instead of blocking the context.
+- These formats are the portable intersection documented by
+  [OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision),
+  [Anthropic vision](https://platform.claude.com/docs/en/build-with-claude/vision),
+  and [Gemini image understanding](https://ai.google.dev/gemini-api/docs/image-understanding).
+
+## Contexts
+
+A context is a named, persistent conversation. One-shot runs are stateless
+unless you name one with `-c`.
+
+```bash
+polly --create project --model openai/gpt-5.4 --maxtokens 4096   # create with settings
+polly --show project                        # show its configuration
+echo "I'm working on a Python web app" | polly -c project
+polly -c project -p "What database should I use?"    # continues the conversation
+polly -c project                            # or continue interactively in the TUI
+polly --last -p "Explain the query"         # -L / --last reuses the most recent context
+cat notes.txt | polly -c project --add      # add stdin to the context, no API call
+polly --reset project                       # clear history, keep settings
+polly --list                                # list all contexts
+polly --delete project                      # delete one
+polly --purge                               # delete all (asks first)
+```
+
+### Settings follow the context
+
+- Settings used with a context — model, temperature, system prompt, tools —
+  are saved to it and restored on the next run.
+- Command-line flags always win over stored settings, and the change is saved
+  for future runs: if a context uses `openai/gpt-5.4` and you run
+  `-m openai/gpt-5.4-mini`, the context switches to GPT-5.4-mini.
+- Changing the system prompt of a context with existing history resets the
+  conversation to keep things consistent.
+- Tools are part of the deal: load `-t ./build.sh` in a context once and it's
+  restored on every later use of that context.
+
+### Storage and backups
+
+Session history, settings, and durable artifact bytes live in one SQLite
+database at `~/.pollytool/polly.db`. This is a clean break from the old
+per-context JSON format: files under `~/.pollytool/contexts` are left
+untouched, not imported, and ignored — the SQLite catalog starts empty on the
+first run after the cutover.
+
+For a simple backup, quit every polly process and copy
+`~/.pollytool/polly.db`. While polly is running, use SQLite's
+[online backup API](https://www.sqlite.org/backup.html) or
+[`VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html#vacuuminto) instead —
+copying the file alone can miss committed data still in the write-ahead log.
+
+## Models and Providers
+
+Models are named `provider/model`. The default is
+`anthropic/claude-sonnet-4-6`.
+
+| Provider | Example model | API key |
+|---|---|---|
+| OpenAI | `openai/gpt-5.4` | `POLLYTOOL_OPENAIKEY` |
+| Anthropic | `anthropic/claude-sonnet-4-6` | `POLLYTOOL_ANTHROPICKEY` |
+| Gemini | `gemini/gemini-3.1-pro-preview` | `POLLYTOOL_GEMINIKEY` |
+| DeepSeek | `deepseek/deepseek-v4-pro` | `POLLYTOOL_DEEPSEEKKEY` |
+| OpenRouter | `openrouter/anthropic/claude-sonnet-4-5` | `POLLYTOOL_OPENROUTERKEY` |
+| Ollama | `ollama/gpt-oss` | `POLLYTOOL_OLLAMAKEY` (optional) |
+| Hugging Face | `huggingface/...` | `POLLYTOOL_HUGGINGFACEKEY` |
+
+### Custom endpoints
+
+```bash
+# A remote Ollama
+polly --baseurl http://192.168.1.100:11434 -m ollama/gpt-oss -p "Hello"
+
+# Any OpenAI-compatible endpoint
+polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hello"
+```
+
+### Provider notes
+
+**OpenAI** — GPT-5.4 and its distills (5.4-mini, 5.4-nano). Native OpenAI
+uses the Responses API; setting `--baseurl` keeps OpenAI-compatible endpoints
+on Chat Completions. Reliable schema support (structured output uses
+`additionalProperties: false`); strict tool schemas with optional parameters
+are downgraded to non-strict on native Responses. Built-in Responses tools
+are not exposed yet.
+
+**Anthropic** — the Claude family (Opus, Sonnet, Haiku). Structured output
+via the tool-use pattern; mostly reliable schema support. Excellent for
+long-form content and analysis.
+
+**Gemini** — Pro and Flash models. Good balance of speed and capability;
+reliable schema output via ResponseSchema.
+
+**DeepSeek** — hosted models such as `deepseek/deepseek-v4-pro` and
+`deepseek/deepseek-v4-flash`. Reasoning models emit a non-standard
+`reasoning_content` field the API requires echoed back on follow-up turns;
+polly captures and replays it automatically, so tool use works without
+configuration.
+
+**OpenRouter** — routes to many upstream providers through one
+OpenAI-compatible endpoint. Use the upstream `provider/model` slug after the
+prefix: `openrouter/anthropic/claude-sonnet-4-5`, `openrouter/openai/gpt-5`,
+`openrouter/deepseek/deepseek-chat`.
+
+**Ollama** — requires an Ollama installation; any model available in Ollama
+works. Use `--baseurl` for remote instances. Schema support is hit and miss,
+depending on the model.
+
+## Tools
+
+Load tools with `-t`/`--tool` (repeatable). Polly auto-detects what you give
+it:
+
+- a **shell script** (`*.sh`) — one tool per script, speaking a two-flag
+  protocol
+- an **MCP server config** (`*.json`) — one or more tools per server
+- a **built-in name** (`bash`, `read_file`, ...) — native tools compiled in
+
+Tool names are namespaced to avoid conflicts: `scriptname__toolname` for
+shell tools (`uppercase__to_uppercase`), `servername__toolname` for MCP tools
+(`filesystem__read_file`). Add `--confirm` to approve each tool call by hand.
+
+### Built-in tools
+
+```bash
+# Sandboxed shell execution
+polly -t bash -p "list the largest files in this directory"
+
+# Direct file access: paged reads, whole-file writes, exact string edits
+polly -t read_file -t write_file -t edit_file -p "fix the typo in README.md"
+
+# Discovery: directory listings and cross-file search, no shell required
+polly -t list_dir -t search_files -t read_file -p "where is retry handled?"
+```
+
+- `bash` — sandboxed shell execution.
+- `read_file` — pages a text file as numbered lines, with literal search and
+  raw byte windows.
+- `write_file` — creates or replaces a file, creating missing parent
+  directories.
+- `edit_file` — replaces an exact literal string that must be unique in the
+  file (or pass `replace_all`).
+- `list_dir` — lists one directory (non-recursive).
+- `search_files` — reports matching lines as `path:line: text` — literal by
+  default, RE2 with `regex`, filtered with an `include` glob — skipping
+  `.git`, symlinks, binaries, and read-denied paths, with output bounded so
+  one minified file can't flood the context.
+
+All of them enforce the sandbox policy in-process: reads follow the read
+policy, and writes are confined to the policy's writable paths minus its
+write-denied islands (protected Git metadata included). `write_file` and
+`edit_file` refuse to load without sandboxing unless the registry explicitly
+opts out; the read-only tools load anywhere, so a session with no `bash` at
+all can still browse, search, and read.
+
+### Shell tools
+
+Any executable can be a tool if it answers two flags: `--schema` prints a
+JSON Schema describing the tool, and `--execute <json-args>` does the work
+and prints the result to stdout.
+
+```bash
+#!/bin/bash
+# uppercase.sh
+
+if [ "$1" = "--schema" ]; then
+  cat <<SCHEMA
+{
+  "title": "uppercase",
+  "description": "Convert text to uppercase",
+  "type": "object",
+  "properties": {
+    "text": {"type": "string", "description": "Text to convert"}
+  },
+  "required": ["text"]
+}
+SCHEMA
+elif [ "$1" = "--execute" ]; then
+  echo "$2" | jq -r .text | tr '[:lower:]' '[:upper:]'
+fi
+```
+
+```bash
+chmod +x uppercase.sh
+polly -t ./uppercase.sh -p "Convert 'hello world' to uppercase"
+```
+
+Shell tools run sandboxed by default, and the schema may include a top-level
+`"sandbox"` field to customize the tool's policy — see
+[Sandboxing](#sandboxing) below. [API.md](API.md#shell-tools) has the full
+protocol contract.
+
+### MCP servers
+
+MCP servers are declared in Claude Desktop-format JSON. One file can define
+several servers; load them all with `-t mcp.json`, or a single one with
+`-t mcp.json#filesystem`.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/workspace"]
+    },
+    "perplexity": {
+      "command": "uvx",
+      "args": ["perplexity-mcp"],
+      "env": {
+        "PERPLEXITY_API_KEY": "pplx-..."
+      }
+    }
+  }
+}
+```
+
+Remote servers connect over SSE or streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "remote-api": {
+      "transport": "sse",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ..."
+      },
+      "timeout": "60s"
+    }
+  }
+}
+```
+
+Local (stdio) servers run sandboxed like any other tool, and a server entry
+may carry its own `"sandbox"` overrides ([Sandboxing](#sandboxing)).
+
+## Agent Skills
+
+Polly discovers [Agent Skills](https://agentskills.io/specification) from one
+or more directories. Each skill lives in a folder named after the skill and
+contains a `SKILL.md` manifest with YAML frontmatter.
+
+```bash
+polly --listskills                          # default directory: ~/.pollytool/skills
+polly --skilldir ~/.pollytool/skills --skilldir ./skills --listskills
+polly --skilldir ~/.pollytool/skills -p "help me review this Go change"
+polly -S ./my-skill -p "..."                # load one skill directly (local dir,
+                                            # git repo URL, or archive URL); auto-activated
+polly --noskills -p "summarize this file"   # disable skills for a run
+```
+
+At runtime polly:
+
+- advertises discovered skills in the system prompt and exposes the
+  `activate_skill` and `read_skill_file` native tools
+- on activation, loads executables under the skill's `scripts/` directory as
+  normal shell tools, and Claude Desktop-style MCP configs under its optional
+  `mcp/` directory — both namespaced by skill name
+- enforces the skill's `allowed-tools` on future turns, matching polly tool
+  names with `*` glob support; skill-bundled tools remain auto-approved
+
+`allowed-tools` is additive for the duration of the run: activating another
+skill can widen access, but it never revokes tools an earlier activation
+already allowed.
+
+## Structured Output
+
+Pass a JSON schema and get validated JSON back:
+
+```bash
+cat > person.schema.json << 'EOF'
+{
+  "type": "object",
+  "properties": {
+    "name": {"type": "string"},
+    "age": {"type": "integer"},
+    "email": {"type": "string"}
+  },
+  "required": ["name", "age"]
+}
+EOF
+
+echo "John Doe is 30 years old, email: john@example.com" | \
+  polly --schema person.schema.json
+```
+
+```json
+{
+  "name": "John Doe",
+  "age": 30,
+  "email": "john@example.com"
+}
+```
+
+Works with images too: `polly -f receipt.jpg --schema receipt.schema.json`.
+
+## Sandboxing
+
+Tool commands — the builtin `bash` tool, shell tools, and stdio MCP servers —
+run **sandboxed by default**: the filesystem is read-only outside the
+policy's writable paths, credential paths (`~/.ssh`, `~/.aws`, `~/.gnupg`,
+...) are blocked from reads, and credential-shaped environment variables
+(`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, ...) are
+stripped. On Linux, tools additionally get private `/tmp` and `/run`, their
+own PID and IPC namespaces, and no access to host Unix sockets. Sandboxed
+tools get a `[sandboxed]` suffix on their LLM-facing description so the model
+knows they're restricted — with a `.git is read-only` note when Git metadata
+is fully pinned, so a failing `git commit` isn't mistaken for a transient
+error.
+
+`--sandbox <preset>` (env `POLLYTOOL_SANDBOX`) selects the base policy for
+all sandboxed tools. Components join with `+`:
+
+| Preset | Meaning |
+|---|---|
+| `base` | temp-dir writes only, no network |
+| `readonly` | no writes at all, not even temp; no network |
+| `workspace` | the working directory is writable; Git metadata stays read-only so a tool cannot replace `.git` or plant hooks |
+| `git` | with `workspace`: keep `.git` writable and pin only its dangerous leaves (config, hooks, routing pointers), so `git commit`/rebase/fetch work |
+| `net` | outbound network allowed |
+| `ssh` | agent-based SSH: `SSH_AUTH_SOCK` and its socket pass through, `~/.ssh/config` and `known_hosts` readable; private keys stay masked |
+| `sshkeys` | read all of `~/.ssh` including private keys (agentless setups); still not writable |
+
+The default is **`workspace+net+git`**: tools can edit the project, reach the
+network, and use Git, while credentials stay masked and everything outside
+the workspace is read-only. Tighten with `--sandbox base` or `--sandbox
+readonly` when tools only need to compute or inspect.
+
+Fine-tune on top of any preset:
+
+- `--writepath <dir>` (repeatable, `POLLYTOOL_WRITEPATHS`) — extra writable
+  paths
+- `--denypath <path>` (repeatable, `POLLYTOOL_DENYPATHS`) — extra
+  read-blocked paths
+- `--allownet` (`POLLYTOOL_ALLOWNET`) — allow network
+- `--nosandbox` (`POLLYTOOL_NOSANDBOX`) — disable sandboxing entirely
+
+Leaving a home directory or filesystem root broadly writable earns a visible
+warning naming the settings to inspect.
+
+Individual tools can customize their own policy with a `"sandbox"` field in
+the shell tool schema or MCP server entry — grant network, extra writable
+paths, specific env vars, and so on:
+
+```jsonc
+// in a shell tool schema or MCP server entry
+"sandbox": true                                                    // base policy
+"sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/data"] }
+"sandbox": { "readPaths": ["~/.aws"], "allowEnv": ["AWS_PROFILE", "AWS_REGION", "HOME", "PATH"] }
+"sandbox": { "passEnv": ["GITHUB_TOKEN"] }
+"sandbox": { "denyWrite": true }
+```
+
+Per-tool policy merges monotonically on top of the preset: it can add grants
+or restrictions but never remove one, and `"sandbox": false` is refused
+unless the caller also makes the explicit global unsafe choice with
+`--nosandbox`.
+
+Sandboxing requires the fixed system `/usr/bin/bwrap` on Linux, or
+`/usr/bin/sandbox-exec` plus `/usr/bin/perl` on macOS. If the required
+trusted backend is unavailable, polly refuses to run sandboxed tools rather
+than silently running them unsandboxed. And when no-sandbox mode is in
+effect, explicitly supplied sandbox flags (`--sandbox`, `--denypath`,
+`--writepath`, `--allownet`) are an error rather than a silently ignored
+policy; `--nosandbox=false` overrides an ambient `POLLYTOOL_NOSANDBOX=true`.
+
+**[SANDBOX.md](SANDBOX.md) is the full reference** — every `"sandbox"` field,
+how the workspace protects Git metadata (and which exotic repository layouts
+it refuses), platform implementation details, and honest limitations.
+
+## CLI Reference
+
 ```
 NAME:
    polly - Chat with LLMs using various providers
@@ -57,690 +612,10 @@ GLOBAL OPTIONS:
    --help, -h                                               show help
 ```
 
-## Features
-
-- **Many Models**: OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Ollama.
-- **Multimodal**: Text, pics, random files.
-- **Structured Output**: JSON on purpose, not by accident.
-- **Tool Calling**: Bolt on shell scripts & MCP servers.
-- **Agent Skills**: Discover `SKILL.md` bundles, activate them on demand, and expose bundled helper scripts as tools.
-- **Contexts**: Memory, but opt‑in.
-- **Interactive TUI**: A full-screen terminal UI (scrollback, history search, bracketed paste, slash commands) when you launch `polly` with no prompt.
-- **Streaming**: Words appear while it thinks.
-- **API**: Do the things yourself [docs](API.md)
-
-## Installation
-
-```bash
-go build -o polly ./cmd/polly/
-```
-
-## Quick Start
-
-```bash
-export POLLYTOOL_ANTHROPICKEY=...
-export POLLYTOOL_OPENAIKEY=...
-
-# Bare polly launches the interactive TUI
-polly
-
-# Basic
-echo "Hello?" | polly
-
-# Pick a model
-echo "Quantum computing in one breath" | polly -m openai/gpt-5.4
-
-# Image
-polly -f image.jpg -p "What’s this?"
-
-# Remote image
-polly -f https://example.com/image.png -p "Describe it"
-
-# Mixed bag
-polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
-
-# Tools example - auto-detects shell tools vs MCP servers
-./polly -p "uppercase this: hello" --tool ./uppercase.sh
-./polly -p "create news.txt with today's news" --tool perp.json --tool filesystem.json
-
-# Agent Skills
-./polly --skilldir ~/.pollytool/skills --listskills
-./polly --skilldir ~/.pollytool/skills -p "review this patch for regressions"
-```
-## Interactive TUI
-
-Running `polly` with no `--prompt` and no piped stdin drops you into a full-screen
-terminal UI (built on tcell/gotui). It supports streaming responses, scrollback,
-reverse history search (Ctrl-R), bracketed paste, and tool/skill display. If the
-terminal isn't a TTY (e.g. `TERM=dumb` or redirected I/O), polly falls back to
-plain one-shot mode.
-
-The TUI shows static local image thumbnails when assistant Markdown contains
-`![alt](./path.png)`. Tool results may use the same Markdown form or emit a local
-image path on a line by itself; relative paths resolve from Polly's working
-directory. Kitty graphics are selected for Kitty, Ghostty, and WezTerm; Sixel
-is selected for Windows Terminal 1.22+ and foot. Other terminals keep a compact
-caption/path fallback. Thumbnails preserve the source aspect ratio inside a
-maximum 50-column by 10-row box, accounting for rectangular terminal cells. Set
-`POLLYTOOL_IMAGE_PROTOCOL=kitty`, `sixel`, or `none` to override auto-detection.
-Remote images, paths buried in prose/JSON, and paths inside code blocks are not
-opened. tmux and Zellij currently always use the caption/path fallback; native
-placement there needs explicit multiplexer passthrough support. On image-capable
-terminals the startup
-splash also draws the polly logo as a native image (embedded in the binary);
-elsewhere, and on short terminals, it keeps the half-block ANSI bird.
-
-You can also send images *to* the model from the composer. Typing a path to an
-existing local image (relative paths resolve from Polly's working directory)
-attaches it on submit — `describe .assets/polly.png` just works. Ctrl-V grabs
-an image off the system clipboard (macOS built-in `osascript` or `pngpaste` if
-installed; Linux `wl-paste`/`xclip`; Windows PowerShell), drag-and-dropping an
-image file onto the terminal attaches it (a paste consisting only of image
-paths is treated as a drop), and `/attach <path>` does the same explicitly —
-use `/attach` for paths containing spaces.
-Each attachment appears as a literal `[image #N]` token at the cursor — delete
-the token to drop the attachment, or reorder and reuse it freely. When input is
-accepted, Polly prepares the exact image payload; queued turns retain those
-bytes even if the source file changes or disappears. SQLite-backed sessions
-persist prepared images. If the last image turn is incomplete after a reload,
-Polly restores it to the composer; resubmitting the unchanged draft reuses those
-exact bytes. Attached text bodies and context imports are not restored because
-they cannot be reconstructed safely from prompt text.
-
-A composer prompt may reference at most 16 unique images, every model-visible
-message is limited to 16 image parts, and a complete request is limited to 100
-images across all retained turns. Each base64-encoded image is limited to
-10,000,000 bytes (10 MB), and image data in the model-visible history plus the
-candidate prompt is limited to 16 MiB in total, leaving request headroom under
-the documented Gemini and Anthropic inline limits.
-Images are downscaled to at most 1568px on the long edge before upload; PNG,
-JPEG, and WebP pass through when already within the upload limits, while
-animated GIFs are reduced to their first frame and normalized to PNG, and BMP
-images are normalized to PNG. JPEG orientation metadata is applied whenever an
-image is resized or re-encoded. Older persisted raster parts are normalized in
-the request without rewriting session history; legacy SVG image parts become a
-short omission marker instead of blocking the context.
-Those formats are the portable intersection documented by
-[OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision),
-[Anthropic vision](https://platform.claude.com/docs/en/build-with-claude/vision),
-and [Gemini image understanding](https://ai.google.dev/gemini-api/docs/image-understanding).
-Clipboard captures and exact prepared-preview files are stored under the user
-cache directory (`pollytool/attachments`) and swept after two weeks. Durable
-restored-draft and reload data lives in the SQLite session database, not this
-preview cache.
-
-Slash commands inside the TUI:
-
-```
-/help [command]              Show help
-/attach <image-path>         Attach a local image to the next prompt
-/clear                       Clear the display (history kept)
-/context  (/stats)           Show durable transcript size and model budget
-/get <key|all>               Inspect current settings
-/set <key> <value>           Change a setting for this session
-                             (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
-/tools [list [ns]|show <n>]  List or inspect loaded tools
-/skills                      List discovered Agent Skills
-/rename <name>               Rename the current context
-/reset confirm               Clear durable conversation history
-/exit  (/quit)               Leave the TUI
-```
-
-Tool activity appears once per turn as a collapsed `▸ N tool calls` disclosure
-from the first call onward. Click it to inspect every row; while open, running
-timers, outcomes, and tool-produced images update in place. Explicitly opened
-activity stays open across later calls, then auto-collapses when the turn ends,
-including failed or canceled turns. Completed disclosures can be reopened
-later or after a session reload. Hydrated details contain only safe call labels
-and outcomes, never raw result bodies; the model still receives every result
-and durable history retains the full exchange.
-
-Reasoning (with `--thinking` enabled) appears once per turn as a quiet
-`Thinking…` disclosure, collapsed at the start of every turn. Click the label
-or press Ctrl-O to show or hide a bounded three-row live tail (at least two full
-rows when the terminal has room); the oldest text scrolls off the top as new
-reasoning arrives. The disclosure stays open across tool calls when explicitly
-opened, then collapses when the turn finishes. Completed disclosures remain
-expandable and summarize all reasoning segments from that turn. Reasoning from
-successful turns survives a session reload; failed or canceled turn reasoning
-is marked unsaved and remains available only for the current process.
-
-Ctrl-C or Esc interrupts an in-flight turn; pressing Ctrl-C again (or at an
-idle prompt) quits. Ctrl-Z suspends Polly and returns to the shell; `fg` resumes
-the same TUI state. Input submitted while a turn is running appears immediately
-in the transcript with a `(queued)` marker; the marker disappears when that
-turn starts. Failed or canceled input returns to the composer as an editable
-draft; pending entries are marked `(not sent)` and remain available through
-input history. Polly enables button-level mouse reporting for
-transcript scrolling and image clicks, so use the terminal's mouse
-override—usually Shift-drag, or Option-drag in some macOS terminals—to select
-text.
-
-Launching the TUI without `-c` starts a persistent session under a generated
-name (e.g. `quiet-otter`). Resume it later with `polly -L` or `polly -c
-quiet-otter`, or give it a permanent name with `/rename`. A session where no
-turn ever ran is discarded on exit. Generated sessions expire after 7 days of
-inactivity; explicitly named and renamed contexts do not expire automatically.
-
-### Model Selection
-
-The default model is `anthropic/claude-sonnet-4-6`. Override with `-m` flag:
-
-
-### Create and Use Named Contexts
-
-```bash
-# Create a new named context with configuration
-polly --create project --model openai/gpt-5.4 --maxtokens 4096
-
-# Show context configuration
-polly --show project
-
-# Use the context in one-shot mode
-echo "I'm working on a Python web app" | polly -c project
-
-# Continue the conversation
-polly -c project -p "What database should I use?"
-
-# Or continue interactively in the REPL
-polly -c project
-
-# Reset a context (clear conversation, keep settings)
-polly --reset project
-
-# List all contexts
-polly --list
-
-# Delete a context
-polly --delete project
-
-# Delete all contexts (requires confirmation)
-polly --purge
-```
-
-### Session Storage and Backups
-
-Polly stores session history, settings, and durable artifact bytes in one
-SQLite database at `~/.pollytool/polly.db`. This is a clean break from the old
-per-context JSON format: files under `~/.pollytool/contexts` are left untouched,
-are not imported, and are ignored by current versions of Polly. On the first
-run after this cutover, the SQLite session catalog therefore starts empty.
-
-For a simple backup, first quit every Polly process and then copy
-`~/.pollytool/polly.db`. While Polly is running, use SQLite's
-[online backup API](https://www.sqlite.org/backup.html) or
-[`VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html#vacuuminto) to create a
-consistent snapshot. Do not copy only `polly.db` while a process has it open:
-committed data may still be in the write-ahead log.
-
-### Context Settings Persistence
-
-Contexts remember your settings (model, temperature, system prompt, active tools) between conversations:
-
-```bash
-# First use - settings are saved
-polly -c helper -m gemini/gemini-3.1-pro-preview -s "You are a SQL expert" -p "Hello"
-
-# Later uses - settings are automatically restored
-polly -c helper -p "Write a complex JOIN query"
-
-# Use the last active context
-polly --last -p "Explain the query"
-
-```
-
-### Settings Priority
-
-Polly manages context settings with a clear priority system:
-
-1. **Settings Persistence**  
-  When you use a context, your current settings (model, temperature, system prompt, tools) are automatically saved to that context's metadata.
-
-2. **Settings Inheritance**  
-  When you resume a context, Polly restores the previously saved settings—unless you override them with command-line flags.
-
-3. **Settings Priority**  
-  Command-line flags always take precedence over stored context settings.  
-  *Example:*  
-  If your context uses `openai/gpt-5.4` but you run `-m openai/gpt-5.4-mini`, Polly switches to GPT-5.4-mini and saves this change for future use.
-
-4. **System Prompt Changes**  
-  If you change the system prompt for a context with existing conversation history, Polly automatically resets the conversation to keep things consistent.
-
-## Tool Management
-
-Polly now provides unified tool management for both shell scripts and MCP servers:
-
-### Command-Line Tool Loading
-
-Tools are auto-detected based on file type:
-- **Shell scripts** (`.sh` files): Loaded as individual tools
-- **MCP servers** (`.json` files): Can provide multiple tools from one server
-
-```bash
-# Load a shell tool
-polly -t ./uppercase.sh -p "make this LOUD: hello"
-
-# Load an MCP server (JSON config)
-polly -t filesystem.json -p "list files in /tmp"
-
-# Mix both types
-polly -t ./mytool.sh -t perplexity.json -p "search and process"
-```
-
-
-### Built-in Tools
-
-Native tools are loaded by name with `-t`:
-
-```bash
-# Sandboxed shell execution
-polly -t bash -p "list the largest files in this directory"
-
-# Direct file access: paged reads, whole-file writes, exact string edits
-polly -t read_file -t write_file -t edit_file -p "fix the typo in README.md"
-
-# Discovery: directory listings and cross-file search, no shell required
-polly -t list_dir -t search_files -t read_file -p "where is retry handled?"
-```
-
-`read_file` pages a text file as numbered lines with literal search and raw byte windows, using the same bounded-read UX as `read_artifact`. `write_file` creates or replaces a file, creating missing parent directories. `edit_file` replaces an exact literal string that must be unique in the file (or pass `replace_all`). `list_dir` lists one directory (non-recursive). `search_files` reports matching lines as `path:line: text` — literal by default, RE2 with `regex`, filtered with an `include` glob — skipping `.git`, symlinks, binaries, and read-denied paths, with output bounded so one minified file can't flood context. All of them enforce the sandbox policy in-process: reads follow the read policy, and writes are confined to the policy's writable paths minus its write-denied islands (protected Git metadata included). `write_file` and `edit_file` refuse to load without sandboxing unless the registry explicitly opts out with `WithUnsafeNoSandbox`; the read-only tools load anywhere, so a session with no `bash` at all can still browse, search, and read.
-
-### Tool Namespacing
-
-To avoid conflicts, tools are automatically namespaced:
-- Shell tools: `scriptname__toolname` (e.g., `uppercase__to_uppercase`)
-- MCP tools: `servername__toolname` (e.g., `filesystem__read_file`)
-
-### Tool Persistence
-
-When tools are loaded in a context, they're automatically saved and restored:
-```bash
-# Tools are saved with the context
-polly -c project -t ./build.sh -p "build the project"
-
-# Later, tools are automatically restored
-polly -c project -p "run tests"  # build.sh is still available
-```
-
-## Agent Skills
-
-Polly can discover [Agent Skills](https://agentskills.io/specification) from one or more directories. Each skill lives in a folder named after the skill and contains a `SKILL.md` manifest with YAML frontmatter.
-
-At runtime Polly:
-- advertises discovered skills in the system prompt
-- exposes `activate_skill` and `read_skill_file` native tools
-- loads executable files under a skill's `scripts/` directory as normal Polly shell tools, namespaced by skill name, when the skill is activated
-- loads Claude Desktop style MCP configs from a skill's optional `mcp/` directory, namespaced by skill and server name, when the skill is activated
-- enforces `allowed-tools` on future turns after activation, matching Polly tool names with `*` glob support; skill-bundled tools remain auto-approved, and multiple skill activations combine their allowlists additively
-
-`allowed-tools` is additive for the duration of the run: activating another skill can widen access, but it does not revoke tools that were already allowed by a previously activated skill.
-
-Examples:
-
-```bash
-# Use the default ~/.pollytool/skills directory if it exists
-polly --listskills
-
-# Point at one or more explicit skill directories
-polly --skilldir ~/.pollytool/skills --skilldir ./skills --listskills
-
-# Run with skills enabled
-polly --skilldir ~/.pollytool/skills -p "help me review this Go change"
-
-# Disable skills for a run
-polly --noskills -p "summarize this file"
-```
-
-## Structured Output
-
-Use JSON schemas to get structured, validated responses:
-
-```bash
-# Create a schema file
-cat > person.schema.json << 'EOF'
-{
-  "type": "object",
-  "properties": {
-    "name": {"type": "string"},
-    "age": {"type": "integer"},
-    "email": {"type": "string"}
-  },
-  "required": ["name", "age"]
-}
-EOF
-
-# Extract structured data
-echo "John Doe is 30 years old, email: john@example.com" | \
-  polly --schema person.schema.json
-```
-
-Output:
-```json
-{
-  "name": "John Doe",
-  "age": 30,
-  "email": "john@example.com"
-}
-```
-
-### Image Analysis with Schema
-
-```bash
-# Analyze image with structured output
-polly -f receipt.jpg --schema receipt.schema.json
-```
-
-## Tool Integration
-
-### Shell Tools
-
-Create executable scripts that follow the tool protocol:
-
-```bash
-#!/bin/bash
-# uppercase_tool.sh
-
-if [ "$1" = "--schema" ]; then
-  cat <<SCHEMA
-{
-  "title": "uppercase",
-  "description": "Convert text to uppercase",
-  "type": "object",
-  "properties": {
-    "text": {"type": "string", "description": "Text to convert"}
-  },
-  "required": ["text"]
-}
-SCHEMA
-elif [ "$1" = "--execute" ]; then
-  echo "$2" | jq -r .text | tr '[:lower:]' '[:upper:]'
-fi
-```
-
-Use the tool:
-```bash
-polly -t ./uppercase_tool.sh -p "Convert 'hello world' to uppercase"
-```
-
-#### Sandboxing
-
-The builtin `bash` tool, shell tools, and stdio MCP servers run **sandboxed by default**. A sandboxed process runs with a read-only root filesystem, writes restricted to the policy's writable paths, sensitive paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) blocked from reads, and credential/runtime env vars (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, ...) stripped. On Linux, `/tmp` and `/run` are private, filesystem Unix sockets are blocked, and the process gets private PID and IPC namespaces plus a detached session. Shell tools (and the builtin `bash` tool) get a `[sandboxed]` suffix on their description so the LLM knows they're restricted — with a `.git is read-only` note when Git metadata is fully pinned so a failing `git commit` isn't mistaken for a transient error. Extra paths can be blocked globally with `--denypath` (or `POLLYTOOL_DENYPATHS`).
-
-**Presets** — `--sandbox <preset>` (env `POLLYTOOL_SANDBOX`) selects the base policy for all sandboxed tools. Components join with `+`:
-
-| Preset | Meaning |
-|---|---|
-| `base` | temp-dir writes only, no network |
-| `readonly` | no writes at all, not even temp; no network |
-| `workspace` | the working directory is writable; discovered Git routing entries and metadata trees stay read-only so a tool cannot replace `.git` or alter repository-local hook/config entry points |
-| `git` | with `workspace`: keep `.git` writable but pin only its dangerous leaves (config, hooks, routing pointers), so `git commit`/rebase/fetch work; requires `workspace` |
-| `net` | outbound network allowed |
-| `ssh` | agent-based SSH: pass `SSH_AUTH_SOCK` and allow its socket, read `~/.ssh/config` and `known_hosts`; private keys stay masked |
-| `sshkeys` | read all of `~/.ssh` including private keys (agentless setups); `~/.ssh` stays unwritable |
-
-The default is **`workspace+net+git`**: tools can edit the project, reach the network, and use Git (commit, rebase, fetch), while credentials stay masked and everything outside the workspace is read-only. Without the `git` component, `workspace` keeps the whole `.git` tree read-only and `git commit` fails with `EPERM`; leaf mode instead pins only the metadata that can select host-executed code (config, hooks, routing/worktree pointers), creating those leaves inert when absent. `workspace` canonicalizes the working directory and refuses the filesystem root, the user's home directory, exact mounted-volume roots on Linux and macOS, and exact Linux private temp/runtime roots because recursively protecting Git metadata there cannot safely use a partial scan. Descendants of mounted volumes remain valid bounded workspaces; otherwise change into a project directory or use `--sandbox base`. Tighten with `--sandbox base` or `--sandbox readonly` when tools only need to compute or inspect. Granular additions: `--writepath <dir>` (repeatable, env `POLLYTOOL_WRITEPATHS`) grants extra writable paths and `--allownet` (env `POLLYTOOL_ALLOWNET`) grants network on top of any preset.
-
-If a global flag or per-tool overlay leaves a home directory or filesystem root as a broad writable grant, Polly emits a visible warning pointing to the global and per-tool settings to inspect. Repeated effective configs do not repeat the same warning.
-
-Sandboxing requires the fixed system `/usr/bin/bwrap` (Linux), or fixed system `/usr/bin/sandbox-exec` plus `/usr/bin/perl` (macOS). If the required trusted backend is unavailable, Polly refuses to run sandboxed tools rather than silently running them unsandboxed. Disable with `--nosandbox` or `POLLYTOOL_NOSANDBOX=true`. For a conversation run, explicitly supplying `--sandbox`, `--denypath`, `--writepath`, or `--allownet` while no-sandbox mode is effective is an error rather than a silently ignored policy; use `--nosandbox=false` to override an ambient opt-out. See [API.md](API.md) for the full spec and [SANDBOX.md](SANDBOX.md) for design intent and platform differences.
-
-**Full example** — `"sandbox": true` inherits the CLI preset; add `--sandbox base` to limit writes to `$TMPDIR` with no network:
-
-```bash
-cat > ./sandboxed_uppercase.sh << 'EOF'
-#!/bin/bash
-if [ "$1" = "--schema" ]; then
-  cat <<'SCHEMA'
-{
-  "title": "sandboxed_uppercase",
-  "description": "Uppercase input text",
-  "type": "object",
-  "sandbox": true,
-  "properties": {"text": {"type": "string"}},
-  "required": ["text"]
-}
-SCHEMA
-elif [ "$1" = "--execute" ]; then
-  echo "$2" | jq -r .text | tr '[:lower:]' '[:upper:]'
-fi
-EOF
-chmod +x ./sandboxed_uppercase.sh
-
-polly -t ./sandboxed_uppercase.sh -p "uppercase 'hello world' using the tool"
-```
-
-**Config variations** — replace `"sandbox": true` in the schema with any of:
-
-```jsonc
-// Grant network + extra writable path
-"sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/data"] }
-
-// Allow network; block DNS on macOS and the default resolver on Linux
-// (Linux remains best-effort: a hard-coded resolver can still be reached.)
-"sandbox": { "allowNetwork": true, "denyDNS": true }
-
-// Unmask specific sensitive paths and pass through selected env vars
-"sandbox": {
-  "readPaths": ["~/.aws"],
-  "allowEnv": ["AWS_PROFILE", "AWS_REGION", "HOME", "PATH"]
-}
-
-// Additively pass one variable through without a strict allowlist
-"sandbox": { "passEnv": ["GITHUB_TOKEN"] }
-
-// Let a tool reach one agent/service socket while others stay blocked
-"sandbox": { "passEnv": ["SSH_AUTH_SOCK"], "allowUnixSockets": ["~/.ssh/agent.sock"] }
-
-// Fully read-only — no writes, not even to temp
-"sandbox": { "denyWrite": true }
-
-// Tool metadata cannot disable the sandbox by itself. The caller must make
-// the explicit global unsafe choice with --nosandbox.
-```
-
-Credential-shaped env vars (`POLLYTOOL_*`, `AWS_*`, names ending in `_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, ..., plus agent sockets like `SSH_AUTH_SOCK`) are stripped from sandboxed processes. Add one back with `passEnv` (additive — everything else still flows), or replace the heuristic entirely with a strict `allowEnv` allowlist (which then ignores `passEnv`).
-
-Relative `writablePaths`, `readPaths`, and `denyPaths` entries resolve against
-Polly's working directory when the sandbox is created. A child read exemption
-such as `~/.ssh/config` exposes only that path; the rest of the denied parent
-remains hidden. `denyWritePaths` entries carve read-only islands out of a
-writable tree. The `workspace` preset recursively discovers regular, nested,
-submodule, and linked-worktree `.git` entries and protects each routing entry,
-per-worktree gitdir, `commondir` pointer, and common gitdir. This intentionally
-blocks direct writes into those Git metadata trees (index/ref updates as well
-as hooks/config) while leaving working-tree files writable. Bare-repository
-working directories and symlinked Git routing or executable/config metadata
-are refused because their identity cannot be pinned portably. Hard-linked
-protected files, repository-local `core.hooksPath`, and config includes are
-refused for the same reason: protecting the config pathname would not protect
-the writable alias or redirected target. Polly accepts either a stable route
-to fixed OS Git or, on Darwin, a standard Homebrew `bin/git` leaf symlink to a
-non-writable, single-link Cellar target; every accepted route and target must stay
-outside writable paths. It executes the resolved selected Git with a
-routing-free environment, preserving that Git's compiled config-prefix
-semantics. It checks effective and overridden
-global/system `core.hooksPath` values plus every nested include (even inactive
-`includeIf` branches). The workspace preset is refused when a hook target,
-selected config source, or config include is in host-visible writable content
-(including macOS temp trees) outside protected Git metadata; hard-linked config
-sources and symlinked or hard-linked configured hook entries are refused as
-mutable aliases. `/dev/null` remains a supported `core.hooksPath` value for
-disabling hooks. The config/hook audit is repeated when each sandbox is
-constructed, after CLI `--writepath` and per-tool `writablePaths` overlays are
-merged, so a later grant cannot make an otherwise external config, include, or
-hook target plantable.
-
-Writable and read-exemption paths are canonicalized when the effective policy
-is prepared. Missing grants are dropped, and the approved filesystem identities
-survive later per-tool merges; replacing or rerouting one before another tool
-is loaded fails closed instead of silently widening that later sandbox.
-
-**MCP server sandboxing** — set `sandbox` on each server entry in the config:
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/workspace"],
-      "sandbox": true
-    },
-    "api_proxy": {
-      "command": "python",
-      "args": ["proxy.py"],
-      "sandbox": { "allowNetwork": true, "writablePaths": ["/tmp/proxy"] }
-    }
-  }
-}
-```
-
-Tools and servers without a `sandbox` field get the CLI preset (`workspace+net+git` unless `--sandbox` says otherwise). A tool's own `sandbox` config merges monotonically on top of the preset: it may add grants or restrictions, but cannot remove an earlier entry. A `"sandbox": false` request is refused unless the caller also made the explicit global unsafe choice with `--nosandbox`.
-
-### MCP Servers
-
-MCP servers are configured through JSON files using the Claude Desktop format. A single config file can define multiple servers:
-
-```bash
-# Create an MCP server config
-cat > mcp.json << 'EOF'
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/workspace"]
-    },
-    "perplexity": {
-      "command": "uvx",
-      "args": ["perplexity-mcp"],
-      "env": {
-        "PERPLEXITY_API_KEY": "pplx-..."
-      }
-    }
-  }
-}
-EOF
-
-# Load all servers from the config
-polly -t mcp.json -p "List files and search for tutorials"
-
-# Or load a specific server
-polly -t mcp.json#filesystem -p "List files in the workspace"
-```
-
-#### Remote MCP Servers
-
-MCP servers can also connect via SSE or Streamable HTTP transports:
-
-```json
-{
-  "mcpServers": {
-    "remote-api": {
-      "transport": "sse",
-      "url": "https://api.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ..."
-      },
-      "timeout": "60s"
-    }
-  }
-}
-```
-
-#### MCP Server Examples
-
-```bash
-cat > servers.json << 'EOF'
-{
-  "mcpServers": {
-    "perplexity": {
-      "command": "uvx",
-      "args": ["perplexity-mcp"],
-      "env": {
-        "PERPLEXITY_API_KEY": "pplx-..."
-      }
-    },
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/files"]
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_TOKEN": "ghp_..."
-      }
-    }
-  }
-}
-EOF
-```
-
-
-### Custom API Endpoints
-
-```bash
-# Use a custom Ollama endpoint
-polly --baseurl http://192.168.1.100:11434 -m ollama/gpt-oss -p "Hello"
-
-# Use OpenAI-compatible endpoint
-polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hello"
-```
-
-
-## Provider-Specific Notes
-
-### OpenAI
-- Supports GPT-5.4 and its distills (5.4-mini, 5.4-nano)
-- Native OpenAI uses the Responses API when `--baseurl` is not set
-- OpenAI-compatible endpoints stay on Chat Completions when `--baseurl` is set
-- Structured output uses `additionalProperties: false` in schema
-- Strict tool schemas with optional parameters are downgraded to non-strict on native OpenAI Responses
-- Reliable schema support
-- Built-in Responses tools are not exposed yet
-
-### Anthropic
-- Supports Claude family (Opus, Sonnet, Haiku)
-- Uses tool-use pattern for structured output
-- Excellent for long-form content and analysis
-- Mostly reliable schema support
-
-### Gemini
-- Supports Gemini Pro and Flash models
-- Good balance of speed and capability
-- Reliable schema output support via ResponseSchema
-
-### DeepSeek
-- Supports DeepSeek's hosted models (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`)
-- API key in `POLLYTOOL_DEEPSEEKKEY`
-- Reasoning models emit a non-standard `reasoning_content` field that the API requires echoed back on follow-up turns; the provider captures and replays it automatically, so tool use works without configuration
-
-```bash
-export POLLYTOOL_DEEPSEEKKEY=...
-polly -m deepseek/deepseek-v4-pro -p "Hello!"
-```
-
-### OpenRouter
-- Routes to many upstream providers through one OpenAI-compatible endpoint
-- API key in `POLLYTOOL_OPENROUTERKEY`
-- Use the upstream `provider/model` slug after the `openrouter/` prefix
-
-```bash
-export POLLYTOOL_OPENROUTERKEY=...
-polly -m openrouter/anthropic/claude-sonnet-4-5 -p "Hello!"
-polly -m openrouter/openai/gpt-5 -p "Hello!"
-polly -m openrouter/deepseek/deepseek-chat -p "Hello!"
-```
-
-### Ollama
-- Requires Ollama installation
-- Supports any model available in Ollama
-- Use --baseurl for remote instances
-- Schema support hit and miss, depends on model
-
 ## See Also
 
-- [Soulshack](https://github.com/pkdindustries/soulshack) - An IRC chatbot that uses Polly for LLM features.
+- [Soulshack](https://github.com/pkdindustries/soulshack) — an IRC chatbot
+  that uses Polly for LLM features.
 
 ## License
 
