@@ -352,60 +352,136 @@ func TestApprovalViewExpandsArgsOncePerCall(t *testing.T) {
 	}
 }
 
-func TestThinkingGhostShowsNewestThoughtAtResponsePosition(t *testing.T) {
+const testThinkingWidth = 60
+
+func TestThinkingBlockShowsBoundedTailThenCollapsesToRollup(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, config: r.config}
 
-	tui.ShowThinking("I should check\nthe   parse loop ")
-	tui.ShowThinking("for off-by-one errors")
-	m.refreshThinkingGhost()
+	// Enough reasoning to settle well past the visible cap.
+	for i := 0; i < 12; i++ {
+		tui.ShowThinking(fmt.Sprintf("this is reasoning sentence number %d about the parse loop. ", i))
+	}
+	m.refreshThinkingBlock(testThinkingWidth)
 
-	blocks := m.transcriptDisplayBlocks()
-	ghost := blocks[len(blocks)-1]
-	if !strings.Contains(ghost, "…") || !strings.Contains(ghost, "off-by-one errors") {
-		t.Fatalf("ghost should trail the transcript with the newest thought, got %q", ghost)
+	block := m.transcript[m.thinkingIndex]
+	if got := strings.Count(block, "\n") + 1; got != thinkingBlockLines {
+		t.Fatalf("block should hold %d lines, got %d: %q", thinkingBlockLines, got, block)
 	}
-	if !strings.Contains(ghost, streamCursorGlyph) || !strings.Contains(ghost, "mod:italic") {
-		t.Fatalf("ghost should carry the caret and italic styling, got %q", ghost)
+	if !strings.Contains(block, streamCursorGlyph) || !strings.Contains(block, "mod:italic") {
+		t.Fatalf("block should carry the caret and italic styling, got %q", block)
 	}
-	if strings.Contains(ghost, "\n") || strings.Contains(plainStyledText(ghost), "  ") {
-		t.Fatalf("ghost should collapse whitespace, got %q", ghost)
+	// The window keeps the newest reasoning and drops the oldest.
+	if !strings.Contains(block, "number 11") || strings.Contains(block, "number 0 ") {
+		t.Fatalf("block should show the newest lines, got %q", block)
 	}
-
-	// The ghost is display-only: never in the transcript, never in the status.
-	if strings.Contains(strings.Join(m.transcript, "\n"), "off-by-one") {
-		t.Fatalf("ghost leaked into the transcript: %#v", m.transcript)
-	}
-	if raw, _ := m.statusActivity(); strings.Contains(raw, "off-by-one") {
-		t.Fatalf("whisper should no longer crowd the status row: %q", raw)
-	}
-
-	// The newest words survive; the oldest are clipped from the left.
-	tui.ShowThinking(strings.Repeat("padding ", 40) + "final insight")
-	m.refreshThinkingGhost()
-	blocks = m.transcriptDisplayBlocks()
-	if !strings.Contains(blocks[len(blocks)-1], "final insight") {
-		t.Fatalf("ghost lost the newest thought: %q", blocks[len(blocks)-1])
-	}
-	if len(m.thinkingTail) > thinkingTailMax {
-		t.Fatalf("thinking tail unbounded: %d runes", len(m.thinkingTail))
+	// No settled line may exceed the width it was wrapped to.
+	for _, line := range m.thinkingWrapped {
+		if len(line) > testThinkingWidth {
+			t.Fatalf("line wider than the wrap width: %q", line)
+		}
 	}
 
-	// The first content chunk replaces the ghost with real text in place.
+	// The first content chunk closes the block into its permanent rollup.
 	tui.AppendAssistantText("Here is the answer")
-	m.refreshThinkingGhost()
-	blocks = m.transcriptDisplayBlocks()
-	last := blocks[len(blocks)-1]
-	if strings.Contains(last, "final insight") || !strings.Contains(last, "Here is the answer") {
-		t.Fatalf("streaming should replace the ghost with content, got %q", last)
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "thought for") || !strings.Contains(joined, "tok") {
+		t.Fatalf("thinking should leave a rollup behind: %#v", m.transcript)
+	}
+	if strings.Contains(joined, "parse loop") {
+		t.Fatalf("reasoning text should not survive in the transcript: %#v", m.transcript)
+	}
+	if m.thinkingIndex != -1 {
+		t.Fatalf("block should be closed, index = %d", m.thinkingIndex)
+	}
+	if !strings.Contains(m.transcript[len(m.transcript)-1], "Here is the answer") {
+		t.Fatalf("answer should follow the rollup: %#v", m.transcript)
 	}
 
-	// The next turn starts with a clean slate.
+	// The full text stays available for /thinking even though the transcript
+	// only ever showed a window of it.
+	if len(m.thinkingLog) != 1 || !strings.Contains(m.thinkingLog[0], "number 0") {
+		t.Fatalf("reasoning log should keep the whole segment: %#v", m.thinkingLog)
+	}
+
+	// The next turn starts with a clean slate but keeps the log.
 	m.beginTurn("again")
-	if m.thinkingTail != nil {
-		t.Fatalf("thinking tail should reset per turn, got %q", string(m.thinkingTail))
+	if m.thinkingIndex != -1 || m.thinkingWrapped != nil || m.thinkingPending != nil {
+		t.Fatalf("thinking state should reset per turn: %d %v %q",
+			m.thinkingIndex, m.thinkingWrapped, string(m.thinkingPending))
+	}
+	if len(m.thinkingLog) != 1 {
+		t.Fatalf("log should survive the turn boundary: %#v", m.thinkingLog)
+	}
+}
+
+// Reasoning can resume between tool calls, so a turn may hold several
+// segments; each leaves its own rollup where it happened.
+func TestEachThinkingSegmentLeavesItsOwnRollup(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	tui.ShowThinking("first I should look at the file\n")
+	m.refreshThinkingBlock(testThinkingWidth)
+	call := messages.ChatMessageToolCall{ID: "a", Name: "bash"}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+	tui.AppendToolEnd(call, "ok", time.Second, nil)
+	tui.ShowThinking("now that I have read it the fix is obvious\n")
+	m.refreshThinkingBlock(testThinkingWidth)
+	tui.AppendAssistantText("Fixed.")
+
+	rollups := 0
+	for _, e := range m.transcript {
+		if strings.Contains(e, "thought for") {
+			rollups++
+		}
+	}
+	if rollups != 2 {
+		t.Fatalf("want one rollup per segment, got %d: %#v", rollups, m.transcript)
+	}
+	if len(m.thinkingLog) != 2 {
+		t.Fatalf("log should hold both segments: %#v", m.thinkingLog)
+	}
+}
+
+func TestThinkingLineSettlingBreaksOnWordBoundaries(t *testing.T) {
+	// A hard newline settles immediately, however short the line.
+	line, rest, ok := takeThinkingLine([]rune("short\nmore text"), 40)
+	if !ok || line != "short" || string(rest) != "more text" {
+		t.Fatalf("newline should settle a line: %q %q %v", line, string(rest), ok)
+	}
+
+	// Text that cannot fill a line is held back rather than shown partially.
+	if _, _, ok := takeThinkingLine([]rune("not yet wide"), 40); ok {
+		t.Fatal("short pending text should not settle")
+	}
+
+	// A long run breaks at the last space that fits, never mid-word.
+	line, rest, ok = takeThinkingLine([]rune("alpha beta gamma delta epsilon zeta"), 20)
+	if !ok {
+		t.Fatal("long text should settle a line")
+	}
+	if len(line) > 20 {
+		t.Fatalf("settled line too wide: %q", line)
+	}
+	if strings.HasSuffix(line, "gamm") || strings.HasPrefix(strings.TrimSpace(string(rest)), "amma") {
+		t.Fatalf("line broke mid-word: %q | %q", line, string(rest))
+	}
+	if !strings.HasPrefix(line, "alpha beta") {
+		t.Fatalf("line should start at the beginning: %q", line)
+	}
+
+	// A paragraph longer than the width must wrap to it rather than settling
+	// as one over-wide line just because a newline eventually follows.
+	long := strings.Repeat("word ", 30) + "\ntail"
+	line, _, ok = takeThinkingLine([]rune(long), 24)
+	if !ok || len(line) > 24 {
+		t.Fatalf("a long paragraph must wrap to the width, got %d chars: %q", len(line), line)
 	}
 }
 

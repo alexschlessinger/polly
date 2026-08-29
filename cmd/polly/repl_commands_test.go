@@ -561,7 +561,9 @@ func TestHintFor(t *testing.T) {
 		{"/he\nlp", ""},
 		{"/zzz", ""},
 		// Typing the name: many matches list bare names, few include summaries.
-		{"/t", "/tools — inspect loaded tools"},
+		// Two commands start with "/t", so the hint lists both with summaries.
+		{"/t", "/thinking — show reasoning the transcript only summarized   /tools — inspect loaded tools"},
+		{"/to", "/tools — inspect loaded tools"},
 		{"/q", "/quit — leave the REPL"},
 		// Typing arguments: keyword matches from the command's completer.
 		{"/get max", "maxcontext  maxtokens"},

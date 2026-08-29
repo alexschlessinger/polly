@@ -705,10 +705,26 @@ type replModel struct {
 	// the status row shows a ~chars/4 token estimate while state is thinking.
 	thinkingChars int
 
-	// thinkingTail keeps the newest runes of the reasoning stream so the
-	// status row can whisper what the model is currently thinking about.
-	// Raw text; whitespace is collapsed at render time.
-	thinkingTail []rune
+	// Live reasoning block. thinkingIndex is the transcript entry showing the
+	// current segment (-1 when none is open); thinkingWrapped holds the lines
+	// it has settled and thinkingPending the runes not yet wide enough to
+	// settle into one. Text is committed a whole line at a time so the block
+	// steps instead of reflowing on every chunk. thinkingStarted and
+	// thinkingSegChars back the rollup the segment collapses into.
+	thinkingIndex    int
+	thinkingWrapped  []string
+	thinkingPending  []rune
+	thinkingStarted  time.Time
+	thinkingSegChars int
+	// thinkingSegRaw accumulates the segment's reasoning verbatim, separate
+	// from the display window, which discards what scrolls past it.
+	thinkingSegRaw strings.Builder
+
+	// thinkingLog keeps each completed segment's full reasoning for this
+	// session, so /thinking can show what the block only ever windowed. Not
+	// persisted — providers stream reasoning once and it is dropped from the
+	// assistant message, so this is the only copy and it dies with the process.
+	thinkingLog []string
 
 	// focusKnown/focused mirror the terminal's focus reports (tcell
 	// EnableFocus). Desktop notifications fire only when the terminal has
@@ -726,10 +742,6 @@ type replModel struct {
 	// tool arrows so a pulse flip invalidates the visual cache.
 	streamCursorFrame string
 
-	// thinkingGhostFrame is the display-only thinking excerpt shown where the
-	// response will appear ("" when hidden). Same cache discipline as the
-	// stream caret; it never enters the transcript.
-	thinkingGhostFrame string
 
 	// Failed/canceled input is restored to the composer. When submitted again
 	// unchanged, restoreDraftNext reuses its already-persisted user message;
@@ -779,6 +791,7 @@ func newReplModel() *replModel {
 		state:            turnStateIdle,
 		followBottom:     true,
 		toolRollupIndex:  -1,
+		thinkingIndex:    -1,
 	}
 	m.ed.goalCol = -1
 	return m
@@ -941,43 +954,17 @@ func (m *replModel) statusActivity() (raw, rendered string) {
 // the live thinking counter; the value is presented with a "~".
 const thinkingCharsPerToken = 4
 
-// thinkingTailMax bounds the retained reasoning tail; whisperMaxRunes is how
-// much of it the thinking ghost shows. The margin absorbs whitespace collapse.
+// thinkingBlockLines is how many settled reasoning lines stay on screen, and
+// thinkingBlockMaxWidth caps how wide they wrap on a roomy terminal so the
+// block reads as a quoted aside rather than full-bleed body text.
 const (
-	thinkingTailMax = 200
-	whisperMaxRunes = 72
+	thinkingBlockLines    = 3
+	thinkingBlockMaxWidth = 78
 )
 
-// appendThinkingTail keeps the newest reasoning runes for the thinking ghost.
-// Caller must hold m.mu.
-func (m *replModel) appendThinkingTail(chunk string) {
-	if chunk == "" {
-		return
-	}
-	m.thinkingTail = append(m.thinkingTail, []rune(chunk)...)
-	if len(m.thinkingTail) > thinkingTailMax {
-		// Copy so the backing array doesn't grow without bound across a turn.
-		m.thinkingTail = append([]rune(nil), m.thinkingTail[len(m.thinkingTail)-thinkingTailMax:]...)
-	}
-}
-
-// thinkingWhisper is the live excerpt of what the model is currently thinking
-// about: the newest words of the reasoning stream, whitespace-collapsed and
-// clipped from the left so the freshest thought always survives. Caller must
-// hold m.mu.
-func (m *replModel) thinkingWhisper() string {
-	if len(m.thinkingTail) == 0 {
-		return ""
-	}
-	collapsed := []rune(strings.Join(strings.Fields(string(m.thinkingTail)), " "))
-	if len(collapsed) == 0 {
-		return ""
-	}
-	if len(collapsed) > whisperMaxRunes {
-		collapsed = collapsed[len(collapsed)-whisperMaxRunes:]
-	}
-	return "…" + string(collapsed)
-}
+// thinkingBlockIndent is the gutter every reasoning line sits in; the first
+// line replaces its last two columns with the caret.
+const thinkingBlockIndent = "    "
 
 // activityTicker is the pinned bottom-row notice shown while the user is
 // scrolled up: how much transcript lies below the viewport, what the agent is
@@ -1549,30 +1536,183 @@ func (m *replModel) refreshStreamCursor() {
 	}
 }
 
-// thinkingGhostNow renders the thinking ghost: the breathing caret plus the
-// newest reasoning excerpt, sitting exactly where the response will appear.
-// The first content chunk replaces it with real text in place. Caller must
+// appendThinking takes one streamed reasoning chunk. It opens a block on the
+// first chunk of a segment and buffers the text; the wrapping into display
+// lines happens at render, where the terminal width is known. Caller must
 // hold m.mu.
-func (m *replModel) thinkingGhostNow() string {
-	if !m.busy || m.canceling || m.state != turnStateThinking || m.turnStarted.IsZero() {
-		return ""
+func (m *replModel) appendThinking(chunk string) {
+	if chunk == "" {
+		return
 	}
-	whisper := m.thinkingWhisper()
-	if whisper == "" {
-		return ""
+	if m.thinkingIndex < 0 {
+		m.appendLine(styled(thinkingBlockIndent+"…", "muted", "italic"))
+		m.thinkingIndex = len(m.transcript) - 1
+		m.thinkingStarted = time.Now()
+		m.thinkingWrapped = nil
+		m.thinkingPending = nil
+		m.thinkingSegChars = 0
+		m.thinkingSegRaw.Reset()
 	}
-	mod := arrowPulse[int(time.Since(m.turnStarted)/arrowPulsePeriod)%len(arrowPulse)]
-	return styled(streamCursorGlyph, "accent", mod) + " " + styled(whisper, "muted", "italic")
+	m.thinkingSegChars += len(chunk)
+	m.thinkingSegRaw.WriteString(chunk)
+	m.thinkingPending = append(m.thinkingPending, []rune(chunk)...)
 }
 
-// refreshThinkingGhost mirrors refreshStreamCursor for the thinking ghost.
-// Caller must hold m.mu.
-func (m *replModel) refreshThinkingGhost() {
-	next := m.thinkingGhostNow()
-	if next != m.thinkingGhostFrame {
-		m.thinkingGhostFrame = next
-		m.invalidateVisual()
+// refreshThinkingBlock settles buffered reasoning into display lines for the
+// current width and repaints the block. Called from render, which is the only
+// place the terminal width is known, so a resize simply re-wraps whatever has
+// not settled yet. Caller must hold m.mu.
+func (m *replModel) refreshThinkingBlock(width int) {
+	if m.thinkingIndex < 0 || m.thinkingIndex >= len(m.transcript) {
+		return
 	}
+	content := min(width-len(thinkingBlockIndent), thinkingBlockMaxWidth)
+	if content < 16 {
+		content = 16
+	}
+	settled := m.settleThinkingLines(content)
+	next := m.thinkingBlockText()
+	if settled || m.transcript[m.thinkingIndex] != next {
+		m.transcript[m.thinkingIndex] = next
+		m.invalidateFlat()
+	}
+}
+
+// settleThinkingLines moves pending reasoning into finished lines, breaking on
+// word boundaries at the given width. Only whole lines are committed, so the
+// block advances a line at a time instead of reflowing on every chunk; the
+// unsettled remainder stays hidden until it fills a line. Reports whether
+// anything settled. Caller must hold m.mu.
+func (m *replModel) settleThinkingLines(width int) bool {
+	settled := false
+	for {
+		line, rest, ok := takeThinkingLine(m.thinkingPending, width)
+		if !ok {
+			break
+		}
+		m.thinkingWrapped = append(m.thinkingWrapped, line)
+		m.thinkingPending = rest
+		settled = true
+		// Only the visible tail is kept for display; the full text lives in
+		// the segment's log entry when it closes.
+		if len(m.thinkingWrapped) > thinkingBlockLines {
+			m.thinkingWrapped = append([]string(nil), m.thinkingWrapped[len(m.thinkingWrapped)-thinkingBlockLines:]...)
+		}
+	}
+	return settled
+}
+
+// takeThinkingLine peels one full display line off the pending reasoning,
+// breaking at the last word boundary that fits. Reports false when the text
+// cannot yet fill a line. Newlines in the reasoning end a line early, so the
+// model's own paragraphing survives.
+func takeThinkingLine(pending []rune, width int) (line string, rest []rune, ok bool) {
+	// A hard break settles the line early so the model's own paragraphing
+	// survives — but only when what precedes it actually fits, otherwise the
+	// paragraph is wrapped by width first and the break handled on a later pass.
+	for i, r := range pending {
+		if r != '\n' {
+			continue
+		}
+		if head := strings.TrimSpace(string(pending[:i])); rw.StringWidth(head) <= width {
+			return head, pending[i+1:], true
+		}
+		break
+	}
+	if rw.StringWidth(strings.TrimSpace(string(pending))) <= width {
+		return "", pending, false
+	}
+	cut, lastSpace := 0, -1
+	for i, r := range pending {
+		if rw.StringWidth(string(pending[:i+1])) > width {
+			break
+		}
+		cut = i + 1
+		if r == ' ' || r == '\t' {
+			lastSpace = i
+		}
+	}
+	if lastSpace > 0 {
+		cut = lastSpace
+	}
+	return strings.TrimSpace(string(pending[:cut])), pending[cut:], true
+}
+
+// thinkingBlockText renders the block: the settled lines in their gutter, the
+// newest last, with the breathing caret marking the live first row. Caller
+// must hold m.mu.
+func (m *replModel) thinkingBlockText() string {
+	mod := "dim"
+	if !m.turnStarted.IsZero() {
+		mod = arrowPulse[int(time.Since(m.turnStarted)/arrowPulsePeriod)%len(arrowPulse)]
+	}
+	head := styled(streamCursorGlyph, "accent", mod) + " "
+	if len(m.thinkingWrapped) == 0 {
+		return "  " + head + styled("thinking…", "muted", "italic")
+	}
+	var b strings.Builder
+	for i, line := range m.thinkingWrapped {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		if i == 0 {
+			b.WriteString("  " + head)
+		} else {
+			b.WriteString(thinkingBlockIndent)
+		}
+		b.WriteString(styled(line, "muted", "italic"))
+	}
+	return b.String()
+}
+
+// finishThinkingBlock collapses the open reasoning segment into its permanent
+// one-line rollup and files the full text for /thinking. Safe to call when no
+// segment is open. Caller must hold m.mu.
+func (m *replModel) finishThinkingBlock() {
+	if m.thinkingIndex < 0 {
+		return
+	}
+	idx := m.thinkingIndex
+	m.thinkingIndex = -1
+	if full := strings.TrimSpace(m.thinkingSegRaw.String()); full != "" {
+		m.thinkingLog = append(m.thinkingLog, full)
+	}
+	rollup := thinkingRollupLine(time.Since(m.thinkingStarted), m.thinkingSegChars)
+	m.thinkingWrapped = nil
+	m.thinkingPending = nil
+	m.thinkingSegChars = 0
+	m.thinkingSegRaw.Reset()
+	if idx >= len(m.transcript) {
+		return
+	}
+	// The block may have grown past one row; collapsing to a single line
+	// shortens it, so a scrolled-away viewport is held still.
+	m.anchorForRemovedLines(m.entryFlatStart(idx)+1, m.entryLineCount(idx)-1)
+	m.transcript[idx] = rollup
+	m.invalidateFlat()
+}
+
+// resetThinkingBlock drops any open segment's state without leaving a rollup.
+// A new turn or a cleared display starts from nothing; the log of completed
+// segments survives, since it is the session's only copy. Caller must hold
+// m.mu.
+func (m *replModel) resetThinkingBlock() {
+	m.thinkingIndex = -1
+	m.thinkingWrapped = nil
+	m.thinkingPending = nil
+	m.thinkingSegChars = 0
+	m.thinkingSegRaw.Reset()
+	m.thinkingStarted = time.Time{}
+}
+
+// thinkingRollupLine is what a finished reasoning segment leaves behind: how
+// long the model thought and roughly how much it produced.
+func thinkingRollupLine(elapsed time.Duration, chars int) string {
+	body := "thought for " + formatElapsed(elapsed)
+	if est := chars / thinkingCharsPerToken; est > 0 {
+		body += " · ~" + humanizeTokens(est) + " tok"
+	}
+	return "  " + styled("⋯", "muted", "bold") + " " + styled(body, "muted", "")
 }
 
 // refreshActiveTools rewrites each running tool's transcript entry with the
@@ -1669,6 +1809,7 @@ func (m *replModel) clearDisplay() {
 	m.currentAssistant = -1
 	m.activeTools = nil
 	m.resetToolWindow()
+	m.resetThinkingBlock()
 	for i := range m.queue {
 		m.queue[i].transcriptShown = false
 	}
@@ -2090,7 +2231,7 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	m.runningTools = 0
 	m.resetToolWindow()
 	m.thinkingChars = 0
-	m.thinkingTail = nil
+	m.resetThinkingBlock()
 	m.turnStarted = time.Now()
 	m.currentPrompt = prompt
 	m.currentTurn = cloneManagedTurn(turn)
@@ -3254,6 +3395,7 @@ func (r *managedREPL) endTurn(err error) {
 	} else if err != nil {
 		activeToolReason = "failed"
 	}
+	m.finishThinkingBlock()
 	m.settleActiveTools(activeToolReason)
 	m.activeTools = nil
 	m.runningTools = 0
@@ -3352,6 +3494,7 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.resetAssistantStream()
 	m.turnStarted = time.Time{}
 	m.toolName = ""
+	m.finishThinkingBlock()
 	m.settleActiveTools("canceled")
 	m.activeTools = nil
 	m.runningTools = 0
@@ -3671,7 +3814,7 @@ func (r *managedREPL) render() {
 	}
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
-	r.model.refreshThinkingGhost()
+	r.model.refreshThinkingBlock(w)
 	inputMaxRows := maxInputRows
 	if h-statusRows > 1 {
 		inputMaxRows = min(inputMaxRows, h-statusRows-1)
@@ -3961,9 +4104,6 @@ func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
 			text:   entry,
 			images: m.transcriptImages[i],
 		})
-	}
-	if m.thinkingGhostFrame != "" {
-		blocks = append(blocks, transcriptDisplayBlock{key: "thinking", text: m.thinkingGhostFrame})
 	}
 	if m.slashHints != "" {
 		blocks = append(blocks, transcriptDisplayBlock{key: "slash", text: styled(m.slashHints, "muted", "")})
@@ -4432,7 +4572,7 @@ func (t *gotuiTurnUI) ShowThinking(chunk string) {
 	}
 	t.repl.model.state = turnStateThinking
 	t.repl.model.thinkingChars += len(chunk)
-	t.repl.model.appendThinkingTail(chunk)
+	t.repl.model.appendThinking(chunk)
 	t.repl.model.mu.Unlock()
 }
 
@@ -4445,6 +4585,9 @@ func (t *gotuiTurnUI) AppendAssistantText(content string) {
 	t.repl.model.state = turnStateStreaming
 	if content != "" {
 		t.repl.model.turnHasOutput = true
+		// The answer supersedes the reasoning that produced it: close the
+		// block before the first token lands so the rollup sits above it.
+		t.repl.model.finishThinkingBlock()
 	}
 	t.repl.model.appendAssistant(content)
 	t.repl.model.mu.Unlock()
@@ -4458,6 +4601,7 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	}
 	if len(calls) > 0 {
 		t.repl.model.turnHasOutput = true
+		t.repl.model.finishThinkingBlock()
 		t.repl.model.finishAssistantBlock("")
 		t.repl.model.runningTools += len(calls)
 		t.repl.model.state = turnStateTool

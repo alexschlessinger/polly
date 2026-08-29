@@ -58,6 +58,10 @@ type replCommandContext struct {
 	// settingsApplied lets the interactive REPL refresh UI derived from config
 	// (e.g. the status-row model name) after /set mutates it.
 	settingsApplied func()
+	// reasoningLog returns this session's completed reasoning segments, newest
+	// last. The transcript only ever shows a window of each, so /thinking is
+	// the way back to the whole thing.
+	reasoningLog func() []string
 	// attachImage validates a local image, registers it, and inserts its
 	// "[image #N]" token into the composer, returning the token.
 	attachImage func(path string) (string, error)
@@ -154,6 +158,13 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "list loaded skills",
 		busySafe: true,
 		run:      replSkillsCommand,
+	})
+	r.register(replCommand{
+		name:     "/thinking",
+		usage:    "/thinking [n]",
+		summary:  "show reasoning the transcript only summarized",
+		busySafe: true,
+		run:      replThinkingCommand,
 	})
 	r.register(replCommand{
 		name:     "/tools",
@@ -439,6 +450,9 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		},
 		settingsApplied: func() {
 			r.model.modelName = stripProviderPrefix(cfg.Model)
+		},
+		reasoningLog: func() []string {
+			return append([]string(nil), r.model.thinkingLog...)
 		},
 	}
 }
@@ -1346,6 +1360,34 @@ func replSkillsCommand(ctx *replCommandContext, args []string) replCommandResult
 		return replCommandResult{err: ctx.replyLine("no skills loaded")}
 	}
 	return replCommandResult{err: ctx.replyLines(append([]string{fmt.Sprintf("skills (%d):", len(list))}, list...))}
+}
+
+// replThinkingCommand prints a past reasoning segment in full. The transcript
+// keeps only a rollup once a segment closes, so this is the way back to the
+// text — for this session only; nothing about reasoning is persisted.
+func replThinkingCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if ctx == nil || ctx.reasoningLog == nil {
+		return replCommandResult{err: ctx.replyLine("/thinking is only available in the interactive TUI")}
+	}
+	log := ctx.reasoningLog()
+	if len(log) == 0 {
+		return replCommandResult{err: ctx.replyLine("no reasoning recorded this session (is --thinking enabled?)")}
+	}
+	// Default to the newest segment; "/thinking 2" counts back from it.
+	back := 1
+	if len(args) > 1 {
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n < 1 {
+			return replCommandResult{err: ctx.replyLine("usage: /thinking [n] — n counts back from the most recent")}
+		}
+		back = n
+	}
+	if back > len(log) {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("only %d reasoning segments this session", len(log)))}
+	}
+	segment := log[len(log)-back]
+	header := fmt.Sprintf("reasoning %d of %d:", len(log)-back+1, len(log))
+	return replCommandResult{err: ctx.replyLines(append([]string{header}, strings.Split(segment, "\n")...))}
 }
 
 func matchingWords(words []string, prefix string) []string {

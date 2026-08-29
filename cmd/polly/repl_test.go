@@ -487,7 +487,9 @@ func TestCompleteSlash(t *testing.T) {
 		// "/c" matches /clear and /context; common prefix extends to "/c".
 		{"/c", true, "/c", []string{"/clear", "/context"}},
 		{"/cl", true, "/clear", []string{"/clear"}},
-		{"/t", true, "/tools", []string{"/tools"}},
+		// "/t" is ambiguous: it completes to the shared prefix and lists both.
+		{"/t", true, "/t", []string{"/thinking", "/tools"}},
+		{"/to", true, "/tools", []string{"/tools"}},
 		// Already complete stays put but still reports its single match.
 		{"/help", true, "/help", []string{"/help"}},
 		// No completion when it isn't a bare slash token.
@@ -621,8 +623,8 @@ func TestSlashHintsLiveFilterAndEscape(t *testing.T) {
 		t.Fatalf("typing / should show all commands, got %q", r.model.slashHints)
 	}
 	send("t")
-	if got := r.model.slashHints; !strings.Contains(got, "/tools — ") {
-		t.Fatalf("typing /t should narrow hints to /tools with summary, got %q", got)
+	if got := r.model.slashHints; !strings.Contains(got, "/tools") || !strings.Contains(got, "/thinking") {
+		t.Fatalf("typing /t should narrow hints to the two /t commands, got %q", got)
 	}
 
 	// Escape hides the line without touching the input…

@@ -180,6 +180,7 @@ Slash commands inside the TUI:
 /set <key> <value>           Change a setting for this session
                              (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /tools [list [ns]|show <n>]  List or inspect loaded tools
+/thinking [n]                Show a past reasoning segment in full
 /skills                      List discovered Agent Skills
 /rename <name>               Rename the current context
 /reset confirm               Clear durable conversation history
@@ -195,6 +196,15 @@ batch opens at full height and then drains a row at a time as its calls land,
 rather than standing tall and collapsing at the end. Folded rows are
 display-only: the model still receives every result, and the durable session
 history keeps the full exchange.
+
+Reasoning (with `--thinking` enabled) streams into a block of the three most
+recent lines, wrapped and set in muted italics, settling a line at a time so it
+steps rather than reflowing on every token. When the answer starts — or a tool
+runs, or the turn ends — the block collapses to a permanent `⋯ thought for 12s ·
+~1.4k tok` line, one per reasoning segment, left where that thinking happened.
+The full text of each segment is kept for the session and `/thinking [n]` prints
+it back, newest first. That buffer is memory-only: providers stream reasoning
+once and it is not written to session history, so it does not survive restart.
 
 Ctrl-C or Esc interrupts an in-flight turn; pressing Ctrl-C again (or at an
 idle prompt) quits. Ctrl-Z suspends Polly and returns to the shell; `fg` resumes
