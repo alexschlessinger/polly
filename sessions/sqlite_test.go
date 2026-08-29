@@ -487,7 +487,7 @@ func TestLeaseContentionTakeoverAndTypedLoss(t *testing.T) {
 	oldHeartbeat, oldStale, oldTimeout, oldRetry := leaseHeartbeatInterval, leaseStaleAfter, leaseAcquireTimeout, leaseRetryInterval
 	leaseHeartbeatInterval = time.Hour
 	leaseStaleAfter = time.Second
-	leaseAcquireTimeout = 60 * time.Millisecond
+	leaseAcquireTimeout = 5 * time.Second
 	leaseRetryInterval = 5 * time.Millisecond
 	t.Cleanup(func() {
 		leaseHeartbeatInterval, leaseStaleAfter = oldHeartbeat, oldStale
@@ -521,6 +521,9 @@ func TestLeaseContentionTakeoverAndTypedLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer leasedReader.Close()
+	// Keep the intentionally contended acquire quick without imposing the same
+	// tiny budget on fresh-database setup, which is much slower under -race.
+	leaseAcquireTimeout = 60 * time.Millisecond
 	if _, err := secondStore.Acquire(ctx, "shared", AcquireOptions{}); !errors.Is(err, ErrSessionInUse) {
 		t.Fatalf("contended acquire = %v", err)
 	}
@@ -528,7 +531,7 @@ func TestLeaseContentionTakeoverAndTypedLoss(t *testing.T) {
 		t.Fatalf("delete active session = %v", err)
 	}
 
-	// The contended probes above need the short budget; the takeover below
+	// The contended acquire above needs the short budget; the takeover below
 	// must instead survive a slow CI disk committing its write transaction.
 	leaseAcquireTimeout = 5 * time.Second
 
