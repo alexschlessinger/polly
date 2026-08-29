@@ -5,5 +5,7 @@ CLAUDE.md
 perp.json
 file.json
 .gocache/
+.gopath/
+.polly-shots/
 AGENTS.md
 /.claude/
