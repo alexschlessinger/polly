@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 )
@@ -138,5 +139,36 @@ func TestMessagesToGeminiContentNativeCallIDs(t *testing.T) {
 	}
 	if id := contents[3].Parts[0].FunctionResponse.ID; id != "" {
 		t.Errorf("synthetic FunctionResponse.ID = %q, want empty", id)
+	}
+}
+
+func TestJSONSchemaToGeminiSchemaTypeUnions(t *testing.T) {
+	// jsonschema-go emits ["null","array"] for nil-able Go slices; Gemini's
+	// typed schema needs a single type plus nullable, or the API 400s.
+	raw := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tags": map[string]any{
+				"type":  []any{"null", "array"},
+				"items": map[string]any{"type": "string"},
+			},
+			"title": map[string]any{"type": "string"},
+		},
+		"required": []any{"tags", "title"},
+	}
+
+	s := jsonSchemaToGeminiSchema(raw)
+	tags := s.Properties["tags"]
+	if tags.Type != gemini.TypeArray {
+		t.Errorf("tags.Type = %q, want ARRAY", tags.Type)
+	}
+	if !tags.Nullable {
+		t.Error("tags.Nullable = false, want true")
+	}
+	if tags.Items == nil || tags.Items.Type != gemini.TypeString {
+		t.Errorf("tags.Items = %+v, want STRING", tags.Items)
+	}
+	if title := s.Properties["title"]; title.Type != gemini.TypeString || title.Nullable {
+		t.Errorf("title = %+v, want non-nullable STRING", title)
 	}
 }

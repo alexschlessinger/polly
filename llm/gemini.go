@@ -222,27 +222,51 @@ func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, req *Co
 // alternative responseJsonSchema is silently ignored on preview models.
 // Only the subset of JSON Schema that maps cleanly to gemini.Schema is handled
 // — that's enough for the structured-output feature polly exposes.
+// geminiSchemaType maps a JSON Schema type name to the API's enum form.
+func geminiSchemaType(t string) gemini.Type {
+	switch t {
+	case "string":
+		return gemini.TypeString
+	case "number":
+		return gemini.TypeNumber
+	case "integer":
+		return gemini.TypeInteger
+	case "boolean":
+		return gemini.TypeBoolean
+	case "array":
+		return gemini.TypeArray
+	case "object":
+		return gemini.TypeObject
+	case "null":
+		return gemini.TypeNULL
+	}
+	return ""
+}
+
 func jsonSchemaToGeminiSchema(raw map[string]any) *gemini.Schema {
 	if raw == nil {
 		return nil
 	}
 	out := &gemini.Schema{}
-	if t, ok := raw["type"].(string); ok {
-		switch t {
-		case "string":
-			out.Type = gemini.TypeString
-		case "number":
-			out.Type = gemini.TypeNumber
-		case "integer":
-			out.Type = gemini.TypeInteger
-		case "boolean":
-			out.Type = gemini.TypeBoolean
-		case "array":
-			out.Type = gemini.TypeArray
-		case "object":
-			out.Type = gemini.TypeObject
-		case "null":
-			out.Type = gemini.TypeNULL
+	switch t := raw["type"].(type) {
+	case string:
+		out.Type = geminiSchemaType(t)
+	case []any:
+		// JSON Schema type unions, e.g. ["null","array"] as emitted by
+		// jsonschema-go for nil-able Go types. Gemini's typed schema has a
+		// single type plus a nullable flag.
+		for _, v := range t {
+			s, ok := v.(string)
+			if !ok {
+				continue
+			}
+			if s == "null" {
+				out.Nullable = true
+				continue
+			}
+			if out.Type == "" {
+				out.Type = geminiSchemaType(s)
+			}
 		}
 	}
 	if d, ok := raw["description"].(string); ok {
