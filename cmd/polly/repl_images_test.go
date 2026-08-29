@@ -22,7 +22,7 @@ func TestRenderMarkdownWithLocalImages(t *testing.T) {
 	path := filepath.Join(dir, "chart.png")
 	writeImageFixture(t, path, 8, 4)
 
-	rendered, images := renderMarkdownWithLocalImages("before\n\n![latency chart](chart.png)\n\nafter", dir)
+	rendered, images, _ := renderMarkdownWithLocalImages("before\n\n![latency chart](chart.png)\n\nafter", dir, false)
 	if len(images) != 1 {
 		t.Fatalf("images = %d, want 1", len(images))
 	}
@@ -52,8 +52,8 @@ func TestRenderMarkdownWithLocalImagesSanitizesPrivateMarkers(t *testing.T) {
 	path := filepath.Join(dir, filename)
 	writeImageFixture(t, path, 8, 4)
 
-	rendered, images := renderMarkdownWithLocalImages(
-		"before"+marker+"\n\n`code"+marker+"`\n\n![ok]("+filename+")", dir,
+	rendered, images, _ := renderMarkdownWithLocalImages(
+		"before"+marker+"\n\n`code"+marker+"`\n\n![ok]("+filename+")", dir, false,
 	)
 	if len(images) != 1 || images[0].Path != path {
 		t.Fatalf("resolved images = %#v", images)
@@ -73,7 +73,7 @@ func TestRenderMarkdownWithLocalImagesSanitizesPrivateMarkers(t *testing.T) {
 
 func TestRenderMarkdownLeavesRemoteAndMissingImagesAsLinks(t *testing.T) {
 	dir := t.TempDir()
-	rendered, images := renderMarkdownWithLocalImages("![remote](https://example.com/a.png) ![missing](missing.png)", dir)
+	rendered, images, _ := renderMarkdownWithLocalImages("![remote](https://example.com/a.png) ![missing](missing.png)", dir, false)
 	if len(images) != 0 {
 		t.Fatalf("images = %#v, want none", images)
 	}

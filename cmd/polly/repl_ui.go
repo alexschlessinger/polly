@@ -612,6 +612,10 @@ type replModel struct {
 	// screen already styled instead of visibly transforming.
 	streamRaw   strings.Builder
 	streamShown int
+	// streamDeferredTable records that the last streaming render drew a table
+	// in its unaligned in-flight form; settle must re-render for the aligned
+	// layout even when no bytes were held back.
+	streamDeferredTable bool
 
 	// flatCache memoizes flattenTranscript's result; nil means "stale". Every
 	// transcript mutation clears it so the next flatten recomputes. render(),
@@ -1244,6 +1248,7 @@ func (m *replModel) appendLine(s string) {
 func (m *replModel) resetAssistantStream() {
 	m.streamRaw.Reset()
 	m.streamShown = 0
+	m.streamDeferredTable = false
 }
 
 // appendAssistant accumulates streamed model output into the current
@@ -1270,24 +1275,28 @@ func (m *replModel) appendAssistant(text string) {
 		return
 	}
 	m.streamShown = len(visible)
-	rendered, images := renderMarkdownWithLocalImages(visible, m.imageBaseDir)
+	rendered, images, deferred := renderMarkdownWithLocalImages(visible, m.imageBaseDir, true)
+	m.streamDeferredTable = deferred
 	m.transcript[m.currentAssistant] = rendered
 	m.setTranscriptImages(m.currentAssistant, images)
 	m.invalidateFlat()
 }
 
 // finishAssistantStream renders any text still held back by the streaming
-// holdback — at settle time the message is final, so everything shows.
+// holdback — at settle time the message is final, so everything shows. A
+// table that streamed in its unaligned form also forces the settle render:
+// holdback never withholds pipe rows, so streamShown alone would miss it.
 func (m *replModel) finishAssistantStream() {
 	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
 		return
 	}
 	raw := m.streamRaw.String()
-	if raw == "" || m.streamShown >= len(raw) {
+	if raw == "" || (m.streamShown >= len(raw) && !m.streamDeferredTable) {
 		return
 	}
 	m.streamShown = len(raw)
-	rendered, images := renderMarkdownWithLocalImages(raw, m.imageBaseDir)
+	m.streamDeferredTable = false
+	rendered, images, _ := renderMarkdownWithLocalImages(raw, m.imageBaseDir, false)
 	m.transcript[m.currentAssistant] = rendered
 	m.setTranscriptImages(m.currentAssistant, images)
 	m.invalidateFlat()

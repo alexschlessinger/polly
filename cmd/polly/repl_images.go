@@ -52,6 +52,13 @@ type transcriptImage struct {
 type markdownRenderState struct {
 	baseDir string
 	images  []transcriptImage
+	// streaming marks the source as a truncated in-flight prefix: a table at
+	// the stream edge renders unaligned, since its column widths are not final.
+	streaming bool
+	// deferredTable reports that a table rendered in the unaligned streaming
+	// form; the stream owner must re-render once the message settles even if
+	// no text was held back.
+	deferredTable bool
 }
 
 type transcriptDisplayBlock struct {

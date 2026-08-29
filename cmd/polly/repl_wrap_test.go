@@ -72,6 +72,17 @@ func TestTranscriptVisualRowsRepeatsStyledCodeGutter(t *testing.T) {
 	}
 }
 
+func TestTranscriptVisualRowsHardWrapsTableRowsLikeCode(t *testing.T) {
+	// Table rows carry the same muted "│ " gutter as code lines, so an
+	// overwide table hard-wraps with a repeated gutter instead of word
+	// wrapping, keeping the unwrapped prefix's column positions intact.
+	requireTranscriptRows(t,
+		"[│ ](fg:muted)aaa  bbb  cc",
+		8,
+		[]string{"│ aaa  b", "│ bb  cc"},
+	)
+}
+
 func TestTranscriptVisualRowsPreservesExplicitBlankLines(t *testing.T) {
 	requireTranscriptRows(t, "alpha beta\n\ncharlie", 6, []string{"alpha", "beta", "", "charli", "e"})
 }

@@ -15,8 +15,10 @@ import (
 
 // mdParser is the shared goldmark instance used to render assistant markdown.
 // Only the parser is used; rendering to gotui markup is done by the walker
-// below so every color stays inside the semantic ANSI palette.
-var mdParser = goldmark.New(goldmark.WithExtensions(extension.Strikethrough))
+// below so every color stays inside the semantic ANSI palette. Capability
+// changes here must be reflected in tuiDisplayContract (display_contract.go),
+// which tells the model what this renderer supports.
+var mdParser = goldmark.New(goldmark.WithExtensions(extension.Strikethrough, extension.Table))
 
 // renderMarkdown converts markdown source into gotui style markup: block
 // structure via goldmark's AST, inline styling through the same styled()
@@ -29,11 +31,13 @@ func renderMarkdown(src string) string {
 // renderMarkdownWithLocalImages keeps the ordinary Markdown surface while
 // replacing explicit, existing local image references with private transcript
 // slots. The slots are consumed only by the managed TUI; callers that just
-// need text continue to use renderMarkdown unchanged.
-func renderMarkdownWithLocalImages(src, baseDir string) (string, []transcriptImage) {
-	state := &markdownRenderState{baseDir: baseDir}
+// need text continue to use renderMarkdown unchanged. streaming marks the
+// source as an in-flight prefix; the returned deferred flag reports that a
+// table rendered unaligned and the caller must re-render at settle.
+func renderMarkdownWithLocalImages(src, baseDir string, streaming bool) (string, []transcriptImage, bool) {
+	state := &markdownRenderState{baseDir: baseDir, streaming: streaming}
 	rendered := renderMarkdownDocument(src, state)
-	return rendered, state.images
+	return rendered, state.images, state.deferredTable
 }
 
 func renderMarkdownDocument(src string, state *markdownRenderState) string {
@@ -99,6 +103,8 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 		return prefixLines(lines, firstPrefix, contPrefix)
 	case *ast.List:
 		return renderList(b, source, firstPrefix, contPrefix, state)
+	case *east.Table:
+		return renderTable(b, source, firstPrefix, contPrefix, state)
 	case *ast.ThematicBreak:
 		return prefixLines([]string{styled(strings.Repeat("─", 12), "muted", "")}, firstPrefix, contPrefix)
 	case *ast.HTMLBlock:
@@ -142,6 +148,108 @@ func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string, s
 		first = false
 	}
 	return out
+}
+
+// renderTable lays a GFM table out at natural column widths: bold header,
+// muted per-column underline, two-space gaps, and the same muted "│ " gutter
+// code fences use — which the wrap layer classifies as hard-wrap content, so
+// an overwide table wraps without reflowing its columns. While the table is
+// still streaming its widths aren't final, so rows render unaligned and
+// state.deferredTable asks the stream owner for a settle re-render.
+func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix string, state *markdownRenderState) []string {
+	var rows [][]string
+	cols := len(table.Alignments)
+	for row := table.FirstChild(); row != nil; row = row.NextSibling() {
+		mod := ""
+		if _, isHeader := row.(*east.TableHeader); isHeader {
+			mod = "bold"
+		}
+		var cells []string
+		for cell := row.FirstChild(); cell != nil; cell = cell.NextSibling() {
+			cells = append(cells, renderInlineChildren(cell, source, "", mod, state))
+		}
+		cols = max(cols, len(cells))
+		rows = append(rows, cells)
+	}
+	if len(rows) == 0 || cols == 0 {
+		return nil
+	}
+
+	gutter := styled("│ ", "muted", "")
+	if state != nil && state.streaming && atStreamEdge(table) {
+		state.deferredTable = true
+		sep := styled(" │ ", "muted", "")
+		lines := make([]string, len(rows))
+		for i, cells := range rows {
+			lines[i] = gutter + strings.Join(cells, sep)
+		}
+		return prefixLines(lines, firstPrefix, contPrefix)
+	}
+
+	widths := make([]int, cols)
+	for _, cells := range rows {
+		for i, cell := range cells {
+			widths[i] = max(widths[i], styledTextWidth(cell))
+		}
+	}
+
+	var lines []string
+	for _, cells := range rows {
+		parts := make([]string, cols)
+		for i := range parts {
+			cell := ""
+			if i < len(cells) {
+				cell = cells[i]
+			}
+			parts[i] = padTableCell(cell, widths[i], tableAlignment(table, i))
+		}
+		lines = append(lines, gutter+strings.TrimRight(strings.Join(parts, "  "), " "))
+		if len(lines) == 1 {
+			underlines := make([]string, cols)
+			for i, w := range widths {
+				underlines[i] = strings.Repeat("─", w)
+			}
+			lines = append(lines, gutter+styled(strings.Join(underlines, "  "), "muted", ""))
+		}
+	}
+	return prefixLines(lines, firstPrefix, contPrefix)
+}
+
+func tableAlignment(table *east.Table, col int) east.Alignment {
+	if col < len(table.Alignments) {
+		return table.Alignments[col]
+	}
+	return east.AlignNone
+}
+
+// padTableCell pads a styled cell to width with plain spaces outside the
+// markup; the visible width comes from the rendered form, so links, escapes,
+// and wide runes all measure correctly.
+func padTableCell(cell string, width int, align east.Alignment) string {
+	pad := width - styledTextWidth(cell)
+	if pad <= 0 {
+		return cell
+	}
+	switch align {
+	case east.AlignRight:
+		return strings.Repeat(" ", pad) + cell
+	case east.AlignCenter:
+		left := pad / 2
+		return strings.Repeat(" ", left) + cell + strings.Repeat(" ", pad-left)
+	default:
+		return cell + strings.Repeat(" ", pad)
+	}
+}
+
+// atStreamEdge reports whether n sits on the document's trailing spine — the
+// only position where a streamed source may still be appending to it.
+func atStreamEdge(n ast.Node) bool {
+	for ; n != nil && n.Parent() != nil; n = n.Parent() {
+		if n.NextSibling() != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func prefixLines(lines []string, firstPrefix, contPrefix string) []string {

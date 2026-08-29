@@ -14,11 +14,11 @@ const (
 	plainDisplayContract = "Your output is written to a plain unix terminal or pipe. Be terse. Do not use markdown; plain text only."
 
 	// tuiDisplayContract covers the managed REPL. It must mirror what the
-	// renderer in markdown.go actually supports: goldmark parses only
-	// strikethrough beyond core markdown (no tables), HTML blocks display as
-	// source, fence language tags drive chroma highlighting, and local image
-	// references render inline. Flip the tables line if table rendering lands.
-	tuiDisplayContract = "Your output is displayed in a terminal TUI that renders markdown. Be terse. Tag code fences with a language for syntax highlighting. Markdown tables and raw HTML are not rendered — use lists instead. Display a local image file inline with ![alt](path). To show markdown source literally, fence it."
+	// renderer in markdown.go actually supports: strikethrough and tables
+	// beyond core markdown, HTML blocks displayed as source, fence language
+	// tags driving chroma highlighting, and local image references rendered
+	// inline.
+	tuiDisplayContract = "Your output is displayed in a terminal TUI that renders markdown. Be terse. Tag code fences with a language for syntax highlighting. Raw HTML is not rendered. Markdown tables render as aligned monospace columns; keep cells short so rows fit the terminal. Display a local image file inline with ![alt](path). To show markdown source literally, fence it."
 )
 
 // legacySystemPromptDefaults are the pre-refactor default system prompts, which

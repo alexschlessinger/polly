@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -141,6 +142,115 @@ func TestSafeVisibleLenCapBoundsLatency(t *testing.T) {
 	in := "start **" + strings.Repeat("x", holdbackCap+10)
 	if got := in[:safeVisibleLen(in)]; got != in {
 		t.Fatalf("past the cap everything should show, got %d of %d bytes", len(got), len(in))
+	}
+}
+
+func TestRenderMarkdownTableAligned(t *testing.T) {
+	got := renderMarkdown("| Name | Qty |\n|---|---|\n| apple | 3 |\n| kiwi | 12 |")
+	want := []string{
+		"│ Name   Qty",
+		"│ ─────  ───",
+		"│ apple  3",
+		"│ kiwi   12",
+	}
+	if plain := strings.Split(plainStyledText(got), "\n"); !slices.Equal(plain, want) {
+		t.Fatalf("table = %q, want %q", plain, want)
+	}
+	for _, markup := range []string{"[Name](mod:bold)", "[Qty](mod:bold)", "[│ ](fg:muted)", "[─────  ───](fg:muted)"} {
+		if !strings.Contains(got, markup) {
+			t.Fatalf("table markup missing %q in %q", markup, got)
+		}
+	}
+	if strings.Contains(got, "[apple](mod:bold)") {
+		t.Fatalf("body cell rendered bold: %q", got)
+	}
+}
+
+func TestRenderMarkdownTableAlignment(t *testing.T) {
+	got := plainStyledText(renderMarkdown("| L | R | C |\n|:--|--:|:-:|\n| a | b | c |\n| aa | bb | cc |"))
+	want := []string{
+		"│ L    R  C",
+		"│ ──  ──  ──",
+		"│ a    b  c",
+		"│ aa  bb  cc",
+	}
+	if plain := strings.Split(got, "\n"); !slices.Equal(plain, want) {
+		t.Fatalf("aligned table = %q, want %q", plain, want)
+	}
+}
+
+func TestRenderMarkdownTableMeasuresRenderedCells(t *testing.T) {
+	// Wide runes count display cells; a link measures as its rendered
+	// "label (dest)" form, not its source text.
+	got := plainStyledText(renderMarkdown("| 名前 | Link |\n|---|---|\n| ab | [x](https://e.co) |"))
+	want := []string{
+		"│ 名前  Link",
+		"│ ────  ────────────────",
+		"│ ab    x (https://e.co)",
+	}
+	if plain := strings.Split(got, "\n"); !slices.Equal(plain, want) {
+		t.Fatalf("measured table = %q, want %q", plain, want)
+	}
+}
+
+func TestRenderMarkdownTableRaggedRows(t *testing.T) {
+	got := plainStyledText(renderMarkdown("| a | b |\n|---|---|\n| x |\n| 1 | 2 | 3 |"))
+	want := []string{
+		"│ a  b",
+		"│ ─  ─",
+		"│ x",
+		"│ 1  2",
+	}
+	if plain := strings.Split(got, "\n"); !slices.Equal(plain, want) {
+		t.Fatalf("ragged table = %q, want %q", plain, want)
+	}
+}
+
+func TestStreamedTableAlignsAtSettle(t *testing.T) {
+	m := newReplModel()
+	m.appendAssistant("| a | b |\n")
+	// Without the delimiter row this is still a paragraph of literal pipes.
+	if got := plainStyledText(m.transcript[0]); !strings.Contains(got, "| a | b |") {
+		t.Fatalf("pre-delimiter render = %q, want literal pipes", got)
+	}
+
+	m.appendAssistant("|---|---|\n| one | 2 |\n")
+	got := plainStyledText(m.transcript[0])
+	for _, want := range []string{"│ a │ b", "│ one │ 2"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("streaming render = %q, missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "─") {
+		t.Fatalf("streaming render already aligned: %q", got)
+	}
+	if !m.streamDeferredTable {
+		t.Fatal("streaming table did not defer the aligned render")
+	}
+
+	// Nothing is held back (pipe rows are not holdback constructs), so only
+	// the deferred-table flag forces the settle re-render.
+	m.finishAssistantBlock("")
+	final := strings.Split(plainStyledText(m.transcript[0]), "\n")
+	want := []string{
+		"│ a    b",
+		"│ ───  ─",
+		"│ one  2",
+	}
+	if !slices.Equal(final, want) {
+		t.Fatalf("settled table = %q, want %q", final, want)
+	}
+}
+
+func TestStreamedTableWithFollowingBlockAlignsImmediately(t *testing.T) {
+	m := newReplModel()
+	m.appendAssistant("| a | b |\n|---|---|\n| x | y |\n\nafter\n")
+	got := plainStyledText(m.transcript[0])
+	if !strings.Contains(got, "│ a  b") || !strings.Contains(got, "─") {
+		t.Fatalf("completed mid-stream table not aligned: %q", got)
+	}
+	if m.streamDeferredTable {
+		t.Fatal("table with a following block should not defer")
 	}
 }
 

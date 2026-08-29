@@ -96,8 +96,9 @@ func transcriptHangingPrefix(line []ui.Cell) (prefix, continuation, content []ui
 		}
 		return prefix, continuation, line[2:], false, true
 	case '│':
-		// The code renderer owns a muted gutter. Do not reinterpret a literal
-		// vertical bar in ordinary assistant prose as fenced code.
+		// The code and table renderers own a muted gutter. Do not reinterpret
+		// a literal vertical bar in ordinary assistant prose as fenced code.
+		// Tables rely on the hard wrap to keep their column positions intact.
 		muted, known := ui.StyleParserColorMap["muted"]
 		if !known || line[0].Style.Fg != muted {
 			return nil, nil, nil, false, false
@@ -229,6 +230,13 @@ func transcriptFitIndex(cells []ui.Cell, width int) int {
 		used += cellWidth
 	}
 	return len(cells)
+}
+
+// styledTextWidth measures the display width of a string carrying gotui style
+// markup: markup syntax, zero-width escapes, and private literal-bracket runes
+// all measure as the cells they render to.
+func styledTextWidth(s string) int {
+	return transcriptCellsWidth(parseStyledCells(s, ui.StyleClear))
 }
 
 func transcriptCellsWidth(cells []ui.Cell) int {
