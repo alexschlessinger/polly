@@ -720,6 +720,14 @@ type replModel struct {
 	// from the display window, which discards what scrolls past it.
 	thinkingSegRaw strings.Builder
 
+	// A turn gets one reasoning rollup, not one per segment: an agentic turn
+	// can think dozens of times between tool calls, and a line each would bury
+	// the prose. thinkingRollupIndex is that entry (-1 before the first
+	// segment closes); the totals it reports accumulate across the turn.
+	thinkingRollupIndex int
+	thinkingTurnDur     time.Duration
+	thinkingTurnChars   int
+
 	// thinkingLog keeps each completed segment's full reasoning for this
 	// session, so /thinking can show what the block only ever windowed. Not
 	// persisted — providers stream reasoning once and it is dropped from the
@@ -789,9 +797,10 @@ func newReplModel() *replModel {
 		imageBaseDir:     baseDir,
 		historyIdx:       -1,
 		state:            turnStateIdle,
-		followBottom:     true,
-		toolRollupIndex:  -1,
-		thinkingIndex:    -1,
+		followBottom:        true,
+		toolRollupIndex:     -1,
+		thinkingIndex:       -1,
+		thinkingRollupIndex: -1,
 	}
 	m.ed.goalCol = -1
 	return m
@@ -1472,6 +1481,15 @@ func (m *replModel) resetToolWindow() {
 // echoes; the tool window, rollup slot, streaming block, and (defensively)
 // running-tool pins are fixed up here.
 func (m *replModel) removeToolRow(index int) {
+	m.removeTranscriptRow(index)
+}
+
+// removeTranscriptRow deletes an entry and repoints every index-pinned
+// reference past it: deleteTranscriptEntry already shifts images and queue
+// echoes; the tool window, both rollup slots, the reasoning block, the
+// streaming block, and running-tool pins are fixed up here. Every folded row
+// goes through this, so a new pinned index only has to be added once.
+func (m *replModel) removeTranscriptRow(index int) {
 	m.deleteTranscriptEntry(index)
 	m.invalidateFlat()
 	for i := range m.activeTools {
@@ -1484,11 +1502,10 @@ func (m *replModel) removeToolRow(index int) {
 			m.toolWindow[i]--
 		}
 	}
-	if m.toolRollupIndex > index {
-		m.toolRollupIndex--
-	}
-	if m.currentAssistant > index {
-		m.currentAssistant--
+	for _, pinned := range []*int{&m.toolRollupIndex, &m.thinkingIndex, &m.thinkingRollupIndex, &m.currentAssistant} {
+		if *pinned > index {
+			*pinned--
+		}
 	}
 }
 
@@ -1579,10 +1596,10 @@ func (m *replModel) refreshThinkingBlock(width int) {
 }
 
 // settleThinkingLines moves pending reasoning into finished lines, breaking on
-// word boundaries at the given width. Only whole lines are committed, so the
-// block advances a line at a time instead of reflowing on every chunk; the
-// unsettled remainder stays hidden until it fills a line. Reports whether
-// anything settled. Caller must hold m.mu.
+// word boundaries at the given width. The remainder keeps rendering as the
+// block's live last row, so the newest words appear as they arrive rather than
+// waiting to fill a line. Reports whether anything settled. Caller must hold
+// m.mu.
 func (m *replModel) settleThinkingLines(width int) bool {
 	settled := false
 	for {
@@ -1638,20 +1655,30 @@ func takeThinkingLine(pending []rune, width int) (line string, rest []rune, ok b
 	return strings.TrimSpace(string(pending[:cut])), pending[cut:], true
 }
 
-// thinkingBlockText renders the block: the settled lines in their gutter, the
-// newest last, with the breathing caret marking the live first row. Caller
-// must hold m.mu.
+// thinkingBlockText renders the block: the newest reasoning lines in their
+// gutter, oldest scrolling off the top, with the still-arriving remainder as
+// the live last row so the text tracks the stream instead of stalling at the
+// last completed line. Caller must hold m.mu.
 func (m *replModel) thinkingBlockText() string {
 	mod := "dim"
 	if !m.turnStarted.IsZero() {
 		mod = arrowPulse[int(time.Since(m.turnStarted)/arrowPulsePeriod)%len(arrowPulse)]
 	}
 	head := styled(streamCursorGlyph, "accent", mod) + " "
-	if len(m.thinkingWrapped) == 0 {
+
+	lines := m.thinkingWrapped
+	if live := strings.TrimSpace(string(m.thinkingPending)); live != "" {
+		lines = append(append([]string(nil), lines...), live)
+	}
+	if len(lines) > thinkingBlockLines {
+		lines = lines[len(lines)-thinkingBlockLines:]
+	}
+	if len(lines) == 0 {
 		return "  " + head + styled("thinking…", "muted", "italic")
 	}
+
 	var b strings.Builder
-	for i, line := range m.thinkingWrapped {
+	for i, line := range lines {
 		if i > 0 {
 			b.WriteString("\n")
 		}
@@ -1677,7 +1704,8 @@ func (m *replModel) finishThinkingBlock() {
 	if full := strings.TrimSpace(m.thinkingSegRaw.String()); full != "" {
 		m.thinkingLog = append(m.thinkingLog, full)
 	}
-	rollup := thinkingRollupLine(time.Since(m.thinkingStarted), m.thinkingSegChars)
+	m.thinkingTurnDur += time.Since(m.thinkingStarted)
+	m.thinkingTurnChars += m.thinkingSegChars
 	m.thinkingWrapped = nil
 	m.thinkingPending = nil
 	m.thinkingSegChars = 0
@@ -1685,11 +1713,32 @@ func (m *replModel) finishThinkingBlock() {
 	if idx >= len(m.transcript) {
 		return
 	}
-	// The block may have grown past one row; collapsing to a single line
-	// shortens it, so a scrolled-away viewport is held still.
-	m.anchorForRemovedLines(m.entryFlatStart(idx)+1, m.entryLineCount(idx)-1)
-	m.transcript[idx] = rollup
-	m.invalidateFlat()
+	if m.thinkingRollupIndex < 0 {
+		// First segment of the turn: its block becomes the rollup in place.
+		// The block may have grown past one row, so a scrolled-away viewport
+		// is held still as it shortens.
+		m.anchorForRemovedLines(m.entryFlatStart(idx)+1, m.entryLineCount(idx)-1)
+		m.thinkingRollupIndex = idx
+	} else {
+		// The turn already has a rollup earlier in the transcript; this block
+		// folds into its totals rather than adding a line of its own.
+		m.anchorForRemovedLines(m.entryFlatStart(idx), m.entryLineCount(idx))
+		m.removeTranscriptRow(idx)
+	}
+	m.refreshThinkingRollup()
+}
+
+// refreshThinkingRollup restates the turn's reasoning rollup with the totals
+// accumulated so far. Caller must hold m.mu.
+func (m *replModel) refreshThinkingRollup() {
+	if m.thinkingRollupIndex < 0 || m.thinkingRollupIndex >= len(m.transcript) {
+		return
+	}
+	next := thinkingRollupLine(m.thinkingTurnDur, m.thinkingTurnChars)
+	if m.transcript[m.thinkingRollupIndex] != next {
+		m.transcript[m.thinkingRollupIndex] = next
+		m.invalidateFlat()
+	}
 }
 
 // resetThinkingBlock drops any open segment's state without leaving a rollup.
@@ -1698,6 +1747,9 @@ func (m *replModel) finishThinkingBlock() {
 // m.mu.
 func (m *replModel) resetThinkingBlock() {
 	m.thinkingIndex = -1
+	m.thinkingRollupIndex = -1
+	m.thinkingTurnDur = 0
+	m.thinkingTurnChars = 0
 	m.thinkingWrapped = nil
 	m.thinkingPending = nil
 	m.thinkingSegChars = 0

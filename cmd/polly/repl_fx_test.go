@@ -417,22 +417,24 @@ func TestThinkingBlockShowsBoundedTailThenCollapsesToRollup(t *testing.T) {
 	}
 }
 
-// Reasoning can resume between tool calls, so a turn may hold several
-// segments; each leaves its own rollup where it happened.
-func TestEachThinkingSegmentLeavesItsOwnRollup(t *testing.T) {
+// An agentic turn reasons repeatedly between tool calls. A rollup per segment
+// would bury the prose under a wall of "thought for" lines, so the turn gets
+// exactly one, accumulating every segment's time and size.
+func TestTurnKeepsOneAccumulatingThinkingRollup(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, config: r.config}
 
-	tui.ShowThinking("first I should look at the file\n")
-	m.refreshThinkingBlock(testThinkingWidth)
-	call := messages.ChatMessageToolCall{ID: "a", Name: "bash"}
-	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	tui.AppendToolEnd(call, "ok", time.Second, nil)
-	tui.ShowThinking("now that I have read it the fix is obvious\n")
-	m.refreshThinkingBlock(testThinkingWidth)
+	// Six reasoning segments, each broken by a tool call.
+	for i := 0; i < 6; i++ {
+		tui.ShowThinking(fmt.Sprintf("segment %d reasoning about the file\n", i))
+		m.refreshThinkingBlock(testThinkingWidth)
+		call := messages.ChatMessageToolCall{ID: fmt.Sprintf("c%d", i), Name: "bash"}
+		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+		tui.AppendToolEnd(call, "ok", time.Second, nil)
+	}
 	tui.AppendAssistantText("Fixed.")
 
 	rollups := 0
@@ -441,11 +443,68 @@ func TestEachThinkingSegmentLeavesItsOwnRollup(t *testing.T) {
 			rollups++
 		}
 	}
-	if rollups != 2 {
-		t.Fatalf("want one rollup per segment, got %d: %#v", rollups, m.transcript)
+	if rollups != 1 {
+		t.Fatalf("a turn should keep exactly one reasoning rollup, got %d: %#v", rollups, m.transcript)
 	}
-	if len(m.thinkingLog) != 2 {
-		t.Fatalf("log should hold both segments: %#v", m.thinkingLog)
+	// It reports the whole turn's reasoning, not just the last segment's.
+	if m.thinkingTurnChars < 6*len("segment 0 reasoning about the file\n") {
+		t.Fatalf("rollup totals should accumulate, got %d chars", m.thinkingTurnChars)
+	}
+	// Every segment is still recoverable through /thinking.
+	if len(m.thinkingLog) != 6 {
+		t.Fatalf("log should hold every segment: %#v", m.thinkingLog)
+	}
+	// The rollup sits where the first segment was, above the activity.
+	if m.thinkingRollupIndex < 0 || m.thinkingRollupIndex > 1 {
+		t.Fatalf("rollup should stay at the first segment's position, got %d", m.thinkingRollupIndex)
+	}
+
+	// A new turn starts its own rollup rather than extending the last.
+	m.beginTurn("again")
+	if m.thinkingRollupIndex != -1 || m.thinkingTurnChars != 0 || m.thinkingTurnDur != 0 {
+		t.Fatalf("turn totals should reset: %d %d %v",
+			m.thinkingRollupIndex, m.thinkingTurnChars, m.thinkingTurnDur)
+	}
+}
+
+// The block tracks the stream: the newest words show as they arrive instead of
+// waiting to fill a line, and the oldest scroll off the top.
+func TestThinkingBlockShowsUnsettledTailLive(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	// A partial line, far too short to settle, must still be visible.
+	tui.ShowThinking("just starting")
+	m.refreshThinkingBlock(testThinkingWidth)
+	if !strings.Contains(m.transcript[m.thinkingIndex], "just starting") {
+		t.Fatalf("partial text should render immediately: %q", m.transcript[m.thinkingIndex])
+	}
+
+	// Growing it word by word keeps the newest text on screen every frame.
+	for _, word := range []string{" and", " then", " continuing", " onward"} {
+		tui.ShowThinking(word)
+		m.refreshThinkingBlock(testThinkingWidth)
+		if !strings.Contains(plainStyledText(m.transcript[m.thinkingIndex]), strings.TrimSpace(word)) {
+			t.Fatalf("newest word %q missing: %q", word, m.transcript[m.thinkingIndex])
+		}
+	}
+
+	// Past the cap the block stays bounded and drops the oldest lines.
+	for i := 0; i < 40; i++ {
+		tui.ShowThinking(fmt.Sprintf("filler phrase %d ", i))
+		m.refreshThinkingBlock(testThinkingWidth)
+	}
+	block := m.transcript[m.thinkingIndex]
+	if got := strings.Count(block, "\n") + 1; got > thinkingBlockLines {
+		t.Fatalf("block grew past %d lines: %d", thinkingBlockLines, got)
+	}
+	if strings.Contains(block, "just starting") {
+		t.Fatalf("oldest text should have scrolled off: %q", block)
+	}
+	if !strings.Contains(block, "39") {
+		t.Fatalf("newest text should be visible: %q", block)
 	}
 }
 
