@@ -798,10 +798,11 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		return 1, err
 	}
 	// Structured output is machine-facing: display guidance is irrelevant
-	// there and "plain text only" could fight the schema on providers whose
-	// structured output is prompt-based.
+	// there, "plain text only" could fight the schema on providers whose
+	// structured output is prompt-based, and the context-mechanics guidance
+	// (put findings in replies) is moot when the reply is a schema payload.
 	if schema == nil {
-		requestMessages = applyDisplayContract(requestMessages, state.displayContract)
+		requestMessages = applyDisplayContract(requestMessages, sendTimeContracts(state.displayContract))
 	}
 
 	// Reject turns projection would deterministically fail before the user

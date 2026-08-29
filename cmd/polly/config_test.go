@@ -351,3 +351,13 @@ func TestApplyDisplayContract(t *testing.T) {
 		t.Fatalf("empty contract mutated messages: %+v", got)
 	}
 }
+
+func TestSendTimeContractsAppendContextMechanics(t *testing.T) {
+	joined := sendTimeContracts(tuiDisplayContract)
+	if joined != tuiDisplayContract+"\n\n"+contextMechanicsContract {
+		t.Fatalf("joined contracts = %q", joined)
+	}
+	if got := sendTimeContracts(""); got != contextMechanicsContract {
+		t.Fatalf("empty display contract composition = %q", got)
+	}
+}

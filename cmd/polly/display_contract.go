@@ -19,7 +19,27 @@ const (
 	// tags driving chroma highlighting, and local image references rendered
 	// inline.
 	tuiDisplayContract = "Your output is displayed in a terminal TUI that renders markdown. Be terse. Tag code fences with a language for syntax highlighting. Raw HTML is not rendered. Markdown tables render as aligned monospace columns; keep cells short so rows fit the terminal. Display a local image file inline with ![alt](path). To show markdown source literally, fence it."
+
+	// contextMechanicsContract teaches the proactive habits the projection's
+	// in-band forms cannot: receipts, stubs, and the omission marker explain
+	// themselves at the point of use, but the model must know before a turn
+	// ends that its reply outlives tool output, and must reach for recall
+	// tools instead of re-running work or re-asking the user. Constant bytes
+	// on purpose — it rides the stable request prefix. Standing guidance
+	// belongs here, composed at send time; the durable receipt and stub forms
+	// are byte-stability contracts with persisted history and must not absorb
+	// wording changes.
+	contextMechanicsContract = "Conversation memory: your visible context is a trimmed view of a complete, durable transcript. Your reply text persists across turns verbatim; large tool outputs shrink to artifact receipts once a turn completes, and the oldest exchanges are eventually omitted. Put load-bearing findings in your replies. Everything trimmed stays recoverable — read_artifact reads a stored output by the ID its receipt names, read_transcript searches or pages the full conversation, list_artifacts catalogs stored items — so prefer those tools over re-running work or asking the user to repeat anything. To see a stored image again, call read_artifact with its artifact ID; writing an image token in a reply does not attach it. Handle context limits silently; don't mention them unless the user asks."
 )
+
+// sendTimeContracts joins the per-frontend display contract with the
+// frontend-independent context-mechanics contract.
+func sendTimeContracts(displayContract string) string {
+	if displayContract == "" {
+		return contextMechanicsContract
+	}
+	return displayContract + "\n\n" + contextMechanicsContract
+}
 
 // legacySystemPromptDefaults are the pre-refactor default system prompts, which
 // baked a display contract into the persisted prompt. They are recognized so

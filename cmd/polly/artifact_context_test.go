@@ -455,3 +455,48 @@ func TestResetPreservesAttachmentTokenMonotonicity(t *testing.T) {
 		t.Fatalf("post-reset token = %q; reusing a number would rebind surviving history/draft tokens", token)
 	}
 }
+
+func TestTurnComposesContextMechanicsContractExceptForSchemas(t *testing.T) {
+	newState := func(t *testing.T, name string) (*conversationState, *captureCompletionLLM) {
+		t.Helper()
+		store := testOpenMemoryStore(t, nil)
+		session := testAcquireSession(t, store, name)
+		registry := tools.NewToolRegistry(nil)
+		artifactStore := session.ArtifactStore()
+		model := &captureCompletionLLM{response: messages.ChatMessage{
+			Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn,
+		}}
+		return &conversationState{
+			session: session, artifactStore: artifactStore, toolRegistry: registry,
+			agent:           llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
+			displayContract: plainDisplayContract,
+		}, model
+	}
+	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128}}
+	runTurn := func(t *testing.T, state *conversationState, schema *llm.Schema) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		ui := newLineTurnUI(config, nil)
+		ui.writer, ui.errWriter = &stdout, &stderr
+		code, err := executeTurnWithUserMessage(context.Background(), config, state, messages.ChatMessage{
+			Role: messages.MessageRoleUser, Content: "hello",
+		}, schema, nil, ui, false)
+		if err != nil || code != 0 {
+			t.Fatalf("turn = code %d, err %v", code, err)
+		}
+	}
+
+	state, model := newState(t, "mechanics-plain")
+	runTurn(t, state, nil)
+	request := projectedRequestText(model.request)
+	if !strings.Contains(request, contextMechanicsContract) || !strings.Contains(request, plainDisplayContract) {
+		t.Fatalf("request lacks send-time contracts: %q", request)
+	}
+
+	schemaState, schemaModel := newState(t, "mechanics-schema")
+	runTurn(t, schemaState, llm.SchemaFromJSON(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`))
+	request = projectedRequestText(schemaModel.request)
+	if strings.Contains(request, contextMechanicsContract) || strings.Contains(request, plainDisplayContract) {
+		t.Fatalf("structured-output request carries send-time contracts: %q", request)
+	}
+}
