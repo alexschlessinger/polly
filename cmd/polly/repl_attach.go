@@ -143,13 +143,13 @@ func availableImageArtifact(store artifacts.Store, ref *artifacts.Ref) bool {
 	return readErr == nil && closeErr == nil && n == ref.Bytes
 }
 
-// promptAttachments resolves everything a prompt references, in appearance
-// order, deduplicated by path: "[image #N]" tokens through the session
-// registry, and bare typed paths — any whitespace-delimited word with an image
-// extension that resolves to an existing local file. A token that was never
-// registered in this session is an error: silently sending its placeholder as
-// text would drop an attachment the user explicitly asked to include. Caller
-// must hold m.mu.
+// promptAttachments resolves the "[image #N]" tokens a prompt references, in
+// appearance order, through the session registry. Bare typed paths are not
+// attachments: the model sees the path as text and calls the view_image tool
+// itself, which keeps path sniffing out of the composer. A token that was
+// never registered in this session is an error: silently sending its
+// placeholder as text would drop an attachment the user explicitly asked to
+// include. Caller must hold m.mu.
 func (m *replModel) promptAttachments(prompt string) ([]composerAttachment, error) {
 	type ref struct {
 		pos int
@@ -157,7 +157,6 @@ func (m *replModel) promptAttachments(prompt string) ([]composerAttachment, erro
 	}
 	var refs []ref
 
-	var tokenSpans [][2]int
 	if strings.Contains(prompt, "[image #") {
 		for _, loc := range attachmentTokenPattern.FindAllStringSubmatchIndex(prompt, -1) {
 			n, err := strconv.Atoi(prompt[loc[2]:loc[3]])
@@ -171,34 +170,9 @@ func (m *replModel) promptAttachments(prompt string) ([]composerAttachment, erro
 				}
 				return nil, fmt.Errorf("unknown attachment token %s", prompt[loc[0]:loc[1]])
 			}
-			tokenSpans = append(tokenSpans, [2]int{loc[0], loc[1]})
 			att.Reference = prompt[loc[0]:loc[1]]
 			refs = append(refs, ref{pos: loc[0], att: att})
 		}
-	}
-
-	for _, word := range splitPromptWords(prompt) {
-		inToken := false
-		for _, span := range tokenSpans {
-			if word.pos >= span[0] && word.pos < span[1] {
-				inToken = true
-				break
-			}
-		}
-		if inToken {
-			continue
-		}
-		candidate := trimPromptPathPunctuation(word.text)
-		// The extension check is a cheap prefilter so ordinary prose never
-		// touches the filesystem.
-		if candidate == "" || !supportedLocalImageExtension(candidate) {
-			continue
-		}
-		img, ok := resolveLocalTranscriptImage(candidate, "", m.imageBaseDir)
-		if !ok {
-			continue
-		}
-		refs = append(refs, ref{pos: word.pos, att: composerAttachment{Path: img.Path, Label: filepath.Base(img.Path)}})
 	}
 
 	if len(refs) == 0 {

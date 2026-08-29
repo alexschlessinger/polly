@@ -194,12 +194,15 @@ func TestRestoredAttachmentDraftReusesExactPreparedMessageAfterSourceMutation(t 
 	}
 }
 
-func TestFailedBarePathAttachmentRestoresAsDurableToken(t *testing.T) {
+func TestFailedBarePathTurnRestoresAsPlainText(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bare.png")
 	writeImageFixture(t, path, 8, 8)
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "bare-restore")
 
+	// A bare typed path is prose now: no attachment, so the failed draft
+	// restores byte-for-byte with the path still in it, and the model is
+	// expected to call view_image on it.
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.state = &conversationState{session: session, artifactStore: session.ArtifactStore()}
 	r.model.artifactStore = session.ArtifactStore()
@@ -207,21 +210,18 @@ func TestFailedBarePathAttachmentRestoresAsDurableToken(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	prepared, ok := r.takePending()
 	if !ok {
-		t.Fatal("bare-path turn was not accepted")
+		t.Fatal("turn was not accepted")
+	}
+	for _, part := range prepared.userMessage.Parts {
+		if part.Type == "image_base64" || part.Type == "image_artifact" {
+			t.Fatalf("bare path produced an image part: %#v", part)
+		}
 	}
 	r.endTurn(errors.New("provider failed"))
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
 
 	draft := r.model.ed.text()
-	if strings.Contains(draft, path) || !strings.Contains(draft, "[image #1]") {
-		t.Fatalf("restored draft did not replace ephemeral path with durable token: %q", draft)
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	restored, ok := r.takePending()
-	if !ok || !reflect.DeepEqual(restored.userMessage, prepared.userMessage) {
-		t.Fatalf("restored bare-path payload changed: %#v", restored.userMessage)
+	if draft != "inspect "+path {
+		t.Fatalf("restored draft = %q, want the original text unchanged", draft)
 	}
 }
 

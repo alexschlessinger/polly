@@ -17,8 +17,10 @@ const (
 	// renderer in markdown.go actually supports: strikethrough and tables
 	// beyond core markdown, HTML blocks displayed as source, fence language
 	// tags driving chroma highlighting, and local image references rendered
-	// inline.
-	tuiDisplayContract = "Your output is displayed in a terminal TUI that renders markdown. Be terse. Tag code fences with a language for syntax highlighting. Raw HTML is not rendered. Markdown tables render as aligned monospace columns; keep cells short so rows fit the terminal. Display a local image file inline with ![alt](path). To show markdown source literally, fence it."
+	// inline. The view_image guidance sits here rather than in path-sniffing
+	// composer logic: when the user mentions an image path or URL, the model
+	// calls the tool itself.
+	tuiDisplayContract = "Your output is displayed in a terminal TUI that renders markdown. Be terse. Tag code fences with a language for syntax highlighting. Raw HTML is not rendered. Markdown tables render as aligned monospace columns; keep cells short so rows fit the terminal. Display a local image file inline with ![alt](path). To show markdown source literally, fence it. When the user gives you an image path or image URL, attach it with the view_image tool so you can actually see it."
 
 	// contextMechanicsContract teaches the proactive habits the projection's
 	// in-band forms cannot: receipts, stubs, and the omission marker explain

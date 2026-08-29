@@ -146,7 +146,7 @@ func TestPromptAttachmentsResolveInTokenOrder(t *testing.T) {
 	}
 }
 
-func TestPromptAttachmentsBareTypedPaths(t *testing.T) {
+func TestPromptAttachmentsIgnoresBareTypedPaths(t *testing.T) {
 	dir := t.TempDir()
 	rel := filepath.Join(".assets", "polly.png")
 	if err := os.MkdirAll(filepath.Join(dir, ".assets"), 0o755); err != nil {
@@ -157,31 +157,29 @@ func TestPromptAttachmentsBareTypedPaths(t *testing.T) {
 	m := newReplModel()
 	m.imageBaseDir = dir
 
+	// Typed paths stay prose: the model is expected to call view_image.
 	got, err := m.promptAttachments("what is (" + rel + "), exactly?")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Path != filepath.Join(dir, rel) {
-		t.Fatalf("typed path attachments = %+v", got)
+	if len(got) != 0 {
+		t.Fatalf("typed path attachments = %+v, want none", got)
 	}
 
-	if atts, err := m.promptAttachments("styles.png is mentioned but does not exist"); err != nil || atts != nil {
-		t.Fatalf("missing file should stay prose, got %+v", atts)
-	}
-	if atts, err := m.promptAttachments("plain words only"); err != nil || atts != nil {
-		t.Fatalf("prose should never resolve, got %+v", atts)
-	}
-
-	// Typed paths and registry tokens merge in appearance order, deduped.
+	// Registry tokens still attach, and a mention of a nonexistent file is
+	// inert prose, never an error.
 	other := filepath.Join(dir, "clip.png")
 	writeImageFixture(t, other, 4, 4)
 	token := m.registerAttachment(other, "clipboard image")
-	got, err = m.promptAttachments("compare " + rel + " with " + token + " and " + rel)
+	got, err = m.promptAttachments("compare " + rel + " with " + token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].Path != filepath.Join(dir, rel) || got[1].Path != other {
-		t.Fatalf("merged attachments = %+v", got)
+	if len(got) != 1 || got[0].Path != other {
+		t.Fatalf("token-only attachments = %+v, want [%s]", got, other)
+	}
+	if atts, err := m.promptAttachments("styles.png is mentioned but does not exist"); err != nil || atts != nil {
+		t.Fatalf("missing file should stay prose, got %+v, %v", atts, err)
 	}
 }
 
