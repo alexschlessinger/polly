@@ -26,7 +26,8 @@ import (
 	"golang.org/x/term"
 )
 
-// turnState describes what the agent is currently doing, for the status bar.
+// turnState describes what the agent is currently doing for the terminal title,
+// quiet-mode fallback, and scrolled-up activity ticker.
 type turnState int
 
 const (
@@ -59,9 +60,9 @@ func (s turnState) label(toolName string) string {
 	return ""
 }
 
-// turnOutcome is the last settled result shown in the status row while the
-// composer is idle. It deliberately lives outside the transcript: completing a
-// turn must not append chrome that shifts the answer vertically.
+// turnOutcome is the last settled result shown in the fixed turn dock and
+// terminal title. Completing a turn must not append chrome that shifts the
+// answer vertically.
 type turnOutcome int
 
 const (
@@ -655,6 +656,13 @@ type replModel struct {
 	toolDisclosureSeq        int64
 	turnToolDisclosureID     int64
 	toolDisclosurePlacements []disclosurePlacement
+	turnDock                 turnDockState
+	turnDockPlacements       []turnDockPlacement
+	turnTrailers             map[int64]*turnTrailerRecord
+	turnTrailerAt            map[int]int64
+	turnTrailerSeq           int64
+	turnTrailerPlacements    []turnTrailerPlacement
+	openTurnTrailerID        int64
 
 	ed           lineEditor
 	busy         bool
@@ -696,8 +704,6 @@ type replModel struct {
 	turnStarted time.Time
 	lastIn      int
 	lastOut     int
-	totalIn     int
-	totalOut    int
 	lastElapsed time.Duration
 	lastOutcome turnOutcome
 
@@ -746,9 +752,8 @@ type replModel struct {
 	unsavedLabeled      bool
 
 	// runningTools counts tool calls currently in flight this turn. A parallel
-	// batch starts several at once; the status only returns to "waiting" when
-	// the last of them finishes, so the first to complete doesn't prematurely
-	// flip the bar (and drop the running-tool name) while siblings still run.
+	// batch starts several at once; the turn state returns to "waiting" only
+	// when the last finishes, so quiet-mode/title activity stays accurate.
 	runningTools int
 }
 
@@ -761,6 +766,7 @@ type transcriptVisualBlock struct {
 	imageSpans       []transcriptImageSpan
 	reasoningID      int64
 	toolDisclosureID int64
+	turnTrailerID    int64
 }
 
 // reasoningRecord is the display projection of one user turn's provider
@@ -824,6 +830,8 @@ func newReplModel() *replModel {
 		transcriptImages: make(map[int][]transcriptImage),
 		toolDisclosures:  make(map[int64]*toolDisclosureRecord),
 		toolDisclosureAt: make(map[int]int64),
+		turnTrailers:     make(map[int64]*turnTrailerRecord),
+		turnTrailerAt:    make(map[int]int64),
 		reasoningRecords: make(map[int64]*reasoningRecord),
 		reasoningAt:      make(map[int]int64),
 		reasoningWidth:   80,
@@ -839,16 +847,15 @@ func newReplModel() *replModel {
 
 const turnCancelDetachAfter = 2 * time.Second
 
-// statusRow renders settled turn metrics on the left and stable context on the
-// right. Live activity belongs in the transcript, where reasoning, streaming,
-// and tool calls each have their own indicator.
+// statusRow renders stable session context. Per-turn activity and completion
+// metrics live in the fixed turn dock immediately above the composer.
 func (m *replModel) statusRow(width int) string {
 	if m.quiet || width <= 0 {
 		return ""
 	}
 	const sep = " · "
 
-	leftRaw, leftStyled := m.statusActivity()
+	leftRaw, leftStyled := "", ""
 	type field struct {
 		drop int
 		text string
@@ -948,29 +955,6 @@ func (m *replModel) statusRow(width int) string {
 		gap = 0
 	}
 	return leftStyled + strings.Repeat(" ", gap) + rightStyled
-}
-
-func (m *replModel) statusActivity() (raw, rendered string) {
-	if m.busy {
-		return "", ""
-	}
-
-	switch m.lastOutcome {
-	case turnOutcomeDone:
-		meta := formatElapsed(m.lastElapsed)
-		if m.totalIn > 0 || m.totalOut > 0 {
-			meta += fmt.Sprintf(" · %s/%s tok", humanizeTokens(m.totalIn), humanizeTokens(m.totalOut))
-		}
-		raw = "done " + meta
-		rendered = styled("done", "ok", "bold") + " " + styled(meta, "muted", "")
-	case turnOutcomeFailed:
-		raw = "failed"
-		rendered = styled(raw, "err", "bold")
-	case turnOutcomeCanceled:
-		raw = "canceled"
-		rendered = styled(raw, "muted", "bold")
-	}
-	return raw, rendered
 }
 
 // reasoningPreviewLines is the bounded expanded tail. The preview uses the
@@ -1131,6 +1115,13 @@ func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
 }
 
 func (m *replModel) deleteTranscriptEntry(index int) {
+	if id, ok := m.turnTrailerAt[index]; ok {
+		delete(m.turnTrailerAt, index)
+		delete(m.turnTrailers, id)
+		if m.openTurnTrailerID == id {
+			m.openTurnTrailerID = 0
+		}
+	}
 	if id, ok := m.reasoningAt[index]; ok {
 		delete(m.reasoningAt, index)
 		delete(m.reasoningRecords, id)
@@ -1169,6 +1160,13 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 			m.toolDisclosureAt[i-1] = id
 			delete(m.toolDisclosureAt, i)
 			if record := m.toolDisclosures[id]; record != nil {
+				record.transcriptIndex = i - 1
+			}
+		}
+		if id, ok := m.turnTrailerAt[i]; ok {
+			m.turnTrailerAt[i-1] = id
+			delete(m.turnTrailerAt, i)
+			if record := m.turnTrailers[id]; record != nil {
 				record.transcriptIndex = i - 1
 			}
 		}
@@ -1424,18 +1422,11 @@ func (m *replModel) refreshToolDisclosure(record *toolDisclosureRecord) {
 	if m.transcript[index] == text && transcriptImagesEqual(m.transcriptImages[index], images) {
 		return
 	}
-	width := m.reasoningWidth
-	oldCount, start := 0, 0
-	if !m.followBottom {
-		oldCount = m.entryVisualLineCount(index, width)
-		start = m.entryVisualStart(index, width)
-	}
 	m.transcript[index] = text
 	m.setTranscriptImages(index, images)
-	m.invalidateFlat()
-	if !m.followBottom {
-		m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(index, width))
-	}
+	// The legacy entry is retained only as semantic backing for the dock and
+	// compatibility with persisted display data; it is not a visible block.
+	m.flatCache = nil
 }
 
 // completeToolDisclosure settles and auto-collapses the turn's tool activity.
@@ -1450,6 +1441,9 @@ func (m *replModel) completeToolDisclosure() {
 
 func (m *replModel) entryVisualLineCount(index, width int) int {
 	if index < 0 || index >= len(m.transcript) {
+		return 0
+	}
+	if m.reasoningAt[index] != 0 || m.toolDisclosureAt[index] != 0 {
 		return 0
 	}
 	if width < 1 {
@@ -1712,16 +1706,10 @@ func (m *replModel) refreshReasoningRecord(record *reasoningRecord, width int) {
 	if m.transcript[record.transcriptIndex] == next {
 		return
 	}
-	oldCount, start := 0, 0
-	if !m.followBottom {
-		oldCount = m.entryVisualLineCount(record.transcriptIndex, width)
-		start = m.entryVisualStart(record.transcriptIndex, width)
-	}
 	m.transcript[record.transcriptIndex] = next
-	m.invalidateFlat()
-	if !m.followBottom {
-		m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(record.transcriptIndex, width))
-	}
+	// The dock owns visibility, so reasoning growth never invalidates or
+	// re-anchors transcript rows.
+	m.flatCache = nil
 }
 
 func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) string {
@@ -2081,11 +2069,20 @@ func (m *replModel) clearDisplay() {
 	m.resetToolDisclosure()
 	m.clearToolDisclosures()
 	m.clearReasoningRecords()
+	m.turnTrailers = make(map[int64]*turnTrailerRecord)
+	m.turnTrailerAt = make(map[int]int64)
+	m.turnTrailerSeq = 0
+	m.turnTrailerPlacements = nil
+	m.openTurnTrailerID = 0
+	m.turnDock.overlay = turnDockOverlayNone
+	m.turnDock.reasoningID = 0
+	m.turnDock.toolDisclosureID = 0
 	for i := range m.queue {
 		m.queue[i].transcriptShown = false
 	}
 	if !m.busy {
 		m.runningTools = 0
+		m.clearTurnDock()
 	}
 	m.resetAssistantStream()
 	m.scrollAnchor = 0
@@ -2099,6 +2096,7 @@ const resumedTurnLimit = 5
 // remembers. It shows only recent user turns, keeps assistant prose, and folds
 // raw tool exchanges into compact activity rows.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
+	m.clearTurnDock()
 	for _, msg := range history {
 		m.rememberArtifactAttachments(msg)
 	}
@@ -2224,6 +2222,7 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	var lastUserTurn *managedTurnInput
 	lastUserContextOnly := false
 	var hydratedReasoning *reasoningRecord
+	turnInput, turnOutput := 0, 0
 	appendHydratedReasoning := func(text string) {
 		if strings.TrimSpace(text) == "" {
 			return
@@ -2234,15 +2233,26 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 		m.appendReasoningTail(hydratedReasoning, text, len(hydratedReasoning.tail) > 0)
 		m.refreshReasoningRecord(hydratedReasoning, 80)
 	}
+	finishHydratedTurn := func() {
+		flushTools()
+		m.setHydratedTurnDock(hydratedReasoning, hydratedToolDisclosure, turnInput, turnOutput)
+		m.attachTurnDockTrailer()
+	}
 	for _, msg := range history[start:] {
 		switch msg.Role {
 		case messages.MessageRoleUser:
 			if agentSyntheticMessage(msg) {
 				continue
 			}
-			flushTools()
+			if lastRole != "" && lastRole != messages.MessageRoleUser {
+				finishHydratedTurn()
+			} else {
+				flushTools()
+				m.clearTurnDock()
+			}
 			hydratedToolDisclosure = nil
 			hydratedReasoning = nil
+			turnInput, turnOutput = 0, 0
 			m.appendTurnSeparator()
 			content, restorable, contextOnly := historyUserSummary(msg)
 			m.appendUserPrompt(content)
@@ -2255,6 +2265,10 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 		case messages.MessageRoleAssistant:
 			flushTools()
 			appendHydratedReasoning(msg.Reasoning)
+			if tokens := msg.GetInputTokens(); tokens > turnInput {
+				turnInput = tokens
+			}
+			turnOutput += msg.GetOutputTokens()
 			if content := msg.GetContent(); content != "" {
 				m.appendAssistant(content)
 				m.finishAssistantBlock("")
@@ -2320,7 +2334,11 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 			}
 		}
 	}
-	flushTools()
+	if lastRole != "" && lastRole != messages.MessageRoleUser {
+		finishHydratedTurn()
+	} else {
+		flushTools()
+	}
 	if lastRole == messages.MessageRoleUser && !lastUserContextOnly {
 		if lastUserTurn != nil {
 			turn := cloneManagedTurn(*lastUserTurn)
@@ -2584,6 +2602,7 @@ func (m *replModel) discardQueuedInputs() int {
 
 func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	prompt := turn.displayText
+	m.startTurnDock()
 	m.busy = true
 	m.canceling = false
 	m.state = turnStateWaiting
@@ -2599,7 +2618,7 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	m.turnHasOutput = false
 	m.unsavedLabeled = false
 	m.lastOutcome = turnOutcomeNone
-	// Token counts are per-turn and live only in the status row.
+	// Token counts are per-turn and appear in the dock once reported.
 	m.lastIn = 0
 	m.lastOut = 0
 	m.followBottom = true
@@ -3146,6 +3165,7 @@ type managedREPL struct {
 	transcriptW *transcriptParagraph
 	dividerW    *widgets.Paragraph
 	inputW      *widgets.Paragraph
+	turnDockW   *widgets.Paragraph
 	statusW     *widgets.Paragraph
 	rootFlex    *widgets.Flex
 
@@ -3195,10 +3215,10 @@ type transcriptParagraph struct {
 	TopRow    int
 	Rows      [][]ui.Cell
 	UseRows   bool
-	// OverlayBottom, when non-empty, replaces the pane's bottom row — the
-	// scrolled-up activity ticker. It covers one transcript row; the row is
-	// still reachable by scrolling, so nothing is lost.
-	OverlayBottom []ui.Cell
+	// OverlayBottom, when non-empty, replaces the pane's bottom rows with the
+	// turn-detail drawer and/or scrolled-up activity ticker. Covered transcript
+	// rows remain reachable by scrolling; opening the drawer never reflows them.
+	OverlayBottom [][]ui.Cell
 }
 
 func newTranscriptParagraph() *transcriptParagraph {
@@ -3261,12 +3281,16 @@ func (p *transcriptParagraph) drawRows(buf *ui.Buffer, rows [][]ui.Cell) {
 		}
 	}
 
-	if len(p.OverlayBottom) > 0 {
-		y := height - 1
+	overlay := p.OverlayBottom
+	if len(overlay) > height {
+		overlay = overlay[len(overlay)-height:]
+	}
+	for i, row := range overlay {
+		y := height - len(overlay) + i
 		for x := 0; x < p.Inner.Dx(); x++ {
 			buf.SetCell(ui.Cell{Rune: ' ', Style: ui.StyleClear}, image.Pt(x, y).Add(p.Inner.Min))
 		}
-		for _, cx := range ui.BuildCellWithXArray(p.OverlayBottom) {
+		for _, cx := range ui.BuildCellWithXArray(row) {
 			if cx.X >= p.Inner.Dx() || rw.RuneWidth(cx.Cell.Rune) == 0 {
 				continue
 			}
@@ -3753,6 +3777,8 @@ func (r *managedREPL) endTurn(err error) {
 	} else if err != nil {
 		activeToolReason = "failed"
 	}
+	m.turnDock.reasoningID = m.turnReasoningID
+	m.turnDock.toolDisclosureID = m.turnToolDisclosureID
 	m.completeThinkingTurn(err != nil)
 	m.settleActiveTools(activeToolReason)
 	m.activeTools = nil
@@ -3792,6 +3818,8 @@ func (r *managedREPL) endTurn(err error) {
 			m.appendNoticeLine("input available with ↑ · current draft preserved")
 		}
 	}
+	m.settleTurnDock()
+	m.attachTurnDockTrailer()
 	// A long turn settling is the "walk away and get pinged" moment; a quick
 	// one never gave the user time to leave. Cancellation is user-initiated,
 	// so only done/failed notify.
@@ -3852,6 +3880,8 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.resetAssistantStream()
 	m.turnStarted = time.Time{}
 	m.toolName = ""
+	m.turnDock.reasoningID = m.turnReasoningID
+	m.turnDock.toolDisclosureID = m.turnToolDisclosureID
 	m.completeThinkingTurn(true)
 	m.settleActiveTools("canceled")
 	m.activeTools = nil
@@ -3860,6 +3890,8 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.denyApprovalLocked()
 	m.state = turnStateIdle
 	m.lastOutcome = turnOutcomeCanceled
+	m.settleTurnDock()
+	m.attachTurnDockTrailer()
 	restored := cloneManagedTurn(m.currentTurn)
 	restoredPersistence := m.currentPersistence
 	m.currentPrompt = ""
@@ -4058,8 +4090,9 @@ func (r *managedREPL) transcriptHeight() int {
 		statusRows = 1
 	}
 	inputRows := r.model.inputRows()
-	dividerRows := dividerRowCount(h, inputRows, statusRows, r.model.quiet)
-	contentHeight := h - inputRows - statusRows - dividerRows
+	dockRows := turnDockRowCount(h, inputRows, statusRows, !r.model.quiet && r.model.turnDock.visible)
+	dividerRows := dividerRowCount(h, inputRows, statusRows, dockRows, r.model.quiet)
+	contentHeight := h - inputRows - statusRows - dockRows - dividerRows
 	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible, r.images != nil)
 	height := contentHeight - logoRows
 	if height < 1 {
@@ -4071,8 +4104,15 @@ func (r *managedREPL) transcriptHeight() int {
 // dividerRowCount is the height of the rule separating the transcript from the
 // bottom chrome: one row outside quiet mode, dropped entirely when the
 // terminal is too short to spare it.
-func dividerRowCount(h, inputRows, statusRows int, quiet bool) int {
-	if quiet || h-inputRows-statusRows < 2 {
+func dividerRowCount(h, inputRows, statusRows, dockRows int, quiet bool) int {
+	if quiet || h-inputRows-statusRows-dockRows < 2 {
+		return 0
+	}
+	return 1
+}
+
+func turnDockRowCount(h, inputRows, statusRows int, visible bool) int {
+	if !visible || h-inputRows-statusRows < 2 {
 		return 0
 	}
 	return 1
@@ -4110,6 +4150,11 @@ func (r *managedREPL) setupWidgets() {
 	r.inputW.WrapText = false
 	r.inputW.TextStyle = ui.NewStyle(ui.ColorClear)
 
+	r.turnDockW = widgets.NewParagraph()
+	noBorder(&r.turnDockW.Block)
+	r.turnDockW.WrapText = false
+	r.turnDockW.TextStyle = ui.NewStyle(ui.ColorGrey)
+
 	r.statusW = widgets.NewParagraph()
 	noBorder(&r.statusW.Block)
 	r.statusW.WrapText = false
@@ -4119,7 +4164,7 @@ func (r *managedREPL) setupWidgets() {
 // layout (re)builds the root flex for the current input height. The input row
 // count varies with multi-line prompts, so the flex is rebuilt each render
 // rather than sized once at setup.
-func (r *managedREPL) layout(w, h, inputRows, logoRows int, showStatus, showDivider bool) {
+func (r *managedREPL) layout(w, h, inputRows, logoRows int, showStatus, showDock, showDivider bool) {
 	flex := widgets.NewFlex()
 	noBorder(&flex.Block)
 	flex.Direction = widgets.FlexColumn
@@ -4127,6 +4172,9 @@ func (r *managedREPL) layout(w, h, inputRows, logoRows int, showStatus, showDivi
 		flex.AddItem(r.logoW, logoRows, 0, false)
 	}
 	flex.AddItem(r.transcriptW, 0, 1, false)
+	if showDock {
+		flex.AddItem(r.turnDockW, 1, 0, false)
+	}
 	if showDivider {
 		flex.AddItem(r.dividerW, 1, 0, false)
 	}
@@ -4173,15 +4221,19 @@ func (r *managedREPL) render() {
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
 	r.model.refreshReasoningRecords(w)
+	r.model.refreshExpandedTurnTrailer(w)
+	showDock := !r.model.quiet && r.model.turnDock.visible
+	dockRows := turnDockRowCount(h, r.model.inputRows(), statusRows, showDock)
+	showDock = dockRows > 0
 	inputMaxRows := maxInputRows
-	if h-statusRows > 1 {
-		inputMaxRows = min(inputMaxRows, h-statusRows-1)
+	if h-statusRows-dockRows > 1 {
+		inputMaxRows = min(inputMaxRows, h-statusRows-dockRows-1)
 	} else {
 		inputMaxRows = 1
 	}
 	input, inputRows, curRow, curCol, editable := r.model.renderInputForTerminal(inputMaxRows, w)
-	dividerRows := dividerRowCount(h, inputRows, statusRows, r.model.quiet)
-	contentHeight := h - inputRows - statusRows - dividerRows
+	dividerRows := dividerRowCount(h, inputRows, statusRows, dockRows, r.model.quiet)
+	contentHeight := h - inputRows - statusRows - dockRows - dividerRows
 	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible, r.images != nil)
 	transcriptHeight := contentHeight - logoRows
 	if transcriptHeight < 0 {
@@ -4206,25 +4258,47 @@ func (r *managedREPL) render() {
 		r.model.scrollAnchor = topRow
 	}
 	status := r.model.statusRow(w)
+	var dock string
+	var dockPlacements []turnDockPlacement
+	if showDock {
+		dock, dockPlacements = r.model.turnDockRow(w)
+	}
 	title := r.model.frameTitle()
 	progress := r.model.frameProgress()
 	notices := r.model.takeNotices()
 	ticker := r.model.activityTicker(len(transcriptRows), topRow, transcriptHeight)
+	var overlay [][]ui.Cell
+	if showDock {
+		overlay = r.model.turnDockOverlayRows(w)
+	}
+	if ticker != "" {
+		overlay = append(overlay, ui.ParseStyles(ticker, ui.NewStyle(ui.ColorClear)))
+	}
+	overlayRows := len(overlay)
 	imagePlacements := r.model.visibleImagePlacements(
 		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
-		pinTranscriptBottom, ticker != "",
+		pinTranscriptBottom, overlayRows,
 	)
 	reasoningPlacements := r.model.visibleReasoningPlacements(
 		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
-		pinTranscriptBottom, ticker != "",
+		pinTranscriptBottom, overlayRows,
 	)
 	toolDisclosurePlacements := r.model.visibleToolDisclosurePlacements(
 		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
-		pinTranscriptBottom, ticker != "",
+		pinTranscriptBottom, overlayRows,
 	)
+	turnTrailerPlacements := r.model.visibleTurnTrailerPlacements(
+		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
+		pinTranscriptBottom, overlayRows,
+	)
+	for i := range dockPlacements {
+		dockPlacements[i].Y = logoRows + transcriptHeight
+	}
 	r.model.imagePlacements = imagePlacements
 	r.model.reasoningPlacements = reasoningPlacements
 	r.model.toolDisclosurePlacements = toolDisclosurePlacements
+	r.model.turnDockPlacements = dockPlacements
+	r.model.turnTrailerPlacements = turnTrailerPlacements
 	r.model.mu.Unlock()
 
 	if logoRows == imageLogoHeight && r.images != nil {
@@ -4241,11 +4315,6 @@ func (r *managedREPL) render() {
 		imagesChanged = r.images.prepare(imagePlacements)
 	}
 
-	var overlay []ui.Cell
-	if ticker != "" {
-		overlay = ui.ParseStyles(ticker, ui.NewStyle(ui.ColorClear))
-	}
-
 	r.transcriptW.Rows = transcriptRows
 	r.transcriptW.UseRows = true
 	r.transcriptW.PinBottom = pinTranscriptBottom
@@ -4259,14 +4328,15 @@ func (r *managedREPL) render() {
 	r.logoW.TopRow = 0
 	r.logoW.OverlayBottom = nil
 	r.inputW.Text = input
+	r.turnDockW.Text = dock
 	r.statusW.Text = status
 	if dividerRows > 0 {
 		r.dividerW.Text = styled(strings.Repeat("─", w), "muted", "")
 	}
 
-	r.layout(w, h, inputRows, logoRows, showStatus, dividerRows > 0)
+	r.layout(w, h, inputRows, logoRows, showStatus, showDock, dividerRows > 0)
 	ui.Clear()
-	r.placeCursor(editable, curCol, logoRows+transcriptHeight+dividerRows+curRow, w)
+	r.placeCursor(editable, curCol, logoRows+transcriptHeight+dockRows+dividerRows+curRow, w)
 	ui.Render(r.rootFlex)
 	if r.images != nil {
 		r.images.commit(imagesChanged)
@@ -4398,6 +4468,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			m.visualCacheCellWidth != m.imageCellWidth || m.visualCacheCellHeight != m.imageCellHeight ||
 			old.key != source.key || old.text != source.text || old.followed != followed ||
 			old.reasoningID != source.reasoningID || old.toolDisclosureID != source.toolDisclosureID ||
+			old.turnTrailerID != source.turnTrailerID ||
 			!transcriptImagesEqual(old.images, source.images)
 		if changed {
 			nativeSlots := m.nativeImages && width >= minimumImageThumbnailCols
@@ -4421,6 +4492,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			imageSpans:       imageSpans,
 			reasoningID:      source.reasoningID,
 			toolDisclosureID: source.toolDisclosureID,
+			turnTrailerID:    source.turnTrailerID,
 		}
 		offset += len(old.rows)
 	}
@@ -4458,6 +4530,13 @@ func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
 	for i, entry := range m.transcript {
 		reasoningID := m.reasoningAt[i]
 		toolDisclosureID := m.toolDisclosureAt[i]
+		turnTrailerID := m.turnTrailerAt[i]
+		// Reasoning and tool activity are retained as semantic records for the
+		// fixed turn dock. Do not also project their legacy disclosure rows into
+		// the transcript, which would show the same activity twice.
+		if reasoningID != 0 || toolDisclosureID != 0 {
+			continue
+		}
 		if i == m.currentAssistant {
 			entry = strings.TrimRight(entry, "\r\n")
 			if entry == "" {
@@ -4474,7 +4553,9 @@ func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
 			}
 		}
 		key := fmt.Sprintf("transcript:%d", i)
-		if reasoningID != 0 {
+		if turnTrailerID != 0 {
+			key = fmt.Sprintf("turn-trailer:%d", turnTrailerID)
+		} else if reasoningID != 0 {
 			key = fmt.Sprintf("reasoning:%d", reasoningID)
 		} else if toolDisclosureID != 0 {
 			key = fmt.Sprintf("tools:%d", toolDisclosureID)
@@ -4485,6 +4566,7 @@ func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
 			images:           m.transcriptImages[i],
 			reasoningID:      reasoningID,
 			toolDisclosureID: toolDisclosureID,
+			turnTrailerID:    turnTrailerID,
 		})
 	}
 	if m.slashHints != "" {
@@ -4578,15 +4660,53 @@ func (m *replModel) scrollToBottom() {
 // visibleReasoningPlacements projects each disclosure header into absolute
 // screen cells. A narrow header may wrap, so every visible header fragment is
 // clickable while preview/detail rows remain inert.
-func (m *replModel) visibleReasoningPlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom, tickerVisible bool) []disclosurePlacement {
-	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, tickerVisible, false)
+func (m *replModel) visibleReasoningPlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []disclosurePlacement {
+	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, false)
 }
 
-func (m *replModel) visibleToolDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom, tickerVisible bool) []disclosurePlacement {
-	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, tickerVisible, true)
+func (m *replModel) visibleToolDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []disclosurePlacement {
+	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, true)
 }
 
-func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom, tickerVisible, tools bool) []disclosurePlacement {
+func (m *replModel) visibleTurnTrailerPlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []turnTrailerPlacement {
+	if viewportHeight <= 0 || width <= 0 {
+		return nil
+	}
+	viewStart := topRow
+	topPadding := 0
+	if pinBottom {
+		viewStart = max(0, totalRows-viewportHeight)
+		if totalRows < viewportHeight {
+			topPadding = viewportHeight - totalRows
+		}
+	}
+	viewEnd := viewStart + viewportHeight - min(overlayRows, viewportHeight)
+	var placements []turnTrailerPlacement
+	rowOffset := 0
+	for _, block := range m.visualBlocks {
+		if block.turnTrailerID != 0 && len(block.rows) > 0 {
+			row := rowOffset
+			if row >= viewStart && row < viewEnd {
+				if record := m.turnTrailers[block.turnTrailerID]; record != nil {
+					for _, field := range record.fields {
+						if field.X >= width {
+							continue
+						}
+						field.Y = logoRows + topPadding + row - viewStart
+						field.Cols = min(field.Cols, width-field.X)
+						placements = append(placements, turnTrailerPlacement{
+							recordID: record.id, turnDockPlacement: field,
+						})
+					}
+				}
+			}
+		}
+		rowOffset += len(block.rows)
+	}
+	return placements
+}
+
+func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int, tools bool) []disclosurePlacement {
 	if viewportHeight <= 0 || width <= 0 {
 		return nil
 	}
@@ -4599,8 +4719,8 @@ func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRo
 		}
 	}
 	viewEnd := viewStart + viewportHeight
-	if tickerVisible {
-		viewEnd--
+	if overlayRows > 0 {
+		viewEnd -= min(overlayRows, viewportHeight)
 	}
 
 	var placements []disclosurePlacement
@@ -4757,6 +4877,17 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	case "<MouseLeft>":
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
+			if m.toggleTurnDockAt(mouse.X, mouse.Y) {
+				return false
+			}
+			if m.toggleTurnTrailerAt(mouse.X, mouse.Y) {
+				return false
+			}
+			// The drawer is modal only for one click: clicking anywhere outside
+			// its dock target dismisses it without activating content underneath.
+			if m.closeTurnDockOverlay() {
+				return false
+			}
 			if !m.toggleReasoningAt(mouse.X, mouse.Y, terminalWidth) &&
 				!m.toggleToolDisclosureAt(mouse.X, mouse.Y) {
 				r.openImageAt(mouse.X, mouse.Y)
@@ -4797,7 +4928,13 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// Ctrl-O toggles the active turn's reasoning disclosure, or the newest
 	// completed one while idle. It never moves focus away from the composer.
 	if e.ID == "<C-o>" {
-		m.toggleLatestReasoning(terminalWidth)
+		if m.busy && !m.toggleTurnDockOverlay(turnDockOverlayThought) {
+			// Preserve the shortcut before the provider emits its first
+			// reasoning chunk; the dock opens as soon as Thought exists.
+			m.turnReasoningOpen = !m.turnReasoningOpen
+		} else if !m.busy {
+			m.toggleLatestTurnTrailerOverlay(turnDockOverlayThought)
+		}
 		return false
 	}
 
@@ -4810,6 +4947,12 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		case r.suspend <- struct{}{}:
 		default:
 		}
+		return false
+	}
+
+	// The turn-detail drawer is a temporary overlay. Escape closes it before
+	// reaching search, approval, or turn-cancel handling.
+	if e.ID == "<Escape>" && m.closeTurnDockOverlay() {
 		return false
 	}
 
@@ -5058,6 +5201,10 @@ func (t *gotuiTurnUI) ShowThinking(chunk string) {
 	}
 	t.repl.model.state = turnStateThinking
 	t.repl.model.appendThinking(chunk)
+	t.repl.model.turnDock.reasoningID = t.repl.model.turnReasoningID
+	if t.repl.model.turnReasoningOpen {
+		t.repl.model.turnDock.overlay = turnDockOverlayThought
+	}
 	t.repl.model.mu.Unlock()
 }
 
@@ -5098,6 +5245,9 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	var record *toolDisclosureRecord
 	for _, c := range calls {
 		record = t.repl.model.appendToolStartRow(c.ID, toolLabel(c))
+	}
+	if record != nil {
+		t.repl.model.turnDock.toolDisclosureID = record.id
 	}
 	t.repl.model.refreshToolDisclosure(record)
 }
@@ -5204,6 +5354,9 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 			settled: true,
 		})
 	}
+	if record != nil {
+		m.turnDock.toolDisclosureID = record.id
+	}
 	m.refreshToolDisclosure(record)
 }
 
@@ -5224,12 +5377,10 @@ func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 		t.repl.model.mu.Unlock()
 		return
 	}
-	// Replace this turn's contribution so the callback remains safe if a
-	// provider reports updated usage more than once.
-	t.repl.model.totalIn += in - t.repl.model.lastIn
-	t.repl.model.totalOut += out - t.repl.model.lastOut
 	t.repl.model.lastIn = in
 	t.repl.model.lastOut = out
+	t.repl.model.turnDock.inputTokens = in
+	t.repl.model.turnDock.outputTokens = out
 	t.repl.model.mu.Unlock()
 }
 

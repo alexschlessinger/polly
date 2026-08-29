@@ -15,10 +15,8 @@ import (
 // toolRows returns the semantic tool-disclosure entries in the transcript.
 func toolRows(m *replModel) []string {
 	var rows []string
-	for _, e := range m.transcript {
-		// "tool call" matches the rollup in both its singular and plural forms.
-		if strings.Contains(e, "→") || strings.Contains(e, "✓") ||
-			strings.Contains(e, "✗") || strings.Contains(e, "tool call") {
+	for i, e := range m.transcript {
+		if m.toolDisclosureAt[i] != 0 {
 			rows = append(rows, e)
 		}
 	}
@@ -27,8 +25,14 @@ func toolRows(m *replModel) []string {
 
 func clickToolDisclosure(t *testing.T, m *replModel, recordID int64, width int) {
 	t.Helper()
+	if m.turnDock.toolDisclosureID == recordID {
+		if !m.toggleTurnDockOverlay(turnDockOverlayTools) {
+			t.Fatalf("tool dock %d did not toggle", recordID)
+		}
+		return
+	}
 	rows := m.transcriptRows(width)
-	placements := m.visibleToolDisclosurePlacements(len(rows), len(rows), 0, 0, width, false, false)
+	placements := m.visibleToolDisclosurePlacements(len(rows), len(rows), 0, 0, width, false, 0)
 	m.toolDisclosurePlacements = placements
 	for _, placement := range placements {
 		if placement.recordID == recordID {
@@ -64,15 +68,15 @@ func TestLiveToolDisclosureStartsCollapsedAndClickTogglesAllRows(t *testing.T) {
 	}
 
 	clickToolDisclosure(t, m, record.id, width)
-	expanded := plainStyledText(m.transcript[record.transcriptIndex])
-	if !record.expanded || !strings.Contains(expanded, "▾ 1 tool call") || !strings.Contains(expanded, "alpha") {
+	expanded := strings.Join(rowsText(m.turnDockOverlayRows(width)), "\n")
+	if m.turnDock.overlay != turnDockOverlayTools || !strings.Contains(expanded, "alpha") {
 		t.Fatalf("first live expansion = %q record=%#v", expanded, record)
 	}
 
 	second := messages.ChatMessageToolCall{ID: "b", Name: "beta"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{second})
-	expanded = plainStyledText(m.transcript[record.transcriptIndex])
-	if !strings.Contains(expanded, "▾ 2 tool calls") || strings.Count(expanded, "alpha") != 1 || strings.Count(expanded, "beta") != 1 {
+	expanded = strings.Join(rowsText(m.turnDockOverlayRows(width)), "\n")
+	if strings.Count(expanded, "alpha") != 1 || strings.Count(expanded, "beta") != 1 {
 		t.Fatalf("expanded live disclosure did not add the second call once: %q", expanded)
 	}
 	if rows := toolRows(m); len(rows) != 1 {
@@ -80,15 +84,14 @@ func TestLiveToolDisclosureStartsCollapsedAndClickTogglesAllRows(t *testing.T) {
 	}
 
 	tui.AppendToolEnd(first, "RAW ALPHA RESULT", time.Second, nil)
-	expanded = plainStyledText(m.transcript[record.transcriptIndex])
+	expanded = strings.Join(rowsText(m.turnDockOverlayRows(width)), "\n")
 	if !strings.Contains(expanded, "✓") || !strings.Contains(expanded, "alpha") || !strings.Contains(expanded, "beta") || strings.Contains(expanded, "RAW ALPHA RESULT") {
 		t.Fatalf("expanded live completion did not update safely: %q", expanded)
 	}
 
 	clickToolDisclosure(t, m, record.id, width)
-	recollapsed := plainStyledText(strings.Join(m.transcript, "\n"))
-	if record.expanded || !strings.Contains(recollapsed, "▸ 2 tool calls") || strings.Contains(recollapsed, "alpha") || strings.Contains(recollapsed, "beta") {
-		t.Fatalf("live disclosure did not hide every row: %q record=%#v", recollapsed, record)
+	if m.turnDock.overlay != turnDockOverlayNone || len(m.turnDockOverlayRows(width)) != 0 {
+		t.Fatalf("tool dock did not hide every row: dock=%#v record=%#v", m.turnDock, record)
 	}
 }
 
@@ -646,7 +649,7 @@ func TestRegeneratedExpandedToolImagePreservesPhysicalViewportAnchor(t *testing.
 	}
 }
 
-func TestToolDisclosureTogglePreservesPhysicalViewportAnchor(t *testing.T) {
+func TestToolDockTogglePreservesPhysicalViewportAnchor(t *testing.T) {
 	const width = 24
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
@@ -683,24 +686,19 @@ func TestToolDisclosureTogglePreservesPhysicalViewportAnchor(t *testing.T) {
 		t.Fatalf("fixture top row = %q, want ctx-10", beforeTop)
 	}
 
-	oldCount := m.entryVisualLineCount(record.transcriptIndex, width)
-	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("wrapped disclosure did not expand")
+	trailer := m.turnTrailers[m.turnTrailerSeq]
+	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayTools) {
+		t.Fatal("wrapped tool trailer did not expand")
 	}
-	newCount := m.entryVisualLineCount(record.transcriptIndex, width)
-	if newCount <= oldCount+1 {
-		t.Fatalf("wrapped detail fixture grew %d -> %d rows", oldCount, newCount)
-	}
-	wantExpandedAnchor := collapsedAnchor + newCount - oldCount
-	if m.scrollAnchor != wantExpandedAnchor {
-		t.Fatalf("expanded scrollAnchor = %d, want %d", m.scrollAnchor, wantExpandedAnchor)
+	if m.scrollAnchor <= collapsedAnchor {
+		t.Fatalf("inline expansion did not preserve the held row: anchor=%d, was %d", m.scrollAnchor, collapsedAnchor)
 	}
 	expandedRows := transcriptRowsText(m.transcriptRows(width))
 	if got := expandedRows[m.scrollAnchor]; got != beforeTop {
-		t.Fatalf("top physical row moved on expansion: %q -> %q", beforeTop, got)
+		t.Fatalf("top physical row moved under overlay: %q -> %q", beforeTop, got)
 	}
-	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("wrapped disclosure did not re-collapse")
+	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayTools) {
+		t.Fatal("wrapped tool trailer did not re-collapse")
 	}
 	if m.scrollAnchor != collapsedAnchor {
 		t.Fatalf("re-collapsed scrollAnchor = %d, want %d", m.scrollAnchor, collapsedAnchor)
@@ -711,7 +709,7 @@ func TestToolDisclosureTogglePreservesPhysicalViewportAnchor(t *testing.T) {
 	}
 }
 
-func TestCompletedToolDisclosureMouseHitboxTracksViewport(t *testing.T) {
+func TestCompletedToolsUseDockHitboxNotTranscriptHitbox(t *testing.T) {
 	const width = 50
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
@@ -734,24 +732,25 @@ func TestCompletedToolDisclosureMouseHitboxTracksViewport(t *testing.T) {
 	}
 
 	rows := m.transcriptRows(width)
-	visible := m.visibleToolDisclosurePlacements(len(rows), 3, 0, 0, width, false, false)
-	if len(visible) != 1 || visible[0].recordID != record.id {
-		t.Fatalf("visible completed disclosure placement = %#v", visible)
-	}
-	if hidden := m.visibleToolDisclosurePlacements(len(rows), 3, 4, 0, width, false, false); len(hidden) != 0 {
-		t.Fatalf("offscreen disclosure retained a click target: %#v", hidden)
+	visible := m.visibleToolDisclosurePlacements(len(rows), 3, 0, 0, width, false, 0)
+	if len(visible) != 0 {
+		t.Fatalf("completed tools retained a transcript hitbox: %#v", visible)
 	}
 
-	m.toolDisclosurePlacements = visible
-	p := visible[0]
-	if !m.toggleToolDisclosureAt(p.X+1, p.Y) || !record.expanded {
-		t.Fatal("clicking the completed tool header did not expand it")
+	placements := m.visibleTurnTrailerPlacements(len(rows), 3, 0, 0, width, false, 0)
+	var toolPlacement *turnTrailerPlacement
+	for i := range placements {
+		if placements[i].overlay == turnDockOverlayTools {
+			toolPlacement = &placements[i]
+		}
 	}
-	if m.toggleToolDisclosureAt(p.X+p.Cols, p.Y) {
-		t.Fatal("click immediately outside the header hitbox toggled the tool disclosure")
+	if toolPlacement == nil {
+		t.Fatalf("completed tool dock placement = %#v record=%#v", placements, record)
 	}
-	if m.toggleToolDisclosureAt(p.X+1, p.Y+1) {
-		t.Fatal("clicking a tool detail row toggled the disclosure")
+	m.turnTrailerPlacements = placements
+	p := *toolPlacement
+	if !m.toggleTurnTrailerAt(p.X+1, p.Y) || m.openTurnTrailerID == 0 {
+		t.Fatal("clicking the completed tool trailer control did not open it")
 	}
 }
 

@@ -419,8 +419,6 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
-			r.model.totalIn = 0
-			r.model.totalOut = 0
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
 			r.model.unsavedLabeled = false

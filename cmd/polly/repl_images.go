@@ -67,6 +67,7 @@ type transcriptDisplayBlock struct {
 	images           []transcriptImage
 	reasoningID      int64
 	toolDisclosureID int64
+	turnTrailerID    int64
 }
 
 type transcriptImageSpan struct {
@@ -531,7 +532,7 @@ func imageCellGeometry(img transcriptImage, maxCols, maxRows, cellWidth, cellHei
 // visibleImagePlacements projects transcript-relative slots into screen cells.
 // Partially clipped thumbnails are omitted; their caption remains visible and
 // scrolling the complete slot into view draws the native image.
-func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom, tickerVisible bool) []terminalImagePlacement {
+func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []terminalImagePlacement {
 	if !m.nativeImages || viewportHeight <= 0 || width < minimumImageThumbnailCols {
 		return nil
 	}
@@ -544,8 +545,8 @@ func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, lo
 		}
 	}
 	viewEnd := viewStart + viewportHeight
-	if tickerVisible {
-		viewEnd--
+	if overlayRows > 0 {
+		viewEnd -= min(overlayRows, viewportHeight)
 	}
 
 	var placements []terminalImagePlacement

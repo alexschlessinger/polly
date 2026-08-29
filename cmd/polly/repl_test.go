@@ -1442,6 +1442,28 @@ func TestTranscriptParagraphPinsWrappedOverflowToBottom(t *testing.T) {
 	}
 }
 
+func TestTranscriptParagraphDrawsMultiRowOverlayWithoutReflow(t *testing.T) {
+	p := newTranscriptParagraph()
+	noBorder(&p.Block)
+	p.Rows = [][]ui.Cell{
+		{{Rune: 'a'}}, {{Rune: 'b'}}, {{Rune: 'c'}}, {{Rune: 'd'}},
+	}
+	p.UseRows = true
+	p.PinBottom = false
+	p.OverlayBottom = [][]ui.Cell{{{Rune: 'x'}}, {{Rune: 'y'}}}
+	p.SetRect(0, 0, 2, 4)
+
+	buf := ui.NewBuffer(image.Rect(0, 0, 2, 4))
+	p.Draw(buf)
+	var got strings.Builder
+	for y := 0; y < 4; y++ {
+		got.WriteRune(buf.GetCell(image.Pt(0, y)).Rune)
+	}
+	if got.String() != "abxy" {
+		t.Fatalf("overlay moved transcript rows instead of covering the bottom: %q", got.String())
+	}
+}
+
 func TestApprovalPromptRendersLiteralBrackets(t *testing.T) {
 	m := newReplModel()
 	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "bash"}}}
@@ -1533,25 +1555,32 @@ func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 	}
 }
 
-func TestCompletedTurnMetricsStayInStatus(t *testing.T) {
+func TestCompletedTurnMetricsMoveFromStatusToDock(t *testing.T) {
 	m := newReplModel()
 	m.contextName = "ctx"
+	m.startTurnDock()
 	m.lastOutcome = turnOutcomeDone
 	m.lastElapsed = 15500 * time.Millisecond
-	m.totalIn = 1234
-	m.totalOut = 567
-	line := m.statusRow(200)
-	for _, want := range []string{"done", "15.5s", "1.2k/567 tok"} {
-		if !strings.Contains(line, want) {
-			t.Errorf("completed status %q missing %q", line, want)
+	m.lastIn = 1234
+	m.lastOut = 567
+	m.settleTurnDock()
+	status := plainStyledText(m.statusRow(200))
+	if strings.Contains(status, "done") || strings.Contains(status, "15.5s") || strings.Contains(status, "tok") {
+		t.Fatalf("status bar retained per-turn metrics: %q", status)
+	}
+	dock, _ := m.turnDockRow(200)
+	plain := plainStyledText(dock)
+	for _, want := range []string{"✓", "15.5s", "1.2k in / 567 out"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("completed dock %q missing %q", plain, want)
 		}
 	}
 	if len(m.transcript) != 0 {
-		t.Fatalf("status metrics must not add transcript rows: %v", m.transcript)
+		t.Fatalf("settling the dock must not add transcript rows: %v", m.transcript)
 	}
 }
 
-func TestTurnTokensAggregateInStatus(t *testing.T) {
+func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 
@@ -1560,15 +1589,23 @@ func TestTurnTokensAggregateInStatus(t *testing.T) {
 	first.RecordTurnTokens(1000, 250)
 	first.RecordTurnTokens(1200, 300)
 	r.endTurn(nil)
+	firstTrailer := m.turnTrailers[m.turnTrailerSeq]
+	if got := plainStyledText(m.transcript[firstTrailer.transcriptIndex]); !strings.Contains(got, "1.2k in / 300 out") {
+		t.Fatalf("first completed trailer = %q", got)
+	}
 
 	m.beginTurn("second")
 	second := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
 	second.RecordTurnTokens(800, 200)
 	r.endTurn(nil)
 
-	line := plainStyledText(m.statusRow(200))
-	if !strings.Contains(line, "2.0k/500 tok") {
-		t.Fatalf("completed status should show aggregate tokens, got %q", line)
+	secondTrailer := m.turnTrailers[m.turnTrailerSeq]
+	if got := plainStyledText(m.transcript[secondTrailer.transcriptIndex]); !strings.Contains(got, "800 in / 200 out") || strings.Contains(got, "2.0k") {
+		t.Fatalf("second completed trailer should show only this turn, got %q", got)
+	}
+	history := plainStyledText(strings.Join(m.transcript, "\n"))
+	if !strings.Contains(history, "1.2k in / 300 out") {
+		t.Fatalf("first attached trailer missing from transcript history: %q", history)
 	}
 	if m.lastIn != 800 || m.lastOut != 200 {
 		t.Fatalf("last turn tokens = %d/%d, want 800/200", m.lastIn, m.lastOut)

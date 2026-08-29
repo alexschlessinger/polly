@@ -79,20 +79,6 @@ func TestStreamCursorPulseInvalidatesVisualCache(t *testing.T) {
 	}
 }
 
-func TestBusyStatusOmitsLiveActivity(t *testing.T) {
-	m := newReplModel()
-	m.beginTurn("explain")
-	m.turnStarted = time.Now().Add(-12 * time.Second)
-
-	for _, st := range []turnState{turnStateWaiting, turnStateThinking, turnStateStreaming, turnStateTool} {
-		m.state = st
-		raw, rendered := m.statusActivity()
-		if raw != "" || rendered != "" {
-			t.Fatalf("busy status activity for state %v = %q / %q, want empty", st, raw, rendered)
-		}
-	}
-}
-
 func TestFrameTitleReflectsTurnState(t *testing.T) {
 	m := newReplModel()
 	m.contextName = "mychat"
@@ -430,7 +416,7 @@ func TestThinkingDisclosurePreviewUsesFullTranscriptWidth(t *testing.T) {
 	}
 }
 
-func TestThinkingDisclosureAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
+func TestThinkingDockAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
@@ -445,23 +431,23 @@ func TestThinkingDisclosureAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
 	if record.expanded || !record.complete || record.active || m.currentReasoningRecord() != nil {
 		t.Fatalf("completed reasoning record did not settle collapsed: %#v", record)
 	}
-	collapsed := plainStyledText(m.transcript[record.transcriptIndex])
-	if !strings.Contains(collapsed, "▸ Thought") || strings.Contains(collapsed, "bounded reasoning") {
-		t.Fatalf("completed disclosure should be a collapsed Thought row: %q", collapsed)
+	if m.turnDock.overlay != turnDockOverlayNone {
+		t.Fatalf("completed dock retained its open drawer: %#v", m.turnDock)
 	}
 
-	// With no active turn, Ctrl-O targets the newest completed disclosure.
+	// With no active turn, Ctrl-O targets the Thought control in the dock.
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if !record.expanded {
-		t.Fatal("idle Ctrl-O did not reopen the newest completed disclosure")
+	trailer := m.turnTrailers[m.turnTrailerSeq]
+	if trailer == nil || trailer.dock.overlay != turnDockOverlayThought {
+		t.Fatal("idle Ctrl-O did not open the completed Thought drawer")
 	}
-	opened := plainStyledText(m.transcript[record.transcriptIndex])
-	if !strings.Contains(opened, "▾ Thought") || !strings.Contains(opened, "bounded reasoning") {
-		t.Fatalf("reopened completed disclosure = %q", opened)
+	opened := plainStyledText(m.transcript[trailer.transcriptIndex])
+	if !strings.Contains(opened, "bounded reasoning") {
+		t.Fatalf("reopened completed Thought drawer = %q", opened)
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if record.expanded {
-		t.Fatal("second idle Ctrl-O did not collapse the completed disclosure")
+	if trailer.dock.overlay != turnDockOverlayNone {
+		t.Fatal("second idle Ctrl-O did not close the completed Thought drawer")
 	}
 }
 
@@ -487,11 +473,11 @@ func TestCtrlOPrearmsActiveTurnBeforeFirstReasoningChunk(t *testing.T) {
 	secondUI.ShowThinking("new live reasoning")
 	active := m.currentReasoningRecord()
 	m.refreshReasoningRecords(testThinkingWidth)
-	if active == nil || !active.expanded {
-		t.Fatalf("first reasoning chunk did not honor the pre-armed disclosure: %#v", active)
+	if active == nil || m.turnDock.overlay != turnDockOverlayThought {
+		t.Fatalf("first reasoning chunk did not honor the pre-armed dock: record=%#v dock=%#v", active, m.turnDock)
 	}
-	if shown := plainStyledText(m.transcript[active.transcriptIndex]); !strings.Contains(shown, "new live reasoning") {
-		t.Fatalf("pre-armed disclosure did not show the live tail: %q", shown)
+	if shown := strings.Join(rowsText(m.turnDockOverlayRows(testThinkingWidth)), "\n"); !strings.Contains(shown, "new live reasoning") {
+		t.Fatalf("pre-armed drawer did not show the live tail: %q", shown)
 	}
 }
 
@@ -639,37 +625,34 @@ func TestExpandedShortReasoningReservesTwoDetailRows(t *testing.T) {
 	}
 }
 
-func TestLiveReasoningResizePreservesScrolledVisualAnchor(t *testing.T) {
+func TestLiveReasoningDockGrowthPreservesScrolledVisualAnchor(t *testing.T) {
 	const width = 24
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, config: r.config}
 	tui.ShowThinking("short")
-	record := m.currentReasoningRecord()
-	if record == nil || !m.toggleReasoning(record.id, width) {
-		t.Fatal("reasoning fixture did not expand")
+	if m.currentReasoningRecord() == nil || !m.toggleTurnDockOverlay(turnDockOverlayThought) {
+		t.Fatal("reasoning dock fixture did not expand")
 	}
 	for i := 0; i < 8; i++ {
 		m.appendLine(fmt.Sprintf("later %d", i))
 	}
-	oldCount := m.entryVisualLineCount(record.transcriptIndex, width)
 	m.followBottom = false
-	m.scrollAnchor = m.entryVisualStart(record.transcriptIndex, width) + oldCount + 2
+	m.scrollAnchor = 2
 	before := m.scrollAnchor
 
 	tui.ShowThinking(strings.Repeat(" additional words", 20))
 	m.refreshReasoningRecords(width)
-	newCount := m.entryVisualLineCount(record.transcriptIndex, width)
-	if newCount <= oldCount {
-		t.Fatalf("fixture did not grow: %d -> %d", oldCount, newCount)
+	if got := len(m.turnDockOverlayRows(width)); got < 2 || got > reasoningPreviewLines {
+		t.Fatalf("grown reasoning drawer rows = %d", got)
 	}
-	if want := before + newCount - oldCount; m.scrollAnchor != want {
-		t.Fatalf("live growth moved held viewport: anchor=%d, want %d", m.scrollAnchor, want)
+	if m.scrollAnchor != before {
+		t.Fatalf("live drawer growth moved held viewport: anchor=%d, want %d", m.scrollAnchor, before)
 	}
 }
 
-func TestCompletedReasoningDisclosureMouseHitboxTracksViewport(t *testing.T) {
+func TestCompletedReasoningUsesDockHitboxNotTranscriptHitbox(t *testing.T) {
 	const width = 50
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -683,21 +666,20 @@ func TestCompletedReasoningDisclosureMouseHitboxTracksViewport(t *testing.T) {
 	}
 
 	rows := m.transcriptRows(width)
-	visible := m.visibleReasoningPlacements(len(rows), 3, 0, 0, width, false, false)
-	if len(visible) != 1 || visible[0].recordID != record.id {
-		t.Fatalf("visible completed disclosure placement = %#v", visible)
-	}
-	if hidden := m.visibleReasoningPlacements(len(rows), 3, 4, 0, width, false, false); len(hidden) != 0 {
-		t.Fatalf("offscreen disclosure retained a click target: %#v", hidden)
+	visible := m.visibleReasoningPlacements(len(rows), 3, 0, 0, width, false, 0)
+	if len(visible) != 0 {
+		t.Fatalf("completed reasoning retained a transcript hitbox: %#v", visible)
 	}
 
-	m.reasoningPlacements = visible
-	p := visible[0]
-	if !m.toggleReasoningAt(p.X+1, p.Y, width) || !record.expanded {
-		t.Fatal("clicking the completed disclosure label did not expand it")
+	rows = m.transcriptRows(width)
+	placements := m.visibleTurnTrailerPlacements(len(rows), len(rows), 0, 0, width, false, 0)
+	if len(placements) != 1 || placements[0].overlay != turnDockOverlayThought {
+		t.Fatalf("completed Thought trailer placement = %#v record=%#v", placements, record)
 	}
-	if m.toggleReasoningAt(p.X+p.Cols, p.Y, width) {
-		t.Fatal("click immediately outside the label hitbox toggled reasoning")
+	m.turnTrailerPlacements = placements
+	p := placements[0]
+	if !m.toggleTurnTrailerAt(p.X+1, p.Y) || m.openTurnTrailerID == 0 {
+		t.Fatal("clicking the completed Thought trailer control did not open it")
 	}
 }
 
@@ -737,19 +719,34 @@ func TestActivityTickerWhileScrolledUp(t *testing.T) {
 
 func TestDividerRowCount(t *testing.T) {
 	// Normal terminal: one divider row between transcript and bottom chrome.
-	if got := dividerRowCount(24, 1, 1, false); got != 1 {
+	if got := dividerRowCount(24, 1, 1, 0, false); got != 1 {
 		t.Fatalf("divider on roomy terminal = %d, want 1", got)
 	}
 	// Quiet mode stays chromeless.
-	if got := dividerRowCount(24, 1, 0, true); got != 0 {
+	if got := dividerRowCount(24, 1, 0, 0, true); got != 0 {
 		t.Fatalf("divider in quiet mode = %d, want 0", got)
 	}
 	// Too short to spare a row: the transcript wins.
-	if got := dividerRowCount(3, 1, 1, false); got != 0 {
+	if got := dividerRowCount(3, 1, 1, 0, false); got != 0 {
 		t.Fatalf("divider on cramped terminal = %d, want 0", got)
 	}
 	// Boundary: exactly one transcript row left after chrome keeps the divider.
-	if got := dividerRowCount(4, 1, 1, false); got != 1 {
+	if got := dividerRowCount(4, 1, 1, 0, false); got != 1 {
 		t.Fatalf("divider at boundary = %d, want 1", got)
+	}
+	if got := dividerRowCount(4, 1, 1, 1, false); got != 0 {
+		t.Fatalf("divider with a dock on cramped terminal = %d, want 0", got)
+	}
+}
+
+func TestTurnDockRowCountPreservesCrampedTranscript(t *testing.T) {
+	if got := turnDockRowCount(24, 1, 1, true); got != 1 {
+		t.Fatalf("roomy terminal dock rows = %d, want 1", got)
+	}
+	if got := turnDockRowCount(3, 1, 1, true); got != 0 {
+		t.Fatalf("cramped terminal dock rows = %d, want 0", got)
+	}
+	if got := turnDockRowCount(24, 1, 1, false); got != 0 {
+		t.Fatalf("hidden dock rows = %d, want 0", got)
 	}
 }

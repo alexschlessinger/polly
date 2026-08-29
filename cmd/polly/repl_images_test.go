@@ -248,7 +248,7 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 		imageSpans: []transcriptImageSpan{{imageIndex: 0, row: 2, x: 3, cols: 50, rows: 10}},
 	}}
 
-	placements := m.visibleImagePlacements(14, 14, 0, 2, 80, false, false)
+	placements := m.visibleImagePlacements(14, 14, 0, 2, 80, false, 0)
 	if len(placements) != 1 {
 		t.Fatalf("placements = %#v", placements)
 	}
@@ -256,8 +256,11 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 	if got.Key != "transcript:4:image:0" || got.X != 3 || got.Y != 4 || got.Cols != transcriptImageThumbnailCols || got.Rows != 10 || got.FitByRows {
 		t.Fatalf("placement = %#v", got)
 	}
-	if clipped := m.visibleImagePlacements(14, 8, 0, 0, 80, false, false); len(clipped) != 0 {
+	if clipped := m.visibleImagePlacements(14, 8, 0, 0, 80, false, 0); len(clipped) != 0 {
 		t.Fatalf("partially clipped placement should be omitted: %#v", clipped)
+	}
+	if covered := m.visibleImagePlacements(14, 14, 0, 0, 80, false, 3); len(covered) != 0 {
+		t.Fatalf("drawer-covered placement should be omitted: %#v", covered)
 	}
 }
 

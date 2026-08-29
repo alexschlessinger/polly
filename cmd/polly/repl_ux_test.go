@@ -948,7 +948,7 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 	m.appendLine("a stable earlier transcript block")
 	m.appendToolStartLine("1", "bash sleep 30")
 	rows1 := m.transcriptRows(80)
-	if len(rows1) < 2 || len(m.visualBlocks[0].rows[0]) == 0 {
+	if len(rows1) != 1 || len(m.visualBlocks[0].rows[0]) == 0 {
 		t.Fatalf("cache fixture rows = %#v", rows1)
 	}
 	staticCell := &m.visualBlocks[0].rows[0][0]
@@ -973,12 +973,12 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 	if record == nil || !m.toggleToolDisclosure(record.id) {
 		t.Fatalf("cached tool disclosure did not expand: %#v", record)
 	}
-	if m.visualCacheValid {
-		t.Fatal("expanding live detail did not invalidate the visual cache")
+	if !m.visualCacheValid {
+		t.Fatal("hidden legacy disclosure invalidated the visual cache")
 	}
 	expandedRows := m.transcriptRows(80)
-	if shown := strings.Join(transcriptRowsText(expandedRows), "\n"); !strings.Contains(shown, "2.0s") || !strings.Contains(shown, "bash sleep 30") {
-		t.Fatalf("expanded live detail missing from visual rows: %q", shown)
+	if shown := strings.Join(transcriptRowsText(expandedRows), "\n"); strings.Contains(shown, "2.0s") || strings.Contains(shown, "bash sleep 30") {
+		t.Fatalf("legacy disclosure leaked into visual rows: %q", shown)
 	}
 
 	m.setSlashHintLine("/help  /history")
