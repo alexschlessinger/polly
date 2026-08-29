@@ -1028,21 +1028,116 @@ func externalizeMessageImages(ctx context.Context, msg messages.ChatMessage, sto
 	return msg, nil
 }
 
-// durableTurnMessages removes provider-protocol denial exchanges while still
-// recording that an all-denied turn completed. The internal marker is never
-// sent to a model; hydration folds it into one compact denied row instead of
-// resurrecting the completed prompt as an incomplete composer draft.
+// durableTurnMessages removes provider-protocol denial exchanges while
+// retaining their safe display projection. The internal marker is never sent
+// to a model; hydration uses it to restore disclosure order and to keep an
+// all-denied turn from looking like an incomplete composer draft.
 func durableTurnMessages(generated []messages.ChatMessage) []messages.ChatMessage {
 	stripped := llm.StripDeniedExchanges(generated)
-	if terminalToolBatchAllDenied(generated) {
+	allDenied := terminalToolBatchAllDenied(generated)
+	displayToolCalls := deniedDisplayToolCalls(generated)
+	if allDenied || displayToolCalls != "" {
+		metadata := make(map[string]any)
+		if allDenied {
+			metadata[messages.MetadataKeyTurnStatus] = messages.TurnStatusToolDenied
+		}
+		if reasoning := deniedDisplayReasoning(generated); reasoning != "" {
+			metadata[messages.MetadataKeyDisplayReasoning] = reasoning
+		}
+		if displayToolCalls != "" {
+			metadata[messages.MetadataKeyDisplayToolCalls] = displayToolCalls
+		}
 		stripped = append(stripped, messages.ChatMessage{
-			Role: messages.MessageRoleInternal,
-			Metadata: map[string]any{
-				messages.MetadataKeyTurnStatus: messages.TurnStatusToolDenied,
-			},
+			Role:     messages.MessageRoleInternal,
+			Metadata: metadata,
 		})
 	}
 	return stripped
+}
+
+// durableDisplayToolCall is the safe, UI-only subset needed to restore tool
+// disclosure order after denied provider-protocol calls have been stripped.
+// Arguments and result bodies are intentionally absent.
+type durableDisplayToolCall struct {
+	ID     string `json:"id,omitempty"`
+	Name   string `json:"name"`
+	Denied bool   `json:"denied,omitempty"`
+}
+
+func deniedDisplayToolCalls(generated []messages.ChatMessage) string {
+	deniedIDs := make(map[string]struct{})
+	for _, msg := range generated {
+		if msg.Role == messages.MessageRoleTool && msg.Content == llm.ToolDeniedContent {
+			deniedIDs[msg.ToolCallID] = struct{}{}
+		}
+	}
+	if len(deniedIDs) == 0 {
+		return ""
+	}
+	var calls []durableDisplayToolCall
+	for _, msg := range generated {
+		if msg.Role != messages.MessageRoleAssistant {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			name := call.Name
+			if name == "" {
+				name = "tool"
+			}
+			_, denied := deniedIDs[call.ID]
+			calls = append(calls, durableDisplayToolCall{ID: call.ID, Name: name, Denied: denied})
+		}
+	}
+	if len(calls) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(calls)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func decodeDisplayToolCalls(value any) []durableDisplayToolCall {
+	encoded, ok := value.(string)
+	if !ok || encoded == "" {
+		return nil
+	}
+	var calls []durableDisplayToolCall
+	if err := json.Unmarshal([]byte(encoded), &calls); err != nil {
+		return nil
+	}
+	return calls
+}
+
+// deniedDisplayReasoning keeps the human-visible reasoning that
+// StripDeniedExchanges necessarily drops with a reasoning-only assistant tool
+// proposal. Storing it on the internal completion marker avoids both an orphan
+// provider message and double-counting it as durable model reasoning.
+func deniedDisplayReasoning(generated []messages.ChatMessage) string {
+	deniedIDs := make(map[string]struct{})
+	for _, msg := range generated {
+		if msg.Role == messages.MessageRoleTool && msg.Content == llm.ToolDeniedContent {
+			deniedIDs[msg.ToolCallID] = struct{}{}
+		}
+	}
+	var segments []string
+	for _, msg := range generated {
+		if msg.Role != messages.MessageRoleAssistant || msg.Content != "" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		allDenied := true
+		for _, call := range msg.ToolCalls {
+			if _, denied := deniedIDs[call.ID]; !denied {
+				allDenied = false
+				break
+			}
+		}
+		if allDenied && strings.TrimSpace(msg.Reasoning) != "" {
+			segments = append(segments, msg.Reasoning)
+		}
+	}
+	return strings.Join(segments, "\n")
 }
 
 func terminalToolBatchAllDenied(generated []messages.ChatMessage) bool {

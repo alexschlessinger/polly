@@ -108,9 +108,17 @@ const (
 	MetadataKeyError                 = "error"
 	MetadataKeyToolSucceeded         = "tool_succeeded"
 	MetadataKeyTurnStatus            = "turn_status"
-	MetadataKeyContextImport         = "context_import"
-	MetadataKeyAgentSynthetic        = "agent_synthetic"
-	TurnStatusToolDenied             = "tool_denied"
+	// MetadataKeyDisplayReasoning preserves reasoning for local transcript
+	// hydration when its provider-protocol assistant message must be removed.
+	// It is UI-only and must never be counted or replayed as model reasoning.
+	MetadataKeyDisplayReasoning = "display_reasoning"
+	// MetadataKeyDisplayToolCalls preserves safe tool-call order and denied
+	// outcomes that are deliberately stripped from provider history. The value
+	// is app-owned UI metadata and must never be replayed to a model.
+	MetadataKeyDisplayToolCalls = "display_tool_calls"
+	MetadataKeyContextImport    = "context_import"
+	MetadataKeyAgentSynthetic   = "agent_synthetic"
+	TurnStatusToolDenied        = "tool_denied"
 )
 
 // GetInputTokens returns the input token count from metadata, or 0 if not set
