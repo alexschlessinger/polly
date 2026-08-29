@@ -225,6 +225,10 @@ polly --purge                               # delete all (asks first)
   `-m openai/gpt-5.4-mini`, the context switches to GPT-5.4-mini.
 - Changing the system prompt of a context with existing history resets the
   conversation to keep things consistent.
+- The system prompt holds only your persona. Output-formatting guidance (plain
+  text for pipes, markdown for the TUI) is a per-frontend display contract
+  composed into each request and never stored, so a context moves freely
+  between one-shot use and the REPL.
 - Tools are part of the deal: load `-t ./build.sh` in a context once and it's
   restored on every later use of that context.
 
@@ -588,7 +592,7 @@ GLOBAL OPTIONS:
    --tool string, -t string [ --tool string, -t string ]    Tool provider: shell script (provides 1 tool) or MCP server (can provide multiple tools). Can be specified multiple times
    --tooltimeout duration                                   Timeout for tool execution (default: 30s) [$POLLYTOOL_TOOLTIMEOUT]
    --prompt string, -p string                               Initial prompt (reads from stdin if not provided; starts REPL when neither is provided)
-   --system string, -s string                               System prompt (default: "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.") [$POLLYTOOL_SYSTEM]
+   --system string, -s string                               System prompt (persona; a per-frontend display contract is added automatically) [$POLLYTOOL_SYSTEM]
    --file string, -f string [ --file string, -f string ]    File, image, or URL to include (can be specified multiple times)
    --schema string                                          Path to JSON schema file for structured output
    --context string, -c string                              Context name for conversation continuity [$POLLYTOOL_CONTEXT]

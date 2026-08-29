@@ -757,7 +757,7 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	return replCommandResult{err: ctx.replyLines(lines)}
 }
 
-var replSettingKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir", "sandbox"}
+var replSettingKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "display", "tooltimeout", "skilldir", "sandbox"}
 
 func completeGetCommand(_ *replCommandContext, fields []string, prefix string) []string {
 	if completionArgPos(fields, prefix) != 1 {
@@ -789,6 +789,7 @@ func replGetCommand(ctx *replCommandContext, args []string) replCommandResult {
 // replSettableKeys lists the /set-writable settings. system, skilldir, and
 // sandbox stay launch-time only: the system prompt is embedded in session
 // history at creation, and skill/sandbox wiring happens during tool loading.
+// display is derived from the active frontend and never settable.
 var replSettableKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"}
 
 // thinkingEffortWords are the named efforts accepted by llm.ParseThinkingEffort
@@ -1064,7 +1065,15 @@ func replSettingValue(ctx *replCommandContext, key string) (string, bool) {
 	case "thinking":
 		return config.ThinkingEffort, true
 	case "system":
+		if config.SystemPrompt == "" {
+			return "(none)", true
+		}
 		return config.SystemPrompt, true
+	case "display":
+		if ctx.state == nil {
+			return "(none)", true
+		}
+		return ctx.state.displayContract, true
 	case "tooltimeout":
 		return config.ToolTimeout.String(), true
 	case "skilldir":

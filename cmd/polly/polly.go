@@ -88,6 +88,9 @@ type conversationState struct {
 	// autoNamedContext marks a session under a generated name, so the REPL
 	// can mention the name and how to keep or resume it.
 	autoNamedContext bool
+	// displayContract is composed into the request's system message each turn;
+	// it is frontend-specific and never persisted (see display_contract.go).
+	displayContract string
 }
 
 func (s *conversationState) Close() error {
@@ -153,17 +156,6 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 	// the conversation survives exit (resume with -L or -c <name>). Contexts
 	// that never see a turn are discarded on exit.
 	autoContext := contextID == "" && wantsAutoREPLContext(config)
-
-	// Session-store defaults are snapshotted when the store opens. Resolve the
-	// mode-specific prompt first so a newly created named or auto REPL session
-	// starts with the markdown-aware prompt rather than persisting the one-shot
-	// default. Management commands retain their existing explicit/default
-	// settings because they do not select a conversation surface.
-	if !hasManagementAction(config) {
-		if mode, modeErr := selectConversationMode(config, hasStdinData()); modeErr == nil {
-			applyConversationModeDefaults(config, mode, cmd.IsSet("system"), supportsManagedREPL())
-		}
-	}
 
 	sessionStore, err := setupSessionStore(config, contextID, autoContext)
 	if err != nil {
@@ -583,9 +575,9 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		return err
 	}
 
-	// Applies before initializeSession so a context's stored prompt still
-	// overrides the effective default.
-	applyConversationModeDefaults(config, input.mode, cmd.IsSet("system"), supportsManagedREPL())
+	// The frontend is fixed for the life of the run; resolve it once so the
+	// display contract and the REPL flavor cannot disagree.
+	managedREPL := supportsManagedREPL()
 
 	// Initialize session state once so one-shot and REPL share the same runtime.
 	sandboxWarnings := newBroadWritablePathWarner()
@@ -603,6 +595,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		skillSources:     skillResult.sources,
 		sandboxWarnings:  sandboxWarnings,
 		autoNamedContext: autoContext,
+		displayContract:  displayContractFor(input.mode, managedREPL),
 	}
 	defer func() {
 		if err := state.Close(); err != nil {
@@ -647,7 +640,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		}
 		return nil
 	case conversationModeREPL:
-		replErr := runREPL(ctx, config, state)
+		replErr := runREPL(ctx, config, state, managedREPL)
 		if autoContext {
 			if err := discardUnusedAutoContext(ctx, state); replErr == nil && err != nil {
 				replErr = err
@@ -753,28 +746,8 @@ func validateREPLConfig(config *Config) error {
 	return fmt.Errorf("%s %s -p or stdin; bare polly starts a text-only REPL", strings.Join(rejected, " and "), verb)
 }
 
-// effectiveDefaultSystemPrompt swaps the pipe-oriented default system prompt
-// (which forbids markdown) for the markdown-welcoming one when the managed
-// REPL — which renders markdown — is about to run. Only the untouched default
-// is swapped: an explicit -s/POLLYTOOL_SYSTEM value passes through, and the
-// fallback line REPL keeps the plain-output default.
-func effectiveDefaultSystemPrompt(current string, isSet, managedREPL bool) string {
-	if managedREPL && !isSet && current == defaultSystemPrompt {
-		return defaultREPLSystemPrompt
-	}
-	return current
-}
-
-func applyConversationModeDefaults(config *Config, mode conversationMode, systemPromptSet, managedREPL bool) {
-	if mode != conversationModeREPL {
-		return
-	}
-	config.Settings.SystemPrompt = effectiveDefaultSystemPrompt(
-		config.Settings.SystemPrompt, systemPromptSet, managedREPL)
-}
-
-func runREPL(ctx context.Context, config *Config, state *conversationState) error {
-	if supportsManagedREPL() {
+func runREPL(ctx context.Context, config *Config, state *conversationState, managedREPL bool) error {
+	if managedREPL {
 		return runManagedREPL(ctx, config, state)
 	}
 	return runFallbackREPL(ctx, config, state)
@@ -823,6 +796,12 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	requestMessages, err := prepareSessionImageRequest(ctx, state.session, userMsg, reuseUser)
 	if err != nil {
 		return 1, err
+	}
+	// Structured output is machine-facing: display guidance is irrelevant
+	// there and "plain text only" could fight the schema on providers whose
+	// structured output is prompt-based.
+	if schema == nil {
+		requestMessages = applyDisplayContract(requestMessages, state.displayContract)
 	}
 
 	// Reject turns projection would deterministically fail before the user
@@ -1436,8 +1415,10 @@ func initializeConversation(ctx context.Context, config *Config, sessionStore se
 		if contextInfo := metadata[contextID]; contextInfo != nil {
 			originalContextInfo = contextInfo
 
-			// Check if system prompt is being changed (only if context has existing conversation)
-			if cmd.IsSet("system") && cmd.String("system") != contextInfo.SystemPrompt {
+			// Check if system prompt is being changed (only if context has
+			// existing conversation). A stored legacy default reads as the
+			// empty persona, so -s "" against it does not wipe history.
+			if cmd.IsSet("system") && cmd.String("system") != normalizeLegacySystemPrompt(contextInfo.SystemPrompt) {
 				// Check if there's an existing conversation to reset
 				exists, err := sessionStore.Exists(ctx, contextInfo.Name)
 				if err != nil {
@@ -1465,7 +1446,7 @@ func initializeConversation(ctx context.Context, config *Config, sessionStore se
 				config.Settings.MaxHistoryTokens = contextInfo.MaxHistoryTokens
 			}
 			if !cmd.IsSet("system") {
-				config.Settings.SystemPrompt = contextInfo.SystemPrompt
+				config.Settings.SystemPrompt = normalizeLegacySystemPrompt(contextInfo.SystemPrompt)
 			}
 			if !cmd.IsSet("thinking") {
 				config.Settings.ThinkingEffort = contextInfo.ThinkingEffort

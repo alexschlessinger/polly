@@ -367,7 +367,11 @@ func showContext(ctx context.Context, store sessions.SessionStore, contextID str
 
 	// Prompts and description
 	fmt.Printf("  Description: %s\n", info.Description)
-	fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
+	if persona := normalizeLegacySystemPrompt(info.SystemPrompt); persona != "" {
+		fmt.Printf("  System Prompt: %s\n", persona)
+	} else {
+		fmt.Printf("  System Prompt: (none)\n")
+	}
 
 	// Tool configuration
 	if len(info.ActiveTools) > 0 {

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/urfave/cli/v3"
 )
 
@@ -293,21 +294,60 @@ func runConfigValidationCommand(args ...string) error {
 	return cmd.Run(context.Background(), append([]string{"polly"}, args...))
 }
 
-func TestEffectiveDefaultSystemPrompt(t *testing.T) {
-	// Managed REPL with the untouched default: markdown-friendly swap.
-	if got := effectiveDefaultSystemPrompt(defaultSystemPrompt, false, true); got != defaultREPLSystemPrompt {
-		t.Fatalf("managed REPL default = %q, want the markdown-friendly prompt", got)
+func TestDisplayContractFor(t *testing.T) {
+	if got := displayContractFor(conversationModeREPL, true); got != tuiDisplayContract {
+		t.Fatalf("managed REPL contract = %q, want the TUI contract", got)
 	}
-	// Explicit -s always wins, even if it matches the default text.
-	if got := effectiveDefaultSystemPrompt(defaultSystemPrompt, true, true); got != defaultSystemPrompt {
-		t.Fatalf("explicit -s was overridden: %q", got)
+	if got := displayContractFor(conversationModeREPL, false); got != plainDisplayContract {
+		t.Fatalf("fallback REPL contract = %q, want the plain contract", got)
 	}
-	// The fallback line REPL renders no markdown: keep the plain default.
-	if got := effectiveDefaultSystemPrompt(defaultSystemPrompt, false, false); got != defaultSystemPrompt {
-		t.Fatalf("fallback REPL default = %q, want the plain prompt", got)
+	if got := displayContractFor(conversationModeOneShot, false); got != plainDisplayContract {
+		t.Fatalf("one-shot contract = %q, want the plain contract", got)
 	}
-	// A custom prompt from env/flag passes through untouched.
-	if got := effectiveDefaultSystemPrompt("be a pirate", false, true); got != "be a pirate" {
+}
+
+func TestNormalizeLegacySystemPrompt(t *testing.T) {
+	for _, legacy := range legacySystemPromptDefaults {
+		if got := normalizeLegacySystemPrompt(legacy); got != "" {
+			t.Fatalf("legacy default not normalized: %q", got)
+		}
+	}
+	if got := normalizeLegacySystemPrompt("be a pirate"); got != "be a pirate" {
 		t.Fatalf("custom prompt mangled: %q", got)
+	}
+	if got := normalizeLegacySystemPrompt(""); got != "" {
+		t.Fatalf("empty prompt mangled: %q", got)
+	}
+}
+
+func TestApplyDisplayContract(t *testing.T) {
+	system := func(content string) messages.ChatMessage {
+		return messages.ChatMessage{Role: messages.MessageRoleSystem, Content: content}
+	}
+	user := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"}
+
+	// Persona present: the contract is appended to the same system message.
+	got := applyDisplayContract([]messages.ChatMessage{system("be a pirate"), user}, tuiDisplayContract)
+	if len(got) != 2 || got[0].Content != "be a pirate\n\n"+tuiDisplayContract {
+		t.Fatalf("persona merge = %+v", got)
+	}
+
+	// A legacy default seeded into an old transcript is replaced outright.
+	got = applyDisplayContract([]messages.ChatMessage{system(legacySystemPromptDefaults[0]), user}, tuiDisplayContract)
+	if len(got) != 2 || got[0].Content != tuiDisplayContract {
+		t.Fatalf("legacy replace = %+v", got)
+	}
+
+	// No system message: one is prepended holding only the contract.
+	got = applyDisplayContract([]messages.ChatMessage{user}, plainDisplayContract)
+	if len(got) != 2 || got[0].Role != messages.MessageRoleSystem || got[0].Content != plainDisplayContract || got[1].Content != "hi" {
+		t.Fatalf("prepend = %+v", got)
+	}
+
+	// Empty contract: untouched.
+	in := []messages.ChatMessage{system("be a pirate"), user}
+	got = applyDisplayContract(in, "")
+	if len(got) != 2 || got[0].Content != "be a pirate" {
+		t.Fatalf("empty contract mutated messages: %+v", got)
 	}
 }

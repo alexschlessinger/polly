@@ -136,28 +136,86 @@ func TestFreshNamedContextSeedsResolvedDefaults(t *testing.T) {
 	}
 }
 
-func TestFreshManagedREPLContextSeedsEffectiveSystemPrompt(t *testing.T) {
-	config, cmd := parseStorageTestConfig(t)
-	applyConversationModeDefaults(config, conversationModeREPL, cmd.IsSet("system"), true)
+func TestFreshContextSeedsPersonaOnly(t *testing.T) {
+	// No -s: the display contract is composed at send time, so nothing is
+	// stored and no system message is seeded.
+	t.Run("default", func(t *testing.T) {
+		config, _ := parseStorageTestConfig(t)
+		store, err := setupSessionStore(config, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		session := testAcquireSession(t, store, "fresh-repl")
 
-	store, err := setupSessionStore(config, "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	session := testAcquireSession(t, store, "fresh-repl")
+		metadata, err := session.GetMetadata(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if metadata.SystemPrompt != "" {
+			t.Fatalf("stored system prompt = %q, want empty", metadata.SystemPrompt)
+		}
+		if history := testSessionHistory(t, session); len(history) != 0 {
+			t.Fatalf("fresh history = %#v, want empty", history)
+		}
+	})
 
-	metadata, err := session.GetMetadata(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if metadata.SystemPrompt != defaultREPLSystemPrompt {
-		t.Fatalf("stored system prompt = %q, want managed REPL default %q", metadata.SystemPrompt, defaultREPLSystemPrompt)
-	}
-	history := testSessionHistory(t, session)
-	want := []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: defaultREPLSystemPrompt}}
-	if !reflect.DeepEqual(history, want) {
-		t.Fatalf("fresh managed REPL history = %#v, want %#v", history, want)
+	// An explicit persona is still seeded into the transcript as message 0.
+	t.Run("persona", func(t *testing.T) {
+		config, _ := parseStorageTestConfig(t, "--system", "be a pirate")
+		store, err := setupSessionStore(config, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		session := testAcquireSession(t, store, "fresh-persona")
+
+		history := testSessionHistory(t, session)
+		want := []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: "be a pirate"}}
+		if !reflect.DeepEqual(history, want) {
+			t.Fatalf("fresh persona history = %#v, want %#v", history, want)
+		}
+	})
+}
+
+func TestInitializeConversationNormalizesLegacyDefaultPrompt(t *testing.T) {
+	// A context stored with a pre-refactor default prompt resolves as
+	// persona-less, and -s "" against it does not trigger the prompt-change
+	// reset that would wipe history.
+	for _, tt := range []struct {
+		name        string
+		setEmptyArg bool
+	}{
+		{name: "resume without -s"},
+		{name: "explicit empty -s", setEmptyArg: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := testOpenMemoryStore(t, &sessions.Metadata{SystemPrompt: legacySystemPromptDefaults[0]})
+			session := testAcquireSession(t, store, "legacy")
+			testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "old turn"})
+			if err := session.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := getCommand()
+			if tt.setEmptyArg {
+				if err := cmd.Set("system", ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			config := &Config{}
+			if _, _, err := initializeConversation(context.Background(), config, store, "legacy", cmd); err != nil {
+				t.Fatal(err)
+			}
+			if config.Settings.SystemPrompt != "" {
+				t.Fatalf("resolved system prompt = %q, want empty", config.Settings.SystemPrompt)
+			}
+
+			reopened := testAcquireSession(t, store, "legacy")
+			if history := testSessionHistory(t, reopened); len(history) != 2 {
+				t.Fatalf("history after legacy resume = %#v, want the seeded system row and user turn", history)
+			}
+		})
 	}
 }
 
@@ -308,7 +366,7 @@ func assertResolvedConfig(t *testing.T, config *Config, modelOverride string) {
 	}
 	if config.Model != wantModel || config.Temperature != 1 || config.MaxTokens != 64_000 ||
 		config.MaxHistoryTokens != 256_000 || config.ThinkingEffort != "off" ||
-		config.SystemPrompt != defaultSystemPrompt || config.ToolTimeout != 30*time.Second ||
+		config.SystemPrompt != "" || config.ToolTimeout != 30*time.Second ||
 		config.MaxIterations != 250 || len(config.SkillDirs) != 0 {
 		t.Fatalf("resolved settings = %+v", config)
 	}
@@ -325,7 +383,7 @@ func assertResolvedMetadata(t *testing.T, metadata *sessions.Metadata, modelOver
 	}
 	if metadata.Model != wantModel || metadata.Temperature != 1 || metadata.MaxTokens != 64_000 ||
 		metadata.MaxHistoryTokens != 256_000 || metadata.ThinkingEffort != "off" ||
-		metadata.SystemPrompt != defaultSystemPrompt || metadata.ToolTimeout != 30*time.Second ||
+		metadata.SystemPrompt != "" || metadata.ToolTimeout != 30*time.Second ||
 		metadata.MaxIterations != 250 || len(metadata.SkillDirs) != 0 {
 		t.Fatalf("stored settings = %+v", metadata)
 	}
