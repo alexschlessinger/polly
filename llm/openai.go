@@ -110,8 +110,14 @@ func (o OpenAIClient) handleStreamingChatCompletion(ctx context.Context, params 
 		if len(chunk.Choices) == 0 {
 			continue
 		}
-		if delta := chunk.Choices[0].Delta.Content; delta != "" {
-			streamCore.EmitContent(delta)
+		delta := chunk.Choices[0].Delta
+		// Reasoning first: it precedes the answer it produced, and emitting it
+		// after would invert that order for anything displaying the stream.
+		if reasoning := delta.ReasoningText(); reasoning != "" {
+			streamCore.EmitReasoning(reasoning)
+		}
+		if delta.Content != "" {
+			streamCore.EmitContent(delta.Content)
 		}
 	}
 
@@ -128,6 +134,9 @@ func (o OpenAIClient) handleNonStreamingChatCompletion(ctx context.Context, para
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
+		if reasoning := choice.Message.ReasoningText(); reasoning != "" {
+			streamCore.EmitReasoning(reasoning)
+		}
 		if choice.Message.Content != "" {
 			streamCore.EmitContent(choice.Message.Content)
 		}

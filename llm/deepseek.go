@@ -78,8 +78,8 @@ func (d DeepSeekClient) handleStreaming(ctx context.Context, params *openai.Chat
 		if delta.Content != "" {
 			streamCore.EmitContent(delta.Content)
 		}
-		if delta.ReasoningContent != "" {
-			streamCore.EmitReasoning(delta.ReasoningContent)
+		if reasoning := delta.ReasoningText(); reasoning != "" {
+			streamCore.EmitReasoning(reasoning)
 		}
 	}
 
@@ -96,8 +96,8 @@ func (d DeepSeekClient) handleNonStreaming(ctx context.Context, params *openai.C
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
-		if choice.Message.ReasoningContent != "" {
-			streamCore.EmitReasoning(choice.Message.ReasoningContent)
+		if reasoning := choice.Message.ReasoningText(); reasoning != "" {
+			streamCore.EmitReasoning(reasoning)
 		}
 		if choice.Message.Content != "" {
 			streamCore.EmitContent(choice.Message.Content)

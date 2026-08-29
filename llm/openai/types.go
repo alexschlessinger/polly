@@ -176,7 +176,20 @@ func (u *ChatUsage) PromptCacheUsage() (read, write int, reported bool) {
 type ChatResponseMessage struct {
 	Content          string         `json:"content"`
 	ReasoningContent string         `json:"reasoning_content"` // DeepSeek
+	Reasoning        string         `json:"reasoning"`         // OpenRouter and most OpenAI-compatible servers
 	ToolCalls        []ChatToolCall `json:"tool_calls"`
+}
+
+// ReasoningText returns whichever reasoning field the server populated.
+// OpenAI-compatible endpoints split on the name: DeepSeek's own API sends
+// `reasoning_content`, while OpenRouter and most other gateways send
+// `reasoning` (alongside a structured `reasoning_details` carrying the same
+// text, which is deliberately ignored). No server sends both.
+func (m ChatResponseMessage) ReasoningText() string {
+	if m.ReasoningContent != "" {
+		return m.ReasoningContent
+	}
+	return m.Reasoning
 }
 
 // ChatChoice is one non-streaming completion choice.
@@ -206,7 +219,17 @@ type ChatToolCallDelta struct {
 type ChatDelta struct {
 	Content          string              `json:"content"`
 	ReasoningContent string              `json:"reasoning_content"` // DeepSeek
+	Reasoning        string              `json:"reasoning"`         // OpenRouter and most OpenAI-compatible servers
 	ToolCalls        []ChatToolCallDelta `json:"tool_calls"`
+}
+
+// ReasoningText returns whichever reasoning field the server populated.
+// See ChatResponseMessage.ReasoningText for why there are two.
+func (d ChatDelta) ReasoningText() string {
+	if d.ReasoningContent != "" {
+		return d.ReasoningContent
+	}
+	return d.Reasoning
 }
 
 // ChatChunkChoice is one streaming choice.

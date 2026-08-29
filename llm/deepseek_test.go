@@ -124,3 +124,65 @@ func TestChatDeltaReasoningContent(t *testing.T) {
 		})
 	}
 }
+
+// OpenAI-compatible gateways split on the field name: DeepSeek's own API sends
+// reasoning_content, OpenRouter and most others send reasoning. Both must
+// decode and resolve to the same text, or reasoning is silently dropped for
+// whichever convention is missing.
+func TestChatDeltaResolvesEitherReasoningField(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "openrouter reasoning field",
+			raw:  `{"content":"","role":"assistant","reasoning":"First, the user asked"}`,
+			want: "First, the user asked",
+		},
+		{
+			// The structured twin carries the same text; ignoring it must not
+			// stop the plain field from being read.
+			name: "reasoning alongside reasoning_details",
+			raw: `{"content":"","reasoning":"weighing it up",` +
+				`"reasoning_details":[{"type":"reasoning.text","text":"weighing it up","index":0}]}`,
+			want: "weighing it up",
+		},
+		{
+			name: "deepseek reasoning_content still wins",
+			raw:  `{"content":null,"reasoning_content":"native deepseek"}`,
+			want: "native deepseek",
+		},
+		{
+			name: "neither field",
+			raw:  `{"content":"just an answer"}`,
+			want: "",
+		},
+		{
+			name: "null reasoning",
+			raw:  `{"content":null,"reasoning":null}`,
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var delta openai.ChatDelta
+			if err := json.Unmarshal([]byte(tc.raw), &delta); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := delta.ReasoningText(); got != tc.want {
+				t.Fatalf("delta.ReasoningText() = %q, want %q", got, tc.want)
+			}
+
+			// The non-streaming shape carries the same two fields.
+			var msg openai.ChatResponseMessage
+			if err := json.Unmarshal([]byte(tc.raw), &msg); err != nil {
+				t.Fatalf("unmarshal message: %v", err)
+			}
+			if got := msg.ReasoningText(); got != tc.want {
+				t.Fatalf("message.ReasoningText() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
