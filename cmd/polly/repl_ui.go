@@ -683,8 +683,8 @@ type replModel struct {
 	followBottom bool
 	scrollAnchor int
 
-	// Status bar fields. modelName/contextName/toolCount/skillCount are
-	// set once at startup; the rest are mutated as a turn progresses.
+	// Status bar fields. modelName/contextName/toolCount/skillCount are set once
+	// at startup; completion metrics are updated as turns settle.
 	modelName   string
 	contextName string
 	toolCount   int
@@ -700,10 +700,6 @@ type replModel struct {
 	totalOut    int
 	lastElapsed time.Duration
 	lastOutcome turnOutcome
-
-	// thinkingChars accumulates the streamed reasoning text length this turn;
-	// the status row shows a ~chars/4 token estimate while state is thinking.
-	thinkingChars int
 
 	// Reasoning disclosures are semantic per-turn records rather than free-form
 	// transcript strings. The UI retains only a bounded tail; successful turns
@@ -843,9 +839,9 @@ func newReplModel() *replModel {
 
 const turnCancelDetachAfter = 2 * time.Second
 
-// statusRow renders live/last-turn state on the left and stable context on the
-// right. Right alignment means a completion can change "streaming" to
-// "done 1.8s" without moving the model/context horizontally.
+// statusRow renders settled turn metrics on the left and stable context on the
+// right. Live activity belongs in the transcript, where reasoning, streaming,
+// and tool calls each have their own indicator.
 func (m *replModel) statusRow(width int) string {
 	if m.quiet || width <= 0 {
 		return ""
@@ -956,24 +952,7 @@ func (m *replModel) statusRow(width int) string {
 
 func (m *replModel) statusActivity() (raw, rendered string) {
 	if m.busy {
-		glyph, spinning := m.spinnerFrame()
-		word := m.state.label(m.toolName)
-		if m.canceling {
-			word = "canceling"
-		}
-		meta := m.busyStatusMeta()
-		if spinning {
-			raw = string(glyph) + " " + word
-			rendered = styled(string(glyph), "accent", "bold") + " " + styled(word, "active", "bold")
-		} else {
-			raw = word
-			rendered = styled(word, "active", "bold")
-		}
-		if meta != "" {
-			raw += " · " + meta
-			rendered += " " + styled("· "+meta, "muted", "")
-		}
-		return raw, rendered
+		return "", ""
 	}
 
 	switch m.lastOutcome {
@@ -994,16 +973,11 @@ func (m *replModel) statusActivity() (raw, rendered string) {
 	return raw, rendered
 }
 
-// thinkingCharsPerToken is the standard rough chars→tokens estimate used for
-// the live thinking counter; the value is presented with a "~".
-const thinkingCharsPerToken = 4
-
-// reasoningPreviewLines is the bounded expanded tail. reasoningPreviewMaxWidth
-// keeps it readable on roomy terminals. The retained/limit pair bounds the
-// duplicate display copy while amortizing compaction of streamed chunks.
+// reasoningPreviewLines is the bounded expanded tail. The preview uses the
+// full transcript width after its block indent. The retained/limit pair bounds
+// the duplicate display copy while amortizing compaction of streamed chunks.
 const (
-	reasoningPreviewLines    = 3
-	reasoningPreviewMaxWidth = 78
+	reasoningPreviewLines    = 5
 	reasoningTailRetainRunes = 8192
 	reasoningTailLimitRunes  = 2 * reasoningTailRetainRunes
 )
@@ -1034,26 +1008,6 @@ func (m *replModel) activityTicker(totalRows, topRow, height int) string {
 		}
 	}
 	return styled(raw, "accent", "bold") + styled(" · End to follow", "muted", "")
-}
-
-// busyStatusMeta is the muted trailer after the busy state word: a thinking
-// size estimate while reasoning streams, then the live turn elapsed time.
-// Caller must hold m.mu.
-func (m *replModel) busyStatusMeta() string {
-	meta := ""
-	if m.state == turnStateThinking && !m.canceling {
-		if est := m.thinkingChars / thinkingCharsPerToken; est > 0 {
-			meta = "~" + humanizeTokens(est) + " tok"
-		}
-	}
-	if !m.turnStarted.IsZero() {
-		elapsed := formatElapsed(time.Since(m.turnStarted))
-		if meta != "" {
-			return meta + " · " + elapsed
-		}
-		return elapsed
-	}
-	return meta
 }
 
 func compactQueuePreview(text string) string {
@@ -1803,7 +1757,7 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 		return header
 	}
 
-	contentWidth := min(reasoningPreviewMaxWidth, width-rw.StringWidth(reasoningBlockIndent))
+	contentWidth := width - rw.StringWidth(reasoningBlockIndent)
 	if contentWidth < 2 {
 		return header
 	}
@@ -2635,7 +2589,6 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	m.state = turnStateWaiting
 	m.runningTools = 0
 	m.resetToolDisclosure()
-	m.thinkingChars = 0
 	m.resetCurrentThinking()
 	m.turnStarted = time.Now()
 	m.currentPrompt = prompt
@@ -5104,7 +5057,6 @@ func (t *gotuiTurnUI) ShowThinking(chunk string) {
 		return
 	}
 	t.repl.model.state = turnStateThinking
-	t.repl.model.thinkingChars += len(chunk)
 	t.repl.model.appendThinking(chunk)
 	t.repl.model.mu.Unlock()
 }

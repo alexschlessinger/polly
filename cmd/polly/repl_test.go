@@ -395,43 +395,20 @@ func TestTakeActiveToolMatchesByIDWithFallback(t *testing.T) {
 	}
 }
 
-func TestStatusRowShowsSpinnerWhenBusy(t *testing.T) {
+func TestStatusRowOmitsLiveActivity(t *testing.T) {
 	m := newReplModel()
 	m.modelName = "gpt-mini"
 	m.contextName = "ctx"
 
-	// Idle: no spinner glyph and no "idle" label — an idle bar is just the
-	// static fields.
 	idle := m.statusRow(120)
-	if strings.ContainsAny(idle, string(spinnerFrames)) {
-		t.Fatalf("idle status row should carry no spinner, got %q", idle)
-	}
-	if strings.Contains(idle, "idle") {
-		t.Fatalf("idle status row should omit the idle label, got %q", idle)
-	}
-
-	// Busy: a spinner frame leads the bar, alongside the state word.
 	m.busy = true
-	m.state = turnStateThinking
 	m.turnStarted = time.Now()
-	busy := m.statusRow(120)
-	if !strings.ContainsAny(busy, string(spinnerFrames)) {
-		t.Fatalf("busy status row should lead with a spinner frame, got %q", busy)
-	}
-	if !strings.Contains(busy, "thinking") {
-		t.Fatalf("busy status row should include the state word, got %q", busy)
-	}
-
-	// The spinner glyph sits at the very start (far left) of the bar.
-	cells := ui.ParseStyles(busy, ui.NewStyle(ui.ColorWhite))
-	if len(cells) == 0 || !strings.ContainsRune(string(spinnerFrames), cells[0].Rune) {
-		t.Fatalf("first cell should be a spinner frame, got bar %q", busy)
-	}
-
-	// The live activity (state + elapsed) is grouped right after the spinner,
-	// ahead of the static model name.
-	if i, j := strings.Index(busy, "thinking"), strings.Index(busy, "gpt-mini"); i < 0 || j < 0 || i > j {
-		t.Fatalf("state word should precede the model name, got %q", busy)
+	for _, st := range []turnState{turnStateWaiting, turnStateThinking, turnStateStreaming, turnStateTool} {
+		m.state = st
+		busy := m.statusRow(120)
+		if busy != idle {
+			t.Fatalf("busy status row for state %v = %q, want static row %q", st, busy, idle)
+		}
 	}
 }
 

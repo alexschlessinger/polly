@@ -79,37 +79,17 @@ func TestStreamCursorPulseInvalidatesVisualCache(t *testing.T) {
 	}
 }
 
-func TestBusyStatusShowsElapsedAndThinkingEstimate(t *testing.T) {
+func TestBusyStatusOmitsLiveActivity(t *testing.T) {
 	m := newReplModel()
 	m.beginTurn("explain")
 	m.turnStarted = time.Now().Add(-12 * time.Second)
 
-	m.state = turnStateWaiting
-	raw, _ := m.statusActivity()
-	if !strings.Contains(raw, "waiting · 12.") {
-		t.Fatalf("busy status should carry live elapsed, got %q", raw)
-	}
-
-	// While reasoning streams, a ~chars/4 token estimate precedes the elapsed.
-	m.state = turnStateThinking
-	m.thinkingChars = 4800
-	raw, _ = m.statusActivity()
-	if !strings.Contains(raw, "thinking · ~1.2k tok · 12.") {
-		t.Fatalf("thinking status should carry the token estimate, got %q", raw)
-	}
-
-	// Sub-token dribble shows no "~0 tok".
-	m.thinkingChars = 3
-	raw, _ = m.statusActivity()
-	if strings.Contains(raw, "tok") {
-		t.Fatalf("tiny reasoning stream should show no estimate, got %q", raw)
-	}
-
-	// The counter is per-turn: the next turn starts from zero.
-	m.thinkingChars = 4800
-	m.beginTurn("again")
-	if m.thinkingChars != 0 {
-		t.Fatalf("thinkingChars = %d after beginTurn, want 0", m.thinkingChars)
+	for _, st := range []turnState{turnStateWaiting, turnStateThinking, turnStateStreaming, turnStateTool} {
+		m.state = st
+		raw, rendered := m.statusActivity()
+		if raw != "" || rendered != "" {
+			t.Fatalf("busy status activity for state %v = %q / %q, want empty", st, raw, rendered)
+		}
 	}
 }
 
@@ -429,6 +409,27 @@ func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 	}
 }
 
+func TestThinkingDisclosurePreviewUsesFullTranscriptWidth(t *testing.T) {
+	const width = 140
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui.ShowThinking(strings.Repeat("wide reasoning preview content ", 32))
+	record := m.currentReasoningRecord()
+	if record == nil || !m.toggleReasoning(record.id, width) {
+		t.Fatal("reasoning disclosure did not expand")
+	}
+
+	want := width - rw.StringWidth(reasoningBlockIndent)
+	if record.previewWidth != want {
+		t.Fatalf("preview width = %d, want full available width %d", record.previewWidth, want)
+	}
+	if got := strings.Count(m.transcript[record.transcriptIndex], "\n"); got > reasoningPreviewLines {
+		t.Fatalf("expanded preview rows = %d, want at most %d", got, reasoningPreviewLines)
+	}
+}
+
 func TestThinkingDisclosureAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -587,7 +588,7 @@ func TestThinkingDisclosureAggregatesToolPhasesAndExpansionIsPerTurn(t *testing.
 
 func TestReasoningTailLinesUseDisplayWidthForCJK(t *testing.T) {
 	const width = 6
-	lines := reasoningTailLines("甲乙丙丁戊己庚辛壬癸子丑", width, reasoningPreviewLines)
+	lines := reasoningTailLines("甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未", width, reasoningPreviewLines)
 	if len(lines) != reasoningPreviewLines {
 		t.Fatalf("CJK preview rows = %#v, want %d", lines, reasoningPreviewLines)
 	}
@@ -597,7 +598,7 @@ func TestReasoningTailLinesUseDisplayWidthForCJK(t *testing.T) {
 		}
 	}
 	joined := strings.Join(lines, "")
-	if !strings.Contains(joined, "丑") || strings.Contains(joined, "甲") {
+	if !strings.Contains(joined, "未") || strings.Contains(joined, "甲") {
 		t.Fatalf("CJK preview should retain the newest bounded rows: %#v", lines)
 	}
 }
