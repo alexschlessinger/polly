@@ -288,3 +288,36 @@ func TestErrorEnvelopeAndRetry(t *testing.T) {
 		t.Errorf("400 was retried: %d calls", badCalls.Load())
 	}
 }
+
+func TestGetModelFetchesContextWindow(t *testing.T) {
+	var gotPath, gotKey, gotVersion, gotMethod string
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotKey = r.Header.Get("x-api-key")
+		gotVersion = r.Header.Get("anthropic-version")
+		_, _ = w.Write([]byte(`{"id":"claude-x","display_name":"Claude X","max_input_tokens":1000000}`))
+	})
+	info, err := client.GetModel(context.Background(), "claude-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/models/claude-x" || gotKey != "test-key" || gotVersion == "" {
+		t.Fatalf("request = %s %s key=%q version=%q", gotMethod, gotPath, gotKey, gotVersion)
+	}
+	if info.ID != "claude-x" || info.MaxInputTokens != 1000000 {
+		t.Fatalf("model info = %+v", info)
+	}
+}
+
+func TestGetModelSurfacesAPIErrors(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"not_found_error","message":"model not found"}}`))
+	})
+	_, err := client.GetModel(context.Background(), "missing")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("error = %v, want 404 APIError", err)
+	}
+}

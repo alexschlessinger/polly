@@ -739,7 +739,16 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	}
 	lines = append(lines, "transcript: "+humanizeTokens(totalTokens)+" estimated tokens (durable)")
 	if cfg.MaxHistoryTokens > 0 {
-		lines = append(lines, "model budget: "+humanizeTokens(cfg.MaxHistoryTokens)+" estimated tokens")
+		line := "model budget: " + humanizeTokens(cfg.MaxHistoryTokens) + " estimated tokens"
+		if md, err := s.GetMetadata(opCtx); err == nil && md != nil {
+			if window := md.ContextWindows[cfg.Model]; window > 0 {
+				if clamped := llm.ClampContextBudget(cfg.MaxHistoryTokens, window, cfg.MaxTokens); clamped < cfg.MaxHistoryTokens {
+					line = "model budget: " + humanizeTokens(clamped) + " estimated tokens (clamped from " +
+						humanizeTokens(cfg.MaxHistoryTokens) + " by the model's " + humanizeTokens(window) + "-token window)"
+				}
+			}
+		}
+		lines = append(lines, line)
 	} else {
 		lines = append(lines, "model budget: unlimited")
 	}

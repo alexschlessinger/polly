@@ -91,6 +91,9 @@ type conversationState struct {
 	// displayContract is composed into the request's system message each turn;
 	// it is frontend-specific and never persisted (see display_contract.go).
 	displayContract string
+	// contextWindows caches per-model context-window discovery for this
+	// process, including failed attempts (entry present, value 0).
+	contextWindows map[string]int
 }
 
 func (s *conversationState) Close() error {
@@ -844,6 +847,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	defer turnUI.Stop()
 
 	req := createCompletionRequest(config, requestMessages, state.toolRegistry, state.skillCatalog, schema)
+	req.MaxContextTokens = resolveContextBudget(ctx, config, state)
 	req.CacheSessionID, err = cacheSessionIDForSession(ctx, state.session)
 	if err != nil {
 		return 1, err

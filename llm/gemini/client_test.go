@@ -291,3 +291,23 @@ func TestModelPath(t *testing.T) {
 		}
 	}
 }
+
+func TestGetModelFetchesContextWindow(t *testing.T) {
+	var gotPath, gotKey, gotMethod string
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotKey = r.Header.Get("x-goog-api-key")
+		_, _ = w.Write([]byte(`{"name":"models/gemini-x","inputTokenLimit":1048576}`))
+	})
+	info, err := client.GetModel(context.Background(), "gemini-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/models/gemini-x" || gotKey != "test-key" {
+		t.Fatalf("request = %s %s key=%q", gotMethod, gotPath, gotKey)
+	}
+	if info.InputTokenLimit != 1048576 {
+		t.Fatalf("model info = %+v", info)
+	}
+}

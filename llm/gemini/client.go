@@ -156,6 +156,38 @@ func (c *Client) post(ctx context.Context, path string, body any) (*http.Respons
 	return resp, nil
 }
 
+// ModelInfo is the slice of GET /v1beta/models/{model} polly uses: the
+// model's advertised context window arrives as inputTokenLimit.
+type ModelInfo struct {
+	Name            string `json:"name"`
+	InputTokenLimit int    `json:"inputTokenLimit,omitempty"`
+}
+
+// GetModel fetches model metadata in a single best-effort attempt; callers
+// treat failures as "window unknown" rather than retrying.
+func (c *Client) GetModel(ctx context.Context, model string) (*ModelInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/"+modelPath(model), nil)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: building request: %w", err)
+	}
+	if c.apiKey != "" {
+		req.Header.Set("x-goog-api-key", c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, errorFromResponse(resp)
+	}
+	out := &ModelInfo{}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return nil, fmt.Errorf("gemini: decoding model info: %w", err)
+	}
+	return out, nil
+}
+
 // modelPath returns the URL resource path for a model name, tolerating names
 // already given in resource form.
 func modelPath(model string) string {

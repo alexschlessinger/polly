@@ -10,6 +10,7 @@ import (
 	"iter"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 )
@@ -53,6 +54,39 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("anthropic api error %d (%s): %s", e.StatusCode, e.Type, e.Message)
+}
+
+// ModelInfo is the slice of GET /v1/models/{id} polly uses: the model's
+// advertised context window arrives as max_input_tokens.
+type ModelInfo struct {
+	ID             string `json:"id"`
+	MaxInputTokens int    `json:"max_input_tokens,omitempty"`
+}
+
+// GetModel fetches model metadata in a single best-effort attempt; callers
+// treat failures as "window unknown" rather than retrying.
+func (c *Client) GetModel(ctx context.Context, model string) (*ModelInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models/"+url.PathEscape(model), nil)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: building request: %w", err)
+	}
+	req.Header.Set("anthropic-version", apiVersion)
+	if c.apiKey != "" {
+		req.Header.Set("x-api-key", c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, errorFromResponse(resp)
+	}
+	out := &ModelInfo{}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return nil, fmt.Errorf("anthropic: decoding model info: %w", err)
+	}
+	return out, nil
 }
 
 // CreateMessage performs a non-streaming completion.

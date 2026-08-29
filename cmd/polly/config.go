@@ -294,7 +294,7 @@ func historyConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.IntFlag{
 			Name:  "maxcontext",
-			Usage: "Maximum estimated tokens sent to the model; full history is retained (0 = unlimited)",
+			Usage: "Maximum estimated tokens sent to the model, clamped to the model's advertised context window when discoverable; full history is retained (0 = unlimited, never clamped)",
 			Value: 256000,
 		},
 	}

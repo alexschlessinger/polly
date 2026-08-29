@@ -94,4 +94,9 @@ type Metadata struct {
 	ToolTimeout      time.Duration          `json:"toolTimeout,omitempty"`
 	SkillDirs        []string               `json:"skillDirs,omitempty"`
 	SkillSources     []string               `json:"skillSources,omitempty"`
+
+	// ContextWindows caches provider-advertised context windows per
+	// provider-prefixed model, discovered once and reused to clamp the
+	// projection budget. A stale entry only makes the clamp conservative.
+	ContextWindows map[string]int `json:"contextWindows,omitempty"`
 }

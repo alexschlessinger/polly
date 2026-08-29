@@ -604,7 +604,7 @@ GLOBAL OPTIONS:
    --purge                                                  Delete all sessions (requires confirmation)
    --create string                                          Create a new context with specified name and configuration
    --show string                                            Show configuration for the specified context
-   --maxcontext int                                         Maximum estimated tokens sent to the model; full history is retained (0 = unlimited) (default: 256000)
+   --maxcontext int                                         Maximum estimated tokens sent to the model, clamped to the model's advertised context window when discoverable; full history is retained (0 = unlimited, never clamped) (default: 256000)
    --confirm                                                Require confirmation before each tool call
    --sandbox string                                         Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace (default: "workspace+net+git") [$POLLYTOOL_SANDBOX]
    --nosandbox                                              Disable sandboxing of tool commands [$POLLYTOOL_NOSANDBOX]
