@@ -99,9 +99,10 @@ func TestToolRollupHoldsPositionWhileProseInterleaves(t *testing.T) {
 }
 
 // A parallel batch is announced in one AppendToolStart and every call in it
-// runs at once. Folding waits for the batch so each call still shows its own
-// outcome, then contracts to the cap.
-func TestParallelBatchStaysWholeUntilItSettles(t *testing.T) {
+// runs at once. In-flight rows are never folded, so the batch opens at full
+// height and then drains one row at a time as its calls settle — no single
+// collapse at the end.
+func TestParallelBatchDrainsAsItsCallsSettle(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -114,32 +115,107 @@ func TestParallelBatchStaysWholeUntilItSettles(t *testing.T) {
 	}
 	tui.AppendToolStart(calls)
 	if len(toolRows(m)) != len(calls) {
-		t.Fatalf("a running batch must stay whole: %d rows, want %d", len(toolRows(m)), len(calls))
+		t.Fatalf("a fully running batch must stay whole: %d rows, want %d", len(toolRows(m)), len(calls))
 	}
 
-	// Outcomes land on their own rows while siblings are still in flight —
-	// including the failures, which must never fold away unseen.
-	tui.AppendToolEnd(calls[0], "boom", time.Second, fmt.Errorf("boom"))
-	if got := len(toolRows(m)); got != len(calls) {
-		t.Fatalf("rows changed while the batch is still running: %d", got)
-	}
-	if !strings.Contains(strings.Join(m.transcript, "\n"), "✗") {
-		t.Fatalf("the failed call should show its outcome: %v", m.transcript)
-	}
-	for _, c := range calls[1:5] {
+	// Each completion releases one row, so the area steps down by one rather
+	// than standing at six and dropping to the cap all at once.
+	wantRows := []int{6, 5, 4, 4, 4, 4}
+	for i, c := range calls {
 		tui.AppendToolEnd(c, "ok", time.Second, nil)
-	}
-
-	// The last call settling releases the window: it contracts in one step.
-	tui.AppendToolEnd(calls[5], "ok", time.Second, nil)
-	if got := len(toolRows(m)); got != toolWindowSize+1 {
-		t.Fatalf("settled batch = %d rows, want %d", got, toolWindowSize+1)
+		if got := len(toolRows(m)); got != wantRows[i] {
+			t.Fatalf("after %d of %d settled: %d rows, want %d", i+1, len(calls), got, wantRows[i])
+		}
 	}
 	if !strings.Contains(m.transcript[m.toolRollupIndex], "6 tool calls") {
 		t.Fatalf("rollup = %q", m.transcript[m.toolRollupIndex])
 	}
 	if m.runningTools != 0 {
 		t.Fatalf("runningTools = %d, want 0", m.runningTools)
+	}
+}
+
+// Calls fold in completion order, which for a parallel batch is not start
+// order. The rollup must still end up above every row it stands for instead
+// of stranded among the survivors.
+func TestRollupStaysAboveSurvivorsWhenCallsFinishOutOfOrder(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.busy = true
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	calls := make([]messages.ChatMessageToolCall, 7)
+	for i := range calls {
+		calls[i] = messages.ChatMessageToolCall{ID: fmt.Sprintf("c%d", i), Name: fmt.Sprintf("tool%d", i)}
+	}
+	tui.AppendToolStart(calls)
+
+	// The sixth call lands first, so the rollup is planted near the bottom;
+	// earlier rows then fold and must pull it up with them.
+	order := []int{5, 0, 1, 3, 2, 4, 6}
+	for _, i := range order {
+		tui.AppendToolEnd(calls[i], "ok", time.Second, nil)
+	}
+
+	rows := toolRows(m)
+	if len(rows) != toolWindowSize+1 {
+		t.Fatalf("settled batch = %d rows, want %d", len(rows), toolWindowSize+1)
+	}
+	if !strings.Contains(rows[0], "7 tool calls") {
+		t.Fatalf("rollup should lead the activity area, got rows %v", rows)
+	}
+	for _, row := range rows[1:] {
+		if strings.Contains(row, "tool calls") {
+			t.Fatalf("only one rollup may exist: %v", rows)
+		}
+	}
+	// It must sit above the surviving rows in the transcript too, not merely
+	// first among tool rows.
+	for _, idx := range m.toolWindow {
+		if idx <= m.toolRollupIndex {
+			t.Fatalf("row %d is at or above the rollup at %d", idx, m.toolRollupIndex)
+		}
+	}
+}
+
+// A slow call at the head of the batch must not hold its finished siblings on
+// screen — folding skips it and takes the oldest settled row instead, so the
+// window still reaches the cap while it runs.
+func TestSlowLeadCallDoesNotBlockFolding(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.busy = true
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	calls := make([]messages.ChatMessageToolCall, 7)
+	for i := range calls {
+		calls[i] = messages.ChatMessageToolCall{ID: fmt.Sprintf("c%d", i), Name: "bash"}
+	}
+	tui.AppendToolStart(calls)
+
+	// Everything except the first call finishes.
+	for _, c := range calls[1:] {
+		tui.AppendToolEnd(c, "ok", time.Second, nil)
+	}
+	// The area is already down to the cap even though the lead call is still
+	// running: it holds one of the three slots rather than blocking the fold.
+	if got := len(toolRows(m)); got != toolWindowSize+1 {
+		t.Fatalf("with one call still running: %d rows, want %d", got, toolWindowSize+1)
+	}
+	if !m.toolRowRunning(m.toolWindow[0]) {
+		t.Fatalf("the running lead call must keep its row: window %v", m.toolWindow)
+	}
+
+	// It is inside the cap by the time it lands, so nothing folds and its own
+	// outcome is shown — a slow call is never dropped for finishing late.
+	tui.AppendToolEnd(calls[0], "ok", 9*time.Second, nil)
+	if got := len(toolRows(m)); got != toolWindowSize+1 {
+		t.Fatalf("settled batch = %d rows, want %d", got, toolWindowSize+1)
+	}
+	if !strings.Contains(strings.Join(m.transcript, "\n"), "9.0s") {
+		t.Fatalf("the slow lead call should show its outcome: %v", m.transcript)
 	}
 }
 

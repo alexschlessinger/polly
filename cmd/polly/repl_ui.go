@@ -1332,56 +1332,87 @@ func toolRollupLine(total int) string {
 }
 
 // foldToolWindow enforces toolWindowSize over the current turn's tool rows.
-// The first fold converts the oldest row's slot into the rollup line; later
-// folds delete the oldest row outright. Rows fold in start order, and a
-// folded call survives only in the rollup's count.
+// The first fold converts a row's slot into the rollup line; later folds
+// delete their row outright. A folded call survives only in the rollup's
+// count.
 //
-// Folding pauses while any windowed call is still running, so a parallel
-// batch stays whole — every call in it shows its own outcome — and contracts
-// only once the batch has settled. The agent starts no new call while one is
-// in flight, so the window can outgrow the cap by at most the current batch
-// before folding resumes; it cannot accumulate across a turn.
+// Rows fold oldest-first, but a still-running row is skipped rather than
+// blocking the ones behind it: a call in a parallel batch releases its row as
+// soon as it settles, so an oversized batch drains steadily instead of
+// standing at full height and collapsing in one step. What stays on screen is
+// therefore every in-flight call plus the most recent settled rows, and the
+// area shrinks as the batch completes. While folding is skipping a running
+// row the rollup can briefly sit below it; that resolves when the call
+// settles and its row folds in turn.
 func (m *replModel) foldToolWindow() {
-	if m.toolWindowRunning() {
-		m.refreshToolRollup()
-		return
-	}
 	for len(m.toolWindow) > toolWindowSize {
-		idx := m.toolWindow[0]
-		m.toolWindow = m.toolWindow[1:]
-		if m.toolRollupIndex < 0 {
-			// The oldest row becomes the rollup in place. A row carrying tool
-			// output images is multi-line; it collapses to the single rollup
-			// line, and those images go with it.
-			m.anchorForRemovedLines(m.entryFlatStart(idx)+1, m.entryLineCount(idx)-1)
-			m.toolRollupIndex = idx
-			m.setTranscriptImages(idx, nil)
-			continue
+		pos, ok := m.oldestSettledToolRow()
+		if !ok {
+			// Every visible row is still executing. Nothing may fold yet, so
+			// the window holds above the cap until calls start landing.
+			break
 		}
-		m.anchorForRemovedLines(m.entryFlatStart(idx), m.entryLineCount(idx))
-		m.removeToolRow(idx)
+		idx := m.toolWindow[pos]
+		m.toolWindow = append(m.toolWindow[:pos], m.toolWindow[pos+1:]...)
+		switch {
+		case m.toolRollupIndex < 0:
+			m.placeToolRollup(idx)
+		case idx < m.toolRollupIndex:
+			// Calls fold in completion order, so a row earlier than the rollup
+			// can fold after it was planted. Move the summary up into that slot
+			// and drop its old row, keeping it above every row it stands for
+			// rather than stranded among the survivors.
+			old := m.toolRollupIndex
+			m.placeToolRollup(idx)
+			m.anchorForRemovedLines(m.entryFlatStart(old), m.entryLineCount(old))
+			m.removeToolRow(old)
+		default:
+			m.anchorForRemovedLines(m.entryFlatStart(idx), m.entryLineCount(idx))
+			m.removeToolRow(idx)
+		}
 	}
 	m.refreshToolRollup()
 }
 
-// toolWindowRunning reports whether any visible tool row is still executing.
-// Membership is checked against the window rather than trusting activeTools
-// alone, so a stale pin left by an interrupted turn cannot stall folding for
-// the rest of the session. Caller must hold m.mu.
-func (m *replModel) toolWindowRunning() bool {
+// placeToolRollup turns a folded row's slot into the rollup line. A row
+// carrying tool output images is multi-line; it collapses to the single
+// rollup line, and those images go with it. Caller must hold m.mu.
+func (m *replModel) placeToolRollup(index int) {
+	m.anchorForRemovedLines(m.entryFlatStart(index)+1, m.entryLineCount(index)-1)
+	m.transcript[index] = toolRollupLine(m.turnToolCalls)
+	m.setTranscriptImages(index, nil)
+	m.toolRollupIndex = index
+	m.invalidateFlat()
+}
+
+// oldestSettledToolRow returns the window position of the earliest row whose
+// call has finished — the next one eligible to fold. Reports false when every
+// visible row is still executing. Caller must hold m.mu.
+func (m *replModel) oldestSettledToolRow() (int, bool) {
+	for pos, idx := range m.toolWindow {
+		if !m.toolRowRunning(idx) {
+			return pos, true
+		}
+	}
+	return 0, false
+}
+
+// toolRowRunning reports whether a transcript entry is a tool row whose call
+// is still executing. Pins are matched by transcript index, so a stale entry
+// left by an interrupted turn cannot hold a row open once its index is gone.
+// Caller must hold m.mu.
+func (m *replModel) toolRowRunning(index int) bool {
 	for _, at := range m.activeTools {
-		for _, idx := range m.toolWindow {
-			if at.index == idx {
-				return true
-			}
+		if at.index == index {
+			return true
 		}
 	}
 	return false
 }
 
 // refreshToolRollup restates the rollup line with the turn's running total.
-// The count keeps climbing while folding is paused, so a bulging batch still
-// reports honestly. Caller must hold m.mu.
+// The count keeps climbing as calls start, so a window held open by in-flight
+// calls still reports honestly. Caller must hold m.mu.
 func (m *replModel) refreshToolRollup() {
 	if m.toolRollupIndex < 0 || m.toolRollupIndex >= len(m.transcript) {
 		return
@@ -1455,6 +1486,7 @@ func (m *replModel) resetToolWindow() {
 // running-tool pins are fixed up here.
 func (m *replModel) removeToolRow(index int) {
 	m.deleteTranscriptEntry(index)
+	m.invalidateFlat()
 	for i := range m.activeTools {
 		if m.activeTools[i].index > index {
 			m.activeTools[i].index--
