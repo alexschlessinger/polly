@@ -78,7 +78,7 @@ func clampGeminiBudget(budget int32, model string) int32 {
 
 // ChatCompletionStream implements the event-based streaming interface
 func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return runStream(ctx, processor, adapters.NewGeminiAdapter(), func(streamCore *streaming.StreamingCore) {
+	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewGeminiAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert session history to Gemini chat history
 		contents, systemInstruction, _ := MessagesToGeminiContent(req.Messages)
 

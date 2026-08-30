@@ -189,7 +189,8 @@ The processor turns raw message chunks into stream events;
 type CompletionRequest struct {
     APIKey  string
     BaseURL string        // Custom endpoint (OpenAI-compatible providers)
-    Timeout time.Duration
+    Timeout  time.Duration // Stream stall budget: cancel after this much silence (0 disables)
+    Deadline time.Duration // Hard per-call ceiling: cancel after this total time (0 = no ceiling)
 
     // nil means "don't send temperature" — required for reasoning models
     // (o1, o3, gpt-5.x), which reject the parameter outright.

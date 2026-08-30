@@ -61,7 +61,7 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 
 // ChatCompletionStream implements the event-based streaming interface
 func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return runStream(ctx, processor, adapters.NewOllamaAdapter(), func(streamCore *streaming.StreamingCore) {
+	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewOllamaAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert messages to Ollama format
 		ollamaMessages := MessagesToOllama(req.Messages)
 

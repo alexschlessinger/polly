@@ -207,7 +207,7 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 // ChatCompletionStream implements the event-based streaming interface
 func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	adapter := adapters.NewAnthropicAdapter()
-	return runStream(ctx, processor, adapter, func(streamCore *streaming.StreamingCore) {
+	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		params := a.buildRequestParams(req)
 		isStreaming := req.Stream == nil || *req.Stream
 		slog.Debug("anthropic_completion_started", "model", req.Model, "stream", isStreaming)

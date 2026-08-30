@@ -64,7 +64,7 @@ func (o OpenAIClient) ChatCompletionStream(ctx context.Context, req *CompletionR
 		adapter = adapters.NewOpenAIResponsesAdapter(req.Model)
 	}
 
-	return runStream(ctx, processor, adapter, func(streamCore *streaming.StreamingCore) {
+	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		if err := o.streamCompletion(ctx, req, streamCore); err != nil {
 			streamCore.EmitError(err)
 		}
@@ -72,14 +72,11 @@ func (o OpenAIClient) ChatCompletionStream(ctx context.Context, req *CompletionR
 }
 
 func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
-	timeout, cancel := context.WithTimeout(ctx, req.Timeout)
-	defer cancel()
-
 	switch o.apiMode {
 	case openAIAPIModeResponses:
-		return o.streamResponses(timeout, req, streamCore)
+		return o.streamResponses(ctx, req, streamCore)
 	default:
-		return o.streamChatCompletions(timeout, req, streamCore)
+		return o.streamChatCompletions(ctx, req, streamCore)
 	}
 }
 

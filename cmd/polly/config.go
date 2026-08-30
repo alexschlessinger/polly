@@ -25,7 +25,7 @@ var (
 	validEmbedProviders  = []string{"openai", "gemini"}
 	purgeDisallowedFlags = []string{
 		"context", "last", "prompt", "file", "model", "temp",
-		"maxtokens", "maxiterations", "timeout", "tool", "mcp", "system", "schema",
+		"maxtokens", "maxiterations", "timeout", "deadline", "tool", "mcp", "system", "schema",
 		"tooltimeout", "maxcontext", "thinking", "baseurl",
 		"skilldir", "skill", "noskills", "listskills",
 		"confirm", "meta", "sandbox", "nosandbox", "denypath", "writepath", "allownet",
@@ -68,6 +68,7 @@ func parseConfig(cmd *cli.Command) *Config {
 
 		// Runtime configuration
 		Timeout:       cmd.Duration("timeout"),
+		Deadline:      cmd.Duration("deadline"),
 		MaxIterations: int(cmd.Int("maxiterations")),
 		BaseURL:       cmd.String("baseurl"),
 		Confirm:       cmd.Bool("confirm"),
@@ -194,9 +195,15 @@ func modelConfigFlags() []cli.Flag {
 		},
 		&cli.DurationFlag{
 			Name:    "timeout",
-			Usage:   "Request timeout",
-			Value:   2 * time.Minute,
+			Usage:   "Stream stall timeout: cancel a request after this long with no provider data (0 disables)",
+			Value:   30 * time.Minute,
 			Sources: cli.EnvVars("POLLYTOOL_TIMEOUT"),
+		},
+		&cli.DurationFlag{
+			Name:    "deadline",
+			Usage:   "Hard per-request ceiling: cancel a request after this total time even if data is still arriving (0 = no ceiling)",
+			Value:   2 * time.Hour,
+			Sources: cli.EnvVars("POLLYTOOL_DEADLINE"),
 		},
 		newThinkingFlag(),
 	}

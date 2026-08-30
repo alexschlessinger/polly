@@ -30,6 +30,7 @@ type Config struct {
 
 	// Runtime configuration
 	Timeout       time.Duration
+	Deadline      time.Duration
 	MaxIterations int
 	BaseURL       string
 	Confirm       bool

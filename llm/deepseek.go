@@ -40,7 +40,7 @@ func NewDeepSeekClient(apiKey, baseURL string) *DeepSeekClient {
 }
 
 func (d DeepSeekClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return runStream(ctx, processor, adapters.NewOpenAIAdapter(), func(streamCore *streaming.StreamingCore) {
+	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewOpenAIAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		if err := d.streamCompletion(ctx, req, streamCore); err != nil {
 			streamCore.EmitError(err)
 		}
@@ -48,18 +48,15 @@ func (d DeepSeekClient) ChatCompletionStream(ctx context.Context, req *Completio
 }
 
 func (d DeepSeekClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
-	timeout, cancel := context.WithTimeout(ctx, req.Timeout)
-	defer cancel()
-
 	params := buildChatCompletionRequestParams(req)
 	replayed := applyDeepSeekReasoningReplay(params, req.Messages)
 	isStreaming := req.Stream == nil || *req.Stream
 	slog.Debug("deepseek_completion_started", "stream", isStreaming, "base_url", d.baseURL, "reasoning_replay_count", replayed)
 
 	if isStreaming {
-		return d.handleStreaming(timeout, params, streamCore)
+		return d.handleStreaming(ctx, params, streamCore)
 	}
-	return d.handleNonStreaming(timeout, params, streamCore)
+	return d.handleNonStreaming(ctx, params, streamCore)
 }
 
 func (d DeepSeekClient) handleStreaming(ctx context.Context, params *openai.ChatCompletionRequest, streamCore *streaming.StreamingCore) error {

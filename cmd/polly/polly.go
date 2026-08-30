@@ -1451,6 +1451,7 @@ func createCompletionRequest(config *Config, history []messages.ChatMessage, reg
 	return &llm.CompletionRequest{
 		BaseURL:          config.BaseURL,
 		Timeout:          config.Timeout,
+		Deadline:         config.Deadline,
 		Temperature:      llm.Float32Ptr(float32(config.Temperature)),
 		Model:            config.Model,
 		MaxTokens:        config.MaxTokens,

@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -17,6 +18,12 @@ type StreamingCore struct {
 	adapter        ProviderAdapter
 	messageChannel chan messages.ChatMessage
 	ctx            context.Context
+	// notifyActivity, when set, is invoked on every piece of provider data so
+	// a stall watchdog can push its deadline out. errorEmitted tracks whether
+	// an error message was already handed to the channel; both are touched
+	// only from the provider goroutine.
+	notifyActivity func()
+	errorEmitted   bool
 }
 
 // ProviderAdapter allows provider-specific handling while using common state.
@@ -55,11 +62,25 @@ func (sc *StreamingCore) GetState() *StreamState {
 	return sc.state
 }
 
+// SetActivityNotifier registers a callback invoked whenever provider data
+// arrives (chunks, content, reasoning, completion). Must be set before the
+// provider starts streaming.
+func (sc *StreamingCore) SetActivityNotifier(fn func()) {
+	sc.notifyActivity = fn
+}
+
+func (sc *StreamingCore) activity() {
+	if sc.notifyActivity != nil {
+		sc.notifyActivity()
+	}
+}
+
 // EmitContent sends a content chunk through the message channel
 func (sc *StreamingCore) EmitContent(content string) {
 	if content == "" {
 		return
 	}
+	sc.activity()
 
 	select {
 	case <-sc.ctx.Done():
@@ -78,6 +99,7 @@ func (sc *StreamingCore) EmitReasoning(reasoning string) {
 	if reasoning == "" {
 		return
 	}
+	sc.activity()
 
 	select {
 	case <-sc.ctx.Done():
@@ -91,20 +113,46 @@ func (sc *StreamingCore) EmitReasoning(reasoning string) {
 	}
 }
 
-// EmitError sends an error message through the channel
+// EmitError sends an error message through the channel.
+//
+// When the watchdog (stall or deadline) canceled this stream, the
+// cancellation is the story: symptom errors from the aborted read
+// (context-cancellation wrappers) are replaced by the watchdog cause, and
+// exactly one error message is sent even though the stream context is already
+// done — dropping it would let the processor fabricate a successful
+// completion from the partial state at channel close.
 func (sc *StreamingCore) EmitError(err error) {
+	if cause := WatchdogCause(sc.ctx); cause != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			err = cause
+		}
+		if sc.errorEmitted {
+			return
+		}
+		sc.errorEmitted = true
+		// The processor drains until its first error message and this is the
+		// first one, so the send cannot block indefinitely.
+		sc.messageChannel <- errorMessage(err)
+		slog.Debug("streaming_error", "error", err)
+		return
+	}
+
+	sc.errorEmitted = true
+	select {
+	case <-sc.ctx.Done():
+		return
+	case sc.messageChannel <- errorMessage(err):
+		slog.Debug("streaming_error", "error", err)
+	}
+}
+
+func errorMessage(err error) messages.ChatMessage {
 	msg := messages.ChatMessage{
 		Role:    messages.MessageRoleAssistant,
 		Content: fmt.Sprintf("Error: %v", err),
 	}
 	msg.SetError(err)
-
-	select {
-	case <-sc.ctx.Done():
-		return
-	case sc.messageChannel <- msg:
-		slog.Debug("streaming_error", "error", err)
-	}
+	return msg
 }
 
 // ProcessChunk delegates chunk processing to the adapter
@@ -112,11 +160,13 @@ func (sc *StreamingCore) ProcessChunk(chunk any) error {
 	if sc.adapter == nil {
 		return fmt.Errorf("no adapter configured")
 	}
+	sc.activity()
 	return sc.adapter.ProcessChunk(chunk, sc.state)
 }
 
 // Complete sends the final accumulated message with all metadata
 func (sc *StreamingCore) Complete() {
+	sc.activity()
 	// Create the final message with accumulated state
 	msg := messages.ChatMessage{
 		Role:       messages.MessageRoleAssistant,
@@ -149,6 +199,7 @@ func (sc *StreamingCore) Complete() {
 // CompleteWithContent sends final message with explicit content
 // Used for structured output responses that weren't streamed
 func (sc *StreamingCore) CompleteWithContent(content string) {
+	sc.activity()
 	msg := messages.ChatMessage{
 		Role:       messages.MessageRoleAssistant,
 		Content:    content, // Explicit content for structured responses
