@@ -78,7 +78,8 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 	var stats ProjectionStats
 
 	var err error
-	projected, stats.CompactedToolResults, err = projectToolResults(ctx, projected, store)
+	front := toolCompactionFront(projected, maxTokens, store)
+	projected, stats.CompactedToolResults, err = projectToolResults(ctx, projected, store, front)
 	if err != nil {
 		return nil, stats, err
 	}
@@ -206,36 +207,104 @@ func projectionMarker(artifactsListable, transcriptReadable bool) string {
 	return marker + "]"
 }
 
-// projectToolResults is the completed-exchange compaction pass. Results in the
-// active exchange keep their birth forms byte-identical (inline bytes, or an
-// artifact preview minted when the tool ran); results in completed exchanges
-// demote to their most compact recoverable form. All rewrites are one-time,
-// anchored to the exchange-completion boundary, and recomputed identically on
-// every later projection: recall results collapse to a constant stub (their
-// content is reproducible on demand), artifact-backed results collapse from
-// preview to receipt, and large inline results are idempotently externalized
-// to a content-addressed artifact behind the same receipt. Legacy transcripts'
-// oversized inline results in the active exchange are externalized with a
-// preview built from the in-hand bytes, as birth would have done.
-func projectToolResults(ctx context.Context, history []messages.ChatMessage, store artifacts.Store) ([]messages.ChatMessage, int, error) {
-	users := realUserIndexes(history)
-	lastUser := -1
-	if len(users) > 0 {
-		lastUser = users[len(users)-1]
+// toolCompactionFront chooses the message-index boundary below which completed
+// exchanges' tool results demote to receipts and stubs. Demotion rewrites
+// messages in place, so every advance invalidates the provider's cached prefix
+// at the rewrite point. The front therefore stays at zero while the projection
+// fits its budget — demotion there would spend a full-price prefix rewrite to
+// save tokens the cache discount already made cheap — and once over budget it
+// may only land on quantized candidates: exchange boundaries where the
+// cumulative demotion savings have grown by at least a fifth of the budget
+// since the previous candidate. It picks the first candidate that brings the
+// projection under budget, or the maximal front (every completed exchange)
+// when none does. Candidates depend only on durable message forms, which are
+// fixed once an exchange completes, so the front is a pure function of
+// (history, budget, store presence) that only advances as the session grows.
+// The gate prices the pre-hydration projection; image-heavy saturation is
+// still caught by the post-hydration budget checks in projectMessages.
+func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store artifacts.Store) int {
+	if maxTokens <= 0 {
+		return 0
 	}
+	users := realUserIndexes(projected)
+	if len(users) <= 1 {
+		return 0
+	}
+	hasStore := store != nil
+	// Oversized inline results never ship raw: the birth-form zone of
+	// projectToolResults externalizes them to bounded previews, so both the
+	// gate estimate and the demotion savings price them at the preview bound.
+	previewBounded := func(msg messages.ChatMessage) bool {
+		return hasStore && msg.Role == messages.MessageRoleTool && msg.Content != ToolDeniedContent &&
+			!isRecallToolName(msg.ToolName) && textArtifactRef(msg) == nil &&
+			estimatedStringTokens(msg.Content) > toolInlineTokenLimit
+	}
+	estimate := 0
+	for _, msg := range projected {
+		tokens := estimateProjectedMessageTokens(msg)
+		if previewBounded(msg) {
+			tokens -= estimatedStringTokens(msg.Content) - toolPreviewTokenLimit
+		}
+		estimate += tokens
+	}
+	if estimate <= maxTokens {
+		return 0
+	}
+	quantum := max(1, maxTokens/omissionQuantumDivisor)
+	cum := 0
+	lastCandidate := 0
+	for j := 0; j+1 < len(users); j++ {
+		for _, msg := range projected[users[j]:users[j+1]] {
+			form, _, ok := demotedToolResultForm(msg, hasStore)
+			if !ok {
+				continue
+			}
+			visible := estimatedStringTokens(msg.Content)
+			if previewBounded(msg) {
+				visible = toolPreviewTokenLimit
+			}
+			if saved := visible - estimatedStringTokens(form); saved > 0 {
+				cum += saved
+			}
+		}
+		// The maximal front is always a candidate so demotion can reach every
+		// completed exchange before omission has to drop whole ones.
+		if cum-lastCandidate < quantum && j+2 < len(users) {
+			continue
+		}
+		lastCandidate = cum
+		if estimate-cum <= maxTokens {
+			return users[j+1]
+		}
+	}
+	return users[len(users)-1]
+}
 
+// projectToolResults is the completed-exchange compaction pass. Results at or
+// past the front keep their birth forms byte-identical (inline bytes, or an
+// artifact preview minted when the tool ran); results before the front demote
+// to their most compact recoverable form: recall results collapse to a
+// constant stub (their content is reproducible on demand), artifact-backed
+// results collapse from preview to receipt, and large inline results are
+// idempotently externalized to a content-addressed artifact behind the same
+// receipt. The front comes from toolCompactionFront: zero while the projection
+// fits its budget, so an unsaturated session ships every exchange in birth
+// form and the provider's cached prefix survives turn boundaries. Legacy
+// transcripts' oversized inline results in the birth-form zone are
+// externalized with a preview built from the in-hand bytes, as birth would
+// have done.
+func projectToolResults(ctx context.Context, history []messages.ChatMessage, store artifacts.Store, front int) ([]messages.ChatMessage, int, error) {
 	compacted := 0
 	for i := range history {
 		msg := &history[i]
 		if msg.Role != messages.MessageRoleTool || msg.Content == ToolDeniedContent {
 			continue
 		}
-		completed := i < lastUser
+		completed := i < front
 		if isRecallToolName(msg.ToolName) {
 			if completed {
-				stub := recallResultStub(msg.ToolName)
-				if estimatedStringTokens(stub) < estimatedStringTokens(msg.Content) {
-					msg.Content = appendArtifactDescriptors(stub, *msg, "", " ")
+				if form, _, ok := demotedToolResultForm(*msg, store != nil); ok {
+					msg.Content = form
 					compacted++
 				}
 			}
@@ -246,30 +315,19 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 			return nil, compacted, fmt.Errorf("tool artifact %s cannot be read without a store", ref.ID)
 		}
 		if completed && store != nil {
-			if ref == nil {
-				if msg.Content == "" || estimatedStringTokens(msg.Content) <= toolPreviewTokenLimit {
-					continue
-				}
-				blob := artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(*msg), Data: []byte(msg.Content)}
-				prospective := artifacts.RefForBlob(blob)
-				form := appendArtifactDescriptors(artifactReceipt(prospective), *msg, prospective.ID, " ")
-				if estimatedStringTokens(form) >= estimatedStringTokens(msg.Content) {
-					continue
-				}
-				stored, err := store.Put(ctx, blob)
+			form, blob, ok := demotedToolResultForm(*msg, true)
+			if !ok {
+				continue
+			}
+			if blob != nil {
+				stored, err := store.Put(ctx, *blob)
 				if err != nil {
 					return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
 				}
 				msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
-				msg.Content = form
-				compacted++
-				continue
 			}
-			form := appendArtifactDescriptors(artifactReceipt(*ref), *msg, ref.ID, " ")
-			if estimatedStringTokens(form) < estimatedStringTokens(msg.Content) {
-				msg.Content = form
-				compacted++
-			}
+			msg.Content = form
+			compacted++
 			continue
 		}
 		if ref == nil && store != nil && estimatedStringTokens(msg.Content) > toolInlineTokenLimit {
@@ -286,6 +344,45 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 		}
 	}
 	return history, compacted, nil
+}
+
+// demotedToolResultForm is the single source of truth for demotion: the exact
+// provider-visible form a tool result takes once the compaction front passes
+// it, plus the blob to store when demotion must first externalize inline
+// content. toolCompactionFront prices candidates with it and
+// projectToolResults applies it, so the two can never disagree about bytes.
+// It reports false when demotion would not shrink the result.
+func demotedToolResultForm(msg messages.ChatMessage, hasStore bool) (string, *artifacts.Blob, bool) {
+	if msg.Role != messages.MessageRoleTool || msg.Content == ToolDeniedContent {
+		return "", nil, false
+	}
+	if isRecallToolName(msg.ToolName) {
+		stub := recallResultStub(msg.ToolName)
+		if estimatedStringTokens(stub) >= estimatedStringTokens(msg.Content) {
+			return "", nil, false
+		}
+		return appendArtifactDescriptors(stub, msg, "", " "), nil, true
+	}
+	if !hasStore {
+		return "", nil, false
+	}
+	if ref := textArtifactRef(msg); ref != nil {
+		form := appendArtifactDescriptors(artifactReceipt(*ref), msg, ref.ID, " ")
+		if estimatedStringTokens(form) >= estimatedStringTokens(msg.Content) {
+			return "", nil, false
+		}
+		return form, nil, true
+	}
+	if msg.Content == "" || estimatedStringTokens(msg.Content) <= toolPreviewTokenLimit {
+		return "", nil, false
+	}
+	blob := artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(msg.Content)}
+	prospective := artifacts.RefForBlob(blob)
+	form := appendArtifactDescriptors(artifactReceipt(prospective), msg, prospective.ID, " ")
+	if estimatedStringTokens(form) >= estimatedStringTokens(msg.Content) {
+		return "", nil, false
+	}
+	return form, &blob, true
 }
 
 func isRecallToolName(name string) bool {

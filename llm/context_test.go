@@ -127,7 +127,8 @@ func TestProjectStubsCompletedExchangeRecallResults(t *testing.T) {
 		{Role: messages.MessageRoleTool, ToolCallID: "new-read", ToolName: "read_artifact", Content: recalled},
 	}
 
-	projected, stats, err := projectMessages(context.Background(), history, 0, nil, false)
+	// Over budget, so the compaction front reaches the completed exchange.
+	projected, stats, err := projectMessages(context.Background(), history, 3_000, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1037,7 +1038,8 @@ func TestProjectDemotesCompletedToolResultsToReceipts(t *testing.T) {
 
 	store := newTestArtifactStore()
 	history := base()
-	projected, stats, err := projectMessages(context.Background(), history, 0, store, false)
+	// Over budget, so the compaction front reaches the completed exchange.
+	projected, stats, err := projectMessages(context.Background(), history, 2_000, store, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1076,7 +1078,7 @@ func TestProjectDemotesCompletedToolResultsToReceipts(t *testing.T) {
 		t.Fatalf("demoted artifact = %d bytes, %v", len(stored), err)
 	}
 
-	again, _, err := projectMessages(context.Background(), base(), 0, store, false)
+	again, _, err := projectMessages(context.Background(), base(), 2_000, store, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1097,9 +1099,10 @@ func TestProjectDemotesCompletedPreviewsWithoutStoreReads(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, Content: "done"},
 		{Role: messages.MessageRoleUser, Content: "current"},
 	}
-	// The failing store proves demoting an artifact-backed preview to its
-	// receipt costs zero store I/O.
-	projected, stats, err := projectMessages(context.Background(), history, 0, failingArtifactStore{}, false)
+	// Over budget, so the front reaches the completed exchange; the failing
+	// store proves demoting an artifact-backed preview to its receipt costs
+	// zero store I/O.
+	projected, stats, err := projectMessages(context.Background(), history, 300, failingArtifactStore{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1112,6 +1115,155 @@ func TestProjectDemotesCompletedPreviewsWithoutStoreReads(t *testing.T) {
 	}
 	if history[2].Content != preview {
 		t.Fatalf("demotion mutated the durable preview")
+	}
+}
+
+func TestCompactionKeepsBirthFormsUnderBudget(t *testing.T) {
+	recalled := strings.Repeat("recalled line\n", 500)
+	completed := strings.Repeat("completed output line\n", 200)
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "old request"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old-read", Name: "read_artifact", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "old-read", ToolName: "read_artifact", Content: recalled},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old-big", Name: "bash", Arguments: `{}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "old-big", ToolName: "bash", Content: completed},
+		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		{Role: messages.MessageRoleUser, Content: "current"},
+	}
+
+	for _, tc := range []struct {
+		name   string
+		budget int
+	}{
+		{name: "fits its budget", budget: 50_000},
+		{name: "no budget configured", budget: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			projected, stats, err := projectMessages(context.Background(), cloneMessages(history), tc.budget, newTestArtifactStore(), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			toolMessages := messagesWithRole(projected, messages.MessageRoleTool)
+			if toolMessages[0].Content != recalled || toolMessages[1].Content != completed {
+				t.Fatalf("completed results were demoted without budget pressure: %q / %q",
+					toolMessages[0].Content[:min(80, len(toolMessages[0].Content))],
+					toolMessages[1].Content[:min(80, len(toolMessages[1].Content))])
+			}
+			if stats.CompactedToolResults != 0 {
+				t.Fatalf("compacted results = %d, want 0", stats.CompactedToolResults)
+			}
+		})
+	}
+}
+
+func TestCompactionHoldsProviderPrefixAcrossTurnBoundary(t *testing.T) {
+	store := newTestArtifactStore()
+	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "work on it"}}
+	for _, label := range []string{"one", "two", "three"} {
+		id := "call-" + label
+		history = append(history,
+			messages.ChatMessage{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: id, Name: "bash", Arguments: `{}`}}},
+			messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: id, ToolName: "bash", Content: strings.Repeat(label+" output\n", 300)},
+		)
+	}
+
+	const budget = 50_000
+	during, _, err := projectMessages(context.Background(), cloneMessages(history), budget, store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A new user turn completes the exchange. Under budget the completed
+	// results must keep their birth forms: the next request is the previous
+	// one plus the appended messages, byte for byte, so the provider's cached
+	// prefix survives the turn boundary.
+	next := append(cloneMessages(history),
+		messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done"},
+		messages.ChatMessage{Role: messages.MessageRoleUser, Content: "diffstat"},
+	)
+	after, stats, err := projectMessages(context.Background(), next, budget, store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.CompactedToolResults != 0 {
+		t.Fatalf("turn boundary compacted %d results under budget", stats.CompactedToolResults)
+	}
+	if len(after) != len(during)+2 || !reflect.DeepEqual(after[:len(during)], during) {
+		t.Fatalf("prefix not byte-stable across the turn boundary:\nduring %d msgs\nafter %d msgs", len(during), len(after))
+	}
+}
+
+func TestCompactionFrontBatchesAndHoldsAcrossGrowth(t *testing.T) {
+	store := newTestArtifactStore()
+	exchange := func(j int) []messages.ChatMessage {
+		id := fmt.Sprintf("call-%02d", j)
+		return []messages.ChatMessage{
+			{Role: messages.MessageRoleUser, Content: fmt.Sprintf("u%02d", j)},
+			{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: id, Name: "bash", Arguments: `{}`}}},
+			{Role: messages.MessageRoleTool, ToolCallID: id, ToolName: "bash", Content: fmt.Sprintf("%02d ", j) + strings.Repeat("r", 2_400)},
+			{Role: messages.MessageRoleAssistant, Content: "noted"},
+		}
+	}
+	var history []messages.ChatMessage
+	for j := 0; j < 10; j++ {
+		history = append(history, exchange(j)...)
+	}
+	history = append(history, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "current question"})
+
+	const budget = 3_000
+	first, firstStats, err := projectMessages(context.Background(), cloneMessages(history), budget, store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstStats.CompactedToolResults == 0 || firstStats.CompactedToolResults == 10 {
+		t.Fatalf("front is not partial: %+v", firstStats)
+	}
+	for i, msg := range history {
+		if msg.Role != messages.MessageRoleTool {
+			continue
+		}
+		form, _, ok := demotedToolResultForm(msg, true)
+		if !ok {
+			t.Fatalf("fixture result %d is not demotable", i)
+		}
+		if got := first[i].Content; got != form && got != msg.Content {
+			t.Fatalf("projected form %d matches neither birth nor demotion: %q", i, got[:min(120, len(got))])
+		}
+	}
+
+	// Sub-quantum growth must not move the front: the next projection is the
+	// previous one plus the appended messages, byte for byte.
+	grown := append(cloneMessages(history),
+		messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "ok"},
+		messages.ChatMessage{Role: messages.MessageRoleUser, Content: "again"},
+	)
+	second, secondStats, err := projectMessages(context.Background(), grown, budget, store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondStats.CompactedToolResults != firstStats.CompactedToolResults {
+		t.Fatalf("front moved on sub-quantum growth: %d -> %d", firstStats.CompactedToolResults, secondStats.CompactedToolResults)
+	}
+	if !reflect.DeepEqual(second[:len(first)], first) {
+		t.Fatalf("prefix not byte-stable across growth")
+	}
+
+	// Growth past the quantum advances the front, and in a batch rather than
+	// one exchange at a time.
+	big := cloneMessages(grown)
+	for j := 10; j < 13; j++ {
+		big = append(big, exchange(j)...)
+	}
+	big = append(big, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "still going"})
+	_, bigStats, err := projectMessages(context.Background(), big, budget, store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bigStats.CompactedToolResults <= secondStats.CompactedToolResults {
+		t.Fatalf("front did not advance past quantum growth: %+v", bigStats)
+	}
+	if bigStats.CompactedToolResults-secondStats.CompactedToolResults < 2 {
+		t.Fatalf("front advanced one exchange at a time: %d -> %d", secondStats.CompactedToolResults, bigStats.CompactedToolResults)
 	}
 }
 
