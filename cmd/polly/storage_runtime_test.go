@@ -448,7 +448,7 @@ func assertResolvedConfig(t *testing.T, config *Config, modelOverride string) {
 	}
 	if config.Model != wantModel || config.Temperature != 1 || config.MaxTokens != 64_000 ||
 		config.MaxHistoryTokens != 256_000 || config.ThinkingEffort != "off" ||
-		config.SystemPrompt != "" || config.ToolTimeout != 30*time.Second ||
+		config.SystemPrompt != "" || config.ToolTimeout != 5*time.Minute ||
 		config.MaxIterations != 250 || len(config.SkillDirs) != 0 {
 		t.Fatalf("resolved settings = %+v", config)
 	}
@@ -465,7 +465,7 @@ func assertResolvedMetadata(t *testing.T, metadata *sessions.Metadata, modelOver
 	}
 	if metadata.Model != wantModel || metadata.Temperature != 1 || metadata.MaxTokens != 64_000 ||
 		metadata.MaxHistoryTokens != 256_000 || metadata.ThinkingEffort != "off" ||
-		metadata.SystemPrompt != "" || metadata.ToolTimeout != 30*time.Second ||
+		metadata.SystemPrompt != "" || metadata.ToolTimeout != 5*time.Minute ||
 		metadata.MaxIterations != 250 || len(metadata.SkillDirs) != 0 {
 		t.Fatalf("stored settings = %+v", metadata)
 	}

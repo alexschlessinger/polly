@@ -614,7 +614,7 @@ GLOBAL OPTIONS:
    --noskills                                               Disable Agent Skill discovery and runtime skill tools
    --listskills                                             List discovered Agent Skills
    --tool string, -t string [ --tool string, -t string ]    Tool provider: shell script (provides 1 tool) or MCP server (can provide multiple tools). Can be specified multiple times
-   --tooltimeout duration                                   Timeout for tool execution (default: 30s) [$POLLYTOOL_TOOLTIMEOUT]
+   --tooltimeout duration                                   Timeout for tool execution (default: 5m0s) [$POLLYTOOL_TOOLTIMEOUT]
    --prompt string, -p string                               Initial prompt (reads from stdin if not provided; starts REPL when neither is provided)
    --system string, -s string                               System prompt (persona; a per-frontend display contract is added automatically) [$POLLYTOOL_SYSTEM]
    --file string, -f string [ --file string, -f string ]    File, image, or URL to include (can be specified multiple times)

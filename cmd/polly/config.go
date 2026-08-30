@@ -250,7 +250,7 @@ func toolConfigFlags() []cli.Flag {
 		&cli.DurationFlag{
 			Name:    "tooltimeout",
 			Usage:   "Timeout for tool execution",
-			Value:   30 * time.Second,
+			Value:   5 * time.Minute,
 			Sources: cli.EnvVars("POLLYTOOL_TOOLTIMEOUT"),
 		},
 	}
