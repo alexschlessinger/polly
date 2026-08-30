@@ -134,9 +134,21 @@ when the terminal has room); the oldest text scrolls off the top as new
 reasoning arrives. The disclosure stays open across tool calls when
 explicitly opened, then collapses when the turn finishes. Completed
 disclosures remain expandable and summarize all reasoning segments from the
-turn. Reasoning from successful turns survives a session reload; reasoning
-from failed or canceled turns is marked unsaved and lasts only for the
-current process.
+turn. Reasoning from successful turns survives a session reload; when a turn
+fails or is canceled before generating anything durable, its reasoning is
+marked unsaved and lasts only for the current process.
+
+### Interrupted turns
+
+A turn that fails or is canceled partway keeps everything it completed:
+each finished model iteration and every executed tool result is written to
+durable history, so a retry continues from real state instead of redoing
+side-effectful work. Tool calls cut off mid-batch are recorded as
+interrupted stubs. The settled turn is labeled `failed · completed work
+saved` (or `canceled · …`); only text streamed by the interrupted final
+call is lost, and a turn that failed before generating anything is still
+labeled `not saved`. Reloaded sessions show these turns with a
+`turn interrupted · completed work retained` marker.
 
 ### Images
 

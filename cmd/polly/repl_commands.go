@@ -421,7 +421,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastOut = 0
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
-			r.model.unsavedLabeled = false
+			r.model.outcomeLabeled = false
 			if err := r.model.restoreQueuedImagesAfterReset(r.state.session.Context(), queued); err != nil {
 				r.model.discardQueuedInputs()
 				return fmt.Errorf("restore queued images: %w", err)

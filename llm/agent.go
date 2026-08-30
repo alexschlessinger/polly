@@ -23,6 +23,12 @@ import (
 // out of persisted history).
 const ToolDeniedContent = "Tool call denied by user."
 
+// ToolInterruptedContent is the tool-result content recorded for a call whose
+// batch aborted (cancellation or artifact-store failure) before a real result
+// was captured. The tool may or may not have run. The stub keeps every tool
+// call answered, so a partial run's messages stay valid provider history.
+const ToolInterruptedContent = "Tool execution was interrupted; no result was recorded and the tool may or may not have run."
+
 // ErrMaxIterations is returned (with a partial AgentResponse) when the agent
 // loop reaches its MaxIterations cap before the model finishes.
 var ErrMaxIterations = errors.New("max iterations exceeded")
@@ -177,7 +183,10 @@ func (a *Agent) SetToolTimeout(d time.Duration) {
 //
 // On error, Run still returns an AgentResponse carrying whatever was
 // generated before the failure (Message may be nil) so callers can account
-// for iterations and tokens actually spent.
+// for iterations and tokens actually spent. AllMessages always ends at a
+// provider-valid boundary — a tool batch the failure cut short is completed
+// with interrupted-tool stubs — so callers can persist the partial turn and
+// replay it in later requests.
 func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks) (*AgentResponse, error) {
 	// Work with a copy of messages - don't mutate input
 	msgs := make([]messages.ChatMessage, len(req.Messages))
@@ -366,9 +375,18 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 
 		// Execute tool calls in parallel
-		toolMsgs, err := a.executeToolsParallel(ctx, response.ToolCalls, cb)
-		if err != nil {
-			return responseFor(response, iteration+1), err
+		toolMsgs, toolErr := a.executeToolsParallel(ctx, response.ToolCalls, cb)
+		if toolErr != nil {
+			// The batch aborted, but tools that finished already changed the
+			// world: keep their real results, stub the unanswered calls, and
+			// return the completed batch so AllMessages stays replayable.
+			toolMsgs = completeAbortedToolBatch(response.ToolCalls, toolMsgs)
+			if a.tools != nil {
+				a.tools.CommitPendingChanges()
+			}
+			a.indexArtifactMessages(toolMsgs)
+			allGenerated = append(allGenerated, toolMsgs...)
+			return responseFor(response, iteration+1), toolErr
 		}
 		if a.tools != nil {
 			a.tools.CommitPendingChanges()
@@ -770,6 +788,29 @@ func (a *Agent) effectiveParallelism(n int) int {
 		return n
 	}
 	return a.config.MaxParallelTools
+}
+
+// completeAbortedToolBatch fills the holes an aborted parallel batch left
+// behind. Results from tools that finished (including denial stubs) are kept
+// verbatim — their side effects are real — and every unanswered call gets an
+// interrupted stub so the assistant message's tool calls all stay answered.
+func completeAbortedToolBatch(calls []messages.ChatMessageToolCall, results []messages.ChatMessage) []messages.ChatMessage {
+	completed := make([]messages.ChatMessage, len(calls))
+	for i, tc := range calls {
+		if i < len(results) && results[i].Role == messages.MessageRoleTool {
+			completed[i] = results[i]
+			continue
+		}
+		stub := messages.ChatMessage{
+			Role:       messages.MessageRoleTool,
+			Content:    ToolInterruptedContent,
+			ToolCallID: tc.ID,
+			ToolName:   tc.Name,
+		}
+		stub.SetToolSucceeded(false)
+		completed[i] = stub
+	}
+	return completed
 }
 
 // allDenied reports whether every message in toolMsgs is a denial stub.

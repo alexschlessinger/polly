@@ -32,6 +32,23 @@ func (e *exitError) Error() string {
 
 func (e *exitError) Unwrap() error { return e.err }
 
+// turnProgressSavedError wraps a failed turn's error once the work generated
+// before the failure has been durably persisted. Outcome classification is
+// unchanged — Unwrap keeps errors.Is/As working on the cause — while UIs use
+// the marker to label the failure "completed work saved" instead of "not
+// saved".
+type turnProgressSavedError struct{ cause error }
+
+func (e *turnProgressSavedError) Error() string { return e.cause.Error() }
+func (e *turnProgressSavedError) Unwrap() error { return e.cause }
+
+// turnProgressSaved reports whether err records that the failed turn's
+// completed work was persisted to the session.
+func turnProgressSaved(err error) bool {
+	var saved *turnProgressSavedError
+	return errors.As(err, &saved)
+}
+
 // turnToolStats accumulates per-turn tool telemetry. The agent executes tool
 // batches on parallel goroutines, so OnToolEnd fires concurrently; all access
 // goes through the mutex.

@@ -29,6 +29,9 @@ func TestClassifyOutcome(t *testing.T) {
 		{"max_iterations", resp(messages.StopReasonMaxIterations), llm.ErrMaxIterations, messages.StopReasonMaxIterations, 3},
 		{"hard_error", nil, errors.New("boom"), messages.StopReasonError, 1},
 		{"nil_message", &llm.AgentResponse{}, nil, messages.StopReasonEndTurn, 0},
+		// The progress-saved wrapper must not change how a failure classifies.
+		{"max_iterations_progress_saved", resp(messages.StopReasonMaxIterations), &turnProgressSavedError{cause: llm.ErrMaxIterations}, messages.StopReasonMaxIterations, 3},
+		{"hard_error_progress_saved", nil, &turnProgressSavedError{cause: errors.New("boom")}, messages.StopReasonError, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -265,8 +265,16 @@ func TestAgentSurfacesArtifactStoreFailures(t *testing.T) {
 			if len(model.requests) != 1 {
 				t.Fatalf("model requests = %d, want failure before follow-up call", len(model.requests))
 			}
-			if response == nil || len(messagesWithRole(response.AllMessages, messages.MessageRoleTool)) != 0 {
-				t.Fatalf("failed artifact result became durable: %#v", response)
+			// The authoritative store refused the payload, so it must not
+			// leak into durable history — but the call is still answered by
+			// an interrupted stub so a persisted partial turn stays valid
+			// provider history.
+			toolMsgs := messagesWithRole(response.AllMessages, messages.MessageRoleTool)
+			if response == nil || len(toolMsgs) != 1 {
+				t.Fatalf("aborted batch durable tool results = %#v", response)
+			}
+			if stub := toolMsgs[0]; stub.Content != ToolInterruptedContent || len(stub.Parts) != 0 {
+				t.Fatalf("failed artifact result leaked into durable history: %#v", stub)
 			}
 		})
 	}

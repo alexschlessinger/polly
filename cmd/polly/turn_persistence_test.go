@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 func TestPersistUserMessageForTurnReusesMatchingFinalUser(t *testing.T) {
@@ -665,4 +667,172 @@ func newTurnPersistenceTestSession(t *testing.T) sessions.Session {
 
 func equalTurnTestMessage(a, b messages.ChatMessage) bool {
 	return a.Role == b.Role && a.Content == b.Content && slices.Equal(a.Parts, b.Parts)
+}
+
+// scriptedStreamLLM plays fixed responses, then fails the stream with failErr.
+type scriptedStreamLLM struct {
+	responses []messages.ChatMessage
+	failErr   error
+	calls     int
+}
+
+func (s *scriptedStreamLLM) ChatCompletionStream(_ context.Context, _ *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
+	idx := s.calls
+	s.calls++
+	if idx < len(s.responses) {
+		input := make(chan messages.ChatMessage, 1)
+		input <- s.responses[idx]
+		close(input)
+		return processor.ProcessMessagesToEvents(input)
+	}
+	events := make(chan *messages.StreamEvent, 1)
+	events <- &messages.StreamEvent{Type: messages.EventTypeError, Error: s.failErr}
+	close(events)
+	return events
+}
+
+func newInterruptedTurnState(t *testing.T, model llm.LLM, tool tools.Tool) (*conversationState, sessions.Session) {
+	t.Helper()
+	session := testAcquireSession(t, testOpenMemoryStore(t, nil), "interrupted-turn")
+	var toolList []tools.Tool
+	if tool != nil {
+		toolList = append(toolList, tool)
+	}
+	registry := tools.NewToolRegistry(toolList)
+	artifactStore := session.ArtifactStore()
+	return &conversationState{
+		session: session, artifactStore: artifactStore, toolRegistry: registry,
+		agent: llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
+	}, session
+}
+
+func assertInterruptedMarker(t *testing.T, marker messages.ChatMessage, wantErr string) {
+	t.Helper()
+	if marker.Role != messages.MessageRoleInternal {
+		t.Fatalf("turn did not close with an internal marker: %#v", marker)
+	}
+	if status, _ := marker.Metadata[messages.MetadataKeyTurnStatus].(string); status != messages.TurnStatusInterrupted {
+		t.Fatalf("marker status = %q, want %q", status, messages.TurnStatusInterrupted)
+	}
+	if detail, _ := marker.Metadata[messages.MetadataKeyError].(string); !strings.Contains(detail, wantErr) {
+		t.Fatalf("marker error = %q, want it to mention %q", detail, wantErr)
+	}
+}
+
+func TestMidTurnFailurePersistsCompletedWork(t *testing.T) {
+	model := &scriptedStreamLLM{
+		responses: []messages.ChatMessage{{
+			Role: messages.MessageRoleAssistant, Content: "let me check", StopReason: messages.StopReasonToolUse,
+			ToolCalls: []messages.ChatMessageToolCall{{ID: "call-1", Name: "probe", Arguments: `{}`}},
+		}},
+		failErr: errors.New("provider exploded"),
+	}
+	probe := &tools.Func{Name: "probe", Run: func(context.Context, tools.Args) (string, error) {
+		return "tool ran ok", nil
+	}}
+	state, session := newInterruptedTurnState(t, model, probe)
+	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128}}
+	var stdout, stderr bytes.Buffer
+	ui := newLineTurnUI(config, nil)
+	ui.writer, ui.errWriter = &stdout, &stderr
+
+	code, err := executeTurnWithUserMessage(context.Background(), config, state, messages.ChatMessage{
+		Role: messages.MessageRoleUser, Content: "run the probe",
+	}, nil, nil, ui, false)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "provider exploded") {
+		t.Fatalf("turn = code %d, err %v; want the provider failure", code, err)
+	}
+	if !turnProgressSaved(err) {
+		t.Fatalf("turn error does not report saved progress: %v", err)
+	}
+
+	history := testSessionHistory(t, session)
+	if len(history) != 4 {
+		t.Fatalf("history = %d messages, want user+assistant+tool+marker: %#v", len(history), history)
+	}
+	if history[1].Role != messages.MessageRoleAssistant || len(history[1].ToolCalls) != 1 {
+		t.Fatalf("completed assistant iteration was not persisted: %#v", history[1])
+	}
+	if history[2].Role != messages.MessageRoleTool || history[2].Content != "tool ran ok" {
+		t.Fatalf("completed tool result was not persisted: %#v", history[2])
+	}
+	assertInterruptedMarker(t, history[3], "provider exploded")
+}
+
+func TestCanceledTurnPersistsCompletedWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	model := &scriptedStreamLLM{
+		responses: []messages.ChatMessage{{
+			Role: messages.MessageRoleAssistant, Content: "starting", StopReason: messages.StopReasonToolUse,
+			ToolCalls: []messages.ChatMessageToolCall{{ID: "call-1", Name: "probe", Arguments: `{}`}},
+		}},
+		failErr: errors.New("must not be reached"),
+	}
+	probe := &tools.Func{Name: "probe", Run: func(context.Context, tools.Args) (string, error) {
+		cancel() // the user hits cancel while the tool is finishing
+		return "did work before cancel", nil
+	}}
+	state, session := newInterruptedTurnState(t, model, probe)
+	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128}}
+	var stdout, stderr bytes.Buffer
+	ui := newLineTurnUI(config, nil)
+	ui.writer, ui.errWriter = &stdout, &stderr
+
+	code, err := executeTurnWithUserMessage(ctx, config, state, messages.ChatMessage{
+		Role: messages.MessageRoleUser, Content: "run the probe",
+	}, nil, nil, ui, false)
+	if code != 1 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("turn = code %d, err %v; want cancellation", code, err)
+	}
+	if !turnProgressSaved(err) {
+		t.Fatalf("canceled turn error does not report saved progress: %v", err)
+	}
+
+	history := testSessionHistory(t, session)
+	if len(history) != 4 {
+		t.Fatalf("history = %d messages, want user+assistant+tool+marker: %#v", len(history), history)
+	}
+	if history[2].Role != messages.MessageRoleTool || history[2].Content != "did work before cancel" {
+		t.Fatalf("tool result completed before cancel was not persisted: %#v", history[2])
+	}
+	assertInterruptedMarker(t, history[3], context.Canceled.Error())
+}
+
+func TestFirstCallFailurePersistsNoGeneratedMessages(t *testing.T) {
+	model := &scriptedStreamLLM{failErr: errors.New("immediate failure")}
+	state, session := newInterruptedTurnState(t, model, nil)
+	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128}}
+	var stdout, stderr bytes.Buffer
+	ui := newLineTurnUI(config, nil)
+	ui.writer, ui.errWriter = &stdout, &stderr
+
+	code, err := executeTurnWithUserMessage(context.Background(), config, state, messages.ChatMessage{
+		Role: messages.MessageRoleUser, Content: "hello",
+	}, nil, nil, ui, false)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "immediate failure") {
+		t.Fatalf("turn = code %d, err %v; want the provider failure", code, err)
+	}
+	if turnProgressSaved(err) {
+		t.Fatalf("turn with no generated work claims saved progress: %v", err)
+	}
+	if history := testSessionHistory(t, session); len(history) != 1 || history[0].Role != messages.MessageRoleUser {
+		t.Fatalf("history = %#v, want only the persisted user message", history)
+	}
+}
+
+func TestDetachedTurnRefusesLatePersistence(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.turnID = 4
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 4}
+	if !turnPersistenceAllowed(tui) {
+		t.Fatal("live turn should be allowed to persist")
+	}
+	r.model.turnID++ // detaching a stuck turn advances the generation
+	if turnPersistenceAllowed(tui) {
+		t.Fatal("detached turn must not append after newer turns")
+	}
+	if !turnPersistenceAllowed(newLineTurnUI(&Config{}, nil)) {
+		t.Fatal("UIs without a gate must default to persisting")
+	}
 }

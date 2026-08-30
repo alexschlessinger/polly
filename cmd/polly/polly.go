@@ -892,7 +892,10 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		OnError: func(err error) {},
 	})
 	if ctx.Err() != nil {
-		return 1, context.Cause(ctx)
+		// Cancellation outranks whatever error the aborted run surfaced, but
+		// the turn still flows through persistence below: tools that completed
+		// changed the world whether or not the user hit cancel.
+		err = context.Cause(ctx)
 	}
 	var in, out int
 	if resp != nil {
@@ -912,27 +915,53 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		turnUI.RecordTurnTokens(in, out)
 	}
 
-	// finishTurn covers everything downstream of a completed agent run:
-	// persistence, the truncation warning, and final output. Folding its error
-	// into runErr means the trailer and exit code below always describe the
-	// turn's final state, whichever stage failed.
-	// A failed/canceled turn keeps any streamed text visibly labeled as
-	// not saved. Keep persistence aligned with that contract: generated messages
-	// and skill metadata are committed only after the agent has completed.
 	runErr := err
+
+	// Persist everything the run generated, completed or not. Executed tool
+	// calls already changed the world; dropping their record would leave the
+	// session blind to work that actually happened and make a retry redo it.
+	// Run guarantees AllMessages ends at a provider-valid boundary (an aborted
+	// tool batch is completed with interrupted stubs), so a partial turn
+	// replays cleanly. The detached context keeps a canceled turn's save from
+	// being canceled along with it; the persistence gate stops a detached turn
+	// from appending after newer turns already have.
+	if resp != nil && len(resp.AllMessages) > 0 && turnPersistenceAllowed(turnUI) {
+		persistCtx := context.WithoutCancel(ctx)
+		perr := func() error {
+			if err := persistActiveSkills(persistCtx, state.session, state.skillRuntime, state.skillSources); err != nil {
+				return fmt.Errorf("failed to persist active skills: %w", err)
+			}
+			// Persist the whole turn (assistant message per iteration + every
+			// tool result) with a single write instead of one rewrite per
+			// message. A failed turn additionally records why it ended, so
+			// hydration can settle it instead of rendering an abandoned turn.
+			durable := durableTurnMessages(resp.AllMessages)
+			if runErr != nil {
+				durable = append(durable, interruptedTurnMarker(runErr))
+			}
+			if perr := state.session.AddMessages(persistCtx, durable); perr != nil {
+				return fmt.Errorf("failed to persist turn: %w", perr)
+			}
+			return nil
+		}()
+		switch {
+		case perr != nil:
+			runErr = errors.Join(runErr, perr)
+		case runErr != nil:
+			// Both facts matter downstream: the turn failed, and the work it
+			// completed is durable. UIs label the outcome accordingly.
+			runErr = &turnProgressSavedError{cause: runErr}
+		}
+	}
+
+	// The success tail covers everything downstream of a completed agent run:
+	// warnings and final output. Folding its error into runErr means the
+	// trailer and exit code below always describe the turn's final state,
+	// whichever stage failed.
 	if runErr == nil {
 		runErr = func() error {
 			if resp == nil {
 				return fmt.Errorf("agent returned no response")
-			}
-			if err := persistActiveSkills(ctx, state.session, state.skillRuntime, state.skillSources); err != nil {
-				return fmt.Errorf("failed to persist active skills: %w", err)
-			}
-
-			// Persist the whole turn (assistant message per iteration + every tool
-			// result) with a single write instead of one rewrite per message.
-			if perr := state.session.AddMessages(ctx, durableTurnMessages(resp.AllMessages)); perr != nil {
-				return fmt.Errorf("failed to persist turn: %w", perr)
 			}
 
 			if resp.Projection.OmittedExchanges > 0 {
@@ -1010,6 +1039,29 @@ func externalizeMessageImages(ctx context.Context, msg messages.ChatMessage, sto
 		}
 	}
 	return msg, nil
+}
+
+// turnPersistenceAllowed asks the turn UI whether the turn may still write to
+// the session. The managed REPL declines for a turn it has detached (^C
+// cancellation timed out): newer turns may already be appending, so a late
+// write would interleave this turn's messages out of order. UIs without an
+// opinion allow persistence.
+func turnPersistenceAllowed(turnUI TurnUI) bool {
+	gate, ok := turnUI.(interface{ TurnPersistenceAllowed() bool })
+	return !ok || gate.TurnPersistenceAllowed()
+}
+
+// interruptedTurnMarker records why a partially persisted turn ended. The
+// internal role never reaches a provider; hydration uses it to settle the
+// turn and label it interrupted instead of leaving it looking abandoned.
+func interruptedTurnMarker(cause error) messages.ChatMessage {
+	return messages.ChatMessage{
+		Role: messages.MessageRoleInternal,
+		Metadata: map[string]any{
+			messages.MetadataKeyTurnStatus: messages.TurnStatusInterrupted,
+			messages.MetadataKeyError:      cause.Error(),
+		},
+	}
 }
 
 // durableTurnMessages removes provider-protocol denial exchanges while

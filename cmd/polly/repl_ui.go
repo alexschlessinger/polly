@@ -749,7 +749,7 @@ type replModel struct {
 	restoredPersistence *turnPersistenceAck
 	restoreDraftNext    bool
 	turnHasOutput       bool
-	unsavedLabeled      bool
+	outcomeLabeled      bool
 
 	// runningTools counts tool calls currently in flight this turn. A parallel
 	// batch starts several at once; the turn state returns to "waiting" only
@@ -1276,17 +1276,20 @@ func (m *replModel) finishAssistantBlock(label string) bool {
 	m.invalidateFlat()
 	if label != "" && content != "" {
 		m.appendLine("  " + styled(label, "muted", ""))
-		m.unsavedLabeled = true
+		m.outcomeLabeled = true
 	}
 	return content != ""
 }
 
-func (m *replModel) labelTurnUnsaved(label string) {
-	if m.unsavedLabeled || !m.turnHasOutput {
+// labelTurnOutcome appends the turn's outcome label ("canceled/failed · …")
+// unless the closing assistant block already carried it. Exactly one outcome
+// label lands per settled turn with visible output.
+func (m *replModel) labelTurnOutcome(label string) {
+	if m.outcomeLabeled || !m.turnHasOutput {
 		return
 	}
 	m.appendLine("  " + styled(label, "muted", ""))
-	m.unsavedLabeled = true
+	m.outcomeLabeled = true
 }
 
 func formattedUserPrompt(p string) string {
@@ -2320,7 +2323,9 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 				appendHydratedReasoning(displayReasoning)
 			}
 			applyToolOrder(displayToolCalls)
-			if status, _ := msg.Metadata[messages.MetadataKeyTurnStatus].(string); status == messages.TurnStatusToolDenied {
+			status, _ := msg.Metadata[messages.MetadataKeyTurnStatus].(string)
+			switch {
+			case status == messages.TurnStatusToolDenied:
 				if len(displayToolCalls) == 0 {
 					// Compatibility with sessions written before safe tool display
 					// metadata existed.
@@ -2329,7 +2334,13 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 				// A durable internal completion marker settles the preceding user
 				// turn without becoming model-visible assistant content.
 				lastRole = messages.MessageRoleAssistant
-			} else if len(displayToolCalls) > 0 {
+			case status == messages.TurnStatusInterrupted:
+				// Everything before the marker is durable completed work; the
+				// turn ended early without a final response. Settle it so the
+				// preceding user message isn't restored as an unsent draft.
+				m.appendLine("  " + styled("turn interrupted · completed work retained", "muted", ""))
+				lastRole = messages.MessageRoleAssistant
+			case len(displayToolCalls) > 0:
 				lastRole = messages.MessageRoleAssistant
 			}
 		}
@@ -2616,7 +2627,7 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 		m.currentPersistence = newTurnPersistenceAck(false)
 	}
 	m.turnHasOutput = false
-	m.unsavedLabeled = false
+	m.outcomeLabeled = false
 	m.lastOutcome = turnOutcomeNone
 	// Token counts are per-turn and appear in the dock once reported.
 	m.lastIn = 0
@@ -3779,13 +3790,23 @@ func (r *managedREPL) endTurn(err error) {
 	}
 	m.turnDock.reasoningID = m.turnReasoningID
 	m.turnDock.toolDisclosureID = m.turnToolDisclosureID
-	m.completeThinkingTurn(err != nil)
+	// A partially persisted turn keeps its completed iterations — reasoning
+	// included — so only a turn that saved nothing marks its thinking unsaved.
+	progressSaved := turnProgressSaved(err)
+	m.completeThinkingTurn(err != nil && !progressSaved)
 	m.settleActiveTools(activeToolReason)
 	m.activeTools = nil
 	m.runningTools = 0
 	// Like reasoning, tool activity defaults closed and auto-collapses when the
 	// turn settles. Canceled/failed row details remain one click away.
 	m.completeToolDisclosure()
+	// The outcome label tells the user what survived to the session. When the
+	// turn persisted its completed work, only text streamed by the interrupted
+	// final call is gone; when nothing was persisted, everything shown is.
+	unsavedSuffix := " · not saved"
+	if progressSaved {
+		unsavedSuffix = " · completed work saved"
+	}
 	switch {
 	case err == nil:
 		m.finishAssistantBlock("")
@@ -3794,8 +3815,8 @@ func (r *managedREPL) endTurn(err error) {
 		}
 		m.lastOutcome = turnOutcomeDone
 	case errors.Is(err, context.Canceled):
-		m.finishAssistantBlock("canceled · not saved")
-		m.labelTurnUnsaved("canceled · not saved")
+		m.finishAssistantBlock("canceled" + unsavedSuffix)
+		m.labelTurnOutcome("canceled" + unsavedSuffix)
 		m.lastOutcome = turnOutcomeCanceled
 		m.discardQueuedInputs()
 		if m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
@@ -3807,8 +3828,8 @@ func (r *managedREPL) endTurn(err error) {
 			m.appendNoticeLine("turn canceled")
 		}
 	default:
-		m.finishAssistantBlock("failed · not saved")
-		m.labelTurnUnsaved("failed · not saved")
+		m.finishAssistantBlock("failed" + unsavedSuffix)
+		m.labelTurnOutcome("failed" + unsavedSuffix)
 		m.appendLine(styled("Error: "+err.Error(), "err", ""))
 		m.lastOutcome = turnOutcomeFailed
 		m.discardQueuedInputs()
@@ -3872,8 +3893,11 @@ func (r *managedREPL) abandonCanceledTurn() {
 	if !m.turnStarted.IsZero() {
 		m.lastElapsed = time.Since(m.turnStarted)
 	}
+	// Detaching advances the turn generation, which also revokes the stuck
+	// turn's session write via TurnPersistenceAllowed — newer turns may start
+	// appending, so its late results must be dropped. "not saved" stays true.
 	m.finishAssistantBlock("canceled · not saved")
-	m.labelTurnUnsaved("canceled · not saved")
+	m.labelTurnOutcome("canceled · not saved")
 	m.busy = false
 	m.canceling = false
 	m.currentAssistant = -1
@@ -5187,6 +5211,17 @@ func (t *gotuiTurnUI) activeLocked() bool {
 
 func (t *gotuiTurnUI) acceptingLocked() bool {
 	return t.activeLocked() && !t.repl.model.canceling
+}
+
+// TurnPersistenceAllowed reports whether this turn may still append to the
+// session. It is deliberately activeLocked, not acceptingLocked: an ordinary
+// cancellation still persists the turn's completed work. Only a detached turn
+// (^C cancellation timed out, generation advanced) is refused — newer turns
+// may already be writing, and a late append would land out of order.
+func (t *gotuiTurnUI) TurnPersistenceAllowed() bool {
+	t.repl.model.mu.Lock()
+	defer t.repl.model.mu.Unlock()
+	return t.activeLocked()
 }
 
 func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {

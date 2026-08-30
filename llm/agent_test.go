@@ -460,3 +460,62 @@ func TestAgentMaxIterationsStopReason(t *testing.T) {
 		t.Fatal("no assistant message in AllMessages carries the max_iterations stop reason")
 	}
 }
+
+// TestAgentAbortedToolBatchKeepsResultsAndStubs: when a parallel tool batch
+// aborts (here: the artifact store refuses a spilled result), tools that
+// finished keep their real results and unanswered calls get interrupted
+// stubs, so AllMessages still ends with every tool call answered and can be
+// persisted and replayed by the caller.
+func TestAgentAbortedToolBatchKeepsResultsAndStubs(t *testing.T) {
+	model := &sequentialLLM{responses: []messages.ChatMessage{{
+		Role:       messages.MessageRoleAssistant,
+		Content:    "running tools",
+		StopReason: messages.StopReasonToolUse,
+		ToolCalls: []messages.ChatMessageToolCall{
+			{ID: "call-big", Name: "big_tool", Arguments: `{}`},
+			{ID: "call-small", Name: "small_tool", Arguments: `{}`},
+		},
+	}}}
+	// big_tool waits for small_tool so the batch deterministically holds one
+	// completed result when big_tool's oversized output hits the failing store.
+	smallDone := make(chan struct{})
+	registry := tools.NewToolRegistry([]tools.Tool{
+		&tools.Func{Name: "big_tool", Run: func(context.Context, tools.Args) (string, error) {
+			<-smallDone
+			return strings.Repeat("x", 60_000), nil // spills past toolInlineTokenLimit
+		}},
+		&tools.Func{Name: "small_tool", Run: func(context.Context, tools.Args) (string, error) {
+			defer close(smallDone)
+			return "small ok", nil
+		}},
+	})
+	agent := NewAgent(model, registry, AgentConfig{ArtifactStore: failingArtifactStore{}})
+
+	resp, err := agent.Run(context.Background(), &CompletionRequest{
+		Messages: messages.User("go"),
+	}, nil)
+
+	if !errors.Is(err, errFailingArtifactStore) {
+		t.Fatalf("err = %v, want the artifact store failure", err)
+	}
+	if len(resp.AllMessages) != 3 {
+		t.Fatalf("AllMessages = %d messages, want assistant + 2 tool results: %#v", len(resp.AllMessages), resp.AllMessages)
+	}
+	results := map[string]messages.ChatMessage{}
+	for _, m := range resp.AllMessages[1:] {
+		if m.Role != messages.MessageRoleTool {
+			t.Fatalf("aborted batch left a non-tool message after the assistant: %#v", m)
+		}
+		results[m.ToolCallID] = m
+	}
+	if small := results["call-small"]; small.Content != "small ok" {
+		t.Fatalf("completed tool result was not kept: %#v", small)
+	}
+	big := results["call-big"]
+	if big.Content != ToolInterruptedContent || big.ToolName != "big_tool" {
+		t.Fatalf("unanswered call was not stubbed: %#v", big)
+	}
+	if succeeded, known := big.ToolSucceeded(); !known || succeeded {
+		t.Fatalf("interrupted stub outcome = (%v, %v), want a known failure", succeeded, known)
+	}
+}

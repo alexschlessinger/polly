@@ -242,6 +242,80 @@ func TestCancelRequestLosingCompletionRaceDoesNotClaimUnsaved(t *testing.T) {
 	}
 }
 
+func TestInterruptedTurnWithPersistedProgressLabelsCompletedWorkSaved(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		err         error
+		wantLabel   string
+		wantOutcome turnOutcome
+	}{
+		{
+			name:        "failed",
+			err:         &turnProgressSavedError{cause: errors.New("provider exploded")},
+			wantLabel:   "failed · completed work saved",
+			wantOutcome: turnOutcomeFailed,
+		},
+		{
+			name:        "canceled",
+			err:         &turnProgressSavedError{cause: context.Canceled},
+			wantLabel:   "canceled · completed work saved",
+			wantOutcome: turnOutcomeCanceled,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newManagedREPL(&Config{Quiet: true}, "ctx", 0, 0)
+			r.model.beginTurn("do work")
+			tui := &gotuiTurnUI{repl: r, config: r.config}
+			tui.AppendAssistantText("I ran the tools.")
+			r.endTurn(tc.err)
+
+			plain := plainStyledText(strings.Join(r.model.flattenTranscript(), "\n"))
+			if !strings.Contains(plain, tc.wantLabel) {
+				t.Fatalf("settled transcript %q missing %q", plain, tc.wantLabel)
+			}
+			if strings.Contains(plain, "not saved") {
+				t.Fatalf("persisted progress was still labeled unsaved: %q", plain)
+			}
+			if r.model.lastOutcome != tc.wantOutcome {
+				t.Fatalf("outcome = %v, want %v", r.model.lastOutcome, tc.wantOutcome)
+			}
+		})
+	}
+}
+
+func TestInterruptedTurnWithPersistedProgressKeepsReasoningSavedLabel(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui.ShowThinking("reasoning from a persisted iteration")
+	record := m.currentReasoningRecord()
+	r.endTurn(&turnProgressSavedError{cause: errors.New("provider failed")})
+	if record == nil || !record.complete || record.unsaved {
+		t.Fatalf("persisted-progress reasoning disclosure = %#v, want saved", record)
+	}
+	if collapsed := plainStyledText(m.transcript[record.transcriptIndex]); strings.Contains(collapsed, "not saved") {
+		t.Fatalf("persisted reasoning was labeled unsaved: %q", collapsed)
+	}
+}
+
+func TestHydrateHistorySettlesInterruptedTurn(t *testing.T) {
+	m := newReplModel()
+	m.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "do the work"},
+		{Role: messages.MessageRoleAssistant, Content: "starting the work"},
+		interruptedTurnMarker(errors.New("provider exploded")),
+	}, "ctx")
+
+	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
+	if !strings.Contains(plain, "turn interrupted · completed work retained") {
+		t.Fatalf("interrupted marker was not rendered: %q", plain)
+	}
+	if strings.Contains(plain, "incomplete") || m.restoredDraft != nil {
+		t.Fatalf("interrupted turn was treated as an unsent draft: plain=%q draft=%#v", plain, m.restoredDraft)
+	}
+}
+
 func TestApprovalEnterAndEscapeDenyWithoutQuitting(t *testing.T) {
 	for _, key := range []string{"<Enter>", "<Escape>"} {
 		t.Run(key, func(t *testing.T) {

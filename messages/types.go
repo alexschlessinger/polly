@@ -119,6 +119,10 @@ const (
 	MetadataKeyContextImport    = "context_import"
 	MetadataKeyAgentSynthetic   = "agent_synthetic"
 	TurnStatusToolDenied        = "tool_denied"
+	// TurnStatusInterrupted marks an internal message closing a turn that was
+	// persisted after failing or being canceled partway: everything before the
+	// marker is durable completed work; the turn produced no final response.
+	TurnStatusInterrupted = "interrupted"
 )
 
 // GetInputTokens returns the input token count from metadata, or 0 if not set
