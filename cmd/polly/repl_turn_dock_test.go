@@ -176,6 +176,51 @@ func TestPriorTrailerExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
 	}
 }
 
+func TestExpandedToolTrailerPreservesLiteralBracketsWithoutLeakingStyleMarkup(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("inspect")
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	calls := []messages.ChatMessageToolCall{
+		{ID: "grep", Name: "grep", Arguments: `{"pattern":"["}`},
+		{ID: "read", Name: "read_file", Arguments: `{"path":"notes.txt"}`},
+	}
+	assertRendered := func(stage string, rows [][]ui.Cell) {
+		t.Helper()
+		shown := strings.Join(rowsText(rows), "\n")
+		for _, want := range []string{"grep [", "read_file notes.txt"} {
+			if !strings.Contains(shown, want) {
+				t.Fatalf("%s expanded tools %q missing %q", stage, shown, want)
+			}
+		}
+		for _, leaked := range []string{"fg:muted", "fg:ok", "mod:bold"} {
+			if strings.Contains(shown, leaked) {
+				t.Fatalf("%s expanded tools exposed style markup %q: %q", stage, leaked, shown)
+			}
+		}
+	}
+	tui.AppendToolStart(calls)
+	if !m.toggleTurnDockOverlay(turnDockOverlayTools) {
+		t.Fatal("live tool dock did not expand")
+	}
+	assertRendered("live", m.turnDockOverlayRows(100))
+	if !m.toggleTurnDockOverlay(turnDockOverlayTools) {
+		t.Fatal("live tool dock did not collapse")
+	}
+	for _, call := range calls {
+		tui.AppendToolEnd(call, "one\ntwo", 100*time.Millisecond, nil)
+	}
+	tui.AppendAssistantText("Done.")
+	r.endTurn(nil)
+
+	trailer := m.turnTrailers[m.turnTrailerSeq]
+	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayTools) {
+		t.Fatal("completed tool trailer did not expand")
+	}
+	assertRendered("completed", m.transcriptRows(100))
+}
+
 func TestEscapeClosesTurnDockOverlayBeforeCancelingTurn(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.beginTurn("work")

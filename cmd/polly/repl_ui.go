@@ -1509,7 +1509,7 @@ func runningToolLine(label string, elapsed time.Duration) string {
 	label = stripTranscriptImageMarkers(label)
 	mod := arrowPulse[int(elapsed/arrowPulsePeriod)%len(arrowPulse)]
 	return "  " + styled("→", "run", mod) + " " +
-		styled(label, "muted", "") + " " +
+		styledToolText(label) + " " +
 		styled("· "+formatElapsed(elapsed), "muted", "")
 }
 
@@ -1978,7 +1978,7 @@ func (m *replModel) settleActiveTools(reason string) {
 		}
 		row := &record.rows[at.row]
 		row.line = "  " + styled("✗", "err", "bold") + " " +
-			styled(strings.TrimSpace(reason+" "+at.label), "muted", "")
+			styledToolText(strings.TrimSpace(reason+" "+at.label))
 		row.images = nil
 		row.settled = true
 	}
@@ -1991,16 +1991,25 @@ func (m *replModel) settleActiveTools(reason string) {
 // for a completed tool call. They return the styled string (rather than
 // appending) so AppendToolEnd can freeze it over the running line in place.
 
+// styledToolText protects arbitrary labels from gotui's inline-style parser.
+// A command may contain an unmatched bracket (for example, grep "["), which
+// would otherwise keep the parser nested and expose this row's style markup as
+// literal text. Tool rows always flow through parseStyledCells, which restores
+// these temporary bracket runes after assigning the intended style.
+func styledToolText(text string) string {
+	return styledCodeLiteral(stripTranscriptImageMarkers(text), "muted", "")
+}
+
 func toolOKLine(label, duration, meta string) string {
 	body := strings.TrimSpace(duration + " " + stripTranscriptImageMarkers(label))
 	if meta != "" {
 		body += " · " + stripTranscriptImageMarkers(meta)
 	}
-	return "  " + styled("✓", "ok", "bold") + " " + styled(body, "muted", "")
+	return "  " + styled("✓", "ok", "bold") + " " + styledToolText(body)
 }
 
 func toolDeniedLine(label string) string {
-	return "  " + styled("✗", "err", "bold") + " " + styled("denied "+stripTranscriptImageMarkers(label), "muted", "")
+	return "  " + styled("✗", "err", "bold") + " " + styledToolText("denied "+label)
 }
 
 // toolErrorLine renders a failed tool call as a red ✗ plus the muted metadata
@@ -2012,7 +2021,7 @@ func toolErrorLine(label, duration, meta string) string {
 	if meta != "" {
 		body += " · " + stripTranscriptImageMarkers(meta)
 	}
-	return "  " + styled("✗", "err", "bold") + " " + styled(body, "muted", "")
+	return "  " + styled("✗", "err", "bold") + " " + styledToolText(body)
 }
 
 func hydratedToolLine(label string, msg messages.ChatMessage) string {
@@ -2029,7 +2038,7 @@ func hydratedToolLine(label string, msg messages.ChatMessage) string {
 		}
 		return toolErrorLine(label, "", "failed")
 	}
-	return "  " + styled("·", "muted", "bold") + " " + styled(label, "muted", "")
+	return "  " + styled("·", "muted", "bold") + " " + styledToolText(label)
 }
 
 func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *toolDisclosureRecord {
@@ -2049,7 +2058,7 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 			record.rows[i].line = stripTranscriptImageMarkers(record.rows[i].line)
 		}
 		if record.rows[i].line == "" {
-			record.rows[i].line = "  " + styled("·", "muted", "bold") + " " + styled(record.rows[i].label, "muted", "")
+			record.rows[i].line = "  " + styled("·", "muted", "bold") + " " + styledToolText(record.rows[i].label)
 		}
 	}
 	m.appendLine("")
@@ -2154,7 +2163,7 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 			for i := range hydratedToolRows {
 				if hydratedToolRows[i].line == "" {
 					hydratedToolRows[i].line = "  " + styled("·", "muted", "bold") + " " +
-						styled(hydratedToolRows[i].label, "muted", "")
+						styledToolText(hydratedToolRows[i].label)
 				}
 			}
 			hydratedToolDisclosure.rows = append(hydratedToolDisclosure.rows, hydratedToolRows...)
@@ -2202,7 +2211,7 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 				row.images = nil
 				row.settled = true
 			} else if row.line == "" {
-				row.line = "  " + styled("·", "muted", "bold") + " " + styled(name, "muted", "")
+				row.line = "  " + styled("·", "muted", "bold") + " " + styledToolText(name)
 			}
 			ordered = append(ordered, row)
 		}
