@@ -568,3 +568,46 @@ func writeImageFixture(t *testing.T, path string, width, height int) {
 		t.Fatal(err)
 	}
 }
+
+func TestResolveLocalTranscriptImageFoldsUnicodeSpaces(t *testing.T) {
+	dir := t.TempDir()
+	// macOS screenshot names use U+202F (narrow no-break space) before AM/PM;
+	// model output normalizes it to U+0020, so the emitted path never
+	// byte-matches the file on disk.
+	realName := "Screenshot 2026-08-26 at 10.09.27\u202FPM.png"
+	realPath := filepath.Join(dir, realName)
+	writeImageFixture(t, realPath, 64, 32)
+
+	plainSpacePath := filepath.Join(dir, "Screenshot 2026-08-26 at 10.09.27 PM.png")
+	img, ok := resolveLocalTranscriptImage(plainSpacePath, "shot", "")
+	if !ok {
+		t.Fatal("plain-space spelling did not resolve to U+202F file")
+	}
+	if img.Path != realPath {
+		t.Fatalf("resolved path = %q, want %q", img.Path, realPath)
+	}
+	if img.Width != 64 || img.Height != 32 {
+		t.Fatalf("dims = %dx%d, want 64x32", img.Width, img.Height)
+	}
+}
+
+func TestResolveLocalTranscriptImageExactMatchWinsOverFold(t *testing.T) {
+	dir := t.TempDir()
+	writeImageFixture(t, filepath.Join(dir, "a b.png"), 64, 32)
+	writeImageFixture(t, filepath.Join(dir, "a\u202Fb.png"), 128, 16)
+
+	img, ok := resolveLocalTranscriptImage(filepath.Join(dir, "a b.png"), "", "")
+	if !ok {
+		t.Fatal("exact path did not resolve")
+	}
+	if img.Width != 64 {
+		t.Fatalf("exact match lost to fold match: width = %d, want 64", img.Width)
+	}
+}
+
+func TestResolveSpaceFoldedPathMissReturnsInput(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nope.png")
+	if got := resolveSpaceFoldedPath(missing); got != missing {
+		t.Fatalf("resolveSpaceFoldedPath(missing) = %q, want input unchanged", got)
+	}
+}

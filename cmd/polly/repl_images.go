@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/alexschlessinger/pollytool/images"
 	rw "github.com/mattn/go-runewidth"
@@ -234,6 +235,13 @@ func resolveLocalTranscriptImage(ref, alt, baseDir string) (transcriptImage, boo
 		return transcriptImage{}, false
 	}
 	info, err := os.Stat(abs)
+	if err != nil {
+		// Retry with Unicode-space folding: macOS screenshot names contain
+		// U+202F before AM/PM, which upstream tokenizers normalize to U+0020,
+		// so model-emitted paths never byte-match the real file.
+		abs = resolveSpaceFoldedPath(abs)
+		info, err = os.Stat(abs)
+	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxLocalImageBytes {
 		return transcriptImage{}, false
 	}
@@ -249,6 +257,60 @@ func resolveLocalTranscriptImage(ref, alt, baseDir string) (transcriptImage, boo
 		Height:      height,
 		Version:     localImageVersion(abs),
 	}, true
+}
+
+// resolveSpaceFoldedPath handles paths whose Unicode space separators were
+// normalized to U+0020 before reaching us (e.g. macOS screenshot names use
+// U+202F before AM/PM). It returns path unchanged when it already exists;
+// otherwise it scans each directory component for an entry whose name matches
+// after folding all Unicode spaces to U+0020. Only the first fold-match per
+// component is used; exact matches always win.
+func resolveSpaceFoldedPath(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	vol := filepath.VolumeName(path)
+	rest := strings.TrimPrefix(path, vol)
+	abs := filepath.IsAbs(rest)
+	components := strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == '\\' })
+	cur := vol
+	if abs {
+		cur += string(filepath.Separator)
+	}
+	for _, comp := range components {
+		next := filepath.Join(cur, comp)
+		if _, err := os.Stat(next); err == nil {
+			cur = next
+			continue
+		}
+		entries, err := os.ReadDir(cur)
+		if err != nil {
+			return path
+		}
+		matched := ""
+		for _, e := range entries {
+			if spaceFold(e.Name()) == spaceFold(comp) {
+				matched = e.Name()
+				break
+			}
+		}
+		if matched == "" {
+			return path
+		}
+		cur = filepath.Join(cur, matched)
+	}
+	return cur
+}
+
+// spaceFold maps every Unicode space separator to U+0020 so path comparison
+// is insensitive to which space character a filename actually contains.
+func spaceFold(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 func localImageDimensions(path string) (int, int, bool) {
