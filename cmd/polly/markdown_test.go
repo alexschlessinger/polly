@@ -80,6 +80,26 @@ func TestRenderMarkdownUnknownLanguageFallsBack(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownCodeBlockExpandsLiteralTabs(t *testing.T) {
+	got := plainStyledText(renderMarkdown("```go\nfunc main() {\n\tif true {\n\t\tprintln(\"x\")\n\t}\n}\n```"))
+	if strings.ContainsRune(got, '\t') {
+		t.Fatalf("rendered code contains a literal tab: %q", got)
+	}
+	for _, want := range []string{"│     if true {", "│         println(\"x\")", "│     }"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered code missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestExpandCodeTabsUsesCodeRelativeTabStops(t *testing.T) {
+	got := expandCodeTabs("a\tb\nabcd\tc\n界\tx")
+	want := "a   b\nabcd    c\n界  x"
+	if got != want {
+		t.Fatalf("expandCodeTabs() = %q, want %q", got, want)
+	}
+}
+
 func TestRenderMarkdownCodeBlockPreservesMarkdownImageLiteral(t *testing.T) {
 	got := renderMarkdown("```markdown\n![headcam-try5](/tmp/headcam-try5.png)\n```")
 	plain := plainStyledText(got)

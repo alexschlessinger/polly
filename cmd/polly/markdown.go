@@ -6,6 +6,7 @@ import (
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
+	rw "github.com/mattn/go-runewidth"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -383,10 +384,47 @@ func renderCodeBlock(code, lang string) []string {
 	return out
 }
 
+const codeTabWidth = 4
+
+// expandCodeTabs gives literal tabs deterministic terminal semantics. Terminal
+// widgets do not agree on tab width (and some count the styled gutter), so
+// expand them before syntax highlighting using tab stops relative to the code
+// itself.
+func expandCodeTabs(code string) string {
+	if !strings.ContainsRune(code, '\t') {
+		return code
+	}
+
+	var out strings.Builder
+	out.Grow(len(code))
+	column := 0
+	for _, r := range code {
+		switch r {
+		case '\t':
+			spaces := codeTabWidth - column%codeTabWidth
+			out.WriteString(strings.Repeat(" ", spaces))
+			column += spaces
+		case '\n':
+			out.WriteRune(r)
+			column = 0
+		case '\r':
+			out.WriteRune(r)
+			column = 0
+		default:
+			out.WriteRune(r)
+			if width := rw.RuneWidth(r); width > 0 {
+				column += width
+			}
+		}
+	}
+	return out.String()
+}
+
 func highlightCodeLines(code, lang string) []string {
 	if code == "" {
 		return nil
 	}
+	code = expandCodeTabs(code)
 	var lexer chroma.Lexer
 	if lang != "" {
 		lexer = lexers.Get(lang)
