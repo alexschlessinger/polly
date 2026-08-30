@@ -335,6 +335,10 @@ Tool names are namespaced to avoid conflicts: `scriptname__toolname` for
 shell tools (`uppercase__to_uppercase`), `servername__toolname` for MCP tools
 (`filesystem__read_file`). Add `--confirm` to approve each tool call by hand.
 
+New contexts start with `bash` and all of the built-in file tools enabled.
+Existing contexts keep their persisted tool set, including an empty one.
+Passing one or more `--tool` values replaces the defaults for that context.
+
 ### Built-in tools
 
 ```bash

@@ -10,8 +10,18 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/urfave/cli/v3"
 )
+
+var defaultNativeToolNames = []string{
+	"bash",
+	"read_file",
+	"list_dir",
+	"search_files",
+	"write_file",
+	"edit_file",
+}
 
 // needsFileStore determines whether the unified store should use disk mode.
 func needsFileStore(config *Config, contextID string) bool {
@@ -58,6 +68,14 @@ func metadataFromConfig(config *Config) *sessions.Metadata {
 	// Config.MaxIterations is the runtime value populated by parseConfig;
 	// Settings.MaxIterations is retained only for persisted-settings helpers.
 	metadata.MaxIterations = config.MaxIterations
+	if len(config.Tools) == 0 {
+		metadata.ActiveTools = make([]tools.ToolLoaderInfo, 0, len(defaultNativeToolNames))
+		for _, name := range defaultNativeToolNames {
+			metadata.ActiveTools = append(metadata.ActiveTools, tools.ToolLoaderInfo{
+				Name: name, Type: "native", Source: "builtin",
+			})
+		}
+	}
 	return metadata
 }
 

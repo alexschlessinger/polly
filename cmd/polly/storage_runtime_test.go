@@ -10,8 +10,90 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/urfave/cli/v3"
 )
+
+func TestMetadataFromConfigSeedsDefaultNativeTools(t *testing.T) {
+	want := make([]tools.ToolLoaderInfo, 0, len(defaultNativeToolNames))
+	for _, name := range defaultNativeToolNames {
+		want = append(want, tools.ToolLoaderInfo{Name: name, Type: "native", Source: "builtin"})
+	}
+
+	metadata := metadataFromConfig(&Config{})
+	if !reflect.DeepEqual(metadata.ActiveTools, want) {
+		t.Fatalf("default active tools = %#v, want %#v", metadata.ActiveTools, want)
+	}
+
+	metadata = metadataFromConfig(&Config{Tools: []string{"custom.json"}})
+	if metadata.ActiveTools != nil {
+		t.Fatalf("explicit tool metadata was preseeded with defaults: %#v", metadata.ActiveTools)
+	}
+}
+
+func TestInitializeSessionAppliesNativeToolDefaultsOnlyToFreshContexts(t *testing.T) {
+	t.Run("fresh context", func(t *testing.T) {
+		config := &Config{NoSandbox: true, NoSkills: true}
+		store := testOpenMemoryStore(t, metadataFromConfig(config))
+		session, registry := initializeToolDefaultsTestSession(t, config, store, "fresh")
+		defer func() { _ = session.Close() }()
+		defer func() { _ = registry.Close() }()
+
+		for _, name := range defaultNativeToolNames {
+			if _, ok := registry.Get(name); !ok {
+				t.Errorf("fresh context did not load default tool %q", name)
+			}
+		}
+	})
+
+	t.Run("existing empty context", func(t *testing.T) {
+		store := testOpenMemoryStore(t, nil)
+		existing := testAcquireSession(t, store, "legacy-empty")
+		if err := existing.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		config := &Config{NoSandbox: true, NoSkills: true}
+		session, registry := initializeToolDefaultsTestSession(t, config, store, "legacy-empty")
+		defer func() { _ = session.Close() }()
+		defer func() { _ = registry.Close() }()
+
+		for _, name := range defaultNativeToolNames {
+			if _, ok := registry.Get(name); ok {
+				t.Errorf("existing empty context unexpectedly enabled default tool %q", name)
+			}
+		}
+	})
+
+	t.Run("explicit tools replace defaults", func(t *testing.T) {
+		config := &Config{NoSandbox: true, NoSkills: true, Tools: []string{"read_file"}}
+		store := testOpenMemoryStore(t, metadataFromConfig(config))
+		session, registry := initializeToolDefaultsTestSession(t, config, store, "explicit")
+		defer func() { _ = session.Close() }()
+		defer func() { _ = registry.Close() }()
+
+		if _, ok := registry.Get("read_file"); !ok {
+			t.Error("explicit read_file tool was not loaded")
+		}
+		for _, name := range defaultNativeToolNames {
+			if name == "read_file" {
+				continue
+			}
+			if _, ok := registry.Get(name); ok {
+				t.Errorf("explicit tool selection unexpectedly retained default tool %q", name)
+			}
+		}
+	})
+}
+
+func initializeToolDefaultsTestSession(t *testing.T, config *Config, store sessions.SessionStore, name string) (sessions.Session, *tools.ToolRegistry) {
+	t.Helper()
+	_, session, _, registry, _, _, _, err := initializeSession(context.Background(), config, store, name, false, getCommand(), nil)
+	if err != nil {
+		t.Fatalf("initializeSession(%q): %v", name, err)
+	}
+	return session, registry
+}
 
 func TestDeleteContextReturnsSessionInUse(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
