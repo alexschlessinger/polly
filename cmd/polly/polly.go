@@ -89,8 +89,11 @@ type conversationState struct {
 	// can mention the name and how to keep or resume it.
 	autoNamedContext bool
 	// displayContract is composed into the request's system message each turn;
-	// it is frontend-specific and never persisted (see display_contract.go).
+	// it is capability-specific and never persisted (see display_contract.go).
 	displayContract string
+	// outputCapabilities is resolved once per process run so the model-facing
+	// contract and the concrete line renderer cannot disagree.
+	outputCapabilities outputCapabilities
 	// contextWindows caches per-model context-window discovery for this
 	// process, including failed attempts (entry present, value 0).
 	contextWindows map[string]int
@@ -581,6 +584,7 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 	// The frontend is fixed for the life of the run; resolve it once so the
 	// display contract and the REPL flavor cannot disagree.
 	managedREPL := supportsManagedREPL()
+	outputCapabilities := outputCapabilitiesForRun(input.mode, managedREPL)
 
 	// Initialize session state once so one-shot and REPL share the same runtime.
 	sandboxWarnings := newBroadWritablePathWarner()
@@ -589,16 +593,17 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		return err
 	}
 	state := &conversationState{
-		session:          session,
-		agent:            agent,
-		artifactStore:    session.ArtifactStore(),
-		toolRegistry:     toolRegistry,
-		skillCatalog:     skillCatalog,
-		skillRuntime:     skillRuntime,
-		skillSources:     skillResult.sources,
-		sandboxWarnings:  sandboxWarnings,
-		autoNamedContext: autoContext,
-		displayContract:  displayContractFor(input.mode, managedREPL),
+		session:            session,
+		agent:              agent,
+		artifactStore:      session.ArtifactStore(),
+		toolRegistry:       toolRegistry,
+		skillCatalog:       skillCatalog,
+		skillRuntime:       skillRuntime,
+		skillSources:       skillResult.sources,
+		sandboxWarnings:    sandboxWarnings,
+		autoNamedContext:   autoContext,
+		displayContract:    displayContractFor(outputCapabilities),
+		outputCapabilities: outputCapabilities,
 	}
 	defer func() {
 		if err := state.Close(); err != nil {
@@ -841,7 +846,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	}
 
 	if turnUI == nil {
-		turnUI = newLineTurnUI(config, inputReader)
+		turnUI = newLineTurnUIWithCapabilities(config, inputReader, state.outputCapabilities)
 	}
 	turnUI.Start()
 	defer turnUI.Stop()

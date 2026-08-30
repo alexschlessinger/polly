@@ -295,14 +295,17 @@ func runConfigValidationCommand(args ...string) error {
 }
 
 func TestDisplayContractFor(t *testing.T) {
-	if got := displayContractFor(conversationModeREPL, true); got != tuiDisplayContract {
+	if got := displayContractFor(outputCapabilities{surface: outputSurfaceManagedTUI}); got != richTerminalDisplayContract {
 		t.Fatalf("managed REPL contract = %q, want the TUI contract", got)
 	}
-	if got := displayContractFor(conversationModeREPL, false); got != plainDisplayContract {
-		t.Fatalf("fallback REPL contract = %q, want the plain contract", got)
+	if got := displayContractFor(outputCapabilities{surface: outputSurfaceLineANSI}); got != richTerminalDisplayContract {
+		t.Fatalf("ANSI line contract = %q, want the rich contract", got)
 	}
-	if got := displayContractFor(conversationModeOneShot, false); got != plainDisplayContract {
-		t.Fatalf("one-shot contract = %q, want the plain contract", got)
+	if got := displayContractFor(outputCapabilities{surface: outputSurfaceLineRaw}); got != markdownDisplayContract {
+		t.Fatalf("raw line contract = %q, want the Markdown-capable contract", got)
+	}
+	if strings.Contains(strings.ToLower(markdownDisplayContract), "do not use markdown") {
+		t.Fatalf("raw contract still forbids Markdown: %q", markdownDisplayContract)
 	}
 }
 
@@ -327,20 +330,20 @@ func TestApplyDisplayContract(t *testing.T) {
 	user := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"}
 
 	// Persona present: the contract is appended to the same system message.
-	got := applyDisplayContract([]messages.ChatMessage{system("be a pirate"), user}, tuiDisplayContract)
-	if len(got) != 2 || got[0].Content != "be a pirate\n\n"+tuiDisplayContract {
+	got := applyDisplayContract([]messages.ChatMessage{system("be a pirate"), user}, richTerminalDisplayContract)
+	if len(got) != 2 || got[0].Content != "be a pirate\n\n"+richTerminalDisplayContract {
 		t.Fatalf("persona merge = %+v", got)
 	}
 
 	// A legacy default seeded into an old transcript is replaced outright.
-	got = applyDisplayContract([]messages.ChatMessage{system(legacySystemPromptDefaults[0]), user}, tuiDisplayContract)
-	if len(got) != 2 || got[0].Content != tuiDisplayContract {
+	got = applyDisplayContract([]messages.ChatMessage{system(legacySystemPromptDefaults[0]), user}, richTerminalDisplayContract)
+	if len(got) != 2 || got[0].Content != richTerminalDisplayContract {
 		t.Fatalf("legacy replace = %+v", got)
 	}
 
 	// No system message: one is prepended holding only the contract.
-	got = applyDisplayContract([]messages.ChatMessage{user}, plainDisplayContract)
-	if len(got) != 2 || got[0].Role != messages.MessageRoleSystem || got[0].Content != plainDisplayContract || got[1].Content != "hi" {
+	got = applyDisplayContract([]messages.ChatMessage{user}, markdownDisplayContract)
+	if len(got) != 2 || got[0].Role != messages.MessageRoleSystem || got[0].Content != markdownDisplayContract || got[1].Content != "hi" {
 		t.Fatalf("prepend = %+v", got)
 	}
 
@@ -353,8 +356,8 @@ func TestApplyDisplayContract(t *testing.T) {
 }
 
 func TestSendTimeContractsAppendContextMechanics(t *testing.T) {
-	joined := sendTimeContracts(tuiDisplayContract)
-	if joined != tuiDisplayContract+"\n\n"+contextMechanicsContract {
+	joined := sendTimeContracts(richTerminalDisplayContract)
+	if joined != richTerminalDisplayContract+"\n\n"+contextMechanicsContract {
 		t.Fatalf("joined contracts = %q", joined)
 	}
 	if got := sendTimeContracts(""); got != contextMechanicsContract {

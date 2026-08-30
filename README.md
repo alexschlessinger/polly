@@ -67,8 +67,12 @@ provider/model` or `POLLYTOOL_MODEL`.
 
 Running `polly` with no `--prompt` and no piped stdin opens a full-screen
 terminal UI (built on tcell/gotui) with streaming responses, scrollback,
-reverse history search, and bracketed paste. If the terminal isn't a TTY
-(`TERM=dumb`, redirected I/O), polly falls back to plain one-shot mode.
+reverse history search, and bracketed paste. When the managed screen cannot
+run (`TERM=dumb` or redirected terminal endpoints), polly uses its line
+frontend instead. On a capable stdout TTY, line output buffers each assistant
+segment and renders Markdown with ANSI styling. Redirected output and
+`NO_COLOR` stream the model's original response unchanged; Polly adds no
+terminal escape or graphics sequences.
 
 ### Sessions
 
@@ -154,11 +158,12 @@ labeled `not saved`. Reloaded sessions show these turns with a
 
 **Seeing them.** The TUI renders static thumbnails when assistant Markdown
 contains `![alt](./path.png)`; tool results may use the same form or emit a
-local image path on a line by itself. Relative paths resolve from polly's
-working directory. Remote images, paths buried in prose or JSON, and paths
-inside code blocks are not opened. Thumbnails preserve the source aspect
-ratio inside a maximum 50-column by 10-row box, accounting for rectangular
-terminal cells.
+local image path on a line by itself. Rich line output also renders local
+images deliberately embedded in assistant Markdown, but does not open images
+directly from tool results. Relative paths resolve from polly's working
+directory. Remote images, paths buried in prose or JSON, and paths inside code
+blocks are not opened. Thumbnails preserve the source aspect ratio inside a
+maximum 50-column by 10-row box, accounting for rectangular terminal cells.
 
 Kitty graphics are used on Kitty, Ghostty, and WezTerm; Sixel on Windows
 Terminal 1.22+ and foot; other terminals get a compact caption/path fallback.
@@ -167,7 +172,8 @@ needs explicit multiplexer passthrough support. Override auto-detection with
 `POLLYTOOL_IMAGE_PROTOCOL=kitty`, `sixel`, or `none`. On image-capable
 terminals the startup splash draws the polly logo as a native image (embedded
 in the binary); elsewhere, and on short terminals, it keeps the half-block
-ANSI bird.
+ANSI bird. The same protocol selection applies to rich line output, but
+redirected stdout and `NO_COLOR` always suppress native graphics.
 
 **Sending them.** Typing a path to an existing local image attaches it on
 submit — `describe .assets/polly.png` just works. `Ctrl-V` grabs an image off
@@ -237,10 +243,11 @@ polly --purge                               # delete all (asks first)
   `-m openai/gpt-5.4-mini`, the context switches to GPT-5.4-mini.
 - Changing the system prompt of a context with existing history resets the
   conversation to keep things consistent.
-- The system prompt holds only your persona. Output-formatting guidance (plain
-  text for pipes, markdown for the TUI) is a per-frontend display contract
-  composed into each request and never stored, so a context moves freely
-  between one-shot use and the REPL.
+- The system prompt holds only your persona. Markdown-capability and terminal
+  rendering guidance is a per-frontend display contract composed into each
+  request and never stored, so a context moves freely between one-shot use and
+  the REPL. Markdown is available rather than mandatory; explicit format
+  requests still win.
 - Tools are part of the deal: load `-t ./build.sh` in a context once and it's
   restored on every later use of that context.
 

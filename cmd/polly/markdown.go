@@ -16,8 +16,8 @@ import (
 // mdParser is the shared goldmark instance used to render assistant markdown.
 // Only the parser is used; rendering to gotui markup is done by the walker
 // below so every color stays inside the semantic ANSI palette. Capability
-// changes here must be reflected in tuiDisplayContract (display_contract.go),
-// which tells the model what this renderer supports.
+// changes here must be reflected in richTerminalDisplayContract
+// (display_contract.go), which tells the model what this renderer supports.
 var mdParser = goldmark.New(goldmark.WithExtensions(extension.Strikethrough, extension.Table))
 
 // renderMarkdown converts markdown source into gotui style markup: block

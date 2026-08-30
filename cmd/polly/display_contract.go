@@ -5,22 +5,27 @@ import (
 )
 
 // The display contract tells the model how its output will be rendered. It is
-// composed into the request's system message at send time — per frontend, never
-// persisted — so the stored system prompt holds only the user's persona and a
-// context moves freely between the pipe, the fallback REPL, and the managed TUI.
+// composed into the request's system message at send time — per output
+// capability, never persisted — so the stored system prompt holds only the
+// user's persona and a context moves freely between the pipe, fallback REPL,
+// and managed TUI.
 const (
-	// plainDisplayContract covers one-shot/pipe output and the fallback line
-	// REPL, where markdown would be noise on raw stdout.
-	plainDisplayContract = "Your output is written to a plain unix terminal or pipe. Be terse. Do not use markdown; plain text only."
+	// markdownDisplayContract covers every human-facing frontend. Markdown is
+	// an available content format, not a requirement: raw line output preserves
+	// the source while rich terminal surfaces render it.
+	markdownDisplayContract = "Your output is emitted as Markdown source or rendered Markdown depending on the terminal. Markdown is supported but optional; follow explicit user formatting requests. Be terse. Tag code fences with a language for syntax highlighting. Raw HTML is not rendered on rich terminal surfaces. Markdown tables render as aligned monospace columns; keep cells short so rows fit the terminal. To show Markdown source literally, fence it. When the user gives you an image path or image URL, attach it with the view_image tool so you can actually see it; that only makes the image visible to you, not the user."
 
-	// tuiDisplayContract covers the managed REPL. It must mirror what the
-	// renderer in markdown.go actually supports: strikethrough and tables
+	// localImageDisplayContract is added only for surfaces that interpret local
+	// Markdown images. Native-capable terminals draw a thumbnail; other rich
+	// terminals retain the caption/path fallback.
+	localImageDisplayContract = "This terminal surface interprets local Markdown image references. When the user wants to see an image, embed it in your reply as ![alt](path) (or ![alt](url)); view_image alone shows them nothing. Local images render as native thumbnails when supported and as compact captions otherwise."
+
+	// richTerminalDisplayContract must mirror what the managed REPL and rich
+	// line renderer in markdown.go actually support: strikethrough and tables
 	// beyond core markdown, HTML blocks displayed as source, fence language
 	// tags driving chroma highlighting, and local image references rendered
-	// inline. The view_image guidance sits here rather than in path-sniffing
-	// composer logic: when the user mentions an image path or URL, the model
-	// calls the tool itself.
-	tuiDisplayContract = "Your output is displayed in a terminal TUI that renders markdown. Be terse. Tag code fences with a language for syntax highlighting. Raw HTML is not rendered. Markdown tables render as aligned monospace columns; keep cells short so rows fit the terminal. Display a local image file inline with ![alt](path). To show markdown source literally, fence it. When the user gives you an image path or image URL, attach it with the view_image tool so you can actually see it."
+	// inline.
+	richTerminalDisplayContract = markdownDisplayContract + "\n\n" + localImageDisplayContract
 
 	// contextMechanicsContract teaches the proactive habits the projection's
 	// in-band forms cannot: receipts, stubs, and the omission marker explain
@@ -62,14 +67,13 @@ func normalizeLegacySystemPrompt(s string) string {
 	return s
 }
 
-// displayContractFor selects the contract for the active frontend. One-shot and
-// the fallback line REPL both write plain text; only the managed REPL renders
-// markdown.
-func displayContractFor(mode conversationMode, managedREPL bool) string {
-	if mode == conversationModeREPL && managedREPL {
-		return tuiDisplayContract
+// displayContractFor describes what the active output surface can interpret.
+// Raw output still accepts Markdown — Polly simply preserves the source.
+func displayContractFor(capabilities outputCapabilities) string {
+	if capabilities.interpretsLocalImages() {
+		return richTerminalDisplayContract
 	}
-	return plainDisplayContract
+	return markdownDisplayContract
 }
 
 // applyDisplayContract merges the contract into the request's system message.

@@ -469,7 +469,7 @@ func TestTurnComposesContextMechanicsContractExceptForSchemas(t *testing.T) {
 		return &conversationState{
 			session: session, artifactStore: artifactStore, toolRegistry: registry,
 			agent:           llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
-			displayContract: plainDisplayContract,
+			displayContract: markdownDisplayContract,
 		}, model
 	}
 	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128}}
@@ -489,14 +489,14 @@ func TestTurnComposesContextMechanicsContractExceptForSchemas(t *testing.T) {
 	state, model := newState(t, "mechanics-plain")
 	runTurn(t, state, nil)
 	request := projectedRequestText(model.request)
-	if !strings.Contains(request, contextMechanicsContract) || !strings.Contains(request, plainDisplayContract) {
+	if !strings.Contains(request, contextMechanicsContract) || !strings.Contains(request, markdownDisplayContract) {
 		t.Fatalf("request lacks send-time contracts: %q", request)
 	}
 
 	schemaState, schemaModel := newState(t, "mechanics-schema")
 	runTurn(t, schemaState, llm.SchemaFromJSON(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`))
 	request = projectedRequestText(schemaModel.request)
-	if strings.Contains(request, contextMechanicsContract) || strings.Contains(request, plainDisplayContract) {
+	if strings.Contains(request, contextMechanicsContract) || strings.Contains(request, markdownDisplayContract) {
 		t.Fatalf("structured-output request carries send-time contracts: %q", request)
 	}
 }

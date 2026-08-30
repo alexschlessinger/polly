@@ -28,23 +28,39 @@ type TurnUI interface {
 	FinishTextTurn()
 }
 
-// lineTurnUI prints turn output to an io.Writer one line at a time.
-// Used for one-shot mode and as the input loop for the fallback REPL.
+// lineTurnUI writes raw streamed output or buffered ANSI Markdown according to
+// the resolved stdout capabilities. It serves one-shot and fallback REPL turns.
 type lineTurnUI struct {
 	config          *Config
 	writer          io.Writer
 	errWriter       io.Writer
 	approver        *toolApprover
+	capabilities    outputCapabilities
+	imageBaseDir    string
+	markdownBuffer  strings.Builder
+	bufferSeparator bool
 	needsSeparator  bool
 	contentPrinted  bool
 	endsWithNewline bool
+	finished        bool
 }
 
 func newLineTurnUI(config *Config, inputReader *bufio.Reader) *lineTurnUI {
+	return newLineTurnUIWithCapabilities(
+		config,
+		inputReader,
+		outputCapabilities{surface: outputSurfaceLineRaw, columns: 80},
+	)
+}
+
+func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, capabilities outputCapabilities) *lineTurnUI {
+	baseDir, _ := os.Getwd()
 	ui := &lineTurnUI{
-		config:    config,
-		writer:    os.Stdout,
-		errWriter: os.Stderr,
+		config:       config,
+		writer:       os.Stdout,
+		errWriter:    os.Stderr,
+		capabilities: capabilities,
+		imageBaseDir: baseDir,
 	}
 	// Only prompt for confirmation when stdin can actually answer. A piped
 	// prompt or `< /dev/null` leaves the approval reader at EOF, which would
@@ -56,16 +72,40 @@ func newLineTurnUI(config *Config, inputReader *bufio.Reader) *lineTurnUI {
 }
 
 func (ui *lineTurnUI) Start() {
+	ui.markdownBuffer.Reset()
+	ui.bufferSeparator = false
 	ui.needsSeparator = false
 	ui.contentPrinted = false
 	ui.endsWithNewline = false
+	ui.finished = false
 }
-func (ui *lineTurnUI) Stop() {}
+
+func (ui *lineTurnUI) Stop() {
+	if ui.finished || ui.config.SchemaPath != "" || !ui.capabilities.rendersLineANSI() {
+		return
+	}
+	ui.flushBufferedMarkdown()
+	if ui.contentPrinted && !ui.endsWithNewline {
+		fmt.Fprintln(ui.writer)
+		ui.endsWithNewline = true
+	}
+}
 
 func (ui *lineTurnUI) ShowThinking(chunk string) {}
 
 func (ui *lineTurnUI) AppendAssistantText(content string) {
 	if ui.config.SchemaPath != "" {
+		return
+	}
+	if ui.capabilities.rendersLineANSI() {
+		if content == "" {
+			return
+		}
+		if ui.needsSeparator {
+			ui.bufferSeparator = true
+			ui.needsSeparator = false
+		}
+		ui.markdownBuffer.WriteString(content)
 		return
 	}
 	if ui.needsSeparator {
@@ -80,7 +120,27 @@ func (ui *lineTurnUI) AppendAssistantText(content string) {
 	}
 }
 
+func (ui *lineTurnUI) flushBufferedMarkdown() {
+	if !ui.capabilities.rendersLineANSI() || ui.markdownBuffer.Len() == 0 {
+		return
+	}
+	if ui.bufferSeparator {
+		fmt.Fprintln(ui.writer)
+		ui.endsWithNewline = true
+		ui.bufferSeparator = false
+	}
+	rendered := renderLineMarkdown(ui.markdownBuffer.String(), ui.imageBaseDir, ui.capabilities)
+	ui.markdownBuffer.Reset()
+	if len(rendered) == 0 {
+		return
+	}
+	_, _ = ui.writer.Write(rendered)
+	ui.contentPrinted = true
+	ui.endsWithNewline = rendered[len(rendered)-1] == '\n'
+}
+
 func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
+	ui.flushBufferedMarkdown()
 	ui.needsSeparator = true
 	if !toolDisplayEnabled(ui.config) {
 		return
@@ -128,6 +188,7 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 }
 
 func (ui *lineTurnUI) AppendWarning(text string) {
+	ui.flushBufferedMarkdown()
 	// Warnings ride stderr so a captured stdout answer stays clean. Terminate
 	// any unfinished stdout line first so a shared terminal doesn't glue the
 	// warning onto the tail of the streamed answer.
@@ -141,10 +202,12 @@ func (ui *lineTurnUI) AppendWarning(text string) {
 func (ui *lineTurnUI) RecordTurnTokens(in, out int) {}
 
 func (ui *lineTurnUI) FinishTextTurn() {
+	ui.flushBufferedMarkdown()
 	if ui.config.SchemaPath == "" && !ui.endsWithNewline {
 		fmt.Fprintln(ui.writer)
 		ui.endsWithNewline = true
 	}
+	ui.finished = true
 }
 
 func trimLeadingResponseNewlines(content string) string {
