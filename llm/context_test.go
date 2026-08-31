@@ -14,6 +14,14 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
+// artifactBirthPreview is the provider-visible form a stored tool result is
+// born with when it carries no media descriptors: what production computes
+// via artifactPreviewWithDescriptors on a descriptor-free message.
+func artifactBirthPreview(ref artifacts.Ref, data []byte) string {
+	head, tail := previewWindows(data)
+	return artifactPreview(ref, head, tail, toolPreviewTokenLimit*4)
+}
+
 func TestProjectToolResultThreshold(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

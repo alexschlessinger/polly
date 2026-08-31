@@ -406,13 +406,6 @@ func previewWindows(data []byte) ([]byte, []byte) {
 	return data[:window], data[len(data)-window:]
 }
 
-// artifactBirthPreview is a stored tool result's permanent provider-visible
-// form, computed once from the bytes in hand.
-func artifactBirthPreview(ref artifacts.Ref, data []byte) string {
-	head, tail := previewWindows(data)
-	return artifactPreview(ref, head, tail, toolPreviewTokenLimit*4)
-}
-
 // ValidateImageProjection runs the deterministic image-selection phase of the
 // provider projection over the given history without reading any artifact
 // bytes. It reports the errors a subsequent Agent.Run would hit regardless of
