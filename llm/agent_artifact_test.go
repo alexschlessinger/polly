@@ -35,8 +35,15 @@ func TestAgentExternalizesRichToolImageAndAttachesItOnce(t *testing.T) {
 	store := newTestArtifactStore()
 	registry := tools.NewToolRegistry([]tools.Tool{rich, pathTool})
 	agent := NewAgent(model, registry, AgentConfig{ArtifactStore: store})
+	var observedTool messages.ChatMessage
 
-	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: messages.User("render it")}, nil)
+	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: messages.User("render it")}, &AgentCallbacks{
+		OnToolResult: func(call messages.ChatMessageToolCall, result messages.ChatMessage) {
+			if call.Name == "render" {
+				observedTool = result
+			}
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +60,9 @@ func TestAgentExternalizesRichToolImageAndAttachesItOnce(t *testing.T) {
 	}
 	if len(durableTool.Parts) != 1 || durableTool.Parts[0].Artifact == nil || durableTool.Parts[0].Artifact.Kind != artifacts.KindImage {
 		t.Fatalf("durable rich tool result = %#v", durableTool)
+	}
+	if len(observedTool.Parts) != 1 || observedTool.Parts[0].Artifact == nil || observedTool.Parts[0].Artifact.ID != durableTool.Parts[0].Artifact.ID {
+		t.Fatalf("typed tool observer = %#v, want durable image artifact %q", observedTool, durableTool.Parts[0].Artifact.ID)
 	}
 	if token := durableTool.Parts[0].Artifact.ImageToken; !stableImageTokenPattern.MatchString(token) || !strings.Contains(durableTool.Content, token) {
 		t.Fatalf("tool image has no visible stable token: ref=%#v content=%q", durableTool.Parts[0].Artifact, durableTool.Content)

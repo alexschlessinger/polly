@@ -85,6 +85,11 @@ type AgentCallbacks struct {
 	// OnToolEnd is called after each tool executes
 	OnToolEnd func(call messages.ChatMessageToolCall, result string, duration time.Duration, err error)
 
+	// OnToolResult follows OnToolEnd with the durable typed result that will be
+	// replayed to the model. Unlike the textual observer above, it preserves
+	// image/artifact parts for human-facing inspection receipts.
+	OnToolResult func(call messages.ChatMessageToolCall, result messages.ChatMessage)
+
 	// OnComplete is called when the final response is ready (no more tool calls)
 	OnComplete func(response *messages.ChatMessage)
 
@@ -509,6 +514,9 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 	// distinguish it from older tool messages whose outcome is unknown. Tool
 	// failures must not use the terminal stream-error metadata.
 	msg.SetToolSucceeded(err == nil)
+	if cb != nil && cb.OnToolResult != nil {
+		cb.OnToolResult(tc, cloneMessages([]messages.ChatMessage{msg})[0])
+	}
 	return msg, nil
 }
 
