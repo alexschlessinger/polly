@@ -71,6 +71,52 @@ func TestRenderMarkdownWithLocalImagesSanitizesPrivateMarkers(t *testing.T) {
 	}
 }
 
+func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
+	withDisplayTTY(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shot.png")
+	writeImageFixture(t, path, 8, 4)
+
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.imageBaseDir = dir
+	m.beginTurn("inspect image")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	marker := string(transcriptImageMarker(0))
+	tui.ShowThinking("provider " + marker + " reasoning survives")
+	reasoning := m.currentReasoningRecord()
+	if reasoning == nil || !m.toggleReasoning(reasoning.id, 80) {
+		t.Fatal("reasoning disclosure did not expand")
+	}
+
+	call := messages.ChatMessageToolCall{ID: "image", Name: "screenshot"}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+	tui.AppendToolEnd(call, path, time.Millisecond, nil)
+	tool := m.currentToolDisclosure()
+	if tool == nil || !m.toggleToolDisclosure(tool.id) {
+		t.Fatal("tool disclosure did not expand")
+	}
+
+	var activity transcriptDisplayBlock
+	for _, block := range m.transcriptDisplayEntries(80) {
+		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
+			activity = block
+			break
+		}
+	}
+	if len(activity.images) != 1 {
+		t.Fatalf("merged activity images = %#v, want one tool image", activity.images)
+	}
+	if got := strings.Count(activity.text, marker); got != transcriptImageThumbnailRows {
+		t.Fatalf("merged activity contains %d slot markers, want %d tool-generated rows", got, transcriptImageThumbnailRows)
+	}
+	visible := strings.Join(transcriptRowsText(m.transcriptRows(80)), "\n")
+	if !strings.Contains(visible, "provider") || !strings.Contains(visible, "reasoning survives") {
+		t.Fatalf("tool image consumed expanded reasoning row: %q", visible)
+	}
+}
+
 func TestRenderMarkdownLeavesRemoteAndMissingImagesAsLinks(t *testing.T) {
 	dir := t.TempDir()
 	rendered, images, _ := renderMarkdownWithLocalImages("![remote](https://example.com/a.png) ![missing](missing.png)", dir, false)

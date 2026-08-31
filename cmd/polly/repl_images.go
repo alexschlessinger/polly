@@ -63,12 +63,17 @@ type markdownRenderState struct {
 }
 
 type transcriptDisplayBlock struct {
-	key              string
-	text             string
-	images           []transcriptImage
-	reasoningID      int64
-	toolDisclosureID int64
-	turnTrailerID    int64
+	key                     string
+	text                    string
+	images                  []transcriptImage
+	reasoningID             int64
+	reasoningIDs            []int64
+	toolDisclosureID        int64
+	toolDisclosureIDs       []int64
+	turnTrailerID           int64
+	activityFields          []turnDockPlacement
+	activityReasoningDetail string
+	activityToolDetail      string
 }
 
 type transcriptImageSpan struct {
