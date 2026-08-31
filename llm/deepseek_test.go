@@ -1,7 +1,10 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm/openai"
@@ -184,5 +187,37 @@ func TestChatDeltaResolvesEitherReasoningField(t *testing.T) {
 				t.Fatalf("message.ReasoningText() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDeepSeekStreamEmitsReasoningBeforeContent: when one delta carries both
+// reasoning_content and content, reasoning must be emitted first — it
+// precedes the answer it produced.
+func TestDeepSeekStreamEmitsReasoningBeforeContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(
+			"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"why\",\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n" +
+				"data: [DONE]\n\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewDeepSeekClient("test-key", server.URL)
+	events := client.ChatCompletionStream(context.Background(), &CompletionRequest{
+		Model:    "deepseek-reasoner",
+		Messages: messages.User("hi"),
+	}, messages.NewStreamProcessor())
+
+	var order []messages.StreamEventType
+	for event := range events {
+		switch event.Type {
+		case messages.EventTypeError:
+			t.Fatalf("stream error: %v", event.Error)
+		case messages.EventTypeReasoning, messages.EventTypeContent:
+			order = append(order, event.Type)
+		}
+	}
+	want := []messages.StreamEventType{messages.EventTypeReasoning, messages.EventTypeContent}
+	if len(order) != 2 || order[0] != want[0] || order[1] != want[1] {
+		t.Fatalf("emission order = %v, want %v", order, want)
 	}
 }

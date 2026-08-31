@@ -72,11 +72,14 @@ func (d DeepSeekClient) handleStreaming(ctx context.Context, params *openai.Chat
 			continue
 		}
 		delta := chunk.Choices[0].Delta
-		if delta.Content != "" {
-			streamCore.EmitContent(delta.Content)
-		}
+		// Reasoning first: reasoning_content arrives before the answer it
+		// produced, and emitting it after would invert that order for
+		// anything displaying the stream.
 		if reasoning := delta.ReasoningText(); reasoning != "" {
 			streamCore.EmitReasoning(reasoning)
+		}
+		if delta.Content != "" {
+			streamCore.EmitContent(delta.Content)
 		}
 	}
 
