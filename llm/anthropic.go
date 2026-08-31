@@ -108,6 +108,13 @@ func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string,
 	// Legacy enabled/budget_tokens mode. A named level maps to its canonical
 	// budget; a raw budget passes through; Dynamic has no legacy equivalent, so
 	// it falls back to the medium canonical budget.
+	if maxTokens <= minThinkingBudget {
+		// budget_tokens must be at least the 1024 floor and strictly less
+		// than max_tokens, so no valid budget exists: any value would be a
+		// guaranteed 400. Dropping thinking lets the request succeed.
+		slog.Debug("anthropic_thinking_disabled", "reason", "max_tokens_too_small", "max_tokens", maxTokens)
+		return nil
+	}
 	budget, ok := effort.AsBudget()
 	if !ok {
 		budget = levelBudgets[LevelMedium]
@@ -118,12 +125,15 @@ func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string,
 	}
 }
 
+// minThinkingBudget is Anthropic's floor for legacy budget_tokens.
+const minThinkingBudget = 1024
+
 // clampThinkingBudget keeps a legacy thinking budget within Anthropic's limits:
-// at least 1024 tokens, and strictly less than max_tokens (the API 400s
-// otherwise). When max_tokens is too small to leave room, the floor wins.
+// at least minThinkingBudget tokens, and strictly less than max_tokens (the API
+// 400s otherwise). Callers guarantee maxTokens > minThinkingBudget; when it
+// isn't, getThinkingConfig drops thinking instead of clamping.
 func clampThinkingBudget(budget, maxTokens int) int {
-	const minThinkingBudget = 1024
-	if maxTokens > minThinkingBudget && budget > maxTokens-1 {
+	if budget > maxTokens-1 {
 		budget = maxTokens - 1
 	}
 	if budget < minThinkingBudget {
@@ -471,7 +481,10 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 
 		case messages.MessageRoleTool:
 			if strings.TrimSpace(msg.ToolCallID) != "" {
-				isError := false
+				// A durably recorded failure travels as is_error, so the
+				// model can tell "ran and failed" from ordinary output.
+				succeeded, known := msg.ToolSucceeded()
+				isError := known && !succeeded
 				result := &anthropic.ContentBlock{
 					Type:      "tool_result",
 					ToolUseID: msg.ToolCallID,

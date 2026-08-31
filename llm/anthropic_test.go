@@ -171,6 +171,16 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			wantBudget:  int64(levelBudgets[LevelMedium]),
 		},
 		{
+			// A legacy budget must be >=1024 and < max_tokens; when
+			// max_tokens leaves no room, thinking is dropped rather than
+			// sending a guaranteed 400.
+			name:        "sonnet_4_5_legacy_small_maxtokens_drops_thinking",
+			model:       "claude-sonnet-4-5-20250929",
+			effort:      EffortLevel(LevelLow),
+			wantTemp:    true,
+			wantEnabled: false,
+		},
+		{
 			name:         "sonnet_4_5_legacy_no_thinking",
 			model:        "claude-sonnet-4-5-20250929",
 			effort:       EffortOff(),
@@ -448,5 +458,37 @@ func TestAnthropicEmptyToolResultOmitsContent(t *testing.T) {
 	}
 	if len(result.Content) != 0 {
 		t.Fatalf("empty tool result content = %#v, want none", result.Content)
+	}
+}
+
+// TestAnthropicToolResultErrorFlag: a durably recorded tool failure travels
+// to Anthropic as is_error:true; successes and results with no recorded
+// outcome stay is_error:false.
+func TestAnthropicToolResultErrorFlag(t *testing.T) {
+	failed := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: "toolu_1", Content: "boom"}
+	failed.SetToolSucceeded(false)
+	succeeded := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: "toolu_2", Content: "ok"}
+	succeeded.SetToolSucceeded(true)
+	unrecorded := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: "toolu_3", Content: "legacy"}
+
+	params, _ := MessagesToAnthropicParams([]messages.ChatMessage{failed, succeeded, unrecorded})
+
+	got := map[string]bool{}
+	for _, param := range params {
+		for _, block := range param.Content {
+			if block.Type == "tool_result" && block.IsError != nil {
+				got[block.ToolUseID] = *block.IsError
+			}
+		}
+	}
+	want := map[string]bool{"toolu_1": true, "toolu_2": false, "toolu_3": false}
+	for id, wantErr := range want {
+		gotErr, ok := got[id]
+		if !ok {
+			t.Fatalf("tool_result %s missing is_error", id)
+		}
+		if gotErr != wantErr {
+			t.Errorf("is_error for %s = %v, want %v", id, gotErr, wantErr)
+		}
 	}
 }
