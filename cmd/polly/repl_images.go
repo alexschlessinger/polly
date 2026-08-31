@@ -32,6 +32,8 @@ const (
 	// accounts for the image and terminal-cell aspect ratios.
 	transcriptImageThumbnailRows = 10
 	transcriptImageThumbnailCols = 50
+	inspectionImageThumbnailRows = 6
+	inspectionImageThumbnailCols = 40
 	minimumImageThumbnailCols    = 8
 
 	maxLocalImageBytes  = images.MaxSourceBytes
@@ -48,6 +50,9 @@ type transcriptImage struct {
 	Width       int
 	Height      int
 	Version     string
+	Inspection  bool
+	MaxCols     int
+	MaxRows     int
 }
 
 type markdownRenderState struct {
@@ -74,6 +79,7 @@ type transcriptDisplayBlock struct {
 	activityFields          []turnDockPlacement
 	activityReasoningDetail string
 	activityToolDetail      string
+	activityImageDetail     string
 }
 
 type transcriptImageSpan struct {
@@ -146,21 +152,56 @@ func offsetTranscriptImageMarkers(s string, offset int) string {
 	}, s)
 }
 
-func transcriptImageSlot(index int, prefix string) string {
+func transcriptImageBounds(img transcriptImage) (int, int) {
+	cols, rows := transcriptImageThumbnailCols, transcriptImageThumbnailRows
+	if img.MaxCols > 0 {
+		cols = min(cols, img.MaxCols)
+	}
+	if img.MaxRows > 0 {
+		rows = min(rows, img.MaxRows)
+	}
+	return max(cols, 1), max(rows, 1)
+}
+
+func transcriptImageSlot(index int, prefix string, rows int) string {
 	line := prefix + string(transcriptImageMarker(index))
-	return strings.Repeat(line+"\n", transcriptImageThumbnailRows-1) + line
+	return strings.Repeat(line+"\n", rows-1) + line
+}
+
+func transcriptImageCaptionText(img transcriptImage) string {
+	label := strings.TrimSpace(sanitizeTranscriptImageText(img.Alt))
+	if label == "" {
+		label = strings.TrimSpace(sanitizeTranscriptImageText(filepath.Base(img.Path)))
+	}
+	if label == "" {
+		label = "image"
+	}
+	label = truncate(label, 80)
+	if img.Inspection {
+		parts := []string{"viewed", label}
+		if img.Width > 0 && img.Height > 0 {
+			parts = append(parts, fmt.Sprintf("%d×%d", img.Width, img.Height))
+		}
+		return strings.Join(parts, " · ")
+	}
+	displayPath := sanitizeTranscriptImageText(img.DisplayPath)
+	if displayPath == "" {
+		displayPath = sanitizeTranscriptImageText(img.Path)
+	}
+	return "image: " + label + " · " + truncate(displayPath, 100)
+}
+
+func sanitizeTranscriptImageText(text string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, stripTranscriptImageMarkers(text))
 }
 
 func transcriptImageCaption(img transcriptImage) string {
-	label := strings.TrimSpace(stripTranscriptImageMarkers(img.Alt))
-	if label == "" {
-		label = stripTranscriptImageMarkers(filepath.Base(img.Path))
-	}
-	displayPath := stripTranscriptImageMarkers(img.DisplayPath)
-	if displayPath == "" {
-		displayPath = stripTranscriptImageMarkers(img.Path)
-	}
-	return styled("image: "+label+" · "+truncate(displayPath, 100), "muted", "")
+	return styledCodeLiteral(transcriptImageCaptionText(img), "muted", "")
 }
 
 func renderTranscriptImage(index int, img transcriptImage, prefix string, leadingNewline, trailingNewline bool) string {
@@ -170,8 +211,15 @@ func renderTranscriptImage(index int, img transcriptImage, prefix string, leadin
 	}
 	b.WriteString(prefix)
 	b.WriteString(transcriptImageCaption(img))
+	if img.Path == "" {
+		if trailingNewline {
+			b.WriteByte('\n')
+		}
+		return b.String()
+	}
 	b.WriteByte('\n')
-	b.WriteString(transcriptImageSlot(index, prefix))
+	_, rows := transcriptImageBounds(img)
+	b.WriteString(transcriptImageSlot(index, prefix, rows))
 	if trailingNewline {
 		b.WriteByte('\n')
 	}
@@ -187,6 +235,14 @@ func renderTranscriptImages(images []transcriptImage, prefix string) string {
 		blocks = append(blocks, renderTranscriptImage(i, img, prefix, false, false))
 	}
 	return strings.Join(blocks, "\n")
+}
+
+// renderInspectionTranscriptImages gives model-viewed media its own subtle
+// rail beneath the Images disclosure. The rail is text-layer chrome; native
+// Kitty/Sixel placements begin immediately to its right.
+func renderInspectionTranscriptImages(images []transcriptImage) string {
+	prefix := "  " + styled("│", "muted", "") + " "
+	return renderTranscriptImages(images, prefix)
 }
 
 // resolveLocalTranscriptImage accepts only explicit filesystem references to
@@ -380,14 +436,19 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 			changed = true
 		}
 	}
-	// Expanded tool rows project their canonical image sidecars onto the
-	// disclosure header. Keep the canonical copies fresh too, so collapsing and
-	// reopening cannot resurrect stale dimensions or file versions.
+	// Tool and Images disclosures project canonical sidecars into transient
+	// activity blocks. Keep those copies fresh so reopening either disclosure
+	// cannot resurrect stale dimensions or file versions.
 	for _, record := range m.toolDisclosures {
 		for rowIndex := range record.rows {
 			updated, copied := refresh(record.rows[rowIndex].images)
 			if copied {
 				record.rows[rowIndex].images = updated
+				changed = true
+			}
+			updated, copied = refresh(record.rows[rowIndex].inspectionImages)
+			if copied {
+				record.rows[rowIndex].inspectionImages = updated
 				changed = true
 			}
 		}
@@ -528,8 +589,9 @@ func locateTranscriptImages(rows [][]ui.Cell, images []transcriptImage, native b
 		if markerIndex >= 0 {
 			geometry, ok := geometries[markerIndex]
 			if !ok {
-				maxCols := min(transcriptImageThumbnailCols, width-markerX)
-				cols, slotRows, fitByRows := imageCellGeometry(images[markerIndex], maxCols, transcriptImageThumbnailRows, cellWidth, cellHeight)
+				imageMaxCols, imageMaxRows := transcriptImageBounds(images[markerIndex])
+				maxCols := min(imageMaxCols, width-markerX)
+				cols, slotRows, fitByRows := imageCellGeometry(images[markerIndex], maxCols, imageMaxRows, cellWidth, cellHeight)
 				geometry = slotGeometry{cols: cols, rows: slotRows, fitByRows: fitByRows}
 				geometries[markerIndex] = geometry
 			}

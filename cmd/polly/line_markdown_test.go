@@ -273,6 +273,83 @@ func TestLineTurnUIToolResultNeverRendersImage(t *testing.T) {
 	}
 }
 
+func TestLineTurnUITypedToolImageRendersInspectionPreview(t *testing.T) {
+	path := t.TempDir() + "/inspected.png"
+	writeImageFixture(t, path, 8, 4)
+	img, ok := resolveLocalTranscriptImage(path, "inspected.png", "")
+	if !ok {
+		t.Fatal("inspection fixture did not resolve")
+	}
+	img.Inspection = true
+	img.MaxCols = inspectionImageThumbnailCols
+	img.MaxRows = inspectionImageThumbnailRows
+
+	var out, errOut bytes.Buffer
+	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{
+		surface:       outputSurfaceLineANSI,
+		imageProtocol: terminalImageKitty,
+		columns:       80,
+	})
+	ui.writer = &out
+	ui.errWriter = &errOut
+	ui.stderrTTY = true
+	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []transcriptImage{img})
+
+	if out.Len() != 0 {
+		t.Fatalf("typed tool image polluted stdout: %q", out.String())
+	}
+	if got := errOut.String(); !strings.Contains(got, "viewed · inspected.png · 8×4") || !strings.Contains(got, "\x1b_Ga=T") || !strings.Contains(got, "c=24") {
+		t.Fatalf("rich inspection preview = %q", got)
+	}
+}
+
+func TestLineTurnUIRedirectedStderrKeepsInspectionTextOnly(t *testing.T) {
+	img := transcriptImage{
+		Path: "/tmp/inspected.png", Alt: "inspected.png", Width: 8, Height: 4,
+		Inspection: true, MaxCols: inspectionImageThumbnailCols, MaxRows: inspectionImageThumbnailRows,
+	}
+	var out, errOut bytes.Buffer
+	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{
+		surface:       outputSurfaceLineANSI,
+		imageProtocol: terminalImageKitty,
+		columns:       80,
+	})
+	ui.writer = &out
+	ui.errWriter = &errOut
+	ui.stderrTTY = false
+	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []transcriptImage{img})
+
+	if out.Len() != 0 || strings.Contains(errOut.String(), "\x1b") {
+		t.Fatalf("redirected inspection output stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	if got := errOut.String(); !strings.Contains(got, "viewed · inspected.png · 8×4") {
+		t.Fatalf("redirected inspection receipt = %q", got)
+	}
+}
+
+func TestLineTurnUIRawToolImageEmitsTextReceiptOnly(t *testing.T) {
+	img := transcriptImage{
+		Path: "/tmp/inspected.png", Alt: "inspected.png", Width: 8, Height: 4,
+		Inspection: true, MaxCols: inspectionImageThumbnailCols, MaxRows: inspectionImageThumbnailRows,
+	}
+	var out, errOut bytes.Buffer
+	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{
+		surface:       outputSurfaceLineRaw,
+		imageProtocol: terminalImageKitty,
+		columns:       80,
+	})
+	ui.writer = &out
+	ui.errWriter = &errOut
+	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []transcriptImage{img})
+
+	if out.Len() != 0 || strings.Contains(errOut.String(), "\x1b") {
+		t.Fatalf("raw inspection output stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	if got := errOut.String(); !strings.Contains(got, "viewed · inspected.png · 8×4") {
+		t.Fatalf("raw inspection receipt = %q", got)
+	}
+}
+
 func TestKittyDisplayPNGChunksOnlyFirstCommandDisplays(t *testing.T) {
 	got := string(kittyDisplayPNG(bytes.Repeat([]byte{0xab}, 5000), 20, 5, false))
 	if strings.Count(got, "a=T") != 1 || !strings.Contains(got, "c=20") || !strings.Contains(got, "C=1") {

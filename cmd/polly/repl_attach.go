@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -321,6 +322,11 @@ func attachmentCacheDir() (string, error) {
 
 const attachmentCacheMaxAge = 14 * 24 * time.Hour
 
+// Tool calls may finish in parallel and materialize the same digest at once.
+// Serialize cache writes so a renderer never observes a partially rewritten
+// image from another result in this process.
+var preparedImageCacheMu sync.Mutex
+
 func sweepAttachmentCache(dir string, now time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -413,7 +419,47 @@ func preparedMessageTranscriptImagesWithStore(msg messages.ChatMessage, store ar
 	return preparedMessageTranscriptImagesInDir(msg, dir)
 }
 
+// inspectionTranscriptImages returns the exact image parts a tool attached to
+// the model-visible result, projected as compact human-facing receipts. This
+// deliberately ignores path-looking tool text: only typed media the model
+// actually received earns an always-visible inspection preview.
+func inspectionTranscriptImages(msg messages.ChatMessage, store artifacts.Store) []transcriptImage {
+	if !msg.HasImages() {
+		return nil
+	}
+	images := make([]transcriptImage, 0, len(msg.Parts))
+	for _, part := range msg.Parts {
+		partMessage := messages.ChatMessage{Parts: []messages.ContentPart{part}}
+		if !partMessage.HasImages() {
+			continue
+		}
+		prepared := preparedMessageTranscriptImagesWithStore(partMessage, store)
+		if len(prepared) == 0 {
+			label := strings.TrimSpace(part.FileName)
+			if label == "" && part.Artifact != nil {
+				label = strings.TrimSpace(part.Artifact.Name)
+			}
+			if label == "" {
+				label = strings.TrimSpace(part.Reference)
+			}
+			if label == "" {
+				label = "image"
+			}
+			prepared = []transcriptImage{{Alt: label, DisplayPath: label}}
+		}
+		for i := range prepared {
+			prepared[i].Inspection = true
+			prepared[i].MaxCols = inspectionImageThumbnailCols
+			prepared[i].MaxRows = inspectionImageThumbnailRows
+		}
+		images = append(images, prepared...)
+	}
+	return images
+}
+
 func preparedMessageTranscriptImagesInDir(msg messages.ChatMessage, dir string) []transcriptImage {
+	preparedImageCacheMu.Lock()
+	defer preparedImageCacheMu.Unlock()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil
 	}

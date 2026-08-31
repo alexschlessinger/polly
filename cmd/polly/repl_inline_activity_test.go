@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -9,6 +10,76 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
+
+func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
+	withDisplayTTY(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("compare screenshots")
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui.ShowThinking("compare the two frames")
+
+	for i, dimensions := range [][2]int{{8, 4}, {4, 8}} {
+		path := filepath.Join(t.TempDir(), fmt.Sprintf("frame-%d.png", i+1))
+		writeImageFixture(t, path, dimensions[0], dimensions[1])
+		call := messages.ChatMessageToolCall{ID: fmt.Sprintf("view-%d", i+1), Name: "view_image"}
+		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+		tui.AppendToolEnd(call, "attached", time.Millisecond, nil)
+		tui.AppendToolMedia(call, inspectionTranscriptImages(testToolImageResult(t, path, call.ID), nil))
+	}
+
+	var activity transcriptDisplayBlock
+	for _, block := range m.transcriptDisplayEntries(120) {
+		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
+			activity = block
+			break
+		}
+	}
+	header := plainStyledText(strings.SplitN(activity.text, "\n", 2)[0])
+	if !strings.Contains(header, "thought") || !strings.Contains(header, "2 tools · ▸ 2 images viewed") {
+		t.Fatalf("three-part activity row = %q", header)
+	}
+	if len(activity.images) != 0 {
+		t.Fatalf("collapsed Images control emitted sidecars: %#v", activity.images)
+	}
+
+	rows := m.transcriptRows(120)
+	thoughts := m.visibleReasoningPlacements(len(rows), len(rows), 0, 0, 120, false, 0)
+	tools := m.visibleToolDisclosurePlacements(len(rows), len(rows), 0, 0, 120, false, 0)
+	images := m.visibleImageDisclosurePlacements(len(rows), len(rows), 0, 0, 120, false, 0)
+	if len(thoughts) != 1 || len(tools) != 1 || len(images) != 1 || thoughts[0].Y != tools[0].Y || tools[0].Y != images[0].Y ||
+		thoughts[0].X+thoughts[0].Cols > tools[0].X || tools[0].X+tools[0].Cols > images[0].X {
+		t.Fatalf("three-part activity hitboxes: thought=%#v tools=%#v images=%#v", thoughts, tools, images)
+	}
+	m.imageDisclosurePlacements = images
+	if !m.toggleImageDisclosureAt(images[0].X, images[0].Y) {
+		t.Fatal("Images hitbox did not expand")
+	}
+	record := m.toolDisclosures[activity.toolDisclosureID]
+	if record == nil || !record.imagesExpanded || record.expanded {
+		t.Fatalf("Images expansion changed Tools state: %#v", record)
+	}
+	for _, block := range m.transcriptDisplayEntries(120) {
+		if block.toolDisclosureID != activity.toolDisclosureID {
+			continue
+		}
+		if len(block.images) != 2 || !strings.Contains(plainStyledText(block.text), "▾ 2 images viewed") {
+			t.Fatalf("expanded two-image gallery = %#v / %q", block.images, plainStyledText(block.text))
+		}
+	}
+
+	tui.AppendAssistantText("done")
+	r.endTurn(nil)
+	trailer := m.turnTrailers[m.turnTrailerSeq]
+	if trailer == nil || record.imagesExpanded {
+		t.Fatalf("settlement did not collapse Images into a trailer: record=%#v trailer=%#v", record, trailer)
+	}
+	trailerHeader := plainStyledText(strings.SplitN(m.transcript[trailer.transcriptIndex], "\n", 2)[0])
+	if !strings.Contains(trailerHeader, "2 tools · ▸ 2 images viewed") {
+		t.Fatalf("settled three-part trailer = %q", trailerHeader)
+	}
+}
 
 func TestInlineActivityHeadersUseTrailerControls(t *testing.T) {
 	if got, want := toolDisclosureHeader(1, false, false), "  "+turnActivityControl("▸", "1 tool"); got != want {
@@ -47,7 +118,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 
 	// Mid-turn: both blocks visible inline, collapsed. The reasoning run
-	// paused when the tool phase began, so it already reads "thought".
+	// paused when the tool phase began, so it already reads "Thought".
 	mid := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
 	if !strings.Contains(mid, "thought") || !strings.Contains(mid, "1 tool") {
 		t.Fatalf("mid-turn transcript missing inline activity: %q", mid)

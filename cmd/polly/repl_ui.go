@@ -655,18 +655,19 @@ type replModel struct {
 	activeToolsPhase int
 	// Tool activity is a semantic disclosure from its first call. It defaults
 	// collapsed; deliberate expansion reveals every live or completed row.
-	toolDisclosures          map[int64]*toolDisclosureRecord
-	toolDisclosureAt         map[int]int64 // transcript index -> disclosure ID
-	toolDisclosureSeq        int64
-	turnToolDisclosureID     int64
-	turnToolDisclosureIDs    []int64 // every disclosure opened this turn
-	toolDisclosurePlacements []disclosurePlacement
-	turnDock                 turnDockState
-	turnTrailers             map[int64]*turnTrailerRecord
-	turnTrailerAt            map[int]int64
-	turnTrailerSeq           int64
-	turnTrailerPlacements    []turnTrailerPlacement
-	openTurnTrailerID        int64
+	toolDisclosures           map[int64]*toolDisclosureRecord
+	toolDisclosureAt          map[int]int64 // transcript index -> disclosure ID
+	toolDisclosureSeq         int64
+	turnToolDisclosureID      int64
+	turnToolDisclosureIDs     []int64 // every disclosure opened this turn
+	toolDisclosurePlacements  []disclosurePlacement
+	imageDisclosurePlacements []disclosurePlacement
+	turnDock                  turnDockState
+	turnTrailers              map[int64]*turnTrailerRecord
+	turnTrailerAt             map[int]int64
+	turnTrailerSeq            int64
+	turnTrailerPlacements     []turnTrailerPlacement
+	openTurnTrailerID         int64
 
 	ed           lineEditor
 	busy         bool
@@ -806,11 +807,12 @@ type disclosurePlacement struct {
 }
 
 type toolDisclosureRow struct {
-	callID  string
-	label   string
-	line    string
-	images  []transcriptImage
-	settled bool
+	callID           string
+	label            string
+	line             string
+	images           []transcriptImage
+	inspectionImages []transcriptImage
+	settled          bool
 }
 
 type toolDisclosureRecord struct {
@@ -818,6 +820,7 @@ type toolDisclosureRecord struct {
 	transcriptIndex int
 	rows            []toolDisclosureRow
 	expanded        bool
+	imagesExpanded  bool
 	complete        bool
 }
 
@@ -1422,6 +1425,7 @@ func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage
 	var b strings.Builder
 	b.WriteString(header)
 	var images []transcriptImage
+	seen := make(map[string]struct{})
 	rows := record.rows
 	if len(rows) > toolPreviewRows {
 		b.WriteString("\n  ")
@@ -1432,19 +1436,75 @@ func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage
 		if row.line == "" {
 			continue
 		}
-		line := row.line
-		if len(row.images) > 0 {
-			if len(images)+len(row.images) <= maxTranscriptImagesPerBlock {
-				line = offsetTranscriptImageMarkers(line, len(images))
-				images = append(images, row.images...)
-			} else {
-				line = stripTranscriptImageMarkers(line)
-			}
-		}
 		b.WriteByte('\n')
-		b.WriteString(line)
+		b.WriteString(row.line)
+		appendToolDisclosureImages(&b, &images, row.images, "    ", seen)
 	}
 	return b.String(), images
+}
+
+func transcriptImageIdentity(img transcriptImage) string {
+	if img.Path != "" {
+		return img.Path
+	}
+	return img.DisplayPath + "\x00" + img.Alt
+}
+
+func appendToolDisclosureImages(b *strings.Builder, rendered *[]transcriptImage, candidates []transcriptImage, prefix string, seen map[string]struct{}) {
+	remaining := maxTranscriptImagesPerBlock - len(*rendered)
+	if remaining <= 0 || len(candidates) == 0 {
+		return
+	}
+	selected := make([]transcriptImage, 0, min(len(candidates), remaining))
+	for _, img := range candidates {
+		identity := transcriptImageIdentity(img)
+		if _, duplicate := seen[identity]; duplicate {
+			continue
+		}
+		seen[identity] = struct{}{}
+		selected = append(selected, img)
+		if len(selected) == remaining {
+			break
+		}
+	}
+	if len(selected) == 0 {
+		return
+	}
+	block := offsetTranscriptImageMarkers(renderTranscriptImages(selected, prefix), len(*rendered))
+	if block == "" {
+		return
+	}
+	b.WriteByte('\n')
+	b.WriteString(block)
+	*rendered = append(*rendered, selected...)
+}
+
+func (m *replModel) toolInspectionImages(ids []int64) []transcriptImage {
+	images := make([]transcriptImage, 0)
+	for _, id := range ids {
+		record := m.toolDisclosures[id]
+		if record == nil {
+			continue
+		}
+		for _, row := range record.rows {
+			for _, img := range row.inspectionImages {
+				images = append(images, img)
+				if len(images) == maxTranscriptImagesPerBlock {
+					return images
+				}
+			}
+		}
+	}
+	return images
+}
+
+func (m *replModel) toolInspectionExpanded(ids []int64) bool {
+	for _, id := range ids {
+		if record := m.toolDisclosures[id]; record != nil && record.imagesExpanded {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *replModel) refreshToolDisclosure(record *toolDisclosureRecord) {
@@ -1543,9 +1603,16 @@ func (m *replModel) completeToolDisclosure() {
 // settlement. Caller must hold m.mu.
 func (m *replModel) collapseTurnToolDisclosures() {
 	for _, id := range m.turnToolDisclosureIDs {
-		if record := m.toolDisclosures[id]; record != nil && record.expanded {
+		if record := m.toolDisclosures[id]; record != nil {
+			changed := record.expanded || record.imagesExpanded
 			record.expanded = false
-			m.refreshToolDisclosure(record)
+			record.imagesExpanded = false
+			if changed {
+				m.refreshToolDisclosure(record)
+				// Image expansion is derived by the shared activity layout rather
+				// than stored in the raw tool entry, so force that projection closed.
+				m.invalidateFlat()
+			}
 		}
 	}
 }
@@ -1601,6 +1668,7 @@ func (m *replModel) clearToolDisclosures() {
 	m.turnToolDisclosureID = 0
 	m.turnToolDisclosureIDs = nil
 	m.toolDisclosurePlacements = nil
+	m.imageDisclosurePlacements = nil
 }
 
 // arrowPulse breathes the running-tool arrow between two brightnesses of one
@@ -2550,6 +2618,7 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 			}
 			lastRole = msg.Role
 		case messages.MessageRoleTool:
+			inspectionImages := inspectionTranscriptImages(msg, m.artifactStore)
 			if len(hydratedToolRows) == 0 {
 				name := msg.ToolName
 				if name == "" {
@@ -2575,6 +2644,7 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 			}
 			if pick >= 0 {
 				hydratedToolRows[pick].line = hydratedToolLine(hydratedToolRows[pick].label, msg)
+				hydratedToolRows[pick].inspectionImages = inspectionImages
 				hydratedToolRows[pick].settled = true
 			}
 			lastRole = msg.Role
@@ -4566,6 +4636,10 @@ func (r *managedREPL) render() {
 		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
 		pinTranscriptBottom, overlayRows,
 	)
+	imageDisclosurePlacements := r.model.visibleImageDisclosurePlacements(
+		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
+		pinTranscriptBottom, overlayRows,
+	)
 	turnTrailerPlacements := r.model.visibleTurnTrailerPlacements(
 		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
 		pinTranscriptBottom, overlayRows,
@@ -4573,6 +4647,7 @@ func (r *managedREPL) render() {
 	r.model.imagePlacements = imagePlacements
 	r.model.reasoningPlacements = reasoningPlacements
 	r.model.toolDisclosurePlacements = toolDisclosurePlacements
+	r.model.imageDisclosurePlacements = imageDisclosurePlacements
 	r.model.turnTrailerPlacements = turnTrailerPlacements
 	r.model.mu.Unlock()
 
@@ -4917,6 +4992,21 @@ func (m *replModel) inlineToolField(ids []int64) (turnDockField, bool) {
 	}, true
 }
 
+func (m *replModel) inlineImageField(ids []int64) (turnDockField, []transcriptImage, bool) {
+	images := m.toolInspectionImages(ids)
+	if len(images) == 0 {
+		return turnDockField{}, nil, false
+	}
+	label := turnImageLabel(len(images))
+	glyph := "▸"
+	if m.toolInspectionExpanded(ids) {
+		glyph = "▾"
+	}
+	return turnDockField{
+		raw: glyph + " " + label, rendered: inlineActivityControl(glyph, label, false), overlay: turnDockOverlayImages,
+	}, images, true
+}
+
 func inlineActivityDetail(text string) string {
 	_, detail, ok := strings.Cut(text, "\n")
 	if !ok {
@@ -4975,12 +5065,10 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 					previous.activityToolDetail += block.activityToolDetail
 				}
 				previous.images = append(previous.images, block.images...)
-				m.layoutInlineActivityBlock(previous, width, false)
 				continue
 			}
 		}
 
-		m.layoutInlineActivityBlock(&block, width, false)
 		laidOut = append(laidOut, block)
 	}
 	for i := range laidOut {
@@ -5011,6 +5099,20 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	if field, ok := m.inlineToolField(block.toolDisclosureIDs); ok {
 		fields = append(fields, field)
 	}
+	block.activityImageDetail = ""
+	if field, inspectionImages, ok := m.inlineImageField(block.toolDisclosureIDs); ok {
+		fields = append(fields, field)
+		if m.toolInspectionExpanded(block.toolDisclosureIDs) {
+			remaining := maxTranscriptImagesPerBlock - len(block.images)
+			if remaining > 0 {
+				inspectionImages = inspectionImages[:min(len(inspectionImages), remaining)]
+				block.activityImageDetail = offsetTranscriptImageMarkers(
+					renderInspectionTranscriptImages(inspectionImages), len(block.images),
+				)
+				block.images = append(block.images, inspectionImages...)
+			}
+		}
+	}
 	for i := range fields {
 		glyph, label, ok := strings.Cut(fields[i].raw, " ")
 		if ok {
@@ -5020,7 +5122,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	header, placements := renderTurnActivityRow(fields, width)
 	block.text = header
 	block.activityReasoningDetail = boundedReasoningDetail(block.activityReasoningDetail, reasoningPreviewLines)
-	for _, detail := range []string{block.activityReasoningDetail, block.activityToolDetail} {
+	for _, detail := range []string{block.activityReasoningDetail, block.activityToolDetail, block.activityImageDetail} {
 		if detail != "" {
 			block.text += "\n" + detail
 		}
@@ -5115,11 +5217,15 @@ func (m *replModel) scrollToBottom() {
 // screen cells. A narrow header may wrap, so every visible header fragment is
 // clickable while preview/detail rows remain inert.
 func (m *replModel) visibleReasoningPlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []disclosurePlacement {
-	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, false)
+	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, turnDockOverlayThought)
 }
 
 func (m *replModel) visibleToolDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []disclosurePlacement {
-	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, true)
+	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, turnDockOverlayTools)
+}
+
+func (m *replModel) visibleImageDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []disclosurePlacement {
+	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, turnDockOverlayImages)
 }
 
 func (m *replModel) visibleTurnTrailerPlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []turnTrailerPlacement {
@@ -5160,7 +5266,7 @@ func (m *replModel) visibleTurnTrailerPlacements(totalRows, viewportHeight, topR
 	return placements
 }
 
-func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int, tools bool) []disclosurePlacement {
+func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int, overlay turnDockOverlay) []disclosurePlacement {
 	if viewportHeight <= 0 || width <= 0 {
 		return nil
 	}
@@ -5180,13 +5286,10 @@ func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRo
 	var placements []disclosurePlacement
 	rowOffset := 0
 	for _, block := range m.visualBlocks {
-		recordID := block.reasoningID
-		recordIDs := block.reasoningIDs
-		overlay := turnDockOverlayThought
-		if tools {
+		recordID, recordIDs := block.reasoningID, block.reasoningIDs
+		if overlay == turnDockOverlayTools || overlay == turnDockOverlayImages {
 			recordID = block.toolDisclosureID
 			recordIDs = block.toolDisclosureIDs
-			overlay = turnDockOverlayTools
 		}
 		if recordID != 0 && len(block.rows) > 0 {
 			// Inline activity blocks carry plural IDs even when truncation leaves
@@ -5271,6 +5374,20 @@ func (m *replModel) toggleToolDisclosureAt(x, y int) bool {
 			return m.toggleToolDisclosureGroup(placement.recordIDs)
 		}
 		return m.toggleToolDisclosure(placement.recordID)
+	}
+	return false
+}
+
+func (m *replModel) toggleImageDisclosureAt(x, y int) bool {
+	for _, placement := range m.imageDisclosurePlacements {
+		if y != placement.Y || x < placement.X || x >= placement.X+placement.Cols {
+			continue
+		}
+		ids := placement.recordIDs
+		if len(ids) == 0 && placement.recordID != 0 {
+			ids = []int64{placement.recordID}
+		}
+		return m.toggleImageDisclosureGroup(ids)
 	}
 	return false
 }
@@ -5389,6 +5506,39 @@ func (m *replModel) toggleToolDisclosureGroup(ids []int64) bool {
 	return true
 }
 
+func (m *replModel) toggleImageDisclosureGroup(ids []int64) bool {
+	anyExpanded, found := false, false
+	validIDs := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		record := m.toolDisclosures[id]
+		if record == nil || len(m.toolInspectionImages([]int64{id})) == 0 {
+			continue
+		}
+		found = true
+		anyExpanded = anyExpanded || record.imagesExpanded
+		validIDs = append(validIDs, id)
+	}
+	if !found {
+		return false
+	}
+	layoutWidth := m.disclosureLayoutWidth(0)
+	oldStart, oldCount, heldGroup := 0, 0, false
+	if !m.followBottom {
+		oldStart, oldCount, heldGroup = m.projectedActivityGroupBounds(validIDs, false, layoutWidth)
+	}
+	expand := !anyExpanded
+	for _, id := range validIDs {
+		m.toolDisclosures[id].imagesExpanded = expand
+	}
+	m.invalidateFlat()
+	if heldGroup {
+		if _, newCount, ok := m.projectedActivityGroupBounds(validIDs, false, layoutWidth); ok {
+			m.anchorForResizedEntry(oldStart, oldCount, newCount)
+		}
+	}
+	return true
+}
+
 // openImageAt opens the transcript thumbnail under the given screen cell, if
 // any, in the OS image viewer. Placements come from the last rendered frame;
 // the embedded splash logo (no backing file) is skipped. Caller must hold m.mu.
@@ -5487,7 +5637,8 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				return false
 			}
 			if !m.toggleReasoningAt(mouse.X, mouse.Y, terminalWidth) &&
-				!m.toggleToolDisclosureAt(mouse.X, mouse.Y) {
+				!m.toggleToolDisclosureAt(mouse.X, mouse.Y) &&
+				!m.toggleImageDisclosureAt(mouse.X, mouse.Y) {
 				r.openImageAt(mouse.X, mouse.Y)
 			}
 		}
@@ -5940,11 +6091,6 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	}
 	final = stripTranscriptImageMarkers(final)
 	images := discoveredImages
-	if len(images) > 0 {
-		// Tool-produced media stays visibly subordinate to the compact tool row;
-		// assistant-authored images remain flush with the transcript body.
-		final += "\n" + renderTranscriptImages(images, "    ")
-	}
 	// Freeze the final line over its running disclosure row. Fall back to a new
 	// row if the display was cleared while the tool was in flight.
 	record := m.currentToolDisclosure()
@@ -5969,6 +6115,62 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	m.refreshToolDisclosure(record)
 	// The disclosure stays live past the batch: an unbroken continuation's
 	// next batch folds into it. Assistant prose or turn settlement closes it.
+}
+
+func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images []transcriptImage) {
+	if len(images) == 0 || (t.config != nil && t.config.Quiet) {
+		return
+	}
+	t.repl.model.mu.Lock()
+	defer t.repl.model.mu.Unlock()
+	m := t.repl.model
+	if !t.acceptingLocked() {
+		return
+	}
+	record, row := m.toolDisclosureRowForCall(call.ID)
+	if row == nil {
+		record = m.ensureToolDisclosure()
+		record.rows = append(record.rows, toolDisclosureRow{
+			callID:  call.ID,
+			label:   stripTranscriptImageMarkers(toolLabel(call)),
+			line:    toolOKLine(toolLabel(call), "", ""),
+			settled: true,
+		})
+		row = &record.rows[len(record.rows)-1]
+	}
+	layoutWidth := m.disclosureLayoutWidth(0)
+	ids := []int64{record.id}
+	oldStart, oldCount, heldGroup := 0, 0, false
+	if !m.followBottom {
+		oldStart, oldCount, heldGroup = m.projectedActivityGroupBounds(ids, false, layoutWidth)
+	}
+	row.inspectionImages = append([]transcriptImage(nil), images...)
+	m.turnDock.toolDisclosureID = record.id
+	m.refreshToolDisclosureWithAnchor(record, false)
+	// The third Images field and its gallery are derived from inspectionImages;
+	// neither necessarily changes the canonical raw tool text.
+	m.invalidateFlat()
+	if heldGroup {
+		if _, newCount, ok := m.projectedActivityGroupBounds(ids, false, layoutWidth); ok {
+			m.anchorForResizedEntry(oldStart, oldCount, newCount)
+		}
+	}
+}
+
+func (m *replModel) toolDisclosureRowForCall(callID string) (*toolDisclosureRecord, *toolDisclosureRow) {
+	for i := len(m.turnToolDisclosureIDs) - 1; i >= 0; i-- {
+		record := m.toolDisclosures[m.turnToolDisclosureIDs[i]]
+		if record == nil {
+			continue
+		}
+		for rowIndex := len(record.rows) - 1; rowIndex >= 0; rowIndex-- {
+			if callID != "" && record.rows[rowIndex].callID != callID {
+				continue
+			}
+			return record, &record.rows[rowIndex]
+		}
+	}
+	return nil, nil
 }
 
 func (t *gotuiTurnUI) AppendWarning(text string) {

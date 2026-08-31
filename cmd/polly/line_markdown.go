@@ -146,11 +146,12 @@ func lineImagePayload(img transcriptImage, capabilities outputCapabilities, pref
 	if capabilities.imageProtocol == terminalImageNone {
 		return nil
 	}
-	maxCols := min(transcriptImageThumbnailCols, capabilities.columns-prefixWidth)
+	imageMaxCols, imageMaxRows := transcriptImageBounds(img)
+	maxCols := min(imageMaxCols, capabilities.columns-prefixWidth)
 	cols, rows, fitByRows := imageCellGeometry(
 		img,
 		maxCols,
-		transcriptImageThumbnailRows,
+		imageMaxRows,
 		defaultLineCellWidth,
 		defaultLineCellHeight,
 	)

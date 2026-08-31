@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -23,6 +24,10 @@ type TurnUI interface {
 	AppendToolStart(calls []messages.ChatMessageToolCall)
 	ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool
 	AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error)
+	// AppendToolMedia surfaces exact typed image parts that entered the model's
+	// tool result. It is separate from text/path discovery so UIs can pin a
+	// trustworthy inspection receipt without exposing arbitrary tool output.
+	AppendToolMedia(call messages.ChatMessageToolCall, images []transcriptImage)
 	AppendWarning(text string)
 	RecordTurnTokens(in, out int)
 	FinishTextTurn()
@@ -43,6 +48,8 @@ type lineTurnUI struct {
 	contentPrinted  bool
 	endsWithNewline bool
 	finished        bool
+	toolMu          sync.Mutex
+	stderrTTY       bool
 }
 
 func newLineTurnUI(config *Config, inputReader *bufio.Reader) *lineTurnUI {
@@ -61,6 +68,7 @@ func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, ca
 		errWriter:    os.Stderr,
 		capabilities: capabilities,
 		imageBaseDir: baseDir,
+		stderrTTY:    terminalFD(int(os.Stderr.Fd())),
 	}
 	// Only prompt for confirmation when stdin can actually answer. A piped
 	// prompt or `< /dev/null` leaves the approval reader at EOF, which would
@@ -169,6 +177,8 @@ func (ui *lineTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 }
 
 func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
 	if !toolDisplayEnabled(ui.config) {
 		return
 	}
@@ -185,6 +195,23 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 		return
 	}
 	fmt.Fprintf(ui.errWriter, "  ✓ %s\n", joinMeta(dur+" "+label, resultLineMeta(result)))
+}
+
+func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []transcriptImage) {
+	if len(images) == 0 || ui.config.SchemaPath != "" || ui.config.Quiet {
+		return
+	}
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	for _, img := range images {
+		fmt.Fprintf(ui.errWriter, "    %s\n", transcriptImageCaptionText(img))
+		if !ui.capabilities.rendersLineANSI() || !ui.stderrTTY {
+			continue
+		}
+		if payload := lineImagePayload(img, ui.capabilities, 4); len(payload) > 0 {
+			_, _ = ui.errWriter.Write(payload)
+		}
+	}
 }
 
 func (ui *lineTurnUI) AppendWarning(text string) {

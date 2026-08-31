@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"image/color"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -107,6 +110,9 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 	}
 	if len(activity.images) != 1 {
 		t.Fatalf("merged activity images = %#v, want one tool image", activity.images)
+	}
+	if strings.Contains(plainStyledText(strings.SplitN(activity.text, "\n", 2)[0]), "image viewed") {
+		t.Fatalf("path-discovered tool output was promoted to Images viewed: %q", plainStyledText(activity.text))
 	}
 	if got := strings.Count(activity.text, marker); got != transcriptImageThumbnailRows {
 		t.Fatalf("merged activity contains %d slot markers, want %d tool-generated rows", got, transcriptImageThumbnailRows)
@@ -226,6 +232,304 @@ func TestAssistantAndToolResultsAttachImageSidecars(t *testing.T) {
 	if len(toolSpans) != 1 || toolSpans[0].row < 2 || toolSpans[0].x != 4 ||
 		toolSpans[0].rows != 10 || len(toolRows) != toolSpans[0].row+toolSpans[0].rows {
 		t.Fatalf("tool image layout rows/spans = %d/%#v", len(toolRows), toolSpans)
+	}
+}
+
+func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
+	withDisplayTTY(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "inspected.png")
+	writeImageFixture(t, path, 8, 4)
+	result := testToolImageResult(t, path, "view-call")
+	images := inspectionTranscriptImages(result, nil)
+	if len(images) != 1 || !images[0].Inspection || images[0].MaxCols != inspectionImageThumbnailCols || images[0].MaxRows != inspectionImageThumbnailRows {
+		t.Fatalf("inspection images = %#v", images)
+	}
+
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.busy = true
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	call := messages.ChatMessageToolCall{ID: "view-call", Name: "view_image", Arguments: `{"source":"inspected.png"}`}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+	tui.AppendToolEnd(call, "Attached image inspected.png.", time.Millisecond, nil)
+	tui.AppendToolMedia(call, images)
+
+	record := r.model.currentToolDisclosure()
+	if record == nil || record.expanded || record.imagesExpanded || len(record.rows) != 1 || len(record.rows[0].inspectionImages) != 1 {
+		t.Fatalf("collapsed typed-image disclosure = %#v", record)
+	}
+	toolIndex := record.transcriptIndex
+	if got := len(r.model.transcriptImages[toolIndex]); got != 0 {
+		t.Fatalf("collapsed tool entry sidecars = %d, want 0", got)
+	}
+	if plain := plainStyledText(stripTranscriptImageMarkers(r.model.transcript[toolIndex])); strings.Contains(plain, "viewed ·") {
+		t.Fatalf("collapsed tool entry leaked inspection detail: %q", plain)
+	}
+
+	var collapsed transcriptDisplayBlock
+	for _, block := range r.model.transcriptDisplayEntries(100) {
+		if block.toolDisclosureID == record.id {
+			collapsed = block
+			break
+		}
+	}
+	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "1 tool · ▸ 1 image viewed") || strings.Contains(plain, "viewed · inspected.png") {
+		t.Fatalf("collapsed activity row = %q", plain)
+	}
+	if len(collapsed.images) != 0 {
+		t.Fatalf("collapsed Images disclosure sidecars = %#v", collapsed.images)
+	}
+
+	rows := r.model.transcriptRows(100)
+	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(len(rows), len(rows), 0, 0, 100, false, 0)
+	if len(r.model.imageDisclosurePlacements) != 1 {
+		t.Fatalf("Images hitboxes = %#v", r.model.imageDisclosurePlacements)
+	}
+	p := r.model.imageDisclosurePlacements[0]
+	if !r.model.toggleImageDisclosureAt(p.X, p.Y) {
+		t.Fatal("Images control did not expand")
+	}
+	if !record.imagesExpanded || record.expanded {
+		t.Fatalf("image/tool expansion was not independent: %#v", record)
+	}
+
+	var expanded transcriptDisplayBlock
+	for _, block := range r.model.transcriptDisplayEntries(100) {
+		if block.toolDisclosureID == record.id {
+			expanded = block
+			break
+		}
+	}
+	plain := plainStyledText(stripTranscriptImageMarkers(expanded.text))
+	if !strings.Contains(plain, "▾ 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") || !strings.Contains(plain, "│") {
+		t.Fatalf("expanded Images disclosure = %q", plain)
+	}
+	if len(expanded.images) != 1 || strings.Count(expanded.text, string(transcriptImageMarker(0))) != inspectionImageThumbnailRows {
+		t.Fatalf("expanded inspection sidecars/markers = %#v / %q", expanded.images, expanded.text)
+	}
+	imageRows, spans := transcriptBlockRowsWithImages(expanded.text, false, 100, expanded.images, true, 10, 20)
+	if len(spans) != 1 || spans[0].x != 4 || spans[0].cols != 24 || spans[0].rows != inspectionImageThumbnailRows || len(imageRows) < 1+inspectionImageThumbnailRows {
+		t.Fatalf("compact inspection geometry rows/spans = %d/%#v", len(imageRows), spans)
+	}
+	if !r.model.toggleToolDisclosure(record.id) || !record.expanded || !record.imagesExpanded {
+		t.Fatalf("opening Tools changed Images state: %#v", record)
+	}
+}
+
+func TestImagesDisclosureTogglePreservesHeldViewport(t *testing.T) {
+	withDisplayTTY(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	const width = 32
+	path := filepath.Join(t.TempDir(), "anchor.png")
+	writeImageFixture(t, path, 8, 4)
+
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("inspect")
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	call := messages.ChatMessageToolCall{ID: "anchor-view", Name: "view_image"}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+	tui.AppendToolEnd(call, "attached", time.Millisecond, nil)
+	tui.AppendToolMedia(call, inspectionTranscriptImages(testToolImageResult(t, path, call.ID), nil))
+	record := m.currentToolDisclosure()
+	if record == nil {
+		t.Fatal("image tool did not create a disclosure")
+	}
+
+	const sentinel = "held viewport sentinel"
+	m.appendLine(sentinel)
+	m.reasoningWidth = width
+	rows := transcriptRowsText(m.transcriptRows(width))
+	anchor := -1
+	for i, row := range rows {
+		if strings.Contains(row, sentinel) {
+			anchor = i
+			break
+		}
+	}
+	if anchor < 0 {
+		t.Fatalf("sentinel missing from rows: %#v", rows)
+	}
+	m.followBottom = false
+	m.scrollAnchor = anchor
+	assertHeld := func(stage string) {
+		t.Helper()
+		rows := transcriptRowsText(m.transcriptRows(width))
+		if m.scrollAnchor < 0 || m.scrollAnchor >= len(rows) || !strings.Contains(rows[m.scrollAnchor], sentinel) {
+			t.Fatalf("%s moved held viewport: anchor=%d rows=%#v", stage, m.scrollAnchor, rows)
+		}
+	}
+	if !m.toggleImageDisclosureGroup([]int64{record.id}) {
+		t.Fatal("Images expansion returned false")
+	}
+	assertHeld("expanding Images")
+	if !m.toggleImageDisclosureGroup([]int64{record.id}) {
+		t.Fatal("Images collapse returned false")
+	}
+	assertHeld("collapsing Images")
+}
+
+func TestToolAndImagesDisclosuresKeepIndependentImageMarkers(t *testing.T) {
+	withDisplayTTY(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	dir := t.TempDir()
+	discoveredPath := filepath.Join(dir, "tool-output.png")
+	inspectedPath := filepath.Join(dir, "model-viewed.png")
+	writeImageFixture(t, discoveredPath, 8, 4)
+	writeImageFixture(t, inspectedPath, 4, 8)
+
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.imageBaseDir = dir
+	m.beginTurn("inspect")
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	call := messages.ChatMessageToolCall{ID: "mixed-images", Name: "view_image"}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+	tui.AppendToolEnd(call, discoveredPath, time.Millisecond, nil)
+	tui.AppendToolMedia(call, inspectionTranscriptImages(testToolImageResult(t, inspectedPath, call.ID), nil))
+	record := m.currentToolDisclosure()
+	if record == nil || !m.toggleToolDisclosure(record.id) || !m.toggleImageDisclosureGroup([]int64{record.id}) {
+		t.Fatalf("mixed image disclosures did not expand: %#v", record)
+	}
+
+	var activity transcriptDisplayBlock
+	for _, block := range m.transcriptDisplayEntries(100) {
+		if block.toolDisclosureID == record.id {
+			activity = block
+			break
+		}
+	}
+	if len(activity.images) != 2 || activity.images[0].Path != discoveredPath || activity.images[1].Path == discoveredPath {
+		t.Fatalf("tool/inspection sidecar order = %#v", activity.images)
+	}
+	if got := strings.Count(activity.text, string(transcriptImageMarker(0))); got != transcriptImageThumbnailRows {
+		t.Fatalf("tool detail marker rows = %d, want %d", got, transcriptImageThumbnailRows)
+	}
+	if got := strings.Count(activity.text, string(transcriptImageMarker(1))); got != inspectionImageThumbnailRows {
+		t.Fatalf("Images gallery marker rows = %d, want %d", got, inspectionImageThumbnailRows)
+	}
+	_, spans := transcriptBlockRowsWithImages(activity.text, false, 100, activity.images, true, 10, 20)
+	if len(spans) != 2 || spans[0].imageIndex != 0 || spans[1].imageIndex != 1 || spans[0].x != 4 || spans[1].x != 4 || spans[0].row >= spans[1].row {
+		t.Fatalf("tool/inspection image spans = %#v", spans)
+	}
+}
+
+func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "durable.png")
+	writeImageFixture(t, path, 6, 3)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := testArtifactStore(t)
+	ref, err := store.Put(context.Background(), artifacts.Blob{
+		Kind: artifacts.KindImage, MIMEType: "image/png", Name: "durable.png", Data: data,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolResult := messages.ChatMessage{
+		Role: messages.MessageRoleTool, ToolCallID: "view-call", ToolName: "view_image",
+		Content: "Attached image durable.png.",
+		Parts: []messages.ContentPart{{
+			Type: "image_artifact", MimeType: ref.MIMEType, FileName: ref.Name, Artifact: &ref,
+		}},
+	}
+	toolResult.SetToolSucceeded(true)
+
+	m := newReplModel()
+	m.artifactStore = store
+	m.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "inspect it"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "view-call", Name: "view_image"}}},
+		toolResult,
+		{Role: messages.MessageRoleAssistant, Content: "done"},
+	}, "ctx")
+
+	var record *toolDisclosureRecord
+	for _, candidate := range m.toolDisclosures {
+		if len(candidate.rows) == 1 && candidate.rows[0].callID == "view-call" {
+			record = candidate
+			break
+		}
+	}
+	if record == nil || record.expanded || len(record.rows[0].inspectionImages) != 1 {
+		t.Fatalf("hydrated inspection disclosure = %#v", record)
+	}
+	if got := len(m.transcriptImages[record.transcriptIndex]); got != 0 {
+		t.Fatalf("collapsed hydrated tool sidecars = %d, want 0", got)
+	}
+	trailer := m.turnTrailers[m.turnTrailerSeq]
+	if trailer == nil {
+		t.Fatal("hydrated image turn did not restore its trailer")
+	}
+	header := plainStyledText(strings.SplitN(m.transcript[trailer.transcriptIndex], "\n", 2)[0])
+	if !strings.Contains(header, "1 tool") || !strings.Contains(header, "1 image viewed") {
+		t.Fatalf("hydrated image trailer = %q", header)
+	}
+	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayImages) {
+		t.Fatal("hydrated Images trailer did not expand")
+	}
+	if got := len(m.transcriptImages[trailer.transcriptIndex]); got != 1 {
+		t.Fatalf("expanded hydrated image sidecars = %d, want 1", got)
+	}
+	plain := plainStyledText(stripTranscriptImageMarkers(m.transcript[trailer.transcriptIndex]))
+	if !strings.Contains(plain, "viewed · durable.png · 6×3") || !strings.Contains(plain, "│") {
+		t.Fatalf("hydrated inspection gallery = %q", plain)
+	}
+	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayImages) || len(m.transcriptImages[trailer.transcriptIndex]) != 0 {
+		t.Fatalf("hydrated Images trailer did not collapse cleanly: %#v", m.transcriptImages[trailer.transcriptIndex])
+	}
+}
+
+func TestTypedToolImageKeepsReceiptWhenPreviewCannotMaterialize(t *testing.T) {
+	result := messages.ChatMessage{Parts: []messages.ContentPart{{
+		Type: "image_url", ImageURL: "https://example.invalid/frame.png", FileName: "frame.png",
+	}}}
+	images := inspectionTranscriptImages(result, nil)
+	if len(images) != 1 || !images[0].Inspection || images[0].Path != "" {
+		t.Fatalf("fallback inspection images = %#v", images)
+	}
+	rendered := renderTranscriptImages(images, "    ")
+	if plain := plainStyledText(rendered); !strings.Contains(plain, "viewed · frame.png") {
+		t.Fatalf("fallback inspection receipt = %q", plain)
+	}
+	if strings.ContainsRune(rendered, transcriptImageMarker(0)) {
+		t.Fatalf("fallback receipt reserved an unusable image slot: %q", rendered)
+	}
+}
+
+func TestInspectionCaptionSanitizesToolMediaName(t *testing.T) {
+	img := transcriptImage{Inspection: true, Alt: "[frame]\n\x1b]evil.png"}
+	caption := transcriptImageCaptionText(img)
+	for _, r := range caption {
+		if r < 0x20 || r == 0x7f {
+			t.Fatalf("control rune survived inspection caption: %q", caption)
+		}
+	}
+	if plain := plainStyledText(transcriptImageCaption(img)); !strings.Contains(plain, "[frame]  ]evil.png") {
+		t.Fatalf("literal brackets were not preserved: %q", plain)
+	}
+}
+
+func testToolImageResult(t *testing.T, path, callID string) messages.ChatMessage {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return messages.ChatMessage{
+		Role:       messages.MessageRoleTool,
+		ToolCallID: callID,
+		ToolName:   "view_image",
+		Content:    "Attached image " + filepath.Base(path) + ".",
+		Parts: []messages.ContentPart{{
+			Type:      "image_base64",
+			ImageData: base64.StdEncoding.EncodeToString(data),
+			MimeType:  "image/png",
+			FileName:  filepath.Base(path),
+		}},
 	}
 }
 

@@ -14,6 +14,7 @@ const (
 	turnDockOverlayNone turnDockOverlay = iota
 	turnDockOverlayThought
 	turnDockOverlayTools
+	turnDockOverlayImages
 )
 
 const turnDockToolOverlayRows = 6
@@ -78,6 +79,13 @@ func turnToolLabel(total int) string {
 	return fmt.Sprintf("%d tools", total)
 }
 
+func turnImageLabel(total int) string {
+	if total == 1 {
+		return "1 image viewed"
+	}
+	return fmt.Sprintf("%d images viewed", total)
+}
+
 func (m *replModel) startTurnDock() {
 	if record := m.turnTrailers[m.openTurnTrailerID]; record != nil {
 		record.dock.overlay = turnDockOverlayNone
@@ -133,17 +141,27 @@ func (m *replModel) turnDockThoughtRecords(dock turnDockState) []*reasoningRecor
 // turnDockToolRecords returns the turn's tool disclosures in order. Caller
 // must hold m.mu.
 func (m *replModel) turnDockToolRecords(dock turnDockState) []*toolDisclosureRecord {
-	ids := dock.toolIDs
-	if len(ids) == 0 && dock.toolDisclosureID != 0 {
-		ids = []int64{dock.toolDisclosureID}
-	}
 	var records []*toolDisclosureRecord
-	for _, id := range ids {
+	for _, id := range turnDockToolIDs(dock) {
 		if record := m.toolDisclosures[id]; record != nil && len(record.rows) > 0 {
 			records = append(records, record)
 		}
 	}
 	return records
+}
+
+func turnDockToolIDs(dock turnDockState) []int64 {
+	if len(dock.toolIDs) > 0 {
+		return dock.toolIDs
+	}
+	if dock.toolDisclosureID != 0 {
+		return []int64{dock.toolDisclosureID}
+	}
+	return nil
+}
+
+func (m *replModel) turnDockInspectionImages(dock turnDockState) []transcriptImage {
+	return m.toolInspectionImages(turnDockToolIDs(dock))
 }
 
 func (m *replModel) turnDockToolRowCount(dock turnDockState) int {
@@ -188,6 +206,16 @@ func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 		raw := glyph + " " + label
 		rendered := turnActivityControl(glyph, label)
 		fields = append(fields, turnDockField{raw: raw, rendered: rendered, overlay: turnDockOverlayTools})
+	}
+	if total := len(m.turnDockInspectionImages(dock)); total > 0 {
+		label := turnImageLabel(total)
+		glyph := "▸"
+		if dock.overlay == turnDockOverlayImages {
+			glyph = "▾"
+		}
+		raw := glyph + " " + label
+		rendered := turnActivityControl(glyph, label)
+		fields = append(fields, turnDockField{raw: raw, rendered: rendered, overlay: turnDockOverlayImages})
 	}
 
 	return append(fields, m.turnDockStatusFields(dock)...)
@@ -366,11 +394,12 @@ func (m *replModel) refreshTurnTrailer(record *turnTrailerRecord) {
 		width = 80
 	}
 	text, fields := m.turnDockRowFor(record.dock, width)
-	if detail := m.turnTrailerDetailText(record.dock, width); detail != "" {
+	detail, images := m.turnTrailerDetail(record.dock, width)
+	if detail != "" {
 		text += "\n" + detail
 	}
 	record.fields = fields
-	if m.transcript[record.transcriptIndex] == text {
+	if m.transcript[record.transcriptIndex] == text && transcriptImagesEqual(m.transcriptImages[record.transcriptIndex], images) {
 		return
 	}
 	oldCount, start := 0, 0
@@ -379,22 +408,23 @@ func (m *replModel) refreshTurnTrailer(record *turnTrailerRecord) {
 		start = m.entryVisualStart(record.transcriptIndex, width)
 	}
 	m.transcript[record.transcriptIndex] = text
+	m.setTranscriptImages(record.transcriptIndex, images)
 	m.invalidateFlat()
 	if !m.followBottom {
 		m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(record.transcriptIndex, width))
 	}
 }
 
-func (m *replModel) turnTrailerDetailText(dock turnDockState, width int) string {
+func (m *replModel) turnTrailerDetail(dock turnDockState, width int) (string, []transcriptImage) {
 	switch dock.overlay {
 	case turnDockOverlayThought:
 		records := m.turnDockThoughtRecords(dock)
 		if len(records) == 0 {
-			return ""
+			return "", nil
 		}
 		contentWidth := width - rw.StringWidth(reasoningBlockIndent)
 		if contentWidth < 2 {
-			return ""
+			return "", nil
 		}
 		var tails []string
 		for _, record := range records {
@@ -404,11 +434,11 @@ func (m *replModel) turnTrailerDetailText(dock turnDockState, width int) string 
 		for i := range lines {
 			lines[i] = reasoningBlockIndent + styled(lines[i], "muted", "italic")
 		}
-		return strings.Join(lines, "\n")
+		return strings.Join(lines, "\n"), nil
 	case turnDockOverlayTools:
 		records := m.turnDockToolRecords(dock)
 		if len(records) == 0 {
-			return ""
+			return "", nil
 		}
 		var all []string
 		for _, record := range records {
@@ -427,9 +457,17 @@ func (m *replModel) turnTrailerDetailText(dock turnDockState, width int) string 
 			lines = append(lines, "  "+styled(fmt.Sprintf("… %d earlier", start), "muted", ""))
 		}
 		lines = append(lines, all[start:]...)
-		return strings.Join(lines, "\n")
+		return strings.Join(lines, "\n"), nil
+	case turnDockOverlayImages:
+		images := m.turnDockInspectionImages(dock)
+		return renderInspectionTranscriptImages(images), images
 	}
-	return ""
+	return "", nil
+}
+
+func (m *replModel) turnTrailerDetailText(dock turnDockState, width int) string {
+	text, _ := m.turnTrailerDetail(dock, width)
+	return text
 }
 
 // boundedReasoningDetail keeps the newest already-wrapped physical rows from
@@ -493,6 +531,10 @@ func (m *replModel) toggleLatestTurnTrailerOverlay(overlay turnDockOverlay) bool
 				if len(m.turnDockToolRecords(record.dock)) == 0 {
 					continue
 				}
+			case turnDockOverlayImages:
+				if len(m.turnDockInspectionImages(record.dock)) == 0 {
+					continue
+				}
 			}
 			return m.toggleTurnTrailerOverlay(record, overlay)
 		}
@@ -501,7 +543,7 @@ func (m *replModel) toggleLatestTurnTrailerOverlay(overlay turnDockOverlay) bool
 }
 
 func (m *replModel) toggleTurnTrailerOverlay(record *turnTrailerRecord, overlay turnDockOverlay) bool {
-	if record == nil || (overlay != turnDockOverlayThought && overlay != turnDockOverlayTools) {
+	if record == nil || (overlay != turnDockOverlayThought && overlay != turnDockOverlayTools && overlay != turnDockOverlayImages) {
 		return false
 	}
 	if open := m.turnTrailers[m.openTurnTrailerID]; open != nil && open.id != record.id {

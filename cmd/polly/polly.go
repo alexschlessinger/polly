@@ -894,6 +894,11 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			stats.record(tc.Name, err)
 			turnUI.AppendToolEnd(tc, result, duration, err)
 		},
+		OnToolResult: func(tc messages.ChatMessageToolCall, result messages.ChatMessage) {
+			if images := inspectionTranscriptImages(result, state.artifactStore); len(images) > 0 {
+				turnUI.AppendToolMedia(tc, images)
+			}
+		},
 		OnError: func(err error) {},
 	})
 	if ctx.Err() != nil {
