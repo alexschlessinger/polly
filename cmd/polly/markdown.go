@@ -84,8 +84,9 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 	case *ast.Paragraph, *ast.TextBlock:
 		return prefixLines(splitInline(renderInlineChildren(n, source, "", "", state)), firstPrefix, contPrefix)
 	case *ast.Heading:
-		marker := styled(strings.Repeat("#", b.Level)+" ", "muted", "")
-		title := renderInlineChildren(n, source, "", "bold", state)
+		plate := markdownHeadingPlateForLevel(b.Level)
+		marker := styled(plate.marker+" ", plate.fg, plate.mod)
+		title := renderInlineChildrenWithOptions(n, source, plate.fg, plate.mod, state, plate.uppercaseText)
 		return prefixLines([]string{marker + title}, firstPrefix, contPrefix)
 	case *ast.FencedCodeBlock:
 		lang := markdownSourceText(string(b.Language(source)), state)
@@ -117,6 +118,30 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 			return prefixLines(strings.Split(raw, "\n"), firstPrefix, contPrefix)
 		}
 		return nil
+	}
+}
+
+type markdownHeadingPlate struct {
+	marker        string
+	fg            string
+	mod           string
+	uppercaseText bool
+}
+
+func markdownHeadingPlateForLevel(level int) markdownHeadingPlate {
+	switch level {
+	case 1:
+		return markdownHeadingPlate{marker: "▌", fg: "accent", mod: "bold", uppercaseText: true}
+	case 2:
+		return markdownHeadingPlate{marker: "▎", fg: "accent", mod: "bold"}
+	case 3:
+		return markdownHeadingPlate{marker: "▏", fg: "accent"}
+	case 4:
+		return markdownHeadingPlate{marker: "▏", fg: "muted"}
+	case 5:
+		return markdownHeadingPlate{marker: "┊", fg: "muted"}
+	default:
+		return markdownHeadingPlate{marker: "·", fg: "muted"}
 	}
 }
 
@@ -273,35 +298,47 @@ func splitInline(s string) []string {
 // modifier. Inner spans override outer ones (gotui markup can't combine
 // modifiers), which is the right reading for nested emphasis.
 func renderInlineChildren(n ast.Node, source []byte, fg, mod string, state *markdownRenderState) string {
+	return renderInlineChildrenWithOptions(n, source, fg, mod, state, false)
+}
+
+func renderInlineChildrenWithOptions(n ast.Node, source []byte, fg, mod string, state *markdownRenderState, uppercaseText bool) string {
 	var b strings.Builder
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
-		b.WriteString(renderInline(c, source, fg, mod, state))
+		b.WriteString(renderInlineWithOptions(c, source, fg, mod, state, uppercaseText))
 	}
 	return b.String()
 }
 
-func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRenderState) string {
+func renderInlineWithOptions(n ast.Node, source []byte, fg, mod string, state *markdownRenderState, uppercaseText bool) string {
 	switch i := n.(type) {
 	case *ast.Text:
-		s := styled(markdownSourceText(string(i.Segment.Value(source)), state), fg, mod)
+		text := markdownSourceText(string(i.Segment.Value(source)), state)
+		if uppercaseText {
+			text = strings.ToUpper(text)
+		}
+		s := styled(text, fg, mod)
 		if i.SoftLineBreak() || i.HardLineBreak() {
 			s += "\n"
 		}
 		return s
 	case *ast.String:
-		return styled(markdownSourceText(string(i.Value), state), fg, mod)
+		text := markdownSourceText(string(i.Value), state)
+		if uppercaseText {
+			text = strings.ToUpper(text)
+		}
+		return styled(text, fg, mod)
 	case *ast.CodeSpan:
 		return styled(markdownSourceText(nodeText(n, source), state), "code", mod)
 	case *ast.Emphasis:
 		if i.Level >= 2 {
-			return renderInlineChildren(n, source, fg, "bold", state)
+			return renderInlineChildrenWithOptions(n, source, fg, "bold", state, uppercaseText)
 		}
-		return renderInlineChildren(n, source, fg, "italic", state)
+		return renderInlineChildrenWithOptions(n, source, fg, "italic", state, uppercaseText)
 	case *east.Strikethrough:
-		return renderInlineChildren(n, source, fg, "strike", state)
+		return renderInlineChildrenWithOptions(n, source, fg, "strike", state, uppercaseText)
 	case *ast.Link:
 		return renderLink(
-			renderInlineChildren(n, source, "accent", mod, state),
+			renderInlineChildrenWithOptions(n, source, "accent", mod, state, false),
 			markdownSourceText(nodeText(n, source), state),
 			markdownSourceText(string(i.Destination), state),
 		)
@@ -314,7 +351,7 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRend
 			}
 		}
 		return renderLink(
-			renderInlineChildren(n, source, "accent", mod, state),
+			renderInlineChildrenWithOptions(n, source, "accent", mod, state, false),
 			markdownSourceText(nodeText(n, source), state),
 			markdownSourceText(string(i.Destination), state),
 		)
