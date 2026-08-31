@@ -13,12 +13,12 @@ const (
 	// markdownDisplayContract covers every human-facing frontend. Markdown is
 	// an available content format, not a requirement: raw line output preserves
 	// the source while rich terminal surfaces render it.
-	markdownDisplayContract = "Your output is emitted as Markdown source or rendered Markdown depending on the terminal. Markdown is supported but optional; follow explicit user formatting requests. Be terse. Tag code fences with a language for syntax highlighting. Raw HTML is not rendered on rich terminal surfaces. Markdown tables render as aligned monospace columns; keep cells short so rows fit the terminal. To show Markdown source literally, fence it. When the user gives you an image path or image URL, attach it with the view_image tool so you can actually see it; that only makes the image visible to you, not the user."
+	markdownDisplayContract = "Your output is emitted as Markdown source or rendered Markdown depending on the terminal. Markdown is supported but optional; follow explicit user formatting requests. Be terse. Tag code fences with a language for syntax highlighting. Raw HTML is not rendered on rich terminal surfaces. Markdown tables render as aligned monospace columns; keep cells short so rows fit the terminal. To show Markdown source literally, fence it. When the user gives you an image path or image URL, attach it with the view_image tool so you can actually see it. Typed images attached by tools produce a user-visible inspection receipt; the TUI groups them under Images viewed."
 
 	// localImageDisplayContract is added only for surfaces that interpret local
 	// Markdown images. Native-capable terminals draw a thumbnail; other rich
 	// terminals retain the caption/path fallback.
-	localImageDisplayContract = "This terminal surface interprets local Markdown image references. When the user wants to see an image, embed it in your reply as ![alt](path) (or ![alt](url)); view_image alone shows them nothing. Local images render as native thumbnails when supported and as compact captions otherwise."
+	localImageDisplayContract = "This terminal surface interprets local Markdown image references. Typed tool images already produce a user-visible inspection receipt, so do not repeat a view_image result in your reply unless the image belongs in the final answer or the user explicitly asks to see it there. To deliberately place an image in the reply, embed it as ![alt](path) (or ![alt](url)). Local images render as native thumbnails when supported and as compact captions otherwise."
 
 	// richTerminalDisplayContract must mirror what the managed REPL and rich
 	// line renderer in markdown.go actually support: strikethrough and tables
