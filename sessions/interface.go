@@ -24,6 +24,11 @@ type StoreConfig struct {
 	Path            string
 	DefaultMetadata *Metadata
 	AutoSessionTTL  time.Duration
+	// CleanupInterval sets how often the background sweep deletes expired
+	// sessions; zero keeps the one-hour default. The sweep only bounds how
+	// long expired rows linger unobserved — Acquire retires an expired,
+	// unleased session immediately regardless of this interval.
+	CleanupInterval time.Duration
 }
 
 // AcquireOptions describe a newly created session. They never alter the

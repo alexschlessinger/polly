@@ -118,6 +118,9 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 	if config.DefaultMetadata != nil && config.DefaultMetadata.TTL < 0 {
 		return nil, fmt.Errorf("default session TTL cannot be negative")
 	}
+	if config.CleanupInterval < 0 {
+		return nil, fmt.Errorf("cleanup interval cannot be negative")
+	}
 
 	dsnPath := config.Path
 	if config.Mode == ModeDisk {
@@ -150,6 +153,10 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 	db.SetConnMaxLifetime(0)
 	db.SetConnMaxIdleTime(0)
 
+	sweep := cleanupInterval
+	if config.CleanupInterval > 0 {
+		sweep = config.CleanupInterval
+	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	store := &SQLiteStore{
 		db:       db,
@@ -157,7 +164,7 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		path:     dsnPath,
 		defaults: cloneMetadata(config.DefaultMetadata),
 		autoTTL:  config.AutoSessionTTL,
-		cleanup:  cleanupInterval,
+		cleanup:  sweep,
 		ctx:      ctx,
 		cancel:   cancel,
 		open:     make(map[*sqliteSession]struct{}),
@@ -954,7 +961,36 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 	expiresNS = now.Add(leaseStaleAfter).UnixNano()
 	err = s.withWrite(ctx, func(conn *sql.Conn) error {
 		var storedID []byte
-		err := conn.QueryRowContext(ctx, "SELECT id FROM sessions WHERE name = ?", name).Scan(&storedID)
+		var updatedNS, ttlNS int64
+		err := conn.QueryRowContext(ctx,
+			"SELECT id, updated_ns, ttl_ns FROM sessions WHERE name = ?", name).Scan(&storedID, &updatedNS, &ttlNS)
+		if err == nil && ttlNS > 0 && updatedNS <= nowNS && ttlNS <= nowNS-updatedNS {
+			// The session idled past its TTL: retire it now instead of
+			// serving stale history until the next sweep observes it. A live
+			// lease means an active holder, so the guarded delete leaves the
+			// row alone and the lease upsert below reports busy.
+			result, deleteErr := conn.ExecContext(ctx, `
+				DELETE FROM sessions
+				WHERE id = ?
+				  AND NOT EXISTS (
+					SELECT 1 FROM session_leases
+					WHERE session_leases.session_id = sessions.id
+					  AND session_leases.expires_ns > ?
+				  )`, storedID, nowNS)
+			if deleteErr != nil {
+				return deleteErr
+			}
+			retired, deleteErr := result.RowsAffected()
+			if deleteErr != nil {
+				return deleteErr
+			}
+			if retired > 0 {
+				if gcErr := garbageCollectArtifacts(ctx, conn); gcErr != nil {
+					return gcErr
+				}
+				err = sql.ErrNoRows
+			}
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			storedID, err = randomBytes(16)
 			if err != nil {

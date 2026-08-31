@@ -674,6 +674,88 @@ func TestExpirySkipsLeaseAndCollectsAfterClose(t *testing.T) {
 	}
 }
 
+func TestAcquireRetiresExpiredSession(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, &Metadata{TTL: time.Second, SystemPrompt: "seed"}, 0)
+	ctx := context.Background()
+
+	session, err := store.Acquire(ctx, "stale", AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := session.ArtifactStore().Put(ctx, artifacts.Blob{Data: []byte("stale")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	firstID := append([]byte(nil), session.(*sqliteSession).id...)
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx,
+		"UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), firstID); err != nil {
+		t.Fatal(err)
+	}
+
+	reacquired := acquireNamed(t, store, "stale")
+	history, err := reacquired.GetHistory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Role != messages.MessageRoleSystem || history[0].Content != "seed" {
+		t.Fatalf("retired session history = %+v", history)
+	}
+	if equalBytes(reacquired.(*sqliteSession).id, firstID) {
+		t.Fatal("expired session kept its identity across reacquire")
+	}
+	var blobs int
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT count(*) FROM artifact_blobs WHERE digest = ?", mustDigest(t, ref.ID)).Scan(&blobs); err != nil || blobs != 0 {
+		t.Fatalf("retired session artifact blobs = %d, %v", blobs, err)
+	}
+}
+
+func TestAcquireKeepsExpiredSessionWithLiveLease(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, &Metadata{TTL: time.Second}, 0)
+	ctx := context.Background()
+	session := acquireNamed(t, store, "held")
+	if err := session.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "keep me"}); err != nil {
+		t.Fatal(err)
+	}
+	concrete := session.(*sqliteSession)
+	if _, err := store.db.ExecContext(ctx,
+		"UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), concrete.id); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := randomBytes(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, busy, err := store.tryAcquire(ctx, "held", AcquireOptions{}, owner)
+	if err != nil || !busy {
+		t.Fatalf("expired-but-leased acquire busy = %v, %v", busy, err)
+	}
+	history, err := session.GetHistory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Content != "keep me" {
+		t.Fatalf("held session history = %+v", history)
+	}
+}
+
+func TestStoreConfigCleanupIntervalOverride(t *testing.T) {
+	store, err := OpenStore(StoreConfig{Mode: ModeMemory, CleanupInterval: 5 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if store.cleanup != 5*time.Minute {
+		t.Fatalf("cleanup interval = %v", store.cleanup)
+	}
+}
+
 func TestAutoRetentionMetadataRoundTripRenameAndEmptyClose(t *testing.T) {
 	store, _ := openTestStore(t, ModeMemory, nil, 7*24*time.Hour)
 	ctx := context.Background()
@@ -1592,6 +1674,7 @@ func TestStoreConfigValidation(t *testing.T) {
 		{Mode: ModeDisk},
 		{Mode: ModeMemory, AutoSessionTTL: -1},
 		{Mode: ModeMemory, DefaultMetadata: &Metadata{TTL: -1}},
+		{Mode: ModeMemory, CleanupInterval: -1},
 	} {
 		if store, err := OpenStore(config); err == nil {
 			_ = store.Close()
