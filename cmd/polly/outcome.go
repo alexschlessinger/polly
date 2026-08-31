@@ -35,8 +35,7 @@ func (e *exitError) Unwrap() error { return e.err }
 // turnProgressSavedError wraps a failed turn's error once the work generated
 // before the failure has been durably persisted. Outcome classification is
 // unchanged — Unwrap keeps errors.Is/As working on the cause — while UIs use
-// the marker to label the failure "completed work saved" instead of "not
-// saved".
+// the marker to avoid falsely labeling persisted progress "not saved".
 type turnProgressSavedError struct{ cause error }
 
 func (e *turnProgressSavedError) Error() string { return e.cause.Error() }
