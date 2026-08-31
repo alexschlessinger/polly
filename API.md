@@ -150,7 +150,9 @@ err = llm.NewCompletionBuilder("openai/gpt-5.4").
 ### Automatic tool handling
 
 `ExecuteWithTools` runs the whole tool loop for you — it executes each call
-the model makes, feeds results back, and returns the model's final answer:
+the model makes, feeds results back, and returns the model's final answer.
+Rounds are capped at 250 (the agent's default); hitting the cap returns the
+last response together with `ErrMaxIterations`:
 
 ```go
 registry := tools.NewToolRegistry([]tools.Tool{&WeatherTool{}})

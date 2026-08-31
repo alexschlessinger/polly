@@ -107,8 +107,11 @@ func StreamComplete(ctx context.Context, model, prompt string, maxTokens int, on
 func ChatWithHistory(ctx context.Context, model string, history []messages.ChatMessage, newMessage string, maxTokens int) (*messages.ChatMessage, error) {
 	client := GetDefaultClient()
 
-	// Add the new message to history
-	allMessages := append(history, messages.ChatMessage{
+	// Add the new message to history on a fresh slice, leaving the caller's
+	// backing array untouched.
+	allMessages := make([]messages.ChatMessage, 0, len(history)+1)
+	allMessages = append(allMessages, history...)
+	allMessages = append(allMessages, messages.ChatMessage{
 		Role:    messages.MessageRoleUser,
 		Content: newMessage,
 	})
@@ -265,8 +268,12 @@ func (b *CompletionBuilder) WithSchema(schema *Schema) *CompletionBuilder {
 
 // WithHistory adds conversation history
 func (b *CompletionBuilder) WithHistory(history []messages.ChatMessage) *CompletionBuilder {
-	// Prepend history before any messages already added
-	b.req.Messages = append(history, b.req.Messages...)
+	// Prepend history before any messages already added, on a fresh slice so
+	// later appends never write into the caller's backing array.
+	merged := make([]messages.ChatMessage, 0, len(history)+len(b.req.Messages))
+	merged = append(merged, history...)
+	merged = append(merged, b.req.Messages...)
+	b.req.Messages = merged
 	return b
 }
 
@@ -310,71 +317,74 @@ func (b *CompletionBuilder) ExecuteStreaming(ctx context.Context, client LLM, on
 	return nil
 }
 
-// ExecuteWithTools runs the completion and handles tool calls automatically
+// ExecuteWithTools runs the completion and handles tool calls automatically.
+// Rounds are capped like Agent.Run's MaxIterations default; hitting the cap
+// returns the last response together with ErrMaxIterations.
 func (b *CompletionBuilder) ExecuteWithTools(ctx context.Context, client LLM, toolRegistry *tools.ToolRegistry) (*messages.ChatMessage, error) {
-	processor := &SimpleProcessor{}
-
 	// Add tools to request if not already added
 	if len(b.req.Tools) == 0 && toolRegistry != nil {
 		b.req.Tools = toolRegistry.All()
 	}
 
-	eventChan := client.ChatCompletionStream(ctx, b.req, processor)
-
+	const maxToolRounds = 250
 	var response *messages.ChatMessage
-	for event := range eventChan {
-		switch event.Type {
-		case messages.EventTypeComplete:
-			response = event.Message
+	for round := 0; round < maxToolRounds; round++ {
+		processor := &SimpleProcessor{}
+		eventChan := client.ChatCompletionStream(ctx, b.req, processor)
 
-			// Handle tool calls if present
-			if len(response.ToolCalls) > 0 && toolRegistry != nil {
-				for _, toolCall := range response.ToolCalls {
-					// Parse arguments
-					var args map[string]any
-					if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
-						return nil, fmt.Errorf("failed to parse tool arguments: %w", err)
-					}
+		response = nil
+		for event := range eventChan {
+			switch event.Type {
+			case messages.EventTypeComplete:
+				response = event.Message
+			case messages.EventTypeError:
+				return nil, event.Error
+			}
+		}
 
-					// Get and execute tool
-					tool, exists, allowed := toolRegistry.GetIfAllowed(toolCall.Name)
-					if !exists {
-						return nil, fmt.Errorf("tool not found: %s", toolCall.Name)
-					}
-					if !allowed {
-						return nil, fmt.Errorf("tool not allowed by active skill policy: %s", toolCall.Name)
-					}
+		if response == nil || len(response.ToolCalls) == 0 || toolRegistry == nil {
+			return response, nil
+		}
 
-					result, err := tool.Execute(ctx, args)
-					if err != nil {
-						if msg, ok := tools.FormatToolError(err); ok {
-							result = msg
-						} else {
-							result = fmt.Sprintf("Error executing tool: %v", err)
-						}
-					}
-
-					// Add tool result to messages
-					b.req.Messages = append(b.req.Messages, *response)
-					b.req.Messages = append(b.req.Messages, messages.ChatMessage{
-						Role:       messages.MessageRoleTool,
-						Content:    result,
-						ToolCallID: toolCall.ID,
-						ToolName:   toolCall.Name,
-					})
-				}
-				toolRegistry.CommitPendingChanges()
-
-				// Continue conversation with tool results
-				return b.ExecuteWithTools(ctx, client, toolRegistry)
+		// The assistant message joins history once, ahead of its results.
+		b.req.Messages = append(b.req.Messages, *response)
+		for _, toolCall := range response.ToolCalls {
+			// Parse arguments
+			var args map[string]any
+			if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+				return nil, fmt.Errorf("failed to parse tool arguments: %w", err)
 			}
 
-		case messages.EventTypeError:
-			return nil, event.Error
+			// Get and execute tool
+			tool, exists, allowed := toolRegistry.GetIfAllowed(toolCall.Name)
+			if !exists {
+				return nil, fmt.Errorf("tool not found: %s", toolCall.Name)
+			}
+			if !allowed {
+				return nil, fmt.Errorf("tool not allowed by active skill policy: %s", toolCall.Name)
+			}
+
+			result, err := tool.Execute(ctx, args)
+			if err != nil {
+				if msg, ok := tools.FormatToolError(err); ok {
+					result = msg
+				} else {
+					result = fmt.Sprintf("Error executing tool: %v", err)
+				}
+			}
+
+			b.req.Messages = append(b.req.Messages, messages.ChatMessage{
+				Role:       messages.MessageRoleTool,
+				Content:    result,
+				ToolCallID: toolCall.ID,
+				ToolName:   toolCall.Name,
+			})
 		}
+		toolRegistry.CommitPendingChanges()
 	}
 
-	return response, nil
+	response.StopReason = messages.StopReasonMaxIterations
+	return response, ErrMaxIterations
 }
 
 // SimpleProcessor is a basic implementation of EventStreamProcessor
@@ -388,8 +398,10 @@ func (s *SimpleProcessor) ProcessMessagesToEvents(msgChan <-chan messages.ChatMe
 
 		var fullContent string
 		var lastMessage messages.ChatMessage
+		received := false
 
 		for msg := range msgChan {
+			received = true
 			lastMessage = msg
 
 			if msg.IsError() {
@@ -416,8 +428,10 @@ func (s *SimpleProcessor) ProcessMessagesToEvents(msgChan <-chan messages.ChatMe
 			}
 		}
 
-		// Send complete event with full message
-		if fullContent != "" || len(lastMessage.ToolCalls) > 0 {
+		// Send complete event with full message. A legitimately empty
+		// completion (a refusal, a content-filter stop) still completes;
+		// its stop reason is the caller's only signal.
+		if received {
 			lastMessage.Content = fullContent
 			eventChan <- &messages.StreamEvent{
 				Type:    messages.EventTypeComplete,
