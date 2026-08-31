@@ -348,8 +348,8 @@ func TestThinkingDisclosureStartsCollapsedWithoutLeakingReasoning(t *testing.T) 
 		t.Fatal("a turn's reasoning disclosure should start collapsed")
 	}
 	block := plainStyledText(m.transcript[record.transcriptIndex])
-	if !strings.Contains(block, "▸ Thinking") {
-		t.Fatalf("collapsed disclosure = %q, want a Thinking label", block)
+	if !strings.Contains(block, "▸ thinking") {
+		t.Fatalf("collapsed disclosure = %q, want a thinking label", block)
 	}
 	if strings.Contains(block, privateReasoning) {
 		t.Fatalf("collapsed disclosure leaked reasoning: %q", block)
@@ -384,7 +384,7 @@ func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 	if !strings.Contains(block, "number 15") || strings.Contains(block, "number 0 ") {
 		t.Fatalf("expanded disclosure should show only the newest tail: %q", block)
 	}
-	if !strings.Contains(block, "▾ Thinking") || !strings.Contains(m.transcript[record.transcriptIndex], "mod:italic") {
+	if !strings.Contains(block, "▾ thinking") || !strings.Contains(m.transcript[record.transcriptIndex], "mod:italic") {
 		t.Fatalf("expanded disclosure lost its open label or preview styling: %q", m.transcript[record.transcriptIndex])
 	}
 
@@ -669,7 +669,7 @@ func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 		t.Fatalf("second segment did not land after the first: first=%d second=%d", first.transcriptIndex, second.transcriptIndex)
 	}
 	plain := plainStyledText(strings.Join(m.transcript, "\n"))
-	if strings.Index(plain, "interim prose") < strings.Index(plain, "Thought") {
+	if strings.Index(plain, "interim prose") < strings.Index(plain, "thought") {
 		t.Fatalf("interim prose should follow the first reasoning block: %q", plain)
 	}
 

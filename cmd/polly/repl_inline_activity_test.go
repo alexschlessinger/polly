@@ -23,7 +23,7 @@ func TestInlineActivityHeadersUseTrailerControls(t *testing.T) {
 
 	m := newReplModel()
 	record := &reasoningRecord{complete: true, elapsed: 2 * time.Second}
-	if got, want := m.reasoningRecordText(record, 80), "  "+inlineActivityControl("▸", "Thought "+formatElapsed(record.elapsed), true); got != want {
+	if got, want := m.reasoningRecordText(record, 80), "  "+inlineActivityControl("▸", "thought "+formatElapsed(record.elapsed), true); got != want {
 		t.Fatalf("inline thought header = %q, want muted metadata control %q", got, want)
 	}
 }
@@ -31,7 +31,7 @@ func TestInlineActivityHeadersUseTrailerControls(t *testing.T) {
 // Windows' coarse monotonic clock can bank an exactly-zero thinking elapsed,
 // which drops the duration from the label — assert the accent span, not the
 // timing.
-var accentThought = regexp.MustCompile(`\[Thought[^\]]*\]\(fg:accent`)
+var accentThought = regexp.MustCompile(`\[thought[^\]]*\]\(fg:accent`)
 
 // Smoke: full turn lifecycle with inline activity — live rows visible during
 // the turn, trailer appended after, blocks stay inline after settle.
@@ -47,18 +47,18 @@ func TestInlineActivitySmoke(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 
 	// Mid-turn: both blocks visible inline, collapsed. The reasoning run
-	// paused when the tool phase began, so it already reads "Thought".
+	// paused when the tool phase began, so it already reads "thought".
 	mid := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
-	if !strings.Contains(mid, "Thought") || !strings.Contains(mid, "1 tool") {
+	if !strings.Contains(mid, "thought") || !strings.Contains(mid, "1 tool") {
 		t.Fatalf("mid-turn transcript missing inline activity: %q", mid)
 	}
 	var activityLines []string
 	for _, line := range strings.Split(mid, "\n") {
-		if strings.Contains(line, "Thought") || strings.Contains(line, "1 tool") {
+		if strings.Contains(line, "thought") || strings.Contains(line, "1 tool") {
 			activityLines = append(activityLines, line)
 		}
 	}
-	if len(activityLines) != 1 || !strings.Contains(activityLines[0], "Thought") ||
+	if len(activityLines) != 1 || !strings.Contains(activityLines[0], "thought") ||
 		!strings.Contains(activityLines[0], " · ") || !strings.Contains(activityLines[0], "1 tool") {
 		t.Fatalf("inline activity should be one trailer-style row: %#v", activityLines)
 	}
@@ -97,9 +97,9 @@ func TestInlineActivitySmoke(t *testing.T) {
 	tui.RecordTurnTokens(100, 20)
 	r.endTurn(nil)
 
-	// Settled: reasoning says "Thought", tool block collapsed, trailer present.
+	// Settled: reasoning says "thought", tool block collapsed, trailer present.
 	final := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
-	for _, want := range []string{"Thought", "1 tool", "All done.", "✓", "100 in / 20 out"} {
+	for _, want := range []string{"thought", "1 tool", "All done.", "✓", "100 in / 20 out"} {
 		if !strings.Contains(final, want) {
 			t.Fatalf("settled transcript missing %q: %q", want, final)
 		}
@@ -154,11 +154,11 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 	visible := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
 	var activityLines []string
 	for _, line := range strings.Split(visible, "\n") {
-		if strings.Contains(line, "Thought") || strings.Contains(line, "tools") {
+		if strings.Contains(line, "thought") || strings.Contains(line, "tools") {
 			activityLines = append(activityLines, line)
 		}
 	}
-	if len(activityLines) != 1 || !strings.Contains(activityLines[0], "Thought 0.7s · ▸ 2 tools") {
+	if len(activityLines) != 1 || !strings.Contains(activityLines[0], "thought 0.7s · ▸ 2 tools") {
 		t.Fatalf("uninterrupted activity should aggregate into one row: %#v", activityLines)
 	}
 	rows := m.transcriptRows(100)
@@ -186,7 +186,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 	visible = strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
 	activityLines = activityLines[:0]
 	for _, line := range strings.Split(visible, "\n") {
-		if strings.Contains(line, "Thought") || strings.Contains(line, "tool") {
+		if strings.Contains(line, "thought") || strings.Contains(line, "tool") {
 			activityLines = append(activityLines, line)
 		}
 	}
@@ -200,7 +200,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 		}
 	}
 	if len(activityHeaders) != 2 ||
-		!strings.Contains(activityHeaders[0], "Thought 0.7s](fg:muted") ||
+		!strings.Contains(activityHeaders[0], "thought 0.7s](fg:muted") ||
 		!strings.Contains(activityHeaders[0], "2 tools](fg:muted") ||
 		!strings.Contains(activityHeaders[1], "fg:accent") {
 		t.Fatalf("activity group colors did not follow the prose boundary: %#v", activityHeaders)
@@ -274,7 +274,7 @@ func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
 	thoughts := m.visibleReasoningPlacements(len(rows), len(rows), 0, 0, width, false, 0)
 	tools := m.visibleToolDisclosurePlacements(len(rows), len(rows), 0, 0, width, false, 0)
 	if len(thoughts) != 1 || thoughts[0].X != 2 || thoughts[0].Cols != 9 {
-		t.Fatalf("fully visible Thought hitbox = %#v, want x=2 cols=9", thoughts)
+		t.Fatalf("fully visible thought hitbox = %#v, want x=2 cols=9", thoughts)
 	}
 	if len(tools) != 0 {
 		t.Fatalf("truncated tool control retained an overlapping hitbox: %#v", tools)

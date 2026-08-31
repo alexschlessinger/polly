@@ -38,7 +38,7 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 		t.Fatalf("settled dock remained attached to bottom row: %#v", m.turnDock)
 	}
 	plain := plainStyledText(m.transcript[len(m.transcript)-1])
-	for _, want := range []string{"Thought", "1 tool", "✓", "34.0s", "18.6k in / 1.2k out"} {
+	for _, want := range []string{"thought", "1 tool", "✓", "34.0s", "18.6k in / 1.2k out"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("settled dock %q missing %q", plain, want)
 		}
@@ -49,7 +49,7 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(160)), "\n"))
 	// The activity blocks stay inline where they occurred; the trailer adds
 	// its own summary fields below the reply.
-	if strings.Count(visible, "1 tool") != 2 || strings.Count(visible, "Thought") != 2 {
+	if strings.Count(visible, "1 tool") != 2 || strings.Count(visible, "thought") != 2 {
 		t.Fatalf("settled activity did not render inline plus trailer: %q", visible)
 	}
 }
@@ -64,15 +64,15 @@ func TestLiveActivityRendersInlineNotInDock(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "read", Name: "read_file"}})
 
 	// Live activity is inline in the transcript where it occurs. The reasoning
-	// segment settled when the tool phase began, so it already reads "Thought".
+	// segment settled when the tool phase began, so it already reads "thought".
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(100)), "\n"))
-	if !strings.Contains(visible, "Thought") || !strings.Contains(visible, "1 tool") {
+	if !strings.Contains(visible, "thought") || !strings.Contains(visible, "1 tool") {
 		t.Fatalf("live activity missing from transcript: %q", visible)
 	}
-	// The dock is status-only: no Thought/tools fields while the turn runs.
+	// The dock is status-only: no thought/tools fields while the turn runs.
 	dock, _ := m.turnDockRow(100)
 	plainDock := plainStyledText(dock)
-	if strings.Contains(plainDock, "Thought") || strings.Contains(plainDock, "1 tool") {
+	if strings.Contains(plainDock, "thought") || strings.Contains(plainDock, "1 tool") {
 		t.Fatalf("live dock carried activity disclosures: %q", plainDock)
 	}
 }
@@ -315,7 +315,7 @@ func TestHydratedHistoryRestoresAttachedTrailers(t *testing.T) {
 	}
 	latest := m.turnTrailers[m.turnTrailerSeq]
 	plain := plainStyledText(m.transcript[latest.transcriptIndex])
-	for _, want := range []string{"Thought", "✓", "1.8k in / 350 out"} {
+	for _, want := range []string{"thought", "✓", "1.8k in / 350 out"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("latest hydrated dock %q missing %q", plain, want)
 		}
