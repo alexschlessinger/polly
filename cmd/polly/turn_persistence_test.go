@@ -491,7 +491,7 @@ func TestDurableTurnMessagesKeepsProseAndDeniedOutcome(t *testing.T) {
 	m := newReplModel()
 	m.hydrateHistory(append([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "inspect"}}, durable...), "ctx")
 	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
-	if !strings.Contains(plain, "I will inspect that.") || !strings.Contains(plain, "▸ 1 tool call") ||
+	if !strings.Contains(plain, "I will inspect that.") || !strings.Contains(plain, "▸ 1 tool") ||
 		strings.Contains(plain, "tool request denied") || strings.Contains(plain, "incomplete") {
 		t.Fatalf("prose + denial hydration = %q", plain)
 	}
@@ -567,7 +567,7 @@ func TestDurableMixedToolBatchReloadsOneOrderedDisclosure(t *testing.T) {
 	}
 
 	collapsed := plainStyledText(strings.Join(m.transcript, "\n"))
-	if !strings.Contains(collapsed, "▸ 2 tool calls") {
+	if !strings.Contains(collapsed, "▸ 2 tools") {
 		t.Fatalf("reloaded collapsed header = %q", collapsed)
 	}
 	for _, hidden := range []string{deniedName, successName, rawBody, llm.ToolDeniedContent} {

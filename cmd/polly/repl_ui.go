@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -649,15 +650,18 @@ type replModel struct {
 	// rows with a breathing arrow and live elapsed time. Parallel calls finish
 	// out of order, so each is matched back to its row by call ID.
 	activeTools []activeTool
+	// activeToolsPhase is the arrow-pulse phase of the last refreshActiveTools
+	// repaint; -1 forces a repaint on the first tick of a new batch.
+	activeToolsPhase int
 	// Tool activity is a semantic disclosure from its first call. It defaults
 	// collapsed; deliberate expansion reveals every live or completed row.
 	toolDisclosures          map[int64]*toolDisclosureRecord
 	toolDisclosureAt         map[int]int64 // transcript index -> disclosure ID
 	toolDisclosureSeq        int64
 	turnToolDisclosureID     int64
+	turnToolDisclosureIDs    []int64 // every disclosure opened this turn
 	toolDisclosurePlacements []disclosurePlacement
 	turnDock                 turnDockState
-	turnDockPlacements       []turnDockPlacement
 	turnTrailers             map[int64]*turnTrailerRecord
 	turnTrailerAt            map[int]int64
 	turnTrailerSeq           int64
@@ -716,8 +720,8 @@ type replModel struct {
 	reasoningOrder       []int64       // creation order, for Ctrl-O
 	reasoningSeq         int64
 	turnReasoningID      int64
-	turnReasoningOpen    bool // Ctrl-O can pre-arm disclosure before the first chunk
-	thinkingIndex        int  // current turn's disclosure entry, or -1
+	turnReasoningIDs     []int64 // every reasoning record opened this turn
+	turnReasoningOpen    bool    // pending Ctrl-O pre-arm before the first chunk
 	thinkingSegmentOpen  bool
 	thinkingSegmentStart time.Time
 	reasoningPlacements  []disclosurePlacement
@@ -758,15 +762,18 @@ type replModel struct {
 }
 
 type transcriptVisualBlock struct {
-	key              string
-	text             string
-	followed         bool
-	rows             [][]ui.Cell
-	images           []transcriptImage
-	imageSpans       []transcriptImageSpan
-	reasoningID      int64
-	toolDisclosureID int64
-	turnTrailerID    int64
+	key               string
+	text              string
+	followed          bool
+	rows              [][]ui.Cell
+	images            []transcriptImage
+	imageSpans        []transcriptImageSpan
+	reasoningID       int64
+	reasoningIDs      []int64
+	toolDisclosureID  int64
+	toolDisclosureIDs []int64
+	turnTrailerID     int64
+	activityFields    []turnDockPlacement
 }
 
 // reasoningRecord is the display projection of one user turn's provider
@@ -792,9 +799,10 @@ type reasoningRecord struct {
 // disclosure. Like native image placements, it is viewport-aware and exists
 // only for mouse hit-testing.
 type disclosurePlacement struct {
-	recordID int64
-	X, Y     int
-	Cols     int
+	recordID  int64
+	recordIDs []int64
+	X, Y      int
+	Cols      int
 }
 
 type toolDisclosureRow struct {
@@ -839,7 +847,7 @@ func newReplModel() *replModel {
 		historyIdx:       -1,
 		state:            turnStateIdle,
 		followBottom:     true,
-		thinkingIndex:    -1,
+		activeToolsPhase: -1,
 	}
 	m.ed.goalCol = -1
 	return m
@@ -856,6 +864,10 @@ func (m *replModel) statusRow(width int) string {
 	const sep = " · "
 
 	leftRaw, leftStyled := "", ""
+	if m.busy && !m.turnStarted.IsZero() {
+		leftRaw = formatElapsed(time.Since(m.turnStarted))
+		leftStyled = styled(leftRaw, "accent", "")
+	}
 	type field struct {
 		drop int
 		text string
@@ -966,6 +978,12 @@ const (
 	reasoningTailLimitRunes  = 2 * reasoningTailRetainRunes
 )
 
+// toolPreviewRows bounds an expanded tool disclosure the same way
+// reasoningPreviewLines bounds thinking: the newest rows, everywhere the
+// disclosure renders. Earlier rows collapse into one elision line; the header
+// keeps the full count.
+const toolPreviewRows = 5
+
 const reasoningBlockIndent = "    "
 
 // activityTicker is the pinned bottom-row notice shown while the user is
@@ -987,9 +1005,6 @@ func (m *replModel) activityTicker(totalRows, topRow, height int) string {
 	raw := fmt.Sprintf("↓ %d %s below", below, word)
 	if m.busy {
 		raw += " · " + m.busyLabel()
-		if !m.turnStarted.IsZero() {
-			raw += " · " + formatElapsed(time.Since(m.turnStarted))
-		}
 	}
 	return styled(raw, "accent", "bold") + styled(" · End to follow", "muted", "")
 }
@@ -1326,21 +1341,31 @@ type activeTool struct {
 	started time.Time
 }
 
+// currentToolDisclosure returns the disclosure currently receiving rows, or —
+// once a batch has settled mid-turn — the turn's most recent disclosure, so
+// callers inspecting the just-completed batch still find it. Caller must hold
+// m.mu.
 func (m *replModel) currentToolDisclosure() *toolDisclosureRecord {
-	if m.turnToolDisclosureID == 0 {
-		return nil
+	if m.turnToolDisclosureID != 0 {
+		return m.toolDisclosures[m.turnToolDisclosureID]
 	}
-	return m.toolDisclosures[m.turnToolDisclosureID]
+	if n := len(m.turnToolDisclosureIDs); n > 0 {
+		return m.toolDisclosures[m.turnToolDisclosureIDs[n-1]]
+	}
+	return nil
 }
 
 func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
-	if record := m.currentToolDisclosure(); record != nil {
+	// Only the live pointer receives new rows: once a batch settles, the next
+	// batch opens a fresh disclosure at its own transcript position.
+	if record := m.toolDisclosures[m.turnToolDisclosureID]; record != nil {
 		return record
 	}
 	m.toolDisclosureSeq++
 	record := &toolDisclosureRecord{id: m.toolDisclosureSeq, transcriptIndex: len(m.transcript)}
 	m.toolDisclosures[record.id] = record
 	m.turnToolDisclosureID = record.id
+	m.turnToolDisclosureIDs = append(m.turnToolDisclosureIDs, record.id)
 	m.appendLine("")
 	record.transcriptIndex = len(m.transcript) - 1
 	m.toolDisclosureAt[record.transcriptIndex] = record.id
@@ -1364,6 +1389,11 @@ func (m *replModel) appendToolStartRow(id, label string) *toolDisclosureRecord {
 		label:  label,
 		line:   runningToolLine(label, 0),
 	})
+	if len(m.activeTools) == 0 {
+		// A fresh batch restarts the pulse clock; drop the drained batch's
+		// phase so a bucket collision cannot skip the first repaint.
+		m.activeToolsPhase = -1
+	}
 	m.activeTools = append(m.activeTools, activeTool{
 		id:      id,
 		row:     row,
@@ -1373,31 +1403,32 @@ func (m *replModel) appendToolStartRow(id, label string) *toolDisclosureRecord {
 	return record
 }
 
-func toolDisclosureHeader(total int, expanded bool) string {
-	word := "tool calls"
-	if total == 1 {
-		word = "tool call"
-	}
+func toolDisclosureHeader(total int, expanded, complete bool) string {
 	glyph := "▸"
 	if expanded {
 		glyph = "▾"
 	}
-	return "  " + styled(glyph, "accent", "bold") + " " +
-		styled(fmt.Sprintf("%d %s", total, word), "muted", "bold")
+	return "  " + inlineActivityControl(glyph, turnToolLabel(total), complete)
 }
 
 func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage) {
 	if record == nil {
 		return "", nil
 	}
-	header := toolDisclosureHeader(len(record.rows), record.expanded)
+	header := toolDisclosureHeader(len(record.rows), record.expanded, record.complete)
 	if !record.expanded {
 		return header, nil
 	}
 	var b strings.Builder
 	b.WriteString(header)
 	var images []transcriptImage
-	for _, row := range record.rows {
+	rows := record.rows
+	if len(rows) > toolPreviewRows {
+		b.WriteString("\n  ")
+		b.WriteString(styled(fmt.Sprintf("… %d earlier", len(rows)-toolPreviewRows), "muted", ""))
+		rows = rows[len(rows)-toolPreviewRows:]
+	}
+	for _, row := range rows {
 		if row.line == "" {
 			continue
 		}
@@ -1417,6 +1448,10 @@ func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage
 }
 
 func (m *replModel) refreshToolDisclosure(record *toolDisclosureRecord) {
+	m.refreshToolDisclosureWithAnchor(record, true)
+}
+
+func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord, reanchor bool) {
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return
 	}
@@ -1425,20 +1460,93 @@ func (m *replModel) refreshToolDisclosure(record *toolDisclosureRecord) {
 	if m.transcript[index] == text && transcriptImagesEqual(m.transcriptImages[index], images) {
 		return
 	}
+	// Tool activity renders inline in the transcript, so updates must
+	// invalidate the visual block cache and re-anchor a held viewport like
+	// any other transcript mutation.
+	width := m.reasoningWidth
+	if width < 2 {
+		width = 80
+	}
+	match := matchToolDisclosureBlock(record.id)
+	oldStart, oldCount, held := 0, 0, false
+	if reanchor && !m.followBottom {
+		oldStart, oldCount, held = m.displayRecordSpan(width, match)
+	}
 	m.transcript[index] = text
 	m.setTranscriptImages(index, images)
-	// The legacy entry is retained only as semantic backing for the dock and
-	// compatibility with persisted display data; it is not a visible block.
-	m.flatCache = nil
+	m.invalidateFlat()
+	if held {
+		if _, newCount, ok := m.displayRecordSpan(width, match); ok {
+			m.anchorForResizedEntry(oldStart, oldCount, newCount)
+		}
+	}
 }
 
-// completeToolDisclosure settles and auto-collapses the turn's tool activity.
-// Its rows remain available for deliberate expansion. Caller must hold m.mu.
+// displayRecordSpan locates the flattened display block satisfying match and
+// returns its first display row and row count. The viewport anchor indexes
+// display rows, and adjacent activity entries merge into one display block —
+// so raw per-entry offsets drift from anchor space and cannot re-anchor a
+// held viewport. Forces the layout for width. Caller must hold m.mu.
+func (m *replModel) displayRecordSpan(width int, match func(*transcriptVisualBlock) bool) (int, int, bool) {
+	m.transcriptRows(width)
+	start := 0
+	for i := range m.visualBlocks {
+		block := &m.visualBlocks[i]
+		if match(block) {
+			return start, len(block.rows), true
+		}
+		start += len(block.rows)
+	}
+	return 0, 0, false
+}
+
+func matchToolDisclosureBlock(recordID int64) func(*transcriptVisualBlock) bool {
+	return func(block *transcriptVisualBlock) bool {
+		if block.toolDisclosureID == recordID {
+			return true
+		}
+		for _, id := range block.toolDisclosureIDs {
+			if id == recordID {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+func matchReasoningBlock(recordID int64) func(*transcriptVisualBlock) bool {
+	return func(block *transcriptVisualBlock) bool {
+		if block.reasoningID == recordID {
+			return true
+		}
+		for _, id := range block.reasoningIDs {
+			if id == recordID {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// completeToolDisclosure settles the live tool disclosure. A deliberately
+// expanded disclosure stays open until the turn settles; the next batch opens
+// a fresh disclosure at its own transcript position. Caller must hold m.mu.
 func (m *replModel) completeToolDisclosure() {
-	if record := m.currentToolDisclosure(); record != nil {
+	if record := m.toolDisclosures[m.turnToolDisclosureID]; record != nil {
 		record.complete = true
-		record.expanded = false
 		m.refreshToolDisclosure(record)
+	}
+	m.turnToolDisclosureID = 0
+}
+
+// collapseTurnToolDisclosures auto-collapses every disclosure of the turn at
+// settlement. Caller must hold m.mu.
+func (m *replModel) collapseTurnToolDisclosures() {
+	for _, id := range m.turnToolDisclosureIDs {
+		if record := m.toolDisclosures[id]; record != nil && record.expanded {
+			record.expanded = false
+			m.refreshToolDisclosure(record)
+		}
 	}
 }
 
@@ -1446,7 +1554,7 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 	if index < 0 || index >= len(m.transcript) {
 		return 0
 	}
-	if m.reasoningAt[index] != 0 || m.toolDisclosureAt[index] != 0 {
+	if m.quiet && (m.reasoningAt[index] != 0 || m.toolDisclosureAt[index] != 0) {
 		return 0
 	}
 	if width < 1 {
@@ -1491,6 +1599,7 @@ func (m *replModel) clearToolDisclosures() {
 	m.toolDisclosureAt = make(map[int]int64)
 	m.toolDisclosureSeq = 0
 	m.turnToolDisclosureID = 0
+	m.turnToolDisclosureIDs = nil
 	m.toolDisclosurePlacements = nil
 }
 
@@ -1547,6 +1656,9 @@ func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
 	record := &reasoningRecord{id: m.reasoningSeq, complete: complete}
 	if !complete {
 		record.expanded = m.turnReasoningOpen
+		// The pending shortcut applies only to the first record it creates. An
+		// expanded record must not silently pre-arm later reasoning segments.
+		m.turnReasoningOpen = false
 	}
 	m.appendLine("")
 	record.transcriptIndex = len(m.transcript) - 1
@@ -1555,6 +1667,19 @@ func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
 	m.reasoningOrder = append(m.reasoningOrder, record.id)
 	m.refreshReasoningRecord(record, 80)
 	return record
+}
+
+// firstNonZero returns id, or the first element of ids when id is zero — the
+// current pointer is cleared as each segment/batch settles, so the dock label
+// falls back to the turn's first record.
+func firstNonZero(id int64, ids []int64) int64 {
+	if id != 0 {
+		return id
+	}
+	if len(ids) > 0 {
+		return ids[0]
+	}
+	return 0
 }
 
 func (m *replModel) currentReasoningRecord() *reasoningRecord {
@@ -1572,18 +1697,27 @@ func (m *replModel) appendThinking(chunk string) {
 		return
 	}
 	record := m.currentReasoningRecord()
+	resumed := false
 	if record == nil {
+		// A new disclosure opens at the current transcript position only when
+		// assistant prose broke the run (or the turn just started), so an
+		// unbroken thinking→tools→thinking continuation keeps aggregating
+		// into one indicator instead of stranding an expanded block.
 		record = m.newReasoningRecord(false)
 		m.turnReasoningID = record.id
-		m.thinkingIndex = record.transcriptIndex
-	}
-	if !m.thinkingSegmentOpen {
-		m.appendReasoningTail(record, "", len(record.tail) > 0)
+		m.turnReasoningIDs = append(m.turnReasoningIDs, record.id)
 		m.thinkingSegmentOpen = true
 		m.thinkingSegmentStart = time.Now()
 		record.active = true
+	} else if !m.thinkingSegmentOpen {
+		// Resuming after a tool phase paused the segment: same record, fresh
+		// clock, one semantic break between the tool-separated passages.
+		m.thinkingSegmentOpen = true
+		m.thinkingSegmentStart = time.Now()
+		record.active = true
+		resumed = true
 	}
-	m.appendReasoningTail(record, chunk, false)
+	m.appendReasoningTail(record, chunk, resumed)
 	// Width-aware wrapping belongs to the render loop. Provider callbacks only
 	// mutate the bounded semantic tail under the model lock.
 }
@@ -1596,6 +1730,9 @@ func (m *replModel) appendReasoningTail(record *reasoningRecord, text string, se
 	}
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
+	// Expanded reasoning can share a visual block with tool image sidecars.
+	// Remove reserved slot runes before they can claim those tool images.
+	text = stripTranscriptImageMarkers(text)
 	addition := []rune(text)
 	if segmentBreak && len(record.tail) > 0 && record.tail[len(record.tail)-1] != '\n' {
 		withBreak := make([]rune, 1, len(addition)+1)
@@ -1630,44 +1767,79 @@ func (m *replModel) appendReasoningTail(record *reasoningRecord, text string, se
 	}
 }
 
-// finishThinkingSegment closes only the current provider segment. The turn's
-// disclosure and expansion choice remain intact across tools and later
-// reasoning. Caller must hold m.mu.
+// finishThinkingSegment closes the current provider segment's disclosure.
+// The segment settles in place; a later reasoning segment opens a fresh
+// disclosure at its own transcript position. Caller must hold m.mu.
 func (m *replModel) finishThinkingSegment() {
+	record := m.currentReasoningRecord()
+	if record == nil {
+		m.thinkingSegmentOpen = false
+		m.thinkingSegmentStart = time.Time{}
+		return
+	}
+	// The record may be paused (tool phase mid-run) rather than live; either
+	// way it is the current run and prose or settlement closes it here. A
+	// paused record already banked its elapsed time.
+	if m.thinkingSegmentOpen {
+		record.elapsed += time.Since(m.thinkingSegmentStart)
+	}
+	record.active = false
+	record.complete = true
+	record.dirty = true
+	// Refresh unconditionally: reasoningWidth may be zero in provider
+	// callbacks, and refreshReasoningRecord treats that as "keep the
+	// existing text", which would strand the live "Thinking…" label.
+	// A deliberately expanded segment stays open until the turn settles.
+	m.refreshReasoningRecord(record, m.reasoningWidth)
+	m.turnReasoningID = 0
+	m.thinkingSegmentOpen = false
+	m.thinkingSegmentStart = time.Time{}
+}
+
+// pauseThinkingSegment banks the running segment's elapsed time and stops its
+// live clock without closing the record: the turn's next reasoning chunk
+// resumes the same disclosure. Tool phases pause; only assistant prose (or
+// turn settlement) closes the run. Caller must hold m.mu.
+func (m *replModel) pauseThinkingSegment() {
 	if !m.thinkingSegmentOpen {
 		return
 	}
-	record := m.currentReasoningRecord()
-	if record != nil {
+	if record := m.currentReasoningRecord(); record != nil {
 		record.elapsed += time.Since(m.thinkingSegmentStart)
 		record.active = false
 		record.dirty = true
+		m.refreshReasoningRecord(record, m.reasoningWidth)
 	}
 	m.thinkingSegmentOpen = false
 	m.thinkingSegmentStart = time.Time{}
 }
 
-// completeThinkingTurn auto-collapses this turn's disclosure and marks whether
-// the provider-generated messages were saved. Caller must hold m.mu.
+// completeThinkingTurn settles any still-open reasoning segment and marks
+// whether the provider-generated messages were saved. Caller must hold m.mu.
 func (m *replModel) completeThinkingTurn(unsaved bool) {
 	m.finishThinkingSegment()
-	record := m.currentReasoningRecord()
-	if record == nil {
-		m.resetCurrentThinking()
-		return
+	// Every segment of the turn auto-collapses at settlement; the "not saved"
+	// marker lands on each when the turn persisted nothing.
+	for _, id := range m.turnReasoningIDs {
+		record := m.reasoningRecords[id]
+		if record == nil {
+			continue
+		}
+		record.complete = true
+		record.expanded = false
+		if unsaved {
+			record.unsaved = true
+		}
+		record.dirty = true
+		m.refreshReasoningRecord(record, m.reasoningWidth)
 	}
-	record.active = false
-	record.complete = true
-	record.unsaved = unsaved
-	record.expanded = false
-	m.refreshReasoningRecord(record, m.reasoningWidth)
 	m.resetCurrentThinking()
 }
 
 func (m *replModel) resetCurrentThinking() {
 	m.turnReasoningID = 0
+	m.turnReasoningIDs = nil
 	m.turnReasoningOpen = false
-	m.thinkingIndex = -1
 	m.thinkingSegmentOpen = false
 	m.thinkingSegmentStart = time.Time{}
 }
@@ -1692,27 +1864,49 @@ func (m *replModel) refreshReasoningRecords(width int) {
 		}
 		return
 	}
-	if record := m.currentReasoningRecord(); record != nil && (record.active || record.dirty) {
-		m.refreshReasoningRecord(record, width)
+	// Refresh every record of the active turn: a turn now spans several
+	// per-segment disclosures, and a settled segment may still be dirty.
+	for _, id := range m.turnReasoningIDs {
+		if record := m.reasoningRecords[id]; record != nil && (record.active || record.dirty) {
+			m.refreshReasoningRecord(record, width)
+		}
 	}
 }
 
 func (m *replModel) refreshReasoningRecord(record *reasoningRecord, width int) {
+	m.refreshReasoningRecordWithAnchor(record, width, true)
+}
+
+func (m *replModel) refreshReasoningRecordWithAnchor(record *reasoningRecord, width int, reanchor bool) {
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return
 	}
 	if width < 1 {
 		width = m.reasoningWidth
 	}
+	if width < 1 {
+		width = 80
+	}
 	next := m.reasoningRecordText(record, width)
 	record.dirty = false
 	if m.transcript[record.transcriptIndex] == next {
 		return
 	}
+	// Reasoning renders inline in the transcript, so growth must invalidate
+	// the visual block cache and re-anchor a held viewport like any other
+	// transcript mutation.
+	match := matchReasoningBlock(record.id)
+	oldStart, oldCount, held := 0, 0, false
+	if reanchor && !m.followBottom {
+		oldStart, oldCount, held = m.displayRecordSpan(width, match)
+	}
 	m.transcript[record.transcriptIndex] = next
-	// The dock owns visibility, so reasoning growth never invalidates or
-	// re-anchors transcript rows.
-	m.flatCache = nil
+	m.invalidateFlat()
+	if held {
+		if _, newCount, ok := m.displayRecordSpan(width, match); ok {
+			m.anchorForResizedEntry(oldStart, oldCount, newCount)
+		}
+	}
 }
 
 func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) string {
@@ -1725,25 +1919,8 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 	if record.active && !m.thinkingSegmentStart.IsZero() && record.id == m.turnReasoningID {
 		elapsed += time.Since(m.thinkingSegmentStart)
 	}
-	label := "Thinking"
-	switch {
-	case record.active:
-		label = "Thinking…"
-		if elapsed > 0 {
-			label += " · " + formatElapsed(elapsed)
-		}
-	case record.complete:
-		label = "Thought"
-		if elapsed > 0 {
-			label += " for " + formatElapsed(elapsed)
-		}
-	case elapsed > 0:
-		label += " · " + formatElapsed(elapsed)
-	}
-	if record.unsaved {
-		label += " · not saved"
-	}
-	header := "  " + styled(glyph, "accent", "bold") + " " + styled(label, "muted", "bold")
+	label := reasoningDisclosureLabel(record.active, record.unsaved, elapsed)
+	header := "  " + inlineActivityControl(glyph, label, record.complete && !record.active)
 	if !record.expanded {
 		return header
 	}
@@ -1776,6 +1953,22 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 		b.WriteString(styled(line, "muted", "italic"))
 	}
 	return b.String()
+}
+
+func reasoningDisclosureLabel(active, unsaved bool, elapsed time.Duration) string {
+	// A paused segment (tool phase mid-run) reads "Thought" like a settled
+	// one; the header styling, not the label, distinguishes live from done.
+	label := "Thought"
+	if active {
+		label = "Thinking…"
+	}
+	if elapsed > 0 {
+		label += " " + formatElapsed(elapsed)
+	}
+	if unsaved {
+		label += " · not saved"
+	}
+	return label
 }
 
 // reasoningTailLines wraps the retained text for the current terminal width,
@@ -1858,15 +2051,27 @@ func splitReasoningWord(word string, width int) []string {
 	return pieces
 }
 
+// anchorForResizedEntry keeps the viewport steady when the entry at visual
+// offset start changes height. An entry wholly above the anchor shifts the
+// anchor by the height delta; an entry containing the anchor keeps the
+// anchor's relative position inside the entry instead of snapping to its top.
 func (m *replModel) anchorForResizedEntry(start, oldCount, newCount int) {
 	if m.followBottom || oldCount == newCount {
 		return
 	}
 	delta := newCount - oldCount
-	if start+oldCount <= m.scrollAnchor {
+	switch {
+	case start+oldCount <= m.scrollAnchor:
+		// Entry is entirely above the anchor: shift by the height change.
 		m.scrollAnchor += delta
-	} else if start < m.scrollAnchor {
-		m.scrollAnchor = start
+	case start < m.scrollAnchor:
+		// Entry straddles the anchor: preserve the anchor's fractional
+		// position within the entry so the viewport does not jump.
+		rel := m.scrollAnchor - start
+		if oldCount > 0 {
+			rel = rel * newCount / oldCount
+		}
+		m.scrollAnchor = start + rel
 	}
 	if m.scrollAnchor < 0 {
 		m.scrollAnchor = 0
@@ -1882,21 +2087,64 @@ func (m *replModel) toggleReasoning(recordID int64, width int) bool {
 		m.reasoningWidth = width
 	}
 	record.expanded = !record.expanded
-	if record.id == m.turnReasoningID {
-		m.turnReasoningOpen = record.expanded
-	}
 	m.refreshReasoningRecord(record, width)
 	return true
 }
 
-func (m *replModel) toggleLatestReasoning(width int) bool {
-	if record := m.currentReasoningRecord(); record != nil {
-		return m.toggleReasoning(record.id, width)
+func (m *replModel) disclosureLayoutWidth(width int) int {
+	if width > 0 {
+		return width
 	}
+	if m.reasoningWidth > 0 {
+		return m.reasoningWidth
+	}
+	return 80
+}
+
+// latestTurnReasoningGroup returns the current turn's newest projected inline
+// reasoning group. Adjacent thought/tool records share one visual control, so
+// the keyboard shortcut must use the same grouping as mouse hit-testing.
+func (m *replModel) latestTurnReasoningGroup(width int) []int64 {
+	if len(m.turnReasoningIDs) == 0 {
+		return nil
+	}
+	currentTurn := make(map[int64]struct{}, len(m.turnReasoningIDs))
+	for _, id := range m.turnReasoningIDs {
+		currentTurn[id] = struct{}{}
+	}
+	blocks := m.transcriptDisplayEntries(m.disclosureLayoutWidth(width))
+	for i := len(blocks) - 1; i >= 0; i-- {
+		var ids []int64
+		for _, id := range blocks[i].reasoningIDs {
+			if _, ok := currentTurn[id]; ok && m.reasoningRecords[id] != nil {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) > 0 {
+			return ids
+		}
+	}
+	// Quiet mode does not project inline activity. Keep the shortcut useful by
+	// falling back to the newest current-turn record in that mode.
+	for i := len(m.turnReasoningIDs) - 1; i >= 0; i-- {
+		id := m.turnReasoningIDs[i]
+		if m.reasoningRecords[id] != nil {
+			return []int64{id}
+		}
+	}
+	return nil
+}
+
+func (m *replModel) toggleLatestReasoning(width int) bool {
 	if m.busy {
-		// The active turn may not have emitted its first reasoning chunk yet.
-		// Remember the user's choice so that record opens immediately when it
-		// exists; never target an older turn while a newer one is running.
+		if ids := m.latestTurnReasoningGroup(width); len(ids) > 0 {
+			if len(ids) == 1 {
+				return m.toggleReasoning(ids[0], width)
+			}
+			return m.toggleReasoningGroup(ids, width)
+		}
+		// No current-turn record exists yet. Remember the user's choice only
+		// until the first record is created; never target an older turn.
 		m.turnReasoningOpen = !m.turnReasoningOpen
 		return true
 	}
@@ -1919,8 +2167,12 @@ func (m *replModel) toggleToolDisclosure(recordID int64) bool {
 }
 
 // refreshActiveTools updates each running disclosure row with the current
-// breathing-arrow frame and live elapsed time. A collapsed disclosure does
-// not repaint because its detail rows are intentionally hidden.
+// breathing-arrow frame and live elapsed time. The arrow pulses every
+// arrowPulsePeriod and the timer rolls each second, so the disclosure is
+// refreshed whenever either boundary has crossed since the last paint —
+// comparing row text alone would freeze the timer for the ~1s stretches
+// where formatElapsed's output is unchanged. The header is always visible,
+// so this repaints whether or not the detail rows are expanded.
 func (m *replModel) refreshActiveTools() {
 	if len(m.activeTools) == 0 {
 		return
@@ -1929,20 +2181,20 @@ func (m *replModel) refreshActiveTools() {
 	if record == nil {
 		return
 	}
-	changed := false
+	// The fastest-changing element is the 500ms arrow pulse; repaint once per
+	// pulse phase. Elapsed-time changes are subsumed by that finer cadence.
+	phase := int(time.Since(m.activeTools[0].started) / arrowPulsePeriod)
+	if phase == m.activeToolsPhase {
+		return
+	}
+	m.activeToolsPhase = phase
 	for _, at := range m.activeTools {
 		if at.row < 0 || at.row >= len(record.rows) {
 			continue
 		}
-		next := runningToolLine(at.label, time.Since(at.started))
-		if record.rows[at.row].line != next {
-			record.rows[at.row].line = next
-			changed = true
-		}
+		record.rows[at.row].line = runningToolLine(at.label, time.Since(at.started))
 	}
-	if changed && record.expanded {
-		m.refreshToolDisclosure(record)
-	}
+	m.refreshToolDisclosure(record)
 }
 
 // takeActiveTool stops tracking a finished tool and returns its disclosure row.
@@ -2078,6 +2330,7 @@ func (m *replModel) clearDisplay() {
 	m.transcriptImages = make(map[int][]transcriptImage)
 	m.currentAssistant = -1
 	m.activeTools = nil
+	m.activeToolsPhase = -1
 	m.resetToolDisclosure()
 	m.clearToolDisclosures()
 	m.clearReasoningRecords()
@@ -2627,7 +2880,9 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	m.canceling = false
 	m.state = turnStateWaiting
 	m.runningTools = 0
+	m.activeToolsPhase = -1
 	m.resetToolDisclosure()
+	m.turnToolDisclosureIDs = nil
 	m.resetCurrentThinking()
 	m.turnStarted = time.Now()
 	m.currentPrompt = prompt
@@ -3782,7 +4037,6 @@ func (r *managedREPL) endTurn(err error) {
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
 	m := r.model
-	wasCanceling := m.canceling
 	if !m.turnStarted.IsZero() {
 		m.lastElapsed = time.Since(m.turnStarted)
 	}
@@ -3797,24 +4051,26 @@ func (r *managedREPL) endTurn(err error) {
 	} else if err != nil {
 		activeToolReason = "failed"
 	}
-	m.turnDock.reasoningID = m.turnReasoningID
-	m.turnDock.toolDisclosureID = m.turnToolDisclosureID
+	m.turnDock.reasoningID = firstNonZero(m.turnReasoningID, m.turnReasoningIDs)
+	m.turnDock.toolDisclosureID = firstNonZero(m.turnToolDisclosureID, m.turnToolDisclosureIDs)
+	m.turnDock.reasoningIDs = append([]int64(nil), m.turnReasoningIDs...)
+	m.turnDock.toolIDs = append([]int64(nil), m.turnToolDisclosureIDs...)
 	// A partially persisted turn keeps its completed iterations — reasoning
 	// included — so only a turn that saved nothing marks its thinking unsaved.
 	progressSaved := turnProgressSaved(err)
 	m.completeThinkingTurn(err != nil && !progressSaved)
 	m.settleActiveTools(activeToolReason)
 	m.activeTools = nil
+	m.activeToolsPhase = -1
 	m.runningTools = 0
 	// Like reasoning, tool activity defaults closed and auto-collapses when the
 	// turn settles. Canceled/failed row details remain one click away.
 	m.completeToolDisclosure()
-	// The outcome label tells the user what survived to the session. When the
-	// turn persisted its completed work, only text streamed by the interrupted
-	// final call is gone; when nothing was persisted, everything shown is.
-	unsavedSuffix := " · not saved"
-	if progressSaved {
-		unsavedSuffix = " · completed work saved"
+	m.collapseTurnToolDisclosures()
+	// Only call out data loss. Persisted progress needs no extra success label.
+	unsavedSuffix := ""
+	if !progressSaved {
+		unsavedSuffix = " · not saved"
 	}
 	switch {
 	case err == nil:
@@ -3828,13 +4084,8 @@ func (r *managedREPL) endTurn(err error) {
 		m.labelTurnOutcome("canceled" + unsavedSuffix)
 		m.lastOutcome = turnOutcomeCanceled
 		m.discardQueuedInputs()
-		if m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
-			m.appendNoticeLine("input restored to composer")
-		} else {
+		if !m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
 			m.appendNoticeLine("input available with ↑ · current draft preserved")
-		}
-		if !wasCanceling {
-			m.appendNoticeLine("turn canceled")
 		}
 	default:
 		m.finishAssistantBlock("failed" + unsavedSuffix)
@@ -3842,9 +4093,7 @@ func (r *managedREPL) endTurn(err error) {
 		m.appendLine(styled("Error: "+err.Error(), "err", ""))
 		m.lastOutcome = turnOutcomeFailed
 		m.discardQueuedInputs()
-		if m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
-			m.appendNoticeLine("input restored to composer")
-		} else {
+		if !m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
 			m.appendNoticeLine("input available with ↑ · current draft preserved")
 		}
 	}
@@ -3913,13 +4162,17 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.resetAssistantStream()
 	m.turnStarted = time.Time{}
 	m.toolName = ""
-	m.turnDock.reasoningID = m.turnReasoningID
-	m.turnDock.toolDisclosureID = m.turnToolDisclosureID
+	m.turnDock.reasoningID = firstNonZero(m.turnReasoningID, m.turnReasoningIDs)
+	m.turnDock.toolDisclosureID = firstNonZero(m.turnToolDisclosureID, m.turnToolDisclosureIDs)
+	m.turnDock.reasoningIDs = append([]int64(nil), m.turnReasoningIDs...)
+	m.turnDock.toolIDs = append([]int64(nil), m.turnToolDisclosureIDs...)
 	m.completeThinkingTurn(true)
 	m.settleActiveTools("canceled")
 	m.activeTools = nil
+	m.activeToolsPhase = -1
 	m.runningTools = 0
 	m.completeToolDisclosure()
+	m.collapseTurnToolDisclosures()
 	m.denyApprovalLocked()
 	m.state = turnStateIdle
 	m.lastOutcome = turnOutcomeCanceled
@@ -3931,9 +4184,7 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.currentTurn = managedTurnInput{}
 	m.currentPersistence = nil
 	m.discardQueuedInputs()
-	if m.restoreTurnDraft(restored, restoredPersistence) {
-		m.appendNoticeLine("input restored to composer")
-	} else {
+	if !m.restoreTurnDraft(restored, restoredPersistence) {
 		m.appendNoticeLine("input available with ↑ · current draft preserved")
 	}
 	m.appendNoticeLine("^C cancellation timed out; detached turn")
@@ -3963,7 +4214,7 @@ func (r *managedREPL) handleInterrupt() bool {
 		r.requestQuit()
 		return true
 	}
-	r.cancelBusyTurn("^C cancel requested")
+	r.cancelBusyTurn()
 	return false
 }
 
@@ -3972,7 +4223,7 @@ func (r *managedREPL) handleInterrupt() bool {
 // goroutine isn't parked on the reply channel. Pending input is marked not sent
 // when cancellation settles. Caller must hold m.mu and ensure m.busy &&
 // !m.canceling.
-func (r *managedREPL) cancelBusyTurn(notice string) {
+func (r *managedREPL) cancelBusyTurn() {
 	m := r.model
 	m.canceling = true
 	// Freeze the visible partial immediately, but do not label it unsaved until
@@ -3981,7 +4232,6 @@ func (r *managedREPL) cancelBusyTurn(notice string) {
 	m.finishAssistantBlock("")
 	r.cancelTurn()
 	m.denyApprovalLocked()
-	m.appendNoticeLine(notice)
 }
 
 // handleSearchKey processes one key while reverse-i-search is active. Enter (or
@@ -4292,18 +4542,14 @@ func (r *managedREPL) render() {
 	}
 	status := r.model.statusRow(w)
 	var dock string
-	var dockPlacements []turnDockPlacement
 	if showDock {
-		dock, dockPlacements = r.model.turnDockRow(w)
+		dock, _ = r.model.turnDockRow(w)
 	}
 	title := r.model.frameTitle()
 	progress := r.model.frameProgress()
 	notices := r.model.takeNotices()
 	ticker := r.model.activityTicker(len(transcriptRows), topRow, transcriptHeight)
 	var overlay [][]ui.Cell
-	if showDock {
-		overlay = r.model.turnDockOverlayRows(w)
-	}
 	if ticker != "" {
 		overlay = append(overlay, ui.ParseStyles(ticker, ui.NewStyle(ui.ColorClear)))
 	}
@@ -4324,13 +4570,9 @@ func (r *managedREPL) render() {
 		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
 		pinTranscriptBottom, overlayRows,
 	)
-	for i := range dockPlacements {
-		dockPlacements[i].Y = logoRows + transcriptHeight
-	}
 	r.model.imagePlacements = imagePlacements
 	r.model.reasoningPlacements = reasoningPlacements
 	r.model.toolDisclosurePlacements = toolDisclosurePlacements
-	r.model.turnDockPlacements = dockPlacements
 	r.model.turnTrailerPlacements = turnTrailerPlacements
 	r.model.mu.Unlock()
 
@@ -4479,7 +4721,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		return m.visualCache
 	}
 
-	sources := m.transcriptDisplayEntries()
+	sources := m.transcriptDisplayEntries(width)
 	oldBlocks := m.visualBlocks
 	canPatch := m.visualCacheWidth == width && m.visualCacheNativeImages == m.nativeImages &&
 		m.visualCacheCellWidth == m.imageCellWidth && m.visualCacheCellHeight == m.imageCellHeight &&
@@ -4517,15 +4759,18 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			copy(m.visualCache[offset:offset+len(rows)], rows)
 		}
 		m.visualBlocks[i] = transcriptVisualBlock{
-			key:              source.key,
-			text:             source.text,
-			followed:         followed,
-			rows:             rows,
-			images:           append([]transcriptImage(nil), source.images...),
-			imageSpans:       imageSpans,
-			reasoningID:      source.reasoningID,
-			toolDisclosureID: source.toolDisclosureID,
-			turnTrailerID:    source.turnTrailerID,
+			key:               source.key,
+			text:              source.text,
+			followed:          followed,
+			rows:              rows,
+			images:            append([]transcriptImage(nil), source.images...),
+			imageSpans:        imageSpans,
+			reasoningID:       source.reasoningID,
+			reasoningIDs:      append([]int64(nil), source.reasoningIDs...),
+			toolDisclosureID:  source.toolDisclosureID,
+			toolDisclosureIDs: append([]int64(nil), source.toolDisclosureIDs...),
+			turnTrailerID:     source.turnTrailerID,
+			activityFields:    append([]turnDockPlacement(nil), source.activityFields...),
 		}
 		offset += len(old.rows)
 	}
@@ -4550,7 +4795,11 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 }
 
 func (m *replModel) transcriptDisplayBlocks() []string {
-	entries := m.transcriptDisplayEntries()
+	width := m.reasoningWidth
+	if width < 2 {
+		width = 80
+	}
+	entries := m.transcriptDisplayEntries(width)
 	blocks := make([]string, len(entries))
 	for i, entry := range entries {
 		blocks[i] = entry.text
@@ -4558,16 +4807,16 @@ func (m *replModel) transcriptDisplayBlocks() []string {
 	return blocks
 }
 
-func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
+func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock {
 	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+1)
 	for i, entry := range m.transcript {
 		reasoningID := m.reasoningAt[i]
 		toolDisclosureID := m.toolDisclosureAt[i]
 		turnTrailerID := m.turnTrailerAt[i]
-		// Reasoning and tool activity are retained as semantic records for the
-		// fixed turn dock. Do not also project their legacy disclosure rows into
-		// the transcript, which would show the same activity twice.
-		if reasoningID != 0 || toolDisclosureID != 0 {
+		// Reasoning and tool activity render inline where they occur. In quiet
+		// mode the records still back the settled trailer, but nothing extra is
+		// projected into the transcript so script output stays clean.
+		if m.quiet && (reasoningID != 0 || toolDisclosureID != 0) {
 			continue
 		}
 		if i == m.currentAssistant {
@@ -4601,11 +4850,183 @@ func (m *replModel) transcriptDisplayEntries() []transcriptDisplayBlock {
 			toolDisclosureID: toolDisclosureID,
 			turnTrailerID:    turnTrailerID,
 		})
+		if reasoningID != 0 {
+			blocks[len(blocks)-1].reasoningIDs = []int64{reasoningID}
+		}
+		if toolDisclosureID != 0 {
+			blocks[len(blocks)-1].toolDisclosureIDs = []int64{toolDisclosureID}
+		}
 	}
 	if m.slashHints != "" {
 		blocks = append(blocks, transcriptDisplayBlock{key: "slash", text: styled(m.slashHints, "muted", "")})
 	}
-	return blocks
+	return m.layoutInlineActivityBlocks(blocks, width)
+}
+
+func (m *replModel) inlineReasoningField(ids []int64) (turnDockField, bool) {
+	var elapsed time.Duration
+	active, complete, unsaved, expanded, found := false, true, false, false, false
+	for _, id := range ids {
+		record := m.reasoningRecords[id]
+		if record == nil {
+			continue
+		}
+		found = true
+		elapsed += record.elapsed
+		if record.active && !m.thinkingSegmentStart.IsZero() && record.id == m.turnReasoningID {
+			elapsed += time.Since(m.thinkingSegmentStart)
+		}
+		active = active || record.active
+		complete = complete && record.complete
+		unsaved = unsaved || record.unsaved
+		expanded = expanded || record.expanded
+	}
+	if !found {
+		return turnDockField{}, false
+	}
+	label := reasoningDisclosureLabel(active, unsaved, elapsed)
+	glyph := "▸"
+	if expanded {
+		glyph = "▾"
+	}
+	return turnDockField{
+		raw: glyph + " " + label, rendered: inlineActivityControl(glyph, label, complete && !active), overlay: turnDockOverlayThought,
+	}, true
+}
+
+func (m *replModel) inlineToolField(ids []int64) (turnDockField, bool) {
+	total, expanded, complete, found := 0, false, true, false
+	for _, id := range ids {
+		if record := m.toolDisclosures[id]; record != nil {
+			found = true
+			total += len(record.rows)
+			expanded = expanded || record.expanded
+			complete = complete && record.complete
+		}
+	}
+	if !found || total == 0 {
+		return turnDockField{}, false
+	}
+	label := turnToolLabel(total)
+	glyph := "▸"
+	if expanded {
+		glyph = "▾"
+	}
+	return turnDockField{
+		raw: glyph + " " + label, rendered: inlineActivityControl(glyph, label, complete), overlay: turnDockOverlayTools,
+	}, true
+}
+
+func inlineActivityDetail(text string) string {
+	_, detail, ok := strings.Cut(text, "\n")
+	if !ok {
+		return ""
+	}
+	return detail
+}
+
+// layoutInlineActivityBlocks gives inline controls the exact one-line layout
+// used by the trailer. Adjacent thought/tool controls become one row while
+// their independently expandable detail remains beneath it.
+func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, width int) []transcriptDisplayBlock {
+	if width < 1 {
+		width = 80
+	}
+	laidOut := make([]transcriptDisplayBlock, 0, len(blocks))
+	for _, block := range blocks {
+		isActivity := block.reasoningID != 0 || block.toolDisclosureID != 0
+		if !isActivity {
+			laidOut = append(laidOut, block)
+			continue
+		}
+		detail := inlineActivityDetail(block.text)
+		if block.reasoningID != 0 {
+			block.activityReasoningDetail = detail
+		} else {
+			block.activityToolDetail = detail
+		}
+
+		if n := len(laidOut); n > 0 {
+			previous := &laidOut[n-1]
+			previousIsActivity := previous.turnTrailerID == 0 &&
+				(previous.reasoningID != 0 || previous.toolDisclosureID != 0)
+			if previousIsActivity {
+				if len(previous.images) > 0 && len(block.images) > 0 {
+					block.activityToolDetail = offsetTranscriptImageMarkers(block.activityToolDetail, len(previous.images))
+				}
+				previous.reasoningIDs = append(previous.reasoningIDs, block.reasoningIDs...)
+				previous.toolDisclosureIDs = append(previous.toolDisclosureIDs, block.toolDisclosureIDs...)
+				if previous.reasoningID == 0 && block.reasoningID != 0 {
+					previous.reasoningID = block.reasoningID
+				}
+				if previous.toolDisclosureID == 0 && block.toolDisclosureID != 0 {
+					previous.toolDisclosureID = block.toolDisclosureID
+				}
+				if block.activityReasoningDetail != "" {
+					if previous.activityReasoningDetail != "" {
+						previous.activityReasoningDetail += "\n"
+					}
+					previous.activityReasoningDetail += block.activityReasoningDetail
+				}
+				if block.activityToolDetail != "" {
+					if previous.activityToolDetail != "" {
+						previous.activityToolDetail += "\n"
+					}
+					previous.activityToolDetail += block.activityToolDetail
+				}
+				previous.images = append(previous.images, block.images...)
+				m.layoutInlineActivityBlock(previous, width, false)
+				continue
+			}
+		}
+
+		m.layoutInlineActivityBlock(&block, width, false)
+		laidOut = append(laidOut, block)
+	}
+	for i := range laidOut {
+		block := &laidOut[i]
+		if block.reasoningID == 0 && block.toolDisclosureID == 0 {
+			continue
+		}
+		movedOn := !m.busy
+		if !movedOn {
+			for j := i + 1; j < len(laidOut); j++ {
+				if laidOut[j].key == "slash" {
+					continue
+				}
+				movedOn = true
+				break
+			}
+		}
+		m.layoutInlineActivityBlock(block, width, movedOn)
+	}
+	return laidOut
+}
+
+func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, width int, settled bool) {
+	var fields []turnDockField
+	if field, ok := m.inlineReasoningField(block.reasoningIDs); ok {
+		fields = append(fields, field)
+	}
+	if field, ok := m.inlineToolField(block.toolDisclosureIDs); ok {
+		fields = append(fields, field)
+	}
+	for i := range fields {
+		glyph, label, ok := strings.Cut(fields[i].raw, " ")
+		if ok {
+			fields[i].rendered = inlineActivityControl(glyph, label, settled)
+		}
+	}
+	header, placements := renderTurnActivityRow(fields, width)
+	block.text = header
+	block.activityReasoningDetail = boundedReasoningDetail(block.activityReasoningDetail, reasoningPreviewLines)
+	for _, detail := range []string{block.activityReasoningDetail, block.activityToolDetail} {
+		if detail != "" {
+			block.text += "\n" + detail
+		}
+	}
+	block.activityFields = placements
+	block.key = fmt.Sprintf("activity:r%v:t%v", block.reasoningIDs, block.toolDisclosureIDs)
 }
 
 func transcriptBlockRows(text string, followed bool, width int) [][]ui.Cell {
@@ -4760,10 +5181,36 @@ func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRo
 	rowOffset := 0
 	for _, block := range m.visualBlocks {
 		recordID := block.reasoningID
+		recordIDs := block.reasoningIDs
+		overlay := turnDockOverlayThought
 		if tools {
 			recordID = block.toolDisclosureID
+			recordIDs = block.toolDisclosureIDs
+			overlay = turnDockOverlayTools
 		}
 		if recordID != 0 && len(block.rows) > 0 {
+			// Inline activity blocks carry plural IDs even when truncation leaves
+			// no fully visible control. In that case, do not fall back to making
+			// the whole (truncated) header a target for every disclosure.
+			if len(block.reasoningIDs) > 0 || len(block.toolDisclosureIDs) > 0 {
+				row := rowOffset
+				if row >= viewStart && row < viewEnd {
+					for _, field := range block.activityFields {
+						if field.overlay != overlay || field.X >= width {
+							continue
+						}
+						placements = append(placements, disclosurePlacement{
+							recordID:  recordID,
+							recordIDs: append([]int64(nil), recordIDs...),
+							X:         field.X,
+							Y:         logoRows + topPadding + row - viewStart,
+							Cols:      min(field.Cols, width-field.X),
+						})
+					}
+				}
+				rowOffset += len(block.rows)
+				continue
+			}
 			header := strings.SplitN(block.text, "\n", 2)[0]
 			headerRows := len(transcriptBlockRows(header, false, width))
 			for headerRow := 0; headerRow < headerRows && headerRow < len(block.rows); headerRow++ {
@@ -4807,6 +5254,9 @@ func (m *replModel) toggleReasoningAt(x, y, width int) bool {
 		if y != placement.Y || x < placement.X || x >= placement.X+placement.Cols {
 			continue
 		}
+		if len(placement.recordIDs) > 1 {
+			return m.toggleReasoningGroup(placement.recordIDs, width)
+		}
 		return m.toggleReasoning(placement.recordID, width)
 	}
 	return false
@@ -4817,9 +5267,126 @@ func (m *replModel) toggleToolDisclosureAt(x, y int) bool {
 		if y != placement.Y || x < placement.X || x >= placement.X+placement.Cols {
 			continue
 		}
+		if len(placement.recordIDs) > 1 {
+			return m.toggleToolDisclosureGroup(placement.recordIDs)
+		}
 		return m.toggleToolDisclosure(placement.recordID)
 	}
 	return false
+}
+
+func activityGroupContains(blockIDs, ids []int64) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		if !slices.Contains(blockIDs, id) {
+			return false
+		}
+	}
+	return true
+}
+
+// projectedActivityGroupBounds measures the merged visual block that owns a
+// disclosure group. Raw transcript entries over-count their independent
+// headers and reasoning previews after layout combines them into one block.
+func (m *replModel) projectedActivityGroupBounds(ids []int64, reasoning bool, width int) (start, count int, ok bool) {
+	m.transcriptRows(width)
+	for _, block := range m.visualBlocks {
+		blockIDs := block.toolDisclosureIDs
+		if reasoning {
+			blockIDs = block.reasoningIDs
+		}
+		if activityGroupContains(blockIDs, ids) {
+			return start, len(block.rows), true
+		}
+		start += len(block.rows)
+	}
+	return 0, 0, false
+}
+
+func (m *replModel) toggleReasoningGroup(ids []int64, width int) bool {
+	anyExpanded, found := false, false
+	validIDs := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if record := m.reasoningRecords[id]; record != nil {
+			found = true
+			anyExpanded = anyExpanded || record.expanded
+			validIDs = append(validIDs, id)
+		}
+	}
+	if !found {
+		return false
+	}
+	if width > 0 {
+		m.reasoningWidth = width
+	}
+	layoutWidth := m.disclosureLayoutWidth(width)
+	oldStart, oldCount, heldGroup := 0, 0, false
+	if !m.followBottom {
+		oldStart, oldCount, heldGroup = m.projectedActivityGroupBounds(validIDs, true, layoutWidth)
+	}
+	// The group header points down whenever any member is expanded. Its first
+	// click therefore collapses the whole group; only an entirely closed group
+	// expands on click.
+	expand := !anyExpanded
+	// Apply the new state to the whole group before refreshing any record:
+	// each refresh re-lays-out the merged activity row, so refreshing mid-loop
+	// would render intermediate frames from a half-toggled group.
+	var changed []*reasoningRecord
+	for _, id := range ids {
+		if record := m.reasoningRecords[id]; record != nil && record.expanded != expand {
+			record.expanded = expand
+			changed = append(changed, record)
+		}
+	}
+	for _, record := range changed {
+		m.refreshReasoningRecordWithAnchor(record, layoutWidth, !heldGroup)
+	}
+	if heldGroup {
+		if _, newCount, ok := m.projectedActivityGroupBounds(validIDs, true, layoutWidth); ok {
+			m.anchorForResizedEntry(oldStart, oldCount, newCount)
+		}
+	}
+	return true
+}
+
+func (m *replModel) toggleToolDisclosureGroup(ids []int64) bool {
+	anyExpanded, found := false, false
+	validIDs := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if record := m.toolDisclosures[id]; record != nil {
+			found = true
+			anyExpanded = anyExpanded || record.expanded
+			validIDs = append(validIDs, id)
+		}
+	}
+	if !found {
+		return false
+	}
+	layoutWidth := m.disclosureLayoutWidth(0)
+	oldStart, oldCount, heldGroup := 0, 0, false
+	if !m.followBottom {
+		oldStart, oldCount, heldGroup = m.projectedActivityGroupBounds(validIDs, false, layoutWidth)
+	}
+	expand := !anyExpanded
+	// Apply-then-refresh: see toggleReasoningGroup.
+	var changed []*toolDisclosureRecord
+	for _, id := range ids {
+		if record := m.toolDisclosures[id]; record != nil && record.expanded != expand {
+			record.expanded = expand
+			changed = append(changed, record)
+		}
+	}
+	for _, record := range changed {
+		m.refreshToolDisclosureWithAnchor(record, !heldGroup)
+	}
+	if heldGroup {
+		if _, newCount, ok := m.projectedActivityGroupBounds(validIDs, false, layoutWidth); ok {
+			m.anchorForResizedEntry(oldStart, oldCount, newCount)
+		}
+	}
+	return true
 }
 
 // openImageAt opens the transcript thumbnail under the given screen cell, if
@@ -4910,14 +5477,12 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	case "<MouseLeft>":
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
-			if m.toggleTurnDockAt(mouse.X, mouse.Y) {
-				return false
-			}
 			if m.toggleTurnTrailerAt(mouse.X, mouse.Y) {
 				return false
 			}
-			// The drawer is modal only for one click: clicking anywhere outside
-			// its dock target dismisses it without activating content underneath.
+			// An expanded trailer overlay is modal for one click: clicking
+			// anywhere outside its target dismisses it without activating
+			// content underneath.
 			if m.closeTurnDockOverlay() {
 				return false
 			}
@@ -4961,11 +5526,9 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// Ctrl-O toggles the active turn's reasoning disclosure, or the newest
 	// completed one while idle. It never moves focus away from the composer.
 	if e.ID == "<C-o>" {
-		if m.busy && !m.toggleTurnDockOverlay(turnDockOverlayThought) {
-			// Preserve the shortcut before the provider emits its first
-			// reasoning chunk; the dock opens as soon as Thought exists.
-			m.turnReasoningOpen = !m.turnReasoningOpen
-		} else if !m.busy {
+		if m.busy {
+			m.toggleLatestReasoning(0)
+		} else {
 			m.toggleLatestTurnTrailerOverlay(turnDockOverlayThought)
 		}
 		return false
@@ -4983,7 +5546,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	}
 
-	// The turn-detail drawer is a temporary overlay. Escape closes it before
+	// An expanded trailer overlay is temporary. Escape closes it before
 	// reaching search, approval, or turn-cancel handling.
 	if e.ID == "<Escape>" && m.closeTurnDockOverlay() {
 		return false
@@ -5027,7 +5590,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		// the input next changes.
 		m.slashHintsHidden = true
 		if m.busy && !m.canceling {
-			r.cancelBusyTurn("esc cancel requested")
+			r.cancelBusyTurn()
 		}
 	case "<C-d>":
 		if m.ed.empty() && !m.busy {
@@ -5246,9 +5809,6 @@ func (t *gotuiTurnUI) ShowThinking(chunk string) {
 	t.repl.model.state = turnStateThinking
 	t.repl.model.appendThinking(chunk)
 	t.repl.model.turnDock.reasoningID = t.repl.model.turnReasoningID
-	if t.repl.model.turnReasoningOpen {
-		t.repl.model.turnDock.overlay = turnDockOverlayThought
-	}
 	t.repl.model.mu.Unlock()
 }
 
@@ -5261,9 +5821,11 @@ func (t *gotuiTurnUI) AppendAssistantText(content string) {
 	t.repl.model.state = turnStateStreaming
 	if content != "" {
 		t.repl.model.turnHasOutput = true
-		// The answer supersedes the reasoning that produced it: close the
-		// block before the first token lands so the rollup sits above it.
+		// Prose is the aggregation boundary: it closes the reasoning run and
+		// the tool run before the first token lands, so activity after the
+		// prose opens fresh indicators below it.
 		t.repl.model.finishThinkingSegment()
+		t.repl.model.completeToolDisclosure()
 	}
 	t.repl.model.appendAssistant(content)
 	t.repl.model.mu.Unlock()
@@ -5277,7 +5839,9 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	}
 	if len(calls) > 0 {
 		t.repl.model.turnHasOutput = true
-		t.repl.model.finishThinkingSegment()
+		// Tools pause the thinking clock without closing the record; an
+		// unbroken continuation resumes the same indicator.
+		t.repl.model.pauseThinkingSegment()
 		t.repl.model.finishAssistantBlock("")
 		t.repl.model.runningTools += len(calls)
 		t.repl.model.state = turnStateTool
@@ -5357,7 +5921,8 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	// Return to "waiting" only once every tool in the batch has finished;
 	// otherwise the first of several parallel tools to complete would flip the
 	// status back to waiting (and drop the running-tool name) mid-batch.
-	if m.busy && m.runningTools == 0 {
+	batchDone := m.busy && m.runningTools == 0
+	if batchDone {
 		m.state = turnStateWaiting
 		m.toolName = ""
 	}
@@ -5402,6 +5967,8 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 		m.turnDock.toolDisclosureID = record.id
 	}
 	m.refreshToolDisclosure(record)
+	// The disclosure stays live past the batch: an unbroken continuation's
+	// next batch folds into it. Assistant prose or turn settlement closes it.
 }
 
 func (t *gotuiTurnUI) AppendWarning(text string) {

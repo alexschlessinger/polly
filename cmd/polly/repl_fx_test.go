@@ -272,10 +272,15 @@ func TestAppendToolEndAnnotatesLines(t *testing.T) {
 		t.Fatalf("success line should carry the line count, got %q", got)
 	}
 
-	// Failure lines carry the exit code and still no output text.
+	// Failure lines carry the exit code and still no output text. The batch
+	// disclosure stays expanded once every call has ended; only turn
+	// settlement collapses it.
 	probe := exec.Command("bash", "-c", "exit 7").Run()
 	wrapped := fmt.Errorf("command failed: %w (output: secret stack trace)", probe)
 	tui.AppendToolEnd(calls[1], "secret stack trace", time.Second, wrapped)
+	if !record.expanded {
+		t.Fatal("deliberately expanded disclosure collapsed at batch end")
+	}
 	got := strings.Join(m.flattenTranscript(), "\n")
 	if !strings.Contains(got, "exit 7") {
 		t.Fatalf("failure line should carry the exit code, got %q", got)
@@ -416,6 +421,37 @@ func TestThinkingDisclosurePreviewUsesFullTranscriptWidth(t *testing.T) {
 	}
 }
 
+func TestSettledThinkingPreviewKeepsNarrowTerminalWidth(t *testing.T) {
+	const width = 24
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.reasoningWidth = width
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui.ShowThinking(strings.Repeat("narrow reasoning preview content ", 32))
+	record := m.currentReasoningRecord()
+	if record == nil || !m.toggleReasoning(record.id, width) {
+		t.Fatal("reasoning disclosure did not expand")
+	}
+
+	wantWidth := width - rw.StringWidth(reasoningBlockIndent)
+	if record.previewWidth != wantWidth {
+		t.Fatalf("live preview width = %d, want %d", record.previewWidth, wantWidth)
+	}
+
+	// Starting a tool settles the reasoning segment from a provider callback.
+	// The settled preview must not silently rerender at the 80-column fallback.
+	call := messages.ChatMessageToolCall{ID: "narrow", Name: "inspect"}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+	if record.previewWidth != wantWidth {
+		t.Fatalf("settled preview width = %d, want retained terminal width %d", record.previewWidth, wantWidth)
+	}
+	rows := transcriptBlockRows(m.transcript[record.transcriptIndex], false, width)
+	if got := len(rows) - 1; got > reasoningPreviewLines {
+		t.Fatalf("settled preview uses %d physical detail rows, want at most %d", got, reasoningPreviewLines)
+	}
+}
+
 func TestThinkingDockAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -473,11 +509,84 @@ func TestCtrlOPrearmsActiveTurnBeforeFirstReasoningChunk(t *testing.T) {
 	secondUI.ShowThinking("new live reasoning")
 	active := m.currentReasoningRecord()
 	m.refreshReasoningRecords(testThinkingWidth)
-	if active == nil || m.turnDock.overlay != turnDockOverlayThought {
-		t.Fatalf("first reasoning chunk did not honor the pre-armed dock: record=%#v dock=%#v", active, m.turnDock)
+	if active == nil || !active.expanded {
+		t.Fatalf("first reasoning chunk did not honor the pre-armed toggle: record=%#v", active)
 	}
-	if shown := strings.Join(rowsText(m.turnDockOverlayRows(testThinkingWidth)), "\n"); !strings.Contains(shown, "new live reasoning") {
-		t.Fatalf("pre-armed drawer did not show the live tail: %q", shown)
+	if m.turnReasoningOpen {
+		t.Fatal("first reasoning record did not consume the pending Ctrl-O pre-arm")
+	}
+	if shown := plainStyledText(m.transcript[active.transcriptIndex]); !strings.Contains(shown, "new live reasoning") {
+		t.Fatalf("pre-armed inline block did not show the live tail: %q", shown)
+	}
+
+	// A tool phase pauses rather than breaks the run: the continuation
+	// resumes the same record and keeps the deliberate expansion.
+	call := messages.ChatMessageToolCall{ID: "between", Name: "inspect"}
+	secondUI.AppendToolStart([]messages.ChatMessageToolCall{call})
+	secondUI.AppendToolEnd(call, "ok", time.Millisecond, nil)
+	secondUI.ShowThinking("continued reasoning")
+	if resumed := m.currentReasoningRecord(); resumed != active || !resumed.expanded {
+		t.Fatalf("unbroken continuation did not resume the expanded record: %#v", resumed)
+	}
+	// Prose is the aggregation boundary; the next run must not inherit the
+	// consumed pre-arm or the previous record's expansion.
+	secondUI.AppendAssistantText("interim answer")
+	secondUI.ShowThinking("later reasoning segment")
+	later := m.currentReasoningRecord()
+	if later == nil || later == active || later.expanded {
+		t.Fatalf("consumed pre-arm leaked into a post-prose record: %#v", later)
+	}
+}
+
+func TestBusyCtrlOTogglesLatestSettledReasoningRun(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("inspect")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	// Prose after each round: two settled runs, each with its own record.
+	for i, thought := range []string{"first reasoning phase", "second reasoning phase"} {
+		tui.ShowThinking(thought)
+		call := messages.ChatMessageToolCall{ID: fmt.Sprintf("group-%d", i), Name: "inspect"}
+		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+		tui.AppendToolEnd(call, "ok", time.Millisecond, nil)
+		tui.AppendAssistantText(fmt.Sprintf("answer %d. ", i))
+	}
+	ids := append([]int64(nil), m.turnReasoningIDs...)
+	if len(ids) != 2 || m.currentReasoningRecord() != nil {
+		t.Fatalf("fixture did not leave two settled current-turn records: ids=%v current=%#v", ids, m.currentReasoningRecord())
+	}
+
+	// Ctrl-O targets the run holding the turn's latest record; earlier
+	// prose-separated runs keep their own state.
+	if !m.toggleReasoning(ids[0], testThinkingWidth) {
+		t.Fatal("fixture reasoning record did not expand")
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if !m.reasoningRecords[ids[1]].expanded || !m.reasoningRecords[ids[0]].expanded {
+		t.Fatalf("Ctrl-O did not expand the latest run while leaving the earlier one open: first=%v second=%v",
+			m.reasoningRecords[ids[0]].expanded, m.reasoningRecords[ids[1]].expanded)
+	}
+	if m.turnReasoningOpen {
+		t.Fatal("toggling an existing record incorrectly armed a future segment")
+	}
+
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if m.reasoningRecords[ids[1]].expanded || !m.reasoningRecords[ids[0]].expanded {
+		t.Fatalf("second Ctrl-O did not collapse only the latest run: first=%v second=%v",
+			m.reasoningRecords[ids[0]].expanded, m.reasoningRecords[ids[1]].expanded)
+	}
+	if m.turnReasoningOpen {
+		t.Fatal("collapsing an existing record incorrectly became a pending pre-arm")
+	}
+
+	// A later run defaults closed even though an earlier record remains
+	// open: existing-record state is independent of the one-shot pre-arm.
+	tui.ShowThinking("third reasoning phase")
+	later := m.currentReasoningRecord()
+	if later == nil || later.expanded {
+		t.Fatalf("existing record toggle leaked into a later reasoning record: %#v", later)
 	}
 }
 
@@ -523,7 +632,7 @@ func TestClearDuringReasoningStartsOneCleanDisclosure(t *testing.T) {
 	}
 }
 
-func TestThinkingDisclosureAggregatesToolPhasesAndExpansionIsPerTurn(t *testing.T) {
+func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -539,36 +648,49 @@ func TestThinkingDisclosureAggregatesToolPhasesAndExpansionIsPerTurn(t *testing.
 	call := messages.ChatMessageToolCall{ID: "c1", Name: "bash"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "ok", time.Second, nil)
-	if !first.expanded {
-		t.Fatal("assistant/tool phase collapsed an explicitly opened disclosure")
+	// The tool phase settles the open reasoning segment in place — expansion
+	// survives until the turn settles — and a later segment opens its own
+	// disclosure at its own transcript position.
+	if !first.expanded || !first.complete {
+		t.Fatalf("tool phase did not settle the first segment in place: %#v", first)
 	}
 	tui.ShowThinking("second phase reasoning")
-	m.refreshReasoningRecord(first, testThinkingWidth)
-	if got := string(first.tail); !strings.Contains(got, "first phase reasoning\nsecond phase reasoning") {
-		t.Fatalf("tool-separated reasoning was not aggregated with a boundary: %q", got)
+	second := m.currentReasoningRecord()
+	if second == nil || second.id == first.id || len(m.reasoningRecords) != 2 {
+		t.Fatalf("second segment did not open its own disclosure: records=%d first=%#v second=%#v", len(m.reasoningRecords), first, second)
 	}
-	if len(m.reasoningRecords) != 1 || m.currentReasoningRecord() != first || !first.expanded {
-		t.Fatalf("tool phase created or reset the per-turn disclosure: records=%d current=%#v first=%#v", len(m.reasoningRecords), m.currentReasoningRecord(), first)
+	if got := string(first.tail); !strings.Contains(got, "first phase reasoning") || strings.Contains(got, "second phase") {
+		t.Fatalf("first segment tail changed after settling: %q", got)
+	}
+	if got := string(second.tail); !strings.Contains(got, "second phase reasoning") {
+		t.Fatalf("second segment tail = %q", got)
+	}
+	if second.transcriptIndex <= first.transcriptIndex {
+		t.Fatalf("second segment did not land after the first: first=%d second=%d", first.transcriptIndex, second.transcriptIndex)
+	}
+	plain := plainStyledText(strings.Join(m.transcript, "\n"))
+	if strings.Index(plain, "interim prose") < strings.Index(plain, "Thought") {
+		t.Fatalf("interim prose should follow the first reasoning block: %q", plain)
 	}
 
 	tui.AppendAssistantText("final prose")
 	r.endTurn(nil)
-	if first.expanded {
-		t.Fatal("first turn did not auto-collapse on completion")
+	if first.expanded || second.expanded || !second.complete {
+		t.Fatal("turn completion did not leave every segment collapsed")
 	}
 
-	m.beginTurn("second")
+	m.beginTurn("second turn")
 	secondUI := &gotuiTurnUI{repl: r, config: r.config}
 	secondUI.ShowThinking("independent second-turn reasoning")
-	second := m.currentReasoningRecord()
-	if second == nil || second.id == first.id || second.expanded {
-		t.Fatalf("second turn did not start with an independent collapsed record: first=%#v second=%#v", first, second)
+	third := m.currentReasoningRecord()
+	if third == nil || third.id == first.id || third.id == second.id || third.expanded {
+		t.Fatalf("second turn did not start with an independent collapsed record: third=%#v", third)
 	}
-	if !m.toggleReasoning(first.id, testThinkingWidth) || !first.expanded || second.expanded {
-		t.Fatalf("opening the older turn affected the active turn: first=%#v second=%#v", first, second)
+	if !m.toggleReasoning(first.id, testThinkingWidth) || !first.expanded || third.expanded {
+		t.Fatalf("opening the older turn affected the active turn: first=%#v third=%#v", first, third)
 	}
-	if !m.toggleLatestReasoning(testThinkingWidth) || !second.expanded || !first.expanded {
-		t.Fatalf("active-turn toggle did not remain per-turn: first=%#v second=%#v", first, second)
+	if !m.toggleLatestReasoning(testThinkingWidth) || !third.expanded || !first.expanded {
+		t.Fatalf("active-turn toggle did not remain per-turn: first=%#v third=%#v", first, third)
 	}
 }
 
@@ -625,34 +747,38 @@ func TestExpandedShortReasoningReservesTwoDetailRows(t *testing.T) {
 	}
 }
 
-func TestLiveReasoningDockGrowthPreservesScrolledVisualAnchor(t *testing.T) {
+func TestLiveReasoningGrowthReanchorsScrolledViewport(t *testing.T) {
 	const width = 24
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, config: r.config}
 	tui.ShowThinking("short")
-	if m.currentReasoningRecord() == nil || !m.toggleTurnDockOverlay(turnDockOverlayThought) {
-		t.Fatal("reasoning dock fixture did not expand")
+	record := m.currentReasoningRecord()
+	if record == nil || !m.toggleReasoning(record.id, width) {
+		t.Fatal("reasoning fixture did not expand")
 	}
 	for i := 0; i < 8; i++ {
 		m.appendLine(fmt.Sprintf("later %d", i))
 	}
+	// Hold the viewport below the reasoning block: growth above the anchor
+	// must shift it so the same content stays on screen.
 	m.followBottom = false
-	m.scrollAnchor = 2
+	m.scrollAnchor = m.entryVisualStart(len(m.transcript)-1, width)
 	before := m.scrollAnchor
 
 	tui.ShowThinking(strings.Repeat(" additional words", 20))
 	m.refreshReasoningRecords(width)
-	if got := len(m.turnDockOverlayRows(width)); got < 2 || got > reasoningPreviewLines {
-		t.Fatalf("grown reasoning drawer rows = %d", got)
+	grown := m.entryVisualLineCount(record.transcriptIndex, width)
+	if grown < 2 {
+		t.Fatalf("grown reasoning block rows = %d, want growth", grown)
 	}
-	if m.scrollAnchor != before {
-		t.Fatalf("live drawer growth moved held viewport: anchor=%d, want %d", m.scrollAnchor, before)
+	if m.scrollAnchor <= before {
+		t.Fatalf("inline growth did not re-anchor held viewport: anchor=%d, was %d", m.scrollAnchor, before)
 	}
 }
 
-func TestCompletedReasoningUsesDockHitboxNotTranscriptHitbox(t *testing.T) {
+func TestCompletedReasoningKeepsInlineHitboxAndTrailerControl(t *testing.T) {
 	const width = 50
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -665,12 +791,14 @@ func TestCompletedReasoningUsesDockHitboxNotTranscriptHitbox(t *testing.T) {
 		m.appendLine(fmt.Sprintf("later row %d", i))
 	}
 
+	// The settled reasoning block stays inline and clickable.
 	rows := m.transcriptRows(width)
-	visible := m.visibleReasoningPlacements(len(rows), 3, 0, 0, width, false, 0)
-	if len(visible) != 0 {
-		t.Fatalf("completed reasoning retained a transcript hitbox: %#v", visible)
+	visible := m.visibleReasoningPlacements(len(rows), len(rows), 0, 0, width, false, 0)
+	if len(visible) != 1 || visible[0].recordID != record.id {
+		t.Fatalf("completed reasoning lost its transcript hitbox: %#v", visible)
 	}
 
+	// The trailer also keeps its Thought control.
 	rows = m.transcriptRows(width)
 	placements := m.visibleTurnTrailerPlacements(len(rows), len(rows), 0, 0, width, false, 0)
 	if len(placements) != 1 || placements[0].overlay != turnDockOverlayThought {
@@ -699,16 +827,20 @@ func TestActivityTickerWhileScrolledUp(t *testing.T) {
 		}
 	}
 
-	// Singular row, and live activity while a turn runs.
+	// Singular row, and live activity while a turn runs. The ticker shows the
+	// busy label but not the elapsed timer (that lives in the status row).
 	m.busy = true
 	m.state = turnStateTool
 	m.toolName = "bash"
 	m.turnStarted = time.Now().Add(-8 * time.Second)
 	got = m.activityTicker(52, 30, 21)
-	for _, want := range []string{"↓ 1 row below", "running bash", "8."} {
+	for _, want := range []string{"↓ 1 row below", "running bash"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("busy ticker %q missing %q", got, want)
 		}
+	}
+	if strings.Contains(got, "8.") {
+		t.Fatalf("busy ticker %q should not show the elapsed timer", got)
 	}
 
 	// Scrolled but nothing below (clamp edge): no ticker.
@@ -748,5 +880,85 @@ func TestTurnDockRowCountPreservesCrampedTranscript(t *testing.T) {
 	}
 	if got := turnDockRowCount(24, 1, 1, false); got != 0 {
 		t.Fatalf("hidden dock rows = %d, want 0", got)
+	}
+}
+
+func TestAnchorForResizedEntryStraddlePreservesRelativePosition(t *testing.T) {
+	m := newReplModel()
+	m.followBottom = false
+
+	// Entry occupies rows [10, 20); anchor sits halfway inside it.
+	m.scrollAnchor = 15
+	m.anchorForResizedEntry(10, 10, 20)
+	// Doubling the entry keeps the anchor at the same fractional depth
+	// (0.5 -> row 20), not snapped to the entry top.
+	if m.scrollAnchor != 20 {
+		t.Fatalf("straddling anchor = %d, want 20 (relative position preserved)", m.scrollAnchor)
+	}
+
+	// Entry wholly above the anchor shifts by the delta.
+	m.scrollAnchor = 50
+	m.anchorForResizedEntry(10, 10, 20)
+	if m.scrollAnchor != 60 {
+		t.Fatalf("above-anchor shift = %d, want 60", m.scrollAnchor)
+	}
+
+	// Entry wholly above the anchor shrinks: shift up by the delta.
+	m.scrollAnchor = 50
+	m.anchorForResizedEntry(10, 10, 4)
+	if m.scrollAnchor != 44 {
+		t.Fatalf("above-anchor shrink = %d, want 44", m.scrollAnchor)
+	}
+
+	// A negative anchor is clamped to zero.
+	m.scrollAnchor = 2
+	m.anchorForResizedEntry(0, 10, 0)
+	if m.scrollAnchor != 0 {
+		t.Fatalf("collapsed entry above anchor = %d, want clamp to 0", m.scrollAnchor)
+	}
+}
+
+func TestToggleToolDisclosureGroupAppliesBeforeRefresh(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("work")
+	tui := &gotuiTurnUI{repl: r, config: r.config}
+
+	// Two prose-separated tool runs -> two disclosures in one turn.
+	a := messages.ChatMessageToolCall{ID: "a", Name: "alpha"}
+	b := messages.ChatMessageToolCall{ID: "b", Name: "beta"}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{a})
+	tui.AppendToolEnd(a, "ok", time.Millisecond, nil)
+	tui.AppendAssistantText("checkpoint prose. ")
+	tui.AppendToolStart([]messages.ChatMessageToolCall{b})
+	tui.AppendToolEnd(b, "ok", time.Millisecond, nil)
+
+	if len(m.turnToolDisclosureIDs) != 2 {
+		t.Fatalf("turn disclosures = %v, want 2", m.turnToolDisclosureIDs)
+	}
+	ids := append([]int64(nil), m.turnToolDisclosureIDs...)
+
+	// Expand the group; every record must end expanded.
+	if !m.toggleToolDisclosureGroup(ids) {
+		t.Fatal("group expand returned false")
+	}
+	for _, id := range ids {
+		if !m.toolDisclosures[id].expanded {
+			t.Fatalf("disclosure %d not expanded after group expand", id)
+		}
+	}
+
+	// A mixed group still advertises an open control, so its first click must
+	// collapse every record rather than re-expand the closed member.
+	m.toolDisclosures[ids[1]].expanded = false
+	m.refreshToolDisclosure(m.toolDisclosures[ids[1]])
+	if !m.toggleToolDisclosureGroup(ids) {
+		t.Fatal("mixed group collapse returned false")
+	}
+	for _, id := range ids {
+		if m.toolDisclosures[id].expanded {
+			t.Fatalf("disclosure %d still expanded after mixed group collapse", id)
+		}
 	}
 }

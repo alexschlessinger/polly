@@ -47,12 +47,14 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 		t.Fatalf("attached trailer records = %#v", m.turnTrailers)
 	}
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(160)), "\n"))
-	if strings.Count(visible, "1 tool") != 1 || strings.Count(visible, "Thought") != 1 {
-		t.Fatalf("settled activity was not handed off exactly once: %q", visible)
+	// The activity blocks stay inline where they occurred; the trailer adds
+	// its own summary fields below the reply.
+	if strings.Count(visible, "1 tool") != 2 || strings.Count(visible, "Thought") != 2 {
+		t.Fatalf("settled activity did not render inline plus trailer: %q", visible)
 	}
 }
 
-func TestTurnDockIsSoleVisibleThoughtAndToolDisclosure(t *testing.T) {
+func TestLiveActivityRendersInlineNotInDock(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -61,14 +63,17 @@ func TestTurnDockIsSoleVisibleThoughtAndToolDisclosure(t *testing.T) {
 	tui.ShowThinking("reasoning detail")
 	tui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "read", Name: "read_file"}})
 
+	// Live activity is inline in the transcript where it occurs. The reasoning
+	// segment settled when the tool phase began, so it already reads "Thought".
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(100)), "\n"))
-	if strings.Contains(visible, "Thinking") || strings.Contains(visible, "Thought") || strings.Contains(visible, "tool call") {
-		t.Fatalf("legacy inline disclosure remained visible: %q", visible)
+	if !strings.Contains(visible, "Thought") || !strings.Contains(visible, "1 tool") {
+		t.Fatalf("live activity missing from transcript: %q", visible)
 	}
+	// The dock is status-only: no Thought/tools fields while the turn runs.
 	dock, _ := m.turnDockRow(100)
 	plainDock := plainStyledText(dock)
-	if !strings.Contains(plainDock, "Thought") || !strings.Contains(plainDock, "1 tool") {
-		t.Fatalf("dock lost activity disclosures: %q", plainDock)
+	if strings.Contains(plainDock, "Thought") || strings.Contains(plainDock, "1 tool") {
+		t.Fatalf("live dock carried activity disclosures: %q", plainDock)
 	}
 }
 
@@ -98,7 +103,7 @@ func TestAttachedTrailerRemainsWhenNextTurnStarts(t *testing.T) {
 	}
 }
 
-func TestTurnDockOverlaysToggleWithoutTranscriptReflow(t *testing.T) {
+func TestLiveTurnDockIsStatusOnly(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -108,41 +113,30 @@ func TestTurnDockOverlaysToggleWithoutTranscriptReflow(t *testing.T) {
 	call := messages.ChatMessageToolCall{ID: "bash", Name: "bash"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 
-	before := append([]string(nil), m.transcript...)
+	// The live dock carries only token counts (the running elapsed time is
+	// the status row's job); activity renders inline in the transcript, so
+	// the dock exposes no clickable overlay fields.
 	_, placements := m.turnDockRow(80)
-	if len(placements) != 2 {
-		t.Fatalf("dock placements = %#v", placements)
-	}
-	for i := range placements {
-		placements[i].Y = 10
-	}
-	m.turnDockPlacements = placements
-
-	thought := placements[0]
-	if !m.toggleTurnDockAt(thought.X, thought.Y) || m.turnDock.overlay != turnDockOverlayThought {
-		t.Fatalf("thought target did not open overlay: %#v", m.turnDock)
-	}
-	thoughtRows := m.turnDockOverlayRows(80)
-	if len(thoughtRows) == 0 || len(thoughtRows) > reasoningPreviewLines {
-		t.Fatalf("thought overlay rows = %d, want 1..%d", len(thoughtRows), reasoningPreviewLines)
-	}
-	if got := strings.Join(rowsText(thoughtRows), " "); !strings.Contains(got, "reasoning detail") {
-		t.Fatalf("thought overlay lost preview: %q", got)
+	for _, p := range placements {
+		if p.overlay != turnDockOverlayNone {
+			t.Fatalf("live dock exposed an overlay field: %#v", placements)
+		}
 	}
 
-	tools := placements[1]
-	if !m.toggleTurnDockAt(tools.X, tools.Y) || m.turnDock.overlay != turnDockOverlayTools {
-		t.Fatalf("tool target did not replace thought overlay: %#v", m.turnDock)
+	// The activity itself is inline: one collapsed reasoning block and one
+	// collapsed tool block, both visible in the transcript projection.
+	entries := m.transcriptDisplayEntries(100)
+	var reasoning, tools int
+	for _, e := range entries {
+		if e.reasoningID != 0 {
+			reasoning++
+		}
+		if e.toolDisclosureID != 0 {
+			tools++
+		}
 	}
-	toolRows := m.turnDockOverlayRows(80)
-	if len(toolRows) == 0 || len(toolRows) > turnDockToolOverlayRows {
-		t.Fatalf("tool overlay rows = %d, want 1..%d", len(toolRows), turnDockToolOverlayRows)
-	}
-	if got := strings.Join(rowsText(toolRows), " "); !strings.Contains(got, "bash") {
-		t.Fatalf("tool overlay lost running call: %q", got)
-	}
-	if strings.Join(before, "\x00") != strings.Join(m.transcript, "\x00") {
-		t.Fatalf("opening overlays mutated transcript: before=%#v after=%#v", before, m.transcript)
+	if reasoning != 1 || tools != 1 {
+		t.Fatalf("inline activity blocks: reasoning=%d tools=%d, want 1 each", reasoning, tools)
 	}
 }
 
@@ -168,7 +162,7 @@ func TestPriorTrailerExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
 	if !strings.Contains(shown, "prior reasoning detail") {
 		t.Fatalf("prior detail did not expand beside its trailer: %q", shown)
 	}
-	if m.turnDock.overlay != turnDockOverlayNone || len(m.turnDockOverlayRows(100)) != 0 {
+	if m.turnDock.overlay != turnDockOverlayNone {
 		t.Fatalf("prior detail reused the current bottom overlay: dock=%#v", m.turnDock)
 	}
 	if !m.turnDock.visible {
@@ -201,12 +195,13 @@ func TestExpandedToolTrailerPreservesLiteralBracketsWithoutLeakingStyleMarkup(t 
 		}
 	}
 	tui.AppendToolStart(calls)
-	if !m.toggleTurnDockOverlay(turnDockOverlayTools) {
-		t.Fatal("live tool dock did not expand")
+	live := m.currentToolDisclosure()
+	if live == nil || !m.toggleToolDisclosure(live.id) {
+		t.Fatal("live tool disclosure did not expand")
 	}
-	assertRendered("live", m.turnDockOverlayRows(100))
-	if !m.toggleTurnDockOverlay(turnDockOverlayTools) {
-		t.Fatal("live tool dock did not collapse")
+	assertRendered("live", m.transcriptRows(100))
+	if !m.toggleToolDisclosure(live.id) {
+		t.Fatal("live tool disclosure did not collapse")
 	}
 	for _, call := range calls {
 		tui.AppendToolEnd(call, "one\ntwo", 100*time.Millisecond, nil)
@@ -223,24 +218,38 @@ func TestExpandedToolTrailerPreservesLiteralBracketsWithoutLeakingStyleMarkup(t 
 
 func TestEscapeClosesTurnDockOverlayBeforeCancelingTurn(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.beginTurn("work")
-	r.model.turnDock.overlay = turnDockOverlayThought
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
-	if r.model.turnDock.overlay != turnDockOverlayNone {
-		t.Fatalf("Escape left overlay open: %#v", r.model.turnDock)
+	m := r.model
+	m.beginTurn("work")
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui.ShowThinking("some reasoning")
+	r.endTurn(nil)
+	trailer := m.turnTrailers[m.turnTrailerSeq]
+	if trailer == nil || !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayThought) {
+		t.Fatal("settled trailer overlay did not open")
 	}
-	if r.model.canceling {
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
+	if trailer.dock.overlay != turnDockOverlayNone || m.openTurnTrailerID != 0 {
+		t.Fatalf("Escape left overlay open: %#v", trailer.dock)
+	}
+	if m.canceling {
 		t.Fatal("Escape canceled the turn instead of closing the overlay")
 	}
 }
 
 func TestClickOutsideClosesTurnDockOverlayWithoutActivatingTranscript(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.beginTurn("work")
-	r.model.turnDock.overlay = turnDockOverlayThought
+	m := r.model
+	m.beginTurn("work")
+	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui.ShowThinking("some reasoning")
+	r.endTurn(nil)
+	trailer := m.turnTrailers[m.turnTrailerSeq]
+	if trailer == nil || !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayThought) {
+		t.Fatal("settled trailer overlay did not open")
+	}
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 0, Y: 0}})
-	if r.model.turnDock.overlay != turnDockOverlayNone {
-		t.Fatalf("outside click left overlay open: %#v", r.model.turnDock)
+	if trailer.dock.overlay != turnDockOverlayNone || m.openTurnTrailerID != 0 {
+		t.Fatalf("outside click left overlay open: %#v", trailer.dock)
 	}
 }
 

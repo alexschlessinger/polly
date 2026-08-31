@@ -347,7 +347,7 @@ func TestActiveToolLifecycle(t *testing.T) {
 		t.Fatalf("active tool row = %d, want 0", m.activeTools[0].row)
 	}
 	record := m.currentToolDisclosure()
-	if record == nil || record.expanded || len(record.rows) != 1 || !strings.Contains(m.transcript[0], "1 tool call") {
+	if record == nil || record.expanded || len(record.rows) != 1 || !strings.Contains(m.transcript[0], "1 tool") {
 		t.Fatalf("started disclosure = %#v transcript=%#v", record, m.transcript)
 	}
 
@@ -395,19 +395,36 @@ func TestTakeActiveToolMatchesByIDWithFallback(t *testing.T) {
 	}
 }
 
-func TestStatusRowOmitsLiveActivity(t *testing.T) {
+func TestStatusRowShowsLiveTimer(t *testing.T) {
+	// While a turn runs, the elapsed timer sits at the far left of the status
+	// row; the static context fields stay right-aligned and unchanged.
+	plain := func(s string) string {
+		var b strings.Builder
+		for _, c := range ui.ParseStyles(s, ui.NewStyle(ui.ColorWhite)) {
+			b.WriteRune(c.Rune)
+		}
+		return b.String()
+	}
+
 	m := newReplModel()
 	m.modelName = "gpt-mini"
 	m.contextName = "ctx"
 
-	idle := m.statusRow(120)
+	idle := plain(m.statusRow(120))
+	if strings.HasPrefix(strings.TrimSpace(idle), "0.0s") {
+		t.Fatalf("idle status row should not show a timer: %q", idle)
+	}
+
 	m.busy = true
 	m.turnStarted = time.Now()
 	for _, st := range []turnState{turnStateWaiting, turnStateThinking, turnStateStreaming, turnStateTool} {
 		m.state = st
-		busy := m.statusRow(120)
-		if busy != idle {
-			t.Fatalf("busy status row for state %v = %q, want static row %q", st, busy, idle)
+		row := plain(m.statusRow(120))
+		if !strings.HasPrefix(row, "0.0s") {
+			t.Fatalf("busy status row for state %v = %q, want timer at left", st, row)
+		}
+		if !strings.Contains(row, "gpt-mini") || !strings.Contains(row, "ctx") {
+			t.Fatalf("busy status row for state %v lost static fields: %q", st, row)
 		}
 	}
 }

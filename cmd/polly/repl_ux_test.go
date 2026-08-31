@@ -149,7 +149,7 @@ func TestFailedTurnLabelsPartialAndMarksQueueNotSent(t *testing.T) {
 
 	joined := strings.Join(m.flattenTranscript(), "\n")
 	plain := plainStyledText(joined)
-	for _, want := range []string{"▸ 1 tool call", "partial answer", "failed · not saved", "provider unavailable"} {
+	for _, want := range []string{"▸ 1 tool", "partial answer", "failed · not saved", "provider unavailable"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("failed transcript %q missing %q", plain, want)
 		}
@@ -218,6 +218,11 @@ func TestCancelFreezesPartialAndRejectsLateCallbacks(t *testing.T) {
 	if strings.Contains(joined, "late") || strings.Contains(joined, "after settle") || strings.Contains(joined, "after-settle") || m.lastIn != 0 || m.lastOut != 0 {
 		t.Fatalf("post-cancel callback mutated settled state: transcript=%q tokens=%d/%d", joined, m.lastIn, m.lastOut)
 	}
+	for _, redundant := range []string{"cancel requested", "input restored to composer", "completed work saved"} {
+		if strings.Contains(plain, redundant) {
+			t.Fatalf("canceled transcript retained redundant notice %q: %q", redundant, plain)
+		}
+	}
 	if len(m.queue) != 0 || !strings.Contains(plain, "> queued\n  (not sent)") {
 		t.Fatalf("cancel left pending input queued: queue=%v transcript=%q", m.queue, joined)
 	}
@@ -242,7 +247,7 @@ func TestCancelRequestLosingCompletionRaceDoesNotClaimUnsaved(t *testing.T) {
 	}
 }
 
-func TestInterruptedTurnWithPersistedProgressLabelsCompletedWorkSaved(t *testing.T) {
+func TestInterruptedTurnWithPersistedProgressOmitsUnsavedLabel(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		err         error
@@ -252,13 +257,13 @@ func TestInterruptedTurnWithPersistedProgressLabelsCompletedWorkSaved(t *testing
 		{
 			name:        "failed",
 			err:         &turnProgressSavedError{cause: errors.New("provider exploded")},
-			wantLabel:   "failed · completed work saved",
+			wantLabel:   "failed",
 			wantOutcome: turnOutcomeFailed,
 		},
 		{
 			name:        "canceled",
 			err:         &turnProgressSavedError{cause: context.Canceled},
-			wantLabel:   "canceled · completed work saved",
+			wantLabel:   "canceled",
 			wantOutcome: turnOutcomeCanceled,
 		},
 	} {
@@ -275,6 +280,9 @@ func TestInterruptedTurnWithPersistedProgressLabelsCompletedWorkSaved(t *testing
 			}
 			if strings.Contains(plain, "not saved") {
 				t.Fatalf("persisted progress was still labeled unsaved: %q", plain)
+			}
+			if strings.Contains(plain, "completed work saved") {
+				t.Fatalf("persisted progress retained redundant success notice: %q", plain)
 			}
 			if r.model.lastOutcome != tc.wantOutcome {
 				t.Fatalf("outcome = %v, want %v", r.model.lastOutcome, tc.wantOutcome)
@@ -594,7 +602,7 @@ func TestHydrateHistoryShowsFiveRecentTurnsAndCollapsesTools(t *testing.T) {
 			t.Fatalf("hydrated transcript leaked excluded/raw content %q: %q", absent, joined)
 		}
 	}
-	for _, present := range []string{"showing last 5 of 7 turns", "unique-question-2", "unique-question-6", "2 tool calls", "tool work done"} {
+	for _, present := range []string{"showing last 5 of 7 turns", "unique-question-2", "unique-question-6", "2 tools", "tool work done"} {
 		if !strings.Contains(joined, present) {
 			t.Fatalf("hydrated transcript missing %q: %q", present, joined)
 		}
@@ -816,7 +824,7 @@ func TestCompletedToolDisclosureSurvivesDiskReloadWithoutRawResults(t *testing.T
 		record = candidate
 	}
 	collapsed := plainStyledText(strings.Join(m.transcript, "\n"))
-	if record == nil || !record.complete || record.expanded || !strings.Contains(collapsed, "▸ 1 tool call") || strings.Contains(collapsed, "RAW SECRET") {
+	if record == nil || !record.complete || record.expanded || !strings.Contains(collapsed, "▸ 1 tool") || strings.Contains(collapsed, "RAW SECRET") {
 		t.Fatalf("reloaded collapsed tool disclosure = %#v transcript=%q", record, collapsed)
 	}
 	if !m.toggleToolDisclosure(record.id) {
@@ -1022,7 +1030,7 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 	m.appendLine("a stable earlier transcript block")
 	m.appendToolStartLine("1", "bash sleep 30")
 	rows1 := m.transcriptRows(80)
-	if len(rows1) != 1 || len(m.visualBlocks[0].rows[0]) == 0 {
+	if len(rows1) != 2 || len(m.visualBlocks[0].rows[0]) == 0 {
 		t.Fatalf("cache fixture rows = %#v", rows1)
 	}
 	staticCell := &m.visualBlocks[0].rows[0][0]
@@ -1040,19 +1048,20 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 	if &rows2[0] != cacheStart {
 		t.Fatal("same-row-count tool update rebuilt the full visual row index")
 	}
-	if shown := strings.Join(transcriptRowsText(rows2), "\n"); strings.Contains(shown, "2.0s") || strings.Contains(shown, "bash sleep 30") {
-		t.Fatalf("collapsed live detail reached visual rows: %q", shown)
+	// Collapsed inline header hides the call detail but stays visible.
+	if shown := strings.Join(transcriptRowsText(rows2), "\n"); strings.Contains(shown, "bash sleep 30") || !strings.Contains(shown, "1 tool") {
+		t.Fatalf("collapsed inline tool block wrong: %q", shown)
 	}
 	record := m.currentToolDisclosure()
 	if record == nil || !m.toggleToolDisclosure(record.id) {
 		t.Fatalf("cached tool disclosure did not expand: %#v", record)
 	}
-	if !m.visualCacheValid {
-		t.Fatal("hidden legacy disclosure invalidated the visual cache")
+	if m.visualCacheValid {
+		t.Fatal("inline disclosure expansion did not invalidate the visual cache")
 	}
 	expandedRows := m.transcriptRows(80)
-	if shown := strings.Join(transcriptRowsText(expandedRows), "\n"); strings.Contains(shown, "2.0s") || strings.Contains(shown, "bash sleep 30") {
-		t.Fatalf("legacy disclosure leaked into visual rows: %q", shown)
+	if shown := strings.Join(transcriptRowsText(expandedRows), "\n"); !strings.Contains(shown, "bash sleep 30") {
+		t.Fatalf("expanded inline disclosure missing detail: %q", shown)
 	}
 
 	m.setSlashHintLine("/help  /history")

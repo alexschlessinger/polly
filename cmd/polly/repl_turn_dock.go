@@ -6,7 +6,6 @@ import (
 	"time"
 
 	rw "github.com/mattn/go-runewidth"
-	ui "github.com/metaspartan/gotui/v5"
 )
 
 type turnDockOverlay int
@@ -27,8 +26,10 @@ type turnDockState struct {
 	elapsedKnown     bool
 	inputTokens      int
 	outputTokens     int
-	reasoningID      int64
-	toolDisclosureID int64
+	reasoningID      int64   // first reasoning record of the turn (label/legacy)
+	toolDisclosureID int64   // first tool disclosure of the turn (label/legacy)
+	reasoningIDs     []int64 // every reasoning record opened during the turn
+	toolIDs          []int64 // every tool disclosure opened during the turn
 	overlay          turnDockOverlay
 }
 
@@ -57,6 +58,26 @@ type turnDockField struct {
 	optional bool
 }
 
+// turnActivityControl is the shared visual language for clickable reasoning
+// and tool controls, whether they appear inline or in a settled trailer.
+func turnActivityControl(glyph, label string) string {
+	return styled(glyph, "accent", "bold") + " " + styled(label, "accent", "bold")
+}
+
+func inlineActivityControl(glyph, label string, settled bool) string {
+	if settled {
+		return styled(glyph, "muted", "") + " " + styled(label, "muted", "")
+	}
+	return turnActivityControl(glyph, label)
+}
+
+func turnToolLabel(total int) string {
+	if total == 1 {
+		return "1 tool"
+	}
+	return fmt.Sprintf("%d tools", total)
+}
+
 func (m *replModel) startTurnDock() {
 	if record := m.turnTrailers[m.openTurnTrailerID]; record != nil {
 		record.dock.overlay = turnDockOverlayNone
@@ -64,7 +85,6 @@ func (m *replModel) startTurnDock() {
 	}
 	m.openTurnTrailerID = 0
 	m.turnDock = turnDockState{visible: !m.quiet, elapsedKnown: true}
-	m.turnDockPlacements = nil
 }
 
 func (m *replModel) settleTurnDock() {
@@ -81,11 +101,6 @@ func (m *replModel) settleTurnDock() {
 
 func (m *replModel) clearTurnDock() {
 	m.turnDock = turnDockState{}
-	m.turnDockPlacements = nil
-}
-
-func (m *replModel) turnDockElapsed() time.Duration {
-	return m.turnDockElapsedFor(m.turnDock)
 }
 
 func (m *replModel) turnDockElapsedFor(dock turnDockState) time.Duration {
@@ -98,79 +113,109 @@ func (m *replModel) turnDockElapsedFor(dock turnDockState) time.Duration {
 	return time.Since(m.turnStarted)
 }
 
-func (m *replModel) turnDockThought() (*reasoningRecord, bool) {
-	return m.turnDockThoughtFor(m.turnDock)
+// turnDockThoughtRecords returns the turn's reasoning records in order. The
+// singular reasoningID seeds the list for docks settled before plural IDs
+// existed. Caller must hold m.mu.
+func (m *replModel) turnDockThoughtRecords(dock turnDockState) []*reasoningRecord {
+	ids := dock.reasoningIDs
+	if len(ids) == 0 && dock.reasoningID != 0 {
+		ids = []int64{dock.reasoningID}
+	}
+	var records []*reasoningRecord
+	for _, id := range ids {
+		if record := m.reasoningRecords[id]; record != nil && len(record.tail) > 0 {
+			records = append(records, record)
+		}
+	}
+	return records
 }
 
-func (m *replModel) turnDockThoughtFor(dock turnDockState) (*reasoningRecord, bool) {
-	record := m.reasoningRecords[dock.reasoningID]
-	return record, record != nil && len(record.tail) > 0
+// turnDockToolRecords returns the turn's tool disclosures in order. Caller
+// must hold m.mu.
+func (m *replModel) turnDockToolRecords(dock turnDockState) []*toolDisclosureRecord {
+	ids := dock.toolIDs
+	if len(ids) == 0 && dock.toolDisclosureID != 0 {
+		ids = []int64{dock.toolDisclosureID}
+	}
+	var records []*toolDisclosureRecord
+	for _, id := range ids {
+		if record := m.toolDisclosures[id]; record != nil && len(record.rows) > 0 {
+			records = append(records, record)
+		}
+	}
+	return records
 }
 
-func (m *replModel) turnDockTools() (*toolDisclosureRecord, bool) {
-	return m.turnDockToolsFor(m.turnDock)
-}
-
-func (m *replModel) turnDockToolsFor(dock turnDockState) (*toolDisclosureRecord, bool) {
-	record := m.toolDisclosures[dock.toolDisclosureID]
-	return record, record != nil && len(record.rows) > 0
-}
-
-func (m *replModel) turnDockFields() []turnDockField {
-	return m.turnDockFieldsFor(m.turnDock)
+func (m *replModel) turnDockToolRowCount(dock turnDockState) int {
+	total := 0
+	for _, record := range m.turnDockToolRecords(dock) {
+		total += len(record.rows)
+	}
+	return total
 }
 
 func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 	var fields []turnDockField
-	if record, ok := m.turnDockThoughtFor(dock); ok {
-		elapsed := record.elapsed
-		if record.active && !m.thinkingSegmentStart.IsZero() {
-			elapsed += time.Since(m.thinkingSegmentStart)
+	// The live dock is status-only: reasoning and tool activity render inline
+	// in the transcript as they occur. Settled trailers keep the activity
+	// fields because their overlays are the only way to revisit them.
+	if !dock.settled {
+		return m.turnDockStatusFields(dock)
+	}
+	if records := m.turnDockThoughtRecords(dock); len(records) > 0 {
+		var elapsed time.Duration
+		for _, record := range records {
+			elapsed += record.elapsed
+			if record.active && !m.thinkingSegmentStart.IsZero() && record.id == m.turnReasoningID {
+				elapsed += time.Since(m.thinkingSegmentStart)
+			}
 		}
-		label := "Thought"
-		if elapsed > 0 {
-			label += " " + formatElapsed(elapsed)
-		}
+		label := reasoningDisclosureLabel(false, false, elapsed)
 		glyph := "▸"
 		if dock.overlay == turnDockOverlayThought {
 			glyph = "▾"
 		}
 		raw := glyph + " " + label
-		rendered := styled(glyph, "accent", "bold") + " " + styled(label, "accent", "bold")
+		rendered := turnActivityControl(glyph, label)
 		fields = append(fields, turnDockField{raw: raw, rendered: rendered, overlay: turnDockOverlayThought})
 	}
-	if record, ok := m.turnDockToolsFor(dock); ok {
-		label := fmt.Sprintf("%d tools", len(record.rows))
-		if len(record.rows) == 1 {
-			label = "1 tool"
-		}
+	if total := m.turnDockToolRowCount(dock); total > 0 {
+		label := turnToolLabel(total)
 		glyph := "▸"
 		if dock.overlay == turnDockOverlayTools {
 			glyph = "▾"
 		}
 		raw := glyph + " " + label
-		rendered := styled(glyph, "accent", "bold") + " " + styled(label, "accent", "bold")
+		rendered := turnActivityControl(glyph, label)
 		fields = append(fields, turnDockField{raw: raw, rendered: rendered, overlay: turnDockOverlayTools})
 	}
 
-	if !dock.settled || dock.elapsedKnown {
+	return append(fields, m.turnDockStatusFields(dock)...)
+}
+
+// turnDockStatusFields renders the status tail shared by the live dock and
+// settled trailers. The live dock carries only token counts: the running
+// elapsed time lives solely in the status row at the lower left, so the two
+// never duplicate. Settled trailers keep their final elapsed time (with the
+// outcome glyph) because the status row has moved on by then.
+func (m *replModel) turnDockStatusFields(dock turnDockState) []turnDockField {
+	var fields []turnDockField
+	if dock.settled && dock.elapsedKnown {
 		elapsed := formatElapsed(m.turnDockElapsedFor(dock))
 		raw, rendered := elapsed, styled(elapsed, "muted", "")
-		if dock.settled {
-			switch dock.outcome {
-			case turnOutcomeDone:
-				raw = "✓ " + elapsed
-				rendered = styled("✓", "ok", "bold") + " " + styled(elapsed, "muted", "")
-			case turnOutcomeFailed:
-				raw = "✗ failed · " + elapsed
-				rendered = styled("✗ failed", "err", "bold") + styled(" · "+elapsed, "muted", "")
-			case turnOutcomeCanceled:
-				raw = "canceled · " + elapsed
-				rendered = styled("canceled", "muted", "bold") + styled(" · "+elapsed, "muted", "")
-			}
+		switch dock.outcome {
+		case turnOutcomeDone:
+			raw = "✓ " + elapsed
+			rendered = styled("✓", "ok", "bold") + " " + styled(elapsed, "muted", "")
+		case turnOutcomeFailed:
+			raw = "✗ failed · " + elapsed
+			rendered = styled("✗ failed", "err", "bold") + styled(" · "+elapsed, "muted", "")
+		case turnOutcomeCanceled:
+			raw = "canceled · " + elapsed
+			rendered = styled("canceled", "muted", "bold") + styled(" · "+elapsed, "muted", "")
 		}
 		fields = append(fields, turnDockField{raw: raw, rendered: rendered})
-	} else if dock.outcome == turnOutcomeDone {
+	} else if dock.settled && dock.outcome == turnOutcomeDone {
 		fields = append(fields, turnDockField{raw: "✓", rendered: styled("✓", "ok", "bold")})
 	}
 
@@ -197,11 +242,12 @@ func (m *replModel) setHydratedTurnDock(reasoning *reasoningRecord, tools *toolD
 	}
 	if reasoning != nil {
 		m.turnDock.reasoningID = reasoning.id
+		m.turnDock.reasoningIDs = []int64{reasoning.id}
 	}
 	if tools != nil {
 		m.turnDock.toolDisclosureID = tools.id
+		m.turnDock.toolIDs = []int64{tools.id}
 	}
-	m.turnDockPlacements = nil
 }
 
 func (m *replModel) turnDockRow(width int) (string, []turnDockPlacement) {
@@ -215,9 +261,18 @@ func (m *replModel) turnDockRowFor(dock turnDockState, width int) (string, []tur
 	if width <= 0 {
 		return "", nil
 	}
+	return renderTurnActivityRow(m.turnDockFieldsFor(dock), width)
+}
+
+// renderTurnActivityRow is the one-line renderer shared by inline activity
+// and the settled trailer. Fields that do not fit are truncated as one row;
+// clickable placements are returned only for controls wholly on that row.
+func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDockPlacement) {
+	if width <= 0 {
+		return "", nil
+	}
 	const indent = "  "
 	const separator = " · "
-	fields := m.turnDockFieldsFor(dock)
 	measure := func(fields []turnDockField) int {
 		parts := make([]string, len(fields))
 		for i := range fields {
@@ -261,7 +316,18 @@ func (m *replModel) turnDockRowFor(dock turnDockState, width int) (string, []tur
 		}
 	}
 	if rw.StringWidth(raw.String()) > width {
-		return styled(rw.Truncate(raw.String(), width, "…"), "muted", ""), nil
+		// The ellipsis occupies the final cell, so retain only controls that
+		// remain wholly visible before it. Keeping those placements prevents
+		// the inline fallback from turning the entire truncated row into
+		// overlapping reasoning and tool targets.
+		visibleWidth := width - rw.StringWidth("…")
+		visiblePlacements := placements[:0]
+		for _, placement := range placements {
+			if placement.X+placement.Cols <= visibleWidth {
+				visiblePlacements = append(visiblePlacements, placement)
+			}
+		}
+		return styled(rw.Truncate(raw.String(), width, "…"), "muted", ""), visiblePlacements
 	}
 	return rendered.String(), placements
 }
@@ -322,40 +388,62 @@ func (m *replModel) refreshTurnTrailer(record *turnTrailerRecord) {
 func (m *replModel) turnTrailerDetailText(dock turnDockState, width int) string {
 	switch dock.overlay {
 	case turnDockOverlayThought:
-		record, ok := m.turnDockThoughtFor(dock)
-		if !ok {
+		records := m.turnDockThoughtRecords(dock)
+		if len(records) == 0 {
 			return ""
 		}
 		contentWidth := width - rw.StringWidth(reasoningBlockIndent)
 		if contentWidth < 2 {
 			return ""
 		}
-		lines := reasoningTailLines(string(record.tail), contentWidth, reasoningPreviewLines)
+		var tails []string
+		for _, record := range records {
+			tails = append(tails, string(record.tail))
+		}
+		lines := reasoningTailLines(strings.Join(tails, "\n"), contentWidth, reasoningPreviewLines)
 		for i := range lines {
 			lines[i] = reasoningBlockIndent + styled(lines[i], "muted", "italic")
 		}
 		return strings.Join(lines, "\n")
 	case turnDockOverlayTools:
-		record, ok := m.turnDockToolsFor(dock)
-		if !ok {
+		records := m.turnDockToolRecords(dock)
+		if len(records) == 0 {
 			return ""
 		}
+		var all []string
+		for _, record := range records {
+			for _, row := range record.rows {
+				if row.line != "" {
+					all = append(all, stripTranscriptImageMarkers(row.line))
+				}
+			}
+		}
 		start := 0
-		if len(record.rows) > turnDockToolOverlayRows {
-			start = len(record.rows) - (turnDockToolOverlayRows - 1)
+		if len(all) > turnDockToolOverlayRows {
+			start = len(all) - (turnDockToolOverlayRows - 1)
 		}
 		var lines []string
 		if start > 0 {
 			lines = append(lines, "  "+styled(fmt.Sprintf("… %d earlier", start), "muted", ""))
 		}
-		for _, row := range record.rows[start:] {
-			if row.line != "" {
-				lines = append(lines, stripTranscriptImageMarkers(row.line))
-			}
-		}
+		lines = append(lines, all[start:]...)
 		return strings.Join(lines, "\n")
 	}
 	return ""
+}
+
+// boundedReasoningDetail keeps the newest already-wrapped physical rows from
+// a merged inline reasoning disclosure. Individual records are bounded before
+// projection; the merged group must preserve the same global row budget.
+func boundedReasoningDetail(detail string, limit int) string {
+	if detail == "" || limit < 1 {
+		return ""
+	}
+	lines := strings.Split(detail, "\n")
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *replModel) refreshExpandedTurnTrailer(width int) {
@@ -367,50 +455,9 @@ func (m *replModel) refreshExpandedTurnTrailer(width int) {
 	}
 }
 
-func (m *replModel) toggleTurnDockAt(x, y int) bool {
-	for _, placement := range m.turnDockPlacements {
-		if y != placement.Y || x < placement.X || x >= placement.X+placement.Cols {
-			continue
-		}
-		return m.toggleTurnDockOverlay(placement.overlay)
-	}
-	return false
-}
-
-func (m *replModel) toggleTurnDockOverlay(overlay turnDockOverlay) bool {
-	if open := m.turnTrailers[m.openTurnTrailerID]; open != nil {
-		open.dock.overlay = turnDockOverlayNone
-		m.refreshTurnTrailer(open)
-		m.openTurnTrailerID = 0
-	}
-	switch overlay {
-	case turnDockOverlayThought:
-		if _, ok := m.turnDockThought(); !ok {
-			return false
-		}
-	case turnDockOverlayTools:
-		if _, ok := m.turnDockTools(); !ok {
-			return false
-		}
-	default:
-		return false
-	}
-	if m.turnDock.overlay == overlay {
-		m.turnDock.overlay = turnDockOverlayNone
-	} else {
-		m.turnDock.overlay = overlay
-	}
-	if overlay == turnDockOverlayThought && m.currentReasoningRecord() != nil {
-		m.turnReasoningOpen = m.turnDock.overlay == turnDockOverlayThought
-	}
-	return true
-}
-
+// closeTurnDockOverlay dismisses an expanded settled-trailer overlay. The
+// live dock is status-only and has no overlay to close.
 func (m *replModel) closeTurnDockOverlay() bool {
-	if m.turnDock.overlay != turnDockOverlayNone {
-		m.turnDock.overlay = turnDockOverlayNone
-		return true
-	}
 	if record := m.turnTrailers[m.openTurnTrailerID]; record != nil && record.dock.overlay != turnDockOverlayNone {
 		record.dock.overlay = turnDockOverlayNone
 		m.refreshTurnTrailer(record)
@@ -418,55 +465,6 @@ func (m *replModel) closeTurnDockOverlay() bool {
 		return true
 	}
 	return false
-}
-
-func (m *replModel) turnDockOverlayRows(width int) [][]ui.Cell {
-	if width < 2 || !m.turnDock.visible {
-		return nil
-	}
-	dock := m.turnDock
-	switch dock.overlay {
-	case turnDockOverlayThought:
-		record, ok := m.turnDockThoughtFor(dock)
-		if !ok {
-			return nil
-		}
-		contentWidth := width - rw.StringWidth(reasoningBlockIndent)
-		if contentWidth < 2 {
-			return nil
-		}
-		lines := reasoningTailLines(string(record.tail), contentWidth, reasoningPreviewLines)
-		rows := make([][]ui.Cell, 0, len(lines))
-		for _, line := range lines {
-			text := reasoningBlockIndent + styled(line, "muted", "italic")
-			rows = append(rows, ui.ParseStyles(text, ui.NewStyle(ui.ColorClear)))
-		}
-		return rows
-	case turnDockOverlayTools:
-		record, ok := m.turnDockToolsFor(dock)
-		if !ok {
-			return nil
-		}
-		start := 0
-		if len(record.rows) > turnDockToolOverlayRows {
-			start = len(record.rows) - (turnDockToolOverlayRows - 1)
-		}
-		var lines []string
-		if start > 0 {
-			lines = append(lines, "  "+styled(fmt.Sprintf("… %d earlier", start), "muted", ""))
-		}
-		for _, row := range record.rows[start:] {
-			if row.line != "" {
-				lines = append(lines, stripTranscriptImageMarkers(row.line))
-			}
-		}
-		rows := transcriptVisualRows(strings.Join(lines, "\n"), ui.NewStyle(ui.ColorClear), width)
-		if len(rows) > turnDockToolOverlayRows {
-			rows = rows[len(rows)-turnDockToolOverlayRows:]
-		}
-		return rows
-	}
-	return nil
 }
 
 func (m *replModel) toggleTurnTrailerAt(x, y int) bool {
@@ -488,11 +486,11 @@ func (m *replModel) toggleLatestTurnTrailerOverlay(overlay turnDockOverlay) bool
 		if record := m.turnTrailers[id]; record != nil {
 			switch overlay {
 			case turnDockOverlayThought:
-				if _, ok := m.turnDockThoughtFor(record.dock); !ok {
+				if len(m.turnDockThoughtRecords(record.dock)) == 0 {
 					continue
 				}
 			case turnDockOverlayTools:
-				if _, ok := m.turnDockToolsFor(record.dock); !ok {
+				if len(m.turnDockToolRecords(record.dock)) == 0 {
 					continue
 				}
 			}
