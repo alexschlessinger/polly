@@ -67,11 +67,16 @@ func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 		}
 	}
 
-	// If there are tool calls, override stop reason to ToolUse
-	// (Gemini doesn't have a specific finish reason for tool calls - it uses "STOP")
-	toolCalls := state.GetToolCalls()
-	if len(toolCalls) > 0 {
-		state.SetStopReason(messages.StopReasonToolUse)
+	// If there are tool calls, override stop reason to ToolUse (Gemini has no
+	// tool-call finish reason - it uses "STOP"). Only a healthy finish is
+	// overridden: a terminal reason such as SAFETY, MAX_TOKENS, or
+	// MALFORMED_FUNCTION_CALL must survive, or calls accumulated before it
+	// would present as an ordinary tool turn.
+	if toolCalls := state.GetToolCalls(); len(toolCalls) > 0 {
+		switch state.GetStopReason() {
+		case "", messages.StopReasonEndTurn:
+			state.SetStopReason(messages.StopReasonToolUse)
+		}
 	}
 
 	return nil

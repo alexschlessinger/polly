@@ -23,6 +23,7 @@ type StreamStateInterface interface {
 
 	// Getters
 	GetMetadata(key string) (any, bool)
+	GetStopReason() messages.StopReason
 	GetToolCalls() []messages.ChatMessageToolCall
 	GetInputTokens() int
 	GetOutputTokens() int
@@ -104,6 +105,13 @@ func (s *StreamState) SetStopReason(reason messages.StopReason) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.StopReason = reason
+}
+
+// GetStopReason returns the stop reason recorded so far
+func (s *StreamState) GetStopReason() messages.StopReason {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.StopReason
 }
 
 // SetMetadata safely sets a metadata value
