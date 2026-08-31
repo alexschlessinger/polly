@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,11 @@ func TestInlineActivityHeadersUseTrailerControls(t *testing.T) {
 		t.Fatalf("inline thought header = %q, want muted metadata control %q", got, want)
 	}
 }
+
+// Windows' coarse monotonic clock can bank an exactly-zero thinking elapsed,
+// which drops the duration from the label — assert the accent span, not the
+// timing.
+var accentThought = regexp.MustCompile(`\[Thought[^\]]*\]\(fg:accent`)
 
 // Smoke: full turn lifecycle with inline activity — live rows visible during
 // the turn, trailer appended after, blocks stay inline after settle.
@@ -62,7 +68,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	for _, block := range m.transcriptDisplayEntries(100) {
 		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
-			if !strings.Contains(header, "Thought 0.0s](fg:accent") ||
+			if !accentThought.MatchString(header) ||
 				!strings.Contains(header, "1 tool](fg:accent") {
 				t.Fatalf("one active control should keep the whole activity row blue: %q", header)
 			}
@@ -81,7 +87,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	for _, block := range m.transcriptDisplayEntries(100) {
 		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
-			if !strings.Contains(header, "Thought 0.0s](fg:accent") ||
+			if !accentThought.MatchString(header) ||
 				!strings.Contains(header, "1 tool](fg:accent") {
 				t.Fatalf("activity row greyed between phases before moving on: %q", header)
 			}

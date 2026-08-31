@@ -276,10 +276,12 @@ func resolveSpaceFoldedPath(path string) string {
 	}
 	vol := filepath.VolumeName(path)
 	rest := strings.TrimPrefix(path, vol)
-	abs := filepath.IsAbs(rest)
 	components := strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == '\\' })
 	cur := vol
-	if abs {
+	// filepath.IsAbs can't root this walk: on Windows the volume-trimmed
+	// rest ("\Users\...") is rooted but not absolute, and losing the
+	// separator here silently yields drive-relative paths ("C:Users\...").
+	if len(rest) > 0 && (rest[0] == '/' || rest[0] == '\\') {
 		cur += string(filepath.Separator)
 	}
 	for _, comp := range components {
