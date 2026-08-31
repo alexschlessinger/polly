@@ -27,8 +27,10 @@ type authTransport struct {
 }
 
 func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.Header.Set("Authorization", "Bearer "+t.Token)
-	return t.Base.RoundTrip(req)
+	// RoundTrippers must not mutate the caller's request.
+	clone := req.Clone(req.Context())
+	clone.Header.Set("Authorization", "Bearer "+t.Token)
+	return t.Base.RoundTrip(clone)
 }
 
 func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
@@ -86,12 +88,13 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			}
 		}
 
-		// Create chat request
-		// Default to non-streaming for Ollama (nil means streaming in Ollama API)
+		// Create chat request. nil means streaming, per the CompletionRequest
+		// contract; the value is sent explicitly so the request body states
+		// the mode either way.
 		stream := req.Stream
 		if stream == nil {
-			streamFalse := false
-			stream = &streamFalse
+			streamTrue := true
+			stream = &streamTrue
 		}
 		options := map[string]any{
 			"num_predict": req.MaxTokens,
@@ -128,7 +131,6 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			chatReq.Tools = ollamaTools
 		}
 
-		// For Ollama, we default to non-streaming (stream is already set above)
 		isStreaming := *stream
 		slog.Debug("ollama_chat_started", "model", req.Model, "stream", isStreaming)
 
