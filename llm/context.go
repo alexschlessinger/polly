@@ -889,7 +889,10 @@ func boundedArtifactDescriptors(descriptors []string, limit int) string {
 }
 
 func artifactPreview(ref artifacts.Ref, headData, tailData []byte, maxBytes int) string {
-	header := fmt.Sprintf("[artifact %s; %d bytes; %d lines; head/tail preview]\n", ref.ID, ref.Bytes, ref.Lines)
+	// The first line must be self-framing: a model that has never seen the
+	// receipt convention should still read this as its tool's real output,
+	// stored whole, deliberately previewed — not as truncated or corrupt data.
+	header := fmt.Sprintf("[tool output stored as artifact %s; %d bytes; %d lines. Head/tail preview follows.]\n", ref.ID, ref.Bytes, ref.Lines)
 	gap := "\n\n[... middle omitted; use read_artifact (offset/limit/query) to read the rest ...]\n\n"
 	available := maxBytes - len(header) - len(gap)
 	if available <= 0 {

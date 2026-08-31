@@ -129,7 +129,7 @@ func TestAgentLargeToolResultKeepsFullArtifactAndSendsPreview(t *testing.T) {
 		t.Fatalf("stored tool result has %d bytes, want %d; err=%v", len(stored), len(full), err)
 	}
 	projectedTools := messagesWithRole(model.requests[1], messages.MessageRoleTool)
-	if len(projectedTools) != 1 || !strings.Contains(projectedTools[0].Content, "head/tail preview") || estimatedStringTokens(projectedTools[0].Content) > toolPreviewTokenLimit {
+	if len(projectedTools) != 1 || !strings.Contains(projectedTools[0].Content, "Head/tail preview follows") || estimatedStringTokens(projectedTools[0].Content) > toolPreviewTokenLimit {
 		t.Fatalf("provider tool projection = %#v", projectedTools)
 	}
 	// The provider-visible form equals the durable form: projection never

@@ -38,7 +38,7 @@ func TestProjectToolResultThreshold(t *testing.T) {
 			}
 			toolMessage := projected[len(projected)-1]
 			if tc.preview {
-				if !strings.Contains(toolMessage.Content, "head/tail preview") || estimatedStringTokens(toolMessage.Content) > toolPreviewTokenLimit {
+				if !strings.Contains(toolMessage.Content, "Head/tail preview follows") || estimatedStringTokens(toolMessage.Content) > toolPreviewTokenLimit {
 					t.Fatalf("preview is not bounded: tokens=%d content=%q", estimatedStringTokens(toolMessage.Content), toolMessage.Content[:min(200, len(toolMessage.Content))])
 				}
 				if stats.CompactedToolResults != 1 {
@@ -196,7 +196,7 @@ func TestProjectSpillsOlderActiveToolPreviewsUnderPressure(t *testing.T) {
 	if toolMessages[0].Content != artifactReceipt(refs[0]) {
 		t.Fatalf("oldest active preview was not demoted first: %q", toolMessages[0].Content[:min(200, len(toolMessages[0].Content))])
 	}
-	if !strings.Contains(toolMessages[len(toolMessages)-1].Content, "head/tail preview") {
+	if !strings.Contains(toolMessages[len(toolMessages)-1].Content, "Head/tail preview follows") {
 		t.Fatalf("newest active result lost its preview: %q", toolMessages[len(toolMessages)-1].Content)
 	}
 	if stats.EstimatedTokens > 1_200 {
