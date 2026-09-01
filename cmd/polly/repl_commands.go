@@ -850,17 +850,13 @@ func replGetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	return replCommandResult{err: ctx.replyLine(key + ": " + value)}
 }
 
-// thinkingEffortWords are the named efforts accepted by llm.ParseThinkingEffort
-// (a raw token budget is also accepted).
-var thinkingEffortWords = []string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh", "max"}
-
 func completeSetCommand(_ *replCommandContext, fields []string, prefix string) []string {
 	switch completionArgPos(fields, prefix) {
 	case 1:
 		return matchingWords(replSettableKeys, prefix)
 	case 2:
-		if fields[1] == "thinking" {
-			return matchingWords(thinkingEffortWords, prefix)
+		if spec, ok := settingSpecFor(fields[1]); ok && spec.setWords != nil {
+			return matchingWords(spec.setWords, prefix)
 		}
 	}
 	return nil
@@ -888,10 +884,8 @@ func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if err := applyReplSetting(ctx.config, key, value); err != nil {
 		return replCommandResult{err: ctx.replyLine(err.Error())}
 	}
-	// The agent captures the tool timeout at construction; push the change
-	// through so it applies to the next turn, not the next launch.
-	if key == "tooltimeout" && ctx.state != nil && ctx.state.agent != nil {
-		ctx.state.agent.SetToolTimeout(ctx.config.ToolTimeout)
+	if spec, ok := settingSpecFor(key); ok && spec.postReplSet != nil {
+		spec.postReplSet(ctx)
 	}
 	if ctx.settingsApplied != nil {
 		ctx.settingsApplied()

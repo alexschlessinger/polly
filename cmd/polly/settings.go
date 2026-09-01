@@ -43,6 +43,14 @@ type settingSpec struct {
 	// entirely (maxiterations). Formats are test-pinned; keep stable.
 	show func(ctx *replCommandContext, cfg *Config) string
 
+	// setWords are value completions offered after "/set <key> "; nil for
+	// free-form values.
+	setWords []string
+
+	// postReplSet runs after a successful /set of this key, for settings a
+	// live component captures at construction.
+	postReplSet func(ctx *replCommandContext)
+
 	// fromCmd reads the flag's parsed value onto cfg in parseConfig; nil on
 	// derived flagless rows.
 	fromCmd func(cfg *Config, cmd *cli.Command)
@@ -159,7 +167,10 @@ var settingSpecs = []settingSpec{
 			cfg.ThinkingEffort = value
 			return nil
 		},
-		show:     func(_ *replCommandContext, cfg *Config) string { return cfg.ThinkingEffort },
+		show: func(_ *replCommandContext, cfg *Config) string { return cfg.ThinkingEffort },
+		// The named efforts accepted by llm.ParseThinkingEffort (a raw token
+		// budget is also accepted); "auto" is deliberately not offered.
+		setWords: []string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh", "max"},
 		fromCmd:  func(cfg *Config, cmd *cli.Command) { cfg.ThinkingEffort = cmd.String("thinking") },
 		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.ThinkingEffort = md.ThinkingEffort },
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.ThinkingEffort = cfg.ThinkingEffort },
@@ -204,7 +215,14 @@ var settingSpecs = []settingSpec{
 			cfg.ToolTimeout = d
 			return nil
 		},
-		show:     func(_ *replCommandContext, cfg *Config) string { return cfg.ToolTimeout.String() },
+		show: func(_ *replCommandContext, cfg *Config) string { return cfg.ToolTimeout.String() },
+		// The agent captures the tool timeout at construction; push the change
+		// through so it applies to the next turn, not the next launch.
+		postReplSet: func(ctx *replCommandContext) {
+			if ctx.state != nil && ctx.state.agent != nil {
+				ctx.state.agent.SetToolTimeout(ctx.config.ToolTimeout)
+			}
+		},
 		fromCmd:  func(cfg *Config, cmd *cli.Command) { cfg.ToolTimeout = cmd.Duration("tooltimeout") },
 		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.ToolTimeout = md.ToolTimeout },
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.ToolTimeout = cfg.ToolTimeout },
