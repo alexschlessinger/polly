@@ -920,8 +920,10 @@ func persistReplSettings(ctx *replCommandContext) error {
 		return err
 	}
 	md.Name = name
+	// What /set can change, /set must persist: every settable row reaches
+	// metadata here, or the change would silently die at relaunch.
 	for _, spec := range settingSpecs {
-		if spec.persistOnSet {
+		if spec.parse != nil {
 			spec.toMeta(cfg, md)
 		}
 	}

@@ -9,9 +9,9 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
-// TestSettingSpecGateMembership pins the three copy gates and the derived key
-// lists. The exclusions are load-bearing: flipping startupWriteBack or
-// persistOnSet on a row changes what reaches persisted session metadata.
+// TestSettingSpecGateMembership pins the copy gates and the derived key
+// lists. The exclusions are load-bearing: flipping startupWriteBack on a row,
+// or making it settable, changes what reaches persisted session metadata.
 func TestSettingSpecGateMembership(t *testing.T) {
 	pin := func(name string, got, want []string) {
 		t.Helper()
@@ -27,8 +27,6 @@ func TestSettingSpecGateMembership(t *testing.T) {
 		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir", "maxiterations"})
 	pin("startupWriteBack gate", settingKeysWhere(func(s settingSpec) bool { return s.startupWriteBack }),
 		[]string{"model", "temp", "maxtokens", "tooltimeout", "skilldir", "maxiterations"})
-	pin("persistOnSet gate", settingKeysWhere(func(s settingSpec) bool { return s.persistOnSet }),
-		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"})
 	pin("postReplSet hooks", settingKeysWhere(func(s settingSpec) bool { return s.postReplSet != nil }),
 		[]string{"tooltimeout"})
 	pin("setWords completions", settingKeysWhere(func(s settingSpec) bool { return s.setWords != nil }),
@@ -41,11 +39,11 @@ func TestSettingSpecGateMembership(t *testing.T) {
 			}
 		} else {
 			if spec.fromCmd != nil || spec.fromMeta != nil || spec.toMeta != nil ||
-				spec.startupWriteBack || spec.persistOnSet || spec.parse != nil {
+				spec.startupWriteBack || spec.parse != nil {
 				t.Errorf("derived setting %q must be show-only", spec.key)
 			}
 		}
-		if (spec.startupWriteBack || spec.persistOnSet) && spec.toMeta == nil {
+		if (spec.startupWriteBack || spec.parse != nil) && spec.toMeta == nil {
 			t.Errorf("setting %q joins a copy gate without a toMeta", spec.key)
 		}
 		if spec.parse != nil && spec.show == nil {

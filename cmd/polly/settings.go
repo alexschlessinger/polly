@@ -12,17 +12,18 @@ import (
 )
 
 // settingSpec declares one context setting. The table drives the REPL key
-// lists, /get rendering, /set parsing, and the three metadata copy gates.
+// lists, /get rendering, /set parsing, and the metadata copy gates.
 //
-// The three gates are deliberately distinct and must stay distinct:
+// The gates are deliberately distinct and must stay distinct:
 //   - flag != "" gates the IsSet twin walks in initializeConversation
 //     (restore from metadata when NOT set) and applyFlagSettings (override
 //     metadata when set);
 //   - startupWriteBack marks updateContextInfo's unconditional startup
 //     write-back set — maxcontext, system, and thinking are excluded on
 //     purpose and reach metadata only through applyFlagSettings;
-//   - persistOnSet marks the fields persistReplSettings writes after a /set —
-//     skilldir, system, and maxiterations are excluded on purpose.
+//   - parse != nil marks the /set-able rows, and exactly those are what
+//     persistReplSettings writes after a /set: what /set can change, /set
+//     must persist, or the change silently dies at relaunch.
 type settingSpec struct {
 	// key is the REPL name used by /get and /set. Table order is load-bearing:
 	// it defines /get all output order and the settable-keys error text.
@@ -33,7 +34,6 @@ type settingSpec struct {
 	flag string
 
 	startupWriteBack bool
-	persistOnSet     bool
 
 	// parse validates value and writes it onto cfg; nil marks the key
 	// read-only for /set. Error texts appear in transcripts; keep stable.
@@ -56,10 +56,10 @@ type settingSpec struct {
 	fromCmd func(cfg *Config, cmd *cli.Command)
 
 	// fromMeta restores a persisted value onto cfg (flag not set at launch);
-	// toMeta copies the resolved cfg value onto md and is shared by all three
-	// copy gates. Both nil only on derived flagless rows. Closures take
-	// *Config, not *Settings: maxiterations must resolve to the outer
-	// Config.MaxIterations, not the shadowed embedded Settings field.
+	// toMeta copies the resolved cfg value onto md and is shared by every
+	// copy gate. Both nil only on derived flagless rows. Closures take
+	// *Config, not *Settings, because MaxIterations lives on Config outside
+	// the embedded Settings.
 	fromMeta func(cfg *Config, md *sessions.Metadata)
 	toMeta   func(cfg *Config, md *sessions.Metadata)
 }
@@ -78,7 +78,6 @@ var settingSpecs = []settingSpec{
 		key:              "model",
 		flag:             "model",
 		startupWriteBack: true,
-		persistOnSet:     true,
 		parse: func(cfg *Config, value string) error {
 			if value == "" {
 				return fmt.Errorf("model requires a provider/model value")
@@ -98,7 +97,6 @@ var settingSpecs = []settingSpec{
 		key:              "temp",
 		flag:             "temp",
 		startupWriteBack: true,
-		persistOnSet:     true,
 		parse: func(cfg *Config, value string) error {
 			f, err := strconv.ParseFloat(value, 64)
 			if err != nil {
@@ -121,7 +119,6 @@ var settingSpecs = []settingSpec{
 		key:              "maxtokens",
 		flag:             "maxtokens",
 		startupWriteBack: true,
-		persistOnSet:     true,
 		parse: func(cfg *Config, value string) error {
 			n, err := strconv.Atoi(value)
 			if err != nil || n <= 0 {
@@ -138,9 +135,8 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.MaxTokens = cfg.MaxTokens },
 	},
 	{
-		key:          "maxcontext",
-		flag:         "maxcontext",
-		persistOnSet: true,
+		key:  "maxcontext",
+		flag: "maxcontext",
 		parse: func(cfg *Config, value string) error {
 			n, err := strconv.Atoi(value)
 			if err != nil || n < 0 {
@@ -157,9 +153,8 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.MaxHistoryTokens = cfg.MaxHistoryTokens },
 	},
 	{
-		key:          "thinking",
-		flag:         "thinking",
-		persistOnSet: true,
+		key:  "thinking",
+		flag: "thinking",
 		parse: func(cfg *Config, value string) error {
 			if _, err := llm.ParseThinkingEffort(value); err != nil {
 				return err
@@ -206,7 +201,6 @@ var settingSpecs = []settingSpec{
 		key:              "tooltimeout",
 		flag:             "tooltimeout",
 		startupWriteBack: true,
-		persistOnSet:     true,
 		parse: func(cfg *Config, value string) error {
 			d, err := time.ParseDuration(value)
 			if err != nil || d <= 0 {
@@ -251,12 +245,11 @@ var settingSpecs = []settingSpec{
 	},
 	{
 		// maxiterations rides the flag-persistence gates but stays invisible
-		// to /get, /set, and completions. Its closures write the outer
-		// Config.MaxIterations, never the shadowed embedded Settings field.
+		// to /get, /set, and completions.
 		key:              "maxiterations",
 		flag:             "maxiterations",
 		startupWriteBack: true,
-		fromCmd:          func(cfg *Config, cmd *cli.Command) { cfg.MaxIterations = int(cmd.Int("maxiterations")) },
+		fromCmd:          func(cfg *Config, cmd *cli.Command) { cfg.MaxIterations = cmd.Int("maxiterations") },
 		fromMeta:         func(cfg *Config, md *sessions.Metadata) { cfg.MaxIterations = md.MaxIterations },
 		toMeta:           func(cfg *Config, md *sessions.Metadata) { md.MaxIterations = cfg.MaxIterations },
 	},
