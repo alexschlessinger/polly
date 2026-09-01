@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -12,8 +13,10 @@ type providerFactory func(apiKey, baseURL string) (LLM, error)
 
 // MultiPass routes requests to different LLM providers based on model prefix.
 type MultiPass struct {
-	apiKeys   map[string]string
-	factories map[string]providerFactory
+	apiKeyMu       sync.RWMutex
+	apiKeys        map[string]string
+	runtimeAPIKeys map[string]string
+	factories      map[string]providerFactory
 }
 
 // getEnvVarNameForProvider returns the environment variable name for the given provider
@@ -40,9 +43,55 @@ func NewMultiPass(apiKeys map[string]string) *MultiPass {
 
 func newMultiPass(apiKeys map[string]string, factories map[string]providerFactory) *MultiPass {
 	return &MultiPass{
-		apiKeys:   copyAPIKeys(apiKeys),
-		factories: copyProviderFactories(factories),
+		apiKeys:        copyAPIKeys(apiKeys),
+		runtimeAPIKeys: make(map[string]string),
+		factories:      copyProviderFactories(factories),
 	}
+}
+
+// SetAPIKey installs a process-local credential override. Runtime keys are
+// deliberately kept out of configuration, environment variables, and session
+// metadata; callers that want persistence should use an OS credential store.
+func (m *MultiPass) SetAPIKey(provider, apiKey string) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" || apiKey == "" {
+		return
+	}
+	m.apiKeyMu.Lock()
+	m.runtimeAPIKeys[provider] = apiKey
+	m.apiKeyMu.Unlock()
+}
+
+// ClearAPIKey removes only the process-local override, revealing any key that
+// was supplied when MultiPass was constructed.
+func (m *MultiPass) ClearAPIKey(provider string) {
+	m.apiKeyMu.Lock()
+	delete(m.runtimeAPIKeys, strings.ToLower(strings.TrimSpace(provider)))
+	m.apiKeyMu.Unlock()
+}
+
+// APIKeySource reports where the effective key comes from without exposing it.
+// The empty string means no key is configured.
+func (m *MultiPass) APIKeySource(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	m.apiKeyMu.RLock()
+	defer m.apiKeyMu.RUnlock()
+	if m.runtimeAPIKeys[provider] != "" {
+		return "session"
+	}
+	if m.apiKeys[provider] != "" {
+		return "environment"
+	}
+	return ""
+}
+
+func (m *MultiPass) apiKey(provider string) string {
+	m.apiKeyMu.RLock()
+	defer m.apiKeyMu.RUnlock()
+	if key := m.runtimeAPIKeys[provider]; key != "" {
+		return key
+	}
+	return m.apiKeys[provider]
 }
 
 func defaultProviderFactories() map[string]providerFactory {
@@ -114,7 +163,7 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 
 	// Populate or validate API key (ollama can be keyless, openai with custom endpoint can be keyless)
 	if req.APIKey == "" {
-		if key := m.apiKeys[provider]; key != "" {
+		if key := m.apiKey(provider); key != "" {
 			req.APIKey = key
 		} else if provider != "ollama" && !(provider == "openai" && req.BaseURL != "") {
 			envVar := getEnvVarNameForProvider(provider)

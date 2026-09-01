@@ -81,7 +81,9 @@ name like `quiet-otter`. Resume it later with `polly -L` (last active) or
 `polly -c quiet-otter`, or give it a permanent name with `/rename`. A session
 where no turn ever ran is discarded on exit. Generated sessions expire after
 7 days of inactivity; explicitly named and renamed contexts never expire
-automatically.
+automatically. The status row shows the active `provider/model` and provider-
+visible context use (`ctx 41.2k/156k`). A leading `~` marks the local estimate
+shown before the provider has reported actual request usage.
 
 ### Keys and input
 
@@ -110,6 +112,9 @@ Option-drag in some macOS terminals — to select text.
 /clear                       Clear the display (history kept)
 /context  (/stats)           Show durable transcript size and model budget
 /get <key|all>               Inspect current settings
+/model                       Select a provider and model
+/keys                        Configure masked, process-local provider keys
+/resume                      Select and resume a saved session
 /set <key> <value>           Change a setting for this session
                              (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /tools [list [ns]|show <n>]  List or inspect loaded tools
@@ -118,6 +123,14 @@ Option-drag in some macOS terminals — to select text.
 /reset confirm               Clear durable conversation history
 /exit  (/quit)               Leave the TUI
 ```
+
+`/model` offers the current model, a compact built-in set of common models,
+models selected earlier in the run, and manual `provider/model` entry. `/keys`
+can override a provider credential until Polly exits; entered keys are masked
+and never written to the transcript, input history, context database, or
+environment. Environment-provided `POLLYTOOL_*KEY` values remain the fallback.
+`/resume` lists saved sessions most-recently-used first, supports type-to-filter,
+and restores the selected session's transcript, model, tools, and skills.
 
 ### Tool calls and reasoning
 

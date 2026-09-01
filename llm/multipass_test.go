@@ -100,6 +100,24 @@ func TestNewMultiPass_SnapshotsAPIKeys(t *testing.T) {
 	}
 }
 
+func TestMultiPassRuntimeAPIKeyOverridesAndClears(t *testing.T) {
+	m := NewMultiPass(map[string]string{"openai": "environment-key"})
+	if got := m.APIKeySource("openai"); got != "environment" {
+		t.Fatalf("initial source = %q, want environment", got)
+	}
+	m.SetAPIKey("OpenAI", "session-key")
+	if got := m.apiKey("openai"); got != "session-key" {
+		t.Fatalf("runtime key = %q, want session-key", got)
+	}
+	if got := m.APIKeySource("openai"); got != "session" {
+		t.Fatalf("runtime source = %q, want session", got)
+	}
+	m.ClearAPIKey("OPENAI")
+	if got := m.apiKey("openai"); got != "environment-key" {
+		t.Fatalf("cleared key = %q, want environment fallback", got)
+	}
+}
+
 func TestNewMultiPass_DoesNotConstructProviders(t *testing.T) {
 	var calls int
 

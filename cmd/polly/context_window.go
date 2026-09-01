@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -41,7 +42,7 @@ func (s *conversationState) contextWindowFor(ctx context.Context, model string) 
 		window = md.ContextWindows[model]
 	} else {
 		discoverCtx, cancel := context.WithTimeout(ctx, contextWindowDiscoveryTimeout)
-		discovered, err := llm.DiscoverModelContextWindow(discoverCtx, model, apiKeyForModel(model))
+		discovered, err := discoverModelContextWindow(discoverCtx, s, model)
 		cancel()
 		switch {
 		case err == nil:
@@ -69,10 +70,13 @@ func (s *conversationState) contextWindowFor(ctx context.Context, model string) 
 	return window
 }
 
-func apiKeyForModel(model string) string {
+func discoverModelContextWindow(ctx context.Context, state *conversationState, model string) (int, error) {
+	if state != nil && state.agent != nil {
+		return state.agent.DiscoverModelContextWindow(ctx, model)
+	}
 	provider, _, ok := strings.Cut(model, "/")
 	if !ok {
-		return ""
+		return 0, fmt.Errorf("model %q lacks a provider prefix", model)
 	}
-	return loadAPIKeys()[strings.ToLower(provider)]
+	return llm.DiscoverModelContextWindow(ctx, model, loadAPIKeys()[strings.ToLower(provider)])
 }

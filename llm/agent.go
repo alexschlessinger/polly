@@ -106,6 +106,52 @@ type AgentResponse struct {
 	PromptCache    PromptCacheStats       // Provider-reported cache use across all LLM calls
 }
 
+// SetProviderAPIKey installs a process-local provider credential when the
+// agent is backed by MultiPass. It returns false for custom LLM clients.
+func (a *Agent) SetProviderAPIKey(provider, apiKey string) bool {
+	m, ok := a.client.(*MultiPass)
+	if !ok {
+		return false
+	}
+	m.SetAPIKey(provider, apiKey)
+	return true
+}
+
+// ClearProviderAPIKey removes a process-local override without changing an
+// environment-provided credential.
+func (a *Agent) ClearProviderAPIKey(provider string) bool {
+	m, ok := a.client.(*MultiPass)
+	if !ok {
+		return false
+	}
+	m.ClearAPIKey(provider)
+	return true
+}
+
+// ProviderAPIKeySource reports "session", "environment", or "" without
+// revealing credential material.
+func (a *Agent) ProviderAPIKeySource(provider string) string {
+	m, ok := a.client.(*MultiPass)
+	if !ok {
+		return ""
+	}
+	return m.APIKeySource(provider)
+}
+
+// DiscoverModelContextWindow uses the agent's effective process-local
+// credential without exposing it to the caller.
+func (a *Agent) DiscoverModelContextWindow(ctx context.Context, model string) (int, error) {
+	m, ok := a.client.(*MultiPass)
+	if !ok {
+		return 0, ErrContextWindowUnknown
+	}
+	provider, _, ok := strings.Cut(model, "/")
+	if !ok {
+		return 0, fmt.Errorf("model %q lacks a provider prefix", model)
+	}
+	return DiscoverModelContextWindow(ctx, model, m.apiKey(strings.ToLower(provider)))
+}
+
 // PromptCacheStats is provider-reported prompt-cache accounting. Zero values
 // mean either no cache activity or that the provider did not report details;
 // Polly never estimates cache hits.
@@ -233,8 +279,11 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// Tool schemas share the model's context with the projected messages;
 		// budget the projection for what remains after them.
 		budget := req.MaxContextTokens
-		if budget > 0 && a.tools != nil {
-			overhead := estimateToolSchemaTokens(a.tools.All())
+		overhead := 0
+		if a.tools != nil {
+			overhead = estimateToolSchemaTokens(a.tools.All())
+		}
+		if budget > 0 && overhead > 0 {
 			if overhead >= budget {
 				err := fmt.Errorf("tool schemas alone need about %d tokens, exceeding the %d-token context budget", overhead, budget)
 				if cb != nil && cb.OnError != nil {
@@ -253,6 +302,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		projection.artifactRefs = nil
 		projection.toolSpills = nil
 		lastProjection = projection
+		lastProjection.RequestEstimatedTokens = projection.EstimatedTokens + overhead
 		if err != nil {
 			if cb != nil && cb.OnError != nil {
 				cb.OnError(err)

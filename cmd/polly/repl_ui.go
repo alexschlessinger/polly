@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	tcell "github.com/gdamore/tcell/v3"
@@ -668,6 +669,7 @@ type replModel struct {
 	turnTrailerSeq            int64
 	turnTrailerPlacements     []turnTrailerPlacement
 	openTurnTrailerID         int64
+	modal                     *replModal
 
 	ed           lineEditor
 	busy         bool
@@ -696,13 +698,17 @@ type replModel struct {
 	followBottom bool
 	scrollAnchor int
 
-	// Status bar fields. modelName/contextName/toolCount/skillCount are set once
-	// at startup; completion metrics are updated as turns settle.
-	modelName   string
-	contextName string
-	toolCount   int
-	skillCount  int
-	quiet       bool
+	// Status bar fields. Context usage describes the provider-visible request,
+	// not the complete durable transcript or cumulative billed tokens.
+	modelName        string
+	contextName      string
+	toolCount        int
+	skillCount       int
+	quiet            bool
+	contextUsed      int
+	contextLimit     int
+	contextEstimated bool
+	recentModels     []string
 
 	state       turnState
 	toolName    string
@@ -880,6 +886,9 @@ func (m *replModel) statusRow(width int) string {
 		fields = append(fields, field{drop: 3, text: m.modelName})
 	}
 	fields = append(fields, field{drop: 0, text: m.contextName})
+	if context := m.contextUsageText(); context != "" {
+		fields = append(fields, field{drop: 1, text: context})
+	}
 	if m.toolCount > 0 {
 		fields = append(fields, field{drop: 2, text: fmt.Sprintf("tools:%d", m.toolCount)})
 	}
@@ -970,6 +979,39 @@ func (m *replModel) statusRow(width int) string {
 		gap = 0
 	}
 	return leftStyled + strings.Repeat(" ", gap) + rightStyled
+}
+
+func (m *replModel) contextUsageText() string {
+	if m.contextUsed <= 0 && m.contextLimit <= 0 {
+		return ""
+	}
+	prefix := "ctx "
+	if m.contextEstimated {
+		prefix += "~"
+	}
+	used := humanizeTokens(m.contextUsed)
+	if m.contextLimit <= 0 {
+		return prefix + used
+	}
+	if m.contextUsed > m.contextLimit && m.contextEstimated {
+		used = ">" + humanizeTokens(m.contextLimit)
+	}
+	return prefix + used + "/" + humanizeTokens(m.contextLimit)
+}
+
+func (m *replModel) clearContextUsage(limit int) {
+	m.contextUsed = 0
+	m.contextLimit = limit
+	m.contextEstimated = false
+}
+
+func (m *replModel) recordContextUsage(used, limit int, estimated bool) {
+	if used < 0 {
+		used = 0
+	}
+	m.contextUsed = used
+	m.contextLimit = limit
+	m.contextEstimated = estimated
 }
 
 // reasoningPreviewLines is the bounded expanded tail. The preview uses the
@@ -3512,6 +3554,7 @@ type managedREPL struct {
 	inputW      *widgets.Paragraph
 	turnDockW   *widgets.Paragraph
 	statusW     *widgets.Paragraph
+	modalW      *modalParagraph
 	rootFlex    *widgets.Flex
 
 	quit       chan struct{}
@@ -3546,6 +3589,11 @@ type managedREPL struct {
 	// histFile is the append handle for persistent input history; nil when
 	// history couldn't be opened (best-effort — never fatal).
 	histFile *os.File
+
+	// resumeContext is set by the /resume picker before the managed screen
+	// exits. The outer conversation loop then closes this runtime and restores
+	// the selected session through the normal initialization path.
+	resumeContext string
 }
 
 // transcriptParagraph is a small, REPL-specific paragraph renderer. gotui's
@@ -3790,7 +3838,11 @@ func sandboxNoticeLine(config *Config, state *conversationState) string {
 
 func newManagedREPL(config *Config, contextName string, toolCount, skillCount int) *managedREPL {
 	m := newReplModel()
-	m.modelName = stripProviderPrefix(config.Model)
+	m.modelName = config.Model
+	m.contextLimit = config.MaxHistoryTokens
+	if config.Model != "" {
+		m.recentModels = []string{config.Model}
+	}
 	if contextName == "" {
 		contextName = "-"
 	}
@@ -4512,6 +4564,7 @@ func (r *managedREPL) setupWidgets() {
 	noBorder(&r.statusW.Block)
 	r.statusW.WrapText = false
 	r.statusW.TextStyle = ui.NewStyle(ui.ColorGrey)
+	r.modalW = newModalParagraph()
 }
 
 // layout (re)builds the root flex for the current input height. The input row
@@ -4611,6 +4664,16 @@ func (r *managedREPL) render() {
 		r.model.scrollAnchor = topRow
 	}
 	status := r.model.statusRow(w)
+	modalOpen := r.model.modal != nil
+	modalText, modalTitle := "", ""
+	modalWidth, modalHeight := 0, 0
+	if modalOpen {
+		modalWidth = modalWidthForTerminal(w, r.model.modal.width)
+		maxRows := max(1, h-8)
+		modalText = r.model.modal.text(maxRows, modalWidth)
+		modalTitle = r.model.modal.title
+		modalHeight = min(h, max(3, strings.Count(modalText, "\n")+3))
+	}
 	var dock string
 	if showDock {
 		dock, _ = r.model.turnDockRow(w)
@@ -4680,14 +4743,25 @@ func (r *managedREPL) render() {
 	r.inputW.Text = input
 	r.turnDockW.Text = dock
 	r.statusW.Text = status
+	if modalOpen {
+		x := (w - modalWidth) / 2
+		y := (h - modalHeight) / 2
+		r.modalW.Text = modalText
+		r.modalW.Title = modalTitle
+		r.modalW.SetRect(x, y, x+modalWidth, y+modalHeight)
+	}
 	if dividerRows > 0 {
 		r.dividerW.Text = styled(strings.Repeat("─", w), "muted", "")
 	}
 
 	r.layout(w, h, inputRows, logoRows, showStatus, showDock, dividerRows > 0)
 	ui.Clear()
-	r.placeCursor(editable, curCol, logoRows+transcriptHeight+dockRows+dividerRows+curRow, w)
-	ui.Render(r.rootFlex)
+	r.placeCursor(editable && !modalOpen, curCol, logoRows+transcriptHeight+dockRows+dividerRows+curRow, w)
+	if modalOpen {
+		ui.Render(r.rootFlex, r.modalW)
+	} else {
+		ui.Render(r.rootFlex)
+	}
 	if r.images != nil {
 		r.images.commit(imagesChanged)
 	}
@@ -4701,6 +4775,20 @@ func (r *managedREPL) render() {
 			r.fx.notify("polly", body)
 		}
 	}
+}
+
+func modalWidthForTerminal(terminalWidth, preferred int) int {
+	if preferred <= 0 {
+		preferred = 64
+	}
+	width := min(preferred, terminalWidth)
+	if terminalWidth > 4 {
+		width = min(preferred, terminalWidth-4)
+	}
+	if terminalWidth >= 24 {
+		width = max(24, width)
+	}
+	return width
 }
 
 // placeCursor positions (or hides) the hardware terminal cursor on the input
@@ -5585,7 +5673,7 @@ func (r *managedREPL) refreshSlashHints() {
 		m.slashHintsHidden = false
 	}
 	hint := ""
-	if !m.slashHintsHidden && !m.pasting && !m.searching && m.approval == nil {
+	if !m.slashHintsHidden && !m.pasting && !m.searching && m.approval == nil && m.modal == nil {
 		hint = defaultReplCommands.hintFor(newManagedReplCommandContext(r), text)
 	}
 	m.setSlashHintLine(hint)
@@ -5607,6 +5695,13 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	case focusLostID:
 		m.focusKnown, m.focused = true, false
+		return false
+	}
+
+	// Selection and credential modals own all remaining input. In particular,
+	// key material never passes through paste handling or the composer.
+	if m.modal != nil {
+		r.handleModalEvent(e)
 		return false
 	}
 
@@ -6197,6 +6292,14 @@ func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 	t.repl.model.mu.Unlock()
 }
 
+func (t *gotuiTurnUI) RecordContextUsage(used, limit int, estimated bool) {
+	t.repl.model.mu.Lock()
+	if t.acceptingLocked() {
+		t.repl.model.recordContextUsage(used, limit, estimated)
+	}
+	t.repl.model.mu.Unlock()
+}
+
 func (t *gotuiTurnUI) FinishTextTurn() {
 	t.repl.model.mu.Lock()
 	if t.acceptingLocked() {
@@ -6222,10 +6325,18 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 	repl.state = state
 	repl.model.artifactStore = state.artifactStore
 	repl.model.hydrateHistory(history, name)
-	if state.autoNamedContext {
-		repl.model.appendNoticeLine("session '" + name + "' · /rename to keep a name · resume later with polly -L")
+	// Seed the bar without network traffic. This is explicitly approximate
+	// until a provider reports the first real request usage.
+	if total, totalErr := state.session.GetTotalTokens(ctx); totalErr == nil {
+		limit := config.MaxHistoryTokens
+		if md, mdErr := state.session.GetMetadata(ctx); mdErr == nil && md != nil {
+			if window := md.ContextWindows[config.Model]; window > 0 {
+				limit = llm.ClampContextBudget(limit, window, config.MaxTokens)
+			}
+		}
+		repl.model.recordContextUsage(total, limit, total > 0)
 	}
-	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
+	err = repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
 		reuseUser := false
 		userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: prompt}
 		if tui, ok := turnUI.(*gotuiTurnUI); ok {
@@ -6237,19 +6348,19 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 		_, err := executeTurnWithUserMessage(turnCtx, config, state, userMsg, nil, nil, turnUI, reuseUser)
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	if repl.resumeContext != "" {
+		return &resumeSessionRequest{name: repl.resumeContext}
+	}
+	return nil
 }
 
 func runFallbackREPL(ctx context.Context, config *Config, state *conversationState) error {
 	reader := bufio.NewReader(os.Stdin)
 	drainSandboxWarningsToWriter(os.Stderr, state)
 	writeFallbackSandboxNotice(os.Stderr, config, state)
-	if state.autoNamedContext && !config.Quiet {
-		name, err := state.session.GetName(ctx)
-		if err != nil {
-			return fmt.Errorf("read session name: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "session '%s' · /rename to keep a name · resume later with polly -L\n", name)
-	}
 	commandCtx := newWriterReplCommandContext(config, state, os.Stderr)
 	commandCtx.ctx = ctx
 	return runREPLLoopWithCommands(ctx, reader, os.Stderr, commandCtx, func(prompt string) error {

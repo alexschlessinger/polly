@@ -42,12 +42,15 @@ var stableImageTokenPattern = regexp.MustCompile(`\[image (?:#[0-9]+|sha256:[0-9
 // ProjectionStats describes the final provider-visible view without changing
 // the complete durable transcript returned by Agent.Run.
 type ProjectionStats struct {
-	EstimatedTokens      int
-	OmittedExchanges     int
-	CompactedToolResults int
-	HydratedImages       int
-	artifactRefs         []artifacts.Ref
-	toolSpills           []toolResultSpill
+	EstimatedTokens int
+	// RequestEstimatedTokens includes tool-schema overhead and therefore
+	// estimates the complete provider input, not just projected messages.
+	RequestEstimatedTokens int
+	OmittedExchanges       int
+	CompactedToolResults   int
+	HydratedImages         int
+	artifactRefs           []artifacts.Ref
+	toolSpills             []toolResultSpill
 }
 
 type toolResultSpill struct {

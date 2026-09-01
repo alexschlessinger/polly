@@ -55,6 +55,7 @@ type commandRunner struct {
 	ctx          context.Context
 	cmd          *cli.Command
 	config       *Config
+	llmClient    *llm.MultiPass
 	sessionStore sessions.SessionStore
 	contextID    string
 	// autoContext marks a generated REPL context name (no -c given): its
@@ -77,6 +78,7 @@ type conversationInput struct {
 }
 
 type conversationState struct {
+	sessionStore    sessions.SessionStore
 	session         sessions.Session
 	agent           *llm.Agent
 	artifactStore   artifacts.Store
@@ -85,9 +87,6 @@ type conversationState struct {
 	skillRuntime    *tools.SkillRuntime
 	skillSources    []string
 	sandboxWarnings *broadWritablePathWarner
-	// autoNamedContext marks a session under a generated name, so the REPL
-	// can mention the name and how to keep or resume it.
-	autoNamedContext bool
 	// displayContract is composed into the request's system message each turn;
 	// it is capability-specific and never persisted (see display_contract.go).
 	displayContract string
@@ -98,6 +97,10 @@ type conversationState struct {
 	// process, including failed attempts (entry present, value 0).
 	contextWindows map[string]int
 }
+
+type resumeSessionRequest struct{ name string }
+
+func (r *resumeSessionRequest) Error() string { return "resume session " + r.name }
 
 func (s *conversationState) Close() error {
 	var errs []error
@@ -196,6 +199,7 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 		ctx:          ctx,
 		cmd:          cmd,
 		config:       config,
+		llmClient:    llm.NewMultiPass(loadAPIKeys()),
 		sessionStore: sessionStore,
 		contextID:    contextID,
 		autoContext:  autoContext,
@@ -254,7 +258,15 @@ func (r *commandRunner) Run() (retErr error) {
 		r.contextID = contextID
 	}
 
-	return runConversation(r.ctx, r.config, r.sessionStore, r.contextID, r.autoContext, r.cmd)
+	for {
+		err := runConversation(r.ctx, r.config, r.llmClient, r.sessionStore, r.contextID, r.autoContext, r.cmd)
+		var resume *resumeSessionRequest
+		if !errors.As(err, &resume) {
+			return err
+		}
+		r.contextID = resume.name
+		r.autoContext = false
+	}
 }
 
 func (r *commandRunner) handleManagementFlags() (bool, error) {
@@ -300,6 +312,10 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 
 // initializeSession sets up everything needed for a conversation session
 func initializeSession(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, *skills.Catalog, *tools.SkillRuntime, *skillCatalogResult, error) {
+	return initializeSessionWithClient(ctx, config, nil, sessionStore, contextID, autoContext, cmd, sandboxWarnings)
+}
+
+func initializeSessionWithClient(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, *skills.Catalog, *tools.SkillRuntime, *skillCatalogResult, error) {
 	// Initialize conversation using helper function
 	var err error
 	contextID, _, err = initializeConversation(ctx, config, sessionStore, contextID, cmd)
@@ -307,11 +323,9 @@ func initializeSession(ctx context.Context, config *Config, sessionStore session
 		return "", nil, nil, nil, nil, nil, nil, err
 	}
 
-	// Load API keys
-	apiKeys := loadAPIKeys()
-
-	// Create LLM provider
-	llmClient := llm.NewMultiPass(apiKeys)
+	if llmClient == nil {
+		llmClient = llm.NewMultiPass(loadAPIKeys())
+	}
 
 	// Get or create session early so we can read persisted skill sources.
 	needFileStore := needsFileStore(config, contextID)
@@ -575,7 +589,7 @@ func broadWritablePathDenied(path string, denyWritePaths []string) bool {
 	return false
 }
 
-func runConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command) (retErr error) {
+func runConversation(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command) (retErr error) {
 	input, err := resolveConversationInput(config)
 	if err != nil {
 		return err
@@ -588,11 +602,12 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 
 	// Initialize session state once so one-shot and REPL share the same runtime.
 	sandboxWarnings := newBroadWritablePathWarner()
-	_, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSession(ctx, config, sessionStore, contextID, autoContext, cmd, sandboxWarnings)
+	_, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSessionWithClient(ctx, config, llmClient, sessionStore, contextID, autoContext, cmd, sandboxWarnings)
 	if err != nil {
 		return err
 	}
 	state := &conversationState{
+		sessionStore:       sessionStore,
 		session:            session,
 		agent:              agent,
 		artifactStore:      session.ArtifactStore(),
@@ -601,7 +616,6 @@ func runConversation(ctx context.Context, config *Config, sessionStore sessions.
 		skillRuntime:       skillRuntime,
 		skillSources:       skillResult.sources,
 		sandboxWarnings:    sandboxWarnings,
-		autoNamedContext:   autoContext,
 		displayContract:    displayContractFor(outputCapabilities),
 		outputCapabilities: outputCapabilities,
 	}
@@ -923,6 +937,16 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			out += m.GetOutputTokens()
 		}
 		turnUI.RecordTurnTokens(in, out)
+		if observer, ok := turnUI.(interface {
+			RecordContextUsage(used, limit int, estimated bool)
+		}); ok {
+			used, estimated := in, false
+			if used <= 0 {
+				used = resp.Projection.RequestEstimatedTokens
+				estimated = true
+			}
+			observer.RecordContextUsage(used, req.MaxContextTokens, estimated)
+		}
 	}
 
 	runErr := err

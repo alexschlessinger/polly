@@ -63,6 +63,11 @@ type replCommandContext struct {
 	attachImage func(path string) (string, error)
 	// setContextName updates the UI's displayed context name after /rename.
 	setContextName func(name string)
+	// Picker callbacks are managed-TUI operations. Keeping
+	// them out of command parsing lets the fallback REPL retain textual /set.
+	openModelPicker  func()
+	openKeyManager   func()
+	openResumePicker func()
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -130,10 +135,28 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		complete: completeHelpCommand,
 	})
 	r.register(replCommand{
+		name:    "/keys",
+		usage:   "/keys",
+		summary: "configure provider keys for this run",
+		run:     replKeysCommand,
+	})
+	r.register(replCommand{
+		name:    "/model",
+		usage:   "/model",
+		summary: "select a provider and model",
+		run:     replModelCommand,
+	})
+	r.register(replCommand{
 		name:    "/rename",
 		usage:   "/rename <name>",
 		summary: "rename the current context",
 		run:     replRenameCommand,
+	})
+	r.register(replCommand{
+		name:    "/resume",
+		usage:   "/resume",
+		summary: "select a saved session",
+		run:     replResumeCommand,
 	})
 	r.register(replCommand{
 		name:    "/reset",
@@ -419,6 +442,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
+			r.model.clearContextUsage(cfg.MaxHistoryTokens)
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
 			r.model.outcomeLabeled = false
@@ -438,8 +462,12 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			return token, nil
 		},
 		settingsApplied: func() {
-			r.model.modelName = stripProviderPrefix(cfg.Model)
+			r.model.modelName = cfg.Model
+			r.model.clearContextUsage(cfg.MaxHistoryTokens)
 		},
+		openModelPicker:  r.openModelPicker,
+		openKeyManager:   r.openKeyManager,
+		openResumePicker: r.openResumePicker,
 	}
 }
 
@@ -714,6 +742,39 @@ func replResetCommand(ctx *replCommandContext, args []string) replCommandResult 
 		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("failed to reset conversation: %v", err))}
 	}
 	return replCommandResult{err: ctx.replyLine("conversation reset")}
+}
+
+func replModelCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 1 {
+		return replCommandResult{err: ctx.replyLine("usage: /model")}
+	}
+	if ctx == nil || ctx.openModelPicker == nil {
+		return replCommandResult{err: ctx.replyLine("model picker unavailable here; use /set model provider/model")}
+	}
+	ctx.openModelPicker()
+	return replCommandResult{}
+}
+
+func replKeysCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 1 {
+		return replCommandResult{err: ctx.replyLine("usage: /keys")}
+	}
+	if ctx == nil || ctx.openKeyManager == nil {
+		return replCommandResult{err: ctx.replyLine("key manager is available only in the managed TUI")}
+	}
+	ctx.openKeyManager()
+	return replCommandResult{}
+}
+
+func replResumeCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 1 {
+		return replCommandResult{err: ctx.replyLine("usage: /resume")}
+	}
+	if ctx == nil || ctx.openResumePicker == nil {
+		return replCommandResult{err: ctx.replyLine("session picker is available only in the managed TUI")}
+	}
+	ctx.openResumePicker()
+	return replCommandResult{}
 }
 
 func replContextCommand(ctx *replCommandContext, args []string) replCommandResult {
