@@ -587,9 +587,20 @@ func TestTranscriptImageLaneLockstep(t *testing.T) {
 		t.Fatalf("images did not follow their entry across the delete: %#v", got)
 	}
 
-	// An empty assistant stream deletes its transcript entry on settle.
+	// An empty assistant stream deletes its transcript entry on settle. The
+	// direct delete above left stream state behind that production never
+	// sees; reset it so the append below starts a genuinely fresh entry.
+	m.currentAssistant = -1
+	m.resetAssistantStream()
+	before := len(m.transcript)
 	m.appendAssistant("\n")
+	if len(m.transcript) != before+1 {
+		t.Fatalf("empty-stream leg did not append a fresh entry")
+	}
 	m.finishAssistantBlock("")
+	if len(m.transcript) != before {
+		t.Fatalf("empty-stream settle did not delete its entry")
+	}
 	check("finishAssistantBlock empty-stream delete")
 
 	m.clearDisplay()
