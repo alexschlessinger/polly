@@ -1155,27 +1155,39 @@ func (s *SQLiteStore) Exists(ctx context.Context, name string) (bool, error) {
 }
 
 func (s *SQLiteStore) GetAllMetadata(ctx context.Context) (map[string]*Metadata, error) {
+	summaries, err := s.ListSummaries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]*Metadata, len(summaries))
+	for _, summary := range summaries {
+		result[summary.Metadata.Name] = summary.Metadata
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, error) {
 	if err := s.ensureOpen(); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT name,created_ns,updated_ns,ttl_ns,settings_json
-		FROM sessions ORDER BY name`)
+		SELECT name,created_ns,updated_ns,ttl_ns,settings_json,next_sequence
+		FROM sessions ORDER BY updated_ns DESC,name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	result := make(map[string]*Metadata)
+	var result []SessionSummary
 	for rows.Next() {
 		var snap sessionSnapshot
-		if err := rows.Scan(&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings); err != nil {
+		if err := rows.Scan(&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq); err != nil {
 			return nil, err
 		}
 		metadata, err := metadataFromSnapshot(snap)
 		if err != nil {
 			return nil, err
 		}
-		result[snap.name] = metadata
+		result = append(result, SessionSummary{Metadata: metadata, MessageCount: int(snap.nextSeq)})
 	}
 	return result, rows.Err()
 }

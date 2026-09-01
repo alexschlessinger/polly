@@ -709,6 +709,7 @@ type replModel struct {
 	contextLimit     int
 	contextEstimated bool
 	recentModels     []string
+	statusSession    statusSessionPlacement
 
 	state       turnState
 	toolName    string
@@ -812,6 +813,14 @@ type disclosurePlacement struct {
 	Cols      int
 }
 
+type statusSessionPlacement struct {
+	X, Cols int
+}
+
+func (p statusSessionPlacement) hit(x, y, terminalHeight int) bool {
+	return p.Cols > 0 && terminalHeight > 0 && y == terminalHeight-1 && x >= p.X && x < p.X+p.Cols
+}
+
 type toolDisclosureRow struct {
 	callID           string
 	label            string
@@ -867,6 +876,7 @@ const turnCancelDetachAfter = 2 * time.Second
 // statusRow renders stable session context. Per-turn activity and completion
 // metrics live in the fixed turn dock immediately above the composer.
 func (m *replModel) statusRow(width int) string {
+	m.statusSession = statusSessionPlacement{}
 	if m.quiet || width <= 0 {
 		return ""
 	}
@@ -878,14 +888,15 @@ func (m *replModel) statusRow(width int) string {
 		leftStyled = styled(leftRaw, "accent", "")
 	}
 	type field struct {
-		drop int
-		text string
+		drop    int
+		text    string
+		session bool
 	}
 	fields := []field{}
 	if m.modelName != "" {
 		fields = append(fields, field{drop: 3, text: m.modelName})
 	}
-	fields = append(fields, field{drop: 0, text: m.contextName})
+	fields = append(fields, field{drop: 0, text: m.contextName, session: true})
 	if context := m.contextUsageText(); context != "" {
 		fields = append(fields, field{drop: 1, text: context})
 	}
@@ -946,7 +957,11 @@ func (m *replModel) statusRow(width int) string {
 	rightStyledParts := make([]string, len(fields))
 	for i, f := range fields {
 		rightRawParts[i] = f.text
-		rightStyledParts[i] = styled(f.text, "muted", "")
+		color := "muted"
+		if f.session {
+			color = "accent"
+		}
+		rightStyledParts[i] = styled(f.text, color, "")
 	}
 	rightRaw := strings.Join(rightRawParts, sep)
 	rightStyled := strings.Join(rightStyledParts, styled(sep, "muted", ""))
@@ -977,6 +992,18 @@ func (m *replModel) statusRow(width int) string {
 	}
 	if gap < 0 {
 		gap = 0
+	}
+	x := width - rightWidth
+	sepWidth := rw.StringWidth(sep)
+	for i, f := range fields {
+		fieldCols := rw.StringWidth(f.text)
+		if f.session && fieldCols > 0 {
+			m.statusSession = statusSessionPlacement{X: x, Cols: fieldCols}
+		}
+		x += fieldCols
+		if i < len(fields)-1 {
+			x += sepWidth
+		}
 	}
 	return leftStyled + strings.Repeat(" ", gap) + rightStyled
 }
@@ -3584,6 +3611,7 @@ type managedREPL struct {
 
 	// startupLogoVisible reserves a small header above the transcript until the
 	// first real turn starts. The composer and status remain live from frame one.
+	showStartupLogo    bool
 	startupLogoVisible bool
 
 	// histFile is the append handle for persistent input history; nil when
@@ -3851,14 +3879,15 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 	m.skillCount = skillCount
 	m.quiet = config.Quiet
 	return &managedREPL{
-		config:         config,
-		model:          m,
-		quit:           make(chan struct{}, 1),
-		suspend:        make(chan struct{}, 1),
-		pending:        make(chan managedTurnInput, 1),
-		uiTasks:        make(chan func(), 8),
-		openImage:      openImageInViewer,
-		suspendProcess: suspendCurrentProcessGroup,
+		config:          config,
+		model:           m,
+		quit:            make(chan struct{}, 1),
+		suspend:         make(chan struct{}, 1),
+		pending:         make(chan managedTurnInput, 1),
+		uiTasks:         make(chan func(), 8),
+		openImage:       openImageInViewer,
+		suspendProcess:  suspendCurrentProcessGroup,
+		showStartupLogo: true,
 	}
 }
 
@@ -3933,7 +3962,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	}()
 
 	r.setupWidgets()
-	r.startupLogoVisible = true
+	r.startupLogoVisible = r.showStartupLogo
 	if !r.model.quiet {
 		r.model.appendNoticeLine(sandboxNoticeLine(r.config, r.state))
 	}
@@ -5682,9 +5711,12 @@ func (r *managedREPL) refreshSlashHints() {
 func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	m := r.model
 	viewport := r.transcriptHeight()
-	terminalWidth, _ := ui.TerminalDimensions()
+	terminalWidth, terminalHeight := ui.TerminalDimensions()
 	if terminalWidth < 1 {
 		terminalWidth = 80
+	}
+	if terminalHeight < 2 {
+		terminalHeight = 24
 	}
 
 	// Focus reports update notification gating and are never input, whatever
@@ -5722,6 +5754,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	case "<MouseLeft>":
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
+			if m.statusSession.hit(mouse.X, mouse.Y, terminalHeight) {
+				r.openResumePicker()
+				return false
+			}
 			if m.toggleTurnTrailerAt(mouse.X, mouse.Y) {
 				return false
 			}
@@ -6312,7 +6348,7 @@ func (t *gotuiTurnUI) FinishTextTurn() {
 // Entry points used by runREPL
 // ---------------------------------------------------------------------------
 
-func runManagedREPL(ctx context.Context, config *Config, state *conversationState) error {
+func runManagedREPL(ctx context.Context, config *Config, state *conversationState, showStartupLogo bool) error {
 	name, err := state.session.GetName(ctx)
 	if err != nil {
 		return fmt.Errorf("read session name: %w", err)
@@ -6322,6 +6358,7 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 		return fmt.Errorf("read session history: %w", err)
 	}
 	repl := newManagedREPL(config, name, toolCount(state.toolRegistry), skillCount(state.skillCatalog))
+	repl.showStartupLogo = showStartupLogo
 	repl.state = state
 	repl.model.artifactStore = state.artifactStore
 	repl.model.hydrateHistory(history, name)

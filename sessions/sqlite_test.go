@@ -168,6 +168,10 @@ func TestSQLiteSessionContract(t *testing.T) {
 			if err != nil || all["alpha"].SystemPrompt != "replacement" {
 				t.Fatalf("all metadata = %#v, %v", all, err)
 			}
+			summaries, err := store.ListSummaries(ctx)
+			if err != nil || len(summaries) != 1 || summaries[0].Metadata.Name != "alpha" || summaries[0].MessageCount != 1 {
+				t.Fatalf("session summaries = %#v, %v", summaries, err)
+			}
 			if last, err := store.GetLast(ctx); err != nil || last != "alpha" {
 				t.Fatalf("last = %q, %v", last, err)
 			}

@@ -258,14 +258,16 @@ func (r *commandRunner) Run() (retErr error) {
 		r.contextID = contextID
 	}
 
+	showStartupLogo := true
 	for {
-		err := runConversation(r.ctx, r.config, r.llmClient, r.sessionStore, r.contextID, r.autoContext, r.cmd)
+		err := runConversation(r.ctx, r.config, r.llmClient, r.sessionStore, r.contextID, r.autoContext, r.cmd, showStartupLogo)
 		var resume *resumeSessionRequest
 		if !errors.As(err, &resume) {
 			return err
 		}
 		r.contextID = resume.name
 		r.autoContext = false
+		showStartupLogo = false
 	}
 }
 
@@ -589,7 +591,7 @@ func broadWritablePathDenied(path string, denyWritePaths []string) bool {
 	return false
 }
 
-func runConversation(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command) (retErr error) {
+func runConversation(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, showStartupLogo bool) (retErr error) {
 	input, err := resolveConversationInput(config)
 	if err != nil {
 		return err
@@ -662,7 +664,7 @@ func runConversation(ctx context.Context, config *Config, llmClient *llm.MultiPa
 		}
 		return nil
 	case conversationModeREPL:
-		replErr := runREPL(ctx, config, state, managedREPL)
+		replErr := runREPL(ctx, config, state, managedREPL, showStartupLogo)
 		if autoContext {
 			if err := discardUnusedAutoContext(ctx, state); replErr == nil && err != nil {
 				replErr = err
@@ -768,9 +770,9 @@ func validateREPLConfig(config *Config) error {
 	return fmt.Errorf("%s %s -p or stdin; bare polly starts a text-only REPL", strings.Join(rejected, " and "), verb)
 }
 
-func runREPL(ctx context.Context, config *Config, state *conversationState, managedREPL bool) error {
+func runREPL(ctx context.Context, config *Config, state *conversationState, managedREPL, showStartupLogo bool) error {
 	if managedREPL {
-		return runManagedREPL(ctx, config, state)
+		return runManagedREPL(ctx, config, state, showStartupLogo)
 	}
 	return runFallbackREPL(ctx, config, state)
 }

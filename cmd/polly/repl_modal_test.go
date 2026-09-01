@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -22,6 +23,10 @@ func TestModalInputPlaceholderRendersAsStyledText(t *testing.T) {
 	got := plainStyledText(m.text(10, 60))
 	if strings.Contains(got, "fg:muted") || !strings.Contains(got, "type a value") {
 		t.Fatalf("placeholder = %q", got)
+	}
+	lines := strings.Split(got, "\n")
+	if helper := lines[len(lines)-1]; helper != strings.Repeat(" ", 24)+"Enter save" {
+		t.Fatalf("centered input helper = %q", helper)
 	}
 }
 
@@ -77,6 +82,10 @@ func TestResumePickerListsRecentSessionsAndRequestsRestart(t *testing.T) {
 	if err := target.SetMetadata(context.Background(), targetMetadata); err != nil {
 		t.Fatal(err)
 	}
+	testAddMessages(t, target, []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "question"},
+		{Role: messages.MessageRoleAssistant, Content: "answer"},
+	})
 	if err := target.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -84,20 +93,32 @@ func TestResumePickerListsRecentSessionsAndRequestsRestart(t *testing.T) {
 	current := testAcquireSession(t, store, "current-work")
 	r := newManagedREPL(&Config{}, "current-work", 0, 0)
 	r.state = &conversationState{sessionStore: store, session: current}
-	if handled, quit := r.runCommand("/resume"); !handled || quit || r.model.modal == nil {
-		t.Fatalf("/resume handled=%v quit=%v modal=%#v", handled, quit, r.model.modal)
+	status := r.model.statusRow(80)
+	if !strings.Contains(status, "[current-work](fg:accent)") {
+		t.Fatalf("clickable session was not accented: %q", status)
+	}
+	placement := r.model.statusSession
+	if !placement.hit(placement.X, 23, 24) || placement.hit(placement.X-1, 23, 24) {
+		t.Fatalf("status session placement = %#v", placement)
+	}
+	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: placement.X, Y: 23}})
+	if r.model.modal == nil {
+		t.Fatal("clicking the status session did not open /resume")
 	}
 	if r.model.modal.title != "Resume session" {
 		t.Fatalf("modal title = %q", r.model.modal.title)
 	}
-	if r.model.modal.width != 60 {
-		t.Fatalf("modal width = %d, want 60", r.model.modal.width)
+	if r.model.modal.width != 64 {
+		t.Fatalf("modal width = %d, want 64", r.model.modal.width)
 	}
 	if r.model.modal.maxRows != 14 || !r.model.modal.showCount {
 		t.Fatalf("modal window = %d rows, count=%v", r.model.modal.maxRows, r.model.modal.showCount)
 	}
-	if got := modalWidthForTerminal(140, r.model.modal.width); got != 60 {
-		t.Fatalf("rendered modal width = %d, want 60", got)
+	if got := modalWidthForTerminal(140, r.model.modal.width); got != 64 {
+		t.Fatalf("rendered modal width = %d, want 64", got)
+	}
+	if footer := plainStyledText(r.model.modal.text(40, 64)); !strings.Contains(footer, "F2 rename") {
+		t.Fatalf("resume modal lacks rename affordance: %q", footer)
 	}
 	for _, item := range r.model.modal.items {
 		if strings.Contains(item.label, "openai/") {
@@ -105,6 +126,9 @@ func TestResumePickerListsRecentSessionsAndRequestsRestart(t *testing.T) {
 		}
 		if strings.Contains(item.label, "ago") {
 			t.Fatalf("resume row used verbose age: %q", item.label)
+		}
+		if item.value == "older-work" && !strings.Contains(item.label, "2 msgs") {
+			t.Fatalf("resume row lacks durable session length: %q", item.label)
 		}
 	}
 	selectedItem := r.model.modal.items[r.model.modal.selected]
@@ -129,6 +153,59 @@ func TestResumePickerListsRecentSessionsAndRequestsRestart(t *testing.T) {
 	case <-r.quit:
 	default:
 		t.Fatal("session selection did not request a managed REPL restart")
+	}
+}
+
+func TestResumePickerRenamesSavedAndCurrentSessions(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	saved := testAcquireSession(t, store, "saved-work")
+	if err := saved.Close(); err != nil {
+		t.Fatal(err)
+	}
+	current := testAcquireSession(t, store, "current-work")
+	r := newManagedREPL(&Config{}, "current-work", 0, 0)
+	r.state = &conversationState{sessionStore: store, session: current}
+
+	r.openResumePicker()
+	for i, item := range r.model.modal.items {
+		if item.value == "saved-work" {
+			r.model.modal.selected = i
+		}
+	}
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<F2>"})
+	if r.model.modal == nil || r.model.modal.title != "Rename session" || r.model.modal.input.text() != "saved-work" {
+		t.Fatalf("saved rename modal = %#v", r.model.modal)
+	}
+	r.model.modal.input.setText("renamed-work")
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	if exists, err := store.Exists(context.Background(), "renamed-work"); err != nil || !exists {
+		t.Fatalf("renamed saved session exists=%v, err=%v", exists, err)
+	}
+	if exists, err := store.Exists(context.Background(), "saved-work"); err != nil || exists {
+		t.Fatalf("old saved session exists=%v, err=%v", exists, err)
+	}
+	if r.model.modal == nil || r.model.modal.items[r.model.modal.selected].value != "renamed-work" {
+		t.Fatalf("picker did not retain renamed selection: %#v", r.model.modal)
+	}
+
+	for i, item := range r.model.modal.items {
+		if item.value == "current-work" {
+			r.model.modal.selected = i
+		}
+	}
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<F2>"})
+	r.model.modal.input.setText("renamed-current")
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	if got := r.model.contextName; got != "renamed-current" {
+		t.Fatalf("status session after rename = %q", got)
+	}
+	if got, err := current.GetName(context.Background()); err != nil || got != "renamed-current" {
+		t.Fatalf("current session after rename = %q, %v", got, err)
+	}
+	select {
+	case <-r.quit:
+		t.Fatal("renaming a session requested a resume restart")
+	default:
 	}
 }
 

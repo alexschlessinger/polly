@@ -37,6 +37,8 @@ type replModal struct {
 	helper    string
 	onSubmit  func(string)
 	onClear   func()
+	onRename  func(string)
+	onCancel  func()
 }
 
 func (m *replModal) wipe() {
@@ -67,13 +69,13 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 			value = strings.Repeat("•", len([]rune(value)))
 		}
 		if value == "" {
-			return "> " + styled("type a value", "muted", "") + "\n\n" + styled(m.helper, "muted", "")
+			return "> " + styled("type a value", "muted", "") + "\n\n" + centeredModalHelper(m.helper, modalWidth)
 		}
-		return "> " + styleEscape(value) + "\n\n" + styled(m.helper, "muted", "")
+		return "> " + styleEscape(value) + "\n\n" + centeredModalHelper(m.helper, modalWidth)
 	}
 	items := m.filteredItems()
 	if len(items) == 0 {
-		return styled("No matches", "muted", "") + "\n\n" + styled("type to filter · Esc back", "muted", "")
+		return styled("No matches", "muted", "") + "\n\n" + centeredModalHelper("type to filter · Esc back", modalWidth)
 	}
 	if m.selected >= len(items) {
 		m.selected = len(items) - 1
@@ -113,21 +115,34 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 			if len(items) == 1 {
 				count = "1 match"
 			}
-			filter = "/" + filter
+			filter = rw.Truncate("/"+filter, 10, "…")
 		} else {
-			count = fmt.Sprintf("%d–%d of %d", start+1, end, len(items))
-			filter = "type filter"
+			if m.onRename != nil {
+				count = fmt.Sprintf("%d–%d/%d", start+1, end, len(items))
+				filter = "filter"
+			} else {
+				count = fmt.Sprintf("%d–%d of %d", start+1, end, len(items))
+				filter = "type filter"
+			}
 		}
-		footer = count + " · " + filter + " · ↑↓ · Enter resume · Esc"
+		footer = count + " · " + filter + " · ↑↓ · Enter resume"
+		if m.onRename != nil {
+			footer += " · F2 rename"
+		}
+		footer += " · Esc"
 	} else {
 		if filter == "" {
 			filter = "type to filter"
 		}
 		footer = filter + " · ↑/↓ select · Enter choose · Esc close"
 	}
-	footerPadding := max(0, (modalWidth-2-rw.StringWidth(footer))/2)
-	lines = append(lines, "", strings.Repeat(" ", footerPadding)+styled(footer, "muted", ""))
+	lines = append(lines, "", centeredModalHelper(footer, modalWidth))
 	return strings.Join(lines, "\n")
+}
+
+func centeredModalHelper(text string, modalWidth int) string {
+	padding := max(0, (modalWidth-2-rw.StringWidth(text))/2)
+	return strings.Repeat(" ", padding) + styled(text, "muted", "")
 }
 
 // modalParagraph clears its complete rectangle before drawing. This makes a
@@ -305,12 +320,16 @@ func (r *managedREPL) openKeyManager() {
 }
 
 func (r *managedREPL) openResumePicker() {
+	r.openResumePickerSelected("")
+}
+
+func (r *managedREPL) openResumePickerSelected(preferred string) {
 	if r.state == nil || r.state.sessionStore == nil || r.state.session == nil {
 		r.model.appendNoticeLine("session picker unavailable")
 		return
 	}
 	ctx := r.state.session.Context()
-	metadata, err := r.state.sessionStore.GetAllMetadata(ctx)
+	summaries, err := r.state.sessionStore.ListSummaries(ctx)
 	if err != nil {
 		r.model.appendNoticeLine("session picker: " + err.Error())
 		return
@@ -320,37 +339,44 @@ func (r *managedREPL) openResumePicker() {
 		r.model.appendNoticeLine("session picker: " + err.Error())
 		return
 	}
-	infos := make([]*sessions.Metadata, 0, len(metadata))
-	for _, info := range metadata {
-		if info != nil {
-			infos = append(infos, info)
+	infos := make([]sessions.SessionSummary, 0, len(summaries))
+	for _, summary := range summaries {
+		if summary.Metadata != nil {
+			infos = append(infos, summary)
 		}
 	}
 	sort.Slice(infos, func(i, j int) bool {
-		if infos[i].LastUsed.Equal(infos[j].LastUsed) {
-			return infos[i].Name < infos[j].Name
+		if infos[i].Metadata.LastUsed.Equal(infos[j].Metadata.LastUsed) {
+			return infos[i].Metadata.Name < infos[j].Metadata.Name
 		}
-		return infos[i].LastUsed.After(infos[j].LastUsed)
+		return infos[i].Metadata.LastUsed.After(infos[j].Metadata.LastUsed)
 	})
 	items := make([]replModalItem, 0, len(infos))
 	selected := 0
 	nameWidth := 0
-	for _, info := range infos {
-		nameWidth = max(nameWidth, len(info.Name))
+	lengthWidth := 0
+	for _, summary := range infos {
+		nameWidth = max(nameWidth, len(summary.Metadata.Name))
+		lengthWidth = max(lengthWidth, rw.StringWidth(formatSessionMessageCount(summary.MessageCount)))
 	}
 	nameWidth = min(nameWidth, 24)
-	for i, info := range infos {
+	for i, summary := range infos {
+		info := summary.Metadata
 		name := truncate(info.Name, nameWidth)
 		age := formatCompactDuration(time.Since(info.LastUsed))
+		length := formatSessionMessageCount(summary.MessageCount)
 		nameColumn := fmt.Sprintf("%-*s", nameWidth, name)
 		ageColumn := fmt.Sprintf("%4s", age)
-		label := nameColumn + "  " + ageColumn
-		display := styleEscape(nameColumn) + "  " + styled(ageColumn, "muted", "")
-		selectedDisplay := styled(nameColumn, "accent", "bold") + "  " + styled(ageColumn, "muted", "")
+		lengthColumn := fmt.Sprintf("%*s", lengthWidth, length)
+		label := nameColumn + "  " + ageColumn + "  " + lengthColumn
+		display := styleEscape(nameColumn) + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
+		selectedDisplay := styled(nameColumn, "accent", "bold") + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
 		if info.Name == current {
 			label += "  current"
 			display += "  " + styled("current", "accent", "")
 			selectedDisplay += "  " + styled("current", "accent", "")
+		}
+		if (preferred != "" && info.Name == preferred) || (preferred == "" && info.Name == current) {
 			selected = i
 		}
 		items = append(items, replModalItem{
@@ -363,7 +389,7 @@ func (r *managedREPL) openResumePicker() {
 	}
 	r.openModal(&replModal{
 		title: "Resume session", items: items, selected: selected,
-		width: 60, maxRows: 14, showCount: true,
+		width: 64, maxRows: 14, showCount: true,
 		onSubmit: func(name string) {
 			if name == "" || name == current {
 				return
@@ -371,7 +397,72 @@ func (r *managedREPL) openResumePicker() {
 			r.resumeContext = name
 			r.requestQuit()
 		},
+		onRename: r.openSessionRenameInput,
 	})
+}
+
+func formatSessionMessageCount(count int) string {
+	unit := "msgs"
+	if count == 1 {
+		unit = "msg"
+	}
+	return humanizeTokens(count) + " " + unit
+}
+
+func (r *managedREPL) openSessionRenameInput(name string) {
+	m := &replModal{
+		title: "Rename session", inputMode: true, width: 64,
+		helper:   "Enter save · Esc back",
+		onCancel: func() { r.openResumePickerSelected(name) },
+		onSubmit: func(newName string) { r.renameSession(name, newName) },
+	}
+	m.input.setText(name)
+	r.openModal(m)
+}
+
+func (r *managedREPL) renameSession(oldName, newName string) {
+	if oldName == "" || newName == "" || r.state == nil || r.state.sessionStore == nil || r.state.session == nil {
+		r.model.appendNoticeLine("rename failed: session unavailable")
+		return
+	}
+	if oldName == newName {
+		r.openResumePickerSelected(oldName)
+		return
+	}
+	ctx := r.state.session.Context()
+	current, err := r.state.session.GetName(ctx)
+	if err != nil {
+		r.model.appendNoticeLine("rename failed: " + err.Error())
+		return
+	}
+	target := r.state.session
+	closeTarget := false
+	if oldName != current {
+		target, err = r.state.sessionStore.Acquire(ctx, oldName, sessions.AcquireOptions{})
+		if err != nil {
+			r.model.appendNoticeLine("rename failed: " + err.Error())
+			r.openResumePickerSelected(oldName)
+			return
+		}
+		closeTarget = true
+	}
+	if err := target.Rename(ctx, newName); err != nil {
+		if closeTarget {
+			_ = target.Close()
+		}
+		r.model.appendNoticeLine("rename failed: " + err.Error())
+		r.openResumePickerSelected(oldName)
+		return
+	}
+	if closeTarget {
+		if err := target.Close(); err != nil {
+			r.model.appendNoticeLine("renamed session; releasing it failed: " + err.Error())
+		}
+	} else {
+		r.model.contextName = newName
+	}
+	r.model.appendNoticeLine("renamed session '" + oldName + "' to '" + newName + "'")
+	r.openResumePickerSelected(newName)
 }
 
 func formatCompactDuration(d time.Duration) string {
@@ -443,7 +534,11 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 	}
 	switch e.ID {
 	case "<Escape>":
+		cancel := m.onCancel
 		r.closeModal()
+		if cancel != nil {
+			cancel()
+		}
 	case "<Up>":
 		if !m.inputMode {
 			m.selected = max(0, m.selected-1)
@@ -467,6 +562,19 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		if submit != nil {
 			submit(value)
 		}
+	case "<F2>":
+		if m.inputMode || m.onRename == nil {
+			break
+		}
+		items := m.filteredItems()
+		if len(items) == 0 {
+			return true
+		}
+		m.selected = min(m.selected, len(items)-1)
+		rename := m.onRename
+		value := items[m.selected].value
+		r.closeModal()
+		rename(value)
 	case "<C-d>":
 		if m.inputMode && m.onClear != nil {
 			clear := m.onClear

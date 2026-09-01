@@ -37,6 +37,14 @@ type AcquireOptions struct {
 	Auto bool
 }
 
+// SessionSummary combines persisted metadata with lightweight transcript
+// aggregates suitable for session pickers. MessageCount is the number of
+// durable messages currently stored for the session.
+type SessionSummary struct {
+	Metadata     *Metadata
+	MessageCount int
+}
+
 // Session is an exclusively leased, database-backed conversation. Context is
 // canceled if the lease is lost, the session is closed, or its store closes.
 type Session interface {
@@ -73,6 +81,7 @@ type SessionStore interface {
 	List(context.Context) ([]string, error)
 	Exists(context.Context, string) (bool, error)
 	GetAllMetadata(context.Context) (map[string]*Metadata, error)
+	ListSummaries(context.Context) ([]SessionSummary, error)
 	GetLast(context.Context) (string, error)
 	Expire(context.Context) error
 	Close() error
