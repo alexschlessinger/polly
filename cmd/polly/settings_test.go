@@ -29,6 +29,10 @@ func TestSettingSpecGateMembership(t *testing.T) {
 		[]string{"model", "temp", "maxtokens", "tooltimeout", "skilldir", "maxiterations"})
 	pin("persistOnSet gate", settingKeysWhere(func(s settingSpec) bool { return s.persistOnSet }),
 		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"})
+	pin("postReplSet hooks", settingKeysWhere(func(s settingSpec) bool { return s.postReplSet != nil }),
+		[]string{"tooltimeout"})
+	pin("setWords completions", settingKeysWhere(func(s settingSpec) bool { return s.setWords != nil }),
+		[]string{"thinking"})
 
 	for _, spec := range settingSpecs {
 		if spec.flag != "" {
@@ -50,9 +54,13 @@ func TestSettingSpecGateMembership(t *testing.T) {
 	}
 }
 
-// TestSettingSpecMetadataRoundTrip catches a mispointed or duplicated
-// cfg/metadata accessor pair: every value written through toMeta must come
-// back identical through fromMeta.
+// TestSettingSpecMetadataRoundTrip catches a mispointed, duplicated, or
+// cross-row-swapped cfg/metadata accessor pair. Each row's closures run in
+// isolation against a fresh Metadata, and the field pairing below is an
+// independent statement of which config and metadata field every row owns —
+// so a row whose closures touch the wrong field, an extra field, or another
+// row's field fails here even when the union over all rows still copies
+// every value (which the call sites' per-flag gating does not guarantee).
 func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 	src := &Config{MaxIterations: 17}
 	src.Model = "anthropic/claude-test"
@@ -64,23 +72,54 @@ func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 	src.ToolTimeout = 45 * time.Second
 	src.SkillDirs = []string{"/a", "/b"}
 
-	md := &sessions.Metadata{}
-	for _, spec := range settingSpecs {
-		if spec.toMeta != nil {
-			spec.toMeta(src, md)
+	owns := map[string]struct {
+		cfg  func(*Config) any
+		meta func(*sessions.Metadata) any
+	}{
+		"model":         {func(c *Config) any { return c.Model }, func(m *sessions.Metadata) any { return m.Model }},
+		"temp":          {func(c *Config) any { return c.Temperature }, func(m *sessions.Metadata) any { return m.Temperature }},
+		"maxtokens":     {func(c *Config) any { return c.MaxTokens }, func(m *sessions.Metadata) any { return m.MaxTokens }},
+		"maxcontext":    {func(c *Config) any { return c.MaxHistoryTokens }, func(m *sessions.Metadata) any { return m.MaxHistoryTokens }},
+		"thinking":      {func(c *Config) any { return c.ThinkingEffort }, func(m *sessions.Metadata) any { return m.ThinkingEffort }},
+		"system":        {func(c *Config) any { return c.SystemPrompt }, func(m *sessions.Metadata) any { return m.SystemPrompt }},
+		"tooltimeout":   {func(c *Config) any { return c.ToolTimeout }, func(m *sessions.Metadata) any { return m.ToolTimeout }},
+		"skilldir":      {func(c *Config) any { return c.SkillDirs }, func(m *sessions.Metadata) any { return m.SkillDirs }},
+		"maxiterations": {func(c *Config) any { return c.MaxIterations }, func(m *sessions.Metadata) any { return m.MaxIterations }},
+	}
+
+	nonZeroFields := func(v reflect.Value) int {
+		count := 0
+		for i := 0; i < v.NumField(); i++ {
+			f := v.Field(i)
+			if !reflect.DeepEqual(f.Interface(), reflect.Zero(f.Type()).Interface()) {
+				count++
+			}
 		}
+		return count
 	}
-	dst := &Config{}
+
 	for _, spec := range settingSpecs {
-		if spec.fromMeta != nil {
-			spec.fromMeta(dst, md)
+		if spec.toMeta == nil {
+			continue
 		}
-	}
-	if !reflect.DeepEqual(src.Settings, dst.Settings) {
-		t.Errorf("settings round trip = %+v, want %+v", dst.Settings, src.Settings)
-	}
-	if src.MaxIterations != dst.MaxIterations {
-		t.Errorf("maxiterations round trip = %d, want %d", dst.MaxIterations, src.MaxIterations)
+		own, ok := owns[spec.key]
+		if !ok {
+			t.Errorf("row %q has metadata closures but no field pairing in this test — add one", spec.key)
+			continue
+		}
+		md := &sessions.Metadata{}
+		spec.toMeta(src, md)
+		if !reflect.DeepEqual(own.meta(md), own.cfg(src)) {
+			t.Errorf("row %q toMeta did not write its own metadata field: md has %v, want %v", spec.key, own.meta(md), own.cfg(src))
+		}
+		if n := nonZeroFields(reflect.ValueOf(md).Elem()); n != 1 {
+			t.Errorf("row %q toMeta touched %d metadata fields, want exactly 1", spec.key, n)
+		}
+		dst := &Config{}
+		spec.fromMeta(dst, md)
+		if !reflect.DeepEqual(own.cfg(dst), own.cfg(src)) {
+			t.Errorf("row %q fromMeta did not restore its own config field: got %v, want %v", spec.key, own.cfg(dst), own.cfg(src))
+		}
 	}
 }
 
