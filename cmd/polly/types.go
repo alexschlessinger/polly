@@ -2,8 +2,6 @@ package main
 
 import (
 	"time"
-
-	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 // Settings contains configuration that can be persisted with a context
@@ -17,8 +15,7 @@ type Settings struct {
 	SystemPrompt     string  `json:"systemPrompt,omitempty"`
 
 	// Agent configuration
-	MaxIterations int           `json:"maxIterations,omitempty"`
-	ToolTimeout   time.Duration `json:"toolTimeout,omitempty"`
+	ToolTimeout time.Duration `json:"toolTimeout,omitempty"`
 
 	// Skill configuration
 	SkillDirs []string `json:"skillDirs,omitempty"`
@@ -29,8 +26,10 @@ type Config struct {
 	Settings // Embed the shared settings
 
 	// Runtime configuration
-	Timeout       time.Duration
-	Deadline      time.Duration
+	Timeout  time.Duration
+	Deadline time.Duration
+	// MaxIterations lives on Config, not the persisted Settings embed; the
+	// settings table persists it to metadata directly.
 	MaxIterations int
 	BaseURL       string
 	Confirm       bool
@@ -69,17 +68,4 @@ type Config struct {
 
 	// Skills to load directly (local paths or URLs, auto-activated)
 	Skills []string
-}
-
-// ToMetadataSettings copies Settings fields to Metadata
-func (s Settings) ToMetadataSettings(m *sessions.Metadata) {
-	m.Model = s.Model
-	m.Temperature = s.Temperature
-	m.MaxTokens = s.MaxTokens
-	m.MaxHistoryTokens = s.MaxHistoryTokens
-	m.ThinkingEffort = s.ThinkingEffort
-	m.SystemPrompt = s.SystemPrompt
-	m.MaxIterations = s.MaxIterations
-	m.ToolTimeout = s.ToolTimeout
-	m.SkillDirs = s.SkillDirs
 }

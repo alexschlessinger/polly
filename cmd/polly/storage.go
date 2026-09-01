@@ -64,10 +64,11 @@ func setupSessionStore(config *Config, contextID string, forceFile bool) (sessio
 
 func metadataFromConfig(config *Config) *sessions.Metadata {
 	metadata := &sessions.Metadata{}
-	config.Settings.ToMetadataSettings(metadata)
-	// Config.MaxIterations is the runtime value populated by parseConfig;
-	// Settings.MaxIterations is retained only for persisted-settings helpers.
-	metadata.MaxIterations = config.MaxIterations
+	for _, spec := range settingSpecs {
+		if spec.toMeta != nil {
+			spec.toMeta(config, metadata)
+		}
+	}
 	if len(config.Tools) == 0 {
 		metadata.ActiveTools = make([]tools.ToolLoaderInfo, 0, len(defaultNativeToolNames))
 		for _, name := range defaultNativeToolNames {
