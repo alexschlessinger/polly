@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/images"
 	_ "golang.org/x/image/tiff"
 )
 
@@ -138,11 +139,11 @@ func captureClipboardImage(ctx context.Context, dir string) (string, error) {
 // and rewrites non-PNG payloads (macOS TIFF clipboards) as PNG so the rest of
 // the pipeline sees one format.
 func normalizeCapturedImage(path string) error {
-	data, err := readBoundedRegularFile(path, maxLocalImageBytes)
+	data, err := images.ReadBoundedFile(path, maxLocalImageBytes)
 	if err != nil {
 		return err
 	}
-	_, format, err := validateImageBytes(data)
+	_, format, err := images.Validate(data)
 	if err != nil {
 		return fmt.Errorf("captured %w", err)
 	}

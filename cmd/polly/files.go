@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -27,7 +28,7 @@ func readFile(path string) (*messages.ContentPart, error) {
 	// Bound local reads just like URL downloads. The helper checks both the
 	// opened file's size and the bytes read, so a large or concurrently growing
 	// file cannot be buffered without limit.
-	data, err := readBoundedRegularFile(path, maxLocalImageBytes)
+	data, err := images.ReadBoundedFile(path, maxLocalImageBytes)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read file %s: %w", path, err)
 	}

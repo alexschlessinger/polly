@@ -523,7 +523,7 @@ func prepareKittyImage(desired desiredTerminalImage, maxWidth, maxHeight int) pr
 	prepared := preparedTerminalImage{
 		fitByRows: imageFitsByRows(bounds.Dx(), bounds.Dy(), maxWidth, maxHeight),
 	}
-	img = fitImage(img, maxWidth, maxHeight)
+	img = images.Fit(img, maxWidth, maxHeight)
 	var pngData bytes.Buffer
 	if err := png.Encode(&pngData, img); err != nil {
 		prepared.err = err
@@ -538,7 +538,7 @@ func prepareSixelImage(desired desiredTerminalImage, maxWidth, maxHeight int) pr
 	if err != nil {
 		return preparedTerminalImage{err: err}
 	}
-	img = fitImage(img, maxWidth, maxHeight)
+	img = images.Fit(img, maxWidth, maxHeight)
 	var sixelData bytes.Buffer
 	encoder := sixel.NewEncoder(&sixelData)
 	encoder.Colors = 256
@@ -636,23 +636,15 @@ func (m *terminalImageManager) geometryVersion() string {
 }
 
 func loadLocalImage(path string) (image.Image, error) {
-	data, err := readBoundedRegularFile(path, maxLocalImageBytes)
+	data, err := images.ReadBoundedFile(path, maxLocalImageBytes)
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := validateImageBytes(data); err != nil {
+	if _, _, err := images.Validate(data); err != nil {
 		return nil, err
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	return img, err
-}
-
-func fitImage(src image.Image, maxWidth, maxHeight int) image.Image {
-	return images.Fit(src, maxWidth, maxHeight)
-}
-
-func fitPixelDimensions(width, height, maxWidth, maxHeight int) (int, int) {
-	return images.FitDimensions(width, height, maxWidth, maxHeight)
 }
 
 func imageFitsByRows(width, height, maxWidth, maxHeight int) bool {

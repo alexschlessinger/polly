@@ -1806,19 +1806,6 @@ func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
 	return record
 }
 
-// firstNonZero returns id, or the first element of ids when id is zero — the
-// current pointer is cleared as each segment/batch settles, so the dock label
-// falls back to the turn's first record.
-func firstNonZero(id int64, ids []int64) int64 {
-	if id != 0 {
-		return id
-	}
-	if len(ids) > 0 {
-		return ids[0]
-	}
-	return 0
-}
-
 func (m *replModel) currentReasoningRecord() *reasoningRecord {
 	if m.turnReasoningID == 0 {
 		return nil
@@ -2477,8 +2464,6 @@ func (m *replModel) clearDisplay() {
 	m.turnTrailerPlacements = nil
 	m.openTurnTrailerID = 0
 	m.turnDock.overlay = turnDockOverlayNone
-	m.turnDock.reasoningID = 0
-	m.turnDock.toolDisclosureID = 0
 	for i := range m.queue {
 		m.queue[i].transcriptShown = false
 	}
@@ -4202,8 +4187,6 @@ func (r *managedREPL) endTurn(err error) {
 	} else if err != nil {
 		activeToolReason = "failed"
 	}
-	m.turnDock.reasoningID = firstNonZero(m.turnReasoningID, m.turnReasoningIDs)
-	m.turnDock.toolDisclosureID = firstNonZero(m.turnToolDisclosureID, m.turnToolDisclosureIDs)
 	m.turnDock.reasoningIDs = append([]int64(nil), m.turnReasoningIDs...)
 	m.turnDock.toolIDs = append([]int64(nil), m.turnToolDisclosureIDs...)
 	// A partially persisted turn keeps its completed iterations — reasoning
@@ -4313,8 +4296,6 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.resetAssistantStream()
 	m.turnStarted = time.Time{}
 	m.toolName = ""
-	m.turnDock.reasoningID = firstNonZero(m.turnReasoningID, m.turnReasoningIDs)
-	m.turnDock.toolDisclosureID = firstNonZero(m.turnToolDisclosureID, m.turnToolDisclosureIDs)
 	m.turnDock.reasoningIDs = append([]int64(nil), m.turnReasoningIDs...)
 	m.turnDock.toolIDs = append([]int64(nil), m.turnToolDisclosureIDs...)
 	m.completeThinkingTurn(true)
@@ -6090,7 +6071,6 @@ func (t *gotuiTurnUI) ShowThinking(chunk string) {
 	}
 	t.repl.model.state = turnStateThinking
 	t.repl.model.appendThinking(chunk)
-	t.repl.model.turnDock.reasoningID = t.repl.model.turnReasoningID
 	t.repl.model.mu.Unlock()
 }
 
@@ -6135,9 +6115,6 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	var record *toolDisclosureRecord
 	for _, c := range calls {
 		record = t.repl.model.appendToolStartRow(c.ID, toolLabel(c))
-	}
-	if record != nil {
-		t.repl.model.turnDock.toolDisclosureID = record.id
 	}
 	t.repl.model.refreshToolDisclosure(record)
 }
@@ -6240,9 +6217,6 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 			settled: true,
 		})
 	}
-	if record != nil {
-		m.turnDock.toolDisclosureID = record.id
-	}
 	m.refreshToolDisclosure(record)
 	// The disclosure stays live past the batch: an unbroken continuation's
 	// next batch folds into it. Assistant prose or turn settlement closes it.
@@ -6276,7 +6250,6 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 		oldStart, oldCount, heldGroup = m.projectedActivityGroupBounds(ids, false, layoutWidth)
 	}
 	row.inspectionImages = append([]transcriptImage(nil), images...)
-	m.turnDock.toolDisclosureID = record.id
 	m.refreshToolDisclosureWithAnchor(record, false)
 	// The third Images field and its gallery are derived from inspectionImages;
 	// neither necessarily changes the canonical raw tool text.

@@ -377,7 +377,7 @@ func spaceFold(s string) string {
 }
 
 func localImageDimensions(path string) (int, int, bool) {
-	file, err := openBoundedRegularFile(path, maxLocalImageBytes)
+	file, err := images.OpenBoundedFile(path, maxLocalImageBytes)
 	if err != nil {
 		return 0, 0, false
 	}
@@ -650,7 +650,7 @@ func imageCellGeometry(img transcriptImage, maxCols, maxRows, cellWidth, cellHei
 
 	maxPixelWidth := maxCols * cellWidth
 	maxPixelHeight := maxRows * cellHeight
-	pixelWidth, pixelHeight := fitPixelDimensions(img.Width, img.Height, maxPixelWidth, maxPixelHeight)
+	pixelWidth, pixelHeight := images.FitDimensions(img.Width, img.Height, maxPixelWidth, maxPixelHeight)
 	if pixelWidth <= 0 || pixelHeight <= 0 {
 		return 0, 0, false
 	}

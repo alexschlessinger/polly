@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -553,7 +554,7 @@ func TestImageCellGeometryPreservesAspectRatio(t *testing.T) {
 		t.Fatalf("square geometry = %dx%d fitByRows=%t, want 20x10 height-bound", cols, rows, fitByRows)
 	}
 
-	fitted := fitImage(image.NewNRGBA(image.Rect(0, 0, 2400, 270)), 500, 60)
+	fitted := images.Fit(image.NewNRGBA(image.Rect(0, 0, 2400, 270)), 500, 60)
 	if got := fitted.Bounds().Size(); got.X != 500 || got.Y != 56 {
 		t.Fatalf("fitted pixels = %v, want (500,56)", got)
 	}

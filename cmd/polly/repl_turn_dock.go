@@ -20,18 +20,16 @@ const (
 const turnDockToolOverlayRows = 6
 
 type turnDockState struct {
-	visible          bool
-	settled          bool
-	outcome          turnOutcome
-	elapsed          time.Duration
-	elapsedKnown     bool
-	inputTokens      int
-	outputTokens     int
-	reasoningID      int64   // first reasoning record of the turn (label/legacy)
-	toolDisclosureID int64   // first tool disclosure of the turn (label/legacy)
-	reasoningIDs     []int64 // every reasoning record opened during the turn
-	toolIDs          []int64 // every tool disclosure opened during the turn
-	overlay          turnDockOverlay
+	visible      bool
+	settled      bool
+	outcome      turnOutcome
+	elapsed      time.Duration
+	elapsedKnown bool
+	inputTokens  int
+	outputTokens int
+	reasoningIDs []int64 // every reasoning record opened during the turn
+	toolIDs      []int64 // every tool disclosure opened during the turn
+	overlay      turnDockOverlay
 }
 
 type turnDockPlacement struct {
@@ -121,16 +119,11 @@ func (m *replModel) turnDockElapsedFor(dock turnDockState) time.Duration {
 	return time.Since(m.turnStarted)
 }
 
-// turnDockThoughtRecords returns the turn's reasoning records in order. The
-// singular reasoningID seeds the list for docks settled before plural IDs
-// existed. Caller must hold m.mu.
+// turnDockThoughtRecords returns the turn's reasoning records in order. Caller
+// must hold m.mu.
 func (m *replModel) turnDockThoughtRecords(dock turnDockState) []*reasoningRecord {
-	ids := dock.reasoningIDs
-	if len(ids) == 0 && dock.reasoningID != 0 {
-		ids = []int64{dock.reasoningID}
-	}
 	var records []*reasoningRecord
-	for _, id := range ids {
+	for _, id := range dock.reasoningIDs {
 		if record := m.reasoningRecords[id]; record != nil && len(record.tail) > 0 {
 			records = append(records, record)
 		}
@@ -142,7 +135,7 @@ func (m *replModel) turnDockThoughtRecords(dock turnDockState) []*reasoningRecor
 // must hold m.mu.
 func (m *replModel) turnDockToolRecords(dock turnDockState) []*toolDisclosureRecord {
 	var records []*toolDisclosureRecord
-	for _, id := range turnDockToolIDs(dock) {
+	for _, id := range dock.toolIDs {
 		if record := m.toolDisclosures[id]; record != nil && len(record.rows) > 0 {
 			records = append(records, record)
 		}
@@ -150,18 +143,8 @@ func (m *replModel) turnDockToolRecords(dock turnDockState) []*toolDisclosureRec
 	return records
 }
 
-func turnDockToolIDs(dock turnDockState) []int64 {
-	if len(dock.toolIDs) > 0 {
-		return dock.toolIDs
-	}
-	if dock.toolDisclosureID != 0 {
-		return []int64{dock.toolDisclosureID}
-	}
-	return nil
-}
-
 func (m *replModel) turnDockInspectionImages(dock turnDockState) []transcriptImage {
-	return m.toolInspectionImages(turnDockToolIDs(dock))
+	return m.toolInspectionImages(dock.toolIDs)
 }
 
 func (m *replModel) turnDockToolRowCount(dock turnDockState) int {
@@ -269,11 +252,9 @@ func (m *replModel) setHydratedTurnDock(reasoning *reasoningRecord, tools *toolD
 		outputTokens: out,
 	}
 	if reasoning != nil {
-		m.turnDock.reasoningID = reasoning.id
 		m.turnDock.reasoningIDs = []int64{reasoning.id}
 	}
 	if tools != nil {
-		m.turnDock.toolDisclosureID = tools.id
 		m.turnDock.toolIDs = []int64{tools.id}
 	}
 }
