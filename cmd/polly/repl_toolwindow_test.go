@@ -459,6 +459,7 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 	if record == nil || !m.toggleToolDisclosure(record.id) {
 		t.Fatalf("detached fixture did not expand: %#v", record)
 	}
+	tui.ShowThinking("pondering")
 	m.canceling = true
 
 	r.abandonCanceledTurn()
@@ -470,6 +471,28 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 	}
 	if expanded := plainStyledText(m.transcript[record.transcriptIndex]); !strings.Contains(expanded, "canceled slow_tool") {
 		t.Fatalf("detached disclosure lost canceled row: %q", expanded)
+	}
+
+	// The canceled trailer is the only way back to the turn's activity, and its
+	// controls derive solely from the dock ID copies in abandonCanceledTurn.
+	trailer := m.turnTrailers[m.turnTrailerSeq]
+	if trailer == nil {
+		t.Fatal("canceled turn left no settled trailer")
+	}
+	if len(trailer.dock.toolIDs) != 1 || trailer.dock.toolIDs[0] != record.id {
+		t.Fatalf("canceled trailer toolIDs = %v, want [%d]", trailer.dock.toolIDs, record.id)
+	}
+	if len(trailer.dock.reasoningIDs) != 1 {
+		t.Fatalf("canceled trailer reasoningIDs = %v, want one record", trailer.dock.reasoningIDs)
+	}
+	var hasTools bool
+	for _, f := range trailer.fields {
+		if f.overlay == turnDockOverlayTools {
+			hasTools = true
+		}
+	}
+	if !hasTools {
+		t.Fatalf("canceled trailer lost its tools control: %#v", trailer.fields)
 	}
 }
 
