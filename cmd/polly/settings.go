@@ -8,6 +8,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/urfave/cli/v3"
 )
 
 // settingSpec declares one context setting. The table drives the REPL key
@@ -41,6 +42,10 @@ type settingSpec struct {
 	// show renders the value for /get; nil hides the key from the REPL
 	// entirely (maxiterations). Formats are test-pinned; keep stable.
 	show func(ctx *replCommandContext, cfg *Config) string
+
+	// fromCmd reads the flag's parsed value onto cfg in parseConfig; nil on
+	// derived flagless rows.
+	fromCmd func(cfg *Config, cmd *cli.Command)
 
 	// fromMeta restores a persisted value onto cfg (flag not set at launch);
 	// toMeta copies the resolved cfg value onto md and is shared by all three
@@ -77,6 +82,7 @@ var settingSpecs = []settingSpec{
 			return nil
 		},
 		show:     func(_ *replCommandContext, cfg *Config) string { return cfg.Model },
+		fromCmd:  func(cfg *Config, cmd *cli.Command) { cfg.Model = cmd.String("model") },
 		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.Model = md.Model },
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.Model = cfg.Model },
 	},
@@ -99,6 +105,7 @@ var settingSpecs = []settingSpec{
 		show: func(_ *replCommandContext, cfg *Config) string {
 			return fmt.Sprintf("%.2f", cfg.Temperature)
 		},
+		fromCmd:  func(cfg *Config, cmd *cli.Command) { cfg.Temperature = cmd.Float64("temp") },
 		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.Temperature = md.Temperature },
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.Temperature = cfg.Temperature },
 	},
@@ -118,6 +125,7 @@ var settingSpecs = []settingSpec{
 		show: func(_ *replCommandContext, cfg *Config) string {
 			return fmt.Sprintf("%d", cfg.MaxTokens)
 		},
+		fromCmd:  func(cfg *Config, cmd *cli.Command) { cfg.MaxTokens = cmd.Int("maxtokens") },
 		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.MaxTokens = md.MaxTokens },
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.MaxTokens = cfg.MaxTokens },
 	},
@@ -136,6 +144,7 @@ var settingSpecs = []settingSpec{
 		show: func(_ *replCommandContext, cfg *Config) string {
 			return fmt.Sprintf("%d", cfg.MaxHistoryTokens)
 		},
+		fromCmd:  func(cfg *Config, cmd *cli.Command) { cfg.MaxHistoryTokens = cmd.Int("maxcontext") },
 		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.MaxHistoryTokens = md.MaxHistoryTokens },
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.MaxHistoryTokens = cfg.MaxHistoryTokens },
 	},
@@ -151,6 +160,7 @@ var settingSpecs = []settingSpec{
 			return nil
 		},
 		show:     func(_ *replCommandContext, cfg *Config) string { return cfg.ThinkingEffort },
+		fromCmd:  func(cfg *Config, cmd *cli.Command) { cfg.ThinkingEffort = cmd.String("thinking") },
 		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.ThinkingEffort = md.ThinkingEffort },
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.ThinkingEffort = cfg.ThinkingEffort },
 	},
@@ -163,6 +173,7 @@ var settingSpecs = []settingSpec{
 			}
 			return cfg.SystemPrompt
 		},
+		fromCmd: func(cfg *Config, cmd *cli.Command) { cfg.SystemPrompt = cmd.String("system") },
 		// A stored legacy default reads as the empty persona. The -s
 		// conversation-reset detection is control flow, not a copy, and stays
 		// in initializeConversation ahead of the table walk.
@@ -194,6 +205,7 @@ var settingSpecs = []settingSpec{
 			return nil
 		},
 		show:     func(_ *replCommandContext, cfg *Config) string { return cfg.ToolTimeout.String() },
+		fromCmd:  func(cfg *Config, cmd *cli.Command) { cfg.ToolTimeout = cmd.Duration("tooltimeout") },
 		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.ToolTimeout = md.ToolTimeout },
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.ToolTimeout = cfg.ToolTimeout },
 	},
@@ -207,6 +219,7 @@ var settingSpecs = []settingSpec{
 			}
 			return strings.Join(cfg.SkillDirs, ", ")
 		},
+		fromCmd: func(cfg *Config, cmd *cli.Command) { cfg.SkillDirs = cmd.StringSlice("skilldir") },
 		fromMeta: func(cfg *Config, md *sessions.Metadata) {
 			cfg.SkillDirs = append([]string(nil), md.SkillDirs...)
 		},
@@ -225,6 +238,7 @@ var settingSpecs = []settingSpec{
 		key:              "maxiterations",
 		flag:             "maxiterations",
 		startupWriteBack: true,
+		fromCmd:          func(cfg *Config, cmd *cli.Command) { cfg.MaxIterations = int(cmd.Int("maxiterations")) },
 		fromMeta:         func(cfg *Config, md *sessions.Metadata) { cfg.MaxIterations = md.MaxIterations },
 		toMeta:           func(cfg *Config, md *sessions.Metadata) { md.MaxIterations = cfg.MaxIterations },
 	},
@@ -245,6 +259,16 @@ func settingKeysWhere(pred func(settingSpec) bool) []string {
 		}
 	}
 	return keys
+}
+
+func settingFlagNames() []string {
+	names := make([]string, 0, len(settingSpecs))
+	for _, s := range settingSpecs {
+		if s.flag != "" {
+			names = append(names, s.flag)
+		}
+	}
+	return names
 }
 
 func settingSpecFor(key string) (settingSpec, bool) {

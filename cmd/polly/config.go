@@ -21,15 +21,17 @@ import (
 const defaultSandboxPreset = "workspace+net+git"
 
 var (
-	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
-	validEmbedProviders  = []string{"openai", "gemini"}
-	purgeDisallowedFlags = []string{
-		"context", "last", "prompt", "file", "model", "temp",
-		"maxtokens", "maxiterations", "timeout", "deadline", "tool", "mcp", "system", "schema",
-		"tooltimeout", "maxcontext", "thinking", "baseurl",
-		"skilldir", "skill", "noskills", "listskills",
+	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
+	validEmbedProviders = []string{"openai", "gemini"}
+	// Setting flags join the --purge guard through the spec table; only the
+	// non-setting flags are listed by hand. Consumed via ContainsFunc, so
+	// order is irrelevant.
+	purgeDisallowedFlags = append(settingFlagNames(),
+		"context", "last", "prompt", "file",
+		"timeout", "deadline", "tool", "mcp", "schema", "baseurl",
+		"skill", "noskills", "listskills",
 		"confirm", "meta", "sandbox", "nosandbox", "denypath", "writepath", "allownet",
-	}
+	)
 )
 
 func getCommand() *cli.Command {
@@ -51,25 +53,13 @@ func getCommand() *cli.Command {
 	return command
 }
 
-// parseConfig extracts configuration from command-line flags
+// parseConfig extracts configuration from command-line flags. Settings flags
+// are read through the spec table; only runtime configuration is hand-listed.
 func parseConfig(cmd *cli.Command) *Config {
 	config := &Config{
-		Settings: Settings{
-			// Model configuration
-			Model:            cmd.String("model"),
-			Temperature:      cmd.Float64("temp"),
-			MaxTokens:        cmd.Int("maxtokens"),
-			MaxHistoryTokens: cmd.Int("maxcontext"),
-			ThinkingEffort:   cmd.String("thinking"),
-			SystemPrompt:     cmd.String("system"),
-			ToolTimeout:      cmd.Duration("tooltimeout"),
-			SkillDirs:        cmd.StringSlice("skilldir"),
-		},
-
 		// Runtime configuration
 		Timeout:       cmd.Duration("timeout"),
 		Deadline:      cmd.Duration("deadline"),
-		MaxIterations: int(cmd.Int("maxiterations")),
 		BaseURL:       cmd.String("baseurl"),
 		Confirm:       cmd.Bool("confirm"),
 		NoSandbox:     cmd.Bool("nosandbox"),
@@ -103,6 +93,11 @@ func parseConfig(cmd *cli.Command) *Config {
 		Debug:      cmd.Bool("debug"),
 		Tools:      cmd.StringSlice("tool"),
 		Skills:     cmd.StringSlice("skill"),
+	}
+	for _, spec := range settingSpecs {
+		if spec.fromCmd != nil {
+			spec.fromCmd(config, cmd)
+		}
 	}
 
 	return config
