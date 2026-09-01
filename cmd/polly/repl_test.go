@@ -603,8 +603,7 @@ func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
 	}
 
 	r.model.ed.clear()
-	r.model.transcript = nil
-	r.model.transcriptImages = nil
+	clearTranscriptForTest(r.model)
 	r.model.invalidateFlat()
 	r.model.history = []string{"hello"}
 	send("/")
@@ -984,8 +983,7 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	}
 
 	// /tools on an empty registry reports none.
-	r.model.transcript = nil
-	r.model.transcriptImages = nil
+	clearTranscriptForTest(r.model)
 	r.runCommand("/tools")
 	if !strings.Contains(strings.Join(r.model.transcript, "\n"), "no tools loaded") {
 		t.Fatalf("/tools = %v", r.model.transcript)

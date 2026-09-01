@@ -1077,12 +1077,13 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 
 func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 	m := newReplModel()
-	m.transcript = []string{
+	for _, entry := range []string{
 		styled("muted one\nmuted two\n", "muted", ""),
 		"",
 		styled("> ", "accent", "bold") + "a prompt that wraps across rows",
+	} {
+		m.appendTranscriptEntry(entry)
 	}
-	m.transcriptImages = make([][]transcriptImage, len(m.transcript))
 	m.invalidateFlat()
 	m.setSlashHintLine("/help  /tools")
 	for _, width := range []int{4, 12, 40} {

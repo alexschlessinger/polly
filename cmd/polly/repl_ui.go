@@ -1194,10 +1194,11 @@ func (m *replModel) invalidateFlat() {
 
 func (m *replModel) invalidateVisual() { m.visualCacheValid = false }
 
+// setTranscriptImages replaces entry index's image list. It indexes the lane
+// unguarded on purpose: every caller has just written m.transcript[index], so
+// an out-of-range index here means the lanes drifted, and that must fail at
+// the write that exposed it rather than at some later render.
 func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
-	if index < 0 || index >= len(m.transcriptImages) {
-		return
-	}
 	if len(images) == 0 {
 		m.transcriptImages[index] = nil
 		return

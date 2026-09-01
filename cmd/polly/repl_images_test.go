@@ -562,6 +562,14 @@ func TestImageCellGeometryPreservesAspectRatio(t *testing.T) {
 
 // TestTranscriptImageLaneLockstep pins the documented invariant: the image
 // lane grows, shrinks, and resets only alongside the transcript.
+// clearTranscriptForTest empties both transcript lanes together, the test-side
+// twin of clearDisplay's lane reset for tests that isolate one command's
+// output without disturbing the rest of the model.
+func clearTranscriptForTest(m *replModel) {
+	m.transcript = nil
+	m.transcriptImages = nil
+}
+
 func TestTranscriptImageLaneLockstep(t *testing.T) {
 	m := newReplModel()
 	check := func(step string) {
@@ -575,6 +583,10 @@ func TestTranscriptImageLaneLockstep(t *testing.T) {
 	check("appendLine")
 	m.appendAssistant("hello")
 	check("appendAssistant")
+	// Settle the stream the way production does, so the later empty-stream
+	// leg starts a genuinely fresh entry instead of extending this one.
+	m.finishAssistantBlock("")
+	check("finishAssistantBlock")
 	m.appendQueuedInput(&queuedREPLInput{text: "queued"})
 	check("appendQueuedInput")
 
@@ -587,11 +599,7 @@ func TestTranscriptImageLaneLockstep(t *testing.T) {
 		t.Fatalf("images did not follow their entry across the delete: %#v", got)
 	}
 
-	// An empty assistant stream deletes its transcript entry on settle. The
-	// direct delete above left stream state behind that production never
-	// sees; reset it so the append below starts a genuinely fresh entry.
-	m.currentAssistant = -1
-	m.resetAssistantStream()
+	// An empty assistant stream deletes its transcript entry on settle.
 	before := len(m.transcript)
 	m.appendAssistant("\n")
 	if len(m.transcript) != before+1 {
@@ -618,8 +626,7 @@ func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 	m.nativeImages = true
 	m.imageCellWidth = 10
 	m.imageCellHeight = 20
-	m.transcript = []string{renderTranscriptImages([]transcriptImage{img}, "")}
-	m.transcriptImages = [][]transcriptImage{{img}}
+	m.setTranscriptImages(m.appendTranscriptEntry(renderTranscriptImages([]transcriptImage{img}, "")), []transcriptImage{img})
 	m.transcriptRows(80)
 	if spans := m.visualBlocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 50 || spans[0].rows != 3 || spans[0].fitByRows {
 		t.Fatalf("initial wide spans = %#v", spans)
