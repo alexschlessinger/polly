@@ -1279,9 +1279,16 @@ func (m *replModel) appendLine(s string) {
 	if m.currentAssistant >= 0 && m.currentAssistant < len(m.transcript) {
 		m.finishAssistantBlock("")
 	}
-	m.transcript = append(m.transcript, s)
+	m.appendTranscriptEntry(s)
 	m.currentAssistant = -1
 	m.invalidateFlat()
+}
+
+// appendTranscriptEntry grows the transcript and returns the new entry's
+// index; every transcript append goes through here.
+func (m *replModel) appendTranscriptEntry(text string) int {
+	m.transcript = append(m.transcript, text)
+	return len(m.transcript) - 1
 }
 
 func (m *replModel) resetAssistantStream() {
@@ -1304,8 +1311,7 @@ func (m *replModel) appendAssistant(text string) {
 		// Start a fresh assistant entry (currentAssistant is reset to -1 by any
 		// intervening non-assistant line), so the builder starts empty too.
 		m.resetAssistantStream()
-		m.transcript = append(m.transcript, "")
-		m.currentAssistant = len(m.transcript) - 1
+		m.currentAssistant = m.appendTranscriptEntry("")
 	}
 	m.streamRaw.WriteString(text)
 	raw := m.streamRaw.String()
@@ -2946,11 +2952,10 @@ func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
 // the visible acknowledgement that Polly retained the input.
 func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
 	if len(m.transcript) > 0 && m.transcript[len(m.transcript)-1] != "" {
-		m.transcript = append(m.transcript, "")
+		m.appendTranscriptEntry("")
 	}
 	entry := formattedUserPrompt(item.text) + "\n  " + styled("(queued)", "muted", "")
-	m.transcript = append(m.transcript, entry)
-	item.transcriptIndex = len(m.transcript) - 1
+	item.transcriptIndex = m.appendTranscriptEntry(entry)
 	item.transcriptShown = true
 	if item.turn != nil {
 		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
