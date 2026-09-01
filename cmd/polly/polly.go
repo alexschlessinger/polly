@@ -1527,32 +1527,11 @@ func initializeConversation(ctx context.Context, config *Config, sessionStore se
 			// Persisted settings are authoritative for an existing session. Zero
 			// and empty values are intentional settings too, so copy every field
 			// that was not explicitly overridden on this invocation.
-			if !cmd.IsSet("model") {
-				config.Settings.Model = contextInfo.Model
-			}
-			if !cmd.IsSet("temp") {
-				config.Settings.Temperature = contextInfo.Temperature
-			}
-			if !cmd.IsSet("maxtokens") {
-				config.Settings.MaxTokens = contextInfo.MaxTokens
-			}
-			if !cmd.IsSet("maxcontext") {
-				config.Settings.MaxHistoryTokens = contextInfo.MaxHistoryTokens
-			}
-			if !cmd.IsSet("system") {
-				config.Settings.SystemPrompt = normalizeLegacySystemPrompt(contextInfo.SystemPrompt)
-			}
-			if !cmd.IsSet("thinking") {
-				config.Settings.ThinkingEffort = contextInfo.ThinkingEffort
-			}
-			if !cmd.IsSet("tooltimeout") {
-				config.Settings.ToolTimeout = contextInfo.ToolTimeout
-			}
-			if !cmd.IsSet("maxiterations") {
-				config.MaxIterations = contextInfo.MaxIterations
-			}
-			if !cmd.IsSet("skilldir") {
-				config.Settings.SkillDirs = append([]string(nil), contextInfo.SkillDirs...)
+			for _, spec := range settingSpecs {
+				if spec.flag == "" || spec.fromMeta == nil || cmd.IsSet(spec.flag) {
+					continue
+				}
+				spec.fromMeta(config, contextInfo)
 			}
 		}
 	}
@@ -1583,32 +1562,10 @@ func initializeConversation(ctx context.Context, config *Config, sessionStore se
 // zero values (e.g. --maxcontext 0 = unlimited) are preserved rather than
 // being lost in a partial metadata merge.
 func applyFlagSettings(md *sessions.Metadata, config *Config, cmd *cli.Command) {
-	if cmd.IsSet("model") {
-		md.Model = config.Settings.Model
-	}
-	if cmd.IsSet("temp") {
-		md.Temperature = config.Settings.Temperature
-	}
-	if cmd.IsSet("maxtokens") {
-		md.MaxTokens = config.Settings.MaxTokens
-	}
-	if cmd.IsSet("maxcontext") {
-		md.MaxHistoryTokens = config.Settings.MaxHistoryTokens
-	}
-	if cmd.IsSet("maxiterations") {
-		md.MaxIterations = config.MaxIterations
-	}
-	if cmd.IsSet("tooltimeout") {
-		md.ToolTimeout = config.Settings.ToolTimeout
-	}
-	if cmd.IsSet("system") {
-		md.SystemPrompt = config.Settings.SystemPrompt
-	}
-	if cmd.IsSet("thinking") {
-		md.ThinkingEffort = config.Settings.ThinkingEffort
-	}
-	if cmd.IsSet("skilldir") {
-		md.SkillDirs = config.Settings.SkillDirs
+	for _, spec := range settingSpecs {
+		if spec.flag != "" && spec.toMeta != nil && cmd.IsSet(spec.flag) {
+			spec.toMeta(config, md)
+		}
 	}
 }
 
@@ -1631,12 +1588,11 @@ func updateContextInfo(ctx context.Context, session sessions.Session, config *Co
 	md.LastUsed = time.Now()
 	// Config holds resolved values — stored settings unless flags override
 	// (see initializeConversation) — so these are safe to write back.
-	md.Model = config.Settings.Model
-	md.Temperature = config.Settings.Temperature
-	md.MaxTokens = config.Settings.MaxTokens
-	md.MaxIterations = config.MaxIterations
-	md.ToolTimeout = config.Settings.ToolTimeout
-	md.SkillDirs = config.Settings.SkillDirs
+	for _, spec := range settingSpecs {
+		if spec.startupWriteBack {
+			spec.toMeta(config, md)
+		}
+	}
 	// Tools are already handled in initializeSession; settings that have no
 	// resolved-config equivalent apply only when explicitly set.
 	applyFlagSettings(md, config, cmd)

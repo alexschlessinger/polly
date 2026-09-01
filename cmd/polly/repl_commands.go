@@ -7,9 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -825,8 +823,6 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	return replCommandResult{err: ctx.replyLines(lines)}
 }
 
-var replSettingKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "display", "tooltimeout", "skilldir", "sandbox"}
-
 func completeGetCommand(_ *replCommandContext, fields []string, prefix string) []string {
 	if completionArgPos(fields, prefix) != 1 {
 		return nil
@@ -854,12 +850,6 @@ func replGetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	return replCommandResult{err: ctx.replyLine(key + ": " + value)}
 }
 
-// replSettableKeys lists the /set-writable settings. system, skilldir, and
-// sandbox stay launch-time only: the system prompt is embedded in session
-// history at creation, and skill/sandbox wiring happens during tool loading.
-// display is derived from the active frontend and never settable.
-var replSettableKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"}
-
 // thinkingEffortWords are the named efforts accepted by llm.ParseThinkingEffort
 // (a raw token budget is also accepted).
 var thinkingEffortWords = []string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh", "max"}
@@ -880,51 +870,11 @@ func completeSetCommand(_ *replCommandContext, fields []string, prefix string) [
 // their completion request from cfg each time, so a change takes effect on the
 // next turn without reconnecting.
 func applyReplSetting(cfg *Config, key, value string) error {
-	switch key {
-	case "model":
-		if value == "" {
-			return fmt.Errorf("model requires a provider/model value")
-		}
-		if err := validateModel(value); err != nil {
-			return err
-		}
-		cfg.Model = value
-	case "temp":
-		f, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			return fmt.Errorf("temp must be a number, got %q", value)
-		}
-		if err := validateTemperature(f); err != nil {
-			return err
-		}
-		cfg.Temperature = f
-	case "maxtokens":
-		n, err := strconv.Atoi(value)
-		if err != nil || n <= 0 {
-			return fmt.Errorf("maxtokens must be a positive integer, got %q", value)
-		}
-		cfg.MaxTokens = n
-	case "maxcontext":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 0 {
-			return fmt.Errorf("maxcontext must be a non-negative integer (0 = unlimited), got %q", value)
-		}
-		cfg.MaxHistoryTokens = n
-	case "thinking":
-		if _, err := llm.ParseThinkingEffort(value); err != nil {
-			return err
-		}
-		cfg.ThinkingEffort = value
-	case "tooltimeout":
-		d, err := time.ParseDuration(value)
-		if err != nil || d <= 0 {
-			return fmt.Errorf("tooltimeout must be a positive duration (e.g. 45s), got %q", value)
-		}
-		cfg.ToolTimeout = d
-	default:
+	spec, ok := settingSpecFor(key)
+	if !ok || spec.parse == nil {
 		return fmt.Errorf("unknown or read-only key: %s (settable: %s)", key, strings.Join(replSettableKeys, ", "))
 	}
-	return nil
+	return spec.parse(cfg, value)
 }
 
 func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
@@ -976,12 +926,11 @@ func persistReplSettings(ctx *replCommandContext) error {
 		return err
 	}
 	md.Name = name
-	md.Model = cfg.Model
-	md.Temperature = cfg.Temperature
-	md.MaxTokens = cfg.MaxTokens
-	md.MaxHistoryTokens = cfg.MaxHistoryTokens
-	md.ThinkingEffort = cfg.ThinkingEffort
-	md.ToolTimeout = cfg.ToolTimeout
+	for _, spec := range settingSpecs {
+		if spec.persistOnSet {
+			spec.toMeta(cfg, md)
+		}
+	}
 	return s.SetMetadata(opCtx, md)
 }
 
@@ -1120,40 +1069,11 @@ func (p sandboxPosture) noticeString() string {
 }
 
 func replSettingValue(ctx *replCommandContext, key string) (string, bool) {
-	config := ctx.configOrDefault()
-	switch key {
-	case "model":
-		return config.Model, true
-	case "temp":
-		return fmt.Sprintf("%.2f", config.Temperature), true
-	case "maxtokens":
-		return fmt.Sprintf("%d", config.MaxTokens), true
-	case "maxcontext":
-		return fmt.Sprintf("%d", config.MaxHistoryTokens), true
-	case "thinking":
-		return config.ThinkingEffort, true
-	case "system":
-		if config.SystemPrompt == "" {
-			return "(none)", true
-		}
-		return config.SystemPrompt, true
-	case "display":
-		if ctx.state == nil {
-			return "(none)", true
-		}
-		return ctx.state.displayContract, true
-	case "tooltimeout":
-		return config.ToolTimeout.String(), true
-	case "skilldir":
-		if len(config.SkillDirs) == 0 {
-			return "[]", true
-		}
-		return strings.Join(config.SkillDirs, ", "), true
-	case "sandbox":
-		return sandboxPostureForContext(ctx).settingString(), true
-	default:
+	spec, ok := settingSpecFor(key)
+	if !ok || spec.show == nil {
 		return "", false
 	}
+	return spec.show(ctx, ctx.configOrDefault()), true
 }
 
 func replToolsCommand(ctx *replCommandContext, args []string) replCommandResult {
