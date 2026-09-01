@@ -560,6 +560,42 @@ func TestImageCellGeometryPreservesAspectRatio(t *testing.T) {
 	}
 }
 
+// TestTranscriptImageLaneLockstep pins the documented invariant: the image
+// lane grows, shrinks, and resets only alongside the transcript.
+func TestTranscriptImageLaneLockstep(t *testing.T) {
+	m := newReplModel()
+	check := func(step string) {
+		t.Helper()
+		if len(m.transcriptImages) != len(m.transcript) {
+			t.Fatalf("%s: image lane len %d, transcript len %d", step, len(m.transcriptImages), len(m.transcript))
+		}
+	}
+	check("empty model")
+	m.appendLine("notice")
+	check("appendLine")
+	m.appendAssistant("hello")
+	check("appendAssistant")
+	m.appendQueuedInput(&queuedREPLInput{text: "queued"})
+	check("appendQueuedInput")
+
+	img := transcriptImage{Path: "/tmp/x.png", Alt: "x"}
+	last := len(m.transcript) - 1
+	m.setTranscriptImages(last, []transcriptImage{img})
+	m.deleteTranscriptEntry(0)
+	check("deleteTranscriptEntry")
+	if got := m.transcriptImages[last-1]; len(got) != 1 || got[0] != img {
+		t.Fatalf("images did not follow their entry across the delete: %#v", got)
+	}
+
+	// An empty assistant stream deletes its transcript entry on settle.
+	m.appendAssistant("\n")
+	m.finishAssistantBlock("")
+	check("finishAssistantBlock empty-stream delete")
+
+	m.clearDisplay()
+	check("clearDisplay")
+}
+
 func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "changing.png")
 	writeImageFixture(t, path, 2400, 270)
@@ -572,7 +608,7 @@ func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 	m.imageCellWidth = 10
 	m.imageCellHeight = 20
 	m.transcript = []string{renderTranscriptImages([]transcriptImage{img}, "")}
-	m.transcriptImages[0] = []transcriptImage{img}
+	m.transcriptImages = [][]transcriptImage{{img}}
 	m.transcriptRows(80)
 	if spans := m.visualBlocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 50 || spans[0].rows != 3 || spans[0].fitByRows {
 		t.Fatalf("initial wide spans = %#v", spans)

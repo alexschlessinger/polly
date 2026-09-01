@@ -576,10 +576,12 @@ type replModel struct {
 	// tool line) and may contain inline style markup. They get joined with
 	// "\n" at render time.
 	transcript []string
-	// transcriptImages is a private sidecar keyed by transcript entry. String
-	// interfaces stay unchanged while the managed TUI can give explicit local
-	// image references stable slots in scrollback.
-	transcriptImages map[int][]transcriptImage
+	// transcriptImages runs in lockstep with transcript: entry i's explicit
+	// local image references live at transcriptImages[i] (nil when the entry
+	// has none). Grown only by appendTranscriptEntry, shrunk only by
+	// deleteTranscriptEntry, reset only by clearDisplay — so the lanes cannot
+	// drift, and a direct append to either is a bug.
+	transcriptImages [][]transcriptImage
 	imageBaseDir     string
 	nativeImages     bool
 	imageCellWidth   int
@@ -853,7 +855,6 @@ func newReplModel() *replModel {
 	baseDir, _ := os.Getwd()
 	m := &replModel{
 		currentAssistant: -1,
-		transcriptImages: make(map[int][]transcriptImage),
 		toolDisclosures:  make(map[int64]*toolDisclosureRecord),
 		toolDisclosureAt: make(map[int]int64),
 		turnTrailers:     make(map[int64]*turnTrailerRecord),
@@ -1194,8 +1195,11 @@ func (m *replModel) invalidateFlat() {
 func (m *replModel) invalidateVisual() { m.visualCacheValid = false }
 
 func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
+	if index < 0 || index >= len(m.transcriptImages) {
+		return
+	}
 	if len(images) == 0 {
-		delete(m.transcriptImages, index)
+		m.transcriptImages[index] = nil
 		return
 	}
 	m.transcriptImages[index] = append([]transcriptImage(nil), images...)
@@ -1229,13 +1233,9 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 			m.turnToolDisclosureID = 0
 		}
 	}
-	m.transcript = append(m.transcript[:index], m.transcript[index+1:]...)
-	delete(m.transcriptImages, index)
+	m.transcript = slices.Delete(m.transcript, index, index+1)
+	m.transcriptImages = slices.Delete(m.transcriptImages, index, index+1)
 	for i := index + 1; i <= len(m.transcript); i++ {
-		if images, ok := m.transcriptImages[i]; ok {
-			m.transcriptImages[i-1] = images
-			delete(m.transcriptImages, i)
-		}
 		if id, ok := m.reasoningAt[i]; ok {
 			m.reasoningAt[i-1] = id
 			delete(m.reasoningAt, i)
@@ -1284,10 +1284,11 @@ func (m *replModel) appendLine(s string) {
 	m.invalidateFlat()
 }
 
-// appendTranscriptEntry grows the transcript and returns the new entry's
-// index; every transcript append goes through here.
+// appendTranscriptEntry grows the transcript and its image lane together and
+// returns the new entry's index; every transcript append goes through here.
 func (m *replModel) appendTranscriptEntry(text string) int {
 	m.transcript = append(m.transcript, text)
+	m.transcriptImages = append(m.transcriptImages, nil)
 	return len(m.transcript) - 1
 }
 
@@ -2457,7 +2458,7 @@ func (m *replModel) appendNoticeLine(text string) {
 
 func (m *replModel) clearDisplay() {
 	m.transcript = nil
-	m.transcriptImages = make(map[int][]transcriptImage)
+	m.transcriptImages = nil
 	m.currentAssistant = -1
 	m.activeTools = nil
 	m.activeToolsPhase = -1

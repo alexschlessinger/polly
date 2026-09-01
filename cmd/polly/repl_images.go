@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"unicode"
 
@@ -415,13 +414,7 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 		}
 		return updated, copied
 	}
-	indices := make([]int, 0, len(m.transcriptImages))
-	for transcriptIndex := range m.transcriptImages {
-		indices = append(indices, transcriptIndex)
-	}
-	sort.Ints(indices)
-	for _, transcriptIndex := range indices {
-		images := m.transcriptImages[transcriptIndex]
+	for transcriptIndex, images := range m.transcriptImages {
 		updated, copied := refresh(images)
 		if copied {
 			oldCount, start := 0, 0

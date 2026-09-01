@@ -1082,6 +1082,7 @@ func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 		"",
 		styled("> ", "accent", "bold") + "a prompt that wraps across rows",
 	}
+	m.transcriptImages = make([][]transcriptImage, len(m.transcript))
 	m.invalidateFlat()
 	m.setSlashHintLine("/help  /tools")
 	for _, width := range []int{4, 12, 40} {
