@@ -604,7 +604,7 @@ func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
 
 	r.model.ed.clear()
 	clearTranscriptForTest(r.model)
-	r.model.invalidateVisual()
+	r.model.visual.invalidate()
 	r.model.hist.entries = []string{"hello"}
 	send("/")
 	send("<Up>")

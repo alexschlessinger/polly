@@ -1030,19 +1030,19 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 	m.appendLine("a stable earlier transcript block")
 	m.appendToolStartLine("1", "bash sleep 30")
 	rows1 := m.transcriptRows(80)
-	if len(rows1) != 2 || len(m.visualBlocks[0].rows[0]) == 0 {
+	if len(rows1) != 2 || len(m.visual.blocks[0].rows[0]) == 0 {
 		t.Fatalf("cache fixture rows = %#v", rows1)
 	}
-	staticCell := &m.visualBlocks[0].rows[0][0]
+	staticCell := &m.visual.blocks[0].rows[0][0]
 	cacheStart := &rows1[0]
 
 	m.activeTools[0].started = time.Now().Add(-2 * time.Second)
 	m.refreshActiveTools()
-	if !m.visualCacheValid {
+	if !m.visual.valid {
 		t.Fatal("collapsed live timer invalidated the visual cache")
 	}
 	rows2 := m.transcriptRows(80)
-	if &m.visualBlocks[0].rows[0][0] != staticCell {
+	if &m.visual.blocks[0].rows[0][0] != staticCell {
 		t.Fatal("unchanged transcript block was reparsed")
 	}
 	if &rows2[0] != cacheStart {
@@ -1056,7 +1056,7 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 	if record == nil || !m.toggleToolDisclosure(record.id) {
 		t.Fatalf("cached tool disclosure did not expand: %#v", record)
 	}
-	if m.visualCacheValid {
+	if m.visual.valid {
 		t.Fatal("inline disclosure expansion did not invalidate the visual cache")
 	}
 	expandedRows := m.transcriptRows(80)
@@ -1084,7 +1084,7 @@ func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 	} {
 		m.appendTranscriptEntry(entry)
 	}
-	m.invalidateVisual()
+	m.visual.invalidate()
 	m.setSlashHintLine("/help  /tools")
 	for _, width := range []int{4, 12, 40} {
 		got := m.transcriptRows(width)

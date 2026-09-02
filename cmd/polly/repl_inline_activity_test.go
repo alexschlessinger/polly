@@ -220,7 +220,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 		t.Fatalf("unbroken rounds should share one record pair: reasoning=%v tools=%v", m.reasoningOrder, m.turnToolDisclosureIDs)
 	}
 	m.reasoningRecords[m.reasoningOrder[0]].elapsed = 700 * time.Millisecond
-	m.invalidateVisual()
+	m.visual.invalidate()
 
 	visible := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
 	var activityLines []string
@@ -339,7 +339,7 @@ func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	record := m.reasoningRecords[m.reasoningOrder[0]]
 	record.elapsed = 0
-	m.invalidateVisual()
+	m.visual.invalidate()
 
 	rows := m.transcriptRows(width)
 	thoughts := m.visibleReasoningPlacements(fullViewport(len(rows), width))

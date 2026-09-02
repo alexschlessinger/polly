@@ -679,7 +679,7 @@ func (m *replModel) visibleImagePlacements(v transcriptViewport) []terminalImage
 	}
 	var placements []terminalImagePlacement
 	rowOffset := 0
-	for _, block := range m.visualBlocks {
+	for _, block := range m.visual.blocks {
 		for _, span := range block.imageSpans {
 			if span.imageIndex < 0 || span.imageIndex >= len(block.images) || span.rows <= 0 {
 				continue

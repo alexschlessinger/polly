@@ -628,7 +628,7 @@ func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 	m.imageCellHeight = 20
 	m.setTranscriptImages(m.appendTranscriptEntry(renderTranscriptImages([]transcriptImage{img}, "")), []transcriptImage{img})
 	m.transcriptRows(80)
-	if spans := m.visualBlocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 50 || spans[0].rows != 3 || spans[0].fitByRows {
+	if spans := m.visual.blocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 50 || spans[0].rows != 3 || spans[0].fitByRows {
 		t.Fatalf("initial wide spans = %#v", spans)
 	}
 
@@ -638,7 +638,7 @@ func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.transcriptRows(80)
-	if spans := m.visualBlocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 3 || spans[0].rows != 10 || !spans[0].fitByRows {
+	if spans := m.visual.blocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 3 || spans[0].rows != 10 || !spans[0].fitByRows {
 		t.Fatalf("changed tall spans = %#v", spans)
 	}
 }
@@ -646,7 +646,7 @@ func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 	m := newReplModel()
 	m.nativeImages = true
-	m.visualBlocks = []transcriptVisualBlock{{
+	m.visual.blocks = []transcriptVisualBlock{{
 		key:        "transcript:4",
 		rows:       make([][]ui.Cell, 14),
 		images:     []transcriptImage{{Path: "/tmp/chart.png"}},

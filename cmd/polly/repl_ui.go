@@ -564,16 +564,7 @@ type replModel struct {
 	// layout even when no bytes were held back.
 	streamDeferredTable bool
 
-	// visualCache keeps the fully styled/wrapped transcript for the current
-	// terminal width. Busy spinner ticks can then redraw only visible rows
-	// without reparsing a long, unchanged context 20 times per second.
-	visualCache             [][]ui.Cell
-	visualCacheWidth        int
-	visualCacheValid        bool
-	visualCacheNativeImages bool
-	visualCacheCellWidth    int
-	visualCacheCellHeight   int
-	visualBlocks            []transcriptVisualBlock
+	visual transcriptVisualCache
 
 	// slashHints is a transient command-completion hint derived from the
 	// composer: while a single-line input starts with "/", the matching
@@ -1111,17 +1102,12 @@ func (m *replModel) takeNotices() []string {
 	return out
 }
 
-// invalidateVisual marks the styled/wrapped transcript cache stale so the next
-// transcriptRows recomputes it. Caller must hold m.mu (every transcript
-// mutation already does).
-func (m *replModel) invalidateVisual() { m.visualCacheValid = false }
-
 // setTranscriptText replaces entry index's text. Every in-place transcript
 // write goes through here or setTranscriptEntry, so the visual cache is
 // always marked stale by the write itself rather than by each caller.
 func (m *replModel) setTranscriptText(index int, text string) {
 	m.transcript[index] = text
-	m.invalidateVisual()
+	m.visual.invalidate()
 }
 
 // setTranscriptEntry replaces entry index's text and image list together.
@@ -1140,7 +1126,7 @@ func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
 	} else {
 		m.transcriptImages[index] = append([]transcriptImage(nil), images...)
 	}
-	m.invalidateVisual()
+	m.visual.invalidate()
 }
 
 func (m *replModel) deleteTranscriptEntry(index int) {
@@ -1207,7 +1193,7 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 			m.queue[i].transcriptIndex--
 		}
 	}
-	m.invalidateVisual()
+	m.visual.invalidate()
 }
 
 // appendLine appends a pre-rendered transcript entry (may contain inline
@@ -1227,7 +1213,7 @@ func (m *replModel) appendLine(s string) {
 func (m *replModel) appendTranscriptEntry(text string) int {
 	m.transcript = append(m.transcript, text)
 	m.transcriptImages = append(m.transcriptImages, nil)
-	m.invalidateVisual()
+	m.visual.invalidate()
 	return len(m.transcript) - 1
 }
 
@@ -1541,8 +1527,8 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 func (m *replModel) displayRecordSpan(width int, match func(*transcriptVisualBlock) bool) (int, int, bool) {
 	m.transcriptRows(width)
 	start := 0
-	for i := range m.visualBlocks {
-		block := &m.visualBlocks[i]
+	for i := range m.visual.blocks {
+		block := &m.visual.blocks[i]
 		if match(block) {
 			return start, len(block.rows), true
 		}
@@ -1625,7 +1611,7 @@ func (m *replModel) collapseTurnToolDisclosures() {
 				m.refreshToolDisclosure(record)
 				// Image expansion is derived by the shared activity layout rather
 				// than stored in the raw tool entry, so force that projection closed.
-				m.invalidateVisual()
+				m.visual.invalidate()
 			}
 		}
 	}
@@ -1726,7 +1712,7 @@ func (m *replModel) refreshStreamCursor() {
 	next := m.streamCursorNow()
 	if next != m.streamCursorFrame {
 		m.streamCursorFrame = next
-		m.invalidateVisual()
+		m.visual.invalidate()
 	}
 }
 
@@ -2412,7 +2398,7 @@ func (m *replModel) clearDisplay() {
 	m.resetAssistantStream()
 	m.scrollAnchor = 0
 	m.followBottom = true
-	m.invalidateVisual()
+	m.visual.invalidate()
 }
 
 const resumedTurnLimit = 5
@@ -2903,7 +2889,7 @@ func (m *replModel) setSlashHintLine(hint string) {
 		return
 	}
 	m.slashHints = hint
-	m.invalidateVisual()
+	m.visual.invalidate()
 }
 
 // beginManagedTurn echoes a user prompt and marks a turn in flight. Shared by
@@ -3862,7 +3848,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	r.images = newTerminalImageManager(ui.DefaultBackend.Screen)
 	r.model.mu.Lock()
 	r.model.nativeImages = r.images != nil
-	r.model.invalidateVisual()
+	r.model.visual.invalidate()
 	r.model.mu.Unlock()
 	// Restore the terminal exactly once. Signal cancellation unwinds through
 	// this defer; terminal effects clear first so the progress OSC goes out
@@ -4734,7 +4720,7 @@ func (r *managedREPL) render() {
 	if r.model.imageCellWidth != imageCellWidth || r.model.imageCellHeight != imageCellHeight {
 		r.model.imageCellWidth = imageCellWidth
 		r.model.imageCellHeight = imageCellHeight
-		r.model.invalidateVisual()
+		r.model.visual.invalidate()
 	}
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
@@ -4879,6 +4865,31 @@ func (r *managedREPL) placeCursor(editable bool, cursorCol, rowY, width int) {
 	screen.ShowCursor(x, rowY)
 }
 
+// transcriptVisualCache keeps the styled, wrapped transcript for the current
+// terminal width and image geometry, so busy spinner ticks redraw only
+// visible rows without reparsing a long, unchanged context 20 times per
+// second. Every transcript mutation invalidates it; a geometry change
+// rebuilds it on the next frame.
+type transcriptVisualCache struct {
+	rows   [][]ui.Cell
+	blocks []transcriptVisualBlock
+	valid  bool
+
+	// The geometry rows were built for.
+	width        int
+	nativeImages bool
+	cellWidth    int
+	cellHeight   int
+}
+
+func (c *transcriptVisualCache) invalidate() { c.valid = false }
+
+// fits reports whether the cache was built for this geometry.
+func (c *transcriptVisualCache) fits(width int, nativeImages bool, cellWidth, cellHeight int) bool {
+	return c.width == width && c.nativeImages == nativeImages &&
+		c.cellWidth == cellWidth && c.cellHeight == cellHeight
+}
+
 // transcriptRows returns the styled, wrapped transcript for width. Visual
 // clipping happens after style parsing and wrapping in transcriptParagraph,
 // so wrapped rows remain reachable through scrollback.
@@ -4887,20 +4898,19 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		width = 1
 	}
 	if m.nativeImages && m.refreshTranscriptImageSources(width) {
-		m.invalidateVisual()
+		m.visual.invalidate()
 	}
-	if m.visualCacheValid && m.visualCacheWidth == width &&
-		m.visualCacheCellWidth == m.imageCellWidth && m.visualCacheCellHeight == m.imageCellHeight {
-		return m.visualCache
+	c := &m.visual
+	fits := c.fits(width, m.nativeImages, m.imageCellWidth, m.imageCellHeight)
+	if c.valid && fits {
+		return c.rows
 	}
 
 	sources := m.transcriptDisplayEntries(width)
-	oldBlocks := m.visualBlocks
-	canPatch := m.visualCacheWidth == width && m.visualCacheNativeImages == m.nativeImages &&
-		m.visualCacheCellWidth == m.imageCellWidth && m.visualCacheCellHeight == m.imageCellHeight &&
-		len(oldBlocks) == len(sources)
+	oldBlocks := c.blocks
+	canPatch := fits && len(oldBlocks) == len(sources)
 	if len(oldBlocks) != len(sources) {
-		m.visualBlocks = make([]transcriptVisualBlock, len(sources))
+		c.blocks = make([]transcriptVisualBlock, len(sources))
 	}
 
 	offset := 0
@@ -4912,8 +4922,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		}
 		rows := old.rows
 		imageSpans := old.imageSpans
-		changed := m.visualCacheWidth != width || m.visualCacheNativeImages != m.nativeImages ||
-			m.visualCacheCellWidth != m.imageCellWidth || m.visualCacheCellHeight != m.imageCellHeight ||
+		changed := !fits ||
 			old.key != source.key || old.text != source.text || old.followed != followed ||
 			!slices.Equal(old.reasoningIDs, source.reasoningIDs) ||
 			!slices.Equal(old.toolDisclosureIDs, source.toolDisclosureIDs) ||
@@ -4930,9 +4939,9 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			canPatch = false
 		}
 		if canPatch && changed {
-			copy(m.visualCache[offset:offset+len(rows)], rows)
+			copy(c.rows[offset:offset+len(rows)], rows)
 		}
-		m.visualBlocks[i] = transcriptVisualBlock{
+		c.blocks[i] = transcriptVisualBlock{
 			key:               source.key,
 			text:              source.text,
 			followed:          followed,
@@ -4949,21 +4958,21 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 
 	if !canPatch {
 		total := 0
-		for _, block := range m.visualBlocks {
+		for _, block := range c.blocks {
 			total += len(block.rows)
 		}
 		rows := make([][]ui.Cell, 0, total)
-		for _, block := range m.visualBlocks {
+		for _, block := range c.blocks {
 			rows = append(rows, block.rows...)
 		}
-		m.visualCache = rows
+		c.rows = rows
 	}
-	m.visualCacheWidth = width
-	m.visualCacheNativeImages = m.nativeImages
-	m.visualCacheCellWidth = m.imageCellWidth
-	m.visualCacheCellHeight = m.imageCellHeight
-	m.visualCacheValid = true
-	return m.visualCache
+	c.width = width
+	c.nativeImages = m.nativeImages
+	c.cellWidth = m.imageCellWidth
+	c.cellHeight = m.imageCellHeight
+	c.valid = true
+	return c.rows
 }
 
 func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock {
@@ -5294,7 +5303,7 @@ func (m *replModel) visibleImageDisclosurePlacements(v transcriptViewport) []dis
 func (m *replModel) visibleTurnTrailerPlacements(v transcriptViewport) []turnTrailerPlacement {
 	var placements []turnTrailerPlacement
 	rowOffset := 0
-	for _, block := range m.visualBlocks {
+	for _, block := range m.visual.blocks {
 		if block.turnTrailerID != 0 && len(block.rows) > 0 {
 			row := rowOffset
 			if v.contains(row) {
@@ -5324,7 +5333,7 @@ func (m *replModel) visibleDisclosurePlacements(v transcriptViewport, overlay tu
 	// leave no fully visible control; the header never stands in for one.
 	var placements []disclosurePlacement
 	rowOffset := 0
-	for _, block := range m.visualBlocks {
+	for _, block := range m.visual.blocks {
 		recordIDs := block.reasoningIDs
 		if overlay == turnDockOverlayTools || overlay == turnDockOverlayImages {
 			recordIDs = block.toolDisclosureIDs
@@ -5491,7 +5500,7 @@ func (m *replModel) toggleImageDisclosureGroup(ids []int64) bool {
 		for _, id := range validIDs {
 			m.toolDisclosures[id].imagesExpanded = expand
 		}
-		m.invalidateVisual()
+		m.visual.invalidate()
 	})
 	return true
 }
@@ -6018,7 +6027,7 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 		// The third Images field and its gallery are derived from
 		// inspectionImages; neither necessarily changes the canonical raw tool
 		// text.
-		m.invalidateVisual()
+		m.visual.invalidate()
 	})
 }
 

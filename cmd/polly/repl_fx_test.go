@@ -61,20 +61,20 @@ func TestStreamCursorPulseInvalidatesVisualCache(t *testing.T) {
 	m.turnStarted = time.Now()
 	m.refreshStreamCursor()
 	m.transcriptRows(80)
-	if !m.visualCacheValid {
+	if !m.visual.valid {
 		t.Fatal("cache should be valid after rendering rows")
 	}
 
 	// Same pulse phase: refresh must not thrash the cache.
 	m.refreshStreamCursor()
-	if !m.visualCacheValid {
+	if !m.visual.valid {
 		t.Fatal("unchanged caret frame should keep the visual cache")
 	}
 
 	// Advance time across a pulse boundary: the frame flips and invalidates.
 	m.turnStarted = time.Now().Add(-arrowPulsePeriod)
 	m.refreshStreamCursor()
-	if m.visualCacheValid {
+	if m.visual.valid {
 		t.Fatal("pulse flip should invalidate the visual cache")
 	}
 }
