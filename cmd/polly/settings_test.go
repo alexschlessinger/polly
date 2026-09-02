@@ -23,7 +23,7 @@ func TestSettingSpecGateMembership(t *testing.T) {
 		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "display", "tooltimeout", "skilldir", "sandbox"})
 	pin("replSettableKeys", replSettableKeys,
 		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"})
-	pin("flagged rows", settingKeysWhere(func(s settingSpec) bool { return s.flag != "" }),
+	pin("flagged rows", settingKeysWhere(func(s settingSpec) bool { return s.flagged() }),
 		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir", "maxiterations"})
 	pin("startupWriteBack gate", settingKeysWhere(func(s settingSpec) bool { return s.startupWriteBack }),
 		[]string{"model", "temp", "maxtokens", "tooltimeout", "skilldir", "maxiterations"})
@@ -33,12 +33,12 @@ func TestSettingSpecGateMembership(t *testing.T) {
 		[]string{"thinking"})
 
 	for _, spec := range settingSpecs {
-		if spec.flag != "" {
-			if spec.fromCmd == nil || spec.fromMeta == nil || spec.toMeta == nil {
-				t.Errorf("flagged setting %q must carry fromCmd, fromMeta, and toMeta", spec.key)
+		if spec.flagged() {
+			if spec.fromMeta == nil || spec.toMeta == nil {
+				t.Errorf("flagged setting %q must carry fromMeta and toMeta", spec.key)
 			}
 		} else {
-			if spec.fromCmd != nil || spec.fromMeta != nil || spec.toMeta != nil ||
+			if spec.fromMeta != nil || spec.toMeta != nil ||
 				spec.startupWriteBack || spec.parse != nil {
 				t.Errorf("derived setting %q must be show-only", spec.key)
 			}
@@ -121,8 +121,8 @@ func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSettingSpecFlagsExist catches a row naming a CLI flag that was never
-// defined (or a renamed flag leaving a stale row behind).
+// TestSettingSpecFlagsExist catches a flagged row whose key names no CLI
+// flag (a renamed flag leaving a stale row behind).
 func TestSettingSpecFlagsExist(t *testing.T) {
 	flags, _ := defineFlagsWithGroups()
 	names := map[string]bool{}
@@ -132,8 +132,8 @@ func TestSettingSpecFlagsExist(t *testing.T) {
 		}
 	}
 	for _, spec := range settingSpecs {
-		if spec.flag != "" && !names[spec.flag] {
-			t.Errorf("setting %q references flag %q that is not defined", spec.key, spec.flag)
+		if spec.flagged() && !names[spec.key] {
+			t.Errorf("flagged setting %q has no CLI flag of that name", spec.key)
 		}
 	}
 }

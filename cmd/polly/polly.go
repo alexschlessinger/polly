@@ -1480,7 +1480,7 @@ func initializeConversation(ctx context.Context, config *Config, sessionStore se
 			// and empty values are intentional settings too, so copy every field
 			// that was not explicitly overridden on this invocation.
 			for _, spec := range settingSpecs {
-				if spec.flag == "" || spec.fromMeta == nil || cmd.IsSet(spec.flag) {
+				if !spec.flagged() || cmd.IsSet(spec.key) {
 					continue
 				}
 				spec.fromMeta(config, contextInfo)

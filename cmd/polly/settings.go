@@ -15,9 +15,9 @@ import (
 // lists, /get rendering, /set parsing, and the metadata copy gates.
 //
 // The gates are deliberately distinct and must stay distinct:
-//   - flag != "" gates the IsSet twin walks in initializeConversation
-//     (restore from metadata when NOT set) and applyFlagSettings (override
-//     metadata when set);
+//   - flagged rows (fromCmd != nil; the flag shares the row's key) gate the
+//     IsSet twin walks in initializeConversation (restore from metadata when
+//     NOT set) and applyFlagSettings (override metadata when set);
 //   - startupWriteBack marks updateContextInfo's unconditional startup
 //     write-back set — maxcontext, system, and thinking are excluded on
 //     purpose and reach metadata only through applyFlagSettings;
@@ -25,13 +25,10 @@ import (
 //     persistReplSettings writes after a /set: what /set can change, /set
 //     must persist, or the change silently dies at relaunch.
 type settingSpec struct {
-	// key is the REPL name used by /get and /set. Table order is load-bearing:
-	// it defines /get all output order and the settable-keys error text.
+	// key is the REPL name used by /get and /set, and the CLI flag name on
+	// flagged rows. Table order is load-bearing: it defines /get all output
+	// order and the settable-keys error text.
 	key string
-
-	// flag is the CLI flag name, or "" for derived flagless settings
-	// (display, sandbox).
-	flag string
 
 	startupWriteBack bool
 
@@ -76,7 +73,6 @@ type settingSpec struct {
 var settingSpecs = []settingSpec{
 	{
 		key:              "model",
-		flag:             "model",
 		startupWriteBack: true,
 		parse: func(cfg *Config, value string) error {
 			if value == "" {
@@ -95,7 +91,6 @@ var settingSpecs = []settingSpec{
 	},
 	{
 		key:              "temp",
-		flag:             "temp",
 		startupWriteBack: true,
 		parse: func(cfg *Config, value string) error {
 			f, err := strconv.ParseFloat(value, 64)
@@ -117,7 +112,6 @@ var settingSpecs = []settingSpec{
 	},
 	{
 		key:              "maxtokens",
-		flag:             "maxtokens",
 		startupWriteBack: true,
 		parse: func(cfg *Config, value string) error {
 			n, err := strconv.Atoi(value)
@@ -138,8 +132,7 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.MaxTokens = cfg.MaxTokens },
 	},
 	{
-		key:  "maxcontext",
-		flag: "maxcontext",
+		key: "maxcontext",
 		parse: func(cfg *Config, value string) error {
 			n, err := strconv.Atoi(value)
 			if err != nil {
@@ -159,8 +152,7 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.MaxHistoryTokens = cfg.MaxHistoryTokens },
 	},
 	{
-		key:  "thinking",
-		flag: "thinking",
+		key: "thinking",
 		parse: func(cfg *Config, value string) error {
 			if _, err := llm.ParseThinkingEffort(value); err != nil {
 				return err
@@ -177,8 +169,7 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.ThinkingEffort = cfg.ThinkingEffort },
 	},
 	{
-		key:  "system",
-		flag: "system",
+		key: "system",
 		show: func(_ *replCommandContext, cfg *Config) string {
 			if cfg.SystemPrompt == "" {
 				return "(none)"
@@ -205,7 +196,6 @@ var settingSpecs = []settingSpec{
 	},
 	{
 		key:              "tooltimeout",
-		flag:             "tooltimeout",
 		startupWriteBack: true,
 		parse: func(cfg *Config, value string) error {
 			d, err := time.ParseDuration(value)
@@ -232,7 +222,6 @@ var settingSpecs = []settingSpec{
 	},
 	{
 		key:              "skilldir",
-		flag:             "skilldir",
 		startupWriteBack: true,
 		show: func(_ *replCommandContext, cfg *Config) string {
 			if len(cfg.SkillDirs) == 0 {
@@ -256,7 +245,6 @@ var settingSpecs = []settingSpec{
 		// maxiterations rides the flag-persistence gates but stays invisible
 		// to /get, /set, and completions.
 		key:              "maxiterations",
-		flag:             "maxiterations",
 		startupWriteBack: true,
 		fromCmd:          func(cfg *Config, cmd *cli.Command) { cfg.MaxIterations = cmd.Int("maxiterations") },
 		fromMeta:         func(cfg *Config, md *sessions.Metadata) { cfg.MaxIterations = md.MaxIterations },
@@ -281,11 +269,17 @@ func settingKeysWhere(pred func(settingSpec) bool) []string {
 	return keys
 }
 
+// flagged reports whether a CLI flag named key backs the row; derived rows
+// (display, sandbox) have none.
+func (s settingSpec) flagged() bool {
+	return s.fromCmd != nil
+}
+
 // flagSet reports whether the setting's flag was given, by argument or
 // environment, so its value must reach metadata even outside the startup
 // write-back set. An explicit zero (--maxcontext 0 = unlimited) counts.
 func (s settingSpec) flagSet(cmd *cli.Command) bool {
-	return s.flag != "" && s.toMeta != nil && cmd.IsSet(s.flag)
+	return s.flagged() && cmd.IsSet(s.key)
 }
 
 func settingSpecFor(key string) (settingSpec, bool) {
