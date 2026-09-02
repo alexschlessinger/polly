@@ -364,7 +364,7 @@ func TestApprovalPromptFitsNarrowTerminal(t *testing.T) {
 	m.approval = &approvalState{
 		calls: []messages.ChatMessageToolCall{{Name: "custom_tool_with_a_very_long_name"}, {Name: "next"}},
 	}
-	text, _, _, _, _ := m.renderInputForTerminal(1, 20)
+	text, _, _, _ := m.renderInputForTerminal(1, 20)
 	plain := plainStyledText(text)
 	if rw.StringWidth(plain) > 20 {
 		t.Fatalf("approval width = %d, want <= 20: %q", rw.StringWidth(plain), plain)
@@ -396,7 +396,7 @@ func TestStatusAndApprovalNeverExceedTerminalWidth(t *testing.T) {
 
 	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "custom_tool_with_a_very_long_name"}}}
 	for width := 1; width <= 60; width++ {
-		text, _, _, _, _ := m.renderInputForTerminal(1, width)
+		text, _, _, _ := m.renderInputForTerminal(1, width)
 		if got := rw.StringWidth(plainStyledText(text)); got > width {
 			t.Fatalf("approval width %d exceeds terminal %d: %q", got, width, plainStyledText(text))
 		}

@@ -69,8 +69,11 @@ func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editab
 	return m.renderInputWithMaxRows(maxInputRows)
 }
 
+// renderInputWithMaxRows also reports the row count the region occupies,
+// derived as frameLayoutFor derives it, for the layout assertions.
 func (m *replModel) renderInputWithMaxRows(maxRows int) (text string, rows, curRow, curCol int, editable bool) {
-	return m.renderInputForTerminal(maxRows, 0)
+	text, curRow, curCol, editable = m.renderInputForTerminal(maxRows, 0)
+	return text, min(max(maxRows, 1), m.inputRows()), curRow, curCol, editable
 }
 
 // inputDisplay returns just the input region's text, for assertions on the

@@ -3367,20 +3367,21 @@ func (m *replModel) inputCursorRowCol() (row, col int) {
 }
 
 // renderInputForTerminal produces the bottom input region: its display text
-// (possibly multiple lines), the row count it occupies, the cursor's row/col
-// within that region, and whether the cursor should be shown. The
-// busy/approval/search overlays are single-line and hide the cursor; the
+// (possibly multiple lines), the cursor's row/col within that region, and
+// whether the cursor should be shown. The region occupies min(maxRows,
+// inputRows()) rows, which frameLayoutFor has already fixed as l.inputRows.
+// The busy/approval/search overlays are single-line and hide the cursor; the
 // editable prompt may span several rows, anchored to the bottom when it
 // overflows maxRows. Caller must hold m.mu.
-func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, rows, curRow, curCol int, editable bool) {
+func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, curRow, curCol int, editable bool) {
 	if maxRows < 1 {
 		maxRows = 1
 	}
 	switch {
 	case m.hist.searching:
-		return m.hist.searchDisplay(), 1, 0, 0, false
+		return m.hist.searchDisplay(), 0, 0, false
 	case m.approval != nil:
-		return m.approvalPrompt(width), 1, 0, 0, false
+		return m.approvalPrompt(width), 0, 0, false
 	}
 
 	lines := strings.Split(m.ed.text(), "\n")
@@ -3436,7 +3437,7 @@ func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, row
 	if curRow > len(visible)-1 {
 		curRow = len(visible) - 1
 	}
-	return strings.Join(parts, "\n"), len(visible), curRow, cc, true
+	return strings.Join(parts, "\n"), curRow, cc, true
 }
 
 func (m *replModel) approvalPrompt(width int) string {
@@ -4736,7 +4737,7 @@ func (r *managedREPL) render() {
 	r.model.refreshReasoningRecords(w)
 	r.model.refreshExpandedTurnTrailer(w)
 	l := r.frameLayoutFor(w, h)
-	input, _, curRow, curCol, editable := r.model.renderInputForTerminal(l.inputRows, w)
+	input, curRow, curCol, editable := r.model.renderInputForTerminal(l.inputRows, w)
 	transcriptRows := r.model.transcriptRows(w)
 	topRow, pinTranscriptBottom := r.model.settleScroll(len(transcriptRows), l.transcriptHeight)
 	status := r.model.statusRow(w)

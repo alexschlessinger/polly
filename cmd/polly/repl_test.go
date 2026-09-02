@@ -767,7 +767,7 @@ func TestRenderInputHorizontallyFollowsCursor(t *testing.T) {
 	m := newReplModel()
 	m.ed.setText("0123456789abcdef")
 
-	text, _, _, curCol, _ := m.renderInputForTerminal(maxInputRows, 8)
+	text, _, curCol, _ := m.renderInputForTerminal(maxInputRows, 8)
 	if !strings.Contains(text, "abcdef") || strings.Contains(text, "0123") {
 		t.Fatalf("long input should show the cursor-side tail, got %q", text)
 	}
