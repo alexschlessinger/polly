@@ -370,10 +370,7 @@ func (m *replModel) refreshTurnTrailer(record *turnTrailerRecord) {
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return
 	}
-	width := m.reasoningWidth
-	if width < 2 {
-		width = 80
-	}
+	width := m.disclosureLayoutWidth(0)
 	text, fields := m.turnDockRowFor(record.dock, width)
 	detail, images := m.turnTrailerDetail(record.dock, width)
 	if detail != "" {
@@ -383,15 +380,11 @@ func (m *replModel) refreshTurnTrailer(record *turnTrailerRecord) {
 	if m.transcript[record.transcriptIndex] == text && transcriptImagesEqual(m.transcriptImages[record.transcriptIndex], images) {
 		return
 	}
-	oldCount, start := 0, 0
-	if !m.followBottom {
-		oldCount = m.entryVisualLineCount(record.transcriptIndex, width)
-		start = m.entryVisualStart(record.transcriptIndex, width)
-	}
-	m.setTranscriptEntry(record.transcriptIndex, text, images)
-	if !m.followBottom {
-		m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(record.transcriptIndex, width))
-	}
+	// The trailer follows the turn's merged activity blocks, so only display
+	// rows can re-anchor a held viewport across its resize.
+	m.mutateAnchored(width, matchTurnTrailerBlock(record.id), func(bool) {
+		m.setTranscriptEntry(record.transcriptIndex, text, images)
+	})
 }
 
 func (m *replModel) turnTrailerDetail(dock turnDockState, width int) (string, []transcriptImage) {

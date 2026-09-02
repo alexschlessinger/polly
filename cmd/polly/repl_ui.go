@@ -1530,24 +1530,15 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 	if m.transcript[index] == text && transcriptImagesEqual(m.transcriptImages[index], images) {
 		return
 	}
-	// Tool activity renders inline in the transcript, so updates must
-	// invalidate the visual block cache and re-anchor a held viewport like
-	// any other transcript mutation.
-	width := m.reasoningWidth
-	if width < 2 {
-		width = 80
+	// Tool activity renders inline in the transcript, so updates re-anchor a
+	// held viewport like any other transcript mutation.
+	if !reanchor {
+		m.setTranscriptEntry(index, text, images)
+		return
 	}
-	match := matchToolDisclosureBlock(record.id)
-	oldStart, oldCount, held := 0, 0, false
-	if reanchor && !m.followBottom {
-		oldStart, oldCount, held = m.displayRecordSpan(width, match)
-	}
-	m.setTranscriptEntry(index, text, images)
-	if held {
-		if _, newCount, ok := m.displayRecordSpan(width, match); ok {
-			m.anchorForResizedEntry(oldStart, oldCount, newCount)
-		}
-	}
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolDisclosureBlock(record.id), func(bool) {
+		m.setTranscriptEntry(index, text, images)
+	})
 }
 
 // displayRecordSpan locates the flattened display block satisfying match and
@@ -1566,6 +1557,45 @@ func (m *replModel) displayRecordSpan(width int, match func(*transcriptVisualBlo
 		start += len(block.rows)
 	}
 	return 0, 0, false
+}
+
+// mutateAnchored applies mutate to the transcript while keeping a held
+// viewport steady: the display block satisfying match is measured before and
+// after, and the scroll anchor shifts by the height change. mutate receives
+// whether the block was found under a held viewport, so nested refreshes can
+// skip their own re-anchoring. When the viewport follows the bottom nothing
+// is measured. Caller must hold m.mu.
+func (m *replModel) mutateAnchored(width int, match func(*transcriptVisualBlock) bool, mutate func(held bool)) {
+	if m.followBottom {
+		mutate(false)
+		return
+	}
+	oldStart, oldCount, held := m.displayRecordSpan(width, match)
+	mutate(held)
+	if held {
+		if _, newCount, ok := m.displayRecordSpan(width, match); ok {
+			m.anchorForResizedEntry(oldStart, oldCount, newCount)
+		}
+	}
+}
+
+// matchActivityGroup matches the merged activity block that owns every
+// record in ids. Raw transcript entries over-count their independent headers
+// and reasoning previews after layout combines them into one block.
+func matchActivityGroup(ids []int64, reasoning bool) func(*transcriptVisualBlock) bool {
+	return func(block *transcriptVisualBlock) bool {
+		blockIDs := block.toolDisclosureIDs
+		if reasoning {
+			blockIDs = block.reasoningIDs
+		}
+		return activityGroupContains(blockIDs, ids)
+	}
+}
+
+func matchTurnTrailerBlock(recordID int64) func(*transcriptVisualBlock) bool {
+	return func(block *transcriptVisualBlock) bool {
+		return block.turnTrailerID == recordID
+	}
 }
 
 func matchToolDisclosureBlock(recordID int64) func(*transcriptVisualBlock) bool {
@@ -1928,31 +1958,21 @@ func (m *replModel) refreshReasoningRecordWithAnchor(record *reasoningRecord, wi
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return
 	}
-	if width < 1 {
-		width = m.reasoningWidth
-	}
-	if width < 1 {
-		width = 80
-	}
+	width = m.disclosureLayoutWidth(width)
 	next := m.reasoningRecordText(record, width)
 	record.dirty = false
 	if m.transcript[record.transcriptIndex] == next {
 		return
 	}
-	// Reasoning renders inline in the transcript, so growth must invalidate
-	// the visual block cache and re-anchor a held viewport like any other
-	// transcript mutation.
-	match := matchReasoningBlock(record.id)
-	oldStart, oldCount, held := 0, 0, false
-	if reanchor && !m.followBottom {
-		oldStart, oldCount, held = m.displayRecordSpan(width, match)
+	// Reasoning renders inline in the transcript, so growth re-anchors a held
+	// viewport like any other transcript mutation.
+	if !reanchor {
+		m.setTranscriptText(record.transcriptIndex, next)
+		return
 	}
-	m.setTranscriptText(record.transcriptIndex, next)
-	if held {
-		if _, newCount, ok := m.displayRecordSpan(width, match); ok {
-			m.anchorForResizedEntry(oldStart, oldCount, newCount)
-		}
-	}
+	m.mutateAnchored(width, matchReasoningBlock(record.id), func(bool) {
+		m.setTranscriptText(record.transcriptIndex, next)
+	})
 }
 
 func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) string {
@@ -2137,14 +2157,16 @@ func (m *replModel) toggleReasoning(recordID int64, width int) bool {
 	return true
 }
 
+// disclosureLayoutWidth resolves the width inline activity is laid out at:
+// the explicit width when usable, else the last renderer width, else 80.
 func (m *replModel) disclosureLayoutWidth(width int) int {
-	if width > 0 {
-		return width
+	if width < 2 {
+		width = m.reasoningWidth
 	}
-	if m.reasoningWidth > 0 {
-		return m.reasoningWidth
+	if width < 2 {
+		return 80
 	}
-	return 80
+	return width
 }
 
 // latestTurnReasoningGroup returns the current turn's newest projected inline
@@ -5222,24 +5244,6 @@ func activityGroupContains(blockIDs, ids []int64) bool {
 	return true
 }
 
-// projectedActivityGroupBounds measures the merged visual block that owns a
-// disclosure group. Raw transcript entries over-count their independent
-// headers and reasoning previews after layout combines them into one block.
-func (m *replModel) projectedActivityGroupBounds(ids []int64, reasoning bool, width int) (start, count int, ok bool) {
-	m.transcriptRows(width)
-	for _, block := range m.visualBlocks {
-		blockIDs := block.toolDisclosureIDs
-		if reasoning {
-			blockIDs = block.reasoningIDs
-		}
-		if activityGroupContains(blockIDs, ids) {
-			return start, len(block.rows), true
-		}
-		start += len(block.rows)
-	}
-	return 0, 0, false
-}
-
 func (m *replModel) toggleReasoningGroup(ids []int64, width int) bool {
 	anyExpanded, found := false, false
 	validIDs := make([]int64, 0, len(ids))
@@ -5257,32 +5261,25 @@ func (m *replModel) toggleReasoningGroup(ids []int64, width int) bool {
 		m.reasoningWidth = width
 	}
 	layoutWidth := m.disclosureLayoutWidth(width)
-	oldStart, oldCount, heldGroup := 0, 0, false
-	if !m.followBottom {
-		oldStart, oldCount, heldGroup = m.projectedActivityGroupBounds(validIDs, true, layoutWidth)
-	}
 	// The group header points down whenever any member is expanded. Its first
 	// click therefore collapses the whole group; only an entirely closed group
 	// expands on click.
 	expand := !anyExpanded
-	// Apply the new state to the whole group before refreshing any record:
-	// each refresh re-lays-out the merged activity row, so refreshing mid-loop
-	// would render intermediate frames from a half-toggled group.
-	var changed []*reasoningRecord
-	for _, id := range ids {
-		if record := m.reasoningRecords[id]; record != nil && record.expanded != expand {
-			record.expanded = expand
-			changed = append(changed, record)
+	m.mutateAnchored(layoutWidth, matchActivityGroup(validIDs, true), func(held bool) {
+		// Apply the new state to the whole group before refreshing any record:
+		// each refresh re-lays-out the merged activity row, so refreshing
+		// mid-loop would render intermediate frames from a half-toggled group.
+		var changed []*reasoningRecord
+		for _, id := range ids {
+			if record := m.reasoningRecords[id]; record != nil && record.expanded != expand {
+				record.expanded = expand
+				changed = append(changed, record)
+			}
 		}
-	}
-	for _, record := range changed {
-		m.refreshReasoningRecordWithAnchor(record, layoutWidth, !heldGroup)
-	}
-	if heldGroup {
-		if _, newCount, ok := m.projectedActivityGroupBounds(validIDs, true, layoutWidth); ok {
-			m.anchorForResizedEntry(oldStart, oldCount, newCount)
+		for _, record := range changed {
+			m.refreshReasoningRecordWithAnchor(record, layoutWidth, !held)
 		}
-	}
+	})
 	return true
 }
 
@@ -5299,28 +5296,20 @@ func (m *replModel) toggleToolDisclosureGroup(ids []int64) bool {
 	if !found {
 		return false
 	}
-	layoutWidth := m.disclosureLayoutWidth(0)
-	oldStart, oldCount, heldGroup := 0, 0, false
-	if !m.followBottom {
-		oldStart, oldCount, heldGroup = m.projectedActivityGroupBounds(validIDs, false, layoutWidth)
-	}
 	expand := !anyExpanded
-	// Apply-then-refresh: see toggleReasoningGroup.
-	var changed []*toolDisclosureRecord
-	for _, id := range ids {
-		if record := m.toolDisclosures[id]; record != nil && record.expanded != expand {
-			record.expanded = expand
-			changed = append(changed, record)
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchActivityGroup(validIDs, false), func(held bool) {
+		// Apply-then-refresh: see toggleReasoningGroup.
+		var changed []*toolDisclosureRecord
+		for _, id := range ids {
+			if record := m.toolDisclosures[id]; record != nil && record.expanded != expand {
+				record.expanded = expand
+				changed = append(changed, record)
+			}
 		}
-	}
-	for _, record := range changed {
-		m.refreshToolDisclosureWithAnchor(record, !heldGroup)
-	}
-	if heldGroup {
-		if _, newCount, ok := m.projectedActivityGroupBounds(validIDs, false, layoutWidth); ok {
-			m.anchorForResizedEntry(oldStart, oldCount, newCount)
+		for _, record := range changed {
+			m.refreshToolDisclosureWithAnchor(record, !held)
 		}
-	}
+	})
 	return true
 }
 
@@ -5339,21 +5328,13 @@ func (m *replModel) toggleImageDisclosureGroup(ids []int64) bool {
 	if !found {
 		return false
 	}
-	layoutWidth := m.disclosureLayoutWidth(0)
-	oldStart, oldCount, heldGroup := 0, 0, false
-	if !m.followBottom {
-		oldStart, oldCount, heldGroup = m.projectedActivityGroupBounds(validIDs, false, layoutWidth)
-	}
 	expand := !anyExpanded
-	for _, id := range validIDs {
-		m.toolDisclosures[id].imagesExpanded = expand
-	}
-	m.invalidateVisual()
-	if heldGroup {
-		if _, newCount, ok := m.projectedActivityGroupBounds(validIDs, false, layoutWidth); ok {
-			m.anchorForResizedEntry(oldStart, oldCount, newCount)
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchActivityGroup(validIDs, false), func(bool) {
+		for _, id := range validIDs {
+			m.toolDisclosures[id].imagesExpanded = expand
 		}
-	}
+		m.invalidateVisual()
+	})
 	return true
 }
 
@@ -5930,22 +5911,14 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 		})
 		row = &record.rows[len(record.rows)-1]
 	}
-	layoutWidth := m.disclosureLayoutWidth(0)
-	ids := []int64{record.id}
-	oldStart, oldCount, heldGroup := 0, 0, false
-	if !m.followBottom {
-		oldStart, oldCount, heldGroup = m.projectedActivityGroupBounds(ids, false, layoutWidth)
-	}
-	row.inspectionImages = append([]transcriptImage(nil), images...)
-	m.refreshToolDisclosureWithAnchor(record, false)
-	// The third Images field and its gallery are derived from inspectionImages;
-	// neither necessarily changes the canonical raw tool text.
-	m.invalidateVisual()
-	if heldGroup {
-		if _, newCount, ok := m.projectedActivityGroupBounds(ids, false, layoutWidth); ok {
-			m.anchorForResizedEntry(oldStart, oldCount, newCount)
-		}
-	}
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchActivityGroup([]int64{record.id}, false), func(bool) {
+		row.inspectionImages = append([]transcriptImage(nil), images...)
+		m.refreshToolDisclosureWithAnchor(record, false)
+		// The third Images field and its gallery are derived from
+		// inspectionImages; neither necessarily changes the canonical raw tool
+		// text.
+		m.invalidateVisual()
+	})
 }
 
 func (m *replModel) toolDisclosureRowForCall(callID string) (*toolDisclosureRecord, *toolDisclosureRow) {

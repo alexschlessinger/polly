@@ -421,6 +421,9 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 		}
 		return updated, copied
 	}
+	// This runs inside transcriptRows, so it cannot measure display blocks
+	// (that would re-enter the layout); it re-anchors in per-entry space,
+	// which is exact only while no earlier activity entries have merged.
 	for transcriptIndex, images := range m.transcriptImages {
 		updated, copied := refresh(images)
 		if copied {
