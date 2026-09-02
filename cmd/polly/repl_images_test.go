@@ -104,7 +104,7 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 
 	var activity transcriptDisplayBlock
 	for _, block := range m.transcriptDisplayEntries(80) {
-		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
+		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			activity = block
 			break
 		}
@@ -269,7 +269,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 
 	var collapsed transcriptDisplayBlock
 	for _, block := range r.model.transcriptDisplayEntries(100) {
-		if block.toolDisclosureID == record.id {
+		if len(block.toolDisclosureIDs) > 0 && block.toolDisclosureIDs[0] == record.id {
 			collapsed = block
 			break
 		}
@@ -296,7 +296,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 
 	var expanded transcriptDisplayBlock
 	for _, block := range r.model.transcriptDisplayEntries(100) {
-		if block.toolDisclosureID == record.id {
+		if len(block.toolDisclosureIDs) > 0 && block.toolDisclosureIDs[0] == record.id {
 			expanded = block
 			break
 		}
@@ -395,7 +395,7 @@ func TestToolAndImagesDisclosuresKeepIndependentImageMarkers(t *testing.T) {
 
 	var activity transcriptDisplayBlock
 	for _, block := range m.transcriptDisplayEntries(100) {
-		if block.toolDisclosureID == record.id {
+		if len(block.toolDisclosureIDs) > 0 && block.toolDisclosureIDs[0] == record.id {
 			activity = block
 			break
 		}

@@ -66,19 +66,26 @@ type markdownRenderState struct {
 	deferredTable bool
 }
 
+// transcriptDisplayBlock is one renderable unit of the transcript. An
+// activity block carries the reasoning and tool disclosure records it shows;
+// adjacent activity entries merge into one block, so both lists may hold
+// several IDs.
 type transcriptDisplayBlock struct {
 	key                     string
 	text                    string
 	images                  []transcriptImage
-	reasoningID             int64
 	reasoningIDs            []int64
-	toolDisclosureID        int64
 	toolDisclosureIDs       []int64
 	turnTrailerID           int64
 	activityFields          []turnDockPlacement
 	activityReasoningDetail string
 	activityToolDetail      string
 	activityImageDetail     string
+}
+
+// isActivity reports whether the block projects reasoning or tool records.
+func (b transcriptDisplayBlock) isActivity() bool {
+	return len(b.reasoningIDs) > 0 || len(b.toolDisclosureIDs) > 0
 }
 
 type transcriptImageSpan struct {

@@ -31,7 +31,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 
 	var activity transcriptDisplayBlock
 	for _, block := range m.transcriptDisplayEntries(120) {
-		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
+		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			activity = block
 			break
 		}
@@ -56,12 +56,12 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 	if !m.toggleImageDisclosureAt(images[0].X, images[0].Y) {
 		t.Fatal("Images hitbox did not expand")
 	}
-	record := m.toolDisclosures[activity.toolDisclosureID]
+	record := m.toolDisclosures[activity.toolDisclosureIDs[0]]
 	if record == nil || !record.imagesExpanded || record.expanded {
 		t.Fatalf("Images expansion changed Tools state: %#v", record)
 	}
 	for _, block := range m.transcriptDisplayEntries(120) {
-		if block.toolDisclosureID != activity.toolDisclosureID {
+		if len(block.toolDisclosureIDs) == 0 || block.toolDisclosureIDs[0] != activity.toolDisclosureIDs[0] {
 			continue
 		}
 		if len(block.images) != 2 || !strings.Contains(plainStyledText(block.text), "▾ 2 images viewed") {
@@ -137,7 +137,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 		t.Fatalf("collapsed reasoning leaked detail: %q", mid)
 	}
 	for _, block := range m.transcriptDisplayEntries(100) {
-		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
+		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
 			if !accentThought.MatchString(header) ||
 				!strings.Contains(header, "1 tool](fg:accent") {
@@ -156,7 +156,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 
 	tui.AppendToolEnd(call, "file contents", 50*time.Millisecond, nil)
 	for _, block := range m.transcriptDisplayEntries(100) {
-		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
+		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
 			if !accentThought.MatchString(header) ||
 				!strings.Contains(header, "1 tool](fg:accent") {
@@ -176,7 +176,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 		}
 	}
 	for _, block := range m.transcriptDisplayEntries(100) {
-		if block.reasoningID == 0 && block.toolDisclosureID == 0 {
+		if !block.isActivity() {
 			continue
 		}
 		header := strings.SplitN(block.text, "\n", 2)[0]
@@ -266,7 +266,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 	}
 	var activityHeaders []string
 	for _, block := range m.transcriptDisplayEntries(100) {
-		if block.reasoningID != 0 || block.toolDisclosureID != 0 {
+		if block.isActivity() {
 			activityHeaders = append(activityHeaders, strings.SplitN(block.text, "\n", 2)[0])
 		}
 	}

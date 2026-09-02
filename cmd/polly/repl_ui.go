@@ -712,9 +712,7 @@ type transcriptVisualBlock struct {
 	rows              [][]ui.Cell
 	images            []transcriptImage
 	imageSpans        []transcriptImageSpan
-	reasoningID       int64
 	reasoningIDs      []int64
-	toolDisclosureID  int64
 	toolDisclosureIDs []int64
 	turnTrailerID     int64
 	activityFields    []turnDockPlacement
@@ -1561,29 +1559,13 @@ func (m *replModel) displayRecordSpan(width int, match func(*transcriptVisualBlo
 
 func matchToolDisclosureBlock(recordID int64) func(*transcriptVisualBlock) bool {
 	return func(block *transcriptVisualBlock) bool {
-		if block.toolDisclosureID == recordID {
-			return true
-		}
-		for _, id := range block.toolDisclosureIDs {
-			if id == recordID {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(block.toolDisclosureIDs, recordID)
 	}
 }
 
 func matchReasoningBlock(recordID int64) func(*transcriptVisualBlock) bool {
 	return func(block *transcriptVisualBlock) bool {
-		if block.reasoningID == recordID {
-			return true
-		}
-		for _, id := range block.reasoningIDs {
-			if id == recordID {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(block.reasoningIDs, recordID)
 	}
 }
 
@@ -4715,7 +4697,8 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		changed := m.visualCacheWidth != width || m.visualCacheNativeImages != m.nativeImages ||
 			m.visualCacheCellWidth != m.imageCellWidth || m.visualCacheCellHeight != m.imageCellHeight ||
 			old.key != source.key || old.text != source.text || old.followed != followed ||
-			old.reasoningID != source.reasoningID || old.toolDisclosureID != source.toolDisclosureID ||
+			!slices.Equal(old.reasoningIDs, source.reasoningIDs) ||
+			!slices.Equal(old.toolDisclosureIDs, source.toolDisclosureIDs) ||
 			old.turnTrailerID != source.turnTrailerID ||
 			!transcriptImagesEqual(old.images, source.images)
 		if changed {
@@ -4738,9 +4721,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			rows:              rows,
 			images:            append([]transcriptImage(nil), source.images...),
 			imageSpans:        imageSpans,
-			reasoningID:       source.reasoningID,
 			reasoningIDs:      append([]int64(nil), source.reasoningIDs...),
-			toolDisclosureID:  source.toolDisclosureID,
 			toolDisclosureIDs: append([]int64(nil), source.toolDisclosureIDs...),
 			turnTrailerID:     source.turnTrailerID,
 			activityFields:    append([]turnDockPlacement(nil), source.activityFields...),
@@ -4802,20 +4783,19 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		} else if toolDisclosureID != 0 {
 			key = fmt.Sprintf("tools:%d", toolDisclosureID)
 		}
-		blocks = append(blocks, transcriptDisplayBlock{
-			key:              key,
-			text:             entry,
-			images:           m.transcriptImages[i],
-			reasoningID:      reasoningID,
-			toolDisclosureID: toolDisclosureID,
-			turnTrailerID:    turnTrailerID,
-		})
+		block := transcriptDisplayBlock{
+			key:           key,
+			text:          entry,
+			images:        m.transcriptImages[i],
+			turnTrailerID: turnTrailerID,
+		}
 		if reasoningID != 0 {
-			blocks[len(blocks)-1].reasoningIDs = []int64{reasoningID}
+			block.reasoningIDs = []int64{reasoningID}
 		}
 		if toolDisclosureID != 0 {
-			blocks[len(blocks)-1].toolDisclosureIDs = []int64{toolDisclosureID}
+			block.toolDisclosureIDs = []int64{toolDisclosureID}
 		}
+		blocks = append(blocks, block)
 	}
 	if m.slashHints != "" {
 		blocks = append(blocks, transcriptDisplayBlock{key: "slash", text: styled(m.slashHints, "muted", "")})
@@ -4909,13 +4889,12 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 	}
 	laidOut := make([]transcriptDisplayBlock, 0, len(blocks))
 	for _, block := range blocks {
-		isActivity := block.reasoningID != 0 || block.toolDisclosureID != 0
-		if !isActivity {
+		if !block.isActivity() {
 			laidOut = append(laidOut, block)
 			continue
 		}
 		detail := inlineActivityDetail(block.text)
-		if block.reasoningID != 0 {
+		if len(block.reasoningIDs) > 0 {
 			block.activityReasoningDetail = detail
 		} else {
 			block.activityToolDetail = detail
@@ -4923,20 +4902,12 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 
 		if n := len(laidOut); n > 0 {
 			previous := &laidOut[n-1]
-			previousIsActivity := previous.turnTrailerID == 0 &&
-				(previous.reasoningID != 0 || previous.toolDisclosureID != 0)
-			if previousIsActivity {
+			if previous.turnTrailerID == 0 && previous.isActivity() {
 				if len(previous.images) > 0 && len(block.images) > 0 {
 					block.activityToolDetail = offsetTranscriptImageMarkers(block.activityToolDetail, len(previous.images))
 				}
 				previous.reasoningIDs = append(previous.reasoningIDs, block.reasoningIDs...)
 				previous.toolDisclosureIDs = append(previous.toolDisclosureIDs, block.toolDisclosureIDs...)
-				if previous.reasoningID == 0 && block.reasoningID != 0 {
-					previous.reasoningID = block.reasoningID
-				}
-				if previous.toolDisclosureID == 0 && block.toolDisclosureID != 0 {
-					previous.toolDisclosureID = block.toolDisclosureID
-				}
 				if block.activityReasoningDetail != "" {
 					if previous.activityReasoningDetail != "" {
 						previous.activityReasoningDetail += "\n"
@@ -4958,7 +4929,7 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 	}
 	for i := range laidOut {
 		block := &laidOut[i]
-		if block.reasoningID == 0 && block.toolDisclosureID == 0 {
+		if !block.isActivity() {
 			continue
 		}
 		movedOn := !m.busy
@@ -5133,73 +5104,34 @@ func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRo
 		viewEnd -= min(overlayRows, viewportHeight)
 	}
 
+	// Only the block's activity controls are click targets. Truncation may
+	// leave no fully visible control; the header never stands in for one.
 	var placements []disclosurePlacement
 	rowOffset := 0
 	for _, block := range m.visualBlocks {
-		recordID, recordIDs := block.reasoningID, block.reasoningIDs
+		recordIDs := block.reasoningIDs
 		if overlay == turnDockOverlayTools || overlay == turnDockOverlayImages {
-			recordID = block.toolDisclosureID
 			recordIDs = block.toolDisclosureIDs
 		}
-		if recordID != 0 && len(block.rows) > 0 {
-			// Inline activity blocks carry plural IDs even when truncation leaves
-			// no fully visible control. In that case, do not fall back to making
-			// the whole (truncated) header a target for every disclosure.
-			if len(block.reasoningIDs) > 0 || len(block.toolDisclosureIDs) > 0 {
-				row := rowOffset
-				if row >= viewStart && row < viewEnd {
-					for _, field := range block.activityFields {
-						if field.overlay != overlay || field.X >= width {
-							continue
-						}
-						placements = append(placements, disclosurePlacement{
-							recordID:  recordID,
-							recordIDs: append([]int64(nil), recordIDs...),
-							X:         field.X,
-							Y:         logoRows + topPadding + row - viewStart,
-							Cols:      min(field.Cols, width-field.X),
-						})
-					}
-				}
-				rowOffset += len(block.rows)
-				continue
-			}
-			header := strings.SplitN(block.text, "\n", 2)[0]
-			headerRows := len(transcriptBlockRows(header, false, width))
-			for headerRow := 0; headerRow < headerRows && headerRow < len(block.rows); headerRow++ {
-				row := rowOffset + headerRow
-				if row < viewStart || row >= viewEnd {
-					continue
-				}
-				cols := visualRowWidth(block.rows[headerRow])
-				if cols > width {
-					cols = width
-				}
-				if cols > 0 {
-					placements = append(placements, disclosurePlacement{
-						recordID: recordID,
-						X:        0,
-						Y:        logoRows + topPadding + row - viewStart,
-						Cols:     cols,
-					})
-				}
-			}
-		}
+		row := rowOffset
 		rowOffset += len(block.rows)
-	}
-	return placements
-}
-
-func visualRowWidth(row []ui.Cell) int {
-	width := 0
-	for _, cx := range ui.BuildCellWithXArray(row) {
-		cellWidth := rw.RuneWidth(cx.Cell.Rune)
-		if cellWidth < 1 {
+		if len(recordIDs) == 0 || len(block.rows) == 0 || row < viewStart || row >= viewEnd {
 			continue
 		}
-		width = max(width, cx.X+cellWidth)
+		for _, field := range block.activityFields {
+			if field.overlay != overlay || field.X >= width {
+				continue
+			}
+			placements = append(placements, disclosurePlacement{
+				recordID:  recordIDs[0],
+				recordIDs: append([]int64(nil), recordIDs...),
+				X:         field.X,
+				Y:         logoRows + topPadding + row - viewStart,
+				Cols:      min(field.Cols, width-field.X),
+			})
+		}
 	}
-	return width
+	return placements
 }
 
 func (m *replModel) toggleReasoningAt(x, y, width int) bool {
