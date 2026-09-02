@@ -2349,6 +2349,11 @@ func hydratedToolLine(label string, msg messages.ChatMessage) string {
 		}
 		return toolErrorLine(label, "", "failed")
 	}
+	return pendingToolLine(label)
+}
+
+// pendingToolLine is the row for a tool call whose outcome is not (yet) known.
+func pendingToolLine(label string) string {
 	return "  " + styled("·", "muted", "bold") + " " + styledToolText(label)
 }
 
@@ -2369,7 +2374,7 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 			record.rows[i].line = stripTranscriptImageMarkers(record.rows[i].line)
 		}
 		if record.rows[i].line == "" {
-			record.rows[i].line = "  " + styled("·", "muted", "bold") + " " + styledToolText(record.rows[i].label)
+			record.rows[i].line = pendingToolLine(record.rows[i].label)
 		}
 	}
 	m.appendLine("")
@@ -2423,270 +2428,324 @@ const resumedTurnLimit = 5
 // hydrateHistory makes a resumed context honest about what the model already
 // remembers. It shows only recent user turns, keeps assistant prose, and folds
 // raw tool exchanges into compact activity rows.
+// hydrateHistory replays a stored conversation into the transcript: the last
+// resumedTurnLimit user turns, each with its assistant text, reasoning, tool
+// activity, and trailer, then the composer restore for an unanswered final
+// prompt.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
 	m.clearTurnDock()
 	for _, msg := range history {
 		m.rememberArtifactAttachments(msg)
 	}
-	totalTurns := 0
+	start, totalTurns, showTurns := resumedHistoryWindow(history)
+	if totalTurns == 0 {
+		return
+	}
+	m.appendNoticeLine(resumedNotice(contextName, totalTurns, showTurns))
+	h := historyHydrator{m: m}
+	for _, msg := range history[start:] {
+		h.replay(msg)
+	}
+	h.finish()
+	m.followBottom = true
+}
+
+// resumedHistoryWindow counts the real user turns in history and returns the
+// index of the first message to replay so that at most resumedTurnLimit of
+// them show.
+func resumedHistoryWindow(history []messages.ChatMessage) (start, totalTurns, showTurns int) {
 	for _, msg := range history {
 		if msg.Role == messages.MessageRoleUser && !agentSyntheticMessage(msg) {
 			totalTurns++
 		}
 	}
-	if totalTurns == 0 {
-		return
-	}
-
-	showTurns := min(totalTurns, resumedTurnLimit)
-	skipTurns := totalTurns - showTurns
-	start := 0
+	showTurns = min(totalTurns, resumedTurnLimit)
+	skip := totalTurns - showTurns
 	seen := 0
 	for i, msg := range history {
 		if msg.Role != messages.MessageRoleUser || agentSyntheticMessage(msg) {
 			continue
 		}
-		if seen == skipTurns {
-			start = i
-			break
+		if seen == skip {
+			return i, totalTurns, showTurns
 		}
 		seen++
 	}
+	return 0, totalTurns, showTurns
+}
 
+func resumedNotice(contextName string, totalTurns, showTurns int) string {
 	name := contextName
 	if name == "" {
 		name = "context"
+	}
+	if totalTurns > showTurns {
+		return fmt.Sprintf("resumed %s · showing last %d of %d turns", name, showTurns, totalTurns)
 	}
 	turnWord := "turns"
 	if totalTurns == 1 {
 		turnWord = "turn"
 	}
-	if totalTurns > showTurns {
-		m.appendNoticeLine(fmt.Sprintf("resumed %s · showing last %d of %d turns", name, showTurns, totalTurns))
-	} else {
-		m.appendNoticeLine(fmt.Sprintf("resumed %s · %d %s", name, totalTurns, turnWord))
-	}
+	return fmt.Sprintf("resumed %s · %d %s", name, totalTurns, turnWord)
+}
 
-	var hydratedToolRows []toolDisclosureRow
-	var hydratedToolDisclosure *toolDisclosureRecord
-	flushTools := func() {
-		if len(hydratedToolRows) == 0 {
-			return
-		}
-		if hydratedToolDisclosure == nil {
-			hydratedToolDisclosure = m.appendCompletedToolDisclosure(hydratedToolRows)
-		} else {
-			for i := range hydratedToolRows {
-				if hydratedToolRows[i].line == "" {
-					hydratedToolRows[i].line = "  " + styled("·", "muted", "bold") + " " +
-						styledToolText(hydratedToolRows[i].label)
-				}
-			}
-			hydratedToolDisclosure.rows = append(hydratedToolDisclosure.rows, hydratedToolRows...)
-			m.refreshToolDisclosure(hydratedToolDisclosure)
-		}
-		hydratedToolRows = nil
+// historyHydrator replays stored messages one at a time, carrying the state
+// the role cases share: tool rows waiting for their disclosure, the open
+// reasoning record, the turn's token totals, and what the last message was so
+// the final user prompt can be settled or restored.
+type historyHydrator struct {
+	m *replModel
+
+	toolRows   []toolDisclosureRow   // rows not yet folded into the turn's disclosure
+	tools      *toolDisclosureRecord // the turn's disclosure, once one exists
+	reasoning  *reasoningRecord
+	turnInput  int
+	turnOutput int
+
+	lastRole            string
+	lastUserTurn        *managedTurnInput
+	lastUserContextOnly bool
+}
+
+func (h *historyHydrator) replay(msg messages.ChatMessage) {
+	switch msg.Role {
+	case messages.MessageRoleUser:
+		h.user(msg)
+	case messages.MessageRoleAssistant:
+		h.assistant(msg)
+	case messages.MessageRoleTool:
+		h.tool(msg)
+	case messages.MessageRoleInternal:
+		h.internal(msg)
 	}
-	applyToolOrder := func(order []durableDisplayToolCall) {
-		if len(order) == 0 {
-			return
+}
+
+func (h *historyHydrator) user(msg messages.ChatMessage) {
+	if agentSyntheticMessage(msg) {
+		return
+	}
+	m := h.m
+	if h.lastRole != "" && h.lastRole != messages.MessageRoleUser {
+		h.finishTurn()
+	} else {
+		h.flushTools()
+		m.clearTurnDock()
+	}
+	h.tools = nil
+	h.reasoning = nil
+	h.turnInput, h.turnOutput = 0, 0
+	m.appendTurnSeparator()
+	content, restorable, contextOnly := historyUserSummary(msg)
+	m.appendUserPrompt(content)
+	h.lastUserTurn = nil
+	if turn, ok := restorableHistoryTurn(msg, content, restorable, m.artifactStore); ok {
+		h.lastUserTurn = &turn
+	}
+	h.lastUserContextOnly = contextOnly
+	h.lastRole = msg.Role
+}
+
+func (h *historyHydrator) assistant(msg messages.ChatMessage) {
+	m := h.m
+	h.flushTools()
+	h.appendReasoning(msg.Reasoning)
+	if tokens := msg.GetInputTokens(); tokens > h.turnInput {
+		h.turnInput = tokens
+	}
+	h.turnOutput += msg.GetOutputTokens()
+	if content := msg.GetContent(); content != "" {
+		m.appendAssistant(content)
+		m.finishAssistantBlock("")
+	}
+	for _, call := range msg.ToolCalls {
+		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: call.ID, label: hydratedToolName(call.Name)})
+	}
+	h.lastRole = msg.Role
+}
+
+// tool settles the row a result belongs to: the row with its call ID, else
+// the oldest row still waiting.
+func (h *historyHydrator) tool(msg messages.ChatMessage) {
+	inspectionImages := inspectionTranscriptImages(msg, h.m.artifactStore)
+	if len(h.toolRows) == 0 {
+		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: msg.ToolCallID, label: hydratedToolName(msg.ToolName)})
+	}
+	pick := -1
+	for i := range h.toolRows {
+		if h.toolRows[i].settled {
+			continue
 		}
-		var existing []toolDisclosureRow
-		if hydratedToolDisclosure != nil {
-			existing = hydratedToolDisclosure.rows
+		if h.toolRows[i].callID == msg.ToolCallID {
+			pick = i
+			break
 		}
-		used := make([]bool, len(existing))
-		ordered := make([]toolDisclosureRow, 0, max(len(order), len(existing)))
-		for _, displayCall := range order {
-			name := displayCall.Name
-			if name == "" {
-				name = "tool"
+		if pick < 0 {
+			pick = i
+		}
+	}
+	if pick >= 0 {
+		h.toolRows[pick].line = hydratedToolLine(h.toolRows[pick].label, msg)
+		h.toolRows[pick].inspectionImages = inspectionImages
+		h.toolRows[pick].settled = true
+	}
+	h.lastRole = msg.Role
+}
+
+// internal applies a durable turn marker: the safe display metadata for the
+// turn's reasoning and tool order, and the status that settles the turn.
+func (h *historyHydrator) internal(msg messages.ChatMessage) {
+	m := h.m
+	h.flushTools()
+	displayToolCalls := decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls])
+	if displayReasoning, _ := msg.Metadata[messages.MetadataKeyDisplayReasoning].(string); displayReasoning != "" {
+		h.appendReasoning(displayReasoning)
+	}
+	h.applyToolOrder(displayToolCalls)
+	status, _ := msg.Metadata[messages.MetadataKeyTurnStatus].(string)
+	switch {
+	case status == messages.TurnStatusToolDenied:
+		if len(displayToolCalls) == 0 {
+			// Compatibility with sessions written before safe tool display
+			// metadata existed.
+			m.appendLine("  " + styled("✗", "err", "bold") + " " + styled("tool request denied", "muted", ""))
+		}
+		// A durable internal completion marker settles the preceding user
+		// turn without becoming model-visible assistant content.
+		h.lastRole = messages.MessageRoleAssistant
+	case status == messages.TurnStatusInterrupted:
+		// Everything before the marker is durable completed work; the
+		// turn ended early without a final response. Settle it so the
+		// preceding user message isn't restored as an unsent draft.
+		m.appendLine("  " + styled("turn interrupted · completed work retained", "muted", ""))
+		h.lastRole = messages.MessageRoleAssistant
+	case len(displayToolCalls) > 0:
+		h.lastRole = messages.MessageRoleAssistant
+	}
+}
+
+// flushTools folds the pending rows into the turn's disclosure, opening one
+// on first use.
+func (h *historyHydrator) flushTools() {
+	if len(h.toolRows) == 0 {
+		return
+	}
+	if h.tools == nil {
+		h.tools = h.m.appendCompletedToolDisclosure(h.toolRows)
+	} else {
+		for i := range h.toolRows {
+			if h.toolRows[i].line == "" {
+				h.toolRows[i].line = pendingToolLine(h.toolRows[i].label)
 			}
-			pick := -1
+		}
+		h.tools.rows = append(h.tools.rows, h.toolRows...)
+		h.m.refreshToolDisclosure(h.tools)
+	}
+	h.toolRows = nil
+}
+
+// applyToolOrder reorders the turn's disclosure to the durable display
+// order: each recorded call takes the existing row with its ID, else the
+// first unused row with its name, else a fresh row; a denied call shows as
+// denied whatever its row held. Rows the record does not mention keep their
+// place at the end.
+func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
+	if len(order) == 0 {
+		return
+	}
+	var existing []toolDisclosureRow
+	if h.tools != nil {
+		existing = h.tools.rows
+	}
+	used := make([]bool, len(existing))
+	ordered := make([]toolDisclosureRow, 0, max(len(order), len(existing)))
+	for _, displayCall := range order {
+		name := hydratedToolName(displayCall.Name)
+		pick := -1
+		for i := range existing {
+			if !used[i] && displayCall.ID != "" && existing[i].callID == displayCall.ID {
+				pick = i
+				break
+			}
+		}
+		if pick < 0 {
 			for i := range existing {
-				if !used[i] && displayCall.ID != "" && existing[i].callID == displayCall.ID {
+				if !used[i] && existing[i].label == name {
 					pick = i
 					break
 				}
 			}
-			if pick < 0 {
-				for i := range existing {
-					if !used[i] && existing[i].label == name {
-						pick = i
-						break
-					}
-				}
-			}
-			row := toolDisclosureRow{callID: displayCall.ID, label: name, settled: true}
-			if pick >= 0 {
-				used[pick] = true
-				row = existing[pick]
-			}
-			if displayCall.Denied {
-				row.line = toolDeniedLine(name)
-				row.images = nil
-				row.settled = true
-			} else if row.line == "" {
-				row.line = "  " + styled("·", "muted", "bold") + " " + styledToolText(name)
-			}
+		}
+		row := toolDisclosureRow{callID: displayCall.ID, label: name, settled: true}
+		if pick >= 0 {
+			used[pick] = true
+			row = existing[pick]
+		}
+		if displayCall.Denied {
+			row.line = toolDeniedLine(name)
+			row.images = nil
+			row.settled = true
+		} else if row.line == "" {
+			row.line = pendingToolLine(name)
+		}
+		ordered = append(ordered, row)
+	}
+	for i, row := range existing {
+		if !used[i] {
 			ordered = append(ordered, row)
 		}
-		for i, row := range existing {
-			if !used[i] {
-				ordered = append(ordered, row)
-			}
-		}
-		if hydratedToolDisclosure == nil {
-			hydratedToolDisclosure = m.appendCompletedToolDisclosure(ordered)
-			return
-		}
-		hydratedToolDisclosure.rows = ordered
-		hydratedToolDisclosure.complete = true
-		hydratedToolDisclosure.expanded = false
-		m.refreshToolDisclosure(hydratedToolDisclosure)
 	}
+	if h.tools == nil {
+		h.tools = h.m.appendCompletedToolDisclosure(ordered)
+		return
+	}
+	h.tools.rows = ordered
+	h.tools.complete = true
+	h.tools.expanded = false
+	h.m.refreshToolDisclosure(h.tools)
+}
 
-	lastRole := ""
-	var lastUserTurn *managedTurnInput
-	lastUserContextOnly := false
-	var hydratedReasoning *reasoningRecord
-	turnInput, turnOutput := 0, 0
-	appendHydratedReasoning := func(text string) {
-		if strings.TrimSpace(text) == "" {
-			return
-		}
-		if hydratedReasoning == nil {
-			hydratedReasoning = m.newReasoningRecord(true)
-		}
-		m.appendReasoningTail(hydratedReasoning, text, len(hydratedReasoning.tail) > 0)
-		m.refreshReasoningRecord(hydratedReasoning, 80)
+func (h *historyHydrator) appendReasoning(text string) {
+	if strings.TrimSpace(text) == "" {
+		return
 	}
-	finishHydratedTurn := func() {
-		flushTools()
-		m.setHydratedTurnDock(hydratedReasoning, hydratedToolDisclosure, turnInput, turnOutput)
-		m.attachTurnDockTrailer()
+	if h.reasoning == nil {
+		h.reasoning = h.m.newReasoningRecord(true)
 	}
-	for _, msg := range history[start:] {
-		switch msg.Role {
-		case messages.MessageRoleUser:
-			if agentSyntheticMessage(msg) {
-				continue
-			}
-			if lastRole != "" && lastRole != messages.MessageRoleUser {
-				finishHydratedTurn()
-			} else {
-				flushTools()
-				m.clearTurnDock()
-			}
-			hydratedToolDisclosure = nil
-			hydratedReasoning = nil
-			turnInput, turnOutput = 0, 0
-			m.appendTurnSeparator()
-			content, restorable, contextOnly := historyUserSummary(msg)
-			m.appendUserPrompt(content)
-			lastUserTurn = nil
-			if turn, ok := restorableHistoryTurn(msg, content, restorable, m.artifactStore); ok {
-				lastUserTurn = &turn
-			}
-			lastUserContextOnly = contextOnly
-			lastRole = msg.Role
-		case messages.MessageRoleAssistant:
-			flushTools()
-			appendHydratedReasoning(msg.Reasoning)
-			if tokens := msg.GetInputTokens(); tokens > turnInput {
-				turnInput = tokens
-			}
-			turnOutput += msg.GetOutputTokens()
-			if content := msg.GetContent(); content != "" {
-				m.appendAssistant(content)
-				m.finishAssistantBlock("")
-			}
-			for _, call := range msg.ToolCalls {
-				name := call.Name
-				if name == "" {
-					name = "tool"
-				}
-				hydratedToolRows = append(hydratedToolRows, toolDisclosureRow{
-					callID: call.ID,
-					label:  name,
-				})
-			}
-			lastRole = msg.Role
-		case messages.MessageRoleTool:
-			inspectionImages := inspectionTranscriptImages(msg, m.artifactStore)
-			if len(hydratedToolRows) == 0 {
-				name := msg.ToolName
-				if name == "" {
-					name = "tool"
-				}
-				hydratedToolRows = append(hydratedToolRows, toolDisclosureRow{
-					callID: msg.ToolCallID,
-					label:  name,
-				})
-			}
-			pick := -1
-			for i := range hydratedToolRows {
-				if hydratedToolRows[i].settled {
-					continue
-				}
-				if hydratedToolRows[i].callID == msg.ToolCallID {
-					pick = i
-					break
-				}
-				if pick < 0 {
-					pick = i
-				}
-			}
-			if pick >= 0 {
-				hydratedToolRows[pick].line = hydratedToolLine(hydratedToolRows[pick].label, msg)
-				hydratedToolRows[pick].inspectionImages = inspectionImages
-				hydratedToolRows[pick].settled = true
-			}
-			lastRole = msg.Role
-		case messages.MessageRoleInternal:
-			flushTools()
-			displayToolCalls := decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls])
-			if displayReasoning, _ := msg.Metadata[messages.MetadataKeyDisplayReasoning].(string); displayReasoning != "" {
-				appendHydratedReasoning(displayReasoning)
-			}
-			applyToolOrder(displayToolCalls)
-			status, _ := msg.Metadata[messages.MetadataKeyTurnStatus].(string)
-			switch {
-			case status == messages.TurnStatusToolDenied:
-				if len(displayToolCalls) == 0 {
-					// Compatibility with sessions written before safe tool display
-					// metadata existed.
-					m.appendLine("  " + styled("✗", "err", "bold") + " " + styled("tool request denied", "muted", ""))
-				}
-				// A durable internal completion marker settles the preceding user
-				// turn without becoming model-visible assistant content.
-				lastRole = messages.MessageRoleAssistant
-			case status == messages.TurnStatusInterrupted:
-				// Everything before the marker is durable completed work; the
-				// turn ended early without a final response. Settle it so the
-				// preceding user message isn't restored as an unsent draft.
-				m.appendLine("  " + styled("turn interrupted · completed work retained", "muted", ""))
-				lastRole = messages.MessageRoleAssistant
-			case len(displayToolCalls) > 0:
-				lastRole = messages.MessageRoleAssistant
-			}
-		}
-	}
-	if lastRole != "" && lastRole != messages.MessageRoleUser {
-		finishHydratedTurn()
+	h.m.appendReasoningTail(h.reasoning, text, len(h.reasoning.tail) > 0)
+	h.m.refreshReasoningRecord(h.reasoning, 80)
+}
+
+func (h *historyHydrator) finishTurn() {
+	h.flushTools()
+	h.m.setHydratedTurnDock(h.reasoning, h.tools, h.turnInput, h.turnOutput)
+	h.m.attachTurnDockTrailer()
+}
+
+// finish settles the trailing turn and, when the conversation ends on an
+// unanswered prompt, restores that prompt to the composer.
+func (h *historyHydrator) finish() {
+	m := h.m
+	if h.lastRole != "" && h.lastRole != messages.MessageRoleUser {
+		h.finishTurn()
 	} else {
-		flushTools()
+		h.flushTools()
 	}
-	if lastRole == messages.MessageRoleUser && !lastUserContextOnly {
-		if lastUserTurn != nil {
-			turn := cloneManagedTurn(*lastUserTurn)
+	if h.lastRole == messages.MessageRoleUser && !h.lastUserContextOnly {
+		if h.lastUserTurn != nil {
+			turn := cloneManagedTurn(*h.lastUserTurn)
 			m.restoreTurnDraft(turn, newTurnPersistenceAck(true))
 			m.appendLine("  " + styled("incomplete · restored to composer", "muted", ""))
 		} else {
 			m.appendLine("  " + styled("incomplete", "muted", ""))
 		}
 	}
-	m.followBottom = true
+}
+
+func hydratedToolName(name string) string {
+	if name == "" {
+		return "tool"
+	}
+	return name
 }
 
 func agentSyntheticMessage(msg messages.ChatMessage) bool {
