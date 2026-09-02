@@ -42,16 +42,58 @@ var levelNames = [...]string{
 }
 
 // ThinkingLevelNames lists the named levels ParseThinkingEffort accepts, in
-// ascending order, for usage text.
+// ascending order.
 func ThinkingLevelNames() []string {
 	return append([]string(nil), levelNames[:]...)
 }
 
-// ThinkingEffortWords lists every named effort ParseThinkingEffort accepts,
-// from off through the levels, for completions. "auto" is an alias of dynamic
-// and is not listed; token budgets are free-form.
+// effortWord is one row of effortWords: a word ParseThinkingEffort accepts and
+// the effort it names. An alias parses but is never advertised: it is absent
+// from completions and usage text, and String renders the canonical word.
+type effortWord struct {
+	word   string
+	effort ThinkingEffort
+	alias  bool
+}
+
+// effortWords is the canonical word<->effort table: the single source of
+// truth for parsing, display, completions, and usage text. The non-level
+// words come first, then the levels in ascending order.
+var effortWords = func() []effortWord {
+	words := []effortWord{
+		{word: "off", effort: EffortOff()},
+		{word: "dynamic", effort: EffortDynamic()},
+		{word: "auto", effort: EffortDynamic(), alias: true},
+	}
+	for level, name := range levelNames {
+		words = append(words, effortWord{word: name, effort: EffortLevel(ThinkingLevel(level))})
+	}
+	return words
+}()
+
+// ThinkingEffortWords lists every advertised word ParseThinkingEffort
+// accepts, from off through the levels, for completions. Aliases are not
+// listed; token budgets are free-form.
 func ThinkingEffortWords() []string {
-	return append([]string{"off", "dynamic"}, levelNames[:]...)
+	var words []string
+	for _, w := range effortWords {
+		if !w.alias {
+			words = append(words, w.word)
+		}
+	}
+	return words
+}
+
+// ThinkingEffortForms spells out every accepted effort form for usage and
+// error text: the advertised non-level words, the levels, and a budget.
+func ThinkingEffortForms() string {
+	var named []string
+	for _, w := range effortWords {
+		if !w.alias && w.effort.kind != kindLevel {
+			named = append(named, w.word)
+		}
+	}
+	return strings.Join(named, ", ") + ", a level (" + strings.Join(levelNames[:], ", ") + "), or a positive token budget (e.g. 12000)"
 }
 
 // thinkingKind discriminates the ThinkingEffort tagged union. The zero value is
@@ -164,27 +206,26 @@ func (e ThinkingEffort) String() string {
 		return e.level.String()
 	case kindBudget:
 		return strconv.Itoa(e.budget)
-	case kindDynamic:
-		return "dynamic"
-	default:
-		return "off"
 	}
+	for _, w := range effortWords {
+		if !w.alias && w.effort.kind == e.kind {
+			return w.word
+		}
+	}
+	return "off"
 }
 
-// ParseThinkingEffort converts a string to a ThinkingEffort. Accepts: off (or
-// empty), dynamic/auto, a named level (ThinkingLevelNames), or a positive
-// integer token budget. Old values (off/low/medium/high) are preserved.
+// ParseThinkingEffort converts a string to a ThinkingEffort: any word in
+// effortWords, aliases included (empty means off), or a positive integer
+// token budget. Old values (off/low/medium/high) are preserved.
 func ParseThinkingEffort(s string) (ThinkingEffort, error) {
 	v := strings.ToLower(strings.TrimSpace(s))
-	switch v {
-	case "", "off":
+	if v == "" {
 		return EffortOff(), nil
-	case "dynamic", "auto":
-		return EffortDynamic(), nil
 	}
-	for level, name := range levelNames {
-		if v == name {
-			return EffortLevel(ThinkingLevel(level)), nil
+	for _, w := range effortWords {
+		if v == w.word {
+			return w.effort, nil
 		}
 	}
 	if n, err := strconv.Atoi(v); err == nil {
@@ -193,5 +234,5 @@ func ParseThinkingEffort(s string) (ThinkingEffort, error) {
 		}
 		return EffortBudget(n), nil
 	}
-	return ThinkingEffort{}, fmt.Errorf("invalid thinking effort %q: must be off, dynamic, a level (%s), or a positive token budget", s, strings.Join(levelNames[:], ", "))
+	return ThinkingEffort{}, fmt.Errorf("invalid thinking effort %q: must be %s", s, ThinkingEffortForms())
 }

@@ -1,6 +1,10 @@
 package llm
 
-import "testing"
+import (
+	"slices"
+	"strings"
+	"testing"
+)
 
 func TestParseThinkingEffort(t *testing.T) {
 	tests := []struct {
@@ -147,6 +151,7 @@ func TestThinkingEffortWordsRoundTrip(t *testing.T) {
 	if len(words) != 2+len(ThinkingLevelNames()) {
 		t.Fatalf("words = %v", words)
 	}
+	forms := ThinkingEffortForms()
 	for _, word := range words {
 		effort, err := ParseThinkingEffort(word)
 		if err != nil {
@@ -155,6 +160,12 @@ func TestThinkingEffortWordsRoundTrip(t *testing.T) {
 		if got := effort.String(); got != word {
 			t.Fatalf("ParseThinkingEffort(%q).String() = %q", word, got)
 		}
+		if !strings.Contains(forms, word) {
+			t.Fatalf("usage forms %q omit advertised word %q", forms, word)
+		}
+	}
+	if slices.Contains(words, "auto") || strings.Contains(forms, "auto") {
+		t.Fatalf("alias leaked into advertised words %v or forms %q", words, forms)
 	}
 	if got := ThinkingLevel(200).String(); got != "unknown" {
 		t.Fatalf("out-of-range level String() = %q", got)
