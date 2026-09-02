@@ -674,20 +674,12 @@ func imageCellGeometry(img transcriptImage, maxCols, maxRows, cellWidth, cellHei
 // Partially clipped thumbnails are omitted; their caption remains visible and
 // scrolling the complete slot into view draws the native image.
 func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []terminalImagePlacement {
-	if !m.nativeImages || viewportHeight <= 0 || width < minimumImageThumbnailCols {
+	if !m.nativeImages || width < minimumImageThumbnailCols {
 		return nil
 	}
-	viewStart := topRow
-	topPadding := 0
-	if pinBottom {
-		viewStart = max(0, totalRows-viewportHeight)
-		if totalRows < viewportHeight {
-			topPadding = viewportHeight - totalRows
-		}
-	}
-	viewEnd := viewStart + viewportHeight
-	if overlayRows > 0 {
-		viewEnd -= min(overlayRows, viewportHeight)
+	v, ok := newTranscriptViewport(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows)
+	if !ok {
+		return nil
 	}
 
 	var placements []terminalImagePlacement
@@ -698,7 +690,7 @@ func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, lo
 				continue
 			}
 			row := rowOffset + span.row
-			if row < viewStart || row+span.rows > viewEnd {
+			if row < v.start || row+span.rows > v.end {
 				continue
 			}
 			if span.cols <= 0 || span.x+span.cols > width {
@@ -709,7 +701,7 @@ func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, lo
 				Key:       fmt.Sprintf("%s:image:%d", block.key, span.imageIndex),
 				Path:      img.Path,
 				X:         span.x,
-				Y:         logoRows + topPadding + row - viewStart,
+				Y:         v.screenY(row),
 				Cols:      span.cols,
 				Rows:      span.rows,
 				FitByRows: span.fitByRows,

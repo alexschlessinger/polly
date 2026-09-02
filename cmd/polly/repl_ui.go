@@ -5086,6 +5086,37 @@ func (m *replModel) scrollToBottom() {
 // visibleReasoningPlacements projects each disclosure header into absolute
 // screen cells. A narrow header may wrap, so every visible header fragment is
 // clickable while preview/detail rows remain inert.
+// transcriptViewport is the window of display rows the transcript pane shows
+// this frame, plus the screen offset every placement projects through.
+type transcriptViewport struct {
+	start, end int // display rows in [start, end) are on screen
+	topPadding int // blank rows above a transcript shorter than the pane
+	logoRows   int
+}
+
+// newTranscriptViewport resolves the visible row window. A pinned viewport
+// shows the last viewportHeight rows; an overlay ticker hides its rows at
+// the bottom. ok is false when the pane cannot show anything.
+func newTranscriptViewport(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) (transcriptViewport, bool) {
+	if viewportHeight <= 0 || width <= 0 {
+		return transcriptViewport{}, false
+	}
+	v := transcriptViewport{start: topRow, logoRows: logoRows}
+	if pinBottom {
+		v.start = max(0, totalRows-viewportHeight)
+		if totalRows < viewportHeight {
+			v.topPadding = viewportHeight - totalRows
+		}
+	}
+	v.end = v.start + viewportHeight - min(overlayRows, viewportHeight)
+	return v, true
+}
+
+func (v transcriptViewport) contains(row int) bool { return row >= v.start && row < v.end }
+
+// screenY maps a display row inside the window to its screen row.
+func (v transcriptViewport) screenY(row int) int { return v.logoRows + v.topPadding + row - v.start }
+
 func (m *replModel) visibleReasoningPlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []disclosurePlacement {
 	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, turnDockOverlayThought)
 }
@@ -5099,30 +5130,22 @@ func (m *replModel) visibleImageDisclosurePlacements(totalRows, viewportHeight, 
 }
 
 func (m *replModel) visibleTurnTrailerPlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []turnTrailerPlacement {
-	if viewportHeight <= 0 || width <= 0 {
+	v, ok := newTranscriptViewport(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows)
+	if !ok {
 		return nil
 	}
-	viewStart := topRow
-	topPadding := 0
-	if pinBottom {
-		viewStart = max(0, totalRows-viewportHeight)
-		if totalRows < viewportHeight {
-			topPadding = viewportHeight - totalRows
-		}
-	}
-	viewEnd := viewStart + viewportHeight - min(overlayRows, viewportHeight)
 	var placements []turnTrailerPlacement
 	rowOffset := 0
 	for _, block := range m.visualBlocks {
 		if block.turnTrailerID != 0 && len(block.rows) > 0 {
 			row := rowOffset
-			if row >= viewStart && row < viewEnd {
+			if v.contains(row) {
 				if record := m.turnTrailers[block.turnTrailerID]; record != nil {
 					for _, field := range record.fields {
 						if field.X >= width {
 							continue
 						}
-						field.Y = logoRows + topPadding + row - viewStart
+						field.Y = v.screenY(row)
 						field.Cols = min(field.Cols, width-field.X)
 						placements = append(placements, turnTrailerPlacement{
 							recordID: record.id, turnDockPlacement: field,
@@ -5137,20 +5160,9 @@ func (m *replModel) visibleTurnTrailerPlacements(totalRows, viewportHeight, topR
 }
 
 func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int, overlay turnDockOverlay) []disclosurePlacement {
-	if viewportHeight <= 0 || width <= 0 {
+	v, ok := newTranscriptViewport(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows)
+	if !ok {
 		return nil
-	}
-	viewStart := topRow
-	topPadding := 0
-	if pinBottom {
-		viewStart = max(0, totalRows-viewportHeight)
-		if totalRows < viewportHeight {
-			topPadding = viewportHeight - totalRows
-		}
-	}
-	viewEnd := viewStart + viewportHeight
-	if overlayRows > 0 {
-		viewEnd -= min(overlayRows, viewportHeight)
 	}
 
 	// Only the block's activity controls are click targets. Truncation may
@@ -5164,7 +5176,7 @@ func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRo
 		}
 		row := rowOffset
 		rowOffset += len(block.rows)
-		if len(recordIDs) == 0 || len(block.rows) == 0 || row < viewStart || row >= viewEnd {
+		if len(recordIDs) == 0 || len(block.rows) == 0 || !v.contains(row) {
 			continue
 		}
 		for _, field := range block.activityFields {
@@ -5175,7 +5187,7 @@ func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRo
 				recordID:  recordIDs[0],
 				recordIDs: append([]int64(nil), recordIDs...),
 				X:         field.X,
-				Y:         logoRows + topPadding + row - viewStart,
+				Y:         v.screenY(row),
 				Cols:      min(field.Cols, width-field.X),
 			})
 		}
