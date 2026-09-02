@@ -825,14 +825,14 @@ func TestDetachedTurnRefusesLatePersistence(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.turnID = 4
 	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 4}
-	if !turnPersistenceAllowed(tui) {
+	if !tui.TurnPersistenceAllowed() {
 		t.Fatal("live turn should be allowed to persist")
 	}
 	r.model.turnID++ // detaching a stuck turn advances the generation
-	if turnPersistenceAllowed(tui) {
+	if tui.TurnPersistenceAllowed() {
 		t.Fatal("detached turn must not append after newer turns")
 	}
-	if !turnPersistenceAllowed(newLineTurnUI(&Config{}, nil)) {
-		t.Fatal("UIs without a gate must default to persisting")
+	if !newLineTurnUI(&Config{}, nil).TurnPersistenceAllowed() {
+		t.Fatal("the line UI must default to persisting")
 	}
 }

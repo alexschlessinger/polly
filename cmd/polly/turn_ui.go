@@ -30,7 +30,18 @@ type TurnUI interface {
 	AppendToolMedia(call messages.ChatMessageToolCall, images []transcriptImage)
 	AppendWarning(text string)
 	RecordTurnTokens(in, out int)
+	// RecordContextUsage reports the turn's context consumption against the
+	// resolved budget; estimated marks a pre-response projection.
+	RecordContextUsage(used, limit int, estimated bool)
 	FinishTextTurn()
+	// UserMessagePersistenceStarted and UserMessagePersistenceFinished bracket
+	// the durable write of the user message, so a UI that projects history
+	// concurrently can serialize against it.
+	UserMessagePersistenceStarted()
+	UserMessagePersistenceFinished(persisted bool)
+	// TurnPersistenceAllowed reports whether the settled turn may still be
+	// written to the session; a detached REPL turn vetoes the write.
+	TurnPersistenceAllowed() bool
 }
 
 // lineTurnUI writes raw streamed output or buffered ANSI Markdown according to
@@ -219,6 +230,14 @@ func (ui *lineTurnUI) AppendWarning(text string) {
 }
 
 func (ui *lineTurnUI) RecordTurnTokens(in, out int) {}
+
+func (ui *lineTurnUI) RecordContextUsage(used, limit int, estimated bool) {}
+
+func (ui *lineTurnUI) UserMessagePersistenceStarted() {}
+
+func (ui *lineTurnUI) UserMessagePersistenceFinished(persisted bool) {}
+
+func (ui *lineTurnUI) TurnPersistenceAllowed() bool { return true }
 
 func (ui *lineTurnUI) FinishTextTurn() {
 	ui.flushBufferedMarkdown()

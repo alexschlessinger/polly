@@ -819,24 +819,16 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	// Persist the user message before spending API tokens. If the session store
 	// is broken (e.g. disk full), fail fast rather than make a call whose result
 	// can't be saved either. Both SQLite modes surface write and lease failures.
-	observer, _ := turnUI.(interface {
-		UserMessagePersistenceStarted()
-		UserMessagePersistenceFinished(bool)
-	})
-	if observer != nil {
-		observer.UserMessagePersistenceStarted()
+	if turnUI == nil {
+		turnUI = newLineTurnUIWithCapabilities(config, inputReader, state.outputCapabilities)
 	}
+	turnUI.UserMessagePersistenceStarted()
 	persistErr := persistUserMessageForTurn(ctx, state.session, userMsg, reuseUser)
-	if observer != nil {
-		observer.UserMessagePersistenceFinished(persistErr == nil)
-	}
+	turnUI.UserMessagePersistenceFinished(persistErr == nil)
 	if persistErr != nil {
 		return 1, fmt.Errorf("failed to persist user message: %w", persistErr)
 	}
 
-	if turnUI == nil {
-		turnUI = newLineTurnUIWithCapabilities(config, inputReader, state.outputCapabilities)
-	}
 	turnUI.Start()
 	defer turnUI.Stop()
 
@@ -912,16 +904,12 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			out += m.GetOutputTokens()
 		}
 		turnUI.RecordTurnTokens(in, out)
-		if observer, ok := turnUI.(interface {
-			RecordContextUsage(used, limit int, estimated bool)
-		}); ok {
-			used, estimated := in, false
-			if used <= 0 {
-				used = resp.Projection.RequestEstimatedTokens
-				estimated = true
-			}
-			observer.RecordContextUsage(used, req.MaxContextTokens, estimated)
+		used, estimated := in, false
+		if used <= 0 {
+			used = resp.Projection.RequestEstimatedTokens
+			estimated = true
 		}
+		turnUI.RecordContextUsage(used, req.MaxContextTokens, estimated)
 	}
 
 	runErr := err
@@ -934,7 +922,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	// replays cleanly. The detached context keeps a canceled turn's save from
 	// being canceled along with it; the persistence gate stops a detached turn
 	// from appending after newer turns already have.
-	if resp != nil && len(resp.AllMessages) > 0 && turnPersistenceAllowed(turnUI) {
+	if resp != nil && len(resp.AllMessages) > 0 && turnUI.TurnPersistenceAllowed() {
 		persistCtx := context.WithoutCancel(ctx)
 		perr := func() error {
 			if err := persistActiveSkills(persistCtx, state.session, state.skillRuntime, state.skillSources); err != nil {
@@ -1055,11 +1043,6 @@ func externalizeMessageImages(ctx context.Context, msg messages.ChatMessage, sto
 // cancellation timed out): newer turns may already be appending, so a late
 // write would interleave this turn's messages out of order. UIs without an
 // opinion allow persistence.
-func turnPersistenceAllowed(turnUI TurnUI) bool {
-	gate, ok := turnUI.(interface{ TurnPersistenceAllowed() bool })
-	return !ok || gate.TurnPersistenceAllowed()
-}
-
 // interruptedTurnMarker records why a partially persisted turn ended. The
 // internal role never reaches a provider; hydration uses it to settle the
 // turn and label it interrupted instead of leaving it looking abandoned.
