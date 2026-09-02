@@ -81,7 +81,7 @@ func TestStreamCursorPulseInvalidatesVisualCache(t *testing.T) {
 
 func TestFrameTitleReflectsTurnState(t *testing.T) {
 	m := newReplModel()
-	m.contextName = "mychat"
+	m.status.contextName = "mychat"
 
 	if got := m.frameTitle(); got != "polly · mychat" {
 		t.Fatalf("idle title = %q", got)
@@ -108,7 +108,7 @@ func TestFrameTitleReflectsTurnState(t *testing.T) {
 	}
 
 	// The placeholder context name is not worth a title segment.
-	m.contextName = "-"
+	m.status.contextName = "-"
 	m.lastOutcome = turnOutcomeFailed
 	if got := m.frameTitle(); got != "polly — failed" {
 		t.Fatalf("failed title = %q", got)

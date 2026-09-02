@@ -407,8 +407,8 @@ func TestStatusRowShowsLiveTimer(t *testing.T) {
 	}
 
 	m := newReplModel()
-	m.modelName = "gpt-mini"
-	m.contextName = "ctx"
+	m.status.modelName = "gpt-mini"
+	m.status.contextName = "ctx"
 
 	idle := plain(m.statusRow(120))
 	if strings.HasPrefix(strings.TrimSpace(idle), "0.0s") {
@@ -452,8 +452,8 @@ func TestStatusRowKeepsStaticFieldsFixed(t *testing.T) {
 	}
 
 	m := newReplModel()
-	m.modelName = "gpt-mini"
-	m.contextName = "ctx"
+	m.status.modelName = "gpt-mini"
+	m.status.contextName = "ctx"
 
 	idleCol := col(m.statusRow(120))
 
@@ -1547,10 +1547,10 @@ func TestVisibleTranscriptFollowsBottom(t *testing.T) {
 
 func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 	m := newReplModel()
-	m.modelName = "gpt-extra-long-name"
-	m.contextName = "my-context"
-	m.toolCount = 4
-	m.skillCount = 2
+	m.status.modelName = "gpt-extra-long-name"
+	m.status.contextName = "my-context"
+	m.status.toolCount = 4
+	m.status.skillCount = 2
 	m.lastIn = 1234
 	m.lastOut = 567
 
@@ -1574,7 +1574,7 @@ func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 
 func TestCompletedTurnMetricsMoveFromStatusToDock(t *testing.T) {
 	m := newReplModel()
-	m.contextName = "ctx"
+	m.status.contextName = "ctx"
 	m.startTurnDock()
 	m.lastOutcome = turnOutcomeDone
 	m.lastElapsed = 15500 * time.Millisecond

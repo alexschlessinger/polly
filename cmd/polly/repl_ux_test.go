@@ -380,10 +380,10 @@ func TestStatusAndApprovalNeverExceedTerminalWidth(t *testing.T) {
 	m.state = turnStateTool
 	m.toolName = "custom_tool_with_a_very_long_name"
 	m.turnStarted = time.Now()
-	m.modelName = "provider/model-with-a-long-name"
-	m.contextName = "context-with-a-long-name"
-	m.toolCount = 12
-	m.skillCount = 8
+	m.status.modelName = "provider/model-with-a-long-name"
+	m.status.contextName = "context-with-a-long-name"
+	m.status.toolCount = 12
+	m.status.skillCount = 8
 	m.queue = queuedTextInputs("a long queued message preview that must truncate")
 	for width := 1; width <= 80; width++ {
 		if got := rw.StringWidth(plainStyledText(m.statusRow(width))); got > width {

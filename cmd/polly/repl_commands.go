@@ -413,7 +413,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		// Commands run on the event loop with the model lock held, so this
 		// mutates the model directly like reply/clearTranscript do.
 		setContextName: func(name string) {
-			r.model.contextName = name
+			r.model.status.contextName = name
 		},
 		resetConversation: func() error {
 			if r.state == nil || r.state.session == nil {
@@ -437,7 +437,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
-			r.model.clearContextUsage(cfg.MaxHistoryTokens)
+			r.model.status.clearContextUsage(cfg.MaxHistoryTokens)
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
 			r.model.outcomeLabeled = false
@@ -457,8 +457,8 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			return token, nil
 		},
 		settingsApplied: func() {
-			r.model.modelName = cfg.Model
-			r.model.clearContextUsage(cfg.MaxHistoryTokens)
+			r.model.status.modelName = cfg.Model
+			r.model.status.clearContextUsage(cfg.MaxHistoryTokens)
 		},
 		openModelPicker:  r.openModelPicker,
 		openKeyManager:   r.openKeyManager,

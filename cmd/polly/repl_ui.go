@@ -619,18 +619,8 @@ type replModel struct {
 	followBottom bool
 	scrollAnchor int
 
-	// Status bar fields. Context usage describes the provider-visible request,
-	// not the complete durable transcript or cumulative billed tokens.
-	modelName        string
-	contextName      string
-	toolCount        int
-	skillCount       int
-	quiet            bool
-	contextUsed      int
-	contextLimit     int
-	contextEstimated bool
-	recentModels     []string
-	statusSession    statusSessionPlacement
+	status sessionStatus
+	quiet  bool
 
 	state       turnState
 	toolName    string
@@ -791,10 +781,85 @@ func newReplModel() *replModel {
 
 const turnCancelDetachAfter = 2 * time.Second
 
+// sessionStatus is what the status bar shows and what its mouse target
+// needs: the model and context names, the tool and skill counts, the last
+// context usage report, the recently used models for the picker, and where
+// the session field landed on the last render. Context usage describes the
+// provider-visible request, not the complete durable transcript or the
+// cumulative billed tokens.
+type sessionStatus struct {
+	modelName    string
+	contextName  string
+	toolCount    int
+	skillCount   int
+	recentModels []string
+
+	contextUsed      int
+	contextLimit     int
+	contextEstimated bool
+
+	sessionField statusSessionPlacement
+}
+
+func newSessionStatus(config *Config, contextName string, toolCount, skillCount int) sessionStatus {
+	s := sessionStatus{
+		modelName:    config.Model,
+		contextName:  contextName,
+		toolCount:    toolCount,
+		skillCount:   skillCount,
+		contextLimit: config.MaxHistoryTokens,
+	}
+	if config.Model != "" {
+		s.recentModels = []string{config.Model}
+	}
+	return s
+}
+
+// rememberModel puts a newly chosen model at the front of the picker's
+// recent list unless it is already listed.
+func (s *sessionStatus) rememberModel(model string) {
+	if !slices.Contains(s.recentModels, model) {
+		s.recentModels = append([]string{model}, s.recentModels...)
+	}
+}
+
+func (s *sessionStatus) contextUsageText() string {
+	if s.contextUsed <= 0 && s.contextLimit <= 0 {
+		return ""
+	}
+	prefix := "ctx "
+	if s.contextEstimated {
+		prefix += "~"
+	}
+	used := humanizeTokens(s.contextUsed)
+	if s.contextLimit <= 0 {
+		return prefix + used
+	}
+	if s.contextUsed > s.contextLimit && s.contextEstimated {
+		used = ">" + humanizeTokens(s.contextLimit)
+	}
+	return prefix + used + "/" + humanizeTokens(s.contextLimit)
+}
+
+func (s *sessionStatus) clearContextUsage(limit int) {
+	s.contextUsed = 0
+	s.contextLimit = limit
+	s.contextEstimated = false
+}
+
+func (s *sessionStatus) recordContextUsage(used, limit int, estimated bool) {
+	if used < 0 {
+		used = 0
+	}
+	s.contextUsed = used
+	s.contextLimit = limit
+	s.contextEstimated = estimated
+}
+
 // statusRow renders stable session context. Per-turn activity and completion
 // metrics live in the fixed turn dock immediately above the composer.
 func (m *replModel) statusRow(width int) string {
-	m.statusSession = statusSessionPlacement{}
+	m.status.sessionField = statusSessionPlacement{}
 	if m.quiet || width <= 0 {
 		return ""
 	}
@@ -811,18 +876,18 @@ func (m *replModel) statusRow(width int) string {
 		session bool
 	}
 	fields := []field{}
-	if m.modelName != "" {
-		fields = append(fields, field{drop: 3, text: m.modelName})
+	if m.status.modelName != "" {
+		fields = append(fields, field{drop: 3, text: m.status.modelName})
 	}
-	fields = append(fields, field{drop: 0, text: m.contextName, session: true})
-	if context := m.contextUsageText(); context != "" {
+	fields = append(fields, field{drop: 0, text: m.status.contextName, session: true})
+	if context := m.status.contextUsageText(); context != "" {
 		fields = append(fields, field{drop: 1, text: context})
 	}
-	if m.toolCount > 0 {
-		fields = append(fields, field{drop: 2, text: fmt.Sprintf("tools:%d", m.toolCount)})
+	if m.status.toolCount > 0 {
+		fields = append(fields, field{drop: 2, text: fmt.Sprintf("tools:%d", m.status.toolCount)})
 	}
-	if m.skillCount > 0 {
-		fields = append(fields, field{drop: 4, text: fmt.Sprintf("skills:%d", m.skillCount)})
+	if m.status.skillCount > 0 {
+		fields = append(fields, field{drop: 4, text: fmt.Sprintf("skills:%d", m.status.skillCount)})
 	}
 
 	fieldWidth := func(fs []field) int {
@@ -916,7 +981,7 @@ func (m *replModel) statusRow(width int) string {
 	for i, f := range fields {
 		fieldCols := rw.StringWidth(f.text)
 		if f.session && fieldCols > 0 {
-			m.statusSession = statusSessionPlacement{X: x, Cols: fieldCols}
+			m.status.sessionField = statusSessionPlacement{X: x, Cols: fieldCols}
 		}
 		x += fieldCols
 		if i < len(fields)-1 {
@@ -924,39 +989,6 @@ func (m *replModel) statusRow(width int) string {
 		}
 	}
 	return leftStyled + strings.Repeat(" ", gap) + rightStyled
-}
-
-func (m *replModel) contextUsageText() string {
-	if m.contextUsed <= 0 && m.contextLimit <= 0 {
-		return ""
-	}
-	prefix := "ctx "
-	if m.contextEstimated {
-		prefix += "~"
-	}
-	used := humanizeTokens(m.contextUsed)
-	if m.contextLimit <= 0 {
-		return prefix + used
-	}
-	if m.contextUsed > m.contextLimit && m.contextEstimated {
-		used = ">" + humanizeTokens(m.contextLimit)
-	}
-	return prefix + used + "/" + humanizeTokens(m.contextLimit)
-}
-
-func (m *replModel) clearContextUsage(limit int) {
-	m.contextUsed = 0
-	m.contextLimit = limit
-	m.contextEstimated = false
-}
-
-func (m *replModel) recordContextUsage(used, limit int, estimated bool) {
-	if used < 0 {
-		used = 0
-	}
-	m.contextUsed = used
-	m.contextLimit = limit
-	m.contextEstimated = estimated
 }
 
 // reasoningPreviewLines is the bounded expanded tail. The preview uses the
@@ -1034,8 +1066,8 @@ func formatElapsed(d time.Duration) string {
 // Caller must hold m.mu.
 func (m *replModel) frameTitle() string {
 	title := "polly"
-	if m.contextName != "" && m.contextName != "-" {
-		title += " · " + m.contextName
+	if m.status.contextName != "" && m.status.contextName != "-" {
+		title += " · " + m.status.contextName
 	}
 	switch {
 	case m.approval != nil:
@@ -3786,17 +3818,10 @@ func sandboxNoticeLine(config *Config, state *conversationState) string {
 
 func newManagedREPL(config *Config, contextName string, toolCount, skillCount int) *managedREPL {
 	m := newReplModel()
-	m.modelName = config.Model
-	m.contextLimit = config.MaxHistoryTokens
-	if config.Model != "" {
-		m.recentModels = []string{config.Model}
-	}
 	if contextName == "" {
 		contextName = "-"
 	}
-	m.contextName = contextName
-	m.toolCount = toolCount
-	m.skillCount = skillCount
+	m.status = newSessionStatus(config, contextName, toolCount, skillCount)
 	m.quiet = config.Quiet
 	return &managedREPL{
 		config:          config,
@@ -5603,7 +5628,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	case "<MouseLeft>":
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
-			if m.statusSession.hit(mouse.X, mouse.Y, terminalHeight) {
+			if m.status.sessionField.hit(mouse.X, mouse.Y, terminalHeight) {
 				r.openResumePicker()
 				return false
 			}
@@ -6074,7 +6099,7 @@ func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 func (t *gotuiTurnUI) RecordContextUsage(used, limit int, estimated bool) {
 	t.repl.model.mu.Lock()
 	if t.acceptingLocked() {
-		t.repl.model.recordContextUsage(used, limit, estimated)
+		t.repl.model.status.recordContextUsage(used, limit, estimated)
 	}
 	t.repl.model.mu.Unlock()
 }
@@ -6114,7 +6139,7 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 				limit = llm.ClampContextBudget(limit, window, config.MaxTokens)
 			}
 		}
-		repl.model.recordContextUsage(total, limit, total > 0)
+		repl.model.status.recordContextUsage(total, limit, total > 0)
 	}
 	err = repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
 		reuseUser := false

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"image"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -236,7 +235,7 @@ func (r *managedREPL) openProviderModels(provider string) {
 	if strings.HasPrefix(r.config.Model, provider+"/") {
 		add(r.config.Model)
 	}
-	for _, recent := range r.model.recentModels {
+	for _, recent := range r.model.status.recentModels {
 		if strings.HasPrefix(recent, provider+"/") {
 			add(recent)
 		}
@@ -290,9 +289,7 @@ func (r *managedREPL) applySelectedModel(model string) {
 		r.model.appendNoticeLine("model: " + err.Error())
 		return
 	}
-	if !slices.Contains(r.model.recentModels, model) {
-		r.model.recentModels = append([]string{model}, r.model.recentModels...)
-	}
+	r.model.status.rememberModel(model)
 	r.model.appendNoticeLine(line)
 }
 
@@ -454,7 +451,7 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 			r.model.appendNoticeLine("renamed session; releasing it failed: " + err.Error())
 		}
 	} else {
-		r.model.contextName = newName
+		r.model.status.contextName = newName
 	}
 	r.model.appendNoticeLine("renamed session '" + oldName + "' to '" + newName + "'")
 	r.openResumePickerSelected(newName)

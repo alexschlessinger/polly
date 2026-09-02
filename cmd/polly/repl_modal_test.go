@@ -34,7 +34,7 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 	cfg := &Config{Settings: Settings{Model: "anthropic/claude-sonnet-4-6", MaxHistoryTokens: 256_000}}
 	r := newManagedREPL(cfg, "ctx", 0, 0)
 	r.startupLogoVisible = true
-	r.model.recordContextUsage(50_000, 156_000, false)
+	r.model.status.recordContextUsage(50_000, 156_000, false)
 
 	if handled, quit := r.runCommand("/model"); !handled || quit || r.model.modal == nil {
 		t.Fatalf("/model handled=%v quit=%v modal=%#v", handled, quit, r.model.modal)
@@ -45,11 +45,11 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 	r.openProviderModels("openai")
 	r.applySelectedModel("openai/gpt-5.4")
 
-	if cfg.Model != "openai/gpt-5.4" || r.model.modelName != cfg.Model {
-		t.Fatalf("selected model config=%q status=%q", cfg.Model, r.model.modelName)
+	if cfg.Model != "openai/gpt-5.4" || r.model.status.modelName != cfg.Model {
+		t.Fatalf("selected model config=%q status=%q", cfg.Model, r.model.status.modelName)
 	}
-	if r.model.contextUsed != 0 || r.model.contextLimit != cfg.MaxHistoryTokens {
-		t.Fatalf("model switch retained stale context usage: %d/%d", r.model.contextUsed, r.model.contextLimit)
+	if r.model.status.contextUsed != 0 || r.model.status.contextLimit != cfg.MaxHistoryTokens {
+		t.Fatalf("model switch retained stale context usage: %d/%d", r.model.status.contextUsed, r.model.status.contextLimit)
 	}
 }
 
@@ -97,7 +97,7 @@ func TestResumePickerListsRecentSessionsAndRequestsRestart(t *testing.T) {
 	if !strings.Contains(status, "[current-work](fg:accent)") {
 		t.Fatalf("clickable session was not accented: %q", status)
 	}
-	placement := r.model.statusSession
+	placement := r.model.status.sessionField
 	if !placement.hit(placement.X, 23, 24) || placement.hit(placement.X-1, 23, 24) {
 		t.Fatalf("status session placement = %#v", placement)
 	}
@@ -196,7 +196,7 @@ func TestResumePickerRenamesSavedAndCurrentSessions(t *testing.T) {
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<F2>"})
 	r.model.modal.input.setText("renamed-current")
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if got := r.model.contextName; got != "renamed-current" {
+	if got := r.model.status.contextName; got != "renamed-current" {
 		t.Fatalf("status session after rename = %q", got)
 	}
 	if got, err := current.GetName(context.Background()); err != nil || got != "renamed-current" {
@@ -253,14 +253,14 @@ func TestFormatCompactDuration(t *testing.T) {
 
 func TestContextUsageStatusIsProviderVisibleAndCompact(t *testing.T) {
 	m := newReplModel()
-	m.modelName = "openai/gpt-5.4"
-	m.contextName = "work"
-	m.recordContextUsage(41_200, 156_000, false)
+	m.status.modelName = "openai/gpt-5.4"
+	m.status.contextName = "work"
+	m.status.recordContextUsage(41_200, 156_000, false)
 	wide := plainStyledText(m.statusRow(120))
 	if !strings.Contains(wide, "ctx 41.2k/156k") {
 		t.Fatalf("status = %q", wide)
 	}
-	m.recordContextUsage(12_300, 156_000, true)
+	m.status.recordContextUsage(12_300, 156_000, true)
 	if got := plainStyledText(m.statusRow(120)); !strings.Contains(got, "ctx ~12.3k/156k") {
 		t.Fatalf("estimated status = %q", got)
 	}
