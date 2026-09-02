@@ -25,6 +25,10 @@ const (
 	// terminal; the native renderer uses their row and column as its anchor.
 	transcriptImageMarkerBase   rune = '\ue000'
 	maxTranscriptImagesPerBlock      = 256
+	// The marker range must stop short of the styled-literal bracket runes
+	// (repl_ui.go), or stripping markers would eat bracket placeholders. A
+	// range that overlaps makes this constant negative and fails to compile.
+	_ = uint(styledLiteralOpenBracket - (transcriptImageMarkerBase + maxTranscriptImagesPerBlock))
 
 	// A thumbnail is fitted inside this maximum cell box. The marker template
 	// reserves the maximum rows; the cell pass collapses unused rows after it
