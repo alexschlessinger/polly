@@ -2504,7 +2504,9 @@ type historyHydrator struct {
 	turnOutput int
 
 	lastRole            string
-	lastUserTurn        *managedTurnInput
+	lastUser            messages.ChatMessage // the newest user message, for the composer restore
+	lastUserContent     string
+	lastUserRestorable  bool
 	lastUserContextOnly bool
 }
 
@@ -2538,10 +2540,9 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	m.appendTurnSeparator()
 	content, restorable, contextOnly := historyUserSummary(msg)
 	m.appendUserPrompt(content)
-	h.lastUserTurn = nil
-	if turn, ok := restorableHistoryTurn(msg, content, restorable, m.artifactStore); ok {
-		h.lastUserTurn = &turn
-	}
+	// Only the final prompt can be restored, so finish builds the turn once
+	// from whichever user message ends up last.
+	h.lastUser, h.lastUserContent, h.lastUserRestorable = msg, content, restorable
 	h.lastUserContextOnly = contextOnly
 	h.lastRole = msg.Role
 }
@@ -2732,8 +2733,7 @@ func (h *historyHydrator) finish() {
 		h.flushTools()
 	}
 	if h.lastRole == messages.MessageRoleUser && !h.lastUserContextOnly {
-		if h.lastUserTurn != nil {
-			turn := cloneManagedTurn(*h.lastUserTurn)
+		if turn, ok := restorableHistoryTurn(h.lastUser, h.lastUserContent, h.lastUserRestorable, m.artifactStore); ok {
 			m.restoreTurnDraft(turn, newTurnPersistenceAck(true))
 			m.appendLine("  " + styled("incomplete · restored to composer", "muted", ""))
 		} else {
