@@ -97,13 +97,10 @@ func persistActiveSkills(ctx context.Context, session sessions.Session, skillRun
 		return nil
 	}
 
-	metadata, err := session.GetMetadata(ctx)
-	if err != nil {
-		return err
-	}
-	metadata.ActiveSkills = activeSkills
-	metadata.SkillSources = skillSources
-	return session.SetMetadata(ctx, metadata)
+	return updateMetadata(ctx, session, func(md *sessions.Metadata) {
+		md.ActiveSkills = activeSkills
+		md.SkillSources = skillSources
+	})
 }
 
 func handleListSkills(config *Config) error {

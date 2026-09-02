@@ -117,6 +117,18 @@ func (s *conversationState) Close() error {
 	return errors.Join(errs...)
 }
 
+// updateMetadata runs one read-modify-write cycle on the session's metadata.
+// GetMetadata never returns a nil value without an error, so mutate always
+// receives a usable object.
+func updateMetadata(ctx context.Context, session sessions.Session, mutate func(*sessions.Metadata)) error {
+	md, err := session.GetMetadata(ctx)
+	if err != nil {
+		return err
+	}
+	mutate(md)
+	return session.SetMetadata(ctx, md)
+}
+
 func closeSessionAfterError(session sessions.Session, cause error) error {
 	if session == nil {
 		return cause
@@ -249,7 +261,7 @@ func (r *commandRunner) Run() (retErr error) {
 
 	showStartupLogo := true
 	for {
-		err := runConversation(r.ctx, r.config, r.llmClient, r.sessionStore, r.contextID, r.autoContext, r.cmd, showStartupLogo)
+		err := r.runConversation(showStartupLogo)
 		var resume *resumeSessionRequest
 		if !errors.As(err, &resume) {
 			return err
@@ -301,102 +313,82 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	return runner.Run()
 }
 
-// initializeSessionWithClient sets up everything needed for a conversation
-// session. A nil llmClient constructs one from config.
-func initializeSessionWithClient(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, *skills.Catalog, *tools.SkillRuntime, *skillCatalogResult, error) {
-	// Initialize conversation using helper function
-	var err error
-	contextID, _, err = initializeConversation(ctx, config, sessionStore, contextID, cmd)
+// newConversationState sets up everything a conversation needs: the session,
+// its tool registry and skill runtime, and the agent. A nil llmClient
+// constructs one from config. Session metadata is staged on one object and
+// written once, so a failure part-way through persists nothing. On error
+// every acquired resource is released and nil is returned.
+func newConversationState(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (state *conversationState, retErr error) {
+	contextID, _, err := initializeConversation(ctx, config, sessionStore, contextID, cmd)
 	if err != nil {
-		return "", nil, nil, nil, nil, nil, nil, err
+		return nil, err
 	}
-
 	if llmClient == nil {
 		llmClient = llm.NewMultiPass(loadAPIKeys())
 	}
 
-	// Get or create session early so we can read persisted skill sources.
-	needFileStore := needsFileStore(config, contextID)
-	session, err := getOrCreateSession(ctx, sessionStore, contextID, needFileStore, autoContext)
+	// Get or create the session early so persisted skill sources can be read.
+	session, err := getOrCreateSession(ctx, sessionStore, contextID, needsFileStore(config, contextID), autoContext)
 	if err != nil {
-		return "", nil, nil, nil, nil, nil, nil, err
+		return nil, err
 	}
+	var toolRegistry *tools.ToolRegistry
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		if toolRegistry != nil {
+			_ = toolRegistry.Close()
+		}
+		retErr = closeSessionAfterError(session, retErr)
+	}()
 	metadata, err := session.GetMetadata(ctx)
 	if err != nil {
-		return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, fmt.Errorf("read context metadata: %w", err))
+		return nil, fmt.Errorf("read context metadata: %w", err)
 	}
 
-	// Discover skills before building the runtime tool registry.
-	// Pass persisted SkillSources so --skill is restored on session resume.
+	// Discover skills before building the runtime tool registry, passing the
+	// persisted sources so --skill is restored on resume; new sources are
+	// staged for the single write below.
 	skillResult, err := loadSkillCatalog(config, metadata.SkillSources)
 	if err != nil {
-		return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, err)
+		return nil, err
 	}
-	skillCatalog := skillResult.catalog
-
-	// Persist skill sources for future session restores.
 	if len(skillResult.sources) > 0 {
 		metadata.SkillSources = skillResult.sources
-		if err := session.SetMetadata(ctx, metadata); err != nil {
-			return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, fmt.Errorf("failed to persist skill sources: %w", err))
-		}
 	}
 
 	registryOpts, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings)
 	if err != nil {
-		return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, err)
+		return nil, err
 	}
-
-	// Handle command-line tools if provided - they replace session tools
-	var toolRegistry *tools.ToolRegistry
-
 	if len(config.Tools) > 0 {
-		// Load command-line tools directly into the registry we'll use
+		// Command-line tools replace the session's persisted tools.
 		toolRegistry = tools.NewToolRegistry(nil, registryOpts...)
 		for _, source := range config.Tools {
-			_, err := toolRegistry.LoadToolAuto(source)
-			if err != nil {
-				return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, fmt.Errorf("failed to load tool %s: %w", source, err))
+			if _, err := toolRegistry.LoadToolAuto(source); err != nil {
+				return nil, fmt.Errorf("failed to load tool %s: %w", source, err)
 			}
 		}
-		// Store the metadata for persistence
 		metadata.ActiveTools = toolRegistry.GetActiveToolLoaders()
-		if err := session.SetMetadata(ctx, metadata); err != nil {
-			return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, fmt.Errorf("failed to persist tool metadata: %w", err))
-		}
 	} else {
-		// Load tools from session metadata
 		toolRegistry, err = loadTools(metadata.ActiveTools, registryOpts...)
 		if err != nil {
-			return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, err)
+			return nil, err
 		}
 	}
-	skillRuntime, err := newSkillRuntime(skillCatalog, toolRegistry)
+	skillRuntime, err := newSkillRuntime(skillResult.catalog, toolRegistry)
 	if err != nil {
-		if toolRegistry != nil {
-			_ = toolRegistry.Close()
-		}
-		return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, err)
+		return nil, err
 	}
 	if err := restoreActiveSkills(metadata, skillRuntime); err != nil {
-		if toolRegistry != nil {
-			_ = toolRegistry.Close()
-		}
-		return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, err)
+		return nil, err
 	}
 	if err := autoActivateSkills(skillResult.autoActivate, skillRuntime); err != nil {
-		if toolRegistry != nil {
-			_ = toolRegistry.Close()
-		}
-		return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, err)
+		return nil, err
 	}
-
-	// Update context info with current settings using helper function
-	if err := updateContextInfo(ctx, session, config, cmd); err != nil {
-		if toolRegistry != nil {
-			_ = toolRegistry.Close()
-		}
-		return "", nil, nil, nil, nil, nil, nil, closeSessionAfterError(session, err)
+	if err := updateContextInfo(ctx, session, metadata, config, cmd); err != nil {
+		return nil, err
 	}
 
 	artifactStore := session.ArtifactStore()
@@ -405,8 +397,17 @@ func initializeSessionWithClient(ctx context.Context, config *Config, llmClient 
 		ToolTimeout:   config.ToolTimeout,
 		ArtifactStore: artifactStore,
 	})
-
-	return contextID, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, nil
+	return &conversationState{
+		sessionStore:    sessionStore,
+		session:         session,
+		agent:           agent,
+		artifactStore:   artifactStore,
+		toolRegistry:    toolRegistry,
+		skillCatalog:    skillResult.catalog,
+		skillRuntime:    skillRuntime,
+		skillSources:    skillResult.sources,
+		sandboxWarnings: sandboxWarnings,
+	}, nil
 }
 
 func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner) ([]tools.RegistryOption, error) {
@@ -573,7 +574,8 @@ func broadWritablePathDenied(path string, denyWritePaths []string) bool {
 	return false
 }
 
-func runConversation(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, showStartupLogo bool) (retErr error) {
+func (r *commandRunner) runConversation(showStartupLogo bool) (retErr error) {
+	ctx, config := r.ctx, r.config
 	input, err := resolveConversationInput(config)
 	if err != nil {
 		return err
@@ -585,24 +587,13 @@ func runConversation(ctx context.Context, config *Config, llmClient *llm.MultiPa
 	outputCapabilities := outputCapabilitiesForRun(input.mode, managedREPL)
 
 	// Initialize session state once so one-shot and REPL share the same runtime.
-	sandboxWarnings := newBroadWritablePathWarner()
-	_, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, err := initializeSessionWithClient(ctx, config, llmClient, sessionStore, contextID, autoContext, cmd, sandboxWarnings)
+	state, err := newConversationState(ctx, config, r.llmClient, r.sessionStore, r.contextID, r.autoContext, r.cmd, newBroadWritablePathWarner())
 	if err != nil {
 		return err
 	}
-	state := &conversationState{
-		sessionStore:       sessionStore,
-		session:            session,
-		agent:              agent,
-		artifactStore:      session.ArtifactStore(),
-		toolRegistry:       toolRegistry,
-		skillCatalog:       skillCatalog,
-		skillRuntime:       skillRuntime,
-		skillSources:       skillResult.sources,
-		sandboxWarnings:    sandboxWarnings,
-		displayContract:    displayContractFor(outputCapabilities),
-		outputCapabilities: outputCapabilities,
-	}
+	state.displayContract = displayContractFor(outputCapabilities)
+	state.outputCapabilities = outputCapabilities
+	session := state.session
 	defer func() {
 		if err := state.Close(); err != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("close conversation state: %w", err))
@@ -647,7 +638,7 @@ func runConversation(ctx context.Context, config *Config, llmClient *llm.MultiPa
 		return nil
 	case conversationModeREPL:
 		replErr := runREPL(ctx, config, state, managedREPL, showStartupLogo)
-		if autoContext {
+		if r.autoContext {
 			if err := discardUnusedAutoContext(ctx, state); replErr == nil && err != nil {
 				replErr = err
 			}
@@ -1554,16 +1545,10 @@ func applyFlagSettings(md *sessions.Metadata, config *Config, cmd *cli.Command) 
 // updateContextInfo persists current settings onto the session metadata via
 // read-modify-write, so explicit zero values survive and persistence errors
 // surface.
-func updateContextInfo(ctx context.Context, session sessions.Session, config *Config, cmd *cli.Command) error {
-	md, err := session.GetMetadata(ctx)
-	if err != nil {
-		return fmt.Errorf("read context metadata: %w", err)
-	}
-	if md == nil {
-		md = &sessions.Metadata{}
-	}
-	// Name and LastUsed are storage-owned: SetMetadata overwrites both, so
-	// they are not written here.
+// updateContextInfo writes the resolved settings onto md, the metadata staged
+// by newConversationState, and persists it. Name and LastUsed are
+// storage-owned: SetMetadata overwrites both, so they are not written here.
+func updateContextInfo(ctx context.Context, session sessions.Session, md *sessions.Metadata, config *Config, cmd *cli.Command) error {
 	// Config holds resolved values — stored settings unless flags override
 	// (see initializeConversation) — so these are safe to write back.
 	for _, spec := range settingSpecs {

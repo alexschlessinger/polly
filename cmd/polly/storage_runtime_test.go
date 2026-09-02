@@ -88,11 +88,11 @@ func TestInitializeSessionAppliesNativeToolDefaultsOnlyToFreshContexts(t *testin
 
 func initializeToolDefaultsTestSession(t *testing.T, config *Config, store sessions.SessionStore, name string) (sessions.Session, *tools.ToolRegistry) {
 	t.Helper()
-	_, session, _, registry, _, _, _, err := initializeSession(context.Background(), config, store, name, false, getCommand(), nil)
+	state, err := newConversationState(context.Background(), config, nil, store, name, false, getCommand(), nil)
 	if err != nil {
-		t.Fatalf("initializeSession(%q): %v", name, err)
+		t.Fatalf("newConversationState(%q): %v", name, err)
 	}
-	return session, registry
+	return state.session, state.toolRegistry
 }
 
 func TestDeleteContextReturnsSessionInUse(t *testing.T) {

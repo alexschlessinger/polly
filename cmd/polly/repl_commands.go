@@ -889,23 +889,15 @@ func persistReplSettings(ctx *replCommandContext) error {
 		return nil
 	}
 	cfg := ctx.configOrDefault()
-	s := ctx.state.session
-	opCtx := ctx.operationContext()
-	md, err := s.GetMetadata(opCtx)
-	if err != nil {
-		return err
-	}
-	if md == nil {
-		md = &sessions.Metadata{}
-	}
 	// What /set can change, /set must persist: every settable row reaches
 	// metadata here, or the change would silently die at relaunch.
-	for _, spec := range settingSpecs {
-		if spec.parse != nil {
-			spec.toMeta(cfg, md)
+	return updateMetadata(ctx.operationContext(), ctx.state.session, func(md *sessions.Metadata) {
+		for _, spec := range settingSpecs {
+			if spec.parse != nil {
+				spec.toMeta(cfg, md)
+			}
 		}
-	}
-	return s.SetMetadata(opCtx, md)
+	})
 }
 
 // sandboxToolSplit partitions sandbox-capable tools by whether they run

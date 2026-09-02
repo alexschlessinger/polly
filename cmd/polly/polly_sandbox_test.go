@@ -375,20 +375,17 @@ func TestInitializeSessionFailsWhenSandboxRequestedButUnavailable(t *testing.T) 
 	})
 
 	store := testOpenMemoryStore(t, nil)
-	_, session, _, registry, _, _, _, err := initializeSession(context.Background(), &Config{
+	state, err := newConversationState(context.Background(), &Config{
 		NoSkills: true,
-	}, store, "", false, getCommand(), nil)
+	}, nil, store, "", false, getCommand(), nil)
 	if err == nil {
-		t.Fatal("initializeSession() error = nil, want sandbox startup failure")
+		t.Fatal("newConversationState() error = nil, want sandbox startup failure")
 	}
 	if !strings.Contains(err.Error(), "sandbox requested but unavailable") {
-		t.Fatalf("initializeSession() error = %q, want sandbox-unavailable prefix", err)
+		t.Fatalf("newConversationState() error = %q, want sandbox-unavailable prefix", err)
 	}
-	if session != nil {
-		t.Fatal("initializeSession() returned a non-nil session on sandbox startup failure")
-	}
-	if registry != nil {
-		t.Fatal("initializeSession() returned a non-nil registry on sandbox startup failure")
+	if state != nil {
+		t.Fatal("newConversationState() returned state on sandbox startup failure")
 	}
 }
 
@@ -404,30 +401,27 @@ func TestInitializeSessionSucceedsWithoutSandboxWhenBackendUnavailable(t *testin
 	})
 
 	store := testOpenMemoryStore(t, nil)
-	_, session, agent, registry, _, _, _, err := initializeSession(context.Background(), &Config{
+	state, err := newConversationState(context.Background(), &Config{
 		NoSandbox: true,
 		NoSkills:  true,
-	}, store, "", false, getCommand(), nil)
+	}, nil, store, "", false, getCommand(), nil)
 	if err != nil {
-		t.Fatalf("initializeSession() error = %v", err)
+		t.Fatalf("newConversationState() error = %v", err)
 	}
 	if called {
-		t.Fatal("initializeSession() should not attempt sandbox setup when sandboxing is disabled")
+		t.Fatal("newConversationState() should not attempt sandbox setup when sandboxing is disabled")
 	}
-	if session == nil {
-		t.Fatal("initializeSession() returned nil session")
+	if state.session == nil {
+		t.Fatal("newConversationState() returned nil session")
 	}
-	if agent == nil {
-		t.Fatal("initializeSession() returned nil agent")
+	if state.agent == nil {
+		t.Fatal("newConversationState() returned nil agent")
 	}
-	if registry == nil {
-		t.Fatal("initializeSession() returned nil registry")
+	if state.toolRegistry == nil {
+		t.Fatal("newConversationState() returned nil registry")
 	}
 
-	t.Cleanup(func() {
-		_ = registry.Close()
-		_ = session.Close()
-	})
+	t.Cleanup(func() { _ = state.Close() })
 }
 
 func TestInitializeSessionClosesRegistryWhenSkillRuntimeFails(t *testing.T) {
@@ -444,16 +438,16 @@ func TestInitializeSessionClosesRegistryWhenSkillRuntimeFails(t *testing.T) {
 	t.Cleanup(func() { newSkillRuntimeImpl = originalNewSkillRuntime })
 
 	store := testOpenMemoryStore(t, nil)
-	_, session, _, registry, _, _, _, err := initializeSession(context.Background(), &Config{
+	state, err := newConversationState(context.Background(), &Config{
 		NoSandbox: true,
 		NoSkills:  true,
 		Tools:     []string{"bash"},
-	}, store, "", false, getCommand(), nil)
+	}, nil, store, "", false, getCommand(), nil)
 	if !errors.Is(err, wantErr) {
-		t.Fatalf("initializeSession() error = %v, want %v", err, wantErr)
+		t.Fatalf("newConversationState() error = %v, want %v", err, wantErr)
 	}
-	if session != nil || registry != nil {
-		t.Fatalf("initializeSession() returned session=%v registry=%v after failure", session, registry)
+	if state != nil {
+		t.Fatalf("newConversationState() returned state %v after failure", state)
 	}
 	if captured == nil {
 		t.Fatal("skill runtime constructor was not called")

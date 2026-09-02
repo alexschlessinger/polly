@@ -10,23 +10,15 @@ import (
 	"io"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/sessions"
-	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 	ui "github.com/metaspartan/gotui/v5"
-	"github.com/urfave/cli/v3"
 )
 
 var slashCommands = defaultReplCommands.commandNames()
 
 func renderMarkdown(src string) string {
 	return renderMarkdownDocument(src, nil)
-}
-
-func initializeSession(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, *skills.Catalog, *tools.SkillRuntime, *skillCatalogResult, error) {
-	return initializeSessionWithClient(ctx, config, nil, sessionStore, contextID, autoContext, cmd, sandboxWarnings)
 }
 
 func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
