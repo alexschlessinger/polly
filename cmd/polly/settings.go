@@ -169,9 +169,9 @@ var settingSpecs = []settingSpec{
 			return nil
 		},
 		show: func(_ *replCommandContext, cfg *Config) string { return cfg.ThinkingEffort },
-		// The named efforts accepted by llm.ParseThinkingEffort (a raw token
-		// budget is also accepted); "auto" is deliberately not offered.
-		setWords: []string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh", "max"},
+		// A raw token budget is also accepted; "auto" is deliberately not
+		// offered.
+		setWords: llm.ThinkingEffortWords(),
 		fromCmd:  func(cfg *Config, cmd *cli.Command) { cfg.ThinkingEffort = cmd.String("thinking") },
 		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.ThinkingEffort = md.ThinkingEffort },
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.ThinkingEffort = cfg.ThinkingEffort },

@@ -139,3 +139,24 @@ func TestThinkingEffortAsBudget(t *testing.T) {
 		})
 	}
 }
+
+// Every advertised word parses and renders back as itself, so completions,
+// usage text, and the parser cannot drift apart.
+func TestThinkingEffortWordsRoundTrip(t *testing.T) {
+	words := ThinkingEffortWords()
+	if len(words) != 2+len(ThinkingLevelNames()) {
+		t.Fatalf("words = %v", words)
+	}
+	for _, word := range words {
+		effort, err := ParseThinkingEffort(word)
+		if err != nil {
+			t.Fatalf("ParseThinkingEffort(%q) error = %v", word, err)
+		}
+		if got := effort.String(); got != word {
+			t.Fatalf("ParseThinkingEffort(%q).String() = %q", word, got)
+		}
+	}
+	if got := ThinkingLevel(200).String(); got != "unknown" {
+		t.Fatalf("out-of-range level String() = %q", got)
+	}
+}

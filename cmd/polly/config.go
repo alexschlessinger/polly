@@ -408,7 +408,7 @@ func outputConfigFlags() []cli.Flag {
 func newThinkingFlag() *cli.StringFlag {
 	return &cli.StringFlag{
 		Name:    "thinking",
-		Usage:   "Reasoning effort: off, dynamic, a level (minimal, low, medium, high, xhigh, max), or a token budget (e.g. 12000)",
+		Usage:   "Reasoning effort: off, dynamic, a level (" + strings.Join(llm.ThinkingLevelNames(), ", ") + "), or a token budget (e.g. 12000)",
 		Value:   "off",
 		Sources: cli.EnvVars("POLLYTOOL_THINKING"),
 		Validator: func(v string) error {
