@@ -4217,11 +4217,9 @@ func (r *managedREPL) handleSearchKey(e ui.Event) bool {
 	case "<Space>":
 		m.searchType(' ')
 	default:
-		if e.Type == ui.KeyboardEvent {
-			if runes := []rune(e.ID); len(runes) == 1 && runes[0] >= 0x20 {
-				m.searchType(runes[0])
-				return false
-			}
+		if ch, ok := printableRune(e); ok {
+			m.searchType(ch)
+			return false
 		}
 		// Any other key (cursor moves, etc.) accepts the match and exits.
 		m.acceptSearch()
@@ -4241,10 +4239,8 @@ func (m *replModel) bufferPasted(e ui.Event) {
 	case "<Tab>":
 		m.pasteBuf = append(m.pasteBuf, '\t')
 	default:
-		if e.Type == ui.KeyboardEvent {
-			if runes := []rune(e.ID); len(runes) == 1 && runes[0] >= 0x20 {
-				m.pasteBuf = append(m.pasteBuf, runes[0])
-			}
+		if ch, ok := printableRune(e); ok {
+			m.pasteBuf = append(m.pasteBuf, ch)
 		}
 	}
 }
@@ -4371,6 +4367,48 @@ func (r *managedREPL) requestQuit() {
 	case r.quit <- struct{}{}:
 	default:
 	}
+}
+
+// requestSuspend queues a Ctrl-Z suspension on the UI loop, which restores
+// the terminal before stopping the foreground process group.
+func (r *managedREPL) requestSuspend() {
+	select {
+	case r.suspend <- struct{}{}:
+	default:
+	}
+}
+
+// runComposerCommandLocked submits a slash command typed into the composer and
+// reports whether it asked the REPL to quit. Caller must hold m.mu.
+func (r *managedREPL) runComposerCommandLocked(trimmed string) bool {
+	m := r.model
+	m.ed.clear()
+	r.recordAcceptedInput(trimmed)
+	m.followBottom = true
+	handled, quit := r.runCommand(trimmed)
+	if quit {
+		r.requestQuit()
+		return true
+	}
+	if !handled {
+		m.appendNoticeLine(defaultReplCommands.unknownCommandNotice(trimmed))
+	}
+	return false
+}
+
+// printableRune returns the single printable rune a keyboard event carries.
+// Any multi-character event ID — bracketed key names like "<F1>" as well as
+// gotui's bare "Unknown_Mouse_Button" — and any control rune is rejected, so
+// stray events never get typed into an input.
+func printableRune(e ui.Event) (rune, bool) {
+	if e.Type != ui.KeyboardEvent {
+		return 0, false
+	}
+	runes := []rune(e.ID)
+	if len(runes) != 1 || runes[0] < 0x20 {
+		return 0, false
+	}
+	return runes[0], true
 }
 
 func (r *managedREPL) setupWidgets() {
@@ -5485,10 +5523,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// restores the terminal and then stops the foreground process group. This
 	// remains available during turns, searches, and approval prompts.
 	if e.ID == "<C-z>" {
-		select {
-		case r.suspend <- struct{}{}:
-		default:
-		}
+		r.requestSuspend()
 		return false
 	}
 
@@ -5555,18 +5590,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			return false
 		}
 		if m.busy && defaultReplCommands.busySafeCommand(trimmed) {
-			m.ed.clear()
-			r.recordAcceptedInput(trimmed)
-			m.followBottom = true
-			handled, quit := r.runCommand(trimmed)
-			if quit {
-				r.requestQuit()
-				return true
-			}
-			if !handled {
-				m.appendNoticeLine(defaultReplCommands.unknownCommandNotice(trimmed))
-			}
-			return false
+			return r.runComposerCommandLocked(trimmed)
 		}
 		isCommand := !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/")
 		if m.busy {
@@ -5591,18 +5615,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		// Only a single-line "/…" is a command; a multi-line prompt that happens
 		// to start with "/" is real input.
 		if isCommand {
-			m.ed.clear()
-			r.recordAcceptedInput(trimmed)
-			m.followBottom = true
-			handled, quit := r.runCommand(trimmed)
-			if quit {
-				r.requestQuit()
-				return true
-			}
-			if !handled {
-				m.appendNoticeLine(defaultReplCommands.unknownCommandNotice(trimmed))
-			}
-			return false
+			return r.runComposerCommandLocked(trimmed)
 		}
 		turn, restoredPersistence, reuseRestored := m.acceptedRestoredTurn(trimmed)
 		if !reuseRestored {
@@ -5684,16 +5697,8 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		}
 		m.ed.insert('\t')
 	default:
-		// Only printable single-rune keyboard events become input. This
-		// rejects any multi-character event ID — bracketed key names like
-		// "<F1>" as well as gotui's bare "Unknown_Mouse_Button" — so stray
-		// events never get typed into the prompt.
-		if e.Type != ui.KeyboardEvent {
-			return false
-		}
-		runes := []rune(e.ID)
-		if len(runes) == 1 && runes[0] >= 0x20 {
-			m.ed.insert(runes[0])
+		if ch, ok := printableRune(e); ok {
+			m.ed.insert(ch)
 		}
 	}
 	return false

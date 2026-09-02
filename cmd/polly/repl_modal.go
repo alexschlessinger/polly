@@ -513,10 +513,7 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		return false
 	}
 	if e.ID == "<C-z>" {
-		select {
-		case r.suspend <- struct{}{}:
-		default:
-		}
+		r.requestSuspend()
 		return true
 	}
 	if e.ID == "<C-c>" {
@@ -585,12 +582,9 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		m.input.backspace()
 		m.selected = 0
 	default:
-		if e.Type == ui.KeyboardEvent {
-			runes := []rune(e.ID)
-			if len(runes) == 1 && runes[0] >= 0x20 {
-				m.input.insert(runes[0])
-				m.selected = 0
-			}
+		if ch, ok := printableRune(e); ok {
+			m.input.insert(ch)
+			m.selected = 0
 		}
 	}
 	return true
