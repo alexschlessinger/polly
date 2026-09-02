@@ -673,15 +673,10 @@ func imageCellGeometry(img transcriptImage, maxCols, maxRows, cellWidth, cellHei
 // visibleImagePlacements projects transcript-relative slots into screen cells.
 // Partially clipped thumbnails are omitted; their caption remains visible and
 // scrolling the complete slot into view draws the native image.
-func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []terminalImagePlacement {
-	if !m.nativeImages || width < minimumImageThumbnailCols {
+func (m *replModel) visibleImagePlacements(v transcriptViewport) []terminalImagePlacement {
+	if !m.nativeImages || v.width < minimumImageThumbnailCols {
 		return nil
 	}
-	v, ok := newTranscriptViewport(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows)
-	if !ok {
-		return nil
-	}
-
 	var placements []terminalImagePlacement
 	rowOffset := 0
 	for _, block := range m.visualBlocks {
@@ -693,7 +688,7 @@ func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, lo
 			if row < v.start || row+span.rows > v.end {
 				continue
 			}
-			if span.cols <= 0 || span.x+span.cols > width {
+			if span.cols <= 0 || span.x+span.cols > v.width {
 				continue
 			}
 			img := block.images[span.imageIndex]

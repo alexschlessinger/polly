@@ -195,3 +195,9 @@ func newLineTurnUI(config *Config, inputReader *bufio.Reader) *lineTurnUI {
 		outputCapabilities{surface: outputSurfaceLineRaw, columns: 80},
 	)
 }
+
+// fullViewport is the window that shows every transcript row at width, the
+// common case for placement assertions.
+func fullViewport(totalRows, width int) transcriptViewport {
+	return frameLayout{width: width, transcriptHeight: totalRows}.transcriptViewport(totalRows, 0, false, 0)
+}

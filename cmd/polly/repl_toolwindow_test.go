@@ -26,7 +26,7 @@ func toolRows(m *replModel) []string {
 func clickToolDisclosure(t *testing.T, m *replModel, recordID int64, width int) {
 	t.Helper()
 	rows := m.transcriptRows(width)
-	placements := m.visibleToolDisclosurePlacements(len(rows), len(rows), 0, 0, width, false, 0)
+	placements := m.visibleToolDisclosurePlacements(fullViewport(len(rows), width))
 	m.toolDisclosurePlacements = placements
 	for _, placement := range placements {
 		if placement.recordID == recordID {
@@ -765,12 +765,12 @@ func TestCompletedToolsKeepInlineHitboxAndTrailerControl(t *testing.T) {
 	// The settled tool block stays inline and clickable. Both batches of the
 	// unbroken run share one aggregated record.
 	rows := m.transcriptRows(width)
-	visible := m.visibleToolDisclosurePlacements(len(rows), len(rows), 0, 0, width, false, 0)
+	visible := m.visibleToolDisclosurePlacements(fullViewport(len(rows), width))
 	if len(visible) != 1 || len(visible[0].recordIDs) != 1 || visible[0].recordIDs[0] != record.id {
 		t.Fatalf("completed tools lost their transcript hitbox: %#v", visible)
 	}
 
-	placements := m.visibleTurnTrailerPlacements(len(rows), len(rows), 0, 0, width, false, 0)
+	placements := m.visibleTurnTrailerPlacements(fullViewport(len(rows), width))
 	var toolPlacement *turnTrailerPlacement
 	for i := range placements {
 		if placements[i].overlay == turnDockOverlayTools {

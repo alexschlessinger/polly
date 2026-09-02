@@ -282,7 +282,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	}
 
 	rows := r.model.transcriptRows(100)
-	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(len(rows), len(rows), 0, 0, 100, false, 0)
+	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(fullViewport(len(rows), 100))
 	if len(r.model.imageDisclosurePlacements) != 1 {
 		t.Fatalf("Images hitboxes = %#v", r.model.imageDisclosurePlacements)
 	}
@@ -653,7 +653,7 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 		imageSpans: []transcriptImageSpan{{imageIndex: 0, row: 2, x: 3, cols: 50, rows: 10}},
 	}}
 
-	placements := m.visibleImagePlacements(14, 14, 0, 2, 80, false, 0)
+	placements := m.visibleImagePlacements(frameLayout{width: 80, logoRows: 2, transcriptHeight: 14}.transcriptViewport(14, 0, false, 0))
 	if len(placements) != 1 {
 		t.Fatalf("placements = %#v", placements)
 	}
@@ -661,10 +661,10 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 	if got.Key != "transcript:4:image:0" || got.X != 3 || got.Y != 4 || got.Cols != transcriptImageThumbnailCols || got.Rows != 10 || got.FitByRows {
 		t.Fatalf("placement = %#v", got)
 	}
-	if clipped := m.visibleImagePlacements(14, 8, 0, 0, 80, false, 0); len(clipped) != 0 {
+	if clipped := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 8}.transcriptViewport(14, 0, false, 0)); len(clipped) != 0 {
 		t.Fatalf("partially clipped placement should be omitted: %#v", clipped)
 	}
-	if covered := m.visibleImagePlacements(14, 14, 0, 0, 80, false, 3); len(covered) != 0 {
+	if covered := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 14}.transcriptViewport(14, 0, false, 3)); len(covered) != 0 {
 		t.Fatalf("drawer-covered placement should be omitted: %#v", covered)
 	}
 }

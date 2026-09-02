@@ -793,14 +793,14 @@ func TestCompletedReasoningKeepsInlineHitboxAndTrailerControl(t *testing.T) {
 
 	// The settled reasoning block stays inline and clickable.
 	rows := m.transcriptRows(width)
-	visible := m.visibleReasoningPlacements(len(rows), len(rows), 0, 0, width, false, 0)
+	visible := m.visibleReasoningPlacements(fullViewport(len(rows), width))
 	if len(visible) != 1 || visible[0].recordID != record.id {
 		t.Fatalf("completed reasoning lost its transcript hitbox: %#v", visible)
 	}
 
 	// The trailer also keeps its Thought control.
 	rows = m.transcriptRows(width)
-	placements := m.visibleTurnTrailerPlacements(len(rows), len(rows), 0, 0, width, false, 0)
+	placements := m.visibleTurnTrailerPlacements(fullViewport(len(rows), width))
 	if len(placements) != 1 || placements[0].overlay != turnDockOverlayThought {
 		t.Fatalf("completed Thought trailer placement = %#v record=%#v", placements, record)
 	}

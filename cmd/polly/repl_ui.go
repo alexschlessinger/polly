@@ -4352,21 +4352,69 @@ func (m *replModel) denyApprovalLocked() {
 // pane based on the live terminal dimensions. Used by scroll handlers so
 // scroll deltas match what the user actually sees.
 func (r *managedREPL) transcriptHeight() int {
-	_, h := ui.TerminalDimensions()
-	statusRows := 0
-	if !r.model.quiet {
-		statusRows = 1
+	return max(1, r.frameLayoutFor(ui.TerminalDimensions()).transcriptHeight)
+}
+
+// frameLayout is the vertical geometry of one frame: how the terminal height
+// splits, top to bottom, between the logo band, the transcript pane, the turn
+// dock, the divider, the composer, and the status bar. render and the scroll
+// handlers derive it the same way, so scroll deltas match the pane the user
+// actually sees.
+type frameLayout struct {
+	width, height    int
+	logoRows         int
+	transcriptHeight int
+	dockRows         int
+	dividerRows      int
+	inputRows        int
+	statusRows       int
+}
+
+// frameLayoutFor splits a w×h terminal. The composer is the only region whose
+// height follows its content, so it is measured first and then capped to what
+// the fixed chrome leaves; the divider and logo drop out when short, and the
+// transcript takes whatever remains. Caller must hold m.mu.
+func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
+	m := r.model
+	l := frameLayout{width: w, height: h, inputRows: m.inputRows()}
+	if !m.quiet {
+		l.statusRows = 1
 	}
-	inputRows := r.model.inputRows()
-	dockRows := turnDockRowCount(h, inputRows, statusRows, !r.model.quiet && r.model.turnDock.visible)
-	dividerRows := dividerRowCount(h, inputRows, statusRows, dockRows, r.model.quiet)
-	contentHeight := h - inputRows - statusRows - dockRows - dividerRows
-	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible, r.images != nil)
-	height := contentHeight - logoRows
-	if height < 1 {
-		return 1
+	l.dockRows = turnDockRowCount(h, l.inputRows, l.statusRows, !m.quiet && m.turnDock.visible)
+	if room := h - l.statusRows - l.dockRows; room > 1 {
+		l.inputRows = min(l.inputRows, room-1)
+	} else {
+		l.inputRows = 1
 	}
-	return height
+	l.dividerRows = dividerRowCount(h, l.inputRows, l.statusRows, l.dockRows, m.quiet)
+	content := h - l.inputRows - l.statusRows - l.dockRows - l.dividerRows
+	l.logoRows = startupLogoRowCount(content, r.startupLogoVisible, r.images != nil)
+	l.transcriptHeight = max(0, content-l.logoRows)
+	return l
+}
+
+// composerRow maps a row inside the composer to its screen row.
+func (l frameLayout) composerRow(row int) int {
+	return l.logoRows + l.transcriptHeight + l.dockRows + l.dividerRows + row
+}
+
+// transcriptViewport resolves which transcript display rows land on screen
+// this frame. A pinned pane shows the last rows; an overlay ticker hides the
+// bottom overlayRows. A pane with no room yields an empty window.
+func (l frameLayout) transcriptViewport(totalRows, topRow int, pinBottom bool, overlayRows int) transcriptViewport {
+	v := transcriptViewport{width: l.width, logoRows: l.logoRows}
+	if l.transcriptHeight <= 0 || l.width <= 0 {
+		return v
+	}
+	v.start = topRow
+	if pinBottom {
+		v.start = max(0, totalRows-l.transcriptHeight)
+		if totalRows < l.transcriptHeight {
+			v.topPadding = l.transcriptHeight - totalRows
+		}
+	}
+	v.end = v.start + l.transcriptHeight - min(overlayRows, l.transcriptHeight)
+	return v
 }
 
 // dividerRowCount is the height of the rule separating the transcript from the
@@ -4551,25 +4599,25 @@ func (r *managedREPL) setupWidgets() {
 // layout (re)builds the root flex for the current input height. The input row
 // count varies with multi-line prompts, so the flex is rebuilt each render
 // rather than sized once at setup.
-func (r *managedREPL) layout(w, h, inputRows, logoRows int, showStatus, showDock, showDivider bool) {
+func (r *managedREPL) layout(l frameLayout) {
 	flex := widgets.NewFlex()
 	noBorder(&flex.Block)
 	flex.Direction = widgets.FlexColumn
-	if logoRows > 0 {
-		flex.AddItem(r.logoW, logoRows, 0, false)
+	if l.logoRows > 0 {
+		flex.AddItem(r.logoW, l.logoRows, 0, false)
 	}
 	flex.AddItem(r.transcriptW, 0, 1, false)
-	if showDock {
+	if l.dockRows > 0 {
 		flex.AddItem(r.turnDockW, 1, 0, false)
 	}
-	if showDivider {
+	if l.dividerRows > 0 {
 		flex.AddItem(r.dividerW, 1, 0, false)
 	}
-	flex.AddItem(r.inputW, inputRows, 0, false)
-	if showStatus {
+	flex.AddItem(r.inputW, l.inputRows, 0, false)
+	if l.statusRows > 0 {
 		flex.AddItem(r.statusW, 1, 0, false)
 	}
-	flex.SetRect(0, 0, w, h)
+	flex.SetRect(0, 0, l.width, l.height)
 	r.rootFlex = flex
 }
 
@@ -4593,11 +4641,6 @@ func (r *managedREPL) render() {
 	if r.images != nil {
 		imageCellWidth, imageCellHeight = r.images.cellDimensions()
 	}
-	showStatus := !r.model.quiet
-	statusRows := 0
-	if showStatus {
-		statusRows = 1
-	}
 
 	r.model.mu.Lock()
 	if r.model.imageCellWidth != imageCellWidth || r.model.imageCellHeight != imageCellHeight {
@@ -4609,41 +4652,10 @@ func (r *managedREPL) render() {
 	r.model.refreshStreamCursor()
 	r.model.refreshReasoningRecords(w)
 	r.model.refreshExpandedTurnTrailer(w)
-	showDock := !r.model.quiet && r.model.turnDock.visible
-	dockRows := turnDockRowCount(h, r.model.inputRows(), statusRows, showDock)
-	showDock = dockRows > 0
-	inputMaxRows := maxInputRows
-	if h-statusRows-dockRows > 1 {
-		inputMaxRows = min(inputMaxRows, h-statusRows-dockRows-1)
-	} else {
-		inputMaxRows = 1
-	}
-	input, inputRows, curRow, curCol, editable := r.model.renderInputForTerminal(inputMaxRows, w)
-	dividerRows := dividerRowCount(h, inputRows, statusRows, dockRows, r.model.quiet)
-	contentHeight := h - inputRows - statusRows - dockRows - dividerRows
-	logoRows := startupLogoRowCount(contentHeight, r.startupLogoVisible, r.images != nil)
-	transcriptHeight := contentHeight - logoRows
-	if transcriptHeight < 0 {
-		transcriptHeight = 0
-	}
+	l := r.frameLayoutFor(w, h)
+	input, _, curRow, curCol, editable := r.model.renderInputForTerminal(l.inputRows, w)
 	transcriptRows := r.model.transcriptRows(w)
-	pinTranscriptBottom := r.model.followBottom
-	topRow := r.model.scrollAnchor
-	if !pinTranscriptBottom {
-		maxTop := len(transcriptRows) - transcriptHeight
-		if maxTop < 0 {
-			maxTop = 0
-		}
-		if topRow >= maxTop {
-			topRow = maxTop
-			r.model.followBottom = true
-			pinTranscriptBottom = true
-		}
-		if topRow < 0 {
-			topRow = 0
-		}
-		r.model.scrollAnchor = topRow
-	}
+	topRow, pinTranscriptBottom := r.model.settleScroll(len(transcriptRows), l.transcriptHeight)
 	status := r.model.statusRow(w)
 	modalOpen := r.model.modal != nil
 	modalText, modalTitle := "", ""
@@ -4656,46 +4668,27 @@ func (r *managedREPL) render() {
 		modalHeight = min(h, max(3, strings.Count(modalText, "\n")+3))
 	}
 	var dock string
-	if showDock {
+	if l.dockRows > 0 {
 		dock, _ = r.model.turnDockRow(w)
 	}
 	title := r.model.frameTitle()
 	progress := r.model.frameProgress()
 	notices := r.model.takeNotices()
-	ticker := r.model.activityTicker(len(transcriptRows), topRow, transcriptHeight)
+	ticker := r.model.activityTicker(len(transcriptRows), topRow, l.transcriptHeight)
 	var overlay [][]ui.Cell
 	if ticker != "" {
 		overlay = append(overlay, ui.ParseStyles(ticker, ui.NewStyle(ui.ColorClear)))
 	}
-	overlayRows := len(overlay)
-	imagePlacements := r.model.visibleImagePlacements(
-		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
-		pinTranscriptBottom, overlayRows,
-	)
-	reasoningPlacements := r.model.visibleReasoningPlacements(
-		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
-		pinTranscriptBottom, overlayRows,
-	)
-	toolDisclosurePlacements := r.model.visibleToolDisclosurePlacements(
-		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
-		pinTranscriptBottom, overlayRows,
-	)
-	imageDisclosurePlacements := r.model.visibleImageDisclosurePlacements(
-		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
-		pinTranscriptBottom, overlayRows,
-	)
-	turnTrailerPlacements := r.model.visibleTurnTrailerPlacements(
-		len(transcriptRows), transcriptHeight, topRow, logoRows, w,
-		pinTranscriptBottom, overlayRows,
-	)
+	viewport := l.transcriptViewport(len(transcriptRows), topRow, pinTranscriptBottom, len(overlay))
+	imagePlacements := r.model.visibleImagePlacements(viewport)
 	r.model.imagePlacements = imagePlacements
-	r.model.reasoningPlacements = reasoningPlacements
-	r.model.toolDisclosurePlacements = toolDisclosurePlacements
-	r.model.imageDisclosurePlacements = imageDisclosurePlacements
-	r.model.turnTrailerPlacements = turnTrailerPlacements
+	r.model.reasoningPlacements = r.model.visibleReasoningPlacements(viewport)
+	r.model.toolDisclosurePlacements = r.model.visibleToolDisclosurePlacements(viewport)
+	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(viewport)
+	r.model.turnTrailerPlacements = r.model.visibleTurnTrailerPlacements(viewport)
 	r.model.mu.Unlock()
 
-	if logoRows == imageLogoHeight && r.images != nil {
+	if l.logoRows == imageLogoHeight && r.images != nil {
 		// The image splash rides the same placement pipeline as thumbnails:
 		// its band is blank in the text layer and the manager draws, diffs,
 		// and releases it like any other placement.
@@ -4714,8 +4707,8 @@ func (r *managedREPL) render() {
 	r.transcriptW.PinBottom = pinTranscriptBottom
 	r.transcriptW.TopRow = topRow
 	r.transcriptW.OverlayBottom = overlay
-	if logoRows == imageLogoHeight {
-		r.logoW.Rows = make([][]ui.Cell, logoRows)
+	if l.logoRows == imageLogoHeight {
+		r.logoW.Rows = make([][]ui.Cell, l.logoRows)
 	} else {
 		r.logoW.Rows = pollyLogoRows(w)
 	}
@@ -4731,13 +4724,13 @@ func (r *managedREPL) render() {
 		r.modalW.Title = modalTitle
 		r.modalW.SetRect(x, y, x+modalWidth, y+modalHeight)
 	}
-	if dividerRows > 0 {
+	if l.dividerRows > 0 {
 		r.dividerW.Text = styled(strings.Repeat("─", w), "muted", "")
 	}
 
-	r.layout(w, h, inputRows, logoRows, showStatus, showDock, dividerRows > 0)
+	r.layout(l)
 	ui.Clear()
-	r.placeCursor(editable && !modalOpen, curCol, logoRows+transcriptHeight+dockRows+dividerRows+curRow, w)
+	r.placeCursor(editable && !modalOpen, curCol, l.composerRow(curRow), w)
 	if modalOpen {
 		ui.Render(r.rootFlex, r.modalW)
 	} else {
@@ -5166,33 +5159,31 @@ func (m *replModel) scrollToBottom() {
 	m.followBottom = true
 }
 
-// visibleReasoningPlacements projects each disclosure header into absolute
-// screen cells. A narrow header may wrap, so every visible header fragment is
-// clickable while preview/detail rows remain inert.
+// settleScroll clamps the held anchor to the rows that exist at this width
+// and re-engages followBottom once it reaches the end, returning the frame's
+// top row and whether the pane pins to the bottom. Caller must hold m.mu.
+func (m *replModel) settleScroll(totalRows, viewportHeight int) (topRow int, pinBottom bool) {
+	if m.followBottom {
+		return m.scrollAnchor, true
+	}
+	topRow = m.scrollAnchor
+	if maxTop := max(0, totalRows-viewportHeight); topRow >= maxTop {
+		topRow = maxTop
+		m.followBottom = true
+	}
+	topRow = max(topRow, 0)
+	m.scrollAnchor = topRow
+	return topRow, m.followBottom
+}
+
 // transcriptViewport is the window of display rows the transcript pane shows
-// this frame, plus the screen offset every placement projects through.
+// this frame, plus the screen offset every placement projects through. It is
+// resolved once per frame by frameLayout.transcriptViewport.
 type transcriptViewport struct {
 	start, end int // display rows in [start, end) are on screen
 	topPadding int // blank rows above a transcript shorter than the pane
 	logoRows   int
-}
-
-// newTranscriptViewport resolves the visible row window. A pinned viewport
-// shows the last viewportHeight rows; an overlay ticker hides its rows at
-// the bottom. ok is false when the pane cannot show anything.
-func newTranscriptViewport(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) (transcriptViewport, bool) {
-	if viewportHeight <= 0 || width <= 0 {
-		return transcriptViewport{}, false
-	}
-	v := transcriptViewport{start: topRow, logoRows: logoRows}
-	if pinBottom {
-		v.start = max(0, totalRows-viewportHeight)
-		if totalRows < viewportHeight {
-			v.topPadding = viewportHeight - totalRows
-		}
-	}
-	v.end = v.start + viewportHeight - min(overlayRows, viewportHeight)
-	return v, true
+	width      int
 }
 
 func (v transcriptViewport) contains(row int) bool { return row >= v.start && row < v.end }
@@ -5200,23 +5191,19 @@ func (v transcriptViewport) contains(row int) bool { return row >= v.start && ro
 // screenY maps a display row inside the window to its screen row.
 func (v transcriptViewport) screenY(row int) int { return v.logoRows + v.topPadding + row - v.start }
 
-func (m *replModel) visibleReasoningPlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []disclosurePlacement {
-	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, turnDockOverlayThought)
+func (m *replModel) visibleReasoningPlacements(v transcriptViewport) []disclosurePlacement {
+	return m.visibleDisclosurePlacements(v, turnDockOverlayThought)
 }
 
-func (m *replModel) visibleToolDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []disclosurePlacement {
-	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, turnDockOverlayTools)
+func (m *replModel) visibleToolDisclosurePlacements(v transcriptViewport) []disclosurePlacement {
+	return m.visibleDisclosurePlacements(v, turnDockOverlayTools)
 }
 
-func (m *replModel) visibleImageDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []disclosurePlacement {
-	return m.visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows, turnDockOverlayImages)
+func (m *replModel) visibleImageDisclosurePlacements(v transcriptViewport) []disclosurePlacement {
+	return m.visibleDisclosurePlacements(v, turnDockOverlayImages)
 }
 
-func (m *replModel) visibleTurnTrailerPlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []turnTrailerPlacement {
-	v, ok := newTranscriptViewport(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows)
-	if !ok {
-		return nil
-	}
+func (m *replModel) visibleTurnTrailerPlacements(v transcriptViewport) []turnTrailerPlacement {
 	var placements []turnTrailerPlacement
 	rowOffset := 0
 	for _, block := range m.visualBlocks {
@@ -5225,11 +5212,11 @@ func (m *replModel) visibleTurnTrailerPlacements(totalRows, viewportHeight, topR
 			if v.contains(row) {
 				if record := m.turnTrailers[block.turnTrailerID]; record != nil {
 					for _, field := range record.fields {
-						if field.X >= width {
+						if field.X >= v.width {
 							continue
 						}
 						field.Y = v.screenY(row)
-						field.Cols = min(field.Cols, width-field.X)
+						field.Cols = min(field.Cols, v.width-field.X)
 						placements = append(placements, turnTrailerPlacement{
 							recordID: record.id, turnDockPlacement: field,
 						})
@@ -5242,12 +5229,9 @@ func (m *replModel) visibleTurnTrailerPlacements(totalRows, viewportHeight, topR
 	return placements
 }
 
-func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int, overlay turnDockOverlay) []disclosurePlacement {
-	v, ok := newTranscriptViewport(totalRows, viewportHeight, topRow, logoRows, width, pinBottom, overlayRows)
-	if !ok {
-		return nil
-	}
-
+// visibleDisclosurePlacements projects one kind of activity control into
+// absolute screen cells for mouse hit-testing.
+func (m *replModel) visibleDisclosurePlacements(v transcriptViewport, overlay turnDockOverlay) []disclosurePlacement {
 	// Only the block's activity controls are click targets. Truncation may
 	// leave no fully visible control; the header never stands in for one.
 	var placements []disclosurePlacement
@@ -5263,7 +5247,7 @@ func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRo
 			continue
 		}
 		for _, field := range block.activityFields {
-			if field.overlay != overlay || field.X >= width {
+			if field.overlay != overlay || field.X >= v.width {
 				continue
 			}
 			placements = append(placements, disclosurePlacement{
@@ -5271,7 +5255,7 @@ func (m *replModel) visibleDisclosurePlacements(totalRows, viewportHeight, topRo
 				recordIDs: append([]int64(nil), recordIDs...),
 				X:         field.X,
 				Y:         v.screenY(row),
-				Cols:      min(field.Cols, width-field.X),
+				Cols:      min(field.Cols, v.width-field.X),
 			})
 		}
 	}
