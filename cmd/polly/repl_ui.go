@@ -1546,7 +1546,7 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 		m.setTranscriptEntry(index, text, images)
 		return
 	}
-	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolDisclosureBlock(record.id), func(bool) {
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
 		m.setTranscriptEntry(index, text, images)
 	})
 }
@@ -1589,34 +1589,25 @@ func (m *replModel) mutateAnchored(width int, match func(*transcriptVisualBlock)
 	}
 }
 
-// matchActivityGroup matches the merged activity block that owns every
-// record in ids. Raw transcript entries over-count their independent headers
-// and reasoning previews after layout combines them into one block.
-func matchActivityGroup(ids []int64, reasoning bool) func(*transcriptVisualBlock) bool {
+// matchToolGroup and matchReasoningGroup match the merged activity block
+// that owns every record in ids. Raw transcript entries over-count their
+// independent headers and reasoning previews after layout combines them into
+// one block, so re-anchoring matches the block, not the entry.
+func matchToolGroup(ids []int64) func(*transcriptVisualBlock) bool {
 	return func(block *transcriptVisualBlock) bool {
-		blockIDs := block.toolDisclosureIDs
-		if reasoning {
-			blockIDs = block.reasoningIDs
-		}
-		return activityGroupContains(blockIDs, ids)
+		return activityGroupContains(block.toolDisclosureIDs, ids)
+	}
+}
+
+func matchReasoningGroup(ids []int64) func(*transcriptVisualBlock) bool {
+	return func(block *transcriptVisualBlock) bool {
+		return activityGroupContains(block.reasoningIDs, ids)
 	}
 }
 
 func matchTurnTrailerBlock(recordID int64) func(*transcriptVisualBlock) bool {
 	return func(block *transcriptVisualBlock) bool {
 		return block.turnTrailerID == recordID
-	}
-}
-
-func matchToolDisclosureBlock(recordID int64) func(*transcriptVisualBlock) bool {
-	return func(block *transcriptVisualBlock) bool {
-		return slices.Contains(block.toolDisclosureIDs, recordID)
-	}
-}
-
-func matchReasoningBlock(recordID int64) func(*transcriptVisualBlock) bool {
-	return func(block *transcriptVisualBlock) bool {
-		return slices.Contains(block.reasoningIDs, recordID)
 	}
 }
 
@@ -1980,7 +1971,7 @@ func (m *replModel) refreshReasoningRecordWithAnchor(record *reasoningRecord, wi
 		m.setTranscriptText(record.transcriptIndex, next)
 		return
 	}
-	m.mutateAnchored(width, matchReasoningBlock(record.id), func(bool) {
+	m.mutateAnchored(width, matchReasoningGroup([]int64{record.id}), func(bool) {
 		m.setTranscriptText(record.transcriptIndex, next)
 	})
 }
@@ -5457,7 +5448,7 @@ func (m *replModel) toggleReasoningGroup(ids []int64, width int) bool {
 	// click therefore collapses the whole group; only an entirely closed group
 	// expands on click.
 	expand := !anyExpanded
-	m.mutateAnchored(layoutWidth, matchActivityGroup(validIDs, true), func(held bool) {
+	m.mutateAnchored(layoutWidth, matchReasoningGroup(validIDs), func(held bool) {
 		// Apply the new state to the whole group before refreshing any record:
 		// each refresh re-lays-out the merged activity row, so refreshing
 		// mid-loop would render intermediate frames from a half-toggled group.
@@ -5489,7 +5480,7 @@ func (m *replModel) toggleToolDisclosureGroup(ids []int64) bool {
 		return false
 	}
 	expand := !anyExpanded
-	m.mutateAnchored(m.disclosureLayoutWidth(0), matchActivityGroup(validIDs, false), func(held bool) {
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(validIDs), func(held bool) {
 		// Apply-then-refresh: see toggleReasoningGroup.
 		var changed []*toolDisclosureRecord
 		for _, id := range ids {
@@ -5521,7 +5512,7 @@ func (m *replModel) toggleImageDisclosureGroup(ids []int64) bool {
 		return false
 	}
 	expand := !anyExpanded
-	m.mutateAnchored(m.disclosureLayoutWidth(0), matchActivityGroup(validIDs, false), func(bool) {
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(validIDs), func(bool) {
 		for _, id := range validIDs {
 			m.toolDisclosures[id].imagesExpanded = expand
 		}
@@ -6046,7 +6037,7 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 		})
 		row = &record.rows[len(record.rows)-1]
 	}
-	m.mutateAnchored(m.disclosureLayoutWidth(0), matchActivityGroup([]int64{record.id}, false), func(bool) {
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
 		row.inspectionImages = append([]transcriptImage(nil), images...)
 		m.refreshToolDisclosureWithAnchor(record, false)
 		// The third Images field and its gallery are derived from
