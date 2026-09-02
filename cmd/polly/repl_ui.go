@@ -2384,6 +2384,13 @@ func (m *replModel) appendNoticeLine(text string) {
 	m.appendLine(styled(text, "muted", ""))
 }
 
+// appendErrorLine reports a failure inline and follows it, so the user sees
+// why the composer kept their input.
+func (m *replModel) appendErrorLine(text string) {
+	m.appendLine(styled("Error: "+text, "err", ""))
+	m.followBottom = true
+}
+
 func (m *replModel) clearDisplay() {
 	m.transcript = nil
 	m.transcriptImages = nil
@@ -4413,6 +4420,82 @@ func (r *managedREPL) runComposerCommandLocked(trimmed string) bool {
 	return false
 }
 
+// submitComposerLocked handles Enter on the composer. Only a single-line "/…"
+// is a command; a multi-line prompt that happens to start with "/" is real
+// input. While a turn runs, busy-safe commands still execute and everything
+// else queues behind it. Reports whether the REPL should quit. Caller must
+// hold m.mu.
+func (r *managedREPL) submitComposerLocked() bool {
+	m := r.model
+	trimmed := strings.TrimSpace(m.ed.text())
+	if trimmed == "" {
+		return false
+	}
+	if m.clipboardCapture {
+		m.appendNoticeLine("clipboard: waiting for image capture")
+		m.followBottom = true
+		return false
+	}
+	if m.busy && defaultReplCommands.busySafeCommand(trimmed) {
+		return r.runComposerCommandLocked(trimmed)
+	}
+	isCommand := !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/")
+	if m.busy {
+		r.queueComposerInputLocked(trimmed, isCommand)
+		return false
+	}
+	if isCommand {
+		return r.runComposerCommandLocked(trimmed)
+	}
+	r.submitComposerTurnLocked(trimmed)
+	return false
+}
+
+// queueComposerInputLocked parks input behind the running turn. Commands
+// remain text-only, while prompts are fully prepared before joining the queue.
+func (r *managedREPL) queueComposerInputLocked(trimmed string, isCommand bool) {
+	m := r.model
+	queued := queuedREPLInput{text: trimmed}
+	if !isCommand {
+		turn, err := r.prepareManagedTurnLocked(trimmed)
+		if err != nil {
+			m.appendErrorLine(err.Error())
+			return
+		}
+		queued.turn = &turn
+	}
+	m.ed.clear()
+	r.recordAcceptedInput(trimmed)
+	m.queue = append(m.queue, queued)
+	m.appendQueuedInput(&m.queue[len(m.queue)-1])
+}
+
+// submitComposerTurnLocked starts a turn from the idle composer. A restored
+// draft resubmitted unchanged reuses its already-persisted user message.
+func (r *managedREPL) submitComposerTurnLocked(trimmed string) {
+	m := r.model
+	turn, restoredPersistence, reuseRestored := m.acceptedRestoredTurn(trimmed)
+	if !reuseRestored {
+		var err error
+		turn, err = r.prepareManagedTurnLocked(trimmed)
+		if err != nil {
+			m.appendErrorLine(err.Error())
+			return
+		}
+	}
+	select {
+	case r.pending <- turn:
+		m.ed.clear()
+		r.recordAcceptedInput(trimmed)
+		m.currentPersistence = restoredPersistence
+		m.restoreDraftNext = reuseRestored
+		m.clearRestoredDraft()
+		m.beginManagedTurn(turn)
+	default:
+		m.appendErrorLine("turn queue is unavailable")
+	}
+}
+
 // printableRune returns the single printable rune a keyboard event carries.
 // Any multi-character event ID — bracketed key names like "<F1>" as well as
 // gotui's bare "Unknown_Mouse_Button" — and any control rune is rejected, so
@@ -5544,8 +5627,9 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	}
 
 	// While a turn is in flight the prompt stays editable so the user can
-	// compose the next message; Enter queues it (see below) rather than
-	// submitting immediately. Editing/history/search keys all work as usual.
+	// compose the next message; Enter queues it (see submitComposerLocked)
+	// rather than submitting immediately. Editing/history/search keys all
+	// work as usual.
 
 	switch e.ID {
 	case "<Escape>":
@@ -5563,65 +5647,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		}
 		m.ed.deleteForward()
 	case "<Enter>":
-		trimmed := strings.TrimSpace(m.ed.text())
-		if trimmed == "" {
-			return false
-		}
-		if m.clipboardCapture {
-			m.appendNoticeLine("clipboard: waiting for image capture")
-			m.followBottom = true
-			return false
-		}
-		if m.busy && defaultReplCommands.busySafeCommand(trimmed) {
-			return r.runComposerCommandLocked(trimmed)
-		}
-		isCommand := !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/")
-		if m.busy {
-			// A turn is running — commands remain text-only, while prompts are
-			// fully prepared before joining the queue.
-			queued := queuedREPLInput{text: trimmed}
-			if !isCommand {
-				turn, err := r.prepareManagedTurnLocked(trimmed)
-				if err != nil {
-					m.appendLine(styled("Error: "+err.Error(), "err", ""))
-					m.followBottom = true
-					return false
-				}
-				queued.turn = &turn
-			}
-			m.ed.clear()
-			r.recordAcceptedInput(trimmed)
-			m.queue = append(m.queue, queued)
-			m.appendQueuedInput(&m.queue[len(m.queue)-1])
-			return false
-		}
-		// Only a single-line "/…" is a command; a multi-line prompt that happens
-		// to start with "/" is real input.
-		if isCommand {
-			return r.runComposerCommandLocked(trimmed)
-		}
-		turn, restoredPersistence, reuseRestored := m.acceptedRestoredTurn(trimmed)
-		if !reuseRestored {
-			var err error
-			turn, err = r.prepareManagedTurnLocked(trimmed)
-			if err != nil {
-				m.appendLine(styled("Error: "+err.Error(), "err", ""))
-				m.followBottom = true
-				return false
-			}
-		}
-		select {
-		case r.pending <- turn:
-			m.ed.clear()
-			r.recordAcceptedInput(trimmed)
-			m.currentPersistence = restoredPersistence
-			m.restoreDraftNext = reuseRestored
-			m.clearRestoredDraft()
-			m.beginManagedTurn(turn)
-		default:
-			m.appendLine(styled("Error: turn queue is unavailable", "err", ""))
-			m.followBottom = true
-		}
+		return r.submitComposerLocked()
 	case "<C-j>":
 		// Ctrl-J inserts a newline for composing multi-line prompts; Enter sends.
 		m.ed.insert('\n')
