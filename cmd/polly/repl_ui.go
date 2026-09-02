@@ -2559,7 +2559,7 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 		m.finishAssistantBlock("")
 	}
 	for _, call := range msg.ToolCalls {
-		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: call.ID, label: hydratedToolName(call.Name)})
+		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: call.ID, label: toolDisplayName(call.Name)})
 	}
 	h.lastRole = msg.Role
 }
@@ -2569,7 +2569,7 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 func (h *historyHydrator) tool(msg messages.ChatMessage) {
 	inspectionImages := inspectionTranscriptImages(msg, h.m.artifactStore)
 	if len(h.toolRows) == 0 {
-		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: msg.ToolCallID, label: hydratedToolName(msg.ToolName)})
+		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: msg.ToolCallID, label: toolDisplayName(msg.ToolName)})
 	}
 	pick := -1
 	for i := range h.toolRows {
@@ -2660,7 +2660,7 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 	used := make([]bool, len(existing))
 	ordered := make([]toolDisclosureRow, 0, max(len(order), len(existing)))
 	for _, displayCall := range order {
-		name := hydratedToolName(displayCall.Name)
+		name := toolDisplayName(displayCall.Name)
 		pick := -1
 		for i := range existing {
 			if !used[i] && displayCall.ID != "" && existing[i].callID == displayCall.ID {
@@ -2740,13 +2740,6 @@ func (h *historyHydrator) finish() {
 			m.appendLine("  " + styled("incomplete", "muted", ""))
 		}
 	}
-}
-
-func hydratedToolName(name string) string {
-	if name == "" {
-		return "tool"
-	}
-	return name
 }
 
 func agentSyntheticMessage(msg messages.ChatMessage) bool {

@@ -1108,12 +1108,8 @@ func deniedDisplayToolCalls(generated []messages.ChatMessage) string {
 			continue
 		}
 		for _, call := range msg.ToolCalls {
-			name := call.Name
-			if name == "" {
-				name = "tool"
-			}
 			_, denied := deniedIDs[call.ID]
-			calls = append(calls, durableDisplayToolCall{ID: call.ID, Name: name, Denied: denied})
+			calls = append(calls, durableDisplayToolCall{ID: call.ID, Name: toolDisplayName(call.Name), Denied: denied})
 		}
 	}
 	if len(calls) == 0 {
