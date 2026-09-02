@@ -251,6 +251,3 @@ func (ui *lineTurnUI) FinishTextTurn() {
 func trimLeadingResponseNewlines(content string) string {
 	return strings.TrimLeft(content, "\r\n")
 }
-
-// joinMeta appends an optional annotation to a tool line body with the shared
-// "·" separator.
