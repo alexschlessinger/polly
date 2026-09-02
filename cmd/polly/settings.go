@@ -281,6 +281,13 @@ func settingKeysWhere(pred func(settingSpec) bool) []string {
 	return keys
 }
 
+// flagSet reports whether the setting's flag was given, by argument or
+// environment, so its value must reach metadata even outside the startup
+// write-back set. An explicit zero (--maxcontext 0 = unlimited) counts.
+func (s settingSpec) flagSet(cmd *cli.Command) bool {
+	return s.flag != "" && s.toMeta != nil && cmd.IsSet(s.flag)
+}
+
 func settingSpecFor(key string) (settingSpec, bool) {
 	for _, s := range settingSpecs {
 		if s.key == key {

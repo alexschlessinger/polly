@@ -1514,34 +1514,28 @@ func initializeConversation(ctx context.Context, config *Config, sessionStore se
 	return contextID, originalContextInfo, nil
 }
 
-// applyFlagSettings copies only explicitly-set CLI flags onto md. Explicit
-// zero values (e.g. --maxcontext 0 = unlimited) are preserved rather than
-// being lost in a partial metadata merge.
+// applyFlagSettings copies only explicitly-set CLI flags onto md, so a plain
+// --reset keeps stored settings instead of replacing them with defaults.
 func applyFlagSettings(md *sessions.Metadata, config *Config, cmd *cli.Command) {
 	for _, spec := range settingSpecs {
-		if spec.flag != "" && spec.toMeta != nil && cmd.IsSet(spec.flag) {
+		if spec.flagSet(cmd) {
 			spec.toMeta(config, md)
 		}
 	}
 }
 
-// updateContextInfo persists current settings onto the session metadata via
-// read-modify-write, so explicit zero values survive and persistence errors
-// surface.
 // updateContextInfo writes the resolved settings onto md, the metadata staged
-// by newConversationState, and persists it. Name and LastUsed are
-// storage-owned: SetMetadata overwrites both, so they are not written here.
+// by newConversationState, and persists it: the startup write-back rows
+// always (config holds the stored value unless a flag overrode it, see
+// initializeConversation), every other row only when its flag was given.
+// Name and LastUsed are storage-owned: SetMetadata overwrites both, so they
+// are not written here.
 func updateContextInfo(ctx context.Context, session sessions.Session, md *sessions.Metadata, config *Config, cmd *cli.Command) error {
-	// Config holds resolved values — stored settings unless flags override
-	// (see initializeConversation) — so these are safe to write back.
 	for _, spec := range settingSpecs {
-		if spec.startupWriteBack {
+		if spec.startupWriteBack || spec.flagSet(cmd) {
 			spec.toMeta(config, md)
 		}
 	}
-	// Tools are already handled in initializeSession; settings that have no
-	// resolved-config equivalent apply only when explicitly set.
-	applyFlagSettings(md, config, cmd)
 	return session.SetMetadata(ctx, md)
 }
 
