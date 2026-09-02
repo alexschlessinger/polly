@@ -122,7 +122,7 @@ var settingSpecs = []settingSpec{
 		parse: func(cfg *Config, value string) error {
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return fmt.Errorf("maxtokens must be a positive integer, got %q", value)
+				return fmt.Errorf("maxtokens must be a non-negative integer (0 = provider default), got %q", value)
 			}
 			if err := validateMaxTokens(n); err != nil {
 				return err
@@ -210,7 +210,7 @@ var settingSpecs = []settingSpec{
 		parse: func(cfg *Config, value string) error {
 			d, err := time.ParseDuration(value)
 			if err != nil {
-				return fmt.Errorf("tooltimeout must be a positive duration (e.g. 45s), got %q", value)
+				return fmt.Errorf("tooltimeout must be a non-negative duration (e.g. 45s; 0 = no timeout), got %q", value)
 			}
 			if err := validateToolTimeout(d); err != nil {
 				return err

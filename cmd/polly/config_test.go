@@ -94,15 +94,16 @@ func TestConfigFlagsRejectPromptAndFileOnManagementCommands(t *testing.T) {
 }
 
 // The CLI flags enforce the same bounds /set does, so a launch cannot store
-// a value the REPL would refuse.
+// a value the REPL would refuse. Zero stays accepted on every row: it is the
+// documented runtime sentinel (no max_tokens, no clamp, no tool timeout).
 func TestConfigFlagsShareSetBounds(t *testing.T) {
 	rejected := []struct {
 		args    []string
 		wantErr string
 	}{
-		{[]string{"--maxtokens", "0"}, "maxtokens must be a positive integer"},
+		{[]string{"--maxtokens=-1"}, "maxtokens must be a non-negative integer"},
 		{[]string{"--maxcontext=-1"}, "maxcontext must be a non-negative integer"},
-		{[]string{"--tooltimeout", "0s"}, "tooltimeout must be a positive duration"},
+		{[]string{"--tooltimeout=-1s"}, "tooltimeout must be a non-negative duration"},
 	}
 	for _, tt := range rejected {
 		err := runConfigValidationCommand(tt.args...)
@@ -110,10 +111,23 @@ func TestConfigFlagsShareSetBounds(t *testing.T) {
 			t.Errorf("run(%v) error = %v, want substring %q", tt.args, err, tt.wantErr)
 		}
 	}
-	for _, args := range [][]string{{"--maxtokens", "1"}, {"--maxcontext", "0"}, {"--tooltimeout", "1s"}} {
+	for _, args := range [][]string{
+		{"--maxtokens", "1"}, {"--maxcontext", "0"}, {"--tooltimeout", "1s"},
+		{"--maxtokens", "0"}, {"--tooltimeout", "0s"},
+	} {
 		if err := runConfigValidationCommand(args...); err != nil {
 			t.Errorf("run(%v) error = %v, want the bound accepted", args, err)
 		}
+	}
+}
+
+// The flags read from the environment, and the validator runs on env-sourced
+// values before any command, so an exported zero must not break a launch.
+func TestConfigFlagsAcceptEnvSourcedZero(t *testing.T) {
+	t.Setenv("POLLYTOOL_MAXTOKENS", "0")
+	t.Setenv("POLLYTOOL_TOOLTIMEOUT", "0s")
+	if err := runConfigValidationCommand(); err != nil {
+		t.Fatalf("run with zero env values error = %v, want accepted", err)
 	}
 }
 

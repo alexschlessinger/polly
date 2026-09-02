@@ -537,10 +537,11 @@ func validateTemperature(temp float64) error {
 
 // validateMaxTokens, validateMaxContext, and validateToolTimeout are shared
 // by the CLI flags and /set, so a value one path rejects the other cannot
-// smuggle into metadata.
+// smuggle into metadata. Zero is a sentinel on every row: no max_tokens on
+// the request, no clamp, no per-tool timeout.
 func validateMaxTokens(n int) error {
-	if n <= 0 {
-		return fmt.Errorf("maxtokens must be a positive integer, got %d", n)
+	if n < 0 {
+		return fmt.Errorf("maxtokens must be a non-negative integer (0 = provider default), got %d", n)
 	}
 	return nil
 }
@@ -553,8 +554,8 @@ func validateMaxContext(n int) error {
 }
 
 func validateToolTimeout(d time.Duration) error {
-	if d <= 0 {
-		return fmt.Errorf("tooltimeout must be a positive duration (e.g. 45s), got %s", d)
+	if d < 0 {
+		return fmt.Errorf("tooltimeout must be a non-negative duration (e.g. 45s; 0 = no timeout), got %s", d)
 	}
 	return nil
 }
