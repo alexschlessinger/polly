@@ -348,11 +348,7 @@ func (m *replModel) attachTurnDockTrailer() {
 	}
 	dock := m.turnDock
 	dock.overlay = turnDockOverlayNone
-	width := m.reasoningWidth
-	if width < 2 {
-		width = 80
-	}
-	text, fields := m.turnDockRowFor(dock, width)
+	text, fields := m.turnDockRowFor(dock, m.disclosureLayoutWidth(0))
 	if text == "" {
 		m.clearTurnDock()
 		return

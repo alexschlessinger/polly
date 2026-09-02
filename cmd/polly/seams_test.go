@@ -162,11 +162,7 @@ func (m *replModel) fullTranscript() string {
 }
 
 func (m *replModel) transcriptDisplayBlocks() []string {
-	width := m.reasoningWidth
-	if width < 2 {
-		width = 80
-	}
-	entries := m.transcriptDisplayEntries(width)
+	entries := m.transcriptDisplayEntries(m.disclosureLayoutWidth(0))
 	blocks := make([]string, len(entries))
 	for i, entry := range entries {
 		blocks[i] = entry.text
