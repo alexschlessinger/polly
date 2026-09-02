@@ -148,7 +148,7 @@ func TestThinkingEffortAsBudget(t *testing.T) {
 // usage text, and the parser cannot drift apart.
 func TestThinkingEffortWordsRoundTrip(t *testing.T) {
 	words := ThinkingEffortWords()
-	if len(words) != 2+len(ThinkingLevelNames()) {
+	if len(words) != 2+len(levelNames) {
 		t.Fatalf("words = %v", words)
 	}
 	forms := ThinkingEffortForms()

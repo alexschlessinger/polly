@@ -41,12 +41,6 @@ var levelNames = [...]string{
 	LevelMax:     "max",
 }
 
-// ThinkingLevelNames lists the named levels ParseThinkingEffort accepts, in
-// ascending order.
-func ThinkingLevelNames() []string {
-	return append([]string(nil), levelNames[:]...)
-}
-
 // effortWord is one row of effortWords: a word ParseThinkingEffort accepts and
 // the effort it names. An alias parses but is never advertised: it is absent
 // from completions and usage text, and String renders the canonical word.
