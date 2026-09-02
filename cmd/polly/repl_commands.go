@@ -846,17 +846,6 @@ func completeSetCommand(_ *replCommandContext, fields []string, prefix string) [
 	return nil
 }
 
-// applyReplSetting validates value for key and writes it onto cfg. Turns build
-// their completion request from cfg each time, so a change takes effect on the
-// next turn without reconnecting.
-func applyReplSetting(cfg *Config, key, value string) error {
-	spec, ok := settingSpecFor(key)
-	if !ok || spec.parse == nil {
-		return fmt.Errorf("unknown or read-only key: %s (settable: %s)", key, strings.Join(replSettableKeys, ", "))
-	}
-	return spec.parse(cfg, value)
-}
-
 func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if len(args) != 3 {
 		return replCommandResult{err: ctx.replyLine("usage: /set <key> <value>. settable: " + strings.Join(replSettableKeys, ", "))}
@@ -874,19 +863,24 @@ func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 // applyAndPersistSetting is the whole /set path for one key: parse onto the
 // config, run the live-apply hook and the UI refresh, then persist. Every
 // interactive way of changing a setting goes through here so none can skip a
-// hook. It returns the notice line to show.
+// hook. It returns the notice line to show. Turns build their completion
+// request from the config each time, so a change takes effect on the next
+// turn without reconnecting.
 func applyAndPersistSetting(ctx *replCommandContext, key, value string) (string, error) {
-	if err := applyReplSetting(ctx.config, key, value); err != nil {
+	spec, ok := settingSpecFor(key)
+	if !ok || spec.parse == nil {
+		return "", fmt.Errorf("unknown or read-only key: %s (settable: %s)", key, strings.Join(replSettableKeys, ", "))
+	}
+	if err := spec.parse(ctx.config, value); err != nil {
 		return "", err
 	}
-	if spec, ok := settingSpecFor(key); ok && spec.postReplSet != nil {
+	if spec.postReplSet != nil {
 		spec.postReplSet(ctx)
 	}
 	if ctx.settingsApplied != nil {
 		ctx.settingsApplied()
 	}
-	display, _ := replSettingValue(ctx, key)
-	line := key + ": " + display
+	line := key + ": " + spec.show(ctx, ctx.configOrDefault())
 	if err := persistReplSettings(ctx); err != nil {
 		line += " (applied for this run; persisting failed: " + err.Error() + ")"
 	}
