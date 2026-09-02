@@ -609,26 +609,18 @@ type replModel struct {
 	openTurnTrailerID         int64
 	modal                     *replModal
 
-	ed           lineEditor
-	busy         bool
-	canceling    bool
-	turnID       int64
-	pasting      bool // inside a bracketed paste; runes go in verbatim
-	approval     *approvalState
-	history      []string
-	historyIdx   int
-	historyDraft string
+	ed        lineEditor
+	busy      bool
+	canceling bool
+	turnID    int64
+	pasting   bool // inside a bracketed paste; runes go in verbatim
+	approval  *approvalState
+	hist      promptHistory
 
 	// queue holds inputs submitted while a turn is in flight (the prompt stays
 	// editable during a turn). Commands remain text-only; prompts carry the
 	// exact prepared message accepted from the composer.
 	queue []queuedREPLInput
-
-	// Reverse-incremental history search (Ctrl-R). searchMatch is the index
-	// into history of the current hit, or -1 when the query matches nothing.
-	searching   bool
-	searchQuery string
-	searchMatch int
 
 	// Scrollback. When followBottom is true, the render trims to the most
 	// recent lines that fit. When false, scrollAnchor names the absolute
@@ -797,7 +789,7 @@ func newReplModel() *replModel {
 		reasoningAt:      make(map[int]int64),
 		reasoningWidth:   80,
 		imageBaseDir:     baseDir,
-		historyIdx:       -1,
+		hist:             promptHistory{idx: -1, match: -1},
 		state:            turnStateIdle,
 		followBottom:     true,
 		activeToolsPhase: -1,
@@ -3060,12 +3052,7 @@ func (m *replModel) restoreTurnDraft(turn managedTurnInput, persistence *turnPer
 		}
 	}
 	if turn.displayText != originalDisplay {
-		for i := len(m.history) - 1; i >= 0; i-- {
-			if m.history[i] == originalDisplay {
-				m.history[i] = turn.displayText
-				break
-			}
-		}
+		m.hist.rewrite(originalDisplay, turn.displayText)
 	}
 	m.restoredDraft = &turn
 	m.restoredPersistence = persistence
@@ -3131,53 +3118,97 @@ func (m *replModel) clearRestoredDraft() {
 	m.restoredPersistence = nil
 }
 
-func (m *replModel) historyUp() {
-	if len(m.history) == 0 || m.approval != nil {
+// promptHistory is the composer's recall state: the accepted inputs, the ↑/↓
+// cursor with the draft it displaced, and the reverse-incremental search.
+type promptHistory struct {
+	entries []string
+	idx     int    // entry being recalled, -1 while editing the draft
+	draft   string // composer text displaced by the first ↑
+
+	searching bool
+	query     string
+	match     int // entry of the current search hit, -1 when nothing matches
+}
+
+// record appends one accepted input and returns recall to the live draft.
+func (h *promptHistory) record(input string) {
+	h.idx = -1
+	h.draft = ""
+	h.entries = append(h.entries, input)
+}
+
+// rewrite replaces the newest entry equal to old, so a prompt whose display
+// text changed after acceptance recalls in its final form.
+func (h *promptHistory) rewrite(old, text string) {
+	for i := len(h.entries) - 1; i >= 0; i-- {
+		if h.entries[i] == old {
+			h.entries[i] = text
+			return
+		}
+	}
+}
+
+func (h *promptHistory) up(ed *lineEditor) {
+	if len(h.entries) == 0 {
 		return
 	}
-	if m.historyIdx == -1 {
-		m.historyDraft = m.ed.text()
-		m.historyIdx = len(m.history) - 1
-	} else if m.historyIdx > 0 {
-		m.historyIdx--
+	if h.idx == -1 {
+		h.draft = ed.text()
+		h.idx = len(h.entries) - 1
+	} else if h.idx > 0 {
+		h.idx--
 	}
-	m.ed.setText(m.history[m.historyIdx])
+	ed.setText(h.entries[h.idx])
+}
+
+func (h *promptHistory) down(ed *lineEditor) {
+	if h.idx == -1 {
+		return
+	}
+	if h.idx < len(h.entries)-1 {
+		h.idx++
+		ed.setText(h.entries[h.idx])
+	} else {
+		h.idx = -1
+		ed.setText(h.draft)
+	}
+}
+
+// historyUp and historyDown recall older and newer inputs into the composer.
+// An approval prompt owns the keyboard, so recall is inert while one is up.
+func (m *replModel) historyUp() {
+	if m.approval == nil {
+		m.hist.up(&m.ed)
+	}
 }
 
 func (m *replModel) historyDown() {
-	if m.historyIdx == -1 || m.approval != nil {
-		return
-	}
-	if m.historyIdx < len(m.history)-1 {
-		m.historyIdx++
-		m.ed.setText(m.history[m.historyIdx])
-	} else {
-		m.historyIdx = -1
-		m.ed.setText(m.historyDraft)
+	if m.approval == nil {
+		m.hist.down(&m.ed)
 	}
 }
 
-// startSearch enters reverse-incremental history search with an empty query.
-func (m *replModel) startSearch() {
-	m.searching = true
-	m.searchQuery = ""
-	m.searchMatch = -1
+// startSearch enters reverse-incremental search with an empty query.
+func (h *promptHistory) startSearch() {
+	h.searching = true
+	h.query = ""
+	h.match = -1
 }
 
-func (m *replModel) endSearch() {
-	m.searching = false
-	m.searchQuery = ""
-	m.searchMatch = -1
+func (h *promptHistory) endSearch() {
+	h.searching = false
+	h.query = ""
+	h.match = -1
 }
 
-// searchFrom scans history backward from index `from`, returning the index of
-// the most recent entry containing query, or -1.
-func (m *replModel) searchFrom(from int, query string) int {
-	if query == "" || from >= len(m.history) {
+// searchFrom scans backward from index from, returning the newest entry
+// containing query, or -1.
+func (h *promptHistory) searchFrom(from int, query string) int {
+	if query == "" || from >= len(h.entries) {
 		return -1
 	}
 	for i := from; i >= 0; i-- {
-		if strings.Contains(m.history[i], query) {
+		if strings.Contains(h.entries[i], query) {
 			return i
 		}
 	}
@@ -3185,49 +3216,49 @@ func (m *replModel) searchFrom(from int, query string) int {
 }
 
 // searchType extends the query by one rune and re-matches from the newest entry.
-func (m *replModel) searchType(r rune) {
-	m.searchQuery += string(r)
-	m.searchMatch = m.searchFrom(len(m.history)-1, m.searchQuery)
+func (h *promptHistory) searchType(r rune) {
+	h.query += string(r)
+	h.match = h.searchFrom(len(h.entries)-1, h.query)
 }
 
 // searchBackspace shortens the query by one rune and re-matches.
-func (m *replModel) searchBackspace() {
-	if m.searchQuery == "" {
+func (h *promptHistory) searchBackspace() {
+	if h.query == "" {
 		return
 	}
-	q := []rune(m.searchQuery)
-	m.searchQuery = string(q[:len(q)-1])
-	m.searchMatch = m.searchFrom(len(m.history)-1, m.searchQuery)
+	q := []rune(h.query)
+	h.query = string(q[:len(q)-1])
+	h.match = h.searchFrom(len(h.entries)-1, h.query)
 }
 
 // searchNext steps to the next older match (repeated Ctrl-R). Stays put when
 // there's no earlier hit.
-func (m *replModel) searchNext() {
-	start := len(m.history) - 1
-	if m.searchMatch >= 0 {
-		start = m.searchMatch - 1
+func (h *promptHistory) searchNext() {
+	start := len(h.entries) - 1
+	if h.match >= 0 {
+		start = h.match - 1
 	}
-	if next := m.searchFrom(start, m.searchQuery); next >= 0 {
-		m.searchMatch = next
+	if next := h.searchFrom(start, h.query); next >= 0 {
+		h.match = next
 	}
 }
 
-// acceptSearch places the current match into the editor and leaves search mode.
-// The text is not submitted — the user can edit it and press Enter.
-func (m *replModel) acceptSearch() {
-	if m.searchMatch >= 0 && m.searchMatch < len(m.history) {
-		m.ed.setText(m.history[m.searchMatch])
+// acceptSearch places the current match into the editor and leaves search
+// mode. The text is not submitted; the user can edit it and press Enter.
+func (h *promptHistory) acceptSearch(ed *lineEditor) {
+	if h.match >= 0 && h.match < len(h.entries) {
+		ed.setText(h.entries[h.match])
 	}
-	m.endSearch()
+	h.endSearch()
 }
 
 // searchDisplay renders the reverse-i-search prompt and the current match.
-func (m *replModel) searchDisplay() string {
+func (h *promptHistory) searchDisplay() string {
 	matched := ""
-	if m.searchMatch >= 0 && m.searchMatch < len(m.history) {
-		matched = m.history[m.searchMatch]
+	if h.match >= 0 && h.match < len(h.entries) {
+		matched = h.entries[h.match]
 	}
-	prompt := fmt.Sprintf("(reverse-i-search)`%s`: ", m.searchQuery)
+	prompt := fmt.Sprintf("(reverse-i-search)`%s`: ", h.query)
 	return styled(prompt, "accent", "bold") + styleEscape(matched)
 }
 
@@ -3307,7 +3338,7 @@ const maxInputRows = 8
 // approval/search overlays are always single-line; the composer remains visible
 // and editable while a turn runs, including in quiet mode.
 func (m *replModel) inputRows() int {
-	if m.approval != nil || m.searching {
+	if m.approval != nil || m.hist.searching {
 		return 1
 	}
 	n := 1 + strings.Count(m.ed.text(), "\n")
@@ -3344,8 +3375,8 @@ func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, row
 		maxRows = 1
 	}
 	switch {
-	case m.searching:
-		return m.searchDisplay(), 1, 0, 0, false
+	case m.hist.searching:
+		return m.hist.searchDisplay(), 1, 0, 0, false
 	case m.approval != nil:
 		return m.approvalPrompt(width), 1, 0, 0, false
 	}
@@ -3694,7 +3725,7 @@ func (r *managedREPL) initHistory() {
 	if err != nil {
 		return
 	}
-	r.model.history = loadHistory(path)
+	r.model.hist.entries = loadHistory(path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
@@ -3702,7 +3733,7 @@ func (r *managedREPL) initHistory() {
 	if err != nil {
 		return
 	}
-	for _, l := range r.model.history {
+	for _, l := range r.model.hist.entries {
 		fmt.Fprintln(f, l)
 	}
 	r.histFile = f
@@ -3730,9 +3761,7 @@ func (r *managedREPL) recordAcceptedInput(input string) {
 	if input == "" {
 		return
 	}
-	r.model.historyIdx = -1
-	r.model.historyDraft = ""
-	r.model.history = append(r.model.history, input)
+	r.model.hist.record(input)
 	r.appendHistory(input)
 }
 
@@ -4290,22 +4319,22 @@ func (r *managedREPL) handleSearchKey(e ui.Event) bool {
 	m := r.model
 	switch e.ID {
 	case "<C-c>", "<Escape>", "<C-g>":
-		m.endSearch()
+		m.hist.endSearch()
 	case "<C-r>":
-		m.searchNext()
+		m.hist.searchNext()
 	case "<Enter>":
-		m.acceptSearch()
+		m.hist.acceptSearch(&m.ed)
 	case "<Backspace>", "<Delete>":
-		m.searchBackspace()
+		m.hist.searchBackspace()
 	case "<Space>":
-		m.searchType(' ')
+		m.hist.searchType(' ')
 	default:
 		if ch, ok := printableRune(e); ok {
-			m.searchType(ch)
+			m.hist.searchType(ch)
 			return false
 		}
 		// Any other key (cursor moves, etc.) accepts the match and exits.
-		m.acceptSearch()
+		m.hist.acceptSearch(&m.ed)
 	}
 	return false
 }
@@ -4336,7 +4365,7 @@ func (m *replModel) bufferPasted(e ui.Event) {
 func (m *replModel) flushPasteBuffer() {
 	text := string(m.pasteBuf)
 	m.pasteBuf = m.pasteBuf[:0]
-	if text == "" || m.approval != nil || m.searching {
+	if text == "" || m.approval != nil || m.hist.searching {
 		return
 	}
 	if images := m.pastedImageAttachments(text); len(images) > 0 {
@@ -5513,7 +5542,7 @@ func (r *managedREPL) refreshSlashHints() {
 		m.slashHintsHidden = false
 	}
 	hint := ""
-	if !m.slashHintsHidden && !m.pasting && !m.searching && m.approval == nil && m.modal == nil {
+	if !m.slashHintsHidden && !m.pasting && !m.hist.searching && m.approval == nil && m.modal == nil {
 		hint = defaultReplCommands.hintFor(newManagedReplCommandContext(r), text)
 	}
 	m.setSlashHintLine(hint)
@@ -5644,7 +5673,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 
 	// Reverse-incremental search owns the keyboard while active, so Ctrl-C
 	// cancels the search rather than quitting. Scroll still works (handled above).
-	if m.searching {
+	if m.hist.searching {
 		return r.handleSearchKey(e)
 	}
 
@@ -5724,7 +5753,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	case "<C-l>":
 		m.clearDisplay()
 	case "<C-r>":
-		m.startSearch()
+		m.hist.startSearch()
 	case "<Up>":
 		// Move up a line within a multi-line prompt; recall older history only
 		// when already on the first line (zsh up-line-or-history).

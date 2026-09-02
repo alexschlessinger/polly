@@ -29,7 +29,7 @@ func (s suspendTrackingScreen) Resume() error {
 func TestCtrlZRequestsSuspendWithoutChangingComposerState(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.ed.setText("unfinished draft")
-	r.model.searching = true
+	r.model.hist.searching = true
 
 	if quit := r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-z>"}); quit {
 		t.Fatal("Ctrl-Z requested quit")
@@ -42,7 +42,7 @@ func TestCtrlZRequestsSuspendWithoutChangingComposerState(t *testing.T) {
 	if got := r.model.ed.text(); got != "unfinished draft" {
 		t.Fatalf("composer after Ctrl-Z = %q, want unchanged draft", got)
 	}
-	if !r.model.searching {
+	if !r.model.hist.searching {
 		t.Fatal("Ctrl-Z should preserve reverse search across fg")
 	}
 }
