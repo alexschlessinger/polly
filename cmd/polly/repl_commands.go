@@ -863,9 +863,20 @@ func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if ctx == nil || ctx.config == nil {
 		return replCommandResult{err: ctx.replyLine("settings unavailable")}
 	}
-	key, value := args[1], args[2]
-	if err := applyReplSetting(ctx.config, key, value); err != nil {
+	line, err := applyAndPersistSetting(ctx, args[1], args[2])
+	if err != nil {
 		return replCommandResult{err: ctx.replyLine(err.Error())}
+	}
+	return replCommandResult{err: ctx.replyLine(line)}
+}
+
+// applyAndPersistSetting is the whole /set path for one key: parse onto the
+// config, run the live-apply hook and the UI refresh, then persist. Every
+// interactive way of changing a setting goes through here so none can skip a
+// hook. It returns the notice line to show.
+func applyAndPersistSetting(ctx *replCommandContext, key, value string) (string, error) {
+	if err := applyReplSetting(ctx.config, key, value); err != nil {
+		return "", err
 	}
 	if spec, ok := settingSpecFor(key); ok && spec.postReplSet != nil {
 		spec.postReplSet(ctx)
@@ -878,7 +889,7 @@ func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if err := persistReplSettings(ctx); err != nil {
 		line += " (applied for this run; persisting failed: " + err.Error() + ")"
 	}
-	return replCommandResult{err: ctx.replyLine(line)}
+	return line, nil
 }
 
 // persistReplSettings writes the resolved settings back to session metadata —

@@ -285,18 +285,13 @@ func (r *managedREPL) applySelectedModel(model string) {
 		r.model.appendNoticeLine("model: enter a model name")
 		return
 	}
-	if err := applyReplSetting(r.config, "model", model); err != nil {
+	line, err := applyAndPersistSetting(newManagedReplCommandContext(r), "model", model)
+	if err != nil {
 		r.model.appendNoticeLine("model: " + err.Error())
 		return
 	}
 	if !slices.Contains(r.model.recentModels, model) {
 		r.model.recentModels = append([]string{model}, r.model.recentModels...)
-	}
-	r.model.modelName = model
-	r.model.clearContextUsage(r.config.MaxHistoryTokens)
-	line := "model: " + model
-	if err := persistReplSettings(newManagedReplCommandContext(r)); err != nil {
-		line += " (applied for this run; persisting failed: " + err.Error() + ")"
 	}
 	r.model.appendNoticeLine(line)
 }
