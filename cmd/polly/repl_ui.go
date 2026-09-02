@@ -5028,11 +5028,6 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	block.key = fmt.Sprintf("activity:r%v:t%v", block.reasoningIDs, block.toolDisclosureIDs)
 }
 
-func transcriptBlockRows(text string, followed bool, width int) [][]ui.Cell {
-	rows, _ := transcriptBlockRowsWithImages(text, followed, width, nil, false, 0, 0)
-	return rows
-}
-
 func transcriptBlockRowsWithImages(text string, followed bool, width int, images []transcriptImage, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
 	cells := parseStyledCells(text, ui.NewStyle(ui.ColorClear))
 	if followed {

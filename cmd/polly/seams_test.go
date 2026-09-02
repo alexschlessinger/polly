@@ -171,6 +171,11 @@ func (m *replModel) transcriptDisplayBlocks() []string {
 	return blocks
 }
 
+func transcriptBlockRows(text string, followed bool, width int) [][]ui.Cell {
+	rows, _ := transcriptBlockRowsWithImages(text, followed, width, nil, false, 0, 0)
+	return rows
+}
+
 func (m *replModel) scrollBy(delta, viewportHeight int) {
 	width, _ := ui.TerminalDimensions()
 	if width < 1 {
