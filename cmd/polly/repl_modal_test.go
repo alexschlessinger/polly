@@ -51,6 +51,30 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 	if r.model.status.contextUsed != 0 || r.model.status.contextLimit != cfg.MaxHistoryTokens {
 		t.Fatalf("model switch retained stale context usage: %d/%d", r.model.status.contextUsed, r.model.status.contextLimit)
 	}
+	if got := r.model.status.recentModels; len(got) == 0 || got[0] != "openai/gpt-5.4" {
+		t.Fatalf("recent models after picker = %v, want the selection first", got)
+	}
+}
+
+// Every model-change entry point shares one apply path, so /set model must
+// feed the picker's recent list exactly as a picker selection does.
+func TestSetModelRemembersRecentModel(t *testing.T) {
+	cfg := &Config{Settings: Settings{Model: "anthropic/claude-sonnet-4-6", MaxHistoryTokens: 256_000}}
+	r := newManagedREPL(cfg, "ctx", 0, 0)
+
+	if handled, quit := r.runCommand("/set model openai/gpt-5.4"); !handled || quit {
+		t.Fatalf("/set model handled=%v quit=%v", handled, quit)
+	}
+	if cfg.Model != "openai/gpt-5.4" || r.model.status.modelName != cfg.Model {
+		t.Fatalf("set model config=%q status=%q", cfg.Model, r.model.status.modelName)
+	}
+	if got := r.model.status.recentModels; len(got) != 2 || got[0] != "openai/gpt-5.4" || got[1] != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("recent models after /set model = %v, want the new model ahead of the launch model", got)
+	}
+	r.runCommand("/set model openai/gpt-5.4")
+	if got := r.model.status.recentModels; len(got) != 2 {
+		t.Fatalf("re-setting the same model duplicated the recent list: %v", got)
+	}
 }
 
 func TestKeyModalMasksAndInstallsSessionCredential(t *testing.T) {

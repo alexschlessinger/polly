@@ -458,6 +458,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		},
 		settingsApplied: func() {
 			r.model.status.modelName = cfg.Model
+			r.model.status.rememberModel(cfg.Model)
 			r.model.status.clearContextUsage(cfg.MaxHistoryTokens)
 		},
 		openModelPicker:  r.openModelPicker,

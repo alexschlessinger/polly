@@ -289,7 +289,6 @@ func (r *managedREPL) applySelectedModel(model string) {
 		r.model.appendNoticeLine("model: " + err.Error())
 		return
 	}
-	r.model.status.rememberModel(model)
 	r.model.appendNoticeLine(line)
 }
 
