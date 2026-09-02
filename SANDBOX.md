@@ -18,23 +18,11 @@ in [README.md](README.md#sandboxing); library wiring in
 
 The commands polly runs are chosen by a language model, often steered by
 untrusted input. The sandbox limits the blast radius of a hallucinated,
-prompt-injected, or buggy command. By default a sandboxed process cannot:
-
-- **Read credentials** — `~/.ssh`, `~/.aws`, `~/.gnupg`, and the rest of
-  the [deny list](#credential-paths-denied-by-default), plus anything added
-  with `--denypath`, unless a `readPaths` grant exempts an entry.
-- **See secrets in the environment** — credential-shaped variables
-  (`POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, ...) and agent sockets
-  (`SSH_AUTH_SOCK`, `GPG_AGENT_INFO`) are stripped unless explicitly passed.
-  Agent sockets matter: with `SSH_AUTH_SOCK` intact a process can use your
-  SSH keys without ever reading `~/.ssh`.
-- **Write beyond the writable set** — the filesystem is read-only except the
-  OS temp dir and configured `writablePaths`. The CLI default adds the
-  workspace with its Git metadata carved back out; the library
-  `DefaultConfig` does not.
-- **Reach the network unless allowed** — the library denies it; the CLI
-  default `workspace+net+git` allows TCP/UDP. Host Unix sockets stay
-  blocked either way, except sockets an `allowUnixSockets` grant names.
+prompt-injected, or buggy command. By default a sandboxed process cannot
+read [credential paths](#credential-paths-denied-by-default), see
+[credential-shaped environment variables](#environment-filtering), write
+outside the [writable set](#the-per-tool-sandbox-object), or reach the
+network or host Unix sockets.
 
 The sandbox is **default-on** (tool metadata cannot opt out; only the
 caller's `--nosandbox` / `WithUnsafeNoSandbox` can), **fails closed** (no
@@ -68,36 +56,35 @@ network, workspace, read-path, or environment grants.
 
 ### CLI presets
 
-`--sandbox <spec>` (`POLLYTOOL_SANDBOX`) picks the base policy. A spec is
-one or more preset names joined with `+`:
+`--sandbox <spec>` (`POLLYTOOL_SANDBOX`) picks the base policy from one or
+more preset names joined with `+`. The presets and what they mean are
+tabulated in [README.md](README.md#sandboxing); in terms of the fields
+below they are:
 
-| Preset | Policy |
-|---|---|
-| `base` | temp-dir writes only, no network |
-| `readonly` | `denyWrite` — nothing writable, not even temp |
-| `workspace` | working directory writable; discovered Git routing entries and metadata trees pinned read-only |
-| `git` | with `workspace`: pin only the dangerous Git metadata leaves instead of whole trees, so commit/rebase/fetch work |
-| `net` | `allowNetwork` |
-| `ssh` | agent-based SSH: pass `SSH_AUTH_SOCK`, allow that socket, read `~/.ssh/config` and `~/.ssh/known_hosts`; private keys stay masked |
-| `sshkeys` | read all of `~/.ssh`, private keys included; `~/.ssh` writes stay denied |
+- `base` — `DefaultConfig()`: temp-dir writes only, no network.
+- `readonly` — `denyWrite`.
+- `workspace` — the working directory in `writablePaths`, with its Git
+  metadata in `denyWritePaths` ([whole-tree or leaf
+  mode](#workspace-git-protection)).
+- `git` — with `workspace`: leaf mode instead of whole-tree. It does
+  nothing on its own; `--sandbox git` is rejected with a pointer to
+  `workspace+git`.
+- `net` — `allowNetwork`.
+- `ssh` — `passEnv: ["SSH_AUTH_SOCK"]`, that socket in `allowUnixSockets`,
+  and `~/.ssh/config` and `~/.ssh/known_hosts` in `readPaths`.
+- `sshkeys` — `~/.ssh` in `readPaths`; writes there stay denied.
 
-The default is **`workspace+net+git`**. `git` does nothing on its own;
-`--sandbox git` is rejected with a pointer to `workspace+git`. `workspace`
-canonicalizes the working directory at startup and refuses roots it cannot
-safely protect (the filesystem root, your home directory, mounted-volume
-roots); change into a project directory or select `--sandbox base`.
+The default is **`workspace+net+git`**. `workspace` canonicalizes the
+working directory at startup and refuses roots it cannot safely protect
+(the filesystem root, your home directory, mounted-volume roots); change
+into a project directory or select `--sandbox base`.
 
 ### Global flags
 
-| Flag | Env | Effect |
-|---|---|---|
-| `--sandbox <spec>` | `POLLYTOOL_SANDBOX` | select the base preset |
-| `--writepath <dir>` (repeatable) | `POLLYTOOL_WRITEPATHS` | extra writable paths for all sandboxed tools |
-| `--denypath <path>` (repeatable) | `POLLYTOOL_DENYPATHS` | extra read-blocked paths for all sandboxed tools |
-| `--allownet` | `POLLYTOOL_ALLOWNET` | allow outbound network for all sandboxed tools |
-| `--nosandbox` | `POLLYTOOL_NOSANDBOX` | disable sandboxing entirely |
-
-When no-sandbox mode is effective, an explicitly supplied `--sandbox`,
+`--writepath`, `--denypath`, and `--allownet` (env `POLLYTOOL_WRITEPATHS`,
+`POLLYTOOL_DENYPATHS`, `POLLYTOOL_ALLOWNET`) overlay every sandboxed tool's
+policy; `--nosandbox` (`POLLYTOOL_NOSANDBOX`) disables sandboxing. When
+no-sandbox mode is effective, an explicitly supplied `--sandbox`,
 `--denypath`, `--writepath`, or `--allownet` is rejected rather than
 silently ignored; `--nosandbox=false` overrides an ambient
 `POLLYTOOL_NOSANDBOX=true`. Polly warns once for each home directory or
@@ -171,9 +158,11 @@ Sensitive variables are always stripped, matched case-insensitively:
   `DOCKER_HOST`, `CONTAINER_HOST`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`,
   `PULSE_SERVER`.
 
-Pass one through with `passEnv` (additive) or `allowEnv` (strict). The
-heuristics are heuristics: a secret in a variable named `CREDS` passes, so
-use `allowEnv` for tools that should see almost nothing.
+Pass one through with `passEnv` (additive) or `allowEnv` (strict). Agent
+sockets are stripped for a reason: with `SSH_AUTH_SOCK` intact a process
+can use your SSH keys without ever reading `~/.ssh`. The heuristics are
+heuristics: a secret in a variable named `CREDS` passes, so use `allowEnv`
+for tools that should see almost nothing.
 
 ### Credential paths denied by default
 
@@ -354,14 +343,12 @@ terminal.
   cross-process signaling are denied; spawning processes, enumerating other
   processes, and Mach services are permitted. The file *read* surface
   matches Linux, which also exposes the whole filesystem read-only.
-- **Denied reads fail loudly**: `cat ~/.ssh/config` returns
-  `Operation not permitted`, where Linux returns empty.
 - **Denied paths are also write-blocked**, so a broad `writablePaths` such
   as `["~"]` cannot re-open write access to `~/.ssh`. `readPaths` re-allows
   reads, never writes. Rules cover both the literal path and its
   symlink-resolved target, since Seatbelt matches resolved vnode paths.
-- **Writable roots are frozen at construction**, including the
-  construction-time `TMPDIR`; a missing `writablePaths` entry is dropped.
+- **Automatic writable roots**, including the construction-time `TMPDIR`,
+  are frozen like configured grants.
 - `allowNetwork` enables TCP/UDP but still denies outbound Unix-domain
   sockets, except macOS's fixed `mDNSResponder` socket when DNS is enabled;
   `denyDNS` removes that exception and blocks port 53.
@@ -381,16 +368,17 @@ terminal.
 | Cross-process env read | blocked by PID namespace | blocked by the OS (`KERN_PROCARGS2` truncates) | ✅ |
 | Signal other processes | invisible | `deny signal` + self/same-sandbox re-allow | ✅ |
 | Controlling terminal | detached (`--new-session`) | detached (`setsid()`) | ✅ |
-| Granted Unix socket | seccomp admits `AF_UNIX`; sockets outside private roots also become reachable | exact socket path only | ⚠️ Linux is broader |
+| Granted Unix socket | seccomp admits `AF_UNIX` | exact socket path only | ⚠️ Linux is broader ([why](#limitations)) |
 | **Denied-read failure mode** | reads as empty | `Operation not permitted` | ❌ inherent |
 | **Process enumeration** | invisible (PID namespace) | visible (`KERN_PROC` sysctl, ungated) | ❌ inherent |
 | **Host IPC** | private IPC namespace; host Unix sockets blocked | host Unix sockets blocked; Mach services allowed | ❌ platform gap |
 
 The bold rows are inherent to the platform. The denied-read failure mode
 is the one that bites portability: a tool doing `[ -f ~/.aws/credentials ]`
-sees *absent* on Linux but *present-but-unreadable* on macOS. Flipping
-Seatbelt to `(deny default)` would break most tools, since every syscall,
-file read, and Mach service would need an allowlist.
+sees *absent* on Linux but *present-but-unreadable* on macOS, where reads
+fail with `Operation not permitted`. Flipping Seatbelt to `(deny default)`
+would break most tools, since every syscall, file read, and Mach service
+would need an allowlist.
 
 ## Observing decisions
 
@@ -418,11 +406,9 @@ such as `[sandboxed: net off, temp writes, env filtered]`. The model sees
 - **Same user, same kernel.** Not a VM or a user-namespaced container.
   Anything your user can do that isn't explicitly denied, the sandbox can
   do.
-- **macOS is allow-by-default.** A sandboxed process can read every
-  non-denied file, enumerate your processes, and talk to Mach services,
-  though it can no longer signal them, read their environments, or hold
-  your terminal. `/private/tmp` also stays shared; Seatbelt has no mount
-  namespace.
+- **macOS is allow-by-default.** Process enumeration and Mach services stay
+  reachable ([differences](#differences-at-a-glance)), and `/private/tmp`
+  is shared because Seatbelt has no mount namespace.
 - **No resource limits.** A sandboxed fork bomb is still a fork bomb.
 - **A granted agent socket is a signing oracle.** `allowUnixSockets` and the
   `ssh` preset let a prompt-injected command sign with your SSH agent while
@@ -435,7 +421,6 @@ such as `[sandboxed: net off, temp writes, env filtered]`. The model sees
 - **The `ssh` preset does not grant `known_hosts` writes.** First contact
   with an unknown host fails inside the sandbox; connect once outside, or
   manage `known_hosts` on the host.
-- **`git commit` needs the `git` component.** Under plain `workspace` the
-  whole `.git` tree is read-only. GPG-signed commits still fail (no
-  gpg-agent socket is granted); disable signing in the sandbox or sign on
+- **GPG-signed commits fail** even under `workspace+git`, since no
+  gpg-agent socket is granted; disable signing in the sandbox or sign on
   the host.

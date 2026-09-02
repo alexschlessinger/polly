@@ -319,68 +319,34 @@ for {
 
 ## Shell Tools
 
-Any executable that answers `--schema` (print a JSON Schema) and
-`--execute <json-args>` (do the work, print plain text to stdout, exit 0 on
-success) is a tool:
-
-```bash
-#!/bin/bash
-# weather.sh
-if [ "$1" = "--schema" ]; then
-    cat <<EOF
-{
-  "title": "get_weather",
-  "description": "Get current weather for a location",
-  "type": "object",
-  "properties": {
-    "location": {"type": "string", "description": "City and state, e.g. 'San Francisco, CA'"}
-  },
-  "required": ["location"]
-}
-EOF
-elif [ "$1" = "--execute" ]; then
-    echo "65°F and foggy in $(echo "$2" | jq -r '.location')"
-fi
-```
-
-Process-backed tools need an explicit sandbox policy; a registry without
-one refuses to load them (it won't even run `--schema`):
+Any executable that answers `--schema` and `--execute <json-args>` is a
+tool; the protocol and a sample script are in
+[README.md](README.md#shell-tools). Process-backed tools need an explicit
+sandbox policy — a registry without one refuses to load them (it won't even
+run `--schema`):
 
 ```go
 registry := tools.NewToolRegistry(nil,
     tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()),
 )
-if _, err := tools.LoadShellToolsWithRegistry(registry, []string{"./weather.sh"}); err != nil {
+if _, err := tools.LoadShellToolsWithRegistry(registry, []string{"./uppercase.sh"}); err != nil {
     log.Printf("warning: %v", err)
 }
 
 response, err := llm.NewCompletionBuilder("openai/gpt-5.4").
-    WithUserMessage("What's the weather in San Francisco and New York?").
+    WithUserMessage("Uppercase 'hello world'").
     ExecuteWithTools(ctx, llm.GetDefaultClient(), registry)
 ```
 
-Sandboxed tools get `[sandboxed]` appended to their LLM-facing description.
-The schema may include a top-level `"sandbox"` field — `true` for the base
-policy, or an object adding grants (`allowNetwork`, `writablePaths`,
-`readPaths`, `passEnv`, ...); every field is in
-[SANDBOX.md](SANDBOX.md#configuration).
-
 ### Sandboxing in the library
 
-[SANDBOX.md](SANDBOX.md) is the full policy reference. The library corners:
+[SANDBOX.md](SANDBOX.md) is the policy reference — every `"sandbox"`
+field, the merge rules, and platform behavior. The library-only corners:
 
-- **Base config.** `sandbox.DefaultConfig()` allows writes to the sandbox
-  temp dir only, denies network, masks credential paths, and strips
-  sensitive env vars. `sandbox.ParsePreset("workspace+net+git")` builds the
-  CLI-style presets.
-- **Merging is monotonic.** A tool's `"sandbox"` object merges on top of the
-  registry's base config and can add grants or restrictions but never
-  remove one. `"sandbox": false` is refused unless the registry was built
-  with `tools.WithUnsafeNoSandbox()`. If no backend is available, loading
-  fails instead of running unsandboxed.
-- **Grants are frozen early.** `WithSandboxFactory` canonicalizes and
-  freezes writable and read grants to their filesystem identities when the
-  option is created; a path replaced or rerouted later fails closed.
+- **Base config.** `sandbox.DefaultConfig()` is the base policy;
+  `sandbox.ParsePreset("workspace+net+git")` builds the CLI-style presets.
+- **Opting out.** `tools.WithUnsafeNoSandbox()` is the registry option that
+  lets tool metadata declare `"sandbox": false` (the CLI's `--nosandbox`).
 - **Wrapping commands yourself.** Wrap an `exec.Cmd` with
   `sandbox.WrapCmdManaged` (or `WrapCmdWithEnvManaged`) and call the
   returned idempotent cleanup after `Start`, `Run`, `Output`, or
@@ -392,29 +358,14 @@ policy, or an object adding grants (`allowNetwork`, `writablePaths`,
 
 ## MCP Servers
 
-Servers are declared in Claude Desktop-format JSON. A *server spec* names
-the file plus, optionally, one server in it: `"mcp.json"` or
-`"mcp.json#filesystem"`.
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-    },
-    "remote": { "url": "https://example.com/mcp", "transport": "streamable" }
-  }
-}
-```
-
+Servers are declared in Claude Desktop-format JSON
+([example](README.md#mcp-servers)). A *server spec* names the file plus,
+optionally, one server in it: `"mcp.json"` or `"mcp.json#filesystem"`.
 `ToolRegistry.LoadMCPServer` applies the registry's sandbox policy to local
 stdio servers and namespaces the tools it finds:
 
 ```go
-registry := tools.NewToolRegistry(nil,
-    tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()),
-)
+// registry as in Shell Tools
 result, err := registry.LoadMCPServer("./mcp.json#filesystem")
 for _, server := range result.Servers {
     fmt.Printf("%s: %v\n", server.Name, server.ToolNames)
@@ -422,11 +373,9 @@ for _, server := range result.Servers {
 // registry.All() now includes the MCP tools
 ```
 
-A server entry may include `"sandbox"` overrides like a shell tool schema,
-with the same `"sandbox": false` rule. Without a registry,
-`tools.NewUnsafeMCPClient(spec)` connects with no sandboxing (the name is
-the warning); its `ListTools()` result can be handed to `NewToolRegistry`,
-and `Close()` shuts it down.
+Without a registry, `tools.NewUnsafeMCPClient(spec)` connects with no
+sandboxing (the name is the warning); its `ListTools()` result can be
+handed to `NewToolRegistry`, and `Close()` shuts it down.
 
 ## Skills
 
@@ -439,9 +388,7 @@ if catalog == nil {
     return // no skills found
 }
 
-registry := tools.NewToolRegistry(nil,
-    tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()),
-)
+// registry as in Shell Tools
 skillRuntime, err := tools.NewSkillRuntime(catalog, registry)
 
 // Set Skills on a request and the skill prompt is injected automatically…
@@ -494,19 +441,18 @@ err = session.Reset(sessionCtx, metadata)
   competing owner receives `sessions.ErrSessionInUse`.
 - `session.ArtifactStore()` is scoped to the session; artifact bytes commit
   in the same database as the transcript.
-- Legacy `~/.pollytool/contexts` JSON files are neither imported nor
-  removed.
 
 ## Structured Output
 
-Three ways to get a schema, most convenient first:
+Besides reflecting one from a struct with `llm.SchemaFor` (strict;
+required = non-omitempty fields; shown in
+[Helpers](#structured-output-the-easy-way)), you can parse JSON or build
+the raw map:
 
 ```go
-schema1 := llm.SchemaFor(UserInfo{}) // strict; required = non-omitempty fields
+schema := llm.SchemaFromJSON(`{"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}`)
 
-schema2 := llm.SchemaFromJSON(`{"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}`)
-
-schema3 := &llm.Schema{Raw: map[string]any{
+schema = &llm.Schema{Raw: map[string]any{
     "type":       "object",
     "properties": map[string]any{"name": map[string]any{"type": "string"}},
     "required":   []string{"name"},
@@ -514,8 +460,7 @@ schema3 := &llm.Schema{Raw: map[string]any{
 ```
 
 Set one on a request via `ResponseSchema`, or let `llm.StructuredComplete`
-handle the request and the unmarshaling together (see
-[Helpers](#structured-output-the-easy-way)).
+handle the request and the unmarshaling together.
 
 ## Error Handling
 

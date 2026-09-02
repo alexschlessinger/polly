@@ -43,13 +43,6 @@ polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 # Tools: shell scripts and MCP servers, auto-detected by file type
 polly -p "uppercase this: hello" --tool ./uppercase.sh
 polly -p "create news.txt with today's news" --tool perp.json --tool filesystem.json
-
-# Keep a conversation going
-polly -c project -p "I'm working on a Python web app"
-polly -c project -p "What database should I use?"
-
-# Agent Skills
-polly --skilldir ~/.pollytool/skills -p "review this patch for regressions"
 ```
 
 The default model is `anthropic/claude-sonnet-4-6`; override it with `-m
@@ -234,14 +227,13 @@ built-in file tools; passing any `--tool` replaces that default.
   filtered by an `include` glob; skips `.git`, symlinks, binaries, and
   read-denied paths.
 
-All of them enforce the sandbox policy in-process. `write_file` and
-`edit_file` refuse to load without sandboxing; the read-only tools load
-anywhere.
+All of them enforce the sandbox policy in-process
+([details](SANDBOX.md#what-gets-sandboxed)).
 
 ### Shell tools
 
 Any executable is a tool if it answers `--schema` (print a JSON Schema) and
-`--execute <json-args>` (do the work, print the result to stdout):
+`--execute <json-args>` (do the work, print the result to stdout, exit 0):
 
 ```bash
 #!/bin/bash
@@ -363,18 +355,12 @@ Components join with `+`:
 The default is **`workspace+net+git`**. Tighten with `--sandbox base` or
 `--sandbox readonly` when tools only need to compute or inspect. On top of
 any preset: `--writepath <dir>` and `--denypath <path>` (both repeatable),
-`--allownet`, and `--nosandbox` to disable sandboxing entirely.
+`--allownet`, and `--nosandbox` to disable sandboxing entirely. Individual
+tools can widen or tighten their own policy with a `"sandbox"` field in the
+shell tool schema or MCP server entry.
 
-Individual tools customize their policy with a `"sandbox"` field in the
-shell tool schema or MCP server entry, such as
-`{ "allowNetwork": true, "writablePaths": ["/tmp/data"] }`. Per-tool policy
-can add grants or restrictions on top of the preset, never remove one, and
-`"sandbox": false` is refused without `--nosandbox`. Without a trusted
-backend (`/usr/bin/bwrap` on Linux, `/usr/bin/sandbox-exec` on macOS) polly
-refuses to run sandboxed tools rather than running them unsandboxed.
-
-**[SANDBOX.md](SANDBOX.md)** has every `"sandbox"` field, the Git metadata
-protection, platform details, and limitations.
+**[SANDBOX.md](SANDBOX.md)** has every `"sandbox"` field, the merge rules,
+the Git metadata protection, platform details, and limitations.
 
 ## CLI Reference
 
