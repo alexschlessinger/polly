@@ -372,13 +372,10 @@ func prepareImageBytesForUpload(data []byte, fileName string) (*messages.Content
 	}, nil
 }
 
-// preparedMessageTranscriptImages materializes the exact portable image bytes
-// accepted into a durable message. Transcript thumbnails then remain faithful
-// if the original path is changed or removed before the turn is rendered.
-func preparedMessageTranscriptImages(msg messages.ChatMessage) []transcriptImage {
-	return preparedMessageTranscriptImagesWithStore(msg, nil)
-}
-
+// preparedMessageTranscriptImagesWithStore materializes the exact portable
+// image bytes accepted into a durable message. Transcript thumbnails then
+// remain faithful if the original path is changed or removed before the turn
+// is rendered.
 func preparedMessageTranscriptImagesWithStore(msg messages.ChatMessage, store artifacts.Store) []transcriptImage {
 	if store != nil {
 		msg = cloneChatMessage(msg)

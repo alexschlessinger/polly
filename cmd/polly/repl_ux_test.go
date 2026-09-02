@@ -1084,7 +1084,7 @@ func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 	} {
 		m.appendTranscriptEntry(entry)
 	}
-	m.invalidateFlat()
+	m.invalidateVisual()
 	m.setSlashHintLine("/help  /tools")
 	for _, width := range []int{4, 12, 40} {
 		got := m.transcriptRows(width)

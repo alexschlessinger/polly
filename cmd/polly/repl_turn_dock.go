@@ -390,7 +390,7 @@ func (m *replModel) refreshTurnTrailer(record *turnTrailerRecord) {
 	}
 	m.transcript[record.transcriptIndex] = text
 	m.setTranscriptImages(record.transcriptIndex, images)
-	m.invalidateFlat()
+	m.invalidateVisual()
 	if !m.followBottom {
 		m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(record.transcriptIndex, width))
 	}
@@ -444,11 +444,6 @@ func (m *replModel) turnTrailerDetail(dock turnDockState, width int) (string, []
 		return renderInspectionTranscriptImages(images), images
 	}
 	return "", nil
-}
-
-func (m *replModel) turnTrailerDetailText(dock turnDockState, width int) string {
-	text, _ := m.turnTrailerDetail(dock, width)
-	return text
 }
 
 // boundedReasoningDetail keeps the newest already-wrapped physical rows from

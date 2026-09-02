@@ -481,13 +481,6 @@ func (m *replModel) restoreQueuedImagesAfterReset(ctx context.Context, queue []q
 	return nil
 }
 
-func textManagedTurn(prompt string) managedTurnInput {
-	return managedTurnInput{
-		displayText: prompt,
-		userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: prompt},
-	}
-}
-
 func cloneManagedTurn(turn managedTurnInput) managedTurnInput {
 	turn.userMessage = cloneChatMessage(turn.userMessage)
 	return turn
@@ -569,12 +562,6 @@ type replModel struct {
 	// layout even when no bytes were held back.
 	streamDeferredTable bool
 
-	// flatCache memoizes flattenTranscript's result; nil means "stale". Every
-	// transcript mutation clears it so the next flatten recomputes. render(),
-	// visibleTranscript and scrollBy all flatten, often without an intervening
-	// change (idle typing, scrolling, waiting for the first token), so the cache
-	// turns those into O(1) instead of re-splitting the whole backlog each time.
-	flatCache []string
 	// visualCache keeps the fully styled/wrapped transcript for the current
 	// terminal width. Busy spinner ticks can then redraw only visible rows
 	// without reparsing a long, unchanged context 20 times per second.
@@ -1132,13 +1119,9 @@ func (m *replModel) takeNotices() []string {
 	return out
 }
 
-// invalidateFlat marks the flattened-transcript cache stale. Caller must hold
-// m.mu (every transcript mutation already does).
-func (m *replModel) invalidateFlat() {
-	m.flatCache = nil
-	m.visualCacheValid = false
-}
-
+// invalidateVisual marks the styled/wrapped transcript cache stale so the next
+// transcriptRows recomputes it. Caller must hold m.mu (every transcript
+// mutation already does).
 func (m *replModel) invalidateVisual() { m.visualCacheValid = false }
 
 // setTranscriptImages replaces entry index's image list. It indexes the lane
@@ -1229,7 +1212,7 @@ func (m *replModel) appendLine(s string) {
 	}
 	m.appendTranscriptEntry(s)
 	m.currentAssistant = -1
-	m.invalidateFlat()
+	m.invalidateVisual()
 }
 
 // appendTranscriptEntry grows the transcript and its image lane together and
@@ -1273,7 +1256,7 @@ func (m *replModel) appendAssistant(text string) {
 	m.streamDeferredTable = deferred
 	m.transcript[m.currentAssistant] = rendered
 	m.setTranscriptImages(m.currentAssistant, images)
-	m.invalidateFlat()
+	m.invalidateVisual()
 }
 
 // finishAssistantStream renders any text still held back by the streaming
@@ -1293,7 +1276,7 @@ func (m *replModel) finishAssistantStream() {
 	rendered, images, _ := renderMarkdownWithLocalImages(raw, m.imageBaseDir, false)
 	m.transcript[m.currentAssistant] = rendered
 	m.setTranscriptImages(m.currentAssistant, images)
-	m.invalidateFlat()
+	m.invalidateVisual()
 }
 
 // finishAssistantBlock closes the semantic assistant block that is currently
@@ -1315,7 +1298,7 @@ func (m *replModel) finishAssistantBlock(label string) bool {
 	}
 	m.currentAssistant = -1
 	m.resetAssistantStream()
-	m.invalidateFlat()
+	m.invalidateVisual()
 	if label != "" && content != "" {
 		m.appendLine("  " + styled(label, "muted", ""))
 		m.outcomeLabeled = true
@@ -1397,14 +1380,6 @@ func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
 	record.transcriptIndex = len(m.transcript) - 1
 	m.toolDisclosureAt[record.transcriptIndex] = record.id
 	return record
-}
-
-// appendToolStartLine adds a live row inside the turn's disclosure. The
-// disclosure exists and is collapsed from the first call; render() animates
-// the row only when the user deliberately expands it.
-func (m *replModel) appendToolStartLine(id, label string) {
-	record := m.appendToolStartRow(id, label)
-	m.refreshToolDisclosure(record)
 }
 
 func (m *replModel) appendToolStartRow(id, label string) *toolDisclosureRecord {
@@ -1558,7 +1533,7 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 	}
 	m.transcript[index] = text
 	m.setTranscriptImages(index, images)
-	m.invalidateFlat()
+	m.invalidateVisual()
 	if held {
 		if _, newCount, ok := m.displayRecordSpan(width, match); ok {
 			m.anchorForResizedEntry(oldStart, oldCount, newCount)
@@ -1635,7 +1610,7 @@ func (m *replModel) collapseTurnToolDisclosures() {
 				m.refreshToolDisclosure(record)
 				// Image expansion is derived by the shared activity layout rather
 				// than stored in the raw tool entry, so force that projection closed.
-				m.invalidateFlat()
+				m.invalidateVisual()
 			}
 		}
 	}
@@ -1980,7 +1955,7 @@ func (m *replModel) refreshReasoningRecordWithAnchor(record *reasoningRecord, wi
 		oldStart, oldCount, held = m.displayRecordSpan(width, match)
 	}
 	m.transcript[record.transcriptIndex] = next
-	m.invalidateFlat()
+	m.invalidateVisual()
 	if held {
 		if _, newCount, ok := m.displayRecordSpan(width, match); ok {
 			m.anchorForResizedEntry(oldStart, oldCount, newCount)
@@ -2429,7 +2404,7 @@ func (m *replModel) clearDisplay() {
 	m.resetAssistantStream()
 	m.scrollAnchor = 0
 	m.followBottom = true
-	m.invalidateFlat()
+	m.invalidateVisual()
 }
 
 const resumedTurnLimit = 5
@@ -2869,13 +2844,10 @@ func (m *replModel) setSlashHintLine(hint string) {
 	m.invalidateVisual()
 }
 
-// beginTurn echoes a user prompt and marks a turn in flight. Shared by the idle
-// submit path and the queued-prompt drain; neither records history here (callers
-// do that when the text is first accepted). Caller must hold m.mu.
-func (m *replModel) beginTurn(prompt string) {
-	m.beginManagedTurn(textManagedTurn(prompt))
-}
-
+// beginManagedTurn echoes a user prompt and marks a turn in flight. Shared by
+// the idle submit path and the queued-prompt drain; neither records history
+// here (callers do that when the text is first accepted). Caller must hold
+// m.mu.
 func (m *replModel) beginManagedTurn(turn managedTurnInput) {
 	prompt := turn.displayText
 	m.appendTurnSeparator()
@@ -2892,7 +2864,7 @@ func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
 		m.transcript[index] = stripTranscriptImageMarkers(m.transcript[index]) +
 			"\n" + renderTranscriptImages(images, "  ")
 		m.setTranscriptImages(index, images)
-		m.invalidateFlat()
+		m.invalidateVisual()
 	}
 }
 
@@ -2910,7 +2882,7 @@ func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
 		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
 	}
 	m.followBottom = true
-	m.invalidateFlat()
+	m.invalidateVisual()
 }
 
 func (m *replModel) activateQueuedInput(item queuedREPLInput) {
@@ -2919,7 +2891,7 @@ func (m *replModel) activateQueuedInput(item queuedREPLInput) {
 		if item.turn != nil {
 			m.decorateUserPrompt(item.transcriptIndex, *item.turn)
 		} else {
-			m.invalidateFlat()
+			m.invalidateVisual()
 		}
 		return
 	}
@@ -2938,7 +2910,7 @@ func (m *replModel) markQueuedInputNotSent(item queuedREPLInput) {
 	if item.turn != nil {
 		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
 	} else {
-		m.invalidateFlat()
+		m.invalidateVisual()
 	}
 }
 
@@ -3297,20 +3269,12 @@ func (m *replModel) inputCursorRowCol() (row, col int) {
 	return row, col
 }
 
-// renderInput produces the bottom input region: its display text (possibly
-// multiple lines), the row count it occupies, the cursor's row/col within that
-// region, and whether the cursor should be shown. The busy/approval/search
-// overlays are single-line and hide the cursor; the editable prompt may span
-// several rows, anchored to the bottom when it overflows maxInputRows. Caller
-// must hold m.mu.
-func (m *replModel) renderInput() (text string, rows, curRow, curCol int, editable bool) {
-	return m.renderInputWithMaxRows(maxInputRows)
-}
-
-func (m *replModel) renderInputWithMaxRows(maxRows int) (text string, rows, curRow, curCol int, editable bool) {
-	return m.renderInputForTerminal(maxRows, 0)
-}
-
+// renderInputForTerminal produces the bottom input region: its display text
+// (possibly multiple lines), the row count it occupies, the cursor's row/col
+// within that region, and whether the cursor should be shown. The
+// busy/approval/search overlays are single-line and hide the cursor; the
+// editable prompt may span several rows, anchored to the bottom when it
+// overflows maxRows. Caller must hold m.mu.
 func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, rows, curRow, curCol int, editable bool) {
 	if maxRows < 1 {
 		maxRows = 1
@@ -3439,13 +3403,6 @@ func sliceDisplayWidth(s string, start, width int) (string, int) {
 		outWidth += runeWidth
 	}
 	return b.String(), skipped
-}
-
-// inputDisplay returns just the input region's text. Retained for tests that
-// assert on the busy/approval overlays.
-func (m *replModel) inputDisplay() string {
-	text, _, _, _, _ := m.renderInput()
-	return text
 }
 
 // busyLabel maps the current turn state to the word shown on the input row.
@@ -3991,10 +3948,6 @@ func (r *managedREPL) takePending() (managedTurnInput, bool) {
 	default:
 		return managedTurnInput{}, false
 	}
-}
-
-func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func(context.Context, string, TurnUI) error) chan error {
-	return r.startManagedTurn(ctx, textManagedTurn(prompt), runTurn)
 }
 
 func (r *managedREPL) startManagedTurn(ctx context.Context, turn managedTurnInput, runTurn func(context.Context, string, TurnUI) error) chan error {
@@ -4726,61 +4679,9 @@ func (r *managedREPL) placeCursor(editable bool, cursorCol, rowY, width int) {
 	screen.ShowCursor(x, rowY)
 }
 
-// visibleTranscript returns the slice of transcript lines that should fill
-// the pane right now, honoring scroll state. Caller must hold m.mu.
-//
-// Scrolling is logical-line based; transcriptParagraph handles wrapped overflow
-// inside the selected slice so follow-bottom still shows the newest rows.
-func (m *replModel) visibleTranscript(maxLines int) string {
-	lines := m.flattenTranscript()
-	if m.slashHints != "" {
-		withHints := make([]string, 0, len(lines)+1)
-		withHints = append(withHints, lines...)
-		withHints = append(withHints, styled(m.slashHints, "muted", ""))
-		lines = withHints
-	}
-	total := len(lines)
-	if total == 0 {
-		return ""
-	}
-
-	if m.followBottom {
-		if total <= maxLines {
-			return strings.Join(lines, "\n")
-		}
-		return strings.Join(lines[total-maxLines:], "\n")
-	}
-
-	top := m.scrollAnchor
-	if top < 0 {
-		top = 0
-	}
-	if top+maxLines >= total {
-		// User scrolled all the way down; re-engage follow.
-		m.followBottom = true
-		top = total - maxLines
-		if top < 0 {
-			top = 0
-		}
-	}
-	end := top + maxLines
-	if end > total {
-		end = total
-	}
-	return strings.Join(lines[top:end], "\n")
-}
-
-// fullTranscript returns every semantic block plus transient slash hints.
-// Visual clipping happens after style parsing and wrapping in
-// transcriptParagraph, so wrapped rows remain reachable through scrollback.
-func (m *replModel) fullTranscript() string {
-	lines := m.flattenTranscript()
-	if m.slashHints != "" {
-		lines = append(append([]string(nil), lines...), styled(m.slashHints, "muted", ""))
-	}
-	return strings.Join(lines, "\n")
-}
-
+// transcriptRows returns the styled, wrapped transcript for width. Visual
+// clipping happens after style parsing and wrapping in transcriptParagraph,
+// so wrapped rows remain reachable through scrollback.
 func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	if width < 1 {
 		width = 1
@@ -4864,19 +4765,6 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	m.visualCacheCellHeight = m.imageCellHeight
 	m.visualCacheValid = true
 	return m.visualCache
-}
-
-func (m *replModel) transcriptDisplayBlocks() []string {
-	width := m.reasoningWidth
-	if width < 2 {
-		width = 80
-	}
-	entries := m.transcriptDisplayEntries(width)
-	blocks := make([]string, len(entries))
-	for i, entry := range entries {
-		blocks[i] = entry.text
-	}
-	return blocks
 }
 
 func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock {
@@ -5146,44 +5034,9 @@ func transcriptBlockRowsWithImages(text string, followed bool, width int, images
 	return locateTranscriptImages(rows, images, native, width, cellWidth, cellHeight)
 }
 
-// flattenTranscript expands embedded "\n" within entries into separate lines
-// so scroll math is uniform.
-func (m *replModel) flattenTranscript() []string {
-	if m.flatCache != nil {
-		return m.flatCache
-	}
-	out := make([]string, 0, len(m.transcript))
-	for i, e := range m.transcript {
-		if i == m.currentAssistant {
-			// A provider often streams its final newline as its own chunk. Keep it
-			// provisional until more text arrives so completion does not create and
-			// then remove a visible blank row.
-			e = strings.TrimRight(e, "\r\n")
-			if e == "" {
-				continue
-			}
-		}
-		if strings.Contains(e, "\n") {
-			out = append(out, strings.Split(e, "\n")...)
-		} else {
-			out = append(out, e)
-		}
-	}
-	m.flatCache = out
-	return out
-}
-
-// scrollBy moves the scroll anchor by delta lines (negative = up). Caller
-// must hold m.mu. Disengages followBottom on first upward scroll; re-engages
-// when the user scrolls back to the bottom.
-func (m *replModel) scrollBy(delta, viewportHeight int) {
-	width, _ := ui.TerminalDimensions()
-	if width < 1 {
-		width = 80
-	}
-	m.scrollByWidth(delta, viewportHeight, width)
-}
-
+// scrollByWidth moves the scroll anchor by delta display rows (negative = up)
+// at the given layout width. Caller must hold m.mu. Disengages followBottom
+// on first upward scroll; re-engages when the user scrolls back to the bottom.
 func (m *replModel) scrollByWidth(delta, viewportHeight, width int) {
 	total := len(m.transcriptRows(width))
 	if total <= viewportHeight {
@@ -5527,7 +5380,7 @@ func (m *replModel) toggleImageDisclosureGroup(ids []int64) bool {
 	for _, id := range validIDs {
 		m.toolDisclosures[id].imagesExpanded = expand
 	}
-	m.invalidateFlat()
+	m.invalidateVisual()
 	if heldGroup {
 		if _, newCount, ok := m.projectedActivityGroupBounds(validIDs, false, layoutWidth); ok {
 			m.anchorForResizedEntry(oldStart, oldCount, newCount)
@@ -6152,7 +6005,7 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 	m.refreshToolDisclosureWithAnchor(record, false)
 	// The third Images field and its gallery are derived from inspectionImages;
 	// neither necessarily changes the canonical raw tool text.
-	m.invalidateFlat()
+	m.invalidateVisual()
 	if heldGroup {
 		if _, newCount, ok := m.projectedActivityGroupBounds(ids, false, layoutWidth); ok {
 			m.anchorForResizedEntry(oldStart, oldCount, newCount)
@@ -6303,10 +6156,6 @@ func writeFallbackSandboxNotice(w io.Writer, config *Config, state *conversation
 		return
 	}
 	fmt.Fprintln(w, sandboxNoticeLine(config, state))
-}
-
-func runREPLLoop(ctx context.Context, reader *bufio.Reader, promptWriter io.Writer, runTurn func(string) error) error {
-	return runREPLLoopWithCommands(ctx, reader, promptWriter, newWriterReplCommandContext(nil, nil, promptWriter), runTurn)
 }
 
 type fallbackLineResult struct {

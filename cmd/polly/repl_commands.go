@@ -78,10 +78,7 @@ func (c *replCommandContext) operationContext() context.Context {
 	return context.Background()
 }
 
-var (
-	defaultReplCommands = newDefaultReplCommandRegistry()
-	slashCommands       = defaultReplCommands.commandNames()
-)
+var defaultReplCommands = newDefaultReplCommandRegistry()
 
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
@@ -487,16 +484,6 @@ func newWriterReplCommandContext(config *Config, state *conversationState, w io.
 	return ctx
 }
 
-func helpLines() []string {
-	return defaultReplCommands.helpLines()
-}
-
-func (m *replModel) appendHelp() {
-	for _, line := range helpLines() {
-		m.appendNoticeLine(line)
-	}
-}
-
 func (r *managedREPL) runCommand(line string) (handled, quit bool) {
 	handled, quit, err := defaultReplCommands.dispatch(line, newManagedReplCommandContext(r))
 	if err != nil {
@@ -504,10 +491,6 @@ func (r *managedREPL) runCommand(line string) (handled, quit bool) {
 		return true, false
 	}
 	return handled, quit
-}
-
-func completeSlash(input string) (completed string, matches []string, ok bool) {
-	return defaultReplCommands.complete(input, nil)
 }
 
 func (r *replCommandRegistry) complete(input string, ctx *replCommandContext) (completed string, matches []string, ok bool) {

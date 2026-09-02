@@ -52,14 +52,6 @@ type lineTurnUI struct {
 	stderrTTY       bool
 }
 
-func newLineTurnUI(config *Config, inputReader *bufio.Reader) *lineTurnUI {
-	return newLineTurnUIWithCapabilities(
-		config,
-		inputReader,
-		outputCapabilities{surface: outputSurfaceLineRaw, columns: 80},
-	)
-}
-
 func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, capabilities outputCapabilities) *lineTurnUI {
 	baseDir, _ := os.Getwd()
 	ui := &lineTurnUI{

@@ -301,11 +301,8 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	return runner.Run()
 }
 
-// initializeSession sets up everything needed for a conversation session
-func initializeSession(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, *skills.Catalog, *tools.SkillRuntime, *skillCatalogResult, error) {
-	return initializeSessionWithClient(ctx, config, nil, sessionStore, contextID, autoContext, cmd, sandboxWarnings)
-}
-
+// initializeSessionWithClient sets up everything needed for a conversation
+// session. A nil llmClient constructs one from config.
 func initializeSessionWithClient(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (string, sessions.Session, *llm.Agent, *tools.ToolRegistry, *skills.Catalog, *tools.SkillRuntime, *skillCatalogResult, error) {
 	// Initialize conversation using helper function
 	var err error
@@ -410,10 +407,6 @@ func initializeSessionWithClient(ctx context.Context, config *Config, llmClient 
 	})
 
 	return contextID, session, agent, toolRegistry, skillCatalog, skillRuntime, skillResult, nil
-}
-
-func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
-	return sandboxRegistryOptionsWithWarnings(config, newBroadWritablePathWarner())
 }
 
 func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner) ([]tools.RegistryOption, error) {
@@ -1641,11 +1634,6 @@ type shutdownSignal struct {
 
 func (e *shutdownSignal) Error() string {
 	return e.signal.String()
-}
-
-func signalExitCode(err error) (int, bool) {
-	code, _, ok := splitSignalError(err)
-	return code, ok
 }
 
 // splitSignalError finds the process signal while retaining independent
