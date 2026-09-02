@@ -1528,7 +1528,7 @@ func applyFlagSettings(md *sessions.Metadata, config *Config, cmd *cli.Command) 
 // are not written here.
 func updateContextInfo(ctx context.Context, session sessions.Session, md *sessions.Metadata, config *Config, cmd *cli.Command) error {
 	for _, spec := range settingSpecs {
-		if spec.startupWriteBack || spec.flagSet(cmd) {
+		if spec.startupWriteBack() || spec.flagSet(cmd) {
 			spec.toMeta(config, md)
 		}
 	}

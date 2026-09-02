@@ -18,9 +18,12 @@ import (
 //   - flagged rows (fromCmd != nil; the flag shares the row's key) gate the
 //     IsSet twin walks in initializeConversation (restore from metadata when
 //     NOT set) and applyFlagSettings (override metadata when set);
-//   - startupWriteBack marks updateContextInfo's unconditional startup
-//     write-back set — maxcontext, system, and thinking are excluded on
-//     purpose and reach metadata only through applyFlagSettings;
+//   - startupWriteBack (flagged, restore not lossy) is updateContextInfo's
+//     unconditional startup write-back set: config holds the stored value
+//     unless a flag overrode it, so the write is a no-op for an untouched
+//     row. The system row's restore normalises a legacy stored prompt, so
+//     writing it back would rewrite the store; it is the one flagged row
+//     that reaches metadata only through applyFlagSettings;
 //   - parse != nil marks the /set-able rows, and exactly those are what
 //     persistReplSettings writes after a /set: what /set can change, /set
 //     must persist, or the change silently dies at relaunch.
@@ -30,7 +33,10 @@ type settingSpec struct {
 	// order and the settable-keys error text.
 	key string
 
-	startupWriteBack bool
+	// lossyRestore marks a flagged row whose fromMeta does not round-trip
+	// (system normalises a legacy prompt), so the startup write-back must
+	// not copy the restored value back over what is stored.
+	lossyRestore bool
 
 	// parse validates value and writes it onto cfg; nil marks the key
 	// read-only for /set. Error texts appear in transcripts; keep stable.
@@ -72,8 +78,7 @@ type settingSpec struct {
 // frontend and never settable.
 var settingSpecs = []settingSpec{
 	{
-		key:              "model",
-		startupWriteBack: true,
+		key: "model",
 		parse: func(cfg *Config, value string) error {
 			if value == "" {
 				return fmt.Errorf("model requires a provider/model value")
@@ -90,8 +95,7 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.Model = cfg.Model },
 	},
 	{
-		key:              "temp",
-		startupWriteBack: true,
+		key: "temp",
 		parse: func(cfg *Config, value string) error {
 			f, err := strconv.ParseFloat(value, 64)
 			if err != nil {
@@ -111,8 +115,7 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.Temperature = cfg.Temperature },
 	},
 	{
-		key:              "maxtokens",
-		startupWriteBack: true,
+		key: "maxtokens",
 		parse: func(cfg *Config, value string) error {
 			n, err := strconv.Atoi(value)
 			if err != nil {
@@ -169,7 +172,8 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.ThinkingEffort = cfg.ThinkingEffort },
 	},
 	{
-		key: "system",
+		key:          "system",
+		lossyRestore: true,
 		show: func(_ *replCommandContext, cfg *Config) string {
 			if cfg.SystemPrompt == "" {
 				return "(none)"
@@ -195,8 +199,7 @@ var settingSpecs = []settingSpec{
 		},
 	},
 	{
-		key:              "tooltimeout",
-		startupWriteBack: true,
+		key: "tooltimeout",
 		parse: func(cfg *Config, value string) error {
 			d, err := time.ParseDuration(value)
 			if err != nil {
@@ -221,8 +224,7 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.ToolTimeout = cfg.ToolTimeout },
 	},
 	{
-		key:              "skilldir",
-		startupWriteBack: true,
+		key: "skilldir",
 		show: func(_ *replCommandContext, cfg *Config) string {
 			if len(cfg.SkillDirs) == 0 {
 				return "[]"
@@ -244,11 +246,10 @@ var settingSpecs = []settingSpec{
 	{
 		// maxiterations rides the flag-persistence gates but stays invisible
 		// to /get, /set, and completions.
-		key:              "maxiterations",
-		startupWriteBack: true,
-		fromCmd:          func(cfg *Config, cmd *cli.Command) { cfg.MaxIterations = cmd.Int("maxiterations") },
-		fromMeta:         func(cfg *Config, md *sessions.Metadata) { cfg.MaxIterations = md.MaxIterations },
-		toMeta:           func(cfg *Config, md *sessions.Metadata) { md.MaxIterations = cfg.MaxIterations },
+		key:      "maxiterations",
+		fromCmd:  func(cfg *Config, cmd *cli.Command) { cfg.MaxIterations = cmd.Int("maxiterations") },
+		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.MaxIterations = md.MaxIterations },
+		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.MaxIterations = cfg.MaxIterations },
 	},
 }
 
@@ -273,6 +274,15 @@ func settingKeysWhere(pred func(settingSpec) bool) []string {
 // (display, sandbox) have none.
 func (s settingSpec) flagged() bool {
 	return s.fromCmd != nil
+}
+
+// startupWriteBack reports whether updateContextInfo copies the row onto
+// metadata unconditionally at startup: every flagged row whose restore
+// round-trips. Config holds the stored value unless a flag overrode it, so
+// the copy is a no-op for an untouched row; the lossy system row is left to
+// flagSet.
+func (s settingSpec) startupWriteBack() bool {
+	return s.flagged() && !s.lossyRestore
 }
 
 // flagSet reports whether the setting's flag was given, by argument or

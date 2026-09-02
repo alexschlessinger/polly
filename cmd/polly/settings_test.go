@@ -10,8 +10,8 @@ import (
 )
 
 // TestSettingSpecGateMembership pins the copy gates and the derived key
-// lists. The exclusions are load-bearing: flipping startupWriteBack on a row,
-// or making it settable, changes what reaches persisted session metadata.
+// lists. The memberships are load-bearing: marking a row lossy, flagging it,
+// or making it settable changes what reaches persisted session metadata.
 func TestSettingSpecGateMembership(t *testing.T) {
 	pin := func(name string, got, want []string) {
 		t.Helper()
@@ -25,8 +25,10 @@ func TestSettingSpecGateMembership(t *testing.T) {
 		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"})
 	pin("flagged rows", settingKeysWhere(func(s settingSpec) bool { return s.flagged() }),
 		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir", "maxiterations"})
-	pin("startupWriteBack gate", settingKeysWhere(func(s settingSpec) bool { return s.startupWriteBack }),
-		[]string{"model", "temp", "maxtokens", "tooltimeout", "skilldir", "maxiterations"})
+	pin("startupWriteBack gate", settingKeysWhere(func(s settingSpec) bool { return s.startupWriteBack() }),
+		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout", "skilldir", "maxiterations"})
+	pin("lossyRestore rows", settingKeysWhere(func(s settingSpec) bool { return s.lossyRestore }),
+		[]string{"system"})
 	pin("postReplSet hooks", settingKeysWhere(func(s settingSpec) bool { return s.postReplSet != nil }),
 		[]string{"tooltimeout"})
 	pin("setWords completions", settingKeysWhere(func(s settingSpec) bool { return s.setWords != nil }),
@@ -39,11 +41,11 @@ func TestSettingSpecGateMembership(t *testing.T) {
 			}
 		} else {
 			if spec.fromMeta != nil || spec.toMeta != nil ||
-				spec.startupWriteBack || spec.parse != nil {
+				spec.lossyRestore || spec.parse != nil {
 				t.Errorf("derived setting %q must be show-only", spec.key)
 			}
 		}
-		if (spec.startupWriteBack || spec.parse != nil) && spec.toMeta == nil {
+		if (spec.startupWriteBack() || spec.parse != nil) && spec.toMeta == nil {
 			t.Errorf("setting %q joins a copy gate without a toMeta", spec.key)
 		}
 		if spec.parse != nil && spec.show == nil {
