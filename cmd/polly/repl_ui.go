@@ -2426,13 +2426,11 @@ func (m *replModel) clearDisplay() {
 
 const resumedTurnLimit = 5
 
-// hydrateHistory makes a resumed context honest about what the model already
-// remembers. It shows only recent user turns, keeps assistant prose, and folds
-// raw tool exchanges into compact activity rows.
-// hydrateHistory replays a stored conversation into the transcript: the last
-// resumedTurnLimit user turns, each with its assistant text, reasoning, tool
-// activity, and trailer, then the composer restore for an unanswered final
-// prompt.
+// hydrateHistory replays a stored conversation into the transcript so a
+// resumed context is honest about what the model already remembers: the last
+// resumedTurnLimit user turns, each with its assistant prose, reasoning, tool
+// exchanges folded into compact activity rows, and trailer, then the composer
+// restore for an unanswered final prompt.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
 	m.clearTurnDock()
 	for _, msg := range history {
