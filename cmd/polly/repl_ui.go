@@ -519,8 +519,10 @@ type replModel struct {
 	// transcriptImages runs in lockstep with transcript: entry i's explicit
 	// local image references live at transcriptImages[i] (nil when the entry
 	// has none). Grown only by appendTranscriptEntry, shrunk only by
-	// deleteTranscriptEntry, reset only by clearDisplay — so the lanes cannot
-	// drift, and a direct append to either is a bug.
+	// deleteTranscriptEntry, reset only by clearDisplay, rewritten in place
+	// only by setTranscriptText/setTranscriptEntry/setTranscriptImages — so
+	// the lanes cannot drift and every mutation invalidates the visual cache.
+	// A direct write to either lane outside those owners is a bug.
 	transcriptImages [][]transcriptImage
 	imageBaseDir     string
 	nativeImages     bool
@@ -1122,16 +1124,31 @@ func (m *replModel) takeNotices() []string {
 // mutation already does).
 func (m *replModel) invalidateVisual() { m.visualCacheValid = false }
 
+// setTranscriptText replaces entry index's text. Every in-place transcript
+// write goes through here or setTranscriptEntry, so the visual cache is
+// always marked stale by the write itself rather than by each caller.
+func (m *replModel) setTranscriptText(index int, text string) {
+	m.transcript[index] = text
+	m.invalidateVisual()
+}
+
+// setTranscriptEntry replaces entry index's text and image list together.
+func (m *replModel) setTranscriptEntry(index int, text string, images []transcriptImage) {
+	m.setTranscriptText(index, text)
+	m.setTranscriptImages(index, images)
+}
+
 // setTranscriptImages replaces entry index's image list. It indexes the lane
-// unguarded on purpose: every caller has just written m.transcript[index], so
-// an out-of-range index here means the lanes drifted, and that must fail at
-// the write that exposed it rather than at some later render.
+// unguarded on purpose: an out-of-range index means the lanes drifted, and
+// that must fail at the write that exposed it rather than at some later
+// render.
 func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
 	if len(images) == 0 {
 		m.transcriptImages[index] = nil
-		return
+	} else {
+		m.transcriptImages[index] = append([]transcriptImage(nil), images...)
 	}
-	m.transcriptImages[index] = append([]transcriptImage(nil), images...)
+	m.invalidateVisual()
 }
 
 func (m *replModel) deleteTranscriptEntry(index int) {
@@ -1198,6 +1215,7 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 			m.queue[i].transcriptIndex--
 		}
 	}
+	m.invalidateVisual()
 }
 
 // appendLine appends a pre-rendered transcript entry (may contain inline
@@ -1210,7 +1228,6 @@ func (m *replModel) appendLine(s string) {
 	}
 	m.appendTranscriptEntry(s)
 	m.currentAssistant = -1
-	m.invalidateVisual()
 }
 
 // appendTranscriptEntry grows the transcript and its image lane together and
@@ -1218,6 +1235,7 @@ func (m *replModel) appendLine(s string) {
 func (m *replModel) appendTranscriptEntry(text string) int {
 	m.transcript = append(m.transcript, text)
 	m.transcriptImages = append(m.transcriptImages, nil)
+	m.invalidateVisual()
 	return len(m.transcript) - 1
 }
 
@@ -1252,9 +1270,7 @@ func (m *replModel) appendAssistant(text string) {
 	m.streamShown = len(visible)
 	rendered, images, deferred := renderMarkdownWithLocalImages(visible, m.imageBaseDir, true)
 	m.streamDeferredTable = deferred
-	m.transcript[m.currentAssistant] = rendered
-	m.setTranscriptImages(m.currentAssistant, images)
-	m.invalidateVisual()
+	m.setTranscriptEntry(m.currentAssistant, rendered, images)
 }
 
 // finishAssistantStream renders any text still held back by the streaming
@@ -1272,9 +1288,7 @@ func (m *replModel) finishAssistantStream() {
 	m.streamShown = len(raw)
 	m.streamDeferredTable = false
 	rendered, images, _ := renderMarkdownWithLocalImages(raw, m.imageBaseDir, false)
-	m.transcript[m.currentAssistant] = rendered
-	m.setTranscriptImages(m.currentAssistant, images)
-	m.invalidateVisual()
+	m.setTranscriptEntry(m.currentAssistant, rendered, images)
 }
 
 // finishAssistantBlock closes the semantic assistant block that is currently
@@ -1292,11 +1306,10 @@ func (m *replModel) finishAssistantBlock(label string) bool {
 	if content == "" {
 		m.deleteTranscriptEntry(idx)
 	} else {
-		m.transcript[idx] = content
+		m.setTranscriptText(idx, content)
 	}
 	m.currentAssistant = -1
 	m.resetAssistantStream()
-	m.invalidateVisual()
 	if label != "" && content != "" {
 		m.appendLine("  " + styled(label, "muted", ""))
 		m.outcomeLabeled = true
@@ -1529,9 +1542,7 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 	if reanchor && !m.followBottom {
 		oldStart, oldCount, held = m.displayRecordSpan(width, match)
 	}
-	m.transcript[index] = text
-	m.setTranscriptImages(index, images)
-	m.invalidateVisual()
+	m.setTranscriptEntry(index, text, images)
 	if held {
 		if _, newCount, ok := m.displayRecordSpan(width, match); ok {
 			m.anchorForResizedEntry(oldStart, oldCount, newCount)
@@ -1936,8 +1947,7 @@ func (m *replModel) refreshReasoningRecordWithAnchor(record *reasoningRecord, wi
 	if reanchor && !m.followBottom {
 		oldStart, oldCount, held = m.displayRecordSpan(width, match)
 	}
-	m.transcript[record.transcriptIndex] = next
-	m.invalidateVisual()
+	m.setTranscriptText(record.transcriptIndex, next)
 	if held {
 		if _, newCount, ok := m.displayRecordSpan(width, match); ok {
 			m.anchorForResizedEntry(oldStart, oldCount, newCount)
@@ -2842,10 +2852,9 @@ func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
 		// The echoed prompt gains thumbnail slots for its attachments. Pasted
 		// private-use runes are stripped first so they cannot pose as slot
 		// anchors in an entry that now carries real ones.
-		m.transcript[index] = stripTranscriptImageMarkers(m.transcript[index]) +
-			"\n" + renderTranscriptImages(images, "  ")
-		m.setTranscriptImages(index, images)
-		m.invalidateVisual()
+		m.setTranscriptEntry(index,
+			stripTranscriptImageMarkers(m.transcript[index])+"\n"+renderTranscriptImages(images, "  "),
+			images)
 	}
 }
 
@@ -2863,16 +2872,13 @@ func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
 		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
 	}
 	m.followBottom = true
-	m.invalidateVisual()
 }
 
 func (m *replModel) activateQueuedInput(item queuedREPLInput) {
 	if item.transcriptShown && item.transcriptIndex >= 0 && item.transcriptIndex < len(m.transcript) {
-		m.transcript[item.transcriptIndex] = formattedUserPrompt(item.text)
+		m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text))
 		if item.turn != nil {
 			m.decorateUserPrompt(item.transcriptIndex, *item.turn)
-		} else {
-			m.invalidateVisual()
 		}
 		return
 	}
@@ -2887,11 +2893,9 @@ func (m *replModel) markQueuedInputNotSent(item queuedREPLInput) {
 	if !item.transcriptShown || item.transcriptIndex < 0 || item.transcriptIndex >= len(m.transcript) {
 		return
 	}
-	m.transcript[item.transcriptIndex] = formattedUserPrompt(item.text) + "\n  " + styled("(not sent)", "muted", "")
+	m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text)+"\n  "+styled("(not sent)", "muted", ""))
 	if item.turn != nil {
 		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
-	} else {
-		m.invalidateVisual()
 	}
 }
 

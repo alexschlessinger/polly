@@ -429,6 +429,9 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 				oldCount = m.entryVisualLineCount(transcriptIndex, width)
 				start = m.entryVisualStart(transcriptIndex, width)
 			}
+			// The one raw lane write: this runs inside transcriptRows, which
+			// invalidates on the returned flag, so the owner's invalidation
+			// would be redundant here.
 			m.transcriptImages[transcriptIndex] = updated
 			if !m.followBottom {
 				m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(transcriptIndex, width))

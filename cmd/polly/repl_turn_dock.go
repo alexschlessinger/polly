@@ -388,9 +388,7 @@ func (m *replModel) refreshTurnTrailer(record *turnTrailerRecord) {
 		oldCount = m.entryVisualLineCount(record.transcriptIndex, width)
 		start = m.entryVisualStart(record.transcriptIndex, width)
 	}
-	m.transcript[record.transcriptIndex] = text
-	m.setTranscriptImages(record.transcriptIndex, images)
-	m.invalidateVisual()
+	m.setTranscriptEntry(record.transcriptIndex, text, images)
 	if !m.followBottom {
 		m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(record.transcriptIndex, width))
 	}
