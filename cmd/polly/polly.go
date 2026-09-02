@@ -1562,12 +1562,8 @@ func updateContextInfo(ctx context.Context, session sessions.Session, config *Co
 	if md == nil {
 		md = &sessions.Metadata{}
 	}
-	name, err := session.GetName(ctx)
-	if err != nil {
-		return fmt.Errorf("read context name: %w", err)
-	}
-	md.Name = name
-	md.LastUsed = time.Now()
+	// Name and LastUsed are storage-owned: SetMetadata overwrites both, so
+	// they are not written here.
 	// Config holds resolved values — stored settings unless flags override
 	// (see initializeConversation) — so these are safe to write back.
 	for _, spec := range settingSpecs {

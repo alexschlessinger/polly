@@ -898,11 +898,6 @@ func persistReplSettings(ctx *replCommandContext) error {
 	if md == nil {
 		md = &sessions.Metadata{}
 	}
-	name, err := s.GetName(opCtx)
-	if err != nil {
-		return err
-	}
-	md.Name = name
 	// What /set can change, /set must persist: every settable row reaches
 	// metadata here, or the change would silently die at relaunch.
 	for _, spec := range settingSpecs {
