@@ -24,8 +24,10 @@ var (
 	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
 	validEmbedProviders = []string{"openai", "gemini"}
 	// purgeCompanionFlags are the only flags --purge accepts alongside
-	// itself; any other flag that is set is an error.
-	purgeCompanionFlags = []string{"purge", "quiet", "debug"}
+	// itself, each under every name cmd.LocalFlagNames reports it by: the
+	// primary name first, then aliases. The guard checks all of them and the
+	// error text advertises the primary ones, so neither can drift.
+	purgeCompanionFlags = [][]string{{"quiet"}, {"debug", "d"}}
 )
 
 func getCommand() *cli.Command {
@@ -462,9 +464,11 @@ func newPurgeFlag() *cli.BoolFlag {
 			if !v {
 				return nil
 			}
-			for _, name := range setFlagNames(cmd) {
-				if !slices.Contains(purgeCompanionFlags, name) {
-					return fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
+			// LocalFlagNames lists every name of every flag set by argument
+			// or environment, mutually exclusive groups included.
+			for _, name := range cmd.LocalFlagNames() {
+				if name != "purge" && !purgeCompanionFlag(name) {
+					return fmt.Errorf("--purge must be used alone (only %s allowed)", purgeCompanionUsage())
 				}
 			}
 			return nil
@@ -472,27 +476,26 @@ func newPurgeFlag() *cli.BoolFlag {
 	}
 }
 
-// setFlagNames returns the primary name of every flag set on cmd, by
-// argument or environment, including the flags in its mutually exclusive
-// groups.
-func setFlagNames(cmd *cli.Command) []string {
-	var names []string
-	visit := func(f cli.Flag) {
-		if f.IsSet() {
-			names = append(names, f.Names()[0])
+func purgeCompanionFlag(name string) bool {
+	for _, names := range purgeCompanionFlags {
+		if slices.Contains(names, name) {
+			return true
 		}
 	}
-	for _, f := range cmd.Flags {
-		visit(f)
+	return false
+}
+
+// purgeCompanionUsage renders the companion flags by primary name for the
+// --purge error text.
+func purgeCompanionUsage() string {
+	names := make([]string, len(purgeCompanionFlags))
+	for i, flag := range purgeCompanionFlags {
+		names[i] = "--" + flag[0]
 	}
-	for _, group := range cmd.MutuallyExclusiveFlags {
-		for _, flags := range group.Flags {
-			for _, f := range flags {
-				visit(f)
-			}
-		}
+	if len(names) == 1 {
+		return names[0]
 	}
-	return names
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 func validateNoPromptOrFiles(cmd *cli.Command, flagName string) error {
