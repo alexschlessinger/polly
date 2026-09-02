@@ -2367,7 +2367,6 @@ func (m *replModel) clearDisplay() {
 	m.currentAssistant = -1
 	m.activeTools = nil
 	m.activeToolsPhase = -1
-	m.resetToolDisclosure()
 	m.clearToolDisclosures()
 	m.clearReasoningRecords()
 	m.turnTrailers = make(map[int64]*turnTrailerRecord)
