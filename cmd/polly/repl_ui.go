@@ -2297,8 +2297,7 @@ func (m *replModel) settleActiveTools(reason string) {
 			continue
 		}
 		row := &record.rows[at.row]
-		row.line = "  " + styled("✗", "err", "bold") + " " +
-			styledToolText(strings.TrimSpace(reason+" "+at.label))
+		row.line = toolErrorLine(at.label, reason, "")
 		row.images = nil
 		row.settled = true
 	}
@@ -2321,11 +2320,7 @@ func styledToolText(text string) string {
 }
 
 func toolOKLine(label, duration, meta string) string {
-	body := strings.TrimSpace(duration + " " + stripTranscriptImageMarkers(label))
-	if meta != "" {
-		body += " · " + stripTranscriptImageMarkers(meta)
-	}
-	return "  " + styled("✓", "ok", "bold") + " " + styledToolText(body)
+	return "  " + styled("✓", "ok", "bold") + " " + styledToolText(toolLineBody(duration, label, meta))
 }
 
 func toolDeniedLine(label string) string {
@@ -2337,11 +2332,7 @@ func toolDeniedLine(label string) string {
 // tool's own output/error text is deliberately not shown; the model still
 // receives the full output, this is display only.
 func toolErrorLine(label, duration, meta string) string {
-	body := strings.TrimSpace(duration + " " + stripTranscriptImageMarkers(label))
-	if meta != "" {
-		body += " · " + stripTranscriptImageMarkers(meta)
-	}
-	return "  " + styled("✗", "err", "bold") + " " + styledToolText(body)
+	return "  " + styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(duration, label, meta))
 }
 
 func hydratedToolLine(label string, msg messages.ChatMessage) string {

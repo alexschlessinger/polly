@@ -194,10 +194,10 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	if err != nil {
 		// Tool output/error text is intentionally omitted; the model still
 		// receives the full output. The ✗ and exit code alone mark the failure.
-		fmt.Fprintf(ui.errWriter, "  ✗ %s\n", joinMeta(dur+" "+label, toolFailureMeta(err)))
+		fmt.Fprintf(ui.errWriter, "  ✗ %s\n", toolLineBody(dur, label, toolFailureMeta(err)))
 		return
 	}
-	fmt.Fprintf(ui.errWriter, "  ✓ %s\n", joinMeta(dur+" "+label, resultLineMeta(result)))
+	fmt.Fprintf(ui.errWriter, "  ✓ %s\n", toolLineBody(dur, label, resultLineMeta(result)))
 }
 
 func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []transcriptImage) {
@@ -254,9 +254,3 @@ func trimLeadingResponseNewlines(content string) string {
 
 // joinMeta appends an optional annotation to a tool line body with the shared
 // "·" separator.
-func joinMeta(body, meta string) string {
-	if meta == "" {
-		return body
-	}
-	return body + " · " + meta
-}

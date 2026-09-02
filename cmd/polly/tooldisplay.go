@@ -236,6 +236,17 @@ func summarizeBashCommand(args tools.Args) string {
 	return truncate(first, 120)
 }
 
+// toolLineBody joins a settled tool line's parts the same way in every
+// frontend: "1.2s bash · 3 lines". Either the duration or the metadata may be
+// empty.
+func toolLineBody(duration, label, meta string) string {
+	body := strings.TrimSpace(duration + " " + label)
+	if meta != "" {
+		body += " · " + meta
+	}
+	return body
+}
+
 // resultLineMeta summarizes how much output a successful tool handed the
 // model, as a human count of lines. Empty output earns no annotation rather
 // than a noisy "0 lines".
