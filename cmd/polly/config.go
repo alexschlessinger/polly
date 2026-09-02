@@ -177,10 +177,11 @@ func modelConfigFlags() []cli.Flag {
 			},
 		},
 		&cli.IntFlag{
-			Name:    "maxtokens",
-			Usage:   "Maximum tokens to generate",
-			Value:   64000,
-			Sources: cli.EnvVars("POLLYTOOL_MAXTOKENS"),
+			Name:      "maxtokens",
+			Usage:     "Maximum tokens to generate",
+			Value:     64000,
+			Sources:   cli.EnvVars("POLLYTOOL_MAXTOKENS"),
+			Validator: validateMaxTokens,
 		},
 		&cli.IntFlag{
 			Name:    "maxiterations",
@@ -243,10 +244,11 @@ func toolConfigFlags() []cli.Flag {
 			Usage:   "Tool provider: shell script (provides 1 tool) or MCP server (can provide multiple tools). Can be specified multiple times",
 		},
 		&cli.DurationFlag{
-			Name:    "tooltimeout",
-			Usage:   "Timeout for tool execution",
-			Value:   5 * time.Minute,
-			Sources: cli.EnvVars("POLLYTOOL_TOOLTIMEOUT"),
+			Name:      "tooltimeout",
+			Usage:     "Timeout for tool execution",
+			Value:     5 * time.Minute,
+			Sources:   cli.EnvVars("POLLYTOOL_TOOLTIMEOUT"),
+			Validator: validateToolTimeout,
 		},
 	}
 }
@@ -295,9 +297,10 @@ func contextManagementFlags() []cli.Flag {
 func historyConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.IntFlag{
-			Name:  "maxcontext",
-			Usage: "Maximum estimated tokens sent to the model, clamped to the model's advertised context window when discoverable; full history is retained (0 = unlimited, never clamped)",
-			Value: 256000,
+			Name:      "maxcontext",
+			Usage:     "Maximum estimated tokens sent to the model, clamped to the model's advertised context window when discoverable; full history is retained (0 = unlimited, never clamped)",
+			Value:     256000,
+			Validator: validateMaxContext,
 		},
 	}
 }
@@ -509,6 +512,30 @@ func validateModelWithProviders(model string, providers []string, example string
 func validateTemperature(temp float64) error {
 	if temp < 0.0 || temp > 2.0 {
 		return fmt.Errorf("temperature must be between 0.0 and 2.0, got %.1f", temp)
+	}
+	return nil
+}
+
+// validateMaxTokens, validateMaxContext, and validateToolTimeout are shared
+// by the CLI flags and /set, so a value one path rejects the other cannot
+// smuggle into metadata.
+func validateMaxTokens(n int) error {
+	if n <= 0 {
+		return fmt.Errorf("maxtokens must be a positive integer, got %d", n)
+	}
+	return nil
+}
+
+func validateMaxContext(n int) error {
+	if n < 0 {
+		return fmt.Errorf("maxcontext must be a non-negative integer (0 = unlimited), got %d", n)
+	}
+	return nil
+}
+
+func validateToolTimeout(d time.Duration) error {
+	if d <= 0 {
+		return fmt.Errorf("tooltimeout must be a positive duration (e.g. 45s), got %s", d)
 	}
 	return nil
 }

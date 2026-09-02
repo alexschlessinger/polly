@@ -121,8 +121,11 @@ var settingSpecs = []settingSpec{
 		startupWriteBack: true,
 		parse: func(cfg *Config, value string) error {
 			n, err := strconv.Atoi(value)
-			if err != nil || n <= 0 {
+			if err != nil {
 				return fmt.Errorf("maxtokens must be a positive integer, got %q", value)
+			}
+			if err := validateMaxTokens(n); err != nil {
+				return err
 			}
 			cfg.MaxTokens = n
 			return nil
@@ -139,8 +142,11 @@ var settingSpecs = []settingSpec{
 		flag: "maxcontext",
 		parse: func(cfg *Config, value string) error {
 			n, err := strconv.Atoi(value)
-			if err != nil || n < 0 {
+			if err != nil {
 				return fmt.Errorf("maxcontext must be a non-negative integer (0 = unlimited), got %q", value)
+			}
+			if err := validateMaxContext(n); err != nil {
+				return err
 			}
 			cfg.MaxHistoryTokens = n
 			return nil
@@ -203,8 +209,11 @@ var settingSpecs = []settingSpec{
 		startupWriteBack: true,
 		parse: func(cfg *Config, value string) error {
 			d, err := time.ParseDuration(value)
-			if err != nil || d <= 0 {
+			if err != nil {
 				return fmt.Errorf("tooltimeout must be a positive duration (e.g. 45s), got %q", value)
+			}
+			if err := validateToolTimeout(d); err != nil {
+				return err
 			}
 			cfg.ToolTimeout = d
 			return nil

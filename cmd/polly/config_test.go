@@ -93,6 +93,30 @@ func TestConfigFlagsRejectPromptAndFileOnManagementCommands(t *testing.T) {
 	}
 }
 
+// The CLI flags enforce the same bounds /set does, so a launch cannot store
+// a value the REPL would refuse.
+func TestConfigFlagsShareSetBounds(t *testing.T) {
+	rejected := []struct {
+		args    []string
+		wantErr string
+	}{
+		{[]string{"--maxtokens", "0"}, "maxtokens must be a positive integer"},
+		{[]string{"--maxcontext=-1"}, "maxcontext must be a non-negative integer"},
+		{[]string{"--tooltimeout", "0s"}, "tooltimeout must be a positive duration"},
+	}
+	for _, tt := range rejected {
+		err := runConfigValidationCommand(tt.args...)
+		if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("run(%v) error = %v, want substring %q", tt.args, err, tt.wantErr)
+		}
+	}
+	for _, args := range [][]string{{"--maxtokens", "1"}, {"--maxcontext", "0"}, {"--tooltimeout", "1s"}} {
+		if err := runConfigValidationCommand(args...); err != nil {
+			t.Errorf("run(%v) error = %v, want the bound accepted", args, err)
+		}
+	}
+}
+
 func TestConfigFlagsRejectPurgeWithOtherFlags(t *testing.T) {
 	tests := [][]string{
 		{"--purge", "--model", "openai/gpt-5.4"},
