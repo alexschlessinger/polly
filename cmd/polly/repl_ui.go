@@ -41,27 +41,6 @@ const (
 	turnStateError
 )
 
-func (s turnState) label(toolName string) string {
-	switch s {
-	case turnStateIdle:
-		return "idle"
-	case turnStateWaiting:
-		return "waiting"
-	case turnStateThinking:
-		return "thinking"
-	case turnStateStreaming:
-		return "streaming"
-	case turnStateTool:
-		if toolName == "" {
-			return "tool"
-		}
-		return "tool: " + toolName
-	case turnStateError:
-		return "error"
-	}
-	return ""
-}
-
 // turnOutcome is the last settled result shown in the fixed turn dock and
 // terminal title. Completing a turn must not append chrome that shifts the
 // answer vertically.
@@ -340,12 +319,6 @@ func (e *lineEditor) down() bool {
 	return true
 }
 
-// displayWidthToCursor is the terminal column count of the text left of the
-// cursor, accounting for wide runes.
-func (e *lineEditor) displayWidthToCursor() int {
-	return rw.StringWidth(string(e.buf[:e.cursor]))
-}
-
 // managedTurnInput is the immutable boundary between accepting composer input
 // and running a model turn. displayText is UI-only; userMessage is the exact
 // normalized payload carried through queues and restored composer drafts.
@@ -405,32 +378,6 @@ func (a *turnPersistenceAck) finishPersistence(persisted bool) {
 		}
 	}
 	a.mu.Unlock()
-}
-
-// snapshotSessionHistory returns a session snapshot consistent with the turn's
-// persistence state. Persistence begins under this same turn-local lock before
-// AddMessage and ends after it returns. Projection either snapshots before that
-// interval (and includes the not-yet-persisted user itself) or waits until the
-// interval is over and observes the stored user; it can never see the session
-// write without its acknowledgement.
-func (a *turnPersistenceAck) snapshotSessionHistory(ctx context.Context, session sessions.Session) ([]messages.ChatMessage, bool, error) {
-	if a == nil {
-		history, err := session.GetHistory(ctx)
-		return history, false, err
-	}
-	for {
-		a.mu.Lock()
-		if a.active > 0 {
-			settled := a.settled
-			a.mu.Unlock()
-			<-settled
-			continue
-		}
-		history, err := session.GetHistory(ctx)
-		persisted := a.persisted
-		a.mu.Unlock()
-		return history, persisted, err
-	}
 }
 
 type queuedREPLInput struct {
@@ -3501,38 +3448,6 @@ func (m *replModel) inputDisplay() string {
 	return text
 }
 
-// spinnerFrames is the braille dot cycle used by the busy indicator.
-var spinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-
-// spinnerFrame returns the current braille frame for the busy animation,
-// advanced off turnStarted at 100ms so the rate is independent of the render
-// tick. ok is false at idle, where no spinner should show. Caller must hold m.mu.
-func (m *replModel) spinnerFrame() (rune, bool) {
-	if !m.busy || m.turnStarted.IsZero() {
-		return 0, false
-	}
-	frame := spinnerFrames[int(time.Since(m.turnStarted)/(100*time.Millisecond))%len(spinnerFrames)]
-	return frame, true
-}
-
-// busyIndicator renders the animated processing line: spinner + a friendly
-// state word + elapsed time, e.g. "⠹ running bash · 3.8s". It is the inline
-// busy row used only in quiet mode, where there is no status bar to carry the
-// spinner. Caller must hold m.mu.
-func (m *replModel) busyIndicator() string {
-	var elapsed time.Duration
-	if !m.turnStarted.IsZero() {
-		elapsed = time.Since(m.turnStarted)
-	}
-	frame, ok := m.spinnerFrame()
-	if !ok {
-		frame = spinnerFrames[0]
-	}
-	return styled(string(frame), "accent", "bold") + " " +
-		styled(m.busyLabel(), "muted", "") + " " +
-		styled("· "+formatElapsed(elapsed), "muted", "")
-}
-
 // busyLabel maps the current turn state to the word shown on the input row.
 func (m *replModel) busyLabel() string {
 	if m.canceling {
@@ -3710,29 +3625,6 @@ func (p *transcriptParagraph) drawRows(buf *ui.Buffer, rows [][]ui.Cell) {
 			buf.SetCell(cx.Cell, image.Pt(cx.X, y).Add(p.Inner.Min))
 		}
 	}
-}
-
-func wrapCellsHard(cells []ui.Cell, width int) []ui.Cell {
-	if width <= 0 || len(cells) == 0 {
-		return cells
-	}
-	out := make([]ui.Cell, 0, len(cells))
-	col := 0
-	for _, cell := range cells {
-		if cell.Rune == '\n' {
-			out = append(out, cell)
-			col = 0
-			continue
-		}
-		cellWidth := rw.RuneWidth(cell.Rune)
-		if cellWidth > 0 && col > 0 && col+cellWidth > width {
-			out = append(out, ui.Cell{Rune: '\n', Style: ui.StyleClear})
-			col = 0
-		}
-		out = append(out, cell)
-		col += cellWidth
-	}
-	return out
 }
 
 // maxPersistedHistory bounds how many input lines are kept across runs. On

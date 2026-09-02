@@ -524,16 +524,9 @@ func purgeContexts(ctx context.Context, store sessions.SessionStore, contextIDs 
 	return errors.Join(deleteErrors...)
 }
 
-// resetContext clears the conversation history but preserves the context settings
-func resetContext(ctx context.Context, sessionStore sessions.SessionStore, name string) (retErr error) {
-	return resetContextWithOptionalSystemPrompt(ctx, sessionStore, name, nil)
-}
-
-func resetContextWithSystemPrompt(ctx context.Context, sessionStore sessions.SessionStore, name, systemPrompt string) error {
-	return resetContextWithOptionalSystemPrompt(ctx, sessionStore, name, &systemPrompt)
-}
-
-func resetContextWithOptionalSystemPrompt(ctx context.Context, sessionStore sessions.SessionStore, name string, systemPrompt *string) (retErr error) {
+// resetContextWithSystemPrompt clears the conversation history while
+// preserving the context settings, with systemPrompt as the new persona.
+func resetContextWithSystemPrompt(ctx context.Context, sessionStore sessions.SessionStore, name, systemPrompt string) (retErr error) {
 	// Get the session (creates if doesn't exist)
 	session, err := sessionStore.Acquire(ctx, name, sessions.AcquireOptions{})
 	if err != nil {
@@ -545,26 +538,17 @@ func resetContextWithOptionalSystemPrompt(ctx context.Context, sessionStore sess
 			retErr = errors.Join(retErr, fmt.Errorf("close context %s: %w", name, err))
 		}
 	}()
-	if systemPrompt != nil {
-		metadata, err := session.GetMetadata(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to read context %s metadata: %w", name, err)
-		}
-		if metadata == nil {
-			metadata = &sessions.Metadata{}
-		}
-		metadata.SystemPrompt = *systemPrompt
-		if err := session.Reset(ctx, metadata); err != nil {
-			return fmt.Errorf("failed to reset context %s with system prompt: %w", name, err)
-		}
-		return nil
+	metadata, err := session.GetMetadata(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read context %s metadata: %w", name, err)
 	}
-
-	// Clear the session history
-	if err := session.Clear(ctx); err != nil {
-		return fmt.Errorf("failed to clear context %s: %w", name, err)
+	if metadata == nil {
+		metadata = &sessions.Metadata{}
 	}
-
+	metadata.SystemPrompt = systemPrompt
+	if err := session.Reset(ctx, metadata); err != nil {
+		return fmt.Errorf("failed to reset context %s with system prompt: %w", name, err)
+	}
 	return nil
 }
 

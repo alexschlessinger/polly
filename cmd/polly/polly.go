@@ -217,17 +217,6 @@ func wantsAutoREPLContext(config *Config) bool {
 		validateREPLConfig(config) == nil
 }
 
-func hasManagementAction(config *Config) bool {
-	return config.ResetContext != "" ||
-		config.ListContexts ||
-		config.ListSkills ||
-		config.DeleteContext != "" ||
-		config.AddToContext ||
-		config.PurgeAll ||
-		config.CreateContext != "" ||
-		config.ShowContext != ""
-}
-
 func (r *commandRunner) Run() (retErr error) {
 	defer func() {
 		if err := r.sessionStore.Close(); err != nil {
