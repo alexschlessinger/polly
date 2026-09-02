@@ -127,6 +127,9 @@ func TestConfigFlagsRejectPurgeWithOtherFlags(t *testing.T) {
 		{"--purge", "--denypath", "/secrets"},
 		{"--purge", "--writepath", "/output"},
 		{"--purge", "--allownet"},
+		{"--purge", "--maxiterations", "3"},
+		{"--purge", "--timeout", "1s"},
+		{"--purge", "--last"},
 	}
 	for _, args := range tests {
 		err := runConfigValidationCommand(args...)

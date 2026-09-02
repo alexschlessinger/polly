@@ -23,15 +23,9 @@ const defaultSandboxPreset = "workspace+net+git"
 var (
 	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
 	validEmbedProviders = []string{"openai", "gemini"}
-	// Setting flags join the --purge guard through the spec table; only the
-	// non-setting flags are listed by hand. Consumed via ContainsFunc, so
-	// order is irrelevant.
-	purgeDisallowedFlags = append(settingFlagNames(),
-		"context", "last", "prompt", "file",
-		"timeout", "deadline", "tool", "mcp", "schema", "baseurl",
-		"skill", "noskills", "listskills",
-		"confirm", "meta", "sandbox", "nosandbox", "denypath", "writepath", "allownet",
-	)
+	// purgeCompanionFlags are the only flags --purge accepts alongside
+	// itself; any other flag that is set is an error.
+	purgeCompanionFlags = []string{"purge", "quiet", "debug"}
 )
 
 func getCommand() *cli.Command {
@@ -468,12 +462,37 @@ func newPurgeFlag() *cli.BoolFlag {
 			if !v {
 				return nil
 			}
-			if slices.ContainsFunc(purgeDisallowedFlags, cmd.IsSet) {
-				return fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
+			for _, name := range setFlagNames(cmd) {
+				if !slices.Contains(purgeCompanionFlags, name) {
+					return fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
+				}
 			}
 			return nil
 		},
 	}
+}
+
+// setFlagNames returns the primary name of every flag set on cmd, by
+// argument or environment, including the flags in its mutually exclusive
+// groups.
+func setFlagNames(cmd *cli.Command) []string {
+	var names []string
+	visit := func(f cli.Flag) {
+		if f.IsSet() {
+			names = append(names, f.Names()[0])
+		}
+	}
+	for _, f := range cmd.Flags {
+		visit(f)
+	}
+	for _, group := range cmd.MutuallyExclusiveFlags {
+		for _, flags := range group.Flags {
+			for _, f := range flags {
+				visit(f)
+			}
+		}
+	}
+	return names
 }
 
 func validateNoPromptOrFiles(cmd *cli.Command, flagName string) error {

@@ -281,16 +281,6 @@ func settingKeysWhere(pred func(settingSpec) bool) []string {
 	return keys
 }
 
-func settingFlagNames() []string {
-	names := make([]string, 0, len(settingSpecs))
-	for _, s := range settingSpecs {
-		if s.flag != "" {
-			names = append(names, s.flag)
-		}
-	}
-	return names
-}
-
 func settingSpecFor(key string) (settingSpec, bool) {
 	for _, s := range settingSpecs {
 		if s.key == key {
