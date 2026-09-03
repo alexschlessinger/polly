@@ -121,7 +121,8 @@ func (r *managedREPL) tabIndexOfModel(m *replModel) int {
 // prompt history belong to the screen rather than to a session, so they move
 // from the model leaving the screen to the one taking it. The model leaving
 // goes hidden, keeping any streamed text raw; the one arriving renders what
-// it streamed while hidden. Runs on the event loop with no model lock held.
+// it streamed while hidden and drops the news it had for the visible tab,
+// now that it is seen. Runs on the event loop with no model lock held.
 func (r *managedREPL) showTab(i int) {
 	tab := r.tabs[i]
 	if old := r.model; old != nil && old != tab.model {
@@ -143,6 +144,8 @@ func (r *managedREPL) showTab(i int) {
 		next.focusKnown, next.focused = focusKnown, focused
 		next.hist.entries = hist
 		next.hidden = false
+		next.signals = nil
+		next.unseenOutcome = turnOutcomeNone
 		next.renderAssistantStream()
 		next.mu.Unlock()
 	}
@@ -421,8 +424,9 @@ func (r *managedREPL) tabLines() []string {
 	return lines
 }
 
-// tabActivity describes the turn running on tab, or "" at idle. Caller must
-// hold r.model.mu; another tab's model is locked here, never the reverse.
+// tabActivity describes the turn running on tab, how its last turn ended
+// while the tab was hidden, or "" at idle. Caller must hold r.model.mu;
+// another tab's model is locked here, never the reverse.
 func (r *managedREPL) tabActivity(tab *replTab) string {
 	m := tab.model
 	if m != r.model {
@@ -433,6 +437,12 @@ func (r *managedREPL) tabActivity(tab *replTab) string {
 	case m.approval != nil:
 		return "approval needed"
 	case !m.busy:
+		switch m.unseenOutcome {
+		case turnOutcomeDone:
+			return "done"
+		case turnOutcomeFailed:
+			return "failed"
+		}
 		return ""
 	case m.turnStarted.IsZero():
 		return m.busyLabel()

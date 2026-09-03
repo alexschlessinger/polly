@@ -144,7 +144,13 @@ func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 		label += fmt.Sprintf(" +%d more", len(calls)-1)
 	}
 	t.model.pushNotice("approval needed: " + truncate(label, 80))
+	t.model.signalHiddenLocked(signalApprovalNeeded, truncate(label, 80))
 	t.model.mu.Unlock()
+	// The visible tab's notice comes from the event loop; wake it,
+	// since nothing else does while the tab holding this turn is hidden.
+	if t.repl != nil {
+		t.repl.wakeTabs()
+	}
 	results, ok := <-reply
 	if !ok {
 		return make([]bool, len(calls))

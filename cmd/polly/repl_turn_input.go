@@ -273,6 +273,7 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	m.turnHasOutput = false
 	m.outcomeLabeled = false
 	m.lastOutcome = turnOutcomeNone
+	m.unseenOutcome = turnOutcomeNone
 	// Token counts are per-turn and appear in the dock once reported.
 	m.lastIn = 0
 	m.lastOut = 0
