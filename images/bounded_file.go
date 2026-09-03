@@ -1,7 +1,9 @@
 package images
 
 import (
+	"bytes"
 	"fmt"
+	"image"
 	"io"
 	"os"
 )
@@ -47,4 +49,17 @@ func ReadBoundedFile(path string, maxBytes int64) ([]byte, error) {
 		return nil, fmt.Errorf("file exceeds the %d MiB limit", maxBytes>>20)
 	}
 	return data, nil
+}
+
+// DecodeBoundedFile reads an image file within maxBytes, applies Validate,
+// and decodes it, reporting the detected format name.
+func DecodeBoundedFile(path string, maxBytes int64) (image.Image, string, error) {
+	data, err := ReadBoundedFile(path, maxBytes)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, _, err := Validate(data); err != nil {
+		return nil, "", err
+	}
+	return image.Decode(bytes.NewReader(data))
 }

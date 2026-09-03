@@ -77,7 +77,7 @@ func NormalizeForModel(data []byte, fileName string) (Normalized, error) {
 		return Normalized{}, fmt.Errorf("%s: %w", fileName, err)
 	}
 
-	mimeType, passthrough := uploadImageFormat(format)
+	mimeType, passthrough := PortableMIMEType(format)
 	var src image.Image
 	if !passthrough {
 		switch format {
@@ -217,7 +217,10 @@ func encodeJPEG(img image.Image) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func uploadImageFormat(format string) (mimeType string, passthrough bool) {
+// PortableMIMEType maps a decoded image format name to the MIME type of the
+// portable upload shape, and reports false for formats NormalizeForModel must
+// convert or reject. It is the one table for what "portable" means.
+func PortableMIMEType(format string) (mimeType string, portable bool) {
 	switch format {
 	case "png":
 		return "image/png", true

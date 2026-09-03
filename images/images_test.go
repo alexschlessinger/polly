@@ -6,6 +6,9 @@ import (
 	"image/color"
 	"image/gif"
 	"image/png"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -80,5 +83,59 @@ func TestNormalizeForModelFileNameFallback(t *testing.T) {
 	}
 	if norm.FileName != "attachment" {
 		t.Fatalf("expected fallback name, got %q", norm.FileName)
+	}
+}
+
+// PortableMIMEType is the one table for the portable upload formats, and
+// NormalizeForModel never produces anything outside it.
+func TestPortableMIMEType(t *testing.T) {
+	for format, want := range map[string]string{"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp"} {
+		if got, ok := PortableMIMEType(format); !ok || got != want {
+			t.Fatalf("PortableMIMEType(%q) = %q, %v; want %q", format, got, ok, want)
+		}
+	}
+	for _, format := range []string{"gif", "bmp", "tiff", ""} {
+		if got, ok := PortableMIMEType(format); ok || got != "" {
+			t.Fatalf("PortableMIMEType(%q) = %q, %v; want not portable", format, got, ok)
+		}
+	}
+	var buf bytes.Buffer
+	if err := gif.Encode(&buf, testImage(4, 3), nil); err != nil {
+		t.Fatal(err)
+	}
+	norm, err := NormalizeForModel(buf.Bytes(), "anim.gif")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := PortableMIMEType(strings.TrimPrefix(norm.MIMEType, "image/")); !ok {
+		t.Fatalf("NormalizeForModel produced %q, which the portable table does not list", norm.MIMEType)
+	}
+}
+
+// DecodeBoundedFile is read + validate + decode in one step, keeping the
+// bounded reader's limit error for the oversize case.
+func TestDecodeBoundedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pic.png")
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, testImage(4, 3)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	img, format, err := DecodeBoundedFile(path, 1<<20)
+	if err != nil || format != "png" || img.Bounds().Dx() != 4 || img.Bounds().Dy() != 3 {
+		t.Fatalf("DecodeBoundedFile = %v, %q, %v", img, format, err)
+	}
+	if _, _, err := DecodeBoundedFile(path, int64(buf.Len())-1); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("oversize error = %v, want the bounded-file limit error", err)
+	}
+	garbage := filepath.Join(dir, "garbage.png")
+	if err := os.WriteFile(garbage, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := DecodeBoundedFile(garbage, 1<<20); err == nil {
+		t.Fatal("garbage decoded without error")
 	}
 }
