@@ -351,6 +351,9 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 		lengthWidth = max(lengthWidth, rw.StringWidth(formatSessionMessageCount(summary.MessageCount)))
 	}
 	nameWidth = min(nameWidth, 24)
+	// A session leased by another polly cannot be opened here: Acquire would
+	// wait out the lease timeout and then fail. Mark it and refuse up front.
+	inUseElsewhere := make(map[string]bool)
 	for i, summary := range infos {
 		info := summary.Metadata
 		name := truncate(info.Name, nameWidth)
@@ -362,10 +365,16 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 		label := nameColumn + "  " + ageColumn + "  " + lengthColumn
 		display := styleEscape(nameColumn) + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
 		selectedDisplay := styled(nameColumn, "accent", "bold") + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
-		if info.Name == current {
+		switch {
+		case info.Name == current:
 			label += "  current"
 			display += "  " + styled("current", "accent", "")
 			selectedDisplay += "  " + styled("current", "accent", "")
+		case summary.InUse:
+			inUseElsewhere[info.Name] = true
+			label += "  in use"
+			display += "  " + styled("in use", "active", "")
+			selectedDisplay += "  " + styled("in use", "active", "")
 		}
 		if (preferred != "" && info.Name == preferred) || (preferred == "" && info.Name == current) {
 			selected = i
@@ -385,8 +394,11 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 			if name == "" || name == current {
 				return
 			}
-			r.resumeContext = name
-			r.requestQuit()
+			if inUseElsewhere[name] {
+				r.model.appendErrorLine(name + " is open in another polly")
+				return
+			}
+			r.requestSwitchLocked(name)
 		},
 		onRename: r.openSessionRenameInput,
 	})

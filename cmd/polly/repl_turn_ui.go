@@ -10,8 +10,11 @@ import (
 // gotuiTurnUI: the TurnUI implementation that pokes the model under lock.
 
 type gotuiTurnUI struct {
-	repl        *managedREPL
-	config      *Config
+	repl   *managedREPL
+	config *Config
+	// state is the session this turn started on, bound at start so an
+	// in-place session switch cannot redirect a running turn.
+	state       *conversationState
 	turnID      int64
 	reuseUser   bool
 	turn        managedTurnInput

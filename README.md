@@ -55,6 +55,12 @@ session where no turn ran is discarded on exit. The status row shows the
 active model and context use (`ctx 41.2k/156k`; a leading `~` marks a local
 estimate).
 
+`/resume` (or a click on the session name in the status row) switches to
+another saved session in place: the current session is released, the
+chosen one is opened, and the screen stays up. A running turn is canceled
+first. Each open session is leased by the polly holding it, so the picker
+marks sessions open in another polly as `in use` and will not open them.
+
 ### Keys and input
 
 | Key | Action |

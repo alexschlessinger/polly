@@ -11,6 +11,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/metaspartan/gotui/v5/widgets"
@@ -373,10 +374,31 @@ type managedREPL struct {
 	// history couldn't be opened (best-effort — never fatal).
 	histFile *os.File
 
-	// resumeContext is set by the /resume picker before the managed screen
-	// exits. The outer conversation loop then closes this runtime and restores
-	// the selected session through the normal initialization path.
-	resumeContext string
+	// runCtx is the Run loop's context, kept for work that event handlers
+	// start (session switches). Background outside Run.
+	runCtx context.Context
+
+	// Session switching (/resume). opener builds the runtime for the chosen
+	// session; nil in unit tests, where a selection only records itself.
+	// onStateChange tells the owner which session is live so shutdown closes
+	// that one. switchTarget names the session a switch is heading for, from
+	// the request until the switch lands or fails; while set, the composer
+	// refuses new turns. switchSaved restores config when the open fails.
+	// switchDone hands the opened runtime back to the event loop.
+	opener         *sessionOpener
+	onStateChange  func(*conversationState)
+	switchTarget   string
+	switchInFlight bool
+	switchSaved    *Config
+	switchCancel   context.CancelFunc
+	switchDone     chan switchResult
+}
+
+// switchResult is the outcome of opening a session for an in-place switch.
+type switchResult struct {
+	name  string
+	state *conversationState
+	err   error
 }
 
 // prepareManagedTurnLocked resolves every attachment, externalizes prepared
@@ -426,6 +448,8 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 		suspend:         make(chan struct{}, 1),
 		pending:         make(chan managedTurnInput, 1),
 		uiTasks:         make(chan func(), 8),
+		switchDone:      make(chan switchResult, 1),
+		runCtx:          context.Background(),
 		openImage:       openImageInViewer,
 		suspendProcess:  suspendCurrentProcessGroup,
 		showStartupLogo: true,
@@ -491,6 +515,9 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 		closeUI()
 	}()
 
+	r.runCtx = ctx
+	defer r.drainSwitch()
+
 	r.initHistory()
 	defer r.closeHistory()
 
@@ -525,6 +552,15 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			r.cancelTurn()
 			r.releaseApproval()
 			return context.Cause(ctx)
+		case <-r.sessionDone():
+			// Lease loss or store shutdown ends the run with its typed cause,
+			// as it did when the run context was parented on the session.
+			r.cancelTurn()
+			r.releaseApproval()
+			return context.Cause(r.state.session.Context())
+		case res := <-r.switchDone:
+			r.finishSwitch(res)
+			r.render()
 		case <-r.quit:
 			r.cancelTurn()
 			r.releaseApproval()
@@ -561,7 +597,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			turnDone = nil
 			cancelDetach = nil
 			r.endTurn(err)
-			turnDone = r.startNextQueued(ctx, runTurn)
+			turnDone = r.continueAfterTurn(ctx, runTurn)
 			r.render()
 		case ev := <-events:
 			if r.handleEvent(ev) {
@@ -664,10 +700,10 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, turn managedTurnInpu
 	}
 	r.model.mu.Unlock()
 
-	turnCtx, cancel := context.WithCancel(ctx)
+	turnCtx, cancel := r.turnContext(ctx)
 	r.turnCancel = cancel
 	done := make(chan error, 1)
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: turnID, reuseUser: reuseUser, turn: cloneManagedTurn(turn), persistence: persistence}
+	tui := &gotuiTurnUI{repl: r, config: r.config, state: r.state, turnID: turnID, reuseUser: reuseUser, turn: cloneManagedTurn(turn), persistence: persistence}
 	go func() {
 		done <- runTurn(turnCtx, turn.displayText, tui)
 	}()
@@ -876,7 +912,168 @@ func (r *managedREPL) abandonCanceledTurn() {
 
 func (r *managedREPL) detachCanceledTurn(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) chan error {
 	r.abandonCanceledTurn()
-	return r.startNextQueued(ctx, runTurn)
+	return r.continueAfterTurn(ctx, runTurn)
+}
+
+// continueAfterTurn runs whatever waited on the turn that just settled. A
+// pending session switch outranks queued input, which belonged to the session
+// being left and was discarded when the switch was requested.
+func (r *managedREPL) continueAfterTurn(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) chan error {
+	if r.switchTarget == "" {
+		return r.startNextQueued(ctx, runTurn)
+	}
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	if !r.switchInFlight {
+		r.beginSwitchLocked()
+	}
+	return nil
+}
+
+// turnContext parents a turn on the live session's lease context, so losing
+// the lease cancels the turn with its typed cause, and bridges the run
+// context in for signals. Cancel reports context.Canceled, the user-cancel
+// cause the turn UI labels as canceled.
+func (r *managedREPL) turnContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	parent := ctx
+	if r.state != nil && r.state.session != nil {
+		parent = r.state.session.Context()
+	}
+	turnCtx, cancel := context.WithCancelCause(parent)
+	stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
+	return turnCtx, func() {
+		stop()
+		cancel(context.Canceled)
+	}
+}
+
+// sessionDone is the live session's lease context, or nil (never ready) when
+// the REPL has no session, as in unit tests.
+func (r *managedREPL) sessionDone() <-chan struct{} {
+	if r.state == nil || r.state.session == nil {
+		return nil
+	}
+	return r.state.session.Context().Done()
+}
+
+// requestSwitchLocked starts moving the REPL to the named session. A running
+// turn is canceled first and the switch proceeds once it settles; queued
+// input is dropped because it belonged to the session being left. Caller
+// must hold m.mu.
+func (r *managedREPL) requestSwitchLocked(name string) {
+	m := r.model
+	if r.switchTarget != "" {
+		m.appendNoticeLine("already switching to " + r.switchTarget)
+		return
+	}
+	if r.opener == nil {
+		m.appendNoticeLine("session switching unavailable")
+		return
+	}
+	r.switchTarget = name
+	if m.busy {
+		m.appendNoticeLine("switching to " + name + " once the current turn is canceled")
+		if !m.canceling {
+			r.cancelBusyTurn()
+		}
+		return
+	}
+	r.beginSwitchLocked()
+}
+
+// beginSwitchLocked resolves the target's settings onto config on the UI
+// goroutine, then opens its runtime off it. Caller must hold m.mu and ensure
+// no turn is in flight.
+func (r *managedREPL) beginSwitchLocked() {
+	m := r.model
+	name := r.switchTarget
+	m.discardQueuedInputs()
+	saved := *r.config
+	r.switchSaved = &saved
+	resolved, err := r.opener.prepare(r.runCtx, name, m.appendNoticeLine)
+	if err != nil {
+		r.failSwitchLocked(err)
+		return
+	}
+	m.appendNoticeLine("opening " + resolved + "…")
+	ctx, cancel := context.WithCancel(r.runCtx)
+	r.switchCancel = cancel
+	r.switchInFlight = true
+	open := r.opener.open
+	go func() {
+		state, err := open(ctx, resolved)
+		r.switchDone <- switchResult{name: resolved, state: state, err: err}
+	}()
+}
+
+// finishSwitch lands an opened session: the new runtime becomes live before
+// the previous one is closed, so an attach failure leaves the REPL where it
+// was. Runs on the event loop without m.mu.
+func (r *managedREPL) finishSwitch(res switchResult) {
+	r.switchInFlight = false
+	if r.switchCancel != nil {
+		r.switchCancel()
+		r.switchCancel = nil
+	}
+	if res.err != nil {
+		r.model.mu.Lock()
+		r.failSwitchLocked(res.err)
+		r.model.mu.Unlock()
+		return
+	}
+	previous := r.state
+	if err := r.attachState(res.state); err != nil {
+		_ = res.state.Close()
+		r.model.mu.Lock()
+		r.failSwitchLocked(err)
+		r.model.mu.Unlock()
+		return
+	}
+	r.switchTarget = ""
+	r.switchSaved = nil
+	r.startupLogoVisible = false
+	if previous != nil {
+		if err := previous.Close(); err != nil {
+			r.model.mu.Lock()
+			r.model.appendNoticeLine("closing previous session: " + err.Error())
+			r.model.mu.Unlock()
+		}
+	}
+}
+
+// failSwitchLocked abandons a switch, restoring the config the target's
+// settings had overwritten. Caller must hold m.mu.
+func (r *managedREPL) failSwitchLocked(err error) {
+	name := r.switchTarget
+	r.switchTarget = ""
+	r.switchInFlight = false
+	if r.switchSaved != nil {
+		*r.config = *r.switchSaved
+		r.switchSaved = nil
+	}
+	reason := err.Error()
+	if errors.Is(err, sessions.ErrSessionInUse) {
+		reason = "it is open in another polly"
+	}
+	r.model.appendErrorLine("could not open " + name + ": " + reason)
+}
+
+// drainSwitch runs when the event loop exits with an open still in flight:
+// the runtime it produces has no owner, so wait for it and close it rather
+// than leak its lease and tool processes.
+func (r *managedREPL) drainSwitch() {
+	if !r.switchInFlight {
+		return
+	}
+	if r.switchCancel != nil {
+		r.switchCancel()
+		r.switchCancel = nil
+	}
+	res := <-r.switchDone
+	r.switchInFlight = false
+	if res.state != nil {
+		_ = res.state.Close()
+	}
 }
 
 // handleInterrupt processes Ctrl-C. While a turn is in flight the first press

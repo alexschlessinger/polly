@@ -95,7 +95,7 @@ func TestKeyModalMasksAndInstallsSessionCredential(t *testing.T) {
 	}
 }
 
-func TestResumePickerListsRecentSessionsAndRequestsRestart(t *testing.T) {
+func TestResumePickerListsRecentSessionsAndSwitchesInPlace(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	target := testAcquireSession(t, store, "older-work")
 	targetMetadata, err := target.GetMetadata(context.Background())
@@ -117,6 +117,7 @@ func TestResumePickerListsRecentSessionsAndRequestsRestart(t *testing.T) {
 	current := testAcquireSession(t, store, "current-work")
 	r := newManagedREPL(&Config{}, "current-work", 0, 0)
 	r.state = &conversationState{sessionStore: store, session: current}
+	r.opener = testSessionOpener(store)
 	status := r.model.statusRow(80)
 	if !strings.Contains(status, "[current-work](fg:accent)") {
 		t.Fatalf("clickable session was not accented: %q", status)
@@ -170,13 +171,38 @@ func TestResumePickerListsRecentSessionsAndRequestsRestart(t *testing.T) {
 		}
 	}
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if r.resumeContext != "older-work" {
-		t.Fatalf("resume context = %q, want older-work", r.resumeContext)
+	if r.switchTarget != "older-work" || !r.switchInFlight {
+		t.Fatalf("selection did not start a switch: target=%q inFlight=%v", r.switchTarget, r.switchInFlight)
 	}
 	select {
 	case <-r.quit:
+		t.Fatal("session selection tore the managed REPL down instead of switching in place")
 	default:
-		t.Fatal("session selection did not request a managed REPL restart")
+	}
+	r.finishSwitch(<-r.switchDone)
+	if r.switchTarget != "" || r.switchInFlight {
+		t.Fatalf("switch did not settle: target=%q inFlight=%v", r.switchTarget, r.switchInFlight)
+	}
+	if name, err := r.state.session.GetName(context.Background()); err != nil || name != "older-work" {
+		t.Fatalf("live session = %q, %v; want older-work", name, err)
+	}
+	if r.model.status.contextName != "older-work" {
+		t.Fatalf("status context = %q, want older-work", r.model.status.contextName)
+	}
+	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "question") || !strings.Contains(transcript, "answer") {
+		t.Fatalf("switched transcript was not hydrated: %q", transcript)
+	}
+	if current.Context().Err() == nil {
+		t.Fatal("previous session was left open after the switch")
+	}
+	summaries, err := store.ListSummaries(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, summary := range summaries {
+		if summary.Metadata.Name == "current-work" && summary.InUse {
+			t.Fatal("previous session still holds its lease after the switch")
+		}
 	}
 }
 
