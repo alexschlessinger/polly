@@ -4,33 +4,44 @@ import (
 	"time"
 )
 
-// Settings contains configuration that can be persisted with a context
+// Settings are the per-session settings: the values a session stores in its
+// metadata, restores when it is opened, and changes through /set. Every open
+// session carries its own copy, so a change made in one tab never reaches
+// another, and every turn reads the settings of the session it runs on.
 type Settings struct {
 	// Model configuration
-	Model            string  `json:"model,omitempty"`
-	Temperature      float64 `json:"temperature,omitempty"`
-	MaxTokens        int     `json:"maxTokens,omitempty"`
-	MaxHistoryTokens int     `json:"maxHistoryTokens,omitempty"` // provider-visible model projection budget
-	ThinkingEffort   string  `json:"thinkingEffort,omitempty"`
-	SystemPrompt     string  `json:"systemPrompt,omitempty"`
+	Model            string
+	Temperature      float64
+	MaxTokens        int
+	MaxHistoryTokens int // provider-visible model projection budget
+	ThinkingEffort   string
+	SystemPrompt     string
 
 	// Agent configuration
-	ToolTimeout time.Duration `json:"toolTimeout,omitempty"`
+	ToolTimeout   time.Duration
+	MaxIterations int
 
 	// Skill configuration
-	SkillDirs []string `json:"skillDirs,omitempty"`
+	SkillDirs []string
 }
 
-// Config holds all configuration from command-line flags
+// clone returns a copy that shares no slices with s.
+func (s Settings) clone() Settings {
+	s.SkillDirs = append([]string(nil), s.SkillDirs...)
+	return s
+}
+
+// Config is the process configuration: everything that holds for the whole
+// run whichever session is visible. Launch carries the settings resolved from
+// flags, environment, and defaults at startup: a new session starts from
+// them, and a flag given explicitly overrides the stored value of every
+// session this process opens.
 type Config struct {
-	Settings // Embed the shared settings
+	Launch Settings
 
 	// Runtime configuration
-	Timeout  time.Duration
-	Deadline time.Duration
-	// MaxIterations lives on Config, not the persisted Settings embed; the
-	// settings table persists it to metadata directly.
-	MaxIterations int
+	Timeout       time.Duration
+	Deadline      time.Duration
 	BaseURL       string
 	Confirm       bool
 	NoSandbox     bool

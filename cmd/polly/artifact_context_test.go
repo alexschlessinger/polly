@@ -267,7 +267,8 @@ func TestExactInlineRetryDoesNotChangeRepresentationWhenStoreRecovers(t *testing
 		session: session, artifactStore: artifactStore, toolRegistry: registry,
 		agent: llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
 	}
-	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128}}
+	state.settings = Settings{Model: "test/model", MaxTokens: 128}
+	config := &Config{}
 	var stdout, stderr bytes.Buffer
 	ui := newLineTurnUI(config, nil)
 	ui.writer, ui.errWriter = &stdout, &stderr
@@ -304,7 +305,8 @@ func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) 
 	}
 	// The budget must cover the agent's registered tool schemas while still
 	// forcing the fat old exchange out of the projection.
-	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 2_000}}
+	state.settings = Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 2_000}
+	config := &Config{}
 	var stdout, stderr bytes.Buffer
 	ui := newLineTurnUI(config, nil)
 	ui.writer = &stdout
@@ -374,7 +376,8 @@ func TestTurnRejectsPoisonPromptsBeforePersist(t *testing.T) {
 		session: session, artifactStore: artifactStore, toolRegistry: registry,
 		agent: llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
 	}
-	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 200}}
+	state.settings = Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 200}
+	config := &Config{}
 	var stdout, stderr bytes.Buffer
 	ui := newLineTurnUI(config, nil)
 	ui.writer, ui.errWriter = &stdout, &stderr
@@ -470,9 +473,10 @@ func TestTurnComposesContextMechanicsContractExceptForSchemas(t *testing.T) {
 			session: session, artifactStore: artifactStore, toolRegistry: registry,
 			agent:           llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
 			displayContract: markdownDisplayContract,
+			settings:        Settings{Model: "test/model", MaxTokens: 128},
 		}, model
 	}
-	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128}}
+	config := &Config{}
 	runTurn := func(t *testing.T, state *conversationState, schema *llm.Schema) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer

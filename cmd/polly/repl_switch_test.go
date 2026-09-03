@@ -15,13 +15,15 @@ import (
 // drained switch still produces a runtime to close.
 func testSessionOpener(store sessions.SessionStore) *sessionOpener {
 	return &sessionOpener{
-		prepare: func(_ context.Context, name string, _ func(string)) (string, error) { return name, nil },
-		open: func(_ context.Context, name string) (*conversationState, error) {
+		prepare: func(_ context.Context, name string, _ func(string)) (string, Settings, error) {
+			return name, Settings{}, nil
+		},
+		open: func(_ context.Context, name string, settings Settings) (*conversationState, error) {
 			session, err := store.Acquire(context.Background(), name, sessions.AcquireOptions{})
 			if err != nil {
 				return nil, err
 			}
-			return &conversationState{sessionStore: store, session: session, artifactStore: session.ArtifactStore()}, nil
+			return &conversationState{sessionStore: store, session: session, artifactStore: session.ArtifactStore(), settings: settings}, nil
 		},
 	}
 }
@@ -80,17 +82,16 @@ func TestResumePickerMarksAndRefusesSessionsInUseElsewhere(t *testing.T) {
 	}
 }
 
-func TestSwitchOpenFailureRestoresConfigAndKeepsSession(t *testing.T) {
+func TestSwitchOpenFailureKeepsSessionAndItsSettings(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r, current := newSwitchTestREPL(t, store, "current-work")
-	r.config.Model = "anthropic/claude-sonnet-4-6"
+	r.state.settings.Model = "anthropic/claude-sonnet-4-6"
 	r.opener = &sessionOpener{
-		prepare: func(_ context.Context, name string, notify func(string)) (string, error) {
-			r.config.Model = "openai/gpt-5.4"
+		prepare: func(_ context.Context, name string, notify func(string)) (string, Settings, error) {
 			notify("System prompt changed, resetting conversation...")
-			return name, nil
+			return name, Settings{Model: "openai/gpt-5.4"}, nil
 		},
-		open: func(context.Context, string) (*conversationState, error) {
+		open: func(context.Context, string, Settings) (*conversationState, error) {
 			return nil, sessions.ErrSessionInUse
 		},
 	}
@@ -103,11 +104,11 @@ func TestSwitchOpenFailureRestoresConfigAndKeepsSession(t *testing.T) {
 	}
 	r.finishSwitch(<-r.switchDone)
 
-	if r.switchTarget != "" || r.switchInFlight || r.switchSaved != nil {
-		t.Fatalf("failed switch left state behind: target=%q inFlight=%v saved=%v", r.switchTarget, r.switchInFlight, r.switchSaved)
+	if r.switchTarget != "" || r.switchInFlight {
+		t.Fatalf("failed switch left state behind: target=%q inFlight=%v", r.switchTarget, r.switchInFlight)
 	}
-	if r.config.Model != "anthropic/claude-sonnet-4-6" {
-		t.Fatalf("config model after failed switch = %q, want the previous session's", r.config.Model)
+	if r.state.settings.Model != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("settings after failed switch = %q, want the live session's", r.state.settings.Model)
 	}
 	if r.state.session != current {
 		t.Fatal("failed switch replaced the live session")

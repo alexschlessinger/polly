@@ -18,21 +18,23 @@ func TestResolveContextBudgetClampsFromCachedWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state := &conversationState{session: session}
-	config := &Config{Settings: Settings{Model: "anthropic/claude-haiku-4-5", MaxHistoryTokens: 256_000, MaxTokens: 4_096}}
+	state := &conversationState{
+		session:  session,
+		settings: Settings{Model: "anthropic/claude-haiku-4-5", MaxHistoryTokens: 256_000, MaxTokens: 4_096},
+	}
 
 	// The cached window clamps the budget without any network discovery.
-	if got := resolveContextBudget(ctx, config, state); got != 200_000-20_000-4_096 {
+	if got := resolveContextBudget(ctx, state); got != 200_000-20_000-4_096 {
 		t.Fatalf("clamped budget = %d", got)
 	}
 	// The process cache holds the resolved window for later turns.
-	if state.contextWindows[config.Model] != 200_000 {
+	if state.contextWindows[state.settings.Model] != 200_000 {
 		t.Fatalf("process cache = %#v", state.contextWindows)
 	}
 
 	// An unlimited budget opts out of clamping entirely.
-	config.MaxHistoryTokens = 0
-	if got := resolveContextBudget(ctx, config, state); got != 0 {
+	state.settings.MaxHistoryTokens = 0
+	if got := resolveContextBudget(ctx, state); got != 0 {
 		t.Fatalf("unlimited budget was clamped to %d", got)
 	}
 }

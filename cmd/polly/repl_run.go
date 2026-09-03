@@ -58,10 +58,10 @@ func (r *managedREPL) attachState(state *conversationState) error {
 	if err != nil {
 		return fmt.Errorf("read session history: %w", err)
 	}
-	config := r.config
+	settings := &state.settings
 	m := newReplModel()
-	m.status = newSessionStatus(config, name, toolCount(state.toolRegistry), skillCount(state.skillCatalog))
-	m.quiet = config.Quiet
+	m.status = newSessionStatus(settings, name, toolCount(state.toolRegistry), skillCount(state.skillCatalog))
+	m.quiet = r.config.Quiet
 	if old := r.model; old != nil {
 		old.mu.Lock()
 		// The generation keeps climbing so a detached turn from the previous
@@ -78,10 +78,10 @@ func (r *managedREPL) attachState(state *conversationState) error {
 	// Seed the bar without network traffic. This is explicitly approximate
 	// until a provider reports the first real request usage.
 	if total, totalErr := state.session.GetTotalTokens(ctx); totalErr == nil {
-		limit := config.MaxHistoryTokens
+		limit := settings.MaxHistoryTokens
 		if md, mdErr := state.session.GetMetadata(ctx); mdErr == nil && md != nil {
-			if window := md.ContextWindows[config.Model]; window > 0 {
-				limit = llm.ClampContextBudget(limit, window, config.MaxTokens)
+			if window := md.ContextWindows[settings.Model]; window > 0 {
+				limit = llm.ClampContextBudget(limit, window, settings.MaxTokens)
 			}
 		}
 		m.status.recordContextUsage(total, limit, total > 0)

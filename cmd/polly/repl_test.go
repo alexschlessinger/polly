@@ -951,8 +951,8 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
 	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello"})
 
-	r := newManagedREPL(&Config{Settings: Settings{MaxHistoryTokens: 5678}}, "ctx-test", 0, 0)
-	r.state = &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil)}
+	r := newManagedREPL(&Config{}, "ctx-test", 0, 0)
+	r.state = &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil), settings: Settings{MaxHistoryTokens: 5678}}
 
 	// /context reports the session name and message stats.
 	if handled, quit := r.runCommand("/context"); !handled || quit {

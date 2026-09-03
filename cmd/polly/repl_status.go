@@ -33,16 +33,16 @@ type sessionStatus struct {
 	sessionField statusSessionPlacement
 }
 
-func newSessionStatus(config *Config, contextName string, toolCount, skillCount int) sessionStatus {
+func newSessionStatus(settings *Settings, contextName string, toolCount, skillCount int) sessionStatus {
 	s := sessionStatus{
-		modelName:    config.Model,
+		modelName:    settings.Model,
 		contextName:  contextName,
 		toolCount:    toolCount,
 		skillCount:   skillCount,
-		contextLimit: config.MaxHistoryTokens,
+		contextLimit: settings.MaxHistoryTokens,
 	}
-	if config.Model != "" {
-		s.recentModels = []string{config.Model}
+	if settings.Model != "" {
+		s.recentModels = []string{settings.Model}
 	}
 	return s
 }

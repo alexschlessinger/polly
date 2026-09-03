@@ -194,7 +194,7 @@ func (r *managedREPL) openModal(modal *replModal) {
 
 func (r *managedREPL) openModelPicker() {
 	items := make([]replModalItem, 0, len(validModelProviders))
-	currentProvider, _, _ := strings.Cut(r.config.Model, "/")
+	currentProvider, _, _ := strings.Cut(r.currentModel(), "/")
 	selected := 0
 	for i, provider := range validModelProviders {
 		detail := r.providerCredentialDetail(provider)
@@ -232,8 +232,9 @@ func (r *managedREPL) openProviderModels(provider string) {
 		seen[model] = true
 		models = append(models, model)
 	}
-	if strings.HasPrefix(r.config.Model, provider+"/") {
-		add(r.config.Model)
+	current := r.currentModel()
+	if strings.HasPrefix(current, provider+"/") {
+		add(current)
 	}
 	for _, recent := range r.model.status.recentModels {
 		if strings.HasPrefix(recent, provider+"/") {
@@ -246,7 +247,7 @@ func (r *managedREPL) openProviderModels(provider string) {
 	items := make([]replModalItem, 0, len(models)+1)
 	for _, model := range models {
 		label := strings.TrimPrefix(model, provider+"/")
-		if model == r.config.Model {
+		if model == current {
 			label += "  current"
 		}
 		items = append(items, replModalItem{label: label, value: model})
@@ -294,7 +295,7 @@ func (r *managedREPL) applySelectedModel(model string) {
 
 func (r *managedREPL) openKeyManager() {
 	items := make([]replModalItem, 0, len(validModelProviders))
-	currentProvider, _, _ := strings.Cut(r.config.Model, "/")
+	currentProvider, _, _ := strings.Cut(r.currentModel(), "/")
 	selected := 0
 	for i, provider := range validModelProviders {
 		if provider == currentProvider {

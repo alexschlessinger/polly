@@ -383,15 +383,31 @@ type managedREPL struct {
 	// onStateChange tells the owner which session is live so shutdown closes
 	// that one. switchTarget names the session a switch is heading for, from
 	// the request until the switch lands or fails; while set, the composer
-	// refuses new turns. switchSaved restores config when the open fails.
-	// switchDone hands the opened runtime back to the event loop.
+	// refuses new turns. switchDone hands the opened runtime back to the
+	// event loop.
 	opener         *sessionOpener
 	onStateChange  func(*conversationState)
 	switchTarget   string
 	switchInFlight bool
-	switchSaved    *Config
 	switchCancel   context.CancelFunc
 	switchDone     chan switchResult
+}
+
+// sessionSettings returns the live session's settings, or nil when no
+// session is attached (unit tests of the screen alone).
+func (r *managedREPL) sessionSettings() *Settings {
+	if r.state == nil {
+		return nil
+	}
+	return &r.state.settings
+}
+
+// currentModel is the live session's model, or "" without a session.
+func (r *managedREPL) currentModel() string {
+	if settings := r.sessionSettings(); settings != nil {
+		return settings.Model
+	}
+	return ""
 }
 
 // switchResult is the outcome of opening a session for an in-place switch.
@@ -439,7 +455,7 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 	if contextName == "" {
 		contextName = "-"
 	}
-	m.status = newSessionStatus(config, contextName, toolCount, skillCount)
+	m.status = newSessionStatus(&config.Launch, contextName, toolCount, skillCount)
 	m.quiet = config.Quiet
 	return &managedREPL{
 		config:          config,
@@ -981,16 +997,14 @@ func (r *managedREPL) requestSwitchLocked(name string) {
 	r.beginSwitchLocked()
 }
 
-// beginSwitchLocked resolves the target's settings onto config on the UI
-// goroutine, then opens its runtime off it. Caller must hold m.mu and ensure
-// no turn is in flight.
+// beginSwitchLocked resolves the target's settings on the UI goroutine, then
+// opens its runtime off it. Caller must hold m.mu and ensure no turn is in
+// flight.
 func (r *managedREPL) beginSwitchLocked() {
 	m := r.model
 	name := r.switchTarget
 	m.discardQueuedInputs()
-	saved := *r.config
-	r.switchSaved = &saved
-	resolved, err := r.opener.prepare(r.runCtx, name, m.appendNoticeLine)
+	resolved, settings, err := r.opener.prepare(r.runCtx, name, m.appendNoticeLine)
 	if err != nil {
 		r.failSwitchLocked(err)
 		return
@@ -1001,7 +1015,7 @@ func (r *managedREPL) beginSwitchLocked() {
 	r.switchInFlight = true
 	open := r.opener.open
 	go func() {
-		state, err := open(ctx, resolved)
+		state, err := open(ctx, resolved, settings)
 		r.switchDone <- switchResult{name: resolved, state: state, err: err}
 	}()
 }
@@ -1030,7 +1044,6 @@ func (r *managedREPL) finishSwitch(res switchResult) {
 		return
 	}
 	r.switchTarget = ""
-	r.switchSaved = nil
 	r.startupLogoVisible = false
 	if previous != nil {
 		if err := previous.Close(); err != nil {
@@ -1041,16 +1054,11 @@ func (r *managedREPL) finishSwitch(res switchResult) {
 	}
 }
 
-// failSwitchLocked abandons a switch, restoring the config the target's
-// settings had overwritten. Caller must hold m.mu.
+// failSwitchLocked abandons a switch. Caller must hold m.mu.
 func (r *managedREPL) failSwitchLocked(err error) {
 	name := r.switchTarget
 	r.switchTarget = ""
 	r.switchInFlight = false
-	if r.switchSaved != nil {
-		*r.config = *r.switchSaved
-		r.switchSaved = nil
-	}
 	reason := err.Error()
 	if errors.Is(err, sessions.ErrSessionInUse) {
 		reason = "it is open in another polly"

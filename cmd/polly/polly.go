@@ -78,8 +78,11 @@ type conversationInput struct {
 }
 
 type conversationState struct {
-	sessionStore    sessions.SessionStore
-	session         sessions.Session
+	sessionStore sessions.SessionStore
+	session      sessions.Session
+	// settings are this session's own: resolved from its stored metadata
+	// when it was opened, changed by /set, and read by every turn on it.
+	settings        Settings
 	agent           *llm.Agent
 	artifactStore   artifacts.Store
 	toolRegistry    *tools.ToolRegistry
@@ -98,13 +101,14 @@ type conversationState struct {
 	contextWindows map[string]int
 }
 
-// sessionOpener lets the managed REPL switch sessions in place. prepare runs
-// on the UI goroutine because it rewrites config from the target session's
-// stored settings and may reset that session's history when --system
-// differs; open builds the runtime and may run off the UI goroutine.
+// sessionOpener lets the managed REPL open sessions while it runs. prepare
+// resolves the target session's stored settings against the launch settings
+// and may reset that session's history when --system differs, reporting that
+// through notify; it runs on the UI goroutine. open builds the runtime from
+// those settings and may run off the UI goroutine.
 type sessionOpener struct {
-	prepare func(ctx context.Context, name string, notify func(string)) (string, error)
-	open    func(ctx context.Context, name string) (*conversationState, error)
+	prepare func(ctx context.Context, name string, notify func(string)) (string, Settings, error)
+	open    func(ctx context.Context, name string, settings Settings) (*conversationState, error)
 }
 
 func (s *conversationState) Close() error {
@@ -314,19 +318,19 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 // written once, so a failure part-way through persists nothing. On error
 // every acquired resource is released and nil is returned.
 func newConversationState(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (*conversationState, error) {
-	contextID, _, err := initializeConversation(ctx, config, sessionStore, contextID, cmd)
+	contextID, settings, err := initializeConversation(ctx, config, sessionStore, contextID, cmd)
 	if err != nil {
 		return nil, err
 	}
-	return openConversationState(ctx, config, llmClient, sessionStore, contextID, autoContext, cmd, sandboxWarnings)
+	return openConversationState(ctx, config, settings, llmClient, sessionStore, contextID, autoContext, cmd, sandboxWarnings)
 }
 
 // openConversationState is the second half of newConversationState: it
 // acquires contextID and builds its runtime from the settings that
-// initializeConversation already resolved onto config. It only reads config,
-// so the managed REPL may run it off the UI goroutine while the current
-// session keeps serving input.
-func openConversationState(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (state *conversationState, retErr error) {
+// initializeConversation resolved for it. It only reads config, so the
+// managed REPL may run it off the UI goroutine while the visible session
+// keeps serving input.
+func openConversationState(ctx context.Context, config *Config, settings Settings, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (state *conversationState, retErr error) {
 	var err error
 	if llmClient == nil {
 		llmClient = llm.NewMultiPass(loadAPIKeys())
@@ -355,7 +359,7 @@ func openConversationState(ctx context.Context, config *Config, llmClient *llm.M
 	// Discover skills before building the runtime tool registry, passing the
 	// persisted sources so --skill is restored on resume; new sources are
 	// staged for the single write below.
-	skillResult, err := loadSkillCatalog(config, metadata.SkillSources)
+	skillResult, err := loadSkillCatalog(config, settings.SkillDirs, metadata.SkillSources)
 	if err != nil {
 		return nil, err
 	}
@@ -392,19 +396,20 @@ func openConversationState(ctx context.Context, config *Config, llmClient *llm.M
 	if err := autoActivateSkills(skillResult.autoActivate, skillRuntime); err != nil {
 		return nil, err
 	}
-	if err := updateContextInfo(ctx, session, metadata, config, cmd); err != nil {
+	if err := updateContextInfo(ctx, session, metadata, &settings, cmd); err != nil {
 		return nil, err
 	}
 
 	artifactStore := session.ArtifactStore()
 	agent := llm.NewAgent(llmClient, toolRegistry, llm.AgentConfig{
-		MaxIterations: config.MaxIterations,
-		ToolTimeout:   config.ToolTimeout,
+		MaxIterations: settings.MaxIterations,
+		ToolTimeout:   settings.ToolTimeout,
 		ArtifactStore: artifactStore,
 	})
 	return &conversationState{
 		sessionStore:    sessionStore,
 		session:         session,
+		settings:        settings,
 		agent:           agent,
 		artifactStore:   artifactStore,
 		toolRegistry:    toolRegistry,
@@ -617,12 +622,11 @@ func (r *commandRunner) runConversation() (retErr error) {
 		// the run when it is lost (see managedREPL.Run), so the run context
 		// carries signals only.
 		opener := &sessionOpener{
-			prepare: func(ctx context.Context, name string, notify func(string)) (string, error) {
-				name, _, err := prepareConversation(ctx, config, r.sessionStore, name, r.cmd, notify)
-				return name, err
+			prepare: func(ctx context.Context, name string, notify func(string)) (string, Settings, error) {
+				return prepareConversation(ctx, config, r.sessionStore, name, r.cmd, notify)
 			},
-			open: func(ctx context.Context, name string) (*conversationState, error) {
-				opened, err := openConversationState(ctx, config, r.llmClient, r.sessionStore, name, false, r.cmd, newBroadWritablePathWarner())
+			open: func(ctx context.Context, name string, settings Settings) (*conversationState, error) {
+				opened, err := openConversationState(ctx, config, settings, r.llmClient, r.sessionStore, name, false, r.cmd, newBroadWritablePathWarner())
 				if err != nil {
 					return nil, err
 				}
@@ -805,6 +809,7 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 // user message. The one-shot and fallback paths build theirs from --file;
 // the managed REPL builds a multimodal message from composer attachments.
 func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (int, error) {
+	settings := &state.settings
 	// An unchanged restored draft must reuse the representation already persisted. If a
 	// prior storage failure left prepared bytes inline and the store later
 	// recovers, rewriting only the restored candidate to an artifact would make it
@@ -840,9 +845,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	if err := llm.ValidateImageProjection(requestMessages); err != nil {
 		return 1, err
 	}
-	if !reusingPersistedUser && config.MaxHistoryTokens > 0 {
-		if tokens := llm.EstimateMessageTokens(userMsg); tokens > config.MaxHistoryTokens {
-			return 1, fmt.Errorf("prompt needs about %d tokens, exceeding the %d-token context budget; it was not added to the conversation", tokens, config.MaxHistoryTokens)
+	if !reusingPersistedUser && settings.MaxHistoryTokens > 0 {
+		if tokens := llm.EstimateMessageTokens(userMsg); tokens > settings.MaxHistoryTokens {
+			return 1, fmt.Errorf("prompt needs about %d tokens, exceeding the %d-token context budget; it was not added to the conversation", tokens, settings.MaxHistoryTokens)
 		}
 	}
 
@@ -862,8 +867,8 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	turnUI.Start()
 	defer turnUI.Stop()
 
-	req := createCompletionRequest(config, requestMessages, state.toolRegistry, state.skillCatalog, schema)
-	req.MaxContextTokens = resolveContextBudget(ctx, config, state)
+	req := createCompletionRequest(config, settings, requestMessages, state.toolRegistry, state.skillCatalog, schema)
+	req.MaxContextTokens = resolveContextBudget(ctx, state)
 	req.CacheSessionID, err = cacheSessionIDForSession(ctx, state.session)
 	if err != nil {
 		return 1, err
@@ -1000,7 +1005,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			}
 
 			if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
-				turnUI.AppendWarning(fmt.Sprintf("response truncated (hit %d token limit, use --maxtokens to increase)", config.MaxTokens))
+				turnUI.AppendWarning(fmt.Sprintf("response truncated (hit %d token limit, use --maxtokens to increase)", settings.MaxTokens))
 			}
 
 			if config.SchemaPath != "" {
@@ -1017,7 +1022,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 
 	stopReason, code := classifyOutcome(resp, runErr)
 	if config.Meta {
-		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, config.Model, stats, in, out, time.Since(turnStart).Milliseconds()))
+		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, settings.Model, stats, in, out, time.Since(turnStart).Milliseconds()))
 	}
 	return code, runErr
 }
@@ -1455,19 +1460,20 @@ func modelVisibleHistory(history []messages.ChatMessage) []messages.ChatMessage 
 	return visible
 }
 
-// createCompletionRequest builds an LLM completion request from config.
-func createCompletionRequest(config *Config, history []messages.ChatMessage, registry *tools.ToolRegistry, skillCatalog *skills.Catalog, schema *llm.Schema) *llm.CompletionRequest {
+// createCompletionRequest builds an LLM completion request from the process
+// config and the session's settings.
+func createCompletionRequest(config *Config, settings *Settings, history []messages.ChatMessage, registry *tools.ToolRegistry, skillCatalog *skills.Catalog, schema *llm.Schema) *llm.CompletionRequest {
 	// Parse thinking effort - already validated at config parsing time
-	thinkingEffort, _ := llm.ParseThinkingEffort(config.ThinkingEffort)
+	thinkingEffort, _ := llm.ParseThinkingEffort(settings.ThinkingEffort)
 
 	return &llm.CompletionRequest{
 		BaseURL:          config.BaseURL,
 		Timeout:          config.Timeout,
 		Deadline:         config.Deadline,
-		Temperature:      llm.Float32Ptr(float32(config.Temperature)),
-		Model:            config.Model,
-		MaxTokens:        config.MaxTokens,
-		MaxContextTokens: config.MaxHistoryTokens,
+		Temperature:      llm.Float32Ptr(float32(settings.Temperature)),
+		Model:            settings.Model,
+		MaxTokens:        settings.MaxTokens,
+		MaxContextTokens: settings.MaxHistoryTokens,
 		Messages:         history,
 		Skills:           skillCatalog,
 		Tools:            registry.All(),
@@ -1476,18 +1482,22 @@ func createCompletionRequest(config *Config, history []messages.ChatMessage, reg
 	}
 }
 
-// initializeConversation handles all the setup needed before starting a conversation
-func initializeConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, *sessions.Metadata, error) {
+// initializeConversation resolves contextID's settings before a conversation
+// starts, reporting a history reset on stderr.
+func initializeConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, Settings, error) {
 	return prepareConversation(ctx, config, sessionStore, contextID, cmd, func(line string) {
 		fmt.Fprintln(os.Stderr, line)
 	})
 }
 
-// prepareConversation resolves contextID's stored settings onto config (flags
-// win) and resets its history when an explicit --system differs, reporting
-// that through notify so the managed REPL can show it without writing to a
-// terminal it owns.
-func prepareConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command, notify func(string)) (string, *sessions.Metadata, error) {
+// prepareConversation resolves the settings contextID will run with: the
+// launch settings, with every stored value that no flag overrode restored
+// from the session's metadata. When an explicit --system differs from the
+// stored prompt the session's history is reset, reported through notify so
+// the managed REPL can show it without writing to a terminal it owns. The
+// returned name is the session's stored name when it exists.
+func prepareConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command, notify func(string)) (string, Settings, error) {
+	settings := config.Launch.clone()
 	var needReset bool
 	var originalContextInfo *sessions.Metadata
 
@@ -1495,7 +1505,7 @@ func prepareConversation(ctx context.Context, config *Config, sessionStore sessi
 	if contextID != "" {
 		metadata, err := sessionStore.GetAllMetadata(ctx)
 		if err != nil {
-			return "", nil, fmt.Errorf("list context metadata: %w", err)
+			return "", Settings{}, fmt.Errorf("list context metadata: %w", err)
 		}
 		if contextInfo := metadata[contextID]; contextInfo != nil {
 			originalContextInfo = contextInfo
@@ -1506,7 +1516,7 @@ func prepareConversation(ctx context.Context, config *Config, sessionStore sessi
 				// Check if there's an existing conversation to reset
 				exists, err := sessionStore.Exists(ctx, contextInfo.Name)
 				if err != nil {
-					return "", nil, fmt.Errorf("check context %q: %w", contextInfo.Name, err)
+					return "", Settings{}, fmt.Errorf("check context %q: %w", contextInfo.Name, err)
 				}
 				if exists {
 					needReset = true
@@ -1521,7 +1531,7 @@ func prepareConversation(ctx context.Context, config *Config, sessionStore sessi
 				if !spec.flagged() || cmd.IsSet(spec.key) {
 					continue
 				}
-				spec.fromMeta(config, contextInfo)
+				spec.fromMeta(&settings, contextInfo)
 			}
 		}
 	}
@@ -1538,36 +1548,36 @@ func prepareConversation(ctx context.Context, config *Config, sessionStore sessi
 		// Store an explicitly changed prompt before Clear: Clear rebuilds the
 		// system message from session metadata, including the meaningful empty
 		// prompt case.
-		if err := resetContextWithSystemPrompt(ctx, sessionStore, contextName, config.Settings.SystemPrompt); err != nil {
-			return "", nil, fmt.Errorf("failed to reset context: %w", err)
+		if err := resetContextWithSystemPrompt(ctx, sessionStore, contextName, settings.SystemPrompt); err != nil {
+			return "", Settings{}, fmt.Errorf("failed to reset context: %w", err)
 		}
 		// Context name remains the same after reset
 		contextID = contextName
 	}
 
-	return contextID, originalContextInfo, nil
+	return contextID, settings, nil
 }
 
 // applyFlagSettings copies only explicitly-set CLI flags onto md, so a plain
 // --reset keeps stored settings instead of replacing them with defaults.
-func applyFlagSettings(md *sessions.Metadata, config *Config, cmd *cli.Command) {
+func applyFlagSettings(md *sessions.Metadata, settings *Settings, cmd *cli.Command) {
 	for _, spec := range settingSpecs {
 		if spec.flagSet(cmd) {
-			spec.toMeta(config, md)
+			spec.toMeta(settings, md)
 		}
 	}
 }
 
 // updateContextInfo writes the resolved settings onto md, the metadata staged
-// by newConversationState, and persists it: every flagged row, since config
-// holds the stored value unless a flag overrode it (see initializeConversation),
-// so the copy is a no-op for an untouched row and an override for a set flag.
-// Name and LastUsed are storage-owned: SetMetadata overwrites both, so they
-// are not written here.
-func updateContextInfo(ctx context.Context, session sessions.Session, md *sessions.Metadata, config *Config, cmd *cli.Command) error {
+// by openConversationState, and persists it: every flagged row, since the
+// resolved settings hold the stored value unless a flag overrode it (see
+// prepareConversation), so the copy is a no-op for an untouched row and an
+// override for a set flag. Name and LastUsed are storage-owned: SetMetadata
+// overwrites both, so they are not written here.
+func updateContextInfo(ctx context.Context, session sessions.Session, md *sessions.Metadata, settings *Settings, cmd *cli.Command) error {
 	for _, spec := range settingSpecs {
 		if spec.flagged() {
-			spec.toMeta(config, md)
+			spec.toMeta(settings, md)
 		}
 	}
 	return session.SetMetadata(ctx, md)

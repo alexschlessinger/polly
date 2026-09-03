@@ -31,8 +31,10 @@ func TestModalInputPlaceholderRendersAsStyledText(t *testing.T) {
 }
 
 func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
-	cfg := &Config{Settings: Settings{Model: "anthropic/claude-sonnet-4-6", MaxHistoryTokens: 256_000}}
+	cfg := &Config{Launch: Settings{Model: "anthropic/claude-sonnet-4-6", MaxHistoryTokens: 256_000}}
 	r := newManagedREPL(cfg, "ctx", 0, 0)
+	r.state = &conversationState{settings: cfg.Launch}
+	settings := &r.state.settings
 	r.startupLogoVisible = true
 	r.model.status.recordContextUsage(50_000, 156_000, false)
 
@@ -45,10 +47,13 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 	r.openProviderModels("openai")
 	r.applySelectedModel("openai/gpt-5.4")
 
-	if cfg.Model != "openai/gpt-5.4" || r.model.status.modelName != cfg.Model {
-		t.Fatalf("selected model config=%q status=%q", cfg.Model, r.model.status.modelName)
+	if settings.Model != "openai/gpt-5.4" || r.model.status.modelName != settings.Model {
+		t.Fatalf("selected model settings=%q status=%q", settings.Model, r.model.status.modelName)
 	}
-	if r.model.status.contextUsed != 0 || r.model.status.contextLimit != cfg.MaxHistoryTokens {
+	if cfg.Launch.Model != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("picker rewrote the launch settings: %q", cfg.Launch.Model)
+	}
+	if r.model.status.contextUsed != 0 || r.model.status.contextLimit != settings.MaxHistoryTokens {
 		t.Fatalf("model switch retained stale context usage: %d/%d", r.model.status.contextUsed, r.model.status.contextLimit)
 	}
 	if got := r.model.status.recentModels; len(got) == 0 || got[0] != "openai/gpt-5.4" {
@@ -59,14 +64,16 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 // Every model-change entry point shares one apply path, so /set model must
 // feed the picker's recent list exactly as a picker selection does.
 func TestSetModelRemembersRecentModel(t *testing.T) {
-	cfg := &Config{Settings: Settings{Model: "anthropic/claude-sonnet-4-6", MaxHistoryTokens: 256_000}}
+	cfg := &Config{Launch: Settings{Model: "anthropic/claude-sonnet-4-6", MaxHistoryTokens: 256_000}}
 	r := newManagedREPL(cfg, "ctx", 0, 0)
+	r.state = &conversationState{settings: cfg.Launch}
+	settings := &r.state.settings
 
 	if handled, quit := r.runCommand("/set model openai/gpt-5.4"); !handled || quit {
 		t.Fatalf("/set model handled=%v quit=%v", handled, quit)
 	}
-	if cfg.Model != "openai/gpt-5.4" || r.model.status.modelName != cfg.Model {
-		t.Fatalf("set model config=%q status=%q", cfg.Model, r.model.status.modelName)
+	if settings.Model != "openai/gpt-5.4" || r.model.status.modelName != settings.Model {
+		t.Fatalf("set model settings=%q status=%q", settings.Model, r.model.status.modelName)
 	}
 	if got := r.model.status.recentModels; len(got) != 2 || got[0] != "openai/gpt-5.4" || got[1] != "anthropic/claude-sonnet-4-6" {
 		t.Fatalf("recent models after /set model = %v, want the new model ahead of the launch model", got)
