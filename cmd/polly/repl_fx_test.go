@@ -40,7 +40,7 @@ func TestStreamCursorOnlyWhileStreaming(t *testing.T) {
 	}
 
 	// The caret is display-only chrome: the transcript itself stays clean.
-	if strings.Contains(strings.Join(m.transcript, "\n"), streamCursorGlyph) {
+	if strings.Contains(strings.Join(transcriptTexts(m), "\n"), streamCursorGlyph) {
 		t.Fatalf("caret must never enter the transcript, got %#v", m.transcript)
 	}
 
@@ -347,7 +347,7 @@ func TestThinkingDisclosureStartsCollapsedWithoutLeakingReasoning(t *testing.T) 
 	if record.expanded {
 		t.Fatal("a turn's reasoning disclosure should start collapsed")
 	}
-	block := plainStyledText(m.transcript[record.transcriptIndex])
+	block := plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !strings.Contains(block, "▸ thinking") {
 		t.Fatalf("collapsed disclosure = %q, want a thinking label", block)
 	}
@@ -376,7 +376,7 @@ func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 		t.Fatal("active reasoning disclosure did not expand")
 	}
 
-	block := plainStyledText(m.transcript[record.transcriptIndex])
+	block := plainStyledText(m.transcript[record.transcriptIndex].text)
 	lines := strings.Split(block, "\n")
 	if got := len(lines) - 1; got != reasoningPreviewLines {
 		t.Fatalf("expanded preview rows = %d, want %d: %q", got, reasoningPreviewLines, block)
@@ -384,14 +384,14 @@ func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 	if !strings.Contains(block, "number 15") || strings.Contains(block, "number 0 ") {
 		t.Fatalf("expanded disclosure should show only the newest tail: %q", block)
 	}
-	if !strings.Contains(block, "▾ thinking") || !strings.Contains(m.transcript[record.transcriptIndex], "mod:italic") {
-		t.Fatalf("expanded disclosure lost its open label or preview styling: %q", m.transcript[record.transcriptIndex])
+	if !strings.Contains(block, "▾ thinking") || !strings.Contains(m.transcript[record.transcriptIndex].text, "mod:italic") {
+		t.Fatalf("expanded disclosure lost its open label or preview styling: %q", m.transcript[record.transcriptIndex].text)
 	}
 
 	// New chunks repaint the open tail immediately without growing beyond the cap.
 	tui.ShowThinking(" newest-live-marker")
 	m.refreshReasoningRecord(record, testThinkingWidth)
-	block = plainStyledText(m.transcript[record.transcriptIndex])
+	block = plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !strings.Contains(block, "newest-live-marker") {
 		t.Fatalf("open disclosure did not follow the live stream: %q", block)
 	}
@@ -416,7 +416,7 @@ func TestThinkingDisclosurePreviewUsesFullTranscriptWidth(t *testing.T) {
 	if record.previewWidth != want {
 		t.Fatalf("preview width = %d, want full available width %d", record.previewWidth, want)
 	}
-	if got := strings.Count(m.transcript[record.transcriptIndex], "\n"); got > reasoningPreviewLines {
+	if got := strings.Count(m.transcript[record.transcriptIndex].text, "\n"); got > reasoningPreviewLines {
 		t.Fatalf("expanded preview rows = %d, want at most %d", got, reasoningPreviewLines)
 	}
 }
@@ -446,7 +446,7 @@ func TestSettledThinkingPreviewKeepsNarrowTerminalWidth(t *testing.T) {
 	if record.previewWidth != wantWidth {
 		t.Fatalf("settled preview width = %d, want retained terminal width %d", record.previewWidth, wantWidth)
 	}
-	rows := transcriptBlockRows(m.transcript[record.transcriptIndex], false, width)
+	rows := transcriptBlockRows(m.transcript[record.transcriptIndex].text, false, width)
 	if got := len(rows) - 1; got > reasoningPreviewLines {
 		t.Fatalf("settled preview uses %d physical detail rows, want at most %d", got, reasoningPreviewLines)
 	}
@@ -477,7 +477,7 @@ func TestThinkingDockAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
 	if trailer == nil || trailer.dock.overlay != turnDockOverlayThought {
 		t.Fatal("idle Ctrl-O did not open the completed Thought drawer")
 	}
-	opened := plainStyledText(m.transcript[trailer.transcriptIndex])
+	opened := plainStyledText(m.transcript[trailer.transcriptIndex].text)
 	if !strings.Contains(opened, "bounded reasoning") {
 		t.Fatalf("reopened completed Thought drawer = %q", opened)
 	}
@@ -515,7 +515,7 @@ func TestCtrlOPrearmsActiveTurnBeforeFirstReasoningChunk(t *testing.T) {
 	if m.turnReasoningOpen {
 		t.Fatal("first reasoning record did not consume the pending Ctrl-O pre-arm")
 	}
-	if shown := plainStyledText(m.transcript[active.transcriptIndex]); !strings.Contains(shown, "new live reasoning") {
+	if shown := plainStyledText(m.transcript[active.transcriptIndex].text); !strings.Contains(shown, "new live reasoning") {
 		t.Fatalf("pre-armed inline block did not show the live tail: %q", shown)
 	}
 
@@ -601,13 +601,13 @@ func TestFailedReasoningDisclosureIsLocalAndMarkedUnsaved(t *testing.T) {
 	if record == nil || !record.complete || !record.unsaved || record.expanded {
 		t.Fatalf("failed reasoning disclosure = %#v", record)
 	}
-	if collapsed := plainStyledText(m.transcript[record.transcriptIndex]); !strings.Contains(collapsed, "not saved") || strings.Contains(collapsed, "reasoning from") {
+	if collapsed := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(collapsed, "not saved") || strings.Contains(collapsed, "reasoning from") {
 		t.Fatalf("failed collapsed disclosure = %q", collapsed)
 	}
 	if !m.toggleReasoning(record.id, testThinkingWidth) {
 		t.Fatal("failed reasoning disclosure did not expand locally")
 	}
-	if expanded := plainStyledText(m.transcript[record.transcriptIndex]); !strings.Contains(expanded, "reasoning from a failed turn") {
+	if expanded := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(expanded, "reasoning from a failed turn") {
 		t.Fatalf("failed local reasoning tail = %q", expanded)
 	}
 }
@@ -668,7 +668,7 @@ func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 	if second.transcriptIndex <= first.transcriptIndex {
 		t.Fatalf("second segment did not land after the first: first=%d second=%d", first.transcriptIndex, second.transcriptIndex)
 	}
-	plain := plainStyledText(strings.Join(m.transcript, "\n"))
+	plain := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if strings.Index(plain, "interim prose") < strings.Index(plain, "thought") {
 		t.Fatalf("interim prose should follow the first reasoning block: %q", plain)
 	}
@@ -723,8 +723,8 @@ func TestReasoningDisclosureStaysBoundedOnTinyTerminal(t *testing.T) {
 	}
 	record.expanded = true
 	m.refreshReasoningRecord(record, rw.StringWidth(reasoningBlockIndent)+1)
-	if got := strings.Count(m.transcript[record.transcriptIndex], "\n"); got != 0 {
-		t.Fatalf("tiny terminal rendered wrapped preview rows: %q", m.transcript[record.transcriptIndex])
+	if got := strings.Count(m.transcript[record.transcriptIndex].text, "\n"); got != 0 {
+		t.Fatalf("tiny terminal rendered wrapped preview rows: %q", m.transcript[record.transcriptIndex].text)
 	}
 }
 
@@ -738,7 +738,7 @@ func TestExpandedShortReasoningReservesTwoDetailRows(t *testing.T) {
 	if record == nil || !m.toggleReasoning(record.id, testThinkingWidth) {
 		t.Fatal("short reasoning disclosure did not expand")
 	}
-	shown := m.transcript[record.transcriptIndex]
+	shown := m.transcript[record.transcriptIndex].text
 	if got := strings.Count(shown, "\n"); got != 2 {
 		t.Fatalf("expanded short reasoning has %d detail rows, want 2: %q", got, shown)
 	}

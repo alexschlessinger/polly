@@ -508,27 +508,31 @@ func cloneChatMessage(msg messages.ChatMessage) messages.ChatMessage {
 // replModel is the mutex-protected state for the MVP TUI. Mutated from both
 // the main event loop and any in-flight turn goroutine, so every read/write
 // holds mu.
+// transcriptEntry is one transcript block: its rendered text and the explicit
+// local image references it carries (nil when none), kept in one value so the
+// two cannot drift apart.
+type transcriptEntry struct {
+	text   string
+	images []transcriptImage
+}
+
 type replModel struct {
 	mu sync.Mutex
 
-	// transcript is the accumulated text rendered into the upper pane.
+	// transcript is the accumulated content rendered into the upper pane.
 	// Each entry is a logical "block" (user prompt, assistant turn, notice,
-	// tool line) and may contain inline style markup. They get joined with
-	// "\n" at render time.
-	transcript []string
-	// transcriptImages runs in lockstep with transcript: entry i's explicit
-	// local image references live at transcriptImages[i] (nil when the entry
-	// has none). Grown only by appendTranscriptEntry, shrunk only by
-	// deleteTranscriptEntry, reset only by clearDisplay, rewritten in place
-	// only by setTranscriptText/setTranscriptEntry/setTranscriptImages — so
-	// the lanes cannot drift and every mutation invalidates the visual cache.
-	// A direct write to either lane outside those owners is a bug.
-	transcriptImages [][]transcriptImage
-	imageBaseDir     string
-	nativeImages     bool
-	imageCellWidth   int
-	imageCellHeight  int
-	artifactStore    artifacts.Store
+	// tool line) whose text may contain inline style markup; entries are
+	// joined with "\n" at render time. Grown only by appendTranscriptEntry,
+	// shrunk only by deleteTranscriptEntry, reset only by clearDisplay,
+	// rewritten in place only by setTranscriptText/setTranscriptEntry/
+	// setTranscriptImages — so every mutation invalidates the visual cache.
+	// A direct write outside those owners is a bug.
+	transcript      []transcriptEntry
+	imageBaseDir    string
+	nativeImages    bool
+	imageCellWidth  int
+	imageCellHeight int
+	artifactStore   artifacts.Store
 	// imagePlacements is the last rendered frame's native thumbnail geometry,
 	// in absolute screen cells, kept for mouse-click hit-testing.
 	imagePlacements []terminalImagePlacement
@@ -1138,7 +1142,7 @@ func (m *replModel) takeNotices() []string {
 // write goes through here or setTranscriptEntry, so the visual cache is
 // always marked stale by the write itself rather than by each caller.
 func (m *replModel) setTranscriptText(index int, text string) {
-	m.transcript[index] = text
+	m.transcript[index].text = text
 	m.visual.invalidate()
 }
 
@@ -1148,15 +1152,12 @@ func (m *replModel) setTranscriptEntry(index int, text string, images []transcri
 	m.setTranscriptImages(index, images)
 }
 
-// setTranscriptImages replaces entry index's image list. It indexes the lane
-// unguarded on purpose: an out-of-range index means the lanes drifted, and
-// that must fail at the write that exposed it rather than at some later
-// render.
+// setTranscriptImages replaces entry index's image list.
 func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
 	if len(images) == 0 {
-		m.transcriptImages[index] = nil
+		m.transcript[index].images = nil
 	} else {
-		m.transcriptImages[index] = append([]transcriptImage(nil), images...)
+		m.transcript[index].images = append([]transcriptImage(nil), images...)
 	}
 	m.visual.invalidate()
 }
@@ -1190,7 +1191,6 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 		}
 	}
 	m.transcript = slices.Delete(m.transcript, index, index+1)
-	m.transcriptImages = slices.Delete(m.transcriptImages, index, index+1)
 	for i := index + 1; i <= len(m.transcript); i++ {
 		if id, ok := m.reasoningAt[i]; ok {
 			m.reasoningAt[i-1] = id
@@ -1240,11 +1240,10 @@ func (m *replModel) appendLine(s string) {
 	m.currentAssistant = -1
 }
 
-// appendTranscriptEntry grows the transcript and its image lane together and
-// returns the new entry's index; every transcript append goes through here.
+// appendTranscriptEntry grows the transcript and returns the new entry's
+// index; every transcript append goes through here.
 func (m *replModel) appendTranscriptEntry(text string) int {
-	m.transcript = append(m.transcript, text)
-	m.transcriptImages = append(m.transcriptImages, nil)
+	m.transcript = append(m.transcript, transcriptEntry{text: text})
 	m.visual.invalidate()
 	return len(m.transcript) - 1
 }
@@ -1274,7 +1273,7 @@ func (m *replModel) appendAssistant(text string) {
 	m.streamRaw.WriteString(text)
 	raw := m.streamRaw.String()
 	visible := raw[:safeVisibleLen(raw)]
-	if len(visible) == m.streamShown && m.transcript[m.currentAssistant] != "" {
+	if len(visible) == m.streamShown && m.transcript[m.currentAssistant].text != "" {
 		return
 	}
 	m.streamShown = len(visible)
@@ -1312,7 +1311,7 @@ func (m *replModel) finishAssistantBlock(label string) bool {
 	}
 	m.finishAssistantStream()
 	idx := m.currentAssistant
-	content := strings.TrimRight(m.transcript[idx], "\r\n")
+	content := strings.TrimRight(m.transcript[idx].text, "\r\n")
 	if content == "" {
 		m.deleteTranscriptEntry(idx)
 	} else {
@@ -1358,7 +1357,7 @@ func (m *replModel) appendUserPrompt(p string) {
 // settled transcript activity and the next user turn. No completion path adds
 // spacing, which keeps an answer stationary when its status changes to done.
 func (m *replModel) appendTurnSeparator() {
-	if len(m.transcript) == 0 || m.transcript[len(m.transcript)-1] == "" {
+	if len(m.transcript) == 0 || m.transcript[len(m.transcript)-1].text == "" {
 		return
 	}
 	m.appendLine("")
@@ -1537,7 +1536,7 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 	}
 	index := record.transcriptIndex
 	text, images := toolDisclosureText(record)
-	if m.transcript[index] == text && transcriptImagesEqual(m.transcriptImages[index], images) {
+	if m.transcript[index].text == text && transcriptImagesEqual(m.transcript[index].images, images) {
 		return
 	}
 	// Tool activity renders inline in the transcript, so updates re-anchor a
@@ -1650,7 +1649,7 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 	if width < 1 {
 		width = 80
 	}
-	entry := m.transcript[index]
+	entry := m.transcript[index].text
 	if index == m.currentAssistant {
 		entry = strings.TrimRight(entry, "\r\n")
 		if entry == "" {
@@ -1660,7 +1659,7 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 	}
 	followed := index < len(m.transcript)-1 || m.slashHints != ""
 	rows, _ := transcriptBlockRowsWithImages(
-		entry, followed, width, m.transcriptImages[index],
+		entry, followed, width, m.transcript[index].images,
 		m.nativeImages && width >= minimumImageThumbnailCols,
 		m.imageCellWidth, m.imageCellHeight,
 	)
@@ -1962,7 +1961,7 @@ func (m *replModel) refreshReasoningRecordWithAnchor(record *reasoningRecord, wi
 	width = m.disclosureLayoutWidth(width)
 	next := m.reasoningRecordText(record, width)
 	record.dirty = false
-	if m.transcript[record.transcriptIndex] == next {
+	if m.transcript[record.transcriptIndex].text == next {
 		return
 	}
 	// Reasoning renders inline in the transcript, so growth re-anchors a held
@@ -2399,7 +2398,6 @@ func (m *replModel) appendErrorLine(text string) {
 
 func (m *replModel) clearDisplay() {
 	m.transcript = nil
-	m.transcriptImages = nil
 	m.currentAssistant = -1
 	m.activeTools = nil
 	m.activeToolsPhase = -1
@@ -2924,7 +2922,7 @@ func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
 		// private-use runes are stripped first so they cannot pose as slot
 		// anchors in an entry that now carries real ones.
 		m.setTranscriptEntry(index,
-			stripTranscriptImageMarkers(m.transcript[index])+"\n"+renderTranscriptImages(images, "  "),
+			stripTranscriptImageMarkers(m.transcript[index].text)+"\n"+renderTranscriptImages(images, "  "),
 			images)
 	}
 }
@@ -2933,7 +2931,7 @@ func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
 // that may still be streaming. The transcript, rather than the status bar, is
 // the visible acknowledgement that Polly retained the input.
 func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
-	if len(m.transcript) > 0 && m.transcript[len(m.transcript)-1] != "" {
+	if len(m.transcript) > 0 && m.transcript[len(m.transcript)-1].text != "" {
 		m.appendTranscriptEntry("")
 	}
 	entry := formattedUserPrompt(item.text) + "\n  " + styled("(queued)", "muted", "")
@@ -4985,7 +4983,8 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 
 func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock {
 	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+1)
-	for i, entry := range m.transcript {
+	for i := range m.transcript {
+		entry := m.transcript[i].text
 		reasoningID := m.reasoningAt[i]
 		toolDisclosureID := m.toolDisclosureAt[i]
 		turnTrailerID := m.turnTrailerAt[i]
@@ -5000,7 +4999,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			if entry == "" {
 				continue
 			}
-			images := m.transcriptImages[i]
+			images := m.transcript[i].images
 			if len(images) > 0 && strings.HasSuffix(entry, string(transcriptImageMarker(len(images)-1))) {
 				// Keep the pulsing stream caret out of the final reserved image
 				// row. The newline is stable even on the caret's hidden frame, so
@@ -5021,7 +5020,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		block := transcriptDisplayBlock{
 			key:           key,
 			text:          entry,
-			images:        m.transcriptImages[i],
+			images:        m.transcript[i].images,
 			turnTrailerID: turnTrailerID,
 		}
 		if reasoningID != 0 {

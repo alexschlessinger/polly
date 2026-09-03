@@ -87,11 +87,22 @@ func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func
 	return r.startManagedTurn(ctx, textManagedTurn(prompt), runTurn)
 }
 
+// transcriptTexts returns the transcript entries' text, for the tests that
+// assert against the joined transcript.
+func transcriptTexts(m *replModel) []string {
+	out := make([]string, len(m.transcript))
+	for i, entry := range m.transcript {
+		out[i] = entry.text
+	}
+	return out
+}
+
 // flattenTranscript expands embedded "\n" within entries into separate lines,
 // the logical-line view tests assert against.
 func (m *replModel) flattenTranscript() []string {
 	out := make([]string, 0, len(m.transcript))
-	for i, e := range m.transcript {
+	for i, entry := range m.transcript {
+		e := entry.text
 		if i == m.currentAssistant {
 			// A provider often streams its final newline as its own chunk. Keep it
 			// provisional until more text arrives so completion does not create and

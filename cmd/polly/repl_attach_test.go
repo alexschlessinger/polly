@@ -725,7 +725,7 @@ func TestBeginManagedTurnEchoesPreparedAttachmentThumbnails(t *testing.T) {
 	m.beginManagedTurn(managedTurnInput{displayText: prompt, userMessage: msg})
 
 	idx := len(m.transcript) - 1
-	entry := m.transcript[idx]
+	entry := m.transcript[idx].text
 	if !strings.Contains(entry, "image: shot.png") {
 		t.Fatalf("user echo lacks attachment caption: %q", entry)
 	}
@@ -737,7 +737,7 @@ func TestBeginManagedTurnEchoesPreparedAttachmentThumbnails(t *testing.T) {
 	if strings.ContainsRune(strings.SplitN(entry, "\n", 2)[0], transcriptImageMarker(0)) {
 		t.Fatal("pasted marker rune survived in the echoed prompt line")
 	}
-	imgs := m.transcriptImages[idx]
+	imgs := m.transcript[idx].images
 	if len(imgs) != 1 || imgs[0].DisplayPath != "shot.png" || imgs[0].Path == path {
 		t.Fatalf("sidecar images = %+v", imgs)
 	}

@@ -75,7 +75,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 	if trailer == nil || record.imagesExpanded {
 		t.Fatalf("settlement did not collapse Images into a trailer: record=%#v trailer=%#v", record, trailer)
 	}
-	trailerHeader := plainStyledText(strings.SplitN(m.transcript[trailer.transcriptIndex], "\n", 2)[0])
+	trailerHeader := plainStyledText(strings.SplitN(m.transcript[trailer.transcriptIndex].text, "\n", 2)[0])
 	if !strings.Contains(trailerHeader, "2 tools · ▸ 2 images viewed") {
 		t.Fatalf("settled three-part trailer = %q", trailerHeader)
 	}
@@ -185,7 +185,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 		}
 	}
 	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if trailer == nil || !strings.Contains(strings.SplitN(m.transcript[trailer.transcriptIndex], "\n", 2)[0], "fg:accent") {
+	if trailer == nil || !strings.Contains(strings.SplitN(m.transcript[trailer.transcriptIndex].text, "\n", 2)[0], "fg:accent") {
 		t.Fatalf("final trailer should retain accent controls: %#v", trailer)
 	}
 

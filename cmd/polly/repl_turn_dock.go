@@ -373,7 +373,7 @@ func (m *replModel) refreshTurnTrailer(record *turnTrailerRecord) {
 		text += "\n" + detail
 	}
 	record.fields = fields
-	if m.transcript[record.transcriptIndex] == text && transcriptImagesEqual(m.transcriptImages[record.transcriptIndex], images) {
+	if m.transcript[record.transcriptIndex].text == text && transcriptImagesEqual(m.transcript[record.transcriptIndex].images, images) {
 		return
 	}
 	// The trailer follows the turn's merged activity blocks, so only display

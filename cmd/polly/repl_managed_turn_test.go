@@ -32,7 +32,7 @@ func TestEnterWaitsForClipboardCapture(t *testing.T) {
 	if _, ok := r.takePending(); ok {
 		t.Fatal("turn reached pending before clipboard capture completed")
 	}
-	if got := r.model.transcript[len(r.model.transcript)-1]; !strings.Contains(got, "waiting for image capture") {
+	if got := r.model.transcript[len(r.model.transcript)-1].text; !strings.Contains(got, "waiting for image capture") {
 		t.Fatalf("missing clipboard wait notice: %q", got)
 	}
 
@@ -118,7 +118,7 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 			case <-time.After(time.Second):
 				t.Fatal("queued turn did not reach runner")
 			}
-			images := r.model.transcriptImages[queuedTranscriptIndex]
+			images := r.model.transcript[queuedTranscriptIndex].images
 			if len(images) != 1 {
 				t.Fatalf("queued prepared preview = %+v", images)
 			}

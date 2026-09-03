@@ -81,7 +81,7 @@ func TestGetCommandShowsStableFlagBackedSettings(t *testing.T) {
 	if handled, quit := r.runCommand("/get model"); !handled || quit {
 		t.Fatalf("/get model handled=%v quit=%v", handled, quit)
 	}
-	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "model: openai/gpt-5.4") {
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "model: openai/gpt-5.4") {
 		t.Fatalf("/get model output = %q", got)
 	}
 
@@ -89,7 +89,7 @@ func TestGetCommandShowsStableFlagBackedSettings(t *testing.T) {
 	if handled, quit := r.runCommand("/get all"); !handled || quit {
 		t.Fatalf("/get all handled=%v quit=%v", handled, quit)
 	}
-	got := strings.Join(r.model.transcript, "\n")
+	got := strings.Join(transcriptTexts(r.model), "\n")
 	for _, want := range []string{"settings:", "temp: 0.70", "maxtokens: 1234", "tooltimeout: 3s", "skilldir: /tmp/skills"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("/get all missing %q in %q", want, got)
@@ -98,7 +98,7 @@ func TestGetCommandShowsStableFlagBackedSettings(t *testing.T) {
 
 	clearTranscriptForTest(r.model)
 	r.runCommand("/get unknown")
-	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "unknown key: unknown") {
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "unknown key: unknown") {
 		t.Fatalf("/get unknown output = %q", got)
 	}
 }
@@ -115,7 +115,7 @@ func TestToolsCommandListNamespaceAndShow(t *testing.T) {
 	if handled, quit := r.runCommand("/tools list git"); !handled || quit {
 		t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
 	}
-	got := strings.Join(r.model.transcript, "\n")
+	got := strings.Join(transcriptTexts(r.model), "\n")
 	if !strings.Contains(got, "git__status") || !strings.Contains(got, "git__diff") || strings.Contains(got, "bash") {
 		t.Fatalf("/tools list git output = %q", got)
 	}
@@ -124,7 +124,7 @@ func TestToolsCommandListNamespaceAndShow(t *testing.T) {
 	if handled, quit := r.runCommand("/tools show git__status"); !handled || quit {
 		t.Fatalf("/tools show handled=%v quit=%v", handled, quit)
 	}
-	got = strings.Join(r.model.transcript, "\n")
+	got = strings.Join(transcriptTexts(r.model), "\n")
 	for _, want := range []string{"name: git__status", "type: native", "source: builtin", "description: Show git status", "required: path"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("/tools show missing %q in %q", want, got)
@@ -133,7 +133,7 @@ func TestToolsCommandListNamespaceAndShow(t *testing.T) {
 
 	clearTranscriptForTest(r.model)
 	r.runCommand("/tools show missing")
-	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "tool not found: missing") {
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "tool not found: missing") {
 		t.Fatalf("/tools show missing output = %q", got)
 	}
 }
@@ -159,7 +159,7 @@ func TestGetSandboxSetting(t *testing.T) {
 	if handled, quit := r.runCommand("/get sandbox"); !handled || quit {
 		t.Fatalf("/get sandbox handled=%v quit=%v", handled, quit)
 	}
-	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "sandbox: disabled (--nosandbox)") {
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "sandbox: disabled (--nosandbox)") {
 		t.Fatalf("/get sandbox output = %q", got)
 	}
 
@@ -168,14 +168,14 @@ func TestGetSandboxSetting(t *testing.T) {
 	r = newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.state = &conversationState{toolRegistry: registry}
 	r.runCommand("/get sandbox")
-	got := strings.Join(r.model.transcript, "\n")
+	got := strings.Join(transcriptTexts(r.model), "\n")
 	if !strings.Contains(got, "active") || !strings.Contains(got, "1 sandboxed, 0 not") {
 		t.Fatalf("/get sandbox output = %q", got)
 	}
 
 	clearTranscriptForTest(r.model)
 	r.runCommand("/get all")
-	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "sandbox: active") {
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "sandbox: active") {
 		t.Fatalf("/get all missing sandbox row: %q", got)
 	}
 }
@@ -189,7 +189,7 @@ func TestToolsListMarksSandboxed(t *testing.T) {
 	if handled, quit := r.runCommand("/tools list"); !handled || quit {
 		t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
 	}
-	got := strings.Join(r.model.transcript, "\n")
+	got := strings.Join(transcriptTexts(r.model), "\n")
 	if !strings.Contains(got, "bash [sandboxed: net off, temp writes, env filtered]") {
 		t.Fatalf("/tools list missing sandbox details for bash: %q", got)
 	}
@@ -201,7 +201,7 @@ func TestToolsListMarksSandboxed(t *testing.T) {
 	if handled, quit := r.runCommand("/tools show bash"); !handled || quit {
 		t.Fatalf("/tools show handled=%v quit=%v", handled, quit)
 	}
-	got = strings.Join(r.model.transcript, "\n")
+	got = strings.Join(transcriptTexts(r.model), "\n")
 	for _, want := range []string{
 		"sandboxed: true",
 		"sandbox: network off; writes limited to temp; env filters credential-like variables",
@@ -270,7 +270,7 @@ func TestToolsSandboxBadges(t *testing.T) {
 			if handled, quit := r.runCommand("/tools list"); !handled || quit {
 				t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
 			}
-			if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, tt.want) {
+			if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, tt.want) {
 				t.Fatalf("/tools list missing %q in %q", tt.want, got)
 			}
 		})
@@ -414,7 +414,7 @@ fi
 	if handled, quit := r.runCommand("/tools list"); !handled || quit {
 		t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
 	}
-	got := strings.Join(r.model.transcript, "\n")
+	got := strings.Join(transcriptTexts(r.model), "\n")
 	if !strings.Contains(got, "unsandboxed__unsandboxed_tool [not sandboxed: opted out]") {
 		t.Fatalf("/tools list missing opt-out badge: %q", got)
 	}
@@ -425,7 +425,7 @@ fi
 	if handled, quit := r.runCommand("/tools list"); !handled || quit {
 		t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
 	}
-	got = strings.Join(r.model.transcript, "\n")
+	got = strings.Join(transcriptTexts(r.model), "\n")
 	if !strings.Contains(got, "bash [sandboxed]") || strings.Contains(got, "bash [sandboxed:") {
 		t.Fatalf("/tools list should fall back to simple sandbox badge without config: %q", got)
 	}

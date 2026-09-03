@@ -17,7 +17,7 @@ func toolRows(m *replModel) []string {
 	var rows []string
 	for i, e := range m.transcript {
 		if m.toolDisclosureAt[i] != 0 {
-			rows = append(rows, e)
+			rows = append(rows, e.text)
 		}
 	}
 	return rows
@@ -56,20 +56,20 @@ func TestLiveToolDisclosureStartsCollapsedAndClickTogglesAllRows(t *testing.T) {
 	if rows := toolRows(m); len(rows) != 1 {
 		t.Fatalf("first live call rendered %d tool entries, want one: %#v", len(rows), m.transcript)
 	}
-	collapsed := plainStyledText(strings.Join(m.transcript, "\n"))
+	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if !strings.Contains(collapsed, "▸ 1 tool") || strings.Contains(collapsed, "alpha") {
 		t.Fatalf("first live call was not private behind its header: %q", collapsed)
 	}
 
 	clickToolDisclosure(t, m, record.id, width)
-	expanded := plainStyledText(m.transcript[record.transcriptIndex])
+	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !record.expanded || !strings.Contains(expanded, "alpha") {
 		t.Fatalf("first live expansion = %q record=%#v", expanded, record)
 	}
 
 	second := messages.ChatMessageToolCall{ID: "b", Name: "beta"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{second})
-	expanded = plainStyledText(m.transcript[record.transcriptIndex])
+	expanded = plainStyledText(m.transcript[record.transcriptIndex].text)
 	if strings.Count(expanded, "alpha") != 1 || strings.Count(expanded, "beta") != 1 {
 		t.Fatalf("expanded live disclosure did not add the second call once: %q", expanded)
 	}
@@ -78,13 +78,13 @@ func TestLiveToolDisclosureStartsCollapsedAndClickTogglesAllRows(t *testing.T) {
 	}
 
 	tui.AppendToolEnd(first, "RAW ALPHA RESULT", time.Second, nil)
-	expanded = plainStyledText(m.transcript[record.transcriptIndex])
+	expanded = plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !strings.Contains(expanded, "✓") || !strings.Contains(expanded, "alpha") || !strings.Contains(expanded, "beta") || strings.Contains(expanded, "RAW ALPHA RESULT") {
 		t.Fatalf("expanded live completion did not update safely: %q", expanded)
 	}
 
 	clickToolDisclosure(t, m, record.id, width)
-	collapsedAgain := plainStyledText(m.transcript[record.transcriptIndex])
+	collapsedAgain := plainStyledText(m.transcript[record.transcriptIndex].text)
 	if record.expanded || strings.Contains(collapsedAgain, "alpha") {
 		t.Fatalf("tool disclosure did not hide every row: %q record=%#v", collapsedAgain, record)
 	}
@@ -124,7 +124,7 @@ func TestToolDisclosureSplitsAtInterleavedProse(t *testing.T) {
 	if rows := toolRows(m); len(rows) != 2 {
 		t.Fatalf("interleaved activity rendered %d tool entries, want 2: %#v", len(rows), m.transcript)
 	}
-	collapsed := plainStyledText(strings.Join(m.transcript, "\n"))
+	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	firstAt := strings.Index(collapsed, "▸ 1 tool")
 	proseAt := strings.Index(collapsed, "thinking about it")
 	secondAt := strings.Index(collapsed, "▸ 3 tools")
@@ -140,7 +140,7 @@ func TestToolDisclosureSplitsAtInterleavedProse(t *testing.T) {
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("post-prose disclosure did not expand")
 	}
-	expanded := plainStyledText(strings.Join(m.transcript, "\n"))
+	expanded := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	previous := strings.Index(expanded, "▾ 3 tools")
 	for _, want := range []string{"tool_b", "tool_c", "tool_d"} {
 		at := strings.Index(expanded, want)
@@ -152,7 +152,7 @@ func TestToolDisclosureSplitsAtInterleavedProse(t *testing.T) {
 	if !m.toggleToolDisclosure(firstRecord.id) {
 		t.Fatal("pre-prose disclosure did not expand")
 	}
-	expanded = plainStyledText(strings.Join(m.transcript, "\n"))
+	expanded = plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if alpha := strings.Index(expanded, "alpha"); alpha < 0 || alpha > strings.Index(expanded, "thinking about it") {
 		t.Fatalf("pre-prose detail escaped its position: %q", expanded)
 	}
@@ -179,7 +179,7 @@ func TestExpandedParallelToolDisclosureUpdatesInStartOrder(t *testing.T) {
 	if rows := toolRows(m); len(rows) != 1 {
 		t.Fatalf("collapsed parallel batch rendered %d tool entries: %#v", len(rows), m.transcript)
 	}
-	if collapsed := plainStyledText(strings.Join(m.transcript, "\n")); !strings.Contains(collapsed, "▸ 5 tools") || strings.Contains(collapsed, "tool0") {
+	if collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n")); !strings.Contains(collapsed, "▸ 5 tools") || strings.Contains(collapsed, "tool0") {
 		t.Fatalf("parallel batch did not start collapsed: %q", collapsed)
 	}
 
@@ -189,7 +189,7 @@ func TestExpandedParallelToolDisclosureUpdatesInStartOrder(t *testing.T) {
 	order := []int{4, 1, 3, 0, 2}
 	for settled, i := range order {
 		tui.AppendToolEnd(calls[i], "ok", time.Duration(i+1)*time.Second, nil)
-		expanded := plainStyledText(m.transcript[record.transcriptIndex])
+		expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
 		if !strings.Contains(expanded, "▾ 5 tools") || strings.Count(expanded, "✓") != settled+1 {
 			t.Fatalf("after %d parallel completions, disclosure = %q", settled+1, expanded)
 		}
@@ -239,7 +239,7 @@ func TestToolDisclosureAggregatesBatchesWithinRun(t *testing.T) {
 		if record == nil || len(record.rows) != (batch+1)*5 || record.complete {
 			t.Fatalf("batch %d disclosure = %#v", batch, record)
 		}
-		plain := plainStyledText(strings.Join(m.transcript, "\n"))
+		plain := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 		if want := fmt.Sprintf("▸ %d tools", (batch+1)*5); !strings.Contains(plain, want) {
 			t.Fatalf("after batch %d collapsed transcript = %q, want header %q", batch, plain, want)
 		}
@@ -254,7 +254,7 @@ func TestToolDisclosureAggregatesBatchesWithinRun(t *testing.T) {
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("aggregated disclosure did not expand")
 	}
-	expanded := plainStyledText(m.transcript[record.transcriptIndex])
+	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !strings.Contains(expanded, "▾ 15 tools") || !strings.Contains(expanded, "… 10 earlier") {
 		t.Fatalf("aggregated expansion missing header or elision: %q", expanded)
 	}
@@ -303,7 +303,7 @@ func TestCompletedTurnCollapsesToRollups(t *testing.T) {
 	if record == nil || !record.complete || record.expanded {
 		t.Fatalf("completed disclosure = %#v, want complete and collapsed", record)
 	}
-	collapsed := strings.Join(m.transcript, "\n")
+	collapsed := strings.Join(transcriptTexts(m), "\n")
 	collapsedPlain := plainStyledText(collapsed)
 	for i := 0; i < 7; i++ {
 		if name := fmt.Sprintf("tool%d", i); strings.Contains(collapsedPlain, name) {
@@ -314,7 +314,7 @@ func TestCompletedTurnCollapsesToRollups(t *testing.T) {
 	if !m.toggleToolDisclosure(record.id) || !record.expanded {
 		t.Fatal("completed disclosure did not expand")
 	}
-	expanded := plainStyledText(strings.Join(m.transcript, "\n"))
+	expanded := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if !strings.Contains(expanded, "▾ 7 tools") || !strings.Contains(expanded, "… 2 earlier") ||
 		!strings.Contains(expanded, "tool6") || strings.Contains(expanded, "tool0") {
 		t.Fatalf("expanded disclosure = %q", expanded)
@@ -322,11 +322,11 @@ func TestCompletedTurnCollapsesToRollups(t *testing.T) {
 	if !m.toggleToolDisclosure(record.id) || record.expanded {
 		t.Fatal("completed disclosure did not re-collapse")
 	}
-	if got := strings.Join(m.transcript, "\n"); got != collapsed {
+	if got := strings.Join(transcriptTexts(m), "\n"); got != collapsed {
 		t.Fatalf("re-collapse did not restore transcript:\n got %q\nwant %q", got, collapsed)
 	}
 	// The prose either side of the activity is untouched.
-	if !strings.Contains(strings.Join(m.transcript, "\n"), "Done.") {
+	if !strings.Contains(strings.Join(transcriptTexts(m), "\n"), "Done.") {
 		t.Fatalf("collapse ate the answer: %#v", m.transcript)
 	}
 }
@@ -345,7 +345,7 @@ func TestSingleCallTurnCollapsesWithSingularWording(t *testing.T) {
 	if live == nil || live.expanded || live.complete || len(live.rows) != 1 {
 		t.Fatalf("single live disclosure = %#v", live)
 	}
-	if plain := plainStyledText(strings.Join(m.transcript, "\n")); !strings.Contains(plain, "▸ 1 tool") || strings.Contains(plain, "bash") {
+	if plain := plainStyledText(strings.Join(transcriptTexts(m), "\n")); !strings.Contains(plain, "▸ 1 tool") || strings.Contains(plain, "bash") {
 		t.Fatalf("single live call did not start collapsed: %q", plain)
 	}
 	tui.AppendToolEnd(call, "ok", time.Second, nil)
@@ -363,21 +363,21 @@ func TestSingleCallTurnCollapsesWithSingularWording(t *testing.T) {
 	if record == nil || !record.complete || record.expanded {
 		t.Fatalf("single-call disclosure = %#v, want complete and collapsed", record)
 	}
-	collapsed := strings.Join(m.transcript, "\n")
+	collapsed := strings.Join(transcriptTexts(m), "\n")
 	if plain := plainStyledText(collapsed); !strings.Contains(plain, "▸ 1 tool") || strings.Contains(plain, "bash") {
 		t.Fatalf("single-call collapsed transcript = %q", plain)
 	}
 	if !m.toggleToolDisclosure(record.id) || !record.expanded {
 		t.Fatal("single-call disclosure did not expand")
 	}
-	if plain := plainStyledText(strings.Join(m.transcript, "\n")); !strings.Contains(plain, "▾ 1 tool") ||
+	if plain := plainStyledText(strings.Join(transcriptTexts(m), "\n")); !strings.Contains(plain, "▾ 1 tool") ||
 		!strings.Contains(plain, "✓") || !strings.Contains(plain, "bash") || strings.Count(plain, "Done.") != 1 {
 		t.Fatalf("single-call expanded transcript = %q", plain)
 	}
 	if !m.toggleToolDisclosure(record.id) || record.expanded {
 		t.Fatal("single-call disclosure did not re-collapse")
 	}
-	if got := strings.Join(m.transcript, "\n"); got != collapsed {
+	if got := strings.Join(transcriptTexts(m), "\n"); got != collapsed {
 		t.Fatalf("single-call re-collapse did not restore transcript:\n got %q\nwant %q", got, collapsed)
 	}
 }
@@ -396,14 +396,14 @@ func TestInterruptedTurnAutoCollapsesAndRemainsExpandable(t *testing.T) {
 	}
 
 	r.endTurn(errors.New("provider unavailable"))
-	collapsed := plainStyledText(strings.Join(m.transcript, "\n"))
+	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if record.expanded || !record.complete || !strings.Contains(collapsed, "▸ 1 tool") || strings.Contains(collapsed, "slow_tool") {
 		t.Fatalf("interrupted turn did not auto-collapse: record=%#v transcript=%q", record, collapsed)
 	}
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("interrupted disclosure did not reopen")
 	}
-	expanded := plainStyledText(m.transcript[record.transcriptIndex])
+	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !strings.Contains(expanded, "failed slow_tool") {
 		t.Fatalf("interrupted expansion lost failure status: %q", expanded)
 	}
@@ -428,14 +428,14 @@ func TestInterruptedParallelBatchAutoCollapsesInStartOrder(t *testing.T) {
 	if !record.complete || record.expanded {
 		t.Fatalf("interrupted parallel disclosure = %#v, want completed and collapsed", record)
 	}
-	collapsed := plainStyledText(strings.Join(m.transcript, "\n"))
+	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if !strings.Contains(collapsed, "▸ 5 tools") || strings.Contains(collapsed, "tool0") {
 		t.Fatalf("interrupted parallel collapse = %q", collapsed)
 	}
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("interrupted parallel disclosure did not expand")
 	}
-	expanded := plainStyledText(m.transcript[record.transcriptIndex])
+	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
 	previous := strings.Index(expanded, "▾ 5 tools")
 	for i := 0; i < 5; i++ {
 		name := fmt.Sprintf("tool%d", i)
@@ -469,7 +469,7 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("detached disclosure did not reopen")
 	}
-	if expanded := plainStyledText(m.transcript[record.transcriptIndex]); !strings.Contains(expanded, "canceled slow_tool") {
+	if expanded := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(expanded, "canceled slow_tool") {
 		t.Fatalf("detached disclosure lost canceled row: %q", expanded)
 	}
 
@@ -529,28 +529,28 @@ func TestToolDisclosureImagesOnlyAppearExpanded(t *testing.T) {
 	}
 
 	// Collapsed disclosures expose no thumbnail sidecars or detail text.
-	for index, images := range m.transcriptImages {
-		if len(images) == 0 {
+	for index, entry := range m.transcript {
+		if len(entry.images) == 0 {
 			continue
 		}
-		if index >= len(m.transcript) || !strings.Contains(m.transcript[index], "image: shot.png") {
-			t.Fatalf("sidecar at %d does not match its row %q", index, m.transcript[index])
+		if !strings.Contains(entry.text, "image: shot.png") {
+			t.Fatalf("sidecar at %d does not match its row %q", index, entry.text)
 		}
 	}
 	record := m.currentToolDisclosure()
 	if record == nil || record.expanded {
 		t.Fatalf("image tool disclosure = %#v", record)
 	}
-	if images := m.transcriptImages[record.transcriptIndex]; len(images) != 0 {
+	if images := m.transcript[record.transcriptIndex].images; len(images) != 0 {
 		t.Fatalf("collapsed disclosure leaked image sidecars: %#v", images)
 	}
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("image tool disclosure did not expand")
 	}
-	if images := m.transcriptImages[record.transcriptIndex]; len(images) != 1 || images[0].Path != path {
+	if images := m.transcript[record.transcriptIndex].images; len(images) != 1 || images[0].Path != path {
 		t.Fatalf("expanded disclosure image sidecars = %#v", images)
 	}
-	if plain := plainStyledText(m.transcript[record.transcriptIndex]); !strings.Contains(plain, "image: shot.png") {
+	if plain := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(plain, "image: shot.png") {
 		t.Fatalf("expanded disclosure lost image caption: %q", plain)
 	}
 	writeImageFixture(t, path, 8, 2)
@@ -570,13 +570,13 @@ func TestToolDisclosureImagesOnlyAppearExpanded(t *testing.T) {
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("image tool disclosure did not re-collapse")
 	}
-	if images := m.transcriptImages[record.transcriptIndex]; len(images) != 0 {
+	if images := m.transcript[record.transcriptIndex].images; len(images) != 0 {
 		t.Fatalf("re-collapsed disclosure retained image sidecars: %#v", images)
 	}
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("image tool disclosure did not reopen")
 	}
-	if images := m.transcriptImages[record.transcriptIndex]; len(images) != 1 || images[0].Width != 8 || images[0].Height != 2 {
+	if images := m.transcript[record.transcriptIndex].images; len(images) != 1 || images[0].Width != 8 || images[0].Height != 2 {
 		t.Fatalf("reopened disclosure resurrected stale image dimensions: %#v", images)
 	}
 }
@@ -599,12 +599,12 @@ func TestToolDisclosureSanitizesPrivateImageMarkerRunes(t *testing.T) {
 	if record == nil || !m.toggleToolDisclosure(record.id) {
 		t.Fatal("private-rune disclosure did not expand")
 	}
-	if strings.Contains(m.transcript[record.transcriptIndex], marker) {
+	if strings.Contains(m.transcript[record.transcriptIndex].text, marker) {
 		t.Fatal("running tool label was mistaken for an image marker")
 	}
 
 	tui.AppendToolEnd(call, "![preview"+marker+"]("+path+")", time.Millisecond, nil)
-	entry := m.transcript[record.transcriptIndex]
+	entry := m.transcript[record.transcriptIndex].text
 	if got := strings.Count(entry, marker); got != transcriptImageThumbnailRows {
 		t.Fatalf("expanded image row contains %d marker runes, want %d generated slot rows", got, transcriptImageThumbnailRows)
 	}
@@ -612,7 +612,7 @@ func TestToolDisclosureSanitizesPrivateImageMarkerRunes(t *testing.T) {
 		t.Fatalf("sanitized tool label was not preserved as text: %q", plain)
 	}
 	_, spans := transcriptBlockRowsWithImages(
-		entry, false, 80, m.transcriptImages[record.transcriptIndex], true, 10, 20,
+		entry, false, 80, m.transcript[record.transcriptIndex].images, true, 10, 20,
 	)
 	if len(spans) != 1 {
 		t.Fatalf("crafted label produced %d image spans, want one: %#v", len(spans), spans)

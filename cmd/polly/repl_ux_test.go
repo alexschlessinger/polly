@@ -161,7 +161,7 @@ func TestFailedTurnLabelsPartialAndMarksQueueNotSent(t *testing.T) {
 	if record == nil || !record.complete || record.expanded || !m.toggleToolDisclosure(record.id) {
 		t.Fatalf("failed tool disclosure did not reopen: %#v", record)
 	}
-	expandedTools := plainStyledText(m.transcript[record.transcriptIndex])
+	expandedTools := plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !strings.Contains(expandedTools, "failed bash sleep 30") || strings.Contains(expandedTools, "→") {
 		t.Fatalf("failed tool expansion = %q", expandedTools)
 	}
@@ -302,7 +302,7 @@ func TestInterruptedTurnWithPersistedProgressKeepsReasoningSavedLabel(t *testing
 	if record == nil || !record.complete || record.unsaved {
 		t.Fatalf("persisted-progress reasoning disclosure = %#v, want saved", record)
 	}
-	if collapsed := plainStyledText(m.transcript[record.transcriptIndex]); strings.Contains(collapsed, "not saved") {
+	if collapsed := plainStyledText(m.transcript[record.transcriptIndex].text); strings.Contains(collapsed, "not saved") {
 		t.Fatalf("persisted reasoning was labeled unsaved: %q", collapsed)
 	}
 }
@@ -617,7 +617,7 @@ func TestHydrateHistoryShowsFiveRecentTurnsAndCollapsesTools(t *testing.T) {
 	if !m.toggleToolDisclosure(tools.id) {
 		t.Fatal("hydrated tool disclosure was not expandable")
 	}
-	if plain := plainStyledText(m.transcript[tools.transcriptIndex]); !strings.Contains(plain, "· bash") ||
+	if plain := plainStyledText(m.transcript[tools.transcriptIndex].text); !strings.Contains(plain, "· bash") ||
 		!strings.Contains(plain, "· read_file") || strings.Contains(plain, "✓") {
 		t.Fatalf("legacy tool outcomes should hydrate neutrally, got %q", plain)
 	}
@@ -641,7 +641,7 @@ func TestHydrateHistoryShowsDurableToolFailure(t *testing.T) {
 	if tools == nil || !m.toggleToolDisclosure(tools.id) {
 		t.Fatal("durable failed tool disclosure was not expandable")
 	}
-	if plain := plainStyledText(m.transcript[tools.transcriptIndex]); !strings.Contains(plain, "✗ bash") {
+	if plain := plainStyledText(m.transcript[tools.transcriptIndex].text); !strings.Contains(plain, "✗ bash") {
 		t.Fatalf("durable failed tool was not restored as failed: %q", plain)
 	}
 }
@@ -697,18 +697,18 @@ func TestHydrateHistoryAggregatesToolBatchesPerRealUserTurn(t *testing.T) {
 		if !m.toggleToolDisclosure(record.id) {
 			t.Fatalf("hydrated disclosure %d did not expand", i)
 		}
-		expanded := plainStyledText(m.transcript[record.transcriptIndex])
+		expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
 		for _, want := range wants[i] {
 			if got := strings.Count(expanded, want); got != 1 {
 				t.Fatalf("hydrated disclosure %d contains %q %d times: %q", i, want, got, expanded)
 			}
 		}
 	}
-	firstExpanded := plainStyledText(m.transcript[records[0].transcriptIndex])
+	firstExpanded := plainStyledText(m.transcript[records[0].transcriptIndex].text)
 	if strings.Contains(firstExpanded, "write_delta") {
 		t.Fatalf("next real user turn leaked into first disclosure: %q", firstExpanded)
 	}
-	if joined := plainStyledText(strings.Join(m.transcript, "\n")); strings.Contains(joined, "raw result for") || strings.Contains(joined, "synthetic continuation") {
+	if joined := plainStyledText(strings.Join(transcriptTexts(m), "\n")); strings.Contains(joined, "raw result for") || strings.Contains(joined, "synthetic continuation") {
 		t.Fatalf("hydration leaked raw or synthetic content: %q", joined)
 	}
 }
@@ -748,7 +748,7 @@ func TestHydrateHistoryBuildsOneCompletedReasoningDisclosurePerTurn(t *testing.T
 	if !m.toggleReasoning(first.id, 80) {
 		t.Fatal("completed hydrated disclosure was not toggleable")
 	}
-	expanded := plainStyledText(m.transcript[first.transcriptIndex])
+	expanded := plainStyledText(m.transcript[first.transcriptIndex].text)
 	if !strings.Contains(expanded, "inspect the inputs") || !strings.Contains(expanded, "compare the result") {
 		t.Fatalf("expanded hydrated disclosure = %q", expanded)
 	}
@@ -783,8 +783,8 @@ func TestCompletedReasoningDisclosureSurvivesDiskReload(t *testing.T) {
 	if record == nil || !record.complete || record.unsaved || record.expanded {
 		t.Fatalf("reloaded reasoning record = %#v", record)
 	}
-	if !m.toggleReasoning(record.id, 80) || !strings.Contains(plainStyledText(m.transcript[record.transcriptIndex]), "durable chain of thought") {
-		t.Fatalf("reloaded completed disclosure did not expand: %q", m.transcript[record.transcriptIndex])
+	if !m.toggleReasoning(record.id, 80) || !strings.Contains(plainStyledText(m.transcript[record.transcriptIndex].text), "durable chain of thought") {
+		t.Fatalf("reloaded completed disclosure did not expand: %q", m.transcript[record.transcriptIndex].text)
 	}
 }
 
@@ -823,14 +823,14 @@ func TestCompletedToolDisclosureSurvivesDiskReloadWithoutRawResults(t *testing.T
 	for _, candidate := range m.toolDisclosures {
 		record = candidate
 	}
-	collapsed := plainStyledText(strings.Join(m.transcript, "\n"))
+	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if record == nil || !record.complete || record.expanded || !strings.Contains(collapsed, "▸ 1 tool") || strings.Contains(collapsed, "RAW SECRET") {
 		t.Fatalf("reloaded collapsed tool disclosure = %#v transcript=%q", record, collapsed)
 	}
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("reloaded tool disclosure did not expand")
 	}
-	expanded := plainStyledText(m.transcript[record.transcriptIndex])
+	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !strings.Contains(expanded, "✓ bash") || strings.Contains(expanded, "RAW SECRET") {
 		t.Fatalf("reloaded tool detail = %q", expanded)
 	}

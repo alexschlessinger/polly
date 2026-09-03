@@ -251,12 +251,12 @@ func TestStreamedTableAlignsAtSettle(t *testing.T) {
 	m := newReplModel()
 	m.appendAssistant("| a | b |\n")
 	// Without the delimiter row this is still a paragraph of literal pipes.
-	if got := plainStyledText(m.transcript[0]); !strings.Contains(got, "| a | b |") {
+	if got := plainStyledText(m.transcript[0].text); !strings.Contains(got, "| a | b |") {
 		t.Fatalf("pre-delimiter render = %q, want literal pipes", got)
 	}
 
 	m.appendAssistant("|---|---|\n| one | 2 |\n")
-	got := plainStyledText(m.transcript[0])
+	got := plainStyledText(m.transcript[0].text)
 	for _, want := range []string{"│ a │ b", "│ one │ 2"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("streaming render = %q, missing %q", got, want)
@@ -272,7 +272,7 @@ func TestStreamedTableAlignsAtSettle(t *testing.T) {
 	// Nothing is held back (pipe rows are not holdback constructs), so only
 	// the deferred-table flag forces the settle re-render.
 	m.finishAssistantBlock("")
-	final := strings.Split(plainStyledText(m.transcript[0]), "\n")
+	final := strings.Split(plainStyledText(m.transcript[0].text), "\n")
 	want := []string{
 		"│ a    b",
 		"│ ───  ─",
@@ -286,7 +286,7 @@ func TestStreamedTableAlignsAtSettle(t *testing.T) {
 func TestStreamedTableWithFollowingBlockAlignsImmediately(t *testing.T) {
 	m := newReplModel()
 	m.appendAssistant("| a | b |\n|---|---|\n| x | y |\n\nafter\n")
-	got := plainStyledText(m.transcript[0])
+	got := plainStyledText(m.transcript[0].text)
 	if !strings.Contains(got, "│ a  b") || !strings.Contains(got, "─") {
 		t.Fatalf("completed mid-stream table not aligned: %q", got)
 	}
@@ -305,7 +305,7 @@ func TestStreamedMarkdownEndToEnd(t *testing.T) {
 	}
 	m.finishAssistantBlock("")
 
-	got := plainStyledText(m.transcript[0])
+	got := plainStyledText(m.transcript[0].text)
 	for _, want := range []string{"▎ Plan", "two", "• run", "• ship", "│ func main() {}", "Done — see docs (https://x.dev)."} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("final render %q missing %q", got, want)

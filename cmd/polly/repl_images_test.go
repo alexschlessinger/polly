@@ -196,8 +196,8 @@ func TestAssistantAndToolResultsAttachImageSidecars(t *testing.T) {
 	m := newReplModel()
 	m.imageBaseDir = dir
 	m.appendAssistant("![result](result.png)")
-	if len(m.transcriptImages[m.currentAssistant]) != 1 {
-		t.Fatalf("assistant sidecar = %#v", m.transcriptImages)
+	if len(m.transcript[m.currentAssistant].images) != 1 {
+		t.Fatalf("assistant sidecar = %#v", m.transcript)
 	}
 	m.finishAssistantBlock("")
 
@@ -214,21 +214,21 @@ func TestAssistantAndToolResultsAttachImageSidecars(t *testing.T) {
 		t.Fatalf("collapsed tool image record = %#v", record)
 	}
 	toolIndex := record.transcriptIndex
-	if len(r.model.transcriptImages[toolIndex]) != 0 || strings.Contains(r.model.transcript[toolIndex], "image: result.png") {
-		t.Fatalf("collapsed tool image leaked sidecar or caption: text=%q sidecars=%#v", r.model.transcript[toolIndex], r.model.transcriptImages)
+	if len(r.model.transcript[toolIndex].images) != 0 || strings.Contains(r.model.transcript[toolIndex].text, "image: result.png") {
+		t.Fatalf("collapsed tool image leaked sidecar or caption: text=%q sidecars=%#v", r.model.transcript[toolIndex].text, r.model.transcript)
 	}
 	if !r.model.toggleToolDisclosure(record.id) {
 		t.Fatal("tool image disclosure did not expand")
 	}
-	if len(r.model.transcriptImages[toolIndex]) != 1 {
-		t.Fatalf("tool sidecar = %#v", r.model.transcriptImages)
+	if len(r.model.transcript[toolIndex].images) != 1 {
+		t.Fatalf("tool sidecar = %#v", r.model.transcript)
 	}
-	if !strings.Contains(r.model.transcript[toolIndex], "image: result.png") {
-		t.Fatalf("tool image caption missing: %q", r.model.transcript[toolIndex])
+	if !strings.Contains(r.model.transcript[toolIndex].text, "image: result.png") {
+		t.Fatalf("tool image caption missing: %q", r.model.transcript[toolIndex].text)
 	}
 	toolRows, toolSpans := transcriptBlockRowsWithImages(
-		r.model.transcript[toolIndex], false, 80,
-		r.model.transcriptImages[toolIndex], true, 10, 20,
+		r.model.transcript[toolIndex].text, false, 80,
+		r.model.transcript[toolIndex].images, true, 10, 20,
 	)
 	if len(toolSpans) != 1 || toolSpans[0].row < 2 || toolSpans[0].x != 4 ||
 		toolSpans[0].rows != 10 || len(toolRows) != toolSpans[0].row+toolSpans[0].rows {
@@ -260,10 +260,10 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 		t.Fatalf("collapsed typed-image disclosure = %#v", record)
 	}
 	toolIndex := record.transcriptIndex
-	if got := len(r.model.transcriptImages[toolIndex]); got != 0 {
+	if got := len(r.model.transcript[toolIndex].images); got != 0 {
 		t.Fatalf("collapsed tool entry sidecars = %d, want 0", got)
 	}
-	if plain := plainStyledText(stripTranscriptImageMarkers(r.model.transcript[toolIndex])); strings.Contains(plain, "viewed ·") {
+	if plain := plainStyledText(stripTranscriptImageMarkers(r.model.transcript[toolIndex].text)); strings.Contains(plain, "viewed ·") {
 		t.Fatalf("collapsed tool entry leaked inspection detail: %q", plain)
 	}
 
@@ -458,29 +458,29 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 	if record == nil || record.expanded || len(record.rows[0].inspectionImages) != 1 {
 		t.Fatalf("hydrated inspection disclosure = %#v", record)
 	}
-	if got := len(m.transcriptImages[record.transcriptIndex]); got != 0 {
+	if got := len(m.transcript[record.transcriptIndex].images); got != 0 {
 		t.Fatalf("collapsed hydrated tool sidecars = %d, want 0", got)
 	}
 	trailer := m.turnTrailers[m.turnTrailerSeq]
 	if trailer == nil {
 		t.Fatal("hydrated image turn did not restore its trailer")
 	}
-	header := plainStyledText(strings.SplitN(m.transcript[trailer.transcriptIndex], "\n", 2)[0])
+	header := plainStyledText(strings.SplitN(m.transcript[trailer.transcriptIndex].text, "\n", 2)[0])
 	if !strings.Contains(header, "1 tool") || !strings.Contains(header, "1 image viewed") {
 		t.Fatalf("hydrated image trailer = %q", header)
 	}
 	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayImages) {
 		t.Fatal("hydrated Images trailer did not expand")
 	}
-	if got := len(m.transcriptImages[trailer.transcriptIndex]); got != 1 {
+	if got := len(m.transcript[trailer.transcriptIndex].images); got != 1 {
 		t.Fatalf("expanded hydrated image sidecars = %d, want 1", got)
 	}
-	plain := plainStyledText(stripTranscriptImageMarkers(m.transcript[trailer.transcriptIndex]))
+	plain := plainStyledText(stripTranscriptImageMarkers(m.transcript[trailer.transcriptIndex].text))
 	if !strings.Contains(plain, "viewed · durable.png · 6×3") || !strings.Contains(plain, "│") {
 		t.Fatalf("hydrated inspection gallery = %q", plain)
 	}
-	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayImages) || len(m.transcriptImages[trailer.transcriptIndex]) != 0 {
-		t.Fatalf("hydrated Images trailer did not collapse cleanly: %#v", m.transcriptImages[trailer.transcriptIndex])
+	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayImages) || len(m.transcript[trailer.transcriptIndex].images) != 0 {
+		t.Fatalf("hydrated Images trailer did not collapse cleanly: %#v", m.transcript[trailer.transcriptIndex].images)
 	}
 }
 
@@ -560,42 +560,30 @@ func TestImageCellGeometryPreservesAspectRatio(t *testing.T) {
 	}
 }
 
-// TestTranscriptImageLaneLockstep pins the documented invariant: the image
-// lane grows, shrinks, and resets only alongside the transcript.
-// clearTranscriptForTest empties both transcript lanes together, the test-side
-// twin of clearDisplay's lane reset for tests that isolate one command's
-// output without disturbing the rest of the model.
+// clearTranscriptForTest empties the transcript, the test-side twin of
+// clearDisplay's reset for tests that isolate one command's output without
+// disturbing the rest of the model.
 func clearTranscriptForTest(m *replModel) {
 	m.transcript = nil
-	m.transcriptImages = nil
 }
 
-func TestTranscriptImageLaneLockstep(t *testing.T) {
+// TestTranscriptImagesFollowTheirEntry pins that an entry's images travel
+// with it: across a delete ahead of it, through an empty-stream settle, and
+// away on clearDisplay.
+func TestTranscriptImagesFollowTheirEntry(t *testing.T) {
 	m := newReplModel()
-	check := func(step string) {
-		t.Helper()
-		if len(m.transcriptImages) != len(m.transcript) {
-			t.Fatalf("%s: image lane len %d, transcript len %d", step, len(m.transcriptImages), len(m.transcript))
-		}
-	}
-	check("empty model")
 	m.appendLine("notice")
-	check("appendLine")
 	m.appendAssistant("hello")
-	check("appendAssistant")
 	// Settle the stream the way production does, so the later empty-stream
 	// leg starts a genuinely fresh entry instead of extending this one.
 	m.finishAssistantBlock("")
-	check("finishAssistantBlock")
 	m.appendQueuedInput(&queuedREPLInput{text: "queued"})
-	check("appendQueuedInput")
 
 	img := transcriptImage{Path: "/tmp/x.png", Alt: "x"}
 	last := len(m.transcript) - 1
 	m.setTranscriptImages(last, []transcriptImage{img})
 	m.deleteTranscriptEntry(0)
-	check("deleteTranscriptEntry")
-	if got := m.transcriptImages[last-1]; len(got) != 1 || got[0] != img {
+	if got := m.transcript[last-1].images; len(got) != 1 || got[0] != img {
 		t.Fatalf("images did not follow their entry across the delete: %#v", got)
 	}
 
@@ -609,10 +597,11 @@ func TestTranscriptImageLaneLockstep(t *testing.T) {
 	if len(m.transcript) != before {
 		t.Fatalf("empty-stream settle did not delete its entry")
 	}
-	check("finishAssistantBlock empty-stream delete")
 
 	m.clearDisplay()
-	check("clearDisplay")
+	if len(m.transcript) != 0 {
+		t.Fatalf("clearDisplay left %d entries", len(m.transcript))
+	}
 }
 
 func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
