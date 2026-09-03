@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm"
-	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
@@ -29,22 +28,16 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 	if err := repl.addTab(state); err != nil {
 		return errors.Join(err, state.Close())
 	}
-	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
-		reuseUser := false
-		userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: prompt}
-		// The turn binds the session it started on: a tab shown while this
-		// goroutine runs must not redirect its writes.
-		state := repl.state
-		if tui, ok := turnUI.(*gotuiTurnUI); ok {
-			reuseUser = tui.reuseUser
-			userMsg = cloneChatMessage(tui.turn.userMessage)
-			if tui.state != nil {
-				state = tui.state
-			}
+	return repl.Run(ctx, func(turnCtx context.Context, _ string, turnUI TurnUI) error {
+		// The turn binds the session of the tab it started on: a tab shown
+		// while this goroutine runs must not redirect its writes.
+		tui, ok := turnUI.(*gotuiTurnUI)
+		if !ok || tui.state == nil {
+			return errors.New("turn started without a session")
 		}
 		// The exit code is a one-shot concern; the REPL already rendered
 		// any warning.
-		_, err := executeTurnWithUserMessage(turnCtx, config, state, userMsg, nil, nil, turnUI, reuseUser)
+		_, err := executeTurnWithUserMessage(turnCtx, config, tui.state, cloneChatMessage(tui.turn.userMessage), nil, nil, turnUI, tui.reuseUser)
 		return err
 	})
 }
@@ -64,6 +57,8 @@ func (r *managedREPL) newTabModel(state *conversationState) (string, *replModel,
 	}
 	settings := &state.settings
 	m := newReplModel()
+	// Off screen until shown; addTab shows a new tab at once.
+	m.hidden = true
 	m.status = newSessionStatus(settings, name, toolCount(state.toolRegistry), skillCount(state.skillCatalog))
 	m.quiet = r.config.Quiet
 	m.artifactStore = state.artifactStore

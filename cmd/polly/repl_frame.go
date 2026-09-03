@@ -308,6 +308,7 @@ func (r *managedREPL) render() {
 	title := r.model.frameTitle()
 	progress := r.model.frameProgress()
 	notices := r.model.takeNotices()
+	focusKnown, focused := r.model.focusKnown, r.model.focused
 	ticker := r.model.activityTicker(len(transcriptRows), topRow, l.transcriptHeight)
 	var overlay [][]ui.Cell
 	if ticker != "" {
@@ -321,6 +322,7 @@ func (r *managedREPL) render() {
 	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(viewport)
 	r.model.turnTrailerPlacements = r.model.visibleTurnTrailerPlacements(viewport)
 	r.model.mu.Unlock()
+	notices = append(notices, r.takeHiddenNotices(focusKnown, focused)...)
 
 	if l.logoRows == imageLogoHeight && r.images != nil {
 		// The image splash rides the same placement pipeline as thumbnails:

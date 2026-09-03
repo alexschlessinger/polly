@@ -1120,11 +1120,12 @@ func TestRestoredDraftResubmitsExactUserAfterDiscardingPendingInput(t *testing.T
 	}
 
 	reuseSeen := make(chan bool, 1)
-	done := r.startManagedTurn(context.Background(), turn, func(_ context.Context, _ string, turnUI TurnUI) error {
+	tab := r.visibleTab()
+	r.startManagedTurn(context.Background(), tab, turn, func(_ context.Context, _ string, turnUI TurnUI) error {
 		reuseSeen <- turnUI.(*gotuiTurnUI).reuseUser
 		return nil
 	})
-	if err := <-done; err != nil {
+	if err := <-tab.turnDone; err != nil {
 		t.Fatal(err)
 	}
 	if !<-reuseSeen {

@@ -5,18 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 // Tabs. The managed REPL holds several open sessions at once, each with its
-// own runtime, settings, and screen model. One tab is visible: r.model and
-// r.state always mirror it. Hidden tabs keep their session leased and their
-// transcript intact, ready to show again.
+// own runtime, settings, screen model, and turn. One tab is visible: r.model
+// and r.state always mirror it. Hidden tabs keep their session leased, their
+// transcript intact, and their turn running, ready to show again.
 //
 // Handlers run under the visible model's lock and only record tab changes;
 // the event loop applies them (applyTabRequests) once the lock is released,
 // so the visible model is never swapped under a lock taken on another one.
+// A tab's turn fields belong to the event loop (see repl_turns.go).
 
 type replTab struct {
 	// name is the session's name as the tab shows it; /rename keeps it
@@ -24,6 +26,16 @@ type replTab struct {
 	name  string
 	state *conversationState
 	model *replModel
+
+	// The tab's turn, owned by the event loop. turnDone carries the running
+	// turn goroutine's result and is nil while none runs; turnCancel cancels
+	// its context. cancelDetachAt is when a canceled turn that has not
+	// settled gets abandoned, zero until a cancel. stopWatch ends the lease
+	// watch that wakes the loop when the session's context ends.
+	turnDone       chan error
+	turnCancel     context.CancelFunc
+	cancelDetachAt time.Time
+	stopWatch      func() bool
 }
 
 // openResult is the outcome of opening a session for a new tab.
@@ -33,15 +45,33 @@ type openResult struct {
 	err   error
 }
 
-// visibleTabIndex is the index of the tab on screen, or -1 when the REPL
-// holds no tabs (unit tests of the screen alone).
+// visibleTabIndex is the index of the tab on screen, or -1 when none holds
+// the screen model.
 func (r *managedREPL) visibleTabIndex() int {
-	for i, tab := range r.tabs {
-		if tab.model == r.model {
-			return i
+	return r.tabIndexOfModel(r.model)
+}
+
+// visibleTab is the tab on screen. The REPL always has one: it starts on a
+// tab with no session behind its model (unit tests of the screen alone stay
+// there), which the first session to land replaces.
+func (r *managedREPL) visibleTab() *replTab {
+	if i := r.visibleTabIndex(); i >= 0 {
+		return r.tabs[i]
+	}
+	tab := &replTab{name: "-", state: r.state, model: r.model}
+	r.tabs = append(r.tabs, tab)
+	return tab
+}
+
+// tabForModel finds the tab whose screen model is m, falling back to the
+// visible tab.
+func (r *managedREPL) tabForModel(m *replModel) *replTab {
+	for _, tab := range r.tabs {
+		if tab.model == m {
+			return tab
 		}
 	}
-	return -1
+	return r.visibleTab()
 }
 
 // tabIndexOf finds the tab holding the named session, or -1.
@@ -54,33 +84,49 @@ func (r *managedREPL) tabIndexOf(name string) int {
 	return -1
 }
 
-// busy reports whether the visible tab has a turn in flight.
-func (r *managedREPL) busy() bool {
-	r.model.mu.Lock()
-	defer r.model.mu.Unlock()
-	return r.model.busy
-}
-
-// addTab opens a tab for state and shows it. Runs on the event loop with no
-// model lock held.
+// addTab opens a tab for state and shows it. The session's lease is watched
+// from here on, so its end wakes the event loop. Runs on the event loop with
+// no model lock held.
 func (r *managedREPL) addTab(state *conversationState) error {
 	name, m, err := r.newTabModel(state)
 	if err != nil {
 		return err
 	}
-	r.tabs = append(r.tabs, &replTab{name: name, state: state, model: m})
-	r.showTab(len(r.tabs) - 1)
+	tab := &replTab{name: name, state: state, model: m}
+	if state.session != nil {
+		tab.stopWatch = context.AfterFunc(state.session.Context(), r.wakeTabs)
+	}
+	// The screen-only tab the REPL starts on stands in until the first
+	// session lands.
+	if len(r.tabs) == 1 && r.tabs[0].state == nil {
+		r.tabs[0] = tab
+	} else {
+		r.tabs = append(r.tabs, tab)
+	}
+	r.showTab(r.tabIndexOfModel(m))
 	return nil
+}
+
+// tabIndexOfModel finds the tab whose screen model is m, or -1.
+func (r *managedREPL) tabIndexOfModel(m *replModel) int {
+	for i, tab := range r.tabs {
+		if tab.model == m {
+			return i
+		}
+	}
+	return -1
 }
 
 // showTab makes tab i visible. Image support and geometry, focus, and the
 // prompt history belong to the screen rather than to a session, so they move
-// from the model leaving the screen to the one taking it. Runs on the event
-// loop with no model lock held.
+// from the model leaving the screen to the one taking it. The model leaving
+// goes hidden, keeping any streamed text raw; the one arriving renders what
+// it streamed while hidden. Runs on the event loop with no model lock held.
 func (r *managedREPL) showTab(i int) {
 	tab := r.tabs[i]
 	if old := r.model; old != nil && old != tab.model {
 		old.mu.Lock()
+		old.hidden = true
 		nativeImages := old.nativeImages
 		cellWidth, cellHeight := old.imageCellWidth, old.imageCellHeight
 		focusKnown, focused := old.focusKnown, old.focused
@@ -96,6 +142,8 @@ func (r *managedREPL) showTab(i int) {
 		next.imageCellWidth, next.imageCellHeight = cellWidth, cellHeight
 		next.focusKnown, next.focused = focusKnown, focused
 		next.hist.entries = hist
+		next.hidden = false
+		next.renderAssistantStream()
 		next.mu.Unlock()
 	}
 	r.model = tab.model
@@ -106,21 +154,17 @@ func (r *managedREPL) showTab(i int) {
 }
 
 // requestShowTabLocked asks the event loop to show tab i once the current
-// handler releases the model lock. Leaving a running turn is refused: a
-// hidden tab cannot run one yet. Caller must hold r.model.mu.
+// handler releases the model lock. A turn running on the tab left behind
+// keeps running out of sight. Caller must hold r.model.mu.
 func (r *managedREPL) requestShowTabLocked(i int) {
-	m := r.model
-	if i < 0 || i >= len(r.tabs) || r.tabs[i].model == m {
-		return
-	}
-	if m.busy {
-		m.appendNoticeLine("finish or cancel the current turn before switching tabs")
+	if i < 0 || i >= len(r.tabs) || r.tabs[i].model == r.model {
 		return
 	}
 	r.showTabRequest = i
 }
 
-// requestCloseTabLocked asks the event loop to close the visible tab.
+// requestCloseTabLocked asks the event loop to close the visible tab. A
+// running turn must be canceled first: closing would cut it off mid-work.
 // Caller must hold r.model.mu.
 func (r *managedREPL) requestCloseTabLocked() {
 	m := r.model
@@ -129,7 +173,7 @@ func (r *managedREPL) requestCloseTabLocked() {
 		return
 	}
 	if m.busy {
-		m.appendNoticeLine("cancel the running turn before closing this tab")
+		m.appendNoticeLine("cancel this tab's turn (Esc) before closing it")
 		return
 	}
 	r.closeTabRequest = true
@@ -162,9 +206,7 @@ func (r *managedREPL) closeVisibleTab() {
 		r.requestQuit()
 		return
 	}
-	tab := r.tabs[i]
-	r.tabs = append(r.tabs[:i], r.tabs[i+1:]...)
-	r.showTab(max(i-1, 0))
+	tab := r.removeTab(i)
 	notice := "closed " + tab.name
 	if err := tab.state.Close(); err != nil {
 		notice += " (" + err.Error() + ")"
@@ -174,11 +216,34 @@ func (r *managedREPL) closeVisibleTab() {
 	r.model.mu.Unlock()
 }
 
+// removeTab takes tab i out of the list, ending its lease watch. When it was
+// on screen its left neighbor takes over. The caller closes the tab's
+// session. Runs on the event loop with no model lock held.
+func (r *managedREPL) removeTab(i int) *replTab {
+	tab := r.tabs[i]
+	if tab.stopWatch != nil {
+		tab.stopWatch()
+		tab.stopWatch = nil
+	}
+	visible := tab.model == r.model
+	r.tabs = append(r.tabs[:i], r.tabs[i+1:]...)
+	if visible {
+		r.showTab(max(i-1, 0))
+	}
+	return tab
+}
+
 // closeTabs closes every tab's session at exit, the visible one included. A
 // generated session that never ran a turn is discarded by its close.
 func (r *managedREPL) closeTabs() error {
 	var errs []error
 	for _, tab := range r.tabs {
+		if tab.stopWatch != nil {
+			tab.stopWatch()
+		}
+		if tab.state == nil {
+			continue
+		}
 		if err := tab.state.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close %s: %w", tab.name, err))
 		}
@@ -187,25 +252,35 @@ func (r *managedREPL) closeTabs() error {
 	return errors.Join(errs...)
 }
 
-// dropLostSession handles the visible session's lease context ending. With
-// other tabs open and no turn running, the dead tab closes and its neighbor
-// takes the screen. Otherwise the run must end with the typed cause, as it
-// does when the store itself closed; that is reported by returning false.
-// Runs on the event loop with no model lock held.
-func (r *managedREPL) dropLostSession() bool {
-	i := r.visibleTabIndex()
-	cause := context.Cause(r.state.session.Context())
-	if i < 0 || len(r.tabs) <= 1 || errors.Is(cause, sessions.ErrStoreClosed) || r.busy() {
-		return false
+// dropLostSessions closes the tabs whose session lease ended. With another
+// tab open, the dead tab leaves the list, its neighbor taking the screen if
+// it was visible; a dead tab whose turn is still unwinding waits for that
+// turn to settle first, since its context is already canceled. The last tab
+// losing its lease, or the store closing, ends the run: the typed cause is
+// returned for Run to report, as it was when the run context was parented on
+// the session. Runs on the event loop with no model lock held.
+func (r *managedREPL) dropLostSessions() error {
+	for i := 0; i < len(r.tabs); {
+		tab := r.tabs[i]
+		if tab.state == nil || tab.state.session == nil || tab.state.session.Context().Err() == nil {
+			i++
+			continue
+		}
+		cause := context.Cause(tab.state.session.Context())
+		if len(r.tabs) == 1 || errors.Is(cause, sessions.ErrStoreClosed) {
+			return cause
+		}
+		if tab.turnDone != nil {
+			i++
+			continue
+		}
+		r.removeTab(i)
+		_ = tab.state.Close()
+		r.model.mu.Lock()
+		r.model.appendErrorLine("closed " + tab.name + ": " + cause.Error())
+		r.model.mu.Unlock()
 	}
-	tab := r.tabs[i]
-	r.tabs = append(r.tabs[:i], r.tabs[i+1:]...)
-	r.showTab(max(i-1, 0))
-	_ = tab.state.Close()
-	r.model.mu.Lock()
-	r.model.appendErrorLine("closed " + tab.name + ": " + cause.Error())
-	r.model.mu.Unlock()
-	return true
+	return nil
 }
 
 // requestNewTabLocked opens a fresh generated session in a new tab. Caller
@@ -245,17 +320,10 @@ func (r *managedREPL) requestOpenLocked(name string) {
 }
 
 // canOpenLocked reports whether a tab may open now, explaining a refusal in
-// the transcript. A new tab takes the screen from the visible one, so a
-// running turn must settle first, and only one open runs at a time. Caller
-// must hold r.model.mu.
+// the transcript: only one open runs at a time. Caller must hold r.model.mu.
 func (r *managedREPL) canOpenLocked() bool {
-	m := r.model
 	if r.opening != "" {
-		m.appendNoticeLine("already opening " + r.opening)
-		return false
-	}
-	if m.busy {
-		m.appendNoticeLine("finish or cancel the current turn before opening another session")
+		r.model.appendNoticeLine("already opening " + r.opening)
 		return false
 	}
 	return true
@@ -332,7 +400,8 @@ func (r *managedREPL) drainOpen() {
 	}
 }
 
-// tabLines lists the open tabs for /tab.
+// tabLines lists the open tabs for /tab, with what each one's turn is doing.
+// Caller must hold r.model.mu; other tabs' models are locked here.
 func (r *managedREPL) tabLines() []string {
 	if len(r.tabs) == 0 {
 		return []string{"no tabs"}
@@ -341,12 +410,34 @@ func (r *managedREPL) tabLines() []string {
 	lines := []string{fmt.Sprintf("tabs (%d):", len(r.tabs))}
 	for i, tab := range r.tabs {
 		line := fmt.Sprintf("  %d  %s", i+1, tab.name)
+		if activity := r.tabActivity(tab); activity != "" {
+			line += "  " + activity
+		}
 		if i == visible {
 			line += "  current"
 		}
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// tabActivity describes the turn running on tab, or "" at idle. Caller must
+// hold r.model.mu; another tab's model is locked here, never the reverse.
+func (r *managedREPL) tabActivity(tab *replTab) string {
+	m := tab.model
+	if m != r.model {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+	}
+	switch {
+	case m.approval != nil:
+		return "approval needed"
+	case !m.busy:
+		return ""
+	case m.turnStarted.IsZero():
+		return m.busyLabel()
+	}
+	return m.busyLabel() + " · " + coarseElapsed(time.Since(m.turnStarted))
 }
 
 // resolveTab finds a tab by 1-based position or session name.

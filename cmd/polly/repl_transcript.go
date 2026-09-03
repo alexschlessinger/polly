@@ -128,9 +128,8 @@ func (m *replModel) resetAssistantStream() {
 }
 
 // appendAssistant accumulates streamed model output into the current
-// assistant entry, rendering the visible (holdback-trimmed) prefix of the raw
-// markdown through goldmark. Unchanged visible prefixes skip the re-render, so
-// a chunk that only extends a held-back token costs nothing.
+// assistant entry and renders it (renderAssistantStream) while its tab is
+// on screen; a hidden tab keeps only the raw text until it shows again.
 func (m *replModel) appendAssistant(text string) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -144,6 +143,20 @@ func (m *replModel) appendAssistant(text string) {
 		m.currentAssistant = m.appendTranscriptEntry("")
 	}
 	m.streamRaw.WriteString(text)
+	if m.hidden {
+		return
+	}
+	m.renderAssistantStream()
+}
+
+// renderAssistantStream renders the visible (holdback-trimmed) prefix of the
+// streaming message through goldmark into its entry. An unchanged visible
+// prefix skips the re-render, so a chunk that only extends a held-back token
+// costs nothing.
+func (m *replModel) renderAssistantStream() {
+	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
+		return
+	}
 	raw := m.streamRaw.String()
 	visible := raw[:safeVisibleLen(raw)]
 	if len(visible) == m.streamShown && m.transcript[m.currentAssistant].text != "" {

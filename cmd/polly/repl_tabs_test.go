@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	ui "github.com/metaspartan/gotui/v5"
@@ -163,55 +164,242 @@ func TestOpenFailureKeepsVisibleTabAndItsSettings(t *testing.T) {
 	}
 }
 
-func TestLeavingABusyTabIsRefusedUntilTheTurnSettles(t *testing.T) {
+func TestLeavingABusyTabKeepsItsTurnRunning(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	target := testAcquireSession(t, store, "older-work")
 	if err := target.Close(); err != nil {
 		t.Fatal(err)
 	}
 	r := newTabTestREPL(t, store, "first-work", "current-work")
-	r.showTab(1)
-	current := r.state.session
+	busy := r.tabs[1]
 	done := startBlockedTurn(t, r)
 
-	r.requestOpenLocked("older-work")
-	r.runTabCommand("/new")
-	r.runTabCommand("/tab 1")
+	// Closing a busy tab would cut its turn off; switching away does not.
 	r.runTabCommand("/close")
-	if r.opening != "" || r.showTabRequest >= 0 || r.closeTabRequest {
-		t.Fatalf("a running turn did not block tab changes: opening=%q show=%d close=%v", r.opening, r.showTabRequest, r.closeTabRequest)
+	if r.closeTabRequest || len(r.tabs) != 2 {
+		t.Fatal("a busy tab was closed")
 	}
-	if r.state.session != current || len(r.tabs) != 2 {
-		t.Fatal("tab changes were applied under a running turn")
+	if got := r.model.fullTranscript(); !strings.Contains(got, "cancel this tab's turn (Esc) before closing it") {
+		t.Fatalf("close refusal was not explained: %q", got)
 	}
-	transcript := r.model.fullTranscript()
-	for _, want := range []string{
-		"finish or cancel the current turn before opening another session",
-		"finish or cancel the current turn before switching tabs",
-		"cancel the running turn before closing this tab",
-	} {
-		if !strings.Contains(transcript, want) {
-			t.Fatalf("refusal %q missing from %q", want, transcript)
-		}
+	r.runTabCommand("/tab 1")
+	if r.visibleTabIndex() != 0 || r.state != r.tabs[0].state {
+		t.Fatal("/tab 1 did not leave the busy tab")
 	}
-	if r.model.canceling {
-		t.Fatal("a refused tab change canceled the running turn")
+	if r.model.busy {
+		t.Fatal("the shown tab inherited the busy state")
+	}
+	busy.model.mu.Lock()
+	running := busy.model.busy && !busy.model.canceling && busy.model.hidden
+	turnID := busy.model.turnID
+	busy.model.mu.Unlock()
+	if !running || busy.turnDone == nil {
+		t.Fatal("leaving the tab disturbed its turn")
 	}
 
-	settleBlockedTurn(t, r, done)
+	// The hidden turn streams into its own tab, unrendered until shown.
+	tui := &gotuiTurnUI{repl: r, model: busy.model, config: r.config, state: busy.state, turnID: turnID}
+	tui.AppendAssistantText("**bold** while hidden\n")
+	busy.model.mu.Lock()
+	rendered := busy.model.transcript[busy.model.currentAssistant].text
+	raw := busy.model.streamRaw.String()
+	busy.model.mu.Unlock()
+	if rendered != "" || raw != "**bold** while hidden\n" {
+		t.Fatalf("hidden tab rendered %q from raw %q", rendered, raw)
+	}
+	if strings.Contains(r.model.fullTranscript(), "while hidden") {
+		t.Fatal("hidden output reached the visible tab")
+	}
+	if got := strings.Join(r.tabLines(), "\n"); !strings.Contains(got, "2  current-work  streaming") || !strings.Contains(got, "1  first-work  current") {
+		t.Fatalf("tab list does not show the hidden turn: %q", got)
+	}
+
+	// Opening another session while a turn runs is fine too: the new tab
+	// takes the screen, the turn keeps going behind it.
+	r.runTabCommand("/tab 2")
 	r.requestOpenLocked("older-work")
 	if r.opening != "older-work" {
-		t.Fatalf("settled turn still blocks opening: opening=%q", r.opening)
+		t.Fatalf("a running turn blocked opening a session: %q", r.model.fullTranscript())
 	}
 	r.finishOpen(<-r.openDone)
-	if name, err := r.state.session.GetName(context.Background()); err != nil || name != "older-work" {
-		t.Fatalf("live session = %q, %v; want older-work", name, err)
+	if len(r.tabs) != 3 || r.visibleTabIndex() != 2 || r.model.busy {
+		t.Fatalf("tabs after opening under a turn = %d, visible %d, busy %v", len(r.tabs), r.visibleTabIndex(), r.model.busy)
 	}
-	if len(r.tabs) != 3 || current.Context().Err() != nil {
-		t.Fatalf("the tab left behind did not stay open: tabs=%d", len(r.tabs))
+
+	r.runTabCommand("/tab 2")
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "bold while hidden") {
+		t.Fatalf("showing the tab did not render its streamed text: %q", got)
 	}
-	if r.model.busy || r.model.canceling {
-		t.Fatal("new tab inherited the settled turn's busy state")
+	settleBlockedTurn(t, r, done)
+	if r.model.busy || r.model.canceling || busy.turnDone != nil {
+		t.Fatal("the settled turn left the tab busy")
+	}
+}
+
+func TestHiddenTurnSettlesOnItsOwnTabAndRunsItsQueue(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "first-work", "current-work")
+	busy := r.tabs[1]
+	release := make(chan struct{})
+	runTurn := func(context.Context, string, TurnUI) error {
+		<-release
+		return nil
+	}
+	r.model.mu.Lock()
+	r.model.beginTurn("keep going")
+	r.model.mu.Unlock()
+	r.startTurn(context.Background(), "keep going", runTurn)
+	busy.model.mu.Lock()
+	busy.model.queue = queuedTextInputs("/set model openai/gpt-5.4")
+	busy.model.mu.Unlock()
+	r.runTabCommand("/tab 1")
+
+	close(release)
+	select {
+	case <-r.tabEvents:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the settled turn did not wake the loop")
+	}
+	if err := r.settleTabs(context.Background(), runTurn); err != nil {
+		t.Fatal(err)
+	}
+	if busy.turnDone != nil || busy.model.busy || busy.model.lastOutcome != turnOutcomeDone {
+		t.Fatalf("hidden turn did not settle on its tab: running=%v busy=%v outcome=%v", busy.turnDone != nil, busy.model.busy, busy.model.lastOutcome)
+	}
+	if r.visibleTabIndex() != 0 || r.model.busy || r.model.lastOutcome != turnOutcomeNone {
+		t.Fatal("settling a hidden turn touched the visible tab")
+	}
+	if busy.state.settings.Model != "openai/gpt-5.4" || r.state.settings.Model == "openai/gpt-5.4" {
+		t.Fatalf("queued command ran on the wrong tab: hidden=%q visible=%q", busy.state.settings.Model, r.state.settings.Model)
+	}
+	if r.model != r.tabs[0].model || r.state != r.tabs[0].state {
+		t.Fatal("running a hidden tab's queue left the screen on the wrong tab")
+	}
+	if got := plainStyledText(busy.model.fullTranscript()); !strings.Contains(got, "openai/gpt-5.4") {
+		t.Fatalf("queued command output went elsewhere: %q", got)
+	}
+	if strings.Contains(plainStyledText(r.model.fullTranscript()), "openai/gpt-5.4") {
+		t.Fatal("queued command output reached the visible tab")
+	}
+}
+
+func TestPendingTurnStartsOnTheTabThatTookIt(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "first-work", "second-work")
+	started := make(chan *replModel, 1)
+	runTurn := func(_ context.Context, _ string, turnUI TurnUI) error {
+		started <- turnUI.(*gotuiTurnUI).model
+		return nil
+	}
+	r.pending <- pendingTurn{model: r.tabs[0].model, turn: textManagedTurn("hello")}
+	r.startPendingTurn(context.Background(), runTurn)
+	if r.tabs[0].turnDone == nil || r.tabs[1].turnDone != nil {
+		t.Fatal("the pending turn did not start on the tab that took it")
+	}
+	select {
+	case m := <-started:
+		if m != r.tabs[0].model {
+			t.Fatal("the turn reports into the wrong tab")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn did not start")
+	}
+	select {
+	case <-r.tabEvents:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the settled turn did not wake the loop")
+	}
+	if err := r.settleTabs(context.Background(), runTurn); err != nil {
+		t.Fatal(err)
+	}
+	if r.tabs[0].turnDone != nil {
+		t.Fatal("the turn did not settle on its tab")
+	}
+}
+
+func TestIdleInterruptWarnsAboutHiddenTurnsThenQuitsWithGrace(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "first-work", "current-work")
+	busy := r.tabs[1]
+	startBlockedTurn(t, r)
+	r.runTabCommand("/tab 1")
+
+	if r.handleInterrupt() {
+		t.Fatal("the first idle interrupt quit with a turn running in another tab")
+	}
+	if got := r.model.fullTranscript(); !strings.Contains(got, "1 turn running in another tab · ^C again to cancel it and quit") {
+		t.Fatalf("no warning about the hidden turn: %q", got)
+	}
+	if busy.model.canceling || busy.turnDone == nil {
+		t.Fatal("the warning canceled the hidden turn")
+	}
+	// Any other key withdraws the warning; the next Ctrl-C warns again.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "x"})
+	r.model.ed.clear()
+	if r.handleInterrupt() {
+		t.Fatal("an interrupt after another key quit without warning again")
+	}
+	if !r.handleInterrupt() {
+		t.Fatal("the second idle interrupt did not quit")
+	}
+	if r.beginQuit() {
+		t.Fatal("quit returned before the running turn settled")
+	}
+	select {
+	case <-r.quit:
+		t.Fatal("beginQuit left the quit request pending")
+	default:
+	}
+	if !busy.model.canceling || r.quitDeadline == nil {
+		t.Fatal("quitting did not cancel the hidden turn under a grace")
+	}
+	deadline := time.After(5 * time.Second)
+	for busy.turnDone != nil {
+		select {
+		case <-r.tabEvents:
+		case <-deadline:
+			t.Fatal("the canceled turn did not settle")
+		}
+		if err := r.settleTabs(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !r.quitSettled() {
+		t.Fatal("quit did not settle once the turn returned")
+	}
+	if busy.model.lastOutcome != turnOutcomeCanceled {
+		t.Fatalf("hidden turn outcome = %v, want canceled", busy.model.lastOutcome)
+	}
+	if !r.beginQuit() {
+		t.Fatal("a repeated quit request did not return at once")
+	}
+}
+
+func TestIdleEOFWarnsAboutHiddenTurnsThenQuits(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "first-work", "current-work")
+	startBlockedTurn(t, r)
+	r.runTabCommand("/tab 1")
+	eof := ui.Event{Type: ui.KeyboardEvent, ID: "<C-d>"}
+	if r.handleEvent(eof) {
+		t.Fatal("the first Ctrl-D quit with a turn running in another tab")
+	}
+	if got := r.model.fullTranscript(); !strings.Contains(got, "1 turn running in another tab") {
+		t.Fatalf("no warning about the hidden turn: %q", got)
+	}
+	if !r.handleEvent(eof) {
+		t.Fatal("the second Ctrl-D did not quit")
+	}
+}
+
+func TestIdleInterruptQuitsAtOnceWithoutHiddenTurns(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "first-work", "current-work")
+	if !r.handleInterrupt() {
+		t.Fatal("interrupt at an idle prompt with idle tabs did not quit")
+	}
+	if !r.beginQuit() {
+		t.Fatal("quit waited with no turn running")
 	}
 }
 
@@ -387,8 +575,13 @@ func TestLostLeaseDropsTabWhenAnotherRemains(t *testing.T) {
 	if err := r.tabs[1].state.session.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if !r.dropLostSession() {
-		t.Fatal("a lost lease with another tab open ended the run")
+	select {
+	case <-r.tabEvents:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the ended lease did not wake the loop")
+	}
+	if err := r.dropLostSessions(); err != nil {
+		t.Fatalf("a lost lease with another tab open ended the run: %v", err)
 	}
 	if len(r.tabs) != 1 || r.visibleTabIndex() != 0 || r.tabs[0].name != "first-work" {
 		t.Fatalf("tabs after lease loss = %d, visible %d", len(r.tabs), r.visibleTabIndex())
@@ -401,8 +594,39 @@ func TestLostLeaseDropsTabWhenAnotherRemains(t *testing.T) {
 	if err := r.tabs[0].state.session.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if r.dropLostSession() {
+	if err := r.dropLostSessions(); err == nil {
 		t.Fatal("the last tab's lost lease was dropped instead of ending the run")
+	}
+}
+
+func TestLostLeaseUnderAHiddenTurnDropsTheTabOnceItSettles(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "first-work", "second-work")
+	lost := r.tabs[1]
+	startBlockedTurn(t, r)
+	r.runTabCommand("/tab 1")
+	if err := lost.state.session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(5 * time.Second)
+	for len(r.tabs) == 2 {
+		select {
+		case <-r.tabEvents:
+		case <-deadline:
+			t.Fatalf("the dead tab was not dropped: turn running=%v", lost.turnDone != nil)
+		}
+		if err := r.settleTabs(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if lost.turnDone != nil || lost.model.busy {
+		t.Fatal("the tab was dropped before its turn settled")
+	}
+	if r.visibleTabIndex() != 0 || r.tabs[0].name != "first-work" {
+		t.Fatal("the surviving tab is not on screen")
+	}
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "closed second-work") {
+		t.Fatalf("lease loss was not explained on the visible tab: %q", got)
 	}
 }
 
@@ -465,13 +689,13 @@ func TestTurnContextFollowsSessionLeaseAndRunContext(t *testing.T) {
 	r.state = &conversationState{sessionStore: store, session: session}
 
 	runCtx, cancelRun := context.WithCancelCause(context.Background())
-	turnCtx, cancelTurn := r.turnContext(runCtx)
+	turnCtx, cancelTurn := turnContext(runCtx, r.state)
 	cancelTurn()
 	if !errors.Is(context.Cause(turnCtx), context.Canceled) {
 		t.Fatalf("user cancel cause = %v, want context.Canceled", context.Cause(turnCtx))
 	}
 
-	turnCtx, cancelTurn = r.turnContext(runCtx)
+	turnCtx, cancelTurn = turnContext(runCtx, r.state)
 	defer cancelTurn()
 	signal := errors.New("shutdown signal")
 	cancelRun(signal)
@@ -481,7 +705,7 @@ func TestTurnContextFollowsSessionLeaseAndRunContext(t *testing.T) {
 	}
 
 	runCtx2 := context.Background()
-	turnCtx, cancelTurn = r.turnContext(runCtx2)
+	turnCtx, cancelTurn = turnContext(runCtx2, r.state)
 	defer cancelTurn()
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
@@ -490,11 +714,9 @@ func TestTurnContextFollowsSessionLeaseAndRunContext(t *testing.T) {
 	if context.Cause(turnCtx) == nil {
 		t.Fatal("closing the session did not cancel its turn")
 	}
-	if r.sessionDone() == nil {
-		t.Fatal("sessionDone returned nil with a live state")
-	}
-	r.state = nil
-	if r.sessionDone() != nil {
-		t.Fatal("sessionDone without a state must never fire")
+	turnCtx, cancelTurn = turnContext(runCtx2, nil)
+	defer cancelTurn()
+	if turnCtx.Err() != nil {
+		t.Fatal("a turn without a session must follow the run context alone")
 	}
 }

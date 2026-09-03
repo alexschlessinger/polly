@@ -675,7 +675,7 @@ func TestBracketedPasteInsertsMultiLine(t *testing.T) {
 	}
 	select {
 	case p := <-r.pending:
-		t.Fatalf("paste should not submit, got %q", p.displayText)
+		t.Fatalf("paste should not submit, got %q", p.turn.displayText)
 	default:
 	}
 
@@ -683,8 +683,8 @@ func TestBracketedPasteInsertsMultiLine(t *testing.T) {
 	send("<Enter>")
 	select {
 	case p := <-r.pending:
-		if p.displayText != "a\nb" {
-			t.Fatalf("submitted %q, want \"a\\nb\"", p.displayText)
+		if p.turn.displayText != "a\nb" {
+			t.Fatalf("submitted %q, want \"a\\nb\"", p.turn.displayText)
 		}
 	default:
 		t.Fatal("Enter after paste should submit")
@@ -1028,7 +1028,7 @@ func TestRunREPLLoopShowsHelp(t *testing.T) {
 func TestHandleInterruptCancelsThenQuits(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	canceled := false
-	r.turnCancel = func() { canceled = true }
+	r.visibleTab().turnCancel = func() { canceled = true }
 	reply := make(chan []bool, 1)
 	r.model.busy = true
 	r.model.state = turnStateTool
@@ -1095,7 +1095,7 @@ func TestMouseLeftOpensThumbnailUnderCursor(t *testing.T) {
 func TestEscapeCancelsTurnButNeverQuits(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	canceled := false
-	r.turnCancel = func() { canceled = true }
+	r.visibleTab().turnCancel = func() { canceled = true }
 	r.model.busy = true
 	r.model.state = turnStateStreaming
 	esc := ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"}
@@ -1139,7 +1139,7 @@ func TestAbandonCanceledTurnRestoresPromptAndInvalidatesCallbacks(t *testing.T) 
 	m.turnID = 7
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: 7}
 
-	r.abandonCanceledTurn()
+	r.abandonCanceledTurn(r.visibleTab())
 	if m.busy || m.canceling {
 		t.Fatalf("abandoned turn should restore idle prompt, busy=%v canceling=%v", m.busy, m.canceling)
 	}
@@ -1222,7 +1222,7 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	// Queueing must not start a turn.
 	select {
 	case p := <-r.pending:
-		t.Fatalf("queueing should not submit, got %q", p.displayText)
+		t.Fatalf("queueing should not submit, got %q", p.turn.displayText)
 	default:
 	}
 
@@ -1259,7 +1259,7 @@ func TestEnterWhileBusyQueuesSlashCommandInHistory(t *testing.T) {
 	}
 	select {
 	case p := <-r.pending:
-		t.Fatalf("queueing slash command should not submit, got %q", p.displayText)
+		t.Fatalf("queueing slash command should not submit, got %q", p.turn.displayText)
 	default:
 	}
 }

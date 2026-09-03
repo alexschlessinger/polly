@@ -64,8 +64,14 @@ session, `/tab` lists the open tabs and `/tab <n|name>` switches, and
 session that never ran a turn is discarded). Closing the last tab leaves
 polly.
 Each tab keeps its own settings, so `/set` and `/model` change only the
-visible one. A tab cannot be left while its turn is running: finish or
-cancel the turn first. Each open session is leased by the polly holding
+visible one. A turn keeps running when you switch away from its tab:
+start a long agentic run, `/new` or `/tab 1`, and keep working; `/tab`
+lists what each tab is doing, and input queued behind a hidden turn runs
+when it settles. A hidden turn that needs tool approval waits until you
+switch back to it. Closing a tab whose turn is running is refused; cancel
+the turn (Esc) first. Quitting with turns running in other tabs warns
+once, and a second Ctrl-C cancels them, waits briefly for their completed
+work to save, and exits. Each open session is leased by the polly holding
 it, so the picker marks sessions open in another polly as `in use` and
 will not open them; picking a session already open in a tab jumps to it.
 
