@@ -263,17 +263,7 @@ func (m *replModel) statusRow(width int) string {
 		}
 	}
 
-	// Center the field block in the row. The timer reserves the left edge,
-	// so the block's start column is fixed: the timer's width is carved out
-	// of the padding rather than shifting the block right.
-	pad := (width-rightWidth)/2 - rw.StringWidth(leftRaw)
-	if pad < 0 {
-		pad = 0
-	}
-	x := (width - rightWidth) / 2
-	if x < 0 {
-		x = 0
-	}
+	x := width - rightWidth
 	sepWidth := rw.StringWidth(sep)
 	for i, f := range fields {
 		fieldCols := rw.StringWidth(f.text)
@@ -284,6 +274,12 @@ func (m *replModel) statusRow(width int) string {
 		if i < len(fields)-1 {
 			x += sepWidth
 		}
+	}
+	// Right-align: pad the left edge so the field block ends at the
+	// terminal's right margin.
+	pad := width - rw.StringWidth(leftRaw) - rightWidth
+	if pad < 0 {
+		pad = 0
 	}
 	return leftStyled + strings.Repeat(" ", pad) + rightStyled
 }
