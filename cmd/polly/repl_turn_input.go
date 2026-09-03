@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
-	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -113,26 +111,9 @@ func materializeArtifactImageParts(ctx context.Context, msg messages.ChatMessage
 			continue
 		}
 		ref := part.Artifact
-		if store == nil {
-			return messages.ChatMessage{}, fmt.Errorf("image artifact %s has no session store", ref.ID)
-		}
-		if !artifacts.ValidID(ref.ID) || ref.Bytes < 0 || ref.Bytes > int64(maxLocalImageBytes) {
-			return messages.ChatMessage{}, fmt.Errorf("image artifact %s has invalid metadata", ref.ID)
-		}
-		r, err := store.Open(ctx, ref.ID)
+		data, err := readImageArtifact(ctx, store, ref)
 		if err != nil {
 			return messages.ChatMessage{}, fmt.Errorf("read queued image artifact %s: %w", ref.ID, err)
-		}
-		data, readErr := io.ReadAll(io.LimitReader(r, ref.Bytes+1))
-		closeErr := r.Close()
-		if readErr != nil {
-			return messages.ChatMessage{}, fmt.Errorf("read queued image artifact %s: %w", ref.ID, readErr)
-		}
-		if closeErr != nil {
-			return messages.ChatMessage{}, fmt.Errorf("close queued image artifact %s: %w", ref.ID, closeErr)
-		}
-		if int64(len(data)) != ref.Bytes {
-			return messages.ChatMessage{}, fmt.Errorf("queued image artifact %s size changed", ref.ID)
 		}
 		reference := part.Reference
 		if reference == "" {
@@ -141,10 +122,7 @@ func materializeArtifactImageParts(ctx context.Context, msg messages.ChatMessage
 		if reference == "" {
 			reference = ref.Reference
 		}
-		msg.Parts[i] = messages.ContentPart{
-			Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(data),
-			MimeType: ref.MIMEType, FileName: ref.Name, Reference: reference,
-		}
+		msg.Parts[i] = artifactImagePart(ref, data, reference)
 	}
 	return msg, nil
 }
@@ -380,13 +358,9 @@ func (m *replModel) bindRestoredImageAttachment(part messages.ContentPart) strin
 		copy := *part.Artifact
 		ref = &copy
 	} else if part.Type == "image_base64" && part.ImageData != "" && m.artifactStore != nil {
-		data, err := base64.StdEncoding.DecodeString(part.ImageData)
-		if err != nil || len(data) == 0 {
-			return ""
-		}
-		stored, err := m.artifactStore.Put(context.Background(), artifacts.Blob{
-			Kind: artifacts.KindImage, MIMEType: part.MimeType, Name: part.FileName, Data: data,
-		})
+		// The restored draft mints its own token below, so the blob is stored
+		// without one.
+		stored, err := storeImagePart(context.Background(), m.artifactStore, part, "")
 		if err != nil {
 			return ""
 		}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -350,11 +351,10 @@ func restorableHistoryTurn(msg messages.ChatMessage, display string, simpleConte
 				return managedTurnInput{}, false
 			}
 		case "image_base64":
-			if !portablePersistedImagePart(part) {
-				upgraded, err := upgradeLegacyImagePart(part)
-				if err != nil || upgraded.Type != "image_base64" || !portablePersistedImagePart(upgraded) {
-					return managedTurnInput{}, false
-				}
+			// A normalized upgrade is portable by construction (NormalizeForModel
+			// bounds the edge and the bytes), so only its kind needs checking.
+			if upgraded, err := portableImagePart(part); err != nil || upgraded.Type != "image_base64" {
+				return managedTurnInput{}, false
 			}
 			imageCount++
 		case "image_artifact":
@@ -398,15 +398,8 @@ func validatePortablePersistedImagePart(part messages.ContentPart) error {
 	if _, decodedFormat, err := image.Decode(bytes.NewReader(data)); err != nil || decodedFormat != format {
 		return fmt.Errorf("invalid %s image data", format)
 	}
-	wantMIME := ""
-	switch format {
-	case "png":
-		wantMIME = "image/png"
-	case "jpeg":
-		wantMIME = "image/jpeg"
-	case "webp":
-		wantMIME = "image/webp"
-	default:
+	wantMIME, ok := images.PortableMIMEType(format)
+	if !ok {
 		return fmt.Errorf("unsupported image format %q", format)
 	}
 	if part.MimeType != wantMIME {
