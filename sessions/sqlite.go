@@ -1389,9 +1389,14 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 	if err := s.ensureOpen(); err != nil {
 		return nil, err
 	}
+	nowNS := time.Now().UTC().UnixNano()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT name,created_ns,updated_ns,ttl_ns,settings_json,next_sequence
-		FROM sessions ORDER BY updated_ns DESC,name`)
+		SELECT name,created_ns,updated_ns,ttl_ns,settings_json,next_sequence,
+		       EXISTS(
+		         SELECT 1 FROM session_leases
+		         WHERE session_leases.session_id = sessions.id
+		           AND session_leases.expires_ns > ?)
+		FROM sessions ORDER BY updated_ns DESC,name`, nowNS)
 	if err != nil {
 		return nil, err
 	}
@@ -1399,14 +1404,15 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 	var result []SessionSummary
 	for rows.Next() {
 		var snap sessionSnapshot
-		if err := rows.Scan(&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq); err != nil {
+		var inUse bool
+		if err := rows.Scan(&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq, &inUse); err != nil {
 			return nil, err
 		}
 		metadata, err := metadataFromSnapshot(snap)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, SessionSummary{Metadata: metadata, MessageCount: int(snap.nextSeq)})
+		result = append(result, SessionSummary{Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse})
 	}
 	return result, rows.Err()
 }

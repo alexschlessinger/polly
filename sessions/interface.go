@@ -39,10 +39,13 @@ type AcquireOptions struct {
 
 // SessionSummary combines persisted metadata with lightweight transcript
 // aggregates suitable for session pickers. MessageCount is the number of
-// durable messages currently stored for the session.
+// durable messages currently stored for the session. InUse reports a live,
+// unexpired lease on the session, whether this process or another one holds
+// it; a picker can mark or refuse such sessions instead of waiting on Acquire.
 type SessionSummary struct {
 	Metadata     *Metadata
 	MessageCount int
+	InUse        bool
 }
 
 // Session is an exclusively leased, database-backed conversation. Context is
