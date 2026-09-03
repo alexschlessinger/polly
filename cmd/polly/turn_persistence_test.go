@@ -825,7 +825,7 @@ func TestFirstCallFailurePersistsNoGeneratedMessages(t *testing.T) {
 func TestDetachedTurnRefusesLatePersistence(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.turnID = 4
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 4}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: 4}
 	if !tui.TurnPersistenceAllowed() {
 		t.Fatal("live turn should be allowed to persist")
 	}

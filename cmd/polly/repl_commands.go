@@ -70,6 +70,12 @@ type replCommandContext struct {
 	openModelPicker  func()
 	openKeyManager   func()
 	openResumePicker func()
+	// Tab callbacks are managed-TUI operations too; the fallback REPL holds
+	// one session and leaves them nil.
+	newTab   func()
+	closeTab func()
+	listTabs func() []string
+	showTab  func(arg string) error
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -99,6 +105,13 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "clear the display (keep conversation history)",
 		busySafe: true,
 		run:      replClearCommand,
+	})
+	r.register(replCommand{
+		name:     "/close",
+		usage:    "/close",
+		summary:  "close this tab (its session stays saved)",
+		busySafe: true,
+		run:      replCloseCommand,
 	})
 	r.register(replCommand{
 		name:     "/context",
@@ -146,16 +159,24 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:     replModelCommand,
 	})
 	r.register(replCommand{
+		name:     "/new",
+		usage:    "/new",
+		summary:  "open a new tab on a fresh session",
+		busySafe: true,
+		run:      replNewCommand,
+	})
+	r.register(replCommand{
 		name:    "/rename",
 		usage:   "/rename <name>",
 		summary: "rename the current context",
 		run:     replRenameCommand,
 	})
 	r.register(replCommand{
-		name:    "/resume",
-		usage:   "/resume",
-		summary: "select a saved session",
-		run:     replResumeCommand,
+		name:     "/resume",
+		usage:    "/resume",
+		summary:  "open a saved session in a new tab",
+		busySafe: true,
+		run:      replResumeCommand,
 	})
 	r.register(replCommand{
 		name:    "/reset",
@@ -176,6 +197,14 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "list loaded skills",
 		busySafe: true,
 		run:      replSkillsCommand,
+	})
+	r.register(replCommand{
+		name:     "/tab",
+		aliases:  []string{"/tabs"},
+		usage:    "/tab [n|name]",
+		summary:  "list open tabs, or switch to one",
+		busySafe: true,
+		run:      replTabCommand,
 	})
 	r.register(replCommand{
 		name:     "/tools",
@@ -427,6 +456,9 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		// mutates the model directly like reply/clearTranscript do.
 		setContextName: func(name string) {
 			r.model.status.contextName = name
+			if i := r.visibleTabIndex(); i >= 0 {
+				r.tabs[i].name = name
+			}
 		},
 		resetConversation: func() error {
 			if r.state == nil || r.state.session == nil {
@@ -480,6 +512,17 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		openModelPicker:  r.openModelPicker,
 		openKeyManager:   r.openKeyManager,
 		openResumePicker: r.openResumePicker,
+		newTab:           r.requestNewTabLocked,
+		closeTab:         r.requestCloseTabLocked,
+		listTabs:         r.tabLines,
+		showTab: func(arg string) error {
+			i, err := r.resolveTab(arg)
+			if err != nil {
+				return err
+			}
+			r.requestShowTabLocked(i)
+			return nil
+		},
 	}
 }
 
@@ -776,6 +819,45 @@ func replResumeCommand(ctx *replCommandContext, args []string) replCommandResult
 	}
 	ctx.openResumePicker()
 	return replCommandResult{}
+}
+
+func replNewCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 1 {
+		return replCommandResult{err: ctx.replyLine("usage: /new")}
+	}
+	if ctx == nil || ctx.newTab == nil {
+		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
+	}
+	ctx.newTab()
+	return replCommandResult{}
+}
+
+func replCloseCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 1 {
+		return replCommandResult{err: ctx.replyLine("usage: /close")}
+	}
+	if ctx == nil || ctx.closeTab == nil {
+		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
+	}
+	ctx.closeTab()
+	return replCommandResult{}
+}
+
+func replTabCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if ctx == nil || ctx.listTabs == nil || ctx.showTab == nil {
+		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
+	}
+	switch len(args) {
+	case 1:
+		return replCommandResult{err: ctx.replyLines(ctx.listTabs())}
+	case 2:
+		if err := ctx.showTab(args[1]); err != nil {
+			return replCommandResult{err: ctx.replyLine(err.Error())}
+		}
+		return replCommandResult{}
+	default:
+		return replCommandResult{err: ctx.replyLine("usage: /tab [n|name]")}
+	}
 }
 
 func replContextCommand(ctx *replCommandContext, args []string) replCommandResult {

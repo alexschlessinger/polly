@@ -10,7 +10,10 @@ import (
 // gotuiTurnUI: the TurnUI implementation that pokes the model under lock.
 
 type gotuiTurnUI struct {
-	repl   *managedREPL
+	repl *managedREPL
+	// model is the screen model of the tab this turn started on. Every
+	// callback lands there, whichever tab is visible when it fires.
+	model  *replModel
 	config *Config
 	// state is the session this turn started on, bound at start so an
 	// in-place session switch cannot redirect a running turn.
@@ -33,11 +36,11 @@ func (t *gotuiTurnUI) UserMessagePersistenceFinished(persisted bool) {
 }
 
 func (t *gotuiTurnUI) activeLocked() bool {
-	return t.turnID == 0 || t.repl.model.turnID == t.turnID
+	return t.turnID == 0 || t.model.turnID == t.turnID
 }
 
 func (t *gotuiTurnUI) acceptingLocked() bool {
-	return t.activeLocked() && !t.repl.model.canceling
+	return t.activeLocked() && !t.model.canceling
 }
 
 // TurnPersistenceAllowed reports whether this turn may still append to the
@@ -46,8 +49,8 @@ func (t *gotuiTurnUI) acceptingLocked() bool {
 // (^C cancellation timed out, generation advanced) is refused — newer turns
 // may already be writing, and a late append would land out of order.
 func (t *gotuiTurnUI) TurnPersistenceAllowed() bool {
-	t.repl.model.mu.Lock()
-	defer t.repl.model.mu.Unlock()
+	t.model.mu.Lock()
+	defer t.model.mu.Unlock()
 	return t.activeLocked()
 }
 
@@ -56,71 +59,71 @@ func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {
 }
 
 func (t *gotuiTurnUI) ShowThinking(chunk string) {
-	t.repl.model.mu.Lock()
+	t.model.mu.Lock()
 	if !t.acceptingLocked() {
-		t.repl.model.mu.Unlock()
+		t.model.mu.Unlock()
 		return
 	}
-	t.repl.model.state = turnStateThinking
-	t.repl.model.appendThinking(chunk)
-	t.repl.model.mu.Unlock()
+	t.model.state = turnStateThinking
+	t.model.appendThinking(chunk)
+	t.model.mu.Unlock()
 }
 
 func (t *gotuiTurnUI) AppendAssistantText(content string) {
-	t.repl.model.mu.Lock()
+	t.model.mu.Lock()
 	if !t.acceptingLocked() {
-		t.repl.model.mu.Unlock()
+		t.model.mu.Unlock()
 		return
 	}
-	t.repl.model.state = turnStateStreaming
+	t.model.state = turnStateStreaming
 	if content != "" {
-		t.repl.model.turnHasOutput = true
+		t.model.turnHasOutput = true
 		// Prose is the aggregation boundary: it closes the reasoning run and
 		// the tool run before the first token lands, so activity after the
 		// prose opens fresh indicators below it.
-		t.repl.model.finishThinkingSegment()
-		t.repl.model.completeToolDisclosure()
+		t.model.finishThinkingSegment()
+		t.model.completeToolDisclosure()
 	}
-	t.repl.model.appendAssistant(content)
-	t.repl.model.mu.Unlock()
+	t.model.appendAssistant(content)
+	t.model.mu.Unlock()
 }
 
 func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
-	t.repl.model.mu.Lock()
-	defer t.repl.model.mu.Unlock()
+	t.model.mu.Lock()
+	defer t.model.mu.Unlock()
 	if !t.acceptingLocked() {
 		return
 	}
 	if len(calls) > 0 {
-		t.repl.model.turnHasOutput = true
+		t.model.turnHasOutput = true
 		// Tools pause the thinking clock without closing the record; an
 		// unbroken continuation resumes the same indicator.
-		t.repl.model.pauseThinkingSegment()
-		t.repl.model.finishAssistantBlock("")
-		t.repl.model.runningTools += len(calls)
-		t.repl.model.state = turnStateTool
-		t.repl.model.toolName = calls[0].Name
+		t.model.pauseThinkingSegment()
+		t.model.finishAssistantBlock("")
+		t.model.runningTools += len(calls)
+		t.model.state = turnStateTool
+		t.model.toolName = calls[0].Name
 	}
 	if !toolDisplayEnabled(t.config) {
 		return
 	}
 	var record *toolDisclosureRecord
 	for _, c := range calls {
-		record = t.repl.model.appendToolStartRow(c.ID, toolLabel(c))
+		record = t.model.appendToolStartRow(c.ID, toolLabel(c))
 	}
-	t.repl.model.refreshToolDisclosure(record)
+	t.model.refreshToolDisclosure(record)
 }
 
 func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
 	if len(calls) == 0 {
 		return nil
 	}
-	t.repl.model.mu.Lock()
-	if !t.activeLocked() || t.repl.model.canceling {
-		t.repl.model.mu.Unlock()
+	t.model.mu.Lock()
+	if !t.activeLocked() || t.model.canceling {
+		t.model.mu.Unlock()
 		return denyToolCalls(calls)
 	}
-	t.repl.model.mu.Unlock()
+	t.model.mu.Unlock()
 
 	if !t.config.Confirm {
 		approved := make([]bool, len(calls))
@@ -130,18 +133,18 @@ func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 		return approved
 	}
 	reply := make(chan []bool, 1)
-	t.repl.model.mu.Lock()
-	if !t.activeLocked() || t.repl.model.canceling {
-		t.repl.model.mu.Unlock()
+	t.model.mu.Lock()
+	if !t.activeLocked() || t.model.canceling {
+		t.model.mu.Unlock()
 		return denyToolCalls(calls)
 	}
-	t.repl.model.approval = &approvalState{calls: calls, reply: reply}
+	t.model.approval = &approvalState{calls: calls, reply: reply}
 	label := toolLabel(calls[0])
 	if len(calls) > 1 {
 		label += fmt.Sprintf(" +%d more", len(calls)-1)
 	}
-	t.repl.model.pushNotice("approval needed: " + truncate(label, 80))
-	t.repl.model.mu.Unlock()
+	t.model.pushNotice("approval needed: " + truncate(label, 80))
+	t.model.mu.Unlock()
 	results, ok := <-reply
 	if !ok {
 		return make([]bool, len(calls))
@@ -157,11 +160,11 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 		// Tool output can be large. Discovery touches only Markdown/path syntax
 		// and the filesystem, so keep it outside the model lock and let the TUI
 		// continue painting while it runs.
-		discoveredImages = discoverToolOutputImages(result, t.repl.model.imageBaseDir)
+		discoveredImages = discoverToolOutputImages(result, t.model.imageBaseDir)
 	}
-	t.repl.model.mu.Lock()
-	defer t.repl.model.mu.Unlock()
-	m := t.repl.model
+	t.model.mu.Lock()
+	defer t.model.mu.Unlock()
+	m := t.model
 	if !t.acceptingLocked() {
 		return
 	}
@@ -218,9 +221,9 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 	if len(images) == 0 || (t.config != nil && t.config.Quiet) {
 		return
 	}
-	t.repl.model.mu.Lock()
-	defer t.repl.model.mu.Unlock()
-	m := t.repl.model
+	t.model.mu.Lock()
+	defer t.model.mu.Unlock()
+	m := t.model
 	if !t.acceptingLocked() {
 		return
 	}
@@ -246,41 +249,41 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 }
 
 func (t *gotuiTurnUI) AppendWarning(text string) {
-	t.repl.model.mu.Lock()
+	t.model.mu.Lock()
 	if !t.acceptingLocked() {
-		t.repl.model.mu.Unlock()
+		t.model.mu.Unlock()
 		return
 	}
-	t.repl.model.appendNoticeLine("Warning: " + text)
-	t.repl.model.turnHasOutput = true
-	t.repl.model.mu.Unlock()
+	t.model.appendNoticeLine("Warning: " + text)
+	t.model.turnHasOutput = true
+	t.model.mu.Unlock()
 }
 
 func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
-	t.repl.model.mu.Lock()
+	t.model.mu.Lock()
 	if !t.acceptingLocked() {
-		t.repl.model.mu.Unlock()
+		t.model.mu.Unlock()
 		return
 	}
-	t.repl.model.lastIn = in
-	t.repl.model.lastOut = out
-	t.repl.model.turnDock.inputTokens = in
-	t.repl.model.turnDock.outputTokens = out
-	t.repl.model.mu.Unlock()
+	t.model.lastIn = in
+	t.model.lastOut = out
+	t.model.turnDock.inputTokens = in
+	t.model.turnDock.outputTokens = out
+	t.model.mu.Unlock()
 }
 
 func (t *gotuiTurnUI) RecordContextUsage(used, limit int, estimated bool) {
-	t.repl.model.mu.Lock()
+	t.model.mu.Lock()
 	if t.acceptingLocked() {
-		t.repl.model.status.recordContextUsage(used, limit, estimated)
+		t.model.status.recordContextUsage(used, limit, estimated)
 	}
-	t.repl.model.mu.Unlock()
+	t.model.mu.Unlock()
 }
 
 func (t *gotuiTurnUI) FinishTextTurn() {
-	t.repl.model.mu.Lock()
+	t.model.mu.Lock()
 	if t.acceptingLocked() {
-		t.repl.model.finishAssistantBlock("")
+		t.model.finishAssistantBlock("")
 	}
-	t.repl.model.mu.Unlock()
+	t.model.mu.Unlock()
 }

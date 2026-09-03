@@ -105,10 +105,12 @@ type conversationState struct {
 // resolves the target session's stored settings against the launch settings
 // and may reset that session's history when --system differs, reporting that
 // through notify; it runs on the UI goroutine. open builds the runtime from
-// those settings and may run off the UI goroutine.
+// those settings, as a generated session when auto is set, and may run off
+// the UI goroutine. newName picks an unused generated session name.
 type sessionOpener struct {
 	prepare func(ctx context.Context, name string, notify func(string)) (string, Settings, error)
-	open    func(ctx context.Context, name string, settings Settings) (*conversationState, error)
+	open    func(ctx context.Context, name string, settings Settings, auto bool) (*conversationState, error)
+	newName func(ctx context.Context) (string, error)
 }
 
 func (s *conversationState) Close() error {
@@ -202,17 +204,9 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 		}
 	}
 	if autoContext {
-		var existsErr error
-		contextID = generateContextName(func(name string) bool {
-			exists, err := sessionStore.Exists(ctx, name)
-			if err != nil {
-				existsErr = err
-				return true
-			}
-			return exists
-		})
-		if existsErr != nil {
-			return nil, closeStoreAfterError(sessionStore, fmt.Errorf("failed to generate context name: %w", existsErr))
+		contextID, err = generateSessionName(ctx, sessionStore)
+		if err != nil {
+			return nil, closeStoreAfterError(sessionStore, err)
 		}
 	}
 
@@ -225,6 +219,24 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 		contextID:    contextID,
 		autoContext:  autoContext,
 	}, nil
+}
+
+// generateSessionName picks a generated session name no session in store
+// uses.
+func generateSessionName(ctx context.Context, store sessions.SessionStore) (string, error) {
+	var existsErr error
+	name := generateContextName(func(name string) bool {
+		exists, err := store.Exists(ctx, name)
+		if err != nil {
+			existsErr = err
+			return true
+		}
+		return exists
+	})
+	if existsErr != nil {
+		return "", fmt.Errorf("failed to generate context name: %w", existsErr)
+	}
+	return name, nil
 }
 
 // wantsAutoREPLContext reports whether this invocation will land in the
@@ -604,14 +616,6 @@ func (r *commandRunner) runConversation() (retErr error) {
 	state.displayContract = displayContractFor(outputCapabilities)
 	state.outputCapabilities = outputCapabilities
 	session := state.session
-	// The managed REPL switches sessions in place, so shutdown closes whichever
-	// session is live at the end, not necessarily the one the run opened.
-	current := state
-	defer func() {
-		if err := current.Close(); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("close conversation state: %w", err))
-		}
-	}()
 
 	// Set up signal handling
 	signalCtx, cancelSignal := setupSignalHandling(ctx)
@@ -620,13 +624,15 @@ func (r *commandRunner) runConversation() (retErr error) {
 	if input.mode == conversationModeREPL && managedREPL {
 		// Each session's lease context parents that session's turns and ends
 		// the run when it is lost (see managedREPL.Run), so the run context
-		// carries signals only.
+		// carries signals only. The REPL owns state from here: it closes
+		// every session it holds at exit, which also discards a generated
+		// session that never ran a turn.
 		opener := &sessionOpener{
 			prepare: func(ctx context.Context, name string, notify func(string)) (string, Settings, error) {
 				return prepareConversation(ctx, config, r.sessionStore, name, r.cmd, notify)
 			},
-			open: func(ctx context.Context, name string, settings Settings) (*conversationState, error) {
-				opened, err := openConversationState(ctx, config, settings, r.llmClient, r.sessionStore, name, false, r.cmd, newBroadWritablePathWarner())
+			open: func(ctx context.Context, name string, settings Settings, auto bool) (*conversationState, error) {
+				opened, err := openConversationState(ctx, config, settings, r.llmClient, r.sessionStore, name, auto, r.cmd, newBroadWritablePathWarner())
 				if err != nil {
 					return nil, err
 				}
@@ -634,15 +640,18 @@ func (r *commandRunner) runConversation() (retErr error) {
 				opened.outputCapabilities = outputCapabilities
 				return opened, nil
 			},
+			newName: func(ctx context.Context) (string, error) {
+				return generateSessionName(ctx, r.sessionStore)
+			},
 		}
-		replErr := runManagedREPL(signalCtx, config, state, opener, func(live *conversationState) { current = live })
-		if r.autoContext && current == state {
-			if err := discardUnusedAutoContext(signalCtx, state); replErr == nil && err != nil {
-				replErr = err
-			}
-		}
-		return replErr
+		return runManagedREPL(signalCtx, config, state, opener)
 	}
+
+	defer func() {
+		if err := state.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close conversation state: %w", err))
+		}
+	}()
 
 	// Make the lease context the direct parent so lease loss is observable
 	// synchronously by the agent and TUI. Signal/caller cancellation is bridged

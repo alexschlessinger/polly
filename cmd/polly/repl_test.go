@@ -487,11 +487,12 @@ func TestCompleteSlash(t *testing.T) {
 		{"/q", true, "/quit", []string{"/quit"}},
 		// Bare "/" matches everything; common prefix is just "/" (no progress).
 		{"/", true, "/", slashCommands},
-		// "/c" matches /clear and /context; common prefix extends to "/c".
-		{"/c", true, "/c", []string{"/clear", "/context"}},
-		{"/cl", true, "/clear", []string{"/clear"}},
-		// With /thinking removed, "/t" uniquely completes to /tools.
-		{"/t", true, "/tools", []string{"/tools"}},
+		// "/c" matches /clear, /close, and /context; common prefix extends to "/c".
+		{"/c", true, "/c", []string{"/clear", "/close", "/context"}},
+		{"/cl", true, "/cl", []string{"/clear", "/close"}},
+		{"/cle", true, "/clear", []string{"/clear"}},
+		// "/t" matches the tab commands and /tools; "/to" is /tools alone.
+		{"/t", true, "/t", []string{"/tab", "/tabs", "/tools"}},
 		{"/to", true, "/tools", []string{"/tools"}},
 		// Already complete stays put but still reports its single match.
 		{"/help", true, "/help", []string{"/help"}},
@@ -1136,7 +1137,7 @@ func TestAbandonCanceledTurnRestoresPromptAndInvalidatesCallbacks(t *testing.T) 
 	m.toolName = "bash"
 	m.turnStarted = time.Now()
 	m.turnID = 7
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 7}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: 7}
 
 	r.abandonCanceledTurn()
 	if m.busy || m.canceling {
@@ -1164,7 +1165,7 @@ func TestGotuiTurnUIDeniesApprovalWhileCanceling(t *testing.T) {
 	r := newManagedREPL(&Config{Confirm: false}, "ctx", 0, 0)
 	r.model.turnID = 1
 	r.model.canceling = true
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 1}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: 1}
 
 	got := tui.ApproveToolCalls([]messages.ChatMessageToolCall{{Name: "bash"}})
 	if len(got) != 1 || got[0] {
@@ -1605,7 +1606,7 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	m := r.model
 
 	m.beginTurn("first")
-	first := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	first := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	first.RecordTurnTokens(1000, 250)
 	first.RecordTurnTokens(1200, 300)
 	r.endTurn(nil)
@@ -1615,7 +1616,7 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	}
 
 	m.beginTurn("second")
-	second := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	second := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	second.RecordTurnTokens(800, 200)
 	r.endTurn(nil)
 

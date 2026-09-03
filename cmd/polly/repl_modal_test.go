@@ -102,7 +102,7 @@ func TestKeyModalMasksAndInstallsSessionCredential(t *testing.T) {
 	}
 }
 
-func TestResumePickerListsRecentSessionsAndSwitchesInPlace(t *testing.T) {
+func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	target := testAcquireSession(t, store, "older-work")
 	targetMetadata, err := target.GetMetadata(context.Background())
@@ -120,14 +120,14 @@ func TestResumePickerListsRecentSessionsAndSwitchesInPlace(t *testing.T) {
 	if err := target.Close(); err != nil {
 		t.Fatal(err)
 	}
-
-	current := testAcquireSession(t, store, "current-work")
-	r := newManagedREPL(&Config{}, "current-work", 0, 0)
-	r.state = &conversationState{sessionStore: store, session: current}
-	r.opener = testSessionOpener(store)
+	r := newTabTestREPL(t, store, "current-work")
+	current := r.tabs[0].state.session
 	status := r.model.statusRow(80)
 	if !strings.Contains(status, "[current-work](fg:accent)") {
 		t.Fatalf("clickable session was not accented: %q", status)
+	}
+	if plain := plainStyledText(status); strings.Contains(plain, "tab 1/1") {
+		t.Fatalf("a lone tab was placed in the status row: %q", plain)
 	}
 	placement := r.model.status.sessionField
 	if !placement.hit(placement.X, 23, 24) || placement.hit(placement.X-1, 23, 24) {
@@ -178,17 +178,20 @@ func TestResumePickerListsRecentSessionsAndSwitchesInPlace(t *testing.T) {
 		}
 	}
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if r.switchTarget != "older-work" || !r.switchInFlight {
-		t.Fatalf("selection did not start a switch: target=%q inFlight=%v", r.switchTarget, r.switchInFlight)
+	if r.opening != "older-work" {
+		t.Fatalf("selection did not start opening the session: opening=%q", r.opening)
 	}
 	select {
 	case <-r.quit:
-		t.Fatal("session selection tore the managed REPL down instead of switching in place")
+		t.Fatal("session selection tore the managed REPL down instead of opening a tab")
 	default:
 	}
-	r.finishSwitch(<-r.switchDone)
-	if r.switchTarget != "" || r.switchInFlight {
-		t.Fatalf("switch did not settle: target=%q inFlight=%v", r.switchTarget, r.switchInFlight)
+	r.finishOpen(<-r.openDone)
+	if r.opening != "" {
+		t.Fatalf("open did not settle: opening=%q", r.opening)
+	}
+	if len(r.tabs) != 2 || r.visibleTabIndex() != 1 {
+		t.Fatalf("tabs after open = %d, visible %d; want 2 with the new tab visible", len(r.tabs), r.visibleTabIndex())
 	}
 	if name, err := r.state.session.GetName(context.Background()); err != nil || name != "older-work" {
 		t.Fatalf("live session = %q, %v; want older-work", name, err)
@@ -196,20 +199,38 @@ func TestResumePickerListsRecentSessionsAndSwitchesInPlace(t *testing.T) {
 	if r.model.status.contextName != "older-work" {
 		t.Fatalf("status context = %q, want older-work", r.model.status.contextName)
 	}
-	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "question") || !strings.Contains(transcript, "answer") {
-		t.Fatalf("switched transcript was not hydrated: %q", transcript)
+	transcript := r.model.fullTranscript()
+	if !strings.Contains(transcript, "question") || !strings.Contains(transcript, "answer") {
+		t.Fatalf("opened transcript was not hydrated: %q", transcript)
 	}
-	if current.Context().Err() == nil {
-		t.Fatal("previous session was left open after the switch")
+	if !strings.Contains(transcript, "opened older-work in tab 2") {
+		t.Fatalf("new tab was not announced: %q", transcript)
 	}
-	summaries, err := store.ListSummaries(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	// The session left behind stays open in its tab, still leased here.
+	if current.Context().Err() != nil {
+		t.Fatal("previous session was closed by opening another tab")
 	}
-	for _, summary := range summaries {
-		if summary.Metadata.Name == "current-work" && summary.InUse {
-			t.Fatal("previous session still holds its lease after the switch")
+	if !sessionInUse(t, store, "current-work") {
+		t.Fatal("previous session dropped its lease")
+	}
+
+	// Picking it again shows its tab instead of opening a second copy.
+	r.openResumePicker()
+	for i, item := range r.model.modal.items {
+		if item.value == "current-work" {
+			if !strings.HasSuffix(item.label, "tab 1") {
+				t.Fatalf("open session not marked with its tab: %q", item.label)
+			}
+			r.model.modal.selected = i
 		}
+	}
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	if r.opening != "" || r.showTabRequest != 0 {
+		t.Fatalf("picking an open session did not request its tab: opening=%q request=%d", r.opening, r.showTabRequest)
+	}
+	r.applyTabRequests()
+	if r.state.session != current || r.visibleTabIndex() != 0 {
+		t.Fatal("picking an open session did not show its tab")
 	}
 }
 

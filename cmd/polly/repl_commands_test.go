@@ -490,7 +490,8 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		{"/set max", true, "/set max", []string{"/set maxcontext", "/set maxtokens"}},
 		// Second arguments complete positionally.
 		{"/set thinking m", true, "/set thinking m", []string{"/set thinking max", "/set thinking medium", "/set thinking minimal"}},
-		{"/help /cl", true, "/help /clear", []string{"/help /clear"}},
+		{"/help /cl", true, "/help /cl", []string{"/help /clear", "/help /close"}},
+		{"/help /cle", true, "/help /clear", []string{"/help /clear"}},
 		// Keywords don't leak past their position.
 		{"/help me", false, "", nil},
 	}
@@ -561,7 +562,7 @@ func TestHintFor(t *testing.T) {
 		{"/he\nlp", ""},
 		{"/zzz", ""},
 		// Typing the name: many matches list bare names, few include summaries.
-		{"/t", "/tools — inspect loaded tools"},
+		{"/t", "/tab — list open tabs, or switch to one   /tabs — list open tabs, or switch to one   /tools — inspect loaded tools"},
 		{"/to", "/tools — inspect loaded tools"},
 		{"/q", "/quit — leave the REPL"},
 		// Typing arguments: keyword matches from the command's completer.

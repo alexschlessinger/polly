@@ -62,7 +62,7 @@ func TestStatusStaysToolUntilParallelToolsAllFinish(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.busy = true
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	calls := []messages.ChatMessageToolCall{{ID: "a", Name: "bash"}, {ID: "b", Name: "grep"}}
 	tui.AppendToolStart(calls)
@@ -321,7 +321,7 @@ func TestToolEndRendersDenialLine(t *testing.T) {
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.busy = true
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	call := messages.ChatMessageToolCall{ID: "a", Name: "bash"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
@@ -350,7 +350,7 @@ func TestToolEndDurationUsesFormatElapsed(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.busy = true
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	call := messages.ChatMessageToolCall{ID: "a", Name: "bash"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
@@ -376,7 +376,7 @@ func TestToolEndErrorDurationUsesFormatElapsed(t *testing.T) {
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.busy = true
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	call := messages.ChatMessageToolCall{ID: "a", Name: "bash"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
