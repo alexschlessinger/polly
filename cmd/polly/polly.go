@@ -1462,9 +1462,8 @@ func initializeConversation(ctx context.Context, config *Config, sessionStore se
 			originalContextInfo = contextInfo
 
 			// Check if system prompt is being changed (only if context has
-			// existing conversation). A stored legacy default reads as the
-			// empty persona, so -s "" against it does not wipe history.
-			if cmd.IsSet("system") && cmd.String("system") != normalizeLegacySystemPrompt(contextInfo.SystemPrompt) {
+			// existing conversation).
+			if cmd.IsSet("system") && cmd.String("system") != contextInfo.SystemPrompt {
 				// Check if there's an existing conversation to reset
 				exists, err := sessionStore.Exists(ctx, contextInfo.Name)
 				if err != nil {
@@ -1521,14 +1520,14 @@ func applyFlagSettings(md *sessions.Metadata, config *Config, cmd *cli.Command) 
 }
 
 // updateContextInfo writes the resolved settings onto md, the metadata staged
-// by newConversationState, and persists it: the startup write-back rows
-// always (config holds the stored value unless a flag overrode it, see
-// initializeConversation), every other row only when its flag was given.
+// by newConversationState, and persists it: every flagged row, since config
+// holds the stored value unless a flag overrode it (see initializeConversation),
+// so the copy is a no-op for an untouched row and an override for a set flag.
 // Name and LastUsed are storage-owned: SetMetadata overwrites both, so they
 // are not written here.
 func updateContextInfo(ctx context.Context, session sessions.Session, md *sessions.Metadata, config *Config, cmd *cli.Command) error {
 	for _, spec := range settingSpecs {
-		if spec.startupWriteBack() || spec.flagSet(cmd) {
+		if spec.flagged() {
 			spec.toMeta(config, md)
 		}
 	}

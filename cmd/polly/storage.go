@@ -232,29 +232,17 @@ func handleAddToContext(ctx context.Context, store sessions.SessionStore, config
 			})
 		}
 
-		// Add each file as a separate message
+		// Add each file as a separate message. A text file keeps its filename
+		// boundary in the provider-visible text; the part's FileName lets the
+		// resumed REPL compact the body to "[attached: name]".
 		for _, part := range parts {
-			switch part.Type {
-			case "text":
-				// Keep filename boundaries in provider-visible text. Metadata below
-				// lets the resumed REPL compact the body without losing that context.
-				var content string
-				if part.FileName != "" {
-					content = fmt.Sprintf("=== %s ===\n%s", part.FileName, part.Text)
-				} else {
-					content = part.Text
-				}
-				msgs = append(msgs, messages.ChatMessage{
-					Role:    messages.MessageRoleUser,
-					Content: content,
-				})
-			case "image_base64":
-				// Create a message with image content using Parts field
-				msgs = append(msgs, messages.ChatMessage{
-					Role:  messages.MessageRoleUser,
-					Parts: []messages.ContentPart{part},
-				})
+			if part.Type == "text" && part.FileName != "" {
+				part.Text = fmt.Sprintf("=== %s ===\n%s", part.FileName, part.Text)
 			}
+			msgs = append(msgs, messages.ChatMessage{
+				Role:  messages.MessageRoleUser,
+				Parts: []messages.ContentPart{part},
+			})
 		}
 	} else {
 		// Original behavior: require stdin when no files
@@ -387,8 +375,8 @@ func showContext(ctx context.Context, store sessions.SessionStore, contextID str
 
 	// Prompts and description
 	fmt.Printf("  Description: %s\n", info.Description)
-	if persona := normalizeLegacySystemPrompt(info.SystemPrompt); persona != "" {
-		fmt.Printf("  System Prompt: %s\n", persona)
+	if info.SystemPrompt != "" {
+		fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
 	} else {
 		fmt.Printf("  System Prompt: (none)\n")
 	}

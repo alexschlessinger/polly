@@ -940,9 +940,14 @@ func TestHydrateHistoryCompactsContextImportedFiles(t *testing.T) {
 		msg  messages.ChatMessage
 		want string
 	}{
+		// The --add form: the filename boundary stays in the model-visible
+		// text, and only the FileName reaches the transcript.
 		{msg: messages.ChatMessage{
-			Role:    messages.MessageRoleUser,
-			Content: "=== legacy.txt ===\nLEGACY SECRET BODY",
+			Role: messages.MessageRoleUser,
+			Parts: []messages.ContentPart{{
+				Type: "text", Text: "=== legacy.txt ===\nLEGACY SECRET BODY", FileName: "legacy.txt",
+			}},
+			Metadata: map[string]any{messages.MetadataKeyContextImport: true},
 		}, want: "attached: legacy.txt"},
 		{msg: messages.ChatMessage{
 			Role: messages.MessageRoleUser,

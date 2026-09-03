@@ -418,10 +418,6 @@ func validatePortablePersistedImagePart(part messages.ContentPart) error {
 func historyUserSummary(msg messages.ChatMessage) (display string, restorable, contextOnly bool) {
 	display = msg.Content
 	contextOnly, _ = msg.Metadata[messages.MetadataKeyContextImport].(bool)
-	if name, ok := legacyImportedTextFile(msg); ok {
-		display = "[attached: " + name + "]"
-		return display, false, true
-	}
 	if contextOnly && len(msg.Parts) == 0 {
 		return "[context added]", false, true
 	}
@@ -456,22 +452,6 @@ func historyUserSummary(msg messages.ChatMessage) (display string, restorable, c
 	// file bodies and context imports that cannot be reconstructed safely.
 	restorable = len(msg.Parts) == 0 && msg.Content != ""
 	return display, restorable, contextOnly
-}
-
-func legacyImportedTextFile(msg messages.ChatMessage) (string, bool) {
-	if len(msg.Parts) != 0 || !strings.HasPrefix(msg.Content, "=== ") {
-		return "", false
-	}
-	lineEnd := strings.IndexByte(msg.Content, '\n')
-	if lineEnd < 8 {
-		return "", false
-	}
-	header := msg.Content[:lineEnd]
-	if !strings.HasSuffix(header, " ===") {
-		return "", false
-	}
-	name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(header, "=== "), " ==="))
-	return name, name != ""
 }
 
 func compactToolNames(names []string) string {

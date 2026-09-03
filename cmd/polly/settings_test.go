@@ -10,8 +10,8 @@ import (
 )
 
 // TestSettingSpecGateMembership pins the copy gates and the derived key
-// lists. The memberships are load-bearing: marking a row lossy, flagging it,
-// or making it settable changes what reaches persisted session metadata.
+// lists. The memberships are load-bearing: flagging a row or making it
+// settable changes what reaches persisted session metadata.
 func TestSettingSpecGateMembership(t *testing.T) {
 	pin := func(name string, got, want []string) {
 		t.Helper()
@@ -25,10 +25,6 @@ func TestSettingSpecGateMembership(t *testing.T) {
 		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"})
 	pin("flagged rows", settingKeysWhere(func(s settingSpec) bool { return s.flagged() }),
 		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir", "maxiterations"})
-	pin("startupWriteBack gate", settingKeysWhere(func(s settingSpec) bool { return s.startupWriteBack() }),
-		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout", "skilldir", "maxiterations"})
-	pin("lossyRestore rows", settingKeysWhere(func(s settingSpec) bool { return s.lossyRestore }),
-		[]string{"system"})
 	pin("postReplSet hooks", settingKeysWhere(func(s settingSpec) bool { return s.postReplSet != nil }),
 		[]string{"tooltimeout"})
 	pin("setWords completions", settingKeysWhere(func(s settingSpec) bool { return s.setWords != nil }),
@@ -40,12 +36,11 @@ func TestSettingSpecGateMembership(t *testing.T) {
 				t.Errorf("flagged setting %q must carry fromMeta and toMeta", spec.key)
 			}
 		} else {
-			if spec.fromMeta != nil || spec.toMeta != nil ||
-				spec.lossyRestore || spec.parse != nil {
+			if spec.fromMeta != nil || spec.toMeta != nil || spec.parse != nil {
 				t.Errorf("derived setting %q must be show-only", spec.key)
 			}
 		}
-		if (spec.startupWriteBack() || spec.parse != nil) && spec.toMeta == nil {
+		if spec.parse != nil && spec.toMeta == nil {
 			t.Errorf("setting %q joins a copy gate without a toMeta", spec.key)
 		}
 		if spec.parse != nil && spec.show == nil {
