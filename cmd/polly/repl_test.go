@@ -105,8 +105,8 @@ func TestReplModelAppendAssistantStreaming(t *testing.T) {
 	if len(m.transcript) != 1 {
 		t.Fatalf("streaming should accumulate into one entry, got %d", len(m.transcript))
 	}
-	if m.transcript[0] != "Hello world" {
-		t.Fatalf("got %q", m.transcript[0])
+	if m.transcript[0].text != "Hello world" {
+		t.Fatalf("got %q", m.transcript[0].text)
 	}
 
 	m.appendLine("tool started")
@@ -347,18 +347,18 @@ func TestActiveToolLifecycle(t *testing.T) {
 		t.Fatalf("active tool row = %d, want 0", m.activeTools[0].row)
 	}
 	record := m.currentToolDisclosure()
-	if record == nil || record.expanded || len(record.rows) != 1 || !strings.Contains(m.transcript[0], "1 tool") {
+	if record == nil || record.expanded || len(record.rows) != 1 || !strings.Contains(m.transcript[0].text, "1 tool") {
 		t.Fatalf("started disclosure = %#v transcript=%#v", record, m.transcript)
 	}
 
 	// A render frame updates the hidden semantic row without leaking its timer.
 	m.activeTools[0].started = m.activeTools[0].started.Add(-15500 * time.Millisecond)
 	m.refreshActiveTools()
-	if strings.Contains(m.transcript[0], "15.5s") || !strings.Contains(record.rows[0].line, "15.5s") {
-		t.Fatalf("collapsed timer update: row=%q transcript=%q", record.rows[0].line, m.transcript[0])
+	if strings.Contains(m.transcript[0].text, "15.5s") || !strings.Contains(record.rows[0].line, "15.5s") {
+		t.Fatalf("collapsed timer update: row=%q transcript=%q", record.rows[0].line, m.transcript[0].text)
 	}
-	if !m.toggleToolDisclosure(record.id) || !strings.Contains(m.transcript[0], "15.5s") {
-		t.Fatalf("expanded disclosure missing elapsed: %q", m.transcript[0])
+	if !m.toggleToolDisclosure(record.id) || !strings.Contains(m.transcript[0].text, "15.5s") {
+		t.Fatalf("expanded disclosure missing elapsed: %q", m.transcript[0].text)
 	}
 
 	// Finishing frees the active slot and freezes the same semantic row.
@@ -372,7 +372,7 @@ func TestActiveToolLifecycle(t *testing.T) {
 	record.rows[row].line = toolOKLine("bash sleep 30", "30.0s", "")
 	record.rows[row].settled = true
 	m.refreshToolDisclosure(record)
-	if len(m.transcript) != 1 || !strings.Contains(m.transcript[0], "✓") {
+	if len(m.transcript) != 1 || !strings.Contains(m.transcript[0].text, "✓") {
 		t.Fatalf("finalized transcript = %v", m.transcript)
 	}
 }
@@ -958,7 +958,7 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	if handled, quit := r.runCommand("/context"); !handled || quit {
 		t.Fatalf("/context handled=%v quit=%v", handled, quit)
 	}
-	if joined := strings.Join(r.model.transcript, "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "messages:") ||
+	if joined := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "messages:") ||
 		!strings.Contains(joined, "transcript:") || !strings.Contains(joined, "(durable)") || !strings.Contains(joined, "model budget: 5.6k") {
 		t.Fatalf("/context output missing fields: %q", joined)
 	}
@@ -968,7 +968,7 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	if got := len(testSessionHistory(t, session)); got != 2 {
 		t.Fatalf("/clear changed durable history; got %d messages", got)
 	}
-	if len(r.model.transcript) != 1 || !strings.Contains(r.model.transcript[0], "cleared") {
+	if len(r.model.transcript) != 1 || !strings.Contains(r.model.transcript[0].text, "cleared") {
 		t.Fatalf("/clear transcript = %v", r.model.transcript)
 	}
 
@@ -985,7 +985,7 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	// /tools on an empty registry reports none.
 	clearTranscriptForTest(r.model)
 	r.runCommand("/tools")
-	if !strings.Contains(strings.Join(r.model.transcript, "\n"), "no tools loaded") {
+	if !strings.Contains(strings.Join(transcriptTexts(r.model), "\n"), "no tools loaded") {
 		t.Fatalf("/tools = %v", r.model.transcript)
 	}
 
@@ -1003,7 +1003,7 @@ func TestRunCommandSessionCommands(t *testing.T) {
 func TestAppendHelpPopulatesTranscript(t *testing.T) {
 	m := newReplModel()
 	m.appendHelp()
-	joined := strings.Join(m.transcript, "\n")
+	joined := strings.Join(transcriptTexts(m), "\n")
 	if !strings.Contains(joined, "commands:") || !strings.Contains(joined, "Ctrl-C") {
 		t.Fatalf("transcript missing help content: %q", joined)
 	}
@@ -1152,7 +1152,7 @@ func TestAbandonCanceledTurnRestoresPromptAndInvalidatesCallbacks(t *testing.T) 
 	tui.AppendAssistantText("late text")
 	tui.AppendWarning("late warning")
 	tui.RecordTurnTokens(1, 2)
-	if strings.Contains(strings.Join(m.transcript, "\n"), "late") {
+	if strings.Contains(strings.Join(transcriptTexts(m), "\n"), "late") {
 		t.Fatalf("stale turn UI callback mutated transcript: %v", m.transcript)
 	}
 	if m.lastIn != 0 || m.lastOut != 0 {
@@ -1368,16 +1368,16 @@ func TestAppendAssistantRendersStreamedLink(t *testing.T) {
 	m.appendAssistant("see [text]")
 
 	// The bracket may still become a link \u2014 held back, only settled text shows.
-	if got := plainStyledText(m.transcript[0]); got != "see" {
+	if got := plainStyledText(m.transcript[0].text); got != "see" {
 		t.Fatalf("partial link should be held back, got %q", got)
 	}
 
 	m.appendAssistant("(url)")
-	if got := plainStyledText(m.transcript[0]); got != "see text (url)" {
+	if got := plainStyledText(m.transcript[0].text); got != "see text (url)" {
 		t.Fatalf("completed link render = %q, want %q", got, "see text (url)")
 	}
-	if !strings.Contains(m.transcript[0], "fg:accent") {
-		t.Fatalf("link text should carry the accent color: %q", m.transcript[0])
+	if !strings.Contains(m.transcript[0].text, "fg:accent") {
+		t.Fatalf("link text should carry the accent color: %q", m.transcript[0].text)
 	}
 }
 
@@ -1397,7 +1397,7 @@ func TestAppendAssistantRendersStreamingCodeFenceWithLanguage(t *testing.T) {
 	m.appendAssistant("totalIn  int  // cumulative input tokens this session\n")
 	m.appendAssistant("totalOut int  // cumulative output tokens this session\n```\nafter")
 
-	got := plainStyledText(m.transcript[0])
+	got := plainStyledText(m.transcript[0].text)
 	want := "before\n\n╭─ go\n│ totalIn  int  // cumulative input tokens this session\n│ totalOut int  // cumulative output tokens this session\n\nafter"
 	if got != want {
 		t.Fatalf("rendered code fence = %q, want %q", got, want)
@@ -1412,7 +1412,7 @@ func TestAppendAssistantRendersBareCodeFenceAcrossChunks(t *testing.T) {
 	m.appendAssistant("(url))\n``")
 	m.appendAssistant("`\n")
 
-	got := plainStyledText(m.transcript[0])
+	got := plainStyledText(m.transcript[0].text)
 	want := "│ fmt.Println([text](url))"
 	if got != want {
 		t.Fatalf("rendered bare code fence = %q, want %q", got, want)
@@ -1424,7 +1424,7 @@ func TestFinishAssistantStreamFlushesPendingFenceLine(t *testing.T) {
 	m.appendAssistant("```go\nx\n```")
 	m.finishAssistantStream()
 
-	got := plainStyledText(m.transcript[0])
+	got := plainStyledText(m.transcript[0].text)
 	want := "╭─ go\n│ x"
 	if got != want {
 		t.Fatalf("finished code fence = %q, want %q", got, want)
@@ -1607,7 +1607,7 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	first.RecordTurnTokens(1200, 300)
 	r.endTurn(nil)
 	firstTrailer := m.turnTrailers[m.turnTrailerSeq]
-	if got := plainStyledText(m.transcript[firstTrailer.transcriptIndex]); !strings.Contains(got, "1.2k in / 300 out") {
+	if got := plainStyledText(m.transcript[firstTrailer.transcriptIndex].text); !strings.Contains(got, "1.2k in / 300 out") {
 		t.Fatalf("first completed trailer = %q", got)
 	}
 
@@ -1617,10 +1617,10 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	r.endTurn(nil)
 
 	secondTrailer := m.turnTrailers[m.turnTrailerSeq]
-	if got := plainStyledText(m.transcript[secondTrailer.transcriptIndex]); !strings.Contains(got, "800 in / 200 out") || strings.Contains(got, "2.0k") {
+	if got := plainStyledText(m.transcript[secondTrailer.transcriptIndex].text); !strings.Contains(got, "800 in / 200 out") || strings.Contains(got, "2.0k") {
 		t.Fatalf("second completed trailer should show only this turn, got %q", got)
 	}
-	history := plainStyledText(strings.Join(m.transcript, "\n"))
+	history := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if !strings.Contains(history, "1.2k in / 300 out") {
 		t.Fatalf("first attached trailer missing from transcript history: %q", history)
 	}

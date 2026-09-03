@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,7 @@ import (
 )
 
 const (
-	schemaVersion            = 1
+	schemaVersion            = 2
 	artifactChunkSize        = 1 << 20
 	journalSizeLimit         = 64 << 20
 	boundedVacuumPages       = 128
@@ -444,7 +445,13 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 		if err := applySchemaV1(ctx, conn); err != nil {
 			return err
 		}
-		version = schemaVersion
+		version = 1
+	}
+	if version == 1 {
+		if err := applySchemaV2(ctx, conn); err != nil {
+			return err
+		}
+		version = 2
 	}
 	if version != schemaVersion {
 		return fmt.Errorf("no session schema migration from version %d", version)
@@ -501,7 +508,7 @@ func applySchemaV1(ctx context.Context, conn *sql.Conn) error {
 			heartbeat_ns INTEGER NOT NULL,
 			expires_ns INTEGER NOT NULL
 		) STRICT, WITHOUT ROWID`,
-		fmt.Sprintf("PRAGMA user_version = %d", schemaVersion),
+		"PRAGMA user_version = 1",
 	}
 	for _, statement := range statements {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
@@ -509,6 +516,218 @@ func applySchemaV1(ctx context.Context, conn *sql.Conn) error {
 		}
 	}
 	return nil
+}
+
+// legacySystemPromptDefaults are the pre-display-contract default system
+// prompts that v1 databases stored verbatim, both in settings_json and as the
+// seeded system row at sequence 0. Schema v2 strips both, so a resumed
+// context reads as persona-less and the request-time display contract is the
+// only contract the model sees.
+var legacySystemPromptDefaults = []string{
+	"Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.",
+	"Your output will be displayed in a unix tui. Be terse. Use markdown where it aids readability. Use code blocks where appropriate, including for markdown.",
+}
+
+func isLegacySystemPrompt(s string) bool {
+	return slices.Contains(legacySystemPromptDefaults, s)
+}
+
+// applySchemaV2 rewrites data, not shape, so validateSchemaV1 still describes
+// the tables: it strips the legacy default prompts (settings_json and the
+// seeded sequence-0 system row, renumbering the rest of that session) and
+// moves --add text imports from the "=== name ===" Content form into the
+// text-part-with-FileName form the writer produces now.
+func applySchemaV2(ctx context.Context, conn *sql.Conn) error {
+	if err := stripLegacySystemPrompts(ctx, conn); err != nil {
+		return fmt.Errorf("apply session schema v2: %w", err)
+	}
+	if err := upgradeImportedTextFiles(ctx, conn); err != nil {
+		return fmt.Errorf("apply session schema v2: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA user_version = 2"); err != nil {
+		return fmt.Errorf("apply session schema v2: %w", err)
+	}
+	return nil
+}
+
+// stripLegacySystemPrompts blanks a legacy default in settings_json and drops
+// the seeded system row that repeats it. Untouched rows stay byte-identical,
+// updated_ns stays put (a migration is not a use), and the gap left by the
+// dropped row is closed because GetHistory requires contiguous sequences
+// that account for next_sequence.
+func stripLegacySystemPrompts(ctx context.Context, conn *sql.Conn) error {
+	type settingsRow struct {
+		id       []byte
+		settings []byte
+	}
+	var rewrites []settingsRow
+	rows, err := conn.QueryContext(ctx, "SELECT id, settings_json FROM sessions")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id, raw []byte
+		if err := rows.Scan(&id, &raw); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		// Decode through Metadata, the blob's own codec, so every other
+		// field round-trips unchanged.
+		var metadata Metadata
+		if err := json.Unmarshal(raw, &metadata); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode session settings: %w", err)
+		}
+		if !isLegacySystemPrompt(metadata.SystemPrompt) {
+			continue
+		}
+		metadata.SystemPrompt = ""
+		settings, err := json.Marshal(metadata)
+		if err != nil {
+			_ = rows.Close()
+			return err
+		}
+		rewrites = append(rewrites, settingsRow{id: id, settings: settings})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, row := range rewrites {
+		if _, err := conn.ExecContext(ctx, "UPDATE sessions SET settings_json = ? WHERE id = ?", row.settings, row.id); err != nil {
+			return err
+		}
+	}
+
+	var stripped [][]byte
+	rows, err = conn.QueryContext(ctx, "SELECT session_id, payload_json FROM messages WHERE sequence = 0")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id, payload []byte
+		if err := rows.Scan(&id, &payload); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		var message messages.ChatMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode session message: %w", err)
+		}
+		if message.Role == messages.MessageRoleSystem && len(message.Parts) == 0 && isLegacySystemPrompt(message.Content) {
+			stripped = append(stripped, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	// Renumbering moves every remaining row through a far-off range first,
+	// so no intermediate step collides on the (session_id, sequence) key.
+	const shift = int64(1) << 40
+	for _, id := range stripped {
+		for _, step := range []struct {
+			sql  string
+			args []any
+		}{
+			{"DELETE FROM messages WHERE session_id = ? AND sequence = 0", []any{id}},
+			{"UPDATE messages SET sequence = sequence + ? WHERE session_id = ?", []any{shift, id}},
+			{"UPDATE messages SET sequence = sequence - ? WHERE session_id = ?", []any{shift + 1, id}},
+			{"UPDATE sessions SET next_sequence = next_sequence - 1 WHERE id = ?", []any{id}},
+		} {
+			if _, err := conn.ExecContext(ctx, step.sql, step.args...); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// upgradeImportedTextFiles rewrites the v1 form of an --add text import, a
+// context-import user message whose Content is "=== name ===\n<body>", into
+// one text part carrying the same text plus FileName. The model-visible text
+// is unchanged; the REPL can now show "[attached: name]" without parsing the
+// header. Only rows flagged as context imports qualify, so a typed prompt
+// that happens to start with the header is left alone.
+func upgradeImportedTextFiles(ctx context.Context, conn *sql.Conn) error {
+	type importRow struct {
+		id       []byte
+		sequence int64
+		payload  []byte
+	}
+	var rewrites []importRow
+	rows, err := conn.QueryContext(ctx, `SELECT session_id, sequence, payload_json FROM messages WHERE instr(payload_json, '"content":"=== ') > 0`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id, payload []byte
+		var sequence int64
+		if err := rows.Scan(&id, &sequence, &payload); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		var message messages.ChatMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode session message: %w", err)
+		}
+		name, ok := importedTextFileName(message)
+		if !ok {
+			continue
+		}
+		message.Parts = []messages.ContentPart{{Type: "text", Text: message.Content, FileName: name}}
+		message.Content = ""
+		upgraded, err := json.Marshal(message)
+		if err != nil {
+			_ = rows.Close()
+			return err
+		}
+		rewrites = append(rewrites, importRow{id: id, sequence: sequence, payload: upgraded})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, row := range rewrites {
+		if _, err := conn.ExecContext(ctx, "UPDATE messages SET payload_json = ? WHERE session_id = ? AND sequence = ?", row.payload, row.id, row.sequence); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// importedTextFileName reports the file name of a v1-form --add text import.
+func importedTextFileName(msg messages.ChatMessage) (string, bool) {
+	if msg.Role != messages.MessageRoleUser || len(msg.Parts) != 0 {
+		return "", false
+	}
+	if imported, _ := msg.Metadata[messages.MetadataKeyContextImport].(bool); !imported {
+		return "", false
+	}
+	if !strings.HasPrefix(msg.Content, "=== ") {
+		return "", false
+	}
+	lineEnd := strings.IndexByte(msg.Content, '\n')
+	if lineEnd < 8 {
+		return "", false
+	}
+	header := msg.Content[:lineEnd]
+	if !strings.HasSuffix(header, " ===") {
+		return "", false
+	}
+	name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(header, "=== "), " ==="))
+	return name, name != ""
 }
 
 type schemaColumnSpec struct {

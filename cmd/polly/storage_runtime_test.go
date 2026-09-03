@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -262,13 +264,11 @@ func TestFreshContextSeedsPersonaOnly(t *testing.T) {
 
 // TestUpdateContextInfoPreservesStoredSettingsWithoutFlags proves the startup
 // write-back is a no-op for an untouched existing context: every flagged row
-// restores from metadata first, so copying it back stores the same value,
-// while the system row, whose restore normalises a legacy prompt, stays out
-// of the write-back set and keeps its stored form.
+// restores from metadata first, so copying it back stores the same value.
 func TestUpdateContextInfoPreservesStoredSettingsWithoutFlags(t *testing.T) {
 	store := testOpenMemoryStore(t, &sessions.Metadata{
 		Model:          "openai/gpt-5.4",
-		SystemPrompt:   legacySystemPromptDefaults[0],
+		SystemPrompt:   "be a pirate",
 		ThinkingEffort: "",
 	})
 	session := testAcquireSession(t, store, "untouched")
@@ -286,7 +286,7 @@ func TestUpdateContextInfoPreservesStoredSettingsWithoutFlags(t *testing.T) {
 	if _, _, err := initializeConversation(context.Background(), config, store, "untouched", cmd); err != nil {
 		t.Fatal(err)
 	}
-	if config.Model != "openai/gpt-5.4" || config.MaxHistoryTokens != 0 || config.ThinkingEffort != "" || config.SystemPrompt != "" {
+	if config.Model != "openai/gpt-5.4" || config.MaxHistoryTokens != 0 || config.ThinkingEffort != "" || config.SystemPrompt != "be a pirate" {
 		t.Fatalf("resolved settings did not restore the stored values: %+v", config.Settings)
 	}
 
@@ -303,15 +303,20 @@ func TestUpdateContextInfoPreservesStoredSettingsWithoutFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	if stored.Model != "openai/gpt-5.4" || stored.MaxHistoryTokens != 0 || stored.ThinkingEffort != "" ||
-		stored.SystemPrompt != legacySystemPromptDefaults[0] {
+		stored.SystemPrompt != "be a pirate" {
 		t.Fatalf("startup write-back rewrote stored settings: %+v", stored)
 	}
 }
 
-func TestInitializeConversationNormalizesLegacyDefaultPrompt(t *testing.T) {
-	// A context stored with a pre-refactor default prompt resolves as
-	// persona-less, and -s "" against it does not trigger the prompt-change
-	// reset that would wipe history.
+// legacySystemPromptDefault is the pre-display-contract default prompt that
+// databases written before the split stored verbatim; the session store's
+// schema v2 migration strips it on open.
+const legacySystemPromptDefault = "Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown."
+
+// A context carrying the legacy default in a schema-v1 database is migrated
+// on open: it resolves as persona-less, keeps its history, and -s "" against
+// it does not trigger the prompt-change reset that would wipe that history.
+func TestInitializeConversationResumesMigratedLegacyContext(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
 		setEmptyArg bool
@@ -320,12 +325,29 @@ func TestInitializeConversationNormalizesLegacyDefaultPrompt(t *testing.T) {
 		{name: "explicit empty -s", setEmptyArg: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			store := testOpenMemoryStore(t, &sessions.Metadata{SystemPrompt: legacySystemPromptDefaults[0]})
+			path := filepath.Join(t.TempDir(), "legacy.db")
+			store := testOpenDiskStore(t, path, &sessions.Metadata{SystemPrompt: legacySystemPromptDefault})
 			session := testAcquireSession(t, store, "legacy")
 			testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "old turn"})
 			if err := session.Close(); err != nil {
 				t.Fatal(err)
 			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// Rewind the schema version so the reopen migrates, exactly as a
+			// database written before the display-contract split would.
+			raw, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := raw.Exec("PRAGMA user_version = 1"); err != nil {
+				t.Fatal(err)
+			}
+			if err := raw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store = testOpenDiskStore(t, path, nil)
 
 			cmd := getCommand()
 			if tt.setEmptyArg {
@@ -342,10 +364,44 @@ func TestInitializeConversationNormalizesLegacyDefaultPrompt(t *testing.T) {
 			}
 
 			reopened := testAcquireSession(t, store, "legacy")
-			if history := testSessionHistory(t, reopened); len(history) != 2 {
-				t.Fatalf("history after legacy resume = %#v, want the seeded system row and user turn", history)
+			history := testSessionHistory(t, reopened)
+			if len(history) != 1 || history[0].Content != "old turn" {
+				t.Fatalf("history after migrated resume = %#v, want the user turn alone", history)
 			}
 		})
+	}
+}
+
+// --add stores a text file as one text part carrying FileName, with the
+// filename boundary kept in the provider-visible text, so the resumed REPL
+// compacts it to "[attached: name]" without parsing the header.
+func TestHandleAddToContextStoresTextFileAsPart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(path, []byte("SECRET BODY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := testOpenMemoryStore(t, nil)
+	config := &Config{Files: []string{path}}
+	withStdin(t, "from stdin\n", func() {
+		if err := handleAddToContext(context.Background(), store, config, "imported"); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	history := testSessionHistory(t, testAcquireSession(t, store, "imported"))
+	if len(history) != 2 {
+		t.Fatalf("imported history = %#v, want the stdin note and the file", history)
+	}
+	file := history[1]
+	want := []messages.ContentPart{{Type: "text", Text: "=== notes.txt ===\nSECRET BODY\n", FileName: "notes.txt"}}
+	if file.Content != "" || !reflect.DeepEqual(file.Parts, want) {
+		t.Fatalf("imported file message = %#v, want parts %#v", file, want)
+	}
+	if imported, _ := file.Metadata[messages.MetadataKeyContextImport].(bool); !imported {
+		t.Fatalf("imported file message lacks the context-import flag: %#v", file.Metadata)
+	}
+	if display, restorable, contextOnly := historyUserSummary(file); display != "[attached: notes.txt]" || restorable || !contextOnly {
+		t.Fatalf("hydrated summary = %q restorable=%v contextOnly=%v", display, restorable, contextOnly)
 	}
 }
 

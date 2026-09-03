@@ -1706,3 +1706,135 @@ func TestSQLiteDataSourceUsesRelativeSQLiteURI(t *testing.T) {
 		t.Fatalf("relative path became URI authority: %q", dsn)
 	}
 }
+
+// TestMigrateSchemaV2StripsLegacyPromptsAndUpgradesImports pins the v1->v2
+// data migration: the pre-contract default prompt leaves settings_json and
+// its seeded system row, that session renumbers contiguously, a sibling with
+// a real persona and every updated_ns stay untouched, --add text imports gain
+// a FileName part with their text intact, and a second open is a no-op.
+func TestMigrateSchemaV2StripsLegacyPromptsAndUpgradesImports(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	seed := func(name string, defaults *Metadata, history []messages.ChatMessage) {
+		t.Helper()
+		store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: path, DefaultMetadata: defaults})
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err := store.Acquire(ctx, name, AcquireOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := session.AddMessages(ctx, history); err != nil {
+			t.Fatal(err)
+		}
+		if err := session.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	imported := messages.ChatMessage{
+		Role:     messages.MessageRoleUser,
+		Content:  "=== notes.txt ===\nbody",
+		Metadata: map[string]any{messages.MetadataKeyContextImport: true},
+	}
+	typed := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "=== typed ===\nnot an import"}
+	reply := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "ok"}
+	seed("legacy", &Metadata{SystemPrompt: legacySystemPromptDefaults[1], Model: "openai/gpt-5.4"}, []messages.ChatMessage{imported, typed, reply})
+	seed("custom", &Metadata{SystemPrompt: "be a pirate"}, []messages.ChatMessage{typed})
+
+	before, err := func() (map[string]*Metadata, error) {
+		store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: path})
+		if err != nil {
+			return nil, err
+		}
+		defer store.Close()
+		return store.GetAllMetadata(ctx)
+	}()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rewind := func() {
+		t.Helper()
+		raw, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Exec("PRAGMA user_version = 1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := raw.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	version := func() int {
+		t.Helper()
+		raw, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer raw.Close()
+		var v int
+		if err := raw.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	check := func(pass string) {
+		t.Helper()
+		store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: path})
+		if err != nil {
+			t.Fatalf("%s: %v", pass, err)
+		}
+		defer store.Close()
+		all, err := store.GetAllMetadata(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := all["legacy"]; got.SystemPrompt != "" || got.Model != "openai/gpt-5.4" || !got.LastUsed.Equal(before["legacy"].LastUsed) {
+			t.Fatalf("%s: legacy metadata = %+v, want the prompt stripped and the rest untouched (before %+v)", pass, got, before["legacy"])
+		}
+		if got := all["custom"]; got.SystemPrompt != "be a pirate" || !got.LastUsed.Equal(before["custom"].LastUsed) {
+			t.Fatalf("%s: custom metadata = %+v, want untouched", pass, got)
+		}
+		legacy, err := store.Acquire(ctx, "legacy", AcquireOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		history, err := legacy.GetHistory(ctx)
+		if err != nil {
+			t.Fatalf("%s: legacy history: %v", pass, err)
+		}
+		_ = legacy.Close()
+		upgraded := imported
+		upgraded.Content = ""
+		upgraded.Parts = []messages.ContentPart{{Type: "text", Text: imported.Content, FileName: "notes.txt"}}
+		if want := []messages.ChatMessage{upgraded, typed, reply}; !reflect.DeepEqual(history, want) {
+			t.Fatalf("%s: legacy history = %#v, want %#v", pass, history, want)
+		}
+		custom, err := store.Acquire(ctx, "custom", AcquireOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		history, err = custom.GetHistory(ctx)
+		if err != nil {
+			t.Fatalf("%s: custom history: %v", pass, err)
+		}
+		_ = custom.Close()
+		if want := []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: "be a pirate"}, typed}; !reflect.DeepEqual(history, want) {
+			t.Fatalf("%s: custom history = %#v, want %#v", pass, history, want)
+		}
+	}
+
+	rewind()
+	check("migrated open")
+	if got := version(); got != 2 {
+		t.Fatalf("user_version after migration = %d, want 2", got)
+	}
+	check("second open")
+	rewind()
+	check("re-run on migrated data")
+}

@@ -48,25 +48,6 @@ func sendTimeContracts(displayContract string) string {
 	return displayContract + "\n\n" + contextMechanicsContract
 }
 
-// legacySystemPromptDefaults are the pre-refactor default system prompts, which
-// baked a display contract into the persisted prompt. They are recognized so
-// contexts created before the split read back as persona-less instead of
-// carrying a stale, possibly wrong-mode contract.
-var legacySystemPromptDefaults = []string{
-	"Your output will be displayed in a unix terminal. Be terse, 512 characters max. Do not use markdown.",
-	"Your output will be displayed in a unix tui. Be terse. Use markdown where it aids readability. Use code blocks where appropriate, including for markdown.",
-}
-
-// normalizeLegacySystemPrompt maps either legacy default to the empty persona.
-func normalizeLegacySystemPrompt(s string) string {
-	for _, legacy := range legacySystemPromptDefaults {
-		if s == legacy {
-			return ""
-		}
-	}
-	return s
-}
-
 // displayContractFor describes what the active output surface can interpret.
 // Raw output still accepts Markdown — Polly simply preserves the source.
 func displayContractFor(capabilities outputCapabilities) string {
@@ -80,15 +61,16 @@ func displayContractFor(capabilities outputCapabilities) string {
 // Providers keep a single system prompt (Anthropic and Gemini take only the
 // last system message), so the contract must extend the existing message rather
 // than ride alongside it; skill guidance is folded into the same message
-// downstream by CompletionRequest.ResolvedMessages. A legacy default seeded
-// into old transcripts is replaced outright — it *was* the display contract.
+// downstream by CompletionRequest.ResolvedMessages. (Pre-contract default
+// prompts seeded into old transcripts are stripped by the session store's
+// schema v2 migration.)
 // msgs must be a request-local copy: the first element is edited in place.
 func applyDisplayContract(msgs []messages.ChatMessage, contract string) []messages.ChatMessage {
 	if contract == "" {
 		return msgs
 	}
 	if len(msgs) > 0 && msgs[0].Role == messages.MessageRoleSystem {
-		if persona := normalizeLegacySystemPrompt(msgs[0].Content); persona != "" {
+		if persona := msgs[0].Content; persona != "" {
 			msgs[0].Content = persona + "\n\n" + contract
 		} else {
 			msgs[0].Content = contract

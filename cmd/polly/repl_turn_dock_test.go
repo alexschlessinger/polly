@@ -31,13 +31,13 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 	if len(m.transcript) != transcriptLen+1 {
 		t.Fatalf("settling did not append exactly one trailer: before=%d after=%d transcript=%#v", transcriptLen, len(m.transcript), m.transcript)
 	}
-	if assistantIndex < 0 || !strings.Contains(plainStyledText(m.transcript[assistantIndex]), "stream closed") {
+	if assistantIndex < 0 || !strings.Contains(plainStyledText(m.transcript[assistantIndex].text), "stream closed") {
 		t.Fatalf("assistant entry moved or changed at settlement: index=%d transcript=%#v", assistantIndex, m.transcript)
 	}
 	if m.turnDock.visible {
 		t.Fatalf("settled dock remained attached to bottom row: %#v", m.turnDock)
 	}
-	plain := plainStyledText(m.transcript[len(m.transcript)-1])
+	plain := plainStyledText(m.transcript[len(m.transcript)-1].text)
 	for _, want := range []string{"thought", "1 tool", "✓", "34.0s", "18.6k in / 1.2k out"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("settled dock %q missing %q", plain, want)
@@ -88,7 +88,7 @@ func TestAttachedTrailerRemainsWhenNextTurnStarts(t *testing.T) {
 	r.endTurn(nil)
 
 	m.beginTurn("second")
-	history := plainStyledText(strings.Join(m.transcript, "\n"))
+	history := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if !strings.Contains(history, "✓ 2.0s") || !strings.Contains(history, "1.2k in / 300 out") {
 		t.Fatalf("previous turn trailer missing from transcript history: %q", history)
 	}
@@ -158,7 +158,7 @@ func TestPriorTrailerExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
 	if !m.toggleTurnTrailerOverlay(prior, turnDockOverlayThought) {
 		t.Fatal("prior trailer did not expand")
 	}
-	shown := plainStyledText(m.transcript[prior.transcriptIndex])
+	shown := plainStyledText(m.transcript[prior.transcriptIndex].text)
 	if !strings.Contains(shown, "prior reasoning detail") {
 		t.Fatalf("prior detail did not expand beside its trailer: %q", shown)
 	}
@@ -273,7 +273,7 @@ func TestQueuedTurnSwitchesDockWithoutAddingTrailer(t *testing.T) {
 		t.Fatal("queued turn did not start")
 	}
 	<-done
-	history := plainStyledText(strings.Join(m.transcript, "\n"))
+	history := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if len(m.transcript) != transcriptLen {
 		t.Fatalf("queued dock switch inserted transcript rows: before=%d after=%d", transcriptLen, len(m.transcript))
 	}
@@ -306,7 +306,7 @@ func TestHydratedHistoryRestoresAttachedTrailers(t *testing.T) {
 
 	m := newReplModel()
 	m.hydrateHistory(history, "ctx")
-	transcript := plainStyledText(strings.Join(m.transcript, "\n"))
+	transcript := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	if !strings.Contains(transcript, "1.0k in / 200 out") || !strings.Contains(transcript, "1.8k in / 350 out") {
 		t.Fatalf("hydrated turn trailers missing: %q", transcript)
 	}
@@ -314,7 +314,7 @@ func TestHydratedHistoryRestoresAttachedTrailers(t *testing.T) {
 		t.Fatalf("hydrated trailers/dock = trailers:%#v dock:%#v", m.turnTrailers, m.turnDock)
 	}
 	latest := m.turnTrailers[m.turnTrailerSeq]
-	plain := plainStyledText(m.transcript[latest.transcriptIndex])
+	plain := plainStyledText(m.transcript[latest.transcriptIndex].text)
 	for _, want := range []string{"thought", "✓", "1.8k in / 350 out"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("latest hydrated dock %q missing %q", plain, want)

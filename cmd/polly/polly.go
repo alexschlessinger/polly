@@ -1008,26 +1008,15 @@ func externalizeMessageImages(ctx context.Context, msg messages.ChatMessage, sto
 		// normalized before its bytes become an immutable artifact: once
 		// externalized, the base64-only portability validation never sees it
 		// again and hydration would replay the bad MIME to providers forever.
-		if !portablePersistedImagePart(part) {
-			upgraded, err := upgradeLegacyImagePart(part)
-			if err != nil {
-				continue
-			}
-			upgraded.Reference = part.Reference
-			msg.Parts[i] = upgraded
-			if upgraded.Type != "image_base64" {
-				continue
-			}
-			part = upgraded
-		}
-		data, err := base64.StdEncoding.DecodeString(part.ImageData)
+		part, err := portableImagePart(part)
 		if err != nil {
-			return messages.ChatMessage{}, fmt.Errorf("decode image artifact %d: %w", i+1, err)
+			continue
 		}
-		ref, err := store.Put(ctx, artifacts.Blob{
-			Kind: artifacts.KindImage, MIMEType: part.MimeType, Name: part.FileName,
-			ImageToken: part.Reference, Reference: part.Reference, Data: data,
-		})
+		if part.Type != "image_base64" {
+			msg.Parts[i] = part
+			continue
+		}
+		ref, err := storeImagePart(ctx, store, part, part.Reference)
 		if err != nil {
 			return messages.ChatMessage{}, fmt.Errorf("store image artifact %d: %w", i+1, err)
 		}
@@ -1283,11 +1272,7 @@ func normalizeLegacyImagesForProjection(history []messages.ChatMessage) []messag
 	for i, msg := range history {
 		normalized[i] = cloneChatMessage(msg)
 		for j, part := range normalized[i].Parts {
-			if part.Type != "image_base64" || portablePersistedImagePart(part) {
-				continue
-			}
-			if upgraded, err := upgradeLegacyImagePart(part); err == nil {
-				upgraded.Reference = part.Reference
+			if upgraded, err := portableImagePart(part); err == nil {
 				normalized[i].Parts[j] = upgraded
 			}
 		}
@@ -1322,10 +1307,7 @@ func preparePortableImageRequest(history []messages.ChatMessage) ([]messages.Cha
 	for messageIndex, msg := range history {
 		normalized[messageIndex] = cloneChatMessage(msg)
 		for partIndex, part := range normalized[messageIndex].Parts {
-			if part.Type != "image_base64" || portablePersistedImagePart(part) {
-				continue
-			}
-			upgraded, err := upgradeLegacyImagePart(part)
+			upgraded, err := portableImagePart(part)
 			if err != nil {
 				return nil, fmt.Errorf("model-visible message %d has a legacy image that cannot be normalized: %w", messageIndex+1, err)
 			}
@@ -1336,6 +1318,23 @@ func preparePortableImageRequest(history []messages.ChatMessage) ([]messages.Cha
 		return nil, err
 	}
 	return normalized, nil
+}
+
+// portableImagePart returns part unchanged unless it is an inline image that
+// fails the portable contract, in which case it returns the normalized
+// upgrade with the original Reference carried over. Callers keep their own
+// failure policy; this is the one place the "upgrade if nonportable" test
+// lives.
+func portableImagePart(part messages.ContentPart) (messages.ContentPart, error) {
+	if part.Type != "image_base64" || portablePersistedImagePart(part) {
+		return part, nil
+	}
+	upgraded, err := upgradeLegacyImagePart(part)
+	if err != nil {
+		return messages.ContentPart{}, err
+	}
+	upgraded.Reference = part.Reference
+	return upgraded, nil
 }
 
 func upgradeLegacyImagePart(part messages.ContentPart) (messages.ContentPart, error) {
@@ -1462,9 +1461,8 @@ func initializeConversation(ctx context.Context, config *Config, sessionStore se
 			originalContextInfo = contextInfo
 
 			// Check if system prompt is being changed (only if context has
-			// existing conversation). A stored legacy default reads as the
-			// empty persona, so -s "" against it does not wipe history.
-			if cmd.IsSet("system") && cmd.String("system") != normalizeLegacySystemPrompt(contextInfo.SystemPrompt) {
+			// existing conversation).
+			if cmd.IsSet("system") && cmd.String("system") != contextInfo.SystemPrompt {
 				// Check if there's an existing conversation to reset
 				exists, err := sessionStore.Exists(ctx, contextInfo.Name)
 				if err != nil {
@@ -1521,14 +1519,14 @@ func applyFlagSettings(md *sessions.Metadata, config *Config, cmd *cli.Command) 
 }
 
 // updateContextInfo writes the resolved settings onto md, the metadata staged
-// by newConversationState, and persists it: the startup write-back rows
-// always (config holds the stored value unless a flag overrode it, see
-// initializeConversation), every other row only when its flag was given.
+// by newConversationState, and persists it: every flagged row, since config
+// holds the stored value unless a flag overrode it (see initializeConversation),
+// so the copy is a no-op for an untouched row and an override for a set flag.
 // Name and LastUsed are storage-owned: SetMetadata overwrites both, so they
 // are not written here.
 func updateContextInfo(ctx context.Context, session sessions.Session, md *sessions.Metadata, config *Config, cmd *cli.Command) error {
 	for _, spec := range settingSpecs {
-		if spec.startupWriteBack() || spec.flagSet(cmd) {
+		if spec.flagged() {
 			spec.toMeta(config, md)
 		}
 	}

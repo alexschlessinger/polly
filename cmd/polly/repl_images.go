@@ -428,8 +428,8 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 	// This runs inside transcriptRows, so it cannot measure display blocks
 	// (that would re-enter the layout); it re-anchors in per-entry space,
 	// which is exact only while no earlier activity entries have merged.
-	for transcriptIndex, images := range m.transcriptImages {
-		updated, copied := refresh(images)
+	for transcriptIndex := range m.transcript {
+		updated, copied := refresh(m.transcript[transcriptIndex].images)
 		if copied {
 			oldCount, start := 0, 0
 			if !m.followBottom {
@@ -439,7 +439,7 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 			// The one raw lane write: this runs inside transcriptRows, which
 			// invalidates on the returned flag, so the owner's invalidation
 			// would be redundant here.
-			m.transcriptImages[transcriptIndex] = updated
+			m.transcript[transcriptIndex].images = updated
 			if !m.followBottom {
 				m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(transcriptIndex, width))
 			}

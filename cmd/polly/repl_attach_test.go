@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -13,9 +14,11 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
@@ -725,7 +728,7 @@ func TestBeginManagedTurnEchoesPreparedAttachmentThumbnails(t *testing.T) {
 	m.beginManagedTurn(managedTurnInput{displayText: prompt, userMessage: msg})
 
 	idx := len(m.transcript) - 1
-	entry := m.transcript[idx]
+	entry := m.transcript[idx].text
 	if !strings.Contains(entry, "image: shot.png") {
 		t.Fatalf("user echo lacks attachment caption: %q", entry)
 	}
@@ -737,7 +740,7 @@ func TestBeginManagedTurnEchoesPreparedAttachmentThumbnails(t *testing.T) {
 	if strings.ContainsRune(strings.SplitN(entry, "\n", 2)[0], transcriptImageMarker(0)) {
 		t.Fatal("pasted marker rune survived in the echoed prompt line")
 	}
-	imgs := m.transcriptImages[idx]
+	imgs := m.transcript[idx].images
 	if len(imgs) != 1 || imgs[0].DisplayPath != "shot.png" || imgs[0].Path == path {
 		t.Fatalf("sidecar images = %+v", imgs)
 	}
@@ -824,5 +827,94 @@ func TestStripTranscriptImageMarkers(t *testing.T) {
 	in := "a" + string(transcriptImageMarker(0)) + "b" + string(transcriptImageMarker(255)) + "c\uE200d"
 	if got := stripTranscriptImageMarkers(in); got != "abc\uE200d" {
 		t.Fatalf("stripTranscriptImageMarkers = %q", got)
+	}
+}
+
+// readImageArtifact is the one read-back for stored images: it refuses a
+// missing store, bad metadata, and a blob whose size drifted from the ref.
+func TestReadImageArtifactGuardsStoreAndSize(t *testing.T) {
+	ctx := context.Background()
+	store := testArtifactStore(t)
+	path := filepath.Join(t.TempDir(), "pic.png")
+	writeImageFixture(t, path, 2, 2)
+	pngBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Put(ctx, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "pic.png", Data: pngBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := readImageArtifact(ctx, store, &ref); err != nil || !bytes.Equal(data, pngBytes) {
+		t.Fatalf("read = %d bytes, %v; want the stored blob", len(data), err)
+	}
+	if _, err := readImageArtifact(ctx, nil, &ref); err == nil || !strings.Contains(err.Error(), "no session store") {
+		t.Fatalf("nil store error = %v", err)
+	}
+	if _, err := readImageArtifact(ctx, store, nil); err == nil || !strings.Contains(err.Error(), "invalid artifact metadata") {
+		t.Fatalf("nil ref error = %v", err)
+	}
+	for _, drift := range []int64{-1, 1} {
+		wrong := ref
+		wrong.Bytes += drift
+		if _, err := readImageArtifact(ctx, store, &wrong); err == nil || !strings.Contains(err.Error(), "stored size changed") {
+			t.Fatalf("size drift %+d error = %v, want stored size changed", drift, err)
+		}
+	}
+	if !availableImageArtifact(store, &ref) || availableImageArtifact(nil, &ref) {
+		t.Fatal("availableImageArtifact disagrees with readImageArtifact")
+	}
+}
+
+// storeImagePart carries the reference onto the stored blob only when given
+// one, so a restored draft can mint its own token afterwards.
+func TestStoreImagePartReference(t *testing.T) {
+	ctx := context.Background()
+	store := testArtifactStore(t)
+	path := filepath.Join(t.TempDir(), "pic.png")
+	writeImageFixture(t, path, 2, 2)
+	part, err := prepareImageForUpload(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := storeImagePart(ctx, store, *part, "[image #1]")
+	if err != nil || ref.ImageToken != "[image #1]" || ref.Reference != "[image #1]" || ref.Bytes == 0 || ref.MIMEType != "image/png" {
+		t.Fatalf("stored ref = %+v, %v", ref, err)
+	}
+	// Without a reference the store mints its own token and records no
+	// reference; the restored-draft path then overwrites the token.
+	bare, err := storeImagePart(ctx, store, *part, "")
+	if err != nil || bare.ImageToken == "[image #1]" || bare.Reference != "" {
+		t.Fatalf("bare ref = %+v, %v; want a store-minted token and no reference", bare, err)
+	}
+	if _, err := storeImagePart(ctx, store, messages.ContentPart{Type: "image_base64", ImageData: "%%%"}, ""); err == nil || !strings.Contains(err.Error(), "invalid or empty base64 data") {
+		t.Fatalf("bad base64 error = %v", err)
+	}
+}
+
+// portableImagePart leaves portable and non-image parts alone and upgrades a
+// legacy part with its Reference intact.
+func TestPortableImagePartKeepsReference(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pic.png")
+	writeImageFixture(t, path, 2, 2)
+	valid, err := prepareImageForUpload(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid.Reference = "[image #3]"
+	if got, err := portableImagePart(*valid); err != nil || !reflect.DeepEqual(got, *valid) {
+		t.Fatalf("portable part changed: %+v, %v", got, err)
+	}
+	text := messages.ContentPart{Type: "text", Text: "hi"}
+	if got, err := portableImagePart(text); err != nil || got != text {
+		t.Fatalf("text part changed: %+v, %v", got, err)
+	}
+	legacy := messages.ContentPart{Type: "image_base64", ImageData: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", MimeType: "image/gif", FileName: "dot.gif", Reference: "[image #2]"}
+	got, err := portableImagePart(legacy)
+	if err != nil || got.Type != "image_base64" || got.MimeType != "image/png" || got.Reference != "[image #2]" {
+		t.Fatalf("legacy GIF upgrade = %+v, %v; want a PNG part keeping the reference", got, err)
+	}
+	if _, err := portableImagePart(messages.ContentPart{Type: "image_base64", ImageData: "%%%", MimeType: "image/png"}); err == nil {
+		t.Fatal("undecodable part upgraded without error")
 	}
 }

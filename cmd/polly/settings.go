@@ -17,13 +17,10 @@ import (
 // The gates are deliberately distinct and must stay distinct:
 //   - flagged rows (fromCmd != nil; the flag shares the row's key) gate the
 //     IsSet twin walks in initializeConversation (restore from metadata when
-//     NOT set) and applyFlagSettings (override metadata when set);
-//   - startupWriteBack (flagged, restore not lossy) is updateContextInfo's
-//     unconditional startup write-back set: config holds the stored value
-//     unless a flag overrode it, so the write is a no-op for an untouched
-//     row. The system row's restore normalises a legacy stored prompt, so
-//     writing it back would rewrite the store; it is the one flagged row
-//     that reaches metadata only through applyFlagSettings;
+//     NOT set) and applyFlagSettings (override metadata when set), and are
+//     updateContextInfo's startup write-back set: config holds the stored
+//     value unless a flag overrode it, so the copy is a no-op for an
+//     untouched row;
 //   - parse != nil marks the /set-able rows, and exactly those are what
 //     persistReplSettings writes after a /set: what /set can change, /set
 //     must persist, or the change silently dies at relaunch.
@@ -32,11 +29,6 @@ type settingSpec struct {
 	// flagged rows. Table order is load-bearing: it defines /get all output
 	// order and the settable-keys error text.
 	key string
-
-	// lossyRestore marks a flagged row whose fromMeta does not round-trip
-	// (system normalises a legacy prompt), so the startup write-back must
-	// not copy the restored value back over what is stored.
-	lossyRestore bool
 
 	// parse validates value and writes it onto cfg; nil marks the key
 	// read-only for /set. Error texts appear in transcripts; keep stable.
@@ -172,8 +164,7 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.ThinkingEffort = cfg.ThinkingEffort },
 	},
 	{
-		key:          "system",
-		lossyRestore: true,
+		key: "system",
 		show: func(_ *replCommandContext, cfg *Config) string {
 			if cfg.SystemPrompt == "" {
 				return "(none)"
@@ -181,13 +172,10 @@ var settingSpecs = []settingSpec{
 			return cfg.SystemPrompt
 		},
 		fromCmd: func(cfg *Config, cmd *cli.Command) { cfg.SystemPrompt = cmd.String("system") },
-		// A stored legacy default reads as the empty persona. The -s
-		// conversation-reset detection is control flow, not a copy, and stays
-		// in initializeConversation ahead of the table walk.
-		fromMeta: func(cfg *Config, md *sessions.Metadata) {
-			cfg.SystemPrompt = normalizeLegacySystemPrompt(md.SystemPrompt)
-		},
-		toMeta: func(cfg *Config, md *sessions.Metadata) { md.SystemPrompt = cfg.SystemPrompt },
+		// The -s conversation-reset detection is control flow, not a copy, and
+		// stays in initializeConversation ahead of the table walk.
+		fromMeta: func(cfg *Config, md *sessions.Metadata) { cfg.SystemPrompt = md.SystemPrompt },
+		toMeta:   func(cfg *Config, md *sessions.Metadata) { md.SystemPrompt = cfg.SystemPrompt },
 	},
 	{
 		key: "display",
@@ -274,15 +262,6 @@ func settingKeysWhere(pred func(settingSpec) bool) []string {
 // (display, sandbox) have none.
 func (s settingSpec) flagged() bool {
 	return s.fromCmd != nil
-}
-
-// startupWriteBack reports whether updateContextInfo copies the row onto
-// metadata unconditionally at startup: every flagged row whose restore
-// round-trips. Config holds the stored value unless a flag overrode it, so
-// the copy is a no-op for an untouched row; the lossy system row is left to
-// flagSet.
-func (s settingSpec) startupWriteBack() bool {
-	return s.flagged() && !s.lossyRestore
 }
 
 // flagSet reports whether the setting's flag was given, by argument or

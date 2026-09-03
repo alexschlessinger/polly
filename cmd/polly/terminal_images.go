@@ -636,14 +636,7 @@ func (m *terminalImageManager) geometryVersion() string {
 }
 
 func loadLocalImage(path string) (image.Image, error) {
-	data, err := images.ReadBoundedFile(path, maxLocalImageBytes)
-	if err != nil {
-		return nil, err
-	}
-	if _, _, err := images.Validate(data); err != nil {
-		return nil, err
-	}
-	img, _, err := image.Decode(bytes.NewReader(data))
+	img, _, err := images.DecodeBoundedFile(path, maxLocalImageBytes)
 	return img, err
 }
 

@@ -352,20 +352,6 @@ func TestDisplayContractFor(t *testing.T) {
 	}
 }
 
-func TestNormalizeLegacySystemPrompt(t *testing.T) {
-	for _, legacy := range legacySystemPromptDefaults {
-		if got := normalizeLegacySystemPrompt(legacy); got != "" {
-			t.Fatalf("legacy default not normalized: %q", got)
-		}
-	}
-	if got := normalizeLegacySystemPrompt("be a pirate"); got != "be a pirate" {
-		t.Fatalf("custom prompt mangled: %q", got)
-	}
-	if got := normalizeLegacySystemPrompt(""); got != "" {
-		t.Fatalf("empty prompt mangled: %q", got)
-	}
-}
-
 func TestApplyDisplayContract(t *testing.T) {
 	system := func(content string) messages.ChatMessage {
 		return messages.ChatMessage{Role: messages.MessageRoleSystem, Content: content}
@@ -376,12 +362,6 @@ func TestApplyDisplayContract(t *testing.T) {
 	got := applyDisplayContract([]messages.ChatMessage{system("be a pirate"), user}, richTerminalDisplayContract)
 	if len(got) != 2 || got[0].Content != "be a pirate\n\n"+richTerminalDisplayContract {
 		t.Fatalf("persona merge = %+v", got)
-	}
-
-	// A legacy default seeded into an old transcript is replaced outright.
-	got = applyDisplayContract([]messages.ChatMessage{system(legacySystemPromptDefaults[0]), user}, richTerminalDisplayContract)
-	if len(got) != 2 || got[0].Content != richTerminalDisplayContract {
-		t.Fatalf("legacy replace = %+v", got)
 	}
 
 	// No system message: one is prepended holding only the contract.

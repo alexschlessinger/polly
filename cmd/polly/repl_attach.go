@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -82,15 +83,8 @@ func (m *replModel) rememberArtifactAttachments(msg messages.ChatMessage) {
 			ref := *part.Artifact
 			imageRef = &ref
 		} else if part.Type == "image_base64" && part.ImageData != "" && m.artifactStore != nil {
-			data, err := base64.StdEncoding.DecodeString(part.ImageData)
-			if err == nil && len(data) > 0 {
-				ref, putErr := m.artifactStore.Put(context.Background(), artifacts.Blob{
-					Kind: artifacts.KindImage, MIMEType: part.MimeType, Name: part.FileName,
-					ImageToken: part.Reference, Reference: part.Reference, Data: data,
-				})
-				if putErr == nil {
-					imageRef = &ref
-				}
+			if ref, err := storeImagePart(context.Background(), m.artifactStore, part, part.Reference); err == nil {
+				imageRef = &ref
 			}
 		}
 		if imageRef == nil {
@@ -131,16 +125,55 @@ func (m *replModel) rememberArtifactAttachments(msg messages.ChatMessage) {
 }
 
 func availableImageArtifact(store artifacts.Store, ref *artifacts.Ref) bool {
-	if store == nil || ref == nil || ref.Kind != artifacts.KindImage || !artifacts.ValidID(ref.ID) || ref.Bytes < 0 || ref.Bytes > int64(maxLocalImageBytes) {
-		return false
+	_, err := readImageArtifact(context.Background(), store, ref)
+	return err == nil
+}
+
+// readImageArtifact returns the stored bytes of an image artifact, refusing a
+// missing store, invalid metadata, and a blob whose size no longer matches
+// ref. Every projection of a stored image back into the inline form reads
+// through here.
+func readImageArtifact(ctx context.Context, store artifacts.Store, ref *artifacts.Ref) ([]byte, error) {
+	if store == nil {
+		return nil, fmt.Errorf("no session store")
 	}
-	r, err := store.Open(context.Background(), ref.ID)
+	if ref == nil || ref.Kind != artifacts.KindImage || !artifacts.ValidID(ref.ID) || ref.Bytes < 0 || ref.Bytes > int64(maxLocalImageBytes) {
+		return nil, fmt.Errorf("invalid artifact metadata")
+	}
+	r, err := store.Open(ctx, ref.ID)
 	if err != nil {
-		return false
+		return nil, err
 	}
-	n, readErr := io.Copy(io.Discard, io.LimitReader(r, ref.Bytes+1))
-	closeErr := r.Close()
-	return readErr == nil && closeErr == nil && n == ref.Bytes
+	data, readErr := io.ReadAll(io.LimitReader(r, ref.Bytes+1))
+	if err := errors.Join(readErr, r.Close()); err != nil {
+		return nil, err
+	}
+	if int64(len(data)) != ref.Bytes {
+		return nil, fmt.Errorf("stored size changed")
+	}
+	return data, nil
+}
+
+// artifactImagePart projects a stored image artifact back into the inline
+// image_base64 form under the given user-visible reference.
+func artifactImagePart(ref *artifacts.Ref, data []byte, reference string) messages.ContentPart {
+	return messages.ContentPart{
+		Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(data),
+		MimeType: ref.MIMEType, FileName: ref.Name, Reference: reference,
+	}
+}
+
+// storeImagePart puts an inline image_base64 part into the artifact store.
+// reference becomes the blob's ImageToken and Reference; "" leaves both unset.
+func storeImagePart(ctx context.Context, store artifacts.Store, part messages.ContentPart, reference string) (artifacts.Ref, error) {
+	data, err := base64.StdEncoding.DecodeString(part.ImageData)
+	if err != nil || len(data) == 0 {
+		return artifacts.Ref{}, fmt.Errorf("invalid or empty base64 data")
+	}
+	return store.Put(ctx, artifacts.Blob{
+		Kind: artifacts.KindImage, MIMEType: part.MimeType, Name: part.FileName,
+		ImageToken: reference, Reference: reference, Data: data,
+	})
 }
 
 // promptAttachments resolves the "[image #N]" tokens a prompt references, in
@@ -383,21 +416,11 @@ func preparedMessageTranscriptImagesWithStore(msg messages.ChatMessage, store ar
 			if part.Artifact == nil || part.Artifact.Kind != artifacts.KindImage {
 				continue
 			}
-			if part.Artifact.Bytes < 0 || part.Artifact.Bytes > int64(maxLocalImageBytes) {
-				continue
-			}
-			r, err := store.Open(context.Background(), part.Artifact.ID)
+			data, err := readImageArtifact(context.Background(), store, part.Artifact)
 			if err != nil {
 				continue
 			}
-			data, readErr := io.ReadAll(io.LimitReader(r, part.Artifact.Bytes+1))
-			_ = r.Close()
-			if readErr != nil || int64(len(data)) != part.Artifact.Bytes {
-				continue
-			}
-			msg.Parts[i] = messages.ContentPart{
-				Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(data), MimeType: part.Artifact.MIMEType, FileName: part.Artifact.Name, Reference: part.Artifact.ImageToken,
-			}
+			msg.Parts[i] = artifactImagePart(part.Artifact, data, part.Artifact.ImageToken)
 		}
 	}
 	dir, err := attachmentCacheDir()

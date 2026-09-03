@@ -292,8 +292,8 @@ func TestAppendAssistantAccumulatesManyChunks(t *testing.T) {
 		t.Fatalf("streaming should stay in one entry, got %d", len(m.transcript))
 	}
 	// Markdown rendering owns trailing whitespace; the words must all survive.
-	if m.transcript[0] != strings.TrimRight(want.String(), " ") {
-		t.Fatalf("accumulated text mismatch:\n got %q\nwant %q", m.transcript[0], want.String())
+	if m.transcript[0].text != strings.TrimRight(want.String(), " ") {
+		t.Fatalf("accumulated text mismatch:\n got %q\nwant %q", m.transcript[0].text, want.String())
 	}
 }
 
@@ -328,13 +328,13 @@ func TestToolEndRendersDenialLine(t *testing.T) {
 	tui.AppendToolEnd(call, llm.ToolDeniedContent, 0, nil)
 
 	record := r.model.currentToolDisclosure()
-	if record == nil || record.expanded || strings.Contains(r.model.transcript[record.transcriptIndex], "denied") {
-		t.Fatalf("denied tool should stay hidden while collapsed: record=%#v transcript=%q", record, r.model.transcript)
+	if record == nil || record.expanded || strings.Contains(r.model.transcript[record.transcriptIndex].text, "denied") {
+		t.Fatalf("denied tool should stay hidden while collapsed: record=%#v transcript=%q", record, transcriptTexts(r.model))
 	}
 	if !r.model.toggleToolDisclosure(record.id) {
 		t.Fatal("denied tool disclosure did not expand")
 	}
-	if expanded := r.model.transcript[record.transcriptIndex]; !strings.Contains(expanded, "denied") {
+	if expanded := r.model.transcript[record.transcriptIndex].text; !strings.Contains(expanded, "denied") {
 		t.Fatalf("expanded denied tool should render a denied line, got %q", expanded)
 	}
 }
@@ -360,7 +360,7 @@ func TestToolEndDurationUsesFormatElapsed(t *testing.T) {
 	if record == nil || !m.toggleToolDisclosure(record.id) {
 		t.Fatalf("duration disclosure did not expand: %#v", record)
 	}
-	last := m.transcript[record.transcriptIndex]
+	last := m.transcript[record.transcriptIndex].text
 	if !strings.Contains(last, "1m30s") {
 		t.Fatalf("ok tool line should use formatElapsed (1m30s), got %q", last)
 	}
@@ -386,7 +386,7 @@ func TestToolEndErrorDurationUsesFormatElapsed(t *testing.T) {
 	if record == nil || !r.model.toggleToolDisclosure(record.id) {
 		t.Fatalf("failed duration disclosure did not expand: %#v", record)
 	}
-	last := r.model.transcript[record.transcriptIndex]
+	last := r.model.transcript[record.transcriptIndex].text
 	if !strings.Contains(last, "1m30s") {
 		t.Fatalf("failed tool line should use formatElapsed (1m30s), got %q", last)
 	}
