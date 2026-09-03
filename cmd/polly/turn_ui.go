@@ -30,7 +30,18 @@ type TurnUI interface {
 	AppendToolMedia(call messages.ChatMessageToolCall, images []transcriptImage)
 	AppendWarning(text string)
 	RecordTurnTokens(in, out int)
+	// RecordContextUsage reports the turn's context consumption against the
+	// resolved budget; estimated marks a pre-response projection.
+	RecordContextUsage(used, limit int, estimated bool)
 	FinishTextTurn()
+	// UserMessagePersistenceStarted and UserMessagePersistenceFinished bracket
+	// the durable write of the user message, so a UI that projects history
+	// concurrently can serialize against it.
+	UserMessagePersistenceStarted()
+	UserMessagePersistenceFinished(persisted bool)
+	// TurnPersistenceAllowed reports whether the settled turn may still be
+	// written to the session; a detached REPL turn vetoes the write.
+	TurnPersistenceAllowed() bool
 }
 
 // lineTurnUI writes raw streamed output or buffered ANSI Markdown according to
@@ -50,14 +61,6 @@ type lineTurnUI struct {
 	finished        bool
 	toolMu          sync.Mutex
 	stderrTTY       bool
-}
-
-func newLineTurnUI(config *Config, inputReader *bufio.Reader) *lineTurnUI {
-	return newLineTurnUIWithCapabilities(
-		config,
-		inputReader,
-		outputCapabilities{surface: outputSurfaceLineRaw, columns: 80},
-	)
 }
 
 func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, capabilities outputCapabilities) *lineTurnUI {
@@ -191,10 +194,10 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	if err != nil {
 		// Tool output/error text is intentionally omitted; the model still
 		// receives the full output. The ✗ and exit code alone mark the failure.
-		fmt.Fprintf(ui.errWriter, "  ✗ %s\n", joinMeta(dur+" "+label, toolFailureMeta(err)))
+		fmt.Fprintf(ui.errWriter, "  ✗ %s\n", toolLineBody(dur, label, toolFailureMeta(err)))
 		return
 	}
-	fmt.Fprintf(ui.errWriter, "  ✓ %s\n", joinMeta(dur+" "+label, resultLineMeta(result)))
+	fmt.Fprintf(ui.errWriter, "  ✓ %s\n", toolLineBody(dur, label, resultLineMeta(result)))
 }
 
 func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []transcriptImage) {
@@ -228,6 +231,14 @@ func (ui *lineTurnUI) AppendWarning(text string) {
 
 func (ui *lineTurnUI) RecordTurnTokens(in, out int) {}
 
+func (ui *lineTurnUI) RecordContextUsage(used, limit int, estimated bool) {}
+
+func (ui *lineTurnUI) UserMessagePersistenceStarted() {}
+
+func (ui *lineTurnUI) UserMessagePersistenceFinished(persisted bool) {}
+
+func (ui *lineTurnUI) TurnPersistenceAllowed() bool { return true }
+
 func (ui *lineTurnUI) FinishTextTurn() {
 	ui.flushBufferedMarkdown()
 	if ui.config.SchemaPath == "" && !ui.endsWithNewline {
@@ -239,13 +250,4 @@ func (ui *lineTurnUI) FinishTextTurn() {
 
 func trimLeadingResponseNewlines(content string) string {
 	return strings.TrimLeft(content, "\r\n")
-}
-
-// joinMeta appends an optional annotation to a tool line body with the shared
-// "·" separator.
-func joinMeta(body, meta string) string {
-	if meta == "" {
-		return body
-	}
-	return body + " · " + meta
 }

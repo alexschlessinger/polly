@@ -88,11 +88,11 @@ func TestInitializeSessionAppliesNativeToolDefaultsOnlyToFreshContexts(t *testin
 
 func initializeToolDefaultsTestSession(t *testing.T, config *Config, store sessions.SessionStore, name string) (sessions.Session, *tools.ToolRegistry) {
 	t.Helper()
-	_, session, _, registry, _, _, _, err := initializeSession(context.Background(), config, store, name, false, getCommand(), nil)
+	state, err := newConversationState(context.Background(), config, nil, store, name, false, getCommand(), nil)
 	if err != nil {
-		t.Fatalf("initializeSession(%q): %v", name, err)
+		t.Fatalf("newConversationState(%q): %v", name, err)
 	}
-	return session, registry
+	return state.session, state.toolRegistry
 }
 
 func TestDeleteContextReturnsSessionInUse(t *testing.T) {
@@ -258,6 +258,54 @@ func TestFreshContextSeedsPersonaOnly(t *testing.T) {
 			t.Fatalf("fresh persona history = %#v, want %#v", history, want)
 		}
 	})
+}
+
+// TestUpdateContextInfoPreservesStoredSettingsWithoutFlags proves the startup
+// write-back is a no-op for an untouched existing context: every flagged row
+// restores from metadata first, so copying it back stores the same value,
+// while the system row, whose restore normalises a legacy prompt, stays out
+// of the write-back set and keeps its stored form.
+func TestUpdateContextInfoPreservesStoredSettingsWithoutFlags(t *testing.T) {
+	store := testOpenMemoryStore(t, &sessions.Metadata{
+		Model:          "openai/gpt-5.4",
+		SystemPrompt:   legacySystemPromptDefaults[0],
+		ThinkingEffort: "",
+	})
+	session := testAcquireSession(t, store, "untouched")
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	config := &Config{Settings: Settings{
+		Model:            "default/model",
+		MaxHistoryTokens: 256_000,
+		ThinkingEffort:   "high",
+		SystemPrompt:     "default system",
+	}}
+	cmd := getCommand()
+	if _, _, err := initializeConversation(context.Background(), config, store, "untouched", cmd); err != nil {
+		t.Fatal(err)
+	}
+	if config.Model != "openai/gpt-5.4" || config.MaxHistoryTokens != 0 || config.ThinkingEffort != "" || config.SystemPrompt != "" {
+		t.Fatalf("resolved settings did not restore the stored values: %+v", config.Settings)
+	}
+
+	session = testAcquireSession(t, store, "untouched")
+	md, err := session.GetMetadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := updateContextInfo(context.Background(), session, md, config, cmd); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := session.GetMetadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Model != "openai/gpt-5.4" || stored.MaxHistoryTokens != 0 || stored.ThinkingEffort != "" ||
+		stored.SystemPrompt != legacySystemPromptDefaults[0] {
+		t.Fatalf("startup write-back rewrote stored settings: %+v", stored)
+	}
 }
 
 func TestInitializeConversationNormalizesLegacyDefaultPrompt(t *testing.T) {

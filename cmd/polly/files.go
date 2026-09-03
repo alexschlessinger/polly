@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -27,15 +28,12 @@ func readFile(path string) (*messages.ContentPart, error) {
 	// Bound local reads just like URL downloads. The helper checks both the
 	// opened file's size and the bytes read, so a large or concurrently growing
 	// file cannot be buffered without limit.
-	data, err := readBoundedRegularFile(path, maxLocalImageBytes)
+	data, err := images.ReadBoundedFile(path, maxLocalImageBytes)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read file %s: %w", path, err)
 	}
 
-	// Detect MIME type
-	mimeType := detectMimeType(path, data)
-
-	if looksLikeImageInput(path, mimeType) {
+	if looksLikeImageInput(path, http.DetectContentType(data)) {
 		return prepareImageBytesForUpload(data, filepath.Base(path))
 	}
 
@@ -45,61 +43,6 @@ func readFile(path string) (*messages.ContentPart, error) {
 		Text:     string(data),
 		FileName: filepath.Base(path),
 	}, nil
-}
-
-// detectMimeType detects the MIME type of a file
-func detectMimeType(path string, data []byte) string {
-	// First try to detect from content
-	mimeType := http.DetectContentType(data)
-
-	// If that fails or gives generic type, try from extension
-	if mimeType == "application/octet-stream" || mimeType == "" {
-		ext := strings.ToLower(filepath.Ext(path))
-		switch ext {
-		case ".jpg", ".jpeg":
-			return "image/jpeg"
-		case ".png":
-			return "image/png"
-		case ".gif":
-			return "image/gif"
-		case ".webp":
-			return "image/webp"
-		case ".bmp":
-			return "image/bmp"
-		case ".svg":
-			return "image/svg+xml"
-		case ".txt", ".md", ".rst", ".log":
-			return "text/plain"
-		case ".json":
-			return "application/json"
-		case ".xml":
-			return "application/xml"
-		case ".html", ".htm":
-			return "text/html"
-		case ".css":
-			return "text/css"
-		case ".js", ".mjs", ".ts", ".tsx", ".jsx":
-			return "text/javascript"
-		case ".py":
-			return "text/x-python"
-		case ".go":
-			return "text/x-go"
-		case ".java":
-			return "text/x-java"
-		case ".c", ".h":
-			return "text/x-c"
-		case ".cpp", ".cc", ".cxx", ".hpp":
-			return "text/x-c++"
-		case ".rs":
-			return "text/x-rust"
-		case ".sh", ".bash":
-			return "text/x-shellscript"
-		case ".yaml", ".yml":
-			return "text/yaml"
-		}
-	}
-
-	return mimeType
 }
 
 // looksLikeImageInput routes anything identified as an image through the

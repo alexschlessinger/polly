@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
 	"golang.org/x/image/bmp"
@@ -293,7 +294,7 @@ func TestPrepareImageForUploadAppliesEXIFOrientationWhenResizing(t *testing.T) {
 		t.Fatal(err)
 	}
 	oriented := jpegWithEXIFOrientation(t, encoded.Bytes(), 6)
-	if got := jpegEXIFOrientation(oriented); got != 6 {
+	if got := images.JPEGOrientation(oriented); got != 6 {
 		t.Fatalf("fixture EXIF orientation = %d, want 6", got)
 	}
 	path := filepath.Join(t.TempDir(), "portrait.jpg")
@@ -316,7 +317,7 @@ func TestPrepareImageForUploadAppliesEXIFOrientationWhenResizing(t *testing.T) {
 	if format != "jpeg" || part.MimeType != "image/jpeg" || config.Width != 784 || config.Height != 1568 {
 		t.Fatalf("oriented resize = %s %s %dx%d, want JPEG 784x1568", format, part.MimeType, config.Width, config.Height)
 	}
-	if got := jpegEXIFOrientation(data); got != 1 {
+	if got := images.JPEGOrientation(data); got != 1 {
 		t.Fatalf("resized JPEG retained stale EXIF orientation %d", got)
 	}
 }
@@ -331,11 +332,11 @@ func TestApplyEXIFOrientationNRGBAFastPathMatchesGenericPath(t *testing.T) {
 	}
 
 	for orientation := 2; orientation <= 8; orientation++ {
-		fast, ok := applyEXIFOrientation(src, orientation).(*image.NRGBA)
+		fast, ok := images.ApplyEXIFOrientation(src, orientation).(*image.NRGBA)
 		if !ok {
 			t.Fatalf("orientation %d did not use NRGBA destination", orientation)
 		}
-		generic := applyEXIFOrientation(wrappedImage{Image: src}, orientation)
+		generic := images.ApplyEXIFOrientation(wrappedImage{Image: src}, orientation)
 		if fast.Bounds() != generic.Bounds() {
 			t.Fatalf("orientation %d bounds = %v, want %v", orientation, fast.Bounds(), generic.Bounds())
 		}

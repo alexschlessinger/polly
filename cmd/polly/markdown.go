@@ -21,18 +21,10 @@ import (
 // (display_contract.go), which tells the model what this renderer supports.
 var mdParser = goldmark.New(goldmark.WithExtensions(extension.Strikethrough, extension.Table))
 
-// renderMarkdown converts markdown source into gotui style markup: block
-// structure via goldmark's AST, inline styling through the same styled()
-// palette the rest of the REPL uses. The result contains real newlines;
-// width-aware wrapping stays downstream in the cell layer.
-func renderMarkdown(src string) string {
-	return renderMarkdownDocument(src, nil)
-}
-
 // renderMarkdownWithLocalImages keeps the ordinary Markdown surface while
 // replacing explicit, existing local image references with private transcript
 // slots. The slots are consumed only by the managed TUI; callers that just
-// need text continue to use renderMarkdown unchanged. streaming marks the
+// need text use renderMarkdownDocument with a nil state. streaming marks the
 // source as an in-flight prefix; the returned deferred flag reports that a
 // table rendered unaligned and the caller must re-render at settle.
 func renderMarkdownWithLocalImages(src, baseDir string, streaming bool) (string, []transcriptImage, bool) {
@@ -41,6 +33,11 @@ func renderMarkdownWithLocalImages(src, baseDir string, streaming bool) (string,
 	return rendered, state.images, state.deferredTable
 }
 
+// renderMarkdownDocument converts markdown source into gotui style markup:
+// block structure via goldmark's AST, inline styling through the same styled()
+// palette the rest of the REPL uses. The result contains real newlines;
+// width-aware wrapping stays downstream in the cell layer. A nil state renders
+// plain text with no image slots.
 func renderMarkdownDocument(src string, state *markdownRenderState) string {
 	if strings.TrimSpace(src) == "" {
 		return ""

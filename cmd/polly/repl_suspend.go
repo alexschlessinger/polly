@@ -49,7 +49,7 @@ func (r *managedREPL) suspendUI(screen tcell.Screen) error {
 	r.images = newTerminalImageManager(screen)
 	r.model.mu.Lock()
 	r.model.nativeImages = r.images != nil
-	r.model.invalidateVisual()
+	r.model.visual.invalidate()
 	r.model.mu.Unlock()
 	return err
 }

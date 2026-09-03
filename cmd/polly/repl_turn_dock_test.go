@@ -128,10 +128,10 @@ func TestLiveTurnDockIsStatusOnly(t *testing.T) {
 	entries := m.transcriptDisplayEntries(100)
 	var reasoning, tools int
 	for _, e := range entries {
-		if e.reasoningID != 0 {
+		if len(e.reasoningIDs) > 0 {
 			reasoning++
 		}
-		if e.toolDisclosureID != 0 {
+		if len(e.toolDisclosureIDs) > 0 {
 			tools++
 		}
 	}

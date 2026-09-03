@@ -523,7 +523,7 @@ func prepareKittyImage(desired desiredTerminalImage, maxWidth, maxHeight int) pr
 	prepared := preparedTerminalImage{
 		fitByRows: imageFitsByRows(bounds.Dx(), bounds.Dy(), maxWidth, maxHeight),
 	}
-	img = fitImage(img, maxWidth, maxHeight)
+	img = images.Fit(img, maxWidth, maxHeight)
 	var pngData bytes.Buffer
 	if err := png.Encode(&pngData, img); err != nil {
 		prepared.err = err
@@ -538,7 +538,7 @@ func prepareSixelImage(desired desiredTerminalImage, maxWidth, maxHeight int) pr
 	if err != nil {
 		return preparedTerminalImage{err: err}
 	}
-	img = fitImage(img, maxWidth, maxHeight)
+	img = images.Fit(img, maxWidth, maxHeight)
 	var sixelData bytes.Buffer
 	encoder := sixel.NewEncoder(&sixelData)
 	encoder.Colors = 256
@@ -636,23 +636,15 @@ func (m *terminalImageManager) geometryVersion() string {
 }
 
 func loadLocalImage(path string) (image.Image, error) {
-	data, err := readBoundedRegularFile(path, maxLocalImageBytes)
+	data, err := images.ReadBoundedFile(path, maxLocalImageBytes)
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := validateImageBytes(data); err != nil {
+	if _, _, err := images.Validate(data); err != nil {
 		return nil, err
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	return img, err
-}
-
-func fitImage(src image.Image, maxWidth, maxHeight int) image.Image {
-	return images.Fit(src, maxWidth, maxHeight)
-}
-
-func fitPixelDimensions(width, height, maxWidth, maxHeight int) (int, int) {
-	return images.FitDimensions(width, height, maxWidth, maxHeight)
 }
 
 func imageFitsByRows(width, height, maxWidth, maxHeight int) bool {
@@ -688,6 +680,13 @@ func kittyTransmitPNG(imageID uint32, pngData []byte) []byte {
 	if len(pngData) == 0 {
 		return nil
 	}
+	return kittyChunked(fmt.Sprintf("a=t,f=100,t=d,i=%d,q=2", imageID), pngData)
+}
+
+// kittyChunked emits pngData as base64 in the 4096-byte chunks the Kitty
+// graphics protocol requires. first is the opening command's control data
+// (without its m= flag); continuation commands carry only q=2 and the flag.
+func kittyChunked(first string, pngData []byte) []byte {
 	encoded := base64.StdEncoding.EncodeToString(pngData)
 	var out bytes.Buffer
 	for offset := 0; offset < len(encoded); offset += 4096 {
@@ -697,7 +696,7 @@ func kittyTransmitPNG(imageID uint32, pngData []byte) []byte {
 			more = 1
 		}
 		if offset == 0 {
-			fmt.Fprintf(&out, "\x1b_Ga=t,f=100,t=d,i=%d,q=2,m=%d;", imageID, more)
+			fmt.Fprintf(&out, "\x1b_G%s,m=%d;", first, more)
 		} else {
 			fmt.Fprintf(&out, "\x1b_Gq=2,m=%d;", more)
 		}
@@ -707,11 +706,17 @@ func kittyTransmitPNG(imageID uint32, pngData []byte) []byte {
 	return out.Bytes()
 }
 
-func kittyPlaceImage(imageID, placementID uint32, placement terminalImagePlacement) []byte {
-	size := fmt.Sprintf("c=%d", placement.Cols)
-	if placement.FitByRows {
-		size = fmt.Sprintf("r=%d", placement.Rows)
+// kittySizeSpec is the placement size control: columns normally, rows when
+// the image is fitted by height.
+func kittySizeSpec(cols, rows int, fitByRows bool) string {
+	if fitByRows {
+		return fmt.Sprintf("r=%d", rows)
 	}
+	return fmt.Sprintf("c=%d", cols)
+}
+
+func kittyPlaceImage(imageID, placementID uint32, placement terminalImagePlacement) []byte {
+	size := kittySizeSpec(placement.Cols, placement.Rows, placement.FitByRows)
 	command := fmt.Sprintf("\x1b_Ga=p,i=%d,p=%d,%s,C=1,q=2;\x1b\\", imageID, placementID, size)
 	return terminalBytesAt(placement.X, placement.Y, []byte(command))
 }

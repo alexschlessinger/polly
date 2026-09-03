@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"unicode"
 
@@ -26,6 +25,10 @@ const (
 	// terminal; the native renderer uses their row and column as its anchor.
 	transcriptImageMarkerBase   rune = '\ue000'
 	maxTranscriptImagesPerBlock      = 256
+	// The marker range must stop short of the styled-literal bracket runes
+	// (repl_ui.go), or stripping markers would eat bracket placeholders. A
+	// range that overlaps makes this constant negative and fails to compile.
+	_ = uint(styledLiteralOpenBracket - (transcriptImageMarkerBase + maxTranscriptImagesPerBlock))
 
 	// A thumbnail is fitted inside this maximum cell box. The marker template
 	// reserves the maximum rows; the cell pass collapses unused rows after it
@@ -67,19 +70,26 @@ type markdownRenderState struct {
 	deferredTable bool
 }
 
+// transcriptDisplayBlock is one renderable unit of the transcript. An
+// activity block carries the reasoning and tool disclosure records it shows;
+// adjacent activity entries merge into one block, so both lists may hold
+// several IDs.
 type transcriptDisplayBlock struct {
 	key                     string
 	text                    string
 	images                  []transcriptImage
-	reasoningID             int64
 	reasoningIDs            []int64
-	toolDisclosureID        int64
 	toolDisclosureIDs       []int64
 	turnTrailerID           int64
 	activityFields          []turnDockPlacement
 	activityReasoningDetail string
 	activityToolDetail      string
 	activityImageDetail     string
+}
+
+// isActivity reports whether the block projects reasoning or tool records.
+func (b transcriptDisplayBlock) isActivity() bool {
+	return len(b.reasoningIDs) > 0 || len(b.toolDisclosureIDs) > 0
 }
 
 type transcriptImageSpan struct {
@@ -377,7 +387,7 @@ func spaceFold(s string) string {
 }
 
 func localImageDimensions(path string) (int, int, bool) {
-	file, err := openBoundedRegularFile(path, maxLocalImageBytes)
+	file, err := images.OpenBoundedFile(path, maxLocalImageBytes)
 	if err != nil {
 		return 0, 0, false
 	}
@@ -415,13 +425,10 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 		}
 		return updated, copied
 	}
-	indices := make([]int, 0, len(m.transcriptImages))
-	for transcriptIndex := range m.transcriptImages {
-		indices = append(indices, transcriptIndex)
-	}
-	sort.Ints(indices)
-	for _, transcriptIndex := range indices {
-		images := m.transcriptImages[transcriptIndex]
+	// This runs inside transcriptRows, so it cannot measure display blocks
+	// (that would re-enter the layout); it re-anchors in per-entry space,
+	// which is exact only while no earlier activity entries have merged.
+	for transcriptIndex, images := range m.transcriptImages {
 		updated, copied := refresh(images)
 		if copied {
 			oldCount, start := 0, 0
@@ -429,6 +436,9 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 				oldCount = m.entryVisualLineCount(transcriptIndex, width)
 				start = m.entryVisualStart(transcriptIndex, width)
 			}
+			// The one raw lane write: this runs inside transcriptRows, which
+			// invalidates on the returned flag, so the owner's invalidation
+			// would be redundant here.
 			m.transcriptImages[transcriptIndex] = updated
 			if !m.followBottom {
 				m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(transcriptIndex, width))
@@ -650,7 +660,7 @@ func imageCellGeometry(img transcriptImage, maxCols, maxRows, cellWidth, cellHei
 
 	maxPixelWidth := maxCols * cellWidth
 	maxPixelHeight := maxRows * cellHeight
-	pixelWidth, pixelHeight := fitPixelDimensions(img.Width, img.Height, maxPixelWidth, maxPixelHeight)
+	pixelWidth, pixelHeight := images.FitDimensions(img.Width, img.Height, maxPixelWidth, maxPixelHeight)
 	if pixelWidth <= 0 || pixelHeight <= 0 {
 		return 0, 0, false
 	}
@@ -663,35 +673,22 @@ func imageCellGeometry(img transcriptImage, maxCols, maxRows, cellWidth, cellHei
 // visibleImagePlacements projects transcript-relative slots into screen cells.
 // Partially clipped thumbnails are omitted; their caption remains visible and
 // scrolling the complete slot into view draws the native image.
-func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, logoRows, width int, pinBottom bool, overlayRows int) []terminalImagePlacement {
-	if !m.nativeImages || viewportHeight <= 0 || width < minimumImageThumbnailCols {
+func (m *replModel) visibleImagePlacements(v transcriptViewport) []terminalImagePlacement {
+	if !m.nativeImages || v.width < minimumImageThumbnailCols {
 		return nil
 	}
-	viewStart := topRow
-	topPadding := 0
-	if pinBottom {
-		viewStart = max(0, totalRows-viewportHeight)
-		if totalRows < viewportHeight {
-			topPadding = viewportHeight - totalRows
-		}
-	}
-	viewEnd := viewStart + viewportHeight
-	if overlayRows > 0 {
-		viewEnd -= min(overlayRows, viewportHeight)
-	}
-
 	var placements []terminalImagePlacement
 	rowOffset := 0
-	for _, block := range m.visualBlocks {
+	for _, block := range m.visual.blocks {
 		for _, span := range block.imageSpans {
 			if span.imageIndex < 0 || span.imageIndex >= len(block.images) || span.rows <= 0 {
 				continue
 			}
 			row := rowOffset + span.row
-			if row < viewStart || row+span.rows > viewEnd {
+			if row < v.start || row+span.rows > v.end {
 				continue
 			}
-			if span.cols <= 0 || span.x+span.cols > width {
+			if span.cols <= 0 || span.x+span.cols > v.width {
 				continue
 			}
 			img := block.images[span.imageIndex]
@@ -699,7 +696,7 @@ func (m *replModel) visibleImagePlacements(totalRows, viewportHeight, topRow, lo
 				Key:       fmt.Sprintf("%s:image:%d", block.key, span.imageIndex),
 				Path:      img.Path,
 				X:         span.x,
-				Y:         logoRows + topPadding + row - viewStart,
+				Y:         v.screenY(row),
 				Cols:      span.cols,
 				Rows:      span.rows,
 				FitByRows: span.fitByRows,

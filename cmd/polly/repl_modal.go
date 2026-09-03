@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"image"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -236,7 +235,7 @@ func (r *managedREPL) openProviderModels(provider string) {
 	if strings.HasPrefix(r.config.Model, provider+"/") {
 		add(r.config.Model)
 	}
-	for _, recent := range r.model.recentModels {
+	for _, recent := range r.model.status.recentModels {
 		if strings.HasPrefix(recent, provider+"/") {
 			add(recent)
 		}
@@ -285,18 +284,10 @@ func (r *managedREPL) applySelectedModel(model string) {
 		r.model.appendNoticeLine("model: enter a model name")
 		return
 	}
-	if err := applyReplSetting(r.config, "model", model); err != nil {
+	line, err := applyAndPersistSetting(newManagedReplCommandContext(r), "model", model)
+	if err != nil {
 		r.model.appendNoticeLine("model: " + err.Error())
 		return
-	}
-	if !slices.Contains(r.model.recentModels, model) {
-		r.model.recentModels = append([]string{model}, r.model.recentModels...)
-	}
-	r.model.modelName = model
-	r.model.clearContextUsage(r.config.MaxHistoryTokens)
-	line := "model: " + model
-	if err := persistReplSettings(newManagedReplCommandContext(r)); err != nil {
-		line += " (applied for this run; persisting failed: " + err.Error() + ")"
 	}
 	r.model.appendNoticeLine(line)
 }
@@ -459,7 +450,7 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 			r.model.appendNoticeLine("renamed session; releasing it failed: " + err.Error())
 		}
 	} else {
-		r.model.contextName = newName
+		r.model.status.contextName = newName
 	}
 	r.model.appendNoticeLine("renamed session '" + oldName + "' to '" + newName + "'")
 	r.openResumePickerSelected(newName)
@@ -513,10 +504,7 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		return false
 	}
 	if e.ID == "<C-z>" {
-		select {
-		case r.suspend <- struct{}{}:
-		default:
-		}
+		r.requestSuspend()
 		return true
 	}
 	if e.ID == "<C-c>" {
@@ -585,12 +573,9 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		m.input.backspace()
 		m.selected = 0
 	default:
-		if e.Type == ui.KeyboardEvent {
-			runes := []rune(e.ID)
-			if len(runes) == 1 && runes[0] >= 0x20 {
-				m.input.insert(runes[0])
-				m.selected = 0
-			}
+		if ch, ok := printableRune(e); ok {
+			m.input.insert(ch)
+			m.selected = 0
 		}
 	}
 	return true

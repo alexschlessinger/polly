@@ -61,7 +61,7 @@ func TestValidateREPLConfigRejectsBoth(t *testing.T) {
 
 func TestReplModelHistoryNavigation(t *testing.T) {
 	m := newReplModel()
-	m.history = []string{"first", "second"}
+	m.hist.entries = []string{"first", "second"}
 	m.ed.setText("draft")
 
 	m.historyUp()
@@ -90,7 +90,7 @@ func TestReplModelHistoryWorksWhileBusy(t *testing.T) {
 	// The prompt stays editable during a turn, so history recall must work too
 	// (the user can compose/queue the next message while the model runs).
 	m := newReplModel()
-	m.history = []string{"one"}
+	m.hist.entries = []string{"one"}
 	m.busy = true
 	m.historyUp()
 	if m.ed.text() != "one" {
@@ -271,8 +271,8 @@ func TestLineEditorVerticalMove(t *testing.T) {
 func TestHandleEventUpDownLineThenHistory(t *testing.T) {
 	r := &managedREPL{model: newReplModel()}
 	m := r.model
-	m.history = []string{"old one", "old two"}
-	m.historyIdx = -1
+	m.hist.entries = []string{"old one", "old two"}
+	m.hist.idx = -1
 	m.ed.setText("first\nsecond") // cursor at end (line 1)
 
 	up := ui.Event{Type: ui.KeyboardEvent, ID: "<Up>"}
@@ -282,8 +282,8 @@ func TestHandleEventUpDownLineThenHistory(t *testing.T) {
 	if m.ed.text() != "first\nsecond" {
 		t.Fatalf("Up within buffer altered text: %q", m.ed.text())
 	}
-	if m.historyIdx != -1 {
-		t.Fatalf("Up within buffer touched history (idx %d)", m.historyIdx)
+	if m.hist.idx != -1 {
+		t.Fatalf("Up within buffer touched history (idx %d)", m.hist.idx)
 	}
 	if row, _ := m.inputCursorRowCol(); row != 0 {
 		t.Fatalf("cursor row after Up = %d, want 0", row)
@@ -407,8 +407,8 @@ func TestStatusRowShowsLiveTimer(t *testing.T) {
 	}
 
 	m := newReplModel()
-	m.modelName = "gpt-mini"
-	m.contextName = "ctx"
+	m.status.modelName = "gpt-mini"
+	m.status.contextName = "ctx"
 
 	idle := plain(m.statusRow(120))
 	if strings.HasPrefix(strings.TrimSpace(idle), "0.0s") {
@@ -452,8 +452,8 @@ func TestStatusRowKeepsStaticFieldsFixed(t *testing.T) {
 	}
 
 	m := newReplModel()
-	m.modelName = "gpt-mini"
-	m.contextName = "ctx"
+	m.status.modelName = "gpt-mini"
+	m.status.contextName = "ctx"
 
 	idleCol := col(m.statusRow(120))
 
@@ -603,9 +603,9 @@ func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
 	}
 
 	r.model.ed.clear()
-	r.model.transcript = nil
-	r.model.invalidateFlat()
-	r.model.history = []string{"hello"}
+	clearTranscriptForTest(r.model)
+	r.model.visual.invalidate()
+	r.model.hist.entries = []string{"hello"}
 	send("/")
 	send("<Up>")
 	if got := r.model.ed.text(); got != "hello" {
@@ -767,7 +767,7 @@ func TestRenderInputHorizontallyFollowsCursor(t *testing.T) {
 	m := newReplModel()
 	m.ed.setText("0123456789abcdef")
 
-	text, _, _, curCol, _ := m.renderInputForTerminal(maxInputRows, 8)
+	text, _, curCol, _ := m.renderInputForTerminal(maxInputRows, 8)
 	if !strings.Contains(text, "abcdef") || strings.Contains(text, "0123") {
 		t.Fatalf("long input should show the cursor-side tail, got %q", text)
 	}
@@ -810,11 +810,11 @@ func TestRenderInputFollowsCursorUp(t *testing.T) {
 
 func TestReverseSearch(t *testing.T) {
 	r := &managedREPL{model: newReplModel()}
-	r.model.history = []string{"git status", "go build", "git commit", "go test"}
+	r.model.hist.entries = []string{"git status", "go build", "git commit", "go test"}
 	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
 
 	send("<C-r>")
-	if !r.model.searching {
+	if !r.model.hist.searching {
 		t.Fatal("Ctrl-R did not enter search")
 	}
 
@@ -822,19 +822,19 @@ func TestReverseSearch(t *testing.T) {
 	send("g")
 	send("i")
 	send("t")
-	if r.model.searchMatch < 0 || r.model.history[r.model.searchMatch] != "git commit" {
-		t.Fatalf("first match = %d, want index of \"git commit\"", r.model.searchMatch)
+	if r.model.hist.match < 0 || r.model.hist.entries[r.model.hist.match] != "git commit" {
+		t.Fatalf("first match = %d, want index of \"git commit\"", r.model.hist.match)
 	}
 
 	// Repeated Ctrl-R steps to the older match.
 	send("<C-r>")
-	if r.model.history[r.model.searchMatch] != "git status" {
-		t.Fatalf("stepped match = %q, want \"git status\"", r.model.history[r.model.searchMatch])
+	if r.model.hist.entries[r.model.hist.match] != "git status" {
+		t.Fatalf("stepped match = %q, want \"git status\"", r.model.hist.entries[r.model.hist.match])
 	}
 
 	// Enter accepts the match into the editor and leaves search (no submit).
 	send("<Enter>")
-	if r.model.searching {
+	if r.model.hist.searching {
 		t.Fatal("Enter did not exit search")
 	}
 	if r.model.ed.text() != "git status" {
@@ -844,7 +844,7 @@ func TestReverseSearch(t *testing.T) {
 
 func TestReverseSearchCancelKeepsDraft(t *testing.T) {
 	r := &managedREPL{model: newReplModel()}
-	r.model.history = []string{"alpha", "beta"}
+	r.model.hist.entries = []string{"alpha", "beta"}
 	r.model.ed.setText("draft")
 
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-r>"})
@@ -854,7 +854,7 @@ func TestReverseSearchCancelKeepsDraft(t *testing.T) {
 	if quit := r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-c>"}); quit {
 		t.Fatal("Ctrl-C during search should cancel, not quit")
 	}
-	if r.model.searching {
+	if r.model.hist.searching {
 		t.Fatal("Ctrl-C did not exit search")
 	}
 	if r.model.ed.text() != "draft" {
@@ -899,7 +899,7 @@ func TestPersistentHistoryFiltersAttachmentTokens(t *testing.T) {
 	r.recordAcceptedInput("plain prompt")
 	r.closeHistory()
 
-	if got := r.model.history; len(got) != 2 || got[0] != "inspect [image #1]" {
+	if got := r.model.hist.entries; len(got) != 2 || got[0] != "inspect [image #1]" {
 		t.Fatalf("same-process recall lost tokenized input: %v", got)
 	}
 	if got := loadHistory(path); len(got) != 1 || got[0] != "plain prompt" {
@@ -923,10 +923,10 @@ func TestInitHistoryTrimsAndPersists(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.initHistory()
 
-	if len(r.model.history) != maxPersistedHistory {
-		t.Fatalf("loaded %d entries, want %d", len(r.model.history), maxPersistedHistory)
+	if len(r.model.hist.entries) != maxPersistedHistory {
+		t.Fatalf("loaded %d entries, want %d", len(r.model.hist.entries), maxPersistedHistory)
 	}
-	if last := r.model.history[len(r.model.history)-1]; last != fmt.Sprintf("cmd%d", maxPersistedHistory+9) {
+	if last := r.model.hist.entries[len(r.model.hist.entries)-1]; last != fmt.Sprintf("cmd%d", maxPersistedHistory+9) {
 		t.Fatalf("newest entry = %q", last)
 	}
 
@@ -983,7 +983,7 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	}
 
 	// /tools on an empty registry reports none.
-	r.model.transcript = nil
+	clearTranscriptForTest(r.model)
 	r.runCommand("/tools")
 	if !strings.Contains(strings.Join(r.model.transcript, "\n"), "no tools loaded") {
 		t.Fatalf("/tools = %v", r.model.transcript)
@@ -1187,8 +1187,8 @@ func TestEnterSlashCommandRecordsHistoryAndPersists(t *testing.T) {
 	if got := r.model.ed.text(); got != "" {
 		t.Fatalf("editor should clear after command submit, got %q", got)
 	}
-	if len(r.model.history) != 1 || r.model.history[0] != "/help" {
-		t.Fatalf("slash command history = %v, want [/help]", r.model.history)
+	if len(r.model.hist.entries) != 1 || r.model.hist.entries[0] != "/help" {
+		t.Fatalf("slash command history = %v, want [/help]", r.model.hist.entries)
 	}
 	r.model.historyUp()
 	if got := r.model.ed.text(); got != "/help" {
@@ -1215,8 +1215,8 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	if len(r.model.queue) != 1 || r.model.queue[0].text != "queued one" || r.model.queue[0].turn == nil {
 		t.Fatalf("queue = %v, want [\"queued one\"]", r.model.queue)
 	}
-	if len(r.model.history) != 1 || r.model.history[0] != "queued one" {
-		t.Fatalf("history should record the queued prompt, got %v", r.model.history)
+	if len(r.model.hist.entries) != 1 || r.model.hist.entries[0] != "queued one" {
+		t.Fatalf("history should record the queued prompt, got %v", r.model.hist.entries)
 	}
 	// Queueing must not start a turn.
 	select {
@@ -1253,8 +1253,8 @@ func TestEnterWhileBusyQueuesSlashCommandInHistory(t *testing.T) {
 	if len(r.model.queue) != 1 || r.model.queue[0].text != "/reset confirm" || r.model.queue[0].turn != nil {
 		t.Fatalf("queue = %v, want [/reset confirm]", r.model.queue)
 	}
-	if len(r.model.history) != 1 || r.model.history[0] != "/reset confirm" {
-		t.Fatalf("history should record the queued slash command, got %v", r.model.history)
+	if len(r.model.hist.entries) != 1 || r.model.hist.entries[0] != "/reset confirm" {
+		t.Fatalf("history should record the queued slash command, got %v", r.model.hist.entries)
 	}
 	select {
 	case p := <-r.pending:
@@ -1547,10 +1547,10 @@ func TestVisibleTranscriptFollowsBottom(t *testing.T) {
 
 func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 	m := newReplModel()
-	m.modelName = "gpt-extra-long-name"
-	m.contextName = "my-context"
-	m.toolCount = 4
-	m.skillCount = 2
+	m.status.modelName = "gpt-extra-long-name"
+	m.status.contextName = "my-context"
+	m.status.toolCount = 4
+	m.status.skillCount = 2
 	m.lastIn = 1234
 	m.lastOut = 567
 
@@ -1574,7 +1574,7 @@ func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 
 func TestCompletedTurnMetricsMoveFromStatusToDock(t *testing.T) {
 	m := newReplModel()
-	m.contextName = "ctx"
+	m.status.contextName = "ctx"
 	m.startTurnDock()
 	m.lastOutcome = turnOutcomeDone
 	m.lastElapsed = 15500 * time.Millisecond

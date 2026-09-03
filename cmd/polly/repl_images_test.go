@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -103,7 +104,7 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 
 	var activity transcriptDisplayBlock
 	for _, block := range m.transcriptDisplayEntries(80) {
-		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
+		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			activity = block
 			break
 		}
@@ -268,7 +269,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 
 	var collapsed transcriptDisplayBlock
 	for _, block := range r.model.transcriptDisplayEntries(100) {
-		if block.toolDisclosureID == record.id {
+		if len(block.toolDisclosureIDs) > 0 && block.toolDisclosureIDs[0] == record.id {
 			collapsed = block
 			break
 		}
@@ -281,7 +282,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	}
 
 	rows := r.model.transcriptRows(100)
-	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(len(rows), len(rows), 0, 0, 100, false, 0)
+	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(fullViewport(len(rows), 100))
 	if len(r.model.imageDisclosurePlacements) != 1 {
 		t.Fatalf("Images hitboxes = %#v", r.model.imageDisclosurePlacements)
 	}
@@ -295,7 +296,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 
 	var expanded transcriptDisplayBlock
 	for _, block := range r.model.transcriptDisplayEntries(100) {
-		if block.toolDisclosureID == record.id {
+		if len(block.toolDisclosureIDs) > 0 && block.toolDisclosureIDs[0] == record.id {
 			expanded = block
 			break
 		}
@@ -394,7 +395,7 @@ func TestToolAndImagesDisclosuresKeepIndependentImageMarkers(t *testing.T) {
 
 	var activity transcriptDisplayBlock
 	for _, block := range m.transcriptDisplayEntries(100) {
-		if block.toolDisclosureID == record.id {
+		if len(block.toolDisclosureIDs) > 0 && block.toolDisclosureIDs[0] == record.id {
 			activity = block
 			break
 		}
@@ -553,10 +554,65 @@ func TestImageCellGeometryPreservesAspectRatio(t *testing.T) {
 		t.Fatalf("square geometry = %dx%d fitByRows=%t, want 20x10 height-bound", cols, rows, fitByRows)
 	}
 
-	fitted := fitImage(image.NewNRGBA(image.Rect(0, 0, 2400, 270)), 500, 60)
+	fitted := images.Fit(image.NewNRGBA(image.Rect(0, 0, 2400, 270)), 500, 60)
 	if got := fitted.Bounds().Size(); got.X != 500 || got.Y != 56 {
 		t.Fatalf("fitted pixels = %v, want (500,56)", got)
 	}
+}
+
+// TestTranscriptImageLaneLockstep pins the documented invariant: the image
+// lane grows, shrinks, and resets only alongside the transcript.
+// clearTranscriptForTest empties both transcript lanes together, the test-side
+// twin of clearDisplay's lane reset for tests that isolate one command's
+// output without disturbing the rest of the model.
+func clearTranscriptForTest(m *replModel) {
+	m.transcript = nil
+	m.transcriptImages = nil
+}
+
+func TestTranscriptImageLaneLockstep(t *testing.T) {
+	m := newReplModel()
+	check := func(step string) {
+		t.Helper()
+		if len(m.transcriptImages) != len(m.transcript) {
+			t.Fatalf("%s: image lane len %d, transcript len %d", step, len(m.transcriptImages), len(m.transcript))
+		}
+	}
+	check("empty model")
+	m.appendLine("notice")
+	check("appendLine")
+	m.appendAssistant("hello")
+	check("appendAssistant")
+	// Settle the stream the way production does, so the later empty-stream
+	// leg starts a genuinely fresh entry instead of extending this one.
+	m.finishAssistantBlock("")
+	check("finishAssistantBlock")
+	m.appendQueuedInput(&queuedREPLInput{text: "queued"})
+	check("appendQueuedInput")
+
+	img := transcriptImage{Path: "/tmp/x.png", Alt: "x"}
+	last := len(m.transcript) - 1
+	m.setTranscriptImages(last, []transcriptImage{img})
+	m.deleteTranscriptEntry(0)
+	check("deleteTranscriptEntry")
+	if got := m.transcriptImages[last-1]; len(got) != 1 || got[0] != img {
+		t.Fatalf("images did not follow their entry across the delete: %#v", got)
+	}
+
+	// An empty assistant stream deletes its transcript entry on settle.
+	before := len(m.transcript)
+	m.appendAssistant("\n")
+	if len(m.transcript) != before+1 {
+		t.Fatalf("empty-stream leg did not append a fresh entry")
+	}
+	m.finishAssistantBlock("")
+	if len(m.transcript) != before {
+		t.Fatalf("empty-stream settle did not delete its entry")
+	}
+	check("finishAssistantBlock empty-stream delete")
+
+	m.clearDisplay()
+	check("clearDisplay")
 }
 
 func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
@@ -570,10 +626,9 @@ func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 	m.nativeImages = true
 	m.imageCellWidth = 10
 	m.imageCellHeight = 20
-	m.transcript = []string{renderTranscriptImages([]transcriptImage{img}, "")}
-	m.transcriptImages[0] = []transcriptImage{img}
+	m.setTranscriptImages(m.appendTranscriptEntry(renderTranscriptImages([]transcriptImage{img}, "")), []transcriptImage{img})
 	m.transcriptRows(80)
-	if spans := m.visualBlocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 50 || spans[0].rows != 3 || spans[0].fitByRows {
+	if spans := m.visual.blocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 50 || spans[0].rows != 3 || spans[0].fitByRows {
 		t.Fatalf("initial wide spans = %#v", spans)
 	}
 
@@ -583,7 +638,7 @@ func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.transcriptRows(80)
-	if spans := m.visualBlocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 3 || spans[0].rows != 10 || !spans[0].fitByRows {
+	if spans := m.visual.blocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 3 || spans[0].rows != 10 || !spans[0].fitByRows {
 		t.Fatalf("changed tall spans = %#v", spans)
 	}
 }
@@ -591,14 +646,14 @@ func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 	m := newReplModel()
 	m.nativeImages = true
-	m.visualBlocks = []transcriptVisualBlock{{
+	m.visual.blocks = []transcriptVisualBlock{{
 		key:        "transcript:4",
 		rows:       make([][]ui.Cell, 14),
 		images:     []transcriptImage{{Path: "/tmp/chart.png"}},
 		imageSpans: []transcriptImageSpan{{imageIndex: 0, row: 2, x: 3, cols: 50, rows: 10}},
 	}}
 
-	placements := m.visibleImagePlacements(14, 14, 0, 2, 80, false, 0)
+	placements := m.visibleImagePlacements(frameLayout{width: 80, logoRows: 2, transcriptHeight: 14}.transcriptViewport(14, 0, false, 0))
 	if len(placements) != 1 {
 		t.Fatalf("placements = %#v", placements)
 	}
@@ -606,10 +661,10 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 	if got.Key != "transcript:4:image:0" || got.X != 3 || got.Y != 4 || got.Cols != transcriptImageThumbnailCols || got.Rows != 10 || got.FitByRows {
 		t.Fatalf("placement = %#v", got)
 	}
-	if clipped := m.visibleImagePlacements(14, 8, 0, 0, 80, false, 0); len(clipped) != 0 {
+	if clipped := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 8}.transcriptViewport(14, 0, false, 0)); len(clipped) != 0 {
 		t.Fatalf("partially clipped placement should be omitted: %#v", clipped)
 	}
-	if covered := m.visibleImagePlacements(14, 14, 0, 0, 80, false, 3); len(covered) != 0 {
+	if covered := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 14}.transcriptViewport(14, 0, false, 3)); len(covered) != 0 {
 		t.Fatalf("drawer-covered placement should be omitted: %#v", covered)
 	}
 }

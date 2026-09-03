@@ -20,18 +20,16 @@ const (
 const turnDockToolOverlayRows = 6
 
 type turnDockState struct {
-	visible          bool
-	settled          bool
-	outcome          turnOutcome
-	elapsed          time.Duration
-	elapsedKnown     bool
-	inputTokens      int
-	outputTokens     int
-	reasoningID      int64   // first reasoning record of the turn (label/legacy)
-	toolDisclosureID int64   // first tool disclosure of the turn (label/legacy)
-	reasoningIDs     []int64 // every reasoning record opened during the turn
-	toolIDs          []int64 // every tool disclosure opened during the turn
-	overlay          turnDockOverlay
+	visible      bool
+	settled      bool
+	outcome      turnOutcome
+	elapsed      time.Duration
+	elapsedKnown bool
+	inputTokens  int
+	outputTokens int
+	reasoningIDs []int64 // every reasoning record opened during the turn
+	toolIDs      []int64 // every tool disclosure opened during the turn
+	overlay      turnDockOverlay
 }
 
 type turnDockPlacement struct {
@@ -121,16 +119,11 @@ func (m *replModel) turnDockElapsedFor(dock turnDockState) time.Duration {
 	return time.Since(m.turnStarted)
 }
 
-// turnDockThoughtRecords returns the turn's reasoning records in order. The
-// singular reasoningID seeds the list for docks settled before plural IDs
-// existed. Caller must hold m.mu.
+// turnDockThoughtRecords returns the turn's reasoning records in order. Caller
+// must hold m.mu.
 func (m *replModel) turnDockThoughtRecords(dock turnDockState) []*reasoningRecord {
-	ids := dock.reasoningIDs
-	if len(ids) == 0 && dock.reasoningID != 0 {
-		ids = []int64{dock.reasoningID}
-	}
 	var records []*reasoningRecord
-	for _, id := range ids {
+	for _, id := range dock.reasoningIDs {
 		if record := m.reasoningRecords[id]; record != nil && len(record.tail) > 0 {
 			records = append(records, record)
 		}
@@ -142,7 +135,7 @@ func (m *replModel) turnDockThoughtRecords(dock turnDockState) []*reasoningRecor
 // must hold m.mu.
 func (m *replModel) turnDockToolRecords(dock turnDockState) []*toolDisclosureRecord {
 	var records []*toolDisclosureRecord
-	for _, id := range turnDockToolIDs(dock) {
+	for _, id := range dock.toolIDs {
 		if record := m.toolDisclosures[id]; record != nil && len(record.rows) > 0 {
 			records = append(records, record)
 		}
@@ -150,18 +143,8 @@ func (m *replModel) turnDockToolRecords(dock turnDockState) []*toolDisclosureRec
 	return records
 }
 
-func turnDockToolIDs(dock turnDockState) []int64 {
-	if len(dock.toolIDs) > 0 {
-		return dock.toolIDs
-	}
-	if dock.toolDisclosureID != 0 {
-		return []int64{dock.toolDisclosureID}
-	}
-	return nil
-}
-
 func (m *replModel) turnDockInspectionImages(dock turnDockState) []transcriptImage {
-	return m.toolInspectionImages(turnDockToolIDs(dock))
+	return m.toolInspectionImages(dock.toolIDs)
 }
 
 func (m *replModel) turnDockToolRowCount(dock turnDockState) int {
@@ -269,11 +252,9 @@ func (m *replModel) setHydratedTurnDock(reasoning *reasoningRecord, tools *toolD
 		outputTokens: out,
 	}
 	if reasoning != nil {
-		m.turnDock.reasoningID = reasoning.id
 		m.turnDock.reasoningIDs = []int64{reasoning.id}
 	}
 	if tools != nil {
-		m.turnDock.toolDisclosureID = tools.id
 		m.turnDock.toolIDs = []int64{tools.id}
 	}
 }
@@ -367,11 +348,7 @@ func (m *replModel) attachTurnDockTrailer() {
 	}
 	dock := m.turnDock
 	dock.overlay = turnDockOverlayNone
-	width := m.reasoningWidth
-	if width < 2 {
-		width = 80
-	}
-	text, fields := m.turnDockRowFor(dock, width)
+	text, fields := m.turnDockRowFor(dock, m.disclosureLayoutWidth(0))
 	if text == "" {
 		m.clearTurnDock()
 		return
@@ -389,10 +366,7 @@ func (m *replModel) refreshTurnTrailer(record *turnTrailerRecord) {
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return
 	}
-	width := m.reasoningWidth
-	if width < 2 {
-		width = 80
-	}
+	width := m.disclosureLayoutWidth(0)
 	text, fields := m.turnDockRowFor(record.dock, width)
 	detail, images := m.turnTrailerDetail(record.dock, width)
 	if detail != "" {
@@ -402,17 +376,11 @@ func (m *replModel) refreshTurnTrailer(record *turnTrailerRecord) {
 	if m.transcript[record.transcriptIndex] == text && transcriptImagesEqual(m.transcriptImages[record.transcriptIndex], images) {
 		return
 	}
-	oldCount, start := 0, 0
-	if !m.followBottom {
-		oldCount = m.entryVisualLineCount(record.transcriptIndex, width)
-		start = m.entryVisualStart(record.transcriptIndex, width)
-	}
-	m.transcript[record.transcriptIndex] = text
-	m.setTranscriptImages(record.transcriptIndex, images)
-	m.invalidateFlat()
-	if !m.followBottom {
-		m.anchorForResizedEntry(start, oldCount, m.entryVisualLineCount(record.transcriptIndex, width))
-	}
+	// The trailer follows the turn's merged activity blocks, so only display
+	// rows can re-anchor a held viewport across its resize.
+	m.mutateAnchored(width, matchTurnTrailerBlock(record.id), func(bool) {
+		m.setTranscriptEntry(record.transcriptIndex, text, images)
+	})
 }
 
 func (m *replModel) turnTrailerDetail(dock turnDockState, width int) (string, []transcriptImage) {
@@ -463,11 +431,6 @@ func (m *replModel) turnTrailerDetail(dock turnDockState, width int) (string, []
 		return renderInspectionTranscriptImages(images), images
 	}
 	return "", nil
-}
-
-func (m *replModel) turnTrailerDetailText(dock turnDockState, width int) string {
-	text, _ := m.turnTrailerDetail(dock, width)
-	return text
 }
 
 // boundedReasoningDetail keeps the newest already-wrapped physical rows from

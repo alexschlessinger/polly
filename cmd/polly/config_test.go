@@ -93,6 +93,44 @@ func TestConfigFlagsRejectPromptAndFileOnManagementCommands(t *testing.T) {
 	}
 }
 
+// The CLI flags enforce the same bounds /set does, so a launch cannot store
+// a value the REPL would refuse. Zero stays accepted on every row: it is the
+// documented runtime sentinel (no max_tokens, no clamp, no tool timeout).
+func TestConfigFlagsShareSetBounds(t *testing.T) {
+	rejected := []struct {
+		args    []string
+		wantErr string
+	}{
+		{[]string{"--maxtokens=-1"}, "maxtokens must be a non-negative integer"},
+		{[]string{"--maxcontext=-1"}, "maxcontext must be a non-negative integer"},
+		{[]string{"--tooltimeout=-1s"}, "tooltimeout must be a non-negative duration"},
+	}
+	for _, tt := range rejected {
+		err := runConfigValidationCommand(tt.args...)
+		if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("run(%v) error = %v, want substring %q", tt.args, err, tt.wantErr)
+		}
+	}
+	for _, args := range [][]string{
+		{"--maxtokens", "1"}, {"--maxcontext", "0"}, {"--tooltimeout", "1s"},
+		{"--maxtokens", "0"}, {"--tooltimeout", "0s"},
+	} {
+		if err := runConfigValidationCommand(args...); err != nil {
+			t.Errorf("run(%v) error = %v, want the bound accepted", args, err)
+		}
+	}
+}
+
+// The flags read from the environment, and the validator runs on env-sourced
+// values before any command, so an exported zero must not break a launch.
+func TestConfigFlagsAcceptEnvSourcedZero(t *testing.T) {
+	t.Setenv("POLLYTOOL_MAXTOKENS", "0")
+	t.Setenv("POLLYTOOL_TOOLTIMEOUT", "0s")
+	if err := runConfigValidationCommand(); err != nil {
+		t.Fatalf("run with zero env values error = %v, want accepted", err)
+	}
+}
+
 func TestConfigFlagsRejectPurgeWithOtherFlags(t *testing.T) {
 	tests := [][]string{
 		{"--purge", "--model", "openai/gpt-5.4"},
@@ -103,15 +141,20 @@ func TestConfigFlagsRejectPurgeWithOtherFlags(t *testing.T) {
 		{"--purge", "--denypath", "/secrets"},
 		{"--purge", "--writepath", "/output"},
 		{"--purge", "--allownet"},
+		{"--purge", "--maxiterations", "3"},
+		{"--purge", "--timeout", "1s"},
+		{"--purge", "--last"},
+		{"--purge", "-m", "openai/gpt-5.4"},
 	}
 	for _, args := range tests {
 		err := runConfigValidationCommand(args...)
-		if err == nil || !strings.Contains(err.Error(), "--purge must be used alone") {
+		if err == nil || !strings.Contains(err.Error(), "--purge must be used alone (only --quiet or --debug allowed)") {
 			t.Errorf("run(%v) error = %v, want purge validation error", args, err)
 		}
 	}
 
-	for _, args := range [][]string{{"--purge", "--quiet"}, {"--purge", "--debug"}} {
+	// Companions are accepted under their aliases too.
+	for _, args := range [][]string{{"--purge", "--quiet"}, {"--purge", "--debug"}, {"--purge", "-d"}} {
 		if err := runConfigValidationCommand(args...); err != nil {
 			t.Errorf("run(%v) error = %v, want quiet/debug allowed with purge", args, err)
 		}

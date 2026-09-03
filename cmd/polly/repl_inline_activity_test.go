@@ -31,7 +31,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 
 	var activity transcriptDisplayBlock
 	for _, block := range m.transcriptDisplayEntries(120) {
-		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
+		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			activity = block
 			break
 		}
@@ -45,9 +45,9 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 	}
 
 	rows := m.transcriptRows(120)
-	thoughts := m.visibleReasoningPlacements(len(rows), len(rows), 0, 0, 120, false, 0)
-	tools := m.visibleToolDisclosurePlacements(len(rows), len(rows), 0, 0, 120, false, 0)
-	images := m.visibleImageDisclosurePlacements(len(rows), len(rows), 0, 0, 120, false, 0)
+	thoughts := m.visibleReasoningPlacements(fullViewport(len(rows), 120))
+	tools := m.visibleToolDisclosurePlacements(fullViewport(len(rows), 120))
+	images := m.visibleImageDisclosurePlacements(fullViewport(len(rows), 120))
 	if len(thoughts) != 1 || len(tools) != 1 || len(images) != 1 || thoughts[0].Y != tools[0].Y || tools[0].Y != images[0].Y ||
 		thoughts[0].X+thoughts[0].Cols > tools[0].X || tools[0].X+tools[0].Cols > images[0].X {
 		t.Fatalf("three-part activity hitboxes: thought=%#v tools=%#v images=%#v", thoughts, tools, images)
@@ -56,12 +56,12 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 	if !m.toggleImageDisclosureAt(images[0].X, images[0].Y) {
 		t.Fatal("Images hitbox did not expand")
 	}
-	record := m.toolDisclosures[activity.toolDisclosureID]
+	record := m.toolDisclosures[activity.toolDisclosureIDs[0]]
 	if record == nil || !record.imagesExpanded || record.expanded {
 		t.Fatalf("Images expansion changed Tools state: %#v", record)
 	}
 	for _, block := range m.transcriptDisplayEntries(120) {
-		if block.toolDisclosureID != activity.toolDisclosureID {
+		if len(block.toolDisclosureIDs) == 0 || block.toolDisclosureIDs[0] != activity.toolDisclosureIDs[0] {
 			continue
 		}
 		if len(block.images) != 2 || !strings.Contains(plainStyledText(block.text), "▾ 2 images viewed") {
@@ -137,7 +137,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 		t.Fatalf("collapsed reasoning leaked detail: %q", mid)
 	}
 	for _, block := range m.transcriptDisplayEntries(100) {
-		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
+		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
 			if !accentThought.MatchString(header) ||
 				!strings.Contains(header, "1 tool](fg:accent") {
@@ -147,8 +147,8 @@ func TestInlineActivitySmoke(t *testing.T) {
 	}
 
 	rows := m.transcriptRows(100)
-	reasoningHit := m.visibleReasoningPlacements(len(rows), len(rows), 0, 0, 100, false, 0)
-	toolHit := m.visibleToolDisclosurePlacements(len(rows), len(rows), 0, 0, 100, false, 0)
+	reasoningHit := m.visibleReasoningPlacements(fullViewport(len(rows), 100))
+	toolHit := m.visibleToolDisclosurePlacements(fullViewport(len(rows), 100))
 	if len(reasoningHit) != 1 || len(toolHit) != 1 || reasoningHit[0].Y != toolHit[0].Y ||
 		reasoningHit[0].X+reasoningHit[0].Cols > toolHit[0].X {
 		t.Fatalf("one-line activity controls need distinct same-row hitboxes: thought=%#v tools=%#v", reasoningHit, toolHit)
@@ -156,7 +156,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 
 	tui.AppendToolEnd(call, "file contents", 50*time.Millisecond, nil)
 	for _, block := range m.transcriptDisplayEntries(100) {
-		if block.reasoningID != 0 && block.toolDisclosureID != 0 {
+		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
 			if !accentThought.MatchString(header) ||
 				!strings.Contains(header, "1 tool](fg:accent") {
@@ -176,7 +176,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 		}
 	}
 	for _, block := range m.transcriptDisplayEntries(100) {
-		if block.reasoningID == 0 && block.toolDisclosureID == 0 {
+		if !block.isActivity() {
 			continue
 		}
 		header := strings.SplitN(block.text, "\n", 2)[0]
@@ -220,7 +220,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 		t.Fatalf("unbroken rounds should share one record pair: reasoning=%v tools=%v", m.reasoningOrder, m.turnToolDisclosureIDs)
 	}
 	m.reasoningRecords[m.reasoningOrder[0]].elapsed = 700 * time.Millisecond
-	m.invalidateVisual()
+	m.visual.invalidate()
 
 	visible := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
 	var activityLines []string
@@ -233,7 +233,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 		t.Fatalf("uninterrupted activity should aggregate into one row: %#v", activityLines)
 	}
 	rows := m.transcriptRows(100)
-	m.reasoningPlacements = m.visibleReasoningPlacements(len(rows), len(rows), 0, 0, 100, false, 0)
+	m.reasoningPlacements = m.visibleReasoningPlacements(fullViewport(len(rows), 100))
 	if len(m.reasoningPlacements) != 1 || len(m.reasoningPlacements[0].recordIDs) != 1 {
 		t.Fatalf("aggregate thought hitbox = %#v", m.reasoningPlacements)
 	}
@@ -266,7 +266,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 	}
 	var activityHeaders []string
 	for _, block := range m.transcriptDisplayEntries(100) {
-		if block.reasoningID != 0 || block.toolDisclosureID != 0 {
+		if block.isActivity() {
 			activityHeaders = append(activityHeaders, strings.SplitN(block.text, "\n", 2)[0])
 		}
 	}
@@ -339,11 +339,11 @@ func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	record := m.reasoningRecords[m.reasoningOrder[0]]
 	record.elapsed = 0
-	m.invalidateVisual()
+	m.visual.invalidate()
 
 	rows := m.transcriptRows(width)
-	thoughts := m.visibleReasoningPlacements(len(rows), len(rows), 0, 0, width, false, 0)
-	tools := m.visibleToolDisclosurePlacements(len(rows), len(rows), 0, 0, width, false, 0)
+	thoughts := m.visibleReasoningPlacements(fullViewport(len(rows), width))
+	tools := m.visibleToolDisclosurePlacements(fullViewport(len(rows), width))
 	if len(thoughts) != 1 || thoughts[0].X != 2 || thoughts[0].Cols != 9 {
 		t.Fatalf("fully visible thought hitbox = %#v, want x=2 cols=9", thoughts)
 	}
@@ -353,8 +353,8 @@ func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
 
 	const fullyTruncatedWidth = 8
 	rows = m.transcriptRows(fullyTruncatedWidth)
-	thoughts = m.visibleReasoningPlacements(len(rows), len(rows), 0, 0, fullyTruncatedWidth, false, 0)
-	tools = m.visibleToolDisclosurePlacements(len(rows), len(rows), 0, 0, fullyTruncatedWidth, false, 0)
+	thoughts = m.visibleReasoningPlacements(fullViewport(len(rows), fullyTruncatedWidth))
+	tools = m.visibleToolDisclosurePlacements(fullViewport(len(rows), fullyTruncatedWidth))
 	if len(thoughts) != 0 || len(tools) != 0 {
 		t.Fatalf("fully truncated controls retained fallback hitboxes: thoughts=%#v tools=%#v", thoughts, tools)
 	}

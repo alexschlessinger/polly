@@ -7,9 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -80,10 +78,7 @@ func (c *replCommandContext) operationContext() context.Context {
 	return context.Background()
 }
 
-var (
-	defaultReplCommands = newDefaultReplCommandRegistry()
-	slashCommands       = defaultReplCommands.commandNames()
-)
+var defaultReplCommands = newDefaultReplCommandRegistry()
 
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
@@ -418,7 +413,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		// Commands run on the event loop with the model lock held, so this
 		// mutates the model directly like reply/clearTranscript do.
 		setContextName: func(name string) {
-			r.model.contextName = name
+			r.model.status.contextName = name
 		},
 		resetConversation: func() error {
 			if r.state == nil || r.state.session == nil {
@@ -442,7 +437,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
-			r.model.clearContextUsage(cfg.MaxHistoryTokens)
+			r.model.status.clearContextUsage(cfg.MaxHistoryTokens)
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
 			r.model.outcomeLabeled = false
@@ -462,8 +457,9 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			return token, nil
 		},
 		settingsApplied: func() {
-			r.model.modelName = cfg.Model
-			r.model.clearContextUsage(cfg.MaxHistoryTokens)
+			r.model.status.modelName = cfg.Model
+			r.model.status.rememberModel(cfg.Model)
+			r.model.status.clearContextUsage(cfg.MaxHistoryTokens)
 		},
 		openModelPicker:  r.openModelPicker,
 		openKeyManager:   r.openKeyManager,
@@ -489,16 +485,6 @@ func newWriterReplCommandContext(config *Config, state *conversationState, w io.
 	return ctx
 }
 
-func helpLines() []string {
-	return defaultReplCommands.helpLines()
-}
-
-func (m *replModel) appendHelp() {
-	for _, line := range helpLines() {
-		m.appendNoticeLine(line)
-	}
-}
-
 func (r *managedREPL) runCommand(line string) (handled, quit bool) {
 	handled, quit, err := defaultReplCommands.dispatch(line, newManagedReplCommandContext(r))
 	if err != nil {
@@ -506,10 +492,6 @@ func (r *managedREPL) runCommand(line string) (handled, quit bool) {
 		return true, false
 	}
 	return handled, quit
-}
-
-func completeSlash(input string) (completed string, matches []string, ok bool) {
-	return defaultReplCommands.complete(input, nil)
 }
 
 func (r *replCommandRegistry) complete(input string, ctx *replCommandContext) (completed string, matches []string, ok bool) {
@@ -825,8 +807,6 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	return replCommandResult{err: ctx.replyLines(lines)}
 }
 
-var replSettingKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "display", "tooltimeout", "skilldir", "sandbox"}
-
 func completeGetCommand(_ *replCommandContext, fields []string, prefix string) []string {
 	if completionArgPos(fields, prefix) != 1 {
 		return nil
@@ -854,75 +834,14 @@ func replGetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	return replCommandResult{err: ctx.replyLine(key + ": " + value)}
 }
 
-// replSettableKeys lists the /set-writable settings. system, skilldir, and
-// sandbox stay launch-time only: the system prompt is embedded in session
-// history at creation, and skill/sandbox wiring happens during tool loading.
-// display is derived from the active frontend and never settable.
-var replSettableKeys = []string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"}
-
-// thinkingEffortWords are the named efforts accepted by llm.ParseThinkingEffort
-// (a raw token budget is also accepted).
-var thinkingEffortWords = []string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh", "max"}
-
 func completeSetCommand(_ *replCommandContext, fields []string, prefix string) []string {
 	switch completionArgPos(fields, prefix) {
 	case 1:
 		return matchingWords(replSettableKeys, prefix)
 	case 2:
-		if fields[1] == "thinking" {
-			return matchingWords(thinkingEffortWords, prefix)
+		if spec, ok := settingSpecFor(fields[1]); ok && spec.setWords != nil {
+			return matchingWords(spec.setWords, prefix)
 		}
-	}
-	return nil
-}
-
-// applyReplSetting validates value for key and writes it onto cfg. Turns build
-// their completion request from cfg each time, so a change takes effect on the
-// next turn without reconnecting.
-func applyReplSetting(cfg *Config, key, value string) error {
-	switch key {
-	case "model":
-		if value == "" {
-			return fmt.Errorf("model requires a provider/model value")
-		}
-		if err := validateModel(value); err != nil {
-			return err
-		}
-		cfg.Model = value
-	case "temp":
-		f, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			return fmt.Errorf("temp must be a number, got %q", value)
-		}
-		if err := validateTemperature(f); err != nil {
-			return err
-		}
-		cfg.Temperature = f
-	case "maxtokens":
-		n, err := strconv.Atoi(value)
-		if err != nil || n <= 0 {
-			return fmt.Errorf("maxtokens must be a positive integer, got %q", value)
-		}
-		cfg.MaxTokens = n
-	case "maxcontext":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 0 {
-			return fmt.Errorf("maxcontext must be a non-negative integer (0 = unlimited), got %q", value)
-		}
-		cfg.MaxHistoryTokens = n
-	case "thinking":
-		if _, err := llm.ParseThinkingEffort(value); err != nil {
-			return err
-		}
-		cfg.ThinkingEffort = value
-	case "tooltimeout":
-		d, err := time.ParseDuration(value)
-		if err != nil || d <= 0 {
-			return fmt.Errorf("tooltimeout must be a positive duration (e.g. 45s), got %q", value)
-		}
-		cfg.ToolTimeout = d
-	default:
-		return fmt.Errorf("unknown or read-only key: %s (settable: %s)", key, strings.Join(replSettableKeys, ", "))
 	}
 	return nil
 }
@@ -934,24 +853,38 @@ func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if ctx == nil || ctx.config == nil {
 		return replCommandResult{err: ctx.replyLine("settings unavailable")}
 	}
-	key, value := args[1], args[2]
-	if err := applyReplSetting(ctx.config, key, value); err != nil {
+	line, err := applyAndPersistSetting(ctx, args[1], args[2])
+	if err != nil {
 		return replCommandResult{err: ctx.replyLine(err.Error())}
 	}
-	// The agent captures the tool timeout at construction; push the change
-	// through so it applies to the next turn, not the next launch.
-	if key == "tooltimeout" && ctx.state != nil && ctx.state.agent != nil {
-		ctx.state.agent.SetToolTimeout(ctx.config.ToolTimeout)
+	return replCommandResult{err: ctx.replyLine(line)}
+}
+
+// applyAndPersistSetting is the whole /set path for one key: parse onto the
+// config, run the live-apply hook and the UI refresh, then persist. Every
+// interactive way of changing a setting goes through here so none can skip a
+// hook. It returns the notice line to show. Turns build their completion
+// request from the config each time, so a change takes effect on the next
+// turn without reconnecting.
+func applyAndPersistSetting(ctx *replCommandContext, key, value string) (string, error) {
+	spec, ok := settingSpecFor(key)
+	if !ok || spec.parse == nil {
+		return "", fmt.Errorf("unknown or read-only key: %s (settable: %s)", key, strings.Join(replSettableKeys, ", "))
+	}
+	if err := spec.parse(ctx.config, value); err != nil {
+		return "", err
+	}
+	if spec.postReplSet != nil {
+		spec.postReplSet(ctx)
 	}
 	if ctx.settingsApplied != nil {
 		ctx.settingsApplied()
 	}
-	display, _ := replSettingValue(ctx, key)
-	line := key + ": " + display
+	line := key + ": " + spec.show(ctx, ctx.configOrDefault())
 	if err := persistReplSettings(ctx); err != nil {
 		line += " (applied for this run; persisting failed: " + err.Error() + ")"
 	}
-	return replCommandResult{err: ctx.replyLine(line)}
+	return line, nil
 }
 
 // persistReplSettings writes the resolved settings back to session metadata —
@@ -962,27 +895,15 @@ func persistReplSettings(ctx *replCommandContext) error {
 		return nil
 	}
 	cfg := ctx.configOrDefault()
-	s := ctx.state.session
-	opCtx := ctx.operationContext()
-	md, err := s.GetMetadata(opCtx)
-	if err != nil {
-		return err
-	}
-	if md == nil {
-		md = &sessions.Metadata{}
-	}
-	name, err := s.GetName(opCtx)
-	if err != nil {
-		return err
-	}
-	md.Name = name
-	md.Model = cfg.Model
-	md.Temperature = cfg.Temperature
-	md.MaxTokens = cfg.MaxTokens
-	md.MaxHistoryTokens = cfg.MaxHistoryTokens
-	md.ThinkingEffort = cfg.ThinkingEffort
-	md.ToolTimeout = cfg.ToolTimeout
-	return s.SetMetadata(opCtx, md)
+	// What /set can change, /set must persist: every settable row reaches
+	// metadata here, or the change would silently die at relaunch.
+	return updateMetadata(ctx.operationContext(), ctx.state.session, func(md *sessions.Metadata) {
+		for _, spec := range settingSpecs {
+			if spec.parse != nil {
+				spec.toMeta(cfg, md)
+			}
+		}
+	})
 }
 
 // sandboxToolSplit partitions sandbox-capable tools by whether they run
@@ -1120,40 +1041,11 @@ func (p sandboxPosture) noticeString() string {
 }
 
 func replSettingValue(ctx *replCommandContext, key string) (string, bool) {
-	config := ctx.configOrDefault()
-	switch key {
-	case "model":
-		return config.Model, true
-	case "temp":
-		return fmt.Sprintf("%.2f", config.Temperature), true
-	case "maxtokens":
-		return fmt.Sprintf("%d", config.MaxTokens), true
-	case "maxcontext":
-		return fmt.Sprintf("%d", config.MaxHistoryTokens), true
-	case "thinking":
-		return config.ThinkingEffort, true
-	case "system":
-		if config.SystemPrompt == "" {
-			return "(none)", true
-		}
-		return config.SystemPrompt, true
-	case "display":
-		if ctx.state == nil {
-			return "(none)", true
-		}
-		return ctx.state.displayContract, true
-	case "tooltimeout":
-		return config.ToolTimeout.String(), true
-	case "skilldir":
-		if len(config.SkillDirs) == 0 {
-			return "[]", true
-		}
-		return strings.Join(config.SkillDirs, ", "), true
-	case "sandbox":
-		return sandboxPostureForContext(ctx).settingString(), true
-	default:
+	spec, ok := settingSpecFor(key)
+	if !ok || spec.show == nil {
 		return "", false
 	}
+	return spec.show(ctx, ctx.configOrDefault()), true
 }
 
 func replToolsCommand(ctx *replCommandContext, args []string) replCommandResult {

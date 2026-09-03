@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"unicode"
@@ -195,25 +194,5 @@ func kittyDisplayPNG(pngData []byte, cols, rows int, fitByRows bool) []byte {
 	if len(pngData) == 0 || cols <= 0 || rows <= 0 {
 		return nil
 	}
-	size := fmt.Sprintf("c=%d", cols)
-	if fitByRows {
-		size = fmt.Sprintf("r=%d", rows)
-	}
-	encoded := base64.StdEncoding.EncodeToString(pngData)
-	var out bytes.Buffer
-	for offset := 0; offset < len(encoded); offset += 4096 {
-		end := min(offset+4096, len(encoded))
-		more := 0
-		if end < len(encoded) {
-			more = 1
-		}
-		if offset == 0 {
-			fmt.Fprintf(&out, "\x1b_Ga=T,f=100,t=d,q=2,%s,C=1,m=%d;", size, more)
-		} else {
-			fmt.Fprintf(&out, "\x1b_Gq=2,m=%d;", more)
-		}
-		out.WriteString(encoded[offset:end])
-		out.WriteString("\x1b\\")
-	}
-	return out.Bytes()
+	return kittyChunked(fmt.Sprintf("a=T,f=100,t=d,q=2,%s,C=1", kittySizeSpec(cols, rows, fitByRows)), pngData)
 }

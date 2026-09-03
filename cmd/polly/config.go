@@ -21,15 +21,13 @@ import (
 const defaultSandboxPreset = "workspace+net+git"
 
 var (
-	validModelProviders  = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
-	validEmbedProviders  = []string{"openai", "gemini"}
-	purgeDisallowedFlags = []string{
-		"context", "last", "prompt", "file", "model", "temp",
-		"maxtokens", "maxiterations", "timeout", "deadline", "tool", "mcp", "system", "schema",
-		"tooltimeout", "maxcontext", "thinking", "baseurl",
-		"skilldir", "skill", "noskills", "listskills",
-		"confirm", "meta", "sandbox", "nosandbox", "denypath", "writepath", "allownet",
-	}
+	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
+	validEmbedProviders = []string{"openai", "gemini"}
+	// purgeCompanionFlags are the only flags --purge accepts alongside
+	// itself, each under every name cmd.LocalFlagNames reports it by: the
+	// primary name first, then aliases. The guard checks all of them and the
+	// error text advertises the primary ones, so neither can drift.
+	purgeCompanionFlags = [][]string{{"quiet"}, {"debug", "d"}}
 )
 
 func getCommand() *cli.Command {
@@ -51,25 +49,13 @@ func getCommand() *cli.Command {
 	return command
 }
 
-// parseConfig extracts configuration from command-line flags
+// parseConfig extracts configuration from command-line flags. Settings flags
+// are read through the spec table; only runtime configuration is hand-listed.
 func parseConfig(cmd *cli.Command) *Config {
 	config := &Config{
-		Settings: Settings{
-			// Model configuration
-			Model:            cmd.String("model"),
-			Temperature:      cmd.Float64("temp"),
-			MaxTokens:        cmd.Int("maxtokens"),
-			MaxHistoryTokens: cmd.Int("maxcontext"),
-			ThinkingEffort:   cmd.String("thinking"),
-			SystemPrompt:     cmd.String("system"),
-			ToolTimeout:      cmd.Duration("tooltimeout"),
-			SkillDirs:        cmd.StringSlice("skilldir"),
-		},
-
 		// Runtime configuration
 		Timeout:       cmd.Duration("timeout"),
 		Deadline:      cmd.Duration("deadline"),
-		MaxIterations: int(cmd.Int("maxiterations")),
 		BaseURL:       cmd.String("baseurl"),
 		Confirm:       cmd.Bool("confirm"),
 		NoSandbox:     cmd.Bool("nosandbox"),
@@ -103,6 +89,11 @@ func parseConfig(cmd *cli.Command) *Config {
 		Debug:      cmd.Bool("debug"),
 		Tools:      cmd.StringSlice("tool"),
 		Skills:     cmd.StringSlice("skill"),
+	}
+	for _, spec := range settingSpecs {
+		if spec.fromCmd != nil {
+			spec.fromCmd(config, cmd)
+		}
 	}
 
 	return config
@@ -182,10 +173,11 @@ func modelConfigFlags() []cli.Flag {
 			},
 		},
 		&cli.IntFlag{
-			Name:    "maxtokens",
-			Usage:   "Maximum tokens to generate",
-			Value:   64000,
-			Sources: cli.EnvVars("POLLYTOOL_MAXTOKENS"),
+			Name:      "maxtokens",
+			Usage:     "Maximum tokens to generate",
+			Value:     64000,
+			Sources:   cli.EnvVars("POLLYTOOL_MAXTOKENS"),
+			Validator: validateMaxTokens,
 		},
 		&cli.IntFlag{
 			Name:    "maxiterations",
@@ -248,10 +240,11 @@ func toolConfigFlags() []cli.Flag {
 			Usage:   "Tool provider: shell script (provides 1 tool) or MCP server (can provide multiple tools). Can be specified multiple times",
 		},
 		&cli.DurationFlag{
-			Name:    "tooltimeout",
-			Usage:   "Timeout for tool execution",
-			Value:   5 * time.Minute,
-			Sources: cli.EnvVars("POLLYTOOL_TOOLTIMEOUT"),
+			Name:      "tooltimeout",
+			Usage:     "Timeout for tool execution",
+			Value:     5 * time.Minute,
+			Sources:   cli.EnvVars("POLLYTOOL_TOOLTIMEOUT"),
+			Validator: validateToolTimeout,
 		},
 	}
 }
@@ -300,9 +293,10 @@ func contextManagementFlags() []cli.Flag {
 func historyConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.IntFlag{
-			Name:  "maxcontext",
-			Usage: "Maximum estimated tokens sent to the model, clamped to the model's advertised context window when discoverable; full history is retained (0 = unlimited, never clamped)",
-			Value: 256000,
+			Name:      "maxcontext",
+			Usage:     "Maximum estimated tokens sent to the model, clamped to the model's advertised context window when discoverable; full history is retained (0 = unlimited, never clamped)",
+			Value:     256000,
+			Validator: validateMaxContext,
 		},
 	}
 }
@@ -416,7 +410,7 @@ func outputConfigFlags() []cli.Flag {
 func newThinkingFlag() *cli.StringFlag {
 	return &cli.StringFlag{
 		Name:    "thinking",
-		Usage:   "Reasoning effort: off, dynamic, a level (minimal, low, medium, high, xhigh, max), or a token budget (e.g. 12000)",
+		Usage:   "Reasoning effort: " + llm.ThinkingEffortForms(),
 		Value:   "off",
 		Sources: cli.EnvVars("POLLYTOOL_THINKING"),
 		Validator: func(v string) error {
@@ -470,12 +464,38 @@ func newPurgeFlag() *cli.BoolFlag {
 			if !v {
 				return nil
 			}
-			if slices.ContainsFunc(purgeDisallowedFlags, cmd.IsSet) {
-				return fmt.Errorf("--purge must be used alone (only --quiet or --debug allowed)")
+			// LocalFlagNames lists every name of every flag set by argument
+			// or environment, mutually exclusive groups included.
+			for _, name := range cmd.LocalFlagNames() {
+				if name != "purge" && !purgeCompanionFlag(name) {
+					return fmt.Errorf("--purge must be used alone (only %s allowed)", purgeCompanionUsage())
+				}
 			}
 			return nil
 		},
 	}
+}
+
+func purgeCompanionFlag(name string) bool {
+	for _, names := range purgeCompanionFlags {
+		if slices.Contains(names, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// purgeCompanionUsage renders the companion flags by primary name for the
+// --purge error text.
+func purgeCompanionUsage() string {
+	names := make([]string, len(purgeCompanionFlags))
+	for i, flag := range purgeCompanionFlags {
+		names[i] = "--" + flag[0]
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 func validateNoPromptOrFiles(cmd *cli.Command, flagName string) error {
@@ -514,6 +534,31 @@ func validateModelWithProviders(model string, providers []string, example string
 func validateTemperature(temp float64) error {
 	if temp < 0.0 || temp > 2.0 {
 		return fmt.Errorf("temperature must be between 0.0 and 2.0, got %.1f", temp)
+	}
+	return nil
+}
+
+// validateMaxTokens, validateMaxContext, and validateToolTimeout are shared
+// by the CLI flags and /set, so a value one path rejects the other cannot
+// smuggle into metadata. Zero is a sentinel on every row: no max_tokens on
+// the request, no clamp, no per-tool timeout.
+func validateMaxTokens(n int) error {
+	if n < 0 {
+		return fmt.Errorf("maxtokens must be a non-negative integer (0 = provider default), got %d", n)
+	}
+	return nil
+}
+
+func validateMaxContext(n int) error {
+	if n < 0 {
+		return fmt.Errorf("maxcontext must be a non-negative integer (0 = unlimited), got %d", n)
+	}
+	return nil
+}
+
+func validateToolTimeout(d time.Duration) error {
+	if d < 0 {
+		return fmt.Errorf("tooltimeout must be a non-negative duration (e.g. 45s; 0 = no timeout), got %s", d)
 	}
 	return nil
 }

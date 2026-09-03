@@ -25,6 +25,17 @@ func toolWasDenied(result string) bool {
 	return result == llm.ToolDeniedContent
 }
 
+// toolDisplayName is the name shown for a tool call, with a placeholder for
+// an unnamed one. The persisted display record (durableDisplayToolCall) and
+// the hydrated row are both built from it, and applyToolOrder pairs them by
+// name, so the placeholder must be the same string on both sides.
+func toolDisplayName(name string) string {
+	if name == "" {
+		return "tool"
+	}
+	return name
+}
+
 func toolLabel(tc messages.ChatMessageToolCall) string {
 	summary := summarizeToolArgs(tc.Name, tc.Arguments)
 	if summary == "" {
@@ -234,6 +245,17 @@ func summarizeBashCommand(args tools.Args) string {
 	}
 
 	return truncate(first, 120)
+}
+
+// toolLineBody joins a settled tool line's parts the same way in every
+// frontend: "1.2s bash · 3 lines". Either the duration or the metadata may be
+// empty.
+func toolLineBody(duration, label, meta string) string {
+	body := strings.TrimSpace(duration + " " + label)
+	if meta != "" {
+		body += " · " + meta
+	}
+	return body
 }
 
 // resultLineMeta summarizes how much output a successful tool handed the

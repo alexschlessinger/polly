@@ -30,6 +30,66 @@ var levelBudgets = [...]int{
 	LevelMax:     65536,
 }
 
+// levelNames is the canonical level<->name table: the single source of truth
+// for parsing, display, and the names offered in usage text and completions.
+var levelNames = [...]string{
+	LevelMinimal: "minimal",
+	LevelLow:     "low",
+	LevelMedium:  "medium",
+	LevelHigh:    "high",
+	LevelXHigh:   "xhigh",
+	LevelMax:     "max",
+}
+
+// effortWord is one row of effortWords: a word ParseThinkingEffort accepts and
+// the effort it names. An alias parses but is never advertised: it is absent
+// from completions and usage text, and String renders the canonical word.
+type effortWord struct {
+	word   string
+	effort ThinkingEffort
+	alias  bool
+}
+
+// effortWords is the canonical word<->effort table: the single source of
+// truth for parsing, display, completions, and usage text. The non-level
+// words come first, then the levels in ascending order.
+var effortWords = func() []effortWord {
+	words := []effortWord{
+		{word: "off", effort: EffortOff()},
+		{word: "dynamic", effort: EffortDynamic()},
+		{word: "auto", effort: EffortDynamic(), alias: true},
+	}
+	for level, name := range levelNames {
+		words = append(words, effortWord{word: name, effort: EffortLevel(ThinkingLevel(level))})
+	}
+	return words
+}()
+
+// ThinkingEffortWords lists every advertised word ParseThinkingEffort
+// accepts, from off through the levels, for completions. Aliases are not
+// listed; token budgets are free-form.
+func ThinkingEffortWords() []string {
+	var words []string
+	for _, w := range effortWords {
+		if !w.alias {
+			words = append(words, w.word)
+		}
+	}
+	return words
+}
+
+// ThinkingEffortForms spells out every accepted effort form for usage and
+// error text: the advertised non-level words, the levels, and a budget.
+func ThinkingEffortForms() string {
+	var named []string
+	for _, w := range effortWords {
+		if !w.alias && w.effort.kind != kindLevel {
+			named = append(named, w.word)
+		}
+	}
+	return strings.Join(named, ", ") + ", a level (" + strings.Join(levelNames[:], ", ") + "), or a positive token budget (e.g. 12000)"
+}
+
 // thinkingKind discriminates the ThinkingEffort tagged union. The zero value is
 // kindOff so that a zero ThinkingEffort means "no thinking".
 type thinkingKind uint8
@@ -124,24 +184,12 @@ func budgetToLevel(n int) ThinkingLevel {
 	return level
 }
 
-// levelName maps a level to its canonical parse string.
+// String renders the level as its canonical parse name.
 func (l ThinkingLevel) String() string {
-	switch l {
-	case LevelMinimal:
-		return "minimal"
-	case LevelLow:
-		return "low"
-	case LevelMedium:
-		return "medium"
-	case LevelHigh:
-		return "high"
-	case LevelXHigh:
-		return "xhigh"
-	case LevelMax:
-		return "max"
-	default:
-		return "unknown"
+	if int(l) < len(levelNames) {
+		return levelNames[l]
 	}
+	return "unknown"
 }
 
 // String renders the effort back into the form ParseThinkingEffort accepts, so
@@ -152,41 +200,33 @@ func (e ThinkingEffort) String() string {
 		return e.level.String()
 	case kindBudget:
 		return strconv.Itoa(e.budget)
-	case kindDynamic:
-		return "dynamic"
-	default:
-		return "off"
 	}
+	for _, w := range effortWords {
+		if !w.alias && w.effort.kind == e.kind {
+			return w.word
+		}
+	}
+	return "off"
 }
 
-// ParseThinkingEffort converts a string to a ThinkingEffort. Accepts: off (or
-// empty), dynamic/auto, the named levels minimal/low/medium/high/xhigh/max, or a
-// positive integer token budget. Old values (off/low/medium/high) are preserved.
+// ParseThinkingEffort converts a string to a ThinkingEffort: any word in
+// effortWords, aliases included (empty means off), or a positive integer
+// token budget. Old values (off/low/medium/high) are preserved.
 func ParseThinkingEffort(s string) (ThinkingEffort, error) {
-	switch v := strings.ToLower(strings.TrimSpace(s)); v {
-	case "", "off":
+	v := strings.ToLower(strings.TrimSpace(s))
+	if v == "" {
 		return EffortOff(), nil
-	case "dynamic", "auto":
-		return EffortDynamic(), nil
-	case "minimal":
-		return EffortLevel(LevelMinimal), nil
-	case "low":
-		return EffortLevel(LevelLow), nil
-	case "medium":
-		return EffortLevel(LevelMedium), nil
-	case "high":
-		return EffortLevel(LevelHigh), nil
-	case "xhigh":
-		return EffortLevel(LevelXHigh), nil
-	case "max":
-		return EffortLevel(LevelMax), nil
-	default:
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				return ThinkingEffort{}, fmt.Errorf("invalid thinking effort %q: token budget must be positive", s)
-			}
-			return EffortBudget(n), nil
-		}
-		return ThinkingEffort{}, fmt.Errorf("invalid thinking effort %q: must be off, dynamic, a level (minimal, low, medium, high, xhigh, max), or a positive token budget", s)
 	}
+	for _, w := range effortWords {
+		if v == w.word {
+			return w.effort, nil
+		}
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		if n <= 0 {
+			return ThinkingEffort{}, fmt.Errorf("invalid thinking effort %q: token budget must be positive", s)
+		}
+		return EffortBudget(n), nil
+	}
+	return ThinkingEffort{}, fmt.Errorf("invalid thinking effort %q: must be %s", s, ThinkingEffortForms())
 }

@@ -85,7 +85,7 @@ func TestGetCommandShowsStableFlagBackedSettings(t *testing.T) {
 		t.Fatalf("/get model output = %q", got)
 	}
 
-	r.model.transcript = nil
+	clearTranscriptForTest(r.model)
 	if handled, quit := r.runCommand("/get all"); !handled || quit {
 		t.Fatalf("/get all handled=%v quit=%v", handled, quit)
 	}
@@ -96,7 +96,7 @@ func TestGetCommandShowsStableFlagBackedSettings(t *testing.T) {
 		}
 	}
 
-	r.model.transcript = nil
+	clearTranscriptForTest(r.model)
 	r.runCommand("/get unknown")
 	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "unknown key: unknown") {
 		t.Fatalf("/get unknown output = %q", got)
@@ -120,7 +120,7 @@ func TestToolsCommandListNamespaceAndShow(t *testing.T) {
 		t.Fatalf("/tools list git output = %q", got)
 	}
 
-	r.model.transcript = nil
+	clearTranscriptForTest(r.model)
 	if handled, quit := r.runCommand("/tools show git__status"); !handled || quit {
 		t.Fatalf("/tools show handled=%v quit=%v", handled, quit)
 	}
@@ -131,7 +131,7 @@ func TestToolsCommandListNamespaceAndShow(t *testing.T) {
 		}
 	}
 
-	r.model.transcript = nil
+	clearTranscriptForTest(r.model)
 	r.runCommand("/tools show missing")
 	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "tool not found: missing") {
 		t.Fatalf("/tools show missing output = %q", got)
@@ -173,7 +173,7 @@ func TestGetSandboxSetting(t *testing.T) {
 		t.Fatalf("/get sandbox output = %q", got)
 	}
 
-	r.model.transcript = nil
+	clearTranscriptForTest(r.model)
 	r.runCommand("/get all")
 	if got := strings.Join(r.model.transcript, "\n"); !strings.Contains(got, "sandbox: active") {
 		t.Fatalf("/get all missing sandbox row: %q", got)
@@ -197,7 +197,7 @@ func TestToolsListMarksSandboxed(t *testing.T) {
 		t.Fatalf("/tools list wrongly marked plain tool: %q", got)
 	}
 
-	r.model.transcript = nil
+	clearTranscriptForTest(r.model)
 	if handled, quit := r.runCommand("/tools show bash"); !handled || quit {
 		t.Fatalf("/tools show handled=%v quit=%v", handled, quit)
 	}
@@ -689,7 +689,9 @@ func TestSetCommand(t *testing.T) {
 		{"/set model gpt", "provider prefix"},
 		{"/set temp eleven", "must be a number"},
 		{"/set temp 9", "between 0.0 and 2.0"},
-		{"/set maxtokens zero", "positive integer"},
+		{"/set maxtokens zero", "non-negative integer"},
+		{"/set maxtokens -1", "non-negative integer"},
+		{"/set tooltimeout -1s", "non-negative duration"},
 		{"/set thinking sideways", "thinking"},
 		{"/set bogus 1", "unknown or read-only key"},
 		{"/set system terse", "unknown or read-only key"},

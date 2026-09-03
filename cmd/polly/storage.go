@@ -64,10 +64,11 @@ func setupSessionStore(config *Config, contextID string, forceFile bool) (sessio
 
 func metadataFromConfig(config *Config) *sessions.Metadata {
 	metadata := &sessions.Metadata{}
-	config.Settings.ToMetadataSettings(metadata)
-	// Config.MaxIterations is the runtime value populated by parseConfig;
-	// Settings.MaxIterations is retained only for persisted-settings helpers.
-	metadata.MaxIterations = config.MaxIterations
+	for _, spec := range settingSpecs {
+		if spec.toMeta != nil {
+			spec.toMeta(config, metadata)
+		}
+	}
 	if len(config.Tools) == 0 {
 		metadata.ActiveTools = make([]tools.ToolLoaderInfo, 0, len(defaultNativeToolNames))
 		for _, name := range defaultNativeToolNames {
@@ -141,7 +142,7 @@ func handleDeleteContext(ctx context.Context, store sessions.SessionStore, conte
 	}
 
 	// Prompt for confirmation (default to no for destructive operation)
-	if !confirmDeletion(contextID) {
+	if !confirmDestructive(fmt.Sprintf("Delete context '%s' permanently?", contextID), "Delete cancelled") {
 		return nil
 	}
 
@@ -149,10 +150,11 @@ func handleDeleteContext(ctx context.Context, store sessions.SessionStore, conte
 }
 
 // confirmDeletion prompts the user to confirm deletion
-func confirmDeletion(contextID string) bool {
-	prompt := fmt.Sprintf("Delete context '%s' permanently?", contextID)
+// confirmDestructive asks prompt with a default of no, printing cancelled
+// when the user declines.
+func confirmDestructive(prompt, cancelled string) bool {
 	if !promptYesNo(prompt, false) {
-		fmt.Println("Delete cancelled")
+		fmt.Println(cancelled)
 		return false
 	}
 	return true
@@ -429,7 +431,7 @@ func handleResetContext(ctx context.Context, store sessions.SessionStore, config
 	}
 
 	// Prompt for confirmation
-	if !confirmReset(contextID) {
+	if !confirmDestructive(fmt.Sprintf("Reset context '%s' (clear conversation history)?", contextID), "Reset cancelled") {
 		return nil
 	}
 
@@ -467,15 +469,6 @@ func handleResetContext(ctx context.Context, store sessions.SessionStore, config
 }
 
 // confirmReset prompts the user to confirm reset
-func confirmReset(contextID string) bool {
-	prompt := fmt.Sprintf("Reset context '%s' (clear conversation history)?", contextID)
-	if !promptYesNo(prompt, false) {
-		fmt.Println("Reset cancelled")
-		return false
-	}
-	return true
-}
-
 // handlePurgeAll deletes all sessions.
 func handlePurgeAll(ctx context.Context, store sessions.SessionStore) error {
 	// Get count of contexts for the confirmation message
@@ -490,7 +483,7 @@ func handlePurgeAll(ctx context.Context, store sessions.SessionStore) error {
 	}
 
 	// Prompt for confirmation
-	if !confirmPurge(len(contextIDs)) {
+	if !confirmDestructive(fmt.Sprintf("This will permanently delete %d context(s) and all associated data. Are you sure?", len(contextIDs)), "Purge cancelled") {
 		return nil
 	}
 
@@ -498,15 +491,6 @@ func handlePurgeAll(ctx context.Context, store sessions.SessionStore) error {
 }
 
 // confirmPurge prompts the user to confirm purge
-func confirmPurge(count int) bool {
-	prompt := fmt.Sprintf("This will permanently delete %d context(s) and all associated data. Are you sure?", count)
-	if !promptYesNo(prompt, false) {
-		fmt.Println("Purge cancelled")
-		return false
-	}
-	return true
-}
-
 // purgeContexts performs the actual purge operation
 func purgeContexts(ctx context.Context, store sessions.SessionStore, contextIDs []string) error {
 	deletedCount := 0
@@ -523,16 +507,9 @@ func purgeContexts(ctx context.Context, store sessions.SessionStore, contextIDs 
 	return errors.Join(deleteErrors...)
 }
 
-// resetContext clears the conversation history but preserves the context settings
-func resetContext(ctx context.Context, sessionStore sessions.SessionStore, name string) (retErr error) {
-	return resetContextWithOptionalSystemPrompt(ctx, sessionStore, name, nil)
-}
-
-func resetContextWithSystemPrompt(ctx context.Context, sessionStore sessions.SessionStore, name, systemPrompt string) error {
-	return resetContextWithOptionalSystemPrompt(ctx, sessionStore, name, &systemPrompt)
-}
-
-func resetContextWithOptionalSystemPrompt(ctx context.Context, sessionStore sessions.SessionStore, name string, systemPrompt *string) (retErr error) {
+// resetContextWithSystemPrompt clears the conversation history while
+// preserving the context settings, with systemPrompt as the new persona.
+func resetContextWithSystemPrompt(ctx context.Context, sessionStore sessions.SessionStore, name, systemPrompt string) (retErr error) {
 	// Get the session (creates if doesn't exist)
 	session, err := sessionStore.Acquire(ctx, name, sessions.AcquireOptions{})
 	if err != nil {
@@ -544,26 +521,17 @@ func resetContextWithOptionalSystemPrompt(ctx context.Context, sessionStore sess
 			retErr = errors.Join(retErr, fmt.Errorf("close context %s: %w", name, err))
 		}
 	}()
-	if systemPrompt != nil {
-		metadata, err := session.GetMetadata(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to read context %s metadata: %w", name, err)
-		}
-		if metadata == nil {
-			metadata = &sessions.Metadata{}
-		}
-		metadata.SystemPrompt = *systemPrompt
-		if err := session.Reset(ctx, metadata); err != nil {
-			return fmt.Errorf("failed to reset context %s with system prompt: %w", name, err)
-		}
-		return nil
+	metadata, err := session.GetMetadata(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read context %s metadata: %w", name, err)
 	}
-
-	// Clear the session history
-	if err := session.Clear(ctx); err != nil {
-		return fmt.Errorf("failed to clear context %s: %w", name, err)
+	if metadata == nil {
+		metadata = &sessions.Metadata{}
 	}
-
+	metadata.SystemPrompt = systemPrompt
+	if err := session.Reset(ctx, metadata); err != nil {
+		return fmt.Errorf("failed to reset context %s with system prompt: %w", name, err)
+	}
 	return nil
 }
 
