@@ -2,19 +2,8 @@
 
 <img src=".assets/polly.png" width="128" height="128">
 
-This is my [LLM](https://en.wikipedia.org/wiki/Stochastic_parrot) CLI tool.
+This is my [LLM](https://en.wikipedia.org/wiki/Stochastic_parrot) harness.
 There are many like it, but this one is mine.
-
-- **Many models** — OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Ollama,
-  Hugging Face. One interface.
-- **Interactive TUI** — streaming, scrollback, history search, images.
-- **Multimodal** — text, pics, random files.
-- **Contexts** — memory, but opt-in. Conversations persist in SQLite.
-- **Tool calling** — bolt on shell scripts and MCP servers.
-- **Sandboxed by default** — tool commands run in an OS-level sandbox that
-  masks your credentials.
-- **Agent Skills** — discover `SKILL.md` bundles and activate them on demand.
-- **Structured output** — JSON on purpose, not by accident.
 
 This file covers the CLI and the TUI. [API.md](API.md) is the Go library
 tour; [SANDBOX.md](SANDBOX.md) is the sandbox reference.
@@ -154,7 +143,7 @@ A context is a named, persistent conversation. One-shot runs are stateless
 unless you name one with `-c`.
 
 ```bash
-polly --create project --model openai/gpt-5.4 --maxtokens 4096   # create with settings
+polly --create project --model openai/gpt-5.6 # create with settings
 polly --show project                        # show its configuration
 polly -c project -p "What database should I use?"    # continue the conversation
 polly -c project                            # or continue in the TUI
