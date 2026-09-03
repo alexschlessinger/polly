@@ -281,11 +281,11 @@ func TestContextUsageStatusIsProviderVisibleAndCompact(t *testing.T) {
 	m.status.contextName = "work"
 	m.status.recordContextUsage(41_200, 156_000, false)
 	wide := plainStyledText(m.statusRow(120))
-	if !strings.Contains(wide, "ctx 41.2k/156k") {
+	if !strings.Contains(wide, "41.2k/156k") {
 		t.Fatalf("status = %q", wide)
 	}
 	m.status.recordContextUsage(12_300, 156_000, true)
-	if got := plainStyledText(m.statusRow(120)); !strings.Contains(got, "ctx ~12.3k/156k") {
+	if got := plainStyledText(m.statusRow(120)); !strings.Contains(got, "~12.3k/156k") {
 		t.Fatalf("estimated status = %q", got)
 	}
 }

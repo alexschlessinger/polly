@@ -1555,8 +1555,11 @@ func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 	m.lastOut = 567
 
 	wide := m.statusRow(200)
-	if !strings.Contains(wide, "skills:2") || !strings.Contains(wide, "tools:4") {
+	if !strings.Contains(wide, "skills:2") {
 		t.Fatalf("wide bar should include all fields: %q", wide)
+	}
+	if strings.Contains(wide, "tools:4") {
+		t.Fatalf("tool count is not shown in the bar: %q", wide)
 	}
 	// Tokens moved to the post-turn summary line; the bar never shows them.
 	if strings.Contains(wide, "1.2k") || strings.Contains(wide, "→") {

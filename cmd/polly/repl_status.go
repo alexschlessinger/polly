@@ -59,18 +59,21 @@ func (s *sessionStatus) contextUsageText() string {
 	if s.contextUsed <= 0 && s.contextLimit <= 0 {
 		return ""
 	}
-	prefix := "ctx "
-	if s.contextEstimated {
-		prefix += "~"
-	}
+	// The bar/number row sits in a dedicated status slot, so the "ctx"
+	// prefix is redundant — the numbers only ever mean context usage.
 	used := humanizeTokens(s.contextUsed)
 	if s.contextLimit <= 0 {
-		return prefix + used
+		return used
 	}
 	if s.contextUsed > s.contextLimit && s.contextEstimated {
 		used = ">" + humanizeTokens(s.contextLimit)
 	}
-	return prefix + used + "/" + humanizeTokens(s.contextLimit)
+	text := used + "/" + humanizeTokens(s.contextLimit)
+	if s.contextEstimated {
+		// Mark the estimate so "12.3k" is never mistaken for a measured value.
+		text = "~" + text
+	}
+	return text
 }
 
 func (s *sessionStatus) clearContextUsage(limit int) {
@@ -88,6 +91,58 @@ func (s *sessionStatus) recordContextUsage(used, limit int, estimated bool) {
 	s.contextEstimated = estimated
 }
 
+// contextMeterBar renders the fullness of the context window as a small
+// bar: `▕████░░▏`. Color shifts green → yellow → red as the window fills,
+// so pressure is legible at a glance without reading the numbers. Width is
+// the inner bar width (excluding the enclosing brackets).
+func contextMeterBar(used, limit, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	filled := 0
+	if limit > 0 {
+		filled = used * width / limit
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > width {
+		filled = width
+	}
+	empty := width - filled
+	color := "green"
+	switch {
+	case filled*2 >= width: // >50% of window used
+		color = "yellow"
+	case filled*5 >= width*4: // >80%
+		color = "red"
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", empty)
+	return styled(bar, color, "")
+}
+
+// contextMeterColor picks the bar color by how full the context window is.
+func contextMeterColor(fraction float64) string {
+	switch {
+	case fraction >= 0.9:
+		return "err"
+	case fraction >= 0.75:
+		return "warn"
+	default:
+		return "ok"
+	}
+}
+
+// shortModelName trims a provider-qualified model to its display form:
+// everything after the last slash ("openai/gpt-5.4" → "gpt-5.4"). A model
+// with no slash passes through unchanged.
+func shortModelName(model string) string {
+	if i := strings.LastIndex(model, "/"); i >= 0 {
+		return model[i+1:]
+	}
+	return model
+}
+
 // statusRow renders stable session context. Per-turn activity and completion
 // metrics live in the fixed turn dock immediately above the composer.
 func (m *replModel) statusRow(width int) string {
@@ -103,20 +158,25 @@ func (m *replModel) statusRow(width int) string {
 		leftStyled = styled(leftRaw, "accent", "")
 	}
 	type field struct {
-		drop    int
-		text    string
-		session bool
+		drop      int
+		text      string
+		session   bool
+		preStyled bool
 	}
 	fields := []field{}
 	if m.status.modelName != "" {
-		fields = append(fields, field{drop: 3, text: m.status.modelName})
+		// Show the bare model name; the provider prefix is redundant once
+		// you know which model you're talking to ("gpt-5.4", not
+		// "openai/gpt-5.4").
+		fields = append(fields, field{drop: 3, text: shortModelName(m.status.modelName)})
 	}
 	fields = append(fields, field{drop: 0, text: m.status.contextName, session: true})
 	if context := m.status.contextUsageText(); context != "" {
 		fields = append(fields, field{drop: 1, text: context})
 	}
-	if m.status.toolCount > 0 {
-		fields = append(fields, field{drop: 2, text: fmt.Sprintf("tools:%d", m.status.toolCount)})
+	// Usage meter bar sits next to the numbers when there's a limit to gauge.
+	if bar := contextMeterBar(m.status.contextUsed, m.status.contextLimit, 10); bar != "" {
+		fields = append(fields, field{drop: 1, text: bar, preStyled: true})
 	}
 	if m.status.skillCount > 0 {
 		fields = append(fields, field{drop: 4, text: fmt.Sprintf("skills:%d", m.status.skillCount)})
@@ -172,6 +232,11 @@ func (m *replModel) statusRow(width int) string {
 	rightStyledParts := make([]string, len(fields))
 	for i, f := range fields {
 		rightRawParts[i] = f.text
+		if f.preStyled {
+			// Field text is already fully styled; render as-is.
+			rightStyledParts[i] = f.text
+			continue
+		}
 		color := "muted"
 		if f.session {
 			color = "accent"
@@ -198,17 +263,17 @@ func (m *replModel) statusRow(width int) string {
 		}
 	}
 
-	if rightRaw == "" {
-		return leftStyled
+	// Center the field block in the row. The timer reserves the left edge,
+	// so the block's start column is fixed: the timer's width is carved out
+	// of the padding rather than shifting the block right.
+	pad := (width-rightWidth)/2 - rw.StringWidth(leftRaw)
+	if pad < 0 {
+		pad = 0
 	}
-	gap := width - rw.StringWidth(leftRaw) - rightWidth
-	if leftRaw != "" && gap < 1 {
-		gap = 1
+	x := (width - rightWidth) / 2
+	if x < 0 {
+		x = 0
 	}
-	if gap < 0 {
-		gap = 0
-	}
-	x := width - rightWidth
 	sepWidth := rw.StringWidth(sep)
 	for i, f := range fields {
 		fieldCols := rw.StringWidth(f.text)
@@ -220,7 +285,7 @@ func (m *replModel) statusRow(width int) string {
 			x += sepWidth
 		}
 	}
-	return leftStyled + strings.Repeat(" ", gap) + rightStyled
+	return leftStyled + strings.Repeat(" ", pad) + rightStyled
 }
 
 // activityTicker is the pinned bottom-row notice shown while the user is
