@@ -9,6 +9,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -348,12 +349,14 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	ctx := context.Background()
 	spawn := func(name, parent, description string) {
-		session := testAcquireSession(t, store, name)
+		session, err := store.Acquire(ctx, name, sessions.AcquireOptions{Parent: parent})
+		if err != nil {
+			t.Fatal(err)
+		}
 		metadata, err := session.GetMetadata(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		metadata.Parent = parent
 		metadata.Description = description
 		if err := session.SetMetadata(ctx, metadata); err != nil {
 			t.Fatal(err)
@@ -362,11 +365,11 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	spawn("epsilon", "gamma", "")
-	spawn("delta", "gamma", "count files")
 	if err := testAcquireSession(t, store, "gamma").Close(); err != nil {
 		t.Fatal(err)
 	}
+	spawn("epsilon", "gamma", "")
+	spawn("delta", "gamma", "count files")
 	r := newTabTestREPL(t, store, "current-work")
 
 	values := func() []string {

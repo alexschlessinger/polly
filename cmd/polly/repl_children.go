@@ -191,15 +191,12 @@ func (r *managedREPL) deliverChildReport(ctx context.Context, tab *replTab, err 
 	r.postChildReport(ctx, tab, res, err, runTurn)
 }
 
-// postChildReport posts a child's reply to the store for its parent session,
-// which takes it the next time it is open and idle, wherever that is. When
-// the parent is an idle tab here, that is now. Runs on the event loop with
-// no model lock held.
+// postChildReport posts a child's reply through its session to the store,
+// for the parent session the store links it to, which takes it the next
+// time it is open and idle, wherever that is. When the parent is an idle tab
+// here, that is now. Runs on the event loop with no model lock held.
 func (r *managedREPL) postChildReport(ctx context.Context, child *replTab, res subagent.Result, err error, runTurn turnRunner) {
-	report := sessions.Report{
-		Child: child.name, Status: sessions.ReportFinished, Text: res.Text,
-		InputTokens: res.InputTokens, OutputTokens: res.OutputTokens,
-	}
+	report := sessions.Report{Status: sessions.ReportFinished, Text: res.Text, InputTokens: res.InputTokens, OutputTokens: res.OutputTokens}
 	switch {
 	case errors.Is(err, context.Canceled):
 		report.Status = sessions.ReportCanceled
@@ -207,22 +204,16 @@ func (r *managedREPL) postChildReport(ctx context.Context, child *replTab, res s
 		report.Status = sessions.ReportFailed
 		report.Error = err.Error()
 	}
-	parent := r.liveParent(child)
-	parentName := child.parentName
-	if parent != nil {
-		// The tab's name follows a rename; the child's record may not.
-		parentName = parent.name
-	}
-	if child.state == nil || child.state.sessionStore == nil || parentName == "" {
+	if child.state == nil || child.state.session == nil {
 		return
 	}
-	if err := child.state.sessionStore.PostReport(ctx, parentName, report); err != nil {
+	if err := child.state.session.Report(ctx, report); err != nil {
 		r.model.mu.Lock()
-		r.model.appendNoticeLine(fmt.Sprintf("agent %s's reply could not be delivered to %s: %s", child.name, parentName, err.Error()))
+		r.model.appendNoticeLine(fmt.Sprintf("agent %s's reply could not be delivered to %s: %s", child.name, child.parentName, err.Error()))
 		r.model.mu.Unlock()
 		return
 	}
-	if parent != nil && r.pullReports(ctx, parent) {
+	if parent := r.liveParent(child); parent != nil && r.pullReports(ctx, parent) {
 		r.startQueued(ctx, parent, runTurn)
 	}
 }

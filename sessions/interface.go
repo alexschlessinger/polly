@@ -32,9 +32,13 @@ type StoreConfig struct {
 }
 
 // AcquireOptions describe a newly created session. They never alter the
-// retention class of an existing session.
+// retention class or parent of an existing session.
 type AcquireOptions struct {
 	Auto bool
+	// Parent names the session whose agent spawns this one. The link is by
+	// id, so Metadata.Parent follows the parent's renames; ErrSessionNotFound
+	// when no session has the name.
+	Parent string
 }
 
 // SessionSummary combines persisted metadata with lightweight transcript
@@ -75,6 +79,9 @@ type Session interface {
 	GetTimeToExpiry(context.Context) (time.Duration, error)
 	GetMessageCounts(context.Context) (map[string]int, error)
 	GetToolCallCount(context.Context) (int, error)
+	// Report posts a report to the session that spawned this one, naming
+	// this session as its child. ErrNoParent when there is none.
+	Report(context.Context, Report) error
 	// TakeReports removes and returns the subagent reports addressed to
 	// this session, oldest first. See Report.
 	TakeReports(context.Context) ([]Report, error)
@@ -132,8 +139,11 @@ type Metadata struct {
 	LastUsed    time.Time     `json:"lastUsed"`
 	Description string        `json:"description,omitempty"`
 	TTL         time.Duration `json:"ttl,omitempty"`
-	// Parent names the session whose agent spawned this one as a subagent;
-	// empty for a session a person started.
+	// Parent names the session whose agent spawned this one as a subagent,
+	// as that session is called now; empty for a session a person started.
+	// Canonical from the store's parent link (see AcquireOptions.Parent):
+	// SetMetadata and Reset ignore it. A session whose parent was deleted
+	// keeps the last name it knew.
 	Parent string `json:"parent,omitempty"`
 
 	Model            string                 `json:"model,omitempty"`

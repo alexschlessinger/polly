@@ -33,16 +33,19 @@ func testSessionOpener(store sessions.SessionStore) *sessionOpener {
 			if err != nil {
 				return nil, err
 			}
-			session, err := store.Acquire(ctx, name, sessions.AcquireOptions{Auto: true})
+			parentName, err := parent.session.GetName(ctx)
 			if err != nil {
 				return nil, err
 			}
-			parentName, _ := parent.session.GetName(ctx)
+			session, err := store.Acquire(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName})
+			if err != nil {
+				return nil, err
+			}
 			md, err := session.GetMetadata(ctx)
 			if err != nil {
 				return nil, err
 			}
-			md.Parent, md.Description = parentName, req.Label
+			md.Description = req.Label
 			if err := session.SetMetadata(ctx, md); err != nil {
 				return nil, err
 			}

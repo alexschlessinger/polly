@@ -1944,3 +1944,117 @@ func TestReportsWaitForTheirParentAndFollowTheirSessions(t *testing.T) {
 		t.Fatalf("reports left after deleting their parent = %d, %v", left, err)
 	}
 }
+
+func TestParentLinkFollowsRenamesAndSurvivesDeletes(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, nil, 0)
+	ctx := context.Background()
+	parent := acquireNamed(t, store, "gamma")
+	if _, err := store.Acquire(ctx, "stray", AcquireOptions{Parent: "nobody"}); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("acquire under a missing parent = %v, want ErrSessionNotFound", err)
+	}
+	child, err := store.Acquire(ctx, "delta", AcquireOptions{Auto: true, Parent: "gamma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Close() })
+	metadata, err := child.GetMetadata(ctx)
+	if err != nil || metadata.Parent != "gamma" {
+		t.Fatalf("child parent = %q, %v; want gamma", metadata.Parent, err)
+	}
+
+	// Callers cannot move a session under another parent.
+	metadata.Parent = "elsewhere"
+	metadata.Description = "count files"
+	if err := child.SetMetadata(ctx, metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata, err = child.GetMetadata(ctx); err != nil || metadata.Parent != "gamma" || metadata.Description != "count files" {
+		t.Fatalf("after SetMetadata parent = %q, description %q, %v", metadata.Parent, metadata.Description, err)
+	}
+
+	// The parent's rename shows through, to the child and to listings.
+	if err := parent.Rename(ctx, "gamma-two"); err != nil {
+		t.Fatal(err)
+	}
+	if metadata, err = child.GetMetadata(ctx); err != nil || metadata.Parent != "gamma-two" {
+		t.Fatalf("after the parent's rename, child parent = %q, %v", metadata.Parent, err)
+	}
+	all, err := store.GetAllMetadata(ctx)
+	if err != nil || all["delta"].Parent != "gamma-two" {
+		t.Fatalf("listed child parent = %q, %v", all["delta"].Parent, err)
+	}
+
+	// The child reports to whatever its parent is called now.
+	if err := child.Report(ctx, Report{Status: ReportFinished, Text: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	reports, err := parent.TakeReports(ctx)
+	if err != nil || len(reports) != 1 || reports[0].Child != "delta" || reports[0].Text != "done" {
+		t.Fatalf("parent took %+v, %v", reports, err)
+	}
+
+	// A deleted parent leaves the child with the last name it knew, and
+	// nowhere to report.
+	if err := parent.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, "gamma-two"); err != nil {
+		t.Fatal(err)
+	}
+	if metadata, err = child.GetMetadata(ctx); err != nil || metadata.Parent != "gamma" {
+		t.Fatalf("orphan's remembered parent = %q, %v; want the name it last wrote", metadata.Parent, err)
+	}
+	if err := child.Report(ctx, Report{Status: ReportFinished}); !errors.Is(err, ErrNoParent) {
+		t.Fatalf("orphan report = %v, want ErrNoParent", err)
+	}
+}
+
+func TestMigrateSchemaV4LinksParentsFromSettings(t *testing.T) {
+	store, path := openTestStore(t, ModeDisk, nil, 0)
+	ctx := context.Background()
+	parent := acquireNamed(t, store, "gamma")
+	child, err := store.Acquire(ctx, "delta", AcquireOptions{Parent: "gamma"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A v3 database carried the parent only as a name in the settings.
+	if _, err := store.db.Exec("UPDATE sessions SET parent_id = NULL"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("PRAGMA user_version = 3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	var linked int
+	if err := reopened.db.QueryRow(`
+		SELECT count(*) FROM sessions AS s JOIN sessions AS p ON p.id = s.parent_id
+		WHERE s.name = 'delta' AND p.name = 'gamma'`).Scan(&linked); err != nil || linked != 1 {
+		t.Fatalf("linked rows after migration = %d, %v", linked, err)
+	}
+	gamma, err := reopened.Acquire(ctx, "gamma", AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gamma.Close()
+	if err := gamma.Rename(ctx, "gamma-two"); err != nil {
+		t.Fatal(err)
+	}
+	all, err := reopened.GetAllMetadata(ctx)
+	if err != nil || all["delta"].Parent != "gamma-two" {
+		t.Fatalf("backfilled link did not follow the rename: %q, %v", all["delta"].Parent, err)
+	}
+}

@@ -44,12 +44,14 @@ func TestListContextsNestsAgentsUnlessFlat(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	ctx := context.Background()
 	spawn := func(name, parent, description string) {
-		session := testAcquireSession(t, store, name)
+		session, err := store.Acquire(ctx, name, sessions.AcquireOptions{Parent: parent})
+		if err != nil {
+			t.Fatal(err)
+		}
 		metadata, err := session.GetMetadata(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		metadata.Parent = parent
 		metadata.Description = description
 		if err := session.SetMetadata(ctx, metadata); err != nil {
 			t.Fatal(err)
@@ -58,11 +60,18 @@ func TestListContextsNestsAgentsUnlessFlat(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	spawn("delta", "gamma", "count files")
+	// omega's parent is deleted under it; omega keeps the name it knew.
+	if err := testAcquireSession(t, store, "gone").Close(); err != nil {
+		t.Fatal(err)
+	}
 	spawn("omega", "gone", "")
+	if err := store.Delete(ctx, "gone"); err != nil {
+		t.Fatal(err)
+	}
 	if err := testAcquireSession(t, store, "gamma").Close(); err != nil {
 		t.Fatal(err)
 	}
+	spawn("delta", "gamma", "count files")
 
 	tree := strings.Split(strings.TrimSpace(captureStdout(t, func() {
 		if err := handleListContexts(ctx, store, false); err != nil {

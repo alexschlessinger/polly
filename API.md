@@ -446,9 +446,10 @@ later; `AgentRunner` has no way to deliver later and runs the child to
 completion regardless. `subagent.WithMaxConcurrent` bounds parallel
 children (default four). The tool is exempt from `AgentConfig.ToolTimeout`
 through the `tools.UntimedTool` interface. The polly CLI's runner opens a
-child session on the same store, recorded with `Metadata.Parent`, and in
-the TUI runs it on a tab of its own; a background child's reply travels as
-a `sessions.Report` (see [Sessions](#sessions)).
+child session on the same store, linked to the parent with
+`AcquireOptions.Parent`, and in the TUI runs it on a tab of its own; a
+background child's reply travels as a `sessions.Report` (see
+[Sessions](#sessions)).
 
 ## Sessions
 
@@ -489,11 +490,16 @@ err = session.Reset(sessionCtx, metadata)
   competing owner receives `sessions.ErrSessionInUse`.
 - `session.ArtifactStore()` is scoped to the session; artifact bytes commit
   in the same database as the transcript.
-- `store.PostReport(ctx, parent, sessions.Report{...})` holds a subagent's
-  reply for the named session, open or not, and `session.TakeReports(ctx)`
-  removes and returns the reports waiting for a leased session, oldest
-  first. A report is deleted with its addressee and names its child as the
-  child is called when read.
+- `AcquireOptions{Parent: name}` links a new session to the one whose agent
+  spawns it. The link is by id, so `Metadata.Parent` reads as the parent's
+  current name after renames, and `SetMetadata` ignores the field; a session
+  whose parent was deleted keeps the last name it knew.
+- `session.Report(ctx, sessions.Report{...})` posts a subagent's reply to
+  its linked parent, and `store.PostReport(ctx, parent, report)` does the
+  same for a named session, open or not. `session.TakeReports(ctx)` removes
+  and returns the reports waiting for a leased session, oldest first. A
+  report is deleted with its addressee and names its child as the child is
+  called when read.
 
 ## Structured Output
 

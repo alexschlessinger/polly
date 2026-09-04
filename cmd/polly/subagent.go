@@ -126,7 +126,7 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 	if err != nil {
 		return nil, err
 	}
-	session, err := store.Acquire(ctx, name, sessions.AcquireOptions{Auto: true})
+	session, err := store.Acquire(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName})
 	if err != nil {
 		return nil, fmt.Errorf("open child session %q: %w", name, err)
 	}
@@ -163,7 +163,6 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 	if err != nil {
 		return nil, fmt.Errorf("read child metadata: %w", err)
 	}
-	metadata.Parent = parentName
 	metadata.Description = spawnLabel(req.Label, req.Task)
 	for _, spec := range settingSpecs {
 		if spec.toMeta != nil {

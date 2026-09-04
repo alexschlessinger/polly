@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	schemaVersion            = 3
+	schemaVersion            = 4
 	artifactChunkSize        = 1 << 20
 	journalSizeLimit         = 64 << 20
 	boundedVacuumPages       = 128
@@ -56,6 +56,7 @@ var (
 var (
 	ErrSessionInUse     = errors.New("session is in use")
 	ErrSessionNotFound  = errors.New("session not found")
+	ErrNoParent         = errors.New("session has no parent")
 	ErrSessionLeaseLost = errors.New("session lease lost")
 	ErrStoreClosed      = errors.New("session store is closed")
 	ErrArtifactCorrupt  = errors.New("artifact is corrupt")
@@ -106,6 +107,24 @@ type sessionSnapshot struct {
 	retention string
 	settings  []byte
 	nextSeq   int64
+	// parent is the current name of the session that spawned this one,
+	// invalid when there is none or it is gone.
+	parent sql.NullString
+}
+
+// scanSnapshot reads one session row by id, with its ttl_explicit flag.
+func scanSnapshot(ctx context.Context, conn interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id []byte) (sessionSnapshot, int, error) {
+	var snap sessionSnapshot
+	var ttlExplicit int
+	err := conn.QueryRowContext(ctx, `
+		SELECT s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.retention,s.settings_json,s.next_sequence,s.ttl_explicit,p.name
+		FROM sessions AS s LEFT JOIN sessions AS p ON p.id = s.parent_id
+		WHERE s.id = ?`, id).Scan(
+		&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.retention,
+		&snap.settings, &snap.nextSeq, &ttlExplicit, &snap.parent)
+	return snap, ttlExplicit, err
 }
 
 // OpenStore opens and validates a unified SQLite store. Disk mode never
@@ -460,6 +479,12 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 		}
 		version = 3
 	}
+	if version == 3 {
+		if err := applySchemaV4(ctx, conn); err != nil {
+			return err
+		}
+		version = 4
+	}
 	if version != schemaVersion {
 		return fmt.Errorf("no session schema migration from version %d", version)
 	}
@@ -584,6 +609,69 @@ func applySchemaV3(ctx context.Context, conn *sql.Conn) error {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("apply session schema v3: %w", err)
 		}
+	}
+	return nil
+}
+
+// applySchemaV4 links a session to the one that spawned it by id: a parent
+// renamed or deleted no longer leaves its children pointing at a name. The
+// link is filled from the parent name each row's settings carried until now,
+// where a session by that name exists. Re-running is harmless.
+func applySchemaV4(ctx context.Context, conn *sql.Conn) error {
+	var hasColumn int
+	if err := conn.QueryRowContext(ctx,
+		"SELECT count(*) FROM pragma_table_info('sessions') WHERE name = 'parent_id'").Scan(&hasColumn); err != nil {
+		return fmt.Errorf("apply session schema v4: %w", err)
+	}
+	if hasColumn == 0 {
+		if _, err := conn.ExecContext(ctx,
+			"ALTER TABLE sessions ADD COLUMN parent_id BLOB REFERENCES sessions(id) ON DELETE SET NULL"); err != nil {
+			return fmt.Errorf("apply session schema v4: %w", err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx,
+		"CREATE INDEX IF NOT EXISTS sessions_parent_idx ON sessions(parent_id)"); err != nil {
+		return fmt.Errorf("apply session schema v4: %w", err)
+	}
+	type link struct {
+		id     []byte
+		parent string
+	}
+	var links []link
+	rows, err := conn.QueryContext(ctx, "SELECT id, settings_json FROM sessions WHERE parent_id IS NULL")
+	if err != nil {
+		return fmt.Errorf("apply session schema v4: %w", err)
+	}
+	for rows.Next() {
+		var id, settings []byte
+		if err := rows.Scan(&id, &settings); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("apply session schema v4: %w", err)
+		}
+		var metadata Metadata
+		if err := json.Unmarshal(settings, &metadata); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("apply session schema v4: decode metadata: %w", err)
+		}
+		if metadata.Parent != "" {
+			links = append(links, link{id: id, parent: metadata.Parent})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("apply session schema v4: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("apply session schema v4: %w", err)
+	}
+	for _, l := range links {
+		if _, err := conn.ExecContext(ctx,
+			"UPDATE sessions SET parent_id = (SELECT id FROM sessions WHERE name = ?) WHERE id = ?", l.parent, l.id); err != nil {
+			return fmt.Errorf("apply session schema v4: %w", err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA user_version = 4"); err != nil {
+		return fmt.Errorf("apply session schema v4: %w", err)
 	}
 	return nil
 }
@@ -790,6 +878,7 @@ var schemaV1Tables = map[string]schemaTableSpec{
 			{"updated_ns", "INTEGER", 1, 0, ""}, {"ttl_ns", "INTEGER", 1, 0, "0"},
 			{"ttl_explicit", "INTEGER", 1, 0, "0"}, {"settings_json", "BLOB", 1, 0, ""},
 			{"next_sequence", "INTEGER", 1, 0, "0"}, {"has_turn", "INTEGER", 1, 0, "0"},
+			{"parent_id", "BLOB", 0, 0, ""}, // added by schema v4
 		},
 		requiredSQL: []string{
 			"check(length(id)=16)", "check(retentionin('named','auto'))", "check(ttl_ns>=0)",
@@ -867,6 +956,9 @@ func validateSchema(ctx context.Context, conn *sql.Conn) error {
 	if err := requireIndexColumns(ctx, conn, "session_reports_session_idx", []string{"session_id", "id"}); err != nil {
 		return err
 	}
+	if err := requireIndexColumns(ctx, conn, "sessions_parent_idx", []string{"parent_id"}); err != nil {
+		return err
+	}
 	if err := requireIndexColumns(ctx, conn, "sessions_updated_idx", []string{"updated_ns", "name"}); err != nil {
 		return err
 	}
@@ -880,6 +972,7 @@ func validateSchema(ctx context.Context, conn *sql.Conn) error {
 		"messages":          {"session_id>sessions.id:CASCADE": true},
 		"artifact_chunks":   {"digest>artifact_blobs.digest:CASCADE": true},
 		"session_artifacts": {"session_id>sessions.id:CASCADE": true, "digest>artifact_blobs.digest:CASCADE": true},
+		"sessions":          {"parent_id>sessions.id:SET NULL": true},
 		"session_leases":    {"session_id>sessions.id:CASCADE": true},
 		"session_reports":   {"session_id>sessions.id:CASCADE": true, "child_id>sessions.id:SET NULL": true},
 	}
@@ -1169,6 +1262,11 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 	if err := validateSessionName(name); err != nil {
 		return nil, fmt.Errorf("invalid session name %q: %w", name, err)
 	}
+	if options.Parent != "" {
+		if err := validateSessionName(options.Parent); err != nil {
+			return nil, fmt.Errorf("invalid parent session name %q: %w", options.Parent, err)
+		}
+	}
 	owner, err := randomBytes(16)
 	if err != nil {
 		return nil, fmt.Errorf("generate session lease owner: %w", err)
@@ -1294,14 +1392,25 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 			} else if options.Auto {
 				metadata.TTL = s.autoTTL
 			}
+			// The parent link is by id; the name in the settings is what
+			// the session remembers of a parent that is later deleted.
+			var parentID []byte
+			metadata.Parent = options.Parent
+			if options.Parent != "" {
+				if perr := conn.QueryRowContext(ctx, "SELECT id FROM sessions WHERE name = ?", options.Parent).Scan(&parentID); errors.Is(perr, sql.ErrNoRows) {
+					return fmt.Errorf("parent %q: %w", options.Parent, ErrSessionNotFound)
+				} else if perr != nil {
+					return perr
+				}
+			}
 			settings, err := json.Marshal(metadata)
 			if err != nil {
 				return fmt.Errorf("encode default session metadata: %w", err)
 			}
 			_, err = conn.ExecContext(ctx, `
 				INSERT INTO sessions
-				(id,name,retention,created_ns,updated_ns,ttl_ns,ttl_explicit,settings_json,next_sequence)
-				VALUES(?,?,?,?,?,?,?,?,0)`, storedID, name, retention, nowNS, nowNS, int64(metadata.TTL), ttlExplicit, settings)
+				(id,name,retention,created_ns,updated_ns,ttl_ns,ttl_explicit,settings_json,next_sequence,parent_id)
+				VALUES(?,?,?,?,?,?,?,?,0,?)`, storedID, name, retention, nowNS, nowNS, int64(metadata.TTL), ttlExplicit, settings, parentID)
 			if err != nil {
 				return err
 			}
@@ -1445,14 +1554,8 @@ func (s *SQLiteStore) PostReport(ctx context.Context, parent string, report Repo
 	if err := validateSessionName(parent); err != nil {
 		return fmt.Errorf("invalid session name %q: %w", parent, err)
 	}
-	switch report.Status {
-	case ReportFinished, ReportCanceled, ReportFailed:
-	default:
-		return fmt.Errorf("post report to %q: unknown status %q", parent, report.Status)
-	}
-	posted := report.Posted
-	if posted.IsZero() {
-		posted = time.Now()
+	if err := report.validate(); err != nil {
+		return fmt.Errorf("post report to %q: %w", parent, err)
 	}
 	err := s.withWrite(ctx, func(conn *sql.Conn) error {
 		var parentID []byte
@@ -1467,17 +1570,35 @@ func (s *SQLiteStore) PostReport(ctx context.Context, parent string, report Repo
 				return err
 			}
 		}
-		_, err := conn.ExecContext(ctx, `
-			INSERT INTO session_reports (session_id, child_id, child, status, body, error, input_tokens, output_tokens, posted_ns)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			parentID, childID, report.Child, string(report.Status), report.Text, report.Error,
-			max(report.InputTokens, 0), max(report.OutputTokens, 0), posted.UTC().UnixNano())
-		return err
+		return insertReport(ctx, conn, parentID, childID, report)
 	})
 	if err != nil {
 		return fmt.Errorf("post report to %q: %w", parent, err)
 	}
 	return nil
+}
+
+func (r Report) validate() error {
+	switch r.Status {
+	case ReportFinished, ReportCanceled, ReportFailed:
+		return nil
+	}
+	return fmt.Errorf("unknown report status %q", r.Status)
+}
+
+// insertReport files report for the session parentID, from the child named
+// in it (childID when that child is a session in this store).
+func insertReport(ctx context.Context, conn *sql.Conn, parentID, childID []byte, report Report) error {
+	posted := report.Posted
+	if posted.IsZero() {
+		posted = time.Now()
+	}
+	_, err := conn.ExecContext(ctx, `
+		INSERT INTO session_reports (session_id, child_id, child, status, body, error, input_tokens, output_tokens, posted_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		parentID, childID, report.Child, string(report.Status), report.Text, report.Error,
+		max(report.InputTokens, 0), max(report.OutputTokens, 0), posted.UTC().UnixNano())
+	return err
 }
 
 func (s *SQLiteStore) GetAllMetadata(ctx context.Context) (map[string]*Metadata, error) {
@@ -1498,12 +1619,13 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 	}
 	nowNS := time.Now().UTC().UnixNano()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT name,created_ns,updated_ns,ttl_ns,settings_json,next_sequence,
+		SELECT s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.settings_json,s.next_sequence,p.name,
 		       EXISTS(
 		         SELECT 1 FROM session_leases
-		         WHERE session_leases.session_id = sessions.id
+		         WHERE session_leases.session_id = s.id
 		           AND session_leases.expires_ns > ?)
-		FROM sessions ORDER BY updated_ns DESC,name`, nowNS)
+		FROM sessions AS s LEFT JOIN sessions AS p ON p.id = s.parent_id
+		ORDER BY s.updated_ns DESC,s.name`, nowNS)
 	if err != nil {
 		return nil, err
 	}
@@ -1512,7 +1634,7 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 	for rows.Next() {
 		var snap sessionSnapshot
 		var inUse bool
-		if err := rows.Scan(&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq, &inUse); err != nil {
+		if err := rows.Scan(&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq, &snap.parent, &inUse); err != nil {
 			return nil, err
 		}
 		metadata, err := metadataFromSnapshot(snap)
@@ -1674,6 +1796,11 @@ func metadataFromSnapshot(snap sessionSnapshot) (*Metadata, error) {
 	metadata.Created = time.Unix(0, snap.createdNS).UTC()
 	metadata.LastUsed = time.Unix(0, snap.updatedNS).UTC()
 	metadata.TTL = time.Duration(snap.ttlNS)
+	// The parent is the linked session's current name; a session whose
+	// parent is gone keeps the last name it knew.
+	if snap.parent.Valid {
+		metadata.Parent = snap.parent.String
+	}
 	return cloneMetadata(&metadata), nil
 }
 
@@ -1796,12 +1923,7 @@ func (s *sqliteSession) snapshot(ctx context.Context) (sessionSnapshot, error) {
 	if err := s.requireLease(ctx, s.store.db); err != nil {
 		return sessionSnapshot{}, err
 	}
-	var snap sessionSnapshot
-	err := s.store.db.QueryRowContext(ctx, `
-		SELECT name,created_ns,updated_ns,ttl_ns,retention,settings_json,next_sequence
-		FROM sessions WHERE id = ?`, s.id).Scan(
-		&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS,
-		&snap.retention, &snap.settings, &snap.nextSeq)
+	snap, _, err := scanSnapshot(ctx, s.store.db, s.id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return sessionSnapshot{}, s.loseLease()
 	}
@@ -1980,18 +2102,18 @@ func (s *sqliteSession) Reset(ctx context.Context, info *Metadata) error {
 		if err := s.requireLease(opCtx, conn); err != nil {
 			return err
 		}
-		var snap sessionSnapshot
-		var ttlExplicit int
-		if err := conn.QueryRowContext(opCtx, `
-			SELECT name,created_ns,updated_ns,ttl_ns,retention,settings_json,next_sequence,ttl_explicit
-			FROM sessions WHERE id = ?`, s.id).Scan(
-			&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.retention,
-			&snap.settings, &snap.nextSeq, &ttlExplicit); err != nil {
+		snap, ttlExplicit, err := scanSnapshot(opCtx, conn, s.id)
+		if err != nil {
+			return err
+		}
+		current, err := metadataFromSnapshot(snap)
+		if err != nil {
 			return err
 		}
 		metadata.Name = snap.name
 		metadata.Created = time.Unix(0, snap.createdNS).UTC()
 		metadata.LastUsed = now
+		metadata.Parent = current.Parent
 		if metadata.TTL < 0 {
 			return fmt.Errorf("session TTL cannot be negative")
 		}
@@ -2069,13 +2191,8 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 		if err := s.requireLease(opCtx, conn); err != nil {
 			return err
 		}
-		var snap sessionSnapshot
-		var ttlExplicit int
-		if err := conn.QueryRowContext(opCtx, `
-			SELECT name,created_ns,updated_ns,ttl_ns,retention,settings_json,next_sequence,ttl_explicit
-			FROM sessions WHERE id = ?`, s.id).Scan(
-			&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.retention,
-			&snap.settings, &snap.nextSeq, &ttlExplicit); err != nil {
+		snap, ttlExplicit, err := scanSnapshot(opCtx, conn, s.id)
+		if err != nil {
 			return err
 		}
 		if snap.name != newName {
@@ -2140,13 +2257,8 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 		if err := s.requireLease(opCtx, conn); err != nil {
 			return err
 		}
-		var snap sessionSnapshot
-		var ttlExplicit int
-		if err := conn.QueryRowContext(opCtx, `
-			SELECT name,created_ns,updated_ns,ttl_ns,retention,settings_json,next_sequence,ttl_explicit
-			FROM sessions WHERE id = ?`, s.id).Scan(
-			&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.retention,
-			&snap.settings, &snap.nextSeq, &ttlExplicit); err != nil {
+		snap, ttlExplicit, err := scanSnapshot(opCtx, conn, s.id)
+		if err != nil {
 			return err
 		}
 		current, err := metadataFromSnapshot(snap)
@@ -2155,8 +2267,10 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 		}
 		metadata.Name = snap.name
 		metadata.Created = time.Unix(0, snap.createdNS).UTC()
-		// LastUsed is canonical storage state, not a caller-controlled setting.
+		// LastUsed and Parent are canonical storage state, not
+		// caller-controlled settings.
 		metadata.LastUsed = current.LastUsed
+		metadata.Parent = current.Parent
 		if metadata.TTL < 0 {
 			return fmt.Errorf("session TTL cannot be negative")
 		}
@@ -2268,6 +2382,37 @@ func (s *sqliteSession) GetMessageCounts(ctx context.Context) (map[string]int, e
 		counts[string(message.Role)]++
 	}
 	return counts, nil
+}
+
+// Report posts report to the session that spawned this one, naming this
+// session as its child. ErrNoParent when none did, or it is gone.
+func (s *sqliteSession) Report(ctx context.Context, report Report) error {
+	if err := report.validate(); err != nil {
+		return err
+	}
+	opCtx, cleanup, err := s.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
+		if err := s.requireLease(opCtx, conn); err != nil {
+			return err
+		}
+		var parentID []byte
+		var name string
+		if err := conn.QueryRowContext(opCtx, "SELECT parent_id, name FROM sessions WHERE id = ?", s.id).Scan(&parentID, &name); errors.Is(err, sql.ErrNoRows) {
+			return s.loseLease()
+		} else if err != nil {
+			return err
+		}
+		if parentID == nil {
+			return fmt.Errorf("report from %q: %w", name, ErrNoParent)
+		}
+		report.Child = name
+		return insertReport(opCtx, conn, parentID, s.id, report)
+	})
+	return s.mapError(ctx, err)
 }
 
 // TakeReports removes and returns the reports addressed to this session, in
