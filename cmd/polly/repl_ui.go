@@ -163,6 +163,11 @@ type replModel struct {
 	status sessionStatus
 	quiet  bool
 
+	// hidden is set while this model's tab is off screen. Streamed text is
+	// then kept raw and rendered when the tab shows again, since markdown
+	// rendering per chunk only serves a visible transcript.
+	hidden bool
+
 	state       turnState
 	toolName    string
 	turnStarted time.Time
@@ -339,10 +344,20 @@ type managedREPL struct {
 	modalW      *modalParagraph
 	rootFlex    *widgets.Flex
 
-	quit       chan struct{}
-	suspend    chan struct{}
-	pending    chan managedTurnInput
-	turnCancel context.CancelFunc
+	quit    chan struct{}
+	suspend chan struct{}
+	pending chan pendingTurn
+	// tabEvents wakes the loop when a tab's turn settles, its lease ends, or
+	// a cancel grace expires; the loop then scans every tab (settleTabs).
+	tabEvents chan struct{}
+
+	// Leaving. quitting is set once every turn has been told to stop;
+	// quitDeadline then bounds how long the loop waits for them to settle
+	// before returning anyway. quitWarned records the idle Ctrl-C that
+	// reported turns running in other tabs, so the next one quits.
+	quitting     bool
+	quitDeadline <-chan time.Time
+	quitWarned   bool
 
 	// suspendProcess stops polly's foreground process group after tcell has
 	// restored the terminal. The shell resumes the group with SIGCONT on `fg`.
@@ -377,9 +392,10 @@ type managedREPL struct {
 	// start (opening sessions). Background outside Run.
 	runCtx context.Context
 
-	// Tabs (see repl_tabs.go). Every open session is a tab; r.model and
-	// r.state mirror the visible one. showTabRequest (-1 when none) and
-	// closeTabRequest are recorded by handlers and applied by the event loop.
+	// Tabs (see repl_tabs.go). Every open session is a tab with its own
+	// screen model and turn; r.model and r.state mirror the visible one.
+	// showTabRequest (-1 when none) and closeTabRequest are recorded by
+	// handlers and applied by the event loop.
 	tabs            []*replTab
 	showTabRequest  int
 	closeTabRequest bool
@@ -452,13 +468,17 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 	m.status = newSessionStatus(&config.Launch, contextName, toolCount, skillCount)
 	m.quiet = config.Quiet
 	return &managedREPL{
-		config:          config,
-		model:           m,
+		config: config,
+		model:  m,
+		// The screen starts on a tab with no session behind it; the first
+		// session to land (addTab) takes its place.
+		tabs:            []*replTab{{name: contextName, model: m}},
 		quit:            make(chan struct{}, 1),
 		suspend:         make(chan struct{}, 1),
-		pending:         make(chan managedTurnInput, 1),
+		pending:         make(chan pendingTurn, 1),
 		uiTasks:         make(chan func(), 8),
 		openDone:        make(chan openResult, 1),
+		tabEvents:       make(chan struct{}, 1),
 		showTabRequest:  -1,
 		runCtx:          context.Background(),
 		openImage:       openImageInViewer,
@@ -479,7 +499,7 @@ func supportsManagedREPL() bool {
 	return true
 }
 
-func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) error {
+func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	if err := ui.Init(); err != nil {
 		return err
 	}
@@ -554,34 +574,36 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
-	var turnDone chan error
-	var cancelDetach <-chan time.Time
-
 	for {
 		select {
 		case <-ctx.Done():
-			r.cancelTurn()
-			r.releaseApproval()
+			r.cancelTurns()
 			return context.Cause(ctx)
-		case <-r.sessionDone():
-			// A lost lease closes that tab when another can take the screen.
-			// Otherwise lease loss or store shutdown ends the run with its
-			// typed cause, as it did when the run context was parented on
-			// the session.
-			if r.dropLostSession() {
-				r.render()
-				continue
+		case <-r.tabEvents:
+			// A turn settled, a lease ended, or a cancel grace ran out on
+			// some tab. A lost lease that leaves nothing to show ends the
+			// run with its typed cause, as it did when the run context was
+			// parented on the session.
+			if err := r.settleTabs(ctx, runTurn); err != nil {
+				r.cancelTurns()
+				return err
 			}
-			r.cancelTurn()
-			r.releaseApproval()
-			return context.Cause(r.state.session.Context())
+			if r.quitSettled() {
+				return nil
+			}
+			r.applyTabRequests()
+			r.render()
+		case <-r.quitDeadline:
+			// The grace for running turns is up; they are cut off.
+			return nil
 		case res := <-r.openDone:
 			r.finishOpen(res)
 			r.render()
 		case <-r.quit:
-			r.cancelTurn()
-			r.releaseApproval()
-			return nil
+			if r.beginQuit() {
+				return nil
+			}
+			r.render()
 		case <-r.suspend:
 			if err := r.suspendUI(ui.DefaultBackend.Screen); err != nil {
 				r.model.mu.Lock()
@@ -604,43 +626,24 @@ func (r *managedREPL) Run(ctx context.Context, runTurn func(context.Context, str
 			if r.needsTick() {
 				r.render()
 			}
-		case <-cancelDetach:
-			cancelDetach = nil
-			if turnDone != nil && r.cancelPending() {
-				turnDone = r.detachCanceledTurn(ctx, runTurn)
-				r.applyTabRequests()
-				r.render()
-			}
-		case err := <-turnDone:
-			turnDone = nil
-			cancelDetach = nil
-			r.endTurn(err)
-			turnDone = r.startNextQueued(ctx, runTurn)
-			r.applyTabRequests()
-			r.render()
 		case ev := <-events:
 			if r.handleEvent(ev) {
-				r.cancelTurn()
-				r.releaseApproval()
-				return nil
+				if r.beginQuit() {
+					return nil
+				}
+				r.render()
+				continue
 			}
 			r.applyTabRequests()
-			if turn, ok := r.takePending(); ok {
-				turnDone = r.startManagedTurn(ctx, turn, runTurn)
-				cancelDetach = nil
-			}
-			if turnDone == nil {
-				turnDone = r.startNextQueued(ctx, runTurn)
-			}
-			if turnDone != nil && cancelDetach == nil && r.cancelPending() {
-				cancelDetach = time.After(turnCancelDetachAfter)
+			r.startPendingTurn(ctx, runTurn)
+			if tab := r.visibleTab(); tab.turnDone == nil {
+				r.startQueued(ctx, tab, runTurn)
 			}
 			if r.wantsRenderForEvent(ev) {
 				r.render()
 			}
-		case turn := <-r.pending:
-			turnDone = r.startManagedTurn(ctx, turn, runTurn)
-			cancelDetach = nil
+		case p := <-r.pending:
+			r.startManagedTurn(ctx, r.tabForModel(p.model), p.turn, runTurn)
 			r.render()
 		case task := <-r.uiTasks:
 			task()
@@ -698,90 +701,125 @@ func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
 	return !r.model.pasting
 }
 
-func (r *managedREPL) takePending() (managedTurnInput, bool) {
+// pendingTurn is a turn the composer accepted, waiting for the event loop
+// to start it on the tab whose model took it.
+type pendingTurn struct {
+	model *replModel
+	turn  managedTurnInput
+}
+
+func (r *managedREPL) takePendingTurn() (pendingTurn, bool) {
 	select {
 	case p := <-r.pending:
 		return p, true
 	default:
-		return managedTurnInput{}, false
+		return pendingTurn{}, false
 	}
 }
 
-func (r *managedREPL) startManagedTurn(ctx context.Context, turn managedTurnInput, runTurn func(context.Context, string, TurnUI) error) chan error {
+// startManagedTurn starts turn on tab: its goroutine reports into the tab's
+// own model and session, whichever tab is visible meanwhile, and its result
+// reaches the loop through tab.turnDone and a tab wake. Runs on the event
+// loop with no model lock held.
+func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn managedTurnInput, runTurn turnRunner) {
 	r.startupLogoVisible = false
-	r.model.mu.Lock()
-	r.model.turnID++
-	turnID := r.model.turnID
-	reuseUser := r.model.restoreDraftNext
-	r.model.restoreDraftNext = false
-	persistence := r.model.currentPersistence
+	m := tab.model
+	m.mu.Lock()
+	m.turnID++
+	turnID := m.turnID
+	reuseUser := m.restoreDraftNext
+	m.restoreDraftNext = false
+	persistence := m.currentPersistence
 	if persistence == nil {
 		persistence = newTurnPersistenceAck(false)
-		r.model.currentPersistence = persistence
+		m.currentPersistence = persistence
 	}
-	r.model.mu.Unlock()
+	m.mu.Unlock()
 
-	turnCtx, cancel := r.turnContext(ctx)
-	r.turnCancel = cancel
+	turnCtx, cancel := turnContext(ctx, tab.state)
+	tab.turnCancel = cancel
+	tab.cancelDetachAt = time.Time{}
 	done := make(chan error, 1)
-	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, state: r.state, turnID: turnID, reuseUser: reuseUser, turn: cloneManagedTurn(turn), persistence: persistence}
+	tab.turnDone = done
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, state: tab.state, turnID: turnID, reuseUser: reuseUser, turn: cloneManagedTurn(turn), persistence: persistence}
 	go func() {
 		done <- runTurn(turnCtx, turn.displayText, tui)
+		r.wakeTabs()
 	}()
-	return done
 }
 
-// startNextQueued drains inputs queued during the turn that just ended. It runs
-// queued commands inline (honoring a quit) and starts a turn for the first
-// queued prompt, returning that turn's done channel — or nil when the queue
-// empties without a prompt. Called from the main loop after endTurn, the safe
-// point where currentAssistant is already reset so activating a queued prompt
-// or a queued /clear can't corrupt the just-finished stream.
-func (r *managedREPL) startNextQueued(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) chan error {
+// startQueued drains the inputs queued on tab while its turn ran, now that it
+// has settled. Queued commands run inline against that tab, hidden or not
+// (honoring a quit), and the first queued prompt starts the tab's next turn.
+// Called from the event loop after settleTurn, the safe point where
+// currentAssistant is already reset so activating a queued prompt or a
+// queued /clear can't corrupt the just-finished stream. Nothing starts while
+// the REPL is leaving.
+func (r *managedREPL) startQueued(ctx context.Context, tab *replTab, runTurn turnRunner) {
+	if r.quitting {
+		return
+	}
+	m := tab.model
 	for {
-		r.model.mu.Lock()
-		if len(r.model.queue) == 0 {
-			r.model.mu.Unlock()
-			return nil
+		m.mu.Lock()
+		if len(m.queue) == 0 {
+			m.mu.Unlock()
+			return
 		}
-		item := r.model.queue[0]
-		r.model.queue = r.model.queue[1:]
+		item := m.queue[0]
+		m.queue = m.queue[1:]
 		text := item.text
-		r.model.activateQueuedInput(item)
+		m.activateQueuedInput(item)
 
 		if item.turn != nil {
 			turn := cloneManagedTurn(*item.turn)
-			r.model.beginManagedTurnState(turn)
-			r.model.mu.Unlock()
-			return r.startManagedTurn(ctx, turn, runTurn)
+			m.beginManagedTurnState(turn)
+			m.mu.Unlock()
+			r.startManagedTurn(ctx, tab, turn, runTurn)
+			return
 		}
 
 		// runCommand and its helpers expect the model lock held (as in
 		// handleEvent); requestQuit does not, so release before quitting.
-		handled, quit := r.runCommand(text)
+		handled, quit := r.runCommandOn(tab, text)
 		if !handled {
-			r.model.appendNoticeLine(defaultReplCommands.unknownCommandNotice(text))
+			m.appendNoticeLine(defaultReplCommands.unknownCommandNotice(text))
 		}
-		if r.model.busy {
-			turn, ok := r.takePending()
-			r.model.mu.Unlock()
-			if !ok {
-				return nil
-			}
-			return r.startManagedTurn(ctx, turn, runTurn)
+		if m.busy {
+			// The command submitted a turn; give it its goroutine.
+			m.mu.Unlock()
+			r.startPendingTurn(ctx, runTurn)
+			return
 		}
-		r.model.mu.Unlock()
+		m.mu.Unlock()
 		if quit {
 			r.requestQuit()
-			return nil
+			return
 		}
 	}
 }
 
-func (r *managedREPL) endTurn(err error) {
-	r.model.mu.Lock()
-	defer r.model.mu.Unlock()
-	m := r.model
+// runCommandOn runs a slash command against tab. Command handlers address
+// the visible tab, so for a hidden tab r.model and r.state name it for the
+// duration; nothing else reads them meanwhile, since this runs on the event
+// loop. Caller must hold tab.model.mu.
+func (r *managedREPL) runCommandOn(tab *replTab, line string) (handled, quit bool) {
+	if tab.model == r.model {
+		return r.runCommand(line)
+	}
+	model, state := r.model, r.state
+	r.model, r.state = tab.model, tab.state
+	defer func() { r.model, r.state = model, state }()
+	return r.runCommand(line)
+}
+
+// settleTurn lands a returned turn on its tab: the outcome is labeled, the
+// tab's screen state returns to idle, and its turn fields clear. Runs on the
+// event loop with no model lock held.
+func (r *managedREPL) settleTurn(tab *replTab, err error) {
+	m := tab.model
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if !m.turnStarted.IsZero() {
 		m.lastElapsed = time.Since(m.turnStarted)
 	}
@@ -867,29 +905,40 @@ func (r *managedREPL) endTurn(err error) {
 	// the idle prompt so a provider goroutine that emits late cannot reopen the
 	// assistant block or move the status back to streaming.
 	m.turnID++
-	r.turnCancel = nil
+	tab.turnDone = nil
+	tab.cancelDetachAt = time.Time{}
+	r.cancelTurn(tab)
 }
 
-func (r *managedREPL) cancelTurn() {
-	if r.turnCancel != nil {
-		r.turnCancel()
-		r.turnCancel = nil
+// cancelTurn cancels tab's turn context, if a turn is running.
+func (r *managedREPL) cancelTurn(tab *replTab) {
+	if tab.turnCancel != nil {
+		tab.turnCancel()
+		tab.turnCancel = nil
 	}
 }
 
-func (r *managedREPL) cancelPending() bool {
-	r.model.mu.Lock()
-	defer r.model.mu.Unlock()
-	return r.model.busy && r.model.canceling
+// cancelPending reports whether tab's turn was canceled and has yet to settle.
+func (r *managedREPL) cancelPending(tab *replTab) bool {
+	tab.model.mu.Lock()
+	defer tab.model.mu.Unlock()
+	return tab.model.busy && tab.model.canceling
 }
 
-func (r *managedREPL) abandonCanceledTurn() {
-	r.model.mu.Lock()
-	defer r.model.mu.Unlock()
-	m := r.model
+// abandonCanceledTurn gives up on tab's canceled turn once the grace is
+// over: the tab returns to idle and the turn's late result is dropped when
+// its goroutine finally returns. Runs on the event loop with no model lock
+// held.
+func (r *managedREPL) abandonCanceledTurn(tab *replTab) {
+	m := tab.model
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if !m.busy || !m.canceling {
 		return
 	}
+	tab.turnDone = nil
+	tab.cancelDetachAt = time.Time{}
+	r.cancelTurn(tab)
 	m.turnID++
 	if !m.turnStarted.IsZero() {
 		m.lastElapsed = time.Since(m.turnStarted)
@@ -931,19 +980,14 @@ func (r *managedREPL) abandonCanceledTurn() {
 	m.appendNoticeLine("^C cancellation timed out; detached turn")
 }
 
-func (r *managedREPL) detachCanceledTurn(ctx context.Context, runTurn func(context.Context, string, TurnUI) error) chan error {
-	r.abandonCanceledTurn()
-	return r.startNextQueued(ctx, runTurn)
-}
-
-// turnContext parents a turn on the live session's lease context, so losing
-// the lease cancels the turn with its typed cause, and bridges the run
-// context in for signals. Cancel reports context.Canceled, the user-cancel
-// cause the turn UI labels as canceled.
-func (r *managedREPL) turnContext(ctx context.Context) (context.Context, context.CancelFunc) {
+// turnContext parents a turn on its session's lease context, so losing the
+// lease cancels the turn with its typed cause, and bridges the run context
+// in for signals. Cancel reports context.Canceled, the user-cancel cause the
+// turn UI labels as canceled.
+func turnContext(ctx context.Context, state *conversationState) (context.Context, context.CancelFunc) {
 	parent := ctx
-	if r.state != nil && r.state.session != nil {
-		parent = r.state.session.Context()
+	if state != nil && state.session != nil {
+		parent = state.session.Context()
 	}
 	turnCtx, cancel := context.WithCancelCause(parent)
 	stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
@@ -953,20 +997,12 @@ func (r *managedREPL) turnContext(ctx context.Context) (context.Context, context
 	}
 }
 
-// sessionDone is the live session's lease context, or nil (never ready) when
-// the REPL has no session, as in unit tests.
-func (r *managedREPL) sessionDone() <-chan struct{} {
-	if r.state == nil || r.state.session == nil {
-		return nil
-	}
-	return r.state.session.Context().Done()
-}
-
 // handleInterrupt processes Ctrl-C. While a turn is in flight the first press
 // cancels it — denying any pending approval so the turn goroutine isn't parked
 // on the reply channel — and keeps the REPL open. A second press while the turn
-// is still winding down quits. At idle, Ctrl-C first clears a draft; only an
-// empty prompt exits. Returns true to quit. Caller must hold m.mu.
+// is still winding down quits. At idle, Ctrl-C first clears a draft; an empty
+// prompt exits, after one warning when turns run in other tabs
+// (requestIdleQuitLocked). Returns true to quit. Caller must hold m.mu.
 func (r *managedREPL) handleInterrupt() bool {
 	m := r.model
 	if !m.busy {
@@ -974,8 +1010,7 @@ func (r *managedREPL) handleInterrupt() bool {
 			m.ed.clear()
 			return false
 		}
-		r.requestQuit()
-		return true
+		return r.requestIdleQuitLocked()
 	}
 	if m.canceling {
 		r.requestQuit()
@@ -997,7 +1032,9 @@ func (r *managedREPL) cancelBusyTurn() {
 	// the turn actually settles as canceled. Completion and cancel can race; a
 	// successful result must never retain a false "not saved" label.
 	m.finishAssistantBlock("")
-	r.cancelTurn()
+	tab := r.visibleTab()
+	r.cancelTurn(tab)
+	r.armCancelDetach(tab)
 	m.denyApprovalLocked()
 }
 
@@ -1071,6 +1108,12 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	case focusLostID:
 		m.focusKnown, m.focused = true, false
 		return false
+	}
+
+	// The warning that turns run in other tabs holds for the very next
+	// quit key only; any other key withdraws it.
+	if e.Type == ui.KeyboardEvent && e.ID != "<C-c>" && e.ID != "<C-d>" {
+		r.quitWarned = false
 	}
 
 	// Selection and credential modals own all remaining input. In particular,
@@ -1217,8 +1260,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		}
 	case "<C-d>":
 		if m.ed.empty() && !m.busy {
-			r.requestQuit()
-			return true
+			return r.requestIdleQuitLocked()
 		}
 		m.ed.deleteForward()
 	case "<Enter>":

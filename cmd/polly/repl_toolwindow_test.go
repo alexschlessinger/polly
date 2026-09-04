@@ -462,7 +462,7 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 	tui.ShowThinking("pondering")
 	m.canceling = true
 
-	r.abandonCanceledTurn()
+	r.abandonCanceledTurn(r.visibleTab())
 	if !record.complete || record.expanded {
 		t.Fatalf("detached disclosure = %#v, want completed and collapsed", record)
 	}

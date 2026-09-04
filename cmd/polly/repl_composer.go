@@ -616,12 +616,6 @@ func (r *managedREPL) captureClipboardToComposer() {
 	}()
 }
 
-func (r *managedREPL) releaseApproval() {
-	r.model.mu.Lock()
-	defer r.model.mu.Unlock()
-	r.model.denyApprovalLocked()
-}
-
 func (m *replModel) denyApprovalLocked() {
 	if m.approval == nil {
 		return
@@ -662,6 +656,10 @@ func (r *managedREPL) submitComposerLocked() bool {
 	m := r.model
 	trimmed := strings.TrimSpace(m.ed.text())
 	if trimmed == "" {
+		return false
+	}
+	if r.quitting {
+		m.appendNoticeLine("leaving; input not sent")
 		return false
 	}
 	if m.clipboardCapture {
@@ -723,7 +721,7 @@ func (r *managedREPL) submitComposerTurnLocked(trimmed string) {
 		}
 	}
 	select {
-	case r.pending <- turn:
+	case r.pending <- pendingTurn{model: m, turn: turn}:
 		m.ed.clear()
 		r.recordAcceptedInput(trimmed)
 		m.currentPersistence = restoredPersistence

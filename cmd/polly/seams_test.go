@@ -83,8 +83,27 @@ func (m *replModel) inputDisplay() string {
 	return text
 }
 
-func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn func(context.Context, string, TurnUI) error) chan error {
-	return r.startManagedTurn(ctx, textManagedTurn(prompt), runTurn)
+// The turn-lifecycle seams address the visible tab, the only one a
+// screen-level test drives; the loop itself works per tab.
+func (r *managedREPL) startTurn(ctx context.Context, prompt string, runTurn turnRunner) chan error {
+	tab := r.visibleTab()
+	r.startManagedTurn(ctx, tab, textManagedTurn(prompt), runTurn)
+	return tab.turnDone
+}
+
+func (r *managedREPL) endTurn(err error) {
+	r.settleTurn(r.visibleTab(), err)
+}
+
+func (r *managedREPL) startNextQueued(ctx context.Context, runTurn turnRunner) chan error {
+	tab := r.visibleTab()
+	r.startQueued(ctx, tab, runTurn)
+	return tab.turnDone
+}
+
+func (r *managedREPL) takePending() (managedTurnInput, bool) {
+	p, ok := r.takePendingTurn()
+	return p.turn, ok
 }
 
 // transcriptTexts returns the transcript entries' text, for the tests that
