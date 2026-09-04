@@ -216,3 +216,59 @@ func TestAgentRunnerRunsAChildOverTheParentsTools(t *testing.T) {
 		t.Fatal("the child lost the base system prompt")
 	}
 }
+
+type probeKey struct{}
+
+func TestAgentRunnerCallbacksObserveEachChild(t *testing.T) {
+	parent := tools.NewToolRegistry([]tools.Tool{
+		&tools.Func{Name: "probe", Desc: "probe", Run: func(ctx context.Context, _ tools.Args) (string, error) {
+			tag, _ := ctx.Value(probeKey{}).(string)
+			return "seen by " + tag, nil
+		}},
+	})
+	fake := &sequentialLLM{responses: []messages.ChatMessage{toolCall("probe", `{}`), reply("all done")}}
+	var labels, streamed, started []string
+	var results []string
+	run := AgentRunner(fake, parent, llm.CompletionRequest{Model: "test/model"}, llm.AgentConfig{},
+		WithCallbacks(func(req Request) *llm.AgentCallbacks {
+			labels = append(labels, req.Label)
+			if req.Label == "quiet" {
+				return nil
+			}
+			return &llm.AgentCallbacks{
+				OnContent: func(text string) { streamed = append(streamed, text) },
+				BeforeToolExecute: func(ctx context.Context, _ messages.ChatMessageToolCall, _ map[string]any) context.Context {
+					return context.WithValue(ctx, probeKey{}, req.Label)
+				},
+				OnToolStart: func(calls []messages.ChatMessageToolCall) {
+					for _, call := range calls {
+						started = append(started, call.Name)
+					}
+				},
+				OnToolEnd: func(_ messages.ChatMessageToolCall, result string, _ time.Duration, _ error) {
+					results = append(results, result)
+				},
+			}
+		}))
+
+	res, err := run(context.Background(), Request{Task: "look", Label: "scout"})
+	if err != nil || res.Text != "all done" {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+	if strings.Join(started, ",") != "probe" || strings.Join(results, ",") != "seen by scout" {
+		t.Fatalf("tool callbacks saw start %v, results %v; want the probe run under the child's label", started, results)
+	}
+	if strings.Join(streamed, "") != "all done" {
+		t.Fatalf("streamed text = %q", streamed)
+	}
+
+	// A nil return from the factory runs that child unobserved.
+	fake.responses = []messages.ChatMessage{reply("quietly")}
+	fake.calls = 0
+	if res, err := run(context.Background(), Request{Task: "hush", Label: "quiet"}); err != nil || res.Text != "quietly" {
+		t.Fatalf("unobserved child = %+v, %v", res, err)
+	}
+	if strings.Join(labels, ",") != "scout,quiet" {
+		t.Fatalf("factory saw requests %v", labels)
+	}
+}

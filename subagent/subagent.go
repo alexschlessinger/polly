@@ -215,12 +215,34 @@ func ChildRegistry(parent *tools.ToolRegistry, allow []string) *tools.ToolRegist
 // parent's tools.
 var ErrNoMatchingTools = errors.New("no tools match the requested list")
 
+// RunnerOption configures AgentRunner.
+type RunnerOption func(*agentRunner)
+
+type agentRunner struct {
+	callbacks func(Request) *llm.AgentCallbacks
+}
+
+// WithCallbacks gives each child the callbacks the factory returns for its
+// request: a host can stream a child's text, watch and approve its tool
+// calls, or inject the context values its tools need, and the request lets
+// it name the child by its label. A nil return runs that child unobserved.
+func WithCallbacks(factory func(Request) *llm.AgentCallbacks) RunnerOption {
+	return func(r *agentRunner) {
+		r.callbacks = factory
+	}
+}
+
 // AgentRunner runs each child as an in-memory llm.Agent: the brief as the
 // only user message after base's messages (a system prompt, typically),
 // base's model and sampling settings unless the brief overrides the model,
 // and ChildRegistry(parent, req.Tools) as its tools. Children run without a
-// session, so Result.Session is empty.
-func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.CompletionRequest, config llm.AgentConfig) Runner {
+// session, so Result.Session is empty. Without WithCallbacks a child runs
+// unobserved, every tool call approved.
+func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.CompletionRequest, config llm.AgentConfig, opts ...RunnerOption) Runner {
+	var runner agentRunner
+	for _, opt := range opts {
+		opt(&runner)
+	}
 	return func(ctx context.Context, req Request) (Result, error) {
 		registry := ChildRegistry(parent, req.Tools)
 		defer registry.Close()
@@ -239,7 +261,13 @@ func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.Completion
 		}
 		childReq.Messages = append(append([]messages.ChatMessage(nil), base.Messages...), messages.User(req.Task)...)
 		childReq.Tools = registry.All()
-		resp, err := agent.Run(ctx, &childReq, &llm.AgentCallbacks{})
+		callbacks := &llm.AgentCallbacks{}
+		if runner.callbacks != nil {
+			if cb := runner.callbacks(req); cb != nil {
+				callbacks = cb
+			}
+		}
+		resp, err := agent.Run(ctx, &childReq, callbacks)
 		if err != nil {
 			return Result{}, err
 		}
