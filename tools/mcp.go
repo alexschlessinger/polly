@@ -452,15 +452,19 @@ func requestOrigin(u *url.URL) string {
 // streams, which a whole-request http.Client.Timeout would sever once it
 // elapsed on a perfectly healthy session.
 func mcpHTTPClient(endpoint string, headers map[string]string, timeout time.Duration) *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = timeout
+	base := http.DefaultTransport
+	if transport, ok := base.(*http.Transport); ok {
+		transport = transport.Clone()
+		transport.ResponseHeaderTimeout = timeout
+		base = transport
+	}
 	origin := ""
 	if u, err := url.Parse(endpoint); err == nil {
 		origin = requestOrigin(u)
 	}
 	return &http.Client{
 		Transport: &headerRoundTripper{
-			base:    transport,
+			base:    base,
 			headers: headers,
 			origin:  origin,
 		},
