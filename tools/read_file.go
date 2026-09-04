@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/schema"
-	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // binarySniffBytes bounds the probe used to distinguish text from binary
@@ -61,25 +60,13 @@ func (t *readFileTool) Execute(ctx context.Context, raw map[string]any) (string,
 	if err != nil {
 		return "", err
 	}
-	sandboxCfg, sandboxActive, err := t.registry.SandboxReadPolicy()
+	routes, resolved := localRoutes(abs)
+	if err := checkReadPolicy(t.registry, routes...); err != nil {
+		return "", err
+	}
+	f, info, err := openLocalRegular(resolved, os.O_RDONLY, 0)
 	if err != nil {
-		return "", fmt.Errorf("resolve sandbox policy: %w", err)
-	}
-	if sandboxActive {
-		if err := sandbox.ReadAllowed(sandboxCfg, abs); err != nil {
-			return "", err
-		}
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", abs, err)
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("%s is a directory, not a file", abs)
-	}
-	f, err := os.Open(abs)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", abs, err)
+		return "", describeOpenError("read", abs, err)
 	}
 	defer f.Close()
 

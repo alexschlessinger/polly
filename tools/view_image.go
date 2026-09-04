@@ -6,12 +6,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/schema"
-	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // viewImageTool lets the model attach an image it discovered itself — a
@@ -67,7 +67,7 @@ func (t *viewImageTool) ExecuteOutput(ctx context.Context, raw map[string]any) (
 		}
 		data, name, err = fetchImageURL(ctx, source, u)
 	} else {
-		data, name, err = readImageFile(source, sandboxCfg, sandboxActive)
+		data, name, err = readImageFile(t.registry, source)
 	}
 	if err != nil {
 		return ToolOutput{}, err
@@ -83,17 +83,21 @@ func (t *viewImageTool) ExecuteOutput(ctx context.Context, raw map[string]any) (
 	}, nil
 }
 
-func readImageFile(path string, sandboxCfg sandbox.Config, sandboxActive bool) ([]byte, string, error) {
+func readImageFile(registry *ToolRegistry, path string) ([]byte, string, error) {
 	abs, err := resolveLocalPath(path)
 	if err != nil {
 		return nil, "", err
 	}
-	if sandboxActive {
-		if err := sandbox.ReadAllowed(sandboxCfg, abs); err != nil {
-			return nil, "", err
-		}
+	routes, resolved := localRoutes(abs)
+	if err := checkReadPolicy(registry, routes...); err != nil {
+		return nil, "", err
 	}
-	data, err := images.ReadBoundedFile(abs, images.MaxSourceBytes)
+	f, _, err := openLocalRegular(resolved, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, "", describeOpenError("read", abs, err)
+	}
+	defer f.Close()
+	data, err := images.ReadBoundedFrom(f, images.MaxSourceBytes)
 	if err != nil {
 		return nil, "", fmt.Errorf("read %s: %w", abs, err)
 	}
