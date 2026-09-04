@@ -118,7 +118,7 @@ func (o OpenAIClient) handleStreamingChatCompletion(ctx context.Context, params 
 		}
 	}
 
-	streamCore.Complete()
+	streamCore.CompleteStream()
 	return nil
 }
 
@@ -211,7 +211,7 @@ func (o OpenAIClient) handleStreamingResponse(ctx context.Context, params *opena
 		streamCore.EmitReasoning(rawReasoningFallback.String())
 	}
 
-	streamCore.Complete()
+	streamCore.CompleteStream()
 	return nil
 }
 

@@ -266,7 +266,7 @@ func (a *AnthropicClient) processStream(ctx context.Context, params *anthropic.M
 	}
 
 	// Send final message with accumulated state
-	streamCore.Complete()
+	streamCore.CompleteStream()
 }
 
 // processNonStreaming handles non-streaming API requests

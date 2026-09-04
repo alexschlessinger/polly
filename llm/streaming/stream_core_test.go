@@ -94,3 +94,36 @@ func TestHandleStructuredOutput_EmptyToolCalls(t *testing.T) {
 		t.Fatal("expected HandleStructuredOutput to return false with no tool calls")
 	}
 }
+
+func TestCompleteStreamRefusesStreamWithoutStopReason(t *testing.T) {
+	ch := make(chan messages.ChatMessage, 4)
+	core := NewStreamingCore(context.Background(), ch, nil)
+	core.state.AppendContent("partial")
+	core.CompleteStream()
+	close(ch)
+	var got []messages.ChatMessage
+	for msg := range ch {
+		got = append(got, msg)
+	}
+	if len(got) != 1 || !got[0].IsError() {
+		t.Fatalf("messages = %+v, want one error", got)
+	}
+	if got[0].GetError().Error() != ErrStreamEndedEarly.Error() {
+		t.Fatalf("error = %v, want ErrStreamEndedEarly", got[0].GetError())
+	}
+}
+
+func TestCompleteStreamCompletesWithStopReason(t *testing.T) {
+	ch := make(chan messages.ChatMessage, 4)
+	core := NewStreamingCore(context.Background(), ch, nil)
+	core.SetStopReason(messages.StopReasonEndTurn)
+	core.CompleteStream()
+	close(ch)
+	var got []messages.ChatMessage
+	for msg := range ch {
+		got = append(got, msg)
+	}
+	if len(got) != 1 || got[0].IsError() || got[0].StopReason != messages.StopReasonEndTurn {
+		t.Fatalf("messages = %+v, want one completion", got)
+	}
+}

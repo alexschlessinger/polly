@@ -173,7 +173,7 @@ func (g *GeminiClient) handleStreamingCompletion(ctx context.Context, req *Compl
 		emitGeminiParts(streamCore, resp)
 	}
 
-	streamCore.Complete()
+	streamCore.CompleteStream()
 }
 
 // emitGeminiParts routes a response's text parts to the stream: parts flagged

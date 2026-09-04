@@ -196,7 +196,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		}
 
 		// Send the final message with accumulated state
-		streamCore.Complete()
+		streamCore.CompleteStream()
 	})
 }
 
