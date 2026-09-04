@@ -1724,30 +1724,36 @@ func setupSignalHandling(ctx context.Context) (context.Context, context.CancelFu
 	}
 }
 
-// outputStructured formats and outputs structured response
+// outputStructured validates and prints a structured response. Only output
+// that parses as JSON and satisfies the schema reaches stdout; anything else
+// is an error, with the raw reply on stderr for inspection, so a pipeline
+// reading --schema output never mistakes a malformed or off-schema reply for
+// success.
 func outputStructured(content string, schema *llm.Schema) error {
+	return writeStructured(os.Stdout, os.Stderr, content, schema)
+}
+
+func writeStructured(stdout, stderr io.Writer, content string, schema *llm.Schema) error {
 	// Empty content means no structured output was produced — e.g. the model
 	// emitted a tool call that was denied and the turn short-circuited. Report
 	// it instead of printing a silent blank line that looks like success.
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("no structured output produced")
 	}
-	// If content is already JSON, pretty-print it
 	var data any
-	if err := json.Unmarshal([]byte(content), &data); err == nil {
-		// Validate against schema if provided
-		if schema != nil {
-			if err := validateJSONAgainstSchema(data, schema); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: Output doesn't match schema: %v\n", err)
-			}
-		}
-
-		jsonBytes, _ := json.MarshalIndent(data, "", "  ")
-		fmt.Println(string(jsonBytes))
-	} else {
-		// Fallback to raw output if not valid JSON
-		fmt.Println(content)
+	if err := json.Unmarshal([]byte(content), &data); err != nil {
+		fmt.Fprintln(stderr, content)
+		return fmt.Errorf("structured output is not valid JSON: %w", err)
 	}
+	if err := validateJSONAgainstSchema(content, schema); err != nil {
+		fmt.Fprintln(stderr, content)
+		return fmt.Errorf("structured output does not match the schema: %w", err)
+	}
+	jsonBytes, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format structured output: %w", err)
+	}
+	fmt.Fprintln(stdout, string(jsonBytes))
 	return nil
 }
 
