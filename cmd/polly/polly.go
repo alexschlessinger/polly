@@ -1624,17 +1624,22 @@ func cleanupAndExit(code int) {
 	os.Exit(code)
 }
 
-// readFromStdin reads all lines from stdin and joins them with newlines
+// readFromStdin reads all of stdin as one prompt: CRLF line endings are
+// normalized and the trailing newline dropped. The whole input is read rather
+// than scanned line by line, so a single long line — minified JSON, a source
+// map, a document without breaks — is not rejected at bufio.Scanner's default
+// 64 KiB line limit.
 func readFromStdin() (string, error) {
-	scanner := bufio.NewScanner(os.Stdin)
-	var lines []string
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
+	return readAllInput(os.Stdin)
+}
+
+func readAllInput(r io.Reader) (string, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
 		return "", fmt.Errorf("error reading stdin: %w", err)
 	}
-	return strings.Join(lines, "\n"), nil
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	return strings.TrimSuffix(text, "\n"), nil
 }
 
 // hasStdinData checks if stdin has data available

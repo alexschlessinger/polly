@@ -113,6 +113,9 @@ func collectEmbedInput(cmd *cli.Command) ([]string, error) {
 	}
 	if hasStdinData() {
 		scanner := bufio.NewScanner(os.Stdin)
+		// One input per line, but a line can be a whole document; the
+		// default 64 KiB token limit would fail ordinary long inputs.
+		scanner.Buffer(make([]byte, 0, 64*1024), maxEmbedLineBytes)
 		for scanner.Scan() {
 			if line := strings.TrimSpace(scanner.Text()); line != "" {
 				inputs = append(inputs, line)
@@ -124,6 +127,9 @@ func collectEmbedInput(cmd *cli.Command) ([]string, error) {
 	}
 	return inputs, nil
 }
+
+// maxEmbedLineBytes bounds one line of piped embed input.
+const maxEmbedLineBytes = 64 << 20
 
 type embedOutput struct {
 	Model       string      `json:"model"`
