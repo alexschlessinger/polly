@@ -208,22 +208,22 @@ func (r *managedREPL) setupWidgets() {
 	noBorder(&r.transcriptW.Block)
 	r.transcriptW.TextStyle = ui.NewStyle(ui.ColorClear)
 
-	r.dividerW = widgets.NewParagraph()
+	r.dividerW = newLiteralParagraph()
 	noBorder(&r.dividerW.Block)
 	r.dividerW.WrapText = false
 	r.dividerW.TextStyle = ui.NewStyle(ui.ColorClear)
 
-	r.inputW = widgets.NewParagraph()
+	r.inputW = newLiteralParagraph()
 	noBorder(&r.inputW.Block)
 	r.inputW.WrapText = false
 	r.inputW.TextStyle = ui.NewStyle(ui.ColorClear)
 
-	r.turnDockW = widgets.NewParagraph()
+	r.turnDockW = newLiteralParagraph()
 	noBorder(&r.turnDockW.Block)
 	r.turnDockW.WrapText = false
 	r.turnDockW.TextStyle = ui.NewStyle(ui.ColorGrey)
 
-	r.statusW = widgets.NewParagraph()
+	r.statusW = newLiteralParagraph()
 	noBorder(&r.statusW.Block)
 	r.statusW.WrapText = false
 	r.statusW.TextStyle = ui.NewStyle(ui.ColorGrey)
@@ -313,7 +313,7 @@ func (r *managedREPL) render() {
 	ticker := r.model.activityTicker(len(transcriptRows), topRow, l.transcriptHeight)
 	var overlay [][]ui.Cell
 	if ticker != "" {
-		overlay = append(overlay, ui.ParseStyles(ticker, ui.NewStyle(ui.ColorClear)))
+		overlay = append(overlay, parseStyledCells(ticker, ui.NewStyle(ui.ColorClear)))
 	}
 	viewport := l.transcriptViewport(len(transcriptRows), topRow, pinTranscriptBottom, len(overlay))
 	imagePlacements := r.model.visibleImagePlacements(viewport)

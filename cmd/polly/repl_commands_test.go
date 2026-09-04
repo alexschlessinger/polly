@@ -188,7 +188,7 @@ func TestToolsListMarksSandboxed(t *testing.T) {
 	if handled, quit := r.runCommand("/tools list"); !handled || quit {
 		t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
 	}
-	got := strings.Join(transcriptTexts(r.model), "\n")
+	got := plainStyledText(strings.Join(transcriptTexts(r.model), "\n"))
 	if !strings.Contains(got, "bash [sandboxed: net off, temp writes, env filtered]") {
 		t.Fatalf("/tools list missing sandbox details for bash: %q", got)
 	}
@@ -269,7 +269,7 @@ func TestToolsSandboxBadges(t *testing.T) {
 			if handled, quit := r.runCommand("/tools list"); !handled || quit {
 				t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
 			}
-			if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, tt.want) {
+			if got := plainStyledText(strings.Join(transcriptTexts(r.model), "\n")); !strings.Contains(got, tt.want) {
 				t.Fatalf("/tools list missing %q in %q", tt.want, got)
 			}
 		})
@@ -413,7 +413,7 @@ fi
 	if handled, quit := r.runCommand("/tools list"); !handled || quit {
 		t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
 	}
-	got := strings.Join(transcriptTexts(r.model), "\n")
+	got := plainStyledText(strings.Join(transcriptTexts(r.model), "\n"))
 	if !strings.Contains(got, "unsandboxed__unsandboxed_tool [not sandboxed: opted out]") {
 		t.Fatalf("/tools list missing opt-out badge: %q", got)
 	}
@@ -424,7 +424,7 @@ fi
 	if handled, quit := r.runCommand("/tools list"); !handled || quit {
 		t.Fatalf("/tools list handled=%v quit=%v", handled, quit)
 	}
-	got = strings.Join(transcriptTexts(r.model), "\n")
+	got = plainStyledText(strings.Join(transcriptTexts(r.model), "\n"))
 	if !strings.Contains(got, "bash [sandboxed]") || strings.Contains(got, "bash [sandboxed:") {
 		t.Fatalf("/tools list should fall back to simple sandbox badge without config: %q", got)
 	}

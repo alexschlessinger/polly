@@ -253,6 +253,7 @@ func (p *modalParagraph) Draw(buf *ui.Buffer) {
 		}
 	}
 	p.Paragraph.Draw(buf)
+	restoreStyledLiterals(buf, p.Inner)
 }
 
 var modelPresets = map[string][]string{

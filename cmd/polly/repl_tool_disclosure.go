@@ -374,7 +374,7 @@ func (m *replModel) settleActiveTools(reason string) {
 // literal text. Tool rows always flow through parseStyledCells, which restores
 // these temporary bracket runes after assigning the intended style.
 func styledToolText(text string) string {
-	return styledCodeLiteral(stripTranscriptImageMarkers(text), "muted", "")
+	return styled(stripTranscriptImageMarkers(text), "muted", "")
 }
 
 func toolOKLine(label, duration, meta string) string {

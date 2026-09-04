@@ -481,7 +481,7 @@ func highlightCodeLines(code, lang string) []string {
 				cur.Reset()
 			}
 			if part != "" {
-				cur.WriteString(styledCodeLiteral(part, fg, mod))
+				cur.WriteString(styled(part, fg, mod))
 			}
 		}
 	}
@@ -493,7 +493,7 @@ func styledLines(s, fg, mod string) []string {
 	raw := strings.Split(s, "\n")
 	out := make([]string, len(raw))
 	for i, l := range raw {
-		out[i] = styledCodeLiteral(l, fg, mod)
+		out[i] = styled(l, fg, mod)
 	}
 	return out
 }

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"image"
 	"strings"
 
 	ui "github.com/metaspartan/gotui/v5"
+	"github.com/metaspartan/gotui/v5/widgets"
 )
 
 // Inline style markup: the gotui color roles and the [text](style) helpers.
@@ -23,14 +25,28 @@ func init() {
 	ui.StyleParserColorMap["code"] = ui.ColorWhite    // fenced code block contents
 }
 
-// styleEscape neutralizes the only sequence gotui's ParseStyles treats as
-// style markup: a "[...](...)" run. gotui has no backslash escape — balanced
-// brackets already render literally via its nesting counter — so we just break
-// a "](" adjacency (e.g. a markdown link in model output) with a zero-width
-// space, leaving every other character untouched. Adding backslashes would be
-// wrong: gotui renders them verbatim.
+// gotui's ParseStyles has no escape: it enters styled-text mode on any '[',
+// and leaves only once brackets balance and a '(' follows. A balanced pair
+// renders literally, but one stray '[' swallows every later rune of the
+// entry and drops the last one. So text bound for the parser never carries
+// real brackets: styleEscape swaps them for two Unicode noncharacters, which
+// never occur in text and are width 1 in every locale (the private-use
+// range is double width under East Asian locales), and parseStyledCells or a
+// literalParagraph restores them once cell styles are assigned.
+const (
+	styledLiteralOpenBracket  rune = '\ufdd0'
+	styledLiteralCloseBracket rune = '\ufdd1'
+)
+
+var styledLiteralBracketReplacer = strings.NewReplacer(
+	"[", string(styledLiteralOpenBracket),
+	"]", string(styledLiteralCloseBracket),
+)
+
+// styleEscape makes s inert to gotui's style parser. Callers building markup
+// by hand apply it to every run of literal text; styled applies it itself.
 func styleEscape(s string) string {
-	return strings.ReplaceAll(s, "](", "]\u200b(")
+	return styledLiteralBracketReplacer.Replace(s)
 }
 
 // styled wraps text in gotui's inline style markup. Color names come from
@@ -54,35 +70,50 @@ func styled(text, fg, modifier string) string {
 	return "[" + text + "](" + strings.Join(parts, ",") + ")"
 }
 
-// Chroma can split source punctuation into individual tokens. A token that is
-// literally "[" or "]" cannot be nested safely inside gotui's own
-// [text](style) syntax, so code rendering substitutes private runes until after
-// ParseStyles has assigned cell styles. The transcript parser restores the
-// original source characters before wrapping or drawing.
-const (
-	styledLiteralOpenBracket  rune = '\ue100'
-	styledLiteralCloseBracket rune = '\ue101'
-)
-
-var styledLiteralBracketReplacer = strings.NewReplacer(
-	"[", string(styledLiteralOpenBracket),
-	"]", string(styledLiteralCloseBracket),
-)
-
-func styledCodeLiteral(text, fg, modifier string) string {
-	text = styledLiteralBracketReplacer.Replace(text)
-	return styled(text, fg, modifier)
+// styledLiteralRune maps a substitute rune back to the bracket it stands for.
+func styledLiteralRune(r rune) (rune, bool) {
+	switch r {
+	case styledLiteralOpenBracket:
+		return '[', true
+	case styledLiteralCloseBracket:
+		return ']', true
+	}
+	return r, false
 }
 
 func parseStyledCells(text string, defaultStyle ui.Style) []ui.Cell {
 	cells := ui.ParseStyles(text, defaultStyle)
 	for i := range cells {
-		switch cells[i].Rune {
-		case styledLiteralOpenBracket:
-			cells[i].Rune = '['
-		case styledLiteralCloseBracket:
-			cells[i].Rune = ']'
-		}
+		cells[i].Rune, _ = styledLiteralRune(cells[i].Rune)
 	}
 	return cells
+}
+
+// literalParagraph is a gotui Paragraph for text built with styled and
+// styleEscape. The stock widget parses its Text itself, so the substitute
+// runes would reach the screen; Draw restores them in the buffer afterwards.
+type literalParagraph struct{ *widgets.Paragraph }
+
+func newLiteralParagraph() *literalParagraph {
+	return &literalParagraph{Paragraph: widgets.NewParagraph()}
+}
+
+func (p *literalParagraph) Draw(buf *ui.Buffer) {
+	p.Paragraph.Draw(buf)
+	restoreStyledLiterals(buf, p.Inner)
+}
+
+// restoreStyledLiterals rewrites the substitute runes within rect back to
+// brackets.
+func restoreStyledLiterals(buf *ui.Buffer, rect image.Rectangle) {
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			pt := image.Pt(x, y)
+			cell := buf.GetCell(pt)
+			if r, ok := styledLiteralRune(cell.Rune); ok {
+				cell.Rune = r
+				buf.SetCell(cell, pt)
+			}
+		}
+	}
 }

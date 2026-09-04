@@ -346,10 +346,10 @@ type managedREPL struct {
 
 	logoW       *transcriptParagraph
 	transcriptW *transcriptParagraph
-	dividerW    *widgets.Paragraph
-	inputW      *widgets.Paragraph
-	turnDockW   *widgets.Paragraph
-	statusW     *widgets.Paragraph
+	dividerW    *literalParagraph
+	inputW      *literalParagraph
+	turnDockW   *literalParagraph
+	statusW     *literalParagraph
 	modalW      *modalParagraph
 	rootFlex    *widgets.Flex
 

@@ -1349,18 +1349,58 @@ func TestBusyPromptStaysEditable(t *testing.T) {
 }
 
 func TestStyleEscapeNeutralizesMarkup(t *testing.T) {
-	// Lone/balanced brackets are left untouched (gotui renders them literally).
-	if got := styleEscape("hello [world]"); got != "hello [world]" {
-		t.Fatalf("balanced brackets must be untouched, got %q", got)
+	// Every bracket leaves as a substitute rune, so nothing in the escaped
+	// text can open or close gotui markup; the parser restores them.
+	got := styleEscape("see [text](url) and [")
+	if strings.ContainsAny(got, "[]") {
+		t.Fatalf("escaped text must carry no brackets, got %q", got)
 	}
-	// The one style trigger, "](", is broken with a zero-width space — and no
-	// backslashes are ever introduced (gotui renders them verbatim).
-	got := styleEscape("see [text](url)")
-	if strings.Contains(got, `\`) {
-		t.Fatalf("must not introduce backslashes, got %q", got)
+	if plain := plainStyledText(got); plain != "see [text](url) and [" {
+		t.Fatalf("round trip = %q", plain)
 	}
-	if got != "see [text]\u200b(url)" {
-		t.Fatalf("expected ZWSP between ] and (, got %q", got)
+}
+
+// gotui treats any '[' as the start of markup and only leaves that state
+// once brackets balance. An unmatched one in model or user text used to
+// swallow the rest of the entry and drop its last rune.
+func TestUnbalancedBracketRendersLiterally(t *testing.T) {
+	rendered := renderMarkdown("use `[` here, then **bold** and `x` end")
+	cells := parseStyledCells(rendered, ui.NewStyle(ui.ColorClear))
+	if got := plainStyledText(rendered); got != "use [ here, then bold and x end" {
+		t.Fatalf("rendered = %q", got)
+	}
+	bold := false
+	for _, c := range cells {
+		if c.Rune == 'b' && c.Style.Modifier&ui.ModifierBold != 0 {
+			bold = true
+		}
+	}
+	if !bold {
+		t.Fatalf("bold span after the bracket lost its style: %q", rendered)
+	}
+
+	prompt := formattedUserPrompt("grep [ src/")
+	if got := plainStyledText(prompt); got != "> grep [ src/" {
+		t.Fatalf("user prompt = %q", got)
+	}
+}
+
+// The stock gotui Paragraph parses its own Text, so the input, dock, status
+// and modal widgets restore the substitute runes after drawing.
+func TestLiteralParagraphRestoresBrackets(t *testing.T) {
+	p := newLiteralParagraph()
+	noBorder(&p.Block)
+	p.WrapText = false
+	p.SetRect(0, 0, 20, 1)
+	p.Text = styled("> ", "accent", "bold") + styleEscape("a[b]c")
+	buf := ui.NewBuffer(image.Rect(0, 0, 20, 1))
+	p.Draw(buf)
+	var got strings.Builder
+	for x := 0; x < 7; x++ {
+		got.WriteRune(buf.GetCell(image.Pt(x, 0)).Rune)
+	}
+	if got.String() != "> a[b]c" {
+		t.Fatalf("drawn = %q", got.String())
 	}
 }
 
@@ -1486,12 +1526,8 @@ func TestApprovalPromptRendersLiteralBrackets(t *testing.T) {
 	m := newReplModel()
 	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "bash"}}}
 
-	cells := ui.ParseStyles(m.inputDisplay(), ui.NewStyle(ui.ColorWhite))
-	var b strings.Builder
-	for _, c := range cells {
-		b.WriteRune(c.Rune)
-	}
-	out := b.String()
+	// The input widget restores brackets the way parseStyledCells does.
+	out := plainStyledText(m.inputDisplay())
 
 	if !strings.Contains(out, "[y]es [N]o [a]ll") {
 		t.Fatalf("approval prompt should render explicit actions, got %q", out)

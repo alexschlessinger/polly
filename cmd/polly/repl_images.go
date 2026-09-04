@@ -211,7 +211,7 @@ func sanitizeTranscriptImageText(text string) string {
 }
 
 func transcriptImageCaption(img transcriptImage) string {
-	return styledCodeLiteral(transcriptImageCaptionText(img), "muted", "")
+	return styled(transcriptImageCaptionText(img), "muted", "")
 }
 
 func renderTranscriptImage(index int, img transcriptImage, prefix string, leadingNewline, trailingNewline bool) string {
