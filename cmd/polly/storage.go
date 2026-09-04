@@ -333,11 +333,27 @@ func handleCreateContext(ctx context.Context, store sessions.SessionStore, confi
 		return fmt.Errorf("context '%s' already exists", contextID)
 	}
 
-	// Create context info with all resolved settings.
+	// Create context info with all resolved settings, including the tools
+	// and skills named on the command line: a later resume rebuilds the
+	// registry from ActiveTools and the catalog from SkillSources, so both
+	// must be recorded now or the created context silently loses them.
 	info := metadataFromConfig(config)
 	info.Name = contextID
 	info.Created = time.Now()
 	info.LastUsed = time.Now()
+	if len(config.Tools) > 0 {
+		loaders, err := resolveCreateTools(config)
+		if err != nil {
+			return err
+		}
+		info.ActiveTools = loaders
+	}
+	if len(config.Skills) > 0 {
+		if _, _, err := resolveSkillSources(config.Skills); err != nil {
+			return err
+		}
+		info.SkillSources = append([]string(nil), config.Skills...)
+	}
 
 	// Create session and set its context info
 	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{})
@@ -355,6 +371,24 @@ func handleCreateContext(ctx context.Context, store sessions.SessionStore, confi
 	}
 
 	return showContext(ctx, store, contextID)
+}
+
+// resolveCreateTools loads the command-line tools the way a turn would, under
+// the same sandbox policy, and returns the loader records to persist; the
+// registry itself is discarded once the tools are known.
+func resolveCreateTools(config *Config) ([]tools.ToolLoaderInfo, error) {
+	registryOpts, err := sandboxRegistryOptionsWithWarnings(config, nil)
+	if err != nil {
+		return nil, err
+	}
+	registry := tools.NewToolRegistry(nil, registryOpts...)
+	defer registry.Close()
+	for _, source := range config.Tools {
+		if _, err := registry.LoadToolAuto(source); err != nil {
+			return nil, fmt.Errorf("failed to load tool %s: %w", source, err)
+		}
+	}
+	return registry.GetActiveToolLoaders(), nil
 }
 
 // handleShowContext shows the configuration for a context

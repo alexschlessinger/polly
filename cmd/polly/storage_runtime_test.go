@@ -14,6 +14,8 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/urfave/cli/v3"
+	"sort"
+	"strings"
 )
 
 func TestMetadataFromConfigSeedsDefaultNativeTools(t *testing.T) {
@@ -601,4 +603,50 @@ func withStdin(t *testing.T, input string, fn func()) {
 		_ = reader.Close()
 	}()
 	fn()
+}
+
+func TestCreateContextPersistsExplicitToolsAndSkills(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	config, _ := parseStorageTestConfig(t)
+	config.NoSandbox = true
+	config.Tools = []string{"read_file", "list_dir"}
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "created-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skill := "---\nname: created-skill\ndescription: a skill named at creation\n---\nDo the thing.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skill), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config.Skills = []string{skillDir}
+
+	if err := handleCreateContext(context.Background(), store, config, "created"); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := store.GetAllMetadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := metadata["created"]
+	var names []string
+	for _, loader := range info.ActiveTools {
+		names = append(names, loader.Name)
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "list_dir,read_file" {
+		t.Fatalf("ActiveTools = %v, want the tools named at creation", names)
+	}
+	if len(info.SkillSources) != 1 || info.SkillSources[0] != skillDir {
+		t.Fatalf("SkillSources = %v, want %q", info.SkillSources, skillDir)
+	}
+}
+
+func TestCreateContextRejectsUnresolvableSkill(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	config, _ := parseStorageTestConfig(t)
+	config.Skills = []string{filepath.Join(t.TempDir(), "missing")}
+	if err := handleCreateContext(context.Background(), store, config, "created"); err == nil {
+		t.Fatal("a context was created with a skill source that does not exist")
+	}
 }
