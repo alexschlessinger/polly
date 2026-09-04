@@ -16,7 +16,40 @@ import (
 
 // Entry points: the managed REPL runner and the line-mode fallback.
 
-func runManagedREPL(ctx context.Context, config *Config, state *conversationState, showStartupLogo bool) error {
+func runManagedREPL(ctx context.Context, config *Config, state *conversationState, opener *sessionOpener, onStateChange func(*conversationState)) error {
+	repl := newManagedREPL(config, "-", 0, 0)
+	repl.opener = opener
+	repl.onStateChange = onStateChange
+	if err := repl.attachState(state); err != nil {
+		return err
+	}
+	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
+		reuseUser := false
+		userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: prompt}
+		// The turn binds the session it started on: a switch that lands while
+		// this goroutine runs must not redirect its writes.
+		state := repl.state
+		if tui, ok := turnUI.(*gotuiTurnUI); ok {
+			reuseUser = tui.reuseUser
+			userMsg = cloneChatMessage(tui.turn.userMessage)
+			if tui.state != nil {
+				state = tui.state
+			}
+		}
+		// The exit code is a one-shot concern; the REPL already rendered
+		// any warning.
+		_, err := executeTurnWithUserMessage(turnCtx, config, state, userMsg, nil, nil, turnUI, reuseUser)
+		return err
+	})
+}
+
+// attachState makes state the REPL's live session. The screen model is
+// rebuilt from the session's history; the screen-level facts the previous
+// model carried (turn generation, image geometry, prompt history, focus) move
+// across so a switch is indistinguishable from a fresh start on that session.
+// Runs on the UI goroutine with no turn in flight.
+func (r *managedREPL) attachState(state *conversationState) error {
+	ctx := state.session.Context()
 	name, err := state.session.GetName(ctx)
 	if err != nil {
 		return fmt.Errorf("read session name: %w", err)
@@ -25,11 +58,23 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 	if err != nil {
 		return fmt.Errorf("read session history: %w", err)
 	}
-	repl := newManagedREPL(config, name, toolCount(state.toolRegistry), skillCount(state.skillCatalog))
-	repl.showStartupLogo = showStartupLogo
-	repl.state = state
-	repl.model.artifactStore = state.artifactStore
-	repl.model.hydrateHistory(history, name)
+	config := r.config
+	m := newReplModel()
+	m.status = newSessionStatus(config, name, toolCount(state.toolRegistry), skillCount(state.skillCatalog))
+	m.quiet = config.Quiet
+	if old := r.model; old != nil {
+		old.mu.Lock()
+		// The generation keeps climbing so a detached turn from the previous
+		// session can never match a turn started on this one.
+		m.turnID = old.turnID
+		m.nativeImages = old.nativeImages
+		m.imageCellWidth, m.imageCellHeight = old.imageCellWidth, old.imageCellHeight
+		m.hist.entries = old.hist.entries
+		m.focusKnown, m.focused = old.focusKnown, old.focused
+		old.mu.Unlock()
+	}
+	m.artifactStore = state.artifactStore
+	m.hydrateHistory(history, name)
 	// Seed the bar without network traffic. This is explicitly approximate
 	// until a provider reports the first real request usage.
 	if total, totalErr := state.session.GetTotalTokens(ctx); totalErr == nil {
@@ -39,25 +84,12 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 				limit = llm.ClampContextBudget(limit, window, config.MaxTokens)
 			}
 		}
-		repl.model.status.recordContextUsage(total, limit, total > 0)
+		m.status.recordContextUsage(total, limit, total > 0)
 	}
-	err = repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
-		reuseUser := false
-		userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: prompt}
-		if tui, ok := turnUI.(*gotuiTurnUI); ok {
-			reuseUser = tui.reuseUser
-			userMsg = cloneChatMessage(tui.turn.userMessage)
-		}
-		// The exit code is a one-shot concern; the REPL already rendered
-		// any warning.
-		_, err := executeTurnWithUserMessage(turnCtx, config, state, userMsg, nil, nil, turnUI, reuseUser)
-		return err
-	})
-	if err != nil {
-		return err
-	}
-	if repl.resumeContext != "" {
-		return &resumeSessionRequest{name: repl.resumeContext}
+	r.model = m
+	r.state = state
+	if r.onStateChange != nil {
+		r.onStateChange(state)
 	}
 	return nil
 }

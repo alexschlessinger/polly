@@ -669,8 +669,14 @@ func (r *managedREPL) submitComposerLocked() bool {
 		m.followBottom = true
 		return false
 	}
-	if m.busy && defaultReplCommands.busySafeCommand(trimmed) {
+	if (m.busy || r.switchTarget != "") && defaultReplCommands.busySafeCommand(trimmed) {
 		return r.runComposerCommandLocked(trimmed)
+	}
+	if r.switchTarget != "" {
+		// The draft stays put: it can go to the new session once it is live.
+		m.appendNoticeLine("switching to " + r.switchTarget + "; input held until it opens")
+		m.followBottom = true
+		return false
 	}
 	isCommand := !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/")
 	if m.busy {

@@ -1085,6 +1085,38 @@ func TestConcurrentDifferentSessions(t *testing.T) {
 	}
 }
 
+func TestListSummariesReportLiveLeases(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, nil, 0)
+	ctx := context.Background()
+	held := acquireNamed(t, store, "held")
+	released := acquireNamed(t, store, "released")
+	if err := released.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	inUse := func() map[string]bool {
+		t.Helper()
+		summaries, err := store.ListSummaries(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := make(map[string]bool, len(summaries))
+		for _, summary := range summaries {
+			result[summary.Metadata.Name] = summary.InUse
+		}
+		return result
+	}
+	if got := inUse(); !got["held"] || got["released"] {
+		t.Fatalf("in-use summaries = %v, want held only", got)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := inUse(); got["held"] || got["released"] {
+		t.Fatalf("in-use summaries after close = %v, want none", got)
+	}
+}
+
 func TestConcurrentAppendsOneSessionRemainOrdered(t *testing.T) {
 	store, _ := openTestStore(t, ModeMemory, nil, 0)
 	session := acquireNamed(t, store, "one")

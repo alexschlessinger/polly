@@ -98,9 +98,14 @@ type conversationState struct {
 	contextWindows map[string]int
 }
 
-type resumeSessionRequest struct{ name string }
-
-func (r *resumeSessionRequest) Error() string { return "resume session " + r.name }
+// sessionOpener lets the managed REPL switch sessions in place. prepare runs
+// on the UI goroutine because it rewrites config from the target session's
+// stored settings and may reset that session's history when --system
+// differs; open builds the runtime and may run off the UI goroutine.
+type sessionOpener struct {
+	prepare func(ctx context.Context, name string, notify func(string)) (string, error)
+	open    func(ctx context.Context, name string) (*conversationState, error)
+}
 
 func (s *conversationState) Close() error {
 	var errs []error
@@ -259,17 +264,7 @@ func (r *commandRunner) Run() (retErr error) {
 		r.contextID = contextID
 	}
 
-	showStartupLogo := true
-	for {
-		err := r.runConversation(showStartupLogo)
-		var resume *resumeSessionRequest
-		if !errors.As(err, &resume) {
-			return err
-		}
-		r.contextID = resume.name
-		r.autoContext = false
-		showStartupLogo = false
-	}
+	return r.runConversation()
 }
 
 func (r *commandRunner) handleManagementFlags() (bool, error) {
@@ -318,11 +313,21 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 // constructs one from config. Session metadata is staged on one object and
 // written once, so a failure part-way through persists nothing. On error
 // every acquired resource is released and nil is returned.
-func newConversationState(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (state *conversationState, retErr error) {
+func newConversationState(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (*conversationState, error) {
 	contextID, _, err := initializeConversation(ctx, config, sessionStore, contextID, cmd)
 	if err != nil {
 		return nil, err
 	}
+	return openConversationState(ctx, config, llmClient, sessionStore, contextID, autoContext, cmd, sandboxWarnings)
+}
+
+// openConversationState is the second half of newConversationState: it
+// acquires contextID and builds its runtime from the settings that
+// initializeConversation already resolved onto config. It only reads config,
+// so the managed REPL may run it off the UI goroutine while the current
+// session keeps serving input.
+func openConversationState(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (state *conversationState, retErr error) {
+	var err error
 	if llmClient == nil {
 		llmClient = llm.NewMultiPass(loadAPIKeys())
 	}
@@ -574,7 +579,7 @@ func broadWritablePathDenied(path string, denyWritePaths []string) bool {
 	return false
 }
 
-func (r *commandRunner) runConversation(showStartupLogo bool) (retErr error) {
+func (r *commandRunner) runConversation() (retErr error) {
 	ctx, config := r.ctx, r.config
 	input, err := resolveConversationInput(config)
 	if err != nil {
@@ -594,8 +599,11 @@ func (r *commandRunner) runConversation(showStartupLogo bool) (retErr error) {
 	state.displayContract = displayContractFor(outputCapabilities)
 	state.outputCapabilities = outputCapabilities
 	session := state.session
+	// The managed REPL switches sessions in place, so shutdown closes whichever
+	// session is live at the end, not necessarily the one the run opened.
+	current := state
 	defer func() {
-		if err := state.Close(); err != nil {
+		if err := current.Close(); err != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("close conversation state: %w", err))
 		}
 	}()
@@ -603,6 +611,35 @@ func (r *commandRunner) runConversation(showStartupLogo bool) (retErr error) {
 	// Set up signal handling
 	signalCtx, cancelSignal := setupSignalHandling(ctx)
 	defer cancelSignal()
+
+	if input.mode == conversationModeREPL && managedREPL {
+		// Each session's lease context parents that session's turns and ends
+		// the run when it is lost (see managedREPL.Run), so the run context
+		// carries signals only.
+		opener := &sessionOpener{
+			prepare: func(ctx context.Context, name string, notify func(string)) (string, error) {
+				name, _, err := prepareConversation(ctx, config, r.sessionStore, name, r.cmd, notify)
+				return name, err
+			},
+			open: func(ctx context.Context, name string) (*conversationState, error) {
+				opened, err := openConversationState(ctx, config, r.llmClient, r.sessionStore, name, false, r.cmd, newBroadWritablePathWarner())
+				if err != nil {
+					return nil, err
+				}
+				opened.displayContract = displayContractFor(outputCapabilities)
+				opened.outputCapabilities = outputCapabilities
+				return opened, nil
+			},
+		}
+		replErr := runManagedREPL(signalCtx, config, state, opener, func(live *conversationState) { current = live })
+		if r.autoContext && current == state {
+			if err := discardUnusedAutoContext(signalCtx, state); replErr == nil && err != nil {
+				replErr = err
+			}
+		}
+		return replErr
+	}
+
 	// Make the lease context the direct parent so lease loss is observable
 	// synchronously by the agent and TUI. Signal/caller cancellation is bridged
 	// into the same typed-cause context for the other shutdown path.
@@ -637,7 +674,7 @@ func (r *commandRunner) runConversation(showStartupLogo bool) (retErr error) {
 		}
 		return nil
 	case conversationModeREPL:
-		replErr := runREPL(ctx, config, state, managedREPL, showStartupLogo)
+		replErr := runFallbackREPL(ctx, config, state)
 		if r.autoContext {
 			if err := discardUnusedAutoContext(ctx, state); replErr == nil && err != nil {
 				replErr = err
@@ -741,13 +778,6 @@ func validateREPLConfig(config *Config) error {
 	}
 
 	return fmt.Errorf("%s %s -p or stdin; bare polly starts a text-only REPL", strings.Join(rejected, " and "), verb)
-}
-
-func runREPL(ctx context.Context, config *Config, state *conversationState, managedREPL, showStartupLogo bool) error {
-	if managedREPL {
-		return runManagedREPL(ctx, config, state, showStartupLogo)
-	}
-	return runFallbackREPL(ctx, config, state)
 }
 
 // executeTurn runs one turn and returns the process exit code the turn's
@@ -1448,6 +1478,16 @@ func createCompletionRequest(config *Config, history []messages.ChatMessage, reg
 
 // initializeConversation handles all the setup needed before starting a conversation
 func initializeConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, *sessions.Metadata, error) {
+	return prepareConversation(ctx, config, sessionStore, contextID, cmd, func(line string) {
+		fmt.Fprintln(os.Stderr, line)
+	})
+}
+
+// prepareConversation resolves contextID's stored settings onto config (flags
+// win) and resets its history when an explicit --system differs, reporting
+// that through notify so the managed REPL can show it without writing to a
+// terminal it owns.
+func prepareConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command, notify func(string)) (string, *sessions.Metadata, error) {
 	var needReset bool
 	var originalContextInfo *sessions.Metadata
 
@@ -1470,7 +1510,7 @@ func initializeConversation(ctx context.Context, config *Config, sessionStore se
 				}
 				if exists {
 					needReset = true
-					fmt.Fprintf(os.Stderr, "System prompt changed, resetting conversation...\n")
+					notify("System prompt changed, resetting conversation...")
 				}
 			}
 
