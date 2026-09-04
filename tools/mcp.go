@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/schema"
@@ -221,9 +225,20 @@ func appendMCPContent(content mcp.Content, textParts *[]string, media *[]ToolMed
 	return nil
 }
 
+// argumentKeys lists argument names for debug logs without their values,
+// which may carry credentials or private content.
+func argumentKeys(args map[string]any) []string {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (m *MCPTool) call(ctx context.Context, args map[string]any) (*mcp.CallToolResult, error) {
 	// Log the tool execution for debugging
-	slog.Debug("mcp_tool_executing", "tool_name", m.tool.Name, "arguments", args)
+	slog.Debug("mcp_tool_executing", "tool_name", m.tool.Name, "argument_keys", argumentKeys(args))
 
 	// Ensure args is not nil (some tools expect empty object instead of nil)
 	if args == nil {
@@ -405,26 +420,49 @@ func FormatMCPServersForDisplay(servers []string) []string {
 	return formatted
 }
 
-// headerRoundTripper wraps an http.RoundTripper to inject custom headers
+// headerRoundTripper injects the configured headers into requests bound for
+// the configured endpoint's origin only. Go drops sensitive headers when it
+// follows a redirect to another host; re-adding them on every request would
+// undo that and hand a bearer token or API key to the redirect target.
 type headerRoundTripper struct {
 	base    http.RoundTripper
 	headers map[string]string
+	origin  string // scheme://host of the configured endpoint
 }
 
 func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if len(h.headers) == 0 || req.URL == nil || requestOrigin(req.URL) != h.origin {
+		return h.base.RoundTrip(req)
+	}
+	// RoundTrippers must not modify the caller's request.
+	req = req.Clone(req.Context())
 	for k, v := range h.headers {
 		req.Header.Set(k, v)
 	}
 	return h.base.RoundTrip(req)
 }
 
-// httpClientWithTimeout creates an HTTP client with custom headers and timeout
-func httpClientWithTimeout(headers map[string]string, timeout time.Duration) *http.Client {
+func requestOrigin(u *url.URL) string {
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+}
+
+// mcpHTTPClient builds the HTTP client for a remote MCP transport. The timeout
+// bounds connection setup and the wait for response headers, not the body:
+// both SSE and streamable HTTP keep response bodies open as long-lived event
+// streams, which a whole-request http.Client.Timeout would sever once it
+// elapsed on a perfectly healthy session.
+func mcpHTTPClient(endpoint string, headers map[string]string, timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = timeout
+	origin := ""
+	if u, err := url.Parse(endpoint); err == nil {
+		origin = requestOrigin(u)
+	}
 	return &http.Client{
-		Timeout: timeout,
 		Transport: &headerRoundTripper{
-			base:    http.DefaultTransport,
+			base:    transport,
 			headers: headers,
+			origin:  origin,
 		},
 	}
 }
@@ -438,6 +476,10 @@ type MCPClient struct {
 	sandboxed      bool   // server process runs inside a sandbox (stdio only)
 	sandboxCfg     *sandbox.Config
 	sandboxOptOut  bool
+
+	closeOnce sync.Once
+	closeErr  error
+	closed    atomic.Bool
 }
 
 // NewUnsafeMCPClient creates an unsandboxed MCP client from a server spec.
@@ -545,7 +587,7 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 		slog.Debug("mcp_sse_connecting", "url", config.URL)
 		transport = &mcp.SSEClientTransport{
 			Endpoint:   config.URL,
-			HTTPClient: httpClientWithTimeout(config.Headers, timeout),
+			HTTPClient: mcpHTTPClient(config.URL, config.Headers, timeout),
 		}
 
 	case "streamable":
@@ -555,7 +597,7 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 		slog.Debug("mcp_http_connecting", "url", config.URL)
 		transport = &mcp.StreamableClientTransport{
 			Endpoint:   config.URL,
-			HTTPClient: httpClientWithTimeout(config.Headers, timeout),
+			HTTPClient: mcpHTTPClient(config.URL, config.Headers, timeout),
 		}
 
 	case "stdio", "":
@@ -638,10 +680,19 @@ func (c *MCPClient) ListTools() ([]Tool, error) {
 	return tools, nil
 }
 
-// Close closes the MCP client connection
+// Close closes the MCP client connection. It is safe to call more than once;
+// later calls return the first result.
 func (c *MCPClient) Close() error {
-	if c.session != nil {
-		return c.session.Close()
-	}
-	return nil
+	c.closeOnce.Do(func() {
+		c.closed.Store(true)
+		if c.session != nil {
+			c.closeErr = c.session.Close()
+		}
+	})
+	return c.closeErr
+}
+
+// Closed reports whether Close has been called.
+func (c *MCPClient) Closed() bool {
+	return c.closed.Load()
 }
