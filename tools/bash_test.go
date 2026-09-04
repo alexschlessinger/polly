@@ -262,3 +262,35 @@ func TestBashToolRunsScriptByAbsolutePath(t *testing.T) {
 		t.Fatalf("Execute() result = %q, want %q", strings.TrimSpace(result), "hello world")
 	}
 }
+
+func TestBashTruncatesRunawayOutput(t *testing.T) {
+	tool := NewUnsafeBashTool("")
+	out, err := tool.Execute(context.Background(), map[string]any{"command": "yes | head -c 6000000"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(out) > capturedOutputLimit+256 {
+		t.Fatalf("captured %d bytes, want at most the %d byte limit plus a notice", len(out), capturedOutputLimit)
+	}
+	if !strings.Contains(out, "[output truncated:") {
+		t.Fatalf("expected truncation notice, got tail %q", out[len(out)-120:])
+	}
+}
+
+func TestBoundedBufferKeepsPrefixAndCountsRest(t *testing.T) {
+	b := newBoundedBuffer(5)
+	n, _ := b.Write([]byte("abcdefgh"))
+	if n != 8 {
+		t.Fatalf("Write returned %d, want 8 (must keep draining)", n)
+	}
+	b.Write([]byte("ij"))
+	if b.Len() != 5 || !b.Truncated() {
+		t.Fatalf("Len=%d Truncated=%v", b.Len(), b.Truncated())
+	}
+	if got := b.String(); !strings.HasPrefix(got, "abcde\n[output truncated: 5 more bytes") {
+		t.Fatalf("String() = %q", got)
+	}
+	if got := newBoundedBuffer(5).String(); got != "" {
+		t.Fatalf("empty String() = %q", got)
+	}
+}
