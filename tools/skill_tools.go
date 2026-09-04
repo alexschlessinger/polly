@@ -11,6 +11,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/skills"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // SkillActivateTool loads a skill's instructions and registers any executable scripts.
@@ -255,13 +256,17 @@ func parseAllowedToolPatterns(value string) []string {
 }
 
 // SkillReadFileTool returns the contents of a file inside a discovered skill.
+// Reads honor the registry's base sandbox read policy so the tool cannot see
+// what a sandboxed command could not.
 type SkillReadFileTool struct {
-	catalog *skills.Catalog
+	catalog  *skills.Catalog
+	registry *ToolRegistry
 }
 
-// NewSkillReadFileTool creates the skill file reader tool.
-func NewSkillReadFileTool(catalog *skills.Catalog) *SkillReadFileTool {
-	return &SkillReadFileTool{catalog: catalog}
+// NewSkillReadFileTool creates the skill file reader tool bound to registry's
+// sandbox policy. A nil registry applies no policy.
+func NewSkillReadFileTool(catalog *skills.Catalog, registry *ToolRegistry) *SkillReadFileTool {
+	return &SkillReadFileTool{catalog: catalog, registry: registry}
 }
 
 func (t *SkillReadFileTool) GetName() string {
@@ -286,6 +291,22 @@ func (t *SkillReadFileTool) GetSchema() *schema.ToolSchema {
 	)
 }
 
+// readPolicy applies the registry's sandbox read policy to the canonical path
+// a skill read is about to open.
+func (t *SkillReadFileTool) readPolicy(canonical string) error {
+	if t.registry == nil {
+		return nil
+	}
+	cfg, active, err := t.registry.SandboxReadPolicy()
+	if err != nil {
+		return fmt.Errorf("resolve sandbox policy: %w", err)
+	}
+	if !active {
+		return nil
+	}
+	return sandbox.ReadAllowed(cfg, canonical)
+}
+
 func (t *SkillReadFileTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	_ = ctx
 
@@ -303,7 +324,7 @@ func (t *SkillReadFileTool) Execute(ctx context.Context, args map[string]any) (s
 		return "", fmt.Errorf("skill %q not found", skillName)
 	}
 
-	content, err := skill.ReadFile(relPath)
+	content, err := skill.ReadFileChecked(relPath, t.readPolicy)
 	if err != nil {
 		return "", err
 	}

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/safefile"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -49,6 +50,12 @@ type Skill struct {
 	RootDir       string
 	SkillFile     string
 	Instructions  string
+
+	// canonicalRoot is RootDir with symlinks resolved at discovery time. Reads
+	// are contained within it rather than within whatever RootDir resolves to
+	// later, so replacing the skill directory with a symlink after discovery
+	// cannot redirect them.
+	canonicalRoot string
 }
 
 // Catalog stores the discovered skill set.
@@ -141,6 +148,10 @@ func loadSkill(root string) (*Skill, bool, error) {
 	if err := validateFrontmatter(meta, filepath.Base(root)); err != nil {
 		return nil, false, fmt.Errorf("validate %s: %w", skillPath, err)
 	}
+	canonicalRoot, err := canonicalPathForValidation(root)
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve %s: %w", root, err)
+	}
 
 	// Replace {baseDir} token used by OpenClaw-style skills.
 	instructions := strings.TrimSpace(body)
@@ -156,6 +167,7 @@ func loadSkill(root string) (*Skill, bool, error) {
 		RootDir:       root,
 		SkillFile:     skillPath,
 		Instructions:  instructions,
+		canonicalRoot: canonicalRoot,
 	}
 
 	if !checkMetadataGating(skill.Metadata) {
@@ -439,54 +451,80 @@ func pathWithinRoot(root, target string) bool {
 
 // ResolvePath resolves a skill-relative path while preventing directory escape.
 func (s *Skill) ResolvePath(rel string) (string, error) {
+	lexical, _, err := s.resolve(rel)
+	return lexical, err
+}
+
+// resolve returns the lexical path of rel under the skill root and the
+// canonical spelling that a read must open. Containment is judged against the
+// canonical root recorded at discovery, so a skill directory that is later
+// replaced by a symlink cannot redirect skill reads outside the tree that was
+// discovered.
+func (s *Skill) resolve(rel string) (lexical, canonical string, err error) {
 	if s == nil {
-		return "", fmt.Errorf("skill is nil")
+		return "", "", fmt.Errorf("skill is nil")
 	}
 	rel = strings.TrimSpace(rel)
 	if rel == "" {
-		return "", fmt.Errorf("path is required")
+		return "", "", fmt.Errorf("path is required")
 	}
 	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path must be relative to the skill root")
+		return "", "", fmt.Errorf("path must be relative to the skill root")
 	}
 
 	resolved := filepath.Clean(filepath.Join(s.RootDir, rel))
 	root := filepath.Clean(s.RootDir)
 	if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
-		return "", fmt.Errorf("path %q escapes the skill root", rel)
+		return "", "", fmt.Errorf("path %q escapes the skill root", rel)
 	}
 
-	canonicalRoot, err := canonicalPathForValidation(root)
-	if err != nil {
-		return "", err
+	canonicalRoot := s.canonicalRoot
+	if canonicalRoot == "" {
+		canonicalRoot, err = canonicalPathForValidation(root)
+		if err != nil {
+			return "", "", err
+		}
 	}
 	canonicalResolved, err := canonicalPathForValidation(resolved)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if !pathWithinRoot(canonicalRoot, canonicalResolved) {
-		return "", fmt.Errorf("path %q escapes the skill root", rel)
+		return "", "", fmt.Errorf("path %q escapes the skill root", rel)
 	}
 
-	return resolved, nil
+	return resolved, canonicalResolved, nil
 }
 
 // ReadFile returns the contents of a skill-relative file.
 func (s *Skill) ReadFile(rel string) (string, error) {
-	path, err := s.ResolvePath(rel)
+	return s.ReadFileChecked(rel, nil)
+}
+
+// ReadFileChecked is ReadFile with a policy hook that sees the canonical path
+// about to be opened; a non-nil error from the hook aborts the read. The file
+// is opened without following symlinks, so the object read is the one the
+// hook approved even if a link is rewritten concurrently.
+func (s *Skill) ReadFileChecked(rel string, check func(canonical string) error) (string, error) {
+	_, canonical, err := s.resolve(rel)
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("%s is a directory", rel)
+	if check != nil {
+		if err := check(canonical); err != nil {
+			return "", err
+		}
 	}
 
-	file, err := os.Open(path)
+	file, err := safefile.OpenRegular(canonical, os.O_RDONLY, 0)
 	if err != nil {
+		var notRegular *safefile.NotRegularError
+		if errors.As(err, &notRegular) {
+			if notRegular.Mode.IsDir() {
+				return "", fmt.Errorf("%s is a directory", rel)
+			}
+			return "", fmt.Errorf("%s is not a regular file", rel)
+		}
 		return "", err
 	}
 	defer file.Close()

@@ -212,7 +212,7 @@ func TestSkillReadFileToolReadsRelativeFile(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	tool := NewSkillReadFileTool(catalog)
+	tool := NewSkillReadFileTool(catalog, nil)
 	result, err := tool.Execute(context.Background(), map[string]any{
 		"skill": "doc-reader",
 		"path":  "references/guide.md",
@@ -426,7 +426,7 @@ func TestSkillActivateStandardSkills(t *testing.T) {
 		t.Run(skill.Name, func(t *testing.T) {
 			registry := NewToolRegistry(nil)
 			activateTool := NewSkillActivateTool(catalog, registry)
-			readTool := NewSkillReadFileTool(catalog)
+			readTool := NewSkillReadFileTool(catalog, registry)
 
 			result, err := activateTool.Execute(context.Background(), map[string]any{"name": skill.Name})
 			if err != nil {

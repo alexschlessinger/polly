@@ -32,7 +32,7 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 	}
 
 	runtime.activateTool = NewSkillActivateTool(catalog, registry)
-	readFileTool := NewSkillReadFileTool(catalog)
+	readFileTool := NewSkillReadFileTool(catalog, registry)
 	newSkillBash := func() (*BashTool, error) {
 		bt := newBashTool("")
 		bt.siblingLoaded = registry.hasVisibleTool

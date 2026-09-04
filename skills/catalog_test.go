@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -458,4 +459,59 @@ Follow these instructions carefully.
 	}
 
 	return skillDir
+}
+
+func TestSkillReadFileRejectsRootReplacedBySymlinkAfterDiscovery(t *testing.T) {
+	root := t.TempDir()
+	skillDir := createTestSkill(t, root, "safe-reader", "Read files safely")
+
+	catalog, err := Discover([]string{root})
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	skill, ok := catalog.Get("safe-reader")
+	if !ok {
+		t.Fatal("expected discovered skill")
+	}
+
+	// Swap the skill directory for a symlink to a tree holding a secret, as
+	// a writable skill directory allows after discovery.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "id_rsa"), []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(skillDir, skillDir+".orig"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, skillDir); err != nil {
+		t.Skipf("Symlink() unavailable: %v", err)
+	}
+
+	if _, err := skill.ReadFile("id_rsa"); err == nil || !strings.Contains(err.Error(), "escapes the skill root") {
+		t.Fatalf("ReadFile() through swapped root error = %v, want escape error", err)
+	}
+}
+
+func TestSkillReadFileCheckedSeesCanonicalPath(t *testing.T) {
+	root := t.TempDir()
+	createTestSkill(t, root, "safe-reader", "Read files safely")
+
+	catalog, err := Discover([]string{root})
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	skill, _ := catalog.Get("safe-reader")
+
+	var seen string
+	_, err = skill.ReadFileChecked("references/guide.md", func(canonical string) error {
+		seen = canonical
+		return errors.New("policy says no")
+	})
+	if err == nil || !strings.Contains(err.Error(), "policy says no") {
+		t.Fatalf("ReadFileChecked() error = %v, want policy error", err)
+	}
+	want, _ := filepath.EvalSymlinks(filepath.Join(root, "safe-reader", "references", "guide.md"))
+	if seen != want {
+		t.Fatalf("policy hook saw %q, want canonical %q", seen, want)
+	}
 }
