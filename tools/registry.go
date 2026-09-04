@@ -587,6 +587,64 @@ func (r *ToolRegistry) GetIfAllowed(name string) (tool Tool, exists bool, allowe
 	return tool, true, true
 }
 
+// setToolLocked installs tool under name with the MCP client backing it (nil
+// for non-MCP tools). If the entry it replaces was the last reference to a
+// different client, that client is closed: a reloaded server or a restored
+// filtered set must not strand the old transport or subprocess, which Close
+// only ever visits through these maps.
+func (r *ToolRegistry) setToolLocked(name string, tool Tool, client *MCPClient) {
+	old := r.toolClients[name]
+	r.tools[name] = tool
+	if client != nil {
+		r.toolClients[name] = client
+	} else {
+		delete(r.toolClients, name)
+	}
+	if old != nil && old != client {
+		r.closeIfOrphanedLocked(old)
+	}
+}
+
+// closeIfOrphanedLocked closes client once no live or pending tool refers to
+// it.
+func (r *ToolRegistry) closeIfOrphanedLocked(client *MCPClient) {
+	for _, c := range r.toolClients {
+		if c == client {
+			return
+		}
+	}
+	for _, c := range r.pendingToolClients {
+		if c == client {
+			return
+		}
+	}
+	slog.Debug("mcp_client_closed", "reason", "no_remaining_tools")
+	client.Close()
+}
+
+// dropServerToolsLocked removes a server's previous registration so a fresh
+// load of the same spec replaces it rather than leaving stale tools behind,
+// closing the previous client once nothing refers to it.
+func (r *ToolRegistry) dropServerToolsLocked(serverSpec string) {
+	names := r.serverTools[serverSpec]
+	if len(names) == 0 {
+		return
+	}
+	delete(r.serverTools, serverSpec)
+	var clients []*MCPClient
+	for _, name := range names {
+		if c := r.toolClients[name]; c != nil {
+			clients = append(clients, c)
+		}
+		delete(r.tools, name)
+		delete(r.toolClients, name)
+		slog.Debug("mcp_tool_removed", "tool_name", name)
+	}
+	for _, c := range clients {
+		r.closeIfOrphanedLocked(c)
+	}
+}
+
 // Remove removes a tool by namespaced name from the registry
 func (r *ToolRegistry) Remove(namespacedName string) {
 	r.mu.Lock()
@@ -625,17 +683,7 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 		}
 
 		// Close client if no other tools use it
-		stillInUse := false
-		for _, c := range r.toolClients {
-			if c == client {
-				stillInUse = true
-				break
-			}
-		}
-		if !stillInUse {
-			slog.Debug("mcp_client_closed", "reason", "no_remaining_tools")
-			client.Close()
-		}
+		r.closeIfOrphanedLocked(client)
 	}
 }
 
@@ -786,10 +834,7 @@ func (r *ToolRegistry) CommitPendingChanges() {
 	defer r.mu.Unlock()
 
 	for name, tool := range r.pendingTools {
-		r.tools[name] = tool
-	}
-	for name, client := range r.pendingToolClients {
-		r.toolClients[name] = client
+		r.setToolLocked(name, tool, r.pendingToolClients[name])
 	}
 	for serverSpec, toolNames := range r.pendingServerTools {
 		r.serverTools[serverSpec] = appendUniqueStrings(r.serverTools[serverSpec], toolNames)
@@ -861,7 +906,7 @@ func (r *ToolRegistry) loadShellToolWithNamespace(path, namespace string) (LoadR
 	defer r.mu.Unlock()
 
 	for _, record := range records {
-		r.tools[record.name] = record.tool
+		r.setToolLocked(record.name, record.tool, nil)
 		slog.Debug("shell_tool_registered", "tool_name", record.name)
 	}
 
@@ -1086,10 +1131,7 @@ func (r *ToolRegistry) LoadMCPServerWithNamespacePrefix(serverSpec, namespacePre
 	defer r.mu.Unlock()
 
 	for _, record := range records {
-		r.tools[record.name] = record.tool
-		if record.client != nil {
-			r.toolClients[record.name] = record.client
-		}
+		r.setToolLocked(record.name, record.tool, record.client)
 		if record.serverSpec != "" {
 			r.serverTools[record.serverSpec] = appendUniqueStrings(r.serverTools[record.serverSpec], []string{record.name})
 		}
@@ -1294,9 +1336,12 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 		}
 	}
 
-	// Register only allowed tools
+	// Register only allowed tools, replacing any earlier registration of the
+	// same server so its client is not stranded.
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	r.dropServerToolsLocked(serverSpec)
 
 	var toolNames []string
 	for _, tool := range tools {
@@ -1317,12 +1362,18 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 					Tool:           tool,
 					namespacedName: namespacedName,
 				}
-				r.tools[namespacedName] = wrappedTool
-				r.toolClients[namespacedName] = client
+				r.setToolLocked(namespacedName, wrappedTool, client)
 				toolNames = append(toolNames, namespacedName)
 				slog.Debug("mcp_tool_registered", "tool_name", namespacedName)
 			}
 		}
+	}
+
+	if len(toolNames) == 0 {
+		// Nothing refers to the client, so nothing would ever close it.
+		client.Close()
+		slog.Debug("mcp_server_closed", "server_name", GetMCPDisplayName(serverSpec), "reason", "no_allowed_tools")
+		return nil
 	}
 
 	// Track which tools came from this server

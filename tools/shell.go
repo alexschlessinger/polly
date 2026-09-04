@@ -268,7 +268,7 @@ func LoadShellToolsWithRegistry(registry *ToolRegistry, paths []string) ([]Tool,
 
 	loaded := make([]Tool, 0, len(records))
 	for _, record := range records {
-		registry.tools[record.name] = record.tool
+		registry.setToolLocked(record.name, record.tool, nil)
 		loaded = append(loaded, record.tool)
 		slog.Debug("shell_tool_registered", "tool_name", record.name)
 	}
