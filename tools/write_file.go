@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/schema"
-	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // writeFileTool writes model-provided content to a local file, creating
@@ -60,40 +59,34 @@ func (t *writeFileTool) Execute(ctx context.Context, raw map[string]any) (string
 	if err != nil {
 		return "", err
 	}
-	if err := checkWritePolicy(t.registry, abs); err != nil {
+	routes, resolved := localRoutes(abs)
+	if err := checkWritePolicy(t.registry, routes...); err != nil {
 		return "", err
 	}
-	existing, err := os.Stat(abs)
-	if err == nil && existing.IsDir() {
-		return "", fmt.Errorf("%s is a directory, not a file", abs)
-	}
+	localFileMu.Lock()
+	defer localFileMu.Unlock()
+	existing, err := os.Lstat(resolved)
 	if err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("write %s: %w", abs, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 		return "", fmt.Errorf("write %s: %w", abs, err)
 	}
-	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+	f, _, err := openLocalRegular(resolved, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return "", describeOpenError("write", abs, err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("write %s: %w", abs, err)
+	}
+	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("write %s: %w", abs, err)
 	}
 	if existing != nil {
 		return fmt.Sprintf("Overwrote %s (%d bytes, %d lines; was %d bytes).", abs, len(content), countLines(content), existing.Size()), nil
 	}
 	return fmt.Sprintf("Created %s (%d bytes, %d lines).", abs, len(content), countLines(content)), nil
-}
-
-// checkWritePolicy enforces the registry's base sandbox write policy on an
-// in-process write. Inactive sandboxing leaves writes unrestricted, just like
-// wrapped commands.
-func checkWritePolicy(registry *ToolRegistry, abs string) error {
-	cfg, active, err := registry.SandboxWritePolicy()
-	if err != nil {
-		return fmt.Errorf("resolve sandbox policy: %w", err)
-	}
-	if !active {
-		return nil
-	}
-	return sandbox.WriteAllowed(cfg, abs)
 }
 
 func countLines(content string) int {

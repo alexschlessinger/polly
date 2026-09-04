@@ -143,3 +143,20 @@ func TestReadFileLoadsFromRegistryWithoutSandbox(t *testing.T) {
 		t.Fatalf("expected read_file to load without a sandbox, got %v", err)
 	}
 }
+
+func TestReadFileFollowsStableSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := writeTestFile(t, dir, "target.txt", "linked content\n")
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	tool := NewReadFileTool(NewToolRegistry(nil))
+	out, err := tool.Execute(context.Background(), map[string]any{"path": link})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "linked content") {
+		t.Fatalf("expected linked content, got %q", out)
+	}
+}

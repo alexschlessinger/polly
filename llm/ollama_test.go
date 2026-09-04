@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -149,5 +150,116 @@ func TestOllamaStreamedToolCallsAccumulate(t *testing.T) {
 	}
 	if complete.ToolCalls[0].ID == complete.ToolCalls[1].ID {
 		t.Fatalf("synthetic IDs collide: %q", complete.ToolCalls[0].ID)
+	}
+}
+
+// TestOllamaSendsSchemaAsFormat: a response schema goes to the server as the
+// format object itself, so decoding is constrained to it rather than to
+// "any JSON".
+func TestOllamaSendsSchemaAsFormat(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &gotBody)
+		w.Write([]byte(
+			`{"message":{"role":"assistant","content":"{\"name\":\"x\"}"},"done":false}` + "\n" +
+				`{"message":{"role":"assistant","content":""},"done":true}` + "\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	schema := &Schema{Raw: map[string]any{
+		"type":       "object",
+		"required":   []any{"name"},
+		"properties": map[string]any{"name": map[string]any{"type": "string"}},
+	}}
+	complete, _ := collectOllamaStream(t, server, &CompletionRequest{
+		Model:          "test-model",
+		Messages:       messages.User("name something"),
+		MaxTokens:      16,
+		ResponseSchema: schema,
+	})
+	if complete.Content != `{"name":"x"}` {
+		t.Fatalf("content = %q", complete.Content)
+	}
+	format, ok := gotBody["format"].(map[string]any)
+	if !ok {
+		t.Fatalf("format = %#v, want the schema object", gotBody["format"])
+	}
+	if format["type"] != "object" {
+		t.Fatalf("format type = %v", format["type"])
+	}
+	props, _ := format["properties"].(map[string]any)
+	if _, ok := props["name"]; !ok {
+		t.Fatalf("format lacks the schema's properties: %#v", format)
+	}
+	// The prompt still describes the schema for the model.
+	msgs, _ := gotBody["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatal("no messages sent")
+	}
+	first, _ := msgs[0].(map[string]any)
+	if first["role"] != "system" || !strings.Contains(first["content"].(string), `"name"`) {
+		t.Fatalf("first message = %#v, want a system prompt describing the schema", first)
+	}
+}
+
+// TestOllamaStreamEndingBeforeDoneIsAnError: a stream that closes without
+// its done chunk was cut off upstream; the partial reply must surface as an
+// error, not as a completed turn.
+func TestOllamaStreamEndingBeforeDoneIsAnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"message":{"role":"assistant","content":"partial"},"done":false}` + "\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewOllamaClient(server.URL, "")
+	var errEvent error
+	var complete *messages.ChatMessage
+	for event := range client.ChatCompletionStream(context.Background(), &CompletionRequest{
+		Model: "test-model", Messages: messages.User("hello"), MaxTokens: 16,
+	}, messages.NewStreamProcessor()) {
+		switch event.Type {
+		case messages.EventTypeError:
+			errEvent = event.Error
+		case messages.EventTypeComplete:
+			complete = event.Message
+		}
+	}
+	if errEvent == nil || !strings.Contains(errEvent.Error(), "terminal event") {
+		t.Fatalf("error = %v, want the early-end error", errEvent)
+	}
+	if complete != nil && complete.StopReason != messages.StopReasonError {
+		t.Fatalf("a cut-off stream completed as %+v", complete)
+	}
+}
+
+// TestMessagesToOllamaReplaysCallIDsAndIndexes: replayed tool calls keep the
+// server's IDs (even ones spelled call_…), number their position, and the
+// tool response echoes the call ID; polly's synthetic IDs stay internal.
+func TestMessagesToOllamaReplaysCallIDsAndIndexes(t *testing.T) {
+	msgs := []messages.ChatMessage{
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{
+			{ID: "call_native9", Name: "a", Arguments: `{"x":1}`},
+			{ID: "ollama_call_0123abcd_1", Name: "b", Arguments: `{}`},
+		}},
+		{Role: messages.MessageRoleTool, ToolCallID: "call_native9", ToolName: "a", Content: "ok"},
+		{Role: messages.MessageRoleTool, ToolCallID: "ollama_call_0123abcd_1", ToolName: "b", Content: "ok"},
+	}
+	out := MessagesToOllama(msgs)
+	if len(out) != 3 {
+		t.Fatalf("%d messages, want 3", len(out))
+	}
+	calls := out[0].ToolCalls
+	if len(calls) != 2 || calls[0].ID != "call_native9" || calls[1].ID != "" {
+		t.Fatalf("replayed calls = %+v", calls)
+	}
+	if calls[0].Function.Index != 0 || calls[1].Function.Index != 1 {
+		t.Fatalf("indexes = %d, %d, want 0, 1", calls[0].Function.Index, calls[1].Function.Index)
+	}
+	if out[1].Role != "tool" || out[1].ToolCallID != "call_native9" || out[1].ToolName != "a" {
+		t.Fatalf("tool response = %+v", out[1])
+	}
+	if out[2].ToolCallID != "" {
+		t.Fatalf("synthetic ID leaked into a tool response: %+v", out[2])
 	}
 }

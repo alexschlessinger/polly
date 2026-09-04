@@ -145,3 +145,26 @@ func TestExpandToolCallMalformedArguments(t *testing.T) {
 		t.Fatalf("malformed args should render as-is, got %q", got)
 	}
 }
+
+func TestExpandToolCallRedactsNestedSecrets(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{
+		"url": "https://x",
+		"headers": map[string]any{
+			"Authorization": "Bearer hunter2",
+			"Accept":        "application/json",
+		},
+		"servers": []any{
+			map[string]any{"name": "a", "config": map[string]any{"api_key": "hunter3"}},
+		},
+	})
+	got := expandToolCall(messages.ChatMessageToolCall{Name: "fetch", Arguments: string(args)})
+	if strings.Contains(got, "hunter2") || strings.Contains(got, "hunter3") {
+		t.Fatalf("expansion leaked a nested sensitive value: %q", got)
+	}
+	if !strings.Contains(got, "application/json") || !strings.Contains(got, "https://x") {
+		t.Fatalf("expansion lost ordinary nested args: %q", got)
+	}
+	if strings.Count(got, "<redacted>") != 2 {
+		t.Fatalf("expected two redactions, got %q", got)
+	}
+}

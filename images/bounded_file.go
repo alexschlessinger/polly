@@ -40,7 +40,22 @@ func ReadBoundedFile(path string, maxBytes int64) ([]byte, error) {
 		return nil, err
 	}
 	defer file.Close()
+	return ReadBoundedFrom(file, maxBytes)
+}
 
+// ReadBoundedFrom reads an already-open file of at most maxBytes bytes,
+// verifying the descriptor itself rather than trusting an earlier lookup.
+func ReadBoundedFrom(file *os.File, maxBytes int64) ([]byte, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file")
+	}
+	if info.Size() < 0 || info.Size() > maxBytes {
+		return nil, fmt.Errorf("file exceeds the %d MiB limit", maxBytes>>20)
+	}
 	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil {
 		return nil, err

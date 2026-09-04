@@ -59,6 +59,11 @@ type Result struct {
 	// Started marks a background child that is running; its reply follows
 	// as a later message.
 	Started bool
+	// Done, for a started child, is closed by the host once the child has
+	// settled. The tool keeps the child's concurrency slot until then, so
+	// the cap counts children that are running, not calls that are waiting.
+	// A host that leaves it nil frees the slot when the call returns.
+	Done <-chan struct{}
 }
 
 // String is the tool result the parent model reads: the reply, then the
@@ -149,8 +154,17 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) (string, error)
 	if err := t.acquire(ctx); err != nil {
 		return "", err
 	}
-	defer t.release()
 	res, err := t.run(ctx, req)
+	if err == nil && res.Started && res.Done != nil {
+		// The child runs on after this call returns; its slot stays taken
+		// until the host reports it settled.
+		go func() {
+			<-res.Done
+			t.release()
+		}()
+	} else {
+		t.release()
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", context.Cause(ctx)

@@ -321,11 +321,7 @@ func expandToolCall(tc messages.ChatMessageToolCall) string {
 			return capLines(strings.TrimRight(cmd, "\n"), approvalViewMaxLines)
 		}
 	}
-	for key := range raw {
-		if sensitiveToolArgKey(key) {
-			raw[key] = "<redacted>"
-		}
-	}
+	redactSensitiveArgs(raw)
 	// Encoder rather than MarshalIndent: the latter HTML-escapes angle
 	// brackets, garbling the redaction marker into unicode escapes.
 	var pretty bytes.Buffer
@@ -336,6 +332,26 @@ func expandToolCall(tc messages.ChatMessageToolCall) string {
 		return capLines(tc.Arguments, approvalViewMaxLines)
 	}
 	return capLines(strings.TrimRight(pretty.String(), "\n"), approvalViewMaxLines)
+}
+
+// redactSensitiveArgs replaces sensitive values anywhere in a decoded JSON
+// argument tree, so a token nested inside a headers or config object is
+// hidden just like one at the top level.
+func redactSensitiveArgs(v any) {
+	switch node := v.(type) {
+	case map[string]any:
+		for key, value := range node {
+			if sensitiveToolArgKey(key) {
+				node[key] = "<redacted>"
+				continue
+			}
+			redactSensitiveArgs(value)
+		}
+	case []any:
+		for _, item := range node {
+			redactSensitiveArgs(item)
+		}
+	}
 }
 
 // capLines bounds s to max lines, noting how much was elided.

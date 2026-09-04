@@ -492,13 +492,18 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	return responseFor(last, a.config.MaxIterations), ErrMaxIterations
 }
 
-// processEvents processes the event stream and returns the final message
+// processEvents processes the event stream and returns the final message.
+// When the context is canceled the stream is abandoned, but not its
+// producers: the processor goroutine writes into a small buffer regardless of
+// readers, so the channel is drained in the background until the provider
+// notices the cancellation and closes it.
 func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.StreamEvent, cb *AgentCallbacks) (*messages.ChatMessage, error) {
 	var response *messages.ChatMessage
 
 	for event := range events {
 		select {
 		case <-ctx.Done():
+			go drainAbandonedEvents(events)
 			return nil, ctx.Err()
 		default:
 		}
@@ -527,6 +532,14 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 	}
 
 	return response, nil
+}
+
+// drainEvents consumes an abandoned event stream until it closes, so the
+// processor and provider goroutines feeding it can finish instead of blocking
+// on a channel nobody reads.
+func drainAbandonedEvents(events <-chan *messages.StreamEvent) {
+	for range events {
+	}
 }
 
 // executeTool executes a single tool call and returns the result message. Tool

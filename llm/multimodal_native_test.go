@@ -79,7 +79,7 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 	})
 
 	t.Run("gemini inlineData", func(t *testing.T) {
-		serverURL, captured := newNativeRequestCaptureServer(t, `{}`)
+		serverURL, captured := newNativeRequestCaptureServer(t, `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
 		routeDefaultTransportTo(t, serverURL)
 		client, err := NewGeminiClient("test-key")
 		if err != nil {
@@ -146,7 +146,7 @@ func TestUnreferencedHistoricalImageIsAbsentFromNativeProviderRequests(t *testin
 			client: func(string) LLM { return NewAnthropicClient("test-key") },
 		},
 		{
-			name: "gemini", model: "gemini-2.5-flash", response: `{}`, path: "/v1beta/models/gemini-2.5-flash:generateContent", route: true,
+			name: "gemini", model: "gemini-2.5-flash", response: `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`, path: "/v1beta/models/gemini-2.5-flash:generateContent", route: true,
 			client: func(string) LLM {
 				client, err := NewGeminiClient("test-key")
 				if err != nil {

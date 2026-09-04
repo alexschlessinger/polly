@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -159,8 +161,8 @@ func resolveRemoteSkill(source string) (*ResolvedSkill, error) {
 	}
 
 	// Check if already cached.
-	if name, err := findSkillInDir(cacheDir); err == nil {
-		return &ResolvedSkill{Dir: filepath.Join(cacheDir, name), Name: name}, nil
+	if dir, err := findCachedSkill(cacheDir); err == nil {
+		return &ResolvedSkill{Dir: dir, Name: filepath.Base(dir)}, nil
 	}
 
 	if isGitURL(source) {
@@ -214,24 +216,72 @@ func parseGitTreeURL(rawURL string) *gitTreeURL {
 	return result
 }
 
-// moveDir moves src to dest, falling back to a recursive copy when
-// os.Rename fails (e.g. cross-device moves between /tmp and /home).
-func moveDir(src, dest string) error {
-	if err := os.Rename(src, dest); err == nil {
+// Remote skill trees are bounded so a hostile archive cannot exhaust disk or
+// inodes: the per-file, whole-tree, and entry-count limits all fail the fetch
+// rather than silently truncating what lands in the cache.
+const (
+	maxArchiveFileBytes  = 32 << 20
+	maxArchiveTotalBytes = 128 << 20
+	maxArchiveEntries    = 10000
+)
+
+// rejectSymlinks fails when the tree under dir contains a symbolic link or any
+// other non-regular file. Remote skill files are read by path later, so a link
+// planted by the repository could otherwise point a skill file at a host
+// secret and have it copied, displayed, or sent to a model.
+func rejectSymlinks(dir string) error {
+	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == dir || d.IsDir() {
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			rel, _ := filepath.Rel(dir, path)
+			return fmt.Errorf("%s is not a regular file (%s); remote skills may not contain symbolic links or special files", rel, d.Type())
+		}
 		return nil
+	})
+}
+
+// moveDir moves the fetched skill tree at src to dest. Trees containing
+// symbolic links are rejected, and the copy fallback is used only for
+// cross-device moves, copying regular files by content so nothing is read
+// through a link.
+func moveDir(src, dest string) error {
+	if err := rejectSymlinks(src); err != nil {
+		return err
+	}
+	err := os.Rename(src, dest)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, syscall.EXDEV) {
+		return err
 	}
 	return copyDir(src, dest)
 }
 
 func copyDir(src, dest string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(src, path)
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
 		target := filepath.Join(dest, rel)
-		if info.IsDir() {
+		if d.IsDir() {
 			return os.MkdirAll(target, 0755)
+		}
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("%s is not a regular file", rel)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -241,13 +291,70 @@ func copyDir(src, dest string) error {
 	})
 }
 
-func cloneGitSkill(rawURL, cacheDir string) (*ResolvedSkill, error) {
-	// Clone into a temp dir, then move into cache to avoid partial state.
-	tmpDir, err := os.MkdirTemp("", "polly-skill-*")
+// stagingDir creates a scratch directory beside cacheDir for a fetch in
+// progress, so that only a complete, validated skill is ever moved into the
+// cache (by a same-device rename) and a failed fetch leaves nothing that a
+// later run could mistake for a cached skill.
+func stagingDir(cacheDir string) (string, func(), error) {
+	dir, err := os.MkdirTemp(filepath.Dir(cacheDir), filepath.Base(cacheDir)+".partial-")
 	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
+		return "", nil, fmt.Errorf("create staging dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+// stageSkill locates the skill inside a freshly fetched tree and moves it to
+// cacheDir/<name>. The name is the skill directory's name, or the SKILL.md
+// frontmatter name when the file sits at the tree root and the fetched
+// directory therefore has no meaningful name of its own.
+func stageSkill(tree, cacheDir string) (*ResolvedSkill, error) {
+	skillDir, err := findSkillDir(tree)
+	if err != nil {
+		return nil, err
+	}
+	name := filepath.Base(skillDir)
+	if skillDir == tree {
+		name, err = skillNameFromFile(filepath.Join(tree, skillFileName))
+		if err != nil {
+			return nil, err
+		}
+	}
+	dest := filepath.Join(cacheDir, name)
+	if err := os.RemoveAll(dest); err != nil {
+		return nil, fmt.Errorf("clear cache entry: %w", err)
+	}
+	if err := moveDir(skillDir, dest); err != nil {
+		return nil, fmt.Errorf("cache skill: %w", err)
+	}
+	return &ResolvedSkill{Dir: dest, Name: name}, nil
+}
+
+// skillNameFromFile reads the validated skill name from a SKILL.md so a
+// root-level skill can be cached under a directory the catalog will accept.
+func skillNameFromFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	meta, _, err := parseSkillMarkdown(string(data))
+	if err != nil {
+		return "", fmt.Errorf("parse %s: %w", skillFileName, err)
+	}
+	name := strings.TrimSpace(meta.Name)
+	if name == "" || len(name) > 64 || !skillNamePattern.MatchString(name) {
+		return "", fmt.Errorf("%s has no valid skill name", skillFileName)
+	}
+	return name, nil
+}
+
+func cloneGitSkill(rawURL, cacheDir string) (*ResolvedSkill, error) {
+	// Clone into a staging dir beside the cache, then move the skill into
+	// place so a failed clone never leaves partial state in the cache.
+	tmpDir, cleanup, err := stagingDir(cacheDir)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
 
 	cloneURL := rawURL
 	var subpath string
@@ -275,41 +382,33 @@ func cloneGitSkill(rawURL, cacheDir string) (*ResolvedSkill, error) {
 	searchDir := tmpDir
 	if subpath != "" {
 		searchDir = filepath.Join(tmpDir, subpath)
-		if info, err := os.Stat(searchDir); err != nil || !info.IsDir() {
+		if info, err := os.Lstat(searchDir); err != nil || !info.IsDir() {
 			return nil, fmt.Errorf("skill from %s: subpath %q not found in repo", rawURL, subpath)
-		}
-		// Check if the subpath itself contains SKILL.md.
-		if _, err := os.Stat(filepath.Join(searchDir, skillFileName)); err == nil {
-			name := filepath.Base(subpath)
-			dest := filepath.Join(cacheDir, name)
-			if err := moveDir(searchDir, dest); err != nil {
-				return nil, fmt.Errorf("cache skill from %s: %w", rawURL, err)
-			}
-			return &ResolvedSkill{Dir: dest, Name: name}, nil
 		}
 	}
 
-	name, err := findSkillInDir(searchDir)
+	resolved, err := stageSkill(searchDir, cacheDir)
 	if err != nil {
 		return nil, fmt.Errorf("skill from %s: %w", rawURL, err)
 	}
-
-	dest := filepath.Join(cacheDir, name)
-	if err := moveDir(filepath.Join(searchDir, name), dest); err != nil {
-		return nil, fmt.Errorf("cache skill from %s: %w", rawURL, err)
-	}
-
-	return &ResolvedSkill{Dir: dest, Name: name}, nil
+	return resolved, nil
 }
 
-// findSkillInDir looks for a SKILL.md in dir itself or in a single subdirectory.
-func findSkillInDir(dir string) (string, error) {
-	// Check if SKILL.md is at the root of the cloned repo.
-	if _, err := os.Stat(filepath.Join(dir, skillFileName)); err == nil {
-		return filepath.Base(dir), nil
+// findSkillDir returns the directory holding SKILL.md within a fetched tree:
+// dir itself, or its single skill subdirectory.
+func findSkillDir(dir string) (string, error) {
+	if _, err := os.Lstat(filepath.Join(dir, skillFileName)); err == nil {
+		return dir, nil
 	}
+	if sub, err := findCachedSkill(dir); err == nil {
+		return sub, nil
+	}
+	return "", fmt.Errorf("no %s found", skillFileName)
+}
 
-	// Look for a single skill subdirectory.
+// findCachedSkill returns the single subdirectory of dir that holds SKILL.md,
+// which is the layout every cached skill has.
+func findCachedSkill(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", err
@@ -318,8 +417,8 @@ func findSkillInDir(dir string) (string, error) {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(dir, e.Name(), skillFileName)); err == nil {
-			return e.Name(), nil
+		if _, err := os.Lstat(filepath.Join(dir, e.Name(), skillFileName)); err == nil {
+			return filepath.Join(dir, e.Name()), nil
 		}
 	}
 	return "", fmt.Errorf("no %s found", skillFileName)
@@ -336,26 +435,90 @@ func fetchArchiveSkill(rawURL, cacheDir string) (*ResolvedSkill, error) {
 		return nil, fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
 	}
 
+	// Extract into a staging dir beside the cache, then move the skill into
+	// place so a failed or truncated extraction never leaves partial state in
+	// the cache.
+	tmpDir, cleanup, err := stagingDir(cacheDir)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
 	lower := strings.ToLower(rawURL)
 	switch {
 	case strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz"):
-		if err := extractTarGz(resp.Body, cacheDir); err != nil {
+		if err := extractTarGz(resp.Body, tmpDir); err != nil {
 			return nil, fmt.Errorf("extract %s: %w", rawURL, err)
 		}
 	case strings.HasSuffix(lower, ".zip"):
-		if err := extractZipFromHTTP(resp.Body, cacheDir); err != nil {
+		if err := extractZipFromHTTP(resp.Body, tmpDir); err != nil {
 			return nil, fmt.Errorf("extract %s: %w", rawURL, err)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported archive format: %s (expected .tar.gz, .tgz, or .zip)", rawURL)
 	}
 
-	name, err := findSkillInDir(cacheDir)
+	resolved, err := stageSkill(tmpDir, cacheDir)
 	if err != nil {
 		return nil, fmt.Errorf("skill from %s: %w", rawURL, err)
 	}
+	return resolved, nil
+}
 
-	return &ResolvedSkill{Dir: filepath.Join(cacheDir, name), Name: name}, nil
+// archiveBudget enforces the entry-count and total-size limits across one
+// archive extraction.
+type archiveBudget struct {
+	entries int
+	bytes   int64
+}
+
+func (b *archiveBudget) addEntry() error {
+	b.entries++
+	if b.entries > maxArchiveEntries {
+		return fmt.Errorf("archive has more than %d entries", maxArchiveEntries)
+	}
+	return nil
+}
+
+func (b *archiveBudget) addBytes(n int64) error {
+	b.bytes += n
+	if b.bytes > maxArchiveTotalBytes {
+		return fmt.Errorf("archive expands to more than %d bytes", maxArchiveTotalBytes)
+	}
+	return nil
+}
+
+// archiveTarget maps an archive entry name to a path under destDir, rejecting
+// absolute names and names that climb out of destDir.
+func archiveTarget(destDir, name string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(name))
+	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("archive entry %q escapes the extraction directory", name)
+	}
+	return filepath.Join(destDir, clean), nil
+}
+
+// writeArchiveFile writes one regular archive entry, failing rather than
+// truncating when the entry is larger than declared or than allowed.
+func writeArchiveFile(target string, mode os.FileMode, r io.Reader, budget *archiveBudget) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode&0755)
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(f, io.LimitReader(r, maxArchiveFileBytes+1))
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if n > maxArchiveFileBytes {
+		return fmt.Errorf("archive entry %s is larger than %d bytes", filepath.Base(target), maxArchiveFileBytes)
+	}
+	return budget.addBytes(n)
 }
 
 func extractTarGz(r io.Reader, destDir string) error {
@@ -365,6 +528,7 @@ func extractTarGz(r io.Reader, destDir string) error {
 	}
 	defer gz.Close()
 
+	var budget archiveBudget
 	tr := tar.NewReader(gz)
 	for {
 		header, err := tr.Next()
@@ -374,10 +538,12 @@ func extractTarGz(r io.Reader, destDir string) error {
 		if err != nil {
 			return err
 		}
-
-		target := filepath.Join(destDir, filepath.Clean(header.Name))
-		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) && target != filepath.Clean(destDir) {
-			continue // skip entries that escape destDir
+		if err := budget.addEntry(); err != nil {
+			return err
+		}
+		target, err := archiveTarget(destDir, header.Name)
+		if err != nil {
+			return err
 		}
 
 		switch header.Typeflag {
@@ -386,25 +552,22 @@ func extractTarGz(r io.Reader, destDir string) error {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			if header.Size > maxArchiveFileBytes {
+				return fmt.Errorf("archive entry %s is larger than %d bytes", header.Name, maxArchiveFileBytes)
+			}
+			if err := writeArchiveFile(target, os.FileMode(header.Mode), tr, &budget); err != nil {
 				return err
 			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode)&0755)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, io.LimitReader(tr, maxSkillFileSize*100)); err != nil {
-				f.Close()
-				return err
-			}
-			f.Close()
+		default:
+			// Links, devices, and other special entries are never materialized.
 		}
 	}
 	return nil
 }
 
 func extractZipFromHTTP(r io.Reader, destDir string) error {
-	// zip needs random access, so buffer to a temp file.
+	// zip needs random access, so buffer to a temp file, bounded by the same
+	// total the expanded tree may reach.
 	tmp, err := os.CreateTemp("", "polly-skill-zip-*")
 	if err != nil {
 		return err
@@ -412,48 +575,51 @@ func extractZipFromHTTP(r io.Reader, destDir string) error {
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 
-	if _, err := io.Copy(tmp, io.LimitReader(r, maxSkillFileSize*100)); err != nil {
+	size, err := io.Copy(tmp, io.LimitReader(r, maxArchiveTotalBytes+1))
+	if err != nil {
 		return err
 	}
+	if size > maxArchiveTotalBytes {
+		return fmt.Errorf("archive is larger than %d bytes", maxArchiveTotalBytes)
+	}
 
-	info, err := tmp.Stat()
+	zr, err := zip.NewReader(tmp, size)
 	if err != nil {
 		return err
 	}
 
-	zr, err := zip.NewReader(tmp, info.Size())
-	if err != nil {
-		return err
-	}
-
+	var budget archiveBudget
 	for _, f := range zr.File {
-		target := filepath.Join(destDir, filepath.Clean(f.Name))
-		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) && target != filepath.Clean(destDir) {
-			continue
+		if err := budget.addEntry(); err != nil {
+			return err
+		}
+		target, err := archiveTarget(destDir, f.Name)
+		if err != nil {
+			return err
 		}
 
 		if f.FileInfo().IsDir() {
-			os.MkdirAll(target, 0755)
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
 			continue
 		}
-
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
+		if !f.Mode().IsRegular() {
+			// Links and other special entries are never materialized.
+			continue
 		}
+		if f.UncompressedSize64 > maxArchiveFileBytes {
+			return fmt.Errorf("archive entry %s is larger than %d bytes", f.Name, maxArchiveFileBytes)
+		}
+
 		rc, err := f.Open()
 		if err != nil {
 			return err
 		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode()&0755)
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		_, copyErr := io.Copy(out, io.LimitReader(rc, maxSkillFileSize*100))
+		err = writeArchiveFile(target, f.Mode(), rc, &budget)
 		rc.Close()
-		out.Close()
-		if copyErr != nil {
-			return copyErr
+		if err != nil {
+			return err
 		}
 	}
 	return nil

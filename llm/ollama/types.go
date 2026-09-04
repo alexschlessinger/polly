@@ -22,6 +22,9 @@ type Message struct {
 	Images    []ImageData `json:"images,omitempty"`
 	ToolCalls []ToolCall  `json:"tool_calls,omitempty"`
 	ToolName  string      `json:"tool_name,omitempty"`
+	// ToolCallID, on a tool response, names the call it answers when the
+	// server issued call IDs.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // ToolCall is a tool invocation requested by the model.
@@ -76,8 +79,12 @@ type ChatRequest struct {
 	Think    any             `json:"think,omitempty"`
 }
 
+// DoneReasonLength is the DoneReason of a reply cut off by num_predict.
+const DoneReasonLength = "length"
+
 // ChatResponse is one NDJSON line of a chat: an incremental chunk, or the
-// final summary when Done is true (which carries the token counts).
+// final summary when Done is true (which carries the token counts and
+// DoneReason: "stop", or "length" when num_predict truncated the reply).
 type ChatResponse struct {
 	Model           string  `json:"model"`
 	Message         Message `json:"message"`

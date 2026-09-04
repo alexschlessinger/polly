@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -156,5 +157,68 @@ func TestEditFileSandboxDenyPathsBlocksRead(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "sandbox policy") {
 		t.Fatalf("expected read denial, got %v", err)
+	}
+}
+
+func TestEditFileConcurrentEditsBothApply(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewEditFileTool(NewToolRegistry(nil))
+	for round := 0; round < 20; round++ {
+		if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		errs := make(chan error, 2)
+		for _, edit := range [][2]string{{"alpha", "ALPHA"}, {"beta", "BETA"}} {
+			wg.Add(1)
+			go func(oldText, newText string) {
+				defer wg.Done()
+				_, err := tool.Execute(context.Background(), map[string]any{"path": path, "old_string": oldText, "new_string": newText})
+				errs <- err
+			}(edit[0], edit[1])
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "ALPHA\nBETA\n" {
+			t.Fatalf("round %d: concurrent edits lost a change: %q", round, data)
+		}
+	}
+}
+
+func TestEditFileRefusesSymlinkSwappedAfterCheck(t *testing.T) {
+	// A symlinked path is resolved and edited in place; the edit lands on the
+	// resolved target, never through a link at open time.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("hello world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	tool := NewEditFileTool(NewToolRegistry(nil))
+	if _, err := tool.Execute(context.Background(), map[string]any{"path": link, "old_string": "hello", "new_string": "goodbye"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	data, _ := os.ReadFile(target)
+	if string(data) != "goodbye world\n" {
+		t.Fatalf("edit through link did not reach target: %q", data)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link was replaced: %v %v", info, err)
 	}
 }

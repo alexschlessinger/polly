@@ -2,7 +2,10 @@ package skills
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -253,5 +256,153 @@ func TestLoadCatalogDiscoversSkills(t *testing.T) {
 	}
 	if _, ok := catalog.Get("test-skill"); !ok {
 		t.Fatal("catalog missing test-skill")
+	}
+}
+
+func TestMoveDirRejectsSymlinks(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "skill")
+	if err := os.MkdirAll(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secret, []byte("host secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(src, "SKILL.md")); err != nil {
+		t.Skipf("Symlink() unavailable: %v", err)
+	}
+	dest := filepath.Join(t.TempDir(), "cached")
+	err := moveDir(src, dest)
+	if err == nil || !strings.Contains(err.Error(), "symbolic links") {
+		t.Fatalf("moveDir() error = %v, want symlink rejection", err)
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Fatalf("moveDir() left %s behind: %v", dest, statErr)
+	}
+}
+
+func TestExtractTarGzRejectsEscapingEntry(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	if err := tw.WriteHeader(&tar.Header{Name: "../evil.txt", Mode: 0644, Size: 4, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	tw.Write([]byte("evil"))
+	tw.Close()
+	gw.Close()
+
+	dest := t.TempDir()
+	err := extractTarGz(&buf, dest)
+	if err == nil || !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("extractTarGz() error = %v, want escape rejection", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(filepath.Dir(dest), "evil.txt")); !os.IsNotExist(statErr) {
+		t.Fatal("escaping entry was written")
+	}
+}
+
+func TestExtractTarGzRejectsTooManyEntries(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	for i := 0; i <= maxArchiveEntries; i++ {
+		if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("f%d", i), Mode: 0644, Size: 0, Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tw.Close()
+	gw.Close()
+
+	err := extractTarGz(&buf, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "entries") {
+		t.Fatalf("extractTarGz() error = %v, want entry limit", err)
+	}
+}
+
+func TestExtractTarGzRejectsOversizedEntry(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	size := int64(maxArchiveFileBytes + 1)
+	if err := tw.WriteHeader(&tar.Header{Name: "big.bin", Mode: 0644, Size: size, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.CopyN(tw, zeroReader{}, size); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	gw.Close()
+
+	err := extractTarGz(&buf, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("extractTarGz() error = %v, want size limit", err)
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+func TestResolveSkillArchiveWithRootLevelSkill(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	root := t.TempDir()
+	createTestSkill(t, root, "root-skill", "skill at the archive root")
+
+	// Archive the skill's contents at the top level, with no wrapping dir.
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	skillDir := filepath.Join(root, "root-skill")
+	filepath.Walk(skillDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || path == skillDir {
+			return err
+		}
+		rel, _ := filepath.Rel(skillDir, path)
+		header, _ := tar.FileInfoHeader(info, "")
+		header.Name = rel
+		tw.WriteHeader(header)
+		if !info.IsDir() {
+			data, _ := os.ReadFile(path)
+			tw.Write(data)
+		}
+		return nil
+	})
+	tw.Close()
+	gw.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(buf.Bytes())
+	}))
+	defer server.Close()
+
+	resolved, err := ResolveSkill(server.URL + "/root.tar.gz")
+	if err != nil {
+		t.Fatalf("ResolveSkill() error = %v", err)
+	}
+	if resolved.Name != "root-skill" {
+		t.Fatalf("Name = %q, want root-skill", resolved.Name)
+	}
+	if filepath.Base(resolved.Dir) != "root-skill" {
+		t.Fatalf("Dir = %q, want a root-skill directory", resolved.Dir)
+	}
+	if _, err := os.Stat(filepath.Join(resolved.Dir, "SKILL.md")); err != nil {
+		t.Fatalf("SKILL.md missing in resolved dir: %v", err)
+	}
+	// Nothing partial is left beside the cache entry.
+	entries, _ := os.ReadDir(filepath.Dir(filepath.Dir(resolved.Dir)))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".partial-") {
+			t.Fatalf("staging dir %s left behind", e.Name())
+		}
+	}
+	if _, err := Discover([]string{filepath.Dir(resolved.Dir)}); err != nil {
+		t.Fatalf("Discover(cached) error = %v", err)
 	}
 }

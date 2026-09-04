@@ -164,6 +164,24 @@ func (sc *StreamingCore) ProcessChunk(chunk any) error {
 	return sc.adapter.ProcessChunk(chunk, sc.state)
 }
 
+// ErrStreamEndedEarly reports a provider stream that closed before its
+// terminal event: no stop reason ever arrived, so whatever accumulated is a
+// partial reply that must not be persisted as a finished turn.
+var ErrStreamEndedEarly = errors.New("stream ended before the provider's terminal event")
+
+// CompleteStream finishes a streamed response. Every provider marks the end
+// of a response with a terminal event that carries the stop reason; a stream
+// that ends without one has been cut short upstream — a proxy or connection
+// dropping it reads as a clean EOF — so an error is emitted instead of a
+// partial (or blank) reply presented as complete.
+func (sc *StreamingCore) CompleteStream() {
+	if sc.state.GetStopReason() == "" {
+		sc.EmitError(ErrStreamEndedEarly)
+		return
+	}
+	sc.Complete()
+}
+
 // Complete sends the final accumulated message with all metadata
 func (sc *StreamingCore) Complete() {
 	sc.activity()

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -72,10 +73,10 @@ func newShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool,
 	// Load schema from the tool, sandboxed if a sandbox is provided.
 	var schemaJSON string
 	var err error
-	if len(schemaSandbox) > 0 && schemaSandbox[0] != nil {
-		schemaJSON, err = tool.runCommandSandboxed("--schema", schemaSandbox[0])
+	if len(schemaSandbox) > 0 {
+		schemaJSON, err = tool.runCommand("--schema", schemaSandbox[0])
 	} else {
-		schemaJSON, err = tool.runCommand("--schema")
+		schemaJSON, err = tool.runCommand("--schema", nil)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema from %s: %v", command, err)
@@ -162,7 +163,10 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 	}
 	defer func() { _ = closeSandboxFiles() }()
 
-	output, err := cmd.CombinedOutput()
+	output := newBoundedBuffer(capturedOutputLimit)
+	cmd.Stdout = output
+	cmd.Stderr = output
+	err = cmd.Run()
 
 	// Log execution details
 	if cmd.ProcessState != nil {
@@ -177,7 +181,7 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 			"exit_code", cmd.ProcessState.ExitCode())
 	}
 
-	result := strings.TrimSpace(string(output))
+	result := strings.TrimSpace(output.String())
 	if err != nil {
 		return result, fmt.Errorf("tool execution failed: %v (output: %s)", err, result)
 	}
@@ -185,29 +189,42 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 	return result, nil
 }
 
-// runCommand executes the shell tool with a single argument.
-func (s *ShellTool) runCommand(arg string) (string, error) {
-	cmd := exec.Command(s.Command, arg)
-	output, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(output)), nil
-}
+// Schema discovery runs a tool binary the model never sees the output of, so
+// it gets a fixed deadline and a small output bound instead of the agent's
+// per-call timeout: a hung or chatty --schema must not stall or bloat startup.
+const (
+	schemaDiscoveryTimeout = 30 * time.Second
+	schemaOutputLimit      = 1 << 20
+)
 
-// runCommandSandboxed executes the shell tool inside a sandbox.
-func (s *ShellTool) runCommandSandboxed(arg string, sb sandbox.Sandbox) (string, error) {
-	cmd := exec.Command(s.Command, arg)
+// runCommand executes the shell tool with a single argument, inside sb when
+// it is non-nil, bounded by schemaDiscoveryTimeout and schemaOutputLimit.
+func (s *ShellTool) runCommand(arg string, sb sandbox.Sandbox) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), schemaDiscoveryTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, s.Command, arg)
 	closeSandboxFiles, err := sandbox.WrapCmdManaged(sb, cmd)
 	if err != nil {
 		return "", fmt.Errorf("sandbox: %w", err)
 	}
 	defer func() { _ = closeSandboxFiles() }()
-	output, err := cmd.Output()
-	if err != nil {
+	stdout := newBoundedBuffer(schemaOutputLimit)
+	stderr := newBoundedBuffer(schemaOutputLimit)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("%s %s timed out after %v", s.Command, arg, schemaDiscoveryTimeout)
+		}
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
 		return "", err
 	}
-	return strings.TrimSpace(string(output)), nil
+	if stdout.Truncated() {
+		return "", fmt.Errorf("%s %s produced more than %d bytes", s.Command, arg, schemaOutputLimit)
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // LoadShellTools loads unsandboxed shell tools using the legacy best-effort
@@ -251,7 +268,7 @@ func LoadShellToolsWithRegistry(registry *ToolRegistry, paths []string) ([]Tool,
 
 	loaded := make([]Tool, 0, len(records))
 	for _, record := range records {
-		registry.tools[record.name] = record.tool
+		registry.setToolLocked(record.name, record.tool, nil)
 		loaded = append(loaded, record.tool)
 		slog.Debug("shell_tool_registered", "tool_name", record.name)
 	}

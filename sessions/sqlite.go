@@ -1781,6 +1781,12 @@ func cloneMetadata(metadata *Metadata) *Metadata {
 	if metadata.SkillDirs != nil {
 		out.SkillDirs = append([]string(nil), metadata.SkillDirs...)
 	}
+	if metadata.ContextWindows != nil {
+		out.ContextWindows = make(map[string]int, len(metadata.ContextWindows))
+		for model, window := range metadata.ContextWindows {
+			out.ContextWindows[model] = window
+		}
+	}
 	if metadata.SkillSources != nil {
 		out.SkillSources = append([]string(nil), metadata.SkillSources...)
 	}

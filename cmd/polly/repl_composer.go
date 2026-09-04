@@ -463,24 +463,38 @@ func loadHistory(path string) []string {
 }
 
 // initHistory loads prior history into the model and opens an append handle,
-// rewriting the file to its trimmed tail so it stays bounded. All failures are
-// silent: a REPL with no persisted history is still fully functional.
+// rewriting the file to its trimmed tail so it stays bounded. The file is
+// shared by every polly the user runs: the handle appends (so entries from
+// concurrent sessions land whole, after one another) and the trim happens
+// under an exclusive lock, so two sessions starting together cannot splice
+// each other's rewrite. All failures are silent: a REPL with no persisted
+// history is still fully functional.
 func (r *managedREPL) initHistory() {
 	path, err := replHistoryPath()
 	if err != nil {
 		return
 	}
-	r.model.hist.entries = loadHistory(path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		r.model.hist.entries = loadHistory(path)
 		return
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
+		r.model.hist.entries = loadHistory(path)
 		return
 	}
-	for _, l := range r.model.hist.entries {
-		fmt.Fprintln(f, l)
+	if err := lockFile(f); err != nil {
+		r.model.hist.entries = loadHistory(path)
+		r.histFile = f
+		return
 	}
+	r.model.hist.entries = loadHistory(path)
+	if err := f.Truncate(0); err == nil {
+		for _, l := range r.model.hist.entries {
+			fmt.Fprintln(f, l)
+		}
+	}
+	_ = unlockFile(f)
 	r.histFile = f
 }
 
@@ -587,10 +601,14 @@ func (m *replModel) insertEditorText(s string) {
 // the cursor. The read happens off the event loop — osascript and friends can
 // take a beat — and lands via a UI task. Caller must hold r.model.mu.
 func (r *managedREPL) captureClipboardToComposer() {
-	if r.model.clipboardCapture {
+	// The capture belongs to the tab it started on: by the time the read
+	// lands, another tab may be visible, and the image (and the flag reset)
+	// must still go to the composer that asked for it.
+	m := r.model
+	if m.clipboardCapture {
 		return
 	}
-	r.model.clipboardCapture = true
+	m.clipboardCapture = true
 	go func() {
 		dir, err := attachmentCacheDir()
 		var path string
@@ -598,7 +616,6 @@ func (r *managedREPL) captureClipboardToComposer() {
 			path, err = captureClipboardImage(context.Background(), dir)
 		}
 		r.postUITask(func() {
-			m := r.model
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			m.clipboardCapture = false

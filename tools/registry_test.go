@@ -95,3 +95,75 @@ func TestRegistryRemove(t *testing.T) {
 		t.Error("Expected tool to not exist after removal")
 	}
 }
+
+func TestSetToolLockedClosesOrphanedClient(t *testing.T) {
+	registry := NewToolRegistry(nil)
+	first := &MCPClient{}
+	second := &MCPClient{}
+	registry.mu.Lock()
+	registry.setToolLocked("srv__a", &testTool{name: "srv__a"}, first)
+	registry.setToolLocked("srv__b", &testTool{name: "srv__b"}, first)
+	// Replacing one of two tools keeps the shared client alive.
+	registry.setToolLocked("srv__a", &testTool{name: "srv__a"}, second)
+	if first.Closed() {
+		t.Fatal("client closed while another tool still used it")
+	}
+	// Replacing the last tool that used it closes it.
+	registry.setToolLocked("srv__b", &testTool{name: "srv__b"}, nil)
+	registry.mu.Unlock()
+	if !first.Closed() {
+		t.Fatal("orphaned client was not closed")
+	}
+	if second.Closed() {
+		t.Fatal("live client was closed")
+	}
+	if _, ok := registry.toolClients["srv__b"]; ok {
+		t.Fatal("non-MCP replacement left a client mapping behind")
+	}
+}
+
+func TestSetToolLockedKeepsPendingClientAlive(t *testing.T) {
+	registry := NewToolRegistry(nil)
+	client := &MCPClient{}
+	registry.mu.Lock()
+	registry.setToolLocked("srv__a", &testTool{name: "srv__a"}, client)
+	registry.pendingToolClients["srv__c"] = client
+	registry.setToolLocked("srv__a", &testTool{name: "srv__a"}, nil)
+	registry.mu.Unlock()
+	if client.Closed() {
+		t.Fatal("client referenced by a pending tool was closed")
+	}
+}
+
+func TestDropServerToolsLockedClosesPreviousClient(t *testing.T) {
+	registry := NewToolRegistry(nil)
+	old := &MCPClient{}
+	registry.mu.Lock()
+	registry.setToolLocked("srv__a", &testTool{name: "srv__a"}, old)
+	registry.setToolLocked("srv__b", &testTool{name: "srv__b"}, old)
+	registry.serverTools["/cfg.json#srv"] = []string{"srv__a", "srv__b"}
+	registry.dropServerToolsLocked("/cfg.json#srv")
+	registry.mu.Unlock()
+	if !old.Closed() {
+		t.Fatal("previous server client was not closed")
+	}
+	if len(registry.tools) != 0 || len(registry.toolClients) != 0 || len(registry.serverTools) != 0 {
+		t.Fatalf("stale registration left behind: tools=%d clients=%d servers=%d", len(registry.tools), len(registry.toolClients), len(registry.serverTools))
+	}
+}
+
+func TestMCPClientCloseIsIdempotent(t *testing.T) {
+	client := &MCPClient{}
+	if client.Closed() {
+		t.Fatal("new client reports closed")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !client.Closed() {
+		t.Fatal("client does not report closed")
+	}
+}

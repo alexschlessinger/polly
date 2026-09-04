@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -127,14 +126,15 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) (string, er
 	}
 	defer func() { _ = closeSandboxFiles() }()
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newBoundedBuffer(capturedOutputLimit)
+	stderr := newBoundedBuffer(capturedOutputLimit)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	err = cmd.Run()
 
 	result := stdout.String()
-	if stderr.Len() > 0 {
+	if stderr.Len() > 0 || stderr.Truncated() {
 		if result != "" && !strings.HasSuffix(result, "\n") {
 			result += "\n"
 		}

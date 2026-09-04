@@ -124,7 +124,15 @@ func TestMapGeminiFinishReason(t *testing.T) {
 		{gemini.FinishReasonImageSafety, messages.StopReasonContentFilter},
 		{gemini.FinishReasonImageProhibitedContent, messages.StopReasonContentFilter},
 		{gemini.FinishReasonMalformedFunctionCall, messages.StopReasonError},
-		{"unknown", messages.StopReasonEndTurn},
+		{gemini.FinishReasonUnexpectedToolCall, messages.StopReasonError},
+		{gemini.FinishReasonTooManyToolCalls, messages.StopReasonError},
+		{gemini.FinishReasonLanguage, messages.StopReasonError},
+		{gemini.FinishReasonOther, messages.StopReasonError},
+		{gemini.FinishReasonImageRecitation, messages.StopReasonContentFilter},
+		{gemini.FinishReasonNoImage, messages.StopReasonError},
+		{gemini.FinishReasonUnspecified, messages.StopReasonError},
+		// A reason this build does not know is never a healthy end of turn.
+		{"MISSING_THOUGHT_SIGNATURE", messages.StopReasonError},
 	}
 
 	for _, tt := range tests {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -166,20 +167,30 @@ func StructuredComplete(ctx context.Context, model, prompt string, schema *Schem
 		case messages.EventTypeContent:
 			content += event.Content
 		case messages.EventTypeComplete:
-			// Try to unmarshal the response into the result
-			if result != nil && content != "" {
-				return json.Unmarshal([]byte(content), result)
+			if content == "" && event.Message != nil {
+				content = event.Message.Content
 			}
 		case messages.EventTypeError:
 			return event.Error
 		}
 	}
 
-	// If we have content but haven't unmarshaled yet, try now
-	if result != nil && content != "" {
-		return json.Unmarshal([]byte(content), result)
+	// A reply with nothing to decode is a failure, not a success with an
+	// untouched result: the caller asked for a value and got none.
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("structured completion returned no content")
 	}
-
+	if schema != nil {
+		if err := schema.Validate(content); err != nil {
+			return fmt.Errorf("structured completion: %w", err)
+		}
+	}
+	if result == nil {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(content), result); err != nil {
+		return fmt.Errorf("structured completion is not valid JSON: %w", err)
+	}
 	return nil
 }
 

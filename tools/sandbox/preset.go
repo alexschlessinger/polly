@@ -1681,6 +1681,14 @@ func resolveExistingPathPrefix(path string) (string, error) {
 	return resolveExistingPathPrefixObserved(path, nil)
 }
 
+// ResolveExistingPathPrefix resolves symlinks along the absolute path the way
+// the kernel would, resolving as far as the deepest existing component and
+// appending the rest lexically. It yields the spelling a policy check and a
+// subsequent no-follow open must agree on for a path that may not exist yet.
+func ResolveExistingPathPrefix(path string) (string, error) {
+	return resolveExistingPathPrefix(path)
+}
+
 // resolveExistingPathPrefixObserved is resolveExistingPathPrefix with a hook
 // for every candidate reached during traversal. Symlink targets are processed
 // component by component so that dot-dot entries apply after earlier symlinks,

@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/schema"
-	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 const (
@@ -72,31 +72,32 @@ func (t *editFileTool) Execute(ctx context.Context, raw map[string]any) (string,
 	if err != nil {
 		return "", err
 	}
-	sandboxCfg, sandboxActive, err := t.registry.SandboxReadPolicy()
-	if err != nil {
-		return "", fmt.Errorf("resolve sandbox policy: %w", err)
-	}
-	if sandboxActive {
-		if err := sandbox.ReadAllowed(sandboxCfg, abs); err != nil {
-			return "", err
-		}
-	}
-	if err := checkWritePolicy(t.registry, abs); err != nil {
+	routes, resolved := localRoutes(abs)
+	if err := checkReadPolicy(t.registry, routes...); err != nil {
 		return "", err
 	}
-	info, err := os.Stat(abs)
+	if err := checkWritePolicy(t.registry, routes...); err != nil {
+		return "", err
+	}
+	// The whole edit runs under one lock and through one descriptor: the
+	// text read is exactly the text replaced, and a concurrent edit_file or
+	// write_file of the same file waits instead of racing this one.
+	localFileMu.Lock()
+	defer localFileMu.Unlock()
+	f, info, err := openLocalRegular(resolved, os.O_RDWR, 0)
 	if err != nil {
-		return "", fmt.Errorf("edit %s: %w", abs, err)
+		return "", describeOpenError("edit", abs, err)
 	}
-	if info.IsDir() {
-		return "", fmt.Errorf("%s is a directory, not a file", abs)
-	}
+	defer f.Close()
 	if info.Size() > editFileMaxBytes {
 		return "", fmt.Errorf("%s is %d bytes; edit_file handles files up to %d bytes", abs, info.Size(), editFileMaxBytes)
 	}
-	data, err := os.ReadFile(abs)
+	data, err := io.ReadAll(io.LimitReader(f, editFileMaxBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("edit %s: %w", abs, err)
+	}
+	if int64(len(data)) > editFileMaxBytes {
+		return "", fmt.Errorf("%s is larger than %d bytes; edit_file handles files up to %d bytes", abs, editFileMaxBytes, editFileMaxBytes)
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
 		return "", fmt.Errorf("%s looks like binary data; edit_file only edits text", abs)
@@ -115,7 +116,7 @@ func (t *editFileTool) Execute(ctx context.Context, raw map[string]any) (string,
 		replacements = count
 		updated = strings.ReplaceAll(content, oldString, newString)
 	}
-	if err := os.WriteFile(abs, []byte(updated), info.Mode().Perm()); err != nil {
+	if err := rewriteFile(f, updated); err != nil {
 		return "", fmt.Errorf("edit %s: %w", abs, err)
 	}
 
@@ -124,6 +125,21 @@ func (t *editFileTool) Execute(ctx context.Context, raw map[string]any) (string,
 		result += "\n" + snippet
 	}
 	return result, nil
+}
+
+// rewriteFile replaces the contents of the open file with content through
+// the same descriptor the content was read from.
+func rewriteFile(f *os.File, content string) error {
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := f.WriteString(content); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 // editSnippet renders numbered lines around the first replacement so the

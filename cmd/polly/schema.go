@@ -45,70 +45,12 @@ func loadSchemaFile(path string) (*llm.Schema, error) {
 	}, nil
 }
 
-// validateJSONAgainstSchema validates JSON output against a schema
-// This is a basic implementation - could be enhanced with a proper JSON schema validator
-func validateJSONAgainstSchema(data any, schema *llm.Schema) error {
+// validateJSONAgainstSchema validates JSON output against a schema with the
+// full JSON Schema validator, so nested constraints, enums, and
+// additionalProperties are enforced, not just the top-level type.
+func validateJSONAgainstSchema(content string, schema *llm.Schema) error {
 	if schema == nil {
 		return nil
 	}
-
-	// Basic type checking
-	schemaType, ok := schema.Raw["type"].(string)
-	if !ok {
-		return fmt.Errorf("schema missing type field")
-	}
-
-	switch schemaType {
-	case "object":
-		obj, ok := data.(map[string]any)
-		if !ok {
-			return fmt.Errorf("expected object, got %T", data)
-		}
-
-		// Check required fields
-		var required []string
-		switch req := schema.Raw["required"].(type) {
-		case []string:
-			required = req
-		case []any:
-			for _, r := range req {
-				if s, ok := r.(string); ok {
-					required = append(required, s)
-				}
-			}
-		}
-		for _, fieldName := range required {
-			if _, exists := obj[fieldName]; !exists {
-				return fmt.Errorf("missing required field: %s", fieldName)
-			}
-		}
-
-	case "array":
-		_, ok := data.([]any)
-		if !ok {
-			return fmt.Errorf("expected array, got %T", data)
-		}
-
-	case "string":
-		_, ok := data.(string)
-		if !ok {
-			return fmt.Errorf("expected string, got %T", data)
-		}
-
-	case "number":
-		switch data.(type) {
-		case float64, float32, int, int64, int32:
-			// Valid number types
-		default:
-			return fmt.Errorf("expected number, got %T", data)
-		}
-
-	case "boolean":
-		_, ok := data.(bool)
-		if !ok {
-			return fmt.Errorf("expected boolean, got %T", data)
-		}
-	}
-
-	return nil
+	return schema.Validate(content)
 }
