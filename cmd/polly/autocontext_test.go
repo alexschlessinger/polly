@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -11,15 +12,39 @@ import (
 )
 
 func TestGenerateContextName(t *testing.T) {
-	name := generateContextName(func(string) bool { return false })
+	name, err := generateContextName(func(string) (bool, error) { return false, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !regexp.MustCompile(`^[a-z]+-[a-z]+$`).MatchString(name) {
 		t.Fatalf("unexpected name shape: %q", name)
 	}
 
 	// With every petname taken, the numbered fallback still terminates.
-	name = generateContextName(func(n string) bool { return !strings.HasSuffix(n, "-3") })
+	name, err = generateContextName(func(n string) (bool, error) { return !strings.HasSuffix(n, "-3"), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.HasSuffix(name, "-3") {
 		t.Fatalf("expected numbered fallback, got %q", name)
+	}
+}
+
+// A store that cannot answer must fail the generation, not spin: the
+// numbered fallback only exits on a free name, so an error read as "taken"
+// never terminates.
+func TestGenerateContextNameReturnsStoreError(t *testing.T) {
+	want := errors.New("store closed")
+	calls := 0
+	_, err := generateContextName(func(string) (bool, error) {
+		calls++
+		return false, want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+	if calls != 1 {
+		t.Fatalf("exists called %d times, want 1", calls)
 	}
 }
 

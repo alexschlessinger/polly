@@ -228,17 +228,11 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 // generateSessionName picks a generated session name no session in store
 // uses.
 func generateSessionName(ctx context.Context, store sessions.SessionStore) (string, error) {
-	var existsErr error
-	name := generateContextName(func(name string) bool {
-		exists, err := store.Exists(ctx, name)
-		if err != nil {
-			existsErr = err
-			return true
-		}
-		return exists
+	name, err := generateContextName(func(name string) (bool, error) {
+		return store.Exists(ctx, name)
 	})
-	if existsErr != nil {
-		return "", fmt.Errorf("failed to generate context name: %w", existsErr)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate context name: %w", err)
 	}
 	return name, nil
 }

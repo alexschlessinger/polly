@@ -31,20 +31,32 @@ var (
 
 // generateContextName returns a random adjective-animal context name that
 // does not collide with an existing context, falling back to a numbered
-// suffix if the namespace is crowded.
-func generateContextName(exists func(string) bool) string {
+// suffix if the namespace is crowded. An error from exists ends the search
+// at once: treating it as "taken" would loop forever on a store that keeps
+// failing (a canceled context, a closed store).
+func generateContextName(exists func(string) (bool, error)) (string, error) {
 	pick := func() string {
 		return petAdjectives[rand.IntN(len(petAdjectives))] + "-" + petAnimals[rand.IntN(len(petAnimals))]
 	}
 	for range 32 {
-		if name := pick(); !exists(name) {
-			return name
+		name := pick()
+		taken, err := exists(name)
+		if err != nil {
+			return "", err
+		}
+		if !taken {
+			return name, nil
 		}
 	}
 	base := pick()
 	for i := 2; ; i++ {
-		if name := fmt.Sprintf("%s-%d", base, i); !exists(name) {
-			return name
+		name := fmt.Sprintf("%s-%d", base, i)
+		taken, err := exists(name)
+		if err != nil {
+			return "", err
+		}
+		if !taken {
+			return name, nil
 		}
 	}
 }
