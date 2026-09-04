@@ -587,10 +587,14 @@ func (m *replModel) insertEditorText(s string) {
 // the cursor. The read happens off the event loop — osascript and friends can
 // take a beat — and lands via a UI task. Caller must hold r.model.mu.
 func (r *managedREPL) captureClipboardToComposer() {
-	if r.model.clipboardCapture {
+	// The capture belongs to the tab it started on: by the time the read
+	// lands, another tab may be visible, and the image (and the flag reset)
+	// must still go to the composer that asked for it.
+	m := r.model
+	if m.clipboardCapture {
 		return
 	}
-	r.model.clipboardCapture = true
+	m.clipboardCapture = true
 	go func() {
 		dir, err := attachmentCacheDir()
 		var path string
@@ -598,7 +602,6 @@ func (r *managedREPL) captureClipboardToComposer() {
 			path, err = captureClipboardImage(context.Background(), dir)
 		}
 		r.postUITask(func() {
-			m := r.model
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			m.clipboardCapture = false
