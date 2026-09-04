@@ -32,15 +32,24 @@ func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 		return nil
 	}
 
-	// Capture token usage (available on each chunk, use latest values)
+	// Capture token usage (available on each chunk, use latest values).
+	// Thinking tokens are billed output that the API reports beside the
+	// candidate tokens, so both count.
 	if resp.UsageMetadata != nil {
 		state.SetTokenUsage(
 			int(resp.UsageMetadata.PromptTokenCount),
-			int(resp.UsageMetadata.CandidatesTokenCount),
+			int(resp.UsageMetadata.CandidatesTokenCount+resp.UsageMetadata.ThoughtsTokenCount),
 		)
 		if resp.UsageMetadata.CachedContentTokenCount != nil {
 			state.SetPromptCacheUsage(int(*resp.UsageMetadata.CachedContentTokenCount), 0)
 		}
+	}
+
+	// A blocked prompt yields no candidates at all; the block reason is the
+	// whole story, and a blank success would hide it.
+	if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" && resp.PromptFeedback.BlockReason != gemini.BlockReasonUnspecified {
+		state.SetStopReason(messages.StopReasonContentFilter)
+		return fmt.Errorf("gemini blocked the prompt: %s", resp.PromptFeedback.BlockReason)
 	}
 
 	// Process each candidate's parts
@@ -132,7 +141,10 @@ func (a *GeminiAdapter) HandleToolCall(toolData any, state streaming.StreamState
 	return nil
 }
 
-// mapGeminiFinishReason converts Gemini's finish reason to our normalized type
+// mapGeminiFinishReason converts Gemini's finish reason to our normalized
+// type. Only STOP is a healthy end of turn: every other reason, including
+// one this build does not know, marks a reply that was cut short or refused,
+// and must not be persisted as a normal completion.
 func mapGeminiFinishReason(fr gemini.FinishReason) messages.StopReason {
 	switch fr {
 	case gemini.FinishReasonStop:
@@ -142,11 +154,14 @@ func mapGeminiFinishReason(fr gemini.FinishReason) messages.StopReason {
 	case gemini.FinishReasonSafety, gemini.FinishReasonRecitation,
 		gemini.FinishReasonBlocklist, gemini.FinishReasonProhibitedContent,
 		gemini.FinishReasonSPII, gemini.FinishReasonImageSafety,
-		gemini.FinishReasonImageProhibitedContent:
+		gemini.FinishReasonImageProhibitedContent, gemini.FinishReasonImageRecitation:
 		return messages.StopReasonContentFilter
-	case gemini.FinishReasonMalformedFunctionCall:
+	case gemini.FinishReasonMalformedFunctionCall, gemini.FinishReasonUnexpectedToolCall,
+		gemini.FinishReasonTooManyToolCalls, gemini.FinishReasonLanguage,
+		gemini.FinishReasonOther, gemini.FinishReasonNoImage, gemini.FinishReasonImageOther,
+		gemini.FinishReasonUnspecified:
 		return messages.StopReasonError
 	default:
-		return messages.StopReasonEndTurn
+		return messages.StopReasonError
 	}
 }

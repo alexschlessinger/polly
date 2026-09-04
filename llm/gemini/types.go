@@ -140,16 +140,24 @@ type GenerateContentRequest struct {
 type FinishReason string
 
 const (
+	FinishReasonUnspecified            FinishReason = "FINISH_REASON_UNSPECIFIED"
 	FinishReasonStop                   FinishReason = "STOP"
 	FinishReasonMaxTokens              FinishReason = "MAX_TOKENS"
 	FinishReasonSafety                 FinishReason = "SAFETY"
 	FinishReasonRecitation             FinishReason = "RECITATION"
+	FinishReasonLanguage               FinishReason = "LANGUAGE"
+	FinishReasonOther                  FinishReason = "OTHER"
 	FinishReasonBlocklist              FinishReason = "BLOCKLIST"
 	FinishReasonProhibitedContent      FinishReason = "PROHIBITED_CONTENT"
 	FinishReasonSPII                   FinishReason = "SPII"
 	FinishReasonMalformedFunctionCall  FinishReason = "MALFORMED_FUNCTION_CALL"
 	FinishReasonImageSafety            FinishReason = "IMAGE_SAFETY"
+	FinishReasonUnexpectedToolCall     FinishReason = "UNEXPECTED_TOOL_CALL"
+	FinishReasonTooManyToolCalls       FinishReason = "TOO_MANY_TOOL_CALLS"
 	FinishReasonImageProhibitedContent FinishReason = "IMAGE_PROHIBITED_CONTENT"
+	FinishReasonNoImage                FinishReason = "NO_IMAGE"
+	FinishReasonImageRecitation        FinishReason = "IMAGE_RECITATION"
+	FinishReasonImageOther             FinishReason = "IMAGE_OTHER"
 )
 
 // Candidate is one generated completion. Only the first is requested.
@@ -170,11 +178,30 @@ type UsageMetadata struct {
 	CachedContentTokenCount *int32 `json:"cachedContentTokenCount,omitempty"`
 }
 
+// BlockReason says why a prompt was refused outright.
+type BlockReason string
+
+const (
+	BlockReasonUnspecified       BlockReason = "BLOCK_REASON_UNSPECIFIED"
+	BlockReasonSafety            BlockReason = "SAFETY"
+	BlockReasonOther             BlockReason = "OTHER"
+	BlockReasonBlocklist         BlockReason = "BLOCKLIST"
+	BlockReasonProhibitedContent BlockReason = "PROHIBITED_CONTENT"
+	BlockReasonImageSafety       BlockReason = "IMAGE_SAFETY"
+)
+
+// PromptFeedback reports a prompt the API refused to answer. When BlockReason
+// is set the response carries no candidates.
+type PromptFeedback struct {
+	BlockReason BlockReason `json:"blockReason,omitempty"`
+}
+
 // GenerateContentResponse is a full response or one SSE chunk; the shapes
 // are identical.
 type GenerateContentResponse struct {
-	Candidates    []*Candidate   `json:"candidates,omitempty"`
-	UsageMetadata *UsageMetadata `json:"usageMetadata,omitempty"`
+	Candidates     []*Candidate    `json:"candidates,omitempty"`
+	PromptFeedback *PromptFeedback `json:"promptFeedback,omitempty"`
+	UsageMetadata  *UsageMetadata  `json:"usageMetadata,omitempty"`
 }
 
 // EmbedContentRequest is one entry of a batchEmbedContents call. Model is

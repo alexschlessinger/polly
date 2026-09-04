@@ -1,6 +1,7 @@
 package adapters
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm/gemini"
@@ -50,5 +51,45 @@ func TestGeminiAdapterFinishReasonWithToolCalls(t *testing.T) {
 				t.Fatalf("stop reason = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestGeminiAdapterBlockedPromptIsAnError: a promptFeedback block reason
+// arrives with no candidates; it must surface as an error and a content
+// filter stop, never as a blank successful reply.
+func TestGeminiAdapterBlockedPromptIsAnError(t *testing.T) {
+	adapter := NewGeminiAdapter()
+	state := streaming.NewStreamState()
+	err := adapter.ProcessChunk(&gemini.GenerateContentResponse{
+		PromptFeedback: &gemini.PromptFeedback{BlockReason: gemini.BlockReasonSafety},
+	}, state)
+	if err == nil || !strings.Contains(err.Error(), "SAFETY") {
+		t.Fatalf("ProcessChunk error = %v, want the block reason", err)
+	}
+	if got := state.GetStopReason(); got != messages.StopReasonContentFilter {
+		t.Fatalf("stop reason = %q, want content_filter", got)
+	}
+	// The unspecified value is the enum's unused default, not a block.
+	if err := adapter.ProcessChunk(&gemini.GenerateContentResponse{
+		PromptFeedback: &gemini.PromptFeedback{BlockReason: gemini.BlockReasonUnspecified},
+		Candidates:     []*gemini.Candidate{{FinishReason: gemini.FinishReasonStop}},
+	}, streaming.NewStreamState()); err != nil {
+		t.Fatalf("unspecified block reason errored: %v", err)
+	}
+}
+
+// TestGeminiAdapterCountsThinkingTokens: thoughtsTokenCount is billed output
+// reported beside candidatesTokenCount, so usage sums both.
+func TestGeminiAdapterCountsThinkingTokens(t *testing.T) {
+	adapter := NewGeminiAdapter()
+	state := streaming.NewStreamState()
+	if err := adapter.ProcessChunk(&gemini.GenerateContentResponse{
+		Candidates:    []*gemini.Candidate{{FinishReason: gemini.FinishReasonStop}},
+		UsageMetadata: &gemini.UsageMetadata{PromptTokenCount: 10, CandidatesTokenCount: 5, ThoughtsTokenCount: 40},
+	}, state); err != nil {
+		t.Fatal(err)
+	}
+	if state.GetInputTokens() != 10 || state.GetOutputTokens() != 45 {
+		t.Fatalf("usage = %d in / %d out, want 10 / 45", state.GetInputTokens(), state.GetOutputTokens())
 	}
 }

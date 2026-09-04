@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -208,6 +209,12 @@ func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, req *Co
 	// Process through adapter (handles tool calls, tokens, stop reason)
 	if err := streamCore.ProcessChunk(resp); err != nil {
 		streamCore.EmitError(err)
+		return
+	}
+	if len(resp.Candidates) == 0 {
+		// The API documents an empty candidate list as a prompt problem
+		// (see promptFeedback, which ProcessChunk reports when present).
+		streamCore.EmitError(errors.New("gemini returned no candidates"))
 		return
 	}
 
