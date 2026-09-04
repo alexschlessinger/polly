@@ -110,6 +110,9 @@ func handleListContexts(ctx context.Context, store sessions.SessionStore) error 
 		if info.Model != "" {
 			modelInfo = fmt.Sprintf(" [%s]", info.Model)
 		}
+		if info.Parent != "" {
+			modelInfo += " (spawned by " + info.Parent + ")"
+		}
 
 		fmt.Printf("%s%s - last used: %s%s\n", name, modelInfo, timeStr, marker)
 	}
@@ -375,6 +378,9 @@ func showContext(ctx context.Context, store sessions.SessionStore, contextID str
 
 	// Prompts and description
 	fmt.Printf("  Description: %s\n", info.Description)
+	if info.Parent != "" {
+		fmt.Printf("  Spawned By: %s\n", info.Parent)
+	}
 	if info.SystemPrompt != "" {
 		fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
 	} else {

@@ -422,6 +422,29 @@ saved := skillRuntime.ActivatedSkills()
 err = skillRuntime.Restore(saved)
 ```
 
+## Subagents
+
+The `subagent` package gives a model the `spawn_agent` tool: a brief, an
+optional label, a tool allow-list, and optional model and iteration
+overrides. What running the child means is the host's `Runner`; the
+library's `AgentRunner` runs an in-memory `llm.Agent` over a derived view
+of the parent's tools (never `spawn_agent` itself), with the brief as the
+only user message after your base messages:
+
+```go
+registry := tools.NewToolRegistry([]tools.Tool{&WeatherTool{}})
+base := llm.CompletionRequest{Model: "openai/gpt-5.4",
+    Messages: []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: "Be brief."}}}
+registry.Register(subagent.NewTool(subagent.AgentRunner(client, registry, base, llm.AgentConfig{})))
+registry.MarkAlwaysAllowed(subagent.ToolName)
+```
+
+The tool result is the child's final reply plus, when the runner gave it
+one, its session name. `subagent.WithMaxConcurrent` bounds parallel
+children (default four). The tool is exempt from `AgentConfig.ToolTimeout`
+through the `tools.UntimedTool` interface. The polly CLI's runner opens a
+child session on the same store, recorded with `Metadata.Parent`.
+
 ## Sessions
 
 Sessions persist conversation history and artifacts in SQLite. Disk-backed

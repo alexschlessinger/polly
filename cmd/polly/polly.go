@@ -418,7 +418,7 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		ToolTimeout:   settings.ToolTimeout,
 		ArtifactStore: artifactStore,
 	})
-	return &conversationState{
+	state = &conversationState{
 		sessionStore:    sessionStore,
 		session:         session,
 		settings:        settings,
@@ -429,7 +429,9 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		skillRuntime:    skillRuntime,
 		skillSources:    skillResult.sources,
 		sandboxWarnings: sandboxWarnings,
-	}, nil
+	}
+	registerSpawnTool(state, config, llmClient)
+	return state, nil
 }
 
 func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner) ([]tools.RegistryOption, error) {
@@ -913,6 +915,10 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		},
 		OnToolStart: func(calls []messages.ChatMessageToolCall) {
 			turnUI.AppendToolStart(calls)
+		},
+		// A spawned child's approvals come back through this turn's UI.
+		BeforeToolExecute: func(ctx context.Context, _ messages.ChatMessageToolCall, _ map[string]any) context.Context {
+			return withParentTurnUI(ctx, turnUI)
 		},
 		ApproveToolCalls: turnUI.ApproveToolCalls,
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {

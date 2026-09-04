@@ -98,6 +98,9 @@ type Metadata struct {
 	LastUsed    time.Time     `json:"lastUsed"`
 	Description string        `json:"description,omitempty"`
 	TTL         time.Duration `json:"ttl,omitempty"`
+	// Parent names the session whose agent spawned this one as a subagent;
+	// empty for a session a person started.
+	Parent string `json:"parent,omitempty"`
 
 	Model            string                 `json:"model,omitempty"`
 	Temperature      float64                `json:"temperature,omitempty"`

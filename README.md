@@ -77,6 +77,21 @@ work to save, and exits. Each open session is leased by the polly holding
 it, so the picker marks sessions open in another polly as `in use` and
 will not open them; picking a session already open in a tab jumps to it.
 
+### Subagents
+
+The model can delegate a self-contained task with the `spawn_agent` tool:
+a brief, an optional label, and the tools the child may use. The child runs
+in a session of its own on the same store, with a fresh context window,
+the parent's settings (the brief may pick a model or an iteration cap), a
+view of the parent's tools that never includes `spawn_agent` itself, and
+the parent's active skills. It shares the parent's MCP servers rather than
+starting them again. Only its final reply comes back, followed by its
+session name, so `polly -c <name>` or `/resume` opens the child's full
+transcript later. Children run in parallel when the model calls the tool
+several times in one turn (four at a time). With `--confirm`, a child's
+tool calls ask you the same way the parent's do. A child's tokens are its
+own and are reported with its reply, not added to the parent's turn.
+
 ### Keys and input
 
 | Key | Action |
@@ -237,6 +252,8 @@ built-in file tools; passing any `--tool` replaces that default.
 - `edit_file` — replace an exact literal string that must be unique (or
   pass `replace_all`).
 - `list_dir` — one directory, non-recursive.
+- `spawn_agent` — delegate a self-contained task to a child agent (see
+  [Subagents](#subagents)).
 - `search_files` — `path:line: text` matches, literal or RE2 with `regex`,
   filtered by an `include` glob; skips `.git`, symlinks, binaries, and
   read-denied paths.
