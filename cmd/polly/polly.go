@@ -295,7 +295,7 @@ func (r *commandRunner) handleManagementFlags() (bool, error) {
 		return true, handleResetContext(r.ctx, store, cfg, r.cmd, cfg.ResetContext)
 	}
 	if cfg.ListContexts {
-		return true, handleListContexts(r.ctx, store)
+		return true, handleListContexts(r.ctx, store, cfg.FlatList)
 	}
 	if cfg.ListSkills {
 		return true, handleListSkills(cfg)

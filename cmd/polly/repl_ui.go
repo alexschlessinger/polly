@@ -403,6 +403,9 @@ type managedREPL struct {
 	// spawnRequests are the /spawn commands recorded by handlers for the
 	// event loop to apply.
 	spawnRequests []spawnRequest
+	// pickerExpanded names the sessions whose agents the resume picker
+	// lists; the picker shares the map so the choice outlives a modal.
+	pickerExpanded map[string]bool
 
 	// runCtx is the Run loop's context, kept for work that event handlers
 	// start (opening sessions). Background outside Run.

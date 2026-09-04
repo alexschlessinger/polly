@@ -89,14 +89,16 @@ const genericToolSummaryWidth = 120
 // summarizeSpawnArgs names a spawned agent by its label, or by the first
 // line of its brief.
 func summarizeSpawnArgs(args tools.Args) string {
-	if label := strings.TrimSpace(args.String("label")); label != "" {
+	return spawnLabel(args.String("label"), args.String("task"))
+}
+
+// spawnLabel names a spawn by its label, else by the first line of its brief.
+// The tool row, the child's tab, and the session picker all use it.
+func spawnLabel(label, task string) string {
+	if label = strings.TrimSpace(label); label != "" {
 		return truncate(label, 60)
 	}
-	task := strings.TrimSpace(args.String("task"))
-	if i := strings.IndexByte(task, '\n'); i >= 0 {
-		task = task[:i]
-	}
-	return truncate(task, 60)
+	return truncate(strings.TrimSpace(task), 60)
 }
 
 // summarizeGenericToolArgs gives custom and MCP tools a useful approval label

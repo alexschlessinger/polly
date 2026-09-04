@@ -164,7 +164,7 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 		return nil, fmt.Errorf("read child metadata: %w", err)
 	}
 	metadata.Parent = parentName
-	metadata.Description = req.Label
+	metadata.Description = spawnLabel(req.Label, req.Task)
 	for _, spec := range settingSpecs {
 		if spec.toMeta != nil {
 			spec.toMeta(&settings, metadata)

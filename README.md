@@ -87,7 +87,11 @@ view of the parent's tools that never includes `spawn_agent` itself, and
 the parent's active skills. It shares the parent's MCP servers rather than
 starting them again. Only its final reply comes back, followed by its
 session name, so `polly -c <name>` or `/resume` opens the child's full
-transcript later. Children run in parallel when the model calls the tool
+transcript later. In `/resume` and `--list`, agents nest under the session
+that spawned them, named by their brief's label. The picker keeps them
+collapsed to a count until you press → on the parent (← collapses again);
+typing a filter finds them either way. `--list --flat` prints one line
+per session for scripts. Children run in parallel when the model calls the tool
 several times in one turn (four at a time). With `--confirm`, a child's
 tool calls ask you the same way the parent's do. A child's tokens are its
 own and are reported with its reply, not added to the parent's turn.
@@ -100,9 +104,9 @@ that land while the parent is busy arrive together as one message.
 In the TUI every child gets a tab of its own, nested under its parent in
 `/tab`. It is an ordinary tab: switch to it to watch it stream, type to
 send it a follow-up, press Esc to cancel just that child, and a child's
-approval or completion shows up as a badge and notice like any hidden
-tab's. While a blocking child runs, the parent's tool row names its tab
-and shows what it is doing (`running bash · 3 tools`). A child tab you
+approval or completion shows up as a notice like any hidden tab's. While
+a blocking child runs, the parent's tool row names its tab and shows what
+it is doing (`running bash · 3 tools`). A child tab you
 never looked at closes on its own once the parent has taken its reply;
 one you viewed stays. `/spawn <brief>` starts a background child of the
 visible tab by hand. Alt+1 to Alt+9 jump to a tab by position and Alt+]
@@ -208,7 +212,8 @@ polly -c project                            # or continue in the TUI
 polly --last -p "Explain the query"         # -L / --last reuses the most recent context
 cat notes.txt | polly -c project --add      # add stdin to the context, no API call
 polly --reset project                       # clear history, keep settings
-polly --list                                # list all contexts
+polly --list                                # list all contexts, agents nested under their parent
+polly --list --flat                         # one line per context, for scripts
 polly --delete project                      # delete one
 polly --purge                               # delete all (asks first)
 ```
@@ -445,6 +450,7 @@ GLOBAL OPTIONS:
    --schema string                                          Path to JSON schema file for structured output
    --context string, -c string                              Context name for conversation continuity [$POLLYTOOL_CONTEXT]
    --last, -L                                               Use the last active context
+   --flat                                                   With --list, print one line per context instead of nesting agents under the context that spawned them
    --maxcontext int                                         Maximum estimated tokens sent to the model, clamped to the model's advertised context window when discoverable; full history is retained (0 = unlimited, never clamped) (default: 256000)
    --confirm                                                Require confirmation before each tool call (default: false)
    --sandbox string                                         Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace (default: "workspace+net+git") [$POLLYTOOL_SANDBOX]
