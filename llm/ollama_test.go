@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -149,5 +150,55 @@ func TestOllamaStreamedToolCallsAccumulate(t *testing.T) {
 	}
 	if complete.ToolCalls[0].ID == complete.ToolCalls[1].ID {
 		t.Fatalf("synthetic IDs collide: %q", complete.ToolCalls[0].ID)
+	}
+}
+
+// TestOllamaSendsSchemaAsFormat: a response schema goes to the server as the
+// format object itself, so decoding is constrained to it rather than to
+// "any JSON".
+func TestOllamaSendsSchemaAsFormat(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &gotBody)
+		w.Write([]byte(
+			`{"message":{"role":"assistant","content":"{\"name\":\"x\"}"},"done":false}` + "\n" +
+				`{"message":{"role":"assistant","content":""},"done":true}` + "\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	schema := &Schema{Raw: map[string]any{
+		"type":       "object",
+		"required":   []any{"name"},
+		"properties": map[string]any{"name": map[string]any{"type": "string"}},
+	}}
+	complete, _ := collectOllamaStream(t, server, &CompletionRequest{
+		Model:          "test-model",
+		Messages:       messages.User("name something"),
+		MaxTokens:      16,
+		ResponseSchema: schema,
+	})
+	if complete.Content != `{"name":"x"}` {
+		t.Fatalf("content = %q", complete.Content)
+	}
+	format, ok := gotBody["format"].(map[string]any)
+	if !ok {
+		t.Fatalf("format = %#v, want the schema object", gotBody["format"])
+	}
+	if format["type"] != "object" {
+		t.Fatalf("format type = %v", format["type"])
+	}
+	props, _ := format["properties"].(map[string]any)
+	if _, ok := props["name"]; !ok {
+		t.Fatalf("format lacks the schema's properties: %#v", format)
+	}
+	// The prompt still describes the schema for the model.
+	msgs, _ := gotBody["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatal("no messages sent")
+	}
+	first, _ := msgs[0].(map[string]any)
+	if first["role"] != "system" || !strings.Contains(first["content"].(string), `"name"`) {
+		t.Fatalf("first message = %#v, want a system prompt describing the schema", first)
 	}
 }

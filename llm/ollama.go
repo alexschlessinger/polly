@@ -117,9 +117,14 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			chatReq.Think = true
 		}
 
-		// Set JSON format if schema is specified
+		// Pass the schema itself as the format so the server constrains
+		// decoding to it; the prompt above still describes it to the model.
+		// Plain "json" mode would accept any object, {} included.
 		if req.ResponseSchema != nil {
 			chatReq.Format = json.RawMessage(`"json"`)
+			if format, err := json.Marshal(req.ResponseSchema.Raw); err == nil && len(req.ResponseSchema.Raw) > 0 {
+				chatReq.Format = format
+			}
 		}
 
 		// Add tool support if available
