@@ -203,6 +203,15 @@ type replModel struct {
 	// turn goroutine ever writes to the terminal.
 	notices []string
 
+	// signals are what happened on this tab while it was hidden — a turn
+	// settling, a tool call needing approval — for the event loop to relay
+	// into the visible transcript as notice lines named after the tab.
+	// Showing the tab drops them: the user now sees the tab itself.
+	signals []tabSignal
+	// unseenOutcome is how the turn that settled while the tab was hidden
+	// ended, kept for the status-row badge until the tab is shown.
+	unseenOutcome turnOutcome
+
 	// streamCursorFrame is the styled caret currently appended to the
 	// streaming assistant block ("" when hidden). Tracked like the breathing
 	// tool arrows so a pulse flip invalidates the visual cache.
@@ -880,6 +889,18 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 	}
 	m.settleTurnDock()
 	m.attachTurnDockTrailer()
+	// Settling out of sight is news for the visible tab: the badge until this
+	// tab is shown, and a notice line. Cancellation is user-initiated.
+	if m.hidden {
+		switch m.lastOutcome {
+		case turnOutcomeDone:
+			m.unseenOutcome = m.lastOutcome
+			m.signalHiddenLocked(signalTurnDone, formatElapsed(m.lastElapsed))
+		case turnOutcomeFailed:
+			m.unseenOutcome = m.lastOutcome
+			m.signalHiddenLocked(signalTurnFailed, truncate(err.Error(), 120))
+		}
+	}
 	// A long turn settling is the "walk away and get pinged" moment; a quick
 	// one never gave the user time to leave. Cancellation is user-initiated,
 	// so only done/failed notify.

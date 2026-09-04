@@ -67,9 +67,11 @@ Each tab keeps its own settings, so `/set` and `/model` change only the
 visible one. A turn keeps running when you switch away from its tab:
 start a long agentic run, `/new` or `/tab 1`, and keep working; `/tab`
 lists what each tab is doing, and input queued behind a hidden turn runs
-when it settles. A hidden turn that needs tool approval waits until you
-switch back to it. Closing a tab whose turn is running is refused; cancel
-the turn (Esc) first. Quitting with turns running in other tabs warns
+when it settles. When a hidden tab's turn finishes or fails, a one-line
+notice naming the tab lands in the visible transcript once the visible
+tab is idle; a hidden tab that needs tool approval says so at once, and
+the approval waits until you switch to it. Closing a tab whose turn is
+running is refused; cancel the turn (Esc) first. Quitting with turns running in other tabs warns
 once, and a second Ctrl-C cancels them, waits briefly for their completed
 work to save, and exits. Each open session is leased by the polly holding
 it, so the picker marks sessions open in another polly as `in use` and

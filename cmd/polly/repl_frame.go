@@ -271,6 +271,7 @@ func (r *managedREPL) render() {
 	if w < 1 || h < 2 {
 		return
 	}
+	r.relayTabSignals()
 	imageCellWidth, imageCellHeight := 0, 0
 	if r.images != nil {
 		imageCellWidth, imageCellHeight = r.images.cellDimensions()
