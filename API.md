@@ -440,10 +440,14 @@ registry.MarkAlwaysAllowed(subagent.ToolName)
 ```
 
 The tool result is the child's final reply plus, when the runner gave it
-one, its session name. `subagent.WithMaxConcurrent` bounds parallel
+one, its session name. A `background: true` call asks the runner to return
+as soon as the child has started (`Result.Started`) and deliver the reply
+later; `AgentRunner` has no way to deliver later and runs the child to
+completion regardless. `subagent.WithMaxConcurrent` bounds parallel
 children (default four). The tool is exempt from `AgentConfig.ToolTimeout`
 through the `tools.UntimedTool` interface. The polly CLI's runner opens a
-child session on the same store, recorded with `Metadata.Parent`.
+child session on the same store, recorded with `Metadata.Parent`, and in
+the TUI runs it on a tab of its own.
 
 ## Sessions
 

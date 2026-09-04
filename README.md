@@ -92,6 +92,23 @@ several times in one turn (four at a time). With `--confirm`, a child's
 tool calls ask you the same way the parent's do. A child's tokens are its
 own and are reported with its reply, not added to the parent's turn.
 
+By default the tool waits for the child's reply. With `background: true`
+it returns at once and the child's reply arrives later as a message to
+the parent, which starts a parent turn when the parent is idle; replies
+that land while the parent is busy arrive together as one message.
+
+In the TUI every child gets a tab of its own, nested under its parent in
+`/tab`. It is an ordinary tab: switch to it to watch it stream, type to
+send it a follow-up, press Esc to cancel just that child, and a child's
+approval or completion shows up as a badge and notice like any hidden
+tab's. While a blocking child runs, the parent's tool row names its tab
+and shows what it is doing (`running bash · 3 tools`). A child tab you
+never looked at closes on its own once the parent has taken its reply;
+one you viewed stays. `/spawn <brief>` starts a background child of the
+visible tab by hand. Alt+1 to Alt+9 jump to a tab by position and Alt+]
+and Alt+[ cycle through the tabs. In one-shot and line mode the tool
+always waits for the reply.
+
 ### Keys and input
 
 | Key | Action |
@@ -123,6 +140,7 @@ reporting for scrolling and image clicks, so use the terminal's override
 /new                         Open a new tab on a fresh session
 /tab [n|name]  (/tabs)       List open tabs, or switch to one
 /close                       Close the visible tab (session stays saved)
+/spawn <brief>               Start a background agent that reports back here
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills
 /rename <name>               Rename the current context

@@ -197,10 +197,10 @@ func TestSpawnAgentToolRunsInsideAParentTurn(t *testing.T) {
 			toolResult = m.GetContent()
 		}
 	}
-	if !strings.HasPrefix(toolResult, "found it\n\n[agent session ") {
+	if !strings.HasPrefix(toolResult, "found it\n\n(agent session ") {
 		t.Fatalf("spawn tool result = %q", toolResult)
 	}
-	name := strings.TrimSuffix(strings.TrimPrefix(toolResult, "found it\n\n[agent session "), "]")
+	name := strings.TrimSuffix(strings.TrimPrefix(toolResult, "found it\n\n(agent session "), ")")
 	md, _ := readChildSession(t, store, name)
 	if md.Parent != "parent-work" || md.Description != "explore" {
 		t.Fatalf("child metadata = %+v", md)

@@ -30,15 +30,16 @@ func (m *replModel) signalHiddenLocked(kind tabSignalKind, detail string) {
 	m.signals = append(m.signals, tabSignal{kind: kind, detail: detail})
 }
 
-// formatTabSignal is the notice line for a signal from the named tab.
-func formatTabSignal(name string, s tabSignal) string {
+// formatTabSignal is the notice line for a signal from tab.
+func formatTabSignal(tab *replTab, s tabSignal) string {
+	name := tab.signalName()
 	switch s.kind {
 	case signalTurnDone:
 		return name + " done · " + s.detail
 	case signalTurnFailed:
 		return name + " failed · " + s.detail
 	case signalApprovalNeeded:
-		return name + " needs approval: " + s.detail + " · /tab " + name
+		return name + " needs approval: " + s.detail + " · /tab " + tab.name
 	}
 	return name + ": " + s.detail
 }
@@ -66,7 +67,7 @@ func (r *managedREPL) relayTabSignals() {
 				kept = append(kept, s)
 				continue
 			}
-			lines = append(lines, formatTabSignal(tab.name, s))
+			lines = append(lines, formatTabSignal(tab, s))
 			failures = append(failures, s.kind == signalTurnFailed)
 		}
 		m.signals = kept

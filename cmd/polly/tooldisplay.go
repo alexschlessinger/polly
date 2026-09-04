@@ -77,12 +77,27 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 		return truncate(args.String("name"), 120)
 	case "read_skill_file":
 		return summarizeReadSkillFileArgs(args)
+	case "spawn_agent":
+		return summarizeSpawnArgs(args)
 	default:
 		return summarizeGenericToolArgs(rawArgs)
 	}
 }
 
 const genericToolSummaryWidth = 120
+
+// summarizeSpawnArgs names a spawned agent by its label, or by the first
+// line of its brief.
+func summarizeSpawnArgs(args tools.Args) string {
+	if label := strings.TrimSpace(args.String("label")); label != "" {
+		return truncate(label, 60)
+	}
+	task := strings.TrimSpace(args.String("task"))
+	if i := strings.IndexByte(task, '\n'); i >= 0 {
+		task = task[:i]
+	}
+	return truncate(task, 60)
+}
 
 // summarizeGenericToolArgs gives custom and MCP tools a useful approval label
 // without dumping arbitrary payloads into the terminal. Only scalar top-level

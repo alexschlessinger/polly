@@ -22,6 +22,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
+	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
@@ -111,6 +112,9 @@ type sessionOpener struct {
 	prepare func(ctx context.Context, name string, notify func(string)) (string, Settings, error)
 	open    func(ctx context.Context, name string, settings Settings, auto bool) (*conversationState, error)
 	newName func(ctx context.Context) (string, error)
+	// spawn builds a child's runtime for a subagent of parent (see
+	// openChildState); nil when the REPL cannot spawn.
+	spawn func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error)
 }
 
 func (s *conversationState) Close() error {
@@ -645,6 +649,9 @@ func (r *commandRunner) runConversation() (retErr error) {
 			newName: func(ctx context.Context) (string, error) {
 				return generateSessionName(ctx, r.sessionStore)
 			},
+			spawn: func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error) {
+				return openChildState(ctx, r.llmClient, parent, req)
+			},
 		}
 		return runManagedREPL(signalCtx, config, state, opener)
 	}
@@ -917,8 +924,8 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			turnUI.AppendToolStart(calls)
 		},
 		// A spawned child's approvals come back through this turn's UI.
-		BeforeToolExecute: func(ctx context.Context, _ messages.ChatMessageToolCall, _ map[string]any) context.Context {
-			return withParentTurnUI(ctx, turnUI)
+		BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
+			return withToolCall(withParentTurnUI(ctx, turnUI), call)
 		},
 		ApproveToolCalls: turnUI.ApproveToolCalls,
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {

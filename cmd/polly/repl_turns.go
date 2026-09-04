@@ -40,15 +40,25 @@ func (r *managedREPL) settleTabs(ctx context.Context, runTurn turnRunner) error 
 		select {
 		case err := <-tab.turnDone:
 			r.settleTurn(tab, err)
-			r.startQueued(ctx, tab, runTurn)
+			r.afterSettle(ctx, tab, err, runTurn)
 		default:
 			if !tab.cancelDetachAt.IsZero() && !now.Before(tab.cancelDetachAt) && r.cancelPending(tab) {
 				r.abandonCanceledTurn(tab)
-				r.startQueued(ctx, tab, runTurn)
+				r.afterSettle(ctx, tab, context.Canceled, runTurn)
 			}
 		}
 	}
 	return r.dropLostSessions()
+}
+
+// afterSettle follows a tab's turn settling: a child's first reply goes to
+// its parent, the tab's spent children close, its children's pending
+// reports become its next input, and its queue runs on.
+func (r *managedREPL) afterSettle(ctx context.Context, tab *replTab, err error, runTurn turnRunner) {
+	r.deliverChildReport(ctx, tab, err, runTurn)
+	r.closeSpentChildren(tab)
+	r.flushReports(tab)
+	r.startQueued(ctx, tab, runTurn)
 }
 
 // armCancelDetach starts the grace after which a canceled turn that has not

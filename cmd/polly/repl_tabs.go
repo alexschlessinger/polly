@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/subagent"
 )
 
 // Tabs. The managed REPL holds several open sessions at once, each with its
@@ -36,6 +38,18 @@ type replTab struct {
 	turnCancel     context.CancelFunc
 	cancelDetachAt time.Time
 	stopWatch      func() bool
+
+	// A child tab (see repl_children.go): parent is the tab whose agent
+	// spawned it; viewed is set once the user has shown it; report records
+	// its first turn's reply until delivered; waiter is the blocking spawn
+	// call waiting for that reply, nil for a background child. reports are
+	// the replies from this tab's children pending for its model. All
+	// loop-owned.
+	parent  *replTab
+	viewed  bool
+	report  *childTurnUI
+	waiter  chan childReport
+	reports []string
 }
 
 // openResult is the outcome of opening a session for a new tab.
@@ -151,6 +165,7 @@ func (r *managedREPL) showTab(i int) {
 	}
 	r.model = tab.model
 	r.state = tab.state
+	tab.viewed = true
 	r.model.mu.Lock()
 	r.appendPendingSandboxWarningsLocked()
 	r.model.mu.Unlock()
@@ -185,6 +200,7 @@ func (r *managedREPL) requestCloseTabLocked() {
 // applyTabRequests performs the tab changes handlers recorded. Runs on the
 // event loop with no model lock held.
 func (r *managedREPL) applyTabRequests() {
+	r.applySpawnRequests()
 	if r.closeTabRequest {
 		r.closeTabRequest = false
 		r.closeVisibleTab()
@@ -228,6 +244,15 @@ func (r *managedREPL) removeTab(i int) *replTab {
 		tab.stopWatch()
 		tab.stopWatch = nil
 	}
+	if tab.waiter != nil {
+		// A blocking spawn call waiting on this child hears it went away.
+		select {
+		case tab.waiter <- childReport{result: subagent.Result{Session: tab.name}, err: errors.New("the agent's tab was closed")}:
+		default:
+		}
+		tab.waiter = nil
+	}
+	tab.report = nil
 	visible := tab.model == r.model
 	r.tabs = append(r.tabs[:i], r.tabs[i+1:]...)
 	if visible {
@@ -413,6 +438,9 @@ func (r *managedREPL) tabLines() []string {
 	lines := []string{fmt.Sprintf("tabs (%d):", len(r.tabs))}
 	for i, tab := range r.tabs {
 		line := fmt.Sprintf("  %d  %s", i+1, tab.name)
+		if depth := tab.depth(); depth > 0 {
+			line = fmt.Sprintf("  %d  %s↳ %s", i+1, strings.Repeat("  ", depth-1), tab.name)
+		}
 		if activity := r.tabActivity(tab); activity != "" {
 			line += "  " + activity
 		}

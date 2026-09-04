@@ -36,6 +36,29 @@ func parentTurnUIFrom(ctx context.Context) TurnUI {
 	return turnUI
 }
 
+type toolCallKey struct{}
+
+// withToolCall hands a tool the call it is answering, so a spawned child can
+// attach itself to that call's disclosure row.
+func withToolCall(ctx context.Context, call messages.ChatMessageToolCall) context.Context {
+	return context.WithValue(ctx, toolCallKey{}, call)
+}
+
+func toolCallFrom(ctx context.Context) messages.ChatMessageToolCall {
+	call, _ := ctx.Value(toolCallKey{}).(messages.ChatMessageToolCall)
+	return call
+}
+
+// childHost is a turn UI that can run a child on a surface of its own (the
+// managed REPL gives it a tab) and deliver a background child's reply
+// later. RunChild returns errNoChildHost to decline, leaving the child to
+// the inline runner.
+type childHost interface {
+	RunChild(ctx context.Context, req subagent.Request) (subagent.Result, error)
+}
+
+var errNoChildHost = errors.New("no child host")
+
 // registerSpawnTool gives state's model the spawn_agent tool. It is an
 // agent built-in like read_transcript: always allowed, never persisted as a
 // loaded tool.
@@ -54,6 +77,14 @@ func spawnRunner(config *Config, client llm.LLM, parent *conversationState) suba
 	childConfig.Meta = false
 	childConfig.Files = nil
 	return func(ctx context.Context, req subagent.Request) (subagent.Result, error) {
+		if host, ok := parentTurnUIFrom(ctx).(childHost); ok {
+			res, err := host.RunChild(ctx, req)
+			if !errors.Is(err, errNoChildHost) {
+				return res, err
+			}
+		}
+		// Inline: the child runs to completion here, its reply the tool's
+		// result. Nothing could deliver a background reply later.
 		child, err := openChildState(ctx, client, parent, req)
 		if err != nil {
 			return subagent.Result{}, err

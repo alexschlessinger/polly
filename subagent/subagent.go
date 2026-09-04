@@ -39,6 +39,10 @@ type Request struct {
 	Model string
 	// MaxIterations caps the child's model calls when positive.
 	MaxIterations int
+	// Background asks the host to return as soon as the child has started
+	// and deliver its reply later as a message to the parent. A host that
+	// cannot deliver later runs the child to completion instead.
+	Background bool
 }
 
 // Result is what a child returned.
@@ -52,11 +56,22 @@ type Result struct {
 	// separately from the parent's.
 	InputTokens  int
 	OutputTokens int
+	// Started marks a background child that is running; its reply follows
+	// as a later message.
+	Started bool
 }
 
 // String is the tool result the parent model reads: the reply, then the
-// session to find the transcript in.
+// session to find the transcript in; for a child still running, where it
+// runs and how its reply arrives.
 func (r Result) String() string {
+	if r.Started {
+		text := "started; the agent is working in the background and its reply will arrive as a message when it finishes"
+		if r.Session != "" {
+			text += "\n\n(agent session " + r.Session + ")"
+		}
+		return text
+	}
 	text := strings.TrimSpace(r.Text)
 	if text == "" {
 		text = "(the agent returned no reply)"
@@ -64,11 +79,11 @@ func (r Result) String() string {
 	if r.Session == "" {
 		return text
 	}
-	trailer := "[agent session " + r.Session
+	trailer := "(agent session " + r.Session
 	if r.InputTokens > 0 || r.OutputTokens > 0 {
 		trailer += fmt.Sprintf(" · %d in / %d out", r.InputTokens, r.OutputTokens)
 	}
-	return text + "\n\n" + trailer + "]"
+	return text + "\n\n" + trailer + ")"
 }
 
 // Runner runs one child to completion. A failed run may still name the
@@ -121,6 +136,7 @@ func (t *Tool) GetSchema() *schema.ToolSchema {
 			"tools":          schema.Strings("Names or globs of the tools the agent may use, for example [\"read_file\", \"search_files\"]. Default: every tool you have, except spawn_agent."),
 			"model":          schema.S("Model to run the agent on, as provider/model. Default: your own model."),
 			"max_iterations": schema.Int("Cap on the agent's model calls. Default: your own limit."),
+			"background":     schema.Bool("Return at once and keep working; the agent's reply arrives later as a message. Default false: wait for the reply."),
 		},
 		"task")
 }
@@ -167,6 +183,7 @@ func parseRequest(args tools.Args) (Request, error) {
 		Label:         strings.TrimSpace(args.String("label")),
 		Model:         strings.TrimSpace(args.String("model")),
 		MaxIterations: args.Int("max_iterations", 0),
+		Background:    args.Bool("background"),
 	}
 	if req.Task == "" {
 		return Request{}, errors.New("task is required: the complete brief for the agent")

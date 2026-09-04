@@ -397,6 +397,13 @@ type managedREPL struct {
 	// history couldn't be opened (best-effort — never fatal).
 	histFile *os.File
 
+	// runTurn executes a turn for a tab; Run sets it, and children spawned
+	// from the event loop start their turns through it.
+	runTurn turnRunner
+	// spawnRequests are the /spawn commands recorded by handlers for the
+	// event loop to apply.
+	spawnRequests []spawnRequest
+
 	// runCtx is the Run loop's context, kept for work that event handlers
 	// start (opening sessions). Background outside Run.
 	runCtx context.Context
@@ -556,6 +563,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	}()
 
 	r.runCtx = ctx
+	r.runTurn = runTurn
 	defer r.drainOpen()
 
 	r.initHistory()
@@ -751,6 +759,9 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 	done := make(chan error, 1)
 	tab.turnDone = done
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, state: tab.state, turnID: turnID, reuseUser: reuseUser, turn: cloneManagedTurn(turn), persistence: persistence}
+	if tab.report != nil {
+		tui.observer = tab.report
+	}
 	go func() {
 		done <- runTurn(turnCtx, turn.displayText, tui)
 		r.wakeTabs()
@@ -1142,6 +1153,15 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	if m.modal != nil {
 		r.handleModalEvent(e)
 		return false
+	}
+
+	// Tab shortcuts work in every mode: a turn or an approval on the tab
+	// left behind keeps waiting there.
+	if e.Type == ui.KeyboardEvent {
+		if i, ok := tabShortcut(e.ID, r.visibleTabIndex(), len(r.tabs)); ok {
+			r.requestShowTabLocked(i)
+			return false
+		}
 	}
 
 	// Scroll keys work in every mode (idle, busy, approval) so the user

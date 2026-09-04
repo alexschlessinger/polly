@@ -73,10 +73,10 @@ func TestToolParsesTheBriefAndFormatsTheReply(t *testing.T) {
 	if got.Task != want.Task || got.Label != want.Label || !slices.Equal(got.Tools, want.Tools) || got.Model != want.Model || got.MaxIterations != want.MaxIterations {
 		t.Fatalf("request = %+v, want %+v", got, want)
 	}
-	if out != "found it\n\n[agent session purple-owl · 10 in / 2 out]" {
+	if out != "found it\n\n(agent session purple-owl · 10 in / 2 out)" {
 		t.Fatalf("result = %q", out)
 	}
-	if (Result{Text: "x"}).String() != "x" || (Result{Session: "s"}).String() != "(the agent returned no reply)\n\n[agent session s]" {
+	if (Result{Text: "x"}).String() != "x" || (Result{Session: "s"}).String() != "(the agent returned no reply)\n\n(agent session s)" {
 		t.Fatal("result formatting without a session or reply")
 	}
 	schema := tool.GetSchema()
