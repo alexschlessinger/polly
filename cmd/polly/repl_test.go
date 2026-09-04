@@ -1754,3 +1754,29 @@ func TestRunREPLLoopSkipsBlankLines(t *testing.T) {
 		t.Fatalf("expected one turn, got %d", calls)
 	}
 }
+
+func TestHistoryFileSurvivesConcurrentSessions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hist")
+	t.Setenv("POLLY_HISTORY_FILE", path)
+	if err := os.WriteFile(path, []byte("earlier\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two pollys open the shared history; each keeps its own handle.
+	first := newManagedREPL(&Config{}, "ctx", 0, 0)
+	first.initHistory()
+	second := newManagedREPL(&Config{}, "ctx", 0, 0)
+	second.initHistory()
+
+	first.appendHistory("from first")
+	second.appendHistory("from second")
+	first.appendHistory("first again")
+	first.closeHistory()
+	second.closeHistory()
+
+	got := loadHistory(path)
+	if strings.Join(got, ",") != "earlier,from first,from second,first again" {
+		t.Fatalf("history after two sessions = %v", got)
+	}
+}
