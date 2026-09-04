@@ -128,6 +128,11 @@ func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string,
 // minThinkingBudget is Anthropic's floor for legacy budget_tokens.
 const minThinkingBudget = 1024
 
+// defaultAnthropicMaxTokens stands in when a request carries no max_tokens
+// (the CLI's "0 = provider default"): a limit every current Claude model
+// accepts.
+const defaultAnthropicMaxTokens = 8192
+
 // clampThinkingBudget keeps a legacy thinking budget within Anthropic's limits:
 // at least minThinkingBudget tokens, and strictly less than max_tokens (the API
 // 400s otherwise). Callers guarantee maxTokens > minThinkingBudget; when it
@@ -148,9 +153,16 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 	anthropicMessages, systemPrompt := MessagesToAnthropicParams(req.Messages)
 
 	// Create the request
+	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		// The Messages API has no provider default: max_tokens is required,
+		// and zero means "populate the prompt cache without generating",
+		// which would return no reply at all.
+		maxTokens = defaultAnthropicMaxTokens
+	}
 	params := &anthropic.MessageRequest{
 		Model:     req.Model,
-		MaxTokens: int64(req.MaxTokens),
+		MaxTokens: int64(maxTokens),
 		Messages:  anthropicMessages,
 	}
 	if req.CacheSessionID != "" {
@@ -165,7 +177,7 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 
 	// Enable thinking for supported models if requested
 	if req.ThinkingEffort.IsEnabled() {
-		params.Thinking = a.getThinkingConfig(req.ThinkingEffort, req.Model, req.MaxTokens)
+		params.Thinking = a.getThinkingConfig(req.ThinkingEffort, req.Model, maxTokens)
 		// Adaptive thinking pairs with output_config effort to control depth,
 		// replacing the legacy budget_tokens knob. Dynamic effort means "let the
 		// model decide", so we send adaptive thinking with no explicit effort.

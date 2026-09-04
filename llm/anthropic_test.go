@@ -492,3 +492,26 @@ func TestAnthropicToolResultErrorFlag(t *testing.T) {
 		}
 	}
 }
+
+// TestAnthropicMaxTokensZeroUsesDefault: the CLI's "0 = provider default"
+// cannot be sent as max_tokens=0, which the Messages API reserves for
+// warming the prompt cache without generating a reply.
+func TestAnthropicMaxTokensZeroUsesDefault(t *testing.T) {
+	client := NewAnthropicClient("key")
+	params := client.buildRequestParams(&CompletionRequest{
+		Model:          "claude-sonnet-4-5",
+		Messages:       messages.User("hi"),
+		MaxTokens:      0,
+		ThinkingEffort: EffortLevel(LevelMedium),
+	})
+	if params.MaxTokens != defaultAnthropicMaxTokens {
+		t.Fatalf("max_tokens = %d, want the %d default", params.MaxTokens, defaultAnthropicMaxTokens)
+	}
+	if params.Thinking != nil && params.Thinking.Type == anthropic.ThinkingTypeEnabled && params.Thinking.BudgetTokens >= params.MaxTokens {
+		t.Fatalf("thinking budget %d not below max_tokens %d", params.Thinking.BudgetTokens, params.MaxTokens)
+	}
+	explicit := client.buildRequestParams(&CompletionRequest{Model: "claude-sonnet-4-5", Messages: messages.User("hi"), MaxTokens: 4096})
+	if explicit.MaxTokens != 4096 {
+		t.Fatalf("explicit max_tokens = %d, want 4096", explicit.MaxTokens)
+	}
+}
