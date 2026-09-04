@@ -12,15 +12,17 @@ import (
 var logger *slog.Logger
 
 // InitLogger initializes the global slog logger.
-// If debug is true, uses tint with colorized console output.
+// If debug is true, uses tint with colorized console output on stderr, so
+// diagnostics never mix into stdout, which carries the program's actual
+// output (a piped reply, --schema JSON, or the terminal UI).
 // If debug is false, uses a discard-backed logger (silent).
 func InitLogger(debug bool) {
-	initLogger(debug, os.Stdout)
+	initLogger(debug, os.Stderr)
 }
 
 func initLogger(debug bool, w io.Writer) {
 	if w == nil {
-		w = os.Stdout
+		w = os.Stderr
 	}
 
 	logger = slog.New(newHandler(debug, w))

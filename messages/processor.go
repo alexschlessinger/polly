@@ -137,7 +137,6 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			"accumulated_reasoning_len", len(accumulatedReasoning),
 			"has_tool_calls", lastMessageWithToolCalls != nil,
 			"stop_reason", stopReason,
-			"accumulated_content", accumulatedContent,
 		)
 
 		completeMsg := ChatMessage{
