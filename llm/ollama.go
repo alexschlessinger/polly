@@ -134,10 +134,13 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		isStreaming := *stream
 		slog.Debug("ollama_chat_started", "model", req.Model, "stream", isStreaming)
 
-		// Track whether we've seen thinking content.
 		// Some models output content before thinking, then repeat it after.
-		// We only want to emit content that appears AFTER thinking has started.
+		// With thinking on, content that arrives before any thinking chunk is
+		// held back: it is dropped once thinking starts (the repeat is what
+		// shows), and flushed at the end when no thinking ever came, so a
+		// model that simply answers is not silenced.
 		var sawThinking bool
+		var heldContent strings.Builder
 		thinkingEnabled := req.ThinkingEffort.IsEnabled()
 
 		// Execute chat - the callback is called for each streamed chunk (or once if non-streaming).
@@ -150,16 +153,23 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			if isStreaming {
 				// Streaming mode: emit tokens incrementally, skip final chunk which contains full content
 				if resp.Message.Thinking != "" && !resp.Done {
-					sawThinking = true
+					if !sawThinking {
+						sawThinking = true
+						heldContent.Reset()
+					}
 					streamCore.EmitReasoning(resp.Message.Thinking)
 				}
 
-				// When thinking is enabled, only emit content AFTER thinking has started
-				// to avoid duplicate content (some models output content before AND after thinking)
 				if resp.Message.Content != "" && !resp.Done {
 					if !thinkingEnabled || sawThinking {
 						streamCore.EmitContent(resp.Message.Content)
+					} else {
+						heldContent.WriteString(resp.Message.Content)
 					}
+				}
+				if resp.Done && heldContent.Len() > 0 {
+					streamCore.EmitContent(heldContent.String())
+					heldContent.Reset()
 				}
 			} else {
 				// Non-streaming mode: callback is called once with complete response
