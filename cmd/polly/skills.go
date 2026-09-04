@@ -29,7 +29,7 @@ func resolveSkillSources(sources []string) (dirs, names []string, err error) {
 	return dirs, names, nil
 }
 
-func loadSkillCatalog(config *Config, persistedSources []string) (*skillCatalogResult, error) {
+func loadSkillCatalog(config *Config, skillDirs []string, persistedSources []string) (*skillCatalogResult, error) {
 	if config.NoSkills {
 		return &skillCatalogResult{}, nil
 	}
@@ -40,7 +40,7 @@ func loadSkillCatalog(config *Config, persistedSources []string) (*skillCatalogR
 		sources = persistedSources
 	}
 
-	dirs := append([]string{}, config.SkillDirs...)
+	dirs := append([]string{}, skillDirs...)
 	skillDirs, autoActivate, err := resolveSkillSources(sources)
 	if err != nil {
 		return nil, err
@@ -109,7 +109,7 @@ func handleListSkills(config *Config) error {
 		return nil
 	}
 
-	result, err := loadSkillCatalog(config, nil)
+	result, err := loadSkillCatalog(config, config.Launch.SkillDirs, nil)
 	if err != nil {
 		return err
 	}

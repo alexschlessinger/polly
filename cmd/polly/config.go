@@ -92,7 +92,7 @@ func parseConfig(cmd *cli.Command) *Config {
 	}
 	for _, spec := range settingSpecs {
 		if spec.fromCmd != nil {
-			spec.fromCmd(config, cmd)
+			spec.fromCmd(&config.Launch, cmd)
 		}
 	}
 

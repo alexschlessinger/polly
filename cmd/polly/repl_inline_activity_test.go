@@ -17,7 +17,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("compare screenshots")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("compare the two frames")
 
 	for i, dimensions := range [][2]int{{8, 4}, {4, 8}} {
@@ -111,7 +111,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("do work")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
 	tui.ShowThinking("let me think about this")
 	call := messages.ChatMessageToolCall{ID: "c1", Name: "read_file", Arguments: `{"path":"x.go"}`}
@@ -205,7 +205,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("ls")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
 	for i, thought := range []string{"first pass", "second pass"} {
 		tui.ShowThinking(thought)
@@ -284,7 +284,7 @@ func TestAggregatedReasoningUsesOneGlobalPreviewBudget(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("inspect")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
 	for i, prefix := range []string{"older-phase", "newer-phase"} {
 		tui.ShowThinking(strings.Repeat(prefix+" ", 24))
@@ -332,7 +332,7 @@ func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("inspect")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
 	tui.ShowThinking("reasoning")
 	call := messages.ChatMessageToolCall{ID: "c1", Name: "bash"}
@@ -366,7 +366,7 @@ func TestActivityGroupTogglesReanchorProjectedVisualBlockOnce(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("inspect")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	for i, thought := range []string{
 		strings.Repeat("older reasoning detail ", 20),

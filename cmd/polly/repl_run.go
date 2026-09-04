@@ -16,18 +16,24 @@ import (
 
 // Entry points: the managed REPL runner and the line-mode fallback.
 
-func runManagedREPL(ctx context.Context, config *Config, state *conversationState, opener *sessionOpener, onStateChange func(*conversationState)) error {
+// runManagedREPL runs the TUI on state and owns every session the REPL opens
+// from there, the initial one included: all of them close when the loop
+// exits, and a generated session that never ran a turn is discarded by that
+// close.
+func runManagedREPL(ctx context.Context, config *Config, state *conversationState, opener *sessionOpener) (retErr error) {
 	repl := newManagedREPL(config, "-", 0, 0)
 	repl.opener = opener
-	repl.onStateChange = onStateChange
-	if err := repl.attachState(state); err != nil {
-		return err
+	defer func() {
+		retErr = errors.Join(retErr, repl.closeTabs())
+	}()
+	if err := repl.addTab(state); err != nil {
+		return errors.Join(err, state.Close())
 	}
 	return repl.Run(ctx, func(turnCtx context.Context, prompt string, turnUI TurnUI) error {
 		reuseUser := false
 		userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: prompt}
-		// The turn binds the session it started on: a switch that lands while
-		// this goroutine runs must not redirect its writes.
+		// The turn binds the session it started on: a tab shown while this
+		// goroutine runs must not redirect its writes.
 		state := repl.state
 		if tui, ok := turnUI.(*gotuiTurnUI); ok {
 			reuseUser = tui.reuseUser
@@ -43,55 +49,37 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 	})
 }
 
-// attachState makes state the REPL's live session. The screen model is
-// rebuilt from the session's history; the screen-level facts the previous
-// model carried (turn generation, image geometry, prompt history, focus) move
-// across so a switch is indistinguishable from a fresh start on that session.
-// Runs on the UI goroutine with no turn in flight.
-func (r *managedREPL) attachState(state *conversationState) error {
+// newTabModel builds the screen model for a tab on state: the status row
+// from the session's settings and the transcript from its history. It
+// returns the session's name alongside. Runs on the UI goroutine.
+func (r *managedREPL) newTabModel(state *conversationState) (string, *replModel, error) {
 	ctx := state.session.Context()
 	name, err := state.session.GetName(ctx)
 	if err != nil {
-		return fmt.Errorf("read session name: %w", err)
+		return "", nil, fmt.Errorf("read session name: %w", err)
 	}
 	history, err := state.session.GetHistory(ctx)
 	if err != nil {
-		return fmt.Errorf("read session history: %w", err)
+		return "", nil, fmt.Errorf("read session history: %w", err)
 	}
-	config := r.config
+	settings := &state.settings
 	m := newReplModel()
-	m.status = newSessionStatus(config, name, toolCount(state.toolRegistry), skillCount(state.skillCatalog))
-	m.quiet = config.Quiet
-	if old := r.model; old != nil {
-		old.mu.Lock()
-		// The generation keeps climbing so a detached turn from the previous
-		// session can never match a turn started on this one.
-		m.turnID = old.turnID
-		m.nativeImages = old.nativeImages
-		m.imageCellWidth, m.imageCellHeight = old.imageCellWidth, old.imageCellHeight
-		m.hist.entries = old.hist.entries
-		m.focusKnown, m.focused = old.focusKnown, old.focused
-		old.mu.Unlock()
-	}
+	m.status = newSessionStatus(settings, name, toolCount(state.toolRegistry), skillCount(state.skillCatalog))
+	m.quiet = r.config.Quiet
 	m.artifactStore = state.artifactStore
 	m.hydrateHistory(history, name)
 	// Seed the bar without network traffic. This is explicitly approximate
 	// until a provider reports the first real request usage.
 	if total, totalErr := state.session.GetTotalTokens(ctx); totalErr == nil {
-		limit := config.MaxHistoryTokens
+		limit := settings.MaxHistoryTokens
 		if md, mdErr := state.session.GetMetadata(ctx); mdErr == nil && md != nil {
-			if window := md.ContextWindows[config.Model]; window > 0 {
-				limit = llm.ClampContextBudget(limit, window, config.MaxTokens)
+			if window := md.ContextWindows[settings.Model]; window > 0 {
+				limit = llm.ClampContextBudget(limit, window, settings.MaxTokens)
 			}
 		}
 		m.status.recordContextUsage(total, limit, total > 0)
 	}
-	r.model = m
-	r.state = state
-	if r.onStateChange != nil {
-		r.onStateChange(state)
-	}
-	return nil
+	return name, m, nil
 }
 
 func runFallbackREPL(ctx context.Context, config *Config, state *conversationState) error {

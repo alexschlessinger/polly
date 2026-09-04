@@ -29,10 +29,7 @@ Use formatting guidance.
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	result, err := loadSkillCatalog(&Config{
-		Settings: Settings{SkillDirs: []string{root}},
-		NoSkills: true,
-	}, nil)
+	result, err := loadSkillCatalog(&Config{NoSkills: true}, []string{root}, nil)
 	if err != nil {
 		t.Fatalf("loadSkillCatalog() error = %v", err)
 	}
@@ -45,7 +42,7 @@ func TestHandleListSkillsReportsDisabled(t *testing.T) {
 	root := t.TempDir()
 	output := captureStdout(t, func() {
 		if err := handleListSkills(&Config{
-			Settings: Settings{SkillDirs: []string{root}},
+			Launch:   Settings{SkillDirs: []string{root}},
 			NoSkills: true,
 		}); err != nil {
 			t.Fatalf("handleListSkills() error = %v", err)
@@ -127,7 +124,7 @@ func TestLoadSkillCatalogWithSkillFlag(t *testing.T) {
 
 	result, err := loadSkillCatalog(&Config{
 		Skills: []string{filepath.Join(root, "my-skill")},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("loadSkillCatalog() error = %v", err)
 	}
@@ -151,9 +148,8 @@ func TestLoadSkillCatalogCombinesSkillDirAndSkill(t *testing.T) {
 	createSkillWithScript(t, skillRoot, "flag-skill")
 
 	result, err := loadSkillCatalog(&Config{
-		Settings: Settings{SkillDirs: []string{dirRoot}},
-		Skills:   []string{filepath.Join(skillRoot, "flag-skill")},
-	}, nil)
+		Skills: []string{filepath.Join(skillRoot, "flag-skill")},
+	}, []string{dirRoot}, nil)
 	if err != nil {
 		t.Fatalf("loadSkillCatalog() error = %v", err)
 	}

@@ -85,7 +85,7 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 	m := r.model
 	m.imageBaseDir = dir
 	m.beginTurn("inspect image")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	marker := string(transcriptImageMarker(0))
 	tui.ShowThinking("provider " + marker + " reasoning survives")
@@ -205,7 +205,7 @@ func TestAssistantAndToolResultsAttachImageSidecars(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.imageBaseDir = dir
 	r.model.busy = true
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "image-call", Name: "screenshot"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, path, time.Millisecond, nil)
@@ -249,7 +249,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.busy = true
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "view-call", Name: "view_image", Arguments: `{"source":"inspected.png"}`}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "Attached image inspected.png.", time.Millisecond, nil)
@@ -327,7 +327,7 @@ func TestImagesDisclosureTogglePreservesHeldViewport(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("inspect")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "anchor-view", Name: "view_image"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "attached", time.Millisecond, nil)
@@ -383,7 +383,7 @@ func TestToolAndImagesDisclosuresKeepIndependentImageMarkers(t *testing.T) {
 	m := r.model
 	m.imageBaseDir = dir
 	m.beginTurn("inspect")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "mixed-images", Name: "view_image"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, discoveredPath, time.Millisecond, nil)

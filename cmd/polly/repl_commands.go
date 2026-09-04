@@ -42,8 +42,12 @@ type replCommandRegistry struct {
 }
 
 type replCommandContext struct {
-	ctx      context.Context
-	config   *Config
+	ctx    context.Context
+	config *Config
+	// settings are the session the commands act on: /get reads them, /set
+	// changes and persists them. Nil when no session is attached, which
+	// makes /set report that settings are unavailable.
+	settings *Settings
 	state    *conversationState
 	registry *replCommandRegistry
 	reply    func(string) error
@@ -66,6 +70,12 @@ type replCommandContext struct {
 	openModelPicker  func()
 	openKeyManager   func()
 	openResumePicker func()
+	// Tab callbacks are managed-TUI operations too; the fallback REPL holds
+	// one session and leaves them nil.
+	newTab   func()
+	closeTab func()
+	listTabs func() []string
+	showTab  func(arg string) error
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -95,6 +105,13 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "clear the display (keep conversation history)",
 		busySafe: true,
 		run:      replClearCommand,
+	})
+	r.register(replCommand{
+		name:     "/close",
+		usage:    "/close",
+		summary:  "close this tab (its session stays saved)",
+		busySafe: true,
+		run:      replCloseCommand,
 	})
 	r.register(replCommand{
 		name:     "/context",
@@ -142,16 +159,24 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:     replModelCommand,
 	})
 	r.register(replCommand{
+		name:     "/new",
+		usage:    "/new",
+		summary:  "open a new tab on a fresh session",
+		busySafe: true,
+		run:      replNewCommand,
+	})
+	r.register(replCommand{
 		name:    "/rename",
 		usage:   "/rename <name>",
 		summary: "rename the current context",
 		run:     replRenameCommand,
 	})
 	r.register(replCommand{
-		name:    "/resume",
-		usage:   "/resume",
-		summary: "select a saved session",
-		run:     replResumeCommand,
+		name:     "/resume",
+		usage:    "/resume",
+		summary:  "open a saved session in a new tab",
+		busySafe: true,
+		run:      replResumeCommand,
 	})
 	r.register(replCommand{
 		name:    "/reset",
@@ -172,6 +197,14 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "list loaded skills",
 		busySafe: true,
 		run:      replSkillsCommand,
+	})
+	r.register(replCommand{
+		name:     "/tab",
+		aliases:  []string{"/tabs"},
+		usage:    "/tab [n|name]",
+		summary:  "list open tabs, or switch to one",
+		busySafe: true,
+		run:      replTabCommand,
 	})
 	r.register(replCommand{
 		name:     "/tools",
@@ -377,6 +410,13 @@ func (ctx *replCommandContext) configOrDefault() *Config {
 	return &Config{}
 }
 
+func (ctx *replCommandContext) settingsOrDefault() *Settings {
+	if ctx != nil && ctx.settings != nil {
+		return ctx.settings
+	}
+	return &Settings{}
+}
+
 func (ctx *replCommandContext) replyLine(line string) error {
 	if ctx != nil && ctx.reply != nil {
 		return ctx.reply(line)
@@ -398,8 +438,10 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 	if r.config != nil {
 		cfg = r.config
 	}
+	settings := r.sessionSettings()
 	return &replCommandContext{
 		config:   cfg,
+		settings: settings,
 		state:    r.state,
 		registry: defaultReplCommands,
 		reply: func(line string) error {
@@ -414,6 +456,9 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		// mutates the model directly like reply/clearTranscript do.
 		setContextName: func(name string) {
 			r.model.status.contextName = name
+			if i := r.visibleTabIndex(); i >= 0 {
+				r.tabs[i].name = name
+			}
 		},
 		resetConversation: func() error {
 			if r.state == nil || r.state.session == nil {
@@ -437,7 +482,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
-			r.model.status.clearContextUsage(cfg.MaxHistoryTokens)
+			r.model.status.clearContextUsage(r.state.settings.MaxHistoryTokens)
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
 			r.model.outcomeLabeled = false
@@ -457,13 +502,27 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			return token, nil
 		},
 		settingsApplied: func() {
-			r.model.status.modelName = cfg.Model
-			r.model.status.rememberModel(cfg.Model)
-			r.model.status.clearContextUsage(cfg.MaxHistoryTokens)
+			if settings == nil {
+				return
+			}
+			r.model.status.modelName = settings.Model
+			r.model.status.rememberModel(settings.Model)
+			r.model.status.clearContextUsage(settings.MaxHistoryTokens)
 		},
 		openModelPicker:  r.openModelPicker,
 		openKeyManager:   r.openKeyManager,
 		openResumePicker: r.openResumePicker,
+		newTab:           r.requestNewTabLocked,
+		closeTab:         r.requestCloseTabLocked,
+		listTabs:         r.tabLines,
+		showTab: func(arg string) error {
+			i, err := r.resolveTab(arg)
+			if err != nil {
+				return err
+			}
+			r.requestShowTabLocked(i)
+			return nil
+		},
 	}
 }
 
@@ -477,6 +536,9 @@ func newWriterReplCommandContext(config *Config, state *conversationState, w io.
 			_, err := fmt.Fprintln(w, line)
 			return err
 		},
+	}
+	if state != nil {
+		ctx.settings = &state.settings
 	}
 	if state != nil && state.session != nil {
 		ctx.ctx = state.session.Context()
@@ -759,11 +821,50 @@ func replResumeCommand(ctx *replCommandContext, args []string) replCommandResult
 	return replCommandResult{}
 }
 
+func replNewCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 1 {
+		return replCommandResult{err: ctx.replyLine("usage: /new")}
+	}
+	if ctx == nil || ctx.newTab == nil {
+		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
+	}
+	ctx.newTab()
+	return replCommandResult{}
+}
+
+func replCloseCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 1 {
+		return replCommandResult{err: ctx.replyLine("usage: /close")}
+	}
+	if ctx == nil || ctx.closeTab == nil {
+		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
+	}
+	ctx.closeTab()
+	return replCommandResult{}
+}
+
+func replTabCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if ctx == nil || ctx.listTabs == nil || ctx.showTab == nil {
+		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
+	}
+	switch len(args) {
+	case 1:
+		return replCommandResult{err: ctx.replyLines(ctx.listTabs())}
+	case 2:
+		if err := ctx.showTab(args[1]); err != nil {
+			return replCommandResult{err: ctx.replyLine(err.Error())}
+		}
+		return replCommandResult{}
+	default:
+		return replCommandResult{err: ctx.replyLine("usage: /tab [n|name]")}
+	}
+}
+
 func replContextCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if ctx == nil || ctx.state == nil || ctx.state.session == nil {
 		return replCommandResult{err: ctx.replyLine("no active session")}
 	}
-	cfg := ctx.configOrDefault()
+	settings := ctx.settingsOrDefault()
 	s := ctx.state.session
 	opCtx := ctx.operationContext()
 	name, err := s.GetName(opCtx)
@@ -771,21 +872,21 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
 	}
 	lines := []string{"context: " + name}
-	if cfg.Model != "" {
-		lines = append(lines, "model: "+stripProviderPrefix(cfg.Model))
+	if settings.Model != "" {
+		lines = append(lines, "model: "+stripProviderPrefix(settings.Model))
 	}
 	totalTokens, err := s.GetTotalTokens(opCtx)
 	if err != nil {
 		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
 	}
 	lines = append(lines, "transcript: "+humanizeTokens(totalTokens)+" estimated tokens (durable)")
-	if cfg.MaxHistoryTokens > 0 {
-		line := "model budget: " + humanizeTokens(cfg.MaxHistoryTokens) + " estimated tokens"
+	if settings.MaxHistoryTokens > 0 {
+		line := "model budget: " + humanizeTokens(settings.MaxHistoryTokens) + " estimated tokens"
 		if md, err := s.GetMetadata(opCtx); err == nil && md != nil {
-			if window := md.ContextWindows[cfg.Model]; window > 0 {
-				if clamped := llm.ClampContextBudget(cfg.MaxHistoryTokens, window, cfg.MaxTokens); clamped < cfg.MaxHistoryTokens {
+			if window := md.ContextWindows[settings.Model]; window > 0 {
+				if clamped := llm.ClampContextBudget(settings.MaxHistoryTokens, window, settings.MaxTokens); clamped < settings.MaxHistoryTokens {
 					line = "model budget: " + humanizeTokens(clamped) + " estimated tokens (clamped from " +
-						humanizeTokens(cfg.MaxHistoryTokens) + " by the model's " + humanizeTokens(window) + "-token window)"
+						humanizeTokens(settings.MaxHistoryTokens) + " by the model's " + humanizeTokens(window) + "-token window)"
 				}
 			}
 		}
@@ -850,7 +951,7 @@ func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if len(args) != 3 {
 		return replCommandResult{err: ctx.replyLine("usage: /set <key> <value>. settable: " + strings.Join(replSettableKeys, ", "))}
 	}
-	if ctx == nil || ctx.config == nil {
+	if ctx == nil || ctx.settings == nil {
 		return replCommandResult{err: ctx.replyLine("settings unavailable")}
 	}
 	line, err := applyAndPersistSetting(ctx, args[1], args[2])
@@ -861,17 +962,20 @@ func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 }
 
 // applyAndPersistSetting is the whole /set path for one key: parse onto the
-// config, run the live-apply hook and the UI refresh, then persist. Every
-// interactive way of changing a setting goes through here so none can skip a
-// hook. It returns the notice line to show. Turns build their completion
-// request from the config each time, so a change takes effect on the next
-// turn without reconnecting.
+// session's settings, run the live-apply hook and the UI refresh, then
+// persist. Every interactive way of changing a setting goes through here so
+// none can skip a hook. It returns the notice line to show. Turns build their
+// completion request from the settings each time, so a change takes effect on
+// the next turn without reconnecting.
 func applyAndPersistSetting(ctx *replCommandContext, key, value string) (string, error) {
 	spec, ok := settingSpecFor(key)
 	if !ok || spec.parse == nil {
 		return "", fmt.Errorf("unknown or read-only key: %s (settable: %s)", key, strings.Join(replSettableKeys, ", "))
 	}
-	if err := spec.parse(ctx.config, value); err != nil {
+	if ctx.settings == nil {
+		return "", fmt.Errorf("settings unavailable")
+	}
+	if err := spec.parse(ctx.settings, value); err != nil {
 		return "", err
 	}
 	if spec.postReplSet != nil {
@@ -880,7 +984,7 @@ func applyAndPersistSetting(ctx *replCommandContext, key, value string) (string,
 	if ctx.settingsApplied != nil {
 		ctx.settingsApplied()
 	}
-	line := key + ": " + spec.show(ctx, ctx.configOrDefault())
+	line := key + ": " + spec.show(ctx, ctx.settingsOrDefault())
 	if err := persistReplSettings(ctx); err != nil {
 		line += " (applied for this run; persisting failed: " + err.Error() + ")"
 	}
@@ -894,13 +998,13 @@ func persistReplSettings(ctx *replCommandContext) error {
 	if ctx.state == nil || ctx.state.session == nil {
 		return nil
 	}
-	cfg := ctx.configOrDefault()
+	settings := ctx.settingsOrDefault()
 	// What /set can change, /set must persist: every settable row reaches
 	// metadata here, or the change would silently die at relaunch.
 	return updateMetadata(ctx.operationContext(), ctx.state.session, func(md *sessions.Metadata) {
 		for _, spec := range settingSpecs {
 			if spec.parse != nil {
-				spec.toMeta(cfg, md)
+				spec.toMeta(settings, md)
 			}
 		}
 	})
@@ -1045,7 +1149,7 @@ func replSettingValue(ctx *replCommandContext, key string) (string, bool) {
 	if !ok || spec.show == nil {
 		return "", false
 	}
-	return spec.show(ctx, ctx.configOrDefault()), true
+	return spec.show(ctx, ctx.settingsOrDefault()), true
 }
 
 func replToolsCommand(ctx *replCommandContext, args []string) replCommandResult {

@@ -45,7 +45,7 @@ func TestLiveToolDisclosureStartsCollapsedAndClickTogglesAllRows(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("run tools")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	first := messages.ChatMessageToolCall{ID: "a", Name: "alpha"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{first})
@@ -95,7 +95,7 @@ func TestToolDisclosureSplitsAtInterleavedProse(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("work")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	first := messages.ChatMessageToolCall{ID: "a", Name: "alpha"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{first})
@@ -163,7 +163,7 @@ func TestExpandedParallelToolDisclosureUpdatesInStartOrder(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("run parallel")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	// Five calls: the largest batch that stays fully visible under the
 	// expanded-row cap, so every row's position is assertable.
@@ -216,7 +216,7 @@ func TestToolDisclosureAggregatesBatchesWithinRun(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("run batches")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	// Three batches with no prose between them are one unbroken run: every
 	// batch folds into the same disclosure and the header counts them all.
@@ -279,7 +279,7 @@ func TestCompletedTurnCollapsesToRollups(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	for i := 0; i < 7; i++ {
 		call := messages.ChatMessageToolCall{ID: fmt.Sprintf("c%d", i), Name: fmt.Sprintf("tool%d", i)}
@@ -337,7 +337,7 @@ func TestSingleCallTurnCollapsesWithSingularWording(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("run the tests")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	call := messages.ChatMessageToolCall{ID: "only", Name: "bash"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
@@ -387,7 +387,7 @@ func TestInterruptedTurnAutoCollapsesAndRemainsExpandable(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "slow", Name: "slow_tool"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	record := m.currentToolDisclosure()
@@ -414,7 +414,7 @@ func TestInterruptedParallelBatchAutoCollapsesInStartOrder(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("parallel")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	var calls []messages.ChatMessageToolCall
 	for i := 0; i < 5; i++ {
 		calls = append(calls, messages.ChatMessageToolCall{ID: fmt.Sprintf("x%d", i), Name: fmt.Sprintf("tool%d", i)})
@@ -452,7 +452,7 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("detach")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "slow", Name: "slow_tool"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	record := m.currentToolDisclosure()
@@ -506,7 +506,7 @@ func TestToolDisclosureImagesOnlyAppearExpanded(t *testing.T) {
 	m := r.model
 	m.imageBaseDir = dir
 	m.busy = true
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	// The image belongs to the third semantic row of one parallel batch; every
 	// call stays hidden behind the same disclosure header.
@@ -592,7 +592,7 @@ func TestToolDisclosureSanitizesPrivateImageMarkerRunes(t *testing.T) {
 	m := r.model
 	m.imageBaseDir = dir
 	m.busy = true
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "private-rune", Name: "screen" + marker + "shot"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	record := m.currentToolDisclosure()
@@ -634,7 +634,7 @@ func TestRegeneratedExpandedToolImagePreservesPhysicalViewportAnchor(t *testing.
 	m.imageCellHeight = 20
 	m.reasoningWidth = width
 	m.beginTurn("inspect image")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "changing-image", Name: "screenshot"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, path, time.Millisecond, nil)
@@ -687,7 +687,7 @@ func TestToolDockTogglePreservesPhysicalViewportAnchor(t *testing.T) {
 	m := r.model
 	m.reasoningWidth = width
 	m.beginTurn("wrap")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	longName := "tool_" + strings.Repeat("wrapped_argument_", 8)
 	call := messages.ChatMessageToolCall{ID: "wrapped", Name: longName}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
@@ -746,7 +746,7 @@ func TestCompletedToolsKeepInlineHitboxAndTrailerControl(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("run tools")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	for i := 0; i < 2; i++ {
 		call := messages.ChatMessageToolCall{ID: fmt.Sprintf("c%d", i), Name: fmt.Sprintf("tool%d", i)}
 		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
@@ -793,7 +793,7 @@ func TestToolDisclosureResetsPerTurn(t *testing.T) {
 	m := r.model
 	runTurn := func(prompt, prefix string) *toolDisclosureRecord {
 		m.beginTurn(prompt)
-		tui := &gotuiTurnUI{repl: r, config: r.config}
+		tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 		// One parallel batch per turn keeps each turn to one disclosure.
 		var calls []messages.ChatMessageToolCall
 		for i := 0; i < 4; i++ {

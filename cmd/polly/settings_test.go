@@ -50,14 +50,14 @@ func TestSettingSpecGateMembership(t *testing.T) {
 }
 
 // TestSettingSpecMetadataRoundTrip catches a mispointed, duplicated, or
-// cross-row-swapped cfg/metadata accessor pair. Each row's closures run in
+// cross-row-swapped settings/metadata accessor pair. Each row's closures run in
 // isolation against a fresh Metadata, and the field pairing below is an
 // independent statement of which config and metadata field every row owns —
 // so a row whose closures touch the wrong field, an extra field, or another
 // row's field fails here even when the union over all rows still copies
 // every value (which the call sites' per-flag gating does not guarantee).
 func TestSettingSpecMetadataRoundTrip(t *testing.T) {
-	src := &Config{MaxIterations: 17}
+	src := &Settings{MaxIterations: 17}
 	src.Model = "anthropic/claude-test"
 	src.Temperature = 0.42
 	src.MaxTokens = 1234
@@ -68,18 +68,18 @@ func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 	src.SkillDirs = []string{"/a", "/b"}
 
 	owns := map[string]struct {
-		cfg  func(*Config) any
+		cfg  func(*Settings) any
 		meta func(*sessions.Metadata) any
 	}{
-		"model":         {func(c *Config) any { return c.Model }, func(m *sessions.Metadata) any { return m.Model }},
-		"temp":          {func(c *Config) any { return c.Temperature }, func(m *sessions.Metadata) any { return m.Temperature }},
-		"maxtokens":     {func(c *Config) any { return c.MaxTokens }, func(m *sessions.Metadata) any { return m.MaxTokens }},
-		"maxcontext":    {func(c *Config) any { return c.MaxHistoryTokens }, func(m *sessions.Metadata) any { return m.MaxHistoryTokens }},
-		"thinking":      {func(c *Config) any { return c.ThinkingEffort }, func(m *sessions.Metadata) any { return m.ThinkingEffort }},
-		"system":        {func(c *Config) any { return c.SystemPrompt }, func(m *sessions.Metadata) any { return m.SystemPrompt }},
-		"tooltimeout":   {func(c *Config) any { return c.ToolTimeout }, func(m *sessions.Metadata) any { return m.ToolTimeout }},
-		"skilldir":      {func(c *Config) any { return c.SkillDirs }, func(m *sessions.Metadata) any { return m.SkillDirs }},
-		"maxiterations": {func(c *Config) any { return c.MaxIterations }, func(m *sessions.Metadata) any { return m.MaxIterations }},
+		"model":         {func(c *Settings) any { return c.Model }, func(m *sessions.Metadata) any { return m.Model }},
+		"temp":          {func(c *Settings) any { return c.Temperature }, func(m *sessions.Metadata) any { return m.Temperature }},
+		"maxtokens":     {func(c *Settings) any { return c.MaxTokens }, func(m *sessions.Metadata) any { return m.MaxTokens }},
+		"maxcontext":    {func(c *Settings) any { return c.MaxHistoryTokens }, func(m *sessions.Metadata) any { return m.MaxHistoryTokens }},
+		"thinking":      {func(c *Settings) any { return c.ThinkingEffort }, func(m *sessions.Metadata) any { return m.ThinkingEffort }},
+		"system":        {func(c *Settings) any { return c.SystemPrompt }, func(m *sessions.Metadata) any { return m.SystemPrompt }},
+		"tooltimeout":   {func(c *Settings) any { return c.ToolTimeout }, func(m *sessions.Metadata) any { return m.ToolTimeout }},
+		"skilldir":      {func(c *Settings) any { return c.SkillDirs }, func(m *sessions.Metadata) any { return m.SkillDirs }},
+		"maxiterations": {func(c *Settings) any { return c.MaxIterations }, func(m *sessions.Metadata) any { return m.MaxIterations }},
 	}
 
 	nonZeroFields := func(v reflect.Value) int {
@@ -110,10 +110,10 @@ func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 		if n := nonZeroFields(reflect.ValueOf(md).Elem()); n != 1 {
 			t.Errorf("row %q toMeta touched %d metadata fields, want exactly 1", spec.key, n)
 		}
-		dst := &Config{}
+		dst := &Settings{}
 		spec.fromMeta(dst, md)
 		if !reflect.DeepEqual(own.cfg(dst), own.cfg(src)) {
-			t.Errorf("row %q fromMeta did not restore its own config field: got %v, want %v", spec.key, own.cfg(dst), own.cfg(src))
+			t.Errorf("row %q fromMeta did not restore its own settings field: got %v, want %v", spec.key, own.cfg(dst), own.cfg(src))
 		}
 	}
 }

@@ -55,11 +55,19 @@ session where no turn ran is discarded on exit. The status row shows the
 active model and context use (`ctx 41.2k/156k`; a leading `~` marks a local
 estimate).
 
-`/resume` (or a click on the session name in the status row) switches to
-another saved session in place: the current session is released, the
-chosen one is opened, and the screen stays up. A running turn is canceled
-first. Each open session is leased by the polly holding it, so the picker
-marks sessions open in another polly as `in use` and will not open them.
+One polly holds several sessions at once, as tabs. `/resume` (or a click
+on the session name in the status row) opens a saved session in a new tab
+and shows it; the session you came from stays open, leased to this polly,
+with its transcript intact. `/new` opens a tab on a fresh generated
+session, `/tab` lists the open tabs and `/tab <n|name>` switches, and
+`/close` closes the visible tab (its session stays saved; a generated
+session that never ran a turn is discarded). Closing the last tab leaves
+polly.
+Each tab keeps its own settings, so `/set` and `/model` change only the
+visible one. A tab cannot be left while its turn is running: finish or
+cancel the turn first. Each open session is leased by the polly holding
+it, so the picker marks sessions open in another polly as `in use` and
+will not open them; picking a session already open in a tab jumps to it.
 
 ### Keys and input
 
@@ -88,7 +96,10 @@ reporting for scrolling and image clicks, so use the terminal's override
                              (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /model                       Pick a provider and model
 /keys                        Set masked, process-local provider keys
-/resume                      Pick and resume a saved session
+/resume                      Open a saved session in a new tab
+/new                         Open a new tab on a fresh session
+/tab [n|name]  (/tabs)       List open tabs, or switch to one
+/close                       Close the visible tab (session stays saved)
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills
 /rename <name>               Rename the current context

@@ -65,18 +65,17 @@ func TestReplCommandRegistryDispatchAliasesAndHelp(t *testing.T) {
 }
 
 func TestGetCommandShowsStableFlagBackedSettings(t *testing.T) {
-	r := newManagedREPL(&Config{
-		Settings: Settings{
-			Model:            "openai/gpt-5.4",
-			Temperature:      0.7,
-			MaxTokens:        1234,
-			MaxHistoryTokens: 5678,
-			ThinkingEffort:   "medium",
-			SystemPrompt:     "be useful",
-			ToolTimeout:      3 * time.Second,
-			SkillDirs:        []string{"/tmp/skills"},
-		},
-	}, "ctx", 0, 0)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.state = &conversationState{settings: Settings{
+		Model:            "openai/gpt-5.4",
+		Temperature:      0.7,
+		MaxTokens:        1234,
+		MaxHistoryTokens: 5678,
+		ThinkingEffort:   "medium",
+		SystemPrompt:     "be useful",
+		ToolTimeout:      3 * time.Second,
+		SkillDirs:        []string{"/tmp/skills"},
+	}}
 
 	if handled, quit := r.runCommand("/get model"); !handled || quit {
 		t.Fatalf("/get model handled=%v quit=%v", handled, quit)
@@ -491,7 +490,8 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		{"/set max", true, "/set max", []string{"/set maxcontext", "/set maxtokens"}},
 		// Second arguments complete positionally.
 		{"/set thinking m", true, "/set thinking m", []string{"/set thinking max", "/set thinking medium", "/set thinking minimal"}},
-		{"/help /cl", true, "/help /clear", []string{"/help /clear"}},
+		{"/help /cl", true, "/help /cl", []string{"/help /clear", "/help /close"}},
+		{"/help /cle", true, "/help /clear", []string{"/help /clear"}},
 		// Keywords don't leak past their position.
 		{"/help me", false, "", nil},
 	}
@@ -562,7 +562,7 @@ func TestHintFor(t *testing.T) {
 		{"/he\nlp", ""},
 		{"/zzz", ""},
 		// Typing the name: many matches list bare names, few include summaries.
-		{"/t", "/tools — inspect loaded tools"},
+		{"/t", "/tab — list open tabs, or switch to one   /tabs — list open tabs, or switch to one   /tools — inspect loaded tools"},
 		{"/to", "/tools — inspect loaded tools"},
 		{"/q", "/quit — leave the REPL"},
 		// Typing arguments: keyword matches from the command's completer.
@@ -642,34 +642,33 @@ func dispatchDefaultCommandForTest(t *testing.T, line string, ctx *replCommandCo
 func TestSetCommand(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "set-test")
-	cfg := &Config{}
-	cfg.Model = "anthropic/claude-sonnet-4-6"
+	settings := &Settings{Model: "anthropic/claude-sonnet-4-6"}
 	applied := 0
 	ctx := &replCommandContext{
-		config:          cfg,
+		settings:        settings,
 		state:           &conversationState{session: session},
 		settingsApplied: func() { applied++ },
 	}
 
 	replies := dispatchDefaultCommandForTest(t, "/set temp 1.5", ctx)
-	if cfg.Temperature != 1.5 {
-		t.Fatalf("temp = %v, want 1.5", cfg.Temperature)
+	if settings.Temperature != 1.5 {
+		t.Fatalf("temp = %v, want 1.5", settings.Temperature)
 	}
 	if got := strings.Join(replies, "\n"); got != "temp: 1.50" {
 		t.Fatalf("/set temp replies = %q", got)
 	}
 
 	dispatchDefaultCommandForTest(t, "/set model openai/gpt-5.4", ctx)
-	if cfg.Model != "openai/gpt-5.4" {
-		t.Fatalf("model = %q, want openai/gpt-5.4", cfg.Model)
+	if settings.Model != "openai/gpt-5.4" {
+		t.Fatalf("model = %q, want openai/gpt-5.4", settings.Model)
 	}
 	dispatchDefaultCommandForTest(t, "/set thinking high", ctx)
-	if cfg.ThinkingEffort != "high" {
-		t.Fatalf("thinking = %q, want high", cfg.ThinkingEffort)
+	if settings.ThinkingEffort != "high" {
+		t.Fatalf("thinking = %q, want high", settings.ThinkingEffort)
 	}
 	dispatchDefaultCommandForTest(t, "/set tooltimeout 45s", ctx)
-	if cfg.ToolTimeout != 45*time.Second {
-		t.Fatalf("tooltimeout = %v, want 45s", cfg.ToolTimeout)
+	if settings.ToolTimeout != 45*time.Second {
+		t.Fatalf("tooltimeout = %v, want 45s", settings.ToolTimeout)
 	}
 	if applied != 4 {
 		t.Fatalf("settingsApplied ran %d times, want 4", applied)
@@ -684,7 +683,7 @@ func TestSetCommand(t *testing.T) {
 		t.Fatalf("metadata not persisted: %+v", md)
 	}
 
-	// Invalid input explains the constraint and leaves config untouched.
+	// Invalid input explains the constraint and leaves the settings untouched.
 	for _, c := range []struct{ line, wantSub string }{
 		{"/set model gpt", "provider prefix"},
 		{"/set temp eleven", "must be a number"},
@@ -702,11 +701,11 @@ func TestSetCommand(t *testing.T) {
 			t.Errorf("%s replies = %q, want mention of %q", c.line, got, c.wantSub)
 		}
 	}
-	if cfg.Model != "openai/gpt-5.4" || cfg.Temperature != 1.5 || cfg.ThinkingEffort != "high" {
-		t.Fatalf("rejected /set mutated config: %+v", cfg.Settings)
+	if settings.Model != "openai/gpt-5.4" || settings.Temperature != 1.5 || settings.ThinkingEffort != "high" {
+		t.Fatalf("rejected /set mutated the settings: %+v", *settings)
 	}
 
-	// Without a config there is nothing to mutate.
+	// Without a session there are no settings to mutate.
 	replies = dispatchDefaultCommandForTest(t, "/set temp 1.0", &replCommandContext{})
 	if got := strings.Join(replies, "\n"); got != "settings unavailable" {
 		t.Fatalf("configless /set replies = %q", got)
@@ -799,8 +798,8 @@ func TestFallbackREPLDispatchesRegistryCommands(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "fallback")
 	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
-	state := &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil)}
-	config := &Config{Settings: Settings{Model: "anthropic/claude-sonnet-4-6"}}
+	state := &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil), settings: Settings{Model: "anthropic/claude-sonnet-4-6"}}
+	config := &Config{}
 	var out bytes.Buffer
 	reader := bufio.NewReader(strings.NewReader("/get model\n/context\n/reset confirm\n/exit\n"))
 	err := runREPLLoopWithCommands(context.Background(), reader, &out, newWriterReplCommandContext(config, state, &out), func(prompt string) error {

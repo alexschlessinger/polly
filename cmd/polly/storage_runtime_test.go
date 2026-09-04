@@ -154,7 +154,7 @@ func TestInitializeConversationRestoresAuthoritativeZeroSettings(t *testing.T) {
 	}
 
 	config := &Config{
-		Settings: Settings{
+		Launch: Settings{
 			Model:            "default/model",
 			Temperature:      1,
 			MaxTokens:        64_000,
@@ -162,21 +162,25 @@ func TestInitializeConversationRestoresAuthoritativeZeroSettings(t *testing.T) {
 			SystemPrompt:     "default system",
 			ThinkingEffort:   "high",
 			ToolTimeout:      30 * time.Second,
+			MaxIterations:    250,
 			SkillDirs:        []string{"/default/skills"},
 		},
-		MaxIterations: 250,
 	}
-	contextID, _, err := initializeConversation(context.Background(), config, store, "zero-settings", getCommand())
+	contextID, settings, err := initializeConversation(context.Background(), config, store, "zero-settings", getCommand())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if contextID != "zero-settings" {
 		t.Fatalf("context ID = %q", contextID)
 	}
-	if config.Model != "" || config.Temperature != 0 || config.MaxTokens != 0 || config.MaxHistoryTokens != 0 ||
-		config.SystemPrompt != "" || config.ThinkingEffort != "off" || config.ToolTimeout != 0 || config.MaxIterations != 0 ||
-		len(config.SkillDirs) != 0 {
-		t.Fatalf("resolved settings did not preserve stored zero values: %+v", config)
+	if settings.Model != "" || settings.Temperature != 0 || settings.MaxTokens != 0 || settings.MaxHistoryTokens != 0 ||
+		settings.SystemPrompt != "" || settings.ThinkingEffort != "off" || settings.ToolTimeout != 0 || settings.MaxIterations != 0 ||
+		len(settings.SkillDirs) != 0 {
+		t.Fatalf("resolved settings did not preserve stored zero values: %+v", settings)
+	}
+	// The launch settings are the process's own and stay untouched.
+	if config.Launch.Model != "default/model" || config.Launch.MaxIterations != 250 {
+		t.Fatalf("resolving a session rewrote the launch settings: %+v", config.Launch)
 	}
 }
 
@@ -206,11 +210,12 @@ func TestFreshNamedContextSeedsResolvedDefaults(t *testing.T) {
 			if _, err := checkAndPromptForMissingContext(context.Background(), store, "fresh"); err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := initializeConversation(context.Background(), config, store, "fresh", cmd); err != nil {
+			_, settings, err := initializeConversation(context.Background(), config, store, "fresh", cmd)
+			if err != nil {
 				t.Fatal(err)
 			}
 
-			assertResolvedConfig(t, config, tt.modelOverride)
+			assertResolvedSettings(t, settings, tt.modelOverride)
 			metadata, err := store.GetAllMetadata(context.Background())
 			if err != nil {
 				t.Fatal(err)
@@ -276,18 +281,19 @@ func TestUpdateContextInfoPreservesStoredSettingsWithoutFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	config := &Config{Settings: Settings{
+	config := &Config{Launch: Settings{
 		Model:            "default/model",
 		MaxHistoryTokens: 256_000,
 		ThinkingEffort:   "high",
 		SystemPrompt:     "default system",
 	}}
 	cmd := getCommand()
-	if _, _, err := initializeConversation(context.Background(), config, store, "untouched", cmd); err != nil {
+	_, settings, err := initializeConversation(context.Background(), config, store, "untouched", cmd)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Model != "openai/gpt-5.4" || config.MaxHistoryTokens != 0 || config.ThinkingEffort != "" || config.SystemPrompt != "be a pirate" {
-		t.Fatalf("resolved settings did not restore the stored values: %+v", config.Settings)
+	if settings.Model != "openai/gpt-5.4" || settings.MaxHistoryTokens != 0 || settings.ThinkingEffort != "" || settings.SystemPrompt != "be a pirate" {
+		t.Fatalf("resolved settings did not restore the stored values: %+v", settings)
 	}
 
 	session = testAcquireSession(t, store, "untouched")
@@ -295,7 +301,7 @@ func TestUpdateContextInfoPreservesStoredSettingsWithoutFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := updateContextInfo(context.Background(), session, md, config, cmd); err != nil {
+	if err := updateContextInfo(context.Background(), session, md, &settings, cmd); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := session.GetMetadata(context.Background())
@@ -356,11 +362,12 @@ func TestInitializeConversationResumesMigratedLegacyContext(t *testing.T) {
 				}
 			}
 			config := &Config{}
-			if _, _, err := initializeConversation(context.Background(), config, store, "legacy", cmd); err != nil {
+			_, settings, err := initializeConversation(context.Background(), config, store, "legacy", cmd)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if config.Settings.SystemPrompt != "" {
-				t.Fatalf("resolved system prompt = %q, want empty", config.Settings.SystemPrompt)
+			if settings.SystemPrompt != "" {
+				t.Fatalf("resolved system prompt = %q, want empty", settings.SystemPrompt)
 			}
 
 			reopened := testAcquireSession(t, store, "legacy")
@@ -436,7 +443,7 @@ func TestInitializeConversationStoresChangedSystemPromptBeforeClear(t *testing.T
 			if err := cmd.Set("system", prompt); err != nil {
 				t.Fatal(err)
 			}
-			config := &Config{Settings: Settings{SystemPrompt: prompt}}
+			config := &Config{Launch: Settings{SystemPrompt: prompt}}
 			if _, _, err := initializeConversation(context.Background(), config, store, "prompt-reset", cmd); err != nil {
 				t.Fatal(err)
 			}
@@ -479,7 +486,7 @@ func TestHandleResetContextRebuildsHistoryFromSystemOverride(t *testing.T) {
 			if err := cmd.Set("system", prompt); err != nil {
 				t.Fatal(err)
 			}
-			config := &Config{Settings: Settings{SystemPrompt: prompt}}
+			config := &Config{Launch: Settings{SystemPrompt: prompt}}
 			withStdin(t, "y\n", func() {
 				if err := handleResetContext(context.Background(), store, config, cmd, "prompt-reset"); err != nil {
 					t.Fatal(err)
@@ -544,17 +551,17 @@ func parseStorageTestConfig(t *testing.T, args ...string) (*Config, *cli.Command
 	return config, parsedCommand
 }
 
-func assertResolvedConfig(t *testing.T, config *Config, modelOverride string) {
+func assertResolvedSettings(t *testing.T, settings Settings, modelOverride string) {
 	t.Helper()
 	wantModel := "anthropic/claude-sonnet-4-6"
 	if modelOverride != "" {
 		wantModel = modelOverride
 	}
-	if config.Model != wantModel || config.Temperature != 1 || config.MaxTokens != 64_000 ||
-		config.MaxHistoryTokens != 256_000 || config.ThinkingEffort != "off" ||
-		config.SystemPrompt != "" || config.ToolTimeout != 5*time.Minute ||
-		config.MaxIterations != 250 || len(config.SkillDirs) != 0 {
-		t.Fatalf("resolved settings = %+v", config)
+	if settings.Model != wantModel || settings.Temperature != 1 || settings.MaxTokens != 64_000 ||
+		settings.MaxHistoryTokens != 256_000 || settings.ThinkingEffort != "off" ||
+		settings.SystemPrompt != "" || settings.ToolTimeout != 5*time.Minute ||
+		settings.MaxIterations != 250 || len(settings.SkillDirs) != 0 {
+		t.Fatalf("resolved settings = %+v", settings)
 	}
 }
 

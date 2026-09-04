@@ -179,7 +179,7 @@ func TestFailedTurnLabelsPartialAndMarksQueueNotSent(t *testing.T) {
 func TestFailedPostToolCallLabelsEarlierGeneratedOutput(t *testing.T) {
 	r := newManagedREPL(&Config{Quiet: true}, "ctx", 0, 0)
 	r.model.beginTurn("do work")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.AppendAssistantText("I will inspect that.")
 	tui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "1", Name: "bash"}})
 	r.endTurn(errors.New("follow-up completion failed"))
@@ -196,7 +196,7 @@ func TestCancelFreezesPartialAndRejectsLateCallbacks(t *testing.T) {
 	m.turnID = 9
 	m.ed.setText("queued")
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 9}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: 9}
 	tui.AppendAssistantText("visible partial")
 
 	if quit := r.handleInterrupt(); quit {
@@ -231,7 +231,7 @@ func TestCancelFreezesPartialAndRejectsLateCallbacks(t *testing.T) {
 func TestCancelRequestLosingCompletionRaceDoesNotClaimUnsaved(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.beginTurn("question")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.AppendAssistantText("completed answer")
 	if quit := r.handleInterrupt(); quit {
 		t.Fatal("first cancel request should not quit")
@@ -270,7 +270,7 @@ func TestInterruptedTurnWithPersistedProgressOmitsUnsavedLabel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newManagedREPL(&Config{Quiet: true}, "ctx", 0, 0)
 			r.model.beginTurn("do work")
-			tui := &gotuiTurnUI{repl: r, config: r.config}
+			tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 			tui.AppendAssistantText("I ran the tools.")
 			r.endTurn(tc.err)
 
@@ -295,7 +295,7 @@ func TestInterruptedTurnWithPersistedProgressKeepsReasoningSavedLabel(t *testing
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("reasoning from a persisted iteration")
 	record := m.currentReasoningRecord()
 	r.endTurn(&turnProgressSavedError{cause: errors.New("provider failed")})
@@ -350,7 +350,7 @@ func TestApprovalEnterAndEscapeDenyWithoutQuitting(t *testing.T) {
 
 func TestEmptyToolApprovalDoesNotInstallBlockingPrompt(t *testing.T) {
 	r := newManagedREPL(&Config{Confirm: true}, "ctx", 0, 0)
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	if got := tui.ApproveToolCalls(nil); got != nil {
 		t.Fatalf("empty approval = %v, want nil", got)
 	}
@@ -466,7 +466,7 @@ func TestQueueSubmissionAppearsInTranscript(t *testing.T) {
 func TestQueueTranscriptEntryDoesNotSplitAssistantStream(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.beginTurn("question")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.AppendAssistantText("hel")
 	r.model.ed.setText("next")
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
@@ -515,7 +515,7 @@ func TestClearDisplayMidTurnDoesNotInventNoResponse(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.beginTurn("question")
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-l>"})
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.AppendAssistantText("answer after clear")
 	r.endTurn(nil)
 
@@ -529,7 +529,7 @@ func TestClearDisplayPreservesParallelToolState(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.beginTurn("run both")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	calls := []messages.ChatMessageToolCall{{ID: "1", Name: "one"}, {ID: "2", Name: "two"}}
 	tui.AppendToolStart(calls)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-l>"})
@@ -995,7 +995,7 @@ func TestHydrateHistoryTreatsDeniedTurnMarkerAsCompleted(t *testing.T) {
 func TestQuietToolBoundaryDoesNotConcatenateAssistantIterations(t *testing.T) {
 	r := newManagedREPL(&Config{Quiet: true}, "ctx", 0, 0)
 	r.model.beginTurn("run it")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.AppendAssistantText("before")
 	tui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "1", Name: "bash"}})
 	tui.AppendAssistantText("after")

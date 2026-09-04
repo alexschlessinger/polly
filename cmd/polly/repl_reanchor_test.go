@@ -21,7 +21,7 @@ func TestTrailerExpansionReanchorsAcrossMergedActivity(t *testing.T) {
 	m := r.model
 	m.reasoningWidth = width
 	m.beginTurn("investigate")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	tui.ShowThinking(strings.Repeat("weighing the options carefully ", 6))
 	call := messages.ChatMessageToolCall{ID: "probe", Name: "bash"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})

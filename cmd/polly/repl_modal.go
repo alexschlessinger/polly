@@ -194,7 +194,7 @@ func (r *managedREPL) openModal(modal *replModal) {
 
 func (r *managedREPL) openModelPicker() {
 	items := make([]replModalItem, 0, len(validModelProviders))
-	currentProvider, _, _ := strings.Cut(r.config.Model, "/")
+	currentProvider, _, _ := strings.Cut(r.currentModel(), "/")
 	selected := 0
 	for i, provider := range validModelProviders {
 		detail := r.providerCredentialDetail(provider)
@@ -232,8 +232,9 @@ func (r *managedREPL) openProviderModels(provider string) {
 		seen[model] = true
 		models = append(models, model)
 	}
-	if strings.HasPrefix(r.config.Model, provider+"/") {
-		add(r.config.Model)
+	current := r.currentModel()
+	if strings.HasPrefix(current, provider+"/") {
+		add(current)
 	}
 	for _, recent := range r.model.status.recentModels {
 		if strings.HasPrefix(recent, provider+"/") {
@@ -246,7 +247,7 @@ func (r *managedREPL) openProviderModels(provider string) {
 	items := make([]replModalItem, 0, len(models)+1)
 	for _, model := range models {
 		label := strings.TrimPrefix(model, provider+"/")
-		if model == r.config.Model {
+		if model == current {
 			label += "  current"
 		}
 		items = append(items, replModalItem{label: label, value: model})
@@ -294,7 +295,7 @@ func (r *managedREPL) applySelectedModel(model string) {
 
 func (r *managedREPL) openKeyManager() {
 	items := make([]replModalItem, 0, len(validModelProviders))
-	currentProvider, _, _ := strings.Cut(r.config.Model, "/")
+	currentProvider, _, _ := strings.Cut(r.currentModel(), "/")
 	selected := 0
 	for i, provider := range validModelProviders {
 		if provider == currentProvider {
@@ -351,7 +352,8 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 		lengthWidth = max(lengthWidth, rw.StringWidth(formatSessionMessageCount(summary.MessageCount)))
 	}
 	nameWidth = min(nameWidth, 24)
-	// A session leased by another polly cannot be opened here: Acquire would
+	// A session open in one of this polly's tabs is reached by showing that
+	// tab. One leased by another polly cannot be opened here: Acquire would
 	// wait out the lease timeout and then fail. Mark it and refuse up front.
 	inUseElsewhere := make(map[string]bool)
 	for i, summary := range infos {
@@ -365,11 +367,16 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 		label := nameColumn + "  " + ageColumn + "  " + lengthColumn
 		display := styleEscape(nameColumn) + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
 		selectedDisplay := styled(nameColumn, "accent", "bold") + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
-		switch {
+		switch tab := r.tabIndexOf(info.Name); {
 		case info.Name == current:
 			label += "  current"
 			display += "  " + styled("current", "accent", "")
 			selectedDisplay += "  " + styled("current", "accent", "")
+		case tab >= 0:
+			mark := fmt.Sprintf("tab %d", tab+1)
+			label += "  " + mark
+			display += "  " + styled(mark, "ok", "")
+			selectedDisplay += "  " + styled(mark, "ok", "")
 		case summary.InUse:
 			inUseElsewhere[info.Name] = true
 			label += "  in use"
@@ -398,7 +405,7 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 				r.model.appendErrorLine(name + " is open in another polly")
 				return
 			}
-			r.requestSwitchLocked(name)
+			r.requestOpenLocked(name)
 		},
 		onRename: r.openSessionRenameInput,
 	})
@@ -440,7 +447,13 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 	}
 	target := r.state.session
 	closeTarget := false
-	if oldName != current {
+	// A session open in another tab is renamed through that tab's lease.
+	tab := r.tabIndexOf(oldName)
+	switch {
+	case oldName == current:
+	case tab >= 0:
+		target = r.tabs[tab].state.session
+	default:
 		target, err = r.state.sessionStore.Acquire(ctx, oldName, sessions.AcquireOptions{})
 		if err != nil {
 			r.model.appendNoticeLine("rename failed: " + err.Error())
@@ -457,12 +470,22 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 		r.openResumePickerSelected(oldName)
 		return
 	}
-	if closeTarget {
+	switch {
+	case closeTarget:
 		if err := target.Close(); err != nil {
 			r.model.appendNoticeLine("renamed session; releasing it failed: " + err.Error())
 		}
-	} else {
+	case oldName == current:
 		r.model.status.contextName = newName
+		if i := r.visibleTabIndex(); i >= 0 {
+			r.tabs[i].name = newName
+		}
+	default:
+		hidden := r.tabs[tab]
+		hidden.name = newName
+		hidden.model.mu.Lock()
+		hidden.model.status.contextName = newName
+		hidden.model.mu.Unlock()
 	}
 	r.model.appendNoticeLine("renamed session '" + oldName + "' to '" + newName + "'")
 	r.openResumePickerSelected(newName)

@@ -66,7 +66,7 @@ func metadataFromConfig(config *Config) *sessions.Metadata {
 	metadata := &sessions.Metadata{}
 	for _, spec := range settingSpecs {
 		if spec.toMeta != nil {
-			spec.toMeta(config, metadata)
+			spec.toMeta(&config.Launch, metadata)
 		}
 	}
 	if len(config.Tools) == 0 {
@@ -446,7 +446,7 @@ func handleResetContext(ctx context.Context, store sessions.SessionStore, config
 	if md == nil {
 		md = &sessions.Metadata{Name: contextID}
 	}
-	applyFlagSettings(md, config, cmd)
+	applyFlagSettings(md, &config.Launch, cmd)
 
 	if err := session.Reset(ctx, md); err != nil {
 		return fmt.Errorf("failed to reset context: %w", err)

@@ -19,12 +19,16 @@ const contextWindowDiscoveryTimeout = 5 * time.Second
 // rewritten; the clamp applies per request. An unlimited budget (0) is an
 // explicit opt-out and skips discovery entirely, and discovery failures leave
 // the configured budget in place.
-func resolveContextBudget(ctx context.Context, config *Config, state *conversationState) int {
-	budget := config.MaxHistoryTokens
-	if budget <= 0 || state == nil || state.session == nil {
+func resolveContextBudget(ctx context.Context, state *conversationState) int {
+	if state == nil {
+		return 0
+	}
+	settings := &state.settings
+	budget := settings.MaxHistoryTokens
+	if budget <= 0 || state.session == nil {
 		return budget
 	}
-	return llm.ClampContextBudget(budget, state.contextWindowFor(ctx, config.Model), config.MaxTokens)
+	return llm.ClampContextBudget(budget, state.contextWindowFor(ctx, settings.Model), settings.MaxTokens)
 }
 
 // contextWindowFor returns the model's advertised context window, or 0 when

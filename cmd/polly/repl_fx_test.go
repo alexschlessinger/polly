@@ -257,7 +257,7 @@ func TestAppendToolEndAnnotatesLines(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.busy = true
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	calls := []messages.ChatMessageToolCall{{ID: "a", Name: "grep"}, {ID: "b", Name: "bash"}}
 	tui.AppendToolStart(calls)
@@ -334,7 +334,7 @@ func TestThinkingDisclosureStartsCollapsedWithoutLeakingReasoning(t *testing.T) 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	const privateReasoning = "private chain about the parse loop"
 	tui.ShowThinking(privateReasoning)
@@ -366,7 +366,7 @@ func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	for i := 0; i < 16; i++ {
 		tui.ShowThinking(fmt.Sprintf("reasoning sentence number %d about the parse loop. ", i))
@@ -405,7 +405,7 @@ func TestThinkingDisclosurePreviewUsesFullTranscriptWidth(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking(strings.Repeat("wide reasoning preview content ", 32))
 	record := m.currentReasoningRecord()
 	if record == nil || !m.toggleReasoning(record.id, width) {
@@ -427,7 +427,7 @@ func TestSettledThinkingPreviewKeepsNarrowTerminalWidth(t *testing.T) {
 	m := r.model
 	m.reasoningWidth = width
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking(strings.Repeat("narrow reasoning preview content ", 32))
 	record := m.currentReasoningRecord()
 	if record == nil || !m.toggleReasoning(record.id, width) {
@@ -456,7 +456,7 @@ func TestThinkingDockAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking(strings.Repeat("bounded reasoning tail ", 16))
 	record := m.currentReasoningRecord()
 	if record == nil || !m.toggleReasoning(record.id, testThinkingWidth) || !record.expanded {
@@ -491,7 +491,7 @@ func TestCtrlOPrearmsActiveTurnBeforeFirstReasoningChunk(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("first")
-	firstUI := &gotuiTurnUI{repl: r, config: r.config}
+	firstUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	firstUI.ShowThinking("older completed reasoning")
 	older := m.currentReasoningRecord()
 	r.endTurn(nil)
@@ -505,7 +505,7 @@ func TestCtrlOPrearmsActiveTurnBeforeFirstReasoningChunk(t *testing.T) {
 		t.Fatalf("pre-arm targeted the wrong turn: pending=%v older=%#v", m.turnReasoningOpen, older)
 	}
 
-	secondUI := &gotuiTurnUI{repl: r, config: r.config}
+	secondUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	secondUI.ShowThinking("new live reasoning")
 	active := m.currentReasoningRecord()
 	m.refreshReasoningRecords(testThinkingWidth)
@@ -543,7 +543,7 @@ func TestBusyCtrlOTogglesLatestSettledReasoningRun(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("inspect")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	// Prose after each round: two settled runs, each with its own record.
 	for i, thought := range []string{"first reasoning phase", "second reasoning phase"} {
@@ -594,7 +594,7 @@ func TestFailedReasoningDisclosureIsLocalAndMarkedUnsaved(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("reasoning from a failed turn")
 	record := m.currentReasoningRecord()
 	r.endTurn(errors.New("provider failed"))
@@ -616,7 +616,7 @@ func TestClearDuringReasoningStartsOneCleanDisclosure(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("reasoning before clear")
 	m.reasoningPlacements = []disclosurePlacement{{recordID: m.turnReasoningID, Cols: 10}}
 	m.clearDisplay()
@@ -637,7 +637,7 @@ func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("first")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	tui.ShowThinking("first phase reasoning")
 	first := m.currentReasoningRecord()
@@ -680,7 +680,7 @@ func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 	}
 
 	m.beginTurn("second turn")
-	secondUI := &gotuiTurnUI{repl: r, config: r.config}
+	secondUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	secondUI.ShowThinking("independent second-turn reasoning")
 	third := m.currentReasoningRecord()
 	if third == nil || third.id == first.id || third.id == second.id || third.expanded {
@@ -715,7 +715,7 @@ func TestReasoningDisclosureStaysBoundedOnTinyTerminal(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("甲乙丙丁 lots of reasoning that would otherwise wrap")
 	record := m.currentReasoningRecord()
 	if record == nil {
@@ -732,7 +732,7 @@ func TestExpandedShortReasoningReservesTwoDetailRows(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("short")
 	record := m.currentReasoningRecord()
 	if record == nil || !m.toggleReasoning(record.id, testThinkingWidth) {
@@ -752,7 +752,7 @@ func TestLiveReasoningGrowthReanchorsScrolledViewport(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("short")
 	record := m.currentReasoningRecord()
 	if record == nil || !m.toggleReasoning(record.id, width) {
@@ -783,7 +783,7 @@ func TestCompletedReasoningKeepsInlineHitboxAndTrailerControl(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("clickable completed reasoning")
 	record := m.currentReasoningRecord()
 	r.endTurn(nil)
@@ -923,7 +923,7 @@ func TestToggleToolDisclosureGroupAppliesBeforeRefresh(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("work")
-	tui := &gotuiTurnUI{repl: r, config: r.config}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
 	// Two prose-separated tool runs -> two disclosures in one turn.
 	a := messages.ChatMessageToolCall{ID: "a", Name: "alpha"}

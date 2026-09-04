@@ -15,7 +15,7 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
 	tui.ShowThinking("inspect the response framing and preserve the newest reasoning tail")
 	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file"}
@@ -59,7 +59,7 @@ func TestLiveActivityRendersInlineNotInDock(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("work")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("reasoning detail")
 	tui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "read", Name: "read_file"}})
 
@@ -81,7 +81,7 @@ func TestAttachedTrailerRemainsWhenNextTurnStarts(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("first")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	tui.AppendAssistantText("first answer")
 	tui.RecordTurnTokens(1200, 300)
 	m.turnStarted = time.Now().Add(-2 * time.Second)
@@ -108,7 +108,7 @@ func TestLiveTurnDockIsStatusOnly(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("work")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	tui.ShowThinking(strings.Repeat("newest reasoning detail ", 20))
 	call := messages.ChatMessageToolCall{ID: "bash", Name: "bash"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
@@ -145,7 +145,7 @@ func TestPriorTrailerExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("first")
-	firstUI := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	firstUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	firstUI.ShowThinking("prior reasoning detail")
 	firstUI.AppendAssistantText("first answer")
 	r.endTurn(nil)
@@ -175,7 +175,7 @@ func TestExpandedToolTrailerPreservesLiteralBracketsWithoutLeakingStyleMarkup(t 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("inspect")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	calls := []messages.ChatMessageToolCall{
 		{ID: "grep", Name: "grep", Arguments: `{"pattern":"["}`},
 		{ID: "read", Name: "read_file", Arguments: `{"path":"notes.txt"}`},
@@ -220,7 +220,7 @@ func TestEscapeClosesTurnDockOverlayBeforeCancelingTurn(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("work")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("some reasoning")
 	r.endTurn(nil)
 	trailer := m.turnTrailers[m.turnTrailerSeq]
@@ -240,7 +240,7 @@ func TestClickOutsideClosesTurnDockOverlayWithoutActivatingTranscript(t *testing
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("work")
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("some reasoning")
 	r.endTurn(nil)
 	trailer := m.turnTrailers[m.turnTrailerSeq]
@@ -257,7 +257,7 @@ func TestQueuedTurnSwitchesDockWithoutAddingTrailer(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("first")
-	first := &gotuiTurnUI{repl: r, config: r.config, turnID: m.turnID}
+	first := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	first.AppendAssistantText("first answer")
 
 	m.queue = append(m.queue, queuedREPLInput{text: "second", turn: func() *managedTurnInput {

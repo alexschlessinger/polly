@@ -702,7 +702,8 @@ func newInterruptedTurnState(t *testing.T, model llm.LLM, tool tools.Tool) (*con
 	artifactStore := session.ArtifactStore()
 	return &conversationState{
 		session: session, artifactStore: artifactStore, toolRegistry: registry,
-		agent: llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
+		agent:    llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
+		settings: Settings{Model: "test/model", MaxTokens: 128},
 	}, session
 }
 
@@ -731,7 +732,7 @@ func TestMidTurnFailurePersistsCompletedWork(t *testing.T) {
 		return "tool ran ok", nil
 	}}
 	state, session := newInterruptedTurnState(t, model, probe)
-	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128}}
+	config := &Config{}
 	var stdout, stderr bytes.Buffer
 	ui := newLineTurnUI(config, nil)
 	ui.writer, ui.errWriter = &stdout, &stderr
@@ -774,7 +775,7 @@ func TestCanceledTurnPersistsCompletedWork(t *testing.T) {
 		return "did work before cancel", nil
 	}}
 	state, session := newInterruptedTurnState(t, model, probe)
-	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128}}
+	config := &Config{}
 	var stdout, stderr bytes.Buffer
 	ui := newLineTurnUI(config, nil)
 	ui.writer, ui.errWriter = &stdout, &stderr
@@ -802,7 +803,7 @@ func TestCanceledTurnPersistsCompletedWork(t *testing.T) {
 func TestFirstCallFailurePersistsNoGeneratedMessages(t *testing.T) {
 	model := &scriptedStreamLLM{failErr: errors.New("immediate failure")}
 	state, session := newInterruptedTurnState(t, model, nil)
-	config := &Config{Settings: Settings{Model: "test/model", MaxTokens: 128}}
+	config := &Config{}
 	var stdout, stderr bytes.Buffer
 	ui := newLineTurnUI(config, nil)
 	ui.writer, ui.errWriter = &stdout, &stderr
@@ -824,7 +825,7 @@ func TestFirstCallFailurePersistsNoGeneratedMessages(t *testing.T) {
 func TestDetachedTurnRefusesLatePersistence(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.turnID = 4
-	tui := &gotuiTurnUI{repl: r, config: r.config, turnID: 4}
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: 4}
 	if !tui.TurnPersistenceAllowed() {
 		t.Fatal("live turn should be allowed to persist")
 	}
