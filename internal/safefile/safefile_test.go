@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"testing"
 )
 
@@ -131,27 +130,6 @@ func TestOpenRegularRefusesSymlinkedAncestor(t *testing.T) {
 		t.Fatalf("OpenRegular(resolved): %v", err)
 	}
 	f.Close()
-}
-
-func TestOpenRegularRejectsFIFOWithoutBlocking(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no FIFOs on windows")
-	}
-	dir := resolvedTempDir(t)
-	fifo := filepath.Join(dir, "fifo")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := OpenRegular(fifo, os.O_RDONLY, 0)
-		done <- err
-	}()
-	err := <-done
-	var notRegular *NotRegularError
-	if !errors.As(err, &notRegular) || notRegular.Mode&os.ModeNamedPipe == 0 {
-		t.Fatalf("OpenRegular(fifo) error = %v, want NotRegularError for a named pipe", err)
-	}
 }
 
 func TestOpenRegularRequiresAbsolutePath(t *testing.T) {

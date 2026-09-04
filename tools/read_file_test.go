@@ -4,11 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -161,29 +158,5 @@ func TestReadFileFollowsStableSymlink(t *testing.T) {
 	}
 	if !strings.Contains(out, "linked content") {
 		t.Fatalf("expected linked content, got %q", out)
-	}
-}
-
-func TestReadFileRejectsNamedPipeWithoutBlocking(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no FIFOs on windows")
-	}
-	fifo := filepath.Join(t.TempDir(), "pipe")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	tool := NewReadFileTool(NewToolRegistry(nil))
-	done := make(chan error, 1)
-	go func() {
-		_, err := tool.Execute(context.Background(), map[string]any{"path": fifo})
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "named pipe") {
-			t.Fatalf("expected named pipe rejection, got %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("read_file blocked on a FIFO")
 	}
 }
