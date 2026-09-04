@@ -1,139 +1,139 @@
 # Pollytool (polly)
 
-<img src=".assets/polly.png" width="128" height="128">
 
-This is my [LLM](https://en.wikipedia.org/wiki/Stochastic_parrot) harness.
-There are many like it, but this one is mine.
+My [LLM](https://en.wikipedia.org/wiki/Stochastic_parrot) harness.
+There are many like it. This one is mine.
 
-This file covers the CLI and the TUI. [API.md](API.md) is the Go library
-tour; [SANDBOX.md](SANDBOX.md) is the sandbox reference.
+This file: the CLI and the TUI. [API.md](API.md): the Go library.
+[SANDBOX.md](SANDBOX.md): the sandbox.
 
-## Installation
+![polly TUI](.assets/interactive.png)
+
+## Install
 
 ```bash
 go build -o polly ./cmd/polly/
 ```
 
-## Quick Start
+## Quick start
 
 ```bash
 export POLLYTOOL_ANTHROPICKEY=...
 export POLLYTOOL_OPENAIKEY=...
 
-polly                                   # bare polly opens the TUI
-echo "Hello?" | polly                   # one-shot from stdin
-polly -p "Hello?"                       # or from a flag
+polly                                   # TUI
+echo "Hello?" | polly                   # one-shot, stdin
+polly -p "Hello?"                       # one-shot, flag
 polly -m openai/gpt-5.4 -p "Quantum computing in one breath"
 
-# Attach files, images, URLs
-polly -f image.jpg -p "What's this?"
+polly -f image.jpg -p "What's this?"    # files, images, URLs
 polly -f notes.txt -f https://example.com/chart.png -p "Tie these together"
 
-# Tools: shell scripts and MCP servers, auto-detected by file type
-polly -p "uppercase this: hello" --tool ./uppercase.sh
-polly -p "create news.txt with today's news" --tool perp.json --tool filesystem.json
+polly -p "uppercase this: hello" --tool ./uppercase.sh                                # shell tool
+polly -p "create news.txt with today's news" --tool perp.json --tool filesystem.json  # MCP servers
 ```
 
-The default model is `anthropic/claude-sonnet-4-6`; override it with `-m
-provider/model` or `POLLYTOOL_MODEL`.
+Default model: `anthropic/claude-sonnet-4-6`. Override with `-m provider/model`
+or `POLLYTOOL_MODEL`.
 
-## The Interactive TUI
+## TUI
 
-`polly` with no `--prompt` and no piped stdin opens a full-screen terminal UI
-with streaming, scrollback, reverse history search, and bracketed paste.
-When a managed screen can't run (`TERM=dumb`, redirected terminal endpoints)
-polly falls back to a line frontend: Markdown with ANSI styling on a TTY,
-the raw response when output is redirected or `NO_COLOR` is set.
+No `-p`, no piped stdin: full-screen TUI. Streaming, scrollback, reverse
+history search, bracketed paste.
+
+No managed screen (`TERM=dumb`, redirected endpoints): line frontend.
+Markdown with ANSI on a TTY. Raw text when redirected or `NO_COLOR` is set.
 
 ### Sessions
 
-Launching without `-c` starts a persistent session under a generated name
-like `quiet-otter`. Resume it with `polly -L` (last active) or
-`polly -c quiet-otter`, or name it permanently with `/rename`. Generated
-sessions expire after 7 days of inactivity; named ones never expire. A
-session where no turn ran is discarded on exit. The status row shows the
-active model and context use (`ctx 41.2k/156k`; a leading `~` marks a local
-estimate).
+Every launch without `-c` gets a session with a generated name (`quiet-otter`).
 
-One polly holds several sessions at once, as tabs. `/resume` (or a click
-on the session name in the status row) opens a saved session in a new tab
-and shows it; the session you came from stays open, leased to this polly,
-with its transcript intact. `/new` opens a tab on a fresh generated
-session, `/tab` lists the open tabs and `/tab <n|name>` switches, and
-`/close` closes the visible tab (its session stays saved; a generated
-session that never ran a turn is discarded). Closing the last tab leaves
-polly.
-Each tab keeps its own settings, so `/set` and `/model` change only the
-visible one. A turn keeps running when you switch away from its tab:
-start a long agentic run, `/new` or `/tab 1`, and keep working; `/tab`
-lists what each tab is doing, and input queued behind a hidden turn runs
-when it settles. When a hidden tab's turn finishes or fails, a one-line
-notice naming the tab lands in the visible transcript once the visible
-tab is idle; a hidden tab that needs tool approval says so at once, and
-the approval waits until you switch to it. Closing a tab whose turn is
-running is refused; cancel the turn (Esc) first. Quitting with turns running in other tabs warns
-once, and a second Ctrl-C cancels them, waits briefly for their completed
-work to save, and exits. Each open session is leased by the polly holding
-it, so the picker marks sessions open in another polly as `in use` and
-will not open them; picking a session already open in a tab jumps to it.
+- Resume: `polly -L` (last active), `polly -c quiet-otter`, or `/resume`.
+- Keep: `/rename`. Named sessions never expire. Generated ones expire after 7 idle days.
+- A session with no turns is discarded on exit.
+- Status row: model and context use. `ctx 41.2k/156k`. A leading `~` means local estimate.
+
+### Tabs
+
+One polly, many sessions. Each is a tab.
+
+| Command | Effect |
+|---|---|
+| `/resume` | Open a saved session in a new tab. The previous tab stays open. Clicking the session name in the status row does the same. |
+| `/new` | New tab, fresh generated session |
+| `/tab` | List tabs and what each is doing |
+| `/tab <n>`, `/tab <name>` | Switch |
+| `/close` | Close the visible tab. Session stays saved. A generated session with no turns is discarded. Last tab closed: polly exits. |
+| `Alt+1`..`Alt+9` | Jump to a tab by position |
+| `Alt+]`, `Alt+[` | Next tab, previous tab |
+
+Rules:
+
+- Settings are per tab. `/set` and `/model` touch only the visible one.
+- Turns keep running in hidden tabs. Start a long run, switch away, keep working. Input queued behind a hidden turn runs when it settles.
+- A hidden tab that finishes or fails posts a one-line notice in the visible transcript, once the visible tab is idle.
+- A hidden tab that needs tool approval says so at once. The approval waits until you switch to it.
+- Closing a tab mid-turn is refused. Esc first.
+- Quitting with turns running elsewhere warns once. A second Ctrl-C cancels them, waits briefly for completed work to save, exits.
+- Open sessions are leased. The picker marks sessions held by another polly `in use` and will not open them. Picking a session already open here jumps to its tab.
 
 ### Subagents
 
-The model can delegate a self-contained task with the `spawn_agent` tool:
-a brief, an optional label, and the tools the child may use. The child runs
-in a session of its own on the same store, with a fresh context window,
-the parent's settings (the brief may pick a model or an iteration cap), a
-view of the parent's tools that never includes `spawn_agent` itself, and
-the parent's active skills. It shares the parent's MCP servers rather than
-starting them again. Only its final reply comes back, followed by its
-session name, so `polly -c <name>` or `/resume` opens the child's full
-transcript later. In `/resume` and `--list`, agents nest under the session
-that spawned them, named by their brief's label. The picker keeps them
-collapsed to a count until you press → on the parent (← collapses again);
-typing a filter finds them either way. `--list --flat` prints one line
-per session for scripts. Children run in parallel when the model calls the tool
-several times in one turn (four at a time). With `--confirm`, a child's
-tool calls ask you the same way the parent's do. A child's tokens are its
-own and are reported with its reply, not added to the parent's turn.
+The model delegates with the `spawn_agent` tool. Arguments: a brief, an
+optional label, the tools the child may use.
 
-By default the tool waits for the child's reply. With `background: true`
-it returns at once and the child's reply arrives later as a message to
-the parent, which starts a parent turn when the parent is idle; replies
-that land while the parent is busy arrive together as one message. The
-reply is addressed to the parent session, not to a tab or a process: the
-store holds it until the parent takes it, so a child that finishes after
-its parent's tab was closed, or after polly quit, still reports the next
-time the parent is open and idle, in any polly. A child cut off by
-quitting reports as canceled with what it had said so far.
+The child:
 
-In the TUI every child gets a tab of its own, nested under its parent in
-`/tab`. It is an ordinary tab: switch to it to watch it stream, type to
-send it a follow-up, press Esc to cancel just that child, and a child's
-approval or completion shows up as a notice like any hidden tab's. While
-a blocking child runs, the parent's tool row names its tab and shows what
-it is doing (`running bash · 3 tools`). A child tab you never looked at
-closes on its own once the parent has taken its reply, or once it has
-reported when its parent's tab is gone; one you viewed stays. Closing a
-tab whose agents are still running is refused, as for a running turn,
-since they work on a view of its tools. `/spawn <brief>` starts a
-background child of the visible tab by hand. Alt+1 to Alt+9 jump to a tab
-by position and Alt+] and Alt+[ cycle through the tabs. In one-shot and
-line mode the tool always waits for the reply.
+- runs in its own session on the same store, with a fresh context window
+- inherits the parent's settings (the brief may set a model or iteration cap), active skills, and tools minus `spawn_agent`
+- shares the parent's MCP servers instead of starting them again
+- returns only its final reply, followed by its session name. `polly -c <name>` or `/resume` opens the full transcript
+- asks for tool approval like the parent does, under `--confirm`
+- counts its own tokens, reported with its reply, not added to the parent's turn
 
-### Keys and input
+Several calls in one turn run in parallel, four at a time.
+
+`/resume` and `--list` nest agents under the session that spawned them,
+named by label. The picker collapses them to a count. `→` on the parent
+expands, `←` collapses. A typed filter finds them either way.
+`--list --flat`: one line per session, for scripts.
+
+**Background.** `background: true` returns at once. The reply arrives
+later as a message to the parent and starts a parent turn when the parent
+is idle. Replies landing while the parent is busy arrive together as one
+message. The reply is addressed to the session, not a tab or a process.
+The store holds it until the parent takes it. Closed tab, quit polly, no
+matter: it lands the next time the parent is open and idle, in any polly.
+A child cut off by quitting reports as canceled with what it had said so
+far.
+
+**In the TUI.** Every child gets a tab, nested under its parent in `/tab`.
+An ordinary tab: switch to it to watch it stream, type to send a
+follow-up, Esc to cancel just that child. Approval and completion notices
+work as for any hidden tab. While a blocking child runs, the parent's tool
+row names its tab and state (`running bash · 3 tools`). A child tab you
+never viewed closes itself once the parent takes its reply, or once it has
+reported after its parent's tab closed. A viewed tab stays. Closing a tab
+with running agents is refused. They work on a view of its tools.
+`/spawn <brief>` starts a background child of the visible tab by hand.
+
+One-shot and line mode: the tool always waits for the reply.
+
+### Keys
 
 | Key | Action |
 |---|---|
-| `Ctrl-C` / `Esc` | Interrupt the in-flight turn; `Ctrl-C` again (or at an idle prompt) quits |
+| `Ctrl-C` / `Esc` | Interrupt the turn. `Ctrl-C` again, or at an idle prompt: quit |
 | `Ctrl-R` | Reverse history search |
-| `Ctrl-O` | Show or hide the reasoning disclosure |
-| `Ctrl-V` | Attach an image from the system clipboard |
-| `Ctrl-Z` | Suspend to the shell; `fg` resumes |
+| `Ctrl-O` | Toggle the reasoning disclosure |
+| `Ctrl-V` | Attach an image from the clipboard |
+| `Ctrl-Z` | Suspend. `fg` resumes |
 
-Input submitted mid-turn is queued and marked `(queued)`; failed or
-canceled input returns to the composer as a draft. Polly enables mouse
-reporting for scrolling and image clicks, so use the terminal's override
-(usually Shift-drag) to select text.
+Input submitted mid-turn is queued and marked `(queued)`. Failed or
+canceled input returns to the composer as a draft.
+
+Mouse reporting is on, for scrolling and image clicks. Select text with
+the terminal's override, usually Shift-drag.
 
 ### Slash commands
 
@@ -159,48 +159,53 @@ reporting for scrolling and image clicks, so use the terminal's override
 /exit  (/quit)               Leave the TUI
 ```
 
-Keys entered with `/keys` last until polly exits and are never written to
-the transcript, history, database, or environment.
+Keys set with `/keys` live until polly exits. Never written to the
+transcript, history, database, or environment.
 
-### Tool calls, reasoning, and interrupted turns
+### Tool calls and reasoning
 
-Tool activity appears once per turn as a collapsed `▸ N tool calls`
-disclosure; click it to watch timers, outcomes, and tool-produced images
-update in place. Details show call labels and outcomes, never raw result
-bodies — the model still receives every result, and durable history keeps
-the full exchange. With `--thinking`, reasoning appears as a collapsed
-`Thinking…` disclosure; click it or press `Ctrl-O` for a live tail. Both
-auto-collapse when the turn ends and can be reopened later, even after a
-reload.
+Tool activity: one collapsed `▸ N tool calls` row per turn. Click it for
+timers, outcomes, and tool-produced images, updating in place. Details
+show call labels and outcomes, never raw result bodies. The model still
+gets every result. Durable history keeps the full exchange.
 
-A turn that fails or is canceled keeps everything it completed: each
-finished model iteration and tool result is written to durable history, so
-a retry continues from real state. Only text streamed by the interrupted
-final call is lost. Such turns are labeled `failed · completed work saved`,
-`canceled · …`, or `not saved` when nothing durable was produced.
+`--thinking`: reasoning shows as a collapsed `Thinking…` row. Click it, or
+`Ctrl-O`, for a live tail.
+
+Both collapse when the turn ends. Both reopen later, even after a reload.
+
+### Interrupted turns
+
+A failed or canceled turn keeps everything it finished. Each completed
+model iteration and tool result is written to durable history. A retry
+continues from real state. Lost: only the text streamed by the
+interrupted final call.
+
+Labels: `failed · completed work saved`, `canceled · …`, or `not saved`
+when nothing durable was produced.
 
 ### Images
 
-**Seeing them.** The TUI renders thumbnails when assistant Markdown
-contains `![alt](./path.png)`, or when a tool result emits a local image
-path on a line by itself. Relative paths resolve from polly's working
-directory; remote images and paths inside prose, JSON, or code blocks are
-not opened. Kitty graphics are used on Kitty, Ghostty, and WezTerm; Sixel on
-Windows Terminal 1.22+ and foot; everything else (tmux and Zellij
-included) gets a caption/path fallback. Override with
-`POLLYTOOL_IMAGE_PROTOCOL=kitty|sixel|none`.
+**In.** Assistant Markdown with `![alt](./path.png)`, or a tool result
+with a local image path alone on a line: thumbnail. Relative paths
+resolve from polly's working directory. Remote images, and paths inside
+prose, JSON, or code blocks: not opened.
 
-**Sending them.** Typing a path to a local image attaches it on submit —
-`describe .assets/polly.png` just works. `Ctrl-V` grabs the clipboard image,
-drag-and-drop attaches a file, and `/attach <path>` handles paths with
-spaces. Each attachment is a `[image #N]` token at the cursor; delete it to
-drop the attachment. Bytes are captured on submit, so queued turns are
-unaffected by later changes to the file.
+Kitty graphics on Kitty, Ghostty, WezTerm. Sixel on Windows Terminal
+1.22+ and foot. Everything else, tmux and Zellij included: caption and
+path. Override with `POLLYTOOL_IMAGE_PROTOCOL=kitty|sixel|none`.
 
-**Limits.** At most 16 images per prompt and 100 across a request; 10 MB
-per image, 16 MiB per request. Images are downscaled to 1568px on the long
-edge. PNG, JPEG, and WebP pass through; GIFs (first frame) and BMPs are
-normalized to PNG. This is the portable intersection of the
+**Out.** A local image path in the prompt attaches on submit.
+`describe .assets/polly.png` works. `Ctrl-V` takes the clipboard image.
+Drag-and-drop attaches a file. `/attach <path>` handles paths with
+spaces. Each attachment is an `[image #N]` token at the cursor. Delete
+the token, drop the attachment. Bytes are captured on submit, so later
+changes to the file do not touch queued turns.
+
+**Limits.** 16 images per prompt, 100 per request. 10 MB per image,
+16 MiB per request. Downscaled to 1568px on the long edge. PNG, JPEG,
+WebP pass through. GIF (first frame) and BMP become PNG. This is the
+portable intersection of the
 [OpenAI](https://developers.openai.com/api/docs/guides/images-vision),
 [Anthropic](https://platform.claude.com/docs/en/build-with-claude/vision),
 and [Gemini](https://ai.google.dev/gemini-api/docs/image-understanding)
@@ -208,36 +213,35 @@ image inputs.
 
 ## Contexts
 
-A context is a named, persistent conversation. One-shot runs are stateless
-unless you name one with `-c`.
+A context is a named, persistent conversation. One-shot runs are
+stateless without `-c`.
 
 ```bash
-polly --create project --model openai/gpt-5.6 # create with settings
-polly --show project                        # show its configuration
-polly -c project -p "What database should I use?"    # continue the conversation
-polly -c project                            # or continue in the TUI
-polly --last -p "Explain the query"         # -L / --last reuses the most recent context
-cat notes.txt | polly -c project --add      # add stdin to the context, no API call
-polly --reset project                       # clear history, keep settings
-polly --list                                # list all contexts, agents nested under their parent
-polly --list --flat                         # one line per context, for scripts
-polly --delete project                      # delete one
-polly --purge                               # delete all (asks first)
+polly --create project --model openai/gpt-5.6    # create with settings
+polly --show project                             # show its configuration
+polly -c project -p "What database should I use?"  # continue
+polly -c project                                 # continue in the TUI
+polly --last -p "Explain the query"              # -L / --last: most recent context
+cat notes.txt | polly -c project --add           # add stdin, no API call
+polly --reset project                            # clear history, keep settings
+polly --list                                     # list all, agents nested under parents
+polly --list --flat                              # one line per context, for scripts
+polly --delete project                           # delete one
+polly --purge                                    # delete all (asks first)
 ```
 
-Settings used with a context — model, temperature, system prompt, tools —
-are saved to it and restored next run; flags win over stored settings and
-the change sticks. Changing the system prompt of a context with history
-resets the conversation. The system prompt holds only your persona;
-terminal rendering guidance is added per request and never stored.
+Settings used with a context (model, temperature, system prompt, tools)
+are saved to it and restored next run. Flags win over stored settings,
+and the change sticks. A new system prompt on a context with history
+resets the conversation. The system prompt holds only your persona.
+Rendering guidance is added per request, never stored.
 
-Everything lives in one SQLite database at `~/.pollytool/polly.db` (old
-JSON files under `~/.pollytool/contexts` are ignored). To back it up, quit
-polly and copy the file, or use SQLite's
-[online backup API](https://www.sqlite.org/backup.html) while it runs — a
-plain copy can miss data still in the write-ahead log.
+Storage: one SQLite file, `~/.pollytool/polly.db`. Old JSON under
+`~/.pollytool/contexts` is ignored. Backup: quit and copy the file, or use
+SQLite's [online backup API](https://www.sqlite.org/backup.html) while it
+runs. A plain copy of a live database can miss the write-ahead log.
 
-## Models and Providers
+## Models
 
 Models are named `provider/model`.
 
@@ -251,50 +255,51 @@ Models are named `provider/model`.
 | Ollama | `ollama/gpt-oss` | `POLLYTOOL_OLLAMAKEY` (optional) |
 | Hugging Face | `huggingface/...` | `POLLYTOOL_HUGGINGFACEKEY` |
 
-`--baseurl` points at a remote Ollama or any OpenAI-compatible endpoint:
+`--baseurl`: a remote Ollama, or any OpenAI-compatible endpoint.
 
 ```bash
 polly --baseurl http://192.168.1.100:11434 -m ollama/gpt-oss -p "Hello"
 polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hello"
 ```
 
-Native OpenAI uses the Responses API (Chat Completions with `--baseurl`);
-strict tool schemas with optional parameters are downgraded to non-strict
-there. DeepSeek reasoning models require their `reasoning_content` echoed
-back on follow-up turns, which polly does automatically. OpenRouter takes
-the upstream slug after the prefix (`openrouter/openai/gpt-5`). Ollama
-schema support depends on the model.
+- Native OpenAI: Responses API. With `--baseurl`: Chat Completions. Strict tool schemas with optional parameters go non-strict there.
+- DeepSeek reasoning models need `reasoning_content` echoed on follow-up turns. Polly does it.
+- OpenRouter: the upstream slug after the prefix. `openrouter/openai/gpt-5`.
+- Ollama: schema support depends on the model.
 
 ## Tools
 
-Load tools with `-t`/`--tool` (repeatable). Polly auto-detects a **shell
-script** (`*.sh`, one tool), an **MCP server config** (`*.json`, one or more
-tools), or a **built-in name** (`bash`, `read_file`, ...). Names are
-namespaced — `uppercase__to_uppercase`, `filesystem__read_file` — and
-`--confirm` asks before each call. New contexts start with `bash` and all
-built-in file tools; passing any `--tool` replaces that default.
+`-t`/`--tool`, repeatable. Detected by file type:
+
+- `*.sh`: shell script, one tool
+- `*.json`: MCP server config, one or more tools
+- bare name: built-in (`bash`, `read_file`, ...)
+
+Names are namespaced: `uppercase__to_uppercase`, `filesystem__read_file`.
+`--confirm` asks before each call.
+
+New contexts start with `bash` and every built-in file tool. Any `--tool`
+replaces that default.
 
 ### Built-in tools
 
-- `bash` — sandboxed shell execution.
-- `read_file` — paged numbered lines, with search and raw byte windows.
-- `write_file` — create or replace a file, creating parent directories.
-- `edit_file` — replace an exact literal string that must be unique (or
-  pass `replace_all`).
-- `list_dir` — one directory, non-recursive.
-- `spawn_agent` — delegate a self-contained task to a child agent (see
-  [Subagents](#subagents)).
-- `search_files` — `path:line: text` matches, literal or RE2 with `regex`,
-  filtered by an `include` glob; skips `.git`, symlinks, binaries, and
-  read-denied paths.
+- `bash`: sandboxed shell.
+- `read_file`: paged numbered lines, search, raw byte windows.
+- `write_file`: create or replace a file. Makes parent directories.
+- `edit_file`: replace an exact literal string. Must be unique, or pass `replace_all`.
+- `list_dir`: one directory, non-recursive.
+- `spawn_agent`: delegate to a child agent. See [Subagents](#subagents).
+- `search_files`: `path:line: text` matches. Literal, or RE2 with `regex`. Filter with an `include` glob. Skips `.git`, symlinks, binaries, read-denied paths.
 
-All of them enforce the sandbox policy in-process
+All enforce the sandbox policy in-process
 ([details](SANDBOX.md#what-gets-sandboxed)).
 
 ### Shell tools
 
-Any executable is a tool if it answers `--schema` (print a JSON Schema) and
-`--execute <json-args>` (do the work, print the result to stdout, exit 0):
+Any executable is a tool if it answers two flags:
+
+- `--schema`: print a JSON Schema
+- `--execute <json-args>`: do the work, print the result to stdout, exit 0
 
 ```bash
 #!/bin/bash
@@ -321,13 +326,13 @@ chmod +x uppercase.sh
 polly -t ./uppercase.sh -p "Convert 'hello world' to uppercase"
 ```
 
-The schema may include a top-level `"sandbox"` field to customize the
-tool's policy — see [Sandboxing](#sandboxing).
+A top-level `"sandbox"` field in the schema customizes the tool's policy.
+See [Sandboxing](#sandboxing).
 
 ### MCP servers
 
-Servers are declared in Claude Desktop-format JSON. Load every server in a
-file with `-t mcp.json`, or one with `-t mcp.json#filesystem`.
+Claude Desktop-format JSON. `-t mcp.json` loads every server in the file.
+`-t mcp.json#filesystem` loads one.
 
 ```json
 {
@@ -350,29 +355,29 @@ Stdio servers run sandboxed like any other tool and may carry their own
 `"sandbox"` overrides. Remote servers (`sse` or streamable HTTP) run
 elsewhere.
 
-## Agent Skills
+## Skills
 
-Polly discovers [Agent Skills](https://agentskills.io/specification) — a
-folder per skill with a `SKILL.md` manifest — from one or more directories.
+[Agent Skills](https://agentskills.io/specification): a folder per skill,
+a `SKILL.md` manifest, discovered from one or more directories.
 
 ```bash
 polly --listskills                          # default: ~/.pollytool/skills
 polly --skilldir ~/.pollytool/skills --skilldir ./skills --listskills
-polly -S ./my-skill -p "..."                # load one skill directly (dir, git URL,
+polly -S ./my-skill -p "..."                # load one directly (dir, git URL,
                                             # or archive URL); auto-activated
-polly --noskills -p "summarize this file"   # disable skills for a run
+polly --noskills -p "summarize this file"   # skills off for a run
 ```
 
-Discovered skills are advertised in the system prompt next to the
-`activate_skill` and `read_skill_file` tools. Activation loads the skill's
-`scripts/` as shell tools and its `mcp/` configs as MCP servers, namespaced
-by skill name, and enforces its `allowed-tools` globs on later turns
-(additively across activations).
+Discovered skills are advertised in the system prompt beside the
+`activate_skill` and `read_skill_file` tools. Activation loads the
+skill's `scripts/` as shell tools and its `mcp/` configs as MCP servers,
+namespaced by skill name. Its `allowed-tools` globs apply on later turns,
+additively across activations.
 
-## Structured Output
+## Structured output
 
-Pass a JSON schema and get validated JSON back. Works with images too
-(`polly -f receipt.jpg --schema receipt.schema.json`).
+A JSON schema in, validated JSON out. Images too:
+`polly -f receipt.jpg --schema receipt.schema.json`.
 
 ```bash
 cat > person.schema.json << 'EOF'
@@ -394,14 +399,15 @@ echo "John Doe is 30 years old, email: john@example.com" | \
 
 ## Sandboxing
 
-Tool commands — the builtin `bash` tool, shell tools, and stdio MCP servers
-— run **sandboxed by default**: the filesystem is read-only outside the
-policy's writable paths, credential paths (`~/.ssh`, `~/.aws`, `~/.gnupg`,
-...) are hidden, and credential-shaped environment variables (`POLLYTOOL_*`,
-`AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, ...) are stripped.
+Tool commands (the builtin `bash` tool, shell tools, stdio MCP servers)
+run **sandboxed by default**.
 
-`--sandbox <preset>` (`POLLYTOOL_SANDBOX`) selects the base policy.
-Components join with `+`:
+- Filesystem read-only outside the policy's writable paths.
+- Credential paths hidden: `~/.ssh`, `~/.aws`, `~/.gnupg`, ...
+- Credential-shaped environment stripped: `POLLYTOOL_*`, `AWS_*`, `*_API_KEY`, `*_TOKEN`, `SSH_AUTH_SOCK`, ...
+
+`--sandbox <preset>` (`POLLYTOOL_SANDBOX`) picks the base policy. Join
+components with `+`.
 
 | Preset | Meaning |
 |---|---|
@@ -413,17 +419,19 @@ Components join with `+`:
 | `ssh` | agent-based SSH: `SSH_AUTH_SOCK` and its socket pass through, `~/.ssh/config` and `known_hosts` readable; private keys stay masked |
 | `sshkeys` | read all of `~/.ssh` including private keys; still not writable |
 
-The default is **`workspace+net+git`**. Tighten with `--sandbox base` or
-`--sandbox readonly` when tools only need to compute or inspect. On top of
-any preset: `--writepath <dir>` and `--denypath <path>` (both repeatable),
-`--allownet`, and `--nosandbox` to disable sandboxing entirely. Individual
-tools can widen or tighten their own policy with a `"sandbox"` field in the
-shell tool schema or MCP server entry.
+Default: **`workspace+net+git`**. Tighten with `--sandbox base` or
+`--sandbox readonly` when tools only compute or inspect.
 
-**[SANDBOX.md](SANDBOX.md)** has every `"sandbox"` field, the merge rules,
-the Git metadata protection, platform details, and limitations.
+On top of any preset: `--writepath <dir>` and `--denypath <path>` (both
+repeatable), `--allownet`. `--nosandbox` turns sandboxing off.
 
-## CLI Reference
+Per tool: a `"sandbox"` field in the shell tool schema or MCP server
+entry widens or tightens that tool's policy.
+
+**[SANDBOX.md](SANDBOX.md)**: every `"sandbox"` field, the merge rules,
+Git metadata protection, platform details, limitations.
+
+## CLI reference
 
 ```
 NAME:
@@ -478,10 +486,9 @@ GLOBAL OPTIONS:
    --add                                                    Add stdin content to context without making an API call
 ```
 
-## See Also
+## See also
 
-- [Soulshack](https://github.com/pkdindustries/soulshack) — an IRC chatbot
-  that uses Polly for LLM features.
+- [Soulshack](https://github.com/pkdindustries/soulshack): an IRC chatbot that uses Polly for LLM features.
 
 ## License
 
