@@ -473,3 +473,77 @@ func TestClosingATabWithRunningAgentsIsRefused(t *testing.T) {
 		t.Fatal("closing was still refused after the agent settled")
 	}
 }
+
+func TestBackgroundChildHoldsItsSlotUntilItSettles(t *testing.T) {
+	r, runs := newChildTestREPL(t)
+	parent := r.visibleTab()
+	result := spawnFromTool(context.Background(), r, parent, subagent.Request{Task: "slow", Background: true}, "")
+	runUITask(t, r)
+	rep := awaitReport(t, result)
+	if rep.err != nil || !rep.result.Started || rep.result.Done == nil {
+		t.Fatalf("background spawn = %+v, %v", rep.result, rep.err)
+	}
+	select {
+	case <-rep.result.Done:
+		t.Fatal("Done closed while the child was still running")
+	default:
+	}
+	child := r.tabs[1]
+	close(runs.slow)
+	settleUntil(t, r, settled(child))
+	select {
+	case <-rep.result.Done:
+	default:
+		t.Fatal("Done stayed open after the child settled")
+	}
+}
+
+func TestClosingAChildTabSettlesItsSpawnSlot(t *testing.T) {
+	r, _ := newChildTestREPL(t)
+	parent := r.visibleTab()
+	result := spawnFromTool(context.Background(), r, parent, subagent.Request{Task: "wait", Background: true}, "")
+	runUITask(t, r)
+	rep := awaitReport(t, result)
+	if rep.err != nil || rep.result.Done == nil {
+		t.Fatalf("background spawn = %+v, %v", rep.result, rep.err)
+	}
+	r.cancelTabTurn(r.tabs[1])
+	r.removeTab(1)
+	select {
+	case <-rep.result.Done:
+	default:
+		t.Fatal("Done stayed open after the child's tab was removed")
+	}
+}
+
+func TestSpawnIsRefusedOnceQuitting(t *testing.T) {
+	r, runs := newChildTestREPL(t)
+	parent := r.visibleTab()
+	beginParentToolCall(t, r, runs, "call-1")
+	result := spawnFromTool(context.Background(), r, parent, subagent.Request{Task: "look", Background: true}, "")
+	// The launch closure is queued; the user quits before the loop runs it.
+	if r.beginQuit() {
+		t.Fatal("quit returned with the parent turn still running")
+	}
+	runUITask(t, r)
+	rep := awaitReport(t, result)
+	if rep.err == nil || !strings.Contains(rep.err.Error(), "quitting") {
+		t.Fatalf("spawn after quit = %+v, %v, want a refusal", rep.result, rep.err)
+	}
+	if len(r.tabs) != 1 {
+		t.Fatalf("%d tabs after a refused spawn, want the parent alone", len(r.tabs))
+	}
+	close(runs.release)
+}
+
+func TestSpawnCommandIsDroppedOnceQuitting(t *testing.T) {
+	r, _ := newChildTestREPL(t)
+	r.model.mu.Lock()
+	r.requestSpawnLocked("look")
+	r.model.mu.Unlock()
+	r.quitting = true
+	r.applySpawnRequests()
+	if len(r.tabs) != 1 || len(r.spawnRequests) != 0 {
+		t.Fatalf("%d tabs, %d requests after /spawn while quitting", len(r.tabs), len(r.spawnRequests))
+	}
+}

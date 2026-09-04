@@ -93,7 +93,7 @@ func (t *gotuiTurnUI) RunChild(ctx context.Context, req subagent.Request) (subag
 		err error
 	}
 	spawned := make(chan outcome, 1)
-	r.uiTasks <- func() {
+	launch := func() {
 		w := waiter
 		if ctx.Err() != nil {
 			// The call stopped waiting before the tab existed; the child
@@ -103,13 +103,26 @@ func (t *gotuiTurnUI) RunChild(ctx context.Context, req subagent.Request) (subag
 		tab, err := r.spawnChildTab(t.model, child, req, w, callID)
 		spawned <- outcome{tab, err}
 	}
-	started := <-spawned
+	// The loop may be gone, or leaving, by the time it would take the
+	// launch; a canceled call does not wait on it.
+	select {
+	case r.uiTasks <- launch:
+	case <-ctx.Done():
+		_ = child.Close()
+		return subagent.Result{}, context.Cause(ctx)
+	}
+	var started outcome
+	select {
+	case started = <-spawned:
+	case <-ctx.Done():
+		return subagent.Result{}, context.Cause(ctx)
+	}
 	if started.err != nil {
 		return subagent.Result{}, started.err
 	}
 	tab := started.tab
 	if req.Background {
-		return subagent.Result{Session: tab.name, Started: true}, nil
+		return subagent.Result{Session: tab.name, Started: true, Done: tab.settled}, nil
 	}
 	select {
 	case rep := <-waiter:
@@ -125,6 +138,12 @@ func (t *gotuiTurnUI) RunChild(ctx context.Context, req subagent.Request) (subag
 // parent's tool row at it so the row can show the child's progress. Runs on
 // the event loop with no model lock held.
 func (r *managedREPL) spawnChildTab(parentModel *replModel, child *conversationState, req subagent.Request, waiter chan childReport, callID string) (*replTab, error) {
+	if r.quitting {
+		// Every turn has been told to stop; a child started now would be
+		// outside that sweep and run tools after the user asked to leave.
+		_ = child.Close()
+		return nil, errors.New("polly is quitting")
+	}
 	pi := r.tabIndexOfModel(parentModel)
 	if pi < 0 || r.runTurn == nil {
 		_ = child.Close()
@@ -136,7 +155,7 @@ func (r *managedREPL) spawnChildTab(parentModel *replModel, child *conversationS
 		_ = child.Close()
 		return nil, err
 	}
-	tab := &replTab{name: name, state: child, model: m, parent: parent, parentName: parent.name, report: &childTurnUI{}, waiter: waiter}
+	tab := &replTab{name: name, state: child, model: m, parent: parent, parentName: parent.name, report: &childTurnUI{}, waiter: waiter, settled: make(chan struct{})}
 	if child.session != nil {
 		tab.stopWatch = context.AfterFunc(child.session.Context(), r.wakeTabs)
 	}
@@ -178,6 +197,7 @@ func (r *managedREPL) deliverChildReport(ctx context.Context, tab *replTab, err 
 	}
 	rec := tab.report
 	tab.report = nil
+	tab.markSettled()
 	res := subagent.Result{Session: tab.name}
 	res.Text, res.InputTokens, res.OutputTokens = rec.result()
 	if tab.waiter != nil {
@@ -370,6 +390,9 @@ func (r *managedREPL) requestSpawnLocked(brief string) {
 func (r *managedREPL) applySpawnRequests() {
 	requests := r.spawnRequests
 	r.spawnRequests = nil
+	if r.quitting {
+		return
+	}
 	for _, sr := range requests {
 		child, err := r.opener.spawn(r.runCtx, sr.parent.state, sr.req)
 		if err == nil {

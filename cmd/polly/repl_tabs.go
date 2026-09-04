@@ -50,6 +50,20 @@ type replTab struct {
 	viewed     bool
 	report     *childTurnUI
 	waiter     chan childReport
+
+	// settled is closed once a child's first turn has settled or its tab is
+	// gone; a background spawn call's concurrency slot is held until then.
+	// Made before the tab is published and closed only on the event loop.
+	settled       chan struct{}
+	settledClosed bool
+}
+
+// markSettled closes settled, once. Runs on the event loop.
+func (t *replTab) markSettled() {
+	if t.settled != nil && !t.settledClosed {
+		t.settledClosed = true
+		close(t.settled)
+	}
 }
 
 // openResult is the outcome of opening a session for a new tab.
@@ -270,6 +284,7 @@ func (r *managedREPL) removeTab(i int) *replTab {
 		tab.waiter = nil
 	}
 	tab.report = nil
+	tab.markSettled()
 	// Its children stand on their own from here: they report to the store
 	// for the parent session, and an unviewed one closes once it has.
 	for _, child := range r.tabs {

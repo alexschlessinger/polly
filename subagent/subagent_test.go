@@ -272,3 +272,49 @@ func TestAgentRunnerCallbacksObserveEachChild(t *testing.T) {
 		t.Fatalf("factory saw requests %v", labels)
 	}
 }
+
+func TestToolHoldsSlotWhileBackgroundChildRuns(t *testing.T) {
+	settled := make(chan struct{})
+	var started atomic.Int32
+	tool := NewTool(func(ctx context.Context, req Request) (Result, error) {
+		started.Add(1)
+		if req.Background {
+			return Result{Started: true, Session: "child", Done: settled}, nil
+		}
+		return Result{Text: "ok"}, nil
+	}, WithMaxConcurrent(1))
+
+	out, err := tool.Execute(context.Background(), map[string]any{"task": "look", "background": true})
+	if err != nil || !strings.Contains(out, "started") {
+		t.Fatalf("background spawn = %q, %v", out, err)
+	}
+
+	// The slot belongs to the running child: a second spawn waits for it.
+	second := make(chan error, 1)
+	go func() {
+		_, err := tool.Execute(context.Background(), map[string]any{"task": "look again"})
+		second <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if started.Load() != 1 {
+		t.Fatalf("%d children started while the background child holds the only slot, want 1", started.Load())
+	}
+	close(settled)
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	if started.Load() != 2 {
+		t.Fatalf("second child never started after the first settled")
+	}
+}
+
+func TestToolFreesSlotForBackgroundChildWithoutDone(t *testing.T) {
+	tool := NewTool(func(ctx context.Context, req Request) (Result, error) {
+		return Result{Started: true}, nil
+	}, WithMaxConcurrent(1))
+	for range 2 {
+		if _, err := tool.Execute(context.Background(), map[string]any{"task": "look", "background": true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
