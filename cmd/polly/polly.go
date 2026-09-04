@@ -22,6 +22,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
+	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
@@ -111,6 +112,9 @@ type sessionOpener struct {
 	prepare func(ctx context.Context, name string, notify func(string)) (string, Settings, error)
 	open    func(ctx context.Context, name string, settings Settings, auto bool) (*conversationState, error)
 	newName func(ctx context.Context) (string, error)
+	// spawn builds a child's runtime for a subagent of parent (see
+	// openChildState); nil when the REPL cannot spawn.
+	spawn func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error)
 }
 
 func (s *conversationState) Close() error {
@@ -291,7 +295,7 @@ func (r *commandRunner) handleManagementFlags() (bool, error) {
 		return true, handleResetContext(r.ctx, store, cfg, r.cmd, cfg.ResetContext)
 	}
 	if cfg.ListContexts {
-		return true, handleListContexts(r.ctx, store)
+		return true, handleListContexts(r.ctx, store, cfg.FlatList)
 	}
 	if cfg.ListSkills {
 		return true, handleListSkills(cfg)
@@ -418,7 +422,7 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		ToolTimeout:   settings.ToolTimeout,
 		ArtifactStore: artifactStore,
 	})
-	return &conversationState{
+	state = &conversationState{
 		sessionStore:    sessionStore,
 		session:         session,
 		settings:        settings,
@@ -429,7 +433,9 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		skillRuntime:    skillRuntime,
 		skillSources:    skillResult.sources,
 		sandboxWarnings: sandboxWarnings,
-	}, nil
+	}
+	registerSpawnTool(state, config, llmClient)
+	return state, nil
 }
 
 func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner) ([]tools.RegistryOption, error) {
@@ -642,6 +648,9 @@ func (r *commandRunner) runConversation() (retErr error) {
 			},
 			newName: func(ctx context.Context) (string, error) {
 				return generateSessionName(ctx, r.sessionStore)
+			},
+			spawn: func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error) {
+				return openChildState(ctx, r.llmClient, parent, req)
 			},
 		}
 		return runManagedREPL(signalCtx, config, state, opener)
@@ -913,6 +922,10 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		},
 		OnToolStart: func(calls []messages.ChatMessageToolCall) {
 			turnUI.AppendToolStart(calls)
+		},
+		// A spawned child's approvals come back through this turn's UI.
+		BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
+			return withToolCall(withParentTurnUI(ctx, turnUI), call)
 		},
 		ApproveToolCalls: turnUI.ApproveToolCalls,
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {

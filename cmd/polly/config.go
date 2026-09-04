@@ -73,6 +73,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		ResetContext:   cmd.String("reset"),
 		UseLastContext: cmd.Bool("last"),
 		ListContexts:   cmd.Bool("list"),
+		FlatList:       cmd.Bool("flat"),
 		DeleteContext:  cmd.String("delete"),
 		AddToContext:   cmd.Bool("add"),
 		PurgeAll:       cmd.Bool("purge"),
@@ -286,6 +287,10 @@ func contextManagementFlags() []cli.Flag {
 			Name:    "last",
 			Aliases: []string{"L"},
 			Usage:   "Use the last active context",
+		},
+		&cli.BoolFlag{
+			Name:  "flat",
+			Usage: "With --list, print one line per context instead of nesting agents under the context that spawned them",
 		},
 	}
 }

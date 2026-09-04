@@ -77,6 +77,49 @@ work to save, and exits. Each open session is leased by the polly holding
 it, so the picker marks sessions open in another polly as `in use` and
 will not open them; picking a session already open in a tab jumps to it.
 
+### Subagents
+
+The model can delegate a self-contained task with the `spawn_agent` tool:
+a brief, an optional label, and the tools the child may use. The child runs
+in a session of its own on the same store, with a fresh context window,
+the parent's settings (the brief may pick a model or an iteration cap), a
+view of the parent's tools that never includes `spawn_agent` itself, and
+the parent's active skills. It shares the parent's MCP servers rather than
+starting them again. Only its final reply comes back, followed by its
+session name, so `polly -c <name>` or `/resume` opens the child's full
+transcript later. In `/resume` and `--list`, agents nest under the session
+that spawned them, named by their brief's label. The picker keeps them
+collapsed to a count until you press → on the parent (← collapses again);
+typing a filter finds them either way. `--list --flat` prints one line
+per session for scripts. Children run in parallel when the model calls the tool
+several times in one turn (four at a time). With `--confirm`, a child's
+tool calls ask you the same way the parent's do. A child's tokens are its
+own and are reported with its reply, not added to the parent's turn.
+
+By default the tool waits for the child's reply. With `background: true`
+it returns at once and the child's reply arrives later as a message to
+the parent, which starts a parent turn when the parent is idle; replies
+that land while the parent is busy arrive together as one message. The
+reply is addressed to the parent session, not to a tab or a process: the
+store holds it until the parent takes it, so a child that finishes after
+its parent's tab was closed, or after polly quit, still reports the next
+time the parent is open and idle, in any polly. A child cut off by
+quitting reports as canceled with what it had said so far.
+
+In the TUI every child gets a tab of its own, nested under its parent in
+`/tab`. It is an ordinary tab: switch to it to watch it stream, type to
+send it a follow-up, press Esc to cancel just that child, and a child's
+approval or completion shows up as a notice like any hidden tab's. While
+a blocking child runs, the parent's tool row names its tab and shows what
+it is doing (`running bash · 3 tools`). A child tab you never looked at
+closes on its own once the parent has taken its reply, or once it has
+reported when its parent's tab is gone; one you viewed stays. Closing a
+tab whose agents are still running is refused, as for a running turn,
+since they work on a view of its tools. `/spawn <brief>` starts a
+background child of the visible tab by hand. Alt+1 to Alt+9 jump to a tab
+by position and Alt+] and Alt+[ cycle through the tabs. In one-shot and
+line mode the tool always waits for the reply.
+
 ### Keys and input
 
 | Key | Action |
@@ -108,6 +151,7 @@ reporting for scrolling and image clicks, so use the terminal's override
 /new                         Open a new tab on a fresh session
 /tab [n|name]  (/tabs)       List open tabs, or switch to one
 /close                       Close the visible tab (session stays saved)
+/spawn <brief>               Start a background agent that reports back here
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills
 /rename <name>               Rename the current context
@@ -175,7 +219,8 @@ polly -c project                            # or continue in the TUI
 polly --last -p "Explain the query"         # -L / --last reuses the most recent context
 cat notes.txt | polly -c project --add      # add stdin to the context, no API call
 polly --reset project                       # clear history, keep settings
-polly --list                                # list all contexts
+polly --list                                # list all contexts, agents nested under their parent
+polly --list --flat                         # one line per context, for scripts
 polly --delete project                      # delete one
 polly --purge                               # delete all (asks first)
 ```
@@ -237,6 +282,8 @@ built-in file tools; passing any `--tool` replaces that default.
 - `edit_file` — replace an exact literal string that must be unique (or
   pass `replace_all`).
 - `list_dir` — one directory, non-recursive.
+- `spawn_agent` — delegate a self-contained task to a child agent (see
+  [Subagents](#subagents)).
 - `search_files` — `path:line: text` matches, literal or RE2 with `regex`,
   filtered by an `include` glob; skips `.git`, symlinks, binaries, and
   read-denied paths.
@@ -410,6 +457,7 @@ GLOBAL OPTIONS:
    --schema string                                          Path to JSON schema file for structured output
    --context string, -c string                              Context name for conversation continuity [$POLLYTOOL_CONTEXT]
    --last, -L                                               Use the last active context
+   --flat                                                   With --list, print one line per context instead of nesting agents under the context that spawned them
    --maxcontext int                                         Maximum estimated tokens sent to the model, clamped to the model's advertised context window when discoverable; full history is retained (0 = unlimited, never clamped) (default: 256000)
    --confirm                                                Require confirmation before each tool call (default: false)
    --sandbox string                                         Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace (default: "workspace+net+git") [$POLLYTOOL_SANDBOX]

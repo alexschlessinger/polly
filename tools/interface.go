@@ -41,6 +41,15 @@ type OutputTool interface {
 	ExecuteOutput(ctx context.Context, args map[string]any) (ToolOutput, error)
 }
 
+// UntimedTool is implemented by tools whose calls outlast any per-tool
+// timeout by design, such as one that runs a whole child agent. The agent
+// loop skips its tool timeout for them; the call still ends with the turn's
+// context.
+type UntimedTool interface {
+	Tool
+	Untimed() bool
+}
+
 // sandboxedTool is implemented by tool types whose commands can run sandboxed.
 type sandboxedTool interface {
 	Sandboxed() bool

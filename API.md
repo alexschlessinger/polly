@@ -422,6 +422,39 @@ saved := skillRuntime.ActivatedSkills()
 err = skillRuntime.Restore(saved)
 ```
 
+## Subagents
+
+The `subagent` package gives a model the `spawn_agent` tool: a brief, an
+optional label, a tool allow-list, and optional model and iteration
+overrides. What running the child means is the host's `Runner`; the
+library's `AgentRunner` runs an in-memory `llm.Agent` over a derived view
+of the parent's tools (never `spawn_agent` itself), with the brief as the
+only user message after your base messages:
+
+```go
+registry := tools.NewToolRegistry([]tools.Tool{&WeatherTool{}})
+base := llm.CompletionRequest{Model: "openai/gpt-5.4",
+    Messages: []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: "Be brief."}}}
+registry.Register(subagent.NewTool(subagent.AgentRunner(client, registry, base, llm.AgentConfig{})))
+registry.MarkAlwaysAllowed(subagent.ToolName)
+```
+
+The tool result is the child's final reply plus, when the runner gave it
+one, its session name. A `background: true` call asks the runner to return
+as soon as the child has started (`Result.Started`) and deliver the reply
+later; `AgentRunner` has no way to deliver later and runs the child to
+completion regardless. `subagent.WithCallbacks` gives `AgentRunner` a
+factory returning the `llm.AgentCallbacks` for each child's request, to
+stream its text, watch or approve its tool calls, or inject context values
+its tools need; without it a child runs unobserved with every call
+approved. `subagent.WithMaxConcurrent` bounds parallel children (default
+four). The tool is exempt from `AgentConfig.ToolTimeout`
+through the `tools.UntimedTool` interface. The polly CLI's runner opens a
+child session on the same store, linked to the parent with
+`AcquireOptions.Parent`, and in the TUI runs it on a tab of its own; a
+background child's reply travels as a `sessions.Report` (see
+[Sessions](#sessions)).
+
 ## Sessions
 
 Sessions persist conversation history and artifacts in SQLite. Disk-backed
@@ -461,6 +494,16 @@ err = session.Reset(sessionCtx, metadata)
   competing owner receives `sessions.ErrSessionInUse`.
 - `session.ArtifactStore()` is scoped to the session; artifact bytes commit
   in the same database as the transcript.
+- `AcquireOptions{Parent: name}` links a new session to the one whose agent
+  spawns it. The link is by id, so `Metadata.Parent` reads as the parent's
+  current name after renames, and `SetMetadata` ignores the field; a session
+  whose parent was deleted keeps the last name it knew.
+- `session.Report(ctx, sessions.Report{...})` posts a subagent's reply to
+  its linked parent, and `store.PostReport(ctx, parent, report)` does the
+  same for a named session, open or not. `session.TakeReports(ctx)` removes
+  and returns the reports waiting for a leased session, oldest first. A
+  report is deleted with its addressee and names its child as the child is
+  called when read.
 
 ## Structured Output
 

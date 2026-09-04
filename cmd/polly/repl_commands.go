@@ -72,10 +72,11 @@ type replCommandContext struct {
 	openResumePicker func()
 	// Tab callbacks are managed-TUI operations too; the fallback REPL holds
 	// one session and leaves them nil.
-	newTab   func()
-	closeTab func()
-	listTabs func() []string
-	showTab  func(arg string) error
+	newTab     func()
+	closeTab   func()
+	listTabs   func() []string
+	showTab    func(arg string) error
+	spawnAgent func(brief string)
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -205,6 +206,13 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "list open tabs, or switch to one",
 		busySafe: true,
 		run:      replTabCommand,
+	})
+	r.register(replCommand{
+		name:     "/spawn",
+		usage:    "/spawn <brief>",
+		summary:  "start a background agent on this session's tools; it reports back here",
+		busySafe: true,
+		run:      replSpawnCommand,
 	})
 	r.register(replCommand{
 		name:     "/tools",
@@ -515,6 +523,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		newTab:           r.requestNewTabLocked,
 		closeTab:         r.requestCloseTabLocked,
 		listTabs:         r.tabLines,
+		spawnAgent:       r.requestSpawnLocked,
 		showTab: func(arg string) error {
 			i, err := r.resolveTab(arg)
 			if err != nil {
@@ -840,6 +849,18 @@ func replCloseCommand(ctx *replCommandContext, args []string) replCommandResult 
 		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
 	}
 	ctx.closeTab()
+	return replCommandResult{}
+}
+
+func replSpawnCommand(ctx *replCommandContext, args []string) replCommandResult {
+	brief := strings.TrimSpace(strings.Join(args[1:], " "))
+	if brief == "" {
+		return replCommandResult{err: ctx.replyLine("usage: /spawn <brief>")}
+	}
+	if ctx == nil || ctx.spawnAgent == nil {
+		return replCommandResult{err: ctx.replyLine("agents are available only in the managed TUI")}
+	}
+	ctx.spawnAgent(brief)
 	return replCommandResult{}
 }
 

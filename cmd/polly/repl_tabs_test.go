@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/subagent"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -27,6 +28,29 @@ func testSessionOpener(store sessions.SessionStore) *sessionOpener {
 			return &conversationState{sessionStore: store, session: session, artifactStore: session.ArtifactStore(), settings: settings}, nil
 		},
 		newName: func(ctx context.Context) (string, error) { return generateSessionName(ctx, store) },
+		spawn: func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error) {
+			name, err := generateSessionName(ctx, store)
+			if err != nil {
+				return nil, err
+			}
+			parentName, err := parent.session.GetName(ctx)
+			if err != nil {
+				return nil, err
+			}
+			session, err := store.Acquire(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName})
+			if err != nil {
+				return nil, err
+			}
+			md, err := session.GetMetadata(ctx)
+			if err != nil {
+				return nil, err
+			}
+			md.Description = req.Label
+			if err := session.SetMetadata(ctx, md); err != nil {
+				return nil, err
+			}
+			return &conversationState{sessionStore: store, session: session, artifactStore: session.ArtifactStore(), settings: parent.settings.clone()}, nil
+		},
 	}
 }
 

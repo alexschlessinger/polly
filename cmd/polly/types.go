@@ -59,6 +59,7 @@ type Config struct {
 	ResetContext   string // Reset this context (clear history, keep settings)
 	UseLastContext bool   // New field for --last flag
 	ListContexts   bool
+	FlatList       bool // --list prints one line per session without nesting agents
 	DeleteContext  string
 	AddToContext   bool
 	PurgeAll       bool   // Delete all sessions

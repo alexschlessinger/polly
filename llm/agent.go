@@ -572,13 +572,6 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 
 // executeToolCall performs the actual tool execution
 func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageToolCall, args map[string]any) (tools.ToolOutput, error) {
-	// Apply timeout
-	if a.config.ToolTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, a.config.ToolTimeout)
-		defer cancel()
-	}
-
 	// Parse args if not already parsed
 	if args == nil {
 		if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
@@ -601,6 +594,13 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 	if !allowed {
 		errMsg := fmt.Sprintf("Tool not allowed by active skill policy: %s", tc.Name)
 		return tools.ToolOutput{Text: errMsg}, errors.New("tool not allowed: " + tc.Name)
+	}
+
+	// Apply the per-tool timeout, except to tools that run long by design.
+	if untimed, ok := tool.(tools.UntimedTool); a.config.ToolTimeout > 0 && !(ok && untimed.Untimed()) {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, a.config.ToolTimeout)
+		defer cancel()
 	}
 
 	// Execute

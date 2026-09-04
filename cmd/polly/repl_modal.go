@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"image"
-	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +17,11 @@ type replModalItem struct {
 	value           string
 	display         string
 	selectedDisplay string
+	// parent is the value of the item this one nests under; such an item
+	// is listed only while its parent is expanded or a filter matches it.
+	parent string
+	// children counts the items nesting under this one.
+	children int
 }
 
 // replModal is shared by provider/model selection and masked credential input.
@@ -34,10 +38,13 @@ type replModal struct {
 	inputMode bool
 	masked    bool
 	helper    string
-	onSubmit  func(string)
-	onClear   func()
-	onRename  func(string)
-	onCancel  func()
+	// expanded holds the values of parent items whose children are listed.
+	// Sharing the map across openings keeps the choice for the process.
+	expanded map[string]bool
+	onSubmit func(string)
+	onClear  func()
+	onRename func(string)
+	onCancel func()
 }
 
 func (m *replModal) wipe() {
@@ -48,10 +55,24 @@ func (m *replModal) wipe() {
 }
 
 func (m *replModal) filteredItems() []replModalItem {
-	if m == nil || m.inputMode || strings.TrimSpace(m.input.text()) == "" {
+	if m == nil || m.inputMode {
 		return m.items
 	}
 	needle := strings.ToLower(strings.TrimSpace(m.input.text()))
+	if needle == "" {
+		if !m.nested() {
+			return m.items
+		}
+		out := make([]replModalItem, 0, len(m.items))
+		for _, item := range m.items {
+			if item.parent == "" || m.expanded[item.parent] {
+				out = append(out, item)
+			}
+		}
+		return out
+	}
+	// A filter reaches collapsed children too: it is how a name from a
+	// spawn reply is found without knowing which parent to expand.
 	out := make([]replModalItem, 0, len(m.items))
 	for _, item := range m.items {
 		if strings.Contains(strings.ToLower(item.label), needle) || strings.Contains(strings.ToLower(item.value), needle) {
@@ -59,6 +80,67 @@ func (m *replModal) filteredItems() []replModalItem {
 		}
 	}
 	return out
+}
+
+// nested reports whether any item nests under another.
+func (m *replModal) nested() bool {
+	for _, item := range m.items {
+		if item.parent != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// toggle expands or collapses the parent of the selected row. Right expands
+// a parent; Left collapses a parent or, on a child, its parent, which then
+// takes the selection. It reports whether the list changed.
+func (m *replModal) toggle(expand bool) bool {
+	items := m.filteredItems()
+	if len(items) == 0 {
+		return false
+	}
+	m.selected = min(m.selected, len(items)-1)
+	item := items[m.selected]
+	target := item.value
+	if item.parent != "" {
+		if expand {
+			return false
+		}
+		target = item.parent
+	} else if item.children == 0 {
+		return false
+	}
+	if m.expanded[target] == expand {
+		return false
+	}
+	if m.expanded == nil {
+		m.expanded = make(map[string]bool)
+	}
+	m.expanded[target] = expand
+	for i, item := range m.filteredItems() {
+		if item.value == target {
+			m.selected = i
+			break
+		}
+	}
+	return true
+}
+
+// nestMarker names an item's collapsed or expanded children.
+func (m *replModal) nestMarker(item replModalItem) string {
+	if item.children == 0 {
+		return ""
+	}
+	glyph := "▸"
+	if m.expanded[item.value] {
+		glyph = "▾"
+	}
+	noun := "agents"
+	if item.children == 1 {
+		noun = "agent"
+	}
+	return fmt.Sprintf("%s %d %s", glyph, item.children, noun)
 }
 
 func (m *replModal) text(maxRows, modalWidth int) string {
@@ -103,6 +185,9 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 				line = styled(items[i].label, "accent", "bold")
 			}
 		}
+		if marker := m.nestMarker(items[i]); marker != "" {
+			line += "  " + styled(marker, "muted", "")
+		}
 		lines = append(lines, prefix+line)
 	}
 	filter := m.input.text()
@@ -127,6 +212,9 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		footer = count + " · " + filter + " · ↑↓ · Enter resume"
 		if m.onRename != nil {
 			footer += " · F2 rename"
+		}
+		if m.nested() {
+			footer += " · → agents"
 		}
 		footer += " · Esc"
 	} else {
@@ -337,28 +425,34 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 			infos = append(infos, summary)
 		}
 	}
-	sort.Slice(infos, func(i, j int) bool {
-		if infos[i].Metadata.LastUsed.Equal(infos[j].Metadata.LastUsed) {
-			return infos[i].Metadata.Name < infos[j].Metadata.Name
-		}
-		return infos[i].Metadata.LastUsed.After(infos[j].Metadata.LastUsed)
-	})
-	items := make([]replModalItem, 0, len(infos))
-	selected := 0
+	// Agents nest under the session that spawned them, collapsed until the
+	// parent is expanded with Right, so a fan-out never buries the list.
+	metas := make([]*sessions.Metadata, len(infos))
+	for i, summary := range infos {
+		metas[i] = summary.Metadata
+	}
+	nodes := sessionTree(metas)
 	nameWidth := 0
 	lengthWidth := 0
-	for _, summary := range infos {
-		nameWidth = max(nameWidth, len(summary.Metadata.Name))
+	for _, node := range nodes {
+		summary := infos[node.Index]
+		nameWidth = max(nameWidth, rw.StringWidth(sessionTreeName(summary.Metadata, node.Depth)))
 		lengthWidth = max(lengthWidth, rw.StringWidth(formatSessionMessageCount(summary.MessageCount)))
 	}
 	nameWidth = min(nameWidth, 24)
+	target := current
+	if preferred != "" {
+		target = preferred
+	}
 	// A session open in one of this polly's tabs is reached by showing that
 	// tab. One leased by another polly cannot be opened here: Acquire would
 	// wait out the lease timeout and then fail. Mark it and refuse up front.
 	inUseElsewhere := make(map[string]bool)
-	for i, summary := range infos {
+	items := make([]replModalItem, 0, len(nodes))
+	for _, node := range nodes {
+		summary := infos[node.Index]
 		info := summary.Metadata
-		name := truncate(info.Name, nameWidth)
+		name := truncate(sessionTreeName(info, node.Depth), nameWidth)
 		age := formatCompactDuration(time.Since(info.LastUsed))
 		length := formatSessionMessageCount(summary.MessageCount)
 		nameColumn := fmt.Sprintf("%-*s", nameWidth, name)
@@ -383,19 +477,24 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 			display += "  " + styled("in use", "active", "")
 			selectedDisplay += "  " + styled("in use", "active", "")
 		}
-		if (preferred != "" && info.Name == preferred) || (preferred == "" && info.Name == current) {
-			selected = i
-		}
-		items = append(items, replModalItem{
+		item := replModalItem{
 			label: label, value: info.Name, display: display, selectedDisplay: selectedDisplay,
-		})
+			children: node.Children,
+		}
+		if node.Depth > 0 {
+			item.parent = info.Parent
+		}
+		if info.Name == target && item.parent != "" {
+			r.expandPickerParent(item.parent)
+		}
+		items = append(items, item)
 	}
 	if len(items) == 0 {
 		r.model.appendNoticeLine("no saved sessions")
 		return
 	}
-	r.openModal(&replModal{
-		title: "Resume session", items: items, selected: selected,
+	m := &replModal{
+		title: "Resume session", items: items, expanded: r.pickerExpanded,
 		width: 64, maxRows: 14, showCount: true,
 		onSubmit: func(name string) {
 			if name == "" || name == current {
@@ -408,7 +507,26 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 			r.requestOpenLocked(name)
 		},
 		onRename: r.openSessionRenameInput,
-	})
+	}
+	if m.nested() {
+		// Room for the agent count after a row's marks.
+		m.width = 72
+	}
+	for i, item := range m.filteredItems() {
+		if item.value == target {
+			m.selected = i
+			break
+		}
+	}
+	r.openModal(m)
+}
+
+// expandPickerParent lists name's agents in the session picker from now on.
+func (r *managedREPL) expandPickerParent(name string) {
+	if r.pickerExpanded == nil {
+		r.pickerExpanded = make(map[string]bool)
+	}
+	r.pickerExpanded[name] = true
 }
 
 func formatSessionMessageCount(count int) string {
@@ -584,6 +702,10 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		r.closeModal()
 		if submit != nil {
 			submit(value)
+		}
+	case "<Right>", "<Left>":
+		if !m.inputMode {
+			m.toggle(e.ID == "<Right>")
 		}
 	case "<F2>":
 		if m.inputMode || m.onRename == nil {

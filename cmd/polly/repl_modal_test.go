@@ -9,6 +9,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -341,5 +342,114 @@ func TestContextUsageStatusIsProviderVisibleAndCompact(t *testing.T) {
 	m.status.recordContextUsage(12_300, 156_000, true)
 	if got := plainStyledText(m.statusRow(120)); !strings.Contains(got, "~12.3k/156k") {
 		t.Fatalf("estimated status = %q", got)
+	}
+}
+
+func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	ctx := context.Background()
+	spawn := func(name, parent, description string) {
+		session, err := store.Acquire(ctx, name, sessions.AcquireOptions{Parent: parent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata, err := session.GetMetadata(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata.Description = description
+		if err := session.SetMetadata(ctx, metadata); err != nil {
+			t.Fatal(err)
+		}
+		if err := session.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := testAcquireSession(t, store, "gamma").Close(); err != nil {
+		t.Fatal(err)
+	}
+	spawn("epsilon", "gamma", "")
+	spawn("delta", "gamma", "count files")
+	r := newTabTestREPL(t, store, "current-work")
+
+	values := func() []string {
+		var out []string
+		for _, item := range r.model.modal.filteredItems() {
+			out = append(out, item.value)
+		}
+		return out
+	}
+	selectedValue := func() string {
+		items := r.model.modal.filteredItems()
+		return items[r.model.modal.selected].value
+	}
+	key := func(id string) { r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	r.openResumePicker()
+	m := r.model.modal
+	if m == nil || m.width != 72 {
+		t.Fatalf("picker with agents = %#v, want the wider modal", m)
+	}
+	if got := strings.Join(values(), " "); got != "current-work gamma" {
+		t.Fatalf("collapsed picker lists %q, want the agents hidden under gamma", got)
+	}
+	text := plainStyledText(m.text(40, m.width))
+	if !strings.Contains(text, "▸ 2 agents") || !strings.Contains(text, "→ agents") {
+		t.Fatalf("collapsed parent lacks its agent count or hint: %q", text)
+	}
+
+	key("<Down>")
+	if selectedValue() != "gamma" {
+		t.Fatalf("selected %q, want gamma", selectedValue())
+	}
+	key("<Right>")
+	if got := strings.Join(values(), " "); got != "current-work gamma delta epsilon" {
+		t.Fatalf("expanded picker lists %q", got)
+	}
+	if selectedValue() != "gamma" {
+		t.Fatalf("expanding moved the selection to %q", selectedValue())
+	}
+	items := m.filteredItems()
+	if !strings.HasPrefix(items[2].label, "↳ count files") || items[2].parent != "gamma" {
+		t.Fatalf("agent row = %#v, want it named by its label under gamma", items[2])
+	}
+	if !strings.HasPrefix(items[3].label, "↳ epsilon") {
+		t.Fatalf("unlabeled agent row = %q, want its session name", items[3].label)
+	}
+	if text := plainStyledText(m.text(40, m.width)); !strings.Contains(text, "▾ 2 agents") {
+		t.Fatalf("expanded parent marker missing: %q", text)
+	}
+
+	key("<Down>")
+	key("<Left>")
+	if got := strings.Join(values(), " "); got != "current-work gamma" {
+		t.Fatalf("collapsing from an agent row lists %q", got)
+	}
+	if selectedValue() != "gamma" {
+		t.Fatalf("collapsing from an agent selected %q, want its parent", selectedValue())
+	}
+
+	for _, ch := range "count" {
+		key(string(ch))
+	}
+	if got := strings.Join(values(), " "); got != "delta" {
+		t.Fatalf("filter reached %q, want the collapsed agent by its label", got)
+	}
+	key("<Enter>")
+	if r.opening != "delta" {
+		t.Fatalf("picking a filtered agent opened %q", r.opening)
+	}
+	r.finishOpen(<-r.openDone)
+	if len(r.tabs) != 2 || r.tabs[1].name != "delta" {
+		t.Fatalf("agent did not open in a tab: %d tabs", len(r.tabs))
+	}
+
+	// Reopening on an agent shows it, expanding its parent.
+	r.openResumePickerSelected("epsilon")
+	if selectedValue() != "epsilon" {
+		t.Fatalf("picker opened on %q, want epsilon", selectedValue())
+	}
+	if !r.pickerExpanded["gamma"] {
+		t.Fatal("opening on an agent did not expand its parent")
 	}
 }

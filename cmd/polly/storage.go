@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -80,8 +81,10 @@ func metadataFromConfig(config *Config) *sessions.Metadata {
 	return metadata
 }
 
-// handleListContexts lists all available contexts
-func handleListContexts(ctx context.Context, store sessions.SessionStore) error {
+// handleListContexts lists the saved contexts newest first, with the agents a
+// context spawned nested under it. flat prints one plain line per context,
+// for scripts.
+func handleListContexts(ctx context.Context, store sessions.SessionStore, flat bool) error {
 	contexts, err := store.GetAllMetadata(ctx)
 	if err != nil {
 		return fmt.Errorf("list context metadata: %w", err)
@@ -96,25 +99,44 @@ func handleListContexts(ctx context.Context, store sessions.SessionStore) error 
 		return nil
 	}
 
-	// Print all contexts with their metadata
-	for name, info := range contexts {
-		marker := ""
-		if info.Name == lastContext {
-			marker = " *"
-		}
-		timeSince := time.Since(info.LastUsed)
-		timeStr := formatDuration(timeSince)
-
-		// Build model info string
-		modelInfo := ""
-		if info.Model != "" {
-			modelInfo = fmt.Sprintf(" [%s]", info.Model)
-		}
-
-		fmt.Printf("%s%s - last used: %s%s\n", name, modelInfo, timeStr, marker)
+	infos := make([]*sessions.Metadata, 0, len(contexts))
+	for _, info := range contexts {
+		infos = append(infos, info)
 	}
-
+	for _, node := range sessionTree(infos) {
+		info := infos[node.Index]
+		depth := node.Depth
+		if flat {
+			depth = 0
+		}
+		fmt.Println(formatContextLine(info, depth, info.Name == lastContext))
+	}
 	return nil
+}
+
+// formatContextLine is one --list row. A nested agent is indented under its
+// parent and named by its brief's label; a top-level one, or any row in a
+// flat list, names the parent that spawned it instead.
+func formatContextLine(info *sessions.Metadata, depth int, last bool) string {
+	var b strings.Builder
+	if depth > 0 {
+		b.WriteString(strings.Repeat("  ", depth) + "↳ ")
+	}
+	b.WriteString(info.Name)
+	if depth > 0 && info.Description != "" {
+		b.WriteString(" · " + info.Description)
+	}
+	if info.Model != "" {
+		fmt.Fprintf(&b, " [%s]", info.Model)
+	}
+	if info.Parent != "" && depth == 0 {
+		b.WriteString(" (spawned by " + info.Parent + ")")
+	}
+	b.WriteString(" - last used: " + formatDuration(time.Since(info.LastUsed)))
+	if last {
+		b.WriteString(" *")
+	}
+	return b.String()
 }
 
 // formatDuration formats a duration in a human-readable way
@@ -375,6 +397,9 @@ func showContext(ctx context.Context, store sessions.SessionStore, contextID str
 
 	// Prompts and description
 	fmt.Printf("  Description: %s\n", info.Description)
+	if info.Parent != "" {
+		fmt.Printf("  Spawned By: %s\n", info.Parent)
+	}
 	if info.SystemPrompt != "" {
 		fmt.Printf("  System Prompt: %s\n", info.SystemPrompt)
 	} else {

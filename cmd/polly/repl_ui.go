@@ -397,6 +397,16 @@ type managedREPL struct {
 	// history couldn't be opened (best-effort — never fatal).
 	histFile *os.File
 
+	// runTurn executes a turn for a tab; Run sets it, and children spawned
+	// from the event loop start their turns through it.
+	runTurn turnRunner
+	// spawnRequests are the /spawn commands recorded by handlers for the
+	// event loop to apply.
+	spawnRequests []spawnRequest
+	// pickerExpanded names the sessions whose agents the resume picker
+	// lists; the picker shares the map so the choice outlives a modal.
+	pickerExpanded map[string]bool
+
 	// runCtx is the Run loop's context, kept for work that event handlers
 	// start (opening sessions). Background outside Run.
 	runCtx context.Context
@@ -556,6 +566,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	}()
 
 	r.runCtx = ctx
+	r.runTurn = runTurn
 	defer r.drainOpen()
 
 	r.initHistory()
@@ -582,6 +593,14 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	events := pollManagedEvents(ui.DefaultBackend.Screen)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	// Reports posted for the open sessions while no polly held them are
+	// their first input; the poll catches ones posted by children running
+	// elsewhere from now on.
+	reportPoll := time.NewTicker(reportPollInterval)
+	defer reportPoll.Stop()
+	if r.pullAllReports(ctx, runTurn) {
+		r.render()
+	}
 
 	for {
 		select {
@@ -633,6 +652,10 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			r.render()
 		case <-ticker.C:
 			if r.needsTick() {
+				r.render()
+			}
+		case <-reportPoll.C:
+			if r.pullAllReports(ctx, runTurn) {
 				r.render()
 			}
 		case ev := <-events:
@@ -751,6 +774,9 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 	done := make(chan error, 1)
 	tab.turnDone = done
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, state: tab.state, turnID: turnID, reuseUser: reuseUser, turn: cloneManagedTurn(turn), persistence: persistence}
+	if tab.report != nil {
+		tui.observer = tab.report
+	}
 	go func() {
 		done <- runTurn(turnCtx, turn.displayText, tui)
 		r.wakeTabs()
@@ -1142,6 +1168,15 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	if m.modal != nil {
 		r.handleModalEvent(e)
 		return false
+	}
+
+	// Tab shortcuts work in every mode: a turn or an approval on the tab
+	// left behind keeps waiting there.
+	if e.Type == ui.KeyboardEvent {
+		if i, ok := tabShortcut(e.ID, r.visibleTabIndex(), len(r.tabs)); ok {
+			r.requestShowTabLocked(i)
+			return false
+		}
 	}
 
 	// Scroll keys work in every mode (idle, busy, approval) so the user
