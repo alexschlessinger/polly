@@ -40,16 +40,16 @@ type replTab struct {
 	stopWatch      func() bool
 
 	// A child tab (see repl_children.go): parent is the tab whose agent
-	// spawned it; viewed is set once the user has shown it; report records
+	// spawned it, nil once that tab is gone, and parentName the session it
+	// reports to; viewed is set once the user has shown it; report records
 	// its first turn's reply until delivered; waiter is the blocking spawn
-	// call waiting for that reply, nil for a background child. reports are
-	// the replies from this tab's children pending for its model. All
+	// call waiting for that reply, nil for a background child. All
 	// loop-owned.
-	parent  *replTab
-	viewed  bool
-	report  *childTurnUI
-	waiter  chan childReport
-	reports []string
+	parent     *replTab
+	parentName string
+	viewed     bool
+	report     *childTurnUI
+	waiter     chan childReport
 }
 
 // openResult is the outcome of opening a session for a new tab.
@@ -194,7 +194,24 @@ func (r *managedREPL) requestCloseTabLocked() {
 		m.appendNoticeLine("cancel this tab's turn (Esc) before closing it")
 		return
 	}
+	// A running child works on a view of this tab's tools; closing the tab
+	// would close them under it.
+	if n := r.runningChildren(r.visibleTab()); n > 0 {
+		m.appendNoticeLine("cancel this tab's agents (Esc in their tabs) before closing it")
+		return
+	}
 	r.closeTabRequest = true
+}
+
+// runningChildren counts parent's children with a turn running.
+func (r *managedREPL) runningChildren(parent *replTab) int {
+	n := 0
+	for _, tab := range r.tabs {
+		if tab.parent == parent && tab.turnDone != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // applyTabRequests performs the tab changes handlers recorded. Runs on the
@@ -253,6 +270,13 @@ func (r *managedREPL) removeTab(i int) *replTab {
 		tab.waiter = nil
 	}
 	tab.report = nil
+	// Its children stand on their own from here: they report to the store
+	// for the parent session, and an unviewed one closes once it has.
+	for _, child := range r.tabs {
+		if child.parent == tab {
+			child.parent = nil
+		}
+	}
 	visible := tab.model == r.model
 	r.tabs = append(r.tabs[:i], r.tabs[i+1:]...)
 	if visible {
@@ -392,13 +416,18 @@ func (r *managedREPL) finishOpen(res openResult) {
 		}
 	}
 	r.model.mu.Lock()
-	defer r.model.mu.Unlock()
 	if res.err != nil {
 		r.failOpenLocked(res.name, res.err)
+		r.model.mu.Unlock()
 		return
 	}
 	r.startupLogoVisible = false
 	r.model.appendNoticeLine(fmt.Sprintf("opened %s in tab %d", res.name, len(r.tabs)))
+	r.model.mu.Unlock()
+	// Reports its agents posted while it was closed are its first input.
+	if tab := r.visibleTab(); r.runTurn != nil && r.pullReports(r.runCtx, tab) {
+		r.startQueued(r.runCtx, tab, r.runTurn)
+	}
 }
 
 // failOpenLocked reports a failed open. Caller must hold r.model.mu.

@@ -447,7 +447,8 @@ completion regardless. `subagent.WithMaxConcurrent` bounds parallel
 children (default four). The tool is exempt from `AgentConfig.ToolTimeout`
 through the `tools.UntimedTool` interface. The polly CLI's runner opens a
 child session on the same store, recorded with `Metadata.Parent`, and in
-the TUI runs it on a tab of its own.
+the TUI runs it on a tab of its own; a background child's reply travels as
+a `sessions.Report` (see [Sessions](#sessions)).
 
 ## Sessions
 
@@ -488,6 +489,11 @@ err = session.Reset(sessionCtx, metadata)
   competing owner receives `sessions.ErrSessionInUse`.
 - `session.ArtifactStore()` is scoped to the session; artifact bytes commit
   in the same database as the transcript.
+- `store.PostReport(ctx, parent, sessions.Report{...})` holds a subagent's
+  reply for the named session, open or not, and `session.TakeReports(ctx)`
+  removes and returns the reports waiting for a leased session, oldest
+  first. A report is deleted with its addressee and names its child as the
+  child is called when read.
 
 ## Structured Output
 

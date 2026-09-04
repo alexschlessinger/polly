@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -220,18 +221,16 @@ func TestReportsArrivingDuringAParentTurnArriveAsOneMessage(t *testing.T) {
 	awaitReport(t, first)
 	awaitReport(t, second)
 	settleUntil(t, r, func() bool { return r.tabs[1].turnDone == nil && r.tabs[2].turnDone == nil })
-	if len(parent.reports) != 2 {
-		t.Fatalf("%d reports pending on the busy parent, want 2", len(parent.reports))
-	}
-	if got := runs.reported(); len(got) != 0 {
-		t.Fatalf("reports reached the parent mid-turn: %q", got)
+	// The reports wait in the store: nothing is queued on the busy parent.
+	parent.model.mu.Lock()
+	queued := len(parent.model.queue)
+	parent.model.mu.Unlock()
+	if queued != 0 || len(runs.reported()) != 0 {
+		t.Fatalf("reports reached the busy parent: queue %d, turns %q", queued, runs.reported())
 	}
 
 	close(runs.release)
-	settleUntil(t, r, func() bool { return len(parent.reports) == 0 })
-	if parent.turnDone == nil {
-		t.Fatal("the pending reports did not start a parent turn")
-	}
+	settleUntil(t, r, func() bool { return len(runs.reported()) == 1 })
 	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "> 2 agent reports") {
 		t.Fatalf("parent transcript lacks the coalesced echo: %q", got)
 	}
@@ -348,5 +347,129 @@ func TestAltKeysSwitchTabs(t *testing.T) {
 	}
 	if i, ok := tabShortcut("<M-[>", -1, 1); !ok || i != 0 {
 		t.Fatalf("Alt-[ on a lone placeholder tab = %d %v", i, ok)
+	}
+}
+
+func TestChildOfAClosedParentReportsThroughTheStore(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "parent-work", "other-work")
+	runs := &childTestRuns{release: make(chan struct{}), slow: make(chan struct{})}
+	r.runTurn = runs.run
+	parent := r.tabs[0]
+	result := spawnFromTool(context.Background(), r, parent, subagent.Request{Task: "slow", Background: true}, "")
+	runUITask(t, r)
+	awaitReport(t, result)
+	child := r.tabs[1]
+	if child.parent != parent || child.parentName != "parent-work" {
+		t.Fatalf("child tab = %+v, want it under parent-work", child)
+	}
+
+	// The parent tab goes away (its lease lost, say) while its child works.
+	r.removeTab(0)
+	if err := parent.state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if child.parent != nil || child.signalName() != child.name+" (agent of parent-work)" {
+		t.Fatalf("orphaned child = parent %v, signal name %q", child.parent, child.signalName())
+	}
+
+	// Its report goes to the store and the unviewed tab closes itself.
+	close(runs.slow)
+	settleUntil(t, r, func() bool { return r.tabIndexOfModel(child.model) < 0 })
+	if len(r.tabs) != 1 || r.tabs[0].name != "other-work" {
+		t.Fatalf("%d tabs after the orphan reported, want other-work alone", len(r.tabs))
+	}
+	if got := runs.reported(); len(got) != 0 {
+		t.Fatalf("the report ran a turn somewhere: %q", got)
+	}
+
+	// Reopening the parent takes the report as its first input.
+	resolved, settings, err := r.opener.prepare(context.Background(), "parent-work", func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := r.opener.open(context.Background(), resolved, settings, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.finishOpen(openResult{name: resolved, state: state})
+	reopened := r.visibleTab()
+	if reopened.name != "parent-work" || reopened.turnDone == nil {
+		t.Fatalf("reopened tab %q running=%v; want parent-work on its agent's report", reopened.name, reopened.turnDone != nil)
+	}
+	settleUntil(t, r, settled(reopened))
+	want := "agent " + child.name + " finished\nfound slow\n\n(agent session " + child.name + " · 7 in / 3 out)"
+	if got := runs.reported(); len(got) != 1 || got[0] != want {
+		t.Fatalf("reopened parent got %q, want %q", got, want)
+	}
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "> agent "+child.name+" finished") {
+		t.Fatalf("reopened parent transcript lacks the report echo: %q", got)
+	}
+}
+
+func TestReportsPostedWhileNoPollyHeldTheParentArriveAtStartup(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	ctx := context.Background()
+	if err := testAcquireSession(t, store, "helper").Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := newTabTestREPL(t, store, "parent-work")
+	if err := store.PostReport(ctx, "parent-work", sessions.Report{Child: "helper", Status: sessions.ReportCanceled, Text: "half done"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PostReport(ctx, "parent-work", sessions.Report{Child: "helper", Status: sessions.ReportFailed, Error: "boom"}); err != nil {
+		t.Fatal(err)
+	}
+	runs := &childTestRuns{release: make(chan struct{}), slow: make(chan struct{})}
+	r.runTurn = runs.run
+
+	// Run pulls once before its loop; the poll does the same later.
+	if !r.pullAllReports(ctx, runs.run) {
+		t.Fatal("startup found no reports")
+	}
+	parent := r.visibleTab()
+	if parent.turnDone == nil {
+		t.Fatal("the waiting reports did not start a turn")
+	}
+	settleUntil(t, r, settled(parent))
+	got := runs.reported()
+	if len(got) != 1 || !strings.Contains(got[0], "agent helper canceled\nhalf done") || !strings.Contains(got[0], "agent helper failed: boom") {
+		t.Fatalf("parent got %q, want both reports in one message", got)
+	}
+	if transcript := plainStyledText(r.model.fullTranscript()); !strings.Contains(transcript, "> 2 agent reports") {
+		t.Fatalf("transcript lacks the coalesced echo: %q", transcript)
+	}
+	if r.pullAllReports(ctx, runs.run) {
+		t.Fatal("reports were delivered twice")
+	}
+}
+
+func TestClosingATabWithRunningAgentsIsRefused(t *testing.T) {
+	r, runs := newChildTestREPL(t)
+	parent := r.visibleTab()
+	result := spawnFromTool(context.Background(), r, parent, subagent.Request{Task: "slow", Background: true}, "")
+	runUITask(t, r)
+	awaitReport(t, result)
+
+	r.model.mu.Lock()
+	r.requestCloseTabLocked()
+	r.model.mu.Unlock()
+	if r.closeTabRequest {
+		t.Fatal("closing a tab with a running agent was allowed")
+	}
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "cancel this tab's agents (Esc in their tabs) before closing it") {
+		t.Fatalf("no refusal notice: %q", got)
+	}
+
+	// Once the agent has settled and reported, the tab may close.
+	child := r.tabs[1]
+	close(runs.slow)
+	settleUntil(t, r, settled(child))
+	settleUntil(t, r, func() bool { return len(runs.reported()) == 1 && parent.turnDone == nil })
+	r.model.mu.Lock()
+	r.requestCloseTabLocked()
+	r.model.mu.Unlock()
+	if !r.closeTabRequest {
+		t.Fatal("closing was still refused after the agent settled")
 	}
 }

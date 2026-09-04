@@ -593,6 +593,14 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	events := pollManagedEvents(ui.DefaultBackend.Screen)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	// Reports posted for the open sessions while no polly held them are
+	// their first input; the poll catches ones posted by children running
+	// elsewhere from now on.
+	reportPoll := time.NewTicker(reportPollInterval)
+	defer reportPoll.Stop()
+	if r.pullAllReports(ctx, runTurn) {
+		r.render()
+	}
 
 	for {
 		select {
@@ -644,6 +652,10 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			r.render()
 		case <-ticker.C:
 			if r.needsTick() {
+				r.render()
+			}
+		case <-reportPoll.C:
+			if r.pullAllReports(ctx, runTurn) {
 				r.render()
 			}
 		case ev := <-events:

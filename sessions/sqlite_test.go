@@ -1863,10 +1863,84 @@ func TestMigrateSchemaV2StripsLegacyPromptsAndUpgradesImports(t *testing.T) {
 
 	rewind()
 	check("migrated open")
-	if got := version(); got != 2 {
-		t.Fatalf("user_version after migration = %d, want 2", got)
+	if got := version(); got != schemaVersion {
+		t.Fatalf("user_version after migration = %d, want %d", got, schemaVersion)
 	}
 	check("second open")
 	rewind()
 	check("re-run on migrated data")
+}
+
+func TestReportsWaitForTheirParentAndFollowTheirSessions(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, nil, 0)
+	ctx := context.Background()
+	parent := acquireNamed(t, store, "parent")
+	child := acquireNamed(t, store, "child")
+
+	if err := store.PostReport(ctx, "parent", Report{Child: "child", Status: ReportFinished, Text: "done", InputTokens: 7, OutputTokens: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PostReport(ctx, "parent", Report{Child: "other", Status: ReportFailed, Error: "boom"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PostReport(ctx, "nobody", Report{Child: "child", Status: ReportFinished}); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("posting to a missing session = %v, want ErrSessionNotFound", err)
+	}
+	if err := store.PostReport(ctx, "parent", Report{Child: "child", Status: "odd"}); err == nil {
+		t.Fatal("an unknown status was accepted")
+	}
+	// The child's report names it as it is called when read, not when posted.
+	if err := child.Rename(ctx, "renamed-child"); err != nil {
+		t.Fatal(err)
+	}
+	reports, err := parent.TakeReports(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 2 {
+		t.Fatalf("took %d reports, want 2", len(reports))
+	}
+	first, second := reports[0], reports[1]
+	if first.Child != "renamed-child" || first.Status != ReportFinished || first.Text != "done" || first.InputTokens != 7 || first.OutputTokens != 3 || first.Posted.IsZero() {
+		t.Fatalf("first report = %+v", first)
+	}
+	if second.Child != "other" || second.Status != ReportFailed || second.Error != "boom" {
+		t.Fatalf("second report = %+v", second)
+	}
+	if again, err := parent.TakeReports(ctx); err != nil || len(again) != 0 {
+		t.Fatalf("second take = %v, %v; want nothing left", again, err)
+	}
+
+	// A report outlives its child, keeping the name the child had.
+	if err := store.PostReport(ctx, "parent", Report{Child: "renamed-child", Status: ReportCanceled, Text: "partial"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, "renamed-child"); err != nil {
+		t.Fatal(err)
+	}
+	reports, err = parent.TakeReports(ctx)
+	if err != nil || len(reports) != 1 || reports[0].Child != "renamed-child" || reports[0].Status != ReportCanceled {
+		t.Fatalf("report after the child was deleted = %+v, %v", reports, err)
+	}
+
+	// Reports go with the session they are addressed to.
+	if err := store.PostReport(ctx, "parent", Report{Child: "late", Status: ReportFinished, Text: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parent.TakeReports(ctx); err == nil {
+		t.Fatal("a closed session took reports")
+	}
+	if err := store.Delete(ctx, "parent"); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := store.db.QueryRow("SELECT count(*) FROM session_reports").Scan(&left); err != nil || left != 0 {
+		t.Fatalf("reports left after deleting their parent = %d, %v", left, err)
+	}
 }
