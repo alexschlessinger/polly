@@ -19,7 +19,6 @@ type StreamStateInterface interface {
 	SetStopReason(reason messages.StopReason)
 	SetMetadata(key string, value any)
 	UpdateToolCallAtIndex(index int, updater func(*messages.ChatMessageToolCall))
-	ResetToolCalls()
 
 	// Getters
 	GetMetadata(key string) (any, bool)
@@ -147,14 +146,6 @@ func (s *StreamState) UpdateToolCallAtIndex(index int, updater func(*messages.Ch
 
 	// Apply the updater function
 	updater(&s.ToolCalls[index])
-}
-
-// ResetToolCalls safely resets the tool calls array
-// Used by Ollama which sends complete tool calls on each update
-func (s *StreamState) ResetToolCalls() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ToolCalls = s.ToolCalls[:0]
 }
 
 // GetToolCalls safely returns a copy of the tool calls

@@ -56,21 +56,6 @@ func TestUpdateToolCallAtIndex_ExistingSlotPreserved(t *testing.T) {
 	}
 }
 
-func TestResetToolCalls_ThenAdd(t *testing.T) {
-	s := NewStreamState()
-	s.AddToolCall(messages.ChatMessageToolCall{Name: "first"})
-	s.ResetToolCalls()
-	s.AddToolCall(messages.ChatMessageToolCall{Name: "second"})
-
-	calls := s.GetToolCalls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 tool call after reset+add, got %d", len(calls))
-	}
-	if calls[0].Name != "second" {
-		t.Errorf("expected %q, got %q", "second", calls[0].Name)
-	}
-}
-
 func TestClone_Independence(t *testing.T) {
 	s := NewStreamState()
 	s.AppendContent("hello")
