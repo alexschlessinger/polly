@@ -264,6 +264,7 @@ func TestBashToolRunsScriptByAbsolutePath(t *testing.T) {
 }
 
 func TestBashTruncatesRunawayOutput(t *testing.T) {
+	skipIfWindows(t)
 	tool := NewUnsafeBashTool("")
 	out, err := tool.Execute(context.Background(), map[string]any{"command": "yes | head -c 6000000"})
 	if err != nil {
