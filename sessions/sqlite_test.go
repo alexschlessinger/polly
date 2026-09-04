@@ -2058,3 +2058,19 @@ func TestMigrateSchemaV4LinksParentsFromSettings(t *testing.T) {
 		t.Fatalf("backfilled link did not follow the rename: %q, %v", all["delta"].Parent, err)
 	}
 }
+
+func TestCloneMetadataDoesNotAliasContextWindows(t *testing.T) {
+	original := &Metadata{ContextWindows: map[string]int{"openai/gpt": 128000}, ActiveSkills: []string{"a"}}
+	clone := cloneMetadata(original)
+	clone.ContextWindows["anthropic/claude"] = 200000
+	clone.ActiveSkills[0] = "b"
+	if _, leaked := original.ContextWindows["anthropic/claude"]; leaked || len(original.ContextWindows) != 1 {
+		t.Fatalf("clone shares the ContextWindows map with its source: %v", original.ContextWindows)
+	}
+	if original.ActiveSkills[0] != "a" {
+		t.Fatal("clone shares the ActiveSkills slice with its source")
+	}
+	if cloneMetadata(&Metadata{}).ContextWindows != nil {
+		t.Fatal("clone invented a ContextWindows map")
+	}
+}
