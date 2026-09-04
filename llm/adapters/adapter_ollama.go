@@ -3,6 +3,7 @@ package adapters
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 
 	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
@@ -49,12 +50,15 @@ func (a *OllamaAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 		a.handleToolCalls(resp.Message.ToolCalls, state)
 	}
 
-	// Infer stop reason (Ollama doesn't expose detailed stop reasons)
+	// Map the done reason: a reply num_predict cut off must read as
+	// truncated, not as a normal end of turn; otherwise tool calls decide.
 	if resp.Done {
-		toolCalls := state.GetToolCalls()
-		if len(toolCalls) > 0 {
+		switch {
+		case resp.DoneReason == ollama.DoneReasonLength:
+			state.SetStopReason(messages.StopReasonMaxTokens)
+		case len(state.GetToolCalls()) > 0:
 			state.SetStopReason(messages.StopReasonToolUse)
-		} else {
+		default:
 			state.SetStopReason(messages.StopReasonEndTurn)
 		}
 	}
@@ -78,7 +82,7 @@ func (a *OllamaAdapter) handleToolCalls(toolCalls []ollama.ToolCall, state strea
 		// Prefer the native call ID when provided; synthesize one otherwise
 		id := tc.ID
 		if id == "" {
-			id = fmt.Sprintf("call_%s_%d", a.idPrefix, base+i)
+			id = syntheticOllamaCallID(a.idPrefix, base+i)
 		}
 		state.AddToolCall(messages.ChatMessageToolCall{
 			ID:        id,
@@ -86,6 +90,23 @@ func (a *OllamaAdapter) handleToolCalls(toolCalls []ollama.ToolCall, state strea
 			Arguments: string(tcArgStr),
 		})
 	}
+}
+
+// syntheticOllamaCallID names a call the server left unnamed. The shape is
+// polly's own so replay can tell it from a server-issued ID.
+func syntheticOllamaCallID(prefix string, n int) string {
+	return fmt.Sprintf("ollama_call_%s_%d", prefix, n)
+}
+
+// syntheticOllamaCallIDPattern matches polly's synthetic Ollama call IDs:
+// the current ollama_call_<nonce>_<n> and the earlier call_<nonce>_<n>
+// still present in saved sessions (nonce as randomIDPrefix makes it).
+var syntheticOllamaCallIDPattern = regexp.MustCompile(`^(?:ollama_)?call_[0-9a-f]{8}_[0-9]+$`)
+
+// IsSyntheticOllamaCallID reports whether id was synthesized by polly rather
+// than issued by an Ollama server, so it must not be echoed back.
+func IsSyntheticOllamaCallID(id string) bool {
+	return syntheticOllamaCallIDPattern.MatchString(id)
 }
 
 // EnrichFinalMessage adds Ollama-specific metadata to the final message
