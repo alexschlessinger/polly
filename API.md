@@ -377,6 +377,26 @@ Without a registry, `tools.NewUnsafeMCPClient(spec)` connects with no
 sandboxing (the name is the warning); its `ListTools()` result can be
 handed to `NewToolRegistry`, and `Close()` shuts it down.
 
+### Derived registries
+
+`registry.Derive(opts...)` returns a registry that sees the parent's tools
+through an allow-list and shares its MCP clients and sandbox policy, so a
+narrower or separately governed tool set (a subagent's, say) does not start
+the servers again:
+
+```go
+worker := registry.Derive(tools.AllowTools("read_file", "search_files", "git__*"),
+    tools.DenyTools("git__push"))
+agent := llm.NewAgent(client, worker, llm.AgentConfig{})
+defer worker.Close() // releases only what the worker loaded itself
+```
+
+A derived registry is a full registry of its own: tools it registers or
+loads are private to it and shadow the parent's, its skill policy and
+always-allowed set are its own (the allow-list bounds everything but those
+built-ins), and a parent tool stays subject to the parent's policy too.
+Closing the parent empties every registry derived from it.
+
 ## Skills
 
 Skills are directories of model instructions activated on demand:

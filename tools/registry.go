@@ -91,6 +91,15 @@ type ToolRegistry struct {
 	baseSandboxPrepared   bool
 	baseSandboxPrepareErr error
 	unsafeNoSandbox       bool
+
+	// parent makes this a derived registry (see Derive): a lookup that misses
+	// the registry's own tools continues in the parent, whose tools and MCP
+	// clients are shared rather than loaded again, and narrowed by
+	// viewAllowed. Both are fixed at Derive and cleared by Close. A parent
+	// never reaches into a derived registry, so a derived registry may call
+	// its parent while holding its own lock.
+	parent      *ToolRegistry
+	viewAllowed func(name string) bool
 }
 
 type registryOptions struct {
@@ -291,6 +300,15 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 		opt(&o)
 	}
 
+	registry := newRegistry(o)
+	for _, tool := range tools {
+		registry.Register(tool)
+	}
+	return registry
+}
+
+// newRegistry builds an empty registry with the built-in native factories.
+func newRegistry(o registryOptions) *ToolRegistry {
 	registry := &ToolRegistry{
 		tools:                 make(map[string]Tool),
 		nativeTools:           make(map[string]func() (Tool, error)),
@@ -353,11 +371,111 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 		return NewEditFileTool(registry), nil
 	}
 
-	for _, tool := range tools {
-		registry.Register(tool)
-	}
-
 	return registry
+}
+
+// DeriveOption narrows a derived registry.
+type DeriveOption func(*deriveOptions)
+
+type deriveOptions struct {
+	allow []string
+	deny  []string
+}
+
+// AllowTools limits the parent tools a derived registry sees to those
+// matching one of the patterns (filepath.Match globs, or exact names).
+// Tools the derived registry registers itself are not affected. Repeated
+// options accumulate.
+func AllowTools(patterns ...string) DeriveOption {
+	return func(o *deriveOptions) {
+		o.allow = appendUniqueStrings(o.allow, patterns)
+	}
+}
+
+// DenyTools hides the parent tools matching any of the patterns from a
+// derived registry, after AllowTools. Repeated options accumulate.
+func DenyTools(patterns ...string) DeriveOption {
+	return func(o *deriveOptions) {
+		o.deny = appendUniqueStrings(o.deny, patterns)
+	}
+}
+
+func (o deriveOptions) filter() func(name string) bool {
+	if len(o.allow) == 0 && len(o.deny) == 0 {
+		return nil
+	}
+	return func(name string) bool {
+		if len(o.allow) > 0 && !matchesAnyToolPattern(o.allow, name) {
+			return false
+		}
+		return !matchesAnyToolPattern(o.deny, name)
+	}
+}
+
+func matchesAnyToolPattern(patterns []string, name string) bool {
+	for _, pattern := range patterns {
+		if matchesToolPattern(pattern, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// Derive returns a registry that sees this registry's tools through the
+// options' allow-list and shares its MCP clients and sandbox policy, for a
+// caller that needs a narrower or separately governed tool set (a subagent,
+// say) without starting the servers again. The derived registry is a full
+// registry of its own: tools it registers or loads are private to it and
+// shadow the parent's, its skill policy and always-allowed set are its own,
+// and closing it releases only what it loaded itself. A parent tool stays
+// subject to the parent's policy as well, and the parent closing empties
+// every registry derived from it. The allow-list bounds every tool but the
+// derived registry's own always-allowed built-ins.
+func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
+	var o deriveOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	baseCfg, prepareErr := r.preparedBaseSandboxConfig()
+	derived := newRegistry(registryOptions{
+		sandboxFactory:        r.sandboxFactory,
+		baseSandboxCfg:        baseCfg.Merge(sandbox.Config{}),
+		baseSandboxPrepared:   true,
+		baseSandboxPrepareErr: prepareErr,
+		unsafeNoSandbox:       r.unsafeNoSandbox,
+	})
+	derived.parent = r
+	derived.viewAllowed = o.filter()
+	return derived
+}
+
+// viewVisibleLocked reports whether the derived registry's allow-list lets
+// name through; its own always-allowed tools pass regardless. Caller must
+// hold r.mu.
+func (r *ToolRegistry) viewVisibleLocked(name string) bool {
+	return r.viewAllowed == nil || r.alwaysAllowedTools[name] || r.viewAllowed(name)
+}
+
+// inheritedLocked resolves name in the parent chain: the tool, whether it
+// exists there, and whether the parent lets this registry use it. Caller
+// must hold r.mu.
+func (r *ToolRegistry) inheritedLocked(name string) (tool Tool, exists bool, allowed bool) {
+	if r.parent == nil {
+		return nil, false, false
+	}
+	return r.parent.GetIfAllowed(name)
+}
+
+// lookupLocked finds a registered tool here or in the parent chain,
+// regardless of policy. Caller must hold r.mu.
+func (r *ToolRegistry) lookupLocked(name string) (Tool, bool) {
+	if tool, ok := r.tools[name]; ok {
+		return tool, true
+	}
+	if r.parent == nil {
+		return nil, false
+	}
+	return r.parent.registeredTool(name)
 }
 
 // Register adds a tool to the registry
@@ -387,7 +505,7 @@ func (r *ToolRegistry) registerSkillRuntimeTools(activate *SkillActivateTool, re
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.tools["bash"]; !exists {
+	if _, exists := r.lookupLocked("bash"); !exists {
 		if candidate == nil {
 			return false
 		}
@@ -406,18 +524,15 @@ func (r *ToolRegistry) registerSkillRuntimeTools(activate *SkillActivateTool, re
 func (r *ToolRegistry) registeredTool(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	tool, ok := r.tools[name]
-	return tool, ok
+	return r.lookupLocked(name)
 }
 
 // hasVisibleTool reports whether a tool is registered and allowed — i.e. the
 // model can see and call it. Bash consults this from GetSchema to steer file
 // work toward dedicated tools, so it must never be called with r.mu held.
 func (r *ToolRegistry) hasVisibleTool(name string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	_, ok := r.tools[name]
-	return ok && r.isToolAllowedLocked(name)
+	_, _, allowed := r.GetIfAllowed(name)
+	return allowed
 }
 
 // MarkAlwaysAllowed exempts a tool from active skill allowlist filtering.
@@ -444,27 +559,29 @@ func (r *ToolRegistry) RegisterNative(name string, factory func() Tool) {
 
 // Get retrieves a tool by name
 func (r *ToolRegistry) Get(name string) (Tool, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	tool, ok := r.tools[name]
-	if !ok || !r.isToolAllowedLocked(name) {
+	tool, _, allowed := r.GetIfAllowed(name)
+	if !allowed {
 		return nil, false
 	}
 	return tool, true
 }
 
-// GetIfAllowed retrieves a tool by name, returning existence and allowance in a single lock acquisition.
+// GetIfAllowed retrieves a tool by name, returning existence and allowance
+// in a single lock acquisition. A derived registry's own tools come first;
+// a parent's tool must pass the parent's policy, then this registry's
+// allow-list and policy.
 func (r *ToolRegistry) GetIfAllowed(name string) (tool Tool, exists bool, allowed bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	tool, exists = r.tools[name]
 	if !exists {
-		return nil, false, false
+		tool, exists, allowed = r.inheritedLocked(name)
+		if !exists || !allowed {
+			return nil, exists, false
+		}
 	}
-	allowed = r.isToolAllowedLocked(name)
-	if !allowed {
+	if !r.viewVisibleLocked(name) || !r.isToolAllowedLocked(name) {
 		return nil, true, false
 	}
 	return tool, true, true
@@ -530,8 +647,9 @@ func (r *ToolRegistry) All() []Tool {
 	names := r.allowedToolNamesLocked()
 	tools := make([]Tool, 0, len(names))
 	for _, name := range names {
-		tool := r.tools[name]
-		tools = append(tools, tool)
+		if tool, ok := r.lookupLocked(name); ok {
+			tools = append(tools, tool)
+		}
 	}
 	return tools
 }
@@ -551,12 +669,28 @@ func (r *ToolRegistry) GetSchemas() []*schema.ToolSchema {
 func (r *ToolRegistry) allowedToolNamesLocked() []string {
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
-		if r.isToolAllowedLocked(name) {
+		if r.viewVisibleLocked(name) && r.isToolAllowedLocked(name) {
 			names = append(names, name)
+		}
+	}
+	if r.parent != nil {
+		for _, name := range r.parent.allowedToolNames() {
+			if _, shadowed := r.tools[name]; shadowed {
+				continue
+			}
+			if r.viewVisibleLocked(name) && r.isToolAllowedLocked(name) {
+				names = append(names, name)
+			}
 		}
 	}
 	sort.Strings(names)
 	return names
+}
+
+func (r *ToolRegistry) allowedToolNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.allowedToolNamesLocked()
 }
 
 func (r *ToolRegistry) isToolAllowedLocked(name string) bool {
@@ -1059,6 +1193,14 @@ func (r *ToolRegistry) GetActiveToolLoaders() []ToolLoaderInfo {
 			Source: tool.GetSource(),
 		})
 	}
+	if r.parent != nil {
+		for _, info := range r.parent.GetActiveToolLoaders() {
+			if _, shadowed := r.tools[info.Name]; shadowed || !r.viewVisibleLocked(info.Name) {
+				continue
+			}
+			loaders = append(loaders, info)
+		}
+	}
 
 	return loaders
 }
@@ -1198,6 +1340,9 @@ func (r *ToolRegistry) GetLoadedMCPServers() []string {
 	for spec := range r.serverTools {
 		servers = append(servers, spec)
 	}
+	if r.parent != nil {
+		servers = appendUniqueStrings(servers, r.parent.GetLoadedMCPServers())
+	}
 	return servers
 }
 
@@ -1235,6 +1380,9 @@ func (r *ToolRegistry) Close() error {
 	r.pendingPolicyActive = false
 	r.allowedPatterns = nil
 	r.pendingAllowedPatterns = nil
+	// A closed derived registry serves nothing more; the parent is untouched.
+	r.parent = nil
+	r.viewAllowed = nil
 
 	return nil
 }
