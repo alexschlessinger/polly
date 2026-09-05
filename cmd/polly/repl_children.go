@@ -315,7 +315,11 @@ func (r *managedREPL) liveParent(child *replTab) *replTab {
 // inputs. Reports remain in the store until that input is persisted. Returns
 // whether a read started; runs on the event loop with no model lock held.
 func (r *managedREPL) pullReports(ctx context.Context, tab *replTab) bool {
-	if r.quitting || tab.reportsLoading || tab.turnDone != nil || tab.state == nil || tab.state.session == nil {
+	if r.quitting || tab.turnDone != nil || tab.state == nil || tab.state.session == nil {
+		return false
+	}
+	if tab.reportsLoading {
+		tab.reportsRepull = true
 		return false
 	}
 	m := tab.model
@@ -344,45 +348,17 @@ func (r *managedREPL) pullReports(ctx context.Context, tab *replTab) bool {
 					r.model.appendNoticeLine("agent reports for " + tab.name + ": " + err.Error())
 					r.model.mu.Unlock()
 				}
-				return
+			} else {
+				m.queueReports(reports)
 			}
+			if tab.reportsRepull {
+				tab.reportsRepull = false
+				if r.pullReports(r.runCtx, tab) {
+					return
+				}
+			}
+			// Other queued inputs waited on this read, whatever it found.
 			m.mu.Lock()
-			// A poll may overlap another input or a restored report draft.
-			seen := make(map[int64]bool)
-			remember := func(turn managedTurnInput) {
-				for _, id := range turn.reportIDs {
-					seen[id] = true
-				}
-			}
-			if m.busy {
-				remember(m.currentTurn)
-			}
-			if m.restoredDraft != nil {
-				remember(*m.restoredDraft)
-			}
-			for _, item := range m.queue {
-				if item.turn != nil {
-					remember(*item.turn)
-				}
-			}
-			var bodies []string
-			var ids []int64
-			display := ""
-			for _, rep := range reports {
-				if seen[rep.ID] {
-					continue
-				}
-				bodies = append(bodies, reportBody(rep))
-				ids = append(ids, rep.ID)
-				display = reportHeader(rep)
-			}
-			if len(ids) > 1 {
-				display = fmt.Sprintf("%d agent reports", len(ids))
-			}
-			if len(ids) > 0 {
-				turn := managedTurnInput{displayText: display, userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: strings.Join(bodies, "\n\n")}, reportIDs: ids}
-				m.queue = slices.Insert(m.queue, 0, queuedREPLInput{text: display, turn: &turn})
-			}
 			busy := m.busy
 			m.mu.Unlock()
 			if !busy {
@@ -394,6 +370,50 @@ func (r *managedREPL) pullReports(ctx context.Context, tab *replTab) bool {
 		return false
 	}
 	return true
+}
+
+// queueReports puts one input for the reports not already running, queued,
+// or held as a restored draft ahead of the other queued inputs. Runs with
+// no model lock held.
+func (m *replModel) queueReports(reports []sessions.Report) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := make(map[int64]bool)
+	remember := func(turn managedTurnInput) {
+		for _, id := range turn.reportIDs {
+			seen[id] = true
+		}
+	}
+	if m.busy {
+		remember(m.currentTurn)
+	}
+	if m.restoredDraft != nil {
+		remember(*m.restoredDraft)
+	}
+	for _, item := range m.queue {
+		if item.turn != nil {
+			remember(*item.turn)
+		}
+	}
+	var bodies []string
+	var ids []int64
+	display := ""
+	for _, rep := range reports {
+		if seen[rep.ID] {
+			continue
+		}
+		bodies = append(bodies, reportBody(rep))
+		ids = append(ids, rep.ID)
+		display = reportHeader(rep)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	if len(ids) > 1 {
+		display = fmt.Sprintf("%d agent reports", len(ids))
+	}
+	turn := managedTurnInput{displayText: display, userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: strings.Join(bodies, "\n\n")}, reportIDs: ids}
+	m.queue = slices.Insert(m.queue, 0, queuedREPLInput{text: display, turn: &turn})
 }
 
 // pullAllReports schedules a read for every idle tab. Results return through

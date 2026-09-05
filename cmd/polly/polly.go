@@ -885,12 +885,11 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		turnUI = newLineTurnUIWithCapabilities(config, inputReader, state.outputCapabilities)
 	}
 	turnUI.UserMessagePersistenceStarted()
-	var persistErr error
-	if tui, ok := turnUI.(*gotuiTurnUI); ok && len(tui.turn.reportIDs) > 0 && !reuseUser {
-		persistErr = state.session.AddReportMessage(ctx, userMsg, tui.turn.reportIDs)
-	} else {
-		persistErr = persistUserMessageForTurn(ctx, state.session, userMsg, reuseUser)
+	var reportIDs []int64
+	if tui, ok := turnUI.(*gotuiTurnUI); ok {
+		reportIDs = tui.turn.reportIDs
 	}
+	persistErr := persistUserMessageForTurn(ctx, state.session, userMsg, reuseUser, reportIDs)
 	turnUI.UserMessagePersistenceFinished(persistErr == nil)
 	if persistErr != nil {
 		return 1, fmt.Errorf("failed to persist user message: %w", persistErr)
@@ -1247,7 +1246,10 @@ func terminalToolBatchAllDenied(generated []messages.ChatMessage) bool {
 	return seen
 }
 
-func persistUserMessageForTurn(ctx context.Context, session sessions.Session, userMsg messages.ChatMessage, reuseUser bool) error {
+// persistUserMessageForTurn appends the turn's user message unless a matching
+// retry already persisted it. Report input consumes its reports in the same
+// write, including a restored report draft whose first persist failed.
+func persistUserMessageForTurn(ctx context.Context, session sessions.Session, userMsg messages.ChatMessage, reuseUser bool, reportIDs []int64) error {
 	if reuseUser {
 		equivalent, err := sessionEndsWithEquivalentUserMessage(ctx, session, userMsg)
 		if err != nil {
@@ -1256,6 +1258,9 @@ func persistUserMessageForTurn(ctx context.Context, session sessions.Session, us
 		if equivalent {
 			return nil
 		}
+	}
+	if len(reportIDs) > 0 {
+		return session.AddReportMessage(ctx, userMsg, reportIDs)
 	}
 	return session.AddMessage(ctx, userMsg)
 }

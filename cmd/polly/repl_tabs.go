@@ -46,13 +46,16 @@ type replTab struct {
 	// its first turn's reply until delivered; waiter is the blocking spawn
 	// call waiting for that reply, nil for a background child. All
 	// loop-owned.
-	parent          *replTab
-	parentName      string
-	viewed          bool
-	report          *childTurnUI
-	waiter          chan childReport
-	waitCtx         context.Context
-	reportsLoading  bool
+	parent         *replTab
+	parentName     string
+	viewed         bool
+	report         *childTurnUI
+	waiter         chan childReport
+	waitCtx        context.Context
+	reportsLoading bool
+	// reportsRepull asks for another read once the one in flight lands: a
+	// report written meanwhile may be missing from it.
+	reportsRepull   bool
 	reportWriteDone chan struct{}
 	reporting       bool
 	deliveryPending bool

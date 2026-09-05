@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -293,6 +294,74 @@ func TestReportReadsDoNotBlockTheUIOrConsumeUnstartedInput(t *testing.T) {
 	if reports, err := reopened.PeekReports(context.Background()); err != nil || len(reports) != 1 {
 		t.Fatalf("closed queue lost reports: %v %v", reports, err)
 	}
+}
+
+func TestFailedReportReadStillStartsQueuedInput(t *testing.T) {
+	r, _ := newChildTestREPL(t)
+	parent := r.visibleTab()
+	session := parent.state.session
+	parent.state.session = &failingReportSession{Session: session}
+	turn := textManagedTurn("queued followup")
+	parent.model.queue = []queuedREPLInput{{text: turn.displayText, turn: &turn}}
+	if !r.pullReports(context.Background(), parent) {
+		t.Fatal("report read did not start")
+	}
+	runUITask(t, r)
+	if parent.turnDone == nil {
+		t.Fatal("queued input stalled behind the failed report read")
+	}
+	settleUntil(t, r, func() bool { return parent.turnDone == nil })
+	if transcript := plainStyledText(parent.model.fullTranscript()); !strings.Contains(transcript, "agent reports for parent-work: inbox unavailable") {
+		t.Fatalf("read failure was not reported: %s", transcript)
+	}
+	parent.state.session = session
+}
+
+type failingReportSession struct{ sessions.Session }
+
+func (s *failingReportSession) PeekReports(context.Context) ([]sessions.Report, error) {
+	return nil, errors.New("inbox unavailable")
+}
+
+func TestReportWrittenDuringAReadIsReadAgain(t *testing.T) {
+	r, runs := newChildTestREPL(t)
+	parent := r.visibleTab()
+	session := parent.state.session
+	stale := &staleReportSession{Session: session, readStarted: make(chan struct{}), readRelease: make(chan struct{})}
+	parent.state.session = stale
+	ctx := context.Background()
+	if !r.pullReports(ctx, parent) {
+		t.Fatal("report read did not start")
+	}
+	<-stale.readStarted
+	// The child's report commits after the read in flight took its rows.
+	if err := parent.state.sessionStore.PostReport(ctx, parent.name, sessions.Report{Child: "helper", Status: sessions.ReportFinished, Text: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	if r.pullReports(ctx, parent) {
+		t.Fatal("a second read started beside the first")
+	}
+	close(stale.readRelease)
+	runUITask(t, r) // the stale read found nothing and reads again
+	runUITask(t, r) // the fresh read queues the report
+	settleUntil(t, r, func() bool { return len(runs.reported()) == 1 && parent.turnDone == nil })
+	parent.state.session = session
+}
+
+// staleReportSession lets a report land between a read's query and its result.
+type staleReportSession struct {
+	sessions.Session
+	readStarted, readRelease chan struct{}
+	once                     sync.Once
+}
+
+func (s *staleReportSession) PeekReports(ctx context.Context) ([]sessions.Report, error) {
+	reports, err := s.Session.PeekReports(ctx)
+	s.once.Do(func() {
+		close(s.readStarted)
+		<-s.readRelease
+	})
+	return reports, err
 }
 
 func TestPendingReportPrecedesOtherQueuedInputs(t *testing.T) {
