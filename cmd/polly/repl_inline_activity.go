@@ -132,8 +132,8 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 
 		laidOut = append(laidOut, block)
 	}
-	// Running children count as progress in one Agents control at a time: the
-	// launch row until its turn has a trailer, then that trailer.
+	// Running children are counted in one Agents control at a time: the launch
+	// row until its turn has a trailer, then that trailer.
 	lastTrailer := -1
 	for i := range laidOut {
 		if laidOut[i].turnTrailerID != 0 {

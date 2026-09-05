@@ -111,9 +111,10 @@ func turnAgentLabel(n int) string {
 }
 
 // agentField renders the Agents control styled like its thought and tools
-// neighbours. While children run it counts progress as settled over total, in
+// neighbours. While children run it counts running and completed ones, in
 // exactly one control: the launch row until its turn has a trailer, then that
-// trailer. Failed or denied launches stay counted wherever the control appears.
+// trailer. Failed, denied, and canceled launches stay counted wherever the
+// control appears.
 func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockField, bool) {
 	var total, running, failed, canceled int
 	for _, id := range ids {
@@ -147,12 +148,15 @@ func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockF
 		glyph = "▾"
 	}
 	if running > 0 && !handedOff {
-		label = fmt.Sprintf("%d/%s", total-running, label)
+		label = turnAgentLabel(running) + " running"
+		if completed := total - running - failed - canceled; completed > 0 {
+			label += fmt.Sprintf(", %d completed", completed)
+		}
 	}
-	switch {
-	case failed > 0:
+	if failed > 0 {
 		label += fmt.Sprintf(", %d failed", failed)
-	case canceled > 0:
+	}
+	if canceled > 0 {
 		label += fmt.Sprintf(", %d canceled", canceled)
 	}
 	return turnDockField{raw: glyph + " " + label, rendered: turnActivityControl(glyph, label), overlay: turnDockOverlayAgents}, true

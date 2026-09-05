@@ -63,7 +63,7 @@ One polly, many sessions. Each is a tab.
 | `/new` | New tab, fresh generated session |
 | `/tab` | List tabs and what each is doing |
 | `/tab <n>`, `/tab <name>` | Switch |
-| `/parent` | Return to this agent’s parent session, reopening it if needed. Also available as `↑ parent-name` in the status bar. |
+| `/parent` | Return to this agent’s parent session, reopening it if needed. Also available as `← Back to caller` in the status bar. |
 | `/close` | Close the visible tab. Session stays saved. A generated session with no turns is discarded. Last tab closed: polly exits. |
 | `Alt+1`..`Alt+9` | Jump to a tab by position |
 | `Alt+]`, `Alt+[` | Next tab, previous tab |
@@ -120,15 +120,15 @@ label to switch to its child tab or reopen its saved conversation. The row
 tracks the initial delegated run, including background work after the parent
 turn finishes. Later follow-ups in the child leave that outcome unchanged.
 Completed turns collapse the activity controls; while children are still
-working, their turn's Agents label counts settled over total (`2/3 agents`),
-and failed or denied launches stay counted (`3 agents, 1 failed`). Saved
-history restores child links and known outcomes; older records with no
+working, their turn's Agents label counts them (`1 agent running, 2 completed`);
+failed, denied, and canceled launches stay counted (`3 agents, 1 failed`).
+Saved history restores child links and known outcomes; older records with no
 reliable outcome show `unknown`. `/spawn` keeps its existing presentation.
 After its initial report is delivered, an agent tab closes when hidden, including
 failed or canceled runs. If you are reading it, it stays until you leave.
 Reopened agent sessions also close when you leave; drafts and follow-up
 conversations keep their tabs open. The session stays saved and can be reopened
-from Agents. Click `↑ parent-name` beside the session name in the status bar,
+from Agents. Click `← Back to caller` beside the session name in the status bar,
 or use `/parent`, to return to the parent (reopening it if needed).
 Closing a tab
 with running agents is refused. They work on a view of its tools.
