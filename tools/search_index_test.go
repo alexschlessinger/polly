@@ -373,29 +373,35 @@ func TestIndexedSearchFiltersCachedDeniedDeletedAndOutsideHits(t *testing.T) {
 }
 
 func TestIndexedSearchModelAndPolicyFailuresDoNotLaunch(t *testing.T) {
-	for _, scenario := range []string{"remote", "readonly", "uncontained", "denied_manifest"} {
-		t.Run(scenario, func(t *testing.T) {
+	local := `{"embedding":{"provider":"local","model":"potion-code-16m-v2"}}`
+	// Each scenario pins the guard it is named for: an acceptable manifest
+	// everywhere else keeps the embedding check from masking later guards.
+	for _, tc := range []struct{ scenario, manifest, want string }{
+		{"remote", `{"embedding":{"provider":"qwen","model":"remote"}}`, "local embedding model"},
+		{"readonly", local, "needs to create or refresh"},
+		{"uncontained", local, "requires sandboxing"},
+		{"denied_manifest", local, "blocked from reads"},
+	} {
+		t.Run(tc.scenario, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.Mkdir(filepath.Join(root, ".zvec-grep"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			writeTestFile(t, filepath.Join(root, ".zvec-grep"), "manifest.json", `{"embedding":{"provider":"qwen","model":"remote"}}`)
+			writeTestFile(t, filepath.Join(root, ".zvec-grep"), "manifest.json", tc.manifest)
 			registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
-			if scenario == "readonly" {
+			switch tc.scenario {
+			case "readonly":
 				registry = stubSandboxRegistry(t, sandbox.Config{DenyWrite: true})
-			} else if scenario == "denied_manifest" {
+			case "denied_manifest":
 				registry = stubSandboxRegistry(t, sandbox.Config{WritablePaths: []string{root}, DenyPaths: []string{filepath.Join(root, ".zvec-grep", "manifest.json")}})
-			} else if scenario == "uncontained" {
+			case "uncontained":
 				registry = NewToolRegistry(nil)
 			}
 			tool := NewSearchFilesTool(registry).(*searchFilesTool)
 			tool.zvecPath = filepath.Join(root, "must-not-run")
 			_, err := tool.Execute(context.Background(), map[string]any{"query": "something", "path": root})
-			if err == nil || strings.Contains(err.Error(), "must-not-run") {
-				t.Fatalf("expected validation before spawning: %v", err)
-			}
-			if scenario == "denied_manifest" && !strings.Contains(err.Error(), "blocked from reads") {
-				t.Fatalf("manifest read was not policy-checked: %v", err)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "must-not-run") {
+				t.Fatalf("got %v, want %q before spawning", err, tc.want)
 			}
 		})
 	}
