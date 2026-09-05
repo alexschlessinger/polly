@@ -430,16 +430,24 @@ func TestIndexedSearchAvailabilityAndSchema(t *testing.T) {
 	if _, err := tool.Execute(context.Background(), map[string]any{"query": "find things"}); err == nil {
 		t.Fatal("missing zg must be reported")
 	}
-	tool.zvecPath = "zg"
+	tool.zvecPath = filepath.Join(t.TempDir(), "must-not-run")
 	if !strings.Contains(tool.GetSchema().Description(), "Start here before") {
 		t.Fatal("schema must prefer indexed discovery")
 	}
-	for _, args := range []map[string]any{
-		{"query": "q", "pattern": "p"}, {"query": "q", "regex": true},
-		{"query": "q", "limit": 51}, {"query": "q", "include": "[bad"},
+	// Each rejection must come from argument validation, not from the
+	// missing binary every query would otherwise fail on.
+	for _, tc := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"query": "q", "pattern": "p"}, "not both"},
+		{map[string]any{"query": "q", "regex": true}, "not both"},
+		{map[string]any{"query": "q", "limit": 51}, "between 1 and 50"},
+		{map[string]any{"query": "q", "include": "[bad"}, "invalid include glob"},
 	} {
-		if _, err := tool.Execute(context.Background(), args); err == nil {
-			t.Fatalf("accepted invalid query arguments: %v", args)
+		_, err := tool.Execute(context.Background(), tc.args)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "must-not-run") {
+			t.Fatalf("args %v: got %v, want validation error %q", tc.args, err, tc.want)
 		}
 	}
 }
