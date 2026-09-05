@@ -92,6 +92,11 @@ type conversationState struct {
 	skillRuntime    *tools.SkillRuntime
 	skillSources    []string
 	sandboxWarnings *broadWritablePathWarner
+	// sandboxProbe is the deferred check that the sandbox backend can start a
+	// command. It runs concurrently with the rest of the open so a session
+	// appears without waiting on the spawn; every turn waits on it before its
+	// first request (see executeTurnWithUserMessage).
+	sandboxProbe *sandboxProbe
 	// instructionWarnings is the last set of repository-instruction warnings
 	// shown, so a persistent problem is reported once rather than every turn.
 	instructionWarnings []string
@@ -407,7 +412,7 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		metadata.SkillSources = skillResult.sources
 	}
 
-	registryOpts, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings)
+	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings)
 	if err != nil {
 		return nil, err
 	}
@@ -457,14 +462,15 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		skillRuntime:    skillRuntime,
 		skillSources:    skillResult.sources,
 		sandboxWarnings: sandboxWarnings,
+		sandboxProbe:    probe,
 	}
 	registerSpawnTool(state, config, llmClient)
 	return state, nil
 }
 
-func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner) ([]tools.RegistryOption, error) {
+func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner) ([]tools.RegistryOption, *sandboxProbe, error) {
 	if config.NoSandbox {
-		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil
+		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil
 	}
 	if warnings == nil {
 		warnings = newBroadWritablePathWarner()
@@ -472,7 +478,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 
 	baseCfg, err := sandbox.ParsePreset(config.SandboxPreset)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	baseCfg = baseCfg.Merge(sandbox.Config{
 		WritablePaths: config.WritePaths,
@@ -481,7 +487,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	})
 	baseCfg, err = sandbox.PrepareConfig(baseCfg)
 	if err != nil {
-		return nil, fmt.Errorf("prepare sandbox config: %w", err)
+		return nil, nil, fmt.Errorf("prepare sandbox config: %w", err)
 	}
 
 	// The same warning-aware factory handles the startup probe and every final
@@ -499,18 +505,47 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// Validate that the backend constructs (e.g. the binary exists)...
 	sb, err := warningFactory(baseCfg)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox requested but unavailable: %w", err)
+		return nil, nil, fmt.Errorf("sandbox requested but unavailable: %w", err)
 	}
 	// ...and that it can actually start a command. Construction alone misses
 	// environments where the backend is present but fails at runtime; without
 	// this probe every bash call would silently return a refusal while the run
-	// still exits 0/ok.
-	if err := sandbox.Probe(sb); err != nil {
-		return nil, fmt.Errorf("sandbox requested but failed to start: %w\n"+
-			"Set POLLYTOOL_NOSANDBOX=1 (or pass --nosandbox) to run without the sandbox", err)
-	}
+	// still exits 0/ok. The spawn costs tens of milliseconds, so it runs off
+	// the open; the first turn waits on it before any tool can run.
+	return []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}, startSandboxProbe(sb), nil
+}
 
-	return []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}, nil
+// sandboxProbe is one asynchronous sandbox.Probe. wait blocks until the
+// spawned command has reported, returning the startup failure with its
+// escape hatch, or the caller's cancellation.
+type sandboxProbe struct {
+	done chan struct{}
+	err  error
+}
+
+func startSandboxProbe(sb sandbox.Sandbox) *sandboxProbe {
+	p := &sandboxProbe{done: make(chan struct{})}
+	go func() {
+		defer close(p.done)
+		if err := sandbox.Probe(sb); err != nil {
+			p.err = fmt.Errorf("sandbox requested but failed to start: %w\n"+
+				"Set POLLYTOOL_NOSANDBOX=1 (or pass --nosandbox) to run without the sandbox", err)
+		}
+	}()
+	return p
+}
+
+// wait is safe on a nil probe, which is what --nosandbox produces.
+func (p *sandboxProbe) wait(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	select {
+	case <-p.done:
+		return p.err
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
 }
 
 type broadWritablePathWarner struct {
@@ -938,6 +973,14 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	// reasoning from the reply. We strip only \n/\r so leading spaces/tabs
 	// (e.g. code-block indentation) are preserved.
 	trimLeadingNL := false
+
+	// The sandbox probe started with the open and has normally long
+	// finished. A backend that cannot start fails the turn here, before the
+	// first request and before the user message persists, rather than as
+	// silent tool refusals later.
+	if err := state.sandboxProbe.wait(ctx); err != nil {
+		return 1, err
+	}
 
 	stats := &turnToolStats{}
 	turnStart := time.Now()
