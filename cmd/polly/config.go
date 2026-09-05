@@ -260,7 +260,7 @@ func inputConfigFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:    "system",
 			Aliases: []string{"s"},
-			Usage:   "System prompt (persona; a per-frontend display contract is added automatically)",
+			Usage:   "Custom persona (replaces coding defaults and AGENTS.md loading; display and recall guidance is added automatically)",
 			Sources: cli.EnvVars("POLLYTOOL_SYSTEM"),
 		},
 		&cli.StringSliceFlag{

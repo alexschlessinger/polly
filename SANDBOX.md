@@ -43,6 +43,7 @@ user on a shared kernel. See [Limitations](#limitations).
 | Remote MCP servers (HTTP/SSE) | no — the process runs elsewhere | n/a |
 | Skill helper / function tools | no — in-process, nothing to wrap | n/a |
 | Builtin file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `search_files`, `view_image`) | policy-checked in-process | `--nosandbox` |
+| Automatic `AGENTS.md` loading for default CLI coding turns | policy-checked in-process | `--nosandbox` |
 
 The builtin file tools have no child process to wrap, so they check every
 path against the base config instead: reads against the deny list minus

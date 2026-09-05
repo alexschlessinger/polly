@@ -134,7 +134,7 @@ func (t *Tool) Untimed() bool { return true }
 
 func (t *Tool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(ToolName,
-		"Delegate a self-contained task to a child agent. The agent works in its own conversation with its own context window, using a subset of your tools, and you receive only its final reply, so use it for work whose intermediate output you do not need: surveying a codebase, checking many files, a long investigation. The agent sees nothing of this conversation: give a complete brief with the goal, where to look, and what to report back. Call the tool several times in one turn to run agents in parallel.",
+		"Delegate a self-contained task to a child agent. The agent works in its own conversation with its own context window, using a subset of your tools, and you receive only its final reply, so use it for work whose intermediate output you do not need: surveying a codebase, checking many files, a long investigation. The agent sees nothing of this conversation: give a complete brief with the goal, relevant paths, constraints and authorization, required validation, and what to report back. Treat tools and the workspace as shared unless the host explicitly provides isolation; a separate conversation does not isolate file edits. Give each editing agent non-overlapping files, avoid changing those files while it runs, and inspect its changes before relying on its report. Call the tool several times in one turn only for independent tasks that can run in parallel.",
 		schema.Params{
 			"task":           schema.S("The complete brief for the agent. It starts with no other context."),
 			"label":          schema.S("Two to five words naming the job, shown to the user while it runs."),
