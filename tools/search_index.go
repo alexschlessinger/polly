@@ -212,7 +212,17 @@ func indexedSearchEmbedding(indexDir, root string) (string, bool, error) {
 		return "", true, fmt.Errorf("automatic indexing requires a local embedding model; existing index is unchanged, use pattern for exact search")
 	}
 	for _, path := range manifest.RootPaths {
-		if !filepath.IsAbs(path.AbsolutePath) || !searchPathWithin(root, path.AbsolutePath) {
+		recorded := path.AbsolutePath
+		if !filepath.IsAbs(recorded) {
+			return "", true, fmt.Errorf("existing zvec-grep index includes paths outside the workspace; use pattern for exact search")
+		}
+		// zg records the root as spelled at index creation (/tmp/proj, a
+		// linked ~/code), while root arrives symlink-resolved; compare
+		// filesystem identities so a valid index is not refused forever.
+		if real, err := filepath.EvalSymlinks(recorded); err == nil {
+			recorded = real
+		}
+		if !searchPathWithin(root, recorded) {
 			return "", true, fmt.Errorf("existing zvec-grep index includes paths outside the workspace; use pattern for exact search")
 		}
 	}

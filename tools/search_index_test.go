@@ -291,6 +291,40 @@ func TestIndexedSearchRejectsLinkedManifestAndCachedFile(t *testing.T) {
 	}
 }
 
+func TestIndexedSearchManifestRootsCompareResolvedPaths(t *testing.T) {
+	skipIfWindows(t)
+	base := t.TempDir()
+	base, _ = filepath.EvalSymlinks(base)
+	root := filepath.Join(base, "real")
+	index := filepath.Join(root, ".zvec-grep")
+	if err := os.MkdirAll(index, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	// The index was created through the alias spelling; the workspace is
+	// the same directory.
+	writeTestFile(t, index, "manifest.json", `{"embedding":{"provider":"local","model":"potion-code-16m-v2"},"rootPaths":[{"absolutePath":"`+alias+`"}]}`)
+	if embedding, exists, err := indexedSearchEmbedding(index, root); err != nil || !exists || embedding != "local/potion-code-16m-v2" {
+		t.Fatalf("alias-spelled root rejected: %q, %v, %v", embedding, exists, err)
+	}
+	outside := filepath.Join(base, "elsewhere")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	// A recorded root that only lexically sits inside the workspace but
+	// resolves elsewhere is still outside it.
+	writeTestFile(t, index, "manifest.json", `{"embedding":{"provider":"local","model":"potion-code-16m-v2"},"rootPaths":[{"absolutePath":"`+filepath.Join(root, "escape")+`"}]}`)
+	if _, _, err := indexedSearchEmbedding(index, root); err == nil {
+		t.Fatal("root resolving outside the workspace was accepted")
+	}
+}
+
 func TestIndexedSearchBoundsCommandOutput(t *testing.T) {
 	script := fakeSearchZG(t, "printf '%s' '"+strings.Repeat("x", searchMaxBytes+1000)+"'\n")
 	out, _, err := runIndexedSearchCommand(context.Background(), nil, script, t.TempDir(), nil)
