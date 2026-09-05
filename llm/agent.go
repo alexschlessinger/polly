@@ -260,6 +260,27 @@ func (a *Agent) SetToolTimeout(d time.Duration) {
 	a.config.ToolTimeout = d
 }
 
+// ValidateRequest checks the initial provider-visible context before a caller
+// persists new input. It uses Run's projection, including skills, tool schemas,
+// image selection, and deterministic reductions, without calling the provider,
+// changing agent state, or writing artifacts. The caller resolves any model
+// window clamp into req.MaxContextTokens, just as for Run.
+func (a *Agent) ValidateRequest(ctx context.Context, req *CompletionRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	validationReq := *req
+	if a.tools != nil {
+		validationReq.Tools = a.tools.All()
+	}
+	store := a.artifactStore
+	if store != nil {
+		store = validationArtifactStore{Store: store}
+	}
+	_, _, err := projectCompletionRequest(ctx, &validationReq, store, a.transcriptTool)
+	return err
+}
+
 // Run executes a completion with automatic tool call handling.
 // It loops until the LLM returns a response with no tool calls,
 // or until MaxIterations is reached.
@@ -313,33 +334,20 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 
 		// Build request with accumulated messages
 		iterReq := loopReq
-		// Tool schemas share the model's context with the projected messages;
-		// budget the projection for what remains after them.
-		budget := req.MaxContextTokens
-		overhead := 0
+		iterReq.Messages = msgs
 		if a.tools != nil {
-			overhead = estimateToolSchemaTokens(a.tools.All())
+			iterReq.Tools = a.tools.All()
 		}
-		if budget > 0 && overhead > 0 {
-			if overhead >= budget {
-				err := fmt.Errorf("tool schemas alone need about %d tokens, exceeding the %d-token context budget", overhead, budget)
-				if cb != nil && cb.OnError != nil {
-					cb.OnError(err)
-				}
-				return responseFor(nil, iteration), err
-			}
-			budget -= overhead
-		}
-		projected, projection, err := projectMessages(ctx, msgs, budget, a.artifactStore, a.transcriptTool)
+		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, a.transcriptTool)
 		a.applyDurableToolSpills(msgs, projection.toolSpills)
 		a.applyDurableToolSpills(allGenerated, projection.toolSpills)
+		newRefs := unpersistedArtifactRefs(projection.artifactRefs, req.Messages, allGenerated)
 		for _, ref := range projection.artifactRefs {
 			a.indexArtifact(ref)
 		}
 		projection.artifactRefs = nil
 		projection.toolSpills = nil
 		lastProjection = projection
-		lastProjection.RequestEstimatedTokens = projection.EstimatedTokens + overhead
 		if err != nil {
 			if cb != nil && cb.OnError != nil {
 				cb.OnError(err)
@@ -348,9 +356,6 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 		a.indexArtifactMessages(projected)
 		iterReq.Messages = projected
-		if a.tools != nil {
-			iterReq.Tools = a.tools.All()
-		}
 		if iterReq.PromptCacheKey == "" {
 			if key, keyErr := derivePromptCacheKey(&iterReq, msgs); keyErr == nil {
 				iterReq.PromptCacheKey = key
@@ -371,6 +376,13 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 		promptCache.ReadInputTokens += response.GetCacheReadInputTokens()
 		promptCache.WriteInputTokens += response.GetCacheWriteInputTokens()
+
+		// Projection can mint refs for older inline results without rewriting
+		// the caller's history. Carry those refs in the generated transcript so
+		// recall survives reloads and budgets that no longer need demotion.
+		for _, ref := range newRefs {
+			response.Parts = append(response.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
+		}
 
 		// Ensure content is never null — some providers reject null content in history
 		if response.Content == "" && len(response.ToolCalls) == 0 {
@@ -797,6 +809,35 @@ func (a *Agent) lookupArtifact(id string) (artifacts.Ref, bool) {
 	return ref, ok
 }
 
+// Only the caller's supplied history and AllMessages are durable. The loop's
+// msgs may already contain a spill applied to a copy of an input message.
+func unpersistedArtifactRefs(refs []artifacts.Ref, histories ...[]messages.ChatMessage) []artifacts.Ref {
+	if len(refs) == 0 {
+		return nil
+	}
+	durable := make(map[string]artifacts.Kind)
+	for _, history := range histories {
+		for _, msg := range history {
+			if msg.Role == messages.MessageRoleInternal {
+				continue
+			}
+			for _, part := range msg.Parts {
+				if ref := part.Artifact; ref != nil && artifactKindPriority(ref.Kind) > artifactKindPriority(durable[ref.ID]) {
+					durable[ref.ID] = ref.Kind
+				}
+			}
+		}
+	}
+	var pending []artifacts.Ref
+	for _, ref := range refs {
+		if artifactKindPriority(ref.Kind) > artifactKindPriority(durable[ref.ID]) {
+			pending = append(pending, ref)
+			durable[ref.ID] = ref.Kind
+		}
+	}
+	return pending
+}
+
 func (a *Agent) applyDurableToolSpills(history []messages.ChatMessage, spills []toolResultSpill) {
 	for _, spill := range spills {
 		for i := len(history) - 1; i >= 0; i-- {
@@ -934,7 +975,8 @@ func allDenied(toolMsgs []messages.ChatMessage) bool {
 // don't pollute persisted history. It drops the "Tool call denied by user."
 // tool-result messages and strips the matching tool_calls from the assistant
 // messages that proposed them. An assistant message left with no content and
-// no remaining tool_calls is dropped entirely.
+// no remaining tool_calls is dropped unless it carries context artifact refs;
+// those survive in a neutral message without denied reasoning/protocol state.
 func StripDeniedExchanges(msgs []messages.ChatMessage) []messages.ChatMessage {
 	deniedIDs := map[string]bool{}
 	for _, m := range msgs {
@@ -960,7 +1002,16 @@ func StripDeniedExchanges(msgs []messages.ChatMessage) []messages.ChatMessage {
 			}
 			m.ToolCalls = remaining
 			if len(remaining) == 0 && m.Content == "" {
-				continue
+				refs := artifactRefsInMessages([]messages.ChatMessage{m})
+				if len(refs) == 0 {
+					continue
+				}
+				// Drop denied reasoning/protocol state, but keep context refs
+				// minted during projection authorized in the saved transcript.
+				m = messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: " "}
+				for _, ref := range refs {
+					m.Parts = append(m.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
+				}
 			}
 		}
 		out = append(out, m)

@@ -123,14 +123,15 @@ type CompletionRequest struct {
     // which reject the parameter. Use llm.Float32Ptr(0.7) to set it.
     Temperature *float32
 
-    Model          string
-    MaxTokens      int
-    Messages       []messages.ChatMessage
-    Tools          []tools.Tool
-    ResponseSchema *Schema         // JSON schema for structured output
-    ThinkingEffort ThinkingEffort  // llm.EffortOff(), EffortLevel(LevelHigh), EffortBudget(n), EffortDynamic()
-    Stream         *bool           // nil = streaming (default), false = non-streaming
-    Skills         *skills.Catalog // Injects the skill prompt into the system prompt
+    Model            string
+    MaxTokens        int
+    MaxContextTokens int             // Agent's estimated input budget (0 = unlimited)
+    Messages         []messages.ChatMessage
+    Tools            []tools.Tool
+    ResponseSchema   *Schema         // JSON schema for structured output
+    ThinkingEffort   ThinkingEffort  // llm.EffortOff(), EffortLevel(LevelHigh), EffortBudget(n), EffortDynamic()
+    Stream           *bool           // nil = streaming (default), false = non-streaming
+    Skills           *skills.Catalog // Injects the skill prompt into the system prompt
 }
 
 type ChatMessage struct {
@@ -156,6 +157,18 @@ Roles are the constants `messages.MessageRoleSystem`, `MessageRoleUser`,
 `MessageRoleAssistant`, `MessageRoleTool`, and `MessageRoleInternal` (app
 state; filter it before sending upstream). `messages.User("hello")` builds a
 one-message user history.
+
+`agent.ValidateRequest(ctx, req)` checks the initial context projection before
+you persist a new user message. It includes the skill prompt, tool schemas,
+selected images, and deterministic context reductions, without calling the
+provider or writing artifacts. Set `MaxContextTokens` to the effective input
+budget before validating; `Run` uses the same projection and budget checks.
+
+Persist `AgentResponse.AllMessages` with their content parts intact, including
+on partial runs. Generated assistant messages may carry artifact references
+created while compacting older tool results. Those references keep the stored
+outputs discoverable after a reload or context-budget increase; they are
+removed from provider-visible messages during projection.
 
 `ChatCompletionStream` sends events on a channel as the response arrives:
 

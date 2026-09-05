@@ -3,9 +3,11 @@ package llm
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,6 +19,102 @@ import (
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools"
 )
+
+func TestDemotedArtifactsSurviveReloadWithLargerBudget(t *testing.T) {
+	for _, name := range []string{"new ref", "upgrade binary ref", "denied proposal", "active input spill"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newTestArtifactStore()
+			content := "IMPORTANT-7E62\n" + strings.Repeat("x", 8_000)
+			ref := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "lookup.txt", Data: []byte(content)})
+			history := []messages.ChatMessage{
+				{Role: messages.MessageRoleUser, Content: "look it up"},
+				{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old", Name: "lookup", Arguments: `{}`}}},
+				{Role: messages.MessageRoleTool, ToolName: "lookup", ToolCallID: "old", Content: content},
+				{Role: messages.MessageRoleAssistant, Content: "looked it up"},
+				{Role: messages.MessageRoleUser, Content: strings.Repeat("q", 2_000)},
+			}
+			if name == "upgrade binary ref" {
+				binary := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindBinary, Data: []byte(content)})
+				history[2].Parts = []messages.ContentPart{{Type: "artifact", Artifact: &binary}}
+			}
+			if name == "active input spill" {
+				history = history[:3]
+			}
+			before := cloneMessages(history)
+			firstModel := &recordingSequentialLLM{}
+			var callbacks *AgentCallbacks
+			if name == "denied proposal" {
+				firstModel.responses = []messages.ChatMessage{{
+					Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, Reasoning: "private denied reasoning",
+					ToolCalls: []messages.ChatMessageToolCall{{ID: "denied", Name: "read_artifact", Arguments: fmt.Sprintf(`{"id":%q}`, ref.ID)}},
+				}}
+				callbacks = &AgentCallbacks{ApproveToolCalls: func([]messages.ChatMessageToolCall) []bool { return []bool{false} }}
+			}
+			firstAgent := NewAgent(firstModel, nil, AgentConfig{ArtifactStore: store})
+			first, err := firstAgent.Run(ctx, &CompletionRequest{Messages: history, MaxContextTokens: 2_500}, callbacks)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first.Projection.CompactedToolResults == 0 {
+				t.Fatal("fixture did not demote old output")
+			}
+			if !reflect.DeepEqual(history, before) {
+				t.Fatal("Run changed caller-owned history")
+			}
+			generated := StripDeniedExchanges(first.AllMessages)
+			refs := artifactRefsInMessages(generated)
+			if len(refs) != 1 || refs[0].ID != ref.ID || refs[0].Kind != artifacts.KindText {
+				t.Fatalf("durable generated refs = %#v", refs)
+			}
+			if name == "denied proposal" && generated[0].Reasoning != "" {
+				t.Fatal("denied reasoning was retained with the catalog ref")
+			}
+			history = append(history, generated...)
+			history = append(history, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "read back " + ref.ID})
+			encoded, err := json.Marshal(history)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reloaded []messages.ChatMessage
+			if err := json.Unmarshal(encoded, &reloaded); err != nil {
+				t.Fatal(err)
+			}
+			model := &recordingSequentialLLM{responses: []messages.ChatMessage{{
+				Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse,
+				ToolCalls: []messages.ChatMessageToolCall{{ID: "recall", Name: "read_artifact", Arguments: fmt.Sprintf(`{"id":%q,"limit":1}`, ref.ID)}},
+			}}}
+			agent := NewAgent(model, nil, AgentConfig{ArtifactStore: store})
+			second, err := agent.Run(ctx, &CompletionRequest{Messages: reloaded, MaxContextTokens: 50_000}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if second.Projection.CompactedToolResults != 0 {
+				t.Fatal("larger budget still compacted results")
+			}
+			var read bool
+			for _, msg := range second.AllMessages {
+				if msg.ToolName == "read_artifact" {
+					read = true
+					if succeeded, known := msg.ToolSucceeded(); !known || !succeeded || !strings.Contains(msg.Content, "IMPORTANT-7E62") {
+						t.Fatalf("recalled result = %q", msg.Content)
+					}
+				}
+			}
+			if !read {
+				t.Fatal("model did not read the artifact")
+			}
+			if refs := artifactRefsInMessages(second.AllMessages); len(refs) != 0 {
+				t.Fatalf("already durable refs were recorded again: %#v", refs)
+			}
+			for _, request := range model.requests {
+				if refs := artifactRefsInMessages(request); len(refs) != 0 {
+					t.Fatalf("catalog refs leaked into provider messages: %#v", refs)
+				}
+			}
+		})
+	}
+}
 
 func TestAgentExternalizesRichToolImageAndAttachesItOnce(t *testing.T) {
 	imageBytes := []byte("typed MCP-style image bytes")

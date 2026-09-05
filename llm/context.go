@@ -75,6 +75,34 @@ func (e *ContextLimitError) Error() string {
 	return fmt.Sprintf("active exchange needs about %d tokens, exceeding the %d-token context budget", e.EstimatedTokens, e.Limit)
 }
 
+// projectCompletionRequest shares the complete input budget between tool
+// schemas and resolved messages, for both validation and the agent loop.
+func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store artifacts.Store, transcriptReadable bool) ([]messages.ChatMessage, ProjectionStats, error) {
+	budget := req.MaxContextTokens
+	overhead := estimateToolSchemaTokens(req.Tools)
+	if budget > 0 {
+		if overhead >= budget {
+			return nil, ProjectionStats{RequestEstimatedTokens: overhead}, fmt.Errorf("tool schemas alone need about %d tokens, exceeding the %d-token context budget", overhead, budget)
+		}
+		budget -= overhead
+	}
+	projected, stats, err := projectMessages(ctx, req.ResolvedMessages(), budget, store, transcriptReadable)
+	stats.RequestEstimatedTokens = stats.EstimatedTokens + overhead
+	return projected, stats, err
+}
+
+// validationArtifactStore prices newly externalized text using its real
+// content-addressed reference without writing it. Image reads still use the
+// configured store, so validation checks the exact images Run would send.
+type validationArtifactStore struct{ artifacts.Store }
+
+func (s validationArtifactStore) Put(ctx context.Context, blob artifacts.Blob) (artifacts.Ref, error) {
+	if err := ctx.Err(); err != nil {
+		return artifacts.Ref{}, err
+	}
+	return artifacts.RefForBlob(blob), nil
+}
+
 func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, transcriptReadable bool) ([]messages.ChatMessage, ProjectionStats, error) {
 	projected := cloneMessages(history)
 	projected = filterInternalMessages(projected)

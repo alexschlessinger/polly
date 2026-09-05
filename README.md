@@ -295,6 +295,16 @@ replaces that default.
 All enforce the sandbox policy in-process
 ([details](SANDBOX.md#what-gets-sandboxed)).
 
+Conversations also provide recall tools for content omitted from model context:
+
+- `list_artifacts`: catalog stored outputs and images from this conversation.
+- `read_artifact`: read or search a stored output, or attach a stored image.
+- `read_transcript`: read or search the conversation transcript.
+
+Both readers accept `offset`/`limit` for numbered lines and `query` for literal
+search. Use `byte_offset` on its own to continue through a long text line when
+a page reports a byte continuation.
+
 ### Shell tools
 
 Any executable is a tool if it answers two flags:
