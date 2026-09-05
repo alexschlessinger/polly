@@ -52,6 +52,39 @@ func TestSearchFilesLoadRequiresZG(t *testing.T) {
 	}
 }
 
+func TestFileToolSchemasMentionSearchFilesOnlyWhenLoaded(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	for _, name := range []string{"read_file", "list_dir"} {
+		if _, err := registry.LoadToolAuto(name); err != nil {
+			t.Fatalf("load %s: %v", name, err)
+		}
+	}
+	// Through GetSchemas: the descriptions consult the registry, which must
+	// not deadlock on its own lock.
+	descriptions := func() map[string]string {
+		out := map[string]string{}
+		for _, s := range registry.GetSchemas() {
+			out[s.Title()] = s.Description()
+		}
+		return out
+	}
+	for name, desc := range descriptions() {
+		if strings.Contains(desc, "search_files") {
+			t.Fatalf("%s steers toward absent search_files: %q", name, desc)
+		}
+	}
+	installSearchDependencyForTest(t)
+	if _, err := registry.LoadToolAuto("search_files"); err != nil {
+		t.Fatalf("load search_files: %v", err)
+	}
+	for _, name := range []string{"read_file", "list_dir"} {
+		if desc := descriptions()[name]; !strings.Contains(desc, "prefer search_files") && !strings.Contains(desc, "Prefer search_files") {
+			t.Fatalf("%s does not steer toward loaded search_files: %q", name, desc)
+		}
+	}
+}
+
 func fakeSearchZG(t *testing.T, body string) string {
 	t.Helper()
 	skipIfWindows(t)

@@ -37,9 +37,15 @@ func NewListDirTool(registry *ToolRegistry) Tool {
 func (t *listDirTool) GetName() string { return "list_dir" }
 
 func (t *listDirTool) GetSchema() *schema.ToolSchema {
+	description := "List a directory's entries (directories first, then files, with sizes). Not recursive."
+	// search_files is absent without zg; steering toward it then would only
+	// invite calls to a tool the model cannot see (mirrors bash).
+	if t.registry.hasVisibleTool("search_files") {
+		description += " Prefer search_files for finding code or documents, with its query mode for discovery; use list_dir when you need the directory listing itself."
+	}
 	return schema.Tool(
 		"list_dir",
-		"List a directory's entries (directories first, then files, with sizes). Not recursive. When search_files is available, prefer it for finding code or documents and use its query mode for discovery. Use list_dir when you need the directory listing itself.",
+		description,
 		schema.Params{
 			"path":   schema.S("Filesystem path of the directory to list"),
 			"offset": schema.Int("1-based starting position in the listing (default 1)"),
