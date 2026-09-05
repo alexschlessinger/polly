@@ -28,11 +28,42 @@ func TestPersistUserMessageForTurnReusesMatchingFinalUser(t *testing.T) {
 		t.Fatalf("AddMessage() error = %v", err)
 	}
 
-	if err := persistUserMessageForTurn(context.Background(), session, userMsg, true); err != nil {
+	if err := persistUserMessageForTurn(context.Background(), session, userMsg, true, nil); err != nil {
 		t.Fatalf("persistUserMessageForTurn() error = %v", err)
 	}
 	if got := testSessionHistory(t, session); !slices.EqualFunc(got, []messages.ChatMessage{userMsg}, equalTurnTestMessage) {
 		t.Fatalf("matching retry should reuse final user message, history = %#v", got)
+	}
+}
+
+func TestPersistUserMessageForTurnConsumesReportsOnRetry(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "parent")
+	ctx := context.Background()
+	if err := store.PostReport(ctx, "parent", sessions.Report{Child: "helper", Status: sessions.ReportFinished, Text: "reply"}); err != nil {
+		t.Fatalf("PostReport() error = %v", err)
+	}
+	reports, err := session.PeekReports(ctx)
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("PeekReports() = %v, %v", reports, err)
+	}
+	userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "agent helper finished"}
+	// A restored report draft retries with reuseUser set, but its first
+	// persist never happened, so the reports must still be consumed.
+	if err := persistUserMessageForTurn(ctx, session, userMsg, true, []int64{reports[0].ID}); err != nil {
+		t.Fatalf("persistUserMessageForTurn() error = %v", err)
+	}
+	if got := testSessionHistory(t, session); !slices.EqualFunc(got, []messages.ChatMessage{userMsg}, equalTurnTestMessage) {
+		t.Fatalf("report input was not persisted, history = %#v", got)
+	}
+	if reports, err := session.PeekReports(ctx); err != nil || len(reports) != 0 {
+		t.Fatalf("retry left its reports unconsumed: %v, %v", reports, err)
+	}
+	if err := persistUserMessageForTurn(ctx, session, userMsg, true, []int64{reports[0].ID}); err != nil {
+		t.Fatalf("persistUserMessageForTurn() retry error = %v", err)
+	}
+	if got := testSessionHistory(t, session); len(got) != 1 {
+		t.Fatalf("matching retry should reuse the persisted report input, history = %#v", got)
 	}
 }
 
@@ -78,7 +109,7 @@ func TestPersistUserMessageForTurnOnlyReusesOnExplicitMatchingRetry(t *testing.T
 			if err := session.AddMessages(context.Background(), tt.history); err != nil {
 				t.Fatalf("AddMessages() error = %v", err)
 			}
-			if err := persistUserMessageForTurn(context.Background(), session, userMsg, tt.reuse); err != nil {
+			if err := persistUserMessageForTurn(context.Background(), session, userMsg, tt.reuse, nil); err != nil {
 				t.Fatalf("persistUserMessageForTurn() error = %v", err)
 			}
 			got := testSessionHistory(t, session)
@@ -106,7 +137,7 @@ func TestPersistUserMessageForTurnComparesAttachedParts(t *testing.T) {
 		if err := session.AddMessage(context.Background(), userMsg); err != nil {
 			t.Fatalf("AddMessage() error = %v", err)
 		}
-		if err := persistUserMessageForTurn(context.Background(), session, userMsg, true); err != nil {
+		if err := persistUserMessageForTurn(context.Background(), session, userMsg, true, nil); err != nil {
 			t.Fatalf("persistUserMessageForTurn() error = %v", err)
 		}
 		if got := len(testSessionHistory(t, session)); got != 1 {
@@ -122,7 +153,7 @@ func TestPersistUserMessageForTurnComparesAttachedParts(t *testing.T) {
 		if err := session.AddMessage(context.Background(), oldMsg); err != nil {
 			t.Fatalf("AddMessage() error = %v", err)
 		}
-		if err := persistUserMessageForTurn(context.Background(), session, userMsg, true); err != nil {
+		if err := persistUserMessageForTurn(context.Background(), session, userMsg, true, nil); err != nil {
 			t.Fatalf("persistUserMessageForTurn() error = %v", err)
 		}
 		if got := len(testSessionHistory(t, session)); got != 2 {
@@ -287,7 +318,7 @@ func TestTurnPersistenceAckSerializesDetachedExactRetry(t *testing.T) {
 
 	runAttempt := func(done chan<- error) {
 		ack.beginPersistence()
-		err := persistUserMessageForTurn(context.Background(), session, userMsg, true)
+		err := persistUserMessageForTurn(context.Background(), session, userMsg, true, nil)
 		ack.finishPersistence(err == nil)
 		done <- err
 	}
@@ -300,7 +331,7 @@ func TestTurnPersistenceAckSerializesDetachedExactRetry(t *testing.T) {
 	go func() {
 		ack.beginPersistence()
 		close(secondAcquired)
-		err := persistUserMessageForTurn(context.Background(), session, userMsg, true)
+		err := persistUserMessageForTurn(context.Background(), session, userMsg, true, nil)
 		ack.finishPersistence(err == nil)
 		secondDone <- err
 	}()

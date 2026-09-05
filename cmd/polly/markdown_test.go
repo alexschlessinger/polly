@@ -251,11 +251,13 @@ func TestStreamedTableAlignsAtSettle(t *testing.T) {
 	m := newReplModel()
 	m.appendAssistant("| a | b |\n")
 	// Without the delimiter row this is still a paragraph of literal pipes.
+	m.renderPendingMarkdown()
 	if got := plainStyledText(m.transcript[0].text); !strings.Contains(got, "| a | b |") {
 		t.Fatalf("pre-delimiter render = %q, want literal pipes", got)
 	}
 
 	m.appendAssistant("|---|---|\n| one | 2 |\n")
+	m.renderPendingMarkdown()
 	got := plainStyledText(m.transcript[0].text)
 	for _, want := range []string{"│ a │ b", "│ one │ 2"} {
 		if !strings.Contains(got, want) {
@@ -265,13 +267,9 @@ func TestStreamedTableAlignsAtSettle(t *testing.T) {
 	if strings.Contains(got, "─") {
 		t.Fatalf("streaming render already aligned: %q", got)
 	}
-	if !m.streamDeferredTable {
-		t.Fatal("streaming table did not defer the aligned render")
-	}
-
-	// Nothing is held back (pipe rows are not holdback constructs), so only
-	// the deferred-table flag forces the settle re-render.
+	// Settlement must align the table even though pipe rows were not held back.
 	m.finishAssistantBlock("")
+	m.renderPendingMarkdown()
 	final := strings.Split(plainStyledText(m.transcript[0].text), "\n")
 	want := []string{
 		"│ a    b",
@@ -286,12 +284,10 @@ func TestStreamedTableAlignsAtSettle(t *testing.T) {
 func TestStreamedTableWithFollowingBlockAlignsImmediately(t *testing.T) {
 	m := newReplModel()
 	m.appendAssistant("| a | b |\n|---|---|\n| x | y |\n\nafter\n")
+	m.renderPendingMarkdown()
 	got := plainStyledText(m.transcript[0].text)
 	if !strings.Contains(got, "│ a  b") || !strings.Contains(got, "─") {
 		t.Fatalf("completed mid-stream table not aligned: %q", got)
-	}
-	if m.streamDeferredTable {
-		t.Fatal("table with a following block should not defer")
 	}
 }
 
@@ -304,6 +300,8 @@ func TestStreamedMarkdownEndToEnd(t *testing.T) {
 		m.appendAssistant(chunk)
 	}
 	m.finishAssistantBlock("")
+
+	m.renderPendingMarkdown()
 
 	got := plainStyledText(m.transcript[0].text)
 	for _, want := range []string{"▎ Plan", "two", "• run", "• ship", "│ func main() {}", "Done — see docs (https://x.dev)."} {

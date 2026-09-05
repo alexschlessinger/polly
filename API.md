@@ -431,6 +431,10 @@ effective tool set, and `agent.Close()` when finished; closing an agent leaves
 the caller's registry, MCP connections, and artifact store open. Each agent
 supports one `Run` at a time; independent agents may share a configured registry.
 
+For a child registry, `skillRuntime.Derive(registry.Derive(...))` inherits
+active skills and their policy without reconnecting their MCP servers. The
+parent owns those clients; the child's later activations remain private.
+
 ## Subagents
 
 The `subagent` package gives a model the `spawn_agent` tool: a brief, an
@@ -457,7 +461,9 @@ factory returning the `llm.AgentCallbacks` for each child's request, to
 stream its text, watch or approve its tool calls, or inject context values
 its tools need; without it a child runs unobserved with every call
 approved. `subagent.WithMaxConcurrent` bounds parallel children (default
-four). The tool is exempt from `AgentConfig.ToolTimeout`
+four). A runner whose child outlives the call must return `Result.Done`,
+including on cancellation or error. Close it only when the child actually
+stops; its concurrency slot stays occupied until then. The tool is exempt from `AgentConfig.ToolTimeout`
 through the `tools.UntimedTool` interface. The polly CLI's runner opens a
 child session on the same store, linked to the parent with
 `AcquireOptions.Parent`, and in the TUI runs it on a tab of its own; a
@@ -513,6 +519,10 @@ err = session.Reset(sessionCtx, metadata)
   and returns the reports waiting for a leased session, oldest first. A
   report is deleted with its addressee and names its child as the child is
   called when read.
+- `session.PeekReports(ctx)` reads reports without consuming them or taking
+  a database write lock. `session.AddReportMessage(ctx, userMessage, reportIDs)`
+  atomically persists the parent input and consumes those reports. The TUI
+  uses this pair so a report queued before a tab closes remains recoverable.
 
 ## Structured Output
 

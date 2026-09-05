@@ -74,6 +74,7 @@ func sessionInUse(t *testing.T, store sessions.SessionStore, name string) bool {
 func newTabTestREPL(t *testing.T, store sessions.SessionStore, names ...string) *managedREPL {
 	t.Helper()
 	r := newManagedREPL(&Config{}, "-", 0, 0)
+	t.Cleanup(func() { _ = r.closeTabs() })
 	r.opener = testSessionOpener(store)
 	for _, name := range names {
 		resolved, settings, err := r.opener.prepare(context.Background(), name, func(string) {})
@@ -269,6 +270,7 @@ func TestHiddenTurnSettlesOnItsOwnTabAndRunsItsQueue(t *testing.T) {
 		<-release
 		return nil
 	}
+	r.runTurn = runTurn
 	r.model.mu.Lock()
 	r.model.beginTurn("keep going")
 	r.model.mu.Unlock()
@@ -287,6 +289,7 @@ func TestHiddenTurnSettlesOnItsOwnTabAndRunsItsQueue(t *testing.T) {
 	if err := r.settleTabs(context.Background(), runTurn); err != nil {
 		t.Fatal(err)
 	}
+	runUITask(t, r) // The inbox read completes before the queued command runs.
 	if busy.turnDone != nil || busy.model.busy || busy.model.lastOutcome != turnOutcomeDone {
 		t.Fatalf("hidden turn did not settle on its tab: running=%v busy=%v outcome=%v", busy.turnDone != nil, busy.model.busy, busy.model.lastOutcome)
 	}
@@ -555,6 +558,7 @@ func TestNewTabOpensGeneratedSessionAndCloseDiscardsIt(t *testing.T) {
 	}
 
 	r.runTabCommand("/close")
+	r.work.wg.Wait()
 	if len(r.tabs) != 1 || r.visibleTabIndex() != 0 || r.state.session != r.tabs[0].state.session {
 		t.Fatalf("tabs after /close = %d, visible %d", len(r.tabs), r.visibleTabIndex())
 	}

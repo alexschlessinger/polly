@@ -9,6 +9,55 @@ import (
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
+func TestDerivedSkillRuntimeInheritsActivationAndPolicy(t *testing.T) {
+	root := t.TempDir()
+	createSkillWithScript(t, root, "parent-skill")
+	createSkillWithScript(t, root, "child-skill")
+	catalog, err := skills.Discover([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	defer parent.Close()
+	runtime, err := NewSkillRuntime(catalog, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Activate("parent-skill"); err != nil {
+		t.Fatal(err)
+	}
+	parent.stageSkillAllowance([]string{"read_*"}, nil)
+	parent.CommitPendingChanges()
+	child := parent.Derive(AllowTools("read_*", "write_*"))
+	defer child.Close()
+	derived, err := runtime.Derive(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := derived.ActivatedSkills(); len(got) != 1 || got[0] != "parent-skill" {
+		t.Fatalf("inherited skills = %v", got)
+	}
+	child.Register(&testTool{name: "write_private"})
+	child.Register(&testTool{name: "read_private"})
+	if _, _, allowed := child.GetIfAllowed("write_private"); allowed {
+		t.Fatal("inherited skill policy does not govern child-owned tools")
+	}
+	if _, _, allowed := child.GetIfAllowed("read_private"); !allowed {
+		t.Fatal("inherited skill policy lost an allowed tool")
+	}
+	if _, err := derived.Activate("child-skill"); err != nil {
+		t.Fatal(err)
+	}
+	if len(derived.ActivatedSkills()) != 2 || len(runtime.ActivatedSkills()) != 1 {
+		t.Fatal("child activations changed the parent")
+	}
+	unrelated := NewToolRegistry(nil)
+	defer unrelated.Close()
+	if _, err := runtime.Derive(unrelated); err == nil {
+		t.Fatal("unrelated registry inherited activations without their tools")
+	}
+}
+
 func TestNewSkillRuntimeRegistersBuiltins(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")

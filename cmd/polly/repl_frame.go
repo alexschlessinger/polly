@@ -278,6 +278,7 @@ func (r *managedREPL) render() {
 	}
 
 	r.model.mu.Lock()
+	r.model.renderPendingMarkdown()
 	if r.model.imageCellWidth != imageCellWidth || r.model.imageCellHeight != imageCellHeight {
 		r.model.imageCellWidth = imageCellWidth
 		r.model.imageCellHeight = imageCellHeight

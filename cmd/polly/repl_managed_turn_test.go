@@ -112,7 +112,7 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 				if !reflect.DeepEqual(got, prepared) {
 					t.Fatalf("queued payload changed after %s:\n got %#v\nwant %#v", mutation, got, prepared)
 				}
-				if err := persistUserMessageForTurn(context.Background(), session, got, false); err != nil {
+				if err := persistUserMessageForTurn(context.Background(), session, got, false, nil); err != nil {
 					t.Fatal(err)
 				}
 			case <-time.After(time.Second):
@@ -166,7 +166,7 @@ func TestRestoredAttachmentDraftReusesExactPreparedMessageAfterSourceMutation(t 
 				if !ok {
 					t.Fatal("accepted attachment turn was not pending")
 				}
-				if err := persistUserMessageForTurn(context.Background(), session, prepared.userMessage, false); err != nil {
+				if err := persistUserMessageForTurn(context.Background(), session, prepared.userMessage, false, nil); err != nil {
 					t.Fatal(err)
 				}
 				r.endTurn(outcome.err)
@@ -183,7 +183,7 @@ func TestRestoredAttachmentDraftReusesExactPreparedMessageAfterSourceMutation(t 
 				if !r.model.restoreDraftNext {
 					t.Fatal("unchanged restored draft did not request persisted-user reuse")
 				}
-				if err := persistUserMessageForTurn(context.Background(), session, retried.userMessage, r.model.restoreDraftNext); err != nil {
+				if err := persistUserMessageForTurn(context.Background(), session, retried.userMessage, r.model.restoreDraftNext, nil); err != nil {
 					t.Fatal(err)
 				}
 				if got := testSessionHistory(t, session); len(got) != 1 || !reflect.DeepEqual(got[0], prepared.userMessage) {
@@ -271,7 +271,7 @@ func TestDiskSessionReloadRestoresPersistedImageWithoutSource(t *testing.T) {
 	if !r.model.restoreDraftNext {
 		t.Fatal("reloaded restored draft did not reuse persisted user")
 	}
-	if err := persistUserMessageForTurn(context.Background(), reopened, retried.userMessage, r.model.restoreDraftNext); err != nil {
+	if err := persistUserMessageForTurn(context.Background(), reopened, retried.userMessage, r.model.restoreDraftNext, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := testSessionHistory(t, reopened); len(got) != 1 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 // Subagents. Every conversation's model has the spawn_agent tool. A child it
@@ -149,14 +151,14 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 	if req.MaxIterations > 0 {
 		settings.MaxIterations = req.MaxIterations
 	}
-	skillRuntime, err := newSkillRuntime(parent.skillCatalog, registry)
-	if err != nil {
-		return nil, err
-	}
+	var skillRuntime *tools.SkillRuntime
 	if parent.skillRuntime != nil {
-		if err := skillRuntime.Restore(parent.skillRuntime.ActivatedSkills()); err != nil {
-			return nil, fmt.Errorf("activate the parent's skills: %w", err)
-		}
+		skillRuntime, err = parent.skillRuntime.Derive(registry)
+	} else {
+		skillRuntime, err = newSkillRuntime(parent.skillCatalog, registry)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inherit the parent's skills: %w", err)
 	}
 
 	metadata, err := session.GetMetadata(ctx)
@@ -178,6 +180,7 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 		}
 	}
 	metadata.SkillSources = parent.skillSources
+	metadata.ContextWindows = maps.Clone(parentMetadata.ContextWindows)
 	if err := session.SetMetadata(ctx, metadata); err != nil {
 		return nil, fmt.Errorf("write child metadata: %w", err)
 	}
@@ -200,6 +203,7 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 		skillSources:       parent.skillSources,
 		sandboxWarnings:    parent.sandboxWarnings,
 		outputCapabilities: parent.outputCapabilities,
+		contextWindows:     parent.cachedContextWindows(),
 	}, nil
 }
 

@@ -59,9 +59,9 @@ type Result struct {
 	// Started marks a background child that is running; its reply follows
 	// as a later message.
 	Started bool
-	// Done, for a started child, is closed by the host once the child has
-	// settled. The tool keeps the child's concurrency slot until then, so
-	// the cap counts children that are running, not calls that are waiting.
+	// Done is closed by the host once the child has settled or an unstarted
+	// spawn has been discarded. Return it even on cancellation when a child
+	// outlives the call: its concurrency slot remains held until Done closes.
 	// A host that leaves it nil frees the slot when the call returns.
 	Done <-chan struct{}
 }
@@ -155,13 +155,18 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) (string, error)
 		return "", err
 	}
 	res, err := t.run(ctx, req)
-	if err == nil && res.Started && res.Done != nil {
+	if res.Done != nil {
 		// The child runs on after this call returns; its slot stays taken
 		// until the host reports it settled.
-		go func() {
-			<-res.Done
+		select {
+		case <-res.Done:
 			t.release()
-		}()
+		default:
+			go func() {
+				<-res.Done
+				t.release()
+			}()
+		}
 	} else {
 		t.release()
 	}
@@ -179,6 +184,9 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) (string, error)
 }
 
 func (t *Tool) acquire(ctx context.Context) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	select {
 	case t.slots <- struct{}{}:
 		return nil

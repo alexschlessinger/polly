@@ -59,8 +59,10 @@ type transcriptImage struct {
 }
 
 type markdownRenderState struct {
-	baseDir string
-	images  []transcriptImage
+	baseDir   string
+	images    []transcriptImage
+	codeCache *markdownCodeCache
+	codeIndex int
 	// streaming marks the source as a truncated in-flight prefix: a table at
 	// the stream edge renders unaligned, since its column widths are not final.
 	streaming bool

@@ -28,9 +28,43 @@ var mdParser = goldmark.New(goldmark.WithExtensions(extension.Strikethrough, ext
 // source as an in-flight prefix; the returned deferred flag reports that a
 // table rendered unaligned and the caller must re-render at settle.
 func renderMarkdownWithLocalImages(src, baseDir string, streaming bool) (string, []transcriptImage, bool) {
-	state := &markdownRenderState{baseDir: baseDir, streaming: streaming}
+	return renderMarkdownWithCache(src, baseDir, streaming, nil)
+}
+
+func renderMarkdownWithCache(src, baseDir string, streaming bool, cache *markdownCodeCache) (string, []transcriptImage, bool) {
+	state := &markdownRenderState{baseDir: baseDir, streaming: streaming, codeCache: cache}
 	rendered := renderMarkdownDocument(src, state)
+	if cache != nil {
+		cache.blocks = cache.blocks[:state.codeIndex]
+	}
 	return rendered, state.images, state.deferredTable
+}
+
+// Each code block retains only its latest rendering. Appending prose or a
+// second block reuses completed highlighting without retaining every prefix
+// of a growing block. The AST is still reparsed so late link definitions and
+// table delimiters keep their normal Markdown semantics.
+type markdownCodeCache struct{ blocks []markdownCodeBlock }
+type markdownCodeBlock struct {
+	code, lang string
+	lines      []string
+}
+
+func (s *markdownRenderState) renderCode(code, lang string) []string {
+	if s == nil || s.codeCache == nil {
+		return renderCodeBlock(code, lang)
+	}
+	i := s.codeIndex
+	s.codeIndex++
+	cache := s.codeCache
+	if i == len(cache.blocks) {
+		cache.blocks = append(cache.blocks, markdownCodeBlock{})
+	}
+	b := &cache.blocks[i]
+	if b.lines == nil || b.code != code || b.lang != lang {
+		*b = markdownCodeBlock{code: code, lang: lang, lines: renderCodeBlock(code, lang)}
+	}
+	return b.lines
 }
 
 // renderMarkdownDocument converts markdown source into gotui style markup:
@@ -88,10 +122,10 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 	case *ast.FencedCodeBlock:
 		lang := markdownSourceText(string(b.Language(source)), state)
 		code := markdownSourceText(codeBlockText(b.Lines(), source), state)
-		return prefixLines(renderCodeBlock(code, lang), firstPrefix, contPrefix)
+		return prefixLines(state.renderCode(code, lang), firstPrefix, contPrefix)
 	case *ast.CodeBlock:
 		code := markdownSourceText(codeBlockText(b.Lines(), source), state)
-		return prefixLines(renderCodeBlock(code, ""), firstPrefix, contPrefix)
+		return prefixLines(state.renderCode(code, ""), firstPrefix, contPrefix)
 	case *ast.Blockquote:
 		gutter := styled("▏ ", "muted", "")
 		inner := renderBlocks(n, source, "", state)

@@ -85,6 +85,12 @@ type Session interface {
 	// TakeReports removes and returns the subagent reports addressed to
 	// this session, oldest first. See Report.
 	TakeReports(context.Context) ([]Report, error)
+	// PeekReports reads pending reports without consuming them or taking a
+	// database write lock. IDs identify reports for AddReportMessage.
+	PeekReports(context.Context) ([]Report, error)
+	// AddReportMessage atomically appends the parent input and consumes only
+	// the specified reports addressed to this session.
+	AddReportMessage(context.Context, messages.ChatMessage, []int64) error
 }
 
 // ReportStatus says how a subagent's run ended.
@@ -101,6 +107,8 @@ const (
 // a parent whose tab was closed, or whose polly has since exited, the next
 // time the parent is open. A report is deleted with its addressee.
 type Report struct {
+	// ID identifies a stored report when read; it is ignored when posting.
+	ID int64
 	// Child names the session the subagent ran on, as it is named now.
 	Child  string
 	Status ReportStatus

@@ -91,7 +91,8 @@ The child:
 - asks for tool approval like the parent does, under `--confirm`
 - counts its own tokens, reported with its reply, not added to the parent's turn
 
-Several calls in one turn run in parallel, four at a time.
+Several calls in one turn run in parallel, four at a time. Canceling a
+blocking call stops waiting; its child retains a slot until it finishes.
 
 `/resume` and `--list` nest agents under the session that spawned them,
 named by label. The picker collapses them to a count. `→` on the parent
@@ -102,7 +103,7 @@ expands, `←` collapses. A typed filter finds them either way.
 later as a message to the parent and starts a parent turn when the parent
 is idle. Replies landing while the parent is busy arrive together as one
 message. The reply is addressed to the session, not a tab or a process.
-The store holds it until the parent takes it. Closed tab, quit polly, no
+The store holds it until the parent saves it as conversation input. Closed tab, quit polly, no
 matter: it lands the next time the parent is open and idle, in any polly.
 A child cut off by quitting reports as canceled with what it had said so
 far.

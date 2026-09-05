@@ -28,6 +28,7 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 	assistantIndex := m.currentAssistant
 	transcriptLen := len(m.transcript)
 	r.endTurn(nil)
+	m.renderPendingMarkdown()
 	if len(m.transcript) != transcriptLen+1 {
 		t.Fatalf("settling did not append exactly one trailer: before=%d after=%d transcript=%#v", transcriptLen, len(m.transcript), m.transcript)
 	}

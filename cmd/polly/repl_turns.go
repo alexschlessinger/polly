@@ -201,10 +201,10 @@ func (r *managedREPL) takeHiddenNotices(focusKnown, focused bool) []string {
 		if m == r.model {
 			continue
 		}
-		m.mu.Lock()
+		m.notificationMu.Lock()
 		notices := m.notices
 		m.notices = nil
-		m.mu.Unlock()
+		m.notificationMu.Unlock()
 		if focusKnown && !focused {
 			out = append(out, notices...)
 		}

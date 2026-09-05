@@ -292,6 +292,7 @@ func TestAppendAssistantAccumulatesManyChunks(t *testing.T) {
 		t.Fatalf("streaming should stay in one entry, got %d", len(m.transcript))
 	}
 	// Markdown rendering owns trailing whitespace; the words must all survive.
+	m.renderPendingMarkdown()
 	if m.transcript[0].text != strings.TrimRight(want.String(), " ") {
 		t.Fatalf("accumulated text mismatch:\n got %q\nwant %q", m.transcript[0].text, want.String())
 	}

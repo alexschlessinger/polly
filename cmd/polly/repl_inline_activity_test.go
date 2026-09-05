@@ -169,6 +169,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	r.endTurn(nil)
 
 	// Settled: reasoning says "thought", tool block collapsed, trailer present.
+	m.renderPendingMarkdown()
 	final := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
 	for _, want := range []string{"thought", "1 tool", "All done.", "✓", "100 in / 20 out"} {
 		if !strings.Contains(final, want) {

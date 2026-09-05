@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -45,24 +46,31 @@ type replTab struct {
 	// its first turn's reply until delivered; waiter is the blocking spawn
 	// call waiting for that reply, nil for a background child. All
 	// loop-owned.
-	parent     *replTab
-	parentName string
-	viewed     bool
-	report     *childTurnUI
-	waiter     chan childReport
+	parent         *replTab
+	parentName     string
+	viewed         bool
+	report         *childTurnUI
+	waiter         chan childReport
+	waitCtx        context.Context
+	reportsLoading bool
+	// reportsRepull asks for another read once the one in flight lands: a
+	// report written meanwhile may be missing from it.
+	reportsRepull   bool
+	reportWriteDone chan struct{}
+	reporting       bool
+	deliveryPending bool
 
-	// settled is closed once a child's first turn has settled or its tab is
-	// gone; a background spawn call's concurrency slot is held until then.
-	// Made before the tab is published and closed only on the event loop.
-	settled       chan struct{}
-	settledClosed bool
+	// settled follows the actual first turn, even after UI cancellation has
+	// detached it. Its concurrency slot must remain held until work ends.
+	settled     chan struct{}
+	settledOnce sync.Once
 }
 
-// markSettled closes settled, once. Runs on the event loop.
+// markSettled closes settled, once, from the first turn's goroutine or a
+// rejected launch's cleanup.
 func (t *replTab) markSettled() {
-	if t.settled != nil && !t.settledClosed {
-		t.settledClosed = true
-		close(t.settled)
+	if t.settled != nil {
+		t.settledOnce.Do(func() { close(t.settled) })
 	}
 }
 
@@ -172,9 +180,10 @@ func (r *managedREPL) showTab(i int) {
 		next.focusKnown, next.focused = focusKnown, focused
 		next.hist.entries = hist
 		next.hidden = false
+		next.notificationMu.Lock()
 		next.signals = nil
+		next.notificationMu.Unlock()
 		next.unseenOutcome = turnOutcomeNone
-		next.renderAssistantStream()
 		next.mu.Unlock()
 	}
 	r.model = tab.model
@@ -258,9 +267,7 @@ func (r *managedREPL) closeVisibleTab() {
 	}
 	tab := r.removeTab(i)
 	notice := "closed " + tab.name
-	if err := tab.state.Close(); err != nil {
-		notice += " (" + err.Error() + ")"
-	}
+	r.closeTabState(tab)
 	r.model.mu.Lock()
 	r.model.appendNoticeLine(notice)
 	r.model.mu.Unlock()
@@ -278,13 +285,12 @@ func (r *managedREPL) removeTab(i int) *replTab {
 	if tab.waiter != nil {
 		// A blocking spawn call waiting on this child hears it went away.
 		select {
-		case tab.waiter <- childReport{result: subagent.Result{Session: tab.name}, err: errors.New("the agent's tab was closed")}:
+		case tab.waiter <- childReport{result: subagent.Result{Session: tab.name, Done: tab.settled}, err: errors.New("the agent's tab was closed")}:
 		default:
 		}
 		tab.waiter = nil
 	}
 	tab.report = nil
-	tab.markSettled()
 	// Its children stand on their own from here: they report to the store
 	// for the parent session, and an unviewed one closes once it has.
 	for _, child := range r.tabs {
@@ -303,7 +309,11 @@ func (r *managedREPL) removeTab(i int) *replTab {
 // closeTabs closes every tab's session at exit, the visible one included. A
 // generated session that never ran a turn is discarded by its close.
 func (r *managedREPL) closeTabs() error {
+	r.cancelTurns()
 	var errs []error
+	if err := r.work.close(); err != nil {
+		errs = append(errs, err)
+	}
 	for _, tab := range r.tabs {
 		if tab.stopWatch != nil {
 			tab.stopWatch()
@@ -342,7 +352,7 @@ func (r *managedREPL) dropLostSessions() error {
 			continue
 		}
 		r.removeTab(i)
-		_ = tab.state.Close()
+		r.closeTabState(tab)
 		r.model.mu.Lock()
 		r.model.appendErrorLine("closed " + tab.name + ": " + cause.Error())
 		r.model.mu.Unlock()

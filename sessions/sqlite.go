@@ -2001,6 +2001,17 @@ func (s *sqliteSession) AddMessage(ctx context.Context, message messages.ChatMes
 }
 
 func (s *sqliteSession) AddMessages(ctx context.Context, messagesToAdd []messages.ChatMessage) error {
+	return s.addMessages(ctx, messagesToAdd, nil)
+}
+
+func (s *sqliteSession) AddReportMessage(ctx context.Context, message messages.ChatMessage, reportIDs []int64) error {
+	if message.Role != messages.MessageRoleUser {
+		return errors.New("report input must be a user message")
+	}
+	return s.addMessages(ctx, []messages.ChatMessage{message}, reportIDs)
+}
+
+func (s *sqliteSession) addMessages(ctx context.Context, messagesToAdd []messages.ChatMessage, reportIDs []int64) error {
 	if len(messagesToAdd) == 0 {
 		if cause := context.Cause(s.ctx); cause != nil {
 			return cause
@@ -2043,6 +2054,11 @@ func (s *sqliteSession) AddMessages(ctx context.Context, messagesToAdd []message
 			if _, err := conn.ExecContext(opCtx,
 				"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
 				s.id, next+int64(i), payload); err != nil {
+				return err
+			}
+		}
+		for _, id := range reportIDs {
+			if _, err := conn.ExecContext(opCtx, "DELETE FROM session_reports WHERE session_id = ? AND id = ?", s.id, id); err != nil {
 				return err
 			}
 		}
@@ -2425,13 +2441,25 @@ func (s *sqliteSession) Report(ctx context.Context, report Report) error {
 // the order they were posted. A child renamed since its report was posted is
 // named as it is now; one deleted since keeps the name it had.
 func (s *sqliteSession) TakeReports(ctx context.Context) ([]Report, error) {
+	return s.readReports(ctx, true)
+}
+
+func (s *sqliteSession) PeekReports(ctx context.Context) ([]Report, error) {
+	return s.readReports(ctx, false)
+}
+
+func (s *sqliteSession) readReports(ctx context.Context, take bool) ([]Report, error) {
 	opCtx, cleanup, err := s.operationContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
 	var reports []Report
-	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
+	transaction := s.store.withRead
+	if take {
+		transaction = s.store.withWrite
+	}
+	err = transaction(opCtx, func(conn *sql.Conn) error {
 		if err := s.requireLease(opCtx, conn); err != nil {
 			return err
 		}
@@ -2443,19 +2471,17 @@ func (s *sqliteSession) TakeReports(ctx context.Context) ([]Report, error) {
 		if err != nil {
 			return err
 		}
-		var ids []int64
 		for rows.Next() {
-			var id, postedNS int64
+			var postedNS int64
 			var report Report
 			var status string
-			if err := rows.Scan(&id, &report.Child, &status, &report.Text, &report.Error, &report.InputTokens, &report.OutputTokens, &postedNS); err != nil {
+			if err := rows.Scan(&report.ID, &report.Child, &status, &report.Text, &report.Error, &report.InputTokens, &report.OutputTokens, &postedNS); err != nil {
 				_ = rows.Close()
 				return err
 			}
 			report.Status = ReportStatus(status)
 			report.Posted = time.Unix(0, postedNS).UTC()
 			reports = append(reports, report)
-			ids = append(ids, id)
 		}
 		if err := rows.Err(); err != nil {
 			_ = rows.Close()
@@ -2464,9 +2490,11 @@ func (s *sqliteSession) TakeReports(ctx context.Context) ([]Report, error) {
 		if err := rows.Close(); err != nil {
 			return err
 		}
-		for _, id := range ids {
-			if _, err := conn.ExecContext(opCtx, "DELETE FROM session_reports WHERE id = ?", id); err != nil {
-				return err
+		if take {
+			for _, report := range reports {
+				if _, err := conn.ExecContext(opCtx, "DELETE FROM session_reports WHERE id = ?", report.ID); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
