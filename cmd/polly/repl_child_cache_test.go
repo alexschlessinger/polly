@@ -233,6 +233,62 @@ func TestChildViewDraftSurvivesRefreshAndFollowupStartup(t *testing.T) {
 	}
 }
 
+func TestChildViewRestoresUnansweredPromptAndReusesItOnResend(t *testing.T) {
+	r, store, activity := savedChildViewFixture(t)
+	ctx := context.Background()
+	// The child's first run ended before it answered, as after a cancel.
+	writer, err := store.Acquire(ctx, "child", sessions.AcquireOptions{ExistingOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "retry me"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	child := clickChildView(t, r, activity)
+	driveChildView(t, r, func() bool { return !child.viewLoading })
+	if transcript := plainStyledText(child.model.fullTranscript()); !strings.Contains(transcript, "restored to composer") || child.model.ed.text() != "retry me" || child.model.restoredDraft == nil {
+		t.Fatalf("view did not restore the unanswered prompt: composer %q, transcript %q", child.model.ed.text(), transcript)
+	}
+	id := child.viewID()
+	r.showTab(0)
+	driveChildView(t, r, func() bool { return r.childViews.entries[id] != nil })
+	child = clickChildView(t, r, activity)
+	if child.viewLoading || child.model.ed.text() != "retry me" || child.model.restoredDraft == nil {
+		t.Fatalf("cached view lost the restored prompt: %q", child.model.ed.text())
+	}
+	driveChildView(t, r, func() bool { return child.childView.Unchanged })
+	child.model.mu.Lock()
+	r.submitComposerLocked()
+	child.model.mu.Unlock()
+	driveChildView(t, r, func() bool { return !child.viewOpening })
+	pending, ok := r.takePendingTurn()
+	if !ok || child.state.session == nil || pending.turn.userMessage.Content != "retry me" || !child.model.restoreDraftNext {
+		t.Fatalf("unchanged resend did not reuse the restored turn: ok %v, reuse %v", ok, child.model.restoreDraftNext)
+	}
+	persisted := make(chan error, 1)
+	r.startManagedTurn(ctx, child, pending.turn, func(ctx context.Context, _ string, turnUI TurnUI) error {
+		tui := turnUI.(*gotuiTurnUI)
+		persisted <- persistUserMessageForTurn(ctx, tui.state.session, tui.turn.userMessage, tui.reuseUser, nil)
+		return nil
+	})
+	if err := <-child.turnDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-persisted; err != nil {
+		t.Fatal(err)
+	}
+	history, err := child.state.session.GetHistory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 3 || history[2].Content != "retry me" {
+		t.Fatalf("resend duplicated the stored prompt: %d messages", len(history))
+	}
+}
+
 func TestChildViewRefreshCannotStealNavigation(t *testing.T) {
 	r, store, activity := savedChildViewFixture(t)
 	gate := make(chan struct{})

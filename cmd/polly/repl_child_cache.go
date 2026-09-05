@@ -17,8 +17,9 @@ const (
 
 // A cached child is a disposable display projection, not an open tab. Its
 // model is built by childDisplayCopy and owns no runtime, lease, callbacks,
-// drafts, or pending input. Taking an entry transfers it to the open view;
-// open views are never cache eviction candidates.
+// drafts, or pending input; a prompt restored from saved history is display
+// and stays. Taking an entry transfers it to the open view; open views are
+// never cache eviction candidates.
 type cachedChildView struct {
 	info     *sessions.SessionView
 	model    *replModel
@@ -127,6 +128,13 @@ func childDisplayCopy(src *replModel) *replModel {
 		ref := *attachment.Artifact
 		attachment.Artifact = &ref
 		m.attachments[id] = attachment
+	}
+	// The unanswered prompt hydrateHistory restored derives from history,
+	// so the projection shows it again; typed edits are not copied.
+	if src.restoredDraft != nil {
+		restored := cloneManagedTurn(*src.restoredDraft)
+		m.restoredDraft, m.restoredPersistence = &restored, src.restoredPersistence
+		m.ed.setText(restored.displayText)
 	}
 	m.lastIn, m.lastOut, m.lastElapsed, m.lastOutcome = src.lastIn, src.lastOut, src.lastElapsed, src.lastOutcome
 	m.toolDisclosureAt = maps.Clone(src.toolDisclosureAt)

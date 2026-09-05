@@ -165,7 +165,8 @@ func (r *managedREPL) refreshChildView(tab *replTab, activity *agentActivity) {
 
 // Keep the model object stable: clipboard completions and other UI callbacks
 // may still target it. Only replace display state, preserving draft input,
-// focus, paste/modal state, and the user's latest scroll position.
+// focus, paste/modal state, and the user's latest scroll position. A prompt
+// the history restores to the composer is part of that display.
 func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m := tab.model
 	m.mu.Lock()
@@ -181,6 +182,7 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.turnTrailers, m.turnTrailerAt, m.turnTrailerSeq = next.turnTrailers, next.turnTrailerAt, next.turnTrailerSeq
 	m.turnDock, m.openTurnTrailerID = next.turnDock, next.openTurnTrailerID
 	mergeChildAttachments(m, next)
+	m.adoptRestoredDraft(next)
 }
 
 func mergeChildAttachments(m, next *replModel) {
@@ -369,6 +371,7 @@ func (r *managedREPL) activateChildViewLocked(tab *replTab) {
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			mergeChildAttachments(m, next)
+			m.adoptRestoredDraft(next)
 			m.artifactStore, m.status.contextName, m.status.parentName = state.artifactStore, tab.name, tab.parentName
 			tab.stopWatch = context.AfterFunc(state.session.Context(), r.wakeTabs)
 			if r.model == m {
