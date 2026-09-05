@@ -126,9 +126,18 @@ Saved history restores child links and known outcomes; older records with no
 reliable outcome show `unknown`. `/spawn` keeps its existing presentation.
 After its initial report is delivered, an agent tab closes when hidden, including
 failed or canceled runs. If you are reading it, it stays until you leave.
-Reopened agent sessions also close when you leave; drafts and follow-up
-conversations keep their tabs open. The session stays saved and can be reopened
-from Agents. Click `← Back to caller` in the divider above the composer,
+Inspecting a completed agent opens its saved transcript without starting its
+tools or taking a session lease. Recently viewed children keep their transcript,
+formatting, scroll position, and expanded disclosures in an in-memory LRU cache,
+separate from open tabs. Cached views appear immediately and refresh in the
+background; an uncached view loads off the UI loop. The cache holds at most
+16 views and an estimated 64 MiB, with up to four unviewed completions using
+8 MiB of that budget. User visits determine recency; background activity does not.
+Leaving a child view closes its tab; drafts keep it open and are never cached
+or evicted. Sending a follow-up opens the execution runtime, preserves the draft
+during startup, and keeps the resulting conversation open. Cache eviction only
+makes the next visit load again; the saved session remains available from Agents.
+Click `← Back to caller` in the divider above the composer,
 or use `/parent`, to return to the parent (reopening it if needed).
 Closing a tab
 with running agents is refused. They work on a view of its tools.

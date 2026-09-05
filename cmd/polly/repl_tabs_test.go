@@ -694,9 +694,6 @@ func TestComposerHoldsInputWhileOpening(t *testing.T) {
 	if got := r.model.ed.text(); got != "draft for the next session" {
 		t.Fatalf("held draft was cleared: %q", got)
 	}
-	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "opening older-work") {
-		t.Fatalf("hold was not explained: %q", transcript)
-	}
 	select {
 	case <-r.pending:
 		t.Fatal("a turn was started during the open")

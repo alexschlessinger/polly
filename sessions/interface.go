@@ -35,6 +35,9 @@ type StoreConfig struct {
 // retention class or parent of an existing session.
 type AcquireOptions struct {
 	Auto bool
+	// ExpectedID, when set, requires the identity returned by ReadView. It
+	// refuses a deleted/reused name atomically and implies ExistingOnly.
+	ExpectedID string
 	// ExistingOnly refuses a missing or expired session instead of creating it.
 	ExistingOnly bool
 	// Parent names the session whose agent spawns this one. The link is by
@@ -49,6 +52,8 @@ type AcquireOptions struct {
 // unexpired lease on the session, whether this process or another one holds
 // it; a picker can mark or refuse such sessions instead of waiting on Acquire.
 type SessionSummary struct {
+	// ID is the stable ViewTarget identity, independent of the session name.
+	ID           string
 	Metadata     *Metadata
 	MessageCount int
 	InUse        bool

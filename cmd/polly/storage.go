@@ -313,7 +313,8 @@ func getOrCreateSession(ctx context.Context, store sessions.SessionStore, contex
 	}
 	target, agentLink := ctx.Value(agentSessionTargetKey{}).(agentSessionTarget)
 	existingOnly, _ := ctx.Value(existingSessionTargetKey{}).(bool)
-	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{Auto: auto, ExistingOnly: agentLink || existingOnly})
+	expectedID, _ := ctx.Value(childViewIdentityKey{}).(string)
+	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{Auto: auto, ExistingOnly: agentLink || existingOnly, ExpectedID: expectedID})
 	if err != nil {
 		return nil, fmt.Errorf("get session for context %q: %w", contextID, err)
 	}

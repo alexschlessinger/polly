@@ -1343,6 +1343,9 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 		var updatedNS, ttlNS int64
 		err := conn.QueryRowContext(ctx,
 			"SELECT id, updated_ns, ttl_ns FROM sessions WHERE name = ?", name).Scan(&storedID, &updatedNS, &ttlNS)
+		if options.ExpectedID != "" && (errors.Is(err, sql.ErrNoRows) || err == nil && hex.EncodeToString(storedID) != options.ExpectedID) {
+			return ErrSessionNotFound
+		}
 		if err == nil && ttlNS > 0 && updatedNS <= nowNS && ttlNS <= nowNS-updatedNS {
 			// The session idled past its TTL: retire it now instead of
 			// serving stale history until the next sweep observes it. A live
@@ -1371,7 +1374,7 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 			}
 		}
 		if errors.Is(err, sql.ErrNoRows) {
-			if options.ExistingOnly {
+			if options.ExistingOnly || options.ExpectedID != "" {
 				return ErrSessionNotFound
 			}
 			storedID, err = randomBytes(16)
@@ -1622,7 +1625,7 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 	}
 	nowNS := time.Now().UTC().UnixNano()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.settings_json,s.next_sequence,p.name,
+		SELECT s.id,s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.settings_json,s.next_sequence,p.name,
 		       EXISTS(
 		         SELECT 1 FROM session_leases
 		         WHERE session_leases.session_id = s.id
@@ -1636,15 +1639,16 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 	var result []SessionSummary
 	for rows.Next() {
 		var snap sessionSnapshot
+		var id []byte
 		var inUse bool
-		if err := rows.Scan(&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq, &snap.parent, &inUse); err != nil {
+		if err := rows.Scan(&id, &snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq, &snap.parent, &inUse); err != nil {
 			return nil, err
 		}
 		metadata, err := metadataFromSnapshot(snap)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, SessionSummary{Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse})
+		result = append(result, SessionSummary{ID: hex.EncodeToString(id), Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse})
 	}
 	return result, rows.Err()
 }
@@ -2600,10 +2604,14 @@ func (s *sqliteSession) close(cause error) error {
 }
 
 type sqliteArtifactStore struct {
-	session *sqliteSession
+	session  *sqliteSession
+	readOnly bool
 }
 
 func (s *sqliteArtifactStore) Put(ctx context.Context, blob artifacts.Blob) (artifacts.Ref, error) {
+	if s.readOnly {
+		return artifacts.Ref{}, ErrReadOnlyView
+	}
 	if ctx != nil {
 		if cause := context.Cause(ctx); cause != nil {
 			return artifacts.Ref{}, cause
@@ -2714,7 +2722,7 @@ func (s *sqliteArtifactStore) Open(ctx context.Context, id string) (io.ReadClose
 	if err != nil {
 		return nil, err
 	}
-	if err := s.session.requireLease(opCtx, s.session.store.db); err != nil {
+	if err := s.requireReadAccess(opCtx); err != nil {
 		cleanup()
 		return nil, s.session.mapError(ctx, err)
 	}
@@ -2752,6 +2760,9 @@ func (s *sqliteArtifactStore) Open(ctx context.Context, id string) (io.ReadClose
 }
 
 func (s *sqliteArtifactStore) RemoveAll(ctx context.Context) error {
+	if s.readOnly {
+		return ErrReadOnlyView
+	}
 	opCtx, cleanup, err := s.session.operationContext(ctx)
 	if err != nil {
 		return err

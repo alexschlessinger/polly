@@ -405,21 +405,17 @@ func (r *managedREPL) openResumePicker() {
 }
 
 func (r *managedREPL) openResumePickerSelected(preferred string) {
-	if r.state == nil || r.state.sessionStore == nil || r.state.session == nil {
+	if r.state == nil || r.state.sessionStore == nil {
 		r.model.appendNoticeLine("session picker unavailable")
 		return
 	}
-	ctx := r.state.session.Context()
+	ctx := r.work.ctx
 	summaries, err := r.state.sessionStore.ListSummaries(ctx)
 	if err != nil {
 		r.model.appendNoticeLine("session picker: " + err.Error())
 		return
 	}
-	current, err := r.state.session.GetName(ctx)
-	if err != nil {
-		r.model.appendNoticeLine("session picker: " + err.Error())
-		return
-	}
+	current := r.visibleTab().name
 	infos := make([]sessions.SessionSummary, 0, len(summaries))
 	for _, summary := range summaries {
 		if summary.Metadata != nil {
@@ -550,7 +546,7 @@ func (r *managedREPL) openSessionRenameInput(name string) {
 }
 
 func (r *managedREPL) renameSession(oldName, newName string) {
-	if oldName == "" || newName == "" || r.state == nil || r.state.sessionStore == nil || r.state.session == nil {
+	if oldName == "" || newName == "" || r.state == nil || r.state.sessionStore == nil {
 		r.model.appendNoticeLine("rename failed: session unavailable")
 		return
 	}
@@ -558,22 +554,23 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 		r.openResumePickerSelected(oldName)
 		return
 	}
-	ctx := r.state.session.Context()
-	current, err := r.state.session.GetName(ctx)
-	if err != nil {
-		r.model.appendNoticeLine("rename failed: " + err.Error())
-		return
-	}
+	ctx := r.work.ctx
+	current := r.visibleTab().name
+	var err error
 	target := r.state.session
 	closeTarget := false
 	// A session open in another tab is renamed through that tab's lease.
 	tab := r.tabIndexOf(oldName)
 	switch {
-	case oldName == current:
-	case tab >= 0:
+	case oldName == current && target != nil:
+	case tab >= 0 && r.tabs[tab].state.session != nil:
 		target = r.tabs[tab].state.session
 	default:
-		target, err = r.state.sessionStore.Acquire(ctx, oldName, sessions.AcquireOptions{})
+		options := sessions.AcquireOptions{ExistingOnly: true}
+		if tab >= 0 {
+			options.ExpectedID = r.tabs[tab].viewID()
+		}
+		target, err = r.state.sessionStore.Acquire(ctx, oldName, options)
 		if err != nil {
 			r.model.appendNoticeLine("rename failed: " + err.Error())
 			r.openResumePickerSelected(oldName)
@@ -593,6 +590,16 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 	case closeTarget:
 		if err := target.Close(); err != nil {
 			r.model.appendNoticeLine("renamed session; releasing it failed: " + err.Error())
+		}
+		if tab >= 0 {
+			r.tabs[tab].name = newName
+			if r.tabs[tab].model == r.model {
+				r.model.status.contextName = newName
+			} else {
+				r.tabs[tab].model.mu.Lock()
+				r.tabs[tab].model.status.contextName = newName
+				r.tabs[tab].model.mu.Unlock()
+			}
 		}
 	case oldName == current:
 		r.model.status.contextName = newName

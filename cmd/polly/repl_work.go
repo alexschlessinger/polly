@@ -74,6 +74,8 @@ func (r *managedREPL) postUI(ctx context.Context, fn func()) bool {
 
 // closeTabState waits off the event loop for a child's final report write.
 func (r *managedREPL) closeTabState(tab *replTab) {
+	cacheView := r.retiredChildViewTask(tab)
+	activity := tab.agentActivity
 	done, agentDone, state, name := tab.reportWriteDone, tab.agentWriteDone, tab.state, tab.name
 	if state == nil {
 		return
@@ -85,12 +87,24 @@ func (r *managedREPL) closeTabState(tab *replTab) {
 		if done != nil {
 			<-done
 		}
+		var view *cachedChildView
+		if cacheView != nil {
+			view = cacheView()
+		}
 		if err := state.Close(); err != nil {
 			r.work.recordError(fmt.Errorf("close %s: %w", name, err))
 			r.postUI(r.work.ctx, func() {
 				r.model.mu.Lock()
 				r.model.appendErrorLine(fmt.Sprintf("close %s: %v", name, err))
 				r.model.mu.Unlock()
+			})
+		}
+		if view != nil {
+			r.postUI(r.work.ctx, func() {
+				if activity != nil {
+					activity.viewID = view.info.ID
+				}
+				r.admitChildDisplay(view)
 			})
 		}
 	})

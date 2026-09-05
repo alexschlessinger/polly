@@ -529,6 +529,22 @@ err = session.Reset(sessionCtx, metadata)
   competing owner receives `sessions.ErrSessionInUse`.
 - `AcquireOptions{ExistingOnly: true}` refuses missing or expired sessions
   with `sessions.ErrSessionNotFound`, so navigation cannot create a new one.
+- `SQLiteStore.ReadView(ctx, sessions.ViewTarget{Name: name}, knownRevision)`
+  reads a consistent snapshot without acquiring a lease or updating last-used
+  time. Its `SessionView` includes stable `ID`, `Revision`, metadata, history,
+  lease status, and a read-only artifact store. Matching `knownRevision` sets
+  `Unchanged` and omits history. Use `ViewTarget{ID: view.ID}` after renames, or
+  `{Parent: parentName, SpawnCallID: callID}` to resolve an unambiguous child.
+  Missing, expired, and deleted identities are refused. `sessions.ViewStore`
+  is an optional capability alongside `SessionStore`; `sessions.ViewIdentity`
+  exposes an acquired SQLite session's `ViewID()`.
+- `AcquireOptions{ExpectedID: view.ID}` atomically verifies the viewed identity
+  before taking a write lease, and implies `ExistingOnly`. A deleted name reused
+  by a different session cannot receive a follow-up intended for the old view.
+- A view's artifact store reads only that session's owned artifacts, remains
+  usable after its writer closes, and rejects `Put`/`RemoveAll` with
+  `sessions.ErrReadOnlyView`. Deletion/reset may remove those artifacts; store
+  shutdown cancels readers. It does not retain or extend the session's lifetime.
 - `session.ArtifactStore()` is scoped to the session; artifact bytes commit
   in the same database as the transcript.
 - `AcquireOptions{Parent: name}` links a new session to the one whose agent

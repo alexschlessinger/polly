@@ -388,8 +388,10 @@ type managedREPL struct {
 	// uiTasks carries deferred UI mutations (e.g. a finished clipboard read)
 	// onto the event loop, which repaints after running each one. Tasks take
 	// the model lock themselves.
-	uiTasks chan func()
-	work    *replWork
+	uiTasks          chan func()
+	work             *replWork
+	childViews       childViewCache
+	childViewRequest *childViewNavigation
 
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
