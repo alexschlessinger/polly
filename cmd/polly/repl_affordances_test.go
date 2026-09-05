@@ -236,6 +236,10 @@ func TestDeliveredChildArmsCallerCueAndOnlyCurrentAgentControl(t *testing.T) {
 	}
 	child := r.tabs[1]
 	child.keepOpen = true
+	// Visit the child once so its affordances are live, then leave it hidden:
+	// the state a background child is in when its delivery lands.
+	r.showTab(1)
+	r.showTab(0)
 	parent.model.mu.Lock()
 	parent.model.takeActiveTool("call-1")
 	parent.model.mu.Unlock()
@@ -264,10 +268,16 @@ func TestDeliveredChildArmsCallerCueAndOnlyCurrentAgentControl(t *testing.T) {
 		t.Fatalf("arrival highlighted %d controls; want only the trailer", count)
 	}
 	// A hidden child does not advertise an old delivery on its next visit.
+	if !child.model.affordances.enabled || !child.model.hidden {
+		t.Fatal("child is not a hidden tab with live affordances")
+	}
 	if !child.model.affordances.caller.IsZero() {
 		t.Fatal("hidden child armed a caller beacon")
 	}
 	r.showTab(1)
+	if !child.model.affordances.caller.IsZero() {
+		t.Fatal("visiting the child replayed an old caller beacon")
+	}
 	r.noteCallerReady(child)
 	if child.model.affordances.caller.IsZero() {
 		t.Fatal("visible child did not arm the caller beacon")
