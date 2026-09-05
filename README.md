@@ -119,9 +119,10 @@ label to switch to its child tab or reopen its saved conversation. The row
 tracks the initial delegated run, including background work after the parent
 turn finishes. Later follow-ups in the child leave that outcome unchanged.
 Completed turns collapse the activity controls; while a child is still
-working, its turn's trailer marks Agents with ↻. Saved history restores child
-links and known outcomes; older records with no reliable outcome show
-`unknown`. `/spawn` keeps its existing presentation. A child tab you
+working, its turn's Agents label ends in an ellipsis, like `thinking…`. Saved
+history restores child links and known outcomes; older records with no
+reliable outcome show `unknown`. `/spawn` keeps its existing presentation.
+A child tab you
 never viewed closes itself once the parent takes its reply, or once it has
 reported after its parent's tab closed. A viewed tab stays. Closing a tab
 with running agents is refused. They work on a view of its tools.

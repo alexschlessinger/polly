@@ -111,8 +111,9 @@ func turnAgentLabel(n int) string {
 }
 
 // agentField renders the Agents control styled like its thought and tools
-// neighbours; liveness is the glyph alone. A running child shows ↻ in exactly
-// one control: the launch row until its turn has a trailer, then that trailer.
+// neighbours. Like thinking…, a trailing ellipsis marks work in progress, in
+// exactly one control: the launch row until its turn has a trailer, then that
+// trailer.
 func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockField, bool) {
 	n, active := 0, false
 	for _, id := range ids {
@@ -129,11 +130,11 @@ func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockF
 		return turnDockField{}, false
 	}
 	glyph, label := "▸", turnAgentLabel(n)
-	switch {
-	case expanded:
+	if expanded {
 		glyph = "▾"
-	case active && !handedOff:
-		glyph = "↻"
+	}
+	if active && !handedOff {
+		label += "…"
 	}
 	return turnDockField{raw: glyph + " " + label, rendered: turnActivityControl(glyph, label), overlay: turnDockOverlayAgents}, true
 }

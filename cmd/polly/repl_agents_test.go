@@ -589,10 +589,10 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 		}
 		return launch, trailer
 	}
-	// Liveness is the ↻ glyph, shown in one control at a time: the launch row
-	// until its turn has a trailer, then the trailer. Brightness follows the
-	// same rules as the thought and tools controls beside it.
-	if launch, trailer := headers(); !strings.Contains(plainStyledText(launch), "↻ 1 agent") || trailer != "" {
+	// Work in progress is the trailing ellipsis, shown in one control at a
+	// time: the launch row until its turn has a trailer, then the trailer.
+	// Brightness follows the same rules as the thought and tools controls.
+	if launch, trailer := headers(); !strings.Contains(plainStyledText(launch), "▸ 1 agent…") || trailer != "" {
 		t.Fatalf("running turn: launch %q / trailer %q", launch, trailer)
 	}
 	parent.model.mu.Lock()
@@ -601,7 +601,7 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 	close(runs.release)
 	settleUntil(t, r, settled(parent))
 	r.refreshAgentActivities()
-	launchIdle, trailerLive := inlineActivityControl("▸", "1 agent", true), turnActivityControl("↻", "1 agent")
+	launchIdle, trailerLive := inlineActivityControl("▸", "1 agent", true), turnActivityControl("▸", "1 agent…")
 	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, trailerLive) {
 		t.Fatalf("settled turn: launch %q / trailer %q", launch, trailer)
 	}
@@ -615,7 +615,7 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 	close(runs.slow)
 	settleUntil(t, r, settled(child))
 	r.refreshAgentActivities()
-	// A finished group stays as bright as its neighbours; only the glyph rests.
+	// A finished group stays as bright as its neighbours; only the ellipsis goes.
 	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, turnActivityControl("▸", "1 agent")) {
 		t.Fatalf("finished child: launch %q / trailer %q", launch, trailer)
 	}
