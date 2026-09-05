@@ -338,7 +338,7 @@ func (b *CompletionBuilder) ExecuteWithTools(ctx context.Context, client LLM, to
 		b.req.Tools = toolRegistry.All()
 	}
 
-	const maxToolRounds = 250
+	const maxToolRounds = 1024
 	var response *messages.ChatMessage
 	for round := 0; round < maxToolRounds; round++ {
 		processor := &SimpleProcessor{}
