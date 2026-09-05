@@ -29,8 +29,8 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 	transcriptLen := len(m.transcript)
 	r.endTurn(nil)
 	m.renderPendingMarkdown()
-	if len(m.transcript) != transcriptLen+2 {
-		t.Fatalf("settling did not append a spacer and trailer: before=%d after=%d transcript=%#v", transcriptLen, len(m.transcript), m.transcript)
+	if len(m.transcript) != transcriptLen+1 {
+		t.Fatalf("settling did not append exactly one trailer: before=%d after=%d transcript=%#v", transcriptLen, len(m.transcript), m.transcript)
 	}
 	if assistantIndex < 0 || !strings.Contains(plainStyledText(m.transcript[assistantIndex].text), "stream closed") {
 		t.Fatalf("assistant entry moved or changed at settlement: index=%d transcript=%#v", assistantIndex, m.transcript)
@@ -38,34 +38,10 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 	if m.turnDock.visible {
 		t.Fatalf("settled dock remained attached to bottom row: %#v", m.turnDock)
 	}
-	if m.transcript[len(m.transcript)-2].text != "" {
-		t.Fatal("footer lacks its separating blank line")
-	}
-	footer := m.transcript[len(m.transcript)-1].text
-	if !strings.Contains(footer, "fg:accent") || strings.Contains(footer, "mod:bold") {
-		t.Fatalf("footer styles are not balanced: %q", footer)
-	}
-	plain := plainStyledText(footer)
-	if strings.TrimSpace(plain) != "▸ thought  ▸ 1 tool" {
-		t.Fatalf("activity footer should contain only controls: %q", plain)
-	}
-	shown := plainStyledText(strings.Join(rowsText(m.transcriptRows(160)), "\n"))
-	if !strings.Contains(shown, "The stream closed before its final event.  ✓ 34.0s · 18.6k ↑  1.2k ↓") {
-		t.Fatalf("stats missing from final assistant line: %q", shown)
-	}
-	if strings.Contains(m.transcript[assistantIndex].text, "18.6k") {
-		t.Fatal("display stats changed assistant text")
-	}
-	for _, width := range []int{40, 60} {
-		rows := rowsText(m.transcriptRows(width))
-		found := false
-		for _, row := range rows {
-			if strings.Contains(row, "✓ 34.0s · 18.6k ↑  1.2k ↓") {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("stats split across narrow rows at %d: %q", width, rows)
+	plain := plainStyledText(m.transcript[len(m.transcript)-1].text)
+	for _, want := range []string{"thought", "1 tool", "✓", "34.0s", "18.6k in / 1.2k out"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("settled dock %q missing %q", plain, want)
 		}
 	}
 	if len(m.turnTrailers) != 1 {
@@ -113,9 +89,8 @@ func TestAttachedTrailerRemainsWhenNextTurnStarts(t *testing.T) {
 	r.endTurn(nil)
 
 	m.beginTurn("second")
-	m.renderPendingMarkdown()
-	history := strings.Join(rowsText(m.transcriptRows(200)), "\n")
-	if !strings.Contains(history, "✓ 2.0s") || !strings.Contains(history, "1.2k ↑  300 ↓") {
+	history := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
+	if !strings.Contains(history, "✓ 2.0s") || !strings.Contains(history, "1.2k in / 300 out") {
 		t.Fatalf("previous turn trailer missing from transcript history: %q", history)
 	}
 	if !strings.Contains(history, "> second") {
@@ -332,9 +307,8 @@ func TestHydratedHistoryRestoresAttachedTrailers(t *testing.T) {
 
 	m := newReplModel()
 	m.hydrateHistory(history, "ctx")
-	m.renderPendingMarkdown()
-	transcript := strings.Join(rowsText(m.transcriptRows(200)), "\n")
-	if !strings.Contains(transcript, "1.0k ↑  200 ↓") || !strings.Contains(transcript, "1.8k ↑  350 ↓") {
+	transcript := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
+	if !strings.Contains(transcript, "1.0k in / 200 out") || !strings.Contains(transcript, "1.8k in / 350 out") {
 		t.Fatalf("hydrated turn trailers missing: %q", transcript)
 	}
 	if m.turnDock.visible || len(m.turnTrailers) != 2 {
@@ -342,13 +316,10 @@ func TestHydratedHistoryRestoresAttachedTrailers(t *testing.T) {
 	}
 	latest := m.turnTrailers[m.turnTrailerSeq]
 	plain := plainStyledText(m.transcript[latest.transcriptIndex].text)
-	for _, want := range []string{"thought"} {
+	for _, want := range []string{"thought", "✓", "1.8k in / 350 out"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("latest hydrated dock %q missing %q", plain, want)
 		}
-	}
-	if !strings.Contains(transcript, "second answer  ✓ · 1.8k ↑  350 ↓") {
-		t.Fatalf("hydrated stats did not follow the answer: %q", transcript)
 	}
 	if strings.Contains(plain, "0.0s") {
 		t.Fatalf("hydrated dock invented an unavailable duration: %q", plain)

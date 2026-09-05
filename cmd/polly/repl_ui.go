@@ -50,11 +50,8 @@ const (
 // local image references it carries (nil when none), kept in one value so the
 // two cannot drift apart.
 type transcriptEntry struct {
-	assistant bool
-	turnStart bool
-	turnStats string // display-only suffix, outside assistant Markdown
-	text      string
-	images    []transcriptImage
+	text   string
+	images []transcriptImage
 	// Completed assistant Markdown is materialized on the next visible paint.
 	markdown  string
 	codeCache *markdownCodeCache

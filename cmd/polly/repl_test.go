@@ -1636,7 +1636,7 @@ func TestCompletedTurnMetricsMoveFromStatusToDock(t *testing.T) {
 	}
 	dock, _ := m.turnDockRow(200)
 	plain := plainStyledText(dock)
-	for _, want := range []string{"✓", "15.5s", "1.2k ↑  567 ↓"} {
+	for _, want := range []string{"✓", "15.5s", "1.2k in / 567 out"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("completed dock %q missing %q", plain, want)
 		}
@@ -1656,7 +1656,7 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	first.RecordTurnTokens(1200, 300)
 	r.endTurn(nil)
 	firstTrailer := m.turnTrailers[m.turnTrailerSeq]
-	if got := plainStyledText(m.transcript[firstTrailer.transcriptIndex].text); !strings.Contains(got, "1.2k ↑  300 ↓") {
+	if got := plainStyledText(m.transcript[firstTrailer.transcriptIndex].text); !strings.Contains(got, "1.2k in / 300 out") {
 		t.Fatalf("first completed trailer = %q", got)
 	}
 
@@ -1666,11 +1666,11 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	r.endTurn(nil)
 
 	secondTrailer := m.turnTrailers[m.turnTrailerSeq]
-	if got := plainStyledText(m.transcript[secondTrailer.transcriptIndex].text); !strings.Contains(got, "800 ↑  200 ↓") || strings.Contains(got, "2.0k") {
+	if got := plainStyledText(m.transcript[secondTrailer.transcriptIndex].text); !strings.Contains(got, "800 in / 200 out") || strings.Contains(got, "2.0k") {
 		t.Fatalf("second completed trailer should show only this turn, got %q", got)
 	}
 	history := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(history, "1.2k ↑  300 ↓") {
+	if !strings.Contains(history, "1.2k in / 300 out") {
 		t.Fatalf("first attached trailer missing from transcript history: %q", history)
 	}
 	if m.lastIn != 800 || m.lastOut != 200 {

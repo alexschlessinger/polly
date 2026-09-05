@@ -76,7 +76,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 		t.Fatalf("settlement did not collapse Images into a trailer: record=%#v trailer=%#v", record, trailer)
 	}
 	trailerHeader := plainStyledText(strings.SplitN(m.transcript[trailer.transcriptIndex].text, "\n", 2)[0])
-	if !strings.Contains(trailerHeader, "2 tools  ▸ 2 images viewed") {
+	if !strings.Contains(trailerHeader, "2 tools · ▸ 2 images viewed") {
 		t.Fatalf("settled three-part trailer = %q", trailerHeader)
 	}
 }
@@ -102,7 +102,7 @@ func TestInlineActivityHeadersUseTrailerControls(t *testing.T) {
 // Windows' coarse monotonic clock can bank an exactly-zero thinking elapsed,
 // which drops the duration from the label — assert the accent span, not the
 // timing.
-var accentThought = regexp.MustCompile(`\[(?:[▸▾] )?thought[^\]]*\]\(fg:accent`)
+var accentThought = regexp.MustCompile(`\[thought[^\]]*\]\(fg:accent`)
 
 // Smoke: full turn lifecycle with inline activity — live rows visible during
 // the turn, trailer appended after, blocks stay inline after settle.
@@ -139,7 +139,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	for _, block := range m.transcriptDisplayEntries(100) {
 		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
-			if strings.Contains(header, "mod:bold") || !accentThought.MatchString(header) ||
+			if !accentThought.MatchString(header) ||
 				!strings.Contains(header, "1 tool](fg:accent") {
 				t.Fatalf("one active control should keep the whole activity row blue: %q", header)
 			}
@@ -158,7 +158,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	for _, block := range m.transcriptDisplayEntries(100) {
 		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
-			if strings.Contains(header, "mod:bold") || !accentThought.MatchString(header) ||
+			if !accentThought.MatchString(header) ||
 				!strings.Contains(header, "1 tool](fg:accent") {
 				t.Fatalf("activity row greyed between phases before moving on: %q", header)
 			}
@@ -171,7 +171,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	// Settled: reasoning says "thought", tool block collapsed, trailer present.
 	m.renderPendingMarkdown()
 	final := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
-	for _, want := range []string{"thought", "1 tool", "All done.", "✓", "100 ↑  20 ↓"} {
+	for _, want := range []string{"thought", "1 tool", "All done.", "✓", "100 in / 20 out"} {
 		if !strings.Contains(final, want) {
 			t.Fatalf("settled transcript missing %q: %q", want, final)
 		}

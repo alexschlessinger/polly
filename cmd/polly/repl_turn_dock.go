@@ -21,7 +21,6 @@ const (
 const turnDockToolOverlayRows = 6
 
 type turnDockState struct {
-	inlineStats  bool
 	visible      bool
 	settled      bool
 	outcome      turnOutcome
@@ -62,7 +61,7 @@ type turnDockField struct {
 // turnActivityControl is the shared visual language for clickable reasoning
 // and tool controls, whether they appear inline or in a settled trailer.
 func turnActivityControl(glyph, label string) string {
-	return styled(glyph+" "+label, "accent", "")
+	return styled(glyph, "accent", "bold") + " " + styled(label, "accent", "bold")
 }
 
 func inlineActivityControl(glyph, label string, settled bool) string {
@@ -166,7 +165,14 @@ func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 		return m.turnDockStatusFields(dock)
 	}
 	if records := m.turnDockThoughtRecords(dock); len(records) > 0 {
-		label := "thought"
+		var elapsed time.Duration
+		for _, record := range records {
+			elapsed += record.elapsed
+			if record.active && !m.thinkingSegmentStart.IsZero() && record.id == m.turnReasoningID {
+				elapsed += time.Since(m.thinkingSegmentStart)
+			}
+		}
+		label := reasoningDisclosureLabel(false, false, elapsed)
 		glyph := "▸"
 		if dock.overlay == turnDockOverlayThought {
 			glyph = "▾"
@@ -199,9 +205,6 @@ func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 		fields = append(fields, turnDockField{raw: raw, rendered: rendered, overlay: turnDockOverlayImages})
 	}
 
-	if dock.inlineStats {
-		return fields
-	}
 	return append(fields, m.turnDockStatusFields(dock)...)
 }
 
@@ -212,20 +215,19 @@ func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 // outcome glyph) because the status row has moved on by then.
 func (m *replModel) turnDockStatusFields(dock turnDockState) []turnDockField {
 	var fields []turnDockField
-	const color = "muted"
 	if dock.settled && dock.elapsedKnown {
 		elapsed := formatElapsed(m.turnDockElapsedFor(dock))
-		raw, rendered := elapsed, styled(elapsed, color, "")
+		raw, rendered := elapsed, styled(elapsed, "muted", "")
 		switch dock.outcome {
 		case turnOutcomeDone:
 			raw = "✓ " + elapsed
-			rendered = styled("✓", "ok", "bold") + " " + styled(elapsed, color, "")
+			rendered = styled("✓", "ok", "bold") + " " + styled(elapsed, "muted", "")
 		case turnOutcomeFailed:
-			raw = "✗ " + elapsed
-			rendered = styled("✗", "err", "") + styled(" "+elapsed, color, "")
+			raw = "✗ failed · " + elapsed
+			rendered = styled("✗ failed", "err", "bold") + styled(" · "+elapsed, "muted", "")
 		case turnOutcomeCanceled:
 			raw = "canceled · " + elapsed
-			rendered = styled("canceled", "muted", "bold") + styled(" · "+elapsed, color, "")
+			rendered = styled("canceled", "muted", "bold") + styled(" · "+elapsed, "muted", "")
 		}
 		fields = append(fields, turnDockField{raw: raw, rendered: rendered})
 	} else if dock.settled && dock.outcome == turnOutcomeDone {
@@ -238,11 +240,8 @@ func (m *replModel) turnDockStatusFields(dock turnDockState) []turnDockField {
 	}
 	if in > 0 || out > 0 {
 		tokenRaw := fmt.Sprintf("%s in / %s out", humanizeTokens(in), humanizeTokens(out))
-		if dock.settled {
-			tokenRaw = fmt.Sprintf("%s ↑  %s ↓", humanizeTokens(in), humanizeTokens(out))
-		}
 		fields = append(fields, turnDockField{
-			raw: tokenRaw, rendered: styled(tokenRaw, color, ""), optional: true,
+			raw: tokenRaw, rendered: styled(tokenRaw, "muted", ""), optional: true,
 		})
 	}
 	return fields
@@ -275,51 +274,24 @@ func (m *replModel) turnDockRowFor(dock turnDockState, width int) (string, []tur
 	if width <= 0 {
 		return "", nil
 	}
-	fields := m.turnDockFieldsFor(dock)
-	if len(fields) == 0 {
-		return "", nil
-	}
-	if !dock.settled {
-		return renderTurnActivityRow(fields, width)
-	}
-	// Group completion, activity controls, and usage in that order. Fields
-	// retain their identities so click targets follow the new positions.
-	var outcome, activity, usage []turnDockField
-	for _, field := range fields {
-		switch {
-		case field.overlay != turnDockOverlayNone:
-			activity = append(activity, field)
-		case field.optional:
-			usage = append(usage, field)
-		default:
-			outcome = append(outcome, field)
-		}
-	}
-	ordered := append(append(outcome, activity...), usage...)
-	return renderTurnFields(ordered, width, func(_, _ turnDockField) string { return "  " }, nil)
+	return renderTurnActivityRow(m.turnDockFieldsFor(dock), width)
 }
 
 // renderTurnActivityRow is the one-line renderer shared by inline activity
 // and the settled trailer. Fields that do not fit are truncated as one row;
 // clickable placements are returned only for controls wholly on that row.
 func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDockPlacement) {
-	return renderTurnFields(fields, width, func(_, _ turnDockField) string { return " · " }, nil)
-}
-
-func renderTurnFields(fields []turnDockField, width int, separator func(turnDockField, turnDockField) string, palette func(string) string) (string, []turnDockPlacement) {
 	if width <= 0 {
 		return "", nil
 	}
 	const indent = "  "
+	const separator = " · "
 	measure := func(fields []turnDockField) int {
-		n := rw.StringWidth(indent)
-		for i, field := range fields {
-			if i > 0 {
-				n += rw.StringWidth(separator(fields[i-1], field))
-			}
-			n += rw.StringWidth(field.raw)
+		parts := make([]string, len(fields))
+		for i := range fields {
+			parts[i] = fields[i].raw
 		}
-		return n
+		return rw.StringWidth(indent) + rw.StringWidth(strings.Join(parts, separator))
 	}
 	for measure(fields) > width {
 		removed := false
@@ -342,9 +314,8 @@ func renderTurnFields(fields []turnDockField, width int, separator func(turnDock
 	var placements []turnDockPlacement
 	for i, field := range fields {
 		if i > 0 {
-			sep := separator(fields[i-1], field)
-			raw.WriteString(sep)
-			rendered.WriteString(styled(sep, "muted", ""))
+			raw.WriteString(separator)
+			rendered.WriteString(styled(separator, "muted", ""))
 		}
 		start := rw.StringWidth(raw.String())
 		raw.WriteString(field.raw)
@@ -369,14 +340,7 @@ func renderTurnFields(fields []turnDockField, width int, separator func(turnDock
 				visiblePlacements = append(visiblePlacements, placement)
 			}
 		}
-		clipped := rw.Truncate(raw.String(), width, "…")
-		if palette != nil {
-			return palette(clipped), visiblePlacements
-		}
-		return styled(clipped, "muted", ""), visiblePlacements
-	}
-	if palette != nil {
-		return palette(raw.String()), placements
+		return styled(rw.Truncate(raw.String(), width, "…"), "muted", ""), visiblePlacements
 	}
 	return rendered.String(), placements
 }
@@ -388,20 +352,6 @@ func (m *replModel) attachTurnDockTrailer() {
 	}
 	dock := m.turnDock
 	dock.overlay = turnDockOverlayNone
-	// Find only this turn's last assistant message. The suffix survives lazy
-	// Markdown rendering without becoming part of the assistant's content.
-	for i := len(m.transcript) - 1; i >= 0; i-- {
-		entry := &m.transcript[i]
-		if entry.turnStart {
-			break
-		}
-		if entry.assistant {
-			entry.turnStats = m.completedTurnStats(dock)
-			dock.inlineStats = true
-			m.visual.invalidate()
-			break
-		}
-	}
 	text, fields := m.turnDockRowFor(dock, m.disclosureLayoutWidth(0))
 	if text == "" {
 		m.clearTurnDock()
@@ -409,7 +359,6 @@ func (m *replModel) attachTurnDockTrailer() {
 	}
 	m.turnTrailerSeq++
 	record := &turnTrailerRecord{id: m.turnTrailerSeq, dock: dock, fields: fields}
-	m.appendTurnSeparator()
 	m.appendLine(text)
 	record.transcriptIndex = len(m.transcript) - 1
 	m.turnTrailers[record.id] = record
@@ -591,13 +540,4 @@ func (m *replModel) toggleTurnTrailerOverlay(record *turnTrailerRecord, overlay 
 	}
 	m.refreshTurnTrailer(record)
 	return true
-}
-
-// completedTurnStats is appended after the final rendered assistant line.
-func (m *replModel) completedTurnStats(dock turnDockState) string {
-	var parts []string
-	for _, field := range m.turnDockStatusFields(dock) {
-		parts = append(parts, field.rendered)
-	}
-	return strings.Join(parts, styled(" · ", "muted", ""))
 }

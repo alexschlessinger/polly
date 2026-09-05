@@ -191,9 +191,6 @@ gets every result. Durable history keeps the full exchange.
 `Ctrl-O`, for a live tail.
 
 Both collapse when the turn ends. Both reopen later, even after a reload.
-Completion stats follow the last assistant line: `✓ 2.7s · 4.2k ↑  214 ↓`.
-The arrows mean input and output tokens. Activity controls remain below the
-answer; failed turns use a red `✗`.
 
 ### Interrupted turns
 
