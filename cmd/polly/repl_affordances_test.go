@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"reflect"
 	"strings"
@@ -222,6 +223,59 @@ func TestQueueFadePreservesHeldViewport(t *testing.T) {
 	if m.scrollAnchor != 6 {
 		t.Fatalf("removing a queue marker above the viewport shifted the viewed text: anchor=%d", m.scrollAnchor)
 	}
+}
+
+// Queue cues are keyed by transcript index. An empty assistant block above a
+// queued entry is deleted on settle, so the cue must move with its entry or
+// the "(queued)" highlight lands on whatever occupies the old index.
+func TestQueuedCueFollowsEntryAcrossEmptyAssistantDelete(t *testing.T) {
+	m := newReplModel()
+	m.affordances.enabled = true
+	m.beginTurn("ask")
+	m.appendAssistant("\n")
+	item := queuedREPLInput{text: "next"}
+	m.appendQueuedInput(&item)
+	m.queue = append(m.queue, item)
+	want := item.transcriptIndex - 1
+	m.finishAssistantBlock("")
+	if got := m.queue[0].transcriptIndex; got != want {
+		t.Fatalf("queued entry index = %d, want %d", got, want)
+	}
+	q, ok := m.affordances.queued[want]
+	if !ok || len(m.affordances.queued) != 1 || q.started.IsZero() {
+		t.Fatalf("queued cue did not follow its entry to %d: %#v", want, m.affordances.queued)
+	}
+	rows := m.transcriptRows(80)
+	l := frameLayout{width: 80, height: 40, transcriptHeight: 38, inputRows: 1, statusRows: 1}
+	v := l.transcriptViewport(len(rows), 0, false, 0)
+	count := 0
+	for _, span := range m.affordanceSpans(q.started.Add(300*time.Millisecond), l, v, "", image.Point{}, false) {
+		if span.duration == 1500*time.Millisecond {
+			count++
+		}
+	}
+	if count != len("(queued)") {
+		t.Fatalf("queued cue highlighted %d cells; want %d", count, len("(queued)"))
+	}
+
+	// A cue below a later delete keeps its index, so the fading label still
+	// overlays its own entry.
+	m.activateQueuedInput(m.queue[0])
+	m.queue = m.queue[1:]
+	m.appendAssistant("\n")
+	m.finishAssistantBlock("")
+	if q, ok := m.affordances.queued[want]; !ok || q.fading.IsZero() {
+		t.Fatalf("fading cue did not stay on entry %d: %#v", want, m.affordances.queued)
+	}
+	for _, block := range m.transcriptDisplayEntries(80) {
+		if block.key == fmt.Sprintf("transcript:%d", want) {
+			if !strings.Contains(block.text, "(queued)") {
+				t.Fatalf("fading entry lost its label: %q", block.text)
+			}
+			return
+		}
+	}
+	t.Fatalf("entry %d was not projected", want)
 }
 
 func TestDeliveredChildArmsCallerCueAndOnlyCurrentAgentControl(t *testing.T) {
