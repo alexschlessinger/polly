@@ -481,7 +481,11 @@ through the `tools.UntimedTool` interface. The polly CLI's runner opens a
 child session on the same store, linked to the parent with
 `AcquireOptions.Parent`, and in the TUI runs it on a tab of its own; a
 background child's reply travels as a `sessions.Report` (see
-[Sessions](#sessions)).
+[Sessions](#sessions)). CLI children share the parent's workspace; separate
+conversations do not isolate file edits. Assign non-overlapping files to
+editing children and inspect their changes before relying on their reports.
+The library's `AgentRunner` uses the base messages you supply; CLI coding
+defaults and automatic `AGENTS.md` loading are not injected by the library.
 
 ## Sessions
 

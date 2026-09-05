@@ -284,6 +284,9 @@ func TestExactInlineRetryDoesNotChangeRepresentationWhenStoreRecovers(t *testing
 }
 
 func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) {
+	// Keep the deliberately small budget independent of this checkout's
+	// AGENTS.md. The default coding policy still participates in projection.
+	t.Chdir(t.TempDir())
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "omission-notice")
 	if err := session.AddMessages(context.Background(), []messages.ChatMessage{
@@ -303,8 +306,8 @@ func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) 
 		toolRegistry:  registry,
 		artifactStore: artifactStore,
 	}
-	// The budget must cover the agent's registered tool schemas while still
-	// forcing the fat old exchange out of the projection.
+	// The budget must cover the runtime guidance and registered tool schemas
+	// while still forcing the fat old exchange out of the projection.
 	state.settings = Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 2_000}
 	config := &Config{}
 	var stdout, stderr bytes.Buffer
@@ -459,10 +462,12 @@ func TestResetPreservesAttachmentTokenMonotonicity(t *testing.T) {
 	}
 }
 
-func TestTurnComposesContextMechanicsContractExceptForSchemas(t *testing.T) {
-	newState := func(t *testing.T, name string) (*conversationState, *captureCompletionLLM) {
+func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
+	t.Chdir(t.TempDir())
+	writeRepositoryTestFile(t, "AGENTS.md", "first-repository-guidance")
+	newState := func(t *testing.T, name, persona string) (*conversationState, *captureCompletionLLM) {
 		t.Helper()
-		store := testOpenMemoryStore(t, nil)
+		store := testOpenMemoryStore(t, &sessions.Metadata{SystemPrompt: persona})
 		session := testAcquireSession(t, store, name)
 		registry := tools.NewToolRegistry(nil)
 		artifactStore := session.ArtifactStore()
@@ -473,7 +478,7 @@ func TestTurnComposesContextMechanicsContractExceptForSchemas(t *testing.T) {
 			session: session, artifactStore: artifactStore, toolRegistry: registry,
 			agent:           llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
 			displayContract: markdownDisplayContract,
-			settings:        Settings{Model: "test/model", MaxTokens: 128},
+			settings:        Settings{Model: "test/model", MaxTokens: 128, SystemPrompt: persona},
 		}, model
 	}
 	config := &Config{}
@@ -490,17 +495,55 @@ func TestTurnComposesContextMechanicsContractExceptForSchemas(t *testing.T) {
 		}
 	}
 
-	state, model := newState(t, "mechanics-plain")
+	state, model := newState(t, "mechanics-plain", "")
 	runTurn(t, state, nil)
 	request := projectedRequestText(model.request)
-	if !strings.Contains(request, contextMechanicsContract) || !strings.Contains(request, markdownDisplayContract) {
-		t.Fatalf("request lacks send-time contracts: %q", request)
+	for _, want := range []string{codingContract, contextMechanicsContract, markdownDisplayContract, "first-repository-guidance"} {
+		if !strings.Contains(request, want) {
+			t.Fatalf("request lacks %q: %q", want, request)
+		}
 	}
 
-	schemaState, schemaModel := newState(t, "mechanics-schema")
+	writeRepositoryTestFile(t, "AGENTS.md", "updated-repository-guidance")
+	runTurn(t, state, nil)
+	request = projectedRequestText(model.request)
+	if strings.Count(request, codingContract) != 1 || !strings.Contains(request, "updated-repository-guidance") || strings.Contains(request, "first-repository-guidance") {
+		t.Fatalf("runtime guidance was duplicated or not refreshed: %q", request)
+	}
+	history, err := state.session.GetHistory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range history {
+		if msg.Role == messages.MessageRoleSystem || strings.Contains(msg.Content, "repository-guidance") {
+			t.Fatalf("runtime guidance reached durable history: %+v", history)
+		}
+	}
+
+	// These paths must bypass instruction discovery entirely, even if the
+	// repository file would make a default coding turn fail.
+	writeRepositoryTestFile(t, "AGENTS.md", "\x00")
+	schemaState, schemaModel := newState(t, "mechanics-schema", "")
 	runTurn(t, schemaState, llm.SchemaFromJSON(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`))
 	request = projectedRequestText(schemaModel.request)
-	if strings.Contains(request, contextMechanicsContract) || strings.Contains(request, markdownDisplayContract) {
+	if strings.Contains(request, contextMechanicsContract) || strings.Contains(request, markdownDisplayContract) || strings.Contains(request, codingContract) {
 		t.Fatalf("structured-output request carries send-time contracts: %q", request)
+	}
+	personaState, personaModel := newState(t, "mechanics-persona", "Translate the user's text into French.")
+	runTurn(t, personaState, nil)
+	request = projectedRequestText(personaModel.request)
+	if !strings.Contains(request, personaState.settings.SystemPrompt) || !strings.Contains(request, contextMechanicsContract) || strings.Contains(request, codingContract) {
+		t.Fatalf("custom persona did not replace coding defaults: %q", request)
+	}
+	blockedState, blockedModel := newState(t, "mechanics-blocked", "")
+	code, err := executeTurnWithUserMessage(context.Background(), config, blockedState, messages.ChatMessage{
+		Role: messages.MessageRoleUser, Content: "edit the code",
+	}, nil, nil, &childTurnUI{}, false)
+	if err == nil || code != 1 || len(blockedModel.request) != 0 {
+		t.Fatalf("invalid instructions reached the model: code %d, err %v", code, err)
+	}
+	history, err = blockedState.session.GetHistory(context.Background())
+	if err != nil || len(history) != 0 {
+		t.Fatalf("invalid instructions left a persisted user message: %+v, %v", history, err)
 	}
 }

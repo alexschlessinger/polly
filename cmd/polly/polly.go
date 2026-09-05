@@ -861,7 +861,15 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	// structured output is prompt-based, and the context-mechanics guidance
 	// (put findings in replies) is moot when the reply is a schema payload.
 	if schema == nil {
-		requestMessages = applyDisplayContract(requestMessages, sendTimeContracts(state.displayContract))
+		contract := sendTimeContracts(state.displayContract)
+		if settings.SystemPrompt == "" {
+			instructions, err := loadRepositoryInstructions(state.toolRegistry)
+			if err != nil {
+				return 1, err
+			}
+			contract = codingContract + "\n\n" + contract + "\n\n" + instructions
+		}
+		requestMessages = applyDisplayContract(requestMessages, contract)
 	}
 
 	// Reject turns projection would deterministically fail before the user

@@ -87,6 +87,7 @@ The child:
 - runs in its own session on the same store, with a fresh context window
 - inherits the parent's settings (the brief may set a model or iteration cap), active skills, and tools minus `spawn_agent`
 - shares the parent's MCP servers instead of starting them again
+- shares the working directory and files; give editing agents non-overlapping files and inspect their changes
 - returns only its final reply, followed by its session name. `polly -c <name>` or `/resume` opens the full transcript
 - asks for tool approval like the parent does, under `--confirm`
 - counts its own tokens, reported with its reply, not added to the parent's turn
@@ -234,8 +235,28 @@ polly --purge                                    # delete all (asks first)
 Settings used with a context (model, temperature, system prompt, tools)
 are saved to it and restored next run. Flags win over stored settings,
 and the change sticks. A new system prompt on a context with history
-resets the conversation. The system prompt holds only your persona.
-Rendering guidance is added per request, never stored.
+resets the conversation. The stored system prompt holds only your custom
+persona. With no custom persona, Polly adds a coding policy: respect the
+requested scope, inspect before editing, preserve unrelated work, sequence
+dependent changes, and verify the result. Display and conversation-recall
+guidance is added per request as well. These defaults are never stored in
+the transcript. The Go library does not add the CLI's coding policy.
+
+Default coding turns also load `AGENTS.md` from the nearest Git root through
+the working directory, in that order. A `.git` directory or worktree file
+marks the root; outside a Git repository, only the working directory's file
+is loaded. Instructions apply to their directory and descendants, with
+more specific instructions taking precedence. The agent is told to check
+for additional instructions before working in deeper directories. Files
+are read again each turn under the sandbox read policy; unreadable,
+non-text, or oversized instructions stop the turn before sending it to
+the model. Limits are 32 KiB per file and 64 KiB combined.
+
+A non-empty `--system` / `POLLYTOOL_SYSTEM` replaces the coding policy and
+automatic `AGENTS.md` loading. Display and recall guidance still applies.
+`--schema` runs omit all of these CLI additions so the schema controls the
+response. Explicit user requests take precedence over the coding defaults
+and repository guidance.
 
 Storage: one SQLite file, `~/.pollytool/polly.db`. Old JSON under
 `~/.pollytool/contexts` is ignored. Backup: quit and copy the file, or use
@@ -471,7 +492,7 @@ GLOBAL OPTIONS:
    --tool string, -t string [ --tool string, -t string ]    Tool provider: shell script (provides 1 tool) or MCP server (can provide multiple tools). Can be specified multiple times
    --tooltimeout duration                                   Timeout for tool execution (default: 5m0s) [$POLLYTOOL_TOOLTIMEOUT]
    --prompt string, -p string                               Initial prompt (reads from stdin if not provided; starts REPL when neither is provided)
-   --system string, -s string                               System prompt (persona; a per-frontend display contract is added automatically) [$POLLYTOOL_SYSTEM]
+   --system string, -s string                               Custom persona (replaces coding defaults and AGENTS.md loading; display and recall guidance is added automatically) [$POLLYTOOL_SYSTEM]
    --file string, -f string [ --file string, -f string ]    File, image, or URL to include (can be specified multiple times)
    --schema string                                          Path to JSON schema file for structured output
    --context string, -c string                              Context name for conversation continuity [$POLLYTOOL_CONTEXT]
