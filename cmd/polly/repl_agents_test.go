@@ -149,7 +149,7 @@ func TestAgentOnlyContinuationInvalidatesRenderedCount(t *testing.T) {
 		t.Fatalf("first count = %q", got)
 	}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{agentCall("second", `{"label":"second"}`)})
-	if got := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n"); !strings.Contains(got, "2 agents") {
+	if got := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n"); !strings.Contains(got, "1 agent running, 1 completed") {
 		t.Fatalf("stale rendered count during launch = %q", got)
 	}
 }
