@@ -138,7 +138,14 @@ func EstimateTokens(msg messages.ChatMessage) int {
 			case artifacts.KindImage:
 				count += imageTokenEstimate
 			case artifacts.KindText:
-				count += int(part.Artifact.Bytes / 4)
+				// A text artifact replaces a tool result's externalized
+				// content. On any other role it only references stored
+				// content that is counted where it lives (the projection
+				// records the artifacts it mints for older inline results on
+				// the assistant reply), so it adds nothing here.
+				if msg.Role == messages.MessageRoleTool {
+					count += int(part.Artifact.Bytes / 4)
+				}
 			}
 		}
 	}

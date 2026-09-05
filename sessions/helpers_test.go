@@ -1,6 +1,8 @@
 package sessions
 
 import (
+	"github.com/alexschlessinger/pollytool/artifacts"
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -475,5 +477,24 @@ func TestValidateContextName(t *testing.T) {
 				t.Errorf("validateContextName(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestEstimateTokensCountsTextArtifactsWhereTheyReplaceContent pins the
+// durable estimate against double counting: a text artifact on a tool result
+// stands in for content the receipt no longer carries, while the reference a
+// projection records on an assistant reply for an older result that is still
+// inline points at content already counted on that result.
+func TestEstimateTokensCountsTextArtifactsWhereTheyReplaceContent(t *testing.T) {
+	ref := artifacts.Ref{ID: "sha256:" + strings.Repeat("a", 64), Kind: artifacts.KindText, Bytes: 8_000, Lines: 1}
+	part := messages.ContentPart{Type: "artifact", Artifact: &ref}
+	receipt := messages.ChatMessage{Role: messages.MessageRoleTool, ToolName: "lookup", ToolCallID: "old", Content: "[tool output stored as artifact]", Parts: []messages.ContentPart{part}}
+	if got := EstimateTokens(receipt); got < 2_000 {
+		t.Fatalf("EstimateTokens(receipt) = %d, want the externalized content counted", got)
+	}
+	reply := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", Parts: []messages.ContentPart{part}}
+	plain := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done"}
+	if got, want := EstimateTokens(reply), EstimateTokens(plain); got != want {
+		t.Fatalf("EstimateTokens(reply with reference) = %d, want %d: the referenced content is counted on the inline result", got, want)
 	}
 }
