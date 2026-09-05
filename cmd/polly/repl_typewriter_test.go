@@ -90,9 +90,12 @@ func TestTypewriterPreservesMarkdownAndFlushesAtBoundaries(t *testing.T) {
 			if m.streamRaw.String() != raw || m.streamTypewriter.prefix() == nil {
 				t.Fatal("reveal changed incoming content or showed the whole burst at once")
 			}
+			// The revealed prefix, not the settled entry, is what the viewer
+			// sees mid-reveal: it must already be formatted output.
 			m.renderPendingMarkdownAt(at.Add(40 * time.Millisecond))
-			if text := plainStyledText(m.transcript[index].text); strings.Contains(text, "**") {
-				t.Fatalf("typewriter exposed incomplete emphasis markup: %q", text)
+			shown := ui.CellsToString(m.streamTypewriter.prefix())
+			if full := plainStyledText(m.transcript[index].text); !strings.Contains(shown, "bold") || !strings.HasPrefix(full, shown) {
+				t.Fatalf("typewriter did not reveal formatted text past the emphasis: %q", shown)
 			}
 			switch boundary {
 			case "finished":
