@@ -158,11 +158,14 @@ Roles are the constants `messages.MessageRoleSystem`, `MessageRoleUser`,
 state; filter it before sending upstream). `messages.User("hello")` builds a
 one-message user history.
 
-`agent.ValidateRequest(ctx, req)` checks the initial context projection before
-you persist a new user message. It includes the skill prompt, tool schemas,
-selected images, and deterministic context reductions, without calling the
-provider or writing artifacts. Set `MaxContextTokens` to the effective input
-budget before validating; `Run` uses the same projection and budget checks.
+`AgentCallbacks.BeforeFirstRequest` runs once per `Run`, after the initial
+projection succeeds and before the first provider call, with that projection's
+statistics. Persist a new user message there: a request that cannot be sent (a
+prompt that does not fit after clamping and deterministic reductions, a
+selected image that cannot be read) returns from `Run` before that point with
+nothing generated, and an error returned from the callback aborts the run
+before any provider call. Set `MaxContextTokens` to the effective input budget
+before running.
 
 Persist `AgentResponse.AllMessages` with their content parts intact, including
 on partial runs. Generated assistant messages may carry artifact references

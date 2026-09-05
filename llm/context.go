@@ -91,18 +91,6 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 	return projected, stats, err
 }
 
-// validationArtifactStore prices newly externalized text using its real
-// content-addressed reference without writing it. Image reads still use the
-// configured store, so validation checks the exact images Run would send.
-type validationArtifactStore struct{ artifacts.Store }
-
-func (s validationArtifactStore) Put(ctx context.Context, blob artifacts.Blob) (artifacts.Ref, error) {
-	if err := ctx.Err(); err != nil {
-		return artifacts.Ref{}, err
-	}
-	return artifacts.RefForBlob(blob), nil
-}
-
 func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, transcriptReadable bool) ([]messages.ChatMessage, ProjectionStats, error) {
 	projected := cloneMessages(history)
 	projected = filterInternalMessages(projected)
