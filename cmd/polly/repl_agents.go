@@ -18,6 +18,7 @@ import (
 // agentActivity belongs to the spawn request's disclosure, not its tool
 // execution. A background tool result can settle long before this run does.
 type agentActivity struct {
+	viewID     string
 	label      string
 	status     string
 	session    string
@@ -313,11 +314,11 @@ func spawnOutcomeStatus(outcome sessions.ReportStatus) string {
 // Saved metadata supplies identity and first-run outcomes without parsing
 // model-visible result prose or treating a live lease as proof of activity.
 func (m *replModel) hydrateAgentSessions(parent string, summaries []sessions.SessionSummary) {
-	byCall := make(map[string][]*sessions.Metadata)
+	byCall := make(map[string][]sessions.SessionSummary)
 	for _, summary := range summaries {
 		md := summary.Metadata
 		if md != nil && md.Parent == parent && md.SpawnCallID != "" {
-			byCall[md.SpawnCallID] = append(byCall[md.SpawnCallID], md)
+			byCall[md.SpawnCallID] = append(byCall[md.SpawnCallID], summary)
 		}
 	}
 	counts := make(map[string]int)
@@ -335,7 +336,8 @@ func (m *replModel) hydrateAgentSessions(parent string, summaries []sessions.Ses
 			if row.agent == nil || counts[row.callID] != 1 || len(matches) != 1 {
 				continue
 			}
-			md := matches[0]
+			md := matches[0].Metadata
+			row.agent.viewID = matches[0].ID
 			row.agent.session, row.agent.attached = md.Name, true
 			row.agent.status, row.agent.active = spawnOutcomeStatus(md.SpawnOutcome), false
 		}
@@ -468,10 +470,13 @@ func (r *managedREPL) openAgentAt(x, y int) bool {
 			return false
 		}
 		for i, tab := range r.tabs {
-			if tab.agentActivity == row.agent {
+			if tab.agentActivity == row.agent || tab.agentActivity != nil && tab.agentActivity == row.agent.origin {
 				r.requestShowTabLocked(i)
 				return true
 			}
+		}
+		if r.requestChildViewLocked(row.agent, row.callID) {
+			return true
 		}
 		parent, store := r.visibleTab(), r.state.sessionStore
 		if store == nil {

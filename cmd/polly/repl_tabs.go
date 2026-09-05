@@ -29,6 +29,12 @@ type replTab struct {
 	name  string
 	state *conversationState
 	model *replModel
+	// A child view has display state but no session lease or execution runtime.
+	childView                *sessions.SessionView
+	viewLoading, viewOpening bool
+	viewSubmit               *string
+	viewUsed                 uint64
+	viewTarget               sessions.ViewTarget
 
 	// The tab's turn, owned by the event loop. turnDone carries the running
 	// turn goroutine's result and is nil while none runs; turnCancel cancels
@@ -170,6 +176,7 @@ func (r *managedREPL) tabIndexOfModel(m *replModel) int {
 // now that it is seen. Runs on the event loop with no model lock held.
 func (r *managedREPL) showTab(i int) {
 	tab := r.tabs[i]
+	tab.viewUsed = r.childViews.visit()
 	previous := r.model
 	if old := r.model; old != nil && old != tab.model {
 		old.mu.Lock()
@@ -258,6 +265,10 @@ func (r *managedREPL) runningChildren(parent *replTab) int {
 // applyTabRequests performs the tab changes handlers recorded. Runs on the
 // event loop with no model lock held.
 func (r *managedREPL) applyTabRequests() {
+	if req := r.childViewRequest; req != nil {
+		r.childViewRequest = nil
+		r.showChildView(req)
+	}
 	r.applySpawnRequests()
 	if r.closeTabRequest {
 		r.closeTabRequest = false
@@ -414,14 +425,10 @@ func (r *managedREPL) requestOpenLocked(name string) {
 	r.beginOpenLocked(name, false)
 }
 
-// canOpenLocked reports whether a tab may open now, explaining a refusal in
-// the transcript: only one open runs at a time. Caller must hold r.model.mu.
+// canOpenLocked reports whether a tab may open now: only one open runs at a
+// time. Caller must hold r.model.mu.
 func (r *managedREPL) canOpenLocked() bool {
-	if r.opening != "" {
-		r.model.appendNoticeLine("already opening " + r.opening)
-		return false
-	}
-	return true
+	return r.opening == ""
 }
 
 // beginOpenLocked resolves the session's settings on the UI goroutine, then
@@ -439,7 +446,6 @@ func (r *managedREPL) beginOpenContextLocked(openCtx context.Context, name strin
 		return
 	}
 	r.opening = resolved
-	m.appendNoticeLine("opening " + resolved + "…")
 	ctx, cancel := context.WithCancel(openCtx)
 	r.openCancel = cancel
 	open := r.opener.open

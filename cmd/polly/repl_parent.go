@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
-	rw "github.com/mattn/go-runewidth"
 	"image"
 	"strings"
+
+	"github.com/alexschlessinger/pollytool/sessions"
+	rw "github.com/mattn/go-runewidth"
 )
 
 // Parent navigation reuses the session opener, but must never create a new
@@ -17,6 +19,42 @@ func (r *managedREPL) requestParentLocked() {
 	child := r.visibleTab()
 	if parent := r.liveParent(child); parent != nil {
 		r.requestShowTabLocked(r.tabIndexOfModel(parent.model))
+		return
+	}
+	if child.childView != nil && child.parentName != "" {
+		if r.opener == nil || !r.canOpenLocked() {
+			return
+		}
+		store := child.state.sessionStore.(sessions.ViewStore)
+		id, revision := child.childView.ID, child.childView.Revision
+		r.background(func() {
+			view, err := store.ReadView(r.work.ctx, sessions.ViewTarget{ID: id}, revision)
+			r.postUI(r.work.ctx, func() {
+				if r.model != child.model || r.quitting {
+					return
+				}
+				child.model.mu.Lock()
+				defer child.model.mu.Unlock()
+				if err != nil {
+					child.model.appendErrorLine("could not find parent: " + err.Error())
+					return
+				}
+				name := view.Metadata.Parent
+				if name == "" {
+					child.model.appendNoticeLine("this session has no parent")
+					return
+				}
+				child.parentName, child.model.status.parentName = name, name
+				if i := r.tabIndexOf(name); i >= 0 {
+					r.requestShowTabLocked(i)
+					return
+				}
+				if r.canOpenLocked() {
+					ctx := context.WithValue(r.runCtx, existingSessionTargetKey{}, true)
+					r.beginOpenContextLocked(ctx, name, false)
+				}
+			})
+		})
 		return
 	}
 	if child.parentName == "" || child.state == nil || child.state.session == nil {
