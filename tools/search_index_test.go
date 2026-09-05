@@ -138,7 +138,7 @@ func TestIndexedSearchRootSkipsRuntimeStateAndBroadAncestors(t *testing.T) {
 		}
 	}
 	notes := filepath.Join(base, "Documents", "notes")
-	if got := indexedSearchRoot(notes); got != notes {
+	if got := indexedSearchRoot(notes, nil); got != notes {
 		t.Fatalf("runtime state directory selected as workspace: %s", got)
 	}
 	calls := filepath.Join(t.TempDir(), "calls")
@@ -157,7 +157,7 @@ echo 'No matches.'
 	}
 
 	writeTestFile(t, filepath.Join(base, ".zvec-grep"), "manifest.json", `{}`)
-	if got := indexedSearchRoot(notes); got != base {
+	if got := indexedSearchRoot(notes, nil); got != base {
 		t.Fatalf("manifest-bearing ancestor not preferred: %s", got)
 	}
 
@@ -172,11 +172,47 @@ echo 'No matches.'
 			t.Fatal(err)
 		}
 	}
-	if got := indexedSearchRoot(filepath.Join(home, "notes")); got != filepath.Join(home, "notes") {
+	if got := indexedSearchRoot(filepath.Join(home, "notes"), nil); got != filepath.Join(home, "notes") {
 		t.Fatalf("versioned home directory selected as workspace: %s", got)
 	}
-	if got := indexedSearchRoot(home); got != home {
+	if got := indexedSearchRoot(home, nil); got != home {
 		t.Fatalf("explicit home search root = %s", got)
+	}
+}
+
+func TestIndexedSearchRootStaysInsideWritablePolicy(t *testing.T) {
+	root := t.TempDir()
+	root, _ = filepath.EvalSymlinks(root)
+	sub := filepath.Join(root, "cmd")
+	for _, dir := range []string{".git", "cmd"} {
+		if err := os.Mkdir(filepath.Join(root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := indexedSearchRoot(sub, func(dir string) bool { return dir == sub }); got != sub {
+		t.Fatalf("unwritable checkout selected as workspace: %s", got)
+	}
+	if got := indexedSearchRoot(sub, func(string) bool { return true }); got != root {
+		t.Fatalf("writable checkout not preferred: %s", got)
+	}
+	// The default CLI sandbox: polly launched in cmd/ may write only there.
+	// Temp directories are always writable, so the checkout's index is
+	// denied explicitly to model the cwd-only grant.
+	calls := filepath.Join(t.TempDir(), "calls")
+	policy := sandbox.Config{WritablePaths: []string{sub}, DenyWritePaths: []string{filepath.Join(root, ".zvec-grep")}}
+	tool := NewSearchFilesTool(stubSandboxRegistry(t, policy)).(*searchFilesTool)
+	tool.zvecPath = fakeSearchZG(t, `
+printf '%s\t%s\n' "$PWD" "$*" >> '`+calls+`'
+if [ "$1" = index ]; then exit 0; fi
+echo 'No matches.'
+`)
+	if _, err := tool.Execute(context.Background(), map[string]any{"query": "entry point", "path": sub}); err != nil {
+		t.Fatalf("query from a writable subdirectory: %v", err)
+	}
+	recorded, _ := os.ReadFile(calls)
+	first := strings.SplitN(string(recorded), "\n", 2)[0]
+	if !strings.HasPrefix(first, sub+"\tindex "+sub+" ") || !strings.Contains(first, "--model-cache "+filepath.Join(sub, ".zvec-grep", "polly", "models")) {
+		t.Fatalf("index must live in the writable search root, got: %s", first)
 	}
 }
 

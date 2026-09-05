@@ -60,6 +60,7 @@ Model fallback is the model's job: `bash` grep/`rg`, `read_file`, `list_dir`. To
 - `zg` runs through the process sandbox, `--mode direct`. No daemon delegation. No extra write or network grants. Automatic indexing is local-model only — never remote embeddings.
 - Cached hits are re-filtered through the current read policy, even if another app built the index.
 - Read-only policy: exact mode works; index creation/refresh does not.
+- Ancestor index or Git root whose `.zvec-grep` the write policy cannot reach → skipped; the index lives at the requested (writable) directory. The default CLI sandbox writes only under cwd, so a launch from a subdirectory indexes that subdirectory. `--writepath <repo-root>` shares one index across launches.
 - Another daemon owns the write lease → index untouched; you get a snapshot marked `possibly_stale`. Verify with `read_file`.
 
 ## Verification

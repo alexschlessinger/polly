@@ -70,7 +70,14 @@ func (t *searchFilesTool) searchIndexed(ctx context.Context, args Args, query st
 	if !info.IsDir() {
 		return "", fmt.Errorf("query path must be a directory; use pattern to search a single file")
 	}
-	root := indexedSearchRoot(abs)
+	// The default CLI sandbox grants writes under cwd only, so an enclosing
+	// checkout's .zvec-grep may be out of reach; index the writable search
+	// root instead of failing every query launched from a subdirectory.
+	var indexable func(string) bool
+	if active {
+		indexable = func(dir string) bool { return sandbox.WriteAllowed(cfg, filepath.Join(dir, ".zvec-grep")) == nil }
+	}
+	root := indexedSearchRoot(abs, indexable)
 	indexDir := filepath.Join(root, ".zvec-grep")
 	if active {
 		if err := sandbox.ReadAllowed(cfg, root); err != nil {
@@ -152,14 +159,15 @@ func (t *searchFilesTool) searchIndexed(ctx context.Context, args Args, query st
 	return filterIndexedSearch(out, root, abs, include, cfg, active, stale)
 }
 
-// Prefer the closest existing index or Git workspace. Unversioned directories
-// without an ancestor index get their own index at the requested search root.
+// Prefer the closest existing index or Git workspace that indexable accepts
+// (nil accepts any). Unversioned directories without an ancestor index get
+// their own index at the requested search root.
 // Only a manifest marks an index: zg's global runtime home is also named
 // .zvec-grep, and finding it must not make $HOME the workspace. Discovery
 // also stops short of the home directory and the filesystem root: the
 // sandbox rejects both as workspaces, and --nosandbox must not index them
 // wholesale (a dotfiles checkout puts .git at $HOME).
-func indexedSearchRoot(path string) string {
+func indexedSearchRoot(path string, indexable func(dir string) bool) string {
 	home, _ := os.UserHomeDir()
 	if real, err := filepath.EvalSymlinks(home); err == nil {
 		home = real
@@ -168,10 +176,13 @@ func indexedSearchRoot(path string) string {
 		if dir != path && (dir == home || filepath.Dir(dir) == dir) {
 			return path
 		}
+		marked := false
 		if info, err := os.Lstat(filepath.Join(dir, ".zvec-grep", "manifest.json")); err == nil && info.Mode().IsRegular() {
-			return dir
+			marked = true
+		} else if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			marked = true
 		}
-		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+		if marked && (indexable == nil || indexable(dir)) {
 			return dir
 		}
 		if filepath.Dir(dir) == dir {

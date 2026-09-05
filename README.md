@@ -340,7 +340,10 @@ The search root uses the closest ancestor index (`.zvec-grep/manifest.json`)
 or Git workspace, otherwise the requested directory; discovery stops short of
 the home directory and the filesystem root. Subdirectory searches stay scoped
 to that directory.
-Automatic indexing requires workspace write access and a local embedding model.
+Automatic indexing requires workspace write access and a local embedding model;
+an ancestor whose `.zvec-grep` the write policy cannot reach is skipped, so a
+launch from a subdirectory under the default sandbox indexes that subdirectory
+(`--writepath <repo-root>` shares one index across launches).
 If an existing zg daemon owns index writes, Polly searches the existing snapshot
 directly and marks it potentially stale. Other index failures are reported so
 the agent can use exact `pattern` searches. Exact directory searches skip

@@ -51,10 +51,12 @@ an existing daemon outside Polly's sandbox. The first query creates a local-mode
 index; subsequent queries refresh it. The index, runtime state, and model cache
 stay under the workspace's `.zvec-grep/`, with no extra write or network grants.
 Read-only policies therefore retain exact search but cannot create or refresh
-indexes. Cached snippets are filtered through the current read policy, including
-when another application built the index. A daemon-owned write lease leaves the
-index intact; Polly returns a potentially stale snapshot and recommends current
-file verification. Automatic indexing does not authorize remote embeddings.
+indexes, and an ancestor checkout outside the write grant is skipped in favor
+of the writable search root. Cached snippets are filtered through the current
+read policy, including when another application built the index. A
+daemon-owned write lease leaves the index intact; Polly returns a potentially
+stale snapshot and recommends current file verification. Automatic indexing
+does not authorize remote embeddings.
 
 The in-process file operations check every
 path against the base config instead: reads against the deny list minus
