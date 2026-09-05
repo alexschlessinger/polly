@@ -388,6 +388,7 @@ the servers again:
 worker := registry.Derive(tools.AllowTools("read_file", "search_files", "git__*"),
     tools.DenyTools("git__push"))
 agent := llm.NewAgent(client, worker, llm.AgentConfig{})
+defer agent.Close()  // releases the agent's private built-ins
 defer worker.Close() // releases only what the worker loaded itself
 ```
 

@@ -138,7 +138,7 @@ func (t *Tool) GetSchema() *schema.ToolSchema {
 		schema.Params{
 			"task":           schema.S("The complete brief for the agent. It starts with no other context."),
 			"label":          schema.S("Two to five words naming the job, shown to the user while it runs."),
-			"tools":          schema.Strings("Names or globs of the tools the agent may use, for example [\"read_file\", \"search_files\"]. Default: every tool you have, except spawn_agent."),
+			"tools":          schema.Strings("Names or globs of the tools the agent may use, for example [\"read_file\", \"search_files\"]. Default: every tool you have, except spawn_agent. The agent always has view_image, read_transcript, and the artifact tools."),
 			"model":          schema.S("Model to run the agent on, as provider/model. Default: your own model."),
 			"max_iterations": schema.Int("Cap on the agent's model calls. Default: your own limit."),
 			"background":     schema.Bool("Return at once and keep working; the agent's reply arrives later as a message. Default false: wait for the reply."),
@@ -229,6 +229,24 @@ func ChildRegistry(parent *tools.ToolRegistry, allow []string) *tools.ToolRegist
 // parent's tools.
 var ErrNoMatchingTools = errors.New("no tools match the requested list")
 
+// CheckChildTools reports ErrNoMatchingTools for a brief whose tool list
+// names nothing the child will have. The agent built-ins count: NewAgent
+// registers them on every child, whatever the list allows of the parent's
+// tools.
+func CheckChildTools(patterns []string, registry *tools.ToolRegistry) error {
+	if len(patterns) == 0 || len(registry.All()) > 0 {
+		return nil
+	}
+	for _, pattern := range patterns {
+		for _, name := range llm.BuiltinToolNames() {
+			if tools.MatchesToolPattern(pattern, name) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: %s", ErrNoMatchingTools, strings.Join(patterns, ", "))
+}
+
 // RunnerOption configures AgentRunner.
 type RunnerOption func(*agentRunner)
 
@@ -260,8 +278,8 @@ func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.Completion
 	return func(ctx context.Context, req Request) (Result, error) {
 		registry := ChildRegistry(parent, req.Tools)
 		defer registry.Close()
-		if len(req.Tools) > 0 && len(registry.All()) == 0 {
-			return Result{}, fmt.Errorf("%w: %s", ErrNoMatchingTools, strings.Join(req.Tools, ", "))
+		if err := CheckChildTools(req.Tools, registry); err != nil {
+			return Result{}, err
 		}
 		agentConfig := config
 		if req.MaxIterations > 0 {
@@ -275,7 +293,6 @@ func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.Completion
 			childReq.Model = req.Model
 		}
 		childReq.Messages = append(append([]messages.ChatMessage(nil), base.Messages...), messages.User(req.Task)...)
-		childReq.Tools = registry.All()
 		callbacks := &llm.AgentCallbacks{}
 		if runner.callbacks != nil {
 			if cb := runner.callbacks(req); cb != nil {

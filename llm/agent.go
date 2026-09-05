@@ -214,6 +214,13 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 // built-ins. Configured tools and policies are inherited from the caller.
 func (a *Agent) ToolRegistry() *tools.ToolRegistry { return a.tools }
 
+// BuiltinToolNames lists the tools NewAgent registers privately on an agent.
+// They are present whatever the caller's registry allows, so a tool allow
+// list need not name them.
+func BuiltinToolNames() []string {
+	return []string{"list_artifacts", "read_artifact", "read_transcript", "view_image"}
+}
+
 // Close releases only the agent's private registry. The caller still owns its
 // registry, MCP clients, and artifact store. Do not call it during Run.
 func (a *Agent) Close() error {

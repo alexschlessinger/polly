@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -240,5 +241,20 @@ func TestAgentCloseLeavesSharedMCPConnectionAlive(t *testing.T) {
 	defer cancel()
 	if reply, err := tool.Execute(ctx, map[string]any{}); err != nil || !strings.Contains(reply, "pong") {
 		t.Fatalf("MCP call after sibling close = %q, %v", reply, err)
+	}
+}
+
+func TestBuiltinToolNamesMatchTheAgentRegistry(t *testing.T) {
+	registry := tools.NewToolRegistry(nil)
+	defer registry.Close()
+	agent := NewAgent(nil, registry, AgentConfig{ArtifactStore: newTestArtifactStore()})
+	defer agent.Close()
+	var got []string
+	for _, tool := range agent.ToolRegistry().All() {
+		got = append(got, tool.GetName())
+	}
+	slices.Sort(got)
+	if want := BuiltinToolNames(); !slices.Equal(got, want) {
+		t.Fatalf("agent built-ins = %v, BuiltinToolNames() = %v", got, want)
 	}
 }

@@ -217,6 +217,27 @@ func TestAgentRunnerRunsAChildOverTheParentsTools(t *testing.T) {
 	}
 }
 
+func TestAgentRunnerAcceptsAToolListOfAgentBuiltins(t *testing.T) {
+	parent := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "probe", Desc: "probe"}})
+	defer parent.Close()
+	fake := &sequentialLLM{responses: []messages.ChatMessage{reply("described"), reply("read")}}
+	run := AgentRunner(fake, parent, llm.CompletionRequest{Model: "test/model"}, llm.AgentConfig{})
+
+	res, err := run(context.Background(), Request{Task: "describe the shot", Tools: []string{"view_image"}})
+	if err != nil {
+		t.Fatalf("a brief naming only a built-in was refused: %v", err)
+	}
+	if got := names(fake.last.Tools); res.Text != "described" || !slices.Contains(got, "view_image") || slices.Contains(got, "probe") {
+		t.Fatalf("result %q, child tools = %v, want view_image without probe", res.Text, got)
+	}
+	if _, err := run(context.Background(), Request{Task: "read", Tools: []string{"read_*"}}); err != nil {
+		t.Fatalf("a glob matching only built-ins was refused: %v", err)
+	}
+	if got := names(fake.last.Tools); !slices.Contains(got, "read_transcript") {
+		t.Fatalf("child tools = %v, want read_transcript", got)
+	}
+}
+
 type probeKey struct{}
 
 func TestAgentRunnerCallbacksObserveEachChild(t *testing.T) {

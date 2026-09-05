@@ -138,8 +138,8 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 		_ = registry.Close()
 		retErr = closeSessionAfterError(session, retErr)
 	}()
-	if len(req.Tools) > 0 && len(registry.All()) == 0 {
-		return nil, fmt.Errorf("%w: %s", subagent.ErrNoMatchingTools, strings.Join(req.Tools, ", "))
+	if err := subagent.CheckChildTools(req.Tools, registry); err != nil {
+		return nil, err
 	}
 
 	settings := parent.settings.clone()
