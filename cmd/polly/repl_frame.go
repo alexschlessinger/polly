@@ -272,6 +272,7 @@ func (r *managedREPL) render() {
 		return
 	}
 	r.relayTabSignals()
+	r.refreshAgentActivities()
 	imageCellWidth, imageCellHeight := 0, 0
 	if r.images != nil {
 		imageCellWidth, imageCellHeight = r.images.cellDimensions()
@@ -322,6 +323,8 @@ func (r *managedREPL) render() {
 	r.model.reasoningPlacements = r.model.visibleReasoningPlacements(viewport)
 	r.model.toolDisclosurePlacements = r.model.visibleToolDisclosurePlacements(viewport)
 	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(viewport)
+	r.model.agentDisclosurePlacements = r.model.visibleDisclosurePlacements(viewport, turnDockOverlayAgents)
+	r.model.agentLinkPlacements = r.model.visibleAgentLinks(viewport)
 	r.model.turnTrailerPlacements = r.model.visibleTurnTrailerPlacements(viewport)
 	r.model.mu.Unlock()
 	notices = append(notices, r.takeHiddenNotices(focusKnown, focused)...)

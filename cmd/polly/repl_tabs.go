@@ -59,6 +59,11 @@ type replTab struct {
 	reportWriteDone chan struct{}
 	reporting       bool
 	deliveryPending bool
+	agentActivity   *agentActivity
+	agentWriteDone  chan struct{}
+	spawnCallID     string
+	agentStatus     string
+	agentActive     bool
 
 	// settled follows the actual first turn, even after UI cancellation has
 	// detached it. Its concurrency slot must remain held until work ends.
@@ -410,15 +415,19 @@ func (r *managedREPL) canOpenLocked() bool {
 // builds its runtime off it; the result lands through openDone. Caller must
 // hold r.model.mu and have checked canOpenLocked.
 func (r *managedREPL) beginOpenLocked(name string, auto bool) {
+	r.beginOpenContextLocked(r.runCtx, name, auto)
+}
+
+func (r *managedREPL) beginOpenContextLocked(openCtx context.Context, name string, auto bool) {
 	m := r.model
-	resolved, settings, err := r.opener.prepare(r.runCtx, name, m.appendNoticeLine)
+	resolved, settings, err := r.opener.prepare(openCtx, name, m.appendNoticeLine)
 	if err != nil {
 		r.failOpenLocked(name, err)
 		return
 	}
 	r.opening = resolved
 	m.appendNoticeLine("opening " + resolved + "…")
-	ctx, cancel := context.WithCancel(r.runCtx)
+	ctx, cancel := context.WithCancel(openCtx)
 	r.openCancel = cancel
 	open := r.opener.open
 	go func() {

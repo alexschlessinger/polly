@@ -1371,6 +1371,9 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 			}
 		}
 		if errors.Is(err, sql.ErrNoRows) {
+			if options.ExistingOnly {
+				return ErrSessionNotFound
+			}
 			storedID, err = randomBytes(16)
 			if err != nil {
 				return err
@@ -2136,6 +2139,7 @@ func (s *sqliteSession) Reset(ctx context.Context, info *Metadata) error {
 		metadata.Created = time.Unix(0, snap.createdNS).UTC()
 		metadata.LastUsed = now
 		metadata.Parent = current.Parent
+		preserveSpawnMetadata(metadata, current)
 		if metadata.TTL < 0 {
 			return fmt.Errorf("session TTL cannot be negative")
 		}
@@ -2293,6 +2297,7 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 		// caller-controlled settings.
 		metadata.LastUsed = current.LastUsed
 		metadata.Parent = current.Parent
+		preserveSpawnMetadata(metadata, current)
 		if metadata.TTL < 0 {
 			return fmt.Errorf("session TTL cannot be negative")
 		}
@@ -2315,6 +2320,17 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 		return err
 	})
 	return s.mapError(ctx, err)
+}
+
+// First-run identity and outcome are write-once. Preserve them inside the
+// transaction so a stale settings snapshot cannot erase a concurrent finish.
+func preserveSpawnMetadata(metadata, current *Metadata) {
+	if current.SpawnCallID != "" {
+		metadata.SpawnCallID = current.SpawnCallID
+	}
+	if current.SpawnOutcome != "" {
+		metadata.SpawnOutcome = current.SpawnOutcome
+	}
 }
 
 func (s *sqliteSession) GetLastUsed(ctx context.Context) (time.Time, error) {

@@ -133,6 +133,8 @@ type replModel struct {
 	turnToolDisclosureIDs     []int64 // every disclosure opened this turn
 	toolDisclosurePlacements  []disclosurePlacement
 	imageDisclosurePlacements []disclosurePlacement
+	agentDisclosurePlacements []disclosurePlacement
+	agentLinkPlacements       []agentLink
 	turnDock                  turnDockState
 	turnTrailers              map[int64]*turnTrailerRecord
 	turnTrailerAt             map[int]int64
@@ -246,6 +248,7 @@ type transcriptVisualBlock struct {
 	toolDisclosureIDs []int64
 	turnTrailerID     int64
 	activityFields    []turnDockPlacement
+	agentLinks        []agentLink
 }
 
 // reasoningRecord is the display projection of one user turn's provider
@@ -287,6 +290,8 @@ func (p statusSessionPlacement) hit(x, y, terminalHeight int) bool {
 
 type toolDisclosureRow struct {
 	callID           string
+	toolName         string
+	agent            *agentActivity
 	label            string
 	line             string
 	images           []transcriptImage
@@ -300,6 +305,7 @@ type toolDisclosureRecord struct {
 	rows            []toolDisclosureRow
 	expanded        bool
 	imagesExpanded  bool
+	agentsExpanded  bool
 	complete        bool
 }
 
@@ -416,9 +422,10 @@ type managedREPL struct {
 	// screen model and turn; r.model and r.state mirror the visible one.
 	// showTabRequest (-1 when none) and closeTabRequest are recorded by
 	// handlers and applied by the event loop.
-	tabs            []*replTab
-	showTabRequest  int
-	closeTabRequest bool
+	tabs                []*replTab
+	pendingAgentUpdates []*replTab
+	showTabRequest      int
+	closeTabRequest     bool
 
 	// Opening sessions (/resume, /new). opener builds the runtime; nil in
 	// unit tests, where a selection only records itself. opening names the
@@ -717,6 +724,14 @@ func (r *managedREPL) appendPendingSandboxWarningsLocked() bool {
 // nothing changes between events, so the tick repaint is skipped — otherwise
 // the REPL would redraw the full screen ~20×/sec while just sitting at a prompt.
 func (r *managedREPL) needsTick() bool {
+	if len(r.pendingAgentUpdates) > 0 {
+		return true
+	}
+	for _, tab := range r.tabs {
+		if tab.agentActivity != nil && tab.report != nil {
+			return true
+		}
+	}
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
 	return r.model.busy
@@ -1207,7 +1222,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				r.openResumePicker()
 				return false
 			}
-			if m.toggleTurnTrailerAt(mouse.X, mouse.Y) {
+			if r.openAgentAt(mouse.X, mouse.Y) || m.toggleTurnTrailerAt(mouse.X, mouse.Y) {
 				return false
 			}
 			// An expanded trailer overlay is modal for one click: clicking
@@ -1218,6 +1233,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			}
 			if !m.toggleReasoningAt(mouse.X, mouse.Y, terminalWidth) &&
 				!m.toggleToolDisclosureAt(mouse.X, mouse.Y) &&
+				!m.toggleAgentDisclosureAt(mouse.X, mouse.Y) &&
 				!m.toggleImageDisclosureAt(mouse.X, mouse.Y) {
 				r.openImageAt(mouse.X, mouse.Y)
 			}

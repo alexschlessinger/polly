@@ -84,6 +84,17 @@ func (m *replModel) appendToolStartRow(id, label string) *toolDisclosureRecord {
 	return record
 }
 
+func (m *replModel) appendToolCallStart(call messages.ChatMessageToolCall) *toolDisclosureRecord {
+	record := m.appendToolStartRow(call.ID, toolLabel(call))
+	record.rows[len(record.rows)-1].setCall(call)
+	if record.rows[len(record.rows)-1].isAgent() {
+		// Agent-only batches leave the canonical Tools text unchanged. Their
+		// count and expanded rows still need a fresh layout before launch ends.
+		m.refreshAgentRecord(record)
+	}
+	return record
+}
+
 func toolDisclosureHeader(total int, expanded, complete bool) string {
 	glyph := "▸"
 	if expanded {
@@ -96,7 +107,11 @@ func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage
 	if record == nil {
 		return "", nil
 	}
-	header := toolDisclosureHeader(len(record.rows), record.expanded, record.complete)
+	rows := ordinaryToolRows(record.rows)
+	header := toolDisclosureHeader(len(rows), record.expanded, record.complete)
+	if len(rows) == 0 {
+		header = ""
+	}
 	if !record.expanded {
 		return header, nil
 	}
@@ -104,7 +119,6 @@ func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage
 	b.WriteString(header)
 	var images []transcriptImage
 	seen := make(map[string]struct{})
-	rows := record.rows
 	if len(rows) > toolPreviewRows {
 		b.WriteString("\n  ")
 		b.WriteString(styled(fmt.Sprintf("… %d earlier", len(rows)-toolPreviewRows), "muted", ""))
@@ -225,9 +239,10 @@ func (m *replModel) completeToolDisclosure() {
 func (m *replModel) collapseTurnToolDisclosures() {
 	for _, id := range m.turnToolDisclosureIDs {
 		if record := m.toolDisclosures[id]; record != nil {
-			changed := record.expanded || record.imagesExpanded
+			changed := record.expanded || record.imagesExpanded || record.agentsExpanded
 			record.expanded = false
 			record.imagesExpanded = false
+			record.agentsExpanded = false
 			if changed {
 				m.refreshToolDisclosure(record)
 				// Image expansion is derived by the shared activity layout rather
@@ -360,6 +375,9 @@ func (m *replModel) settleActiveTools(reason string) {
 			continue
 		}
 		row := &record.rows[at.row]
+		if row.agent != nil && !row.agent.attached {
+			row.agent.status, row.agent.active = reason, false
+		}
 		row.line = toolErrorLine(at.label, reason, "")
 		row.images = nil
 		row.settled = true
@@ -367,6 +385,7 @@ func (m *replModel) settleActiveTools(reason string) {
 	if record.expanded {
 		m.refreshToolDisclosure(record)
 	}
+	m.refreshAgentRecord(record)
 }
 
 // toolOKLine / toolDeniedLine / toolErrorLine build the final transcript entry

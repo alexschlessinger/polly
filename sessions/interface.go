@@ -35,6 +35,8 @@ type StoreConfig struct {
 // retention class or parent of an existing session.
 type AcquireOptions struct {
 	Auto bool
+	// ExistingOnly refuses a missing or expired session instead of creating it.
+	ExistingOnly bool
 	// Parent names the session whose agent spawns this one. The link is by
 	// id, so Metadata.Parent follows the parent's renames; ErrSessionNotFound
 	// when no session has the name.
@@ -153,6 +155,11 @@ type Metadata struct {
 	// SetMetadata and Reset ignore it. A session whose parent was deleted
 	// keeps the last name it knew.
 	Parent string `json:"parent,omitempty"`
+	// SpawnCallID identifies the parent's spawn_agent call. SpawnOutcome
+	// records only the initial delegated run; later child turns leave it alone.
+	// Once set, SetMetadata and Reset preserve these fields.
+	SpawnCallID  string       `json:"spawnCallID,omitempty"`
+	SpawnOutcome ReportStatus `json:"spawnOutcome,omitempty"`
 
 	Model            string                 `json:"model,omitempty"`
 	Temperature      float64                `json:"temperature,omitempty"`

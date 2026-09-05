@@ -53,7 +53,7 @@ func (m *replModel) visibleDisclosurePlacements(v transcriptViewport, overlay tu
 	rowOffset := 0
 	for _, block := range m.visual.blocks {
 		recordIDs := block.reasoningIDs
-		if overlay == turnDockOverlayTools || overlay == turnDockOverlayImages {
+		if overlay == turnDockOverlayTools || overlay == turnDockOverlayImages || overlay == turnDockOverlayAgents {
 			recordIDs = block.toolDisclosureIDs
 		}
 		row := rowOffset

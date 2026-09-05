@@ -311,9 +311,19 @@ func getOrCreateSession(ctx context.Context, store sessions.SessionStore, contex
 	if contextID == "" && !needFileStore {
 		contextID = "default" // Memory store context
 	}
-	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{Auto: auto})
+	target, agentLink := ctx.Value(agentSessionTargetKey{}).(agentSessionTarget)
+	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{Auto: auto, ExistingOnly: agentLink})
 	if err != nil {
 		return nil, fmt.Errorf("get session for context %q: %w", contextID, err)
+	}
+	if agentLink {
+		md, err := session.GetMetadata(ctx)
+		if err == nil && (md.Parent != target.parent || md.SpawnCallID != target.callID) {
+			err = fmt.Errorf("agent session changed: %w", sessions.ErrSessionNotFound)
+		}
+		if err != nil {
+			return nil, closeSessionAfterError(session, err)
+		}
 	}
 	return session, nil
 }

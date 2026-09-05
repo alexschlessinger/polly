@@ -102,6 +102,12 @@ func (r *managedREPL) runChild(ctx context.Context, parentModel *replModel, pare
 	if err != nil {
 		return subagent.Result{}, err
 	}
+	if callID != "" {
+		if err := updateMetadata(ctx, child.session, func(md *sessions.Metadata) { md.SpawnCallID = callID }); err != nil {
+			_ = child.Close()
+			return subagent.Result{}, err
+		}
+	}
 	name, model, err := r.newTabModelContext(ctx, child)
 	if err != nil {
 		_ = child.Close()
@@ -188,6 +194,7 @@ func (r *managedREPL) spawnChildTab(parentModel *replModel, tab *replTab, req su
 	}
 	parent := r.tabs[pi]
 	child, m, name := tab.state, tab.model, tab.name
+	tab.spawnCallID = callID
 	tab.parent, tab.parentName = parent, parent.name
 	if child.session != nil {
 		tab.stopWatch = context.AfterFunc(child.session.Context(), r.wakeTabs)
@@ -205,8 +212,15 @@ func (r *managedREPL) spawnChildTab(parentModel *replModel, tab *replTab, req su
 	m.mu.Unlock()
 	r.startManagedTurn(r.runCtx, tab, turn, r.runTurn)
 	if callID != "" {
+		tab.agentActivity = &agentActivity{}
+		tab.agentStatus, tab.agentActive = "working", true
 		parentModel.mu.Lock()
 		parentModel.attachChildToTool(callID, m, name)
+		if record, row := parentModel.toolDisclosureRowForCall(callID); row != nil && row.agent != nil {
+			tab.agentActivity = row.agent
+			row.agent.session, row.agent.status, row.agent.attached = name, "working", true
+			parentModel.refreshAgentRecord(record)
+		}
 		parentModel.mu.Unlock()
 	}
 	r.model.mu.Lock()
@@ -228,6 +242,7 @@ func (r *managedREPL) deliverChildReport(ctx context.Context, tab *replTab, err 
 	if tab.report == nil {
 		return
 	}
+	r.finishChildAgent(tab, err)
 	rec := tab.report
 	tab.report = nil
 	res := subagent.Result{Session: tab.name, Done: tab.settled}

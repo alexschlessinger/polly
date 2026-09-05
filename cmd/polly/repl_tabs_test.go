@@ -20,8 +20,8 @@ func testSessionOpener(store sessions.SessionStore) *sessionOpener {
 		prepare: func(_ context.Context, name string, _ func(string)) (string, Settings, error) {
 			return name, Settings{}, nil
 		},
-		open: func(_ context.Context, name string, settings Settings, auto bool) (*conversationState, error) {
-			session, err := store.Acquire(context.Background(), name, sessions.AcquireOptions{Auto: auto})
+		open: func(ctx context.Context, name string, settings Settings, auto bool) (*conversationState, error) {
+			session, err := getOrCreateSession(context.WithoutCancel(ctx), store, name, true, auto)
 			if err != nil {
 				return nil, err
 			}
