@@ -88,8 +88,8 @@ func TestExecuteWithToolsCapsRounds(t *testing.T) {
 	if response == nil || response.StopReason != messages.StopReasonMaxIterations {
 		t.Fatalf("response = %#v, want stop reason %q", response, messages.StopReasonMaxIterations)
 	}
-	if fake.calls != 250 {
-		t.Fatalf("LLM calls = %d, want 250", fake.calls)
+	if fake.calls != 1024 {
+		t.Fatalf("LLM calls = %d, want 1024", fake.calls)
 	}
 }
 

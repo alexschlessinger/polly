@@ -89,7 +89,7 @@ err = llm.NewCompletionBuilder("openai/gpt-5.4").
     ExecuteStreaming(ctx, client, func(chunk string) { fmt.Print(chunk) })
 
 // Tool loop: executes each call the model makes, feeds results back, and
-// returns the final answer. Capped at 250 rounds; hitting the cap returns
+// returns the final answer. Capped at 1024 rounds; hitting the cap returns
 // the last response together with ErrMaxIterations.
 registry := tools.NewToolRegistry([]tools.Tool{&WeatherTool{}})
 response, err := llm.NewCompletionBuilder("openai/gpt-5.4").
