@@ -120,6 +120,48 @@ func (r *SkillRuntime) Restore(names []string) error {
 	return nil
 }
 
+// Derive inherits activation state into a registry derived from this runtime's
+// registry. MCP clients remain owned by the parent; no skill files are loaded
+// and no servers are connected again. The child's policy and future skill
+// activations remain independent, within the derived registry's tool filter.
+func (r *SkillRuntime) Derive(registry *ToolRegistry) (*SkillRuntime, error) {
+	if r == nil || registry == nil {
+		return nil, ErrSkillRuntimeUnavailable
+	}
+	registry.mu.RLock()
+	parent := registry.parent
+	registry.mu.RUnlock()
+	if parent != r.registry {
+		return nil, fmt.Errorf("skill runtime requires a registry derived from its parent")
+	}
+	child, err := NewSkillRuntime(r.catalog, registry)
+	if err != nil {
+		return nil, err
+	}
+	if child.activateTool != nil {
+		child.activateTool.mu.Lock()
+		for _, name := range r.ActivatedSkills() {
+			child.activateTool.activated[name] = true
+		}
+		child.activateTool.mu.Unlock()
+	}
+	// This policy must also govern tools the child loads itself. A parallel
+	// activation may have staged policy not yet committed by the parent.
+	parent.mu.RLock()
+	patterns := appendUniqueStrings(append([]string(nil), parent.allowedPatterns...), parent.pendingAllowedPatterns)
+	autoAllowed := make([]string, 0, len(parent.autoAllowedTools)+len(parent.pendingAutoAllowed))
+	for name := range parent.autoAllowedTools {
+		autoAllowed = append(autoAllowed, name)
+	}
+	for name := range parent.pendingAutoAllowed {
+		autoAllowed = append(autoAllowed, name)
+	}
+	parent.mu.RUnlock()
+	registry.stageSkillAllowance(patterns, autoAllowed)
+	registry.CommitPendingChanges()
+	return child, nil
+}
+
 // ActivatedSkills returns the currently activated skill names in stable order.
 func (r *SkillRuntime) ActivatedSkills() []string {
 	if !r.Enabled() {

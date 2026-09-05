@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"time"
 
@@ -36,11 +37,14 @@ func resolveContextBudget(ctx context.Context, state *conversationState) int {
 // lookups persist into session metadata so later runs of this context skip
 // the network entirely.
 func (s *conversationState) contextWindowFor(ctx context.Context, model string) int {
-	if window, attempted := s.contextWindows[model]; attempted {
+	s.contextWindowsMu.Lock()
+	window, attempted := s.contextWindows[model]
+	s.contextWindowsMu.Unlock()
+	if attempted {
 		return window
 	}
 
-	window := 0
+	window = 0
 	md, mdErr := s.session.GetMetadata(ctx)
 	if mdErr == nil && md != nil && md.ContextWindows[model] > 0 {
 		window = md.ContextWindows[model]
@@ -67,11 +71,19 @@ func (s *conversationState) contextWindowFor(ctx context.Context, model string) 
 		}
 	}
 
+	s.contextWindowsMu.Lock()
 	if s.contextWindows == nil {
 		s.contextWindows = make(map[string]int)
 	}
 	s.contextWindows[model] = window
+	s.contextWindowsMu.Unlock()
 	return window
+}
+
+func (s *conversationState) cachedContextWindows() map[string]int {
+	s.contextWindowsMu.Lock()
+	defer s.contextWindowsMu.Unlock()
+	return maps.Clone(s.contextWindows)
 }
 
 func discoverModelContextWindow(ctx context.Context, state *conversationState, model string) (int, error) {

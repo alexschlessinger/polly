@@ -35,6 +35,10 @@ func (c *childTestRuns) run(ctx context.Context, prompt string, turnUI TurnUI) e
 		<-ctx.Done()
 		return context.Cause(ctx)
 	case strings.HasPrefix(prompt, "agent ") || strings.HasSuffix(prompt, " agent reports"):
+		tui := turnUI.(*gotuiTurnUI)
+		if err := tui.state.session.AddReportMessage(ctx, tui.turn.userMessage, tui.turn.reportIDs); err != nil {
+			return err
+		}
 		c.mu.Lock()
 		c.reports = append(c.reports, turnUI.(*gotuiTurnUI).turn.userMessage.Content)
 		c.mu.Unlock()
@@ -107,6 +111,8 @@ func settleUntil(t *testing.T, r *managedREPL, cond func() bool) {
 	for !cond() {
 		select {
 		case <-r.tabEvents:
+		case task := <-r.uiTasks:
+			task()
 		case <-deadline:
 			t.Fatal("the loop did not reach the expected state")
 		}
@@ -175,6 +181,7 @@ func TestBlockingChildRunsInATabAndAnswersTheCall(t *testing.T) {
 	// The parent settles: nobody looked at the child, so it goes.
 	close(runs.release)
 	settleUntil(t, r, settled(parent))
+	settleUntil(t, r, func() bool { return len(r.tabs) == 1 })
 	if len(r.tabs) != 1 || r.visibleTab() != parent {
 		t.Fatalf("tabs after the parent settled: %d", len(r.tabs))
 	}
@@ -193,6 +200,7 @@ func TestBackgroundChildReportsToTheIdleParent(t *testing.T) {
 
 	// The child settles; the idle parent takes the report as its next turn.
 	settleUntil(t, r, settled(child))
+	settleUntil(t, r, func() bool { return parent.turnDone != nil })
 	if parent.turnDone == nil {
 		t.Fatal("the report did not start a parent turn")
 	}
@@ -220,7 +228,9 @@ func TestReportsArrivingDuringAParentTurnArriveAsOneMessage(t *testing.T) {
 	runUITask(t, r)
 	awaitReport(t, first)
 	awaitReport(t, second)
-	settleUntil(t, r, func() bool { return r.tabs[1].turnDone == nil && r.tabs[2].turnDone == nil })
+	settleUntil(t, r, func() bool {
+		return r.tabs[1].turnDone == nil && r.tabs[2].turnDone == nil && !r.tabs[1].reporting && !r.tabs[2].reporting
+	})
 	// The reports wait in the store: nothing is queued on the busy parent.
 	parent.model.mu.Lock()
 	queued := len(parent.model.queue)
@@ -296,6 +306,7 @@ func TestOrphanedBlockingChildReportsLikeABackgroundOne(t *testing.T) {
 	}
 	close(runs.slow)
 	settleUntil(t, r, settled(child))
+	settleUntil(t, r, func() bool { return parent.turnDone != nil })
 	if parent.turnDone == nil {
 		t.Fatal("the orphaned child's reply did not reach the parent")
 	}
@@ -309,6 +320,7 @@ func TestSpawnCommandStartsABackgroundChild(t *testing.T) {
 	r, runs := newChildTestREPL(t)
 	parent := r.visibleTab()
 	r.runTabCommand("/spawn count the files")
+	runUITask(t, r)
 	if len(r.tabs) != 2 || r.tabs[1].parent != parent || r.visibleTab() != parent {
 		t.Fatalf("tabs after /spawn: %d, visible %d", len(r.tabs), r.visibleTabIndex())
 	}
@@ -317,6 +329,7 @@ func TestSpawnCommandStartsABackgroundChild(t *testing.T) {
 		t.Fatalf("/spawn was not announced: %q", got)
 	}
 	settleUntil(t, r, settled(child))
+	settleUntil(t, r, func() bool { return len(runs.reported()) > 0 })
 	settleUntil(t, r, settled(parent))
 	if got := runs.reported(); len(got) != 1 || !strings.Contains(got[0], "found count the files") {
 		t.Fatalf("parent got %q", got)
@@ -394,6 +407,7 @@ func TestChildOfAClosedParentReportsThroughTheStore(t *testing.T) {
 	}
 	r.finishOpen(openResult{name: resolved, state: state})
 	reopened := r.visibleTab()
+	settleUntil(t, r, func() bool { return reopened.turnDone != nil })
 	if reopened.name != "parent-work" || reopened.turnDone == nil {
 		t.Fatalf("reopened tab %q running=%v; want parent-work on its agent's report", reopened.name, reopened.turnDone != nil)
 	}
@@ -428,6 +442,7 @@ func TestReportsPostedWhileNoPollyHeldTheParentArriveAtStartup(t *testing.T) {
 		t.Fatal("startup found no reports")
 	}
 	parent := r.visibleTab()
+	settleUntil(t, r, func() bool { return parent.turnDone != nil })
 	if parent.turnDone == nil {
 		t.Fatal("the waiting reports did not start a turn")
 	}
@@ -439,7 +454,9 @@ func TestReportsPostedWhileNoPollyHeldTheParentArriveAtStartup(t *testing.T) {
 	if transcript := plainStyledText(r.model.fullTranscript()); !strings.Contains(transcript, "> 2 agent reports") {
 		t.Fatalf("transcript lacks the coalesced echo: %q", transcript)
 	}
-	if r.pullAllReports(ctx, runs.run) {
+	r.pullAllReports(ctx, runs.run)
+	settleUntil(t, r, func() bool { return !parent.reportsLoading })
+	if len(runs.reported()) != 1 || parent.turnDone != nil {
 		t.Fatal("reports were delivered twice")
 	}
 }
@@ -511,8 +528,8 @@ func TestClosingAChildTabSettlesItsSpawnSlot(t *testing.T) {
 	r.removeTab(1)
 	select {
 	case <-rep.result.Done:
-	default:
-		t.Fatal("Done stayed open after the child's tab was removed")
+	case <-time.After(time.Second):
+		t.Fatal("Done stayed open after the canceled child returned")
 	}
 }
 

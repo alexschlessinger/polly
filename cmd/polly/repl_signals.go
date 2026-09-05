@@ -27,6 +27,8 @@ func (m *replModel) signalHiddenLocked(kind tabSignalKind, detail string) {
 	if !m.hidden {
 		return
 	}
+	m.notificationMu.Lock()
+	defer m.notificationMu.Unlock()
 	m.signals = append(m.signals, tabSignal{kind: kind, detail: detail})
 }
 
@@ -60,7 +62,7 @@ func (r *managedREPL) relayTabSignals() {
 		if m == r.model {
 			continue
 		}
-		m.mu.Lock()
+		m.notificationMu.Lock()
 		var kept []tabSignal
 		for _, s := range m.signals {
 			if busy && s.kind != signalApprovalNeeded {
@@ -71,7 +73,7 @@ func (r *managedREPL) relayTabSignals() {
 			failures = append(failures, s.kind == signalTurnFailed)
 		}
 		m.signals = kept
-		m.mu.Unlock()
+		m.notificationMu.Unlock()
 	}
 	if len(lines) == 0 {
 		return

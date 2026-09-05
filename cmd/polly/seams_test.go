@@ -109,6 +109,7 @@ func (r *managedREPL) takePending() (managedTurnInput, bool) {
 // transcriptTexts returns the transcript entries' text, for the tests that
 // assert against the joined transcript.
 func transcriptTexts(m *replModel) []string {
+	m.renderPendingMarkdown()
 	out := make([]string, len(m.transcript))
 	for i, entry := range m.transcript {
 		out[i] = entry.text
@@ -119,6 +120,7 @@ func transcriptTexts(m *replModel) []string {
 // flattenTranscript expands embedded "\n" within entries into separate lines,
 // the logical-line view tests assert against.
 func (m *replModel) flattenTranscript() []string {
+	m.renderPendingMarkdown()
 	out := make([]string, 0, len(m.transcript))
 	for i, entry := range m.transcript {
 		e := entry.text
@@ -192,6 +194,7 @@ func (m *replModel) fullTranscript() string {
 }
 
 func (m *replModel) transcriptDisplayBlocks() []string {
+	m.renderPendingMarkdown()
 	entries := m.transcriptDisplayEntries(m.disclosureLayoutWidth(0))
 	blocks := make([]string, len(entries))
 	for i, entry := range entries {

@@ -51,6 +51,9 @@ const (
 type transcriptEntry struct {
 	text   string
 	images []transcriptImage
+	// Completed assistant Markdown is materialized on the next visible paint.
+	markdown  string
+	codeCache *markdownCodeCache
 }
 
 type replModel struct {
@@ -93,17 +96,14 @@ type replModel struct {
 	currentAssistant int
 
 	// streamRaw accumulates the in-flight assistant message's raw markdown;
-	// streamShown is how many of its bytes are currently rendered. The whole
-	// message re-renders through goldmark per growth of the visible prefix —
-	// bounded by message size, never conversation size — while unclosed inline
+	// streamShown is how many of its bytes are currently rendered. The visible
+	// prefix renders at most once per frame, reusing code highlighting, while unclosed inline
 	// markup near the tail is held back (safeVisibleLen) so text lands on
 	// screen already styled instead of visibly transforming.
-	streamRaw   strings.Builder
-	streamShown int
-	// streamDeferredTable records that the last streaming render drew a table
-	// in its unaligned in-flight form; settle must re-render for the aligned
-	// layout even when no bytes were held back.
-	streamDeferredTable bool
+	streamRaw       strings.Builder
+	streamShown     int
+	streamCodeCache *markdownCodeCache
+	markdownPending bool
 
 	visual transcriptVisualCache
 
@@ -198,10 +198,10 @@ type replModel struct {
 	focusKnown bool
 	focused    bool
 
-	// notices queues desktop-notification bodies. Turn goroutines push under
-	// mu; the render loop drains and emits on the event-loop goroutine so no
-	// turn goroutine ever writes to the terminal.
-	notices []string
+	// Notifications have their own short lock so painting one tab never waits
+	// for another tab's transcript mutations.
+	notificationMu sync.Mutex
+	notices        []string
 
 	// signals are what happened on this tab while it was hidden — a turn
 	// settling, a tool call needing approval — for the event loop to relay
@@ -381,6 +381,7 @@ type managedREPL struct {
 	// onto the event loop, which repaints after running each one. Tasks take
 	// the model lock themselves.
 	uiTasks chan func()
+	work    *replWork
 
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
@@ -496,6 +497,7 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 		suspend:         make(chan struct{}, 1),
 		pending:         make(chan pendingTurn, 1),
 		uiTasks:         make(chan func(), 8),
+		work:            newREPLWork(),
 		openDone:        make(chan openResult, 1),
 		tabEvents:       make(chan struct{}, 1),
 		showTabRequest:  -1,
@@ -777,8 +779,13 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 	if tab.report != nil {
 		tui.observer = tab.report
 	}
+	firstChildTurn := tab.report != nil
 	go func() {
-		done <- runTurn(turnCtx, turn.displayText, tui)
+		err := runTurn(turnCtx, turn.displayText, tui)
+		if firstChildTurn {
+			tab.markSettled()
+		}
+		done <- err
 		r.wakeTabs()
 	}()
 }
@@ -791,7 +798,7 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 // queued /clear can't corrupt the just-finished stream. Nothing starts while
 // the REPL is leaving.
 func (r *managedREPL) startQueued(ctx context.Context, tab *replTab, runTurn turnRunner) {
-	if r.quitting {
+	if r.quitting || tab.turnDone != nil || tab.reportsLoading || runTurn == nil {
 		return
 	}
 	m := tab.model

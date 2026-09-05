@@ -102,6 +102,7 @@ func TestReplModelAppendAssistantStreaming(t *testing.T) {
 	m := newReplModel()
 	m.appendAssistant("Hello ")
 	m.appendAssistant("world")
+	m.renderPendingMarkdown()
 	if len(m.transcript) != 1 {
 		t.Fatalf("streaming should accumulate into one entry, got %d", len(m.transcript))
 	}
@@ -1409,11 +1410,13 @@ func TestAppendAssistantRendersStreamedLink(t *testing.T) {
 	m.appendAssistant("see [text]")
 
 	// The bracket may still become a link \u2014 held back, only settled text shows.
+	m.renderPendingMarkdown()
 	if got := plainStyledText(m.transcript[0].text); got != "see" {
 		t.Fatalf("partial link should be held back, got %q", got)
 	}
 
 	m.appendAssistant("(url)")
+	m.renderPendingMarkdown()
 	if got := plainStyledText(m.transcript[0].text); got != "see text (url)" {
 		t.Fatalf("completed link render = %q, want %q", got, "see text (url)")
 	}
@@ -1438,6 +1441,8 @@ func TestAppendAssistantRendersStreamingCodeFenceWithLanguage(t *testing.T) {
 	m.appendAssistant("totalIn  int  // cumulative input tokens this session\n")
 	m.appendAssistant("totalOut int  // cumulative output tokens this session\n```\nafter")
 
+	m.renderPendingMarkdown()
+
 	got := plainStyledText(m.transcript[0].text)
 	want := "before\n\n╭─ go\n│ totalIn  int  // cumulative input tokens this session\n│ totalOut int  // cumulative output tokens this session\n\nafter"
 	if got != want {
@@ -1453,6 +1458,8 @@ func TestAppendAssistantRendersBareCodeFenceAcrossChunks(t *testing.T) {
 	m.appendAssistant("(url))\n``")
 	m.appendAssistant("`\n")
 
+	m.renderPendingMarkdown()
+
 	got := plainStyledText(m.transcript[0].text)
 	want := "│ fmt.Println([text](url))"
 	if got != want {
@@ -1460,10 +1467,12 @@ func TestAppendAssistantRendersBareCodeFenceAcrossChunks(t *testing.T) {
 	}
 }
 
-func TestFinishAssistantStreamFlushesPendingFenceLine(t *testing.T) {
+func TestFinishAssistantBlockFlushesPendingFenceLine(t *testing.T) {
 	m := newReplModel()
 	m.appendAssistant("```go\nx\n```")
-	m.finishAssistantStream()
+	m.finishAssistantBlock("")
+
+	m.renderPendingMarkdown()
 
 	got := plainStyledText(m.transcript[0].text)
 	want := "╭─ go\n│ x"

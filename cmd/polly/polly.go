@@ -99,7 +99,8 @@ type conversationState struct {
 	outputCapabilities outputCapabilities
 	// contextWindows caches per-model context-window discovery for this
 	// process, including failed attempts (entry present, value 0).
-	contextWindows map[string]int
+	contextWindowsMu sync.Mutex
+	contextWindows   map[string]int
 }
 
 // sessionOpener lets the managed REPL open sessions while it runs. prepare
@@ -884,7 +885,12 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		turnUI = newLineTurnUIWithCapabilities(config, inputReader, state.outputCapabilities)
 	}
 	turnUI.UserMessagePersistenceStarted()
-	persistErr := persistUserMessageForTurn(ctx, state.session, userMsg, reuseUser)
+	var persistErr error
+	if tui, ok := turnUI.(*gotuiTurnUI); ok && len(tui.turn.reportIDs) > 0 && !reuseUser {
+		persistErr = state.session.AddReportMessage(ctx, userMsg, tui.turn.reportIDs)
+	} else {
+		persistErr = persistUserMessageForTurn(ctx, state.session, userMsg, reuseUser)
+	}
 	turnUI.UserMessagePersistenceFinished(persistErr == nil)
 	if persistErr != nil {
 		return 1, fmt.Errorf("failed to persist user message: %w", persistErr)

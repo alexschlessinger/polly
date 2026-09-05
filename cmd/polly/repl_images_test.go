@@ -196,6 +196,7 @@ func TestAssistantAndToolResultsAttachImageSidecars(t *testing.T) {
 	m := newReplModel()
 	m.imageBaseDir = dir
 	m.appendAssistant("![result](result.png)")
+	m.renderPendingMarkdown()
 	if len(m.transcript[m.currentAssistant].images) != 1 {
 		t.Fatalf("assistant sidecar = %#v", m.transcript)
 	}

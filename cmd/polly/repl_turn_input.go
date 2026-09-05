@@ -20,6 +20,7 @@ import (
 type managedTurnInput struct {
 	displayText string
 	userMessage messages.ChatMessage
+	reportIDs   []int64
 }
 
 // turnPersistenceAck belongs to one logical user turn. Provider goroutines can
@@ -158,6 +159,7 @@ func (m *replModel) restoreQueuedImagesAfterReset(ctx context.Context, queue []q
 
 func cloneManagedTurn(turn managedTurnInput) managedTurnInput {
 	turn.userMessage = cloneChatMessage(turn.userMessage)
+	turn.reportIDs = append([]int64(nil), turn.reportIDs...)
 	return turn
 }
 
@@ -207,7 +209,7 @@ func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
 // that may still be streaming. The transcript, rather than the status bar, is
 // the visible acknowledgement that Polly retained the input.
 func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
-	if len(m.transcript) > 0 && m.transcript[len(m.transcript)-1].text != "" {
+	if len(m.transcript) > 0 && m.transcriptEntryHasContent(len(m.transcript)-1) {
 		m.appendTranscriptEntry("")
 	}
 	entry := formattedUserPrompt(item.text) + "\n  " + styled("(queued)", "muted", "")

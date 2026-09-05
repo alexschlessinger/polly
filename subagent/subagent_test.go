@@ -339,3 +339,34 @@ func TestToolFreesSlotForBackgroundChildWithoutDone(t *testing.T) {
 		}
 	}
 }
+
+func TestCanceledBlockingCallKeepsTheRunningChildSlot(t *testing.T) {
+	settled := make(chan struct{})
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	var started atomic.Int32
+	tool := NewTool(func(ctx context.Context, req Request) (Result, error) {
+		if started.Add(1) == 1 {
+			cancelFirst()
+			return Result{Session: "still running", Done: settled}, context.Canceled
+		}
+		return Result{Text: "done"}, nil
+	}, WithMaxConcurrent(1))
+	if _, err := tool.Execute(firstCtx, map[string]any{"task": "first"}); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if _, err := tool.Execute(ctx, map[string]any{"task": "second"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second spawn bypassed the occupied slot: %v", err)
+	}
+	if started.Load() != 1 {
+		t.Fatalf("started %d children with limit 1", started.Load())
+	}
+	close(settled)
+	ctx, cancelNext := context.WithTimeout(context.Background(), time.Second)
+	defer cancelNext()
+	if _, err := tool.Execute(ctx, map[string]any{"task": "third"}); err != nil {
+		t.Fatal(err)
+	}
+}

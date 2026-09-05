@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -79,57 +80,97 @@ func (t *gotuiTurnUI) RunChild(ctx context.Context, req subagent.Request) (subag
 	if r == nil || r.opener == nil || r.opener.spawn == nil {
 		return subagent.Result{}, errNoChildHost
 	}
-	child, err := r.opener.spawn(ctx, t.state, req)
+	t.model.mu.Lock()
+	parent := t.state.childSnapshot()
+	t.model.mu.Unlock()
+	return r.runChild(ctx, t.model, parent, req, toolCallFrom(ctx).ID)
+}
+
+// runChild prepares the session and screen off the event loop. A launch has
+// one owner: either the loop adopts it, or this goroutine closes it. The
+// lifetime channel always follows the child, even when its caller cancels.
+func (r *managedREPL) runChild(ctx context.Context, parentModel *replModel, parent *conversationState, req subagent.Request, callID string) (subagent.Result, error) {
+	if !r.work.begin() {
+		return subagent.Result{}, context.Canceled
+	}
+	defer r.work.wg.Done()
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(r.work.ctx, cancel)
+	defer stop()
+	defer cancel()
+	child, err := r.opener.spawn(ctx, parent, req)
 	if err != nil {
 		return subagent.Result{}, err
 	}
-	var waiter chan childReport
-	if !req.Background {
-		waiter = make(chan childReport, 1)
-	}
-	callID := toolCallFrom(ctx).ID
-	type outcome struct {
-		tab *replTab
-		err error
-	}
-	spawned := make(chan outcome, 1)
-	launch := func() {
-		w := waiter
-		if ctx.Err() != nil {
-			// The call stopped waiting before the tab existed; the child
-			// runs on and reports the way a background child does.
-			w = nil
-		}
-		tab, err := r.spawnChildTab(t.model, child, req, w, callID)
-		spawned <- outcome{tab, err}
-	}
-	// The loop may be gone, or leaving, by the time it would take the
-	// launch; a canceled call does not wait on it.
-	select {
-	case r.uiTasks <- launch:
-	case <-ctx.Done():
+	name, model, err := r.newTabModelContext(ctx, child)
+	if err != nil {
 		_ = child.Close()
-		return subagent.Result{}, context.Cause(ctx)
+		return subagent.Result{}, err
 	}
-	var started outcome
+	tab := &replTab{name: name, state: child, model: model, report: &childTurnUI{}, settled: make(chan struct{})}
+	if !req.Background {
+		tab.waiter = make(chan childReport, 1)
+		tab.waitCtx = ctx
+	}
+	waiter := tab.waiter
+	res := subagent.Result{Session: name, Done: tab.settled}
+	var handoff sync.Mutex
+	adopted, abandoned := false, false
+	spawned := make(chan error, 1)
+	launch := func() {
+		handoff.Lock()
+		defer handoff.Unlock()
+		if abandoned {
+			return
+		}
+		err := context.Cause(ctx)
+		if err == nil {
+			err = r.spawnChildTab(parentModel, tab, req, callID)
+		}
+		adopted = err == nil
+		spawned <- err
+	}
+	cleanup := func() {
+		handoff.Lock()
+		abandoned = !adopted
+		owned := adopted
+		handoff.Unlock()
+		if !owned {
+			_ = child.Close()
+			tab.markSettled()
+		} else if waiter != nil {
+			r.childDoneWaiting(tab, waiter, true)
+		}
+	}
+	if !r.postUI(ctx, launch) {
+		cleanup()
+		err := context.Cause(ctx)
+		if err == nil {
+			err = context.Canceled
+		}
+		return res, err
+	}
 	select {
-	case started = <-spawned:
+	case err := <-spawned:
+		if err != nil {
+			cleanup()
+			return res, err
+		}
 	case <-ctx.Done():
-		return subagent.Result{}, context.Cause(ctx)
+		cleanup()
+		return res, context.Cause(ctx)
 	}
-	if started.err != nil {
-		return subagent.Result{}, started.err
-	}
-	tab := started.tab
 	if req.Background {
-		return subagent.Result{Session: tab.name, Started: true, Done: tab.settled}, nil
+		res.Started = true
+		return res, nil
 	}
 	select {
 	case rep := <-waiter:
+		r.childDoneWaiting(tab, waiter, false)
 		return rep.result, rep.err
 	case <-ctx.Done():
-		r.uiTasks <- func() { r.orphanChild(tab) }
-		return subagent.Result{Session: tab.name}, context.Cause(ctx)
+		cleanup()
+		return res, context.Cause(ctx)
 	}
 }
 
@@ -137,25 +178,17 @@ func (t *gotuiTurnUI) RunChild(ctx context.Context, req subagent.Request) (subag
 // starts its first turn on the brief, and, for a blocking spawn, points the
 // parent's tool row at it so the row can show the child's progress. Runs on
 // the event loop with no model lock held.
-func (r *managedREPL) spawnChildTab(parentModel *replModel, child *conversationState, req subagent.Request, waiter chan childReport, callID string) (*replTab, error) {
+func (r *managedREPL) spawnChildTab(parentModel *replModel, tab *replTab, req subagent.Request, callID string) error {
 	if r.quitting {
-		// Every turn has been told to stop; a child started now would be
-		// outside that sweep and run tools after the user asked to leave.
-		_ = child.Close()
-		return nil, errors.New("polly is quitting")
+		return errors.New("polly is quitting")
 	}
 	pi := r.tabIndexOfModel(parentModel)
 	if pi < 0 || r.runTurn == nil {
-		_ = child.Close()
-		return nil, errors.New("the parent tab is closed")
+		return errors.New("the parent tab is closed")
 	}
 	parent := r.tabs[pi]
-	name, m, err := r.newTabModel(child)
-	if err != nil {
-		_ = child.Close()
-		return nil, err
-	}
-	tab := &replTab{name: name, state: child, model: m, parent: parent, parentName: parent.name, report: &childTurnUI{}, waiter: waiter, settled: make(chan struct{})}
+	child, m, name := tab.state, tab.model, tab.name
+	tab.parent, tab.parentName = parent, parent.name
 	if child.session != nil {
 		tab.stopWatch = context.AfterFunc(child.session.Context(), r.wakeTabs)
 	}
@@ -177,7 +210,7 @@ func (r *managedREPL) spawnChildTab(parentModel *replModel, child *conversationS
 		parentModel.mu.Unlock()
 	}
 	r.model.mu.Lock()
-	if waiter == nil {
+	if tab.waiter == nil {
 		label := req.Label
 		if label == "" {
 			label = name
@@ -185,7 +218,7 @@ func (r *managedREPL) spawnChildTab(parentModel *replModel, child *conversationS
 		r.model.appendNoticeLine(fmt.Sprintf("agent %s started in tab %d · /tab %s", label, at+1, name))
 	}
 	r.model.mu.Unlock()
-	return tab, nil
+	return nil
 }
 
 // deliverChildReport hands a settled child's first reply to whoever waits
@@ -197,10 +230,10 @@ func (r *managedREPL) deliverChildReport(ctx context.Context, tab *replTab, err 
 	}
 	rec := tab.report
 	tab.report = nil
-	tab.markSettled()
-	res := subagent.Result{Session: tab.name}
+	res := subagent.Result{Session: tab.name, Done: tab.settled}
 	res.Text, res.InputTokens, res.OutputTokens = rec.result()
-	if tab.waiter != nil {
+	if tab.waiter != nil && (tab.waitCtx == nil || tab.waitCtx.Err() == nil) {
+		tab.deliveryPending = true
 		select {
 		case tab.waiter <- childReport{result: res, err: err}:
 		default:
@@ -208,6 +241,7 @@ func (r *managedREPL) deliverChildReport(ctx context.Context, tab *replTab, err 
 		tab.waiter = nil
 		return
 	}
+	tab.waiter = nil
 	r.postChildReport(ctx, tab, res, err, runTurn)
 }
 
@@ -216,6 +250,40 @@ func (r *managedREPL) deliverChildReport(ctx context.Context, tab *replTab, err 
 // time it is open and idle, wherever that is. When the parent is an idle tab
 // here, that is now. Runs on the event loop with no model lock held.
 func (r *managedREPL) postChildReport(ctx context.Context, child *replTab, res subagent.Result, err error, runTurn turnRunner) {
+	report := storedChildReport(res, err)
+	if child.state == nil || child.state.session == nil {
+		return
+	}
+	child.reporting = true
+	done := make(chan struct{})
+	child.reportWriteDone = done
+	session := child.state.session
+	if !r.background(func() {
+		defer close(done)
+		writeErr := writeChildReport(session, report)
+		if writeErr != nil {
+			r.work.recordError(fmt.Errorf("deliver agent report: %w", writeErr))
+		}
+		r.postUI(r.work.ctx, func() {
+			child.reporting = false
+			if writeErr != nil {
+				r.model.mu.Lock()
+				r.model.appendNoticeLine(fmt.Sprintf("agent %s's reply could not be delivered to %s: %s", child.name, child.parentName, writeErr))
+				r.model.mu.Unlock()
+				return
+			}
+			if parent := r.liveParent(child); parent != nil {
+				r.pullReports(r.runCtx, parent)
+			}
+			r.closeSpentOrphan(child)
+		})
+	}) {
+		child.reporting = false
+		close(done)
+	}
+}
+
+func storedChildReport(res subagent.Result, err error) sessions.Report {
 	report := sessions.Report{Status: sessions.ReportFinished, Text: res.Text, InputTokens: res.InputTokens, OutputTokens: res.OutputTokens}
 	switch {
 	case errors.Is(err, context.Canceled):
@@ -224,18 +292,14 @@ func (r *managedREPL) postChildReport(ctx context.Context, child *replTab, res s
 		report.Status = sessions.ReportFailed
 		report.Error = err.Error()
 	}
-	if child.state == nil || child.state.session == nil {
-		return
-	}
-	if err := child.state.session.Report(ctx, report); err != nil {
-		r.model.mu.Lock()
-		r.model.appendNoticeLine(fmt.Sprintf("agent %s's reply could not be delivered to %s: %s", child.name, child.parentName, err.Error()))
-		r.model.mu.Unlock()
-		return
-	}
-	if parent := r.liveParent(child); parent != nil && r.pullReports(ctx, parent) {
-		r.startQueued(ctx, parent, runTurn)
-	}
+	return report
+}
+
+func writeChildReport(session sessions.Session, report sessions.Report) error {
+	// A finished child's report survives cancellation of the parent turn.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return session.Report(ctx, report)
 }
 
 // liveParent is child's parent tab while it is open here, else nil.
@@ -246,13 +310,12 @@ func (r *managedREPL) liveParent(child *replTab) *replTab {
 	return nil
 }
 
-// pullReports takes the reports waiting in the store for tab's session and
-// queues them as its next input: one message, echoed by its headers alone.
-// Nothing is taken while the tab is busy or polly is leaving; a report left
-// in the store waits, one taken into the queue would not. It reports whether
-// input was queued. Runs on the event loop with no model lock held.
+// pullReports schedules an idle tab's inbox read. Its completion queues one
+// parent input, echoed by its headers alone, before draining other queued
+// inputs. Reports remain in the store until that input is persisted. Returns
+// whether a read started; runs on the event loop with no model lock held.
 func (r *managedREPL) pullReports(ctx context.Context, tab *replTab) bool {
-	if r.quitting || tab.turnDone != nil || tab.state == nil || tab.state.session == nil {
+	if r.quitting || tab.reportsLoading || tab.turnDone != nil || tab.state == nil || tab.state.session == nil {
 		return false
 	}
 	m := tab.model
@@ -262,46 +325,87 @@ func (r *managedREPL) pullReports(ctx context.Context, tab *replTab) bool {
 	if busy {
 		return false
 	}
-	reports, err := tab.state.session.TakeReports(ctx)
-	if err != nil {
-		// A lost lease drops the tab on its own; anything else is news.
-		if tab.state.session.Context().Err() == nil {
-			r.model.mu.Lock()
-			r.model.appendNoticeLine("agent reports for " + tab.name + ": " + err.Error())
-			r.model.mu.Unlock()
-		}
+	tab.reportsLoading = true
+	session := tab.state.session
+	if !r.background(func() {
+		readCtx, cancel := context.WithCancel(ctx)
+		stop := context.AfterFunc(r.work.ctx, cancel)
+		defer stop()
+		defer cancel()
+		reports, err := session.PeekReports(readCtx)
+		r.postUI(readCtx, func() {
+			tab.reportsLoading = false
+			if r.quitting || r.tabIndexOfModel(m) < 0 {
+				return
+			}
+			if err != nil {
+				if session.Context().Err() == nil {
+					r.model.mu.Lock()
+					r.model.appendNoticeLine("agent reports for " + tab.name + ": " + err.Error())
+					r.model.mu.Unlock()
+				}
+				return
+			}
+			m.mu.Lock()
+			// A poll may overlap another input or a restored report draft.
+			seen := make(map[int64]bool)
+			remember := func(turn managedTurnInput) {
+				for _, id := range turn.reportIDs {
+					seen[id] = true
+				}
+			}
+			if m.busy {
+				remember(m.currentTurn)
+			}
+			if m.restoredDraft != nil {
+				remember(*m.restoredDraft)
+			}
+			for _, item := range m.queue {
+				if item.turn != nil {
+					remember(*item.turn)
+				}
+			}
+			var bodies []string
+			var ids []int64
+			display := ""
+			for _, rep := range reports {
+				if seen[rep.ID] {
+					continue
+				}
+				bodies = append(bodies, reportBody(rep))
+				ids = append(ids, rep.ID)
+				display = reportHeader(rep)
+			}
+			if len(ids) > 1 {
+				display = fmt.Sprintf("%d agent reports", len(ids))
+			}
+			if len(ids) > 0 {
+				turn := managedTurnInput{displayText: display, userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: strings.Join(bodies, "\n\n")}, reportIDs: ids}
+				m.queue = slices.Insert(m.queue, 0, queuedREPLInput{text: display, turn: &turn})
+			}
+			busy := m.busy
+			m.mu.Unlock()
+			if !busy {
+				r.startQueued(r.runCtx, tab, r.runTurn)
+			}
+		})
+	}) {
+		tab.reportsLoading = false
 		return false
 	}
-	if len(reports) == 0 {
-		return false
-	}
-	bodies := make([]string, len(reports))
-	for i, rep := range reports {
-		bodies[i] = reportBody(rep)
-	}
-	display := reportHeader(reports[0])
-	if n := len(reports); n > 1 {
-		display = fmt.Sprintf("%d agent reports", n)
-	}
-	turn := managedTurnInput{displayText: display, userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: strings.Join(bodies, "\n\n")}}
-	m.mu.Lock()
-	m.queue = slices.Insert(m.queue, 0, queuedREPLInput{text: display, turn: &turn})
-	m.mu.Unlock()
 	return true
 }
 
-// pullAllReports pulls for every idle tab and runs what that queued, at
-// startup and on the report poll. It reports whether any tab got input.
-// Runs on the event loop with no model lock held.
+// pullAllReports schedules a read for every idle tab. Results return through
+// uiTasks; a report stays durable until its parent input is persisted.
 func (r *managedREPL) pullAllReports(ctx context.Context, runTurn turnRunner) bool {
-	queued := false
-	for _, tab := range append([]*replTab(nil), r.tabs...) {
+	started := false
+	for _, tab := range r.tabs {
 		if r.pullReports(ctx, tab) {
-			queued = true
-			r.startQueued(ctx, tab, runTurn)
+			started = true
 		}
 	}
-	return queued
+	return started
 }
 
 // reportHeader is a report's one-line summary: how the child ended. Headers
@@ -330,11 +434,11 @@ func reportBody(rep sessions.Report) string {
 func (r *managedREPL) closeSpentChildren(parent *replTab) {
 	for i := len(r.tabs) - 1; i >= 0; i-- {
 		tab := r.tabs[i]
-		if tab.parent != parent || tab.viewed || tab.report != nil || tab.turnDone != nil || tab.model == r.model {
+		if tab.parent != parent || tab.viewed || tab.report != nil || tab.reporting || tab.deliveryPending || tab.turnDone != nil || tab.model == r.model {
 			continue
 		}
 		r.removeTab(i)
-		_ = tab.state.Close()
+		r.closeTabState(tab)
 	}
 }
 
@@ -343,7 +447,7 @@ func (r *managedREPL) closeSpentChildren(parent *replTab) {
 // the report, so nothing here needs the tab. It reports whether it closed the
 // tab. Runs on the event loop with no model lock held.
 func (r *managedREPL) closeSpentOrphan(tab *replTab) bool {
-	if tab.parentName == "" || tab.parent != nil || tab.viewed || tab.report != nil || tab.turnDone != nil || tab.model == r.model {
+	if tab.parentName == "" || tab.parent != nil || tab.viewed || tab.report != nil || tab.reporting || tab.deliveryPending || tab.turnDone != nil || tab.model == r.model {
 		return false
 	}
 	i := r.tabIndexOfModel(tab.model)
@@ -351,23 +455,55 @@ func (r *managedREPL) closeSpentOrphan(tab *replTab) bool {
 		return false
 	}
 	r.removeTab(i)
-	_ = tab.state.Close()
+	r.closeTabState(tab)
 	return true
 }
 
 // orphanChild drops the waiter of a child whose blocking call stopped
 // waiting. A report already handed to that waiter is posted instead. Runs
 // on the event loop with no model lock held.
-func (r *managedREPL) orphanChild(tab *replTab) {
-	if tab.waiter == nil {
-		return
-	}
+func (r *managedREPL) orphanChild(tab *replTab, waiter chan childReport) {
+	tab.waiter = nil
 	select {
-	case rep := <-tab.waiter:
-		tab.waiter = nil
+	case rep := <-waiter:
 		r.postChildReport(r.runCtx, tab, rep.result, rep.err, r.runTurn)
 	default:
-		tab.waiter = nil
+	}
+}
+
+// A buffered reply is not spent until its caller accepts it or gives it back
+// for durable delivery. Acknowledgement is asynchronous, including when the
+// UI queue is full; shutdown drains a returned reply before closing sessions.
+func (r *managedREPL) childDoneWaiting(tab *replTab, waiter chan childReport, abandoned bool) {
+	finish := func() {
+		ack := make(chan struct{})
+		if r.postUI(r.work.ctx, func() {
+			if abandoned {
+				r.orphanChild(tab, waiter)
+			}
+			tab.deliveryPending = false
+			if parent := r.liveParent(tab); parent != nil && parent.turnDone == nil {
+				r.closeSpentChildren(parent)
+			}
+			r.closeSpentOrphan(tab)
+			close(ack)
+		}) {
+			select {
+			case <-ack:
+				return
+			case <-r.work.ctx.Done():
+			}
+		}
+		if abandoned {
+			select {
+			case rep := <-waiter:
+				r.work.recordError(writeChildReport(tab.state.session, storedChildReport(rep.result, rep.err)))
+			default:
+			}
+		}
+	}
+	if !r.background(finish) {
+		finish()
 	}
 }
 
@@ -394,15 +530,20 @@ func (r *managedREPL) applySpawnRequests() {
 		return
 	}
 	for _, sr := range requests {
-		child, err := r.opener.spawn(r.runCtx, sr.parent.state, sr.req)
-		if err == nil {
-			_, err = r.spawnChildTab(sr.parent.model, child, sr.req, nil, "")
-		}
-		if err != nil {
-			r.model.mu.Lock()
-			r.model.appendErrorLine("could not spawn an agent: " + err.Error())
-			r.model.mu.Unlock()
-		}
+		sr.parent.model.mu.Lock()
+		parent := sr.parent.state.childSnapshot()
+		sr.parent.model.mu.Unlock()
+		ctx := r.runCtx
+		r.background(func() {
+			_, err := r.runChild(ctx, sr.parent.model, parent, sr.req, "")
+			if err != nil {
+				r.postUI(r.work.ctx, func() {
+					r.model.mu.Lock()
+					r.model.appendErrorLine("could not spawn an agent: " + err.Error())
+					r.model.mu.Unlock()
+				})
+			}
+		})
 	}
 }
 
@@ -419,13 +560,12 @@ func (m *replModel) attachChildToTool(callID string, child *replModel, name stri
 	}
 }
 
-// childActivity describes what a child tab is doing, for its parent's tool
-// row: what its turn is up to and how many tools it has called. The caller
-// holds the parent's lock and the child is locked here; the parent is the
-// visible tab when its rows repaint, so this is the visible-over-hidden
-// order the tab code keeps.
-func childActivity(child *replModel) string {
-	child.mu.Lock()
+// childActivity samples a child's state for its parent's tool row. Painting
+// never waits for the hidden model; a busy lock retains the previous label.
+func childActivity(child *replModel) (string, bool) {
+	if !child.mu.TryLock() {
+		return "", false
+	}
 	defer child.mu.Unlock()
 	var parts []string
 	switch {
@@ -450,7 +590,7 @@ func childActivity(child *replModel) string {
 	default:
 		parts = append(parts, fmt.Sprintf("%d tools", n))
 	}
-	return strings.Join(parts, " · ")
+	return strings.Join(parts, " · "), true
 }
 
 // turnToolCallCount counts the tool calls the current turn has made. Caller

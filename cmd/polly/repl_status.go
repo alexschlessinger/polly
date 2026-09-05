@@ -394,6 +394,8 @@ const notifyMinTurn = 10 * time.Second
 
 // pushNotice queues a desktop-notification body. Caller must hold m.mu.
 func (m *replModel) pushNotice(body string) {
+	m.notificationMu.Lock()
+	defer m.notificationMu.Unlock()
 	m.notices = append(m.notices, body)
 }
 
@@ -402,6 +404,8 @@ func (m *replModel) pushNotice(body string) {
 // ping. Drained-but-dropped notices are gone for good; going unfocused later
 // must not replay stale news. Caller must hold m.mu.
 func (m *replModel) takeNotices() []string {
+	m.notificationMu.Lock()
+	defer m.notificationMu.Unlock()
 	out := m.notices
 	m.notices = nil
 	if !m.focusKnown || m.focused {

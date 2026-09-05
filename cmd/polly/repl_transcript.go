@@ -124,12 +124,12 @@ func (m *replModel) appendTranscriptEntry(text string) int {
 func (m *replModel) resetAssistantStream() {
 	m.streamRaw.Reset()
 	m.streamShown = 0
-	m.streamDeferredTable = false
+	m.streamCodeCache = nil
 }
 
 // appendAssistant accumulates streamed model output into the current
-// assistant entry and renders it (renderAssistantStream) while its tab is
-// on screen; a hidden tab keeps only the raw text until it shows again.
+// assistant entry. Provider chunk frequency never determines paint frequency;
+// the event loop renders the accumulated prefix once per visible frame.
 func (m *replModel) appendAssistant(text string) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -143,8 +143,22 @@ func (m *replModel) appendAssistant(text string) {
 		m.currentAssistant = m.appendTranscriptEntry("")
 	}
 	m.streamRaw.WriteString(text)
-	if m.hidden {
-		return
+}
+
+// renderPendingMarkdown runs only for a visible paint, never on a provider
+// callback or when a hidden child settles. Caller holds m.mu.
+func (m *replModel) renderPendingMarkdown() {
+	if m.markdownPending {
+		for i := range m.transcript {
+			entry := &m.transcript[i]
+			if entry.markdown == "" {
+				continue
+			}
+			rendered, images, _ := renderMarkdownWithCache(entry.markdown, m.imageBaseDir, false, entry.codeCache)
+			entry.markdown, entry.codeCache = "", nil
+			m.setTranscriptEntry(i, rendered, images)
+		}
+		m.markdownPending = false
 	}
 	m.renderAssistantStream()
 }
@@ -163,26 +177,10 @@ func (m *replModel) renderAssistantStream() {
 		return
 	}
 	m.streamShown = len(visible)
-	rendered, images, deferred := renderMarkdownWithLocalImages(visible, m.imageBaseDir, true)
-	m.streamDeferredTable = deferred
-	m.setTranscriptEntry(m.currentAssistant, rendered, images)
-}
-
-// finishAssistantStream renders any text still held back by the streaming
-// holdback — at settle time the message is final, so everything shows. A
-// table that streamed in its unaligned form also forces the settle render:
-// holdback never withholds pipe rows, so streamShown alone would miss it.
-func (m *replModel) finishAssistantStream() {
-	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
-		return
+	if m.streamCodeCache == nil {
+		m.streamCodeCache = &markdownCodeCache{}
 	}
-	raw := m.streamRaw.String()
-	if raw == "" || (m.streamShown >= len(raw) && !m.streamDeferredTable) {
-		return
-	}
-	m.streamShown = len(raw)
-	m.streamDeferredTable = false
-	rendered, images, _ := renderMarkdownWithLocalImages(raw, m.imageBaseDir, false)
+	rendered, images, _ := renderMarkdownWithCache(visible, m.imageBaseDir, true, m.streamCodeCache)
 	m.setTranscriptEntry(m.currentAssistant, rendered, images)
 }
 
@@ -195,13 +193,16 @@ func (m *replModel) finishAssistantBlock(label string) bool {
 	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
 		return false
 	}
-	m.finishAssistantStream()
 	idx := m.currentAssistant
-	content := strings.TrimRight(m.transcript[idx].text, "\r\n")
-	if content == "" {
+	content := strings.TrimRight(m.streamRaw.String(), "\r\n")
+	if strings.TrimSpace(content) == "" {
+		content = ""
 		m.deleteTranscriptEntry(idx)
 	} else {
-		m.setTranscriptText(idx, content)
+		m.transcript[idx].markdown = content
+		m.transcript[idx].codeCache = m.streamCodeCache
+		m.markdownPending = true
+		m.visual.invalidate()
 	}
 	m.currentAssistant = -1
 	m.resetAssistantStream()
@@ -243,10 +244,15 @@ func (m *replModel) appendUserPrompt(p string) {
 // settled transcript activity and the next user turn. No completion path adds
 // spacing, which keeps an answer stationary when its status changes to done.
 func (m *replModel) appendTurnSeparator() {
-	if len(m.transcript) == 0 || m.transcript[len(m.transcript)-1].text == "" {
+	if len(m.transcript) == 0 || !m.transcriptEntryHasContent(len(m.transcript)-1) {
 		return
 	}
 	m.appendLine("")
+}
+
+func (m *replModel) transcriptEntryHasContent(i int) bool {
+	entry := m.transcript[i]
+	return entry.text != "" || entry.markdown != "" || (i == m.currentAssistant && strings.TrimSpace(m.streamRaw.String()) != "")
 }
 
 // streamCursorGlyph is the caret appended to the streaming assistant block —
@@ -288,6 +294,7 @@ func (m *replModel) appendErrorLine(text string) {
 
 func (m *replModel) clearDisplay() {
 	m.transcript = nil
+	m.markdownPending = false
 	m.currentAssistant = -1
 	m.activeTools = nil
 	m.activeToolsPhase = -1
