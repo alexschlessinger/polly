@@ -260,6 +260,7 @@ func (m *replModel) toggleAgentDisclosureGroup(ids []int64) bool {
 	if _, ok := m.agentField(ids, false, false); !ok {
 		return false
 	}
+	m.noteDisclosure(turnDockOverlayAgents, ids[0], false)
 	expand := !m.agentsExpanded(ids)
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(ids), func(bool) {
 		for _, id := range ids {
@@ -397,6 +398,9 @@ func (r *managedREPL) updateChildAgent(child *replTab) bool {
 					a.origin = child.agentActivity
 				}
 				if a.session != child.name || a.status != child.agentStatus || a.active != child.agentActive {
+					if a.active && !child.agentActive && child.agentStatus == "done" {
+						m.noteAgentCompletion(record.id)
+					}
 					a.session, a.status, a.active, a.attached = child.name, child.agentStatus, child.agentActive, true
 					changed = true
 				}

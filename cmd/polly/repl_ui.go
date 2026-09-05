@@ -58,7 +58,8 @@ type transcriptEntry struct {
 }
 
 type replModel struct {
-	mu sync.Mutex
+	mu          sync.Mutex
+	affordances affordanceState
 
 	// transcript is the accumulated content rendered into the upper pane.
 	// Each entry is a logical "block" (user prompt, assistant turn, notice,
@@ -101,10 +102,11 @@ type replModel struct {
 	// prefix renders at most once per frame, reusing code highlighting, while unclosed inline
 	// markup near the tail is held back (safeVisibleLen) so text lands on
 	// screen already styled instead of visibly transforming.
-	streamRaw       strings.Builder
-	streamShown     int
-	streamCodeCache *markdownCodeCache
-	markdownPending bool
+	streamRaw        strings.Builder
+	streamShown      int
+	streamTypewriter assistantTypewriter
+	streamCodeCache  *markdownCodeCache
+	markdownPending  bool
 
 	visual transcriptVisualCache
 
@@ -242,6 +244,7 @@ type replModel struct {
 type transcriptVisualBlock struct {
 	key               string
 	text              string
+	cells             []ui.Cell
 	followed          bool
 	rows              [][]ui.Cell
 	images            []transcriptImage
@@ -393,7 +396,8 @@ type managedREPL struct {
 
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
-	fx *terminalFX
+	fx          *terminalFX
+	affordanceW *affordanceLayer
 	// images owns native Kitty/Sixel placements. Nil means captions/paths only.
 	images *terminalImageManager
 
@@ -551,8 +555,11 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	// flip the gate open.
 	ui.DefaultBackend.Screen.EnableFocus()
 	r.fx = newTerminalFX(ui.DefaultBackend.Screen)
+	r.affordanceW = &affordanceLayer{}
 	r.images = newTerminalImageManager(ui.DefaultBackend.Screen)
 	r.model.mu.Lock()
+	r.model.affordances.enabled = ui.DefaultBackend.Screen.Colors() > 0
+	r.model.affordances.inputAt = time.Now()
 	r.model.nativeImages = r.images != nil
 	r.model.visual.invalidate()
 	r.model.mu.Unlock()
@@ -664,6 +671,8 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 		case <-ticker.C:
 			if r.needsTick() {
 				r.render()
+			} else {
+				r.tickAffordances(time.Now())
 			}
 		case <-reportPoll.C:
 			if r.pullAllReports(ctx, runTurn) {
@@ -722,9 +731,9 @@ func (r *managedREPL) appendPendingSandboxWarningsLocked() bool {
 }
 
 // needsTick reports whether the periodic render tick should repaint. Only a
-// live turn animates (spinner, breathing tool arrow, elapsed timers); at idle
-// nothing changes between events, so the tick repaint is skipped — otherwise
-// the REPL would redraw the full screen ~20×/sec while just sitting at a prompt.
+// live turn needs whole-frame refreshes (spinners and elapsed timers). Idle
+// affordance feedback has a separate cell-only tick, avoiding a full repaint
+// ~20 times a second while sitting at the prompt.
 func (r *managedREPL) needsTick() bool {
 	if len(r.pendingAgentUpdates) > 0 {
 		return true
@@ -1181,7 +1190,11 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	case focusLostID:
 		m.focusKnown, m.focused = true, false
+		m.resetAffordances()
 		return false
+	}
+	if e.Type == ui.KeyboardEvent {
+		m.affordances.inputAt = time.Now()
 	}
 
 	// The warning that turns run in other tabs holds for the very next

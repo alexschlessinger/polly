@@ -192,6 +192,14 @@ gets every result. Durable history keeps the full exchange.
 
 Both collapse when the turn ends. Both reopen later, even after a reload.
 
+Small accents acknowledge disclosure toggles, completed agent counts, new
+context usage, and queued input. A delivered agent report briefly lights
+`← Back to caller`. The empty composer has a slow idle cursor; typing restores
+the terminal cursor. Incoming assistant text has a quick typewriter reveal
+that catches up immediately when the response finishes. These effects use
+your terminal's colors, pause while unfocused, and are omitted in quiet mode
+or with `NO_COLOR`.
+
 ### Interrupted turns
 
 A failed or canceled turn keeps everything it finished. Each completed

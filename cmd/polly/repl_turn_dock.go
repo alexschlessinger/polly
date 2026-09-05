@@ -523,6 +523,7 @@ func (m *replModel) toggleTurnTrailerOverlay(record *turnTrailerRecord, overlay 
 	if record == nil || (overlay != turnDockOverlayThought && overlay != turnDockOverlayTools && overlay != turnDockOverlayImages && overlay != turnDockOverlayAgents) {
 		return false
 	}
+	m.noteDisclosure(overlay, record.id, true)
 	if open := m.turnTrailers[m.openTurnTrailerID]; open != nil && open.id != record.id {
 		open.dock.overlay = turnDockOverlayNone
 		m.refreshTurnTrailer(open)
