@@ -118,7 +118,7 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	}
 	var record *toolDisclosureRecord
 	for _, c := range calls {
-		record = t.model.appendToolStartRow(c.ID, toolLabel(c))
+		record = t.model.appendToolCallStart(c)
 	}
 	t.model.refreshToolDisclosure(record)
 }
@@ -214,6 +214,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	record := m.currentToolDisclosure()
 	if rowIndex, ok := m.takeActiveTool(call.ID); ok && record != nil && rowIndex >= 0 && rowIndex < len(record.rows) {
 		row := &record.rows[rowIndex]
+		row.finishAgentCall(call, denied, err)
 		row.line = final
 		row.images = append([]transcriptImage(nil), images...)
 		row.settled = true
@@ -226,8 +227,14 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 			images:  append([]transcriptImage(nil), images...),
 			settled: true,
 		})
+		row := &record.rows[len(record.rows)-1]
+		row.setCall(call)
+		row.finishAgentCall(call, denied, err)
 	}
 	m.refreshToolDisclosure(record)
+	if call.Name == "spawn_agent" {
+		m.refreshAgentRecord(record)
+	}
 	// The disclosure stays live past the batch: an unbroken continuation's
 	// next batch folds into it. Assistant prose or turn settlement closes it.
 }
@@ -252,6 +259,7 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 			settled: true,
 		})
 		row = &record.rows[len(record.rows)-1]
+		row.setCall(call)
 	}
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
 		row.inspectionImages = append([]transcriptImage(nil), images...)

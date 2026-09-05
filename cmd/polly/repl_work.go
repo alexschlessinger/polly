@@ -74,11 +74,14 @@ func (r *managedREPL) postUI(ctx context.Context, fn func()) bool {
 
 // closeTabState waits off the event loop for a child's final report write.
 func (r *managedREPL) closeTabState(tab *replTab) {
-	done, state, name := tab.reportWriteDone, tab.state, tab.name
+	done, agentDone, state, name := tab.reportWriteDone, tab.agentWriteDone, tab.state, tab.name
 	if state == nil {
 		return
 	}
 	r.background(func() {
+		if agentDone != nil {
+			<-agentDone
+		}
 		if done != nil {
 			<-done
 		}

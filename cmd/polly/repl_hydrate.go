@@ -85,8 +85,9 @@ func resumedNotice(contextName string, totalTurns, showTurns int) string {
 type historyHydrator struct {
 	m *replModel
 
-	toolRows   []toolDisclosureRow   // rows not yet folded into the turn's disclosure
-	tools      *toolDisclosureRecord // the turn's disclosure, once one exists
+	toolRows   []toolDisclosureRow     // rows not yet folded into the turn's disclosure
+	tools      *toolDisclosureRecord   // the turn's disclosure, once one exists
+	toolGroups []*toolDisclosureRecord // prose-separated activity in this turn
 	reasoning  *reasoningRecord
 	turnInput  int
 	turnOutput int
@@ -123,6 +124,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 		m.clearTurnDock()
 	}
 	h.tools = nil
+	h.toolGroups = nil
 	h.reasoning = nil
 	h.turnInput, h.turnOutput = 0, 0
 	m.appendTurnSeparator()
@@ -146,9 +148,15 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 	if content := msg.GetContent(); content != "" {
 		m.appendAssistant(content)
 		m.finishAssistantBlock("")
+		h.tools = nil
 	}
 	for _, call := range msg.ToolCalls {
-		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: call.ID, label: toolDisplayName(call.Name)})
+		row := toolDisclosureRow{callID: call.ID, label: toolDisplayName(call.Name)}
+		row.setCall(call)
+		if row.agent != nil {
+			row.agent.active, row.agent.status = false, "unknown"
+		}
+		h.toolRows = append(h.toolRows, row)
 	}
 	h.lastRole = msg.Role
 }
@@ -158,7 +166,13 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 func (h *historyHydrator) tool(msg messages.ChatMessage) {
 	inspectionImages := inspectionTranscriptImages(msg, h.m.artifactStore)
 	if len(h.toolRows) == 0 {
-		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: msg.ToolCallID, label: toolDisplayName(msg.ToolName)})
+		row := toolDisclosureRow{callID: msg.ToolCallID, label: toolDisplayName(msg.ToolName)}
+		row.setCall(messages.ChatMessageToolCall{ID: msg.ToolCallID, Name: msg.ToolName})
+		// Without the original arguments, success only proves launch success.
+		if row.agent != nil {
+			row.agent.background = true
+		}
+		h.toolRows = append(h.toolRows, row)
 	}
 	pick := -1
 	for i := range h.toolRows {
@@ -174,6 +188,7 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 		}
 	}
 	if pick >= 0 {
+		h.toolRows[pick].hydrateAgentResult(msg)
 		h.toolRows[pick].line = hydratedToolLine(h.toolRows[pick].label, msg)
 		h.toolRows[pick].inspectionImages = inspectionImages
 		h.toolRows[pick].settled = true
@@ -221,6 +236,7 @@ func (h *historyHydrator) flushTools() {
 	}
 	if h.tools == nil {
 		h.tools = h.m.appendCompletedToolDisclosure(h.toolRows)
+		h.toolGroups = append(h.toolGroups, h.tools)
 	} else {
 		for i := range h.toolRows {
 			if h.toolRows[i].line == "" {
@@ -240,6 +256,43 @@ func (h *historyHydrator) flushTools() {
 // place at the end.
 func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 	if len(order) == 0 {
+		return
+	}
+	// Safe display markers cover a whole turn. Apply known calls at their
+	// original prose-separated group. Stripped denied calls have no transcript
+	// position; keep them with the latest batch, as legacy hydration did.
+	if len(h.toolGroups) > 0 {
+		orders := make(map[*toolDisclosureRecord][]durableDisplayToolCall)
+		used := make(map[*toolDisclosureRow]bool)
+		for _, call := range order {
+			target := h.tools
+			if target == nil {
+				target = h.toolGroups[len(h.toolGroups)-1]
+			}
+		search:
+			for _, group := range h.toolGroups {
+				for i := range group.rows {
+					row := &group.rows[i]
+					if !used[row] && ((call.ID != "" && row.callID == call.ID) ||
+						((call.ID == "" || row.callID == "") && row.label == toolDisplayName(call.Name))) {
+						target = group
+						used[row] = true
+						break search
+					}
+				}
+			}
+			orders[target] = append(orders[target], call)
+		}
+		for _, group := range h.toolGroups {
+			localHydrator := historyHydrator{m: h.m, tools: group}
+			localHydrator.applyToolOrder(orders[group])
+		}
+		if missing := orders[nil]; len(missing) > 0 {
+			localHydrator := historyHydrator{m: h.m}
+			localHydrator.applyToolOrder(missing)
+			h.tools = localHydrator.tools
+			h.toolGroups = append(h.toolGroups, h.tools)
+		}
 		return
 	}
 	var existing []toolDisclosureRow
@@ -270,7 +323,12 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 			used[pick] = true
 			row = existing[pick]
 		}
+		row.setCall(messages.ChatMessageToolCall{ID: displayCall.ID, Name: displayCall.Name})
+		if pick < 0 && row.agent != nil {
+			row.agent.active, row.agent.status = false, "unknown"
+		}
 		if displayCall.Denied {
+			row.finishAgentCall(messages.ChatMessageToolCall{}, true, nil)
 			row.line = toolDeniedLine(name)
 			row.images = nil
 			row.settled = true
@@ -286,6 +344,7 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 	}
 	if h.tools == nil {
 		h.tools = h.m.appendCompletedToolDisclosure(ordered)
+		h.toolGroups = append(h.toolGroups, h.tools)
 		return
 	}
 	h.tools.rows = ordered
@@ -308,6 +367,12 @@ func (h *historyHydrator) appendReasoning(text string) {
 func (h *historyHydrator) finishTurn() {
 	h.flushTools()
 	h.m.setHydratedTurnDock(h.reasoning, h.tools, h.turnInput, h.turnOutput)
+	if len(h.toolGroups) > 0 {
+		h.m.turnDock.toolIDs = nil
+		for _, group := range h.toolGroups {
+			h.m.turnDock.toolIDs = append(h.m.turnDock.toolIDs, group.id)
+		}
+	}
 	h.m.attachTurnDockTrailer()
 }
 

@@ -112,8 +112,16 @@ far.
 **In the TUI.** Every child gets a tab, nested under its parent in `/tab`.
 An ordinary tab: switch to it to watch it stream, type to send a
 follow-up, Esc to cancel just that child. Approval and completion notices
-work as for any hidden tab. While a blocking child runs, the parent's tool
-row names its tab and state (`running bash · 3 tools`). A child tab you
+work as for any hidden tab. Model `spawn_agent` calls appear under **Agents**
+beside Thought, Tools, and Images viewed, including failed or denied launches.
+Agents expands independently and lists tasks in launch order; click a task
+label to switch to its child tab or reopen its saved conversation. The row
+tracks the initial delegated run, including background work after the parent
+turn finishes. Later follow-ups in the child leave that outcome unchanged.
+Completed turns collapse the activity controls; Agents stays active while a
+child is working. Saved history restores child links and known outcomes;
+older records with no reliable outcome show `unknown`. `/spawn` keeps its
+existing presentation. A child tab you
 never viewed closes itself once the parent takes its reply, or once it has
 reported after its parent's tab closed. A viewed tab stays. Closing a tab
 with running agents is refused. They work on a view of its tools.

@@ -527,12 +527,22 @@ err = session.Reset(sessionCtx, metadata)
 - `Acquire` holds an exclusive lease. Close both session and store, and use
   `session.Context()` for work that should stop if the lease is lost. A
   competing owner receives `sessions.ErrSessionInUse`.
+- `AcquireOptions{ExistingOnly: true}` refuses missing or expired sessions
+  with `sessions.ErrSessionNotFound`, so navigation cannot create a new one.
 - `session.ArtifactStore()` is scoped to the session; artifact bytes commit
   in the same database as the transcript.
 - `AcquireOptions{Parent: name}` links a new session to the one whose agent
   spawns it. The link is by id, so `Metadata.Parent` reads as the parent's
   current name after renames, and `SetMetadata` ignores the field; a session
   whose parent was deleted keeps the last name it knew.
+- Optional `Metadata.SpawnCallID` (`spawnCallID` in JSON) identifies the
+  parent's originating `spawn_agent` call. `Metadata.SpawnOutcome`
+  (`spawnOutcome`) records only that child's initial delegated run, using
+  `ReportFinished`, `ReportFailed`, or `ReportCanceled`; empty means unknown
+  or not yet settled. The CLI records these fields for Agents activity in
+  the TUI and leaves the outcome unchanged on child follow-ups. They use the
+  existing metadata JSON storage and require no schema migration.
+  `SetMetadata` and `Reset` preserve each field once it has a nonempty value.
 - `session.Report(ctx, sessions.Report{...})` posts a subagent's reply to
   its linked parent, and `store.PostReport(ctx, parent, report)` does the
   same for a named session, open or not. `session.TakeReports(ctx)` removes

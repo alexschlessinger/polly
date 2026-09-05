@@ -304,6 +304,8 @@ func (m *replModel) clearDisplay() {
 	m.turnTrailerAt = make(map[int]int64)
 	m.turnTrailerSeq = 0
 	m.turnTrailerPlacements = nil
+	m.agentLinkPlacements = nil
+	m.agentDisclosurePlacements = nil
 	m.openTurnTrailerID = 0
 	m.turnDock.overlay = turnDockOverlayNone
 	for i := range m.queue {
@@ -406,6 +408,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			toolDisclosureIDs: append([]int64(nil), source.toolDisclosureIDs...),
 			turnTrailerID:     source.turnTrailerID,
 			activityFields:    append([]turnDockPlacement(nil), source.activityFields...),
+			agentLinks:        append([]agentLink(nil), source.agentLinks...),
 		}
 		offset += len(old.rows)
 	}
@@ -470,6 +473,12 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			text:          entry,
 			images:        m.transcript[i].images,
 			turnTrailerID: turnTrailerID,
+		}
+		if trailer := m.turnTrailers[turnTrailerID]; trailer != nil && trailer.dock.overlay == turnDockOverlayAgents {
+			// Rebuild links and detail at the current width, just as inline
+			// activity does; stored trailer text may precede a resize.
+			block.text, trailer.fields = m.turnDockRowFor(trailer.dock, width)
+			m.appendAgentDetail(&block, trailer.dock.toolIDs, width)
 		}
 		if reasoningID != 0 {
 			block.reasoningIDs = []int64{reasoningID}

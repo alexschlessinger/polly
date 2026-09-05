@@ -14,6 +14,7 @@ const (
 	turnDockOverlayNone turnDockOverlay = iota
 	turnDockOverlayThought
 	turnDockOverlayTools
+	turnDockOverlayAgents
 	turnDockOverlayImages
 )
 
@@ -150,7 +151,7 @@ func (m *replModel) turnDockInspectionImages(dock turnDockState) []transcriptIma
 func (m *replModel) turnDockToolRowCount(dock turnDockState) int {
 	total := 0
 	for _, record := range m.turnDockToolRecords(dock) {
-		total += len(record.rows)
+		total += len(ordinaryToolRows(record.rows))
 	}
 	return total
 }
@@ -189,6 +190,9 @@ func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 		raw := glyph + " " + label
 		rendered := turnActivityControl(glyph, label)
 		fields = append(fields, turnDockField{raw: raw, rendered: rendered, overlay: turnDockOverlayTools})
+	}
+	if field, ok := m.agentField(dock.toolIDs, dock.overlay == turnDockOverlayAgents); ok {
+		fields = append(fields, field)
 	}
 	if total := len(m.turnDockInspectionImages(dock)); total > 0 {
 		label := turnImageLabel(total)
@@ -411,6 +415,9 @@ func (m *replModel) turnTrailerDetail(dock turnDockState, width int) (string, []
 		var all []string
 		for _, record := range records {
 			for _, row := range record.rows {
+				if row.isAgent() {
+					continue
+				}
 				if row.line != "" {
 					all = append(all, stripTranscriptImageMarkers(row.line))
 				}
@@ -426,6 +433,9 @@ func (m *replModel) turnTrailerDetail(dock turnDockState, width int) (string, []
 		}
 		lines = append(lines, all[start:]...)
 		return strings.Join(lines, "\n"), nil
+	case turnDockOverlayAgents:
+		detail, _ := m.agentDetail(dock.toolIDs, width)
+		return detail, nil
 	case turnDockOverlayImages:
 		images := m.turnDockInspectionImages(dock)
 		return renderInspectionTranscriptImages(images), images
@@ -491,7 +501,11 @@ func (m *replModel) toggleLatestTurnTrailerOverlay(overlay turnDockOverlay) bool
 					continue
 				}
 			case turnDockOverlayTools:
-				if len(m.turnDockToolRecords(record.dock)) == 0 {
+				if m.turnDockToolRowCount(record.dock) == 0 {
+					continue
+				}
+			case turnDockOverlayAgents:
+				if _, ok := m.agentField(record.dock.toolIDs, false); !ok {
 					continue
 				}
 			case turnDockOverlayImages:
@@ -506,7 +520,7 @@ func (m *replModel) toggleLatestTurnTrailerOverlay(overlay turnDockOverlay) bool
 }
 
 func (m *replModel) toggleTurnTrailerOverlay(record *turnTrailerRecord, overlay turnDockOverlay) bool {
-	if record == nil || (overlay != turnDockOverlayThought && overlay != turnDockOverlayTools && overlay != turnDockOverlayImages) {
+	if record == nil || (overlay != turnDockOverlayThought && overlay != turnDockOverlayTools && overlay != turnDockOverlayImages && overlay != turnDockOverlayAgents) {
 		return false
 	}
 	if open := m.turnTrailers[m.openTurnTrailerID]; open != nil && open.id != record.id {

@@ -67,6 +67,13 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	m.quiet = r.config.Quiet
 	m.artifactStore = state.artifactStore
 	m.hydrateHistory(history, name)
+	if m.hasAgentRows() && state.sessionStore != nil {
+		if summaries, err := state.sessionStore.ListSummaries(ctx); err == nil {
+			m.hydrateAgentSessions(name, summaries)
+		} else {
+			m.appendNoticeLine("agent sessions unavailable: " + err.Error())
+		}
+	}
 	// Seed the bar without network traffic. This is explicitly approximate
 	// until a provider reports the first real request usage.
 	if total, totalErr := state.session.GetTotalTokens(ctx); totalErr == nil {

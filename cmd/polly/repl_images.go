@@ -87,6 +87,7 @@ type transcriptDisplayBlock struct {
 	activityReasoningDetail string
 	activityToolDetail      string
 	activityImageDetail     string
+	agentLinks              []agentLink
 }
 
 // isActivity reports whether the block projects reasoning or tool records.

@@ -72,7 +72,7 @@ func beginParentToolCall(t *testing.T, r *managedREPL, runs *childTestRuns, call
 	t.Helper()
 	r.model.mu.Lock()
 	r.model.beginTurn("delegate")
-	r.model.appendToolStartRow(callID, "spawn_agent explore")
+	r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: callID, Name: subagent.ToolName, Arguments: `{"label":"explore"}`})
 	r.model.mu.Unlock()
 	r.startTurn(context.Background(), "delegate", runs.run)
 }
@@ -154,16 +154,16 @@ func TestBlockingChildRunsInATabAndAnswersTheCall(t *testing.T) {
 	if got := plainStyledText(r.model.fullTranscript()); strings.Contains(got, "started in tab") {
 		t.Fatalf("a blocking spawn announced itself: %q", got)
 	}
-	// The parent's tool row names the child and shows what it is doing.
+	// The parent's Agents row links the child and shows its initial run.
+	r.refreshAgentActivities()
 	r.model.mu.Lock()
 	r.model.activeToolsPhase = -1
 	r.model.refreshActiveTools()
 	record := r.model.currentToolDisclosure()
-	record.expanded = true
-	rowText, _ := toolDisclosureText(record)
+	rowText, links := r.model.agentDetail([]int64{record.id}, 100)
 	r.model.mu.Unlock()
-	if got := plainStyledText(rowText); !strings.Contains(got, "spawn_agent explore · "+child.name+" · ") {
-		t.Fatalf("parent tool row = %q", got)
+	if got := plainStyledText(rowText); !strings.Contains(got, "explore · ") || len(links) != 1 || record.rows[0].agent.session != child.name {
+		t.Fatalf("parent agent row = %q, links %+v", got, links)
 	}
 
 	settleUntil(t, r, settled(child))

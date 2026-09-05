@@ -99,6 +99,11 @@ func spawnRunner(config *Config, client llm.LLM, parent *conversationState) suba
 		ui := &childTurnUI{parent: parentTurnUIFrom(ctx)}
 		userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: req.Task}
 		_, err = executeTurnWithUserMessage(ctx, &childConfig, child, userMsg, nil, nil, ui, false)
+		if saveErr := recordSpawnOutcome(child.session, storedChildReport(subagent.Result{}, err).Status); saveErr != nil {
+			if parentUI := parentTurnUIFrom(ctx); parentUI != nil {
+				parentUI.AppendWarning("could not save agent outcome: " + saveErr.Error())
+			}
+		}
 		res := subagent.Result{Session: name}
 		res.Text, res.InputTokens, res.OutputTokens = ui.result()
 		return res, err
@@ -166,6 +171,7 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 		return nil, fmt.Errorf("read child metadata: %w", err)
 	}
 	metadata.Description = spawnLabel(req.Label, req.Task)
+	metadata.SpawnCallID = toolCallFrom(ctx).ID
 	for _, spec := range settingSpecs {
 		if spec.toMeta != nil {
 			spec.toMeta(&settings, metadata)

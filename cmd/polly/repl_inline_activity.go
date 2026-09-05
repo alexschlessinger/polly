@@ -44,7 +44,7 @@ func (m *replModel) inlineToolField(ids []int64) (turnDockField, bool) {
 	for _, id := range ids {
 		if record := m.toolDisclosures[id]; record != nil {
 			found = true
-			total += len(record.rows)
+			total += len(ordinaryToolRows(record.rows))
 			expanded = expanded || record.expanded
 			complete = complete && record.complete
 		}
@@ -160,6 +160,9 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	if field, ok := m.inlineToolField(block.toolDisclosureIDs); ok {
 		fields = append(fields, field)
 	}
+	if field, ok := m.agentField(block.toolDisclosureIDs, m.agentsExpanded(block.toolDisclosureIDs)); ok {
+		fields = append(fields, field)
+	}
 	block.activityImageDetail = ""
 	if field, inspectionImages, ok := m.inlineImageField(block.toolDisclosureIDs); ok {
 		fields = append(fields, field)
@@ -175,6 +178,9 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		}
 	}
 	for i := range fields {
+		if fields[i].overlay == turnDockOverlayAgents {
+			continue
+		}
 		glyph, label, ok := strings.Cut(fields[i].raw, " ")
 		if ok {
 			fields[i].rendered = inlineActivityControl(glyph, label, settled)
@@ -183,10 +189,16 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	header, placements := renderTurnActivityRow(fields, width)
 	block.text = header
 	block.activityReasoningDetail = boundedReasoningDetail(block.activityReasoningDetail, reasoningPreviewLines)
-	for _, detail := range []string{block.activityReasoningDetail, block.activityToolDetail, block.activityImageDetail} {
+	for _, detail := range []string{block.activityReasoningDetail, block.activityToolDetail} {
 		if detail != "" {
 			block.text += "\n" + detail
 		}
+	}
+	if m.agentsExpanded(block.toolDisclosureIDs) {
+		m.appendAgentDetail(block, block.toolDisclosureIDs, width)
+	}
+	if block.activityImageDetail != "" {
+		block.text += "\n" + block.activityImageDetail
 	}
 	block.activityFields = placements
 	block.key = fmt.Sprintf("activity:r%v:t%v", block.reasoningIDs, block.toolDisclosureIDs)
