@@ -24,7 +24,7 @@ const ToolName = "spawn_agent"
 
 // DefaultMaxConcurrent bounds how many children one tool runs at once; a
 // parent that calls the tool more times in one batch waits for a slot.
-const DefaultMaxConcurrent = 4
+const DefaultMaxConcurrent = 32
 
 // Request is a parent's brief for one child, as the model wrote it.
 type Request struct {

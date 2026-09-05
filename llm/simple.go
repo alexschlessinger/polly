@@ -59,16 +59,16 @@ func QuickComplete(ctx context.Context, model, prompt string, maxTokens int) (st
 	processor := &SimpleProcessor{}
 	eventChan := client.ChatCompletionStream(ctx, req, processor)
 
-	var result string
+	var result strings.Builder
 	for event := range eventChan {
 		switch event.Type {
 		case messages.EventTypeContent:
-			result += event.Content
+			result.WriteString(event.Content)
 		case messages.EventTypeError:
 			return "", event.Error
 		}
 	}
-	return result, nil
+	return result.String(), nil
 }
 
 // StreamComplete performs a streaming completion with a callback for each chunk.
@@ -161,14 +161,14 @@ func StructuredComplete(ctx context.Context, model, prompt string, schema *Schem
 	processor := &SimpleProcessor{}
 	eventChan := client.ChatCompletionStream(ctx, req, processor)
 
-	var content string
+	var contentBuilder strings.Builder
 	for event := range eventChan {
 		switch event.Type {
 		case messages.EventTypeContent:
-			content += event.Content
+			contentBuilder.WriteString(event.Content)
 		case messages.EventTypeComplete:
-			if content == "" && event.Message != nil {
-				content = event.Message.Content
+			if contentBuilder.Len() == 0 && event.Message != nil {
+				contentBuilder.WriteString(event.Message.Content)
 			}
 		case messages.EventTypeError:
 			return event.Error
@@ -177,6 +177,7 @@ func StructuredComplete(ctx context.Context, model, prompt string, schema *Schem
 
 	// A reply with nothing to decode is a failure, not a success with an
 	// untouched result: the caller asked for a value and got none.
+	content := contentBuilder.String()
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("structured completion returned no content")
 	}
@@ -298,16 +299,16 @@ func (b *CompletionBuilder) Execute(ctx context.Context, client LLM) (string, er
 	processor := &SimpleProcessor{}
 	eventChan := client.ChatCompletionStream(ctx, b.req, processor)
 
-	var result string
+	var result strings.Builder
 	for event := range eventChan {
 		switch event.Type {
 		case messages.EventTypeContent:
-			result += event.Content
+			result.WriteString(event.Content)
 		case messages.EventTypeError:
 			return "", event.Error
 		}
 	}
-	return result, nil
+	return result.String(), nil
 }
 
 // ExecuteStreaming runs the completion with streaming callback
@@ -407,7 +408,7 @@ func (s *SimpleProcessor) ProcessMessagesToEvents(msgChan <-chan messages.ChatMe
 	go func() {
 		defer close(eventChan)
 
-		var fullContent string
+		var fullContent strings.Builder
 		var lastMessage messages.ChatMessage
 		received := false
 
@@ -424,7 +425,7 @@ func (s *SimpleProcessor) ProcessMessagesToEvents(msgChan <-chan messages.ChatMe
 			}
 
 			if msg.Content != "" {
-				fullContent += msg.Content
+				fullContent.WriteString(msg.Content)
 				eventChan <- &messages.StreamEvent{
 					Type:    messages.EventTypeContent,
 					Content: msg.Content,
@@ -443,7 +444,7 @@ func (s *SimpleProcessor) ProcessMessagesToEvents(msgChan <-chan messages.ChatMe
 		// completion (a refusal, a content-filter stop) still completes;
 		// its stop reason is the caller's only signal.
 		if received {
-			lastMessage.Content = fullContent
+			lastMessage.Content = fullContent.String()
 			eventChan <- &messages.StreamEvent{
 				Type:    messages.EventTypeComplete,
 				Message: &lastMessage,

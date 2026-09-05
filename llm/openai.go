@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -944,20 +945,86 @@ func deepCopyMap(input map[string]any) map[string]any {
 	if input == nil {
 		return nil
 	}
-	raw, err := json.Marshal(input)
-	if err != nil {
-		out := make(map[string]any, len(input))
-		for key, value := range input {
-			out[key] = value
-		}
-		return out
+	if copied, ok := copyOpenAISchemaValue(input, make(map[openAISchemaVisit]bool)); ok {
+		return copied.(map[string]any)
 	}
-	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		out = make(map[string]any, len(input))
-		for key, value := range input {
-			out[key] = value
-		}
+	// Preserve the previous JSON-copy fallback for unsupported values and
+	// cyclic caller-provided annotations, without recursing indefinitely.
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
 	}
 	return out
+}
+
+type openAISchemaVisit struct {
+	mapValue  reflect.Value
+	sliceData uintptr
+	sliceLen  int
+}
+
+func copyOpenAISchemaValue(value any, active map[openAISchemaVisit]bool) (any, bool) {
+	switch v := value.(type) {
+	case map[string]any:
+		if v == nil {
+			return nil, true
+		}
+		visit := openAISchemaVisit{mapValue: reflect.ValueOf(v)}
+		if active[visit] {
+			return nil, false
+		}
+		active[visit] = true
+		defer delete(active, visit)
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			copied, ok := copyOpenAISchemaValue(item, active)
+			if !ok {
+				return nil, false
+			}
+			out[key] = copied
+		}
+		return out, true
+	case []any:
+		if v == nil {
+			return nil, true
+		}
+		visit := openAISchemaVisit{sliceData: reflect.ValueOf(v).Pointer(), sliceLen: len(v)}
+		if active[visit] {
+			return nil, false
+		}
+		active[visit] = true
+		defer delete(active, visit)
+		out := make([]any, len(v))
+		for i, item := range v {
+			copied, ok := copyOpenAISchemaValue(item, active)
+			if !ok {
+				return nil, false
+			}
+			out[i] = copied
+		}
+		return out, true
+	case []string:
+		// Keep the JSON round trip's canonical container shape, including
+		// schema unions and required-property lists supplied by Go callers.
+		if v == nil {
+			return nil, true
+		}
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = item
+		}
+		return out, true
+	case nil, bool, string, float64:
+		return v, true
+	default:
+		// Typed containers and custom JSON marshalers are uncommon schema
+		// leaves. Normalize those alone, rather than serializing every schema.
+		if raw, err := json.Marshal(value); err == nil {
+			var out any
+			if json.Unmarshal(raw, &out) == nil {
+				return out, true
+			}
+		}
+		return nil, false
+	}
 }

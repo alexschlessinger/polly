@@ -115,21 +115,25 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req *ChatCompletionRe
 				yield(nil, err)
 				return
 			}
-			var probe struct {
-				Error *APIError `json:"error"`
+			var envelope struct {
+				ChatCompletionChunk
+				Error json.RawMessage `json:"error"`
 			}
-			if json.Unmarshal(data, &probe) == nil && probe.Error != nil {
-				yield(nil, probe.Error)
-				return
+			decodeErr := json.Unmarshal(data, &envelope)
+			if len(envelope.Error) > 0 {
+				var apiErr *APIError
+				if json.Unmarshal(envelope.Error, &apiErr) == nil && apiErr != nil {
+					yield(nil, apiErr)
+					return
+				}
 			}
-			chunk := &ChatCompletionChunk{}
-			if err := json.Unmarshal(data, chunk); err != nil {
+			if err := decodeErr; err != nil {
 				if !yield(nil, fmt.Errorf("openai: invalid stream chunk: %w", err)) {
 					return
 				}
 				continue
 			}
-			if !yield(chunk, nil) {
+			if !yield(&envelope.ChatCompletionChunk, nil) {
 				return
 			}
 		}

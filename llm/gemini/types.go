@@ -11,6 +11,11 @@
 // wire encoding.
 package gemini
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // Content is one turn of conversation history. Role is "user" or "model";
 // system instructions travel outside Contents and leave Role empty.
 type Content struct {
@@ -35,8 +40,32 @@ type Part struct {
 
 // Blob is inline binary data, e.g. an image.
 type Blob struct {
-	MIMEType string `json:"mimeType,omitempty"`
-	Data     []byte `json:"data,omitempty"`
+	MIMEType   string `json:"mimeType,omitempty"`
+	Data       []byte `json:"data,omitempty"`
+	base64Data *string
+}
+
+// NewBase64Blob retains already validated base64 for outgoing image replay.
+// Ordinary Blob values continue to encode Data as base64 automatically.
+func NewBase64Blob(mimeType, data string) *Blob {
+	// DecodeString accepts CR/LF, including an otherwise empty payload.
+	// Omit those line breaks just as decoding and re-encoding did.
+	data = strings.ReplaceAll(strings.ReplaceAll(data, "\r", ""), "\n", "")
+	// StdEncoding accepts unused padding bits. Clear only those bits to
+	// preserve the canonical wire value previously produced by re-encoding.
+	if len(data) >= 4 && data[len(data)-1] == '=' {
+		const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+		index, mask := len(data)-2, 0x3c
+		if data[len(data)-2] == '=' {
+			index, mask = len(data)-3, 0x30
+		}
+		if value := strings.IndexByte(alphabet, data[index]); value >= 0 && value&mask != value {
+			canonical := []byte(data)
+			canonical[index] = alphabet[value&mask]
+			data = string(canonical)
+		}
+	}
+	return &Blob{MIMEType: mimeType, base64Data: &data}
 }
 
 // FunctionCall is a tool invocation requested by the model. The API assigns
@@ -44,17 +73,31 @@ type Blob struct {
 type FunctionCall struct {
 	// ID is set by the API on some models; when present it must be echoed
 	// back on the matching FunctionResponse.
-	ID   string         `json:"id,omitempty"`
-	Name string         `json:"name,omitempty"`
-	Args map[string]any `json:"args,omitempty"`
+	ID       string         `json:"id,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	Args     map[string]any `json:"args,omitempty"`
+	argsJSON json.RawMessage
+}
+
+// NewRawFunctionCall avoids building a map for validated historical arguments.
+// Callers must treat args as immutable for the lifetime of the request.
+func NewRawFunctionCall(id, name string, args json.RawMessage) *FunctionCall {
+	return &FunctionCall{ID: id, Name: name, argsJSON: args}
 }
 
 // FunctionResponse returns a tool result to the model. Response must be an
 // object; wrap bare values before sending.
 type FunctionResponse struct {
-	ID       string         `json:"id,omitempty"`
-	Name     string         `json:"name,omitempty"`
-	Response map[string]any `json:"response,omitempty"`
+	ID           string         `json:"id,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Response     map[string]any `json:"response,omitempty"`
+	responseJSON json.RawMessage
+}
+
+// NewRawFunctionResponse retains a validated object for outgoing tool replay.
+// Callers must treat response as immutable for the lifetime of the request.
+func NewRawFunctionResponse(id, name string, response json.RawMessage) *FunctionResponse {
+	return &FunctionResponse{ID: id, Name: name, responseJSON: response}
 }
 
 // Tool declares functions the model may call.

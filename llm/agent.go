@@ -47,9 +47,12 @@ type Agent struct {
 
 	// transcript is the durable conversation snapshot served by
 	// read_transcript, refreshed as the run generates messages.
-	transcriptMu   sync.RWMutex
-	transcript     []messages.ChatMessage
-	transcriptTool bool
+	transcriptMu       sync.RWMutex
+	transcript         []messages.ChatMessage
+	transcriptTool     bool
+	transcriptText     strings.Builder
+	transcriptRendered int
+	transcriptIndex    int
 }
 
 // AgentConfig configures agent behavior
@@ -213,7 +216,7 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		viewer := tools.NewViewImageTool(registry)
 		registry.Register(viewer)
 		registry.MarkAlwaysAllowed(viewer.GetName())
-		transcript := &readTranscriptTool{snapshot: agent.transcriptSnapshot}
+		transcript := &readTranscriptTool{snapshot: agent.transcriptSnapshot, rendered: agent.renderedTranscript}
 		registry.Register(transcript)
 		registry.MarkAlwaysAllowed(transcript.GetName())
 		agent.transcriptTool = true
@@ -256,7 +259,40 @@ func (a *Agent) setTranscript(history []messages.ChatMessage) {
 	snapshot := append([]messages.ChatMessage(nil), history...)
 	a.transcriptMu.Lock()
 	a.transcript = snapshot
+	a.transcriptText.Reset()
+	a.transcriptRendered = 0
+	a.transcriptIndex = 0
 	a.transcriptMu.Unlock()
+}
+
+// Appending never changes the prefix already published to a reader. A spill
+// replacement uses copy-on-write below before changing an existing message.
+func (a *Agent) appendTranscript(history ...messages.ChatMessage) {
+	a.transcriptMu.Lock()
+	a.transcript = append(a.transcript, history...)
+	a.transcriptMu.Unlock()
+}
+
+func (a *Agent) renderedTranscript() string {
+	a.transcriptMu.Lock()
+	defer a.transcriptMu.Unlock()
+	a.transcriptIndex = appendTranscriptText(&a.transcriptText, a.transcript[a.transcriptRendered:], a.transcriptIndex)
+	a.transcriptRendered = len(a.transcript)
+	return a.transcriptText.String()
+}
+
+func (a *Agent) applyTranscriptSpills(spills []toolResultSpill) {
+	if len(spills) == 0 {
+		return
+	}
+	a.transcriptMu.Lock()
+	defer a.transcriptMu.Unlock()
+	// Existing snapshots may still be held by concurrent readers.
+	a.transcript = append([]messages.ChatMessage(nil), a.transcript...)
+	a.applyDurableToolSpills(a.transcript, spills)
+	a.transcriptText.Reset()
+	a.transcriptRendered = 0
+	a.transcriptIndex = 0
 }
 
 func (a *Agent) transcriptSnapshot() []messages.ChatMessage {
@@ -287,9 +323,9 @@ func (a *Agent) SetToolTimeout(d time.Duration) {
 // with interrupted-tool stubs — so callers can persist the partial turn and
 // replay it in later requests.
 func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks) (*AgentResponse, error) {
-	// Work with a copy of messages - don't mutate input
-	msgs := make([]messages.ChatMessage, len(req.Messages))
-	copy(msgs, req.Messages)
+	// Own the history's nested containers once. Projection can then share the
+	// immutable prefix between iterations without exposing caller-owned slices.
+	msgs := cloneMessages(req.Messages)
 
 	// Resolve skills once before the loop to avoid double-augmentation
 	// on subsequent iterations (where msgs[0] already has the augmented prompt).
@@ -299,6 +335,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		msgs = loopReq.ResolvedMessages()
 		loopReq.Skills = nil
 	}
+	loopReq.shapeCache = newRequestShapeCache(msgs)
+	loopReq.providerReplayCache = &providerReplayCache{}
+	loopReq.projectionCache = &projectionCache{}
 
 	var allGenerated []messages.ChatMessage
 	var nudgedResponseTool bool
@@ -328,9 +367,14 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		if a.tools != nil {
 			iterReq.Tools = a.tools.All()
 		}
+		iterReq.shapeCache.prepareTools(iterReq.Tools)
 		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, a.transcriptTool)
 		a.applyDurableToolSpills(msgs, projection.toolSpills)
 		a.applyDurableToolSpills(allGenerated, projection.toolSpills)
+		a.applyTranscriptSpills(projection.toolSpills)
+		if len(projection.toolSpills) != 0 {
+			loopReq.projectionCache.invalidateMessages()
+		}
 		newRefs := unpersistedArtifactRefs(projection.artifactRefs, req.Messages, allGenerated)
 		for _, ref := range projection.artifactRefs {
 			a.indexArtifact(ref)
@@ -352,6 +396,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			if err := cb.BeforeFirstRequest(lastProjection); err != nil {
 				return responseFor(nil, iteration), err
 			}
+			// The callback can update a caller-owned tool schema before this
+			// request. Refresh the stable shape after that mutation boundary.
+			iterReq.shapeCache.prepareTools(iterReq.Tools)
 		}
 		if iterReq.PromptCacheKey == "" {
 			if key, keyErr := derivePromptCacheKey(&iterReq, msgs); keyErr == nil {
@@ -387,7 +434,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 		msgs = append(msgs, *response)
 		allGenerated = append(allGenerated, *response)
-		a.setTranscript(msgs)
+		a.appendTranscript(*response)
 
 		// Check stop reason to determine next action
 		switch response.StopReason {
@@ -401,6 +448,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 				}
 				msgs = append(msgs, nudge)
 				allGenerated = append(allGenerated, nudge)
+				a.appendTranscript(nudge)
 				continue
 			}
 			// Normal completion
@@ -455,6 +503,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 					}
 					msgs = append(msgs, nudge)
 					allGenerated = append(allGenerated, nudge)
+					a.appendTranscript(nudge)
 					continue
 				}
 				if cb != nil && cb.OnComplete != nil {
@@ -485,12 +534,14 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			a.commitToolChanges()
 			a.indexArtifactMessages(toolMsgs)
 			allGenerated = append(allGenerated, toolMsgs...)
+			a.appendTranscript(toolMsgs...)
 			return responseFor(response, iteration+1), toolErr
 		}
 		a.commitToolChanges()
 		a.indexArtifactMessages(toolMsgs)
 		msgs = append(msgs, toolMsgs...)
 		allGenerated = append(allGenerated, toolMsgs...)
+		a.appendTranscript(toolMsgs...)
 
 		// Short-circuit when every tool in the batch was denied. Looping to
 		// feed the denials back would just make the model editorialize ("I
@@ -843,7 +894,7 @@ func (a *Agent) applyDurableToolSpills(history []messages.ChatMessage, spills []
 				continue
 			}
 			ref := spill.Ref
-			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
+			msg.Parts = appendArtifactPart(msg.Parts, ref)
 			// The durable final form is exactly what the spilling projection
 			// sent, so later pass-through projections stay byte-identical.
 			msg.Content = spill.Receipt

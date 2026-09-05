@@ -81,7 +81,7 @@ func clampGeminiBudget(budget int32, model string) int32 {
 func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewGeminiAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert session history to Gemini chat history
-		contents, systemInstruction, _ := MessagesToGeminiContent(req.Messages)
+		contents, systemInstruction, _ := messagesToGeminiContent(req.Messages, requestProviderReplayCache(req))
 
 		// Configure model parameters
 		config := &gemini.GenerationConfig{
@@ -348,6 +348,10 @@ func nativeGeminiCallID(id string) string {
 
 // MessagesToGeminiContent converts messages to Gemini content format
 func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, string, map[string]string) {
+	return messagesToGeminiContent(msgs, nil)
+}
+
+func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplayCache) ([]*gemini.Content, string, map[string]string) {
 	var history []*gemini.Content
 	var systemInstruction string
 	callIDToName := make(map[string]string)
@@ -366,6 +370,12 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, st
 					case "text":
 						parts = append(parts, &gemini.Part{Text: part.Text})
 					case "image_base64":
+						if replay != nil {
+							if replay.validGeminiImage(part.ImageData) {
+								parts = append(parts, &gemini.Part{InlineData: gemini.NewBase64Blob(part.MimeType, part.ImageData)})
+							}
+							continue
+						}
 						// Decode base64 to bytes
 						imageData, err := base64.StdEncoding.DecodeString(part.ImageData)
 						if err == nil {
@@ -405,15 +415,19 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, st
 					if tc.ID != "" {
 						callIDToName[tc.ID] = tc.Name
 					}
-					var args map[string]any
-					if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
-						part := &gemini.Part{
-							FunctionCall: &gemini.FunctionCall{
-								ID:   nativeGeminiCallID(tc.ID),
-								Name: tc.Name,
-								Args: args,
-							},
+					var call *gemini.FunctionCall
+					if replay != nil {
+						if raw, valid := replay.geminiArguments(tc.Arguments); valid {
+							call = gemini.NewRawFunctionCall(nativeGeminiCallID(tc.ID), tc.Name, raw)
 						}
+					} else {
+						var args map[string]any
+						if json.Unmarshal([]byte(tc.Arguments), &args) == nil {
+							call = &gemini.FunctionCall{ID: nativeGeminiCallID(tc.ID), Name: tc.Name, Args: args}
+						}
+					}
+					if call != nil {
+						part := &gemini.Part{FunctionCall: call}
 
 						// Check metadata for thought signature. In-process the
 						// adapter stores map[string]string; after a JSON
@@ -451,26 +465,25 @@ func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, st
 				funcName = callIDToName[msg.ToolCallID]
 			}
 
-			var output any
-			if err := json.Unmarshal([]byte(msg.Content), &output); err != nil {
-				output = msg.Content
-			}
-
-			// Ensure output is a map[string]any as the API requires
-			var response map[string]any
-			if m, ok := output.(map[string]any); ok {
-				response = m
+			var result *gemini.FunctionResponse
+			if replay != nil {
+				result = gemini.NewRawFunctionResponse(nativeGeminiCallID(msg.ToolCallID), funcName, replay.geminiResult(msg.Content))
 			} else {
-				response = map[string]any{"result": output}
+				var output any
+				if err := json.Unmarshal([]byte(msg.Content), &output); err != nil {
+					output = msg.Content
+				}
+				// Ensure output is a map[string]any as the API requires.
+				response, ok := output.(map[string]any)
+				if !ok {
+					response = map[string]any{"result": output}
+				}
+				result = &gemini.FunctionResponse{ID: nativeGeminiCallID(msg.ToolCallID), Name: funcName, Response: response}
 			}
 			history = append(history, &gemini.Content{
 				Role: "user",
 				Parts: []*gemini.Part{{
-					FunctionResponse: &gemini.FunctionResponse{
-						ID:       nativeGeminiCallID(msg.ToolCallID),
-						Name:     funcName,
-						Response: response,
-					},
+					FunctionResponse: result,
 				}},
 			})
 		}

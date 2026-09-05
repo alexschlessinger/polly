@@ -79,26 +79,46 @@ func (e *ContextLimitError) Error() string {
 // schemas and resolved messages, for both validation and the agent loop.
 func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store artifacts.Store, transcriptReadable bool) ([]messages.ChatMessage, ProjectionStats, error) {
 	budget := req.MaxContextTokens
-	overhead := estimateToolSchemaTokens(req.Tools)
+	overhead := estimateRequestToolSchemaTokens(req)
 	if budget > 0 {
 		if overhead >= budget {
 			return nil, ProjectionStats{RequestEstimatedTokens: overhead}, fmt.Errorf("tool schemas alone need about %d tokens, exceeding the %d-token context budget", overhead, budget)
 		}
 		budget -= overhead
 	}
-	projected, stats, err := projectMessages(ctx, req.ResolvedMessages(), budget, store, transcriptReadable)
+	history := req.Messages
+	if req.Skills != nil && !req.Skills.IsEmpty() {
+		history = req.ResolvedMessages()
+	}
+	projected, stats, err := projectMessagesCached(ctx, history, budget, store, transcriptReadable, req.projectionCache)
 	stats.RequestEstimatedTokens = stats.EstimatedTokens + overhead
 	return projected, stats, err
 }
 
 func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, transcriptReadable bool) ([]messages.ChatMessage, ProjectionStats, error) {
-	projected := cloneMessages(history)
-	projected = filterInternalMessages(projected)
+	return projectMessagesCached(ctx, history, maxTokens, store, transcriptReadable, nil)
+}
+
+func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, transcriptReadable bool, cache *projectionCache) ([]messages.ChatMessage, ProjectionStats, error) {
+	if cache == nil {
+		cache = &projectionCache{}
+	}
+	// Own the message slice; transformations copy nested slices only when
+	// changing them. The durable strings and untouched containers are shared.
+	projected := make([]messages.ChatMessage, 0, len(history))
+	tokens := &projectionTokens{counts: make([]int, 0, len(history))}
+	for i, n := range cache.estimates(history) {
+		if history[i].Role != messages.MessageRoleInternal {
+			projected = append(projected, history[i])
+			tokens.counts = append(tokens.counts, n)
+			tokens.total += n
+		}
+	}
 	var stats ProjectionStats
 
 	var err error
-	front := toolCompactionFront(projected, maxTokens, store)
-	projected, stats.CompactedToolResults, err = projectToolResults(ctx, projected, store, front)
+	front := toolCompactionFront(projected, maxTokens, store, tokens, cache)
+	projected, stats.CompactedToolResults, err = projectToolResults(ctx, projected, store, front, tokens, cache)
 	if err != nil {
 		return nil, stats, err
 	}
@@ -108,32 +128,34 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 	// applyDurableToolSpills persists.
 	stats.artifactRefs = artifactRefsInMessages(projected)
 	spillDescriptors := toolMediaDescriptorsByCall(projected)
-	projected, stats.HydratedImages, err = projectImages(ctx, projected, store)
+	projected, stats.HydratedImages, err = projectImages(ctx, projected, store, tokens, cache)
 	if err != nil {
 		return nil, stats, err
 	}
 
-	stats.EstimatedTokens = estimateProjectedTokens(projected)
+	stats.EstimatedTokens = tokens.total
 	if maxTokens <= 0 || stats.EstimatedTokens <= maxTokens {
 		return stripArtifactParts(projected), stats, nil
 	}
 
 	marker := projectionMarker(store != nil, transcriptReadable)
-	if front := omissionFront(projected, marker, maxTokens); front > 0 {
+	if front := omissionFront(projected, marker, maxTokens, tokens); front > 0 {
 		users := realUserIndexes(projected)
+		tokens.omit(projected, users[0], users[front])
 		projected = omitExchangePreservingSystems(projected, users[0], users[front])
+		tokens.addMarker(projected, marker)
 		projected = addProjectionMarker(projected, marker)
 		stats.OmittedExchanges = front
-		stats.EstimatedTokens = estimateProjectedTokens(projected)
+		stats.EstimatedTokens = tokens.total
 	}
 	if stats.EstimatedTokens > maxTokens {
-		spilled, spills, spillErr := spillActiveToolResults(ctx, projected, maxTokens, store, spillDescriptors)
+		spilled, spills, spillErr := spillActiveToolResults(ctx, projected, maxTokens, store, spillDescriptors, tokens)
 		if spillErr != nil {
 			return nil, stats, spillErr
 		}
 		stats.toolSpills = spills
 		stats.CompactedToolResults += spilled
-		stats.EstimatedTokens = estimateProjectedTokens(projected)
+		stats.EstimatedTokens = tokens.total
 	}
 	if stats.EstimatedTokens > maxTokens {
 		return nil, stats, &ContextLimitError{EstimatedTokens: stats.EstimatedTokens, Limit: maxTokens}
@@ -184,19 +206,21 @@ func artifactRefsInMessages(history []messages.ChatMessage) []artifacts.Ref {
 // turn, and the provider-visible prefix stays byte-stable between jumps.
 // Candidates depend only on the transcript prefix, which is append-only, so
 // the front remains a pure function of (history, budget).
-func omissionFront(projected []messages.ChatMessage, marker string, maxTokens int) int {
+func omissionFront(projected []messages.ChatMessage, marker string, maxTokens int, tokens *projectionTokens) int {
 	users := realUserIndexes(projected)
 	if len(users) <= 1 {
 		return 0
 	}
-	withMarker := estimateProjectedTokens(addProjectionMarker(cloneMessages(projected), marker))
+	_, markerTokens := projectionMarkerTokenDelta(projected, marker)
+	withMarker := tokens.total + markerTokens
 	quantum := max(1, maxTokens/omissionQuantumDivisor)
 	cum := 0
 	lastCandidate := 0
 	for j := 0; j+1 < len(users); j++ {
-		for _, msg := range projected[users[j]:users[j+1]] {
+		for i := users[j]; i < users[j+1]; i++ {
+			msg := projected[i]
 			if msg.Role != messages.MessageRoleSystem {
-				cum += estimateProjectedMessageTokens(msg)
+				cum += tokens.counts[i]
 			}
 		}
 		// The maximal front is always a candidate so omission can reach it.
@@ -241,7 +265,7 @@ func projectionMarker(artifactsListable, transcriptReadable bool) string {
 // (history, budget, store presence) that only advances as the session grows.
 // The gate prices the pre-hydration projection; image-heavy saturation is
 // still caught by the post-hydration budget checks in projectMessages.
-func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store artifacts.Store) int {
+func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store artifacts.Store, tokens *projectionTokens, cache *projectionCache) int {
 	if maxTokens <= 0 {
 		return 0
 	}
@@ -258,13 +282,11 @@ func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store 
 			!isRecallToolName(msg.ToolName) && textArtifactRef(msg) == nil &&
 			estimatedStringTokens(msg.Content) > toolInlineTokenLimit
 	}
-	estimate := 0
+	estimate := tokens.total
 	for _, msg := range projected {
-		tokens := estimateProjectedMessageTokens(msg)
 		if previewBounded(msg) {
-			tokens -= estimatedStringTokens(msg.Content) - toolPreviewTokenLimit
+			estimate -= estimatedStringTokens(msg.Content) - toolPreviewTokenLimit
 		}
-		estimate += tokens
 	}
 	if estimate <= maxTokens {
 		return 0
@@ -273,16 +295,20 @@ func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store 
 	cum := 0
 	lastCandidate := 0
 	for j := 0; j+1 < len(users); j++ {
-		for _, msg := range projected[users[j]:users[j+1]] {
-			form, _, ok := demotedToolResultForm(msg, hasStore)
-			if !ok {
+		for i := users[j]; i < users[j+1]; i++ {
+			msg := projected[i]
+			if msg.Role != messages.MessageRoleTool {
+				continue
+			}
+			plan := cache.demotion(i, msg, hasStore)
+			if !plan.ok {
 				continue
 			}
 			visible := estimatedStringTokens(msg.Content)
 			if previewBounded(msg) {
 				visible = toolPreviewTokenLimit
 			}
-			if saved := visible - estimatedStringTokens(form); saved > 0 {
+			if saved := visible - plan.tokens; saved > 0 {
 				cum += saved
 			}
 		}
@@ -312,7 +338,7 @@ func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store 
 // transcripts' oversized inline results in the birth-form zone are
 // externalized with a preview built from the in-hand bytes, as birth would
 // have done.
-func projectToolResults(ctx context.Context, history []messages.ChatMessage, store artifacts.Store, front int) ([]messages.ChatMessage, int, error) {
+func projectToolResults(ctx context.Context, history []messages.ChatMessage, store artifacts.Store, front int, tokens *projectionTokens, cache *projectionCache) ([]messages.ChatMessage, int, error) {
 	compacted := 0
 	for i := range history {
 		msg := &history[i]
@@ -322,8 +348,9 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 		completed := i < front
 		if isRecallToolName(msg.ToolName) {
 			if completed {
-				if form, _, ok := demotedToolResultForm(*msg, store != nil); ok {
-					msg.Content = form
+				if plan := cache.demotion(i, *msg, store != nil); plan.ok {
+					tokens.replaceContent(i, msg.Content, plan.content)
+					msg.Content = plan.content
 					compacted++
 				}
 			}
@@ -334,74 +361,74 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 			return nil, compacted, fmt.Errorf("tool artifact %s cannot be read without a store", ref.ID)
 		}
 		if completed && store != nil {
-			form, blob, ok := demotedToolResultForm(*msg, true)
-			if !ok {
+			plan := cache.demotion(i, *msg, true)
+			if !plan.ok {
 				continue
 			}
-			if blob != nil {
-				stored, err := store.Put(ctx, *blob)
-				if err != nil {
-					return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
+			if plan.inline {
+				if plan.stored == nil {
+					stored, err := store.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(*msg), Data: []byte(msg.Content)})
+					if err != nil {
+						return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
+					}
+					plan.stored = &stored
+					plan.content = appendArtifactDescriptors(artifactReceipt(stored), *msg, stored.ID, " ")
 				}
-				msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
+				msg.Parts = appendArtifactPart(msg.Parts, *plan.stored)
 			}
-			msg.Content = form
+			tokens.replaceContent(i, msg.Content, plan.content)
+			msg.Content = plan.content
 			compacted++
 			continue
 		}
 		if ref == nil && store != nil && estimatedStringTokens(msg.Content) > toolInlineTokenLimit {
-			stored, err := store.Put(ctx, artifacts.Blob{
-				Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(*msg), Data: []byte(msg.Content),
-			})
-			if err != nil {
-				return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
+			form, ok := cache.birthForms[i]
+			if !ok {
+				stored, err := store.Put(ctx, artifacts.Blob{
+					Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(*msg), Data: []byte(msg.Content),
+				})
+				if err != nil {
+					return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
+				}
+				head, tail := previewWindows([]byte(msg.Content))
+				form = cachedToolForm{ref: stored, content: artifactPreviewWithDescriptors(stored, head, tail, *msg)}
+				if cache.birthForms == nil {
+					cache.birthForms = make(map[int]cachedToolForm)
+				}
+				cache.birthForms[i] = form
 			}
-			head, tail := previewWindows([]byte(msg.Content))
-			msg.Parts = append(msg.Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
-			msg.Content = artifactPreviewWithDescriptors(stored, head, tail, *msg)
+			msg.Parts = appendArtifactPart(msg.Parts, form.ref)
+			tokens.replaceContent(i, msg.Content, form.content)
+			msg.Content = form.content
 			compacted++
 		}
 	}
 	return history, compacted, nil
 }
 
-// demotedToolResultForm is the single source of truth for demotion: the exact
-// provider-visible form a tool result takes once the compaction front passes
-// it, plus the blob to store when demotion must first externalize inline
-// content. toolCompactionFront prices candidates with it and
-// projectToolResults applies it, so the two can never disagree about bytes.
-// It reports false when demotion would not shrink the result.
+// appendArtifactPart gives a transformed message its own slice before adding
+// a reference, including when the durable slice has spare capacity.
+func appendArtifactPart(parts []messages.ContentPart, ref artifacts.Ref) []messages.ContentPart {
+	out := make([]messages.ContentPart, len(parts)+1)
+	copy(out, parts)
+	out[len(parts)] = messages.ContentPart{Type: "artifact", Artifact: &ref}
+	return out
+}
+
+// demotedToolResultForm materializes a standalone demotion. The projection's
+// budget gate uses planToolDemotion instead, deferring payload work until a
+// result is actually stored.
 func demotedToolResultForm(msg messages.ChatMessage, hasStore bool) (string, *artifacts.Blob, bool) {
-	if msg.Role != messages.MessageRoleTool || msg.Content == ToolDeniedContent {
+	plan := planToolDemotion(msg, hasStore)
+	if !plan.ok {
 		return "", nil, false
 	}
-	if isRecallToolName(msg.ToolName) {
-		stub := recallResultStub(msg.ToolName)
-		if estimatedStringTokens(stub) >= estimatedStringTokens(msg.Content) {
-			return "", nil, false
-		}
-		return appendArtifactDescriptors(stub, msg, "", " "), nil, true
+	if !plan.inline {
+		return plan.content, nil, true
 	}
-	if !hasStore {
-		return "", nil, false
-	}
-	if ref := textArtifactRef(msg); ref != nil {
-		form := appendArtifactDescriptors(artifactReceipt(*ref), msg, ref.ID, " ")
-		if estimatedStringTokens(form) >= estimatedStringTokens(msg.Content) {
-			return "", nil, false
-		}
-		return form, nil, true
-	}
-	if msg.Content == "" || estimatedStringTokens(msg.Content) <= toolPreviewTokenLimit {
-		return "", nil, false
-	}
-	blob := artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(msg.Content)}
-	prospective := artifacts.RefForBlob(blob)
-	form := appendArtifactDescriptors(artifactReceipt(prospective), msg, prospective.ID, " ")
-	if estimatedStringTokens(form) >= estimatedStringTokens(msg.Content) {
-		return "", nil, false
-	}
-	return form, &blob, true
+	blob := &artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(msg.Content)}
+	ref := artifacts.RefForBlob(*blob)
+	return appendArtifactDescriptors(artifactReceipt(ref), msg, ref.ID, " "), blob, true
 }
 
 func isRecallToolName(name string) bool {
@@ -663,18 +690,29 @@ func selectProjectedImages(history []messages.ChatMessage) (imageSelection, erro
 	return imageSelection{latestUser: latestUser, selected: selected}, nil
 }
 
-func projectImages(ctx context.Context, history []messages.ChatMessage, store artifacts.Store) ([]messages.ChatMessage, int, error) {
+func projectImages(ctx context.Context, history []messages.ChatMessage, store artifacts.Store, tokens *projectionTokens, cache *projectionCache) ([]messages.ChatMessage, int, error) {
 	selection, err := selectProjectedImages(history)
 	if err != nil {
 		return nil, 0, err
 	}
 	latestUser := selection.latestUser
 	selected := selection.selected
+	cache.retainSelectedImages(history, selected)
 
 	var referenced []messages.ContentPart
 	var currentToolImages []messages.ContentPart
 	hydrated := 0
 	for i := range history {
+		hasImage := false
+		for _, part := range history[i].Parts {
+			if isImagePart(part) {
+				hasImage = true
+				break
+			}
+		}
+		if !hasImage {
+			continue
+		}
 		parts := make([]messages.ContentPart, 0, len(history[i].Parts))
 		selectedCurrentImage := false
 		for j, part := range history[i].Parts {
@@ -685,7 +723,7 @@ func projectImages(ctx context.Context, history []messages.ChatMessage, store ar
 			if !selected[[2]int{i, j}] {
 				continue
 			}
-			hydratedPart, err := hydrateImagePart(ctx, part, store)
+			hydratedPart, err := cache.hydrateImage(ctx, part, store)
 			if err != nil {
 				return nil, hydrated, err
 			}
@@ -704,11 +742,14 @@ func projectImages(ctx context.Context, history []messages.ChatMessage, store ar
 		if i == latestUser && selectedCurrentImage {
 			promoteMessageContentToTextPart(&history[i])
 		}
+		tokens.update(i, history[i])
 	}
 
 	if latestUser >= 0 && len(referenced) > 0 {
 		promoteMessageContentToTextPart(&history[latestUser])
-		history[latestUser].Parts = append(history[latestUser].Parts, referenced...)
+		parts := history[latestUser].Parts
+		history[latestUser].Parts = append(parts[:len(parts):len(parts)], referenced...)
+		tokens.update(latestUser, history[latestUser])
 	}
 	if len(currentToolImages) > 0 {
 		parts := []messages.ContentPart{{Type: "text", Text: "Images returned by the preceding tool call(s):"}}
@@ -718,6 +759,7 @@ func projectImages(ctx context.Context, history []messages.ChatMessage, store ar
 			Parts:    parts,
 			Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true},
 		})
+		tokens.append(history[len(history)-1])
 	}
 	return history, hydrated, nil
 }
@@ -755,25 +797,6 @@ func promoteMessageContentToTextPart(msg *messages.ChatMessage) {
 	}
 	msg.Parts = append([]messages.ContentPart{{Type: "text", Text: msg.Content}}, msg.Parts...)
 	msg.Content = ""
-}
-
-func hydrateImagePart(ctx context.Context, part messages.ContentPart, store artifacts.Store) (messages.ContentPart, error) {
-	if part.Type == "image_base64" || part.Type == "image_url" {
-		return part, nil
-	}
-	if part.Artifact == nil || part.Artifact.Kind != artifacts.KindImage {
-		return messages.ContentPart{}, fmt.Errorf("invalid image artifact reference")
-	}
-	if store == nil {
-		return messages.ContentPart{}, fmt.Errorf("image artifact %s cannot be read without a store", part.Artifact.ID)
-	}
-	data, err := readArtifactBytes(ctx, store, part.Artifact.ID, part.Artifact.Bytes)
-	if err != nil {
-		return messages.ContentPart{}, fmt.Errorf("read image artifact %s: %w", part.Artifact.ID, err)
-	}
-	return messages.ContentPart{
-		Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString(data), MimeType: part.Artifact.MIMEType, FileName: part.Artifact.Name,
-	}, nil
 }
 
 func readArtifactBytes(ctx context.Context, store artifacts.Store, id string, expected int64) ([]byte, error) {
@@ -1027,7 +1050,7 @@ func withDescriptorList(content string, descriptors []string) string {
 	return strings.TrimSpace(content + " " + strings.Join(descriptors, " "))
 }
 
-func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, descriptors map[string][]string) (int, []toolResultSpill, error) {
+func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, descriptors map[string][]string, tokens *projectionTokens) (int, []toolResultSpill, error) {
 	users := realUserIndexes(history)
 	if len(users) == 0 {
 		return 0, nil, nil
@@ -1042,7 +1065,7 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 	}
 	newlyCompacted := 0
 	var spills []toolResultSpill
-	for i := start; i < len(history) && estimateProjectedTokens(history) > maxTokens; i++ {
+	for i := start; i < len(history) && tokens.total > maxTokens; i++ {
 		if history[i].Role != messages.MessageRoleTool || history[i].Content == ToolDeniedContent {
 			continue
 		}
@@ -1055,6 +1078,7 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 			}
 			stub := withDescriptorList(recallResultStub(history[i].ToolName), descriptors[history[i].ToolCallID])
 			if estimatedStringTokens(stub) < estimatedStringTokens(history[i].Content) {
+				tokens.replaceContent(i, history[i].Content, stub)
 				history[i].Content = stub
 				newlyCompacted++
 			}
@@ -1063,15 +1087,11 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 		ref := textArtifactRef(history[i])
 		originalContent := history[i].Content
 		mint := false
-		var blob artifacts.Blob
 		if ref == nil {
 			if originalContent == "" || store == nil {
 				continue
 			}
-			blob = artifacts.Blob{
-				Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(history[i]), Data: []byte(originalContent),
-			}
-			prospective := artifacts.RefForBlob(blob)
+			prospective := prospectiveTextRef(originalContent)
 			ref = &prospective
 			mint = true
 		}
@@ -1083,15 +1103,19 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 			continue
 		}
 		if mint {
-			stored, err := store.Put(ctx, blob)
+			stored, err := store.Put(ctx, artifacts.Blob{
+				Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(history[i]), Data: []byte(originalContent),
+			})
 			if err != nil {
 				return newlyCompacted, spills, fmt.Errorf("store active tool artifact for %q: %w", history[i].ToolName, err)
 			}
-			history[i].Parts = append(history[i].Parts, messages.ContentPart{Type: "artifact", Artifact: &stored})
+			history[i].Parts = appendArtifactPart(history[i].Parts, stored)
+			form = withDescriptorList(artifactReceipt(stored), descriptors[history[i].ToolCallID])
 			spills = append(spills, toolResultSpill{
 				ToolCallID: history[i].ToolCallID, ToolName: history[i].ToolName, Content: originalContent, Ref: stored, Receipt: form,
 			})
 		}
+		tokens.replaceContent(i, history[i].Content, form)
 		history[i].Content = form
 		newlyCompacted++
 	}
@@ -1100,7 +1124,18 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 
 func stripArtifactParts(history []messages.ChatMessage) []messages.ChatMessage {
 	for i := range history {
-		parts := history[i].Parts[:0]
+		var parts []messages.ContentPart
+		removed := false
+		for _, part := range history[i].Parts {
+			if part.Artifact != nil || part.Type == "artifact" || part.Type == "image_artifact" || part.Type == "file" {
+				removed = true
+				break
+			}
+		}
+		if !removed {
+			continue
+		}
+		parts = make([]messages.ContentPart, 0, len(history[i].Parts))
 		for _, part := range history[i].Parts {
 			if part.Artifact == nil && part.Type != "artifact" && part.Type != "image_artifact" && part.Type != "file" {
 				parts = append(parts, part)
@@ -1109,16 +1144,6 @@ func stripArtifactParts(history []messages.ChatMessage) []messages.ChatMessage {
 		history[i].Parts = parts
 	}
 	return history
-}
-
-func filterInternalMessages(history []messages.ChatMessage) []messages.ChatMessage {
-	out := history[:0]
-	for _, msg := range history {
-		if msg.Role != messages.MessageRoleInternal {
-			out = append(out, msg)
-		}
-	}
-	return out
 }
 
 func cloneMessages(history []messages.ChatMessage) []messages.ChatMessage {

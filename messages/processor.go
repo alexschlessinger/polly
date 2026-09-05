@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -37,8 +38,8 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			close(eventChan)
 		}()
 
-		var accumulatedContent string
-		var accumulatedReasoning string
+		var accumulatedContent strings.Builder
+		var accumulatedReasoning strings.Builder
 		var lastMessageWithToolCalls *ChatMessage
 		var lastMessageMetadata map[string]any
 		var stopReason StopReason
@@ -69,10 +70,10 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 				// slog.Debug("processor_reasoning_chunk_received",
 				// 	"processor_id", processorID,
 				// 	"chunk_len", len(msg.Reasoning),
-				// 	"accumulated_len", len(accumulatedReasoning),
+				// 	"accumulated_len", accumulatedReasoning.Len(),
 				// 	"preview", msg.Reasoning[:min(50, len(msg.Reasoning))],
 				// )
-				accumulatedReasoning += msg.Reasoning
+				accumulatedReasoning.WriteString(msg.Reasoning)
 				eventChan <- &StreamEvent{
 					Type:    EventTypeReasoning,
 					Content: msg.Reasoning,
@@ -85,11 +86,11 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 				// slog.Debug("processor_content_chunk_received",
 				// 	"processor_id", processorID,
 				// 	"chunk_len", len(msg.Content),
-				// 	"accumulated_len_before", len(accumulatedContent),
-				// 	"accumulated_len_after", len(accumulatedContent)+len(msg.Content),
+				// 	"accumulated_len_before", accumulatedContent.Len(),
+				// 	"accumulated_len_after", accumulatedContent.Len()+len(msg.Content),
 				// 	"preview", msg.Content[:min(50, len(msg.Content))],
 				// )
-				accumulatedContent += msg.Content
+				accumulatedContent.WriteString(msg.Content)
 				eventChan <- &StreamEvent{
 					Type:    EventTypeContent,
 					Content: msg.Content,
@@ -133,16 +134,16 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 		// should ignore this to avoid duplication
 		slog.Debug("processor_event_type_complete_created",
 			"processor_id", processorID,
-			"accumulated_content_len", len(accumulatedContent),
-			"accumulated_reasoning_len", len(accumulatedReasoning),
+			"accumulated_content_len", accumulatedContent.Len(),
+			"accumulated_reasoning_len", accumulatedReasoning.Len(),
 			"has_tool_calls", lastMessageWithToolCalls != nil,
 			"stop_reason", stopReason,
 		)
 
 		completeMsg := ChatMessage{
 			Role:       MessageRoleAssistant,
-			Content:    accumulatedContent,
-			Reasoning:  accumulatedReasoning,
+			Content:    accumulatedContent.String(),
+			Reasoning:  accumulatedReasoning.String(),
 			Metadata:   lastMessageMetadata,
 			StopReason: stopReason,
 		}

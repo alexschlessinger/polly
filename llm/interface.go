@@ -75,6 +75,11 @@ type CompletionRequest struct {
 	ThinkingEffort ThinkingEffort         // Reasoning effort: Off, a named Level, a raw token Budget, or Dynamic
 	Stream         *bool                  // nil = streaming (default), false = non-streaming
 	Skills         *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
+
+	// Private caches belong to one Agent.Run and are shared by its requests.
+	shapeCache          *requestShapeCache
+	projectionCache     *projectionCache
+	providerReplayCache *providerReplayCache
 }
 
 // ResolvedMessages returns a copy of Messages with skill prompt injected.

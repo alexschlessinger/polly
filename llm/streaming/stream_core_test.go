@@ -127,3 +127,26 @@ func TestCompleteStreamCompletesWithStopReason(t *testing.T) {
 		t.Fatalf("messages = %+v, want one completion", got)
 	}
 }
+
+func TestCompleteDoesNotRepeatBufferedText(t *testing.T) {
+	core, ch := newTestStreamingCore()
+	core.EmitContent("first")
+	core.EmitReasoning("thought")
+	core.EmitContent(" second")
+	core.SetStopReason(messages.StopReasonEndTurn)
+	core.CompleteStream()
+	close(ch)
+	var content, reasoning string
+	var final messages.ChatMessage
+	for msg := range ch {
+		content += msg.Content
+		reasoning += msg.Reasoning
+		final = msg
+	}
+	if content != "first second" || reasoning != "thought" {
+		t.Fatalf("streamed text duplicated or lost: %q / %q", content, reasoning)
+	}
+	if final.Content != "" || final.Reasoning != "" || final.StopReason != messages.StopReasonEndTurn {
+		t.Fatalf("final metadata message changed: %+v", final)
+	}
+}

@@ -18,6 +18,14 @@ import (
 type readTranscriptTool struct {
 	tools.NativeTool
 	snapshot func() []messages.ChatMessage
+	rendered func() string
+}
+
+func (t *readTranscriptTool) text() string {
+	if t.rendered != nil {
+		return t.rendered()
+	}
+	return renderTranscript(t.snapshot())
 }
 
 func (t *readTranscriptTool) GetName() string { return "read_transcript" }
@@ -47,7 +55,7 @@ func (t *readTranscriptTool) Execute(ctx context.Context, raw map[string]any) (s
 		if byteOffset < 0 {
 			return "", fmt.Errorf("byte_offset must be at least 0")
 		}
-		rendered := renderTranscript(t.snapshot())
+		rendered := t.text()
 		if byteOffset >= int64(len(rendered)) {
 			return fmt.Sprintf("Transcript has no content at or after byte %d.", byteOffset), nil
 		}
@@ -61,7 +69,7 @@ func (t *readTranscriptTool) Execute(ctx context.Context, raw map[string]any) (s
 	if limit < 1 || limit > artifactReadMaxLines {
 		return "", fmt.Errorf("limit must be between 1 and %d", artifactReadMaxLines)
 	}
-	rendered := renderTranscript(t.snapshot())
+	rendered := t.text()
 	text, err := tools.PageLines(ctx, strings.NewReader(rendered), "transcript", offset, limit, args.String("query"))
 	if err != nil {
 		return "", err
@@ -77,7 +85,11 @@ func (t *readTranscriptTool) Execute(ctx context.Context, raw map[string]any) (s
 // later ones.
 func renderTranscript(history []messages.ChatMessage) string {
 	var b strings.Builder
-	index := 0
+	appendTranscriptText(&b, history, 0)
+	return b.String()
+}
+
+func appendTranscriptText(b *strings.Builder, history []messages.ChatMessage, index int) int {
 	for _, msg := range history {
 		if msg.Role == messages.MessageRoleInternal {
 			continue
@@ -102,5 +114,5 @@ func renderTranscript(history []messages.ChatMessage) string {
 			b.WriteString(fmt.Sprintf("[tool call %s %s]\n", call.Name, call.Arguments))
 		}
 	}
-	return b.String()
+	return index
 }

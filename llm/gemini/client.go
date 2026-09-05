@@ -132,7 +132,13 @@ func (c *Client) BatchEmbedContents(ctx context.Context, model string, requests 
 // post sends a JSON body and returns the response with its body still open.
 // Non-2xx statuses are drained and returned as *APIError.
 func (c *Client) post(ctx context.Context, path string, body any) (*http.Response, error) {
-	payload, err := json.Marshal(body)
+	var payload []byte
+	var err error
+	if req, ok := body.(*GenerateContentRequest); ok && req != nil {
+		payload, err = req.MarshalJSON()
+	} else {
+		payload, err = json.Marshal(body)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("gemini: encoding request: %w", err)
 	}

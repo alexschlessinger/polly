@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"strings"
 
@@ -150,7 +149,7 @@ func clampThinkingBudget(budget, maxTokens int) int {
 // buildRequestParams creates the Anthropic API request parameters
 func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.MessageRequest {
 	// Convert messages to Anthropic format
-	anthropicMessages, systemPrompt := MessagesToAnthropicParams(req.Messages)
+	anthropicMessages, systemPrompt := messagesToAnthropicParams(req.Messages, requestProviderReplayCache(req))
 
 	// Create the request
 	maxTokens := req.MaxTokens
@@ -373,6 +372,10 @@ func anthropicTextBlock(text string) *anthropic.ContentBlock {
 
 // MessagesToAnthropicParams converts messages to Anthropic message parameters
 func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.MessageParam, string) {
+	return messagesToAnthropicParams(msgs, nil)
+}
+
+func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerReplayCache) ([]anthropic.MessageParam, string) {
 	var anthropicMessages []anthropic.MessageParam
 	systemPrompt := ""
 
@@ -471,12 +474,7 @@ func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.Message
 				for _, tc := range msg.ToolCalls {
 					// Anthropic requires the input field even for tools with
 					// no parameters; invalid argument JSON degrades to {}.
-					input := json.RawMessage("{}")
-					if argStr := strings.TrimSpace(tc.Arguments); argStr != "" {
-						if json.Valid([]byte(argStr)) {
-							input = json.RawMessage(argStr)
-						}
-					}
+					input := replay.anthropicInput(tc.Arguments)
 					blocks = append(blocks, &anthropic.ContentBlock{
 						Type:  "tool_use",
 						ID:    tc.ID,

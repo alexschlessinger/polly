@@ -1,6 +1,8 @@
 package adapters
 
 import (
+	"strings"
+
 	"github.com/alexschlessinger/pollytool/llm/anthropic"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -13,6 +15,8 @@ type AnthropicAdapter struct {
 	currentBlockIndex    int
 	currentThinkingBlock map[string]any
 	thinkingBlocks       []map[string]any
+	thinkingBuilder      strings.Builder
+	arguments            toolArgumentBuffers
 }
 
 // NewAnthropicAdapter creates a new Anthropic streaming adapter
@@ -83,6 +87,7 @@ func (a *AnthropicAdapter) handleContentBlockStart(event *anthropic.StreamEvent,
 	switch event.ContentBlock.Type {
 	case "thinking":
 		// Start capturing a thinking block
+		a.thinkingBuilder.Reset()
 		a.currentThinkingBlock = map[string]any{
 			"type":     "thinking",
 			"thinking": "", // Will be filled by deltas
@@ -118,11 +123,8 @@ func (a *AnthropicAdapter) handleContentBlockDelta(event *anthropic.StreamEvent,
 	if thinking := event.Delta.Thinking; thinking != "" {
 		// Add to current thinking block if we're capturing one
 		if a.currentThinkingBlock != nil {
-			if existingThinking, ok := a.currentThinkingBlock["thinking"].(string); ok {
-				a.currentThinkingBlock["thinking"] = existingThinking + thinking
-			} else {
-				a.currentThinkingBlock["thinking"] = thinking
-			}
+			a.thinkingBuilder.WriteString(thinking)
+			a.currentThinkingBlock["thinking"] = a.thinkingBuilder.String()
 		}
 		// Note: Reasoning emission is handled by the main streaming loop
 	}
@@ -139,17 +141,10 @@ func (a *AnthropicAdapter) handleContentBlockDelta(event *anthropic.StreamEvent,
 
 	// Check if it's tool use input delta
 	if event.Delta.PartialJSON != "" && a.currentBlockType == "tool_use" {
-		// Update the last tool call's arguments
-		toolCalls := state.GetToolCalls()
-		if a.currentBlockIndex >= 0 && a.currentBlockIndex < len(toolCalls) {
+		// The block-start event already established this index.
+		if a.currentBlockIndex >= 0 {
 			state.UpdateToolCallAtIndex(a.currentBlockIndex, func(tc *messages.ChatMessageToolCall) {
-				if tc.Arguments == "{}" {
-					// First content, replace the default empty object
-					tc.Arguments = event.Delta.PartialJSON
-				} else {
-					// Append to existing content
-					tc.Arguments += event.Delta.PartialJSON
-				}
+				tc.Arguments = a.arguments.append(a.currentBlockIndex, tc.Arguments, event.Delta.PartialJSON)
 			})
 		}
 	}
@@ -157,6 +152,7 @@ func (a *AnthropicAdapter) handleContentBlockDelta(event *anthropic.StreamEvent,
 
 // handleContentBlockStop processes content block stop events
 func (a *AnthropicAdapter) handleContentBlockStop(state streaming.StreamStateInterface) {
+	delete(a.arguments, a.currentBlockIndex)
 	if a.currentBlockType == "thinking" && a.currentThinkingBlock != nil {
 		// Save completed thinking block
 		a.thinkingBlocks = append(a.thinkingBlocks, a.currentThinkingBlock)

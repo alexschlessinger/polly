@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"maps"
+	"strings"
 	"sync"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -50,7 +51,9 @@ type StreamState struct {
 	Metadata map[string]any
 
 	// Internal state management
-	mu sync.Mutex // Protects concurrent access to fields
+	mu               sync.Mutex // Protects concurrent access to fields
+	contentBuilder   strings.Builder
+	reasoningBuilder strings.Builder
 }
 
 // NewStreamState creates a new StreamState with initialized fields
@@ -65,14 +68,26 @@ func NewStreamState() *StreamState {
 func (s *StreamState) AppendContent(content string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ResponseContent += content
+	s.ResponseContent = appendStreamText(&s.contentBuilder, s.ResponseContent, content)
 }
 
 // AppendReasoning safely appends reasoning/thinking content
 func (s *StreamState) AppendReasoning(reasoning string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ReasoningContent += reasoning
+	s.ReasoningContent = appendStreamText(&s.reasoningBuilder, s.ReasoningContent, reasoning)
+}
+
+// Keep the public fields current without copying the accumulated prefix. A
+// caller may initialize or replace a field directly, and Clone starts with fresh
+// builders, so seed the buffer from that snapshot when necessary.
+func appendStreamText(builder *strings.Builder, current, delta string) string {
+	if current != builder.String() {
+		builder.Reset()
+		builder.WriteString(current)
+	}
+	builder.WriteString(delta)
+	return builder.String()
 }
 
 // AddToolCall safely adds a tool call to the state

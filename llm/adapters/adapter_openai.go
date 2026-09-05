@@ -27,7 +27,9 @@ const (
 
 // OpenAIAdapter handles Chat Completions streaming patterns.
 // Chat Completions sends tool calls incrementally with index-based updates.
-type OpenAIAdapter struct{}
+type OpenAIAdapter struct {
+	arguments toolArgumentBuffers
+}
 
 func NewOpenAIAdapter() *OpenAIAdapter {
 	return &OpenAIAdapter{}
@@ -71,11 +73,7 @@ func (a *OpenAIAdapter) handleIndexedToolCall(index int, tc openai.ChatToolCallD
 		if tc.Function.Arguments == "" {
 			return
 		}
-		if toolCall.Arguments == "{}" {
-			toolCall.Arguments = tc.Function.Arguments
-			return
-		}
-		toolCall.Arguments += tc.Function.Arguments
+		toolCall.Arguments = a.arguments.append(index, toolCall.Arguments, tc.Function.Arguments)
 	})
 }
 
@@ -93,7 +91,8 @@ type OpenAIResponsesAdapter struct {
 	toolCallIndexByOutput map[int]int
 	// model stamps the reasoning items so a later turn can tell whether they
 	// are still replayable.
-	model string
+	model     string
+	arguments toolArgumentBuffers
 }
 
 func NewOpenAIResponsesAdapter(model string) *OpenAIResponsesAdapter {
@@ -137,11 +136,7 @@ func (a *OpenAIResponsesAdapter) handleFunctionCallDelta(event *openai.ResponseS
 		return
 	}
 	a.updateToolCallAtOutputIndex(int(event.OutputIndex), state, func(toolCall *messages.ChatMessageToolCall) {
-		if toolCall.Arguments == "{}" {
-			toolCall.Arguments = string(event.Delta)
-			return
-		}
-		toolCall.Arguments += string(event.Delta)
+		toolCall.Arguments = a.arguments.append(int(event.OutputIndex), toolCall.Arguments, string(event.Delta))
 	})
 }
 
@@ -152,6 +147,7 @@ func (a *OpenAIResponsesAdapter) handleFunctionCallDone(event *openai.ResponseSt
 		}
 		if event.Arguments != "" {
 			toolCall.Arguments = event.Arguments
+			delete(a.arguments, int(event.OutputIndex))
 		}
 	})
 }
@@ -178,6 +174,7 @@ func (a *OpenAIResponsesAdapter) handleOutputItem(item *openai.ResponseOutputIte
 		}
 		if args := string(item.Arguments); args != "" {
 			toolCall.Arguments = args
+			delete(a.arguments, index)
 		}
 	})
 }

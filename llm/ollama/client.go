@@ -81,17 +81,21 @@ func (c *Client) Chat(ctx context.Context, req *ChatRequest, fn func(ChatRespons
 			continue
 		}
 		// The server reports failures mid-stream as an error line.
-		var probe struct {
-			Error string `json:"error"`
+		var envelope struct {
+			ChatResponse
+			Error json.RawMessage `json:"error"`
 		}
-		if json.Unmarshal(line, &probe) == nil && probe.Error != "" {
-			return StatusError{StatusCode: resp.StatusCode, ErrorMessage: probe.Error}
+		decodeErr := json.Unmarshal(line, &envelope)
+		if len(envelope.Error) > 0 {
+			var message string
+			if json.Unmarshal(envelope.Error, &message) == nil && message != "" {
+				return StatusError{StatusCode: resp.StatusCode, ErrorMessage: message}
+			}
 		}
-		var chunk ChatResponse
-		if err := json.Unmarshal(line, &chunk); err != nil {
+		if err := decodeErr; err != nil {
 			return fmt.Errorf("ollama: invalid response line: %w", err)
 		}
-		if err := fn(chunk); err != nil {
+		if err := fn(envelope.ChatResponse); err != nil {
 			return err
 		}
 	}
