@@ -316,8 +316,8 @@ polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hel
 Names are namespaced: `uppercase__to_uppercase`, `filesystem__read_file`.
 `--confirm` asks before each call.
 
-New contexts start with `bash` and every built-in file tool. Any `--tool`
-replaces that default.
+New contexts start with `bash` and the built-in file tools. `search_files`
+loads only when `zg` (zvec-grep) is on `PATH`. Any `--tool` replaces that default.
 
 ### Built-in tools
 
@@ -327,10 +327,26 @@ replaces that default.
 - `edit_file`: replace an exact literal string. Must be unique, or pass `replace_all`.
 - `list_dir`: one directory, non-recursive.
 - `spawn_agent`: delegate to a child agent. See [Subagents](#subagents).
-- `search_files`: `path:line: text` matches. Literal, or RE2 with `regex`. Filter with an `include` glob. Skips `.git`, symlinks, binaries, read-denied paths.
+- `search_files`: preferred entry point for finding code and documents. Requires `zg` (zvec-grep) on `PATH`; use `query` for natural-language or cross-file discovery. Polly creates the workspace's `.zvec-grep/` index on first query and incrementally refreshes it before subsequent queries. New indexes use the local `potion-code-16m-v2` model; the first query may download it. Existing local-model indexes retain their model and file-selection settings. Indexed results are ranked snippets (default 7, maximum 50). Use `pattern` for exact `path:line: text` matches, or RE2 with `regex` (default 100, maximum 500). Supply exactly one of `query` or `pattern`; both support an `include` glob. Exact matching skips `.git`, symlinks, binaries, and read-denied paths.
 
-All enforce the sandbox policy in-process
-([details](SANDBOX.md#what-gets-sandboxed)).
+If zg is missing, Polly omits `search_files`, including when restoring a session
+that previously used it. An explicit `--tool search_files` reports the missing
+dependency. Other available tools handle search in that case.
+
+Native file operations enforce the sandbox policy in-process; indexed search
+runs zg through the process sandbox and checks cached hits against the current
+read policy. It keeps its runtime and model cache in `.zvec-grep/polly/`.
+The search root uses the closest ancestor index or Git workspace, otherwise
+the requested directory. Subdirectory searches stay scoped to that directory.
+Automatic indexing requires workspace write access and a local embedding model.
+If an existing zg daemon owns index writes, Polly searches the existing snapshot
+directly and marks it potentially stale. Other index failures are reported so
+the agent can use exact `pattern` searches. Exact directory searches skip
+generated `.zvec-grep` state as well. See [sandbox details](SANDBOX.md#what-gets-sandboxed).
+
+To verify an installed zg with the real sandbox, run
+`POLLYTOOL_REQUIRE_ZG_TESTS=1 go test ./tools -run TestIndexedSearchLive -count=1`.
+This builds a temporary index and downloads a local model into it.
 
 Conversations also provide recall tools for content omitted from model context:
 

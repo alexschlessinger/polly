@@ -39,7 +39,7 @@ func (t *listDirTool) GetName() string { return "list_dir" }
 func (t *listDirTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(
 		"list_dir",
-		"List a directory's entries (directories first, then files, with sizes). Not recursive; use search_files to locate content by pattern.",
+		"List a directory's entries (directories first, then files, with sizes). Not recursive. When search_files is available, prefer it for finding code or documents and use its query mode for discovery. Use list_dir when you need the directory listing itself.",
 		schema.Params{
 			"path":   schema.S("Filesystem path of the directory to list"),
 			"offset": schema.Int("1-based starting position in the listing (default 1)"),

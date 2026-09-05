@@ -67,6 +67,7 @@ func TestBashToolSchemaAnnotatesSandboxPosture(t *testing.T) {
 }
 
 func TestBashSchemaSteersTowardLoadedFileTools(t *testing.T) {
+	installSearchDependencyForTest(t)
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
 		t.Fatalf("load bash: %v", err)

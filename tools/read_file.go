@@ -38,7 +38,7 @@ func (t *readFileTool) GetName() string { return "read_file" }
 func (t *readFileTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(
 		"read_file",
-		"Read a bounded section of a local text file as numbered lines, search it literally, or page raw bytes. Truncated output reports the exact continuation offset. Use view_image for images.",
+		"Read a bounded section of a local text file as numbered lines, search it literally, or page raw bytes. For discovery, prefer search_files when available before broad file reads; read only the sections its snippets do not already answer. Truncated output reports the exact continuation offset. Use view_image for images.",
 		schema.Params{
 			"path":        schema.S("Filesystem path of the file to read"),
 			"offset":      schema.Int("1-based starting line (default 1)"),

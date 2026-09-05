@@ -42,10 +42,21 @@ user on a shared kernel. See [Limitations](#limitations).
 | Stdio MCP servers | yes (the whole server process) | global `--nosandbox` only |
 | Remote MCP servers (HTTP/SSE) | no — the process runs elsewhere | n/a |
 | Skill helper / function tools | no — in-process, nothing to wrap | n/a |
-| Builtin file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `search_files`, `view_image`) | policy-checked in-process | `--nosandbox` |
+| Builtin file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, exact `search_files`, `view_image`) | policy-checked in-process | `--nosandbox` |
+| Indexed `search_files` (`query`, when zg is installed) | sandboxed zg subprocesses plus cached-hit read-policy checks | `--nosandbox` |
 | Automatic `AGENTS.md` loading for default CLI coding turns | policy-checked in-process | `--nosandbox` |
 
-The builtin file tools have no child process to wrap, so they check every
+Indexed search uses `zg --mode direct`: it never delegates filesystem work to
+an existing daemon outside Polly's sandbox. The first query creates a local-model
+index; subsequent queries refresh it. The index, runtime state, and model cache
+stay under the workspace's `.zvec-grep/`, with no extra write or network grants.
+Read-only policies therefore retain exact search but cannot create or refresh
+indexes. Cached snippets are filtered through the current read policy, including
+when another application built the index. A daemon-owned write lease leaves the
+index intact; Polly returns a potentially stale snapshot and recommends current
+file verification. Automatic indexing does not authorize remote embeddings.
+
+The in-process file operations check every
 path against the base config instead: reads against the deny list minus
 `readPaths`, writes against the writable paths minus `denyWritePaths` and
 the deny list. `write_file` and `edit_file` refuse to load when sandboxing
