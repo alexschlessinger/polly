@@ -93,7 +93,7 @@ func TestAgentExternalizesRichToolImageAndAttachesItOnce(t *testing.T) {
 	if got := len(projectedImageParts(model.requests[2])); got != 0 || !strings.Contains(projectedText(model.requests[2]), "/tmp/never-auto-upload.png") {
 		t.Fatalf("textual filesystem path was not kept text-only: %#v", model.requests[2])
 	}
-	if _, ok, allowed := registry.GetIfAllowed("read_artifact"); !ok || !allowed {
+	if _, ok, allowed := agent.ToolRegistry().GetIfAllowed("read_artifact"); !ok || !allowed {
 		t.Fatalf("session read_artifact tool registration = exists:%v allowed:%v", ok, allowed)
 	}
 }

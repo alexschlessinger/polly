@@ -38,6 +38,7 @@ var ErrMaxIterations = errors.New("max iterations exceeded")
 type Agent struct {
 	client        LLM
 	tools         *tools.ToolRegistry
+	sourceTools   *tools.ToolRegistry
 	config        AgentConfig
 	artifactStore artifacts.Store
 	artifactMu    sync.RWMutex
@@ -172,15 +173,20 @@ func hasToolCall(msg *messages.ChatMessage, name string) bool {
 // NewAgent creates an agent that handles the agentic loop and its compact,
 // session-scoped model projection. The agent does not own transcript state:
 // callers provide messages and persist the generated messages themselves.
+// Agent built-ins are private to this agent. The caller retains ownership of
+// registry and its configured tools; later registry changes remain visible.
 func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
 	if config.MaxIterations <= 0 {
 		config.MaxIterations = 250
 	}
-	if registry == nil && config.ArtifactStore != nil {
+	source := registry
+	if registry != nil {
+		registry = registry.Derive()
+	} else if config.ArtifactStore != nil {
 		registry = tools.NewToolRegistry(nil)
 	}
 	agent := &Agent{
-		client: client, tools: registry, config: config,
+		client: client, tools: registry, sourceTools: source, config: config,
 		artifactStore: config.ArtifactStore,
 		artifactRefs:  make(map[string]artifacts.Ref),
 	}
@@ -202,6 +208,30 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		agent.transcriptTool = true
 	}
 	return agent
+}
+
+// ToolRegistry returns the agent's effective tools, including its private
+// built-ins. Configured tools and policies are inherited from the caller.
+func (a *Agent) ToolRegistry() *tools.ToolRegistry { return a.tools }
+
+// Close releases only the agent's private registry. The caller still owns its
+// registry, MCP clients, and artifact store. Do not call it during Run.
+func (a *Agent) Close() error {
+	if a.tools != nil {
+		return a.tools.Close()
+	}
+	return nil
+}
+
+func (a *Agent) commitToolChanges() {
+	// Inherited skill tools stage changes in the registry they were created
+	// with. Publish those changes at the same iteration boundary as before.
+	if a.sourceTools != nil {
+		a.sourceTools.CommitPendingChanges()
+	}
+	if a.tools != nil {
+		a.tools.CommitPendingChanges()
+	}
 }
 
 func (a *Agent) setTranscript(history []messages.ChatMessage) {
@@ -436,16 +466,12 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			// world: keep their real results, stub the unanswered calls, and
 			// return the completed batch so AllMessages stays replayable.
 			toolMsgs = completeAbortedToolBatch(response.ToolCalls, toolMsgs)
-			if a.tools != nil {
-				a.tools.CommitPendingChanges()
-			}
+			a.commitToolChanges()
 			a.indexArtifactMessages(toolMsgs)
 			allGenerated = append(allGenerated, toolMsgs...)
 			return responseFor(response, iteration+1), toolErr
 		}
-		if a.tools != nil {
-			a.tools.CommitPendingChanges()
-		}
+		a.commitToolChanges()
 		a.indexArtifactMessages(toolMsgs)
 		msgs = append(msgs, toolMsgs...)
 		allGenerated = append(allGenerated, toolMsgs...)

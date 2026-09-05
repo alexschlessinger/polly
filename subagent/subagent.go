@@ -268,6 +268,7 @@ func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.Completion
 			agentConfig.MaxIterations = req.MaxIterations
 		}
 		agent := llm.NewAgent(client, registry, agentConfig)
+		defer agent.Close()
 
 		childReq := base
 		if req.Model != "" {

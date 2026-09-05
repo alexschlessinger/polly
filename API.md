@@ -422,6 +422,14 @@ saved := skillRuntime.ActivatedSkills()
 err = skillRuntime.Restore(saved)
 ```
 
+`llm.NewAgent` keeps `read_transcript`, `read_artifact`, `list_artifacts`, and
+`view_image` in an agent-owned registry. Constructing an agent does not register
+these tools in the caller's registry. Configured tools, sandbox policy, and
+runtime updates remain inherited. Use `agent.ToolRegistry()` to inspect the
+effective tool set, and `agent.Close()` when finished; closing an agent leaves
+the caller's registry, MCP connections, and artifact store open. Each agent
+supports one `Run` at a time; independent agents may share a configured registry.
+
 ## Subagents
 
 The `subagent` package gives a model the `spawn_agent` tool: a brief, an

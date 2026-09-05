@@ -117,8 +117,22 @@ type sessionOpener struct {
 	spawn func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error)
 }
 
+// effectiveTools includes the agent's private built-ins for display and
+// request projection. Persistence and tool loading use toolRegistry instead.
+func (s *conversationState) effectiveTools() *tools.ToolRegistry {
+	if s.agent != nil {
+		return s.agent.ToolRegistry()
+	}
+	return s.toolRegistry
+}
+
 func (s *conversationState) Close() error {
 	var errs []error
+	if s.agent != nil {
+		if err := s.agent.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if s.toolRegistry != nil {
 		if err := s.toolRegistry.Close(); err != nil {
 			errs = append(errs, err)
@@ -879,7 +893,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	turnUI.Start()
 	defer turnUI.Stop()
 
-	req := createCompletionRequest(config, settings, requestMessages, state.toolRegistry, state.skillCatalog, schema)
+	req := createCompletionRequest(config, settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
 	req.MaxContextTokens = resolveContextBudget(ctx, state)
 	req.CacheSessionID, err = cacheSessionIDForSession(ctx, state.session)
 	if err != nil {

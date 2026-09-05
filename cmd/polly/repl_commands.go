@@ -1210,11 +1210,11 @@ func completeToolsCommand(ctx *replCommandContext, fields []string, prefix strin
 }
 
 func loadedToolNames(ctx *replCommandContext) []string {
-	if ctx == nil || ctx.state == nil || ctx.state.toolRegistry == nil {
+	if ctx == nil || ctx.state == nil || ctx.state.effectiveTools() == nil {
 		return nil
 	}
 	var names []string
-	for _, t := range ctx.state.toolRegistry.All() {
+	for _, t := range ctx.state.effectiveTools().All() {
 		names = append(names, t.GetName())
 	}
 	return names
@@ -1241,8 +1241,8 @@ func completeHelpCommand(ctx *replCommandContext, fields []string, prefix string
 
 func replListTools(ctx *replCommandContext, namespace string) replCommandResult {
 	var all []tools.Tool
-	if ctx != nil && ctx.state != nil && ctx.state.toolRegistry != nil {
-		all = ctx.state.toolRegistry.All()
+	if ctx != nil && ctx.state != nil && ctx.state.effectiveTools() != nil {
+		all = ctx.state.effectiveTools().All()
 	}
 	if len(all) == 0 {
 		return replCommandResult{err: ctx.replyLine("no tools loaded")}
@@ -1270,10 +1270,10 @@ func replListTools(ctx *replCommandContext, namespace string) replCommandResult 
 }
 
 func replShowTool(ctx *replCommandContext, name string) replCommandResult {
-	if ctx == nil || ctx.state == nil || ctx.state.toolRegistry == nil {
+	if ctx == nil || ctx.state == nil || ctx.state.effectiveTools() == nil {
 		return replCommandResult{err: ctx.replyLine("tool not found: " + name)}
 	}
-	tool, ok := ctx.state.toolRegistry.Get(name)
+	tool, ok := ctx.state.effectiveTools().Get(name)
 	if !ok {
 		return replCommandResult{err: ctx.replyLine("tool not found: " + name)}
 	}
