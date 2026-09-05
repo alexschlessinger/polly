@@ -52,7 +52,7 @@ Model fallback is the model's job: `bash` grep/`rg`, `read_file`, `list_dir`. To
 
 - Location: `<workspace>/.zvec-grep/`. Index, runtime state, model cache all live there.
 - Created on first `query`. Refreshed incrementally after. Model: `potion-code-16m-v2`, downloaded on first query.
-- Search root: nearest ancestor index or Git workspace, else the requested directory. Subdirectory searches stay scoped.
+- Search root: nearest ancestor with `.zvec-grep/manifest.json` or a Git checkout, else the requested directory. Discovery stops short of the home directory and the filesystem root; zg's own `~/.zvec-grep` runtime home is not an index. Subdirectory searches stay scoped.
 - Exact mode skips `.git` and `.zvec-grep` too.
 
 ## Policy

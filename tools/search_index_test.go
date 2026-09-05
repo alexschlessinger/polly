@@ -128,6 +128,58 @@ esac
 	}
 }
 
+func TestIndexedSearchRootSkipsRuntimeStateAndBroadAncestors(t *testing.T) {
+	base := t.TempDir()
+	base, _ = filepath.EvalSymlinks(base)
+	// zg's own runtime home is named .zvec-grep but holds no workspace manifest.
+	for _, dir := range []string{".zvec-grep/daemon", ".zvec-grep/models", "Documents/notes"} {
+		if err := os.MkdirAll(filepath.Join(base, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notes := filepath.Join(base, "Documents", "notes")
+	if got := indexedSearchRoot(notes); got != notes {
+		t.Fatalf("runtime state directory selected as workspace: %s", got)
+	}
+	calls := filepath.Join(t.TempDir(), "calls")
+	tool := NewSearchFilesTool(NewToolRegistry(nil, WithUnsafeNoSandbox())).(*searchFilesTool)
+	tool.zvecPath = fakeSearchZG(t, `
+printf '%s\t%s\n' "$PWD" "$*" >> '`+calls+`'
+if [ "$1" = index ]; then exit 0; fi
+echo 'No matches.'
+`)
+	if _, err := tool.Execute(context.Background(), map[string]any{"query": "meeting notes", "path": notes}); err != nil {
+		t.Fatalf("query beside runtime state: %v", err)
+	}
+	recorded, _ := os.ReadFile(calls)
+	if first := strings.SplitN(string(recorded), "\n", 2)[0]; !strings.HasPrefix(first, notes+"\tindex "+notes+" ") {
+		t.Fatalf("index must build the requested directory in that directory, got: %s", first)
+	}
+
+	writeTestFile(t, filepath.Join(base, ".zvec-grep"), "manifest.json", `{}`)
+	if got := indexedSearchRoot(notes); got != base {
+		t.Fatalf("manifest-bearing ancestor not preferred: %s", got)
+	}
+
+	// A dotfiles checkout versions $HOME itself; discovery must not climb
+	// into it, while an explicitly requested home search still names it.
+	home := t.TempDir()
+	home, _ = filepath.EvalSymlinks(home)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	for _, dir := range []string{".git", "notes"} {
+		if err := os.Mkdir(filepath.Join(home, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := indexedSearchRoot(filepath.Join(home, "notes")); got != filepath.Join(home, "notes") {
+		t.Fatalf("versioned home directory selected as workspace: %s", got)
+	}
+	if got := indexedSearchRoot(home); got != home {
+		t.Fatalf("explicit home search root = %s", got)
+	}
+}
+
 func TestIndexedSearchDaemonLeaseUsesSnapshot(t *testing.T) {
 	root := t.TempDir()
 	root, _ = filepath.EvalSymlinks(root)

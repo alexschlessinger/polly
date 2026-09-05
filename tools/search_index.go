@@ -154,9 +154,21 @@ func (t *searchFilesTool) searchIndexed(ctx context.Context, args Args, query st
 
 // Prefer the closest existing index or Git workspace. Unversioned directories
 // without an ancestor index get their own index at the requested search root.
+// Only a manifest marks an index: zg's global runtime home is also named
+// .zvec-grep, and finding it must not make $HOME the workspace. Discovery
+// also stops short of the home directory and the filesystem root: the
+// sandbox rejects both as workspaces, and --nosandbox must not index them
+// wholesale (a dotfiles checkout puts .git at $HOME).
 func indexedSearchRoot(path string) string {
+	home, _ := os.UserHomeDir()
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		home = real
+	}
 	for dir := path; ; dir = filepath.Dir(dir) {
-		if _, err := os.Lstat(filepath.Join(dir, ".zvec-grep")); err == nil {
+		if dir != path && (dir == home || filepath.Dir(dir) == dir) {
+			return path
+		}
+		if info, err := os.Lstat(filepath.Join(dir, ".zvec-grep", "manifest.json")); err == nil && info.Mode().IsRegular() {
 			return dir
 		}
 		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {

@@ -336,8 +336,10 @@ dependency. Other available tools handle search in that case.
 Native file operations enforce the sandbox policy in-process; indexed search
 runs zg through the process sandbox and checks cached hits against the current
 read policy. It keeps its runtime and model cache in `.zvec-grep/polly/`.
-The search root uses the closest ancestor index or Git workspace, otherwise
-the requested directory. Subdirectory searches stay scoped to that directory.
+The search root uses the closest ancestor index (`.zvec-grep/manifest.json`)
+or Git workspace, otherwise the requested directory; discovery stops short of
+the home directory and the filesystem root. Subdirectory searches stay scoped
+to that directory.
 Automatic indexing requires workspace write access and a local embedding model.
 If an existing zg daemon owns index writes, Polly searches the existing snapshot
 directly and marks it potentially stale. Other index failures are reported so
