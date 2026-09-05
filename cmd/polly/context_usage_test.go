@@ -76,8 +76,11 @@ func TestContextMeterUsesLatestRequestAfterCompaction(t *testing.T) {
 			model := &compactingContextLLM{omitFinalUsage: omitFinalUsage}
 			state := &conversationState{
 				session: session, artifactStore: artifactStore, toolRegistry: registry,
-				agent:          llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
-				settings:       Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 8_000},
+				agent: llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
+				// A persona keeps the coding defaults and any AGENTS.md out of
+				// the request; their size would otherwise decide when this
+				// fixture compacts.
+				settings:       Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 8_000, SystemPrompt: "context meter"},
 				contextWindows: map[string]int{"test/model": 0},
 			}
 			config := &Config{}
