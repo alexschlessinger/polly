@@ -312,7 +312,8 @@ func getOrCreateSession(ctx context.Context, store sessions.SessionStore, contex
 		contextID = "default" // Memory store context
 	}
 	target, agentLink := ctx.Value(agentSessionTargetKey{}).(agentSessionTarget)
-	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{Auto: auto, ExistingOnly: agentLink})
+	existingOnly, _ := ctx.Value(existingSessionTargetKey{}).(bool)
+	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{Auto: auto, ExistingOnly: agentLink || existingOnly})
 	if err != nil {
 		return nil, fmt.Errorf("get session for context %q: %w", contextID, err)
 	}

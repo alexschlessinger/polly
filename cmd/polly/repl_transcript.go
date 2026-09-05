@@ -141,6 +141,7 @@ func (m *replModel) appendAssistant(text string) {
 		// intervening non-assistant line), so the builder starts empty too.
 		m.resetAssistantStream()
 		m.currentAssistant = m.appendTranscriptEntry("")
+		m.transcript[m.currentAssistant].assistant = true
 	}
 	m.streamRaw.WriteString(text)
 }
@@ -238,11 +239,11 @@ func formattedUserPrompt(p string) string {
 
 func (m *replModel) appendUserPrompt(p string) {
 	m.appendLine(formattedUserPrompt(p))
+	m.transcript[len(m.transcript)-1].turnStart = true
 }
 
-// appendTurnSeparator inserts the single renderer-owned blank row between
-// settled transcript activity and the next user turn. No completion path adds
-// spacing, which keeps an answer stationary when its status changes to done.
+// appendTurnSeparator inserts one renderer-owned blank row before a turn
+// footer or a new user turn, without duplicating an existing blank entry.
 func (m *replModel) appendTurnSeparator() {
 	if len(m.transcript) == 0 || !m.transcriptEntryHasContent(len(m.transcript)-1) {
 		return
@@ -459,6 +460,25 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			} else {
 				entry += m.streamCursorFrame
 			}
+		}
+		if stats := m.transcript[i].turnStats; stats != "" && !m.quiet {
+			entry = strings.TrimRight(entry, "\r\n")
+			separator := "  "
+			images := m.transcript[i].images
+			if len(images) > 0 && strings.HasSuffix(entry, string(transcriptImageMarker(len(images)-1))) {
+				separator = "\n"
+			} else {
+				// Keep a fitting stats group together instead of stranding a
+				// token arrow on the following row. Measure only the final
+				// logical line; earlier paragraphs do not affect its wrapping.
+				lastLine := entry[strings.LastIndex(entry, "\n")+1:]
+				rows := transcriptVisualRows(lastLine, ui.NewStyle(ui.ColorClear), width)
+				statsWidth := styledTextWidth(stats)
+				if len(rows) > 0 && statsWidth <= width && transcriptCellsWidth(rows[len(rows)-1])+2+statsWidth > width {
+					separator = "\n"
+				}
+			}
+			entry += separator + stats
 		}
 		key := fmt.Sprintf("transcript:%d", i)
 		if turnTrailerID != 0 {

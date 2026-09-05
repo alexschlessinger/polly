@@ -93,7 +93,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	r.endTurn(nil)
 	trailer := m.turnTrailers[m.turnTrailerSeq]
 	header = plainStyledText(m.transcript[trailer.transcriptIndex].text)
-	if !strings.Contains(header, "3 tools · ▸ 3 agents · ▸ 1 image viewed") || record.agentsExpanded || record.imagesExpanded || record.expanded {
+	if !strings.Contains(header, "3 tools  ▸ 3 agents  ▸ 1 image viewed") || record.agentsExpanded || record.imagesExpanded || record.expanded {
 		t.Fatalf("settled trailer / expansion = %q / %+v", header, record)
 	}
 	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayAgents) {
@@ -601,22 +601,22 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 	close(runs.release)
 	settleUntil(t, r, settled(parent))
 	r.refreshAgentActivities()
-	launchIdle, trailerLive := inlineActivityControl("▸", "1 agent", true), turnActivityControl("▸", "1 agent running")
-	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, trailerLive) {
+	launchIdle, trailerLive := inlineActivityControl("▸", "1 agent", true), "▸ 1 agent running"
+	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || (!strings.Contains(plainStyledText(trailer), trailerLive) || !strings.Contains(trailer, "fg:accent")) {
 		t.Fatalf("settled turn: launch %q / trailer %q", launch, trailer)
 	}
 	// A new parent turn does not hand liveness back to the earlier launch row.
 	parent.model.mu.Lock()
 	parent.model.beginTurn("again")
 	parent.model.mu.Unlock()
-	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, trailerLive) {
+	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || (!strings.Contains(plainStyledText(trailer), trailerLive) || !strings.Contains(trailer, "fg:accent")) {
 		t.Fatalf("next turn: launch %q / trailer %q", launch, trailer)
 	}
 	close(runs.slow)
 	settleUntil(t, r, settled(child))
 	r.refreshAgentActivities()
 	// A finished group stays as bright as its neighbours; only the running phrase goes.
-	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, turnActivityControl("▸", "1 agent")) {
+	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || (!strings.Contains(plainStyledText(trailer), "▸ 1 agent") || !strings.Contains(trailer, "fg:accent")) {
 		t.Fatalf("finished child: launch %q / trailer %q", launch, trailer)
 	}
 	<-child.agentWriteDone

@@ -25,8 +25,8 @@ import (
 // reports waiting for it whenever it is open and idle, here or in a later
 // polly, as one message that starts a parent turn. Only that first turn
 // reports; later turns on the child are between the user and the child. A
-// child nobody looked at closes once the parent turn that took its report
-// settles, or, when its parent tab is gone, once it has reported.
+// delivered child closes while hidden, unless the user has a draft or has
+// continued its conversation. A visible child stays until the user leaves.
 
 // childReport is what a blocking spawn call receives when its child settles.
 type childReport struct {
@@ -290,7 +290,8 @@ func (r *managedREPL) postChildReport(ctx context.Context, child *replTab, res s
 			if parent := r.liveParent(child); parent != nil {
 				r.pullReports(r.runCtx, parent)
 			}
-			r.closeSpentOrphan(child)
+			child.delivered = true
+			r.closeSpentChild(child)
 		})
 	}) {
 		child.reporting = false
@@ -463,26 +464,28 @@ func reportBody(rep sessions.Report) string {
 	return reportHeader(rep) + "\n" + res.String()
 }
 
-// closeSpentChildren closes parent's children whose report was taken and
-// that nobody looked at, now that parent's turn settled. Runs on the event
-// loop with no model lock held.
-func (r *managedREPL) closeSpentChildren(parent *replTab) {
-	for i := len(r.tabs) - 1; i >= 0; i-- {
-		tab := r.tabs[i]
-		if tab.parent != parent || tab.viewed || tab.report != nil || tab.reporting || tab.deliveryPending || tab.turnDone != nil || tab.model == r.model {
-			continue
-		}
-		r.removeTab(i)
-		r.closeTabState(tab)
+// closeSpentChild releases a delivered agent's hidden tab. Drafts, queued
+// input, and follow-up conversations belong to the user and keep it open.
+// Runs on the event loop with no model lock held.
+func (r *managedREPL) closeSpentChild(tab *replTab) bool {
+	if tab.parentName == "" || !tab.delivered || tab.keepOpen || tab.report != nil || tab.reporting || tab.deliveryPending || tab.turnDone != nil || tab.model == r.model || r.runningChildren(tab) > 0 {
+		return false
 	}
-}
-
-// closeSpentOrphan closes a settled child whose parent tab is gone, once its
-// report is in the store, unless someone looked at it: nothing here will take
-// the report, so nothing here needs the tab. It reports whether it closed the
-// tab. Runs on the event loop with no model lock held.
-func (r *managedREPL) closeSpentOrphan(tab *replTab) bool {
-	if tab.parentName == "" || tab.parent != nil || tab.viewed || tab.report != nil || tab.reporting || tab.deliveryPending || tab.turnDone != nil || tab.model == r.model {
+	if tab.settled != nil {
+		select {
+		case <-tab.settled:
+		default:
+			return false
+		}
+	}
+	m := tab.model
+	m.mu.Lock()
+	// An untouched retry draft restored after a failed initial run is not
+	// user input. Editing it makes it an ordinary draft.
+	draft := !m.ed.empty() && (m.restoredDraft == nil || m.ed.text() != m.restoredDraft.displayText)
+	keep := m.busy || draft || len(m.queue) > 0 || m.pasting || m.clipboardCapture
+	m.mu.Unlock()
+	if keep {
 		return false
 	}
 	i := r.tabIndexOfModel(tab.model)
@@ -492,6 +495,12 @@ func (r *managedREPL) closeSpentOrphan(tab *replTab) bool {
 	r.removeTab(i)
 	r.closeTabState(tab)
 	return true
+}
+
+func (r *managedREPL) closeSpentTabs() {
+	for i := len(r.tabs) - 1; i >= 0; i-- {
+		r.closeSpentChild(r.tabs[i])
+	}
 }
 
 // orphanChild drops the waiter of a child whose blocking call stopped
@@ -517,10 +526,10 @@ func (r *managedREPL) childDoneWaiting(tab *replTab, waiter chan childReport, ab
 				r.orphanChild(tab, waiter)
 			}
 			tab.deliveryPending = false
-			if parent := r.liveParent(tab); parent != nil && parent.turnDone == nil {
-				r.closeSpentChildren(parent)
+			if !abandoned {
+				tab.delivered = true
 			}
-			r.closeSpentOrphan(tab)
+			r.closeSpentChild(tab)
 			close(ack)
 		}) {
 			select {

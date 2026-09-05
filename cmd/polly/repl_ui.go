@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"os"
 	"strings"
 	"sync"
@@ -49,8 +50,11 @@ const (
 // local image references it carries (nil when none), kept in one value so the
 // two cannot drift apart.
 type transcriptEntry struct {
-	text   string
-	images []transcriptImage
+	assistant bool
+	turnStart bool
+	turnStats string // display-only suffix, outside assistant Markdown
+	text      string
+	images    []transcriptImage
 	// Completed assistant Markdown is materialized on the next visible paint.
 	markdown  string
 	codeCache *markdownCodeCache
@@ -162,8 +166,9 @@ type replModel struct {
 	followBottom bool
 	scrollAnchor int
 
-	status sessionStatus
-	quiet  bool
+	status     sessionStatus
+	parentLink image.Rectangle
+	quiet      bool
 
 	// hidden is set while this model's tab is off screen. Streamed text is
 	// then kept raw and rendered when the tab shows again, since markdown
@@ -772,6 +777,9 @@ func (r *managedREPL) takePendingTurn() (pendingTurn, bool) {
 // loop with no model lock held.
 func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn managedTurnInput, runTurn turnRunner) {
 	r.startupLogoVisible = false
+	if tab.parentName != "" && tab.report == nil {
+		tab.keepOpen = true
+	}
 	m := tab.model
 	m.mu.Lock()
 	m.turnID++
@@ -1218,6 +1226,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	case "<MouseLeft>":
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
+			if image.Pt(mouse.X, mouse.Y).In(m.parentLink) {
+				r.requestParentLocked()
+				return false
+			}
 			if m.status.sessionField.hit(mouse.X, mouse.Y, terminalHeight) {
 				r.openResumePicker()
 				return false

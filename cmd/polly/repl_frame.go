@@ -294,6 +294,7 @@ func (r *managedREPL) render() {
 	transcriptRows := r.model.transcriptRows(w)
 	topRow, pinTranscriptBottom := r.model.settleScroll(len(transcriptRows), l.transcriptHeight)
 	status := r.model.statusRow(w)
+	divider := r.model.dividerRow(l)
 	modalOpen := r.model.modal != nil
 	modalText, modalTitle := "", ""
 	modalWidth, modalHeight := 0, 0
@@ -365,9 +366,7 @@ func (r *managedREPL) render() {
 		r.modalW.Title = modalTitle
 		r.modalW.SetRect(x, y, x+modalWidth, y+modalHeight)
 	}
-	if l.dividerRows > 0 {
-		r.dividerW.Text = styled(strings.Repeat("─", w), "muted", "")
-	}
+	r.dividerW.Text = divider
 
 	r.layout(l)
 	ui.Clear()

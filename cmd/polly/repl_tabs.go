@@ -42,13 +42,14 @@ type replTab struct {
 
 	// A child tab (see repl_children.go): parent is the tab whose agent
 	// spawned it, nil once that tab is gone, and parentName the session it
-	// reports to; viewed is set once the user has shown it; report records
-	// its first turn's reply until delivered; waiter is the blocking spawn
-	// call waiting for that reply, nil for a background child. All
-	// loop-owned.
+	// reports to. report holds its first reply; waiter is the blocking spawn
+	// call, nil for a background child. delivered permits cleanup after the
+	// caller accepts the reply or the store saves it. keepOpen preserves a
+	// conversation the user continued. All fields are loop-owned.
 	parent         *replTab
 	parentName     string
-	viewed         bool
+	delivered      bool
+	keepOpen       bool
 	report         *childTurnUI
 	waiter         chan childReport
 	waitCtx        context.Context
@@ -133,7 +134,10 @@ func (r *managedREPL) addTab(state *conversationState) error {
 	if err != nil {
 		return err
 	}
-	tab := &replTab{name: name, state: state, model: m}
+	tab := &replTab{name: name, state: state, model: m, parentName: m.status.parentName, delivered: m.status.parentName != ""}
+	if i := r.tabIndexOf(tab.parentName); i >= 0 {
+		tab.parent = r.tabs[i]
+	}
 	if state.session != nil {
 		tab.stopWatch = context.AfterFunc(state.session.Context(), r.wakeTabs)
 	}
@@ -166,6 +170,7 @@ func (r *managedREPL) tabIndexOfModel(m *replModel) int {
 // now that it is seen. Runs on the event loop with no model lock held.
 func (r *managedREPL) showTab(i int) {
 	tab := r.tabs[i]
+	previous := r.model
 	if old := r.model; old != nil && old != tab.model {
 		old.mu.Lock()
 		old.hidden = true
@@ -193,10 +198,18 @@ func (r *managedREPL) showTab(i int) {
 	}
 	r.model = tab.model
 	r.state = tab.state
-	tab.viewed = true
 	r.model.mu.Lock()
+	if tab.parent != nil {
+		tab.parentName = tab.parent.name
+	}
+	r.model.status.parentName = tab.parentName
 	r.appendPendingSandboxWarningsLocked()
 	r.model.mu.Unlock()
+	if previous != nil && previous != tab.model {
+		if i := r.tabIndexOfModel(previous); i >= 0 {
+			r.closeSpentChild(r.tabs[i])
+		}
+	}
 }
 
 // requestShowTabLocked asks the event loop to show tab i once the current
@@ -297,7 +310,7 @@ func (r *managedREPL) removeTab(i int) *replTab {
 	}
 	tab.report = nil
 	// Its children stand on their own from here: they report to the store
-	// for the parent session, and an unviewed one closes once it has.
+	// for the parent session, and an idle one closes once it has.
 	for _, child := range r.tabs {
 		if child.parent == tab {
 			child.parent = nil

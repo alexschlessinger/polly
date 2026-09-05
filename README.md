@@ -63,7 +63,7 @@ One polly, many sessions. Each is a tab.
 | `/new` | New tab, fresh generated session |
 | `/tab` | List tabs and what each is doing |
 | `/tab <n>`, `/tab <name>` | Switch |
-| `/parent` | Return to this agent’s parent session, reopening it if needed. Also available as `← Back to caller` in the status bar. |
+| `/parent` | Return to this agent’s parent session, reopening it if needed. Also available as `← Back to caller` in the divider above the composer. |
 | `/close` | Close the visible tab. Session stays saved. A generated session with no turns is discarded. Last tab closed: polly exits. |
 | `Alt+1`..`Alt+9` | Jump to a tab by position |
 | `Alt+]`, `Alt+[` | Next tab, previous tab |
@@ -93,7 +93,7 @@ The child:
 - asks for tool approval like the parent does, under `--confirm`
 - counts its own tokens, reported with its reply, not added to the parent's turn
 
-Several calls in one turn run in parallel, four at a time. Canceling a
+Several calls in one turn run in parallel, up to 32 at a time per parent session. Canceling a
 blocking call stops waiting; its child retains a slot until it finishes.
 
 `/resume` and `--list` nest agents under the session that spawned them,
@@ -128,7 +128,7 @@ After its initial report is delivered, an agent tab closes when hidden, includin
 failed or canceled runs. If you are reading it, it stays until you leave.
 Reopened agent sessions also close when you leave; drafts and follow-up
 conversations keep their tabs open. The session stays saved and can be reopened
-from Agents. Click `← Back to caller` beside the session name in the status bar,
+from Agents. Click `← Back to caller` in the divider above the composer,
 or use `/parent`, to return to the parent (reopening it if needed).
 Closing a tab
 with running agents is refused. They work on a view of its tools.
@@ -191,6 +191,9 @@ gets every result. Durable history keeps the full exchange.
 `Ctrl-O`, for a live tail.
 
 Both collapse when the turn ends. Both reopen later, even after a reload.
+Completion stats follow the last assistant line: `✓ 2.7s · 4.2k ↑  214 ↓`.
+The arrows mean input and output tokens. Activity controls remain below the
+answer; failed turns use a red `✗`.
 
 ### Interrupted turns
 

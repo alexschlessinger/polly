@@ -48,19 +48,18 @@ func (r *managedREPL) settleTabs(ctx context.Context, runTurn turnRunner) error 
 			}
 		}
 	}
+	r.closeSpentTabs()
 	return r.dropLostSessions()
 }
 
 // afterSettle follows a tab's turn settling: a child's first reply goes to
-// its parent, a child whose parent tab is gone closes once it has reported,
-// the tab's spent children close, the reports waiting for the tab become
-// its next input, and its queue runs on.
+// its parent, a delivered hidden child closes, the reports waiting for a
+// retained tab become its next input, and its queue runs on.
 func (r *managedREPL) afterSettle(ctx context.Context, tab *replTab, err error, runTurn turnRunner) {
 	r.deliverChildReport(ctx, tab, err, runTurn)
-	if r.closeSpentOrphan(tab) {
+	if r.closeSpentChild(tab) {
 		return
 	}
-	r.closeSpentChildren(tab)
 	r.pullReports(ctx, tab)
 	r.startQueued(ctx, tab, runTurn)
 }

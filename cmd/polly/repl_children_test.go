@@ -174,11 +174,12 @@ func TestBlockingChildRunsInATabAndAnswersTheCall(t *testing.T) {
 	if child.report != nil || child.waiter != nil || child.turnDone != nil {
 		t.Fatal("the child kept its report after answering")
 	}
-	if len(r.tabs) != 2 {
-		t.Fatal("the child closed before the parent's turn settled")
+	settleUntil(t, r, func() bool { return len(r.tabs) == 1 })
+	if parent.turnDone == nil {
+		t.Fatal("the parent stopped while closing the delivered child")
 	}
 
-	// The parent settles: nobody looked at the child, so it goes.
+	// The parent can finish normally after the delivered child closes.
 	close(runs.release)
 	settleUntil(t, r, settled(parent))
 	settleUntil(t, r, func() bool { return len(r.tabs) == 1 })
@@ -228,9 +229,7 @@ func TestReportsArrivingDuringAParentTurnArriveAsOneMessage(t *testing.T) {
 	runUITask(t, r)
 	awaitReport(t, first)
 	awaitReport(t, second)
-	settleUntil(t, r, func() bool {
-		return r.tabs[1].turnDone == nil && r.tabs[2].turnDone == nil && !r.tabs[1].reporting && !r.tabs[2].reporting
-	})
+	settleUntil(t, r, func() bool { return len(r.tabs) == 1 })
 	// The reports wait in the store: nothing is queued on the busy parent.
 	parent.model.mu.Lock()
 	queued := len(parent.model.queue)
@@ -254,7 +253,7 @@ func TestReportsArrivingDuringAParentTurnArriveAsOneMessage(t *testing.T) {
 	}
 }
 
-func TestEscOnAChildCancelsOnlyTheChildAndAViewedChildStays(t *testing.T) {
+func TestEscOnAChildCancelsOnlyTheChildAndClosesAfterLeaving(t *testing.T) {
 	r, runs := newChildTestREPL(t)
 	parent := r.visibleTab()
 	beginParentToolCall(t, r, runs, "call-1")
@@ -263,7 +262,7 @@ func TestEscOnAChildCancelsOnlyTheChildAndAViewedChildStays(t *testing.T) {
 	child := r.tabs[1]
 
 	r.runTabCommand("/tab 2")
-	if r.visibleTab() != child || !child.viewed {
+	if r.visibleTab() != child {
 		t.Fatal("/tab 2 did not show the child")
 	}
 	r.model.mu.Lock()
@@ -281,8 +280,9 @@ func TestEscOnAChildCancelsOnlyTheChildAndAViewedChildStays(t *testing.T) {
 	r.runTabCommand("/tab 1")
 	close(runs.release)
 	settleUntil(t, r, settled(parent))
-	if len(r.tabs) != 2 || r.tabs[1] != child || child.model.busy {
-		t.Fatalf("a viewed child did not stay: %d tabs", len(r.tabs))
+	settleUntil(t, r, func() bool { return len(r.tabs) == 1 })
+	if r.visibleTab() != parent {
+		t.Fatal("leaving the child did not return to its parent")
 	}
 }
 

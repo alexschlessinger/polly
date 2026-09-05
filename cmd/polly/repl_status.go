@@ -30,6 +30,7 @@ type sessionStatus struct {
 	contextLimit     int
 	contextEstimated bool
 
+	parentName   string
 	sessionField statusSessionPlacement
 }
 
@@ -211,17 +212,13 @@ func (m *replModel) statusRow(width int) string {
 		fields = append(fields[:idx], fields[idx+1:]...)
 	}
 
-	// Context is the one non-droppable field. Truncate it rather than letting a
-	// wide context name push operational state off-screen.
+	// Truncate the session name when it is the only remaining field.
 	if needed() > width && len(fields) == 1 {
 		budget := width - rw.StringWidth(leftRaw)
 		if leftRaw != "" {
 			budget--
 		}
-		if budget < 0 {
-			budget = 0
-		}
-		if budget == 0 {
+		if budget <= 0 {
 			fields[0].text = ""
 		} else {
 			fields[0].text = rw.Truncate(fields[0].text, budget, "…")

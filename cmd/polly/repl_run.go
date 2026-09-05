@@ -64,6 +64,9 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	// Off screen until shown; addTab shows a new tab at once.
 	m.hidden = true
 	m.status = newSessionStatus(settings, name, toolCount(state.effectiveTools()), skillCount(state.skillCatalog))
+	if md, err := state.session.GetMetadata(ctx); err == nil && md != nil {
+		m.status.parentName = md.Parent
+	}
 	m.quiet = r.config.Quiet
 	m.artifactStore = state.artifactStore
 	m.hydrateHistory(history, name)

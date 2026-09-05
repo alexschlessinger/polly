@@ -74,6 +74,7 @@ type replCommandContext struct {
 	// one session and leaves them nil.
 	newTab     func()
 	closeTab   func()
+	showParent func()
 	listTabs   func() []string
 	showTab    func(arg string) error
 	spawnAgent func(brief string)
@@ -206,6 +207,13 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "list open tabs, or switch to one",
 		busySafe: true,
 		run:      replTabCommand,
+	})
+	r.register(replCommand{
+		name:     "/parent",
+		usage:    "/parent",
+		summary:  "return to this agent’s parent session",
+		busySafe: true,
+		run:      replParentCommand,
 	})
 	r.register(replCommand{
 		name:     "/spawn",
@@ -522,6 +530,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		openResumePicker: r.openResumePicker,
 		newTab:           r.requestNewTabLocked,
 		closeTab:         r.requestCloseTabLocked,
+		showParent:       r.requestParentLocked,
 		listTabs:         r.tabLines,
 		spawnAgent:       r.requestSpawnLocked,
 		showTab: func(arg string) error {
@@ -1453,4 +1462,15 @@ func matchingWords(words []string, prefix string) []string {
 	}
 	sort.Strings(matches)
 	return matches
+}
+
+func replParentCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) != 1 {
+		return replCommandResult{err: ctx.replyLine("usage: /parent")}
+	}
+	if ctx == nil || ctx.showParent == nil {
+		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
+	}
+	ctx.showParent()
+	return replCommandResult{}
 }
