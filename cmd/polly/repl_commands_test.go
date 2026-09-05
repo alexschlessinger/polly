@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -856,5 +857,27 @@ func TestFallbackREPLRecoversFromCancelledTurn(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "Error: cancelled") {
 		t.Fatalf("expected 'Error: cancelled' in output, got %q", got)
+	}
+}
+
+func TestToolsCommandIncludesPrivateAgentBuiltins(t *testing.T) {
+	registry := tools.NewToolRegistry(nil)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.state = &conversationState{toolRegistry: registry, agent: llm.NewAgent(nil, registry, llm.AgentConfig{})}
+	defer r.state.Close()
+	r.runCommand("/tools list")
+	got := strings.Join(transcriptTexts(r.model), "\n")
+	for _, name := range []string{"read_transcript", "view_image"} {
+		if !strings.Contains(got, name) {
+			t.Errorf("tool list missing %s: %s", name, got)
+		}
+		if _, ok := registry.Get(name); ok {
+			t.Errorf("tool list leaked private %s into configured registry", name)
+		}
+	}
+	clearTranscriptForTest(r.model)
+	r.runCommand("/tools show read_transcript")
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "name: read_transcript") {
+		t.Fatalf("private tool inspection failed: %s", got)
 	}
 }

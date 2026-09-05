@@ -59,7 +59,7 @@ func (r *managedREPL) newTabModel(state *conversationState) (string, *replModel,
 	m := newReplModel()
 	// Off screen until shown; addTab shows a new tab at once.
 	m.hidden = true
-	m.status = newSessionStatus(settings, name, toolCount(state.toolRegistry), skillCount(state.skillCatalog))
+	m.status = newSessionStatus(settings, name, toolCount(state.effectiveTools()), skillCount(state.skillCatalog))
 	m.quiet = r.config.Quiet
 	m.artifactStore = state.artifactStore
 	m.hydrateHistory(history, name)

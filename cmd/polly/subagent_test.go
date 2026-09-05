@@ -98,6 +98,21 @@ func TestSpawnRunnerRunsAChildOnItsOwnSession(t *testing.T) {
 	}
 }
 
+func TestSpawnRunnerAcceptsAToolListOfAgentBuiltins(t *testing.T) {
+	hits := 0
+	model := &scriptedStreamLLM{responses: []messages.ChatMessage{spawnTestReply("described")}, failErr: errors.New("too many calls")}
+	parent, _ := newSpawnTestParent(t, model, &hits)
+	run := spawnRunner(&Config{}, model, parent)
+
+	res, err := run(context.Background(), subagent.Request{Task: "describe the shot", Tools: []string{"view_image"}})
+	if err != nil {
+		t.Fatalf("a brief naming only a built-in was refused: %v", err)
+	}
+	if res.Text != "described" || hits != 0 {
+		t.Fatalf("result = %+v, probe hits %d", res, hits)
+	}
+}
+
 func TestSpawnRunnerRefusesAnUnknownToolList(t *testing.T) {
 	hits := 0
 	model := &scriptedStreamLLM{failErr: errors.New("no model call expected")}

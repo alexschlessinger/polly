@@ -414,7 +414,7 @@ func (o deriveOptions) filter() func(name string) bool {
 
 func matchesAnyToolPattern(patterns []string, name string) bool {
 	for _, pattern := range patterns {
-		if matchesToolPattern(pattern, name) {
+		if MatchesToolPattern(pattern, name) {
 			return true
 		}
 	}
@@ -752,14 +752,16 @@ func (r *ToolRegistry) isToolAllowedLocked(name string) bool {
 		return true
 	}
 	for _, pattern := range r.allowedPatterns {
-		if matchesToolPattern(pattern, name) {
+		if MatchesToolPattern(pattern, name) {
 			return true
 		}
 	}
 	return false
 }
 
-func matchesToolPattern(pattern, name string) bool {
+// MatchesToolPattern reports whether a tool allow-list entry, a filepath.Match
+// glob or an exact name, matches name.
+func MatchesToolPattern(pattern, name string) bool {
 	if pattern == "" {
 		return false
 	}
