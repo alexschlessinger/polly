@@ -145,9 +145,11 @@ func (m *replModel) finishThinkingSegment() {
 	record.active = false
 	record.complete = true
 	record.dirty = true
-	// Refresh unconditionally: reasoningWidth may be zero in provider
-	// callbacks, and refreshReasoningRecord treats that as "keep the
-	// existing text", which would strand the live "Thinking…" label.
+	// Refresh unconditionally so the header drops its live styling and
+	// freezes the banked elapsed value now that the segment is closed:
+	// reasoningRecordText adds the running clock only while the record is
+	// active. reasoningWidth may be zero in provider callbacks;
+	// disclosureLayoutWidth falls back for that.
 	// A deliberately expanded segment stays open until the turn settles.
 	m.refreshReasoningRecord(record, m.reasoningWidth)
 	m.turnReasoningID = 0
