@@ -168,6 +168,11 @@ func TestChildViewCacheHitPaintsBeforeDatabaseAndKeepsScroll(t *testing.T) {
 	if len(r.tabs) != 1 {
 		t.Fatal("cached child remained open")
 	}
+	// The user's visit, not the background completion, sets recency: an
+	// entry retired with used 0 would only get the small probation pool.
+	if used := r.childViews.entries[info.ID].used; used == 0 || used != child.viewUsed {
+		t.Fatalf("user visit did not set cache recency: tab %d, cached %d", child.viewUsed, used)
+	}
 	gate := make(chan struct{})
 	r.state.sessionStore = &gatedChildViewStore{SessionStore: store, reader: store, gate: gate}
 	child = clickChildView(t, r, activity)
