@@ -289,6 +289,81 @@ func TestChildViewRestoresUnansweredPromptAndReusesItOnResend(t *testing.T) {
 	}
 }
 
+// drainUITasks runs the callbacks already queued for the event loop.
+func drainUITasks(r *managedREPL) {
+	for {
+		select {
+		case task := <-r.uiTasks:
+			task()
+			r.applyTabRequests()
+		default:
+			return
+		}
+	}
+}
+
+func TestClearedChildViewLoadsColdOnNextInspection(t *testing.T) {
+	r, _, activity := savedChildViewFixture(t)
+	child := clickChildView(t, r, activity)
+	driveChildView(t, r, func() bool { return !child.viewLoading })
+	child.model.ed.setText("/clear")
+	child.model.mu.Lock()
+	r.submitComposerLocked()
+	child.model.mu.Unlock()
+	if strings.Contains(plainStyledText(child.model.fullTranscript()), "saved child answer") {
+		t.Fatal("/clear kept the transcript")
+	}
+	if r.retiredChildViewTask(child) != nil {
+		t.Fatal("cleared display offered for caching under the saved revision")
+	}
+	r.showTab(0)
+	r.work.wg.Wait()
+	drainUITasks(r)
+	if len(r.tabs) != 1 || len(r.childViews.entries) != 0 {
+		t.Fatalf("cleared view was cached: %d tabs, %d entries", len(r.tabs), len(r.childViews.entries))
+	}
+	child = clickChildView(t, r, activity)
+	if !child.viewLoading {
+		t.Fatal("cleared view was served warm")
+	}
+	driveChildView(t, r, func() bool {
+		return strings.Contains(plainStyledText(child.model.fullTranscript()), "The saved child answer.")
+	})
+}
+
+func TestClearedLeasedChildIsNotCachedOnRetirement(t *testing.T) {
+	r, _, activity := savedChildViewFixture(t)
+	state, err := r.opener.open(context.Background(), "child", Settings{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.addTab(state); err != nil {
+		t.Fatal(err)
+	}
+	child := r.visibleTab()
+	child.agentActivity = activity
+	child.model.ed.setText("/clear")
+	child.model.mu.Lock()
+	r.submitComposerLocked()
+	child.model.mu.Unlock()
+	if r.retiredChildViewTask(child) != nil {
+		t.Fatal("cleared leased child offered for caching")
+	}
+	r.showTab(0)
+	r.work.wg.Wait()
+	drainUITasks(r)
+	if len(r.tabs) != 1 || len(r.childViews.entries) != 0 {
+		t.Fatalf("cleared child was cached: %d tabs, %d entries", len(r.tabs), len(r.childViews.entries))
+	}
+	shown := clickChildView(t, r, activity)
+	if !shown.viewLoading {
+		t.Fatal("cleared child was served warm")
+	}
+	driveChildView(t, r, func() bool {
+		return strings.Contains(plainStyledText(shown.model.fullTranscript()), "The saved child answer.")
+	})
+}
+
 func TestChildViewRefreshCannotStealNavigation(t *testing.T) {
 	r, store, activity := savedChildViewFixture(t)
 	gate := make(chan struct{})

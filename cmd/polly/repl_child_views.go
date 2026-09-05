@@ -172,6 +172,7 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transcript, m.markdownPending, m.visual = next.transcript, next.markdownPending, next.visual
+	m.displayCleared = next.displayCleared
 	m.status = next.status
 	m.lastIn, m.lastOut, m.lastElapsed, m.lastOutcome = next.lastIn, next.lastOut, next.lastElapsed, next.lastOutcome
 	m.toolDisclosures, m.toolDisclosureAt, m.toolDisclosureSeq = next.toolDisclosures, next.toolDisclosureAt, next.toolDisclosureSeq
@@ -257,6 +258,15 @@ func (r *managedREPL) retiredChildViewTask(tab *replTab) func() *cachedChildView
 	}
 	store, ok := tab.state.sessionStore.(sessions.ViewStore)
 	if !ok {
+		return nil
+	}
+	// A cleared transcript no longer shows the history its revision names;
+	// caching it would make every later inspection read back as unchanged
+	// and empty. The next inspection loads cold instead.
+	tab.model.mu.Lock()
+	cleared := tab.model.displayCleared
+	tab.model.mu.Unlock()
+	if cleared {
 		return nil
 	}
 	if tab.childView != nil {

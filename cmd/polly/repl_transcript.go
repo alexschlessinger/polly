@@ -294,6 +294,7 @@ func (m *replModel) appendErrorLine(text string) {
 
 func (m *replModel) clearDisplay() {
 	m.transcript = nil
+	m.displayCleared = true
 	m.markdownPending = false
 	m.currentAssistant = -1
 	m.activeTools = nil
