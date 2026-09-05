@@ -132,6 +132,14 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 
 		laidOut = append(laidOut, block)
 	}
+	// A running child lights one Agents control at a time: the launch row
+	// while its turn is still running, then that turn's settled trailer.
+	lastTrailer := -1
+	for i := range laidOut {
+		if laidOut[i].turnTrailerID != 0 {
+			lastTrailer = i
+		}
+	}
 	for i := range laidOut {
 		block := &laidOut[i]
 		if !block.isActivity() {
@@ -147,12 +155,12 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 				break
 			}
 		}
-		m.layoutInlineActivityBlock(block, width, movedOn)
+		m.layoutInlineActivityBlock(block, width, movedOn, !m.busy || i < lastTrailer)
 	}
 	return laidOut
 }
 
-func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, width int, settled bool) {
+func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, width int, settled, agentsSettled bool) {
 	var fields []turnDockField
 	if field, ok := m.inlineReasoningField(block.reasoningIDs); ok {
 		fields = append(fields, field)
@@ -160,7 +168,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	if field, ok := m.inlineToolField(block.toolDisclosureIDs); ok {
 		fields = append(fields, field)
 	}
-	if field, ok := m.agentField(block.toolDisclosureIDs, m.agentsExpanded(block.toolDisclosureIDs)); ok {
+	if field, ok := m.agentField(block.toolDisclosureIDs, m.agentsExpanded(block.toolDisclosureIDs), agentsSettled); ok {
 		fields = append(fields, field)
 	}
 	block.activityImageDetail = ""
@@ -178,6 +186,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		}
 	}
 	for i := range fields {
+		// Agents rendered its own state: it hands off at turn end, not on move-on.
 		if fields[i].overlay == turnDockOverlayAgents {
 			continue
 		}

@@ -110,7 +110,10 @@ func turnAgentLabel(n int) string {
 	return fmt.Sprintf("%d agents", n)
 }
 
-func (m *replModel) agentField(ids []int64, expanded bool) (turnDockField, bool) {
+// agentField renders the Agents control. A running child lights exactly one
+// control: the launch row while its turn runs, then that turn's settled
+// trailer. settled dims the inline copy once the trailer owns liveness.
+func (m *replModel) agentField(ids []int64, expanded, settled bool) (turnDockField, bool) {
 	n, active := 0, false
 	for _, id := range ids {
 		if record := m.toolDisclosures[id]; record != nil {
@@ -129,7 +132,7 @@ func (m *replModel) agentField(ids []int64, expanded bool) (turnDockField, bool)
 	if expanded {
 		glyph = "▾"
 	}
-	return turnDockField{raw: glyph + " " + label, rendered: inlineActivityControl(glyph, label, !active), overlay: turnDockOverlayAgents}, true
+	return turnDockField{raw: glyph + " " + label, rendered: inlineActivityControl(glyph, label, settled || !active), overlay: turnDockOverlayAgents}, true
 }
 
 func (m *replModel) hasAgentRows() bool {
@@ -227,7 +230,7 @@ func (m *replModel) appendAgentDetail(block *transcriptDisplayBlock, ids []int64
 }
 
 func (m *replModel) toggleAgentDisclosureGroup(ids []int64) bool {
-	if _, ok := m.agentField(ids, false); !ok {
+	if _, ok := m.agentField(ids, false, false); !ok {
 		return false
 	}
 	expand := !m.agentsExpanded(ids)

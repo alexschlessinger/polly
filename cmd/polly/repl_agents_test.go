@@ -563,3 +563,59 @@ func TestAgentInitialFailureAndCancellationSurviveTabClosure(t *testing.T) {
 		})
 	}
 }
+
+func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
+	r, runs := newChildTestREPL(t)
+	parent := r.visibleTab()
+	beginParentToolCall(t, r, runs, "call-1")
+	result := spawnFromTool(context.Background(), r, parent, subagent.Request{Task: "slow", Background: true}, "call-1")
+	runUITask(t, r)
+	if rep := awaitReport(t, result); rep.err != nil {
+		t.Fatal(rep.err)
+	}
+	child := r.tabs[1]
+	child.viewed = true
+	live, dim := turnActivityControl("▸", "1 agent"), inlineActivityControl("▸", "1 agent", true)
+	headers := func() (launch, trailer string) {
+		parent.model.mu.Lock()
+		defer parent.model.mu.Unlock()
+		for _, block := range parent.model.transcriptDisplayEntries(100) {
+			header := strings.SplitN(block.text, "\n", 2)[0]
+			switch {
+			case block.turnTrailerID != 0:
+				trailer = header
+			case block.isActivity():
+				launch = header
+			}
+		}
+		return launch, trailer
+	}
+	// The spawn notice follows the launch row, yet the row stays lit for the
+	// rest of its turn: nothing else can show the child until the trailer.
+	if launch, trailer := headers(); !strings.Contains(launch, live) || trailer != "" {
+		t.Fatalf("running turn: launch %q / trailer %q", launch, trailer)
+	}
+	parent.model.mu.Lock()
+	parent.model.takeActiveTool("call-1")
+	parent.model.mu.Unlock()
+	close(runs.release)
+	settleUntil(t, r, settled(parent))
+	r.refreshAgentActivities()
+	if launch, trailer := headers(); !strings.Contains(launch, dim) || !strings.Contains(trailer, live) {
+		t.Fatalf("settled turn: launch %q / trailer %q", launch, trailer)
+	}
+	// A new parent turn does not relight the earlier launch row.
+	parent.model.mu.Lock()
+	parent.model.beginTurn("again")
+	parent.model.mu.Unlock()
+	if launch, trailer := headers(); !strings.Contains(launch, dim) || !strings.Contains(trailer, live) {
+		t.Fatalf("next turn: launch %q / trailer %q", launch, trailer)
+	}
+	close(runs.slow)
+	settleUntil(t, r, settled(child))
+	r.refreshAgentActivities()
+	if launch, trailer := headers(); !strings.Contains(launch, dim) || !strings.Contains(trailer, dim) {
+		t.Fatalf("finished child: launch %q / trailer %q", launch, trailer)
+	}
+	<-child.agentWriteDone
+}

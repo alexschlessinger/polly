@@ -191,7 +191,7 @@ func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 		rendered := turnActivityControl(glyph, label)
 		fields = append(fields, turnDockField{raw: raw, rendered: rendered, overlay: turnDockOverlayTools})
 	}
-	if field, ok := m.agentField(dock.toolIDs, dock.overlay == turnDockOverlayAgents); ok {
+	if field, ok := m.agentField(dock.toolIDs, dock.overlay == turnDockOverlayAgents, false); ok {
 		fields = append(fields, field)
 	}
 	if total := len(m.turnDockInspectionImages(dock)); total > 0 {
@@ -505,7 +505,7 @@ func (m *replModel) toggleLatestTurnTrailerOverlay(overlay turnDockOverlay) bool
 					continue
 				}
 			case turnDockOverlayAgents:
-				if _, ok := m.agentField(record.dock.toolIDs, false); !ok {
+				if _, ok := m.agentField(record.dock.toolIDs, false, false); !ok {
 					continue
 				}
 			case turnDockOverlayImages:

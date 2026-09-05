@@ -118,10 +118,10 @@ Agents expands independently and lists tasks in launch order; click a task
 label to switch to its child tab or reopen its saved conversation. The row
 tracks the initial delegated run, including background work after the parent
 turn finishes. Later follow-ups in the child leave that outcome unchanged.
-Completed turns collapse the activity controls; Agents stays active while a
-child is working. Saved history restores child links and known outcomes;
-older records with no reliable outcome show `unknown`. `/spawn` keeps its
-existing presentation. A child tab you
+Completed turns collapse the activity controls; while a child is still
+working, only its turn's trailer keeps Agents active. Saved history restores
+child links and known outcomes; older records with no reliable outcome show
+`unknown`. `/spawn` keeps its existing presentation. A child tab you
 never viewed closes itself once the parent takes its reply, or once it has
 reported after its parent's tab closed. A viewed tab stays. Closing a tab
 with running agents is refused. They work on a view of its tools.
