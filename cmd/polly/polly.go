@@ -95,7 +95,9 @@ type conversationState struct {
 	// sandboxProbe is the deferred check that the sandbox backend can start a
 	// command. It runs concurrently with the rest of the open so a session
 	// appears without waiting on the spawn; every turn waits on it before its
-	// first request (see executeTurnWithUserMessage).
+	// first request (see executeTurnWithUserMessage), and an open consults it
+	// when a tool that spawns while loading fails, so the sandbox diagnosis
+	// wins over the raw load error.
 	sandboxProbe *sandboxProbe
 	// instructionWarnings is the last set of repository-instruction warnings
 	// shown, so a persistent problem is reported once rather than every turn.
@@ -416,19 +418,30 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 	if err != nil {
 		return nil, err
 	}
+	// A tool that spawns while loading (a shell tool's --schema, a stdio MCP
+	// server) runs under the backend the probe is checking and fails first
+	// when that backend cannot start. The probe's diagnosis names the escape
+	// hatch, so it wins over the raw load error; a load that succeeds never
+	// waits.
+	loadErr := func(err error) error {
+		if probeErr := probe.wait(ctx); probeErr != nil {
+			return probeErr
+		}
+		return err
+	}
 	if len(config.Tools) > 0 {
 		// Command-line tools replace the session's persisted tools.
 		toolRegistry = tools.NewToolRegistry(nil, registryOpts...)
 		for _, source := range config.Tools {
 			if _, err := toolRegistry.LoadToolAuto(source); err != nil {
-				return nil, fmt.Errorf("failed to load tool %s: %w", source, err)
+				return nil, loadErr(fmt.Errorf("failed to load tool %s: %w", source, err))
 			}
 		}
 		metadata.ActiveTools = toolRegistry.GetActiveToolLoaders()
 	} else {
 		toolRegistry, err = loadTools(metadata.ActiveTools, registryOpts...)
 		if err != nil {
-			return nil, err
+			return nil, loadErr(err)
 		}
 	}
 	skillRuntime, err := newSkillRuntime(skillResult.catalog, toolRegistry)
@@ -511,7 +524,9 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// environments where the backend is present but fails at runtime; without
 	// this probe every bash call would silently return a refusal while the run
 	// still exits 0/ok. The spawn costs tens of milliseconds, so it runs off
-	// the open; the first turn waits on it before any tool can run.
+	// the open; the first turn waits on it before any tool can run, and the
+	// open itself consults it only when a tool that spawns while loading
+	// fails (see openConversationState).
 	return []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}, startSandboxProbe(sb), nil
 }
 

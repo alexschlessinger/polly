@@ -14,6 +14,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -519,4 +520,54 @@ func TestOpenConversationStateDefersSandboxProbeFailureToTurns(t *testing.T) {
 	if err := state.sandboxProbe.wait(context.Background()); err == nil || !strings.Contains(err.Error(), "POLLYTOOL_NOSANDBOX") {
 		t.Fatalf("probe error = %v, want the startup failure with its escape hatch", err)
 	}
+}
+
+// writeSchemaTool writes an executable shell tool whose --schema answer is
+// valid, so loading it fails only when the sandbox cannot start it.
+func writeSchemaTool(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "probe-tool.sh")
+	script := `#!/bin/sh
+if [ "$1" = "--schema" ]; then
+  printf '%s\n' '{"title":"probe_tool","description":"probe","type":"object","properties":{}}'
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func assertSandboxStartFailure(t *testing.T, err error) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), "POLLYTOOL_NOSANDBOX") {
+		t.Fatalf("error = %v, want the sandbox startup failure with its escape hatch", err)
+	}
+}
+
+// A tool that spawns while loading runs under the backend the probe checks,
+// so on a backend that cannot start the load fails first. The open must still
+// report the sandbox failure with its escape hatch rather than the raw load
+// error, on both the --tools path and the persisted ActiveTools path.
+func TestOpenConversationStateReportsSandboxFailureOverToolLoadFailure(t *testing.T) {
+	skipIfWindows(t)
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return probeFailSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+	script := writeSchemaTool(t)
+
+	t.Run("command-line tools", func(t *testing.T) {
+		store := testOpenMemoryStore(t, nil)
+		_, err := openConversationState(context.Background(), &Config{NoSkills: true, SandboxPreset: "base", Tools: []string{script}}, Settings{}, nil, store, "probe-tools", false, nil, nil)
+		assertSandboxStartFailure(t, err)
+	})
+	t.Run("persisted tools", func(t *testing.T) {
+		store := testOpenMemoryStore(t, &sessions.Metadata{ActiveTools: []tools.ToolLoaderInfo{{Name: "probe_tool", Type: "shell", Source: script}}})
+		_, err := openConversationState(context.Background(), &Config{NoSkills: true, SandboxPreset: "base"}, Settings{}, nil, store, "probe-resume", false, nil, nil)
+		assertSandboxStartFailure(t, err)
+	})
 }
