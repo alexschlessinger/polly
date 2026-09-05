@@ -91,6 +91,17 @@ type AgentCallbacks struct {
 	// image/artifact parts for human-facing inspection receipts.
 	OnToolResult func(call messages.ChatMessageToolCall, result messages.ChatMessage)
 
+	// BeforeFirstRequest is called once per Run, after the initial projection
+	// succeeds and before the first provider call, with that projection's
+	// statistics. A caller that must persist new input before spending
+	// provider tokens does so here, knowing the request can be sent: a
+	// projection failure returns from Run before this point with nothing
+	// generated. Returning an error aborts the run with that error and no
+	// provider call; OnError is not called for it. Artifacts the projection
+	// externalized are already stored; they are content-addressed, so a
+	// retry reuses them.
+	BeforeFirstRequest func(stats ProjectionStats) error
+
 	// OnComplete is called when the final response is ready (no more tool calls)
 	OnComplete func(response *messages.ChatMessage)
 
@@ -260,27 +271,6 @@ func (a *Agent) SetToolTimeout(d time.Duration) {
 	a.config.ToolTimeout = d
 }
 
-// ValidateRequest checks the initial provider-visible context before a caller
-// persists new input. It uses Run's projection, including skills, tool schemas,
-// image selection, and deterministic reductions, without calling the provider,
-// changing agent state, or writing artifacts. The caller resolves any model
-// window clamp into req.MaxContextTokens, just as for Run.
-func (a *Agent) ValidateRequest(ctx context.Context, req *CompletionRequest) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	validationReq := *req
-	if a.tools != nil {
-		validationReq.Tools = a.tools.All()
-	}
-	store := a.artifactStore
-	if store != nil {
-		store = validationArtifactStore{Store: store}
-	}
-	_, _, err := projectCompletionRequest(ctx, &validationReq, store, a.transcriptTool)
-	return err
-}
-
 // Run executes a completion with automatic tool call handling.
 // It loops until the LLM returns a response with no tool calls,
 // or until MaxIterations is reached.
@@ -356,6 +346,13 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 		a.indexArtifactMessages(projected)
 		iterReq.Messages = projected
+		if iteration == 0 && cb != nil && cb.BeforeFirstRequest != nil {
+			// The request is known to be sendable; the caller may now commit
+			// the input it staged, or decline before any provider tokens are spent.
+			if err := cb.BeforeFirstRequest(lastProjection); err != nil {
+				return responseFor(nil, iteration), err
+			}
+		}
 		if iterReq.PromptCacheKey == "" {
 			if key, keyErr := derivePromptCacheKey(&iterReq, msgs); keyErr == nil {
 				iterReq.PromptCacheKey = key

@@ -886,49 +886,50 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		requestMessages = applyDisplayContract(requestMessages, contract)
 	}
 
-	// Reject turns projection would deterministically fail before the user
-	// message is durably persisted: a persisted-then-unsendable message would
-	// make the same failure permanent for exact retries. This covers image
-	// references that resolve to nothing (or ambiguously) and the complete
-	// request after clamping the budget and applying deterministic reductions.
+	// Image references that resolve to nothing (or ambiguously) are rejected
+	// before anything is persisted; the complete request, after clamping the
+	// budget and applying deterministic reductions, is judged by the run's
+	// first projection below.
 	if err := llm.ValidateImageProjection(requestMessages); err != nil {
 		return 1, err
 	}
-	req := createCompletionRequest(config, settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
-	req.MaxContextTokens = resolveContextBudget(ctx, state)
-	if err := state.agent.ValidateRequest(ctx, req); err != nil {
-		if !reusingPersistedUser {
-			return 1, fmt.Errorf("prompt was not added to the conversation: %w", err)
-		}
-		return 1, err
-	}
 
-	// Persist the user message before spending API tokens. If the session store
-	// is broken (e.g. disk full), fail fast rather than make a call whose result
-	// can't be saved either. Both SQLite modes surface write and lease failures.
 	if turnUI == nil {
 		turnUI = newLineTurnUIWithCapabilities(config, inputReader, state.outputCapabilities)
 	}
-	turnUI.UserMessagePersistenceStarted()
-	var reportIDs []int64
-	if tui, ok := turnUI.(*gotuiTurnUI); ok {
-		reportIDs = tui.turn.reportIDs
-	}
-	persistErr := persistUserMessageForTurn(ctx, state.session, userMsg, reuseUser, reportIDs)
-	turnUI.UserMessagePersistenceFinished(persistErr == nil)
-	if persistErr != nil {
-		return 1, fmt.Errorf("failed to persist user message: %w", persistErr)
-	}
-
 	turnUI.Start()
 	defer turnUI.Stop()
 	for _, warning := range instructionWarnings {
 		turnUI.AppendWarning(warning)
 	}
 
+	req := createCompletionRequest(config, settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
+	req.MaxContextTokens = resolveContextBudget(ctx, state)
 	req.CacheSessionID, err = cacheSessionIDForSession(ctx, state.session)
 	if err != nil {
 		return 1, err
+	}
+	var reportIDs []int64
+	if tui, ok := turnUI.(*gotuiTurnUI); ok {
+		reportIDs = tui.turn.reportIDs
+	}
+	// The user message is persisted once the run's first projection shows
+	// the request can be sent, before any provider tokens are spent. Earlier
+	// would make a deterministic projection failure permanent for exact
+	// retries of a persisted-then-unsendable message; later would lose the
+	// input when the call fails. A broken session store (disk full, lost
+	// lease) therefore fails the turn before the call, whose result could
+	// not be saved either.
+	persistAttempted := false
+	persistUser := func(llm.ProjectionStats) error {
+		persistAttempted = true
+		turnUI.UserMessagePersistenceStarted()
+		persistErr := persistUserMessageForTurn(ctx, state.session, userMsg, reuseUser, reportIDs)
+		turnUI.UserMessagePersistenceFinished(persistErr == nil)
+		if persistErr != nil {
+			return fmt.Errorf("failed to persist user message: %w", persistErr)
+		}
+		return nil
 	}
 
 	// trimLeadingNL strips leading newlines from the next content burst.
@@ -976,13 +977,18 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 				turnUI.AppendToolMedia(tc, images)
 			}
 		},
-		OnError: func(err error) {},
+		OnError:            func(err error) {},
+		BeforeFirstRequest: persistUser,
 	})
 	if ctx.Err() != nil {
 		// Cancellation outranks whatever error the aborted run surfaced, but
 		// the turn still flows through persistence below: tools that completed
 		// changed the world whether or not the user hit cancel.
 		err = context.Cause(ctx)
+	}
+	if err != nil && !persistAttempted && !reusingPersistedUser {
+		// The run stopped before its first projection cleared the request.
+		err = fmt.Errorf("prompt was not added to the conversation: %w", err)
 	}
 	var in, out int
 	if resp != nil {
