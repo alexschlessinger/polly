@@ -16,6 +16,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
+	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -570,4 +571,39 @@ func TestOpenConversationStateReportsSandboxFailureOverToolLoadFailure(t *testin
 		_, err := openConversationState(context.Background(), &Config{NoSkills: true, SandboxPreset: "base"}, Settings{}, nil, store, "probe-resume", false, nil, nil)
 		assertSandboxStartFailure(t, err)
 	})
+}
+
+// The managed TUI spawns children from a childSnapshot of the parent, so the
+// snapshot must carry the probe: a /spawn before any parent turn is otherwise
+// the first turn on a backend that cannot start, and would run unchecked.
+func TestChildSnapshotCarriesSandboxProbeToChildTurns(t *testing.T) {
+	hits := 0
+	model := &captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}
+	parent, _ := newSpawnTestParent(t, model, &hits)
+	t.Cleanup(func() { _ = parent.toolRegistry.Close() })
+	parent.sandboxProbe = startSandboxProbe(probeFailSandbox{})
+
+	child, err := openChildState(context.Background(), model, parent.childSnapshot(), subagent.Request{Task: "run the tests"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Close() })
+	if child.sandboxProbe != parent.sandboxProbe {
+		t.Fatal("a child opened from the snapshot does not carry the parent's sandbox probe")
+	}
+	config := &Config{}
+	var stdout, stderr bytes.Buffer
+	ui := newLineTurnUI(config, nil)
+	ui.writer, ui.errWriter = &stdout, &stderr
+
+	code, err := executeTurnWithUserMessage(context.Background(), config, child, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "run the tests"}, nil, nil, ui, false)
+	if err == nil || code != 1 || !strings.Contains(err.Error(), "POLLYTOOL_NOSANDBOX") {
+		t.Fatalf("child turn = code %d, err %v; want the probe failure with its escape hatch", code, err)
+	}
+	if model.request != nil {
+		t.Fatal("the model was called despite the failed probe")
+	}
+	if history := testSessionHistory(t, child.session); len(history) != 0 {
+		t.Fatalf("child user message persisted despite the failed probe: %#v", history)
+	}
 }

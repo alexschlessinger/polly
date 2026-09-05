@@ -97,12 +97,15 @@ func (r *managedREPL) closeTabState(tab *replTab) {
 }
 
 // childSnapshot freezes settings while the model lock is held. The runtime
-// and leased session have their own synchronization; caches are copied.
+// and leased session have their own synchronization; caches are copied. The
+// sandbox probe is shared: a child spawned before any parent turn is the
+// first turn on the backend, and must fail the way the parent's would.
 func (s *conversationState) childSnapshot() *conversationState {
 	return &conversationState{
 		sessionStore: s.sessionStore, session: s.session, settings: s.settings.clone(),
 		toolRegistry: s.toolRegistry, skillCatalog: s.skillCatalog, skillRuntime: s.skillRuntime,
 		skillSources: append([]string(nil), s.skillSources...), sandboxWarnings: s.sandboxWarnings,
-		outputCapabilities: s.outputCapabilities, contextWindows: s.cachedContextWindows(),
+		sandboxProbe: s.sandboxProbe, outputCapabilities: s.outputCapabilities,
+		contextWindows: s.cachedContextWindows(),
 	}
 }
