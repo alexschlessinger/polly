@@ -13,7 +13,12 @@ import (
 // reasoning delta to the first content delta, so a resumed transcript can show
 // how long the model thought.
 func TestProcessEventsRecordsThinkingDuration(t *testing.T) {
+	// The receiver stamps the clock with time.Now, so a descheduled goroutine
+	// inflates the measurement. The tail after the first content delta is far
+	// longer than the thought: the upper bound still proves the clock stopped
+	// at content rather than at completion, with the whole tail as headroom.
 	const thought = 20 * time.Millisecond
+	const tail = 10 * thought
 	events := make(chan *messages.StreamEvent)
 	go func() {
 		defer close(events)
@@ -21,7 +26,7 @@ func TestProcessEventsRecordsThinkingDuration(t *testing.T) {
 		time.Sleep(thought)
 		events <- &messages.StreamEvent{Type: messages.EventTypeReasoning, Content: " think"}
 		events <- &messages.StreamEvent{Type: messages.EventTypeContent, Content: "answer"}
-		time.Sleep(thought)
+		time.Sleep(tail)
 		events <- &messages.StreamEvent{Type: messages.EventTypeComplete, Message: &messages.ChatMessage{Role: messages.MessageRoleAssistant, Reasoning: "let me think", Content: "answer"}}
 	}()
 	response, err := (&Agent{}).processEvents(context.Background(), events, nil)
@@ -29,8 +34,8 @@ func TestProcessEventsRecordsThinkingDuration(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := response.ThinkingDuration()
-	if got < thought || got >= 2*thought {
-		t.Fatalf("thinking duration = %v, want about %v (reasoning to first content, not to completion)", got, thought)
+	if got < thought || got >= thought+tail {
+		t.Fatalf("thinking duration = %v, want at least %v and under %v (reasoning to first content, not to completion)", got, thought, thought+tail)
 	}
 }
 
