@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -112,7 +113,7 @@ func (ui *lineTurnUI) clearActivityLocked() {
 
 func (ui *lineTurnUI) renderActivityLocked() {
 	a := ui.activity
-	if a == nil || a.stopped || a.paused || !a.caps.live || (ui.stdoutTTY && ui.contentPrinted && !ui.endsWithNewline) {
+	if a == nil || a.stopped || a.paused || ui.prompting || !a.caps.live || (ui.stdoutTTY && ui.contentPrinted && !ui.endsWithNewline) {
 		return
 	}
 	columns := a.caps.columns
@@ -200,7 +201,17 @@ func (ui *lineTurnUI) activityLineLocked(text string) {
 		fmt.Fprintln(ui.writer)
 		ui.endsWithNewline = true
 	}
-	fmt.Fprintln(ui.errWriter, ui.activityColorLocked(cleanActivityText(text)))
+	fmt.Fprintln(ui.statusWriterLocked(), ui.activityColorLocked(cleanActivityText(text)))
+}
+
+// An open approval prompt owns the terminal: notices raised meanwhile (a
+// sibling's failure, an image caption) queue here and replay once it is
+// answered, so they never land on the prompt line.
+func (ui *lineTurnUI) statusWriterLocked() io.Writer {
+	if ui.prompting {
+		return &ui.pending
+	}
+	return ui.errWriter
 }
 
 func (ui *lineTurnUI) activityPhaseLocked(phase string) {

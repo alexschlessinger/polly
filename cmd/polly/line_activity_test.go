@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -316,5 +318,111 @@ func TestLineActivityInterruptedRawAnswerPreservesPartialBytes(t *testing.T) {
 	ui.Stop()
 	if out.String() != "partial" {
 		t.Fatalf("interruption changed captured answer: %q", out.String())
+	}
+}
+
+// lockedBuffer captures the approval prompt, written outside toolMu, in the
+// same stream as status writes made under it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitForStatusCount(t *testing.T, status *lockedBuffer, want string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for strings.Count(status.String(), want) < count {
+		if time.Now().After(deadline) {
+			t.Fatalf("status never showed %q x%d: %q", want, count, status.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A child's approval prompt runs inside a parent tool goroutine; siblings must
+// keep reporting while it waits on stdin, and their notices must not land on
+// the prompt line.
+func TestLineActivityApprovalPromptDoesNotBlockSiblings(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "1")
+	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{columns: 80})
+	status := new(lockedBuffer)
+	stdin, answers := io.Pipe()
+	ui.writer, ui.errWriter = io.Discard, status
+	ui.stdoutTTY, ui.stderrTTY = false, true
+	ui.approver = &toolApprover{reader: bufio.NewReader(stdin), out: status}
+	ui.Start()
+	t.Cleanup(ui.Stop)
+	// Closing stdin releases any prompt still open when an assertion fails,
+	// so Stop can take toolMu instead of hanging the test.
+	t.Cleanup(func() { answers.Close() })
+
+	spawn := []messages.ChatMessageToolCall{
+		{ID: "a", Name: "spawn_agent", Arguments: `{"label":"review"}`},
+		{ID: "b", Name: "spawn_agent", Arguments: `{"label":"tests"}`},
+	}
+	ui.AppendToolStart(spawn)
+	review := &childTurnUI{parent: ui, activity: ui.childActivity(spawn[0])}
+	tests := &childTurnUI{parent: ui, activity: ui.childActivity(spawn[1])}
+	tool := messages.ChatMessageToolCall{ID: "t", Name: "read_file", Arguments: `{"path":"a.go"}`}
+	const prompt = "allow? (Y/n/a): "
+
+	reviewApproved := make(chan []bool, 1)
+	go func() { reviewApproved <- review.ApproveToolCalls([]messages.ChatMessageToolCall{tool}) }()
+	waitForStatusCount(t, status, prompt, 1)
+
+	siblingDone := make(chan struct{})
+	go func() {
+		defer close(siblingDone)
+		tests.ShowThinking("still streaming")
+		tests.AppendToolStart([]messages.ChatMessageToolCall{tool})
+		tests.AppendToolEnd(tool, "", time.Second, errors.New("boom"))
+		ui.AppendToolEnd(spawn[1], "report", time.Second, nil)
+	}()
+	select {
+	case <-siblingDone:
+	case <-time.After(5 * time.Second):
+		answers.Close()
+		t.Fatal("sibling child blocked behind the approval prompt")
+	}
+	if got := status.String(); !strings.HasSuffix(got, prompt) || strings.Contains(got, "✗") {
+		t.Fatalf("prompt overwritten while open: %q", got)
+	}
+
+	// A second prompt waits its turn on the shared reader, so the answers
+	// line up with the prompts in order.
+	testsApproved := make(chan []bool, 1)
+	go func() { testsApproved <- tests.ApproveToolCalls([]messages.ChatMessageToolCall{tool}) }()
+	fmt.Fprintln(answers, "y")
+	if got := <-reviewApproved; len(got) != 1 || !got[0] {
+		t.Fatalf("first approval = %v", got)
+	}
+	waitForStatusCount(t, status, prompt, 2)
+	fmt.Fprintln(answers, "n")
+	if got := <-testsApproved; len(got) != 1 || got[0] {
+		t.Fatalf("second approval = %v", got)
+	}
+
+	got := status.String()
+	first := strings.Index(got, prompt)
+	failed := strings.Index(got, "✗ tests: read_file · failed")
+	second := strings.LastIndex(got, prompt)
+	if first < 0 || failed < first || second < failed {
+		t.Fatalf("queued notice out of order: %q", got)
+	}
+	if !strings.Contains(got[failed:second], "\r\x1b[2K") {
+		t.Fatalf("status did not resume after the prompt: %q", got)
 	}
 }

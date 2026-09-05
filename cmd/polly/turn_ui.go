@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -63,6 +64,12 @@ type lineTurnUI struct {
 	stderrTTY       bool
 	stdoutTTY       bool
 	activity        *lineActivity
+	// promptMu serializes approval prompts on the shared stdin reader; it is
+	// always taken before toolMu, never while holding it. prompting and
+	// pending are guarded by toolMu.
+	promptMu  sync.Mutex
+	prompting bool
+	pending   bytes.Buffer
 }
 
 func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, capabilities outputCapabilities) *lineTurnUI {
@@ -211,13 +218,27 @@ func (ui *lineTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 		}
 		return approved
 	}
-	// Hold the output lock while reading approvals: child completions and the
-	// timer must not overwrite a prompt. The runner calls this outside tools.
+	// Children forward approvals from inside the parent's tool goroutines, so
+	// the stdin read must not hold toolMu: siblings keep consuming their
+	// streams (and touching the stall watchdog) while the user decides. The
+	// prompting flag parks repaints and notices instead, so nothing lands on
+	// the prompt line; promptMu keeps concurrent prompts off the same reader.
+	ui.promptMu.Lock()
+	defer ui.promptMu.Unlock()
+	ui.toolMu.Lock()
+	ui.clearActivityLocked()
+	ui.prompting = true
+	ui.toolMu.Unlock()
+	approved := ui.approver.approveToolCalls(calls)
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
-	ui.clearActivityLocked()
-	defer ui.renderActivityLocked()
-	return ui.approver.approveToolCalls(calls)
+	ui.prompting = false
+	if ui.pending.Len() > 0 {
+		_, _ = ui.errWriter.Write(ui.pending.Bytes())
+		ui.pending.Reset()
+	}
+	ui.renderActivityLocked()
+	return approved
 }
 
 func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
@@ -251,7 +272,7 @@ func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []t
 			continue
 		}
 		if payload := lineImagePayload(img, caps, 4); len(payload) > 0 {
-			_, _ = ui.errWriter.Write(payload)
+			_, _ = ui.statusWriterLocked().Write(payload)
 		}
 	}
 }
