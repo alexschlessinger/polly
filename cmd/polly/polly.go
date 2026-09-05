@@ -867,15 +867,18 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	// Reject turns projection would deterministically fail before the user
 	// message is durably persisted: a persisted-then-unsendable message would
 	// make the same failure permanent for exact retries. This covers image
-	// references that resolve to nothing (or ambiguously) and a single prompt
-	// that alone exceeds the context budget.
+	// references that resolve to nothing (or ambiguously) and the complete
+	// request after clamping the budget and applying deterministic reductions.
 	if err := llm.ValidateImageProjection(requestMessages); err != nil {
 		return 1, err
 	}
-	if !reusingPersistedUser && settings.MaxHistoryTokens > 0 {
-		if tokens := llm.EstimateMessageTokens(userMsg); tokens > settings.MaxHistoryTokens {
-			return 1, fmt.Errorf("prompt needs about %d tokens, exceeding the %d-token context budget; it was not added to the conversation", tokens, settings.MaxHistoryTokens)
+	req := createCompletionRequest(config, settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
+	req.MaxContextTokens = resolveContextBudget(ctx, state)
+	if err := state.agent.ValidateRequest(ctx, req); err != nil {
+		if !reusingPersistedUser {
+			return 1, fmt.Errorf("prompt was not added to the conversation: %w", err)
 		}
+		return 1, err
 	}
 
 	// Persist the user message before spending API tokens. If the session store
@@ -898,8 +901,6 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	turnUI.Start()
 	defer turnUI.Stop()
 
-	req := createCompletionRequest(config, settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
-	req.MaxContextTokens = resolveContextBudget(ctx, state)
 	req.CacheSessionID, err = cacheSessionIDForSession(ctx, state.session)
 	if err != nil {
 		return 1, err
@@ -960,21 +961,20 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	}
 	var in, out int
 	if resp != nil {
-		// Multi-iteration turns produce multiple assistant messages (one per
-		// LLM call between tool roundtrips). Providers report input tokens
-		// cumulatively per-call (each call resends history), so take max for
-		// input. Output tokens are per-iteration, so sum them.
+		// The turn trailer retains peak input usage and total output usage.
+		// Context usage follows the latest call: projection can shrink between
+		// iterations, and an unreported final usage must fall back to its estimate.
+		latestInput := 0
 		for _, m := range resp.AllMessages {
 			if m.Role != messages.MessageRoleAssistant {
 				continue
 			}
-			if t := m.GetInputTokens(); t > in {
-				in = t
-			}
+			latestInput = m.GetInputTokens()
+			in = max(in, latestInput)
 			out += m.GetOutputTokens()
 		}
 		turnUI.RecordTurnTokens(in, out)
-		used, estimated := in, false
+		used, estimated := latestInput, false
 		if used <= 0 {
 			used = resp.Projection.RequestEstimatedTokens
 			estimated = true

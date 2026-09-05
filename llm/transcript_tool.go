@@ -25,17 +25,34 @@ func (t *readTranscriptTool) GetName() string { return "read_transcript" }
 func (t *readTranscriptTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(
 		"read_transcript",
-		"Page or search the durable conversation transcript as numbered lines, including exchanges omitted from the visible context and the full content of demoted tool results.",
+		"Page or search the durable conversation transcript as numbered lines or raw byte windows, including exchanges omitted from the visible context and the full content of demoted tool results.",
 		schema.Params{
-			"offset": schema.Int("1-based starting line (default 1)"),
-			"limit":  schema.Int("Maximum lines or matches (default 200, maximum 500)"),
-			"query":  schema.S("Optional case-sensitive literal search"),
+			"offset":      schema.Int("1-based starting line (default 1)"),
+			"limit":       schema.Int("Maximum lines or matches (default 200, maximum 500)"),
+			"query":       schema.S("Optional case-sensitive literal search"),
+			"byte_offset": schema.Int("0-based byte position; returns a raw byte window instead of numbered lines (for transcripts with very long lines)"),
 		},
 	)
 }
 
 func (t *readTranscriptTool) Execute(ctx context.Context, raw map[string]any) (string, error) {
 	args := tools.Args(raw)
+	if _, hasByteOffset := raw["byte_offset"]; hasByteOffset {
+		for _, key := range []string{"offset", "limit", "query"} {
+			if _, conflict := raw[key]; conflict {
+				return "", fmt.Errorf("byte_offset cannot be combined with offset, limit, or query")
+			}
+		}
+		byteOffset := int64(args.Int("byte_offset", -1))
+		if byteOffset < 0 {
+			return "", fmt.Errorf("byte_offset must be at least 0")
+		}
+		rendered := renderTranscript(t.snapshot())
+		if byteOffset >= int64(len(rendered)) {
+			return fmt.Sprintf("Transcript has no content at or after byte %d.", byteOffset), nil
+		}
+		return tools.PageByteWindow(ctx, strings.NewReader(rendered), "transcript", "conversation", int64(len(rendered)), byteOffset)
+	}
 	offset := args.Int("offset", 1)
 	if offset < 1 {
 		return "", fmt.Errorf("offset must be at least 1")
