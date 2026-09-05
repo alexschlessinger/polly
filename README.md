@@ -63,6 +63,7 @@ One polly, many sessions. Each is a tab.
 | `/new` | New tab, fresh generated session |
 | `/tab` | List tabs and what each is doing |
 | `/tab <n>`, `/tab <name>` | Switch |
+| `/parent` | Return to this agent’s parent session, reopening it if needed. Also available as `↑ parent-name` in the status bar. |
 | `/close` | Close the visible tab. Session stays saved. A generated session with no turns is discarded. Last tab closed: polly exits. |
 | `Alt+1`..`Alt+9` | Jump to a tab by position |
 | `Alt+]`, `Alt+[` | Next tab, previous tab |
@@ -118,13 +119,18 @@ Agents expands independently and lists tasks in launch order; click a task
 label to switch to its child tab or reopen its saved conversation. The row
 tracks the initial delegated run, including background work after the parent
 turn finishes. Later follow-ups in the child leave that outcome unchanged.
-Completed turns collapse the activity controls; while a child is still
-working, its turn's Agents label ends in an ellipsis, like `thinking…`. Saved
+Completed turns collapse the activity controls; while children are still
+working, their turn's Agents label counts settled over total (`2/3 agents`),
+and failed or denied launches stay counted (`3 agents, 1 failed`). Saved
 history restores child links and known outcomes; older records with no
 reliable outcome show `unknown`. `/spawn` keeps its existing presentation.
-A child tab you
-never viewed closes itself once the parent takes its reply, or once it has
-reported after its parent's tab closed. A viewed tab stays. Closing a tab
+After its initial report is delivered, an agent tab closes when hidden, including
+failed or canceled runs. If you are reading it, it stays until you leave.
+Reopened agent sessions also close when you leave; drafts and follow-up
+conversations keep their tabs open. The session stays saved and can be reopened
+from Agents. Click `↑ parent-name` beside the session name in the status bar,
+or use `/parent`, to return to the parent (reopening it if needed).
+Closing a tab
 with running agents is refused. They work on a view of its tools.
 `/spawn <brief>` starts a background child of the visible tab by hand.
 
@@ -162,6 +168,7 @@ the terminal's override, usually Shift-drag.
 /new                         Open a new tab on a fresh session
 /tab [n|name]  (/tabs)       List open tabs, or switch to one
 /close                       Close the visible tab (session stays saved)
+/parent                      Return to this agent’s parent session
 /spawn <brief>               Start a background agent that reports back here
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills

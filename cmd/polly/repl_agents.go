@@ -111,30 +111,49 @@ func turnAgentLabel(n int) string {
 }
 
 // agentField renders the Agents control styled like its thought and tools
-// neighbours. Like thinking…, a trailing ellipsis marks work in progress, in
+// neighbours. While children run it counts progress as settled over total, in
 // exactly one control: the launch row until its turn has a trailer, then that
-// trailer.
+// trailer. Failed or denied launches stay counted wherever the control appears.
 func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockField, bool) {
-	n, active := 0, false
+	var total, running, failed, canceled int
 	for _, id := range ids {
-		if record := m.toolDisclosures[id]; record != nil {
-			for _, row := range record.rows {
-				if row.isAgent() {
-					n++
-					active = active || (row.agent != nil && row.agent.active)
-				}
+		record := m.toolDisclosures[id]
+		if record == nil {
+			continue
+		}
+		for _, row := range record.rows {
+			if !row.isAgent() {
+				continue
+			}
+			total++
+			if row.agent == nil {
+				continue
+			}
+			switch {
+			case row.agent.active:
+				running++
+			case row.agent.status == "failed", row.agent.status == "denied":
+				failed++
+			case row.agent.status == "canceled":
+				canceled++
 			}
 		}
 	}
-	if n == 0 {
+	if total == 0 {
 		return turnDockField{}, false
 	}
-	glyph, label := "▸", turnAgentLabel(n)
+	glyph, label := "▸", turnAgentLabel(total)
 	if expanded {
 		glyph = "▾"
 	}
-	if active && !handedOff {
-		label += "…"
+	if running > 0 && !handedOff {
+		label = fmt.Sprintf("%d/%s", total-running, label)
+	}
+	switch {
+	case failed > 0:
+		label += fmt.Sprintf(", %d failed", failed)
+	case canceled > 0:
+		label += fmt.Sprintf(", %d canceled", canceled)
 	}
 	return turnDockField{raw: glyph + " " + label, rendered: turnActivityControl(glyph, label), overlay: turnDockOverlayAgents}, true
 }

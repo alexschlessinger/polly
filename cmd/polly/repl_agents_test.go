@@ -306,7 +306,7 @@ func TestBackgroundAgentUpdatesOriginalTurnAndFreezesAfterFollowup(t *testing.T)
 		t.Fatal(rep.err)
 	}
 	child := r.tabs[1]
-	child.viewed = true
+	child.keepOpen = true
 	record, row := parent.model.toolDisclosureRowForCall("call-1")
 	initial := row.agent
 	parent.model.mu.Lock()
@@ -574,7 +574,7 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 		t.Fatal(rep.err)
 	}
 	child := r.tabs[1]
-	child.viewed = true
+	child.keepOpen = true
 	headers := func() (launch, trailer string) {
 		parent.model.mu.Lock()
 		defer parent.model.mu.Unlock()
@@ -589,10 +589,10 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 		}
 		return launch, trailer
 	}
-	// Work in progress is the trailing ellipsis, shown in one control at a
-	// time: the launch row until its turn has a trailer, then the trailer.
+	// Progress is settled over total, counted in one control at a time: the
+	// launch row until its turn has a trailer, then the trailer.
 	// Brightness follows the same rules as the thought and tools controls.
-	if launch, trailer := headers(); !strings.Contains(plainStyledText(launch), "▸ 1 agent…") || trailer != "" {
+	if launch, trailer := headers(); !strings.Contains(plainStyledText(launch), "▸ 0/1 agent") || trailer != "" {
 		t.Fatalf("running turn: launch %q / trailer %q", launch, trailer)
 	}
 	parent.model.mu.Lock()
@@ -601,7 +601,7 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 	close(runs.release)
 	settleUntil(t, r, settled(parent))
 	r.refreshAgentActivities()
-	launchIdle, trailerLive := inlineActivityControl("▸", "1 agent", true), turnActivityControl("▸", "1 agent…")
+	launchIdle, trailerLive := inlineActivityControl("▸", "1 agent", true), turnActivityControl("▸", "0/1 agent")
 	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, trailerLive) {
 		t.Fatalf("settled turn: launch %q / trailer %q", launch, trailer)
 	}
@@ -615,9 +615,51 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 	close(runs.slow)
 	settleUntil(t, r, settled(child))
 	r.refreshAgentActivities()
-	// A finished group stays as bright as its neighbours; only the ellipsis goes.
+	// A finished group stays as bright as its neighbours; only the fraction goes.
 	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, turnActivityControl("▸", "1 agent")) {
 		t.Fatalf("finished child: launch %q / trailer %q", launch, trailer)
 	}
 	<-child.agentWriteDone
+}
+
+func TestAgentLabelCountsProgressAndFailures(t *testing.T) {
+	withDisplayTTY(t)
+	header := func(m *replModel) string {
+		return strings.SplitN(plainStyledText(activityBlocks(m, 100)[0].text), "\n", 2)[0]
+	}
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("delegate")
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+	calls := []messages.ChatMessageToolCall{agentCall("a", `{}`), agentCall("b", `{}`), agentCall("c", `{}`), agentCall("d", `{}`)}
+	tui.AppendToolStart(calls)
+	if got := header(m); !strings.Contains(got, "▸ 0/4 agents") {
+		t.Fatalf("all running = %q", got)
+	}
+	tui.AppendToolEnd(calls[1], llm.ToolDeniedContent, time.Millisecond, nil)
+	tui.AppendToolEnd(calls[2], "", time.Millisecond, errors.New("launch failed"))
+	tui.AppendToolEnd(calls[3], "", time.Millisecond, context.Canceled)
+	// Denied and failed count together; canceled is named only when it is the
+	// sole kind of bad outcome.
+	if got := header(m); !strings.Contains(got, "▸ 3/4 agents, 2 failed") {
+		t.Fatalf("mixed outcomes while running = %q", got)
+	}
+	tui.AppendToolEnd(calls[0], "ok", time.Millisecond, nil)
+	if got := header(m); !strings.Contains(got, "▸ 4 agents, 2 failed") || strings.Contains(got, "/") {
+		t.Fatalf("settled = %q", got)
+	}
+
+	r = newManagedREPL(&Config{}, "ctx", 0, 0)
+	m = r.model
+	m.beginTurn("delegate")
+	tui = &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+	only := agentCall("only", `{}`)
+	tui.AppendToolStart([]messages.ChatMessageToolCall{only})
+	if got := header(m); !strings.Contains(got, "▸ 0/1 agent") {
+		t.Fatalf("single running = %q", got)
+	}
+	tui.AppendToolEnd(only, "", time.Millisecond, context.Canceled)
+	if got := header(m); !strings.Contains(got, "▸ 1 agent, 1 canceled") {
+		t.Fatalf("single canceled = %q", got)
+	}
 }
