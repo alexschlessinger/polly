@@ -110,10 +110,10 @@ func turnAgentLabel(n int) string {
 	return fmt.Sprintf("%d agents", n)
 }
 
-// agentField renders the Agents control. A running child lights exactly one
-// control: the launch row while its turn runs, then that turn's settled
-// trailer. settled dims the inline copy once the trailer owns liveness.
-func (m *replModel) agentField(ids []int64, expanded, settled bool) (turnDockField, bool) {
+// agentField renders the Agents control styled like its thought and tools
+// neighbours; liveness is the glyph alone. A running child shows ↻ in exactly
+// one control: the launch row until its turn has a trailer, then that trailer.
+func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockField, bool) {
 	n, active := 0, false
 	for _, id := range ids {
 		if record := m.toolDisclosures[id]; record != nil {
@@ -129,10 +129,13 @@ func (m *replModel) agentField(ids []int64, expanded, settled bool) (turnDockFie
 		return turnDockField{}, false
 	}
 	glyph, label := "▸", turnAgentLabel(n)
-	if expanded {
+	switch {
+	case expanded:
 		glyph = "▾"
+	case active && !handedOff:
+		glyph = "↻"
 	}
-	return turnDockField{raw: glyph + " " + label, rendered: inlineActivityControl(glyph, label, settled || !active), overlay: turnDockOverlayAgents}, true
+	return turnDockField{raw: glyph + " " + label, rendered: turnActivityControl(glyph, label), overlay: turnDockOverlayAgents}, true
 }
 
 func (m *replModel) hasAgentRows() bool {

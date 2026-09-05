@@ -575,7 +575,6 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 	}
 	child := r.tabs[1]
 	child.viewed = true
-	live, dim := turnActivityControl("▸", "1 agent"), inlineActivityControl("▸", "1 agent", true)
 	headers := func() (launch, trailer string) {
 		parent.model.mu.Lock()
 		defer parent.model.mu.Unlock()
@@ -590,9 +589,10 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 		}
 		return launch, trailer
 	}
-	// The spawn notice follows the launch row, yet the row stays lit for the
-	// rest of its turn: nothing else can show the child until the trailer.
-	if launch, trailer := headers(); !strings.Contains(launch, live) || trailer != "" {
+	// Liveness is the ↻ glyph, shown in one control at a time: the launch row
+	// until its turn has a trailer, then the trailer. Brightness follows the
+	// same rules as the thought and tools controls beside it.
+	if launch, trailer := headers(); !strings.Contains(plainStyledText(launch), "↻ 1 agent") || trailer != "" {
 		t.Fatalf("running turn: launch %q / trailer %q", launch, trailer)
 	}
 	parent.model.mu.Lock()
@@ -601,20 +601,22 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 	close(runs.release)
 	settleUntil(t, r, settled(parent))
 	r.refreshAgentActivities()
-	if launch, trailer := headers(); !strings.Contains(launch, dim) || !strings.Contains(trailer, live) {
+	launchIdle, trailerLive := inlineActivityControl("▸", "1 agent", true), turnActivityControl("↻", "1 agent")
+	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, trailerLive) {
 		t.Fatalf("settled turn: launch %q / trailer %q", launch, trailer)
 	}
-	// A new parent turn does not relight the earlier launch row.
+	// A new parent turn does not hand liveness back to the earlier launch row.
 	parent.model.mu.Lock()
 	parent.model.beginTurn("again")
 	parent.model.mu.Unlock()
-	if launch, trailer := headers(); !strings.Contains(launch, dim) || !strings.Contains(trailer, live) {
+	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, trailerLive) {
 		t.Fatalf("next turn: launch %q / trailer %q", launch, trailer)
 	}
 	close(runs.slow)
 	settleUntil(t, r, settled(child))
 	r.refreshAgentActivities()
-	if launch, trailer := headers(); !strings.Contains(launch, dim) || !strings.Contains(trailer, dim) {
+	// A finished group stays as bright as its neighbours; only the glyph rests.
+	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, turnActivityControl("▸", "1 agent")) {
 		t.Fatalf("finished child: launch %q / trailer %q", launch, trailer)
 	}
 	<-child.agentWriteDone
