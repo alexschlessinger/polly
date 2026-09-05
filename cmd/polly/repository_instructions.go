@@ -25,17 +25,19 @@ const (
 // each directory's instructions down to cwd, in increasing specificity. With
 // no Git root, only cwd is considered. Re-reading per turn keeps instructions
 // current without persisting machine-local guidance in a portable session.
-func loadRepositoryInstructions(registry *tools.ToolRegistry) (string, error) {
+// Guidance never blocks a turn: a file that cannot be loaded is skipped and
+// named in the returned warnings.
+func loadRepositoryInstructions(registry *tools.ToolRegistry) (instructions string, warnings []string) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("read working directory: %w", err)
+		return "", []string{fmt.Sprintf("repository instructions not loaded: read working directory: %v", err)}
 	}
 	var cfg sandbox.Config
 	var active bool
 	if registry != nil {
 		cfg, active, err = registry.SandboxReadPolicy()
 		if err != nil {
-			return "", fmt.Errorf("resolve repository instruction policy: %w", err)
+			return "", []string{fmt.Sprintf("repository instructions not loaded: resolve read policy: %v", err)}
 		}
 	}
 	// Approve both spellings, then open only the resolved route without
@@ -58,55 +60,60 @@ func loadRepositoryInstructions(registry *tools.ToolRegistry) (string, error) {
 		return resolved, nil
 	}
 
-	dirs := []string{cwd}
-	for dir := cwd; ; dir = filepath.Dir(dir) {
-		marker, err := resolve(filepath.Join(dir, ".git"))
-		if err != nil {
-			return "", fmt.Errorf("find repository root: %w", err)
-		}
-		info, err := os.Lstat(marker)
-		if err == nil && (info.IsDir() || info.Mode().IsRegular()) {
-			slices.Reverse(dirs)
-			break
-		}
-		if err != nil && !os.IsNotExist(err) {
-			return "", fmt.Errorf("find repository root: %w", err)
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			dirs = []string{cwd}
-			break
-		}
-		dirs = append(dirs, parent)
-	}
-
 	var b strings.Builder
-	fmt.Fprintf(&b, "Working directory: %q\n\n<repository_instructions>\n", cwd)
+	fmt.Fprintf(&b, "Working directory: %s\n\n<repository_instructions>\n", cwd)
 	total := 0
-	for _, dir := range dirs {
+	for _, dir := range repositoryInstructionDirs(cwd) {
 		path := filepath.Join(dir, "AGENTS.md")
-		resolved, err := resolve(path)
-		if err != nil {
-			return "", fmt.Errorf("load repository instructions: %w", err)
-		}
-		content, err := readRepositoryInstructions(resolved)
-		if os.IsNotExist(err) {
+		// A policy denial covering a directory without instructions is not
+		// news; only a file that exists and cannot be loaded is.
+		if _, err := os.Lstat(path); err != nil {
+			if !os.IsNotExist(err) {
+				warnings = append(warnings, fmt.Sprintf("repository instructions %s skipped: %v", path, err))
+			}
 			continue
 		}
+		resolved, err := resolve(path)
+		var content string
+		if err == nil {
+			content, err = readRepositoryInstructions(resolved)
+		}
 		if err != nil {
-			return "", fmt.Errorf("load repository instructions %s: %w", path, err)
+			warnings = append(warnings, fmt.Sprintf("repository instructions %s skipped: %v", path, err))
+			continue
+		}
+		if total+len(content) > maxRepositoryInstructionsBytes {
+			warnings = append(warnings, fmt.Sprintf("repository instructions %s skipped: instructions exceed %d bytes in total", path, maxRepositoryInstructionsBytes))
+			continue
 		}
 		total += len(content)
-		if total > maxRepositoryInstructionsBytes {
-			return "", fmt.Errorf("repository instructions exceed %d bytes in total", maxRepositoryInstructionsBytes)
-		}
 		if strings.TrimSpace(content) != "" {
 			fmt.Fprintf(&b, "<file path=\"%s\" scope=\"%s\">\n%s\n</file>\n",
-				html.EscapeString(path), html.EscapeString(dir), html.EscapeString(content))
+				html.EscapeString(path), html.EscapeString(dir), content)
 		}
 	}
 	b.WriteString("</repository_instructions>")
-	return b.String(), nil
+	return b.String(), warnings
+}
+
+// repositoryInstructionDirs lists the directories whose instructions apply
+// to cwd, root first: the nearest ancestor holding a .git directory or
+// worktree file through cwd, or cwd alone outside Git. Finding the root
+// only probes for the marker; nothing is read.
+func repositoryInstructionDirs(cwd string) []string {
+	dirs := []string{cwd}
+	for dir := cwd; ; dir = filepath.Dir(dir) {
+		info, err := os.Lstat(filepath.Join(dir, ".git"))
+		if err == nil && (info.IsDir() || info.Mode().IsRegular()) {
+			slices.Reverse(dirs)
+			return dirs
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return []string{cwd}
+		}
+		dirs = append(dirs, parent)
+	}
 }
 
 func readRepositoryInstructions(path string) (string, error) {

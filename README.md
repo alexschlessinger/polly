@@ -248,9 +248,9 @@ marks the root; outside a Git repository, only the working directory's file
 is loaded. Instructions apply to their directory and descendants, with
 more specific instructions taking precedence. The agent is told to check
 for additional instructions before working in deeper directories. Files
-are read again each turn under the sandbox read policy; unreadable,
-non-text, or oversized instructions stop the turn before sending it to
-the model. Limits are 32 KiB per file and 64 KiB combined.
+are read again each turn under the sandbox read policy. A file that is
+unreadable, non-text, or oversized is skipped with a warning, shown once
+until the problem changes. Limits are 32 KiB per file and 64 KiB combined.
 
 A non-empty `--system` / `POLLYTOOL_SYSTEM` replaces the coding policy and
 automatic `AGENTS.md` loading. Display and recall guidance still applies.

@@ -520,8 +520,8 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 		}
 	}
 
-	// These paths must bypass instruction discovery entirely, even if the
-	// repository file would make a default coding turn fail.
+	// These paths must bypass instruction discovery entirely, even when the
+	// repository file is invalid.
 	writeRepositoryTestFile(t, "AGENTS.md", "\x00")
 	schemaState, schemaModel := newState(t, "mechanics-schema", "")
 	runTurn(t, schemaState, llm.SchemaFromJSON(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`))
@@ -535,15 +535,34 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 	if !strings.Contains(request, personaState.settings.SystemPrompt) || !strings.Contains(request, contextMechanicsContract) || strings.Contains(request, codingContract) {
 		t.Fatalf("custom persona did not replace coding defaults: %q", request)
 	}
-	blockedState, blockedModel := newState(t, "mechanics-blocked", "")
-	code, err := executeTurnWithUserMessage(context.Background(), config, blockedState, messages.ChatMessage{
-		Role: messages.MessageRoleUser, Content: "edit the code",
-	}, nil, nil, &childTurnUI{}, false)
-	if err == nil || code != 1 || len(blockedModel.request) != 0 {
-		t.Fatalf("invalid instructions reached the model: code %d, err %v", code, err)
+	// An invalid file is skipped with a warning shown once, never a failed turn.
+	skippedState, skippedModel := newState(t, "mechanics-skipped", "")
+	turnOutput := func(t *testing.T) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		ui := newLineTurnUI(config, nil)
+		ui.writer, ui.errWriter = &stdout, &stderr
+		code, err := executeTurnWithUserMessage(context.Background(), config, skippedState, messages.ChatMessage{
+			Role: messages.MessageRoleUser, Content: "edit the code",
+		}, nil, nil, ui, false)
+		if err != nil || code != 0 {
+			t.Fatalf("invalid instructions blocked the turn: code %d, err %v", code, err)
+		}
+		return stdout.String() + stderr.String()
 	}
-	history, err = blockedState.session.GetHistory(context.Background())
-	if err != nil || len(history) != 0 {
-		t.Fatalf("invalid instructions left a persisted user message: %+v, %v", history, err)
+	out := turnOutput(t)
+	request = projectedRequestText(skippedModel.request)
+	if !strings.Contains(request, codingContract) || strings.Contains(request, "<file ") {
+		t.Fatalf("invalid instructions reached the model or displaced the coding policy: %q", request)
+	}
+	if !strings.Contains(out, "AGENTS.md skipped") || !strings.Contains(out, "NUL") {
+		t.Fatalf("invalid instructions were not reported: %q", out)
+	}
+	if out := turnOutput(t); strings.Contains(out, "skipped") {
+		t.Fatalf("an unchanged instruction problem was reported again: %q", out)
+	}
+	writeRepositoryTestFile(t, "AGENTS.md", "repaired-guidance")
+	if out := turnOutput(t); strings.Contains(out, "skipped") || !strings.Contains(projectedRequestText(skippedModel.request), "repaired-guidance") {
+		t.Fatalf("repaired instructions were not picked up: %q", out)
 	}
 }

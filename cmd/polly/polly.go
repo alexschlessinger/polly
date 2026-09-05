@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -91,6 +92,9 @@ type conversationState struct {
 	skillRuntime    *tools.SkillRuntime
 	skillSources    []string
 	sandboxWarnings *broadWritablePathWarner
+	// instructionWarnings is the last set of repository-instruction warnings
+	// shown, so a persistent problem is reported once rather than every turn.
+	instructionWarnings []string
 	// displayContract is composed into the request's system message each turn;
 	// it is capability-specific and never persisted (see display_contract.go).
 	displayContract string
@@ -177,6 +181,17 @@ func closeStoreAfterError(store sessions.SessionStore, cause error) error {
 		return errors.Join(cause, fmt.Errorf("close context store: %w", err))
 	}
 	return cause
+}
+
+// changedInstructionWarnings returns the repository-instruction warnings to
+// show this turn. The files are read again every turn, so a warning repeats
+// only once the set changes.
+func (s *conversationState) changedInstructionWarnings(warnings []string) []string {
+	if slices.Equal(warnings, s.instructionWarnings) {
+		return nil
+	}
+	s.instructionWarnings = warnings
+	return warnings
 }
 
 func (s *conversationState) drainSandboxWarnings() []string {
@@ -860,13 +875,12 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	// there, "plain text only" could fight the schema on providers whose
 	// structured output is prompt-based, and the context-mechanics guidance
 	// (put findings in replies) is moot when the reply is a schema payload.
+	var instructionWarnings []string
 	if schema == nil {
 		contract := sendTimeContracts(state.displayContract)
 		if settings.SystemPrompt == "" {
-			instructions, err := loadRepositoryInstructions(state.toolRegistry)
-			if err != nil {
-				return 1, err
-			}
+			instructions, warnings := loadRepositoryInstructions(state.toolRegistry)
+			instructionWarnings = state.changedInstructionWarnings(warnings)
 			contract = codingContract + "\n\n" + contract + "\n\n" + instructions
 		}
 		requestMessages = applyDisplayContract(requestMessages, contract)
@@ -908,6 +922,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 
 	turnUI.Start()
 	defer turnUI.Stop()
+	for _, warning := range instructionWarnings {
+		turnUI.AppendWarning(warning)
+	}
 
 	req.CacheSessionID, err = cacheSessionIDForSession(ctx, state.session)
 	if err != nil {
