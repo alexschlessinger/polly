@@ -1075,6 +1075,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			}
 
 			if config.SchemaPath != "" {
+				if ui, ok := turnUI.(*lineTurnUI); ok {
+					ui.pauseActivity()
+				}
 				var content string
 				if resp.Message != nil {
 					content = resp.Message.Content
@@ -1087,6 +1090,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	}
 
 	stopReason, code := classifyOutcome(resp, runErr)
+	if ui, ok := turnUI.(*lineTurnUI); ok {
+		ui.SetTurnOutcome(stopReason, runErr)
+	}
 	if config.Meta {
 		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, settings.Model, stats, in, out, time.Since(turnStart).Milliseconds()))
 	}

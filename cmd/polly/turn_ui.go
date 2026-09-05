@@ -61,6 +61,8 @@ type lineTurnUI struct {
 	finished        bool
 	toolMu          sync.Mutex
 	stderrTTY       bool
+	stdoutTTY       bool
+	activity        *lineActivity
 }
 
 func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, capabilities outputCapabilities) *lineTurnUI {
@@ -72,6 +74,7 @@ func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, ca
 		capabilities: capabilities,
 		imageBaseDir: baseDir,
 		stderrTTY:    terminalFD(int(os.Stderr.Fd())),
+		stdoutTTY:    terminalFD(int(os.Stdout.Fd())),
 	}
 	// Only prompt for confirmation when stdin can actually answer. A piped
 	// prompt or `< /dev/null` leaves the approval reader at EOF, which would
@@ -83,28 +86,57 @@ func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, ca
 }
 
 func (ui *lineTurnUI) Start() {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
 	ui.markdownBuffer.Reset()
 	ui.bufferSeparator = false
 	ui.needsSeparator = false
 	ui.contentPrinted = false
 	ui.endsWithNewline = false
 	ui.finished = false
+	ui.startActivityLocked()
 }
 
 func (ui *lineTurnUI) Stop() {
-	if ui.finished || ui.config.SchemaPath != "" || !ui.capabilities.rendersLineANSI() {
-		return
+	ui.toolMu.Lock()
+	ui.clearActivityLocked()
+	if !ui.finished && ui.config.SchemaPath == "" && ui.capabilities.rendersLineANSI() {
+		ui.flushBufferedMarkdown()
 	}
-	ui.flushBufferedMarkdown()
-	if ui.contentPrinted && !ui.endsWithNewline {
+	if ui.config.SchemaPath == "" && (ui.stdoutTTY || ui.capabilities.rendersLineANSI()) && ui.contentPrinted && !ui.endsWithNewline {
 		fmt.Fprintln(ui.writer)
 		ui.endsWithNewline = true
 	}
+	ui.finishActivityLocked()
+	var done chan struct{}
+	if ui.activity != nil {
+		done = ui.activity.done
+	}
+	ui.toolMu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
-func (ui *lineTurnUI) ShowThinking(chunk string) {}
+func (ui *lineTurnUI) ShowThinking(chunk string) {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	if chunk != "" {
+		ui.activityPhaseLocked("Thinking")
+	}
+	ui.renderActivityLocked()
+}
 
 func (ui *lineTurnUI) AppendAssistantText(content string) {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	if !ui.capabilities.rendersLineANSI() {
+		ui.clearActivityLocked()
+	}
+	defer ui.renderActivityLocked()
+	if content != "" {
+		ui.activityPhaseLocked("Writing")
+	}
 	if ui.config.SchemaPath != "" {
 		return
 	}
@@ -151,21 +183,24 @@ func (ui *lineTurnUI) flushBufferedMarkdown() {
 }
 
 func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	ui.clearActivityLocked()
+	defer ui.renderActivityLocked()
 	ui.flushBufferedMarkdown()
 	ui.needsSeparator = true
-	if !toolDisplayEnabled(ui.config) {
+	if !ui.activityEnabled() {
 		return
 	}
-	if ui.contentPrinted {
+	if ui.contentPrinted && (ui.stdoutTTY || ui.capabilities.rendersLineANSI()) {
 		if !ui.endsWithNewline {
 			fmt.Fprintln(ui.writer)
 			ui.endsWithNewline = true
 		}
 		ui.contentPrinted = false
 	}
-	for _, tc := range calls {
-		fmt.Fprintf(ui.errWriter, "  → %s\n", toolLabel(tc))
-	}
+	ui.activityPhaseLocked("Working")
+	ui.activityToolsLocked("", "", calls)
 }
 
 func (ui *lineTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
@@ -176,62 +211,82 @@ func (ui *lineTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 		}
 		return approved
 	}
+	// Hold the output lock while reading approvals: child completions and the
+	// timer must not overwrite a prompt. The runner calls this outside tools.
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	ui.clearActivityLocked()
+	defer ui.renderActivityLocked()
 	return ui.approver.approveToolCalls(calls)
 }
 
 func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
-	if !toolDisplayEnabled(ui.config) {
+	if !ui.activityEnabled() {
 		return
 	}
-	label := toolLabel(call)
-	if toolWasDenied(result) {
-		fmt.Fprintf(ui.errWriter, "  ✗ denied %s\n", label)
-		return
-	}
-	dur := formatElapsed(duration)
-	if err != nil {
-		// Tool output/error text is intentionally omitted; the model still
-		// receives the full output. The ✗ and exit code alone mark the failure.
-		fmt.Fprintf(ui.errWriter, "  ✗ %s\n", toolLineBody(dur, label, toolFailureMeta(err)))
-		return
-	}
-	fmt.Fprintf(ui.errWriter, "  ✓ %s\n", toolLineBody(dur, label, resultLineMeta(result)))
+	ui.activityToolEndLocked("", "", call, result, duration, err)
+	ui.renderActivityLocked()
 }
 
 func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []transcriptImage) {
-	if len(images) == 0 || ui.config.SchemaPath != "" || ui.config.Quiet {
+	if len(images) == 0 || ui.config.Quiet {
 		return
 	}
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
+	ui.clearActivityLocked()
+	defer ui.renderActivityLocked()
+	if ui.activity != nil {
+		ui.activity.images += len(images)
+	}
+	caps := ui.capabilities
+	if ui.activity != nil {
+		caps = ui.activity.imageCaps
+	}
 	for _, img := range images {
-		fmt.Fprintf(ui.errWriter, "    %s\n", transcriptImageCaptionText(img))
-		if !ui.capabilities.rendersLineANSI() || !ui.stderrTTY {
+		ui.activityLineLocked("    " + transcriptImageCaptionText(img))
+		if !caps.rendersLineANSI() || !ui.stderrTTY {
 			continue
 		}
-		if payload := lineImagePayload(img, ui.capabilities, 4); len(payload) > 0 {
+		if payload := lineImagePayload(img, caps, 4); len(payload) > 0 {
 			_, _ = ui.errWriter.Write(payload)
 		}
 	}
 }
 
 func (ui *lineTurnUI) AppendWarning(text string) {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	ui.clearActivityLocked()
+	defer ui.renderActivityLocked()
 	ui.flushBufferedMarkdown()
 	// Warnings ride stderr so a captured stdout answer stays clean. Terminate
 	// any unfinished stdout line first so a shared terminal doesn't glue the
 	// warning onto the tail of the streamed answer.
-	if ui.contentPrinted && !ui.endsWithNewline {
+	if ui.stdoutTTY && ui.contentPrinted && !ui.endsWithNewline {
 		fmt.Fprintln(ui.writer)
 		ui.endsWithNewline = true
 	}
-	fmt.Fprintf(ui.errWriter, "Warning: %s\n", text)
+	ui.activityLineLocked("Warning: " + text)
 }
 
-func (ui *lineTurnUI) RecordTurnTokens(in, out int) {}
+func (ui *lineTurnUI) RecordTurnTokens(in, out int) {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	if ui.activity != nil {
+		ui.activity.in, ui.activity.out = in, out
+	}
+}
 
-func (ui *lineTurnUI) RecordContextUsage(used, limit int, estimated bool) {}
+func (ui *lineTurnUI) RecordContextUsage(used, limit int, estimated bool) {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	if ui.activity != nil {
+		ui.activity.used, ui.activity.limit, ui.activity.estimated = used, limit, estimated
+	}
+}
 
 func (ui *lineTurnUI) UserMessagePersistenceStarted() {}
 
@@ -240,6 +295,9 @@ func (ui *lineTurnUI) UserMessagePersistenceFinished(persisted bool) {}
 func (ui *lineTurnUI) TurnPersistenceAllowed() bool { return true }
 
 func (ui *lineTurnUI) FinishTextTurn() {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	ui.clearActivityLocked()
 	ui.flushBufferedMarkdown()
 	if ui.config.SchemaPath == "" && !ui.endsWithNewline {
 		fmt.Fprintln(ui.writer)

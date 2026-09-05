@@ -97,6 +97,9 @@ func spawnRunner(config *Config, client llm.LLM, parent *conversationState) suba
 			return subagent.Result{}, fmt.Errorf("read child session name: %w", err)
 		}
 		ui := &childTurnUI{parent: parentTurnUIFrom(ctx)}
+		if host, ok := ui.parent.(lineChildActivityHost); ok {
+			ui.activity = host.childActivity(toolCallFrom(ctx))
+		}
 		userMsg := messages.ChatMessage{Role: messages.MessageRoleUser, Content: req.Task}
 		_, err = executeTurnWithUserMessage(ctx, &childConfig, child, userMsg, nil, nil, ui, false)
 		if saveErr := recordSpawnOutcome(child.session, storedChildReport(subagent.Result{}, err).Status); saveErr != nil {
@@ -213,11 +216,12 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 	}, nil
 }
 
-// childTurnUI is a child's turn UI: nothing shows, since the child's output
-// is the parent's tool result, but the reply is kept and tool approvals go
-// to the parent's UI so a confirming user still decides.
+// childTurnUI keeps the child's reply for the parent's tool result. Optional
+// line activity reports progress without exposing that reply; approvals go to
+// the parent's UI so a confirming user still decides.
 type childTurnUI struct {
-	parent TurnUI
+	parent   TurnUI
+	activity *lineChildActivity
 
 	mu    sync.Mutex
 	text  strings.Builder
@@ -226,19 +230,44 @@ type childTurnUI struct {
 	out   int
 }
 
-func (u *childTurnUI) Start()                              {}
-func (u *childTurnUI) Stop()                               {}
-func (u *childTurnUI) ShowThinking(string)                 {}
-func (u *childTurnUI) AppendWarning(string)                {}
+func (u *childTurnUI) Start() {}
+func (u *childTurnUI) Stop()  {}
+func (u *childTurnUI) ShowThinking(chunk string) {
+	if u.activity != nil && chunk != "" {
+		u.activity.phase("thinking")
+	}
+}
+func (u *childTurnUI) AppendWarning(text string) {
+	if u.activity != nil {
+		u.activity.ui.AppendWarning(u.activity.prefix + text)
+	}
+}
 func (u *childTurnUI) RecordContextUsage(int, int, bool)   {}
 func (u *childTurnUI) UserMessagePersistenceStarted()      {}
 func (u *childTurnUI) UserMessagePersistenceFinished(bool) {}
 func (u *childTurnUI) TurnPersistenceAllowed() bool        { return true }
-func (u *childTurnUI) AppendToolEnd(messages.ChatMessageToolCall, string, time.Duration, error) {
+func (u *childTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+	if u.activity != nil {
+		u.activity.toolEnd(call, result, duration, err)
+	}
 }
-func (u *childTurnUI) AppendToolMedia(messages.ChatMessageToolCall, []transcriptImage) {}
+func (u *childTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []transcriptImage) {
+	if u.activity != nil {
+		u.activity.media(images)
+	}
+}
+
+func (u *childTurnUI) childActivity(call messages.ChatMessageToolCall) *lineChildActivity {
+	if u.activity == nil {
+		return nil
+	}
+	return u.activity.ui.newChildActivity(u.activity.scope, u.activity.prefix, call)
+}
 
 func (u *childTurnUI) AppendAssistantText(content string) {
+	if u.activity != nil && content != "" {
+		u.activity.phase("writing")
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.text.WriteString(content)
@@ -246,7 +275,11 @@ func (u *childTurnUI) AppendAssistantText(content string) {
 
 // AppendToolStart drops the text streamed before a tool batch: that was
 // the child working, not its reply.
-func (u *childTurnUI) AppendToolStart([]messages.ChatMessageToolCall) {
+func (u *childTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
+	if u.activity != nil {
+		u.activity.phase("working")
+		u.activity.tools(calls)
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.text.Reset()
