@@ -417,19 +417,26 @@ func toolErrorLine(label, duration, meta string) string {
 	return "  " + styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(duration, label, meta))
 }
 
+// hydratedToolLine rebuilds a settled row from its stored result. The raw
+// result body is never shown; the recorded duration is, when the result
+// carries one.
 func hydratedToolLine(label string, msg messages.ChatMessage) string {
 	label = stripTranscriptImageMarkers(label)
 	if toolWasDenied(msg.Content) {
 		return toolDeniedLine(label)
 	}
+	duration := ""
+	if d := msg.ToolDuration(); d > 0 {
+		duration = formatElapsed(d)
+	}
 	if msg.IsError() {
-		return toolErrorLine(label, "", "failed")
+		return toolErrorLine(label, duration, "failed")
 	}
 	if succeeded, known := msg.ToolSucceeded(); known {
 		if succeeded {
-			return toolOKLine(label, "", "")
+			return toolOKLine(label, duration, "")
 		}
-		return toolErrorLine(label, "", "failed")
+		return toolErrorLine(label, duration, "failed")
 	}
 	return pendingToolLine(label)
 }

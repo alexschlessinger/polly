@@ -306,10 +306,9 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 func reasoningDisclosureLabel(active, unsaved bool, elapsed time.Duration) string {
 	// A paused segment (tool phase mid-run) reads "Thought" like a settled
 	// one; the header styling, not the label, distinguishes live from done.
+	// The label itself never flips to "thinking…": the elapsed timer keeps
+	// ticking up in place, which already signals live activity.
 	label := "thought"
-	if active {
-		label = "thinking…"
-	}
 	if elapsed > 0 {
 		label += " " + formatElapsed(elapsed)
 	}

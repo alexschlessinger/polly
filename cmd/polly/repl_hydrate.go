@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/images"
@@ -140,7 +141,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 	m := h.m
 	h.flushTools()
-	h.appendReasoning(msg.Reasoning)
+	h.appendReasoning(msg.Reasoning, msg.ThinkingDuration())
 	if tokens := msg.GetInputTokens(); tokens > h.turnInput {
 		h.turnInput = tokens
 	}
@@ -151,7 +152,9 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 		h.tools = nil
 	}
 	for _, call := range msg.ToolCalls {
-		row := toolDisclosureRow{callID: call.ID, label: toolDisplayName(call.Name)}
+		// The stored call keeps its arguments, so the row reads like it did
+		// live: the tool name plus its argument summary.
+		row := toolDisclosureRow{callID: call.ID, label: toolLabel(call)}
 		row.setCall(call)
 		if row.agent != nil {
 			row.agent.active, row.agent.status = false, "unknown"
@@ -203,7 +206,7 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 	h.flushTools()
 	displayToolCalls := decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls])
 	if displayReasoning, _ := msg.Metadata[messages.MetadataKeyDisplayReasoning].(string); displayReasoning != "" {
-		h.appendReasoning(displayReasoning)
+		h.appendReasoning(displayReasoning, msg.ThinkingDuration())
 	}
 	h.applyToolOrder(displayToolCalls)
 	status, _ := msg.Metadata[messages.MetadataKeyTurnStatus].(string)
@@ -353,7 +356,10 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 	h.m.refreshToolDisclosure(h.tools)
 }
 
-func (h *historyHydrator) appendReasoning(text string) {
+// appendReasoning adds a stored reasoning segment to the turn's record. The
+// elapsed time accumulates the way the live clock did: one record sums every
+// segment it absorbed.
+func (h *historyHydrator) appendReasoning(text string, elapsed time.Duration) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
@@ -361,6 +367,7 @@ func (h *historyHydrator) appendReasoning(text string) {
 		h.reasoning = h.m.newReasoningRecord(true)
 	}
 	h.m.appendReasoningTail(h.reasoning, text, len(h.reasoning.tail) > 0)
+	h.reasoning.elapsed += elapsed
 	h.m.refreshReasoningRecord(h.reasoning, 80)
 }
 
