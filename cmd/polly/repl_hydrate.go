@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/images"
@@ -140,7 +141,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 	m := h.m
 	h.flushTools()
-	h.appendReasoning(msg.Reasoning)
+	h.appendReasoning(msg.Reasoning, msg.ThinkingDuration())
 	if tokens := msg.GetInputTokens(); tokens > h.turnInput {
 		h.turnInput = tokens
 	}
@@ -151,7 +152,9 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 		h.tools = nil
 	}
 	for _, call := range msg.ToolCalls {
-		row := toolDisclosureRow{callID: call.ID, label: toolDisplayName(call.Name)}
+		// The stored call keeps its arguments, so the row reads like it did
+		// live: the tool name plus its argument summary.
+		row := toolDisclosureRow{callID: call.ID, label: toolLabel(call)}
 		row.setCall(call)
 		if row.agent != nil {
 			row.agent.active, row.agent.status = false, "unknown"
@@ -203,7 +206,7 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 	h.flushTools()
 	displayToolCalls := decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls])
 	if displayReasoning, _ := msg.Metadata[messages.MetadataKeyDisplayReasoning].(string); displayReasoning != "" {
-		h.appendReasoning(displayReasoning)
+		h.appendReasoning(displayReasoning, msg.ThinkingDuration())
 	}
 	h.applyToolOrder(displayToolCalls)
 	status, _ := msg.Metadata[messages.MetadataKeyTurnStatus].(string)
@@ -249,11 +252,25 @@ func (h *historyHydrator) flushTools() {
 	h.toolRows = nil
 }
 
+// isDisplayCall reports whether the row is the recorded call, by ID.
+func (row *toolDisclosureRow) isDisplayCall(call durableDisplayToolCall) bool {
+	return call.ID != "" && row.callID == call.ID
+}
+
+// couldBeDisplayCall reports whether the row may be the recorded call when
+// the IDs cannot decide. Only a missing ID on either side is bridged: two
+// calls that both carry IDs are different calls, so a denied call whose
+// exchange was stripped never takes a same-named sibling's row. The row's
+// label carries the argument summary, so the comparison is by tool name.
+func (row *toolDisclosureRow) couldBeDisplayCall(call durableDisplayToolCall) bool {
+	return (call.ID == "" || row.callID == "") && toolDisplayName(row.toolName) == toolDisplayName(call.Name)
+}
+
 // applyToolOrder reorders the turn's disclosure to the durable display
-// order: each recorded call takes the existing row with its ID, else the
-// first unused row with its name, else a fresh row; a denied call shows as
-// denied whatever its row held. Rows the record does not mention keep their
-// place at the end.
+// order: each recorded call takes the existing row with its ID, else (when
+// either side lacks an ID) the first unused row with its tool name, else a
+// fresh row; a denied call shows as denied whatever its row held. Rows the
+// record does not mention keep their place at the end.
 func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 	if len(order) == 0 {
 		return
@@ -273,8 +290,7 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 			for _, group := range h.toolGroups {
 				for i := range group.rows {
 					row := &group.rows[i]
-					if !used[row] && ((call.ID != "" && row.callID == call.ID) ||
-						((call.ID == "" || row.callID == "") && row.label == toolDisplayName(call.Name))) {
+					if !used[row] && (row.isDisplayCall(call) || row.couldBeDisplayCall(call)) {
 						target = group
 						used[row] = true
 						break search
@@ -305,14 +321,14 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 		name := toolDisplayName(displayCall.Name)
 		pick := -1
 		for i := range existing {
-			if !used[i] && displayCall.ID != "" && existing[i].callID == displayCall.ID {
+			if !used[i] && existing[i].isDisplayCall(displayCall) {
 				pick = i
 				break
 			}
 		}
 		if pick < 0 {
 			for i := range existing {
-				if !used[i] && existing[i].label == name {
+				if !used[i] && existing[i].couldBeDisplayCall(displayCall) {
 					pick = i
 					break
 				}
@@ -353,7 +369,10 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 	h.m.refreshToolDisclosure(h.tools)
 }
 
-func (h *historyHydrator) appendReasoning(text string) {
+// appendReasoning adds a stored reasoning segment to the turn's record. The
+// elapsed time accumulates the way the live clock did: one record sums every
+// segment it absorbed.
+func (h *historyHydrator) appendReasoning(text string, elapsed time.Duration) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
@@ -361,6 +380,7 @@ func (h *historyHydrator) appendReasoning(text string) {
 		h.reasoning = h.m.newReasoningRecord(true)
 	}
 	h.m.appendReasoningTail(h.reasoning, text, len(h.reasoning.tail) > 0)
+	h.reasoning.elapsed += elapsed
 	h.m.refreshReasoningRecord(h.reasoning, 80)
 }
 

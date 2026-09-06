@@ -348,8 +348,8 @@ func TestThinkingDisclosureStartsCollapsedWithoutLeakingReasoning(t *testing.T) 
 		t.Fatal("a turn's reasoning disclosure should start collapsed")
 	}
 	block := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(block, "▸ thinking") {
-		t.Fatalf("collapsed disclosure = %q, want a thinking label", block)
+	if !strings.Contains(block, "▸ thought") {
+		t.Fatalf("collapsed disclosure = %q, want a thought label", block)
 	}
 	if strings.Contains(block, privateReasoning) {
 		t.Fatalf("collapsed disclosure leaked reasoning: %q", block)
@@ -384,7 +384,7 @@ func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 	if !strings.Contains(block, "number 15") || strings.Contains(block, "number 0 ") {
 		t.Fatalf("expanded disclosure should show only the newest tail: %q", block)
 	}
-	if !strings.Contains(block, "▾ thinking") || !strings.Contains(m.transcript[record.transcriptIndex].text, "mod:italic") {
+	if !strings.Contains(block, "▾ thought") || !strings.Contains(m.transcript[record.transcriptIndex].text, "mod:italic") {
 		t.Fatalf("expanded disclosure lost its open label or preview styling: %q", m.transcript[record.transcriptIndex].text)
 	}
 

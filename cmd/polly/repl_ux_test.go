@@ -761,9 +761,18 @@ func TestCompletedReasoningDisclosureSurvivesDiskReload(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "reasoning.db")
 	store := testOpenDiskStore(t, dbPath, nil)
 	session := testAcquireSession(t, store, "reasoning-reload")
+	// Two reasoning segments in one turn (thinking → tool → thinking) fold
+	// into one disclosure live, and its clock sums both; hydration matches.
+	thought := messages.ChatMessage{Role: messages.MessageRoleAssistant, Reasoning: "durable chain of thought",
+		ToolCalls: []messages.ChatMessageToolCall{{ID: "1", Name: "bash", Arguments: `{"command":"true"}`}}}
+	thought.SetThinkingDuration(2 * time.Second)
+	result := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: "1", ToolName: "bash", Content: ""}
+	result.SetToolSucceeded(true)
+	answer := messages.ChatMessage{Role: messages.MessageRoleAssistant, Reasoning: "and a second thought", Content: "answer"}
+	answer.SetThinkingDuration(500 * time.Millisecond)
 	testAddMessages(t, session, []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "explain"},
-		{Role: messages.MessageRoleAssistant, Reasoning: "durable chain of thought", Content: "answer"},
+		thought, result, answer,
 	})
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
@@ -783,6 +792,12 @@ func TestCompletedReasoningDisclosureSurvivesDiskReload(t *testing.T) {
 	if record == nil || !record.complete || record.unsaved || record.expanded {
 		t.Fatalf("reloaded reasoning record = %#v", record)
 	}
+	if record.elapsed != 2500*time.Millisecond {
+		t.Fatalf("reloaded reasoning elapsed = %v, want the stored segments summed to 2.5s", record.elapsed)
+	}
+	if header := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(header, "thought 2.5s") {
+		t.Fatalf("reloaded reasoning header lost its thinking time: %q", header)
+	}
 	if !m.toggleReasoning(record.id, 80) || !strings.Contains(plainStyledText(m.transcript[record.transcriptIndex].text), "durable chain of thought") {
 		t.Fatalf("reloaded completed disclosure did not expand: %q", m.transcript[record.transcriptIndex].text)
 	}
@@ -799,9 +814,10 @@ func TestCompletedToolDisclosureSurvivesDiskReloadWithoutRawResults(t *testing.T
 		Content:    "RAW SECRET TOOL BODY",
 	}
 	toolResult.SetToolSucceeded(true)
+	toolResult.SetToolDuration(1200 * time.Millisecond)
 	testAddMessages(t, session, []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "run"},
-		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "1", Name: "bash"}}},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "1", Name: "bash", Arguments: `{"command":"cat secret.txt"}`}}},
 		toolResult,
 		{Role: messages.MessageRoleAssistant, Content: "done"},
 	})
@@ -830,8 +846,10 @@ func TestCompletedToolDisclosureSurvivesDiskReloadWithoutRawResults(t *testing.T
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("reloaded tool disclosure did not expand")
 	}
+	// The row reads as it did live: duration, tool name, argument summary.
+	// The result body still stays out of the transcript.
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expanded, "✓ bash") || strings.Contains(expanded, "RAW SECRET") {
+	if !strings.Contains(expanded, "✓ 1.2s bash cat secret.txt") || strings.Contains(expanded, "RAW SECRET") {
 		t.Fatalf("reloaded tool detail = %q", expanded)
 	}
 }

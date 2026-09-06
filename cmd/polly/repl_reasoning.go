@@ -145,9 +145,11 @@ func (m *replModel) finishThinkingSegment() {
 	record.active = false
 	record.complete = true
 	record.dirty = true
-	// Refresh unconditionally: reasoningWidth may be zero in provider
-	// callbacks, and refreshReasoningRecord treats that as "keep the
-	// existing text", which would strand the live "Thinking…" label.
+	// Refresh unconditionally so the header drops its live styling and
+	// freezes the banked elapsed value now that the segment is closed:
+	// reasoningRecordText adds the running clock only while the record is
+	// active. reasoningWidth may be zero in provider callbacks;
+	// disclosureLayoutWidth falls back for that.
 	// A deliberately expanded segment stays open until the turn settles.
 	m.refreshReasoningRecord(record, m.reasoningWidth)
 	m.turnReasoningID = 0
@@ -306,10 +308,9 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 func reasoningDisclosureLabel(active, unsaved bool, elapsed time.Duration) string {
 	// A paused segment (tool phase mid-run) reads "Thought" like a settled
 	// one; the header styling, not the label, distinguishes live from done.
+	// The label itself never flips to "thinking…": the elapsed timer keeps
+	// ticking up in place, which already signals live activity.
 	label := "thought"
-	if active {
-		label = "thinking…"
-	}
 	if elapsed > 0 {
 		label += " " + formatElapsed(elapsed)
 	}

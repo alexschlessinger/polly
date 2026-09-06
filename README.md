@@ -187,7 +187,8 @@ timers, outcomes, and tool-produced images, updating in place. Details
 show call labels and outcomes, never raw result bodies. The model still
 gets every result. Durable history keeps the full exchange.
 
-`--thinking`: reasoning shows as a collapsed `Thinking…` row. Click it, or
+`--thinking`: reasoning shows as a collapsed `▸ thought 2.1s` row whose
+elapsed timer ticks up live while thinking. Click it, or
 `Ctrl-O`, for a live tail.
 
 Both collapse when the turn ends. Both reopen later, even after a reload.
