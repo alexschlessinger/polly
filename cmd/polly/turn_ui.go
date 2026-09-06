@@ -90,7 +90,10 @@ func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, ca
 		stderrTTY:    terminalFD(int(os.Stderr.Fd())),
 		stdoutTTY:    terminalFD(int(os.Stdout.Fd())),
 	}
-	ui.sameTerminal = ui.stdoutTTY && ui.stderrTTY && sameOutputTerminal(os.Stdout, os.Stderr)
+	// Two TTYs are one screen: /dev/tty and /dev/ttysNNN stat differently
+	// yet paint the same terminal, so an inode comparison would split the
+	// frame into two cursor owners that overwrite each other.
+	ui.sameTerminal = ui.stdoutTTY && ui.stderrTTY
 	// Only prompt for confirmation when stdin can actually answer. A piped
 	// prompt or `< /dev/null` leaves the approval reader at EOF, which would
 	// otherwise deny every tool call.

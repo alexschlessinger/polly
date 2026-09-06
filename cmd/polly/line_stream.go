@@ -14,15 +14,6 @@ import (
 	"golang.org/x/term"
 )
 
-func sameOutputTerminal(stdout, stderr *os.File) bool {
-	a, err := stdout.Stat()
-	if err != nil {
-		return false
-	}
-	b, err := stderr.Stat()
-	return err == nil && os.SameFile(a, b)
-}
-
 // Every owned row ends short of the last column and the cursor rests at the
 // end of the last row. Scrollback is never cleared (no ED or alternate screen).
 // widths also account for reflow when a terminal shrinks between frames.
