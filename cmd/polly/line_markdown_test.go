@@ -114,8 +114,8 @@ func TestLineTurnUIFlushesRichOutputAtBoundaries(t *testing.T) {
 	if got := ansiSGRPattern.ReplaceAllString(out.String(), ""); got != "before\n\nafter\n" {
 		t.Fatalf("boundary output = %q", got)
 	}
-	if !strings.Contains(errOut.String(), "→ read") || !strings.Contains(errOut.String(), "Warning: check") {
-		t.Fatalf("stderr lost tool or warning: %q", errOut.String())
+	if strings.Contains(errOut.String(), "read") || !strings.Contains(errOut.String(), "Warning: check") {
+		t.Fatalf("stderr should retain warnings without successful tool rows: %q", errOut.String())
 	}
 }
 

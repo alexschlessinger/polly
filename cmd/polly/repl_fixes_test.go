@@ -393,7 +393,7 @@ func TestToolEndErrorDurationUsesFormatElapsed(t *testing.T) {
 	}
 }
 
-func TestLineTurnUIToolEndDurationUsesFormatElapsed(t *testing.T) {
+func TestLineTurnUISuccessfulToolEndDoesNotPrintRow(t *testing.T) {
 	old := terminalFD
 	terminalFD = func(int) bool { return true }
 	t.Cleanup(func() { terminalFD = old })
@@ -403,8 +403,8 @@ func TestLineTurnUIToolEndDurationUsesFormatElapsed(t *testing.T) {
 	tui.errWriter = &errOut
 
 	tui.AppendToolEnd(messages.ChatMessageToolCall{Name: "bash"}, "ok", 90*time.Second, nil)
-	if !strings.Contains(errOut.String(), "1m30s") {
-		t.Fatalf("line UI tool result should use formatElapsed, got %q", errOut.String())
+	if errOut.Len() != 0 {
+		t.Fatalf("successful tool result should not leave a row, got %q", errOut.String())
 	}
 }
 

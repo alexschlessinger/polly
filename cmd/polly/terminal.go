@@ -37,8 +37,8 @@ func promptYesNoWithReader(prompt string, defaultValue bool, reader *bufio.Reade
 	return response == "y" || response == "yes"
 }
 
-func promptYesNoAllWithReader(prompt string, reader *bufio.Reader) byte {
-	fmt.Fprintf(os.Stderr, "%s (Y/n/a): ", prompt)
+func promptYesNoAllWithReader(out io.Writer, prompt string, reader *bufio.Reader) byte {
+	fmt.Fprintf(out, "%s (Y/n/a): ", prompt)
 	response, err := readLine(reader)
 	if err != nil {
 		return 'n'
@@ -54,13 +54,16 @@ func promptYesNoAllWithReader(prompt string, reader *bufio.Reader) byte {
 	}
 }
 
+// The prompt shares stderr with the status line, so out is the same stream
+// the line UI writes to; tests capture both to check their ordering.
 type toolApprover struct {
 	approveAll bool
 	reader     *bufio.Reader
+	out        io.Writer
 }
 
 func newToolApprover(reader *bufio.Reader) *toolApprover {
-	return &toolApprover{reader: reader}
+	return &toolApprover{reader: reader, out: os.Stderr}
 }
 
 func (ta *toolApprover) approveToolCalls(calls []messages.ChatMessageToolCall) []bool {
@@ -78,9 +81,9 @@ func (ta *toolApprover) approveToolCalls(calls []messages.ChatMessageToolCall) [
 		if summary != "" {
 			label += ": " + truncate(summary, 80)
 		}
-		fmt.Fprintf(os.Stderr, "  %s\n", label)
+		fmt.Fprintf(ta.out, "  %s\n", label)
 
-		switch promptYesNoAllWithReader("  allow?", ta.reader) {
+		switch promptYesNoAllWithReader(ta.out, "  allow?", ta.reader) {
 		case 'y':
 			approved[i] = true
 		case 'a':
