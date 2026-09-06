@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -11,7 +12,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
+	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -221,7 +226,7 @@ func TestSandboxRegistryOptionsWarnsBroadBaseOnce(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	warnings := newBroadWritablePathWarner()
-	opts, err := sandboxRegistryOptionsWithWarnings(&Config{
+	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
 	}, warnings)
@@ -252,7 +257,7 @@ func TestSandboxRegistryOptionsWarnsBroadPerToolOverlay(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	warnings := newBroadWritablePathWarner()
-	opts, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings)
+	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings)
 	if err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
 	}
@@ -301,7 +306,7 @@ func TestSandboxRegistryOptionsDoesNotWarnForIneffectiveBroadWrite(t *testing.T)
 		{WritablePaths: []string{root}, DenyWritePaths: []string{root}},
 	} {
 		warnings := newBroadWritablePathWarner()
-		opts, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings)
+		opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings)
 		if err != nil {
 			t.Fatalf("sandboxRegistryOptions() error = %v", err)
 		}
@@ -325,7 +330,7 @@ func TestSandboxRegistryOptionsDoesNotWarnWhenFactoryFails(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	warnings := newBroadWritablePathWarner()
-	_, err := sandboxRegistryOptionsWithWarnings(&Config{
+	_, _, err := sandboxRegistryOptionsWithWarnings(&Config{
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
 	}, warnings)
@@ -454,5 +459,151 @@ func TestInitializeSessionClosesRegistryWhenSkillRuntimeFails(t *testing.T) {
 	}
 	if got := len(captured.All()); got != 0 {
 		t.Fatalf("registry retained %d tools after initialization failure", got)
+	}
+}
+
+// The probe's spawn no longer holds an open back: the options come back at
+// once, and a backend that cannot start fails the first turn before any
+// request or persistence.
+func TestSandboxProbeFailureLandsOnTheFirstTurn(t *testing.T) {
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return probeFailSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+	t.Chdir(t.TempDir())
+
+	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{}, newBroadWritablePathWarner())
+	if err != nil || probe == nil {
+		t.Fatalf("sandboxRegistryOptionsWithWarnings() = %v, %v; want options and a pending probe", probe, err)
+	}
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "probe-turn")
+	registry := tools.NewToolRegistry(nil, opts...)
+	t.Cleanup(func() { _ = registry.Close() })
+	artifactStore := session.ArtifactStore()
+	model := &captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}
+	state := &conversationState{
+		session: session, artifactStore: artifactStore, toolRegistry: registry, sandboxProbe: probe,
+		agent: llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
+	}
+	state.settings = Settings{Model: "test/model", MaxTokens: 128}
+	config := &Config{}
+	var stdout, stderr bytes.Buffer
+	ui := newLineTurnUI(config, nil)
+	ui.writer, ui.errWriter = &stdout, &stderr
+
+	code, err := executeTurnWithUserMessage(context.Background(), config, state, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hello"}, nil, nil, ui, false)
+	if err == nil || code != 1 || !strings.Contains(err.Error(), "POLLYTOOL_NOSANDBOX") {
+		t.Fatalf("turn = code %d, err %v; want the probe failure with its escape hatch", code, err)
+	}
+	if model.request != nil {
+		t.Fatal("the model was called despite the failed probe")
+	}
+	if history := testSessionHistory(t, session); len(history) != 0 {
+		t.Fatalf("user message persisted despite the failed probe: %#v", history)
+	}
+}
+
+func TestOpenConversationStateDefersSandboxProbeFailureToTurns(t *testing.T) {
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return probeFailSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	store := testOpenMemoryStore(t, nil)
+	state, err := openConversationState(context.Background(), &Config{NoSkills: true, SandboxPreset: "base"}, Settings{}, nil, store, "probe-open", false, nil, nil)
+	if err != nil {
+		t.Fatalf("openConversationState() error = %v, want the open to succeed with the probe pending", err)
+	}
+	t.Cleanup(func() { _ = state.Close() })
+	if err := state.sandboxProbe.wait(context.Background()); err == nil || !strings.Contains(err.Error(), "POLLYTOOL_NOSANDBOX") {
+		t.Fatalf("probe error = %v, want the startup failure with its escape hatch", err)
+	}
+}
+
+// writeSchemaTool writes an executable shell tool whose --schema answer is
+// valid, so loading it fails only when the sandbox cannot start it.
+func writeSchemaTool(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "probe-tool.sh")
+	script := `#!/bin/sh
+if [ "$1" = "--schema" ]; then
+  printf '%s\n' '{"title":"probe_tool","description":"probe","type":"object","properties":{}}'
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func assertSandboxStartFailure(t *testing.T, err error) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), "POLLYTOOL_NOSANDBOX") {
+		t.Fatalf("error = %v, want the sandbox startup failure with its escape hatch", err)
+	}
+}
+
+// A tool that spawns while loading runs under the backend the probe checks,
+// so on a backend that cannot start the load fails first. The open must still
+// report the sandbox failure with its escape hatch rather than the raw load
+// error, on both the --tools path and the persisted ActiveTools path.
+func TestOpenConversationStateReportsSandboxFailureOverToolLoadFailure(t *testing.T) {
+	skipIfWindows(t)
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return probeFailSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+	script := writeSchemaTool(t)
+
+	t.Run("command-line tools", func(t *testing.T) {
+		store := testOpenMemoryStore(t, nil)
+		_, err := openConversationState(context.Background(), &Config{NoSkills: true, SandboxPreset: "base", Tools: []string{script}}, Settings{}, nil, store, "probe-tools", false, nil, nil)
+		assertSandboxStartFailure(t, err)
+	})
+	t.Run("persisted tools", func(t *testing.T) {
+		store := testOpenMemoryStore(t, &sessions.Metadata{ActiveTools: []tools.ToolLoaderInfo{{Name: "probe_tool", Type: "shell", Source: script}}})
+		_, err := openConversationState(context.Background(), &Config{NoSkills: true, SandboxPreset: "base"}, Settings{}, nil, store, "probe-resume", false, nil, nil)
+		assertSandboxStartFailure(t, err)
+	})
+}
+
+// The managed TUI spawns children from a childSnapshot of the parent, so the
+// snapshot must carry the probe: a /spawn before any parent turn is otherwise
+// the first turn on a backend that cannot start, and would run unchecked.
+func TestChildSnapshotCarriesSandboxProbeToChildTurns(t *testing.T) {
+	hits := 0
+	model := &captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}
+	parent, _ := newSpawnTestParent(t, model, &hits)
+	t.Cleanup(func() { _ = parent.toolRegistry.Close() })
+	parent.sandboxProbe = startSandboxProbe(probeFailSandbox{})
+
+	child, err := openChildState(context.Background(), model, parent.childSnapshot(), subagent.Request{Task: "run the tests"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Close() })
+	if child.sandboxProbe != parent.sandboxProbe {
+		t.Fatal("a child opened from the snapshot does not carry the parent's sandbox probe")
+	}
+	config := &Config{}
+	var stdout, stderr bytes.Buffer
+	ui := newLineTurnUI(config, nil)
+	ui.writer, ui.errWriter = &stdout, &stderr
+
+	code, err := executeTurnWithUserMessage(context.Background(), config, child, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "run the tests"}, nil, nil, ui, false)
+	if err == nil || code != 1 || !strings.Contains(err.Error(), "POLLYTOOL_NOSANDBOX") {
+		t.Fatalf("child turn = code %d, err %v; want the probe failure with its escape hatch", code, err)
+	}
+	if model.request != nil {
+		t.Fatal("the model was called despite the failed probe")
+	}
+	if history := testSessionHistory(t, child.session); len(history) != 0 {
+		t.Fatalf("child user message persisted despite the failed probe: %#v", history)
 	}
 }

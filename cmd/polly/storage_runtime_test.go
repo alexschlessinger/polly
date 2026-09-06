@@ -13,6 +13,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
 	"sort"
 	"strings"
@@ -648,5 +649,30 @@ func TestCreateContextRejectsUnresolvableSkill(t *testing.T) {
 	config.Skills = []string{filepath.Join(t.TempDir(), "missing")}
 	if err := handleCreateContext(context.Background(), store, config, "created"); err == nil {
 		t.Fatal("a context was created with a skill source that does not exist")
+	}
+}
+
+// A create resolves its tools under the sandbox policy the turns will run
+// with. Builtin tools construct without spawning, so only the probe notices a
+// backend that cannot start; the create must fail on it rather than persist
+// a context whose every later turn fails.
+func TestCreateContextFailsWhenSandboxCannotStart(t *testing.T) {
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return probeFailSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	store := testOpenMemoryStore(t, nil)
+	config, _ := parseStorageTestConfig(t)
+	config.NoSandbox = false
+	config.SandboxPreset = "base"
+	config.Tools = []string{"read_file"}
+	err := handleCreateContext(context.Background(), store, config, "created")
+	if err == nil || !strings.Contains(err.Error(), "POLLYTOOL_NOSANDBOX") {
+		t.Fatalf("handleCreateContext() error = %v, want the sandbox startup failure with its escape hatch", err)
+	}
+	if testStoreExists(t, store, "created") {
+		t.Fatal("a context was created although its sandbox cannot start")
 	}
 }

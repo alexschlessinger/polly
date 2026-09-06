@@ -21,8 +21,17 @@ func renderMarkdown(src string) string {
 	return renderMarkdownDocument(src, nil)
 }
 
+// sandboxRegistryOptions waits for the probe, so tests of the options keep
+// the synchronous failure the open used to have.
 func sandboxRegistryOptions(config *Config) ([]tools.RegistryOption, error) {
-	return sandboxRegistryOptionsWithWarnings(config, newBroadWritablePathWarner())
+	opts, probe, err := sandboxRegistryOptionsWithWarnings(config, newBroadWritablePathWarner())
+	if err != nil {
+		return nil, err
+	}
+	if err := probe.wait(context.Background()); err != nil {
+		return nil, err
+	}
+	return opts, nil
 }
 
 func signalExitCode(err error) (int, bool) {

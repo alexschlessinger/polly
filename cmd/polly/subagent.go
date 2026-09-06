@@ -208,6 +208,7 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 		skillRuntime:       skillRuntime,
 		skillSources:       parent.skillSources,
 		sandboxWarnings:    parent.sandboxWarnings,
+		sandboxProbe:       parent.sandboxProbe,
 		outputCapabilities: parent.outputCapabilities,
 		contextWindows:     parent.cachedContextWindows(),
 	}, nil
