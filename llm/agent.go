@@ -105,6 +105,15 @@ type AgentCallbacks struct {
 	// retry reuses them.
 	BeforeFirstRequest func(stats ProjectionStats) error
 
+	// OnRequestProjection observes each sendable request, after the initial
+	// persistence gate. Iteration is zero-based within this Run.
+	OnRequestProjection func(iteration int, stats ProjectionStats)
+
+	// OnIterationUsage reports completed provider usage once per iteration,
+	// before its tools run. Counts are for this iteration, not cumulative.
+	// Missing provider usage is reported as zero.
+	OnIterationUsage func(iteration, inputTokens, outputTokens int)
+
 	// OnComplete is called when the final response is ready (no more tool calls)
 	OnComplete func(response *messages.ChatMessage)
 
@@ -408,6 +417,10 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			}
 		}
 
+		if cb != nil && cb.OnRequestProjection != nil {
+			cb.OnRequestProjection(iteration, lastProjection)
+		}
+
 		// Stream completion
 		processor := messages.NewStreamProcessor()
 
@@ -417,6 +430,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		response, err := a.processEvents(ctx, events, cb)
 		if err != nil {
 			return responseFor(nil, iteration+1), err
+		}
+		if cb != nil && cb.OnIterationUsage != nil {
+			cb.OnIterationUsage(iteration, response.GetInputTokens(), response.GetOutputTokens())
 		}
 		promptCache.ReadInputTokens += response.GetCacheReadInputTokens()
 		promptCache.WriteInputTokens += response.GetCacheWriteInputTokens()

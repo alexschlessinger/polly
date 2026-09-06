@@ -167,6 +167,25 @@ nothing generated, and an error returned from the callback aborts the run
 before any provider call. Set `MaxContextTokens` to the effective input budget
 before running.
 
+Two optional, nil-safe callbacks expose live accounting without inspecting
+rendered output:
+
+```go
+OnRequestProjection func(iteration int, stats ProjectionStats)
+OnIterationUsage    func(iteration, inputTokens, outputTokens int)
+```
+
+`OnRequestProjection` runs after each successful projection and before its
+provider request. On the first iteration it follows the successful
+`BeforeFirstRequest` persistence gate; a veto or projection failure emits no
+request callback. `OnIterationUsage` runs after a provider iteration completes,
+before its tools execute, with measured usage (zero when unavailable).
+Iterations are zero-based within each `Run`, including subsequent runs of the
+same agent. Store usage by iteration and replace repeated samples when
+reconciling; the CLI's turn totals use peak input and summed output tokens.
+Context usage follows the latest request's projection until that same request
+reports measured input, even if projections shrink between iterations.
+
 Persist `AgentResponse.AllMessages` with their content parts intact, including
 on partial runs. Generated assistant messages may carry artifact references
 created while compacting older tool results. Those references keep the stored
