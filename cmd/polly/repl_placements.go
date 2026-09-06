@@ -142,6 +142,7 @@ func (m *replModel) toggleReasoningGroup(ids []int64, width int) bool {
 	if !found {
 		return false
 	}
+	m.noteDisclosure(turnDockOverlayThought, validIDs[0], false)
 	if width > 0 {
 		m.reasoningWidth = width
 	}
@@ -181,6 +182,7 @@ func (m *replModel) toggleToolDisclosureGroup(ids []int64) bool {
 	if !found {
 		return false
 	}
+	m.noteDisclosure(turnDockOverlayTools, validIDs[0], false)
 	expand := !anyExpanded
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(validIDs), func(held bool) {
 		// Apply-then-refresh: see toggleReasoningGroup.
@@ -213,6 +215,7 @@ func (m *replModel) toggleImageDisclosureGroup(ids []int64) bool {
 	if !found {
 		return false
 	}
+	m.noteDisclosure(turnDockOverlayImages, validIDs[0], false)
 	expand := !anyExpanded
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(validIDs), func(bool) {
 		for _, id := range validIDs {

@@ -214,6 +214,7 @@ func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
 	}
 	entry := formattedUserPrompt(item.text) + "\n  " + styled("(queued)", "muted", "")
 	item.transcriptIndex = m.appendTranscriptEntry(entry)
+	m.noteQueuedInput(item.transcriptIndex, formattedUserPrompt(item.text)+"\n  ")
 	item.transcriptShown = true
 	if item.turn != nil {
 		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
@@ -223,6 +224,7 @@ func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
 
 func (m *replModel) activateQueuedInput(item queuedREPLInput) {
 	if item.transcriptShown && item.transcriptIndex >= 0 && item.transcriptIndex < len(m.transcript) {
+		m.fadeQueuedInput(item.transcriptIndex, formattedUserPrompt(item.text)+"\n  ")
 		m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text))
 		if item.turn != nil {
 			m.decorateUserPrompt(item.transcriptIndex, *item.turn)
@@ -237,6 +239,7 @@ func (m *replModel) activateQueuedInput(item queuedREPLInput) {
 }
 
 func (m *replModel) markQueuedInputNotSent(item queuedREPLInput) {
+	delete(m.affordances.queued, item.transcriptIndex)
 	if !item.transcriptShown || item.transcriptIndex < 0 || item.transcriptIndex >= len(m.transcript) {
 		return
 	}

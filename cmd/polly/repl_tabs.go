@@ -181,6 +181,8 @@ func (r *managedREPL) showTab(i int) {
 	if old := r.model; old != nil && old != tab.model {
 		old.mu.Lock()
 		old.hidden = true
+		old.resetAffordances()
+		affordancesEnabled := old.affordances.enabled
 		nativeImages := old.nativeImages
 		cellWidth, cellHeight := old.imageCellWidth, old.imageCellHeight
 		focusKnown, focused := old.focusKnown, old.focused
@@ -197,6 +199,8 @@ func (r *managedREPL) showTab(i int) {
 		next.focusKnown, next.focused = focusKnown, focused
 		next.hist.entries = hist
 		next.hidden = false
+		next.affordances.enabled = affordancesEnabled
+		next.resetAffordances()
 		next.notificationMu.Lock()
 		next.signals = nil
 		next.notificationMu.Unlock()

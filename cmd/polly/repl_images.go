@@ -79,6 +79,7 @@ type markdownRenderState struct {
 type transcriptDisplayBlock struct {
 	key                     string
 	text                    string
+	cells                   []ui.Cell // optional formatted streaming prefix
 	images                  []transcriptImage
 	reasoningIDs            []int64
 	toolDisclosureIDs       []int64
