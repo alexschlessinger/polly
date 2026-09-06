@@ -1,4 +1,6 @@
 /polly
+/textfx
+/experiments/textfx/textfx
 CLAUDE.md
 .vscode/tasks.json
 .vscode/launch.json
