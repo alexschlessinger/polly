@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -246,6 +247,43 @@ func TestLineStreamingHeightShrinkThenNoticeDoesNotReplayScrollback(t *testing.T
 		if strings.Count(got, text) != 1 {
 			t.Fatalf("shrink/notice lost or duplicated %q: %q", text, got)
 		}
+	}
+}
+
+// A cut inside a streaming code block lands on a line start, and the clipped
+// continuation is a slice of one full-block highlight rather than a fresh
+// chroma pass per probe: the same lines come back and the cache holds the
+// whole block afterwards.
+func TestFitPrefixCutsCodeAtLineStartsAndSharesHighlight(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("```go\n")
+	for i := range 40 {
+		fmt.Fprintf(&b, "func f%02d() int { return %d } // trailing\n", i, i)
+	}
+	src := b.String()
+	var cache markdownCodeCache
+	doc := newLineMarkdownDocument(src, "", true, &cache)
+	rows, _ := doc.render(0, len(src), 80)
+	cut := doc.fitPrefix(0, len(src), 80, len(rows)-10)
+	if cut == 0 || cut == len(src) || src[cut-1] != '\n' {
+		t.Fatalf("cut %d is not a line start", cut)
+	}
+	var head, tail []string
+	for _, row := range must2(doc.render(0, cut, 80)) {
+		head = append(head, lineCellsOutput(row, false))
+	}
+	for _, row := range must2(doc.render(cut, len(src), 80)) {
+		tail = append(tail, lineCellsOutput(row, false))
+	}
+	var full []string
+	for _, row := range must2(doc.render(0, len(src), 80)) {
+		full = append(full, lineCellsOutput(row, false))
+	}
+	if got := append(head, tail...); !slices.Equal(got, full) {
+		t.Fatalf("clipped code = %q, want %q", got, full)
+	}
+	if len(cache.blocks) != 1 || cache.blocks[0].code != strings.TrimPrefix(src, "```go\n") {
+		t.Fatalf("cache does not hold the whole block: %q", cache.blocks[0].code)
 	}
 }
 

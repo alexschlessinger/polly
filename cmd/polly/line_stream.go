@@ -27,27 +27,38 @@ func (f *lineTerminalFrame) physicalRows(columns int) int {
 	return rows
 }
 
+// clear and write each hand the terminal one write: a paint split across a
+// write per row lets the terminal show a half-cleared frame in between.
 func (f *lineTerminalFrame) clear(w io.Writer, columns, height int) {
 	rows := f.physicalRows(columns)
 	if height > 0 {
 		rows = min(rows, height)
 	}
+	var b bytes.Buffer
 	for i := 0; i < rows; i++ {
 		if i > 0 {
-			fmt.Fprint(w, "\x1b[1A")
+			b.WriteString("\x1b[1A")
 		}
-		fmt.Fprint(w, "\r\x1b[2K")
+		b.WriteString("\r\x1b[2K")
+	}
+	if b.Len() > 0 {
+		_, _ = w.Write(b.Bytes())
 	}
 	f.widths = nil
 }
 
 func (f *lineTerminalFrame) write(w io.Writer, rows []string) {
+	var b bytes.Buffer
 	for i, row := range rows {
 		if i > 0 {
-			fmt.Fprint(w, "\r\n")
+			b.WriteString("\r\n")
 		}
-		fmt.Fprint(w, "\r", row)
+		b.WriteString("\r")
+		b.WriteString(row)
 		f.widths = append(f.widths, lineOutputWidth(row))
+	}
+	if b.Len() > 0 {
+		_, _ = w.Write(b.Bytes())
 	}
 }
 
@@ -204,15 +215,17 @@ func (s *lineStream) draw(ui *lineTurnUI, force bool) {
 	src := ui.markdownBuffer.String()
 	columns, height := ui.answerSizeLocked()
 	width := max(1, columns-1)
+	// Every streamed chunk lands here; the throttle decides before the
+	// footer is styled so a skipped paint costs one size probe and nothing
+	// else. A resize or an explicit request still paints at once.
+	throttled := !force && columns == s.columns && height == s.height && len(s.frame.widths) > 0
+	if throttled && time.Since(s.lastPaint) < 200*time.Millisecond {
+		return
+	}
 	footer := s.footer(ui)
 	footerText := strings.Join(footer, "\n")
-	if !force && columns == s.columns && height == s.height && len(s.frame.widths) > 0 {
-		if src == s.lastSource && footerText == s.lastFooter {
-			return
-		}
-		if time.Since(s.lastPaint) < 200*time.Millisecond {
-			return
-		}
+	if throttled && src == s.lastSource && footerText == s.lastFooter {
+		return
 	}
 	visible := safeVisibleLen(src)
 	if visible < s.committed {

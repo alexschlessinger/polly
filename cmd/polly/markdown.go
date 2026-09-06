@@ -127,15 +127,13 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 		return prefixLines([]string{marker + title}, firstPrefix, contPrefix)
 	case *ast.FencedCodeBlock:
 		lang := markdownSourceText(string(b.Language(source)), state)
-		code := markdownSourceText(clippedCodeBlockText(b.Lines(), source, state), state)
-		lines := state.renderCode(code, lang)
+		lines := renderClippedCode(b.Lines(), source, lang, state)
 		if lang != "" && state != nil && state.clip != nil && state.clip.start > state.clip.bounds[n].start && len(lines) > 0 {
 			lines = lines[1:]
 		}
 		return prefixLines(lines, firstPrefix, contPrefix)
 	case *ast.CodeBlock:
-		code := markdownSourceText(clippedCodeBlockText(b.Lines(), source, state), state)
-		return prefixLines(state.renderCode(code, ""), firstPrefix, contPrefix)
+		return prefixLines(renderClippedCode(b.Lines(), source, "", state), firstPrefix, contPrefix)
 	case *ast.Blockquote:
 		gutter := styled("▏ ", "muted", "")
 		inner := renderBlocks(n, source, "", state)

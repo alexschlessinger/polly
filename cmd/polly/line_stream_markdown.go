@@ -41,6 +41,51 @@ func (r *markdownSourceRange) slice(value []byte, offset int) []byte {
 	return value[start:end]
 }
 
+// clippedCodeLines reports which whole lines of a code block a clip covers.
+// A clip that starts or ends inside a line is not aligned, and the caller
+// highlights the clipped text on its own instead.
+func clippedCodeLines(lines *text.Segments, clip *markdownSourceRange) (skip, take int, aligned bool) {
+	for i := 0; i < lines.Len(); i++ {
+		seg := lines.At(i)
+		switch {
+		case seg.Stop <= clip.start:
+			skip++
+		case seg.Start >= clip.end:
+			return skip, take, true
+		case seg.Start < clip.start || seg.Stop > clip.end:
+			return 0, 0, false
+		default:
+			take++
+		}
+	}
+	return skip, take, true
+}
+
+// renderClippedCode highlights a code block once, in full, and hands back the
+// lines the clip covers. Streaming probes render many clips of one growing
+// block; keying the highlight cache on the whole block lets them all share
+// one chroma pass instead of paying for one per probe.
+func renderClippedCode(lines *text.Segments, source []byte, lang string, state *markdownRenderState) []string {
+	if state == nil || state.clip == nil {
+		return state.renderCode(markdownSourceText(codeBlockText(lines, source), state), lang)
+	}
+	if skip, take, aligned := clippedCodeLines(lines, state.clip); aligned {
+		full := state.renderCode(markdownSourceText(codeBlockText(lines, source), state), lang)
+		body := full
+		var header []string
+		if lang != "" && len(full) > 0 {
+			header, body = full[:1], full[1:]
+		}
+		if skip <= len(body) {
+			// Copy out: the cached slice must not be appended into.
+			out := make([]string, 0, len(header)+take)
+			out = append(out, header...)
+			return append(out, body[skip:min(len(body), skip+take)]...)
+		}
+	}
+	return state.renderCode(markdownSourceText(clippedCodeBlockText(lines, source, state), state), lang)
+}
+
 func clippedCodeBlockText(lines *text.Segments, source []byte, state *markdownRenderState) string {
 	if state == nil || state.clip == nil {
 		return codeBlockText(lines, source)
@@ -194,20 +239,52 @@ func (d *lineMarkdownDocument) completedEnd() int {
 	}
 	start := d.bounds[last].start
 	// Include the block's opening marker in its uncommitted range.
-	return strings.LastIndexByte(string(d.source[:start]), '\n') + 1
+	return bytes.LastIndexByte(d.source[:start], '\n') + 1
 }
 
-// fitPrefix finds a source boundary, never a rendered-row index. It may split
-// an open paragraph or code line without replaying its earlier source later.
+// fitPrefix finds a source boundary, never a rendered-row index. It prefers
+// line starts, so a cut inside a code block keeps whole highlighted lines and
+// costs one probe per doubling of lines rather than of bytes; only when not
+// even the first line fits does it split that line by rune. Either way the
+// earlier source is never replayed later.
 func (d *lineMarkdownDocument) fitPrefix(start, end, width, rows int) int {
-	lo, hi := start, end
+	fits := func(at int) bool {
+		part, _ := d.render(start, at, width)
+		return len(part) <= rows
+	}
+	var lines []int
+	for at := start; at < end; {
+		next := bytes.IndexByte(d.source[at:end], '\n')
+		if next < 0 {
+			break
+		}
+		at += next + 1
+		lines = append(lines, at)
+	}
+	if len(lines) == 0 || lines[len(lines)-1] != end {
+		lines = append(lines, end)
+	}
+	lo, hi := -1, len(lines)-1
 	for lo < hi {
 		mid := (lo + hi + 1) / 2
-		for mid < end && !utf8.RuneStart(d.source[mid]) {
+		if fits(lines[mid]) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if lo >= 0 {
+		return lines[lo]
+	}
+	// Not even the first line fits: split it by rune.
+	lineEnd := lines[0]
+	lo, hi = start, lineEnd
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		for mid < lineEnd && !utf8.RuneStart(d.source[mid]) {
 			mid++
 		}
-		part, _ := d.render(start, mid, width)
-		if len(part) <= rows {
+		if fits(mid) {
 			lo = mid
 		} else {
 			hi = mid - 1
