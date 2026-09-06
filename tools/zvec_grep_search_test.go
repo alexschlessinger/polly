@@ -600,7 +600,7 @@ func TestZvecGrepSearchAvailabilityAndValidation(t *testing.T) {
 		{map[string]any{"query": "q", "modifiedBefore": "-1d"}, "modifiedBefore must be"},
 		{map[string]any{"query": "q", "fileTypes": "-x"}, "not a ripgrep file type"},
 		{map[string]any{"query": "q", "globs": strings.Repeat("a", zvecMaxPathChars+1)}, "limited to"},
-		{map[string]any{"query": "q", "path": filepath.Join(t.TempDir(), "absent")}, "no such file"},
+		{map[string]any{"query": "q", "path": filepath.Join(t.TempDir(), "absent")}, "path does not exist"},
 	} {
 		_, err := tool.Execute(context.Background(), tc.args)
 		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "must-not-run") {

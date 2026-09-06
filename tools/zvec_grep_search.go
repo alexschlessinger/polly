@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"os/exec"
@@ -338,11 +339,14 @@ func (t *zvecGrepSearchTool) Execute(ctx context.Context, raw map[string]any) (s
 			return "", err
 		}
 	}
-	abs, err = filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", err
+	var info os.FileInfo
+	if abs, err = filepath.EvalSymlinks(abs); err == nil {
+		info, err = os.Stat(abs)
 	}
-	info, err := os.Stat(abs)
+	if errors.Is(err, fs.ErrNotExist) {
+		// The OS phrasing differs per platform; keep the message stable.
+		return "", fmt.Errorf("path does not exist: %s", abs)
+	}
 	if err != nil {
 		return "", err
 	}
