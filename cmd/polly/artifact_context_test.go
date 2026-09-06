@@ -558,11 +558,11 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 	if !strings.Contains(out, "AGENTS.md skipped") || !strings.Contains(out, "NUL") {
 		t.Fatalf("invalid instructions were not reported: %q", out)
 	}
-	if out := turnOutput(t); strings.Contains(out, "skipped") {
+	if out := turnOutput(t); strings.Contains(out, "AGENTS.md skipped") {
 		t.Fatalf("an unchanged instruction problem was reported again: %q", out)
 	}
 	writeRepositoryTestFile(t, "AGENTS.md", "repaired-guidance")
-	if out := turnOutput(t); strings.Contains(out, "skipped") || !strings.Contains(projectedRequestText(skippedModel.request), "repaired-guidance") {
+	if out := turnOutput(t); strings.Contains(out, "AGENTS.md skipped") || !strings.Contains(projectedRequestText(skippedModel.request), "repaired-guidance") {
 		t.Fatalf("repaired instructions were not picked up: %q", out)
 	}
 }

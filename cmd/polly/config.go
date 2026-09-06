@@ -81,15 +81,16 @@ func parseConfig(cmd *cli.Command) *Config {
 		ShowContext:    cmd.String("show"),
 
 		// Input/Output configuration
-		Prompt:     cmd.String("prompt"),
-		PromptSet:  cmd.IsSet("prompt"),
-		Files:      cmd.StringSlice("file"),
-		SchemaPath: cmd.String("schema"),
-		Meta:       cmd.Bool("meta"),
-		Quiet:      cmd.Bool("quiet"),
-		Debug:      cmd.Bool("debug"),
-		Tools:      cmd.StringSlice("tool"),
-		Skills:     cmd.StringSlice("skill"),
+		Prompt:          cmd.String("prompt"),
+		PromptSet:       cmd.IsSet("prompt"),
+		Files:           cmd.StringSlice("file"),
+		SchemaPath:      cmd.String("schema"),
+		Meta:            cmd.Bool("meta"),
+		ActivityDetails: cmd.Bool("activity-details"),
+		Quiet:           cmd.Bool("quiet"),
+		Debug:           cmd.Bool("debug"),
+		Tools:           cmd.StringSlice("tool"),
+		Skills:          cmd.StringSlice("skill"),
 	}
 	for _, spec := range settingSpecs {
 		if spec.fromCmd != nil {
@@ -396,6 +397,11 @@ func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 
 func outputConfigFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.BoolFlag{
+			Name:    "activity-details",
+			Usage:   "Print bounded thought, tool, agent, and image details at turn end (requires -p or stdin)",
+			Sources: cli.EnvVars("POLLYTOOL_ACTIVITY_DETAILS"),
+		},
 		&cli.BoolFlag{
 			Name:  "quiet",
 			Usage: "Suppress status and tool display output",

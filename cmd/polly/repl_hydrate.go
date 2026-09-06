@@ -92,6 +92,7 @@ type historyHydrator struct {
 	reasoning  *reasoningRecord
 	turnInput  int
 	turnOutput int
+	stopReason messages.StopReason
 
 	lastRole            string
 	lastUser            messages.ChatMessage // the newest user message, for the composer restore
@@ -128,6 +129,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	h.toolGroups = nil
 	h.reasoning = nil
 	h.turnInput, h.turnOutput = 0, 0
+	h.stopReason = ""
 	m.appendTurnSeparator()
 	content, restorable, contextOnly := historyUserSummary(msg)
 	m.appendUserPrompt(content)
@@ -146,6 +148,7 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 		h.turnInput = tokens
 	}
 	h.turnOutput += msg.GetOutputTokens()
+	h.stopReason = msg.StopReason
 	if content := msg.GetContent(); content != "" {
 		m.appendAssistant(content)
 		m.finishAssistantBlock("")
@@ -202,6 +205,9 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 // internal applies a durable turn marker: the safe display metadata for the
 // turn's reasoning and tool order, and the status that settles the turn.
 func (h *historyHydrator) internal(msg messages.ChatMessage) {
+	if msg.StopReason != "" {
+		h.stopReason = msg.StopReason
+	}
 	m := h.m
 	h.flushTools()
 	displayToolCalls := decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls])
@@ -387,6 +393,7 @@ func (h *historyHydrator) appendReasoning(text string, elapsed time.Duration) {
 func (h *historyHydrator) finishTurn() {
 	h.flushTools()
 	h.m.setHydratedTurnDock(h.reasoning, h.tools, h.turnInput, h.turnOutput)
+	h.m.turnDock.outcome = (turnCompletion{Reason: h.stopReason}).outcome()
 	if len(h.toolGroups) > 0 {
 		h.m.turnDock.toolIDs = nil
 		for _, group := range h.toolGroups {

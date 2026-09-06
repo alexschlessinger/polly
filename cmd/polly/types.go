@@ -67,13 +67,14 @@ type Config struct {
 	ShowContext    string // Show configuration for this context
 
 	// Input/Output configuration
-	Prompt     string
-	PromptSet  bool
-	Files      []string // Files/images to include
-	SchemaPath string   // Path to JSON schema file
-	Meta       bool     // Emit a machine-readable run-outcome trailer (polly-meta lines) to stderr
-	Quiet      bool
-	Debug      bool
+	Prompt          string
+	PromptSet       bool
+	Files           []string // Files/images to include
+	SchemaPath      string   // Path to JSON schema file
+	Meta            bool     // Emit a machine-readable run-outcome trailer (polly-meta lines) to stderr
+	ActivityDetails bool     // Print bounded turn details to stderr in one-shot mode
+	Quiet           bool
+	Debug           bool
 
 	// Temporary storage for command line tools (before conversion to ActiveTools)
 	Tools []string

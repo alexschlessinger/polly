@@ -59,10 +59,14 @@ type transcriptImage struct {
 }
 
 type markdownRenderState struct {
-	baseDir   string
-	images    []transcriptImage
-	codeCache *markdownCodeCache
-	codeIndex int
+	baseDir        string
+	images         []transcriptImage
+	imagePositions []int
+	codeCache      *markdownCodeCache
+	codeIndex      int
+	// clip is used only by the scrollback renderer. Source offsets, rather
+	// than rendered row indexes, keep committed text stable across restyling.
+	clip *markdownSourceRange
 	// streaming marks the source as a truncated in-flight prefix: a table at
 	// the stream edge renders unaligned, since its column widths are not final.
 	streaming bool

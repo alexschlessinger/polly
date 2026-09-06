@@ -84,6 +84,10 @@ func (m *replModel) appendThinking(chunk string) {
 // appendReasoningTail adds text to a bounded rune tail. segmentBreak inserts
 // one semantic newline between tool-separated assistant reasoning segments.
 func (m *replModel) appendReasoningTail(record *reasoningRecord, text string, segmentBreak bool) {
+	appendReasoningTail(record, text, segmentBreak)
+}
+
+func appendReasoningTail(record *reasoningRecord, text string, segmentBreak bool) {
 	if record == nil {
 		return
 	}

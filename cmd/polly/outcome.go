@@ -85,7 +85,7 @@ func (s *turnToolStats) snapshot() (calls, errCount int, lastTool string, failur
 // 0 end_turn, 2 max_tokens, 3 max_iterations, 1 hard error.
 func classifyOutcome(resp *llm.AgentResponse, err error) (messages.StopReason, int) {
 	switch {
-	case errors.Is(err, llm.ErrMaxIterations):
+	case !activityCanceled(err) && onlyIterationLimit(err):
 		return messages.StopReasonMaxIterations, 3
 	case err != nil:
 		return messages.StopReasonError, 1

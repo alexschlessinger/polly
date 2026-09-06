@@ -150,7 +150,7 @@ func TestCLISignalExitStatusAndStderr(t *testing.T) {
 			if !errors.As(err, &exitErr) || exitErr.ExitCode() != tc.wantCode {
 				t.Fatalf("CLI exit error = %v (code %d), want code %d; stderr=%q", err, command.ProcessState.ExitCode(), tc.wantCode, stderr.String())
 			}
-			if got := strings.TrimSpace(stderr.String()); !strings.HasPrefix(got, "Working\nStopped · ") || strings.ContainsAny(got, "\x1b\r") || strings.Contains(got, "Error:") {
+			if got := strings.TrimSpace(stderr.String()); !strings.HasPrefix(got, "waiting\n  canceled · ") || strings.ContainsAny(got, "\x1b\r") || strings.Contains(got, "Error:") {
 				t.Fatalf("CLI should settle interrupted activity without an error or cursor controls: %q", got)
 			}
 		})

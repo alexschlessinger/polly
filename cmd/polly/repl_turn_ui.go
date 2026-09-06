@@ -317,3 +317,15 @@ func (t *gotuiTurnUI) FinishTextTurn() {
 		t.observer.FinishTextTurn()
 	}
 }
+
+func (t *gotuiTurnUI) CompleteTurn(completion turnCompletion) {
+	t.model.mu.Lock()
+	accepted := t.activeLocked() && t.model.completion == nil
+	if accepted {
+		t.model.completion = &completion
+	}
+	t.model.mu.Unlock()
+	if accepted && t.observer != nil {
+		t.observer.CompleteTurn(completion)
+	}
+}

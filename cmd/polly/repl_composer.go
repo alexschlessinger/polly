@@ -406,17 +406,23 @@ func sliceDisplayWidth(s string, start, width int) (string, int) {
 
 // busyLabel maps the current turn state to the word shown on the input row.
 func (m *replModel) busyLabel() string {
-	if m.canceling {
+	return turnBusyLabel(m.state, m.toolName, m.canceling)
+}
+
+// turnBusyLabel names what a live turn is doing, shared by the TUI's window
+// title and scrolled-away ticker and by the one-shot status line.
+func turnBusyLabel(state turnState, toolName string, canceling bool) string {
+	if canceling {
 		return "canceling"
 	}
-	switch m.state {
+	switch state {
 	case turnStateThinking:
 		return "thinking"
 	case turnStateStreaming:
 		return "streaming"
 	case turnStateTool:
-		if m.toolName != "" {
-			return "running " + m.toolName
+		if toolName != "" {
+			return "running " + toolName
 		}
 		return "running tool"
 	default:

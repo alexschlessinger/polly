@@ -864,6 +864,9 @@ func validateREPLConfig(config *Config) error {
 	if config.Meta {
 		rejected = append(rejected, "--meta")
 	}
+	if config.ActivityDetails {
+		rejected = append(rejected, "--activity-details")
+	}
 	if len(rejected) == 0 {
 		return nil
 	}
@@ -900,7 +903,7 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 // executeTurnWithUserMessage is the shared turn body behind a caller-built
 // user message. The one-shot and fallback paths build theirs from --file;
 // the managed REPL builds a multimodal message from composer attachments.
-func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (int, error) {
+func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (exitCode int, finalErr error) {
 	settings := &state.settings
 	// An unchanged restored draft must reuse the representation already persisted. If a
 	// prior storage failure left prepared bytes inline and the store later
@@ -949,6 +952,22 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	}
 	turnUI.Start()
 	defer turnUI.Stop()
+	activityStart := time.Now()
+	completed := false
+	complete := func(reason messages.StopReason, err error) {
+		if !completed {
+			completed = true
+			turnUI.CompleteTurn(turnCompletion{Reason: reason, Err: err, Elapsed: time.Since(activityStart), ProgressSaved: err == nil || turnProgressSaved(err)})
+		}
+	}
+	defer func() {
+		if !completed {
+			if outputErr := flushTurnOutputError(turnUI); outputErr != nil {
+				finalErr, exitCode = errors.Join(finalErr, outputErr), 1
+			}
+			complete(messages.StopReasonError, finalErr)
+		}
+	}()
 	for _, warning := range instructionWarnings {
 		turnUI.AppendWarning(warning)
 	}
@@ -999,6 +1018,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 
 	stats := &turnToolStats{}
 	turnStart := time.Now()
+	usage := turnUsage{}
 
 	resp, err := state.agent.Run(ctx, req, &llm.AgentCallbacks{
 		OnReasoning: func(content string) {
@@ -1037,6 +1057,15 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		},
 		OnError:            func(err error) {},
 		BeforeFirstRequest: persistUser,
+		OnRequestProjection: func(iteration int, stats llm.ProjectionStats) {
+			usage.project(iteration, stats, req.MaxContextTokens)
+			turnUI.RecordContextUsage(usage.used, usage.limit, usage.estimated)
+		},
+		OnIterationUsage: func(iteration, in, out int) {
+			peak, total := usage.record(iteration, in, out)
+			turnUI.RecordTurnTokens(peak, total)
+			turnUI.RecordContextUsage(usage.used, usage.limit, usage.estimated)
+		},
 	})
 	if ctx.Err() != nil {
 		// Cancellation outranks whatever error the aborted run surfaced, but
@@ -1063,12 +1092,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			out += m.GetOutputTokens()
 		}
 		turnUI.RecordTurnTokens(in, out)
-		used, estimated := latestInput, false
-		if used <= 0 {
-			used = resp.Projection.RequestEstimatedTokens
-			estimated = true
+		if usage.projected {
+			turnUI.RecordContextUsage(usage.used, usage.limit, usage.estimated)
 		}
-		turnUI.RecordContextUsage(used, req.MaxContextTokens, estimated)
 	}
 
 	runErr := err
@@ -1147,9 +1173,14 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		}()
 	}
 
+	if outputErr := flushTurnOutputError(turnUI); outputErr != nil {
+		runErr = errors.Join(runErr, outputErr)
+	}
 	stopReason, code := classifyOutcome(resp, runErr)
-	if ui, ok := turnUI.(*lineTurnUI); ok {
-		ui.SetTurnOutcome(stopReason, runErr)
+	complete(stopReason, runErr)
+	if outputErr := flushTurnOutputError(turnUI); outputErr != nil {
+		runErr = errors.Join(runErr, outputErr)
+		stopReason, code = classifyOutcome(resp, runErr)
 	}
 	if config.Meta {
 		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, settings.Model, stats, in, out, time.Since(turnStart).Milliseconds()))
@@ -1201,8 +1232,15 @@ func externalizeMessageImages(ctx context.Context, msg messages.ChatMessage, sto
 // internal role never reaches a provider; hydration uses it to settle the
 // turn and label it interrupted instead of leaving it looking abandoned.
 func interruptedTurnMarker(cause error) messages.ChatMessage {
+	// StopReason is already persisted on ChatMessage. Keep an explicit cap
+	// reason on this display-only marker so hydration need not parse errors.
+	reason := messages.StopReason("")
+	if onlyIterationLimit(cause) {
+		reason = messages.StopReasonMaxIterations
+	}
 	return messages.ChatMessage{
-		Role: messages.MessageRoleInternal,
+		Role:       messages.MessageRoleInternal,
+		StopReason: reason,
 		Metadata: map[string]any{
 			messages.MetadataKeyTurnStatus: messages.TurnStatusInterrupted,
 			messages.MetadataKeyError:      cause.Error(),

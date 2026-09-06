@@ -203,6 +203,36 @@ func TestParseConfigMeta(t *testing.T) {
 	}
 }
 
+func TestParseConfigActivityDetails(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+		args      []string
+		want      bool
+	}{
+		{"default", "", nil, false},
+		{"flag", "", []string{"--activity-details"}, true},
+		{"environment", "true", nil, true},
+		{"explicit false", "true", []string{"--activity-details=false"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("POLLYTOOL_ACTIVITY_DETAILS", tc.env)
+			var config *Config
+			cmd := &cli.Command{Flags: outputConfigFlags(), Action: func(_ context.Context, c *cli.Command) error { config = parseConfig(c); return nil }}
+			if err := cmd.Run(context.Background(), append([]string{"polly"}, tc.args...)); err != nil {
+				t.Fatal(err)
+			}
+			if config.ActivityDetails != tc.want {
+				t.Fatalf("details=%v want=%v", config.ActivityDetails, tc.want)
+			}
+			if tc.want {
+				if err := validateREPLConfig(config); err == nil || !strings.Contains(err.Error(), "--activity-details requires -p or stdin") {
+					t.Fatalf("REPL validation=%v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestSandboxPresetFlagDefaultsAndValidation(t *testing.T) {
 	var parsed *Config
 	flags, groups := defineFlagsWithGroups()

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -73,17 +72,9 @@ func (row *toolDisclosureRow) finishAgentCall(_ messages.ChatMessageToolCall, de
 		return
 	}
 	a.active = false
-	switch {
-	case denied:
-		a.status = "denied"
-	case errors.Is(err, context.Canceled):
-		a.status = "canceled"
-	case err != nil:
-		a.status = "failed"
-	case a.background:
+	a.status = toolActivityOutcome(denied, err)
+	if a.background && a.status == "done" {
 		a.status = "unknown"
-	default:
-		a.status = "done"
 	}
 }
 
@@ -116,8 +107,8 @@ func turnAgentLabel(n int) string {
 // exactly one control: the launch row until its turn has a trailer, then that
 // trailer. Failed, denied, and canceled launches stay counted wherever the
 // control appears.
-func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockField, bool) {
-	var total, running, failed, canceled int
+func (m *replModel) agentCounts(ids []int64) activityAgentCounts {
+	var counts activityAgentCounts
 	for _, id := range ids {
 		record := m.toolDisclosures[id]
 		if record == nil {
@@ -127,27 +118,34 @@ func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockF
 			if !row.isAgent() {
 				continue
 			}
-			total++
 			if row.agent == nil {
+				counts.add("unknown", false)
 				continue
 			}
-			switch {
-			case row.agent.active:
-				running++
-			case row.agent.status == "failed", row.agent.status == "denied":
-				failed++
-			case row.agent.status == "canceled":
-				canceled++
-			}
+			counts.add(row.agent.status, row.agent.active)
 		}
 	}
-	if total == 0 {
+	return counts
+}
+
+func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockField, bool) {
+	c := m.agentCounts(ids)
+	if c.Total == 0 {
 		return turnDockField{}, false
 	}
-	glyph, label := "▸", turnAgentLabel(total)
+	glyph, label := "▸", turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled, handedOff)
 	if expanded {
 		glyph = "▾"
 	}
+	return turnDockField{raw: glyph + " " + label, rendered: turnActivityControl(glyph, label), overlay: turnDockOverlayAgents}, true
+}
+
+// turnAgentSummaryLabel composes the agent field's label from its counts,
+// shared by the TUI trailer and the one-shot summary. Running agents lead
+// while the turn is live; a settled turn (or one that handed liveness off to a
+// later trailer) reports one total with its failed and canceled tails.
+func turnAgentSummaryLabel(total, running, failed, canceled int, handedOff bool) string {
+	label := turnAgentLabel(total)
 	if running > 0 && !handedOff {
 		label = turnAgentLabel(running) + " running"
 		if completed := total - running - failed - canceled; completed > 0 {
@@ -160,7 +158,7 @@ func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockF
 	if canceled > 0 {
 		label += fmt.Sprintf(", %d canceled", canceled)
 	}
-	return turnDockField{raw: glyph + " " + label, rendered: turnActivityControl(glyph, label), overlay: turnDockOverlayAgents}, true
+	return label
 }
 
 func (m *replModel) hasAgentRows() bool {
