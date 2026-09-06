@@ -157,6 +157,24 @@ func (s *lineStream) clear(ui *lineTurnUI, columns, height int) {
 	s.frame.clear(w, columns, height)
 }
 
+// resync clears the owned frame after accounting for a shrunken terminal.
+// Resizing can itself scroll the top of an old frame out of view: that
+// prefix has become scrollback, so its source boundary advances without
+// being written again and only the remaining owned rows are cleared. Every
+// clear must go through here, or a later flush replays the scrolled-off
+// prefix from a stale committed offset.
+func (s *lineStream) resync(ui *lineTurnUI, columns, height int) {
+	if overflow := s.frame.physicalRows(columns) - height; overflow > 0 && height > 0 {
+		src := ui.markdownBuffer.String()
+		visible := max(safeVisibleLen(src), s.committed)
+		if s.committed < visible {
+			doc := newLineMarkdownDocument(src[:visible], ui.imageBaseDir, true, &s.cache)
+			s.committed = doc.fitPrefix(s.committed, visible, max(1, columns-1), overflow)
+		}
+	}
+	s.clear(ui, columns, height)
+}
+
 func (s *lineStream) emit(ui *lineTurnUI, doc *lineMarkdownDocument, start, end, width int) {
 	rows, images := doc.render(start, end, width)
 	for _, cells := range rows {
@@ -202,13 +220,7 @@ func (s *lineStream) draw(ui *lineTurnUI, force bool) {
 	}
 	doc := newLineMarkdownDocument(src[:visible], ui.imageBaseDir, true, &s.cache)
 	budget := max(1, height-len(footer))
-	// Resizing can itself scroll the top of an old frame out of view. That
-	// prefix has become scrollback; advance its source boundary without
-	// writing it again, then clear only the remaining owned rows.
-	if overflow := s.frame.physicalRows(columns) - height; overflow > 0 && s.committed < visible {
-		s.committed = doc.fitPrefix(s.committed, visible, width, overflow)
-	}
-	s.clear(ui, columns, height)
+	s.resync(ui, columns, height)
 	if ui.bufferSeparator && visible > s.committed {
 		fmt.Fprintln(ui.writer)
 		ui.bufferSeparator = false
@@ -245,7 +257,7 @@ func (s *lineStream) draw(ui *lineTurnUI, force bool) {
 // typed-image receipts, details, or completion can take over the terminal.
 func (s *lineStream) flush(ui *lineTurnUI) {
 	columns, height := ui.answerSizeLocked()
-	s.clear(ui, columns, height)
+	s.resync(ui, columns, height)
 	src := ui.markdownBuffer.String()
 	if ui.bufferSeparator {
 		fmt.Fprintln(ui.writer)

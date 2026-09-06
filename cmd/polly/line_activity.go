@@ -113,7 +113,7 @@ func (ui *lineTurnUI) startActivityLocked() {
 func (ui *lineTurnUI) clearActivityLocked() {
 	if ui.stream != nil && ui.sameTerminal {
 		columns, rows := ui.answerSizeLocked()
-		ui.stream.frame.clear(ui.errWriter, columns, rows)
+		ui.stream.resync(ui, columns, rows)
 	}
 	if a := ui.activity; a != nil && a.visible {
 		ui.statusFrame.clear(ui.errWriter, ui.statusColumnsLocked(), 0)

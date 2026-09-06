@@ -221,6 +221,34 @@ func TestLineSourceClippingPreservesTheSharedMarkdownWalker(t *testing.T) {
 	}
 }
 
+// Shrinking the terminal scrolls the top of the owned frame into scrollback.
+// A notice arriving before the next repaint must not replay those rows.
+func TestLineStreamingHeightShrinkThenNoticeDoesNotReplayScrollback(t *testing.T) {
+	columns, height := 24, 12
+	ui, out := lineStreamTestUI(t, false, true, &columns, &height)
+	// One open paragraph wrapping to eight rows: a mutable tail the frame
+	// owns in full, so nothing has been committed when the screen shrinks.
+	var words []string
+	for i := range 24 {
+		words = append(words, fmt.Sprintf("word%03d", i))
+	}
+	ui.AppendAssistantText(strings.Join(words, " "))
+	paintLineStream(ui)
+	if rows := len(ui.stream.frame.widths); rows < 6 || rows > height || ui.stream.committed != 0 {
+		t.Fatalf("frame rows=%d committed=%d", rows, ui.stream.committed)
+	}
+	height = 3
+	ui.AppendWarning("check this")
+	ui.FinishTextTurn()
+	ui.CompleteTurn(turnCompletion{Elapsed: time.Second})
+	got := lineTestScreen(out.String())
+	for _, text := range append(words, "Warning: check this") {
+		if strings.Count(got, text) != 1 {
+			t.Fatalf("shrink/notice lost or duplicated %q: %q", text, got)
+		}
+	}
+}
+
 func TestLineStreamingResizeCJKAndNotice(t *testing.T) {
 	columns, height := 70, 18
 	ui, out := lineStreamTestUI(t, false, true, &columns, &height)
