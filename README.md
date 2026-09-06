@@ -36,6 +36,24 @@ polly -p "create news.txt with today's news" --tool perp.json --tool filesystem.
 Default model: `anthropic/claude-sonnet-4-6`. Override with `-m provider/model`
 or `POLLYTOOL_MODEL`.
 
+## One-shot output
+
+With `-p` or piped input, progress appears on stderr by default. A capable
+terminal gets a live status line with thinking/writing state, elapsed time,
+tool and agent counts, image receipts, and rotating labels for concurrent work.
+Successful calls update compact counts instead of printing individual tool or
+agent rows. Failures and denials get brief notices. Child activity is labeled
+with its agent; unnamed agents get short numbered names instead of repeating
+their task briefs. The final summary keeps activity counts, elapsed time, and
+token/context usage when available. Status colors use the TUI's terminal palette.
+
+Stdout carries the answer. Redirecting it (`polly -p "…" > answer.md`) keeps
+terminal progress on stderr. Redirected stderr and `TERM=dumb` get plain activity
+lines without cursor controls; `NO_COLOR` disables status color while retaining
+live updates on a capable terminal. `--quiet` suppresses activity, including
+image receipts, but still reports warnings and errors. Structured answers and
+`--meta` retain their machine-readable formats.
+
 ## TUI
 
 No `-p`, no piped stdin: full-screen TUI. Streaming, scrollback, reverse
