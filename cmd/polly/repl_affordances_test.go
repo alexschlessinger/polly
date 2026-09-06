@@ -341,3 +341,21 @@ func TestDeliveredChildArmsCallerCueAndOnlyCurrentAgentControl(t *testing.T) {
 		t.Fatal("leaving the child retained a stale caller beacon")
 	}
 }
+
+// A refreshed child view swaps in records numbered from scratch; a cue noted
+// against the old numbering must not survive onto an unrelated row.
+func TestReplacedChildDisplayDropsStaleDisclosureCues(t *testing.T) {
+	m := newReplModel()
+	m.affordances.enabled = true
+	m.noteDisclosure(turnDockOverlayTools, 4, false)
+	if len(m.affordances.disclosures) != 1 {
+		t.Fatalf("cue not recorded: %#v", m.affordances.disclosures)
+	}
+	(&managedREPL{}).replaceChildDisplay(&replTab{model: m}, newReplModel())
+	if len(m.affordances.disclosures) != 0 {
+		t.Fatalf("stale disclosure cue survived the display swap: %#v", m.affordances.disclosures)
+	}
+	if !m.affordances.enabled {
+		t.Fatal("reset disabled affordances for the view")
+	}
+}

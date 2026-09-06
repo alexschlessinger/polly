@@ -192,6 +192,10 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.turnDock, m.openTurnTrailerID = next.turnDock, next.openTurnTrailerID
 	mergeChildAttachments(m, next)
 	m.adoptRestoredDraft(next)
+	// Cues are keyed by record id, and the swapped-in records are numbered
+	// afresh, so a click noted moments ago would light whichever row now owns
+	// that id. Every other record-map replacement resets them too.
+	m.resetAffordances()
 }
 
 func mergeChildAttachments(m, next *replModel) {
