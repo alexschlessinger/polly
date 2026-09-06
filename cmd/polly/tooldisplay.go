@@ -65,8 +65,8 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 		return summarizeReadFileArgs(args)
 	case "write_file", "edit_file", "list_dir":
 		return truncate(args.String("path"), 120)
-	case "search_files":
-		return summarizeSearchFilesArgs(args)
+	case "zvec_grep_search":
+		return summarizeZvecGrepSearchArgs(args)
 	case "write":
 		return truncate(args.String("file_path"), 120)
 	case "edit":
@@ -224,13 +224,19 @@ func summarizeReadFileArgs(args tools.Args) string {
 	return summary
 }
 
-func summarizeSearchFilesArgs(args tools.Args) string {
-	summary := truncate(args.String("pattern"), 60)
+// summarizeZvecGrepSearchArgs joins every query group the model supplied;
+// each route field accepts a string or a list.
+func summarizeZvecGrepSearchArgs(args tools.Args) string {
+	var groups []string
+	for _, key := range []string{"query", "queries", "fts", "vector"} {
+		if s := args.String(key); s != "" {
+			groups = append(groups, s)
+		}
+		groups = append(groups, args.StringSlice(key)...)
+	}
+	summary := truncate(strings.Join(groups, " | "), 60)
 	if path := args.String("path"); path != "" {
 		summary += " in " + truncate(path, 60)
-	}
-	if include := args.String("include"); include != "" {
-		summary += " (" + truncate(include, 30) + ")"
 	}
 	return summary
 }

@@ -70,7 +70,6 @@ func (t *BashTool) GetSource() string { return "builtin" }
 // that is the description it attends to when reaching for cat or grep.
 var bashAlternatives = []struct{ name, replaces string }{
 	{"read_file", "cat/head/tail"},
-	{"search_files", "grep/rg"},
 	{"list_dir", "ls/find"},
 	{"write_file", "echo/tee redirection"},
 	{"edit_file", "sed/awk in-place edits"},
@@ -102,8 +101,8 @@ func (t *BashTool) GetSchema() *schema.ToolSchema {
 				strings.Join(prefer, ", ") +
 				". Reserve bash for what only a shell can do (pipelines, git, builds, running programs)"
 		}
-		if t.siblingLoaded("search_files") {
-			description += ". Start discovery with search_files before shell searches or broad directory traversal; use its query mode when available"
+		if t.siblingLoaded("zvec_grep_search") {
+			description += ". Start discovery with zvec_grep_search before shell searches or broad directory traversal"
 		}
 	}
 	return schema.Tool("bash", description,

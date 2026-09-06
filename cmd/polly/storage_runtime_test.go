@@ -112,17 +112,22 @@ func TestMissingZGDoesNotLoadSearchOrBreakSessionRestore(t *testing.T) {
 	config := &Config{NoSandbox: true, NoSkills: true}
 	metadata := metadataFromConfig(config)
 	for _, info := range metadata.ActiveTools {
-		if info.Name == "search_files" {
+		if info.Name == "zvec_grep_search" {
 			t.Fatal("missing zg was included in default active tools")
 		}
 	}
-	// Simulate a session saved before zg was uninstalled. Its preference
-	// should survive restoration while the actual tool stays unavailable.
-	metadata.ActiveTools = append(metadata.ActiveTools, tools.ToolLoaderInfo{Name: "search_files", Type: "native", Source: "builtin"})
+	// Simulate a session saved before zg was uninstalled, on a Polly that
+	// still shipped search_files. Both preferences survive restoration
+	// while neither tool is registered.
+	metadata.ActiveTools = append(metadata.ActiveTools,
+		tools.ToolLoaderInfo{Name: "zvec_grep_search", Type: "native", Source: "builtin"},
+		tools.ToolLoaderInfo{Name: "search_files", Type: "native", Source: "builtin"})
 	store := testOpenMemoryStore(t, metadata)
 	session, registry := initializeToolDefaultsTestSession(t, config, store, "missing-zg")
-	if _, ok := registry.Get("search_files"); ok {
-		t.Error("restored unavailable search_files")
+	for _, name := range []string{"zvec_grep_search", "search_files"} {
+		if _, ok := registry.Get(name); ok {
+			t.Errorf("restored unavailable %s", name)
+		}
 	}
 	if _, ok := registry.Get("read_file"); !ok {
 		t.Error("lost available native tools")
@@ -134,7 +139,7 @@ func TestMissingZGDoesNotLoadSearchOrBreakSessionRestore(t *testing.T) {
 	installDefaultSearchDependency(t)
 	session, registry = initializeToolDefaultsTestSession(t, config, store, "missing-zg")
 	defer func() { _ = registry.Close(); _ = session.Close() }()
-	if _, ok := registry.Get("search_files"); !ok {
+	if _, ok := registry.Get("zvec_grep_search"); !ok {
 		t.Error("saved search preference was lost while zg was unavailable")
 	}
 }

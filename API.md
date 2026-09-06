@@ -335,14 +335,15 @@ for {
 
 ## Shell Tools
 
-Loading the native `search_files` tool requires `zg` on
+Loading the native `zvec_grep_search` tool requires `zg` on
 `PATH` and a registry with a sandbox factory (or one that explicitly uses
-`WithUnsafeNoSandbox`). Pass `query` for natural-language discovery, or `pattern`
-for exact literal/RE2 matching. Query mode creates and refreshes a local-model
-workspace index through sandboxed zg subprocesses. `LoadToolAuto` returns
-`tools.ErrSearchFilesUnavailable` when zg is missing and does not register the
-tool. The library's default temp-only write policy does not grant index
-writes to arbitrary workspaces. See [search behavior](README.md#built-in-tools).
+`WithUnsafeNoSandbox`). It offers zg's own agent search request (`query`,
+`queries`, `fts`, `vector`, `fuse`, globs, file types, symbol filters) and
+creates and refreshes a local-model workspace index through sandboxed zg
+subprocesses. `LoadToolAuto` returns `tools.ErrZvecGrepSearchUnavailable` when
+zg is missing and does not register the tool. Exact lookups are the bash
+tool's job (`grep`, `rg`). The library's default temp-only write policy does not
+grant index writes to arbitrary workspaces. See [search behavior](README.md#built-in-tools).
 
 Any executable that answers `--schema` and `--execute <json-args>` is a
 tool; the protocol and a sample script are in
@@ -410,7 +411,7 @@ narrower or separately governed tool set (a subagent's, say) does not start
 the servers again:
 
 ```go
-worker := registry.Derive(tools.AllowTools("read_file", "search_files", "git__*"),
+worker := registry.Derive(tools.AllowTools("read_file", "zvec_grep_search", "git__*"),
     tools.DenyTools("git__push"))
 agent := llm.NewAgent(client, worker, llm.AgentConfig{})
 defer agent.Close()  // releases the agent's private built-ins

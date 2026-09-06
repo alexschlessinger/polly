@@ -20,7 +20,8 @@ const (
 )
 
 // listDirTool lists one directory's entries. Non-recursive by design:
-// search_files locates content, and wrapped commands handle traversal.
+// zvec_grep_search and grep locate content, and wrapped commands handle
+// traversal.
 // Listing honors the registry's base sandbox read policy so the tool cannot
 // see what a sandboxed command could not.
 type listDirTool struct {
@@ -38,10 +39,10 @@ func (t *listDirTool) GetName() string { return "list_dir" }
 
 func (t *listDirTool) GetSchema() *schema.ToolSchema {
 	description := "List a directory's entries (directories first, then files, with sizes). Not recursive."
-	// search_files is absent without zg; steering toward it then would only
-	// invite calls to a tool the model cannot see (mirrors bash).
-	if t.registry.hasVisibleTool("search_files") {
-		description += " Prefer search_files for finding code or documents, with its query mode for discovery; use list_dir when you need the directory listing itself."
+	// Steer only toward tools the model can see (mirrors bash):
+	// zvec_grep_search is absent without zg.
+	if t.registry.hasVisibleTool("zvec_grep_search") {
+		description += " Prefer zvec_grep_search for finding code or documents; use list_dir when you need the directory listing itself."
 	}
 	return schema.Tool(
 		"list_dir",

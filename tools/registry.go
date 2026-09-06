@@ -140,6 +140,16 @@ func WithUnsafeNoSandbox() RegistryOption {
 	}
 }
 
+// HasNativeTool reports whether name is a built-in tool this registry can
+// load, loaded or not. Session restoration uses it to drop a tool that a
+// saved session names but Polly no longer ships.
+func (r *ToolRegistry) HasNativeTool(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.nativeTools[name]
+	return ok
+}
+
 // HasSandbox reports whether sandboxing is available.
 func (r *ToolRegistry) HasSandbox() bool {
 	return r.sandboxFactory != nil
@@ -355,8 +365,10 @@ func newRegistry(o registryOptions) *ToolRegistry {
 	registry.nativeTools["list_dir"] = func() (Tool, error) {
 		return NewListDirTool(registry), nil
 	}
-	registry.nativeTools["search_files"] = func() (Tool, error) {
-		return loadSearchFilesTool(registry)
+	// zg's agent search surface; absent without zg rather than imitated.
+	// Exact lookups are bash's job (grep, rg).
+	registry.nativeTools["zvec_grep_search"] = func() (Tool, error) {
+		return loadZvecGrepSearchTool(registry)
 	}
 	registry.nativeTools["write_file"] = func() (Tool, error) {
 		if err := registry.requireProcessSandbox("write_file"); err != nil {

@@ -352,7 +352,7 @@ polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hel
 Names are namespaced: `uppercase__to_uppercase`, `filesystem__read_file`.
 `--confirm` asks before each call.
 
-New contexts start with `bash` and the built-in file tools. `search_files`
+New contexts start with `bash` and the built-in file tools. `zvec_grep_search`
 loads only when `zg` (zvec-grep) is on `PATH`. Any `--tool` replaces that default.
 
 ### Built-in tools
@@ -363,11 +363,11 @@ loads only when `zg` (zvec-grep) is on `PATH`. Any `--tool` replaces that defaul
 - `edit_file`: replace an exact literal string. Must be unique, or pass `replace_all`.
 - `list_dir`: one directory, non-recursive.
 - `spawn_agent`: delegate to a child agent. See [Subagents](#subagents).
-- `search_files`: preferred entry point for finding code and documents. Requires `zg` (zvec-grep) on `PATH`; use `query` for natural-language or cross-file discovery. Polly creates the workspace's `.zvec-grep/` index on first query and incrementally refreshes it before subsequent queries. New indexes use the local `potion-code-16m-v2` model; the first query may download it. Existing local-model indexes retain their model and file-selection settings. Indexed results are ranked snippets (default 7, maximum 50). Use `pattern` for exact `path:line: text` matches, or RE2 with `regex` (default 100, maximum 500). Supply exactly one of `query` or `pattern`; both support an `include` glob. Exact matching skips `.git`, symlinks, binaries, and read-denied paths.
+- `zvec_grep_search`: zg's own agent search request, loaded when `zg` (zvec-grep) is on `PATH`: `query` and `queries` for hybrid groups, `fts` and `vector` for supplemental routes, `fuse`, a per-group `limit` (default 7, maximum 50), rg-style `globs` and `insensitiveGlobs`, `fileTypes`, `preferSymbol` and `symbolTypes`, `modifiedAfter` and `modifiedBefore`, and `path` to narrow within the workspace. Polly creates the workspace's `.zvec-grep/` index on first use and refreshes it inside each query. New indexes use the local `potion-code-16m-v2` model; the first query may download it. Existing local-model indexes retain their model and file-selection settings. Results are ranked snippets, not exhaustive matches. See [SEARCH.md](SEARCH.md).
 
-If zg is missing, Polly omits `search_files`, including when restoring a session
-that previously used it. An explicit `--tool search_files` reports the missing
-dependency. Other available tools handle search in that case.
+If zg is missing, Polly omits `zvec_grep_search`, including when restoring a session
+that previously used it. An explicit `--tool zvec_grep_search` reports the missing
+dependency. Exact lookups are bash's job, with `grep` or `rg`, with or without zg.
 
 Native file operations enforce the sandbox policy in-process; indexed search
 runs zg through the process sandbox and checks cached hits against the current
@@ -382,11 +382,10 @@ launch from a subdirectory under the default sandbox indexes that subdirectory
 (`--writepath <repo-root>` shares one index across launches).
 If an existing zg daemon owns index writes, Polly searches the existing snapshot
 directly and marks it potentially stale. Other index failures are reported so
-the agent can use exact `pattern` searches. Exact directory searches skip
-generated `.zvec-grep` state as well. See [sandbox details](SANDBOX.md#what-gets-sandboxed).
+the agent can use `grep` or `rg` in bash. See [sandbox details](SANDBOX.md#what-gets-sandboxed).
 
 To verify an installed zg with the real sandbox, run
-`POLLYTOOL_REQUIRE_ZG_TESTS=1 go test ./tools -run TestIndexedSearchLive -count=1`.
+`POLLYTOOL_REQUIRE_ZG_TESTS=1 go test ./tools -run TestZvecGrepSearchLive -count=1`.
 This builds a temporary index and downloads a local model into it.
 
 Conversations also provide recall tools for content omitted from model context:

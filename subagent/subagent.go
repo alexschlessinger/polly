@@ -138,7 +138,7 @@ func (t *Tool) GetSchema() *schema.ToolSchema {
 		schema.Params{
 			"task":           schema.S("The complete brief for the agent. It starts with no other context."),
 			"label":          schema.S("Two to five words naming the job, shown to the user while it runs."),
-			"tools":          schema.Strings("Names or globs of the tools the agent may use, for example [\"read_file\", \"search_files\"]. Default: every tool you have, except spawn_agent. The agent always has view_image, read_transcript, and the artifact tools."),
+			"tools":          schema.Strings("Names or globs of the tools the agent may use, for example [\"read_file\", \"zvec_grep_search\"]. Default: every tool you have, except spawn_agent. The agent always has view_image, read_transcript, and the artifact tools."),
 			"model":          schema.S("Model to run the agent on, as provider/model. Default: your own model."),
 			"max_iterations": schema.Int("Cap on the agent's model calls. Default: your own limit."),
 			"background":     schema.Bool("Return at once and keep working; the agent's reply arrives later as a message. Default false: wait for the reply."),
