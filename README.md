@@ -290,9 +290,12 @@ and the change sticks. A new system prompt on a context with history
 resets the conversation. The stored system prompt holds only your custom
 persona. With no custom persona, Polly adds a coding policy: respect the
 requested scope, inspect before editing, preserve unrelated work, sequence
-dependent changes, and verify the result. Display and conversation-recall
-guidance is added per request as well. These defaults are never stored in
-the transcript. The Go library does not add the CLI's coding policy.
+dependent changes, verify the result at a depth matched to its risk, and
+reply in one short paragraph, with a brief plan and updates for substantial
+work and the result, validation, and remaining issues for changes. Display
+and conversation-recall guidance is added per request as well. These
+defaults are never stored in the transcript. The Go library does not add
+the CLI's coding policy.
 
 Default coding turns also load `AGENTS.md` from the nearest Git root through
 the working directory, in that order. A `.git` directory or worktree file
