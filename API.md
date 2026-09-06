@@ -335,6 +335,15 @@ for {
 
 ## Shell Tools
 
+Loading the native `search_files` tool requires `zg` on
+`PATH` and a registry with a sandbox factory (or one that explicitly uses
+`WithUnsafeNoSandbox`). Pass `query` for natural-language discovery, or `pattern`
+for exact literal/RE2 matching. Query mode creates and refreshes a local-model
+workspace index through sandboxed zg subprocesses. `LoadToolAuto` returns
+`tools.ErrSearchFilesUnavailable` when zg is missing and does not register the
+tool. The library's default temp-only write policy does not grant index
+writes to arbitrary workspaces. See [search behavior](README.md#built-in-tools).
+
 Any executable that answers `--schema` and `--execute <json-args>` is a
 tool; the protocol and a sample script are in
 [README.md](README.md#shell-tools). Process-backed tools need an explicit

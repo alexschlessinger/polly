@@ -356,7 +356,7 @@ func newRegistry(o registryOptions) *ToolRegistry {
 		return NewListDirTool(registry), nil
 	}
 	registry.nativeTools["search_files"] = func() (Tool, error) {
-		return NewSearchFilesTool(registry), nil
+		return loadSearchFilesTool(registry)
 	}
 	registry.nativeTools["write_file"] = func() (Tool, error) {
 		if err := registry.requireProcessSandbox("write_file"); err != nil {

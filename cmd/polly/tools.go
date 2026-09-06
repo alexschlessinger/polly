@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/alexschlessinger/pollytool/tools"
@@ -50,6 +51,11 @@ func loadTools(loaderInfos []tools.ToolLoaderInfo, opts ...tools.RegistryOption)
 	// Load native tools
 	for name := range nativeTools {
 		if _, err := registry.LoadToolAuto(name); err != nil {
+			// A saved session may have been created on a machine with zg.
+			// Keep its selection persisted, but omit the unavailable tool now.
+			if errors.Is(err, tools.ErrSearchFilesUnavailable) {
+				continue
+			}
 			return nil, fmt.Errorf("failed to load native tool %s: %w", name, err)
 		}
 	}

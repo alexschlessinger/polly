@@ -102,6 +102,9 @@ func (t *BashTool) GetSchema() *schema.ToolSchema {
 				strings.Join(prefer, ", ") +
 				". Reserve bash for what only a shell can do (pipelines, git, builds, running programs)"
 		}
+		if t.siblingLoaded("search_files") {
+			description += ". Start discovery with search_files before shell searches or broad directory traversal; use its query mode when available"
+		}
 	}
 	return schema.Tool("bash", description,
 		schema.Params{"command": schema.S("The shell command to execute")},

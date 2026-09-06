@@ -108,6 +108,10 @@ func TestSearchFilesSkipsGitBinariesAndSymlinks(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	writeTestFile(t, filepath.Join(dir, ".git"), "config", "needle\n")
+	if err := os.Mkdir(filepath.Join(dir, ".zvec-grep"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, ".zvec-grep"), "manifest.json", "needle\n")
 	writeTestFile(t, dir, "blob.bin", "needle\x00needle")
 	if err := os.Symlink(filepath.Join(dir, "keep.txt"), filepath.Join(dir, "alias.txt")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
@@ -120,7 +124,7 @@ func TestSearchFilesSkipsGitBinariesAndSymlinks(t *testing.T) {
 	if !strings.Contains(out, "keep.txt:1: needle") {
 		t.Fatalf("expected keep.txt match:\n%s", out)
 	}
-	for _, banned := range []string{".git", "blob.bin", "alias.txt"} {
+	for _, banned := range []string{".git", ".zvec-grep", "blob.bin", "alias.txt"} {
 		if strings.Contains(out, banned) {
 			t.Fatalf("expected %s to be skipped:\n%s", banned, out)
 		}

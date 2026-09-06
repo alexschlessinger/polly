@@ -73,6 +73,9 @@ func metadataFromConfig(config *Config) *sessions.Metadata {
 	if len(config.Tools) == 0 {
 		metadata.ActiveTools = make([]tools.ToolLoaderInfo, 0, len(defaultNativeToolNames))
 		for _, name := range defaultNativeToolNames {
+			if name == "search_files" && !tools.SearchFilesAvailable() {
+				continue
+			}
 			metadata.ActiveTools = append(metadata.ActiveTools, tools.ToolLoaderInfo{
 				Name: name, Type: "native", Source: "builtin",
 			})
