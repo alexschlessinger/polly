@@ -590,19 +590,25 @@ func linkGrandchildRow(m *replModel) *agentActivity {
 
 // blockingCloseSession holds a retiring tab between its display copy and its
 // cache admission, so that copy and a concurrent write to a row it holds are
-// ordered by nothing but the row owner's lock.
+// ordered by nothing but the row owner's lock. after runs once the lease is
+// released, before the tab's identity write is queued.
 type blockingCloseSession struct {
 	sessions.Session
 	release <-chan struct{}
+	after   func()
 }
 
 func (s blockingCloseSession) ViewID() string { return s.Session.(sessions.ViewIdentity).ViewID() }
 func (s blockingCloseSession) Close() error {
 	<-s.release
-	if s.Session == nil {
-		return nil
+	var err error
+	if s.Session != nil {
+		err = s.Session.Close()
 	}
-	return s.Session.Close()
+	if s.after != nil {
+		s.after()
+	}
+	return err
 }
 
 func releaseOnCleanup(t *testing.T) (<-chan struct{}, func()) {
@@ -677,8 +683,13 @@ func TestRetiredGrandchildIdentityLandsUnderRetiringChildLock(t *testing.T) {
 	grand.agentActivity = grandActivity
 	releaseGrand, unblockGrand := releaseOnCleanup(t)
 	releaseChild, unblockChild := releaseOnCleanup(t)
-	grandState.session = blockingCloseSession{Session: grandState.session, release: releaseGrand}
+	// The child's retirement copies its rows right as the grandchild's
+	// identity write is queued behind the released lease: the retiring
+	// goroutine, not this one, lets it go, so nothing orders the two.
+	childRetire := make(chan struct{})
+	grandState.session = blockingCloseSession{Session: grandState.session, release: releaseGrand, after: func() { close(childRetire) }}
 	childState.session = blockingCloseSession{Session: childState.session, release: releaseChild}
+	child.agentWriteDone = childRetire
 	grandID, childID := grand.viewID(), child.viewID()
 	r.showTab(0)
 	child.keepOpen = false
