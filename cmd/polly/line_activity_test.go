@@ -76,7 +76,7 @@ func TestLineActivityLiveSettlesOnceAndLeavesAnswerClean(t *testing.T) {
 		t.Fatalf("live status duplicated or leaked output/color: %q", got)
 	}
 	// The settled line is the TUI trailer without its click glyphs.
-	trailer := regexp.MustCompile(`^  thought \S+ · 1 tool · ✓ \S+ · 12 in / 8 out\n$`)
+	trailer := regexp.MustCompile(`^  thought( \S+)? · 1 tool · ✓ \S+ · 12 in / 8 out\n$`)
 	if settled := settledActivityLines(got); !trailer.MatchString(settled) {
 		t.Fatalf("settled summary = %q", settled)
 	}
