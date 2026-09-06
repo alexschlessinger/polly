@@ -48,9 +48,12 @@ func TestChildViewCacheBudgetsAndUserRecency(t *testing.T) {
 		t.Fatal("completion pool is not bounded by admission order")
 	}
 	// Unviewed completions also share a byte budget the user's visits do not.
+	// An oversized one is refused outright rather than admitted and evicted,
+	// which would displace the completions already admitted before it.
 	c = childViewCache{}
+	c.put(entry("small", 0, 1<<20))
 	c.put(entry("big", 0, childViewProbationBytes+1))
-	if c.entries["big"] != nil {
+	if c.entries["big"] != nil || c.entries["small"] == nil {
 		t.Fatal("unviewed completion above the probation byte budget admitted")
 	}
 	c.put(entry("viewed", c.visit(), childViewProbationBytes+1))
