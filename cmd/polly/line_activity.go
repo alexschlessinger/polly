@@ -479,7 +479,6 @@ type lineChildActivity struct {
 	ui                   *lineTurnUI
 	scope, prefix, label string
 	launch               *lineAgentProgress
-	sequence             int
 	state                turnState
 	toolName             string
 	thinkingSince        time.Time
@@ -518,8 +517,14 @@ func (ui *lineTurnUI) newChildActivity(parentScope string, call messages.ChatMes
 	if launch == nil {
 		return nil
 	}
-	label := prefix + lineAgentName(call, fmt.Sprintf("agent %d", ui.activity.nextScope))
-	c := &lineChildActivity{ui: ui, scope: fmt.Sprint(ui.activity.nextScope), prefix: label + ": ", label: label, launch: launch, sequence: ui.activity.nextScope, state: turnStateWaiting, direct: parentScope == ""}
+	// A direct child is named by its launch row so notices, captions, and
+	// the Agents summary agree; nextScope also counts nested children, so
+	// it only numbers those. Either way nextScope stays the scope identity.
+	label := launch.label
+	if parentScope != "" {
+		label = prefix + lineAgentName(call, fmt.Sprintf("agent %d", ui.activity.nextScope))
+	}
+	c := &lineChildActivity{ui: ui, scope: fmt.Sprint(ui.activity.nextScope), prefix: label + ": ", label: label, launch: launch, state: turnStateWaiting, direct: parentScope == ""}
 	if ui.activity.scopes == nil {
 		ui.activity.scopes = make(map[string]*lineChildActivity)
 	}
@@ -661,6 +666,19 @@ func (ui *lineTurnUI) finishActivityLocked() {
 		if launch.active {
 			launch.status, launch.active = "canceled", false
 		}
+	}
+	// A tool whose end never arrived may have half-changed the world. The
+	// trailer stays at parity with the TUI, so the fact goes to scrollback
+	// the way a failed or denied call does.
+	for _, item := range a.active {
+		if item.agent {
+			continue
+		}
+		prefix := ""
+		if child := a.scopes[item.scope]; child != nil {
+			prefix = child.prefix
+		}
+		ui.activityLineLocked("  ✗ " + prefix + toolDisplayName(item.name) + " · unfinished")
 	}
 	if a.outcome == turnOutcomeNone {
 		a.outcome = turnOutcomeFailed

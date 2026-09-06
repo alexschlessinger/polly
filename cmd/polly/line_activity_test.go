@@ -183,6 +183,11 @@ func TestLineActivityInterruptedToolsAndFailedResults(t *testing.T) {
 	if !strings.Contains(got, "\n  2 tools · ✗ failed · ") || strings.Contains(got, "✓") || strings.Contains(got, "private") {
 		t.Fatalf("interrupted status = %q", got)
 	}
+	// The call that never ended is named in scrollback, before the summary.
+	unfinished := strings.Index(got, "✗ bash · unfinished")
+	if unfinished < 0 || unfinished > strings.Index(got, "2 tools") || strings.Contains(got, "read_file · unfinished") {
+		t.Fatalf("unfinished tool not reported: %q", got)
+	}
 }
 
 // The live line and the plain log speak the TUI's busy vocabulary. The log
@@ -291,6 +296,15 @@ func TestLineActivitySuccessfulFanoutLeavesOnlySummary(t *testing.T) {
 				child := &childTurnUI{parent: ui, activity: ui.childActivity(spawn)}
 				if child.activity.label != fmt.Sprintf("agent %d", i+1) {
 					t.Fatalf("verbose unnamed agent: %q", child.activity.label)
+				}
+				// A nested spawn takes a scope of its own without renumbering
+				// the parent's later agents away from their launch rows.
+				if i == 0 {
+					nested := messages.ChatMessageToolCall{ID: "nested", Name: "spawn_agent", Arguments: `{"task":"look deeper"}`}
+					grandchild := child.childActivity(nested)
+					if grandchild == nil || !strings.HasPrefix(grandchild.label, "agent 1: agent ") {
+						t.Fatalf("nested agent label: %#v", grandchild)
+					}
 				}
 				for j := range 2 {
 					call := messages.ChatMessageToolCall{ID: fmt.Sprint(j), Name: "read_file", Arguments: `{"path":"README.md"}`}
