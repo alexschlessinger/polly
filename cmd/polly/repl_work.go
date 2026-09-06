@@ -75,7 +75,14 @@ func (r *managedREPL) postUI(ctx context.Context, fn func()) bool {
 // closeTabState waits off the event loop for a child's final report write.
 func (r *managedREPL) closeTabState(tab *replTab) {
 	cacheView := r.retiredChildViewTask(tab)
+	// The agent row belongs to the parent's model, whose lock covers the
+	// identity write below (a retiring parent copies its rows under it). A
+	// parent that already closed left no row anyone reads.
 	activity := tab.agentActivity
+	var owner *replModel
+	if tab.parent != nil {
+		owner = tab.parent.model
+	}
 	done, agentDone, state, name := tab.reportWriteDone, tab.agentWriteDone, tab.state, tab.name
 	if state == nil {
 		return
@@ -101,8 +108,10 @@ func (r *managedREPL) closeTabState(tab *replTab) {
 		}
 		if view != nil {
 			r.postUI(r.work.ctx, func() {
-				if activity != nil {
+				if activity != nil && owner != nil {
+					owner.mu.Lock()
 					activity.viewID = view.info.ID
+					owner.mu.Unlock()
 				}
 				r.admitChildDisplay(view)
 			})

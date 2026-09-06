@@ -58,7 +58,9 @@ func (r *managedREPL) showChildView(req *childViewNavigation) {
 	tab.model.artifactStore = info.Artifacts
 	r.tabs = append(r.tabs, tab)
 	r.showTab(len(r.tabs) - 1)
-	r.refreshChildView(tab, req.activity)
+	// showTab may have retired the parent, so tab.parent no longer names the
+	// model whose row req.activity is; the request recorded it.
+	r.refreshChildView(tab, req.activity, req.parent.model)
 }
 
 func (r *managedREPL) childViewState(store sessions.SessionStore, info *sessions.SessionView) *conversationState {
@@ -92,7 +94,11 @@ func prepareChildDisplay(info *sessions.SessionView, cfg *Config, width int) *re
 	return m
 }
 
-func (r *managedREPL) refreshChildView(tab *replTab, activity *agentActivity) {
+// refreshChildView reads the view again off the loop and lands the result on
+// tab. activity is the agent row that opened the view and owner the model
+// holding that row: a retiring owner copies its rows under its lock, so the
+// identity write takes the same lock.
+func (r *managedREPL) refreshChildView(tab *replTab, activity *agentActivity, owner *replModel) {
 	store := tab.state.sessionStore.(sessions.ViewStore)
 	target, revision := tab.viewTarget, tab.childView.Revision
 	width := max(80, tab.model.visual.width)
@@ -116,7 +122,9 @@ func (r *managedREPL) refreshChildView(tab *replTab, activity *agentActivity) {
 				return
 			}
 			if err == nil {
+				owner.mu.Lock()
 				activity.viewID = info.ID
+				owner.mu.Unlock()
 			} else if target.ID != "" {
 				r.childViews.take(target.ID)
 			}

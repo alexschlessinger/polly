@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -555,6 +556,145 @@ func TestRetiredChildRevisionPrecedesLeaseRelease(t *testing.T) {
 	driveChildView(t, r, func() bool {
 		return strings.Contains(plainStyledText(child.model.fullTranscript()), "Written after lease release.")
 	})
+}
+
+// savedGrandchild adds a finished grandchild session the child spawned.
+func savedGrandchild(t *testing.T, store *sessions.SQLiteStore) {
+	t.Helper()
+	ctx := context.Background()
+	grand, err := store.Acquire(ctx, "grandchild", sessions.AcquireOptions{Parent: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := updateMetadata(ctx, grand, func(md *sessions.Metadata) { md.SpawnCallID = "gcall"; md.SpawnOutcome = sessions.ReportFinished }); err != nil {
+		t.Fatal(err)
+	}
+	if err := grand.AddMessages(ctx, []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "deeper"}, {Role: messages.MessageRoleAssistant, Content: "The grandchild answer."}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := grand.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// linkGrandchildRow gives the child's transcript the spawn row that opens
+// the grandchild; the row belongs to m.
+func linkGrandchildRow(m *replModel) *agentActivity {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.appendToolCallStart(agentCall("gcall", `{"label":"grandchild"}`))
+	_, row := m.toolDisclosureRowForCall("gcall")
+	row.agent.session = "grandchild"
+	return row.agent
+}
+
+// blockingCloseSession holds a retiring tab between its display copy and its
+// cache admission, so that copy and a concurrent write to a row it holds are
+// ordered by nothing but the row owner's lock.
+type blockingCloseSession struct {
+	sessions.Session
+	release <-chan struct{}
+}
+
+func (s blockingCloseSession) ViewID() string { return s.Session.(sessions.ViewIdentity).ViewID() }
+func (s blockingCloseSession) Close() error {
+	<-s.release
+	if s.Session == nil {
+		return nil
+	}
+	return s.Session.Close()
+}
+
+func releaseOnCleanup(t *testing.T) (<-chan struct{}, func()) {
+	t.Helper()
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	return release, unblock
+}
+
+// Opening a grandchild view retires the spent child view whose row it
+// updates: the identity write must take that child's lock (run with -race).
+func TestGrandchildViewIdentityLandsUnderRetiringChildLock(t *testing.T) {
+	r, store, activity := savedChildViewFixture(t)
+	savedGrandchild(t, store)
+	child := clickChildView(t, r, activity)
+	driveChildView(t, r, func() bool { return !child.viewLoading })
+	grandActivity := linkGrandchildRow(child.model)
+	release, unblock := releaseOnCleanup(t)
+	child.state.session = blockingCloseSession{release: release}
+	childID := child.viewID()
+	child.model.mu.Lock()
+	ok := r.requestChildViewLocked(grandActivity, "gcall")
+	child.model.mu.Unlock()
+	if !ok {
+		t.Fatal("grandchild navigation unavailable")
+	}
+	r.applyTabRequests()
+	grand := r.visibleTab()
+	if grand.name != "grandchild" || r.tabIndexOfModel(child.model) >= 0 {
+		t.Fatalf("grandchild view did not retire the child: visible %s", grand.name)
+	}
+	driveChildView(t, r, func() bool { return !grand.viewLoading })
+	child.model.mu.Lock()
+	recorded := grandActivity.viewID
+	child.model.mu.Unlock()
+	if recorded == "" || recorded != grand.viewID() {
+		t.Fatalf("grandchild identity %q not recorded on the child's row", recorded)
+	}
+	unblock()
+	driveChildView(t, r, func() bool { return r.childViews.entries[childID] != nil })
+}
+
+// A retired leased grandchild records its identity on the row of a child
+// that may itself be retiring at the same time (run with -race).
+func TestRetiredGrandchildIdentityLandsUnderRetiringChildLock(t *testing.T) {
+	r, store, _ := savedChildViewFixture(t)
+	savedGrandchild(t, store)
+	ctx := context.Background()
+	childState, err := r.opener.open(ctx, "child", Settings{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.addTab(childState); err != nil {
+		t.Fatal(err)
+	}
+	child := r.visibleTab()
+	child.keepOpen = true // a continued conversation stays open while hidden
+	grandActivity := linkGrandchildRow(child.model)
+	grandState, err := r.opener.open(ctx, "grandchild", Settings{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.addTab(grandState); err != nil {
+		t.Fatal(err)
+	}
+	grand := r.visibleTab()
+	if grand.parent != child {
+		t.Fatal("grandchild tab is not the child's")
+	}
+	grand.agentActivity = grandActivity
+	releaseGrand, unblockGrand := releaseOnCleanup(t)
+	releaseChild, unblockChild := releaseOnCleanup(t)
+	grandState.session = blockingCloseSession{Session: grandState.session, release: releaseGrand}
+	childState.session = blockingCloseSession{Session: childState.session, release: releaseChild}
+	grandID, childID := grand.viewID(), child.viewID()
+	r.showTab(0)
+	child.keepOpen = false
+	if !r.closeSpentChild(child) {
+		t.Fatal("child did not retire")
+	}
+	unblockGrand()
+	driveChildView(t, r, func() bool { return r.childViews.entries[grandID] != nil })
+	unblockChild()
+	driveChildView(t, r, func() bool { return r.childViews.entries[childID] != nil })
+	child.model.mu.Lock()
+	recorded := grandActivity.viewID
+	child.model.mu.Unlock()
+	if recorded != grandID {
+		t.Fatalf("grandchild identity %q not recorded on the child's row", recorded)
+	}
 }
 
 func TestChildViewParentNavigationFollowsRename(t *testing.T) {
