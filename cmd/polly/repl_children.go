@@ -291,6 +291,7 @@ func (r *managedREPL) postChildReport(ctx context.Context, child *replTab, res s
 				r.pullReports(r.runCtx, parent)
 			}
 			child.delivered = true
+			r.noteCallerReady(child)
 			r.closeSpentChild(child)
 		})
 	}) {
@@ -528,6 +529,7 @@ func (r *managedREPL) childDoneWaiting(tab *replTab, waiter chan childReport, ab
 			tab.deliveryPending = false
 			if !abandoned {
 				tab.delivered = true
+				r.noteCallerReady(tab)
 			}
 			r.closeSpentChild(tab)
 			close(ack)

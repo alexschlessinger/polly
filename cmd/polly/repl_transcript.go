@@ -64,6 +64,17 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 		}
 	}
 	m.transcript = slices.Delete(m.transcript, index, index+1)
+	if len(m.affordances.queued) > 0 {
+		queued := make(map[int]queuedAffordance, len(m.affordances.queued))
+		for i, q := range m.affordances.queued {
+			if i < index {
+				queued[i] = q
+			} else if i > index {
+				queued[i-1] = q
+			}
+		}
+		m.affordances.queued = queued
+	}
 	for i := index + 1; i <= len(m.transcript); i++ {
 		if id, ok := m.reasoningAt[i]; ok {
 			m.reasoningAt[i-1] = id
@@ -124,6 +135,7 @@ func (m *replModel) appendTranscriptEntry(text string) int {
 func (m *replModel) resetAssistantStream() {
 	m.streamRaw.Reset()
 	m.streamShown = 0
+	m.streamTypewriter = assistantTypewriter{}
 	m.streamCodeCache = nil
 }
 
@@ -143,11 +155,16 @@ func (m *replModel) appendAssistant(text string) {
 		m.currentAssistant = m.appendTranscriptEntry("")
 	}
 	m.streamRaw.WriteString(text)
+	m.streamTypewriter.received(time.Now(), m.typewriterVisible())
 }
 
 // renderPendingMarkdown runs only for a visible paint, never on a provider
 // callback or when a hidden child settles. Caller holds m.mu.
 func (m *replModel) renderPendingMarkdown() {
+	m.renderPendingMarkdownAt(time.Now())
+}
+
+func (m *replModel) renderPendingMarkdownAt(now time.Time) {
 	if m.markdownPending {
 		for i := range m.transcript {
 			entry := &m.transcript[i]
@@ -160,28 +177,33 @@ func (m *replModel) renderPendingMarkdown() {
 		}
 		m.markdownPending = false
 	}
-	m.renderAssistantStream()
+	m.renderAssistantStream(now)
 }
 
 // renderAssistantStream renders the visible (holdback-trimmed) prefix of the
 // streaming message through goldmark into its entry. An unchanged visible
 // prefix skips the re-render, so a chunk that only extends a held-back token
 // costs nothing.
-func (m *replModel) renderAssistantStream() {
+func (m *replModel) renderAssistantStream(now time.Time) {
 	if m.currentAssistant < 0 || m.currentAssistant >= len(m.transcript) {
 		return
 	}
 	raw := m.streamRaw.String()
 	visible := raw[:safeVisibleLen(raw)]
-	if len(visible) == m.streamShown && m.transcript[m.currentAssistant].text != "" {
-		return
+	if len(visible) != m.streamShown || m.transcript[m.currentAssistant].text == "" {
+		m.streamShown = len(visible)
+		if m.streamCodeCache == nil {
+			m.streamCodeCache = &markdownCodeCache{}
+		}
+		rendered, images, _ := renderMarkdownWithCache(visible, m.imageBaseDir, true, m.streamCodeCache)
+		m.setTranscriptEntry(m.currentAssistant, rendered, images)
 	}
-	m.streamShown = len(visible)
-	if m.streamCodeCache == nil {
-		m.streamCodeCache = &markdownCodeCache{}
+	entry := &m.transcript[m.currentAssistant]
+	// Captions and reserved thumbnail rows arrive as a unit, never as a
+	// growing partial image slot beneath the typing caret.
+	if m.streamTypewriter.update(entry.text, now, m.typewriterVisible() && len(entry.images) == 0) {
+		m.visual.invalidate()
 	}
-	rendered, images, _ := renderMarkdownWithCache(visible, m.imageBaseDir, true, m.streamCodeCache)
-	m.setTranscriptEntry(m.currentAssistant, rendered, images)
 }
 
 // finishAssistantBlock closes the semantic assistant block that is currently
@@ -298,6 +320,7 @@ func (m *replModel) clearDisplay() {
 	m.currentAssistant = -1
 	m.activeTools = nil
 	m.activeToolsPhase = -1
+	m.resetAffordances()
 	m.clearToolDisclosures()
 	m.clearReasoningRecords()
 	m.turnTrailers = make(map[int64]*turnTrailerRecord)
@@ -380,14 +403,19 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		imageSpans := old.imageSpans
 		changed := !fits ||
 			old.key != source.key || old.text != source.text || old.followed != followed ||
+			!slices.Equal(old.cells, source.cells) ||
 			!slices.Equal(old.reasoningIDs, source.reasoningIDs) ||
 			!slices.Equal(old.toolDisclosureIDs, source.toolDisclosureIDs) ||
 			old.turnTrailerID != source.turnTrailerID ||
 			!transcriptImagesEqual(old.images, source.images)
 		if changed {
 			nativeSlots := m.nativeImages && width >= minimumImageThumbnailCols
-			rows, imageSpans = transcriptBlockRowsWithImages(
-				source.text, followed, width, source.images, nativeSlots,
+			cells := source.cells
+			if cells == nil {
+				cells = parseStyledCells(source.text, ui.StyleClear)
+			}
+			rows, imageSpans = transcriptCellRowsWithImages(
+				cells, followed, width, source.images, nativeSlots,
 				m.imageCellWidth, m.imageCellHeight,
 			)
 		}
@@ -400,6 +428,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		c.blocks[i] = transcriptVisualBlock{
 			key:               source.key,
 			text:              source.text,
+			cells:             source.cells,
 			followed:          followed,
 			rows:              rows,
 			images:            append([]transcriptImage(nil), source.images...),
@@ -436,6 +465,10 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+1)
 	for i := range m.transcript {
 		entry := m.transcript[i].text
+		var cells []ui.Cell
+		if q, ok := m.affordances.queued[i]; ok && !q.fading.IsZero() {
+			entry = q.text
+		}
 		reasoningID := m.reasoningAt[i]
 		toolDisclosureID := m.toolDisclosureAt[i]
 		turnTrailerID := m.turnTrailerAt[i]
@@ -451,13 +484,20 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 				continue
 			}
 			images := m.transcript[i].images
+			if prefix := m.streamTypewriter.prefix(); prefix != nil {
+				cells = append([]ui.Cell{}, prefix...)
+				entry = ui.CellsToString(prefix)
+			}
+			caret := m.streamCursorFrame
 			if len(images) > 0 && strings.HasSuffix(entry, string(transcriptImageMarker(len(images)-1))) {
 				// Keep the pulsing stream caret out of the final reserved image
 				// row. The newline is stable even on the caret's hidden frame, so
 				// follow-bottom does not oscillate by one row.
-				entry += "\n" + m.streamCursorFrame
-			} else {
-				entry += m.streamCursorFrame
+				caret = "\n" + caret
+			}
+			entry += caret
+			if cells != nil {
+				cells = append(cells, parseStyledCells(caret, ui.StyleClear)...)
 			}
 		}
 		key := fmt.Sprintf("transcript:%d", i)
@@ -471,6 +511,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		block := transcriptDisplayBlock{
 			key:           key,
 			text:          entry,
+			cells:         cells,
 			images:        m.transcript[i].images,
 			turnTrailerID: turnTrailerID,
 		}
@@ -496,6 +537,10 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 
 func transcriptBlockRowsWithImages(text string, followed bool, width int, images []transcriptImage, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
 	cells := parseStyledCells(text, ui.NewStyle(ui.ColorClear))
+	return transcriptCellRowsWithImages(cells, followed, width, images, native, cellWidth, cellHeight)
+}
+
+func transcriptCellRowsWithImages(cells []ui.Cell, followed bool, width int, images []transcriptImage, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
 	if followed {
 		// The joined renderer places one newline between transcript blocks. Add
 		// that separator before splitting: a normal separator is absorbed by the

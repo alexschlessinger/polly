@@ -11,6 +11,7 @@ require (
 	github.com/mattn/go-sixel v0.0.12
 	github.com/metaspartan/gotui/v5 v5.0.3
 	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/rivo/uniseg v0.4.7
 	github.com/urfave/cli/v3 v3.11.0
 	github.com/yuin/goldmark v1.8.5
 	go.yaml.in/yaml/v3 v3.0.5
@@ -32,7 +33,6 @@ require (
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/soniakeys/quant v1.0.0 // indirect

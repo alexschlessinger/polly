@@ -3,6 +3,7 @@ package main
 import (
 	"image"
 	"strings"
+	"time"
 
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -279,7 +280,9 @@ func (r *managedREPL) render() {
 	}
 
 	r.model.mu.Lock()
-	r.model.renderPendingMarkdown()
+	now := time.Now()
+	r.model.expireAffordances(now)
+	r.model.renderPendingMarkdownAt(now)
 	if r.model.imageCellWidth != imageCellWidth || r.model.imageCellHeight != imageCellHeight {
 		r.model.imageCellWidth = imageCellWidth
 		r.model.imageCellHeight = imageCellHeight
@@ -327,6 +330,11 @@ func (r *managedREPL) render() {
 	r.model.agentDisclosurePlacements = r.model.visibleDisclosurePlacements(viewport, turnDockOverlayAgents)
 	r.model.agentLinkPlacements = r.model.visibleAgentLinks(viewport)
 	r.model.turnTrailerPlacements = r.model.visibleTurnTrailerPlacements(viewport)
+	var affordanceSpans []affordanceSpan
+	idleCursor := r.affordanceW != nil && editable && r.model.idleAffordanceCursor(now)
+	if r.affordanceW != nil {
+		affordanceSpans = r.model.affordanceSpans(now, l, viewport, status, image.Pt(min(curCol, w-1), l.composerRow(curRow)), idleCursor)
+	}
 	r.model.mu.Unlock()
 	notices = append(notices, r.takeHiddenNotices(focusKnown, focused)...)
 
@@ -370,9 +378,19 @@ func (r *managedREPL) render() {
 
 	r.layout(l)
 	ui.Clear()
-	r.placeCursor(editable && !modalOpen, curCol, l.composerRow(curRow), w)
+	r.placeCursor(editable && !modalOpen && !idleCursor, curCol, l.composerRow(curRow), w)
 	if modalOpen {
+		if r.affordanceW != nil {
+			r.affordanceW.cells = nil
+			r.affordanceW.idleCursor = false
+		}
 		ui.Render(r.rootFlex, r.modalW)
+	} else if r.affordanceW != nil {
+		r.affordanceW.Drawable = r.rootFlex
+		r.affordanceW.spans = affordanceSpans
+		r.affordanceW.now = now
+		r.affordanceW.idleCursor = idleCursor
+		ui.Render(r.affordanceW)
 	} else {
 		ui.Render(r.rootFlex)
 	}
