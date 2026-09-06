@@ -679,6 +679,10 @@ func (r *managedREPL) submitComposerLocked() bool {
 		m.appendNoticeLine("leaving; input not sent")
 		return false
 	}
+	if tab := r.visibleTab(); tab.childView != nil && !(strings.HasPrefix(trimmed, "/") && !strings.Contains(trimmed, "\n") && childViewLocalCommand(trimmed)) {
+		r.activateChildViewLocked(tab)
+		return false
+	}
 	if m.clipboardCapture {
 		m.appendNoticeLine("clipboard: waiting for image capture")
 		m.followBottom = true

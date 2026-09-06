@@ -390,3 +390,22 @@ func (m *replModel) clearRestoredDraft() {
 	m.restoredDraft = nil
 	m.restoredPersistence = nil
 }
+
+// adoptRestoredDraft carries the unanswered prompt hydrateHistory restored
+// into next over to m when next's display replaces m's. The prompt is saved
+// history rather than typing: it fills an empty composer, never overwrites
+// input, and an untouched earlier restore follows the history it came from
+// instead of lingering as a stale draft. Resending it unchanged then reuses
+// the stored user message rather than persisting a duplicate.
+func (m *replModel) adoptRestoredDraft(next *replModel) {
+	if m.restoredDraft == next.restoredDraft {
+		return
+	}
+	if m.restoredDraft != nil && m.ed.text() == m.restoredDraft.displayText {
+		m.ed.clear()
+	}
+	m.restoredDraft, m.restoredPersistence = next.restoredDraft, next.restoredPersistence
+	if m.restoredDraft != nil && m.ed.empty() {
+		m.ed.setText(m.restoredDraft.displayText)
+	}
+}

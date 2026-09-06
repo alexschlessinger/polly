@@ -468,7 +468,7 @@ func reportBody(rep sessions.Report) string {
 // input, and follow-up conversations belong to the user and keep it open.
 // Runs on the event loop with no model lock held.
 func (r *managedREPL) closeSpentChild(tab *replTab) bool {
-	if tab.parentName == "" || !tab.delivered || tab.keepOpen || tab.report != nil || tab.reporting || tab.deliveryPending || tab.turnDone != nil || tab.model == r.model || r.runningChildren(tab) > 0 {
+	if tab.parentName == "" || !tab.delivered || tab.keepOpen || tab.report != nil || tab.reporting || tab.deliveryPending || tab.turnDone != nil || tab.viewOpening || tab.model == r.model || r.runningChildren(tab) > 0 {
 		return false
 	}
 	if tab.settled != nil {

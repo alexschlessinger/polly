@@ -410,7 +410,7 @@ func TestAgentLabelClickPrecedesTrailerDismissal(t *testing.T) {
 	}
 }
 
-func TestSavedAgentNavigationResolvesRenamesAndRefusesMissingOrLeased(t *testing.T) {
+func TestSavedAgentNavigationResolvesRenamesAndReadsLeasedChildren(t *testing.T) {
 	for _, kind := range []string{"renamed", "missing", "leased", "reused"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
@@ -455,24 +455,19 @@ func TestSavedAgentNavigationResolvesRenamesAndRefusesMissingOrLeased(t *testing
 			if !handled {
 				t.Fatal("label not handled")
 			}
+			r.applyTabRequests()
 			runUITask(t, r)
 			if kind == "renamed" {
-				select {
-				case res := <-r.openDone:
-					r.finishOpen(res)
-				case <-time.After(5 * time.Second):
-					t.Fatal("reopen did not finish")
-				}
 				if r.visibleTab().name != "new-child-name" {
 					t.Fatalf("opened %s", r.visibleTab().name)
 				}
-			} else {
-				want := "missing or ambiguous"
-				if kind == "leased" {
-					want = "open in another polly"
+			} else if kind == "leased" {
+				if r.visibleTab().childView == nil || r.visibleTab().state.session != nil {
+					t.Fatal("inspection acquired a runtime")
 				}
-				if r.opening != "" || !strings.Contains(plainStyledText(m.fullTranscript()), want) {
-					t.Fatalf("refusal = %q, opening %q", m.fullTranscript(), r.opening)
+			} else {
+				if r.opening != "" || !strings.Contains(plainStyledText(r.model.fullTranscript()), "session not found") {
+					t.Fatalf("refusal = %q, opening %q", r.model.fullTranscript(), r.opening)
 				}
 			}
 		})
