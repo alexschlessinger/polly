@@ -425,10 +425,14 @@ func (r *managedREPL) requestOpenLocked(name string) {
 	r.beginOpenLocked(name, false)
 }
 
-// canOpenLocked reports whether a tab may open now: only one open runs at a
-// time. Caller must hold r.model.mu.
+// canOpenLocked reports whether a tab may open now, explaining a refusal in
+// the transcript: only one open runs at a time. Caller must hold r.model.mu.
 func (r *managedREPL) canOpenLocked() bool {
-	return r.opening == ""
+	if r.opening != "" {
+		r.model.appendNoticeLine("already opening " + r.opening)
+		return false
+	}
+	return true
 }
 
 // beginOpenLocked resolves the session's settings on the UI goroutine, then
@@ -446,6 +450,7 @@ func (r *managedREPL) beginOpenContextLocked(openCtx context.Context, name strin
 		return
 	}
 	r.opening = resolved
+	m.appendNoticeLine("opening " + resolved + "…")
 	ctx, cancel := context.WithCancel(openCtx)
 	r.openCancel = cancel
 	open := r.opener.open

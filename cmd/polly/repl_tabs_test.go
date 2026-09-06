@@ -546,6 +546,13 @@ func TestNewTabOpensGeneratedSessionAndCloseDiscardsIt(t *testing.T) {
 		t.Fatalf("/new did not start opening a session: %q", r.model.fullTranscript())
 	}
 	name := r.opening
+	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "opening "+name+"…") {
+		t.Fatalf("open in flight was not announced: %q", transcript)
+	}
+	r.runTabCommand("/new")
+	if transcript := r.model.fullTranscript(); r.opening != name || !strings.Contains(transcript, "already opening "+name) {
+		t.Fatalf("second /new during the open was not refused with a notice: %q", transcript)
+	}
 	r.finishOpen(<-r.openDone)
 	if len(r.tabs) != 2 || r.visibleTabIndex() != 1 || r.tabs[1].name != name {
 		t.Fatalf("tabs after /new = %d, visible %d, names %q/%q", len(r.tabs), r.visibleTabIndex(), r.tabs[0].name, r.tabs[len(r.tabs)-1].name)
@@ -693,6 +700,9 @@ func TestComposerHoldsInputWhileOpening(t *testing.T) {
 	}
 	if got := r.model.ed.text(); got != "draft for the next session" {
 		t.Fatalf("held draft was cleared: %q", got)
+	}
+	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "opening older-work") {
+		t.Fatalf("hold was not explained: %q", transcript)
 	}
 	select {
 	case <-r.pending:

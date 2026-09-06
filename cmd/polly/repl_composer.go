@@ -693,6 +693,7 @@ func (r *managedREPL) submitComposerLocked() bool {
 	}
 	if r.opening != "" {
 		// The draft stays put: it can go to the new tab once it is live.
+		m.appendNoticeLine("opening " + r.opening + "; input held until it opens")
 		m.followBottom = true
 		return false
 	}
