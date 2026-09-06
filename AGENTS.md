@@ -44,7 +44,7 @@ Sandboxing is default-on for bash, shell tools, and stdio MCP servers (bubblewra
 
 ## Gotchas
 
-- Do not commit the `polly` binary (34 MB, gitignored at repo root) or runtime data.
+- Do not commit the `polly` binary (34 MB, gitignored at repo root), the `textfx` experiment binary (`go build ./experiments/...` drops it at the repo root; gitignored there and under `experiments/textfx/`), or runtime data.
 - `.gopath/` (~1.4 GB) is a local GOPATH cache, gitignored — not repo source. `.claude/worktrees/`, `.polly-shots/`, `.zvec-grep/`, `.tmux-tmp/` are scratch; work from the repo root or greps will hit duplicate trees. Agent-facing skills live in `.agents/skills/`.
 - `skills.Message` is deliberately field-order-compatible with `messages.ChatMessage` to break an import cycle — do not reorder fields.
 - Tool wrappers must preserve media output: use `NamespacedTool.ExecuteOutput` when wrapping; don't drop `OutputTool` semantics.
