@@ -11,6 +11,7 @@ type tabSignalKind int
 const (
 	signalTurnDone tabSignalKind = iota
 	signalTurnFailed
+	signalTurnIncomplete
 	signalApprovalNeeded
 )
 
@@ -40,6 +41,8 @@ func formatTabSignal(tab *replTab, s tabSignal) string {
 		return name + " done · " + s.detail
 	case signalTurnFailed:
 		return name + " failed · " + s.detail
+	case signalTurnIncomplete:
+		return name + " incomplete · " + s.detail
 	case signalApprovalNeeded:
 		return name + " needs approval: " + s.detail + " · /tab " + tab.name
 	}

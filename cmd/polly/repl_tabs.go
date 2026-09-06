@@ -561,6 +561,8 @@ func (r *managedREPL) tabActivity(tab *replTab) string {
 			return "done"
 		case turnOutcomeFailed:
 			return "failed"
+		case turnOutcomeIncomplete:
+			return "incomplete"
 		}
 		return ""
 	case m.turnStarted.IsZero():

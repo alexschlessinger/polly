@@ -920,7 +920,7 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 	activeToolReason := "stopped"
 	if m.lastOutcome == turnOutcomeCanceled {
 		activeToolReason = "canceled"
-	} else if err != nil {
+	} else if err != nil && m.lastOutcome != turnOutcomeIncomplete {
 		activeToolReason = "failed"
 	}
 	m.turnDock.reasoningIDs = append([]int64(nil), m.turnReasoningIDs...)
@@ -943,8 +943,18 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 		unsavedSuffix = " · not saved"
 	}
 	switch {
-	case m.lastOutcome == turnOutcomeDone || m.lastOutcome == turnOutcomeIncomplete:
+	case m.lastOutcome == turnOutcomeDone:
 		m.finishAssistantBlock("")
+		if !m.turnHasOutput {
+			m.appendNoticeLine("(no response)")
+		}
+	case m.lastOutcome == turnOutcomeIncomplete:
+		// A cap is news like a failure but settles like success: completed
+		// work is persisted, queued input still flows, and the prompt is not
+		// clawed back — matching how hydration treats an interrupted turn.
+		label := turnOutcomeLabel(m.lastOutcome) + unsavedSuffix
+		m.finishAssistantBlock(label)
+		m.labelTurnOutcome(label)
 		if !m.turnHasOutput {
 			m.appendNoticeLine("(no response)")
 		}
@@ -976,16 +986,22 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 		case turnOutcomeFailed:
 			m.unseenOutcome = m.lastOutcome
 			m.signalHiddenLocked(signalTurnFailed, truncate(err.Error(), 120))
+		case turnOutcomeIncomplete:
+			// err is nil for a token cap, so the detail is elapsed, not err.
+			m.unseenOutcome = m.lastOutcome
+			m.signalHiddenLocked(signalTurnIncomplete, formatElapsed(m.lastElapsed))
 		}
 	}
 	// A long turn settling is the "walk away and get pinged" moment; a quick
 	// one never gave the user time to leave. Cancellation is user-initiated,
-	// so only done/failed notify.
-	if m.lastElapsed >= notifyMinTurn &&
-		(m.lastOutcome == turnOutcomeDone || m.lastOutcome == turnOutcomeFailed) {
+	// so only done/failed/incomplete notify.
+	if m.lastElapsed >= notifyMinTurn && m.lastOutcome != turnOutcomeCanceled {
 		body := "done in " + coarseElapsed(m.lastElapsed)
-		if m.lastOutcome == turnOutcomeFailed {
+		switch m.lastOutcome {
+		case turnOutcomeFailed:
 			body = "failed after " + coarseElapsed(m.lastElapsed)
+		case turnOutcomeIncomplete:
+			body = "incomplete after " + coarseElapsed(m.lastElapsed)
 		}
 		if preview := compactQueuePreview(m.currentPrompt); preview != "" {
 			body += " — " + preview
