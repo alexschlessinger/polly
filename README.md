@@ -294,6 +294,12 @@ dependent changes, and verify the result. Display and conversation-recall
 guidance is added per request as well. These defaults are never stored in
 the transcript. The Go library does not add the CLI's coding policy.
 
+Default replies favor one short explanatory paragraph, expanding when needed
+or requested. Substantial work starts with a brief plan, followed by meaningful
+updates; completed changes include the result, validation, and remaining issues.
+Investigation and verification scale with the change's risk while honoring
+repository-required checks.
+
 Default coding turns also load `AGENTS.md` from the nearest Git root through
 the working directory, in that order. A `.git` directory or worktree file
 marks the root; outside a Git repository, only the working directory's file

@@ -13,12 +13,12 @@ const (
 	// markdownDisplayContract covers every human-facing frontend. Markdown is
 	// an available content format, not a requirement: raw line output preserves
 	// the source while rich terminal surfaces render it.
-	markdownDisplayContract = "Your output is emitted as Markdown source or rendered Markdown depending on the terminal. Markdown is supported but optional; follow explicit user formatting requests. Be concise without omitting evidence or qualifications needed to understand the answer. Tag code fences with a language for syntax highlighting. Raw HTML is not rendered on rich terminal surfaces. Markdown tables render as aligned monospace columns; keep cells short so rows fit the terminal. To show Markdown source literally, fence it. When the user gives you an image path or image URL, attach it with the view_image tool so you can actually see it. Typed images attached by tools produce a user-visible inspection receipt; the TUI groups them under Images viewed."
+	markdownDisplayContract = "Follow the user's formatting requests. Be concise without losing necessary detail. Markdown is optional; use language-tagged code fences, short table cells, and fences for literal Markdown. Raw HTML is not rendered. Inspect supplied image paths or URLs with view_image; attached tool images already produce visible receipts."
 
 	// localImageDisplayContract is added only for surfaces that interpret local
 	// Markdown images. Native-capable terminals draw a thumbnail; other rich
 	// terminals retain the caption/path fallback.
-	localImageDisplayContract = "This terminal surface interprets local Markdown image references. Typed tool images already produce a user-visible inspection receipt, so do not repeat a view_image result in your reply unless the image belongs in the final answer or the user explicitly asks to see it there. To deliberately place an image in the reply, embed it as ![alt](path) (or ![alt](url)). Local images render as native thumbnails when supported and as compact captions otherwise."
+	localImageDisplayContract = "Embed images with ![alt](path-or-url) when requested or useful in the answer; avoid repeating inspection images. Terminals show thumbnails or captions."
 
 	// richTerminalDisplayContract must mirror what the managed REPL and rich
 	// line renderer in markdown.go actually support: strikethrough and tables
@@ -36,7 +36,7 @@ const (
 	// belongs here, composed at send time; the durable receipt and stub forms
 	// are byte-stability contracts with persisted history and must not absorb
 	// wording changes.
-	contextMechanicsContract = "Conversation memory: your visible context is a trimmed view of a complete, durable transcript. Your reply text persists across turns verbatim; large tool outputs shrink to artifact receipts once a turn completes, and the oldest exchanges are eventually omitted. Put important findings and decisions in your replies. Everything trimmed stays recoverable — read_artifact reads a stored output by the ID its receipt names, read_transcript searches or pages the full conversation, list_artifacts catalogs stored items — so use those tools to recover prior findings before repeating an investigation or asking the user to repeat information. Historical file contents, command output, and test results may be stale: use fresh reads and checks when current state matters, especially before editing or claiming validation. To see a stored image again, call read_artifact with its artifact ID; writing an image token in a reply does not attach it. Handle context limits silently; don't mention them unless the user asks."
+	contextMechanicsContract = "Context is trimmed; the full transcript remains recoverable. Replies persist verbatim, while large tool outputs become artifact receipts. Briefly preserve important findings and decisions in replies. Recover earlier work with read_transcript, read_artifact, or list_artifacts before repeating investigations or questions. Recheck historical evidence when current state matters. Reattach stored images with read_artifact; image tokens do not attach them. Discuss context limits only if asked."
 )
 
 // sendTimeContracts joins the per-frontend display contract with the
