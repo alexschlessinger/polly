@@ -102,6 +102,30 @@ func TestOutputFailureOverridesTokenCapAfterFlush(t *testing.T) {
 	}
 }
 
+func TestStderrWriteFailureKeepsDeliveredAnswerExitZero(t *testing.T) {
+	for _, rich := range []bool{false, true} {
+		t.Run(fmt.Sprint(rich), func(t *testing.T) {
+			message := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "answer", StopReason: messages.StopReasonEndTurn}
+			state, _ := newInterruptedTurnState(t, &scriptedStreamLLM{responses: []messages.ChatMessage{message}}, nil)
+			state.settings.SystemPrompt = "fixture"
+			config := &Config{}
+			ui := newLineTurnUI(config, nil)
+			var answer bytes.Buffer
+			ui.writer, ui.errWriter = &answer, failingTurnWriter{}
+			if rich {
+				ui.capabilities.surface = outputSurfaceLineANSI
+			}
+			code, err := executeTurnWithUserMessage(context.Background(), config, state, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"}, nil, nil, ui, false)
+			if code != 0 || err != nil || ui.activity.outcome != turnOutcomeDone {
+				t.Fatalf("stderr chrome failure changed the outcome: code=%d err=%v outcome=%v", code, err, ui.activity.outcome)
+			}
+			if !strings.Contains(answer.String(), "answer") {
+				t.Fatalf("answer not delivered: %q", answer.String())
+			}
+		})
+	}
+}
+
 func TestActivityRawAnswerBytesAcrossDetailAndQuietModes(t *testing.T) {
 	for _, interrupted := range []bool{false, true} {
 		for _, config := range []*Config{{}, {ActivityDetails: true}, {Quiet: true}, {Quiet: true, ActivityDetails: true}} {

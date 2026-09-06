@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"io"
 )
 
@@ -43,14 +42,14 @@ func (ui *lineTurnUI) FlushOutputError() error {
 	return ui.outputErrorLocked()
 }
 
+// outputErrorLocked reports a failure delivering the answer. Status rows and
+// the settled summary on stderr are chrome, not the contract: a redirected or
+// closed stderr must not turn a fully delivered stdout answer into exit 1.
 func (ui *lineTurnUI) outputErrorLocked() error {
-	var failures []error
-	for _, w := range []io.Writer{ui.writer, ui.errWriter} {
-		if checked, ok := w.(*lineCheckedWriter); ok && checked.err != nil {
-			failures = append(failures, checked.err)
-		}
+	if checked, ok := ui.writer.(*lineCheckedWriter); ok {
+		return checked.err
 	}
-	return errors.Join(failures...)
+	return nil
 }
 
 func flushTurnOutputError(turnUI TurnUI) error {
