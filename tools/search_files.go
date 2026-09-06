@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -14,6 +16,29 @@ import (
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
+
+// ErrSearchFilesUnavailable identifies an absent optional zg dependency.
+// Session restoration can omit this tool without treating the session as broken.
+var ErrSearchFilesUnavailable = errors.New("search_files requires zvec-grep (zg) on PATH")
+
+// SearchFilesAvailable reports whether the native search tool's dependency is
+// installed. Loading resolves it again so a PATH change cannot expose a tool
+// whose dependency is no longer available.
+func SearchFilesAvailable() bool {
+	_, err := exec.LookPath("zg")
+	return err == nil
+}
+
+func loadSearchFilesTool(registry *ToolRegistry) (Tool, error) {
+	binary, err := exec.LookPath("zg")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSearchFilesUnavailable, err)
+	}
+	if err := registry.requireProcessSandbox("search_files"); err != nil {
+		return nil, err
+	}
+	return &searchFilesTool{registry: registry, zvecPath: binary}, nil
+}
 
 const (
 	searchDefaultLimit = 100
@@ -39,20 +64,25 @@ const (
 type searchFilesTool struct {
 	NativeTool
 	registry *ToolRegistry
+	zvecPath string
 }
 
 // NewSearchFilesTool creates the search_files tool bound to registry's
 // sandbox policy.
 func NewSearchFilesTool(registry *ToolRegistry) Tool {
-	return &searchFilesTool{registry: registry}
+	t := &searchFilesTool{registry: registry}
+	if registry.requireProcessSandbox("indexed search") == nil {
+		t.zvecPath, _ = exec.LookPath("zg")
+	}
+	return t
 }
 
 func (t *searchFilesTool) GetName() string { return "search_files" }
 
 func (t *searchFilesTool) GetSchema() *schema.ToolSchema {
-	return schema.Tool(
+	s := schema.Tool(
 		"search_files",
-		"Search files under a directory for matching lines, reported as path:line: text with paths relative to the search root. Matching is a case-sensitive literal by default; .git, symlinks, and binary files are skipped. Follow up with read_file; never include the path:line: prefix in edit_file's old_string.",
+		"Search files under a directory for matching lines, reported as path:line: text with paths relative to the search root. Matching is a case-sensitive literal by default; .git, .zvec-grep, symlinks, and binary files are skipped. Follow up with read_file; never include the path:line: prefix in edit_file's old_string.",
 		schema.Params{
 			"pattern": schema.S("Text to search for (single-line, case-sensitive literal unless regex is set)"),
 			"path":    schema.S("Directory (or single file) to search; defaults to the current directory"),
@@ -62,6 +92,15 @@ func (t *searchFilesTool) GetSchema() *schema.ToolSchema {
 		},
 		"pattern",
 	)
+	if t.zvecPath != "" {
+		s.Raw["description"] = "Preferred tool for finding code and documents. Use query for natural-language, conceptual, or cross-file discovery with zvec-grep; Polly automatically creates a local workspace index and refreshes it. Start here before shell searches, directory exploration, or broad file reads. Use pattern only for exact literal/RE2 occurrences and focused verification. Supply exactly one of query or pattern. Indexed results are ranked samples, not exhaustive matches; follow up with read_file only when the snippets are insufficient."
+		props := s.Raw["properties"].(map[string]any)
+		props["query"] = schema.S("Natural-language discovery question, optionally including known symbols; uses the local zvec-grep index")
+		props["limit"] = schema.Int("Maximum results: query defaults to 7 (max 50); pattern defaults to 100 (max 500)")
+		props["path"] = schema.S("Directory to search (default current directory); pattern also accepts a single file. Query reuses the nearest workspace index while keeping results inside this directory")
+		delete(s.Raw, "required")
+	}
+	return s
 }
 
 type searchState struct {
@@ -85,6 +124,12 @@ func (t *searchFilesTool) Execute(ctx context.Context, raw map[string]any) (stri
 		return "", err
 	}
 	args := Args(raw)
+	if query := strings.TrimSpace(args.String("query")); query != "" {
+		if args.String("pattern") != "" || args.Bool("regex") {
+			return "", fmt.Errorf("supply query for indexed discovery or pattern (with optional regex) for exact matching, not both")
+		}
+		return t.searchIndexed(ctx, args, query)
+	}
 	pattern := args.String("pattern")
 	if pattern == "" {
 		return "", fmt.Errorf("pattern is required")
@@ -154,7 +199,7 @@ func (t *searchFilesTool) Execute(ctx context.Context, raw map[string]any) (stri
 			if path == abs {
 				return nil
 			}
-			if d.Name() == ".git" {
+			if d.Name() == ".git" || d.Name() == ".zvec-grep" {
 				return fs.SkipDir
 			}
 			if state.sandboxActive && sandbox.ReadAllowed(state.sandboxCfg, path) != nil {

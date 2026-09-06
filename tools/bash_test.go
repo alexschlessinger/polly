@@ -67,6 +67,7 @@ func TestBashToolSchemaAnnotatesSandboxPosture(t *testing.T) {
 }
 
 func TestBashSchemaSteersTowardLoadedFileTools(t *testing.T) {
+	installSearchDependencyForTest(t)
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
 		t.Fatalf("load bash: %v", err)
@@ -75,19 +76,24 @@ func TestBashSchemaSteersTowardLoadedFileTools(t *testing.T) {
 	if !ok {
 		t.Fatal("bash not registered")
 	}
-	if desc := bash.GetSchema().Description(); strings.Contains(desc, "instead of") {
+	if desc := bash.GetSchema().Description(); strings.Contains(desc, "instead of") || strings.Contains(desc, "search_files") {
 		t.Fatalf("description steers with no file tools loaded: %q", desc)
 	}
 
 	// Loading file tools after bash must still surface them: the schema is
-	// computed per call, not snapshotted at load time.
-	for _, name := range []string{"read_file", "search_files"} {
-		if _, err := registry.LoadToolAuto(name); err != nil {
-			t.Fatalf("load %s: %v", name, err)
-		}
+	// computed per call, not snapshotted at load time. The discovery sentence
+	// keys on search_files specifically, not on any sibling being loaded.
+	if _, err := registry.LoadToolAuto("read_file"); err != nil {
+		t.Fatalf("load read_file: %v", err)
+	}
+	if desc := bash.GetSchema().Description(); !strings.Contains(desc, "read_file instead of cat/head/tail") || strings.Contains(desc, "search_files") {
+		t.Fatalf("description with only read_file loaded: %q", desc)
+	}
+	if _, err := registry.LoadToolAuto("search_files"); err != nil {
+		t.Fatalf("load search_files: %v", err)
 	}
 	desc := bash.GetSchema().Description()
-	for _, want := range []string{"read_file instead of cat/head/tail", "search_files instead of grep/rg"} {
+	for _, want := range []string{"read_file instead of cat/head/tail", "search_files instead of grep/rg", "Start discovery with search_files before shell searches"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q: %q", want, desc)
 		}
