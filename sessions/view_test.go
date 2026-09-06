@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -157,5 +158,43 @@ func TestSessionViewRejectsAmbiguousChildrenAndSequenceLoss(t *testing.T) {
 	}
 	if _, err := store.ReadView(ctx, ViewTarget{Name: "one"}, ""); err == nil {
 		t.Fatal("missing messages accepted")
+	}
+}
+
+// A view must agree with Acquire about expiry: a session past its TTL is
+// still served while a lease holds it (Acquire keeps it too), and refused
+// once released (Acquire would retire it), so a follow-up never lands on a
+// conversation the view just showed but the store no longer has.
+func TestSessionViewRefusesExpiredSessionUnlessLeased(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, &Metadata{TTL: time.Second}, 0)
+	ctx := context.Background()
+	session := acquireNamed(t, store, "stale")
+	if err := session.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "keep me"}); err != nil {
+		t.Fatal(err)
+	}
+	id := session.(ViewIdentity).ViewID()
+	backdate := func() {
+		t.Helper()
+		if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), session.(*sqliteSession).id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backdate()
+	held, err := store.ReadView(ctx, ViewTarget{ID: id}, "")
+	if err != nil || !held.InUse || len(held.History) != 1 {
+		t.Fatalf("expired session under a live lease: %+v, %v", held, err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backdate()
+	if _, err := store.ReadView(ctx, ViewTarget{Name: "stale"}, ""); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expired view by name: %v", err)
+	}
+	if _, err := store.ReadView(ctx, ViewTarget{ID: id}, ""); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expired view by id: %v", err)
+	}
+	if _, err := store.Acquire(ctx, "stale", AcquireOptions{ExpectedID: id}); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expired identity acquired: %v", err)
 	}
 }
