@@ -13,18 +13,17 @@ const (
 	// markdownDisplayContract covers every human-facing frontend. Markdown is
 	// an available content format, not a requirement: raw line output preserves
 	// the source while rich terminal surfaces render it.
-	markdownDisplayContract = "Follow the user's formatting requests. Be concise without losing necessary detail. Markdown is optional; use language-tagged code fences, short table cells, and fences for literal Markdown. Raw HTML is not rendered. Inspect supplied image paths or URLs with view_image; attached tool images already produce visible receipts."
+	markdownDisplayContract = "Follow the user's formatting requests. Be concise without losing necessary detail. Markdown is optional; use language-tagged code fences, fences for literal Markdown, and short table cells so rows fit the terminal. Inspect supplied image paths or URLs with view_image."
 
-	// localImageDisplayContract is added only for surfaces that interpret local
-	// Markdown images. Native-capable terminals draw a thumbnail; other rich
-	// terminals retain the caption/path fallback.
-	localImageDisplayContract = "Embed images with ![alt](path-or-url) when requested or useful in the answer; avoid repeating inspection images. Terminals show thumbnails or captions."
+	// localImageDisplayContract is added only for surfaces that render
+	// Markdown: HTML shown as source, tool-image receipts, and local image
+	// references drawn as native thumbnails or caption/path fallbacks.
+	localImageDisplayContract = "Raw HTML is shown as source. Attached tool images already show an inspection receipt; re-embed one only when it belongs in the answer or the user asks to see it. Embed images with ![alt](path-or-url); this terminal shows thumbnails or captions."
 
-	// richTerminalDisplayContract must mirror what the managed REPL and rich
-	// line renderer in markdown.go actually support: strikethrough and tables
-	// beyond core markdown, HTML blocks displayed as source, fence language
-	// tags driving chroma highlighting, and local image references rendered
-	// inline.
+	// richTerminalDisplayContract is markdownDisplayContract plus the
+	// rendered-surface sentence. Its HTML, table, and thumbnail claims must
+	// track what the managed REPL and the rich line renderer in markdown.go
+	// actually do.
 	richTerminalDisplayContract = markdownDisplayContract + "\n\n" + localImageDisplayContract
 
 	// contextMechanicsContract teaches the proactive habits the projection's
@@ -36,7 +35,7 @@ const (
 	// belongs here, composed at send time; the durable receipt and stub forms
 	// are byte-stability contracts with persisted history and must not absorb
 	// wording changes.
-	contextMechanicsContract = "Context is trimmed; the full transcript remains recoverable. Replies persist verbatim, while large tool outputs become artifact receipts. Briefly preserve important findings and decisions in replies. Recover earlier work with read_transcript, read_artifact, or list_artifacts before repeating investigations or questions. Recheck historical evidence when current state matters. Reattach stored images with read_artifact; image tokens do not attach them. Discuss context limits only if asked."
+	contextMechanicsContract = "Context is trimmed; the full transcript remains recoverable. Replies persist verbatim, while large tool outputs become artifact receipts. Briefly preserve important findings and decisions in replies. Recover earlier work with read_transcript, read_artifact, or list_artifacts before repeating investigations or questions. Earlier file contents, command output, and test results may be stale: re-read and re-run before editing or claiming validation. To show a stored image again call read_artifact with its artifact ID; writing its [image ...] reference in a reply does not attach it. Discuss context limits only if asked."
 )
 
 // sendTimeContracts joins the per-frontend display contract with the
