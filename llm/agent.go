@@ -592,6 +592,11 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 // notices the cancellation and closes it.
 func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.StreamEvent, cb *AgentCallbacks) (*messages.ChatMessage, error) {
 	var response *messages.ChatMessage
+	// Thinking time is the wall clock from the first reasoning delta to the
+	// first content delta, or to the end of the response when the model went
+	// straight from reasoning to tool calls. It lands on the message as
+	// display-only metadata so a resumed transcript can show it.
+	var thinkingStart, thinkingEnd time.Time
 
 	for event := range events {
 		select {
@@ -603,15 +608,27 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 
 		switch event.Type {
 		case messages.EventTypeReasoning:
+			if thinkingStart.IsZero() {
+				thinkingStart = time.Now()
+			}
 			if cb != nil && cb.OnReasoning != nil {
 				cb.OnReasoning(event.Content)
 			}
 		case messages.EventTypeContent:
+			if !thinkingStart.IsZero() && thinkingEnd.IsZero() {
+				thinkingEnd = time.Now()
+			}
 			if cb != nil && cb.OnContent != nil {
 				cb.OnContent(event.Content)
 			}
 		case messages.EventTypeComplete:
 			response = event.Message
+			if response != nil && !thinkingStart.IsZero() {
+				if thinkingEnd.IsZero() {
+					thinkingEnd = time.Now()
+				}
+				response.SetThinkingDuration(thinkingEnd.Sub(thinkingStart))
+			}
 		case messages.EventTypeError:
 			if cb != nil && cb.OnError != nil {
 				cb.OnError(event.Error)
@@ -670,6 +687,7 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 	// distinguish it from older tool messages whose outcome is unknown. Tool
 	// failures must not use the terminal stream-error metadata.
 	msg.SetToolSucceeded(err == nil)
+	msg.SetToolDuration(duration)
 	if cb != nil && cb.OnToolResult != nil {
 		cb.OnToolResult(tc, cloneMessages([]messages.ChatMessage{msg})[0])
 	}

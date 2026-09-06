@@ -26,9 +26,11 @@ func toolWasDenied(result string) bool {
 }
 
 // toolDisplayName is the name shown for a tool call, with a placeholder for
-// an unnamed one. The persisted display record (durableDisplayToolCall) and
-// the hydrated row are both built from it, and applyToolOrder pairs them by
-// name, so the placeholder must be the same string on both sides.
+// an unnamed one. The persisted display record (durableDisplayToolCall)
+// stores it, and applyToolOrder pairs that record with a hydrated row by tool
+// name (row.toolName, not the row's label, which also carries the argument
+// summary), passing both sides through here so an unnamed call matches
+// itself.
 func toolDisplayName(name string) string {
 	if name == "" {
 		return "tool"

@@ -2,6 +2,7 @@ package messages
 
 import (
 	"errors"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 )
@@ -118,7 +119,15 @@ const (
 	MetadataKeyDisplayToolCalls = "display_tool_calls"
 	MetadataKeyContextImport    = "context_import"
 	MetadataKeyAgentSynthetic   = "agent_synthetic"
-	TurnStatusToolDenied        = "tool_denied"
+	// MetadataKeyThinkingMillis records how long an assistant message streamed
+	// reasoning before its first content (or the end of the response), in
+	// milliseconds. It is display-only accounting so a resumed transcript can
+	// show the thinking time; providers never see it.
+	MetadataKeyThinkingMillis = "thinking_ms"
+	// MetadataKeyToolMillis records a tool result's wall-clock execution time
+	// in milliseconds, for the same display-only purpose.
+	MetadataKeyToolMillis = "tool_ms"
+	TurnStatusToolDenied  = "tool_denied"
 	// TurnStatusInterrupted marks an internal message closing a turn that was
 	// persisted after failing or being canceled partway: everything before the
 	// marker is durable completed work; the turn produced no final response.
@@ -207,6 +216,40 @@ func (m *ChatMessage) GetError() error {
 		return errors.New(msg)
 	}
 	return nil
+}
+
+// SetThinkingDuration records how long the model spent streaming reasoning.
+// Durations are stored as whole milliseconds; a positive duration under one
+// millisecond rounds up so a recorded thought never reads back as absent.
+func (m *ChatMessage) SetThinkingDuration(d time.Duration) {
+	m.setMillis(MetadataKeyThinkingMillis, d)
+}
+
+// ThinkingDuration returns the recorded reasoning time, or zero when none was
+// recorded.
+func (m *ChatMessage) ThinkingDuration() time.Duration {
+	return time.Duration(metadataInt(m.Metadata, MetadataKeyThinkingMillis)) * time.Millisecond
+}
+
+// SetToolDuration records a tool call's wall-clock execution time.
+func (m *ChatMessage) SetToolDuration(d time.Duration) {
+	m.setMillis(MetadataKeyToolMillis, d)
+}
+
+// ToolDuration returns the recorded tool execution time, or zero when none
+// was recorded.
+func (m *ChatMessage) ToolDuration() time.Duration {
+	return time.Duration(metadataInt(m.Metadata, MetadataKeyToolMillis)) * time.Millisecond
+}
+
+func (m *ChatMessage) setMillis(key string, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	if m.Metadata == nil {
+		m.Metadata = make(map[string]any)
+	}
+	m.Metadata[key] = int(max(d.Milliseconds(), 1))
 }
 
 // SetToolSucceeded records the durable outcome of an ordinary tool call.

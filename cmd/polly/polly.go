@@ -1159,8 +1159,11 @@ func durableTurnMessages(generated []messages.ChatMessage) []messages.ChatMessag
 		if allDenied {
 			metadata[messages.MetadataKeyTurnStatus] = messages.TurnStatusToolDenied
 		}
-		if reasoning := deniedDisplayReasoning(generated); reasoning != "" {
+		if reasoning, thinking := deniedDisplayReasoning(generated); reasoning != "" {
 			metadata[messages.MetadataKeyDisplayReasoning] = reasoning
+			if thinking > 0 {
+				metadata[messages.MetadataKeyThinkingMillis] = int(max(thinking.Milliseconds(), 1))
+			}
 		}
 		if displayToolCalls != "" {
 			metadata[messages.MetadataKeyDisplayToolCalls] = displayToolCalls
@@ -1227,8 +1230,10 @@ func decodeDisplayToolCalls(value any) []durableDisplayToolCall {
 // deniedDisplayReasoning keeps the human-visible reasoning that
 // StripDeniedExchanges necessarily drops with a reasoning-only assistant tool
 // proposal. Storing it on the internal completion marker avoids both an orphan
-// provider message and double-counting it as durable model reasoning.
-func deniedDisplayReasoning(generated []messages.ChatMessage) string {
+// provider message and double-counting it as durable model reasoning. The
+// summed thinking time of those stripped messages rides along so the resumed
+// disclosure keeps its elapsed label.
+func deniedDisplayReasoning(generated []messages.ChatMessage) (string, time.Duration) {
 	deniedIDs := make(map[string]struct{})
 	for _, msg := range generated {
 		if msg.Role == messages.MessageRoleTool && msg.Content == llm.ToolDeniedContent {
@@ -1236,6 +1241,7 @@ func deniedDisplayReasoning(generated []messages.ChatMessage) string {
 		}
 	}
 	var segments []string
+	var thinking time.Duration
 	for _, msg := range generated {
 		if msg.Role != messages.MessageRoleAssistant || msg.Content != "" || len(msg.ToolCalls) == 0 {
 			continue
@@ -1249,9 +1255,10 @@ func deniedDisplayReasoning(generated []messages.ChatMessage) string {
 		}
 		if allDenied && strings.TrimSpace(msg.Reasoning) != "" {
 			segments = append(segments, msg.Reasoning)
+			thinking += msg.ThinkingDuration()
 		}
 	}
-	return strings.Join(segments, "\n")
+	return strings.Join(segments, "\n"), thinking
 }
 
 func terminalToolBatchAllDenied(generated []messages.ChatMessage) bool {

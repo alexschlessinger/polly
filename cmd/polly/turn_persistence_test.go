@@ -410,14 +410,16 @@ func portablePNGBase64Size(t *testing.T, encodedSize int) string {
 }
 
 func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testing.T) {
-	generated := []messages.ChatMessage{
-		{
-			Role:      messages.MessageRoleAssistant,
-			Reasoning: "I should inspect the requested file before answering.",
-			ToolCalls: []messages.ChatMessageToolCall{
-				{ID: "1", Name: "bash", Arguments: `{}`},
-			},
+	proposal := messages.ChatMessage{
+		Role:      messages.MessageRoleAssistant,
+		Reasoning: "I should inspect the requested file before answering.",
+		ToolCalls: []messages.ChatMessageToolCall{
+			{ID: "1", Name: "bash", Arguments: `{}`},
 		},
+	}
+	proposal.SetThinkingDuration(3 * time.Second)
+	generated := []messages.ChatMessage{
+		proposal,
 		{
 			Role:       messages.MessageRoleTool,
 			Content:    llm.ToolDeniedContent,
@@ -438,6 +440,9 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	if durable[0].Reasoning != "" {
 		t.Fatalf("internal display reasoning must not be model reasoning: %#v", durable[0])
 	}
+	if got := durable[0].ThinkingDuration(); got != 3*time.Second {
+		t.Fatalf("stripped proposal's thinking time on marker = %v, want 3s", got)
+	}
 
 	history := append([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "do it"}}, durable...)
 	visible := modelVisibleHistory(history)
@@ -453,6 +458,9 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	record := m.reasoningRecords[m.reasoningOrder[0]]
 	if record == nil || !record.complete || record.unsaved || !strings.Contains(string(record.tail), "inspect the requested file") {
 		t.Fatalf("hydrated denied reasoning = %#v", record)
+	}
+	if record.elapsed != 3*time.Second {
+		t.Fatalf("hydrated denied reasoning elapsed = %v, want 3s", record.elapsed)
 	}
 	if len(m.toolDisclosures) != 1 {
 		t.Fatalf("denied tool disclosures = %d, want 1", len(m.toolDisclosures))
