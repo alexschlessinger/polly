@@ -389,7 +389,10 @@ func (r *managedREPL) activateChildViewLocked(tab *replTab) {
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			mergeChildAttachments(m, next)
-			m.adoptRestoredDraft(next)
+			// An unchanged revision keeps the tab's own restored prompt: a
+			// retired display may carry one the store never received, and
+			// adopting next's absent restore would clear it and drop the
+			// Enter that is about to submit it.
 			m.artifactStore, m.status.contextName, m.status.parentName = state.artifactStore, tab.name, tab.parentName
 			tab.stopWatch = context.AfterFunc(state.session.Context(), r.wakeTabs)
 			if r.model == m {

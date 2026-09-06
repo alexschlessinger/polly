@@ -308,6 +308,41 @@ func TestChildViewRestoresUnansweredPromptAndReusesItOnResend(t *testing.T) {
 	}
 }
 
+func TestRetiredChildResendsUnpersistedRestoredPrompt(t *testing.T) {
+	r, _, activity := savedChildViewFixture(t)
+	state, err := r.opener.open(context.Background(), "child", Settings{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.addTab(state); err != nil {
+		t.Fatal(err)
+	}
+	child := r.visibleTab()
+	child.agentActivity = activity
+	id := child.viewID()
+	// The run ended before its prompt reached the store, as when projection
+	// fails or Esc lands before the first request, so the saved history does
+	// not restore it: only the retired display carries the prompt.
+	child.model.mu.Lock()
+	child.model.restoreTurnDraft(managedTurnInput{displayText: "retry me", userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: "retry me"}}, newTurnPersistenceAck(false))
+	child.model.mu.Unlock()
+	r.showTab(0)
+	driveChildView(t, r, func() bool { return r.childViews.entries[id] != nil })
+	child = clickChildView(t, r, activity)
+	if child.viewLoading || child.model.ed.text() != "retry me" {
+		t.Fatalf("cached view lost the unpersisted prompt: %q", child.model.ed.text())
+	}
+	driveChildView(t, r, func() bool { return child.childView.Unchanged })
+	child.model.mu.Lock()
+	r.submitComposerLocked()
+	child.model.mu.Unlock()
+	driveChildView(t, r, func() bool { return !child.viewOpening })
+	pending, ok := r.takePendingTurn()
+	if !ok || child.state.session == nil || pending.turn.userMessage.Content != "retry me" {
+		t.Fatalf("unchanged resend was dropped: pending %v, composer %q", ok, child.model.ed.text())
+	}
+}
+
 // drainUITasks runs the callbacks already queued for the event loop.
 func drainUITasks(r *managedREPL) {
 	for {
