@@ -388,8 +388,13 @@ func handleCreateContext(ctx context.Context, store sessions.SessionStore, confi
 // the same sandbox policy, and returns the loader records to persist; the
 // registry itself is discarded once the tools are known.
 func resolveCreateTools(config *Config) ([]tools.ToolLoaderInfo, error) {
-	registryOpts, err := sandboxRegistryOptionsWithWarnings(config, nil)
+	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, nil)
 	if err != nil {
+		return nil, err
+	}
+	// A command has nothing to overlap the probe with; its failure stays
+	// ahead of the tool loads.
+	if err := probe.wait(context.Background()); err != nil {
 		return nil, err
 	}
 	registry := tools.NewToolRegistry(nil, registryOpts...)
