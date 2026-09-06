@@ -235,12 +235,12 @@ func (u *childTurnUI) Start() {}
 func (u *childTurnUI) Stop()  {}
 func (u *childTurnUI) ShowThinking(chunk string) {
 	if u.activity != nil && chunk != "" {
-		u.activity.phase("thinking")
+		u.activity.phase(turnStateThinking)
 	}
 }
 func (u *childTurnUI) AppendWarning(text string) {
 	if u.activity != nil {
-		u.activity.ui.AppendWarning(u.activity.prefix + text)
+		u.activity.warning(text)
 	}
 }
 func (u *childTurnUI) RecordContextUsage(int, int, bool)   {}
@@ -262,12 +262,12 @@ func (u *childTurnUI) childActivity(call messages.ChatMessageToolCall) *lineChil
 	if u.activity == nil {
 		return nil
 	}
-	return u.activity.ui.newChildActivity(u.activity.scope, u.activity.prefix, call)
+	return u.activity.ui.newChildActivity(u.activity.scope, call)
 }
 
 func (u *childTurnUI) AppendAssistantText(content string) {
 	if u.activity != nil && content != "" {
-		u.activity.phase("writing")
+		u.activity.phase(turnStateStreaming)
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -278,7 +278,6 @@ func (u *childTurnUI) AppendAssistantText(content string) {
 // the child working, not its reply.
 func (u *childTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	if u.activity != nil {
-		u.activity.phase("working")
 		u.activity.tools(calls)
 	}
 	u.mu.Lock()
@@ -298,6 +297,9 @@ func (u *childTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 }
 
 func (u *childTurnUI) RecordTurnTokens(in, out int) {
+	if u.activity != nil {
+		u.activity.usage(in, out)
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.in, u.out = in, out
@@ -307,6 +309,12 @@ func (u *childTurnUI) FinishTextTurn() {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.reply = u.text.String()
+}
+
+func (u *childTurnUI) CompleteTurn(completion turnCompletion) {
+	if u.activity != nil {
+		u.activity.complete(completion)
+	}
 }
 
 // result is the reply and usage; a turn that never finished (a failure)

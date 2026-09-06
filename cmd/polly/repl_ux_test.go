@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -247,6 +248,39 @@ func TestCancelRequestLosingCompletionRaceDoesNotClaimUnsaved(t *testing.T) {
 	}
 }
 
+// An iteration cap is news like a failure but settles like success: the
+// transcript names it, queued input keeps flowing, and the prompt is not
+// restored as a draft.
+func TestIncompleteTurnLabelsWithoutDiscardingQueue(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	m.appendToolStartLine("call-1", "bash sleep 30")
+	m.appendAssistant("partial answer\n")
+	m.ed.setText("next question")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	r.endTurn(llm.ErrMaxIterations)
+
+	joined := strings.Join(m.flattenTranscript(), "\n")
+	plain := plainStyledText(joined)
+	for _, want := range []string{"partial answer", "incomplete · not saved"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("incomplete transcript %q missing %q", plain, want)
+		}
+	}
+	for _, reject := range []string{"Error:", "failed", "(not sent)"} {
+		if strings.Contains(plain, reject) {
+			t.Fatalf("incomplete turn settled like a failure: %q", plain)
+		}
+	}
+	if m.busy || m.lastOutcome != turnOutcomeIncomplete {
+		t.Fatalf("incomplete turn did not settle: busy=%v outcome=%v", m.busy, m.lastOutcome)
+	}
+	if m.restoredDraft != nil || m.ed.text() == "explain" {
+		t.Fatalf("incomplete turn clawed the prompt back: editor=%q draft=%#v", m.ed.text(), m.restoredDraft)
+	}
+}
+
 func TestInterruptedTurnWithPersistedProgressOmitsUnsavedLabel(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -265,6 +299,12 @@ func TestInterruptedTurnWithPersistedProgressOmitsUnsavedLabel(t *testing.T) {
 			err:         &turnProgressSavedError{cause: context.Canceled},
 			wantLabel:   "canceled",
 			wantOutcome: turnOutcomeCanceled,
+		},
+		{
+			name:        "incomplete",
+			err:         &turnProgressSavedError{cause: llm.ErrMaxIterations},
+			wantLabel:   "incomplete",
+			wantOutcome: turnOutcomeIncomplete,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

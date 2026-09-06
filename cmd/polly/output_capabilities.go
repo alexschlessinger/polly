@@ -22,6 +22,7 @@ type outputCapabilities struct {
 	surface       outputSurface
 	imageProtocol terminalImageProtocol
 	columns       int
+	noColor       bool
 }
 
 func (c outputCapabilities) rendersMarkdown() bool {
@@ -64,13 +65,18 @@ func resolveOutputCapabilities(
 	}
 
 	termName := strings.TrimSpace(getenv("TERM"))
-	if !stdoutTTY || strings.EqualFold(termName, "dumb") || getenv("NO_COLOR") != "" {
+	if !stdoutTTY || strings.EqualFold(termName, "dumb") {
 		return outputCapabilities{surface: outputSurfaceLineRaw, columns: columns}
 	}
 
-	return outputCapabilities{
+	caps := outputCapabilities{
 		surface:       outputSurfaceLineANSI,
 		imageProtocol: detectTerminalImageProtocol(getenv),
 		columns:       columns,
+		noColor:       getenv("NO_COLOR") != "",
 	}
+	if caps.noColor {
+		caps.imageProtocol = terminalImageNone
+	}
+	return caps
 }

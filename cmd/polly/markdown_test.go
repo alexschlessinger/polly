@@ -207,6 +207,31 @@ func TestRenderMarkdownTableAligned(t *testing.T) {
 	}
 }
 
+// A streamed frame that overflows the screen cuts inside a table. The
+// continuation keeps the full table's column widths and carries no header
+// rule of its own.
+func TestRenderMarkdownTableClippedPastHeaderKeepsWidths(t *testing.T) {
+	source := "| Name | Qty |\n|---|---|\n| apple | 3 |\n| kiwi | 12 |"
+	doc := newLineMarkdownDocument(source, "", false, nil)
+	cut := strings.Index(source, "| kiwi")
+	var head, tail []string
+	for _, row := range must2(doc.render(0, cut, 1000)) {
+		head = append(head, lineCellsOutput(row, false))
+	}
+	for _, row := range must2(doc.render(cut, len(source), 1000)) {
+		tail = append(tail, lineCellsOutput(row, false))
+	}
+	full := strings.Split(plainStyledText(renderMarkdown(source)), "\n")
+	if got := append(head, tail...); !slices.Equal(got, full) {
+		t.Fatalf("clipped table = %q, want %q", got, full)
+	}
+	if len(tail) != 1 || strings.Contains(tail[0], "─") {
+		t.Fatalf("continuation grew a header rule: %q", tail)
+	}
+}
+
+func must2[T any, U any](t T, _ U) T { return t }
+
 func TestRenderMarkdownTableAlignment(t *testing.T) {
 	got := plainStyledText(renderMarkdown("| L | R | C |\n|:--|--:|:-:|\n| a | b | c |\n| aa | bb | cc |"))
 	want := []string{

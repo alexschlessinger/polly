@@ -111,21 +111,29 @@ func renderBlocks(parent ast.Node, source []byte, prefix string, state *markdown
 }
 
 func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, state *markdownRenderState) []string {
+	if state != nil && state.clip.excludes(n) {
+		return nil
+	}
 	switch b := n.(type) {
 	case *ast.Paragraph, *ast.TextBlock:
 		return prefixLines(splitInline(renderInlineChildren(n, source, "", "", state)), firstPrefix, contPrefix)
 	case *ast.Heading:
 		plate := markdownHeadingPlateForLevel(b.Level)
 		marker := styled(plate.marker+" ", plate.fg, plate.mod)
+		if state != nil && state.clip != nil && state.clip.start > state.clip.bounds[n].start {
+			marker = ""
+		}
 		title := renderInlineChildrenWithOptions(n, source, plate.fg, plate.mod, state, plate.uppercaseText)
 		return prefixLines([]string{marker + title}, firstPrefix, contPrefix)
 	case *ast.FencedCodeBlock:
 		lang := markdownSourceText(string(b.Language(source)), state)
-		code := markdownSourceText(codeBlockText(b.Lines(), source), state)
-		return prefixLines(state.renderCode(code, lang), firstPrefix, contPrefix)
+		lines := renderClippedCode(b.Lines(), source, lang, state)
+		if lang != "" && state != nil && state.clip != nil && state.clip.start > state.clip.bounds[n].start && len(lines) > 0 {
+			lines = lines[1:]
+		}
+		return prefixLines(lines, firstPrefix, contPrefix)
 	case *ast.CodeBlock:
-		code := markdownSourceText(codeBlockText(b.Lines(), source), state)
-		return prefixLines(state.renderCode(code, ""), firstPrefix, contPrefix)
+		return prefixLines(renderClippedCode(b.Lines(), source, "", state), firstPrefix, contPrefix)
 	case *ast.Blockquote:
 		gutter := styled("▏ ", "muted", "")
 		inner := renderBlocks(n, source, "", state)
@@ -141,7 +149,7 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 	case *ast.ThematicBreak:
 		return prefixLines([]string{styled(strings.Repeat("─", 12), "muted", "")}, firstPrefix, contPrefix)
 	case *ast.HTMLBlock:
-		html := markdownSourceText(codeBlockText(b.Lines(), source), state)
+		html := markdownSourceText(clippedCodeBlockText(b.Lines(), source, state), state)
 		return prefixLines(splitInline(styleEscape(html)), firstPrefix, contPrefix)
 	default:
 		raw := markdownSourceText(nodeText(n, source), state)
@@ -189,6 +197,12 @@ func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string, s
 			marker = fmt.Sprintf("%d. ", num)
 			num++
 		}
+		if state != nil && state.clip.excludes(item) {
+			continue
+		}
+		if state != nil && state.clip != nil && state.clip.start > state.clip.bounds[item].start {
+			marker = strings.Repeat(" ", len(marker))
+		}
 		indent := strings.Repeat(" ", len(marker))
 		lead, cont := firstPrefix, contPrefix
 		if !first {
@@ -214,20 +228,43 @@ func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string, s
 // still streaming its widths aren't final, so rows render unaligned and
 // state.deferredTable asks the stream owner for a settle re-render.
 func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix string, state *markdownRenderState) []string {
+	// A clip may start inside the table when a streamed frame overflows the
+	// screen. Widths still come from every row, so the committed prefix and
+	// the mutable remainder pad identically, and the header underline follows
+	// the header row rather than whichever row happens to be emitted first.
 	var rows [][]string
-	cols := len(table.Alignments)
+	widths := make([]int, len(table.Alignments))
+	headerShown := false
 	for row := table.FirstChild(); row != nil; row = row.NextSibling() {
+		_, isHeader := row.(*east.TableHeader)
 		mod := ""
-		if _, isHeader := row.(*east.TableHeader); isHeader {
+		if isHeader {
 			mod = "bold"
+		}
+		// Clipped-out rows are measured, not emitted: the clip-aware inline
+		// renderer would slice their text away, so they render unclipped.
+		excluded := state != nil && state.clip.excludes(row)
+		cellState := state
+		if excluded {
+			cellState = nil
 		}
 		var cells []string
 		for cell := row.FirstChild(); cell != nil; cell = cell.NextSibling() {
-			cells = append(cells, renderInlineChildren(cell, source, "", mod, state))
+			cells = append(cells, renderInlineChildren(cell, source, "", mod, cellState))
 		}
-		cols = max(cols, len(cells))
+		for len(widths) < len(cells) {
+			widths = append(widths, 0)
+		}
+		for i, cell := range cells {
+			widths[i] = max(widths[i], styledTextWidth(cell))
+		}
+		if excluded {
+			continue
+		}
+		headerShown = headerShown || isHeader
 		rows = append(rows, cells)
 	}
+	cols := len(widths)
 	if len(rows) == 0 || cols == 0 {
 		return nil
 	}
@@ -243,13 +280,6 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 		return prefixLines(lines, firstPrefix, contPrefix)
 	}
 
-	widths := make([]int, cols)
-	for _, cells := range rows {
-		for i, cell := range cells {
-			widths[i] = max(widths[i], styledTextWidth(cell))
-		}
-	}
-
 	var lines []string
 	for _, cells := range rows {
 		parts := make([]string, cols)
@@ -261,7 +291,7 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 			parts[i] = padTableCell(cell, widths[i], tableAlignment(table, i))
 		}
 		lines = append(lines, gutter+strings.TrimRight(strings.Join(parts, "  "), " "))
-		if len(lines) == 1 {
+		if len(lines) == 1 && headerShown {
 			underlines := make([]string, cols)
 			for i, w := range widths {
 				underlines[i] = strings.Repeat("─", w)
@@ -341,14 +371,21 @@ func renderInlineChildrenWithOptions(n ast.Node, source []byte, fg, mod string, 
 }
 
 func renderInlineWithOptions(n ast.Node, source []byte, fg, mod string, state *markdownRenderState, uppercaseText bool) string {
+	if state != nil && state.clip.excludes(n) {
+		return ""
+	}
 	switch i := n.(type) {
 	case *ast.Text:
-		text := markdownSourceText(string(i.Segment.Value(source)), state)
+		value := i.Segment.Value(source)
+		if state != nil {
+			value = state.clip.slice(value, i.Segment.Start)
+		}
+		text := markdownSourceText(string(value), state)
 		if uppercaseText {
 			text = strings.ToUpper(text)
 		}
 		s := styled(text, fg, mod)
-		if i.SoftLineBreak() || i.HardLineBreak() {
+		if (i.SoftLineBreak() || i.HardLineBreak()) && (state == nil || state.clip == nil || state.clip.end >= i.Segment.Stop) {
 			s += "\n"
 		}
 		return s
@@ -359,7 +396,10 @@ func renderInlineWithOptions(n ast.Node, source []byte, fg, mod string, state *m
 		}
 		return styled(text, fg, mod)
 	case *ast.CodeSpan:
-		return styled(markdownSourceText(nodeText(n, source), state), "code", mod)
+		if state == nil || state.clip == nil {
+			return styled(markdownSourceText(nodeText(n, source), state), "code", mod)
+		}
+		return renderInlineChildrenWithOptions(n, source, "code", mod, state, false)
 	case *ast.Emphasis:
 		if i.Level >= 2 {
 			return renderInlineChildrenWithOptions(n, source, fg, "bold", state, uppercaseText)
@@ -368,16 +408,23 @@ func renderInlineWithOptions(n ast.Node, source []byte, fg, mod string, state *m
 	case *east.Strikethrough:
 		return renderInlineChildrenWithOptions(n, source, fg, "strike", state, uppercaseText)
 	case *ast.Link:
+		dest := string(i.Destination)
+		if state != nil && state.clip != nil && state.clip.end < state.clip.bounds[n].end {
+			dest = ""
+		}
 		return renderLink(
 			renderInlineChildrenWithOptions(n, source, "accent", mod, state, false),
 			markdownSourceText(nodeText(n, source), state),
-			markdownSourceText(string(i.Destination), state),
+			markdownSourceText(dest, state),
 		)
 	case *ast.Image:
 		if state != nil && len(state.images) < maxTranscriptImagesPerBlock {
 			if img, ok := resolveLocalTranscriptImage(string(i.Destination), nodeText(n, source), state.baseDir); ok {
 				index := len(state.images)
 				state.images = append(state.images, img)
+				if state.clip != nil {
+					state.imagePositions = append(state.imagePositions, state.clip.bounds[n].start)
+				}
 				return renderTranscriptImage(index, img, "", n.PreviousSibling() != nil, n.NextSibling() != nil)
 			}
 		}
@@ -387,12 +434,20 @@ func renderInlineWithOptions(n ast.Node, source []byte, fg, mod string, state *m
 			markdownSourceText(string(i.Destination), state),
 		)
 	case *ast.AutoLink:
-		return styled(markdownSourceText(string(i.URL(source)), state), "accent", mod)
+		value := i.URL(source)
+		if state != nil && state.clip != nil {
+			value = state.clip.slice(value, state.clip.bounds[n].start)
+		}
+		return styled(markdownSourceText(string(value), state), "accent", mod)
 	case *ast.RawHTML:
 		var b strings.Builder
 		for s := 0; s < i.Segments.Len(); s++ {
 			seg := i.Segments.At(s)
-			b.Write(seg.Value(source))
+			value := seg.Value(source)
+			if state != nil {
+				value = state.clip.slice(value, seg.Start)
+			}
+			b.Write(value)
 		}
 		return styled(markdownSourceText(b.String(), state), fg, mod)
 	default:

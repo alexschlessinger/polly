@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"image"
 	"os"
@@ -41,6 +40,8 @@ const (
 	turnOutcomeDone
 	turnOutcomeFailed
 	turnOutcomeCanceled
+	// turnOutcomeIncomplete marks a turn cut short by a token or iteration cap.
+	turnOutcomeIncomplete
 )
 
 // replModel is the mutex-protected state for the MVP TUI. Mutated from both
@@ -185,6 +186,7 @@ type replModel struct {
 	lastOut     int
 	lastElapsed time.Duration
 	lastOutcome turnOutcome
+	completion  *turnCompletion
 
 	// Reasoning disclosures are semantic per-turn records rather than free-form
 	// transcript strings. The UI retains only a bounded tail; successful turns
@@ -900,22 +902,32 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 	if !m.turnStarted.IsZero() {
 		m.lastElapsed = time.Since(m.turnStarted)
 	}
+	completion := turnCompletion{Err: err, Elapsed: m.lastElapsed, ProgressSaved: err == nil || turnProgressSaved(err)}
+	if m.completion != nil {
+		completion = *m.completion
+		if err != nil {
+			completion.Err = err
+		}
+	}
+	m.lastElapsed = completion.Elapsed
+	m.lastOutcome = completion.outcome()
+	err = completion.Err
 	m.busy = false
 	m.canceling = false
 	m.toolName = ""
 	// Any tool whose OnToolEnd never fired must settle to a terminal row; leaving
 	// the animated arrow frozen would make an idle transcript look active.
 	activeToolReason := "stopped"
-	if errors.Is(err, context.Canceled) {
+	if m.lastOutcome == turnOutcomeCanceled {
 		activeToolReason = "canceled"
-	} else if err != nil {
+	} else if err != nil && m.lastOutcome != turnOutcomeIncomplete {
 		activeToolReason = "failed"
 	}
 	m.turnDock.reasoningIDs = append([]int64(nil), m.turnReasoningIDs...)
 	m.turnDock.toolIDs = append([]int64(nil), m.turnToolDisclosureIDs...)
 	// A partially persisted turn keeps its completed iterations — reasoning
 	// included — so only a turn that saved nothing marks its thinking unsaved.
-	progressSaved := turnProgressSaved(err)
+	progressSaved := completion.ProgressSaved
 	m.completeThinkingTurn(err != nil && !progressSaved)
 	m.settleActiveTools(activeToolReason)
 	m.activeTools = nil
@@ -931,16 +943,24 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 		unsavedSuffix = " · not saved"
 	}
 	switch {
-	case err == nil:
+	case m.lastOutcome == turnOutcomeDone:
 		m.finishAssistantBlock("")
 		if !m.turnHasOutput {
 			m.appendNoticeLine("(no response)")
 		}
-		m.lastOutcome = turnOutcomeDone
-	case errors.Is(err, context.Canceled):
+	case m.lastOutcome == turnOutcomeIncomplete:
+		// A cap is news like a failure but settles like success: completed
+		// work is persisted, queued input still flows, and the prompt is not
+		// clawed back — matching how hydration treats an interrupted turn.
+		label := turnOutcomeLabel(m.lastOutcome) + unsavedSuffix
+		m.finishAssistantBlock(label)
+		m.labelTurnOutcome(label)
+		if !m.turnHasOutput {
+			m.appendNoticeLine("(no response)")
+		}
+	case m.lastOutcome == turnOutcomeCanceled:
 		m.finishAssistantBlock("canceled" + unsavedSuffix)
 		m.labelTurnOutcome("canceled" + unsavedSuffix)
-		m.lastOutcome = turnOutcomeCanceled
 		m.discardQueuedInputs()
 		if !m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
 			m.appendNoticeLine("input available with ↑ · current draft preserved")
@@ -949,7 +969,6 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 		m.finishAssistantBlock("failed" + unsavedSuffix)
 		m.labelTurnOutcome("failed" + unsavedSuffix)
 		m.appendLine(styled("Error: "+err.Error(), "err", ""))
-		m.lastOutcome = turnOutcomeFailed
 		m.discardQueuedInputs()
 		if !m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
 			m.appendNoticeLine("input available with ↑ · current draft preserved")
@@ -967,16 +986,22 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 		case turnOutcomeFailed:
 			m.unseenOutcome = m.lastOutcome
 			m.signalHiddenLocked(signalTurnFailed, truncate(err.Error(), 120))
+		case turnOutcomeIncomplete:
+			// err is nil for a token cap, so the detail is elapsed, not err.
+			m.unseenOutcome = m.lastOutcome
+			m.signalHiddenLocked(signalTurnIncomplete, formatElapsed(m.lastElapsed))
 		}
 	}
 	// A long turn settling is the "walk away and get pinged" moment; a quick
 	// one never gave the user time to leave. Cancellation is user-initiated,
-	// so only done/failed notify.
-	if m.lastElapsed >= notifyMinTurn &&
-		(m.lastOutcome == turnOutcomeDone || m.lastOutcome == turnOutcomeFailed) {
+	// so only done/failed/incomplete notify.
+	if m.lastElapsed >= notifyMinTurn && m.lastOutcome != turnOutcomeCanceled {
 		body := "done in " + coarseElapsed(m.lastElapsed)
-		if m.lastOutcome == turnOutcomeFailed {
+		switch m.lastOutcome {
+		case turnOutcomeFailed:
 			body = "failed after " + coarseElapsed(m.lastElapsed)
+		case turnOutcomeIncomplete:
+			body = "incomplete after " + coarseElapsed(m.lastElapsed)
 		}
 		if preview := compactQueuePreview(m.currentPrompt); preview != "" {
 			body += " — " + preview

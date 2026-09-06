@@ -627,9 +627,11 @@ func childActivity(child *replModel) (string, bool) {
 			parts = append(parts, "failed")
 		case turnOutcomeCanceled:
 			parts = append(parts, "canceled")
+		case turnOutcomeIncomplete:
+			parts = append(parts, "incomplete")
 		}
 	}
-	switch n := child.turnToolCallCount(); n {
+	switch n := child.turnDockToolRowCount(turnDockState{toolIDs: child.turnToolDisclosureIDs}); n {
 	case 0:
 	case 1:
 		parts = append(parts, "1 tool")

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -160,6 +161,15 @@ func TestEndTurnNoticeOnlyForLongTurns(t *testing.T) {
 	r.endTurn(errors.New("provider unavailable"))
 	if len(r.model.notices) != 1 || !strings.Contains(r.model.notices[0], "failed after 30s") {
 		t.Fatalf("failed turn notices = %#v", r.model.notices)
+	}
+	r.model.notices = nil
+
+	// A long turn cut short by a cap is exactly the walk-away case.
+	r.model.beginTurn("keep going")
+	r.model.turnStarted = time.Now().Add(-30 * time.Second)
+	r.endTurn(llm.ErrMaxIterations)
+	if len(r.model.notices) != 1 || !strings.Contains(r.model.notices[0], "incomplete after 30s") {
+		t.Fatalf("incomplete turn notices = %#v", r.model.notices)
 	}
 }
 

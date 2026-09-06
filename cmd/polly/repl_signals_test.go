@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -40,6 +41,37 @@ func startHiddenTurn(t *testing.T, r *managedREPL, runTurn turnRunner) *replTab 
 // signals.
 func (r *managedREPL) signal() {
 	r.relayTabSignals()
+}
+
+func TestHiddenIncompleteTurnSignalsTheVisibleTab(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "first-work", "current-work")
+	release := make(chan struct{})
+	runTurn := func(context.Context, string, TurnUI) error {
+		<-release
+		return llm.ErrMaxIterations
+	}
+	busy := startHiddenTurn(t, r, runTurn)
+	r.signal()
+
+	close(release)
+	waitTabEvent(t, r)
+	if err := r.settleTabs(context.Background(), runTurn); err != nil {
+		t.Fatal(err)
+	}
+	r.signal()
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "current-work incomplete · ") {
+		t.Fatalf("visible transcript lacks the incomplete notice: %q", got)
+	}
+	if got := strings.Join(r.tabLines(), "\n"); !strings.Contains(got, "2  current-work  incomplete") {
+		t.Fatalf("tab list does not show the unseen cap: %q", got)
+	}
+	busy.model.mu.Lock()
+	unseen := busy.model.unseenOutcome
+	busy.model.mu.Unlock()
+	if unseen != turnOutcomeIncomplete {
+		t.Fatalf("unseen outcome = %v", unseen)
+	}
 }
 
 func TestHiddenTurnOutcomeSignalsTheVisibleTab(t *testing.T) {

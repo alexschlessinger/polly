@@ -55,11 +55,11 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			wantImage:   terminalImageNone,
 		},
 		{
-			name:        "no color is raw and overrides forced graphics",
+			name:        "no color retains terminal rendering and overrides forced graphics",
 			mode:        conversationModeOneShot,
 			stdoutTTY:   true,
 			env:         map[string]string{"NO_COLOR": "1", "POLLYTOOL_IMAGE_PROTOCOL": "sixel"},
-			wantSurface: outputSurfaceLineRaw,
+			wantSurface: outputSurfaceLineANSI,
 			wantImage:   terminalImageNone,
 		},
 		{

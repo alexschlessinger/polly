@@ -38,21 +38,50 @@ or `POLLYTOOL_MODEL`.
 
 ## One-shot output
 
-With `-p` or piped input, progress appears on stderr by default. A capable
-terminal gets a live status line with thinking/writing state, elapsed time,
-tool and agent counts, image receipts, and rotating labels for concurrent work.
+With `-p` or piped input, answers stream immediately and progress appears on
+stderr by default. A capable terminal gets up to two compact status rows,
+collapsing to one when they fit. Activity, thought duration, parent tools,
+agents, and inspected images occupy the first row; elapsed time and token usage
+occupy the second. Usage updates after each provider iteration.
 Successful calls update compact counts instead of printing individual tool or
 agent rows. Failures and denials get brief notices. Child activity is labeled
 with its agent; unnamed agents get short numbered names instead of repeating
-their task briefs. The final summary keeps activity counts, elapsed time, and
-token/context usage when available. Status colors use the TUI's terminal palette.
+their task briefs. While waiting for agents, the status shows aggregate agent
+counts. Child work stays under Agents and does not inflate parent
+tool, image, or token totals. The final summary is the TUI's turn trailer, same fields in
+the same order, without its click glyphs. A turn cut short by a token or iteration cap reads
+`incomplete`. Status colors use the TUI's terminal palette.
 
-Stdout carries the answer. Redirecting it (`polly -p "…" > answer.md`) keeps
-terminal progress on stderr. Redirected stderr and `TERM=dumb` get plain activity
-lines without cursor controls; `NO_COLOR` disables status color while retaining
-live updates on a capable terminal. `--quiet` suppresses activity, including
-image receipts, but still reports warnings and errors. Structured answers and
-`--meta` retain their machine-readable formats.
+Stdout carries only the answer. Redirecting or piping it preserves raw Markdown
+without rendering escapes, receipts, or status-induced whitespace; terminal
+progress on stderr remains live independently. Redirected stderr and `TERM=dumb`
+get plain state changes and a complete, untruncated trailer without cursor
+controls. `NO_COLOR` disables color while retaining immediate streaming and
+supported cursor updates. `--quiet` suppresses activity and details, including
+image receipts, but still reports warnings and errors.
+
+On a terminal, completed answer blocks enter scrollback. Only the visible
+answer tail is restyled as Markdown arrives or the terminal resizes. Tool
+calls, notices, approvals, images, and completion flush that tail. Native
+images are transmitted once when committed.
+
+`--activity-details` (or `POLLYTOOL_ACTIVITY_DETAILS=true`) prints bounded
+Thought, Tools, Agents, and Images groups on stderr after the answer and before
+the trailer, including on failure or cancellation. Thought shows the last five
+lines; Tools shows up to six rows, with earlier calls counted in an elision row.
+Agent summaries follow launch order. Image receipts follow result order, with
+up to 64 captions and a count for additional receipts; previews are not resent.
+The flag applies to one-shot runs only; the REPL ignores it, so the environment variable can stay exported.
+
+```bash
+polly -p "Review this change" > answer.md
+polly -p "Continue the review" >> answer.md
+polly -p "Explain the code" --activity-details > answer.md 2> activity.log
+polly -p "Summarize" | cat
+```
+
+Structured `--schema` stdout is unchanged. With `--meta`, all activity and
+optional details finish before the existing `polly-meta` record on stderr.
 
 ## TUI
 
@@ -60,7 +89,8 @@ No `-p`, no piped stdin: full-screen TUI. Streaming, scrollback, reverse
 history search, bracketed paste.
 
 No managed screen (`TERM=dumb`, redirected endpoints): line frontend.
-Markdown with ANSI on a TTY. Raw text when redirected or `NO_COLOR` is set.
+Markdown on a capable TTY, with color unless `NO_COLOR` is set. Raw text when
+redirected or `TERM=dumb`.
 
 ### Sessions
 
@@ -580,6 +610,7 @@ GLOBAL OPTIONS:
    --denypath string [ --denypath string ]                  Additional path blocked from sandboxed reads (repeatable, supports ~) [$POLLYTOOL_DENYPATHS]
    --writepath string [ --writepath string ]                Additional path sandboxed tools may write to (repeatable, supports ~) [$POLLYTOOL_WRITEPATHS]
    --allownet                                               Allow sandboxed tools outbound network access [$POLLYTOOL_ALLOWNET]
+   --activity-details                                       Print bounded thought, tool, agent, and image details at turn end (one-shot only; ignored by the REPL) [$POLLYTOOL_ACTIVITY_DETAILS]
    --quiet                                                  Suppress status and tool display output
    --debug, -d                                              Enable debug logging
    --meta                                                   Emit a machine-readable run-outcome trailer (polly-meta key=value lines) to stderr

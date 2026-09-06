@@ -3,14 +3,17 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -64,13 +67,18 @@ func TestLineActivityLiveSettlesOnceAndLeavesAnswerClean(t *testing.T) {
 		t.Fatalf("answer = %q", got)
 	}
 	got := status.String()
-	for _, want := range []string{"Thinking", "1 tool", "main.go", "Done", "12 in / 8 out", "ctx 12/100", "\r\x1b[2K"} {
+	for _, want := range []string{"thinking", "running read_file", "streaming", "\r\x1b[2K"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q: %q", want, got)
 		}
 	}
-	if strings.ContainsAny(got, "✓→") || strings.Contains(got, "private") || strings.Contains(got, "\x1b[2m") {
+	if strings.Contains(got, "→") || strings.Contains(got, "private") || strings.Contains(got, "\x1b[2m") {
 		t.Fatalf("live status duplicated or leaked output/color: %q", got)
+	}
+	// The settled line is the TUI trailer without its click glyphs.
+	trailer := regexp.MustCompile(`^  thought( \S+)? · 1 tool · ✓ \S+ · 12 in / 8 out\n$`)
+	if settled := settledActivityLines(got); !trailer.MatchString(settled) {
+		t.Fatalf("settled summary = %q", settled)
 	}
 	before := status.Len()
 	ui.Stop()
@@ -78,7 +86,7 @@ func TestLineActivityLiveSettlesOnceAndLeavesAnswerClean(t *testing.T) {
 		t.Fatal("Stop duplicated status")
 	}
 	select {
-	case <-ui.activity.done:
+	case <-ui.renderDone:
 	default:
 		t.Fatal("status timer did not stop")
 	}
@@ -109,9 +117,17 @@ func TestLineActivityChildrenAreAttributedAndConcurrent(t *testing.T) {
 	ui.FinishTextTurn()
 	ui.Stop()
 	got := status.String()
-	for _, want := range []string{"review: viewed", "tests: viewed", "2 tools", "2 agents", "2 images viewed"} {
+	for _, want := range []string{"review: viewed", "tests: viewed", "2 agents"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q: %q", want, got)
+		}
+	}
+	if ui.activity.tools != 0 || ui.activity.images != 0 {
+		t.Fatal("child work entered parent totals")
+	}
+	for _, launch := range ui.activity.launches {
+		if launch.tools != 1 || launch.images != 1 {
+			t.Fatalf("unattributed child activity: %+v", launch)
 		}
 	}
 	if len(ui.activity.active) != 0 || strings.Contains(got+out.String(), "hidden") {
@@ -149,7 +165,7 @@ func TestLineActivityQuietAndSchema(t *testing.T) {
 			if quiet && status.Len() != 0 {
 				t.Fatalf("quiet status: %q", status.String())
 			}
-			if !quiet && !strings.Contains(status.String(), "Done") {
+			if !quiet && !strings.Contains(status.String(), "✓") {
 				t.Fatalf("schema lost stderr status: %q", status.String())
 			}
 		})
@@ -164,8 +180,92 @@ func TestLineActivityInterruptedToolsAndFailedResults(t *testing.T) {
 	ui.SetTurnOutcome(messages.StopReasonEndTurn, errors.New("interrupted"))
 	ui.Stop()
 	got := status.String()
-	if !strings.Contains(got, "1 unfinished") || !strings.Contains(got, "1 failed") || !strings.Contains(got, "Stopped") || strings.Contains(got, "Done") || strings.Contains(got, "private") {
+	if !strings.Contains(got, "\n  2 tools · ✗ failed · ") || strings.Contains(got, "✓") || strings.Contains(got, "private") {
 		t.Fatalf("interrupted status = %q", got)
+	}
+	// The call that never ended is named in scrollback, before the summary.
+	unfinished := strings.Index(got, "✗ bash · unfinished")
+	if unfinished < 0 || unfinished > strings.Index(got, "2 tools") || strings.Contains(got, "read_file · unfinished") {
+		t.Fatalf("unfinished tool not reported: %q", got)
+	}
+}
+
+// The live line and the plain log speak the TUI's busy vocabulary. The log
+// records state changes without naming tools and without the waits between
+// batches.
+func TestLineActivityUsesTheTUIBusyLabels(t *testing.T) {
+	read := messages.ChatMessageToolCall{ID: "1", Name: "read_file", Arguments: `{"path":"main.go"}`}
+	run := messages.ChatMessageToolCall{ID: "2", Name: "bash", Arguments: `{"command":"go test"}`}
+	drive := func(ui *lineTurnUI, check func(string)) {
+		ui.ShowThinking("private")
+		check("thinking")
+		ui.AppendToolStart([]messages.ChatMessageToolCall{read, run})
+		check("running read_file")
+		ui.AppendToolEnd(read, "", time.Second, nil)
+		check("running bash")
+		ui.AppendToolEnd(run, "", time.Second, nil)
+		check("waiting")
+		ui.AppendToolStart([]messages.ChatMessageToolCall{run})
+		ui.AppendToolEnd(run, "", time.Second, nil)
+		ui.AppendAssistantText("answer")
+		check("streaming")
+		ui.FinishTextTurn()
+		ui.Stop()
+	}
+
+	t.Run("live", func(t *testing.T) {
+		ui, _, status := activityTestUI(t, true, &Config{})
+		drive(ui, func(want string) {
+			t.Helper()
+			repaints := strings.Split(status.String(), "\r\x1b[2K")
+			if got := strings.TrimLeft(repaints[len(repaints)-1], "\r"); !strings.HasPrefix(got, "  "+want+" · ") {
+				t.Fatalf("live label = %q, want %q", got, want)
+			}
+		})
+	})
+
+	t.Run("log", func(t *testing.T) {
+		ui, _, status := activityTestUI(t, false, &Config{})
+		drive(ui, func(string) {})
+		if got := status.String(); !strings.HasPrefix(got, "waiting\nthinking\nrunning tool\nstreaming\n  thought ") {
+			t.Fatalf("logged states = %q", got)
+		}
+	})
+}
+
+func TestLineActivitySummaryOutcomesMatchTheTUITrailer(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		reason messages.StopReason
+		err    error
+		want   string
+	}{
+		{"done", messages.StopReasonEndTurn, nil, "✓ "},
+		{"failed", messages.StopReasonError, errors.New("boom"), "✗ failed · "},
+		{"canceled", messages.StopReasonError, context.Canceled, "canceled · "},
+		{"incomplete", messages.StopReasonMaxIterations, llm.ErrMaxIterations, "incomplete · "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ui, _, status := activityTestUI(t, false, &Config{})
+			ui.SetTurnOutcome(tt.reason, tt.err)
+			ui.Stop()
+			if got := settledActivityLines(status.String()); !strings.Contains(got, "\n  "+tt.want) {
+				t.Fatalf("summary = %q", got)
+			}
+		})
+	}
+}
+
+func TestLineActivitySummaryFoldsAgentOutcomesLikeTheTUI(t *testing.T) {
+	ui, _, status := activityTestUI(t, false, &Config{})
+	spawn := []messages.ChatMessageToolCall{{ID: "a", Name: "spawn_agent"}, {ID: "b", Name: "spawn_agent"}, {ID: "c", Name: "spawn_agent"}}
+	ui.AppendToolStart(spawn)
+	ui.AppendToolEnd(spawn[0], "", time.Second, nil)
+	ui.AppendToolEnd(spawn[1], "", time.Second, errors.New("boom"))
+	ui.SetTurnOutcome(messages.StopReasonError, context.Canceled)
+	ui.Stop()
+	if got := settledActivityLines(status.String()); !strings.Contains(got, "\n  3 agents, 1 failed, 1 canceled · canceled · ") {
+		t.Fatalf("summary = %q", got)
 	}
 }
 
@@ -197,6 +297,15 @@ func TestLineActivitySuccessfulFanoutLeavesOnlySummary(t *testing.T) {
 				if child.activity.label != fmt.Sprintf("agent %d", i+1) {
 					t.Fatalf("verbose unnamed agent: %q", child.activity.label)
 				}
+				// A nested spawn takes a scope of its own without renumbering
+				// the parent's later agents away from their launch rows.
+				if i == 0 {
+					nested := messages.ChatMessageToolCall{ID: "nested", Name: "spawn_agent", Arguments: `{"task":"look deeper"}`}
+					grandchild := child.childActivity(nested)
+					if grandchild == nil || !strings.HasPrefix(grandchild.label, "agent 1: agent ") {
+						t.Fatalf("nested agent label: %#v", grandchild)
+					}
+				}
 				for j := range 2 {
 					call := messages.ChatMessageToolCall{ID: fmt.Sprint(j), Name: "read_file", Arguments: `{"path":"README.md"}`}
 					child.AppendToolStart([]messages.ChatMessageToolCall{call})
@@ -207,15 +316,16 @@ func TestLineActivitySuccessfulFanoutLeavesOnlySummary(t *testing.T) {
 			ui.FinishTextTurn()
 			ui.Stop()
 			got := settledActivityLines(status.String())
-			for _, forbidden := range []string{"read_file", "spawn_agent", "README", "Read the file", " lines", "✓", "→", "private result", "child report"} {
+			for _, forbidden := range []string{"read_file", "spawn_agent", "README", "Read the file", " lines", "→", "private result", "child report"} {
 				if strings.Contains(got, forbidden) {
 					t.Fatalf("successful tool detail %q survived in scrollback: %q", forbidden, got)
 				}
 			}
-			if !strings.Contains(got, "10 tools · 5 agents") {
+			if !strings.Contains(got, "5 agents · ✓ ") || strings.Contains(got, "10 tools") || strings.Count(got, "✓") != 1 {
 				t.Fatalf("missing aggregate summary: %q", got)
 			}
-			if strings.Count(got, "\n") > 2 {
+			// A log gets one line per stretch of activity, never one per batch.
+			if strings.Count(got, "\n") > 3 || strings.Contains(got, "waiting\nrunning tool\nwaiting") {
 				t.Fatalf("fanout flooded scrollback: %q", got)
 			}
 		})
@@ -247,7 +357,7 @@ func TestLineActivityUsesTUIPaletteWhenColorSupported(t *testing.T) {
 			ui.Stop()
 			got := status.String()
 			if tt.wantColor {
-				for _, want := range []string{"\x1b[0;93;1mThinking", "\x1b[0;91;1m", "\x1b[0;32;1mDone", "\x1b[0;94m1 tool"} {
+				for _, want := range []string{"\x1b[0;93;1mthinking", "\x1b[0;91;1m", "\x1b[0;32;1m✓", "\x1b[0;94m1 tool"} {
 					if !strings.Contains(got, want) {
 						t.Fatalf("missing TUI color %q: %q", want, got)
 					}
@@ -280,7 +390,7 @@ func TestLineActivityNarrowStatusAndPause(t *testing.T) {
 	ui.activity.caps = lineStatusCapabilities{live: true, columns: 2}
 	ui.renderActivityLocked()
 	ui.toolMu.Unlock()
-	if got := status.String(); got != "\r\x1b[2K" {
+	if got := status.String(); got != "" {
 		t.Fatalf("status would wrap narrow terminal: %q", got)
 	}
 	ui.pauseActivity()

@@ -203,6 +203,37 @@ func TestParseConfigMeta(t *testing.T) {
 	}
 }
 
+func TestParseConfigActivityDetails(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+		args      []string
+		want      bool
+	}{
+		{"default", "", nil, false},
+		{"flag", "", []string{"--activity-details"}, true},
+		{"environment", "true", nil, true},
+		{"explicit false", "true", []string{"--activity-details=false"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("POLLYTOOL_ACTIVITY_DETAILS", tc.env)
+			var config *Config
+			cmd := &cli.Command{Flags: outputConfigFlags(), Action: func(_ context.Context, c *cli.Command) error { config = parseConfig(c); return nil }}
+			if err := cmd.Run(context.Background(), append([]string{"polly"}, tc.args...)); err != nil {
+				t.Fatal(err)
+			}
+			if config.ActivityDetails != tc.want {
+				t.Fatalf("details=%v want=%v", config.ActivityDetails, tc.want)
+			}
+			// The env var may be exported globally; a bare REPL must still
+			// start and simply ignore the one-shot trailer.
+			mode, err := selectConversationMode(config, false)
+			if err != nil || mode != conversationModeREPL || config.ActivityDetails {
+				t.Fatalf("mode=%v err=%v details=%v", mode, err, config.ActivityDetails)
+			}
+		})
+	}
+}
+
 func TestSandboxPresetFlagDefaultsAndValidation(t *testing.T) {
 	var parsed *Config
 	flags, groups := defineFlagsWithGroups()

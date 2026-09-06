@@ -35,6 +35,7 @@ type TurnUI interface {
 	// resolved budget; estimated marks a pre-response projection.
 	RecordContextUsage(used, limit int, estimated bool)
 	FinishTextTurn()
+	CompleteTurn(turnCompletion)
 	// UserMessagePersistenceStarted and UserMessagePersistenceFinished bracket
 	// the durable write of the user message, so a UI that projects history
 	// concurrently can serialize against it.
@@ -45,25 +46,31 @@ type TurnUI interface {
 	TurnPersistenceAllowed() bool
 }
 
-// lineTurnUI writes raw streamed output or buffered ANSI Markdown according to
-// the resolved stdout capabilities. It serves one-shot and fallback REPL turns.
+// lineTurnUI streams raw output or owns a terminal Markdown tail and footer,
+// according to each stream's capabilities. It also serves fallback REPL turns.
 type lineTurnUI struct {
-	config          *Config
-	writer          io.Writer
-	errWriter       io.Writer
-	approver        *toolApprover
-	capabilities    outputCapabilities
-	imageBaseDir    string
-	markdownBuffer  strings.Builder
-	bufferSeparator bool
-	needsSeparator  bool
-	contentPrinted  bool
-	endsWithNewline bool
-	finished        bool
-	toolMu          sync.Mutex
-	stderrTTY       bool
-	stdoutTTY       bool
-	activity        *lineActivity
+	config                   *Config
+	writer                   io.Writer
+	errWriter                io.Writer
+	approver                 *toolApprover
+	capabilities             outputCapabilities
+	imageBaseDir             string
+	markdownBuffer           strings.Builder
+	bufferSeparator          bool
+	needsSeparator           bool
+	contentPrinted           bool
+	endsWithNewline          bool
+	finished                 bool
+	toolMu                   sync.Mutex
+	stderrTTY                bool
+	stdoutTTY                bool
+	activity                 *lineActivity
+	stream                   *lineStream
+	statusFrame              lineTerminalFrame
+	sameTerminal             bool
+	renderCancel, renderDone chan struct{}
+	completed                bool
+	size                     func(stdout bool) (columns, rows int)
 	// promptMu serializes approval prompts on the shared stdin reader; it is
 	// always taken before toolMu, never while holding it. prompting and
 	// pending are guarded by toolMu.
@@ -83,6 +90,10 @@ func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, ca
 		stderrTTY:    terminalFD(int(os.Stderr.Fd())),
 		stdoutTTY:    terminalFD(int(os.Stdout.Fd())),
 	}
+	// Two TTYs are one screen: /dev/tty and /dev/ttysNNN stat differently
+	// yet paint the same terminal, so an inode comparison would split the
+	// frame into two cursor owners that overwrite each other.
+	ui.sameTerminal = ui.stdoutTTY && ui.stderrTTY
 	// Only prompt for confirmation when stdin can actually answer. A piped
 	// prompt or `< /dev/null` leaves the approval reader at EOF, which would
 	// otherwise deny every tool call.
@@ -95,13 +106,21 @@ func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, ca
 func (ui *lineTurnUI) Start() {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
+	ui.writer, ui.errWriter = checkedLineWriter(ui.writer), checkedLineWriter(ui.errWriter)
 	ui.markdownBuffer.Reset()
 	ui.bufferSeparator = false
 	ui.needsSeparator = false
 	ui.contentPrinted = false
 	ui.endsWithNewline = false
 	ui.finished = false
+	ui.completed = false
+	ui.activity, ui.stream = nil, nil
+	ui.statusFrame = lineTerminalFrame{}
+	if ui.capabilities.rendersLineANSI() && ui.stdoutTTY && ui.config.SchemaPath == "" {
+		ui.stream = &lineStream{displayedImages: make(map[int]bool)}
+	}
 	ui.startActivityLocked()
+	ui.startRendererLocked()
 }
 
 func (ui *lineTurnUI) Stop() {
@@ -115,10 +134,9 @@ func (ui *lineTurnUI) Stop() {
 		ui.endsWithNewline = true
 	}
 	ui.finishActivityLocked()
-	var done chan struct{}
-	if ui.activity != nil {
-		done = ui.activity.done
-	}
+	ui.completed = true
+	ui.stopRendererLocked()
+	done := ui.renderDone
 	ui.toolMu.Unlock()
 	if done != nil {
 		<-done
@@ -128,8 +146,14 @@ func (ui *lineTurnUI) Stop() {
 func (ui *lineTurnUI) ShowThinking(chunk string) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
+	if ui.completed {
+		return
+	}
 	if chunk != "" {
-		ui.activityPhaseLocked("Thinking")
+		if a := ui.activity; a != nil && a.details != nil && !a.stopped {
+			a.details.appendThought(chunk, a.state != turnStateThinking)
+		}
+		ui.activityStateLocked(turnStateThinking, "")
 	}
 	ui.renderActivityLocked()
 }
@@ -137,12 +161,15 @@ func (ui *lineTurnUI) ShowThinking(chunk string) {
 func (ui *lineTurnUI) AppendAssistantText(content string) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
+	if ui.completed {
+		return
+	}
 	if !ui.capabilities.rendersLineANSI() {
 		ui.clearActivityLocked()
 	}
 	defer ui.renderActivityLocked()
 	if content != "" {
-		ui.activityPhaseLocked("Writing")
+		ui.activityStateLocked(turnStateStreaming, "")
 	}
 	if ui.config.SchemaPath != "" {
 		return
@@ -171,7 +198,11 @@ func (ui *lineTurnUI) AppendAssistantText(content string) {
 }
 
 func (ui *lineTurnUI) flushBufferedMarkdown() {
-	if !ui.capabilities.rendersLineANSI() || ui.markdownBuffer.Len() == 0 {
+	if ui.prompting || !ui.capabilities.rendersLineANSI() || ui.markdownBuffer.Len() == 0 {
+		return
+	}
+	if ui.stream != nil {
+		ui.stream.flush(ui)
 		return
 	}
 	if ui.bufferSeparator {
@@ -192,6 +223,9 @@ func (ui *lineTurnUI) flushBufferedMarkdown() {
 func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
+	if ui.completed {
+		return
+	}
 	ui.clearActivityLocked()
 	defer ui.renderActivityLocked()
 	ui.flushBufferedMarkdown()
@@ -206,8 +240,10 @@ func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 		}
 		ui.contentPrinted = false
 	}
-	ui.activityPhaseLocked("Working")
-	ui.activityToolsLocked("", "", calls)
+	if len(calls) > 0 {
+		ui.activityStateLocked(turnStateTool, calls[0].Name)
+	}
+	ui.activityToolsLocked("", calls)
 }
 
 func (ui *lineTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
@@ -227,12 +263,14 @@ func (ui *lineTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 	defer ui.promptMu.Unlock()
 	ui.toolMu.Lock()
 	ui.clearActivityLocked()
+	ui.flushBufferedMarkdown()
 	ui.prompting = true
 	ui.toolMu.Unlock()
 	approved := ui.approver.approveToolCalls(calls)
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
 	ui.prompting = false
+	ui.flushBufferedMarkdown()
 	if ui.pending.Len() > 0 {
 		_, _ = ui.errWriter.Write(ui.pending.Bytes())
 		ui.pending.Reset()
@@ -244,7 +282,7 @@ func (ui *lineTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []b
 func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
-	if !ui.activityEnabled() {
+	if ui.completed || !ui.activityEnabled() {
 		return
 	}
 	ui.activityToolEndLocked("", "", call, result, duration, err)
@@ -257,10 +295,17 @@ func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []t
 	}
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
+	if ui.completed {
+		return
+	}
 	ui.clearActivityLocked()
+	ui.flushBufferedMarkdown()
 	defer ui.renderActivityLocked()
 	if ui.activity != nil {
 		ui.activity.images += len(images)
+		if ui.activity.details != nil {
+			ui.activity.details.addImages(images)
+		}
 	}
 	caps := ui.capabilities
 	if ui.activity != nil {
@@ -286,7 +331,7 @@ func (ui *lineTurnUI) AppendWarning(text string) {
 	// Warnings ride stderr so a captured stdout answer stays clean. Terminate
 	// any unfinished stdout line first so a shared terminal doesn't glue the
 	// warning onto the tail of the streamed answer.
-	if ui.stdoutTTY && ui.contentPrinted && !ui.endsWithNewline {
+	if ui.sameTerminal && ui.contentPrinted && !ui.endsWithNewline {
 		fmt.Fprintln(ui.writer)
 		ui.endsWithNewline = true
 	}
@@ -296,18 +341,16 @@ func (ui *lineTurnUI) AppendWarning(text string) {
 func (ui *lineTurnUI) RecordTurnTokens(in, out int) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
+	if ui.completed {
+		return
+	}
 	if ui.activity != nil {
 		ui.activity.in, ui.activity.out = in, out
 	}
 }
 
-func (ui *lineTurnUI) RecordContextUsage(used, limit int, estimated bool) {
-	ui.toolMu.Lock()
-	defer ui.toolMu.Unlock()
-	if ui.activity != nil {
-		ui.activity.used, ui.activity.limit, ui.activity.estimated = used, limit, estimated
-	}
-}
+// RecordContextUsage is TUI chrome: the line surface has no context meter.
+func (ui *lineTurnUI) RecordContextUsage(int, int, bool) {}
 
 func (ui *lineTurnUI) UserMessagePersistenceStarted() {}
 

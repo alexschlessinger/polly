@@ -359,6 +359,8 @@ func (m *replModel) frameTitle() string {
 		return title + " — failed"
 	case turnOutcomeCanceled:
 		return title + " — canceled"
+	case turnOutcomeIncomplete:
+		return title + " — incomplete"
 	}
 	return title
 }

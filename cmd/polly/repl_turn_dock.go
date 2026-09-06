@@ -52,10 +52,13 @@ type turnTrailerPlacement struct {
 }
 
 type turnDockField struct {
-	raw      string
-	rendered string
-	overlay  turnDockOverlay
-	optional bool
+	raw       string
+	rendered  string
+	overlay   turnDockOverlay
+	optional  bool
+	protected bool
+	elapsed   string
+	outcome   turnOutcome
 }
 
 // turnActivityControl is the shared visual language for clickable reasoning
@@ -156,6 +159,23 @@ func (m *replModel) turnDockToolRowCount(dock turnDockState) int {
 	return total
 }
 
+func (m *replModel) activitySummaryFor(dock turnDockState) turnActivitySummary {
+	s := turnActivitySummary{Tools: m.turnDockToolRowCount(dock), Agents: m.agentCounts(dock.toolIDs), Outcome: dock.outcome, Elapsed: m.turnDockElapsedFor(dock), In: dock.inputTokens, Out: dock.outputTokens}
+	for _, record := range m.turnDockToolRecords(dock) {
+		for _, row := range record.rows {
+			s.Images += len(row.inspectionImages)
+		}
+	}
+	for _, record := range m.turnDockThoughtRecords(dock) {
+		s.Reasoned = true
+		s.Thought += record.elapsed
+		if record.active && !m.thinkingSegmentStart.IsZero() && record.id == m.turnReasoningID {
+			s.Thought += time.Since(m.thinkingSegmentStart)
+		}
+	}
+	return s
+}
+
 func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 	var fields []turnDockField
 	// The live dock is status-only: reasoning and tool activity render inline
@@ -164,15 +184,9 @@ func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 	if !dock.settled {
 		return m.turnDockStatusFields(dock)
 	}
-	if records := m.turnDockThoughtRecords(dock); len(records) > 0 {
-		var elapsed time.Duration
-		for _, record := range records {
-			elapsed += record.elapsed
-			if record.active && !m.thinkingSegmentStart.IsZero() && record.id == m.turnReasoningID {
-				elapsed += time.Since(m.thinkingSegmentStart)
-			}
-		}
-		label := reasoningDisclosureLabel(false, false, elapsed)
+	summary := m.activitySummaryFor(dock)
+	if summary.Reasoned {
+		label := reasoningDisclosureLabel(false, false, summary.Thought)
 		glyph := "▸"
 		if dock.overlay == turnDockOverlayThought {
 			glyph = "▾"
@@ -181,7 +195,7 @@ func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 		rendered := turnActivityControl(glyph, label)
 		fields = append(fields, turnDockField{raw: raw, rendered: rendered, overlay: turnDockOverlayThought})
 	}
-	if total := m.turnDockToolRowCount(dock); total > 0 {
+	if total := summary.Tools; total > 0 {
 		label := turnToolLabel(total)
 		glyph := "▸"
 		if dock.overlay == turnDockOverlayTools {
@@ -194,7 +208,7 @@ func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 	if field, ok := m.agentField(dock.toolIDs, dock.overlay == turnDockOverlayAgents, false); ok {
 		fields = append(fields, field)
 	}
-	if total := len(m.turnDockInspectionImages(dock)); total > 0 {
+	if total := summary.Images; total > 0 {
 		label := turnImageLabel(total)
 		glyph := "▸"
 		if dock.overlay == turnDockOverlayImages {
@@ -216,35 +230,56 @@ func (m *replModel) turnDockFieldsFor(dock turnDockState) []turnDockField {
 func (m *replModel) turnDockStatusFields(dock turnDockState) []turnDockField {
 	var fields []turnDockField
 	if dock.settled && dock.elapsedKnown {
-		elapsed := formatElapsed(m.turnDockElapsedFor(dock))
-		raw, rendered := elapsed, styled(elapsed, "muted", "")
-		switch dock.outcome {
-		case turnOutcomeDone:
-			raw = "✓ " + elapsed
-			rendered = styled("✓", "ok", "bold") + " " + styled(elapsed, "muted", "")
-		case turnOutcomeFailed:
-			raw = "✗ failed · " + elapsed
-			rendered = styled("✗ failed", "err", "bold") + styled(" · "+elapsed, "muted", "")
-		case turnOutcomeCanceled:
-			raw = "canceled · " + elapsed
-			rendered = styled("canceled", "muted", "bold") + styled(" · "+elapsed, "muted", "")
-		}
-		fields = append(fields, turnDockField{raw: raw, rendered: rendered})
-	} else if dock.settled && dock.outcome == turnOutcomeDone {
-		fields = append(fields, turnDockField{raw: "✓", rendered: styled("✓", "ok", "bold")})
+		fields = append(fields, turnOutcomeField(dock.outcome, formatElapsed(m.turnDockElapsedFor(dock))))
+	} else if dock.settled && dock.outcome != turnOutcomeNone {
+		fields = append(fields, turnOutcomeField(dock.outcome, ""))
 	}
 
 	in, out := dock.inputTokens, dock.outputTokens
 	if !dock.settled {
 		in, out = m.lastIn, m.lastOut
 	}
-	if in > 0 || out > 0 {
-		tokenRaw := fmt.Sprintf("%s in / %s out", humanizeTokens(in), humanizeTokens(out))
-		fields = append(fields, turnDockField{
-			raw: tokenRaw, rendered: styled(tokenRaw, "muted", ""), optional: true,
-		})
+	if field, ok := turnTokenField(in, out); ok {
+		fields = append(fields, field)
 	}
 	return fields
+}
+
+// turnOutcomeField is the settled outcome glyph with the turn's elapsed time,
+// shared by the TUI trailer and the one-shot summary.
+func turnOutcomeField(outcome turnOutcome, elapsed string) turnDockField {
+	raw, rendered := elapsed, styled(elapsed, "muted", "")
+	tail := ""
+	if elapsed != "" {
+		tail = " · " + elapsed
+	}
+	switch outcome {
+	case turnOutcomeDone:
+		raw = strings.TrimSpace("✓ " + elapsed)
+		rendered = styled("✓", "ok", "bold")
+		if elapsed != "" {
+			rendered += " " + styled(elapsed, "muted", "")
+		}
+	case turnOutcomeFailed:
+		raw = "✗ failed" + tail
+		rendered = styled("✗ failed", "err", "bold") + styled(tail, "muted", "")
+	case turnOutcomeCanceled:
+		raw = "canceled" + tail
+		rendered = styled("canceled", "muted", "bold") + styled(tail, "muted", "")
+	case turnOutcomeIncomplete:
+		raw = "incomplete" + tail
+		rendered = styled("incomplete", "active", "bold") + styled(tail, "muted", "")
+	}
+	return turnDockField{raw: raw, rendered: rendered, protected: true, elapsed: elapsed, outcome: outcome}
+}
+
+// turnTokenField is the optional token-count tail of a status row.
+func turnTokenField(in, out int) (turnDockField, bool) {
+	if in <= 0 && out <= 0 {
+		return turnDockField{}, false
+	}
+	raw := fmt.Sprintf("%s in / %s out", humanizeTokens(in), humanizeTokens(out))
+	return turnDockField{raw: raw, rendered: styled(raw, "muted", ""), optional: true}, true
 }
 
 func (m *replModel) setHydratedTurnDock(reasoning *reasoningRecord, tools *toolDisclosureRecord, in, out int) {
@@ -280,19 +315,28 @@ func (m *replModel) turnDockRowFor(dock turnDockState, width int) (string, []tur
 // renderTurnActivityRow is the one-line renderer shared by inline activity
 // and the settled trailer. Fields that do not fit are truncated as one row;
 // clickable placements are returned only for controls wholly on that row.
+// turnDockFieldsWidth is the rendered width of an activity row: the indent,
+// the raw fields, and a separator between each pair. The TUI dock and the
+// one-shot status row fit their fields with the same measure.
+func turnDockFieldsWidth(fields []turnDockField) int {
+	if len(fields) == 0 {
+		return 0
+	}
+	width := rw.StringWidth("  ") + (len(fields)-1)*rw.StringWidth(" · ")
+	for _, f := range fields {
+		width += rw.StringWidth(f.raw)
+	}
+	return width
+}
+
 func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDockPlacement) {
 	if width <= 0 {
 		return "", nil
 	}
 	const indent = "  "
 	const separator = " · "
-	measure := func(fields []turnDockField) int {
-		parts := make([]string, len(fields))
-		for i := range fields {
-			parts[i] = fields[i].raw
-		}
-		return rw.StringWidth(indent) + rw.StringWidth(strings.Join(parts, separator))
-	}
+	fields = append([]turnDockField(nil), fields...)
+	measure := turnDockFieldsWidth
 	for measure(fields) > width {
 		removed := false
 		for i := len(fields) - 1; i >= 0; i-- {
@@ -305,6 +349,39 @@ func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDoc
 		}
 		if !removed {
 			break
+		}
+	}
+	// Keep the outcome and elapsed time visible. Activity controls may lose
+	// detail on a narrow row, but may not push the result off its right edge.
+	protected := 0
+	for _, field := range fields {
+		if field.protected {
+			protected += rw.StringWidth(field.raw)
+		}
+	}
+	if protected > 0 {
+		for measure(fields) > width && len(fields) > 1 {
+			pick := -1
+			for i, f := range fields {
+				if !f.protected {
+					pick = i
+					break
+				}
+			}
+			if pick < 0 {
+				break
+			}
+			excess := measure(fields) - width
+			f := fields[pick]
+			available := rw.StringWidth(f.raw) - excess
+			if available >= 3 {
+				f.raw = rw.Truncate(f.raw, available, "…")
+				f.rendered = styled(f.raw, "accent", "")
+				f.overlay = turnDockOverlayNone
+				fields[pick] = f
+			} else {
+				fields = append(fields[:pick], fields[pick+1:]...)
+			}
 		}
 	}
 
