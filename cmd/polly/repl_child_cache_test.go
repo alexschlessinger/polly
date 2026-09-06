@@ -47,6 +47,19 @@ func TestChildViewCacheBudgetsAndUserRecency(t *testing.T) {
 	if len(c.entries) != childViewProbationEntries || c.entries["0"] != nil || c.entries["7"] == nil {
 		t.Fatal("completion pool is not bounded by admission order")
 	}
+	// Unviewed completions also share a byte budget the user's visits do not.
+	c = childViewCache{}
+	c.put(entry("big", 0, childViewProbationBytes+1))
+	if c.entries["big"] != nil {
+		t.Fatal("unviewed completion above the probation byte budget admitted")
+	}
+	c.put(entry("viewed", c.visit(), childViewProbationBytes+1))
+	for _, id := range []string{"p0", "p1", "p2"} {
+		c.put(entry(id, 0, 3<<20)) // 9 MiB unviewed across three entries
+	}
+	if c.entries["viewed"] == nil || c.entries["p0"] != nil || c.entries["p1"] == nil || c.entries["p2"] == nil {
+		t.Fatalf("probation bytes not bounded: %d entries, %d bytes", len(c.entries), c.bytes)
+	}
 }
 
 func TestChildDisplayCacheDropsExecutionAndInputState(t *testing.T) {
