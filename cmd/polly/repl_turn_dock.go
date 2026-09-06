@@ -315,6 +315,20 @@ func (m *replModel) turnDockRowFor(dock turnDockState, width int) (string, []tur
 // renderTurnActivityRow is the one-line renderer shared by inline activity
 // and the settled trailer. Fields that do not fit are truncated as one row;
 // clickable placements are returned only for controls wholly on that row.
+// turnDockFieldsWidth is the rendered width of an activity row: the indent,
+// the raw fields, and a separator between each pair. The TUI dock and the
+// one-shot status row fit their fields with the same measure.
+func turnDockFieldsWidth(fields []turnDockField) int {
+	if len(fields) == 0 {
+		return 0
+	}
+	width := rw.StringWidth("  ") + (len(fields)-1)*rw.StringWidth(" · ")
+	for _, f := range fields {
+		width += rw.StringWidth(f.raw)
+	}
+	return width
+}
+
 func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDockPlacement) {
 	if width <= 0 {
 		return "", nil
@@ -322,13 +336,7 @@ func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDoc
 	const indent = "  "
 	const separator = " · "
 	fields = append([]turnDockField(nil), fields...)
-	measure := func(fields []turnDockField) int {
-		parts := make([]string, len(fields))
-		for i := range fields {
-			parts[i] = fields[i].raw
-		}
-		return rw.StringWidth(indent) + rw.StringWidth(strings.Join(parts, separator))
-	}
+	measure := turnDockFieldsWidth
 	for measure(fields) > width {
 		removed := false
 		for i := len(fields) - 1; i >= 0; i-- {

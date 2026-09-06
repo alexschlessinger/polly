@@ -349,16 +349,8 @@ func (ui *lineTurnUI) RecordTurnTokens(in, out int) {
 	}
 }
 
-func (ui *lineTurnUI) RecordContextUsage(used, limit int, estimated bool) {
-	ui.toolMu.Lock()
-	defer ui.toolMu.Unlock()
-	if ui.completed {
-		return
-	}
-	if ui.activity != nil {
-		ui.activity.used, ui.activity.limit, ui.activity.estimated = used, limit, estimated
-	}
-}
+// RecordContextUsage is TUI chrome: the line surface has no context meter.
+func (ui *lineTurnUI) RecordContextUsage(int, int, bool) {}
 
 func (ui *lineTurnUI) UserMessagePersistenceStarted() {}
 

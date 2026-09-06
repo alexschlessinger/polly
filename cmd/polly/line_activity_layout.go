@@ -7,24 +7,13 @@ import (
 	rw "github.com/mattn/go-runewidth"
 )
 
-func activityFieldsWidth(fields []turnDockField) int {
-	if len(fields) == 0 {
-		return 0
-	}
-	width := 2 + (len(fields)-1)*3
-	for _, f := range fields {
-		width += rw.StringWidth(f.raw)
-	}
-	return width
-}
-
 // Use two rows only when necessary. Each row is fitted independently to
 // preserve activity, outcome, and elapsed time.
 func renderLineActivityRows(activity, status []turnDockField, width int) []string {
 	// At very small widths the outcome and elapsed time need both rows by
 	// themselves. Drop activity/usage first, then indentation, to keep these
 	// two facts whole wherever the terminal can hold their individual labels.
-	if len(status) > 0 && status[0].elapsed != "" && activityFieldsWidth(status[:1]) > width {
+	if len(status) > 0 && status[0].elapsed != "" && turnDockFieldsWidth(status[:1]) > width {
 		primary := status[0]
 		var rows []string
 		for _, field := range []turnDockField{turnOutcomeField(primary.outcome, ""), mutedField(primary.elapsed, false)} {
@@ -45,7 +34,7 @@ func renderLineActivityRows(activity, status []turnDockField, width int) []strin
 	if len(all) == 0 {
 		return nil
 	}
-	if activityFieldsWidth(all) <= width {
+	if turnDockFieldsWidth(all) <= width {
 		row, _ := renderTurnActivityRow(all, width)
 		return []string{row}
 	}

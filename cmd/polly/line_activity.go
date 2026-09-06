@@ -69,8 +69,7 @@ type lineActivity struct {
 	thought                  time.Duration
 	thinkingSince            time.Time
 	reasoned                 bool
-	in, out, used, limit     int
-	estimated                bool
+	in, out                  int
 	visible, paused, stopped bool
 	nextScope                int
 }
