@@ -824,6 +824,9 @@ func selectConversationMode(config *Config, stdinAvailable bool) (conversationMo
 		return conversationModeOneShot, err
 	}
 
+	// The details trailer is one-shot chrome; an exported
+	// POLLYTOOL_ACTIVITY_DETAILS must not change how the REPL runs.
+	config.ActivityDetails = false
 	return conversationModeREPL, nil
 }
 
@@ -863,9 +866,6 @@ func validateREPLConfig(config *Config) error {
 	// REPL's tcell screen and interleave with the fallback REPL's prompt.
 	if config.Meta {
 		rejected = append(rejected, "--meta")
-	}
-	if config.ActivityDetails {
-		rejected = append(rejected, "--activity-details")
 	}
 	if len(rejected) == 0 {
 		return nil

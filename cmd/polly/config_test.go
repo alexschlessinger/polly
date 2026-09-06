@@ -224,10 +224,11 @@ func TestParseConfigActivityDetails(t *testing.T) {
 			if config.ActivityDetails != tc.want {
 				t.Fatalf("details=%v want=%v", config.ActivityDetails, tc.want)
 			}
-			if tc.want {
-				if err := validateREPLConfig(config); err == nil || !strings.Contains(err.Error(), "--activity-details requires -p or stdin") {
-					t.Fatalf("REPL validation=%v", err)
-				}
+			// The env var may be exported globally; a bare REPL must still
+			// start and simply ignore the one-shot trailer.
+			mode, err := selectConversationMode(config, false)
+			if err != nil || mode != conversationModeREPL || config.ActivityDetails {
+				t.Fatalf("mode=%v err=%v details=%v", mode, err, config.ActivityDetails)
 			}
 		})
 	}

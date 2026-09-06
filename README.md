@@ -71,7 +71,7 @@ the trailer, including on failure or cancellation. Thought shows the last five
 lines; Tools shows up to six rows, with earlier calls counted in an elision row.
 Agent summaries follow launch order. Image receipts follow result order, with
 up to 64 captions and a count for additional receipts; previews are not resent.
-The flag requires `-p` or piped input and defaults to false.
+The flag applies to one-shot runs only; the REPL ignores it, so the environment variable can stay exported.
 
 ```bash
 polly -p "Review this change" > answer.md
@@ -607,7 +607,7 @@ GLOBAL OPTIONS:
    --denypath string [ --denypath string ]                  Additional path blocked from sandboxed reads (repeatable, supports ~) [$POLLYTOOL_DENYPATHS]
    --writepath string [ --writepath string ]                Additional path sandboxed tools may write to (repeatable, supports ~) [$POLLYTOOL_WRITEPATHS]
    --allownet                                               Allow sandboxed tools outbound network access [$POLLYTOOL_ALLOWNET]
-   --activity-details                                       Print bounded thought, tool, agent, and image details at turn end (requires -p or stdin) [$POLLYTOOL_ACTIVITY_DETAILS]
+   --activity-details                                       Print bounded thought, tool, agent, and image details at turn end (one-shot only; ignored by the REPL) [$POLLYTOOL_ACTIVITY_DETAILS]
    --quiet                                                  Suppress status and tool display output
    --debug, -d                                              Enable debug logging
    --meta                                                   Emit a machine-readable run-outcome trailer (polly-meta key=value lines) to stderr

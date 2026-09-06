@@ -399,7 +399,7 @@ func outputConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{
 			Name:    "activity-details",
-			Usage:   "Print bounded thought, tool, agent, and image details at turn end (requires -p or stdin)",
+			Usage:   "Print bounded thought, tool, agent, and image details at turn end (one-shot only; ignored by the REPL)",
 			Sources: cli.EnvVars("POLLYTOOL_ACTIVITY_DETAILS"),
 		},
 		&cli.BoolFlag{
