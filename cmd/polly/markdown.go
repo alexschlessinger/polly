@@ -230,23 +230,43 @@ func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string, s
 // still streaming its widths aren't final, so rows render unaligned and
 // state.deferredTable asks the stream owner for a settle re-render.
 func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix string, state *markdownRenderState) []string {
+	// A clip may start inside the table when a streamed frame overflows the
+	// screen. Widths still come from every row, so the committed prefix and
+	// the mutable remainder pad identically, and the header underline follows
+	// the header row rather than whichever row happens to be emitted first.
 	var rows [][]string
-	cols := len(table.Alignments)
+	widths := make([]int, len(table.Alignments))
+	headerShown := false
 	for row := table.FirstChild(); row != nil; row = row.NextSibling() {
-		if state != nil && state.clip.excludes(row) {
-			continue
-		}
+		_, isHeader := row.(*east.TableHeader)
 		mod := ""
-		if _, isHeader := row.(*east.TableHeader); isHeader {
+		if isHeader {
 			mod = "bold"
+		}
+		// Clipped-out rows are measured, not emitted: the clip-aware inline
+		// renderer would slice their text away, so they render unclipped.
+		excluded := state != nil && state.clip.excludes(row)
+		cellState := state
+		if excluded {
+			cellState = nil
 		}
 		var cells []string
 		for cell := row.FirstChild(); cell != nil; cell = cell.NextSibling() {
-			cells = append(cells, renderInlineChildren(cell, source, "", mod, state))
+			cells = append(cells, renderInlineChildren(cell, source, "", mod, cellState))
 		}
-		cols = max(cols, len(cells))
+		for len(widths) < len(cells) {
+			widths = append(widths, 0)
+		}
+		for i, cell := range cells {
+			widths[i] = max(widths[i], styledTextWidth(cell))
+		}
+		if excluded {
+			continue
+		}
+		headerShown = headerShown || isHeader
 		rows = append(rows, cells)
 	}
+	cols := len(widths)
 	if len(rows) == 0 || cols == 0 {
 		return nil
 	}
@@ -262,13 +282,6 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 		return prefixLines(lines, firstPrefix, contPrefix)
 	}
 
-	widths := make([]int, cols)
-	for _, cells := range rows {
-		for i, cell := range cells {
-			widths[i] = max(widths[i], styledTextWidth(cell))
-		}
-	}
-
 	var lines []string
 	for _, cells := range rows {
 		parts := make([]string, cols)
@@ -280,7 +293,7 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 			parts[i] = padTableCell(cell, widths[i], tableAlignment(table, i))
 		}
 		lines = append(lines, gutter+strings.TrimRight(strings.Join(parts, "  "), " "))
-		if len(lines) == 1 {
+		if len(lines) == 1 && headerShown {
 			underlines := make([]string, cols)
 			for i, w := range widths {
 				underlines[i] = strings.Repeat("─", w)
