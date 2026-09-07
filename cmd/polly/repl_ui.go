@@ -495,8 +495,8 @@ func (r *managedREPL) prepareManagedTurnLocked(prompt string) (managedTurnInput,
 	return turn, nil
 }
 
-// sandboxNoticeLine summarizes the sandbox posture for the REPL startup
-// notice, so the operator can see at a glance which tools run restricted.
+// sandboxNoticeLine reports exceptional sandbox posture at REPL startup.
+// An active sandbox with no issues needs no notice.
 func sandboxNoticeLine(config *Config, state *conversationState) string {
 	return currentSandboxPosture(config, state).noticeString()
 }
@@ -609,7 +609,9 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	r.setupWidgets()
 	r.startupLogoVisible = r.showStartupLogo
 	if !r.model.quiet {
-		r.model.appendNoticeLine(sandboxNoticeLine(r.config, r.state))
+		if notice := sandboxNoticeLine(r.config, r.state); notice != "" {
+			r.model.appendNoticeLine(notice)
+		}
 	}
 	r.model.mu.Lock()
 	r.appendPendingSandboxWarningsLocked()

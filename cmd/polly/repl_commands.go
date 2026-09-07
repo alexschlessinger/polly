@@ -1163,6 +1163,9 @@ func (p sandboxPosture) noticeString() string {
 	case sandboxPostureUnavailable:
 		return "sandbox: unavailable"
 	default:
+		if len(p.unsandboxed) == 0 && !p.sshAgentUnavailable {
+			return ""
+		}
 		line := fmt.Sprintf("sandbox: active (%s; %d tools sandboxed", p.preset, len(p.sandboxed))
 		if len(p.unsandboxed) > 0 {
 			line += "; not sandboxed: " + strings.Join(p.unsandboxed, ", ")

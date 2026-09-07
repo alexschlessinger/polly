@@ -441,10 +441,10 @@ func TestSandboxNoticeLine(t *testing.T) {
 
 	registry := stubSandboxRegistry(t)
 	state := &conversationState{toolRegistry: registry}
-	if got := sandboxNoticeLine(&Config{}, state); got != "sandbox: active (base; 1 tools sandboxed)" {
+	if got := sandboxNoticeLine(&Config{}, state); got != "" {
 		t.Fatalf("active notice = %q", got)
 	}
-	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state); got != "sandbox: active (workspace+net+git; 1 tools sandboxed)" {
+	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state); got != "" {
 		t.Fatalf("preset notice = %q", got)
 	}
 
@@ -463,6 +463,10 @@ func TestSandboxNoticeLine(t *testing.T) {
 
 func TestWriteFallbackSandboxNotice(t *testing.T) {
 	var out bytes.Buffer
+	writeFallbackSandboxNotice(&out, &Config{SandboxPreset: "workspace+net+git"}, &conversationState{toolRegistry: stubSandboxRegistry(t)})
+	if out.Len() != 0 {
+		t.Fatalf("active sandbox wrote a startup notice: %q", out.String())
+	}
 	writeFallbackSandboxNotice(&out, &Config{NoSandbox: true}, nil)
 	if got := out.String(); got != "sandbox: disabled (--nosandbox)\n" {
 		t.Fatalf("fallback sandbox notice = %q", got)
