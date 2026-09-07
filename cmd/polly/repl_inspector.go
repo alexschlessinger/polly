@@ -168,7 +168,7 @@ func (r *managedREPL) refreshInspector(width int) {
 	if live != nil {
 		m := live.model
 		m.mu.Lock()
-		revision := fmt.Sprintf("live:%p:%s:%q:%d:%d:%d", m, live.name, m.status.description, m.visual.revision, m.streamRaw.Len(), m.inspections.version)
+		revision := fmt.Sprintf("live:%p:%s:%q:%d:%d:%d:%d:%d", m, live.name, m.status.description, m.visual.revision, m.streamRaw.Len(), m.inspections.version, m.turnReasoningID, m.thinkingSegmentStart.UnixNano())
 		source.info = &sessions.SessionView{ID: live.viewID(), Metadata: &sessions.Metadata{Name: live.name, Parent: live.parentName, Description: m.status.description}, Artifacts: m.artifactStore}
 		if live.parent != nil {
 			source.info.ParentID = live.parent.viewID()
@@ -200,6 +200,10 @@ func (r *managedREPL) refreshInspector(width int) {
 		}
 		if i.target.kind == conversationViewKind {
 			source.model = childDisplayCopy(m)
+			// A live view needs the display clock, without inheriting execution
+			// state. Saved and retired display snapshots keep their banked time.
+			source.model.turnReasoningID = m.turnReasoningID
+			source.model.thinkingSegmentStart = m.thinkingSegmentStart
 			// A hidden live stream has not materialized Markdown into its entry.
 			if m.currentAssistant >= 0 && m.currentAssistant < len(source.model.transcript) {
 				source.model.transcript[m.currentAssistant].markdown = m.streamRaw.String()

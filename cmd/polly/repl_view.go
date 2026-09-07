@@ -38,6 +38,14 @@ type conversationView struct{ viewRenderer }
 type toolView struct{ viewRenderer }
 type thoughtView struct{ viewRenderer }
 
+func (conversationView) Rows(m *replModel, width int) [][]ui.Cell {
+	// Advance live thought labels even when no source content has changed.
+	// Only the affected display rows are invalidated; projections stay cached.
+	m.refreshReasoningRecords(width)
+	m.refreshExpandedTurnTrailer(width)
+	return m.transcriptRows(width)
+}
+
 func viewFor(kind viewKind) View {
 	switch kind {
 	case toolViewKind:

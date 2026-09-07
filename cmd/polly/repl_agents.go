@@ -24,6 +24,9 @@ type agentActivity struct {
 	background bool
 	active     bool
 	attached   bool
+
+	// Reported usage for the original delegated run, retained after completion.
+	inputTokens, outputTokens int
 	// origin binds a restored row to the same live run across child renames.
 	origin *agentActivity
 }
@@ -188,7 +191,7 @@ func agentActivityLine(a *agentActivity) string {
 	case status == "approval needed":
 		glyph, color = "!", "active"
 	case a.active:
-		glyph, color = "↻", "run"
+		glyph = " "
 	case status == "done":
 		glyph, color = "✓", "ok"
 	case status == "failed" || status == "denied":
@@ -198,7 +201,11 @@ func agentActivityLine(a *agentActivity) string {
 	if a.session != "" {
 		label = styled(a.label, "accent", "underline")
 	}
-	return "  " + styled(glyph, color, "") + " " + label + styled(" · "+status, "muted", "")
+	detail := " · " + status
+	if a.inputTokens > 0 || a.outputTokens > 0 {
+		detail += fmt.Sprintf(" · %s in / %s out", humanizeTokens(a.inputTokens), humanizeTokens(a.outputTokens))
+	}
+	return "  " + styled(glyph, color, "") + " " + label + styled(detail, "muted", "")
 }
 
 // agentDetail uses the normal cell wrapper for both display and link geometry.
@@ -367,6 +374,7 @@ func (r *managedREPL) refreshAgentActivities() {
 				} else if child.model.busy {
 					status = child.model.busyLabel()
 				}
+				child.agentInputTokens, child.agentOutputTokens = child.model.lastIn, child.model.lastOut
 				child.model.mu.Unlock()
 				child.agentStatus, child.agentActive = status, true
 			}
@@ -397,11 +405,12 @@ func (r *managedREPL) updateChildAgent(child *replTab) bool {
 				if a != child.agentActivity {
 					a.origin = child.agentActivity
 				}
-				if a.session != child.name || a.status != child.agentStatus || a.active != child.agentActive {
+				if a.session != child.name || a.status != child.agentStatus || a.active != child.agentActive || a.inputTokens != child.agentInputTokens || a.outputTokens != child.agentOutputTokens {
 					if a.active && !child.agentActive && child.agentStatus == "done" {
 						m.noteAgentCompletion(record.id)
 					}
 					a.session, a.status, a.active, a.attached = child.name, child.agentStatus, child.agentActive, true
+					a.inputTokens, a.outputTokens = child.agentInputTokens, child.agentOutputTokens
 					changed = true
 				}
 			}
@@ -437,6 +446,9 @@ func (r *managedREPL) finishChildAgent(child *replTab, err error) {
 	if child.spawnCallID == "" {
 		return
 	}
+	child.model.mu.Lock()
+	child.agentInputTokens, child.agentOutputTokens = child.model.lastIn, child.model.lastOut
+	child.model.mu.Unlock()
 	outcome := storedChildReport(subagent.Result{}, err).Status
 	child.agentStatus, child.agentActive = spawnOutcomeStatus(outcome), false
 	if !r.updateChildAgent(child) {

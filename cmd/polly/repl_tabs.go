@@ -73,6 +73,9 @@ type replTab struct {
 	agentStatus     string
 	agentActive     bool
 
+	// Loop-owned usage snapshot for the original delegated run.
+	agentInputTokens, agentOutputTokens int
+
 	// settled follows the actual first turn, even after UI cancellation has
 	// detached it. Its concurrency slot must remain held until work ends.
 	settled     chan struct{}

@@ -165,6 +165,9 @@ tool row, or thought detail opens the inspector. **Ctrl-G** and `/agents` open
 the Agents dialog, showing attention-needed agents first, then running agents,
 then completed agents newest first. Agent outcomes still describe the initial
 delegated run; later follow-ups do not change that outcome.
+Expanded agent rows show input/output token counts as each model response reports
+usage. Input is the peak request size and output is the total for the delegated
+turn, matching the turn summary. Counts stay visible after that run finishes.
 
 The inspector observes work while the main composer stays addressed to the root
 session. **Stop** cancels the inspected agent's current turn and

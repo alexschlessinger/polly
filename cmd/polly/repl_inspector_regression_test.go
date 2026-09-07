@@ -18,6 +18,62 @@ import (
 
 func settleInspectorWork(r *managedREPL) { r.work.wg.Wait(); drainUITasks(r) }
 
+func TestInspectorLiveThoughtClock(t *testing.T) {
+	withDisplayTTY(t)
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "child")
+	child := r.visibleTab()
+	child.model.beginTurn("think")
+	child.model.appendThinking("first thought")
+	child.model.thinkingSegmentStart = time.Now().Add(-2 * time.Second)
+	r.showTab(0)
+	r.inspect(tabViewTarget(child))
+	v := waitInspector(t, r, 140)
+	readElapsed := func() time.Duration {
+		t.Helper()
+		text := strings.Join(transcriptRowsText(v.view.Rows(v.model, 69)), "\n")
+		_, suffix, ok := strings.Cut(text, "thought ")
+		if !ok || len(strings.Fields(suffix)) == 0 {
+			t.Fatalf("thought clock missing: %q", text)
+		}
+		elapsed, err := time.ParseDuration(strings.Fields(suffix)[0])
+		if err != nil {
+			t.Fatalf("invalid thought clock: %q", text)
+		}
+		return elapsed
+	}
+	before := readElapsed()
+	if before < 2*time.Second {
+		t.Fatalf("live snapshot omitted elapsed thinking time: %v", before)
+	}
+	// Advance only the display clock: content, source revision, and the
+	// expensive projection remain unchanged between these frame reads.
+	model := v.model
+	v.model.thinkingSegmentStart = v.model.thinkingSegmentStart.Add(-5 * time.Second)
+	if after := readElapsed(); after < before+5*time.Second || v.model != model {
+		t.Fatalf("cached view did not advance its clock: %v -> %v", before, after)
+	}
+	child.model.pauseThinkingSegment()
+	v = waitInspector(t, r, 140)
+	paused := readElapsed()
+	v.model.thinkingSegmentStart = time.Now().Add(-time.Hour)
+	if readElapsed() != paused {
+		t.Fatal("paused thought kept counting tool execution time")
+	}
+	child.model.appendThinking("more thought")
+	child.model.thinkingSegmentStart = time.Now().Add(-3 * time.Second)
+	v = waitInspector(t, r, 140)
+	if resumed := readElapsed(); resumed < paused+3*time.Second {
+		t.Fatalf("resumed thinking clock lost banked time: %v -> %v", paused, resumed)
+	}
+	child.model.completeThinkingTurn(false)
+	v = waitInspector(t, r, 140)
+	finished := readElapsed()
+	v.model.thinkingSegmentStart = time.Now().Add(-time.Hour)
+	if readElapsed() != finished {
+		t.Fatal("completed thought timer did not freeze")
+	}
+}
+
 func TestInspectorRegressionReopenDuringLoad(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	r.model.appendThinking("thought")
