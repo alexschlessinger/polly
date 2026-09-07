@@ -284,19 +284,14 @@ func protectExistingSQLiteFile(path string) error {
 	if !pathInfo.Mode().IsRegular() {
 		return fmt.Errorf("refusing non-regular SQLite file %q", path)
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open SQLite file %q for protection: %w", path, err)
-	}
-	defer file.Close()
-	openedInfo, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("inspect opened SQLite file %q: %w", path, err)
-	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
-		return fmt.Errorf("SQLite file %q changed while opening", path)
-	}
-	if err := file.Chmod(0o600); err != nil {
+	// Chmod by path, never through an opened descriptor: closing any
+	// descriptor for a SQLite file releases this process's POSIX locks on it,
+	// including locks held by SQLite's own descriptors. This also applies to
+	// the shared-memory sidecar and to stores already open in this process.
+	// The lstat above leaves a race a symlink swap could win, but the store
+	// lives in a directory only its owner can write, and a redirected chmod
+	// can only tighten a file the owner already controls.
+	if err := os.Chmod(path, 0o600); err != nil {
 		return fmt.Errorf("protect SQLite file %q: %w", path, err)
 	}
 	return nil
