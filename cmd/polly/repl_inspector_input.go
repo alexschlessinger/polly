@@ -91,13 +91,19 @@ func (r *managedREPL) inspectorAction(action string) {
 
 func (r *managedREPL) resizeInspector(direction int) {
 	i := &r.workspace().inspector
-	width, _ := ui.TerminalDimensions()
+	width, height := ui.TerminalDimensions()
 	if !i.open || i.maximized || width < 120 {
 		return
 	}
 	// Start from the displayed divider, including after a drag or terminal
 	// resize clamps a pane to its minimum. A width control must never reverse.
 	left := width - r.inspectorGeometry(width).width - 1
+	if r.haloChrome(width, height) {
+		left = r.haloSplitColumn(width)
+		left = max(50, min(width-53, left-direction*max(1, (width-1)/20)))
+		r.inspectorRatio = (float64(left) + .5) / float64(width-1)
+		return
+	}
 	left = max(50, min(width-51, left-direction*max(1, (width-1)/20)))
 	// Store the middle of this column's interval so float rounding does not
 	// place the divider one column short when geometry converts back to int.
@@ -203,6 +209,17 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 				return true
 			}
 		}
+		if i.open && point.In(r.haloBounds.outer) && !point.In(r.inspectorBounds) {
+			// The frame/rail belongs to the inspector, including in full-width
+			// mode; clicks must not reach the hidden conversation underneath.
+			switch e.ID {
+			case "<MouseWheelUp>":
+				r.inspectorScroll(-3)
+			case "<MouseWheelDown>":
+				r.inspectorScroll(3)
+			}
+			return true
+		}
 		if i.open && point.In(r.inspectorBounds) {
 			switch e.ID {
 			case "<MouseWheelUp>":
@@ -261,7 +278,7 @@ func (r *managedREPL) handleViewNavigation(e ui.Event) bool {
 		return false
 	}
 	i := &r.workspace().inspector
-	inspector := i.open && r.mousePosition.In(r.inspectorBounds)
+	inspector := i.open && (r.mousePosition.In(r.inspectorBounds) || r.mousePosition.In(r.haloBounds.outer))
 	if !inspector && !r.mousePosition.In(r.mainTranscriptBounds) {
 		return false
 	}

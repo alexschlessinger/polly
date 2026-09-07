@@ -144,6 +144,7 @@ func TestAgentInspectorPromptClick(t *testing.T) {
 	fixture, screen := affordanceTestREPL(t)
 	t.Cleanup(func() { _ = fixture.work.close() })
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
+	r.config.Theme = "halo"
 	r.setupWidgets()
 	r.showTab(0)
 	child := r.tabs[1]

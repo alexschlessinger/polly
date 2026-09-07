@@ -28,16 +28,20 @@ type replModalItem struct {
 // It is intentionally display-only state: none of its text enters the composer,
 // transcript, input history, or durable session metadata.
 type replModal struct {
-	title     string
-	items     []replModalItem
-	selected  int
-	width     int
-	maxRows   int
-	showCount bool
-	input     lineEditor
-	inputMode bool
-	masked    bool
-	helper    string
+	title      string
+	items      []replModalItem
+	selected   int
+	top        int
+	visible    int
+	halo       bool
+	listBounds image.Rectangle
+	width      int
+	maxRows    int
+	showCount  bool
+	input      lineEditor
+	inputMode  bool
+	masked     bool
+	helper     string
 	// expanded holds the values of parent items whose children are listed.
 	// Sharing the map across openings keeps the choice for the process.
 	expanded map[string]bool
@@ -157,11 +161,10 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	}
 	items := m.filteredItems()
 	if len(items) == 0 {
+		m.top, m.selected, m.visible = 0, 0, 0
 		return styled("No matches", "muted", "") + "\n\n" + centeredModalHelper("type to filter · Esc back", modalWidth)
 	}
-	if m.selected >= len(items) {
-		m.selected = len(items) - 1
-	}
+	m.selected = max(0, min(m.selected, len(items)-1))
 	start := 0
 	visibleRows := maxRows
 	if m.maxRows > 0 {
@@ -170,7 +173,18 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	if len(items) > visibleRows && m.selected >= visibleRows {
 		start = m.selected - visibleRows + 1
 	}
+	if m.halo {
+		m.top = max(0, min(m.top, len(items)-visibleRows))
+		if m.selected < m.top {
+			m.top = m.selected
+		}
+		if m.selected >= m.top+visibleRows {
+			m.top = m.selected - visibleRows + 1
+		}
+		start = m.top
+	}
 	end := min(len(items), start+visibleRows)
+	m.visible = end - start
 	lines := make([]string, 0, end-start+2)
 	for i := start; i < end; i++ {
 		prefix := "  "
@@ -235,7 +249,10 @@ func centeredModalHelper(text string, modalWidth int) string {
 
 // modalParagraph clears its complete rectangle before drawing. This makes a
 // ColorClear modal opaque while still honoring the terminal's own background.
-type modalParagraph struct{ *widgets.Paragraph }
+type modalParagraph struct {
+	*widgets.Paragraph
+	scrollbar haloScrollbar
+}
 
 func newModalParagraph() *modalParagraph {
 	p := widgets.NewParagraph()
@@ -255,6 +272,7 @@ func (p *modalParagraph) Draw(buf *ui.Buffer) {
 	}
 	p.Paragraph.Draw(buf)
 	restoreStyledLiterals(buf, p.Inner)
+	p.scrollbar.draw(buf)
 }
 
 var modelPresets = map[string][]string{
@@ -272,6 +290,8 @@ func (r *managedREPL) closeModal() {
 		r.model.modal.wipe()
 	}
 	r.model.modal = nil
+	r.modalScrollbar = haloScrollbar{}
+	r.scrollDrag = haloScrollDrag{}
 }
 
 func (r *managedREPL) openModal(modal *replModal) {
@@ -688,6 +708,25 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		return true
 	}
 	if e.Type == ui.MouseEvent {
+		if m.halo {
+			mouse, ok := e.Payload.(ui.Mouse)
+			if !ok || m.inputMode || !image.Pt(mouse.X, mouse.Y).In(m.listBounds) {
+				return true
+			}
+			switch e.ID {
+			case "<MouseWheelUp>":
+				m.selected = max(0, m.selected-3)
+			case "<MouseWheelDown>":
+				m.selected = min(len(m.filteredItems())-1, m.selected+3)
+			case "<MouseLeft>":
+				index := m.top + mouse.Y - m.listBounds.Min.Y
+				if index >= 0 && index < len(m.filteredItems()) {
+					m.selected = index
+					return r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+				}
+			}
+			return true
+		}
 		switch e.ID {
 		case "<MouseWheelUp>":
 			m.selected = max(0, m.selected-1)
@@ -697,6 +736,20 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		return true
 	}
 	switch e.ID {
+	case "<PageUp>", "<PageDown>", "<Home>", "<End>":
+		if m.halo && !m.inputMode {
+			switch e.ID {
+			case "<PageUp>":
+				m.selected -= max(1, m.visible-1)
+			case "<PageDown>":
+				m.selected += max(1, m.visible-1)
+			case "<Home>":
+				m.selected = 0
+			case "<End>":
+				m.selected = len(m.filteredItems()) - 1
+			}
+			m.selected = max(0, min(m.selected, len(m.filteredItems())-1))
+		}
 	case "<Escape>":
 		cancel := m.onCancel
 		if m.onDraft != nil {

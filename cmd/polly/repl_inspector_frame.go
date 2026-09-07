@@ -29,6 +29,13 @@ func (r *managedREPL) setupInspectorWidgets() {
 
 func (r *managedREPL) inspectorTranscriptWidth(width int) int {
 	i := &r.workspace().inspector
+	_, height := ui.TerminalDimensions()
+	if r.haloChrome(width, height) {
+		if i.open && !i.maximized && width >= 120 {
+			return r.haloSplitColumn(width)
+		}
+		return width
+	}
 	if !i.open || i.maximized || width < 120 {
 		return width
 	}
@@ -74,6 +81,11 @@ func (r *managedREPL) renderInspector(l frameLayout) []terminalImagePlacement {
 	g := r.inspectorGeometry(l.width)
 	x := l.width - g.width
 	y, paneHeight := l.logoRows, l.transcriptHeight
+	if l.halo {
+		x -= 2
+		y++
+		paneHeight = max(0, paneHeight-2)
+	}
 	header := r.inspectorHeader(g.width, paneHeight, x, y)
 	r.inspectorHeaderW.Text = header.text
 	r.inspectorButtons = header.buttons
