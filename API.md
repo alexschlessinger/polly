@@ -506,7 +506,7 @@ factory returning the `llm.AgentCallbacks` for each child's request, to
 stream its text, watch or approve its tool calls, or inject context values
 its tools need; without it a child runs unobserved with every call
 approved. `subagent.WithMaxConcurrent` bounds parallel children (default
-four). A runner whose child outlives the call must return `Result.Done`,
+32). A runner whose child outlives the call must return `Result.Done`,
 including on cancellation or error. Close it only when the child actually
 stops; its concurrency slot stays occupied until then. The tool is exempt from `AgentConfig.ToolTimeout`
 through the `tools.UntimedTool` interface. The polly CLI's runner opens a
