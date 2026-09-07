@@ -61,6 +61,7 @@ type transcriptEntry struct {
 type replModel struct {
 	mu          sync.Mutex
 	affordances affordanceState
+	inspections inspectionSource
 
 	// transcript is the accumulated content rendered into the upper pane.
 	// Each entry is a logical "block" (user prompt, assistant turn, notice,
@@ -143,6 +144,7 @@ type replModel struct {
 	imageDisclosurePlacements []disclosurePlacement
 	agentDisclosurePlacements []disclosurePlacement
 	agentLinkPlacements       []agentLink
+	inspectionLinks           []inspectionLink
 	turnDock                  turnDockState
 	turnTrailers              map[int64]*turnTrailerRecord
 	turnTrailerAt             map[int]int64
@@ -266,6 +268,7 @@ type transcriptVisualBlock struct {
 // reasoning. tail is intentionally bounded; the durable ChatMessage remains
 // the authoritative complete copy for successful turns.
 type reasoningRecord struct {
+	inspectionKey   string
 	id              int64
 	transcriptIndex int
 	tail            []rune
@@ -300,6 +303,7 @@ func (p statusSessionPlacement) hit(x, y, terminalHeight int) bool {
 }
 
 type toolDisclosureRow struct {
+	inspectionKey    string
 	callID           string
 	toolName         string
 	agent            *agentActivity
@@ -397,10 +401,25 @@ type managedREPL struct {
 	// uiTasks carries deferred UI mutations (e.g. a finished clipboard read)
 	// onto the event loop, which repaints after running each one. Tasks take
 	// the model lock themselves.
-	uiTasks          chan func()
-	work             *replWork
-	childViews       childViewCache
-	childViewRequest *childViewNavigation
+	uiTasks              chan func()
+	work                 *replWork
+	childViews           childViewCache
+	childViewRequest     *childViewNavigation
+	workspaces           []*replTab
+	inspectorRatio       float64
+	inspectorRefreshAt   time.Time
+	inspectorW           *transcriptParagraph
+	inspectorHeaderW     *literalParagraph
+	inspectorHeaderRows  int
+	inspectorButtons     []inspectorButton
+	inspectorBounds      image.Rectangle
+	mainTranscriptBounds image.Rectangle
+	inspectorDivider     image.Rectangle
+	inspectorDragging    bool
+	mousePosition        image.Point
+	mousePositionKnown   bool
+	workspaceActions     []func()
+	workspaceAgentLink   image.Rectangle
 
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
@@ -513,7 +532,7 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 		model:  m,
 		// The screen starts on a tab with no session behind it; the first
 		// session to land (addTab) takes its place.
-		tabs:            []*replTab{{name: contextName, model: m}},
+		tabs:            []*replTab{{name: contextName, model: m, workspaceRoot: true}},
 		quit:            make(chan struct{}, 1),
 		suspend:         make(chan struct{}, 1),
 		pending:         make(chan pendingTurn, 1),
@@ -551,13 +570,10 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	// default to all-defaults so unstyled text emits the terminal's own
 	// foreground (SGR 39) and follows the theme instead of being forced white.
 	ui.DefaultBackend.Screen.SetStyle(tcell.StyleDefault)
-	// gotui enables full mouse-motion tracking during Init. Trim that to
-	// button-level tracking: with tracking fully off, terminals translate the
-	// wheel into arrow keys on the alt screen (alternate scroll mode), which
-	// lands in history recall instead of scrolling the transcript. Button
-	// tracking delivers real wheel events while leaving motion/drag alone;
-	// clicks are captured but dropped (native selection needs shift/option).
-	ui.DefaultBackend.Screen.EnableMouse(tcell.MouseButtonEvents)
+	// Motion reports route inspector navigation by pointer position and allow
+	// divider dragging. Button reports keep wheel scrolling separate from keys.
+	// Native text selection uses the terminal's shift/option override.
+	ui.DefaultBackend.Screen.EnableMouse(tcell.MouseButtonEvents | tcell.MouseMotionEvents)
 	// Focus reports gate desktop notifications (notify only when the user is
 	// known to be elsewhere); terminals without focus reporting simply never
 	// flip the gate open.
@@ -607,7 +623,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	}()
 
 	r.setupWidgets()
-	r.startupLogoVisible = r.showStartupLogo
+	r.startupLogoVisible = r.showStartupLogo && !r.workspace().inspector.open
 	if !r.model.quiet {
 		r.model.appendNoticeLine(sandboxNoticeLine(r.config, r.state))
 	}
@@ -743,6 +759,23 @@ func (r *managedREPL) appendPendingSandboxWarningsLocked() bool {
 // affordance feedback has a separate cell-only tick, avoiding a full repaint
 // ~20 times a second while sitting at the prompt.
 func (r *managedREPL) needsTick() bool {
+	if r.workspace().inspector.open {
+		i := &r.workspace().inspector
+		v := i.current
+		if v != nil && !v.loading && !v.unavailable && v.failures > 0 && !time.Now().Before(v.retryAt) {
+			return true
+		}
+		if tab := r.inspectionTab(i.target); tab != nil {
+			tab.model.mu.Lock()
+			busy := tab.model.busy
+			tab.model.mu.Unlock()
+			if busy {
+				return true
+			}
+		} else if (v == nil || !v.loading && !v.unavailable && v.failures == 0) && time.Since(r.inspectorRefreshAt) >= time.Second {
+			return true
+		}
+	}
 	if len(r.pendingAgentUpdates) > 0 {
 		return true
 	}
@@ -761,6 +794,11 @@ func (r *managedREPL) needsTick() bool {
 // repaint when the paste's closing marker flips m.pasting back off (handleEvent
 // clears it), so a large paste draws once instead of once per character.
 func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
+	// Button-free motion and release only update pointer/drag state. Hover
+	// navigation has no visual focus indicator and needs no frame repaint.
+	if ev.Type == ui.MouseEvent && ev.ID == "<MouseRelease>" {
+		return false
+	}
 	if ev.ID == pasteStartID {
 		return false
 	}
@@ -1204,6 +1242,14 @@ func (r *managedREPL) refreshSlashHints() {
 
 func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	m := r.model
+	// Track motion even while a dialog, search, or paste owns input, so the
+	// next navigation key uses the pointer's current location.
+	if e.Type == ui.MouseEvent {
+		if mouse, ok := e.Payload.(ui.Mouse); ok {
+			r.mousePosition = image.Pt(mouse.X, mouse.Y)
+			r.mousePositionKnown = true
+		}
+	}
 	viewport := r.transcriptHeight()
 	terminalWidth, terminalHeight := ui.TerminalDimensions()
 	if terminalWidth < 1 {
@@ -1221,6 +1267,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	case focusLostID:
 		m.focusKnown, m.focused = true, false
+		r.mousePositionKnown = false
 		m.resetAffordances()
 		return false
 	}
@@ -1244,11 +1291,15 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// Tab shortcuts work in every mode: a turn or an approval on the tab
 	// left behind keeps waiting there.
 	if e.Type == ui.KeyboardEvent {
-		if i, ok := tabShortcut(e.ID, r.visibleTabIndex(), len(r.tabs)); ok {
+		if i, ok := r.workspaceShortcut(e.ID); ok {
 			r.requestShowTabLocked(i)
 			return false
 		}
 	}
+	if r.handleInspectorEvent(e) {
+		return false
+	}
+	terminalWidth = r.inspectorTranscriptWidth(terminalWidth)
 
 	// Scroll keys work in every mode (idle, busy, approval) so the user
 	// can review history without interrupting the agent.

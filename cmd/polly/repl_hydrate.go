@@ -23,15 +23,15 @@ const resumedTurnLimit = 5
 // exchanges folded into compact activity rows, and trailer, then the composer
 // restore for an unanswered final prompt.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
+	defer m.hydrateInspections(history)
 	m.clearTurnDock()
 	for _, msg := range history {
 		m.rememberArtifactAttachments(msg)
 	}
-	start, totalTurns, showTurns := resumedHistoryWindow(history)
+	start, totalTurns, _ := resumedHistoryWindow(history)
 	if totalTurns == 0 {
 		return
 	}
-	m.appendNoticeLine(resumedNotice(contextName, totalTurns, showTurns))
 	h := historyHydrator{m: m}
 	for _, msg := range history[start:] {
 		h.replay(msg)
@@ -62,21 +62,6 @@ func resumedHistoryWindow(history []messages.ChatMessage) (start, totalTurns, sh
 		seen++
 	}
 	return 0, totalTurns, showTurns
-}
-
-func resumedNotice(contextName string, totalTurns, showTurns int) string {
-	name := contextName
-	if name == "" {
-		name = "context"
-	}
-	if totalTurns > showTurns {
-		return fmt.Sprintf("resumed %s · showing last %d of %d turns", name, showTurns, totalTurns)
-	}
-	turnWord := "turns"
-	if totalTurns == 1 {
-		turnWord = "turn"
-	}
-	return fmt.Sprintf("resumed %s · %d %s", name, totalTurns, turnWord)
 }
 
 // historyHydrator replays stored messages one at a time, carrying the state

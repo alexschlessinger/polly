@@ -25,9 +25,23 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 	defer func() {
 		retErr = errors.Join(retErr, repl.closeTabs())
 	}()
-	if err := repl.addTab(state); err != nil {
-		return errors.Join(err, state.Close())
+	entry := state.workspaceEntry
+	if entry != nil && state.session == nil {
+		repl.addReadOnlyWorkspace(entry.root, state.sessionStore)
+	} else {
+		if err := repl.addTab(state); err != nil {
+			return errors.Join(err, state.Close())
+		}
 	}
+	if entry != nil {
+		if entry.orphan {
+			repl.model.appendNoticeLine("Parent unavailable")
+		}
+		if entry.selected.ID != entry.root.ID {
+			repl.inspect(viewTarget{session: sessions.ViewTarget{ID: entry.selected.ID, Name: entry.selected.Metadata.Name}})
+		}
+	}
+	state.workspaceEntry = nil
 	return repl.Run(ctx, func(turnCtx context.Context, _ string, turnUI TurnUI) error {
 		// The turn binds the session of the tab it started on: a tab shown
 		// while this goroutine runs must not redirect its writes.
@@ -66,6 +80,7 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	m.status = newSessionStatus(settings, name, toolCount(state.effectiveTools()), skillCount(state.skillCatalog))
 	if md, err := state.session.GetMetadata(ctx); err == nil && md != nil {
 		m.status.parentName = md.Parent
+		m.status.description = md.Description
 	}
 	m.quiet = r.config.Quiet
 	m.artifactStore = state.artifactStore

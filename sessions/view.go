@@ -25,7 +25,10 @@ type ViewTarget struct {
 // a lease nor updates last-used time. Artifacts remains usable after a writer
 // closes, but cannot write and never resolves a deleted/reused session name.
 type SessionView struct {
-	ID, Revision     string
+	ID, Revision string
+	// ParentID is the linked parent's stable identity. Metadata.Parent may
+	// retain a display name after deletion and must not be used as identity.
+	ParentID         string
 	Metadata         *Metadata
 	History          []messages.ChatMessage
 	Artifacts        artifacts.Store
@@ -120,6 +123,11 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 			return err
 		}
 		view.ID = hex.EncodeToString(id)
+		var parentID []byte
+		if err := conn.QueryRowContext(ctx, "SELECT parent_id FROM sessions WHERE id = ?", id).Scan(&parentID); err != nil {
+			return err
+		}
+		view.ParentID = hex.EncodeToString(parentID)
 		// Includes metadata and parent/name changes, as well as history changes
 		// that preserve the message count (Clear/Reset followed by appends).
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%s", snap.name, snap.parent.String, snap.updatedNS, snap.nextSeq, snap.settings)))

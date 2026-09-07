@@ -458,76 +458,10 @@ func (r *managedREPL) finishChildAgent(child *replTab, err error) {
 // off the UI loop and resolves the child again, so renames and deleted/reused
 // session names cannot silently open an unrelated or newly created session.
 func (r *managedREPL) openAgentAt(x, y int) bool {
-	m := r.model
-	for _, link := range m.agentLinkPlacements {
-		if link.Y != y || x < link.X || x >= link.X+link.Cols {
-			continue
+	for _, link := range r.model.agentLinkPlacements {
+		if link.Y == y && x >= link.X && x < link.X+link.Cols {
+			return r.inspectAgent(r.model, tabViewTarget(r.visibleTab()), link)
 		}
-		record := m.toolDisclosures[link.recordID]
-		if record == nil || link.rowIndex >= len(record.rows) {
-			return false
-		}
-		row := record.rows[link.rowIndex]
-		if row.agent == nil || row.agent.session == "" || r.state == nil {
-			return false
-		}
-		for i, tab := range r.tabs {
-			if tab.agentActivity == row.agent || tab.agentActivity != nil && tab.agentActivity == row.agent.origin {
-				r.requestShowTabLocked(i)
-				return true
-			}
-		}
-		if r.requestChildViewLocked(row.agent, row.callID) {
-			return true
-		}
-		parent, store := r.visibleTab(), r.state.sessionStore
-		if store == nil {
-			return true
-		}
-		parentName, callID := parent.name, row.callID
-		r.background(func() {
-			summaries, err := store.ListSummaries(r.work.ctx)
-			r.postUI(r.work.ctx, func() {
-				if r.tabIndexOfModel(m) < 0 {
-					return
-				}
-				m.mu.Lock()
-				defer m.mu.Unlock()
-				if err != nil {
-					m.appendNoticeLine("agent session: " + err.Error())
-					return
-				}
-				var matches []sessions.SessionSummary
-				for _, summary := range summaries {
-					md := summary.Metadata
-					if md != nil && md.Parent == parentName && md.SpawnCallID == callID {
-						matches = append(matches, summary)
-					}
-				}
-				if len(matches) != 1 {
-					m.appendNoticeLine("agent session is missing or ambiguous")
-					return
-				}
-				target := matches[0]
-				if m != r.model {
-					return
-				}
-				if i := r.tabIndexOf(target.Metadata.Name); i >= 0 {
-					r.requestShowTabLocked(i)
-					return
-				}
-				if target.InUse {
-					m.appendNoticeLine("could not open " + target.Metadata.Name + ": it is open in another polly")
-					return
-				}
-				if r.opener == nil || !r.canOpenLocked() {
-					return
-				}
-				ctx := context.WithValue(r.runCtx, agentSessionTargetKey{}, agentSessionTarget{parentName, callID})
-				r.beginOpenContextLocked(ctx, target.Metadata.Name, false)
-			})
-		})
-		return true
 	}
 	return false
 }

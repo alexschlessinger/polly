@@ -45,6 +45,7 @@ type replModal struct {
 	onClear  func()
 	onRename func(string)
 	onCancel func()
+	onDraft  func(string)
 }
 
 func (m *replModal) wipe() {
@@ -464,7 +465,14 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 			display += "  " + styled("current", "accent", "")
 			selectedDisplay += "  " + styled("current", "accent", "")
 		case tab >= 0:
-			mark := fmt.Sprintf("tab %d", tab+1)
+			mark := "active agent"
+			r.syncWorkspaces()
+			for n, workspace := range r.workspaces {
+				if workspace == r.tabs[tab] {
+					mark = fmt.Sprintf("workspace %d", n+1)
+					break
+				}
+			}
 			label += "  " + mark
 			display += "  " + styled(mark, "ok", "")
 			selectedDisplay += "  " + styled(mark, "ok", "")
@@ -497,7 +505,14 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 			if name == "" || name == current {
 				return
 			}
-			if inUseElsewhere[name] {
+			if inUseElsewhere[name] && func() bool {
+				for _, info := range infos {
+					if info.Metadata.Name == name {
+						return info.Metadata.Parent == ""
+					}
+				}
+				return true
+			}() {
 				r.model.appendErrorLine(name + " is open in another polly")
 				return
 			}
@@ -684,6 +699,9 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 	switch e.ID {
 	case "<Escape>":
 		cancel := m.onCancel
+		if m.onDraft != nil {
+			m.onDraft(m.input.text())
+		}
 		r.closeModal()
 		if cancel != nil {
 			cancel()
@@ -733,6 +751,10 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 			clear := m.onClear
 			r.closeModal()
 			clear()
+		}
+	case "<C-j>":
+		if m.inputMode && m.onDraft != nil {
+			m.input.insert('\n')
 		}
 	case "<Backspace>", "<C-h>":
 		m.input.backspace()

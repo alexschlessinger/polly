@@ -1620,7 +1620,7 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 	}
 	nowNS := time.Now().UTC().UnixNano()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.id,s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.settings_json,s.next_sequence,p.name,
+		SELECT s.id,s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.settings_json,s.next_sequence,p.name,s.parent_id,
 		       EXISTS(
 		         SELECT 1 FROM session_leases
 		         WHERE session_leases.session_id = s.id
@@ -1634,16 +1634,16 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 	var result []SessionSummary
 	for rows.Next() {
 		var snap sessionSnapshot
-		var id []byte
+		var id, parentID []byte
 		var inUse bool
-		if err := rows.Scan(&id, &snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq, &snap.parent, &inUse); err != nil {
+		if err := rows.Scan(&id, &snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq, &snap.parent, &parentID, &inUse); err != nil {
 			return nil, err
 		}
 		metadata, err := metadataFromSnapshot(snap)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, SessionSummary{ID: hex.EncodeToString(id), Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse})
+		result = append(result, SessionSummary{ID: hex.EncodeToString(id), ParentID: hex.EncodeToString(parentID), Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse})
 	}
 	return result, rows.Err()
 }

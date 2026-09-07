@@ -405,7 +405,7 @@ func TestAgentLabelClickPrecedesTrailerDismissal(t *testing.T) {
 	}
 	link := m.agentLinkPlacements[0]
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
-	if r.showTabRequest != 1 || m.openTurnTrailerID == 0 {
+	if !r.workspace().inspector.open || r.workspace().inspector.target.session.Name != "child" || r.model != m || m.openTurnTrailerID == 0 {
 		t.Fatalf("label click dismissed overlay: request %d, record %d", r.showTabRequest, record.id)
 	}
 }
@@ -456,18 +456,18 @@ func TestSavedAgentNavigationResolvesRenamesAndReadsLeasedChildren(t *testing.T)
 				t.Fatal("label not handled")
 			}
 			r.applyTabRequests()
-			runUITask(t, r)
+			view := waitInspector(t, r, 140)
 			if kind == "renamed" {
-				if r.visibleTab().name != "new-child-name" {
-					t.Fatalf("opened %s", r.visibleTab().name)
+				if view.info == nil || view.info.Metadata.Name != "new-child-name" {
+					t.Fatalf("opened %#v", view.info)
 				}
 			} else if kind == "leased" {
-				if r.visibleTab().childView == nil || r.visibleTab().state.session != nil {
+				if len(r.tabs) != 1 || r.visibleTab().name != "parent" || view.info == nil || !view.info.InUse {
 					t.Fatal("inspection acquired a runtime")
 				}
 			} else {
-				if r.opening != "" || !strings.Contains(plainStyledText(r.model.fullTranscript()), "session not found") {
-					t.Fatalf("refusal = %q, opening %q", r.model.fullTranscript(), r.opening)
+				if r.opening != "" || !strings.Contains(inspectorText(view), "session not found") {
+					t.Fatalf("refusal = %q, opening %q", inspectorText(view), r.opening)
 				}
 			}
 		})

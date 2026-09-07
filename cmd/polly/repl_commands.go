@@ -72,12 +72,14 @@ type replCommandContext struct {
 	openResumePicker func()
 	// Tab callbacks are managed-TUI operations too; the fallback REPL holds
 	// one session and leaves them nil.
-	newTab     func()
-	closeTab   func()
-	showParent func()
-	listTabs   func() []string
-	showTab    func(arg string) error
-	spawnAgent func(brief string)
+	newTab      func()
+	closeTab    func()
+	showParent  func()
+	listTabs    func() []string
+	showTab     func(arg string) error
+	spawnAgent  func(brief string)
+	inspectView func(string)
+	openAgents  func()
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -94,6 +96,7 @@ var defaultReplCommands = newDefaultReplCommandRegistry()
 
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
+	registerInspectorCommands(r)
 	r.register(replCommand{
 		name:     "/attach",
 		usage:    "/attach <image-path>",
@@ -398,14 +401,18 @@ func keyHelpLines() []string {
 		"  Enter             send message",
 		"  Ctrl-J            newline (multi-line input)",
 		"  Type /            list commands; Tab completes",
-		"  Ctrl-C / Esc      interrupt turn (Ctrl-C twice to quit)",
+		"  Ctrl-C            interrupt root turn (twice to quit)",
+		"  Esc               dismiss dialog/search, close inspector, then interrupt",
 		"  Ctrl-Z            suspend to shell (`fg` resumes)",
-		"  Up / Down         move line; recall history at top/bottom",
+		"  Up / Down         scroll hovered transcript; otherwise move line or recall history",
+		"  Left / Right      previous/next tool or thought while hovering inspector; otherwise move cursor",
 		"  Ctrl-R            reverse-search history",
 		"  Ctrl-V            attach an image from the clipboard",
-		"  PgUp / PgDn       scroll transcript",
+		"  PgUp / PgDn       page hovered transcript (main transcript by default)",
+		"  Home / End        top/follow bottom of hovered transcript; otherwise line start/end",
 		"  Ctrl-O            toggle thinking for the active/latest turn",
 		"  Click disclosure  expand/collapse thinking or tool calls",
+		"  Click detail      inspect agent, tool result, or thought",
 		"  Click thumbnail   open image in the OS viewer",
 		"  Shift-drag        select terminal text (terminal override)",
 		"  Ctrl-A / Ctrl-E   line start / end",
@@ -498,6 +505,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
+			r.model.inspections = inspectionSource{}
 			r.model.status.clearContextUsage(r.state.settings.MaxHistoryTokens)
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
@@ -531,8 +539,10 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		newTab:           r.requestNewTabLocked,
 		closeTab:         r.requestCloseTabLocked,
 		showParent:       r.requestParentLocked,
-		listTabs:         r.tabLines,
+		listTabs:         r.requestWorkspaceLines,
 		spawnAgent:       r.requestSpawnLocked,
+		inspectView:      r.inspectCommand,
+		openAgents:       r.openAgentsPicker,
 		showTab: func(arg string) error {
 			i, err := r.resolveTab(arg)
 			if err != nil {

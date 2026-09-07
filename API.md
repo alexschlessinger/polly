@@ -558,13 +558,18 @@ err = session.Reset(sessionCtx, metadata)
   competing owner receives `sessions.ErrSessionInUse`.
 - `AcquireOptions{ExistingOnly: true}` refuses missing or expired sessions
   with `sessions.ErrSessionNotFound`, so navigation cannot create a new one.
+- `ListSummaries` includes stable `ID` and `ParentID` alongside metadata,
+  message count, and lease status. Family pickers can resolve ancestry without
+  loading transcripts; `ParentID` is empty when the parent has been deleted.
 - `SQLiteStore.ReadView(ctx, sessions.ViewTarget{Name: name}, knownRevision)`
   reads a consistent snapshot without acquiring a lease or updating last-used
-  time. Its `SessionView` includes stable `ID`, `Revision`, metadata, history,
+  time. Its `SessionView` includes stable `ID`, `ParentID`, `Revision`, metadata, history,
   lease status, and a read-only artifact store. Matching `knownRevision` sets
   `Unchanged` and omits history. Use `ViewTarget{ID: view.ID}` after renames, or
   `{Parent: parentName, SpawnCallID: callID}` to resolve an unambiguous child.
-  Missing, expired, and deleted identities are refused. `sessions.ViewStore`
+  `ParentID` is the stable ancestry link; `Metadata.Parent` is only a display
+  name and may remain after parent deletion. Missing, expired, and deleted
+  identities are refused. `sessions.ViewStore`
   is an optional capability alongside `SessionStore`; `sessions.ViewIdentity`
   exposes an acquired SQLite session's `ViewID()`.
 - `AcquireOptions{ExpectedID: view.ID}` atomically verifies the viewed identity

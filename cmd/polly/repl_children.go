@@ -205,6 +205,12 @@ func (r *managedREPL) spawnChildTab(parentModel *replModel, tab *replTab, req su
 		at++
 	}
 	r.tabs = slices.Insert(r.tabs, at, tab)
+	if root := r.rootTab(parent); root != nil {
+		if root.workspace == nil {
+			root.workspace = &sessionWorkspace{}
+		}
+		root.workspace.hasAgents = true
+	}
 
 	turn := managedTurnInput{displayText: req.Task, userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: req.Task}}
 	m.mu.Lock()
@@ -229,7 +235,7 @@ func (r *managedREPL) spawnChildTab(parentModel *replModel, tab *replTab, req su
 		if label == "" {
 			label = name
 		}
-		r.model.appendNoticeLine(fmt.Sprintf("agent %s started in tab %d · /tab %s", label, at+1, name))
+		r.model.appendNoticeLine(fmt.Sprintf("agent %s started · /agents", label))
 	}
 	r.model.mu.Unlock()
 	return nil
@@ -469,7 +475,7 @@ func reportBody(rep sessions.Report) string {
 // input, and follow-up conversations belong to the user and keep it open.
 // Runs on the event loop with no model lock held.
 func (r *managedREPL) closeSpentChild(tab *replTab) bool {
-	if tab.parentName == "" || !tab.delivered || tab.keepOpen || tab.report != nil || tab.reporting || tab.deliveryPending || tab.turnDone != nil || tab.viewOpening || tab.model == r.model || r.runningChildren(tab) > 0 {
+	if tab.parentName == "" || !tab.delivered || tab.keepOpen || tab.report != nil || tab.reporting || tab.deliveryPending || tab.turnDone != nil || tab.viewOpening || tab.model == r.model || r.runningDescendants(tab) > 0 {
 		return false
 	}
 	if tab.settled != nil {

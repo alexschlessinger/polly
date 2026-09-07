@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -134,11 +134,10 @@ func TestResumedHistoryWindow(t *testing.T) {
 	if total != resumedTurnLimit+3 || show != resumedTurnLimit || start != 6 {
 		t.Fatalf("window = (start %d, total %d, show %d)", start, total, show)
 	}
-	want := fmt.Sprintf("resumed context · showing last %d of %d turns", show, total)
-	if got := resumedNotice("", total, show); got != want {
-		t.Fatalf("notice = %q, want %q", got, want)
+	m := newReplModel()
+	m.hydrateHistory(history, "context")
+	if strings.Contains(m.fullTranscript(), "resumed context") {
+		t.Fatal("history hydration added a routine resume notice")
 	}
-	if got := resumedNotice("ctx", 1, 1); got != "resumed ctx · 1 turn" {
-		t.Fatalf("single-turn notice = %q", got)
-	}
+
 }

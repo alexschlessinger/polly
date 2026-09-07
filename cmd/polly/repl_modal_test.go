@@ -204,8 +204,8 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 	if !strings.Contains(transcript, "question") || !strings.Contains(transcript, "answer") {
 		t.Fatalf("opened transcript was not hydrated: %q", transcript)
 	}
-	if !strings.Contains(transcript, "opened older-work in tab 2") {
-		t.Fatalf("new tab was not announced: %q", transcript)
+	if strings.Contains(transcript, "opened older-work in tab 2") {
+		t.Fatalf("routine opened notice remains: %q", transcript)
 	}
 	// The session left behind stays open in its tab, still leased here.
 	if current.Context().Err() != nil {
@@ -219,7 +219,7 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 	r.openResumePicker()
 	for i, item := range r.model.modal.items {
 		if item.value == "current-work" {
-			if !strings.HasSuffix(item.label, "tab 1") {
+			if !strings.HasSuffix(item.label, "workspace 1") {
 				t.Fatalf("open session not marked with its tab: %q", item.label)
 			}
 			r.model.modal.selected = i
@@ -440,8 +440,8 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 		t.Fatalf("picking a filtered agent opened %q", r.opening)
 	}
 	r.finishOpen(<-r.openDone)
-	if len(r.tabs) != 2 || r.tabs[1].name != "delta" {
-		t.Fatalf("agent did not open in a tab: %d tabs", len(r.tabs))
+	if len(r.tabs) != 2 || r.visibleTab().name != "gamma" || !r.workspace().inspector.open || r.workspace().inspector.target.session.Name != "delta" {
+		t.Fatalf("agent did not open in its parent's inspector: %d tabs, root %s", len(r.tabs), r.visibleTab().name)
 	}
 
 	// Reopening on an agent shows it, expanding its parent.

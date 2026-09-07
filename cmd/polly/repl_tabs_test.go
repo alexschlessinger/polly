@@ -155,6 +155,10 @@ func TestResumePickerMarksAndRefusesSessionsInUseElsewhere(t *testing.T) {
 
 func TestOpenFailureKeepsVisibleTabAndItsSettings(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
+	other := testAcquireSession(t, store, "other-work")
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
 	r := newTabTestREPL(t, store, "current-work")
 	current := r.state.session
 	r.state.settings.Model = "anthropic/claude-sonnet-4-6"
@@ -546,8 +550,8 @@ func TestNewTabOpensGeneratedSessionAndCloseDiscardsIt(t *testing.T) {
 		t.Fatalf("/new did not start opening a session: %q", r.model.fullTranscript())
 	}
 	name := r.opening
-	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "opening "+name+"…") {
-		t.Fatalf("open in flight was not announced: %q", transcript)
+	if transcript := r.model.fullTranscript(); strings.Contains(transcript, "opening "+name+"…") {
+		t.Fatalf("routine opening notice remains: %q", transcript)
 	}
 	r.runTabCommand("/new")
 	if transcript := r.model.fullTranscript(); r.opening != name || !strings.Contains(transcript, "already opening "+name) {
@@ -560,8 +564,8 @@ func TestNewTabOpensGeneratedSessionAndCloseDiscardsIt(t *testing.T) {
 	if !testStoreExists(t, store, name) {
 		t.Fatalf("generated session %q was not created", name)
 	}
-	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "opened "+name+" in tab 2") {
-		t.Fatalf("new tab was not announced: %q", transcript)
+	if transcript := r.model.fullTranscript(); strings.Contains(transcript, "opened "+name+" in tab 2") {
+		t.Fatalf("routine opened notice remains: %q", transcript)
 	}
 
 	r.runTabCommand("/close")
@@ -683,7 +687,7 @@ func TestRenameFromPickerRenamesSessionOpenInAnotherTab(t *testing.T) {
 		t.Fatal("rename did not reopen the picker")
 	}
 	for _, item := range r.model.modal.items {
-		if item.value == "renamed-work" && !strings.HasSuffix(item.label, "tab 1") {
+		if item.value == "renamed-work" && !strings.HasSuffix(item.label, "workspace 1") {
 			t.Fatalf("renamed session not marked with its tab: %q", item.label)
 		}
 	}

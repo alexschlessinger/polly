@@ -22,6 +22,7 @@ const turnCancelDetachAfter = 2 * time.Second
 type sessionStatus struct {
 	modelName    string
 	contextName  string
+	description  string
 	toolCount    int
 	skillCount   int
 	recentModels []string
