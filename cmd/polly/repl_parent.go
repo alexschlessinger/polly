@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"image"
-	"strings"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
@@ -108,15 +107,11 @@ func (m *replModel) dividerRow(l frameLayout) string {
 		return ""
 	}
 	if m.status.parentName == "" {
-		return styled(strings.Repeat("─", l.width), "muted", "")
+		return ""
 	}
 	label := rw.Truncate("← Back to caller", l.width, "…")
 	cols := rw.StringWidth(label)
 	y := l.composerRow(0) - 1
 	m.parentLink = image.Rect(0, y, cols, y+1)
-	rest := ""
-	if cols < l.width {
-		rest = " " + strings.Repeat("─", l.width-cols-1)
-	}
-	return styled(label, "accent", "") + styled(rest, "muted", "")
+	return styled(label, "accent", "")
 }

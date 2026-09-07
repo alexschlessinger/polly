@@ -32,6 +32,15 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	if totalTurns == 0 {
 		return
 	}
+	// A truncated history window starts with a follow-up, not the launch prompt.
+	if start > 0 {
+		for _, msg := range history[:start] {
+			if msg.Role == messages.MessageRoleUser && !agentSyntheticMessage(msg) {
+				m.userPromptSeen = true
+				break
+			}
+		}
+	}
 	h := historyHydrator{m: m}
 	for _, msg := range history[start:] {
 		h.replay(msg)

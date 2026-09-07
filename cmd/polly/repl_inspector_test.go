@@ -40,6 +40,137 @@ func inspectorText(v *viewInstance) string {
 	return plainStyledText(strings.Join(transcriptTexts(v.model), "\n"))
 }
 
+func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "private launch task\nwith another line"},
+		{Role: messages.MessageRoleAssistant, Content: "First agent message."},
+		{Role: messages.MessageRoleUser, Content: "visible follow-up"},
+		{Role: messages.MessageRoleAssistant, Content: "Second agent message."},
+	}
+	rendered := func(v *viewInstance, width int) string {
+		var rows []string
+		for _, row := range v.view.Rows(v.model, width) {
+			rows = append(rows, plainCells(row))
+		}
+		return strings.Join(rows, "\n")
+	}
+	for _, live := range []bool{true, false} {
+		t.Run(fmt.Sprintf("live=%v", live), func(t *testing.T) {
+			store := testOpenMemoryStore(t, nil)
+			r := newTabTestREPL(t, store, "root")
+			r.model.hydrateHistory(history, "root")
+			var target viewTarget
+			var source *replModel
+			if live {
+				r = newTabTestREPL(t, store, "live-root", "agent")
+				child := r.tabs[1]
+				r.showTab(0)
+				r.model.hydrateHistory(history, "live-root")
+				child.model.hydrateHistory(history, "agent")
+				source, target = child.model, tabViewTarget(child)
+			} else {
+				child, err := store.Acquire(context.Background(), "agent", sessions.AcquireOptions{Parent: "root"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := child.AddMessages(context.Background(), history); err != nil {
+					t.Fatal(err)
+				}
+				if err := child.Close(); err != nil {
+					t.Fatal(err)
+				}
+				target = viewTarget{session: sessions.ViewTarget{Name: "agent"}}
+			}
+			r.inspect(target)
+			for _, width := range []int{140, 240} {
+				v := waitInspector(t, r, width)
+				got := rendered(v, r.inspectorGeometry(width).width)
+				if !strings.HasPrefix(got, "▸ Prompt\nFirst agent message.") || strings.Contains(got, "private launch task") || !strings.Contains(got, "visible follow-up") || !strings.Contains(got, "Second agent message.") {
+					t.Fatalf("unexpected agent inspector transcript: %q", got)
+				}
+				if !strings.Contains(inspectorText(v), "private launch task") {
+					t.Fatal("display filtering removed the underlying prompt")
+				}
+			}
+			r.inspectorAction("prompt")
+			if got := rendered(waitInspector(t, r, 140), 50); !strings.HasPrefix(got, "▾ Prompt\n") || !strings.Contains(got, "private launch task") || !strings.Contains(got, "with another line") {
+				t.Fatalf("expanded prompt missing: %q", got)
+			}
+			r.closeInspector()
+			r.inspectCommand("")
+			if got := rendered(waitInspector(t, r, 240), 70); !strings.Contains(got, "private launch task") {
+				t.Fatal("cached view lost prompt expansion")
+			}
+			r.inspectorAction("prompt")
+			if source != nil {
+				got := rendered(&viewInstance{model: source, view: conversationView{}}, 80)
+				if !strings.Contains(got, "private launch task") {
+					t.Fatal("inspector changed the live agent transcript")
+				}
+			}
+			r.closeInspector()
+			r.inspectCommand("")
+			if got := rendered(waitInspector(t, r, 140), 50); strings.Contains(got, "private launch task") {
+				t.Fatal("cached inspector restored the launch prompt")
+			}
+			r.inspect(tabViewTarget(r.visibleTab()))
+			if got := rendered(waitInspector(t, r, 140), 50); !strings.Contains(got, "private launch task") {
+				t.Fatal("main-session inspector lost its user prompt")
+			}
+		})
+	}
+}
+
+func TestAgentInspectorRetainsPromptsAfterHistoryWindowAndClear(t *testing.T) {
+	m := newReplModel()
+	var history []messages.ChatMessage
+	for n := 0; n < resumedTurnLimit+1; n++ {
+		history = append(history, messages.ChatMessage{Role: messages.MessageRoleUser, Content: fmt.Sprintf("task %d", n)}, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "reply"})
+	}
+	m.hydrateHistory(history, "agent")
+	view := conversationView{collapseInitialPrompt: true}
+	if got := plainCells(view.Rows(m, 80)[0]); !strings.Contains(got, "task 1") {
+		t.Fatalf("truncated history hid a follow-up: %q", got)
+	}
+	m.clearDisplay()
+	m.appendUserPrompt("after clear")
+	if got := plainCells(view.Rows(m, 80)[0]); !strings.Contains(got, "after clear") {
+		t.Fatalf("clear caused another prompt to be hidden: %q", got)
+	}
+}
+
+func TestAgentInspectorPromptClick(t *testing.T) {
+	withDisplayTTY(t)
+	fixture, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = fixture.work.close() })
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
+	r.setupWidgets()
+	r.showTab(0)
+	child := r.tabs[1]
+	child.model.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "the launch task"},
+		{Role: messages.MessageRoleAssistant, Content: "the answer"},
+	}, "agent")
+	r.inspect(tabViewTarget(child))
+	for _, width := range []int{140, 80} {
+		screen.SetSize(width, 32)
+		waitInspector(t, r, width)
+		r.render()
+		button := headerButton(r.inspectorButtons, "prompt")
+		if button.Empty() || button.Min != r.inspectorW.Inner.Min {
+			t.Fatalf("prompt control does not match the first body row: %v", button)
+		}
+		for _, expanded := range []bool{true, false} {
+			r.handleEvent(mouseEvent("<MouseLeft>", button.Min))
+			r.render()
+			m := r.workspace().inspector.current.model
+			if m.initialPromptExpanded != expanded || len(r.inspectorW.OverlayBottom) != 0 {
+				t.Fatal("prompt click failed or was treated as new output")
+			}
+		}
+	}
+}
+
 func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 	withDisplayTTY(t)
 	store := testOpenMemoryStore(t, nil)
@@ -57,8 +188,14 @@ func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 	if !strings.Contains(inspectorText(v), `"answer": 42`) {
 		t.Fatalf("result = %s", inspectorText(v))
 	}
+	if first := strings.Split(inspectorText(v), "\n")[0]; strings.Contains(first, "bash") || !strings.Contains(first, "completed") {
+		t.Fatalf("expected status without a repeated tool name: %q", first)
+	}
 	if !strings.Contains(inspectorText(v), "Arguments") || !strings.Contains(inspectorText(v), `"command": "printf hi"`) {
 		t.Fatalf("tool arguments are not visible by default: %s", inspectorText(v))
+	}
+	if !strings.Contains(inspectorText(v), "╭─ json\n│ {") || !strings.Contains(strings.Join(transcriptTexts(v.model), "\n"), styled(`"printf hi"`, "ok", "")) {
+		t.Fatalf("arguments lack JSON code-block highlighting: %s", strings.Join(transcriptTexts(v.model), "\n"))
 	}
 	if m.ed.text() != "keep my draft" || r.model != m {
 		t.Fatal("inspection stole composer")
@@ -263,7 +400,7 @@ func TestInspectorCacheEvictionPreservesViewState(t *testing.T) {
 	if s.top != 12 || s.follow || s.search != "line" {
 		t.Fatalf("eviction changed state: %#v", s)
 	}
-	if r.workspace().inspector.current.geometry.width != 80 {
+	if r.workspace().inspector.current.geometry.width != 50 {
 		t.Fatalf("geometry = %#v", r.workspace().inspector.current.geometry)
 	}
 }
@@ -819,5 +956,62 @@ func TestHydratedThoughtKeysFollowProseSplits(t *testing.T) {
 	trailer := m.turnTrailers[m.turnTrailerSeq]
 	if trailer == nil || len(trailer.dock.reasoningIDs) != 1 || trailer.dock.reasoningIDs[0] != m.reasoningOrder[2] {
 		t.Fatalf("settled turn trailer does not carry the turn's last reasoning record: %+v", trailer)
+	}
+}
+
+func TestInspectorSwitchStartsAtTop(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = r.work.close() })
+	screen.SetSize(140, 32)
+	for _, name := range []string{"first", "second"} {
+		call := messages.ChatMessageToolCall{ID: name, Name: name}
+		r.model.appendToolCallStart(call)
+		r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat(name+" output\n", 100)})
+	}
+	r.inspectCommand("tools")
+	checkTop := func() {
+		t.Helper()
+		waitInspector(t, r, 140)
+		r.render()
+		s := r.workspace().viewState(r.workspace().inspector.target)
+		if s.top != 0 || s.follow || r.inspectorW.TopRow != 0 || r.inspectorW.PinBottom {
+			t.Fatalf("item did not open at the top: %+v", s)
+		}
+		if len(r.inspectorW.OverlayBottom) != 0 {
+			t.Fatal("initial content was marked as new output")
+		}
+	}
+	checkTop()
+	second := r.workspace().inspector.target
+	r.inspectorScroll(15)
+	r.render()
+	if r.inspectorW.TopRow == 0 {
+		t.Fatal("test item did not scroll")
+	}
+	r.inspectorSequence(-1)
+	checkTop()
+	r.inspectorAction("follow")
+	r.render()
+	r.inspectorSequence(1)
+	checkTop()
+	r.inspectorScroll(15)
+	r.inspectorHistory(-1)
+	checkTop()
+	r.inspectorHistory(1)
+	checkTop()
+	r.inspectorSequence(-1)
+	checkTop()
+	r.inspect(second)
+	checkTop()
+	// Refreshing the same selection must retain a deliberate scroll position.
+	r.inspectorScroll(15)
+	r.render()
+	top := r.inspectorW.TopRow
+	r.inspect(second)
+	waitInspector(t, r, 140)
+	r.render()
+	if r.inspectorW.TopRow != top {
+		t.Fatal("refresh reset the current item's scroll position")
 	}
 }

@@ -73,17 +73,23 @@ func (r *managedREPL) renderInspector(l frameLayout) []terminalImagePlacement {
 	}
 	g := r.inspectorGeometry(l.width)
 	x := l.width - g.width
-	header := r.inspectorHeader(g.width, l.transcriptHeight, x, l.logoRows)
+	y, paneHeight := l.logoRows, l.transcriptHeight
+	header := r.inspectorHeader(g.width, paneHeight, x, y)
 	r.inspectorHeaderW.Text = header.text
 	r.inspectorButtons = header.buttons
 	r.inspectorHeaderRows = header.rows
 	rows := transcriptVisualRows("Loading…", ui.StyleClear, g.width)
 	v := i.current
 	if v != nil && v.model != nil {
-		rows = v.view.Rows(v.model, v.geometry.width)
+		// While a refreshed projection is loading, the previous model still
+		// has to fit the current pane (especially during divider dragging).
+		rows = v.view.Rows(v.model, g.width)
 	}
 	s := w.viewState(i.target)
-	height := max(0, l.transcriptHeight-r.inspectorHeaderRows)
+	if s.lastRows < 0 && v != nil && v.model != nil {
+		s.lastRows = len(rows)
+	}
+	height := max(0, paneHeight-r.inspectorHeaderRows)
 	if s.follow {
 		s.top = max(0, len(rows)-height)
 		s.lastRows = len(rows)
@@ -93,15 +99,24 @@ func (r *managedREPL) renderInspector(l frameLayout) []terminalImagePlacement {
 	pin := s.follow && (i.target.kind == conversationViewKind || len(rows) > height)
 	r.inspectorW.Rows, r.inspectorW.TopRow, r.inspectorW.PinBottom = rows, s.top, pin
 	r.inspectorW.OverlayBottom = nil
-	if !s.follow && len(rows) > s.lastRows {
+	if !s.follow && s.lastRows >= 0 && len(rows) > s.lastRows {
 		r.inspectorW.OverlayBottom = [][]ui.Cell{parseStyledCells(styled("↓ new output · End to follow", "accent", ""), ui.StyleClear)}
-		r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, l.logoRows+l.transcriptHeight-1, l.width, l.logoRows+l.transcriptHeight), "follow"})
+		r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, y+paneHeight-1, x+g.width, y+paneHeight), "follow"})
 	}
 	if v == nil || v.model == nil {
 		return nil
 	}
-	viewport := (frameLayout{width: g.width, logoRows: l.logoRows + r.inspectorHeaderRows, transcriptHeight: height}).transcriptViewport(len(rows), s.top, pin, len(r.inspectorW.OverlayBottom))
+	viewport := (frameLayout{width: g.width, logoRows: y + r.inspectorHeaderRows, transcriptHeight: height}).transcriptViewport(len(rows), s.top, pin, len(r.inspectorW.OverlayBottom))
 	m := v.model
+	offset := 0
+	for _, block := range m.visual.blocks {
+		if block.key == "initial-prompt" && viewport.contains(offset) {
+			row := viewport.screenY(offset)
+			r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, row, x+g.width, row+1), "prompt"})
+			break
+		}
+		offset += len(block.rows)
+	}
 	placements := m.visibleImagePlacements(viewport)
 	for n := range placements {
 		placements[n].X += x

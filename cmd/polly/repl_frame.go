@@ -83,7 +83,7 @@ func (p *transcriptParagraph) drawRows(buf *ui.Buffer, rows [][]ui.Cell) {
 			break
 		}
 		for _, cx := range ui.BuildCellWithXArray(row) {
-			if rw.RuneWidth(cx.Cell.Rune) == 0 {
+			if rw.RuneWidth(cx.Cell.Rune) == 0 || cx.X+rw.RuneWidth(cx.Cell.Rune) > p.Inner.Dx() {
 				continue
 			}
 			buf.SetCell(cx.Cell, image.Pt(cx.X, y).Add(p.Inner.Min))
@@ -146,7 +146,9 @@ func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
 	} else {
 		l.inputRows = 1
 	}
-	l.dividerRows = dividerRowCount(h, l.inputRows, l.statusRows, l.dockRows, m.quiet)
+	if m.status.parentName != "" {
+		l.dividerRows = dividerRowCount(h, l.inputRows, l.statusRows, l.dockRows, m.quiet)
+	}
 	content := h - l.inputRows - l.statusRows - l.dockRows - l.dividerRows
 	l.logoRows = startupLogoRowCount(content, r.startupLogoVisible, r.images != nil)
 	l.transcriptHeight = max(0, content-l.logoRows)
@@ -177,9 +179,8 @@ func (l frameLayout) transcriptViewport(totalRows, topRow int, pinBottom bool, o
 	return v
 }
 
-// dividerRowCount is the height of the rule separating the transcript from the
-// bottom chrome: one row outside quiet mode, dropped entirely when the
-// terminal is too short to spare it.
+// dividerRowCount reserves parent navigation above the composer, dropped
+// entirely in quiet mode or when the terminal is too short to spare it.
 func dividerRowCount(h, inputRows, statusRows, dockRows int, quiet bool) int {
 	if quiet || h-inputRows-statusRows-dockRows < 2 {
 		return 0
@@ -341,17 +342,23 @@ func (r *managedREPL) render() {
 	r.model.turnTrailerPlacements = r.model.visibleTurnTrailerPlacements(viewport)
 	r.model.inspectionLinks = r.model.visibleInspectionLinks(viewport, 0)
 	var affordanceSpans []affordanceSpan
-	idleCursor := r.affordanceW != nil && editable && r.model.idleAffordanceCursor(now)
+	idleCursor := r.affordanceW != nil && editable && !r.workspace().inspector.searching && r.model.idleAffordanceCursor(now)
 	if r.affordanceW != nil {
 		affordanceSpans = r.model.affordanceSpans(now, l, viewport, status, image.Pt(min(curCol, w-1), l.composerRow(curRow)), idleCursor)
 	}
 	r.model.mu.Unlock()
-	r.mainTranscriptBounds = image.Rect(0, l.logoRows, mainWidth, l.logoRows+l.transcriptHeight)
+	r.mainTranscriptBounds = image.Rect(0, viewport.logoRows, mainWidth, viewport.logoRows+l.transcriptHeight)
 	if r.workspace().inspector.open {
 		if r.workspace().inspector.maximized || w < 120 {
 			r.mainTranscriptBounds = image.Rectangle{}
 			imagePlacements = nil
-			affordanceSpans = nil
+			visible := affordanceSpans[:0]
+			for _, span := range affordanceSpans {
+				if span.y < l.logoRows || span.y >= l.logoRows+l.transcriptHeight {
+					visible = append(visible, span)
+				}
+			}
+			affordanceSpans = visible
 		}
 		imagePlacements = append(imagePlacements, r.renderInspector(l)...)
 		if r.workspace().inspector.searching {

@@ -22,6 +22,9 @@ func (r *managedREPL) inspect(target viewTarget) {
 		return
 	}
 	r.retireInspector(w)
+	if len(i.history) == 0 || i.target.key() != target.key() {
+		w.viewState(target).resetScroll()
+	}
 	if len(i.history) > 0 {
 		i.history = i.history[:i.position+1]
 	}
@@ -59,6 +62,9 @@ func (r *managedREPL) inspectorHistory(delta int) {
 		return
 	}
 	r.retireInspector(w)
+	if i.target.key() != i.history[next].key() {
+		w.viewState(i.history[next]).resetScroll()
+	}
 	i.position, i.target, i.open = next, i.history[next], true
 	i.generation++
 }
@@ -114,7 +120,7 @@ func (r *managedREPL) inspectorGeometry(width int) viewGeometry {
 	if i.open && !i.maximized && width >= 120 {
 		ratio := r.inspectorRatio
 		if ratio == 0 {
-			ratio = .5
+			ratio = .7
 		}
 		left := max(50, min(width-51, int(float64(width-1)*ratio)))
 		width -= left + 1
@@ -165,6 +171,14 @@ func (r *managedREPL) refreshInspector(width int) {
 		live.model.mu.Unlock()
 		if tool != nil || thought != nil {
 			v.unavailable, v.failures, v.revision = false, 0, ""
+		}
+	}
+	if i.target.kind == conversationViewKind {
+		root := r.visibleTab()
+		isRoot := i.target.session.ID == root.viewID() || i.target.session.ID == "" && i.target.session.Name == root.name
+		v.view = conversationView{collapseInitialPrompt: !isRoot}
+		if v.model != nil {
+			v.model.setInitialPromptExpanded(state.promptExpanded)
 		}
 	}
 	if v.unavailable || v.failures > 0 && time.Now().Before(v.retryAt) {
@@ -347,6 +361,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				}
 			}
 			latest := w.viewState(i.target)
+			model.setInitialPromptExpanded(latest.promptExpanded)
 			if v.model != nil {
 				rememberViewPosition(v.model, latest)
 			}
