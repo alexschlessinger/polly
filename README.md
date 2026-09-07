@@ -134,7 +134,7 @@ optional label, the tools the child may use.
 The child:
 
 - runs in its own session on the same store, with a fresh context window
-- inherits the parent's settings (the brief may set a model or iteration cap), active skills, and tools minus `spawn_agent`
+- inherits the parent's settings and system prompt (the brief may set a model or iteration cap), active skills, and tools minus `spawn_agent`
 - shares the parent's MCP servers instead of starting them again
 - shares the working directory and files; give editing agents non-overlapping files and inspect their changes
 - returns only its final reply, followed by its session name. `polly -c <name>` or `/resume` opens the full transcript

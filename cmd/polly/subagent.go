@@ -118,7 +118,8 @@ func spawnRunner(config *Config, client llm.LLM, parent *conversationState) suba
 // catalog with the parent's active skills, and an agent on the parent's
 // client. The session records the parent, the brief's label, and the
 // settings and tools the child runs with, so it can be resumed like any
-// session.
+// session. It opens on the parent's persona and display contract, so its
+// system message is composed the way the parent's is.
 func openChildState(ctx context.Context, client llm.LLM, parent *conversationState, req subagent.Request) (state *conversationState, retErr error) {
 	store := parent.sessionStore
 	if store == nil || parent.session == nil || parent.toolRegistry == nil {
@@ -190,7 +191,10 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 	}
 	metadata.SkillSources = parent.skillSources
 	metadata.ContextWindows = maps.Clone(parentMetadata.ContextWindows)
-	if err := session.SetMetadata(ctx, metadata); err != nil {
+	// Reset, not SetMetadata: the store seeded the new session with the
+	// launch persona, and only Reset rebuilds the system message from the
+	// parent's, which a resumed context may have changed.
+	if err := session.Reset(ctx, metadata); err != nil {
 		return nil, fmt.Errorf("write child metadata: %w", err)
 	}
 
@@ -213,6 +217,7 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 		sandboxWarnings:    parent.sandboxWarnings,
 		sandboxProbe:       parent.sandboxProbe,
 		outputCapabilities: parent.outputCapabilities,
+		displayContract:    parent.displayContract,
 		contextWindows:     parent.cachedContextWindows(),
 	}, nil
 }

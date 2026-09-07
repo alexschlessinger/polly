@@ -221,3 +221,67 @@ func TestSpawnAgentToolRunsInsideAParentTurn(t *testing.T) {
 		t.Fatalf("child metadata = %+v", md)
 	}
 }
+
+func TestSpawnedChildOpensOnTheParentsPersonaAndDisplayContract(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, persona := range []string{"be a pirate", ""} {
+		name := "persona"
+		if persona == "" {
+			name = "coding"
+		}
+		t.Run(name, func(t *testing.T) {
+			// The store seeds every new session with the launch persona; the
+			// child must open on the parent's, which a resumed context may
+			// have changed or cleared.
+			store := testOpenMemoryStore(t, &sessions.Metadata{SystemPrompt: "launch persona"})
+			session := testAcquireSession(t, store, "parent-work")
+			registry := tools.NewToolRegistry(nil)
+			artifactStore := session.ArtifactStore()
+			model := &captureCompletionLLM{response: spawnTestReply("done")}
+			parent := &conversationState{
+				sessionStore: store, session: session, artifactStore: artifactStore, toolRegistry: registry,
+				agent:           llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
+				displayContract: richTerminalDisplayContract,
+				settings:        Settings{Model: "test/model", MaxTokens: 128, MaxIterations: 10, SystemPrompt: persona},
+			}
+			registerSpawnTool(parent, &Config{}, model)
+			run := spawnRunner(&Config{}, model, parent)
+
+			res, err := run(context.Background(), subagent.Request{Task: "look around"})
+			if err != nil || res.Text != "done" {
+				t.Fatalf("result = %+v, err %v", res, err)
+			}
+			request := projectedRequestText(model.request)
+			if len(model.request) == 0 || model.request[0].Role != messages.MessageRoleSystem {
+				t.Fatalf("the child's request has no system message: %+v", model.request)
+			}
+			if strings.Contains(request, "launch persona") {
+				t.Fatalf("the child opened on the store's launch persona instead of the parent's: %q", request)
+			}
+			for _, want := range []string{richTerminalDisplayContract, contextMechanicsContract} {
+				if !strings.Contains(request, want) {
+					t.Fatalf("the child's request lacks %q:\n%s", want, request)
+				}
+			}
+			md, history := readChildSession(t, store, res.Session)
+			if md.SystemPrompt != persona {
+				t.Fatalf("child metadata persona = %q, want %q", md.SystemPrompt, persona)
+			}
+			if persona != "" {
+				if !strings.Contains(request, persona) || strings.Contains(request, codingContract) {
+					t.Fatalf("a persona child's request should carry the persona and no coding contract:\n%s", request)
+				}
+				if len(history) != 3 || history[0].Role != messages.MessageRoleSystem || history[0].Content != persona || history[1].Content != "look around" {
+					t.Fatalf("persona child history = %+v", history)
+				}
+				return
+			}
+			if !strings.Contains(request, codingContract) {
+				t.Fatalf("a child without a persona should get the coding contract:\n%s", request)
+			}
+			if len(history) != 2 || history[0].Content != "look around" {
+				t.Fatalf("coding child history = %+v", history)
+			}
+		})
+	}
+}
