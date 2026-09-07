@@ -205,12 +205,6 @@ func (r *managedREPL) spawnChildTab(parentModel *replModel, tab *replTab, req su
 		at++
 	}
 	r.tabs = slices.Insert(r.tabs, at, tab)
-	if root := r.rootTab(parent); root != nil {
-		if root.workspace == nil {
-			root.workspace = &sessionWorkspace{}
-		}
-		root.workspace.hasAgents = true
-	}
 
 	turn := managedTurnInput{displayText: req.Task, userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: req.Task}}
 	m.mu.Lock()

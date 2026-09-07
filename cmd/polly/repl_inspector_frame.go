@@ -1,11 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"image"
 	"strings"
 
-	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/metaspartan/gotui/v5/widgets"
 )
@@ -18,82 +16,6 @@ type inspectionLink struct {
 	rect image.Rectangle
 	kind viewKind
 	key  string
-}
-
-func (r *managedREPL) workspaceDivider(l frameLayout, original string) string {
-	r.workspaceAgentLink = image.Rectangle{}
-	if l.dividerRows == 0 {
-		return original
-	}
-	r.refreshWorkspaceAgentPresence()
-	hasAgents, running, approvals := r.workspaceActivityCounts()
-	if !hasAgents {
-		return original
-	}
-	label := "Agents"
-	if running > 0 {
-		label += fmt.Sprintf(" · %d running", running)
-	}
-	if approvals > 0 {
-		label += fmt.Sprintf(" · %d need approval", approvals)
-	}
-	label = rw.Truncate(label, l.width, "…")
-	r.workspaceAgentLink = image.Rect(0, l.composerRow(0)-1, rw.StringWidth(label), l.composerRow(0))
-	return styled(label, "accent", "")
-}
-
-func (r *managedREPL) workspaceActivityCounts() (hasAgents bool, running, approvals int) {
-	root := r.visibleTab()
-	w := r.workspace()
-	for _, tab := range r.tabs {
-		if tab == root || r.rootTab(tab) != root {
-			continue
-		}
-		w.hasAgents = true
-		m := tab.model
-		m.mu.Lock()
-		if m.busy {
-			running++
-		}
-		if m.approval != nil {
-			approvals++
-		}
-		m.mu.Unlock()
-	}
-	return w.hasAgents, running, approvals
-}
-
-// Load saved children once per workspace, off the event loop. Runtime retirement
-// does not erase their existence; stable parent IDs exclude recreated sessions.
-func (r *managedREPL) refreshWorkspaceAgentPresence() {
-	w := r.workspace()
-	root := r.visibleTab()
-	if w.agentsChecked || root.state == nil || root.state.sessionStore == nil {
-		return
-	}
-	store := root.state.sessionStore
-	w.agentsChecked = true
-	id, name := root.viewID(), root.name
-	r.background(func() {
-		summaries, err := store.ListSummaries(r.work.ctx)
-		found := false
-		if err == nil {
-			for _, summary := range summaries {
-				if summary.ParentID == id {
-					found = true
-					break
-				}
-			}
-		}
-		r.postUI(r.work.ctx, func() {
-			if root.viewID() == id {
-				w.hasAgents = w.hasAgents || found
-				if root.name != name {
-					w.agentsChecked = false
-				}
-			}
-		})
-	})
 }
 
 func (r *managedREPL) setupInspectorWidgets() {

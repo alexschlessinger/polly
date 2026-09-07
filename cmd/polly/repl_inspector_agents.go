@@ -58,7 +58,6 @@ func (r *managedREPL) beginAgentsPicker() {
 				m.appendErrorLine(err.Error())
 				return
 			}
-			r.workspace().hasAgents = len(children) > 0
 			priority := func(s sessions.SessionSummary) int {
 				v := statuses[s.Metadata.Name]
 				if v == "approval needed" {

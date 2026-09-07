@@ -419,7 +419,6 @@ type managedREPL struct {
 	mousePosition        image.Point
 	mousePositionKnown   bool
 	workspaceActions     []func()
-	workspaceAgentLink   image.Rectangle
 
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
@@ -1482,6 +1481,8 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		m.clearDisplay()
 	case "<C-r>":
 		m.hist.startSearch()
+	case "<C-g>":
+		r.openAgentsPicker()
 	case "<Up>":
 		// Move up a line within a multi-line prompt; recall older history only
 		// when already on the first line (zsh up-line-or-history).

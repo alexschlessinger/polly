@@ -122,7 +122,7 @@ Rules:
 - Settings are per tab. `/set` and `/model` touch only the visible one.
 - Turns keep running in hidden tabs. Start a long run, switch away, keep working. Input queued behind a hidden turn runs when it settles.
 - A hidden tab that finishes or fails posts a one-line notice in the visible transcript, once the visible tab is idle.
-- An agent needing approval raises a persistent attention indicator. Open **Agents**, select it, and choose **Review** for an explicitly addressed approval dialog.
+- An agent needing approval raises a persistent attention indicator. Press **Ctrl-G** or use `/agents`, select it, and choose **Review** for an explicitly addressed approval dialog.
 - Closing a workspace with active turns is refused. Ctrl-C interrupts the root turn; **Stop** in an agent inspector interrupts that agent.
 - Quitting with turns running elsewhere warns once. A second Ctrl-C cancels them, waits briefly for completed work to save, exits.
 - Open sessions are leased. The picker marks sessions held by another polly `in use` and will not open them. Picking a session already open here jumps to its workspace. When opening an agent whose parent is leased elsewhere, the parent is a labeled read-only snapshot. Execution still requires acquiring its lease. A deleted or expired parent is never recreated; a surviving agent opens with **Parent unavailable**.
@@ -161,8 +161,8 @@ far.
 
 **In the TUI.** Inline Thought, Tools, Agents, and Images viewed summaries
 keep their existing expand/collapse behavior. Clicking an expanded agent task,
-tool row, or thought detail opens the inspector. The **Agents** control appears
-when the workspace has agents. It and `/agents` show attention-needed agents first, then running agents,
+tool row, or thought detail opens the inspector. **Ctrl-G** and `/agents` open
+the Agents dialog, showing attention-needed agents first, then running agents,
 then completed agents newest first. Agent outcomes still describe the initial
 delegated run; later follow-ups do not change that outcome.
 
@@ -231,6 +231,7 @@ One-shot and line mode: the tool always waits for the reply.
 | `Home` / `End` | Top/follow bottom of hovered transcript; otherwise input line start/end |
 | `Ctrl-A` / `Ctrl-E` | Input line start/end regardless of pointer |
 | `Ctrl-R` | Reverse history search |
+| `Ctrl-G` | Open the Agents dialog; cancel reverse history search when active |
 | `Ctrl-O` | Toggle the reasoning disclosure |
 | `Ctrl-V` | Attach an image from the clipboard |
 | `Ctrl-Z` | Suspend. `fg` resumes |

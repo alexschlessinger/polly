@@ -346,7 +346,6 @@ func (r *managedREPL) render() {
 		affordanceSpans = r.model.affordanceSpans(now, l, viewport, status, image.Pt(min(curCol, w-1), l.composerRow(curRow)), idleCursor)
 	}
 	r.model.mu.Unlock()
-	divider = r.workspaceDivider(l, divider)
 	r.mainTranscriptBounds = image.Rect(0, l.logoRows, mainWidth, l.logoRows+l.transcriptHeight)
 	if r.workspace().inspector.open {
 		if r.workspace().inspector.maximized || w < 120 {

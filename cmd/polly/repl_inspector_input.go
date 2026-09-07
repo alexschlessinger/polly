@@ -170,10 +170,6 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 			return false
 		}
 		point := image.Pt(mouse.X, mouse.Y)
-		if e.ID == "<MouseLeft>" && point.In(r.workspaceAgentLink) {
-			r.openAgentsPicker()
-			return true
-		}
 		if e.ID == "<MouseLeft>" && point.In(r.inspectorDivider) {
 			r.inspectorDragging = true
 			return true

@@ -407,6 +407,7 @@ func keyHelpLines() []string {
 		"  Up / Down         scroll hovered transcript; otherwise move line or recall history",
 		"  Left / Right      previous/next tool or thought while hovering inspector; otherwise move cursor",
 		"  Ctrl-R            reverse-search history",
+		"  Ctrl-G            open the Agents dialog",
 		"  Ctrl-V            attach an image from the clipboard",
 		"  PgUp / PgDn       page hovered transcript (main transcript by default)",
 		"  Home / End        top/follow bottom of hovered transcript; otherwise line start/end",

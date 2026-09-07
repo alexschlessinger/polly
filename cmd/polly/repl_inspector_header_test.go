@@ -91,7 +91,7 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	}
 }
 
-func TestWorkspaceAgentsControlRequiresAgentsInThatWorkspace(t *testing.T) {
+func TestAgentsShortcutPreservesComposerAndInspector(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root", "other")
 	child, err := store.Acquire(context.Background(), "saved-agent", sessions.AcquireOptions{Parent: "root"})
@@ -101,30 +101,42 @@ func TestWorkspaceAgentsControlRequiresAgentsInThatWorkspace(t *testing.T) {
 	if err := child.Close(); err != nil {
 		t.Fatal(err)
 	}
-	l := frameLayout{width: 120, transcriptHeight: 28, dividerRows: 1, inputRows: 1, statusRows: 1}
-	refresh := func() string {
-		t.Helper()
-		r.workspaceDivider(l, "divider")
-		r.work.wg.Wait()
-		for len(r.uiTasks) > 0 {
-			(<-r.uiTasks)()
-		}
-		return plainStyledText(r.workspaceDivider(l, "divider"))
-	}
-	if text := refresh(); text != "divider" || !r.workspaceAgentLink.Empty() {
-		t.Fatalf("empty workspace has an Agents control: %q", text)
-	}
 	r.showTab(0)
 	r.inspect(tabViewTarget(r.visibleTab()))
-	if text := refresh(); text != "Agents" || r.workspaceAgentLink.Empty() {
-		t.Fatalf("saved agent missing or message label still visible: %q", text)
+	target := r.workspace().inspector.target
+	r.model.ed.setText("keep this draft")
+	r.model.ed.left()
+	cursor := r.model.ed.cursor
+	key := func(id string) {
+		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id})
+		r.applyTabRequests()
+		settleInspectorWork(r)
 	}
-	if len(r.tabs) != 2 {
-		t.Fatal("checking saved agents started an execution runtime")
+	for _, busy := range []bool{false, true} {
+		r.model.busy = busy
+		key("<C-g>")
+		modal := r.model.modal
+		if modal == nil || modal.title != "Agents · root" || len(modal.items) != 1 || !strings.Contains(modal.items[0].label, "saved-agent") {
+			t.Fatalf("Ctrl-G did not open the workspace's saved agents: %#v", modal)
+		}
+		if len(r.tabs) != 2 || sessionInUse(t, store, "saved-agent") {
+			t.Fatal("opening the Agents dialog activated an agent runtime")
+		}
+		key("<Escape>")
+		if r.model.ed.text() != "keep this draft" || r.model.ed.cursor != cursor || !r.workspace().inspector.open || r.workspace().inspector.target != target {
+			t.Fatal("opening or dismissing the Agents dialog changed the draft or inspector")
+		}
 	}
-	r.showTab(1)
-	if text := refresh(); text != "divider" || !r.workspaceAgentLink.Empty() {
-		t.Fatalf("Agents control leaked across workspaces: %q", text)
+	r.model.busy = false
+	r.model.hist.startSearch()
+	key("<C-g>")
+	if r.model.hist.searching || r.model.modal != nil {
+		t.Fatal("Ctrl-G did not retain its history-search cancellation behavior")
+	}
+	r.workspace().inspector.searching = true
+	key("<C-g>")
+	if r.model.modal != nil || !r.workspace().inspector.searching {
+		t.Fatal("Ctrl-G stole input from inspector search")
 	}
 }
 
