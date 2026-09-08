@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -192,14 +193,26 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 	if ctx.Err() != nil {
 		return out, ctx.Err()
 	}
-	if !targetStarted {
+	// A wrapper that exits 0 ran its target even if the readiness byte was
+	// lost; only a failure without the byte means the target never started.
+	if !targetStarted && err != nil {
 		return out, fmt.Errorf("sandbox target did not start: %w", err)
 	}
 	if err != nil {
 		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() >= 0 {
-			out.Data = CommandResult{ExitCode: exit.ExitCode()}
-			return out, &CommandError{ExitCode: exit.ExitCode(), Cause: err}
+		if errors.As(err, &exit) {
+			code := exit.ExitCode()
+			if code < 0 {
+				// Killed by a signal: report it the way shells do, so the
+				// caller still sees a command result rather than a launch failure.
+				if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+					code = 128 + int(status.Signal())
+				}
+			}
+			if code >= 0 {
+				out.Data = CommandResult{ExitCode: code}
+				return out, &CommandError{ExitCode: code, Cause: err}
+			}
 		}
 		return out, fmt.Errorf("launch command: %w", err)
 	}
