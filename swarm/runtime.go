@@ -1417,6 +1417,7 @@ func (r *Runtime) runWorkflow(ctx context.Context, controller, source string, in
 	host := &workflowHost{runtime: r, controller: controller}
 	runner := workflow.Runner{Host: host, Config: workflow.Config{RunID: controller}}
 	report, err := runner.Run(ctx, source, input)
+	host.close()
 	persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer stop()
 	var released []string

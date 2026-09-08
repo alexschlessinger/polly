@@ -6,18 +6,76 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
 type workflowHost struct {
 	runtime    *Runtime
 	controller string
+	// Binding a registry starts fresh native tools and relaunches local MCP
+	// servers; one binding per context serves every step run under the same
+	// policy. calls keeps close from racing a step still executing.
+	mu    sync.Mutex
+	bound map[string]*boundRegistry
+	calls sync.WaitGroup
+}
+type boundRegistry struct {
+	policy   string
+	registry *tools.ToolRegistry
+}
+
+// registry returns the context's bound tools, rebinding only when the policy
+// derived from the current coordination state differs from the cached one.
+func (h *workflowHost) registry(ctx context.Context, s *State, c *ExecutionContext) (*tools.ToolRegistry, error) {
+	ec, err := h.runtime.contextPolicy(ctx, s, c)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := json.Marshal(struct {
+		Root     string
+		ReadOnly bool
+		Sandbox  sandbox.Config
+	}{ec.Root, ec.ReadOnly, ec.Sandbox})
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if cached := h.bound[c.ID]; cached != nil {
+		if cached.policy == string(policy) {
+			return cached.registry, nil
+		}
+		cached.registry.Close()
+		delete(h.bound, c.ID)
+	}
+	registry, _, err := h.runtime.config.Registry.BindExecutionContext(ec, nil)
+	if err != nil {
+		return nil, err
+	}
+	if h.bound == nil {
+		h.bound = map[string]*boundRegistry{}
+	}
+	h.bound[c.ID] = &boundRegistry{policy: string(policy), registry: registry}
+	return registry, nil
+}
+
+// close releases every bound registry once no step is still running.
+func (h *workflowHost) close() {
+	h.calls.Wait()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id, cached := range h.bound {
+		cached.registry.Close()
+		delete(h.bound, id)
+	}
 }
 
 func (h *workflowHost) SaveWorkflow(ctx context.Context, report workflow.Report) error {
@@ -27,6 +85,8 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	h.calls.Add(1)
+	defer h.calls.Done()
 	r := h.runtime
 	a := tools.Args(op.Args)
 	switch op.Kind {
@@ -102,15 +162,10 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 		if err != nil {
 			return nil, err
 		}
-		ec, err := r.contextPolicy(ctx, s, c)
+		registry, err := h.registry(ctx, s, c)
 		if err != nil {
 			return nil, err
 		}
-		registry, _, err := r.config.Registry.BindExecutionContext(ec, nil)
-		if err != nil {
-			return nil, err
-		}
-		defer registry.Close()
 		name := a.String("name")
 		args, _ := op.Args["args"].(map[string]any)
 		if op.Kind == "exec" {
