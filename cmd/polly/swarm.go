@@ -155,7 +155,7 @@ func registerSwarmCommands(r *replCommandRegistry) {
 		}
 		return replCommandResult{err: ctx.replyLine(tools.Result(value))}
 	}})
-	r.register(replCommand{name: "/workflow", usage: "/workflow <script.js> <input.json>", summary: "run a saved JavaScript workflow using the shared swarm runtime", run: func(ctx *replCommandContext, args []string) replCommandResult {
+	r.register(replCommand{name: "/workflow", usage: "/workflow <script.js> <input.json>", summary: "run a JavaScript workflow on the swarm runtime", run: func(ctx *replCommandContext, args []string) replCommandResult {
 		if len(args) != 3 || ctx.state == nil || ctx.state.swarm == nil {
 			return replCommandResult{err: fmt.Errorf("usage: /workflow <script.js> <input.json>")}
 		}
