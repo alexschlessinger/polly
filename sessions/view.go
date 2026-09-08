@@ -130,6 +130,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		view.ParentID = hex.EncodeToString(parentID)
 		// Includes metadata and parent/name changes, as well as history changes
 		// that preserve the message count (Clear/Reset followed by appends).
+		// Writers advance updated_ns monotonically, even within one clock tick.
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%s", snap.name, snap.parent.String, snap.updatedNS, snap.nextSeq, snap.settings)))
 		view.Revision = hex.EncodeToString(digest[:])
 		view.Unchanged = view.Revision == knownRevision

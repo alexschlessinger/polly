@@ -208,7 +208,7 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 			}
 		}
 		if len(state.Append) > 0 {
-			_, err := conn.ExecContext(opCtx, `UPDATE sessions SET next_sequence=?,updated_ns=?,has_turn=1 WHERE id=?`, state.Sequence+int64(len(state.Append)), time.Now().UnixNano(), s.id)
+			_, err := conn.ExecContext(opCtx, `UPDATE sessions SET next_sequence=?,updated_ns=max(updated_ns+1,?),has_turn=1 WHERE id=?`, state.Sequence+int64(len(state.Append)), time.Now().UnixNano(), s.id)
 			return err
 		}
 		return nil

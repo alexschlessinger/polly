@@ -2111,7 +2111,7 @@ func (s *sqliteSession) addMessages(ctx context.Context, messagesToAdd []message
 			}
 		}
 		_, err := conn.ExecContext(opCtx, `
-			UPDATE sessions SET next_sequence = ?, updated_ns = ?, has_turn = 1 WHERE id = ?`,
+			UPDATE sessions SET next_sequence = ?, updated_ns = max(updated_ns + 1, ?), has_turn = 1 WHERE id = ?`,
 			next+int64(len(payloads)), nowNS, s.id)
 		return err
 	})
@@ -2143,7 +2143,7 @@ func (s *sqliteSession) Clear(ctx context.Context) error {
 			return err
 		}
 		if _, err := conn.ExecContext(opCtx,
-			"UPDATE sessions SET next_sequence = ?, updated_ns = ? WHERE id = ?", next, nowNS, s.id); err != nil {
+			"UPDATE sessions SET next_sequence = ?, updated_ns = max(updated_ns + 1, ?) WHERE id = ?", next, nowNS, s.id); err != nil {
 			return err
 		}
 		return nil
@@ -2202,7 +2202,7 @@ func (s *sqliteSession) Reset(ctx context.Context, info *Metadata) error {
 		}
 		_, err = conn.ExecContext(opCtx, `
 			UPDATE sessions
-			SET updated_ns = ?, ttl_ns = ?, ttl_explicit = ?, settings_json = ?, next_sequence = ?
+			SET updated_ns = max(updated_ns + 1, ?), ttl_ns = ?, ttl_explicit = ?, settings_json = ?, next_sequence = ?
 			WHERE id = ?`, now.UnixNano(), int64(metadata.TTL), newTTLExplicit, settings, next, s.id)
 		return err
 	})
@@ -2292,7 +2292,7 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 		}
 		_, err = conn.ExecContext(opCtx, `
 			UPDATE sessions
-			SET name = ?, retention = 'named', updated_ns = ?, ttl_ns = ?, settings_json = ?
+			SET name = ?, retention = 'named', updated_ns = max(updated_ns + 1, ?), ttl_ns = ?, settings_json = ?
 			WHERE id = ?`, newName, now.UnixNano(), snap.ttlNS, settings, s.id)
 		return err
 	})
@@ -2360,7 +2360,7 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 		}
 		_, err = conn.ExecContext(opCtx, `
 			UPDATE sessions
-			SET updated_ns = ?, ttl_ns = ?, ttl_explicit = ?, settings_json = ?
+			SET updated_ns = max(updated_ns + 1, ?), ttl_ns = ?, ttl_explicit = ?, settings_json = ?
 			WHERE id = ?`, now.UnixNano(), int64(metadata.TTL), newTTLExplicit, settings, s.id)
 		return err
 	})

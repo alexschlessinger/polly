@@ -134,6 +134,50 @@ func TestSessionViewIdentityRevisionAndReusedNames(t *testing.T) {
 	}
 }
 
+func TestSessionViewRevisionAdvancesWhenWallClockDoesNot(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, nil, 0)
+	ctx := context.Background()
+	session := acquireNamed(t, store, "clock")
+	if err := session.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	// A future stored timestamp deterministically exercises a repeated or
+	// backward clock tick without depending on the host timer's resolution.
+	previous := time.Now().Add(time.Minute).UnixNano()
+	if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET updated_ns=? WHERE id=?", previous, session.(*sqliteSession).id); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.ReadView(ctx, ViewTarget{Name: "clock"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md, err := session.GetMetadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, update := range []func() error{
+		func() error { return session.Clear(ctx) },
+		func() error {
+			return session.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "replacement"})
+		},
+		func() error { return session.Reset(ctx, md) },
+		func() error { md.Description = "updated"; return session.SetMetadata(ctx, md) },
+		func() error { return session.Rename(ctx, "renamed-clock") },
+	} {
+		if err := update(); err != nil {
+			t.Fatal(err)
+		}
+		after, err := store.ReadView(ctx, ViewTarget{ID: before.ID}, before.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.Unchanged || after.Metadata.LastUsed.UnixNano() <= previous {
+			t.Fatalf("revision did not advance: unchanged=%t last=%d previous=%d", after.Unchanged, after.Metadata.LastUsed.UnixNano(), previous)
+		}
+		before, previous = after, after.Metadata.LastUsed.UnixNano()
+	}
+}
+
 func TestSessionViewRejectsAmbiguousChildrenAndSequenceLoss(t *testing.T) {
 	store, _ := openTestStore(t, ModeMemory, nil, 0)
 	ctx := context.Background()
