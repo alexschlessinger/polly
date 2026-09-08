@@ -12,13 +12,6 @@ func registerInspectorCommands(r *replCommandRegistry) {
 		ctx.inspectView(strings.Join(args[1:], " "))
 		return replCommandResult{}
 	}})
-	r.register(replCommand{name: "/agents", usage: "/agents", summary: "inspect agents belonging to this session", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
-		if ctx.openAgents == nil {
-			return replCommandResult{err: ctx.replyLine("agent picker is available only in the managed TUI")}
-		}
-		ctx.openAgents()
-		return replCommandResult{}
-	}})
 }
 
 func (r *managedREPL) inspectCommand(arg string) {

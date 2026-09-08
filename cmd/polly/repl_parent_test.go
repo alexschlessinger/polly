@@ -89,7 +89,7 @@ func TestReopenedAgentClosesOnLeavingButKeepsUserWork(t *testing.T) {
 				r.startTurn(context.Background(), "one more question", func(context.Context, string, TurnUI) error { return nil })
 				settleUntil(t, r, settled(child))
 			}
-			r.runTabCommand("/parent")
+			r.runParent()
 			want := 1
 			if mode != "inspect" {
 				want = 2
@@ -116,7 +116,7 @@ func TestParentCommandReopensSavedParentAndFollowsRename(t *testing.T) {
 	if err := parent.Close(); err != nil {
 		t.Fatal(err)
 	}
-	r.runTabCommand("/parent")
+	r.runParent()
 	runUITask(t, r)
 	select {
 	case result := <-r.openDone:
@@ -134,7 +134,7 @@ func TestParentNavigationDoesNotCreateMissingSession(t *testing.T) {
 	if err := r.state.sessionStore.Delete(context.Background(), "parent-work"); err != nil {
 		t.Fatal(err)
 	}
-	r.runTabCommand("/parent")
+	r.runParent()
 	runUITask(t, r)
 	select {
 	case result := <-r.openDone:
@@ -213,7 +213,7 @@ func TestFailedReportDeliveryKeepsAgentTab(t *testing.T) {
 	awaitReport(t, result)
 	settleUntil(t, r, func() bool { return child.turnDone == nil && child.report == nil && !child.reporting })
 	r.showTab(r.tabIndexOfModel(child.model))
-	r.runTabCommand("/parent")
+	r.runParent()
 	if child.delivered || len(r.tabs) != 2 {
 		t.Fatal("undelivered report lost its tab")
 	}

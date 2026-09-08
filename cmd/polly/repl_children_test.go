@@ -148,7 +148,7 @@ func TestBlockingChildRunsInATabAndAnswersTheCall(t *testing.T) {
 		t.Fatalf("tabs after spawning: %d, visible %d", len(r.tabs), r.visibleTabIndex())
 	}
 	child := r.tabs[1]
-	if got := strings.Join(r.tabLines(), "\n"); !strings.Contains(got, "tabs (1)") || strings.Contains(got, child.name) || !strings.Contains(got, "1 agents running") {
+	if got := strings.Join(r.tabLines(), "\n"); len(r.tabLines()) != 1 || strings.Contains(got, child.name) || !strings.Contains(got, "1 agent running") {
 		t.Fatalf("workspace list did not aggregate child activity: %q", got)
 	}
 	if got := plainStyledText(r.model.fullTranscript()); strings.Contains(got, "started · /agents") {

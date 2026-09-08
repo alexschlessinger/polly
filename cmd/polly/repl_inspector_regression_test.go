@@ -328,7 +328,7 @@ func TestInspectorRegressionAgentPickerReadsUnrelatedHistory(t *testing.T) {
 	}
 	counted := &countedInspectorViews{SessionStore: store, ViewStore: store.(sessions.ViewStore)}
 	r.state.sessionStore = counted
-	r.beginAgentsPicker()
+	r.openSessionsPicker()
 	settleInspectorWork(r)
 	if count := counted.histories.Load(); count > 0 {
 		t.Fatalf("empty workspace agent picker deserialized %d unrelated history messages", count)

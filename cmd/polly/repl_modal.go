@@ -220,7 +220,7 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 				filter = "type filter"
 			}
 		}
-		footer = count + " · " + filter + " · ↑↓ · Enter resume"
+		footer = count + " · " + filter + " · ↑↓ · Enter open"
 		if m.onRename != nil {
 			footer += " · F2 rename"
 		}
@@ -417,11 +417,16 @@ func (r *managedREPL) openKeyManager() {
 	})
 }
 
-func (r *managedREPL) openResumePicker() {
-	r.openResumePickerSelected("")
+func (r *managedREPL) openSessionsPicker() {
+	r.openSessionsPickerSelected("")
 }
 
-func (r *managedREPL) openResumePickerSelected(preferred string) {
+// openSessionsPickerSelected lists every session this polly can reach: the
+// open workspaces first, in tab order, with what each is doing, then the
+// saved sessions, newest first. Agents nest under the session that spawned
+// them; an open workspace with live agents starts expanded. Caller holds the
+// visible model's lock.
+func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 	if r.state == nil || r.state.sessionStore == nil {
 		r.model.appendNoticeLine("session picker unavailable")
 		return
@@ -445,7 +450,29 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 	for i, summary := range infos {
 		metas[i] = summary.Metadata
 	}
-	nodes := sessionTree(metas)
+	r.syncWorkspaces()
+	workspaceIndex := func(node sessionTreeNode) (int, bool) {
+		for n, workspace := range r.workspaces {
+			if workspace.name == infos[node.Index].Metadata.Name {
+				return n, true
+			}
+		}
+		return 0, false
+	}
+	activity := make(map[string]string)
+	for _, tab := range r.tabs {
+		activity[tab.name] = r.workspaceActivity(tab)
+	}
+	priority := func(node sessionTreeNode) int {
+		switch v := activity[infos[node.Index].Metadata.Name]; {
+		case v == "approval needed":
+			return 0
+		case v != "" && v != "done" && v != "failed" && v != "incomplete":
+			return 1
+		}
+		return 2
+	}
+	nodes := orderSessionGroups(sessionTree(metas), workspaceIndex, priority)
 	nameWidth := 0
 	lengthWidth := 0
 	for _, node := range nodes {
@@ -475,28 +502,31 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 		label := nameColumn + "  " + ageColumn + "  " + lengthColumn
 		display := styleEscape(nameColumn) + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
 		selectedDisplay := styled(nameColumn, "accent", "bold") + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
+		mark, color := "", ""
 		switch tab := r.tabIndexOf(info.Name); {
 		case info.Name == current:
-			label += "  current"
-			display += "  " + styled("current", "accent", "")
-			selectedDisplay += "  " + styled("current", "accent", "")
+			mark, color = "current", "accent"
 		case tab >= 0:
-			mark := "active agent"
-			r.syncWorkspaces()
+			mark, color = "active agent", "ok"
 			for n, workspace := range r.workspaces {
 				if workspace == r.tabs[tab] {
 					mark = fmt.Sprintf("workspace %d", n+1)
 					break
 				}
 			}
-			label += "  " + mark
-			display += "  " + styled(mark, "ok", "")
-			selectedDisplay += "  " + styled(mark, "ok", "")
 		case summary.InUse:
 			inUseElsewhere[info.Name] = true
-			label += "  in use"
-			display += "  " + styled("in use", "active", "")
-			selectedDisplay += "  " + styled("in use", "active", "")
+			mark, color = "in use", "active"
+		}
+		if mark != "" {
+			label += "  " + mark
+			display += "  " + styled(mark, color, "")
+			selectedDisplay += "  " + styled(mark, color, "")
+			if state := activity[info.Name]; state != "" {
+				label += " · " + state
+				display += styled(" · "+state, "muted", "")
+				selectedDisplay += styled(" · "+state, "muted", "")
+			}
 		}
 		item := replModalItem{
 			label: label, value: info.Name, display: display, selectedDisplay: selectedDisplay,
@@ -508,6 +538,10 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 		if info.Name == target && item.parent != "" {
 			r.expandPickerParent(item.parent)
 		}
+		// An open workspace with agents running here shows them without a keypress.
+		if node.Depth == 0 && node.Children > 0 && r.tabIndexOf(info.Name) >= 0 && r.hasLiveAgents(r.tabs[r.tabIndexOf(info.Name)]) {
+			r.expandPickerParent(info.Name)
+		}
 		items = append(items, item)
 	}
 	if len(items) == 0 {
@@ -515,7 +549,7 @@ func (r *managedREPL) openResumePickerSelected(preferred string) {
 		return
 	}
 	m := &replModal{
-		title: "Resume session", items: items, expanded: r.pickerExpanded,
+		title: "Sessions", items: items, expanded: r.pickerExpanded,
 		width: 64, maxRows: 14, showCount: true,
 		onSubmit: func(name string) {
 			if name == "" || name == current {
@@ -569,7 +603,7 @@ func (r *managedREPL) openSessionRenameInput(name string) {
 	m := &replModal{
 		title: "Rename session", inputMode: true, width: 64,
 		helper:   "Enter save · Esc back",
-		onCancel: func() { r.openResumePickerSelected(name) },
+		onCancel: func() { r.openSessionsPickerSelected(name) },
 		onSubmit: func(newName string) { r.renameSession(name, newName) },
 	}
 	m.input.setText(name)
@@ -582,7 +616,7 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 		return
 	}
 	if oldName == newName {
-		r.openResumePickerSelected(oldName)
+		r.openSessionsPickerSelected(oldName)
 		return
 	}
 	ctx := r.work.ctx
@@ -604,7 +638,7 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 		target, err = r.state.sessionStore.Acquire(ctx, oldName, options)
 		if err != nil {
 			r.model.appendNoticeLine("rename failed: " + err.Error())
-			r.openResumePickerSelected(oldName)
+			r.openSessionsPickerSelected(oldName)
 			return
 		}
 		closeTarget = true
@@ -614,7 +648,7 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 			_ = target.Close()
 		}
 		r.model.appendNoticeLine("rename failed: " + err.Error())
-		r.openResumePickerSelected(oldName)
+		r.openSessionsPickerSelected(oldName)
 		return
 	}
 	switch {
@@ -645,7 +679,7 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 		hidden.model.mu.Unlock()
 	}
 	r.model.appendNoticeLine("renamed session '" + oldName + "' to '" + newName + "'")
-	r.openResumePickerSelected(newName)
+	r.openSessionsPickerSelected(newName)
 }
 
 func formatCompactDuration(d time.Duration) string {

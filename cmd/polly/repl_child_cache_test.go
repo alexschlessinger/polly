@@ -777,7 +777,7 @@ func TestChildViewParentNavigationFollowsRename(t *testing.T) {
 	if err := parent.Close(); err != nil {
 		t.Fatal(err)
 	}
-	r.runTabCommand("/parent")
+	r.runParent()
 	runUITask(t, r)
 	select {
 	case result := <-r.openDone:

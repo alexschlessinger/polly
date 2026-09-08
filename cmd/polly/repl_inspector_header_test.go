@@ -116,8 +116,15 @@ func TestAgentsShortcutPreservesComposerAndInspector(t *testing.T) {
 		r.model.busy = busy
 		key("<C-g>")
 		modal := r.model.modal
-		if modal == nil || modal.title != "Agents · root" || len(modal.items) != 1 || !strings.Contains(modal.items[0].label, "saved-agent") {
-			t.Fatalf("Ctrl-G did not open the workspace's saved agents: %#v", modal)
+		if modal == nil || modal.title != "Sessions" {
+			t.Fatalf("Ctrl-G did not open the sessions picker: %#v", modal)
+		}
+		nested := false
+		for _, item := range modal.items {
+			nested = nested || item.value == "saved-agent" && item.parent == "root"
+		}
+		if !nested {
+			t.Fatalf("the picker does not nest the saved agent under its workspace: %#v", modal.items)
 		}
 		if len(r.tabs) != 2 || sessionInUse(t, store, "saved-agent") {
 			t.Fatal("opening the Agents dialog activated an agent runtime")

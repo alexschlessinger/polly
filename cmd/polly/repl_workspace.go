@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"slices"
-	"strconv"
+	"strings"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 )
@@ -52,71 +52,70 @@ func (r *managedREPL) workspaceShortcut(id string) (int, bool) {
 	return 0, false
 }
 
-// Commands queue this snapshot until the composer lock has been released.
-func (r *managedREPL) requestWorkspaceLines() []string {
+// peekTabActivity reads what a tab's turn is doing without blocking: the
+// visible model is already locked by the caller, and another runtime that is
+// busy under its own lock reports its last known agent status instead.
+func (r *managedREPL) peekTabActivity(tab *replTab) string {
+	if tab.model == r.model {
+		return modelTabActivity(tab.model)
+	}
+	if tab.model.mu.TryLock() {
+		defer tab.model.mu.Unlock()
+		return modelTabActivity(tab.model)
+	}
+	return tab.agentStatus
+}
+
+// workspaceActivity describes a workspace for the sessions picker: its own
+// turn state, then how many of its agents are running or waiting on an
+// approval. Caller holds the visible model's lock.
+func (r *managedREPL) workspaceActivity(tab *replTab) string {
+	var parts []string
+	if activity := r.peekTabActivity(tab); activity != "" {
+		parts = append(parts, activity)
+	}
+	running, approvals := 0, 0
+	for _, child := range r.tabs {
+		if child == tab || r.rootTab(child) != tab {
+			continue
+		}
+		switch r.peekTabActivity(child) {
+		case "approval needed":
+			approvals++
+		case "", "done", "failed", "incomplete":
+		default:
+			running++
+		}
+	}
+	if running > 0 {
+		parts = append(parts, turnAgentLabel(running)+" running")
+	}
+	if approvals > 0 {
+		parts = append(parts, fmt.Sprintf("%d need approval", approvals))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// hasLiveAgents reports whether any agent of the workspace runs in this polly.
+func (r *managedREPL) hasLiveAgents(tab *replTab) bool {
+	for _, child := range r.tabs {
+		if child != tab && r.rootTab(child) == tab {
+			return true
+		}
+	}
+	return false
+}
+
+// attentionAgentName is the agent of the visible workspace that waits on an
+// approval, so Ctrl-G can open the picker on it; empty when none does.
+func (r *managedREPL) attentionAgentName() string {
 	owner := r.visibleTab()
-	r.workspaceActions = append(r.workspaceActions, func() {
-		lines := r.workspaceLines()
-		owner.model.mu.Lock()
-		defer owner.model.mu.Unlock()
-		for _, line := range lines {
-			owner.model.appendNoticeLine(line)
-		}
-	})
-	return nil
-}
-
-func (r *managedREPL) workspaceLines() []string {
-	r.syncWorkspaces()
-	lines := []string{fmt.Sprintf("tabs (%d):", len(r.workspaces))}
-	for n, tab := range r.workspaces {
-		line := fmt.Sprintf("  %d  %s", n+1, tab.name)
-		if activity := r.tabActivity(tab); activity != "" {
-			line += "  " + activity
-		}
-		running, approvals := 0, 0
-		for _, child := range r.tabs {
-			if child == tab || r.rootTab(child) != tab {
-				continue
-			}
-			m := child.model
-			m.mu.Lock()
-			if m.busy {
-				running++
-			}
-			if m.approval != nil {
-				approvals++
-			}
-			m.mu.Unlock()
-		}
-		if running > 0 {
-			line += fmt.Sprintf(" · %d agents running", running)
-		}
-		if approvals > 0 {
-			line += fmt.Sprintf(" · %d need approval", approvals)
-		}
-		if tab.model == r.model {
-			line += "  current"
-		}
-		lines = append(lines, line)
-	}
-	return lines
-}
-
-func (r *managedREPL) resolveWorkspace(arg string) (int, error) {
-	r.syncWorkspaces()
-	if n, err := strconv.Atoi(arg); err == nil {
-		if n < 1 || n > len(r.workspaces) {
-			return -1, fmt.Errorf("no tab %d (%d open)", n, len(r.workspaces))
-		}
-		return r.tabIndexOfModel(r.workspaces[n-1].model), nil
-	}
-	for _, tab := range r.workspaces {
-		if tab.name == arg {
-			return r.tabIndexOfModel(tab.model), nil
+	for _, tab := range r.tabs {
+		if tab != owner && r.rootTab(tab) == owner && r.peekTabActivity(tab) == "approval needed" {
+			return tab.name
 		}
 	}
-	return -1, fmt.Errorf("no tab named %s", arg)
+	return ""
 }
 
 func (r *managedREPL) inspectAgent(source *replModel, parent viewTarget, link agentLink) bool {

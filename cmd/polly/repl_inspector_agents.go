@@ -2,102 +2,10 @@ package main
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 )
-
-func (r *managedREPL) openAgentsPicker() {
-	r.workspaceActions = append(r.workspaceActions, r.beginAgentsPicker)
-}
-
-func (r *managedREPL) beginAgentsPicker() {
-	if r.state == nil || r.state.sessionStore == nil {
-		r.model.mu.Lock()
-		r.model.appendNoticeLine("agent sessions unavailable")
-		r.model.mu.Unlock()
-		return
-	}
-	owner, store := r.visibleTab(), r.state.sessionStore
-	ownerID, generation := owner.viewID(), r.workspace().inspector.generation
-	statuses := make(map[string]string)
-	for _, tab := range r.tabs {
-		if tab == owner || r.rootTab(tab) != owner {
-			continue
-		}
-		tab.model.mu.Lock()
-		statuses[tab.name] = modelTabActivity(tab.model)
-		tab.model.mu.Unlock()
-	}
-	r.background(func() {
-		summaries, err := store.ListSummaries(r.work.ctx)
-
-		var children []sessions.SessionSummary
-		if err == nil {
-			ids := map[string]bool{ownerID: true}
-			for changed := true; changed; {
-				changed = false
-				for _, summary := range summaries {
-					if summary.Metadata != nil && summary.ParentID != "" && ids[summary.ParentID] && !ids[summary.ID] {
-						ids[summary.ID] = true
-						children = append(children, summary)
-						changed = true
-					}
-				}
-			}
-		}
-		r.postUI(r.work.ctx, func() {
-			if r.visibleTab() != owner || r.workspace().inspector.generation != generation {
-				return
-			}
-			m := r.model
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			if err != nil {
-				m.appendErrorLine(err.Error())
-				return
-			}
-			priority := func(s sessions.SessionSummary) int {
-				v := statuses[s.Metadata.Name]
-				if v == "approval needed" {
-					return 0
-				}
-				if v != "" && v != "done" && v != "failed" && v != "incomplete" {
-					return 1
-				}
-				return 2
-			}
-			sort.SliceStable(children, func(i, j int) bool {
-				a, b := priority(children[i]), priority(children[j])
-				if a != b {
-					return a < b
-				}
-				return children[i].Metadata.LastUsed.After(children[j].Metadata.LastUsed)
-			})
-			var items []replModalItem
-			targets := make(map[string]viewTarget)
-			for _, s := range children {
-				md := s.Metadata
-				label := md.Name
-				if md.Description != "" {
-					label = md.Description + " (" + md.Name + ")"
-				}
-				status := statuses[md.Name]
-				if status == "" {
-					status = spawnOutcomeStatus(md.SpawnOutcome)
-				}
-				items = append(items, replModalItem{label: label + " · " + status, value: s.ID})
-				targets[s.ID] = viewTarget{session: sessions.ViewTarget{ID: s.ID, Name: md.Name}}
-			}
-			if len(items) == 0 {
-				m.appendNoticeLine("this session has no agents")
-				return
-			}
-			r.openModal(&replModal{title: "Agents · " + owner.name, items: items, width: 72, maxRows: 14, onSubmit: func(id string) { r.inspect(targets[id]) }})
-		})
-	})
-}
 
 func (r *managedREPL) inspectLaunchedAgent(parent viewTarget, callID string) {
 	if r.state == nil {

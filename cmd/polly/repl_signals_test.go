@@ -30,7 +30,7 @@ func startHiddenTurn(t *testing.T, r *managedREPL, runTurn turnRunner) *replTab 
 	r.model.beginTurn("keep going")
 	r.model.mu.Unlock()
 	r.startTurn(context.Background(), "keep going", runTurn)
-	r.runTabCommand("/tab 1")
+	r.showWorkspace(1)
 	if r.visibleTab() == tab {
 		t.Fatal("/tab 1 did not leave the busy tab")
 	}
@@ -105,12 +105,12 @@ func TestHiddenTurnOutcomeSignalsTheVisibleTab(t *testing.T) {
 	}
 
 	// Showing the tab is seeing the news: its listed activity clears.
-	r.runTabCommand("/tab 2")
+	r.showWorkspace(2)
 	r.signal()
 	if got := strings.Join(r.tabLines(), "\n"); !strings.Contains(got, "2  current-work  current") || strings.Contains(got, "done") {
 		t.Fatalf("tab list after showing the tab: %q", got)
 	}
-	r.runTabCommand("/tab 1")
+	r.showWorkspace(1)
 	r.signal()
 	if got := strings.Count(plainStyledText(r.model.fullTranscript()), "current-work done"); got != 1 {
 		t.Fatalf("settle notice appeared %d times, want once", got)
@@ -171,7 +171,7 @@ func TestHiddenApprovalSignalsAndWakesTheLoop(t *testing.T) {
 	}
 
 	// The prompt waits on the tab that asked; showing it is how to answer.
-	r.runTabCommand("/tab 2")
+	r.showWorkspace(2)
 	r.signal()
 	if r.model != busy.model || r.model.approval == nil {
 		t.Fatal("the approval is not waiting on its tab")
@@ -245,8 +245,8 @@ func TestShowingATabDropsItsPendingSignals(t *testing.T) {
 	r.signal()
 
 	// Seen before the visible turn let the notice through: nothing to say.
-	r.runTabCommand("/tab 2")
-	r.runTabCommand("/tab 1")
+	r.showWorkspace(2)
+	r.showWorkspace(1)
 	settleBlockedTurn(t, r, done)
 	r.signal()
 	if got := plainStyledText(r.model.fullTranscript()); strings.Contains(got, "current-work done") {
