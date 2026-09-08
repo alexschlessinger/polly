@@ -155,8 +155,7 @@ func TestInspectorRegressionEndFollowsInspector(t *testing.T) {
 	s.top = 0
 	s.lastRows = 1
 	r.chrome.inner = image.Rect(70, 0, 140, 30)
-	r.mousePosition = image.Pt(100, 10)
-	r.mousePositionKnown = true
+	r.workspace().inspector.focused = true
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<End>"})
 	if !s.follow {
 		t.Fatal("advertised End to follow leaves inspector scrolled away")

@@ -53,7 +53,7 @@ func (r *managedREPL) retireInspector(w *sessionWorkspace) {
 func (r *managedREPL) closeInspector() {
 	w := r.workspace()
 	r.retireInspector(w)
-	w.inspector.open, w.inspector.searching = false, false
+	w.inspector.open, w.inspector.searching, w.inspector.focused = false, false, false
 	w.inspector.generation++
 }
 

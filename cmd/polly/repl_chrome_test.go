@@ -644,3 +644,52 @@ func TestComposerRuleInRootSession(t *testing.T) {
 		t.Fatalf("frame with a dock still joined the rule: %+v", g)
 	}
 }
+
+// While the inspector has the keys its frame brightens to the text color and
+// the composer cursor hides; a pending approval's color still wins.
+func TestInspectorFocusBrightensFrameAndHidesCursor(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := chromeTestREPL(t)
+	screen.SetSize(140, 40)
+	m := r.model
+	m.appendThinking("a thought")
+	r.inspectCommand("thoughts")
+	waitInspector(t, r, 140)
+	// Recent input keeps the idle affordance cursor off, so the hardware
+	// cursor reports the composer's editability.
+	m.affordances.inputAt = time.Now()
+	r.render()
+	frameFg := func() ui.Color {
+		_, style, _ := screen.Get(r.chrome.frame.Min.X, r.chrome.frame.Min.Y)
+		return style.GetForeground()
+	}
+	if frameFg() != ui.ColorGrey {
+		t.Fatalf("resting frame color = %v", frameFg())
+	}
+	if _, _, visible := screen.GetCursor(); !visible {
+		t.Fatal("composer cursor hidden at rest")
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
+	r.render()
+	if !r.inspectorFocused() || frameFg() != ui.ColorClear {
+		t.Fatalf("focused frame color = %v focused=%v", frameFg(), r.inspectorFocused())
+	}
+	if _, _, visible := screen.GetCursor(); visible {
+		t.Fatal("composer cursor shown while the inspector has the keys")
+	}
+	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "read_file"}}}
+	r.render()
+	if frameFg() != ui.ColorYellow {
+		t.Fatalf("approval did not win over focus: %v", frameFg())
+	}
+	m.approval = nil
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
+	m.affordances.inputAt = time.Now()
+	r.render()
+	if _, _, visible := screen.GetCursor(); !visible {
+		t.Fatal("composer cursor missing after focus returned")
+	}
+	if r.inspectorFocused() || !r.workspace().inspector.open || frameFg() != ui.ColorGrey {
+		t.Fatalf("Escape did not return the keys: focused=%v open=%v fg=%v", r.inspectorFocused(), r.workspace().inspector.open, frameFg())
+	}
+}

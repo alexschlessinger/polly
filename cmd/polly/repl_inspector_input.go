@@ -175,11 +175,26 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 		return true
 	}
 	// Search and approval own Escape first: cancel the search, deny the call.
+	// A focused inspector gives the keys back before it closes.
 	if i.open && e.ID == "<Escape>" && !r.model.hist.searching && r.model.approval == nil {
+		if i.focused {
+			i.focused = false
+			return true
+		}
 		r.closeInspector()
 		return true
 	}
-	if r.handleViewNavigation(e) {
+	if r.inspectorFocused() && e.Type == ui.KeyboardEvent {
+		if e.ID == "<Tab>" {
+			i.focused = false
+			return true
+		}
+		// Typing means the composer: hand the keys back and let the rune land.
+		if _, ok := printableRune(e); ok {
+			i.focused = false
+		}
+	}
+	if r.handleFocusedNavigation(e) {
 		return true
 	}
 	if e.Type == ui.MouseEvent {
@@ -265,26 +280,26 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 	return false
 }
 
-// Plain navigation keys follow the pointer across both transcript panes.
-// Control-key editor shortcuts and text input continue to address the composer.
-func (r *managedREPL) handleViewNavigation(e ui.Event) bool {
-	if e.Type != ui.KeyboardEvent || !r.mousePositionKnown || r.model.hist.searching || r.model.approval != nil {
+// inspectorFocused reports whether the navigation keys address the inspector.
+func (r *managedREPL) inspectorFocused() bool {
+	i := &r.workspace().inspector
+	return i.open && i.focused
+}
+
+// Plain navigation keys address the focused inspector; otherwise they stay
+// with the composer, whose history recall and paging they drive. Control-key
+// editor shortcuts and text input always address the composer.
+func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
+	if e.Type != ui.KeyboardEvent || !r.inspectorFocused() || r.model.hist.searching || r.model.approval != nil {
 		return false
 	}
 	i := &r.workspace().inspector
-	inspector := i.open && (r.mousePosition.In(r.chrome.inner) || r.mousePosition.In(r.chrome.frame))
-	if !inspector && !r.mousePosition.In(r.chrome.main) {
-		return false
-	}
-	height := r.chrome.main.Dy()
-	if inspector {
-		height = r.chrome.inner.Dy() - r.inspectorHeaderRows
-	}
+	height := r.chrome.inner.Dy() - r.inspectorHeaderRows
 	delta := 0
 	switch e.ID {
 	case "<Left>", "<Right>":
-		if !inspector || i.target.kind == conversationViewKind {
-			return false
+		if i.target.kind == conversationViewKind {
+			return true
 		}
 		direction := -1
 		if e.ID == "<Right>" {
@@ -301,31 +316,19 @@ func (r *managedREPL) handleViewNavigation(e ui.Event) bool {
 	case "<PageDown>":
 		delta = max(1, height/2)
 	case "<Home>":
-		if inspector {
-			s := r.workspace().viewState(i.target)
-			s.top, s.follow = 0, false
-			if i.current != nil && i.current.model != nil {
-				s.lastRows = len(i.current.model.visual.rows)
-			}
-		} else {
-			r.model.scrollAnchor, r.model.followBottom = 0, false
+		s := r.workspace().viewState(i.target)
+		s.top, s.follow = 0, false
+		if i.current != nil && i.current.model != nil {
+			s.lastRows = len(i.current.model.visual.rows)
 		}
 		return true
 	case "<End>":
-		if inspector {
-			r.inspectorAction("follow")
-		} else {
-			r.model.scrollToBottom()
-		}
+		r.inspectorAction("follow")
 		return true
 	default:
 		return false
 	}
-	if inspector {
-		r.inspectorScroll(delta)
-	} else {
-		r.model.scrollByWidth(delta, height, r.chrome.main.Dx())
-	}
+	r.inspectorScroll(delta)
 	return true
 }
 

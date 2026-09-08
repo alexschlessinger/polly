@@ -363,7 +363,7 @@ func (r *managedREPL) render() {
 	r.model.turnTrailerPlacements = r.model.visibleTurnTrailerPlacements(viewport)
 	r.model.inspectionLinks = r.model.visibleInspectionLinks(viewport, 0)
 	var affordanceSpans []affordanceSpan
-	idleCursor := r.affordanceW != nil && editable && !r.workspace().inspector.searching && r.model.idleAffordanceCursor(now)
+	idleCursor := r.affordanceW != nil && editable && !r.workspace().inspector.searching && !r.inspectorFocused() && r.model.idleAffordanceCursor(now)
 	if r.affordanceW != nil {
 		affordanceSpans = r.model.affordanceSpans(now, l, viewport, status, image.Pt(min(curCol, w-1), l.composerRow(curRow)), idleCursor)
 	}
@@ -380,7 +380,8 @@ func (r *managedREPL) render() {
 			affordanceSpans = visible
 		}
 		imagePlacements = append(imagePlacements, r.renderInspector(l)...)
-		if r.workspace().inspector.searching {
+		// While the inspector owns the keys, the composer shows no cursor.
+		if r.workspace().inspector.searching || r.inspectorFocused() {
 			editable = false
 			idleCursor = false
 		}

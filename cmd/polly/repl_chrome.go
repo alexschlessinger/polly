@@ -216,7 +216,12 @@ func (r *managedREPL) refreshChrome(drawable ui.Drawable, l frameLayout, now tim
 	r.orbit.geometry(g.frame)
 	active, attention := r.inspectorActivity(l)
 	r.orbit.active = active
+	// The frame brightens to the text color while the inspector owns the
+	// keys; a pending approval's attention color wins over both.
 	base := chromeColor("muted")
+	if r.inspectorFocused() {
+		base = ui.ColorClear
+	}
 	if attention {
 		base = chromeColor("active")
 	}
