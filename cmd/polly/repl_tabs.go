@@ -117,6 +117,7 @@ func (r *managedREPL) visibleTab() *replTab {
 		return r.tabs[i]
 	}
 	tab := &replTab{name: "-", state: r.state, model: r.model}
+	r.bindMemberUI(tab)
 	r.tabs = append(r.tabs, tab)
 	return tab
 }
@@ -155,6 +156,7 @@ func (r *managedREPL) addTab(state *conversationState) error {
 
 func (r *managedREPL) addPreparedTab(state *conversationState, name string, m *replModel) error {
 	tab := &replTab{name: name, state: state, model: m, parentName: m.status.parentName, delivered: m.status.parentName != ""}
+	r.bindMemberUI(tab)
 	tab.detachedWorkspace = state.workspaceEntry != nil && state.workspaceEntry.orphan
 	tab.workspaceRoot = tab.parentName == "" || tab.detachedWorkspace
 	if i := r.tabIndexOf(tab.parentName); i >= 0 && !tab.detachedWorkspace {

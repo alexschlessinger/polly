@@ -57,6 +57,15 @@ func (t *gotuiTurnUI) TurnPersistenceAllowed() bool {
 	return t.activeLocked()
 }
 
+// bindMemberUI gives the tab's session a screen for swarm members that run
+// outside a turn, so their approvals land in this tab like a turn's would.
+func (r *managedREPL) bindMemberUI(tab *replTab) {
+	if tab == nil || tab.state == nil {
+		return
+	}
+	tab.state.setMemberUI(&gotuiTurnUI{repl: r, model: tab.model, config: r.config, state: tab.state})
+}
+
 func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {
 	return make([]bool, len(calls))
 }

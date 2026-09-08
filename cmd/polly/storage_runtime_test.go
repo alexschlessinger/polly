@@ -11,13 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"sort"
+	"strings"
+
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
-	"sort"
-	"strings"
 )
 
 func TestMetadataFromConfigSeedsDefaultNativeTools(t *testing.T) {

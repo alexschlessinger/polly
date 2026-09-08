@@ -114,6 +114,7 @@ func (r *managedREPL) runChild(ctx context.Context, parentModel *replModel, pare
 		return subagent.Result{}, err
 	}
 	tab := &replTab{name: name, state: child, model: model, report: &childTurnUI{}, settled: make(chan struct{})}
+	r.bindMemberUI(tab)
 	if !req.Background {
 		tab.waiter = make(chan childReport, 1)
 		tab.waitCtx = ctx

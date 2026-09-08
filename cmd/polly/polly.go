@@ -115,6 +115,36 @@ type conversationState struct {
 	// process, including failed attempts (entry present, value 0).
 	contextWindowsMu sync.Mutex
 	contextWindows   map[string]int
+	// memberUI, when set, takes the approvals of swarm members that run
+	// outside a turn (launched by a command, or woken by peer mail): the
+	// managed REPL binds the screen of the tab holding this session. turnUI
+	// is the running turn's UI, the fallback for hosts without a screen.
+	uiMu     sync.Mutex
+	memberUI TurnUI
+	turnUI   TurnUI
+}
+
+func (s *conversationState) setMemberUI(ui TurnUI) {
+	s.uiMu.Lock()
+	defer s.uiMu.Unlock()
+	s.memberUI = ui
+}
+
+func (s *conversationState) setTurnUI(ui TurnUI) {
+	s.uiMu.Lock()
+	defer s.uiMu.Unlock()
+	s.turnUI = ui
+}
+
+// hostTurnUI is the UI a swarm member without a parent turn reports to, or
+// nil when nothing on this host can take an approval right now.
+func (s *conversationState) hostTurnUI() TurnUI {
+	s.uiMu.Lock()
+	defer s.uiMu.Unlock()
+	if s.memberUI != nil {
+		return s.memberUI
+	}
+	return s.turnUI
 }
 
 // sessionOpener lets the managed REPL open sessions while it runs. prepare
@@ -986,6 +1016,8 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	}
 	turnUI.Start()
 	defer turnUI.Stop()
+	state.setTurnUI(turnUI)
+	defer state.setTurnUI(nil)
 	activityStart := time.Now()
 	completed := false
 	complete := func(reason messages.StopReason, err error) {
