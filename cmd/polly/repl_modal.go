@@ -710,7 +710,7 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 	if e.Type == ui.MouseEvent {
 		if m.halo {
 			mouse, ok := e.Payload.(ui.Mouse)
-			if !ok || m.inputMode || !image.Pt(mouse.X, mouse.Y).In(m.listBounds) {
+			if !ok || m.inputMode {
 				return true
 			}
 			switch e.ID {
@@ -719,6 +719,9 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 			case "<MouseWheelDown>":
 				m.selected = min(len(m.filteredItems())-1, m.selected+3)
 			case "<MouseLeft>":
+				if !image.Pt(mouse.X, mouse.Y).In(m.listBounds) {
+					return true
+				}
 				index := m.top + mouse.Y - m.listBounds.Min.Y
 				if index >= 0 && index < len(m.filteredItems()) {
 					m.selected = index

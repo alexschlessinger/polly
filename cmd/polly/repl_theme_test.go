@@ -550,3 +550,67 @@ func TestHaloPasteSearchApprovalAndDefaultPaint(t *testing.T) {
 		t.Fatalf("default text lost terminal colors: %v", style)
 	}
 }
+
+func TestHaloScrollbarPagingKeepsUnseenOutputBaseline(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	r.config.Theme = "halo"
+	r.inspect(tabViewTarget(r.visibleTab()))
+	waitInspector(t, r, 140)
+	s := r.workspace().viewState(r.workspace().inspector.target)
+	r.inspectorScrollbar = haloScrollbar{total: 100, visible: 20}
+	s.follow, s.lastRows = false, 50
+	r.setHaloScrollTop("inspector", 10)
+	if s.top != 10 || s.follow || s.lastRows != 50 {
+		t.Fatalf("paging while scrolled up marked unseen output as seen: %+v", s)
+	}
+	r.setHaloScrollTop("inspector", 90)
+	if s.top != 80 || !s.follow || s.lastRows != 100 {
+		t.Fatalf("paging to the end did not resume following: %+v", s)
+	}
+}
+
+func TestHaloModalWheelScrollsOutsideListRows(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	r.config.Theme = "halo"
+	m := &replModal{title: "pick", halo: true, listBounds: image.Rect(10, 10, 40, 15)}
+	for n := 0; n < 10; n++ {
+		m.items = append(m.items, replModalItem{label: fmt.Sprintf("item %d", n), value: fmt.Sprint(n)})
+	}
+	r.model.modal = m
+	r.handleModalEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseWheelDown>", Payload: ui.Mouse{X: 0, Y: 0}})
+	if m.selected != 3 {
+		t.Fatalf("wheel over the dialog frame did not move the selection: %d", m.selected)
+	}
+	r.handleModalEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 0, Y: 0}})
+	if r.model.modal != m || m.selected != 3 {
+		t.Fatal("a click outside the rows selected or activated an item")
+	}
+}
+
+func TestHaloShortTranscriptFallsBackToPlainLayout(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := haloTestREPL(t)
+	screen.SetSize(80, 12)
+	call := messages.ChatMessageToolCall{ID: "a", Name: "a"}
+	r.model.appendToolCallStart(call)
+	r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("row\n", 40)})
+	r.inspectCommand("tools")
+	waitInspector(t, r, 80)
+	r.model.turnDock.visible = true
+	r.model.ed.setText(strings.Repeat("line\n", maxInputRows-1) + "line")
+	l := r.frameLayoutFor(80, 12)
+	if !l.halo || l.transcriptHeight >= 3 {
+		t.Fatalf("fixture did not squeeze the transcript under the frame minimum: %+v", l)
+	}
+	r.render()
+	bottom := l.logoRows + l.transcriptHeight
+	if !r.haloBounds.outer.Empty() || !r.inspectorScrollbar.track.Empty() || !r.inspectorScrollbar.thumb.Empty() {
+		t.Fatalf("a frame was laid out with no room for it: bounds=%+v scrollbar=%+v", r.haloBounds, r.inspectorScrollbar)
+	}
+	if r.inspectorBounds.Max.Y > bottom || r.mainTranscriptBounds.Max.Y > bottom {
+		t.Fatalf("panes extend below the transcript region (%d): inspector=%v main=%v", bottom, r.inspectorBounds, r.mainTranscriptBounds)
+	}
+	if _, plain := r.rootFlex.(*frameGroup); plain {
+		t.Fatal("frame group used without a frame")
+	}
+}

@@ -25,7 +25,9 @@ func (r *managedREPL) haloSplitColumn(width int) int {
 
 func (r *managedREPL) haloGeometry(l frameLayout) haloGeometry {
 	g := haloGeometry{}
-	if !l.halo {
+	// Two border rows plus at least one content row; anything shorter would
+	// canonicalize into rectangles that spill onto the composer.
+	if !l.halo || l.transcriptHeight < 3 {
 		return g
 	}
 	x := 0
@@ -62,9 +64,14 @@ func setWidgetRect(w ui.Drawable, rect image.Rectangle) {
 	w.SetRect(rect.Min.X, rect.Min.Y, rect.Max.X, rect.Max.Y)
 }
 
-func (r *managedREPL) layoutHalo(l frameLayout) {
+// layoutHalo reports false when the frame has no room, leaving the plain
+// layout to seat the widgets.
+func (r *managedREPL) layoutHalo(l frameLayout) bool {
 	g := r.haloGeometry(l)
 	r.haloBounds = g
+	if g.outer.Empty() {
+		return false
+	}
 	group := &frameGroup{Block: *ui.NewBlock()}
 	noBorder(&group.Block)
 	group.SetRect(0, 0, l.width, l.height)
@@ -102,6 +109,7 @@ func (r *managedREPL) layoutHalo(l frameLayout) {
 		add(r.statusW, image.Rect(0, l.height-1, l.width, l.height))
 	}
 	r.rootFlex = group
+	return true
 }
 
 type haloChromeLayer struct {

@@ -239,8 +239,7 @@ func (r *managedREPL) setupWidgets() {
 // count varies with multi-line prompts, so the flex is rebuilt each render
 // rather than sized once at setup.
 func (r *managedREPL) layout(l frameLayout) {
-	if l.halo {
-		r.layoutHalo(l)
+	if l.halo && r.layoutHalo(l) {
 		return
 	}
 	flex := widgets.NewFlex()

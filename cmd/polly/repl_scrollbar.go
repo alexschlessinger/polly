@@ -63,7 +63,10 @@ func (r *managedREPL) setHaloScrollTop(pane string, top int) {
 		s := r.workspace().viewState(r.workspace().inspector.target)
 		s.top = max(0, min(top, b.total-b.visible))
 		s.follow = s.top >= max(0, b.total-b.visible)
-		s.lastRows = b.total
+		// Like inspectorScroll: only a follow position marks output as seen.
+		if s.follow {
+			s.lastRows = b.total
+		}
 	case "modal":
 		if m := r.model.modal; m != nil {
 			b := r.modalScrollbar

@@ -3,6 +3,7 @@ package main
 import (
 	"image"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v3"
@@ -39,6 +40,22 @@ type themeLayer struct {
 	modal   ui.Drawable
 }
 
+// terminalPalette is the terminal's indexed palette, built once per depth:
+// FindColor's nearest-color scan is per cell, so the candidate list is not.
+var terminalPalettes sync.Map
+
+func terminalPalette(n int) []tcell.Color {
+	if v, ok := terminalPalettes.Load(n); ok {
+		return v.([]tcell.Color)
+	}
+	colors := make([]tcell.Color, n)
+	for i := range colors {
+		colors[i] = tcell.PaletteColor(i)
+	}
+	v, _ := terminalPalettes.LoadOrStore(n, colors)
+	return v.([]tcell.Color)
+}
+
 func (t *themeLayer) color(c ui.Color) ui.Color {
 	if t.colors >= 1<<24 || c == ui.ColorClear {
 		return c
@@ -49,11 +66,7 @@ func (t *themeLayer) color(c ui.Color) ui.Color {
 	if v, ok := t.palette[c]; ok {
 		return v
 	}
-	colors := make([]tcell.Color, min(t.colors, 256))
-	for i := range colors {
-		colors[i] = tcell.PaletteColor(i)
-	}
-	v := tcell.FindColor(c, colors)
+	v := tcell.FindColor(c, terminalPalette(min(t.colors, 256)))
 	if t.palette == nil {
 		t.palette = make(map[ui.Color]ui.Color)
 	}
