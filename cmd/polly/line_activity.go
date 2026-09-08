@@ -209,7 +209,7 @@ func (a *lineActivity) countFields() []turnDockField {
 		fields = append(fields, accentField(turnToolLabel(s.Tools)))
 	}
 	if c := s.Agents; c.Total > 0 {
-		fields = append(fields, accentField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled)))
+		fields = append(fields, accentField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled, c.Paused)))
 	}
 	if s.Images > 0 {
 		fields = append(fields, accentField(turnImageLabel(s.Images)))

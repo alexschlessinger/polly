@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -64,12 +65,12 @@ func TestToolParsesTheBriefAndFormatsTheReply(t *testing.T) {
 	out, err := tool.Execute(context.Background(), map[string]any{
 		"task": " look around ", "label": "explore",
 		"tools": []any{"read_file", " ", "git__*"},
-		"model": "openai/gpt-5.4", "max_iterations": float64(3),
+		"model": "openai/gpt-5.4",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Request{Task: "look around", Label: "explore", Tools: []string{"read_file", "git__*"}, Model: "openai/gpt-5.4", MaxIterations: 3}
+	want := Request{Task: "look around", Label: "explore", Tools: []string{"read_file", "git__*"}, Model: "openai/gpt-5.4"}
 	if got.Task != want.Task || got.Label != want.Label || !slices.Equal(got.Tools, want.Tools) || got.Model != want.Model || got.MaxIterations != want.MaxIterations {
 		t.Fatalf("request = %+v, want %+v", got, want)
 	}
@@ -82,6 +83,36 @@ func TestToolParsesTheBriefAndFormatsTheReply(t *testing.T) {
 	schema := tool.GetSchema()
 	if schema.Title() != ToolName || !tool.Untimed() || tool.GetType() != "native" {
 		t.Fatalf("tool identity: %s %v %s", schema.Title(), tool.Untimed(), tool.GetType())
+	}
+}
+
+func TestToolRejectsModelIterationOverrides(t *testing.T) {
+	called := false
+	tool := NewTool(func(context.Context, Request) (Result, error) {
+		called = true
+		return Result{}, nil
+	})
+	data, err := json.Marshal(tool.GetSchema())
+	if err != nil || strings.Contains(string(data), "max_iterations") {
+		t.Fatalf("model schema still exposes iteration overrides: %s %v", data, err)
+	}
+	for _, value := range []any{8, 0, -1, nil, "8"} {
+		_, err := tool.Execute(context.Background(), map[string]any{"task": "review", "max_iterations": value})
+		var toolErr *tools.ToolError
+		if !errors.As(err, &toolErr) || toolErr.Code != "INVALID_ARGS" || called {
+			t.Fatalf("override %v: %v called=%t", value, err, called)
+		}
+	}
+}
+
+func TestToolIterationPausePreservesPartialResult(t *testing.T) {
+	tool := NewTool(func(context.Context, Request) (Result, error) {
+		return Result{Session: "reviewer", Text: "finding already established"}, llm.ErrMaxIterations
+	})
+	text, err := tool.Execute(context.Background(), map[string]any{"task": "review"})
+	var toolErr *tools.ToolError
+	if !errors.As(err, &toolErr) || toolErr.Code != "ITERATION_LIMIT" || !strings.Contains(text, "finding already established") || !strings.Contains(text, "reviewer") {
+		t.Fatalf("partial result lost or classified as failure: %q %v", text, err)
 	}
 }
 

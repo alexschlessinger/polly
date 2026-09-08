@@ -133,18 +133,18 @@ func (m *replModel) agentField(ids []int64, expanded bool) (turnDockField, bool)
 	if c.Total == 0 {
 		return turnDockField{}, false
 	}
-	return activityField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled), activityAgents, expanded), true
+	return activityField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled, c.Paused), activityAgents, expanded), true
 }
 
 // turnAgentSummaryLabel composes the agent field's label from its counts,
 // shared by the TUI launch row and the one-shot summary. Running agents lead
 // while any child runs; afterwards one total with its failed and canceled
 // tails.
-func turnAgentSummaryLabel(total, running, failed, canceled int) string {
+func turnAgentSummaryLabel(total, running, failed, canceled, paused int) string {
 	label := turnAgentLabel(total)
 	if running > 0 {
 		label = turnAgentLabel(running) + " running"
-		if completed := total - running - failed - canceled; completed > 0 {
+		if completed := total - running - failed - canceled - paused; completed > 0 {
 			label += fmt.Sprintf(", %d completed", completed)
 		}
 	}
@@ -153,6 +153,9 @@ func turnAgentSummaryLabel(total, running, failed, canceled int) string {
 	}
 	if canceled > 0 {
 		label += fmt.Sprintf(", %d canceled", canceled)
+	}
+	if paused > 0 {
+		label += fmt.Sprintf(", %d paused", paused)
 	}
 	return label
 }
@@ -305,6 +308,8 @@ func spawnOutcomeStatus(outcome sessions.ReportStatus) string {
 		return "failed"
 	case sessions.ReportCanceled:
 		return "canceled"
+	case sessions.ReportPaused:
+		return "paused · iteration limit"
 	default:
 		return "unknown"
 	}
@@ -347,6 +352,7 @@ func (m *replModel) hydrateAgentSessions(parent string, summaries []sessions.Ses
 // refreshAgentActivities runs before painting, with no model lock held. It
 // samples each child separately, then updates its original display records.
 func (r *managedREPL) refreshAgentActivities() {
+	r.refreshSwarmActivities()
 	pending := r.pendingAgentUpdates[:0]
 	for _, child := range r.pendingAgentUpdates {
 		if !r.updateChildAgent(child) {

@@ -21,6 +21,7 @@ const (
 	conversationViewKind viewKind = iota
 	toolViewKind
 	thoughtViewKind
+	swarmViewKind
 )
 
 // View renders content. It deliberately has no execution, lease, or input API.
@@ -58,6 +59,8 @@ func viewFor(kind viewKind) View {
 		return toolView{}
 	case thoughtViewKind:
 		return thoughtView{}
+	case swarmViewKind:
+		return conversationView{}
 	default:
 		return conversationView{}
 	}

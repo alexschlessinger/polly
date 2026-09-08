@@ -72,6 +72,9 @@ type replTab struct {
 	spawnCallID     string
 	agentStatus     string
 	agentActive     bool
+	swarmLoading    bool
+	swarmActive     bool
+	swarmRefreshAt  time.Time
 
 	// Loop-owned usage snapshot for the original delegated run.
 	agentInputTokens, agentOutputTokens int
@@ -275,6 +278,10 @@ func (r *managedREPL) requestCloseTabLocked() {
 	// would close them under it.
 	if n := r.runningDescendants(r.visibleTab()); n > 0 {
 		m.appendNoticeLine("Stop this workspace's running agents in the inspector before closing it")
+		return
+	}
+	if r.state != nil && r.state.swarm != nil && r.state.swarm.HasActive() {
+		m.appendNoticeLine("stop this swarm's active members and workflows before closing it")
 		return
 	}
 	r.closeTabRequest = true

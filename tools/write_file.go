@@ -55,7 +55,7 @@ func (t *writeFileTool) Execute(ctx context.Context, raw map[string]any) (string
 	if !ok {
 		return "", fmt.Errorf("content must be a string")
 	}
-	abs, err := resolveLocalPath(path)
+	abs, err := t.registry.ResolvePath(path)
 	if err != nil {
 		return "", err
 	}

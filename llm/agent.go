@@ -62,10 +62,30 @@ type AgentConfig struct {
 	MaxParallelTools int             // Maximum parallel tool executions (0 = unlimited)
 	ResponseTool     string          // If set, require final response via this tool
 	ArtifactStore    artifacts.Store // Optional private store for context artifacts
+	// DisableTools is an absolute upper bound, including private built-ins.
+	DisableTools bool
 }
 
 // AgentCallbacks provides hooks for observing and customizing agent execution
 type AgentCallbacks struct {
+	// ContinueAfterFinal keeps a coordinator's answer provisional while work
+	// remains. Returning input continues this same iteration budget.
+	ContinueAfterFinal func(context.Context, *messages.ChatMessage) ([]messages.ChatMessage, error)
+	// AdmitInput stages peer input at a provider boundary, after the complete
+	// preceding tool batch. Checkpoint commits it only after projection succeeds.
+	AdmitInput func(context.Context) ([]messages.ChatMessage, error)
+	// Checkpoint persists the generated prefix (including admitted input).
+	// It is opt-in; legacy callers still persist AllMessages once at turn end.
+	Checkpoint func(context.Context, AgentCheckpoint) error
+	// BeforeToolBatch runs before any call starts. It can reject incompatible
+	// parallel operations and journal intent without persisting an unanswered
+	// assistant tool-use message into replayable conversation history.
+	BeforeToolBatch func(context.Context, []messages.ChatMessageToolCall) error
+	// JournalToolBatch stores an in-flight prefix separately from replayable
+	// history so recovery can report uncertain effects without re-running them.
+	JournalToolBatch func(context.Context, AgentCheckpoint) error
+	// AfterToolBatch may park an execution at a provider-valid boundary.
+	AfterToolBatch func(context.Context) error
 	// OnReasoning is called when reasoning/thinking content is streamed
 	OnReasoning func(content string)
 
@@ -121,13 +141,21 @@ type AgentCallbacks struct {
 	OnError func(err error)
 }
 
+type AgentCheckpoint struct {
+	Generated  []messages.ChatMessage
+	Iterations int
+	Final      bool
+	Request    bool
+}
+
 // AgentResponse contains the results after Run completes
 type AgentResponse struct {
-	Message        *messages.ChatMessage  // Final assistant message (no tool calls)
-	AllMessages    []messages.ChatMessage // All messages generated (assistant + tool results)
-	IterationCount int                    // Number of LLM calls made
-	Projection     ProjectionStats        // Final provider-visible context projection
-	PromptCache    PromptCacheStats       // Provider-reported cache use across all LLM calls
+	Message           *messages.ChatMessage  // Final assistant message (no tool calls)
+	AllMessages       []messages.ChatMessage // All messages generated (assistant + tool results)
+	IterationCount    int                    // Number of LLM calls made
+	Projection        ProjectionStats        // Final provider-visible context projection
+	PromptCache       PromptCacheStats       // Provider-reported cache use across all LLM calls
+	PersistedMessages int                    // Prefix already acknowledged by Checkpoint.
 }
 
 // SetProviderAPIKey installs a process-local provider credential when the
@@ -213,7 +241,7 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		artifactStore: config.ArtifactStore,
 		artifactRefs:  make(map[string]artifacts.Ref),
 	}
-	if config.ArtifactStore != nil {
+	if config.ArtifactStore != nil && !config.DisableTools {
 		reader := &readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact}
 		registry.Register(reader)
 		registry.MarkAlwaysAllowed(reader.GetName())
@@ -221,7 +249,7 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		registry.Register(lister)
 		registry.MarkAlwaysAllowed(lister.GetName())
 	}
-	if registry != nil {
+	if registry != nil && !config.DisableTools {
 		viewer := tools.NewViewImageTool(registry)
 		registry.Register(viewer)
 		registry.MarkAlwaysAllowed(viewer.GetName())
@@ -331,7 +359,7 @@ func (a *Agent) SetToolTimeout(d time.Duration) {
 // provider-valid boundary — a tool batch the failure cut short is completed
 // with interrupted-tool stubs — so callers can persist the partial turn and
 // replay it in later requests.
-func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks) (*AgentResponse, error) {
+func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks) (result *AgentResponse, runErr error) {
 	// Own the history's nested containers once. Projection can then share the
 	// immutable prefix between iterations without exposing caller-owned slices.
 	msgs := cloneMessages(req.Messages)
@@ -353,6 +381,22 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	var responseToolCalled bool
 	var lastProjection ProjectionStats
 	var promptCache PromptCacheStats
+	var persisted int
+	defer func() {
+		if result == nil || cb == nil || cb.Checkpoint == nil {
+			return
+		}
+		// Cancellation cannot erase a completed tool result. The persistence
+		// implementation must still enforce the session lease/generation fence.
+		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := cb.Checkpoint(persistCtx, AgentCheckpoint{Generated: result.AllMessages, Iterations: result.IterationCount, Final: true}); err != nil {
+			runErr = errors.Join(runErr, err)
+		} else {
+			persisted = len(result.AllMessages)
+		}
+		result.PersistedMessages = persisted
+	}()
 	a.resetArtifactIndex(msgs)
 	a.setTranscript(msgs)
 	responseFor := func(message *messages.ChatMessage, iterations int) *AgentResponse {
@@ -371,9 +415,27 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 
 		// Build request with accumulated messages
+		var admitted []messages.ChatMessage
+		if cb != nil && cb.AdmitInput != nil {
+			var err error
+			admitted, err = cb.AdmitInput(ctx)
+			if err != nil {
+				return responseFor(nil, iteration), err
+			}
+			for _, msg := range admitted {
+				if msg.Role != messages.MessageRoleUser {
+					return responseFor(nil, iteration), errors.New("admitted input must be a user message")
+				}
+			}
+		}
 		iterReq := loopReq
 		iterReq.Messages = msgs
-		if a.tools != nil {
+		if len(admitted) > 0 {
+			iterReq.Messages = append(cloneMessages(msgs), admitted...)
+		}
+		if a.config.DisableTools {
+			iterReq.Tools = nil
+		} else if a.tools != nil {
 			iterReq.Tools = a.tools.All()
 		}
 		iterReq.shapeCache.prepareTools(iterReq.Tools)
@@ -409,6 +471,16 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			// request. Refresh the stable shape after that mutation boundary.
 			iterReq.shapeCache.prepareTools(iterReq.Tools)
 		}
+		if cb != nil && cb.Checkpoint != nil {
+			candidate := append(cloneMessages(allGenerated), admitted...)
+			if err := cb.Checkpoint(ctx, AgentCheckpoint{Generated: candidate, Iterations: iteration, Request: true}); err != nil {
+				return responseFor(nil, iteration), err
+			}
+			persisted = len(candidate)
+		}
+		msgs = append(msgs, admitted...)
+		allGenerated = append(allGenerated, admitted...)
+		a.appendTranscript(admitted...)
 		if iterReq.PromptCacheKey == "" {
 			if key, keyErr := derivePromptCacheKey(&iterReq, msgs); keyErr == nil {
 				iterReq.PromptCacheKey = key
@@ -452,6 +524,28 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		allGenerated = append(allGenerated, *response)
 		a.appendTranscript(*response)
 
+		continueFinal := func() (bool, error) {
+			if cb == nil || cb.ContinueAfterFinal == nil {
+				return false, nil
+			}
+			input, err := cb.ContinueAfterFinal(ctx, response)
+			if err != nil {
+				return false, err
+			}
+			if len(input) == 0 {
+				return false, nil
+			}
+			for _, msg := range input {
+				if msg.Role != messages.MessageRoleUser || len(msg.ToolCalls) != 0 {
+					return false, errors.New("continuation input must be user text")
+				}
+			}
+			msgs = append(msgs, input...)
+			allGenerated = append(allGenerated, input...)
+			a.appendTranscript(input...)
+			responseToolCalled = false
+			return true, nil
+		}
 		// Check stop reason to determine next action
 		switch response.StopReason {
 		case messages.StopReasonEndTurn:
@@ -467,6 +561,11 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 				a.appendTranscript(nudge)
 				continue
 			}
+			if again, err := continueFinal(); err != nil {
+				return responseFor(response, iteration+1), err
+			} else if again {
+				continue
+			}
 			// Normal completion
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
@@ -474,6 +573,11 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			return responseFor(response, iteration+1), nil
 
 		case messages.StopReasonMaxTokens:
+			if again, err := continueFinal(); err != nil {
+				return responseFor(response, iteration+1), err
+			} else if again {
+				continue
+			}
 			// Response truncated - warn and return
 			slog.Debug("response_truncated", "reason", "max_tokens")
 			if cb != nil && cb.OnComplete != nil {
@@ -522,6 +626,11 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 					a.appendTranscript(nudge)
 					continue
 				}
+				if again, err := continueFinal(); err != nil {
+					return responseFor(response, iteration+1), err
+				} else if again {
+					continue
+				}
 				if cb != nil && cb.OnComplete != nil {
 					cb.OnComplete(response)
 				}
@@ -541,6 +650,28 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 
 		// Execute tool calls in parallel
+		if len(response.ToolCalls) > 1 && a.tools != nil {
+			for _, call := range response.ToolCalls {
+				if tool, ok := a.tools.Get(call.Name); ok {
+					if exclusive, ok := tool.(tools.ExclusiveTool); ok && exclusive.ExclusiveBatch() {
+						allGenerated = append(allGenerated, completeAbortedToolBatch(response.ToolCalls, nil)...)
+						return responseFor(response, iteration+1), fmt.Errorf("%s must be the only tool in its batch; no tools were started", call.Name)
+					}
+				}
+			}
+		}
+		if cb != nil && cb.BeforeToolBatch != nil {
+			if err := cb.BeforeToolBatch(ctx, response.ToolCalls); err != nil {
+				allGenerated = append(allGenerated, completeAbortedToolBatch(response.ToolCalls, nil)...)
+				return responseFor(response, iteration+1), err
+			}
+		}
+		if cb != nil && cb.JournalToolBatch != nil {
+			if err := cb.JournalToolBatch(ctx, AgentCheckpoint{Generated: allGenerated, Iterations: iteration + 1}); err != nil {
+				allGenerated = append(allGenerated, completeAbortedToolBatch(response.ToolCalls, nil)...)
+				return responseFor(response, iteration+1), err
+			}
+		}
 		toolMsgs, toolErr := a.executeToolsParallel(ctx, response.ToolCalls, cb)
 		if toolErr != nil {
 			// The batch aborted, but tools that finished already changed the
@@ -558,12 +689,26 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		msgs = append(msgs, toolMsgs...)
 		allGenerated = append(allGenerated, toolMsgs...)
 		a.appendTranscript(toolMsgs...)
+		if cb != nil && cb.AfterToolBatch != nil {
+			if err := cb.AfterToolBatch(ctx); err != nil {
+				return responseFor(response, iteration+1), err
+			}
+		}
 
 		// Short-circuit when every tool in the batch was denied. Looping to
 		// feed the denials back would just make the model editorialize ("I
 		// can't run that"), which pollutes history and teaches it to refuse
 		// preemptively on later turns. The caller already saw the denial.
 		if allDenied(toolMsgs) {
+			if cb != nil && cb.ContinueAfterFinal != nil {
+				input, err := cb.ContinueAfterFinal(ctx, response)
+				if err != nil {
+					return responseFor(response, iteration+1), err
+				}
+				if len(input) != 0 {
+					return responseFor(response, iteration+1), errors.New("coordination remains unfinished after the tool batch was denied")
+				}
+			}
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
 			}
@@ -575,6 +720,11 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// so making another LLM call to "process" the tool result would
 		// generate plain text the caller discards anyway.
 		if responseToolCalled {
+			if again, err := continueFinal(); err != nil {
+				return responseFor(response, iteration+1), err
+			} else if again {
+				continue
+			}
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
 			}
@@ -777,6 +927,19 @@ func mergeToolErrorText(errorText, resultText string) string {
 
 func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageToolCall, output tools.ToolOutput) (messages.ChatMessage, error) {
 	msg := messages.ChatMessage{Role: messages.MessageRoleTool, Content: output.Text, ToolCallID: tc.ID, ToolName: tc.Name}
+	if output.Data != nil {
+		// Keep typed data durable without feeding a second copy into model
+		// text. JSON round-tripping severs caller-owned mutable containers.
+		data, err := json.Marshal(output.Data)
+		if err != nil {
+			return messages.ChatMessage{}, fmt.Errorf("encode structured tool data: %w", err)
+		}
+		var value any
+		if err = json.Unmarshal(data, &value); err != nil {
+			return messages.ChatMessage{}, err
+		}
+		msg.Metadata = map[string]any{"tool_data": value}
+	}
 	var textArtifact *artifacts.Ref
 	if !isRecallToolName(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
 		ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)})

@@ -35,6 +35,53 @@ user on a shared kernel. See [Limitations](#limitations).
 
 ## What gets sandboxed
 
+Swarm members use a registry-level execution root and a separately prepared
+sandbox for that root. No process-wide `chdir` is used. Editing worktrees are
+outside the parent's checkout; native file tools, bash, shell tools, images,
+skills, and repository instructions resolve there. Local stdio MCP servers
+relaunch there. Context-specific binding discards tool/server sandbox overlays
+that could restore the parent's write grants. Required incompatible tools fail
+launch; optional ones are omitted and reported. Later skill activation cannot
+expand the member's inherited tool capabilities.
+
+Member policies deny parent/sibling files, session databases, and every write to
+common Git metadata and the linked worktree's `.git` entry. The default 512
+worktree directory slots are reserved before member sandboxes start, so future
+siblings are already covered. The common Git object store remains readable;
+this is filesystem isolation, not confidentiality of repository history. Native
+file tools retain their context checks even with an explicit process sandbox
+opt-out. An unsandboxed shell necessarily retains ambient host authority.
+
+Runtime snapshot, worktree administration, and integration commands use the
+same sandbox factory with a trusted Git executable and narrow runtime grants.
+For these fixed runtime commands only, preset-generated whole-directory Git
+pins are replaced with protections for configuration, hooks, parent indexes,
+HEAD, and branch refs. This allows snapshots and worktree administration when
+the parent is itself a linked checkout with a common gitdir outside its write
+root. The parent and member tool policies retain their original Git pins.
+Explicit deny rules, including an extra deny for the same common gitdir, and
+global write denial remain in force; this grant is never exposed to a shell,
+MCP server, or model-selected command. Read-only reviewers inside Git also use
+this runtime snapshot path. Setup errors do not silently switch to live files.
+Only the parent can accept/apply changes. Apply is exclusive within a parent
+tool batch, preserves its index/branch, rechecks source versions, and records a
+recovery manifest. Git 2.40+ and a supported process sandbox (macOS/Linux), or an
+explicit unsafe acknowledgment, are required for editing. See
+[worktree limitations and recovery](WORKFLOWS.md#worktrees-and-integration).
+
+Workflow JavaScript has no direct process/filesystem/network APIs. Its host tools
+use these same policies, approvals, and timeouts. Remote MCP processes cannot be
+contained locally and require the operator's explicit `contextIndependent: true`
+declaration in the server configuration before being exposed to a member.
+Tool metadata and peer messages do not grant additional user authorization.
+
+The bash tool distinguishes sandbox launcher failure from an ordinary command
+exit with a target-start acknowledgment descriptor. Only the latter can be
+recovered by workflow `exec(check: false)`; timeout, cancellation, approval and
+policy-construction failures still reject. OS access denials inside a running
+command remain that command's exit status; stderr is never parsed to infer an
+error category.
+
 | Execution path | Sandboxed | Opt-out |
 |---|---|---|
 | Builtin `bash` tool | yes | `--nosandbox` |

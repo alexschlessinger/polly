@@ -792,6 +792,9 @@ func (r *managedREPL) needsTick() bool {
 		return true
 	}
 	for _, tab := range r.tabs {
+		if tab.state != nil && tab.state.swarm != nil && (tab.swarmActive || tab.state.swarm.HasActive()) {
+			return true
+		}
 		if tab.agentActivity != nil && tab.report != nil {
 			return true
 		}

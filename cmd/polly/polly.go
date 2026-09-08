@@ -24,6 +24,7 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/subagent"
+	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
@@ -80,6 +81,7 @@ type conversationInput struct {
 }
 
 type conversationState struct {
+	swarm          *swarm.Runtime
 	workspaceEntry *workspaceEntry
 	sessionStore   sessions.SessionStore
 	session        sessions.Session
@@ -141,6 +143,11 @@ func (s *conversationState) effectiveTools() *tools.ToolRegistry {
 
 func (s *conversationState) Close() error {
 	var errs []error
+	if s.swarm != nil {
+		if err := s.swarm.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if s.agent != nil {
 		if err := s.agent.Close(); err != nil {
 			errs = append(errs, err)
@@ -403,6 +410,9 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 	if err != nil {
 		return nil, fmt.Errorf("read context metadata: %w", err)
 	}
+	if metadata.SwarmID != "" {
+		return nil, fmt.Errorf("this swarm member is inspected through /agents and resumed through its parent %q with /swarm resume; independent execution would lose its worktree binding", metadata.Parent)
+	}
 
 	// Discover skills before building the runtime tool registry, passing the
 	// persisted sources so --skill is restored on resume; new sources are
@@ -478,7 +488,9 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		sandboxWarnings: sandboxWarnings,
 		sandboxProbe:    probe,
 	}
-	registerSpawnTool(state, config, llmClient)
+	if err := registerSwarm(state, config, llmClient); err != nil {
+		return nil, err
+	}
 	return state, nil
 }
 
@@ -1042,13 +1054,18 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	turnStart := time.Now()
 	usage := turnUsage{}
 
-	resp, err := state.agent.Run(ctx, req, &llm.AgentCallbacks{
+	_, lineOutput := turnUI.(*lineTurnUI)
+	settledOutput := lineOutput && !config.Stream
+	if line, ok := turnUI.(*lineTurnUI); ok {
+		line.settledOutput = settledOutput
+	}
+	callbacks := &llm.AgentCallbacks{
 		OnReasoning: func(content string) {
 			trimLeadingNL = true
 			turnUI.ShowThinking(content)
 		},
 		OnContent: func(content string) {
-			if config.SchemaPath != "" {
+			if config.SchemaPath != "" || settledOutput {
 				return
 			}
 			if trimLeadingNL {
@@ -1093,7 +1110,16 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			turnUI.RecordTurnTokens(peak, total)
 			turnUI.RecordContextUsage(usage.used, usage.limit, usage.estimated)
 		},
-	})
+	}
+	if state.swarm != nil {
+		systemPrompt := settings.SystemPrompt
+		state.swarm.UpdateDefaults(*req, llm.AgentConfig{MaxIterations: settings.MaxIterations, ToolTimeout: settings.ToolTimeout}, func(registry *tools.ToolRegistry) string {
+			instructions, _ := loadRepositoryInstructions(registry)
+			return systemPrompt + "\n\n" + codingContract + "\n\n" + instructions
+		})
+		state.swarm.BindParent(callbacks, turnUI.TurnPersistenceAllowed)
+	}
+	resp, err := state.agent.Run(ctx, req, callbacks)
 	if ctx.Err() != nil {
 		// Cancellation outranks whatever error the aborted run surfaced, but
 		// the turn still flows through persistence below: tools that completed
@@ -1144,7 +1170,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			// tool result) with a single write instead of one rewrite per
 			// message. A failed turn additionally records why it ended, so
 			// hydration can settle it instead of rendering an abandoned turn.
-			durable := durableTurnMessages(resp.AllMessages)
+			durable := durableTurnMessages(resp.AllMessages[resp.PersistedMessages:])
 			if runErr != nil {
 				durable = append(durable, interruptedTurnMarker(runErr))
 			}
@@ -1195,9 +1221,17 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 				}
 				return outputStructured(content, schema)
 			}
+			if settledOutput && resp.Message != nil {
+				turnUI.AppendAssistantText(resp.Message.Content)
+			}
 			turnUI.FinishTextTurn()
 			return nil
 		}()
+	}
+	if runErr != nil && settledOutput && config.SchemaPath == "" {
+		name, _ := state.session.GetName(context.WithoutCancel(ctx))
+		turnUI.AppendAssistantText("Blocked: " + runErr.Error() + "\n\nSession: " + name + "\n")
+		turnUI.FinishTextTurn()
 	}
 
 	if outputErr := flushTurnOutputError(turnUI); outputErr != nil {

@@ -305,6 +305,9 @@ func storedChildReport(res subagent.Result, err error) sessions.Report {
 	switch {
 	case errors.Is(err, context.Canceled):
 		report.Status = sessions.ReportCanceled
+	case onlyIterationLimit(err):
+		report.Status = sessions.ReportPaused
+		report.Error = err.Error()
 	case err != nil:
 		report.Status = sessions.ReportFailed
 		report.Error = err.Error()
@@ -459,6 +462,8 @@ func reportHeader(rep sessions.Report) string {
 		return fmt.Sprintf("agent %s canceled", rep.Child)
 	case sessions.ReportFailed:
 		return fmt.Sprintf("agent %s failed: %s", rep.Child, rep.Error)
+	case sessions.ReportPaused:
+		return fmt.Sprintf("agent %s paused at its iteration limit: %s", rep.Child, rep.Error)
 	}
 	return fmt.Sprintf("agent %s finished", rep.Child)
 }

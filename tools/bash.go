@@ -2,7 +2,9 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -112,19 +114,55 @@ func (t *BashTool) GetSchema() *schema.ToolSchema {
 }
 
 func (t *BashTool) Execute(ctx context.Context, args map[string]any) (string, error) {
+	out, err := t.ExecuteOutput(ctx, args)
+	return out.Text, err
+}
+
+// CommandResult records the process outcome without interpreting stderr.
+type CommandResult struct {
+	ExitCode int `json:"exitCode"`
+}
+
+// CommandError means a command was launched and exited unsuccessfully. Setup,
+// cancellation and timeout errors deliberately do not have this type.
+type CommandError struct {
+	ExitCode int
+	Cause    error
+}
+
+func (e *CommandError) Error() string { return fmt.Sprintf("command failed: %v", e.Cause) }
+func (e *CommandError) Unwrap() error { return e.Cause }
+
+func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (ToolOutput, error) {
 	command, ok := args["command"].(string)
 	if !ok || strings.TrimSpace(command) == "" {
-		return "", fmt.Errorf("command must be a non-empty string")
+		return ToolOutput{}, fmt.Errorf("command must be a non-empty string")
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	// The target shell acknowledges startup through a private descriptor.
+	// A backend that exits during sandbox setup must not become a recoverable
+	// command_failed result merely because it also used a numeric exit code.
+	var readyRead, readyWrite *os.File
+	if t.sandbox != nil {
+		var err error
+		readyRead, readyWrite, err = os.Pipe()
+		if err != nil {
+			return ToolOutput{}, err
+		}
+		defer readyRead.Close()
+		defer readyWrite.Close()
+		fd := 3 + len(cmd.ExtraFiles)
+		cmd.ExtraFiles = append(cmd.ExtraFiles, readyWrite)
+		cmd.Args[len(cmd.Args)-1] = fmt.Sprintf("printf . >&%d; exec %d>&-; ", fd, fd) + command
+	}
 	if t.workDir != "" {
 		cmd.Dir = t.workDir
 	}
 
 	closeSandboxFiles, err := sandbox.WrapCmdManaged(t.sandbox, cmd)
 	if err != nil {
-		return "", fmt.Errorf("sandbox: %w", err)
+		return ToolOutput{}, fmt.Errorf("sandbox: %w", err)
 	}
 	defer func() { _ = closeSandboxFiles() }()
 
@@ -134,6 +172,13 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) (string, er
 	cmd.Stderr = stderr
 
 	err = cmd.Run()
+	targetStarted := true
+	if readyRead != nil {
+		_ = readyWrite.Close()
+		var ready [1]byte
+		n, _ := readyRead.Read(ready[:])
+		targetStarted = n == 1 && ready[0] == '.'
+	}
 
 	result := stdout.String()
 	if stderr.Len() > 0 || stderr.Truncated() {
@@ -143,9 +188,21 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) (string, er
 		result += stderr.String()
 	}
 
-	if err != nil {
-		return strings.TrimSpace(result), fmt.Errorf("command failed: %w (output: %s)", err, strings.TrimSpace(result))
+	out := ToolOutput{Text: strings.TrimSpace(result)}
+	if ctx.Err() != nil {
+		return out, ctx.Err()
 	}
-
-	return strings.TrimSpace(result), nil
+	if !targetStarted {
+		return out, fmt.Errorf("sandbox target did not start: %w", err)
+	}
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() >= 0 {
+			out.Data = CommandResult{ExitCode: exit.ExitCode()}
+			return out, &CommandError{ExitCode: exit.ExitCode(), Cause: err}
+		}
+		return out, fmt.Errorf("launch command: %w", err)
+	}
+	out.Data = CommandResult{ExitCode: 0}
+	return out, nil
 }

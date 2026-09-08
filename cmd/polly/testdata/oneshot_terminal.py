@@ -9,6 +9,7 @@ import re
 import select
 import shlex
 import signal
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -20,6 +21,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 binary, directory = sys.argv[1], Path(sys.argv[2])
 answer = b"**first** answer.\n\nSecond paragraph.\n"
 first = b"**first** "
+settled_released = threading.Event()
+swarm_source = '''polly.defineWorkflow({name:"client coordination fixture", inputSchema:polly.schema.object({}), async run(){
+  const workers=await polly.parallel(["one","two"], label=>polly.agent({task:"swarm fixture worker "+label,label,readOnly:true,tools:[]}),{concurrency:2,errors:"throw_after_all"});
+  const results=workers.map(row=>row.value);
+  const reviewer=await polly.agent({task:"swarm fixture reviewer",label:"reviewer",input:results,readOnly:true,tools:[]});
+  return {tasks:[...results.map(result=>result.task),reviewer.task],review:reviewer.value};
+}});'''
 
 
 class Provider(BaseHTTPRequestHandler):
@@ -50,6 +58,31 @@ class Provider(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         try:
+            if any("You are a member of Polly swarm" in m.get("content", "") for m in request["messages"] if m["role"] == "system"):
+                assert not request.get("tools"), "tools: [] exposed tools"
+                assert "swarm fixture" in prompt, prompt
+                emit({"content":"reviewed shared worker results" if "reviewer" in prompt else "published worker result"})
+                emit({}, True)
+                return
+            if "swarm coordination" in prompt:
+                completed = {m.get("tool_name"):m.get("content", "") for m in request["messages"] if m["role"] == "tool"}
+                calls = []
+                if "workflow_run" not in completed:
+                    calls = [("workflow_run", {"source":swarm_source,"input":"{}"})]
+                elif "swarm_tasks" not in completed:
+                    calls = [("swarm_tasks", {})]
+                elif "swarm_review" not in completed:
+                    tasks = json.loads(completed["swarm_tasks"])
+                    assert len(tasks) == 3, tasks
+                    calls = [("swarm_review",{"task":task["id"],"revision":task["revision"],"accept":True}) for task in tasks.values()]
+                if calls:
+                    emit({"content":"coordinating provisional work", "tool_calls":[{"function":{"name":name,"arguments":args}} for name,args in calls]})
+                    emit({}, True)
+                    return
+            if "settled" in prompt and not any(m["role"] == "tool" for m in request["messages"]):
+                emit({"content": "provisional narration", "tool_calls": [{"function": {"name": "read_messages", "arguments": {}}}]})
+                emit({}, True)
+                return
             emit({"thinking": "one\ntwo\nthree\nfour\nfive\nsix"})
             time.sleep(.1)
             if "schema" in prompt:
@@ -59,6 +92,8 @@ class Provider(BaseHTTPRequestHandler):
                 time.sleep(.6)
                 emit({"content": answer[len(first):].decode()})
             time.sleep(.25)
+            if "settled" in prompt:
+                settled_released.set()
             emit({}, True)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -66,7 +101,7 @@ class Provider(BaseHTTPRequestHandler):
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-base = ["--model", "ollama/fixture", "--baseurl", f"http://127.0.0.1:{server.server_port}", "--context", "", "--noskills", "--nosandbox", "--system", "Local output fixture", "--maxcontext", "128000", "--maxtokens", "2048"]
+base = ["--stream", "--model", "ollama/fixture", "--baseurl", f"http://127.0.0.1:{server.server_port}", "--context", "", "--noskills", "--nosandbox", "--system", "Local output fixture", "--maxcontext", "128000", "--maxtokens", "2048"]
 schema = directory / "schema.json"
 schema.write_text(json.dumps({"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"], "additionalProperties": False}))
 
@@ -95,12 +130,15 @@ def screen(data):
     return "\n".join("".join(row).rstrip() for row in rows)
 
 
-def run(name, terminal=False, destination="capture", flags=(), color=True, dumb=False, interrupt=False, resize=False, prompt="normal"):
+def run(name, terminal=False, destination="capture", flags=(), color=True, dumb=False, interrupt=False, resize=False, prompt="normal", streaming=True):
     env = {k: v for k, v in os.environ.items() if not k.startswith("POLLYTOOL_") and k not in ("NO_COLOR", "POLLY_TEST_ONESHOT_ARGS")}
     env["TERM"] = "dumb" if dumb else "xterm-256color"
+    fixture_home = directory / (name+"-home")
+    fixture_home.mkdir()
+    env["HOME"] = str(fixture_home)
     if not color:
         env["NO_COLOR"] = "1"
-    env["POLLY_TEST_ONESHOT_ARGS"] = json.dumps(base+["-p", prompt]+list(flags))
+    env["POLLY_TEST_ONESHOT_ARGS"] = json.dumps((base if streaming else base[1:])+["-p", prompt]+list(flags))
     argv = [binary, "-test.run=^TestOneShotCLIProcess$"]
     master = slave = None
     if terminal:
@@ -116,7 +154,7 @@ def run(name, terminal=False, destination="capture", flags=(), color=True, dumb=
         stdout = subprocess.DEVNULL
     elif destination == "pipe":
         argv = ["/bin/sh", "-c", shlex.join(argv)+" | cat"]
-    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=env)
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, env=env, cwd=fixture_home)
     if slave is not None:
         os.close(slave)
     channels = {}
@@ -140,6 +178,8 @@ def run(name, terminal=False, destination="capture", flags=(), color=True, dumb=
             if not part:
                 channels.pop(fd)
                 continue
+            if prompt == "settled" and channels[fd] == "stdout":
+                assert settled_released.is_set(), (name, "stdout escaped before final settlement", part)
             data[channels[fd]].extend(part)
         if terminal and not midpoint:
             current = screen(data["terminal"])
@@ -188,10 +228,23 @@ def run(name, terminal=False, destination="capture", flags=(), color=True, dumb=
         assert all(line.startswith(b"polly-meta ") for line in stderr[meta:].splitlines()), (name, stderr)
     if dumb or not terminal:
         assert b"\x1b" not in data["stderr"], (name, "redirected status escapes")
+    if prompt == "swarm coordination":
+        database = fixture_home / ".pollytool" / "polly.db"
+        assert database.exists(), "coordination did not promote one-shot memory storage"
+        with sqlite3.connect(database) as connection:
+            records = {}
+            for kind, payload in connection.execute("SELECT kind,payload_json FROM swarm_records"):
+                records.setdefault(kind, []).append(json.loads(payload))
+        assert len(records["member"]) == 3 and len(records["execution"]) == 3, records
+        assert len(records["task"]) == 3 and all(task["status"] == "done" for task in records["task"]), records
+        assert len(records["run"]) == 1 and records["run"][0]["status"] == "completed", records
+        assert records["workflow"][0]["status"] == "completed", records
     return name, bytes(data["stdout"])
 
 
 cases = [
+    ("default-settled", {"prompt": "settled", "streaming": False}),
+    ("swarm-coordination", {"prompt": "swarm coordination", "streaming": False}),
     ("live", {"terminal": True}),
     ("no-color", {"terminal": True, "color": False}),
     ("quiet-live", {"terminal": True, "color": False, "flags": ["--quiet"]}),

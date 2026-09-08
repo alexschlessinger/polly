@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/alexschlessinger/pollytool/schema"
+	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
@@ -43,6 +44,12 @@ func (n *NamespacedTool) ExecuteOutput(ctx context.Context, args map[string]any)
 	return ToolOutput{Text: text}, err
 }
 
+func (n *NamespacedTool) ExclusiveBatch() bool {
+	t, ok := n.Tool.(ExclusiveTool)
+	return ok && t.ExclusiveBatch()
+}
+func (n *NamespacedTool) Untimed() bool { t, ok := n.Tool.(UntimedTool); return ok && t.Untimed() }
+
 // GetSchema returns a schema with the namespaced title
 func (n *NamespacedTool) GetSchema() *schema.ToolSchema {
 	c := n.Tool.GetSchema().Copy()
@@ -60,8 +67,12 @@ func (n *NamespacedTool) GetName() string {
 
 // ToolRegistry manages available tools
 type ToolRegistry struct {
-	mu    sync.RWMutex
-	tools map[string]Tool
+	executionSkills     *skills.Catalog
+	executionSourceRoot string
+	executionRoot       string
+	executionPolicy     *sandbox.Config
+	mu                  sync.RWMutex
+	tools               map[string]Tool
 
 	// Native tool factories
 	nativeTools map[string]func() (Tool, error) // toolName -> factory
@@ -208,6 +219,9 @@ func (r *ToolRegistry) preparedBaseSandboxConfig() (sandbox.Config, error) {
 // sandboxing is active. active is false when no sandbox factory is configured,
 // in which case in-process reads are unrestricted just like wrapped commands.
 func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err error) {
+	if r.executionPolicy != nil {
+		return *r.executionPolicy, true, nil
+	}
 	if r.sandboxFactory == nil {
 		return sandbox.Config{}, false, nil
 	}
@@ -338,7 +352,7 @@ func newRegistry(o registryOptions) *ToolRegistry {
 	}
 
 	registry.nativeTools["bash"] = func() (Tool, error) {
-		bt := newBashTool("")
+		bt := newBashTool(registry.executionRoot)
 		bt.siblingLoaded = registry.hasVisibleTool
 		if registry.sandboxFactory == nil {
 			if err := registry.requireProcessSandbox("bash"); err != nil {
@@ -457,6 +471,10 @@ func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 		unsafeNoSandbox:       r.unsafeNoSandbox,
 	})
 	derived.parent = r
+	derived.executionRoot = r.executionRoot
+	derived.executionSourceRoot = r.executionSourceRoot
+	derived.executionPolicy = r.executionPolicy
+	derived.executionSkills = r.executionSkills
 	derived.viewAllowed = o.filter()
 	return derived
 }
@@ -1010,6 +1028,22 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 }
 
 func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
+	if r.executionRoot != "" {
+		if config.URL != "" && !config.ContextIndependent {
+			return nil, nil, fmt.Errorf("remote MCP server %s must declare contextIndependent to be shared with a worktree", serverName)
+		}
+		copy := *config
+		config = &copy
+		config.WorkDir = r.executionRoot
+		config.Command = rebindSourcePath(config.Command, r.executionSourceRoot, r.executionRoot)
+		config.Args = append([]string(nil), config.Args...)
+		for i, arg := range config.Args {
+			config.Args[i] = rebindSourcePath(arg, r.executionSourceRoot, r.executionRoot)
+		}
+		// Context binding is an upper bound; tool metadata cannot reintroduce
+		// the original checkout's grants.
+		config.Sandbox = nil
+	}
 	localProcess := config.Transport == "" || config.Transport == "stdio"
 	if localProcess {
 		if err := r.requireProcessSandbox("stdio MCP server"); err != nil {

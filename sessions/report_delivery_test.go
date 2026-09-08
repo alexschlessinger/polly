@@ -9,6 +9,20 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
+func TestPausedReportRetainsPartialResultAndReason(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, nil, 0)
+	ctx := context.Background()
+	parent := acquireNamed(t, store, "parent")
+	want := Report{Child: "reviewer", Status: ReportPaused, Text: "partial finding", Error: "iteration limit reached (8/8)"}
+	if err := store.PostReport(ctx, "parent", want); err != nil {
+		t.Fatal(err)
+	}
+	reports, err := parent.PeekReports(ctx)
+	if err != nil || len(reports) != 1 || reports[0].Status != ReportPaused || reports[0].Text != want.Text || reports[0].Error != want.Error {
+		t.Fatalf("paused report: %+v %v", reports, err)
+	}
+}
+
 func TestReportInputCommitsWithConsumption(t *testing.T) {
 	store, _ := openTestStore(t, ModeMemory, nil, 0)
 	ctx := context.Background()

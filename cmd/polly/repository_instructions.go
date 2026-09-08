@@ -29,6 +29,10 @@ const (
 // named in the returned warnings.
 func loadRepositoryInstructions(registry *tools.ToolRegistry) (instructions string, warnings []string) {
 	cwd, err := os.Getwd()
+	if registry != nil && registry.ExecutionRoot() != "" {
+		cwd = registry.ExecutionRoot()
+		err = nil
+	}
 	if err != nil {
 		return "", []string{fmt.Sprintf("repository instructions not loaded: read working directory: %v", err)}
 	}

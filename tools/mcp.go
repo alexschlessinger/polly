@@ -175,7 +175,7 @@ func mcpResultOutput(result *mcp.CallToolResult) (ToolOutput, error) {
 		}
 		textParts = append(textParts, string(encoded))
 	}
-	return ToolOutput{Text: strings.Join(textParts, "\n"), Media: media}, nil
+	return ToolOutput{Text: strings.Join(textParts, "\n"), Data: result.StructuredContent, Media: media}, nil
 }
 
 func appendMCPContent(content mcp.Content, textParts *[]string, media *[]ToolMedia) error {
@@ -296,6 +296,8 @@ func mcpErrorDescription(result *mcp.CallToolResult) (string, error) {
 
 // MCPConfig represents the JSON configuration for an MCP server
 type MCPConfig struct {
+	ContextIndependent bool   `json:"contextIndependent,omitempty"`
+	WorkDir            string `json:"-"`
 	// Local/stdio transport fields
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
@@ -612,6 +614,7 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 
 		// Create the command with arguments
 		cmd := exec.Command(config.Command, config.Args...)
+		cmd.Dir = config.WorkDir
 
 		// Set up stderr to see any error output from the server
 		cmd.Stderr = os.Stderr

@@ -403,6 +403,11 @@ func TestInitializeConversationResumesMigratedLegacyContext(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			for _, table := range []string{"swarm_records", "swarm_artifacts", "swarm_members"} {
+				if _, err := raw.Exec("DROP TABLE IF EXISTS " + table); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if _, err := raw.Exec("PRAGMA user_version = 1"); err != nil {
 				t.Fatal(err)
 			}

@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	schemaVersion            = 4
+	schemaVersion            = 6
 	artifactChunkSize        = 1 << 20
 	journalSizeLimit         = 64 << 20
 	boundedVacuumPages       = 128
@@ -65,6 +65,7 @@ var (
 // SQLiteStore is the common implementation used for both ephemeral and
 // persistent sessions.
 type SQLiteStore struct {
+	dbMu     sync.RWMutex // gates handle-preserving memory-to-disk promotion
 	db       *sql.DB
 	mode     StoreMode
 	path     string
@@ -430,15 +431,15 @@ func configureJournal(ctx context.Context, conn *sql.Conn, mode StoreMode) error
 }
 
 func migrateSchema(ctx context.Context, conn *sql.Conn) error {
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("begin session schema migration: %w", err)
-	}
 	committed := false
 	defer func() {
 		if !committed {
 			rollbackConn(conn)
 		}
 	}()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin session schema migration: %w", err)
+	}
 
 	var version int
 	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -479,6 +480,18 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 			return err
 		}
 		version = 4
+	}
+	if version == 4 {
+		if err := applySchemaV5(ctx, conn); err != nil {
+			return err
+		}
+		version = 5
+	}
+	if version == 5 {
+		if err := applySchemaV6(ctx, conn); err != nil {
+			return err
+		}
+		version = 6
 	}
 	if version != schemaVersion {
 		return fmt.Errorf("no session schema migration from version %d", version)
@@ -932,12 +945,17 @@ var schemaV3Tables = map[string]schemaTableSpec{
 			{"output_tokens", "INTEGER", 1, 0, "0"}, {"posted_ns", "INTEGER", 1, 0, ""},
 		},
 		requiredSQL: []string{
-			"check(statusin('finished','canceled','failed'))", "check(input_tokens>=0)", "check(output_tokens>=0)",
+			"check(statusin('finished','canceled','failed','paused'))", "check(input_tokens>=0)", "check(output_tokens>=0)",
 		},
 	},
 }
 
 func validateSchema(ctx context.Context, conn *sql.Conn) error {
+	for table, spec := range schemaV5Tables {
+		if err := validateSchemaTable(ctx, conn, table, spec); err != nil {
+			return fmt.Errorf("session database schema v5 table %s: %w", table, err)
+		}
+	}
 	for table, spec := range schemaV1Tables {
 		if err := validateSchemaTable(ctx, conn, table, spec); err != nil {
 			return fmt.Errorf("session database schema v1 table %s: %w", table, err)
@@ -964,6 +982,9 @@ func validateSchema(ctx context.Context, conn *sql.Conn) error {
 		return err
 	}
 	expectedForeignKeys := map[string]map[string]bool{
+		"swarm_records":     {"parent_id>sessions.id:CASCADE": true},
+		"swarm_artifacts":   {"parent_id>sessions.id:CASCADE": true, "digest>artifact_blobs.digest:CASCADE": true},
+		"swarm_members":     {"parent_id>sessions.id:CASCADE": true, "member_id>sessions.id:CASCADE": true},
 		"messages":          {"session_id>sessions.id:CASCADE": true},
 		"artifact_chunks":   {"digest>artifact_blobs.digest:CASCADE": true},
 		"session_artifacts": {"session_id>sessions.id:CASCADE": true, "digest>artifact_blobs.digest:CASCADE": true},
@@ -1178,20 +1199,25 @@ func (s *SQLiteStore) ensureOpen() error {
 }
 
 func (s *SQLiteStore) withWrite(ctx context.Context, fn func(*sql.Conn) error) (err error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return err
-	}
 	committed := false
 	defer func() {
 		if !committed {
 			rollbackConn(conn)
 		}
 	}()
+	// Cancellation can mask a BEGIN that SQLite already executed. Install
+	// rollback before dispatch so that connection never returns to the pool
+	// in an uncertain transaction, including failures starting the transaction.
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
 	if err = fn(conn); err != nil {
 		return err
 	}
@@ -1203,20 +1229,22 @@ func (s *SQLiteStore) withWrite(ctx context.Context, fn func(*sql.Conn) error) (
 }
 
 func (s *SQLiteStore) withRead(ctx context.Context, fn func(*sql.Conn) error) (err error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	if _, err = conn.ExecContext(ctx, "BEGIN"); err != nil {
-		return err
-	}
 	committed := false
 	defer func() {
 		if !committed {
 			rollbackConn(conn)
 		}
 	}()
+	if _, err = conn.ExecContext(ctx, "BEGIN"); err != nil {
+		return err
+	}
 	if err = fn(conn); err != nil {
 		return err
 	}
@@ -1349,6 +1377,7 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 			result, deleteErr := conn.ExecContext(ctx, `
 				DELETE FROM sessions
 				WHERE id = ?
+				  AND NOT EXISTS (SELECT 1 FROM swarm_members WHERE member_id=sessions.id)
 				  AND NOT EXISTS (
 					SELECT 1 FROM session_leases
 					WHERE session_leases.session_id = sessions.id
@@ -1459,6 +1488,8 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 }
 
 func (s *SQLiteStore) releaseLease(ctx context.Context, id, owner []byte) error {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
 	releaseCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	_, err := s.db.ExecContext(releaseCtx,
@@ -1514,6 +1545,8 @@ func (s *SQLiteStore) Delete(ctx context.Context, name string) error {
 }
 
 func (s *SQLiteStore) List(ctx context.Context) ([]string, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
 	if err := s.ensureOpen(); err != nil {
 		return nil, err
 	}
@@ -1534,6 +1567,8 @@ func (s *SQLiteStore) List(ctx context.Context) ([]string, error) {
 }
 
 func (s *SQLiteStore) Exists(ctx context.Context, name string) (bool, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
 	if err := s.ensureOpen(); err != nil {
 		return false, err
 	}
@@ -1581,7 +1616,7 @@ func (s *SQLiteStore) PostReport(ctx context.Context, parent string, report Repo
 
 func (r Report) validate() error {
 	switch r.Status {
-	case ReportFinished, ReportCanceled, ReportFailed:
+	case ReportFinished, ReportCanceled, ReportFailed, ReportPaused:
 		return nil
 	}
 	return fmt.Errorf("unknown report status %q", r.Status)
@@ -1615,6 +1650,8 @@ func (s *SQLiteStore) GetAllMetadata(ctx context.Context) (map[string]*Metadata,
 }
 
 func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
 	if err := s.ensureOpen(); err != nil {
 		return nil, err
 	}
@@ -1649,6 +1686,8 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 }
 
 func (s *SQLiteStore) GetLast(ctx context.Context) (string, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
 	if err := s.ensureOpen(); err != nil {
 		return "", err
 	}
@@ -1673,6 +1712,7 @@ func (s *SQLiteStore) Expire(ctx context.Context) error {
 			WHERE ttl_ns > 0
 			  AND updated_ns <= ?
 			  AND ttl_ns <= ? - updated_ns
+			  AND NOT EXISTS (SELECT 1 FROM swarm_members WHERE member_id=sessions.id)
 			  AND NOT EXISTS (
 				SELECT 1 FROM session_leases
 				WHERE session_leases.session_id = sessions.id
@@ -1701,6 +1741,8 @@ func (s *SQLiteStore) Expire(ctx context.Context) error {
 }
 
 func (s *SQLiteStore) incrementalVacuum(ctx context.Context) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
 	if s.mode != ModeDisk || ctx.Err() != nil {
 		return
 	}
@@ -1727,6 +1769,8 @@ func (s *SQLiteStore) Close() error {
 			closeErr = errors.Join(closeErr, err)
 		}
 	}
+	s.dbMu.Lock()
+	defer s.dbMu.Unlock()
 	if err := s.db.Close(); err != nil {
 		closeErr = errors.Join(closeErr, err)
 	}
@@ -1818,7 +1862,7 @@ func garbageCollectArtifacts(ctx context.Context, conn *sql.Conn) error {
 		WHERE NOT EXISTS (
 			SELECT 1 FROM session_artifacts
 			WHERE session_artifacts.digest = artifact_blobs.digest
-		)`)
+		) AND NOT EXISTS (SELECT 1 FROM swarm_artifacts WHERE swarm_artifacts.digest=artifact_blobs.digest)`)
 	return err
 }
 
@@ -1928,6 +1972,8 @@ func (s *sqliteSession) requireLease(ctx context.Context, conn interface {
 }
 
 func (s *sqliteSession) snapshot(ctx context.Context) (sessionSnapshot, error) {
+	s.store.dbMu.RLock()
+	defer s.store.dbMu.RUnlock()
 	if err := s.requireLease(ctx, s.store.db); err != nil {
 		return sessionSnapshot{}, err
 	}
@@ -2324,6 +2370,12 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 // First-run identity and outcome are write-once. Preserve them inside the
 // transaction so a stale settings snapshot cannot erase a concurrent finish.
 func preserveSpawnMetadata(metadata, current *Metadata) {
+	if current.SwarmID != "" {
+		metadata.SwarmID = current.SwarmID
+	}
+	if current.ExecutionContext != "" {
+		metadata.ExecutionContext = current.ExecutionContext
+	}
 	if current.SpawnCallID != "" {
 		metadata.SpawnCallID = current.SpawnCallID
 	}
@@ -2346,6 +2398,8 @@ func (s *sqliteSession) GetLastUsed(ctx context.Context) (time.Time, error) {
 }
 
 func (s *sqliteSession) CacheSessionID(ctx context.Context) (string, error) {
+	s.store.dbMu.RLock()
+	defer s.store.dbMu.RUnlock()
 	opCtx, cleanup, err := s.operationContext(ctx)
 	if err != nil {
 		return "", err
@@ -2577,7 +2631,11 @@ func (s *sqliteSession) close(cause error) error {
 			return nil
 		}
 
-		if retention == retentionAuto && hasTurn == 0 {
+		var pinned bool
+		if err := conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM swarm_members WHERE member_id=?) OR EXISTS(SELECT 1 FROM swarm_records WHERE parent_id=?)`, s.id, s.id).Scan(&pinned); err != nil {
+			return err
+		}
+		if retention == retentionAuto && hasTurn == 0 && !pinned {
 			if _, err := conn.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", s.id); err != nil {
 				return err
 			}
@@ -2704,6 +2762,8 @@ func verifyStoredArtifact(ctx context.Context, conn *sql.Conn, digest []byte, ex
 }
 
 func (s *sqliteArtifactStore) Open(ctx context.Context, id string) (io.ReadCloser, error) {
+	s.session.store.dbMu.RLock()
+	defer s.session.store.dbMu.RUnlock()
 	if ctx != nil {
 		if cause := context.Cause(ctx); cause != nil {
 			return nil, cause
@@ -2799,6 +2859,8 @@ type artifactReader struct {
 }
 
 func (r *artifactReader) Read(p []byte) (int, error) {
+	r.store.dbMu.RLock()
+	defer r.store.dbMu.RUnlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {

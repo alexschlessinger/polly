@@ -31,8 +31,8 @@ func (s *Schema) Validate(jsonStr string) error {
 	if err != nil {
 		return fmt.Errorf("schema validation error: %w", err)
 	}
-	var instance any
-	if err := json.Unmarshal([]byte(jsonStr), &instance); err != nil {
+	instance, err := DecodeJSON(jsonStr)
+	if err != nil {
 		return fmt.Errorf("schema validation error: %w", err)
 	}
 	if err := resolved.Validate(instance); err != nil {

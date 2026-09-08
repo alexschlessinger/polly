@@ -49,6 +49,7 @@ type TurnUI interface {
 // lineTurnUI streams raw output or owns a terminal Markdown tail and footer,
 // according to each stream's capabilities. It also serves fallback REPL turns.
 type lineTurnUI struct {
+	settledOutput            bool
 	config                   *Config
 	writer                   io.Writer
 	errWriter                io.Writer
@@ -168,7 +169,7 @@ func (ui *lineTurnUI) AppendAssistantText(content string) {
 		ui.clearActivityLocked()
 	}
 	defer ui.renderActivityLocked()
-	if content != "" {
+	if content != "" && !ui.settledOutput {
 		ui.activityStateLocked(turnStateStreaming, "")
 	}
 	if ui.config.SchemaPath != "" {
@@ -229,7 +230,7 @@ func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	ui.clearActivityLocked()
 	defer ui.renderActivityLocked()
 	ui.flushBufferedMarkdown()
-	ui.needsSeparator = true
+	ui.needsSeparator = !ui.settledOutput
 	if !ui.activityEnabled() {
 		return
 	}

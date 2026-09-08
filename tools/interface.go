@@ -23,7 +23,10 @@ type Tool interface {
 // string. Agent callers use OutputTool when available; ordinary Tool callers
 // remain source-compatible with Execute's string result.
 type ToolOutput struct {
-	Text  string
+	Text string
+	// Data is a machine-readable result, independent of its display text.
+	// Legacy tools leave it nil. Wrappers must preserve it together with Media.
+	Data  any
 	Media []ToolMedia
 }
 
@@ -48,6 +51,13 @@ type OutputTool interface {
 type UntimedTool interface {
 	Tool
 	Untimed() bool
+}
+
+// ExclusiveTool must be the sole call in a model tool batch. The agent checks
+// the entire batch before dispatching any operation.
+type ExclusiveTool interface {
+	Tool
+	ExclusiveBatch() bool
 }
 
 // sandboxedTool is implemented by tool types whose commands can run sandboxed.

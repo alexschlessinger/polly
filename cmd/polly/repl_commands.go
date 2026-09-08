@@ -82,6 +82,7 @@ type replCommandContext struct {
 	closeTab    func()
 	spawnAgent  func(brief string)
 	inspectView func(string)
+	openSwarm   func(string)
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -99,6 +100,7 @@ var defaultReplCommands = newDefaultReplCommandRegistry()
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
 	registerInspectorCommands(r)
+	registerSwarmCommands(r)
 	r.register(replCommand{
 		name:     "/attach",
 		usage:    "/attach <image-path>",
@@ -567,6 +569,12 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		closeTab:           r.requestCloseTabLocked,
 		spawnAgent:         r.requestSpawnLocked,
 		inspectView:        r.inspectCommand,
+		openSwarm: func(section string) {
+			target := tabViewTarget(r.visibleTab())
+			target.kind = swarmViewKind
+			target.item = section
+			r.inspect(target)
+		},
 	}
 }
 
