@@ -26,15 +26,18 @@ func TestReadOnlyExposurePreservesDeniesAndIdentity(t *testing.T) {
 	if len(cfg.ReadPaths) != 0 || ReadAllowed(cfg, secret) == nil || WriteAllowed(cfg, filepath.Join(selected, "new")) == nil {
 		t.Fatal("visibility expanded read or write authority")
 	}
-	if err := os.Rename(selected, selected+"-old"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(selected, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := PrepareConfig(cfg); err == nil {
-		t.Fatal("accepted a replacement for the frozen visible directory")
-	}
+	t.Run("directory identity", func(t *testing.T) {
+		skipIfWindows(t)
+		if err := os.Rename(selected, selected+"-old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(selected, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := PrepareConfig(cfg); err == nil {
+			t.Fatal("accepted a replacement for the frozen visible directory")
+		}
+	})
 }
 
 func TestReadOnlyExposureSandbox(t *testing.T) {
