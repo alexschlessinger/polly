@@ -21,6 +21,8 @@ const (
 // and stays. Taking an entry transfers it to the open view; open views are
 // never cache eviction candidates.
 type cachedChildView struct {
+	key      string
+	view     *viewInstance
 	info     *sessions.SessionView
 	model    *replModel
 	used     uint64 // last user visit; zero is an unviewed completion
@@ -28,12 +30,21 @@ type cachedChildView struct {
 	bytes    int64
 }
 
-type childViewCache struct {
+type ViewCache struct {
 	entries    map[string]*cachedChildView
 	clock      uint64
 	bytes      int64
 	maxBytes   int64
 	maxEntries int
+}
+
+type childViewCache = ViewCache
+
+func (v *cachedChildView) cacheKey() string {
+	if v.key != "" {
+		return v.key
+	}
+	return v.info.ID
 }
 
 func (c *childViewCache) visit() uint64 { c.clock++; return c.clock }
@@ -59,17 +70,17 @@ func (c *childViewCache) put(v *cachedChildView) {
 	}
 	// A late background completion must not replace a more recently visited
 	// projection or change its recency.
-	if old := c.entries[v.info.ID]; old != nil && old.used > v.used {
+	if old := c.entries[v.cacheKey()]; old != nil && old.used > v.used {
 		return
 	}
 	if v.bytes > c.maxBytes || v.used == 0 && v.bytes > childViewProbationBytes {
 		return
 	}
-	c.take(v.info.ID)
+	c.take(v.cacheKey())
 	if c.entries == nil {
 		c.entries = make(map[string]*cachedChildView)
 	}
-	c.entries[v.info.ID] = v
+	c.entries[v.cacheKey()] = v
 	c.clock++
 	v.admitted = c.clock
 	c.bytes += v.bytes
@@ -89,7 +100,7 @@ func (c *childViewCache) put(v *cachedChildView) {
 		if victim == nil || c.bytes <= c.maxBytes && len(c.entries) <= c.maxEntries && probationBytes <= childViewProbationBytes && probationCount <= childViewProbationEntries {
 			return
 		}
-		c.take(victim.info.ID)
+		c.take(victim.cacheKey())
 	}
 }
 
@@ -99,6 +110,7 @@ func (c *childViewCache) put(v *cachedChildView) {
 // mutable outer indexes so subsequent paints cannot patch the old model.
 func childDisplayCopy(src *replModel) *replModel {
 	m := newReplModel()
+	m.inspections = src.inspections.clone()
 	m.hidden, m.quiet = true, src.quiet
 	m.imageBaseDir = src.imageBaseDir
 	m.nativeImages, m.imageCellWidth, m.imageCellHeight = src.nativeImages, src.imageCellWidth, src.imageCellHeight
@@ -190,39 +202,63 @@ func cloneViewDock(d turnDockState) turnDockState {
 func childViewSize(m *replModel) int64 { return retainedViewBytes(reflect.ValueOf(m)) }
 
 func retainedViewBytes(v reflect.Value) int64 {
+	return retainedViewBytesPath(v, make(map[viewAllocation]bool))
+}
+
+type viewAllocation struct {
+	typ     reflect.Type
+	pointer uintptr
+}
+
+func retainedViewBytesPath(v reflect.Value, path map[viewAllocation]bool) int64 {
 	if !v.IsValid() {
 		return 0
+	}
+	// Metadata and standard-library structs can contain cycles (for example
+	// local time zones). Count shared values conservatively, but never follow
+	// a pointer already on this traversal path.
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice:
+		if v.IsNil() {
+			return 0
+		}
+		key := viewAllocation{v.Type(), uintptr(v.UnsafePointer())}
+		if path[key] {
+			return 0
+		}
+		path[key] = true
+		defer delete(path, key)
 	}
 	switch v.Kind() {
 	case reflect.Pointer:
 		if v.IsNil() {
 			return 0
 		}
-		return int64(v.Type().Elem().Size()) + retainedViewBytes(v.Elem())
+		return int64(v.Type().Elem().Size()) + retainedViewBytesPath(v.Elem(), path)
 	case reflect.Interface:
 		if v.IsNil() {
 			return 0
 		}
-		return retainedViewBytes(v.Elem())
+		return retainedViewBytesPath(v.Elem(), path)
 	case reflect.String:
 		return int64(v.Len())
 	case reflect.Slice:
 		n := int64(v.Cap()) * int64(v.Type().Elem().Size())
 		for i := 0; i < v.Len(); i++ {
-			n += retainedViewBytes(v.Index(i))
+			n += retainedViewBytesPath(v.Index(i), path)
 		}
 		return n
 	case reflect.Map:
 		n := int64(v.Len()) * (int64(v.Type().Key().Size()+v.Type().Elem().Size()) + 32)
 		it := v.MapRange()
 		for it.Next() {
-			n += retainedViewBytes(it.Key()) + retainedViewBytes(it.Value())
+			n += retainedViewBytesPath(it.Key(), path) + retainedViewBytesPath(it.Value(), path)
 		}
 		return n
 	case reflect.Struct:
 		var n int64
 		for i := 0; i < v.NumField(); i++ {
-			n += retainedViewBytes(v.Field(i))
+			n += retainedViewBytesPath(v.Field(i), path)
 		}
 		return n
 	}

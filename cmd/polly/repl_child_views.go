@@ -64,7 +64,11 @@ func (r *managedREPL) showChildView(req *childViewNavigation) {
 }
 
 func (r *managedREPL) childViewState(store sessions.SessionStore, info *sessions.SessionView) *conversationState {
-	settings := r.config.Launch.clone()
+	return readOnlyConversationState(r.config, store, info)
+}
+
+func readOnlyConversationState(config *Config, store sessions.SessionStore, info *sessions.SessionView) *conversationState {
+	settings := config.Launch.clone()
 	if info.Metadata != nil {
 		for _, spec := range settingSpecs {
 			if spec.fromMeta != nil {
@@ -86,6 +90,7 @@ func prepareChildDisplay(info *sessions.SessionView, cfg *Config, width int) *re
 	}
 	m.status = newSessionStatus(&settings, info.Metadata.Name, len(info.Metadata.ActiveTools), len(info.Metadata.ActiveSkills))
 	m.status.parentName = info.Metadata.Parent
+	m.status.description = info.Metadata.Description
 	m.artifactStore = info.Artifacts
 	m.hydrateHistory(info.History, info.Metadata.Name)
 	m.renderPendingMarkdown()
@@ -183,6 +188,7 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.displayCleared = next.displayCleared
 	m.status = next.status
 	m.lastIn, m.lastOut, m.lastElapsed, m.lastOutcome = next.lastIn, next.lastOut, next.lastElapsed, next.lastOutcome
+	m.inspections = next.inspections
 	m.toolDisclosures, m.toolDisclosureAt, m.toolDisclosureSeq = next.toolDisclosures, next.toolDisclosureAt, next.toolDisclosureSeq
 	m.turnToolDisclosureID, m.turnToolDisclosureIDs = next.turnToolDisclosureID, next.turnToolDisclosureIDs
 	m.reasoningRecords, m.reasoningAt, m.reasoningOrder = next.reasoningRecords, next.reasoningAt, next.reasoningOrder
@@ -316,7 +322,7 @@ func childViewLocalCommand(line string) bool {
 		return true
 	}
 	switch name[0] {
-	case "/help", "/parent", "/tab", "/close", "/new", "/resume", "/exit", "/quit", "/clear", "/attach":
+	case "/help", "/parent", "/tab", "/close", "/new", "/resume", "/exit", "/quit", "/clear", "/attach", "/inspect", "/agents":
 		return true
 	}
 	return false
@@ -398,6 +404,7 @@ func (r *managedREPL) activateChildViewLocked(tab *replTab) {
 			// adopting next's absent restore would clear it and drop the
 			// Enter that is about to submit it.
 			m.artifactStore, m.status.contextName, m.status.parentName = state.artifactStore, tab.name, tab.parentName
+			m.status.description = fresh.Metadata.Description
 			tab.stopWatch = context.AfterFunc(state.session.Context(), r.wakeTabs)
 			if r.model == m {
 				r.state = state

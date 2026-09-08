@@ -41,6 +41,7 @@ start() {
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   local cmd="env HOME=$(printf %q "$SANDBOX_HOME") PATH=$(printf %q "$SPAWN_PATH") $(printf %q "$REPO/polly")"
   local arg; for arg in "$@"; do cmd+=" $(printf %q "$arg")"; done
+  [[ -z "${POLLY_SHOT_LOG:-}" ]] || cmd+=" 2>$(printf %q "$POLLY_SHOT_LOG")"
   tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$cmd"
   wait_for '>' 15 || die "polly prompt did not appear"
   echo "started tmux session '$SESSION' (${COLS}x${ROWS})"
@@ -68,7 +69,9 @@ settle() {  # wait until two consecutive captures are identical
   return 0
 }
 
-text() { tmux capture-pane -pt "$SESSION"; }
+text() { tmux capture-pane -pt "$SESSION" ${1:+-S "$1"}; }
+
+resize() { tmux resize-window -t "$SESSION" -x "$1" -y "$2"; }
 
 shot() {  # shot [name] -> PNG of the ANSI capture (needs freeze), else .ansi
   prep
@@ -109,6 +112,7 @@ wstart() {
   # text (readable via wtext) instead of instantly closing the GUI.
   local cmdstr="HOME=$(printf %q "$SANDBOX_HOME") PATH=$(printf %q "$SPAWN_PATH") $(printf %q "$REPO/polly")"
   local arg; for arg in "$@"; do cmdstr+=" $(printf %q "$arg")"; done
+  [[ -z "${POLLY_SHOT_LOG:-}" ]] || cmdstr+=" 2>$(printf %q "$POLLY_SHOT_LOG")"
   open -na WezTerm.app --args --config enable_tab_bar=false \
     --config initial_cols="$COLS" --config initial_rows="$ROWS" \
     --config 'exit_behavior="Close"' \
@@ -159,12 +163,12 @@ wkey() {  # wkey enter|esc|up|down|left|right|tab|bs|c-<x>
   wcli send-text --no-paste --pane-id "$(wpane)" "$seq"
 }
 
-wtext() { wcli get-text --pane-id "$(wpane)"; }
+wtext() { wcli get-text --pane-id "$(wpane)" ${1:+--start-line "$1"}; }
 
 wwait() {  # wwait <grep-pattern> [timeout-sec]
   local pat="$1" deadline=$((SECONDS + ${2:-10}))
   while ((SECONDS < deadline)); do
-    wtext | grep -q -- "$pat" && return 0
+    wtext | grep -- "$pat" >/dev/null && return 0
     sleep 0.3
   done
   return 1
@@ -196,7 +200,7 @@ wstop() {
 # ---------- dispatch ----------
 
 case "${1:-}" in
-  start|keys|wait_for|settle|text|shot|stop|wstart|wtype|wkey|wtext|wwait|wshot|wstop|build) cmd="$1"; shift; "$cmd" "$@" ;;
+  start|keys|wait_for|settle|text|resize|shot|stop|wstart|wtype|wkey|wtext|wwait|wshot|wstop|build) cmd="$1"; shift; "$cmd" "$@" ;;
   type) shift; type_text "$@" ;;
   wait) shift; wait_for "$@" ;;
   *) cat >&2 <<'EOF'
@@ -207,14 +211,15 @@ usage: driver.sh <command> [args]
     keys <keys...>       tmux key names (Enter, C-c, Down, ...)
     wait <pat> [sec]     poll screen for pattern
     settle [sec]         wait for screen to stop changing
-    text                 print screen as plain text
+    text [start-line]    print screen (optional scrollback start)
+    resize <cols> <rows> resize the tmux window
     shot [name]          ANSI capture -> PNG via freeze
     stop                 kill session
   wezterm (real window; kitty-graphics images render):
     wstart [polly-args]  launch TUI in a WezTerm window
     wtype <text>         send text over IPC
     wkey <name>          enter|esc|up|down|left|right|tab|bs|c-<x>
-    wtext                print pane text
+    wtext [start-line]   print pane text (optional scrollback start)
     wwait <pat> [sec]    poll pane text for pattern
     wshot [name]         pixel screenshot of the window
     wstop                close the window

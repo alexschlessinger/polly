@@ -148,10 +148,10 @@ func TestBlockingChildRunsInATabAndAnswersTheCall(t *testing.T) {
 		t.Fatalf("tabs after spawning: %d, visible %d", len(r.tabs), r.visibleTabIndex())
 	}
 	child := r.tabs[1]
-	if got := strings.Join(r.tabLines(), "\n"); !strings.Contains(got, "2  ↳ "+child.name) {
-		t.Fatalf("tab list does not nest the child: %q", got)
+	if got := strings.Join(r.tabLines(), "\n"); !strings.Contains(got, "tabs (1)") || strings.Contains(got, child.name) || !strings.Contains(got, "1 agents running") {
+		t.Fatalf("workspace list did not aggregate child activity: %q", got)
 	}
-	if got := plainStyledText(r.model.fullTranscript()); strings.Contains(got, "started in tab") {
+	if got := plainStyledText(r.model.fullTranscript()); strings.Contains(got, "started · /agents") {
 		t.Fatalf("a blocking spawn announced itself: %q", got)
 	}
 	// The parent's Agents row links the child and shows its initial run.
@@ -253,7 +253,7 @@ func TestReportsArrivingDuringAParentTurnArriveAsOneMessage(t *testing.T) {
 	}
 }
 
-func TestEscOnAChildCancelsOnlyTheChildAndClosesAfterLeaving(t *testing.T) {
+func TestInspectorStopCancelsOnlyTheChildAndKeepsRootVisible(t *testing.T) {
 	r, runs := newChildTestREPL(t)
 	parent := r.visibleTab()
 	beginParentToolCall(t, r, runs, "call-1")
@@ -261,13 +261,8 @@ func TestEscOnAChildCancelsOnlyTheChildAndClosesAfterLeaving(t *testing.T) {
 	runUITask(t, r)
 	child := r.tabs[1]
 
-	r.runTabCommand("/tab 2")
-	if r.visibleTab() != child {
-		t.Fatal("/tab 2 did not show the child")
-	}
-	r.model.mu.Lock()
-	r.cancelBusyTurn()
-	r.model.mu.Unlock()
+	r.inspect(tabViewTarget(child))
+	r.stopInspectedAgent(tabViewTarget(child))
 	settleUntil(t, r, settled(child))
 	rep := awaitReport(t, result)
 	if !errors.Is(rep.err, context.Canceled) || rep.result.Session != child.name {
@@ -277,7 +272,10 @@ func TestEscOnAChildCancelsOnlyTheChildAndClosesAfterLeaving(t *testing.T) {
 		t.Fatal("canceling the child canceled the parent")
 	}
 
-	r.runTabCommand("/tab 1")
+	if r.visibleTab() != parent || !r.workspace().inspector.open {
+		t.Fatal("stopping inspection changed the workspace")
+	}
+	r.closeInspector()
 	close(runs.release)
 	settleUntil(t, r, settled(parent))
 	settleUntil(t, r, func() bool { return len(r.tabs) == 1 })
@@ -325,7 +323,7 @@ func TestSpawnCommandStartsABackgroundChild(t *testing.T) {
 		t.Fatalf("tabs after /spawn: %d, visible %d", len(r.tabs), r.visibleTabIndex())
 	}
 	child := r.tabs[1]
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "agent "+child.name+" started in tab 2 · /tab "+child.name) {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "agent "+child.name+" started · /agents") {
 		t.Fatalf("/spawn was not announced: %q", got)
 	}
 	settleUntil(t, r, settled(child))
@@ -474,7 +472,7 @@ func TestClosingATabWithRunningAgentsIsRefused(t *testing.T) {
 	if r.closeTabRequest {
 		t.Fatal("closing a tab with a running agent was allowed")
 	}
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "cancel this tab's agents (Esc in their tabs) before closing it") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "stop this workspace's running agents in the inspector before closing it") {
 		t.Fatalf("no refusal notice: %q", got)
 	}
 

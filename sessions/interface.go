@@ -53,7 +53,9 @@ type AcquireOptions struct {
 // it; a picker can mark or refuse such sessions instead of waiting on Acquire.
 type SessionSummary struct {
 	// ID is the stable ViewTarget identity, independent of the session name.
-	ID           string
+	ID string
+	// ParentID is the linked parent's stable identity; empty after deletion.
+	ParentID     string
 	Metadata     *Metadata
 	MessageCount int
 	InUse        bool

@@ -80,8 +80,9 @@ type conversationInput struct {
 }
 
 type conversationState struct {
-	sessionStore sessions.SessionStore
-	session      sessions.Session
+	workspaceEntry *workspaceEntry
+	sessionStore   sessions.SessionStore
+	session        sessions.Session
 	// settings are this session's own: resolved from its stored metadata
 	// when it was opened, changed by /set, and read by every turn on it.
 	settings        Settings
@@ -689,10 +690,31 @@ func (r *commandRunner) runConversation() (retErr error) {
 	outputCapabilities := outputCapabilitiesForRun(input.mode, managedREPL)
 
 	// Initialize session state once so one-shot and REPL share the same runtime.
-	state, err := newConversationState(ctx, config, r.llmClient, r.sessionStore, r.contextID, r.autoContext, r.cmd, newBroadWritablePathWarner())
+	var entry *workspaceEntry
+	contextID := r.contextID
+	openCtx := ctx
+	if input.mode == conversationModeREPL && managedREPL && !r.autoContext && contextID != "" {
+		if reader, ok := r.sessionStore.(sessions.ViewStore); ok {
+			entry, err = resolveWorkspaceEntry(ctx, reader, contextID)
+			if err != nil && !errors.Is(err, sessions.ErrSessionNotFound) {
+				return err
+			}
+			if entry != nil {
+				contextID = entry.root.Metadata.Name
+				openCtx = context.WithValue(ctx, childViewIdentityKey{}, entry.root.ID)
+			}
+		}
+	}
+	var state *conversationState
+	if entry != nil && entry.root.InUse {
+		state = readOnlyConversationState(config, r.sessionStore, entry.root)
+	} else {
+		state, err = newConversationState(openCtx, config, r.llmClient, r.sessionStore, contextID, r.autoContext, r.cmd, newBroadWritablePathWarner())
+	}
 	if err != nil {
 		return err
 	}
+	state.workspaceEntry = entry
 	state.displayContract = displayContractFor(outputCapabilities)
 	state.outputCapabilities = outputCapabilities
 	session := state.session
@@ -1051,6 +1073,11 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			turnUI.AppendToolEnd(tc, result, duration, err)
 		},
 		OnToolResult: func(tc messages.ChatMessageToolCall, result messages.ChatMessage) {
+			if receiver, ok := turnUI.(interface {
+				AppendToolResult(messages.ChatMessageToolCall, messages.ChatMessage)
+			}); ok {
+				receiver.AppendToolResult(tc, result)
+			}
 			if images := inspectionTranscriptImages(result, state.artifactStore); len(images) > 0 {
 				turnUI.AppendToolMedia(tc, images)
 			}

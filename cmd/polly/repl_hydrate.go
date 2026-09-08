@@ -23,15 +23,15 @@ const resumedTurnLimit = 5
 // exchanges folded into compact activity rows, and trailer, then the composer
 // restore for an unanswered final prompt.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
+	defer m.hydrateInspections(history)
 	m.clearTurnDock()
 	for _, msg := range history {
 		m.rememberArtifactAttachments(msg)
 	}
-	start, totalTurns, showTurns := resumedHistoryWindow(history)
+	start, totalTurns, _ := resumedHistoryWindow(history)
 	if totalTurns == 0 {
 		return
 	}
-	m.appendNoticeLine(resumedNotice(contextName, totalTurns, showTurns))
 	h := historyHydrator{m: m}
 	for _, msg := range history[start:] {
 		h.replay(msg)
@@ -64,21 +64,6 @@ func resumedHistoryWindow(history []messages.ChatMessage) (start, totalTurns, sh
 	return 0, totalTurns, showTurns
 }
 
-func resumedNotice(contextName string, totalTurns, showTurns int) string {
-	name := contextName
-	if name == "" {
-		name = "context"
-	}
-	if totalTurns > showTurns {
-		return fmt.Sprintf("resumed %s · showing last %d of %d turns", name, showTurns, totalTurns)
-	}
-	turnWord := "turns"
-	if totalTurns == 1 {
-		turnWord = "turn"
-	}
-	return fmt.Sprintf("resumed %s · %d %s", name, totalTurns, turnWord)
-}
-
 // historyHydrator replays stored messages one at a time, carrying the state
 // the role cases share: tool rows waiting for their disclosure, the open
 // reasoning record, the turn's token totals, and what the last message was so
@@ -90,9 +75,12 @@ type historyHydrator struct {
 	tools      *toolDisclosureRecord   // the turn's disclosure, once one exists
 	toolGroups []*toolDisclosureRecord // prose-separated activity in this turn
 	reasoning  *reasoningRecord
-	turnInput  int
-	turnOutput int
-	stopReason messages.StopReason
+	// dockReasoning is the turn's latest record, kept for the dock after
+	// prose closes the open one.
+	dockReasoning *reasoningRecord
+	turnInput     int
+	turnOutput    int
+	stopReason    messages.StopReason
 
 	lastRole            string
 	lastUser            messages.ChatMessage // the newest user message, for the composer restore
@@ -127,7 +115,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	}
 	h.tools = nil
 	h.toolGroups = nil
-	h.reasoning = nil
+	h.reasoning, h.dockReasoning = nil, nil
 	h.turnInput, h.turnOutput = 0, 0
 	h.stopReason = ""
 	m.appendTurnSeparator()
@@ -153,6 +141,9 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 		m.appendAssistant(content)
 		m.finishAssistantBlock("")
 		h.tools = nil
+		// Prose closes the reasoning run, as it does live, so a later segment
+		// opens its own record and the inspector's thought keys line up.
+		h.reasoning = nil
 	}
 	for _, call := range msg.ToolCalls {
 		// The stored call keeps its arguments, so the row reads like it did
@@ -384,6 +375,7 @@ func (h *historyHydrator) appendReasoning(text string, elapsed time.Duration) {
 	}
 	if h.reasoning == nil {
 		h.reasoning = h.m.newReasoningRecord(true)
+		h.dockReasoning = h.reasoning
 	}
 	h.m.appendReasoningTail(h.reasoning, text, len(h.reasoning.tail) > 0)
 	h.reasoning.elapsed += elapsed
@@ -392,7 +384,7 @@ func (h *historyHydrator) appendReasoning(text string, elapsed time.Duration) {
 
 func (h *historyHydrator) finishTurn() {
 	h.flushTools()
-	h.m.setHydratedTurnDock(h.reasoning, h.tools, h.turnInput, h.turnOutput)
+	h.m.setHydratedTurnDock(h.dockReasoning, h.tools, h.turnInput, h.turnOutput)
 	h.m.turnDock.outcome = (turnCompletion{Reason: h.stopReason}).outcome()
 	if len(h.toolGroups) > 0 {
 		h.m.turnDock.toolIDs = nil

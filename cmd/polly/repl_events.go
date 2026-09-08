@@ -65,8 +65,12 @@ func pollManagedEvents(screen tcell.Screen) <-chan ui.Event {
 		}
 		// EventQ stays open until the screen is finalized (ui.Close → Fini),
 		// at which point the range ends and the goroutine exits.
+		var held tcell.ButtonMask
 		for ev := range screen.EventQ() {
 			if out, ok := convertTcellEvent(ev); ok {
+				if mouse, isMouse := ev.(*tcell.EventMouse); isMouse {
+					out = markMouseDrag(&held, mouse, out)
+				}
 				ch <- out
 			}
 		}
@@ -118,6 +122,22 @@ func convertTcellKey(e *tcell.EventKey) ui.Event {
 		id = fmt.Sprintf("<Key:%v>", e.Key())
 	}
 	return ui.Event{Type: ui.KeyboardEvent, ID: id, Payload: e}
+}
+
+// mouseButtons are the buttons whose held motion counts as a drag.
+const mouseButtons = tcell.Button1 | tcell.Button2 | tcell.Button3
+
+// markMouseDrag flags a mouse event whose button was already held on the
+// previous sample. tcell reports motion with a held button as that button, so
+// click handlers would otherwise fire on every cell a drag crosses.
+func markMouseDrag(held *tcell.ButtonMask, e *tcell.EventMouse, ev ui.Event) ui.Event {
+	buttons := e.Buttons() & mouseButtons
+	if mouse, ok := ev.Payload.(ui.Mouse); ok {
+		mouse.Drag = buttons != 0 && *held&buttons != 0
+		ev.Payload = mouse
+	}
+	*held = buttons
+	return ev
 }
 
 func convertTcellMouse(e *tcell.EventMouse) ui.Event {

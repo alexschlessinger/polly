@@ -103,15 +103,16 @@ Every launch without `-c` gets a session with a generated name (`quiet-otter`).
 
 ### Tabs
 
-One polly, many sessions. Each is a tab.
+One polly, many concurrent session workspaces. The tab list contains root
+sessions; agents, tools, and thoughts open in one inspector inside a workspace.
 
 | Command | Effect |
 |---|---|
-| `/resume` | Open a saved session in a new tab. The previous tab stays open. Clicking the session name in the status row does the same. |
+| `/resume` | Select or open a saved workspace. Selecting an agent opens its root workspace and inspects the agent. Clicking the status-row session name opens the picker. |
 | `/new` | New tab, fresh generated session |
-| `/tab` | List tabs and what each is doing |
+| `/tab` | List root workspaces, including descendant activity and approval counts |
 | `/tab <n>`, `/tab <name>` | Switch |
-| `/parent` | Return to this agent’s parent session, reopening it if needed. Also available as `← Back to caller` in the divider above the composer. |
+| `/parent` | Go up from a tool or thought to its conversation, or from an agent to its caller. |
 | `/close` | Close the visible tab. Session stays saved. A generated session with no turns is discarded. Last tab closed: polly exits. |
 | `Alt+1`..`Alt+9` | Jump to a tab by position |
 | `Alt+]`, `Alt+[` | Next tab, previous tab |
@@ -121,10 +122,10 @@ Rules:
 - Settings are per tab. `/set` and `/model` touch only the visible one.
 - Turns keep running in hidden tabs. Start a long run, switch away, keep working. Input queued behind a hidden turn runs when it settles.
 - A hidden tab that finishes or fails posts a one-line notice in the visible transcript, once the visible tab is idle.
-- A hidden tab that needs tool approval says so at once. The approval waits until you switch to it.
-- Closing a tab mid-turn is refused. Esc first.
+- An agent needing approval raises a persistent attention indicator. Press **Ctrl-G** or use `/agents`, select it, and choose **Review** for an explicitly addressed approval dialog.
+- Closing a workspace with active turns is refused. Ctrl-C interrupts the root turn; **Stop** in an agent inspector interrupts that agent.
 - Quitting with turns running elsewhere warns once. A second Ctrl-C cancels them, waits briefly for completed work to save, exits.
-- Open sessions are leased. The picker marks sessions held by another polly `in use` and will not open them. Picking a session already open here jumps to its tab.
+- Open sessions are leased. The picker marks sessions held by another polly `in use` and will not open them. Picking a session already open here jumps to its workspace. When opening an agent whose parent is leased elsewhere, the parent is a labeled read-only snapshot. Execution still requires acquiring its lease. A deleted or expired parent is never recreated; a surviving agent opens with **Parent unavailable**.
 
 ### Subagents
 
@@ -158,37 +159,65 @@ matter: it lands the next time the parent is open and idle, in any polly.
 A child cut off by quitting reports as canceled with what it had said so
 far.
 
-**In the TUI.** Every child gets a tab, nested under its parent in `/tab`.
-An ordinary tab: switch to it to watch it stream, type to send a
-follow-up, Esc to cancel just that child. Approval and completion notices
-work as for any hidden tab. Model `spawn_agent` calls appear under **Agents**
-beside Thought, Tools, and Images viewed, including failed or denied launches.
-Agents expands independently and lists tasks in launch order; click a task
-label to switch to its child tab or reopen its saved conversation. The row
-tracks the initial delegated run, including background work after the parent
-turn finishes. Later follow-ups in the child leave that outcome unchanged.
-Completed turns collapse the activity controls; while children are still
-working, their turn's Agents label counts them (`1 agent running, 2 completed`);
-failed, denied, and canceled launches stay counted (`3 agents, 1 failed`).
-Saved history restores child links and known outcomes; older records with no
-reliable outcome show `unknown`. `/spawn` keeps its existing presentation.
-After its initial report is delivered, an agent tab closes when hidden, including
-failed or canceled runs. If you are reading it, it stays until you leave.
-Inspecting a completed agent opens its saved transcript without starting its
-tools or taking a session lease. Recently viewed children keep their transcript,
-formatting, scroll position, and expanded disclosures in an in-memory LRU cache,
-separate from open tabs. Cached views appear immediately and refresh in the
-background; an uncached view loads off the UI loop. The cache holds at most
-16 views and an estimated 64 MiB, with up to four unviewed completions using
-8 MiB of that budget. User visits determine recency; background activity does not.
-Leaving a child view closes its tab; drafts keep it open and are never cached
-or evicted. Sending a follow-up opens the execution runtime, preserves the draft
-during startup, and keeps the resulting conversation open. Cache eviction only
-makes the next visit load again; the saved session remains available from Agents.
-Click `← Back to caller` in the divider above the composer,
-or use `/parent`, to return to the parent (reopening it if needed).
-Closing a tab
-with running agents is refused. They work on a view of its tools.
+**In the TUI.** Inline Thought, Tools, Agents, and Images viewed summaries
+keep their existing expand/collapse behavior. Clicking an expanded agent task,
+tool row, or thought detail opens the inspector. **Ctrl-G** and `/agents` open
+the Agents dialog, showing attention-needed agents first, then running agents,
+then completed agents newest first. Agent outcomes still describe the initial
+delegated run; later follow-ups do not change that outcome.
+Expanded agent rows show input/output token counts as each model response reports
+usage. Input is the peak request size and output is the total for the delegated
+turn, matching the turn summary. Counts stay visible after that run finishes.
+
+The inspector observes work while the main composer stays addressed to the root
+session. **Stop** cancels the inspected agent's current turn and
+keeps its view open. **Review** addresses that agent's pending approval without
+changing the inspected target. Completion never switches your selection.
+
+At 120 columns or wider the transcript and inspector split roughly 50/50. Drag
+the divider to resize, with at least 50 columns per pane. Narrow terminals show the
+inspector above the main composer. Typing stays in that composer.
+Mouse scrolling follows the pointer. Left/Right navigate previous/next tools or
+thoughts while the pointer is over the inspector; elsewhere they move the editor
+cursor. Over either transcript pane, Up/Down scroll one line, Page Up/Down page
+through that pane, Home goes to the top, and End follows new output at the bottom.
+Over the composer, arrows and Home/End edit normally; Page Up/Down scroll the
+main transcript. Ctrl-A/Ctrl-E always address the editor. Dialogs and searches
+retain their keyboard controls.
+**[x]** closes the inspector from the top
+right. Tool names and thought positions appear in the breadcrumb; agent actions
+appear below the title.
+Agent headings show the task title, falling back to the session name when untitled.
+Use `/inspect prev`, `/inspect next`, `/inspect back`, and `/inspect forward`
+for navigation, `/inspect find` for search, and `/inspect maximize`,
+`/inspect wider`, or `/inspect narrower` to adjust the pane. Clickable
+breadcrumbs return to the owning conversation. Agent **Stop** appears
+while running and **Review** appears when an approval is pending.
+Escape dismisses a dialog or search first, then closes the inspector, before
+existing cancellation handling. Ctrl-C always keeps its root interrupt behavior.
+
+`/inspect` reopens the last selection, otherwise the newest root tool call.
+`/inspect thoughts` opens the newest thought block. Tool navigation includes
+all saved turns in that conversation, including agent launches, in transcript
+order without wrapping. Parent and child sequences stay separate. Launch views
+include arguments, result, and an **Open agent** action. Tool views show running status,
+then captured completed output, with arguments always visible, readable JSON,
+plain text, supported images, and full stored text artifacts. They do not reread files
+or stream intermediate shell output. Missing, empty, and unavailable full output
+are labeled. Thought views show the reasoning text supplied and retained by the
+provider. Scrolling away holds position and offers **new output** when it arrives.
+
+Inspection does not acquire leases or keep completed execution runtimes alive.
+Conversation, tool, and thought display projections share a cache of at most
+16 inactive views and an estimated 64 MiB, including a four-entry/8 MiB allowance
+for unviewed completions. User visits determine recency. Displayed panes stay
+available; eviction drops reloadable display content, preserving navigation,
+search, expanded sections, scroll state, and drafts separately. Saved content
+loads and formats off the UI loop. Workspace state and split width last for this
+Polly run; a restart begins with the inspector closed unless opening an agent
+explicitly with `polly -c <agent>`.
+
+Closing a workspace with running agents is refused.
 `/spawn <brief>` starts a background child of the visible tab by hand.
 
 One-shot and line mode: the tool always waits for the reply.
@@ -197,8 +226,15 @@ One-shot and line mode: the tool always waits for the reply.
 
 | Key | Action |
 |---|---|
-| `Ctrl-C` / `Esc` | Interrupt the turn. `Ctrl-C` again, or at an idle prompt: quit |
+| `Ctrl-C` | Interrupt the root turn. Again, or at an idle prompt: quit |
+| `Esc` | Dismiss dialog/search, then close inspector, then interrupt |
+| `Left` / `Right` | Previous/next tool or thought while hovering the inspector; otherwise move cursor |
+| `Up` / `Down` | Scroll hovered transcript; otherwise move input line or recall history |
+| `Page Up` / `Page Down` | Page hovered transcript; main transcript by default |
+| `Home` / `End` | Top/follow bottom of hovered transcript; otherwise input line start/end |
+| `Ctrl-A` / `Ctrl-E` | Input line start/end regardless of pointer |
 | `Ctrl-R` | Reverse history search |
+| `Ctrl-G` | Open the Agents dialog; cancel reverse history search when active |
 | `Ctrl-O` | Toggle the reasoning disclosure |
 | `Ctrl-V` | Attach an image from the clipboard |
 | `Ctrl-Z` | Suspend. `fg` resumes |
@@ -221,11 +257,13 @@ the terminal's override, usually Shift-drag.
                              (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /model                       Pick a provider and model
 /keys                        Set masked, process-local provider keys
-/resume                      Open a saved session in a new tab
+/resume                      Select or open a saved workspace
 /new                         Open a new tab on a fresh session
-/tab [n|name]  (/tabs)       List open tabs, or switch to one
+/tab [n|name]  (/tabs)       List root workspaces, or switch to one
 /close                       Close the visible tab (session stays saved)
-/parent                      Return to this agent’s parent session
+/parent                      Go up through the inspector to the caller
+/inspect [tools|thoughts]    Open the last view, newest tool, or thoughts
+/agents                      Pick an agent to inspect
 /spawn <brief>               Start a background agent that reports back here
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills
@@ -241,7 +279,8 @@ transcript, history, database, or environment.
 
 Tool activity: one collapsed `▸ N tool calls` row per turn. Click it for
 timers, outcomes, and tool-produced images, updating in place. Details
-show call labels and outcomes, never raw result bodies. The model still
+show call labels and outcomes; click a detail row for the full captured result
+in the inspector. The model still
 gets every result. Durable history keeps the full exchange.
 
 `--thinking`: reasoning shows as a collapsed `▸ thought 2.1s` row whose

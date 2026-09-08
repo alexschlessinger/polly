@@ -84,6 +84,7 @@ func (m *replModel) appendThinking(chunk string) {
 // appendReasoningTail adds text to a bounded rune tail. segmentBreak inserts
 // one semantic newline between tool-separated assistant reasoning segments.
 func (m *replModel) appendReasoningTail(record *reasoningRecord, text string, segmentBreak bool) {
+	m.inspections.appendThought(&record.inspectionKey, text, segmentBreak, record.complete)
 	appendReasoningTail(record, text, segmentBreak)
 }
 
@@ -148,6 +149,13 @@ func (m *replModel) finishThinkingSegment() {
 	}
 	record.active = false
 	record.complete = true
+	for i := range m.inspections.thoughts {
+		if m.inspections.thoughts[i].key == record.inspectionKey {
+			m.inspections.thoughts[i].complete = true
+			m.inspections.thoughts[i].writer = nil
+			m.inspections.thoughts[i].version++
+		}
+	}
 	record.dirty = true
 	// Refresh unconditionally so the header drops its live styling and
 	// freezes the banked elapsed value now that the segment is closed:

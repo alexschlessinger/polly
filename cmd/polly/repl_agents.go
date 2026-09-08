@@ -24,6 +24,9 @@ type agentActivity struct {
 	background bool
 	active     bool
 	attached   bool
+
+	// Reported usage for the original delegated run, retained after completion.
+	inputTokens, outputTokens int
 	// origin binds a restored row to the same live run across child renames.
 	origin *agentActivity
 }
@@ -188,7 +191,7 @@ func agentActivityLine(a *agentActivity) string {
 	case status == "approval needed":
 		glyph, color = "!", "active"
 	case a.active:
-		glyph, color = "↻", "run"
+		glyph = " "
 	case status == "done":
 		glyph, color = "✓", "ok"
 	case status == "failed" || status == "denied":
@@ -198,7 +201,11 @@ func agentActivityLine(a *agentActivity) string {
 	if a.session != "" {
 		label = styled(a.label, "accent", "underline")
 	}
-	return "  " + styled(glyph, color, "") + " " + label + styled(" · "+status, "muted", "")
+	detail := " · " + status
+	if a.inputTokens > 0 || a.outputTokens > 0 {
+		detail += fmt.Sprintf(" · %s in / %s out", humanizeTokens(a.inputTokens), humanizeTokens(a.outputTokens))
+	}
+	return "  " + styled(glyph, color, "") + " " + label + styled(detail, "muted", "")
 }
 
 // agentDetail uses the normal cell wrapper for both display and link geometry.
@@ -367,6 +374,7 @@ func (r *managedREPL) refreshAgentActivities() {
 				} else if child.model.busy {
 					status = child.model.busyLabel()
 				}
+				child.agentInputTokens, child.agentOutputTokens = child.model.lastIn, child.model.lastOut
 				child.model.mu.Unlock()
 				child.agentStatus, child.agentActive = status, true
 			}
@@ -397,11 +405,12 @@ func (r *managedREPL) updateChildAgent(child *replTab) bool {
 				if a != child.agentActivity {
 					a.origin = child.agentActivity
 				}
-				if a.session != child.name || a.status != child.agentStatus || a.active != child.agentActive {
+				if a.session != child.name || a.status != child.agentStatus || a.active != child.agentActive || a.inputTokens != child.agentInputTokens || a.outputTokens != child.agentOutputTokens {
 					if a.active && !child.agentActive && child.agentStatus == "done" {
 						m.noteAgentCompletion(record.id)
 					}
 					a.session, a.status, a.active, a.attached = child.name, child.agentStatus, child.agentActive, true
+					a.inputTokens, a.outputTokens = child.agentInputTokens, child.agentOutputTokens
 					changed = true
 				}
 			}
@@ -437,6 +446,9 @@ func (r *managedREPL) finishChildAgent(child *replTab, err error) {
 	if child.spawnCallID == "" {
 		return
 	}
+	child.model.mu.Lock()
+	child.agentInputTokens, child.agentOutputTokens = child.model.lastIn, child.model.lastOut
+	child.model.mu.Unlock()
 	outcome := storedChildReport(subagent.Result{}, err).Status
 	child.agentStatus, child.agentActive = spawnOutcomeStatus(outcome), false
 	if !r.updateChildAgent(child) {
@@ -458,76 +470,10 @@ func (r *managedREPL) finishChildAgent(child *replTab, err error) {
 // off the UI loop and resolves the child again, so renames and deleted/reused
 // session names cannot silently open an unrelated or newly created session.
 func (r *managedREPL) openAgentAt(x, y int) bool {
-	m := r.model
-	for _, link := range m.agentLinkPlacements {
-		if link.Y != y || x < link.X || x >= link.X+link.Cols {
-			continue
+	for _, link := range r.model.agentLinkPlacements {
+		if link.Y == y && x >= link.X && x < link.X+link.Cols {
+			return r.inspectAgent(r.model, tabViewTarget(r.visibleTab()), link)
 		}
-		record := m.toolDisclosures[link.recordID]
-		if record == nil || link.rowIndex >= len(record.rows) {
-			return false
-		}
-		row := record.rows[link.rowIndex]
-		if row.agent == nil || row.agent.session == "" || r.state == nil {
-			return false
-		}
-		for i, tab := range r.tabs {
-			if tab.agentActivity == row.agent || tab.agentActivity != nil && tab.agentActivity == row.agent.origin {
-				r.requestShowTabLocked(i)
-				return true
-			}
-		}
-		if r.requestChildViewLocked(row.agent, row.callID) {
-			return true
-		}
-		parent, store := r.visibleTab(), r.state.sessionStore
-		if store == nil {
-			return true
-		}
-		parentName, callID := parent.name, row.callID
-		r.background(func() {
-			summaries, err := store.ListSummaries(r.work.ctx)
-			r.postUI(r.work.ctx, func() {
-				if r.tabIndexOfModel(m) < 0 {
-					return
-				}
-				m.mu.Lock()
-				defer m.mu.Unlock()
-				if err != nil {
-					m.appendNoticeLine("agent session: " + err.Error())
-					return
-				}
-				var matches []sessions.SessionSummary
-				for _, summary := range summaries {
-					md := summary.Metadata
-					if md != nil && md.Parent == parentName && md.SpawnCallID == callID {
-						matches = append(matches, summary)
-					}
-				}
-				if len(matches) != 1 {
-					m.appendNoticeLine("agent session is missing or ambiguous")
-					return
-				}
-				target := matches[0]
-				if m != r.model {
-					return
-				}
-				if i := r.tabIndexOf(target.Metadata.Name); i >= 0 {
-					r.requestShowTabLocked(i)
-					return
-				}
-				if target.InUse {
-					m.appendNoticeLine("could not open " + target.Metadata.Name + ": it is open in another polly")
-					return
-				}
-				if r.opener == nil || !r.canOpenLocked() {
-					return
-				}
-				ctx := context.WithValue(r.runCtx, agentSessionTargetKey{}, agentSessionTarget{parentName, callID})
-				r.beginOpenContextLocked(ctx, target.Metadata.Name, false)
-			})
-		})
-		return true
 	}
 	return false
 }

@@ -351,9 +351,10 @@ func (m *replModel) clearDisplay() {
 // second. Every transcript mutation invalidates it; a geometry change
 // rebuilds it on the next frame.
 type transcriptVisualCache struct {
-	rows   [][]ui.Cell
-	blocks []transcriptVisualBlock
-	valid  bool
+	revision uint64
+	rows     [][]ui.Cell
+	blocks   []transcriptVisualBlock
+	valid    bool
 
 	// The geometry rows were built for.
 	width        int
@@ -362,7 +363,7 @@ type transcriptVisualCache struct {
 	cellHeight   int
 }
 
-func (c *transcriptVisualCache) invalidate() { c.valid = false }
+func (c *transcriptVisualCache) invalidate() { c.valid = false; c.revision++ }
 
 // fits reports whether the cache was built for this geometry.
 func (c *transcriptVisualCache) fits(width int, nativeImages bool, cellWidth, cellHeight int) bool {

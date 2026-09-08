@@ -221,6 +221,7 @@ func TestAgentLabelHitboxesWithToolAndViewedImages(t *testing.T) {
 				row.images = images // ordinary result media before the agent detail
 				_, a := m.toolDisclosureRowForCall("a")
 				a.agent.session = "child"
+				a.agent.inputTokens, a.agent.outputTokens = 12000, 2400
 				ids := []int64{record.id}
 				m.toggleToolDisclosureGroup(ids)
 				m.toggleAgentDisclosureGroup(ids)
@@ -234,7 +235,7 @@ func TestAgentLabelHitboxesWithToolAndViewedImages(t *testing.T) {
 					}
 					link := links[0]
 					text := transcriptRowsText(rows)[link.Y]
-					if text != "  ↻ linked agent task ·" && !strings.Contains(text, "linked agent task") {
+					if !strings.Contains(text, "linked agent task") {
 						t.Fatalf("link shifted into image: %+v / %q", link, text)
 					}
 					for _, image := range m.visibleImagePlacements(fullViewport(len(rows), width)) {
@@ -317,6 +318,15 @@ func TestBackgroundAgentUpdatesOriginalTurnAndFreezesAfterFollowup(t *testing.T)
 	if !initial.active || !r.needsTick() || record.agentsExpanded {
 		t.Fatal("parent settlement lost background activity")
 	}
+	usageUI := &gotuiTurnUI{model: child.model, turnID: child.model.turnID}
+	for _, out := range []int{100, 220} {
+		usageUI.RecordTurnTokens(1200, out)
+		r.refreshAgentActivities()
+		text, _ := parent.model.agentDetail([]int64{record.id}, 100)
+		if got := plainStyledText(text); !strings.Contains(got, fmt.Sprintf("1.2k in / %d out", out)) || strings.Contains(got, "↻") {
+			t.Fatalf("running agent usage did not refresh: %q", got)
+		}
+	}
 	child.model.mu.Lock()
 	child.model.approval = &approvalState{}
 	child.model.mu.Unlock()
@@ -334,7 +344,7 @@ func TestBackgroundAgentUpdatesOriginalTurnAndFreezesAfterFollowup(t *testing.T)
 	close(runs.slow)
 	settleUntil(t, r, settled(child))
 	r.refreshAgentActivities()
-	if initial.active || initial.status != "done" {
+	if initial.active || initial.status != "done" || initial.inputTokens != 7 || initial.outputTokens != 3 {
 		t.Fatalf("original = %+v", initial)
 	}
 	_, latest := parent.model.toolDisclosureRowForCall("new-call")
@@ -357,9 +367,10 @@ func TestBackgroundAgentUpdatesOriginalTurnAndFreezesAfterFollowup(t *testing.T)
 	child.model.beginTurn("wait")
 	child.model.mu.Unlock()
 	r.startManagedTurn(context.Background(), child, managedTurnInput{displayText: "wait"}, runs.run)
+	(&gotuiTurnUI{model: child.model, turnID: child.model.turnID}).RecordTurnTokens(9000, 400)
 	r.refreshAgentActivities()
-	if initial.active || initial.status != "done" {
-		t.Fatal("follow-up reopened original activity")
+	if initial.active || initial.status != "done" || initial.inputTokens != 7 || initial.outputTokens != 3 {
+		t.Fatal("follow-up changed original activity or token usage")
 	}
 	child.turnCancel()
 	settleUntil(t, r, settled(child))
@@ -373,7 +384,7 @@ func TestFinalAgentSnapshotSurvivesAutomaticTabRemoval(t *testing.T) {
 	m := r.model
 	m.appendToolCallStart(agentCall("a", `{}`))
 	_, row := m.toolDisclosureRowForCall("a")
-	child := &replTab{name: "child", model: newReplModel(), agentActivity: row.agent, spawnCallID: "a", agentStatus: "done"}
+	child := &replTab{name: "child", model: newReplModel(), agentActivity: row.agent, spawnCallID: "a", agentStatus: "done", agentInputTokens: 1200, agentOutputTokens: 220}
 	m.mu.Lock()
 	if r.updateChildAgent(child) {
 		t.Fatal("update should defer while locked")
@@ -381,8 +392,13 @@ func TestFinalAgentSnapshotSurvivesAutomaticTabRemoval(t *testing.T) {
 	r.pendingAgentUpdates = append(r.pendingAgentUpdates, child)
 	m.mu.Unlock()
 	r.refreshAgentActivities()
-	if len(r.pendingAgentUpdates) != 0 || row.agent.active || row.agent.status != "done" {
+	if len(r.pendingAgentUpdates) != 0 || row.agent.active || row.agent.status != "done" || row.agent.inputTokens != 1200 || row.agent.outputTokens != 220 {
 		t.Fatalf("snapshot lost: %+v", row.agent)
+	}
+	copy := childDisplayCopy(m)
+	_, cachedRow := copy.toolDisclosureRowForCall("a")
+	if cachedRow.agent.inputTokens != 1200 || cachedRow.agent.outputTokens != 220 {
+		t.Fatal("display snapshot lost final agent usage")
 	}
 }
 
@@ -405,7 +421,7 @@ func TestAgentLabelClickPrecedesTrailerDismissal(t *testing.T) {
 	}
 	link := m.agentLinkPlacements[0]
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
-	if r.showTabRequest != 1 || m.openTurnTrailerID == 0 {
+	if !r.workspace().inspector.open || r.workspace().inspector.target.session.Name != "child" || r.model != m || m.openTurnTrailerID == 0 {
 		t.Fatalf("label click dismissed overlay: request %d, record %d", r.showTabRequest, record.id)
 	}
 }
@@ -456,18 +472,18 @@ func TestSavedAgentNavigationResolvesRenamesAndReadsLeasedChildren(t *testing.T)
 				t.Fatal("label not handled")
 			}
 			r.applyTabRequests()
-			runUITask(t, r)
+			view := waitInspector(t, r, 140)
 			if kind == "renamed" {
-				if r.visibleTab().name != "new-child-name" {
-					t.Fatalf("opened %s", r.visibleTab().name)
+				if view.info == nil || view.info.Metadata.Name != "new-child-name" {
+					t.Fatalf("opened %#v", view.info)
 				}
 			} else if kind == "leased" {
-				if r.visibleTab().childView == nil || r.visibleTab().state.session != nil {
+				if len(r.tabs) != 1 || r.visibleTab().name != "parent" || view.info == nil || !view.info.InUse {
 					t.Fatal("inspection acquired a runtime")
 				}
 			} else {
-				if r.opening != "" || !strings.Contains(plainStyledText(r.model.fullTranscript()), "session not found") {
-					t.Fatalf("refusal = %q, opening %q", r.model.fullTranscript(), r.opening)
+				if r.opening != "" || !strings.Contains(inspectorText(view), "session not found") {
+					t.Fatalf("refusal = %q, opening %q", inspectorText(view), r.opening)
 				}
 			}
 		})

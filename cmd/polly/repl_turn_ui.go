@@ -114,6 +114,9 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 		t.model.toolName = calls[0].Name
 	}
 	if !toolDisplayEnabled(t.config) {
+		for _, call := range calls {
+			t.model.inspections.startTool(call)
+		}
 		return
 	}
 	var record *toolDisclosureRecord
@@ -186,6 +189,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	if m.runningTools > 0 {
 		m.runningTools--
 	}
+	m.inspections.finishTool(call, result, duration, err)
 	m.turnHasOutput = true
 	// Return to "waiting" only once every tool in the batch has finished;
 	// otherwise the first of several parallel tools to complete would flip the
@@ -269,6 +273,14 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 		// text.
 		m.visual.invalidate()
 	})
+}
+
+func (t *gotuiTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result messages.ChatMessage) {
+	t.model.mu.Lock()
+	defer t.model.mu.Unlock()
+	if t.activeLocked() {
+		t.model.inspections.setResult(call, result)
+	}
 }
 
 func (t *gotuiTurnUI) AppendWarning(text string) {

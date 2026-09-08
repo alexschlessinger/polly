@@ -195,6 +195,7 @@ func turnDockRowCount(h, inputRows, statusRows int, visible bool) int {
 }
 
 func (r *managedREPL) setupWidgets() {
+	r.setupInspectorWidgets()
 	// gotui paragraphs default their TextStyle to ColorWhite, which forces
 	// unstyled text (primary input, LLM responses) to white and ignores the
 	// terminal theme. ColorClear (= tcell.ColorDefault) inherits the terminal's
@@ -241,7 +242,11 @@ func (r *managedREPL) layout(l frameLayout) {
 	if l.logoRows > 0 {
 		flex.AddItem(r.logoW, l.logoRows, 0, false)
 	}
-	flex.AddItem(r.transcriptW, 0, 1, false)
+	if r.workspace().inspector.open {
+		flex.AddItem(r.inspectorLayout(l), 0, 1, false)
+	} else {
+		flex.AddItem(r.transcriptW, 0, 1, false)
+	}
 	if l.dockRows > 0 {
 		flex.AddItem(r.turnDockW, 1, 0, false)
 	}
@@ -274,6 +279,8 @@ func (r *managedREPL) render() {
 	}
 	r.relayTabSignals()
 	r.refreshAgentActivities()
+	r.refreshInspector(w)
+	mainWidth := r.inspectorTranscriptWidth(w)
 	imageCellWidth, imageCellHeight := 0, 0
 	if r.images != nil {
 		imageCellWidth, imageCellHeight = r.images.cellDimensions()
@@ -290,11 +297,11 @@ func (r *managedREPL) render() {
 	}
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
-	r.model.refreshReasoningRecords(w)
-	r.model.refreshExpandedTurnTrailer(w)
+	r.model.refreshReasoningRecords(mainWidth)
+	r.model.refreshExpandedTurnTrailer(mainWidth)
 	l := r.frameLayoutFor(w, h)
 	input, curRow, curCol, editable := r.model.renderInputForTerminal(l.inputRows, w)
-	transcriptRows := r.model.transcriptRows(w)
+	transcriptRows := (conversationView{}).Rows(r.model, mainWidth)
 	topRow, pinTranscriptBottom := r.model.settleScroll(len(transcriptRows), l.transcriptHeight)
 	status := r.model.statusRow(w)
 	divider := r.model.dividerRow(l)
@@ -321,7 +328,9 @@ func (r *managedREPL) render() {
 	if ticker != "" {
 		overlay = append(overlay, parseStyledCells(ticker, ui.NewStyle(ui.ColorClear)))
 	}
-	viewport := l.transcriptViewport(len(transcriptRows), topRow, pinTranscriptBottom, len(overlay))
+	paneLayout := l
+	paneLayout.width = mainWidth
+	viewport := paneLayout.transcriptViewport(len(transcriptRows), topRow, pinTranscriptBottom, len(overlay))
 	imagePlacements := r.model.visibleImagePlacements(viewport)
 	r.model.imagePlacements = imagePlacements
 	r.model.reasoningPlacements = r.model.visibleReasoningPlacements(viewport)
@@ -330,12 +339,30 @@ func (r *managedREPL) render() {
 	r.model.agentDisclosurePlacements = r.model.visibleDisclosurePlacements(viewport, turnDockOverlayAgents)
 	r.model.agentLinkPlacements = r.model.visibleAgentLinks(viewport)
 	r.model.turnTrailerPlacements = r.model.visibleTurnTrailerPlacements(viewport)
+	r.model.inspectionLinks = r.model.visibleInspectionLinks(viewport, 0)
 	var affordanceSpans []affordanceSpan
 	idleCursor := r.affordanceW != nil && editable && r.model.idleAffordanceCursor(now)
 	if r.affordanceW != nil {
 		affordanceSpans = r.model.affordanceSpans(now, l, viewport, status, image.Pt(min(curCol, w-1), l.composerRow(curRow)), idleCursor)
 	}
 	r.model.mu.Unlock()
+	r.mainTranscriptBounds = image.Rect(0, l.logoRows, mainWidth, l.logoRows+l.transcriptHeight)
+	if r.workspace().inspector.open {
+		if r.workspace().inspector.maximized || w < 120 {
+			r.mainTranscriptBounds = image.Rectangle{}
+			imagePlacements = nil
+			affordanceSpans = nil
+		}
+		imagePlacements = append(imagePlacements, r.renderInspector(l)...)
+		if r.workspace().inspector.searching {
+			editable = false
+			idleCursor = false
+		}
+	} else {
+		r.inspectorBounds, r.inspectorDivider = image.Rectangle{}, image.Rectangle{}
+		r.inspectorButtons = nil
+		r.inspectorDragging = false
+	}
 	notices = append(notices, r.takeHiddenNotices(focusKnown, focused)...)
 
 	if l.logoRows == imageLogoHeight && r.images != nil {
@@ -348,6 +375,9 @@ func (r *managedREPL) render() {
 	}
 
 	imagesChanged := false
+	if modalOpen {
+		imagePlacements = nil
+	}
 	if r.images != nil {
 		imagesChanged = r.images.prepare(imagePlacements)
 	}

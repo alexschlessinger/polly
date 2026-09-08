@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +22,9 @@ import (
 // A tab's turn fields belong to the event loop (see repl_turns.go).
 
 type replTab struct {
+	workspaceRoot     bool
+	detachedWorkspace bool
+	workspace         *sessionWorkspace
 	// name is the session's name as the tab shows it; /rename keeps it
 	// current. Read without a lock so a handler can find a tab by name.
 	name  string
@@ -72,6 +73,9 @@ type replTab struct {
 	agentStatus     string
 	agentActive     bool
 
+	// Loop-owned usage snapshot for the original delegated run.
+	agentInputTokens, agentOutputTokens int
+
 	// settled follows the actual first turn, even after UI cancellation has
 	// detached it. Its concurrency slot must remain held until work ends.
 	settled     chan struct{}
@@ -88,9 +92,12 @@ func (t *replTab) markSettled() {
 
 // openResult is the outcome of opening a session for a new tab.
 type openResult struct {
-	name  string
-	state *conversationState
-	err   error
+	display        *replModel
+	notices        []string
+	workspaceEntry *workspaceEntry
+	name           string
+	state          *conversationState
+	err            error
 }
 
 // visibleTabIndex is the index of the tab on screen, or -1 when none holds
@@ -140,8 +147,14 @@ func (r *managedREPL) addTab(state *conversationState) error {
 	if err != nil {
 		return err
 	}
+	return r.addPreparedTab(state, name, m)
+}
+
+func (r *managedREPL) addPreparedTab(state *conversationState, name string, m *replModel) error {
 	tab := &replTab{name: name, state: state, model: m, parentName: m.status.parentName, delivered: m.status.parentName != ""}
-	if i := r.tabIndexOf(tab.parentName); i >= 0 {
+	tab.detachedWorkspace = state.workspaceEntry != nil && state.workspaceEntry.orphan
+	tab.workspaceRoot = tab.parentName == "" || tab.detachedWorkspace
+	if i := r.tabIndexOf(tab.parentName); i >= 0 && !tab.detachedWorkspace {
 		tab.parent = r.tabs[i]
 	}
 	if state.session != nil {
@@ -178,9 +191,19 @@ func (r *managedREPL) showTab(i int) {
 	tab := r.tabs[i]
 	tab.viewUsed = r.childViews.visit()
 	previous := r.model
+	if previous != tab.model {
+		if oldIndex := r.tabIndexOfModel(previous); oldIndex >= 0 && r.tabs[oldIndex].workspace != nil {
+			old := r.tabs[oldIndex]
+			r.retireInspector(old.workspace)
+			old.workspace.inspector.generation++
+		}
+	}
 	if old := r.model; old != nil && old != tab.model {
 		old.mu.Lock()
 		old.hidden = true
+		if oldIndex := r.tabIndexOfModel(old); oldIndex >= 0 {
+			r.retireMainProjection(r.tabs[oldIndex])
+		}
 		old.resetAffordances()
 		affordancesEnabled := old.affordances.enabled
 		nativeImages := old.nativeImages
@@ -201,6 +224,7 @@ func (r *managedREPL) showTab(i int) {
 		next.hidden = false
 		next.affordances.enabled = affordancesEnabled
 		next.resetAffordances()
+		r.restoreMainProjection(tab)
 		next.notificationMu.Lock()
 		next.signals = nil
 		next.notificationMu.Unlock()
@@ -248,19 +272,26 @@ func (r *managedREPL) requestCloseTabLocked() {
 	}
 	// A running child works on a view of this tab's tools; closing the tab
 	// would close them under it.
-	if n := r.runningChildren(r.visibleTab()); n > 0 {
-		m.appendNoticeLine("cancel this tab's agents (Esc in their tabs) before closing it")
+	if n := r.runningDescendants(r.visibleTab()); n > 0 {
+		m.appendNoticeLine("stop this workspace's running agents in the inspector before closing it")
 		return
 	}
 	r.closeTabRequest = true
 }
 
-// runningChildren counts parent's children with a turn running.
-func (r *managedREPL) runningChildren(parent *replTab) int {
+// Count every running descendant: idle intermediate agents can still own
+// active children that depend on their ancestors' runtime resources.
+func (r *managedREPL) runningDescendants(parent *replTab) int {
 	n := 0
 	for _, tab := range r.tabs {
-		if tab.parent == parent && tab.turnDone != nil {
-			n++
+		if tab == parent || tab.turnDone == nil {
+			continue
+		}
+		for p, depth := tab.parent, 0; p != nil && depth < len(r.tabs); p, depth = p.parent, depth+1 {
+			if p == parent {
+				n++
+				break
+			}
 		}
 	}
 	return n
@@ -269,6 +300,11 @@ func (r *managedREPL) runningChildren(parent *replTab) int {
 // applyTabRequests performs the tab changes handlers recorded. Runs on the
 // event loop with no model lock held.
 func (r *managedREPL) applyTabRequests() {
+	actions := r.workspaceActions
+	r.workspaceActions = nil
+	for _, action := range actions {
+		action()
+	}
 	if req := r.childViewRequest; req != nil {
 		r.childViewRequest = nil
 		r.showChildView(req)
@@ -281,7 +317,13 @@ func (r *managedREPL) applyTabRequests() {
 	if i := r.showTabRequest; i >= 0 {
 		r.showTabRequest = -1
 		if i < len(r.tabs) {
-			r.showTab(i)
+			tab := r.tabs[i]
+			if root := r.rootTab(tab); root != nil && root != tab {
+				r.showTab(r.tabIndexOfModel(root.model))
+				r.inspect(tabViewTarget(tab))
+			} else {
+				r.showTab(i)
+			}
 		}
 	}
 }
@@ -294,7 +336,8 @@ func (r *managedREPL) closeVisibleTab() {
 	if i < 0 {
 		return
 	}
-	if len(r.tabs) == 1 {
+	r.syncWorkspaces()
+	if len(r.workspaces) <= 1 {
 		r.requestQuit()
 		return
 	}
@@ -334,7 +377,12 @@ func (r *managedREPL) removeTab(i int) *replTab {
 	visible := tab.model == r.model
 	r.tabs = append(r.tabs[:i], r.tabs[i+1:]...)
 	if visible {
-		r.showTab(max(i-1, 0))
+		r.syncWorkspaces()
+		if len(r.workspaces) > 0 {
+			r.showTab(r.tabIndexOfModel(r.workspaces[len(r.workspaces)-1].model))
+		} else if len(r.tabs) > 0 {
+			r.showTab(max(0, min(i-1, len(r.tabs)-1)))
+		}
 	}
 	return tab
 }
@@ -426,6 +474,9 @@ func (r *managedREPL) requestOpenLocked(name string) {
 	if !r.canOpenLocked() {
 		return
 	}
+	if r.beginWorkspaceOpen(name) {
+		return
+	}
 	r.beginOpenLocked(name, false)
 }
 
@@ -454,13 +505,20 @@ func (r *managedREPL) beginOpenContextLocked(openCtx context.Context, name strin
 		return
 	}
 	r.opening = resolved
-	m.appendNoticeLine("opening " + resolved + "…")
 	ctx, cancel := context.WithCancel(openCtx)
 	r.openCancel = cancel
 	open := r.opener.open
 	go func() {
 		state, err := open(ctx, resolved, settings, auto)
-		r.openDone <- openResult{name: resolved, state: state, err: err}
+		res := openResult{name: resolved, state: state, err: err}
+		if err == nil {
+			res.name, res.display, res.err = r.newTabModelContext(ctx, state)
+			if res.err != nil {
+				_ = state.Close()
+				res.state = nil
+			}
+		}
+		r.openDone <- res
 	}()
 }
 
@@ -472,19 +530,29 @@ func (r *managedREPL) finishOpen(res openResult) {
 		r.openCancel()
 		r.openCancel = nil
 	}
-	if res.err == nil {
-		if res.err = r.addTab(res.state); res.err != nil {
+	if res.err == nil && res.workspaceEntry != nil {
+		res.err = r.finishWorkspaceOpen(res)
+	} else if res.err == nil {
+		if res.display != nil {
+			res.err = r.addPreparedTab(res.state, res.name, res.display)
+		} else {
+			res.err = r.addTab(res.state)
+		}
+		if res.err != nil {
 			_ = res.state.Close()
 		}
 	}
 	r.model.mu.Lock()
+	for _, notice := range res.notices {
+		r.model.appendNoticeLine(notice)
+	}
 	if res.err != nil {
 		r.failOpenLocked(res.name, res.err)
 		r.model.mu.Unlock()
 		return
 	}
 	r.startupLogoVisible = false
-	r.model.appendNoticeLine(fmt.Sprintf("opened %s in tab %d", res.name, len(r.tabs)))
+	r.syncWorkspaces()
 	r.model.mu.Unlock()
 	// Reports its agents posted while it was closed are its first input.
 	if tab := r.visibleTab(); r.runTurn != nil && r.pullReports(r.runCtx, tab) {
@@ -520,38 +588,19 @@ func (r *managedREPL) drainOpen() {
 }
 
 // tabLines lists the open tabs for /tab, with what each one's turn is doing.
-// Caller must hold r.model.mu; other tabs' models are locked here.
-func (r *managedREPL) tabLines() []string {
-	if len(r.tabs) == 0 {
-		return []string{"no tabs"}
-	}
-	visible := r.visibleTabIndex()
-	lines := []string{fmt.Sprintf("tabs (%d):", len(r.tabs))}
-	for i, tab := range r.tabs {
-		line := fmt.Sprintf("  %d  %s", i+1, tab.name)
-		if depth := tab.depth(); depth > 0 {
-			line = fmt.Sprintf("  %d  %s↳ %s", i+1, strings.Repeat("  ", depth-1), tab.name)
-		}
-		if activity := r.tabActivity(tab); activity != "" {
-			line += "  " + activity
-		}
-		if i == visible {
-			line += "  current"
-		}
-		lines = append(lines, line)
-	}
-	return lines
-}
+// Runs outside model locks; each runtime is snapshotted separately.
+func (r *managedREPL) tabLines() []string { return r.workspaceLines() }
 
 // tabActivity describes the turn running on tab, how its last turn ended
-// while the tab was hidden, or "" at idle. Caller must hold r.model.mu;
-// another tab's model is locked here, never the reverse.
+// while the tab was hidden, or "" at idle. Runs outside model locks.
 func (r *managedREPL) tabActivity(tab *replTab) string {
 	m := tab.model
-	if m != r.model {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return modelTabActivity(m)
+}
+
+func modelTabActivity(m *replModel) string {
 	switch {
 	case m.approval != nil:
 		return "approval needed"
@@ -572,15 +621,4 @@ func (r *managedREPL) tabActivity(tab *replTab) string {
 }
 
 // resolveTab finds a tab by 1-based position or session name.
-func (r *managedREPL) resolveTab(arg string) (int, error) {
-	if n, err := strconv.Atoi(arg); err == nil {
-		if n < 1 || n > len(r.tabs) {
-			return -1, fmt.Errorf("no tab %d (%d open)", n, len(r.tabs))
-		}
-		return n - 1, nil
-	}
-	if i := r.tabIndexOf(arg); i >= 0 {
-		return i, nil
-	}
-	return -1, fmt.Errorf("no tab named %s", arg)
-}
+func (r *managedREPL) resolveTab(arg string) (int, error) { return r.resolveWorkspace(arg) }

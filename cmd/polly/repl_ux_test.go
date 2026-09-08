@@ -637,12 +637,12 @@ func TestHydrateHistoryShowsFiveRecentTurnsAndCollapsesTools(t *testing.T) {
 	m := newReplModel()
 	m.hydrateHistory(history, "project-x")
 	joined := strings.Join(m.flattenTranscript(), "\n")
-	for _, absent := range []string{"unique-question-0", "unique-question-1", "raw secret shell output", "raw secret file output"} {
+	for _, absent := range []string{"resumed project-x", "showing last 5 of 7 turns", "unique-question-0", "unique-question-1", "raw secret shell output", "raw secret file output"} {
 		if strings.Contains(joined, absent) {
-			t.Fatalf("hydrated transcript leaked excluded/raw content %q: %q", absent, joined)
+			t.Fatalf("hydrated transcript contains unwanted notice or content %q: %q", absent, joined)
 		}
 	}
-	for _, present := range []string{"showing last 5 of 7 turns", "unique-question-2", "unique-question-6", "2 tools", "tool work done"} {
+	for _, present := range []string{"unique-question-2", "unique-question-6", "2 tools", "tool work done"} {
 		if !strings.Contains(joined, present) {
 			t.Fatalf("hydrated transcript missing %q: %q", present, joined)
 		}

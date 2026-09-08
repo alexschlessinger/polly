@@ -16,6 +16,10 @@ type existingSessionTargetKey struct{}
 // requestParentLocked handles the divider link and /parent. Caller holds the
 // visible model's lock; the metadata read runs off the event loop.
 func (r *managedREPL) requestParentLocked() {
+	if r.workspace().inspector.open {
+		r.inspectorAction("parent")
+		return
+	}
 	child := r.visibleTab()
 	if parent := r.liveParent(child); parent != nil {
 		r.requestShowTabLocked(r.tabIndexOfModel(parent.model))

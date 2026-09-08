@@ -86,6 +86,7 @@ func (m *replModel) appendToolStartRow(id, label string) *toolDisclosureRecord {
 
 func (m *replModel) appendToolCallStart(call messages.ChatMessageToolCall) *toolDisclosureRecord {
 	record := m.appendToolStartRow(call.ID, toolLabel(call))
+	record.rows[len(record.rows)-1].inspectionKey = m.inspections.startTool(call)
 	record.rows[len(record.rows)-1].setCall(call)
 	if record.rows[len(record.rows)-1].isAgent() {
 		// Agent-only batches leave the canonical Tools text unchanged. Their
@@ -364,6 +365,15 @@ func (m *replModel) takeActiveTool(id string) (int, bool) {
 }
 
 func (m *replModel) settleActiveTools(reason string) {
+	for i := range m.inspections.tools {
+		t := &m.inspections.tools[i]
+		if !t.complete {
+			t.complete = true
+			t.status = reason
+			t.version++
+			m.inspections.version++
+		}
+	}
 	if len(m.activeTools) == 0 {
 		return
 	}
