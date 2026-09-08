@@ -483,3 +483,110 @@ func TestPreviewConflictsAndDriftRefuseApply(t *testing.T) {
 		t.Fatal("applied stale preview")
 	}
 }
+
+func TestCaptureHonorsGlobalExcludesAndRefusesFilters(t *testing.T) {
+	m, root := fixture(t)
+	ctx := context.Background()
+	// A global excludes file outside the checkout: the user's git hides .env,
+	// so the snapshot must hide it too even though isolated commands see no
+	// global configuration.
+	home := t.TempDir()
+	writeTest(t, filepath.Join(home, "ignore"), ".env\n")
+	writeTest(t, filepath.Join(home, "gitconfig"), "[core]\n\texcludesFile = "+filepath.Join(home, "ignore")+"\n")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, "gitconfig"))
+	m, err := New(ctx, m.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTest(t, filepath.Join(root, ".env"), "SECRET=1\n")
+	writeTest(t, filepath.Join(root, "kept.txt"), "kept\n")
+	s, err := m.Capture(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing := string(gitTest(t, root, "ls-tree", "-r", "--name-only", s.Tree))
+	if strings.Contains(listing, ".env") || !strings.Contains(listing, "kept.txt") {
+		t.Fatalf("snapshot ignored the global excludes file: %q", listing)
+	}
+	// LFS installs its filter globally; only paths whose attributes use a
+	// filter make the repository unsupported.
+	writeTest(t, filepath.Join(home, "gitconfig"), "[filter \"lfs\"]\n\tclean = cat\n\tsmudge = cat\n")
+	if _, err = m.Capture(ctx, root); err != nil {
+		t.Fatalf("a configured but unused filter blocked capture: %v", err)
+	}
+	writeTest(t, filepath.Join(root, ".gitattributes"), "*.bin filter=lfs\n")
+	writeTest(t, filepath.Join(root, "big.bin"), "binary\n")
+	if _, err = m.Capture(ctx, root); err == nil || !strings.Contains(err.Error(), "content filters") {
+		t.Fatalf("filtered path accepted: %v", err)
+	}
+}
+
+func TestValidateTreeRefusesGitlinksAndOversizedUntrackedBlobs(t *testing.T) {
+	m, root := fixture(t)
+	ctx := context.Background()
+	head := strings.TrimSpace(string(gitTest(t, root, "rev-parse", "HEAD")))
+	index := filepath.Join(t.TempDir(), "index")
+	env := []string{"GIT_INDEX_FILE=" + index}
+	if _, err := m.git(ctx, root, env, nil, "update-index", "--add", "--cacheinfo", "160000,"+head+",sub"); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := m.git(ctx, root, env, nil, "write-tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.validateTree(ctx, root, strings.TrimSpace(string(tree)), nil); err == nil || !strings.Contains(err.Error(), "submodules") {
+		t.Fatalf("gitlink published: %v", err)
+	}
+	m.MaxUntrackedFileBytes = 4
+	if err := m.validateTree(ctx, root, head+"^{tree}", nil); err == nil || !strings.Contains(err.Error(), "size limit") {
+		t.Fatalf("oversized untracked blob published: %v", err)
+	}
+	if err := m.validateTree(ctx, root, head+"^{tree}", map[string]bool{"a.txt": true}); err != nil {
+		t.Fatalf("tracked blob capped: %v", err)
+	}
+}
+
+func TestFailedCreateReleasesSlotAndNewReclaimsStaleClaims(t *testing.T) {
+	m, root := fixture(t)
+	ctx := context.Background()
+	base, err := m.Capture(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bogus := base
+	bogus.Commit = strings.Repeat("0", 40)
+	if _, err := m.Create(ctx, bogus); err == nil {
+		t.Fatal("bogus commit checked out")
+	}
+	if _, err := os.Stat(filepath.Join(m.Slots[0], "owner")); err == nil {
+		t.Fatal("failed create kept its slot claim")
+	}
+	c, err := m.Create(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(c.Path) != m.Slots[0] {
+		t.Fatalf("released slot not reused: %s", c.Path)
+	}
+	// A claim with no manifest is a crashed create once it is old enough; a
+	// fresh one may belong to another runtime mid-checkout and stays.
+	stale := filepath.Join(m.Slots[1], "owner")
+	writeTest(t, stale, "deadbeef")
+	old := time.Now().Add(-2 * staleClaim)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	writeTest(t, filepath.Join(m.Slots[2], "owner"), "cafef00d")
+	if _, err := New(ctx, m.Config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Fatal("stale claim survived New")
+	}
+	if _, err := os.Stat(filepath.Join(m.Slots[2], "owner")); err != nil {
+		t.Fatal("fresh claim reclaimed")
+	}
+	if _, err := os.Stat(filepath.Join(m.Slots[0], "owner")); err != nil {
+		t.Fatal("live checkout reclaimed")
+	}
+}
