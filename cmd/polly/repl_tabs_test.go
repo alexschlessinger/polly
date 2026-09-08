@@ -440,20 +440,24 @@ func TestIdleInterruptWarnsAboutHiddenTurnsThenQuitsWithGrace(t *testing.T) {
 	}
 }
 
-func TestIdleEOFWarnsAboutHiddenTurnsThenQuits(t *testing.T) {
+func TestControlDNeverQuits(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "first-work", "current-work")
 	startBlockedTurn(t, r)
 	r.showWorkspace(1)
 	eof := ui.Event{Type: ui.KeyboardEvent, ID: "<C-d>"}
-	if r.handleEvent(eof) {
-		t.Fatal("the first Ctrl-D quit with a turn running in another tab")
+	for range 2 {
+		if r.handleEvent(eof) {
+			t.Fatal("Ctrl-D on an empty composer quit")
+		}
 	}
-	if got := r.model.fullTranscript(); !strings.Contains(got, "1 turn running in another tab") {
-		t.Fatalf("no warning about the hidden turn: %q", got)
+	if got := r.model.fullTranscript(); strings.Contains(got, "turn running") {
+		t.Fatalf("Ctrl-D warned about quitting: %q", got)
 	}
-	if !r.handleEvent(eof) {
-		t.Fatal("the second Ctrl-D did not quit")
+	select {
+	case <-r.quit:
+		t.Fatal("Ctrl-D requested a quit")
+	default:
 	}
 }
 
@@ -614,26 +618,63 @@ func TestNewTabOpensGeneratedSessionAndCloseDiscardsIt(t *testing.T) {
 	}
 }
 
-func TestClosingTheLastTabLeavesTheREPL(t *testing.T) {
+func TestClosingTheLastWorkspaceOpensAFreshSessionInPlace(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "current-work")
+	old := r.tabs[0].state.session
 
 	r.runTabCommand("/close")
+	if r.opening == "" {
+		t.Fatalf("closing the last workspace did not start a fresh session: %q", r.model.fullTranscript())
+	}
 	select {
 	case <-r.quit:
+		t.Fatal("closing the last workspace quit")
 	default:
-		t.Fatal("closing the last tab did not quit")
 	}
-	// The exit path closes the sessions, so the tab is still whole here.
-	if len(r.tabs) != 1 || r.tabs[0].state.session.Context().Err() != nil {
-		t.Fatal("the last tab was closed before the exit path ran")
+	// The old tab keeps the screen and its lease until the new one lands.
+	if len(r.tabs) != 1 || old.Context().Err() != nil {
+		t.Fatal("the old workspace was closed before its replacement landed")
 	}
-	if err := r.closeTabs(); err != nil {
-		t.Fatal(err)
+	name := r.opening
+	r.finishOpen(<-r.openDone)
+	r.work.wg.Wait()
+	if len(r.tabs) != 1 || r.visibleTab().name != name || r.tabs[0].state.session == old {
+		t.Fatalf("tabs after replacement = %d, visible %q, want only %q", len(r.tabs), r.visibleTab().name, name)
 	}
-	if len(r.tabs) != 0 || sessionInUse(t, store, "current-work") {
-		t.Fatal("closeTabs did not release the session")
+	if sessionInUse(t, store, "current-work") || !testStoreExists(t, store, "current-work") {
+		t.Fatal("the replaced session was not released, or was discarded")
 	}
+	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "closed current-work") {
+		t.Fatalf("closing the workspace was not announced: %q", transcript)
+	}
+
+	t.Run("no session can be made", func(t *testing.T) {
+		r := newTabTestREPL(t, store, "other-work")
+		r.opener.newName = nil
+		r.runTabCommand("/close")
+		select {
+		case <-r.quit:
+		default:
+			t.Fatal("closing the last workspace without a session maker did not quit")
+		}
+		if len(r.tabs) != 1 || r.tabs[0].state.session.Context().Err() != nil {
+			t.Fatal("the last tab was closed before the exit path ran")
+		}
+	})
+	t.Run("naming fails", func(t *testing.T) {
+		r := newTabTestREPL(t, store, "third-work")
+		r.opener.newName = func(context.Context) (string, error) { return "", errors.New("no names left") }
+		r.runTabCommand("/close")
+		select {
+		case <-r.quit:
+			t.Fatal("a naming failure quit instead of keeping the workspace")
+		default:
+		}
+		if r.opening != "" || len(r.tabs) != 1 || !strings.Contains(r.model.fullTranscript(), "no names left") {
+			t.Fatalf("failed replacement did not keep the workspace with a notice: %q", r.model.fullTranscript())
+		}
+	})
 }
 
 func TestLostLeaseDropsTabWhenAnotherRemains(t *testing.T) {

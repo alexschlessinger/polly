@@ -184,18 +184,21 @@ func (r *managedREPL) openAgentApproval(target viewTarget) {
 	}
 	index := request.index
 	call := request.calls[index]
+	remaining := len(request.calls) - index
 	m.mu.Unlock()
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
+	// The call itself sits above the choices, so nothing needs a "view" step.
+	const width = 88
+	items := []replModalItem{{label: "Deny", value: "n"}, {label: "Allow this call", value: "y"}}
+	if remaining > 1 {
+		items = append(items, replModalItem{label: "Allow remaining calls in this batch", value: "a"})
+	}
 	r.openModal(&replModal{
-		title: fmt.Sprintf("Approval · %s · %s", tab.name, call.Name), width: 88,
-		items: []replModalItem{{label: "Deny", value: "n"}, {label: "Allow this call", value: "y"}, {label: "Allow remaining calls in this batch", value: "a"}, {label: "View arguments", value: "v"}},
+		title: fmt.Sprintf("Approval · %s · %s", tab.name, call.Name), width: width,
+		body:  approvalCallBlock(call, strings.Split(expandToolCall(call), "\n"), width-4, approvalPromptMaxRows),
+		items: items,
 		onSubmit: func(answer string) {
-			if answer == "v" {
-				r.openModal(&replModal{title: "Arguments · " + tab.name, width: 88, inputMode: true, helper: "Esc return to approval", onCancel: func() { r.reviewAgentApproval(target) }})
-				r.model.modal.input.setText(readableResult(call.Arguments))
-				return
-			}
 			r.workspaceActions = append(r.workspaceActions, func() {
 				m.mu.Lock()
 				if m.approval == request && request.index == index {

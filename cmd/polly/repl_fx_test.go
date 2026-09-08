@@ -300,7 +300,9 @@ func TestAppendToolEndAnnotatesLines(t *testing.T) {
 	}
 }
 
-func TestApprovalViewExpandsArgsOncePerCall(t *testing.T) {
+// The pending call shows above the prompt for every call in a batch, and
+// nothing is written into the transcript to show it.
+func TestApprovalShowsEachCallAboveThePrompt(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	first, _ := json.Marshal(map[string]any{"command": "rm -rf ./build &&\nmake all"})
@@ -312,29 +314,24 @@ func TestApprovalViewExpandsArgsOncePerCall(t *testing.T) {
 		},
 		reply: make(chan []bool, 1),
 	}
-
-	view := ui.Event{Type: ui.KeyboardEvent, ID: "v"}
-	r.handleEvent(view)
-	got := strings.Join(m.flattenTranscript(), "\n")
-	if !strings.Contains(got, "rm -rf ./build") || !strings.Contains(got, "make all") {
-		t.Fatalf("[v]iew should expand the full command, got %q", got)
-	}
-	if !strings.Contains(got, "╭─ bash") {
-		t.Fatalf("[v]iew block should name the tool, got %q", got)
-	}
-
-	// Holding v must not spam the transcript.
 	before := len(m.flattenTranscript())
-	r.handleEvent(view)
-	if len(m.flattenTranscript()) != before {
-		t.Fatal("repeated [v]iew duplicated the args block")
+	composer := plainStyledText(m.inputDisplay())
+	for _, want := range []string{"╭─ bash", "rm -rf ./build", "make all", "Allow (1/2) bash"} {
+		if !strings.Contains(composer, want) {
+			t.Fatalf("approval composer lacks %q: %q", want, composer)
+		}
 	}
-
-	// Answering advances to the next call, which is viewable again.
+	if len(m.flattenTranscript()) != before {
+		t.Fatal("showing the call wrote into the transcript")
+	}
+	// Answering advances to the next call, whose arguments replace the block.
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "y"})
-	r.handleEvent(view)
-	if got := strings.Join(m.flattenTranscript(), "\n"); !strings.Contains(got, "TODO") {
-		t.Fatalf("[v]iew after advancing should expand the next call, got %q", got)
+	composer = plainStyledText(m.inputDisplay())
+	if !strings.Contains(composer, "╭─ grep") || !strings.Contains(composer, "TODO") || strings.Contains(composer, "rm -rf") || strings.Contains(composer, "allow all") {
+		t.Fatalf("second call not shown on its own: %q", composer)
+	}
+	if len(m.flattenTranscript()) != before {
+		t.Fatal("advancing the batch wrote into the transcript")
 	}
 }
 

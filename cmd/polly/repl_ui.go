@@ -332,9 +332,6 @@ type approvalState struct {
 	index int
 	out   []bool
 	reply chan []bool
-	// viewed marks that [v]iew already expanded the current call's arguments,
-	// so holding v can't spam the transcript. Reset as index advances.
-	viewed bool
 }
 
 func newReplModel() *replModel {
@@ -409,11 +406,14 @@ type managedREPL struct {
 	// uiTasks carries deferred UI mutations (e.g. a finished clipboard read)
 	// onto the event loop, which repaints after running each one. Tasks take
 	// the model lock themselves.
-	uiTasks             chan func()
-	work                *replWork
-	childViews          childViewCache
-	childViewRequest    *childViewNavigation
-	workspaces          []*replTab
+	uiTasks          chan func()
+	work             *replWork
+	childViews       childViewCache
+	childViewRequest *childViewNavigation
+	workspaces       []*replTab
+	// replacingTab is the last workspace a /close is replacing; finishOpen
+	// closes it once the fresh session holds the screen.
+	replacingTab        *replTab
 	inspectorRatio      float64
 	inspectorRefreshAt  time.Time
 	inspectorW          *transcriptParagraph
@@ -1296,7 +1296,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 
 	// The warning that turns run in other tabs holds for the very next
 	// quit key only; any other key withdraws it.
-	if e.Type == ui.KeyboardEvent && e.ID != "<C-c>" && e.ID != "<C-d>" {
+	if e.Type == ui.KeyboardEvent && e.ID != "<C-c>" {
 		r.quitWarned = false
 	}
 
@@ -1443,8 +1443,6 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			m.handleApprovalAnswer('n')
 		case "a", "A":
 			m.handleApprovalAnswer('a')
-		case "v", "V":
-			m.showApprovalArgs()
 		}
 		return false
 	}
@@ -1464,9 +1462,6 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			r.cancelBusyTurn()
 		}
 	case "<C-d>":
-		if m.ed.empty() && !m.busy {
-			return r.requestIdleQuitLocked()
-		}
 		m.ed.deleteForward()
 	case "<Enter>":
 		return r.submitComposerLocked()
