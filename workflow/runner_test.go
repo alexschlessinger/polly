@@ -175,3 +175,17 @@ func TestJSBudgetExcludesDurabilityWrites(t *testing.T) {
 		t.Fatalf("spinning script not interrupted: %v", err)
 	}
 }
+
+func TestScopeRethrowsPrimitiveAndFrozenErrorsIntact(t *testing.T) {
+	r := Runner{Host: hostFunc(func(context.Context, Operation) (any, error) { return nil, nil })}
+	for _, thrown := range []string{`"lint failed"`, `Object.freeze(new Error("frozen"))`, `42`} {
+		_, err := r.Run(context.Background(), script(`return polly.scope({context:"ctx",label:"lint"}, async () => { throw `+thrown+`; });`), map[string]any{})
+		var failure *Error
+		if !errors.As(err, &failure) || failure.Code != "workflow_failed" {
+			t.Fatalf("throw %s: %v", thrown, err)
+		}
+		if strings.Contains(failure.Message, "TypeError") {
+			t.Fatalf("throw %s became a TypeError: %s", thrown, failure.Message)
+		}
+	}
+}

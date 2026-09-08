@@ -53,7 +53,13 @@
     scope: async (defaults, callback) => {
       if (!defaults || "cwd" in defaults) throw new Error("scope requires an execution context, not cwd");
       try { return await callback(work(defaults)); }
-      catch (error) { error.report = { label: defaults.label, context: defaults.context }; throw error; }
+      catch (error) {
+        // A thrown primitive or frozen value cannot carry the scope report;
+        // wrap it so the rethrow never turns into a TypeError.
+        const carrier = error !== null && typeof error === "object" && Object.isExtensible(error) ? error : Object.assign(new Error(String(error)), { code: "workflow_failed" });
+        carrier.report = { label: defaults.label, context: defaults.context };
+        throw carrier;
+      }
     },
     defineWorkflow: d => {
       if (definition) throw new Error("define exactly one workflow");
