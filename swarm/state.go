@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,7 +135,8 @@ func decodeState(raw *sessions.CoordinationState) (*State, error) {
 	s := &State{}
 	// Keep each domain in separately keyed records. All affected records and
 	// transcript receipts commit in the same SQLite transaction.
-	fields := map[string]any{"parent_turn": &s.ParentTurns, "run": &s.Runs, "member": &s.Members, "task": &s.Tasks, "mail": &s.Messages, "publication": &s.Publications, "execution": &s.Executions, "context": &s.Contexts, "snapshot": &s.Snapshots, "preview": &s.Previews, "workflow": &s.Workflows}
+	steps := map[string]*workflow.Step{}
+	fields := map[string]any{"parent_turn": &s.ParentTurns, "run": &s.Runs, "member": &s.Members, "task": &s.Tasks, "mail": &s.Messages, "publication": &s.Publications, "execution": &s.Executions, "context": &s.Contexts, "snapshot": &s.Snapshots, "preview": &s.Previews, "workflow": &s.Workflows, "workflow_step": &steps}
 	for kind, target := range fields {
 		records := raw.Records[kind]
 		if records == nil {
@@ -148,11 +150,17 @@ func decodeState(raw *sessions.CoordinationState) (*State, error) {
 			return nil, fmt.Errorf("read swarm %s: %w", kind, err)
 		}
 	}
+	if err := attachWorkflowSteps(s.Workflows, steps); err != nil {
+		return nil, err
+	}
 	s.normalizeIterationLimits()
 	return s, nil
 }
 func encodeState(raw *sessions.CoordinationState, s *State) error {
-	fields := map[string]any{"parent_turn": s.ParentTurns, "run": s.Runs, "member": s.Members, "task": s.Tasks, "mail": s.Messages, "publication": s.Publications, "execution": s.Executions, "context": s.Contexts, "snapshot": s.Snapshots, "preview": s.Previews, "workflow": s.Workflows}
+	// A workflow's steps are records of their own, so each checkpoint of a
+	// long run rewrites one step instead of the whole report.
+	reports, steps := detachWorkflowSteps(s.Workflows)
+	fields := map[string]any{"parent_turn": s.ParentTurns, "run": s.Runs, "member": s.Members, "task": s.Tasks, "mail": s.Messages, "publication": s.Publications, "execution": s.Executions, "context": s.Contexts, "snapshot": s.Snapshots, "preview": s.Previews, "workflow": reports, "workflow_step": steps}
 	for kind, value := range fields {
 		data, err := json.Marshal(value)
 		if err != nil {
@@ -163,6 +171,49 @@ func encodeState(raw *sessions.CoordinationState, s *State) error {
 			return err
 		}
 		raw.Records[kind] = group
+	}
+	return nil
+}
+
+// Step records are keyed "<report>/<index>". A report that still carries
+// embedded steps predates the split and is read as it was written.
+func detachWorkflowSteps(reports map[string]*workflow.Report) (map[string]*workflow.Report, map[string]workflow.Step) {
+	headers := make(map[string]*workflow.Report, len(reports))
+	steps := map[string]workflow.Step{}
+	for id, report := range reports {
+		header := *report
+		header.Steps = nil
+		headers[id] = &header
+		for index, step := range report.Steps {
+			steps[fmt.Sprintf("%s/%d", id, index)] = step
+		}
+	}
+	return headers, steps
+}
+func attachWorkflowSteps(reports map[string]*workflow.Report, steps map[string]*workflow.Step) error {
+	indexed := map[string]map[int]workflow.Step{}
+	for key, step := range steps {
+		id, number, ok := strings.Cut(key, "/")
+		index, err := strconv.Atoi(number)
+		if !ok || err != nil || index < 0 || reports[id] == nil {
+			return fmt.Errorf("read swarm workflow_step: unexpected record %q", key)
+		}
+		if indexed[id] == nil {
+			indexed[id] = map[int]workflow.Step{}
+		}
+		indexed[id][index] = *step
+	}
+	for id, report := range reports {
+		if len(report.Steps) > 0 {
+			continue
+		}
+		report.Steps = make([]workflow.Step, len(indexed[id]))
+		for index, step := range indexed[id] {
+			if index >= len(report.Steps) {
+				return fmt.Errorf("read swarm workflow_step: %s is missing a step before %d", id, index)
+			}
+			report.Steps[index] = step
+		}
 	}
 	return nil
 }
@@ -571,6 +622,7 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 			}
 		}
 	}
+	sort.Strings(denied)
 	writes := []string{}
 	if c.Checkout != nil {
 		writes = append(writes, manager.GitDir, c.Root+"/.git")
