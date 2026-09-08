@@ -160,7 +160,7 @@ func TestHiddenApprovalSignalsAndWakesTheLoop(t *testing.T) {
 	}
 	r.signal()
 	transcript := plainStyledText(r.model.fullTranscript())
-	if !strings.Contains(transcript, "current-work needs approval: bash") || !strings.Contains(transcript, "· /tab current-work") {
+	if !strings.Contains(transcript, "current-work needs approval · bash") || !strings.Contains(transcript, "· Ctrl-G") {
 		t.Fatalf("visible transcript lacks the approval notice: %q", transcript)
 	}
 	if got := strings.Join(r.tabLines(), "\n"); !strings.Contains(got, "2  current-work  approval needed") {
@@ -273,7 +273,7 @@ func TestApprovalSignalsDoNotWaitForTheVisibleTurn(t *testing.T) {
 	close(release)
 	waitTabEvent(t, r)
 	r.signal()
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "current-work needs approval: bash") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "current-work needs approval · bash") {
 		t.Fatalf("approval notice waited for the visible turn: %q", got)
 	}
 	busy.model.mu.Lock()

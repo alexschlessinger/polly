@@ -105,7 +105,7 @@ func (r *managedREPL) addReadOnlyWorkspace(info *sessions.SessionView, store ses
 	infoCopy := *info
 	infoCopy.History = nil
 	info = &infoCopy
-	m.appendNoticeLine("Read-only · open in another polly. Sending requires its session lease.")
+	m.appendNoticeLine("Read-only · open in another polly · sending requires its session lease")
 	tab := &replTab{name: info.Metadata.Name, model: m, childView: info, viewTarget: sessions.ViewTarget{ID: info.ID}, state: r.childViewState(store, info), detachedWorkspace: true}
 	tab.workspaceRoot = true
 	if len(r.tabs) == 1 && r.tabs[0].state == nil {

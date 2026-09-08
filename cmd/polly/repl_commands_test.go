@@ -301,7 +301,7 @@ func TestSandboxNoticeReportsMissingSSHAgent(t *testing.T) {
 	state := &conversationState{toolRegistry: stubSandboxRegistry(t)}
 	t.Setenv("SSH_AUTH_SOCK", "/nonexistent/agent.sock")
 	got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git+ssh"}, state)
-	if !strings.Contains(got, "ssh: agent unavailable") {
+	if !strings.Contains(got, "ssh agent unavailable") {
 		t.Fatalf("sandboxNoticeLine = %q, want an agent-unavailable hint", got)
 	}
 	// Without the ssh component the hint must not appear.
@@ -433,10 +433,10 @@ fi
 }
 
 func TestSandboxNoticeLine(t *testing.T) {
-	if got := sandboxNoticeLine(&Config{NoSandbox: true}, nil); got != "sandbox: disabled (--nosandbox)" {
+	if got := sandboxNoticeLine(&Config{NoSandbox: true}, nil); got != "Sandbox disabled (--nosandbox)" {
 		t.Fatalf("disabled notice = %q", got)
 	}
-	if got := sandboxNoticeLine(&Config{}, nil); got != "sandbox: unavailable" {
+	if got := sandboxNoticeLine(&Config{}, nil); got != "Sandbox unavailable" {
 		t.Fatalf("nil-state notice = %q", got)
 	}
 
@@ -453,7 +453,7 @@ func TestSandboxNoticeLine(t *testing.T) {
 	registry = tools.NewToolRegistry([]tools.Tool{tools.NewUnsafeBashTool("")},
 		tools.WithSandboxFactory(factory, sandbox.Config{}))
 	state = &conversationState{toolRegistry: registry}
-	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state); got != "sandbox: active (workspace+net+git; 0 tools sandboxed; not sandboxed: bash)" {
+	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state); got != "Sandbox active · workspace, net, git · 0 tools sandboxed · not sandboxed: bash" {
 		t.Fatalf("opt-out notice = %q", got)
 	}
 }
@@ -461,19 +461,22 @@ func TestSandboxNoticeLine(t *testing.T) {
 // The masthead's sandbox row always has something to say, in sentence case,
 // with the preset's parts and anything exceptional joined by dots.
 func TestSandboxSummaryLine(t *testing.T) {
-	if got := currentSandboxPosture(&Config{NoSandbox: true}, nil).summaryLine(); got != "Sandbox disabled (--nosandbox)" {
+	if got := currentSandboxPosture(&Config{NoSandbox: true}, nil).summaryLine(false); got != "Sandbox disabled (--nosandbox)" {
 		t.Fatalf("disabled summary = %q", got)
 	}
-	if got := currentSandboxPosture(&Config{}, nil).summaryLine(); got != "Sandbox unavailable" {
+	if got := currentSandboxPosture(&Config{}, nil).summaryLine(false); got != "Sandbox unavailable" {
 		t.Fatalf("unavailable summary = %q", got)
 	}
 	state := &conversationState{toolRegistry: stubSandboxRegistry(t)}
-	if got := currentSandboxPosture(&Config{SandboxPreset: "workspace+net+git"}, state).summaryLine(); got != "Sandbox active · workspace, net, git" {
+	if got := currentSandboxPosture(&Config{SandboxPreset: "workspace+net+git"}, state).summaryLine(false); got != "Sandbox active · workspace, net, git" {
 		t.Fatalf("healthy summary = %q", got)
 	}
 	posture := sandboxPosture{state: sandboxPostureActive, preset: "workspace+ssh", unsandboxed: []string{"bash"}, sshAgentUnavailable: true}
-	if got := posture.summaryLine(); got != "Sandbox active · workspace, ssh · not sandboxed: bash · ssh agent unavailable" {
+	if got := posture.summaryLine(false); got != "Sandbox active · workspace, ssh · not sandboxed: bash · ssh agent unavailable" {
 		t.Fatalf("exceptional summary = %q", got)
+	}
+	if got := posture.summaryLine(true); got != "Sandbox active · workspace, ssh · 0 tools sandboxed · not sandboxed: bash · ssh agent unavailable" {
+		t.Fatalf("counted summary = %q", got)
 	}
 }
 
@@ -484,7 +487,7 @@ func TestWriteFallbackSandboxNotice(t *testing.T) {
 		t.Fatalf("active sandbox wrote a startup notice: %q", out.String())
 	}
 	writeFallbackSandboxNotice(&out, &Config{NoSandbox: true}, nil)
-	if got := out.String(); got != "sandbox: disabled (--nosandbox)\n" {
+	if got := out.String(); got != "Sandbox disabled (--nosandbox)\n" {
 		t.Fatalf("fallback sandbox notice = %q", got)
 	}
 

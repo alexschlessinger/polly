@@ -39,7 +39,7 @@ func TestRenderMarkdownWithLocalImages(t *testing.T) {
 	if got := strings.Count(rendered, string(transcriptImageMarker(0))); got != transcriptImageThumbnailRows {
 		t.Fatalf("marker rows = %d, want %d\n%s", got, transcriptImageThumbnailRows, rendered)
 	}
-	if !strings.Contains(rendered, "image: latency chart · chart.png") {
+	if !strings.Contains(rendered, "latency chart · chart.png") {
 		t.Fatalf("rendered caption missing: %q", rendered)
 	}
 
@@ -215,7 +215,7 @@ func TestAssistantAndToolResultsAttachImageSidecars(t *testing.T) {
 		t.Fatalf("collapsed tool image record = %#v", record)
 	}
 	toolIndex := record.transcriptIndex
-	if len(r.model.transcript[toolIndex].images) != 0 || strings.Contains(r.model.transcript[toolIndex].text, "image: result.png") {
+	if len(r.model.transcript[toolIndex].images) != 0 || strings.Contains(r.model.transcript[toolIndex].text, "result.png · ") {
 		t.Fatalf("collapsed tool image leaked sidecar or caption: text=%q sidecars=%#v", r.model.transcript[toolIndex].text, r.model.transcript)
 	}
 	if !r.model.toggleToolDisclosure(record.id) {
@@ -224,7 +224,7 @@ func TestAssistantAndToolResultsAttachImageSidecars(t *testing.T) {
 	if len(r.model.transcript[toolIndex].images) != 1 {
 		t.Fatalf("tool sidecar = %#v", r.model.transcript)
 	}
-	if !strings.Contains(r.model.transcript[toolIndex].text, "image: result.png") {
+	if !strings.Contains(r.model.transcript[toolIndex].text, "result.png · ") {
 		t.Fatalf("tool image caption missing: %q", r.model.transcript[toolIndex].text)
 	}
 	toolRows, toolSpans := transcriptBlockRowsWithImages(

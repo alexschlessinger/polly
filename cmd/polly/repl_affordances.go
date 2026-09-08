@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"image"
 	"math"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v3"
+	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -32,8 +32,7 @@ type affordanceState struct {
 	caller        time.Time
 	inputAt       time.Time
 	contextKnown  bool
-	contextFilled int
-	contextFrom   int
+	contextFilled int // last used-token count; growth arms the cue
 	contextAt     time.Time
 }
 
@@ -353,20 +352,18 @@ func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptVi
 			add(m.parentLink.Max.X+1+i, m.parentLink.Min.Y, 1, at.Add(time.Duration(9-i)*60*time.Millisecond), 500*time.Millisecond, ui.ColorWhite)
 		}
 	}
-	filled := 0
-	if m.status.contextLimit > 0 {
-		filled = max(0, min(10, m.status.contextUsed*10/m.status.contextLimit))
+	// The used count lights up when it grows; the window it is measured
+	// against stays quiet.
+	used := m.status.contextUsed
+	if m.affordances.contextKnown && used > m.affordances.contextFilled {
+		m.affordances.contextAt = now
 	}
-	if m.affordances.contextKnown && filled > m.affordances.contextFilled {
-		m.affordances.contextAt, m.affordances.contextFrom = now, m.affordances.contextFilled
-	}
-	m.affordances.contextKnown, m.affordances.contextFilled = true, filled
-	bar := parseStyledCells(contextMeterBar(m.status.contextUsed, m.status.contextLimit, 10), ui.NewStyle(ui.ColorClear))
-	cells := parseStyledCells(status, ui.NewStyle(ui.ColorClear))
-	for i, cx := range ui.BuildCellWithXArray(cells) {
-		if len(bar) > 0 && i+len(bar) <= len(cells) && slices.Equal(cells[i:i+len(bar)], bar) {
-			add(cx.X+m.affordances.contextFrom, l.height-1, max(0, filled-m.affordances.contextFrom), m.affordances.contextAt, 1400*time.Millisecond, ui.ColorWhite)
-			break
+	m.affordances.contextKnown, m.affordances.contextFilled = true, used
+	if usedText, _ := m.status.contextUsageParts(); usedText != "" {
+		plain := ui.CellsToString(parseStyledCells(status, ui.NewStyle(ui.ColorClear)))
+		if at := strings.LastIndex(plain, m.status.contextUsageText()); at >= 0 {
+			x := rw.StringWidth(plain[:at])
+			add(x, l.height-1, rw.StringWidth(usedText), m.affordances.contextAt, 1400*time.Millisecond, ui.ColorWhite)
 		}
 	}
 	if idle {

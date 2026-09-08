@@ -51,13 +51,13 @@ func (r *managedREPL) inspectCommand(arg string) {
 	s := r.model.inspections
 	if arg == "thoughts" {
 		if len(s.thoughts) == 0 {
-			r.model.appendNoticeLine("no thoughts to inspect")
+			r.model.appendNoticeLine("No thoughts to inspect")
 			return
 		}
 		t.kind, t.item = thoughtViewKind, s.thoughts[len(s.thoughts)-1].key
 	} else {
 		if len(s.tools) == 0 {
-			r.model.appendNoticeLine("no tools to inspect")
+			r.model.appendNoticeLine("No tools to inspect")
 			return
 		}
 		t.kind, t.item = toolViewKind, s.tools[len(s.tools)-1].key

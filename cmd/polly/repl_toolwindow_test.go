@@ -405,7 +405,7 @@ func TestInterruptedTurnAutoCollapsesAndRemainsExpandable(t *testing.T) {
 		t.Fatal("interrupted disclosure did not reopen")
 	}
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expanded, "failed slow_tool") {
+	if !strings.Contains(expanded, "slow_tool · failed") {
 		t.Fatalf("interrupted expansion lost failure status: %q", expanded)
 	}
 }
@@ -440,7 +440,7 @@ func TestInterruptedParallelBatchAutoCollapsesInStartOrder(t *testing.T) {
 	previous := strings.Index(expanded, "▾ 5 tools")
 	for i := 0; i < 5; i++ {
 		name := fmt.Sprintf("tool%d", i)
-		at := strings.Index(expanded, "failed "+name)
+		at := strings.Index(expanded, name+" · failed")
 		if at <= previous || strings.Count(expanded, name) != 1 {
 			t.Fatalf("interrupted expansion lost order/status at %s: %q", name, expanded)
 		}
@@ -470,7 +470,7 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("detached disclosure did not reopen")
 	}
-	if expanded := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(expanded, "canceled slow_tool") {
+	if expanded := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(expanded, "slow_tool · canceled") {
 		t.Fatalf("detached disclosure lost canceled row: %q", expanded)
 	}
 
@@ -528,7 +528,7 @@ func TestToolDisclosureImagesOnlyAppearExpanded(t *testing.T) {
 		if len(entry.images) == 0 {
 			continue
 		}
-		if !strings.Contains(entry.text, "image: shot.png") {
+		if !strings.Contains(entry.text, "shot.png · ") {
 			t.Fatalf("sidecar at %d does not match its row %q", index, entry.text)
 		}
 	}
@@ -545,7 +545,7 @@ func TestToolDisclosureImagesOnlyAppearExpanded(t *testing.T) {
 	if images := m.transcript[record.transcriptIndex].images; len(images) != 1 || images[0].Path != path {
 		t.Fatalf("expanded disclosure image sidecars = %#v", images)
 	}
-	if plain := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(plain, "image: shot.png") {
+	if plain := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(plain, "shot.png · ") {
 		t.Fatalf("expanded disclosure lost image caption: %q", plain)
 	}
 	writeImageFixture(t, path, 8, 2)

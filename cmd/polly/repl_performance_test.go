@@ -311,7 +311,7 @@ func TestFailedReportReadStillStartsQueuedInput(t *testing.T) {
 		t.Fatal("queued input stalled behind the failed report read")
 	}
 	settleUntil(t, r, func() bool { return parent.turnDone == nil })
-	if transcript := plainStyledText(parent.model.fullTranscript()); !strings.Contains(transcript, "agent reports for parent-work: inbox unavailable") {
+	if transcript := plainStyledText(parent.model.fullTranscript()); !strings.Contains(transcript, "Agent reports for parent-work unavailable · inbox unavailable") {
 		t.Fatalf("read failure was not reported: %s", transcript)
 	}
 	parent.state.session = session
@@ -383,7 +383,7 @@ func TestPendingReportPrecedesOtherQueuedInputs(t *testing.T) {
 		return len(runs.reported()) == 1 && len(parent.model.queue) == 0 && parent.turnDone == nil
 	})
 	transcript := plainStyledText(parent.model.fullTranscript())
-	if a, b := strings.Index(transcript, "▎ agent helper finished"), strings.Index(transcript, "▎ queued followup"); a < 0 || b < a {
+	if a, b := strings.Index(transcript, "agent helper finished"), strings.Index(transcript, "▎ queued followup"); a < 0 || b < a {
 		t.Fatalf("queue order changed: %s", transcript)
 	}
 }

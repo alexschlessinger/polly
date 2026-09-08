@@ -163,7 +163,7 @@ func TestFailedTurnLabelsPartialAndMarksQueueNotSent(t *testing.T) {
 		t.Fatalf("failed tool disclosure did not reopen: %#v", record)
 	}
 	expandedTools := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expandedTools, "failed bash sleep 30") || strings.Contains(expandedTools, "→") {
+	if !strings.Contains(expandedTools, "bash sleep 30 · failed") || strings.Contains(expandedTools, "→") {
 		t.Fatalf("failed tool expansion = %q", expandedTools)
 	}
 	if m.busy || m.state != turnStateIdle || m.lastOutcome != turnOutcomeFailed {
@@ -356,7 +356,7 @@ func TestHydrateHistorySettlesInterruptedTurn(t *testing.T) {
 	}, "ctx")
 
 	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
-	if !strings.Contains(plain, "turn interrupted · completed work retained") {
+	if !strings.Contains(plain, "Turn interrupted · completed work retained") {
 		t.Fatalf("interrupted marker was not rendered: %q", plain)
 	}
 	if strings.Contains(plain, "incomplete") || m.restoredDraft != nil {
@@ -560,7 +560,7 @@ func TestClearDisplayMidTurnDoesNotInventNoResponse(t *testing.T) {
 	r.endTurn(nil)
 
 	plain := plainStyledText(strings.Join(r.model.flattenTranscript(), "\n"))
-	if !strings.Contains(plain, "answer after clear") || strings.Contains(plain, "(no response)") {
+	if !strings.Contains(plain, "answer after clear") || strings.Contains(plain, "No response") {
 		t.Fatalf("mid-turn clear completion = %q", plain)
 	}
 }
@@ -896,10 +896,10 @@ func TestCompletedToolDisclosureSurvivesDiskReloadWithoutRawResults(t *testing.T
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("reloaded tool disclosure did not expand")
 	}
-	// The row reads as it did live: duration, tool name, argument summary.
+	// The row reads as it did live: tool name, argument summary, duration.
 	// The result body still stays out of the transcript.
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expanded, "✓ 1.2s bash cat secret.txt") || strings.Contains(expanded, "RAW SECRET") {
+	if !strings.Contains(expanded, "✓ bash cat secret.txt · 1.2s") || strings.Contains(expanded, "RAW SECRET") {
 		t.Fatalf("reloaded tool detail = %q", expanded)
 	}
 }
@@ -1228,7 +1228,7 @@ func TestCancellationRestoresInputWithoutOverwritingNewerDraft(t *testing.T) {
 	if r.model.restoredDraft == nil || r.model.restoredDraft.displayText != "canceled prompt" {
 		t.Fatalf("canceled input was not retained for history recall: %#v", r.model.restoredDraft)
 	}
-	if plain := plainStyledText(r.model.fullTranscript()); !strings.Contains(plain, "input available with ↑ · current draft preserved") {
+	if plain := plainStyledText(r.model.fullTranscript()); !strings.Contains(plain, "Input available with ↑ · current draft preserved") {
 		t.Fatalf("preserved-draft notice missing: %q", plain)
 	}
 }

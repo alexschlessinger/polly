@@ -729,7 +729,7 @@ func TestBeginManagedTurnEchoesPreparedAttachmentThumbnails(t *testing.T) {
 
 	idx := len(m.transcript) - 1
 	entry := m.transcript[idx].text
-	if !strings.Contains(entry, "image: shot.png") {
+	if !strings.Contains(entry, "shot.png · ") {
 		t.Fatalf("user echo lacks attachment caption: %q", entry)
 	}
 	if !strings.ContainsRune(entry, transcriptImageMarker(0)) {

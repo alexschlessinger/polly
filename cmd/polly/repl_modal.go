@@ -397,12 +397,12 @@ func (r *managedREPL) openManualModel(provider string) {
 func (r *managedREPL) applySelectedModel(model string) {
 	_, name, ok := strings.Cut(model, "/")
 	if !ok || strings.TrimSpace(name) == "" {
-		r.model.appendNoticeLine("model: enter a model name")
+		r.model.appendNoticeLine("Enter a model name")
 		return
 	}
 	line, err := applyAndPersistSetting(newManagedReplCommandContext(r), "model", model)
 	if err != nil {
-		r.model.appendNoticeLine("model: " + err.Error())
+		r.model.appendNoticeLine("Model change failed · " + err.Error())
 		return
 	}
 	r.model.appendNoticeLine(line)
@@ -437,13 +437,13 @@ func (r *managedREPL) openSessionsPicker() {
 // visible model's lock.
 func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 	if r.state == nil || r.state.sessionStore == nil {
-		r.model.appendNoticeLine("session picker unavailable")
+		r.model.appendNoticeLine("Session picker unavailable")
 		return
 	}
 	ctx := r.work.ctx
 	summaries, err := r.state.sessionStore.ListSummaries(ctx)
 	if err != nil {
-		r.model.appendNoticeLine("session picker: " + err.Error())
+		r.model.appendNoticeLine("Session picker unavailable · " + err.Error())
 		return
 	}
 	current := r.visibleTab().name
@@ -554,7 +554,7 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 		items = append(items, item)
 	}
 	if len(items) == 0 {
-		r.model.appendNoticeLine("no saved sessions")
+		r.model.appendNoticeLine("No saved sessions")
 		return
 	}
 	m := &replModal{
@@ -621,7 +621,7 @@ func (r *managedREPL) openSessionRenameInput(name string) {
 
 func (r *managedREPL) renameSession(oldName, newName string) {
 	if oldName == "" || newName == "" || r.state == nil || r.state.sessionStore == nil {
-		r.model.appendNoticeLine("rename failed: session unavailable")
+		r.model.appendNoticeLine("Rename failed · session unavailable")
 		return
 	}
 	if oldName == newName {
@@ -646,7 +646,7 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 		}
 		target, err = r.state.sessionStore.Acquire(ctx, oldName, options)
 		if err != nil {
-			r.model.appendNoticeLine("rename failed: " + err.Error())
+			r.model.appendNoticeLine("Rename failed · " + err.Error())
 			r.openSessionsPickerSelected(oldName)
 			return
 		}
@@ -656,14 +656,14 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 		if closeTarget {
 			_ = target.Close()
 		}
-		r.model.appendNoticeLine("rename failed: " + err.Error())
+		r.model.appendNoticeLine("Rename failed · " + err.Error())
 		r.openSessionsPickerSelected(oldName)
 		return
 	}
 	switch {
 	case closeTarget:
 		if err := target.Close(); err != nil {
-			r.model.appendNoticeLine("renamed session; releasing it failed: " + err.Error())
+			r.model.appendNoticeLine("Renamed · releasing the session failed · " + err.Error())
 		}
 		if tab >= 0 {
 			r.tabs[tab].name = newName
@@ -687,7 +687,7 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 		hidden.model.setContextName(newName)
 		hidden.model.mu.Unlock()
 	}
-	r.model.appendNoticeLine("renamed session '" + oldName + "' to '" + newName + "'")
+	r.model.appendNoticeLine("Renamed session '" + oldName + "' to '" + newName + "'")
 	r.openSessionsPickerSelected(newName)
 }
 
@@ -713,7 +713,7 @@ func (r *managedREPL) openProviderKeyInput(provider string) {
 				return
 			}
 			if r.state == nil || r.state.agent == nil || !r.state.agent.SetProviderAPIKey(provider, key) {
-				r.model.appendNoticeLine("key manager: provider router unavailable")
+				r.model.appendNoticeLine("Key manager unavailable · no provider router")
 				return
 			}
 			// A missing key may have made model-metadata discovery fail earlier
@@ -723,11 +723,11 @@ func (r *managedREPL) openProviderKeyInput(provider string) {
 					delete(r.state.contextWindows, model)
 				}
 			}
-			r.model.appendNoticeLine(provider + " key configured for this run")
+			r.model.appendNoticeLine("Configured the " + provider + " key for this run")
 		},
 		onClear: func() {
 			if r.state != nil && r.state.agent != nil && r.state.agent.ClearProviderAPIKey(provider) {
-				r.model.appendNoticeLine(provider + " session key cleared")
+				r.model.appendNoticeLine("Cleared the " + provider + " key for this run")
 			}
 		},
 	})

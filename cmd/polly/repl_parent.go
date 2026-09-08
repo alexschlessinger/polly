@@ -45,7 +45,7 @@ func (r *managedREPL) requestParentLocked() {
 				}
 				name := view.Metadata.Parent
 				if name == "" {
-					child.model.appendNoticeLine("this session has no parent")
+					child.model.appendNoticeLine("This session has no parent")
 					return
 				}
 				child.parentName, child.model.status.parentName = name, name
@@ -62,7 +62,7 @@ func (r *managedREPL) requestParentLocked() {
 		return
 	}
 	if child.parentName == "" || child.state == nil || child.state.session == nil {
-		r.model.appendNoticeLine("this session has no parent")
+		r.model.appendNoticeLine("This session has no parent")
 		return
 	}
 	if r.opener == nil || !r.canOpenLocked() {
@@ -83,7 +83,7 @@ func (r *managedREPL) requestParentLocked() {
 				return
 			}
 			if md == nil || md.Parent == "" {
-				m.appendNoticeLine("this session has no parent")
+				m.appendNoticeLine("This session has no parent")
 				return
 			}
 			child.parentName, m.status.parentName = md.Parent, md.Parent

@@ -273,14 +273,17 @@ func summarizeBashCommand(args tools.Args) string {
 }
 
 // toolLineBody joins a settled tool line's parts the same way in every
-// frontend: "1.2s bash · 3 lines". Either the duration or the metadata may be
-// empty.
-func toolLineBody(duration, label, meta string) string {
-	body := strings.TrimSpace(duration + " " + label)
+// frontend: "bash · 3 lines · 1.2s". The label leads because it is what the
+// eye scans for; the metadata and the duration may each be empty.
+func toolLineBody(label, meta, duration string) string {
+	parts := []string{label}
 	if meta != "" {
-		body += " · " + meta
+		parts = append(parts, meta)
 	}
-	return body
+	if duration != "" {
+		parts = append(parts, duration)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // resultLineMeta summarizes how much output a successful tool handed the

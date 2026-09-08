@@ -2,8 +2,8 @@ package main
 
 // Signals from hidden tabs. A tab off screen still settles turns and asks
 // for tool approvals; the visible transcript gets one notice line per
-// event, named after the tab, and /tab lists what each hidden tab is up
-// to. Signals are keyed on the tab's screen model, so a tab that is not a
+// event, named after the tab, and the sessions picker (Ctrl-G) shows what
+// each hidden tab is up to. Signals are keyed on the tab's screen model, so a tab that is not a
 // session of its own (a subagent's, say) signals the same way.
 
 type tabSignalKind int
@@ -44,7 +44,7 @@ func formatTabSignal(tab *replTab, s tabSignal) string {
 	case signalTurnIncomplete:
 		return name + " incomplete · " + s.detail
 	case signalApprovalNeeded:
-		return name + " needs approval: " + s.detail + " · /tab " + tab.name
+		return name + " needs approval · " + s.detail + " · Ctrl-G"
 	}
 	return name + ": " + s.detail
 }

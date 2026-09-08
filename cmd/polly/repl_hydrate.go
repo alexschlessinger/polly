@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
+	"regexp"
 	"strings"
 	"time"
 
@@ -128,8 +129,12 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	h.turnInput, h.turnOutput = 0, 0
 	h.stopReason = ""
 	m.appendTurnSeparator()
-	content, restorable, contextOnly := historyUserSummary(msg)
-	m.appendUserPrompt(content)
+	content, restorable, contextOnly, notice := historyUserSummary(msg)
+	if notice {
+		m.appendNoticePrompt(content)
+	} else {
+		m.appendUserPrompt(content)
+	}
 	// Only the final prompt can be restored, so finish builds the turn once
 	// from whichever user message ends up last.
 	h.lastUser, h.lastUserContent, h.lastUserRestorable = msg, content, restorable
@@ -230,7 +235,7 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 		// Everything before the marker is durable completed work; the
 		// turn ended early without a final response. Settle it so the
 		// preceding user message isn't restored as an unsent draft.
-		m.appendLine("  " + styled("turn interrupted · completed work retained", "muted", ""))
+		m.appendLine("  " + styled("Turn interrupted · completed work retained", "muted", ""))
 		h.lastRole = messages.MessageRoleAssistant
 	case len(displayToolCalls) > 0:
 		h.lastRole = messages.MessageRoleAssistant
@@ -501,11 +506,19 @@ func validatePortablePersistedImagePart(part messages.ContentPart) error {
 	return nil
 }
 
-func historyUserSummary(msg messages.ChatMessage) (display string, restorable, contextOnly bool) {
+func historyUserSummary(msg messages.ChatMessage) (display string, restorable, contextOnly, notice bool) {
 	display = msg.Content
 	contextOnly, _ = msg.Metadata[messages.MetadataKeyContextImport].(bool)
 	if contextOnly && len(msg.Parts) == 0 {
-		return "[context added]", false, true
+		return "[context added]", false, true, false
+	}
+	if headers := agentReportHeaders(msg); len(headers) > 0 {
+		// The REPL composed this message from child reports; the transcript
+		// shows what it showed live, the headers as a notice.
+		if len(headers) > 1 {
+			return fmt.Sprintf("%d agent reports", len(headers)), false, false, true
+		}
+		return headers[0], false, false, true
 	}
 	var attachments []string
 	if display == "" {
@@ -537,7 +550,22 @@ func historyUserSummary(msg messages.ChatMessage) (display string, restorable, c
 	// separately recognizes persisted image_base64 parts while rejecting text
 	// file bodies and context imports that cannot be reconstructed safely.
 	restorable = len(msg.Parts) == 0 && msg.Content != ""
-	return display, restorable, contextOnly
+	return display, restorable, contextOnly, false
+}
+
+// agentReportHeaderPattern matches the header line reportHeader writes ahead
+// of each child's reply.
+var agentReportHeaderPattern = regexp.MustCompile(`(?m)^agent \S+ (?:finished|canceled|failed: .*)$`)
+
+// agentReportHeaders returns the report headers a user message carries: every
+// message the REPL marked as a report, and older ones recognized by the
+// session trailer the child's reply ends with.
+func agentReportHeaders(msg messages.ChatMessage) []string {
+	marked, _ := msg.Metadata[messages.MetadataKeyAgentReport].(bool)
+	if !marked && !(strings.HasPrefix(msg.Content, "agent ") && strings.Contains(msg.Content, "\n\n(agent session ")) {
+		return nil
+	}
+	return agentReportHeaderPattern.FindAllString(msg.Content, -1)
 }
 
 func compactToolNames(names []string) string {

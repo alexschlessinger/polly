@@ -168,7 +168,7 @@ func TestRenderLineMarkdownImages(t *testing.T) {
 		})
 		text := string(got)
 		beforeAt := strings.Index(text, "before")
-		captionAt := strings.Index(text, "image: latency")
+		captionAt := strings.Index(text, "latency · ")
 		imageAt := strings.Index(text, "\x1b_Ga=T")
 		afterAt := strings.Index(text, "after")
 		if beforeAt < 0 || captionAt <= beforeAt || imageAt <= captionAt || afterAt <= imageAt {
@@ -199,7 +199,7 @@ func TestRenderLineMarkdownImages(t *testing.T) {
 			columns: 80,
 		}))
 		plain := ansiSGRPattern.ReplaceAllString(got, "")
-		if !strings.Contains(plain, "image: latency") || !strings.Contains(plain, "after") || strings.Contains(got, "\x1b_G") {
+		if !strings.Contains(plain, "latency · ") || !strings.Contains(plain, "after") || strings.Contains(got, "\x1b_G") {
 			t.Fatalf("caption fallback = %q", got)
 		}
 	})
@@ -210,7 +210,7 @@ func TestRenderLineMarkdownImages(t *testing.T) {
 			imageProtocol: terminalImageKitty,
 			columns:       minimumImageThumbnailCols - 1,
 		}))
-		if strings.Contains(got, "\x1b_G") || !strings.Contains(got, "image: latency") {
+		if strings.Contains(got, "\x1b_G") || !strings.Contains(got, "latency · ") {
 			t.Fatalf("narrow fallback = %q", got)
 		}
 	})
@@ -236,10 +236,10 @@ func TestRenderLineMarkdownPreservesImageOrderAndIgnoresFences(t *testing.T) {
 		dir,
 		outputCapabilities{surface: outputSurfaceLineANSI, imageProtocol: terminalImageKitty, columns: 80},
 	))
-	firstAt := strings.Index(got, "image: first")
+	firstAt := strings.Index(got, "first · ")
 	middleAt := strings.Index(got, "middle")
 	literalAt := strings.Index(got, "![literal](a.png)")
-	secondAt := strings.Index(got, "image: second")
+	secondAt := strings.Index(got, "second · ")
 	if firstAt < 0 || middleAt <= firstAt || literalAt <= middleAt || secondAt <= literalAt {
 		t.Fatalf("image/text ordering = %q", got)
 	}

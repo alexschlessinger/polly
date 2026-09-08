@@ -309,7 +309,10 @@ func TestToolErrorLineRendering(t *testing.T) {
 			t.Errorf("error line %q missing %q", line, want)
 		}
 	}
-	// Display is only ✗, time, command, and exit code — no tool output.
+	if got := plainStyledText(line); got != "  ✗ bash · exit 1 · 1.4s" {
+		t.Fatalf("error line = %q, want label · meta · duration", got)
+	}
+	// Display is only ✗, command, exit code, and time — no tool output.
 	for _, unwanted := range []string{"line one", "fatal: the real error"} {
 		if strings.Contains(line, unwanted) {
 			t.Errorf("error line should not include %q: %q", unwanted, line)
@@ -1843,5 +1846,36 @@ func TestComposerAndEchoShareTheUserGutter(t *testing.T) {
 	}
 	if !strings.HasPrefix(text, userGutter()) || !strings.HasPrefix(formattedUserPrompt("x"), userGutter()) {
 		t.Fatal("composer and echo should use the same styled gutter")
+	}
+}
+
+// The status row reads context as a count against its window; without a
+// window it is a bare token count, and the used number colors by pressure.
+func TestStatusContextReadsAsCountAndPressure(t *testing.T) {
+	m := newReplModel()
+	m.status.contextName = "ctx"
+	m.status.recordContextUsage(448, 0, false)
+	if got := plainStyledText(m.statusRow(80)); !strings.Contains(got, "ctx · 448 tok") || strings.Contains(got, "░") || strings.Contains(got, "█") {
+		t.Fatalf("status without a window = %q", got)
+	}
+	if got := m.status.contextUsageStyled(); got != styled("448 tok", "muted", "") {
+		t.Fatalf("unbounded usage styled = %q", got)
+	}
+	for _, tc := range []struct {
+		used, limit int
+		color       string
+	}{{10_000, 100_000, "ok"}, {75_000, 100_000, "active"}, {90_000, 100_000, "err"}} {
+		m.status.recordContextUsage(tc.used, tc.limit, false)
+		want := styled(humanizeTokens(tc.used), tc.color, "") + styled("/100k", "muted", "")
+		if got := m.status.contextUsageStyled(); got != want {
+			t.Fatalf("usage %d/%d styled = %q, want %q", tc.used, tc.limit, got, want)
+		}
+		if row := m.statusRow(80); !strings.Contains(row, want) {
+			t.Fatalf("status row %q lacks the colored usage %q", row, want)
+		}
+	}
+	m.status.recordContextUsage(12_300, 100_000, true)
+	if got := m.status.contextUsageStyled(); got != styled("~12.3k", "ok", "")+styled("/100k", "muted", "") {
+		t.Fatalf("estimated usage styled = %q", got)
 	}
 }

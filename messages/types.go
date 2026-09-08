@@ -118,6 +118,10 @@ const (
 	// is app-owned UI metadata and must never be replayed to a model.
 	MetadataKeyDisplayToolCalls = "display_tool_calls"
 	MetadataKeyContextImport    = "context_import"
+	// MetadataKeyAgentReport marks a user message the REPL composed from
+	// child-agent reports, so a resumed transcript shows it as a notice
+	// rather than as something the user typed. It is UI-only.
+	MetadataKeyAgentReport = "agent_report"
 	MetadataKeyAgentSynthetic   = "agent_synthetic"
 	// MetadataKeyThinkingMillis records how long an assistant message streamed
 	// reasoning before its first content (or the end of the response), in

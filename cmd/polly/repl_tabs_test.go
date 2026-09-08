@@ -242,7 +242,7 @@ func TestLeavingABusyTabKeepsItsTurnRunning(t *testing.T) {
 	if r.closeTabRequest || len(r.tabs) != 2 {
 		t.Fatal("a busy tab was closed")
 	}
-	if got := r.model.fullTranscript(); !strings.Contains(got, "cancel this tab's turn (Esc) before closing it") {
+	if got := r.model.fullTranscript(); !strings.Contains(got, "Cancel this workspace's turn (Esc) before closing it") {
 		t.Fatalf("close refusal was not explained: %q", got)
 	}
 	r.showWorkspace(1)
@@ -586,7 +586,7 @@ func TestNewTabOpensGeneratedSessionAndCloseDiscardsIt(t *testing.T) {
 		t.Fatalf("routine opening notice remains: %q", transcript)
 	}
 	r.runTabCommand("/new")
-	if transcript := r.model.fullTranscript(); r.opening != name || !strings.Contains(transcript, "already opening "+name) {
+	if transcript := r.model.fullTranscript(); r.opening != name || !strings.Contains(transcript, "Already opening "+name) {
 		t.Fatalf("second /new during the open was not refused with a notice: %q", transcript)
 	}
 	r.finishOpen(<-r.openDone)
@@ -608,7 +608,7 @@ func TestNewTabOpensGeneratedSessionAndCloseDiscardsIt(t *testing.T) {
 	if testStoreExists(t, store, name) {
 		t.Fatal("a generated session that never ran a turn survived closing its tab")
 	}
-	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "closed "+name) {
+	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "Closed "+name) {
 		t.Fatalf("closing the tab was not announced: %q", transcript)
 	}
 	select {
@@ -645,7 +645,7 @@ func TestClosingTheLastWorkspaceOpensAFreshSessionInPlace(t *testing.T) {
 	if sessionInUse(t, store, "current-work") || !testStoreExists(t, store, "current-work") {
 		t.Fatal("the replaced session was not released, or was discarded")
 	}
-	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "closed current-work") {
+	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "Closed current-work") {
 		t.Fatalf("closing the workspace was not announced: %q", transcript)
 	}
 
@@ -694,7 +694,7 @@ func TestLostLeaseDropsTabWhenAnotherRemains(t *testing.T) {
 	if len(r.tabs) != 1 || r.visibleTabIndex() != 0 || r.tabs[0].name != "first-work" {
 		t.Fatalf("tabs after lease loss = %d, visible %d", len(r.tabs), r.visibleTabIndex())
 	}
-	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "closed second-work") {
+	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "Closed second-work") {
 		t.Fatalf("lease loss was not explained: %q", transcript)
 	}
 
@@ -733,7 +733,7 @@ func TestLostLeaseUnderAHiddenTurnDropsTheTabOnceItSettles(t *testing.T) {
 	if r.visibleTabIndex() != 0 || r.tabs[0].name != "first-work" {
 		t.Fatal("the surviving tab is not on screen")
 	}
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "closed second-work") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "Closed second-work") {
 		t.Fatalf("lease loss was not explained on the visible tab: %q", got)
 	}
 }
@@ -774,7 +774,7 @@ func TestComposerHoldsInputWhileOpening(t *testing.T) {
 	if got := r.model.ed.text(); got != "draft for the next session" {
 		t.Fatalf("held draft was cleared: %q", got)
 	}
-	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "opening older-work") {
+	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "Opening older-work") {
 		t.Fatalf("hold was not explained: %q", transcript)
 	}
 	select {

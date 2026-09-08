@@ -212,7 +212,7 @@ func (r *managedREPL) openImageAt(x, y int) {
 			continue
 		}
 		if err := r.openImage(p.Path); err != nil {
-			r.model.appendNoticeLine("open failed: " + err.Error())
+			r.model.appendNoticeLine("Could not open the image · " + err.Error())
 		}
 		return
 	}

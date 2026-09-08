@@ -120,7 +120,7 @@ func (r *managedREPL) sendInspectorMessage(w *sessionWorkspace, target viewTarge
 	if !m.ed.empty() && m.ed.text() != expectedDraft {
 		m.mu.Unlock()
 		mainModel.mu.Lock()
-		mainModel.appendNoticeLine("agent has an existing draft; message kept in inspector")
+		mainModel.appendNoticeLine("Agent has a draft · message kept in the inspector")
 		mainModel.mu.Unlock()
 		return
 	}
@@ -171,7 +171,7 @@ func (r *managedREPL) openAgentApproval(target viewTarget) {
 	tab := r.inspectionTab(target)
 	if tab == nil {
 		r.model.mu.Lock()
-		r.model.appendNoticeLine("no local approval pending for this agent")
+		r.model.appendNoticeLine("No approval pending for this agent")
 		r.model.mu.Unlock()
 		return
 	}
