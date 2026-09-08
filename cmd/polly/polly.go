@@ -1054,9 +1054,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	turnStart := time.Now()
 	usage := turnUsage{}
 
-	_, lineOutput := turnUI.(*lineTurnUI)
-	settledOutput := lineOutput && !config.Stream
-	if line, ok := turnUI.(*lineTurnUI); ok {
+	line, lineOutput := turnUI.(*lineTurnUI)
+	settledOutput := lineOutput && !config.Stream && !line.interactive
+	if lineOutput {
 		line.settledOutput = settledOutput
 	}
 	callbacks := &llm.AgentCallbacks{
@@ -1230,7 +1230,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	}
 	if runErr != nil && settledOutput && config.SchemaPath == "" {
 		name, _ := state.session.GetName(context.WithoutCancel(ctx))
-		turnUI.AppendAssistantText("Blocked: " + runErr.Error() + "\n\nSession: " + name + "\n")
+		turnUI.AppendAssistantText(settledAnswer(resp, runErr, name))
 		turnUI.FinishTextTurn()
 	}
 
@@ -1247,6 +1247,16 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, settings.Model, stats, in, out, time.Since(turnStart).Milliseconds()))
 	}
 	return code, runErr
+}
+
+// settledAnswer is what a failed one-shot run still prints on stdout: the
+// answer the model produced, so a consumer keeps it and reads the failure from
+// stderr, or a blocker report naming the session when there is no answer.
+func settledAnswer(resp *llm.AgentResponse, runErr error, session string) string {
+	if resp != nil && resp.Message != nil && strings.TrimSpace(resp.Message.Content) != "" {
+		return resp.Message.Content
+	}
+	return "Blocked: " + runErr.Error() + "\n\nSession: " + session + "\n"
 }
 
 // externalizeMessageImages replaces prepared base64 image parts with private

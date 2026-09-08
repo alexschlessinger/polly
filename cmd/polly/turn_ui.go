@@ -49,7 +49,10 @@ type TurnUI interface {
 // lineTurnUI streams raw output or owns a terminal Markdown tail and footer,
 // according to each stream's capabilities. It also serves fallback REPL turns.
 type lineTurnUI struct {
-	settledOutput            bool
+	settledOutput bool
+	// interactive marks a REPL turn: the answer streams as it arrives. Settled
+	// output, one answer after the run, is for one-shot and piped runs only.
+	interactive              bool
 	config                   *Config
 	writer                   io.Writer
 	errWriter                io.Writer
