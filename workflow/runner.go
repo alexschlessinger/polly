@@ -107,6 +107,32 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		}
 	}()
 	// Timers interrupt only an uninterrupted JS slice, never host waiting.
+	// The durability write a host call makes before it starts is host work
+	// too, so the budget clock stops around it (pauseBudget/resumeBudget run
+	// on the VM goroutine, inside the slice that owns the timer).
+	var (
+		budgetTimer   *time.Timer
+		budgetStarted time.Time
+		budgetLeft    time.Duration
+		budgetPaused  bool
+	)
+	pauseBudget := func() {
+		if budgetTimer == nil || budgetPaused {
+			return
+		}
+		if budgetTimer.Stop() {
+			budgetLeft -= time.Since(budgetStarted)
+			budgetPaused = true
+		}
+	}
+	resumeBudget := func() {
+		if !budgetPaused {
+			return
+		}
+		budgetPaused = false
+		budgetStarted = time.Now()
+		budgetTimer.Reset(max(budgetLeft, 0))
+	}
 	runJS := func(fn func() error) (err error) {
 		if ctx.Err() != nil {
 			return context.Cause(ctx)
@@ -117,9 +143,11 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 			cancel(&Error{Code: "execution_budget", Message: "JavaScript execution budget exceeded"})
 			vm.Interrupt(context.Cause(ctx))
 		})
+		budgetTimer, budgetStarted, budgetLeft, budgetPaused = timer, time.Now(), budget, false
 		interrupted := make(chan struct{})
 		stop := context.AfterFunc(ctx, func() { defer close(interrupted); vm.Interrupt(context.Cause(ctx)) })
 		defer func() {
+			budgetTimer = nil
 			if !timer.Stop() {
 				<-timedOut
 			}
@@ -199,7 +227,10 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		op := Operation{ID: fmt.Sprintf("%s/%d", state.ID, index+1), Kind: call.Argument(0).String(), Args: args}
 		state.Steps = append(state.Steps, Step{Operation: op, Status: "running", Started: time.Now().UTC()})
 		// Intent must be durable before a command or agent can start.
-		if err := save(ctx); err != nil {
+		pauseBudget()
+		err = save(ctx)
+		resumeBudget()
+		if err != nil {
 			cancel(err)
 			return rejectError(err)
 		}

@@ -143,3 +143,35 @@ func TestWorkflowHostWaitDoesNotSpendJSBudget(t *testing.T) {
 		t.Fatalf("%+v %v", report, err)
 	}
 }
+
+type slowRecorder struct {
+	hostFunc
+	delay time.Duration
+	saves atomic.Int32
+}
+
+func (r *slowRecorder) SaveWorkflow(context.Context, Report) error {
+	r.saves.Add(1)
+	time.Sleep(r.delay)
+	return nil
+}
+
+func TestJSBudgetExcludesDurabilityWrites(t *testing.T) {
+	host := &slowRecorder{hostFunc: func(context.Context, Operation) (any, error) { return map[string]any{"ok": true}, nil }, delay: 20 * time.Millisecond}
+	// 32 workers each record their intent synchronously inside one JS slice:
+	// 640ms of host writes against a 200ms budget for JavaScript itself.
+	r := Runner{Host: host, Config: Config{JSBudget: 200 * time.Millisecond}}
+	report, err := r.Run(context.Background(), script(`return polly.parallel(Array.from({length:32},(_,i)=>i), n=>polly.agent({n}), {concurrency:32});`), map[string]any{})
+	if err != nil {
+		t.Fatalf("host writes were charged to the JavaScript budget: %v", err)
+	}
+	if len(report.Steps) != 32 || host.saves.Load() < 32 {
+		t.Fatalf("steps=%d saves=%d", len(report.Steps), host.saves.Load())
+	}
+	// A genuinely spinning script is still interrupted.
+	_, err = r.Run(context.Background(), script(`for(;;){}`), map[string]any{})
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Code != "execution_budget" {
+		t.Fatalf("spinning script not interrupted: %v", err)
+	}
+}
