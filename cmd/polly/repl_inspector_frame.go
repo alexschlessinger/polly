@@ -86,7 +86,9 @@ func (r *managedREPL) renderInspector(l frameLayout) []terminalImagePlacement {
 		rows = v.view.Rows(v.model, g.width)
 	}
 	s := w.viewState(i.target)
-	if s.lastRows < 0 && v != nil && v.model != nil {
+	// Seed the new-output baseline from a settled paint; a stale model shown
+	// while a fresh projection loads must not count as the starting point.
+	if s.lastRows < 0 && v != nil && v.model != nil && !v.loading {
 		s.lastRows = len(rows)
 	}
 	height := max(0, paneHeight-r.inspectorHeaderRows)

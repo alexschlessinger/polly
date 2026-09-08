@@ -1015,3 +1015,93 @@ func TestInspectorSwitchStartsAtTop(t *testing.T) {
 		t.Fatal("refresh reset the current item's scroll position")
 	}
 }
+
+func TestReplaceChildDisplayKeepsLaunchPromptIdentity(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
+	tab := r.tabs[1]
+	next := newReplModel()
+	next.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "launch"}, {Role: messages.MessageRoleAssistant, Content: "reply"}}, "agent")
+	r.replaceChildDisplay(tab, next)
+	tab.model.appendUserPrompt("follow-up")
+	flagged := 0
+	for _, entry := range tab.model.transcript {
+		if entry.initialPrompt {
+			flagged++
+		}
+	}
+	if flagged != 1 || tab.model.transcript[len(tab.model.transcript)-1].initialPrompt {
+		t.Fatalf("follow-up after a display swap was flagged as the launch prompt (%d flagged)", flagged)
+	}
+}
+
+func TestReinspectingResolvedTargetKeepsSelection(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "root")
+	saved := testAcquireSession(t, store, "saved")
+	testAddMessages(t, saved, []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "q"}, {Role: messages.MessageRoleAssistant, Content: "a"}})
+	if err := saved.Close(); err != nil {
+		t.Fatal(err)
+	}
+	byName := viewTarget{session: sessions.ViewTarget{Name: "saved"}}
+	r.inspect(byName)
+	waitInspector(t, r, 140)
+	i := &r.workspace().inspector
+	if i.target.session.ID == "" || i.target.key() == byName.key() {
+		t.Fatalf("target was not resolved to its identity: %+v", i.target)
+	}
+	s := r.workspace().viewState(i.target)
+	s.follow, s.top = false, 7
+	r.inspect(byName)
+	if s.top != 7 || s.follow || len(i.history) != 1 || i.generation != 1 {
+		t.Fatalf("re-click through the name key reset the open view: top=%d follow=%v history=%d generation=%d", s.top, s.follow, len(i.history), i.generation)
+	}
+}
+
+func TestParentActionClearsSearchAndWaitsForFirstRead(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
+	child := r.tabs[1]
+	r.showTab(0)
+	call := messages.ChatMessageToolCall{ID: "c", Name: "bash"}
+	child.model.appendToolCallStart(call)
+	child.model.inspections.setResult(call, messages.ChatMessage{Content: "out"})
+	target := tabViewTarget(child)
+	target.kind, target.item = toolViewKind, child.model.inspections.tools[0].key
+	r.inspect(target)
+	waitInspector(t, r, 140)
+	i := &r.workspace().inspector
+	i.searching = true
+	r.inspectorAction("parent")
+	if !i.open || i.searching || i.target.kind != conversationViewKind {
+		t.Fatalf("parent navigation left search open or went elsewhere: open=%v searching=%v kind=%v", i.open, i.searching, i.target.kind)
+	}
+	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "someone-else"}})
+	i.current = &viewInstance{target: i.target, view: viewFor(i.target.kind), loading: true}
+	r.inspectorAction("parent")
+	if !i.open {
+		t.Fatal("parent click during the first read closed the inspector")
+	}
+}
+
+func TestNewOutputBaselineIgnoresStaleModelWhileLoading(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = r.work.close() })
+	screen.SetSize(140, 32)
+	call := messages.ChatMessageToolCall{ID: "a", Name: "a"}
+	r.model.appendToolCallStart(call)
+	r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("out\n", 100)})
+	r.inspectCommand("tools")
+	v := waitInspector(t, r, 140)
+	s := r.workspace().viewState(r.workspace().inspector.target)
+	s.resetScroll()
+	v.loading = true
+	r.render()
+	if s.lastRows != -1 || len(r.inspectorW.OverlayBottom) != 0 {
+		t.Fatalf("stale model seeded the new-output baseline: lastRows=%d", s.lastRows)
+	}
+	v.loading = false
+	r.render()
+	if s.lastRows < 0 || len(r.inspectorW.OverlayBottom) != 0 {
+		t.Fatalf("settled paint did not seed the baseline cleanly: lastRows=%d overlay=%d", s.lastRows, len(r.inspectorW.OverlayBottom))
+	}
+}

@@ -85,7 +85,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	b := inspectorHeaderBuilder{width: max(0, width), origin: image.Pt(x, y)}
 	b.newline()
 	root := r.visibleTab()
-	isRoot := i.target.session.ID == root.viewID() || i.target.session.ID == "" && i.target.session.Name == root.name
+	isRoot := r.targetsVisibleTab(i.target)
 	name := i.target.session.Name
 	if i.current != nil && i.current.info != nil && i.current.info.Metadata != nil {
 		metadata := i.current.info.Metadata

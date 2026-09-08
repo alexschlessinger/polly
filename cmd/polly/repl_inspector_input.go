@@ -44,10 +44,11 @@ func (r *managedREPL) inspectorAction(action string) {
 			i.current.model.setInitialPromptExpanded(s.promptExpanded)
 		}
 	case "parent":
+		// Navigation leaves the Find row behind; it belongs to the item.
+		i.searching = false
 		if i.target.kind != conversationViewKind {
 			t := i.target
-			root := r.visibleTab()
-			if t.session.ID == root.viewID() || t.session.ID == "" && t.session.Name == root.name {
+			if r.targetsVisibleTab(t) {
 				r.closeInspector()
 			} else {
 				t.kind = conversationViewKind
@@ -55,6 +56,11 @@ func (r *managedREPL) inspectorAction(action string) {
 				r.inspect(t)
 			}
 		} else {
+			if v := i.current; v != nil && v.loading && v.info == nil {
+				// The parent is unknown until the first read lands; that is
+				// not the root, so do not close.
+				return
+			}
 			if i.current != nil && i.current.info != nil && i.current.info.ParentID != "" && i.current.info.ParentID != r.visibleTab().viewID() {
 				t := viewTarget{session: sessions.ViewTarget{ID: i.current.info.ParentID, Name: i.current.info.Metadata.Parent}}
 				r.inspect(t)
