@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/hex"
@@ -127,21 +128,33 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 		if err != nil {
 			return err
 		}
+		before := cloneRecords(state.Records)
 		if err := fn(state); err != nil {
 			return err
 		}
 		if state.ExpectedSequence != nil && *state.ExpectedSequence != state.Sequence {
 			return errors.New("checkpoint sequence changed")
 		}
-		if _, err := conn.ExecContext(opCtx, `DELETE FROM swarm_records WHERE parent_id=?`, parent); err != nil {
-			return err
+		// Only records the callback changed are written. A checkpoint touches
+		// one execution and a few messages, never the family's whole record set.
+		for kind, group := range before {
+			for id := range group {
+				if state.Records[kind][id] == nil {
+					if _, err := conn.ExecContext(opCtx, `DELETE FROM swarm_records WHERE parent_id=? AND kind=? AND id=?`, parent, kind, id); err != nil {
+						return err
+					}
+				}
+			}
 		}
 		for kind, group := range state.Records {
 			for id, value := range group {
 				if !json.Valid(value) || kind == "" || id == "" {
 					return errors.New("invalid coordination record")
 				}
-				if _, err := conn.ExecContext(opCtx, `INSERT INTO swarm_records VALUES(?,?,?,?)`, parent, kind, id, []byte(value)); err != nil {
+				if previous, ok := before[kind][id]; ok && bytes.Equal(previous, value) {
+					continue
+				}
+				if _, err := conn.ExecContext(opCtx, `INSERT OR REPLACE INTO swarm_records VALUES(?,?,?,?)`, parent, kind, id, []byte(value)); err != nil {
 					return err
 				}
 			}
@@ -214,6 +227,18 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 		return nil
 	})
 	return s.mapError(ctx, err)
+}
+
+func cloneRecords(records map[string]map[string]json.RawMessage) map[string]map[string]json.RawMessage {
+	out := make(map[string]map[string]json.RawMessage, len(records))
+	for kind, group := range records {
+		copied := make(map[string]json.RawMessage, len(group))
+		for id, value := range group {
+			copied[id] = value
+		}
+		out[kind] = copied
+	}
+	return out
 }
 
 // OpenPublishedArtifact grants the caller a private reference only after the
