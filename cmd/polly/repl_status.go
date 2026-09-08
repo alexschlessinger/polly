@@ -180,9 +180,6 @@ func (m *replModel) statusRow(width int) string {
 	if bar := contextMeterBar(m.status.contextUsed, m.status.contextLimit, 10); bar != "" {
 		fields = append(fields, field{drop: 1, text: bar, preStyled: true})
 	}
-	if m.status.skillCount > 0 {
-		fields = append(fields, field{drop: 4, text: fmt.Sprintf("skills:%d", m.status.skillCount)})
-	}
 
 	fieldWidth := func(fs []field) int {
 		parts := make([]string, len(fs))

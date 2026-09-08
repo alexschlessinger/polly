@@ -473,7 +473,7 @@ func TestBusyReadOnlyCommandsRunImmediately(t *testing.T) {
 	if len(r.model.queue) != 0 {
 		t.Fatalf("busy /help was queued instead of executed: %v", r.model.queue)
 	}
-	if joined := strings.Join(r.model.flattenTranscript(), "\n"); !strings.Contains(joined, "commands:") {
+	if joined := strings.Join(r.model.flattenTranscript(), "\n"); !strings.Contains(joined, "Send and edit") {
 		t.Fatalf("busy /help output missing: %q", joined)
 	}
 

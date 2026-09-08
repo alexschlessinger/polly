@@ -32,8 +32,11 @@ type replCommand struct {
 	// queueing behind it; their output may interleave with streaming assistant
 	// text. Reserve it for read-only inspection and queue management.
 	busySafe bool
-	run      replCommandFunc
-	complete replCommandCompleteFunc
+	// busySafeWhen, when set, decides per invocation: /set shows settings
+	// mid-turn but queues a change behind it.
+	busySafeWhen func(args []string) bool
+	run          replCommandFunc
+	complete     replCommandCompleteFunc
 }
 
 type replCommandRegistry struct {
@@ -51,6 +54,9 @@ type replCommandContext struct {
 	state    *conversationState
 	registry *replCommandRegistry
 	reply    func(string) error
+	// replyMarkup, when set, appends a line that carries its own styling
+	// (two-tone help rows); the line frontend leaves it nil and gets plain text.
+	replyMarkup func(string)
 
 	// Interactive-only operations are callbacks so the command parser stays
 	// independent of the managed REPL's turn state. The fallback REPL
@@ -116,7 +122,6 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	})
 	r.register(replCommand{
 		name:     "/context",
-		aliases:  []string{"/stats"},
 		usage:    "/context",
 		summary:  "session tokens, capacity, counts",
 		busySafe: true,
@@ -130,14 +135,6 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run: func(*replCommandContext, []string) replCommandResult {
 			return replCommandResult{quit: true}
 		},
-	})
-	r.register(replCommand{
-		name:     "/get",
-		usage:    "/get <key|all>",
-		summary:  "show effective settings",
-		busySafe: true,
-		run:      replGetCommand,
-		complete: completeGetCommand,
 	})
 	r.register(replCommand{
 		name:     "/help",
@@ -187,30 +184,24 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:     replResetCommand,
 	})
 	r.register(replCommand{
-		name:     "/set",
-		usage:    "/set <key> <value>",
-		summary:  "change a setting for this session",
-		run:      replSetCommand,
-		complete: completeSetCommand,
-	})
-	r.register(replCommand{
-		name:     "/skills",
-		usage:    "/skills",
-		summary:  "list loaded skills",
-		busySafe: true,
-		run:      replSkillsCommand,
+		name:         "/set",
+		usage:        "/set [key [value]]",
+		summary:      "show or change settings",
+		busySafeWhen: func(args []string) bool { return len(args) < 3 },
+		run:          replSetCommand,
+		complete:     completeSetCommand,
 	})
 	r.register(replCommand{
 		name:     "/spawn",
 		usage:    "/spawn <brief>",
-		summary:  "start a background agent on this session's tools; it reports back here",
+		summary:  "start a background agent that reports back here",
 		busySafe: true,
 		run:      replSpawnCommand,
 	})
 	r.register(replCommand{
 		name:     "/tools",
 		usage:    "/tools [list [namespace]|show <name>]",
-		summary:  "inspect loaded tools",
+		summary:  "inspect loaded tools and skills",
 		busySafe: true,
 		run:      replToolsCommand,
 		complete: completeToolsCommand,
@@ -329,7 +320,13 @@ func (r *replCommandRegistry) busySafeCommand(input string) bool {
 		return false
 	}
 	cmd, ok := r.get(fields[0])
-	return ok && cmd.busySafe
+	if !ok {
+		return false
+	}
+	if cmd.busySafeWhen != nil {
+		return cmd.busySafeWhen(fields)
+	}
+	return cmd.busySafe
 }
 
 func (r *replCommandRegistry) commandNames() []string {
@@ -342,25 +339,53 @@ func (r *replCommandRegistry) commandNames() []string {
 	return names
 }
 
+// helpLines is the plain /help text: the commands, then the keys by task.
 func (r *replCommandRegistry) helpLines() []string {
-	lines := []string{"commands:"}
-	type row struct {
-		names   string
-		summary string
-	}
-	rows := make([]row, 0, len(r.commands))
-	width := 0
-	for _, cmd := range r.commands {
-		names := strings.Join(append([]string{cmd.name}, cmd.aliases...), ", ")
-		if len(names) > width {
-			width = len(names)
+	return r.helpLinesStyled(false)
+}
+
+// helpLinesStyled renders /help; with markup, names and keys keep the text
+// color while their descriptions are muted, so the eye can scan one column.
+func (r *replCommandRegistry) helpLinesStyled(markup bool) []string {
+	row := func(name, desc string, width int) string {
+		name = fmt.Sprintf("%-*s", width, name)
+		if markup {
+			return "  " + styleEscape(name) + "  " + styled(desc, "muted", "")
 		}
-		rows = append(rows, row{names: names, summary: cmd.summary})
+		return "  " + name + "  " + desc
 	}
-	for _, row := range rows {
-		lines = append(lines, fmt.Sprintf("  %-*s  %s", width, row.names, row.summary))
+	// Help is a reference list, so commands sort by name rather than by
+	// registration order.
+	commands := append([]replCommand(nil), r.commands...)
+	sort.Slice(commands, func(i, j int) bool { return commands[i].name < commands[j].name })
+	width := 0
+	names := make([]string, 0, len(commands))
+	for _, cmd := range commands {
+		name := strings.Join(append([]string{cmd.name}, cmd.aliases...), ", ")
+		width = max(width, len(name))
+		names = append(names, name)
 	}
-	lines = append(lines, keyHelpLines()...)
+	var lines []string
+	for n, cmd := range commands {
+		lines = append(lines, row(names[n], cmd.summary, width))
+	}
+	groups := keyHelpGroups()
+	width = 0
+	for _, g := range groups {
+		for _, k := range g.rows {
+			width = max(width, len(k.key))
+		}
+	}
+	for _, g := range groups {
+		title := g.title
+		if markup {
+			title = styled(title, "", "bold")
+		}
+		lines = append(lines, "", title)
+		for _, k := range g.rows {
+			lines = append(lines, row(k.key, k.desc, width))
+		}
+	}
 	return lines
 }
 
@@ -377,36 +402,52 @@ func (r *replCommandRegistry) helpFor(name string) []string {
 	}
 }
 
-func keyHelpLines() []string {
-	return []string{
-		"keys:",
-		"  Enter             send message",
-		"  Ctrl-J            newline (multi-line input)",
-		"  Type /            list commands; Tab completes",
-		"  Ctrl-C            interrupt root turn (twice to quit)",
-		"  Esc               dismiss dialog/search, leave or close the inspector, then interrupt",
-		"  Ctrl-Z            suspend to shell (`fg` resumes)",
-		"  Tab               focus the inspector from an empty composer (Esc or typing returns)",
-		"  Up / Down         move line or recall history; scroll the inspector when it has focus",
-		"  Left / Right      move cursor; previous/next tool or thought when the inspector has focus",
-		"  Ctrl-R            reverse-search history",
-		"  Ctrl-G            open the Agents dialog",
-		"  Ctrl-V            attach an image from the clipboard",
-		"  PgUp / PgDn       page the transcript; the inspector when it has focus",
-		"  Home / End        line start/end; inspector top/follow when it has focus",
-		"  Ctrl-O            toggle thinking for the active/latest turn",
-		"  Click disclosure  expand/collapse thinking or tool calls",
-		"  Click detail      inspect agent, tool result, or thought",
-		"  Click thumbnail   open image in the OS viewer",
-		"  Shift-drag        select terminal text (terminal override)",
-		"  Ctrl-A / Ctrl-E   line start / end",
-		"  Delete / Ctrl-D   delete next char (Ctrl-D exits when empty)",
-		"  Ctrl-U / Ctrl-K   clear before / after cursor",
-		"  Ctrl-L            clear display",
-		"  Ctrl-W            delete previous word",
-		"  Alt-B / Alt-F     word left / right",
-		"  Alt-D             delete next word",
-		"  y approve · n/Enter/Esc deny · a approve all",
+type keyHelpRow struct{ key, desc string }
+
+type keyHelpGroup struct {
+	title string
+	rows  []keyHelpRow
+}
+
+// keyHelpGroups is the key reference by task. Editing keys follow readline,
+// so two rows cover the chords instead of one row each; no key column is
+// wider than the widest navigation key, which keeps help legible at 80.
+func keyHelpGroups() []keyHelpGroup {
+	return []keyHelpGroup{
+		{"Send and edit", []keyHelpRow{
+			{"Enter", "Send the message"},
+			{"Ctrl-J", "Insert a newline"},
+			{"Tab", "Complete a slash command"},
+			{"Ctrl-R", "Search history"},
+			{"Ctrl-V", "Attach the clipboard image"},
+			{"Ctrl-L", "Clear the display"},
+			{"Ctrl-C", "Interrupt the turn · twice to quit"},
+			{"Ctrl-Z", "Suspend to the shell (fg resumes)"},
+			{"Esc", "Dismiss a dialog, search, or the inspector · interrupt"},
+			{"Ctrl-A/E Ctrl-U/K", "Line start or end · clear to the start or end"},
+			{"Ctrl-W Alt-B/F Alt-D", "Delete the previous word · move or delete by word"},
+		}},
+		{"Navigate", []keyHelpRow{
+			{"Up / Down", "Move or recall history · scroll a focused inspector"},
+			{"PgUp / PgDn", "Page the transcript · the inspector when it has focus"},
+			{"Home / End", "Line start or end · focused inspector top or follow"},
+			{"Alt-1..9 Alt-] Alt-[", "Switch workspace"},
+			{"Ctrl-G", "Open the sessions picker"},
+			{"Shift-drag", "Select terminal text"},
+		}},
+		{"Inspect", []keyHelpRow{
+			{"Tab", "Focus the inspector from an empty composer · Esc returns"},
+			{"Left / Right", "Previous or next tool or thought in a focused inspector"},
+			{"Click detail", "Inspect an agent, tool result, or thought"},
+			{"Click disclosure", "Expand thinking or tool calls"},
+			{"Ctrl-O", "Toggle thinking for the latest turn"},
+			{"Click thumbnail", "Open the image"},
+		}},
+		{"Approve", []keyHelpRow{
+			{"y", "Allow"},
+			{"n Enter Esc", "Deny"},
+			{"a", "Allow the rest of the batch"},
+		}},
 	}
 }
 
@@ -455,6 +496,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.appendNoticeLine(line)
 			return nil
 		},
+		replyMarkup: r.model.appendLine,
 		clearTranscript: func() error {
 			r.model.clearDisplay()
 			return nil
@@ -713,6 +755,12 @@ func replHelpCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if len(args) > 1 {
 		return replCommandResult{err: ctx.replyLines(ctx.registry.helpFor(args[1]))}
 	}
+	if ctx.replyMarkup != nil {
+		for _, line := range ctx.registry.helpLinesStyled(true) {
+			ctx.replyMarkup(line)
+		}
+		return replCommandResult{}
+	}
 	return replCommandResult{err: ctx.replyLines(ctx.registry.helpLines())}
 }
 
@@ -905,37 +953,10 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	return replCommandResult{err: ctx.replyLines(lines)}
 }
 
-func completeGetCommand(_ *replCommandContext, fields []string, prefix string) []string {
-	if completionArgPos(fields, prefix) != 1 {
-		return nil
-	}
-	return matchingWords(append([]string{"all"}, replSettingKeys...), prefix)
-}
-
-func replGetCommand(ctx *replCommandContext, args []string) replCommandResult {
-	if len(args) < 2 {
-		return replCommandResult{err: ctx.replyLine("usage: /get <key|all>. available: " + strings.Join(append([]string{"all"}, replSettingKeys...), ", "))}
-	}
-	key := args[1]
-	if key == "all" {
-		lines := []string{"settings:"}
-		for _, k := range replSettingKeys {
-			v, _ := replSettingValue(ctx, k)
-			lines = append(lines, fmt.Sprintf("  %s: %s", k, v))
-		}
-		return replCommandResult{err: ctx.replyLines(lines)}
-	}
-	value, ok := replSettingValue(ctx, key)
-	if !ok {
-		return replCommandResult{err: ctx.replyLine("unknown key: " + key + " (available: " + strings.Join(append([]string{"all"}, replSettingKeys...), ", ") + ")")}
-	}
-	return replCommandResult{err: ctx.replyLine(key + ": " + value)}
-}
-
 func completeSetCommand(_ *replCommandContext, fields []string, prefix string) []string {
 	switch completionArgPos(fields, prefix) {
 	case 1:
-		return matchingWords(replSettableKeys, prefix)
+		return matchingWords(replSettingKeys, prefix)
 	case 2:
 		if spec, ok := settingSpecFor(fields[1]); ok && spec.setWords != nil {
 			return matchingWords(spec.setWords, prefix)
@@ -944,26 +965,37 @@ func completeSetCommand(_ *replCommandContext, fields []string, prefix string) [
 	return nil
 }
 
+// replSetCommand shows every setting, one setting, or changes one: /set,
+// /set key, /set key value.
 func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
-	if len(args) != 3 {
-		return replCommandResult{err: ctx.replyLine("usage: /set <key> <value>. settable: " + strings.Join(replSettableKeys, ", "))}
+	switch len(args) {
+	case 1:
+		lines := []string{"settings:"}
+		for _, k := range replSettingKeys {
+			v, _ := replSettingValue(ctx, k)
+			lines = append(lines, fmt.Sprintf("  %s: %s", k, v))
+		}
+		return replCommandResult{err: ctx.replyLines(lines)}
+	case 2:
+		value, ok := replSettingValue(ctx, args[1])
+		if !ok {
+			return replCommandResult{err: ctx.replyLine("unknown key: " + args[1] + " (keys: " + strings.Join(replSettingKeys, ", ") + ")")}
+		}
+		return replCommandResult{err: ctx.replyLine(args[1] + ": " + value)}
+	case 3:
+		if ctx == nil || ctx.settings == nil {
+			return replCommandResult{err: ctx.replyLine("settings unavailable")}
+		}
+		line, err := applyAndPersistSetting(ctx, args[1], args[2])
+		if err != nil {
+			return replCommandResult{err: ctx.replyLine(err.Error())}
+		}
+		return replCommandResult{err: ctx.replyLine(line)}
+	default:
+		return replCommandResult{err: ctx.replyLine("usage: /set [key [value]]. settable: " + strings.Join(replSettableKeys, ", "))}
 	}
-	if ctx == nil || ctx.settings == nil {
-		return replCommandResult{err: ctx.replyLine("settings unavailable")}
-	}
-	line, err := applyAndPersistSetting(ctx, args[1], args[2])
-	if err != nil {
-		return replCommandResult{err: ctx.replyLine(err.Error())}
-	}
-	return replCommandResult{err: ctx.replyLine(line)}
 }
 
-// applyAndPersistSetting is the whole /set path for one key: parse onto the
-// session's settings, run the live-apply hook and the UI refresh, then
-// persist. Every interactive way of changing a setting goes through here so
-// none can skip a hook. It returns the notice line to show. Turns build their
-// completion request from the settings each time, so a change takes effect on
-// the next turn without reconnecting.
 func applyAndPersistSetting(ctx *replCommandContext, key, value string) (string, error) {
 	spec, ok := settingSpecFor(key)
 	if !ok || spec.parse == nil {
@@ -1157,7 +1189,13 @@ func replSettingValue(ctx *replCommandContext, key string) (string, bool) {
 
 func replToolsCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if len(args) == 1 {
-		return replListTools(ctx, "")
+		res := replListTools(ctx, "")
+		if res.err == nil {
+			if skills := skillsSection(ctx); len(skills) > 0 {
+				res.err = ctx.replyLines(skills)
+			}
+		}
+		return res
 	}
 	switch args[1] {
 	case "list":
@@ -1409,7 +1447,8 @@ func isTempWritablePath(path string) bool {
 	return false
 }
 
-func replSkillsCommand(ctx *replCommandContext, args []string) replCommandResult {
+// skillsSection lists the loaded skills under /tools; nothing when none.
+func skillsSection(ctx *replCommandContext) []string {
 	var list []string
 	if ctx != nil && ctx.state != nil && ctx.state.skillCatalog != nil {
 		for _, s := range ctx.state.skillCatalog.List() {
@@ -1421,9 +1460,9 @@ func replSkillsCommand(ctx *replCommandContext, args []string) replCommandResult
 		}
 	}
 	if len(list) == 0 {
-		return replCommandResult{err: ctx.replyLine("no skills loaded")}
+		return nil
 	}
-	return replCommandResult{err: ctx.replyLines(append([]string{fmt.Sprintf("skills (%d):", len(list))}, list...))}
+	return append([]string{fmt.Sprintf("skills (%d):", len(list))}, list...)
 }
 
 func matchingWords(words []string, prefix string) []string {

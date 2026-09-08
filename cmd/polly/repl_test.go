@@ -1007,7 +1007,7 @@ func TestAppendHelpPopulatesTranscript(t *testing.T) {
 	m := newReplModel()
 	m.appendHelp()
 	joined := strings.Join(transcriptTexts(m), "\n")
-	if !strings.Contains(joined, "commands:") || !strings.Contains(joined, "Ctrl-C") {
+	if !strings.Contains(joined, "Send and edit") || !strings.Contains(joined, "Ctrl-C") {
 		t.Fatalf("transcript missing help content: %q", joined)
 	}
 }
@@ -1022,7 +1022,7 @@ func TestRunREPLLoopShowsHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(out.String(), "commands:") || !strings.Contains(out.String(), "/exit") {
+	if !strings.Contains(out.String(), "Send and edit") || !strings.Contains(out.String(), "/exit") {
 		t.Fatalf("help output missing: %q", out.String())
 	}
 }
@@ -1636,11 +1636,12 @@ func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 	m.lastOut = 567
 
 	wide := m.statusRow(200)
-	if !strings.Contains(wide, "skills:2") {
+	if !strings.Contains(wide, "gpt-extra-long-name") {
 		t.Fatalf("wide bar should include all fields: %q", wide)
 	}
-	if strings.Contains(wide, "tools:4") {
-		t.Fatalf("tool count is not shown in the bar: %q", wide)
+	// Tool and skill counts are inventory, not status: /tools lists them.
+	if strings.Contains(wide, "tools:4") || strings.Contains(wide, "skills:2") {
+		t.Fatalf("counts are not shown in the bar: %q", wide)
 	}
 	// Tokens moved to the post-turn summary line; the bar never shows them.
 	if strings.Contains(wide, "1.2k") || strings.Contains(wide, "→") {
@@ -1648,7 +1649,7 @@ func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 	}
 
 	narrow := m.statusRow(20)
-	if strings.Contains(narrow, "skills:2") {
+	if strings.Contains(narrow, "gpt-extra-long-name") {
 		t.Fatalf("narrow bar should drop higher-priority fields before context: %q", narrow)
 	}
 	if !strings.Contains(narrow, "my-context") {
