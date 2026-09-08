@@ -156,13 +156,13 @@ func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
 	} else {
 		l.inputRows = 1
 	}
-	if m.status.parentName != "" {
-		l.dividerRows = dividerRowCount(h, l.inputRows, l.statusRows, l.dockRows, m.quiet)
-	}
+	// The rule above the composer separates history from the input in every
+	// session; in agent tabs it also carries the link back to the caller.
+	l.dividerRows = dividerRowCount(h, l.inputRows, l.statusRows, l.dockRows, m.quiet)
 	content := h - l.inputRows - l.statusRows - l.dockRows - l.dividerRows
 	l.logoRows = startupLogoRowCount(content, r.startupLogoVisible, r.images != nil)
 	l.transcriptHeight = max(0, content-l.logoRows)
-	l.chrome = r.chromeGeometryFor(w, l.logoRows, l.transcriptHeight)
+	l.chrome = r.chromeGeometryFor(w, l.logoRows, l.transcriptHeight, l.dividerRows > 0 && l.dockRows == 0)
 	return l
 }
 
@@ -190,8 +190,8 @@ func (l frameLayout) transcriptViewport(totalRows, topRow int, pinBottom bool, o
 	return v
 }
 
-// dividerRowCount reserves parent navigation above the composer, dropped
-// entirely in quiet mode or when the terminal is too short to spare it.
+// dividerRowCount reserves the rule above the composer, dropped entirely in
+// quiet mode or when the terminal is too short to spare it.
 func dividerRowCount(h, inputRows, statusRows, dockRows int, quiet bool) int {
 	if quiet || h-inputRows-statusRows-dockRows < 2 {
 		return 0

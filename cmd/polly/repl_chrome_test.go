@@ -603,3 +603,44 @@ func TestShortTranscriptUsesPlainInspector(t *testing.T) {
 		}
 	}
 }
+
+// Every session draws the rule above the composer. When no dock sits between
+// the transcript and the rule, the inspector frame's bottom border lands on
+// the rule row and the conversation's rule meets its corner.
+func TestComposerRuleInRootSession(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := chromeTestREPL(t)
+	screen.SetSize(80, 24)
+	m := r.model
+	r.render()
+	l := r.frameLayoutFor(80, 24)
+	rule := l.composerRow(0) - 1
+	if l.dividerRows != 1 || !m.parentLink.Empty() {
+		t.Fatalf("root session lacks the rule: %+v link=%v", l, m.parentLink)
+	}
+	for x := 0; x < 80; x++ {
+		if glyph := screenGlyph(screen, image.Pt(x, rule)); glyph != "─" {
+			t.Fatalf("rule row cell %d = %q", x, glyph)
+		}
+	}
+	screen.SetSize(140, 40)
+	r.inspect(tabViewTarget(r.visibleTab()))
+	waitInspector(t, r, 140)
+	r.render()
+	l = r.frameLayoutFor(140, 40)
+	g := r.chrome
+	if !g.joined || g.frame.Max.Y != l.composerRow(0) || g.inner.Max.Y != l.logoRows+l.transcriptHeight {
+		t.Fatalf("frame did not join the rule: %+v layout=%+v", g, l)
+	}
+	corner := image.Pt(g.frame.Min.X, g.frame.Max.Y-1)
+	if screenGlyph(screen, corner) != "┴" || screenGlyph(screen, image.Pt(0, corner.Y)) != "─" || screenGlyph(screen, image.Pt(139, corner.Y)) != "╯" {
+		t.Fatalf("joined corner row reads %q %q %q", screenGlyph(screen, image.Pt(0, corner.Y)), screenGlyph(screen, corner), screenGlyph(screen, image.Pt(139, corner.Y)))
+	}
+	m.turnDock.visible = true
+	r.render()
+	l = r.frameLayoutFor(140, 40)
+	g = r.chrome
+	if g.joined || g.frame.Max.Y != l.logoRows+l.transcriptHeight || screenGlyph(screen, image.Pt(g.frame.Min.X, g.frame.Max.Y-1)) != "╰" {
+		t.Fatalf("frame with a dock still joined the rule: %+v", g)
+	}
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"image"
+	"strings"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
@@ -98,20 +99,31 @@ func (r *managedREPL) requestParentLocked() {
 	})
 }
 
-// dividerRow anchors parent navigation immediately above the composer. Its
-// mouse target follows the layout, including multiline input and short screens.
-// Caller holds m.mu.
+// dividerRow is the rule above the composer. In an agent tab it carries the
+// link back to the caller, whose mouse target follows the layout, including
+// multiline input and short screens. Caller holds m.mu.
 func (m *replModel) dividerRow(l frameLayout) string {
 	m.parentLink = image.Rectangle{}
 	if l.dividerRows == 0 || l.width <= 0 {
 		return ""
 	}
+	rule := func(n int) string { return styled(strings.Repeat("─", max(0, n)), "muted", "") }
 	if m.status.parentName == "" {
-		return ""
+		return rule(l.width)
 	}
-	label := rw.Truncate("← Back to caller", l.width, "…")
+	// Inside a full-width frame the link sits past the corner glyphs.
+	col := 0
+	if l.chrome.joined && l.chrome.main.Empty() {
+		col = min(2, l.width-1)
+	}
+	label := rw.Truncate("← Back to caller", l.width-col, "…")
 	cols := rw.StringWidth(label)
 	y := l.composerRow(0) - 1
-	m.parentLink = image.Rect(0, y, cols, y+1)
-	return styled(label, "accent", "")
+	m.parentLink = image.Rect(col, y, col+cols, y+1)
+	tail := l.width - col - cols
+	if tail > 0 {
+		label += " "
+		tail--
+	}
+	return rule(col) + styled(label, "accent", "") + rule(tail)
 }
