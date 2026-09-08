@@ -588,19 +588,6 @@ func (r *managedREPL) drainOpen() {
 	}
 }
 
-// tabLines lists the open tabs for /tab, with what each one's turn is doing.
-// Runs outside model locks; each runtime is snapshotted separately.
-func (r *managedREPL) tabLines() []string { return r.workspaceLines() }
-
-// tabActivity describes the turn running on tab, how its last turn ended
-// while the tab was hidden, or "" at idle. Runs outside model locks.
-func (r *managedREPL) tabActivity(tab *replTab) string {
-	m := tab.model
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return modelTabActivity(m)
-}
-
 func modelTabActivity(m *replModel) string {
 	switch {
 	case m.approval != nil:
@@ -620,6 +607,3 @@ func modelTabActivity(m *replModel) string {
 	}
 	return m.busyLabel() + " · " + coarseElapsed(time.Since(m.turnStarted))
 }
-
-// resolveTab finds a tab by 1-based position or session name.
-func (r *managedREPL) resolveTab(arg string) (int, error) { return r.resolveWorkspace(arg) }

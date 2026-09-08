@@ -67,19 +67,15 @@ type replCommandContext struct {
 	setContextName func(name string)
 	// Picker callbacks are managed-TUI operations. Keeping
 	// them out of command parsing lets the fallback REPL retain textual /set.
-	openModelPicker  func()
-	openKeyManager   func()
-	openResumePicker func()
+	openModelPicker    func()
+	openKeyManager     func()
+	openSessionsPicker func()
 	// Tab callbacks are managed-TUI operations too; the fallback REPL holds
 	// one session and leaves them nil.
 	newTab      func()
 	closeTab    func()
-	showParent  func()
-	listTabs    func() []string
-	showTab     func(arg string) error
 	spawnAgent  func(brief string)
 	inspectView func(string)
-	openAgents  func()
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -177,11 +173,12 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:     replRenameCommand,
 	})
 	r.register(replCommand{
-		name:     "/resume",
-		usage:    "/resume",
-		summary:  "open a saved session in a new tab",
+		name:     "/sessions",
+		aliases:  []string{"/resume"},
+		usage:    "/sessions",
+		summary:  "switch to an open session or resume a saved one",
 		busySafe: true,
-		run:      replResumeCommand,
+		run:      replSessionsCommand,
 	})
 	r.register(replCommand{
 		name:    "/reset",
@@ -202,21 +199,6 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "list loaded skills",
 		busySafe: true,
 		run:      replSkillsCommand,
-	})
-	r.register(replCommand{
-		name:     "/tab",
-		aliases:  []string{"/tabs"},
-		usage:    "/tab [n|name]",
-		summary:  "list open tabs, or switch to one",
-		busySafe: true,
-		run:      replTabCommand,
-	})
-	r.register(replCommand{
-		name:     "/parent",
-		usage:    "/parent",
-		summary:  "return to this agent’s parent session",
-		busySafe: true,
-		run:      replParentCommand,
 	})
 	r.register(replCommand{
 		name:     "/spawn",
@@ -536,24 +518,13 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.status.rememberModel(settings.Model)
 			r.model.status.clearContextUsage(settings.MaxHistoryTokens)
 		},
-		openModelPicker:  r.openModelPicker,
-		openKeyManager:   r.openKeyManager,
-		openResumePicker: r.openResumePicker,
-		newTab:           r.requestNewTabLocked,
-		closeTab:         r.requestCloseTabLocked,
-		showParent:       r.requestParentLocked,
-		listTabs:         r.requestWorkspaceLines,
-		spawnAgent:       r.requestSpawnLocked,
-		inspectView:      r.inspectCommand,
-		openAgents:       r.openAgentsPicker,
-		showTab: func(arg string) error {
-			i, err := r.resolveTab(arg)
-			if err != nil {
-				return err
-			}
-			r.requestShowTabLocked(i)
-			return nil
-		},
+		openModelPicker:    r.openModelPicker,
+		openKeyManager:     r.openKeyManager,
+		openSessionsPicker: r.openSessionsPicker,
+		newTab:             r.requestNewTabLocked,
+		closeTab:           r.requestCloseTabLocked,
+		spawnAgent:         r.requestSpawnLocked,
+		inspectView:        r.inspectCommand,
 	}
 }
 
@@ -841,14 +812,14 @@ func replKeysCommand(ctx *replCommandContext, args []string) replCommandResult {
 	return replCommandResult{}
 }
 
-func replResumeCommand(ctx *replCommandContext, args []string) replCommandResult {
+func replSessionsCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if len(args) != 1 {
-		return replCommandResult{err: ctx.replyLine("usage: /resume")}
+		return replCommandResult{err: ctx.replyLine("usage: /sessions")}
 	}
-	if ctx == nil || ctx.openResumePicker == nil {
+	if ctx == nil || ctx.openSessionsPicker == nil {
 		return replCommandResult{err: ctx.replyLine("session picker is available only in the managed TUI")}
 	}
-	ctx.openResumePicker()
+	ctx.openSessionsPicker()
 	return replCommandResult{}
 }
 
@@ -884,23 +855,6 @@ func replSpawnCommand(ctx *replCommandContext, args []string) replCommandResult 
 	}
 	ctx.spawnAgent(brief)
 	return replCommandResult{}
-}
-
-func replTabCommand(ctx *replCommandContext, args []string) replCommandResult {
-	if ctx == nil || ctx.listTabs == nil || ctx.showTab == nil {
-		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
-	}
-	switch len(args) {
-	case 1:
-		return replCommandResult{err: ctx.replyLines(ctx.listTabs())}
-	case 2:
-		if err := ctx.showTab(args[1]); err != nil {
-			return replCommandResult{err: ctx.replyLine(err.Error())}
-		}
-		return replCommandResult{}
-	default:
-		return replCommandResult{err: ctx.replyLine("usage: /tab [n|name]")}
-	}
 }
 
 func replContextCommand(ctx *replCommandContext, args []string) replCommandResult {
@@ -1481,15 +1435,4 @@ func matchingWords(words []string, prefix string) []string {
 	}
 	sort.Strings(matches)
 	return matches
-}
-
-func replParentCommand(ctx *replCommandContext, args []string) replCommandResult {
-	if len(args) != 1 {
-		return replCommandResult{err: ctx.replyLine("usage: /parent")}
-	}
-	if ctx == nil || ctx.showParent == nil {
-		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
-	}
-	ctx.showParent()
-	return replCommandResult{}
 }

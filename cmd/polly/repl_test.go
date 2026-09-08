@@ -492,8 +492,8 @@ func TestCompleteSlash(t *testing.T) {
 		{"/c", true, "/c", []string{"/clear", "/close", "/context"}},
 		{"/cl", true, "/cl", []string{"/clear", "/close"}},
 		{"/cle", true, "/clear", []string{"/clear"}},
-		// "/t" matches the tab commands and /tools; "/to" is /tools alone.
-		{"/t", true, "/t", []string{"/tab", "/tabs", "/tools"}},
+		// "/t" is /tools alone now that the tab commands are gone.
+		{"/t", true, "/tools", []string{"/tools"}},
 		{"/to", true, "/tools", []string{"/tools"}},
 		// Already complete stays put but still reports its single match.
 		{"/help", true, "/help", []string{"/help"}},

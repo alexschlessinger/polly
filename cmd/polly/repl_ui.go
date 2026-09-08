@@ -1345,7 +1345,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				return false
 			}
 			if m.status.sessionField.hit(mouse.X, mouse.Y, terminalHeight) {
-				r.openResumePicker()
+				r.openSessionsPicker()
 				return false
 			}
 			if r.openAgentAt(mouse.X, mouse.Y) || m.toggleTurnTrailerAt(mouse.X, mouse.Y) {
@@ -1505,7 +1505,8 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	case "<C-r>":
 		m.hist.startSearch()
 	case "<C-g>":
-		r.openAgentsPicker()
+		// The picker opens on the agent that needs attention, when one does.
+		r.openSessionsPickerSelected(r.attentionAgentName())
 	case "<Up>":
 		// Move up a line within a multi-line prompt; recall older history only
 		// when already on the first line (zsh up-line-or-history).

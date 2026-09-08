@@ -80,3 +80,44 @@ func sessionTreeName(info *sessions.Metadata, depth int) string {
 	}
 	return info.Name
 }
+
+// orderSessionGroups puts the subtrees rooted at open workspaces first, in
+// workspace order, ahead of the saved sessions in their tree order. Within an
+// open subtree the agents sort by priority (lower first) when they are all
+// direct children, so the one waiting on an approval leads.
+func orderSessionGroups(nodes []sessionTreeNode, workspaceIndex func(sessionTreeNode) (int, bool), priority func(sessionTreeNode) int) []sessionTreeNode {
+	type group struct {
+		nodes []sessionTreeNode
+		order int
+		open  bool
+	}
+	var groups []group
+	for _, node := range nodes {
+		if node.Depth == 0 || len(groups) == 0 {
+			g := group{}
+			g.order, g.open = workspaceIndex(node)
+			groups = append(groups, g)
+		}
+		groups[len(groups)-1].nodes = append(groups[len(groups)-1].nodes, node)
+	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		a, b := groups[i], groups[j]
+		if a.open != b.open {
+			return a.open
+		}
+		return a.open && a.order < b.order
+	})
+	out := make([]sessionTreeNode, 0, len(nodes))
+	for _, g := range groups {
+		children := g.nodes[1:]
+		flat := true
+		for _, child := range children {
+			flat = flat && child.Depth == 1
+		}
+		if g.open && flat {
+			sort.SliceStable(children, func(i, j int) bool { return priority(children[i]) < priority(children[j]) })
+		}
+		out = append(out, g.nodes...)
+	}
+	return out
+}

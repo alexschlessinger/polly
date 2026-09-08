@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -98,5 +99,22 @@ func TestListContextsNestsAgentsUnlessFlat(t *testing.T) {
 	})
 	if strings.Contains(flat, "↳") || !strings.Contains(flat, "\ndelta (spawned by gamma) - ") {
 		t.Fatalf("flat list = %q, want one plain line per session naming the agent's parent", flat)
+	}
+}
+
+func TestOrderSessionGroupsPutsOpenWorkspacesFirst(t *testing.T) {
+	// saved-a, saved-b, open-2 (with two agents), open-1
+	nodes := []sessionTreeNode{{Index: 0}, {Index: 1}, {Index: 2, Children: 2}, {Index: 3, Depth: 1}, {Index: 4, Depth: 1}, {Index: 5}}
+	open := map[int]int{2: 1, 5: 0}
+	got := orderSessionGroups(nodes,
+		func(n sessionTreeNode) (int, bool) { i, ok := open[n.Index]; return i, ok },
+		func(n sessionTreeNode) int { return 5 - n.Index },
+	)
+	var order []int
+	for _, n := range got {
+		order = append(order, n.Index)
+	}
+	if want := []int{5, 2, 4, 3, 0, 1}; fmt.Sprint(order) != fmt.Sprint(want) {
+		t.Fatalf("order = %v, want %v", order, want)
 	}
 }

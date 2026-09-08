@@ -136,9 +136,9 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 	}
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: placement.X, Y: 23}})
 	if r.model.modal == nil {
-		t.Fatal("clicking the status session did not open /resume")
+		t.Fatal("clicking the status session did not open the sessions picker")
 	}
-	if r.model.modal.title != "Resume session" {
+	if r.model.modal.title != "Sessions" {
 		t.Fatalf("modal title = %q", r.model.modal.title)
 	}
 	if r.model.modal.width != 64 {
@@ -216,7 +216,7 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 	}
 
 	// Picking it again shows its tab instead of opening a second copy.
-	r.openResumePicker()
+	r.openSessionsPicker()
 	for i, item := range r.model.modal.items {
 		if item.value == "current-work" {
 			if !strings.HasSuffix(item.label, "workspace 1") {
@@ -245,7 +245,7 @@ func TestResumePickerRenamesSavedAndCurrentSessions(t *testing.T) {
 	r := newManagedREPL(&Config{}, "current-work", 0, 0)
 	r.state = &conversationState{sessionStore: store, session: current}
 
-	r.openResumePicker()
+	r.openSessionsPicker()
 	for i, item := range r.model.modal.items {
 		if item.value == "saved-work" {
 			r.model.modal.selected = i
@@ -299,7 +299,7 @@ func TestResumeModalBoundsRowsAndReportsVisibleRange(t *testing.T) {
 		t.Fatalf("first modal window = %q", first)
 	}
 	lines := strings.Split(first, "\n")
-	if footer := lines[len(lines)-1]; footer != "    1–14 of 20 · type filter · ↑↓ · Enter resume · Esc" {
+	if footer := lines[len(lines)-1]; footer != "     1–14 of 20 · type filter · ↑↓ · Enter open · Esc" {
 		t.Fatalf("centered footer = %q", footer)
 	}
 	m.selected = 15
@@ -385,7 +385,7 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 	}
 	key := func(id string) { r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
 
-	r.openResumePicker()
+	r.openSessionsPicker()
 	m := r.model.modal
 	if m == nil || m.width != 72 {
 		t.Fatalf("picker with agents = %#v, want the wider modal", m)
@@ -445,11 +445,105 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 	}
 
 	// Reopening on an agent shows it, expanding its parent.
-	r.openResumePickerSelected("epsilon")
+	r.openSessionsPickerSelected("epsilon")
 	if selectedValue() != "epsilon" {
 		t.Fatalf("picker opened on %q, want epsilon", selectedValue())
 	}
 	if !r.pickerExpanded["gamma"] {
 		t.Fatal("opening on an agent did not expand its parent")
+	}
+}
+
+// The picker lists the open workspaces first, in tab order, with what each
+// is doing; a workspace with a live agent starts expanded and the agent that
+// needs an approval leads. Saved sessions follow.
+func TestSessionsPickerListsOpenWorkspacesFirstWithAgents(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	ctx := context.Background()
+	for _, name := range []string{"older-saved", "newer-saved", "root"} {
+		if err := testAcquireSession(t, store, name).Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"idle-agent", "waiting-agent"} {
+		child, err := store.Acquire(ctx, name, sessions.AcquireOptions{Parent: "root"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := child.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := newTabTestREPL(t, store, "root", "second")
+	root := r.tabs[0]
+	// Live agent tabs report to root without holding the screen.
+	for _, name := range []string{"idle-agent", "waiting-agent"} {
+		r.tabs = append(r.tabs, &replTab{name: name, parent: root, parentName: root.name, model: newReplModel()})
+	}
+	r.showTab(0)
+	r.tabs[1].model.busy = true
+	r.tabs[1].model.state = turnStateStreaming
+	r.tabs[3].model.approval = &approvalState{reply: make(chan []bool, 1)}
+	r.openSessionsPicker()
+	m := r.model.modal
+	if m == nil || m.title != "Sessions" {
+		t.Fatalf("picker = %#v", m)
+	}
+	var order []string
+	for _, item := range m.filteredItems() {
+		order = append(order, item.value)
+	}
+	if got := strings.Join(order, " "); got != "root waiting-agent idle-agent second newer-saved older-saved" {
+		t.Fatalf("picker order = %q", got)
+	}
+	labels := make(map[string]string)
+	for _, item := range m.items {
+		labels[item.value] = item.label
+	}
+	for value, want := range map[string]string{
+		"root":          "current · 1 need approval",
+		"second":        "workspace 2 · streaming",
+		"waiting-agent": "active agent · approval needed",
+	} {
+		if !strings.HasSuffix(labels[value], want) {
+			t.Fatalf("%s row = %q, want suffix %q", value, labels[value], want)
+		}
+	}
+	if !r.pickerExpanded["root"] {
+		t.Fatal("workspace with live agents did not start expanded")
+	}
+}
+
+func TestCtrlGPreselectsAgentNeedingApproval(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	if err := testAcquireSession(t, store, "root").Close(); err != nil {
+		t.Fatal(err)
+	}
+	child, err := store.Acquire(context.Background(), "agent", sessions.AcquireOptions{Parent: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := newTabTestREPL(t, store, "root")
+	root := r.tabs[0]
+	tab := &replTab{name: "agent", parent: root, parentName: root.name, model: newReplModel()}
+	r.tabs = append(r.tabs, tab)
+	r.model.ed.setText("draft")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-g>"})
+	m := r.model.modal
+	if m == nil || m.filteredItems()[m.selected].value != "root" {
+		t.Fatalf("Ctrl-G without attention did not open on the current session: %#v", m)
+	}
+	r.closeModal()
+	tab.model.approval = &approvalState{reply: make(chan []bool, 1)}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-g>"})
+	m = r.model.modal
+	if m == nil || m.filteredItems()[m.selected].value != "agent" {
+		t.Fatalf("Ctrl-G did not open on the agent needing approval: %#v", m)
+	}
+	if r.model.ed.text() != "draft" {
+		t.Fatal("opening the picker changed the composer")
 	}
 }

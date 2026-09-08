@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -99,6 +100,39 @@ func (r *managedREPL) runTabCommand(line string) {
 	r.applyTabRequests()
 }
 
+// showWorkspace switches to workspace n (1-based) with its Alt shortcut and
+// applies the change, as the event loop does after a handler returns.
+func (r *managedREPL) showWorkspace(n int) {
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: fmt.Sprintf("<M-%d>", n)})
+	r.applyTabRequests()
+}
+
+// runParent follows the rule's caller link and applies the tab change.
+func (r *managedREPL) runParent() {
+	r.model.mu.Lock()
+	r.requestParentLocked()
+	r.model.mu.Unlock()
+	r.applyTabRequests()
+}
+
+// tabLines lists the open workspaces as the sessions picker marks them:
+// position, name, what the workspace is doing, and "current" for the visible one.
+func (r *managedREPL) tabLines() []string {
+	r.syncWorkspaces()
+	var lines []string
+	for n, tab := range r.workspaces {
+		line := fmt.Sprintf("%d  %s", n+1, tab.name)
+		if activity := r.workspaceActivity(tab); activity != "" {
+			line += "  " + activity
+		}
+		if tab.model == r.model {
+			line += "  current"
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func startBlockedTurn(t *testing.T, r *managedREPL) chan error {
 	t.Helper()
 	r.model.mu.Lock()
@@ -130,7 +164,7 @@ func TestResumePickerMarksAndRefusesSessionsInUseElsewhere(t *testing.T) {
 	r := newTabTestREPL(t, store, "current-work")
 	current := r.state.session
 
-	r.openResumePicker()
+	r.openSessionsPicker()
 	var held *replModalItem
 	for i := range r.model.modal.items {
 		if r.model.modal.items[i].value == "held-elsewhere" {
@@ -211,7 +245,7 @@ func TestLeavingABusyTabKeepsItsTurnRunning(t *testing.T) {
 	if got := r.model.fullTranscript(); !strings.Contains(got, "cancel this tab's turn (Esc) before closing it") {
 		t.Fatalf("close refusal was not explained: %q", got)
 	}
-	r.runTabCommand("/tab 1")
+	r.showWorkspace(1)
 	if r.visibleTabIndex() != 0 || r.state != r.tabs[0].state {
 		t.Fatal("/tab 1 did not leave the busy tab")
 	}
@@ -245,7 +279,7 @@ func TestLeavingABusyTabKeepsItsTurnRunning(t *testing.T) {
 
 	// Opening another session while a turn runs is fine too: the new tab
 	// takes the screen, the turn keeps going behind it.
-	r.runTabCommand("/tab 2")
+	r.showWorkspace(2)
 	r.requestOpenLocked("older-work")
 	if r.opening != "older-work" {
 		t.Fatalf("a running turn blocked opening a session: %q", r.model.fullTranscript())
@@ -255,7 +289,7 @@ func TestLeavingABusyTabKeepsItsTurnRunning(t *testing.T) {
 		t.Fatalf("tabs after opening under a turn = %d, visible %d, busy %v", len(r.tabs), r.visibleTabIndex(), r.model.busy)
 	}
 
-	r.runTabCommand("/tab 2")
+	r.showWorkspace(2)
 	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "bold while hidden") {
 		t.Fatalf("showing the tab did not render its streamed text: %q", got)
 	}
@@ -282,7 +316,7 @@ func TestHiddenTurnSettlesOnItsOwnTabAndRunsItsQueue(t *testing.T) {
 	busy.model.mu.Lock()
 	busy.model.queue = queuedTextInputs("/set model openai/gpt-5.4")
 	busy.model.mu.Unlock()
-	r.runTabCommand("/tab 1")
+	r.showWorkspace(1)
 
 	close(release)
 	select {
@@ -353,7 +387,7 @@ func TestIdleInterruptWarnsAboutHiddenTurnsThenQuitsWithGrace(t *testing.T) {
 	r := newTabTestREPL(t, store, "first-work", "current-work")
 	busy := r.tabs[1]
 	startBlockedTurn(t, r)
-	r.runTabCommand("/tab 1")
+	r.showWorkspace(1)
 
 	if r.handleInterrupt() {
 		t.Fatal("the first idle interrupt quit with a turn running in another tab")
@@ -410,7 +444,7 @@ func TestIdleEOFWarnsAboutHiddenTurnsThenQuits(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "first-work", "current-work")
 	startBlockedTurn(t, r)
-	r.runTabCommand("/tab 1")
+	r.showWorkspace(1)
 	eof := ui.Event{Type: ui.KeyboardEvent, ID: "<C-d>"}
 	if r.handleEvent(eof) {
 		t.Fatal("the first Ctrl-D quit with a turn running in another tab")
@@ -471,7 +505,7 @@ func TestShowTabMovesScreenFactsAndKeepsEachTranscript(t *testing.T) {
 	r.model.imageCellWidth, r.model.imageCellHeight = 9, 18
 	r.model.appendNoticeLine("only in the first tab")
 
-	r.runTabCommand("/tab 2")
+	r.showWorkspace(2)
 	m := r.model
 	if r.visibleTabIndex() != 1 || r.state != r.tabs[1].state {
 		t.Fatal("/tab 2 did not show the second tab")
@@ -492,19 +526,13 @@ func TestShowTabMovesScreenFactsAndKeepsEachTranscript(t *testing.T) {
 		t.Fatal("transcripts leaked between tabs")
 	}
 
-	r.runTabCommand("/tab first-work")
+	r.showWorkspace(1)
 	if r.visibleTabIndex() != 0 || !strings.Contains(r.model.fullTranscript(), "only in the first tab") {
 		t.Fatal("/tab by name did not show the first tab with its transcript")
 	}
 
-	r.runTabCommand("/tab 3")
-	r.runTabCommand("/tab nope")
-	r.runTabCommand("/tab")
-	transcript := r.model.fullTranscript()
-	for _, want := range []string{"no tab 3 (2 open)", "no tab named nope", "tabs (2):", "1  first-work  current", "2  second-work"} {
-		if !strings.Contains(transcript, want) {
-			t.Fatalf("%q missing from %q", want, transcript)
-		}
+	if got := strings.Join(r.tabLines(), "\n"); !strings.Contains(got, "1  first-work  current") || !strings.Contains(got, "2  second-work") {
+		t.Fatalf("workspace list = %q", got)
 	}
 }
 
@@ -643,7 +671,7 @@ func TestLostLeaseUnderAHiddenTurnDropsTheTabOnceItSettles(t *testing.T) {
 	r := newTabTestREPL(t, store, "first-work", "second-work")
 	lost := r.tabs[1]
 	startBlockedTurn(t, r)
-	r.runTabCommand("/tab 1")
+	r.showWorkspace(1)
 	if err := lost.state.session.Close(); err != nil {
 		t.Fatal(err)
 	}

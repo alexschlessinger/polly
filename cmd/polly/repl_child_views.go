@@ -323,7 +323,7 @@ func childViewLocalCommand(line string) bool {
 		return true
 	}
 	switch name[0] {
-	case "/help", "/parent", "/tab", "/close", "/new", "/resume", "/exit", "/quit", "/clear", "/attach", "/inspect", "/agents":
+	case "/help", "/close", "/new", "/sessions", "/resume", "/exit", "/quit", "/clear", "/attach", "/inspect":
 		return true
 	}
 	return false
