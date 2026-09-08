@@ -94,7 +94,7 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 }
 
 func (m *replModel) entryVisualStart(index, width int) int {
-	start := 0
+	start := m.mastheadRowCount(width)
 	for i := 0; i < index; i++ {
 		start += m.entryVisualLineCount(i, width)
 	}

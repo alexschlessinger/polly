@@ -78,11 +78,16 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	// Off screen until shown; addTab shows a new tab at once.
 	m.hidden = true
 	m.status = newSessionStatus(settings, name, toolCount(state.effectiveTools()), skillCount(state.skillCatalog))
+	root := true
 	if md, err := state.session.GetMetadata(ctx); err == nil && md != nil {
 		m.status.parentName = md.Parent
 		m.status.description = md.Description
+		root = md.Parent == ""
 	}
 	m.quiet = r.config.Quiet
+	if root {
+		m.masthead = mastheadState{enabled: true, sandbox: currentSandboxPosture(r.config, state).summaryLine()}
+	}
 	m.artifactStore = state.artifactStore
 	m.hydrateHistory(history, name)
 	if m.hasAgentRows() && state.sessionStore != nil {

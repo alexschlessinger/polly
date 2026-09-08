@@ -413,11 +413,8 @@ func (r *managedREPL) render() {
 	r.transcriptW.PinBottom = pinTranscriptBottom
 	r.transcriptW.TopRow = topRow
 	r.transcriptW.OverlayBottom = overlay
-	if l.logoRows == imageLogoHeight {
-		r.logoW.Rows = make([][]ui.Cell, l.logoRows)
-	} else {
-		r.logoW.Rows = pollyLogoRows(w)
-	}
+	// The band is blank in the text layer; the image manager paints it.
+	r.logoW.Rows = make([][]ui.Cell, l.logoRows)
 	r.logoW.TopRow = 0
 	r.logoW.OverlayBottom = nil
 	r.inputW.Text = input

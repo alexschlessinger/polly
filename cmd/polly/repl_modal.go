@@ -668,15 +668,15 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 		if tab >= 0 {
 			r.tabs[tab].name = newName
 			if r.tabs[tab].model == r.model {
-				r.model.status.contextName = newName
+				r.model.setContextName(newName)
 			} else {
 				r.tabs[tab].model.mu.Lock()
-				r.tabs[tab].model.status.contextName = newName
+				r.tabs[tab].model.setContextName(newName)
 				r.tabs[tab].model.mu.Unlock()
 			}
 		}
 	case oldName == current:
-		r.model.status.contextName = newName
+		r.model.setContextName(newName)
 		if i := r.visibleTabIndex(); i >= 0 {
 			r.tabs[i].name = newName
 		}
@@ -684,7 +684,7 @@ func (r *managedREPL) renameSession(oldName, newName string) {
 		hidden := r.tabs[tab]
 		hidden.name = newName
 		hidden.model.mu.Lock()
-		hidden.model.status.contextName = newName
+		hidden.model.setContextName(newName)
 		hidden.model.mu.Unlock()
 	}
 	r.model.appendNoticeLine("renamed session '" + oldName + "' to '" + newName + "'")

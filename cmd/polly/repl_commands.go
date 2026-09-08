@@ -504,7 +504,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		// Commands run on the event loop with the model lock held, so this
 		// mutates the model directly like reply/clearTranscript do.
 		setContextName: func(name string) {
-			r.model.status.contextName = name
+			r.model.setContextName(name)
 			if i := r.visibleTabIndex(); i >= 0 {
 				r.tabs[i].name = name
 			}
@@ -556,7 +556,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			if settings == nil {
 				return
 			}
-			r.model.status.modelName = settings.Model
+			r.model.setModelName(settings.Model)
 			r.model.status.rememberModel(settings.Model)
 			r.model.status.clearContextUsage(settings.MaxHistoryTokens)
 		},
@@ -1176,6 +1176,26 @@ func (p sandboxPosture) noticeString() string {
 			line += "; ssh: agent unavailable"
 		}
 		return line + ")"
+	}
+}
+
+// summaryLine is the masthead's sandbox row: the posture in sentence case,
+// the preset's parts, and anything exceptional a user should know at a glance.
+func (p sandboxPosture) summaryLine() string {
+	switch p.state {
+	case sandboxPostureDisabled:
+		return "Sandbox disabled (--nosandbox)"
+	case sandboxPostureUnavailable:
+		return "Sandbox unavailable"
+	default:
+		parts := []string{"Sandbox active", strings.ReplaceAll(p.preset, "+", ", ")}
+		if len(p.unsandboxed) > 0 {
+			parts = append(parts, "not sandboxed: "+strings.Join(p.unsandboxed, ", "))
+		}
+		if p.sshAgentUnavailable {
+			parts = append(parts, "ssh agent unavailable")
+		}
+		return strings.Join(parts, " · ")
 	}
 }
 

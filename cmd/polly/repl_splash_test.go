@@ -8,100 +8,18 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-func plainLogo(rows [][]ui.Cell) string {
-	lines := make([]string, len(rows))
-	for y, row := range rows {
-		var line strings.Builder
-		for _, cell := range row {
-			line.WriteRune(cell.Rune)
-		}
-		lines[y] = strings.TrimRight(line.String(), " ")
-	}
-	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
-}
-
-func TestStartupLogoIsSmallCenteredAndTextFree(t *testing.T) {
-	for _, width := range []int{120, 80, 20, 13, 8, 1} {
-		rows := pollyLogoRows(width)
-		if len(rows) != startupLogoHeight {
-			t.Fatalf("width %d logo has %d rows, want %d", width, len(rows), startupLogoHeight)
-		}
-		nonBlank := false
-		for y, row := range rows {
-			if len(row) > width {
-				t.Fatalf("width %d logo row %d has %d cells", width, y, len(row))
-			}
-			for _, cell := range row {
-				if cell.Rune != ' ' {
-					nonBlank = true
-				}
-			}
-		}
-		if !nonBlank {
-			t.Fatalf("width %d logo was entirely blank", width)
-		}
-		plain := plainLogo(rows)
-		if strings.Contains(plain, "POLLY") || strings.Contains(plain, "type") {
-			t.Fatalf("startup mark contains text:\n%s", plain)
-		}
-	}
-
-	rows := pollyLogoRows(80)
-	left := 80
-	for _, row := range rows {
-		for x, cell := range row {
-			if cell.Rune != ' ' {
-				left = min(left, x)
-			}
-		}
-	}
-	if left != 33 {
-		t.Fatalf("80-column logo begins at column %d, want 33", left)
-	}
-}
-
-func TestStartupLogoUsesSuppliedPollyPalette(t *testing.T) {
-	colors := map[ui.Color]bool{}
-	for _, row := range pollyLogoRows(80) {
-		for _, cell := range row {
-			if cell.Rune == ' ' {
-				continue
-			}
-			colors[cell.Style.Fg] = true
-			colors[cell.Style.Bg] = true
-		}
-	}
-	for _, color := range []ui.Color{pollyGreen, pollyWing, pollyCrown, pollyBeak, pollyFace, pollyFoot} {
-		if !colors[color] {
-			t.Fatalf("startup logo did not use palette color %v", color)
-		}
-	}
-}
-
-func TestStartupLogoOnlyUsesSpareTranscriptHeight(t *testing.T) {
-	if got := startupLogoRowCount(startupLogoHeight+1, true, false); got != startupLogoHeight {
-		t.Fatalf("roomy terminal logo rows = %d", got)
-	}
-	if got := startupLogoRowCount(startupLogoHeight, true, false); got != 0 {
-		t.Fatalf("short terminal reserved %d logo rows", got)
-	}
-	if got := startupLogoRowCount(100, false, false); got != 0 {
-		t.Fatalf("hidden logo reserved %d rows", got)
-	}
-}
-
-// TestStartupLogoImageLadder covers the graphics-capable splash: tall
-// terminals get the taller image band, terminals too short for it degrade to
-// the half-block art, and then to nothing.
+// TestStartupLogoImageLadder covers the graphics-capable splash: a terminal
+// with room gets the image band, one without gets nothing, and terminals
+// without native graphics never reserve a band (the bird is in the masthead).
 func TestStartupLogoImageLadder(t *testing.T) {
 	if got := startupLogoRowCount(imageLogoHeight+1, true, true); got != imageLogoHeight {
 		t.Fatalf("native tall terminal logo rows = %d, want %d", got, imageLogoHeight)
 	}
-	if got := startupLogoRowCount(imageLogoHeight, true, true); got != startupLogoHeight {
-		t.Fatalf("native mid terminal logo rows = %d, want ANSI fallback %d", got, startupLogoHeight)
-	}
-	if got := startupLogoRowCount(startupLogoHeight, true, true); got != 0 {
+	if got := startupLogoRowCount(imageLogoHeight, true, true); got != 0 {
 		t.Fatalf("native short terminal reserved %d rows", got)
+	}
+	if got := startupLogoRowCount(100, true, false); got != 0 {
+		t.Fatalf("text terminal reserved %d rows", got)
 	}
 	if got := startupLogoRowCount(100, false, true); got != 0 {
 		t.Fatalf("hidden logo reserved %d rows", got)

@@ -23,6 +23,17 @@ func init() {
 	ui.StyleParserColorMap["active"] = ui.ColorYellow // status-bar active turn
 	ui.StyleParserColorMap["muted"] = ui.ColorGrey    // metadata (ANSI bright-black, XTerm8)
 	ui.StyleParserColorMap["code"] = ui.ColorWhite    // fenced code block contents
+	// The masthead bird is the one place the TUI paints true color: its
+	// palette registers by name so the bird is ordinary styled text.
+	ui.StyleParserColorMap["polly-green"] = pollyGreen
+	ui.StyleParserColorMap["polly-light"] = pollyLight
+	ui.StyleParserColorMap["polly-wing"] = pollyWing
+	ui.StyleParserColorMap["polly-crown"] = pollyCrown
+	ui.StyleParserColorMap["polly-beak"] = pollyBeak
+	ui.StyleParserColorMap["polly-mouth"] = pollyMouth
+	ui.StyleParserColorMap["polly-face"] = pollyFace
+	ui.StyleParserColorMap["polly-eye"] = pollyEye
+	ui.StyleParserColorMap["polly-foot"] = pollyFoot
 }
 
 // gotui's ParseStyles has no escape: it enters styled-text mode on any '[',
@@ -47,6 +58,15 @@ var styledLiteralBracketReplacer = strings.NewReplacer(
 // by hand apply it to every run of literal text; styled applies it itself.
 func styleEscape(s string) string {
 	return styledLiteralBracketReplacer.Replace(s)
+}
+
+// styledBg is styled with a background color as well; both names resolve
+// through StyleParserColorMap.
+func styledBg(text, fg, bg string) string {
+	if text == "" {
+		return ""
+	}
+	return "[" + styleEscape(text) + "](fg:" + fg + ",bg:" + bg + ")"
 }
 
 // styled wraps text in gotui's inline style markup. Color names come from

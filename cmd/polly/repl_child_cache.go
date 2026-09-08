@@ -125,6 +125,10 @@ func childDisplayCopy(src *replModel) *replModel {
 	m.visual = src.visual
 	m.visual.rows = slices.Clone(src.visual.rows)
 	m.visual.blocks = slices.Clone(src.visual.blocks)
+	if src.masthead.enabled {
+		// The snapshot has no masthead; its cached rows were laid out with one.
+		m.visual.invalidate()
+	}
 	m.followBottom, m.scrollAnchor = src.followBottom, src.scrollAnchor
 	m.status = src.status
 	m.status.recentModels = slices.Clone(src.status.recentModels)
