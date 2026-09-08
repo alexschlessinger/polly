@@ -67,6 +67,7 @@ func (r *ToolRegistry) ExecutionPolicy(root string, readOnly bool, deniedReads, 
 	}
 	cfg := sandbox.DefaultConfig()
 	cfg.AllowNetwork = base.AllowNetwork
+	cfg.DenyDNS = base.DenyDNS
 	cfg.AllowEnv = append([]string(nil), base.AllowEnv...)
 	cfg.PassEnv = append([]string(nil), base.PassEnv...)
 	cfg.DenyPaths = append(cfg.DenyPaths, base.DenyPaths...)

@@ -2,11 +2,14 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 func TestBoundNativeFilesAndReadOnlyPolicy(t *testing.T) {
@@ -64,5 +67,32 @@ func TestBashDistinguishesSandboxSetupFromCommandExit(t *testing.T) {
 	_, err = NewUnsafeBashTool(t.TempDir()).ExecuteOutput(context.Background(), map[string]any{"command": "exit 9"})
 	if !errors.As(err, &command) || command.ExitCode != 9 {
 		t.Fatalf("ordinary exit: %v", err)
+	}
+}
+
+func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *testing.T) {
+	registry := NewToolRegistry(nil, WithSandboxFactory(func(cfg sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }, sandbox.Config{AllowNetwork: true, DenyDNS: true}))
+	defer registry.Close()
+	ec, err := registry.ExecutionPolicy(t.TempDir(), false, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ec.Sandbox.AllowNetwork || !ec.Sandbox.DenyDNS {
+		t.Fatalf("member policy widened the parent's network policy: %+v", ec.Sandbox)
+	}
+	home := t.TempDir()
+	overlay := restrictiveSandboxOverlay(&MCPConfig{Sandbox: json.RawMessage(`{"allowNetwork":true,"writablePaths":["` + home + `"],"denyWrite":true,"denyDNS":true,"denyPaths":["` + home + `/.ssh"]}`)})
+	kept, err := sandbox.ParseConfig(overlay)
+	if err != nil || kept == nil {
+		t.Fatalf("overlay: %v %v", kept, err)
+	}
+	if kept.AllowNetwork || len(kept.WritablePaths) != 0 {
+		t.Fatalf("server grants survived context binding: %+v", kept)
+	}
+	if !kept.DenyWrite || !kept.DenyDNS || len(kept.DenyPaths) != 1 {
+		t.Fatalf("server restrictions dropped: %+v", kept)
+	}
+	if restrictiveSandboxOverlay(&MCPConfig{Sandbox: json.RawMessage(`false`)}) != nil || restrictiveSandboxOverlay(&MCPConfig{}) != nil {
+		t.Fatal("opt-out or absent overlays must bind with the member policy alone")
 	}
 }

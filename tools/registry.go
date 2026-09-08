@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1027,6 +1028,22 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 	}
 }
 
+func restrictiveSandboxOverlay(config *MCPConfig) json.RawMessage {
+	if config.SandboxOptOut() {
+		return nil
+	}
+	overlay, err := config.SandboxConfig()
+	if err != nil || overlay == nil {
+		return nil
+	}
+	restricted := sandbox.Config{DenyPaths: overlay.DenyPaths, DenyWritePaths: overlay.DenyWritePaths, DenyWrite: overlay.DenyWrite, DenyDNS: overlay.DenyDNS}
+	data, err := json.Marshal(restricted)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
 func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
 	if r.executionRoot != "" {
 		if config.URL != "" && !config.ContextIndependent {
@@ -1040,9 +1057,10 @@ func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName,
 		for i, arg := range config.Args {
 			config.Args[i] = rebindSourcePath(arg, r.executionSourceRoot, r.executionRoot)
 		}
-		// Context binding is an upper bound; tool metadata cannot reintroduce
-		// the original checkout's grants.
-		config.Sandbox = nil
+		// Context binding is an upper bound: a server's own sandbox entry may
+		// only narrow it. Its grants (and any opt-out) are dropped; the deny
+		// rules and DNS block the parent honored for it still apply.
+		config.Sandbox = restrictiveSandboxOverlay(config)
 	}
 	localProcess := config.Transport == "" || config.Transport == "stdio"
 	if localProcess {
