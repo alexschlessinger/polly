@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"image"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,59 +15,23 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
-	"github.com/urfave/cli/v3"
 )
 
-func TestThemeFlag(t *testing.T) {
-	for _, tc := range []struct {
-		name, env string
-		args      []string
-		want      string
-		invalid   bool
-	}{
-		{"default", "", nil, "default", false},
-		{"halo flag", "", []string{"--theme=halo"}, "halo", false},
-		{"env", "halo", nil, "halo", false},
-		{"override", "halo", []string{"--theme=default"}, "default", false},
-		{"invalid flag", "", []string{"--theme=neon"}, "", true},
-		{"invalid env", "neon", nil, "", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("POLLYTOOL_THEME", tc.env)
-			if tc.env == "" {
-				_ = os.Unsetenv("POLLYTOOL_THEME")
-			}
-			var config *Config
-			cmd := &cli.Command{Writer: io.Discard, ErrWriter: io.Discard, Flags: outputConfigFlags(), Action: func(_ context.Context, c *cli.Command) error { config = parseConfig(c); return nil }}
-			err := cmd.Run(context.Background(), append([]string{"polly"}, tc.args...))
-			if tc.invalid {
-				if err == nil || config != nil {
-					t.Fatalf("invalid theme reached action: %v", err)
-				}
-				return
-			}
-			if err != nil || config.Theme != tc.want {
-				t.Fatalf("config=%+v err=%v", config, err)
-			}
-			config.PromptSet = true
-			if mode, err := selectConversationMode(config, false); err != nil || mode != conversationModeOneShot {
-				t.Fatalf("theme affected one-shot selection: %v %v", mode, err)
-			}
-		})
-	}
-}
-
-func haloTestREPL(t *testing.T) (*managedREPL, tcell.SimulationScreen) {
+func chromeTestREPL(t *testing.T) (*managedREPL, tcell.SimulationScreen) {
 	t.Helper()
 	r, screen := affordanceTestREPL(t)
-	r.config.Theme = "halo"
 	t.Cleanup(func() { _ = r.work.close() })
 	return r, screen
 }
 
-func TestHaloFrameGeometryAndEditor(t *testing.T) {
+func screenGlyph(screen tcell.SimulationScreen, pt image.Point) string {
+	glyph, _, _ := screen.Get(pt.X, pt.Y)
+	return glyph
+}
+
+func TestChromeFrameGeometryAndEditor(t *testing.T) {
 	withDisplayTTY(t)
-	r, screen := haloTestREPL(t)
+	r, screen := chromeTestREPL(t)
 	m := r.model
 	m.appendNoticeLine(strings.Repeat("wrapped words ", 60))
 	m.ed.setText("first\n" + strings.Repeat("界", 80))
@@ -83,13 +46,13 @@ func TestHaloFrameGeometryAndEditor(t *testing.T) {
 		if !visible || !image.Pt(x, y).In(r.inputW.Inner) {
 			t.Fatalf("%v cursor=(%d,%d,%v), input=%v", size, x, y, visible, r.inputW.Inner)
 		}
-		if l.halo || !r.haloBounds.outer.Empty() || r.inputW.Inner.Min.X != 0 || r.inputW.Inner.Dx() != size.X {
-			t.Fatal("Halo changed unframed conversation/composer geometry")
+		if !l.chrome.frame.Empty() || !r.chrome.frame.Empty() || r.inputW.Inner.Min.X != 0 || r.inputW.Inner.Dx() != size.X {
+			t.Fatal("a closed inspector changed conversation/composer geometry")
 		}
 		for _, pt := range []image.Point{{0, 0}, {2, r.inputW.Inner.Min.Y}} {
 			_, style, _ := screen.Get(pt.X, pt.Y)
 			if style.GetBackground() != ui.ColorClear {
-				t.Fatal("Halo colored the main canvas")
+				t.Fatal("chrome colored the main canvas")
 			}
 		}
 	}
@@ -98,9 +61,9 @@ func TestHaloFrameGeometryAndEditor(t *testing.T) {
 	}
 }
 
-func TestHaloSplitResizeMaximizeAndControls(t *testing.T) {
+func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 	withDisplayTTY(t)
-	r, screen := haloTestREPL(t)
+	r, screen := chromeTestREPL(t)
 	screen.SetSize(140, 40)
 	m := r.model
 	m.ed.setText("draft stays here")
@@ -113,25 +76,32 @@ func TestHaloSplitResizeMaximizeAndControls(t *testing.T) {
 		screen.SetSize(width, 40)
 		waitInspector(t, r, width)
 		r.render()
+		g := r.chrome
 		if r.inspectorW.Inner.Dx() != r.inspectorGeometry(width).width {
 			t.Fatal("inspector wrapper differs from body")
 		}
-		if width == 240 && (r.mainTranscriptBounds.Dx() != 167 || r.inspectorW.Inner.Dx() != 70) {
-			t.Fatal("default split is not 70 percent conversation and 30 percent inspector")
+		if width == 240 && (g.main.Dx() != 167 || r.inspectorW.Inner.Dx() != 71) {
+			t.Fatalf("default split is not 70 percent conversation and 30 percent inspector: %v %v", g.main, r.inspectorW.Inner)
 		}
-		if r.haloBounds.outer.Intersect(r.mainTranscriptBounds).Dx() > 0 || r.inputW.Inner.Min.X != 0 || r.inputW.Inner.Dx() != width {
+		if g.frame.Empty() {
+			t.Fatalf("no frame at width %d", width)
+		}
+		if g.frame.Intersect(g.main).Dx() > 0 || r.inputW.Inner.Min.X != 0 || r.inputW.Inner.Dx() != width {
 			t.Fatal("inspector chrome reached the conversation or composer")
 		}
+		if screenGlyph(screen, g.frame.Min) != "╭" || screenGlyph(screen, g.frame.Max.Sub(image.Pt(1, 1))) != "╯" {
+			t.Fatalf("frame corners missing at width %d", width)
+		}
 		checkInspectorHeaderGeometry(t, inspectorHeaderLayout{text: r.inspectorHeaderW.Text, buttons: r.inspectorButtons, rows: r.inspectorHeaderRows}, r.inspectorHeaderW.Inner)
-		if width >= 120 {
+		if width >= splitThreshold {
 			for _, ratio := range []float64{.01, .99, .5} {
 				r.inspectorRatio = ratio
 				r.render()
-				if r.mainTranscriptBounds.Dx() < 50 || r.inspectorW.Inner.Dx() < 50 {
+				if r.chrome.main.Dx() < inspectorMinWidth || r.inspectorW.Inner.Dx() < inspectorMinWidth {
 					t.Fatal("resize violated readable minimum")
 				}
 			}
-		} else if !r.mainTranscriptBounds.Empty() {
+		} else if !g.main.Empty() {
 			t.Fatal("narrow inspector overlaps root")
 		}
 		parent := headerButton(r.inspectorButtons, "parent")
@@ -147,12 +117,12 @@ func TestHaloSplitResizeMaximizeAndControls(t *testing.T) {
 	}
 	r.inspectCommand("maximize")
 	r.render()
-	if !r.mainTranscriptBounds.Empty() || r.inspectorW.Inner.Min.X != 1 {
+	if !r.chrome.main.Empty() || r.inspectorW.Inner.Min.X != 1 || r.chrome.frame.Min.X != 0 {
 		t.Fatal("maximize failed")
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", headerButton(r.inspectorButtons, "parent").Min))
 	r.render()
-	if r.workspace().inspector.open || r.transcriptW.Inner.Min.X != 0 {
+	if r.workspace().inspector.open || r.transcriptW.Inner.Min.X != 0 || !r.chrome.frame.Empty() {
 		t.Fatal("close failed")
 	}
 	if m.ed.text() != "draft stays here" {
@@ -160,9 +130,9 @@ func TestHaloSplitResizeMaximizeAndControls(t *testing.T) {
 	}
 }
 
-func TestHaloScrollbarsFollowAndModalMapping(t *testing.T) {
+func TestChromeScrollbarsFollowAndModalMapping(t *testing.T) {
 	withDisplayTTY(t)
-	r, screen := haloTestREPL(t)
+	r, screen := chromeTestREPL(t)
 	screen.SetSize(100, 32)
 	m := r.model
 	m.appendNoticeLine(strings.Repeat("line\n", 120))
@@ -173,6 +143,16 @@ func TestHaloScrollbarsFollowAndModalMapping(t *testing.T) {
 	b := r.inspectorScrollbar
 	if b.thumb.Empty() {
 		t.Fatal("missing scrollbar")
+	}
+	// The thumb rides the frame's right edge; content owns every column before it.
+	if b.track.Min.X != 99 || r.inspectorW.Inner.Max.X != 99 {
+		t.Fatalf("scrollbar is not on the frame edge: track=%v inner=%v", b.track, r.inspectorW.Inner)
+	}
+	if screenGlyph(screen, b.thumb.Min) != "┃" {
+		t.Fatalf("thumb glyph = %q", screenGlyph(screen, b.thumb.Min))
+	}
+	if screenGlyph(screen, image.Pt(b.track.Min.X, b.track.Min.Y)) != "│" && b.thumb.Min.Y != b.track.Min.Y {
+		t.Fatal("edge outside the thumb lost its border")
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", b.thumb.Min))
 	r.handleEvent(mouseEvent("<MouseLeft>", b.track.Min))
@@ -206,6 +186,9 @@ func TestHaloScrollbarsFollowAndModalMapping(t *testing.T) {
 	if modal.top == 0 || !image.Pt(modal.listBounds.Min.X, modal.listBounds.Min.Y+modal.selected-modal.top).In(modal.listBounds) {
 		t.Fatal("selection is not visible")
 	}
+	if r.modalScrollbar.thumb.Empty() || r.modalScrollbar.thumb.Min.X != r.modalW.Max.X-1 {
+		t.Fatalf("dialog scrollbar is not on its border: %v dialog=%v", r.modalScrollbar.thumb, r.modalW.Rectangle)
+	}
 	want := fmt.Sprint(modal.top + 2)
 	r.handleEvent(mouseEvent("<MouseLeft>", modal.listBounds.Min.Add(image.Pt(1, 2))))
 	if chosen != want {
@@ -230,65 +213,110 @@ func TestHaloScrollbarsFollowAndModalMapping(t *testing.T) {
 	}
 }
 
-func TestHaloOrbitUsesDisplayCellsOnly(t *testing.T) {
+func TestOrbitUsesDisplayCellsOnly(t *testing.T) {
 	withDisplayTTY(t)
-	r, screen := haloTestREPL(t)
+	r, screen := chromeTestREPL(t)
 	m := r.model
 	m.beginTurn("go")
 	r.render()
-	if r.haloOrbit.active {
-		t.Fatal("main conversation animated a Halo frame")
+	if r.orbit.active {
+		t.Fatal("main conversation animated a frame")
 	}
 	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 100)
 	r.render()
-	if !r.haloOrbit.active {
+	if !r.orbit.active {
 		t.Fatal("busy frame did not animate")
 	}
-	epoch := r.haloOrbit.epoch
+	epoch := r.orbit.epoch
 	rows := append([][]ui.Cell(nil), m.visual.rows...)
 	placements := append([]inspectionLink(nil), m.inspectionLinks...)
 	canonical := strings.Join(transcriptTexts(m), "\n")
-	geometry := r.mainTranscriptBounds
-	edgeBefore := r.haloOrbit.cells[3].last
+	geometry := r.chrome
+	edgeBefore := r.orbit.cells[3].last
 	r.tickAffordances(epoch.Add(700 * time.Millisecond))
-	if r.haloOrbit.cells[3].last == edgeBefore {
+	if r.orbit.cells[3].last == edgeBefore {
 		t.Fatal("orbit did not move")
 	}
-	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.inspectionLinks) || canonical != strings.Join(transcriptTexts(m), "\n") || geometry != r.mainTranscriptBounds {
+	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.inspectionLinks) || canonical != strings.Join(transcriptTexts(m), "\n") || geometry != r.chrome {
 		t.Fatal("border tick mutated content or hitboxes")
 	}
 	r.render()
-	if !r.haloOrbit.epoch.Equal(epoch) {
+	if !r.orbit.epoch.Equal(epoch) {
 		t.Fatal("redraw restarted orbit")
 	}
 	screen.SetSize(140, 40)
 	r.render()
-	if !r.haloOrbit.epoch.Equal(epoch) || len(r.haloOrbit.cells) != 2*(r.haloBounds.outer.Dx()+r.haloBounds.outer.Dy())-4 {
+	if !r.orbit.epoch.Equal(epoch) || len(r.orbit.cells) != 2*(r.chrome.frame.Dx()+r.chrome.frame.Dy())-4 {
 		t.Fatal("resize lost phase or perimeter")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: focusLostID})
 	r.render()
-	if r.haloOrbit.active {
+	if r.orbit.active {
 		t.Fatal("unfocused motion")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: focusGainedID})
 	r.openModal(&replModal{title: "Dialog", items: []replModalItem{{label: "one"}}})
 	r.render()
-	if r.haloOrbit.active {
+	if r.orbit.active {
 		t.Fatal("modal did not pause motion")
 	}
 	r.closeModal()
 	r.endTurn(nil)
 	r.render()
-	if r.haloOrbit.active {
-		t.Fatal("idle Halo should be static")
+	if r.orbit.active {
+		t.Fatal("idle frame should be static")
 	}
 }
 
-func TestHaloHistoricalToolDoesNotAnimateWithLiveSource(t *testing.T) {
+func TestOrbitGlintUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
 	withDisplayTTY(t)
-	r, screen := haloTestREPL(t)
+	r, screen := chromeTestREPL(t)
+	screen.SetSize(140, 40)
+	m := r.model
+	m.appendNoticeLine(strings.Repeat("line\n", 120))
+	m.beginTurn("go")
+	r.inspect(tabViewTarget(r.visibleTab()))
+	waitInspector(t, r, 140)
+	r.render()
+	if !r.orbit.active || r.inspectorScrollbar.thumb.Empty() {
+		t.Fatalf("fixture lacks a live frame with a thumb: active=%v thumb=%v", r.orbit.active, r.inspectorScrollbar.thumb)
+	}
+	accent, seen := chromeColor("accent"), false
+	for tick := 0; tick < 40; tick++ {
+		now := r.orbit.epoch.Add(time.Duration(tick) * 50 * time.Millisecond)
+		r.orbit.tick(screen, now)
+		for n := range r.orbit.cells {
+			cell := r.orbit.frame(n, now)
+			if cell.Style.Fg.IsRGB() || cell.Style.Bg.IsRGB() {
+				t.Fatal("glint used a color outside the terminal palette")
+			}
+			if cell.Style.Fg == accent {
+				seen = true
+			}
+		}
+		if screenGlyph(screen, r.inspectorScrollbar.thumb.Min) != "┃" {
+			t.Fatalf("tick %d painted over the scrollbar thumb", tick)
+		}
+	}
+	if !seen {
+		t.Fatal("glint never lit an accent cell")
+	}
+	// The drag grip appears only while the pointer is over the divider.
+	grip := image.Pt(r.chrome.divider.Min.X, r.chrome.divider.Min.Y+r.chrome.divider.Dy()/2)
+	if screenGlyph(screen, grip) != "│" {
+		t.Fatalf("grip shown without hover: %q", screenGlyph(screen, grip))
+	}
+	r.handleEvent(mouseEvent("<MouseRelease>", grip))
+	r.render()
+	if screenGlyph(screen, grip) != "⋮" {
+		t.Fatalf("hovering the divider did not show the grip: %q", screenGlyph(screen, grip))
+	}
+}
+
+func TestHistoricalToolDoesNotAnimateWithLiveSource(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := chromeTestREPL(t)
 	screen.SetSize(140, 30)
 	m := r.model
 	m.beginTurn("work")
@@ -298,94 +326,56 @@ func TestHaloHistoricalToolDoesNotAnimateWithLiveSource(t *testing.T) {
 	r.inspectCommand("tools")
 	waitInspector(t, r, 140)
 	r.render()
-	if r.haloOrbit.active {
+	if r.orbit.active {
 		t.Fatal("historical tool inherited busy source")
 	}
 }
 
-func TestHaloPaletteKeepsCanonicalRolesAndLimitedColor(t *testing.T) {
-	cell := ui.Cell{Rune: '>', Style: ui.NewStyle(ui.ColorBlue, ui.ColorClear, ui.ModifierBold)}
-	parser := ui.StyleParserColorMap["accent"]
-	for _, colors := range []int{1 << 24, 256, 16, 0} {
-		theme := themeLayer{halo: true, colors: colors, panes: []image.Rectangle{image.Rect(0, 0, 10, 10)}}
-		if theme.convert(cell, image.Pt(11, 1)) != cell {
-			t.Fatal("palette leaked outside Halo surface")
-		}
-		next := theme.convert(cell, image.Pt(1, 1))
-		if next.Rune != cell.Rune || next.Style.Modifier&ui.ModifierBold == 0 {
-			t.Fatal("theme changed glyph/emphasis")
-		}
-		if colors == 1<<24 && (next.Style.Fg != haloPalette.accent || next.Style.Bg != cell.Style.Bg) {
-			t.Fatal("Halo palette mismatch")
-		}
-		if colors == 16 || colors == 256 {
-			if next.Style.Fg.IsRGB() || next.Style.Bg.IsRGB() {
-				t.Fatal("limited color did not quantize")
-			}
-		}
-		if colors == 0 && (next.Style.Fg != ui.ColorClear || next.Style.Bg != ui.ColorClear) {
-			t.Fatal("monochrome contains colors")
-		}
-	}
-	if cell.Style.Fg != ui.ColorBlue || ui.StyleParserColorMap["accent"] != parser {
-		t.Fatal("theme changed canonical roles")
-	}
-	theme := themeLayer{}
-	if theme.convert(cell, image.Pt(1, 1)) != cell {
-		t.Fatal("default theme changed")
-	}
-}
-
-func TestHaloScopesPaletteToInspectorAndDialogs(t *testing.T) {
+func TestChromeKeepsTerminalColors(t *testing.T) {
 	withDisplayTTY(t)
-	r, screen := haloTestREPL(t)
+	r, screen := chromeTestREPL(t)
 	screen.SetSize(140, 40)
 	m := r.model
 	m.ed.setText("draft")
-	r.render()
-	_, promptStyle, _ := screen.Get(0, r.inputW.Inner.Min.Y)
 	call := messages.ChatMessageToolCall{ID: "scope", Name: "read_file"}
 	m.appendToolCallStart(call)
-	m.inspections.setResult(call, messages.ChatMessage{Content: "result"})
+	m.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("result\n", 80)})
 	r.inspectCommand("tools")
 	waitInspector(t, r, 140)
 	r.render()
-	_, after, _ := screen.Get(0, r.inputW.Inner.Min.Y)
-	if after != promptStyle {
-		t.Fatal("inspector recolored composer")
-	}
-	_, mainStyle, _ := screen.Get(0, r.mainTranscriptBounds.Min.Y)
-	if mainStyle.GetBackground() != ui.ColorClear {
-		t.Fatal("inspector recolored main canvas")
-	}
-	for _, pt := range []image.Point{r.inspectorW.Inner.Min, r.inspectorHeaderW.Inner.Min, r.haloBounds.outer.Min, r.haloBounds.inspector.track.Min} {
-		_, inspectorStyle, _ := screen.Get(pt.X, pt.Y)
-		if inspectorStyle.GetBackground() != mainStyle.GetBackground() {
-			t.Fatalf("inspector background differs from main at %v", pt)
+	check := func(pt image.Point, want ui.Color, what string) {
+		t.Helper()
+		_, style, _ := screen.Get(pt.X, pt.Y)
+		fg, bg := style.GetForeground(), style.GetBackground()
+		if fg != want || fg.IsRGB() || bg != ui.ColorClear {
+			t.Fatalf("%s at %v: fg=%v bg=%v, want palette %v on the terminal background", what, pt, fg, bg, want)
 		}
 	}
-	r.closeInspector()
+	check(r.chrome.frame.Min, ui.ColorGrey, "frame")
+	check(r.inspectorScrollbar.thumb.Min, ui.ColorGrey, "thumb")
+	check(r.inspectorHeaderW.Inner.Min, ui.ColorBlue, "title arrow")
+	_, prompt, _ := screen.Get(2, r.inputW.Inner.Min.Y)
+	if prompt.GetForeground() != ui.ColorClear || prompt.GetBackground() != ui.ColorClear {
+		t.Fatalf("composer text lost terminal colors: %v", prompt)
+	}
 	r.openModal(&replModal{title: "Scoped dialog", items: []replModalItem{{label: "one"}}})
 	r.render()
-	_, dialogStyle, _ := screen.Get(r.modalW.Inner.Min.X, r.modalW.Inner.Min.Y)
-	if dialogStyle.GetBackground() != r.themeW.color(haloPalette.pane) {
-		t.Fatal("standalone dialog lost Halo background")
-	}
-	_, outsideStyle, _ := screen.Get(0, 0)
-	if outsideStyle.GetBackground() != ui.ColorClear {
-		t.Fatal("dialog recolored main canvas")
+	check(r.modalW.Min, ui.ColorGrey, "dialog border")
+	_, inside, _ := screen.Get(r.modalW.Inner.Min.X, r.modalW.Inner.Min.Y)
+	if inside.GetBackground() != ui.ColorClear {
+		t.Fatal("dialog painted its own background")
 	}
 	r.closeModal()
+	r.closeInspector()
 	r.render()
-	_, after, _ = screen.Get(0, r.inputW.Inner.Min.Y)
-	if after != promptStyle || r.haloOrbit.active || len(r.haloOrbit.cells) != 0 {
-		t.Fatal("closing Halo surfaces left chrome or colors behind")
+	if r.orbit.active || len(r.orbit.cells) != 0 || !r.chrome.frame.Empty() {
+		t.Fatal("closing the inspector left chrome behind")
 	}
 }
 
-func TestHaloFullscreenInspectorKeepsComposerCursor(t *testing.T) {
+func TestFullscreenInspectorKeepsComposerCursor(t *testing.T) {
 	withDisplayTTY(t)
-	r, screen := haloTestREPL(t)
+	r, screen := chromeTestREPL(t)
 	screen.SetSize(80, 24)
 	r.model.affordances.inputAt = time.Now().Add(-time.Second)
 	r.inspect(tabViewTarget(r.visibleTab()))
@@ -409,10 +399,10 @@ func TestHaloFullscreenInspectorKeepsComposerCursor(t *testing.T) {
 	}
 }
 
-func TestHaloNativeMediaAndDisclosureOrigins(t *testing.T) {
+func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 	withDisplayTTY(t)
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	r, screen := haloTestREPL(t)
+	r, screen := chromeTestREPL(t)
 	screen.SetSize(140, 40)
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 140, Height: 40, PixelWidth: 1400, PixelHeight: 800}}
 	r.images = &terminalImageManager{screen: screen, tty: tty, protocol: terminalImageKitty}
@@ -442,7 +432,7 @@ func TestHaloNativeMediaAndDisclosureOrigins(t *testing.T) {
 	clicked := false
 	for _, link := range m.inspectionLinks {
 		if link.kind == toolViewKind {
-			if !link.rect.In(r.mainTranscriptBounds) {
+			if !link.rect.In(r.chrome.main) {
 				t.Fatal("detail click escapes framed content")
 			}
 			r.handleEvent(mouseEvent("<MouseLeft>", link.rect.Min))
@@ -463,11 +453,11 @@ func TestHaloNativeMediaAndDisclosureOrigins(t *testing.T) {
 		}
 		for _, p := range placements {
 			if !image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows).In(r.inspectorW.Inner) {
-				t.Fatalf("image crosses frame/rail: %+v inner=%v", p, r.inspectorW.Inner)
+				t.Fatalf("image crosses frame: %+v inner=%v", p, r.inspectorW.Inner)
 			}
 		}
 		before := append([]terminalImagePlacement(nil), placements...)
-		r.haloOrbit.tick(screen, r.themeW, time.Now().Add(time.Second))
+		r.orbit.tick(screen, time.Now().Add(time.Second))
 		if !reflect.DeepEqual(before, r.workspace().inspector.current.model.imagePlacements) {
 			t.Fatal("edge tick re-placed media")
 		}
@@ -485,14 +475,14 @@ func TestHaloNativeMediaAndDisclosureOrigins(t *testing.T) {
 		t.Fatal("missing image in root conversation")
 	}
 	p := m.imagePlacements[0]
-	if !image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows).In(r.mainTranscriptBounds) {
+	if !image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows).In(r.chrome.main) {
 		t.Fatalf("root image missed content origin: %+v", p)
 	}
 }
 
-func TestHaloPasteSearchApprovalAndDefaultPaint(t *testing.T) {
+func TestPasteSearchAndApprovalFrame(t *testing.T) {
 	withDisplayTTY(t)
-	r, screen := haloTestREPL(t)
+	r, screen := chromeTestREPL(t)
 	m := r.model
 	screen.SetSize(80, 24)
 	paste := "界界\nsecond line\nthird"
@@ -520,59 +510,54 @@ func TestHaloPasteSearchApprovalAndDefaultPaint(t *testing.T) {
 	waitInspector(t, r, 80)
 	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "read_file"}}}
 	r.render()
-	if r.haloOrbit.active {
+	if r.orbit.active {
 		t.Fatal("approval animated")
 	}
-	for _, c := range r.haloOrbit.cells {
-		if c.base.Style.Fg != haloPalette.attention {
-			t.Fatal("approval frame is not amber")
+	for _, c := range r.orbit.cells {
+		if c.base.Style.Fg != chromeColor("active") {
+			t.Fatal("approval frame is not the attention color")
 		}
 	}
 	m.approval = nil
 	m.busy = false
 	m.quiet = true
 	r.render()
-	if r.haloOrbit.active {
+	if r.orbit.active {
 		t.Fatal("quiet motion")
 	}
 	m.quiet = false
 	m.ed.setText("draft")
 	r.closeInspector()
-	r.config.Theme = "default"
 	r.render()
-	defaultLayout := r.frameLayoutFor(80, 24)
-	if defaultLayout.halo || r.inputW.Inner.Min.X != 0 {
-		t.Fatal("default theme gained insets")
+	if !r.frameLayoutFor(80, 24).chrome.frame.Empty() || r.inputW.Inner.Min.X != 0 {
+		t.Fatal("closed inspector kept insets")
 	}
 	_, style, _ := screen.Get(2, r.inputW.Inner.Min.Y)
-	fg, bg := style.GetForeground(), style.GetBackground()
-	if fg != ui.ColorClear || bg != ui.ColorClear {
-		t.Fatalf("default text lost terminal colors: %v", style)
+	if fg, bg := style.GetForeground(), style.GetBackground(); fg != ui.ColorClear || bg != ui.ColorClear {
+		t.Fatalf("text lost terminal colors: %v", style)
 	}
 }
 
-func TestHaloScrollbarPagingKeepsUnseenOutputBaseline(t *testing.T) {
+func TestScrollbarPagingKeepsUnseenOutputBaseline(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	r.config.Theme = "halo"
 	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	s := r.workspace().viewState(r.workspace().inspector.target)
-	r.inspectorScrollbar = haloScrollbar{total: 100, visible: 20}
+	r.inspectorScrollbar = scrollbar{total: 100, visible: 20}
 	s.follow, s.lastRows = false, 50
-	r.setHaloScrollTop("inspector", 10)
+	r.setScrollTop("inspector", 10)
 	if s.top != 10 || s.follow || s.lastRows != 50 {
 		t.Fatalf("paging while scrolled up marked unseen output as seen: %+v", s)
 	}
-	r.setHaloScrollTop("inspector", 90)
+	r.setScrollTop("inspector", 90)
 	if s.top != 80 || !s.follow || s.lastRows != 100 {
 		t.Fatalf("paging to the end did not resume following: %+v", s)
 	}
 }
 
-func TestHaloModalWheelScrollsOutsideListRows(t *testing.T) {
+func TestModalWheelScrollsOutsideListRows(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	r.config.Theme = "halo"
-	m := &replModal{title: "pick", halo: true, listBounds: image.Rect(10, 10, 40, 15)}
+	m := &replModal{title: "pick", listBounds: image.Rect(10, 10, 40, 15)}
 	for n := 0; n < 10; n++ {
 		m.items = append(m.items, replModalItem{label: fmt.Sprintf("item %d", n), value: fmt.Sprint(n)})
 	}
@@ -587,9 +572,9 @@ func TestHaloModalWheelScrollsOutsideListRows(t *testing.T) {
 	}
 }
 
-func TestHaloShortTranscriptFallsBackToPlainLayout(t *testing.T) {
+func TestShortTranscriptUsesPlainInspector(t *testing.T) {
 	withDisplayTTY(t)
-	r, screen := haloTestREPL(t)
+	r, screen := chromeTestREPL(t)
 	screen.SetSize(80, 12)
 	call := messages.ChatMessageToolCall{ID: "a", Name: "a"}
 	r.model.appendToolCallStart(call)
@@ -599,18 +584,22 @@ func TestHaloShortTranscriptFallsBackToPlainLayout(t *testing.T) {
 	r.model.turnDock.visible = true
 	r.model.ed.setText(strings.Repeat("line\n", maxInputRows-1) + "line")
 	l := r.frameLayoutFor(80, 12)
-	if !l.halo || l.transcriptHeight >= 3 {
+	if !l.chrome.plain || l.transcriptHeight >= 3 {
 		t.Fatalf("fixture did not squeeze the transcript under the frame minimum: %+v", l)
 	}
 	r.render()
 	bottom := l.logoRows + l.transcriptHeight
-	if !r.haloBounds.outer.Empty() || !r.inspectorScrollbar.track.Empty() || !r.inspectorScrollbar.thumb.Empty() {
-		t.Fatalf("a frame was laid out with no room for it: bounds=%+v scrollbar=%+v", r.haloBounds, r.inspectorScrollbar)
+	if !r.chrome.frame.Empty() || !r.inspectorScrollbar.track.Empty() || !r.inspectorScrollbar.thumb.Empty() {
+		t.Fatalf("a frame was laid out with no room for it: chrome=%+v scrollbar=%+v", r.chrome, r.inspectorScrollbar)
 	}
-	if r.inspectorBounds.Max.Y > bottom || r.mainTranscriptBounds.Max.Y > bottom {
-		t.Fatalf("panes extend below the transcript region (%d): inspector=%v main=%v", bottom, r.inspectorBounds, r.mainTranscriptBounds)
+	if r.chrome.inner.Max.Y > bottom || r.chrome.inner.Min.X != 0 || r.chrome.inner.Dx() != 80 {
+		t.Fatalf("plain inspector does not span the transcript region (%d): %v", bottom, r.chrome.inner)
 	}
-	if _, plain := r.rootFlex.(*frameGroup); plain {
-		t.Fatal("frame group used without a frame")
+	for y := 0; y < 12; y++ {
+		for x := 0; x < 80; x++ {
+			if glyph := screenGlyph(screen, image.Pt(x, y)); glyph == "╭" || glyph == "╯" {
+				t.Fatalf("frame glyph %q painted at (%d,%d) without a frame", glyph, x, y)
+			}
+		}
 	}
 }

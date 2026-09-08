@@ -158,18 +158,9 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		}
 	}
 
-	if r.haloEnabled() {
-		if i.searching {
-			b.newline()
-			b.write("Enter: find · Esc: cancel", "muted", "", "")
-		}
-	} else {
+	if i.searching {
 		b.newline()
-		hint := ""
-		if i.searching {
-			hint = "─ Enter: find · Esc: cancel "
-		}
-		b.write(hint+strings.Repeat("─", max(0, width-rw.StringWidth(hint))), "muted", "", "")
+		b.write("Enter: find · Esc: cancel", "muted", "", "")
 	}
 	return b.layout(height)
 }

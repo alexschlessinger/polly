@@ -376,12 +376,11 @@ type managedREPL struct {
 	statusW                            *literalParagraph
 	modalW                             *modalParagraph
 	rootFlex                           ui.Drawable
-	themeW                             *themeLayer
-	haloBounds                         haloGeometry
-	haloOrbit                          haloOrbit
-	inspectorScrollbar, modalScrollbar haloScrollbar
-	scrollDrag                         haloScrollDrag
-	haloHoverChanged                   bool
+	chrome                             chromeGeometry
+	orbit                              frameOrbit
+	inspectorScrollbar, modalScrollbar scrollbar
+	scrollDrag                         scrollDragState
+	chromeHoverChanged                 bool
 
 	quit    chan struct{}
 	suspend chan struct{}
@@ -410,24 +409,21 @@ type managedREPL struct {
 	// uiTasks carries deferred UI mutations (e.g. a finished clipboard read)
 	// onto the event loop, which repaints after running each one. Tasks take
 	// the model lock themselves.
-	uiTasks              chan func()
-	work                 *replWork
-	childViews           childViewCache
-	childViewRequest     *childViewNavigation
-	workspaces           []*replTab
-	inspectorRatio       float64
-	inspectorRefreshAt   time.Time
-	inspectorW           *transcriptParagraph
-	inspectorHeaderW     *literalParagraph
-	inspectorHeaderRows  int
-	inspectorButtons     []inspectorButton
-	inspectorBounds      image.Rectangle
-	mainTranscriptBounds image.Rectangle
-	inspectorDivider     image.Rectangle
-	inspectorDragging    bool
-	mousePosition        image.Point
-	mousePositionKnown   bool
-	workspaceActions     []func()
+	uiTasks             chan func()
+	work                *replWork
+	childViews          childViewCache
+	childViewRequest    *childViewNavigation
+	workspaces          []*replTab
+	inspectorRatio      float64
+	inspectorRefreshAt  time.Time
+	inspectorW          *transcriptParagraph
+	inspectorHeaderW    *literalParagraph
+	inspectorHeaderRows int
+	inspectorButtons    []inspectorButton
+	inspectorDragging   bool
+	mousePosition       image.Point
+	mousePositionKnown  bool
+	workspaceActions    []func()
 
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
@@ -804,10 +800,10 @@ func (r *managedREPL) needsTick() bool {
 // repaint when the paste's closing marker flips m.pasting back off (handleEvent
 // clears it), so a large paste draws once instead of once per character.
 func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
-	// Button-free motion and release only update pointer/drag state. Hover
-	// navigation has no visual focus indicator and needs no frame repaint.
+	// Button-free motion and release only update pointer/drag state; a
+	// repaint is due only when a hover highlight (grip, thumb) changed.
 	if ev.Type == ui.MouseEvent && ev.ID == "<MouseRelease>" {
-		return r.haloEnabled() && r.haloHoverChanged
+		return r.chromeHoverChanged
 	}
 	if mouse, ok := ev.Payload.(ui.Mouse); ok && mouse.Drag && !r.inspectorDragging && r.scrollDrag.pane == "" {
 		return false
@@ -1259,12 +1255,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// next navigation key uses the pointer's current location.
 	if e.Type == ui.MouseEvent {
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
-			if r.haloEnabled() {
-				next := image.Pt(mouse.X, mouse.Y)
-				r.haloHoverChanged = r.inspectorDragging || r.scrollDrag.pane != ""
-				for _, rect := range []image.Rectangle{r.inspectorDivider, r.inspectorScrollbar.track, r.modalScrollbar.track} {
-					r.haloHoverChanged = r.haloHoverChanged || next.In(rect) != (r.mousePositionKnown && r.mousePosition.In(rect))
-				}
+			next := image.Pt(mouse.X, mouse.Y)
+			r.chromeHoverChanged = r.inspectorDragging || r.scrollDrag.pane != ""
+			for _, rect := range []image.Rectangle{r.chrome.divider, r.inspectorScrollbar.track, r.modalScrollbar.track} {
+				r.chromeHoverChanged = r.chromeHoverChanged || next.In(rect) != (r.mousePositionKnown && r.mousePosition.In(rect))
 			}
 			r.mousePosition = image.Pt(mouse.X, mouse.Y)
 			r.mousePositionKnown = true
@@ -1309,7 +1303,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// Selection and credential modals own all remaining input. In particular,
 	// key material never passes through paste handling or the composer.
 	if m.modal != nil {
-		if r.handleHaloScrollbar(e, true) {
+		if r.handleScrollbar(e, true) {
 			return false
 		}
 		r.handleModalEvent(e)
@@ -1324,10 +1318,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			return false
 		}
 	}
-	if r.handleHaloScrollbar(e, false) || r.handleInspectorEvent(e) {
+	if r.handleScrollbar(e, false) || r.handleInspectorEvent(e) {
 		return false
 	}
-	terminalWidth = r.inspectorTranscriptWidth(terminalWidth)
+	terminalWidth = r.frameLayoutFor(terminalWidth, terminalHeight).mainWidth()
 
 	// Scroll keys work in every mode (idle, busy, approval) so the user
 	// can review history without interrupting the agent.

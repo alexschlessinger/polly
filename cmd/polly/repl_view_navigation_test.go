@@ -30,7 +30,7 @@ func TestPointerNavigationUsesVisiblePaneGeometry(t *testing.T) {
 		waitInspector(t, r, mode.width)
 		r.render()
 		s := r.workspace().viewState(r.workspace().inspector.target)
-		move(r.inspectorBounds.Min.Add(image.Pt(2, 4)))
+		move(r.chrome.inner.Min.Add(image.Pt(2, 4)))
 		key("<Home>")
 		key("<Down>")
 		if s.top != 1 || s.follow {
@@ -57,11 +57,11 @@ func TestPointerNavigationUsesVisiblePaneGeometry(t *testing.T) {
 			t.Fatal("pane scrolling changed composer")
 		}
 		if mode.width < 120 || mode.maximized {
-			if !r.mainTranscriptBounds.Empty() {
+			if !r.chrome.main.Empty() {
 				t.Fatal("hidden main transcript retained hitbox")
 			}
 		} else {
-			move(r.mainTranscriptBounds.Min.Add(image.Pt(2, 4)))
+			move(r.chrome.main.Min.Add(image.Pt(2, 4)))
 			key("<Home>")
 			key("<Down>")
 			if r.model.scrollAnchor != 1 || !s.follow {
@@ -85,7 +85,7 @@ func TestPointerNavigationUsesVisiblePaneGeometry(t *testing.T) {
 		if r.model.ed.cursor != 5 {
 			t.Fatal("composer End failed")
 		}
-		move(r.inspectorBounds.Min.Add(image.Pt(2, 4)))
+		move(r.chrome.inner.Min.Add(image.Pt(2, 4)))
 		key("<C-a>")
 		if r.model.ed.cursor != 0 {
 			t.Fatal("Ctrl-A stopped addressing editor")

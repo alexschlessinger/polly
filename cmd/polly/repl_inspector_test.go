@@ -141,38 +141,33 @@ func TestAgentInspectorRetainsPromptsAfterHistoryWindowAndClear(t *testing.T) {
 
 func TestAgentInspectorPromptClick(t *testing.T) {
 	withDisplayTTY(t)
-	for _, theme := range []string{"default", "halo"} {
-		t.Run(theme, func(t *testing.T) {
-			fixture, screen := affordanceTestREPL(t)
-			t.Cleanup(func() { _ = fixture.work.close() })
-			r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
-			r.config.Theme = theme
-			r.setupWidgets()
-			r.showTab(0)
-			child := r.tabs[1]
-			child.model.hydrateHistory([]messages.ChatMessage{
-				{Role: messages.MessageRoleUser, Content: "the launch task"},
-				{Role: messages.MessageRoleAssistant, Content: "the answer"},
-			}, "agent")
-			r.inspect(tabViewTarget(child))
-			for _, width := range []int{140, 80} {
-				screen.SetSize(width, 32)
-				waitInspector(t, r, width)
-				r.render()
-				button := headerButton(r.inspectorButtons, "prompt")
-				if button.Empty() || button.Min != r.inspectorW.Inner.Min {
-					t.Fatalf("prompt control does not match the first body row: %v", button)
-				}
-				for _, expanded := range []bool{true, false} {
-					r.handleEvent(mouseEvent("<MouseLeft>", button.Min))
-					r.render()
-					m := r.workspace().inspector.current.model
-					if m.initialPromptExpanded != expanded || len(r.inspectorW.OverlayBottom) != 0 {
-						t.Fatal("prompt click failed or was treated as new output")
-					}
-				}
+	fixture, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = fixture.work.close() })
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
+	r.setupWidgets()
+	r.showTab(0)
+	child := r.tabs[1]
+	child.model.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "the launch task"},
+		{Role: messages.MessageRoleAssistant, Content: "the answer"},
+	}, "agent")
+	r.inspect(tabViewTarget(child))
+	for _, width := range []int{140, 80} {
+		screen.SetSize(width, 32)
+		waitInspector(t, r, width)
+		r.render()
+		button := headerButton(r.inspectorButtons, "prompt")
+		if button.Empty() || button.Min != r.inspectorW.Inner.Min {
+			t.Fatalf("prompt control does not match the first body row: %v", button)
+		}
+		for _, expanded := range []bool{true, false} {
+			r.handleEvent(mouseEvent("<MouseLeft>", button.Min))
+			r.render()
+			m := r.workspace().inspector.current.model
+			if m.initialPromptExpanded != expanded || len(r.inspectorW.OverlayBottom) != 0 {
+				t.Fatal("prompt click failed or was treated as new output")
 			}
-		})
+		}
 	}
 }
 
@@ -305,7 +300,7 @@ func TestInspectorArrowNavigationFollowsMouse(t *testing.T) {
 			r.model.ed.setText("draft")
 			r.inspectCommand(kind)
 			waitInspector(t, r, 140)
-			r.inspectorBounds = image.Rect(70, 0, 140, 30)
+			r.chrome.inner = image.Rect(70, 0, 140, 30)
 			key := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
 			move := func(x, y int) {
 				e := convertTcellMouse(tcell.NewEventMouse(x, y, tcell.ButtonNone, tcell.ModNone))
@@ -695,20 +690,21 @@ func TestInspectorMediaFramesAndResize(t *testing.T) {
 		screen.SetSize(width, 40)
 		waitInspector(t, r, width)
 		r.render()
-		if r.inspectorBounds.Max.X != width {
+		// The frame's right edge owns the last column; content stops before it.
+		if r.chrome.inner.Max.X != width-1 {
 			t.Fatal("inspector escapes pane")
 		}
-		if width < 120 && r.inspectorBounds.Min.X != 0 {
+		if width < 120 && r.chrome.inner.Min.X != 1 {
 			t.Fatal("narrow inspector did not fill width")
 		}
-		if r.inspectorBounds.Dx() < 50 {
+		if r.chrome.inner.Dx() < 50 {
 			t.Fatal("pane narrower than minimum")
 		}
 		if len(r.images.active) != 1 {
 			t.Fatalf("image not placed at width %d: %#v", width, r.images.active)
 		}
 		for _, p := range r.workspace().inspector.current.model.imagePlacements {
-			if !image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows).In(r.inspectorBounds) || !strings.HasPrefix(p.Key, "inspector:") {
+			if !image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows).In(r.chrome.inner) || !strings.HasPrefix(p.Key, "inspector:") {
 				t.Fatalf("image outside inspector: %#v", p)
 			}
 		}
@@ -716,7 +712,7 @@ func TestInspectorMediaFramesAndResize(t *testing.T) {
 	r.inspectorAction("maximize")
 	waitInspector(t, r, 180)
 	r.render()
-	if r.inspectorBounds.Min.X != 0 {
+	if r.chrome.inner.Min.X != 1 || !r.chrome.main.Empty() {
 		t.Fatal("maximize left root transcript visible")
 	}
 	r.closeInspector()

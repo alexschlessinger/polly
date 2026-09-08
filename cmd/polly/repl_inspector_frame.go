@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	ui "github.com/metaspartan/gotui/v5"
-	"github.com/metaspartan/gotui/v5/widgets"
 )
 
 type inspectorButton struct {
@@ -27,65 +26,18 @@ func (r *managedREPL) setupInspectorWidgets() {
 	r.inspectorHeaderW.WrapText = false
 }
 
-func (r *managedREPL) inspectorTranscriptWidth(width int) int {
-	i := &r.workspace().inspector
-	_, height := ui.TerminalDimensions()
-	if r.haloChrome(width, height) {
-		if i.open && !i.maximized && width >= 120 {
-			return r.haloSplitColumn(width)
-		}
-		return width
-	}
-	if !i.open || i.maximized || width < 120 {
-		return width
-	}
-	return width - r.inspectorGeometry(width).width - 1
-}
-
-// Only the transcript region splits. The composer retains one explicit
-// recipient across narrow/full-width inspection and ordinary split mode.
-func (r *managedREPL) inspectorLayout(l frameLayout) *widgets.Flex {
-	outer := widgets.NewFlex()
-	noBorder(&outer.Block)
-	outer.Direction = widgets.FlexRow
-	i := &r.workspace().inspector
-	width := r.inspectorGeometry(l.width).width
-	x := l.width - width
-	r.inspectorBounds = image.Rect(x, l.logoRows, l.width, l.logoRows+l.transcriptHeight)
-	r.inspectorDivider = image.Rectangle{}
-	if !i.maximized && l.width >= 120 {
-		outer.AddItem(r.transcriptW, x-1, 0, false)
-		divider := newLiteralParagraph()
-		noBorder(&divider.Block)
-		divider.Text = strings.Repeat("│\n", max(0, l.transcriptHeight-1)) + "│"
-		outer.AddItem(divider, 1, 0, false)
-		r.inspectorDivider = image.Rect(x-1, l.logoRows, x, l.logoRows+l.transcriptHeight)
-	}
-	right := widgets.NewFlex()
-	noBorder(&right.Block)
-	right.Direction = widgets.FlexColumn
-	right.AddItem(r.inspectorHeaderW, r.inspectorHeaderRows, 0, false)
-	right.AddItem(r.inspectorW, 0, 1, false)
-	outer.AddItem(right, width, 0, false)
-	return outer
-}
-
+// renderInspector projects the inspected view into the frame interior. The
+// header is measured first; the body takes the rows beneath it.
 func (r *managedREPL) renderInspector(l frameLayout) []terminalImagePlacement {
 	w := r.workspace()
 	i := &w.inspector
 	if !i.open {
-		r.inspectorBounds = image.Rectangle{}
 		r.inspectorButtons = nil
 		return nil
 	}
-	g := r.inspectorGeometry(l.width)
-	x := l.width - g.width
-	y, paneHeight := l.logoRows, l.transcriptHeight
-	if l.halo {
-		x -= 2
-		y++
-		paneHeight = max(0, paneHeight-2)
-	}
+	inner := l.chrome.inner
+	g := r.viewGeometryFor(l.chrome, l.width)
+	x, y, paneHeight := inner.Min.X, inner.Min.Y, inner.Dy()
 	header := r.inspectorHeader(g.width, paneHeight, x, y)
 	r.inspectorHeaderW.Text = header.text
 	r.inspectorButtons = header.buttons

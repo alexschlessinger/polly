@@ -31,6 +31,10 @@ The gallery adapts to smaller sizes. Split preview switches to one pane below
 | deco | Gold inlay and centered nameplate | Twin-line brass thumb |
 | radar | Open brackets with sweeping edge telemetry | Range-finder ticks |
 
+The TUI's inspector chrome (`cmd/polly/repl_chrome.go`) grew out of the halo
+study: the frame, edge scrollbar, and glint are now the only chrome, drawn on
+the terminal's own palette, and no longer ship as a `--theme`.
+
 ## Try the interactions
 
 In the gallery, click a study or select it with Left/Right and press Enter.
