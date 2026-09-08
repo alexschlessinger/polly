@@ -30,6 +30,9 @@ func TestFourAgentsFromLinkedWorkspace(t *testing.T) {
 	for _, preset := range []string{"workspace", "workspace+git"} {
 		for _, readOnly := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/readOnly=%t", preset, readOnly), func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+				t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 				entered := make(chan struct{}, 4)
 				release := make(chan struct{})
 				var once sync.Once
@@ -48,6 +51,7 @@ func TestFourAgentsFromLinkedWorkspace(t *testing.T) {
 						return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: calls}
 					}
 					found, gitOK := false, false
+					var gitResult string
 					for _, msg := range req.Messages {
 						if msg.Role != messages.MessageRoleTool {
 							continue
@@ -55,12 +59,13 @@ func TestFourAgentsFromLinkedWorkspace(t *testing.T) {
 						if msg.ToolCallID == "read" && strings.Contains(msg.Content, "uncommitted review input") {
 							found = true
 						}
-						if msg.ToolCallID == "git" && strings.Contains(msg.Content, "true") {
-							gitOK = true
+						if msg.ToolCallID == "git" {
+							gitResult = msg.Content
+							gitOK = strings.Contains(msg.Content, "true")
 						}
 					}
 					if !found || !gitOK {
-						t.Errorf("member snapshot read=%t git status=%t", found, gitOK)
+						t.Errorf("member snapshot read=%t git status=%t: %s", found, gitOK, gitResult)
 					}
 					return answer("review complete")
 				})

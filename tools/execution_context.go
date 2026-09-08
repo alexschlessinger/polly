@@ -75,6 +75,12 @@ func (r *ToolRegistry) ExecutionPolicy(root string, readOnly bool, deniedReads, 
 	cfg.DenyWritePaths = append(cfg.DenyWritePaths, deniedWrites...)
 	cfg.WritablePaths = []string{abs}
 	cfg.DenyWrite = readOnly || base.DenyWrite
+	if cfg.DenyWrite {
+		cfg, err = sandbox.ExposeReadOnlyPaths(cfg, abs)
+		if err != nil {
+			return ExecutionContext{}, err
+		}
+	}
 	return ExecutionContext{Root: abs, ReadOnly: cfg.DenyWrite, Sandbox: cfg}, nil
 }
 

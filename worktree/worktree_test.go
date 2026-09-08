@@ -21,6 +21,11 @@ func fixture(t *testing.T) (*Manager, string) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX Git fixture")
 	}
+	// Other sandbox packages replace paths under their HOME to test races.
+	// Keep this fixture's credential reservations independent of those paths.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	dir := t.TempDir()
 	root := filepath.Join(dir, "source")
 	if err := os.Mkdir(root, 0700); err != nil {

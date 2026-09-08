@@ -898,7 +898,7 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 			}
 		}
 	}
-	for _, readPath := range cfg.ReadPaths {
+	for _, readPath := range readAuthorityPaths(cfg) {
 		readPath = filepath.Clean(expandTilde(readPath))
 		if isWithinAny(readPath, privateRoots) {
 			if _, err := os.Stat(readPath); err == nil {
@@ -991,6 +991,13 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 	for _, bind := range readExemptionBinds {
 		readRestores[filepath.Clean(bind.destination)] = true
 	}
+	// Mask ancestors first. A later ancestor tmpfs would otherwise erase an
+	// earlier descendant mount before its final read-only remount (for example,
+	// a sibling checkout plus its reserved slot directory).
+	deniedPaths = append([]DeniedPath(nil), deniedPaths...)
+	sort.SliceStable(deniedPaths, func(i, j int) bool {
+		return strings.Count(deniedPaths[i].Path, string(filepath.Separator)) < strings.Count(deniedPaths[j].Path, string(filepath.Separator))
+	})
 	var deniedReadOnlyPaths []string
 	for _, denied := range deniedPaths {
 		if isReadExempt(denied.Path, readSet) && readRestores[filepath.Clean(denied.Path)] {
@@ -1074,11 +1081,11 @@ func linuxAuthoritySourcePaths(cfg Config, privateRoots []string) []string {
 			}
 		}
 	}
-	for _, readPath := range cfg.ReadPaths {
+	for _, readPath := range readAuthorityPaths(cfg) {
 		add(readPath)
 	}
 	if !cfg.DenyWrite {
-		for _, authority := range append(append([]string{}, cfg.WritablePaths...), cfg.ReadPaths...) {
+		for _, authority := range append(append([]string{}, cfg.WritablePaths...), readAuthorityPaths(cfg)...) {
 			authority = filepath.Clean(expandTilde(authority))
 			for _, writable := range cfg.WritablePaths {
 				writable = filepath.Clean(expandTilde(writable))
@@ -1429,7 +1436,7 @@ func pathExplicitlyExposedWithRoots(path string, cfg Config, privateRoots []stri
 			}
 		}
 	}
-	for _, readPath := range cfg.ReadPaths {
+	for _, readPath := range readAuthorityPaths(cfg) {
 		readPath = filepath.Clean(expandTilde(readPath))
 		if isPathWithin(path, readPath) {
 			return true

@@ -69,6 +69,11 @@ recovery manifest. Git 2.40+ and a supported process sandbox (macOS/Linux), or a
 explicit unsafe acknowledgment, are required for editing. See
 [worktree limitations and recovery](WORKFLOWS.md#worktrees-and-integration).
 
+Runtime Git and read-only members explicitly expose their selected checkout
+paths when Linux private temp mounts would otherwise hide them. These frozen
+read-only bindings preserve credential and custom deny rules; they are not
+`ReadPaths` exemptions and do not grant writes to the source checkout.
+
 Workflow JavaScript has no direct process/filesystem/network APIs. Its host tools
 use these same policies, approvals, and timeouts. Remote MCP processes cannot be
 contained locally and require the operator's explicit `contextIndependent: true`

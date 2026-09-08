@@ -276,6 +276,11 @@ type Config struct {
 	// construction; missing exemptions are dropped and cannot appear later.
 	ReadPaths []string `json:"readPaths,omitempty"`
 
+	// visiblePaths exposes host directories hidden by private namespace mounts.
+	// Unlike ReadPaths, these runtime-selected paths never exempt deny rules.
+	// They are read-only unless a separate WritablePaths grant covers them.
+	visiblePaths []string
+
 	// Extra paths blocked from reads, in addition to DeniedPaths (supports ~ expansion).
 	DenyPaths []string `json:"denyPaths,omitempty"`
 
@@ -374,6 +379,9 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.ReadPaths, err = normalize("readPaths", cfg.ReadPaths); err != nil {
+		return Config{}, err
+	}
+	if cfg.visiblePaths, err = normalize("visiblePaths", cfg.visiblePaths); err != nil {
 		return Config{}, err
 	}
 	if cfg.DenyPaths, err = normalize("denyPaths", cfg.DenyPaths); err != nil {
@@ -499,6 +507,9 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 	if cfg.ReadPaths, err = freeze("readPaths", cfg.ReadPaths); err != nil {
 		return Config{}, err
 	}
+	if cfg.visiblePaths, err = freeze("visiblePaths", cfg.visiblePaths); err != nil {
+		return Config{}, err
+	}
 	if cfg.AllowUnixSockets, err = freezeUnixSocketGrants(cfg.AllowUnixSockets); err != nil {
 		return Config{}, err
 	}
@@ -528,6 +539,7 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 	}
 	cfg.WritablePaths = minimize(cfg.WritablePaths, nonCovering)
 	cfg.ReadPaths = minimize(cfg.ReadPaths, nil)
+	cfg.visiblePaths = minimize(cfg.visiblePaths, nil)
 
 	if cfg.DenyWrite {
 		// ReadPaths are canonical now, so a caller that restored a prepared alias
@@ -537,7 +549,7 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 		for path, identity := range carried {
 			covered := false
 			if identity.read {
-				for _, readPath := range cfg.ReadPaths {
+				for _, readPath := range readAuthorityPaths(cfg) {
 					if pathWithinPolicy(path, readPath) || pathWithinPolicy(readPath, path) {
 						covered = true
 						break
@@ -591,8 +603,8 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 	cfg.readPathAliases = aliases
 
 	paths := effectiveAuthorityPaths(cfg)
-	readAuthority := make(map[string]bool, len(cfg.ReadPaths))
-	for _, path := range cfg.ReadPaths {
+	readAuthority := make(map[string]bool)
+	for _, path := range readAuthorityPaths(cfg) {
 		readAuthority[filepath.Clean(path)] = true
 	}
 	writeAuthority := make(map[string]bool, len(cfg.WritablePaths))
@@ -861,11 +873,33 @@ func cloneAuthorityPathIdentities(identities []authorityPathIdentity) []authorit
 }
 
 func effectiveAuthorityPaths(cfg Config) []string {
-	paths := append([]string(nil), cfg.ReadPaths...)
+	paths := readAuthorityPaths(cfg)
 	if !cfg.DenyWrite {
 		paths = append(paths, cfg.WritablePaths...)
 	}
 	return paths
+}
+
+func readAuthorityPaths(cfg Config) []string {
+	return concatStrings(cfg.ReadPaths, cfg.visiblePaths)
+}
+
+// ExposeReadOnlyPaths retains canonical host paths inside private namespaces.
+// It does not override credential/read denies or grant writes. Callers must
+// resolve symlinks before selecting paths; their identities are then frozen.
+func ExposeReadOnlyPaths(cfg Config, paths ...string) (Config, error) {
+	cfg = cfg.Merge(Config{})
+	for _, path := range paths {
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return Config{}, err
+		}
+		if !filepath.IsAbs(path) || filepath.Clean(path) != real {
+			return Config{}, fmt.Errorf("visible sandbox path must be canonical: %s", path)
+		}
+		cfg.visiblePaths = append(cfg.visiblePaths, path)
+	}
+	return PrepareConfig(cfg)
 }
 
 func captureAuthorityPathIdentities(paths []string) ([]authorityPathIdentity, error) {
@@ -999,6 +1033,7 @@ func (c Config) Merge(overlay Config) Config {
 	c.DenyDNS = c.DenyDNS || overlay.DenyDNS
 	c.WritablePaths = concatStrings(c.WritablePaths, overlay.WritablePaths)
 	c.ReadPaths = concatStrings(c.ReadPaths, overlay.ReadPaths)
+	c.visiblePaths = concatStrings(c.visiblePaths, overlay.visiblePaths)
 	c.DenyPaths = concatStrings(c.DenyPaths, overlay.DenyPaths)
 	c.DenyWritePaths = concatStrings(c.DenyWritePaths, overlay.DenyWritePaths)
 	c.AllowEnv = concatStrings(c.AllowEnv, overlay.AllowEnv)

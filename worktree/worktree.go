@@ -134,6 +134,10 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		return nil, err
 	}
 	cfg.WritablePaths = []string{c.Directory}
+	cfg, err = sandbox.RuntimeGitReadConfig(cfg, c.Root)
+	if err != nil {
+		return nil, err
+	}
 	if c.Registry.HasSandbox() {
 		m.sandbox, err = c.Registry.NewSandboxDirect(cfg)
 		if err != nil {

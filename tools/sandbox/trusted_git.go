@@ -12,6 +12,70 @@ func TrustedGitExecutable(writableRoots []string) (string, error) {
 	return trustedGitExecutable(writableRoots)
 }
 
+// RuntimeGitReadConfig exposes a checkout and its Git routing directories for
+// fixed runtime plumbing, including when Linux hides their host temp directory.
+// Discovery reads only routing files and never grants an exemption from denies.
+func RuntimeGitReadConfig(base Config, root string) (Config, error) {
+	entry := filepath.Join(root, ".git")
+	if err := ReadAllowed(base, entry); err != nil {
+		return Config{}, err
+	}
+	info, err := os.Lstat(entry)
+	if err != nil {
+		return Config{}, err
+	}
+	gitDir := entry
+	switch {
+	case info.IsDir():
+	case info.Mode().IsRegular() && !hasMultipleLinks(info):
+		gitDir, err = readGitPointer(entry, "gitdir:")
+		if err != nil {
+			return Config{}, err
+		}
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(root, gitDir)
+		}
+	default:
+		return Config{}, fmt.Errorf("unsupported Git routing entry: %s", entry)
+	}
+	if err := ReadAllowed(base, gitDir); err != nil {
+		return Config{}, err
+	}
+	gitDir, err = resolveGitDir(gitDir)
+	if err != nil {
+		return Config{}, err
+	}
+	paths := []string{root, gitDir}
+	pointer := filepath.Join(gitDir, "commondir")
+	if err := ReadAllowed(base, pointer); err != nil {
+		return Config{}, err
+	}
+	info, err = os.Lstat(pointer)
+	if err == nil {
+		if !info.Mode().IsRegular() || hasMultipleLinks(info) {
+			return Config{}, fmt.Errorf("unsupported Git common-directory pointer: %s", pointer)
+		}
+		common, err := readGitPointer(pointer, "")
+		if err != nil {
+			return Config{}, err
+		}
+		if !filepath.IsAbs(common) {
+			common = filepath.Join(gitDir, common)
+		}
+		if err := ReadAllowed(base, common); err != nil {
+			return Config{}, err
+		}
+		common, err = resolveGitDir(common)
+		if err != nil {
+			return Config{}, err
+		}
+		paths = append(paths, common)
+	} else if !os.IsNotExist(err) {
+		return Config{}, err
+	}
+	return ExposeReadOnlyPaths(base, paths...)
+}
+
 // RuntimeGitConfig is only for the host's fixed Git plumbing operations, never
 // an agent's bash, shell, MCP, or custom tool. It replaces preset-generated
 // whole-tree pins for the selected repository with metadata leaf protections.
