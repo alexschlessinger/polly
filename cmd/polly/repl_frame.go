@@ -321,6 +321,10 @@ func (r *managedREPL) render() {
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
 	r.model.refreshReasoningRecords(mainWidth)
+	// The pointer hovers what the last paint showed; its hint rides the
+	// status row of this one.
+	r.hover = r.hoverTargetAt(r.mousePosition)
+	r.model.hoverHint = r.hover.hint
 	input, curRow, curCol, editable := r.model.renderInputForTerminal(l.inputRows, w)
 	transcriptRows := (conversationView{}).Rows(r.model, mainWidth)
 	topRow, pinTranscriptBottom := r.model.settleScroll(len(transcriptRows), l.transcriptHeight)
@@ -388,6 +392,10 @@ func (r *managedREPL) render() {
 		r.inspectorDragging = false
 	}
 	notices = append(notices, r.takeHiddenNotices(focusKnown, focused)...)
+	// Hitboxes are fresh now; the underline follows this frame's layout.
+	r.model.mu.Lock()
+	r.hover = r.hoverTargetAt(r.mousePosition)
+	r.model.mu.Unlock()
 
 	if l.logoRows == imageLogoHeight && r.images != nil {
 		// The image splash rides the same placement pipeline as thumbnails:
@@ -455,6 +463,7 @@ func (r *managedREPL) render() {
 		r.affordanceW.spans = affordanceSpans
 		r.affordanceW.now = now
 		r.affordanceW.idleCursor = idleCursor
+		r.affordanceW.underlined = r.hovered
 		drawable = r.affordanceW
 	}
 	drawable = r.refreshChrome(drawable, l, now)
@@ -468,6 +477,7 @@ func (r *managedREPL) render() {
 	for n := range r.orbit.cells {
 		r.orbit.cells[n].last = r.orbit.frame(n, now)
 	}
+	r.paintHover(ui.DefaultBackend.Screen)
 	if r.images != nil {
 		r.images.commit(imagesChanged)
 	}

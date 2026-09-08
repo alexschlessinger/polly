@@ -178,6 +178,9 @@ type replModel struct {
 	quiet      bool
 	// masthead heads the transcript flow in root sessions; see mastheadBlock.
 	masthead mastheadState
+	// hoverHint names the wordless target under the pointer in the status
+	// row's idle slot; the frame that paints the status row sets it.
+	hoverHint string
 
 	// hidden is set while this model's tab is off screen. Streamed text is
 	// then kept raw and rendered when the tab shows again, since markdown
@@ -423,7 +426,11 @@ type managedREPL struct {
 	inspectorDragging   bool
 	mousePosition       image.Point
 	mousePositionKnown  bool
-	workspaceActions    []func()
+	// hover is the target under the pointer as of the last paint, and
+	// hoverCells the screen cells its underline occupies; see repl_hover.go.
+	hover            hoverTarget
+	hoverCells       []image.Point
+	workspaceActions []func()
 
 	// fx drives window-level terminal effects (title, taskbar progress,
 	// desktop notifications); nil outside a managed-screen Run (unit tests).
@@ -800,7 +807,8 @@ func (r *managedREPL) needsTick() bool {
 // clears it), so a large paste draws once instead of once per character.
 func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
 	// Button-free motion and release only update pointer/drag state; a
-	// repaint is due only when a hover highlight (grip, thumb) changed.
+	// repaint is due only when the target under the pointer changed (the
+	// grip, a thumb, or a hover-marked link, label, row, or button).
 	if ev.Type == ui.MouseEvent && ev.ID == "<MouseRelease>" {
 		return r.chromeHoverChanged
 	}
@@ -1261,6 +1269,9 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			}
 			r.mousePosition = image.Pt(mouse.X, mouse.Y)
 			r.mousePositionKnown = true
+			// A new target under the pointer repaints, like the grip and
+			// thumb highlights; motion within one target does not.
+			r.chromeHoverChanged = r.chromeHoverChanged || r.hoverTargetAt(next) != r.hover
 			if mouse.Drag && !r.inspectorDragging && r.scrollDrag.pane == "" {
 				// Held-button motion is not a click; only an active divider
 				// drag consumes it.

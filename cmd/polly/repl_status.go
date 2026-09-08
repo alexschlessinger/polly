@@ -148,6 +148,10 @@ func (m *replModel) statusRow(width int) string {
 	if m.busy && !m.turnStarted.IsZero() {
 		leftRaw = formatElapsed(time.Since(m.turnStarted))
 		leftStyled = styled(leftRaw, "accent", "")
+	} else if m.hoverHint != "" {
+		// A wordless target under the pointer names its action here while
+		// no turn owns the slot.
+		leftRaw, leftStyled = m.hoverHint, styled(m.hoverHint, "muted", "")
 	}
 	type field struct {
 		drop     int
