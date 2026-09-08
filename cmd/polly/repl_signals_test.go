@@ -176,7 +176,7 @@ func TestHiddenApprovalSignalsAndWakesTheLoop(t *testing.T) {
 	if r.model != busy.model || r.model.approval == nil {
 		t.Fatal("the approval is not waiting on its tab")
 	}
-	if got := plainStyledText(r.model.inputDisplay()); !strings.Contains(got, "allow bash ls -la") {
+	if got := plainStyledText(r.model.inputDisplay()); !strings.Contains(got, "Allow bash ls -la") {
 		t.Fatalf("approval prompt not shown: %q", got)
 	}
 	r.model.mu.Lock()

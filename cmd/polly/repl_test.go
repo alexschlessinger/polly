@@ -16,6 +16,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
+	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -1531,18 +1532,52 @@ func TestTranscriptParagraphDrawsMultiRowOverlayWithoutReflow(t *testing.T) {
 	}
 }
 
-func TestApprovalPromptRendersLiteralBrackets(t *testing.T) {
+func TestApprovalPromptShowsKeyHints(t *testing.T) {
 	m := newReplModel()
-	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "bash"}}}
-
-	// The input widget restores brackets the way parseStyledCells does.
+	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "bash", Arguments: `{"command":"ls -la"}`}}}
 	out := plainStyledText(m.inputDisplay())
-
-	if !strings.Contains(out, "[y]es [N]o [a]ll") {
-		t.Fatalf("approval prompt should render explicit actions, got %q", out)
+	if !strings.HasSuffix(out, "Allow bash ls -la?  y allow · n deny") || strings.ContainsAny(out, "[]\\") {
+		t.Fatalf("approval prompt = %q", out)
 	}
-	if strings.Contains(out, `\`) {
-		t.Fatalf("approval prompt should not contain backslashes, got %q", out)
+	// "allow all" appears only while more calls wait in the batch.
+	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "bash"}, {Name: "read_file"}}}
+	if out := plainStyledText(m.inputDisplay()); !strings.HasSuffix(out, "Allow (1/2) bash?  y allow · n deny · a allow all") {
+		t.Fatalf("batch prompt = %q", out)
+	}
+	m.approval.index = 1
+	if out := plainStyledText(m.inputDisplay()); strings.Contains(out, "allow all") {
+		t.Fatalf("last call of a batch still offers allow all: %q", out)
+	}
+}
+
+// The pending call sits above the prompt, titled and guttered like a tool
+// block, elided when it would push the prompt past the cap.
+func TestApprovalPromptShowsCallBlockAboveKeys(t *testing.T) {
+	m := newReplModel()
+	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "bash", Arguments: `{"command":"rm -rf build\nmake"}`}}}
+	if rows := m.inputRows(); rows != 4 {
+		t.Fatalf("input rows = %d, want title, two lines, and the prompt", rows)
+	}
+	text, _, _, editable := m.renderInputForTerminal(4, 80)
+	lines := strings.Split(plainStyledText(text), "\n")
+	if editable || len(lines) != 4 || lines[0] != "  ╭─ bash" || lines[1] != "  │ rm -rf build" || lines[2] != "  │ make" || !strings.HasPrefix(lines[3], "Allow bash") {
+		t.Fatalf("approval rows = %q editable=%v", lines, editable)
+	}
+	text, _, _, _ = m.renderInputForTerminal(3, 80)
+	if lines := strings.Split(plainStyledText(text), "\n"); len(lines) != 3 || lines[1] != "  │ …" {
+		t.Fatalf("capped approval rows = %q", lines)
+	}
+	text, _, _, _ = m.renderInputForTerminal(1, 80)
+	if lines := strings.Split(plainStyledText(text), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], "Allow bash") {
+		t.Fatalf("single-row approval = %q", lines)
+	}
+	for width := 1; width <= 60; width++ {
+		text, _, _, _ := m.renderInputForTerminal(4, width)
+		for _, line := range strings.Split(plainStyledText(text), "\n") {
+			if got := rw.StringWidth(line); got > width {
+				t.Fatalf("approval row %q is %d wide at width %d", line, got, width)
+			}
+		}
 	}
 }
 

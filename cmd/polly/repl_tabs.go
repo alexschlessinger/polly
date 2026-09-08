@@ -330,8 +330,10 @@ func (r *managedREPL) applyTabRequests() {
 }
 
 // closeVisibleTab closes the visible tab's session and shows its left
-// neighbor. Closing the last tab leaves the REPL, which closes every session
-// on the way out. Runs on the event loop with no model lock held.
+// neighbor. Closing the last workspace replaces it with a fresh session
+// instead of leaving; only when no session can be made does it quit, which
+// closes every session on the way out. Runs on the event loop with no model
+// lock held.
 func (r *managedREPL) closeVisibleTab() {
 	i := r.visibleTabIndex()
 	if i < 0 {
@@ -339,7 +341,9 @@ func (r *managedREPL) closeVisibleTab() {
 	}
 	r.syncWorkspaces()
 	if len(r.workspaces) <= 1 {
-		r.requestQuit()
+		if !r.replaceLastWorkspace(r.tabs[i]) {
+			r.requestQuit()
+		}
 		return
 	}
 	tab := r.removeTab(i)
@@ -348,6 +352,29 @@ func (r *managedREPL) closeVisibleTab() {
 	r.model.mu.Lock()
 	r.model.appendNoticeLine(notice)
 	r.model.mu.Unlock()
+}
+
+// replaceLastWorkspace starts a fresh generated session to stand in for the
+// last workspace; finishOpen closes the old tab once the new one holds the
+// screen, so its lease is never dropped early. It reports false when no
+// session can be made here. Runs on the event loop with no model lock held.
+func (r *managedREPL) replaceLastWorkspace(old *replTab) bool {
+	if r.opener == nil || r.opener.newName == nil {
+		return false
+	}
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	if !r.canOpenLocked() {
+		return true
+	}
+	name, err := r.opener.newName(r.runCtx)
+	if err != nil {
+		r.model.appendErrorLine("could not name a new session: " + err.Error())
+		return true
+	}
+	r.replacingTab = old
+	r.beginOpenLocked(name, true)
+	return true
 }
 
 // removeTab takes tab i out of the list, ending its lease watch. When it was
@@ -391,6 +418,7 @@ func (r *managedREPL) removeTab(i int) *replTab {
 // closeTabs closes every tab's session at exit, the visible one included. A
 // generated session that never ran a turn is discarded by its close.
 func (r *managedREPL) closeTabs() error {
+	r.replacingTab = nil
 	r.cancelTurns()
 	var errs []error
 	if err := r.work.close(); err != nil {
@@ -548,6 +576,7 @@ func (r *managedREPL) finishOpen(res openResult) {
 		r.model.appendNoticeLine(notice)
 	}
 	if res.err != nil {
+		r.replacingTab = nil
 		r.failOpenLocked(res.name, res.err)
 		r.model.mu.Unlock()
 		return
@@ -555,6 +584,18 @@ func (r *managedREPL) finishOpen(res openResult) {
 	r.startupLogoVisible = false
 	r.syncWorkspaces()
 	r.model.mu.Unlock()
+	// The workspace this session replaces leaves now that the new one holds
+	// the screen.
+	if old := r.replacingTab; old != nil {
+		r.replacingTab = nil
+		if i := r.tabIndexOfModel(old.model); i >= 0 && old.model != r.model {
+			r.removeTab(i)
+			r.closeTabState(old)
+			r.model.mu.Lock()
+			r.model.appendNoticeLine("closed " + old.name)
+			r.model.mu.Unlock()
+		}
+	}
 	// Reports its agents posted while it was closed are its first input.
 	if tab := r.visibleTab(); r.runTurn != nil && r.pullReports(r.runCtx, tab) {
 		r.startQueued(r.runCtx, tab, r.runTurn)

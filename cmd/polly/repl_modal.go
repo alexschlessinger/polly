@@ -41,6 +41,10 @@ type replModal struct {
 	inputMode  bool
 	masked     bool
 	helper     string
+	// body is styled rows shown above the list (an approval's call block);
+	// bodyRows is how many rows it took in the last text, list rows follow.
+	body     []string
+	bodyRows int
 	// expanded holds the values of parent items whose children are listed.
 	// Sharing the map across openings keeps the choice for the process.
 	expanded map[string]bool
@@ -235,6 +239,11 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		footer = filter + " · ↑/↓ select · Enter choose · Esc close"
 	}
 	lines = append(lines, "", centeredModalHelper(footer, modalWidth))
+	m.bodyRows = 0
+	if len(m.body) > 0 {
+		m.bodyRows = len(m.body) + 1
+		lines = append(append(append([]string(nil), m.body...), ""), lines...)
+	}
 	return strings.Join(lines, "\n")
 }
 

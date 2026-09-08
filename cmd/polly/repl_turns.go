@@ -105,7 +105,7 @@ func (r *managedREPL) hiddenTurns() int {
 }
 
 // requestIdleQuitLocked handles a quit asked for at an idle prompt (Ctrl-C on
-// an empty composer, Ctrl-D). With turns running in other tabs the first
+// an empty composer). With turns running in other tabs the first
 // request only says so; the next one quits, canceling them. Returns true to
 // quit. Caller must hold r.model.mu.
 func (r *managedREPL) requestIdleQuitLocked() bool {

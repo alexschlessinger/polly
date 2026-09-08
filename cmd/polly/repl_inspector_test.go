@@ -726,6 +726,14 @@ func TestInspectorAgentMessageAndApprovalKeepRootOwnership(t *testing.T) {
 	if r.model.modal == nil || !strings.Contains(r.model.modal.title, "agent") {
 		t.Fatal("approval not addressed")
 	}
+	if body := plainStyledText(strings.Join(r.model.modal.body, "\n")); !strings.HasPrefix(body, "  ╭─ bash") {
+		t.Fatalf("approval dialog does not show the call: %q", body)
+	}
+	for _, item := range r.model.modal.items {
+		if item.value == "v" || item.value == "a" {
+			t.Fatalf("single-call approval offers %q", item.label)
+		}
+	}
 	r.model.modal.onSubmit("y")
 	r.closeModal()
 	r.applyTabRequests()

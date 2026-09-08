@@ -77,6 +77,34 @@ func link(label string) string {
 	return styled(label, "accent", "")
 }
 
+// keyHints renders key and verb pairs the way dialog footers do: the key in
+// the text color, its verb muted, pairs joined by a muted middle dot. A pair
+// with an empty verb shows the key alone.
+func keyHints(pairs ...[2]string) string {
+	parts := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		part := styleEscape(p[0])
+		if p[1] != "" {
+			part += " " + styled(p[1], "muted", "")
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, styled(" · ", "muted", ""))
+}
+
+// keyHintsText is the unstyled text of keyHints, for width math.
+func keyHintsText(pairs ...[2]string) string {
+	parts := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		part := p[0]
+		if p[1] != "" {
+			part += " " + p[1]
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, " · ")
+}
+
 // styledLiteralRune maps a substitute rune back to the bracket it stands for.
 func styledLiteralRune(r rune) (rune, bool) {
 	switch r {

@@ -409,8 +409,8 @@ func TestApprovalPromptFitsNarrowTerminal(t *testing.T) {
 	if rw.StringWidth(plain) > 20 {
 		t.Fatalf("approval width = %d, want <= 20: %q", rw.StringWidth(plain), plain)
 	}
-	if !strings.Contains(plain, "[y/N/a/v]") {
-		t.Fatalf("narrow approval lost its actions: %q", plain)
+	if !strings.Contains(plain, "y · n · a") {
+		t.Fatalf("narrow approval lost its keys: %q", plain)
 	}
 }
 
@@ -599,6 +599,16 @@ func TestDeleteAndControlDDeleteForward(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-d>"})
 	if got := r.model.ed.text(); got != "a" {
 		t.Fatalf("Ctrl-D on non-empty input = %q, want a", got)
+	}
+	// Ctrl-D only deletes: an empty composer is not a request to leave.
+	r.model.ed.setText("")
+	if r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-d>"}) {
+		t.Fatal("Ctrl-D on an empty composer quit")
+	}
+	select {
+	case <-r.quit:
+		t.Fatal("Ctrl-D on an empty composer requested a quit")
+	default:
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/messages"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -185,11 +186,9 @@ func (m *replModel) handleApprovalAnswer(answer byte) bool {
 	case 'y':
 		a.out[a.index] = true
 		a.index++
-		a.viewed = false
 	case 'n':
 		a.out[a.index] = false
 		a.index++
-		a.viewed = false
 	}
 	if a.index >= len(a.out) {
 		m.finishApproval()
@@ -198,24 +197,48 @@ func (m *replModel) handleApprovalAnswer(answer byte) bool {
 	return false
 }
 
-// showApprovalArgs expands the current approval candidate's full arguments
-// into the transcript as a gutter block, so [v]iew survives scrollback and the
-// prompt stays put. No-op when already expanded for this call. Caller must
-// hold m.mu.
-func (m *replModel) showApprovalArgs() {
+// approvalCallLines is the pending call as the block above the approval
+// prompt shows it: the bash command itself, or the redacted arguments.
+// Caller must hold m.mu.
+func (m *replModel) approvalCallLines() []string {
 	a := m.approval
-	if a == nil || a.viewed {
-		return
+	if a == nil || a.index >= len(a.calls) {
+		return nil
 	}
-	a.viewed = true
-	call := a.calls[a.index]
-	var b strings.Builder
-	b.WriteString("  " + styled("╭─ "+call.Name, "muted", ""))
-	for _, line := range strings.Split(expandToolCall(call), "\n") {
-		b.WriteString("\n  " + styled("│ ", "muted", "") + styled(line, "code", ""))
+	return strings.Split(expandToolCall(a.calls[a.index]), "\n")
+}
+
+// approvalCallBlock renders a call as a titled payload, "╭─ name" over "│ "
+// gutter rows, truncated to width (zero means unbounded) and to rows (the
+// last row elided when the block does not fit). Fewer than two rows, or a
+// terminal too narrow for a gutter, leaves no room for a block.
+func approvalCallBlock(call messages.ChatMessageToolCall, lines []string, width, rows int) []string {
+	if rows < 2 || width > 0 && width < 8 {
+		return nil
 	}
-	m.appendLine(b.String())
-	m.followBottom = true
+	fit := func(s string, room int) string {
+		if width <= 0 {
+			return s
+		}
+		return rw.Truncate(s, max(0, room), "…")
+	}
+	out := []string{"  " + styled(fit("╭─ "+call.Name, width-2), "muted", "")}
+	if len(lines) > rows-1 {
+		lines = append(append([]string(nil), lines[:rows-2]...), "…")
+	}
+	for _, line := range lines {
+		out = append(out, "  "+styled("│ ", "muted", "")+styled(fit(line, width-4), "code", ""))
+	}
+	return out
+}
+
+// approvalPromptRows is the composer region while an approval waits: the
+// call block, then the prompt with its key hints on the last row.
+func (m *replModel) approvalPromptRows(maxRows, width int) string {
+	a := m.approval
+	rows := approvalCallBlock(a.calls[a.index], m.approvalCallLines(), width, maxRows-1)
+	rows = append(rows, m.approvalPrompt(width))
+	return strings.Join(rows, "\n")
 }
 
 func (m *replModel) finishApproval() {
@@ -237,12 +260,20 @@ const inputPromptWidth = 2
 // visible while composing or after a paste.
 const maxInputRows = 8
 
+// approvalPromptMaxRows caps the composer region while an approval waits: the
+// call block above the prompt shows what is about to run, elided past this.
+const approvalPromptMaxRows = 10
+
 // inputRows is how many terminal rows the input region currently occupies. The
-// approval/search overlays are always single-line; the composer remains visible
-// and editable while a turn runs, including in quiet mode.
+// search overlay is single-line; an approval shows its call block above the
+// prompt; the composer remains visible and editable while a turn runs,
+// including in quiet mode.
 func (m *replModel) inputRows() int {
-	if m.approval != nil || m.hist.searching {
+	if m.hist.searching {
 		return 1
+	}
+	if m.approval != nil {
+		return min(approvalPromptMaxRows, 2+len(m.approvalCallLines()))
 	}
 	n := 1 + strings.Count(m.ed.text(), "\n")
 	if n > maxInputRows {
@@ -282,7 +313,7 @@ func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, cur
 	case m.hist.searching:
 		return m.hist.searchDisplay(), 0, 0, false
 	case m.approval != nil:
-		return m.approvalPrompt(width), 0, 0, false
+		return m.approvalPromptRows(maxRows, width), 0, 0, false
 	}
 
 	lines := strings.Split(m.ed.text(), "\n")
@@ -341,39 +372,43 @@ func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, cur
 	return strings.Join(parts, "\n"), curRow, cc, true
 }
 
+// approvalPrompt asks the question and lists the keys as the dialogs do:
+// "Allow bash ls? y allow · n deny", with "a allow all" only while more calls
+// in the batch wait behind this one. Narrow terminals keep the keys alone.
 func (m *replModel) approvalPrompt(width int) string {
-	call := m.approval.calls[m.approval.index]
-	prefix := "allow "
-	if len(m.approval.calls) > 1 {
-		prefix += fmt.Sprintf("(%d/%d) ", m.approval.index+1, len(m.approval.calls))
+	a := m.approval
+	call := a.calls[a.index]
+	prefix := "Allow "
+	if len(a.calls) > 1 {
+		prefix += fmt.Sprintf("(%d/%d) ", a.index+1, len(a.calls))
 	}
-	actions := "[y]es [N]o [a]ll [v]iew"
-	if width > 0 && width < 46 {
-		actions = "[y/N/a/v]"
+	pairs := [][2]string{{"y", "allow"}, {"n", "deny"}}
+	if len(a.calls)-a.index > 1 {
+		pairs = append(pairs, [2]string{"a", "allow all"})
 	}
-	suffix := "? " + actions
+	if width > 0 && width < 40 {
+		for i := range pairs {
+			pairs[i][1] = ""
+		}
+	}
+	hints, hintsText := keyHints(pairs...), keyHintsText(pairs...)
+	const gap = "?  "
 	label := toolLabel(call)
 	if width > 0 {
-		budget := width - rw.StringWidth(prefix) - rw.StringWidth(suffix)
+		budget := width - rw.StringWidth(prefix) - rw.StringWidth(gap) - rw.StringWidth(hintsText)
 		if budget < 0 {
 			prefix = ""
-			budget = width - rw.StringWidth(suffix)
+			budget = width - rw.StringWidth(gap) - rw.StringWidth(hintsText)
 		}
 		if budget < 0 {
-			// Truncating bracketed action text can leave an unmatched "[";
-			// wrapping that fragment in gotui style markup makes the parser expose
-			// the markup itself. Render the tiny fallback literally.
-			return styleEscape(rw.Truncate(actions, width, "…"))
+			return styleEscape(rw.Truncate(hintsText, width, "…"))
 		}
-		if budget == 0 {
-			label = ""
-		} else {
-			label = rw.Truncate(label, budget, "…")
+		label = ""
+		if budget > 0 {
+			label = rw.Truncate(toolLabel(call), budget, "…")
 		}
 	}
-	return styled(prefix, "accent", "bold") +
-		styled(label, "muted", "") +
-		styled(suffix, "accent", "bold")
+	return styled(prefix, "", "bold") + styleEscape(label) + gap + hints
 }
 
 func sliceDisplayWidth(s string, start, width int) (string, int) {
