@@ -127,7 +127,9 @@ func writeFallbackSandboxNotice(w io.Writer, config *Config, state *conversation
 	if config == nil || config.Quiet {
 		return
 	}
-	fmt.Fprintln(w, sandboxNoticeLine(config, state))
+	if notice := sandboxNoticeLine(config, state); notice != "" {
+		fmt.Fprintln(w, notice)
+	}
 }
 
 type fallbackLineResult struct {

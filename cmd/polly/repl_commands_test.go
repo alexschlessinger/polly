@@ -441,28 +441,28 @@ func TestSandboxNoticeLine(t *testing.T) {
 
 	registry := stubSandboxRegistry(t)
 	state := &conversationState{toolRegistry: registry}
-	if got := sandboxNoticeLine(&Config{}, state); got != "sandbox: active (base; 1 tools sandboxed)" {
-		t.Fatalf("active notice = %q", got)
-	}
-	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state); got != "sandbox: active (workspace+net+git; 1 tools sandboxed)" {
-		t.Fatalf("preset notice = %q", got)
+	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state); got != "" {
+		t.Fatalf("healthy active sandbox printed a notice: %q", got)
 	}
 
-	// An unsandboxed-but-capable tool is called out by name.
+	// An unsandboxed-but-capable tool is called out by name, with the preset.
 	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return probeFailSandbox{}, nil
 	}
 	registry = tools.NewToolRegistry([]tools.Tool{tools.NewUnsafeBashTool("")},
 		tools.WithSandboxFactory(factory, sandbox.Config{}))
 	state = &conversationState{toolRegistry: registry}
-	got := sandboxNoticeLine(&Config{}, state)
-	if !strings.Contains(got, "0 tools sandboxed") || !strings.Contains(got, "not sandboxed: bash") {
+	if got := sandboxNoticeLine(&Config{SandboxPreset: "workspace+net+git"}, state); got != "sandbox: active (workspace+net+git; 0 tools sandboxed; not sandboxed: bash)" {
 		t.Fatalf("opt-out notice = %q", got)
 	}
 }
 
 func TestWriteFallbackSandboxNotice(t *testing.T) {
 	var out bytes.Buffer
+	writeFallbackSandboxNotice(&out, &Config{SandboxPreset: "workspace+net+git"}, &conversationState{toolRegistry: stubSandboxRegistry(t)})
+	if out.Len() != 0 {
+		t.Fatalf("active sandbox wrote a startup notice: %q", out.String())
+	}
 	writeFallbackSandboxNotice(&out, &Config{NoSandbox: true}, nil)
 	if got := out.String(); got != "sandbox: disabled (--nosandbox)\n" {
 		t.Fatalf("fallback sandbox notice = %q", got)

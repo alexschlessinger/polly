@@ -411,9 +411,11 @@ one `sandbox_wrap` line per command, **names only, never values**:
         denied_paths=17 unix_sockets=0
 ```
 
-In the REPL, startup prints a posture line, `/get sandbox` shows the live
-state, and `/tools list` marks each sandboxed tool with a policy summary
-such as `[sandboxed: net off, temp writes, env filtered]`. The model sees
+In the REPL, startup prints a posture line only when the posture is
+exceptional: the sandbox is disabled or unavailable, a capable tool runs
+unsandboxed, or the `ssh` component has no reachable agent. `/get sandbox`
+always shows the live state, and `/tools list` marks each sandboxed tool with
+a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The model sees
 `[sandboxed]` appended to each sandboxed tool's description.
 
 ## Limitations

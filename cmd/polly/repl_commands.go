@@ -1163,6 +1163,12 @@ func (p sandboxPosture) noticeString() string {
 	case sandboxPostureUnavailable:
 		return "sandbox: unavailable"
 	default:
+		// Only exceptional posture earns a startup line. An active sandbox
+		// covering every capable tool, with its ssh agent reachable when the
+		// preset needs one, returns "" so callers print nothing.
+		if len(p.unsandboxed) == 0 && !p.sshAgentUnavailable {
+			return ""
+		}
 		line := fmt.Sprintf("sandbox: active (%s; %d tools sandboxed", p.preset, len(p.sandboxed))
 		if len(p.unsandboxed) > 0 {
 			line += "; not sandboxed: " + strings.Join(p.unsandboxed, ", ")
