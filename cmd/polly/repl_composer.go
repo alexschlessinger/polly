@@ -251,7 +251,7 @@ func (m *replModel) finishApproval() {
 	m.approval = nil
 }
 
-// inputPromptWidth is the visible column count of the "> " prompt prefix (and
+// inputPromptWidth is the visible column count of the "▎ " gutter (and
 // of the matching indent on wrapped continuation lines).
 const inputPromptWidth = 2
 
@@ -355,11 +355,7 @@ func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, cur
 				ln, _ = sliceDisplayWidth(ln, 0, contentWidth)
 			}
 		}
-		if start+i == 0 {
-			parts[i] = styled("> ", "accent", "bold") + styleEscape(ln)
-		} else {
-			parts[i] = "  " + styleEscape(ln)
-		}
+		parts[i] = userGutter() + styleEscape(ln)
 	}
 
 	curRow = cr - start

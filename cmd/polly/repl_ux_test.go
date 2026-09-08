@@ -169,7 +169,7 @@ func TestFailedTurnLabelsPartialAndMarksQueueNotSent(t *testing.T) {
 	if m.busy || m.state != turnStateIdle || m.lastOutcome != turnOutcomeFailed {
 		t.Fatalf("failed turn did not settle idle: busy=%v state=%v outcome=%v", m.busy, m.state, m.lastOutcome)
 	}
-	if len(m.queue) != 0 || !strings.Contains(plain, "> next question\n  (not sent)") {
+	if len(m.queue) != 0 || !strings.Contains(plain, "▎ next question\n▎ (not sent)") {
 		t.Fatalf("failed turn left pending input queued: queue=%v transcript=%q", m.queue, joined)
 	}
 	if m.ed.text() != "explain" || m.restoredDraft == nil {
@@ -224,7 +224,7 @@ func TestCancelFreezesPartialAndRejectsLateCallbacks(t *testing.T) {
 			t.Fatalf("canceled transcript retained redundant notice %q: %q", redundant, plain)
 		}
 	}
-	if len(m.queue) != 0 || !strings.Contains(plain, "> queued\n  (not sent)") {
+	if len(m.queue) != 0 || !strings.Contains(plain, "▎ queued\n▎ (not sent)") {
 		t.Fatalf("cancel left pending input queued: queue=%v transcript=%q", m.queue, joined)
 	}
 }
@@ -493,7 +493,7 @@ func TestQueueSubmissionAppearsInTranscript(t *testing.T) {
 			r.model.ed.setText("next message")
 			r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 			joined := plainStyledText(r.model.fullTranscript())
-			if !strings.Contains(joined, "> next message\n  (queued)") {
+			if !strings.Contains(joined, "▎ next message\n▎ (queued)") {
 				t.Fatalf("queued transcript entry missing: %q", joined)
 			}
 			if status := plainStyledText(r.model.statusRow(80)); strings.Contains(status, "queued") {
@@ -522,7 +522,7 @@ func TestQueueTranscriptEntryDoesNotSplitAssistantStream(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("queued entry split assistant output: %#v", got)
 	}
-	if joined := plainStyledText(strings.Join(got, "\n")); !strings.Contains(joined, "> next\n  (queued)") {
+	if joined := plainStyledText(strings.Join(got, "\n")); !strings.Contains(joined, "▎ next\n▎ (queued)") {
 		t.Fatalf("queued entry missing beside assistant stream: %#v", got)
 	}
 }
@@ -543,7 +543,7 @@ func TestQueuedTranscriptEntryActivatesWithoutDuplicate(t *testing.T) {
 		t.Fatal("queued turn did not start")
 	}
 	joined := plainStyledText(r.model.fullTranscript())
-	if strings.Count(joined, "> next") != 1 || strings.Contains(joined, "(queued)") {
+	if strings.Count(joined, "▎ next") != 1 || strings.Contains(joined, "(queued)") {
 		t.Fatalf("queued entry was duplicated or left marked after activation: %q", joined)
 	}
 	if err := <-done; err != nil {
@@ -1153,7 +1153,7 @@ func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 	for _, entry := range []string{
 		styled("muted one\nmuted two\n", "muted", ""),
 		"",
-		styled("> ", "accent", "bold") + "a prompt that wraps across rows",
+		userGutter() + "a prompt that wraps across rows",
 	} {
 		m.appendTranscriptEntry(entry)
 	}
@@ -1177,7 +1177,7 @@ func TestRestoredDraftResubmitsExactUserAfterDiscardingPendingInput(t *testing.T
 	if r.model.ed.text() != "same prompt" || len(r.model.queue) != 0 {
 		t.Fatalf("failure did not restore input and discard queue: editor=%q queue=%v", r.model.ed.text(), r.model.queue)
 	}
-	if joined := plainStyledText(r.model.fullTranscript()); !strings.Contains(joined, "> later\n  (not sent)") {
+	if joined := plainStyledText(r.model.fullTranscript()); !strings.Contains(joined, "▎ later\n▎ (not sent)") {
 		t.Fatalf("discarded pending input was not marked unsent: %q", joined)
 	}
 
@@ -1282,7 +1282,7 @@ func TestQueuedResetIsAConsistentBarrier(t *testing.T) {
 		if len(r.model.queue) != 0 {
 			t.Fatalf("reset failure left queue=%v", r.model.queue)
 		}
-		if joined := plainStyledText(r.model.fullTranscript()); !strings.Contains(joined, "> must wait\n  (not sent)") {
+		if joined := plainStyledText(r.model.fullTranscript()); !strings.Contains(joined, "▎ must wait\n▎ (not sent)") {
 			t.Fatalf("reset failure did not mark following input unsent: %q", joined)
 		}
 	})

@@ -1235,7 +1235,7 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 	if len(r.model.queue) != 0 {
 		t.Fatalf("canceled turn should clear pending queue, got %v", r.model.queue)
 	}
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "> queued one\n  (not sent)") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "▎ queued one\n▎ (not sent)") {
 		t.Fatalf("canceled queued entry was not marked unsent: %q", got)
 	}
 }
@@ -1382,7 +1382,7 @@ func TestUnbalancedBracketRendersLiterally(t *testing.T) {
 	}
 
 	prompt := formattedUserPrompt("grep [ src/")
-	if got := plainStyledText(prompt); got != "> grep [ src/" {
+	if got := plainStyledText(prompt); got != "▎ grep [ src/" {
 		t.Fatalf("user prompt = %q", got)
 	}
 }
@@ -1394,14 +1394,14 @@ func TestLiteralParagraphRestoresBrackets(t *testing.T) {
 	noBorder(&p.Block)
 	p.WrapText = false
 	p.SetRect(0, 0, 20, 1)
-	p.Text = styled("> ", "accent", "bold") + styleEscape("a[b]c")
+	p.Text = userGutter() + styleEscape("a[b]c")
 	buf := ui.NewBuffer(image.Rect(0, 0, 20, 1))
 	p.Draw(buf)
 	var got strings.Builder
 	for x := 0; x < 7; x++ {
 		got.WriteRune(buf.GetCell(image.Pt(x, 0)).Rune)
 	}
-	if got.String() != "> a[b]c" {
+	if got.String() != "▎ a[b]c" {
 		t.Fatalf("drawn = %q", got.String())
 	}
 }
@@ -1823,5 +1823,25 @@ func TestHistoryFileSurvivesConcurrentSessions(t *testing.T) {
 	got := loadHistory(path)
 	if strings.Join(got, ",") != "earlier,from first,from second,first again" {
 		t.Fatalf("history after two sessions = %v", got)
+	}
+}
+
+// The composer and the echoed prompt share one gutter: every row the user
+// writes carries the accent bar, both while typing and once it is sent.
+func TestComposerAndEchoShareTheUserGutter(t *testing.T) {
+	m := newReplModel()
+	m.ed.setText("first\nsecond")
+	text, _, curCol, _ := m.renderInputForTerminal(maxInputRows, 40)
+	if got := plainStyledText(text); got != "▎ first\n▎ second" {
+		t.Fatalf("composer rows = %q", got)
+	}
+	if curCol != inputPromptWidth+len("second") {
+		t.Fatalf("cursor column = %d, want %d", curCol, inputPromptWidth+len("second"))
+	}
+	if got := plainStyledText(formattedUserPrompt("first\nsecond")); got != "▎ first\n▎ second" {
+		t.Fatalf("echoed prompt rows = %q", got)
+	}
+	if !strings.HasPrefix(text, userGutter()) || !strings.HasPrefix(formattedUserPrompt("x"), userGutter()) {
+		t.Fatal("composer and echo should use the same styled gutter")
 	}
 }

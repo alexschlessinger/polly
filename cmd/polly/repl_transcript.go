@@ -246,14 +246,19 @@ func (m *replModel) labelTurnOutcome(label string) {
 	m.outcomeLabeled = true
 }
 
+// userGutterGlyph marks every row the user wrote: the composer while typing,
+// the echoed prompt afterwards, and the queued or not-sent trailer under it.
+// Assistant text carries no marker, so the bar alone says who is speaking.
+const userGutterGlyph = '▎'
+
+func userGutter() string {
+	return styled(string(userGutterGlyph)+" ", "accent", "bold")
+}
+
 func formattedUserPrompt(p string) string {
 	lines := strings.Split(p, "\n")
 	for i, line := range lines {
-		if i == 0 {
-			lines[i] = styled("> ", "accent", "bold") + styleEscape(line)
-		} else {
-			lines[i] = "  " + styleEscape(line)
-		}
+		lines[i] = userGutter() + styleEscape(line)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -476,11 +481,11 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+1)
 	for i := range m.transcript {
 		if m.collapseInitialPrompt && m.transcript[i].initialPrompt {
-			label := "▸ Prompt"
+			glyph := "▸"
 			if m.initialPromptExpanded {
-				label = "▾ Prompt"
+				glyph = "▾"
 			}
-			blocks = append(blocks, transcriptDisplayBlock{key: "initial-prompt", text: styled(label, "accent", "")})
+			blocks = append(blocks, transcriptDisplayBlock{key: "initial-prompt", text: styled(glyph, "accent", "bold") + " " + styled("Prompt", "muted", "")})
 			if !m.initialPromptExpanded {
 				continue
 			}

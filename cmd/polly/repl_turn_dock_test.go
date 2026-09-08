@@ -93,7 +93,7 @@ func TestAttachedTrailerRemainsWhenNextTurnStarts(t *testing.T) {
 	if !strings.Contains(history, "✓ 2.0s") || !strings.Contains(history, "1.2k in / 300 out") {
 		t.Fatalf("previous turn trailer missing from transcript history: %q", history)
 	}
-	if !strings.Contains(history, "> second") {
+	if !strings.Contains(history, "▎ second") {
 		t.Fatalf("second prompt missing from transcript: %q", history)
 	}
 	if !m.turnDock.visible || m.turnDock.settled || m.turnDock.inputTokens != 0 || m.turnDock.outputTokens != 0 {

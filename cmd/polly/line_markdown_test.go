@@ -23,7 +23,7 @@ func TestRenderLineMarkdownANSI(t *testing.T) {
 		t.Fatalf("ANSI output has no style sequences: %q", got)
 	}
 	plain := ansiSGRPattern.ReplaceAllString(got, "")
-	for _, want := range []string{"▎ Setup", "• bold and italic with code", "Name", "kiwi", "12", "日本語"} {
+	for _, want := range []string{"Setup", "• bold and italic with code", "Name", "kiwi", "12", "日本語"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("rendered output missing %q: %q", want, plain)
 		}
@@ -70,7 +70,7 @@ func TestLineTurnUIBuffersOnlyRichOutput(t *testing.T) {
 		t.Fatalf("rich output streamed before settlement: %q", richOut.String())
 	}
 	rich.FinishTextTurn()
-	if got := ansiSGRPattern.ReplaceAllString(richOut.String(), ""); got != "▎ Hello\n" {
+	if got := ansiSGRPattern.ReplaceAllString(richOut.String(), ""); got != "Hello\n" {
 		t.Fatalf("rich output = %q, want rendered heading", got)
 	}
 

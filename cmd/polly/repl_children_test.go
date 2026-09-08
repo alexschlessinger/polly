@@ -205,7 +205,7 @@ func TestBackgroundChildReportsToTheIdleParent(t *testing.T) {
 	if parent.turnDone == nil {
 		t.Fatal("the report did not start a parent turn")
 	}
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "> agent "+child.name+" finished") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "▎ agent "+child.name+" finished") {
 		t.Fatalf("parent transcript lacks the report echo: %q", got)
 	}
 	settleUntil(t, r, settled(parent))
@@ -240,7 +240,7 @@ func TestReportsArrivingDuringAParentTurnArriveAsOneMessage(t *testing.T) {
 
 	close(runs.release)
 	settleUntil(t, r, func() bool { return len(runs.reported()) == 1 })
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "> 2 agent reports") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "▎ 2 agent reports") {
 		t.Fatalf("parent transcript lacks the coalesced echo: %q", got)
 	}
 	settleUntil(t, r, settled(parent))
@@ -414,7 +414,7 @@ func TestChildOfAClosedParentReportsThroughTheStore(t *testing.T) {
 	if got := runs.reported(); len(got) != 1 || got[0] != want {
 		t.Fatalf("reopened parent got %q, want %q", got, want)
 	}
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "> agent "+child.name+" finished") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "▎ agent "+child.name+" finished") {
 		t.Fatalf("reopened parent transcript lacks the report echo: %q", got)
 	}
 }
@@ -449,7 +449,7 @@ func TestReportsPostedWhileNoPollyHeldTheParentArriveAtStartup(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0], "agent helper canceled\nhalf done") || !strings.Contains(got[0], "agent helper failed: boom") {
 		t.Fatalf("parent got %q, want both reports in one message", got)
 	}
-	if transcript := plainStyledText(r.model.fullTranscript()); !strings.Contains(transcript, "> 2 agent reports") {
+	if transcript := plainStyledText(r.model.fullTranscript()); !strings.Contains(transcript, "▎ 2 agent reports") {
 		t.Fatalf("transcript lacks the coalesced echo: %q", transcript)
 	}
 	r.pullAllReports(ctx, runs.run)
