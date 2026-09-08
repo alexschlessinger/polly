@@ -496,12 +496,25 @@ func codeBlockText(lines *text.Segments, source []byte) string {
 // and "│ " gutters — with chroma highlighting inside, mapped onto the same
 // semantic ANSI slots as the rest of the UI so it follows the terminal theme.
 func renderCodeBlock(code, lang string) []string {
-	var out []string
-	if lang != "" {
-		out = append(out, styled("╭─ "+lang, "muted", ""))
+	lines := highlightCodeLines(strings.TrimRight(code, "\n"), lang)
+	if lang == "" {
+		return gutterLines(lines)
 	}
+	return renderFence(lang, lines)
+}
+
+// renderFence titles a payload block: the muted "╭─ title" header, then the
+// lines under the muted "│ " gutter that the wrapper hard-wraps like code.
+// Tool arguments and output use it with section titles; fenced Markdown
+// code uses it with the language.
+func renderFence(title string, lines []string) []string {
+	return append([]string{styled("╭─ "+title, "muted", "")}, gutterLines(lines)...)
+}
+
+func gutterLines(lines []string) []string {
+	out := make([]string, 0, len(lines))
 	gutter := styled("│ ", "muted", "")
-	for _, line := range highlightCodeLines(strings.TrimRight(code, "\n"), lang) {
+	for _, line := range lines {
 		out = append(out, gutter+line)
 	}
 	return out

@@ -129,28 +129,26 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 	if source.info != nil {
 		m.artifactStore = source.info.Artifacts
 	}
-	status := t.status
-	if t.complete && t.duration > 0 {
-		status += " · " + formatElapsed(t.duration)
-	}
-	m.appendLine(styled(status, "muted", ""))
-	m.appendLine(styled("Arguments", "muted", ""))
+	// The tool's state lives in the inspector header; the body is two titled
+	// payloads, arguments then output, under one gutter.
 	arguments := strings.TrimSpace(t.call.Arguments)
-	if arguments == "" {
-		m.appendLine("(none)")
-	} else {
+	title, lines := "arguments", []string{styled("(none)", "muted", "")}
+	if arguments != "" {
 		lang := ""
 		if json.Valid([]byte(arguments)) {
 			lang = "json"
+			title += " · json"
 		}
-		m.appendLine(strings.Join(renderCodeBlock(readableResult(arguments), lang), "\n"))
+		lines = highlightCodeLines(strings.TrimRight(readableResult(arguments), "\n"), lang)
 	}
-	m.appendLine(styled("Output", "muted", ""))
+	m.appendLine(strings.Join(renderFence(title, lines), "\n"))
 	if !t.complete {
+		m.appendLine(styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("Running… output appears when this tool finishes.")
 		return m, nil
 	}
 	if !t.available {
+		m.appendLine(styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("Output unavailable in saved history.")
 		return m, nil
 	}
@@ -180,9 +178,15 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 		break
 	}
 	if body == "" {
+		m.appendLine(styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("No text output.")
 	} else {
-		m.appendLine(styleEscape(stripTranscriptImageMarkers(readableResult(body))))
+		text := strings.TrimRight(stripTranscriptImageMarkers(readableResult(body)), "\n")
+		raw := strings.Split(text, "\n")
+		for n := range raw {
+			raw[n] = styleEscape(raw[n])
+		}
+		m.appendLine(strings.Join(renderFence("output · "+resultLineMeta(text), raw), "\n"))
 	}
 	images := inspectionTranscriptImages(t.result, m.artifactStore)
 	if len(images) > 0 {

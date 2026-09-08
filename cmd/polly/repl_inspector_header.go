@@ -39,7 +39,14 @@ func (b *inspectorHeaderBuilder) write(text, color, modifier, action string) {
 	b.lines[row] += styled(text, color, modifier)
 	if action != "" {
 		at := b.origin.Add(image.Pt(b.col, row))
-		b.buttons = append(b.buttons, inspectorButton{image.Rect(at.X, at.Y, at.X+cols, at.Y+1), action})
+		rect := image.Rect(at.X, at.Y, at.X+cols, at.Y+1)
+		// Adjacent spans with one action are one control, so a title and its
+		// arrow share a hitbox.
+		if n := len(b.buttons); n > 0 && b.buttons[n-1].action == action && b.buttons[n-1].rect.Min.Y == at.Y && b.buttons[n-1].rect.Max.X == at.X {
+			b.buttons[n-1].rect.Max.X = rect.Max.X
+		} else {
+			b.buttons = append(b.buttons, inspectorButton{rect, action})
+		}
 	}
 	b.col += cols
 }
@@ -55,14 +62,16 @@ func (b *inspectorHeaderBuilder) item(text, color, modifier, action string) {
 	b.write(text, color, modifier, action)
 }
 
-func (b *inspectorHeaderBuilder) button(label, action string, enabled, selected bool) {
+// link adds a clickable word: accent when enabled, muted and inert when not,
+// and the attention color when it is the action the row exists for.
+func (b *inspectorHeaderBuilder) link(label, action string, enabled, selected bool) {
 	color, modifier := "accent", ""
 	if !enabled {
 		color, action = "muted", ""
 	} else if selected {
 		color, modifier = "active", "bold"
 	}
-	b.item("["+label+"]", color, modifier, action)
+	b.item(label, color, modifier, action)
 }
 
 func (b *inspectorHeaderBuilder) layout(height int) inspectorHeaderLayout {
@@ -97,10 +106,10 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	if name == "" {
 		name = "Conversation"
 	}
-	b.write("<", "accent", "", "parent")
-	b.write(" ", "accent", "", "")
+	// The arrow and the title are one control: either returns to the caller.
+	b.write("‹ ", "accent", "", "parent")
 	titleWidth := max(0, width-b.col)
-	itemName := ""
+	itemName, status, launch := "", "", false
 	if i.target.kind != conversationViewKind {
 		itemName = "Thought"
 		if i.target.kind == toolViewKind {
@@ -114,7 +123,9 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 				}
 			}
 		}
-		if index, total, _, _ := inspectorSequencePosition(i); index > 0 {
+		var index, total int
+		index, total, status, launch = inspectorSequencePosition(i)
+		if index > 0 {
 			itemName += fmt.Sprintf(" · %d/%d", index, total)
 		}
 	}
@@ -124,20 +135,35 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		b.write(rw.Truncate(name, titleWidth, "…"), "accent", "bold", "parent")
 	}
 
+	// The second row carries the item's state and its actions; it exists
+	// only when there is something to say.
+	sep := func() {
+		if b.col > 0 {
+			b.write(" ·", "muted", "", "")
+		}
+	}
 	if i.searching {
-		// Search replaces the contextual actions and creates no hidden hitboxes.
+		// Search replaces the contextual row and creates no hidden hitboxes.
 		b.newline()
 		b.write("Find: ", "accent", "", "")
-		b.write(rw.TruncatePrefix(i.searchInput.text(), max(0, width-b.col-1), "…")+"▏", "", "", "")
+		hint := "  Enter find · Esc cancel"
+		room := width - b.col - 1
+		if room-rw.StringWidth(hint) >= 8 {
+			room -= rw.StringWidth(hint)
+		} else {
+			hint = ""
+		}
+		b.write(rw.TruncatePrefix(i.searchInput.text(), max(0, room), "…")+"▏", "", "", "")
+		b.write(hint, "muted", "", "")
 	} else if i.target.kind == toolViewKind {
-		_, _, elapsed, launch := inspectorSequencePosition(i)
-		if launch || elapsed != "" {
+		if status != "" || launch {
 			b.newline()
-			if launch {
-				b.button("Open agent", "agent", true, false)
+			if status != "" {
+				b.item(status, "muted", "", "")
 			}
-			if elapsed != "" {
-				b.item(elapsed, "muted", "", "")
+			if launch {
+				sep()
+				b.link("Open agent", "agent", true, false)
 			}
 		}
 	} else if i.target.kind == conversationViewKind && !isRoot {
@@ -149,23 +175,28 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			if busy || approval {
 				b.newline()
 			}
+			switch {
+			case approval:
+				b.item("approval needed", "muted", "", "")
+			case busy:
+				b.item("running", "muted", "", "")
+			}
 			if busy {
-				b.button("Stop agent", "stop", !canceling, false)
+				sep()
+				b.link("Stop agent", "stop", !canceling, false)
 			}
 			if approval {
-				b.button("Review approval", "review", true, true)
+				sep()
+				b.link("Review approval", "review", true, true)
 			}
 		}
-	}
-
-	if i.searching {
-		b.newline()
-		b.write("Enter: find · Esc: cancel", "muted", "", "")
 	}
 	return b.layout(height)
 }
 
-func inspectorSequencePosition(i *inspectorState) (index, total int, elapsed string, launch bool) {
+// inspectorSequencePosition locates the inspected item in its catalogue: its
+// position, the tool's state with its clock, and whether it launched an agent.
+func inspectorSequencePosition(i *inspectorState) (index, total int, status string, launch bool) {
 	if i.current == nil || i.current.model == nil {
 		return
 	}
@@ -183,12 +214,23 @@ func inspectorSequencePosition(i *inspectorState) (index, total int, elapsed str
 		for n, tool := range s.tools {
 			if tool.key == i.target.item {
 				index, launch = n+1, tool.call.Name == "spawn_agent"
-				if !tool.complete && !tool.started.IsZero() {
-					elapsed = formatElapsed(time.Since(tool.started))
-				}
+				status = inspectedToolStatus(tool)
 				break
 			}
 		}
 	}
 	return
+}
+
+// inspectedToolStatus is the tool's state and clock: a live clock while it
+// runs, its duration once it settled.
+func inspectedToolStatus(t inspectedTool) string {
+	status := t.status
+	switch {
+	case !t.complete && !t.started.IsZero():
+		status += " · " + formatElapsed(time.Since(t.started))
+	case t.complete && t.duration > 0:
+		status += " · " + formatElapsed(t.duration)
+	}
+	return status
 }
