@@ -60,7 +60,6 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 				if checkpoint.Request {
 					e.Iterations++
 				}
-				e.PendingTools = nil
 				e.Intent = nil
 				e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[persisted:]))
 				if checkpoint.Final {
@@ -131,18 +130,21 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		if execution == "" {
 			return nil
 		}
-		return session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-			s, err := decodeState(raw)
-			if err != nil {
-				return err
-			}
-			e := s.Executions[execution]
-			if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status != "running" {
-				return errors.New("execution intent was fenced")
-			}
-			e.PendingTools = calls
-			return encodeState(raw, s)
-		})
+		// A batch may start only while this execution still owns its member.
+		// JournalToolBatch records the intent itself once the calls are known.
+		raw, err := session.ReadCoordination(ctx)
+		if err != nil {
+			return err
+		}
+		s, err := decodeState(raw)
+		if err != nil {
+			return err
+		}
+		e := s.Executions[execution]
+		if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status != "running" {
+			return errors.New("execution intent was fenced")
+		}
+		return nil
 	}
 	cb.JournalToolBatch = func(ctx context.Context, c llm.AgentCheckpoint) error {
 		return session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {

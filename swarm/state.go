@@ -91,21 +91,19 @@ type Publication struct {
 	Posted     time.Time       `json:"posted"`
 }
 type Execution struct {
-	InputSaved   bool                   `json:"inputSaved"`
-	Intent       []messages.ChatMessage `json:"intent,omitempty"`
-	Usage        Usage                  `json:"usage"`
-	ID           string                 `json:"id"`
-	Run          string                 `json:"run"`
-	Member       string                 `json:"member"`
-	Controller   string                 `json:"controller,omitempty"`
-	Status       string                 `json:"status"`
-	Request      AgentRequest           `json:"request"`
-	Iterations   int                    `json:"iterations"`
-	Generation   int                    `json:"generation"`
-	PendingTools any                    `json:"pendingTools,omitempty"`
-	Result       *AgentResult           `json:"result,omitempty"`
-	Error        string                 `json:"error,omitempty"`
-	StopReason   messages.StopReason    `json:"stopReason,omitempty"`
+	InputSaved bool                   `json:"inputSaved"`
+	Intent     []messages.ChatMessage `json:"intent,omitempty"`
+	Usage      Usage                  `json:"usage"`
+	ID         string                 `json:"id"`
+	Run        string                 `json:"run"`
+	Member     string                 `json:"member"`
+	Status     string                 `json:"status"`
+	Request    AgentRequest           `json:"request"`
+	Iterations int                    `json:"iterations"`
+	Generation int                    `json:"generation"`
+	Result     *AgentResult           `json:"result,omitempty"`
+	Error      string                 `json:"error,omitempty"`
+	StopReason messages.StopReason    `json:"stopReason,omitempty"`
 }
 type ExecutionContext struct {
 	ID       string             `json:"id"`
@@ -548,7 +546,14 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 
 // ContextPolicy denies live siblings and parent files. The common Git object
 // store stays readable; filesystem isolation is not source-code secrecy.
-func (r *Runtime) contextPolicy(s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
+func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
+	var manager *worktree.Manager
+	if c.Checkout != nil {
+		var err error
+		if manager, err = r.manager(ctx); err != nil {
+			return tools.ExecutionContext{}, err
+		}
+	}
 	denied := append([]string(nil), r.config.PrivatePaths...)
 	for _, other := range s.Contexts {
 		if other.Root != c.Root {
@@ -556,8 +561,11 @@ func (r *Runtime) contextPolicy(s *State, c *ExecutionContext) (tools.ExecutionC
 		}
 	}
 	if c.Checkout != nil {
+		// Every reserved slot is denied individually: sandboxes refuse writes
+		// inside a denied tree even where reads are exempted, so the runtime
+		// directory itself cannot be denied around the member's own checkout.
 		denied = append(denied, r.config.Root)
-		for _, slot := range r.worktrees.Slots {
+		for _, slot := range manager.Slots {
 			if slot != filepath.Dir(c.Root) {
 				denied = append(denied, slot)
 			}
@@ -565,13 +573,16 @@ func (r *Runtime) contextPolicy(s *State, c *ExecutionContext) (tools.ExecutionC
 	}
 	writes := []string{}
 	if c.Checkout != nil {
-		writes = append(writes, r.worktrees.GitDir, c.Root+"/.git")
+		writes = append(writes, manager.GitDir, c.Root+"/.git")
 	}
 	ec, err := r.config.Registry.ExecutionPolicy(c.Root, c.ReadOnly, denied, writes)
+	if err != nil {
+		return ec, err
+	}
 	ec.SourceRoot = r.config.Root
 	ec.BuiltinTools = llm.BuiltinToolNames()
-	if err == nil && c.Checkout != nil {
-		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, r.worktrees.GitDir)
+	if c.Checkout != nil {
+		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, manager.GitDir)
 	}
-	return ec, err
+	return ec, nil
 }

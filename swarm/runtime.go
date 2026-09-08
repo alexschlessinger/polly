@@ -2,7 +2,6 @@ package swarm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -529,7 +528,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		stored.Status = "queued"
 		stored.Controller = controller
 		run.Starts++
-		e := &Execution{ID: i.id, Run: run.ID, Member: m.ID, Controller: controller, Status: "queued", Request: req, Generation: 1}
+		e := &Execution{ID: i.id, Run: run.ID, Member: m.ID, Status: "queued", Request: req, Generation: 1}
 		s.Executions[i.id] = e
 		return nil
 	})
@@ -675,12 +674,13 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	}
 	unlock := r.lockContext(c.ID)
 	defer unlock()
+	var manager *worktree.Manager
 	if c.Checkout != nil {
-		if _, err := r.manager(ctx); err != nil {
+		if manager, err = r.manager(ctx); err != nil {
 			return AgentResult{}, err
 		}
 	}
-	ec, err := r.contextPolicy(s, c)
+	ec, err := r.contextPolicy(ctx, s, c)
 	if err != nil {
 		return AgentResult{}, err
 	}
@@ -801,7 +801,14 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	}
 	var parked atomic.Bool
 	cb.BeforeToolExecute = chainToolContext(cb.BeforeToolExecute, func(ctx context.Context) context.Context {
-		return context.WithValue(ctx, waitKey{}, func() { parked.Store(true) })
+		return context.WithValue(ctx, waitKey{}, func() {
+			// The wake baseline is the state at park time, so the member's own
+			// earlier task changes in this slice cannot wake it for a no-input call.
+			if s, err := r.read(ctx); err == nil {
+				i.waitState = waitState(s, i.member)
+			}
+			parked.Store(true)
+		})
 	})
 	r.bindCheckpoint(coord, i.id, e.Iterations, e.Generation, cb)
 	cb.AfterToolBatch = func(context.Context) error {
@@ -856,7 +863,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		}
 	}
 	if runErr == nil && !m.ReadOnly && c.Checkout != nil {
-		snapshot, captureErr := r.worktrees.Capture(ctx, c.Root)
+		snapshot, captureErr := manager.Capture(ctx, c.Root)
 		if captureErr != nil {
 			return result, captureErr
 		}
@@ -1109,7 +1116,6 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 				if task.Feedback == e.Error {
 					task.Feedback = ""
 				}
-				e.Controller = ""
 				e.Generation++
 				e.Status = "queued"
 				e.Error = ""
@@ -1173,7 +1179,6 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 					}
 				}
 				e.Intent = nil
-				e.PendingTools = nil
 				return encodeState(raw, s)
 			})
 			closeErr := session.Close()
@@ -1463,15 +1468,4 @@ func (r *Runtime) CancelWorkflow(id string) error {
 	}
 	cancel()
 	return nil
-}
-
-// MarshalResult is useful for clients rendering the inspector without loading
-// any child's private transcript into an agent's context.
-func (r *Runtime) MarshalResult(ctx context.Context) (string, error) {
-	s, err := r.read(ctx)
-	if err != nil {
-		return "", err
-	}
-	data, err := json.MarshalIndent(s, "", "  ")
-	return string(data), err
 }

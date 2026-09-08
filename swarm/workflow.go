@@ -102,7 +102,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 		if err != nil {
 			return nil, err
 		}
-		ec, err := r.contextPolicy(s, c)
+		ec, err := r.contextPolicy(ctx, s, c)
 		if err != nil {
 			return nil, err
 		}

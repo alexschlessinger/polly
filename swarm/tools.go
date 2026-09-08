@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/schema"
@@ -287,21 +286,6 @@ func (r *Runtime) apply(ctx context.Context, taskID, previewID string) error {
 		return err
 	}
 	return r.update(ctx, func(s *State) error { t := s.Tasks[taskID]; t.Status = "done"; return nil })
-}
-
-// WaitForChange is useful to clients implementing progress inspectors.
-func (r *Runtime) WaitForChange(ctx context.Context) error {
-	r.mu.Lock()
-	notify := r.notify
-	r.mu.Unlock()
-	select {
-	case <-notify:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(time.Minute):
-		return nil
-	}
 }
 
 func decodeRequest(args map[string]any) (AgentRequest, error) {
