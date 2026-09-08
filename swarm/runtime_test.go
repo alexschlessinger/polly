@@ -323,3 +323,83 @@ func TestRestartResumesLogicalExecutionAndJournalsUncertainCalls(t *testing.T) {
 		t.Fatalf("assignment appended %d times", briefs)
 	}
 }
+
+func TestSendNeverBlocksOnTheLaunchLock(t *testing.T) {
+	var calls atomic.Int32
+	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+		calls.Add(1)
+		return answer("done")
+	})
+	r := runtimeTest(t, model, 2, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := r.Spawn(ctx, subagent.Request{Task: "idle afterwards", ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A StopMember of another member, or a launch mid-checkout, holds launchMu.
+	// The sender's tool goroutine must still finish its send.
+	r.launchMu.Lock()
+	sent := make(chan error, 1)
+	go func() {
+		_, err := r.Send(ctx, r.ID, result.Session, "request", "", "one more thing")
+		sent <- err
+	}()
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		r.launchMu.Unlock()
+		t.Fatal("send blocked behind the launch lock")
+	}
+	r.launchMu.Unlock()
+	// The wake still launches the idle member once the lock is free.
+	deadline := time.Now().Add(5 * time.Second)
+	for calls.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("peer request never woke the idle member: %d calls", calls.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestParentWaitIgnoresAlreadyParkedMembers(t *testing.T) {
+	var calls atomic.Int32
+	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+		if calls.Add(1) == 1 {
+			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "wait", Name: "swarm_wait", Arguments: `{}`}}}
+		}
+		return answer("resumed and finished")
+	})
+	r := runtimeTest(t, model, 1, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := r.Spawn(ctx, subagent.Request{Task: "park", ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Yielded {
+		t.Fatalf("member did not park: %+v", result)
+	}
+	// Nothing addressed to the parent has changed: its wait must block rather
+	// than return on the member's steady parked state.
+	short, stop := context.WithTimeout(ctx, 300*time.Millisecond)
+	err = r.waitParent(short)
+	stop()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("parent wait returned with nothing new: %v", err)
+	}
+	if _, err := r.Send(ctx, r.ID, result.Session, "request", "", "carry on"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.waitParent(ctx); err != nil {
+		t.Fatalf("parent wait missed the member finishing: %v", err)
+	}
+	select {
+	case <-result.Done:
+	case <-ctx.Done():
+		t.Fatal("member never finished")
+	}
+}

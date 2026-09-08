@@ -1025,7 +1025,12 @@ func (r *Runtime) wake(memberID string) {
 	if m == nil || m.Status != "idle" || m.Controller != "" || !hasWakeMail(s, memberID) {
 		return
 	}
-	_, _ = r.start(r.ctx, "", AgentRequest{Session: memberID, Task: "Respond to your pending addressed requests and report any resulting work."})
+	// Launching takes launchMu, which a concurrent StopMember or launch may
+	// hold for a while. Send runs on the sender's own tool goroutine, so the
+	// launch happens off it; the runtime's closing check still applies.
+	go func() {
+		_, _ = r.start(r.ctx, "", AgentRequest{Session: memberID, Task: "Respond to your pending addressed requests and report any resulting work."})
+	}()
 }
 
 // Resume continues a paused execution using its remaining iteration allowance.
@@ -1249,31 +1254,35 @@ func (r *Runtime) HasActive() bool {
 	return len(r.active) > 0 || len(r.workflowCancels) > 0
 }
 func (r *Runtime) StopMember(ctx context.Context, memberID string) error {
-	// Serialize with launch/resume through cancellation and the saved stop.
-	// Otherwise a stop can miss a member being registered by a concurrent grant.
-	r.launchMu.Lock()
-	defer r.launchMu.Unlock()
-	r.mu.Lock()
-	i := r.active[memberID]
-	if i != nil {
+	for {
+		// launchMu keeps a concurrent launch or resume from registering a new
+		// invocation between this check and the saved stop.
+		r.launchMu.Lock()
+		r.mu.Lock()
+		i := r.active[memberID]
+		r.mu.Unlock()
+		if i == nil {
+			err := r.update(ctx, func(s *State) error {
+				m := s.Members[memberID]
+				if m == nil {
+					return errors.New("unknown member")
+				}
+				m.Status = "stopped"
+				return nil
+			})
+			r.launchMu.Unlock()
+			return err
+		}
+		r.launchMu.Unlock()
+		// Waiting must not hold launchMu: the member's own tool goroutine may
+		// be inside a peer wake that needs the lock before the member can end.
 		i.cancel()
-	}
-	r.mu.Unlock()
-	if i != nil {
 		select {
 		case <-i.done:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-	return r.update(ctx, func(s *State) error {
-		m := s.Members[memberID]
-		if m == nil {
-			return errors.New("unknown member")
-		}
-		m.Status = "stopped"
-		return nil
-	})
 }
 
 // Settle waits for running invocations. Waiting with no deliverable work,

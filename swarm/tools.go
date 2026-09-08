@@ -99,7 +99,7 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	before := tools.Result(s.Tasks)
+	before := coordinationFingerprint(s)
 	for {
 		r.mu.Lock()
 		notify := r.notify
@@ -109,13 +109,8 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if active == 0 || len(inbox(s, r.ID, true)) > 0 || tools.Result(s.Tasks) != before {
+		if active == 0 || len(inbox(s, r.ID, true)) > 0 || coordinationFingerprint(s) != before {
 			return nil
-		}
-		for _, m := range s.Members {
-			if m.Status == "waiting" {
-				return nil
-			}
 		}
 		select {
 		case <-ctx.Done():
@@ -123,6 +118,20 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 		case <-notify:
 		}
 	}
+}
+
+// coordinationFingerprint covers what a waiting parent acts on: task changes
+// and member or workflow status transitions. A member that was already parked
+// when the wait began is not news, so its steady state cannot end the wait.
+func coordinationFingerprint(s *State) string {
+	statuses := make(map[string]string, len(s.Members)+len(s.Workflows))
+	for id, m := range s.Members {
+		statuses["member:"+id] = m.Status
+	}
+	for id, w := range s.Workflows {
+		statuses["workflow:"+id] = w.Status
+	}
+	return tools.Result(s.Tasks) + tools.Result(statuses)
 }
 
 // RegisterParentTools binds parent-only authority in closures, never in model
