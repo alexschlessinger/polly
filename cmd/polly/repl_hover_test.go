@@ -22,12 +22,18 @@ func hoverAt(t *testing.T, r *managedREPL, p image.Point) {
 	}
 }
 
+// underlinedRun collects the underlined cells on a row. Every underlined
+// cell must carry the hover color, whatever its text's own style, so the mark
+// reads as one line across a check, a label, and muted metadata.
 func underlinedRun(screen tcell.SimulationScreen, y int) string {
 	width, _ := screen.Size()
 	var b strings.Builder
 	for x := 0; x < width; x++ {
 		str, style, _ := screen.Get(x, y)
 		if style.HasUnderline() {
+			if style.GetUnderlineColor() != hoverUnderlineColor() {
+				return "underline color follows the text at " + str
+			}
 			b.WriteString(str)
 		}
 	}
@@ -85,9 +91,11 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	if at.IsZero() || !record.expanded {
 		t.Fatal("click did not expand and arm the glint")
 	}
+	// The expanded tool row under the pointer mixes a green check, a bright
+	// label, and muted metadata; the mark stays one color across all three.
 	before := underlinedRun(screen, r.hover.rect.Min.Y)
-	if before == "" {
-		t.Fatalf("no target under the pointer after the click: %+v", r.hover)
+	if !strings.HasPrefix(before, "✓ read_file") || !strings.HasSuffix(before, "1.0s") {
+		t.Fatalf("hovered tool row underline = %q, want one line from the check to the duration", before)
 	}
 	r.tickAffordances(at.Add(500 * time.Millisecond))
 	r.tickAffordances(at.Add(2 * time.Second))

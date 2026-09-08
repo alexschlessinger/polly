@@ -30,6 +30,15 @@ const (
 	hoverHintImage  = "Open image"
 )
 
+// hoverUnderlineColor keeps the mark one color across a run whose text
+// changes style (a green check, a bright label, muted metadata); without it
+// the line would follow each cell's foreground and read as broken. Accent is
+// the palette's "clickable" slot. Terminals without colored underlines fall
+// back to a plain one.
+func hoverUnderlineColor() ui.Color {
+	return chromeColor("accent")
+}
+
 // hoverTargetAt resolves the pointer against the hitboxes of the last paint,
 // in the order clicks resolve them. Caller holds r.model.mu.
 func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
@@ -166,5 +175,10 @@ func setScreenUnderline(screen tcell.Screen, pt image.Point, on bool) {
 	if str == "" {
 		return
 	}
-	screen.Put(pt.X, pt.Y, str, style.Underline(on))
+	if on {
+		style = style.Underline(true, hoverUnderlineColor())
+	} else {
+		style = style.Underline(false)
+	}
+	screen.Put(pt.X, pt.Y, str, style)
 }
