@@ -53,11 +53,6 @@ func completeSlash(input string) (completed string, matches []string, ok bool) {
 	return defaultReplCommands.complete(input, nil)
 }
 
-func (m *replModel) turnTrailerDetailText(dock turnDockState, width int) string {
-	text, _ := m.turnTrailerDetail(dock, width)
-	return text
-}
-
 func textManagedTurn(prompt string) managedTurnInput {
 	return managedTurnInput{
 		displayText: prompt,

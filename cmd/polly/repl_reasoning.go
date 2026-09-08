@@ -282,7 +282,7 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 		elapsed += time.Since(m.thinkingSegmentStart)
 	}
 	label := reasoningDisclosureLabel(record.active, record.unsaved, elapsed)
-	header := "  " + inlineActivityControl(glyph, label, record.complete && !record.active)
+	header := activityRowHeader(glyph, label)
 	if !record.expanded {
 		return header
 	}
@@ -421,7 +421,7 @@ func (m *replModel) toggleReasoning(recordID int64, width int) bool {
 		m.reasoningWidth = width
 	}
 	record.expanded = !record.expanded
-	m.noteDisclosure(turnDockOverlayThought, recordID, false)
+	m.noteDisclosure(activityThought, recordID)
 	m.refreshReasoningRecord(record, width)
 	return true
 }

@@ -96,12 +96,12 @@ func (m *replModel) appendToolCallStart(call messages.ChatMessageToolCall) *tool
 	return record
 }
 
-func toolDisclosureHeader(total int, expanded, complete bool) string {
+func toolDisclosureHeader(total int, expanded bool) string {
 	glyph := "▸"
 	if expanded {
 		glyph = "▾"
 	}
-	return "  " + inlineActivityControl(glyph, turnToolLabel(total), complete)
+	return activityRowHeader(glyph, turnToolLabel(total))
 }
 
 func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage) {
@@ -109,7 +109,7 @@ func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage
 		return "", nil
 	}
 	rows := ordinaryToolRows(record.rows)
-	header := toolDisclosureHeader(len(rows), record.expanded, record.complete)
+	header := toolDisclosureHeader(len(rows), record.expanded)
 	if len(rows) == 0 {
 		header = ""
 	}
@@ -298,7 +298,7 @@ func (m *replModel) toggleToolDisclosure(recordID int64) bool {
 		return false
 	}
 	record.expanded = !record.expanded
-	m.noteDisclosure(turnDockOverlayTools, recordID, false)
+	m.noteDisclosure(activityTools, recordID)
 	m.refreshToolDisclosure(record)
 	return true
 }

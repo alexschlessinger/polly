@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -105,11 +104,9 @@ func turnAgentLabel(n int) string {
 	return fmt.Sprintf("%d agents", n)
 }
 
-// agentField renders the Agents control styled like its thought and tools
-// neighbours. While children run it counts running and completed ones, in
-// exactly one control: the launch row until its turn has a trailer, then that
-// trailer. Failed, denied, and canceled launches stay counted wherever the
-// control appears.
+// agentCounts tallies the agent rows behind a set of tool disclosures; the
+// launch row's Agents disclosure reports them, running ones first, for as
+// long as any child runs.
 func (m *replModel) agentCounts(ids []int64) activityAgentCounts {
 	var counts activityAgentCounts
 	for _, id := range ids {
@@ -131,25 +128,21 @@ func (m *replModel) agentCounts(ids []int64) activityAgentCounts {
 	return counts
 }
 
-func (m *replModel) agentField(ids []int64, expanded, handedOff bool) (turnDockField, bool) {
+func (m *replModel) agentField(ids []int64, expanded bool) (turnDockField, bool) {
 	c := m.agentCounts(ids)
 	if c.Total == 0 {
 		return turnDockField{}, false
 	}
-	glyph, label := "▸", turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled, handedOff)
-	if expanded {
-		glyph = "▾"
-	}
-	return turnDockField{raw: glyph + " " + label, rendered: turnActivityControl(glyph, label), overlay: turnDockOverlayAgents}, true
+	return activityField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled), activityAgents, expanded), true
 }
 
 // turnAgentSummaryLabel composes the agent field's label from its counts,
-// shared by the TUI trailer and the one-shot summary. Running agents lead
-// while the turn is live; a settled turn (or one that handed liveness off to a
-// later trailer) reports one total with its failed and canceled tails.
-func turnAgentSummaryLabel(total, running, failed, canceled int, handedOff bool) string {
+// shared by the TUI launch row and the one-shot summary. Running agents lead
+// while any child runs; afterwards one total with its failed and canceled
+// tails.
+func turnAgentSummaryLabel(total, running, failed, canceled int) string {
 	label := turnAgentLabel(total)
-	if running > 0 && !handedOff {
+	if running > 0 {
 		label = turnAgentLabel(running) + " running"
 		if completed := total - running - failed - canceled; completed > 0 {
 			label += fmt.Sprintf(", %d completed", completed)
@@ -263,10 +256,10 @@ func (m *replModel) appendAgentDetail(block *transcriptDisplayBlock, ids []int64
 }
 
 func (m *replModel) toggleAgentDisclosureGroup(ids []int64) bool {
-	if _, ok := m.agentField(ids, false, false); !ok {
+	if _, ok := m.agentField(ids, false); !ok {
 		return false
 	}
-	m.noteDisclosure(turnDockOverlayAgents, ids[0], false)
+	m.noteDisclosure(activityAgents, ids[0])
 	expand := !m.agentsExpanded(ids)
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(ids), func(bool) {
 		for _, id := range ids {
@@ -425,11 +418,6 @@ func (r *managedREPL) updateChildAgent(child *replTab) bool {
 
 func (m *replModel) refreshAgentRecord(record *toolDisclosureRecord) {
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) { m.visual.invalidate() })
-	for _, trailer := range m.turnTrailers {
-		if slices.Contains(trailer.dock.toolIDs, record.id) {
-			m.refreshTurnTrailer(trailer)
-		}
-	}
 }
 
 func recordSpawnOutcome(session sessions.Session, outcome sessions.ReportStatus) error {

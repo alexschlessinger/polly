@@ -37,7 +37,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 		}
 	}
 	header := plainStyledText(strings.SplitN(activity.text, "\n", 2)[0])
-	if !strings.Contains(header, "thought") || !strings.Contains(header, "2 tools · ▸ 2 images viewed") {
+	if !strings.HasPrefix(header, "  ▸ thought") || !strings.Contains(header, "2 tools · 2 images viewed") {
 		t.Fatalf("three-part activity row = %q", header)
 	}
 	if len(activity.images) != 0 {
@@ -64,45 +64,61 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 		if len(block.toolDisclosureIDs) == 0 || block.toolDisclosureIDs[0] != activity.toolDisclosureIDs[0] {
 			continue
 		}
-		if len(block.images) != 2 || !strings.Contains(plainStyledText(block.text), "▾ 2 images viewed") {
-			t.Fatalf("expanded two-image gallery = %#v / %q", block.images, plainStyledText(block.text))
+		expanded := plainStyledText(strings.SplitN(block.text, "\n", 2)[0])
+		if len(block.images) != 2 || !strings.HasPrefix(expanded, "  ▾ ") || !strings.Contains(expanded, "2 images viewed") {
+			t.Fatalf("expanded two-image gallery = %#v / %q", block.images, expanded)
 		}
 	}
 
 	tui.AppendAssistantText("done")
 	r.endTurn(nil)
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if trailer == nil || record.imagesExpanded {
-		t.Fatalf("settlement did not collapse Images into a trailer: record=%#v trailer=%#v", record, trailer)
+	if record.imagesExpanded {
+		t.Fatalf("settlement did not collapse Images: record=%#v", record)
 	}
-	trailerHeader := plainStyledText(strings.SplitN(m.transcript[trailer.transcriptIndex].text, "\n", 2)[0])
-	if !strings.Contains(trailerHeader, "2 tools · ▸ 2 images viewed") {
-		t.Fatalf("settled three-part trailer = %q", trailerHeader)
+	// The trailer is status only; the images stay on the inline row.
+	if trailer := m.turnTrailers[m.turnTrailerSeq]; trailer != nil && strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "images") {
+		t.Fatalf("settled trailer repeated the activity: %q", plainStyledText(m.transcript[trailer.transcriptIndex].text))
+	}
+	for _, block := range m.transcriptDisplayEntries(120) {
+		if len(block.toolDisclosureIDs) > 0 && block.toolDisclosureIDs[0] == activity.toolDisclosureIDs[0] {
+			if header := plainStyledText(strings.SplitN(block.text, "\n", 2)[0]); !strings.Contains(header, "2 tools · 2 images viewed") {
+				t.Fatalf("settled inline row = %q", header)
+			}
+		}
 	}
 }
 
-func TestInlineActivityHeadersUseTrailerControls(t *testing.T) {
-	if got, want := toolDisclosureHeader(1, false, false), "  "+turnActivityControl("▸", "1 tool"); got != want {
-		t.Fatalf("inline tool header = %q, want trailer control %q", got, want)
+// Every activity row shares one shape: an accent triangle, then muted labels.
+func TestInlineActivityHeadersShareOneShape(t *testing.T) {
+	if got, want := toolDisclosureHeader(1, false), "  "+styled("▸", "accent", "bold")+" "+styled("1 tool", "muted", ""); got != want {
+		t.Fatalf("inline tool header = %q, want %q", got, want)
 	}
-	if got, want := toolDisclosureHeader(2, true, false), "  "+turnActivityControl("▾", "2 tools"); got != want {
-		t.Fatalf("expanded inline tool header = %q, want trailer control %q", got, want)
-	}
-	if got, want := toolDisclosureHeader(1, false, true), "  "+inlineActivityControl("▸", "1 tool", true); got != want {
-		t.Fatalf("completed inline tool header = %q, want muted metadata control %q", got, want)
+	if got, want := toolDisclosureHeader(2, true), activityRowHeader("▾", "2 tools"); got != want {
+		t.Fatalf("expanded inline tool header = %q, want %q", got, want)
 	}
 
 	m := newReplModel()
 	record := &reasoningRecord{complete: true, elapsed: 2 * time.Second}
-	if got, want := m.reasoningRecordText(record, 80), "  "+inlineActivityControl("▸", "thought "+formatElapsed(record.elapsed), true); got != want {
-		t.Fatalf("inline thought header = %q, want muted metadata control %q", got, want)
+	if got, want := m.reasoningRecordText(record, 80), activityRowHeader("▸", "thought "+formatElapsed(record.elapsed)); got != want {
+		t.Fatalf("inline thought header = %q, want %q", got, want)
+	}
+	row, placements := renderActivityRow(false, []turnDockField{
+		activityField("thought 0.7s", activityThought, false),
+		activityField("2 tools", activityTools, false),
+	}, 80)
+	if want := activityRowHeader("▸", "thought 0.7s") + styled(" · ", "muted", "") + styled("2 tools", "muted", ""); row != want {
+		t.Fatalf("two-field row = %q, want %q", row, want)
+	}
+	// The triangle belongs to the first hitbox; later ones start at their label.
+	if len(placements) != 2 || placements[0] != (turnDockPlacement{kind: activityThought, X: 2, Cols: 14}) || placements[1] != (turnDockPlacement{kind: activityTools, X: 19, Cols: 7}) {
+		t.Fatalf("two-field placements = %#v", placements)
 	}
 }
 
 // Windows' coarse monotonic clock can bank an exactly-zero thinking elapsed,
-// which drops the duration from the label — assert the accent span, not the
+// which drops the duration from the label — assert the muted span, not the
 // timing.
-var accentThought = regexp.MustCompile(`\[thought[^\]]*\]\(fg:accent`)
+var mutedThought = regexp.MustCompile(`\[thought[^\]]*\]\(fg:muted`)
 
 // Smoke: full turn lifecycle with inline activity — live rows visible during
 // the turn, trailer appended after, blocks stay inline after settle.
@@ -139,9 +155,9 @@ func TestInlineActivitySmoke(t *testing.T) {
 	for _, block := range m.transcriptDisplayEntries(100) {
 		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
-			if !accentThought.MatchString(header) ||
-				!strings.Contains(header, "1 tool](fg:accent") {
-				t.Fatalf("one active control should keep the whole activity row blue: %q", header)
+			if !strings.HasPrefix(header, "  "+styled("▸", "accent", "bold")+" ") || !mutedThought.MatchString(header) ||
+				!strings.Contains(header, "1 tool](fg:muted") {
+				t.Fatalf("activity row should be one accent triangle with muted labels: %q", header)
 			}
 		}
 	}
@@ -155,15 +171,6 @@ func TestInlineActivitySmoke(t *testing.T) {
 	}
 
 	tui.AppendToolEnd(call, "file contents", 50*time.Millisecond, nil)
-	for _, block := range m.transcriptDisplayEntries(100) {
-		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
-			header := strings.SplitN(block.text, "\n", 2)[0]
-			if !accentThought.MatchString(header) ||
-				!strings.Contains(header, "1 tool](fg:accent") {
-				t.Fatalf("activity row greyed between phases before moving on: %q", header)
-			}
-		}
-	}
 	tui.AppendAssistantText("All done.")
 	tui.RecordTurnTokens(100, 20)
 	r.endTurn(nil)
@@ -181,13 +188,16 @@ func TestInlineActivitySmoke(t *testing.T) {
 			continue
 		}
 		header := strings.SplitN(block.text, "\n", 2)[0]
-		if strings.Contains(header, "fg:accent") || !strings.Contains(header, "fg:muted") {
-			t.Fatalf("settled inline activity should use metadata grey: %q", header)
+		if !strings.HasPrefix(header, "  "+styled("▸", "accent", "bold")+" ") || !strings.Contains(header, "1 tool](fg:muted") {
+			t.Fatalf("settled inline activity keeps its shape: %q", header)
 		}
 	}
 	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if trailer == nil || !strings.Contains(strings.SplitN(m.transcript[trailer.transcriptIndex].text, "\n", 2)[0], "fg:accent") {
-		t.Fatalf("final trailer should retain accent controls: %#v", trailer)
+	if trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "tool") {
+		t.Fatalf("final trailer should be status only: %#v", trailer)
+	}
+	if got := plainStyledText(m.transcript[trailer.transcriptIndex].text); !strings.HasPrefix(got, "  ✓ ") || !strings.HasSuffix(got, " · 100 in / 20 out") {
+		t.Fatalf("final trailer = %q", got)
 	}
 
 	// Expand the settled reasoning inline.
@@ -230,7 +240,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 			activityLines = append(activityLines, line)
 		}
 	}
-	if len(activityLines) != 1 || !strings.Contains(activityLines[0], "thought 0.7s · ▸ 2 tools") {
+	if len(activityLines) != 1 || !strings.Contains(activityLines[0], "▸ thought 0.7s · 2 tools") {
 		t.Fatalf("uninterrupted activity should aggregate into one row: %#v", activityLines)
 	}
 	rows := m.transcriptRows(100)
@@ -274,8 +284,8 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 	if len(activityHeaders) != 2 ||
 		!strings.Contains(activityHeaders[0], "thought 0.7s](fg:muted") ||
 		!strings.Contains(activityHeaders[0], "2 tools](fg:muted") ||
-		!strings.Contains(activityHeaders[1], "fg:accent") {
-		t.Fatalf("activity group colors did not follow the prose boundary: %#v", activityHeaders)
+		!strings.Contains(activityHeaders[1], "1 tool](fg:muted") {
+		t.Fatalf("activity groups did not follow the prose boundary: %#v", activityHeaders)
 	}
 }
 
@@ -317,14 +327,16 @@ func TestAggregatedReasoningUsesOneGlobalPreviewBudget(t *testing.T) {
 	}
 	assertGlobalPreview("inline aggregate", inlineDetail)
 
+	// Settling collapses the group; reopening it inline keeps the same budget.
 	r.endTurn(nil)
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if trailer == nil {
-		t.Fatal("settled turn did not attach a trailer")
+	if !m.toggleReasoningGroup(ids, width) {
+		t.Fatal("settled aggregate did not reopen")
 	}
-	trailer.dock.overlay = turnDockOverlayThought
-	settledDetail := plainStyledText(m.turnTrailerDetailText(trailer.dock, width))
-	assertGlobalPreview("settled trailer", settledDetail)
+	for _, block := range m.transcriptDisplayEntries(width) {
+		if len(block.reasoningIDs) == len(ids) {
+			assertGlobalPreview("settled aggregate", plainStyledText(block.activityReasoningDetail))
+		}
+	}
 }
 
 func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {

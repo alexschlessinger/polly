@@ -427,7 +427,7 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 	tui.AppendToolEnd(call, "image ready", time.Second, nil)
 	m.inspections.setResult(call, messages.ChatMessage{Role: messages.MessageRoleTool, Parts: []messages.ContentPart{{Type: "image_artifact", Artifact: &ref}}})
 	r.endTurn(nil)
-	m.toggleLatestTurnTrailerOverlay(turnDockOverlayTools)
+	m.toggleToolDisclosure(m.currentToolDisclosure().id)
 	r.render()
 	clicked := false
 	for _, link := range m.inspectionLinks {

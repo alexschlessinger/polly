@@ -196,7 +196,7 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.reasoningSeq, m.reasoningWidth = next.reasoningSeq, next.reasoningWidth
 	m.turnReasoningID, m.turnReasoningIDs = next.turnReasoningID, next.turnReasoningIDs
 	m.turnTrailers, m.turnTrailerAt, m.turnTrailerSeq = next.turnTrailers, next.turnTrailerAt, next.turnTrailerSeq
-	m.turnDock, m.openTurnTrailerID = next.turnDock, next.openTurnTrailerID
+	m.turnDock = next.turnDock
 	mergeChildAttachments(m, next)
 	m.adoptRestoredDraft(next)
 	// Cues are keyed by record id, and the swapped-in records are numbered

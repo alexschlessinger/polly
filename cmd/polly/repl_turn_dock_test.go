@@ -39,19 +39,17 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 		t.Fatalf("settled dock remained attached to bottom row: %#v", m.turnDock)
 	}
 	plain := plainStyledText(m.transcript[len(m.transcript)-1].text)
-	for _, want := range []string{"thought", "1 tool", "✓", "34.0s", "18.6k in / 1.2k out"} {
-		if !strings.Contains(plain, want) {
-			t.Errorf("settled dock %q missing %q", plain, want)
-		}
+	if plain != "  ✓ 34.0s · 18.6k in / 1.2k out" {
+		t.Errorf("settled trailer = %q, want the status row alone", plain)
 	}
 	if len(m.turnTrailers) != 1 {
 		t.Fatalf("attached trailer records = %#v", m.turnTrailers)
 	}
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(160)), "\n"))
-	// The activity blocks stay inline where they occurred; the trailer adds
-	// its own summary fields below the reply.
-	if strings.Count(visible, "1 tool") != 2 || strings.Count(visible, "thought") != 2 {
-		t.Fatalf("settled activity did not render inline plus trailer: %q", visible)
+	// The activity stays inline where it occurred, once; the trailer only
+	// reports the outcome, the time, and the tokens.
+	if strings.Count(visible, "1 tool") != 1 || strings.Count(visible, "thought") != 1 {
+		t.Fatalf("settled activity did not render inline exactly once: %q", visible)
 	}
 }
 
@@ -119,8 +117,8 @@ func TestLiveTurnDockIsStatusOnly(t *testing.T) {
 	// the dock exposes no clickable overlay fields.
 	_, placements := m.turnDockRow(80)
 	for _, p := range placements {
-		if p.overlay != turnDockOverlayNone {
-			t.Fatalf("live dock exposed an overlay field: %#v", placements)
+		if p.kind != activityNone {
+			t.Fatalf("live dock exposed an activity field: %#v", placements)
 		}
 	}
 
@@ -141,7 +139,7 @@ func TestLiveTurnDockIsStatusOnly(t *testing.T) {
 	}
 }
 
-func TestPriorTrailerExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
+func TestPriorThoughtExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -150,28 +148,25 @@ func TestPriorTrailerExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
 	firstUI.ShowThinking("prior reasoning detail")
 	firstUI.AppendAssistantText("first answer")
 	r.endTurn(nil)
-	prior := m.turnTrailers[m.turnTrailerSeq]
+	prior := m.reasoningRecords[m.reasoningOrder[0]]
 
 	m.beginTurn("second")
 	if !m.turnDock.visible {
 		t.Fatal("second turn did not own the fixed dock")
 	}
-	if !m.toggleTurnTrailerOverlay(prior, turnDockOverlayThought) {
-		t.Fatal("prior trailer did not expand")
+	if !m.toggleReasoning(prior.id, 100) {
+		t.Fatal("prior thought did not expand")
 	}
 	shown := plainStyledText(m.transcript[prior.transcriptIndex].text)
 	if !strings.Contains(shown, "prior reasoning detail") {
-		t.Fatalf("prior detail did not expand beside its trailer: %q", shown)
-	}
-	if m.turnDock.overlay != turnDockOverlayNone {
-		t.Fatalf("prior detail reused the current bottom overlay: dock=%#v", m.turnDock)
+		t.Fatalf("prior detail did not expand beneath its row: %q", shown)
 	}
 	if !m.turnDock.visible {
-		t.Fatal("expanding prior trailer displaced the current fixed dock")
+		t.Fatal("expanding a prior thought displaced the current fixed dock")
 	}
 }
 
-func TestExpandedToolTrailerPreservesLiteralBracketsWithoutLeakingStyleMarkup(t *testing.T) {
+func TestExpandedToolsPreserveLiteralBracketsWithoutLeakingStyleMarkup(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -210,48 +205,10 @@ func TestExpandedToolTrailerPreservesLiteralBracketsWithoutLeakingStyleMarkup(t 
 	tui.AppendAssistantText("Done.")
 	r.endTurn(nil)
 
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayTools) {
-		t.Fatal("completed tool trailer did not expand")
+	if !m.toggleToolDisclosure(live.id) {
+		t.Fatal("completed tool disclosure did not expand")
 	}
 	assertRendered("completed", m.transcriptRows(100))
-}
-
-func TestEscapeClosesTurnDockOverlayBeforeCancelingTurn(t *testing.T) {
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	m := r.model
-	m.beginTurn("work")
-	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
-	tui.ShowThinking("some reasoning")
-	r.endTurn(nil)
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if trailer == nil || !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayThought) {
-		t.Fatal("settled trailer overlay did not open")
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
-	if trailer.dock.overlay != turnDockOverlayNone || m.openTurnTrailerID != 0 {
-		t.Fatalf("Escape left overlay open: %#v", trailer.dock)
-	}
-	if m.canceling {
-		t.Fatal("Escape canceled the turn instead of closing the overlay")
-	}
-}
-
-func TestClickOutsideClosesTurnDockOverlayWithoutActivatingTranscript(t *testing.T) {
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	m := r.model
-	m.beginTurn("work")
-	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
-	tui.ShowThinking("some reasoning")
-	r.endTurn(nil)
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if trailer == nil || !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayThought) {
-		t.Fatal("settled trailer overlay did not open")
-	}
-	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 0, Y: 0}})
-	if trailer.dock.overlay != turnDockOverlayNone || m.openTurnTrailerID != 0 {
-		t.Fatalf("outside click left overlay open: %#v", trailer.dock)
-	}
 }
 
 func TestQueuedTurnSwitchesDockWithoutAddingTrailer(t *testing.T) {
@@ -315,17 +272,28 @@ func TestHydratedHistoryRestoresAttachedTrailers(t *testing.T) {
 		t.Fatalf("hydrated trailers/dock = trailers:%#v dock:%#v", m.turnTrailers, m.turnDock)
 	}
 	latest := m.turnTrailers[m.turnTrailerSeq]
-	plain := plainStyledText(m.transcript[latest.transcriptIndex].text)
-	for _, want := range []string{"thought", "✓", "1.8k in / 350 out"} {
-		if !strings.Contains(plain, want) {
-			t.Errorf("latest hydrated dock %q missing %q", plain, want)
-		}
+	// No duration survives in history, so the row is the outcome and tokens.
+	if plain := plainStyledText(m.transcript[latest.transcriptIndex].text); plain != "  ✓ · 1.8k in / 350 out" {
+		t.Fatalf("latest hydrated trailer = %q", plain)
 	}
-	if strings.Contains(plain, "0.0s") {
-		t.Fatalf("hydrated dock invented an unavailable duration: %q", plain)
+	if !strings.Contains(transcript, "▸ thought") {
+		t.Fatalf("hydrated reasoning missing its inline row: %q", transcript)
 	}
-	if len(latest.fields) != 1 || latest.fields[0].overlay != turnDockOverlayThought {
-		t.Fatalf("latest hydrated trailer fields = %#v", latest.fields)
+}
+
+// A hydrated turn with neither a duration nor a token count would leave a
+// bare check mark; it leaves nothing instead.
+func TestHydratedTurnWithoutUsageLeavesNoTrailer(t *testing.T) {
+	m := newReplModel()
+	m.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "first"},
+		{Role: messages.MessageRoleAssistant, Content: "first answer"},
+	}, "ctx")
+	if len(m.turnTrailers) != 0 {
+		t.Fatalf("usage-free turn attached a trailer: %#v", m.turnTrailers)
+	}
+	if transcript := plainStyledText(strings.Join(transcriptTexts(m), "\n")); strings.Contains(transcript, "✓") {
+		t.Fatalf("usage-free turn rendered a bare outcome: %q", transcript)
 	}
 }
 

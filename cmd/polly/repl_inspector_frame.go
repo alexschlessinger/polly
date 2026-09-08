@@ -95,9 +95,8 @@ func (r *managedREPL) renderInspector(l frameLayout) []terminalImagePlacement {
 	}
 	m.reasoningPlacements = m.visibleReasoningPlacements(viewport)
 	m.toolDisclosurePlacements = m.visibleToolDisclosurePlacements(viewport)
-	m.agentDisclosurePlacements = m.visibleDisclosurePlacements(viewport, turnDockOverlayAgents)
+	m.agentDisclosurePlacements = m.visibleDisclosurePlacements(viewport, activityAgents)
 	m.imageDisclosurePlacements = m.visibleImageDisclosurePlacements(viewport)
-	m.turnTrailerPlacements = m.visibleTurnTrailerPlacements(viewport)
 	m.inspectionLinks = m.visibleInspectionLinks(viewport, x)
 	return placements
 }
@@ -121,29 +120,6 @@ func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspec
 			for row := offset + firstRow; row < offset+len(last); row++ {
 				if v.contains(row) {
 					links = append(links, inspectionLink{image.Rect(x, v.screenY(row), x+v.width, v.screenY(row)+1), kind, key})
-				}
-			}
-		}
-		if trailer := m.turnTrailers[block.turnTrailerID]; trailer != nil {
-			switch trailer.dock.overlay {
-			case turnDockOverlayTools:
-				searchAt := strings.IndexByte(block.text, '\n') + 1
-				for _, record := range m.turnDockToolRecords(trailer.dock) {
-					for _, row := range ordinaryToolRows(record.rows) {
-						if row.line == "" {
-							continue
-						}
-						if n := strings.Index(block.text[searchAt:], row.line); n >= 0 {
-							n += searchAt
-							add(n, n+len(row.line), toolViewKind, row.inspectionKey)
-							searchAt = n + len(row.line)
-						}
-					}
-				}
-			case turnDockOverlayThought:
-				records := m.turnDockThoughtRecords(trailer.dock)
-				if len(records) > 0 {
-					add(strings.IndexByte(block.text, '\n')+1, len(block.text), thoughtViewKind, records[len(records)-1].inspectionKey)
 				}
 			}
 		}

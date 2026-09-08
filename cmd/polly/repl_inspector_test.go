@@ -828,10 +828,15 @@ func TestInspectorOpensFromSettledDropdownDetails(t *testing.T) {
 	tui.AppendAssistantText("finished")
 	r.endTurn(nil)
 	for _, tc := range []struct {
-		overlay turnDockOverlay
-		kind    viewKind
-	}{{turnDockOverlayTools, toolViewKind}, {turnDockOverlayThought, thoughtViewKind}} {
-		m.toggleLatestTurnTrailerOverlay(tc.overlay)
+		open func() bool
+		kind viewKind
+	}{
+		{func() bool { return m.toggleToolDisclosure(m.currentToolDisclosure().id) }, toolViewKind},
+		{func() bool { return m.toggleReasoning(m.reasoningOrder[0], 140) }, thoughtViewKind},
+	} {
+		if !tc.open() {
+			t.Fatal("settled disclosure did not expand")
+		}
 		r.render()
 		found := false
 		for _, link := range m.inspectionLinks {
@@ -1045,9 +1050,8 @@ func TestHydratedThoughtKeysFollowProseSplits(t *testing.T) {
 			t.Fatalf("record %d opens %+v, want %q", i, thought, want)
 		}
 	}
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if trailer == nil || len(trailer.dock.reasoningIDs) != 1 || trailer.dock.reasoningIDs[0] != m.reasoningOrder[2] {
-		t.Fatalf("settled turn trailer does not carry the turn's last reasoning record: %+v", trailer)
+	if last := m.reasoningRecords[m.reasoningOrder[2]]; !last.complete || last.expanded {
+		t.Fatalf("the turn's last reasoning record did not settle collapsed: %+v", last)
 	}
 }
 

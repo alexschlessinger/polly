@@ -45,24 +45,18 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	r.endTurn(nil)
 	m.ed.setText("draft") // Keep the normal editor cursor throughout this check.
 	r.render()
-	var target turnTrailerPlacement
-	for _, p := range m.turnTrailerPlacements {
-		if p.overlay == turnDockOverlayTools {
-			target = p
-			break
-		}
+	if len(m.toolDisclosurePlacements) != 1 {
+		t.Fatalf("tool disclosure hitboxes = %#v, want one", m.toolDisclosurePlacements)
 	}
-	if target.Cols == 0 {
-		t.Fatal("no tool disclosure to click")
-	}
+	target := m.toolDisclosurePlacements[0]
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: target.X, Y: target.Y}})
 	r.render()
-	at := m.affordances.disclosures[affordanceTarget{turnDockOverlayTools, target.recordID, true}]
+	at := m.affordances.disclosures[affordanceTarget{activityTools, target.recordID}]
 	if at.IsZero() {
 		t.Fatal("click did not arm disclosure feedback")
 	}
-	for _, p := range m.turnTrailerPlacements {
-		if p.recordID == target.recordID && p.overlay == target.overlay {
+	for _, p := range m.toolDisclosurePlacements {
+		if p.recordID == target.recordID {
 			target = p
 		}
 	}
@@ -71,14 +65,14 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	for i := range rows {
 		rows[i] = append([]ui.Cell(nil), m.visual.rows[i]...)
 	}
-	placements := append([]turnTrailerPlacement(nil), m.turnTrailerPlacements...)
+	placements := append([]disclosurePlacement(nil), m.toolDisclosurePlacements...)
 	_, before, _ := screen.Get(target.X, target.Y)
 	r.tickAffordances(at.Add(500 * time.Millisecond))
 	glyph, highlighted, _ := screen.Get(target.X, target.Y)
 	if glyph != "▾" || highlighted == before {
 		t.Fatalf("disclosure did not visibly react: glyph=%q before=%v after=%v", glyph, before, highlighted)
 	}
-	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.turnTrailerPlacements) || canonical != strings.Join(transcriptTexts(m), "\n") {
+	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.toolDisclosurePlacements) || canonical != strings.Join(transcriptTexts(m), "\n") {
 		t.Fatal("style-only tick changed transcript/cache/click geometry")
 	}
 	r.tickAffordances(at.Add(2 * time.Second))
@@ -162,13 +156,22 @@ func TestAffordanceCursorYieldsToTypingAndFocus(t *testing.T) {
 }
 
 func TestAgentCueSelectsCompletedCountNotFailureCount(t *testing.T) {
-	for _, tc := range []struct{ label, want string }{
-		{"▸ 1 agent running, 12 completed", "12"},
-		{"▸ 3 agents, 1 failed", "3"},
-		{"▾ 3 agents, 1 canceled", "3"},
+	// The first hitbox on a row includes the triangle; a later one starts at
+	// its label.
+	for _, tc := range []struct {
+		label, want string
+		first       bool
+	}{
+		{"1 agent running, 12 completed", "12", true},
+		{"3 agents, 1 failed", "3", true},
+		{"3 agents, 1 canceled", "3", false},
 	} {
-		row := parseStyledCells("  "+turnActivityControl(string([]rune(tc.label)[0]), string([]rune(tc.label)[2:])), ui.NewStyle(ui.ColorClear))
-		x, cols := agentCountCells(row, turnDockPlacement{X: 2, Cols: len([]rune(tc.label))})
+		row := parseStyledCells(activityRowHeader("▾", tc.label), ui.NewStyle(ui.ColorClear))
+		placement := turnDockPlacement{X: 4, Cols: len([]rune(tc.label))}
+		if tc.first {
+			placement = turnDockPlacement{X: 2, Cols: len([]rune(tc.label)) + 2}
+		}
+		x, cols := agentCountCells(row, placement)
 		var got strings.Builder
 		for _, cx := range ui.BuildCellWithXArray(row) {
 			if cx.X >= x && cx.X < x+cols {
@@ -347,7 +350,7 @@ func TestDeliveredChildArmsCallerCueAndOnlyCurrentAgentControl(t *testing.T) {
 func TestReplacedChildDisplayDropsStaleDisclosureCues(t *testing.T) {
 	m := newReplModel()
 	m.affordances.enabled = true
-	m.noteDisclosure(turnDockOverlayTools, 4, false)
+	m.noteDisclosure(activityTools, 4)
 	if len(m.affordances.disclosures) != 1 {
 		t.Fatalf("cue not recorded: %#v", m.affordances.disclosures)
 	}

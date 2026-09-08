@@ -275,7 +275,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 			break
 		}
 	}
-	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "1 tool · ▸ 1 image viewed") || strings.Contains(plain, "viewed · inspected.png") {
+	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "▸ 1 tool · 1 image viewed") || strings.Contains(plain, "viewed · inspected.png") {
 		t.Fatalf("collapsed activity row = %q", plain)
 	}
 	if len(collapsed.images) != 0 {
@@ -303,7 +303,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 		}
 	}
 	plain := plainStyledText(stripTranscriptImageMarkers(expanded.text))
-	if !strings.Contains(plain, "▾ 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") || !strings.Contains(plain, "│") {
+	if !strings.Contains(plain, "▾ 1 tool · 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") || !strings.Contains(plain, "│") {
 		t.Fatalf("expanded Images disclosure = %q", plain)
 	}
 	if len(expanded.images) != 1 || strings.Count(expanded.text, string(transcriptImageMarker(0))) != inspectionImageThumbnailRows {
@@ -462,26 +462,32 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 	if got := len(m.transcript[record.transcriptIndex].images); got != 0 {
 		t.Fatalf("collapsed hydrated tool sidecars = %d, want 0", got)
 	}
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if trailer == nil {
-		t.Fatal("hydrated image turn did not restore its trailer")
+	activity := func() transcriptDisplayBlock {
+		for _, block := range m.transcriptDisplayEntries(80) {
+			if len(block.toolDisclosureIDs) > 0 && block.toolDisclosureIDs[0] == record.id {
+				return block
+			}
+		}
+		t.Fatal("hydrated image turn has no activity row")
+		return transcriptDisplayBlock{}
 	}
-	header := plainStyledText(strings.SplitN(m.transcript[trailer.transcriptIndex].text, "\n", 2)[0])
+	header := plainStyledText(strings.SplitN(activity().text, "\n", 2)[0])
 	if !strings.Contains(header, "1 tool") || !strings.Contains(header, "1 image viewed") {
-		t.Fatalf("hydrated image trailer = %q", header)
+		t.Fatalf("hydrated image activity row = %q", header)
 	}
-	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayImages) {
-		t.Fatal("hydrated Images trailer did not expand")
+	if !m.toggleImageDisclosureGroup([]int64{record.id}) {
+		t.Fatal("hydrated Images disclosure did not expand")
 	}
-	if got := len(m.transcript[trailer.transcriptIndex].images); got != 1 {
+	expanded := activity()
+	if got := len(expanded.images); got != 1 {
 		t.Fatalf("expanded hydrated image sidecars = %d, want 1", got)
 	}
-	plain := plainStyledText(stripTranscriptImageMarkers(m.transcript[trailer.transcriptIndex].text))
+	plain := plainStyledText(stripTranscriptImageMarkers(expanded.text))
 	if !strings.Contains(plain, "viewed · durable.png · 6×3") || !strings.Contains(plain, "│") {
 		t.Fatalf("hydrated inspection gallery = %q", plain)
 	}
-	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayImages) || len(m.transcript[trailer.transcriptIndex].images) != 0 {
-		t.Fatalf("hydrated Images trailer did not collapse cleanly: %#v", m.transcript[trailer.transcriptIndex].images)
+	if !m.toggleImageDisclosureGroup([]int64{record.id}) || len(activity().images) != 0 {
+		t.Fatalf("hydrated Images disclosure did not collapse cleanly: %#v", activity().images)
 	}
 }
 

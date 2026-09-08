@@ -39,9 +39,6 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 	if id, ok := m.turnTrailerAt[index]; ok {
 		delete(m.turnTrailerAt, index)
 		delete(m.turnTrailers, id)
-		if m.openTurnTrailerID == id {
-			m.openTurnTrailerID = 0
-		}
 	}
 	if id, ok := m.reasoningAt[index]; ok {
 		delete(m.reasoningAt, index)
@@ -341,11 +338,8 @@ func (m *replModel) clearDisplay() {
 	m.turnTrailers = make(map[int64]*turnTrailerRecord)
 	m.turnTrailerAt = make(map[int]int64)
 	m.turnTrailerSeq = 0
-	m.turnTrailerPlacements = nil
 	m.agentLinkPlacements = nil
 	m.agentDisclosurePlacements = nil
-	m.openTurnTrailerID = 0
-	m.turnDock.overlay = turnDockOverlayNone
 	for i := range m.queue {
 		m.queue[i].transcriptShown = false
 	}
@@ -502,7 +496,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		toolDisclosureID := m.toolDisclosureAt[i]
 		turnTrailerID := m.turnTrailerAt[i]
 		// Reasoning and tool activity render inline where they occur. In quiet
-		// mode the records still back the settled trailer, but nothing extra is
+		// mode the records still back the turn summary, but nothing extra is
 		// projected into the transcript so script output stays clean.
 		if m.quiet && (reasoningID != 0 || toolDisclosureID != 0) {
 			continue
@@ -543,12 +537,6 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			cells:         cells,
 			images:        m.transcript[i].images,
 			turnTrailerID: turnTrailerID,
-		}
-		if trailer := m.turnTrailers[turnTrailerID]; trailer != nil && trailer.dock.overlay == turnDockOverlayAgents {
-			// Rebuild links and detail at the current width, just as inline
-			// activity does; stored trailer text may precede a resize.
-			block.text, trailer.fields = m.turnDockRowFor(trailer.dock, width)
-			m.appendAgentDetail(&block, trailer.dock.toolIDs, width)
 		}
 		if reasoningID != 0 {
 			block.reasoningIDs = []int64{reasoningID}

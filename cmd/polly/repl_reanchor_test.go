@@ -51,8 +51,8 @@ func TestTrailerExpansionReanchorsAcrossMergedActivity(t *testing.T) {
 		t.Fatalf("fixture top row = %q, want the prose just below the trailer", beforeTop)
 	}
 
-	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayTools) {
-		t.Fatal("trailer did not expand")
+	if !m.toggleToolDisclosure(m.currentToolDisclosure().id) {
+		t.Fatal("tool disclosure did not expand")
 	}
 	afterRows := transcriptRowsText(m.transcriptRows(width))
 	if got := afterRows[m.scrollAnchor]; got != beforeTop {

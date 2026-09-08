@@ -56,7 +56,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatalf("adjacent activity split: %+v", blocks)
 	}
 	header := plainStyledText(blocks[0].text)
-	if !strings.Contains(header, "3 tools · ▸ 2 agents · ▸ 1 image viewed") || strings.Contains(header, "Trace sessions") {
+	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, "3 tools · 2 agents · 1 image viewed") || strings.Contains(header, "Trace sessions") {
 		t.Fatalf("collapsed header = %q", header)
 	}
 	ids := blocks[0].toolDisclosureIDs
@@ -91,16 +91,23 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	}
 	m.toggleAgentDisclosureGroup(ids)
 	r.endTurn(nil)
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	header = plainStyledText(m.transcript[trailer.transcriptIndex].text)
-	if !strings.Contains(header, "3 tools · ▸ 3 agents · ▸ 1 image viewed") || record.agentsExpanded || record.imagesExpanded || record.expanded {
-		t.Fatalf("settled trailer / expansion = %q / %+v", header, record)
+	// Settling collapses the disclosures; the trailer is status only and the
+	// activity stays inline, where the agents can be reopened.
+	if record.agentsExpanded || record.imagesExpanded || record.expanded {
+		t.Fatalf("settled expansion = %+v", record)
 	}
-	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayAgents) {
-		t.Fatal("trailer Agents did not expand")
+	if trailer := m.turnTrailers[m.turnTrailerSeq]; trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "agent") {
+		t.Fatalf("settled trailer = %#v", trailer)
 	}
-	if got := plainStyledText(m.transcript[trailer.transcriptIndex].text); !strings.Contains(got, "agent · done") || !strings.Contains(got, "Trace sessions") {
-		t.Fatalf("trailer omitted launches: %q", got)
+	settled := activityBlocks(m, 120)
+	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), "3 tools · 2 agents · 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
+		t.Fatalf("settled launch rows = %+v", settled)
+	}
+	if !m.toggleAgentDisclosureGroup(ids) {
+		t.Fatal("settled Agents did not expand")
+	}
+	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▾ ") || !strings.Contains(got, "Trace sessions · done") {
+		t.Fatalf("settled launch row omitted launches: %q", got)
 	}
 }
 
@@ -292,7 +299,11 @@ func TestHydratedAgentsUseVerifiedIdentityAndFirstOutcome(t *testing.T) {
 			t.Fatalf("%s: %+v", tc.id, row)
 		}
 	}
-	if m.turnDockToolRowCount(m.turnTrailers[m.turnTrailerSeq].dock) != 0 {
+	var ids []int64
+	for id := range m.toolDisclosures {
+		ids = append(ids, id)
+	}
+	if m.toolRowCount(ids) != 0 {
 		t.Fatal("hydrated agents counted as Tools")
 	}
 }
@@ -402,7 +413,7 @@ func TestFinalAgentSnapshotSurvivesAutomaticTabRemoval(t *testing.T) {
 	}
 }
 
-func TestAgentLabelClickPrecedesTrailerDismissal(t *testing.T) {
+func TestAgentLabelClickKeepsTheAgentsDisclosureOpen(t *testing.T) {
 	r, _ := newChildTestREPL(t)
 	m := r.model
 	m.beginTurn("go")
@@ -412,17 +423,16 @@ func TestAgentLabelClickPrecedesTrailerDismissal(t *testing.T) {
 	row.agent.session = "child"
 	r.tabs = append(r.tabs, child)
 	r.endTurn(nil)
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	m.toggleTurnTrailerOverlay(trailer, turnDockOverlayAgents)
+	m.toggleAgentDisclosureGroup([]int64{record.id})
 	rows := m.transcriptRows(80)
 	m.agentLinkPlacements = m.visibleAgentLinks(fullViewport(len(rows), 80))
 	if len(m.agentLinkPlacements) != 1 {
-		t.Fatalf("trailer links = %+v", m.agentLinkPlacements)
+		t.Fatalf("agent links = %+v", m.agentLinkPlacements)
 	}
 	link := m.agentLinkPlacements[0]
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
-	if !r.workspace().inspector.open || r.workspace().inspector.target.session.Name != "child" || r.model != m || m.openTurnTrailerID == 0 {
-		t.Fatalf("label click dismissed overlay: request %d, record %d", r.showTabRequest, record.id)
+	if !r.workspace().inspector.open || r.workspace().inspector.target.session.Name != "child" || r.model != m || !record.agentsExpanded {
+		t.Fatalf("label click collapsed the disclosure: request %d, record %+v", r.showTabRequest, record)
 	}
 }
 
@@ -527,9 +537,9 @@ func TestHydratedAgentGroupsStopAtAssistantProse(t *testing.T) {
 			t.Fatalf("wrong group count: %q", block.text)
 		}
 	}
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if !strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "2 agents") {
-		t.Fatal("trailer lost earlier group")
+	// Each group keeps its own row; a usage-free history turn adds no trailer.
+	if len(m.turnTrailers) != 0 {
+		t.Fatalf("hydrated agent turn attached a trailer: %+v", m.turnTrailers)
 	}
 }
 
@@ -575,7 +585,7 @@ func TestAgentInitialFailureAndCancellationSurviveTabClosure(t *testing.T) {
 	}
 }
 
-func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
+func TestBackgroundAgentLivenessStaysOnTheLaunchRow(t *testing.T) {
 	r, runs := newChildTestREPL(t)
 	parent := r.visibleTab()
 	beginParentToolCall(t, r, runs, "call-1")
@@ -600,10 +610,10 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 		}
 		return launch, trailer
 	}
-	// The running count is the live cue, shown in one control at a time: the
-	// launch row until its turn has a trailer, then the trailer.
-	// Brightness follows the same rules as the thought and tools controls.
-	if launch, trailer := headers(); !strings.Contains(plainStyledText(launch), "▸ 1 agent running") || trailer != "" {
+	// The running count is the live cue and lives on the launch row for as
+	// long as the child runs; the settled trailer is status only.
+	running, idle := activityRowHeader("▸", "1 agent running"), activityRowHeader("▸", "1 agent")
+	if launch, trailer := headers(); launch != running || trailer != "" {
 		t.Fatalf("running turn: launch %q / trailer %q", launch, trailer)
 	}
 	parent.model.mu.Lock()
@@ -612,23 +622,22 @@ func TestBackgroundAgentLivenessHandsOffToTrailer(t *testing.T) {
 	close(runs.release)
 	settleUntil(t, r, settled(parent))
 	r.refreshAgentActivities()
-	launchIdle, trailerLive := inlineActivityControl("▸", "1 agent", true), turnActivityControl("▸", "1 agent running")
-	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, trailerLive) {
+	if launch, trailer := headers(); launch != running || strings.Contains(trailer, "agent") {
 		t.Fatalf("settled turn: launch %q / trailer %q", launch, trailer)
 	}
-	// A new parent turn does not hand liveness back to the earlier launch row.
+	// A new parent turn does not move the count anywhere.
 	parent.model.mu.Lock()
 	parent.model.beginTurn("again")
 	parent.model.mu.Unlock()
-	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, trailerLive) {
-		t.Fatalf("next turn: launch %q / trailer %q", launch, trailer)
+	if launch, _ := headers(); launch != running {
+		t.Fatalf("next turn: launch %q", launch)
 	}
 	close(runs.slow)
 	settleUntil(t, r, settled(child))
 	r.refreshAgentActivities()
-	// A finished group stays as bright as its neighbours; only the running phrase goes.
-	if launch, trailer := headers(); !strings.Contains(launch, launchIdle) || !strings.Contains(trailer, turnActivityControl("▸", "1 agent")) {
-		t.Fatalf("finished child: launch %q / trailer %q", launch, trailer)
+	// A finished group keeps its row; only the running phrase goes.
+	if launch, _ := headers(); launch != idle {
+		t.Fatalf("finished child: launch %q", launch)
 	}
 	<-child.agentWriteDone
 }

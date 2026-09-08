@@ -15,9 +15,8 @@ import (
 // Screen-local feedback. None of this state belongs to stored messages or
 // provider replay. Cue maps contain only recent events, not transcript history.
 type affordanceTarget struct {
-	kind    turnDockOverlay
-	id      int64
-	trailer bool
+	kind activityKind
+	id   int64
 }
 
 type queuedAffordance struct {
@@ -44,14 +43,14 @@ func (m *replModel) affordancesVisible() bool {
 	return m.affordances.enabled && !m.quiet && !m.hidden && m.modal == nil && (!m.focusKnown || m.focused)
 }
 
-func (m *replModel) noteDisclosure(kind turnDockOverlay, id int64, trailer bool) {
+func (m *replModel) noteDisclosure(kind activityKind, id int64) {
 	if !m.affordancesVisible() {
 		return
 	}
 	if m.affordances.disclosures == nil {
 		m.affordances.disclosures = make(map[affordanceTarget]time.Time)
 	}
-	m.affordances.disclosures[affordanceTarget{kind, id, trailer}] = time.Now()
+	m.affordances.disclosures[affordanceTarget{kind, id}] = time.Now()
 }
 
 func (m *replModel) noteAgentCompletion(id int64) {
@@ -293,45 +292,27 @@ func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptVi
 			spans = append(spans, affordanceSpan{x: x, y: y, cols: cols, at: at, duration: duration, color: color})
 		}
 	}
-	for kind, placements := range map[turnDockOverlay][]disclosurePlacement{
-		turnDockOverlayThought: m.reasoningPlacements, turnDockOverlayTools: m.toolDisclosurePlacements,
-		turnDockOverlayAgents: m.agentDisclosurePlacements, turnDockOverlayImages: m.imageDisclosurePlacements,
+	for kind, placements := range map[activityKind][]disclosurePlacement{
+		activityThought: m.reasoningPlacements, activityTools: m.toolDisclosurePlacements,
+		activityAgents: m.agentDisclosurePlacements, activityImages: m.imageDisclosurePlacements,
 	} {
 		for _, p := range placements {
-			add(p.X, p.Y, 1, m.affordances.disclosures[affordanceTarget{kind, p.recordID, false}], 1500*time.Millisecond, ui.ColorWhite)
+			add(p.X, p.Y, 1, m.affordances.disclosures[affordanceTarget{kind, p.recordID}], 1500*time.Millisecond, ui.ColorWhite)
 		}
 	}
-	for _, p := range m.turnTrailerPlacements {
-		add(p.X, p.Y, 1, m.affordances.disclosures[affordanceTarget{p.overlay, p.recordID, true}], 1500*time.Millisecond, ui.ColorWhite)
-	}
-	// Work from semantic activity blocks, not arbitrary answer text. A count
-	// may move from an inline group to a trailer while a child is still running.
-	agentOwners := make(map[int64]int64, len(m.affordances.agents))
-	for id := range m.affordances.agents {
-		for trailerID, trailer := range m.turnTrailers {
-			if slices.Contains(trailer.dock.toolIDs, id) {
-				agentOwners[id] = trailerID
-			}
-		}
-	}
+	// Work from semantic activity blocks, not arbitrary answer text: a child's
+	// completion lights the count on the launch row that owns it.
 	offset := 0
 	for _, block := range m.visual.blocks {
-		ids, fields := block.toolDisclosureIDs, block.activityFields
-		if trailer := m.turnTrailers[block.turnTrailerID]; trailer != nil {
-			ids, fields = trailer.dock.toolIDs, trailer.fields
-		}
 		if v.contains(offset) && len(block.rows) > 0 {
 			var at time.Time
-			for _, id := range ids {
-				if owner := agentOwners[id]; owner != 0 && owner != block.turnTrailerID {
-					continue
-				}
+			for _, id := range block.toolDisclosureIDs {
 				if m.affordances.agents[id].After(at) {
 					at = m.affordances.agents[id]
 				}
 			}
-			for _, field := range fields {
-				if field.overlay == turnDockOverlayAgents {
+			for _, field := range block.activityFields {
+				if field.kind == activityAgents {
 					x, cols := agentCountCells(block.rows[0], field)
 					add(x, v.screenY(offset), cols, at, 1300*time.Millisecond, ui.ColorGreen)
 				}
@@ -403,11 +384,16 @@ func agentCountCells(row []ui.Cell, field turnDockPlacement) (int, int) {
 		}
 	}
 	s := []rune(text.String())
-	start := 2
+	start := 0
 	if i := strings.Index(string(s), " completed"); i >= 0 {
 		start = len([]rune(string(s)[:i]))
 		for start > 0 && s[start-1] >= '0' && s[start-1] <= '9' {
 			start--
+		}
+	} else {
+		// The first hitbox on a row carries the triangle before its label.
+		for start < len(s) && (s[start] < '0' || s[start] > '9') {
+			start++
 		}
 	}
 	end := start

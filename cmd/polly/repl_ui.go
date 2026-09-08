@@ -152,8 +152,6 @@ type replModel struct {
 	turnTrailers              map[int64]*turnTrailerRecord
 	turnTrailerAt             map[int]int64
 	turnTrailerSeq            int64
-	turnTrailerPlacements     []turnTrailerPlacement
-	openTurnTrailerID         int64
 	modal                     *replModal
 
 	ed        lineEditor
@@ -1349,13 +1347,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				r.openSessionsPicker()
 				return false
 			}
-			if r.openAgentAt(mouse.X, mouse.Y) || m.toggleTurnTrailerAt(mouse.X, mouse.Y) {
-				return false
-			}
-			// An expanded trailer overlay is modal for one click: clicking
-			// anywhere outside its target dismisses it without activating
-			// content underneath.
-			if m.closeTurnDockOverlay() {
+			if r.openAgentAt(mouse.X, mouse.Y) {
 				return false
 			}
 			if !m.toggleReasoningAt(mouse.X, mouse.Y, terminalWidth) &&
@@ -1400,11 +1392,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// Ctrl-O toggles the active turn's reasoning disclosure, or the newest
 	// completed one while idle. It never moves focus away from the composer.
 	if e.ID == "<C-o>" {
-		if m.busy {
-			m.toggleLatestReasoning(0)
-		} else {
-			m.toggleLatestTurnTrailerOverlay(turnDockOverlayThought)
-		}
+		m.toggleLatestReasoning(0)
 		return false
 	}
 
@@ -1414,12 +1402,6 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// remains available during turns, searches, and approval prompts.
 	if e.ID == "<C-z>" {
 		r.requestSuspend()
-		return false
-	}
-
-	// An expanded trailer overlay is temporary. Escape closes it before
-	// reaching search, approval, or turn-cancel handling.
-	if e.ID == "<Escape>" && m.closeTurnDockOverlay() {
 		return false
 	}
 

@@ -255,7 +255,7 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 					s := w.viewState(i.target)
 					m.followBottom, m.scrollAnchor = s.follow, s.top
 					x := mouse.X - r.chrome.inner.Min.X
-					if m.toggleTurnTrailerAt(x, mouse.Y) || m.closeTurnDockOverlay() || m.toggleReasoningAt(x, mouse.Y, r.chrome.inner.Dx()) || m.toggleToolDisclosureAt(x, mouse.Y) || m.toggleAgentDisclosureAt(x, mouse.Y) || m.toggleImageDisclosureAt(x, mouse.Y) {
+					if m.toggleReasoningAt(x, mouse.Y, r.chrome.inner.Dx()) || m.toggleToolDisclosureAt(x, mouse.Y) || m.toggleAgentDisclosureAt(x, mouse.Y) || m.toggleImageDisclosureAt(x, mouse.Y) {
 						s := w.viewState(i.target)
 						s.top = m.scrollAnchor
 						rememberViewSections(m, s)

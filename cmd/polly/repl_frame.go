@@ -24,8 +24,8 @@ type transcriptParagraph struct {
 	Rows      [][]ui.Cell
 	UseRows   bool
 	// OverlayBottom, when non-empty, replaces the pane's bottom rows with the
-	// turn-detail drawer and/or scrolled-up activity ticker. Covered transcript
-	// rows remain reachable by scrolling; opening the drawer never reflows them.
+	// scrolled-up activity ticker. Covered transcript rows remain reachable by
+	// scrolling; the ticker never reflows them.
 	OverlayBottom [][]ui.Cell
 }
 
@@ -321,7 +321,6 @@ func (r *managedREPL) render() {
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
 	r.model.refreshReasoningRecords(mainWidth)
-	r.model.refreshExpandedTurnTrailer(mainWidth)
 	input, curRow, curCol, editable := r.model.renderInputForTerminal(l.inputRows, w)
 	transcriptRows := (conversationView{}).Rows(r.model, mainWidth)
 	topRow, pinTranscriptBottom := r.model.settleScroll(len(transcriptRows), l.transcriptHeight)
@@ -358,9 +357,8 @@ func (r *managedREPL) render() {
 	r.model.reasoningPlacements = r.model.visibleReasoningPlacements(viewport)
 	r.model.toolDisclosurePlacements = r.model.visibleToolDisclosurePlacements(viewport)
 	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(viewport)
-	r.model.agentDisclosurePlacements = r.model.visibleDisclosurePlacements(viewport, turnDockOverlayAgents)
+	r.model.agentDisclosurePlacements = r.model.visibleDisclosurePlacements(viewport, activityAgents)
 	r.model.agentLinkPlacements = r.model.visibleAgentLinks(viewport)
-	r.model.turnTrailerPlacements = r.model.visibleTurnTrailerPlacements(viewport)
 	r.model.inspectionLinks = r.model.visibleInspectionLinks(viewport, 0)
 	var affordanceSpans []affordanceSpan
 	idleCursor := r.affordanceW != nil && editable && !r.workspace().inspector.searching && !r.inspectorFocused() && r.model.idleAffordanceCursor(now)
