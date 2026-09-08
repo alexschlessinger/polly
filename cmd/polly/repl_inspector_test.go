@@ -188,14 +188,19 @@ func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 	if !strings.Contains(inspectorText(v), `"answer": 42`) {
 		t.Fatalf("result = %s", inspectorText(v))
 	}
-	if first := strings.Split(inspectorText(v), "\n")[0]; strings.Contains(first, "bash") || !strings.Contains(first, "completed") {
-		t.Fatalf("expected status without a repeated tool name: %q", first)
+	// The state belongs to the header; the body opens with the arguments fence.
+	if first := strings.Split(inspectorText(v), "\n")[0]; strings.Contains(first, "bash") || first != "╭─ arguments · json" {
+		t.Fatalf("expected the arguments fence without a repeated tool name: %q", first)
 	}
-	if !strings.Contains(inspectorText(v), "Arguments") || !strings.Contains(inspectorText(v), `"command": "printf hi"`) {
-		t.Fatalf("tool arguments are not visible by default: %s", inspectorText(v))
+	if !strings.Contains(inspectorText(v), `"command": "printf hi"`) || !strings.Contains(inspectorText(v), "╭─ output · 3 lines") {
+		t.Fatalf("tool arguments and output are not fenced by default: %s", inspectorText(v))
 	}
-	if !strings.Contains(inspectorText(v), "╭─ json\n│ {") || !strings.Contains(strings.Join(transcriptTexts(v.model), "\n"), styled(`"printf hi"`, "ok", "")) {
+	if !strings.Contains(inspectorText(v), "╭─ arguments · json\n│ {") || !strings.Contains(strings.Join(transcriptTexts(v.model), "\n"), styled(`"printf hi"`, "ok", "")) {
 		t.Fatalf("arguments lack JSON code-block highlighting: %s", strings.Join(transcriptTexts(v.model), "\n"))
+	}
+	header := r.inspectorHeader(60, 20, 0, 0)
+	if rows := strings.Split(plainStyledText(header.text), "\n"); len(rows) != 2 || !strings.HasPrefix(rows[0], "‹ bash") || !strings.HasPrefix(rows[1], "completed · 1.0s") {
+		t.Fatalf("tool header = %q", plainStyledText(header.text))
 	}
 	if m.ed.text() != "keep my draft" || r.model != m {
 		t.Fatal("inspection stole composer")
@@ -1104,5 +1109,44 @@ func TestNewOutputBaselineIgnoresStaleModelWhileLoading(t *testing.T) {
 	r.render()
 	if s.lastRows < 0 || len(r.inspectorW.OverlayBottom) != 0 {
 		t.Fatalf("settled paint did not seed the baseline cleanly: lastRows=%d overlay=%d", s.lastRows, len(r.inspectorW.OverlayBottom))
+	}
+}
+
+// The tool body is two titled payloads under one gutter, so raw output wraps
+// like code and empty or pending output still shows its title.
+func TestToolBodyFences(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	call := messages.ChatMessageToolCall{ID: "one", Name: "bash", Arguments: `{"command":"ls"}`}
+	r.model.appendToolCallStart(call)
+	r.model.inspections.setResult(call, messages.ChatMessage{Content: "alpha\n" + strings.Repeat("wide ", 30) + "\ngamma"})
+	r.inspectCommand("tools")
+	v := waitInspector(t, r, 140)
+	text := inspectorText(v)
+	for _, want := range []string{"╭─ arguments · json\n│ {", "╭─ output · 3 lines\n│ alpha"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in %s", want, text)
+		}
+	}
+	for _, stale := range []string{"\nArguments\n", "\nOutput\n", "completed"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("stale label %q in %s", stale, text)
+		}
+	}
+	rows := v.view.Rows(v.model, 40)
+	continued := 0
+	for _, row := range rows {
+		if line := plainCells(row); strings.HasPrefix(line, "│ ") && strings.Contains(line, "wide") {
+			continued++
+		}
+	}
+	if continued < 2 {
+		t.Fatalf("long raw output did not hard-wrap under the gutter: %d rows", continued)
+	}
+	pending := messages.ChatMessageToolCall{ID: "two", Name: "bash"}
+	r.model.appendToolCallStart(pending)
+	r.inspectCommand("tools")
+	v = waitInspector(t, r, 140)
+	if text := inspectorText(v); !strings.Contains(text, "╭─ arguments\n│ (none)") || !strings.Contains(text, "╭─ output\nRunning…") {
+		t.Fatalf("pending tool body = %s", text)
 	}
 }

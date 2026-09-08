@@ -199,7 +199,7 @@ func agentActivityLine(a *agentActivity) string {
 	}
 	label := styleEscape(a.label)
 	if a.session != "" {
-		label = styled(a.label, "accent", "underline")
+		label = link(a.label)
 	}
 	detail := " · " + status
 	if a.inputTokens > 0 || a.outputTokens > 0 {
@@ -209,12 +209,12 @@ func agentActivityLine(a *agentActivity) string {
 }
 
 // agentDetail uses the normal cell wrapper for both display and link geometry.
-// Only the underlined label is clickable, including each wrapped fragment.
+// Only the accent label is clickable, including each wrapped fragment.
 func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 	var lines []string
 	var links []agentLink
 	y := 0
-	linkStyle := parseStyledCells(styled("x", "accent", "underline"), ui.StyleClear)[0].Style
+	linkStyle := parseStyledCells(link("x"), ui.StyleClear)[0].Style
 	for _, id := range ids {
 		record := m.toolDisclosures[id]
 		if record == nil {

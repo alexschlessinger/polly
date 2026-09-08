@@ -70,6 +70,13 @@ func styled(text, fg, modifier string) string {
 	return "[" + text + "](" + strings.Join(parts, ",") + ")"
 }
 
+// link marks text the user can click. A link is the accent color and nothing
+// else: the terminal has no underline through gotui, and brackets would read
+// as literal text.
+func link(label string) string {
+	return styled(label, "accent", "")
+}
+
 // styledLiteralRune maps a substitute rune back to the bracket it stands for.
 func styledLiteralRune(r rune) (rune, bool) {
 	switch r {

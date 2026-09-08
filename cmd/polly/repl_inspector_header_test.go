@@ -175,7 +175,7 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 		t.Helper()
 		header := r.inspectorHeader(120, 20, 120, 0)
 		line := strings.Split(plainStyledText(header.text), "\n")[0]
-		if line != "< "+want || strings.Contains(line, "sly-hare") {
+		if line != "‹ "+want || strings.Contains(line, "sly-hare") {
 			t.Fatalf("unexpected agent heading: %q", line)
 		}
 		checkInspectorHeaderGeometry(t, header, image.Rect(120, 0, 240, header.rows))
@@ -221,7 +221,7 @@ func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {
 				t.Fatalf("width %d lost %s: %s", width, action, plainStyledText(header.text))
 			}
 		}
-		if title := strings.Split(plainStyledText(header.text), "\n")[0]; title != "< spawn_agent · 2/3" {
+		if title := strings.Split(plainStyledText(header.text), "\n")[0]; title != "‹ spawn_agent · 2/3" {
 			t.Fatalf("expected only the tool and position: %q", title)
 		}
 		for _, action := range []string{"back", "forward", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
@@ -243,8 +243,8 @@ func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {
 	r.chrome.inner = image.Rect(71, 3, 121, 20)
 	r.inspectorHeaderRows = header.rows
 	parent := headerButton(header.buttons, "parent")
-	if parent != image.Rect(71, 3, 72, 4) {
-		t.Fatalf("parent arrow has wrong hitbox: %v", parent)
+	if parent.Min != image.Pt(71, 3) || parent.Dy() != 1 || parent.Dx() != rw.StringWidth("‹ spawn_agent · 2/3") {
+		t.Fatalf("parent control does not span the arrow and title: %v", parent)
 	}
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 73, Y: 3}})
 	if i.open || r.visibleTab().name != "root" {
@@ -275,7 +275,7 @@ func TestInspectorHeaderArrowReturnsToOwnerOutsideMainSession(t *testing.T) {
 			header := r.inspectorHeader(width, 20, 71, 3)
 			checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 71+width, 3+header.rows))
 			title := strings.Split(plainStyledText(header.text), "\n")[0]
-			if !strings.HasPrefix(title, "< ") || strings.Contains(title, "agent") || strings.Contains(title, "root") || strings.Contains(title, "›") || headerButton(header.buttons, "parent") != image.Rect(71, 3, 72, 4) {
+			if !strings.HasPrefix(title, "‹ ") || strings.Contains(title, "agent") || strings.Contains(title, "root") || strings.Contains(title, "›") || headerButton(header.buttons, "parent").Min != image.Pt(71, 3) {
 				t.Fatalf("expected leading arrow without parent breadcrumb: %q", title)
 			}
 		}
@@ -378,11 +378,43 @@ func TestInspectorCommandResizeFollowsDisplayedPane(t *testing.T) {
 	ratio := r.inspectorRatio
 	r.inspectorAction("narrower")
 	header := r.inspectorHeader(400, 20, 0, 0)
-	if r.inspectorRatio != ratio || !headerButton(header.buttons, "wider").Empty() || !headerButton(header.buttons, "maximize").Empty() || !strings.HasPrefix(strings.Split(plainStyledText(header.text), "\n")[0], "< ") {
+	if r.inspectorRatio != ratio || !headerButton(header.buttons, "wider").Empty() || !headerButton(header.buttons, "maximize").Empty() || !strings.HasPrefix(strings.Split(plainStyledText(header.text), "\n")[0], "‹ ") {
 		t.Fatal("maximized inspector exposes ineffective width controls")
 	}
 }
 
 func mouseEvent(id string, p image.Point) ui.Event {
 	return ui.Event{Type: ui.MouseEvent, ID: id, Payload: ui.Mouse{X: p.X, Y: p.Y}}
+}
+
+// A tool header is two rows: the title, then its state and actions with no
+// brackets. A launch tool's second row links to the agent; a thought has no
+// second row at all.
+func TestInspectorHeaderTwoRows(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	call := messages.ChatMessageToolCall{ID: "launch", Name: "spawn_agent"}
+	r.model.appendToolCallStart(call)
+	r.model.inspections.setResult(call, messages.ChatMessage{Content: "done"})
+	r.model.appendThinking("a thought")
+	r.inspectCommand("tools")
+	waitInspector(t, r, 140)
+	header := r.inspectorHeader(60, 20, 71, 3)
+	checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 131, 3+header.rows))
+	rows := strings.Split(plainStyledText(header.text), "\n")
+	if len(rows) != 2 || rows[0] != "‹ spawn_agent · 1/1" || !strings.HasPrefix(rows[1], "completed") || !strings.HasSuffix(rows[1], "Open agent") {
+		t.Fatalf("tool header rows = %q", rows)
+	}
+	if strings.ContainsAny(plainStyledText(header.text), "[]") {
+		t.Fatal("header actions are bracketed")
+	}
+	agent := headerButton(header.buttons, "agent")
+	if agent.Empty() || agent.Min.Y != 4 || agent.Dx() != rw.StringWidth("Open agent") {
+		t.Fatalf("Open agent link hitbox = %v", agent)
+	}
+	r.inspectCommand("thoughts")
+	waitInspector(t, r, 140)
+	header = r.inspectorHeader(60, 20, 71, 3)
+	if header.rows != 1 || plainStyledText(header.text) != "‹ Thought · 1/1" {
+		t.Fatalf("thought header = %q rows=%d", plainStyledText(header.text), header.rows)
+	}
 }
