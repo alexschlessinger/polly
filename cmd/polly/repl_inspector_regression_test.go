@@ -140,7 +140,7 @@ func TestInspectorRegressionCompletedToolReuse(t *testing.T) {
 	if v.model != model || store.reads.Load() != before || index != 1 || total != 2 {
 		t.Fatal("navigation update reprojected the completed tool or lost its position")
 	}
-	if waitInspector(t, r, 160).model == model || store.reads.Load() != before+1 {
+	if waitInspector(t, r, 240).model == model || store.reads.Load() != before+1 {
 		t.Fatal("width change failed to rebuild the selected result")
 	}
 }

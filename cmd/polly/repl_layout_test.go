@@ -2,14 +2,14 @@ package main
 
 import "testing"
 
-// A roomy terminal seats every region: transcript, dock, divider, composer,
+// A roomy terminal seats every region: transcript, dock, composer,
 // status bar, top to bottom.
 func TestFrameLayoutSeatsEveryRegion(t *testing.T) {
 	r := &managedREPL{model: newReplModel()}
 	r.model.turnDock.visible = true
 
 	l := r.frameLayoutFor(80, 24)
-	want := frameLayout{width: 80, height: 24, transcriptHeight: 20, dockRows: 1, dividerRows: 1, inputRows: 1, statusRows: 1}
+	want := frameLayout{width: 80, height: 24, transcriptHeight: 21, dockRows: 1, inputRows: 1, statusRows: 1}
 	if l != want {
 		t.Fatalf("layout = %+v, want %+v", l, want)
 	}

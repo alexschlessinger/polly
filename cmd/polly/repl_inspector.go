@@ -18,10 +18,16 @@ func tabViewTarget(tab *replTab) viewTarget {
 func (r *managedREPL) inspect(target viewTarget) {
 	w := r.workspace()
 	i := &w.inspector
-	if i.open && i.target.key() == target.key() {
+	// A store-resolved target aliases its name-keyed state under the ID key,
+	// so a second click through the original link is the same selection.
+	same := i.target.key() == target.key() || w.states[target.key()] != nil && w.states[target.key()] == w.states[i.target.key()]
+	if i.open && same {
 		return
 	}
 	r.retireInspector(w)
+	if len(i.history) == 0 || !same {
+		w.viewState(target).resetScroll()
+	}
 	if len(i.history) > 0 {
 		i.history = i.history[:i.position+1]
 	}
@@ -59,6 +65,9 @@ func (r *managedREPL) inspectorHistory(delta int) {
 		return
 	}
 	r.retireInspector(w)
+	if i.target.key() != i.history[next].key() {
+		w.viewState(i.history[next]).resetScroll()
+	}
 	i.position, i.target, i.open = next, i.history[next], true
 	i.generation++
 }
@@ -96,6 +105,16 @@ func (r *managedREPL) inspectorSequence(delta int) {
 	}
 }
 
+// targetsVisibleTab reports whether target names the workspace's main
+// session, by identity when the target carries one and by name otherwise.
+func (r *managedREPL) targetsVisibleTab(target viewTarget) bool {
+	root := r.visibleTab()
+	if target.session.ID != "" {
+		return target.session.ID == root.viewID()
+	}
+	return target.session.Name != "" && target.session.Name == root.name
+}
+
 func (r *managedREPL) inspectionTab(target viewTarget) *replTab {
 	for _, tab := range r.tabs {
 		if target.session.ID != "" {
@@ -114,7 +133,7 @@ func (r *managedREPL) inspectorGeometry(width int) viewGeometry {
 	if i.open && !i.maximized && width >= 120 {
 		ratio := r.inspectorRatio
 		if ratio == 0 {
-			ratio = .5
+			ratio = .7
 		}
 		left := max(50, min(width-51, int(float64(width-1)*ratio)))
 		width -= left + 1
@@ -165,6 +184,12 @@ func (r *managedREPL) refreshInspector(width int) {
 		live.model.mu.Unlock()
 		if tool != nil || thought != nil {
 			v.unavailable, v.failures, v.revision = false, 0, ""
+		}
+	}
+	if i.target.kind == conversationViewKind {
+		v.view = conversationView{collapseInitialPrompt: !r.targetsVisibleTab(i.target)}
+		if v.model != nil {
+			v.model.setInitialPromptExpanded(state.promptExpanded)
 		}
 	}
 	if v.unavailable || v.failures > 0 && time.Now().Before(v.retryAt) {
@@ -347,6 +372,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				}
 			}
 			latest := w.viewState(i.target)
+			model.setInitialPromptExpanded(latest.promptExpanded)
 			if v.model != nil {
 				rememberViewPosition(v.model, latest)
 			}

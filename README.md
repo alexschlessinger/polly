@@ -174,7 +174,8 @@ session. **Stop** cancels the inspected agent's current turn and
 keeps its view open. **Review** addresses that agent's pending approval without
 changing the inspected target. Completion never switches your selection.
 
-At 120 columns or wider the transcript and inspector split roughly 50/50. Drag
+At 120 columns or wider the default split is 70% transcript and 30% inspector,
+subject to each pane's minimum width. Drag
 the divider to resize, with at least 50 columns per pane. Narrow terminals show the
 inspector above the main composer. Typing stays in that composer.
 Mouse scrolling follows the pointer. Left/Right navigate previous/next tools or
@@ -184,15 +185,18 @@ through that pane, Home goes to the top, and End follows new output at the botto
 Over the composer, arrows and Home/End edit normally; Page Up/Down scroll the
 main transcript. Ctrl-A/Ctrl-E always address the editor. Dialogs and searches
 retain their keyboard controls.
-**[x]** closes the inspector from the top
-right. Tool names and thought positions appear in the breadcrumb; agent actions
-appear below the title.
+Clicking the title or its leading `<` goes to the parent, or closes the inspector
+when the parent is the main session. Tool names and thought positions appear
+without a parent breadcrumb. Agent actions appear below the title.
 Agent headings show the task title, falling back to the session name when untitled.
+Agent transcript inspectors collapse the launch prompt into a clickable
+`▸ Prompt` row above the first agent message; later follow-up prompts remain visible.
+Tool inspector arguments use a JSON code block with syntax highlighting.
 Use `/inspect prev`, `/inspect next`, `/inspect back`, and `/inspect forward`
 for navigation, `/inspect find` for search, and `/inspect maximize`,
-`/inspect wider`, or `/inspect narrower` to adjust the pane. Clickable
-breadcrumbs return to the owning conversation. Agent **Stop** appears
+`/inspect wider`, or `/inspect narrower` to adjust the pane. Agent **Stop** appears
 while running and **Review** appears when an approval is pending.
+Switching inspector items starts at the top; press End to follow new output.
 Escape dismisses a dialog or search first, then closes the inspector, before
 existing cancellation handling. Ctrl-C always keeps its root interrupt behavior.
 

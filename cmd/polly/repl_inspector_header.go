@@ -85,7 +85,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	b := inspectorHeaderBuilder{width: max(0, width), origin: image.Pt(x, y)}
 	b.newline()
 	root := r.visibleTab()
-	isRoot := i.target.session.ID == root.viewID()
+	isRoot := r.targetsVisibleTab(i.target)
 	name := i.target.session.Name
 	if i.current != nil && i.current.info != nil && i.current.info.Metadata != nil {
 		metadata := i.current.info.Metadata
@@ -97,9 +97,9 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	if name == "" {
 		name = "Conversation"
 	}
-	// Keep the close button at the right edge even with long names.
-	const chromeWidth = len("[x]")
-	titleWidth := max(0, width-chromeWidth-1)
+	b.write("<", "accent", "", "parent")
+	b.write(" ", "accent", "", "")
+	titleWidth := max(0, width-b.col)
 	itemName := ""
 	if i.target.kind != conversationViewKind {
 		itemName = "Thought"
@@ -117,26 +117,12 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		if index, total, _, _ := inspectorSequencePosition(i); index > 0 {
 			itemName += fmt.Sprintf(" · %d/%d", index, total)
 		}
-		itemName = rw.Truncate(itemName, max(1, titleWidth/2), "…")
-		titleWidth = max(0, titleWidth-rw.StringWidth(itemName)-3)
 	}
-	if !isRoot && titleWidth >= 5 {
-		rootWidth := min(rw.StringWidth(root.name), (titleWidth-3)/2)
-		b.write(rw.Truncate(root.name, rootWidth, "…"), "accent", "", "root")
-		b.write(" › ", "muted", "", "")
-		titleWidth -= rootWidth + 3
-	}
-	parentAction := ""
-	if i.target.kind != conversationViewKind {
-		parentAction = "parent"
-	}
-	b.write(rw.Truncate(name, titleWidth, "…"), "accent", "bold", parentAction)
 	if itemName != "" {
-		b.write(" › ", "muted", "", "")
-		b.write(itemName, "", "bold", "")
+		b.write(rw.Truncate(itemName, titleWidth, "…"), "accent", "bold", "parent")
+	} else {
+		b.write(rw.Truncate(name, titleWidth, "…"), "accent", "bold", "parent")
 	}
-	b.write(strings.Repeat(" ", max(0, width-chromeWidth-b.col-1)), "", "", "")
-	b.button("x", "close", true, false)
 
 	if i.searching {
 		// Search replaces the contextual actions and creates no hidden hitboxes.

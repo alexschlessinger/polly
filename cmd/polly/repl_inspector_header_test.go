@@ -65,12 +65,12 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	defer func() { child.model.busy, child.model.approval = false, nil }()
 	header := r.inspectorHeader(50, 20, 90, 3)
 	checkInspectorHeaderGeometry(t, header, image.Rect(90, 3, 140, 3+header.rows))
-	for _, action := range []string{"root", "stop", "review", "close"} {
+	for _, action := range []string{"stop", "review", "parent"} {
 		if headerButton(header.buttons, action).Empty() {
 			t.Fatalf("missing %s control: %s", action, plainStyledText(header.text))
 		}
 	}
-	for _, action := range []string{"back", "forward", "parent", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
+	for _, action := range []string{"root", "back", "forward", "close", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
 		if !headerButton(header.buttons, action).Empty() {
 			t.Fatalf("inapplicable action %s is clickable", action)
 		}
@@ -175,7 +175,7 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 		t.Helper()
 		header := r.inspectorHeader(120, 20, 120, 0)
 		line := strings.Split(plainStyledText(header.text), "\n")[0]
-		if !strings.HasPrefix(line, "sly-hare › "+want) || !strings.HasSuffix(line, "[x]") {
+		if line != "< "+want || strings.Contains(line, "sly-hare") {
 			t.Fatalf("unexpected agent heading: %q", line)
 		}
 		checkInspectorHeaderGeometry(t, header, image.Rect(120, 0, 240, header.rows))
@@ -199,7 +199,7 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 	}
 }
 
-func TestInspectorHeaderWrappingAndBreadcrumbClicks(t *testing.T) {
+func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root")
 	for _, name := range []string{"bash", "spawn_agent", "read_file"} {
@@ -216,24 +216,21 @@ func TestInspectorHeaderWrappingAndBreadcrumbClicks(t *testing.T) {
 	for _, width := range []int{50, 60, 80, 160} {
 		header := r.inspectorHeader(width, 20, 71, 3)
 		checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 71+width, 3+header.rows))
-		for _, action := range []string{"parent", "agent", "close"} {
+		for _, action := range []string{"agent", "parent"} {
 			if headerButton(header.buttons, action).Empty() {
 				t.Fatalf("width %d lost %s: %s", width, action, plainStyledText(header.text))
 			}
 		}
-		if !strings.Contains(strings.Split(plainStyledText(header.text), "\n")[0], "spawn_agent · 2/3") {
-			t.Fatal("tool position missing")
+		if title := strings.Split(plainStyledText(header.text), "\n")[0]; title != "< spawn_agent · 2/3" {
+			t.Fatalf("expected only the tool and position: %q", title)
 		}
 		for _, action := range []string{"back", "forward", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
 			if !headerButton(header.buttons, action).Empty() {
 				t.Fatalf("removed control %s is still clickable", action)
 			}
 		}
-		if !headerButton(header.buttons, "root").Empty() {
-			t.Fatal("owner breadcrumb would close the root tool instead of returning to its conversation")
-		}
-		if crumb := headerButton(header.buttons, "parent"); crumb.Min != image.Pt(71, 3) {
-			t.Fatalf("breadcrumb does not start at the session name: %v", crumb)
+		if !headerButton(header.buttons, "close").Empty() || !headerButton(header.buttons, "root").Empty() {
+			t.Fatal("removed controls retain a click target")
 		}
 	}
 	header := r.inspectorHeader(50, 1, 71, 3)
@@ -241,14 +238,62 @@ func TestInspectorHeaderWrappingAndBreadcrumbClicks(t *testing.T) {
 	if !headerButton(header.buttons, "args").Empty() {
 		t.Fatal("clipped header row is still clickable")
 	}
-	// Follow the rendered breadcrumb through the actual mouse dispatcher.
+	// Clicking the title performs the same parent navigation as the arrow.
 	r.inspectorButtons = header.buttons
 	r.inspectorBounds = image.Rect(71, 3, 121, 20)
 	r.inspectorHeaderRows = header.rows
-	crumb := headerButton(header.buttons, "parent")
-	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: crumb.Min.X, Y: crumb.Min.Y}})
-	if !i.open || i.target.kind != conversationViewKind {
-		t.Fatal("owner breadcrumb closed inspector or navigated to the wrong target")
+	parent := headerButton(header.buttons, "parent")
+	if parent != image.Rect(71, 3, 72, 4) {
+		t.Fatalf("parent arrow has wrong hitbox: %v", parent)
+	}
+	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 73, Y: 3}})
+	if i.open || r.visibleTab().name != "root" {
+		t.Fatal("title did not close inspector for a main-session item")
+	}
+}
+
+func TestInspectorHeaderArrowReturnsToOwnerOutsideMainSession(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
+	child := r.tabs[1]
+	child.parent, child.parentName = r.tabs[0], r.tabs[0].name
+	r.showTab(0)
+	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file"}
+	child.model.appendToolCallStart(call)
+	child.model.inspections.setResult(call, messages.ChatMessage{Content: "result"})
+	child.model.appendThinking("agent thought")
+	for _, kind := range []viewKind{toolViewKind, thoughtViewKind} {
+		target := tabViewTarget(child)
+		target.kind = kind
+		if kind == toolViewKind {
+			target.item = child.model.inspections.tools[0].key
+		} else {
+			target.item = child.model.inspections.thoughts[0].key
+		}
+		r.inspect(target)
+		waitInspector(t, r, 140)
+		for _, width := range []int{24, 50, 80} {
+			header := r.inspectorHeader(width, 20, 71, 3)
+			checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 71+width, 3+header.rows))
+			title := strings.Split(plainStyledText(header.text), "\n")[0]
+			if !strings.HasPrefix(title, "< ") || strings.Contains(title, "agent") || strings.Contains(title, "root") || strings.Contains(title, "›") || headerButton(header.buttons, "parent") != image.Rect(71, 3, 72, 4) {
+				t.Fatalf("expected leading arrow without parent breadcrumb: %q", title)
+			}
+		}
+		header := r.inspectorHeader(50, 20, 71, 3)
+		r.inspectorButtons, r.inspectorHeaderRows = header.buttons, header.rows
+		r.inspectorBounds = image.Rect(71, 3, 121, 23)
+		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 73, Y: 3}})
+		i := &r.workspace().inspector
+		if !i.open || i.target.kind != conversationViewKind || i.target.session.ID != child.viewID() {
+			t.Fatal("item title did not return to the owning agent's conversation")
+		}
+		waitInspector(t, r, 140)
+		header = r.inspectorHeader(50, 20, 71, 3)
+		r.inspectorButtons, r.inspectorHeaderRows = header.buttons, header.rows
+		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 73, Y: 3}})
+		if i.open {
+			t.Fatal("agent title did not close inspector when returning to main session")
+		}
 	}
 }
 
@@ -290,6 +335,7 @@ func TestInspectorHeaderSearchReplacesActionsAndOwnsInput(t *testing.T) {
 	if r.inspectorW.Inner.Min.Y != r.inspectorBounds.Min.Y+r.inspectorHeaderRows {
 		t.Fatal("body origin disagrees with header height")
 	}
+	r.inspectorAction("follow")
 	r.inspectorScroll(-3)
 	wantTop := len(r.workspace().inspector.current.model.visual.rows) - (r.inspectorBounds.Dy() - r.inspectorHeaderRows) - 3
 	if s.top != wantTop {
@@ -330,7 +376,11 @@ func TestInspectorCommandResizeFollowsDisplayedPane(t *testing.T) {
 	ratio := r.inspectorRatio
 	r.inspectorAction("narrower")
 	header := r.inspectorHeader(400, 20, 0, 0)
-	if r.inspectorRatio != ratio || !headerButton(header.buttons, "wider").Empty() || !headerButton(header.buttons, "maximize").Empty() || !strings.HasSuffix(strings.Split(plainStyledText(header.text), "\n")[0], "[x]") {
+	if r.inspectorRatio != ratio || !headerButton(header.buttons, "wider").Empty() || !headerButton(header.buttons, "maximize").Empty() || !strings.HasPrefix(strings.Split(plainStyledText(header.text), "\n")[0], "< ") {
 		t.Fatal("maximized inspector exposes ineffective width controls")
 	}
+}
+
+func mouseEvent(id string, p image.Point) ui.Event {
+	return ui.Event{Type: ui.MouseEvent, ID: id, Payload: ui.Mouse{X: p.X, Y: p.Y}}
 }

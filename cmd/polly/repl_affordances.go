@@ -278,7 +278,7 @@ func (r *managedREPL) tickAffordances(now time.Time) {
 	}
 	r.model.mu.Lock()
 	repaint := r.model.expireAffordances(now)
-	repaint = repaint || r.model.idleAffordanceCursor(now) != r.affordanceW.idleCursor
+	repaint = repaint || (r.model.idleAffordanceCursor(now) && !r.workspace().inspector.searching) != r.affordanceW.idleCursor
 	r.model.mu.Unlock()
 	if repaint {
 		r.render()
@@ -345,7 +345,7 @@ func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptVi
 			if block.key != fmt.Sprintf("transcript:%d", index) {
 				continue
 			}
-			rows := transcriptVisualRows(q.prefix+styled("(queued)", "muted", ""), ui.NewStyle(ui.ColorClear), l.width)
+			rows := transcriptVisualRows(q.prefix+styled("(queued)", "muted", ""), ui.NewStyle(ui.ColorClear), v.width)
 			remaining := len("(queued)")
 			for y := len(rows) - 1; y >= 0 && remaining > 0; y-- {
 				cells := ui.BuildCellWithXArray(rows[y])

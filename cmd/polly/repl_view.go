@@ -34,11 +34,18 @@ type viewRenderer struct{}
 
 func (viewRenderer) Rows(m *replModel, width int) [][]ui.Cell { return m.transcriptRows(width) }
 
-type conversationView struct{ viewRenderer }
+type conversationView struct {
+	viewRenderer
+	collapseInitialPrompt bool
+}
 type toolView struct{ viewRenderer }
 type thoughtView struct{ viewRenderer }
 
-func (conversationView) Rows(m *replModel, width int) [][]ui.Cell {
+func (v conversationView) Rows(m *replModel, width int) [][]ui.Cell {
+	if m.collapseInitialPrompt != v.collapseInitialPrompt {
+		m.collapseInitialPrompt = v.collapseInitialPrompt
+		m.visual.invalidate()
+	}
 	// Advance live thought labels even when no source content has changed.
 	// Only the affected display rows are invalidated; projections stay cached.
 	m.refreshReasoningRecords(width)
@@ -72,13 +79,19 @@ func (t viewTarget) key() string {
 }
 
 type viewState struct {
-	top      int
-	follow   bool
-	search   string
-	lastRows int
-	anchor   viewAnchor
-	sections map[string]viewSection
-	revision uint64
+	promptExpanded bool
+	top            int
+	follow         bool
+	search         string
+	lastRows       int // -1 until a newly selected inspector item has rendered
+	anchor         viewAnchor
+	sections       map[string]viewSection
+	revision       uint64
+}
+
+func (s *viewState) resetScroll() {
+	s.top, s.follow, s.lastRows = 0, false, -1
+	s.anchor = viewAnchor{}
 }
 
 type viewGeometry struct {
@@ -101,6 +114,7 @@ func (conversationView) Project(_ context.Context, source viewSource, state view
 		return nil, fmt.Errorf("conversation unavailable")
 	}
 	m := source.model
+	m.setInitialPromptExpanded(state.promptExpanded)
 	applyViewSections(m, state)
 	m.renderPendingMarkdown()
 	return m, nil
@@ -119,13 +133,18 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 	if t.complete && t.duration > 0 {
 		status += " · " + formatElapsed(t.duration)
 	}
-	m.appendLine(styled(t.call.Name, "accent", "bold") + " · " + styleEscape(status))
+	m.appendLine(styled(status, "muted", ""))
 	m.appendLine(styled("Arguments", "muted", ""))
 	arguments := strings.TrimSpace(t.call.Arguments)
 	if arguments == "" {
-		arguments = "(none)"
+		m.appendLine("(none)")
+	} else {
+		lang := ""
+		if json.Valid([]byte(arguments)) {
+			lang = "json"
+		}
+		m.appendLine(strings.Join(renderCodeBlock(readableResult(arguments), lang), "\n"))
 	}
-	m.appendLine(styleEscape(readableResult(arguments)))
 	m.appendLine(styled("Output", "muted", ""))
 	if !t.complete {
 		m.appendNoticeLine("Running… output appears when this tool finishes.")

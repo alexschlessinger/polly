@@ -260,6 +260,15 @@ func formattedUserPrompt(p string) string {
 
 func (m *replModel) appendUserPrompt(p string) {
 	m.appendLine(formattedUserPrompt(p))
+	m.transcript[len(m.transcript)-1].initialPrompt = !m.userPromptSeen
+	m.userPromptSeen = true
+}
+
+func (m *replModel) setInitialPromptExpanded(expanded bool) {
+	if m.initialPromptExpanded != expanded {
+		m.initialPromptExpanded = expanded
+		m.visual.invalidate()
+	}
 }
 
 // appendTurnSeparator inserts the single renderer-owned blank row between
@@ -466,6 +475,16 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock {
 	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+1)
 	for i := range m.transcript {
+		if m.collapseInitialPrompt && m.transcript[i].initialPrompt {
+			label := "▸ Prompt"
+			if m.initialPromptExpanded {
+				label = "▾ Prompt"
+			}
+			blocks = append(blocks, transcriptDisplayBlock{key: "initial-prompt", text: styled(label, "accent", "")})
+			if !m.initialPromptExpanded {
+				continue
+			}
+		}
 		entry := m.transcript[i].text
 		var cells []ui.Cell
 		if q, ok := m.affordances.queued[i]; ok && !q.fading.IsZero() {
