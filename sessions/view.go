@@ -116,7 +116,15 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 			return err
 		}
 		if !view.InUse && snap.ttlNS > 0 && now >= snap.updatedNS && now-snap.updatedNS >= snap.ttlNS {
-			return ErrSessionNotFound
+			// A swarm parent or member outlives its TTL until the family is
+			// cleaned up, so it stays visible too.
+			var pinned bool
+			if err := conn.QueryRowContext(ctx, `SELECT `+swarmPinnedSQL+` FROM sessions WHERE id=?`, id).Scan(&pinned); err != nil {
+				return err
+			}
+			if !pinned {
+				return ErrSessionNotFound
+			}
 		}
 		view.Metadata, err = metadataFromSnapshot(snap)
 		if err != nil {

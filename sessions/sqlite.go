@@ -1377,7 +1377,7 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 			result, deleteErr := conn.ExecContext(ctx, `
 				DELETE FROM sessions
 				WHERE id = ?
-				  AND NOT EXISTS (SELECT 1 FROM swarm_members WHERE member_id=sessions.id)
+				  AND NOT `+swarmPinnedSQL+`
 				  AND NOT EXISTS (
 					SELECT 1 FROM session_leases
 					WHERE session_leases.session_id = sessions.id
@@ -1700,6 +1700,13 @@ func (s *SQLiteStore) GetLast(ctx context.Context) (string, error) {
 	return name, err
 }
 
+// swarmPinnedSQL matches a session the swarm tables keep alive: a member of a
+// family, or a parent whose records (and, by cascade, members, mailboxes and
+// paused executions) would vanish with it. TTL sweeps leave both alone until
+// the family is cleaned up explicitly.
+const swarmPinnedSQL = `(EXISTS (SELECT 1 FROM swarm_members WHERE member_id=sessions.id)
+			      OR EXISTS (SELECT 1 FROM swarm_records WHERE parent_id=sessions.id))`
+
 func (s *SQLiteStore) Expire(ctx context.Context) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
@@ -1712,7 +1719,7 @@ func (s *SQLiteStore) Expire(ctx context.Context) error {
 			WHERE ttl_ns > 0
 			  AND updated_ns <= ?
 			  AND ttl_ns <= ? - updated_ns
-			  AND NOT EXISTS (SELECT 1 FROM swarm_members WHERE member_id=sessions.id)
+			  AND NOT `+swarmPinnedSQL+`
 			  AND NOT EXISTS (
 				SELECT 1 FROM session_leases
 				WHERE session_leases.session_id = sessions.id

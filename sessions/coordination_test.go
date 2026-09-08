@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -142,5 +143,62 @@ func TestCoordinationCheckpointRollbackAndPins(t *testing.T) {
 	}
 	if err = store.db.QueryRow("SELECT count(*) FROM artifact_blobs").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("publication outlived parent: %d %v", count, err)
+	}
+}
+
+func TestSwarmParentSurvivesTTLExpiry(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, &Metadata{TTL: time.Second}, 0)
+	ctx := context.Background()
+	parent := acquireNamed(t, store, "parent")
+	plain := acquireNamed(t, store, "plain")
+	for _, s := range []Session{parent, plain} {
+		if err := s.AddMessage(ctx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hello"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parentID := parent.(ViewIdentity).ViewID()
+	if err := parent.(CoordinationSession).UpdateCoordination(ctx, func(s *CoordinationState) error {
+		s.Records["run"] = map[string]json.RawMessage{"r1": json.RawMessage(`{"status":"paused"}`)}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	backdate := func(s Session) {
+		t.Helper()
+		if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), s.(*sqliteSession).id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := parent.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backdate(parent)
+	backdate(plain)
+	// The sweep retires the plain session and leaves the swarm parent, whose
+	// deletion would cascade through its records, members and mailboxes.
+	if err := store.Expire(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var parents, plains int
+	if err := store.db.QueryRowContext(ctx, "SELECT count(*) FROM sessions WHERE name='parent'").Scan(&parents); err != nil || parents != 1 {
+		t.Fatalf("swarm parent expired: %d %v", parents, err)
+	}
+	if err := store.db.QueryRowContext(ctx, "SELECT count(*) FROM sessions WHERE name='plain'").Scan(&plains); err != nil || plains != 0 {
+		t.Fatalf("plain session kept: %d %v", plains, err)
+	}
+	// It stays visible and reacquirable under the same identity too.
+	if view, err := store.ReadView(ctx, ViewTarget{ID: parentID}, ""); err != nil || len(view.History) != 1 {
+		t.Fatalf("expired-but-pinned parent hidden: %+v %v", view, err)
+	}
+	backdate(parent)
+	again := acquireNamed(t, store, "parent")
+	if again.(ViewIdentity).ViewID() != parentID {
+		t.Fatal("acquire retired the swarm parent")
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
