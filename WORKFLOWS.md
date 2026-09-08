@@ -174,9 +174,11 @@ custom Go tools explicitly declare that property; remote MCP configuration uses
 `"contextIndependent": true`. Member registries omit indexed semantic search.
 
 Git 2.40+ is required for the explicit merge-base integration path. The runtime
-refuses conflicted indexes, submodules, sparse/split indexes, configured content
-filters/LFS, symlinked top-level Git metadata, and special files. New files have
-a default 32 MiB individual / 256 MiB total capture guard. External writers cannot
+refuses conflicted indexes, submodules, sparse/split indexes, paths whose
+attributes apply a content filter (LFS), symlinked top-level Git metadata, and
+special files. Untracked files follow the repository's and the user's global
+ignore rules. New files have a default 32 MiB individual / 256 MiB total capture
+guard, enforced on the tree that is actually published. External writers cannot
 be locked by Polly; a detected inconsistent snapshot is refused. Stop external
 writes when a consistent repository-wide snapshot is required.
 
