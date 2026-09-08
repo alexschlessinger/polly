@@ -540,6 +540,17 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 					return false, errors.New("continuation input must be user text")
 				}
 			}
+			if iteration+1 >= a.config.MaxIterations {
+				// No model call is left to answer the continuation. Appending it
+				// would leave history ending in a user message, so the budget
+				// ends the turn here with the answer intact.
+				stampMaxIterations(allGenerated)
+				response.StopReason = messages.StopReasonMaxIterations
+				if cb.OnError != nil {
+					cb.OnError(ErrMaxIterations)
+				}
+				return false, ErrMaxIterations
+			}
 			msgs = append(msgs, input...)
 			allGenerated = append(allGenerated, input...)
 			a.appendTranscript(input...)
@@ -700,14 +711,12 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// can't run that"), which pollutes history and teaches it to refuse
 		// preemptively on later turns. The caller already saw the denial.
 		if allDenied(toolMsgs) {
-			if cb != nil && cb.ContinueAfterFinal != nil {
-				input, err := cb.ContinueAfterFinal(ctx, response)
-				if err != nil {
-					return responseFor(response, iteration+1), err
-				}
-				if len(input) != 0 {
-					return responseFor(response, iteration+1), errors.New("coordination remains unfinished after the tool batch was denied")
-				}
+			// Outstanding coordination is real input, not a denial replay: the
+			// continuation prompt gives the model something concrete to do.
+			if again, err := continueFinal(); err != nil {
+				return responseFor(response, iteration+1), err
+			} else if again {
+				continue
 			}
 			if cb != nil && cb.OnComplete != nil {
 				cb.OnComplete(response)
@@ -736,19 +745,24 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	// exhausted the budget) so callers that persist AllMessages record why the
 	// turn ended. The stamp must land in allGenerated itself — msgs holds
 	// separate copies that are never returned.
-	var last *messages.ChatMessage
-	for i := len(allGenerated) - 1; i >= 0; i-- {
-		if allGenerated[i].Role == messages.MessageRoleAssistant {
-			last = &allGenerated[i]
-			last.StopReason = messages.StopReasonMaxIterations
-			break
-		}
-	}
+	last := stampMaxIterations(allGenerated)
 	if cb != nil && cb.OnError != nil {
 		cb.OnError(ErrMaxIterations)
 	}
 	// Return the partial response so the caller can save the history
 	return responseFor(last, a.config.MaxIterations), ErrMaxIterations
+}
+
+// stampMaxIterations marks the last generated assistant message as ended by
+// the iteration budget and returns it.
+func stampMaxIterations(generated []messages.ChatMessage) *messages.ChatMessage {
+	for i := len(generated) - 1; i >= 0; i-- {
+		if generated[i].Role == messages.MessageRoleAssistant {
+			generated[i].StopReason = messages.StopReasonMaxIterations
+			return &generated[i]
+		}
+	}
+	return nil
 }
 
 // processEvents processes the event stream and returns the final message.

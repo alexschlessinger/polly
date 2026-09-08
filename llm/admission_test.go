@@ -88,20 +88,45 @@ func TestExclusiveBatchStartsNothing(t *testing.T) {
 	}
 }
 
-func TestDeniedBatchCannotReportUnfinishedCoordinationAsSuccess(t *testing.T) {
+func TestDeniedBatchContinuesOnOutstandingCoordination(t *testing.T) {
 	model := &sequentialLLM{responses: []messages.ChatMessage{{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "denied", Name: "work", Arguments: `{}`}}}}}
 	registry := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "work", Run: func(context.Context, tools.Args) (string, error) { t.Error("denied tool ran"); return "", nil }}})
 	agent := NewAgent(model, registry, AgentConfig{MaxIterations: 3})
 	defer agent.Close()
 	settles := 0
-	_, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
+	response, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
 		ApproveToolCalls: func([]messages.ChatMessageToolCall) []bool { return []bool{false} },
 		ContinueAfterFinal: func(context.Context, *messages.ChatMessage) ([]messages.ChatMessage, error) {
 			settles++
+			if settles == 1 {
+				return messages.User("work remains"), nil
+			}
+			return nil, nil
+		},
+	})
+	// The denial receipts, the continuation prompt, then the answer to it.
+	if err != nil || settles != 2 || model.callCount != 2 || len(response.AllMessages) != 4 || response.AllMessages[2].Role != messages.MessageRoleUser {
+		t.Fatalf("denial settlement: %v settles=%d calls=%d messages=%d", err, settles, model.callCount, len(response.AllMessages))
+	}
+}
+
+func TestContinuationOnTheLastIterationEndsWithTheAnswer(t *testing.T) {
+	model := &sequentialLLM{responses: []messages.ChatMessage{{Role: messages.MessageRoleAssistant, Content: "final answer", StopReason: messages.StopReasonEndTurn}}}
+	agent := NewAgent(model, tools.NewToolRegistry(nil), AgentConfig{MaxIterations: 1})
+	defer agent.Close()
+	response, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
+		ContinueAfterFinal: func(context.Context, *messages.ChatMessage) ([]messages.ChatMessage, error) {
 			return messages.User("work remains"), nil
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "unfinished") || settles != 1 || model.callCount != 1 {
-		t.Fatalf("denial settlement: %v settles=%d calls=%d", err, settles, model.callCount)
+	if !errors.Is(err, ErrMaxIterations) || model.callCount != 1 {
+		t.Fatalf("last-iteration continuation: %v calls=%d", err, model.callCount)
+	}
+	// History must not end in the unanswered continuation prompt.
+	if len(response.AllMessages) != 1 || response.AllMessages[0].Role != messages.MessageRoleAssistant || response.AllMessages[0].StopReason != messages.StopReasonMaxIterations {
+		t.Fatalf("history: %+v", response.AllMessages)
+	}
+	if response.Message == nil || response.Message.Content != "final answer" || response.Message.StopReason != messages.StopReasonMaxIterations {
+		t.Fatalf("answer lost: %+v", response.Message)
 	}
 }
