@@ -168,6 +168,9 @@ type affordanceLayer struct {
 	cells      []affordanceCell
 	now        time.Time
 	idleCursor bool
+	// underlined reports cells the hover mark occupies, so a tick that
+	// repaints one of them keeps the underline.
+	underlined func(image.Point) bool
 }
 
 func (a *affordanceLayer) Draw(buf *ui.Buffer) {
@@ -250,6 +253,9 @@ func (a *affordanceLayer) tick(screen tcell.Screen, now time.Time) {
 		next := cell.frame(now)
 		if next != cell.last {
 			screenCell(screen, cell.point, next)
+			if a.underlined != nil && a.underlined(cell.point) {
+				setScreenUnderline(screen, cell.point, true)
+			}
 			cell.last = next
 			changed = true
 		}
