@@ -21,6 +21,9 @@ type managedTurnInput struct {
 	displayText string
 	userMessage messages.ChatMessage
 	reportIDs   []int64
+	// notice marks input the REPL composed itself (agent reports): the
+	// transcript shows it as a muted notice, not as a prompt the user typed.
+	notice bool
 }
 
 // turnPersistenceAck belongs to one logical user turn. Provider goroutines can
@@ -189,9 +192,31 @@ func cloneChatMessage(msg messages.ChatMessage) messages.ChatMessage {
 func (m *replModel) beginManagedTurn(turn managedTurnInput) {
 	prompt := turn.displayText
 	m.appendTurnSeparator()
-	m.appendUserPrompt(prompt)
-	m.decorateUserPrompt(len(m.transcript)-1, turn)
+	if turn.notice {
+		m.appendNoticePrompt(prompt)
+	} else {
+		m.appendUserPrompt(prompt)
+		m.decorateUserPrompt(len(m.transcript)-1, turn)
+	}
 	m.beginManagedTurnState(turn)
+}
+
+// appendNoticePrompt echoes input the REPL composed itself. It counts as a
+// prompt for the masthead's invitation, but carries no gutter: nobody typed it.
+func (m *replModel) appendNoticePrompt(text string) {
+	m.appendNoticeLine(text)
+	m.userPromptSeen = true
+}
+
+// queuedEcho is the transcript form of queued input: the prompt as it will
+// be echoed, then the marker on its own row.
+func queuedEcho(item *queuedREPLInput, marker string) (entry, prefix string) {
+	if item.turn != nil && item.turn.notice {
+		prefix = styled(item.text, "muted", "") + "\n"
+	} else {
+		prefix = formattedUserPrompt(item.text) + "\n" + userGutter()
+	}
+	return prefix + styled(marker, "muted", ""), prefix
 }
 
 func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
@@ -212,26 +237,37 @@ func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
 	if len(m.transcript) > 0 && m.transcriptEntryHasContent(len(m.transcript)-1) {
 		m.appendTranscriptEntry("")
 	}
-	entry := formattedUserPrompt(item.text) + "\n" + userGutter() + styled("(queued)", "muted", "")
+	entry, prefix := queuedEcho(item, "(queued)")
 	item.transcriptIndex = m.appendTranscriptEntry(entry)
-	m.noteQueuedInput(item.transcriptIndex, formattedUserPrompt(item.text)+"\n"+userGutter())
+	m.noteQueuedInput(item.transcriptIndex, prefix)
 	item.transcriptShown = true
-	if item.turn != nil {
+	if item.turn != nil && !item.turn.notice {
 		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
 	}
 	m.followBottom = true
 }
 
 func (m *replModel) activateQueuedInput(item queuedREPLInput) {
+	notice := item.turn != nil && item.turn.notice
 	if item.transcriptShown && item.transcriptIndex >= 0 && item.transcriptIndex < len(m.transcript) {
-		m.fadeQueuedInput(item.transcriptIndex, formattedUserPrompt(item.text)+"\n"+userGutter())
-		m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text))
-		if item.turn != nil {
-			m.decorateUserPrompt(item.transcriptIndex, *item.turn)
+		_, prefix := queuedEcho(&item, "")
+		m.fadeQueuedInput(item.transcriptIndex, prefix)
+		if notice {
+			m.setTranscriptText(item.transcriptIndex, styled(item.text, "muted", ""))
+			m.userPromptSeen = true
+		} else {
+			m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text))
+			if item.turn != nil {
+				m.decorateUserPrompt(item.transcriptIndex, *item.turn)
+			}
 		}
 		return
 	}
 	m.appendTurnSeparator()
+	if notice {
+		m.appendNoticePrompt(item.text)
+		return
+	}
 	m.appendUserPrompt(item.text)
 	if item.turn != nil {
 		m.decorateUserPrompt(len(m.transcript)-1, *item.turn)
@@ -243,8 +279,9 @@ func (m *replModel) markQueuedInputNotSent(item queuedREPLInput) {
 	if !item.transcriptShown || item.transcriptIndex < 0 || item.transcriptIndex >= len(m.transcript) {
 		return
 	}
-	m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text)+"\n"+userGutter()+styled("(not sent)", "muted", ""))
-	if item.turn != nil {
+	entry, _ := queuedEcho(&item, "(not sent)")
+	m.setTranscriptText(item.transcriptIndex, entry)
+	if item.turn != nil && !item.turn.notice {
 		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
 	}
 }

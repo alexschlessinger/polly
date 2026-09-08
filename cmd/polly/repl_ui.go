@@ -631,7 +631,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	r.model.mu.Lock()
 	// The sandbox posture reads from the masthead, exceptional or not; the
 	// line frontends keep their startup notice.
-	r.model.masthead = mastheadState{enabled: true, sandbox: currentSandboxPosture(r.config, r.state).summaryLine()}
+	r.model.masthead = mastheadState{enabled: true, sandbox: currentSandboxPosture(r.config, r.state).summaryLine(false)}
 	r.model.visual.invalidate()
 	r.appendPendingSandboxWarningsLocked()
 	r.model.mu.Unlock()
@@ -682,7 +682,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 		case <-r.suspend:
 			if err := r.suspendUI(ui.DefaultBackend.Screen); err != nil {
 				r.model.mu.Lock()
-				r.model.appendNoticeLine("suspend failed: " + err.Error())
+				r.model.appendNoticeLine("Suspend failed · " + err.Error())
 				r.model.mu.Unlock()
 			}
 			r.render()
@@ -992,7 +992,7 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 	case m.lastOutcome == turnOutcomeDone:
 		m.finishAssistantBlock("")
 		if !m.turnHasOutput {
-			m.appendNoticeLine("(no response)")
+			m.appendNoticeLine("No response")
 		}
 	case m.lastOutcome == turnOutcomeIncomplete:
 		// A cap is news like a failure but settles like success: completed
@@ -1002,14 +1002,14 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 		m.finishAssistantBlock(label)
 		m.labelTurnOutcome(label)
 		if !m.turnHasOutput {
-			m.appendNoticeLine("(no response)")
+			m.appendNoticeLine("No response")
 		}
 	case m.lastOutcome == turnOutcomeCanceled:
 		m.finishAssistantBlock("canceled" + unsavedSuffix)
 		m.labelTurnOutcome("canceled" + unsavedSuffix)
 		m.discardQueuedInputs()
 		if !m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
-			m.appendNoticeLine("input available with ↑ · current draft preserved")
+			m.appendNoticeLine("Input available with ↑ · current draft preserved")
 		}
 	default:
 		m.finishAssistantBlock("failed" + unsavedSuffix)
@@ -1017,7 +1017,7 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 		m.appendLine(styled("Error: "+err.Error(), "err", ""))
 		m.discardQueuedInputs()
 		if !m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
-			m.appendNoticeLine("input available with ↑ · current draft preserved")
+			m.appendNoticeLine("Input available with ↑ · current draft preserved")
 		}
 	}
 	m.settleTurnDock()
@@ -1135,9 +1135,9 @@ func (r *managedREPL) abandonCanceledTurn(tab *replTab) {
 	m.currentPersistence = nil
 	m.discardQueuedInputs()
 	if !m.restoreTurnDraft(restored, restoredPersistence) {
-		m.appendNoticeLine("input available with ↑ · current draft preserved")
+		m.appendNoticeLine("Input available with ↑ · current draft preserved")
 	}
-	m.appendNoticeLine("^C cancellation timed out; detached turn")
+	m.appendNoticeLine("Cancellation timed out · turn detached")
 }
 
 // turnContext parents a turn on its session's lease context, so losing the

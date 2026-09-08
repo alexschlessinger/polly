@@ -184,7 +184,9 @@ func TestAgentCueSelectsCompletedCountNotFailureCount(t *testing.T) {
 	}
 }
 
-func TestContextCueUsesRenderedMeter(t *testing.T) {
+// Growth in context usage lights the used count in the status row, not the
+// window it is measured against.
+func TestContextCueHighlightsTheUsedCount(t *testing.T) {
 	r, _ := affordanceTestREPL(t)
 	m := r.model
 	m.ed.setText("draft")
@@ -195,17 +197,17 @@ func TestContextCueUsesRenderedMeter(t *testing.T) {
 	}
 	m.status.recordContextUsage(29000, 128000, true)
 	r.render()
-	var found bool
+	var lit strings.Builder
 	for _, c := range r.affordanceW.cells {
 		if c.span.duration == 1400*time.Millisecond {
-			found = true
-			if c.base.Rune != '█' || c.point.Y != 31 {
-				t.Fatalf("context cue targets the wrong cell: %#v", c)
+			if c.point.Y != 31 {
+				t.Fatalf("context cue left the status row: %#v", c)
 			}
+			lit.WriteRune(c.base.Rune)
 		}
 	}
-	if !found {
-		t.Fatal("new context cell was not highlighted")
+	if lit.String() != "~29.0k" {
+		t.Fatalf("context cue lit %q, want the used count", lit.String())
 	}
 }
 

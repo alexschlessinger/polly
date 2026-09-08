@@ -264,17 +264,17 @@ func (r *managedREPL) requestShowTabLocked(i int) {
 func (r *managedREPL) requestCloseTabLocked() {
 	m := r.model
 	if r.visibleTabIndex() < 0 {
-		m.appendNoticeLine("no tab to close")
+		m.appendNoticeLine("No workspace to close")
 		return
 	}
 	if m.busy {
-		m.appendNoticeLine("cancel this tab's turn (Esc) before closing it")
+		m.appendNoticeLine("Cancel this workspace's turn (Esc) before closing it")
 		return
 	}
 	// A running child works on a view of this tab's tools; closing the tab
 	// would close them under it.
 	if n := r.runningDescendants(r.visibleTab()); n > 0 {
-		m.appendNoticeLine("stop this workspace's running agents in the inspector before closing it")
+		m.appendNoticeLine("Stop this workspace's running agents in the inspector before closing it")
 		return
 	}
 	r.closeTabRequest = true
@@ -347,7 +347,7 @@ func (r *managedREPL) closeVisibleTab() {
 		return
 	}
 	tab := r.removeTab(i)
-	notice := "closed " + tab.name
+	notice := "Closed " + tab.name
 	r.closeTabState(tab)
 	r.model.mu.Lock()
 	r.model.appendNoticeLine(notice)
@@ -464,7 +464,7 @@ func (r *managedREPL) dropLostSessions() error {
 		r.removeTab(i)
 		r.closeTabState(tab)
 		r.model.mu.Lock()
-		r.model.appendErrorLine("closed " + tab.name + ": " + cause.Error())
+		r.model.appendErrorLine("Closed " + tab.name + " · " + cause.Error())
 		r.model.mu.Unlock()
 	}
 	return nil
@@ -475,7 +475,7 @@ func (r *managedREPL) dropLostSessions() error {
 func (r *managedREPL) requestNewTabLocked() {
 	m := r.model
 	if r.opener == nil || r.opener.newName == nil {
-		m.appendNoticeLine("new tabs are unavailable")
+		m.appendNoticeLine("New sessions are unavailable")
 		return
 	}
 	if !r.canOpenLocked() {
@@ -497,7 +497,7 @@ func (r *managedREPL) requestOpenLocked(name string) {
 		return
 	}
 	if r.opener == nil {
-		r.model.appendNoticeLine("opening sessions is unavailable")
+		r.model.appendNoticeLine("Opening sessions is unavailable")
 		return
 	}
 	if !r.canOpenLocked() {
@@ -513,7 +513,7 @@ func (r *managedREPL) requestOpenLocked(name string) {
 // the transcript: only one open runs at a time. Caller must hold r.model.mu.
 func (r *managedREPL) canOpenLocked() bool {
 	if r.opening != "" {
-		r.model.appendNoticeLine("already opening " + r.opening)
+		r.model.appendNoticeLine("Already opening " + r.opening)
 		return false
 	}
 	return true
@@ -592,7 +592,7 @@ func (r *managedREPL) finishOpen(res openResult) {
 			r.removeTab(i)
 			r.closeTabState(old)
 			r.model.mu.Lock()
-			r.model.appendNoticeLine("closed " + old.name)
+			r.model.appendNoticeLine("Closed " + old.name)
 			r.model.mu.Unlock()
 		}
 	}

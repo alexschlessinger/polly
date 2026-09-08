@@ -1155,33 +1155,22 @@ func (p sandboxPosture) settingString() string {
 	}
 }
 
+// noticeString is the line frontends' startup notice. Only exceptional
+// posture earns one: an active sandbox covering every capable tool, with its
+// ssh agent reachable when the preset needs one, returns "" so callers print
+// nothing. The TUI shows the posture in its masthead instead.
 func (p sandboxPosture) noticeString() string {
-	switch p.state {
-	case sandboxPostureDisabled:
-		return "sandbox: disabled (--nosandbox)"
-	case sandboxPostureUnavailable:
-		return "sandbox: unavailable"
-	default:
-		// Only exceptional posture earns a startup line. An active sandbox
-		// covering every capable tool, with its ssh agent reachable when the
-		// preset needs one, returns "" so callers print nothing.
-		if len(p.unsandboxed) == 0 && !p.sshAgentUnavailable {
-			return ""
-		}
-		line := fmt.Sprintf("sandbox: active (%s; %d tools sandboxed", p.preset, len(p.sandboxed))
-		if len(p.unsandboxed) > 0 {
-			line += "; not sandboxed: " + strings.Join(p.unsandboxed, ", ")
-		}
-		if p.sshAgentUnavailable {
-			line += "; ssh: agent unavailable"
-		}
-		return line + ")"
+	if p.state == sandboxPostureActive && len(p.unsandboxed) == 0 && !p.sshAgentUnavailable {
+		return ""
 	}
+	return p.summaryLine(true)
 }
 
-// summaryLine is the masthead's sandbox row: the posture in sentence case,
-// the preset's parts, and anything exceptional a user should know at a glance.
-func (p sandboxPosture) summaryLine() string {
+// summaryLine is the sandbox posture in sentence case: the state, the
+// preset's parts, optionally how many tools the sandbox covers, and anything
+// exceptional a user should know at a glance. The masthead shows it without
+// the count; the line frontends' notice includes it.
+func (p sandboxPosture) summaryLine(withCount bool) string {
 	switch p.state {
 	case sandboxPostureDisabled:
 		return "Sandbox disabled (--nosandbox)"
@@ -1189,6 +1178,9 @@ func (p sandboxPosture) summaryLine() string {
 		return "Sandbox unavailable"
 	default:
 		parts := []string{"Sandbox active", strings.ReplaceAll(p.preset, "+", ", ")}
+		if withCount {
+			parts = append(parts, fmt.Sprintf("%d tools sandboxed", len(p.sandboxed)))
+		}
 		if len(p.unsandboxed) > 0 {
 			parts = append(parts, "not sandboxed: "+strings.Join(p.unsandboxed, ", "))
 		}

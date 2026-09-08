@@ -463,7 +463,7 @@ func TestHandleAddToContextStoresTextFileAsPart(t *testing.T) {
 	if imported, _ := file.Metadata[messages.MetadataKeyContextImport].(bool); !imported {
 		t.Fatalf("imported file message lacks the context-import flag: %#v", file.Metadata)
 	}
-	if display, restorable, contextOnly := historyUserSummary(file); display != "[attached: notes.txt]" || restorable || !contextOnly {
+	if display, restorable, contextOnly, notice := historyUserSummary(file); display != "[attached: notes.txt]" || restorable || !contextOnly || notice {
 		t.Fatalf("hydrated summary = %q restorable=%v contextOnly=%v", display, restorable, contextOnly)
 	}
 }

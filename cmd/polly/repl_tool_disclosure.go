@@ -389,7 +389,7 @@ func (m *replModel) settleActiveTools(reason string) {
 		if row.agent != nil && !row.agent.attached {
 			row.agent.status, row.agent.active = reason, false
 		}
-		row.line = toolErrorLine(at.label, reason, "")
+		row.line = toolErrorLine(at.label, "", reason)
 		row.images = nil
 		row.settled = true
 	}
@@ -413,19 +413,19 @@ func styledToolText(text string) string {
 }
 
 func toolOKLine(label, duration, meta string) string {
-	return "  " + styled("✓", "ok", "bold") + " " + styledToolText(toolLineBody(duration, label, meta))
+	return "  " + styled("✓", "ok", "bold") + " " + styledToolText(toolLineBody(label, meta, duration))
 }
 
 func toolDeniedLine(label string) string {
-	return "  " + styled("✗", "err", "bold") + " " + styledToolText("denied "+label)
+	return "  " + styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(label, "denied", ""))
 }
 
 // toolErrorLine renders a failed tool call as a red ✗ plus the muted metadata
-// (timing · command · exit code) — the same shape as a success line. The
+// (command · exit code · timing) — the same shape as a success line. The
 // tool's own output/error text is deliberately not shown; the model still
 // receives the full output, this is display only.
 func toolErrorLine(label, duration, meta string) string {
-	return "  " + styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(duration, label, meta))
+	return "  " + styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(label, meta, duration))
 }
 
 // hydratedToolLine rebuilds a settled row from its stored result. The raw

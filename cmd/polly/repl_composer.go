@@ -657,12 +657,12 @@ func (r *managedREPL) captureClipboardToComposer() {
 			defer m.mu.Unlock()
 			m.clipboardCapture = false
 			if err != nil {
-				m.appendNoticeLine("clipboard: " + err.Error())
+				m.appendNoticeLine("Clipboard capture failed · " + err.Error())
 				return
 			}
 			img, ok := resolveLocalTranscriptImage(path, "clipboard image", m.imageBaseDir)
 			if !ok {
-				m.appendNoticeLine("clipboard: captured image could not be used")
+				m.appendNoticeLine("Clipboard image could not be used")
 				return
 			}
 			m.insertEditorText(m.registerAttachment(img.Path, "clipboard image") + " ")
@@ -713,7 +713,7 @@ func (r *managedREPL) submitComposerLocked() bool {
 		return false
 	}
 	if r.quitting {
-		m.appendNoticeLine("leaving; input not sent")
+		m.appendNoticeLine("Leaving · input not sent")
 		return false
 	}
 	if tab := r.visibleTab(); tab.childView != nil && !(strings.HasPrefix(trimmed, "/") && !strings.Contains(trimmed, "\n") && childViewLocalCommand(trimmed)) {
@@ -721,7 +721,7 @@ func (r *managedREPL) submitComposerLocked() bool {
 		return false
 	}
 	if m.clipboardCapture {
-		m.appendNoticeLine("clipboard: waiting for image capture")
+		m.appendNoticeLine("Clipboard capture still running")
 		m.followBottom = true
 		return false
 	}
@@ -730,7 +730,7 @@ func (r *managedREPL) submitComposerLocked() bool {
 	}
 	if r.opening != "" {
 		// The draft stays put: it can go to the new tab once it is live.
-		m.appendNoticeLine("opening " + r.opening + "; input held until it opens")
+		m.appendNoticeLine("Opening " + r.opening + " · input held until it opens")
 		m.followBottom = true
 		return false
 	}

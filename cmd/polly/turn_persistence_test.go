@@ -472,7 +472,7 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	if tools == nil || !tools.complete || len(tools.rows) != 1 || record.transcriptIndex >= tools.transcriptIndex {
 		t.Fatalf("hydrated denied tool disclosure/order = reasoning %#v tools %#v", record, tools)
 	}
-	if !m.toggleToolDisclosure(tools.id) || !strings.Contains(plainStyledText(m.transcript[tools.transcriptIndex].text), "✗ denied bash") {
+	if !m.toggleToolDisclosure(tools.id) || !strings.Contains(plainStyledText(m.transcript[tools.transcriptIndex].text), "✗ bash · denied") {
 		t.Fatalf("hydrated denied tool disclosure did not expand: %#v", tools)
 	}
 
@@ -538,7 +538,7 @@ func TestDurableTurnMessagesKeepsProseAndDeniedOutcome(t *testing.T) {
 	for _, candidate := range m.toolDisclosures {
 		tools = candidate
 	}
-	if tools == nil || !m.toggleToolDisclosure(tools.id) || !strings.Contains(plainStyledText(m.transcript[tools.transcriptIndex].text), "✗ denied bash") {
+	if tools == nil || !m.toggleToolDisclosure(tools.id) || !strings.Contains(plainStyledText(m.transcript[tools.transcriptIndex].text), "✗ bash · denied") {
 		t.Fatalf("prose + denial disclosure = %#v", tools)
 	}
 }
@@ -618,7 +618,7 @@ func TestDurableMixedToolBatchReloadsOneOrderedDisclosure(t *testing.T) {
 		t.Fatal("reloaded mixed disclosure did not expand")
 	}
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	deniedDetail := "✗ denied " + deniedName
+	deniedDetail := "✗ " + deniedName + " · denied"
 	successDetail := "✓ " + successName
 	deniedAt := strings.Index(expanded, deniedDetail)
 	successAt := strings.Index(expanded, successDetail)

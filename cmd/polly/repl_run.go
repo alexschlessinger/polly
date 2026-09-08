@@ -86,7 +86,7 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	}
 	m.quiet = r.config.Quiet
 	if root {
-		m.masthead = mastheadState{enabled: true, sandbox: currentSandboxPosture(r.config, state).summaryLine()}
+		m.masthead = mastheadState{enabled: true, sandbox: currentSandboxPosture(r.config, state).summaryLine(false)}
 	}
 	m.artifactStore = state.artifactStore
 	m.hydrateHistory(history, name)
@@ -94,7 +94,7 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 		if summaries, err := state.sessionStore.ListSummaries(ctx); err == nil {
 			m.hydrateAgentSessions(name, summaries)
 		} else {
-			m.appendNoticeLine("agent sessions unavailable: " + err.Error())
+			m.appendNoticeLine("Agent sessions unavailable · " + err.Error())
 		}
 	}
 	// Seed the bar without network traffic. This is explicitly approximate

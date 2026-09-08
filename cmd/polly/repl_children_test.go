@@ -151,7 +151,7 @@ func TestBlockingChildRunsInATabAndAnswersTheCall(t *testing.T) {
 	if got := strings.Join(r.tabLines(), "\n"); len(r.tabLines()) != 1 || strings.Contains(got, child.name) || !strings.Contains(got, "1 agent running") {
 		t.Fatalf("workspace list did not aggregate child activity: %q", got)
 	}
-	if got := plainStyledText(r.model.fullTranscript()); strings.Contains(got, "started · /agents") {
+	if got := plainStyledText(r.model.fullTranscript()); strings.Contains(got, "started · /sessions") {
 		t.Fatalf("a blocking spawn announced itself: %q", got)
 	}
 	// The parent's Agents row links the child and shows its initial run.
@@ -205,7 +205,7 @@ func TestBackgroundChildReportsToTheIdleParent(t *testing.T) {
 	if parent.turnDone == nil {
 		t.Fatal("the report did not start a parent turn")
 	}
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "▎ agent "+child.name+" finished") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "agent "+child.name+" finished") || strings.Contains(got, "▎ agent") {
 		t.Fatalf("parent transcript lacks the report echo: %q", got)
 	}
 	settleUntil(t, r, settled(parent))
@@ -240,7 +240,7 @@ func TestReportsArrivingDuringAParentTurnArriveAsOneMessage(t *testing.T) {
 
 	close(runs.release)
 	settleUntil(t, r, func() bool { return len(runs.reported()) == 1 })
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "▎ 2 agent reports") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "2 agent reports") || strings.Contains(got, "▎ 2 agent") {
 		t.Fatalf("parent transcript lacks the coalesced echo: %q", got)
 	}
 	settleUntil(t, r, settled(parent))
@@ -323,7 +323,7 @@ func TestSpawnCommandStartsABackgroundChild(t *testing.T) {
 		t.Fatalf("tabs after /spawn: %d, visible %d", len(r.tabs), r.visibleTabIndex())
 	}
 	child := r.tabs[1]
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "agent "+child.name+" started · /agents") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "Agent "+child.name+" started · /sessions") {
 		t.Fatalf("/spawn was not announced: %q", got)
 	}
 	settleUntil(t, r, settled(child))
@@ -414,7 +414,7 @@ func TestChildOfAClosedParentReportsThroughTheStore(t *testing.T) {
 	if got := runs.reported(); len(got) != 1 || got[0] != want {
 		t.Fatalf("reopened parent got %q, want %q", got, want)
 	}
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "▎ agent "+child.name+" finished") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "agent "+child.name+" finished") || strings.Contains(got, "▎ agent") {
 		t.Fatalf("reopened parent transcript lacks the report echo: %q", got)
 	}
 }
@@ -449,7 +449,7 @@ func TestReportsPostedWhileNoPollyHeldTheParentArriveAtStartup(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0], "agent helper canceled\nhalf done") || !strings.Contains(got[0], "agent helper failed: boom") {
 		t.Fatalf("parent got %q, want both reports in one message", got)
 	}
-	if transcript := plainStyledText(r.model.fullTranscript()); !strings.Contains(transcript, "▎ 2 agent reports") {
+	if transcript := plainStyledText(r.model.fullTranscript()); !strings.Contains(transcript, "2 agent reports") || strings.Contains(transcript, "▎ 2 agent") {
 		t.Fatalf("transcript lacks the coalesced echo: %q", transcript)
 	}
 	r.pullAllReports(ctx, runs.run)
@@ -472,7 +472,7 @@ func TestClosingATabWithRunningAgentsIsRefused(t *testing.T) {
 	if r.closeTabRequest {
 		t.Fatal("closing a tab with a running agent was allowed")
 	}
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "stop this workspace's running agents in the inspector before closing it") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "Stop this workspace's running agents in the inspector before closing it") {
 		t.Fatalf("no refusal notice: %q", got)
 	}
 
@@ -560,5 +560,42 @@ func TestSpawnCommandIsDroppedOnceQuitting(t *testing.T) {
 	r.applySpawnRequests()
 	if len(r.tabs) != 1 || len(r.spawnRequests) != 0 {
 		t.Fatalf("%d tabs, %d requests after /spawn while quitting", len(r.tabs), len(r.spawnRequests))
+	}
+}
+
+// Reports the REPL composed for the parent read as notices, live and after a
+// reload: the header line only, no gutter, and never the session trailer.
+func TestHydratedAgentReportsReadAsNotices(t *testing.T) {
+	marked := messages.ChatMessage{
+		Role:     messages.MessageRoleUser,
+		Content:  "agent helper finished\nfound it\n\n(agent session helper · 7 in / 3 out)",
+		Metadata: map[string]any{messages.MetadataKeyAgentReport: true},
+	}
+	legacy := messages.ChatMessage{
+		Role:    messages.MessageRoleUser,
+		Content: "agent one canceled\nhalf done\n\n(agent session one)\n\nagent two failed: boom\n(the agent returned no reply)\n\n(agent session two)",
+	}
+	m := newReplModel()
+	m.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "delegate"},
+		{Role: messages.MessageRoleAssistant, Content: "on it"},
+		marked,
+		{Role: messages.MessageRoleAssistant, Content: "thanks"},
+		legacy,
+		{Role: messages.MessageRoleAssistant, Content: "noted"},
+	}, "parent")
+	got := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
+	for _, want := range []string{"▎ delegate", "\nagent helper finished\n", "\n2 agent reports\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("hydrated transcript %q missing %q", got, want)
+		}
+	}
+	for _, leaked := range []string{"(agent session", "found it", "▎ agent", "▎ 2 agent", "half done"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("hydrated transcript leaked %q: %q", leaked, got)
+		}
+	}
+	if m.restoredDraft != nil || !m.userPromptSeen {
+		t.Fatalf("report notices changed draft or prompt state: draft=%#v seen=%v", m.restoredDraft, m.userPromptSeen)
 	}
 }

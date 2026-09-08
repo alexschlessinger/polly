@@ -206,7 +206,7 @@ func transcriptImageCaptionText(img transcriptImage) string {
 	if displayPath == "" {
 		displayPath = sanitizeTranscriptImageText(img.Path)
 	}
-	return "image: " + label + " · " + truncate(displayPath, 100)
+	return label + " · " + truncate(displayPath, 100)
 }
 
 func sanitizeTranscriptImageText(text string) string {

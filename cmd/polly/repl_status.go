@@ -58,24 +58,56 @@ func (s *sessionStatus) rememberModel(model string) {
 }
 
 func (s *sessionStatus) contextUsageText() string {
+	used, limit := s.contextUsageParts()
+	return used + limit
+}
+
+// contextUsageParts splits the usage readout into the used count and the
+// window it is measured against: "~12.3k" and "/156k", or "448 tok" and ""
+// when no limit is known. The numbers only ever mean context usage, so no
+// prefix names them.
+func (s *sessionStatus) contextUsageParts() (used, limit string) {
 	if s.contextUsed <= 0 && s.contextLimit <= 0 {
-		return ""
+		return "", ""
 	}
-	// The bar/number row sits in a dedicated status slot, so the "ctx"
-	// prefix is redundant — the numbers only ever mean context usage.
-	used := humanizeTokens(s.contextUsed)
+	used = humanizeTokens(s.contextUsed)
 	if s.contextLimit <= 0 {
-		return used
+		return used + " tok", ""
 	}
 	if s.contextUsed > s.contextLimit && s.contextEstimated {
 		used = ">" + humanizeTokens(s.contextLimit)
 	}
-	text := used + "/" + humanizeTokens(s.contextLimit)
 	if s.contextEstimated {
 		// Mark the estimate so "12.3k" is never mistaken for a measured value.
-		text = "~" + text
+		used = "~" + used
 	}
-	return text
+	return used, "/" + humanizeTokens(s.contextLimit)
+}
+
+// contextUsageStyled colors the used count by how full the window is; the
+// window itself stays muted so the number carries the signal.
+func (s *sessionStatus) contextUsageStyled() string {
+	used, limit := s.contextUsageParts()
+	if used == "" {
+		return ""
+	}
+	return styled(used, contextUsageColor(s.contextUsed, s.contextLimit), "") + styled(limit, "muted", "")
+}
+
+// contextUsageColor is muted without a limit, then ok, active, and err as the
+// window passes three quarters and nine tenths full.
+func contextUsageColor(used, limit int) string {
+	if limit <= 0 {
+		return "muted"
+	}
+	switch {
+	case used*10 >= limit*9:
+		return "err"
+	case used*4 >= limit*3:
+		return "active"
+	default:
+		return "ok"
+	}
 }
 
 func (s *sessionStatus) clearContextUsage(limit int) {
@@ -91,48 +123,6 @@ func (s *sessionStatus) recordContextUsage(used, limit int, estimated bool) {
 	s.contextUsed = used
 	s.contextLimit = limit
 	s.contextEstimated = estimated
-}
-
-// contextMeterBar renders the fullness of the context window as a small
-// bar: `▕████░░▏`. Color shifts green → yellow → red as the window fills,
-// so pressure is legible at a glance without reading the numbers. Width is
-// the inner bar width (excluding the enclosing brackets).
-func contextMeterBar(used, limit, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	filled := 0
-	if limit > 0 {
-		filled = used * width / limit
-	}
-	if filled < 0 {
-		filled = 0
-	}
-	if filled > width {
-		filled = width
-	}
-	empty := width - filled
-	color := "green"
-	switch {
-	case filled*2 >= width: // >50% of window used
-		color = "yellow"
-	case filled*5 >= width*4: // >80%
-		color = "red"
-	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", empty)
-	return styled(bar, color, "")
-}
-
-// contextMeterColor picks the bar color by how full the context window is.
-func contextMeterColor(fraction float64) string {
-	switch {
-	case fraction >= 0.9:
-		return "err"
-	case fraction >= 0.75:
-		return "warn"
-	default:
-		return "ok"
-	}
 }
 
 // shortModelName trims a provider-qualified model to its display form:
@@ -160,10 +150,10 @@ func (m *replModel) statusRow(width int) string {
 		leftStyled = styled(leftRaw, "accent", "")
 	}
 	type field struct {
-		drop      int
-		text      string
-		session   bool
-		preStyled bool
+		drop     int
+		text     string
+		rendered string // styled form when the field carries its own colors
+		session  bool
 	}
 	fields := []field{}
 	if m.status.modelName != "" {
@@ -174,11 +164,7 @@ func (m *replModel) statusRow(width int) string {
 	}
 	fields = append(fields, field{drop: 0, text: m.status.contextName, session: true})
 	if context := m.status.contextUsageText(); context != "" {
-		fields = append(fields, field{drop: 1, text: context})
-	}
-	// Usage meter bar sits next to the numbers when there's a limit to gauge.
-	if bar := contextMeterBar(m.status.contextUsed, m.status.contextLimit, 10); bar != "" {
-		fields = append(fields, field{drop: 1, text: bar, preStyled: true})
+		fields = append(fields, field{drop: 1, text: context, rendered: m.status.contextUsageStyled()})
 	}
 
 	fieldWidth := func(fs []field) int {
@@ -227,9 +213,8 @@ func (m *replModel) statusRow(width int) string {
 	rightStyledParts := make([]string, len(fields))
 	for i, f := range fields {
 		rightRawParts[i] = f.text
-		if f.preStyled {
-			// Field text is already fully styled; render as-is.
-			rightStyledParts[i] = f.text
+		if f.rendered != "" && !strings.HasPrefix(f.text, "…") && f.text == m.status.contextUsageText() {
+			rightStyledParts[i] = f.rendered
 			continue
 		}
 		color := "muted"

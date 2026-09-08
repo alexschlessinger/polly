@@ -168,3 +168,25 @@ func TestExpandToolCallRedactsNestedSecrets(t *testing.T) {
 		t.Fatalf("expected two redactions, got %q", got)
 	}
 }
+
+// Every frontend joins a settled tool row the same way: the label leads,
+// then the metadata, then the duration; empty parts leave no dots behind.
+func TestToolLineBodyOrder(t *testing.T) {
+	for _, tc := range []struct{ label, meta, duration, want string }{
+		{"read_file", "12 lines", "1.0s", "read_file · 12 lines · 1.0s"},
+		{"bash ls", "", "1.2s", "bash ls · 1.2s"},
+		{"bash", "exit 1", "", "bash · exit 1"},
+		{"write", "denied", "", "write · denied"},
+		{"ls", "", "", "ls"},
+	} {
+		if got := toolLineBody(tc.label, tc.meta, tc.duration); got != tc.want {
+			t.Fatalf("toolLineBody(%q, %q, %q) = %q, want %q", tc.label, tc.meta, tc.duration, got, tc.want)
+		}
+	}
+	if got := plainStyledText(toolDeniedLine("write")); got != "  ✗ write · denied" {
+		t.Fatalf("denied line = %q", got)
+	}
+	if got := plainStyledText(toolOKLine("read_file", "1.0s", "12 lines")); got != "  ✓ read_file · 12 lines · 1.0s" {
+		t.Fatalf("ok line = %q", got)
+	}
+}

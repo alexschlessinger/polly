@@ -143,12 +143,12 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 	m.appendLine(strings.Join(renderFence(title, lines), "\n"))
 	if !t.complete {
 		m.appendLine(styled("╭─ output", "muted", ""))
-		m.appendNoticeLine("Running… output appears when this tool finishes.")
+		m.appendNoticeLine("Running… output appears when this tool finishes")
 		return m, nil
 	}
 	if !t.available {
 		m.appendLine(styled("╭─ output", "muted", ""))
-		m.appendNoticeLine("Output unavailable in saved history.")
+		m.appendNoticeLine("Output unavailable in saved history")
 		return m, nil
 	}
 	body := t.result.GetContent()
@@ -178,7 +178,7 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 	}
 	if body == "" {
 		m.appendLine(styled("╭─ output", "muted", ""))
-		m.appendNoticeLine("No text output.")
+		m.appendNoticeLine("No text output")
 	} else {
 		text := strings.TrimRight(stripTranscriptImageMarkers(readableResult(body)), "\n")
 		raw := strings.Split(text, "\n")

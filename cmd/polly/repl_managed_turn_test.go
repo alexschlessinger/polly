@@ -32,7 +32,7 @@ func TestEnterWaitsForClipboardCapture(t *testing.T) {
 	if _, ok := r.takePending(); ok {
 		t.Fatal("turn reached pending before clipboard capture completed")
 	}
-	if got := r.model.transcript[len(r.model.transcript)-1].text; !strings.Contains(got, "waiting for image capture") {
+	if got := r.model.transcript[len(r.model.transcript)-1].text; !strings.Contains(got, "Clipboard capture still running") {
 		t.Fatalf("missing clipboard wait notice: %q", got)
 	}
 

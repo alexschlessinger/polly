@@ -229,7 +229,7 @@ func (r *managedREPL) spawnChildTab(parentModel *replModel, tab *replTab, req su
 		if label == "" {
 			label = name
 		}
-		r.model.appendNoticeLine(fmt.Sprintf("agent %s started · /agents", label))
+		r.model.appendNoticeLine(fmt.Sprintf("Agent %s started · /sessions", label))
 	}
 	r.model.mu.Unlock()
 	return nil
@@ -283,7 +283,7 @@ func (r *managedREPL) postChildReport(ctx context.Context, child *replTab, res s
 			child.reporting = false
 			if writeErr != nil {
 				r.model.mu.Lock()
-				r.model.appendNoticeLine(fmt.Sprintf("agent %s's reply could not be delivered to %s: %s", child.name, child.parentName, writeErr))
+				r.model.appendNoticeLine(fmt.Sprintf("Agent %s's reply could not be delivered to %s · %s", child.name, child.parentName, writeErr))
 				r.model.mu.Unlock()
 				return
 			}
@@ -362,7 +362,7 @@ func (r *managedREPL) pullReports(ctx context.Context, tab *replTab) bool {
 			if err != nil {
 				if session.Context().Err() == nil {
 					r.model.mu.Lock()
-					r.model.appendNoticeLine("agent reports for " + tab.name + ": " + err.Error())
+					r.model.appendNoticeLine("Agent reports for " + tab.name + " unavailable · " + err.Error())
 					r.model.mu.Unlock()
 				}
 			} else {
@@ -429,7 +429,12 @@ func (m *replModel) queueReports(reports []sessions.Report) {
 	if len(ids) > 1 {
 		display = fmt.Sprintf("%d agent reports", len(ids))
 	}
-	turn := managedTurnInput{displayText: display, userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: strings.Join(bodies, "\n\n")}, reportIDs: ids}
+	turn := managedTurnInput{
+		displayText: display,
+		userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: strings.Join(bodies, "\n\n"), Metadata: map[string]any{messages.MetadataKeyAgentReport: true}},
+		reportIDs:   ids,
+		notice:      true,
+	}
 	m.queue = slices.Insert(m.queue, 0, queuedREPLInput{text: display, turn: &turn})
 }
 
@@ -557,11 +562,11 @@ func (r *managedREPL) childDoneWaiting(tab *replTab, waiter chan childReport, ab
 // the event loop applies it. Caller must hold r.model.mu.
 func (r *managedREPL) requestSpawnLocked(brief string) {
 	if r.opener == nil || r.opener.spawn == nil {
-		r.model.appendNoticeLine("spawning agents is unavailable")
+		r.model.appendNoticeLine("Spawning agents is unavailable")
 		return
 	}
 	if r.visibleTabIndex() < 0 || r.state == nil {
-		r.model.appendNoticeLine("no session to spawn from")
+		r.model.appendNoticeLine("No session to spawn from")
 		return
 	}
 	r.spawnRequests = append(r.spawnRequests, spawnRequest{parent: r.visibleTab(), req: subagent.Request{Task: brief, Background: true}})
