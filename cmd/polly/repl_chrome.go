@@ -35,6 +35,9 @@ type chromeGeometry struct {
 	// plain marks an inspector that is open but unframed because the region
 	// is too small for borders.
 	plain bool
+	// joined marks a frame whose bottom border sits on the composer rule, so
+	// the interior keeps the transcript region's last row.
+	joined bool
 }
 
 // split divides the interior into the header, the body beneath it, and the
@@ -69,9 +72,11 @@ func (r *managedREPL) splitColumn(width int) int {
 }
 
 // chromeGeometryFor derives the chrome for a transcript region of the given
-// width that starts at row top and spans rows. It reads loop-owned state only,
+// width that starts at row top and spans rows. When the composer rule sits
+// directly under the region (joined), the frame's bottom border lands on the
+// rule row instead of spending a region row. It reads loop-owned state only,
 // so it is safe without the model lock.
-func (r *managedREPL) chromeGeometryFor(width, top, rows int) chromeGeometry {
+func (r *managedREPL) chromeGeometryFor(width, top, rows int, joined bool) chromeGeometry {
 	g := chromeGeometry{}
 	region := image.Rect(0, top, width, top+rows)
 	open, maximized := false, false
@@ -95,8 +100,13 @@ func (r *managedREPL) chromeGeometryFor(width, top, rows int) chromeGeometry {
 		x = r.splitColumn(width)
 		g.main = image.Rect(0, top, x, top+rows)
 	}
-	g.frame = image.Rect(x, top, width, top+rows)
-	g.inner = image.Rect(x+1, top+1, width-1, top+rows-1)
+	bottom := top + rows
+	if joined {
+		g.joined = true
+		bottom++
+	}
+	g.frame = image.Rect(x, top, width, bottom)
+	g.inner = image.Rect(x+1, top+1, width-1, bottom-1)
 	if x > 0 {
 		g.divider = image.Rect(x, g.inner.Min.Y, x+1, g.inner.Max.Y)
 	}
@@ -122,7 +132,7 @@ func (r *managedREPL) viewGeometryFor(g chromeGeometry, width int) viewGeometry 
 // without a layout (refreshInspector, tests) use it; render corrects the
 // width from the real layout.
 func (r *managedREPL) inspectorGeometry(width int) viewGeometry {
-	return r.viewGeometryFor(r.chromeGeometryFor(width, 0, 3), width)
+	return r.viewGeometryFor(r.chromeGeometryFor(width, 0, 3, false), width)
 }
 
 // A fixed geometry group avoids Flex's extra insets in framed layouts.
@@ -212,17 +222,27 @@ func (r *managedREPL) refreshChrome(drawable ui.Drawable, l frameLayout, now tim
 	}
 	hover := r.inspectorDragging || r.mousePositionKnown && r.mousePosition.In(g.divider)
 	grip := image.Pt(g.divider.Min.X, g.divider.Min.Y+g.divider.Dy()/2)
+	// On the composer rule the conversation's rule meets the frame's corner.
+	corner := image.Pt(g.frame.Min.X, g.frame.Max.Y-1)
+	cornerRune := '╰'
+	if g.joined && !g.divider.Empty() {
+		cornerRune = '┴'
+	}
 	for n := range r.orbit.cells {
 		cell := &r.orbit.cells[n]
 		if cell.base.Rune == '⋮' {
 			cell.base.Rune = '│'
 		}
 		cell.base.Style = ui.NewStyle(base)
-		if !g.divider.Empty() && hover && cell.point == grip {
+		switch {
+		case !g.divider.Empty() && hover && cell.point == grip:
 			cell.base.Rune = '⋮'
 			cell.base.Style.Fg = chromeColor("accent")
+		case cell.point == corner:
+			cell.base.Rune = cornerRune
 		}
 	}
-	r.orbit.masks = []image.Rectangle{r.inspectorScrollbar.thumb}
+	// The thumb and the caller link own their cells; the frame never paints them.
+	r.orbit.masks = []image.Rectangle{r.inspectorScrollbar.thumb, r.model.parentLink}
 	return &chromeLayer{Drawable: drawable, r: r, now: now}
 }

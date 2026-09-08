@@ -158,7 +158,7 @@ func TestParentDividerFollowsLayout(t *testing.T) {
 		for _, width := range []int{1, 4, 12, 24, 80, 120} {
 			l := r.frameLayoutFor(width, 24)
 			row := plainStyledText(m.dividerRow(l))
-			if rw.StringWidth(row) > width || strings.Contains(row, "─") {
+			if rw.StringWidth(row) != width || (width >= 24 && !strings.HasSuffix(row, "─")) {
 				t.Fatalf("width %d divider: %q", width, row)
 			}
 			p := m.parentLink
@@ -182,9 +182,11 @@ func TestParentDividerFollowsLayout(t *testing.T) {
 	}
 	m.quiet = false
 	m.status.parentName = ""
-	row := plainStyledText(m.dividerRow(r.frameLayoutFor(80, 24)))
-	if row != "" || !m.parentLink.Empty() || r.frameLayoutFor(80, 24).dividerRows != 0 {
-		t.Fatal("ordinary session has navigation")
+	// A root session keeps the rule but has nowhere to go back to.
+	l := r.frameLayoutFor(80, 24)
+	row := plainStyledText(m.dividerRow(l))
+	if row != strings.Repeat("─", 80) || !m.parentLink.Empty() || l.dividerRows != 1 {
+		t.Fatalf("ordinary session rule = %q link=%v layout=%+v", row, m.parentLink, l)
 	}
 }
 
