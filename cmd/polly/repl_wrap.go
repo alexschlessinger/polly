@@ -74,26 +74,23 @@ func wrapTranscriptLine(line []ui.Cell, width int) [][]ui.Cell {
 }
 
 // transcriptHangingPrefix recognizes the two transcript prefixes whose visual
-// continuation has semantic meaning. The prompt continuation is whitespace;
-// the code continuation repeats the original gutter cells and their style.
+// continuation has semantic meaning. Both repeat the original gutter cells and
+// their style: the user gutter wraps softly at words, the code gutter hard.
 func transcriptHangingPrefix(line []ui.Cell) (prefix, continuation, content []ui.Cell, hard, ok bool) {
 	if len(line) < 2 || line[1].Rune != ' ' {
 		return nil, nil, nil, false, false
 	}
 
 	switch line[0].Rune {
-	case '>':
-		// Only the REPL-owned, accent/bold marker is a user prompt. A plain
-		// assistant Markdown blockquote must retain ordinary prose wrapping.
+	case userGutterGlyph:
+		// Only the REPL-owned, accent/bold bar is a user prompt. The same
+		// rune in assistant prose is unstyled and wraps as ordinary text.
 		accent, known := ui.StyleParserColorMap["accent"]
 		if !known || line[0].Style.Fg != accent || line[0].Style.Modifier&ui.ModifierBold == 0 {
 			return nil, nil, nil, false, false
 		}
 		prefix = append([]ui.Cell(nil), line[:2]...)
-		continuation = []ui.Cell{
-			{Rune: ' ', Style: line[0].Style},
-			{Rune: ' ', Style: line[1].Style},
-		}
+		continuation = append([]ui.Cell(nil), prefix...)
 		return prefix, continuation, line[2:], false, true
 	case '│':
 		// The code and table renderers own a muted gutter. Do not reinterpret

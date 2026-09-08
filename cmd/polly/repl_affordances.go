@@ -345,7 +345,9 @@ func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptVi
 			remaining := len("(queued)")
 			for y := len(rows) - 1; y >= 0 && remaining > 0; y-- {
 				cells := ui.BuildCellWithXArray(rows[y])
-				for i := len(cells) - 1; i >= 0 && remaining > 0; i-- {
+				// The marker's cells are counted from the row end; the user
+				// gutter repeats on wrapped rows and is never part of it.
+				for i := len(cells) - 1; i >= inputPromptWidth && remaining > 0; i-- {
 					if cells[i].Cell.Rune == ' ' {
 						continue
 					}

@@ -383,7 +383,7 @@ func TestPendingReportPrecedesOtherQueuedInputs(t *testing.T) {
 		return len(runs.reported()) == 1 && len(parent.model.queue) == 0 && parent.turnDone == nil
 	})
 	transcript := plainStyledText(parent.model.fullTranscript())
-	if a, b := strings.Index(transcript, "> agent helper finished"), strings.Index(transcript, "> queued followup"); a < 0 || b < a {
+	if a, b := strings.Index(transcript, "▎ agent helper finished"), strings.Index(transcript, "▎ queued followup"); a < 0 || b < a {
 		t.Fatalf("queue order changed: %s", transcript)
 	}
 }

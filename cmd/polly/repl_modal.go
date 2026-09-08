@@ -158,9 +158,9 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 			value = strings.Repeat("•", len([]rune(value)))
 		}
 		if value == "" {
-			return "> " + styled("type a value", "muted", "") + "\n\n" + centeredModalHelper(m.helper, modalWidth)
+			return userGutter() + styled("type a value", "muted", "") + "\n\n" + centeredModalHelper(m.helper, modalWidth)
 		}
-		return "> " + styleEscape(value) + "\n\n" + centeredModalHelper(m.helper, modalWidth)
+		return userGutter() + styleEscape(value) + "\n\n" + centeredModalHelper(m.helper, modalWidth)
 	}
 	items := m.filteredItems()
 	if len(items) == 0 {

@@ -43,7 +43,7 @@ start() {
   local arg; for arg in "$@"; do cmd+=" $(printf %q "$arg")"; done
   [[ -z "${POLLY_SHOT_LOG:-}" ]] || cmd+=" 2>$(printf %q "$POLLY_SHOT_LOG")"
   tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$cmd"
-  wait_for '>' 15 || die "polly prompt did not appear"
+  wait_for '▎' 15 || die "polly prompt did not appear"
   echo "started tmux session '$SESSION' (${COLS}x${ROWS})"
 }
 
@@ -140,7 +140,7 @@ wstart() {
   done
   [[ -n "$pane" ]] || die "wezterm pane did not appear"
   echo "$pane" > "$STATE.pane"
-  wwait '>' 15 || die "polly prompt did not appear"
+  wwait '▎' 15 || die "polly prompt did not appear"
   echo "started wezterm pane $pane (${COLS}x${ROWS})"
 }
 

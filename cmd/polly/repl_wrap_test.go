@@ -41,23 +41,32 @@ func TestTranscriptVisualRowsKeepsLeadingZeroWidthCellWithWideRune(t *testing.T)
 	requireTranscriptRows(t, "\u200b界x", 1, []string{"\u200b界", "x"})
 }
 
-func TestTranscriptVisualRowsUsesPromptHangingIndent(t *testing.T) {
+// A wrapped prompt keeps the user gutter on every row, in the marker's own
+// style, so a long question still reads as one block the user wrote.
+func TestTranscriptVisualRowsRepeatsUserGutter(t *testing.T) {
 	rows := requireTranscriptRows(t,
-		"[> ](fg:blue,mod:bold)alpha beta gamma",
+		userGutter()+"alpha beta gamma",
 		12,
-		[]string{"> alpha beta", "  gamma"},
+		[]string{"▎ alpha beta", "▎ gamma"},
 	)
 
-	if rows[0][0].Style != ui.ParseStyles("[>](fg:blue,mod:bold)", ui.StyleClear)[0].Style {
+	want := ui.ParseStyles(styled("▎", "accent", "bold"), ui.StyleClear)[0].Style
+	if rows[0][0].Style != want {
 		t.Fatal("prompt marker lost its source style")
+	}
+	if rows[1][0].Style != want {
+		t.Fatal("continuation gutter lost the marker style")
 	}
 	if rows[1][2].Style != ui.NewStyle(ui.ColorClear) {
 		t.Fatal("wrapped prompt content lost its source style")
 	}
 }
 
-func TestTranscriptVisualRowsDoesNotTreatAssistantBlockquoteAsPrompt(t *testing.T) {
+// Assistant prose wraps as prose: a Markdown blockquote and a bare bar rune
+// are ordinary words without the accent/bold gutter style.
+func TestTranscriptVisualRowsDoesNotTreatAssistantTextAsPrompt(t *testing.T) {
 	requireTranscriptRows(t, "> alpha beta", 8, []string{"> alpha", "beta"})
+	requireTranscriptRows(t, "▎ alpha beta", 8, []string{"▎ alpha", "beta"})
 }
 
 func TestTranscriptVisualRowsRepeatsStyledCodeGutter(t *testing.T) {

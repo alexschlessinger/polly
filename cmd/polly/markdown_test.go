@@ -20,17 +20,19 @@ func TestRenderMarkdownInlineStyles(t *testing.T) {
 
 func TestRenderMarkdownHeadings(t *testing.T) {
 	got := renderMarkdown("# Release plan\n\n## Renderer\n\n### Details\n\n#### Fallback\n\n##### Narrow\n\n###### Notes")
-	wantPlain := "▌ RELEASE PLAN\n\n▎ Renderer\n\n▏ Details\n\n▏ Fallback\n\n┊ Narrow\n\n· Notes"
+	wantPlain := "Release plan\n\nRenderer\n\nDetails\n\nFallback\n\nNarrow\n\nNotes"
 	if plain := plainStyledText(got); plain != wantPlain {
 		t.Fatalf("heading plaintext = %q, want %q", plain, wantPlain)
 	}
+	// Headings rank by weight alone; no marker glyph can collide with the
+	// user gutter or the code fence.
 	for _, want := range []string{
-		"[▌ ](fg:accent,mod:bold)[RELEASE PLAN](fg:accent,mod:bold)",
-		"[▎ ](fg:accent,mod:bold)[Renderer](fg:accent,mod:bold)",
-		"[▏ ](fg:accent)[Details](fg:accent)",
-		"[▏ ](fg:muted)[Fallback](fg:muted)",
-		"[┊ ](fg:muted)[Narrow](fg:muted)",
-		"[· ](fg:muted)[Notes](fg:muted)",
+		"[Release plan](fg:accent,mod:bold)",
+		"[Renderer](mod:bold)",
+		"[Details](fg:muted,mod:bold)",
+		"[Fallback](fg:muted)",
+		"[Narrow](fg:muted)",
+		"[Notes](fg:muted)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("heading render %q missing %q", got, want)
@@ -38,9 +40,9 @@ func TestRenderMarkdownHeadings(t *testing.T) {
 	}
 }
 
-func TestRenderMarkdownH1UppercasesOnlyPlainText(t *testing.T) {
+func TestRenderMarkdownH1KeepsCase(t *testing.T) {
 	got := renderMarkdown("# *Release* [Docs](https://example.com/Guide) with `eBPF`")
-	want := "▌ RELEASE Docs (https://example.com/Guide) WITH eBPF"
+	want := "Release Docs (https://example.com/Guide) with eBPF"
 	if plain := plainStyledText(got); plain != want {
 		t.Fatalf("H1 plaintext = %q, want %q", plain, want)
 	}
@@ -329,7 +331,7 @@ func TestStreamedMarkdownEndToEnd(t *testing.T) {
 	m.renderPendingMarkdown()
 
 	got := plainStyledText(m.transcript[0].text)
-	for _, want := range []string{"▎ Plan", "two", "• run", "• ship", "│ func main() {}", "Done — see docs (https://x.dev)."} {
+	for _, want := range []string{"Plan", "two", "• run", "• ship", "│ func main() {}", "Done — see docs (https://x.dev)."} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("final render %q missing %q", got, want)
 		}

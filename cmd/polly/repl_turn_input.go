@@ -200,7 +200,7 @@ func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
 		// private-use runes are stripped first so they cannot pose as slot
 		// anchors in an entry that now carries real ones.
 		m.setTranscriptEntry(index,
-			stripTranscriptImageMarkers(m.transcript[index].text)+"\n"+renderTranscriptImages(images, "  "),
+			stripTranscriptImageMarkers(m.transcript[index].text)+"\n"+renderTranscriptImages(images, userGutter()),
 			images)
 	}
 }
@@ -212,9 +212,9 @@ func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
 	if len(m.transcript) > 0 && m.transcriptEntryHasContent(len(m.transcript)-1) {
 		m.appendTranscriptEntry("")
 	}
-	entry := formattedUserPrompt(item.text) + "\n  " + styled("(queued)", "muted", "")
+	entry := formattedUserPrompt(item.text) + "\n" + userGutter() + styled("(queued)", "muted", "")
 	item.transcriptIndex = m.appendTranscriptEntry(entry)
-	m.noteQueuedInput(item.transcriptIndex, formattedUserPrompt(item.text)+"\n  ")
+	m.noteQueuedInput(item.transcriptIndex, formattedUserPrompt(item.text)+"\n"+userGutter())
 	item.transcriptShown = true
 	if item.turn != nil {
 		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
@@ -224,7 +224,7 @@ func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
 
 func (m *replModel) activateQueuedInput(item queuedREPLInput) {
 	if item.transcriptShown && item.transcriptIndex >= 0 && item.transcriptIndex < len(m.transcript) {
-		m.fadeQueuedInput(item.transcriptIndex, formattedUserPrompt(item.text)+"\n  ")
+		m.fadeQueuedInput(item.transcriptIndex, formattedUserPrompt(item.text)+"\n"+userGutter())
 		m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text))
 		if item.turn != nil {
 			m.decorateUserPrompt(item.transcriptIndex, *item.turn)
@@ -243,7 +243,7 @@ func (m *replModel) markQueuedInputNotSent(item queuedREPLInput) {
 	if !item.transcriptShown || item.transcriptIndex < 0 || item.transcriptIndex >= len(m.transcript) {
 		return
 	}
-	m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text)+"\n  "+styled("(not sent)", "muted", ""))
+	m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text)+"\n"+userGutter()+styled("(not sent)", "muted", ""))
 	if item.turn != nil {
 		m.decorateUserPrompt(item.transcriptIndex, *item.turn)
 	}
