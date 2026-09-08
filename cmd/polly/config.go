@@ -87,6 +87,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		SchemaPath:      cmd.String("schema"),
 		Meta:            cmd.Bool("meta"),
 		ActivityDetails: cmd.Bool("activity-details"),
+		Theme:           cmd.String("theme"),
 		Quiet:           cmd.Bool("quiet"),
 		Debug:           cmd.Bool("debug"),
 		Tools:           cmd.StringSlice("tool"),
@@ -397,6 +398,17 @@ func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 
 func outputConfigFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{
+			Name: "theme", Value: "default",
+			Usage:   "TUI appearance: default or halo",
+			Sources: cli.EnvVars("POLLYTOOL_THEME"),
+			Validator: func(v string) error {
+				if v != "default" && v != "halo" {
+					return fmt.Errorf("invalid theme %q: choose default or halo", v)
+				}
+				return nil
+			},
+		},
 		&cli.BoolFlag{
 			Name:    "activity-details",
 			Usage:   "Print bounded thought, tool, agent, and image details at turn end (one-shot only; ignored by the REPL)",

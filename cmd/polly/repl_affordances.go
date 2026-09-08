@@ -170,6 +170,7 @@ type affordanceLayer struct {
 	cells      []affordanceCell
 	now        time.Time
 	idleCursor bool
+	theme      *themeLayer
 }
 
 func (a *affordanceLayer) Draw(buf *ui.Buffer) {
@@ -251,14 +252,11 @@ func (a *affordanceLayer) tick(screen tcell.Screen, now time.Time) {
 	for _, cell := range a.cells {
 		next := cell.frame(now)
 		if next != cell.last {
-			style := tcell.StyleDefault.Foreground(next.Style.Fg).Background(next.Style.Bg).
-				Bold(next.Style.Modifier&ui.ModifierBold != 0).
-				Dim(next.Style.Modifier&ui.ModifierDim != 0).
-				Reverse(next.Style.Modifier&ui.ModifierReverse != 0).
-				Italic(next.Style.Modifier&ui.ModifierItalic != 0).
-				StrikeThrough(next.Style.Modifier&tcell.AttrStrikeThrough != 0).
-				Blink(next.Style.Modifier&ui.ModifierBlink != 0)
-			screen.SetContent(cell.point.X, cell.point.Y, next.Rune, nil, style)
+			display := next
+			if a.theme != nil {
+				display = a.theme.convert(display, cell.point)
+			}
+			screenCell(screen, cell.point, display)
 			cell.last = next
 			changed = true
 		}
@@ -273,6 +271,9 @@ func (a *affordanceLayer) tick(screen tcell.Screen, now time.Time) {
 }
 
 func (r *managedREPL) tickAffordances(now time.Time) {
+	if r.haloOrbit.active && r.themeW != nil && r.themeW.modal == nil {
+		r.haloOrbit.tick(ui.DefaultBackend.Screen, r.themeW, now)
+	}
 	if r.affordanceW == nil {
 		return
 	}

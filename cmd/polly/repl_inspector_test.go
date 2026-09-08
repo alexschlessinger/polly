@@ -141,33 +141,38 @@ func TestAgentInspectorRetainsPromptsAfterHistoryWindowAndClear(t *testing.T) {
 
 func TestAgentInspectorPromptClick(t *testing.T) {
 	withDisplayTTY(t)
-	fixture, screen := affordanceTestREPL(t)
-	t.Cleanup(func() { _ = fixture.work.close() })
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
-	r.setupWidgets()
-	r.showTab(0)
-	child := r.tabs[1]
-	child.model.hydrateHistory([]messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "the launch task"},
-		{Role: messages.MessageRoleAssistant, Content: "the answer"},
-	}, "agent")
-	r.inspect(tabViewTarget(child))
-	for _, width := range []int{140, 80} {
-		screen.SetSize(width, 32)
-		waitInspector(t, r, width)
-		r.render()
-		button := headerButton(r.inspectorButtons, "prompt")
-		if button.Empty() || button.Min != r.inspectorW.Inner.Min {
-			t.Fatalf("prompt control does not match the first body row: %v", button)
-		}
-		for _, expanded := range []bool{true, false} {
-			r.handleEvent(mouseEvent("<MouseLeft>", button.Min))
-			r.render()
-			m := r.workspace().inspector.current.model
-			if m.initialPromptExpanded != expanded || len(r.inspectorW.OverlayBottom) != 0 {
-				t.Fatal("prompt click failed or was treated as new output")
+	for _, theme := range []string{"default", "halo"} {
+		t.Run(theme, func(t *testing.T) {
+			fixture, screen := affordanceTestREPL(t)
+			t.Cleanup(func() { _ = fixture.work.close() })
+			r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
+			r.config.Theme = theme
+			r.setupWidgets()
+			r.showTab(0)
+			child := r.tabs[1]
+			child.model.hydrateHistory([]messages.ChatMessage{
+				{Role: messages.MessageRoleUser, Content: "the launch task"},
+				{Role: messages.MessageRoleAssistant, Content: "the answer"},
+			}, "agent")
+			r.inspect(tabViewTarget(child))
+			for _, width := range []int{140, 80} {
+				screen.SetSize(width, 32)
+				waitInspector(t, r, width)
+				r.render()
+				button := headerButton(r.inspectorButtons, "prompt")
+				if button.Empty() || button.Min != r.inspectorW.Inner.Min {
+					t.Fatalf("prompt control does not match the first body row: %v", button)
+				}
+				for _, expanded := range []bool{true, false} {
+					r.handleEvent(mouseEvent("<MouseLeft>", button.Min))
+					r.render()
+					m := r.workspace().inspector.current.model
+					if m.initialPromptExpanded != expanded || len(r.inspectorW.OverlayBottom) != 0 {
+						t.Fatal("prompt click failed or was treated as new output")
+					}
+				}
 			}
-		}
+		})
 	}
 }
 

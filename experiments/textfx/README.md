@@ -1,5 +1,8 @@
 # Text lab
 
+For borders, title bars, scrollbars, and interactive resizing, see the
+[Window lab](../windowfx/README.md).
+
 Run from the repository root:
 
 ```sh

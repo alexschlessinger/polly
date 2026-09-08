@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
+	ui "github.com/metaspartan/gotui/v5"
 )
 
 func tabViewTarget(tab *replTab) viewTarget {
@@ -130,7 +131,16 @@ func (r *managedREPL) inspectionTab(target viewTarget) *replTab {
 
 func (r *managedREPL) inspectorGeometry(width int) viewGeometry {
 	i := &r.workspace().inspector
-	if i.open && !i.maximized && width >= 120 {
+	_, height := ui.TerminalDimensions()
+	halo := r.haloChrome(width, height)
+	if halo {
+		if i.open && !i.maximized && width >= 120 {
+			width -= r.haloSplitColumn(width) + 3
+		} else {
+			width -= 3
+		}
+	}
+	if !halo && i.open && !i.maximized && width >= 120 {
 		ratio := r.inspectorRatio
 		if ratio == 0 {
 			ratio = .7

@@ -13,7 +13,6 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
-	"github.com/metaspartan/gotui/v5/widgets"
 	"golang.org/x/term"
 )
 
@@ -369,14 +368,20 @@ type managedREPL struct {
 
 	model *replModel
 
-	logoW       *transcriptParagraph
-	transcriptW *transcriptParagraph
-	dividerW    *literalParagraph
-	inputW      *literalParagraph
-	turnDockW   *literalParagraph
-	statusW     *literalParagraph
-	modalW      *modalParagraph
-	rootFlex    *widgets.Flex
+	logoW                              *transcriptParagraph
+	transcriptW                        *transcriptParagraph
+	dividerW                           *literalParagraph
+	inputW                             *literalParagraph
+	turnDockW                          *literalParagraph
+	statusW                            *literalParagraph
+	modalW                             *modalParagraph
+	rootFlex                           ui.Drawable
+	themeW                             *themeLayer
+	haloBounds                         haloGeometry
+	haloOrbit                          haloOrbit
+	inspectorScrollbar, modalScrollbar haloScrollbar
+	scrollDrag                         haloScrollDrag
+	haloHoverChanged                   bool
 
 	quit    chan struct{}
 	suspend chan struct{}
@@ -802,9 +807,9 @@ func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
 	// Button-free motion and release only update pointer/drag state. Hover
 	// navigation has no visual focus indicator and needs no frame repaint.
 	if ev.Type == ui.MouseEvent && ev.ID == "<MouseRelease>" {
-		return false
+		return r.haloEnabled() && r.haloHoverChanged
 	}
-	if mouse, ok := ev.Payload.(ui.Mouse); ok && mouse.Drag && !r.inspectorDragging {
+	if mouse, ok := ev.Payload.(ui.Mouse); ok && mouse.Drag && !r.inspectorDragging && r.scrollDrag.pane == "" {
 		return false
 	}
 	if ev.ID == pasteStartID {
@@ -1254,9 +1259,16 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// next navigation key uses the pointer's current location.
 	if e.Type == ui.MouseEvent {
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
+			if r.haloEnabled() {
+				next := image.Pt(mouse.X, mouse.Y)
+				r.haloHoverChanged = r.inspectorDragging || r.scrollDrag.pane != ""
+				for _, rect := range []image.Rectangle{r.inspectorDivider, r.inspectorScrollbar.track, r.modalScrollbar.track} {
+					r.haloHoverChanged = r.haloHoverChanged || next.In(rect) != (r.mousePositionKnown && r.mousePosition.In(rect))
+				}
+			}
 			r.mousePosition = image.Pt(mouse.X, mouse.Y)
 			r.mousePositionKnown = true
-			if mouse.Drag && !r.inspectorDragging {
+			if mouse.Drag && !r.inspectorDragging && r.scrollDrag.pane == "" {
 				// Held-button motion is not a click; only an active divider
 				// drag consumes it.
 				return false
@@ -1297,6 +1309,9 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// Selection and credential modals own all remaining input. In particular,
 	// key material never passes through paste handling or the composer.
 	if m.modal != nil {
+		if r.handleHaloScrollbar(e, true) {
+			return false
+		}
 		r.handleModalEvent(e)
 		return false
 	}
@@ -1309,7 +1324,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			return false
 		}
 	}
-	if r.handleInspectorEvent(e) {
+	if r.handleHaloScrollbar(e, false) || r.handleInspectorEvent(e) {
 		return false
 	}
 	terminalWidth = r.inspectorTranscriptWidth(terminalWidth)

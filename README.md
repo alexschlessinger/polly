@@ -88,6 +88,29 @@ optional details finish before the existing `polly-meta` record on stderr.
 No `-p`, no piped stdin: full-screen TUI. Streaming, scrollback, reverse
 history search, bracketed paste.
 
+Run `polly --theme=halo` for mint chrome on the inspector and charcoal and mint
+dialogs. The inspector shares the main conversation's background. The main
+conversation, composer, startup screen, and status controls
+keep their original colors and layout. The existing appearance remains
+`--theme=default`. `POLLYTOOL_THEME=halo` sets the startup default; an explicit
+flag overrides it. Themes apply only to the managed TUI and are not saved in
+sessions.
+
+Halo gives the inspector its own rounded frame, scrollbar, and a leading `<`
+parent control, with no separator beneath the title. `/inspect maximize` expands or
+restores it. The frame stays when maximized or when a narrow
+terminal shows only the inspector. Drag its left edge to resize the split, drag
+the scrollbar thumb, or click the track to page. Existing wheel and keyboard
+controls continue to work, and scrolling to the bottom resumes following new
+output. Dialog lists support scrollbar controls, row clicks, and
+Home/End/Page Up/Page Down. The composer retains automatic multiline sizing.
+
+A glint travels around the inspector while the inspected work runs. Idle frames
+stay still; pending approvals use a steady amber border. Motion pauses for
+dialogs, quiet mode, and lost focus. Very small terminals use compact inspector
+layout with Halo colors; limited-color and monochrome terminals retain readable
+fallbacks.
+
 No managed screen (`TERM=dumb`, redirected endpoints): line frontend.
 Markdown on a capable TTY, with color unless `NO_COLOR` is set. Raw text when
 redirected or `TERM=dumb`.
@@ -653,6 +676,7 @@ GLOBAL OPTIONS:
    --denypath string [ --denypath string ]                  Additional path blocked from sandboxed reads (repeatable, supports ~) [$POLLYTOOL_DENYPATHS]
    --writepath string [ --writepath string ]                Additional path sandboxed tools may write to (repeatable, supports ~) [$POLLYTOOL_WRITEPATHS]
    --allownet                                               Allow sandboxed tools outbound network access [$POLLYTOOL_ALLOWNET]
+   --theme string                                           TUI appearance: default or halo (default: "default") [$POLLYTOOL_THEME]
    --activity-details                                       Print bounded thought, tool, agent, and image details at turn end (one-shot only; ignored by the REPL) [$POLLYTOOL_ACTIVITY_DETAILS]
    --quiet                                                  Suppress status and tool display output
    --debug, -d                                              Enable debug logging

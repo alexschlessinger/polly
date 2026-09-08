@@ -128,6 +128,7 @@ type frameLayout struct {
 	dividerRows      int
 	inputRows        int
 	statusRows       int
+	halo             bool
 }
 
 // frameLayoutFor splits a w×h terminal. The composer is the only region whose
@@ -137,6 +138,7 @@ type frameLayout struct {
 func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
 	m := r.model
 	l := frameLayout{width: w, height: h, inputRows: m.inputRows()}
+	l.halo = r.haloChrome(w, h)
 	if !m.quiet {
 		l.statusRows = 1
 	}
@@ -237,6 +239,9 @@ func (r *managedREPL) setupWidgets() {
 // count varies with multi-line prompts, so the flex is rebuilt each render
 // rather than sized once at setup.
 func (r *managedREPL) layout(l frameLayout) {
+	if l.halo && r.layoutHalo(l) {
+		return
+	}
 	flex := widgets.NewFlex()
 	noBorder(&flex.Block)
 	flex.Direction = widgets.FlexColumn
@@ -310,6 +315,7 @@ func (r *managedREPL) render() {
 	modalText, modalTitle := "", ""
 	modalWidth, modalHeight := 0, 0
 	if modalOpen {
+		r.model.modal.halo = r.haloEnabled()
 		modalWidth = modalWidthForTerminal(w, r.model.modal.width)
 		maxRows := max(1, h-8)
 		modalText = r.model.modal.text(maxRows, modalWidth)
@@ -409,27 +415,65 @@ func (r *managedREPL) render() {
 		y := (h - modalHeight) / 2
 		r.modalW.Text = modalText
 		r.modalW.Title = modalTitle
+		r.modalW.PaddingRight = 0
+		if r.haloEnabled() {
+			r.modalW.PaddingRight = 1
+		}
 		r.modalW.SetRect(x, y, x+modalWidth, y+modalHeight)
+		if r.haloEnabled() {
+			m := r.model.modal
+			m.listBounds = image.Rect(r.modalW.Inner.Min.X, r.modalW.Inner.Min.Y, r.modalW.Inner.Max.X, min(r.modalW.Inner.Max.Y, r.modalW.Inner.Min.Y+m.visible))
+			track := image.Rect(x+modalWidth-2, m.listBounds.Min.Y, x+modalWidth-1, m.listBounds.Max.Y)
+			if m.inputMode {
+				track = image.Rectangle{}
+			}
+			r.modalScrollbar = newHaloScrollbar(track, len(m.filteredItems()), m.visible, m.top)
+			r.modalScrollbar.hover = r.mousePositionKnown && r.mousePosition.In(track)
+			r.modalScrollbar.dragging = r.scrollDrag.pane == "modal"
+			r.modalW.scrollbar = r.modalScrollbar
+		} else {
+			r.modalW.scrollbar = haloScrollbar{}
+		}
 	}
 	r.dividerW.Text = divider
 
 	r.layout(l)
+	if l.halo {
+		r.setHaloScrollbars()
+	} else {
+		r.haloBounds = haloGeometry{}
+		r.inspectorScrollbar = haloScrollbar{}
+	}
 	ui.Clear()
 	r.placeCursor(editable && !modalOpen && !idleCursor, curCol, l.composerRow(curRow), w)
+	var drawable ui.Drawable = r.rootFlex
 	if modalOpen {
 		if r.affordanceW != nil {
 			r.affordanceW.cells = nil
 			r.affordanceW.idleCursor = false
 		}
-		ui.Render(r.rootFlex, r.modalW)
+		if !r.haloEnabled() {
+			ui.Render(r.rootFlex, r.modalW)
+		}
 	} else if r.affordanceW != nil {
 		r.affordanceW.Drawable = r.rootFlex
 		r.affordanceW.spans = affordanceSpans
 		r.affordanceW.now = now
 		r.affordanceW.idleCursor = idleCursor
-		ui.Render(r.affordanceW)
-	} else {
-		ui.Render(r.rootFlex)
+		drawable = r.affordanceW
+	}
+	if r.haloEnabled() {
+		drawable = r.haloFrame(drawable, l, now, modalOpen)
+		if r.affordanceW != nil {
+			r.affordanceW.theme = r.themeW
+		}
+		ui.Render(drawable)
+		for n := range r.haloOrbit.cells {
+			cell := &r.haloOrbit.cells[n]
+			cell.last = r.themeW.convert(r.haloOrbit.frame(n, now), cell.point)
+		}
+	} else if !modalOpen {
+		ui.Render(drawable)
 	}
 	if r.images != nil {
 		r.images.commit(imagesChanged)

@@ -73,6 +73,7 @@ type Config struct {
 	SchemaPath      string   // Path to JSON schema file
 	Meta            bool     // Emit a machine-readable run-outcome trailer (polly-meta lines) to stderr
 	ActivityDetails bool     // Print bounded turn details to stderr in one-shot mode
+	Theme           string   // Runtime-only managed TUI appearance
 	Quiet           bool
 	Debug           bool
 
