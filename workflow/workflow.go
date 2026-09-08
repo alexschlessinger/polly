@@ -4,11 +4,8 @@ package workflow
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -93,14 +90,6 @@ func errorValue(err error) *Error {
 		code = "timeout"
 	}
 	return &Error{Code: code, Message: err.Error(), Cause: err}
-}
-
-func newID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(fmt.Sprintf("workflow identity: %v", err))
-	}
-	return hex.EncodeToString(b[:])
 }
 
 func cloneReport(r Report) (Report, error) {

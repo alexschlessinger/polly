@@ -5,8 +5,6 @@ package worktree
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -61,18 +60,6 @@ type Manager struct {
 // Broken repositories and sandbox failures never return this sentinel.
 var ErrNotRepository = errors.New("isolated editing requires a Git checkout")
 
-func id() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(err)
-	}
-	return hex.EncodeToString(b[:])
-}
-func inside(root, path string) bool {
-	rel, e := filepath.Rel(root, path)
-	return e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
 func New(ctx context.Context, c Config) (*Manager, error) {
 	if c.Registry == nil {
 		return nil, errors.New("worktree registry is required")
@@ -107,7 +94,7 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	if inside(root, directory) {
+	if sandbox.PathWithin(directory, root) {
 		return nil, errors.New("runtime worktree directory must be outside source checkout")
 	}
 	if err := os.MkdirAll(directory, 0700); err != nil {
@@ -346,7 +333,7 @@ func (m *Manager) capture(ctx context.Context, source string) (Snapshot, error) 
 	if err != nil {
 		return Snapshot{}, err
 	}
-	index := filepath.Join(m.Directory, "index-"+id())
+	index := filepath.Join(m.Directory, "index-"+ids.New())
 	defer os.Remove(index)
 	if err := seedIndex(strings.TrimSpace(string(indexPath)), index); err != nil {
 		return Snapshot{}, err
@@ -384,7 +371,7 @@ func (m *Manager) capture(ctx context.Context, source string) (Snapshot, error) 
 }
 
 func (m *Manager) snapshotTree(ctx context.Context, tree, source string) (Snapshot, error) {
-	s := Snapshot{ID: id(), Tree: tree, Source: source}
+	s := Snapshot{ID: ids.New(), Tree: tree, Source: source}
 	commit, err := m.git(ctx, m.Root, nil, []byte("polly immutable snapshot\n"), "commit-tree", tree)
 	if err != nil {
 		return Snapshot{}, err
@@ -432,7 +419,7 @@ func (m *Manager) CleanupSnapshotRefs(ctx context.Context) error {
 
 func (m *Manager) checkSourcePath(source, name string) error {
 	path := filepath.Join(source, name)
-	if !inside(source, path) {
+	if !sandbox.PathWithin(path, source) {
 		return errors.New("snapshot path escaped checkout")
 	}
 	cfg, active, err := m.Registry.SandboxReadPolicy()
@@ -462,7 +449,7 @@ func (m *Manager) Create(ctx context.Context, s Snapshot) (Checkout, error) {
 	return m.create(ctx, s)
 }
 func (m *Manager) create(ctx context.Context, s Snapshot) (Checkout, error) {
-	c := Checkout{ID: id(), Base: s}
+	c := Checkout{ID: ids.New(), Base: s}
 	for _, slot := range m.Slots {
 		owner, err := os.OpenFile(filepath.Join(slot, "owner"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if errors.Is(err, os.ErrExist) {
@@ -512,7 +499,7 @@ func (m *Manager) Preview(ctx context.Context, base, candidate Snapshot) (Previe
 	if err != nil {
 		return Preview{}, err
 	}
-	p := Preview{ID: id(), Parent: parent, Candidate: candidate}
+	p := Preview{ID: ids.New(), Parent: parent, Candidate: candidate}
 	merged, mergeErr := m.git(ctx, m.Root, nil, nil, "merge-tree", "--write-tree", "--merge-base="+base.Commit, parent.Commit, candidate.Commit)
 	lines := strings.SplitN(string(merged), "\n", 2)
 	tree := strings.TrimSpace(lines[0])
@@ -594,7 +581,7 @@ func (m *Manager) Cleanup(ctx context.Context, c Checkout, expectedTree string) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	owner, readErr := os.ReadFile(filepath.Join(filepath.Dir(c.Path), "owner"))
-	if c.ID == "" || !inside(m.Directory, c.Path) || readErr != nil || string(owner) != c.ID {
+	if c.ID == "" || !sandbox.PathWithin(c.Path, m.Directory) || readErr != nil || string(owner) != c.ID {
 		return errors.New("not a runtime-owned worktree")
 	}
 	current, err := m.capture(ctx, c.Path)

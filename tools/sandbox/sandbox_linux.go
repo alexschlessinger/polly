@@ -140,7 +140,7 @@ func validateLinuxSpecialMountRestrictions(cfg Config) error {
 		}
 		checkRoute := func(candidate string) error {
 			for _, root := range []string{"/dev", "/proc"} {
-				if isPathWithin(candidate, root) || isPathWithin(root, candidate) {
+				if PathWithin(candidate, root) || PathWithin(root, candidate) {
 					return intersectionError(root)
 				}
 			}
@@ -148,7 +148,7 @@ func validateLinuxSpecialMountRestrictions(cfg Config) error {
 		}
 		checkTraversal := func(candidate string) error {
 			for _, root := range []string{"/dev", "/proc"} {
-				if isPathWithin(candidate, root) {
+				if PathWithin(candidate, root) {
 					return intersectionError(root)
 				}
 			}
@@ -261,7 +261,7 @@ func privateLinuxRoots() (tempRoots []string, runRoots []string) {
 			path = real
 		}
 		for _, existing := range *paths {
-			if path == existing || isPathWithin(path, existing) {
+			if path == existing || PathWithin(path, existing) {
 				return
 			}
 		}
@@ -287,7 +287,7 @@ func deniedReadSet(cfg Config) map[string]bool {
 
 func isReadExempt(path string, readSet map[string]bool) bool {
 	for parent := range readSet {
-		if isPathWithin(path, parent) {
+		if PathWithin(path, parent) {
 			return true
 		}
 	}
@@ -360,7 +360,7 @@ func planDeniedReservations(paths []DeniedPath, _ map[string]bool, cfg Config, p
 		path := filepath.Clean(denied.Path)
 		private := false
 		for _, root := range privateRoots {
-			if isPathWithin(path, root) {
+			if PathWithin(path, root) {
 				private = true
 				break
 			}
@@ -428,11 +428,11 @@ func planDeniedReservations(paths []DeniedPath, _ map[string]bool, cfg Config, p
 			if resolved, err := filepath.EvalSymlinks(writable); err == nil {
 				writable = filepath.Clean(resolved)
 			}
-			if pathEqualsAny(writable, privateRoots) || !isPathWithin(plans[i].root, writable) {
+			if pathEqualsAny(writable, privateRoots) || !PathWithin(plans[i].root, writable) {
 				continue
 			}
 			var ancestors []string
-			for ancestor := filepath.Dir(plans[i].root); ancestor != writable && isPathWithin(ancestor, writable); ancestor = filepath.Dir(ancestor) {
+			for ancestor := filepath.Dir(plans[i].root); ancestor != writable && PathWithin(ancestor, writable); ancestor = filepath.Dir(ancestor) {
 				ancestors = append(ancestors, ancestor)
 			}
 			for j := len(ancestors) - 1; j >= 0; j-- {
@@ -747,9 +747,9 @@ func planLinuxReadExemptionBinds(cfg Config, deniedPaths []DeniedPath, strict bo
 			readPath = filepath.Clean(expandTilde(readPath))
 			candidate := ""
 			switch {
-			case isPathWithin(deniedPath, readPath):
+			case PathWithin(deniedPath, readPath):
 				candidate = deniedPath
-			case isPathWithin(readPath, deniedPath):
+			case PathWithin(readPath, deniedPath):
 				candidate = readPath
 			}
 			if candidate == "" || seen[candidate] {
@@ -873,7 +873,7 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 	resolvInPrivateRun := false
 	if cfg.AllowNetwork {
 		// systemd-resolved commonly makes /etc/resolv.conf a symlink into /run.
-		if real, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil && isPathWithin(real, privateRun) {
+		if real, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil && PathWithin(real, privateRun) {
 			source := "/etc/resolv.conf"
 			if cfg.DenyDNS {
 				source = "/dev/null"
@@ -889,7 +889,7 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 	seenCommandBinds := make(map[string]bool)
 	for _, commandPath := range commandPaths {
 		for _, privateRoot := range privateRoots {
-			if !isPathWithin(commandPath, privateRoot) {
+			if !PathWithin(commandPath, privateRoot) {
 				continue
 			}
 			if !seenCommandBinds[commandPath] {
@@ -957,7 +957,7 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 		if !cfg.DenyWrite {
 			for _, writable := range cfg.WritablePaths {
 				writable = filepath.Clean(expandTilde(writable))
-				if writable == reservation.root || !isPathWithin(writable, reservation.root) || coveredByDenyWritePath(writable, *denyWritePlan) {
+				if writable == reservation.root || !PathWithin(writable, reservation.root) || coveredByDenyWritePath(writable, *denyWritePlan) {
 					continue
 				}
 				rel, _ := filepath.Rel(reservation.root, writable)
@@ -1052,7 +1052,7 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 
 func linuxRoutingMountCoversPrivateRoot(destination string, privateRoots []string) bool {
 	for _, root := range privateRoots {
-		if isPathWithin(root, destination) {
+		if PathWithin(root, destination) {
 			return true
 		}
 	}
@@ -1186,12 +1186,12 @@ func planDenyWriteProtectedSchedule(plan denyWriteMountPlan, reservations []deni
 		deepestCovering := -1
 		containsReservation := false
 		for i, reservation := range reservations {
-			if isPathWithin(identity.path, reservation.root) {
+			if PathWithin(identity.path, reservation.root) {
 				if deepestCovering < 0 || pathDepth(reservation.root) > pathDepth(reservations[deepestCovering].root) {
 					deepestCovering = i
 				}
 			}
-			if isPathWithin(reservation.root, identity.path) {
+			if PathWithin(reservation.root, identity.path) {
 				containsReservation = true
 			}
 		}
@@ -1228,7 +1228,7 @@ func pathDepth(path string) int {
 
 func pathBelowAny(path string, roots []authorityPathIdentity) bool {
 	for _, root := range roots {
-		if path != root.path && isPathWithin(path, root.path) {
+		if path != root.path && PathWithin(path, root.path) {
 			return true
 		}
 	}
@@ -1237,7 +1237,7 @@ func pathBelowAny(path string, roots []authorityPathIdentity) bool {
 
 func coveredByDenyWritePath(path string, plan denyWriteMountPlan) bool {
 	for _, protected := range plan.protected {
-		if isPathWithin(path, protected.path) {
+		if PathWithin(path, protected.path) {
 			return true
 		}
 	}
@@ -1294,7 +1294,7 @@ func planDenyWriteMounts(cfg Config, strict bool) (denyWriteMountPlan, error) {
 	for _, protected := range protectedPaths {
 		covered := false
 		for _, parent := range kept {
-			if isPathWithin(protected, parent) {
+			if PathWithin(protected, parent) {
 				covered = true
 				break
 			}
@@ -1319,11 +1319,11 @@ func planDenyWriteMounts(cfg Config, strict bool) (denyWriteMountPlan, error) {
 			if resolved, err := filepath.EvalSymlinks(writable); err == nil {
 				writable = resolved
 			}
-			if !isPathWithin(real, writable) {
+			if !PathWithin(real, writable) {
 				continue
 			}
 			var ancestors []string
-			for ancestor := filepath.Dir(real); ancestor != writable && isPathWithin(ancestor, writable); ancestor = filepath.Dir(ancestor) {
+			for ancestor := filepath.Dir(real); ancestor != writable && PathWithin(ancestor, writable); ancestor = filepath.Dir(ancestor) {
 				ancestors = append(ancestors, ancestor)
 			}
 			for i := len(ancestors) - 1; i >= 0; i-- {
@@ -1370,7 +1370,7 @@ func appendDenyWriteProtectedMounts(args []string, plan denyWriteMountPlan, rese
 func hiddenByDeniedReservation(path string, reservations []deniedReservation) bool {
 	for _, reservation := range reservations {
 		for omitted := range reservation.omitted {
-			if isPathWithin(path, filepath.Join(reservation.root, omitted)) {
+			if PathWithin(path, filepath.Join(reservation.root, omitted)) {
 				return true
 			}
 		}
@@ -1392,7 +1392,7 @@ func linuxPinnedSource(path string, sources map[string]string) (string, error) {
 func writableByAncestor(path string, writablePaths []string) bool {
 	for _, writable := range writablePaths {
 		writable = filepath.Clean(expandTilde(writable))
-		if isPathWithin(path, writable) {
+		if PathWithin(path, writable) {
 			return true
 		}
 	}
@@ -1401,7 +1401,7 @@ func writableByAncestor(path string, writablePaths []string) bool {
 
 func isWithinAny(path string, roots []string) bool {
 	for _, root := range roots {
-		if isPathWithin(path, root) {
+		if PathWithin(path, root) {
 			return true
 		}
 	}
@@ -1431,31 +1431,26 @@ func pathExplicitlyExposedWithRoots(path string, cfg Config, privateRoots []stri
 			if pathEqualsAny(writable, privateRoots) {
 				continue
 			}
-			if isPathWithin(path, writable) {
+			if PathWithin(path, writable) {
 				return true
 			}
 		}
 	}
 	for _, readPath := range readAuthorityPaths(cfg) {
 		readPath = filepath.Clean(expandTilde(readPath))
-		if isPathWithin(path, readPath) {
+		if PathWithin(path, readPath) {
 			return true
 		}
 	}
 	for _, alias := range cfg.readPathAliases {
-		if isPathWithin(path, alias.path) || isPathWithin(alias.path, path) {
+		if PathWithin(path, alias.path) || PathWithin(alias.path, path) {
 			return true
 		}
 		for _, symlink := range alias.symlinks {
-			if isPathWithin(path, symlink.path) || isPathWithin(symlink.path, path) {
+			if PathWithin(path, symlink.path) || PathWithin(symlink.path, path) {
 				return true
 			}
 		}
 	}
 	return false
-}
-
-func isPathWithin(path, parent string) bool {
-	rel, err := filepath.Rel(parent, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

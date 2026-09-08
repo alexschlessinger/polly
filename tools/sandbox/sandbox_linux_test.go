@@ -3393,7 +3393,7 @@ func TestLinuxBuildBwrapArgsGrantedSocketBindOrdering(t *testing.T) {
 	tempRoots, _ := privateLinuxRoots()
 	coveringAt := -1
 	for _, root := range tempRoots {
-		if !isPathWithin(sock, root) {
+		if !PathWithin(sock, root) {
 			continue
 		}
 		if at := strings.Index(joined, strings.Join([]string{"--tmpfs", root}, "\x00")); at >= 0 {

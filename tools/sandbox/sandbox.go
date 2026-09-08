@@ -518,7 +518,7 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 		for _, path := range paths {
 			covered := false
 			for _, parent := range paths {
-				if parent != path && !nonCovering[parent] && pathLexicallyWithinPolicy(path, parent) {
+				if parent != path && !nonCovering[parent] && PathWithin(path, parent) {
 					covered = true
 					break
 				}
@@ -717,7 +717,7 @@ func mergeReadPathSymlinkIdentities(guards []readPathAliasIdentity, current []re
 func pathUsesReadPathAliasRoute(path string, alias readPathAliasIdentity) bool {
 	path = filepath.Clean(path)
 	aliasPath := filepath.Clean(alias.path)
-	if pathLexicallyWithinPolicy(path, aliasPath) {
+	if PathWithin(path, aliasPath) {
 		return true
 	}
 
@@ -1271,12 +1271,12 @@ func effectiveUnixSocketGrants(cfg Config, denied []DeniedPath) []unixSocketGran
 		}
 		hidden := false
 		for _, deny := range denied {
-			if !pathLexicallyWithinPolicy(path, deny.Path) {
+			if !PathWithin(path, deny.Path) {
 				continue
 			}
 			exempt := false
 			for _, readPath := range cfg.ReadPaths {
-				if pathLexicallyWithinPolicy(path, readPath) {
+				if PathWithin(path, readPath) {
 					exempt = true
 					break
 				}

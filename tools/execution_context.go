@@ -248,8 +248,8 @@ func rebindSourcePath(path, source, root string) string {
 	if source == "" || !filepath.IsAbs(path) {
 		return path
 	}
-	rel, err := filepath.Rel(source, path)
-	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if sandbox.PathWithin(path, source) {
+		rel, _ := filepath.Rel(source, path)
 		return filepath.Join(root, rel)
 	}
 	return path

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
@@ -297,7 +298,7 @@ func (r *Runtime) makeContext(ctx context.Context, actor string, req AgentReques
 		}
 		source = c.Root
 	}
-	c := &ExecutionContext{ID: newID(), Owner: actor, Root: source, ReadOnly: req.ReadOnly}
+	c := &ExecutionContext{ID: ids.New(), Owner: actor, Root: source, ReadOnly: req.ReadOnly}
 	// Research outside Git uses a live read-only tree. Editing requires an
 	// isolated checkout even when a caller supplies an existing worktree.
 	m, err := r.manager(ctx)
@@ -433,7 +434,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if err != nil {
 			return nil, err
 		}
-		name := "agent-" + newID()[:12]
+		name := "agent-" + ids.New()[:12]
 		session, err := r.config.Store.Acquire(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName})
 		if err != nil {
 			return nil, err
@@ -484,7 +485,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stop := context.AfterFunc(r.ctx, cancel)
-	i := &invocation{id: newID(), member: m.ID, done: make(chan struct{}), cancel: func() { stop(); cancel() }}
+	i := &invocation{id: ids.New(), member: m.ID, done: make(chan struct{}), cancel: func() { stop(); cancel() }}
 	r.active[m.ID] = i
 	r.mu.Unlock()
 	r.parentTools.Lock()
@@ -511,7 +512,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			return errors.New("unknown task")
 		}
 		if task == nil {
-			task = &Task{ID: newID(), Run: run.ID, Description: req.Task, Criteria: "Parent reviews and accepts the submitted result", Owner: m.ID, Status: "running", Revision: 1}
+			task = &Task{ID: ids.New(), Run: run.ID, Description: req.Task, Criteria: "Parent reviews and accepts the submitted result", Owner: m.ID, Status: "running", Revision: 1}
 			s.Tasks[task.ID] = task
 		} else {
 			if task.Run != run.ID || task.Owner != "" && task.Owner != m.ID || !depsDone(s, task) || task.Status == "done" || task.Status == "canceled" {
@@ -982,7 +983,7 @@ func (r *Runtime) finish(i *invocation) {
 				task.Revision++
 			}
 		}
-		mail := &Mail{ID: newID(), From: m.ID, To: r.ID, Kind: "info", Text: "Agent " + m.Label + " " + e.Status + ". Session: " + m.ID + ". Task: " + m.Task + ". Result: " + tools.Result(i.result.Value), Posted: time.Now().UTC()}
+		mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Text: "Agent " + m.Label + " " + e.Status + ". Session: " + m.ID + ". Task: " + m.Task + ". Result: " + tools.Result(i.result.Value), Posted: time.Now().UTC()}
 		if i.err != nil {
 			mail.Text += " Reason: " + e.Error
 		}
@@ -1373,7 +1374,7 @@ func (r *Runtime) AcknowledgeWorkflow(ctx context.Context, id string) error {
 // RunWorkflow reserves invoked members to this attempt. Restart is another
 // call with explicit inputs; it never resumes a JavaScript heap or replays steps.
 func (r *Runtime) RunWorkflow(ctx context.Context, source string, input any) (*workflow.Report, error) {
-	controller := newID()
+	controller := ids.New()
 	r.launchMu.Lock()
 	if r.closing {
 		r.launchMu.Unlock()
@@ -1430,7 +1431,7 @@ func (r *Runtime) StartWorkflow(ctx context.Context, source string, input any) (
 	if r.closing {
 		return "", context.Canceled
 	}
-	id := newID()
+	id := ids.New()
 	if err := r.SaveWorkflow(ctx, workflow.Report{ID: id, Source: source, Input: input, Status: "running", Started: time.Now().UTC()}); err != nil {
 		return "", err
 	}

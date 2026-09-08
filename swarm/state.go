@@ -4,8 +4,6 @@ package swarm
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -169,13 +168,6 @@ func encodeState(raw *sessions.CoordinationState, s *State) error {
 	}
 	return nil
 }
-func newID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(err)
-	}
-	return hex.EncodeToString(b[:])
-}
 func fail(code, message string) error { return &workflow.Error{Code: code, Message: message} }
 
 func (r *Runtime) read(ctx context.Context) (*State, error) {
@@ -210,7 +202,7 @@ func (r *Runtime) currentRun(s *State) *Run {
 			return run
 		}
 	}
-	run := &Run{ID: newID(), Status: "running", Limit: r.config.MaxExecutions}
+	run := &Run{ID: ids.New(), Status: "running", Limit: r.config.MaxExecutions}
 	s.Runs[run.ID] = run
 	return run
 }
@@ -269,7 +261,7 @@ func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, 
 		if owner != "" && s.Members[owner] == nil {
 			return errors.New("unknown task owner")
 		}
-		task = &Task{ID: newID(), Run: r.currentRun(s).ID, Description: description, Criteria: criteria, Dependencies: deps, Owner: owner, Status: "pending", Revision: 1}
+		task = &Task{ID: ids.New(), Run: r.currentRun(s).ID, Description: description, Criteria: criteria, Dependencies: deps, Owner: owner, Status: "pending", Revision: 1}
 		s.Tasks[task.ID] = task
 		return nil
 	})
@@ -361,7 +353,7 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 			t.Status = "changes_requested"
 			t.Feedback = feedback
 			t.Revision++
-			mail := &Mail{ID: newID(), From: r.ID, To: t.Owner, Kind: "request", Text: "Changes requested for task " + t.ID + ": " + feedback, Posted: time.Now().UTC()}
+			mail := &Mail{ID: ids.New(), From: r.ID, To: t.Owner, Kind: "request", Text: "Changes requested for task " + t.ID + ": " + feedback, Posted: time.Now().UTC()}
 			s.Messages[mail.ID] = mail
 			wake = t.Owner
 		}
@@ -417,7 +409,7 @@ func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text strin
 				return errors.New("reply does not match an addressed request")
 			}
 		}
-		mail = &Mail{ID: newID(), From: actor, To: to, Kind: kind, ReplyTo: replyTo, Text: text, Posted: time.Now().UTC()}
+		mail = &Mail{ID: ids.New(), From: actor, To: to, Kind: kind, ReplyTo: replyTo, Text: text, Posted: time.Now().UTC()}
 		if kind == "reply" {
 			s.Messages[replyTo].ReplyID = mail.ID
 		}
@@ -539,7 +531,7 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 		if p.Snapshot != "" && s.Snapshots[p.Snapshot] == nil {
 			return errors.New("unknown snapshot")
 		}
-		p.ID = newID()
+		p.ID = ids.New()
 		p.Author = actor
 		p.Run = r.currentRun(s).ID
 		p.Posted = time.Now().UTC()

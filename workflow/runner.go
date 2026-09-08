@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/dop251/goja"
 )
@@ -36,7 +37,7 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 	caller := ctx
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	state := Report{ID: newID(), Source: source, Input: input, Status: "running", Steps: []Step{}, Started: time.Now().UTC()}
+	state := Report{ID: ids.New(), Source: source, Input: input, Status: "running", Steps: []Step{}, Started: time.Now().UTC()}
 	if r.Config.RunID != "" {
 		state.ID = r.Config.RunID
 	}
