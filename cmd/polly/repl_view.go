@@ -232,13 +232,17 @@ type sessionWorkspace struct {
 
 type inspectorState struct {
 	open, maximized bool
-	target          viewTarget
-	history         []viewTarget
-	position        int
-	current         *viewInstance
-	generation      uint64
-	searching       bool
-	searchInput     lineEditor
+	// focused routes the navigation keys to the inspector instead of the
+	// composer. Tab on an empty composer sets it; Esc, typing, closing, or
+	// leaving the workspace clears it.
+	focused     bool
+	target      viewTarget
+	history     []viewTarget
+	position    int
+	current     *viewInstance
+	generation  uint64
+	searching   bool
+	searchInput lineEditor
 }
 
 type viewInstance struct {

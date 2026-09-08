@@ -287,7 +287,7 @@ func TestInspectorHistoryAndToolSequenceAreSeparate(t *testing.T) {
 	}
 }
 
-func TestInspectorArrowNavigationFollowsMouse(t *testing.T) {
+func TestInspectorArrowNavigationFollowsFocus(t *testing.T) {
 	for _, kind := range []string{"tools", "thoughts"} {
 		t.Run(kind, func(t *testing.T) {
 			store := testOpenMemoryStore(t, nil)
@@ -305,29 +305,29 @@ func TestInspectorArrowNavigationFollowsMouse(t *testing.T) {
 			r.model.ed.setText("draft")
 			r.inspectCommand(kind)
 			waitInspector(t, r, 140)
-			r.chrome.inner = image.Rect(70, 0, 140, 30)
 			key := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
-			move := func(x, y int) {
-				e := convertTcellMouse(tcell.NewEventMouse(x, y, tcell.ButtonNone, tcell.ModNone))
-				r.handleEvent(e)
-				if r.wantsRenderForEvent(e) {
-					t.Fatal("pointer motion requested a full repaint")
-				}
-			}
-			last := r.workspace().inspector.target
+			i := &r.workspace().inspector
+			last := i.target
 			key("<Left>")
-			if r.model.ed.cursor != 4 || r.workspace().inspector.target != last {
-				t.Fatal("unknown pointer position stole an editor key")
+			if r.model.ed.cursor != 4 || i.target != last {
+				t.Fatal("an unfocused inspector stole an editor key")
 			}
 			key("<Right>")
-			move(100, 10) // Hover, without clicking or changing editor focus.
+			// Pointer position never matters: hovering the inspector leaves the keys alone.
+			r.handleEvent(convertTcellMouse(tcell.NewEventMouse(100, 10, tcell.ButtonNone, tcell.ModNone)))
+			key("<Left>")
+			if r.model.ed.cursor != 4 || i.target != last {
+				t.Fatal("hovering the inspector redirected an editor key")
+			}
+			key("<Right>")
+			i.focused = true
 			for _, step := range []struct {
 				key   string
 				index int
 			}{{"<Left>", 2}, {"<Left>", 1}, {"<Left>", 1}, {"<Right>", 2}, {"<Right>", 3}, {"<Right>", 3}} {
 				key(step.key)
 				waitInspector(t, r, 140)
-				index, total, _, _ := inspectorSequencePosition(&r.workspace().inspector)
+				index, total, _, _ := inspectorSequencePosition(i)
 				if index != step.index || total != 3 || r.model.ed.text() != "draft" || r.model.ed.cursor != 5 {
 					t.Fatalf("%s: item %d/%d, draft %q at %d", step.key, index, total, r.model.ed.text(), r.model.ed.cursor)
 				}
@@ -335,7 +335,7 @@ func TestInspectorArrowNavigationFollowsMouse(t *testing.T) {
 			for _, mode := range []string{"result search", "history search", "dialog", "approval", "paste"} {
 				switch mode {
 				case "result search":
-					r.workspace().inspector.searching = true
+					i.searching = true
 				case "history search":
 					r.model.hist.startSearch()
 				case "dialog":
@@ -346,40 +346,118 @@ func TestInspectorArrowNavigationFollowsMouse(t *testing.T) {
 					key(pasteStartID)
 				}
 				key("<Left>")
-				if r.workspace().inspector.target != last {
-					t.Fatalf("hover navigation stole %s input", mode)
+				if i.target != last {
+					t.Fatalf("focused navigation stole %s input", mode)
 				}
-				r.workspace().inspector.searching = false
+				i.searching = false
 				r.model.hist.searching = false
 				r.model.modal = nil
 				r.model.approval = nil
 				r.model.pasting = false
 			}
 			key("x")
-			if r.model.ed.text() != "draftx" {
-				t.Fatal("hover redirected typing away from the composer")
+			if r.model.ed.text() != "draftx" || i.focused {
+				t.Fatal("typing did not return the keys to the composer")
 			}
-			r.openModal(&replModal{inputMode: true})
-			move(100, 30) // Composer starts at the inspector's bottom edge.
-			r.closeModal()
-			key("<Left>")
-			if r.model.ed.cursor != 5 || r.workspace().inspector.target != last {
-				t.Fatal("motion during a dialog left stale inspector hover")
+			i.focused = true
+			key("<Escape>")
+			if i.focused || !i.open {
+				t.Fatal("Escape did not return focus before closing the inspector")
 			}
-			move(100, 10)
-			key(focusLostID)
-			key(focusGainedID)
-			key("<Left>")
-			if r.model.ed.cursor != 4 || r.workspace().inspector.target != last {
-				t.Fatal("focus loss retained stale inspector hover")
-			}
-			move(100, 10)
+			i.focused = true
 			r.closeInspector()
-			key("<Right>")
-			if r.model.ed.cursor != 5 {
+			key("<Left>")
+			if r.model.ed.cursor != 5 || i.focused {
 				t.Fatal("closed inspector consumed arrow input")
 			}
 		})
+	}
+}
+
+// Tab on an empty composer hands the navigation keys to the inspector; the
+// editor's control-key shortcuts and typing always reach the composer.
+func TestFocusedNavigationAddressesInspector(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = r.work.close() })
+	r.model.appendLine(strings.Repeat("main transcript line\n", 100))
+	r.model.appendThinking(strings.Repeat("inspected thought\n", 100))
+	r.inspectCommand("thoughts")
+	key := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}); r.render() }
+	for _, mode := range []struct {
+		width     int
+		maximized bool
+	}{{140, false}, {100, false}, {140, true}} {
+		screen.SetSize(mode.width, 40)
+		i := &r.workspace().inspector
+		i.maximized = mode.maximized
+		i.focused = false
+		waitInspector(t, r, mode.width)
+		r.render()
+		s := r.workspace().viewState(i.target)
+		r.model.ed.setText("draft")
+		key("<Tab>")
+		if i.focused {
+			t.Fatal("Tab with a draft focused the inspector instead of completing")
+		}
+		r.model.ed.setText("")
+		key("<Tab>")
+		if !i.focused {
+			t.Fatal("Tab on an empty composer did not focus the inspector")
+		}
+		if _, _, visible := screen.GetCursor(); visible {
+			t.Fatal("composer cursor shown while the inspector has the keys")
+		}
+		key("<Home>")
+		key("<Down>")
+		if s.top != 1 || s.follow {
+			t.Fatalf("inspector line scrolling at width %d: %+v", mode.width, s)
+		}
+		key("<PageDown>")
+		top := s.top
+		if top <= 1 {
+			t.Fatal("Page Down did not page inspector")
+		}
+		key("<Up>")
+		if s.top != top-1 {
+			t.Fatal("Up did not scroll inspector one row")
+		}
+		key("<PageUp>")
+		if s.top != 0 {
+			t.Fatal("Page Up did not restore inspector top")
+		}
+		key("<End>")
+		if !s.follow {
+			t.Fatal("End failed to follow inspector")
+		}
+		if !r.model.followBottom {
+			t.Fatal("inspector paging scrolled the conversation")
+		}
+		r.model.ed.setText("draft")
+		key("<C-a>")
+		if r.model.ed.cursor != 0 || !i.focused {
+			t.Fatal("Ctrl-A stopped addressing the editor")
+		}
+		key("<C-e>")
+		if r.model.ed.cursor != 5 {
+			t.Fatal("Ctrl-E stopped addressing the editor")
+		}
+		key("<Escape>")
+		if i.focused || !i.open {
+			t.Fatal("Escape did not hand the keys back")
+		}
+		top = s.top
+		key("<Up>")
+		if s.top != top || !s.follow {
+			t.Fatal("unfocused Up scrolled the inspector")
+		}
+		r.model.ed.setText("")
+		key("<Tab>")
+		key("x")
+		if r.model.ed.text() != "x" || i.focused {
+			t.Fatal("typing did not return focus to the composer")
+		}
+		r.model.ed.setText("")
 	}
 }
 

@@ -196,6 +196,7 @@ func (r *managedREPL) showTab(i int) {
 			old := r.tabs[oldIndex]
 			r.retireInspector(old.workspace)
 			old.workspace.inspector.generation++
+			old.workspace.inspector.focused = false
 		}
 	}
 	if old := r.model; old != nil && old != tab.model {

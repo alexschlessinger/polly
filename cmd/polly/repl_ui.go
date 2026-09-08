@@ -1251,8 +1251,8 @@ func (r *managedREPL) refreshSlashHints() {
 
 func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	m := r.model
-	// Track motion even while a dialog, search, or paste owns input, so the
-	// next navigation key uses the pointer's current location.
+	// Track motion even while a dialog, search, or paste owns input, so hover
+	// highlights (grip, thumbs) follow the pointer. Keys never depend on it.
 	if e.Type == ui.MouseEvent {
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
 			next := image.Pt(mouse.X, mouse.Y)
@@ -1519,6 +1519,12 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	case "<Space>":
 		m.ed.insert(' ')
 	case "<Tab>":
+		// An empty composer has nothing to complete: Tab hands the keys to
+		// the open inspector instead (Esc or typing hands them back).
+		if i := &r.workspace().inspector; m.ed.empty() && i.open && !i.searching {
+			i.focused = true
+			return false
+		}
 		// Complete with the live command context so completers can see
 		// session state (e.g. loaded tool names for "/tools show").
 		cur := m.ed.text()
