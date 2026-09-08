@@ -91,20 +91,14 @@ func (r *managedREPL) inspectorAction(action string) {
 
 func (r *managedREPL) resizeInspector(direction int) {
 	i := &r.workspace().inspector
-	width, height := ui.TerminalDimensions()
-	if !i.open || i.maximized || width < 120 {
+	width, _ := ui.TerminalDimensions()
+	if !i.open || i.maximized || width < splitThreshold {
 		return
 	}
 	// Start from the displayed divider, including after a drag or terminal
 	// resize clamps a pane to its minimum. A width control must never reverse.
-	left := width - r.inspectorGeometry(width).width - 1
-	if r.haloChrome(width, height) {
-		left = r.haloSplitColumn(width)
-		left = max(50, min(width-53, left-direction*max(1, (width-1)/20)))
-		r.inspectorRatio = (float64(left) + .5) / float64(width-1)
-		return
-	}
-	left = max(50, min(width-51, left-direction*max(1, (width-1)/20)))
+	lo, hi := splitLimits(width)
+	left := max(lo, min(hi, r.splitColumn(width)-direction*max(1, (width-1)/20)))
 	// Store the middle of this column's interval so float rounding does not
 	// place the divider one column short when geometry converts back to int.
 	r.inspectorRatio = (float64(left) + .5) / float64(width-1)
@@ -118,7 +112,7 @@ func (r *managedREPL) inspectorScroll(delta int) {
 	}
 	s := w.viewState(i.target)
 	rows := len(i.current.model.visual.rows)
-	height := max(1, r.inspectorBounds.Dy()-r.inspectorHeaderRows)
+	height := max(1, r.chrome.inner.Dy()-r.inspectorHeaderRows)
 	if s.follow {
 		s.top = max(0, rows-height)
 		s.lastRows = rows
@@ -194,7 +188,7 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 			return false
 		}
 		point := image.Pt(mouse.X, mouse.Y)
-		if e.ID == "<MouseLeft>" && point.In(r.inspectorDivider) {
+		if e.ID == "<MouseLeft>" && point.In(r.chrome.divider) {
 			r.inspectorDragging = true
 			return true
 		}
@@ -209,8 +203,8 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 				return true
 			}
 		}
-		if i.open && point.In(r.haloBounds.outer) && !point.In(r.inspectorBounds) {
-			// The frame/rail belongs to the inspector, including in full-width
+		if i.open && point.In(r.chrome.frame) && !point.In(r.chrome.inner) {
+			// The frame belongs to the inspector, including in full-width
 			// mode; clicks must not reach the hidden conversation underneath.
 			switch e.ID {
 			case "<MouseWheelUp>":
@@ -220,7 +214,7 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 			}
 			return true
 		}
-		if i.open && point.In(r.inspectorBounds) {
+		if i.open && point.In(r.chrome.inner) {
 			switch e.ID {
 			case "<MouseWheelUp>":
 				r.inspectorScroll(-3)
@@ -235,7 +229,7 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 						return true
 					}
 				}
-				if mouse.Y < r.inspectorBounds.Min.Y+r.inspectorHeaderRows {
+				if mouse.Y < r.chrome.inner.Min.Y+r.inspectorHeaderRows {
 					return true
 				}
 				if i.current != nil && i.current.model != nil {
@@ -245,8 +239,8 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 					}
 					s := w.viewState(i.target)
 					m.followBottom, m.scrollAnchor = s.follow, s.top
-					x := mouse.X - r.inspectorBounds.Min.X
-					if m.toggleTurnTrailerAt(x, mouse.Y) || m.closeTurnDockOverlay() || m.toggleReasoningAt(x, mouse.Y, r.inspectorBounds.Dx()) || m.toggleToolDisclosureAt(x, mouse.Y) || m.toggleAgentDisclosureAt(x, mouse.Y) || m.toggleImageDisclosureAt(x, mouse.Y) {
+					x := mouse.X - r.chrome.inner.Min.X
+					if m.toggleTurnTrailerAt(x, mouse.Y) || m.closeTurnDockOverlay() || m.toggleReasoningAt(x, mouse.Y, r.chrome.inner.Dx()) || m.toggleToolDisclosureAt(x, mouse.Y) || m.toggleAgentDisclosureAt(x, mouse.Y) || m.toggleImageDisclosureAt(x, mouse.Y) {
 						s := w.viewState(i.target)
 						s.top = m.scrollAnchor
 						rememberViewSections(m, s)
@@ -278,13 +272,13 @@ func (r *managedREPL) handleViewNavigation(e ui.Event) bool {
 		return false
 	}
 	i := &r.workspace().inspector
-	inspector := i.open && (r.mousePosition.In(r.inspectorBounds) || r.mousePosition.In(r.haloBounds.outer))
-	if !inspector && !r.mousePosition.In(r.mainTranscriptBounds) {
+	inspector := i.open && (r.mousePosition.In(r.chrome.inner) || r.mousePosition.In(r.chrome.frame))
+	if !inspector && !r.mousePosition.In(r.chrome.main) {
 		return false
 	}
-	height := r.mainTranscriptBounds.Dy()
+	height := r.chrome.main.Dy()
 	if inspector {
-		height = r.inspectorBounds.Dy() - r.inspectorHeaderRows
+		height = r.chrome.inner.Dy() - r.inspectorHeaderRows
 	}
 	delta := 0
 	switch e.ID {
@@ -330,7 +324,7 @@ func (r *managedREPL) handleViewNavigation(e ui.Event) bool {
 	if inspector {
 		r.inspectorScroll(delta)
 	} else {
-		r.model.scrollByWidth(delta, height, r.mainTranscriptBounds.Dx())
+		r.model.scrollByWidth(delta, height, r.chrome.main.Dx())
 	}
 	return true
 }

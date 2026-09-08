@@ -33,7 +33,6 @@ type replModal struct {
 	selected   int
 	top        int
 	visible    int
-	halo       bool
 	listBounds image.Rectangle
 	width      int
 	maxRows    int
@@ -170,19 +169,16 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	if m.maxRows > 0 {
 		visibleRows = min(visibleRows, m.maxRows)
 	}
-	if len(items) > visibleRows && m.selected >= visibleRows {
-		start = m.selected - visibleRows + 1
+	// The list is a window over the items: it scrolls only as far as the
+	// selection needs, so paging and the scrollbar keep a stable origin.
+	m.top = max(0, min(m.top, len(items)-visibleRows))
+	if m.selected < m.top {
+		m.top = m.selected
 	}
-	if m.halo {
-		m.top = max(0, min(m.top, len(items)-visibleRows))
-		if m.selected < m.top {
-			m.top = m.selected
-		}
-		if m.selected >= m.top+visibleRows {
-			m.top = m.selected - visibleRows + 1
-		}
-		start = m.top
+	if m.selected >= m.top+visibleRows {
+		m.top = m.selected - visibleRows + 1
 	}
+	start = m.top
 	end := min(len(items), start+visibleRows)
 	m.visible = end - start
 	lines := make([]string, 0, end-start+2)
@@ -251,7 +247,7 @@ func centeredModalHelper(text string, modalWidth int) string {
 // ColorClear modal opaque while still honoring the terminal's own background.
 type modalParagraph struct {
 	*widgets.Paragraph
-	scrollbar haloScrollbar
+	scrollbar scrollbar
 }
 
 func newModalParagraph() *modalParagraph {
@@ -290,8 +286,8 @@ func (r *managedREPL) closeModal() {
 		r.model.modal.wipe()
 	}
 	r.model.modal = nil
-	r.modalScrollbar = haloScrollbar{}
-	r.scrollDrag = haloScrollDrag{}
+	r.modalScrollbar = scrollbar{}
+	r.scrollDrag = scrollDragState{}
 }
 
 func (r *managedREPL) openModal(modal *replModal) {
@@ -708,39 +704,30 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		return true
 	}
 	if e.Type == ui.MouseEvent {
-		if m.halo {
-			mouse, ok := e.Payload.(ui.Mouse)
-			if !ok || m.inputMode {
-				return true
-			}
-			switch e.ID {
-			case "<MouseWheelUp>":
-				m.selected = max(0, m.selected-3)
-			case "<MouseWheelDown>":
-				m.selected = min(len(m.filteredItems())-1, m.selected+3)
-			case "<MouseLeft>":
-				if !image.Pt(mouse.X, mouse.Y).In(m.listBounds) {
-					return true
-				}
-				index := m.top + mouse.Y - m.listBounds.Min.Y
-				if index >= 0 && index < len(m.filteredItems()) {
-					m.selected = index
-					return r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-				}
-			}
+		mouse, ok := e.Payload.(ui.Mouse)
+		if !ok || m.inputMode {
 			return true
 		}
 		switch e.ID {
 		case "<MouseWheelUp>":
-			m.selected = max(0, m.selected-1)
+			m.selected = max(0, m.selected-3)
 		case "<MouseWheelDown>":
-			m.selected++
+			m.selected = min(len(m.filteredItems())-1, m.selected+3)
+		case "<MouseLeft>":
+			if !image.Pt(mouse.X, mouse.Y).In(m.listBounds) {
+				return true
+			}
+			index := m.top + mouse.Y - m.listBounds.Min.Y
+			if index >= 0 && index < len(m.filteredItems()) {
+				m.selected = index
+				return r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+			}
 		}
 		return true
 	}
 	switch e.ID {
 	case "<PageUp>", "<PageDown>", "<Home>", "<End>":
-		if m.halo && !m.inputMode {
+		if !m.inputMode {
 			switch e.ID {
 			case "<PageUp>":
 				m.selected -= max(1, m.visible-1)

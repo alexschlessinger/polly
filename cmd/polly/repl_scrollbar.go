@@ -6,19 +6,22 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// A reserved rail never changes wrapping when content grows or shrinks.
-type haloScrollbar struct {
+// scrollbar lives on a frame's right edge: the track is the border column
+// beside the body, and only the thumb is painted over the border glyphs, so
+// wrapping never changes when content grows or shrinks.
+type scrollbar struct {
 	track, thumb        image.Rectangle
 	total, visible, top int
 	hover, dragging     bool
 }
-type haloScrollDrag struct {
+
+type scrollDragState struct {
 	pane   string
 	offset int
 }
 
-func newHaloScrollbar(track image.Rectangle, total, visible, top int) haloScrollbar {
-	b := haloScrollbar{track: track, total: total, visible: visible, top: max(0, min(top, total-visible))}
+func newScrollbar(track image.Rectangle, total, visible, top int) scrollbar {
+	b := scrollbar{track: track, total: total, visible: visible, top: max(0, min(top, total-visible))}
 	if track.Empty() || total <= visible || visible <= 0 {
 		return b
 	}
@@ -28,35 +31,37 @@ func newHaloScrollbar(track image.Rectangle, total, visible, top int) haloScroll
 	return b
 }
 
-func (b haloScrollbar) draw(buf *ui.Buffer) {
+func (b scrollbar) draw(buf *ui.Buffer) {
 	if b.thumb.Empty() {
 		return
 	}
-	for y := b.track.Min.Y; y < b.track.Max.Y; y++ {
-		pt := image.Pt(b.track.Min.X, y)
-		ch, fg := '│', haloPalette.edge
-		if pt.In(b.thumb) {
-			ch, fg = '┃', haloPalette.muted
-			if b.hover || b.dragging {
-				fg = haloPalette.accent
-			}
-		}
-		buf.SetCell(ui.Cell{Rune: ch, Style: ui.NewStyle(fg)}, pt)
+	fg := chromeColor("muted")
+	if b.hover || b.dragging {
+		fg = chromeColor("accent")
+	}
+	for y := b.thumb.Min.Y; y < b.thumb.Max.Y; y++ {
+		buf.SetCell(ui.Cell{Rune: '┃', Style: ui.NewStyle(fg)}, image.Pt(b.thumb.Min.X, y))
 	}
 }
 
-func (r *managedREPL) setHaloScrollbars() {
-	g := r.haloBounds
+// setInspectorScrollbar sizes the inspector's thumb from the rows renderInspector
+// seated; there is no bar without a frame.
+func (r *managedREPL) setInspectorScrollbar(l frameLayout) {
+	r.inspectorScrollbar = scrollbar{}
+	if !r.workspace().inspector.open || l.chrome.frame.Empty() {
+		return
+	}
+	_, body, track := l.chrome.split(r.inspectorHeaderRows)
 	top := r.inspectorW.TopRow
 	if r.inspectorW.PinBottom {
-		top = max(0, len(r.inspectorW.Rows)-g.inspector.content.Dy())
+		top = max(0, len(r.inspectorW.Rows)-body.Dy())
 	}
-	r.inspectorScrollbar = newHaloScrollbar(g.inspector.track, len(r.inspectorW.Rows), g.inspector.content.Dy(), top)
-	r.inspectorScrollbar.hover = r.mousePositionKnown && r.mousePosition.In(r.inspectorScrollbar.track)
+	r.inspectorScrollbar = newScrollbar(track, len(r.inspectorW.Rows), body.Dy(), top)
+	r.inspectorScrollbar.hover = r.mousePositionKnown && r.mousePosition.In(track)
 	r.inspectorScrollbar.dragging = r.scrollDrag.pane == "inspector"
 }
 
-func (r *managedREPL) setHaloScrollTop(pane string, top int) {
+func (r *managedREPL) setScrollTop(pane string, top int) {
 	switch pane {
 	case "inspector":
 		b := r.inspectorScrollbar
@@ -77,8 +82,8 @@ func (r *managedREPL) setHaloScrollTop(pane string, top int) {
 }
 
 // Called with the main model lock held before pane/editor dispatch.
-func (r *managedREPL) handleHaloScrollbar(e ui.Event, modal bool) bool {
-	if !r.haloEnabled() || e.Type != ui.MouseEvent {
+func (r *managedREPL) handleScrollbar(e ui.Event, modal bool) bool {
+	if e.Type != ui.MouseEvent {
 		return false
 	}
 	mouse, ok := e.Payload.(ui.Mouse)
@@ -87,17 +92,17 @@ func (r *managedREPL) handleHaloScrollbar(e ui.Event, modal bool) bool {
 	}
 	pt := image.Pt(mouse.X, mouse.Y)
 	if e.ID == "<MouseRelease>" {
-		r.scrollDrag = haloScrollDrag{}
+		r.scrollDrag = scrollDragState{}
 		return false
 	}
 	bars := []struct {
 		name string
-		bar  haloScrollbar
+		bar  scrollbar
 	}{{"inspector", r.inspectorScrollbar}}
 	if modal {
 		bars = []struct {
 			name string
-			bar  haloScrollbar
+			bar  scrollbar
 		}{{"modal", r.modalScrollbar}}
 	}
 	for _, v := range bars {
@@ -112,7 +117,7 @@ func (r *managedREPL) handleHaloScrollbar(e ui.Event, modal bool) bool {
 			if travel > 0 {
 				top = (y*(b.total-b.visible) + travel/2) / travel
 			}
-			r.setHaloScrollTop(v.name, top)
+			r.setScrollTop(v.name, top)
 			return true
 		}
 		if !pt.In(b.track) {
@@ -120,20 +125,20 @@ func (r *managedREPL) handleHaloScrollbar(e ui.Event, modal bool) bool {
 		}
 		switch e.ID {
 		case "<MouseWheelUp>":
-			r.setHaloScrollTop(v.name, b.top-3)
+			r.setScrollTop(v.name, b.top-3)
 			return true
 		case "<MouseWheelDown>":
-			r.setHaloScrollTop(v.name, b.top+3)
+			r.setScrollTop(v.name, b.top+3)
 			return true
 		case "<MouseLeft>":
 			if pt.In(b.thumb) {
-				r.scrollDrag = haloScrollDrag{v.name, pt.Y - b.thumb.Min.Y}
+				r.scrollDrag = scrollDragState{v.name, pt.Y - b.thumb.Min.Y}
 			} else {
 				delta := max(1, b.visible-1)
 				if pt.Y < b.thumb.Min.Y {
 					delta = -delta
 				}
-				r.setHaloScrollTop(v.name, b.top+delta)
+				r.setScrollTop(v.name, b.top+delta)
 			}
 			return true
 		}

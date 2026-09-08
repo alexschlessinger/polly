@@ -83,7 +83,7 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	if strings.Contains(plainStyledText(header.text), "Stop agent") || strings.Contains(plainStyledText(header.text), "Review approval") {
 		t.Fatal("inactive agent still shows stop/approval controls")
 	}
-	if header.rows != 2 {
+	if header.rows != 1 {
 		t.Fatal("inactive agent header retained an empty action row")
 	}
 	if strings.Contains(plainStyledText(header.text), "F6") {
@@ -240,7 +240,7 @@ func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {
 	}
 	// Clicking the title performs the same parent navigation as the arrow.
 	r.inspectorButtons = header.buttons
-	r.inspectorBounds = image.Rect(71, 3, 121, 20)
+	r.chrome.inner = image.Rect(71, 3, 121, 20)
 	r.inspectorHeaderRows = header.rows
 	parent := headerButton(header.buttons, "parent")
 	if parent != image.Rect(71, 3, 72, 4) {
@@ -281,7 +281,7 @@ func TestInspectorHeaderArrowReturnsToOwnerOutsideMainSession(t *testing.T) {
 		}
 		header := r.inspectorHeader(50, 20, 71, 3)
 		r.inspectorButtons, r.inspectorHeaderRows = header.buttons, header.rows
-		r.inspectorBounds = image.Rect(71, 3, 121, 23)
+		r.chrome.inner = image.Rect(71, 3, 121, 23)
 		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 73, Y: 3}})
 		i := &r.workspace().inspector
 		if !i.open || i.target.kind != conversationViewKind || i.target.session.ID != child.viewID() {
@@ -332,12 +332,12 @@ func TestInspectorHeaderSearchReplacesActionsAndOwnsInput(t *testing.T) {
 	if !strings.Contains(searchHeader, "Find: …") || !strings.Contains(searchHeader, "needle▏") {
 		t.Fatalf("long search query lost its visible tail: %s", searchHeader)
 	}
-	if r.inspectorW.Inner.Min.Y != r.inspectorBounds.Min.Y+r.inspectorHeaderRows {
+	if r.inspectorW.Inner.Min.Y != r.chrome.inner.Min.Y+r.inspectorHeaderRows {
 		t.Fatal("body origin disagrees with header height")
 	}
 	r.inspectorAction("follow")
 	r.inspectorScroll(-3)
-	wantTop := len(r.workspace().inspector.current.model.visual.rows) - (r.inspectorBounds.Dy() - r.inspectorHeaderRows) - 3
+	wantTop := len(r.workspace().inspector.current.model.visual.rows) - (r.chrome.inner.Dy() - r.inspectorHeaderRows) - 3
 	if s.top != wantTop {
 		t.Fatalf("scroll used wrong header height: %d != %d", s.top, wantTop)
 	}
@@ -369,7 +369,9 @@ func TestInspectorCommandResizeFollowsDisplayedPane(t *testing.T) {
 	for range 30 {
 		r.inspectorAction("wider")
 	}
-	if width := r.inspectorGeometry(400).width; width != 349 {
+	// The conversation keeps its readable minimum and the frame its two
+	// border columns.
+	if width := r.inspectorGeometry(400).width; width != 348 {
 		t.Fatalf("maximum inspector width = %d", width)
 	}
 	r.inspectorAction("maximize")

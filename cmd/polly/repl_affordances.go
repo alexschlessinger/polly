@@ -170,7 +170,6 @@ type affordanceLayer struct {
 	cells      []affordanceCell
 	now        time.Time
 	idleCursor bool
-	theme      *themeLayer
 }
 
 func (a *affordanceLayer) Draw(buf *ui.Buffer) {
@@ -252,11 +251,7 @@ func (a *affordanceLayer) tick(screen tcell.Screen, now time.Time) {
 	for _, cell := range a.cells {
 		next := cell.frame(now)
 		if next != cell.last {
-			display := next
-			if a.theme != nil {
-				display = a.theme.convert(display, cell.point)
-			}
-			screenCell(screen, cell.point, display)
+			screenCell(screen, cell.point, next)
 			cell.last = next
 			changed = true
 		}
@@ -271,8 +266,8 @@ func (a *affordanceLayer) tick(screen tcell.Screen, now time.Time) {
 }
 
 func (r *managedREPL) tickAffordances(now time.Time) {
-	if r.haloOrbit.active && r.themeW != nil && r.themeW.modal == nil {
-		r.haloOrbit.tick(ui.DefaultBackend.Screen, r.themeW, now)
+	if r.orbit.active {
+		r.orbit.tick(ui.DefaultBackend.Screen, now)
 	}
 	if r.affordanceW == nil {
 		return

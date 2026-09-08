@@ -1,15 +1,19 @@
 package main
 
-import "testing"
+import (
+	"image"
+	"testing"
+)
 
 // A roomy terminal seats every region: transcript, dock, composer,
-// status bar, top to bottom.
+// status bar, top to bottom. With no inspector the conversation owns the
+// whole transcript region.
 func TestFrameLayoutSeatsEveryRegion(t *testing.T) {
 	r := &managedREPL{model: newReplModel()}
 	r.model.turnDock.visible = true
 
 	l := r.frameLayoutFor(80, 24)
-	want := frameLayout{width: 80, height: 24, transcriptHeight: 21, dockRows: 1, inputRows: 1, statusRows: 1}
+	want := frameLayout{width: 80, height: 24, transcriptHeight: 21, dockRows: 1, inputRows: 1, statusRows: 1, chrome: chromeGeometry{main: image.Rect(0, 0, 80, 21)}}
 	if l != want {
 		t.Fatalf("layout = %+v, want %+v", l, want)
 	}
@@ -28,7 +32,7 @@ func TestFrameLayoutShortTerminalCapsComposer(t *testing.T) {
 	r.model.turnDock.visible = true
 
 	l := r.frameLayoutFor(80, 6)
-	want := frameLayout{width: 80, height: 6, transcriptHeight: 1, inputRows: 4, statusRows: 1}
+	want := frameLayout{width: 80, height: 6, transcriptHeight: 1, inputRows: 4, statusRows: 1, chrome: chromeGeometry{main: image.Rect(0, 0, 80, 1)}}
 	if l != want {
 		t.Fatalf("layout = %+v, want %+v", l, want)
 	}

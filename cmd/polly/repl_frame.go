@@ -7,7 +7,6 @@ import (
 
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
-	"github.com/metaspartan/gotui/v5/widgets"
 )
 
 // Frame layout and rendering: the vertical split, widgets, and cursor placement.
@@ -115,11 +114,12 @@ func (r *managedREPL) transcriptHeight() int {
 	return max(1, r.frameLayoutFor(ui.TerminalDimensions()).transcriptHeight)
 }
 
-// frameLayout is the vertical geometry of one frame: how the terminal height
-// splits, top to bottom, between the logo band, the transcript pane, the turn
-// dock, the divider, the composer, and the status bar. render and the scroll
-// handlers derive it the same way, so scroll deltas match the pane the user
-// actually sees.
+// frameLayout is the geometry of one frame: how the terminal height splits,
+// top to bottom, between the logo band, the transcript region, the turn dock,
+// the divider, the composer, and the status bar, and how the transcript
+// region splits sideways between the conversation and the inspector chrome.
+// render and the scroll handlers derive it the same way, so scroll deltas
+// match the pane the user actually sees.
 type frameLayout struct {
 	width, height    int
 	logoRows         int
@@ -128,7 +128,16 @@ type frameLayout struct {
 	dividerRows      int
 	inputRows        int
 	statusRows       int
-	halo             bool
+	chrome           chromeGeometry
+}
+
+// mainWidth is the wrap width of the conversation transcript: its pane when
+// one is shown, otherwise the full terminal.
+func (l frameLayout) mainWidth() int {
+	if l.chrome.main.Empty() {
+		return l.width
+	}
+	return l.chrome.main.Dx()
 }
 
 // frameLayoutFor splits a w×h terminal. The composer is the only region whose
@@ -138,7 +147,6 @@ type frameLayout struct {
 func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
 	m := r.model
 	l := frameLayout{width: w, height: h, inputRows: m.inputRows()}
-	l.halo = r.haloChrome(w, h)
 	if !m.quiet {
 		l.statusRows = 1
 	}
@@ -154,6 +162,7 @@ func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
 	content := h - l.inputRows - l.statusRows - l.dockRows - l.dividerRows
 	l.logoRows = startupLogoRowCount(content, r.startupLogoVisible, r.images != nil)
 	l.transcriptHeight = max(0, content-l.logoRows)
+	l.chrome = r.chromeGeometryFor(w, l.logoRows, l.transcriptHeight)
 	return l
 }
 
@@ -235,36 +244,43 @@ func (r *managedREPL) setupWidgets() {
 	r.modalW = newModalParagraph()
 }
 
-// layout (re)builds the root flex for the current input height. The input row
-// count varies with multi-line prompts, so the flex is rebuilt each render
-// rather than sized once at setup.
+// layout seats every widget for this frame from the layout's rectangles. The
+// input row count varies with multi-line prompts and the inspector header
+// with its content, so the group is rebuilt each render rather than sized
+// once at setup. Pane bounds are absolute; transcript rows and disclosure x
+// coordinates stay local to content.
 func (r *managedREPL) layout(l frameLayout) {
-	if l.halo && r.layoutHalo(l) {
-		return
+	g := l.chrome
+	group := &frameGroup{Block: *ui.NewBlock()}
+	noBorder(&group.Block)
+	group.SetRect(0, 0, l.width, l.height)
+	add := func(w ui.Drawable, rect image.Rectangle) {
+		if !rect.Empty() {
+			setWidgetRect(w, rect)
+			group.items = append(group.items, w)
+		}
 	}
-	flex := widgets.NewFlex()
-	noBorder(&flex.Block)
-	flex.Direction = widgets.FlexColumn
-	if l.logoRows > 0 {
-		flex.AddItem(r.logoW, l.logoRows, 0, false)
-	}
+	add(r.logoW, image.Rect(0, 0, l.width, l.logoRows))
+	add(r.transcriptW, g.main)
 	if r.workspace().inspector.open {
-		flex.AddItem(r.inspectorLayout(l), 0, 1, false)
-	} else {
-		flex.AddItem(r.transcriptW, 0, 1, false)
+		header, body, _ := g.split(r.inspectorHeaderRows)
+		add(r.inspectorHeaderW, header)
+		add(r.inspectorW, body)
 	}
+	y := l.logoRows + l.transcriptHeight
 	if l.dockRows > 0 {
-		flex.AddItem(r.turnDockW, 1, 0, false)
+		add(r.turnDockW, image.Rect(0, y, l.width, y+1))
+		y++
 	}
 	if l.dividerRows > 0 {
-		flex.AddItem(r.dividerW, 1, 0, false)
+		add(r.dividerW, image.Rect(0, y, l.width, y+1))
 	}
-	flex.AddItem(r.inputW, l.inputRows, 0, false)
+	add(r.inputW, image.Rect(0, l.composerRow(0), l.width, l.composerRow(l.inputRows)))
 	if l.statusRows > 0 {
-		flex.AddItem(r.statusW, 1, 0, false)
+		add(r.statusW, image.Rect(0, l.height-1, l.width, l.height))
 	}
-	flex.SetRect(0, 0, l.width, l.height)
-	r.rootFlex = flex
+	r.rootFlex = group
+	r.chrome = g
 }
 
 // noBorder disables the visible border AND cancels the unconditional 1-cell
@@ -286,7 +302,6 @@ func (r *managedREPL) render() {
 	r.relayTabSignals()
 	r.refreshAgentActivities()
 	r.refreshInspector(w)
-	mainWidth := r.inspectorTranscriptWidth(w)
 	imageCellWidth, imageCellHeight := 0, 0
 	if r.images != nil {
 		imageCellWidth, imageCellHeight = r.images.cellDimensions()
@@ -301,11 +316,12 @@ func (r *managedREPL) render() {
 		r.model.imageCellHeight = imageCellHeight
 		r.model.visual.invalidate()
 	}
+	l := r.frameLayoutFor(w, h)
+	mainWidth := l.mainWidth()
 	r.model.refreshActiveTools()
 	r.model.refreshStreamCursor()
 	r.model.refreshReasoningRecords(mainWidth)
 	r.model.refreshExpandedTurnTrailer(mainWidth)
-	l := r.frameLayoutFor(w, h)
 	input, curRow, curCol, editable := r.model.renderInputForTerminal(l.inputRows, w)
 	transcriptRows := (conversationView{}).Rows(r.model, mainWidth)
 	topRow, pinTranscriptBottom := r.model.settleScroll(len(transcriptRows), l.transcriptHeight)
@@ -315,7 +331,6 @@ func (r *managedREPL) render() {
 	modalText, modalTitle := "", ""
 	modalWidth, modalHeight := 0, 0
 	if modalOpen {
-		r.model.modal.halo = r.haloEnabled()
 		modalWidth = modalWidthForTerminal(w, r.model.modal.width)
 		maxRows := max(1, h-8)
 		modalText = r.model.modal.text(maxRows, modalWidth)
@@ -353,10 +368,8 @@ func (r *managedREPL) render() {
 		affordanceSpans = r.model.affordanceSpans(now, l, viewport, status, image.Pt(min(curCol, w-1), l.composerRow(curRow)), idleCursor)
 	}
 	r.model.mu.Unlock()
-	r.mainTranscriptBounds = image.Rect(0, viewport.logoRows, mainWidth, viewport.logoRows+l.transcriptHeight)
 	if r.workspace().inspector.open {
-		if r.workspace().inspector.maximized || w < 120 {
-			r.mainTranscriptBounds = image.Rectangle{}
+		if l.chrome.main.Empty() {
 			imagePlacements = nil
 			visible := affordanceSpans[:0]
 			for _, span := range affordanceSpans {
@@ -372,7 +385,6 @@ func (r *managedREPL) render() {
 			idleCursor = false
 		}
 	} else {
-		r.inspectorBounds, r.inspectorDivider = image.Rectangle{}, image.Rectangle{}
 		r.inspectorButtons = nil
 		r.inspectorDragging = false
 	}
@@ -415,35 +427,24 @@ func (r *managedREPL) render() {
 		y := (h - modalHeight) / 2
 		r.modalW.Text = modalText
 		r.modalW.Title = modalTitle
-		r.modalW.PaddingRight = 0
-		if r.haloEnabled() {
-			r.modalW.PaddingRight = 1
-		}
 		r.modalW.SetRect(x, y, x+modalWidth, y+modalHeight)
-		if r.haloEnabled() {
-			m := r.model.modal
-			m.listBounds = image.Rect(r.modalW.Inner.Min.X, r.modalW.Inner.Min.Y, r.modalW.Inner.Max.X, min(r.modalW.Inner.Max.Y, r.modalW.Inner.Min.Y+m.visible))
-			track := image.Rect(x+modalWidth-2, m.listBounds.Min.Y, x+modalWidth-1, m.listBounds.Max.Y)
-			if m.inputMode {
-				track = image.Rectangle{}
-			}
-			r.modalScrollbar = newHaloScrollbar(track, len(m.filteredItems()), m.visible, m.top)
-			r.modalScrollbar.hover = r.mousePositionKnown && r.mousePosition.In(track)
-			r.modalScrollbar.dragging = r.scrollDrag.pane == "modal"
-			r.modalW.scrollbar = r.modalScrollbar
-		} else {
-			r.modalW.scrollbar = haloScrollbar{}
+		// The dialog's scrollbar rides its own right border, like the
+		// inspector's rides the frame edge.
+		m := r.model.modal
+		m.listBounds = image.Rect(r.modalW.Inner.Min.X, r.modalW.Inner.Min.Y, r.modalW.Inner.Max.X, min(r.modalW.Inner.Max.Y, r.modalW.Inner.Min.Y+m.visible))
+		track := image.Rect(x+modalWidth-1, m.listBounds.Min.Y, x+modalWidth, m.listBounds.Max.Y)
+		if m.inputMode {
+			track = image.Rectangle{}
 		}
+		r.modalScrollbar = newScrollbar(track, len(m.filteredItems()), m.visible, m.top)
+		r.modalScrollbar.hover = r.mousePositionKnown && r.mousePosition.In(track)
+		r.modalScrollbar.dragging = r.scrollDrag.pane == "modal"
+		r.modalW.scrollbar = r.modalScrollbar
 	}
 	r.dividerW.Text = divider
 
 	r.layout(l)
-	if l.halo {
-		r.setHaloScrollbars()
-	} else {
-		r.haloBounds = haloGeometry{}
-		r.inspectorScrollbar = haloScrollbar{}
-	}
+	r.setInspectorScrollbar(l)
 	ui.Clear()
 	r.placeCursor(editable && !modalOpen && !idleCursor, curCol, l.composerRow(curRow), w)
 	var drawable ui.Drawable = r.rootFlex
@@ -452,9 +453,6 @@ func (r *managedREPL) render() {
 			r.affordanceW.cells = nil
 			r.affordanceW.idleCursor = false
 		}
-		if !r.haloEnabled() {
-			ui.Render(r.rootFlex, r.modalW)
-		}
 	} else if r.affordanceW != nil {
 		r.affordanceW.Drawable = r.rootFlex
 		r.affordanceW.spans = affordanceSpans
@@ -462,18 +460,16 @@ func (r *managedREPL) render() {
 		r.affordanceW.idleCursor = idleCursor
 		drawable = r.affordanceW
 	}
-	if r.haloEnabled() {
-		drawable = r.haloFrame(drawable, l, now, modalOpen)
-		if r.affordanceW != nil {
-			r.affordanceW.theme = r.themeW
-		}
+	drawable = r.refreshChrome(drawable, l, now)
+	if modalOpen {
+		ui.Render(drawable, r.modalW)
+	} else {
 		ui.Render(drawable)
-		for n := range r.haloOrbit.cells {
-			cell := &r.haloOrbit.cells[n]
-			cell.last = r.themeW.convert(r.haloOrbit.frame(n, now), cell.point)
-		}
-	} else if !modalOpen {
-		ui.Render(drawable)
+	}
+	// Seed the orbit's last-painted cells from this paint, so an idle tick
+	// only rewrites cells the glint actually moved.
+	for n := range r.orbit.cells {
+		r.orbit.cells[n].last = r.orbit.frame(n, now)
 	}
 	if r.images != nil {
 		r.images.commit(imagesChanged)

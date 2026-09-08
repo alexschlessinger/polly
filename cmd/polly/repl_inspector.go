@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
-	ui "github.com/metaspartan/gotui/v5"
 )
 
 func tabViewTarget(tab *replTab) viewTarget {
@@ -127,33 +126,6 @@ func (r *managedREPL) inspectionTab(target viewTarget) *replTab {
 		}
 	}
 	return nil
-}
-
-func (r *managedREPL) inspectorGeometry(width int) viewGeometry {
-	i := &r.workspace().inspector
-	_, height := ui.TerminalDimensions()
-	halo := r.haloChrome(width, height)
-	if halo {
-		if i.open && !i.maximized && width >= 120 {
-			width -= r.haloSplitColumn(width) + 3
-		} else {
-			width -= 3
-		}
-	}
-	if !halo && i.open && !i.maximized && width >= 120 {
-		ratio := r.inspectorRatio
-		if ratio == 0 {
-			ratio = .7
-		}
-		left := max(50, min(width-51, int(float64(width-1)*ratio)))
-		width -= left + 1
-	}
-	g := viewGeometry{width: width}
-	if r.images != nil {
-		g.cellWidth, g.cellHeight = r.images.cellDimensions()
-		g.nativeImages = true
-	}
-	return g
 }
 
 // refreshInspector runs before paint with no model locks held. Live source
