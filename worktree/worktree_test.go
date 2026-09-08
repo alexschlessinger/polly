@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -56,6 +57,45 @@ func TestGitVersionGate(t *testing.T) {
 		if err := validateGitVersion(version); err != nil {
 			t.Fatalf("rejected %q: %v", version, err)
 		}
+	}
+}
+
+func TestCaptureRetainsSameSizeEditWithRacyIndex(t *testing.T) {
+	m, root := fixture(t)
+	gitTest(t, root, "config", "core.trustctime", "false")
+	path := filepath.Join(root, "racy.bin")
+	stamp := time.Now().Add(-5 * time.Second).Truncate(time.Second)
+	writeTest(t, path, "\x00\x01\x02")
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, root, "add", ".")
+	indexPath := filepath.Join(root, ".git", "index")
+	if err := os.Chtimes(indexPath, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTest(t, path, "\x00\xff\x03")
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := m.Capture(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitTest(t, root, "show", snapshot.Commit+":racy.bin"); !bytes.Equal(got, []byte{0, 255, 3}) {
+		t.Fatalf("snapshot lost the same-size edit: %v", got)
+	}
+	after, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(indexPath)
+	if err != nil || !bytes.Equal(before, after) || !info.ModTime().Equal(stamp) {
+		t.Fatalf("capture changed the parent index: %v", err)
 	}
 }
 

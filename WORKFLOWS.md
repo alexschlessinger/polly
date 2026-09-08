@@ -162,7 +162,8 @@ repository; a standalone copy or a package subdirectory is not a valid source.
 Live read-only files are used only outside Git, never as a fallback for a denied
 or broken Git setup. Report setup errors without modifying `.git`, ignore rules,
 or sandbox settings to work around them.
-The runtime seeds a private Git index from the parent's index and captures
+The runtime seeds a private Git index, preserving the original index timestamp
+so Git still detects rapid same-size edits, and captures
 tracked edits and non-ignored new files. It preserves the original index and
 HEAD, excludes Git-ignored build/dependency data, and checks for source drift.
 There is no global `chdir`. Native tools, shell/MCP processes, image paths,

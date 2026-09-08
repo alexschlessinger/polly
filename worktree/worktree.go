@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,6 +243,31 @@ func (m *Manager) Capture(ctx context.Context, source string) (Snapshot, error) 
 	}
 	return snapshot, nil
 }
+
+func seedIndex(source, destination string) error {
+	file, err := os.Open(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	seed, err := io.ReadAll(file)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(destination, seed, 0600); err != nil {
+		return err
+	}
+	// Git uses the index timestamp to rehash racily clean entries. A fresh
+	// timestamp on these copied stat records can silently hide same-size edits.
+	return os.Chtimes(destination, info.ModTime(), info.ModTime())
+}
 func (m *Manager) capture(ctx context.Context, source string) (Snapshot, error) {
 	source, err := filepath.Abs(source)
 	if err != nil {
@@ -322,14 +348,8 @@ func (m *Manager) capture(ctx context.Context, source string) (Snapshot, error) 
 	}
 	index := filepath.Join(m.Directory, "index-"+id())
 	defer os.Remove(index)
-	seed, err := os.ReadFile(strings.TrimSpace(string(indexPath)))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := seedIndex(strings.TrimSpace(string(indexPath)), index); err != nil {
 		return Snapshot{}, err
-	}
-	if err == nil {
-		if err = os.WriteFile(index, seed, 0600); err != nil {
-			return Snapshot{}, err
-		}
 	}
 	env := []string{"GIT_INDEX_FILE=" + index}
 	paths, err := m.git(ctx, source, env, nil, "ls-files", "-z")
