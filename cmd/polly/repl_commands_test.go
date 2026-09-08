@@ -458,6 +458,25 @@ func TestSandboxNoticeLine(t *testing.T) {
 	}
 }
 
+// The masthead's sandbox row always has something to say, in sentence case,
+// with the preset's parts and anything exceptional joined by dots.
+func TestSandboxSummaryLine(t *testing.T) {
+	if got := currentSandboxPosture(&Config{NoSandbox: true}, nil).summaryLine(); got != "Sandbox disabled (--nosandbox)" {
+		t.Fatalf("disabled summary = %q", got)
+	}
+	if got := currentSandboxPosture(&Config{}, nil).summaryLine(); got != "Sandbox unavailable" {
+		t.Fatalf("unavailable summary = %q", got)
+	}
+	state := &conversationState{toolRegistry: stubSandboxRegistry(t)}
+	if got := currentSandboxPosture(&Config{SandboxPreset: "workspace+net+git"}, state).summaryLine(); got != "Sandbox active · workspace, net, git" {
+		t.Fatalf("healthy summary = %q", got)
+	}
+	posture := sandboxPosture{state: sandboxPostureActive, preset: "workspace+ssh", unsandboxed: []string{"bash"}, sshAgentUnavailable: true}
+	if got := posture.summaryLine(); got != "Sandbox active · workspace, ssh · not sandboxed: bash · ssh agent unavailable" {
+		t.Fatalf("exceptional summary = %q", got)
+	}
+}
+
 func TestWriteFallbackSandboxNotice(t *testing.T) {
 	var out bytes.Buffer
 	writeFallbackSandboxNotice(&out, &Config{SandboxPreset: "workspace+net+git"}, &conversationState{toolRegistry: stubSandboxRegistry(t)})

@@ -178,6 +178,8 @@ type replModel struct {
 	status     sessionStatus
 	parentLink image.Rectangle
 	quiet      bool
+	// masthead heads the transcript flow in root sessions; see mastheadBlock.
+	masthead mastheadState
 
 	// hidden is set while this model's tab is off screen. Streamed text is
 	// then kept raw and rendered when the tab shows again, since markdown
@@ -628,12 +630,11 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 
 	r.setupWidgets()
 	r.startupLogoVisible = r.showStartupLogo && !r.workspace().inspector.open
-	if !r.model.quiet {
-		if notice := sandboxNoticeLine(r.config, r.state); notice != "" {
-			r.model.appendNoticeLine(notice)
-		}
-	}
 	r.model.mu.Lock()
+	// The sandbox posture reads from the masthead, exceptional or not; the
+	// line frontends keep their startup notice.
+	r.model.masthead = mastheadState{enabled: true, sandbox: currentSandboxPosture(r.config, r.state).summaryLine()}
+	r.model.visual.invalidate()
 	r.appendPendingSandboxWarningsLocked()
 	r.model.mu.Unlock()
 	r.render()

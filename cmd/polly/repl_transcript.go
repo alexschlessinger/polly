@@ -478,7 +478,10 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 }
 
 func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock {
-	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+1)
+	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+2)
+	if masthead, ok := m.mastheadBlock(width); ok {
+		blocks = append(blocks, masthead)
+	}
 	for i := range m.transcript {
 		if m.collapseInitialPrompt && m.transcript[i].initialPrompt {
 			glyph := "▸"
