@@ -256,13 +256,23 @@ func parseRequest(args tools.Args) (Request, error) {
 	if req.Task == "" {
 		return Request{}, errors.New("task is required: the complete brief for the agent")
 	}
-	if _, supplied := args["tools"]; supplied {
-		req.Tools = []string{}
-	}
-	for _, pattern := range args.StringSlice("tools") {
-		if pattern = strings.TrimSpace(pattern); pattern != "" {
-			req.Tools = append(req.Tools, pattern)
+	// Only an explicit array narrows the child's tools; null means omitted,
+	// and a bare string is one pattern rather than an empty selection.
+	switch raw := args["tools"].(type) {
+	case nil:
+	case string:
+		if pattern := strings.TrimSpace(raw); pattern != "" {
+			req.Tools = []string{pattern}
 		}
+	case []any, []string:
+		req.Tools = []string{}
+		for _, pattern := range args.StringSlice("tools") {
+			if pattern = strings.TrimSpace(pattern); pattern != "" {
+				req.Tools = append(req.Tools, pattern)
+			}
+		}
+	default:
+		return Request{}, errors.New("tools must be an array of tool names or globs")
 	}
 	return req, nil
 }

@@ -401,3 +401,32 @@ func TestCanceledBlockingCallKeepsTheRunningChildSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestToolTreatsNullToolsAsOmitted(t *testing.T) {
+	var got Request
+	tool := NewTool(func(_ context.Context, req Request) (Result, error) {
+		got = req
+		return Result{Text: "ok"}, nil
+	})
+	for _, tc := range []struct {
+		value any
+		want  []string
+	}{
+		{nil, nil},
+		{"read_file", []string{"read_file"}},
+		{[]any{}, []string{}},
+		{[]any{" "}, []string{}},
+	} {
+		if _, err := tool.Execute(context.Background(), map[string]any{"task": "look", "tools": tc.value}); err != nil {
+			t.Fatalf("tools %v: %v", tc.value, err)
+		}
+		if (got.Tools == nil) != (tc.want == nil) || !slices.Equal(got.Tools, tc.want) {
+			t.Fatalf("tools %v parsed as %#v, want %#v", tc.value, got.Tools, tc.want)
+		}
+	}
+	_, err := tool.Execute(context.Background(), map[string]any{"task": "look", "tools": 5})
+	var toolErr *tools.ToolError
+	if !errors.As(err, &toolErr) || toolErr.Code != "INVALID_ARGS" {
+		t.Fatalf("numeric tools accepted: %v", err)
+	}
+}
