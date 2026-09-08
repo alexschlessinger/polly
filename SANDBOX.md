@@ -413,7 +413,7 @@ one `sandbox_wrap` line per command, **names only, never values**:
 
 In the REPL, startup prints a posture line only when the posture is
 exceptional: the sandbox is disabled or unavailable, a capable tool runs
-unsandboxed, or the `ssh` component has no reachable agent. `/get sandbox`
+unsandboxed, or the `ssh` component has no reachable agent. `/set sandbox`
 always shows the live state, and `/tools list` marks each sandboxed tool with
 a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The model sees
 `[sandboxed]` appended to each sandboxed tool's description.

@@ -2,10 +2,15 @@ package main
 
 import "strings"
 
-const inspectorCommandUsage = "/inspect [tools|thoughts|close|prev|next|back|forward|find|maximize|wider|narrower]"
+const inspectorCommandUsage = "/inspect [tools|thoughts|find|maximize]"
 
 func registerInspectorCommands(r *replCommandRegistry) {
-	r.register(replCommand{name: "/inspect", usage: inspectorCommandUsage, summary: "inspect a tool result or thought block", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
+	r.register(replCommand{name: "/inspect", usage: inspectorCommandUsage, summary: "inspect a tool result or thought block", busySafe: true, complete: func(_ *replCommandContext, fields []string, prefix string) []string {
+		if completionArgPos(fields, prefix) != 1 {
+			return nil
+		}
+		return matchingWords([]string{"find", "maximize", "thoughts", "tools"}, prefix)
+	}, run: func(ctx *replCommandContext, args []string) replCommandResult {
 		if ctx.inspectView == nil {
 			return replCommandResult{err: ctx.replyLine("inspector is available only in the managed TUI")}
 		}
@@ -26,7 +31,7 @@ func (r *managedREPL) inspectCommand(arg string) {
 			r.inspectorAction("find")
 		}
 		return
-	case "close", "prev", "next", "back", "forward", "maximize", "wider", "narrower":
+	case "maximize":
 		r.inspectorAction(arg)
 		return
 	case "":

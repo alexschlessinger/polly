@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	rw "github.com/mattn/go-runewidth"
 	"net"
 	"os"
 	"os/exec"
@@ -78,28 +79,28 @@ func TestGetCommandShowsStableFlagBackedSettings(t *testing.T) {
 		SkillDirs:        []string{"/tmp/skills"},
 	}}
 
-	if handled, quit := r.runCommand("/get model"); !handled || quit {
-		t.Fatalf("/get model handled=%v quit=%v", handled, quit)
+	if handled, quit := r.runCommand("/set model"); !handled || quit {
+		t.Fatalf("/set model handled=%v quit=%v", handled, quit)
 	}
 	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "model: openai/gpt-5.4") {
-		t.Fatalf("/get model output = %q", got)
+		t.Fatalf("/set model output = %q", got)
 	}
 
 	clearTranscriptForTest(r.model)
-	if handled, quit := r.runCommand("/get all"); !handled || quit {
-		t.Fatalf("/get all handled=%v quit=%v", handled, quit)
+	if handled, quit := r.runCommand("/set"); !handled || quit {
+		t.Fatalf("/set handled=%v quit=%v", handled, quit)
 	}
 	got := strings.Join(transcriptTexts(r.model), "\n")
 	for _, want := range []string{"settings:", "temp: 0.70", "maxtokens: 1234", "tooltimeout: 3s", "skilldir: /tmp/skills"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("/get all missing %q in %q", want, got)
+			t.Fatalf("/set missing %q in %q", want, got)
 		}
 	}
 
 	clearTranscriptForTest(r.model)
-	r.runCommand("/get unknown")
+	r.runCommand("/set unknown")
 	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "unknown key: unknown") {
-		t.Fatalf("/get unknown output = %q", got)
+		t.Fatalf("/set unknown output = %q", got)
 	}
 }
 
@@ -156,27 +157,27 @@ func stubSandboxRegistry(t *testing.T) *tools.ToolRegistry {
 
 func TestGetSandboxSetting(t *testing.T) {
 	r := newManagedREPL(&Config{NoSandbox: true}, "ctx", 0, 0)
-	if handled, quit := r.runCommand("/get sandbox"); !handled || quit {
-		t.Fatalf("/get sandbox handled=%v quit=%v", handled, quit)
+	if handled, quit := r.runCommand("/set sandbox"); !handled || quit {
+		t.Fatalf("/set sandbox handled=%v quit=%v", handled, quit)
 	}
 	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "sandbox: disabled (--nosandbox)") {
-		t.Fatalf("/get sandbox output = %q", got)
+		t.Fatalf("/set sandbox output = %q", got)
 	}
 
 	registry := stubSandboxRegistry(t)
 	registry.Register(&tools.Func{Name: "plain", Desc: "no sandbox support"})
 	r = newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.state = &conversationState{toolRegistry: registry}
-	r.runCommand("/get sandbox")
+	r.runCommand("/set sandbox")
 	got := strings.Join(transcriptTexts(r.model), "\n")
 	if !strings.Contains(got, "active") || !strings.Contains(got, "1 sandboxed, 0 not") {
-		t.Fatalf("/get sandbox output = %q", got)
+		t.Fatalf("/set sandbox output = %q", got)
 	}
 
 	clearTranscriptForTest(r.model)
-	r.runCommand("/get all")
+	r.runCommand("/set")
 	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "sandbox: active") {
-		t.Fatalf("/get all missing sandbox row: %q", got)
+		t.Fatalf("/set missing sandbox row: %q", got)
 	}
 }
 
@@ -482,9 +483,9 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		wantCompleted string
 		wantMatches   []string
 	}{
-		{"/g", true, "/get", []string{"/get"}},
-		{"/get model", true, "/get model", []string{"/get model"}},
-		{"/get max", true, "/get max", []string{"/get maxcontext", "/get maxtokens"}},
+		{"/g", false, "", nil},
+		{"/se", true, "/se", []string{"/sessions", "/set"}},
+		{"/set model", true, "/set model", []string{"/set model"}},
 		{"/tools s", true, "/tools show", []string{"/tools show"}},
 		{"/thi", false, "", nil},
 		{"/set th", true, "/set thinking", []string{"/set thinking"}},
@@ -521,7 +522,7 @@ func TestUnknownCommandNotice(t *testing.T) {
 		{"/quti", "unknown command: /quti — did you mean /quit?"},
 		// Unique prefixes.
 		{"/con", "unknown command: /con — did you mean /context?"},
-		{"/stat", "unknown command: /stat — did you mean /stats?"},
+		{"/contex", "unknown command: /contex — did you mean /context?"},
 		// Only the command token is named, not the arguments.
 		{"/hlep me now", "unknown command: /hlep — did you mean /help?"},
 		// Ambiguous prefix or nothing close: fall back to /help.
@@ -546,7 +547,7 @@ func TestDispatchIsCaseInsensitive(t *testing.T) {
 	if err != nil || !handled || quit {
 		t.Fatalf("dispatch(/HELP) handled=%v quit=%v err=%v", handled, quit, err)
 	}
-	if len(replies) == 0 || replies[0] != "commands:" {
+	if len(replies) == 0 || !strings.HasPrefix(replies[0], "  /attach") {
 		t.Fatalf("dispatch(/HELP) replies = %v", replies)
 	}
 }
@@ -563,11 +564,11 @@ func TestHintFor(t *testing.T) {
 		{"/he\nlp", ""},
 		{"/zzz", ""},
 		// Typing the name: many matches list bare names, few include summaries.
-		{"/t", "/tools — inspect loaded tools"},
-		{"/to", "/tools — inspect loaded tools"},
+		{"/t", "/tools — inspect loaded tools and skills"},
+		{"/to", "/tools — inspect loaded tools and skills"},
 		{"/q", "/quit — leave the REPL"},
 		// Typing arguments: keyword matches from the command's completer.
-		{"/get max", "maxcontext  maxtokens"},
+		{"/set max", "maxcontext  maxtokens"},
 		// Value completion for keys with enumerable values.
 		{"/set thinking ", "dynamic  high  low  max  medium  minimal  off  xhigh"},
 		{"/set thinking hi", "high"},
@@ -695,7 +696,7 @@ func TestSetCommand(t *testing.T) {
 		{"/set thinking sideways", "thinking"},
 		{"/set bogus 1", "unknown or read-only key"},
 		{"/set system terse", "unknown or read-only key"},
-		{"/set", "usage: /set"},
+		{"/set", "settings:"},
 	} {
 		replies := dispatchDefaultCommandForTest(t, c.line, ctx)
 		if got := strings.Join(replies, "\n"); !strings.Contains(got, c.wantSub) {
@@ -788,7 +789,7 @@ func TestLifecycleCommandsAppearInHelp(t *testing.T) {
 			t.Fatalf("help missing %q in %q", want, help)
 		}
 	}
-	for _, removed := range []string{"/queue", "/retry"} {
+	for _, removed := range []string{"/queue", "/retry", "/get", "/skills", "/stats", "/tab", "/parent", "/agents", "commands:", "keys:", "hovered"} {
 		if strings.Contains(help, removed) {
 			t.Fatalf("help still exposes removed %s command: %q", removed, help)
 		}
@@ -802,7 +803,7 @@ func TestFallbackREPLDispatchesRegistryCommands(t *testing.T) {
 	state := &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil), settings: Settings{Model: "anthropic/claude-sonnet-4-6"}}
 	config := &Config{}
 	var out bytes.Buffer
-	reader := bufio.NewReader(strings.NewReader("/get model\n/context\n/reset confirm\n/exit\n"))
+	reader := bufio.NewReader(strings.NewReader("/set model\n/context\n/reset confirm\n/exit\n"))
 	err := runREPLLoopWithCommands(context.Background(), reader, &out, newWriterReplCommandContext(config, state, &out), func(prompt string) error {
 		t.Fatalf("runTurn should not be called for command %q", prompt)
 		return nil
@@ -879,5 +880,28 @@ func TestToolsCommandIncludesPrivateAgentBuiltins(t *testing.T) {
 	r.runCommand("/tools show read_transcript")
 	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "name: read_transcript") {
 		t.Fatalf("private tool inspection failed: %s", got)
+	}
+}
+
+// Help groups the keys by task and, in the TUI, keeps keys in the text
+// color with muted descriptions; the line frontend gets the same rows plain.
+func TestHelpGroupsKeysByTask(t *testing.T) {
+	plain := strings.Join(defaultReplCommands.helpLines(), "\n")
+	for _, want := range []string{"\nSend and edit\n", "\nNavigate\n", "\nInspect\n", "\nApprove\n", "  Tab", "Ctrl-A/E Ctrl-U/K", "  y  ", "show or change settings"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("help missing %q in %q", want, plain)
+		}
+	}
+	markup := strings.Join(defaultReplCommands.helpLinesStyled(true), "\n")
+	if !strings.Contains(markup, styled("Send the message", "muted", "")) || !strings.Contains(markup, styled("Send and edit", "", "bold")) {
+		t.Fatalf("styled help lacks two-tone rows: %q", markup)
+	}
+	for _, line := range strings.Split(plain, "\n") {
+		if rw.StringWidth(line) > 80 {
+			t.Fatalf("help row wider than 80 columns: %q", line)
+		}
+	}
+	if !defaultReplCommands.busySafeCommand("/set model") || !defaultReplCommands.busySafeCommand("/set") || defaultReplCommands.busySafeCommand("/set model x") {
+		t.Fatal("/set should show settings mid-turn but queue a change")
 	}
 }
