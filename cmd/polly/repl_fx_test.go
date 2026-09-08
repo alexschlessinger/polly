@@ -474,23 +474,19 @@ func TestThinkingDockAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
 	if record.expanded || !record.complete || record.active || m.currentReasoningRecord() != nil {
 		t.Fatalf("completed reasoning record did not settle collapsed: %#v", record)
 	}
-	if m.turnDock.overlay != turnDockOverlayNone {
-		t.Fatalf("completed dock retained its open drawer: %#v", m.turnDock)
-	}
 
-	// With no active turn, Ctrl-O targets the Thought control in the dock.
+	// With no active turn, Ctrl-O reopens the latest thought inline.
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if trailer == nil || trailer.dock.overlay != turnDockOverlayThought {
-		t.Fatal("idle Ctrl-O did not open the completed Thought drawer")
+	if !record.expanded {
+		t.Fatal("idle Ctrl-O did not reopen the completed thought")
 	}
-	opened := plainStyledText(m.transcript[trailer.transcriptIndex].text)
+	opened := plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !strings.Contains(opened, "bounded reasoning") {
-		t.Fatalf("reopened completed Thought drawer = %q", opened)
+		t.Fatalf("reopened completed thought = %q", opened)
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if trailer.dock.overlay != turnDockOverlayNone {
-		t.Fatal("second idle Ctrl-O did not close the completed Thought drawer")
+	if record.expanded {
+		t.Fatal("second idle Ctrl-O did not collapse the thought")
 	}
 }
 
@@ -785,7 +781,7 @@ func TestLiveReasoningGrowthReanchorsScrolledViewport(t *testing.T) {
 	}
 }
 
-func TestCompletedReasoningKeepsInlineHitboxAndTrailerControl(t *testing.T) {
+func TestCompletedReasoningKeepsInlineHitbox(t *testing.T) {
 	const width = 50
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -805,16 +801,14 @@ func TestCompletedReasoningKeepsInlineHitboxAndTrailerControl(t *testing.T) {
 		t.Fatalf("completed reasoning lost its transcript hitbox: %#v", visible)
 	}
 
-	// The trailer also keeps its Thought control.
-	rows = m.transcriptRows(width)
-	placements := m.visibleTurnTrailerPlacements(fullViewport(len(rows), width))
-	if len(placements) != 1 || placements[0].overlay != turnDockOverlayThought {
-		t.Fatalf("completed Thought trailer placement = %#v record=%#v", placements, record)
+	// Clicking the row's triangle opens the thought; the trailer below is
+	// status only.
+	m.reasoningPlacements = visible
+	if !m.toggleReasoningAt(visible[0].X, visible[0].Y, width) || !record.expanded {
+		t.Fatal("clicking the completed thought control did not open it")
 	}
-	m.turnTrailerPlacements = placements
-	p := placements[0]
-	if !m.toggleTurnTrailerAt(p.X+1, p.Y) || m.openTurnTrailerID == 0 {
-		t.Fatal("clicking the completed Thought trailer control did not open it")
+	if trailer := m.turnTrailers[m.turnTrailerSeq]; trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "thought") {
+		t.Fatalf("settled trailer = %#v", trailer)
 	}
 }
 

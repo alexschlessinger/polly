@@ -301,7 +301,6 @@ func (r *managedREPL) refreshInspector(width int) {
 				}
 				model.nativeImages, model.imageCellWidth, model.imageCellHeight = geometry.nativeImages, geometry.cellWidth, geometry.cellHeight
 				model.refreshReasoningRecords(geometry.width)
-				model.refreshExpandedTurnTrailer(geometry.width)
 				v.view.Rows(model, geometry.width)
 				store := model.artifactStore
 				model.artifactStore = nil

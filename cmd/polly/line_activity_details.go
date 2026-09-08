@@ -27,9 +27,12 @@ func (d *lineActivityDetails) appendThought(chunk string, segmentBreak bool) {
 	appendReasoningTail(&d.thought, chunk, segmentBreak)
 }
 
+// lineActivityToolRows bounds the tool rows a one-shot activity summary keeps.
+const lineActivityToolRows = 6
+
 func (d *lineActivityDetails) startTool(call messages.ChatMessageToolCall) *lineToolDetail {
 	t := &lineToolDetail{label: cleanActivityText(toolLabel(call))}
-	if len(d.tools) == turnDockToolOverlayRows {
+	if len(d.tools) == lineActivityToolRows {
 		copy(d.tools, d.tools[1:])
 		d.tools = d.tools[:len(d.tools)-1]
 		d.earlierTools++
@@ -90,7 +93,7 @@ func (ui *lineTurnUI) finishDetailsLocked(completion turnCompletion) {
 	if len(d.tools) > 0 {
 		heading("Tools")
 		earlier, rows := d.earlierTools, d.tools
-		if earlier > 0 && len(rows) == turnDockToolOverlayRows {
+		if earlier > 0 && len(rows) == lineActivityToolRows {
 			rows, earlier = rows[1:], earlier+1
 		}
 		if earlier > 0 {

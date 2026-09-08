@@ -7,53 +7,27 @@ import (
 // Placements: mapping visible disclosure rows to screen cells and toggling them.
 
 func (m *replModel) visibleReasoningPlacements(v transcriptViewport) []disclosurePlacement {
-	return m.visibleDisclosurePlacements(v, turnDockOverlayThought)
+	return m.visibleDisclosurePlacements(v, activityThought)
 }
 
 func (m *replModel) visibleToolDisclosurePlacements(v transcriptViewport) []disclosurePlacement {
-	return m.visibleDisclosurePlacements(v, turnDockOverlayTools)
+	return m.visibleDisclosurePlacements(v, activityTools)
 }
 
 func (m *replModel) visibleImageDisclosurePlacements(v transcriptViewport) []disclosurePlacement {
-	return m.visibleDisclosurePlacements(v, turnDockOverlayImages)
-}
-
-func (m *replModel) visibleTurnTrailerPlacements(v transcriptViewport) []turnTrailerPlacement {
-	var placements []turnTrailerPlacement
-	rowOffset := 0
-	for _, block := range m.visual.blocks {
-		if block.turnTrailerID != 0 && len(block.rows) > 0 {
-			row := rowOffset
-			if v.contains(row) {
-				if record := m.turnTrailers[block.turnTrailerID]; record != nil {
-					for _, field := range record.fields {
-						if field.X >= v.width {
-							continue
-						}
-						field.Y = v.screenY(row)
-						field.Cols = min(field.Cols, v.width-field.X)
-						placements = append(placements, turnTrailerPlacement{
-							recordID: record.id, turnDockPlacement: field,
-						})
-					}
-				}
-			}
-		}
-		rowOffset += len(block.rows)
-	}
-	return placements
+	return m.visibleDisclosurePlacements(v, activityImages)
 }
 
 // visibleDisclosurePlacements projects one kind of activity control into
 // absolute screen cells for mouse hit-testing.
-func (m *replModel) visibleDisclosurePlacements(v transcriptViewport, overlay turnDockOverlay) []disclosurePlacement {
+func (m *replModel) visibleDisclosurePlacements(v transcriptViewport, kind activityKind) []disclosurePlacement {
 	// Only the block's activity controls are click targets. Truncation may
 	// leave no fully visible control; the header never stands in for one.
 	var placements []disclosurePlacement
 	rowOffset := 0
 	for _, block := range m.visual.blocks {
 		recordIDs := block.reasoningIDs
-		if overlay == turnDockOverlayTools || overlay == turnDockOverlayImages || overlay == turnDockOverlayAgents {
+		if kind == activityTools || kind == activityImages || kind == activityAgents {
 			recordIDs = block.toolDisclosureIDs
 		}
 		row := rowOffset
@@ -62,7 +36,7 @@ func (m *replModel) visibleDisclosurePlacements(v transcriptViewport, overlay tu
 			continue
 		}
 		for _, field := range block.activityFields {
-			if field.overlay != overlay || field.X >= v.width {
+			if field.kind != kind || field.X >= v.width {
 				continue
 			}
 			placements = append(placements, disclosurePlacement{
@@ -142,7 +116,7 @@ func (m *replModel) toggleReasoningGroup(ids []int64, width int) bool {
 	if !found {
 		return false
 	}
-	m.noteDisclosure(turnDockOverlayThought, validIDs[0], false)
+	m.noteDisclosure(activityThought, validIDs[0])
 	if width > 0 {
 		m.reasoningWidth = width
 	}
@@ -182,7 +156,7 @@ func (m *replModel) toggleToolDisclosureGroup(ids []int64) bool {
 	if !found {
 		return false
 	}
-	m.noteDisclosure(turnDockOverlayTools, validIDs[0], false)
+	m.noteDisclosure(activityTools, validIDs[0])
 	expand := !anyExpanded
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(validIDs), func(held bool) {
 		// Apply-then-refresh: see toggleReasoningGroup.
@@ -215,7 +189,7 @@ func (m *replModel) toggleImageDisclosureGroup(ids []int64) bool {
 	if !found {
 		return false
 	}
-	m.noteDisclosure(turnDockOverlayImages, validIDs[0], false)
+	m.noteDisclosure(activityImages, validIDs[0])
 	expand := !anyExpanded
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(validIDs), func(bool) {
 		for _, id := range validIDs {

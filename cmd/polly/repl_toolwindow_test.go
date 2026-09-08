@@ -486,14 +486,8 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 	if len(trailer.dock.reasoningIDs) != 1 {
 		t.Fatalf("canceled trailer reasoningIDs = %v, want one record", trailer.dock.reasoningIDs)
 	}
-	var hasTools bool
-	for _, f := range trailer.fields {
-		if f.overlay == turnDockOverlayTools {
-			hasTools = true
-		}
-	}
-	if !hasTools {
-		t.Fatalf("canceled trailer lost its tools control: %#v", trailer.fields)
+	if got := plainStyledText(m.transcript[trailer.transcriptIndex].text); !strings.Contains(got, "canceled") || strings.Contains(got, "tool") {
+		t.Fatalf("canceled trailer = %q, want status only", got)
 	}
 }
 
@@ -718,9 +712,8 @@ func TestToolDockTogglePreservesPhysicalViewportAnchor(t *testing.T) {
 		t.Fatalf("fixture top row = %q, want ctx-10", beforeTop)
 	}
 
-	trailer := m.turnTrailers[m.turnTrailerSeq]
-	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayTools) {
-		t.Fatal("wrapped tool trailer did not expand")
+	if !m.toggleToolDisclosure(record.id) {
+		t.Fatal("wrapped tool disclosure did not expand")
 	}
 	if m.scrollAnchor <= collapsedAnchor {
 		t.Fatalf("inline expansion did not preserve the held row: anchor=%d, was %d", m.scrollAnchor, collapsedAnchor)
@@ -729,8 +722,8 @@ func TestToolDockTogglePreservesPhysicalViewportAnchor(t *testing.T) {
 	if got := expandedRows[m.scrollAnchor]; got != beforeTop {
 		t.Fatalf("top physical row moved under overlay: %q -> %q", beforeTop, got)
 	}
-	if !m.toggleTurnTrailerOverlay(trailer, turnDockOverlayTools) {
-		t.Fatal("wrapped tool trailer did not re-collapse")
+	if !m.toggleToolDisclosure(record.id) {
+		t.Fatal("wrapped tool disclosure did not re-collapse")
 	}
 	if m.scrollAnchor != collapsedAnchor {
 		t.Fatalf("re-collapsed scrollAnchor = %d, want %d", m.scrollAnchor, collapsedAnchor)
@@ -771,20 +764,9 @@ func TestCompletedToolsKeepInlineHitboxAndTrailerControl(t *testing.T) {
 		t.Fatalf("completed tools lost their transcript hitbox: %#v", visible)
 	}
 
-	placements := m.visibleTurnTrailerPlacements(fullViewport(len(rows), width))
-	var toolPlacement *turnTrailerPlacement
-	for i := range placements {
-		if placements[i].overlay == turnDockOverlayTools {
-			toolPlacement = &placements[i]
-		}
-	}
-	if toolPlacement == nil {
-		t.Fatalf("completed tool dock placement = %#v record=%#v", placements, record)
-	}
-	m.turnTrailerPlacements = placements
-	p := *toolPlacement
-	if !m.toggleTurnTrailerAt(p.X+1, p.Y) || m.openTurnTrailerID == 0 {
-		t.Fatal("clicking the completed tool trailer control did not open it")
+	m.toolDisclosurePlacements = visible
+	if !m.toggleToolDisclosureAt(visible[0].X+1, visible[0].Y) || !record.expanded {
+		t.Fatal("clicking the completed tool control did not open it")
 	}
 }
 

@@ -184,12 +184,11 @@ func childDisplayCopy(src *replModel) *replModel {
 		m.reasoningRecords[id] = &copy
 	}
 	m.turnTrailerAt = maps.Clone(src.turnTrailerAt)
-	m.turnTrailerSeq, m.openTurnTrailerID = src.turnTrailerSeq, src.openTurnTrailerID
+	m.turnTrailerSeq = src.turnTrailerSeq
 	m.turnDock = cloneViewDock(src.turnDock)
 	for id, record := range src.turnTrailers {
 		copy := *record
 		copy.dock = cloneViewDock(record.dock)
-		copy.fields = slices.Clone(record.fields)
 		m.turnTrailers[id] = &copy
 	}
 	return m

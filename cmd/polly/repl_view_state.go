@@ -15,7 +15,6 @@ type viewAnchor struct {
 
 type viewSection struct {
 	tools, images, agents, thought bool
-	overlay                        turnDockOverlay
 }
 
 func rowTextUnits(row []ui.Cell) int {
@@ -87,11 +86,6 @@ func rememberViewSections(m *replModel, s *viewState) {
 			s.sections[r.inspectionKey] = viewSection{thought: r.expanded}
 		}
 	}
-	for _, trailer := range m.turnTrailers {
-		if key := trailerSectionKey(m, trailer); key != "" {
-			s.sections[key] = viewSection{overlay: trailer.dock.overlay}
-		}
-	}
 	s.revision++
 }
 
@@ -108,28 +102,4 @@ func applyViewSections(m *replModel, s viewState) {
 			r.dirty = true
 		}
 	}
-	for _, trailer := range m.turnTrailers {
-		if v, ok := s.sections[trailerSectionKey(m, trailer)]; ok {
-			trailer.dock.overlay = v.overlay
-			if v.overlay != turnDockOverlayNone {
-				m.openTurnTrailerID = trailer.id
-			}
-			m.refreshTurnTrailer(trailer)
-		}
-	}
-
-}
-
-func trailerSectionKey(m *replModel, r *turnTrailerRecord) string {
-	for _, record := range m.turnDockToolRecords(r.dock) {
-		if key := toolSectionKey(record); key != "" {
-			return "trailer:" + key
-		}
-	}
-	for _, record := range m.turnDockThoughtRecords(r.dock) {
-		if record.inspectionKey != "" {
-			return "trailer:" + record.inspectionKey
-		}
-	}
-	return ""
 }
