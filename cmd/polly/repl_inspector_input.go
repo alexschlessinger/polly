@@ -157,7 +157,8 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 		}
 		return true
 	}
-	if i.open && e.ID == "<Escape>" {
+	// Search and approval own Escape first: cancel the search, deny the call.
+	if i.open && e.ID == "<Escape>" && !r.model.hist.searching && r.model.approval == nil {
 		r.closeInspector()
 		return true
 	}

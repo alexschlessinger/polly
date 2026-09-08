@@ -685,3 +685,139 @@ func TestViewSizeHandlesCyclicFormattingState(t *testing.T) {
 		t.Fatalf("invalid retained size: %d", size)
 	}
 }
+
+func TestEscapeDefersToApprovalAndSearchWhileInspecting(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	r.inspect(tabViewTarget(r.visibleTab()))
+	waitInspector(t, r, 140)
+	m := r.model
+	approval := &approvalState{calls: []messages.ChatMessageToolCall{{ID: "1", Name: "bash"}}, reply: make(chan []bool, 1)}
+	m.approval = approval
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
+	if !r.workspace().inspector.open {
+		t.Fatal("escape closed the inspector instead of answering the approval")
+	}
+	select {
+	case out := <-approval.reply:
+		if len(out) != 1 || out[0] {
+			t.Fatalf("escape did not deny the call: %v", out)
+		}
+	default:
+		t.Fatal("escape left the approval pending")
+	}
+	m.hist.searching = true
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
+	if !r.workspace().inspector.open || m.hist.searching {
+		t.Fatal("escape closed the inspector instead of cancelling the search")
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
+	if r.workspace().inspector.open {
+		t.Fatal("escape with nothing else pending did not close the inspector")
+	}
+}
+
+func TestSavedConversationInspectorLinksNestedAgents(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "root")
+	ctx := context.Background()
+	child, err := store.Acquire(ctx, "child", sessions.AcquireOptions{Parent: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := agentCall("gcall", `{"label":"grandchild"}`)
+	testAddMessages(t, child, []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "delegate"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}},
+		{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: "The grandchild answer."},
+		{Role: messages.MessageRoleAssistant, Content: "Delegated."},
+	})
+	if err := child.Close(); err != nil {
+		t.Fatal(err)
+	}
+	grand, err := store.Acquire(ctx, "grandchild", sessions.AcquireOptions{Parent: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := updateMetadata(ctx, grand, func(md *sessions.Metadata) { md.SpawnCallID = "gcall"; md.SpawnOutcome = sessions.ReportFinished }); err != nil {
+		t.Fatal(err)
+	}
+	testAddMessages(t, grand, []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "deeper"}, {Role: messages.MessageRoleAssistant, Content: "The grandchild answer."}})
+	if err := grand.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "child"}})
+	v := waitInspector(t, r, 140)
+	var row *toolDisclosureRow
+	for _, record := range v.model.toolDisclosures {
+		for i := range record.rows {
+			if record.rows[i].callID == "gcall" {
+				row = &record.rows[i]
+			}
+		}
+	}
+	if row == nil || row.agent == nil || row.agent.session != "grandchild" || row.agent.viewID == "" {
+		t.Fatalf("saved child view did not resolve its spawned agent: %+v", row)
+	}
+}
+
+func TestInspectedLiveToolRecoversAfterReset(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	m := r.model
+	call := messages.ChatMessageToolCall{ID: "call_0", Name: "bash"}
+	m.appendToolCallStart(call)
+	m.inspections.setResult(call, messages.ChatMessage{Content: "first output"})
+	r.inspectCommand("tools")
+	v := waitInspector(t, r, 140)
+	if !strings.Contains(inspectorText(v), "first output") {
+		t.Fatalf("tool view = %q", inspectorText(v))
+	}
+	epoch := m.inspections.epoch
+	m.mu.Lock()
+	handled, quit := r.runCommand("/reset confirm")
+	m.mu.Unlock()
+	if !handled || quit {
+		t.Fatalf("reset handled=%v quit=%v", handled, quit)
+	}
+	if m.inspections.epoch == epoch {
+		t.Fatal("reset did not move the inspection epoch")
+	}
+	r.refreshInspector(140)
+	settleInspectorWork(r)
+	v = r.workspace().inspector.current
+	if !v.unavailable || !strings.Contains(inspectorText(v), "no longer available") {
+		t.Fatalf("wiped item still shows: %q", inspectorText(v))
+	}
+	m.appendToolCallStart(call)
+	m.inspections.setResult(call, messages.ChatMessage{Content: "second output"})
+	v = waitInspector(t, r, 140)
+	if v.unavailable || !strings.Contains(inspectorText(v), "second output") {
+		t.Fatalf("inspector did not recover the reused key: unavailable=%v %q", v.unavailable, inspectorText(v))
+	}
+}
+
+func TestHydratedThoughtKeysFollowProseSplits(t *testing.T) {
+	m := newReplModel()
+	call := messages.ChatMessageToolCall{ID: "c", Name: "bash", Arguments: `{"command":"true"}`}
+	m.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "one"},
+		{Role: messages.MessageRoleAssistant, Reasoning: "thought A", Content: "prose one"},
+		{Role: messages.MessageRoleUser, Content: "two"},
+		{Role: messages.MessageRoleAssistant, Reasoning: "thought B", Content: "prose two", ToolCalls: []messages.ChatMessageToolCall{call}},
+		{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: "ok"},
+		{Role: messages.MessageRoleAssistant, Reasoning: "thought C", Content: "prose three"},
+	}, "history")
+	if len(m.inspections.thoughts) != 3 || len(m.reasoningOrder) != 3 {
+		t.Fatalf("thoughts %d records %d, want 3 and 3", len(m.inspections.thoughts), len(m.reasoningOrder))
+	}
+	for i, want := range []string{"thought A", "thought B", "thought C"} {
+		record := m.reasoningRecords[m.reasoningOrder[i]]
+		_, thought := m.inspections.selected(viewTarget{kind: thoughtViewKind, item: record.inspectionKey})
+		if thought == nil || !strings.Contains(thought.text, want) {
+			t.Fatalf("record %d opens %+v, want %q", i, thought, want)
+		}
+	}
+	trailer := m.turnTrailers[m.turnTrailerSeq]
+	if trailer == nil || len(trailer.dock.reasoningIDs) != 1 || trailer.dock.reasoningIDs[0] != m.reasoningOrder[2] {
+		t.Fatalf("settled turn trailer does not carry the turn's last reasoning record: %+v", trailer)
+	}
+}

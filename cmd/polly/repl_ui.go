@@ -798,6 +798,9 @@ func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
 	if ev.Type == ui.MouseEvent && ev.ID == "<MouseRelease>" {
 		return false
 	}
+	if mouse, ok := ev.Payload.(ui.Mouse); ok && mouse.Drag && !r.inspectorDragging {
+		return false
+	}
 	if ev.ID == pasteStartID {
 		return false
 	}
@@ -1247,6 +1250,11 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
 			r.mousePosition = image.Pt(mouse.X, mouse.Y)
 			r.mousePositionKnown = true
+			if mouse.Drag && !r.inspectorDragging {
+				// Held-button motion is not a click; only an active divider
+				// drag consumes it.
+				return false
+			}
 		}
 	}
 	viewport := r.transcriptHeight()

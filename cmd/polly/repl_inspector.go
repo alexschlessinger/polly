@@ -156,6 +156,17 @@ func (r *managedREPL) refreshInspector(width int) {
 	if v.loading {
 		return
 	}
+	live := r.inspectionTab(i.target)
+	if v.unavailable && live != nil && i.target.kind != conversationViewKind {
+		// A live catalogue can regain the selected key (a reset followed by a
+		// new turn), so unavailability is re-checked against it each refresh.
+		live.model.mu.Lock()
+		tool, thought := live.model.inspections.selected(i.target)
+		live.model.mu.Unlock()
+		if tool != nil || thought != nil {
+			v.unavailable, v.failures, v.revision = false, 0, ""
+		}
+	}
 	if v.unavailable || v.failures > 0 && time.Now().Before(v.retryAt) {
 		if v.model != nil && v.geometry != geometry {
 			v.view.Rows(v.model, geometry.width)
@@ -164,16 +175,17 @@ func (r *managedREPL) refreshInspector(width int) {
 		return
 	}
 	var source viewSource
-	live := r.inspectionTab(i.target)
 	if live != nil {
 		m := live.model
 		m.mu.Lock()
 		revision := fmt.Sprintf("live:%p:%s:%q:%d:%d:%d:%d:%d", m, live.name, m.status.description, m.visual.revision, m.streamRaw.Len(), m.inspections.version, m.turnReasoningID, m.thinkingSegmentStart.UnixNano())
 		source.info = &sessions.SessionView{ID: live.viewID(), Metadata: &sessions.Metadata{Name: live.name, Parent: live.parentName, Description: m.status.description}, Artifacts: m.artifactStore}
-		if live.parent != nil {
-			source.info.ParentID = live.parent.viewID()
-		} else if live.childView != nil {
+		// The saved view's ParentID is the stable ancestry; a runtime parent
+		// tab only stands in when the tab was never read from the store.
+		if live.childView != nil && live.childView.ParentID != "" {
 			source.info.ParentID = live.childView.ParentID
+		} else if live.parent != nil {
+			source.info.ParentID = live.parent.viewID()
 		}
 		tool, thought := m.inspections.selected(i.target)
 		if i.target.kind != conversationViewKind {
@@ -252,6 +264,14 @@ func (r *managedREPL) refreshInspector(width int) {
 				if err == nil && !source.info.Unchanged {
 					if target.kind == conversationViewKind {
 						source.model = prepareChildDisplay(source.info, r.config, geometry.width)
+						if source.model.hasAgentRows() {
+							// Saved spawn rows link to their sessions the way a
+							// live tab's do; otherwise nested agents are reachable
+							// only through the Agents picker.
+							if summaries, e := tabStoreSummaries(reader, r.work.ctx); e == nil {
+								source.model.hydrateAgentSessions(source.info.Metadata.Name, summaries)
+							}
+						}
 						source.revision = source.info.Revision
 					} else {
 						source.model = newReplModel()

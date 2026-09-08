@@ -192,7 +192,16 @@ func (r *managedREPL) sendInspectorMessage(w *sessionWorkspace, target viewTarge
 		if v == nil || v.info == nil || v.model == nil || v.target.session.ID != target.session.ID {
 			return
 		}
-		tab = &replTab{name: v.info.Metadata.Name, model: childDisplayCopy(v.model), childView: v.info, viewTarget: sessions.ViewTarget{ID: v.info.ID}, parent: r.visibleTab(), parentName: v.info.Metadata.Parent, delivered: true}
+		// A live parent tab keeps the workspace chain honest for a grandchild;
+		// the visible root only stands in when the parent has no runtime.
+		parent := r.visibleTab()
+		for _, candidate := range r.tabs {
+			if v.info.ParentID != "" && candidate.viewID() == v.info.ParentID {
+				parent = candidate
+				break
+			}
+		}
+		tab = &replTab{name: v.info.Metadata.Name, model: childDisplayCopy(v.model), childView: v.info, viewTarget: sessions.ViewTarget{ID: v.info.ID}, parent: parent, parentName: v.info.Metadata.Parent, delivered: true}
 		tab.state = r.childViewState(r.state.sessionStore, v.info)
 		tab.model.artifactStore = v.info.Artifacts
 		r.tabs = append(r.tabs, tab)

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	ui "github.com/metaspartan/gotui/v5"
 	"os"
 	"path/filepath"
 	"strings"
@@ -829,5 +830,38 @@ func TestToolDisclosureResetsPerTurn(t *testing.T) {
 	}
 	if !m.toggleToolDisclosure(first.id) || first.expanded || !second.expanded {
 		t.Fatalf("re-collapsing first turn affected second: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestDraggedMouseSampleDoesNotRetoggleDisclosure(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = r.work.close() })
+	screen.SetSize(80, 24)
+	m := r.model
+	m.beginTurn("run tools")
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "a", Name: "alpha"}})
+	record := m.currentToolDisclosure()
+	r.render()
+	if len(m.toolDisclosurePlacements) == 0 {
+		t.Fatal("no disclosure placement after render")
+	}
+	p := m.toolDisclosurePlacements[0]
+	press := ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: p.X + 1, Y: p.Y}}
+	r.handleEvent(press)
+	if !record.expanded {
+		t.Fatal("press did not toggle the disclosure")
+	}
+	drag := ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: p.X + 2, Y: p.Y, Drag: true}}
+	r.handleEvent(drag)
+	if !record.expanded {
+		t.Fatal("held-button motion toggled the disclosure again")
+	}
+	if r.wantsRenderForEvent(drag) {
+		t.Fatal("ignored drag sample still requests a repaint")
+	}
+	if r.mousePosition.X != p.X+2 {
+		t.Fatal("drag sample did not update the pointer position")
 	}
 }
