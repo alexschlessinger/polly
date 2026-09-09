@@ -198,7 +198,8 @@ files, including staged, unstaged, and non-ignored new files. Source paths choos
 what to copy; they never grant editing access to that checkout. Children do not
 write repository Git metadata or commit. The parent previews a three-way merge
 and applies an accepted candidate without changing its index or branch. Git 2.40+
-is required. `read_only: true` supports research; outside Git it observes live
+is required. Set `read_only: true` for research, summaries, and reviews; a task's
+"do not edit" wording does not change its execution mode. Outside Git it observes live
 files. See [worktree restrictions](WORKFLOWS.md#worktrees-and-integration).
 
 Tools, native paths, shell commands, local MCP servers, repository instructions,
@@ -210,7 +211,10 @@ disables every model tool, including coordination and private built-ins.
 Up to 32 children execute concurrently, with 256 logical executions per run.
 `--swarm-concurrent` and `--swarm-executions` set these limits. Waiting releases
 resources and preserves the remaining iteration allowance; it does not spend a
-new execution. Additional service turns and retries do. Quitting pauses work;
+new execution. Additional service turns and retries do. A blank member final
+gets one corrective model call within the same execution and remaining allowance;
+another blank final fails with a saved error instead of reporting success.
+Quitting pauses work;
 reopening the parent and using `/swarm resume ID` explicitly resumes it. A
 finished member keeps its conversation and files until cleanup.
 
@@ -237,9 +241,16 @@ reply, or integration work. An unchanged blocker produces an incomplete result,
 not an endless wait. One-shot memory sessions are promoted to the normal SQLite
 store before the first coordination mutation, so the parent can be resumed.
 
+Accepting a submitted revision completes read-only work and editing candidates
+whose immutable tree matches their original starting snapshot. Changed candidates
+remain **accepted · integration pending** until applied. Previously accepted
+unchanged tasks are also completed when the parent next settles, including after
+context cleanup. Cleanup itself does not accept or integrate a task.
+
 Inline agent rows and `/swarm members` show the swarm's current member state, including
 queued, running, waiting, paused (with the iteration-limit reason when applicable),
-failed, and awaiting review. A completed
+failed, and awaiting review. Retired members still show outstanding task work;
+the inspector distinguishes open runs from active executions. A completed
 background spawn call does not mean its member finished. Status refreshes do
 not require a child tab or acquire the child's execution lease.
 

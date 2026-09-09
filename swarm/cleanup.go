@@ -3,6 +3,7 @@ package swarm
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // Cleanup retires inactive execution contexts after proving their current
@@ -28,7 +29,7 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 	}
 
 	if contextID != "" && s.Contexts[contextID] == nil {
-		return errors.New("unknown execution context")
+		return fmt.Errorf("unknown execution context %q; cleanup requires the context field from list_agents, not an execution ID", contextID)
 	}
 	contexts := []*ExecutionContext{}
 	acceptedTrees := map[string]string{}
