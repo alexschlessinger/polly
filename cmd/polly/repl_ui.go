@@ -154,13 +154,15 @@ type replModel struct {
 	turnTrailerSeq            int64
 	modal                     *replModal
 
-	ed        lineEditor
-	busy      bool
-	canceling bool
-	turnID    int64
-	pasting   bool // inside a bracketed paste; runes go in verbatim
-	approval  *approvalState
-	hist      promptHistory
+	ed              lineEditor
+	busy            bool
+	canceling       bool
+	turnID          int64
+	pasting         bool // inside a bracketed paste; runes go in verbatim
+	approval        *approvalState
+	approvalQueue   []*approvalState
+	approvalsClosed bool
+	hist            promptHistory
 
 	// queue holds inputs submitted while a turn is in flight (the prompt stays
 	// editable during a turn). Commands remain text-only; prompts carry the
@@ -331,10 +333,12 @@ type toolDisclosureRecord struct {
 }
 
 type approvalState struct {
-	calls []messages.ChatMessageToolCall
-	index int
-	out   []bool
-	reply chan []bool
+	ctx       context.Context
+	requester string
+	calls     []messages.ChatMessageToolCall
+	index     int
+	out       []bool
+	reply     chan []bool
 }
 
 func newReplModel() *replModel {

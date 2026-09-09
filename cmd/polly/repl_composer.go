@@ -242,13 +242,9 @@ func (m *replModel) approvalPromptRows(maxRows, width int) string {
 }
 
 func (m *replModel) finishApproval() {
-	if m.approval == nil {
-		return
+	if m.approval != nil {
+		m.resolveApprovalLocked(m.approval, append([]bool(nil), m.approval.out...))
 	}
-	out := append([]bool(nil), m.approval.out...)
-	m.approval.reply <- out
-	close(m.approval.reply)
-	m.approval = nil
 }
 
 // inputPromptWidth is the visible column count of the "▎ " gutter (and
@@ -375,6 +371,9 @@ func (m *replModel) approvalPrompt(width int) string {
 	a := m.approval
 	call := a.calls[a.index]
 	prefix := "Allow "
+	if a.requester != "" {
+		prefix += "agent " + truncate(a.requester, 16) + " · "
+	}
 	if len(a.calls) > 1 {
 		prefix += fmt.Sprintf("(%d/%d) ", a.index+1, len(a.calls))
 	}
@@ -668,19 +667,6 @@ func (r *managedREPL) captureClipboardToComposer() {
 			m.insertEditorText(m.registerAttachment(img.Path, "clipboard image") + " ")
 		})
 	}()
-}
-
-func (m *replModel) denyApprovalLocked() {
-	if m.approval == nil {
-		return
-	}
-	denied := make([]bool, len(m.approval.calls))
-	select {
-	case m.approval.reply <- denied:
-	default:
-	}
-	close(m.approval.reply)
-	m.approval = nil
 }
 
 // runComposerCommandLocked submits a slash command typed into the composer and

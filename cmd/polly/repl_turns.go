@@ -182,6 +182,7 @@ func (r *managedREPL) cancelTurns() {
 func (r *managedREPL) releaseApprovals() {
 	for _, tab := range r.tabs {
 		tab.model.mu.Lock()
+		tab.model.approvalsClosed = true
 		tab.model.denyApprovalLocked()
 		tab.model.mu.Unlock()
 	}

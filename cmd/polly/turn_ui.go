@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -44,6 +45,20 @@ type TurnUI interface {
 	// TurnPersistenceAllowed reports whether the settled turn may still be
 	// written to the session; a detached REPL turn vetoes the write.
 	TurnPersistenceAllowed() bool
+}
+
+// Context-aware screens can revoke a pending request when its execution ends.
+// Keep this optional for surfaces that handle their own synchronous prompts.
+func approveToolCalls(ctx context.Context, ui TurnUI, requester string, calls []messages.ChatMessageToolCall) []bool {
+	if ctx.Err() != nil {
+		return denyToolCalls(calls)
+	}
+	if screen, ok := ui.(interface {
+		ApproveToolCallsContext(context.Context, string, []messages.ChatMessageToolCall) []bool
+	}); ok {
+		return screen.ApproveToolCallsContext(ctx, requester, calls)
+	}
+	return ui.ApproveToolCalls(calls)
 }
 
 // lineTurnUI streams raw output or owns a terminal Markdown tail and footer,

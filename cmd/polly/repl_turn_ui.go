@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -127,47 +127,50 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 }
 
 func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	return t.ApproveToolCallsContext(context.Background(), "", calls)
+}
+
+func (t *gotuiTurnUI) ApproveToolCallsContext(ctx context.Context, requester string, calls []messages.ChatMessageToolCall) []bool {
 	if len(calls) == 0 {
 		return nil
 	}
 	t.model.mu.Lock()
-	if !t.activeLocked() || t.model.canceling {
+	if ctx.Err() != nil || !t.acceptingLocked() || t.model.approvalsClosed {
 		t.model.mu.Unlock()
 		return denyToolCalls(calls)
 	}
-	t.model.mu.Unlock()
-
 	if !t.config.Confirm {
+		t.model.mu.Unlock()
 		approved := make([]bool, len(calls))
 		for i := range approved {
 			approved[i] = true
 		}
 		return approved
 	}
-	reply := make(chan []bool, 1)
-	t.model.mu.Lock()
-	if !t.activeLocked() || t.model.canceling {
+	a := &approvalState{ctx: ctx, requester: requester, calls: append([]messages.ChatMessageToolCall(nil), calls...), reply: make(chan []bool, 1)}
+	t.model.approvalQueue = append(t.model.approvalQueue, a)
+	t.model.advanceApprovalLocked()
+	t.model.mu.Unlock()
+	t.wakeApprovals()
+	select {
+	case results, ok := <-a.reply:
+		if !ok || ctx.Err() != nil {
+			return denyToolCalls(calls)
+		}
+		return results
+	case <-ctx.Done():
+		t.model.mu.Lock()
+		t.model.resolveApprovalLocked(a, denyToolCalls(calls))
 		t.model.mu.Unlock()
+		t.wakeApprovals()
 		return denyToolCalls(calls)
 	}
-	t.model.approval = &approvalState{calls: calls, reply: reply}
-	label := toolLabel(calls[0])
-	if len(calls) > 1 {
-		label += fmt.Sprintf(" +%d more", len(calls)-1)
-	}
-	t.model.pushNotice("approval needed: " + truncate(label, 80))
-	t.model.signalHiddenLocked(signalApprovalNeeded, truncate(label, 80))
-	t.model.mu.Unlock()
-	// The visible tab's notice comes from the event loop; wake it,
-	// since nothing else does while the tab holding this turn is hidden.
+}
+
+func (t *gotuiTurnUI) wakeApprovals() {
 	if t.repl != nil {
 		t.repl.wakeTabs()
 	}
-	results, ok := <-reply
-	if !ok {
-		return make([]bool, len(calls))
-	}
-	return results
 }
 
 func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {

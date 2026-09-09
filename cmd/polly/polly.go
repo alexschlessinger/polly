@@ -1109,7 +1109,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
 			return withToolCall(withParentTurnUI(ctx, turnUI), call)
 		},
-		ApproveToolCalls: turnUI.ApproveToolCalls,
+		ApproveToolCalls: func(calls []messages.ChatMessageToolCall) []bool {
+			return approveToolCalls(ctx, turnUI, "", calls)
+		},
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 			stats.record(tc.Name, err)
 			turnUI.AppendToolEnd(tc, result, duration, err)
