@@ -184,6 +184,12 @@ authority. Information waits until the next active turn. Requests/replies may
 wake an idle member. A failed, stopped, or workflow-reserved member does not
 silently restart on peer traffic.
 
+Admitted mail remains in the model's saved history with its delivery receipt.
+The TUI omits these internal envelopes from user turns and the restored composer,
+including mail saved by older versions; `/swarm` still exposes the messages.
+Completion reports preserve plain-text results as text and structured results
+as JSON.
+
 `swarm_publish` records attributed findings, optional source/artifact references,
 and an optional immutable snapshot. Authors may supersede their own findings;
 history is retained. `swarm_search` performs case-insensitive literal search of

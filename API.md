@@ -658,6 +658,12 @@ retained by their parent. `sessions.DurableStore.Promote(ctx, path)` moves a mem
 store into the disk store atomically without changing live handles, stable IDs,
 cache identity, or artifact access. Existing unrelated disk sessions remain.
 
+Admitted peer inputs carry `messages.MetadataKeySwarmMessages` delivery IDs and
+`MetadataKeyAgentSynthetic: true`; they remain model-visible user-role messages
+without becoming user turns in the TUI. Older inputs carrying only the delivery
+IDs are also recognized during display replay. Coordination continuation prompts
+are synthetic too.
+
 ## Sessions
 
 Sessions persist conversation history and artifacts in SQLite. Disk-backed

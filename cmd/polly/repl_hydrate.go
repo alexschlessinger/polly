@@ -430,7 +430,29 @@ func (h *historyHydrator) finish() {
 
 func agentSyntheticMessage(msg messages.ChatMessage) bool {
 	synthetic, _ := msg.Metadata[messages.MetadataKeyAgentSynthetic].(bool)
-	return synthetic
+	if synthetic {
+		return true
+	}
+	// Legacy mailbox admission already stored authenticated IDs, but omitted
+	// the synthetic flag. Recognize both in-memory and JSON-decoded metadata;
+	// never hide a real user prompt just because it contains the envelope text.
+	switch ids := msg.Metadata[messages.MetadataKeySwarmMessages].(type) {
+	case []string:
+		for _, id := range ids {
+			if id == "" {
+				return false
+			}
+		}
+		return len(ids) > 0
+	case []any:
+		for _, value := range ids {
+			if id, ok := value.(string); !ok || id == "" {
+				return false
+			}
+		}
+		return len(ids) > 0
+	}
+	return false
 }
 
 func restorableHistoryTurn(msg messages.ChatMessage, display string, simpleContent bool, store artifacts.Store) (managedTurnInput, bool) {
