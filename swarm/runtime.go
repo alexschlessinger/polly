@@ -277,6 +277,14 @@ func (r *Runtime) event(kind, member, text string) {
 func (r *Runtime) Close() error {
 	r.launchMu.Lock()
 	r.closing = true
+	// Cancel the orchestration contexts before their workers. Independent
+	// AfterFunc callbacks can otherwise deliver a worker's cancellation while
+	// its workflow still appears live, recording shutdown as a task failure.
+	r.mu.Lock()
+	for _, cancel := range r.workflowCancels {
+		cancel()
+	}
+	r.mu.Unlock()
 	r.cancel()
 	r.launchMu.Unlock()
 	r.wg.Wait()
