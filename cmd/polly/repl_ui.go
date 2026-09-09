@@ -801,7 +801,8 @@ func (r *managedREPL) needsTick() bool {
 	}
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
-	return r.model.busy
+	// A live listing (the sessions picker) repaints to follow the tabs.
+	return r.model.busy || r.model.modal != nil && r.model.modal.refresh != nil
 }
 
 // wantsRenderForEvent reports whether to repaint after handling ev. Bracketed
@@ -1352,6 +1353,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			}
 			if m.status.sessionField.hit(mouse.X, mouse.Y, terminalHeight) {
 				r.openSessionsPicker()
+				return false
+			}
+			if m.status.agentsField.hit(mouse.X, mouse.Y, terminalHeight) {
+				r.openSessionsPickerSelected(r.attentionAgentName())
 				return false
 			}
 			if r.openAgentAt(mouse.X, mouse.Y) {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/swarm"
 )
 
 // Tabs. The managed REPL holds several open sessions at once, each with its
@@ -57,6 +58,10 @@ type replTab struct {
 	swarmLoading   bool
 	swarmActive    bool
 	swarmRefreshAt time.Time
+	// Event-loop-owned display snapshot; the runtime remains the execution owner.
+	swarmSnapshot *swarm.State
+	// Typed launches announce each settled execution once, independently of paint.
+	swarmAnnounced map[string]string
 }
 
 // openResult is the outcome of opening a session for a new tab.
@@ -472,6 +477,24 @@ func (r *managedREPL) requestOpenLocked(name string) {
 		return
 	}
 	r.beginOpenLocked(name, false)
+}
+
+// Picker selections pin the identity that was displayed, even if another
+// process renames/deletes the session before the asynchronous read begins.
+func (r *managedREPL) requestOpenTargetLocked(target sessions.ViewTarget) {
+	if target.ID == "" {
+		r.requestOpenLocked(target.Name)
+		return
+	}
+	for i, tab := range r.tabs {
+		if tab.viewID() == target.ID {
+			r.requestShowTabLocked(i)
+			return
+		}
+	}
+	if !r.beginWorkspaceTarget(target) {
+		r.model.appendNoticeLine("Opening sessions is unavailable")
+	}
 }
 
 // canOpenLocked reports whether a tab may open now, explaining a refusal in

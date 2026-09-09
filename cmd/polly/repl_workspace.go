@@ -74,19 +74,7 @@ func (r *managedREPL) workspaceActivity(tab *replTab) string {
 	if activity := r.peekTabActivity(tab); activity != "" {
 		parts = append(parts, activity)
 	}
-	running, approvals := 0, 0
-	for _, child := range r.tabs {
-		if child == tab || r.rootTab(child) != tab {
-			continue
-		}
-		switch r.peekTabActivity(child) {
-		case "approval needed":
-			approvals++
-		case "", "done", "failed", "incomplete":
-		default:
-			running++
-		}
-	}
+	running, approvals := r.agentCountsFor(tab)
 	if running > 0 {
 		parts = append(parts, turnAgentLabel(running)+" running")
 	}
@@ -113,6 +101,18 @@ func (r *managedREPL) hasLiveAgents(tab *replTab) bool {
 // approval, so Ctrl-G can open the picker on it; empty when none does.
 func (r *managedREPL) attentionAgentName() string {
 	owner := r.visibleTab()
+	if owner.swarmSnapshot != nil {
+		if a := owner.model.approval; a != nil {
+			if member := owner.swarmSnapshot.Members[a.requester]; member != nil {
+				return member.ID
+			}
+		}
+		for _, a := range owner.model.approvalQueue {
+			if member := owner.swarmSnapshot.Members[a.requester]; member != nil {
+				return member.ID
+			}
+		}
+	}
 	for _, tab := range r.tabs {
 		if tab != owner && r.rootTab(tab) == owner && r.peekTabActivity(tab) == "approval needed" {
 			return tab.name

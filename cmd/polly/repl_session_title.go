@@ -81,22 +81,12 @@ func (r *managedREPL) refreshSessionTitle(id string, locked *replModel) {
 		r.model.mu.Lock()
 		defer r.model.mu.Unlock()
 	}
-	if m := r.model.modal; m != nil && m.onEditTitle != nil {
-		selected, filter := "", m.input.text()
-		if items := m.filteredItems(); m.selected >= 0 && m.selected < len(items) {
-			selected = items[m.selected].value
-		}
-		r.openSessionsPickerSelected(selected)
-		if next := r.model.modal; next != nil {
-			next.input.setText(filter)
-			for i, item := range next.filteredItems() {
-				if item.value == selected {
-					next.selected = i
-					break
-				}
-			}
-		}
+	if m := r.model.modal; m != nil && m.picker != nil {
+		selected := pickerSelection(m)
+		m.picker.merge(summaries, m.expanded)
+		r.refreshSessionsPickerItems(m.picker, m, selected)
 	}
+
 }
 
 func (r *managedREPL) openSessionTitleInput(summary sessions.SessionSummary) {
@@ -120,7 +110,7 @@ func (r *managedREPL) openSessionTitleInput(summary sessions.SessionSummary) {
 	m := &replModal{
 		title: "Edit title", inputMode: true, width: 72,
 		helper:   "Enter save · Esc back",
-		onCancel: func() { r.openSessionsPickerSelected(md.Name) },
+		onCancel: func() { r.openSessionsPickerSelected(summary.ID) },
 		onSubmit: func(title string) { r.editSessionTitle(summary, title) },
 	}
 	m.input.setText(sessions.DisplayLabel(md))
@@ -185,5 +175,5 @@ func (r *managedREPL) editSessionTitle(summary sessions.SessionSummary, title st
 		r.model.appendNoticeLine("Title update failed · " + err.Error())
 	}
 	r.refreshSessionTitle(summary.ID, r.model)
-	r.openSessionsPickerSelected(summary.Metadata.Name)
+	r.openSessionsPickerSelected(summary.ID)
 }

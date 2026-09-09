@@ -36,6 +36,14 @@ type sessionStatus struct {
 
 	parentName   string
 	sessionField statusSessionPlacement
+
+	// agents is what this workspace's agents are doing, as the status row
+	// says it ("1 agent running", "1 needs approval"), in agentsColor;
+	// agentsField is where it was painted, for a click that opens the
+	// sessions picker on them.
+	agents      string
+	agentsColor string
+	agentsField statusSessionPlacement
 }
 
 func newSessionStatus(settings *Settings, contextName string, toolCount, skillCount int) sessionStatus {
@@ -146,6 +154,7 @@ func shortModelName(model string) string {
 // metrics live in the fixed turn dock immediately above the composer.
 func (m *replModel) statusRow(width int) string {
 	m.status.sessionField = statusSessionPlacement{}
+	m.status.agentsField = statusSessionPlacement{}
 	if m.quiet || width <= 0 {
 		return ""
 	}
@@ -165,6 +174,7 @@ func (m *replModel) statusRow(width int) string {
 		text     string
 		rendered string // styled form when the field carries its own colors
 		session  bool
+		agents   bool
 	}
 	fields := []field{}
 	if m.status.modelName != "" {
@@ -174,6 +184,9 @@ func (m *replModel) statusRow(width int) string {
 		fields = append(fields, field{drop: 3, text: shortModelName(m.status.modelName)})
 	}
 	fields = append(fields, field{drop: 0, text: m.status.displayLabel(), session: true})
+	if m.status.agents != "" {
+		fields = append(fields, field{drop: 2, text: m.status.agents, rendered: styled(m.status.agents, m.status.agentsColor, ""), agents: true})
+	}
 	if context := m.status.contextUsageText(); context != "" {
 		fields = append(fields, field{drop: 1, text: context, rendered: m.status.contextUsageStyled()})
 	}
@@ -224,7 +237,7 @@ func (m *replModel) statusRow(width int) string {
 	rightStyledParts := make([]string, len(fields))
 	for i, f := range fields {
 		rightRawParts[i] = f.text
-		if f.rendered != "" && !strings.HasPrefix(f.text, "…") && f.text == m.status.contextUsageText() {
+		if f.rendered != "" && !strings.HasPrefix(f.text, "…") && (f.agents || f.text == m.status.contextUsageText()) {
 			rightStyledParts[i] = f.rendered
 			continue
 		}
@@ -260,6 +273,9 @@ func (m *replModel) statusRow(width int) string {
 		fieldCols := rw.StringWidth(f.text)
 		if f.session && fieldCols > 0 {
 			m.status.sessionField = statusSessionPlacement{X: x, Cols: fieldCols}
+		}
+		if f.agents && fieldCols > 0 {
+			m.status.agentsField = statusSessionPlacement{X: x, Cols: fieldCols}
 		}
 		x += fieldCols
 		if i < len(fields)-1 {

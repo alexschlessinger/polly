@@ -15,6 +15,7 @@ import (
 type replModalItem struct {
 	label           string
 	value           string
+	identity        string // Stable session identity when its display changes.
 	searchText      string // full text, independent of truncated display columns
 	display         string
 	selectedDisplay string
@@ -22,7 +23,8 @@ type replModalItem struct {
 	// is listed only while its parent is expanded or a filter matches it.
 	parent string
 	// children counts the items nesting under this one.
-	children int
+	children   int
+	nestDetail string
 }
 
 // replModal is shared by provider/model selection and masked credential input.
@@ -49,6 +51,8 @@ type replModal struct {
 	// expanded holds the values of parent items whose children are listed.
 	// Sharing the map across openings keeps the choice for the process.
 	expanded    map[string]bool
+	refresh     func()
+	picker      *sessionsPicker
 	onSubmit    func(string)
 	onClear     func()
 	onEditTitle func(string)
@@ -149,7 +153,11 @@ func (m *replModal) nestMarker(item replModalItem) string {
 	if item.children == 1 {
 		noun = "agent"
 	}
-	return fmt.Sprintf("%s %d %s", glyph, item.children, noun)
+	marker := fmt.Sprintf("%s %d %s", glyph, item.children, noun)
+	if item.nestDetail != "" {
+		marker += " · " + item.nestDetail
+	}
+	return marker
 }
 
 func (m *replModal) text(maxRows, modalWidth int) string {
@@ -425,185 +433,6 @@ func (r *managedREPL) openKeyManager() {
 		title: "Provider keys", items: items, selected: selected,
 		onSubmit: r.openProviderKeyInput,
 	})
-}
-
-func (r *managedREPL) openSessionsPicker() {
-	r.openSessionsPickerSelected("")
-}
-
-// openSessionsPickerSelected lists every session this polly can reach: the
-// open workspaces first, in tab order, with what each is doing, then the
-// saved sessions, newest first. Agents nest under the session that spawned
-// them; an open workspace with live agents starts expanded. Caller holds the
-// visible model's lock.
-func (r *managedREPL) openSessionsPickerSelected(preferred string) {
-	if r.state == nil || r.state.sessionStore == nil {
-		r.model.appendNoticeLine("Session picker unavailable")
-		return
-	}
-	ctx := r.work.ctx
-	summaries, err := r.state.sessionStore.ListSummaries(ctx)
-	if err != nil {
-		r.model.appendNoticeLine("Session picker unavailable · " + err.Error())
-		return
-	}
-	current := r.visibleTab().name
-	infos := make([]sessions.SessionSummary, 0, len(summaries))
-	for _, summary := range summaries {
-		if summary.Metadata != nil {
-			infos = append(infos, summary)
-		}
-	}
-	// Agents nest under the session that spawned them, collapsed until the
-	// parent is expanded with Right, so a fan-out never buries the list.
-	metas := make([]*sessions.Metadata, len(infos))
-	for i, summary := range infos {
-		metas[i] = summary.Metadata
-	}
-	r.syncWorkspaces()
-	workspaceIndex := func(node sessionTreeNode) (int, bool) {
-		for n, workspace := range r.workspaces {
-			if workspace.name == infos[node.Index].Metadata.Name {
-				return n, true
-			}
-		}
-		return 0, false
-	}
-	activity := make(map[string]string)
-	for _, tab := range r.tabs {
-		activity[tab.name] = r.workspaceActivity(tab)
-	}
-	priority := func(node sessionTreeNode) int {
-		switch v := activity[infos[node.Index].Metadata.Name]; {
-		case v == "approval needed":
-			return 0
-		case v != "" && v != "done" && v != "failed" && v != "incomplete":
-			return 1
-		}
-		return 2
-	}
-	nodes := orderSessionGroups(sessionTree(metas), workspaceIndex, priority)
-	nameWidth := 0
-	lengthWidth := 0
-	for _, node := range nodes {
-		summary := infos[node.Index]
-		nameWidth = max(nameWidth, rw.StringWidth(sessionTreeName(summary.Metadata, node.Depth)))
-		lengthWidth = max(lengthWidth, rw.StringWidth(formatSessionMessageCount(summary.MessageCount)))
-	}
-	nameWidth = min(nameWidth, 24)
-	target := current
-	if preferred != "" {
-		target = preferred
-	}
-	// A session open in one of this polly's tabs is reached by showing that
-	// tab. One leased by another polly cannot be opened here: Acquire would
-	// wait out the lease timeout and then fail. Mark it and refuse up front.
-	inUseElsewhere := make(map[string]bool)
-	items := make([]replModalItem, 0, len(nodes))
-	for _, node := range nodes {
-		summary := infos[node.Index]
-		info := summary.Metadata
-		name := truncate(sessionTreeName(info, node.Depth), nameWidth)
-		age := formatCompactDuration(time.Since(info.LastUsed))
-		length := formatSessionMessageCount(summary.MessageCount)
-		nameColumn := fmt.Sprintf("%-*s", nameWidth, name)
-		ageColumn := fmt.Sprintf("%4s", age)
-		lengthColumn := fmt.Sprintf("%*s", lengthWidth, length)
-		label := nameColumn + "  " + ageColumn + "  " + lengthColumn
-		display := styleEscape(nameColumn) + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
-		selectedDisplay := styled(nameColumn, "accent", "bold") + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
-		if sessions.DisplayLabel(info) != info.Name {
-			label += "  " + info.Name
-			display += "  " + styled(info.Name, "muted", "")
-			selectedDisplay += "  " + styled(info.Name, "muted", "")
-		}
-		mark, color := "", ""
-		switch tab := r.tabIndexOf(info.Name); {
-		case info.Name == current:
-			mark, color = "current", "accent"
-		case tab >= 0:
-			mark, color = "active agent", "ok"
-			for n, workspace := range r.workspaces {
-				if workspace == r.tabs[tab] {
-					mark = fmt.Sprintf("workspace %d", n+1)
-					break
-				}
-			}
-		case summary.InUse:
-			inUseElsewhere[info.Name] = true
-			mark, color = "in use", "active"
-		}
-		if mark != "" {
-			label += "  " + mark
-			display += "  " + styled(mark, color, "")
-			selectedDisplay += "  " + styled(mark, color, "")
-			if state := activity[info.Name]; state != "" {
-				label += " · " + state
-				display += styled(" · "+state, "muted", "")
-				selectedDisplay += styled(" · "+state, "muted", "")
-			}
-		}
-		item := replModalItem{
-			label: label, value: info.Name, display: display, selectedDisplay: selectedDisplay,
-			searchText: info.Title + " " + info.Name + " " + info.Description,
-			children:   node.Children,
-		}
-		if node.Depth > 0 {
-			item.parent = info.Parent
-		}
-		if info.Name == target && item.parent != "" {
-			r.expandPickerParent(item.parent)
-		}
-		// An open workspace with agents running here shows them without a keypress.
-		if node.Depth == 0 && node.Children > 0 && r.tabIndexOf(info.Name) >= 0 && r.hasLiveAgents(r.tabs[r.tabIndexOf(info.Name)]) {
-			r.expandPickerParent(info.Name)
-		}
-		items = append(items, item)
-	}
-	if len(items) == 0 {
-		r.model.appendNoticeLine("No saved sessions")
-		return
-	}
-	m := &replModal{
-		title: "Sessions", items: items, expanded: r.pickerExpanded,
-		width: 64, maxRows: 14, showCount: true,
-		onSubmit: func(name string) {
-			if name == "" || name == current {
-				return
-			}
-			if inUseElsewhere[name] && func() bool {
-				for _, info := range infos {
-					if info.Metadata.Name == name {
-						return info.Metadata.Parent == ""
-					}
-				}
-				return true
-			}() {
-				r.model.appendErrorLine(name + " is open in another polly")
-				return
-			}
-			r.requestOpenLocked(name)
-		},
-		onEditTitle: func(name string) {
-			for _, summary := range infos {
-				if summary.Metadata.Name == name {
-					r.openSessionTitleInput(summary)
-					return
-				}
-			}
-		},
-	}
-	if m.nested() {
-		// Room for the agent count after a row's marks.
-		m.width = 72
-	}
-	for i, item := range m.filteredItems() {
-		if item.value == target {
-			m.selected = i
-			break
-		}
-	}
-	r.openModal(m)
 }
 
 // expandPickerParent lists name's agents in the session picker from now on.

@@ -275,6 +275,10 @@ func (r *managedREPL) applySpawnRequests() {
 					parent.model.appendErrorLine("could not spawn an agent: " + err.Error())
 				} else {
 					parent.swarmActive = true
+					if parent.swarmAnnounced == nil {
+						parent.swarmAnnounced = make(map[string]string)
+					}
+					parent.swarmAnnounced[res.Session] = ""
 					parent.model.appendNoticeLine("Agent " + res.Session + " started · /sessions to inspect · /swarm to coordinate")
 				}
 			})

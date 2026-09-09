@@ -393,7 +393,7 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 
 	r.openSessionsPicker()
 	m := r.model.modal
-	if m == nil || m.width != 72 {
+	if m == nil || m.width != sessionsPickerNestedWidth {
 		t.Fatalf("picker with agents = %#v, want the wider modal", m)
 	}
 	if got := strings.Join(values(), " "); got != "current-work gamma" {
@@ -416,7 +416,7 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 		t.Fatalf("expanding moved the selection to %q", selectedValue())
 	}
 	items := m.filteredItems()
-	if !strings.HasPrefix(items[2].label, "↳ count files") || items[2].parent != "gamma" {
+	if !strings.HasPrefix(items[2].label, "↳ delta") || items[2].parent != "gamma" || !strings.Contains(items[2].searchText, "count files") {
 		t.Fatalf("agent row = %#v, want it named by its label under gamma", items[2])
 	}
 	if !strings.HasPrefix(items[3].label, "↳ epsilon") {
@@ -484,7 +484,11 @@ func TestSessionsPickerListsOpenWorkspacesFirstWithAgents(t *testing.T) {
 	root := r.tabs[0]
 	// Live agent tabs report to root without holding the screen.
 	for _, name := range []string{"idle-agent", "waiting-agent"} {
-		r.tabs = append(r.tabs, &replTab{name: name, parent: root, parentName: root.name, model: newReplModel()})
+		info, err := store.(sessions.ViewStore).ReadView(ctx, sessions.ViewTarget{Name: name}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.tabs = append(r.tabs, &replTab{name: name, viewTarget: sessions.ViewTarget{ID: info.ID}, parent: root, parentName: root.name, model: newReplModel()})
 	}
 	r.showTab(0)
 	r.tabs[1].model.busy = true
@@ -507,9 +511,9 @@ func TestSessionsPickerListsOpenWorkspacesFirstWithAgents(t *testing.T) {
 		labels[item.value] = item.label
 	}
 	for value, want := range map[string]string{
-		"root":          "current · 1 need approval",
+		"root":          "current",
 		"second":        "workspace 2 · streaming",
-		"waiting-agent": "active agent · approval needed",
+		"waiting-agent": "approval needed",
 	} {
 		if !strings.HasSuffix(labels[value], want) {
 			t.Fatalf("%s row = %q, want suffix %q", value, labels[value], want)

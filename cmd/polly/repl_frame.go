@@ -308,6 +308,7 @@ func (r *managedREPL) render() {
 	}
 
 	r.model.mu.Lock()
+	r.model.status.agents, r.model.status.agentsColor = r.agentsStatus()
 	now := time.Now()
 	r.model.expireAffordances(now)
 	r.model.renderPendingMarkdownAt(now)
@@ -334,6 +335,9 @@ func (r *managedREPL) render() {
 	modalText, modalTitle := "", ""
 	modalWidth, modalHeight := 0, 0
 	if modalOpen {
+		if r.model.modal.refresh != nil {
+			r.model.modal.refresh()
+		}
 		modalWidth = modalWidthForTerminal(w, r.model.modal.width)
 		maxRows := max(1, h-8)
 		modalText = r.model.modal.text(maxRows, modalWidth)
