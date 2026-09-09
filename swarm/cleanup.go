@@ -40,28 +40,11 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 	}
 	// Validate every requested context before removing any checkout.
 	for _, c := range contexts {
-		if c.Checkout == nil {
-			continue
-		}
-		manager, err := r.manager(ctx)
+		tree, err := r.contextCleanupTree(ctx, s, c)
 		if err != nil {
 			return err
 		}
-		current, err := manager.Capture(ctx, c.Root)
-		if err != nil {
-			return err
-		}
-		integrated := current.Tree == c.Checkout.Base.Tree
-		for _, task := range s.Tasks {
-			candidate := s.Snapshots[task.Snapshot]
-			if task.Status == "done" && candidate != nil && candidate.Source == c.Root && candidate.Tree == current.Tree {
-				integrated = true
-			}
-		}
-		if !integrated {
-			return errors.New("cleanup refuses unintegrated changes in context " + c.ID)
-		}
-		acceptedTrees[c.ID] = current.Tree
+		acceptedTrees[c.ID] = tree
 	}
 	if contextID == "" && (len(s.Previews) > 0 || len(s.Snapshots) > 0) {
 		manager, err := r.manager(ctx)
@@ -79,18 +62,7 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 		}
 	}
 	for _, c := range contexts {
-		if c.Checkout != nil {
-			if err := r.worktrees.Cleanup(ctx, *c.Checkout, acceptedTrees[c.ID]); err != nil {
-				return err
-			}
-		}
-		if err := r.update(ctx, func(s *State) error {
-			delete(s.Contexts, c.ID)
-			if m := s.Members[c.Owner]; m != nil {
-				m.Status = "retired"
-			}
-			return nil
-		}); err != nil {
+		if err := r.retireContext(ctx, c, acceptedTrees[c.ID]); err != nil {
 			return err
 		}
 	}

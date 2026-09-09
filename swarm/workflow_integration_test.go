@@ -43,6 +43,9 @@ func TestWorkflowReleaseDuringAttemptAndRetainsDirtyCopies(t *testing.T) {
 	unlock()
 	_, err = h.release(ctx, dirty)
 	candidateError(t, err, "unintegrated_changes")
+	if err := r.Cleanup(ctx, clean); err == nil {
+		t.Fatal("general cleanup ignored the active workflow")
+	}
 	if _, err = h.release(ctx, clean); err != nil {
 		t.Fatal(err)
 	}
@@ -62,28 +65,27 @@ func TestWorkflowReleaseDuringAttemptAndRetainsDirtyCopies(t *testing.T) {
 	candidateError(t, err, "context_denied")
 }
 
-func TestReleasedEmptySubmissionRetainsIntegrationProvenance(t *testing.T) {
-	r, p := applyFixture(t, false)
-	ctx := context.Background()
-	ref := submittedInput(t, r, p.Parent, map[string]string{})
-	if err := r.update(ctx, func(s *State) error { s.Members[ref.Task].Controller = "workflow"; return nil }); err != nil {
-		t.Fatal(err)
-	}
-	h := &workflowHost{runtime: r, controller: "workflow"}
-	defer h.close()
-	s, _ := r.read(ctx)
-	if _, err := h.release(ctx, s.Members[ref.Task].Context); err != nil {
-		t.Fatal(err)
-	}
-	c, err := r.PrepareIntegration(ctx, []TaskReference{ref}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = r.AcceptIntegration(ctx, c.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = r.ApplyIntegration(ctx, c.ID); err != nil {
-		t.Fatal(err)
+func TestContextCleanupRetainsIntegrationProvenance(t *testing.T) {
+	for _, via := range []string{"direct", "workflow"} {
+		t.Run(via, func(t *testing.T) {
+			r, p := applyFixture(t, false)
+			ctx := context.Background()
+			ref := submittedInput(t, r, p.Parent, map[string]string{})
+			cleanup := contextCleanupCaller(t, r, via, ref.Task)
+			if err := cleanup(ctx, ref.Task); err != nil {
+				t.Fatal(err)
+			}
+			c, err := r.PrepareIntegration(ctx, []TaskReference{ref}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = r.AcceptIntegration(ctx, c.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = r.ApplyIntegration(ctx, c.ID); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

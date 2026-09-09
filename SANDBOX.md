@@ -79,15 +79,18 @@ paths when Linux private temp mounts would otherwise hide them. These frozen
 read-only bindings preserve credential and custom deny rules; they are not
 `ReadPaths` exemptions and do not grant writes to the source checkout.
 
-Workflow JavaScript has no direct process/filesystem/network APIs. Its host tools
-use these same policies, approvals, and timeouts. Remote MCP processes cannot be
+Workflow JavaScript has no direct process/filesystem/network APIs. The workflow
+host and agent loop share the Go tool invoker for timeouts, execution gates, and
+rich output; each caller checks tool availability and approvals before invocation.
+Remote MCP processes cannot be
 contained locally and require the operator's explicit `contextIndependent: true`
 declaration in the server configuration before being exposed to a member.
 Parent workflow integration uses the host's existing parent authority. Scripts
 cannot provide an identity or broaden filesystem/tool policy, and generic
 `polly.tool` remains bound to isolated contexts. `polly.release` verifies ownership,
-per-context inactivity, and unchanged/integrated contents before cleanup; snapshots
-and publications remain pinned. Check-copy edits require explicit adoption through
+per-context inactivity, and unchanged/integrated contents before cleanup. The
+content checks and durable retirement routine are shared with ordinary cleanup;
+snapshots and publications remain pinned when releasing a context. Check-copy edits require explicit adoption through
 an editing task before integration. Tool metadata and peer messages do not grant
 additional user authorization.
 

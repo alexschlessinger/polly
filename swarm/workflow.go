@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/llm"
@@ -217,21 +216,11 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 				}
 			}
 		}
-		var cancel context.CancelFunc
-		timeout := r.currentDefaults().agent.ToolTimeout
-		if untimed, ok := tool.(tools.UntimedTool); timeout > 0 && !(ok && untimed.Untimed()) {
-			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout))
-			defer cancel()
+		execution, err := registry.ExecuteTool(ctx, tool, args, r.currentDefaults().agent.ToolTimeout)
+		if execution.ContextErr != nil {
+			return nil, execution.ContextErr
 		}
-		var output tools.ToolOutput
-		if rich, ok := tool.(tools.OutputTool); ok {
-			output, err = rich.ExecuteOutput(ctx, args)
-		} else {
-			output.Text, err = tool.Execute(ctx, args)
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
+		output := execution.Output
 		refs := []artifacts.Ref{}
 		for _, media := range output.Media {
 			kind := artifacts.KindBinary

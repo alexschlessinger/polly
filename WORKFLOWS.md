@@ -134,8 +134,13 @@ Successful attempts release safe temporary copies and report dirty copies with
 paths and context IDs. Failed attempts retain their copies for inspection.
 `release` uses per-context activity checks, so finished check copies can be released
 while the workflow continues. It preserves candidate snapshots and publications,
-and refuses unintegrated edits. Retirement is recorded before cleanup so interrupted
-cleanup cannot expose a reused directory as an old execution context.
+and refuses unintegrated edits. Workflow release and ordinary swarm cleanup share
+the same Go checks and retirement routine. Both save submission provenance and
+record retirement before deleting files, so interrupted cleanup cannot expose a
+reused directory as an old execution context. After retirement is recorded, cleanup
+finishes under a bounded parent-lease context even if its caller is canceled.
+Ordinary cleanup still requires all members and workflows to stop; workflow release
+checks only the selected copy.
 
 Authority is inherited from the parent host, never supplied in JavaScript
 arguments. Generic `tool` calls remain confined to isolated contexts and cannot

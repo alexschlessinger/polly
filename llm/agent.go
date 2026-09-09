@@ -900,35 +900,18 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 		return tools.ToolOutput{Text: errMsg}, errors.New("tool not allowed: " + tc.Name)
 	}
 
-	// Apply the per-tool timeout, except to tools that run long by design.
-	if untimed, ok := tool.(tools.UntimedTool); a.config.ToolTimeout > 0 && !(ok && untimed.Untimed()) {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, a.config.ToolTimeout)
-		defer cancel()
-	}
-
-	// One lexical execution boundary owns the gate, including errors and
-	// panics. Result observers and persistence never own a permit.
-	release, gateErr := a.tools.GuardExecution(ctx, tool)
-	if gateErr != nil {
-		return tools.ToolOutput{Text: gateErr.Error()}, gateErr
-	}
-	defer release()
-
-	// Execute
-	var output tools.ToolOutput
-	var err error
-	if rich, ok := tool.(tools.OutputTool); ok {
-		output, err = rich.ExecuteOutput(ctx, args)
-	} else {
-		output.Text, err = tool.Execute(ctx, args)
+	execution, err := a.tools.ExecuteTool(ctx, tool, args, a.config.ToolTimeout)
+	output := execution.Output
+	if !execution.Invoked {
+		output.Text = err.Error()
+		return output, err
 	}
 	if err != nil {
 		if msg, ok := tools.FormatToolError(err); ok {
 			output.Text = mergeToolErrorText(msg, output.Text)
 			return output, err
 		}
-		if ctx.Err() == context.DeadlineExceeded {
+		if execution.ContextErr == context.DeadlineExceeded {
 			output.Text = mergeToolErrorText(fmt.Sprintf("Error: tool execution timed out after %v", a.config.ToolTimeout), output.Text)
 			return output, err
 		}

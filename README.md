@@ -218,8 +218,11 @@ publications, workflow reports, and integration candidates/previews, with a raw 
 full saved records. `/swarm stop ID`,
 `/swarm resume ID [ADDITIONAL_ITERATIONS]`, and `/swarm grant N` control execution; budget grants require
 an explicit client/user action. `/swarm cleanup CONTEXT_ID` retires an inactive
-context only when its current edits are integrated. `/swarm cleanup all` also
-retires Git snapshot references. Unintegrated changes are refused.
+context only when unchanged or its current edits are integrated. Cleanup requires
+members and workflows to stop; a running workflow can release its own inactive
+copies with `polly.release`. Both paths retain unintegrated edits and record
+retirement before removing files. `/swarm cleanup all` also retires Git snapshot
+references.
 
 Parent tools can combine several editing task revisions with `swarm_integration`.
 Prepare, resolve conflicts in a separate copy, review/check, accept, and apply.
