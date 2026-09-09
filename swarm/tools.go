@@ -188,7 +188,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 			return nil, errors.New("budget grants require explicit user-directed resume through the client")
 		}
 	})
-	register("workflow_run", "Run a JavaScript workflow using the same swarm scheduler and tool authority. Supply source containing polly.defineWorkflow and JSON input. The workflow cannot accept or integrate tasks.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("workflow_run", "Run a JavaScript workflow using the same swarm scheduler and tool authority. Supply source containing polly.defineWorkflow and JSON input. Parent workflows can review tasks and prepare, repair, accept, and apply integration candidates. Children retain their existing permissions.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
 		input, err := schema.DecodeJSON(a.String("input"))
 		if err != nil {
 			return nil, err

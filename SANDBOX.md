@@ -83,7 +83,13 @@ Workflow JavaScript has no direct process/filesystem/network APIs. Its host tool
 use these same policies, approvals, and timeouts. Remote MCP processes cannot be
 contained locally and require the operator's explicit `contextIndependent: true`
 declaration in the server configuration before being exposed to a member.
-Tool metadata and peer messages do not grant additional user authorization.
+Parent workflow integration uses the host's existing parent authority. Scripts
+cannot provide an identity or broaden filesystem/tool policy, and generic
+`polly.tool` remains bound to isolated contexts. `polly.release` verifies ownership,
+per-context inactivity, and unchanged/integrated contents before cleanup; snapshots
+and publications remain pinned. Check-copy edits require explicit adoption through
+an editing task before integration. Tool metadata and peer messages do not grant
+additional user authorization.
 
 The bash tool distinguishes sandbox launcher failure from an ordinary command
 exit with a target-start acknowledgment descriptor. Only the latter can be

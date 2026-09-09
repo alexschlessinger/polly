@@ -90,6 +90,18 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 	r := h.runtime
 	a := tools.Args(op.Args)
 	switch op.Kind {
+	case "integration":
+		return r.integrationOperation(ctx, op.Args)
+	case "task":
+		return r.taskOperation(ctx, op.Args)
+	case "release":
+		var request struct {
+			Context string `json:"context"`
+		}
+		if err := strictRequest(op.Args, &request); err != nil {
+			return nil, err
+		}
+		return h.release(ctx, request.Context)
 	case "agent":
 		req, err := decodeRequest(op.Args)
 		if err != nil {
@@ -121,6 +133,8 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 			return nil, err
 		}
 		if req.Context != "" {
+			unlock := r.lockContext(req.Context)
+			defer unlock()
 			if _, err = h.context(ctx, req.Context); err != nil {
 				return nil, err
 			}
@@ -141,6 +155,10 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 		}
 		unlock := r.lockContext(c.ID)
 		defer unlock()
+		c, err = h.context(ctx, c.ID)
+		if err != nil {
+			return nil, err
+		}
 		m, err := r.manager(ctx)
 		if err != nil {
 			return nil, err
@@ -158,6 +176,10 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 		}
 		unlock := r.lockContext(c.ID)
 		defer unlock()
+		c, err = h.context(ctx, c.ID)
+		if err != nil {
+			return nil, err
+		}
 		s, err := r.read(ctx)
 		if err != nil {
 			return nil, err
@@ -260,8 +282,8 @@ func (h *workflowHost) context(ctx context.Context, id string) (*ExecutionContex
 		return nil, err
 	}
 	c := s.Contexts[id]
-	if c == nil {
-		return nil, errors.New("unknown execution context")
+	if c == nil || c.Retiring {
+		return nil, errors.New("unknown or retiring execution context")
 	}
 	if c.Owner == h.controller {
 		return c, nil

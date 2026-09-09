@@ -55,6 +55,7 @@ type Member struct {
 	ReadOnly   bool     `json:"readOnly"`
 }
 type Task struct {
+	StartingSnapshot string   `json:"startingSnapshot,omitempty"`
 	Execution        string   `json:"execution,omitempty"`
 	ID               string   `json:"id"`
 	Run              string   `json:"run"`
@@ -107,6 +108,7 @@ type Execution struct {
 	StopReason messages.StopReason    `json:"stopReason,omitempty"`
 }
 type ExecutionContext struct {
+	Retiring bool               `json:"retiring,omitempty"`
 	ID       string             `json:"id"`
 	Owner    string             `json:"owner"`
 	Root     string             `json:"root"`
@@ -600,6 +602,9 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 // ContextPolicy denies live siblings and parent files. The common Git object
 // store stays readable; filesystem isolation is not source-code secrecy.
 func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
+	if c == nil || c.Retiring {
+		return tools.ExecutionContext{}, fail("context_denied", "execution context is retiring")
+	}
 	var manager *worktree.Manager
 	if c.Checkout != nil {
 		var err error

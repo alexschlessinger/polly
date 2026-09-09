@@ -28,6 +28,7 @@
       exec: (command, o = {}) => invoke("exec", options({ ...o, command })),
       snapshot: (context = defaults.context) => invoke("snapshot", { context }),
       context: o => invoke("context", options(o)),
+      release: (context = defaults.context) => invoke("release", {context}),
       log,
     });
   }
@@ -50,6 +51,18 @@
   }
   const api = Object.freeze({
     ...work(), schema, parallel, fail,
+    integration: Object.freeze({
+      prepare: o => invoke("integration", {...o, op: "prepare"}),
+      read: id => invoke("integration", {op: "read", id}),
+      revise: (id, repair) => invoke("integration", {op: "revise", id, repair}),
+      refresh: id => invoke("integration", {op: "refresh", id}),
+      accept: id => invoke("integration", {op: "accept", id}),
+      apply: id => invoke("integration", {op: "apply", id}),
+    }),
+    tasks: Object.freeze({
+      read: task => invoke("task", {op: "read", task}),
+      review: o => invoke("task", {...o, op: "review"}),
+    }),
     scope: async (defaults, callback) => {
       if (!defaults || "cwd" in defaults) throw new Error("scope requires an execution context, not cwd");
       try { return await callback(work(defaults)); }

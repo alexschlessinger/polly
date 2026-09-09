@@ -40,6 +40,7 @@ type Config struct {
 	Stream                           bool
 	SwarmConcurrent, SwarmExecutions int
 	SwarmDirectory                   string
+	SwarmApplyTimeout                time.Duration
 	Launch                           Settings
 
 	// Runtime configuration

@@ -307,7 +307,7 @@ func (r *Runtime) makeContext(ctx context.Context, actor string, req AgentReques
 	}
 	if req.Context != "" {
 		c := s.Contexts[req.Context]
-		if c == nil || c.Owner != actor && actor != r.ID {
+		if c == nil || c.Retiring || c.Owner != actor && actor != r.ID {
 			return nil, errors.New("unknown execution context")
 		}
 		source = c.Root
@@ -1448,7 +1448,7 @@ func (r *Runtime) runWorkflow(ctx context.Context, controller, source string, in
 				if err == nil {
 					m.Controller = ""
 					released = append(released, m.ID)
-				} else {
+				} else if m.Status != "retired" {
 					m.Status = "paused"
 				}
 			}

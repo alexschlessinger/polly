@@ -69,10 +69,18 @@ func integrationInputs(s *State, refs []TaskReference) ([]IntegrationInput, stri
 		}
 		c := s.Contexts[owner.Context]
 		snapshot := s.Snapshots[t.Snapshot]
-		if c == nil || c.Checkout == nil || snapshot == nil || snapshot.Source != c.Root {
+		var base *worktree.Snapshot
+		if c != nil && !c.Retiring && c.Checkout != nil && snapshot != nil && snapshot.Source == c.Root {
+			b := c.Checkout.Base
+			base = &b
+		}
+		if (c == nil || c.Retiring) && t.StartingSnapshot != "" {
+			base = s.Snapshots[t.StartingSnapshot]
+		}
+		if base == nil || snapshot == nil {
 			return nil, "", fail("stale_task", "submitted task provenance is unavailable; submit again")
 		}
-		inputs = append(inputs, IntegrationInput{TaskReference: ref, Base: c.Checkout.Base, Submitted: *snapshot})
+		inputs = append(inputs, IntegrationInput{TaskReference: ref, Base: *base, Submitted: *snapshot})
 	}
 	return inputs, run, nil
 }

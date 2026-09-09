@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/ids"
@@ -58,6 +59,7 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 	}
 	mail := make(chan completion, limit)
 	waiting := map[int]pending{}
+	var calls sync.WaitGroup
 	activated := false
 	save := func(c context.Context) error {
 		copy, err := cloneReport(state)
@@ -72,6 +74,24 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 	defer func() {
 		interrupted := caller.Err() != nil
 		cancel(nil)
+		calls.Wait()
+		// Host effects can finish after cancellation, especially a committed apply.
+		// Retain their receipts before closing the host or finalizing the report.
+		for len(mail) > 0 {
+			completed := <-mail
+			step := &state.Steps[completed.index]
+			if step.Status != "running" {
+				continue
+			}
+			step.Finished = time.Now().UTC()
+			if completed.err != nil {
+				step.Status = "failed"
+				step.Error = errorValue(completed.err)
+			} else {
+				step.Status = "completed"
+				step.Value = completed.value
+			}
+		}
 		state.Finished = time.Now().UTC()
 		if runErr != nil {
 			state.Status = "failed"
@@ -235,12 +255,11 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 			return rejectError(err)
 		}
 		waiting[index] = pending{resolve, reject}
+		calls.Add(1)
 		go func() {
+			defer calls.Done()
 			value, err := r.Host.Call(ctx, op)
-			select {
-			case mail <- completion{index, value, err}:
-			case <-ctx.Done():
-			}
+			mail <- completion{index, value, err}
 		}()
 		return vm.ToValue(p)
 	})

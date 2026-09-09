@@ -230,8 +230,13 @@ The default checks touched paths and preserves unrelated parent edits; choose
 **JavaScript workflows.** `/workflow SCRIPT.js INPUT.json` starts an explicit
 workflow and saves its report. Model tools `workflow_run`, `workflow_start`,
 `workflow_read`, `workflow_cancel`, and `workflow_acknowledge` use that same runtime in the library, CLI,
-and TUI. Scripts coordinate typed agent results, commands, and tools; they cannot
-accept or integrate tasks. See [the workflow API and runnable example](WORKFLOWS.md).
+and TUI. Parent scripts coordinate typed agent results, commands, tools, task reviews, and
+integration candidates using the parent's existing authority. See [the workflow API and runnable example](WORKFLOWS.md).
+[The integration recipe](examples/workflows/integrate-results.js) combines task
+revisions, resolves conflicts, reviews/tests, repairs when needed, and applies the
+accepted result. It defaults to two repair executions and one refresh attempt,
+without resetting consumed budgets. `--swarm-apply-timeout` (or
+`POLLYTOOL_SWARM_APPLY_TIMEOUT`) bounds a started write; default `2m`.
 Managed members are inspected through `/agents`; resume execution through their
 parent so the worktree and policy are restored together.
 

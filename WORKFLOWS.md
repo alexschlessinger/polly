@@ -59,6 +59,15 @@ polly.defineWorkflow({
 | `tool(name, args, {context})` | `{text, data, artifacts, step}`. Uses compatible tools with the same sandbox, approval, and timeout rules. |
 | `exec(command, {context, check?})` | Tool result plus `exitCode`. Ordinary nonzero exit rejects unless `check: false`. |
 | `snapshot(context)` | Immutable `{id, commit, tree, source}`. Use `.id` as the next agent/context's `snapshot`. |
+| `integration.prepare({tasks:[{task,revision}], drift?})` | Ordered parent candidate; drift is `"paths"` (default) or `"tree"`. |
+| `integration.read(id)` | Candidate, conflicts, provenance, supersession links, acceptance, and receipt. |
+| `integration.revise(id, {task,revision})` | New candidate adopting an exact intermediate repair and continuing pending inputs. |
+| `integration.refresh(id)` | Candidate fields plus `changed`; unchanged means the same ID and acceptance. |
+| `integration.accept(id)` | Accepts that candidate and all contributing task revisions. |
+| `integration.apply(id)` | Durable apply receipt; rechecks authority, acceptance, revisions, supersession, and filesystem preconditions. |
+| `tasks.read(task)` | Current task description, acceptance criteria, revision, status, feedback, and result. |
+| `tasks.review({task,revision,accept,feedback?})` | Accepts a submitted task or requests changes with feedback. |
+| `release(context)` | Removes an inactive workflow-owned copy only when unchanged or demonstrably integrated. `work.release()` uses its scoped context. |
 | `parallel(items, callback, {concurrency?, errors?})` | Ordered `{ok, value}` / `{ok, error}` entries. Default concurrency 8, bounded 1–256. |
 | `log(message)` | Awaitable progress event and saved log step. |
 | `fail(message, result?)` | Fails the workflow with structured diagnostic data. |
@@ -92,6 +101,54 @@ Polly does not infer stronger error types from stderr text.
 Usage components absent from provider metadata are `null`, not invented zeros.
 Execution usage accumulates across waits; a continuation is a new logical
 execution, even when it reuses the same member conversation.
+
+## Parent integration recipe
+
+Use [integrate-results.js](examples/workflows/integrate-results.js) with an explicit
+input file, using the same `/workflow`, `workflow_run`, and `workflow_start` launch
+commands as other workflows:
+
+```json
+{"tasks":[{"task":"TASK_ID","revision":3}],"checks":["go test ./..."],"drift":"paths"}
+```
+
+The recipe prepares, resolves conflicts, reviews and checks the combined result,
+repairs if needed, accepts, and applies. Reviewers receive the contributing tasks'
+descriptions and acceptance criteria. `reviewInstructions` is optional; the parent
+chooses the commands in `checks` (an empty array deliberately omits command checks).
+Defaults are two repair executions across the entire attempt and one refresh after
+applicable parent drift. Each repair inherits the normal model-call allowance;
+neither repair nor refresh resets any consumed runtime budget. Every changed
+candidate gets fresh review and every check; unchanged refresh skips revalidation.
+
+Sandbox/setup failures, cancellation, budget exhaustion, and uncertain apply
+outcomes produce blockers. Only ordinary check exits or negative review verdicts
+enter the validation repair loop. Conflict repair receives the complete structured
+conflict list, including binary/base/ours/theirs references.
+
+Each check uses its own writable copy of the immutable candidate. Check-side
+changes are never implicitly integrated. To adopt intended source changes, submit
+a distinct editing repair based on the candidate, explicitly reproduce the intended
+changes there, then call `integration.revise` and validate the new candidate.
+Successful attempts release safe temporary copies and report dirty copies with
+paths and context IDs. Failed attempts retain their copies for inspection.
+`release` uses per-context activity checks, so finished check copies can be released
+while the workflow continues. It preserves candidate snapshots and publications,
+and refuses unintegrated edits. Retirement is recorded before cleanup so interrupted
+cleanup cannot expose a reused directory as an old execution context.
+
+Authority is inherited from the parent host, never supplied in JavaScript
+arguments. Generic `tool` calls remain confined to isolated contexts and cannot
+reach the parent integration tools. Children retain their existing permissions.
+An apply that has started finishes under the parent lease even if its workflow is
+canceled. The final interrupted report retains the completed apply step and receipt;
+it does not claim rollback. The CLI write timeout is `--swarm-apply-timeout`, default
+`2m` (`POLLYTOOL_SWARM_APPLY_TIMEOUT`); receipt recording has a separate bound.
+
+Requesting changes through `tasks.review` does not wake a workflow-reserved member.
+Continue it explicitly with `agent({session, task: feedback})`. Restarting JavaScript
+is always an explicit new attempt. Integration ends at working-file changes;
+staging, commits, and publishing are outside these operations.
 
 ## Sharing and task ownership
 

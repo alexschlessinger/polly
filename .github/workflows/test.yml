@@ -41,7 +41,7 @@ jobs:
 
       - name: Sandbox security tests
         if: runner.os != 'Windows'
-        run: go test ./tools/sandbox ./swarm ./worktree
+        run: go test ./tools/sandbox ./swarm ./worktree ./cmd/polly
         env:
           POLLYTOOL_REQUIRE_SANDBOX_TESTS: '1'
 

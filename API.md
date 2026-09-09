@@ -570,7 +570,7 @@ caller ID. Task revisions and atomic transactions reject stale claims/submission
 
 Parent hosts use `PrepareIntegration(ctx, []TaskReference, drift)`,
 `ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`,
-and `ApplyIntegration`. `TaskReference` holds `Task` and the exact `Revision`.
+and `ApplyIntegration`; `ReadTask` returns the current submitted task contract. `TaskReference` holds `Task` and the exact `Revision`.
 `drift` defaults to `paths`; `tree` adds whole-tree equality. Candidates contain
 ordered inputs, repair provenance, pending merges, structured conflicts, immutable
 snapshots, acceptance and supersession links. `RefreshIntegration` returns
@@ -587,6 +587,14 @@ results, failure details, and final output. Restarting a script is an explicit n
 attempt; there is no persisted JavaScript heap or automatic effect replay.
 Failed/interrupted reports block settlement until `AcknowledgeWorkflow` records
 parent handling; this never accepts tasks or discards files.
+Parent JavaScript uses `polly.integration.prepare/read/revise/refresh/accept/apply`
+and `polly.tasks.read/review` over those same operations. `polly.release(context)`
+removes only an inactive attempt-owned context whose contents are unchanged or
+proven integrated, retaining snapshots and publications. A requested change does
+not wake a reserved member; the script explicitly continues its session. Workflow
+termination waits for host calls and saves late apply receipts before releasing
+registries or reservations. Children and generic context tools gain no parent API.
+
 The independent `workflow.Runner{Host, Config}` can be embedded over another
 trusted host implementing `Call`; optional `Recorder.SaveWorkflow` supplies
 persistence. See [WORKFLOWS.md](WORKFLOWS.md) for the JavaScript contract.

@@ -34,9 +34,9 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 	path := filepath.Join(home, ".pollytool", "polly.db")
 	systemPrompt := state.settings.SystemPrompt
 	c := swarm.Config{Store: state.sessionStore, Parent: state.session, Registry: state.toolRegistry, Client: client,
-		Request:   *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
-		Agent:     llm.AgentConfig{MaxIterations: state.settings.MaxIterations, ToolTimeout: state.settings.ToolTimeout},
-		Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
+		Request:      *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
+		Agent:        llm.AgentConfig{MaxIterations: state.settings.MaxIterations, ToolTimeout: state.settings.ToolTimeout},
+		ApplyTimeout: config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
 		PrivatePaths:    []string{path, path + "-wal", path + "-shm"},
 		DurableMessages: durableTurnMessages,
 		Instructions: func(registry *tools.ToolRegistry) string {
