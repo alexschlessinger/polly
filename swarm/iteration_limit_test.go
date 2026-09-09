@@ -164,7 +164,7 @@ func TestIterationGrantRestoresSameExecutionAndWorktreeFromDisk(t *testing.T) {
 	s := waitIterationMember(t, ctx, r, result.Session)
 	e := s.Executions[limit.Execution]
 	member := s.Members[result.Session]
-	if e.Status != "paused" || e.StopReason != messages.StopReasonMaxIterations || member.Status != "paused" || s.Tasks[result.Task].Status != "blocked" || len(s.Publications) != 1 {
+	if e.Status != "paused" || e.StopReason != messages.StopReasonMaxIterations || MemberState(s, member).Lifecycle != LifecyclePaused || s.Tasks[result.Task].Status != "blocked" || len(s.Publications) != 1 {
 		t.Fatalf("exhaustion state: %+v member=%+v", e, member)
 	}
 	root := s.Contexts[result.Context].Root
@@ -361,7 +361,7 @@ func TestResumeReportsNewTurnBudgetRefusal(t *testing.T) {
 		t.Fatalf("resume swallowed launch refusal: %v", err)
 	}
 	s, err := r.State(ctx)
-	if err != nil || len(s.Executions) != 1 || s.Members[result.Session].Status != "idle" {
+	if err != nil || len(s.Executions) != 1 || MemberState(s, s.Members[result.Session]).Lifecycle != LifecycleIdle {
 		t.Fatalf("refused resume changed the member: %+v %v", s, err)
 	}
 }
@@ -452,7 +452,7 @@ func TestIterationResumeSerializesAssignmentAndStop(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if action == "stop" && s.Members[result.Session].Status != "stopped" {
+			if action == "stop" && s.Members[result.Session].Control != MemberControlStopped {
 				t.Fatal("resume overwrote the concurrent stop")
 			}
 			if s.Tasks[result.Task].Owner != result.Session {

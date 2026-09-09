@@ -114,7 +114,7 @@ func TestReviewToolGuidanceForRetiredOrMissingProvenance(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	if err := r.update(ctx, func(s *State) error {
-		s.Members["retired"] = &Member{ID: "retired", Status: "retired", Context: "removed"}
+		s.Members["retired"] = &Member{ID: "retired", Control: MemberControlRetired, Context: "removed"}
 		s.Tasks["task"] = &Task{ID: "task", Owner: "retired", Status: "awaiting_review", Revision: 2, Snapshot: "missing"}
 		return nil
 	}); err != nil {
@@ -150,7 +150,7 @@ func TestCleanupToolReportsRetirementAfterSuccess(t *testing.T) {
 		t.Fatalf("cleanup: %q %v", out, err)
 	}
 	state, err = r.State(ctx)
-	if err != nil || state.Members[result.Session].Status != "retired" {
+	if err != nil || state.Members[result.Session].Control != MemberControlRetired {
 		t.Fatalf("success did not retire member: %+v %v", state, err)
 	}
 }

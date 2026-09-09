@@ -42,17 +42,17 @@ type Usage struct {
 	CachedInputTokens *int `json:"cachedInputTokens"`
 }
 type Member struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Label      string   `json:"label"`
-	Status     string   `json:"status"`
-	Controller string   `json:"controller,omitempty"`
-	Context    string   `json:"context"`
-	Tools      []string `json:"tools"`
-	Model      string   `json:"model"`
-	Task       string   `json:"task,omitempty"`
-	Execution  string   `json:"execution,omitempty"`
-	ReadOnly   bool     `json:"readOnly"`
+	ID         string        `json:"id"`
+	Name       string        `json:"name"`
+	Label      string        `json:"label"`
+	Control    MemberControl `json:"control,omitempty"`
+	Controller string        `json:"controller,omitempty"`
+	Context    string        `json:"context"`
+	Tools      []string      `json:"tools"`
+	Model      string        `json:"model"`
+	Task       string        `json:"task,omitempty"`
+	Execution  string        `json:"execution,omitempty"`
+	ReadOnly   bool          `json:"readOnly"`
 }
 type Task struct {
 	Deferral         *TaskDeferral `json:"deferral,omitempty"`

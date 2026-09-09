@@ -268,11 +268,6 @@ func (r *Runtime) prepare(ctx context.Context) error {
 				e.Error = "process interrupted; explicit resume required"
 			}
 		}
-		for _, m := range s.Members {
-			if m.Status == "running" || m.Status == "waiting" || m.Status == "queued" {
-				m.Status = "paused"
-			}
-		}
 		for _, w := range s.Workflows {
 			if w.Status == "running" {
 				w.Status = "interrupted"
@@ -505,7 +500,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if model == "" {
 			model = defaults.request.Model
 		}
-		m = &Member{ID: identity, Name: name, Label: req.Label, Status: "idle", Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ReadOnly: c.ReadOnly}
+		m = &Member{ID: identity, Name: name, Label: req.Label, Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ReadOnly: c.ReadOnly}
 		err = r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 			s, err := decodeState(raw)
 			if err != nil {
@@ -547,8 +542,8 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if stored.Controller != "" && stored.Controller != controller {
 			return fail("session_busy", "member reserved by another workflow")
 		}
-		if stored.Status == "paused" || stored.Status == "failed" || stored.Status == "stopped" || stored.Status == "retired" {
-			return errors.New("member is paused; explicit resume or takeover required")
+		if err := launchRefusal(s, stored); err != nil {
+			return err
 		}
 		task := s.Tasks[req.TaskID]
 		if req.Session != "" && req.TaskID == "" {
@@ -575,7 +570,6 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		stored.Task = task.ID
 		task.Execution = i.id
 		stored.Execution = i.id
-		stored.Status = "queued"
 		stored.Controller = controller
 		run.Starts++
 		e := &Execution{Workflow: controller, ID: i.id, Run: run.ID, Member: m.ID, Status: "queued", Request: req, Generation: 1}
@@ -775,7 +769,6 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	coord := session.(sessions.CoordinationSession)
 	if err = r.update(ctx, func(s *State) error {
 		s.Executions[i.id].Status = "running"
-		s.Members[m.ID].Status = "running"
 		return nil
 	}); err != nil {
 		return AgentResult{}, err
@@ -1124,14 +1117,12 @@ func (r *Runtime) finish(i *invocation) {
 			} else if errors.Is(i.err, context.Canceled) {
 				e.Status = "paused"
 			}
-			m.Status = e.Status
 			if task := s.Tasks[m.Task]; task != nil && task.Owner == m.ID && task.Execution == i.id && task.Status == "running" {
 				task.Status, task.Feedback = "blocked", e.Error
 				task.Revision++
 			}
 		} else {
 			e.Status = "completed"
-			m.Status = "idle"
 			if task := s.Tasks[m.Task]; task != nil && task.Execution == i.id && task.Owner == m.ID && task.Status == "running" {
 				task.Result = i.result.Value
 				task.Status = "awaiting_review"
@@ -1188,7 +1179,7 @@ func (r *Runtime) wakeIdleMember(memberID string) {
 		return
 	}
 	m := s.Members[memberID]
-	if m == nil || m.Status != "idle" || m.Controller != "" || !hasWakeMail(s, memberID) {
+	if !wakeEligible(s, m) {
 		return
 	}
 	_, _ = r.startLocked(r.ctx, "", AgentRequest{Session: memberID, Task: "Respond to your pending addressed requests and report any resulting work."})
@@ -1259,7 +1250,7 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 			if m == nil {
 				return errors.New("unknown member")
 			}
-			if m.Status == "retired" || s.Contexts[m.Context] == nil {
+			if m.Control == MemberControlRetired || s.Contexts[m.Context] == nil {
 				return errors.New("member's execution context has been retired")
 			}
 			r.mu.Lock()
@@ -1301,7 +1292,9 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 				e.Error = ""
 				e.StopReason = ""
 				m.Controller = ""
-				m.Status = "queued"
+				if m.Control == MemberControlStopped {
+					m.Control = MemberControlEnabled
+				}
 				if task.Status == "blocked" {
 					task.Status = "running"
 					task.Revision++
@@ -1311,7 +1304,9 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 				copy := *m
 				restart = &copy
 				m.Controller = ""
-				m.Status = "idle"
+				if m.Control == MemberControlStopped {
+					m.Control = MemberControlEnabled
+				}
 			}
 		}
 		return nil
@@ -1325,7 +1320,6 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 			if !launched {
 				_ = r.update(context.WithoutCancel(ctx), func(s *State) error {
 					s.Executions[resume.ID].Status = "paused"
-					s.Members[memberID].Status = "paused"
 					return nil
 				})
 			}
@@ -1385,8 +1379,8 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 		_, err = r.startLocked(ctx, "", AgentRequest{Session: memberID, Task: "Resume the assigned work after the explicit parent resume. Review pending requests and any blocker feedback."})
 		if err != nil {
 			restoreErr := r.update(context.WithoutCancel(ctx), func(s *State) error {
-				if m := s.Members[memberID]; m != nil && m.Execution == restart.Execution && m.Status == "idle" {
-					m.Status, m.Controller = restart.Status, restart.Controller
+				if m := s.Members[memberID]; m != nil && m.Execution == restart.Execution && m.Controller == "" {
+					m.Control, m.Controller = restart.Control, restart.Controller
 					if task := s.Tasks[deferredTask]; deferred != nil && task != nil && task.Execution == deferred.Execution && task.Revision == deferred.Revision && task.AcceptedRevision == deferred.AcceptedRevision {
 						task.Deferral = deferred
 						if run := s.Runs[deferredRun]; run != nil && unsettledTask(s, deferredRun) == nil && grant == 0 {
@@ -1445,10 +1439,10 @@ func (r *Runtime) StopMember(ctx context.Context, memberID string) error {
 		if i == nil {
 			err := r.update(ctx, func(s *State) error {
 				m := s.Members[memberID]
-				if m == nil {
-					return errors.New("unknown member")
+				if err := stopRefusal(m); err != nil {
+					return err
 				}
-				m.Status = "stopped"
+				m.Control = MemberControlStopped
 				return nil
 			})
 			r.launchMu.Unlock()

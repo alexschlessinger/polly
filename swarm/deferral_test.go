@@ -62,7 +62,7 @@ func TestWorkflowDeferralPersistsWithoutAcceptingOrApplying(t *testing.T) {
 	if !TaskDeferred(s, s.Tasks[task.ID]) || s.Tasks[task.ID].Status != "awaiting_review" || s.Tasks[task.ID].AcceptedRevision != 0 || len(s.Applies) != 0 || s.Runs[task.Run].Status != "completed" {
 		t.Fatalf("deferral changed disposition: %+v", s.Tasks[task.ID])
 	}
-	if s.Members[task.Owner].Status != "idle" || MemberState(s, s.Members[task.Owner]).Outcome != "completed" {
+	if s.Members[task.Owner].Control != MemberControlEnabled || MemberState(s, s.Members[task.Owner]).Outcome != "completed" {
 		t.Fatal("failed workflow paused its completed agent")
 	}
 	if err := r.Close(); err != nil {
@@ -351,9 +351,9 @@ func TestDeferredEditingCandidateRemainsIsolated(t *testing.T) {
 
 func TestHistoricalMemberOutcomeIsDisplayOnly(t *testing.T) {
 	s := &State{Executions: map[string]*Execution{"e": {ID: "e", Member: "m", Status: "completed"}}, Tasks: map[string]*Task{"t": {ID: "t", Status: "done"}}, Workflows: map[string]*workflow.Report{}}
-	m := &Member{ID: "m", Execution: "e", Task: "t", Status: "paused"}
+	m := &Member{ID: "m", Execution: "e", Task: "t"}
 	p := MemberState(s, m)
-	if p.Outcome != "completed" || p.Lifecycle != LifecycleIdle || p.Display != "idle · done" || p.Busy || p.Attention || m.Status != "paused" {
+	if p.Outcome != "completed" || p.Lifecycle != LifecycleIdle || p.Display != "idle · done" || p.Busy || p.Attention {
 		t.Fatalf("projection: %+v", p)
 	}
 }

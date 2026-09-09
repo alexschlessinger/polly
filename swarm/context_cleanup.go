@@ -52,7 +52,7 @@ func (r *Runtime) retireContext(ctx context.Context, c *ExecutionContext, tree s
 		}
 		stored.Retiring = true
 		if member := s.Members[c.Owner]; member != nil {
-			member.Status = "retired"
+			member.Control = MemberControlRetired
 		}
 		return nil
 	}); err != nil {

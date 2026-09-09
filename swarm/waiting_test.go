@@ -136,8 +136,8 @@ func TestNormalFinalNeverWritesWaiting(t *testing.T) {
 		t.Fatal("member never finished")
 	}
 	s = awaitState(t, r, ctx, func(s *State) bool { return s.Executions[e.ID].Status == "completed" })
-	if s.Members[result.Session].Status != "idle" {
-		t.Fatalf("member after completion: %+v", s.Members[result.Session])
+	if p := MemberState(s, s.Members[result.Session]); p.Lifecycle != LifecycleIdle {
+		t.Fatalf("member after completion: %+v", p)
 	}
 }
 

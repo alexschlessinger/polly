@@ -24,7 +24,7 @@ func TestInspectionLargeReportAndPagination(t *testing.T) {
 		for i := range 180 {
 			id := fmt.Sprintf("task-%03d", i)
 			s.Tasks[id] = &Task{ID: id, Owner: id, Execution: id, Description: strings.Repeat("description", 90), Result: map[string]any{"claim": "small"}, Status: "awaiting_review"}
-			s.Members[id] = &Member{ID: id, Execution: id, Task: id, Status: "paused", Label: strings.Repeat("long title", 80)}
+			s.Members[id] = &Member{ID: id, Execution: id, Task: id, Label: strings.Repeat("long title", 80)}
 			s.Executions[id] = &Execution{ID: id, Member: id, Workflow: w.ID, Status: "completed", Error: ""}
 			w.Steps = append(w.Steps, workflow.Step{Operation: workflow.Operation{ID: id, Kind: "agent"}, Status: "completed", Value: map[string]any{"claim": "small"}})
 		}

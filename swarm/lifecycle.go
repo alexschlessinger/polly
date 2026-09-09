@@ -99,17 +99,6 @@ func ExecutionWorkflow(s *State, e *Execution) string {
 	return ""
 }
 
-// memberControl reads the member's standing instruction.
-func memberControl(m *Member) MemberControl {
-	switch m.Status {
-	case "stopped":
-		return MemberControlStopped
-	case "retired":
-		return MemberControlRetired
-	}
-	return MemberControlEnabled
-}
-
 // MemberState derives a member's presentation. Reading never repairs records,
 // accepts tasks or claims an execution.
 func MemberState(s *State, m *Member) AgentPresentation {
@@ -122,7 +111,7 @@ func MemberState(s *State, m *Member) AgentPresentation {
 		p.Outcome, p.Workflow, p.StopReason = e.Status, ExecutionWorkflow(s, e), string(e.StopReason)
 		p.Iterations, p.MaxIterations = e.Iterations, e.Request.MaxIterations
 	}
-	p.Control = memberControl(m)
+	p.Control = m.Control
 	open := false
 	if t := s.Tasks[m.Task]; t != nil {
 		p.TaskStatus, p.Deferred = TaskStatus(t), TaskDeferred(s, t)

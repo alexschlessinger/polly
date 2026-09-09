@@ -48,7 +48,7 @@ func submittedInput(t *testing.T, r *Runtime, base worktree.Snapshot, files map[
 	err = r.update(ctx, func(s *State) error {
 		run := r.currentRun(s)
 		s.Contexts[id] = &ExecutionContext{ID: id, Owner: id, Root: c.Path, Checkout: &c}
-		s.Members[id] = &Member{ID: id, Context: id, Task: id, Status: "idle"}
+		s.Members[id] = &Member{ID: id, Context: id, Task: id}
 		s.Tasks[id] = &Task{ID: id, Run: run.ID, Owner: id, Status: "awaiting_review", Revision: 1, Snapshot: snapshot.ID}
 		s.Snapshots[snapshot.ID] = &snapshot
 		s.Snapshots[base.ID] = &base

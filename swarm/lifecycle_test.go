@@ -10,7 +10,7 @@ import (
 // memberFixture builds the smallest state that exercises one presentation.
 func memberFixture(control, execution, task string, stop messages.StopReason) (*State, *Member) {
 	s := &State{Members: map[string]*Member{}, Executions: map[string]*Execution{}, Tasks: map[string]*Task{}}
-	m := &Member{ID: "m", Name: "worker", Status: control}
+	m := &Member{ID: "m", Name: "worker", Control: MemberControl(control)}
 	if task != "" {
 		s.Tasks["t"] = &Task{ID: "t", Status: task, Revision: 1}
 		m.Task = "t"
@@ -93,7 +93,7 @@ func TestFingerprintStableAcrossQueuedToRunning(t *testing.T) {
 	if resumed == waiting {
 		t.Fatal("a new generation did not change the fingerprint")
 	}
-	m.Status = "stopped"
+	m.Control = MemberControlStopped
 	if coordinationFingerprint(s) == resumed {
 		t.Fatal("a control change did not change the fingerprint")
 	}

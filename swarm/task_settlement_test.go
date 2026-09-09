@@ -80,7 +80,7 @@ func TestUnchangedTaskAcceptanceBeforeAndAfterCleanup(t *testing.T) {
 					t.Fatal("settlement overwrote parent changes")
 				}
 				s, _ = r.State(ctx)
-				if len(s.Applies) != 0 || s.Members[result.Session].Status != "retired" {
+				if len(s.Applies) != 0 || s.Members[result.Session].Control != MemberControlRetired {
 					t.Fatal("settlement required an apply or failed to retire the member")
 				}
 			})
@@ -132,7 +132,7 @@ func unchangedTaskState() (*State, *Task) {
 	task := &Task{ID: "task", Owner: "member", Status: "awaiting_review", Revision: 2, AcceptedRevision: 2, Snapshot: submitted.ID}
 	s := &State{
 		Tasks:     map[string]*Task{task.ID: task},
-		Members:   map[string]*Member{"member": {ID: "member", Context: "copy", Status: "idle"}},
+		Members:   map[string]*Member{"member": {ID: "member", Context: "copy"}},
 		Contexts:  map[string]*ExecutionContext{"copy": {Owner: "member", Root: "/member", Checkout: &worktree.Checkout{Path: "/member", Base: base}}},
 		Snapshots: map[string]*worktree.Snapshot{base.ID: &base, submitted.ID: &submitted},
 	}
@@ -154,15 +154,18 @@ func TestUnchangedTaskRequiresOriginalProvenance(t *testing.T) {
 		{"empty commit", func(s *State, task *Task) { s.Snapshots[task.Snapshot].Commit = "" }},
 		{"changed candidate", func(s *State, task *Task) { s.Snapshots[task.Snapshot].Tree = "changed-tree" }},
 		{"different recorded base", func(s *State, task *Task) { task.StartingSnapshot = task.Snapshot }},
-		{"retired missing starting snapshot", func(s *State, task *Task) { delete(s.Contexts, "copy"); s.Members[task.Owner].Status = "retired" }},
+		{"retired missing starting snapshot", func(s *State, task *Task) {
+			delete(s.Contexts, "copy")
+			s.Members[task.Owner].Control = MemberControlRetired
+		}},
 		{"retired missing base", func(s *State, task *Task) {
 			delete(s.Contexts, "copy")
-			s.Members[task.Owner].Status = "retired"
+			s.Members[task.Owner].Control = MemberControlRetired
 			task.StartingSnapshot = "missing"
 		}},
 		{"retired base id mismatch", func(s *State, task *Task) {
 			delete(s.Contexts, "copy")
-			s.Members[task.Owner].Status = "retired"
+			s.Members[task.Owner].Control = MemberControlRetired
 			task.StartingSnapshot = "base"
 			s.Snapshots["base"].ID = "foreign"
 		}},

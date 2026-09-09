@@ -213,8 +213,12 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 			}
 		} else if task.Status == "changes_requested" {
 			owner := s.Members[task.Owner]
+			var execution *Execution
+			if owner != nil {
+				execution = s.Executions[owner.Execution]
+			}
 			switch {
-			case owner == nil || owner.Status == "retired" || s.Contexts[owner.Context] == nil:
+			case owner == nil || owner.Control == MemberControlRetired || s.Contexts[owner.Context] == nil:
 				result["nextAction"] = "The previous member cannot resume; use swarm_update_task to reassign the task to an available member, or cancel the task."
 			case owner.Controller != "":
 				if w := s.Workflows[owner.Controller]; w != nil && w.Status == "running" {
@@ -222,7 +226,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 				} else {
 					result["nextAction"] = "Use swarm_control resume with the member ID after other active work settles. The terminal workflow is not replayed."
 				}
-			case owner.Status == "paused" || owner.Status == "stopped":
+			case owner.Control == MemberControlStopped || execution != nil && (execution.Status == "paused" || execution.Status == "failed"):
 				result["nextAction"] = "Use swarm_control resume with the member ID to request a revised submission; an exhausted iteration allowance requires a user-directed grant."
 			default:
 				result["nextAction"] = "Wait for the member's revised submission."

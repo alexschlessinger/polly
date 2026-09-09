@@ -51,7 +51,7 @@ func TestSwarmProjectionGroupsWorkflowMembersAndPreservesDirectRows(t *testing.T
 		}},
 	}}
 	for _, id := range []string{"direct", "worker-a", "worker-b", "typed"} {
-		s.Members[id] = &swarm.Member{ID: id, Name: id, Label: id, Status: "running", Execution: id}
+		s.Members[id] = &swarm.Member{ID: id, Name: id, Label: id, Execution: id}
 	}
 	for id, call := range map[string]string{"direct": "direct", "worker-a": "workflow/1", "worker-b": "workflow/2", "typed": ""} {
 		s.Executions[id] = &swarm.Execution{ID: id, Member: id, Request: swarm.AgentRequest{CallID: call}}
@@ -114,7 +114,7 @@ func TestSwarmProjectionRestoresMembersWithoutToolHistoryAndKeepsStreaming(t *te
 	m := newReplModel()
 	m.appendAssistant("answer in progress")
 	current := m.currentAssistant
-	s := &swarm.State{Members: map[string]*swarm.Member{"member": {ID: "member", Name: "renamable", Status: "waiting"}}}
+	s := &swarm.State{Members: map[string]*swarm.Member{"member": {ID: "member", Name: "renamable"}}}
 	m.hydrateSwarmAgents(s)
 	m.appendAssistant(" continues")
 	m.renderPendingMarkdown()
@@ -130,7 +130,7 @@ func TestSwarmProjectionRestoresMembersWithoutToolHistoryAndKeepsStreaming(t *te
 	}
 	rememberViewSections(m, &view)
 	s.Members["member"].Name = "renamed"
-	s.Members["member"].Status = "retired"
+	s.Members["member"].Control = swarm.MemberControlRetired
 	m.hydrateSwarmAgents(s)
 	a := projectedAgentRows(m)["member"][0]
 	if a.session != "renamed" || a.display() != "idle · retired" || a.busy() {
@@ -160,7 +160,7 @@ func TestSwarmProjectionKeepsInterleavedWorkflowsGrouped(t *testing.T) {
 	})
 	s := &swarm.State{Members: map[string]*swarm.Member{}, Executions: map[string]*swarm.Execution{}, Workflows: map[string]*workflow.Report{}}
 	add := func(id, group string) {
-		s.Members[id] = &swarm.Member{ID: id, Name: id, Status: "idle"}
+		s.Members[id] = &swarm.Member{ID: id, Name: id}
 		s.Executions[id] = &swarm.Execution{Member: id, Request: swarm.AgentRequest{CallID: id}}
 		s.Workflows[group].Steps = append(s.Workflows[group].Steps, workflow.Step{Operation: workflow.Operation{ID: id, Kind: "agent"}})
 		m.hydrateSwarmAgents(s)

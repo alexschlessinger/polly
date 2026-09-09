@@ -103,7 +103,7 @@ func TestSwarmRowsFollowMemberLifecycleWithoutChildTabs(t *testing.T) {
 	if row == nil || row.agent.display() != "unknown" {
 		t.Fatal("fixture must exercise the old background-result gap")
 	}
-	member := &swarm.Member{ID: "member-id", Name: "reviewer", Status: "queued", Execution: "execution", Task: "task"}
+	member := &swarm.Member{ID: "member-id", Name: "reviewer", Execution: "execution", Task: "task"}
 	execution := &swarm.Execution{ID: "execution", Member: member.ID, Request: swarm.AgentRequest{CallID: call.ID}, Status: "queued"}
 	task := &swarm.Task{ID: "task", Status: "running"}
 	s := &swarm.State{Members: map[string]*swarm.Member{member.ID: member}, Executions: map[string]*swarm.Execution{execution.ID: execution}, Tasks: map[string]*swarm.Task{task.ID: task}}
@@ -121,7 +121,7 @@ func TestSwarmRowsFollowMemberLifecycleWithoutChildTabs(t *testing.T) {
 		{"idle", "completed", "done", "idle · done", false},
 		{"idle", "completed", "canceled", "idle · canceled", false},
 	} {
-		member.Status, execution.Status, task.Status = tc.member, tc.execution, tc.task
+		execution.Status, task.Status = tc.execution, tc.task
 		m.hydrateSwarmAgents(s)
 		if row.agent.display() != tc.want || row.agent.busy() != tc.active || row.agent.viewID != member.ID || row.agent.session != member.Name || !row.agent.attached {
 			t.Fatalf("%s/%s/%s: %+v", tc.member, tc.execution, tc.task, row.agent)
@@ -130,7 +130,7 @@ func TestSwarmRowsFollowMemberLifecycleWithoutChildTabs(t *testing.T) {
 	// A deleted ID cannot be rebound to a different member reusing the name or
 	// call ID. Rendering never acquires a child session or an execution lease.
 	delete(s.Members, member.ID)
-	s.Members["replacement"] = &swarm.Member{ID: "replacement", Name: member.Name, Status: "running"}
+	s.Members["replacement"] = &swarm.Member{ID: "replacement", Name: member.Name}
 	execution.Member = "replacement"
 	m.hydrateSwarmAgents(s)
 	if row.agent.viewID != member.ID || row.agent.busy() {
@@ -144,7 +144,7 @@ func TestSwarmRowsRejectAmbiguousCallIdentity(t *testing.T) {
 	m.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "review"}, {Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}}}, "parent")
 	s := &swarm.State{Members: map[string]*swarm.Member{}, Executions: map[string]*swarm.Execution{}}
 	for _, id := range []string{"first", "second"} {
-		s.Members[id] = &swarm.Member{ID: id, Name: id, Status: "running"}
+		s.Members[id] = &swarm.Member{ID: id, Name: id}
 		s.Executions[id] = &swarm.Execution{ID: id, Member: id, Request: swarm.AgentRequest{CallID: call.ID}}
 	}
 	m.hydrateSwarmAgents(s)
@@ -218,7 +218,11 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Only this display snapshot changes: the runtime, lease, and IDs stay fixed.
-			member.Status, execution.Status, task.Status = tc.member, tc.execution, tc.task
+			member.Control = swarm.MemberControlEnabled
+			if tc.member == "retired" {
+				member.Control = swarm.MemberControlRetired
+			}
+			execution.Status, task.Status = tc.execution, tc.task
 			task.Snapshot, task.AcceptedRevision = "candidate", 0
 			if tc.accepted {
 				task.AcceptedRevision = task.Revision

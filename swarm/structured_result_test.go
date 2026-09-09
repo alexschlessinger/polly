@@ -305,7 +305,6 @@ func TestStructuredAcceptedRecoveryWithoutModelCall(t *testing.T) {
 		e := s.Executions[m.Execution]
 		e.Status = "paused"
 		e.Result = nil
-		m.Status = "paused"
 		task := s.Tasks[result.Task]
 		task.Status = "running"
 		task.Result = nil
@@ -509,7 +508,6 @@ func TestStructuredUncertainCompletionIsNotAccepted(t *testing.T) {
 		e.Completion = nil
 		e.Result = nil
 		e.Status = "paused"
-		m.Status = "paused"
 		s.Tasks[m.Task].Status = "running"
 		s.Tasks[m.Task].Result = nil
 		e.Intent = []messages.ChatMessage{iterationTool("uncertain", completionToolName, `{"value":false}`)}
