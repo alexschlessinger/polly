@@ -2,7 +2,6 @@ package streaming
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -232,32 +231,6 @@ func (sc *StreamingCore) SetPromptCacheUsage(read, write int) {
 // SetStopReason updates the stop reason in the state
 func (sc *StreamingCore) SetStopReason(reason messages.StopReason) {
 	sc.state.SetStopReason(reason)
-}
-
-// HandleStructuredOutput processes structured output tool calls (e.g., for JSON schemas)
-func (sc *StreamingCore) HandleStructuredOutput(toolName string) bool {
-	for _, tc := range sc.state.ToolCalls {
-		if tc.Name == toolName {
-			// Parse the arguments to extract the structured data
-			var args map[string]any
-			if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
-				if data, ok := args["data"]; ok {
-					// Return just the structured data as content
-					if dataJSON, err := json.Marshal(data); err == nil {
-						// The structured payload IS the final answer — flip the
-						// stop reason from ToolUse to EndTurn so the agent loop
-						// terminates instead of issuing another LLM call against
-						// a transcript that ends with this synthetic assistant
-						// message (Anthropic 4.x rejects assistant prefill).
-						sc.state.SetStopReason(messages.StopReasonEndTurn)
-						sc.CompleteWithContent(string(dataJSON))
-						return true
-					}
-				}
-			}
-		}
-	}
-	return false
 }
 
 // logCompletionDetails logs streaming completion information for debugging

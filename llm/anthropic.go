@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strings"
 
@@ -270,10 +271,8 @@ func (a *AnthropicClient) processStream(ctx context.Context, params *anthropic.M
 	}
 
 	// Handle structured output response
-	if req.ResponseSchema != nil {
-		if streamCore.HandleStructuredOutput(structuredOutputToolName) {
-			return
-		}
+	if req.ResponseSchema != nil && completeStructuredOutput(streamCore) {
+		return
 	}
 
 	// Send final message with accumulated state
@@ -320,13 +319,43 @@ func (a *AnthropicClient) processNonStreaming(ctx context.Context, params *anthr
 	}
 
 	// Handle structured output if needed
-	if req.ResponseSchema != nil {
-		if streamCore.HandleStructuredOutput(structuredOutputToolName) {
-			return
-		}
+	if req.ResponseSchema != nil && completeStructuredOutput(streamCore) {
+		return
 	}
 
 	streamCore.Complete()
+}
+
+// completeStructuredOutput finishes a structured-output turn. Anthropic has
+// no native schema mode, so the schema rides on the synthetic
+// extract_structured_data tool and the model's call is the answer: its data
+// argument becomes the reply's content. The stop reason flips from ToolUse to
+// EndTurn so the agent loop terminates instead of issuing another call
+// against a transcript that ends with this synthetic assistant message
+// (Anthropic 4.x rejects assistant prefill). It reports false, sending
+// nothing, when no well-formed call to the tool was made.
+func completeStructuredOutput(streamCore *streaming.StreamingCore) bool {
+	for _, tc := range streamCore.GetState().GetToolCalls() {
+		if tc.Name != structuredOutputToolName {
+			continue
+		}
+		var args map[string]any
+		if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+			continue
+		}
+		data, ok := args["data"]
+		if !ok {
+			continue
+		}
+		dataJSON, err := json.Marshal(data)
+		if err != nil {
+			continue
+		}
+		streamCore.SetStopReason(messages.StopReasonEndTurn)
+		streamCore.CompleteWithContent(string(dataJSON))
+		return true
+	}
+	return false
 }
 
 // ConvertToAnthropicTool creates a synthetic tool for structured output with Anthropic
