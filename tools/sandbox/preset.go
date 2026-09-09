@@ -458,7 +458,7 @@ func materializeGitLeafProtections(workspace string, repositories []gitRepositor
 			// nothing commits from inside a bare metadata tree.
 			continue
 		}
-		if !pathLexicallyWithinPolicy(repository.gitDir, workspace) {
+		if !PathWithin(repository.gitDir, workspace) {
 			// A gitdir outside the workspace (separate-git-dir layouts,
 			// worktrees of an external repository) is not writable in the
 			// sandbox anyway; keep whole-tree parity so a later writable-path
@@ -1654,7 +1654,7 @@ func normalizeTrustedGitPolicyAlias(path string) string {
 		"/tmp": "/private/tmp",
 		"/var": "/private/var",
 	} {
-		if !pathLexicallyWithinPolicy(path, alias) {
+		if !PathWithin(path, alias) {
 			continue
 		}
 		info, err := os.Lstat(alias)
@@ -1772,7 +1772,7 @@ func absolutePathComponents(path string) (string, []string) {
 }
 
 func pathWithinPolicy(path, parent string) bool {
-	if pathLexicallyWithinPolicy(path, parent) {
+	if PathWithin(path, parent) {
 		return true
 	}
 	parentInfo, err := os.Stat(filepath.Clean(parent))
@@ -1788,11 +1788,6 @@ func pathWithinPolicy(path, parent string) bool {
 	// those names (for example default APFS, but not a case-sensitive volume).
 	resolved, err := resolveExistingPathPrefix(path)
 	return err == nil && resolved != filepath.Clean(path) && existingAncestorHasIdentity(resolved, parentInfo)
-}
-
-func pathLexicallyWithinPolicy(path, parent string) bool {
-	rel, err := filepath.Rel(parent, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func existingAncestorHasIdentity(path string, parentInfo fs.FileInfo) bool {
@@ -1825,7 +1820,7 @@ func pathProtectedByGitGuardrail(path string, protected []string) bool {
 
 func pathLexicallyProtectedByGitGuardrail(path string, protected []string) bool {
 	for _, parent := range protected {
-		if pathLexicallyWithinPolicy(path, parent) {
+		if PathWithin(path, parent) {
 			return true
 		}
 	}

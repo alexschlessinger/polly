@@ -2267,6 +2267,12 @@ func TestDarwinSandboxAllowsGrantedUnixSocket(t *testing.T) {
 		go func() {
 			conn, acceptErr := listener.AcceptUnix()
 			if acceptErr == nil {
+				// Read the probe before closing so nc cannot lose a race with
+				// the server and receive SIGPIPE after a permitted connection.
+				acceptErr = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+				if acceptErr == nil {
+					_, acceptErr = io.ReadFull(conn, make([]byte, len("probe")))
+				}
 				_ = conn.Close()
 			}
 			accepted <- acceptErr

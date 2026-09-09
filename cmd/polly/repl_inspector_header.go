@@ -112,6 +112,12 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	itemName, status, launch := "", "", false
 	if i.target.kind != conversationViewKind {
 		itemName = "Thought"
+		if i.target.kind == swarmViewKind {
+			itemName = "Swarm"
+			if i.target.item != "" {
+				itemName += " · " + i.target.item
+			}
+		}
 		if i.target.kind == toolViewKind {
 			itemName = "Tool"
 		}
@@ -155,6 +161,13 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		}
 		b.write(rw.TruncatePrefix(i.searchInput.text(), max(0, room), "…")+"▏", "", "", "")
 		b.write(hint, "muted", "", "")
+	} else if i.target.kind == swarmViewKind {
+		b.newline()
+		b.link("Agents", "swarm_agents", true, false)
+		for _, name := range []string{"members", "tasks", "messages", "publications", "workflows", "integrations", "previews", "raw"} {
+			sep()
+			b.link(name, "swarm_"+name, true, i.target.item == name)
+		}
 	} else if i.target.kind == toolViewKind {
 		if status != "" || launch {
 			b.newline()
@@ -167,7 +180,12 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			}
 		}
 	} else if i.target.kind == conversationViewKind && !isRoot {
-		if tab := r.inspectionTab(i.target); tab != nil && tab != root {
+		if r.inspectedSwarm(i.target) != nil {
+			b.newline()
+			b.link("Stop agent", "stop", true, false)
+			sep()
+			b.link("Send request", "message", true, false)
+		} else if tab := r.inspectionTab(i.target); tab != nil && tab != root {
 			m := tab.model
 			m.mu.Lock()
 			busy, canceling, approval := m.busy, m.canceling, m.approval != nil

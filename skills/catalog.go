@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/internal/safefile"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -441,14 +442,6 @@ func canonicalPathForValidation(path string) (string, error) {
 	return absoluteCleanPath(resolved)
 }
 
-func pathWithinRoot(root, target string) bool {
-	rel, err := filepath.Rel(root, target)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
-}
-
 // ResolvePath resolves a skill-relative path while preventing directory escape.
 func (s *Skill) ResolvePath(rel string) (string, error) {
 	lexical, _, err := s.resolve(rel)
@@ -489,7 +482,7 @@ func (s *Skill) resolve(rel string) (lexical, canonical string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	if !pathWithinRoot(canonicalRoot, canonicalResolved) {
+	if !sandbox.PathWithin(canonicalResolved, canonicalRoot) {
 		return "", "", fmt.Errorf("path %q escapes the skill root", rel)
 	}
 

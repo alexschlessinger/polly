@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -46,9 +47,27 @@ type TurnUI interface {
 	TurnPersistenceAllowed() bool
 }
 
+// Context-aware screens can revoke a pending request when its execution ends.
+// Keep this optional for surfaces that handle their own synchronous prompts.
+func approveToolCalls(ctx context.Context, ui TurnUI, requester string, calls []messages.ChatMessageToolCall) []bool {
+	if ctx.Err() != nil {
+		return denyToolCalls(calls)
+	}
+	if screen, ok := ui.(interface {
+		ApproveToolCallsContext(context.Context, string, []messages.ChatMessageToolCall) []bool
+	}); ok {
+		return screen.ApproveToolCallsContext(ctx, requester, calls)
+	}
+	return ui.ApproveToolCalls(calls)
+}
+
 // lineTurnUI streams raw output or owns a terminal Markdown tail and footer,
 // according to each stream's capabilities. It also serves fallback REPL turns.
 type lineTurnUI struct {
+	settledOutput bool
+	// interactive marks a REPL turn: the answer streams as it arrives. Settled
+	// output, one answer after the run, is for one-shot and piped runs only.
+	interactive              bool
 	config                   *Config
 	writer                   io.Writer
 	errWriter                io.Writer
@@ -168,7 +187,7 @@ func (ui *lineTurnUI) AppendAssistantText(content string) {
 		ui.clearActivityLocked()
 	}
 	defer ui.renderActivityLocked()
-	if content != "" {
+	if content != "" && !ui.settledOutput {
 		ui.activityStateLocked(turnStateStreaming, "")
 	}
 	if ui.config.SchemaPath != "" {
@@ -229,7 +248,7 @@ func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	ui.clearActivityLocked()
 	defer ui.renderActivityLocked()
 	ui.flushBufferedMarkdown()
-	ui.needsSeparator = true
+	ui.needsSeparator = !ui.settledOutput
 	if !ui.activityEnabled() {
 		return
 	}

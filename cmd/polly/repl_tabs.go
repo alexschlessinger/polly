@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
-	"github.com/alexschlessinger/pollytool/subagent"
 )
 
 // Tabs. The managed REPL holds several open sessions at once, each with its
@@ -47,47 +45,18 @@ type replTab struct {
 	cancelDetachAt time.Time
 	stopWatch      func() bool
 
-	// A child tab (see repl_children.go): parent is the tab whose agent
-	// spawned it, nil once that tab is gone, and parentName the session it
-	// reports to. report holds its first reply; waiter is the blocking spawn
-	// call, nil for a background child. delivered permits cleanup after the
-	// caller accepts the reply or the store saves it. keepOpen preserves a
-	// conversation the user continued. All fields are loop-owned.
+	// Saved child views retain their parent link and close when unused. The
+	// swarm runtime owns delegated execution; tabs own only interactive turns.
+	agentActivity  *agentActivity // Display identity only; never execution state.
 	parent         *replTab
 	parentName     string
 	delivered      bool
 	keepOpen       bool
-	report         *childTurnUI
-	waiter         chan childReport
-	waitCtx        context.Context
 	reportsLoading bool
-	// reportsRepull asks for another read once the one in flight lands: a
-	// report written meanwhile may be missing from it.
-	reportsRepull   bool
-	reportWriteDone chan struct{}
-	reporting       bool
-	deliveryPending bool
-	agentActivity   *agentActivity
-	agentWriteDone  chan struct{}
-	spawnCallID     string
-	agentStatus     string
-	agentActive     bool
-
-	// Loop-owned usage snapshot for the original delegated run.
-	agentInputTokens, agentOutputTokens int
-
-	// settled follows the actual first turn, even after UI cancellation has
-	// detached it. Its concurrency slot must remain held until work ends.
-	settled     chan struct{}
-	settledOnce sync.Once
-}
-
-// markSettled closes settled, once, from the first turn's goroutine or a
-// rejected launch's cleanup.
-func (t *replTab) markSettled() {
-	if t.settled != nil {
-		t.settledOnce.Do(func() { close(t.settled) })
-	}
+	reportsRepull  bool
+	swarmLoading   bool
+	swarmActive    bool
+	swarmRefreshAt time.Time
 }
 
 // openResult is the outcome of opening a session for a new tab.
@@ -114,6 +83,7 @@ func (r *managedREPL) visibleTab() *replTab {
 		return r.tabs[i]
 	}
 	tab := &replTab{name: "-", state: r.state, model: r.model}
+	r.bindMemberUI(tab)
 	r.tabs = append(r.tabs, tab)
 	return tab
 }
@@ -152,6 +122,7 @@ func (r *managedREPL) addTab(state *conversationState) error {
 
 func (r *managedREPL) addPreparedTab(state *conversationState, name string, m *replModel) error {
 	tab := &replTab{name: name, state: state, model: m, parentName: m.status.parentName, delivered: m.status.parentName != ""}
+	r.bindMemberUI(tab)
 	tab.detachedWorkspace = state.workspaceEntry != nil && state.workspaceEntry.orphan
 	tab.workspaceRoot = tab.parentName == "" || tab.detachedWorkspace
 	if i := r.tabIndexOf(tab.parentName); i >= 0 && !tab.detachedWorkspace {
@@ -271,10 +242,14 @@ func (r *managedREPL) requestCloseTabLocked() {
 		m.appendNoticeLine("Cancel this workspace's turn (Esc) before closing it")
 		return
 	}
-	// A running child works on a view of this tab's tools; closing the tab
-	// would close them under it.
+	// Interactive turns in saved child conversations must stop before the
+	// workspace can close. Swarm executions are checked separately below.
 	if n := r.runningDescendants(r.visibleTab()); n > 0 {
 		m.appendNoticeLine("Stop this workspace's running agents in the inspector before closing it")
+		return
+	}
+	if r.state != nil && r.state.swarm != nil && r.state.swarm.HasActive() {
+		m.appendNoticeLine("stop this swarm's active members and workflows before closing it")
 		return
 	}
 	r.closeTabRequest = true
@@ -386,17 +361,7 @@ func (r *managedREPL) removeTab(i int) *replTab {
 		tab.stopWatch()
 		tab.stopWatch = nil
 	}
-	if tab.waiter != nil {
-		// A blocking spawn call waiting on this child hears it went away.
-		select {
-		case tab.waiter <- childReport{result: subagent.Result{Session: tab.name, Done: tab.settled}, err: errors.New("the agent's tab was closed")}:
-		default:
-		}
-		tab.waiter = nil
-	}
-	tab.report = nil
-	// Its children stand on their own from here: they report to the store
-	// for the parent session, and an idle one closes once it has.
+	// Saved child views retain their stored parent identity after its tab closes.
 	for _, child := range r.tabs {
 		if child.parent == tab {
 			child.parent = nil

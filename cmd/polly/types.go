@@ -37,7 +37,11 @@ func (s Settings) clone() Settings {
 // them, and a flag given explicitly overrides the stored value of every
 // session this process opens.
 type Config struct {
-	Launch Settings
+	Stream                           bool
+	SwarmConcurrent, SwarmExecutions int
+	SwarmDirectory                   string
+	SwarmApplyTimeout                time.Duration
+	Launch                           Settings
 
 	// Runtime configuration
 	Timeout       time.Duration

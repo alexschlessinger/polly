@@ -1,11 +1,9 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -26,7 +24,7 @@ type agentActivity struct {
 
 	// Reported usage for the original delegated run, retained after completion.
 	inputTokens, outputTokens int
-	// origin binds a restored row to the same live run across child renames.
+	// origin binds saved display rows to a live inspector across renames.
 	origin *agentActivity
 }
 
@@ -133,18 +131,18 @@ func (m *replModel) agentField(ids []int64, expanded bool) (turnDockField, bool)
 	if c.Total == 0 {
 		return turnDockField{}, false
 	}
-	return activityField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled), activityAgents, expanded), true
+	return activityField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled, c.Paused), activityAgents, expanded), true
 }
 
 // turnAgentSummaryLabel composes the agent field's label from its counts,
 // shared by the TUI launch row and the one-shot summary. Running agents lead
 // while any child runs; afterwards one total with its failed and canceled
 // tails.
-func turnAgentSummaryLabel(total, running, failed, canceled int) string {
+func turnAgentSummaryLabel(total, running, failed, canceled, paused int) string {
 	label := turnAgentLabel(total)
 	if running > 0 {
 		label = turnAgentLabel(running) + " running"
-		if completed := total - running - failed - canceled; completed > 0 {
+		if completed := total - running - failed - canceled - paused; completed > 0 {
 			label += fmt.Sprintf(", %d completed", completed)
 		}
 	}
@@ -153,6 +151,9 @@ func turnAgentSummaryLabel(total, running, failed, canceled int) string {
 	}
 	if canceled > 0 {
 		label += fmt.Sprintf(", %d canceled", canceled)
+	}
+	if paused > 0 {
+		label += fmt.Sprintf(", %d paused", paused)
 	}
 	return label
 }
@@ -305,6 +306,8 @@ func spawnOutcomeStatus(outcome sessions.ReportStatus) string {
 		return "failed"
 	case sessions.ReportCanceled:
 		return "canceled"
+	case sessions.ReportPaused:
+		return "paused · iteration limit"
 	default:
 		return "unknown"
 	}
@@ -344,114 +347,11 @@ func (m *replModel) hydrateAgentSessions(parent string, summaries []sessions.Ses
 	m.visual.invalidate()
 }
 
-// refreshAgentActivities runs before painting, with no model lock held. It
-// samples each child separately, then updates its original display records.
-func (r *managedREPL) refreshAgentActivities() {
-	pending := r.pendingAgentUpdates[:0]
-	for _, child := range r.pendingAgentUpdates {
-		if !r.updateChildAgent(child) {
-			pending = append(pending, child)
-		}
-	}
-	clear(r.pendingAgentUpdates[len(pending):])
-	r.pendingAgentUpdates = pending
-	for _, child := range r.tabs {
-		if child.agentActivity == nil {
-			continue
-		}
-		if child.report != nil {
-			if child.model.mu.TryLock() {
-				status := "working"
-				if child.model.approval != nil {
-					status = "approval needed"
-				} else if child.model.busy {
-					status = child.model.busyLabel()
-				}
-				child.agentInputTokens, child.agentOutputTokens = child.model.lastIn, child.model.lastOut
-				child.model.mu.Unlock()
-				child.agentStatus, child.agentActive = status, true
-			}
-		}
-		r.updateChildAgent(child)
-	}
-}
-
-func (r *managedREPL) updateChildAgent(child *replTab) bool {
-	updated := true
-	for _, parent := range r.tabs {
-		m := parent.model
-		if m == child.model {
-			continue
-		}
-		if !m.mu.TryLock() {
-			updated = false
-			continue
-		}
-		for _, record := range m.toolDisclosures {
-			changed := false
-			for i := range record.rows {
-				row := &record.rows[i]
-				a := row.agent
-				if a == nil || (a != child.agentActivity && a.origin != child.agentActivity && !(a.session == child.name && row.callID == child.spawnCallID && a.session != "")) {
-					continue
-				}
-				if a != child.agentActivity {
-					a.origin = child.agentActivity
-				}
-				if a.session != child.name || a.status != child.agentStatus || a.active != child.agentActive || a.inputTokens != child.agentInputTokens || a.outputTokens != child.agentOutputTokens {
-					if a.active && !child.agentActive && child.agentStatus == "done" {
-						m.noteAgentCompletion(record.id)
-					}
-					a.session, a.status, a.active, a.attached = child.name, child.agentStatus, child.agentActive, true
-					a.inputTokens, a.outputTokens = child.agentInputTokens, child.agentOutputTokens
-					changed = true
-				}
-			}
-			if changed {
-				m.refreshAgentRecord(record)
-			}
-		}
-		m.mu.Unlock()
-	}
-	return updated
-}
+// refreshAgentActivities reads runtime state without tying execution to tabs.
+func (r *managedREPL) refreshAgentActivities() { r.refreshSwarmActivities() }
 
 func (m *replModel) refreshAgentRecord(record *toolDisclosureRecord) {
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) { m.visual.invalidate() })
-}
-
-func recordSpawnOutcome(session sessions.Session, outcome sessions.ReportStatus) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return updateMetadata(ctx, session, func(md *sessions.Metadata) {
-		if md.SpawnCallID != "" && md.SpawnOutcome == "" {
-			md.SpawnOutcome = outcome
-		}
-	})
-}
-
-func (r *managedREPL) finishChildAgent(child *replTab, err error) {
-	if child.spawnCallID == "" {
-		return
-	}
-	child.model.mu.Lock()
-	child.agentInputTokens, child.agentOutputTokens = child.model.lastIn, child.model.lastOut
-	child.model.mu.Unlock()
-	outcome := storedChildReport(subagent.Result{}, err).Status
-	child.agentStatus, child.agentActive = spawnOutcomeStatus(outcome), false
-	if !r.updateChildAgent(child) {
-		r.pendingAgentUpdates = append(r.pendingAgentUpdates, child)
-	}
-	done := make(chan struct{})
-	child.agentWriteDone = done
-	if !r.background(func() {
-		defer close(done)
-		if err := recordSpawnOutcome(child.state.session, outcome); err != nil {
-			r.work.recordError(fmt.Errorf("save agent outcome: %w", err))
-		}
-	}) {
-		close(done)
-	}
 }
 
 // openAgentAt is called with the visible model locked. Store validation runs

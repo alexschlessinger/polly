@@ -54,7 +54,7 @@ func (r *managedREPL) workspaceShortcut(id string) (int, bool) {
 
 // peekTabActivity reads what a tab's turn is doing without blocking: the
 // visible model is already locked by the caller, and another runtime that is
-// busy under its own lock reports its last known agent status instead.
+// busy under its own lock reports a generic activity label.
 func (r *managedREPL) peekTabActivity(tab *replTab) string {
 	if tab.model == r.model {
 		return modelTabActivity(tab.model)
@@ -63,7 +63,7 @@ func (r *managedREPL) peekTabActivity(tab *replTab) string {
 		defer tab.model.mu.Unlock()
 		return modelTabActivity(tab.model)
 	}
-	return tab.agentStatus
+	return "working"
 }
 
 // workspaceActivity describes a workspace for the sessions picker: its own
@@ -98,6 +98,9 @@ func (r *managedREPL) workspaceActivity(tab *replTab) string {
 
 // hasLiveAgents reports whether any agent of the workspace runs in this polly.
 func (r *managedREPL) hasLiveAgents(tab *replTab) bool {
+	if tab.state != nil && tab.state.swarm != nil && tab.state.swarm.HasActive() {
+		return true
+	}
 	for _, child := range r.tabs {
 		if child != tab && r.rootTab(child) == tab {
 			return true
@@ -128,12 +131,6 @@ func (r *managedREPL) inspectAgent(source *replModel, parent viewTarget, link ag
 		return false
 	}
 	target := viewTarget{session: sessions.ViewTarget{ID: row.agent.viewID, Name: row.agent.session, Parent: parent.session.Name, SpawnCallID: row.callID}}
-	for _, tab := range r.tabs {
-		if tab.agentActivity == row.agent || tab.agentActivity != nil && tab.agentActivity == row.agent.origin {
-			target = tabViewTarget(tab)
-			break
-		}
-	}
 	r.inspect(target)
 	return true
 }

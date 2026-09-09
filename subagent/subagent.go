@@ -28,16 +28,22 @@ const DefaultMaxConcurrent = 32
 
 // Request is a parent's brief for one child, as the model wrote it.
 type Request struct {
+	// Source is a checkout to copy into isolation; ReadOnly permits research
+	// outside Git. Session and TaskID continue existing swarm work.
+	Source, Session, TaskID, CallID string
+	ReadOnly                        bool
 	// Task is the brief. It is everything the child knows.
 	Task string
 	// Label names the job in a few words for the people watching.
 	Label string
-	// Tools lists the tool names or globs the child may use; empty means the
-	// parent's tools. The child never gets spawn_agent itself.
+	// Tools lists the tool names or globs the child may use. Nil inherits the
+	// parent's tools; an explicit empty slice disables every model tool.
+	// The child never gets spawn_agent itself.
 	Tools []string
 	// Model overrides the parent's model when set.
 	Model string
-	// MaxIterations caps the child's model calls when positive.
+	// MaxIterations is a trusted host override for the child's model calls.
+	// The model-facing spawn tool always inherits the configured limit.
 	MaxIterations int
 	// Background asks the host to return as soon as the child has started
 	// and deliver its reply later as a message to the parent. A host that
@@ -47,10 +53,12 @@ type Request struct {
 
 // Result is what a child returned.
 type Result struct {
+	// Yielded releases a blocking parent when a child needs its response.
+	Yielded bool
 	// Text is the child's final reply.
 	Text string
-	// Session names the session holding the child's transcript, empty when
-	// the child ran without one.
+	// Session identifies the saved child conversation using the host's name
+	// or stable ID, and is empty when the child ran without one.
 	Session string
 	// InputTokens and OutputTokens are the child's own usage, reported
 	// separately from the parent's.
@@ -70,6 +78,9 @@ type Result struct {
 // session to find the transcript in; for a child still running, where it
 // runs and how its reply arrives.
 func (r Result) String() string {
+	if r.Yielded {
+		return "coordination yielded; inspect addressed messages and respond before waiting again. Other children in this batch continue in the background.\n(agent session " + r.Session + ")"
+	}
 	if r.Started {
 		text := "started; the agent is working in the background and its reply will arrive as a message when it finishes"
 		if r.Session != "" {
@@ -95,6 +106,14 @@ func (r Result) String() string {
 // child's session in its Result so the failure can be inspected.
 type Runner func(ctx context.Context, req Request) (Result, error)
 
+type callIDKey struct{}
+
+// WithCallID binds the provider's call identity without accepting it from
+// model-authored arguments. Durable hosts use it to reconcile retried spawns.
+func WithCallID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, callIDKey{}, id)
+}
+
 // Option configures the tool.
 type Option func(*Tool)
 
@@ -111,9 +130,14 @@ func WithMaxConcurrent(n int) Option {
 // Tool is the spawn_agent tool. It parses the model's brief, bounds how many
 // children run at once, and hands each brief to its Runner.
 type Tool struct {
-	run   Runner
-	slots chan struct{}
+	run              Runner
+	slots            chan struct{}
+	runtimeScheduler bool
 }
+
+// WithRuntimeScheduler delegates all execution slots to a shared runtime.
+// Standalone tools retain their existing local concurrency limiter.
+func WithRuntimeScheduler() Option { return func(t *Tool) { t.runtimeScheduler = true } }
 
 // NewTool builds the spawn_agent tool over run.
 func NewTool(run Runner, opts ...Option) *Tool {
@@ -130,24 +154,33 @@ func (t *Tool) GetSource() string { return "builtin" }
 
 // Untimed exempts the tool from the agent's per-tool timeout: a child agent
 // runs as long as its own iteration cap and the parent's turn allow.
-func (t *Tool) Untimed() bool { return true }
+func (t *Tool) Untimed() bool     { return true }
+func (t *Tool) Coordinates() bool { return true }
 
 func (t *Tool) GetSchema() *schema.ToolSchema {
-	return schema.Tool(ToolName,
-		"Delegate a self-contained task to a child agent. The agent works in its own conversation with its own context window, using a subset of your tools, and you receive only its final reply, so use it for work whose intermediate output you do not need: surveying a codebase, checking many files, a long investigation. The agent sees nothing of this conversation: give a complete brief with the goal, relevant paths, constraints and authorization, required validation, and what to report back. Treat tools and the workspace as shared unless the host explicitly provides isolation; a separate conversation does not isolate file edits. Give each editing agent non-overlapping files, avoid changing those files while it runs, and inspect its changes before relying on its report. Call the tool several times in one turn only for independent tasks that can run in parallel.",
+	description := "Delegate a self-contained task to a child agent with its own conversation and context window. Give a complete brief with the goal, relevant paths, constraints and authorization, validation, and what to report back. Treat files as shared unless the host explicitly provides isolation. Give editing agents non-overlapping files, avoid changing those files while they run, and inspect their changes. Parallel calls should describe independent work."
+	if t.runtimeScheduler {
+		description = "Delegate work to a direct child in your shared swarm. Give a complete brief with the goal, constraints, existing authorization, validation, and expected result; private conversations are not shared. Inside Git, both editing and read-only children receive isolated worktrees seeded by the runtime from the source checkout's current files. Children discover teammates, exchange addressed messages, and publish findings. They cannot spawn children or write repository Git metadata. You own task creation, acceptance, and integration: review and apply accepted snapshots before reporting completion. Prefer background execution followed by swarm_wait. A blocking call may return yielded when coordination needs your response; read and answer addressed requests before waiting again. Outside Git, read_only uses live files. If runtime Git setup is denied, report the error; do not copy or repoint Git metadata, modify ignore rules, or disable sandboxing to work around it."
+	}
+	description += " Children inherit the host's model-call limit. Do not impose guessed iteration caps in the brief. If a limit is reached, preserve the assignment and findings for explicit continuation."
+	return schema.Tool(ToolName, description,
 		schema.Params{
-			"task":           schema.S("The complete brief for the agent. It starts with no other context."),
-			"label":          schema.S("Two to five words naming the job, shown to the user while it runs."),
-			"tools":          schema.Strings("Names or globs of the tools the agent may use, for example [\"read_file\", \"zvec_grep_search\"]. Default: every tool you have, except spawn_agent. The agent always has view_image, read_transcript, and the artifact tools."),
-			"model":          schema.S("Model to run the agent on, as provider/model. Default: your own model."),
-			"max_iterations": schema.Int("Cap on the agent's model calls. Default: your own limit."),
-			"background":     schema.Bool("Return at once and keep working; the agent's reply arrives later as a message. Default false: wait for the reply."),
+			"source":     schema.S("Absolute checkout root in the parent's Git repository; omit to use the parent checkout. Not a file, subdirectory, or independently initialized repository."),
+			"read_only":  schema.Bool("Research-only member. Inside Git still requires a runtime snapshot; outside Git observes live files."),
+			"session":    schema.S("Existing swarm member ID to continue"),
+			"task_id":    schema.S("Existing task to assign"),
+			"task":       schema.S("The complete brief for the agent. It starts with no other context."),
+			"label":      schema.S("Two to five words naming the job, shown to the user while it runs."),
+			"tools":      schema.Strings("Names or globs of permitted tools. Omitted: inherit compatible parent tools except spawn_agent. Explicit []: disable all model tools, including private built-ins. Nonempty selections retain private transcript/artifact tools and host coordination tools."),
+			"model":      schema.S("Model to run the agent on, as provider/model. Default: your own model."),
+			"background": schema.Bool("Return at once and keep working; the agent's reply arrives later as a message. Default false: wait for the reply."),
 		},
 		"task")
 }
 
 func (t *Tool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	req, err := parseRequest(tools.Args(args))
+	req.CallID, _ = ctx.Value(callIDKey{}).(string)
 	if err != nil {
 		return "", tools.NewToolError(err.Error(), "INVALID_ARGS")
 	}
@@ -155,7 +188,9 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) (string, error)
 		return "", err
 	}
 	res, err := t.run(ctx, req)
-	if res.Done != nil {
+	if t.runtimeScheduler {
+		// The runtime owns slots, including releases while a member waits.
+	} else if res.Done != nil {
 		// The child runs on after this call returns; its slot stays taken
 		// until the host reports it settled.
 		select {
@@ -174,6 +209,9 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) (string, error)
 		if ctx.Err() != nil {
 			return "", context.Cause(ctx)
 		}
+		if llm.IsIterationLimit(err) {
+			return res.String(), tools.NewToolError("agent paused at its iteration limit: "+err.Error(), "ITERATION_LIMIT")
+		}
 		msg := "agent failed: " + err.Error()
 		if res.Session != "" {
 			msg += " (session " + res.Session + ")"
@@ -187,6 +225,9 @@ func (t *Tool) acquire(ctx context.Context) error {
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
+	if t.runtimeScheduler {
+		return nil
+	}
 	select {
 	case t.slots <- struct{}{}:
 		return nil
@@ -196,37 +237,56 @@ func (t *Tool) acquire(ctx context.Context) error {
 }
 
 func (t *Tool) release() {
+	if t.runtimeScheduler {
+		return
+	}
 	<-t.slots
 }
 
 func parseRequest(args tools.Args) (Request, error) {
+	if _, supplied := args["max_iterations"]; supplied {
+		return Request{}, errors.New("max_iterations is controlled by the host; omit it to inherit the configured limit")
+	}
 	req := Request{
-		Task:          strings.TrimSpace(args.String("task")),
-		Label:         strings.TrimSpace(args.String("label")),
-		Model:         strings.TrimSpace(args.String("model")),
-		MaxIterations: args.Int("max_iterations", 0),
-		Background:    args.Bool("background"),
+		Source: args.String("source"), Session: args.String("session"), TaskID: args.String("task_id"), ReadOnly: args.Bool("read_only"),
+		Task:       strings.TrimSpace(args.String("task")),
+		Label:      strings.TrimSpace(args.String("label")),
+		Model:      strings.TrimSpace(args.String("model")),
+		Background: args.Bool("background"),
 	}
 	if req.Task == "" {
 		return Request{}, errors.New("task is required: the complete brief for the agent")
 	}
-	if req.MaxIterations < 0 {
-		return Request{}, errors.New("max_iterations must be positive")
-	}
-	for _, pattern := range args.StringSlice("tools") {
-		if pattern = strings.TrimSpace(pattern); pattern != "" {
-			req.Tools = append(req.Tools, pattern)
+	// Only an explicit array narrows the child's tools; null means omitted,
+	// and a bare string is one pattern rather than an empty selection.
+	switch raw := args["tools"].(type) {
+	case nil:
+	case string:
+		if pattern := strings.TrimSpace(raw); pattern != "" {
+			req.Tools = []string{pattern}
 		}
+	case []any, []string:
+		req.Tools = []string{}
+		for _, pattern := range args.StringSlice("tools") {
+			if pattern = strings.TrimSpace(pattern); pattern != "" {
+				req.Tools = append(req.Tools, pattern)
+			}
+		}
+	default:
+		return Request{}, errors.New("tools must be an array of tool names or globs")
 	}
 	return req, nil
 }
 
 // ChildRegistry derives a child's view of the parent's tools: those the
-// brief allows, or all of them, and never spawn_agent itself, so a child
-// does not spawn children of its own. The child's built-ins it registers
+// brief allows, excluding nested spawning and coordination tools bound to
+// the parent's identity. The child's built-ins it registers
 // later stay visible regardless (see tools.ToolRegistry.Derive).
 func ChildRegistry(parent *tools.ToolRegistry, allow []string) *tools.ToolRegistry {
-	opts := []tools.DeriveOption{tools.DenyTools(ToolName)}
+	opts := []tools.DeriveOption{tools.DenyTools(ToolName, "swarm_*", "workflow_*", "list_agents", "send_message", "read_messages")}
+	if allow != nil && len(allow) == 0 {
+		opts = append(opts, tools.DenyTools("*"))
+	}
 	if len(allow) > 0 {
 		opts = append(opts, tools.AllowTools(allow...))
 	}
@@ -290,6 +350,7 @@ func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.Completion
 			return Result{}, err
 		}
 		agentConfig := config
+		agentConfig.DisableTools = agentConfig.DisableTools || req.Tools != nil && len(req.Tools) == 0
 		if req.MaxIterations > 0 {
 			agentConfig.MaxIterations = req.MaxIterations
 		}

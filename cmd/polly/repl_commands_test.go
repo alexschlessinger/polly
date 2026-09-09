@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	rw "github.com/mattn/go-runewidth"
 	"net"
 	"os"
 	"os/exec"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	rw "github.com/mattn/go-runewidth"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"

@@ -392,6 +392,7 @@ func (r *managedREPL) activateChildViewLocked(tab *replTab) {
 			}
 			adopted = true
 			tab.state, tab.childView, tab.keepOpen = state, nil, true
+			r.bindMemberUI(tab)
 			tab.name, tab.parentName = fresh.Metadata.Name, fresh.Metadata.Parent
 			if fresh.Revision != info.Revision {
 				r.replaceChildDisplay(tab, next)

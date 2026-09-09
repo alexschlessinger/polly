@@ -11,13 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"sort"
+	"strings"
+
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
-	"sort"
-	"strings"
 )
 
 func TestMetadataFromConfigSeedsDefaultNativeTools(t *testing.T) {
@@ -402,6 +403,11 @@ func TestInitializeConversationResumesMigratedLegacyContext(t *testing.T) {
 			raw, err := sql.Open("sqlite", path)
 			if err != nil {
 				t.Fatal(err)
+			}
+			for _, table := range []string{"swarm_records", "swarm_artifacts", "swarm_members"} {
+				if _, err := raw.Exec("DROP TABLE IF EXISTS " + table); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if _, err := raw.Exec("PRAGMA user_version = 1"); err != nil {
 				t.Fatal(err)

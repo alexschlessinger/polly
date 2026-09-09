@@ -63,7 +63,7 @@ func (t *readFileTool) Execute(ctx context.Context, raw map[string]any) (string,
 	if path == "" {
 		return "", fmt.Errorf("path is required")
 	}
-	abs, err := resolveLocalPath(path)
+	abs, err := t.registry.ResolvePath(path)
 	if err != nil {
 		return "", err
 	}

@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/alexschlessinger/pollytool/artifacts"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/sessions"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"

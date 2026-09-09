@@ -52,11 +52,9 @@ func (r *managedREPL) settleTabs(ctx context.Context, runTurn turnRunner) error 
 	return r.dropLostSessions()
 }
 
-// afterSettle follows a tab's turn settling: a child's first reply goes to
-// its parent, a delivered hidden child closes, the reports waiting for a
-// retained tab become its next input, and its queue runs on.
+// afterSettle retires unused saved views, reads historical reports and drains
+// queued input. Swarm results are persisted by the runtime.
 func (r *managedREPL) afterSettle(ctx context.Context, tab *replTab, err error, runTurn turnRunner) {
-	r.deliverChildReport(ctx, tab, err, runTurn)
 	if r.closeSpentChild(tab) {
 		return
 	}
@@ -184,6 +182,7 @@ func (r *managedREPL) cancelTurns() {
 func (r *managedREPL) releaseApprovals() {
 	for _, tab := range r.tabs {
 		tab.model.mu.Lock()
+		tab.model.approvalsClosed = true
 		tab.model.denyApprovalLocked()
 		tab.model.mu.Unlock()
 	}

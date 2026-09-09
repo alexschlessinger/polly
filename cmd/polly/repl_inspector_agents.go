@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/swarm"
 )
 
 func (r *managedREPL) inspectLaunchedAgent(parent viewTarget, callID string) {
@@ -78,12 +79,12 @@ func (r *managedREPL) openAgentEditor(w *sessionWorkspace, target viewTarget) {
 	}
 	m := &replModal{title: "Message " + target.session.Name, inputMode: true, width: 76, helper: "Enter send · Ctrl-J newline · Esc keep draft"}
 	m.input.setText(w.agentDrafts[key])
-	m.onDraft = func(text string) { w.agentDrafts[key] = text }
+	m.onDraft = func(text string) { w.setAgentDraft(key, text) }
 	m.onSubmit = func(text string) {
 		if strings.TrimSpace(text) == "" {
 			return
 		}
-		w.agentDrafts[key] = text
+		w.setAgentDraft(key, text)
 		r.workspaceActions = append(r.workspaceActions, func() { r.sendInspectorMessage(w, target, text, expectedDraft) })
 	}
 	r.model.mu.Lock()
@@ -94,6 +95,27 @@ func (r *managedREPL) openAgentEditor(w *sessionWorkspace, target viewTarget) {
 // Called outside model locks. A saved view gains an execution owner only on
 // this explicit submit; it is never acquired simply to paint a pane.
 func (r *managedREPL) sendInspectorMessage(w *sessionWorkspace, target viewTarget, text, expectedDraft string) {
+	if runtime := r.inspectedSwarm(target); runtime != nil {
+		model := r.model
+		key := target.key()
+		draftVersion := w.agentDraftVersions[key]
+		r.background(func() {
+			_, err := runtime.Send(r.work.ctx, runtime.ID, target.session.ID, "request", "", text)
+			r.postUI(r.work.ctx, func() {
+				model.mu.Lock()
+				defer model.mu.Unlock()
+				if err != nil {
+					model.appendNoticeLine("could not send agent request: " + err.Error())
+				} else {
+					if w.agentDraftVersions[key] == draftVersion && w.agentDrafts[key] == text {
+						delete(w.agentDrafts, key)
+					}
+					model.appendNoticeLine("request sent; paused members require /swarm resume ID")
+				}
+			})
+		})
+		return
+	}
 	tab := r.inspectionTab(target)
 	if tab == nil {
 		v := w.inspector.current
@@ -141,6 +163,18 @@ func (r *managedREPL) sendInspectorMessage(w *sessionWorkspace, target viewTarge
 }
 
 func (r *managedREPL) stopInspectedAgent(target viewTarget) {
+	if runtime := r.inspectedSwarm(target); runtime != nil {
+		model := r.model
+		r.background(func() {
+			err := runtime.StopMember(r.work.ctx, target.session.ID)
+			model.mu.Lock()
+			defer model.mu.Unlock()
+			if err != nil {
+				model.appendNoticeLine(err.Error())
+			}
+		})
+		return
+	}
 	tab := r.inspectionTab(target)
 	if tab == nil || tab == r.visibleTab() {
 		return
@@ -156,6 +190,17 @@ func (r *managedREPL) stopInspectedAgent(target viewTarget) {
 	r.cancelTurn(tab)
 	r.armCancelDetach(tab)
 	m.denyApprovalLocked()
+}
+
+func (r *managedREPL) inspectedSwarm(target viewTarget) *swarm.Runtime {
+	if r.state == nil || r.state.swarm == nil {
+		return nil
+	}
+	v := r.workspace().inspector.current
+	if v == nil || v.info == nil || v.info.Metadata == nil || v.info.ID != target.session.ID || v.info.Metadata.SwarmID != r.state.swarm.ID {
+		return nil
+	}
+	return r.state.swarm
 }
 
 func (r *managedREPL) reviewAgentApproval(target viewTarget) {

@@ -116,7 +116,15 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 			return err
 		}
 		if !view.InUse && snap.ttlNS > 0 && now >= snap.updatedNS && now-snap.updatedNS >= snap.ttlNS {
-			return ErrSessionNotFound
+			// A swarm parent or member outlives its TTL until the family is
+			// cleaned up, so it stays visible too.
+			var pinned bool
+			if err := conn.QueryRowContext(ctx, `SELECT `+swarmPinnedSQL+` FROM sessions WHERE id=?`, id).Scan(&pinned); err != nil {
+				return err
+			}
+			if !pinned {
+				return ErrSessionNotFound
+			}
 		}
 		view.Metadata, err = metadataFromSnapshot(snap)
 		if err != nil {
@@ -130,6 +138,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		view.ParentID = hex.EncodeToString(parentID)
 		// Includes metadata and parent/name changes, as well as history changes
 		// that preserve the message count (Clear/Reset followed by appends).
+		// Writers advance updated_ns monotonically, even within one clock tick.
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%s", snap.name, snap.parent.String, snap.updatedNS, snap.nextSeq, snap.settings)))
 		view.Revision = hex.EncodeToString(digest[:])
 		view.Unchanged = view.Revision == knownRevision

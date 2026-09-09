@@ -101,6 +101,7 @@ func TestSpawnMetadataSurvivesStaleSettingsWritesAndReset(t *testing.T) {
 	}
 	first := *stale
 	first.SpawnCallID, first.SpawnOutcome = "initial", ReportFinished
+	first.SwarmID, first.ExecutionContext = "family", "isolated"
 	if err := session.SetMetadata(ctx, &first); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestSpawnMetadataSurvivesStaleSettingsWritesAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	md, err := session.GetMetadata(ctx)
-	if err != nil || md.Model != "follow-up-model" || md.SpawnCallID != "initial" || md.SpawnOutcome != ReportFinished {
+	if err != nil || md.Model != "follow-up-model" || md.SpawnCallID != "initial" || md.SpawnOutcome != ReportFinished || md.SwarmID != "family" || md.ExecutionContext != "isolated" {
 		t.Fatalf("stale write erased initial run: %+v / %v", md, err)
 	}
 	stale.SpawnCallID, stale.SpawnOutcome = "later", ReportFailed
@@ -117,7 +118,7 @@ func TestSpawnMetadataSurvivesStaleSettingsWritesAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	md, err = session.GetMetadata(ctx)
-	if err != nil || md.SpawnCallID != "initial" || md.SpawnOutcome != ReportFinished {
+	if err != nil || md.SpawnCallID != "initial" || md.SpawnOutcome != ReportFinished || md.SwarmID != "family" || md.ExecutionContext != "isolated" {
 		t.Fatalf("reset changed initial run: %+v / %v", md, err)
 	}
 }

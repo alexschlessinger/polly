@@ -22,12 +22,6 @@ type activeTool struct {
 	row     int
 	label   string
 	started time.Time
-	// child is the screen model of the subagent tab this call spawned, so
-	// the row can show the child's progress; nil for other tools. childName
-	// is that tab's name.
-	child       *replModel
-	childName   string
-	childStatus string
 }
 
 // currentToolDisclosure returns the disclosure currently receiving rows, or —
@@ -331,15 +325,6 @@ func (m *replModel) refreshActiveTools() {
 			continue
 		}
 		label := at.label
-		if at.child != nil {
-			label += " · " + at.childName
-			if activity, ok := childActivity(at.child); ok {
-				at.childStatus = activity
-			}
-			if at.childStatus != "" {
-				label += " · " + at.childStatus
-			}
-		}
 		record.rows[at.row].line = runningToolLine(label, time.Since(at.started))
 	}
 	m.refreshToolDisclosure(record)

@@ -25,6 +25,11 @@ func TestOneShotCLIProcess(t *testing.T) {
 
 func TestOneShotTerminalContract(t *testing.T) {
 	skipIfWindows(t)
+	// Register the Python fixture as an input to Go's test cache. Reads made
+	// only by the subprocess would otherwise leave an old result reusable.
+	if _, err := os.ReadFile("testdata/oneshot_terminal.py"); err != nil {
+		t.Fatal(err)
+	}
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("PTY contract fixture requires python3")

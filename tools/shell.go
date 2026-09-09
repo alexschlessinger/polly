@@ -15,6 +15,7 @@ import (
 
 // ShellTool wraps external commands/scripts as tools
 type ShellTool struct {
+	workDir       string
 	Command       string
 	schema        *schema.ToolSchema
 	sandbox       sandbox.Sandbox
@@ -40,6 +41,7 @@ func (s *ShellTool) Sandboxed() bool { return s.sandbox != nil }
 // WithSandbox returns a copy with sandboxing enabled.
 func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
 	return &ShellTool{
+		workDir:       s.workDir,
 		Command:       s.Command,
 		schema:        s.schema,
 		sandbox:       sb,
@@ -156,6 +158,7 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 
 	// Run command with --execute using context for timeout
 	cmd := exec.CommandContext(ctx, s.Command, "--execute", string(argsJSON))
+	cmd.Dir = s.workDir
 
 	closeSandboxFiles, err := sandbox.WrapCmdManaged(s.sandbox, cmd)
 	if err != nil {

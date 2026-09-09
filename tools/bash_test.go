@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -299,5 +300,18 @@ func TestBoundedBufferKeepsPrefixAndCountsRest(t *testing.T) {
 	}
 	if got := newBoundedBuffer(5).String(); got != "" {
 		t.Fatalf("empty String() = %q", got)
+	}
+}
+
+func TestBashToolReportsSignalExitsAsCommandResults(t *testing.T) {
+	skipIfWindows(t)
+	tool := newBashTool("")
+	out, err := tool.ExecuteOutput(context.Background(), map[string]any{"command": "kill -TERM $$"})
+	var command *CommandError
+	if !errors.As(err, &command) || command.ExitCode != 143 {
+		t.Fatalf("signal exit lost its command result: %v", err)
+	}
+	if result, ok := out.Data.(CommandResult); !ok || result.ExitCode != 143 {
+		t.Fatalf("data = %#v", out.Data)
 	}
 }
