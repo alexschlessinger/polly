@@ -50,6 +50,10 @@ func (n *NamespacedTool) ExclusiveBatch() bool {
 	return ok && t.ExclusiveBatch()
 }
 func (n *NamespacedTool) Untimed() bool { t, ok := n.Tool.(UntimedTool); return ok && t.Untimed() }
+func (n *NamespacedTool) RecallStub() string {
+	stub, _ := RecallStub(n.Tool)
+	return stub
+}
 
 func (n *NamespacedTool) Coordinates() bool {
 	t, ok := n.Tool.(CoordinationTool)

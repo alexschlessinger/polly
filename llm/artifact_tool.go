@@ -33,6 +33,9 @@ type readArtifactTool struct {
 }
 
 func (t *readArtifactTool) GetName() string { return "read_artifact" }
+func (t *readArtifactTool) RecallStub() string {
+	return "[read_artifact result elided to save space; the call above shows its arguments. Call read_artifact again to re-read.]"
+}
 
 func (t *readArtifactTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(
@@ -140,6 +143,9 @@ type listArtifactsTool struct {
 }
 
 func (t *listArtifactsTool) GetName() string { return "list_artifacts" }
+func (t *listArtifactsTool) RecallStub() string {
+	return "[list_artifacts result elided; call list_artifacts again for the current catalog.]"
+}
 
 func (t *listArtifactsTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(

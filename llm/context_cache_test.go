@@ -44,7 +44,7 @@ func TestProjectionCacheMatchesFreshProjectionAsHistoryGrows(t *testing.T) {
 					messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: fmt.Sprint(turn), ToolName: "lookup", Content: strings.Repeat("payload\n", 400)},
 				)
 				before := cloneMessages(history)
-				got, stats, err := projectMessagesCached(ctx, history, budget, store, true, cache)
+				got, stats, err := projectMessagesCached(ctx, history, budget, store, builtinProjectionTools(true), cache)
 				want, wantStats, wantErr := projectMessages(ctx, history, budget, store, true)
 				if fmt.Sprint(err) != fmt.Sprint(wantErr) || !reflect.DeepEqual(got, want) || !reflect.DeepEqual(stats, wantStats) {
 					t.Fatalf("turn %d cache differs from fresh projection: stats=%+v want=%+v errors=%v / %v", turn, stats, wantStats, err, wantErr)
@@ -84,7 +84,7 @@ func TestProjectionCachesStoredFormsAndSelectedImages(t *testing.T) {
 			}
 			cache := &projectionCache{}
 			for range 3 {
-				got, stats, err := projectMessagesCached(ctx, history, tc.budget, store, false, cache)
+				got, stats, err := projectMessagesCached(ctx, history, tc.budget, store, builtinProjectionTools(false), cache)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -105,7 +105,7 @@ func TestProjectionCachesStoredFormsAndSelectedImages(t *testing.T) {
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_artifact", Artifact: &ref}}}}
 	cache := &projectionCache{}
 	for range 3 {
-		got, stats, err := projectMessagesCached(ctx, history, 0, store, false, cache)
+		got, stats, err := projectMessagesCached(ctx, history, 0, store, builtinProjectionTools(false), cache)
 		if err != nil || stats.HydratedImages != 1 || stats.EstimatedTokens != estimateProjectedTokens(got) {
 			t.Fatalf("image projection: %+v, %v", stats, err)
 		}
@@ -167,11 +167,11 @@ func BenchmarkProjectionCachedHistory(b *testing.B) {
 				history = append(history, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", ToolCalls: []messages.ChatMessageToolCall{{ID: "id", Name: "tool", Arguments: `{}`}}})
 			}
 			cache := &projectionCache{}
-			projectMessagesCached(context.Background(), history, 0, nil, false, cache)
+			projectMessagesCached(context.Background(), history, 0, nil, builtinProjectionTools(false), cache)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				if _, _, err := projectMessagesCached(context.Background(), history, 0, nil, false, cache); err != nil {
+				if _, _, err := projectMessagesCached(context.Background(), history, 0, nil, builtinProjectionTools(false), cache); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -193,7 +193,7 @@ func BenchmarkSpillActiveUnshrinkableHistory(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				spillActiveToolResults(context.Background(), history, 1, nil, nil, tokens)
+				spillActiveToolResults(context.Background(), history, 1, nil, nil, nil, tokens)
 			}
 		})
 	}

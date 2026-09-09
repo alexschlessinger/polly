@@ -23,23 +23,23 @@ func TestTranscriptCacheAppendReplaceAndSpill(t *testing.T) {
 		messages.ChatMessage{Role: messages.MessageRoleTool, ToolName: "read_transcript", Content: first},
 		messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "answer"},
 	)
-	if got, want := a.renderedTranscript(), renderTranscript(a.transcriptSnapshot()); got != want {
+	if got, want := a.renderedTranscript(), renderTranscript(a.transcriptSnapshot(), a.projectionTools().recall); got != want {
 		t.Fatalf("incremental rendering differs: %q != %q", got, want)
 	}
-	if first != renderTranscript(snapshot) || len(snapshot) != 2 {
+	if first != renderTranscript(snapshot, a.projectionTools().recall) || len(snapshot) != 2 {
 		t.Fatal("appending changed a published transcript snapshot")
 	}
 	a.applyTranscriptSpills([]toolResultSpill{{ToolCallID: "call", ToolName: "run", Content: "large tool result", Receipt: "receipt", Ref: artifacts.Ref{ID: "artifact"}}})
-	if got, want := a.renderedTranscript(), renderTranscript(a.transcriptSnapshot()); got != want || !strings.Contains(got, "receipt") {
+	if got, want := a.renderedTranscript(), renderTranscript(a.transcriptSnapshot(), a.projectionTools().recall); got != want || !strings.Contains(got, "receipt") {
 		t.Fatalf("spill did not invalidate rendering: %q != %q", got, want)
 	}
-	if snapshot[1].Content != "large tool result" || first != renderTranscript(snapshot) {
+	if snapshot[1].Content != "large tool result" || first != renderTranscript(snapshot, a.projectionTools().recall) {
 		t.Fatal("spill changed an older snapshot or rendered string")
 	}
 	replacement := make([]messages.ChatMessage, len(a.transcriptSnapshot()))
 	replacement[0] = messages.ChatMessage{Role: messages.MessageRoleUser, Content: "new run, same length"}
 	a.setTranscript(replacement)
-	if got, want := a.renderedTranscript(), renderTranscript(replacement); got != want || strings.Contains(got, "receipt") {
+	if got, want := a.renderedTranscript(), renderTranscript(replacement, a.projectionTools().recall); got != want || strings.Contains(got, "receipt") {
 		t.Fatalf("same-length run replacement reused stale text: %q", got)
 	}
 }
@@ -97,7 +97,7 @@ func BenchmarkTranscriptRenderCache(b *testing.B) {
 				if cached {
 					a.renderedTranscript()
 				} else {
-					renderTranscript(history)
+					renderTranscript(history, a.projectionTools().recall)
 				}
 			}
 		})

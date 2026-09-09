@@ -23,6 +23,9 @@ type readTranscriptTool struct {
 func (t *readTranscriptTool) text() string { return t.rendered() }
 
 func (t *readTranscriptTool) GetName() string { return "read_transcript" }
+func (t *readTranscriptTool) RecallStub() string {
+	return "[read_transcript result elided to save space; the call above shows its arguments. Call read_transcript again to re-read.]"
+}
 
 func (t *readTranscriptTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(
@@ -77,13 +80,15 @@ func (t *readTranscriptTool) Execute(ctx context.Context, raw map[string]any) (s
 // are elided from the rendering: they are reproducible by calling the tool
 // again, and inlining them would nest prior read_transcript output inside
 // later ones.
-func renderTranscript(history []messages.ChatMessage) string {
+func renderTranscript(history []messages.ChatMessage, recall recallStubs) string {
 	var b strings.Builder
-	appendTranscriptText(&b, history, 0)
+	appendTranscriptText(&b, history, 0, recall)
 	return b.String()
 }
 
-func appendTranscriptText(b *strings.Builder, history []messages.ChatMessage, index int) int {
+// appendTranscriptText renders history onto b. Recall results are not
+// rendered: they are reproducible by calling the tool again.
+func appendTranscriptText(b *strings.Builder, history []messages.ChatMessage, index int, recall recallStubs) int {
 	for _, msg := range history {
 		if msg.Role == messages.MessageRoleInternal {
 			continue
@@ -94,7 +99,7 @@ func appendTranscriptText(b *strings.Builder, history []messages.ChatMessage, in
 			b.WriteString(" " + msg.ToolName)
 		}
 		b.WriteString(" ===\n")
-		if msg.Role == messages.MessageRoleTool && isRecallToolName(msg.ToolName) {
+		if _, isRecall := recall.stub(msg.ToolName); msg.Role == messages.MessageRoleTool && isRecall {
 			b.WriteString("[" + msg.ToolName + " result not rendered; reproducible by calling it again]\n")
 			continue
 		}

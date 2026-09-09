@@ -283,6 +283,29 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 // built-ins. Configured tools and policies are inherited from the caller.
 func (a *Agent) ToolRegistry() *tools.ToolRegistry { return a.tools }
 
+// projectionTools describes the agent's current tools to the projection.
+// It is read each iteration, so a tool registered mid-run is honoured.
+func (a *Agent) projectionTools() projectionTools {
+	p := projectionTools{transcriptReadable: a.transcriptTool}
+	if a.tools != nil {
+		p.recall = recallStubsFor(a.tools.All())
+	}
+	return p
+}
+
+// isRecallTool reports whether name is a registered recall tool.
+func (a *Agent) isRecallTool(name string) bool {
+	if a.tools == nil {
+		return false
+	}
+	tool, ok := a.tools.Get(name)
+	if !ok {
+		return false
+	}
+	_, recall := tools.RecallStub(tool)
+	return recall
+}
+
 // BuiltinToolNames lists the tools NewAgent registers privately on an agent.
 // They are present whatever the caller's registry allows, so a tool allow
 // list need not name them.
@@ -331,7 +354,7 @@ func (a *Agent) appendTranscript(history ...messages.ChatMessage) {
 func (a *Agent) renderedTranscript() string {
 	a.transcriptMu.Lock()
 	defer a.transcriptMu.Unlock()
-	a.transcriptIndex = appendTranscriptText(&a.transcriptText, a.transcript[a.transcriptRendered:], a.transcriptIndex)
+	a.transcriptIndex = appendTranscriptText(&a.transcriptText, a.transcript[a.transcriptRendered:], a.transcriptIndex, a.projectionTools().recall)
 	a.transcriptRendered = len(a.transcript)
 	return a.transcriptText.String()
 }
@@ -466,7 +489,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			iterReq.Tools = a.tools.All()
 		}
 		iterReq.shapeCache.prepareTools(iterReq.Tools)
-		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, a.transcriptTool)
+		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, a.projectionTools())
 		a.applyDurableToolSpills(msgs, projection.toolSpills)
 		a.applyDurableToolSpills(allGenerated, projection.toolSpills)
 		a.applyTranscriptSpills(projection.toolSpills)
@@ -921,7 +944,7 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 		msg.Metadata = map[string]any{"tool_data": value}
 	}
 	var textArtifact *artifacts.Ref
-	if !isRecallToolName(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
+	if !a.isRecallTool(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
 		ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)})
 		if err != nil {
 			return messages.ChatMessage{}, fmt.Errorf("store text artifact for tool %q: %w", tc.Name, err)

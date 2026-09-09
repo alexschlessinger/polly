@@ -129,13 +129,12 @@ func prospectiveTextRef(content string) artifacts.Ref {
 
 // Planning never copies or hashes an inline payload. A digest's spelling does
 // not affect receipt length; line counting is done once per immutable message.
-func planToolDemotion(msg messages.ChatMessage, hasStore bool) *toolDemotion {
+func planToolDemotion(msg messages.ChatMessage, hasStore bool, recallStub string) *toolDemotion {
 	p := &toolDemotion{}
 	if msg.Role != messages.MessageRoleTool || msg.Content == ToolDeniedContent {
 		return p
 	}
-	if isRecallToolName(msg.ToolName) {
-		stub := recallResultStub(msg.ToolName)
+	if stub := recallStub; stub != "" {
 		if estimatedStringTokens(stub) >= estimatedStringTokens(msg.Content) {
 			return p
 		}
@@ -161,14 +160,16 @@ func planToolDemotion(msg messages.ChatMessage, hasStore bool) *toolDemotion {
 	return p
 }
 
-func (c *projectionCache) demotion(i int, msg messages.ChatMessage, hasStore bool) *toolDemotion {
+// demotion memoises the plan for message i. recallStub is the stub of a
+// recall tool's result, or "" for an ordinary tool result.
+func (c *projectionCache) demotion(i int, msg messages.ChatMessage, hasStore bool, recallStub string) *toolDemotion {
 	if c.demotions == nil {
 		c.demotions = make(map[int]*toolDemotion)
 	}
 	if p, ok := c.demotions[i]; ok {
 		return p
 	}
-	p := planToolDemotion(msg, hasStore)
+	p := planToolDemotion(msg, hasStore, recallStub)
 	c.demotions[i] = p
 	return p
 }

@@ -76,7 +76,38 @@ func (e *ContextLimitError) Error() string {
 
 // projectCompletionRequest shares the complete input budget between tool
 // schemas and resolved messages, for both validation and the agent loop.
-func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store artifacts.Store, transcriptReadable bool) ([]messages.ChatMessage, ProjectionStats, error) {
+// projectionTools is what the projection knows about the agent's tools:
+// whether the transcript can be read back, and which tools' results are
+// recall results that may be elided in favour of a re-call.
+type projectionTools struct {
+	transcriptReadable bool
+	recall             recallStubs
+}
+
+// recallStubs maps a recall tool's name to the stub its elided result
+// becomes. A nil map marks no tool as recall.
+type recallStubs map[string]string
+
+func (r recallStubs) stub(name string) (string, bool) {
+	stub, ok := r[name]
+	return stub, ok
+}
+
+// recallStubsFor collects the recall stubs of the tools that declare one.
+func recallStubsFor(list []tools.Tool) recallStubs {
+	var stubs recallStubs
+	for _, tool := range list {
+		if stub, ok := tools.RecallStub(tool); ok {
+			if stubs == nil {
+				stubs = make(recallStubs)
+			}
+			stubs[tool.GetName()] = stub
+		}
+	}
+	return stubs
+}
+
+func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store artifacts.Store, agentTools projectionTools) ([]messages.ChatMessage, ProjectionStats, error) {
 	budget := req.MaxContextTokens
 	overhead := estimateRequestToolSchemaTokens(req)
 	if budget > 0 {
@@ -89,12 +120,12 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 	if req.Skills != nil && !req.Skills.IsEmpty() {
 		history = req.ResolvedMessages()
 	}
-	projected, stats, err := projectMessagesCached(ctx, history, budget, store, transcriptReadable, req.projectionCache)
+	projected, stats, err := projectMessagesCached(ctx, history, budget, store, agentTools, req.projectionCache)
 	stats.RequestEstimatedTokens = stats.EstimatedTokens + overhead
 	return projected, stats, err
 }
 
-func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, transcriptReadable bool, cache *projectionCache) ([]messages.ChatMessage, ProjectionStats, error) {
+func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, agentTools projectionTools, cache *projectionCache) ([]messages.ChatMessage, ProjectionStats, error) {
 	if cache == nil {
 		cache = &projectionCache{}
 	}
@@ -112,8 +143,8 @@ func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, 
 	var stats ProjectionStats
 
 	var err error
-	front := toolCompactionFront(projected, maxTokens, store, tokens, cache)
-	projected, stats.CompactedToolResults, err = projectToolResults(ctx, projected, store, front, tokens, cache)
+	front := toolCompactionFront(projected, maxTokens, store, agentTools.recall, tokens, cache)
+	projected, stats.CompactedToolResults, err = projectToolResults(ctx, projected, store, agentTools.recall, front, tokens, cache)
 	if err != nil {
 		return nil, stats, err
 	}
@@ -133,7 +164,7 @@ func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, 
 		return stripArtifactParts(projected), stats, nil
 	}
 
-	marker := projectionMarker(store != nil, transcriptReadable)
+	marker := projectionMarker(store != nil, agentTools.transcriptReadable)
 	if front := omissionFront(projected, marker, maxTokens, tokens); front > 0 {
 		users := realUserIndexes(projected)
 		tokens.omit(projected, users[0], users[front])
@@ -144,7 +175,7 @@ func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, 
 		stats.EstimatedTokens = tokens.total
 	}
 	if stats.EstimatedTokens > maxTokens {
-		spilled, spills, spillErr := spillActiveToolResults(ctx, projected, maxTokens, store, spillDescriptors, tokens)
+		spilled, spills, spillErr := spillActiveToolResults(ctx, projected, maxTokens, store, agentTools.recall, spillDescriptors, tokens)
 		if spillErr != nil {
 			return nil, stats, spillErr
 		}
@@ -260,7 +291,7 @@ func projectionMarker(artifactsListable, transcriptReadable bool) string {
 // (history, budget, store presence) that only advances as the session grows.
 // The gate prices the pre-hydration projection; image-heavy saturation is
 // still caught by the post-hydration budget checks in projectMessages.
-func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store artifacts.Store, tokens *projectionTokens, cache *projectionCache) int {
+func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store artifacts.Store, recall recallStubs, tokens *projectionTokens, cache *projectionCache) int {
 	if maxTokens <= 0 {
 		return 0
 	}
@@ -273,8 +304,9 @@ func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store 
 	// projectToolResults externalizes them to bounded previews, so both the
 	// gate estimate and the demotion savings price them at the preview bound.
 	previewBounded := func(msg messages.ChatMessage) bool {
+		_, isRecall := recall.stub(msg.ToolName)
 		return hasStore && msg.Role == messages.MessageRoleTool && msg.Content != ToolDeniedContent &&
-			!isRecallToolName(msg.ToolName) && textArtifactRef(msg) == nil &&
+			!isRecall && textArtifactRef(msg) == nil &&
 			estimatedStringTokens(msg.Content) > toolInlineTokenLimit
 	}
 	estimate := tokens.total
@@ -295,7 +327,8 @@ func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store 
 			if msg.Role != messages.MessageRoleTool {
 				continue
 			}
-			plan := cache.demotion(i, msg, hasStore)
+			stub, _ := recall.stub(msg.ToolName)
+			plan := cache.demotion(i, msg, hasStore, stub)
 			if !plan.ok {
 				continue
 			}
@@ -333,7 +366,7 @@ func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store 
 // transcripts' oversized inline results in the birth-form zone are
 // externalized with a preview built from the in-hand bytes, as birth would
 // have done.
-func projectToolResults(ctx context.Context, history []messages.ChatMessage, store artifacts.Store, front int, tokens *projectionTokens, cache *projectionCache) ([]messages.ChatMessage, int, error) {
+func projectToolResults(ctx context.Context, history []messages.ChatMessage, store artifacts.Store, recall recallStubs, front int, tokens *projectionTokens, cache *projectionCache) ([]messages.ChatMessage, int, error) {
 	compacted := 0
 	for i := range history {
 		msg := &history[i]
@@ -341,9 +374,9 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 			continue
 		}
 		completed := i < front
-		if isRecallToolName(msg.ToolName) {
+		if stub, isRecall := recall.stub(msg.ToolName); isRecall {
 			if completed {
-				if plan := cache.demotion(i, *msg, store != nil); plan.ok {
+				if plan := cache.demotion(i, *msg, store != nil, stub); plan.ok {
 					tokens.replaceContent(i, msg.Content, plan.content)
 					msg.Content = plan.content
 					compacted++
@@ -356,7 +389,7 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 			return nil, compacted, fmt.Errorf("tool artifact %s cannot be read without a store", ref.ID)
 		}
 		if completed && store != nil {
-			plan := cache.demotion(i, *msg, true)
+			plan := cache.demotion(i, *msg, true, "")
 			if !plan.ok {
 				continue
 			}
@@ -408,20 +441,6 @@ func appendArtifactPart(parts []messages.ContentPart, ref artifacts.Ref) []messa
 	copy(out, parts)
 	out[len(parts)] = messages.ContentPart{Type: "artifact", Artifact: &ref}
 	return out
-}
-
-func isRecallToolName(name string) bool {
-	return name == "read_artifact" || name == "list_artifacts" || name == "read_transcript"
-}
-
-func recallResultStub(toolName string) string {
-	switch toolName {
-	case "list_artifacts":
-		return "[list_artifacts result elided; call list_artifacts again for the current catalog.]"
-	case "read_transcript":
-		return "[read_transcript result elided to save space; the call above shows its arguments. Call read_transcript again to re-read.]"
-	}
-	return "[read_artifact result elided to save space; the call above shows its arguments. Call read_artifact again to re-read.]"
 }
 
 // previewWindows bounds the head and tail slices fed to artifactPreview, which
@@ -1023,7 +1042,7 @@ func withDescriptorList(content string, descriptors []string) string {
 	return strings.TrimSpace(content + " " + strings.Join(descriptors, " "))
 }
 
-func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, descriptors map[string][]string, tokens *projectionTokens) (int, []toolResultSpill, error) {
+func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, recall recallStubs, descriptors map[string][]string, tokens *projectionTokens) (int, []toolResultSpill, error) {
 	users := realUserIndexes(history)
 	if len(users) == 0 {
 		return 0, nil, nil
@@ -1042,14 +1061,14 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 		if history[i].Role != messages.MessageRoleTool || history[i].Content == ToolDeniedContent {
 			continue
 		}
-		if isRecallToolName(history[i].ToolName) {
+		if recallStub, isRecall := recall.stub(history[i].ToolName); isRecall {
 			// Stubbing a recall the model has not yet acted on would instruct it
 			// to re-read under a budget that can never fit the result; leave the
 			// newest unseen recall verbatim and fail over to ContextLimitError.
 			if i > lastAssistant {
 				continue
 			}
-			stub := withDescriptorList(recallResultStub(history[i].ToolName), descriptors[history[i].ToolCallID])
+			stub := withDescriptorList(recallStub, descriptors[history[i].ToolCallID])
 			if estimatedStringTokens(stub) < estimatedStringTokens(history[i].Content) {
 				tokens.replaceContent(i, history[i].Content, stub)
 				history[i].Content = stub

@@ -60,6 +60,27 @@ type ExclusiveTool interface {
 	ExclusiveBatch() bool
 }
 
+// RecallTool is a tool whose result is reproducible on demand: calling it
+// again with the same arguments yields the same information. The agent may
+// therefore elide a completed call's result under context pressure and
+// replace it with RecallStub, which tells the model how to get the content
+// back. An empty stub means the tool is not a recall tool.
+type RecallTool interface {
+	Tool
+	RecallStub() string
+}
+
+// RecallStub returns the stub a tool's elided result is replaced with, and
+// whether the tool is a recall tool at all.
+func RecallStub(tool Tool) (string, bool) {
+	if recall, ok := tool.(RecallTool); ok {
+		if stub := recall.RecallStub(); stub != "" {
+			return stub, true
+		}
+	}
+	return "", false
+}
+
 // sandboxedTool is implemented by tool types whose commands can run sandboxed.
 type sandboxedTool interface {
 	Sandboxed() bool

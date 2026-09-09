@@ -22,7 +22,7 @@ func TestRenderTranscriptSkipsInternalAndElidesRecallResults(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "r", Name: "read_artifact", Arguments: `{}`}}},
 		{Role: messages.MessageRoleTool, ToolName: "read_artifact", ToolCallID: "r", Content: "RECALLED PAYLOAD"},
 	}
-	rendered := renderTranscript(history)
+	rendered := renderTranscript(history, builtinProjectionTools(false).recall)
 	if strings.Contains(rendered, "app state") {
 		t.Fatalf("internal message leaked into the rendering: %q", rendered)
 	}
@@ -43,7 +43,7 @@ func TestReadTranscriptToolPagesAndSearches(t *testing.T) {
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "alpha\nbeta\ngamma"},
 	}
-	tool := &readTranscriptTool{rendered: func() string { return renderTranscript(history) }}
+	tool := &readTranscriptTool{rendered: func() string { return renderTranscript(history, builtinProjectionTools(false).recall) }}
 
 	found, err := tool.Execute(context.Background(), map[string]any{"query": "beta"})
 	if err != nil {
@@ -79,7 +79,7 @@ func TestReadTranscriptFollowsByteContinuation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			history := messages.User(tc.text)
-			tool := &readTranscriptTool{rendered: func() string { return renderTranscript(history) }}
+			tool := &readTranscriptTool{rendered: func() string { return renderTranscript(history, builtinProjectionTools(false).recall) }}
 			page, err := tool.Execute(context.Background(), map[string]any{"query": "TAIL-7E62"})
 			if err != nil {
 				t.Fatal(err)
@@ -89,7 +89,7 @@ func TestReadTranscriptFollowsByteContinuation(t *testing.T) {
 				t.Fatalf("page lacks continuation: %q", page[:min(200, len(page))])
 			}
 			start, _ := strconv.Atoi(match[1])
-			rendered := renderTranscript(history)
+			rendered := renderTranscript(history, builtinProjectionTools(false).recall)
 			nextPattern := regexp.MustCompile(`\n\[transcript continues; next byte_offset=(\d+)\]$`)
 			var rebuilt strings.Builder
 			offset := start
@@ -126,7 +126,7 @@ func TestReadTranscriptFollowsByteContinuation(t *testing.T) {
 
 func TestReadTranscriptByteOffsetValidation(t *testing.T) {
 	history := messages.User("tiny content")
-	tool := &readTranscriptTool{rendered: func() string { return renderTranscript(history) }}
+	tool := &readTranscriptTool{rendered: func() string { return renderTranscript(history, builtinProjectionTools(false).recall) }}
 	for _, key := range []string{"offset", "limit", "query"} {
 		if _, err := tool.Execute(context.Background(), map[string]any{"byte_offset": 0, key: 1}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
 			t.Fatalf("byte_offset combined with %s: %v", key, err)
@@ -135,7 +135,7 @@ func TestReadTranscriptByteOffsetValidation(t *testing.T) {
 	if _, err := tool.Execute(context.Background(), map[string]any{"byte_offset": -1}); err == nil {
 		t.Fatal("accepted negative byte_offset")
 	}
-	end := len(renderTranscript(history))
+	end := len(renderTranscript(history, builtinProjectionTools(false).recall))
 	for _, offset := range []int{end, end + 10} {
 		out, err := tool.Execute(context.Background(), map[string]any{"byte_offset": offset})
 		if err != nil || out != fmt.Sprintf("Transcript has no content at or after byte %d.", offset) {
