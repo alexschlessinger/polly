@@ -1322,3 +1322,25 @@ func TestInspectorDeclinesMessagesToASessionHeldElsewhere(t *testing.T) {
 		t.Fatalf("message editor did not open once the lease ended: %#v", r.model.modal)
 	}
 }
+
+func TestEntryMeasurementCountsTheCollapsedPromptRow(t *testing.T) {
+	m := newReplModel()
+	m.collapseInitialPrompt = true
+	m.appendUserPrompt("launch task\nline two\nline three")
+	m.appendLine("agent reply")
+	for _, expanded := range []bool{false, true} {
+		m.setInitialPromptExpanded(expanded)
+		rows := m.transcriptRows(80)
+		last := m.visual.blocks[len(m.visual.blocks)-1]
+		wantStart := len(rows) - len(last.rows)
+		if got := m.entryVisualStart(1, 80); got != wantStart {
+			t.Fatalf("expanded=%v: entry 1 starts at %d, display shows it at %d", expanded, got, wantStart)
+		}
+		if got := m.entryVisualLineCount(0, 80); got != wantStart-m.mastheadRowCount(80) {
+			t.Fatalf("expanded=%v: prompt entry measures %d rows, display uses %d", expanded, got, wantStart-m.mastheadRowCount(80))
+		}
+		if got := m.entryVisualLineCount(1, 80); got != len(last.rows) {
+			t.Fatalf("expanded=%v: reply measures %d rows, display uses %d", expanded, got, len(last.rows))
+		}
+	}
+}

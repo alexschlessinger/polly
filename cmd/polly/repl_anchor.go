@@ -78,21 +78,31 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 	if width < 1 {
 		width = 80
 	}
+	followed := index < len(m.transcript)-1 || m.slashHints != ""
+	count := 0
+	if m.collapseInitialPrompt && m.transcript[index].initialPrompt {
+		// The prompt row stands in for the collapsed entry and precedes it
+		// when expanded, so it is part of this entry's height either way.
+		rows, _ := transcriptBlockRowsWithImages(initialPromptRow(m.initialPromptExpanded), followed || m.initialPromptExpanded, width, nil, false, 0, 0)
+		count += len(rows)
+		if !m.initialPromptExpanded {
+			return count
+		}
+	}
 	entry := m.transcript[index].text
 	if index == m.currentAssistant {
 		entry = strings.TrimRight(entry, "\r\n")
 		if entry == "" {
-			return 0
+			return count
 		}
 		entry += m.streamCursorFrame
 	}
-	followed := index < len(m.transcript)-1 || m.slashHints != ""
 	rows, _ := transcriptBlockRowsWithImages(
 		entry, followed, width, m.transcript[index].images,
 		m.nativeImages && width >= style.MinimumThumbnailCols,
 		m.imageCellWidth, m.imageCellHeight,
 	)
-	return len(rows)
+	return count + len(rows)
 }
 
 func (m *replModel) entryVisualStart(index, width int) int {

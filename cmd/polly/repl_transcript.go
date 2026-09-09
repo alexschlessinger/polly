@@ -431,6 +431,16 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	return c.rows
 }
 
+// initialPromptRow is the disclosure row an agent inspector shows in place
+// of (collapsed) or above (expanded) the launch prompt.
+func initialPromptRow(expanded bool) string {
+	glyph := "▸"
+	if expanded {
+		glyph = "▾"
+	}
+	return style.Styled(glyph, "accent", "bold") + " " + style.Styled("Prompt", "muted", "")
+}
+
 func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock {
 	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+2)
 	if masthead, ok := m.mastheadBlock(width); ok {
@@ -438,11 +448,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 	}
 	for i := range m.transcript {
 		if m.collapseInitialPrompt && m.transcript[i].initialPrompt {
-			glyph := "▸"
-			if m.initialPromptExpanded {
-				glyph = "▾"
-			}
-			blocks = append(blocks, transcriptDisplayBlock{key: "initial-prompt", text: style.Styled(glyph, "accent", "bold") + " " + style.Styled("Prompt", "muted", "")})
+			blocks = append(blocks, transcriptDisplayBlock{key: "initial-prompt", text: initialPromptRow(m.initialPromptExpanded)})
 			if !m.initialPromptExpanded {
 				continue
 			}
