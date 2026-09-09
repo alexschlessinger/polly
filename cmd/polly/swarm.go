@@ -223,7 +223,10 @@ func swarmInspectorText(s *swarm.State, section string) string {
 	case "tasks":
 		for _, id := range swarmRecordIDs(s.Tasks) {
 			task := s.Tasks[id]
-			fmt.Fprintf(&b, "%s · revision %d\n%s\n%s\nOwner: %s\nAcceptance: %s\n", task.Status, task.Revision, id, task.Description, task.Owner, task.Criteria)
+			fmt.Fprintf(&b, "%s · revision %d\n%s\n%s\nOwner: %s\nAcceptance criteria: %s\n", swarm.TaskStatus(task), task.Revision, id, task.Description, task.Owner, task.Criteria)
+			if task.AcceptedRevision > 0 {
+				fmt.Fprintf(&b, "Accepted revision: %d\n", task.AcceptedRevision)
+			}
 			if len(task.Dependencies) > 0 {
 				fmt.Fprintf(&b, "Dependencies: %s\n", strings.Join(task.Dependencies, ", "))
 			}
@@ -334,8 +337,29 @@ func swarmInspectorText(s *swarm.State, section string) string {
 		return b.String()
 	}
 	fmt.Fprintf(&b, "%d members · %d tasks · %d publications · %d workflows\n\n", len(s.Members), len(s.Tasks), len(s.Publications), len(s.Workflows))
-	for _, run := range s.Runs {
-		fmt.Fprintf(&b, "Run %s\n%s · %d / %d logical executions\n\n", run.ID, run.Status, run.Starts, run.Limit)
+	for _, id := range swarmRecordIDs(s.Runs) {
+		run := s.Runs[id]
+		status := run.Status
+		if status == "running" {
+			// The run remains open while coordination is outstanding, even
+			// when every model execution has already completed.
+			status = "open"
+		}
+		active, pending := 0, 0
+		for _, execution := range s.Executions {
+			if execution.Run == run.ID {
+				switch execution.Status {
+				case "queued", "running", "waiting":
+					active++
+				}
+			}
+		}
+		for _, task := range s.Tasks {
+			if task.Run == run.ID && task.Status != "done" && task.Status != "canceled" {
+				pending++
+			}
+		}
+		fmt.Fprintf(&b, "Run %s\n%s · active executions: %d · pending tasks: %d · %d / %d logical executions\n\n", run.ID, status, active, pending, run.Starts, run.Limit)
 	}
 	ids := make([]string, 0, len(s.Members))
 	for id := range s.Members {
@@ -351,7 +375,7 @@ func swarmInspectorText(s *swarm.State, section string) string {
 		status, _ := swarmMemberActivity(s, m)
 		fmt.Fprintf(&b, "%s — %s\n%s\nTask: %s\n", label, status, m.ID, m.Task)
 		if e := s.Executions[m.Execution]; e != nil {
-			fmt.Fprintf(&b, "Model calls: %d / %d\n", e.Iterations, e.Request.MaxIterations)
+			fmt.Fprintf(&b, "Execution: %s\nModel calls: %d / %d\n", e.Status, e.Iterations, e.Request.MaxIterations)
 			if e.Error != "" {
 				fmt.Fprintf(&b, "Reason: %s\n", e.Error)
 			}
