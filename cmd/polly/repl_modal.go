@@ -51,7 +51,6 @@ type replModal struct {
 	// Sharing the map across openings keeps the choice for the process.
 	expanded    map[string]bool
 	refresh     func()
-	picker      *sessionsPicker
 	onSubmit    func(string)
 	onClear     func()
 	onEditTitle func(string)

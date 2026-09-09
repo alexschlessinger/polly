@@ -8,18 +8,18 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
-// tabs remains the execution registry. workspaces is the independent, ordered
-// navigation list; observing a child never appends to this list.
-func (r *managedREPL) syncWorkspaces() {
+// workspaceTabs lists the workspace roots in tab order: the navigation list
+// that shortcuts, the sessions picker, and closing count through. tabs
+// remains the execution registry; observing a child adds a tab but never a
+// workspace.
+func (r *managedREPL) workspaceTabs() []*replTab {
+	var workspaces []*replTab
 	for _, tab := range r.tabs {
-		if !tab.workspaceRoot {
-			continue
-		}
-		if !slices.Contains(r.workspaces, tab) {
-			r.workspaces = append(r.workspaces, tab)
+		if tab.workspaceRoot {
+			workspaces = append(workspaces, tab)
 		}
 	}
-	r.workspaces = slices.DeleteFunc(r.workspaces, func(t *replTab) bool { return !slices.Contains(r.tabs, t) || !t.workspaceRoot })
+	return workspaces
 }
 
 func (r *managedREPL) rootTab(tab *replTab) *replTab {
@@ -44,10 +44,10 @@ func (r *managedREPL) rootTab(tab *replTab) *replTab {
 }
 
 func (r *managedREPL) workspaceShortcut(id string) (int, bool) {
-	r.syncWorkspaces()
-	visible := slices.Index(r.workspaces, r.visibleTab())
-	if n, ok := tabShortcut(id, visible, len(r.workspaces)); ok {
-		return r.tabIndexOfModel(r.workspaces[n].model), true
+	workspaces := r.workspaceTabs()
+	visible := slices.Index(workspaces, r.visibleTab())
+	if n, ok := tabShortcut(id, visible, len(workspaces)); ok {
+		return r.tabIndexOfModel(workspaces[n].model), true
 	}
 	return 0, false
 }

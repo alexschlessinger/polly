@@ -406,7 +406,6 @@ type managedREPL struct {
 	work             *replWork
 	childViews       childViewCache
 	childViewRequest *childViewNavigation
-	workspaces       []*replTab
 	// replacingTab is the last workspace a /close is replacing; finishOpen
 	// closes it once the fresh session holds the screen.
 	replacingTab        *replTab
@@ -449,6 +448,9 @@ type managedREPL struct {
 	// pickerExpanded names the sessions whose agents the resume picker
 	// lists; the picker shares the map so the choice outlives a modal.
 	pickerExpanded map[string]bool
+	// sessionsPicker is the most recently opened sessions picker; it is live
+	// while its modal is the visible model's.
+	sessionsPicker *sessionsPicker
 
 	// runCtx is the Run loop's context, kept for work that event handlers
 	// start (opening sessions). Background outside Run.

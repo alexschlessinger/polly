@@ -94,9 +94,8 @@ func (r *managedREPL) runParent() {
 // tabLines lists the open workspaces as the sessions picker marks them:
 // position, name, what the workspace is doing, and "current" for the visible one.
 func (r *managedREPL) tabLines() []string {
-	r.syncWorkspaces()
 	var lines []string
-	for n, tab := range r.workspaces {
+	for n, tab := range r.workspaceTabs() {
 		line := fmt.Sprintf("%d  %s", n+1, tab.name)
 		if activity := r.workspaceActivity(tab); activity != "" {
 			line += "  " + activity

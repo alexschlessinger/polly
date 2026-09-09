@@ -24,6 +24,7 @@ const sessionsPickerNestedWidth = 80
 // what each row says is refreshed in place.
 type sessionsPicker struct {
 	current  string // Stable ID of the workspace that opened the picker.
+	modal    *replModal
 	rows     []sessionsPickerRow
 	infos    map[string]sessions.SessionSummary // keyed by stable ID
 	listedAt time.Time
@@ -90,9 +91,9 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 		}
 		metas[i] = &meta
 	}
-	r.syncWorkspaces()
+	workspaces := r.workspaceTabs()
 	workspaceIndex := func(node sessionTreeNode) (int, bool) {
-		for n, workspace := range r.workspaces {
+		for n, workspace := range workspaces {
 			if workspace.viewID() == infos[node.Index].ID {
 				return n, true
 			}
@@ -160,7 +161,8 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 			}
 		},
 	}
-	m.picker = p
+	r.sessionsPicker = p
+	p.modal = m
 	m.refresh = func() { r.refreshSessionsPicker(p, m) }
 	m.items = r.sessionsPickerItems(p)
 	if m.nested() {
@@ -332,7 +334,7 @@ func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
 		case owned:
 		case tab >= 0:
 			mark, color = "active agent", "ok"
-			for n, workspace := range r.workspaces {
+			for n, workspace := range r.workspaceTabs() {
 				if workspace == r.tabs[tab] {
 					mark = fmt.Sprintf("workspace %d", n+1)
 					break

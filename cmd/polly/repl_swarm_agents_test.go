@@ -223,7 +223,7 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 				t.Fatal("acceptance before paint suppressed the completion cue")
 			}
 			r.model.mu.Lock()
-			r.refreshSessionsPickerItems(picker.picker, picker, member.ID)
+			r.refreshSessionsPickerItems(r.sessionsPicker, picker, member.ID)
 			item := pickerItem(t, picker, member.ID)
 			selected := pickerSelection(picker)
 			agents, _ := r.agentsStatus()

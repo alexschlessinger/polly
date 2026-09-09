@@ -153,7 +153,7 @@ func TestSessionsPickerRelistRefreshesImmediatelyAndPinsSelection(t *testing.T) 
 		return store.ListSummaries(ctx)
 	}}
 	r.model.mu.Lock()
-	m.picker.listedAt = time.Time{}
+	r.sessionsPicker.listedAt = time.Time{}
 	m.refresh()
 	r.model.mu.Unlock()
 	<-entered
@@ -169,7 +169,7 @@ func TestSessionsPickerRelistRefreshesImmediatelyAndPinsSelection(t *testing.T) 
 		t.Fatal(err)
 	}
 	close(release)
-	for m.picker.listing {
+	for r.sessionsPicker.listing {
 		runUITask(t, r)
 	}
 	// No second paint/refresh is needed to consume the newly merged rows.

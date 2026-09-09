@@ -66,7 +66,7 @@ func (r *managedREPL) refreshSessionTitle(id string, locked *replModel) {
 			tab.childView = &copy
 		}
 	}
-	for _, w := range r.workspaces {
+	for _, w := range r.workspaceTabs() {
 		if w.workspace == nil {
 			continue
 		}
@@ -81,10 +81,10 @@ func (r *managedREPL) refreshSessionTitle(id string, locked *replModel) {
 		r.model.mu.Lock()
 		defer r.model.mu.Unlock()
 	}
-	if m := r.model.modal; m != nil && m.picker != nil {
+	if p, m := r.sessionsPicker, r.model.modal; p != nil && m != nil && p.modal == m {
 		selected := pickerSelection(m)
-		m.picker.merge(summaries, m.expanded)
-		r.refreshSessionsPickerItems(m.picker, m, selected)
+		p.merge(summaries, m.expanded)
+		r.refreshSessionsPickerItems(p, m, selected)
 	}
 
 }

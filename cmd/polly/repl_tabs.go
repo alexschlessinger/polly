@@ -327,8 +327,7 @@ func (r *managedREPL) closeVisibleTab() {
 	if i < 0 {
 		return
 	}
-	r.syncWorkspaces()
-	if len(r.workspaces) <= 1 {
+	if len(r.workspaceTabs()) <= 1 {
 		if !r.replaceLastWorkspace(r.tabs[i]) {
 			r.requestQuit()
 		}
@@ -383,9 +382,8 @@ func (r *managedREPL) removeTab(i int) *replTab {
 	visible := tab.model == r.model
 	r.tabs = append(r.tabs[:i], r.tabs[i+1:]...)
 	if visible {
-		r.syncWorkspaces()
-		if len(r.workspaces) > 0 {
-			r.showTab(r.tabIndexOfModel(r.workspaces[len(r.workspaces)-1].model))
+		if workspaces := r.workspaceTabs(); len(workspaces) > 0 {
+			r.showTab(r.tabIndexOfModel(workspaces[len(workspaces)-1].model))
 		} else if len(r.tabs) > 0 {
 			r.showTab(max(0, min(i-1, len(r.tabs)-1)))
 		}
@@ -578,7 +576,6 @@ func (r *managedREPL) finishOpen(res openResult) {
 		return
 	}
 	r.startupLogoVisible = false
-	r.syncWorkspaces()
 	r.model.mu.Unlock()
 	// The workspace this session replaces leaves now that the new one holds
 	// the screen.
