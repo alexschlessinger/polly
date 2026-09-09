@@ -60,9 +60,11 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 				}
 				e.Intent = nil
 				e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[persisted:]))
-				if checkpoint.Final {
+				// Only a parked invocation is waiting: the yield's final
+				// checkpoint commits the batch and the status together. Every
+				// other exit stays running until finish records its outcome.
+				if checkpoint.Final && errors.Is(checkpoint.Err, ErrYielded) {
 					e.Status = "waiting"
-					s.Members[raw.ActorID].Status = "waiting"
 				}
 			}
 			if execution == "" {

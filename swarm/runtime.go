@@ -81,6 +81,7 @@ type AgentResult struct {
 type invocation struct {
 	waitState  string
 	id, member string
+	generation int
 	done       chan struct{}
 	cancel     context.CancelFunc
 	result     AgentResult
@@ -701,6 +702,18 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 			case <-notify:
 			}
 		}
+		// A wake re-queues the same execution: the record says queued while
+		// the invocation waits for a slot and running once the slice starts.
+		if err := r.update(ctx, func(s *State) error {
+			if e := s.Executions[i.id]; e != nil && e.Generation == i.generation && e.Status == "waiting" {
+				e.Status = "queued"
+			}
+			return nil
+		}); err != nil {
+			i.err = err
+			r.finish(i)
+			return
+		}
 	}
 }
 
@@ -715,6 +728,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if m == nil || e == nil {
 		return AgentResult{}, errors.New("execution disappeared")
 	}
+	i.generation = e.Generation
 	i.waitState = waitState(s, i.member)
 	if task := s.Tasks[m.Task]; task != nil && task.Status == "canceled" {
 		return AgentResult{}, errors.New("assigned task was canceled")
