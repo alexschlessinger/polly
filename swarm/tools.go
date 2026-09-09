@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
@@ -13,16 +14,34 @@ import (
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
+// Mutations have no successful outcome to report when they fail. Keep this
+// separate from tool serialization, where partial workflow reports are useful.
+func mutationResult(value any, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func coordinationToolResult(value any, err error) (string, error) {
+	if err != nil && value == nil {
+		return "", err
+	}
+	return tools.Result(value), err
+}
+
+type taskToolView struct {
+	*Task
+	DisplayStatus string `json:"displayStatus"`
+}
+
 func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execution string, session sessions.CoordinationSession) {
 	registry.Register(&publishedArtifactTool{session: session})
 	registry.MarkAlwaysAllowed("swarm_read_artifact")
 	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
 		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_integration", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := fn(ctx, a)
-			if err != nil {
-				return tools.Result(v), err
-			}
-			return tools.Result(v), nil
+			return coordinationToolResult(v, err)
 		}})
 		registry.MarkAlwaysAllowed(name)
 	}
@@ -43,21 +62,25 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 		}
 		return inbox(s, actor, false), nil
 	})
-	register("swarm_tasks", "List shared task status and acceptance criteria.", nil, nil, func(ctx context.Context, a tools.Args) (any, error) {
+	register("swarm_tasks", "List shared task status and acceptance criteria. A current acceptedRevision with a snapshot can still require integration; use swarm_integration for accepted editing work.", nil, nil, func(ctx context.Context, a tools.Args) (any, error) {
 		s, err := r.read(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return s.Tasks, nil
+		tasks := make(map[string]taskToolView, len(s.Tasks))
+		for id, task := range s.Tasks {
+			tasks[id] = taskToolView{Task: task, DisplayStatus: TaskStatus(task)}
+		}
+		return tasks, nil
 	})
 	register("swarm_block", "Record a blocker on your assigned task. The parent updates dependencies or resumes work explicitly.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "reason": schema.S("Blocker")}, []string{"task", "revision", "reason"}, func(ctx context.Context, a tools.Args) (any, error) {
-		return "blocked", r.BlockTask(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("reason"))
+		return mutationResult("blocked", r.BlockTask(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("reason")))
 	})
 	register("swarm_claim", "Atomically claim an unassigned pending task whose dependencies are accepted.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision")}, []string{"task", "revision"}, func(ctx context.Context, a tools.Args) (any, error) {
-		return "claimed", r.Claim(ctx, actor, a.String("task"), a.Int("revision", 0))
+		return mutationResult("claimed", r.Claim(ctx, actor, a.String("task"), a.Int("revision", 0)))
 	})
 	register("swarm_submit", "Submit your task result for parent review. A snapshot records the exact editing candidate.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "result": schema.S("Result and evidence"), "snapshot": schema.S("Published snapshot ID")}, []string{"task", "revision", "result"}, func(ctx context.Context, a tools.Args) (any, error) {
-		return "submitted", r.Submit(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("result"), a.String("snapshot"))
+		return mutationResult("submitted", r.Submit(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("result"), a.String("snapshot")))
 	})
 	register("swarm_publish", "Publish attributed findings with source references; optionally supersede your earlier publication.", schema.Params{"artifacts": schema.Strings("IDs of your own artifacts to publish"), "text": schema.S("Finding and evidence"), "sources": schema.Strings("Source references"), "supersedes": schema.S("Earlier publication ID"), "snapshot": schema.S("Snapshot ID")}, []string{"text"}, func(ctx context.Context, a tools.Args) (any, error) {
 		refs := []artifacts.Ref{}
@@ -83,7 +106,7 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 	register("swarm_snapshot", "Capture an immutable candidate from your isolated files. This does not commit to a branch or accept a task.", nil, nil, func(ctx context.Context, a tools.Args) (any, error) { return r.captureMember(ctx, actor) })
 	register("swarm_wait", "Yield after this tool batch until addressed input is available. The runtime releases your execution slot and preserves your iteration budget.", nil, nil, func(ctx context.Context, a tools.Args) (any, error) {
 		if actor == r.ID {
-			return "coordination changed; inspect messages and tasks", r.waitParent(ctx)
+			return mutationResult("coordination changed; inspect messages and tasks", r.waitParent(ctx))
 		}
 		park, ok := ctx.Value(waitKey{}).(func())
 		if !ok {
@@ -145,10 +168,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
 		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_integration", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := fn(ctx, a)
-			if err != nil {
-				return tools.Result(v), err
-			}
-			return tools.Result(v), nil
+			return coordinationToolResult(v, err)
 		}})
 		registry.MarkAlwaysAllowed(name)
 	}
@@ -156,27 +176,44 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		return r.CreateTask(ctx, a.String("description"), a.String("criteria"), a.StringSlice("dependencies"), a.String("owner"))
 	})
 	register("swarm_update_task", "Reassign or unblock a task by setting its owner and dependencies. Stop an active owner first; dependency cycles are refused.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "owner": schema.S("Member ID or empty for claims"), "dependencies": schema.Strings("Replacement dependency IDs")}, []string{"task", "revision", "owner", "dependencies"}, func(ctx context.Context, a tools.Args) (any, error) {
-		return "updated", r.UpdateTask(ctx, a.String("task"), a.Int("revision", 0), a.String("owner"), a.StringSlice("dependencies"))
+		return mutationResult("updated", r.UpdateTask(ctx, a.String("task"), a.Int("revision", 0), a.String("owner"), a.StringSlice("dependencies")))
 	})
-	register("swarm_review", "Accept the current submitted revision or request changes with feedback. Editing tasks finish after applying the accepted snapshot.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Submitted revision"), "accept": schema.Bool("Accept result"), "feedback": schema.S("Changes requested")}, []string{"task", "revision", "accept"}, func(ctx context.Context, a tools.Args) (any, error) {
-		return "review recorded", r.Review(ctx, a.String("task"), a.Int("revision", 0), a.Bool("accept"), a.String("feedback"))
+	register("swarm_review", "Accept the current submitted revision or request changes with feedback. Accepted unchanged candidates finish immediately; changed candidates still require swarm_integration. Read the returned status and next action.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Submitted revision"), "accept": schema.Bool("Accept result"), "feedback": schema.S("Changes requested")}, []string{"task", "revision", "accept"}, func(ctx context.Context, a tools.Args) (any, error) {
+		if err := r.Review(ctx, a.String("task"), a.Int("revision", 0), a.Bool("accept"), a.String("feedback")); err != nil {
+			return nil, err
+		}
+		s, err := r.read(ctx)
+		if err != nil {
+			return nil, err
+		}
+		task := s.Tasks[a.String("task")]
+		if task == nil {
+			return nil, errors.New("reviewed task is no longer available")
+		}
+		result := map[string]any{"task": task.ID, "revision": task.Revision, "acceptedRevision": task.AcceptedRevision, "status": task.Status, "displayStatus": TaskStatus(task)}
+		if task.Status == "awaiting_review" && task.AcceptedRevision == task.Revision && task.Snapshot != "" {
+			result["nextAction"] = fmt.Sprintf("Use swarm_integration to prepare task %s revision %d, inspect the candidate, then accept and apply it. Cleanup does not integrate this result.", task.ID, task.Revision)
+		} else if task.Status == "changes_requested" {
+			result["nextAction"] = "Wait for the member's revised submission; explicitly continue a workflow-owned member through its workflow."
+		}
+		return result, nil
 	})
-	register("swarm_control", "Stop or explicitly resume a member using its remaining allowance, cancel a task, or clean an integrated/unchanged execution context. Iteration exhaustion retains saved work and requires a user-directed client grant. Extra execution budgets also require a user-directed client control.", schema.Params{"action": schema.S("stop, resume, cancel_task or cleanup"), "id": schema.S("Member, task or context ID")}, []string{"action"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("swarm_control", "Stop or explicitly resume a member using its remaining allowance, cancel a task, or clean an integrated/unchanged execution context. Cleanup retires the context; it does not accept or integrate tasks. Iteration exhaustion retains saved work and requires a user-directed client grant. Extra execution budgets also require a user-directed client control.", schema.Params{"action": schema.S("stop, resume, cancel_task or cleanup"), "id": schema.S("stop/resume: member ID; cancel_task: task ID; cleanup: context ID from list_agents.members[].context, not the execution ID")}, []string{"action"}, func(ctx context.Context, a tools.Args) (any, error) {
 		switch a.String("action") {
 		case "stop":
-			return "stopped", r.StopMember(ctx, a.String("id"))
+			return mutationResult("stopped", r.StopMember(ctx, a.String("id")))
 		case "resume":
 			if err := r.Resume(ctx, a.String("id"), 0); err != nil {
 				return nil, err
 			}
 			return "resumed", nil
 		case "cancel_task":
-			return "canceled", r.CancelTask(ctx, a.String("id"))
+			return mutationResult("canceled", r.CancelTask(ctx, a.String("id")))
 		case "cleanup":
 			if a.String("id") == "" {
 				return nil, errors.New("name an inactive execution context; whole-family cleanup is a client control")
 			}
-			return "retired", r.Cleanup(ctx, a.String("id"))
+			return mutationResult("retired", r.Cleanup(ctx, a.String("id")))
 		default:
 			return nil, errors.New("budget grants require explicit user-directed resume through the client")
 		}
@@ -198,13 +235,13 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 			return nil, err
 		}
 		id, err := r.StartWorkflow(ctx, a.String("source"), input)
-		return map[string]any{"id": id, "status": "started"}, err
+		return mutationResult(map[string]any{"id": id, "status": "started"}, err)
 	})
 	register("workflow_cancel", "Cancel a running workflow and pause its reserved members.", schema.Params{"id": schema.S("Workflow ID")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
-		return "canceled", r.CancelWorkflow(a.String("id"))
+		return mutationResult("canceled", r.CancelWorkflow(a.String("id")))
 	})
 	register("workflow_acknowledge", "Acknowledge a terminal workflow failure after inspecting its report and arranging recovery or reporting the blocker. This does not accept tasks, discard edits, or resume members.", schema.Params{"id": schema.S("Workflow report ID")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
-		return "acknowledged", r.AcknowledgeWorkflow(ctx, a.String("id"))
+		return mutationResult("acknowledged", r.AcknowledgeWorkflow(ctx, a.String("id")))
 	})
 	register("workflow_read", "Inspect saved workflow source, inputs, steps and result without resuming JavaScript.", schema.Params{"id": schema.S("Workflow report ID")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
 		s, err := r.read(ctx)
