@@ -55,6 +55,11 @@ this is filesystem isolation, not confidentiality of repository history. Native
 file tools retain their context checks even with an explicit process sandbox
 opt-out. An unsandboxed shell necessarily retains ambient host authority.
 
+Runtime-private paths inside the source checkout are omitted from snapshot
+indexes and excluded from Git staging before file contents are read, including
+tracked entries and private directories. This prevents new snapshots from
+copying session databases; it does not remove objects already in Git history.
+
 Runtime snapshot, worktree administration, and integration commands use the
 same sandbox factory with a trusted Git executable and narrow runtime grants.
 For these fixed runtime commands only, preset-generated whole-directory Git

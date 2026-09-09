@@ -45,6 +45,9 @@ type Config struct {
 	Root, Directory                          string
 	Registry                                 *tools.ToolRegistry
 	MaxUntrackedFileBytes, MaxUntrackedBytes int64
+	// PrivatePaths are runtime-owned files/directories excluded before Git
+	// reads snapshot content. Paths inside Root are excluded in every copy.
+	PrivatePaths []string
 	// MaxWorktrees reserves paths before any member sandbox starts. A member
 	// can then deny future sibling paths as well as existing ones.
 	MaxWorktrees int
@@ -57,7 +60,8 @@ type Manager struct {
 	sandbox     sandbox.Sandbox
 	// userConfig pins the user's global ignore and attribute files for the
 	// isolated commands, which otherwise see no global configuration.
-	userConfig []string
+	userConfig   []string
+	privatePaths []string // frozen repository-relative exclusions
 }
 
 // staleClaim is how long a slot claim without a checkout manifest is trusted
@@ -122,7 +126,12 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Manager{Config: c, Git: git}
+	privatePaths, err := snapshotPrivatePaths(root, c.PrivatePaths)
+	if err != nil {
+		return nil, err
+	}
+	c.PrivatePaths = append([]string(nil), c.PrivatePaths...)
+	m := &Manager{Config: c, Git: git, privatePaths: privatePaths}
 	// Resolve Git metadata read-only before granting runtime administrative
 	// writes. Member sandboxes are constructed separately and deny these paths.
 	cfg, _, err := c.Registry.SandboxReadPolicy()
@@ -375,6 +384,9 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 		if len(fields) != 3 || fields[2] != "0" || fields[0] == "160000" {
 			return Snapshot{}, errors.New("conflicted indexes and submodules are unsupported")
 		}
+		if m.privateSourcePath(name) {
+			continue
+		}
 		if err := m.checkSourcePath(source, name, readPolicy, readActive); err != nil {
 			return Snapshot{}, err
 		}
@@ -388,6 +400,9 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 	var total int64
 	for _, name := range bytes.Split(untracked, []byte{0}) {
 		if len(name) == 0 {
+			continue
+		}
+		if m.privateSourcePath(string(name)) {
 			continue
 		}
 		if err := m.checkSourcePath(source, string(name), readPolicy, readActive); err != nil {
@@ -423,12 +438,36 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	// A copied index can already contain private entries. Remove them only
+	// from this temporary index before any add can read their file contents.
+	var kept, private []byte
+	for _, name := range bytes.Split(paths, []byte{0}) {
+		if len(name) == 0 {
+			continue
+		}
+		if m.privateSourcePath(string(name)) {
+			private = append(append(private, name...), 0)
+		} else {
+			kept = append(append(kept, name...), 0)
+		}
+	}
+	if len(private) > 0 {
+		if _, err = m.git(ctx, source, env, private, "update-index", "--force-remove", "-z", "--stdin"); err != nil {
+			return Snapshot{}, err
+		}
+	}
+	paths = kept
 	if len(paths) > 0 {
 		if _, err = m.git(ctx, source, env, paths, "update-index", "--no-assume-unchanged", "--no-skip-worktree", "-z", "--stdin"); err != nil {
 			return Snapshot{}, err
 		}
 	}
-	if _, err = m.git(ctx, source, env, nil, "add", "-A", "--", "."); err != nil {
+	add := []string{"add", "-A", "--", "."}
+	for _, path := range m.privatePaths {
+		// Negative pathspecs also cover files appearing after enumeration.
+		add = append(add, ":(top,exclude,literal)"+path)
+	}
+	if _, err = m.git(ctx, source, env, nil, add...); err != nil {
 		return Snapshot{}, err
 	}
 	tree, err := m.git(ctx, source, env, nil, "write-tree")
@@ -437,7 +476,7 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 	}
 	// A second capture refuses a changing source instead of publishing a
 	// known inconsistent set. External writers cannot be locked by Polly.
-	if _, err = m.git(ctx, source, env, nil, "add", "-A", "--", "."); err != nil {
+	if _, err = m.git(ctx, source, env, nil, add...); err != nil {
 		return Snapshot{}, err
 	}
 	check, err := m.git(ctx, source, env, nil, "write-tree")
@@ -496,6 +535,9 @@ func (m *Manager) validateTree(ctx context.Context, source, tree string, tracked
 		fields := strings.Fields(meta)
 		if len(fields) != 4 {
 			return errors.New("unreadable snapshot tree")
+		}
+		if m.privateSourcePath(name) {
+			return fmt.Errorf("snapshot includes a private path: %s", name)
 		}
 		if fields[0] == "160000" || fields[1] != "blob" {
 			return errors.New("conflicted indexes and submodules are unsupported")

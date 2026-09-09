@@ -297,7 +297,7 @@ func (r *Runtime) manager(ctx context.Context) (*worktree.Manager, error) {
 	if r.worktrees != nil {
 		return r.worktrees, nil
 	}
-	m, err := worktree.New(ctx, worktree.Config{Root: r.config.Root, Directory: r.config.Directory, Registry: r.config.Registry, MaxWorktrees: r.config.MaxWorktrees})
+	m, err := worktree.New(ctx, worktree.Config{Root: r.config.Root, Directory: r.config.Directory, Registry: r.config.Registry, MaxWorktrees: r.config.MaxWorktrees, PrivatePaths: r.config.PrivatePaths})
 	if err == nil {
 		r.worktrees = m
 	}

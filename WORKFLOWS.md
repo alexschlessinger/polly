@@ -250,8 +250,10 @@ Git 2.40+ is required for the explicit merge-base integration path. The runtime
 refuses conflicted indexes, submodules, sparse/split indexes, paths whose
 attributes apply a content filter (LFS), symlinked top-level Git metadata, and
 special files. Untracked files follow the repository's and the user's global
-ignore rules. New files have a default 32 MiB individual / 256 MiB total capture
-guard, enforced on the tree that is actually published. External writers cannot
+ignore rules. Runtime-private paths such as session databases are excluded before
+snapshot staging, including tracked files and private directories; existing Git
+history is unchanged. New files have a default 32 MiB individual / 256 MiB total
+capture guard, enforced on the tree that is actually published. External writers cannot
 be locked by Polly; a detected inconsistent snapshot is refused. Stop external
 writes when a consistent repository-wide snapshot is required.
 
