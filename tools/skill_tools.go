@@ -20,14 +20,24 @@ type SkillActivateTool struct {
 	registry  *ToolRegistry
 	mu        sync.Mutex
 	activated map[string]bool
+	// skillTools records the tools each activation loaded, so a derived
+	// runtime can tell whether its registry's allow-list still shows them.
+	skillTools map[string][]string
+	// unavailable names the skills a derived runtime may not activate: the
+	// parent loaded their tools, and this registry's allow-list hides the
+	// ones listed. Activating one is refused rather than delivering
+	// instructions for tools the model cannot call.
+	unavailable map[string][]string
 }
 
 // NewSkillActivateTool creates the skill activation tool.
 func NewSkillActivateTool(catalog *skills.Catalog, registry *ToolRegistry) *SkillActivateTool {
 	return &SkillActivateTool{
-		catalog:   catalog,
-		registry:  registry,
-		activated: make(map[string]bool),
+		catalog:     catalog,
+		registry:    registry,
+		activated:   make(map[string]bool),
+		skillTools:  make(map[string][]string),
+		unavailable: make(map[string][]string),
 	}
 }
 
@@ -78,7 +88,11 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 
 	t.mu.Lock()
 	alreadyActivated := t.activated[skill.Name]
+	withheld := t.unavailable[skill.Name]
 	t.mu.Unlock()
+	if len(withheld) > 0 {
+		return "", fmt.Errorf("skill %q is unavailable to this agent: its tools %s are excluded by the agent's tool allow list", skill.Name, strings.Join(withheld, ", "))
+	}
 
 	// Always list scripts (just file paths, no side effects)
 	scriptFiles, err := skill.ListFiles("scripts")
@@ -132,10 +146,16 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 
 		t.mu.Lock()
 		t.activated[skill.Name] = true
+		t.skillTools[skill.Name] = append([]string(nil), loadedTools...)
 		t.mu.Unlock()
 	}
 	sort.Strings(loadedTools)
 	sort.Strings(loadedMCPServers)
+	// A derived registry's allow-list can hide tools the skill just loaded;
+	// they are registered but never callable, so say so instead of listing
+	// them as loaded.
+	hiddenTools := t.registry.hiddenByView(loadedTools)
+	loadedTools = withoutStrings(loadedTools, hiddenTools)
 
 	allFiles, err := skill.ListFiles(".")
 	if err != nil {
@@ -206,6 +226,14 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 	} else if alreadyActivated {
 		b.WriteString("(skill already active for this run)\n")
 	}
+	if len(hiddenTools) > 0 {
+		b.WriteString("Tools excluded by this agent's tool allow list (not callable):\n")
+		for _, toolName := range hiddenTools {
+			b.WriteString("- ")
+			b.WriteString(toolName)
+			b.WriteString("\n")
+		}
+	}
 
 	if len(allowedPatterns) > 0 {
 		b.WriteString("Allowed tool patterns now active for future turns:\n")
@@ -247,6 +275,31 @@ func (t *SkillActivateTool) ActivatedSkills() []string {
 	}
 	sort.Strings(skills)
 	return skills
+}
+
+// toolsLoadedBy returns the tools the named skill's activation loaded here.
+func (t *SkillActivateTool) toolsLoadedBy(skill string) []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.skillTools[skill]...)
+}
+
+// withoutStrings returns names without the entries in drop, keeping order.
+func withoutStrings(names, drop []string) []string {
+	if len(drop) == 0 {
+		return names
+	}
+	dropped := make(map[string]bool, len(drop))
+	for _, name := range drop {
+		dropped[name] = true
+	}
+	kept := names[:0:0]
+	for _, name := range names {
+		if !dropped[name] {
+			kept = append(kept, name)
+		}
+	}
+	return kept
 }
 
 func parseAllowedToolPatterns(value string) []string {

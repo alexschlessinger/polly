@@ -419,10 +419,10 @@ type deriveOptions struct {
 	deny  []string
 }
 
-// AllowTools limits the parent tools a derived registry sees to those
-// matching one of the patterns (filepath.Match globs, or exact names).
-// Tools the derived registry registers itself are not affected. Repeated
-// options accumulate.
+// AllowTools limits the tools a derived registry sees to those matching one
+// of the patterns (filepath.Match globs, or exact names). It bounds the
+// tools the derived registry loads itself as well as the parent's; only its
+// always-allowed built-ins pass regardless. Repeated options accumulate.
 func AllowTools(patterns ...string) DeriveOption {
 	return func(o *deriveOptions) {
 		o.allow = appendUniqueStrings(o.allow, patterns)
@@ -495,6 +495,20 @@ func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 // hold r.mu.
 func (r *ToolRegistry) viewVisibleLocked(name string) bool {
 	return r.viewAllowed == nil || r.alwaysAllowedTools[name] || r.viewAllowed(name)
+}
+
+// hiddenByView returns, in order, the names among names that this
+// registry's allow-list hides. Every name passes a registry without one.
+func (r *ToolRegistry) hiddenByView(names []string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var hidden []string
+	for _, name := range names {
+		if !r.viewVisibleLocked(name) {
+			hidden = append(hidden, name)
+		}
+	}
+	return hidden
 }
 
 // inheritedLocked resolves name in the parent chain: the tool, whether it

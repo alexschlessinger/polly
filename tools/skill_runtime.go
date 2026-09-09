@@ -122,8 +122,11 @@ func (r *SkillRuntime) Restore(names []string) error {
 
 // Derive inherits activation state into a registry derived from this runtime's
 // registry. MCP clients remain owned by the parent; no skill files are loaded
-// and no servers are connected again. The child's policy and future skill
-// activations remain independent, within the derived registry's tool filter.
+// and no servers are connected again. A skill whose loaded tools the derived
+// registry's allow-list hides is not inherited: the child is refused it, with
+// the hidden tools named, rather than handed instructions for tools it cannot
+// call. The child's policy and future skill activations remain independent,
+// within the derived registry's tool filter.
 func (r *SkillRuntime) Derive(registry *ToolRegistry) (*SkillRuntime, error) {
 	if r == nil || registry == nil {
 		return nil, ErrSkillRuntimeUnavailable
@@ -139,9 +142,23 @@ func (r *SkillRuntime) Derive(registry *ToolRegistry) (*SkillRuntime, error) {
 		return nil, err
 	}
 	if child.activateTool != nil {
-		child.activateTool.mu.Lock()
+		inherited := make(map[string][]string)
+		withheld := make(map[string][]string)
 		for _, name := range r.ActivatedSkills() {
+			loaded := r.activateTool.toolsLoadedBy(name)
+			if hidden := registry.hiddenByView(loaded); len(hidden) > 0 {
+				withheld[name] = hidden
+				continue
+			}
+			inherited[name] = loaded
+		}
+		child.activateTool.mu.Lock()
+		for name, loaded := range inherited {
 			child.activateTool.activated[name] = true
+			child.activateTool.skillTools[name] = loaded
+		}
+		for name, hidden := range withheld {
+			child.activateTool.unavailable[name] = hidden
 		}
 		child.activateTool.mu.Unlock()
 	}

@@ -338,3 +338,74 @@ func TestNewSkillRuntimeNoBashWithoutSkills(t *testing.T) {
 		t.Fatal("bash tool should not be registered when no skills are available")
 	}
 }
+
+// A skill the parent activated is withheld from a derived runtime whose
+// allow-list hides the tools that activation loaded: the child is refused
+// it with the tools named, instead of inheriting instructions for tools it
+// cannot call. A derived registry that can see them inherits as before.
+func TestDerivedSkillRuntimeWithholdsSkillsWhoseToolsAreHidden(t *testing.T) {
+	root := t.TempDir()
+	createSkillWithScript(t, root, "lookup-skill")
+	catalog, err := skills.Discover([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	defer parent.Close()
+	runtime, err := NewSkillRuntime(catalog, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Activate("lookup-skill"); err != nil {
+		t.Fatal(err)
+	}
+	// Stand in for the MCP tools the activation would have loaded.
+	parent.Register(&testTool{name: "lookup-skill__search"})
+	runtime.activateTool.mu.Lock()
+	runtime.activateTool.skillTools["lookup-skill"] = []string{"lookup-skill__search"}
+	runtime.activateTool.mu.Unlock()
+
+	narrow := parent.Derive(AllowTools("read_*"))
+	defer narrow.Close()
+	withheld, err := runtime.Derive(narrow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := withheld.ActivatedSkills(); len(got) != 0 {
+		t.Fatalf("hidden-tool skill was inherited: %v", got)
+	}
+	_, err = withheld.Activate("lookup-skill")
+	if err == nil || !strings.Contains(err.Error(), "lookup-skill__search") || !strings.Contains(err.Error(), "allow list") {
+		t.Fatalf("Activate() error = %v, want refusal naming the hidden tool and the allow list", err)
+	}
+
+	wide := parent.Derive(AllowTools("read_*", "lookup-skill__*"))
+	defer wide.Close()
+	inherited, err := runtime.Derive(wide)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inherited.ActivatedSkills(); len(got) != 1 || got[0] != "lookup-skill" {
+		t.Fatalf("visible-tool skill was not inherited: %v", got)
+	}
+	if got := inherited.activateTool.toolsLoadedBy("lookup-skill"); len(got) != 1 || got[0] != "lookup-skill__search" {
+		t.Fatalf("inherited skill lost its tool record: %v", got)
+	}
+}
+
+func TestHiddenByViewNamesOnlyFilteredTools(t *testing.T) {
+	parent := NewToolRegistry(nil)
+	defer parent.Close()
+	if got := parent.hiddenByView([]string{"a", "b"}); len(got) != 0 {
+		t.Fatalf("unfiltered registry hid %v", got)
+	}
+	child := parent.Derive(AllowTools("read_*"))
+	defer child.Close()
+	child.MarkAlwaysAllowed("builtin")
+	if got := child.hiddenByView([]string{"read_file", "write_file", "builtin", "search"}); strings.Join(got, ",") != "write_file,search" {
+		t.Fatalf("hiddenByView = %v, want write_file and search", got)
+	}
+	if got := withoutStrings([]string{"a", "b", "c"}, []string{"b"}); strings.Join(got, ",") != "a,c" {
+		t.Fatalf("withoutStrings = %v", got)
+	}
+}
