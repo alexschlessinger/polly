@@ -39,7 +39,7 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 	if err != nil {
 		slog.Debug("ollama_invalid_url", "url", baseURL, "error", err)
 		// Fall back to default if parsing fails
-		u, _ = url.Parse("http://localhost:11434")
+		u, _ = url.Parse(defaultOllamaBaseURL)
 	}
 
 	// Create HTTP client with optional Bearer token authentication

@@ -121,11 +121,11 @@ func TestMultiPassRuntimeAPIKeyOverridesAndClears(t *testing.T) {
 func TestNewMultiPass_DoesNotConstructProviders(t *testing.T) {
 	var calls int
 
-	m := newMultiPass(map[string]string{"openai": "test-key"}, map[string]providerFactory{
-		"openai": func(apiKey, baseURL string) (LLM, error) {
+	m := newMultiPass(map[string]string{"openai": "test-key"}, map[string]providerSpec{
+		"openai": {new: func(apiKey, baseURL string) (LLM, error) {
 			calls++
 			return &recordingLLM{}, nil
-		},
+		}},
 	})
 
 	if m == nil {
@@ -139,11 +139,11 @@ func TestNewMultiPass_DoesNotConstructProviders(t *testing.T) {
 func TestMultiPass_ClientFor_DoesNotCacheClients(t *testing.T) {
 	var calls int
 
-	m := newMultiPass(nil, map[string]providerFactory{
-		"openai": func(apiKey, baseURL string) (LLM, error) {
+	m := newMultiPass(nil, map[string]providerSpec{
+		"openai": {new: func(apiKey, baseURL string) (LLM, error) {
 			calls++
 			return &recordingLLM{}, nil
-		},
+		}},
 	})
 
 	if _, err := m.clientFor("openai", "test-key", ""); err != nil {
@@ -183,8 +183,8 @@ func TestMultiPass_UsesDefaultProviderConfig(t *testing.T) {
 	var gotBaseURL string
 	var gotReq *CompletionRequest
 
-	m := newMultiPass(map[string]string{"openai": "default-key"}, map[string]providerFactory{
-		"openai": func(apiKey, baseURL string) (LLM, error) {
+	m := newMultiPass(map[string]string{"openai": "default-key"}, map[string]providerSpec{
+		"openai": {new: func(apiKey, baseURL string) (LLM, error) {
 			gotAPIKey = apiKey
 			gotBaseURL = baseURL
 			return &recordingLLM{
@@ -192,7 +192,7 @@ func TestMultiPass_UsesDefaultProviderConfig(t *testing.T) {
 					gotReq = req
 				},
 			}, nil
-		},
+		}},
 	})
 
 	processor := messages.NewStreamProcessor()
@@ -223,17 +223,17 @@ func TestMultiPass_OpenAIBaseURLAllowsMissingAPIKey(t *testing.T) {
 	var gotBaseURL string
 	var gotReq *CompletionRequest
 
-	m := newMultiPass(nil, map[string]providerFactory{
-		"openai": func(apiKey, baseURL string) (LLM, error) {
-			gotAPIKey = apiKey
-			gotBaseURL = baseURL
-			return &recordingLLM{
-				onCall: func(req *CompletionRequest) {
-					gotReq = req
-				},
-			}, nil
-		},
-	})
+	openAI := defaultProviders()["openai"]
+	openAI.new = func(apiKey, baseURL string) (LLM, error) {
+		gotAPIKey = apiKey
+		gotBaseURL = baseURL
+		return &recordingLLM{
+			onCall: func(req *CompletionRequest) {
+				gotReq = req
+			},
+		}, nil
+	}
+	m := newMultiPass(nil, map[string]providerSpec{"openai": openAI})
 
 	processor := messages.NewStreamProcessor()
 	events := m.ChatCompletionStream(context.Background(), &CompletionRequest{
@@ -260,13 +260,13 @@ func TestMultiPass_ClientFor_DefaultsOllamaBaseURL(t *testing.T) {
 	var gotAPIKey string
 	var gotBaseURL string
 
-	m := newMultiPass(nil, map[string]providerFactory{
-		"ollama": func(apiKey, baseURL string) (LLM, error) {
-			gotAPIKey = apiKey
-			gotBaseURL = baseURL
-			return &recordingLLM{}, nil
-		},
-	})
+	ollama := defaultProviders()["ollama"]
+	ollama.new = func(apiKey, baseURL string) (LLM, error) {
+		gotAPIKey = apiKey
+		gotBaseURL = baseURL
+		return &recordingLLM{}, nil
+	}
+	m := newMultiPass(nil, map[string]providerSpec{"ollama": ollama})
 
 	if _, err := m.clientFor("ollama", "ollama-key", ""); err != nil {
 		t.Fatalf("clientFor() error = %v", err)
@@ -275,8 +275,8 @@ func TestMultiPass_ClientFor_DefaultsOllamaBaseURL(t *testing.T) {
 	if gotAPIKey != "ollama-key" {
 		t.Fatalf("factory apiKey = %q, want %q", gotAPIKey, "ollama-key")
 	}
-	if gotBaseURL != "http://localhost:11434" {
-		t.Fatalf("factory baseURL = %q, want %q", gotBaseURL, "http://localhost:11434")
+	if gotBaseURL != defaultOllamaBaseURL {
+		t.Fatalf("factory baseURL = %q, want %q", gotBaseURL, defaultOllamaBaseURL)
 	}
 }
 

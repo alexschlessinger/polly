@@ -81,30 +81,24 @@ func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, erro
 		slog.Warn("embedding_task_type_ignored", "provider", provider, "task_type", req.TaskType)
 	}
 
-	switch provider {
-	case "openai":
-		apiKey, err := resolveEmbeddingAPIKey(provider, req.APIKey, req.BaseURL)
-		if err != nil {
-			return nil, err
-		}
-		return embedOpenAI(ctx, req, model, apiKey)
-	case "gemini":
-		apiKey, err := resolveEmbeddingAPIKey(provider, req.APIKey, req.BaseURL)
-		if err != nil {
-			return nil, err
-		}
-		return embedGemini(ctx, req, model, apiKey)
-	default:
+	spec, ok := defaultProviders()[provider]
+	if !ok || spec.embed == nil {
 		return nil, fmt.Errorf("unsupported embedding provider %q", provider)
 	}
+	apiKey, err := resolveEmbeddingAPIKey(provider, req.APIKey, req.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	return spec.embed(ctx, req, model, apiKey)
 }
 
+// resolveEmbeddingAPIKey applies the provider table's credential rule, so an
+// endpoint that is keyless for chat is keyless for embeddings too.
 func resolveEmbeddingAPIKey(provider, explicit, baseURL string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
-	// Keep behavior aligned with chat routing: OpenAI-compatible endpoints can be keyless.
-	if provider == "openai" && strings.TrimSpace(baseURL) != "" {
+	if spec, ok := defaultProviders()[provider]; ok && !spec.requiresKey(baseURL) {
 		return "", nil
 	}
 	envVar := getEnvVarNameForProvider(provider)

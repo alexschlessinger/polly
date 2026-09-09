@@ -3,6 +3,8 @@ package llm
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 
@@ -11,12 +13,37 @@ import (
 
 type providerFactory func(apiKey, baseURL string) (LLM, error)
 
+// providerSpec is everything the package knows about one provider prefix:
+// how to build its chat client, the endpoint used when a request names
+// none, whether a request may go without a credential, and the optional
+// capabilities only some providers offer. Chat routing, embeddings, and
+// context-window discovery all read this one table, so a provider is
+// described in exactly one place.
+type providerSpec struct {
+	new providerFactory
+	// defaultBaseURL fills an empty request base URL before new runs.
+	defaultBaseURL string
+	// keyless reports whether a request with the given (undefaulted) base
+	// URL may proceed without an API key. nil means a key is always required.
+	keyless func(baseURL string) bool
+	// contextWindow looks up the model's advertised input window; nil when
+	// the provider has no model-metadata endpoint.
+	contextWindow func(ctx context.Context, apiKey, model string) (int, error)
+	// embed serves embedding requests; nil when the provider has none.
+	embed func(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error)
+}
+
+// requiresKey reports whether a request against baseURL needs a credential.
+func (p providerSpec) requiresKey(baseURL string) bool {
+	return p.keyless == nil || !p.keyless(baseURL)
+}
+
 // MultiPass routes requests to different LLM providers based on model prefix.
 type MultiPass struct {
 	apiKeyMu       sync.RWMutex
 	apiKeys        map[string]string
 	runtimeAPIKeys map[string]string
-	factories      map[string]providerFactory
+	providers      map[string]providerSpec
 }
 
 // getEnvVarNameForProvider returns the environment variable name for the given provider
@@ -27,14 +54,14 @@ func getEnvVarNameForProvider(provider string) string {
 // NewMultiPass creates a new multi-provider router using a snapshot of the
 // provided API keys.
 func NewMultiPass(apiKeys map[string]string) *MultiPass {
-	return newMultiPass(apiKeys, defaultProviderFactories())
+	return newMultiPass(apiKeys, defaultProviders())
 }
 
-func newMultiPass(apiKeys map[string]string, factories map[string]providerFactory) *MultiPass {
+func newMultiPass(apiKeys map[string]string, providers map[string]providerSpec) *MultiPass {
 	return &MultiPass{
 		apiKeys:        copyAPIKeys(apiKeys),
 		runtimeAPIKeys: make(map[string]string),
-		factories:      copyProviderFactories(factories),
+		providers:      maps.Clone(providers),
 	}
 }
 
@@ -83,34 +110,52 @@ func (m *MultiPass) apiKey(provider string) string {
 	return m.apiKeys[provider]
 }
 
-func defaultProviderFactories() map[string]providerFactory {
-	return map[string]providerFactory{
-		"openai": func(apiKey, baseURL string) (LLM, error) {
-			return NewOpenAIClient(apiKey, baseURL), nil
+const (
+	defaultOllamaBaseURL      = "http://localhost:11434"
+	defaultHuggingFaceBaseURL = "https://router.huggingface.co/v1"
+	defaultOpenRouterBaseURL  = "https://openrouter.ai/api/v1"
+)
+
+// customEndpointKeyless lets an OpenAI-compatible request against a
+// user-supplied endpoint run without a credential.
+func customEndpointKeyless(baseURL string) bool { return strings.TrimSpace(baseURL) != "" }
+
+func alwaysKeyless(string) bool { return true }
+
+// defaultProviders is the provider table. Add a provider here and every
+// router in the package knows it.
+func defaultProviders() map[string]providerSpec {
+	return map[string]providerSpec{
+		"openai": {
+			new:     func(apiKey, baseURL string) (LLM, error) { return NewOpenAIClient(apiKey, baseURL), nil },
+			keyless: customEndpointKeyless,
+			embed:   embedOpenAI,
 		},
-		"anthropic": func(apiKey, _ string) (LLM, error) {
-			return NewAnthropicClient(apiKey), nil
+		"anthropic": {
+			new:           func(apiKey, _ string) (LLM, error) { return NewAnthropicClient(apiKey), nil },
+			contextWindow: anthropicContextWindow,
 		},
-		"gemini": func(apiKey, _ string) (LLM, error) {
-			return NewGeminiClient(apiKey)
+		"gemini": {
+			new:           func(apiKey, _ string) (LLM, error) { return NewGeminiClient(apiKey) },
+			contextWindow: geminiContextWindow,
+			embed:         embedGemini,
 		},
-		"ollama": func(apiKey, baseURL string) (LLM, error) {
-			return NewOllamaClient(baseURL, apiKey), nil
+		"ollama": {
+			new:            func(apiKey, baseURL string) (LLM, error) { return NewOllamaClient(baseURL, apiKey), nil },
+			defaultBaseURL: defaultOllamaBaseURL,
+			keyless:        alwaysKeyless,
 		},
-		"huggingface": func(apiKey, baseURL string) (LLM, error) {
-			if baseURL == "" {
-				baseURL = "https://router.huggingface.co/v1"
-			}
-			return NewOpenAIClient(apiKey, baseURL), nil
+		"huggingface": {
+			new:            func(apiKey, baseURL string) (LLM, error) { return NewOpenAIClient(apiKey, baseURL), nil },
+			defaultBaseURL: defaultHuggingFaceBaseURL,
 		},
-		"deepseek": func(apiKey, baseURL string) (LLM, error) {
-			return NewDeepSeekClient(apiKey, baseURL), nil
+		"deepseek": {
+			new:            func(apiKey, baseURL string) (LLM, error) { return NewDeepSeekClient(apiKey, baseURL), nil },
+			defaultBaseURL: defaultDeepSeekBaseURL,
 		},
-		"openrouter": func(apiKey, baseURL string) (LLM, error) {
-			if baseURL == "" {
-				baseURL = "https://openrouter.ai/api/v1"
-			}
-			return newOpenRouterClient(apiKey, baseURL), nil
+		"openrouter": {
+			new:            func(apiKey, baseURL string) (LLM, error) { return newOpenRouterClient(apiKey, baseURL), nil },
+			defaultBaseURL: defaultOpenRouterBaseURL,
 		},
 	}
 }
@@ -119,14 +164,6 @@ func copyAPIKeys(apiKeys map[string]string) map[string]string {
 	out := make(map[string]string, len(apiKeys))
 	for provider, key := range apiKeys {
 		out[provider] = key
-	}
-	return out
-}
-
-func copyProviderFactories(factories map[string]providerFactory) map[string]providerFactory {
-	out := make(map[string]providerFactory, len(factories))
-	for provider, factory := range factories {
-		out[provider] = factory
 	}
 	return out
 }
@@ -150,11 +187,12 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	// Update the request with the actual model name (without prefix)
 	req.Model = actualModel
 
-	// Populate or validate API key (ollama can be keyless, openai with custom endpoint can be keyless)
+	// Populate or validate the API key; the provider table says which
+	// requests may go without one.
 	if req.APIKey == "" {
 		if key := m.apiKey(provider); key != "" {
 			req.APIKey = key
-		} else if provider != "ollama" && !(provider == "openai" && req.BaseURL != "") {
+		} else if spec, ok := m.providers[provider]; ok && spec.requiresKey(req.BaseURL) {
 			envVar := getEnvVarNameForProvider(provider)
 			err := fmt.Errorf("missing API key for provider '%s'. Set the %s environment variable.", provider, envVar)
 			return processor.ProcessMessagesToEvents(singleErrorMessage(err))
@@ -178,16 +216,14 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 
 // clientFor creates a provider client for the current request.
 func (m *MultiPass) clientFor(provider, apiKey, baseURL string) (LLM, error) {
-	factory, ok := m.factories[provider]
+	spec, ok := m.providers[provider]
 	if !ok {
-		return nil, fmt.Errorf("unknown provider '%s'. Valid providers: openai, anthropic, gemini, ollama, huggingface, deepseek, openrouter", provider)
+		return nil, fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(slices.Sorted(maps.Keys(m.providers)), ", "))
 	}
-
-	if provider == "ollama" && baseURL == "" {
-		baseURL = "http://localhost:11434"
+	if baseURL == "" {
+		baseURL = spec.defaultBaseURL
 	}
-
-	return factory(apiKey, baseURL)
+	return spec.new(apiKey, baseURL)
 }
 
 func singleErrorMessage(err error) <-chan messages.ChatMessage {

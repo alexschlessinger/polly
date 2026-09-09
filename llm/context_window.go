@@ -32,27 +32,33 @@ func DiscoverModelContextWindow(ctx context.Context, model, apiKey string) (int,
 	if !ok {
 		return 0, fmt.Errorf("model %q lacks a provider prefix", model)
 	}
-	switch strings.ToLower(provider) {
-	case "anthropic":
-		info, err := anthropic.NewClient(apiKey).GetModel(ctx, name)
-		if err != nil {
-			return 0, err
-		}
-		if info.MaxInputTokens <= 0 {
-			return 0, ErrContextWindowUnknown
-		}
-		return info.MaxInputTokens, nil
-	case "gemini":
-		info, err := gemini.NewClient(apiKey).GetModel(ctx, name)
-		if err != nil {
-			return 0, err
-		}
-		if info.InputTokenLimit <= 0 {
-			return 0, ErrContextWindowUnknown
-		}
-		return info.InputTokenLimit, nil
+	spec, ok := defaultProviders()[strings.ToLower(provider)]
+	if !ok || spec.contextWindow == nil {
+		return 0, ErrContextWindowUnknown
 	}
-	return 0, ErrContextWindowUnknown
+	return spec.contextWindow(ctx, apiKey, name)
+}
+
+func anthropicContextWindow(ctx context.Context, apiKey, model string) (int, error) {
+	info, err := anthropic.NewClient(apiKey).GetModel(ctx, model)
+	if err != nil {
+		return 0, err
+	}
+	if info.MaxInputTokens <= 0 {
+		return 0, ErrContextWindowUnknown
+	}
+	return info.MaxInputTokens, nil
+}
+
+func geminiContextWindow(ctx context.Context, apiKey, model string) (int, error) {
+	info, err := gemini.NewClient(apiKey).GetModel(ctx, model)
+	if err != nil {
+		return 0, err
+	}
+	if info.InputTokenLimit <= 0 {
+		return 0, ErrContextWindowUnknown
+	}
+	return info.InputTokenLimit, nil
 }
 
 // ClampContextBudget bounds a positive context budget by a discovered model
