@@ -468,7 +468,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			meta.SpawnCallID = req.CallID
 			meta.SwarmID = r.ID
 			meta.ExecutionContext = c.ID
-			err = session.SetMetadata(ctx, meta)
+			// Acquire may have seeded the store's launch-time system prompt.
+			// New members compose their own prompt from the current parent
+			// instructions when their first request is ready to be sent.
+			meta.SystemPrompt = ""
+			err = session.Reset(ctx, meta)
 		}
 		if err != nil {
 			session.Close()
@@ -752,6 +756,16 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 			}
 			if defaults.instructions != nil {
 				system += "\n\n" + defaults.instructions(registry)
+			} else {
+				// Library hosts without an instruction factory still inherit
+				// the parent's deliberate prompt, never stale store defaults.
+				metadata, err := r.config.Parent.GetMetadata(ctx)
+				if err != nil {
+					return AgentResult{}, err
+				}
+				if metadata.SystemPrompt != "" {
+					system += "\n\n" + metadata.SystemPrompt
+				}
 			}
 			history = append(history, messages.ChatMessage{Role: messages.MessageRoleSystem, Content: system})
 		}
