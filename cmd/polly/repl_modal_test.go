@@ -628,6 +628,52 @@ func TestSessionsPickerRefreshesWhileOpen(t *testing.T) {
 	}
 }
 
+// The status row says what the visible workspace's agents are doing, in a
+// field that opens the sessions picker on them; approvals outrank running.
+func TestStatusRowShowsTheWorkspaceAgents(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "root")
+	root := r.tabs[0]
+	r.model.status.modelName = "gpt-mini"
+	if text, color := r.agentsStatus(); text != "" || color != "" {
+		t.Fatalf("idle workspace reports %q", text)
+	}
+	one := &replTab{name: "one", parent: root, parentName: root.name, model: newReplModel()}
+	two := &replTab{name: "two", parent: root, parentName: root.name, model: newReplModel()}
+	r.tabs = append(r.tabs, one, two)
+	one.model.busy, one.model.state = true, turnStateStreaming
+	if text, color := r.agentsStatus(); text != "1 agent running" || color != "run" {
+		t.Fatalf("one running agent = %q %q", text, color)
+	}
+	two.model.busy, two.model.state = true, turnStateTool
+	if text, _ := r.agentsStatus(); text != "2 agents running" {
+		t.Fatalf("two running agents = %q", text)
+	}
+	two.model.approval = &approvalState{reply: make(chan []bool, 1)}
+	text, color := r.agentsStatus()
+	if text != "1 needs approval" || color != "active" {
+		t.Fatalf("waiting agent = %q %q", text, color)
+	}
+	m := r.model
+	m.status.agents, m.status.agentsColor = text, color
+	row := m.statusRow(120)
+	plain := plainStyledText(row)
+	if !strings.HasSuffix(plain, "gpt-mini · root · 1 needs approval") || !strings.Contains(row, styled(text, "active", "")) {
+		t.Fatalf("status row = %q", plain)
+	}
+	f := m.status.agentsField
+	if cells := []rune(plain); f.Cols != len(text) || string(cells[f.X:f.X+f.Cols]) != text || !f.hit(f.X, 23, 24) || f.hit(f.X-1, 23, 24) {
+		t.Fatalf("agents field %+v does not cover %q in %q", f, text, plain)
+	}
+	// The field gives way before the session name does.
+	if narrow := plainStyledText(m.statusRow(30)); strings.Contains(narrow, "approval") || !strings.Contains(narrow, "root") {
+		t.Fatalf("narrow status row = %q", narrow)
+	}
+	if m.status.agentsField.Cols != 0 {
+		t.Fatal("dropped field kept a hitbox")
+	}
+}
+
 func TestCtrlGPreselectsAgentNeedingApproval(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	if err := testAcquireSession(t, store, "root").Close(); err != nil {

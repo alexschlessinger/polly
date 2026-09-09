@@ -81,8 +81,10 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 	if p.In(m.parentLink) {
 		return hoverTarget{rect: m.parentLink}
 	}
-	if f := m.status.sessionField; f.hit(p.X, p.Y, height) {
-		return hoverTarget{rect: image.Rect(f.X, height-1, f.X+f.Cols, height)}
+	for _, f := range []statusSessionPlacement{m.status.sessionField, m.status.agentsField} {
+		if f.hit(p.X, p.Y, height) {
+			return hoverTarget{rect: image.Rect(f.X, height-1, f.X+f.Cols, height)}
+		}
 	}
 	right := r.chrome.main.Max.X
 	if right <= 0 {

@@ -302,12 +302,14 @@ func (r *managedREPL) render() {
 	r.relayTabSignals()
 	r.refreshAgentActivities()
 	r.refreshInspector(w)
+	agents, agentsColor := r.agentsStatus()
 	imageCellWidth, imageCellHeight := 0, 0
 	if r.images != nil {
 		imageCellWidth, imageCellHeight = r.images.cellDimensions()
 	}
 
 	r.model.mu.Lock()
+	r.model.status.agents, r.model.status.agentsColor = agents, agentsColor
 	now := time.Now()
 	r.model.expireAffordances(now)
 	r.model.renderPendingMarkdownAt(now)

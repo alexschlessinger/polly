@@ -394,3 +394,19 @@ func (r *managedREPL) agentCountsFor(root *replTab) (running, approvals int) {
 	}
 	return running, approvals
 }
+
+// agentsStatus is the status row's word on the visible workspace's agents
+// here: the approvals they wait on first, else how many run. Empty when
+// none does. Runs on the event loop with no model lock held.
+func (r *managedREPL) agentsStatus() (text, color string) {
+	running, approvals := r.agentCountsFor(r.visibleTab())
+	switch {
+	case approvals > 1:
+		return fmt.Sprintf("%d need approval", approvals), "active"
+	case approvals == 1:
+		return "1 needs approval", "active"
+	case running > 0:
+		return turnAgentLabel(running) + " running", "run"
+	}
+	return "", ""
+}
