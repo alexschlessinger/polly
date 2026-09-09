@@ -1387,7 +1387,7 @@ func (r *Runtime) Settle(ctx context.Context) error {
 		notify := r.notify
 		active := len(r.active) + len(r.workflowCancels)
 		r.mu.Unlock()
-		s, err := r.read(ctx)
+		s, err := r.settlementState(ctx)
 		if err != nil {
 			return err
 		}
@@ -1430,13 +1430,8 @@ func (r *Runtime) Settle(ctx context.Context) error {
 					return ErrBudget
 				}
 			}
-			for _, t := range s.Tasks {
-				if t.Run == current && t.Status != "done" && t.Status != "canceled" {
-					if e := s.Executions[t.Execution]; e != nil && e.Status == "paused" && e.StopReason == messages.StopReasonMaxIterations {
-						return e.iterationLimitError()
-					}
-					return fail("blocked", "swarm has work awaiting parent review, a reply, or explicit resume")
-				}
+			if task := unsettledTask(s, current); task != nil {
+				return taskSettlementError(s, task)
 			}
 			for _, w := range s.Workflows {
 				if w.Run == current && w.Status != "running" && w.Status != "completed" && !w.Acknowledged {
