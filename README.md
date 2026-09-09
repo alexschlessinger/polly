@@ -82,7 +82,11 @@ Limits: 32 concurrent, 256 executions per run (`--swarm-concurrent`,
 `--swarm-executions`). Quitting pauses; `/swarm resume ID [N]` continues with
 N extra model calls; `/swarm grant N` adds execution starts. `/swarm`
 inspects members, tasks, messages, publications, workflows, integrations, and
-previews (plus `raw`).
+previews (plus `raw`). Agent rows, the sessions picker, the status row, and
+`/swarm` share one vocabulary: `idle`, `active`, `waiting`, `paused` plus a
+detail (`idle · awaiting review`, `paused · iteration limit (3/5)`), with the
+parent's own line first; quitting leaves members `paused · interrupted`.
+Diagram: [API.md](API.md#swarm-lifecycle).
 Peer messages stay out of the main conversation view, including after resume;
 inspect them through `/swarm`.
 `/workflow SCRIPT.js INPUT.json` runs a JavaScript workflow. Everything else:
