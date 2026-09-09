@@ -21,6 +21,11 @@ func tabViewTarget(tab *replTab) viewTarget {
 func (r *managedREPL) inspect(target viewTarget) {
 	w := r.workspace()
 	i := &w.inspector
+	if target.session.ID == "" {
+		if resolved, ok := w.resolved[viewTarget{session: target.session}.key()]; ok {
+			target.session = resolved
+		}
+	}
 	// A store-resolved target aliases its name-keyed state under the ID key,
 	// so a second click through the original link is the same selection.
 	same := i.target.key() == target.key() || w.states[target.key()] != nil && w.states[target.key()] == w.states[i.target.key()]
@@ -386,6 +391,12 @@ func (r *managedREPL) refreshInspector(width int) {
 					v.target.session.Name = source.info.Metadata.Name
 					w.states[i.target.key()] = w.viewState(target)
 					i.history[i.position] = i.target
+					if target.session.ID == "" {
+						if w.resolved == nil {
+							w.resolved = make(map[string]sessions.ViewTarget)
+						}
+						w.resolved[viewTarget{session: target.session}.key()] = i.target.session
+					}
 				}
 			}
 			latest := w.viewState(i.target)

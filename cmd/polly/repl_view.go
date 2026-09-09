@@ -231,8 +231,12 @@ func (thoughtView) Project(_ context.Context, source viewSource, state viewState
 // sessionWorkspace owns navigation, not child execution. Drafts stay on the
 // runtime or in agentDrafts; neither they nor navigation metadata are evicted.
 type sessionWorkspace struct {
-	inspector          inspectorState
-	states             map[string]*viewState
+	inspector inspectorState
+	states    map[string]*viewState
+	// resolved maps a name-keyed session target to the identity the store
+	// answered with, so a later open through the same link starts from the
+	// identity and finds its cached view instead of reading cold.
+	resolved           map[string]sessions.ViewTarget
 	agentDrafts        map[string]string
 	agentDraftVersions map[string]uint64
 	agentSubmissions   map[string]string

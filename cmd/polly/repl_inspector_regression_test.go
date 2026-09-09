@@ -334,3 +334,44 @@ func TestInspectorRegressionAgentPickerReadsUnrelatedHistory(t *testing.T) {
 		t.Fatalf("empty workspace agent picker deserialized %d unrelated history messages", count)
 	}
 }
+
+func TestReopeningANameKeyedAgentStartsFromItsResolvedIdentity(t *testing.T) {
+	ctx := context.Background()
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "parent")
+	child, err := store.Acquire(ctx, "child", sessions.AcquireOptions{Parent: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testAddMessages(t, child, []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "task"}, {Role: messages.MessageRoleAssistant, Content: "child output"}})
+	if err := child.Close(); err != nil {
+		t.Fatal(err)
+	}
+	counted := &countedInspectorViews{SessionStore: store, ViewStore: store.(sessions.ViewStore)}
+	r.state.sessionStore = counted
+	link := viewTarget{session: sessions.ViewTarget{Name: "child", Parent: "parent"}}
+	r.inspect(link)
+	v := waitInspector(t, r, 140)
+	w := r.workspace()
+	id := w.inspector.target.session.ID
+	if id == "" || !strings.Contains(inspectorText(v), "child output") {
+		t.Fatalf("first open: id=%q text=%q", id, inspectorText(v))
+	}
+	r.inspect(link)
+	if len(w.inspector.history) != 1 || w.inspector.current != v {
+		t.Fatalf("a repeat click through the link reopened the view: history=%d", len(w.inspector.history))
+	}
+	histories := counted.histories.Load()
+	r.closeInspector()
+	r.inspect(link)
+	if w.inspector.target.session.ID != id {
+		t.Fatalf("reopen target = %+v, want the resolved identity %q", w.inspector.target.session, id)
+	}
+	v = waitInspector(t, r, 140)
+	if counted.histories.Load() != histories {
+		t.Fatal("reopening through the link read the session history again")
+	}
+	if !strings.Contains(inspectorText(v), "child output") {
+		t.Fatalf("reopened view = %q", inspectorText(v))
+	}
+}
