@@ -1,15 +1,15 @@
 package gemini
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"iter"
 	"net/http"
 	"strings"
+
+	"github.com/alexschlessinger/pollytool/llm/internal/httpx"
 )
 
 const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
@@ -19,16 +19,20 @@ type Client struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
+	maxRetries int
 }
 
 // NewClient returns a client for the public Gemini API endpoint. Request
 // lifetimes are governed by the caller's context; the client itself sets no
-// timeout so streams can run long.
+// timeout so streams can run long. Like the official SDK, transient failures
+// (408/409/429/5xx and transport errors) are retried twice with backoff,
+// honoring Retry-After.
 func NewClient(apiKey string) *Client {
 	return &Client{
 		apiKey:     apiKey,
 		baseURL:    defaultBaseURL,
 		httpClient: &http.Client{},
+		maxRetries: httpx.DefaultMaxRetries,
 	}
 }
 
@@ -71,20 +75,12 @@ func (c *Client) GenerateContentStream(ctx context.Context, model string, req *G
 		}
 		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
-		// A chunk carrying inline data or thought signatures can be a very
-		// long single line; allow up to 256MB like the official SDK.
-		scanner.Buffer(make([]byte, 1024), 256<<20)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 || line[0] == ':' { // blank or SSE comment/keep-alive
-				continue
-			}
-			data, ok := bytes.CutPrefix(line, []byte("data:"))
-			if !ok {
-				// The API signals mid-stream failures as a bare JSON error
-				// envelope instead of a data: event.
-				if !yield(nil, streamLineError(line)) {
+		// The API signals mid-stream failures as a bare JSON error envelope
+		// instead of a data: event; the scanner hands such lines to
+		// streamLineError.
+		for data, err := range httpx.ScanSSE(resp.Body, streamLineError) {
+			if err != nil {
+				if !yield(nil, fmt.Errorf("gemini: %w", err)) {
 					return
 				}
 				continue
@@ -99,9 +95,6 @@ func (c *Client) GenerateContentStream(ctx context.Context, model string, req *G
 			if !yield(chunk, nil) {
 				return
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			yield(nil, fmt.Errorf("gemini: reading stream: %w", err))
 		}
 	}
 }
@@ -129,8 +122,9 @@ func (c *Client) BatchEmbedContents(ctx context.Context, model string, requests 
 	return out, nil
 }
 
-// post sends a JSON body and returns the response with its body still open.
-// Non-2xx statuses are drained and returned as *APIError.
+// post sends a JSON body with retries and returns the response with its body
+// still open. Non-2xx statuses that survive the retry budget are drained and
+// returned as *APIError.
 func (c *Client) post(ctx context.Context, path string, body any) (*http.Response, error) {
 	var payload []byte
 	var err error
@@ -142,24 +136,18 @@ func (c *Client) post(ctx context.Context, path string, body any) (*http.Respons
 	if err != nil {
 		return nil, fmt.Errorf("gemini: encoding request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+path, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("gemini: building request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("x-goog-api-key", c.apiKey)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("gemini: request failed: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		defer resp.Body.Close()
-		return nil, errorFromResponse(resp)
-	}
-	return resp, nil
+	retrier := httpx.Retrier{Client: c.httpClient, MaxRetries: c.maxRetries, Prefix: "gemini", ErrorFromResponse: errorFromResponse}
+	return retrier.Do(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+path, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if c.apiKey != "" {
+			req.Header.Set("x-goog-api-key", c.apiKey)
+		}
+		return req, nil
+	})
 }
 
 // ModelInfo is the slice of GET /v1beta/models/{model} polly uses: the
@@ -203,30 +191,21 @@ func modelPath(model string) string {
 	return "models/" + model
 }
 
-type errorEnvelope struct {
-	Error *APIError `json:"error"`
-}
-
 // errorFromResponse converts a non-2xx response into an *APIError, falling
 // back to the raw body when it isn't the standard envelope.
 func errorFromResponse(resp *http.Response) error {
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return &APIError{Code: resp.StatusCode, Status: resp.Status}
+	apiErr, body, ok := httpx.ReadError[APIError](resp)
+	if !ok {
+		return &APIError{Code: resp.StatusCode, Status: resp.Status, Message: body}
 	}
-	var envelope errorEnvelope
-	if json.Unmarshal(body, &envelope) == nil && envelope.Error != nil {
-		return envelope.Error
-	}
-	return &APIError{Code: resp.StatusCode, Status: resp.Status, Message: string(body)}
+	return apiErr
 }
 
 // streamLineError interprets a non-data stream line: either the API's error
 // envelope or garbage worth surfacing verbatim.
 func streamLineError(line []byte) error {
-	var envelope errorEnvelope
-	if json.Unmarshal(line, &envelope) == nil && envelope.Error != nil {
-		return envelope.Error
+	if apiErr, ok := httpx.ParseEnvelope[APIError](line); ok {
+		return apiErr
 	}
 	const maxQuoted = 512
 	if len(line) > maxQuoted {

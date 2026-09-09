@@ -1,25 +1,19 @@
 package openai
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"iter"
-	"math"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
-	"time"
+
+	"github.com/alexschlessinger/pollytool/llm/internal/httpx"
 )
 
-const (
-	defaultBaseURL    = "https://api.openai.com/v1/"
-	defaultMaxRetries = 2
-)
+const defaultBaseURL = "https://api.openai.com/v1/"
 
 // Client talks to the OpenAI API or any OpenAI-compatible server.
 type Client struct {
@@ -40,7 +34,7 @@ func NewClient(apiKey, baseURL string) *Client {
 		apiKey:     apiKey,
 		baseURL:    normalizeBaseURL(baseURL),
 		httpClient: &http.Client{},
-		maxRetries: defaultMaxRetries,
+		maxRetries: httpx.DefaultMaxRetries,
 	}
 }
 
@@ -199,10 +193,9 @@ func (c *Client) CreateEmbeddings(ctx context.Context, req *EmbeddingRequest) (*
 }
 
 // streamData POSTs the body and yields each SSE data payload until the
-// stream ends or a "[DONE]" sentinel arrives. event:/id: lines are ignored
-// (payload type fields are authoritative), comment lines — OpenRouter's
-// ": OPENROUTER PROCESSING" keep-alives among them — are skipped, and data
-// segments accumulate across lines per the SSE spec.
+// stream ends or a "[DONE]" sentinel arrives. Comment lines — OpenRouter's
+// ": OPENROUTER PROCESSING" keep-alives among them — are skipped by the
+// scanner, and payload type fields are authoritative over event: lines.
 func (c *Client) streamData(ctx context.Context, path string, body any) iter.Seq2[[]byte, error] {
 	return func(yield func([]byte, error) bool) {
 		resp, err := c.post(ctx, path, body)
@@ -212,45 +205,18 @@ func (c *Client) streamData(ctx context.Context, path string, body any) iter.Seq
 		}
 		defer resp.Body.Close()
 
-		var data []byte
-		flush := func() (keepGoing, done bool) {
-			if len(data) == 0 {
-				return true, false
+		for data, err := range httpx.ScanSSE(resp.Body, nil) {
+			if err != nil {
+				yield(nil, fmt.Errorf("openai: %w", err))
+				return
 			}
-			payload := data
-			data = nil
-			if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
-				return false, true
+			if bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+				return
 			}
-			return yield(payload, nil), false
-		}
-
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 1024), 256<<20)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			switch {
-			case len(line) == 0:
-				keepGoing, done := flush()
-				if !keepGoing || done {
-					return
-				}
-			case line[0] == ':': // SSE comment/keep-alive
-			default:
-				if rest, ok := bytes.CutPrefix(line, []byte("data:")); ok {
-					rest = bytes.TrimPrefix(rest, []byte(" "))
-					if len(data) > 0 {
-						data = append(data, '\n')
-					}
-					data = append(data, rest...)
-				}
+			if !yield(data, nil) {
+				return
 			}
 		}
-		if err := scanner.Err(); err != nil {
-			yield(nil, fmt.Errorf("openai: reading stream: %w", err))
-			return
-		}
-		flush()
 	}
 }
 
@@ -262,100 +228,31 @@ func (c *Client) post(ctx context.Context, path string, body any) (*http.Respons
 	if err != nil {
 		return nil, fmt.Errorf("openai: encoding request: %w", err)
 	}
-
-	var lastErr error
-	for attempt := 0; ; attempt++ {
+	retrier := httpx.Retrier{
+		Client: c.httpClient, MaxRetries: c.maxRetries, Prefix: "openai",
+		ErrorFromResponse: func(resp *http.Response) error { return errorFromResponse(resp) },
+	}
+	return retrier.Do(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
 		if err != nil {
-			return nil, fmt.Errorf("openai: building request: %w", err)
+			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		if c.apiKey != "" {
 			req.Header.Set("Authorization", "Bearer "+c.apiKey)
 		}
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, fmt.Errorf("openai: request failed: %w", err)
-			}
-			lastErr = fmt.Errorf("openai: request failed: %w", err)
-			if attempt >= c.maxRetries {
-				return nil, lastErr
-			}
-			if err := sleepBeforeRetry(ctx, nil, attempt); err != nil {
-				return nil, lastErr
-			}
-			continue
-		}
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return resp, nil
-		}
-
-		apiErr := errorFromResponse(resp)
-		resp.Body.Close()
-		if !retryableStatus(resp.StatusCode) || attempt >= c.maxRetries {
-			return nil, apiErr
-		}
-		lastErr = apiErr
-		if err := sleepBeforeRetry(ctx, resp, attempt); err != nil {
-			return nil, lastErr
-		}
-	}
-}
-
-func retryableStatus(code int) bool {
-	return code == http.StatusRequestTimeout ||
-		code == http.StatusConflict ||
-		code == http.StatusTooManyRequests ||
-		code >= 500
-}
-
-// sleepBeforeRetry waits out the server's Retry-After(-Ms) hint when present,
-// otherwise an exponential backoff (0.5s doubling, 8s cap). Returns early
-// with the context's error if it is cancelled while waiting.
-func sleepBeforeRetry(ctx context.Context, resp *http.Response, attempt int) error {
-	delay := time.Duration(math.Min(8, 0.5*math.Pow(2, float64(attempt))) * float64(time.Second))
-	if resp != nil {
-		if ms := resp.Header.Get("Retry-After-Ms"); ms != "" {
-			if v, err := strconv.Atoi(ms); err == nil && v >= 0 {
-				delay = time.Duration(v) * time.Millisecond
-			}
-		} else if ra := resp.Header.Get("Retry-After"); ra != "" {
-			if v, err := strconv.Atoi(ra); err == nil && v >= 0 {
-				delay = time.Duration(v) * time.Second
-			} else if at, err := http.ParseTime(ra); err == nil {
-				delay = max(time.Until(at), 0)
-			}
-		}
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-type errorEnvelope struct {
-	Error *APIError `json:"error"`
+		return req, nil
+	})
 }
 
 // errorFromResponse converts a non-2xx response into an *APIError, falling
 // back to the raw body when it isn't the standard envelope — compatible
 // servers return all sorts of shapes.
 func errorFromResponse(resp *http.Response) *APIError {
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return &APIError{StatusCode: resp.StatusCode, Type: resp.Status}
+	apiErr, body, ok := httpx.ReadError[APIError](resp)
+	if !ok {
+		return &APIError{StatusCode: resp.StatusCode, Type: resp.Status, Message: body}
 	}
-	var envelope errorEnvelope
-	if json.Unmarshal(body, &envelope) == nil && envelope.Error != nil {
-		envelope.Error.StatusCode = resp.StatusCode
-		return envelope.Error
-	}
-	return &APIError{StatusCode: resp.StatusCode, Type: resp.Status, Message: string(body)}
+	apiErr.StatusCode = resp.StatusCode
+	return apiErr
 }

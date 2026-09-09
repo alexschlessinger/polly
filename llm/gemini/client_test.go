@@ -219,6 +219,7 @@ func TestErrorEnvelope(t *testing.T) {
 	}
 
 	plain := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After-Ms", "1")
 		w.WriteHeader(http.StatusBadGateway)
 		w.Write([]byte("upstream fell over"))
 	})
