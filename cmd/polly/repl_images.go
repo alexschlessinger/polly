@@ -7,6 +7,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/images"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -48,17 +49,6 @@ type transcriptImageSpan struct {
 	cols       int
 	rows       int
 	fitByRows  bool
-}
-
-type terminalImagePlacement struct {
-	Key  string
-	Path string
-	// Embedded names a compile-time asset in embeddedTerminalImages instead
-	// of a file on disk. A string key keeps the struct comparable.
-	Embedded   string
-	X, Y       int
-	Cols, Rows int
-	FitByRows  bool
 }
 
 // refreshTranscriptImageSources updates dimensions when a referenced file is
@@ -170,7 +160,7 @@ func locateTranscriptImages(rows [][]ui.Cell, images []style.Image, native bool,
 			if !ok {
 				imageMaxCols, imageMaxRows := style.ImageBounds(images[markerIndex])
 				maxCols := min(imageMaxCols, width-markerX)
-				cols, slotRows, fitByRows := imageCellGeometry(images[markerIndex], maxCols, imageMaxRows, cellWidth, cellHeight)
+				cols, slotRows, fitByRows := termimg.CellGeometry(images[markerIndex], maxCols, imageMaxRows, cellWidth, cellHeight)
 				geometry = slotGeometry{cols: cols, rows: slotRows, fitByRows: fitByRows}
 				geometries[markerIndex] = geometry
 			}
@@ -209,44 +199,14 @@ func locateTranscriptImages(rows [][]ui.Cell, images []style.Image, native bool,
 	return out, spans
 }
 
-// imageCellGeometry fits an image inside a maximum cell rectangle while
-// accounting for the fact that terminal cells are usually taller than they
-// are wide. The returned axis tells Kitty which single dimension to constrain;
-// Kitty derives the other from the source aspect ratio without distortion.
-func imageCellGeometry(img style.Image, maxCols, maxRows, cellWidth, cellHeight int) (cols, rows int, fitByRows bool) {
-	if maxCols < style.MinimumThumbnailCols || maxRows <= 0 {
-		return 0, 0, false
-	}
-	if cellWidth <= 0 {
-		cellWidth = 10
-	}
-	if cellHeight <= 0 {
-		cellHeight = 20
-	}
-	if img.Width <= 0 || img.Height <= 0 {
-		return maxCols, maxRows, false
-	}
-
-	maxPixelWidth := maxCols * cellWidth
-	maxPixelHeight := maxRows * cellHeight
-	pixelWidth, pixelHeight := images.FitDimensions(img.Width, img.Height, maxPixelWidth, maxPixelHeight)
-	if pixelWidth <= 0 || pixelHeight <= 0 {
-		return 0, 0, false
-	}
-	cols = min(maxCols, max(1, (pixelWidth+cellWidth-1)/cellWidth))
-	rows = min(maxRows, max(1, (pixelHeight+cellHeight-1)/cellHeight))
-	fitByRows = imageFitsByRows(img.Width, img.Height, maxPixelWidth, maxPixelHeight)
-	return cols, rows, fitByRows
-}
-
 // visibleImagePlacements projects transcript-relative slots into screen cells.
 // Partially clipped thumbnails are omitted; their caption remains visible and
 // scrolling the complete slot into view draws the native image.
-func (m *replModel) visibleImagePlacements(v transcriptViewport) []terminalImagePlacement {
+func (m *replModel) visibleImagePlacements(v transcriptViewport) []termimg.Placement {
 	if !m.nativeImages || v.width < style.MinimumThumbnailCols {
 		return nil
 	}
-	var placements []terminalImagePlacement
+	var placements []termimg.Placement
 	rowOffset := 0
 	for _, block := range m.visual.blocks {
 		for _, span := range block.imageSpans {
@@ -261,7 +221,7 @@ func (m *replModel) visibleImagePlacements(v transcriptViewport) []terminalImage
 				continue
 			}
 			img := block.images[span.imageIndex]
-			placements = append(placements, terminalImagePlacement{
+			placements = append(placements, termimg.Placement{
 				Key:       fmt.Sprintf("%s:image:%d", block.key, span.imageIndex),
 				Path:      img.Path,
 				X:         span.x,

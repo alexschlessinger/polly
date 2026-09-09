@@ -12,6 +12,7 @@ import (
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -88,7 +89,7 @@ type replModel struct {
 	artifactStore   artifacts.Store
 	// imagePlacements is the last rendered frame's native thumbnail geometry,
 	// in absolute screen cells, kept for mouse-click hit-testing.
-	imagePlacements []terminalImagePlacement
+	imagePlacements []termimg.Placement
 
 	// attachments maps "[image #N]" composer tokens to validated local images
 	// or durable image artifacts for this session. Tokens resolve once when the
@@ -431,7 +432,7 @@ type managedREPL struct {
 	fx          *terminalFX
 	affordanceW *affordanceLayer
 	// images owns native Kitty/Sixel placements. Nil means captions/paths only.
-	images *terminalImageManager
+	images *termimg.Manager
 
 	// startupLogoVisible reserves a small header above the transcript until the
 	// first real turn starts. The composer and status remain live from frame one.
@@ -586,7 +587,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	ui.DefaultBackend.Screen.EnableFocus()
 	r.fx = newTerminalFX(ui.DefaultBackend.Screen)
 	r.affordanceW = &affordanceLayer{}
-	r.images = newTerminalImageManager(ui.DefaultBackend.Screen)
+	r.images = termimg.NewManager(ui.DefaultBackend.Screen)
 	r.model.mu.Lock()
 	r.model.affordances.enabled = ui.DefaultBackend.Screen.Colors() > 0
 	r.model.affordances.inputAt = time.Now()
@@ -600,7 +601,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	closeUI := func() {
 		closeOnce.Do(func() {
 			if r.images != nil {
-				r.images.shutdown()
+				r.images.Shutdown()
 				r.images = nil
 			}
 			r.fx.shutdown()
@@ -694,7 +695,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			if appended {
 				r.render()
 			}
-		case <-r.images.readyEvents():
+		case <-r.images.ReadyEvents():
 			// CPU-heavy image preparation finishes off-thread. The event loop
 			// remains the sole owner of terminal writes and cell locks.
 			r.render()

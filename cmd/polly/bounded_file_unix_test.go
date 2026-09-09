@@ -7,6 +7,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 )
 
 func TestPrepareImageForUploadRejectsFIFOWithoutBlocking(t *testing.T) {
@@ -27,7 +29,7 @@ func TestPrepareImageForUploadRejectsFIFOWithoutBlocking(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("FIFO attachment blocked instead of being rejected")
 	}
-	if _, err := loadLocalImage(path); err == nil {
+	if _, err := termimg.LoadLocalImage(path); err == nil {
 		t.Fatal("FIFO display image was accepted")
 	}
 }

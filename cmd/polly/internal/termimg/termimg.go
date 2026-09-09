@@ -1,4 +1,8 @@
-package main
+// Package termimg draws transcript thumbnails with the terminal's native
+// graphics protocol, Kitty or Sixel: it detects which one the terminal
+// speaks, prepares scaled pixels off the event loop, and places or deletes
+// them by screen cell without disturbing the text layer.
+package termimg
 
 import (
 	"bytes"
@@ -21,52 +25,52 @@ import (
 	"github.com/alexschlessinger/pollytool/images"
 )
 
-type terminalImageProtocol uint8
+type Protocol uint8
 
 const (
-	terminalImageNone terminalImageProtocol = iota
-	terminalImageKitty
-	terminalImageSixel
+	ProtocolNone Protocol = iota
+	ProtocolKitty
+	ProtocolSixel
 )
 
-func (p terminalImageProtocol) String() string {
+func (p Protocol) String() string {
 	switch p {
-	case terminalImageKitty:
+	case ProtocolKitty:
 		return "kitty"
-	case terminalImageSixel:
+	case ProtocolSixel:
 		return "sixel"
 	default:
 		return "none"
 	}
 }
 
-// detectTerminalImageProtocol is conservative: emitting an unsupported image
+// DetectProtocol is conservative: emitting an unsupported image
 // protocol can put escape payloads into the terminal. POLLYTOOL_IMAGE_PROTOCOL
 // is an escape hatch for compatible terminals that do not identify themselves.
-func detectTerminalImageProtocol(getenv func(string) string) terminalImageProtocol {
+func DetectProtocol(getenv func(string) string) Protocol {
 	override := strings.ToLower(strings.TrimSpace(getenv("POLLYTOOL_IMAGE_PROTOCOL")))
 	switch override {
 	case "none", "off", "0":
-		return terminalImageNone
+		return ProtocolNone
 	}
 	// Multiplexer passthrough and placement ownership need a separate design.
 	// Keep the first slice honest and fall back to captions inside them even
 	// when a native protocol was explicitly requested.
 	if getenv("TMUX") != "" || getenv("ZELLIJ") != "" || getenv("ZELLIJ_SESSION_NAME") != "" {
-		return terminalImageNone
+		return ProtocolNone
 	}
 	switch override {
 	case "kitty":
-		return terminalImageKitty
+		return ProtocolKitty
 	case "sixel":
-		return terminalImageSixel
+		return ProtocolSixel
 	}
 
 	if getenv("WT_SESSION") != "" {
-		return terminalImageSixel
+		return ProtocolSixel
 	}
 	if getenv("KITTY_WINDOW_ID") != "" || getenv("WEZTERM_PANE") != "" || getenv("GHOSTTY_RESOURCES_DIR") != "" {
-		return terminalImageKitty
+		return ProtocolKitty
 	}
 	identity := strings.ToLower(strings.Join([]string{
 		getenv("TERM"),
@@ -74,21 +78,21 @@ func detectTerminalImageProtocol(getenv func(string) string) terminalImageProtoc
 		getenv("LC_TERMINAL"),
 	}, " "))
 	if strings.Contains(identity, "kitty") || strings.Contains(identity, "ghostty") || strings.Contains(identity, "wezterm") {
-		return terminalImageKitty
+		return ProtocolKitty
 	}
 	if strings.Contains(identity, "foot") || strings.Contains(identity, "sixel") || strings.Contains(identity, "windows terminal") {
-		return terminalImageSixel
+		return ProtocolSixel
 	}
-	return terminalImageNone
+	return ProtocolNone
 }
 
-type desiredTerminalImage struct {
-	terminalImagePlacement
+type Desired struct {
+	Placement
 	version string
 }
 
 type activeTerminalImage struct {
-	desiredTerminalImage
+	Desired
 	imageID     uint32
 	placementID uint32
 }
@@ -100,15 +104,15 @@ type kittyUpload struct {
 
 const maxSixelCacheEntries = 32
 
-type preparedTerminalImage struct {
-	data      []byte
-	fitByRows bool
-	err       error
+type Prepared struct {
+	Data      []byte
+	FitByRows bool
+	Err       error
 }
 
 type terminalImageCacheEntry struct {
 	key   string
-	image preparedTerminalImage
+	image Prepared
 }
 
 // terminalImageLRU bounds encoded sixel payloads without throwing away every
@@ -118,19 +122,19 @@ type terminalImageLRU struct {
 	order   list.List
 }
 
-func (c *terminalImageLRU) get(key string) (preparedTerminalImage, bool) {
+func (c *terminalImageLRU) get(key string) (Prepared, bool) {
 	if c.entries == nil {
-		return preparedTerminalImage{}, false
+		return Prepared{}, false
 	}
 	element, ok := c.entries[key]
 	if !ok {
-		return preparedTerminalImage{}, false
+		return Prepared{}, false
 	}
 	c.order.MoveToFront(element)
 	return element.Value.(terminalImageCacheEntry).image, true
 }
 
-func (c *terminalImageLRU) put(key string, image preparedTerminalImage) {
+func (c *terminalImageLRU) put(key string, image Prepared) {
 	if c.entries == nil {
 		c.entries = make(map[string]*list.Element)
 	}
@@ -154,15 +158,15 @@ func (c *terminalImageLRU) clear() {
 	c.order.Init()
 }
 
-// terminalImageManager is the only component allowed to write graphics
+// Manager is the only component allowed to write graphics
 // escapes. Terminal writes and cell locks stay on the gotui render goroutine;
 // background workers only prepare immutable encoded pixel payloads.
-type terminalImageManager struct {
+type Manager struct {
 	screen   tcell.Screen
 	tty      tcell.Tty
-	protocol terminalImageProtocol
+	protocol Protocol
 
-	desired      []desiredTerminalImage
+	desired      []Desired
 	active       []activeTerminalImage
 	kittyUploads map[string]kittyUpload
 
@@ -172,22 +176,22 @@ type terminalImageManager struct {
 	preparationWanted     map[string]struct{}
 	preparationDirty      bool
 	preparationClosed     bool
-	kittyPrepared         map[string]preparedTerminalImage
+	kittyPrepared         map[string]Prepared
 	sixelCache            terminalImageLRU
 	runAsync              func(func())
 	ready                 chan struct{}
 }
 
-func newTerminalImageManager(screen tcell.Screen) *terminalImageManager {
-	protocol := detectTerminalImageProtocol(os.Getenv)
-	if protocol == terminalImageNone || screen == nil {
+func NewManager(screen tcell.Screen) *Manager {
+	protocol := DetectProtocol(os.Getenv)
+	if protocol == ProtocolNone || screen == nil {
 		return nil
 	}
 	tty, ok := screen.Tty()
 	if !ok {
 		return nil
 	}
-	return &terminalImageManager{
+	return &Manager{
 		screen:   screen,
 		tty:      tty,
 		protocol: protocol,
@@ -196,18 +200,33 @@ func newTerminalImageManager(screen tcell.Screen) *terminalImageManager {
 	}
 }
 
-// prepare releases old locks before gotui paints the next ordinary text frame.
+// NewManagerFor builds a manager for a known protocol and tty, preparing
+// pixels synchronously. It is for surfaces that already know what the
+// terminal speaks; NewManager detects it from the environment.
+func NewManagerFor(screen tcell.Screen, tty tcell.Tty, protocol Protocol) *Manager {
+	return &Manager{screen: screen, tty: tty, protocol: protocol, ready: make(chan struct{}, 1)}
+}
+
+// ActiveCount reports how many thumbnails are currently placed on screen.
+func (m *Manager) ActiveCount() int {
+	if m == nil {
+		return 0
+	}
+	return len(m.active)
+}
+
+// Prepare releases old locks before gotui paints the next ordinary text frame.
 // commit then draws and locks the new placements after that frame is flushed.
-func (m *terminalImageManager) prepare(placements []terminalImagePlacement) bool {
-	desired := make([]desiredTerminalImage, 0, len(placements))
+func (m *Manager) Prepare(placements []Placement) bool {
+	desired := make([]Desired, 0, len(placements))
 	geometry := m.geometryVersion()
 	for _, placement := range placements {
 		if (placement.Path == "" && placement.Embedded == "") ||
 			placement.Cols <= 0 || placement.Rows <= 0 || placement.X < 0 || placement.Y < 0 {
 			continue
 		}
-		desired = append(desired, desiredTerminalImage{
-			terminalImagePlacement: placement,
+		desired = append(desired, Desired{
+			Placement: placement,
 			version: fmt.Sprintf("%s%s:thumb:%dx%d:%t",
 				placementImageVersion(placement), geometry,
 				placement.Cols, placement.Rows, placement.FitByRows),
@@ -235,19 +254,19 @@ func (m *terminalImageManager) prepare(placements []terminalImagePlacement) bool
 	return true
 }
 
-func (m *terminalImageManager) commit(changed bool) {
+func (m *Manager) Commit(changed bool) {
 	if m == nil || !changed {
 		return
 	}
 	switch m.protocol {
-	case terminalImageKitty:
+	case ProtocolKitty:
 		m.commitKitty()
-	case terminalImageSixel:
+	case ProtocolSixel:
 		m.commitSixel()
 	}
 }
 
-func (m *terminalImageManager) shutdown() {
+func (m *Manager) Shutdown() {
 	if m == nil {
 		return
 	}
@@ -263,7 +282,7 @@ func (m *terminalImageManager) shutdown() {
 	m.preparationMu.Unlock()
 }
 
-func (m *terminalImageManager) readyEvents() <-chan struct{} {
+func (m *Manager) ReadyEvents() <-chan struct{} {
 	if m == nil {
 		return nil
 	}
@@ -272,7 +291,7 @@ func (m *terminalImageManager) readyEvents() <-chan struct{} {
 
 // placementImageVersion identifies the pixel source of a placement. Embedded
 // assets are fixed at compile time, so their name and length suffice.
-func placementImageVersion(placement terminalImagePlacement) string {
+func placementImageVersion(placement Placement) string {
 	if placement.Embedded != "" {
 		return fmt.Sprintf("embedded:%s:%d", placement.Embedded, len(embeddedTerminalImages[placement.Embedded]))
 	}
@@ -281,7 +300,7 @@ func placementImageVersion(placement terminalImagePlacement) string {
 
 // loadPlacementImage decodes a placement's pixels from its embedded asset or
 // its file on disk.
-func loadPlacementImage(placement terminalImagePlacement) (image.Image, error) {
+func loadPlacementImage(placement Placement) (image.Image, error) {
 	if placement.Embedded != "" {
 		data, ok := embeddedTerminalImages[placement.Embedded]
 		if !ok || len(data) == 0 {
@@ -290,10 +309,10 @@ func loadPlacementImage(placement terminalImagePlacement) (image.Image, error) {
 		img, _, err := image.Decode(bytes.NewReader(data))
 		return img, err
 	}
-	return loadLocalImage(placement.Path)
+	return LoadLocalImage(placement.Path)
 }
 
-func desiredTerminalImagesEqual(a, b []desiredTerminalImage) bool {
+func desiredTerminalImagesEqual(a, b []Desired) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -305,11 +324,11 @@ func desiredTerminalImagesEqual(a, b []desiredTerminalImage) bool {
 	return true
 }
 
-func (m *terminalImageManager) releaseActive(freeImages bool) {
+func (m *Manager) releaseActive(freeImages bool) {
 	if len(m.active) == 0 && (!freeImages || len(m.kittyUploads) == 0) {
 		return
 	}
-	if m.protocol == terminalImageKitty {
+	if m.protocol == ProtocolKitty {
 		for _, active := range m.active {
 			_ = writeFull(m.tty, kittyDeletePlacement(active.imageID, active.placementID))
 		}
@@ -326,8 +345,8 @@ func (m *terminalImageManager) releaseActive(freeImages bool) {
 	m.active = nil
 }
 
-func (m *terminalImageManager) pruneKittyUploads() {
-	if m.protocol != terminalImageKitty || len(m.kittyUploads) == 0 {
+func (m *Manager) pruneKittyUploads() {
+	if m.protocol != ProtocolKitty || len(m.kittyUploads) == 0 {
 		return
 	}
 	keep := make(map[string]struct{}, len(m.desired))
@@ -343,17 +362,17 @@ func (m *terminalImageManager) pruneKittyUploads() {
 	}
 }
 
-func (m *terminalImageManager) advancePreparationGeneration(clearCaches bool) {
+func (m *Manager) advancePreparationGeneration(clearCaches bool) {
 	keepKitty := make(map[string]struct{}, len(m.desired))
 	wanted := make(map[string]struct{}, len(m.desired))
-	cw, ch := m.cellDimensions()
+	cw, ch := m.CellDimensions()
 	for _, desired := range m.desired {
 		keepKitty[desired.version] = struct{}{}
-		if m.protocol == terminalImageKitty {
-			wanted[terminalImageKitty.String()+":"+desired.version] = struct{}{}
-		} else if m.protocol == terminalImageSixel {
+		if m.protocol == ProtocolKitty {
+			wanted[ProtocolKitty.String()+":"+desired.version] = struct{}{}
+		} else if m.protocol == ProtocolSixel {
 			key := sixelImageCacheKey(desired, cw, ch)
-			wanted[terminalImageSixel.String()+":"+key] = struct{}{}
+			wanted[ProtocolSixel.String()+":"+key] = struct{}{}
 		}
 	}
 
@@ -374,7 +393,7 @@ func (m *terminalImageManager) advancePreparationGeneration(clearCaches bool) {
 	m.preparationMu.Unlock()
 }
 
-func (m *terminalImageManager) takePreparationDirty() bool {
+func (m *Manager) takePreparationDirty() bool {
 	m.preparationMu.Lock()
 	dirty := m.preparationDirty
 	m.preparationDirty = false
@@ -382,29 +401,29 @@ func (m *terminalImageManager) takePreparationDirty() bool {
 	return dirty
 }
 
-func (m *terminalImageManager) schedulePreparations(desired []desiredTerminalImage) {
+func (m *Manager) schedulePreparations(desired []Desired) {
 	if len(desired) == 0 {
 		return
 	}
-	cw, ch := m.cellDimensions()
+	cw, ch := m.CellDimensions()
 	for _, item := range desired {
 		switch m.protocol {
-		case terminalImageKitty:
+		case ProtocolKitty:
 			if _, uploaded := m.kittyUploads[item.version]; uploaded {
 				continue
 			}
-			m.schedulePreparation(terminalImageKitty, item.version, item, item.Cols*cw, item.Rows*ch)
-		case terminalImageSixel:
+			m.schedulePreparation(ProtocolKitty, item.version, item, item.Cols*cw, item.Rows*ch)
+		case ProtocolSixel:
 			cacheKey := sixelImageCacheKey(item, cw, ch)
-			m.schedulePreparation(terminalImageSixel, cacheKey, item, item.Cols*cw, item.Rows*ch)
+			m.schedulePreparation(ProtocolSixel, cacheKey, item, item.Cols*cw, item.Rows*ch)
 		}
 	}
 }
 
-func (m *terminalImageManager) schedulePreparation(
-	protocol terminalImageProtocol,
+func (m *Manager) schedulePreparation(
+	protocol Protocol,
 	cacheKey string,
-	desired desiredTerminalImage,
+	desired Desired,
 	maxWidth, maxHeight int,
 ) {
 	pendingKey := protocol.String() + ":" + cacheKey
@@ -414,7 +433,7 @@ func (m *terminalImageManager) schedulePreparation(
 		return
 	}
 	var cached bool
-	if protocol == terminalImageKitty {
+	if protocol == ProtocolKitty {
 		_, cached = m.kittyPrepared[cacheKey]
 	} else {
 		_, cached = m.sixelCache.get(cacheKey)
@@ -435,12 +454,12 @@ func (m *terminalImageManager) schedulePreparation(
 	m.preparationMu.Unlock()
 
 	task := func() {
-		var prepared preparedTerminalImage
+		var prepared Prepared
 		switch protocol {
-		case terminalImageKitty:
-			prepared = prepareKittyImage(desired, maxWidth, maxHeight)
-		case terminalImageSixel:
-			prepared = prepareSixelImage(desired, maxWidth, maxHeight)
+		case ProtocolKitty:
+			prepared = PrepareKitty(desired, maxWidth, maxHeight)
+		case ProtocolSixel:
+			prepared = PrepareSixel(desired, maxWidth, maxHeight)
 		}
 		m.finishPreparation(protocol, cacheKey, pendingKey, generation, prepared)
 	}
@@ -451,11 +470,11 @@ func (m *terminalImageManager) schedulePreparation(
 	}
 }
 
-func (m *terminalImageManager) finishPreparation(
-	protocol terminalImageProtocol,
+func (m *Manager) finishPreparation(
+	protocol Protocol,
 	cacheKey, pendingKey string,
 	generation uint64,
-	prepared preparedTerminalImage,
+	prepared Prepared,
 ) {
 	m.preparationMu.Lock()
 	if m.preparationPending[pendingKey] == generation {
@@ -466,9 +485,9 @@ func (m *terminalImageManager) finishPreparation(
 		m.preparationMu.Unlock()
 		return
 	}
-	if protocol == terminalImageKitty {
+	if protocol == ProtocolKitty {
 		if m.kittyPrepared == nil {
-			m.kittyPrepared = make(map[string]preparedTerminalImage)
+			m.kittyPrepared = make(map[string]Prepared)
 		}
 		m.kittyPrepared[cacheKey] = prepared
 	} else {
@@ -486,49 +505,49 @@ func (m *terminalImageManager) finishPreparation(
 	}
 }
 
-func (m *terminalImageManager) preparedKittyImage(version string) (preparedTerminalImage, bool) {
+func (m *Manager) preparedKittyImage(version string) (Prepared, bool) {
 	m.preparationMu.Lock()
 	prepared, ok := m.kittyPrepared[version]
 	m.preparationMu.Unlock()
 	return prepared, ok
 }
 
-func (m *terminalImageManager) dropPreparedKittyImage(version string) {
+func (m *Manager) dropPreparedKittyImage(version string) {
 	m.preparationMu.Lock()
 	delete(m.kittyPrepared, version)
 	m.preparationMu.Unlock()
 }
 
-func (m *terminalImageManager) preparedSixelImage(key string) (preparedTerminalImage, bool) {
+func (m *Manager) preparedSixelImage(key string) (Prepared, bool) {
 	m.preparationMu.Lock()
 	prepared, ok := m.sixelCache.get(key)
 	m.preparationMu.Unlock()
 	return prepared, ok
 }
 
-func prepareKittyImage(desired desiredTerminalImage, maxWidth, maxHeight int) preparedTerminalImage {
-	img, err := loadPlacementImage(desired.terminalImagePlacement)
+func PrepareKitty(desired Desired, maxWidth, maxHeight int) Prepared {
+	img, err := loadPlacementImage(desired.Placement)
 	if err != nil {
-		return preparedTerminalImage{err: err}
+		return Prepared{Err: err}
 	}
 	bounds := img.Bounds()
-	prepared := preparedTerminalImage{
-		fitByRows: imageFitsByRows(bounds.Dx(), bounds.Dy(), maxWidth, maxHeight),
+	prepared := Prepared{
+		FitByRows: imageFitsByRows(bounds.Dx(), bounds.Dy(), maxWidth, maxHeight),
 	}
 	img = images.Fit(img, maxWidth, maxHeight)
 	var pngData bytes.Buffer
 	if err := png.Encode(&pngData, img); err != nil {
-		prepared.err = err
+		prepared.Err = err
 		return prepared
 	}
-	prepared.data = pngData.Bytes()
+	prepared.Data = pngData.Bytes()
 	return prepared
 }
 
-func prepareSixelImage(desired desiredTerminalImage, maxWidth, maxHeight int) preparedTerminalImage {
-	img, err := loadPlacementImage(desired.terminalImagePlacement)
+func PrepareSixel(desired Desired, maxWidth, maxHeight int) Prepared {
+	img, err := loadPlacementImage(desired.Placement)
 	if err != nil {
-		return preparedTerminalImage{err: err}
+		return Prepared{Err: err}
 	}
 	img = images.Fit(img, maxWidth, maxHeight)
 	var sixelData bytes.Buffer
@@ -536,16 +555,16 @@ func prepareSixelImage(desired desiredTerminalImage, maxWidth, maxHeight int) pr
 	encoder.Colors = 256
 	encoder.Transparent = true
 	if err := encoder.Encode(img); err != nil {
-		return preparedTerminalImage{err: err}
+		return Prepared{Err: err}
 	}
-	return preparedTerminalImage{data: sixelData.Bytes()}
+	return Prepared{Data: sixelData.Bytes()}
 }
 
-func sixelImageCacheKey(desired desiredTerminalImage, cellWidth, cellHeight int) string {
+func sixelImageCacheKey(desired Desired, cellWidth, cellHeight int) string {
 	return fmt.Sprintf("%s:%dx%d", desired.version, desired.Cols*cellWidth, desired.Rows*cellHeight)
 }
 
-func (m *terminalImageManager) commitKitty() {
+func (m *Manager) commitKitty() {
 	usedIDs := make(map[uint32]string)
 	for version, upload := range m.kittyUploads {
 		usedIDs[upload.imageID] = "image:" + version
@@ -556,12 +575,12 @@ func (m *terminalImageManager) commitKitty() {
 		upload, ok := m.kittyUploads[desired.version]
 		if !ok {
 			prepared, ready := m.preparedKittyImage(desired.version)
-			if !ready || prepared.err != nil || len(prepared.data) == 0 {
+			if !ready || prepared.Err != nil || len(prepared.Data) == 0 {
 				continue
 			}
-			upload.fitByRows = prepared.fitByRows
+			upload.fitByRows = prepared.FitByRows
 			upload.imageID = uniqueTerminalImageID("image:"+desired.version, usedIDs)
-			if err := writeFull(m.tty, kittyTransmitPNG(upload.imageID, prepared.data)); err != nil {
+			if err := writeFull(m.tty, kittyTransmitPNG(upload.imageID, prepared.Data)); err != nil {
 				continue
 			}
 			if m.kittyUploads == nil {
@@ -571,7 +590,7 @@ func (m *terminalImageManager) commitKitty() {
 			m.dropPreparedKittyImage(desired.version)
 		}
 
-		placement := desired.terminalImagePlacement
+		placement := desired.Placement
 		placement.FitByRows = upload.fitByRows
 		placementKey := "placement:" + desired.Key
 		placementID := uniqueTerminalImageID(placementKey, usedPlacementIDs)
@@ -580,30 +599,30 @@ func (m *terminalImageManager) commitKitty() {
 		}
 		m.screen.LockRegion(desired.X, desired.Y, desired.Cols, desired.Rows, true)
 		m.active = append(m.active, activeTerminalImage{
-			desiredTerminalImage: desired,
-			imageID:              upload.imageID,
-			placementID:          placementID,
+			Desired:     desired,
+			imageID:     upload.imageID,
+			placementID: placementID,
 		})
 	}
 }
 
-func (m *terminalImageManager) commitSixel() {
-	cw, ch := m.cellDimensions()
+func (m *Manager) commitSixel() {
+	cw, ch := m.CellDimensions()
 	for _, desired := range m.desired {
 		cacheKey := sixelImageCacheKey(desired, cw, ch)
 		prepared, ready := m.preparedSixelImage(cacheKey)
-		if !ready || prepared.err != nil || len(prepared.data) == 0 {
+		if !ready || prepared.Err != nil || len(prepared.Data) == 0 {
 			continue
 		}
-		if err := writeFull(m.tty, terminalBytesAt(desired.X, desired.Y, prepared.data)); err != nil {
+		if err := writeFull(m.tty, terminalBytesAt(desired.X, desired.Y, prepared.Data)); err != nil {
 			continue
 		}
 		m.screen.LockRegion(desired.X, desired.Y, desired.Cols, desired.Rows, true)
-		m.active = append(m.active, activeTerminalImage{desiredTerminalImage: desired})
+		m.active = append(m.active, activeTerminalImage{Desired: desired})
 	}
 }
 
-func (m *terminalImageManager) cellDimensions() (int, int) {
+func (m *Manager) CellDimensions() (int, int) {
 	const defaultCellWidth, defaultCellHeight = 10, 20
 	window, err := m.tty.WindowSize()
 	if err != nil {
@@ -619,7 +638,7 @@ func (m *terminalImageManager) cellDimensions() (int, int) {
 	return cw, ch
 }
 
-func (m *terminalImageManager) geometryVersion() string {
+func (m *Manager) geometryVersion() string {
 	window, err := m.tty.WindowSize()
 	if err != nil {
 		return ":geometry:unknown"
@@ -627,8 +646,9 @@ func (m *terminalImageManager) geometryVersion() string {
 	return fmt.Sprintf(":geometry:%dx%d:%dx%d", window.Width, window.Height, window.PixelWidth, window.PixelHeight)
 }
 
-func loadLocalImage(path string) (image.Image, error) {
-	img, _, err := images.DecodeBoundedFile(path, maxLocalImageBytes)
+// LoadLocalImage decodes a raster file within the source bounds.
+func LoadLocalImage(path string) (image.Image, error) {
+	img, _, err := images.DecodeBoundedFile(path, images.MaxSourceBytes)
 	return img, err
 }
 
@@ -665,13 +685,13 @@ func kittyTransmitPNG(imageID uint32, pngData []byte) []byte {
 	if len(pngData) == 0 {
 		return nil
 	}
-	return kittyChunked(fmt.Sprintf("a=t,f=100,t=d,i=%d,q=2", imageID), pngData)
+	return KittyChunked(fmt.Sprintf("a=t,f=100,t=d,i=%d,q=2", imageID), pngData)
 }
 
-// kittyChunked emits pngData as base64 in the 4096-byte chunks the Kitty
+// KittyChunked emits pngData as base64 in the 4096-byte chunks the Kitty
 // graphics protocol requires. first is the opening command's control data
 // (without its m= flag); continuation commands carry only q=2 and the flag.
-func kittyChunked(first string, pngData []byte) []byte {
+func KittyChunked(first string, pngData []byte) []byte {
 	encoded := base64.StdEncoding.EncodeToString(pngData)
 	var out bytes.Buffer
 	for offset := 0; offset < len(encoded); offset += 4096 {
@@ -691,17 +711,17 @@ func kittyChunked(first string, pngData []byte) []byte {
 	return out.Bytes()
 }
 
-// kittySizeSpec is the placement size control: columns normally, rows when
+// KittySizeSpec is the placement size control: columns normally, rows when
 // the image is fitted by height.
-func kittySizeSpec(cols, rows int, fitByRows bool) string {
+func KittySizeSpec(cols, rows int, fitByRows bool) string {
 	if fitByRows {
 		return fmt.Sprintf("r=%d", rows)
 	}
 	return fmt.Sprintf("c=%d", cols)
 }
 
-func kittyPlaceImage(imageID, placementID uint32, placement terminalImagePlacement) []byte {
-	size := kittySizeSpec(placement.Cols, placement.Rows, placement.FitByRows)
+func kittyPlaceImage(imageID, placementID uint32, placement Placement) []byte {
+	size := KittySizeSpec(placement.Cols, placement.Rows, placement.FitByRows)
 	command := fmt.Sprintf("\x1b_Ga=p,i=%d,p=%d,%s,C=1,q=2;\x1b\\", imageID, placementID, size)
 	return terminalBytesAt(placement.X, placement.Y, []byte(command))
 }

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -214,8 +215,8 @@ func (m *replModel) setModelName(model string) {
 // least one transcript row to spare. Everywhere else the bird lives in the
 // masthead.
 func startupLogoRowCount(contentHeight int, visible, nativeImages bool) int {
-	if !visible || !nativeImages || contentHeight <= imageLogoHeight {
+	if !visible || !nativeImages || contentHeight <= termimg.LogoHeight {
 		return 0
 	}
-	return imageLogoHeight
+	return termimg.LogoHeight
 }

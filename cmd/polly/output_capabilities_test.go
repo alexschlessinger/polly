@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
+)
 
 func TestResolveOutputCapabilities(t *testing.T) {
 	tests := []struct {
@@ -10,7 +14,7 @@ func TestResolveOutputCapabilities(t *testing.T) {
 		stdoutTTY   bool
 		env         map[string]string
 		wantSurface outputSurface
-		wantImage   terminalImageProtocol
+		wantImage   termimg.Protocol
 	}{
 		{
 			name:        "managed TUI keeps existing rich behavior",
@@ -19,7 +23,7 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			stdoutTTY:   true,
 			env:         map[string]string{"KITTY_WINDOW_ID": "1", "NO_COLOR": "1"},
 			wantSurface: outputSurfaceManagedTUI,
-			wantImage:   terminalImageKitty,
+			wantImage:   termimg.ProtocolKitty,
 		},
 		{
 			name:        "one shot TTY renders ANSI and kitty",
@@ -28,7 +32,7 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			stdoutTTY:   true,
 			env:         map[string]string{"KITTY_WINDOW_ID": "1"},
 			wantSurface: outputSurfaceLineANSI,
-			wantImage:   terminalImageKitty,
+			wantImage:   termimg.ProtocolKitty,
 		},
 		{
 			name:        "fallback TTY renders ANSI and sixel",
@@ -36,7 +40,7 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			stdoutTTY:   true,
 			env:         map[string]string{"WT_SESSION": "1"},
 			wantSurface: outputSurfaceLineANSI,
-			wantImage:   terminalImageSixel,
+			wantImage:   termimg.ProtocolSixel,
 		},
 		{
 			name:        "redirected stdout is raw despite forced protocol",
@@ -44,7 +48,7 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			stdoutTTY:   false,
 			env:         map[string]string{"POLLYTOOL_IMAGE_PROTOCOL": "kitty"},
 			wantSurface: outputSurfaceLineRaw,
-			wantImage:   terminalImageNone,
+			wantImage:   termimg.ProtocolNone,
 		},
 		{
 			name:        "dumb terminal is raw",
@@ -52,7 +56,7 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			stdoutTTY:   true,
 			env:         map[string]string{"TERM": "dumb", "KITTY_WINDOW_ID": "1"},
 			wantSurface: outputSurfaceLineRaw,
-			wantImage:   terminalImageNone,
+			wantImage:   termimg.ProtocolNone,
 		},
 		{
 			name:        "no color retains terminal rendering and overrides forced graphics",
@@ -60,7 +64,7 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			stdoutTTY:   true,
 			env:         map[string]string{"NO_COLOR": "1", "POLLYTOOL_IMAGE_PROTOCOL": "sixel"},
 			wantSurface: outputSurfaceLineANSI,
-			wantImage:   terminalImageNone,
+			wantImage:   termimg.ProtocolNone,
 		},
 		{
 			name:        "multiplexer keeps ANSI but disables graphics",
@@ -68,7 +72,7 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			stdoutTTY:   true,
 			env:         map[string]string{"TMUX": "/tmp/tmux", "KITTY_WINDOW_ID": "1"},
 			wantSurface: outputSurfaceLineANSI,
-			wantImage:   terminalImageNone,
+			wantImage:   termimg.ProtocolNone,
 		},
 	}
 

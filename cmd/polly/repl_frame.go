@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -305,7 +306,7 @@ func (r *managedREPL) render() {
 	r.refreshInspector(w)
 	imageCellWidth, imageCellHeight := 0, 0
 	if r.images != nil {
-		imageCellWidth, imageCellHeight = r.images.cellDimensions()
+		imageCellWidth, imageCellHeight = r.images.CellDimensions()
 	}
 
 	r.model.mu.Lock()
@@ -399,12 +400,12 @@ func (r *managedREPL) render() {
 	r.hover = r.hoverTargetAt(r.mousePosition)
 	r.model.mu.Unlock()
 
-	if l.logoRows == imageLogoHeight && r.images != nil {
+	if l.logoRows == termimg.LogoHeight && r.images != nil {
 		// The image splash rides the same placement pipeline as thumbnails:
 		// its band is blank in the text layer and the manager draws, diffs,
 		// and releases it like any other placement.
-		if logo, ok := startupLogoPlacement(w, imageCellWidth, imageCellHeight); ok {
-			imagePlacements = append([]terminalImagePlacement{logo}, imagePlacements...)
+		if logo, ok := termimg.StartupLogoPlacement(w, imageCellWidth, imageCellHeight); ok {
+			imagePlacements = append([]termimg.Placement{logo}, imagePlacements...)
 		}
 	}
 
@@ -413,7 +414,7 @@ func (r *managedREPL) render() {
 		imagePlacements = nil
 	}
 	if r.images != nil {
-		imagesChanged = r.images.prepare(imagePlacements)
+		imagesChanged = r.images.Prepare(imagePlacements)
 	}
 
 	r.transcriptW.Rows = transcriptRows
@@ -481,7 +482,7 @@ func (r *managedREPL) render() {
 	}
 	r.paintHover(ui.DefaultBackend.Screen)
 	if r.images != nil {
-		r.images.commit(imagesChanged)
+		r.images.Commit(imagesChanged)
 	}
 
 	// Window-level effects go out after the frame, on this same goroutine, so

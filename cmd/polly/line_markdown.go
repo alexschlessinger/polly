@@ -8,6 +8,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	tcell "github.com/gdamore/tcell/v3"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -144,12 +145,12 @@ func ansiPaletteCode(color ui.Color, background bool) (int, bool) {
 }
 
 func lineImagePayload(img style.Image, capabilities outputCapabilities, prefixWidth int) []byte {
-	if capabilities.imageProtocol == terminalImageNone {
+	if capabilities.imageProtocol == termimg.ProtocolNone {
 		return nil
 	}
 	imageMaxCols, imageMaxRows := style.ImageBounds(img)
 	maxCols := min(imageMaxCols, capabilities.columns-prefixWidth)
-	cols, rows, fitByRows := imageCellGeometry(
+	cols, rows, fitByRows := termimg.CellGeometry(
 		img,
 		maxCols,
 		imageMaxRows,
@@ -159,7 +160,7 @@ func lineImagePayload(img style.Image, capabilities outputCapabilities, prefixWi
 	if cols <= 0 || rows <= 0 {
 		return nil
 	}
-	desired := desiredTerminalImage{terminalImagePlacement: terminalImagePlacement{
+	desired := termimg.Desired{Placement: termimg.Placement{
 		Path:      img.Path,
 		Cols:      cols,
 		Rows:      rows,
@@ -170,18 +171,18 @@ func lineImagePayload(img style.Image, capabilities outputCapabilities, prefixWi
 
 	var payload []byte
 	switch capabilities.imageProtocol {
-	case terminalImageKitty:
-		prepared := prepareKittyImage(desired, maxWidth, maxHeight)
-		if prepared.err != nil || len(prepared.data) == 0 {
+	case termimg.ProtocolKitty:
+		prepared := termimg.PrepareKitty(desired, maxWidth, maxHeight)
+		if prepared.Err != nil || len(prepared.Data) == 0 {
 			return nil
 		}
-		payload = kittyDisplayPNG(prepared.data, cols, rows, prepared.fitByRows)
-	case terminalImageSixel:
-		prepared := prepareSixelImage(desired, maxWidth, maxHeight)
-		if prepared.err != nil || len(prepared.data) == 0 {
+		payload = kittyDisplayPNG(prepared.Data, cols, rows, prepared.FitByRows)
+	case termimg.ProtocolSixel:
+		prepared := termimg.PrepareSixel(desired, maxWidth, maxHeight)
+		if prepared.Err != nil || len(prepared.Data) == 0 {
 			return nil
 		}
-		payload = append([]byte("\x1b7"), prepared.data...)
+		payload = append([]byte("\x1b7"), prepared.Data...)
 		payload = append(payload, []byte("\x1b8")...)
 	default:
 		return nil
@@ -196,5 +197,5 @@ func kittyDisplayPNG(pngData []byte, cols, rows int, fitByRows bool) []byte {
 	if len(pngData) == 0 || cols <= 0 || rows <= 0 {
 		return nil
 	}
-	return kittyChunked(fmt.Sprintf("a=T,f=100,t=d,q=2,%s,C=1", kittySizeSpec(cols, rows, fitByRows)), pngData)
+	return termimg.KittyChunked(fmt.Sprintf("a=T,f=100,t=d,q=2,%s,C=1", termimg.KittySizeSpec(cols, rows, fitByRows)), pngData)
 }

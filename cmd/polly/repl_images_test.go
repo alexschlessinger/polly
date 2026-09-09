@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -17,6 +16,7 @@ import (
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 	tcell "github.com/gdamore/tcell/v3"
@@ -543,35 +543,6 @@ func testToolImageResult(t *testing.T, path, callID string) messages.ChatMessage
 	}
 }
 
-func TestImageCellGeometryPreservesAspectRatio(t *testing.T) {
-	wide := style.Image{Path: "/tmp/headcam.png", DisplayPath: "headcam.png", Width: 2400, Height: 270}
-	cols, rows, fitByRows := imageCellGeometry(wide, 50, 10, 10, 20)
-	if cols != 50 || rows != 3 || fitByRows {
-		t.Fatalf("wide geometry = %dx%d fitByRows=%t, want 50x3 width-bound", cols, rows, fitByRows)
-	}
-	wideRows, wideSpans := transcriptBlockRowsWithImages(
-		style.RenderImages([]style.Image{wide}, ""), false, 80,
-		[]style.Image{wide}, true, 10, 20,
-	)
-	if len(wideRows) != 4 || len(wideSpans) != 1 || wideSpans[0].cols != 50 || wideSpans[0].rows != 3 {
-		t.Fatalf("wide slot rows/spans = %d/%#v, want caption plus 50x3 slot", len(wideRows), wideSpans)
-	}
-
-	square := style.Image{Width: 100, Height: 100}
-	cols, rows, fitByRows = imageCellGeometry(square, 50, 10, 10, 20)
-	if cols != 20 || rows != 10 || !fitByRows {
-		t.Fatalf("square geometry = %dx%d fitByRows=%t, want 20x10 height-bound", cols, rows, fitByRows)
-	}
-
-	fitted := images.Fit(image.NewNRGBA(image.Rect(0, 0, 2400, 270)), 500, 60)
-	if got := fitted.Bounds().Size(); got.X != 500 || got.Y != 56 {
-		t.Fatalf("fitted pixels = %v, want (500,56)", got)
-	}
-}
-
-// clearTranscriptForTest empties the transcript, the test-side twin of
-// clearDisplay's reset for tests that isolate one command's output without
-// disturbing the rest of the model.
 func clearTranscriptForTest(m *replModel) {
 	m.transcript = nil
 }
@@ -667,278 +638,6 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 	}
 }
 
-func TestDetectTerminalImageProtocol(t *testing.T) {
-	tests := []struct {
-		name string
-		env  map[string]string
-		want terminalImageProtocol
-	}{
-		{name: "kitty", env: map[string]string{"KITTY_WINDOW_ID": "1"}, want: terminalImageKitty},
-		{name: "ghostty", env: map[string]string{"TERM_PROGRAM": "ghostty"}, want: terminalImageKitty},
-		{name: "wezterm", env: map[string]string{"WEZTERM_PANE": "2"}, want: terminalImageKitty},
-		{name: "windows terminal", env: map[string]string{"WT_SESSION": "id"}, want: terminalImageSixel},
-		{name: "foot", env: map[string]string{"TERM": "foot"}, want: terminalImageSixel},
-		{name: "override", env: map[string]string{"POLLYTOOL_IMAGE_PROTOCOL": "sixel", "KITTY_WINDOW_ID": "1"}, want: terminalImageSixel},
-		{name: "disabled", env: map[string]string{"POLLYTOOL_IMAGE_PROTOCOL": "none", "KITTY_WINDOW_ID": "1"}, want: terminalImageNone},
-		{name: "tmux fallback", env: map[string]string{"TMUX": "/tmp/tmux", "KITTY_WINDOW_ID": "1"}, want: terminalImageNone},
-		{name: "tmux ignores forced kitty", env: map[string]string{"TMUX": "/tmp/tmux", "POLLYTOOL_IMAGE_PROTOCOL": "kitty"}, want: terminalImageNone},
-		{name: "tmux ignores forced sixel", env: map[string]string{"TMUX": "/tmp/tmux", "POLLYTOOL_IMAGE_PROTOCOL": "sixel"}, want: terminalImageNone},
-		{name: "zellij fallback", env: map[string]string{"ZELLIJ": "0", "TERM_PROGRAM": "ghostty"}, want: terminalImageNone},
-		{name: "unknown", env: map[string]string{"TERM": "xterm-256color"}, want: terminalImageNone},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := detectTerminalImageProtocol(func(key string) string { return tt.env[key] })
-			if got != tt.want {
-				t.Fatalf("protocol = %s, want %s", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestKittyCommandsAreChunkedAndPositioned(t *testing.T) {
-	data := bytes.Repeat([]byte{0xab}, 5000)
-	command := string(kittyTransmitPNG(42, data))
-	parts := strings.Split(command, "\x1b\\")
-	if len(parts) < 3 {
-		t.Fatalf("expected multiple chunks, got %d", len(parts)-1)
-	}
-	for i, part := range parts[:len(parts)-1] {
-		semicolon := strings.IndexByte(part, ';')
-		if semicolon < 0 {
-			t.Fatalf("chunk %d has no payload delimiter: %q", i, part)
-		}
-		if payload := part[semicolon+1:]; len(payload) > 4096 {
-			t.Fatalf("chunk %d payload = %d bytes", i, len(payload))
-		}
-	}
-	if !strings.Contains(parts[0], "a=t,f=100,t=d,i=42,q=2,m=1") || !strings.Contains(parts[len(parts)-2], "m=0") {
-		t.Fatalf("unexpected kitty chunks: %q", command)
-	}
-
-	placed := string(kittyPlaceImage(42, 7, terminalImagePlacement{X: 3, Y: 4, Cols: 50, Rows: 3}))
-	if !strings.HasPrefix(placed, "\x1b7\x1b[5;4H") || !strings.Contains(placed, "a=p,i=42,p=7,c=50,C=1,q=2") || strings.Contains(placed, ",r=") || !strings.HasSuffix(placed, "\x1b8") {
-		t.Fatalf("placement command = %q", placed)
-	}
-	heightPlaced := string(kittyPlaceImage(42, 8, terminalImagePlacement{Cols: 20, Rows: 10, FitByRows: true}))
-	if !strings.Contains(heightPlaced, "a=p,i=42,p=8,r=10,C=1,q=2") || strings.Contains(heightPlaced, ",c=") {
-		t.Fatalf("height-bound placement command = %q", heightPlaced)
-	}
-}
-
-func TestTerminalImageManagerDrawsKittyAndSixel(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "thumb.png")
-	writeImageFixture(t, path, 8, 4)
-	placement := terminalImagePlacement{Key: "transcript:1:image:0", Path: path, X: 2, Y: 3, Cols: 20, Rows: 5}
-
-	for _, protocol := range []terminalImageProtocol{terminalImageKitty, terminalImageSixel} {
-		t.Run(protocol.String(), func(t *testing.T) {
-			screen := tcell.NewSimulationScreen("UTF-8")
-			if err := screen.Init(); err != nil {
-				t.Fatal(err)
-			}
-			defer screen.Fini()
-			screen.SetSize(80, 24)
-			tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
-			manager := &terminalImageManager{screen: screen, tty: tty, protocol: protocol}
-
-			changed := manager.prepare([]terminalImagePlacement{placement})
-			if !changed {
-				t.Fatal("first placement did not change the image frame")
-			}
-			manager.commit(changed)
-			if len(manager.active) != 1 {
-				t.Fatalf("active placements = %d, want 1", len(manager.active))
-			}
-			if protocol == terminalImageKitty && !strings.Contains(tty.String(), "\x1b_Ga=t,f=100") {
-				t.Fatalf("kitty transmission missing: %q", tty.String())
-			}
-			if protocol == terminalImageSixel && !strings.Contains(tty.String(), "\x1bP") {
-				t.Fatalf("sixel transmission missing: %q", tty.String())
-			}
-			if manager.prepare([]terminalImagePlacement{placement}) {
-				t.Fatal("unchanged placement requested a redraw")
-			}
-			moved := placement
-			moved.Y++
-			beforeTransfers := strings.Count(tty.String(), "\x1b_Ga=t,f=100")
-			if !manager.prepare([]terminalImagePlacement{moved}) {
-				t.Fatal("moved placement did not request a redraw")
-			}
-			manager.commit(true)
-			if protocol == terminalImageKitty && strings.Count(tty.String(), "\x1b_Ga=t,f=100") != beforeTransfers {
-				t.Fatal("moving a kitty placement retransmitted unchanged pixels")
-			}
-			if !manager.prepare(nil) || len(manager.active) != 0 {
-				t.Fatalf("clearing placements did not release the active image: %#v", manager.active)
-			}
-		})
-	}
-}
-
-func TestTerminalImageManagerPreparesPixelsOffThread(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "thumb.png")
-	writeImageFixture(t, path, 8, 4)
-	placement := terminalImagePlacement{Key: "transcript:1:image:0", Path: path, Cols: 20, Rows: 5}
-
-	for _, protocol := range []terminalImageProtocol{terminalImageKitty, terminalImageSixel} {
-		t.Run(protocol.String(), func(t *testing.T) {
-			screen := tcell.NewSimulationScreen("UTF-8")
-			if err := screen.Init(); err != nil {
-				t.Fatal(err)
-			}
-			defer screen.Fini()
-			tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
-			var tasks []func()
-			manager := &terminalImageManager{
-				screen: screen, tty: tty, protocol: protocol,
-				runAsync: func(task func()) { tasks = append(tasks, task) },
-				ready:    make(chan struct{}, 1),
-			}
-
-			manager.commit(manager.prepare([]terminalImagePlacement{placement}))
-			if len(tasks) != 1 || len(manager.active) != 0 || tty.Len() != 0 {
-				t.Fatalf("before preparation: tasks=%d active=%d output=%d", len(tasks), len(manager.active), tty.Len())
-			}
-			moved := placement
-			moved.X++
-			manager.commit(manager.prepare([]terminalImagePlacement{moved}))
-			if len(tasks) != 1 {
-				t.Fatalf("moving an in-flight placement scheduled %d preparations, want 1", len(tasks))
-			}
-			tasks[0]()
-			select {
-			case <-manager.readyEvents():
-			default:
-				t.Fatal("completed preparation did not wake the render loop")
-			}
-			if !manager.prepare([]terminalImagePlacement{moved}) {
-				t.Fatal("completed preparation did not dirty the image frame")
-			}
-			manager.commit(true)
-			if len(manager.active) != 1 || tty.Len() == 0 {
-				t.Fatalf("after preparation: active=%d output=%d", len(manager.active), tty.Len())
-			}
-		})
-	}
-}
-
-func TestTerminalImageManagerConcurrentPreparation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "thumb.png")
-	writeImageFixture(t, path, 32, 16)
-	placement := terminalImagePlacement{Key: "transcript:1:image:0", Path: path, Cols: 20, Rows: 5}
-
-	for _, protocol := range []terminalImageProtocol{terminalImageKitty, terminalImageSixel} {
-		t.Run(protocol.String(), func(t *testing.T) {
-			screen := tcell.NewSimulationScreen("UTF-8")
-			if err := screen.Init(); err != nil {
-				t.Fatal(err)
-			}
-			defer screen.Fini()
-			tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
-			manager := &terminalImageManager{
-				screen: screen, tty: tty, protocol: protocol,
-				runAsync: func(task func()) { go task() },
-				ready:    make(chan struct{}, 1),
-			}
-
-			manager.commit(manager.prepare([]terminalImagePlacement{placement}))
-			select {
-			case <-manager.readyEvents():
-			case <-time.After(5 * time.Second):
-				t.Fatal("timed out waiting for image preparation")
-			}
-			manager.commit(manager.prepare([]terminalImagePlacement{placement}))
-			if len(manager.active) != 1 {
-				t.Fatalf("active placements = %d, want 1", len(manager.active))
-			}
-			manager.shutdown()
-		})
-	}
-}
-
-func TestKittyPlacementIDsProbeHashCollisions(t *testing.T) {
-	const firstKey = "I7osYYO9nZRS"
-	const secondKey = "r6EQsMhzbXtS"
-	if stableTerminalImageID("placement:"+firstKey) != stableTerminalImageID("placement:"+secondKey) {
-		t.Fatal("test fixture no longer collides")
-	}
-
-	path := filepath.Join(t.TempDir(), "thumb.png")
-	writeImageFixture(t, path, 8, 4)
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	defer screen.Fini()
-	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
-	manager := &terminalImageManager{screen: screen, tty: tty, protocol: terminalImageKitty}
-	placements := []terminalImagePlacement{
-		{Key: firstKey, Path: path, X: 0, Y: 0, Cols: 10, Rows: 3},
-		{Key: secondKey, Path: path, X: 10, Y: 0, Cols: 10, Rows: 3},
-	}
-	manager.commit(manager.prepare(placements))
-	if len(manager.active) != 2 {
-		t.Fatalf("active placements = %d, want 2", len(manager.active))
-	}
-	if manager.active[0].placementID == manager.active[1].placementID {
-		t.Fatalf("colliding placement IDs were not probed: %d", manager.active[0].placementID)
-	}
-}
-
-func TestTerminalImageLRUEvictsOnlyOldestEntry(t *testing.T) {
-	var cache terminalImageLRU
-	for i := 0; i < maxSixelCacheEntries; i++ {
-		cache.put(fmt.Sprintf("image-%d", i), preparedTerminalImage{data: []byte{byte(i)}})
-	}
-	if _, ok := cache.get("image-0"); !ok {
-		t.Fatal("missing cache fixture")
-	}
-	cache.put("newest", preparedTerminalImage{data: []byte{255}})
-
-	if len(cache.entries) != maxSixelCacheEntries {
-		t.Fatalf("cache entries = %d, want %d", len(cache.entries), maxSixelCacheEntries)
-	}
-	if _, ok := cache.get("image-1"); ok {
-		t.Fatal("least-recently-used entry was retained")
-	}
-	if _, ok := cache.get("image-0"); !ok {
-		t.Fatal("recently used entry was evicted")
-	}
-	if _, ok := cache.get("newest"); !ok {
-		t.Fatal("new entry was evicted")
-	}
-}
-
-func TestKittyReloadConstrainsChangedAspectToReservedRows(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "changing.png")
-	writeImageFixture(t, path, 2400, 270)
-	placement := terminalImagePlacement{Key: "transcript:1:image:0", Path: path, Cols: 50, Rows: 3}
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	defer screen.Fini()
-	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
-	manager := &terminalImageManager{screen: screen, tty: tty, protocol: terminalImageKitty}
-	manager.commit(manager.prepare([]terminalImagePlacement{placement}))
-
-	writeImageFixture(t, path, 270, 2400)
-	future := time.Now().Add(time.Second)
-	if err := os.Chtimes(path, future, future); err != nil {
-		t.Fatal(err)
-	}
-	tty.Reset()
-	if !manager.prepare([]terminalImagePlacement{placement}) {
-		t.Fatal("changed image version did not request a redraw")
-	}
-	manager.commit(true)
-	command := tty.String()
-	if !strings.Contains(command, ",r=3,C=1") || strings.Contains(command, ",c=50,C=1") {
-		t.Fatalf("changed tall image was not height-constrained: %q", command)
-	}
-}
-
 type imageTestTTY struct {
 	bytes.Buffer
 	window tcell.WindowSize
@@ -1007,3 +706,33 @@ func TestResolveLocalTranscriptImageExactMatchWinsOverFold(t *testing.T) {
 		t.Fatalf("exact match lost to fold match: width = %d, want 64", img.Width)
 	}
 }
+
+func TestImageCellGeometryPreservesAspectRatio(t *testing.T) {
+	wide := style.Image{Path: "/tmp/headcam.png", DisplayPath: "headcam.png", Width: 2400, Height: 270}
+	cols, rows, fitByRows := termimg.CellGeometry(wide, 50, 10, 10, 20)
+	if cols != 50 || rows != 3 || fitByRows {
+		t.Fatalf("wide geometry = %dx%d fitByRows=%t, want 50x3 width-bound", cols, rows, fitByRows)
+	}
+	wideRows, wideSpans := transcriptBlockRowsWithImages(
+		style.RenderImages([]style.Image{wide}, ""), false, 80,
+		[]style.Image{wide}, true, 10, 20,
+	)
+	if len(wideRows) != 4 || len(wideSpans) != 1 || wideSpans[0].cols != 50 || wideSpans[0].rows != 3 {
+		t.Fatalf("wide slot rows/spans = %d/%#v, want caption plus 50x3 slot", len(wideRows), wideSpans)
+	}
+
+	square := style.Image{Width: 100, Height: 100}
+	cols, rows, fitByRows = termimg.CellGeometry(square, 50, 10, 10, 20)
+	if cols != 20 || rows != 10 || !fitByRows {
+		t.Fatalf("square geometry = %dx%d fitByRows=%t, want 20x10 height-bound", cols, rows, fitByRows)
+	}
+
+	fitted := images.Fit(image.NewNRGBA(image.Rect(0, 0, 2400, 270)), 500, 60)
+	if got := fitted.Bounds().Size(); got.X != 500 || got.Y != 56 {
+		t.Fatalf("fitted pixels = %v, want (500,56)", got)
+	}
+}
+
+// clearTranscriptForTest empties the transcript, the test-side twin of
+// clearDisplay's reset for tests that isolate one command's output without
+// disturbing the rest of the model.

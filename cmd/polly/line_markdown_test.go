@@ -10,6 +10,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -144,7 +145,7 @@ func TestLineTurnUISchemaSuppressesRichDisplay(t *testing.T) {
 	var out bytes.Buffer
 	ui := newLineTurnUIWithCapabilities(&Config{SchemaPath: "schema.json"}, nil, outputCapabilities{
 		surface:       outputSurfaceLineANSI,
-		imageProtocol: terminalImageKitty,
+		imageProtocol: termimg.ProtocolKitty,
 		columns:       80,
 	})
 	ui.writer = &out
@@ -165,7 +166,7 @@ func TestRenderLineMarkdownImages(t *testing.T) {
 	t.Run("kitty", func(t *testing.T) {
 		got := renderLineMarkdown(source, dir, outputCapabilities{
 			surface:       outputSurfaceLineANSI,
-			imageProtocol: terminalImageKitty,
+			imageProtocol: termimg.ProtocolKitty,
 			columns:       80,
 		})
 		text := string(got)
@@ -184,7 +185,7 @@ func TestRenderLineMarkdownImages(t *testing.T) {
 	t.Run("sixel", func(t *testing.T) {
 		got := string(renderLineMarkdown(source, dir, outputCapabilities{
 			surface:       outputSurfaceLineANSI,
-			imageProtocol: terminalImageSixel,
+			imageProtocol: termimg.ProtocolSixel,
 			columns:       80,
 		}))
 		if !strings.Contains(got, "\x1b7\x1bP") || !strings.Contains(got, "\x1b\\\x1b8") {
@@ -209,7 +210,7 @@ func TestRenderLineMarkdownImages(t *testing.T) {
 	t.Run("narrow terminal", func(t *testing.T) {
 		got := string(renderLineMarkdown(source, dir, outputCapabilities{
 			surface:       outputSurfaceLineANSI,
-			imageProtocol: terminalImageKitty,
+			imageProtocol: termimg.ProtocolKitty,
 			columns:       style.MinimumThumbnailCols - 1,
 		}))
 		if strings.Contains(got, "\x1b_G") || !strings.Contains(got, "latency · ") {
@@ -222,7 +223,7 @@ func TestRenderLineMarkdownDoesNotOpenRemoteOrMissingImages(t *testing.T) {
 	got := string(renderLineMarkdown(
 		"![remote](https://example.com/a.png) ![missing](missing.png)",
 		t.TempDir(),
-		outputCapabilities{surface: outputSurfaceLineANSI, imageProtocol: terminalImageKitty, columns: 80},
+		outputCapabilities{surface: outputSurfaceLineANSI, imageProtocol: termimg.ProtocolKitty, columns: 80},
 	))
 	if strings.Contains(got, "\x1b_G") || !strings.Contains(got, "example.com") || !strings.Contains(got, "missing.png") {
 		t.Fatalf("remote/missing image handling = %q", got)
@@ -236,7 +237,7 @@ func TestRenderLineMarkdownPreservesImageOrderAndIgnoresFences(t *testing.T) {
 	got := string(renderLineMarkdown(
 		"![first](a.png)\n\nmiddle\n\n```markdown\n![literal](a.png)\n```\n\n![second](b.png)",
 		dir,
-		outputCapabilities{surface: outputSurfaceLineANSI, imageProtocol: terminalImageKitty, columns: 80},
+		outputCapabilities{surface: outputSurfaceLineANSI, imageProtocol: termimg.ProtocolKitty, columns: 80},
 	))
 	firstAt := strings.Index(got, "first · ")
 	middleAt := strings.Index(got, "middle")
@@ -261,7 +262,7 @@ func TestLineTurnUIToolResultNeverRendersImage(t *testing.T) {
 	var out, errOut bytes.Buffer
 	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{
 		surface:       outputSurfaceLineANSI,
-		imageProtocol: terminalImageKitty,
+		imageProtocol: termimg.ProtocolKitty,
 		columns:       80,
 	})
 	ui.writer = &out
@@ -289,7 +290,7 @@ func TestLineTurnUITypedToolImageRendersInspectionPreview(t *testing.T) {
 	var out, errOut bytes.Buffer
 	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{
 		surface:       outputSurfaceLineANSI,
-		imageProtocol: terminalImageKitty,
+		imageProtocol: termimg.ProtocolKitty,
 		columns:       80,
 	})
 	ui.writer = &out
@@ -313,7 +314,7 @@ func TestLineTurnUIRedirectedStderrKeepsInspectionTextOnly(t *testing.T) {
 	var out, errOut bytes.Buffer
 	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{
 		surface:       outputSurfaceLineANSI,
-		imageProtocol: terminalImageKitty,
+		imageProtocol: termimg.ProtocolKitty,
 		columns:       80,
 	})
 	ui.writer = &out
@@ -337,7 +338,7 @@ func TestLineTurnUIRawToolImageEmitsTextReceiptOnly(t *testing.T) {
 	var out, errOut bytes.Buffer
 	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{
 		surface:       outputSurfaceLineRaw,
-		imageProtocol: terminalImageKitty,
+		imageProtocol: termimg.ProtocolKitty,
 		columns:       80,
 	})
 	ui.writer = &out

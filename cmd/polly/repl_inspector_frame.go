@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -29,7 +30,7 @@ func (r *managedREPL) setupInspectorWidgets() {
 
 // renderInspector projects the inspected view into the frame interior. The
 // header is measured first; the body takes the rows beneath it.
-func (r *managedREPL) renderInspector(l frameLayout) []terminalImagePlacement {
+func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	w := r.workspace()
 	i := &w.inspector
 	if !i.open {

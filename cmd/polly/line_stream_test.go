@@ -14,6 +14,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
 	rw "github.com/mattn/go-runewidth"
 )
@@ -317,7 +318,7 @@ func TestLineStreamingImagesCommitOnce(t *testing.T) {
 	ui, out := lineStreamTestUI(t, true, false, &columns, &height)
 	ui.imageBaseDir = t.TempDir()
 	writeImageFixture(t, ui.imageBaseDir+"/chart.png", 8, 4)
-	ui.capabilities.imageProtocol = terminalImageKitty
+	ui.capabilities.imageProtocol = termimg.ProtocolKitty
 	ui.AppendAssistantText("![chart](chart.png)")
 	paintLineStream(ui)
 	paintLineStream(ui)
@@ -391,7 +392,7 @@ func TestPrintedImageDetailsDoNotResendPreviews(t *testing.T) {
 	ui, out, status := activityTestUI(t, true, &Config{ActivityDetails: true})
 	path := t.TempDir() + "/image.png"
 	writeImageFixture(t, path, 8, 4)
-	ui.activity.imageCaps = outputCapabilities{surface: outputSurfaceLineANSI, imageProtocol: terminalImageKitty, columns: 80}
+	ui.activity.imageCaps = outputCapabilities{surface: outputSurfaceLineANSI, imageProtocol: termimg.ProtocolKitty, columns: 80}
 	ui.AppendToolMedia(messages.ChatMessageToolCall{}, []style.Image{{Path: path, Alt: "inspected", Width: 8, Height: 4, Inspection: true}})
 	if strings.Count(status.String(), "\x1b_Ga=T") != 1 {
 		t.Fatal("inspection did not display its preview")

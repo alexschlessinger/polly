@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -158,7 +159,7 @@ func TestHoverNamesWordlessTargetsInTheStatusRow(t *testing.T) {
 
 	// A thumbnail names its action and underlines its caption row.
 	m.mu.Lock()
-	m.imagePlacements = []terminalImagePlacement{{Key: "shot", Path: "/tmp/shot.png", X: 2, Y: 10, Cols: 8, Rows: 3}}
+	m.imagePlacements = []termimg.Placement{{Key: "shot", Path: "/tmp/shot.png", X: 2, Y: 10, Cols: 8, Rows: 3}}
 	m.mu.Unlock()
 	m.mu.Lock()
 	got := r.hoverTargetAt(image.Pt(4, 11))

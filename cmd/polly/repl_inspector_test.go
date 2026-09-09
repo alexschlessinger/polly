@@ -12,6 +12,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/gdamore/tcell/v3"
@@ -757,8 +758,8 @@ func TestInspectorMediaFramesAndResize(t *testing.T) {
 	r, screen := affordanceTestREPL(t)
 	t.Cleanup(func() { _ = r.work.close() })
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 140, Height: 40, PixelWidth: 1400, PixelHeight: 800}}
-	r.images = &terminalImageManager{screen: screen, tty: tty, protocol: terminalImageKitty}
-	t.Cleanup(func() { r.images.shutdown() })
+	r.images = termimg.NewManagerFor(screen, tty, termimg.ProtocolKitty)
+	t.Cleanup(func() { r.images.Shutdown() })
 	r.model.nativeImages = true
 	store := testArtifactStore(t)
 	r.model.artifactStore = store
@@ -792,8 +793,8 @@ func TestInspectorMediaFramesAndResize(t *testing.T) {
 		if r.chrome.inner.Dx() < 50 {
 			t.Fatal("pane narrower than minimum")
 		}
-		if len(r.images.active) != 1 {
-			t.Fatalf("image not placed at width %d: %#v", width, r.images.active)
+		if r.images.ActiveCount() != 1 {
+			t.Fatalf("image not placed at width %d: %d", width, r.images.ActiveCount())
 		}
 		for _, p := range r.workspace().inspector.current.model.imagePlacements {
 			if !image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows).In(r.chrome.inner) || !strings.HasPrefix(p.Key, "inspector:") {
@@ -809,7 +810,7 @@ func TestInspectorMediaFramesAndResize(t *testing.T) {
 	}
 	r.closeInspector()
 	r.render()
-	if len(r.images.active) != 0 {
+	if r.images.ActiveCount() != 0 {
 		t.Fatal("closing inspector left image displayed")
 	}
 }

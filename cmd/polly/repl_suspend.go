@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/gdamore/tcell/v3"
 )
 
@@ -36,7 +37,7 @@ func suspendTerminal(screen tcell.Screen, suspendProcess func() error) error {
 // the shell, then recreates their state so the next render repaints cleanly.
 func (r *managedREPL) suspendUI(screen tcell.Screen) error {
 	if r.images != nil {
-		r.images.shutdown()
+		r.images.Shutdown()
 		r.images = nil
 	}
 	if r.fx != nil {
@@ -46,7 +47,7 @@ func (r *managedREPL) suspendUI(screen tcell.Screen) error {
 	err := suspendTerminal(screen, r.suspendProcess)
 
 	r.fx = newTerminalFX(screen)
-	r.images = newTerminalImageManager(screen)
+	r.images = termimg.NewManager(screen)
 	r.model.mu.Lock()
 	r.model.nativeImages = r.images != nil
 	r.model.visual.invalidate()

@@ -121,7 +121,7 @@ func (r *managedREPL) viewGeometryFor(g chromeGeometry, width int) viewGeometry 
 	}
 	vg := viewGeometry{width: width}
 	if r.images != nil {
-		vg.cellWidth, vg.cellHeight = r.images.cellDimensions()
+		vg.cellWidth, vg.cellHeight = r.images.CellDimensions()
 		vg.nativeImages = true
 	}
 	return vg

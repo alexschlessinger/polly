@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 	rw "github.com/mattn/go-runewidth"
@@ -1075,7 +1076,7 @@ func TestMouseLeftOpensThumbnailUnderCursor(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	var opened []string
 	r.openImage = func(path string) error { opened = append(opened, path); return nil }
-	r.model.imagePlacements = []terminalImagePlacement{
+	r.model.imagePlacements = []termimg.Placement{
 		{Key: "logo", Embedded: "logo", X: 0, Y: 0, Cols: 10, Rows: 5},
 		{Key: "b:image:0", Path: "/tmp/pic.png", X: 4, Y: 6, Cols: 20, Rows: 8},
 	}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -406,8 +407,8 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 	r, screen := chromeTestREPL(t)
 	screen.SetSize(140, 40)
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 140, Height: 40, PixelWidth: 1400, PixelHeight: 800}}
-	r.images = &terminalImageManager{screen: screen, tty: tty, protocol: terminalImageKitty}
-	t.Cleanup(func() { r.images.shutdown() })
+	r.images = termimg.NewManagerFor(screen, tty, termimg.ProtocolKitty)
+	t.Cleanup(func() { r.images.Shutdown() })
 	m := r.model
 	m.nativeImages = true
 	m.artifactStore = testArtifactStore(t)
@@ -449,7 +450,7 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 		waitInspector(t, r, width)
 		r.render()
 		placements := r.workspace().inspector.current.model.imagePlacements
-		if len(placements) != 1 || len(r.images.active) != 1 {
+		if len(placements) != 1 || r.images.ActiveCount() != 1 {
 			t.Fatalf("width %d lost native image: %v", width, placements)
 		}
 		for _, p := range placements {
@@ -457,7 +458,7 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 				t.Fatalf("image crosses frame: %+v inner=%v", p, r.inspectorW.Inner)
 			}
 		}
-		before := append([]terminalImagePlacement(nil), placements...)
+		before := append([]termimg.Placement(nil), placements...)
 		r.orbit.tick(screen, time.Now().Add(time.Second))
 		if !reflect.DeepEqual(before, r.workspace().inspector.current.model.imagePlacements) {
 			t.Fatal("edge tick re-placed media")
@@ -465,7 +466,7 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 	}
 	r.closeInspector()
 	r.render()
-	if len(r.images.active) != 0 {
+	if r.images.ActiveCount() != 0 {
 		t.Fatal("closing inspector left native image displayed")
 	}
 	images := []style.Image{{Path: path, Width: 24, Height: 12, Inspection: true}}

@@ -20,6 +20,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
@@ -441,7 +442,7 @@ func TestPrepareImageForUploadRejectsOversizedFileBeforeReading(t *testing.T) {
 	if _, err := prepareImageForUpload(path); err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("oversized attachment error = %v", err)
 	}
-	if _, err := loadLocalImage(path); err == nil || !strings.Contains(err.Error(), "limit") {
+	if _, err := termimg.LoadLocalImage(path); err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("oversized display image error = %v", err)
 	}
 }

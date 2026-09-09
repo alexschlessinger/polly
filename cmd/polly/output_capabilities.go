@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"golang.org/x/term"
 )
 
@@ -20,7 +21,7 @@ const (
 // display choice.
 type outputCapabilities struct {
 	surface       outputSurface
-	imageProtocol terminalImageProtocol
+	imageProtocol termimg.Protocol
 	columns       int
 	noColor       bool
 }
@@ -59,7 +60,7 @@ func resolveOutputCapabilities(
 	if mode == conversationModeREPL && managedREPL {
 		return outputCapabilities{
 			surface:       outputSurfaceManagedTUI,
-			imageProtocol: detectTerminalImageProtocol(getenv),
+			imageProtocol: termimg.DetectProtocol(getenv),
 			columns:       columns,
 		}
 	}
@@ -71,12 +72,12 @@ func resolveOutputCapabilities(
 
 	caps := outputCapabilities{
 		surface:       outputSurfaceLineANSI,
-		imageProtocol: detectTerminalImageProtocol(getenv),
+		imageProtocol: termimg.DetectProtocol(getenv),
 		columns:       columns,
 		noColor:       getenv("NO_COLOR") != "",
 	}
 	if caps.noColor {
-		caps.imageProtocol = terminalImageNone
+		caps.imageProtocol = termimg.ProtocolNone
 	}
 	return caps
 }
