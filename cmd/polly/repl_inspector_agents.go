@@ -79,12 +79,12 @@ func (r *managedREPL) openAgentEditor(w *sessionWorkspace, target viewTarget) {
 	}
 	m := &replModal{title: "Message " + target.session.Name, inputMode: true, width: 76, helper: "Enter send · Ctrl-J newline · Esc keep draft"}
 	m.input.setText(w.agentDrafts[key])
-	m.onDraft = func(text string) { w.agentDrafts[key] = text }
+	m.onDraft = func(text string) { w.setAgentDraft(key, text) }
 	m.onSubmit = func(text string) {
 		if strings.TrimSpace(text) == "" {
 			return
 		}
-		w.agentDrafts[key] = text
+		w.setAgentDraft(key, text)
 		r.workspaceActions = append(r.workspaceActions, func() { r.sendInspectorMessage(w, target, text, expectedDraft) })
 	}
 	r.model.mu.Lock()
@@ -97,6 +97,8 @@ func (r *managedREPL) openAgentEditor(w *sessionWorkspace, target viewTarget) {
 func (r *managedREPL) sendInspectorMessage(w *sessionWorkspace, target viewTarget, text, expectedDraft string) {
 	if runtime := r.inspectedSwarm(target); runtime != nil {
 		model := r.model
+		key := target.key()
+		draftVersion := w.agentDraftVersions[key]
 		r.background(func() {
 			_, err := runtime.Send(r.work.ctx, runtime.ID, target.session.ID, "request", "", text)
 			r.postUI(r.work.ctx, func() {
@@ -105,7 +107,9 @@ func (r *managedREPL) sendInspectorMessage(w *sessionWorkspace, target viewTarge
 				if err != nil {
 					model.appendNoticeLine("could not send agent request: " + err.Error())
 				} else {
-					delete(w.agentDrafts, target.key())
+					if w.agentDraftVersions[key] == draftVersion && w.agentDrafts[key] == text {
+						delete(w.agentDrafts, key)
+					}
 					model.appendNoticeLine("request sent; paused members require /swarm resume ID")
 				}
 			})
