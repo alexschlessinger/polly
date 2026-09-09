@@ -239,7 +239,9 @@ multipass := llm.NewMultiPass(map[string]string{
     "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
     "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
 })
-// or llm.GetDefaultClient() to load every key from the env
+// or llm.GetDefaultClient() to load the OpenAI, Anthropic, Gemini, Ollama and
+// Hugging Face keys from the environment; pass DeepSeek/OpenRouter keys to
+// llm.NewMultiPass explicitly.
 
 req := &llm.CompletionRequest{
     Model:       "anthropic/claude-opus-4-7",
@@ -768,6 +770,12 @@ err = session.Reset(sessionCtx, metadata)
   identities are refused. `sessions.ViewStore`
   is an optional capability alongside `SessionStore`; `sessions.ViewIdentity`
   exposes an acquired SQLite session's `ViewID()`.
+- `sessions.CoordinationViewStore.ReadCoordinationView(ctx, rootID)` is an
+  optional trusted-host display capability implemented by SQLite. It reads a
+  root's saved coordination records by stable identity without acquiring a
+  lease, touching last-used time, or loading transcripts. `swarm.ReadStateView`
+  decodes these records for history/status views; neither operation activates
+  execution or grants model tools access to other families.
 - `AcquireOptions{ExpectedID: view.ID}` atomically verifies the viewed identity
   before taking a write lease, and implies `ExistingOnly`. A deleted name reused
   by a different session cannot receive a follow-up intended for the old view.
@@ -858,3 +866,23 @@ for event := range client.ChatCompletionStream(ctx, req, processor) {
   active integration writes and their bounded outcome recording before the host
   closes its session. A confirmed apply is idempotent; uncertain writes are reconciled
   from persisted path states without automatically repeating the patch.
+
+### Workflow inspection and deferral
+
+`Runtime.DeferWorkflow(ctx, reportID, note)` atomically acknowledges a terminal
+failed/canceled/interrupted workflow and defers its exact unresolved task
+revisions. `AcknowledgeWorkflow` remains acknowledgment only. Optional
+`Task.Deferral` and host-authored `Execution.Workflow` metadata persist without
+a schema migration. `TaskDeferred`, `DeferredCount`, and `MemberState` expose
+read-only derived disposition; they do not accept or repair historical tasks.
+Explicit recovery waits for any newer run to settle and retains existing budget
+accounting. Accepted editing work still requires separate integration.
+
+Model-facing `workflow_read`, `swarm_tasks`, and `list_agents` use bounded,
+paginated summaries and explicit detail selection; complete oversized values
+are text artifacts readable through existing artifact tools. Workflow JavaScript
+and `AgentResult.Value` retain full values and their existing return shapes.
+`ToolOutput.Media` with valid UTF-8 `text/*` or `application/json` content is
+stored as a readable text artifact; media wrappers must preserve those bytes.
+See [WORKFLOWS.md](WORKFLOWS.md#inspecting-and-deferring-retained-work) for tool
+arguments and the distinction between research acceptance and candidate review.

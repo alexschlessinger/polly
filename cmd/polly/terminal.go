@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"golang.org/x/term"
 )
@@ -79,7 +80,7 @@ func (ta *toolApprover) approveToolCalls(calls []messages.ChatMessageToolCall) [
 		summary := summarizeToolArgs(tc.Name, tc.Arguments)
 		label := tc.Name
 		if summary != "" {
-			label += ": " + truncate(summary, 80)
+			label += ": " + style.Truncate(summary, 80)
 		}
 		fmt.Fprintf(ta.out, "  %s\n", label)
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
@@ -194,7 +195,7 @@ func newLineMarkdownDocument(src, baseDir string, streaming bool, cache *markdow
 	return &lineMarkdownDocument{source: source, doc: doc, bounds: markdownSourceBounds(doc, source), baseDir: baseDir, streaming: streaming, cache: cache}
 }
 
-func (d *lineMarkdownDocument) render(start, end, width int) ([][]ui.Cell, []transcriptImage) {
+func (d *lineMarkdownDocument) render(start, end, width int) ([][]ui.Cell, []style.Image) {
 	if start >= end {
 		return nil, nil
 	}
@@ -209,7 +210,7 @@ func (d *lineMarkdownDocument) render(start, end, width int) ([][]ui.Cell, []tra
 		return nil, nil
 	}
 	// Prose tabs, like code tabs, must have deterministic physical widths.
-	cells := parseStyledCells(markup, ui.StyleClear)
+	cells := style.ParseCells(markup, ui.StyleClear)
 	var expanded []ui.Cell
 	column := 0
 	for _, c := range cells {
@@ -225,11 +226,11 @@ func (d *lineMarkdownDocument) render(start, end, width int) ([][]ui.Cell, []tra
 			if c.Rune == '\n' {
 				column = 0
 			} else {
-				column += transcriptCellWidth(c)
+				column += style.CellWidth(c)
 			}
 		}
 	}
-	return ui.SplitCells(wrapTranscriptCells(expanded, width), '\n'), state.images
+	return ui.SplitCells(style.WrapCells(expanded, width), '\n'), state.images
 }
 
 func (d *lineMarkdownDocument) completedEnd() int {

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -137,7 +138,7 @@ func TestActivityRawAnswerBytesAcrossDetailAndQuietModes(t *testing.T) {
 			call := messages.ChatMessageToolCall{ID: "read", Name: "read_file", Arguments: `{"path":"a.go"}`}
 			line.AppendToolStart([]messages.ChatMessageToolCall{call})
 			line.AppendToolEnd(call, "result", time.Second, nil)
-			line.AppendToolMedia(call, []transcriptImage{{Alt: "receipt", Inspection: true}})
+			line.AppendToolMedia(call, []style.Image{{Alt: "receipt", Inspection: true}})
 			line.AppendAssistantText("after")
 			completion := turnCompletion{}
 			want := "before continued\nafter\n"
@@ -168,12 +169,12 @@ func TestTurnActivityScopeParity(t *testing.T) {
 		ui.ShowThinking("reasoning")
 		ui.AppendToolStart([]messages.ChatMessageToolCall{read, spawn})
 		ui.AppendToolEnd(read, "one\ntwo", time.Second, nil)
-		ui.AppendToolMedia(read, []transcriptImage{{Alt: "parent", Inspection: true}})
+		ui.AppendToolMedia(read, []style.Image{{Alt: "parent", Inspection: true}})
 	}
 	child := &childTurnUI{parent: line, activity: line.childActivity(spawn)}
 	child.ShowThinking("private")
 	child.AppendToolStart([]messages.ChatMessageToolCall{read})
-	child.AppendToolMedia(read, []transcriptImage{{Alt: "child", Inspection: true}})
+	child.AppendToolMedia(read, []style.Image{{Alt: "child", Inspection: true}})
 	child.RecordTurnTokens(900, 300)
 	child.RecordTurnTokens(900, 300)
 	child.AppendToolEnd(read, "child result", time.Second, nil)

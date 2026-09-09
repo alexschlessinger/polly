@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -60,14 +61,14 @@ type turnDockField struct {
 // activityField is one disclosure on an inline activity row: a muted label
 // whose hitbox toggles the detail beneath the row.
 func activityField(label string, kind activityKind, expanded bool) turnDockField {
-	return turnDockField{raw: label, rendered: styled(label, "muted", ""), kind: kind, expanded: expanded}
+	return turnDockField{raw: label, rendered: style.Styled(label, "muted", ""), kind: kind, expanded: expanded}
 }
 
 // activityRowHeader is the collapsed activity row for one disclosure: the
 // accent triangle, then the muted label. Rows with several disclosures share
 // the triangle and join their labels with dots; see renderActivityRow.
 func activityRowHeader(glyph, label string) string {
-	return "  " + styled(glyph, "accent", "bold") + " " + styled(label, "muted", "")
+	return "  " + style.Styled(glyph, "accent", "bold") + " " + style.Styled(label, "muted", "")
 }
 
 // toolRowCount counts the ordinary (non-agent) tool rows behind a set of
@@ -177,7 +178,7 @@ func (m *replModel) turnDockStatusFields(dock turnDockState) []turnDockField {
 // turnOutcomeField is the settled outcome glyph with the turn's elapsed time,
 // shared by the TUI trailer and the one-shot summary.
 func turnOutcomeField(outcome turnOutcome, elapsed string) turnDockField {
-	raw, rendered := elapsed, styled(elapsed, "muted", "")
+	raw, rendered := elapsed, style.Styled(elapsed, "muted", "")
 	tail := ""
 	if elapsed != "" {
 		tail = " · " + elapsed
@@ -185,19 +186,19 @@ func turnOutcomeField(outcome turnOutcome, elapsed string) turnDockField {
 	switch outcome {
 	case turnOutcomeDone:
 		raw = strings.TrimSpace("✓ " + elapsed)
-		rendered = styled("✓", "ok", "bold")
+		rendered = style.Styled("✓", "ok", "bold")
 		if elapsed != "" {
-			rendered += " " + styled(elapsed, "muted", "")
+			rendered += " " + style.Styled(elapsed, "muted", "")
 		}
 	case turnOutcomeFailed:
 		raw = "✗ failed" + tail
-		rendered = styled("✗ failed", "err", "bold") + styled(tail, "muted", "")
+		rendered = style.Styled("✗ failed", "err", "bold") + style.Styled(tail, "muted", "")
 	case turnOutcomeCanceled:
 		raw = "canceled" + tail
-		rendered = styled("canceled", "muted", "bold") + styled(tail, "muted", "")
+		rendered = style.Styled("canceled", "muted", "bold") + style.Styled(tail, "muted", "")
 	case turnOutcomeIncomplete:
 		raw = "incomplete" + tail
-		rendered = styled("incomplete", "active", "bold") + styled(tail, "muted", "")
+		rendered = style.Styled("incomplete", "active", "bold") + style.Styled(tail, "muted", "")
 	}
 	return turnDockField{raw: raw, rendered: rendered, protected: true, elapsed: elapsed, outcome: outcome}
 }
@@ -208,7 +209,7 @@ func turnTokenField(in, out int) (turnDockField, bool) {
 		return turnDockField{}, false
 	}
 	raw := fmt.Sprintf("%s in / %s out", humanizeTokens(in), humanizeTokens(out))
-	return turnDockField{raw: raw, rendered: styled(raw, "muted", ""), optional: true}, true
+	return turnDockField{raw: raw, rendered: style.Styled(raw, "muted", ""), optional: true}, true
 }
 
 func (m *replModel) setHydratedTurnDock(reasoning *reasoningRecord, tools *toolDisclosureRecord, in, out int) {
@@ -306,7 +307,7 @@ func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDoc
 			available := rw.StringWidth(f.raw) - excess
 			if available >= 3 {
 				f.raw = rw.Truncate(f.raw, available, "…")
-				f.rendered = styled(f.raw, "accent", "")
+				f.rendered = style.Styled(f.raw, "accent", "")
 				f.kind = activityNone
 				fields[pick] = f
 			} else {
@@ -322,7 +323,7 @@ func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDoc
 	for i, field := range fields {
 		if i > 0 {
 			raw.WriteString(separator)
-			rendered.WriteString(styled(separator, "muted", ""))
+			rendered.WriteString(style.Styled(separator, "muted", ""))
 		}
 		start := rw.StringWidth(raw.String())
 		raw.WriteString(field.raw)
@@ -347,7 +348,7 @@ func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDoc
 				visiblePlacements = append(visiblePlacements, placement)
 			}
 		}
-		return styled(rw.Truncate(raw.String(), width, "…"), "muted", ""), visiblePlacements
+		return style.Styled(rw.Truncate(raw.String(), width, "…"), "muted", ""), visiblePlacements
 	}
 	return rendered.String(), placements
 }
@@ -368,17 +369,17 @@ func renderActivityRow(expanded bool, fields []turnDockField, width int) (string
 		glyph = "▾"
 	}
 	prefix := indent + glyph + " "
-	header := indent + styled(glyph, "accent", "bold") + " "
+	header := indent + style.Styled(glyph, "accent", "bold") + " "
 	var raw, rendered strings.Builder
 	var placements []turnDockPlacement
 	for i, field := range fields {
 		if i > 0 {
 			raw.WriteString(separator)
-			rendered.WriteString(styled(separator, "muted", ""))
+			rendered.WriteString(style.Styled(separator, "muted", ""))
 		}
 		start := rw.StringWidth(prefix) + rw.StringWidth(raw.String())
 		raw.WriteString(field.raw)
-		rendered.WriteString(styled(field.raw, "muted", ""))
+		rendered.WriteString(style.Styled(field.raw, "muted", ""))
 		cols := rw.StringWidth(field.raw)
 		if field.kind == activityNone || start+cols > width {
 			continue
@@ -400,9 +401,9 @@ func renderActivityRow(expanded bool, fields []turnDockField, width int) (string
 		}
 		room := width - rw.StringWidth(prefix)
 		if room < 1 {
-			return styled(rw.Truncate(prefix, width, "…"), "muted", ""), nil
+			return style.Styled(rw.Truncate(prefix, width, "…"), "muted", ""), nil
 		}
-		return header + styled(rw.Truncate(raw.String(), room, "…"), "muted", ""), visiblePlacements
+		return header + style.Styled(rw.Truncate(raw.String(), room, "…"), "muted", ""), visiblePlacements
 	}
 	return header + rendered.String(), placements
 }

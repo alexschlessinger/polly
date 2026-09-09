@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/gdamore/tcell/v3"
@@ -195,7 +196,7 @@ func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 	if !strings.Contains(inspectorText(v), `"url": "https://x"`) || !strings.Contains(inspectorText(v), "╭─ output · 3 lines") {
 		t.Fatalf("tool arguments and output are not fenced by default: %s", inspectorText(v))
 	}
-	if !strings.Contains(inspectorText(v), "╭─ arguments · json\n│ {") || !strings.Contains(strings.Join(transcriptTexts(v.model), "\n"), styled(`"https://x"`, "ok", "")) {
+	if !strings.Contains(inspectorText(v), "╭─ arguments · json\n│ {") || !strings.Contains(strings.Join(transcriptTexts(v.model), "\n"), style.Styled(`"https://x"`, "ok", "")) {
 		t.Fatalf("arguments lack JSON code-block highlighting: %s", strings.Join(transcriptTexts(v.model), "\n"))
 	}
 	header := r.inspectorHeader(60, 20, 0, 0)

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -174,7 +175,7 @@ func TestRenderLineMarkdownImages(t *testing.T) {
 		if beforeAt < 0 || captionAt <= beforeAt || imageAt <= captionAt || afterAt <= imageAt {
 			t.Fatalf("kitty image order is wrong: %q", text)
 		}
-		if !strings.Contains(text, "C=1") || strings.ContainsRune(text, transcriptImageMarker(0)) {
+		if !strings.Contains(text, "C=1") || strings.ContainsRune(text, style.ImageMarker(0)) {
 			t.Fatalf("kitty output lost cursor policy or leaked marker: %q", text)
 		}
 	})
@@ -188,7 +189,7 @@ func TestRenderLineMarkdownImages(t *testing.T) {
 		if !strings.Contains(got, "\x1b7\x1bP") || !strings.Contains(got, "\x1b\\\x1b8") {
 			t.Fatalf("sixel output lacks save/payload/restore framing")
 		}
-		if strings.ContainsRune(got, transcriptImageMarker(0)) {
+		if strings.ContainsRune(got, style.ImageMarker(0)) {
 			t.Fatalf("sixel output leaked marker")
 		}
 	})
@@ -208,7 +209,7 @@ func TestRenderLineMarkdownImages(t *testing.T) {
 		got := string(renderLineMarkdown(source, dir, outputCapabilities{
 			surface:       outputSurfaceLineANSI,
 			imageProtocol: terminalImageKitty,
-			columns:       minimumImageThumbnailCols - 1,
+			columns:       style.MinimumThumbnailCols - 1,
 		}))
 		if strings.Contains(got, "\x1b_G") || !strings.Contains(got, "latency · ") {
 			t.Fatalf("narrow fallback = %q", got)
@@ -281,8 +282,8 @@ func TestLineTurnUITypedToolImageRendersInspectionPreview(t *testing.T) {
 		t.Fatal("inspection fixture did not resolve")
 	}
 	img.Inspection = true
-	img.MaxCols = inspectionImageThumbnailCols
-	img.MaxRows = inspectionImageThumbnailRows
+	img.MaxCols = style.InspectionThumbnailCols
+	img.MaxRows = style.InspectionThumbnailRows
 
 	var out, errOut bytes.Buffer
 	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{
@@ -293,7 +294,7 @@ func TestLineTurnUITypedToolImageRendersInspectionPreview(t *testing.T) {
 	ui.writer = &out
 	ui.errWriter = &errOut
 	ui.stderrTTY = true
-	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []transcriptImage{img})
+	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []style.Image{img})
 
 	if out.Len() != 0 {
 		t.Fatalf("typed tool image polluted stdout: %q", out.String())
@@ -304,9 +305,9 @@ func TestLineTurnUITypedToolImageRendersInspectionPreview(t *testing.T) {
 }
 
 func TestLineTurnUIRedirectedStderrKeepsInspectionTextOnly(t *testing.T) {
-	img := transcriptImage{
+	img := style.Image{
 		Path: "/tmp/inspected.png", Alt: "inspected.png", Width: 8, Height: 4,
-		Inspection: true, MaxCols: inspectionImageThumbnailCols, MaxRows: inspectionImageThumbnailRows,
+		Inspection: true, MaxCols: style.InspectionThumbnailCols, MaxRows: style.InspectionThumbnailRows,
 	}
 	var out, errOut bytes.Buffer
 	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{
@@ -317,7 +318,7 @@ func TestLineTurnUIRedirectedStderrKeepsInspectionTextOnly(t *testing.T) {
 	ui.writer = &out
 	ui.errWriter = &errOut
 	ui.stderrTTY = false
-	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []transcriptImage{img})
+	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []style.Image{img})
 
 	if out.Len() != 0 || strings.Contains(errOut.String(), "\x1b") {
 		t.Fatalf("redirected inspection output stdout=%q stderr=%q", out.String(), errOut.String())
@@ -328,9 +329,9 @@ func TestLineTurnUIRedirectedStderrKeepsInspectionTextOnly(t *testing.T) {
 }
 
 func TestLineTurnUIRawToolImageEmitsTextReceiptOnly(t *testing.T) {
-	img := transcriptImage{
+	img := style.Image{
 		Path: "/tmp/inspected.png", Alt: "inspected.png", Width: 8, Height: 4,
-		Inspection: true, MaxCols: inspectionImageThumbnailCols, MaxRows: inspectionImageThumbnailRows,
+		Inspection: true, MaxCols: style.InspectionThumbnailCols, MaxRows: style.InspectionThumbnailRows,
 	}
 	var out, errOut bytes.Buffer
 	ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{
@@ -340,7 +341,7 @@ func TestLineTurnUIRawToolImageEmitsTextReceiptOnly(t *testing.T) {
 	})
 	ui.writer = &out
 	ui.errWriter = &errOut
-	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []transcriptImage{img})
+	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []style.Image{img})
 
 	if out.Len() != 0 || strings.Contains(errOut.String(), "\x1b") {
 		t.Fatalf("raw inspection output stdout=%q stderr=%q", out.String(), errOut.String())

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/metaspartan/gotui/v5/widgets"
@@ -24,6 +25,7 @@ type replModalItem struct {
 	// children counts the items nesting under this one.
 	children   int
 	nestDetail string
+	groupOnly  bool // synthetic history groups toggle instead of opening a session
 }
 
 // replModal is shared by provider/model selection and masked credential input.
@@ -75,8 +77,21 @@ func (m *replModal) filteredItems() []replModalItem {
 			return m.items
 		}
 		out := make([]replModalItem, 0, len(m.items))
+		parents := make(map[string]string, len(m.items))
 		for _, item := range m.items {
-			if item.parent == "" || m.expanded[item.parent] {
+			parents[item.value] = item.parent
+		}
+		for _, item := range m.items {
+			visible := true
+			seen := map[string]bool{}
+			for parent := item.parent; parent != ""; parent = parents[parent] {
+				if seen[parent] || !m.expanded[parent] {
+					visible = false
+					break
+				}
+				seen[parent] = true
+			}
+			if visible {
 				out = append(out, item)
 			}
 		}
@@ -114,7 +129,7 @@ func (m *replModal) toggle(expand bool) bool {
 	m.selected = min(m.selected, len(items)-1)
 	item := items[m.selected]
 	target := item.value
-	if item.parent != "" {
+	if item.parent != "" && (!expand && !m.expanded[item.value] || item.children == 0) {
 		if expand {
 			return false
 		}
@@ -147,9 +162,12 @@ func (m *replModal) nestMarker(item replModalItem) string {
 	if m.expanded[item.value] {
 		glyph = "▾"
 	}
-	noun := "agents"
-	if item.children == 1 {
-		noun = "agent"
+	noun := "agent"
+	if strings.HasPrefix(item.value, "history:") {
+		noun = "workflow"
+	}
+	if item.children != 1 {
+		noun += "s"
 	}
 	marker := fmt.Sprintf("%s %d %s", glyph, item.children, noun)
 	if item.nestDetail != "" {
@@ -165,14 +183,14 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 			value = strings.Repeat("•", len([]rune(value)))
 		}
 		if value == "" {
-			return userGutter() + styled("type a value", "muted", "") + "\n\n" + centeredModalHelper(m.helper, modalWidth)
+			return userGutter() + style.Styled("type a value", "muted", "") + "\n\n" + centeredModalHelper(m.helper, modalWidth)
 		}
-		return userGutter() + styleEscape(value) + "\n\n" + centeredModalHelper(m.helper, modalWidth)
+		return userGutter() + style.Escape(value) + "\n\n" + centeredModalHelper(m.helper, modalWidth)
 	}
 	items := m.filteredItems()
 	if len(items) == 0 {
 		m.top, m.selected, m.visible = 0, 0, 0
-		return styled("No matches", "muted", "") + "\n\n" + centeredModalHelper("type to filter · Esc back", modalWidth)
+		return style.Styled("No matches", "muted", "") + "\n\n" + centeredModalHelper("type to filter · Esc back", modalWidth)
 	}
 	m.selected = max(0, min(m.selected, len(items)-1))
 	start := 0
@@ -195,20 +213,20 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	lines := make([]string, 0, end-start+2)
 	for i := start; i < end; i++ {
 		prefix := "  "
-		line := styleEscape(items[i].label)
+		line := style.Escape(items[i].label)
 		if items[i].display != "" {
 			line = items[i].display
 		}
 		if i == m.selected {
-			prefix = styled("›", "accent", "bold") + " "
+			prefix = style.Styled("›", "accent", "bold") + " "
 			if items[i].selectedDisplay != "" {
 				line = items[i].selectedDisplay
 			} else {
-				line = styled(items[i].label, "accent", "bold")
+				line = style.Styled(items[i].label, "accent", "bold")
 			}
 		}
 		if marker := m.nestMarker(items[i]); marker != "" {
-			line += "  " + styled(marker, "muted", "")
+			line += "  " + style.Styled(marker, "muted", "")
 		}
 		lines = append(lines, prefix+line)
 	}
@@ -256,7 +274,7 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 
 func centeredModalHelper(text string, modalWidth int) string {
 	padding := max(0, (modalWidth-2-rw.StringWidth(text))/2)
-	return strings.Repeat(" ", padding) + styled(text, "muted", "")
+	return strings.Repeat(" ", padding) + style.Styled(text, "muted", "")
 }
 
 // modalParagraph clears its complete rectangle before drawing. This makes a
@@ -283,7 +301,7 @@ func (p *modalParagraph) Draw(buf *ui.Buffer) {
 		}
 	}
 	p.Paragraph.Draw(buf)
-	restoreStyledLiterals(buf, p.Inner)
+	style.RestoreLiterals(buf, p.Inner)
 	p.scrollbar.draw(buf)
 }
 
@@ -572,6 +590,10 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 			}
 			m.selected = min(m.selected, len(items)-1)
 			value = items[m.selected].value
+			if items[m.selected].groupOnly {
+				m.toggle(!m.expanded[value])
+				return true
+			}
 		}
 		submit := m.onSubmit
 		r.closeModal()

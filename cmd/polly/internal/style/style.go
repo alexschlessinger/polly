@@ -1,14 +1,30 @@
-package main
+package style
 
 import (
 	"image"
 	"strings"
 
+	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/metaspartan/gotui/v5/widgets"
 )
 
-// Inline style markup: the gotui color roles and the [text](style) helpers.
+// Package style is the transcript text vocabulary shared by every polly
+// surface: gotui inline markup and its bracket escaping, cell wrapping, and
+// the sidecar image slots that Markdown rendering leaves in styled text.
+
+// The masthead bird's palette, registered by name below.
+var (
+	pollyGreen = tcell.NewRGBColor(0x01, 0xab, 0x46)
+	pollyLight = tcell.NewRGBColor(0x57, 0xcd, 0x75)
+	pollyWing  = tcell.NewRGBColor(0xb7, 0xd0, 0x19)
+	pollyCrown = tcell.NewRGBColor(0xff, 0x2b, 0x23)
+	pollyBeak  = tcell.NewRGBColor(0xff, 0xd5, 0x1d)
+	pollyMouth = tcell.NewRGBColor(0xff, 0x60, 0x0d)
+	pollyFace  = tcell.NewRGBColor(0xec, 0x80, 0xaf)
+	pollyEye   = tcell.NewRGBColor(0x31, 0x2f, 0x2a)
+	pollyFoot  = tcell.NewRGBColor(0xfe, 0xba, 0x02)
+)
 
 // init registers polly's semantic accent colors. Each name maps to an ANSI
 // palette slot (XTerm 0–15) that the terminal (e.g. Ghostty) remaps to the
@@ -54,29 +70,29 @@ var styledLiteralBracketReplacer = strings.NewReplacer(
 	"]", string(styledLiteralCloseBracket),
 )
 
-// styleEscape makes s inert to gotui's style parser. Callers building markup
+// Escape makes s inert to gotui's style parser. Callers building markup
 // by hand apply it to every run of literal text; styled applies it itself.
-func styleEscape(s string) string {
+func Escape(s string) string {
 	return styledLiteralBracketReplacer.Replace(s)
 }
 
-// styledBg is styled with a background color as well; both names resolve
+// StyledBg is styled with a background color as well; both names resolve
 // through StyleParserColorMap.
-func styledBg(text, fg, bg string) string {
+func StyledBg(text, fg, bg string) string {
 	if text == "" {
 		return ""
 	}
-	return "[" + styleEscape(text) + "](fg:" + fg + ",bg:" + bg + ")"
+	return "[" + Escape(text) + "](fg:" + fg + ",bg:" + bg + ")"
 }
 
-// styled wraps text in gotui's inline style markup. Color names come from
+// Styled wraps text in gotui's inline style markup. Color names come from
 // gotui's StyleParserColorMap; empty fg/modifier means no styling. The text is
 // run through styleEscape — callers don't need to pre-sanitize.
-func styled(text, fg, modifier string) string {
+func Styled(text, fg, modifier string) string {
 	if text == "" {
 		return ""
 	}
-	text = styleEscape(text)
+	text = Escape(text)
 	parts := []string{}
 	if fg != "" {
 		parts = append(parts, "fg:"+fg)
@@ -90,30 +106,30 @@ func styled(text, fg, modifier string) string {
 	return "[" + text + "](" + strings.Join(parts, ",") + ")"
 }
 
-// link marks text the user can click. A link is the accent color and nothing
+// Link marks text the user can click. A Link is the accent color and nothing
 // else: the terminal has no underline through gotui, and brackets would read
 // as literal text.
-func link(label string) string {
-	return styled(label, "accent", "")
+func Link(label string) string {
+	return Styled(label, "accent", "")
 }
 
-// keyHints renders key and verb pairs the way dialog footers do: the key in
+// KeyHints renders key and verb pairs the way dialog footers do: the key in
 // the text color, its verb muted, pairs joined by a muted middle dot. A pair
 // with an empty verb shows the key alone.
-func keyHints(pairs ...[2]string) string {
+func KeyHints(pairs ...[2]string) string {
 	parts := make([]string, 0, len(pairs))
 	for _, p := range pairs {
-		part := styleEscape(p[0])
+		part := Escape(p[0])
 		if p[1] != "" {
-			part += " " + styled(p[1], "muted", "")
+			part += " " + Styled(p[1], "muted", "")
 		}
 		parts = append(parts, part)
 	}
-	return strings.Join(parts, styled(" · ", "muted", ""))
+	return strings.Join(parts, Styled(" · ", "muted", ""))
 }
 
-// keyHintsText is the unstyled text of keyHints, for width math.
-func keyHintsText(pairs ...[2]string) string {
+// KeyHintsText is the unstyled text of keyHints, for width math.
+func KeyHintsText(pairs ...[2]string) string {
 	parts := make([]string, 0, len(pairs))
 	for _, p := range pairs {
 		part := p[0]
@@ -136,7 +152,7 @@ func styledLiteralRune(r rune) (rune, bool) {
 	return r, false
 }
 
-func parseStyledCells(text string, defaultStyle ui.Style) []ui.Cell {
+func ParseCells(text string, defaultStyle ui.Style) []ui.Cell {
 	cells := ui.ParseStyles(text, defaultStyle)
 	for i := range cells {
 		cells[i].Rune, _ = styledLiteralRune(cells[i].Rune)
@@ -144,23 +160,23 @@ func parseStyledCells(text string, defaultStyle ui.Style) []ui.Cell {
 	return cells
 }
 
-// literalParagraph is a gotui Paragraph for text built with styled and
+// LiteralParagraph is a gotui Paragraph for text built with styled and
 // styleEscape. The stock widget parses its Text itself, so the substitute
 // runes would reach the screen; Draw restores them in the buffer afterwards.
-type literalParagraph struct{ *widgets.Paragraph }
+type LiteralParagraph struct{ *widgets.Paragraph }
 
-func newLiteralParagraph() *literalParagraph {
-	return &literalParagraph{Paragraph: widgets.NewParagraph()}
+func NewLiteralParagraph() *LiteralParagraph {
+	return &LiteralParagraph{Paragraph: widgets.NewParagraph()}
 }
 
-func (p *literalParagraph) Draw(buf *ui.Buffer) {
+func (p *LiteralParagraph) Draw(buf *ui.Buffer) {
 	p.Paragraph.Draw(buf)
-	restoreStyledLiterals(buf, p.Inner)
+	RestoreLiterals(buf, p.Inner)
 }
 
-// restoreStyledLiterals rewrites the substitute runes within rect back to
+// RestoreLiterals rewrites the substitute runes within rect back to
 // brackets.
-func restoreStyledLiterals(buf *ui.Buffer, rect image.Rectangle) {
+func RestoreLiterals(buf *ui.Buffer, rect image.Rectangle) {
 	for y := rect.Min.Y; y < rect.Max.Y; y++ {
 		for x := rect.Min.X; x < rect.Max.X; x++ {
 			pt := image.Pt(x, y)

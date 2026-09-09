@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
 )
@@ -37,7 +38,7 @@ func (b *inspectorHeaderBuilder) write(text, color, modifier, action string) {
 		return
 	}
 	row := len(b.lines) - 1
-	b.lines[row] += styled(text, color, modifier)
+	b.lines[row] += style.Styled(text, color, modifier)
 	if action != "" {
 		at := b.origin.Add(image.Pt(b.col, row))
 		rect := image.Rect(at.X, at.Y, at.X+cols, at.Y+1)

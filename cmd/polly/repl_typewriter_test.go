@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -171,7 +172,7 @@ func TestTypewriterRevealsFinalStylesWithoutMarkdownFlicker(t *testing.T) {
 			at := m.streamTypewriter.receivedAt
 			m.renderPendingMarkdownAt(at)
 			canonical := m.transcript[m.currentAssistant].text
-			full := parseStyledCells(strings.TrimRight(canonical, "\r\n"), ui.StyleClear)
+			full := style.ParseCells(strings.TrimRight(canonical, "\r\n"), ui.StyleClear)
 			for frame := 0; frame <= 6; frame++ {
 				m.renderPendingMarkdownAt(at.Add(time.Duration(frame) * 20 * time.Millisecond))
 				prefix := m.streamTypewriter.prefix()
@@ -213,7 +214,7 @@ func TestTypewriterKeepsImageSlotsWhole(t *testing.T) {
 		t.Fatal("image response retained a partial typing projection")
 	}
 	for _, block := range m.transcriptDisplayEntries(80) {
-		if len(block.images) > 0 && strings.Count(block.text, string(transcriptImageMarker(0))) != transcriptImageThumbnailRows {
+		if len(block.images) > 0 && strings.Count(block.text, string(style.ImageMarker(0))) != style.ThumbnailRows {
 			t.Fatal("typing split the reserved image slot")
 		}
 	}

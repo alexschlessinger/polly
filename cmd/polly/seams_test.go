@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 	ui "github.com/metaspartan/gotui/v5"
@@ -39,7 +40,7 @@ func signalExitCode(err error) (int, bool) {
 	return code, ok
 }
 
-func preparedMessageTranscriptImages(msg messages.ChatMessage) []transcriptImage {
+func preparedMessageTranscriptImages(msg messages.ChatMessage) []style.Image {
 	return preparedMessageTranscriptImagesWithStore(msg, nil)
 }
 
@@ -153,7 +154,7 @@ func (m *replModel) visibleTranscript(maxLines int) string {
 	if m.slashHints != "" {
 		withHints := make([]string, 0, len(lines)+1)
 		withHints = append(withHints, lines...)
-		withHints = append(withHints, styled(m.slashHints, "muted", ""))
+		withHints = append(withHints, style.Styled(m.slashHints, "muted", ""))
 		lines = withHints
 	}
 	total := len(lines)
@@ -192,7 +193,7 @@ func (m *replModel) visibleTranscript(maxLines int) string {
 func (m *replModel) fullTranscript() string {
 	lines := m.flattenTranscript()
 	if m.slashHints != "" {
-		lines = append(append([]string(nil), lines...), styled(m.slashHints, "muted", ""))
+		lines = append(append([]string(nil), lines...), style.Styled(m.slashHints, "muted", ""))
 	}
 	return strings.Join(lines, "\n")
 }

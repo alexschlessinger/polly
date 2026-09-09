@@ -55,13 +55,13 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 			}
 			if lastTool(req, "send_message") == "" {
 				var list struct {
-					Members map[string]*Member `json:"members"`
+					Items []*Member `json:"items"`
 				}
 				if err := json.Unmarshal([]byte(roster), &list); err != nil {
 					t.Error(err)
 					return answer("bad roster")
 				}
-				for _, m := range list.Members {
+				for _, m := range list.Items {
 					if m.Label == "worker-b" {
 						return batch(call("ask", "send_message", map[string]any{"to": m.ID, "kind": "request", "text": "What is the shared answer?"}), call("wait", "swarm_wait", map[string]any{}))
 					}

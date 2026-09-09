@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 	tcell "github.com/gdamore/tcell/v3"
@@ -36,22 +37,22 @@ func TestRenderMarkdownWithLocalImages(t *testing.T) {
 	if images[0].Width != 8 || images[0].Height != 4 {
 		t.Fatalf("image dimensions = %dx%d, want 8x4", images[0].Width, images[0].Height)
 	}
-	if got := strings.Count(rendered, string(transcriptImageMarker(0))); got != transcriptImageThumbnailRows {
-		t.Fatalf("marker rows = %d, want %d\n%s", got, transcriptImageThumbnailRows, rendered)
+	if got := strings.Count(rendered, string(style.ImageMarker(0))); got != style.ThumbnailRows {
+		t.Fatalf("marker rows = %d, want %d\n%s", got, style.ThumbnailRows, rendered)
 	}
 	if !strings.Contains(rendered, "latency chart · chart.png") {
 		t.Fatalf("rendered caption missing: %q", rendered)
 	}
 
 	plain := renderMarkdown("![latency chart](chart.png)")
-	if strings.ContainsRune(plain, transcriptImageMarker(0)) {
+	if strings.ContainsRune(plain, style.ImageMarker(0)) {
 		t.Fatalf("ordinary markdown renderer leaked an image marker: %q", plain)
 	}
 }
 
 func TestRenderMarkdownWithLocalImagesSanitizesPrivateMarkers(t *testing.T) {
 	dir := t.TempDir()
-	marker := string(transcriptImageMarker(0))
+	marker := string(style.ImageMarker(0))
 	filename := "chart" + marker + ".png"
 	path := filepath.Join(dir, filename)
 	writeImageFixture(t, path, 8, 4)
@@ -62,10 +63,10 @@ func TestRenderMarkdownWithLocalImagesSanitizesPrivateMarkers(t *testing.T) {
 	if len(images) != 1 || images[0].Path != path {
 		t.Fatalf("resolved images = %#v", images)
 	}
-	if got := strings.Count(rendered, marker); got != transcriptImageThumbnailRows {
-		t.Fatalf("rendered Markdown contains %d marker runes, want %d generated slot rows", got, transcriptImageThumbnailRows)
+	if got := strings.Count(rendered, marker); got != style.ThumbnailRows {
+		t.Fatalf("rendered Markdown contains %d marker runes, want %d generated slot rows", got, style.ThumbnailRows)
 	}
-	plain := plainStyledText(stripTranscriptImageMarkers(rendered))
+	plain := plainStyledText(style.StripImageMarkers(rendered))
 	if !strings.Contains(plain, "before") || !strings.Contains(plain, "code") {
 		t.Fatalf("sanitizing markers damaged source text: %q", plain)
 	}
@@ -87,7 +88,7 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 	m.beginTurn("inspect image")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
-	marker := string(transcriptImageMarker(0))
+	marker := string(style.ImageMarker(0))
 	tui.ShowThinking("provider " + marker + " reasoning survives")
 	reasoning := m.currentReasoningRecord()
 	if reasoning == nil || !m.toggleReasoning(reasoning.id, 80) {
@@ -115,8 +116,8 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 	if strings.Contains(plainStyledText(strings.SplitN(activity.text, "\n", 2)[0]), "image viewed") {
 		t.Fatalf("path-discovered tool output was promoted to Images viewed: %q", plainStyledText(activity.text))
 	}
-	if got := strings.Count(activity.text, marker); got != transcriptImageThumbnailRows {
-		t.Fatalf("merged activity contains %d slot markers, want %d tool-generated rows", got, transcriptImageThumbnailRows)
+	if got := strings.Count(activity.text, marker); got != style.ThumbnailRows {
+		t.Fatalf("merged activity contains %d slot markers, want %d tool-generated rows", got, style.ThumbnailRows)
 	}
 	visible := strings.Join(transcriptRowsText(m.transcriptRows(80)), "\n")
 	if !strings.Contains(visible, "provider") || !strings.Contains(visible, "reasoning survives") {
@@ -130,7 +131,7 @@ func TestRenderMarkdownLeavesRemoteAndMissingImagesAsLinks(t *testing.T) {
 	if len(images) != 0 {
 		t.Fatalf("images = %#v, want none", images)
 	}
-	if strings.ContainsRune(rendered, transcriptImageMarker(0)) {
+	if strings.ContainsRune(rendered, style.ImageMarker(0)) {
 		t.Fatalf("rendered leaked an image marker: %q", rendered)
 	}
 	if !strings.Contains(rendered, "https://example.com/a.png") || !strings.Contains(rendered, "missing.png") {
@@ -164,24 +165,24 @@ func TestDiscoverToolOutputImagesIsExplicit(t *testing.T) {
 }
 
 func TestTranscriptImageSlotsCollapseWithoutNativeBackend(t *testing.T) {
-	img := transcriptImage{Path: "/tmp/chart.png", DisplayPath: "chart.png", Alt: "chart", Width: 8, Height: 4}
-	text := renderTranscriptImages([]transcriptImage{img}, "")
+	img := style.Image{Path: "/tmp/chart.png", DisplayPath: "chart.png", Alt: "chart", Width: 8, Height: 4}
+	text := style.RenderImages([]style.Image{img}, "")
 
-	fallbackRows, fallbackSpans := transcriptBlockRowsWithImages(text, false, 80, []transcriptImage{img}, false, 10, 20)
+	fallbackRows, fallbackSpans := transcriptBlockRowsWithImages(text, false, 80, []style.Image{img}, false, 10, 20)
 	if len(fallbackRows) != 1 || len(fallbackSpans) != 0 {
 		t.Fatalf("fallback rows/spans = %d/%d, want 1/0", len(fallbackRows), len(fallbackSpans))
 	}
 
-	nativeRows, nativeSpans := transcriptBlockRowsWithImages(text, false, 80, []transcriptImage{img}, true, 10, 20)
-	if len(nativeRows) != 1+transcriptImageThumbnailRows {
-		t.Fatalf("native rows = %d, want %d", len(nativeRows), 1+transcriptImageThumbnailRows)
+	nativeRows, nativeSpans := transcriptBlockRowsWithImages(text, false, 80, []style.Image{img}, true, 10, 20)
+	if len(nativeRows) != 1+style.ThumbnailRows {
+		t.Fatalf("native rows = %d, want %d", len(nativeRows), 1+style.ThumbnailRows)
 	}
-	if len(nativeSpans) != 1 || nativeSpans[0].row != 1 || nativeSpans[0].x != 0 || nativeSpans[0].cols != 40 || nativeSpans[0].rows != transcriptImageThumbnailRows || !nativeSpans[0].fitByRows {
+	if len(nativeSpans) != 1 || nativeSpans[0].row != 1 || nativeSpans[0].x != 0 || nativeSpans[0].cols != 40 || nativeSpans[0].rows != style.ThumbnailRows || !nativeSpans[0].fitByRows {
 		t.Fatalf("native spans = %#v", nativeSpans)
 	}
 	for _, row := range nativeRows {
 		for _, cell := range row {
-			if _, marker := transcriptImageMarkerIndex(cell.Rune); marker {
+			if _, marker := style.ImageMarkerIndex(cell.Rune); marker {
 				t.Fatalf("private marker reached final cells: %#v", cell)
 			}
 		}
@@ -244,7 +245,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	writeImageFixture(t, path, 8, 4)
 	result := testToolImageResult(t, path, "view-call")
 	images := inspectionTranscriptImages(result, nil)
-	if len(images) != 1 || !images[0].Inspection || images[0].MaxCols != inspectionImageThumbnailCols || images[0].MaxRows != inspectionImageThumbnailRows {
+	if len(images) != 1 || !images[0].Inspection || images[0].MaxCols != style.InspectionThumbnailCols || images[0].MaxRows != style.InspectionThumbnailRows {
 		t.Fatalf("inspection images = %#v", images)
 	}
 
@@ -264,7 +265,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	if got := len(r.model.transcript[toolIndex].images); got != 0 {
 		t.Fatalf("collapsed tool entry sidecars = %d, want 0", got)
 	}
-	if plain := plainStyledText(stripTranscriptImageMarkers(r.model.transcript[toolIndex].text)); strings.Contains(plain, "viewed ·") {
+	if plain := plainStyledText(style.StripImageMarkers(r.model.transcript[toolIndex].text)); strings.Contains(plain, "viewed ·") {
 		t.Fatalf("collapsed tool entry leaked inspection detail: %q", plain)
 	}
 
@@ -302,15 +303,15 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 			break
 		}
 	}
-	plain := plainStyledText(stripTranscriptImageMarkers(expanded.text))
+	plain := plainStyledText(style.StripImageMarkers(expanded.text))
 	if !strings.Contains(plain, "▾ 1 tool · 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") || !strings.Contains(plain, "│") {
 		t.Fatalf("expanded Images disclosure = %q", plain)
 	}
-	if len(expanded.images) != 1 || strings.Count(expanded.text, string(transcriptImageMarker(0))) != inspectionImageThumbnailRows {
+	if len(expanded.images) != 1 || strings.Count(expanded.text, string(style.ImageMarker(0))) != style.InspectionThumbnailRows {
 		t.Fatalf("expanded inspection sidecars/markers = %#v / %q", expanded.images, expanded.text)
 	}
 	imageRows, spans := transcriptBlockRowsWithImages(expanded.text, false, 100, expanded.images, true, 10, 20)
-	if len(spans) != 1 || spans[0].x != 4 || spans[0].cols != 24 || spans[0].rows != inspectionImageThumbnailRows || len(imageRows) < 1+inspectionImageThumbnailRows {
+	if len(spans) != 1 || spans[0].x != 4 || spans[0].cols != 24 || spans[0].rows != style.InspectionThumbnailRows || len(imageRows) < 1+style.InspectionThumbnailRows {
 		t.Fatalf("compact inspection geometry rows/spans = %d/%#v", len(imageRows), spans)
 	}
 	if !r.model.toggleToolDisclosure(record.id) || !record.expanded || !record.imagesExpanded {
@@ -404,11 +405,11 @@ func TestToolAndImagesDisclosuresKeepIndependentImageMarkers(t *testing.T) {
 	if len(activity.images) != 2 || activity.images[0].Path != discoveredPath || activity.images[1].Path == discoveredPath {
 		t.Fatalf("tool/inspection sidecar order = %#v", activity.images)
 	}
-	if got := strings.Count(activity.text, string(transcriptImageMarker(0))); got != transcriptImageThumbnailRows {
-		t.Fatalf("tool detail marker rows = %d, want %d", got, transcriptImageThumbnailRows)
+	if got := strings.Count(activity.text, string(style.ImageMarker(0))); got != style.ThumbnailRows {
+		t.Fatalf("tool detail marker rows = %d, want %d", got, style.ThumbnailRows)
 	}
-	if got := strings.Count(activity.text, string(transcriptImageMarker(1))); got != inspectionImageThumbnailRows {
-		t.Fatalf("Images gallery marker rows = %d, want %d", got, inspectionImageThumbnailRows)
+	if got := strings.Count(activity.text, string(style.ImageMarker(1))); got != style.InspectionThumbnailRows {
+		t.Fatalf("Images gallery marker rows = %d, want %d", got, style.InspectionThumbnailRows)
 	}
 	_, spans := transcriptBlockRowsWithImages(activity.text, false, 100, activity.images, true, 10, 20)
 	if len(spans) != 2 || spans[0].imageIndex != 0 || spans[1].imageIndex != 1 || spans[0].x != 4 || spans[1].x != 4 || spans[0].row >= spans[1].row {
@@ -482,7 +483,7 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 	if got := len(expanded.images); got != 1 {
 		t.Fatalf("expanded hydrated image sidecars = %d, want 1", got)
 	}
-	plain := plainStyledText(stripTranscriptImageMarkers(expanded.text))
+	plain := plainStyledText(style.StripImageMarkers(expanded.text))
 	if !strings.Contains(plain, "viewed · durable.png · 6×3") || !strings.Contains(plain, "│") {
 		t.Fatalf("hydrated inspection gallery = %q", plain)
 	}
@@ -499,24 +500,24 @@ func TestTypedToolImageKeepsReceiptWhenPreviewCannotMaterialize(t *testing.T) {
 	if len(images) != 1 || !images[0].Inspection || images[0].Path != "" {
 		t.Fatalf("fallback inspection images = %#v", images)
 	}
-	rendered := renderTranscriptImages(images, "    ")
+	rendered := style.RenderImages(images, "    ")
 	if plain := plainStyledText(rendered); !strings.Contains(plain, "viewed · frame.png") {
 		t.Fatalf("fallback inspection receipt = %q", plain)
 	}
-	if strings.ContainsRune(rendered, transcriptImageMarker(0)) {
+	if strings.ContainsRune(rendered, style.ImageMarker(0)) {
 		t.Fatalf("fallback receipt reserved an unusable image slot: %q", rendered)
 	}
 }
 
 func TestInspectionCaptionSanitizesToolMediaName(t *testing.T) {
-	img := transcriptImage{Inspection: true, Alt: "[frame]\n\x1b]evil.png"}
-	caption := transcriptImageCaptionText(img)
+	img := style.Image{Inspection: true, Alt: "[frame]\n\x1b]evil.png"}
+	caption := style.ImageCaptionText(img)
 	for _, r := range caption {
 		if r < 0x20 || r == 0x7f {
 			t.Fatalf("control rune survived inspection caption: %q", caption)
 		}
 	}
-	if plain := plainStyledText(transcriptImageCaption(img)); !strings.Contains(plain, "[frame]  ]evil.png") {
+	if plain := plainStyledText(style.ImageCaption(img)); !strings.Contains(plain, "[frame]  ]evil.png") {
 		t.Fatalf("literal brackets were not preserved: %q", plain)
 	}
 }
@@ -542,20 +543,20 @@ func testToolImageResult(t *testing.T, path, callID string) messages.ChatMessage
 }
 
 func TestImageCellGeometryPreservesAspectRatio(t *testing.T) {
-	wide := transcriptImage{Path: "/tmp/headcam.png", DisplayPath: "headcam.png", Width: 2400, Height: 270}
+	wide := style.Image{Path: "/tmp/headcam.png", DisplayPath: "headcam.png", Width: 2400, Height: 270}
 	cols, rows, fitByRows := imageCellGeometry(wide, 50, 10, 10, 20)
 	if cols != 50 || rows != 3 || fitByRows {
 		t.Fatalf("wide geometry = %dx%d fitByRows=%t, want 50x3 width-bound", cols, rows, fitByRows)
 	}
 	wideRows, wideSpans := transcriptBlockRowsWithImages(
-		renderTranscriptImages([]transcriptImage{wide}, ""), false, 80,
-		[]transcriptImage{wide}, true, 10, 20,
+		style.RenderImages([]style.Image{wide}, ""), false, 80,
+		[]style.Image{wide}, true, 10, 20,
 	)
 	if len(wideRows) != 4 || len(wideSpans) != 1 || wideSpans[0].cols != 50 || wideSpans[0].rows != 3 {
 		t.Fatalf("wide slot rows/spans = %d/%#v, want caption plus 50x3 slot", len(wideRows), wideSpans)
 	}
 
-	square := transcriptImage{Width: 100, Height: 100}
+	square := style.Image{Width: 100, Height: 100}
 	cols, rows, fitByRows = imageCellGeometry(square, 50, 10, 10, 20)
 	if cols != 20 || rows != 10 || !fitByRows {
 		t.Fatalf("square geometry = %dx%d fitByRows=%t, want 20x10 height-bound", cols, rows, fitByRows)
@@ -586,9 +587,9 @@ func TestTranscriptImagesFollowTheirEntry(t *testing.T) {
 	m.finishAssistantBlock("")
 	m.appendQueuedInput(&queuedREPLInput{text: "queued"})
 
-	img := transcriptImage{Path: "/tmp/x.png", Alt: "x"}
+	img := style.Image{Path: "/tmp/x.png", Alt: "x"}
 	last := len(m.transcript) - 1
-	m.setTranscriptImages(last, []transcriptImage{img})
+	m.setTranscriptImages(last, []style.Image{img})
 	m.deleteTranscriptEntry(0)
 	if got := m.transcript[last-1].images; len(got) != 1 || got[0] != img {
 		t.Fatalf("images did not follow their entry across the delete: %#v", got)
@@ -622,7 +623,7 @@ func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 	m.nativeImages = true
 	m.imageCellWidth = 10
 	m.imageCellHeight = 20
-	m.setTranscriptImages(m.appendTranscriptEntry(renderTranscriptImages([]transcriptImage{img}, "")), []transcriptImage{img})
+	m.setTranscriptImages(m.appendTranscriptEntry(style.RenderImages([]style.Image{img}, "")), []style.Image{img})
 	m.transcriptRows(80)
 	if spans := m.visual.blocks[0].imageSpans; len(spans) != 1 || spans[0].cols != 50 || spans[0].rows != 3 || spans[0].fitByRows {
 		t.Fatalf("initial wide spans = %#v", spans)
@@ -645,7 +646,7 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 	m.visual.blocks = []transcriptVisualBlock{{
 		key:        "transcript:4",
 		rows:       make([][]ui.Cell, 14),
-		images:     []transcriptImage{{Path: "/tmp/chart.png"}},
+		images:     []style.Image{{Path: "/tmp/chart.png"}},
 		imageSpans: []transcriptImageSpan{{imageIndex: 0, row: 2, x: 3, cols: 50, rows: 10}},
 	}}
 
@@ -654,7 +655,7 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 		t.Fatalf("placements = %#v", placements)
 	}
 	got := placements[0]
-	if got.Key != "transcript:4:image:0" || got.X != 3 || got.Y != 4 || got.Cols != transcriptImageThumbnailCols || got.Rows != 10 || got.FitByRows {
+	if got.Key != "transcript:4:image:0" || got.X != 3 || got.Y != 4 || got.Cols != style.ThumbnailCols || got.Rows != 10 || got.FitByRows {
 		t.Fatalf("placement = %#v", got)
 	}
 	if clipped := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 8}.transcriptViewport(14, 0, false, 0)); len(clipped) != 0 {

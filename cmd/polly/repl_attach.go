@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -312,7 +313,7 @@ func splitDroppedPaths(text string) []string {
 // pastedImageAttachments interprets a bracketed paste as a terminal drag-drop:
 // it converts only when the entire paste is nothing but existing local image
 // paths. Prose that merely contains a path stays text. Caller must hold m.mu.
-func (m *replModel) pastedImageAttachments(text string) []transcriptImage {
+func (m *replModel) pastedImageAttachments(text string) []style.Image {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
@@ -320,7 +321,7 @@ func (m *replModel) pastedImageAttachments(text string) []transcriptImage {
 	if len(paths) == 0 || len(paths) > maxPromptAttachments {
 		return nil
 	}
-	images := make([]transcriptImage, 0, len(paths))
+	images := make([]style.Image, 0, len(paths))
 	for _, path := range paths {
 		img, ok := resolveLocalTranscriptImage(path, "", m.imageBaseDir)
 		if !ok {
@@ -403,7 +404,7 @@ func prepareImageBytesForUpload(data []byte, fileName string) (*messages.Content
 // image bytes accepted into a durable message. Transcript thumbnails then
 // remain faithful if the original path is changed or removed before the turn
 // is rendered.
-func preparedMessageTranscriptImagesWithStore(msg messages.ChatMessage, store artifacts.Store) []transcriptImage {
+func preparedMessageTranscriptImagesWithStore(msg messages.ChatMessage, store artifacts.Store) []style.Image {
 	if store != nil {
 		msg = msg.Clone()
 		for i, part := range msg.Parts {
@@ -428,11 +429,11 @@ func preparedMessageTranscriptImagesWithStore(msg messages.ChatMessage, store ar
 // the model-visible result, projected as compact human-facing receipts. This
 // deliberately ignores path-looking tool text: only typed media the model
 // actually received earns an always-visible inspection preview.
-func inspectionTranscriptImages(msg messages.ChatMessage, store artifacts.Store) []transcriptImage {
+func inspectionTranscriptImages(msg messages.ChatMessage, store artifacts.Store) []style.Image {
 	if !msg.HasImages() {
 		return nil
 	}
-	images := make([]transcriptImage, 0, len(msg.Parts))
+	images := make([]style.Image, 0, len(msg.Parts))
 	for _, part := range msg.Parts {
 		partMessage := messages.ChatMessage{Parts: []messages.ContentPart{part}}
 		if !partMessage.HasImages() {
@@ -450,25 +451,25 @@ func inspectionTranscriptImages(msg messages.ChatMessage, store artifacts.Store)
 			if label == "" {
 				label = "image"
 			}
-			prepared = []transcriptImage{{Alt: label, DisplayPath: label}}
+			prepared = []style.Image{{Alt: label, DisplayPath: label}}
 		}
 		for i := range prepared {
 			prepared[i].Inspection = true
-			prepared[i].MaxCols = inspectionImageThumbnailCols
-			prepared[i].MaxRows = inspectionImageThumbnailRows
+			prepared[i].MaxCols = style.InspectionThumbnailCols
+			prepared[i].MaxRows = style.InspectionThumbnailRows
 		}
 		images = append(images, prepared...)
 	}
 	return images
 }
 
-func preparedMessageTranscriptImagesInDir(msg messages.ChatMessage, dir string) []transcriptImage {
+func preparedMessageTranscriptImagesInDir(msg messages.ChatMessage, dir string) []style.Image {
 	preparedImageCacheMu.Lock()
 	defer preparedImageCacheMu.Unlock()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil
 	}
-	images := make([]transcriptImage, 0, len(msg.Parts))
+	images := make([]style.Image, 0, len(msg.Parts))
 	for _, part := range msg.Parts {
 		if part.Type != "image_base64" {
 			continue

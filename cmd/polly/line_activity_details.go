@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -61,13 +62,13 @@ func (t *lineToolDetail) finish(_ messages.ChatMessageToolCall, result string, d
 
 const lineImageDetailLimit = 64
 
-func (d *lineActivityDetails) addImages(images []transcriptImage) {
+func (d *lineActivityDetails) addImages(images []style.Image) {
 	for _, img := range images {
 		if len(d.images) == lineImageDetailLimit {
 			d.earlierImages++
 			continue
 		}
-		d.images = append(d.images, truncate(cleanActivityText(transcriptImageCaptionText(img)), 512))
+		d.images = append(d.images, style.Truncate(cleanActivityText(style.ImageCaptionText(img)), 512))
 	}
 }
 
@@ -83,11 +84,11 @@ func (ui *lineTurnUI) finishDetailsLocked(completion turnCompletion) {
 		width = max(1, ui.statusColumnsLocked()-4)
 	}
 	print := func(markup string) { ui.statusLineLocked(styledMarkupToLine(markup, a.caps.color)) }
-	heading := func(text string) { print("  " + styled(text, "accent", "")) }
+	heading := func(text string) { print("  " + style.Styled(text, "accent", "")) }
 	if len(d.thought.tail) > 0 {
 		heading("Thought")
 		for _, line := range reasoningTailLines(string(d.thought.tail), width, reasoningPreviewLines) {
-			print(reasoningBlockIndent + styled(cleanActivityText(line), "muted", "italic"))
+			print(reasoningBlockIndent + style.Styled(cleanActivityText(line), "muted", "italic"))
 		}
 	}
 	if len(d.tools) > 0 {
@@ -97,7 +98,7 @@ func (ui *lineTurnUI) finishDetailsLocked(completion turnCompletion) {
 			rows, earlier = rows[1:], earlier+1
 		}
 		if earlier > 0 {
-			print("  " + styled(fmt.Sprintf("… %d earlier", earlier), "muted", ""))
+			print("  " + style.Styled(fmt.Sprintf("… %d earlier", earlier), "muted", ""))
 		}
 		for _, row := range rows {
 			line := row.line
@@ -127,16 +128,16 @@ func (ui *lineTurnUI) finishDetailsLocked(completion turnCompletion) {
 			if f, ok := turnTokenField(launch.in, launch.out); ok {
 				parts = append(parts, f.raw)
 			}
-			print("    " + styled(strings.Join(parts, " · "), "muted", ""))
+			print("    " + style.Styled(strings.Join(parts, " · "), "muted", ""))
 		}
 	}
 	if len(d.images) > 0 {
 		heading("Images")
 		for _, caption := range d.images {
-			print("    " + styled(caption, "muted", ""))
+			print("    " + style.Styled(caption, "muted", ""))
 		}
 		if d.earlierImages > 0 {
-			print("    " + styled(fmt.Sprintf("… %d more receipts", d.earlierImages), "muted", ""))
+			print("    " + style.Styled(fmt.Sprintf("… %d more receipts", d.earlierImages), "muted", ""))
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -193,11 +194,11 @@ func (m *replModel) appendNoticePrompt(text string) {
 // be echoed, then the marker on its own row.
 func queuedEcho(item *queuedREPLInput, marker string) (entry, prefix string) {
 	if item.turn != nil && item.turn.notice {
-		prefix = styled(item.text, "muted", "") + "\n"
+		prefix = style.Styled(item.text, "muted", "") + "\n"
 	} else {
 		prefix = formattedUserPrompt(item.text) + "\n" + userGutter()
 	}
-	return prefix + styled(marker, "muted", ""), prefix
+	return prefix + style.Styled(marker, "muted", ""), prefix
 }
 
 func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
@@ -206,7 +207,7 @@ func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
 		// private-use runes are stripped first so they cannot pose as slot
 		// anchors in an entry that now carries real ones.
 		m.setTranscriptEntry(index,
-			stripTranscriptImageMarkers(m.transcript[index].text)+"\n"+renderTranscriptImages(images, userGutter()),
+			style.StripImageMarkers(m.transcript[index].text)+"\n"+style.RenderImages(images, userGutter()),
 			images)
 	}
 }
@@ -234,7 +235,7 @@ func (m *replModel) activateQueuedInput(item queuedREPLInput) {
 		_, prefix := queuedEcho(&item, "")
 		m.fadeQueuedInput(item.transcriptIndex, prefix)
 		if notice {
-			m.setTranscriptText(item.transcriptIndex, styled(item.text, "muted", ""))
+			m.setTranscriptText(item.transcriptIndex, style.Styled(item.text, "muted", ""))
 			m.userPromptSeen = true
 		} else {
 			m.setTranscriptText(item.transcriptIndex, formattedUserPrompt(item.text))

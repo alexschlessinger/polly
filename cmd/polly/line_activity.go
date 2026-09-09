@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
 	"golang.org/x/term"
@@ -80,7 +81,7 @@ func cleanActivityText(s string) string {
 			return ' '
 		}
 		return r
-	}, stripTranscriptImageMarkers(s))
+	}, style.StripImageMarkers(s))
 }
 
 func (ui *lineTurnUI) activityEnabled() bool { return !ui.config.Quiet }
@@ -161,7 +162,7 @@ func (a *lineActivity) liveFields() []turnDockField {
 	}
 	label := a.busyLabel()
 	fields := []turnDockField{
-		{raw: label, rendered: styled(label, role, modifier)},
+		{raw: label, rendered: style.Styled(label, role, modifier)},
 	}
 	if a.reasoned {
 		fields = append(fields, accentField(reasoningDisclosureLabel(false, false, a.thoughtDuration())))
@@ -209,7 +210,7 @@ func (a *lineActivity) countFields() []turnDockField {
 		fields = append(fields, accentField(turnToolLabel(s.Tools)))
 	}
 	if c := s.Agents; c.Total > 0 {
-		fields = append(fields, accentField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled, c.Paused)))
+		fields = append(fields, accentField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled, c.Paused, c.Deferred)))
 	}
 	if s.Images > 0 {
 		fields = append(fields, accentField(turnImageLabel(s.Images)))
@@ -218,11 +219,11 @@ func (a *lineActivity) countFields() []turnDockField {
 }
 
 func accentField(label string) turnDockField {
-	return turnDockField{raw: label, rendered: styled(label, "accent", "")}
+	return turnDockField{raw: label, rendered: style.Styled(label, "accent", "")}
 }
 
 func mutedField(label string, optional bool) turnDockField {
-	return turnDockField{raw: label, rendered: styled(label, "muted", ""), optional: optional}
+	return turnDockField{raw: label, rendered: style.Styled(label, "muted", ""), optional: optional}
 }
 
 // Use the same theme-relative palette and style conversion as the TUI.
@@ -241,7 +242,7 @@ func (u *lineTurnUI) activityColorLocked(text string) string {
 		case strings.HasPrefix(part, "Warning:"):
 			role, modifier = "active", "bold"
 		}
-		parts[i] = styled(part, role, modifier)
+		parts[i] = style.Styled(part, role, modifier)
 	}
 	return styledMarkupToLine(strings.Join(parts, " · "), true)
 }
@@ -249,7 +250,7 @@ func (u *lineTurnUI) activityColorLocked(text string) string {
 // styledMarkupToLine flattens gotui style markup for one stderr line: the
 // TUI palette as ANSI when color is on, plain text otherwise.
 func styledMarkupToLine(markup string, color bool) string {
-	cells := parseStyledCells(markup, ui.StyleClear)
+	cells := style.ParseCells(markup, ui.StyleClear)
 	var out bytes.Buffer
 	if color {
 		appendANSIStyledCells(&out, cells)
@@ -432,7 +433,7 @@ func lineAgentName(call messages.ChatMessageToolCall, fallback string) string {
 		Label string `json:"label"`
 	}
 	if json.Unmarshal([]byte(call.Arguments), &args) == nil && strings.TrimSpace(args.Label) != "" {
-		return truncate(cleanActivityText(args.Label), 40)
+		return style.Truncate(cleanActivityText(args.Label), 40)
 	}
 	return fallback
 }
@@ -634,7 +635,7 @@ func (c *lineChildActivity) toolEnd(call messages.ChatMessageToolCall, result st
 	c.ui.renderActivityLocked()
 }
 
-func (c *lineChildActivity) media(images []transcriptImage) {
+func (c *lineChildActivity) media(images []style.Image) {
 	c.ui.toolMu.Lock()
 	defer c.ui.toolMu.Unlock()
 	if c.ui.activity.stopped {
@@ -642,7 +643,7 @@ func (c *lineChildActivity) media(images []transcriptImage) {
 	}
 	c.launch.images += len(images)
 	for _, img := range images {
-		c.ui.activityLineLocked("    " + c.prefix + transcriptImageCaptionText(img))
+		c.ui.activityLineLocked("    " + c.prefix + style.ImageCaptionText(img))
 	}
 	c.ui.renderActivityLocked()
 }

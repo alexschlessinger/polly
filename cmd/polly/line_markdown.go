@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	tcell "github.com/gdamore/tcell/v3"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -30,7 +31,7 @@ func renderLineMarkdown(src, baseDir string, capabilities outputCapabilities) []
 	displayedImages := make(map[int]bool, len(images))
 	var out bytes.Buffer
 	for lineIndex, line := range lines {
-		cells := parseStyledCells(line, ui.StyleClear)
+		cells := style.ParseCells(line, ui.StyleClear)
 		markerIndex, markerCell := lineImageMarker(cells, len(images))
 		if markerIndex >= 0 {
 			if !displayedImages[markerIndex] {
@@ -55,7 +56,7 @@ func renderLineMarkdown(src, baseDir string, capabilities outputCapabilities) []
 
 func lineImageMarker(cells []ui.Cell, imageCount int) (imageIndex, cellIndex int) {
 	for i, cell := range cells {
-		index, ok := transcriptImageMarkerIndex(cell.Rune)
+		index, ok := style.ImageMarkerIndex(cell.Rune)
 		if ok && index < imageCount {
 			return index, i
 		}
@@ -141,11 +142,11 @@ func ansiPaletteCode(color ui.Color, background bool) (int, bool) {
 	return 0, false
 }
 
-func lineImagePayload(img transcriptImage, capabilities outputCapabilities, prefixWidth int) []byte {
+func lineImagePayload(img style.Image, capabilities outputCapabilities, prefixWidth int) []byte {
 	if capabilities.imageProtocol == terminalImageNone {
 		return nil
 	}
-	imageMaxCols, imageMaxRows := transcriptImageBounds(img)
+	imageMaxCols, imageMaxRows := style.ImageBounds(img)
 	maxCols := min(imageMaxCols, capabilities.columns-prefixWidth)
 	cols, rows, fitByRows := imageCellGeometry(
 		img,

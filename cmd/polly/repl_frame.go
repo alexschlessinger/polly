@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -44,7 +45,7 @@ func (p *transcriptParagraph) Draw(buf *ui.Buffer) {
 	}
 	rows := p.Rows
 	if !p.UseRows {
-		rows = transcriptVisualRows(p.Text, p.TextStyle, p.Inner.Dx())
+		rows = style.VisualRows(p.Text, p.TextStyle, p.Inner.Dx())
 	}
 	p.drawRows(buf, rows)
 }
@@ -222,22 +223,22 @@ func (r *managedREPL) setupWidgets() {
 	noBorder(&r.transcriptW.Block)
 	r.transcriptW.TextStyle = ui.NewStyle(ui.ColorClear)
 
-	r.dividerW = newLiteralParagraph()
+	r.dividerW = style.NewLiteralParagraph()
 	noBorder(&r.dividerW.Block)
 	r.dividerW.WrapText = false
 	r.dividerW.TextStyle = ui.NewStyle(ui.ColorClear)
 
-	r.inputW = newLiteralParagraph()
+	r.inputW = style.NewLiteralParagraph()
 	noBorder(&r.inputW.Block)
 	r.inputW.WrapText = false
 	r.inputW.TextStyle = ui.NewStyle(ui.ColorClear)
 
-	r.turnDockW = newLiteralParagraph()
+	r.turnDockW = style.NewLiteralParagraph()
 	noBorder(&r.turnDockW.Block)
 	r.turnDockW.WrapText = false
 	r.turnDockW.TextStyle = ui.NewStyle(ui.ColorGrey)
 
-	r.statusW = newLiteralParagraph()
+	r.statusW = style.NewLiteralParagraph()
 	noBorder(&r.statusW.Block)
 	r.statusW.WrapText = false
 	r.statusW.TextStyle = ui.NewStyle(ui.ColorGrey)
@@ -355,7 +356,7 @@ func (r *managedREPL) render() {
 	ticker := r.model.activityTicker(len(transcriptRows), topRow, l.transcriptHeight)
 	var overlay [][]ui.Cell
 	if ticker != "" {
-		overlay = append(overlay, parseStyledCells(ticker, ui.NewStyle(ui.ColorClear)))
+		overlay = append(overlay, style.ParseCells(ticker, ui.NewStyle(ui.ColorClear)))
 	}
 	paneLayout := l
 	paneLayout.width = mainWidth

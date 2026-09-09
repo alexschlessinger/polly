@@ -15,12 +15,16 @@ async function verify(group, worker, reports) {
   const checkContext = await polly.context({snapshot: candidate.id});
   const results = await polly.parallel(["review", "checks"], async kind => {
     if (kind === "review") {
-      return polly.agent({
+      const review = await polly.agent({
         label: group.label + " reviewer", snapshot: candidate.id, readOnly: true,
         task: "Independently verify EVERY finding in the candidate. Read the evidence file. Treat fix reports as claims. Trace the failure scenario and whether the regression test detects it. Return an actionable verdict for every key. You cannot edit or commit.",
         input: {findings: group.findings, evidence: group.evidence, reports},
         schema: s.keyed(ids(group.findings), verdict),
       });
+      // Record consumption before a failing parallel check can abort this scope.
+      const task = await polly.tasks.read(review.task);
+      await polly.tasks.review({task: task.id, revision: task.revision, accept: true});
+      return review;
     }
     return polly.scope({context: checkContext, label: "checks"}, async work => {
       const failures = [];

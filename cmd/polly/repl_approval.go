@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+)
 
 // All queue transitions run under model.mu. Only the owner of a pending
 // request may reply to it; cancellation and an answer can therefore race
@@ -34,8 +38,8 @@ func (m *replModel) advanceApprovalLocked() {
 		if a.requester != "" {
 			label = "agent " + a.requester + ": " + label
 		}
-		m.pushNotice("approval needed: " + truncate(label, 80))
-		m.signalHiddenLocked(signalApprovalNeeded, truncate(label, 80))
+		m.pushNotice("approval needed: " + style.Truncate(label, 80))
+		m.signalHiddenLocked(signalApprovalNeeded, style.Truncate(label, 80))
 	}
 }
 

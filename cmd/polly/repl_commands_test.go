@@ -15,6 +15,7 @@ import (
 
 	rw "github.com/mattn/go-runewidth"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
@@ -916,7 +917,7 @@ func TestHelpGroupsKeysByTask(t *testing.T) {
 		}
 	}
 	markup := strings.Join(defaultReplCommands.helpLinesStyled(true), "\n")
-	if !strings.Contains(markup, styled("Send the message", "muted", "")) || !strings.Contains(markup, styled("Send and edit", "", "bold")) {
+	if !strings.Contains(markup, style.Styled("Send the message", "muted", "")) || !strings.Contains(markup, style.Styled("Send and edit", "", "bold")) {
 		t.Fatalf("styled help lacks two-tone rows: %q", markup)
 	}
 	for _, line := range strings.Split(plain, "\n") {

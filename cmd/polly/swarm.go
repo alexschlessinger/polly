@@ -98,7 +98,7 @@ func memberCallbacks(config *Config, state *conversationState) func(context.Cont
 }
 
 func registerSwarmCommands(r *replCommandRegistry) {
-	r.register(replCommand{name: "/swarm", usage: "/swarm [members|tasks|messages|publications|workflows|integrations|previews|raw|stop ID|resume ID [ADDITIONAL_ITERATIONS]|grant N|cleanup CONTEXT_ID|cleanup all|cancel-workflow ID|acknowledge-workflow ID]", summary: "inspect and control this parent's shared swarm", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
+	r.register(replCommand{name: "/swarm", usage: "/swarm [members|tasks|messages|publications|workflows|integrations|previews|raw|stop ID|resume ID [ADDITIONAL_ITERATIONS]|grant N|cleanup CONTEXT_ID|cleanup all|cancel-workflow ID|acknowledge-workflow ID|defer-workflow ID NOTE]", summary: "inspect and control this parent's shared swarm", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
 		if ctx.state == nil || ctx.state.swarm == nil {
 			return replCommandResult{err: ctx.replyLine("no parent swarm runtime is attached")}
 		}
@@ -119,6 +119,8 @@ func registerSwarmCommands(r *replCommandRegistry) {
 				err = runtime.CancelWorkflow(args[2])
 			case "acknowledge-workflow":
 				err = runtime.AcknowledgeWorkflow(opCtx, args[2])
+			case "defer-workflow":
+				err = runtime.DeferWorkflow(opCtx, args[2], strings.Join(args[3:], " "))
 			case "resume":
 				switch len(args) {
 				case 3:
@@ -224,6 +226,9 @@ func swarmInspectorText(s *swarm.State, section string) string {
 		for _, id := range swarmRecordIDs(s.Tasks) {
 			task := s.Tasks[id]
 			fmt.Fprintf(&b, "%s · revision %d\n%s\n%s\nOwner: %s\nAcceptance criteria: %s\n", swarm.TaskStatus(task), task.Revision, id, task.Description, task.Owner, task.Criteria)
+			if swarm.TaskDeferred(s, task) {
+				fmt.Fprintf(&b, "Deferred: %s\n", task.Deferral.Note)
+			}
 			if task.AcceptedRevision > 0 {
 				fmt.Fprintf(&b, "Accepted revision: %d\n", task.AcceptedRevision)
 			}
@@ -281,6 +286,9 @@ func swarmInspectorText(s *swarm.State, section string) string {
 			}
 			if w.Acknowledged {
 				b.WriteString("Failure acknowledged by parent\n")
+				if count := swarm.DeferredCount(s, w.ID); count > 0 {
+					fmt.Fprintf(&b, "%d deferred items retained for later review\n", count)
+				}
 			}
 			if w.Output != nil {
 				fmt.Fprintf(&b, "Result:\n%s\n", jsonText(w.Output))

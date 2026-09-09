@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/images"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -20,47 +21,13 @@ import (
 )
 
 const (
-	// Image markers live only between Markdown rendering and the transcript
-	// cell pass. They are replaced with blank cells before gotui reaches the
-	// terminal; the native renderer uses their row and column as its anchor.
-	transcriptImageMarkerBase   rune = '\ue000'
-	maxTranscriptImagesPerBlock      = 256
-	// The marker range must stop short of the styled-literal bracket runes
-	// (repl_ui.go), or stripping markers would eat bracket placeholders. A
-	// range that overlaps makes this constant negative and fails to compile.
-	_ = uint(styledLiteralOpenBracket - (transcriptImageMarkerBase + maxTranscriptImagesPerBlock))
-
-	// A thumbnail is fitted inside this maximum cell box. The marker template
-	// reserves the maximum rows; the cell pass collapses unused rows after it
-	// accounts for the image and terminal-cell aspect ratios.
-	transcriptImageThumbnailRows = 10
-	transcriptImageThumbnailCols = 50
-	inspectionImageThumbnailRows = 6
-	inspectionImageThumbnailCols = 40
-	minimumImageThumbnailCols    = 8
-
 	maxLocalImageBytes  = images.MaxSourceBytes
 	maxLocalImagePixels = images.MaxSourcePixels
 )
 
-// transcriptImage is deliberately a sidecar to transcript text. Tool and
-// message interfaces continue to traffic in strings; only the managed TUI
-// interprets explicit local-image references.
-type transcriptImage struct {
-	Path        string
-	DisplayPath string
-	Alt         string
-	Width       int
-	Height      int
-	Version     string
-	Inspection  bool
-	MaxCols     int
-	MaxRows     int
-}
-
 type markdownRenderState struct {
 	baseDir        string
-	images         []transcriptImage
+	images         []style.Image
 	imagePositions []int
 	codeCache      *markdownCodeCache
 	codeIndex      int
@@ -84,7 +51,7 @@ type transcriptDisplayBlock struct {
 	key                     string
 	text                    string
 	cells                   []ui.Cell // optional formatted streaming prefix
-	images                  []transcriptImage
+	images                  []style.Image
 	reasoningIDs            []int64
 	toolDisclosureIDs       []int64
 	turnTrailerID           int64
@@ -120,178 +87,35 @@ type terminalImagePlacement struct {
 	FitByRows  bool
 }
 
-func transcriptImagesEqual(a, b []transcriptImage) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func transcriptImageMarker(index int) rune {
-	return transcriptImageMarkerBase + rune(index)
-}
-
-func transcriptImageMarkerIndex(r rune) (int, bool) {
-	index := int(r - transcriptImageMarkerBase)
-	return index, index >= 0 && index < maxTranscriptImagesPerBlock
-}
-
-// stripTranscriptImageMarkers removes private marker runes from text that is
-// about to share a transcript entry with real image slots, so pasted
-// private-use characters cannot pose as slot anchors.
-func stripTranscriptImageMarkers(s string) string {
-	return strings.Map(func(r rune) rune {
-		if _, ok := transcriptImageMarkerIndex(r); ok {
-			return -1
-		}
-		return r
-	}, s)
-}
-
-func offsetTranscriptImageMarkers(s string, offset int) string {
-	if offset == 0 {
-		return s
-	}
-	return strings.Map(func(r rune) rune {
-		index, ok := transcriptImageMarkerIndex(r)
-		if !ok {
-			return r
-		}
-		index += offset
-		if index >= maxTranscriptImagesPerBlock {
-			return -1
-		}
-		return transcriptImageMarker(index)
-	}, s)
-}
-
-func transcriptImageBounds(img transcriptImage) (int, int) {
-	cols, rows := transcriptImageThumbnailCols, transcriptImageThumbnailRows
-	if img.MaxCols > 0 {
-		cols = min(cols, img.MaxCols)
-	}
-	if img.MaxRows > 0 {
-		rows = min(rows, img.MaxRows)
-	}
-	return max(cols, 1), max(rows, 1)
-}
-
-func transcriptImageSlot(index int, prefix string, rows int) string {
-	line := prefix + string(transcriptImageMarker(index))
-	return strings.Repeat(line+"\n", rows-1) + line
-}
-
-func transcriptImageCaptionText(img transcriptImage) string {
-	label := strings.TrimSpace(sanitizeTranscriptImageText(img.Alt))
-	if label == "" {
-		label = strings.TrimSpace(sanitizeTranscriptImageText(filepath.Base(img.Path)))
-	}
-	if label == "" {
-		label = "image"
-	}
-	label = truncate(label, 80)
-	if img.Inspection {
-		parts := []string{"viewed", label}
-		if img.Width > 0 && img.Height > 0 {
-			parts = append(parts, fmt.Sprintf("%d×%d", img.Width, img.Height))
-		}
-		return strings.Join(parts, " · ")
-	}
-	displayPath := sanitizeTranscriptImageText(img.DisplayPath)
-	if displayPath == "" {
-		displayPath = sanitizeTranscriptImageText(img.Path)
-	}
-	return label + " · " + truncate(displayPath, 100)
-}
-
-func sanitizeTranscriptImageText(text string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return ' '
-		}
-		return r
-	}, stripTranscriptImageMarkers(text))
-}
-
-func transcriptImageCaption(img transcriptImage) string {
-	return styled(transcriptImageCaptionText(img), "muted", "")
-}
-
-func renderTranscriptImage(index int, img transcriptImage, prefix string, leadingNewline, trailingNewline bool) string {
-	var b strings.Builder
-	if leadingNewline {
-		b.WriteByte('\n')
-	}
-	b.WriteString(prefix)
-	b.WriteString(transcriptImageCaption(img))
-	if img.Path == "" {
-		if trailingNewline {
-			b.WriteByte('\n')
-		}
-		return b.String()
-	}
-	b.WriteByte('\n')
-	_, rows := transcriptImageBounds(img)
-	b.WriteString(transcriptImageSlot(index, prefix, rows))
-	if trailingNewline {
-		b.WriteByte('\n')
-	}
-	return b.String()
-}
-
-func renderTranscriptImages(images []transcriptImage, prefix string) string {
-	var blocks []string
-	for i, img := range images {
-		if i >= maxTranscriptImagesPerBlock {
-			break
-		}
-		blocks = append(blocks, renderTranscriptImage(i, img, prefix, false, false))
-	}
-	return strings.Join(blocks, "\n")
-}
-
-// renderInspectionTranscriptImages gives model-viewed media its own subtle
-// rail beneath the Images disclosure. The rail is text-layer chrome; native
-// Kitty/Sixel placements begin immediately to its right.
-func renderInspectionTranscriptImages(images []transcriptImage) string {
-	prefix := "  " + styled("│", "muted", "") + " "
-	return renderTranscriptImages(images, prefix)
-}
-
 // resolveLocalTranscriptImage accepts only explicit filesystem references to
 // existing regular raster files. Remote URLs, data URLs, arbitrary prose, and
 // missing files remain ordinary text.
-func resolveLocalTranscriptImage(ref, alt, baseDir string) (transcriptImage, bool) {
+func resolveLocalTranscriptImage(ref, alt, baseDir string) (style.Image, bool) {
 	display := strings.TrimSpace(ref)
 	if display == "" || strings.ContainsRune(display, '\x00') {
-		return transcriptImage{}, false
+		return style.Image{}, false
 	}
 
 	path := display
 	parsed, err := url.Parse(display)
 	if err != nil {
-		return transcriptImage{}, false
+		return style.Image{}, false
 	}
 	if parsed.Scheme != "" {
 		windowsDrive := runtime.GOOS == "windows" && len(display) >= 2 && display[1] == ':'
 		if !windowsDrive {
 			if !strings.EqualFold(parsed.Scheme, "file") || (parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost")) {
-				return transcriptImage{}, false
+				return style.Image{}, false
 			}
 			path = parsed.Path
 		}
 	} else if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return transcriptImage{}, false
+		return style.Image{}, false
 	}
 	if unescaped, err := url.PathUnescape(path); err == nil {
 		path = unescaped
 	} else {
-		return transcriptImage{}, false
+		return style.Image{}, false
 	}
 	if runtime.GOOS == "windows" && len(path) >= 3 && path[0] == '/' && path[2] == ':' {
 		path = path[1:]
@@ -299,7 +123,7 @@ func resolveLocalTranscriptImage(ref, alt, baseDir string) (transcriptImage, boo
 	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) || path == "~" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return transcriptImage{}, false
+			return style.Image{}, false
 		}
 		path = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~/"), `~\`))
 	}
@@ -311,7 +135,7 @@ func resolveLocalTranscriptImage(ref, alt, baseDir string) (transcriptImage, boo
 	}
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil || !supportedLocalImageExtension(abs) {
-		return transcriptImage{}, false
+		return style.Image{}, false
 	}
 	info, err := os.Stat(abs)
 	if err != nil {
@@ -322,13 +146,13 @@ func resolveLocalTranscriptImage(ref, alt, baseDir string) (transcriptImage, boo
 		info, err = os.Stat(abs)
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxLocalImageBytes {
-		return transcriptImage{}, false
+		return style.Image{}, false
 	}
 	width, height, ok := localImageDimensions(abs)
 	if !ok {
-		return transcriptImage{}, false
+		return style.Image{}, false
 	}
-	return transcriptImage{
+	return style.Image{
 		Path:        abs,
 		DisplayPath: display,
 		Alt:         strings.TrimSpace(alt),
@@ -413,7 +237,7 @@ func localImageDimensions(path string) (int, int, bool) {
 // before the terminal protocol sees the new aspect ratio.
 func (m *replModel) refreshTranscriptImageSources(width int) bool {
 	changed := false
-	refresh := func(images []transcriptImage) ([]transcriptImage, bool) {
+	refresh := func(images []style.Image) ([]style.Image, bool) {
 		updated := images
 		copied := false
 		for imageIndex, img := range images {
@@ -422,7 +246,7 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 				continue
 			}
 			if !copied {
-				updated = append([]transcriptImage(nil), images...)
+				updated = append([]style.Image(nil), images...)
 				copied = true
 			}
 			updated[imageIndex].Version = version
@@ -486,9 +310,9 @@ func supportedLocalImageExtension(path string) bool {
 // discoverToolOutputImages recognizes explicit Markdown images and bare path
 // lines. It intentionally does not mine prose, JSON, inline code, or fenced
 // code for path-looking substrings.
-func discoverToolOutputImages(body, baseDir string) []transcriptImage {
+func discoverToolOutputImages(body, baseDir string) []style.Image {
 	markdownImages := discoverMarkdownImages(body, baseDir)
-	images := make([]transcriptImage, 0, len(markdownImages))
+	images := make([]style.Image, 0, len(markdownImages))
 	seen := make(map[string]struct{}, len(markdownImages))
 	for _, img := range markdownImages {
 		if _, duplicate := seen[img.Path]; duplicate {
@@ -524,22 +348,22 @@ func discoverToolOutputImages(body, baseDir string) []transcriptImage {
 		}
 		seen[img.Path] = struct{}{}
 		images = append(images, img)
-		if len(images) >= maxTranscriptImagesPerBlock {
+		if len(images) >= style.MaxImagesPerBlock {
 			break
 		}
 	}
 	return images
 }
 
-func discoverMarkdownImages(src, baseDir string) []transcriptImage {
+func discoverMarkdownImages(src, baseDir string) []style.Image {
 	if strings.TrimSpace(src) == "" {
 		return nil
 	}
 	source := []byte(src)
 	doc := mdParser.Parser().Parse(text.NewReader(source))
-	var images []transcriptImage
+	var images []style.Image
 	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering || len(images) >= maxTranscriptImagesPerBlock {
+		if !entering || len(images) >= style.MaxImagesPerBlock {
 			return ast.WalkContinue, nil
 		}
 		imageNode, ok := n.(*ast.Image)
@@ -569,7 +393,7 @@ func markdownFence(line string, indent int) (byte, int, bool) {
 // locateTranscriptImages removes private markers from terminal cells. With no
 // native backend the marker rows collapse completely, leaving the caption/path
 // as a compact fallback.
-func locateTranscriptImages(rows [][]ui.Cell, images []transcriptImage, native bool, width, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
+func locateTranscriptImages(rows [][]ui.Cell, images []style.Image, native bool, width, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
 	if len(images) == 0 {
 		return rows, nil
 	}
@@ -592,7 +416,7 @@ func locateTranscriptImages(rows [][]ui.Cell, images []transcriptImage, native b
 		x := 0
 		markerX := 0
 		for i, cell := range row {
-			if index, ok := transcriptImageMarkerIndex(cell.Rune); ok && index < len(images) {
+			if index, ok := style.ImageMarkerIndex(cell.Rune); ok && index < len(images) {
 				markerIndex, markerCell, markerX = index, i, x
 				break
 			}
@@ -607,7 +431,7 @@ func locateTranscriptImages(rows [][]ui.Cell, images []transcriptImage, native b
 		if markerIndex >= 0 {
 			geometry, ok := geometries[markerIndex]
 			if !ok {
-				imageMaxCols, imageMaxRows := transcriptImageBounds(images[markerIndex])
+				imageMaxCols, imageMaxRows := style.ImageBounds(images[markerIndex])
 				maxCols := min(imageMaxCols, width-markerX)
 				cols, slotRows, fitByRows := imageCellGeometry(images[markerIndex], maxCols, imageMaxRows, cellWidth, cellHeight)
 				geometry = slotGeometry{cols: cols, rows: slotRows, fitByRows: fitByRows}
@@ -652,8 +476,8 @@ func locateTranscriptImages(rows [][]ui.Cell, images []transcriptImage, native b
 // accounting for the fact that terminal cells are usually taller than they
 // are wide. The returned axis tells Kitty which single dimension to constrain;
 // Kitty derives the other from the source aspect ratio without distortion.
-func imageCellGeometry(img transcriptImage, maxCols, maxRows, cellWidth, cellHeight int) (cols, rows int, fitByRows bool) {
-	if maxCols < minimumImageThumbnailCols || maxRows <= 0 {
+func imageCellGeometry(img style.Image, maxCols, maxRows, cellWidth, cellHeight int) (cols, rows int, fitByRows bool) {
+	if maxCols < style.MinimumThumbnailCols || maxRows <= 0 {
 		return 0, 0, false
 	}
 	if cellWidth <= 0 {
@@ -682,7 +506,7 @@ func imageCellGeometry(img transcriptImage, maxCols, maxRows, cellWidth, cellHei
 // Partially clipped thumbnails are omitted; their caption remains visible and
 // scrolling the complete slot into view draws the native image.
 func (m *replModel) visibleImagePlacements(v transcriptViewport) []terminalImagePlacement {
-	if !m.nativeImages || v.width < minimumImageThumbnailCols {
+	if !m.nativeImages || v.width < style.MinimumThumbnailCols {
 		return nil
 	}
 	var placements []terminalImagePlacement

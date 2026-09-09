@@ -5,6 +5,8 @@ import (
 	_ "embed"
 	"image"
 	"sync"
+
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 )
 
 // The image splash replaces the half-block bird when the terminal can draw
@@ -46,7 +48,7 @@ func startupLogoPlacement(width, cellWidth, cellHeight int) (terminalImagePlacem
 		return terminalImagePlacement{}, false
 	}
 	cols, rows, fitByRows := imageCellGeometry(
-		transcriptImage{Width: logoWidth, Height: logoHeight},
+		style.Image{Width: logoWidth, Height: logoHeight},
 		width, imageLogoArtRows, cellWidth, cellHeight,
 	)
 	if cols <= 0 || rows <= 0 {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/gdamore/tcell/v3"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -324,7 +325,7 @@ func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptVi
 			if block.key != fmt.Sprintf("transcript:%d", index) {
 				continue
 			}
-			rows := transcriptVisualRows(q.prefix+styled("(queued)", "muted", ""), ui.NewStyle(ui.ColorClear), v.width)
+			rows := style.VisualRows(q.prefix+style.Styled("(queued)", "muted", ""), ui.NewStyle(ui.ColorClear), v.width)
 			remaining := len("(queued)")
 			for y := len(rows) - 1; y >= 0 && remaining > 0; y-- {
 				cells := ui.BuildCellWithXArray(rows[y])
@@ -363,7 +364,7 @@ func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptVi
 	}
 	m.affordances.contextKnown, m.affordances.contextFilled = true, used
 	if usedText, _ := m.status.contextUsageParts(); usedText != "" {
-		plain := ui.CellsToString(parseStyledCells(status, ui.NewStyle(ui.ColorClear)))
+		plain := ui.CellsToString(style.ParseCells(status, ui.NewStyle(ui.ColorClear)))
 		if at := strings.LastIndex(plain, m.status.contextUsageText()); at >= 0 {
 			x := rw.StringWidth(plain[:at])
 			add(x, l.height-1, rw.StringWidth(usedText), m.affordances.contextAt, 1400*time.Millisecond, ui.ColorWhite)

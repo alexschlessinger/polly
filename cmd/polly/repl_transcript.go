@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -20,17 +21,17 @@ func (m *replModel) setTranscriptText(index int, text string) {
 }
 
 // setTranscriptEntry replaces entry index's text and image list together.
-func (m *replModel) setTranscriptEntry(index int, text string, images []transcriptImage) {
+func (m *replModel) setTranscriptEntry(index int, text string, images []style.Image) {
 	m.setTranscriptText(index, text)
 	m.setTranscriptImages(index, images)
 }
 
 // setTranscriptImages replaces entry index's image list.
-func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
+func (m *replModel) setTranscriptImages(index int, images []style.Image) {
 	if len(images) == 0 {
 		m.transcript[index].images = nil
 	} else {
-		m.transcript[index].images = append([]transcriptImage(nil), images...)
+		m.transcript[index].images = append([]style.Image(nil), images...)
 	}
 	m.visual.invalidate()
 }
@@ -191,7 +192,7 @@ func (m *replModel) finishAssistantBlock(label string) bool {
 	m.currentAssistant = -1
 	m.resetAssistantStream()
 	if label != "" && content != "" {
-		m.appendLine("  " + styled(label, "muted", ""))
+		m.appendLine("  " + style.Styled(label, "muted", ""))
 		m.outcomeLabeled = true
 	}
 	return content != ""
@@ -204,23 +205,18 @@ func (m *replModel) labelTurnOutcome(label string) {
 	if m.outcomeLabeled || !m.turnHasOutput {
 		return
 	}
-	m.appendLine("  " + styled(label, "muted", ""))
+	m.appendLine("  " + style.Styled(label, "muted", ""))
 	m.outcomeLabeled = true
 }
 
-// userGutterGlyph marks every row the user wrote: the composer while typing,
-// the echoed prompt afterwards, and the queued or not-sent trailer under it.
-// Assistant text carries no marker, so the bar alone says who is speaking.
-const userGutterGlyph = '▎'
-
 func userGutter() string {
-	return styled(string(userGutterGlyph)+" ", "accent", "bold")
+	return style.Styled(string(style.UserGutterGlyph)+" ", "accent", "bold")
 }
 
 func formattedUserPrompt(p string) string {
 	lines := strings.Split(p, "\n")
 	for i, line := range lines {
-		lines[i] = userGutter() + styleEscape(line)
+		lines[i] = userGutter() + style.Escape(line)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -265,7 +261,7 @@ func (m *replModel) streamCursorNow() string {
 		return ""
 	}
 	mod := arrowPulse[int(time.Since(m.turnStarted)/arrowPulsePeriod)%len(arrowPulse)]
-	return styled(streamCursorGlyph, "accent", mod)
+	return style.Styled(streamCursorGlyph, "accent", mod)
 }
 
 // refreshStreamCursor recomputes the caret frame, invalidating the visual
@@ -280,13 +276,13 @@ func (m *replModel) refreshStreamCursor() {
 }
 
 func (m *replModel) appendNoticeLine(text string) {
-	m.appendLine(styled(text, "muted", ""))
+	m.appendLine(style.Styled(text, "muted", ""))
 }
 
 // appendErrorLine reports a failure inline and follows it, so the user sees
 // why the composer kept their input.
 func (m *replModel) appendErrorLine(text string) {
-	m.appendLine(styled("Error: "+text, "err", ""))
+	m.appendLine(style.Styled("Error: "+text, "err", ""))
 	m.followBottom = true
 }
 
@@ -380,12 +376,12 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			!slices.Equal(old.reasoningIDs, source.reasoningIDs) ||
 			!slices.Equal(old.toolDisclosureIDs, source.toolDisclosureIDs) ||
 			old.turnTrailerID != source.turnTrailerID ||
-			!transcriptImagesEqual(old.images, source.images)
+			!style.ImagesEqual(old.images, source.images)
 		if changed {
-			nativeSlots := m.nativeImages && width >= minimumImageThumbnailCols
+			nativeSlots := m.nativeImages && width >= style.MinimumThumbnailCols
 			cells := source.cells
 			if cells == nil {
-				cells = parseStyledCells(source.text, ui.StyleClear)
+				cells = style.ParseCells(source.text, ui.StyleClear)
 			}
 			rows, imageSpans = transcriptCellRowsWithImages(
 				cells, followed, width, source.images, nativeSlots,
@@ -404,7 +400,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			cells:             source.cells,
 			followed:          followed,
 			rows:              rows,
-			images:            append([]transcriptImage(nil), source.images...),
+			images:            append([]style.Image(nil), source.images...),
 			imageSpans:        imageSpans,
 			reasoningIDs:      append([]int64(nil), source.reasoningIDs...),
 			toolDisclosureIDs: append([]int64(nil), source.toolDisclosureIDs...),
@@ -445,7 +441,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			if m.initialPromptExpanded {
 				glyph = "▾"
 			}
-			blocks = append(blocks, transcriptDisplayBlock{key: "initial-prompt", text: styled(glyph, "accent", "bold") + " " + styled("Prompt", "muted", "")})
+			blocks = append(blocks, transcriptDisplayBlock{key: "initial-prompt", text: style.Styled(glyph, "accent", "bold") + " " + style.Styled("Prompt", "muted", "")})
 			if !m.initialPromptExpanded {
 				continue
 			}
@@ -475,7 +471,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 				entry = ui.CellsToString(prefix)
 			}
 			caret := m.streamCursorFrame
-			if len(images) > 0 && strings.HasSuffix(entry, string(transcriptImageMarker(len(images)-1))) {
+			if len(images) > 0 && strings.HasSuffix(entry, string(style.ImageMarker(len(images)-1))) {
 				// Keep the pulsing stream caret out of the final reserved image
 				// row. The newline is stable even on the caret's hidden frame, so
 				// follow-bottom does not oscillate by one row.
@@ -483,7 +479,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			}
 			entry += caret
 			if cells != nil {
-				cells = append(cells, parseStyledCells(caret, ui.StyleClear)...)
+				cells = append(cells, style.ParseCells(caret, ui.StyleClear)...)
 			}
 		}
 		key := fmt.Sprintf("transcript:%d", i)
@@ -510,17 +506,17 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		blocks = append(blocks, block)
 	}
 	if m.slashHints != "" {
-		blocks = append(blocks, transcriptDisplayBlock{key: "slash", text: styled(m.slashHints, "muted", "")})
+		blocks = append(blocks, transcriptDisplayBlock{key: "slash", text: style.Styled(m.slashHints, "muted", "")})
 	}
 	return m.layoutInlineActivityBlocks(blocks, width)
 }
 
-func transcriptBlockRowsWithImages(text string, followed bool, width int, images []transcriptImage, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
-	cells := parseStyledCells(text, ui.NewStyle(ui.ColorClear))
+func transcriptBlockRowsWithImages(text string, followed bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
+	cells := style.ParseCells(text, ui.NewStyle(ui.ColorClear))
 	return transcriptCellRowsWithImages(cells, followed, width, images, native, cellWidth, cellHeight)
 }
 
-func transcriptCellRowsWithImages(cells []ui.Cell, followed bool, width int, images []transcriptImage, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
+func transcriptCellRowsWithImages(cells []ui.Cell, followed bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
 	if followed {
 		// The joined renderer places one newline between transcript blocks. Add
 		// that separator before splitting: a normal separator is absorbed by the
@@ -528,7 +524,7 @@ func transcriptCellRowsWithImages(cells []ui.Cell, followed bool, width int, ima
 		// newline correctly produces an interior blank row.
 		cells = append(cells, ui.Cell{Rune: '\n', Style: ui.StyleClear})
 	}
-	rows := ui.SplitCells(wrapTranscriptCells(cells, width), '\n')
+	rows := ui.SplitCells(style.WrapCells(cells, width), '\n')
 	return locateTranscriptImages(rows, images, native, width, cellWidth, cellHeight)
 }
 

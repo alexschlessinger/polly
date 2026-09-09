@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -35,7 +36,7 @@ type TurnUI interface {
 	// AppendToolMedia surfaces exact typed image parts that entered the model's
 	// tool result. It is separate from text/path discovery so UIs can pin a
 	// trustworthy inspection receipt without exposing arbitrary tool output.
-	AppendToolMedia(call messages.ChatMessageToolCall, images []transcriptImage)
+	AppendToolMedia(call messages.ChatMessageToolCall, images []style.Image)
 	AppendWarning(text string)
 	RecordTurnTokens(in, out int)
 	// RecordContextUsage reports the turn's context consumption against the
@@ -332,7 +333,7 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	ui.renderActivityLocked()
 }
 
-func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []transcriptImage) {
+func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []style.Image) {
 	if len(images) == 0 || ui.config.Quiet {
 		return
 	}
@@ -355,7 +356,7 @@ func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []t
 		caps = ui.activity.imageCaps
 	}
 	for _, img := range images {
-		ui.activityLineLocked("    " + transcriptImageCaptionText(img))
+		ui.activityLineLocked("    " + style.ImageCaptionText(img))
 		if !caps.rendersLineANSI() || !ui.stderrTTY {
 			continue
 		}

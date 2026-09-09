@@ -574,7 +574,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		stored.Status = "queued"
 		stored.Controller = controller
 		run.Starts++
-		e := &Execution{ID: i.id, Run: run.ID, Member: m.ID, Status: "queued", Request: req, Generation: 1}
+		e := &Execution{Workflow: controller, ID: i.id, Run: run.ID, Member: m.ID, Status: "queued", Request: req, Generation: 1}
 		s.Executions[i.id] = e
 		return nil
 	})
@@ -1107,7 +1107,7 @@ func (r *Runtime) finish(i *invocation) {
 			} else if errors.Is(i.err, context.Canceled) {
 				e.Status = "paused"
 			}
-			m.Status = "paused"
+			m.Status = e.Status
 			if task := s.Tasks[m.Task]; task != nil && task.Owner == m.ID && task.Execution == i.id && task.Status == "running" {
 				task.Status, task.Feedback = "blocked", e.Error
 				task.Revision++
@@ -1121,9 +1121,9 @@ func (r *Runtime) finish(i *invocation) {
 				task.Revision++
 			}
 		}
-		mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Text: "Agent " + m.Label + " " + e.Status + ". Session: " + m.ID + ". Task: " + m.Task + ". Result: " + agentResultText(i.result.Value), Posted: time.Now().UTC()}
+		mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Text: "Agent " + clipInspection(m.Label, 512) + " " + e.Status + ". Session: " + m.ID + ". Task: " + m.Task + ". Inspect: swarm_tasks({task: \"" + m.Task + "\", section: \"result\"}).", Posted: time.Now().UTC()}
 		if i.err != nil {
-			mail.Text += " Reason: " + e.Error
+			mail.Text += " Reason: " + clipInspection(e.Error, 1024)
 		}
 		s.Messages[mail.ID] = mail
 		return nil
@@ -1210,11 +1210,25 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 	}
 	var resume *Execution
 	var restart *Member
+	var deferred *TaskDeferral
+	var deferredTask, deferredRun, deferredRunStatus string
 	// Keep assignment checks and slot registration indivisible to task edits.
 	r.parentTools.Lock()
 	unlockTasks := sync.OnceFunc(r.parentTools.Unlock)
 	defer unlockTasks()
 	err := r.update(ctx, func(s *State) error {
+		if m := s.Members[memberID]; m != nil {
+			if task := s.Tasks[m.Task]; task != nil && task.Deferral != nil {
+				copy := *task.Deferral
+				deferred, deferredTask, deferredRun = &copy, task.ID, task.Run
+				if run := s.Runs[task.Run]; run != nil {
+					deferredRunStatus = run.Status
+				}
+			}
+			if err := reactivateTask(s, s.Tasks[m.Task]); err != nil {
+				return err
+			}
+		}
 		run := r.currentRun(s)
 		if grant > 0 {
 			if grant > int(^uint(0)>>1)-run.Limit {
@@ -1356,6 +1370,12 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 			restoreErr := r.update(context.WithoutCancel(ctx), func(s *State) error {
 				if m := s.Members[memberID]; m != nil && m.Execution == restart.Execution && m.Status == "idle" {
 					m.Status, m.Controller = restart.Status, restart.Controller
+					if task := s.Tasks[deferredTask]; deferred != nil && task != nil && task.Execution == deferred.Execution && task.Revision == deferred.Revision && task.AcceptedRevision == deferred.AcceptedRevision {
+						task.Deferral = deferred
+						if run := s.Runs[deferredRun]; run != nil && unsettledTask(s, deferredRun) == nil && grant == 0 {
+							run.Status = deferredRunStatus
+						}
+					}
 				}
 				return nil
 			})
@@ -1476,7 +1496,7 @@ func (r *Runtime) Settle(ctx context.Context) error {
 				if run.Status == "running" || run.Status == "paused" {
 					current = run.ID
 				}
-				if run.Status == "paused" {
+				if run.Status == "paused" && !runDeferred(s, run.ID) {
 					return ErrBudget
 				}
 			}
@@ -1603,8 +1623,6 @@ func (r *Runtime) runWorkflow(ctx context.Context, controller, source string, in
 				if err == nil {
 					m.Controller = ""
 					released = append(released, m.ID)
-				} else if m.Status != "retired" {
-					m.Status = "paused"
 				}
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
@@ -48,7 +49,7 @@ func (row *toolDisclosureRow) setCall(call messages.ChatMessageToolCall) {
 		Background bool   `json:"background"`
 	}
 	_ = json.Unmarshal([]byte(call.Arguments), &args)
-	label := sanitizeTranscriptImageText(spawnLabel(args.Label, args.Task))
+	label := style.SanitizeImageText(spawnLabel(args.Label, args.Task))
 	if label == "" {
 		label = "agent"
 	}
@@ -138,14 +139,14 @@ func (m *replModel) agentField(ids []int64, expanded bool) (turnDockField, bool)
 	if c.Total == 0 {
 		return turnDockField{}, false
 	}
-	return activityField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled, c.Paused), activityAgents, expanded), true
+	return activityField(turnAgentSummaryLabel(c.Total, c.Running, c.Failed, c.Canceled, c.Paused, c.Deferred), activityAgents, expanded), true
 }
 
 // turnAgentSummaryLabel composes the agent field's label from its counts,
 // shared by the TUI launch row and the one-shot summary. Running agents lead
 // while any child runs; afterwards one total with its failed and canceled
 // tails.
-func turnAgentSummaryLabel(total, running, failed, canceled, paused int) string {
+func turnAgentSummaryLabel(total, running, failed, canceled, paused int, deferred ...int) string {
 	label := turnAgentLabel(total)
 	if running > 0 {
 		label = turnAgentLabel(running) + " running"
@@ -161,6 +162,9 @@ func turnAgentSummaryLabel(total, running, failed, canceled, paused int) string 
 	}
 	if paused > 0 {
 		label += fmt.Sprintf(", %d paused", paused)
+	}
+	if len(deferred) > 0 && deferred[0] > 0 {
+		label += fmt.Sprintf(", %d deferred", deferred[0])
 	}
 	return label
 }
@@ -186,7 +190,7 @@ func (m *replModel) agentsExpanded(ids []int64) bool {
 }
 
 func agentActivityLine(a *agentActivity) string {
-	status := sanitizeTranscriptImageText(a.status)
+	status := style.SanitizeImageText(a.status)
 	glyph, color := "·", "muted"
 	switch {
 	case status == "approval needed":
@@ -198,15 +202,15 @@ func agentActivityLine(a *agentActivity) string {
 	case status == "failed" || status == "denied":
 		glyph, color = "✗", "err"
 	}
-	label := styleEscape(a.label)
+	label := style.Escape(a.label)
 	if a.session != "" {
-		label = link(a.label)
+		label = style.Link(a.label)
 	}
 	detail := " · " + status
 	if a.inputTokens > 0 || a.outputTokens > 0 {
 		detail += fmt.Sprintf(" · %s in / %s out", humanizeTokens(a.inputTokens), humanizeTokens(a.outputTokens))
 	}
-	return "  " + styled(glyph, color, "") + " " + label + styled(detail, "muted", "")
+	return "  " + style.Styled(glyph, color, "") + " " + label + style.Styled(detail, "muted", "")
 }
 
 // agentDetail uses the normal cell wrapper for both display and link geometry.
@@ -243,21 +247,21 @@ func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 	var lines []string
 	var links []agentLink
 	y := 0
-	linkStyle := parseStyledCells(link("x"), ui.StyleClear)[0].Style
+	linkStyle := style.ParseCells(style.Link("x"), ui.StyleClear)[0].Style
 	for _, group := range groups {
 		for n, ref := range group {
 			row := ref.record.rows[ref.index]
 			if n == 0 && row.agent.workflowID != "" {
-				heading := "  " + styled("Workflow · "+sanitizeTranscriptImageText(row.agent.workflowName), "muted", "")
+				heading := "  " + style.Styled("Workflow · "+style.SanitizeImageText(row.agent.workflowName), "muted", "")
 				lines = append(lines, heading)
-				y += len(transcriptVisualRows(heading, ui.StyleClear, width))
+				y += len(style.VisualRows(heading, ui.StyleClear, width))
 			}
 			line := agentActivityLine(row.agent)
 			lines = append(lines, line)
-			for _, cells := range transcriptVisualRows(line, ui.StyleClear, width) {
+			for _, cells := range style.VisualRows(line, ui.StyleClear, width) {
 				x, start, end := 0, -1, 0
 				for _, cell := range cells {
-					w := transcriptCellWidth(cell)
+					w := style.CellWidth(cell)
 					if row.agent.session != "" && cell.Style == linkStyle {
 						if start < 0 {
 							start = x
@@ -281,7 +285,7 @@ func (m *replModel) appendAgentDetail(block *transcriptDisplayBlock, ids []int64
 	if detail == "" {
 		return
 	}
-	native := m.nativeImages && width >= minimumImageThumbnailCols
+	native := m.nativeImages && width >= style.MinimumThumbnailCols
 	rows, _ := transcriptBlockRowsWithImages(block.text, false, width, block.images, native, m.imageCellWidth, m.imageCellHeight)
 	for i := range links {
 		links[i].Y += len(rows)

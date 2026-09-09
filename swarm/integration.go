@@ -60,7 +60,9 @@ func integrationInputs(s *State, refs []TaskReference) ([]IntegrationInput, stri
 		if t.Run != run {
 			return nil, "", fail("invalid_args", "integration tasks must belong to one run")
 		}
-		if r := s.Runs[run]; r == nil || r.Status != "running" && r.Status != "paused" {
+		// Retained candidates remain inspectable after settlement. Acceptance
+		// and application reactivate their run under the task lock separately.
+		if r := s.Runs[run]; r == nil || r.Status != "running" && r.Status != "paused" && !TaskDeferred(s, t) {
 			return nil, "", fail("stale_task", "task run is no longer active")
 		}
 		owner := s.Members[t.Owner]
@@ -332,6 +334,9 @@ func (r *Runtime) AcceptIntegration(ctx context.Context, id string) (*Integratio
 			return fail("conflicts", "candidate has unresolved inputs")
 		}
 		for _, ref := range c.references() {
+			if err := reactivateTask(s, s.Tasks[ref.Task]); err != nil {
+				return err
+			}
 			s.Tasks[ref.Task].AcceptedRevision = ref.Revision
 		}
 		c.Accepted = true

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -135,7 +136,7 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 	// payloads, arguments then output, under one gutter. A bash call shows
 	// the command it runs, as the approval block does, not its JSON envelope.
 	arguments := strings.TrimSpace(t.call.Arguments)
-	title, lines := "arguments", []string{styled("(none)", "muted", "")}
+	title, lines := "arguments", []string{style.Styled("(none)", "muted", "")}
 	if cmd, ok := bashCommandOf(t.call); ok {
 		title, lines = "command", highlightCodeLines(cmd, "bash")
 	} else if arguments != "" {
@@ -148,12 +149,12 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 	}
 	m.appendLine(strings.Join(renderFence(title, lines), "\n"))
 	if !t.complete {
-		m.appendLine(styled("╭─ output", "muted", ""))
+		m.appendLine(style.Styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("Running… output appears when this tool finishes")
 		return m, nil
 	}
 	if !t.available {
-		m.appendLine(styled("╭─ output", "muted", ""))
+		m.appendLine(style.Styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("Output unavailable in saved history")
 		return m, nil
 	}
@@ -183,19 +184,19 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 		break
 	}
 	if body == "" {
-		m.appendLine(styled("╭─ output", "muted", ""))
+		m.appendLine(style.Styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("No text output")
 	} else {
-		text := strings.TrimRight(stripTranscriptImageMarkers(readableResult(body)), "\n")
+		text := strings.TrimRight(style.StripImageMarkers(readableResult(body)), "\n")
 		raw := strings.Split(text, "\n")
 		for n := range raw {
-			raw[n] = styleEscape(raw[n])
+			raw[n] = style.Escape(raw[n])
 		}
 		m.appendLine(strings.Join(renderFence("output · "+resultLineMeta(text), raw), "\n"))
 	}
 	images := inspectionTranscriptImages(t.result, m.artifactStore)
 	if len(images) > 0 {
-		idx := m.appendTranscriptEntry(renderInspectionTranscriptImages(images))
+		idx := m.appendTranscriptEntry(style.RenderInspectionImages(images))
 		m.setTranscriptImages(idx, images)
 	}
 	return m, nil
@@ -217,11 +218,11 @@ func (thoughtView) Project(_ context.Context, source viewSource, state viewState
 		return nil, errViewItemUnavailable
 	}
 	m := newReplModel()
-	text := stripTranscriptImageMarkers(source.thought.text)
+	text := style.StripImageMarkers(source.thought.text)
 	if strings.TrimSpace(text) == "" {
 		m.appendNoticeLine("Waiting for thoughts…")
 	} else {
-		m.appendLine(styleEscape(text))
+		m.appendLine(style.Escape(text))
 	}
 	return m, nil
 }

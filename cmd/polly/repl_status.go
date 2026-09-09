@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
 )
@@ -106,7 +107,7 @@ func (s *sessionStatus) contextUsageStyled() string {
 	if used == "" {
 		return ""
 	}
-	return styled(used, contextUsageColor(s.contextUsed, s.contextLimit), "") + styled(limit, "muted", "")
+	return style.Styled(used, contextUsageColor(s.contextUsed, s.contextLimit), "") + style.Styled(limit, "muted", "")
 }
 
 // contextUsageColor is muted without a limit, then ok, active, and err as the
@@ -163,11 +164,11 @@ func (m *replModel) statusRow(width int) string {
 	leftRaw, leftStyled := "", ""
 	if m.busy && !m.turnStarted.IsZero() {
 		leftRaw = formatElapsed(time.Since(m.turnStarted))
-		leftStyled = styled(leftRaw, "accent", "")
+		leftStyled = style.Styled(leftRaw, "accent", "")
 	} else if m.hoverHint != "" {
 		// A wordless target under the pointer names its action here while
 		// no turn owns the slot.
-		leftRaw, leftStyled = m.hoverHint, styled(m.hoverHint, "muted", "")
+		leftRaw, leftStyled = m.hoverHint, style.Styled(m.hoverHint, "muted", "")
 	}
 	type field struct {
 		drop     int
@@ -185,7 +186,7 @@ func (m *replModel) statusRow(width int) string {
 	}
 	fields = append(fields, field{drop: 0, text: m.status.displayLabel(), session: true})
 	if m.status.agents != "" {
-		fields = append(fields, field{drop: 2, text: m.status.agents, rendered: styled(m.status.agents, m.status.agentsColor, ""), agents: true})
+		fields = append(fields, field{drop: 2, text: m.status.agents, rendered: style.Styled(m.status.agents, m.status.agentsColor, ""), agents: true})
 	}
 	if context := m.status.contextUsageText(); context != "" {
 		fields = append(fields, field{drop: 1, text: context, rendered: m.status.contextUsageStyled()})
@@ -245,10 +246,10 @@ func (m *replModel) statusRow(width int) string {
 		if f.session {
 			color = "accent"
 		}
-		rightStyledParts[i] = styled(f.text, color, "")
+		rightStyledParts[i] = style.Styled(f.text, color, "")
 	}
 	rightRaw := strings.Join(rightRawParts, sep)
-	rightStyled := strings.Join(rightStyledParts, styled(sep, "muted", ""))
+	rightStyled := strings.Join(rightStyledParts, style.Styled(sep, "muted", ""))
 
 	rightWidth := rw.StringWidth(rightRaw)
 	leftBudget := width - rightWidth
@@ -263,7 +264,7 @@ func (m *replModel) statusRow(width int) string {
 			leftRaw, leftStyled = "", ""
 		} else {
 			leftRaw = rw.Truncate(leftRaw, leftBudget, "…")
-			leftStyled = styled(leftRaw, "muted", "")
+			leftStyled = style.Styled(leftRaw, "muted", "")
 		}
 	}
 
@@ -311,11 +312,11 @@ func (m *replModel) activityTicker(totalRows, topRow, height int) string {
 	if m.busy {
 		raw += " · " + m.busyLabel()
 	}
-	return styled(raw, "accent", "bold") + styled(" · End to follow", "muted", "")
+	return style.Styled(raw, "accent", "bold") + style.Styled(" · End to follow", "muted", "")
 }
 
 func compactQueuePreview(text string) string {
-	return truncate(strings.Join(strings.Fields(text), " "), 36)
+	return style.Truncate(strings.Join(strings.Fields(text), " "), 36)
 }
 
 func humanizeTokens(n int) string {

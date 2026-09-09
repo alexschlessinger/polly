@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -467,8 +468,8 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 	if len(r.images.active) != 0 {
 		t.Fatal("closing inspector left native image displayed")
 	}
-	images := []transcriptImage{{Path: path, Width: 24, Height: 12, Inspection: true}}
-	idx := m.appendTranscriptEntry(renderInspectionTranscriptImages(images))
+	images := []style.Image{{Path: path, Width: 24, Height: 12, Inspection: true}}
+	idx := m.appendTranscriptEntry(style.RenderInspectionImages(images))
 	m.setTranscriptImages(idx, images)
 	r.render()
 	if len(m.imagePlacements) != 1 {

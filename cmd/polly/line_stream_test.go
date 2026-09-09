@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	rw "github.com/mattn/go-runewidth"
 )
@@ -377,7 +378,7 @@ func TestLineCompletionRejectsLateCallbacks(t *testing.T) {
 	ui.AppendAssistantText("late answer")
 	ui.ShowThinking("late reasoning")
 	ui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "late", Name: "read_file"}})
-	ui.AppendToolMedia(messages.ChatMessageToolCall{}, []transcriptImage{{Alt: "late image"}})
+	ui.AppendToolMedia(messages.ChatMessageToolCall{}, []style.Image{{Alt: "late image"}})
 	ui.RecordTurnTokens(100, 20)
 	ui.Stop()
 	if out.String() != beforeAnswer || status.String() != beforeStatus {
@@ -390,7 +391,7 @@ func TestPrintedImageDetailsDoNotResendPreviews(t *testing.T) {
 	path := t.TempDir() + "/image.png"
 	writeImageFixture(t, path, 8, 4)
 	ui.activity.imageCaps = outputCapabilities{surface: outputSurfaceLineANSI, imageProtocol: terminalImageKitty, columns: 80}
-	ui.AppendToolMedia(messages.ChatMessageToolCall{}, []transcriptImage{{Path: path, Alt: "inspected", Width: 8, Height: 4, Inspection: true}})
+	ui.AppendToolMedia(messages.ChatMessageToolCall{}, []style.Image{{Path: path, Alt: "inspected", Width: 8, Height: 4, Inspection: true}})
 	if strings.Count(status.String(), "\x1b_Ga=T") != 1 {
 		t.Fatal("inspection did not display its preview")
 	}
@@ -419,7 +420,7 @@ func TestLineFooterFittingProtectsOutcomeAndElapsed(t *testing.T) {
 			t.Fatalf("outcome hidden at %d: %q", width, joined)
 		}
 		for _, row := range rows {
-			if styledTextWidth(row) > width {
+			if style.TextWidth(row) > width {
 				t.Fatalf("footer overflows %d: %q", width, row)
 			}
 		}
@@ -446,7 +447,7 @@ func TestSeparateTerminalsDoNotShareCursorOrWhitespace(t *testing.T) {
 	ui.stdoutTTY, ui.sameTerminal = true, false
 	ui.AppendAssistantText("partial")
 	ui.AppendWarning("independent")
-	ui.AppendToolMedia(messages.ChatMessageToolCall{}, []transcriptImage{{Alt: "receipt"}})
+	ui.AppendToolMedia(messages.ChatMessageToolCall{}, []style.Image{{Alt: "receipt"}})
 	ui.CompleteTurn(turnCompletion{})
 	if out.String() != "partial" || !strings.Contains(status.String(), "independent") {
 		t.Fatalf("independent streams interfered: stdout=%q stderr=%q", out.String(), status.String())

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/swarm"
 )
@@ -56,7 +57,7 @@ func (u *childTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 		u.activity.toolEnd(call, result, duration, err)
 	}
 }
-func (u *childTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []transcriptImage) {
+func (u *childTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []style.Image) {
 	if u.activity != nil {
 		u.activity.media(images)
 	}

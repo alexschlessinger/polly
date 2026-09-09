@@ -8,6 +8,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
@@ -286,7 +287,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				if err == nil {
 					body := swarmInspectorText(state, target.item)
 					source.model = newReplModel()
-					source.model.appendLine(styleEscape(body))
+					source.model.appendLine(style.Escape(body))
 					data, _ := json.Marshal(state)
 					source.revision = fmt.Sprintf("swarm:%x", sha256.Sum256(data))
 					source.info = &sessions.SessionView{ID: target.session.ID, Metadata: &sessions.Metadata{Name: target.session.Name}, Revision: source.revision}

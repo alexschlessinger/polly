@@ -5,6 +5,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/rivo/uniseg"
 )
@@ -116,7 +117,7 @@ func (s *assistantTypewriter) update(source string, now time.Time, animate bool)
 	}
 	previous := s.count
 	if source != s.source {
-		s.cells = parseStyledCells(strings.TrimRight(source, "\r\n"), ui.StyleClear)
+		s.cells = style.ParseCells(strings.TrimRight(source, "\r\n"), ui.StyleClear)
 		text := ui.CellsToString(s.cells)
 		// Late link definitions or completed tables can rewrite earlier text.
 		// Show those corrections immediately instead of replaying the block.

@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 	rw "github.com/mattn/go-runewidth"
@@ -1357,7 +1358,7 @@ func TestBusyPromptStaysEditable(t *testing.T) {
 func TestStyleEscapeNeutralizesMarkup(t *testing.T) {
 	// Every bracket leaves as a substitute rune, so nothing in the escaped
 	// text can open or close gotui markup; the parser restores them.
-	got := styleEscape("see [text](url) and [")
+	got := style.Escape("see [text](url) and [")
 	if strings.ContainsAny(got, "[]") {
 		t.Fatalf("escaped text must carry no brackets, got %q", got)
 	}
@@ -1371,7 +1372,7 @@ func TestStyleEscapeNeutralizesMarkup(t *testing.T) {
 // swallow the rest of the entry and drop its last rune.
 func TestUnbalancedBracketRendersLiterally(t *testing.T) {
 	rendered := renderMarkdown("use `[` here, then **bold** and `x` end")
-	cells := parseStyledCells(rendered, ui.NewStyle(ui.ColorClear))
+	cells := style.ParseCells(rendered, ui.NewStyle(ui.ColorClear))
 	if got := plainStyledText(rendered); got != "use [ here, then bold and x end" {
 		t.Fatalf("rendered = %q", got)
 	}
@@ -1394,11 +1395,11 @@ func TestUnbalancedBracketRendersLiterally(t *testing.T) {
 // The stock gotui Paragraph parses its own Text, so the input, dock, status
 // and modal widgets restore the substitute runes after drawing.
 func TestLiteralParagraphRestoresBrackets(t *testing.T) {
-	p := newLiteralParagraph()
+	p := style.NewLiteralParagraph()
 	noBorder(&p.Block)
 	p.WrapText = false
 	p.SetRect(0, 0, 20, 1)
-	p.Text = userGutter() + styleEscape("a[b]c")
+	p.Text = userGutter() + style.Escape("a[b]c")
 	buf := ui.NewBuffer(image.Rect(0, 0, 20, 1))
 	p.Draw(buf)
 	var got strings.Builder
@@ -1432,7 +1433,7 @@ func TestAppendAssistantRendersStreamedLink(t *testing.T) {
 
 func plainStyledText(s string) string {
 	var rendered strings.Builder
-	for _, c := range parseStyledCells(s, ui.NewStyle(ui.ColorWhite)) {
+	for _, c := range style.ParseCells(s, ui.NewStyle(ui.ColorWhite)) {
 		if c.Rune != '\u200b' {
 			rendered.WriteRune(c.Rune)
 		}
@@ -1719,7 +1720,7 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 }
 
 func TestTruncatePreservesUTF8(t *testing.T) {
-	got := truncate(strings.Repeat("é", 20), 10)
+	got := style.Truncate(strings.Repeat("é", 20), 10)
 	if !utf8.ValidString(got) {
 		t.Fatalf("truncate split a UTF-8 sequence: %q", got)
 	}
@@ -1859,7 +1860,7 @@ func TestStatusContextReadsAsCountAndPressure(t *testing.T) {
 	if got := plainStyledText(m.statusRow(80)); !strings.Contains(got, "ctx · 448 tok") || strings.Contains(got, "░") || strings.Contains(got, "█") {
 		t.Fatalf("status without a window = %q", got)
 	}
-	if got := m.status.contextUsageStyled(); got != styled("448 tok", "muted", "") {
+	if got := m.status.contextUsageStyled(); got != style.Styled("448 tok", "muted", "") {
 		t.Fatalf("unbounded usage styled = %q", got)
 	}
 	for _, tc := range []struct {
@@ -1867,7 +1868,7 @@ func TestStatusContextReadsAsCountAndPressure(t *testing.T) {
 		color       string
 	}{{10_000, 100_000, "ok"}, {75_000, 100_000, "active"}, {90_000, 100_000, "err"}} {
 		m.status.recordContextUsage(tc.used, tc.limit, false)
-		want := styled(humanizeTokens(tc.used), tc.color, "") + styled("/100k", "muted", "")
+		want := style.Styled(humanizeTokens(tc.used), tc.color, "") + style.Styled("/100k", "muted", "")
 		if got := m.status.contextUsageStyled(); got != want {
 			t.Fatalf("usage %d/%d styled = %q, want %q", tc.used, tc.limit, got, want)
 		}
@@ -1876,7 +1877,7 @@ func TestStatusContextReadsAsCountAndPressure(t *testing.T) {
 		}
 	}
 	m.status.recordContextUsage(12_300, 100_000, true)
-	if got := m.status.contextUsageStyled(); got != styled("~12.3k", "ok", "")+styled("/100k", "muted", "") {
+	if got := m.status.contextUsageStyled(); got != style.Styled("~12.3k", "ok", "")+style.Styled("/100k", "muted", "") {
 		t.Fatalf("estimated usage styled = %q", got)
 	}
 }

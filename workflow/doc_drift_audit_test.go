@@ -28,7 +28,14 @@ func TestDocDriftRejectsIncompleteEvidence(t *testing.T) {
 	}
 	for _, kind := range []string{"empty claims", "blank claim evidence", "blank evidence", "blank change", "stale blank change", "unverifiable"} {
 		t.Run(kind, func(t *testing.T) {
+			accepted := 0
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
+				if op.Kind == "task" {
+					if op.Args["op"] == "review" && op.Args["accept"] == true {
+						accepted++
+					}
+					return map[string]any{"id": op.Args["task"], "revision": 2}, nil
+				}
 				if op.Kind != "agent" {
 					t.Fatalf("unexpected operation %s", op.Kind)
 				}
@@ -72,6 +79,15 @@ func TestDocDriftRejectsIncompleteEvidence(t *testing.T) {
 			if err == nil || report.Status != "failed" {
 				t.Fatalf("incomplete audit succeeded: %+v %v", report, err)
 			}
+			wantAccepted := 1 // valid enumeration, invalid verification
+			if kind == "empty claims" || kind == "blank claim evidence" {
+				wantAccepted = 0
+			} else if kind == "unverifiable" {
+				wantAccepted = 2 // negative research is consumed before failing
+			}
+			if accepted != wantAccepted {
+				t.Fatalf("accepted %d research tasks, want %d", accepted, wantAccepted)
+			}
 		})
 	}
 }
@@ -114,7 +130,7 @@ func TestDocDriftAuditWorkflowDecisions(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
-			var enumerators, verifiers, editors, verifyPass int
+			var enumerators, verifiers, editors, verifyPass, accepted int
 			docs := []any{map[string]any{"path": "README.md"}}
 			if tc.dupPaths {
 				docs = append(docs, docs[0])
@@ -127,6 +143,14 @@ func TestDocDriftAuditWorkflowDecisions(t *testing.T) {
 				mu.Lock()
 				defer mu.Unlock()
 				switch op.Kind {
+				case "task":
+					if op.Args["op"] == "review" && op.Args["accept"] == true {
+						accepted++
+					}
+					if strings.Contains(fmt.Sprint(op.Args["task"]), "editor") {
+						t.Error("editor was accepted automatically")
+					}
+					return map[string]any{"id": op.Args["task"], "revision": 2}, nil
 				case "log":
 					return nil, nil
 				case "snapshot":
@@ -177,6 +201,13 @@ func TestDocDriftAuditWorkflowDecisions(t *testing.T) {
 			if enumerators != tc.enumerators || verifiers != tc.verifiers || editors != tc.editors {
 				t.Fatalf("enumerators/verifiers/editors=%d/%d/%d, want %d/%d/%d",
 					enumerators, verifiers, editors, tc.enumerators, tc.verifiers, tc.editors)
+			}
+			wantAccepted := enumerators + verifiers
+			if tc.dupClaimIDs {
+				wantAccepted = 0
+			}
+			if accepted != wantAccepted {
+				t.Fatalf("accepted %d research tasks, want %d", accepted, wantAccepted)
 			}
 			if tc.blocked {
 				var failure *Error

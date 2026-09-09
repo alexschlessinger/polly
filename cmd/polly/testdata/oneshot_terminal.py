@@ -72,7 +72,7 @@ class Provider(BaseHTTPRequestHandler):
                 elif "swarm_tasks" not in completed:
                     calls = [("swarm_tasks", {})]
                 elif "swarm_review" not in completed:
-                    tasks = json.loads(completed["swarm_tasks"])
+                    tasks = {task["id"]: task for task in json.loads(completed["swarm_tasks"])["items"]}
                     assert len(tasks) == 3, tasks
                     calls = [("swarm_review",{"task":task["id"],"revision":task["revision"],"accept":True}) for task in tasks.values()]
                 if calls:

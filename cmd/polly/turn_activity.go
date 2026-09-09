@@ -87,10 +87,14 @@ type turnActivitySummary struct {
 }
 
 type activityAgentCounts struct {
-	Total, Running, Failed, Canceled, Paused int
+	Total, Running, Failed, Canceled, Paused, Deferred int
 }
 
 func (c *activityAgentCounts) add(status string, active bool) {
+	if strings.HasSuffix(status, " · deferred") {
+		c.Deferred++
+		status = strings.TrimSuffix(status, " · deferred")
+	}
 	c.Total++
 	switch {
 	case active:

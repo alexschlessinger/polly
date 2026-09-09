@@ -1,4 +1,4 @@
-package main
+package style
 
 import (
 	"slices"
@@ -17,7 +17,7 @@ func transcriptRowsText(rows [][]ui.Cell) []string {
 
 func requireTranscriptRows(t *testing.T, text string, width int, want []string) [][]ui.Cell {
 	t.Helper()
-	rows := transcriptVisualRows(text, ui.NewStyle(ui.ColorClear), width)
+	rows := VisualRows(text, ui.NewStyle(ui.ColorClear), width)
 	if got := transcriptRowsText(rows); !slices.Equal(got, want) {
 		t.Fatalf("visual rows = %#v, want %#v", got, want)
 	}
@@ -31,7 +31,7 @@ func TestTranscriptVisualRowsWordWrapsProse(t *testing.T) {
 func TestTranscriptVisualRowsHardWrapsLongTokenByDisplayWidth(t *testing.T) {
 	rows := requireTranscriptRows(t, "ab界界界", 4, []string{"ab界", "界界"})
 	for i, row := range rows {
-		if got := transcriptCellsWidth(row); got > 4 {
+		if got := CellsWidth(row); got > 4 {
 			t.Fatalf("row %d display width = %d, want <= 4", i, got)
 		}
 	}
@@ -45,12 +45,12 @@ func TestTranscriptVisualRowsKeepsLeadingZeroWidthCellWithWideRune(t *testing.T)
 // style, so a long question still reads as one block the user wrote.
 func TestTranscriptVisualRowsRepeatsUserGutter(t *testing.T) {
 	rows := requireTranscriptRows(t,
-		userGutter()+"alpha beta gamma",
+		Styled(string(UserGutterGlyph)+" ", "accent", "bold")+"alpha beta gamma",
 		12,
 		[]string{"▎ alpha beta", "▎ gamma"},
 	)
 
-	want := ui.ParseStyles(styled("▎", "accent", "bold"), ui.StyleClear)[0].Style
+	want := ui.ParseStyles(Styled("▎", "accent", "bold"), ui.StyleClear)[0].Style
 	if rows[0][0].Style != want {
 		t.Fatal("prompt marker lost its source style")
 	}
@@ -100,7 +100,7 @@ func TestWrapTranscriptCellsPreservesSourceStylesAcrossBreaks(t *testing.T) {
 	defaultStyle := ui.NewStyle(ui.ColorClear)
 	text := "[alpha](fg:green,mod:bold) [beta](fg:red)"
 	source := ui.ParseStyles(text, defaultStyle)
-	rows := transcriptVisualRows(text, defaultStyle, 5)
+	rows := VisualRows(text, defaultStyle, 5)
 	requireTranscriptRows(t, text, 5, []string{"alpha", "beta"})
 
 	for i := range rows[0] {
@@ -117,7 +117,7 @@ func TestWrapTranscriptCellsPreservesSourceStylesAcrossBreaks(t *testing.T) {
 
 func TestWrapTranscriptCellsLeavesNonPositiveWidthUnchanged(t *testing.T) {
 	cells := ui.ParseStyles("[wide text](fg:green,mod:bold)", ui.StyleClear)
-	got := wrapTranscriptCells(cells, 0)
+	got := WrapCells(cells, 0)
 	if !slices.Equal(got, cells) {
 		t.Fatal("non-positive width changed transcript cells")
 	}

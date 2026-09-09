@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -90,7 +91,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 
 // Every activity row shares one shape: an accent triangle, then muted labels.
 func TestInlineActivityHeadersShareOneShape(t *testing.T) {
-	if got, want := toolDisclosureHeader(1, false), "  "+styled("▸", "accent", "bold")+" "+styled("1 tool", "muted", ""); got != want {
+	if got, want := toolDisclosureHeader(1, false), "  "+style.Styled("▸", "accent", "bold")+" "+style.Styled("1 tool", "muted", ""); got != want {
 		t.Fatalf("inline tool header = %q, want %q", got, want)
 	}
 	if got, want := toolDisclosureHeader(2, true), activityRowHeader("▾", "2 tools"); got != want {
@@ -106,7 +107,7 @@ func TestInlineActivityHeadersShareOneShape(t *testing.T) {
 		activityField("thought 0.7s", activityThought, false),
 		activityField("2 tools", activityTools, false),
 	}, 80)
-	if want := activityRowHeader("▸", "thought 0.7s") + styled(" · ", "muted", "") + styled("2 tools", "muted", ""); row != want {
+	if want := activityRowHeader("▸", "thought 0.7s") + style.Styled(" · ", "muted", "") + style.Styled("2 tools", "muted", ""); row != want {
 		t.Fatalf("two-field row = %q, want %q", row, want)
 	}
 	// The triangle belongs to the first hitbox; later ones start at their label.
@@ -155,7 +156,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	for _, block := range m.transcriptDisplayEntries(100) {
 		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
-			if !strings.HasPrefix(header, "  "+styled("▸", "accent", "bold")+" ") || !mutedThought.MatchString(header) ||
+			if !strings.HasPrefix(header, "  "+style.Styled("▸", "accent", "bold")+" ") || !mutedThought.MatchString(header) ||
 				!strings.Contains(header, "1 tool](fg:muted") {
 				t.Fatalf("activity row should be one accent triangle with muted labels: %q", header)
 			}
@@ -188,7 +189,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 			continue
 		}
 		header := strings.SplitN(block.text, "\n", 2)[0]
-		if !strings.HasPrefix(header, "  "+styled("▸", "accent", "bold")+" ") || !strings.Contains(header, "1 tool](fg:muted") {
+		if !strings.HasPrefix(header, "  "+style.Styled("▸", "accent", "bold")+" ") || !strings.Contains(header, "1 tool](fg:muted") {
 			t.Fatalf("settled inline activity keeps its shape: %q", header)
 		}
 	}

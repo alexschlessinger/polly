@@ -1,4 +1,4 @@
-package main
+package style
 
 import (
 	"unicode"
@@ -7,7 +7,12 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// wrapTranscriptCells wraps parsed transcript cells to terminal width while
+// UserGutterGlyph marks every row the user wrote: the composer while typing,
+// the echoed prompt afterwards, and the queued or not-sent trailer under it.
+// Assistant text carries no marker, so the bar alone says who is speaking.
+const UserGutterGlyph = '▎'
+
+// WrapCells wraps parsed transcript cells to terminal width while
 // retaining the style carried by every source cell. Prose prefers whitespace
 // boundaries; tokens wider than a row are hard-wrapped. Explicit newlines are
 // preserved.
@@ -15,7 +20,7 @@ import (
 // Prompt lines use a two-column hanging indent after their leading "> ". Code
 // lines repeat their styled "│ " gutter and hard-wrap so source whitespace is
 // never reflowed.
-func wrapTranscriptCells(cells []ui.Cell, width int) []ui.Cell {
+func WrapCells(cells []ui.Cell, width int) []ui.Cell {
 	if len(cells) == 0 || width <= 0 {
 		return append([]ui.Cell(nil), cells...)
 	}
@@ -36,11 +41,11 @@ func wrapTranscriptCells(cells []ui.Cell, width int) []ui.Cell {
 	return out
 }
 
-// transcriptVisualRows parses gotui inline styles, wraps the resulting cells,
+// VisualRows parses gotui inline styles, wraps the resulting cells,
 // and returns the terminal rows ready for drawing or visual-row scroll math.
-func transcriptVisualRows(text string, style ui.Style, width int) [][]ui.Cell {
-	cells := parseStyledCells(text, style)
-	return ui.SplitCells(wrapTranscriptCells(cells, width), '\n')
+func VisualRows(text string, style ui.Style, width int) [][]ui.Cell {
+	cells := ParseCells(text, style)
+	return ui.SplitCells(WrapCells(cells, width), '\n')
 }
 
 func appendTranscriptRows(dst []ui.Cell, rows [][]ui.Cell) []ui.Cell {
@@ -61,7 +66,7 @@ func wrapTranscriptLine(line []ui.Cell, width int) [][]ui.Cell {
 	if prefix, continuation, content, hard, ok := transcriptHangingPrefix(line); ok {
 		// A prefix that consumes the row cannot hang alongside content. Fall back
 		// to ordinary hard wrapping so narrow terminals still make progress.
-		if transcriptCellsWidth(prefix) >= width || transcriptCellsWidth(continuation) >= width {
+		if CellsWidth(prefix) >= width || CellsWidth(continuation) >= width {
 			return wrapTranscriptHard(nil, nil, line, width)
 		}
 		if hard {
@@ -82,7 +87,7 @@ func transcriptHangingPrefix(line []ui.Cell) (prefix, continuation, content []ui
 	}
 
 	switch line[0].Rune {
-	case userGutterGlyph:
+	case UserGutterGlyph:
 		// Only the REPL-owned, accent/bold bar is a user prompt. The same
 		// rune in assistant prose is unstyled and wraps as ordinary text.
 		accent, known := ui.StyleParserColorMap["accent"]
@@ -121,7 +126,7 @@ func wrapTranscriptWords(prefix, continuation, content []ui.Cell, width int) [][
 		if first {
 			rowPrefix = prefix
 		}
-		capacity := width - transcriptCellsWidth(rowPrefix)
+		capacity := width - CellsWidth(rowPrefix)
 		if capacity <= 0 {
 			return wrapTranscriptHard(nil, nil, append(append([]ui.Cell(nil), prefix...), content...), width)
 		}
@@ -150,7 +155,7 @@ func wrapTranscriptHard(prefix, continuation, content []ui.Cell, width int) [][]
 		if first {
 			rowPrefix = prefix
 		}
-		capacity := width - transcriptCellsWidth(rowPrefix)
+		capacity := width - CellsWidth(rowPrefix)
 		if capacity <= 0 {
 			// This only occurs in the no-prefix narrow fallback. Consuming one
 			// source cell prevents zero-width or wide-rune input from stalling.
@@ -214,7 +219,7 @@ func transcriptFitIndex(cells []ui.Cell, width int) int {
 	}
 	used := 0
 	for i, cell := range cells {
-		cellWidth := transcriptCellWidth(cell)
+		cellWidth := CellWidth(cell)
 		if cellWidth > 0 && used+cellWidth > width {
 			// Keep leading combining/zero-width cells attached to the first
 			// visible rune. If that rune itself is wider than the terminal, it
@@ -229,22 +234,22 @@ func transcriptFitIndex(cells []ui.Cell, width int) int {
 	return len(cells)
 }
 
-// styledTextWidth measures the display width of a string carrying gotui style
+// TextWidth measures the display width of a string carrying gotui style
 // markup: markup syntax, zero-width escapes, and private literal-bracket runes
 // all measure as the cells they render to.
-func styledTextWidth(s string) int {
-	return transcriptCellsWidth(parseStyledCells(s, ui.StyleClear))
+func TextWidth(s string) int {
+	return CellsWidth(ParseCells(s, ui.StyleClear))
 }
 
-func transcriptCellsWidth(cells []ui.Cell) int {
+func CellsWidth(cells []ui.Cell) int {
 	width := 0
 	for _, cell := range cells {
-		width += transcriptCellWidth(cell)
+		width += CellWidth(cell)
 	}
 	return width
 }
 
-func transcriptCellWidth(cell ui.Cell) int {
+func CellWidth(cell ui.Cell) int {
 	width := rw.RuneWidth(cell.Rune)
 	if width < 0 {
 		return 0

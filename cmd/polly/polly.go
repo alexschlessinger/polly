@@ -422,7 +422,11 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		metadata.SkillSources = skillResult.sources
 	}
 
-	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings)
+	privatePaths, err := sessionPrivatePaths(sessionStore)
+	if err != nil {
+		return nil, err
+	}
+	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, privatePaths...)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +496,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	return state, nil
 }
 
-func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner) ([]tools.RegistryOption, *sandboxProbe, error) {
+func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, error) {
 	if config.NoSandbox {
 		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil
 	}
@@ -506,7 +510,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	}
 	baseCfg = baseCfg.Merge(sandbox.Config{
 		WritablePaths: config.WritePaths,
-		DenyPaths:     config.DenyPaths,
+		DenyPaths:     append(append([]string(nil), config.DenyPaths...), privatePaths...),
 		AllowNetwork:  config.AllowNet,
 	})
 	baseCfg, err = sandbox.PrepareConfig(baseCfg)

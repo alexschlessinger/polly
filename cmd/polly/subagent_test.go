@@ -165,7 +165,7 @@ func TestModelSpawnUsesParentSwarmAndPrivateSession(t *testing.T) {
 		foundIdentity := false
 		for _, message := range history {
 			if message.ToolName == "list_agents" {
-				if !strings.Contains(message.Content, `"self":"`+member.ID+`"`) {
+				if !strings.Contains(message.Content, `"self": "`+member.ID+`"`) {
 					t.Fatalf("caller identity leaked: %s", message.Content)
 				}
 				foundIdentity = true

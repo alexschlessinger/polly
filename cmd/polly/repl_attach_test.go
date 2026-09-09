@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
@@ -716,7 +717,7 @@ func TestBeginManagedTurnEchoesPreparedAttachmentThumbnails(t *testing.T) {
 
 	m := newReplModel()
 	token := m.registerAttachment(path, "shot.png")
-	prompt := "describe " + token + " " + string(transcriptImageMarker(0))
+	prompt := "describe " + token + " " + string(style.ImageMarker(0))
 	attachments, err := m.promptAttachments(prompt)
 	if err != nil {
 		t.Fatal(err)
@@ -732,12 +733,12 @@ func TestBeginManagedTurnEchoesPreparedAttachmentThumbnails(t *testing.T) {
 	if !strings.Contains(entry, "shot.png · ") {
 		t.Fatalf("user echo lacks attachment caption: %q", entry)
 	}
-	if !strings.ContainsRune(entry, transcriptImageMarker(0)) {
+	if !strings.ContainsRune(entry, style.ImageMarker(0)) {
 		t.Fatal("user echo lacks thumbnail slot markers")
 	}
 	// The prompt's own private-use rune was stripped; only the slot rows carry
 	// marker runes, all below the caption line.
-	if strings.ContainsRune(strings.SplitN(entry, "\n", 2)[0], transcriptImageMarker(0)) {
+	if strings.ContainsRune(strings.SplitN(entry, "\n", 2)[0], style.ImageMarker(0)) {
 		t.Fatal("pasted marker rune survived in the echoed prompt line")
 	}
 	imgs := m.transcript[idx].images
@@ -824,8 +825,8 @@ func TestReplAttachCommand(t *testing.T) {
 }
 
 func TestStripTranscriptImageMarkers(t *testing.T) {
-	in := "a" + string(transcriptImageMarker(0)) + "b" + string(transcriptImageMarker(255)) + "c\uE200d"
-	if got := stripTranscriptImageMarkers(in); got != "abc\uE200d" {
+	in := "a" + string(style.ImageMarker(0)) + "b" + string(style.ImageMarker(255)) + "c\uE200d"
+	if got := style.StripImageMarkers(in); got != "abc\uE200d" {
 		t.Fatalf("stripTranscriptImageMarkers = %q", got)
 	}
 }

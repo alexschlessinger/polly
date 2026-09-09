@@ -82,6 +82,11 @@ func (r *Runtime) applyPlanLocked(ctx context.Context, plan worktree.ApplyPlan, 
 	if err = acceptedTasks(s, refs); err != nil {
 		return err
 	}
+	for _, ref := range refs {
+		if err = reactivateTask(s, s.Tasks[ref.Task]); err != nil {
+			return err
+		}
+	}
 	m, err := r.manager(ctx)
 	if err != nil {
 		return err
@@ -97,6 +102,11 @@ func (r *Runtime) applyPlanLocked(ctx context.Context, plan worktree.ApplyPlan, 
 	if err = r.update(ctx, func(s *State) error {
 		if err := acceptedTasks(s, refs); err != nil {
 			return err
+		}
+		for _, ref := range refs {
+			if err := reactivateTask(s, s.Tasks[ref.Task]); err != nil {
+				return err
+			}
 		}
 		s.Applies[plan.ID] = &record
 		return nil
@@ -191,6 +201,7 @@ func (r *Runtime) saveApplyOutcome(ctx context.Context, record ApplyRecord) erro
 			} else {
 				for _, ref := range record.Tasks {
 					s.Tasks[ref.Task].Status = "done"
+					s.Tasks[ref.Task].Deferral = nil
 				}
 			}
 		}

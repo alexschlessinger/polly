@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -93,7 +94,7 @@ func appendReasoningTail(record *reasoningRecord, text string, segmentBreak bool
 	text = strings.ReplaceAll(text, "\r", "\n")
 	// Expanded reasoning can share a visual block with tool image sidecars.
 	// Remove reserved slot runes before they can claim those tool images.
-	text = stripTranscriptImageMarkers(text)
+	text = style.StripImageMarkers(text)
 	addition := []rune(text)
 	if segmentBreak && len(record.tail) > 0 && record.tail[len(record.tail)-1] != '\n' {
 		withBreak := make([]rune, 1, len(addition)+1)
@@ -307,7 +308,7 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 		}
 		b.WriteString("\n")
 		b.WriteString(reasoningBlockIndent)
-		b.WriteString(styled(line, "muted", "italic"))
+		b.WriteString(style.Styled(line, "muted", "italic"))
 	}
 	return b.String()
 }

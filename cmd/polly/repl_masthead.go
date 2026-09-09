@@ -3,7 +3,7 @@ package main
 import (
 	"strings"
 
-	tcell "github.com/gdamore/tcell/v3"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -12,18 +12,6 @@ import (
 // scrolls with history and survives /clear because it is not a transcript
 // entry. Terminals with native graphics show the macaw band at startup
 // instead of the half-block bird, so their masthead is text only.
-
-var (
-	pollyGreen = tcell.NewRGBColor(0x01, 0xab, 0x46)
-	pollyLight = tcell.NewRGBColor(0x57, 0xcd, 0x75)
-	pollyWing  = tcell.NewRGBColor(0xb7, 0xd0, 0x19)
-	pollyCrown = tcell.NewRGBColor(0xff, 0x2b, 0x23)
-	pollyBeak  = tcell.NewRGBColor(0xff, 0xd5, 0x1d)
-	pollyMouth = tcell.NewRGBColor(0xff, 0x60, 0x0d)
-	pollyFace  = tcell.NewRGBColor(0xec, 0x80, 0xaf)
-	pollyEye   = tcell.NewRGBColor(0x31, 0x2f, 0x2a)
-	pollyFoot  = tcell.NewRGBColor(0xfe, 0xba, 0x02)
-)
 
 // pollyLogoPixels is a compact rendering of the supplied vector mark: red
 // crown, yellow/orange left-facing beak, pink face, green body, lime wing,
@@ -78,13 +66,13 @@ func pollyHalfBlockMarkup(topPixel, bottomPixel rune) string {
 	case !topPainted && !bottomPainted:
 		return " "
 	case topPainted && !bottomPainted:
-		return styled("▀", top, "")
+		return style.Styled("▀", top, "")
 	case !topPainted && bottomPainted:
-		return styled("▄", bottom, "")
+		return style.Styled("▄", bottom, "")
 	case top == bottom:
-		return styled("█", top, "")
+		return style.Styled("█", top, "")
 	default:
-		return styledBg("▀", top, bottom)
+		return style.StyledBg("▀", top, bottom)
 	}
 }
 
@@ -128,10 +116,10 @@ const mastheadInvitation = "Type a message, or / for commands."
 func (m *replModel) mastheadTextRows(width int) []string {
 	rows := []string{m.mastheadTitle(width)}
 	if m.masthead.sandbox != "" {
-		rows = append(rows, styled(rw.Truncate(m.masthead.sandbox, width, "…"), "muted", ""))
+		rows = append(rows, style.Styled(rw.Truncate(m.masthead.sandbox, width, "…"), "muted", ""))
 	}
 	if !m.userPromptSeen {
-		rows = append(rows, styled(rw.Truncate(mastheadInvitation, width, "…"), "muted", ""))
+		rows = append(rows, style.Styled(rw.Truncate(mastheadInvitation, width, "…"), "muted", ""))
 	}
 	return rows
 }
@@ -154,15 +142,15 @@ func (m *replModel) mastheadTitle(width int) string {
 		}
 		return n <= width
 	}
-	sep := styled(" · ", "muted", "")
-	title := styled("polly", "", "bold")
+	sep := style.Styled(" · ", "muted", "")
+	title := style.Styled("polly", "", "bold")
 	switch {
 	case session != "" && model != "" && fits("polly", session, model):
-		return title + sep + styled(session, "accent", "") + sep + styled(model, "muted", "")
+		return title + sep + style.Styled(session, "accent", "") + sep + style.Styled(model, "muted", "")
 	case session != "" && fits("polly", session):
-		return title + sep + styled(session, "accent", "")
+		return title + sep + style.Styled(session, "accent", "")
 	case model != "" && session == "" && fits("polly", model):
-		return title + sep + styled(model, "muted", "")
+		return title + sep + style.Styled(model, "muted", "")
 	default:
 		return title
 	}

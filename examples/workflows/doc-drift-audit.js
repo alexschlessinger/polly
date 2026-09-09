@@ -17,6 +17,13 @@ const verdict = s.object({
 const fix = s.object({status: s.enum("fixed", "skipped"), what: s.string()});
 const ids = claims => claims.map(c => c.id);
 
+// Acceptance records consumption of research, including negative findings.
+// It does not certify a clean audit or accept an editing candidate.
+async function acceptResearch(result) {
+  const task = await polly.tasks.read(result.task);
+  await polly.tasks.review({task: task.id, revision: task.revision, accept: true});
+}
+
 async function auditArea(input, area) {
   const label = area.label || area.path;
   const found = await polly.agent({
@@ -28,6 +35,7 @@ async function auditArea(input, area) {
   const claims = found.value.claims;
   s.keyed(ids(claims), verdict); // duplicate claim ids reject before any effect
   if (!claims.length) polly.fail("No claims extracted", {label, path: area.path, status: "incomplete", session: found.session, task: found.task});
+  await acceptResearch(found);
 
   async function verify(previous, snapshot) {
     const review = await polly.agent({
@@ -36,6 +44,7 @@ async function auditArea(input, area) {
       input: {doc: area.path, claims, previous: previous || []},
       schema: s.keyed(ids(claims), verdict),
     });
+    await acceptResearch(review);
     const unverifiable = Object.entries(review.value).filter(([, v]) => v.verdict === "unverifiable");
     if (unverifiable.length) polly.fail("Claims could not be verified", {
       label, path: area.path, status: "incomplete", unverifiable,

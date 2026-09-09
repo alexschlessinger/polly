@@ -56,7 +56,7 @@ func TestSettlementNudgeIsSynthetic(t *testing.T) {
 	}
 }
 
-func TestCompletionMailPreservesTextAndStructuredResults(t *testing.T) {
+func TestCompletionMailReferencesPreservedResults(t *testing.T) {
 	for _, structured := range []bool{false, true} {
 		name, content := "text", "first line\nsecond line"
 		var shape map[string]any
@@ -78,7 +78,10 @@ func TestCompletionMailPreservesTextAndStructuredResults(t *testing.T) {
 			var report string
 			for _, mail := range s.Messages {
 				if mail.From == result.Session {
-					_, report, _ = strings.Cut(mail.Text, ". Result: ")
+					if !strings.Contains(mail.Text, result.Task) || !strings.Contains(mail.Text, "swarm_tasks") {
+						t.Fatalf("missing retrieval reference: %s", mail.Text)
+					}
+					report = agentResultText(s.Tasks[result.Task].Result)
 				}
 			}
 			if structured {

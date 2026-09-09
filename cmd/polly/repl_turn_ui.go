@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -160,9 +161,9 @@ func (t *gotuiTurnUI) wakeApprovals() {
 }
 
 func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
-	label := stripTranscriptImageMarkers(toolLabel(call))
+	label := style.StripImageMarkers(toolLabel(call))
 	denied := toolWasDenied(result)
-	var discoveredImages []transcriptImage
+	var discoveredImages []style.Image
 	if toolDisplayEnabled(t.config) && !denied {
 		// Tool output can be large. Discovery touches only Markdown/path syntax
 		// and the filesystem, so keep it outside the model lock and let the TUI
@@ -200,7 +201,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	default:
 		final = toolOKLine(label, formatElapsed(duration), resultLineMeta(result))
 	}
-	final = stripTranscriptImageMarkers(final)
+	final = style.StripImageMarkers(final)
 	images := discoveredImages
 	// Freeze the final line over its running disclosure row. Fall back to a new
 	// row if the display was cleared while the tool was in flight.
@@ -209,7 +210,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 		row := &record.rows[rowIndex]
 		row.finishAgentCall(call, denied, err)
 		row.line = final
-		row.images = append([]transcriptImage(nil), images...)
+		row.images = append([]style.Image(nil), images...)
 		row.settled = true
 	} else {
 		record = m.ensureToolDisclosure()
@@ -217,7 +218,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 			callID:  call.ID,
 			label:   label,
 			line:    final,
-			images:  append([]transcriptImage(nil), images...),
+			images:  append([]style.Image(nil), images...),
 			settled: true,
 		})
 		row := &record.rows[len(record.rows)-1]
@@ -232,7 +233,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	// next batch folds into it. Assistant prose or turn settlement closes it.
 }
 
-func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images []transcriptImage) {
+func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images []style.Image) {
 	if len(images) == 0 || (t.config != nil && t.config.Quiet) {
 		return
 	}
@@ -247,7 +248,7 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 		record = m.ensureToolDisclosure()
 		record.rows = append(record.rows, toolDisclosureRow{
 			callID:  call.ID,
-			label:   stripTranscriptImageMarkers(toolLabel(call)),
+			label:   style.StripImageMarkers(toolLabel(call)),
 			line:    toolOKLine(toolLabel(call), "", ""),
 			settled: true,
 		})
@@ -255,7 +256,7 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 		row.setCall(call)
 	}
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
-		row.inspectionImages = append([]transcriptImage(nil), images...)
+		row.inspectionImages = append([]style.Image(nil), images...)
 		m.refreshToolDisclosureWithAnchor(record, false)
 		// The third Images field and its gallery are derived from
 		// inspectionImages; neither necessarily changes the canonical raw tool

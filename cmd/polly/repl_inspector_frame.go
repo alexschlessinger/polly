@@ -4,6 +4,7 @@ import (
 	"image"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -21,7 +22,7 @@ func (r *managedREPL) setupInspectorWidgets() {
 	r.inspectorW = newTranscriptParagraph()
 	noBorder(&r.inspectorW.Block)
 	r.inspectorW.UseRows = true
-	r.inspectorHeaderW = newLiteralParagraph()
+	r.inspectorHeaderW = style.NewLiteralParagraph()
 	noBorder(&r.inspectorHeaderW.Block)
 	r.inspectorHeaderW.WrapText = false
 }
@@ -42,7 +43,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []terminalImagePlacement {
 	r.inspectorHeaderW.Text = header.text
 	r.inspectorButtons = header.buttons
 	r.inspectorHeaderRows = header.rows
-	rows := transcriptVisualRows("Loading…", ui.StyleClear, g.width)
+	rows := style.VisualRows("Loading…", ui.StyleClear, g.width)
 	v := i.current
 	if v != nil && v.model != nil {
 		// While a refreshed projection is loading, the previous model still
@@ -66,7 +67,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []terminalImagePlacement {
 	r.inspectorW.Rows, r.inspectorW.TopRow, r.inspectorW.PinBottom = rows, s.top, pin
 	r.inspectorW.OverlayBottom = nil
 	if !s.follow && s.lastRows >= 0 && len(rows) > s.lastRows {
-		r.inspectorW.OverlayBottom = [][]ui.Cell{parseStyledCells(styled("↓ new output · End to follow", "accent", ""), ui.StyleClear)}
+		r.inspectorW.OverlayBottom = [][]ui.Cell{style.ParseCells(style.Styled("↓ new output · End to follow", "accent", ""), ui.StyleClear)}
 		r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, y+paneHeight-1, x+g.width, y+paneHeight), "follow"})
 	}
 	if v == nil || v.model == nil {
@@ -108,8 +109,8 @@ func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspec
 			if key == "" || start < 0 {
 				return
 			}
-			prefix, _ := transcriptCellRowsWithImages(parseStyledCells(block.text[:start], ui.StyleClear), false, v.width, block.images, m.nativeImages, m.imageCellWidth, m.imageCellHeight)
-			last, _ := transcriptCellRowsWithImages(parseStyledCells(block.text[:end], ui.StyleClear), false, v.width, block.images, m.nativeImages, m.imageCellWidth, m.imageCellHeight)
+			prefix, _ := transcriptCellRowsWithImages(style.ParseCells(block.text[:start], ui.StyleClear), false, v.width, block.images, m.nativeImages, m.imageCellWidth, m.imageCellHeight)
+			last, _ := transcriptCellRowsWithImages(style.ParseCells(block.text[:end], ui.StyleClear), false, v.width, block.images, m.nativeImages, m.imageCellWidth, m.imageCellHeight)
 			firstRow := max(0, len(prefix)-1)
 			if strings.HasSuffix(block.text[:start], "\n") {
 				firstRow = len(prefix)

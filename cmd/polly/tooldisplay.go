@@ -11,10 +11,10 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
-	rw "github.com/mattn/go-runewidth"
 )
 
 // toolWasDenied reports whether a tool result represents a user denial rather
@@ -64,19 +64,19 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 	case "read_file":
 		return summarizeReadFileArgs(args)
 	case "write_file", "edit_file", "list_dir":
-		return truncate(args.String("path"), 120)
+		return style.Truncate(args.String("path"), 120)
 	case "zvec_grep_search":
 		return summarizeZvecGrepSearchArgs(args)
 	case "write":
-		return truncate(args.String("file_path"), 120)
+		return style.Truncate(args.String("file_path"), 120)
 	case "edit":
-		return truncate(args.String("file_path"), 120)
+		return style.Truncate(args.String("file_path"), 120)
 	case "glob":
-		return truncate(args.String("pattern"), 120)
+		return style.Truncate(args.String("pattern"), 120)
 	case "grep":
-		return truncate(args.String("pattern"), 120)
+		return style.Truncate(args.String("pattern"), 120)
 	case "activate_skill":
-		return truncate(args.String("name"), 120)
+		return style.Truncate(args.String("name"), 120)
 	case "read_skill_file":
 		return summarizeReadSkillFileArgs(args)
 	case "spawn_agent":
@@ -98,9 +98,9 @@ func summarizeSpawnArgs(args tools.Args) string {
 // The tool row, the child's tab, and the session picker all use it.
 func spawnLabel(label, task string) string {
 	if label = strings.TrimSpace(label); label != "" {
-		return truncate(label, 60)
+		return style.Truncate(label, 60)
 	}
-	return truncate(strings.TrimSpace(task), 60)
+	return style.Truncate(strings.TrimSpace(task), 60)
 }
 
 // summarizeGenericToolArgs gives custom and MCP tools a useful approval label
@@ -126,12 +126,12 @@ func summarizeGenericToolArgs(args map[string]any) string {
 		}
 		parts = append(parts, compactToolArgKey(key)+"="+value)
 	}
-	return truncate(strings.Join(parts, ", "), genericToolSummaryWidth)
+	return style.Truncate(strings.Join(parts, ", "), genericToolSummaryWidth)
 }
 
 func compactToolArgKey(key string) string {
 	key = strings.Join(strings.Fields(key), " ")
-	return truncate(key, 32)
+	return style.Truncate(key, 32)
 }
 
 func genericToolArgValue(value any) string {
@@ -198,7 +198,7 @@ func splitToolArgKey(key string) []string {
 }
 
 func summarizeReadArgs(args tools.Args) string {
-	summary := truncate(args.String("file_path"), 120)
+	summary := style.Truncate(args.String("file_path"), 120)
 	if offset := args.Int("offset", 0); offset > 0 {
 		limit := args.Int("limit", 0)
 		if limit > 0 {
@@ -211,9 +211,9 @@ func summarizeReadArgs(args tools.Args) string {
 }
 
 func summarizeReadFileArgs(args tools.Args) string {
-	summary := truncate(args.String("path"), 120)
+	summary := style.Truncate(args.String("path"), 120)
 	if query := args.String("query"); query != "" {
-		summary += fmt.Sprintf(" (query %q)", truncate(query, 40))
+		summary += fmt.Sprintf(" (query %q)", style.Truncate(query, 40))
 	} else if offset := args.Int("offset", 0); offset > 0 {
 		if limit := args.Int("limit", 0); limit > 0 {
 			summary += fmt.Sprintf(" (lines %d-%d)", offset, offset+limit-1)
@@ -234,16 +234,16 @@ func summarizeZvecGrepSearchArgs(args tools.Args) string {
 		}
 		groups = append(groups, args.StringSlice(key)...)
 	}
-	summary := truncate(strings.Join(groups, " | "), 60)
+	summary := style.Truncate(strings.Join(groups, " | "), 60)
 	if path := args.String("path"); path != "" {
-		summary += " in " + truncate(path, 60)
+		summary += " in " + style.Truncate(path, 60)
 	}
 	return summary
 }
 
 func summarizeReadSkillFileArgs(args tools.Args) string {
-	skill := truncate(args.String("skill"), 120)
-	path := truncate(args.String("path"), 120)
+	skill := style.Truncate(args.String("skill"), 120)
+	path := style.Truncate(args.String("path"), 120)
 	if skill != "" && path != "" {
 		return skill + "/" + path
 	}
@@ -264,12 +264,12 @@ func summarizeBashCommand(args tools.Args) string {
 		for _, line := range lines[1:] {
 			line = strings.TrimSpace(line)
 			if line != "" && line != "EOF" && line != "'EOF'" {
-				return truncate(prefix+" "+line, 120)
+				return style.Truncate(prefix+" "+line, 120)
 			}
 		}
 	}
 
-	return truncate(first, 120)
+	return style.Truncate(first, 120)
 }
 
 // toolLineBody joins a settled tool line's parts the same way in every
@@ -387,16 +387,6 @@ func capLines(s string, max int) string {
 	}
 	kept := lines[:max]
 	return strings.Join(kept, "\n") + fmt.Sprintf("\n… (+%d more lines)", len(lines)-max)
-}
-
-func truncate(s string, max int) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	if rw.StringWidth(s) > max {
-		return rw.Truncate(s, max, "...")
-	}
-	return s
 }
 
 func toolDisplayEnabled(config *Config) bool {

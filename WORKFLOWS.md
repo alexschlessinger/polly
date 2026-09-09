@@ -257,7 +257,7 @@ Workflow calls and ordinary spawns use this same pool and budget. A workflow
 reserves its members across its steps. Concurrent calls to a reserved/busy
 member fail; idle peer traffic cannot create an extra workflow-controlled turn.
 Successful workflows release reservations. Failed or canceled attempts leave
-their members paused for explicit parent/user recovery.
+their interrupted executions paused for explicit parent/user recovery. Completed and failed executions retain their actual outcomes; a failed workflow does not pause completed agents.
 Failed and interrupted reports block settlement until the parent inspects and
 acknowledges them with `workflow_acknowledge` or `/swarm acknowledge-workflow ID`.
 Acknowledgment retains the report and does not accept tasks or discard changes.
@@ -433,3 +433,52 @@ All one-shot stdout is settled by default, with stderr progress and explicit
 provisional until coordination settles. Unresolved review, dependency, failure,
 or reply work produces a blocker after one corrective prompt for unchanged
 state. Structured output is emitted only after successful validation.
+
+### Inspecting and deferring retained work
+
+`workflow_read({id})` returns a bounded summary of the outcome, acknowledgment,
+step counts, agent/task references, failures, and deferred items. Use
+`section: "steps"` to page step summaries, then `section: "step", step: "<id>"`
+for one saved operation. Sections `source`, `input`, and `output` select the
+other report fields. `pointer` is a JSON Pointer within the selected section,
+for example `/value/value/claims/0` within an agent step. Inspection never
+resumes JavaScript or reads the current worktree instead of captured results.
+
+`swarm_tasks` lists summaries; select `task: "<id>", section: "details"` for
+criteria and feedback, or `section: "result"` for the result (including retained
+partial results). `list_agents` returns `items` with caller `self` and `parent`
+identity, execution outcome, task disposition, and context IDs. Listings use
+1-based `offset`, default `limit: 50`, maximum 100, and a 16 KiB response budget;
+pass `next` back as `offset`. Oversized selections have bounded previews and
+complete pretty-printed text artifacts. Use the receipt's `read_artifact` ID
+with `offset`/`limit`, literal `query`, or exact `byte_offset` paging.
+
+Workflow scripts explicitly accept research when they consume it:
+
+```js
+const task = await polly.tasks.read(research.task);
+await polly.tasks.review({task: task.id, revision: task.revision, accept: true});
+```
+
+Accepting research acknowledges the completed investigation, including negative
+or unverifiable findings. It does not certify a clean verdict or accept an
+editing candidate. The audit and fix-review examples perform this bookkeeping
+before branching on findings or allowing parallel failures to abort the scope.
+
+After reporting a failed, canceled, or interrupted workflow, the parent can use
+`workflow_acknowledge({id, defer: true, note: "reason for retaining work"})`.
+Acknowledgment and deferral commit together. Deferral retains unresolved tasks,
+results, snapshots, and worktrees without accepting, applying, or canceling them.
+It lets the parent finish without repeatedly prompting about those exact task
+revisions. Acknowledgment without `defer` retains its previous behavior.
+Active work, unanswered requests, approvals, uncertain integrations, and
+unrelated tasks still require attention.
+
+Reads never reactivate deferred work. Explicit review, task changes, or recovery
+clear the affected deferral. Changed task revisions or execution generations
+invalidate it. Recover retained work only after any newer run in the workspace
+settles. Paused executions retain their original remaining budget; an exhausted
+allowance needs an explicit user grant. Failed executions use the existing
+explicit restart and launch accounting. Nothing automatically replays a workflow
+or deletes retained work. Older reports remain historical; display correction
+of misleading paused labels does not accept their tasks.

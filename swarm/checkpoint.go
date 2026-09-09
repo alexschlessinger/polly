@@ -3,7 +3,6 @@ package swarm
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -201,7 +200,7 @@ func (r *Runtime) BindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 		if settleErr == nil {
 			err = r.update(ctx, func(s *State) error {
 				for _, run := range s.Runs {
-					if run.Status == "running" {
+					if run.Status == "running" || run.Status == "paused" && runDeferred(s, run.ID) {
 						run.Status = "completed"
 					}
 				}
@@ -209,17 +208,12 @@ func (r *Runtime) BindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 			})
 			return nil, err
 		}
-		data, _ := json.Marshal(struct {
-			Tasks     map[string]*Task
-			Members   map[string]*Member
-			Workflows any
-		}{s.Tasks, s.Members, s.Workflows})
-		fingerprint := sha256.Sum256(data)
+		fingerprint := sha256.Sum256([]byte(coordinationFingerprint(s)))
 		if prompted && last == fingerprint {
 			return nil, settleErr
 		}
 		prompted = true
 		last = fingerprint
-		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "Coordination is still outstanding: " + settleErr.Error() + ". Read addressed messages and swarm_tasks, respond to requests, review results, and integrate accepted editing work. Inspect failed workflow reports with workflow_read and acknowledge only after arranging recovery or reporting the blocker. The previous answer remains provisional.", Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true}}}, nil
+		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "Coordination is still outstanding: " + settleErr.Error() + ". Read addressed messages and swarm_tasks. Review completed research and explicitly review editing candidates before integration. For a failed workflow, inspect workflow_read, then either recover its work or report the failure and use workflow_acknowledge with defer=true and a note to retain unresolved work for later. Deferral does not accept, apply, or cancel work. The previous answer remains provisional.", Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true}}}, nil
 	}
 }

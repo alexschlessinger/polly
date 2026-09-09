@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -1080,7 +1081,7 @@ func TestVisualRowScrollHandlesWrappedParagraphs(t *testing.T) {
 	m := newReplModel()
 	m.appendLine(strings.Repeat("word ", 20))
 	m.appendLine("tail")
-	total := len(transcriptVisualRows(m.fullTranscript(), ui.NewStyle(ui.ColorClear), 10))
+	total := len(style.VisualRows(m.fullTranscript(), ui.NewStyle(ui.ColorClear), 10))
 	if total <= 3 {
 		t.Fatalf("fixture did not wrap: %d rows", total)
 	}
@@ -1152,7 +1153,7 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 	m := newReplModel()
 	for _, entry := range []string{
-		styled("muted one\nmuted two\n", "muted", ""),
+		style.Styled("muted one\nmuted two\n", "muted", ""),
 		"",
 		userGutter() + "a prompt that wraps across rows",
 	} {
@@ -1162,7 +1163,7 @@ func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 	m.setSlashHintLine("/help  /tools")
 	for _, width := range []int{4, 12, 40} {
 		got := m.transcriptRows(width)
-		want := transcriptVisualRows(m.fullTranscript(), ui.NewStyle(ui.ColorClear), width)
+		want := style.VisualRows(m.fullTranscript(), ui.NewStyle(ui.ColorClear), width)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("width %d cached rows diverged from joined renderer:\n got=%#v\nwant=%#v", width, got, want)
 		}

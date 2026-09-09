@@ -2,6 +2,8 @@ package main
 
 import (
 	"strings"
+
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 )
 
 // Held-viewport re-anchoring: block matching and entry measurement.
@@ -87,7 +89,7 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 	followed := index < len(m.transcript)-1 || m.slashHints != ""
 	rows, _ := transcriptBlockRowsWithImages(
 		entry, followed, width, m.transcript[index].images,
-		m.nativeImages && width >= minimumImageThumbnailCols,
+		m.nativeImages && width >= style.MinimumThumbnailCols,
 		m.imageCellWidth, m.imageCellHeight,
 	)
 	return len(rows)

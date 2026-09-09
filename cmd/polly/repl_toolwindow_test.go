@@ -11,6 +11,7 @@ import (
 
 	ui "github.com/metaspartan/gotui/v5"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -553,7 +554,7 @@ func TestToolDisclosureImagesOnlyAppearExpanded(t *testing.T) {
 	if !m.refreshTranscriptImageSources(80) {
 		t.Fatal("regenerated tool image did not refresh")
 	}
-	var canonical []transcriptImage
+	var canonical []style.Image
 	for _, row := range record.rows {
 		if row.callID == shot.ID {
 			canonical = row.images
@@ -580,7 +581,7 @@ func TestToolDisclosureImagesOnlyAppearExpanded(t *testing.T) {
 func TestToolDisclosureSanitizesPrivateImageMarkerRunes(t *testing.T) {
 	withDisplayTTY(t)
 	dir := t.TempDir()
-	marker := string(transcriptImageMarker(0))
+	marker := string(style.ImageMarker(0))
 	path := filepath.Join(dir, "shot"+marker+".png")
 	writeImageFixture(t, path, 4, 4)
 
@@ -601,10 +602,10 @@ func TestToolDisclosureSanitizesPrivateImageMarkerRunes(t *testing.T) {
 
 	tui.AppendToolEnd(call, "![preview"+marker+"]("+path+")", time.Millisecond, nil)
 	entry := m.transcript[record.transcriptIndex].text
-	if got := strings.Count(entry, marker); got != transcriptImageThumbnailRows {
-		t.Fatalf("expanded image row contains %d marker runes, want %d generated slot rows", got, transcriptImageThumbnailRows)
+	if got := strings.Count(entry, marker); got != style.ThumbnailRows {
+		t.Fatalf("expanded image row contains %d marker runes, want %d generated slot rows", got, style.ThumbnailRows)
 	}
-	if plain := plainStyledText(stripTranscriptImageMarkers(entry)); !strings.Contains(plain, "screenshot") {
+	if plain := plainStyledText(style.StripImageMarkers(entry)); !strings.Contains(plain, "screenshot") {
 		t.Fatalf("sanitized tool label was not preserved as text: %q", plain)
 	}
 	_, spans := transcriptBlockRowsWithImages(

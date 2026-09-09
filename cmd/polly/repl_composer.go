@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
@@ -163,7 +164,7 @@ func (h *promptHistory) searchDisplay() string {
 		matched = h.entries[h.match]
 	}
 	prompt := fmt.Sprintf("(reverse-i-search)`%s`: ", h.query)
-	return styled(prompt, "accent", "bold") + styleEscape(matched)
+	return style.Styled(prompt, "accent", "bold") + style.Escape(matched)
 }
 
 // handleApprovalAnswer applies one answer to the pending approval batch.
@@ -227,12 +228,12 @@ func approvalCallBlock(call messages.ChatMessageToolCall, lines []string, width,
 		}
 		return rw.Truncate(s, max(0, room), "…")
 	}
-	out := []string{"  " + styled(fit("╭─ "+call.Name, width-2), "muted", "")}
+	out := []string{"  " + style.Styled(fit("╭─ "+call.Name, width-2), "muted", "")}
 	if len(lines) > rows-1 {
 		lines = append(append([]string(nil), lines[:rows-2]...), "…")
 	}
 	for _, line := range lines {
-		out = append(out, "  "+styled("│ ", "muted", "")+styled(fit(line, width-4), "code", ""))
+		out = append(out, "  "+style.Styled("│ ", "muted", "")+style.Styled(fit(line, width-4), "code", ""))
 	}
 	return out
 }
@@ -352,7 +353,7 @@ func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, cur
 				ln, _ = sliceDisplayWidth(ln, 0, contentWidth)
 			}
 		}
-		parts[i] = userGutter() + styleEscape(ln)
+		parts[i] = userGutter() + style.Escape(ln)
 	}
 
 	curRow = cr - start
@@ -373,7 +374,7 @@ func (m *replModel) approvalPrompt(width int) string {
 	call := a.calls[a.index]
 	prefix := "Allow "
 	if a.requester != "" {
-		prefix += "agent " + truncate(a.requester, 16) + " · "
+		prefix += "agent " + style.Truncate(a.requester, 16) + " · "
 	}
 	if len(a.calls) > 1 {
 		prefix += fmt.Sprintf("(%d/%d) ", a.index+1, len(a.calls))
@@ -387,7 +388,7 @@ func (m *replModel) approvalPrompt(width int) string {
 			pairs[i][1] = ""
 		}
 	}
-	hints, hintsText := keyHints(pairs...), keyHintsText(pairs...)
+	hints, hintsText := style.KeyHints(pairs...), style.KeyHintsText(pairs...)
 	const gap = "?  "
 	label := toolLabel(call)
 	if width > 0 {
@@ -397,14 +398,14 @@ func (m *replModel) approvalPrompt(width int) string {
 			budget = width - rw.StringWidth(gap) - rw.StringWidth(hintsText)
 		}
 		if budget < 0 {
-			return styleEscape(rw.Truncate(hintsText, width, "…"))
+			return style.Escape(rw.Truncate(hintsText, width, "…"))
 		}
 		label = ""
 		if budget > 0 {
 			label = rw.Truncate(toolLabel(call), budget, "…")
 		}
 	}
-	return styled(prefix, "", "bold") + styleEscape(label) + gap + hints
+	return style.Styled(prefix, "", "bold") + style.Escape(label) + gap + hints
 }
 
 func sliceDisplayWidth(s string, start, width int) (string, int) {

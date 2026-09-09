@@ -95,9 +95,15 @@ func TestReviewToolReportsRemainingIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var tasks map[string]taskToolView
-	if err := json.Unmarshal([]byte(out), &tasks); err != nil {
+	var page struct {
+		Items []taskToolView `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &page); err != nil {
 		t.Fatal(err)
+	}
+	tasks := map[string]taskToolView{}
+	for _, task := range page.Items {
+		tasks[task.ID] = task
 	}
 	if tasks["changed"].Status != "awaiting_review" || tasks["changed"].DisplayStatus != "accepted · integration pending" || tasks["research"].DisplayStatus != "done" {
 		t.Fatalf("task list lost machine or display status: %s", out)
@@ -157,7 +163,7 @@ func TestFailedWorkflowToolRetainsItsReport(t *testing.T) {
 		"source": `polly.defineWorkflow({name:"failure",inputSchema:polly.schema.object({}),async run(){throw new Error("inspect this report")}})`,
 		"input":  "{}",
 	})
-	if err == nil || !strings.Contains(out, `"status":"failed"`) || !strings.Contains(out, `"id":`) {
+	if err == nil || !strings.Contains(out, `"status": "failed"`) || !strings.Contains(out, `"id":`) {
 		t.Fatalf("failed workflow lost its inspectable report: %q %v", out, err)
 	}
 }

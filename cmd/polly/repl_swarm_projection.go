@@ -3,6 +3,7 @@ package main
 import (
 	"sort"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/swarm"
 )
 
@@ -51,7 +52,7 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 			record = m.toolDisclosures.add(&toolDisclosureRecord{complete: true}, m.appendTranscriptEntry(""))
 		}
 		record.rows = append(record.rows, toolDisclosureRow{settled: true, agent: &agentActivity{
-			viewID: memberID, label: sanitizeTranscriptImageText(spawnLabel(member.Label, member.Name)),
+			viewID: memberID, label: style.SanitizeImageText(spawnLabel(member.Label, member.Name)),
 			workflowID: workflowID, workflowName: name,
 		}})
 		members[memberID] = true

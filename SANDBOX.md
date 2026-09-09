@@ -466,9 +466,13 @@ terminal.
 | **Host IPC** | private IPC namespace; host Unix sockets blocked | host Unix sockets blocked; Mach services allowed | ❌ platform gap |
 
 The bold rows are inherent to the platform. The denied-read failure mode
-is the one that bites portability: a tool doing `[ -f ~/.aws/credentials ]`
-sees *absent* on Linux but *present-but-unreadable* on macOS, where reads
-fail with `Operation not permitted`. Flipping Seatbelt to `(deny default)`
+is the one that bites portability, but only for reads and listings: on
+macOS `(deny file-read* (subpath ...))` covers metadata too, so an
+existence probe such as `[ -f ~/.aws/credentials ]` reports *absent* there
+as well (`stat` fails with `Operation not permitted`). The platform
+difference is the failure mode of a read or listing — empty on Linux,
+`Operation not permitted` on macOS — not whether the path looks present.
+Flipping Seatbelt to `(deny default)`
 would break most tools, since every syscall, file read, and Mach service
 would need an allowlist.
 
@@ -493,7 +497,7 @@ exceptional: the sandbox is disabled or unavailable, a capable tool runs
 unsandboxed, or the `ssh` component has no reachable agent. `/set sandbox`
 always shows the live state, and `/tools list` marks each sandboxed tool with
 a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The model sees
-`[sandboxed]` appended to each sandboxed tool's description.
+`[sandboxed]` appended to the bash and shell tools' descriptions.
 
 ## Limitations
 
@@ -518,3 +522,13 @@ a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The 
 - **GPG-signed commits fail** even under `workspace+git`, since no
   gpg-agent socket is granted; disable signing in the sandbox or sign on
   the host.
+
+### Session storage is private to the host
+
+The CLI and managed TUI add the actual session database, its `-wal` and `-shm`
+sidecars, and the default disk-promotion destination to ordinary tool deny paths
+before shell schema loading or stdio MCP startup. Both configured spellings and
+canonical routes are covered, including sidecars that do not exist yet. Native
+file tools and sandboxed processes inherit these restrictions. Host session
+storage and scoped workflow/task/artifact inspection remain available.
+Explicit `--nosandbox` retains its existing unrestricted process semantics.

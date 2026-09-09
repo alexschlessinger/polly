@@ -116,6 +116,9 @@ func TestWorkflowExampleFixRepairReviewAndParentApply(t *testing.T) {
 				t.Fatal("editing result erased its integration candidate")
 			}
 		}
+		if task.Status == "done" {
+			continue
+		}
 		if err := r.Review(ctx, task.ID, task.Revision, true, ""); err != nil {
 			t.Fatal(err)
 		}

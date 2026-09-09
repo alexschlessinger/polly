@@ -6,6 +6,7 @@ import (
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	rw "github.com/mattn/go-runewidth"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -27,11 +28,11 @@ var mdParser = goldmark.New(goldmark.WithExtensions(extension.Strikethrough, ext
 // need text use renderMarkdownDocument with a nil state. streaming marks the
 // source as an in-flight prefix; the returned deferred flag reports that a
 // table rendered unaligned and the caller must re-render at settle.
-func renderMarkdownWithLocalImages(src, baseDir string, streaming bool) (string, []transcriptImage, bool) {
+func renderMarkdownWithLocalImages(src, baseDir string, streaming bool) (string, []style.Image, bool) {
 	return renderMarkdownWithCache(src, baseDir, streaming, nil)
 }
 
-func renderMarkdownWithCache(src, baseDir string, streaming bool, cache *markdownCodeCache) (string, []transcriptImage, bool) {
+func renderMarkdownWithCache(src, baseDir string, streaming bool, cache *markdownCodeCache) (string, []style.Image, bool) {
 	state := &markdownRenderState{baseDir: baseDir, streaming: streaming, codeCache: cache}
 	rendered := renderMarkdownDocument(src, state)
 	if cache != nil {
@@ -90,7 +91,7 @@ func markdownSourceText(s string, state *markdownRenderState) string {
 	if state == nil {
 		return s
 	}
-	return stripTranscriptImageMarkers(s)
+	return style.StripImageMarkers(s)
 }
 
 // renderBlocks renders a parent's block children, separating siblings with a
@@ -130,7 +131,7 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 	case *ast.CodeBlock:
 		return prefixLines(renderClippedCode(b.Lines(), source, "", state), firstPrefix, contPrefix)
 	case *ast.Blockquote:
-		gutter := styled("▏ ", "muted", "")
+		gutter := style.Styled("▏ ", "muted", "")
 		inner := renderBlocks(n, source, "", state)
 		lines := make([]string, len(inner))
 		for i, l := range inner {
@@ -142,13 +143,13 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 	case *east.Table:
 		return renderTable(b, source, firstPrefix, contPrefix, state)
 	case *ast.ThematicBreak:
-		return prefixLines([]string{styled(strings.Repeat("─", 12), "muted", "")}, firstPrefix, contPrefix)
+		return prefixLines([]string{style.Styled(strings.Repeat("─", 12), "muted", "")}, firstPrefix, contPrefix)
 	case *ast.HTMLBlock:
 		html := markdownSourceText(clippedCodeBlockText(b.Lines(), source, state), state)
-		return prefixLines(splitInline(styleEscape(html)), firstPrefix, contPrefix)
+		return prefixLines(splitInline(style.Escape(html)), firstPrefix, contPrefix)
 	default:
 		raw := markdownSourceText(nodeText(n, source), state)
-		if raw = strings.TrimRight(styleEscape(raw), "\n"); raw != "" {
+		if raw = strings.TrimRight(style.Escape(raw), "\n"); raw != "" {
 			return prefixLines(strings.Split(raw, "\n"), firstPrefix, contPrefix)
 		}
 		return nil
@@ -197,7 +198,7 @@ func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string, s
 		inner := renderBlocks(item, source, "", state)
 		for i, l := range inner {
 			if i == 0 {
-				out = append(out, lead+styled(marker, "muted", "")+l)
+				out = append(out, lead+style.Styled(marker, "muted", "")+l)
 			} else {
 				out = append(out, cont+indent+l)
 			}
@@ -242,7 +243,7 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 			widths = append(widths, 0)
 		}
 		for i, cell := range cells {
-			widths[i] = max(widths[i], styledTextWidth(cell))
+			widths[i] = max(widths[i], style.TextWidth(cell))
 		}
 		if excluded {
 			continue
@@ -255,10 +256,10 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 		return nil
 	}
 
-	gutter := styled("│ ", "muted", "")
+	gutter := style.Styled("│ ", "muted", "")
 	if state != nil && state.streaming && atStreamEdge(table) {
 		state.deferredTable = true
-		sep := styled(" │ ", "muted", "")
+		sep := style.Styled(" │ ", "muted", "")
 		lines := make([]string, len(rows))
 		for i, cells := range rows {
 			lines[i] = gutter + strings.Join(cells, sep)
@@ -282,7 +283,7 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 			for i, w := range widths {
 				underlines[i] = strings.Repeat("─", w)
 			}
-			lines = append(lines, gutter+styled(strings.Join(underlines, "  "), "muted", ""))
+			lines = append(lines, gutter+style.Styled(strings.Join(underlines, "  "), "muted", ""))
 		}
 	}
 	return prefixLines(lines, firstPrefix, contPrefix)
@@ -299,7 +300,7 @@ func tableAlignment(table *east.Table, col int) east.Alignment {
 // markup; the visible width comes from the rendered form, so links, escapes,
 // and wide runes all measure correctly.
 func padTableCell(cell string, width int, align east.Alignment) string {
-	pad := width - styledTextWidth(cell)
+	pad := width - style.TextWidth(cell)
 	if pad <= 0 {
 		return cell
 	}
@@ -362,16 +363,16 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRend
 		if state != nil {
 			value = state.clip.slice(value, i.Segment.Start)
 		}
-		s := styled(markdownSourceText(string(value), state), fg, mod)
+		s := style.Styled(markdownSourceText(string(value), state), fg, mod)
 		if (i.SoftLineBreak() || i.HardLineBreak()) && (state == nil || state.clip == nil || state.clip.end >= i.Segment.Stop) {
 			s += "\n"
 		}
 		return s
 	case *ast.String:
-		return styled(markdownSourceText(string(i.Value), state), fg, mod)
+		return style.Styled(markdownSourceText(string(i.Value), state), fg, mod)
 	case *ast.CodeSpan:
 		if state == nil || state.clip == nil {
-			return styled(markdownSourceText(nodeText(n, source), state), "code", mod)
+			return style.Styled(markdownSourceText(nodeText(n, source), state), "code", mod)
 		}
 		return renderInlineChildren(n, source, "code", mod, state)
 	case *ast.Emphasis:
@@ -392,14 +393,14 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRend
 			markdownSourceText(dest, state),
 		)
 	case *ast.Image:
-		if state != nil && len(state.images) < maxTranscriptImagesPerBlock {
+		if state != nil && len(state.images) < style.MaxImagesPerBlock {
 			if img, ok := resolveLocalTranscriptImage(string(i.Destination), nodeText(n, source), state.baseDir); ok {
 				index := len(state.images)
 				state.images = append(state.images, img)
 				if state.clip != nil {
 					state.imagePositions = append(state.imagePositions, state.clip.bounds[n].start)
 				}
-				return renderTranscriptImage(index, img, "", n.PreviousSibling() != nil, n.NextSibling() != nil)
+				return style.RenderImage(index, img, "", n.PreviousSibling() != nil, n.NextSibling() != nil)
 			}
 		}
 		return renderLink(
@@ -412,7 +413,7 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRend
 		if state != nil && state.clip != nil {
 			value = state.clip.slice(value, state.clip.bounds[n].start)
 		}
-		return styled(markdownSourceText(string(value), state), "accent", mod)
+		return style.Styled(markdownSourceText(string(value), state), "accent", mod)
 	case *ast.RawHTML:
 		var b strings.Builder
 		for s := 0; s < i.Segments.Len(); s++ {
@@ -423,9 +424,9 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRend
 			}
 			b.Write(value)
 		}
-		return styled(markdownSourceText(b.String(), state), fg, mod)
+		return style.Styled(markdownSourceText(b.String(), state), fg, mod)
 	default:
-		return styled(markdownSourceText(nodeText(n, source), state), fg, mod)
+		return style.Styled(markdownSourceText(nodeText(n, source), state), fg, mod)
 	}
 }
 
@@ -435,7 +436,7 @@ func renderLink(label, labelText, dest string) string {
 	if dest == "" || dest == labelText {
 		return label
 	}
-	return label + styled(" ("+truncate(dest, 40)+")", "muted", "")
+	return label + style.Styled(" ("+style.Truncate(dest, 40)+")", "muted", "")
 }
 
 func nodeText(n ast.Node, source []byte) string {
@@ -482,12 +483,12 @@ func renderCodeBlock(code, lang string) []string {
 // Tool arguments and output use it with section titles; fenced Markdown
 // code uses it with the language.
 func renderFence(title string, lines []string) []string {
-	return append([]string{styled("╭─ "+title, "muted", "")}, gutterLines(lines)...)
+	return append([]string{style.Styled("╭─ "+title, "muted", "")}, gutterLines(lines)...)
 }
 
 func gutterLines(lines []string) []string {
 	out := make([]string, 0, len(lines))
-	gutter := styled("│ ", "muted", "")
+	gutter := style.Styled("│ ", "muted", "")
 	for _, line := range lines {
 		out = append(out, gutter+line)
 	}
@@ -557,7 +558,7 @@ func highlightCodeLines(code, lang string) []string {
 				cur.Reset()
 			}
 			if part != "" {
-				cur.WriteString(styled(part, fg, mod))
+				cur.WriteString(style.Styled(part, fg, mod))
 			}
 		}
 	}
@@ -569,7 +570,7 @@ func styledLines(s, fg, mod string) []string {
 	raw := strings.Split(s, "\n")
 	out := make([]string, len(raw))
 	for i, l := range raw {
-		out[i] = styled(l, fg, mod)
+		out[i] = style.Styled(l, fg, mod)
 	}
 	return out
 }

@@ -1,5 +1,7 @@
 package main
 
+import "github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+
 // Signals from hidden tabs. A tab off screen still settles turns and asks
 // for tool approvals; the visible transcript gets one notice line per
 // event, named after the tab, and the sessions picker (Ctrl-G) shows what
@@ -85,7 +87,7 @@ func (r *managedREPL) relayTabSignals() {
 	defer r.model.mu.Unlock()
 	for i, line := range lines {
 		if failures[i] {
-			r.model.appendLine(styled(line, "err", ""))
+			r.model.appendLine(style.Styled(line, "err", ""))
 		} else {
 			r.model.appendNoticeLine(line)
 		}

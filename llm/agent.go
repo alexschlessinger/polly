@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -944,6 +945,8 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 		if strings.HasPrefix(strings.ToLower(media.MIMEType), "image/") {
 			kind = artifacts.KindImage
 			partType = "image_artifact"
+		} else if (strings.HasPrefix(strings.ToLower(media.MIMEType), "text/") || strings.EqualFold(media.MIMEType, "application/json")) && utf8.Valid(media.Data) {
+			kind = artifacts.KindText
 		}
 		if a.artifactStore != nil {
 			ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: kind, MIMEType: media.MIMEType, Name: media.Name, Reference: media.Reference, Data: media.Data})
@@ -953,6 +956,9 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 			msg.Parts = append(msg.Parts, messages.ContentPart{Type: partType, Artifact: &ref, MimeType: ref.MIMEType, FileName: ref.Name, Reference: ref.ImageToken})
 			if textArtifact == nil {
 				descriptor := artifactMediaDescriptor(ref)
+				if kind == artifacts.KindText {
+					descriptor = artifactReceipt(ref)
+				}
 				msg.Content = strings.TrimSpace(msg.Content + "\n" + descriptor)
 			}
 			continue

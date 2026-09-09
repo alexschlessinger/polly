@@ -39,8 +39,9 @@ record. Token or iteration cap: trailer reads `incomplete`.
 ## TUI
 
 No `-p`, no piped stdin: full-screen TUI. `TERM=dumb` or redirected: line
-frontend. `--theme=halo` (`POLLYTOOL_THEME`): framed inspector with scrollbar,
-draggable split, running glint, amber border on pending approval.
+frontend. The framed inspector (scrollbar, draggable split, running glint,
+amber border on pending approval) is always on; there is no theme flag or
+environment variable for it.
 
 ### Sessions
 
@@ -49,7 +50,7 @@ days. Named sessions never expire; empty ones are discarded on exit. Resume:
 `polly -L`, `polly -c quiet-otter`, `/resume`. Polly titles sessions once their
 purpose is clear; the handle stays. `/title <text>` (or **F2** in the picker)
 protects a title; `/rename <name>` changes the handle. Status row:
-`ctx 41.2k/156k`, `~` = local estimate.
+`41.2k/156k`, `~` = local estimate.
 
 ### Tabs
 
@@ -57,12 +58,14 @@ protects a title; `/rename <name>` changes the handle. Status row:
 |---|---|
 | `/resume` | Pick a saved session or agent; or click the status-row name |
 | `/new`, `/close` | Fresh tab / close visible tab (session kept; refused while running) |
-| `/tab [n\|name]` | List or switch |
-| `/parent` | Tool or thought to conversation; agent to caller |
 | `Alt+1`..`9`, `Alt+]`, `Alt+[` | Jump, next, previous |
 
-Settings are per tab. Hidden tabs keep running, queue input, post one notice
-on completion. Pending approval: **Ctrl-G**, select, **Review**. Ctrl-C
+Parent navigation is a click on the divider link, or the inspector's parent
+action. Settings are per tab. Hidden tabs keep running, queue input, post one
+notice on completion. In the **Ctrl-G** picker, attention-needed and running
+agents precede expandable **History** groups. Finished workflow attempts show
+their outcomes and deferred-item counts; retained work stays inspectable until
+explicit cleanup. Pending approval: **Ctrl-G**, select, **Review**. Ctrl-C
 interrupts the root turn; a second at quit cancels the rest. Sessions are
 leased: another polly's show `in use`; an agent whose parent is leased
 elsewhere opens with a read-only parent snapshot.
@@ -78,17 +81,20 @@ assigned worktrees. `source` selects snapshot input, not their working directory
 Limits: 32 concurrent, 256 executions per run (`--swarm-concurrent`,
 `--swarm-executions`). Quitting pauses; `/swarm resume ID [N]` continues with
 N extra model calls; `/swarm grant N` adds execution starts. `/swarm`
-inspects members, tasks, messages, publications, reports, integrations.
+inspects members, tasks, messages, publications, workflows, integrations, and
+previews (plus `raw`).
 Peer messages stay out of the main conversation view, including after resume;
 inspect them through `/swarm`.
 `/workflow SCRIPT.js INPUT.json` runs a JavaScript workflow. Everything else:
 [WORKFLOWS.md](WORKFLOWS.md).
 
 Inspector: click an expanded agent, tool, or thought row, or `/inspect
-[tools|thoughts|prev|next|back|forward|find|maximize|wider|narrower]`.
-**Stop** cancels the inspected agent; **Review** answers its approval. Split
-70/30 at 120+ columns, drag to resize; narrow terminals stack. Keys act on the
-pane under the pointer. Inspection never takes leases.
+[tools|thoughts|find|maximize]` (prev/next, back/forward, wider/narrower are
+inspector buttons, not command arguments). **Stop** cancels the inspected
+agent; **Review** answers its approval. Split 70/30 at 120+ columns, drag to
+resize; below 120 columns the inspector takes the full width, replacing the
+split. Keys act on the focused pane; **Tab** focuses the inspector from an
+empty composer (**Esc** returns). Inspection never takes leases.
 
 ### Keys
 
@@ -97,8 +103,8 @@ pane under the pointer. Inspection never takes leases.
 | `Ctrl-C` | Interrupt root turn; again, or idle: quit |
 | `Esc` | Dismiss dialog/search, close inspector, interrupt, in that order |
 | `Left`/`Right` | Prev/next tool or thought over inspector; else cursor |
-| `Up`/`Down`, `PgUp`/`PgDn`, `Home`/`End` | Scroll hovered pane; else edit or history |
-| `Ctrl-R` / `Ctrl-G` / `Ctrl-O` | History search / agents dialog / reasoning toggle |
+| `Up`/`Down`, `PgUp`/`PgDn`, `Home`/`End` | Scroll focused inspector; else edit or history |
+| `Ctrl-R` / `Ctrl-G` / `Ctrl-O` | History search / sessions picker / reasoning toggle |
 | `Ctrl-V` / `Ctrl-Z` | Attach clipboard image / suspend |
 
 Mid-turn input queues; failed input returns as a draft. Select text with Shift-drag.
@@ -106,17 +112,18 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ### Slash commands
 
 ```
-/help [cmd]  /attach <path>  /clear  /context  /get <key|all>  /model  /keys
-/set <key> <val>   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
-/sessions  /new  /tab  /close  /parent  /inspect  /spawn  /swarm  /workflow
-/tools [list|show <n>]  /skills  /title <text>  /rename <name>  /reset confirm  /exit
+/help [cmd]  /attach <path>  /clear  /context  /model  /keys
+/set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
+/sessions  /new  /close  /inspect  /spawn  /swarm  /workflow
+/tools [list [namespace]|show <name>]  /title <text>  /rename <name>
+/reset confirm  /exit
 ```
 
 `/keys` are process-local, never stored.
 
 ### Transcript
 
-Tool calls: one collapsed `▸ N tool calls` row per turn; click for details,
+Tool calls: a collapsed `▸ N tools` row per batch; click for details,
 click a detail for the inspector. `--thinking`: collapsed `▸ thought` row with
 live timer, `Ctrl-O` for the tail. Both reopen after reload. Interrupted turns
 keep every completed iteration and tool result.
@@ -126,8 +133,9 @@ keep every completed iteration and tool result.
 **In:** Markdown `![](./path.png)` or a bare local path in a tool result.
 Kitty graphics (Kitty, Ghostty, WezTerm), Sixel (Windows Terminal 1.22+, foot),
 else caption. `POLLYTOOL_IMAGE_PROTOCOL=kitty|sixel|none`.
-**Out:** local path in the prompt, `Ctrl-V`, drag-and-drop, `/attach`; each an
-`[image #N]` token. **Limits:** 16 per prompt, 100 per request, 10 MB each,
+**Out:** `Ctrl-V`, drag-and-drop, and `/attach` each leave an `[image #N]`
+token. A bare typed path stays text, so the model calls `view_image` itself.
+**Limits:** 16 per prompt, 100 per request, 10 MB each,
 16 MiB total, 1568px long edge. GIF (first frame) and BMP become PNG.
 
 ## Contexts
@@ -171,9 +179,9 @@ back up with SQLite's [online backup API](https://www.sqlite.org/backup.html).
 ### Built-in tools
 
 Default set: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`,
-`spawn_agent`, `set_session_title`, recall tools `list_artifacts`,
-`read_artifact`, `read_transcript`, and `zvec_grep_search` when `zg` is on
-`PATH` ([SEARCH.md](SEARCH.md)). Any `--tool` replaces the set.
+`spawn_agent`, `set_session_title`, `view_image`, recall tools
+`list_artifacts`, `read_artifact`, `read_transcript`, and `zvec_grep_search`
+when `zg` is on `PATH` ([SEARCH.md](SEARCH.md)). Any `--tool` replaces the set.
 
 ### Shell tools
 
@@ -190,8 +198,8 @@ HTTP servers (`"transport"`, `"url"`, `"headers"`, `"timeout"`) run elsewhere.
 
 [Agent Skills](https://agentskills.io/specification), one `SKILL.md` per folder.
 `--skilldir` (default `~/.pollytool/skills`), `--listskills`, `-S <dir|git|url>`
-loads and activates one, `--noskills` disables. Activation loads `scripts/` as
-shell tools and `mcp/` as servers.
+loads and activates one, `--noskills` disables. Activation loads `mcp/` JSON
+as servers and lists `scripts/` as paths to run via the bash tool.
 
 ## Structured output
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -106,7 +107,7 @@ func TestLineActivityChildrenAreAttributedAndConcurrent(t *testing.T) {
 			child.ShowThinking("hidden child reasoning")
 			tool := messages.ChatMessageToolCall{ID: "same-provider-id", Name: "read_file", Arguments: `{"path":"a.go"}`}
 			child.AppendToolStart([]messages.ChatMessageToolCall{tool})
-			child.AppendToolMedia(tool, []transcriptImage{{Alt: "frame.png", Width: 8, Height: 4, Inspection: true}})
+			child.AppendToolMedia(tool, []style.Image{{Alt: "frame.png", Width: 8, Height: 4, Inspection: true}})
 			child.AppendToolEnd(tool, "hidden child result", time.Second, nil)
 			child.AppendAssistantText("hidden child answer")
 			child.FinishTextTurn()
@@ -409,7 +410,7 @@ func TestLineActivityQuietSuppressesToolsAndImages(t *testing.T) {
 	if child := ui.childActivity(call); child != nil {
 		t.Fatal("quiet turn created child display")
 	}
-	ui.AppendToolMedia(call, []transcriptImage{{Alt: "frame.png", Inspection: true}})
+	ui.AppendToolMedia(call, []style.Image{{Alt: "frame.png", Inspection: true}})
 	ui.AppendToolEnd(call, "ok", time.Second, nil)
 	ui.Stop()
 	if status.Len() != 0 {

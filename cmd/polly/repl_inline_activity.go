@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 )
 
 // Inline activity: reasoning, tool, and image fields laid out within the transcript.
@@ -46,7 +48,7 @@ func (m *replModel) inlineToolField(ids []int64) (turnDockField, bool) {
 	return activityField(turnToolLabel(total), activityTools, expanded), true
 }
 
-func (m *replModel) inlineImageField(ids []int64) (turnDockField, []transcriptImage, bool) {
+func (m *replModel) inlineImageField(ids []int64) (turnDockField, []style.Image, bool) {
 	images := m.toolInspectionImages(ids)
 	if len(images) == 0 {
 		return turnDockField{}, nil, false
@@ -86,7 +88,7 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 			previous := &laidOut[n-1]
 			if previous.turnTrailerID == 0 && previous.isActivity() {
 				if len(previous.images) > 0 && len(block.images) > 0 {
-					block.activityToolDetail = offsetTranscriptImageMarkers(block.activityToolDetail, len(previous.images))
+					block.activityToolDetail = style.OffsetImageMarkers(block.activityToolDetail, len(previous.images))
 				}
 				previous.reasoningIDs = append(previous.reasoningIDs, block.reasoningIDs...)
 				previous.toolDisclosureIDs = append(previous.toolDisclosureIDs, block.toolDisclosureIDs...)
@@ -132,11 +134,11 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	if field, inspectionImages, ok := m.inlineImageField(block.toolDisclosureIDs); ok {
 		fields = append(fields, field)
 		if m.toolInspectionExpanded(block.toolDisclosureIDs) {
-			remaining := maxTranscriptImagesPerBlock - len(block.images)
+			remaining := style.MaxImagesPerBlock - len(block.images)
 			if remaining > 0 {
 				inspectionImages = inspectionImages[:min(len(inspectionImages), remaining)]
-				block.activityImageDetail = offsetTranscriptImageMarkers(
-					renderInspectionTranscriptImages(inspectionImages), len(block.images),
+				block.activityImageDetail = style.OffsetImageMarkers(
+					style.RenderInspectionImages(inspectionImages), len(block.images),
 				)
 				block.images = append(block.images, inspectionImages...)
 			}

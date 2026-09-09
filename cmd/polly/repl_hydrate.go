@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -222,7 +223,7 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 		if len(displayToolCalls) == 0 {
 			// Compatibility with sessions written before safe tool display
 			// metadata existed.
-			m.appendLine("  " + styled("✗", "err", "bold") + " " + styled("tool request denied", "muted", ""))
+			m.appendLine("  " + style.Styled("✗", "err", "bold") + " " + style.Styled("tool request denied", "muted", ""))
 		}
 		// A durable internal completion marker settles the preceding user
 		// turn without becoming model-visible assistant content.
@@ -231,7 +232,7 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 		// Everything before the marker is durable completed work; the
 		// turn ended early without a final response. Settle it so the
 		// preceding user message isn't restored as an unsent draft.
-		m.appendLine("  " + styled("Turn interrupted · completed work retained", "muted", ""))
+		m.appendLine("  " + style.Styled("Turn interrupted · completed work retained", "muted", ""))
 		h.lastRole = messages.MessageRoleAssistant
 	case len(displayToolCalls) > 0:
 		h.lastRole = messages.MessageRoleAssistant
@@ -417,9 +418,9 @@ func (h *historyHydrator) finish() {
 	if h.lastRole == messages.MessageRoleUser && !h.lastUserContextOnly {
 		if turn, ok := restorableHistoryTurn(h.lastUser, h.lastUserContent, h.lastUserRestorable, m.artifactStore); ok {
 			m.restoreTurnDraft(turn, newTurnPersistenceAck(true))
-			m.appendLine("  " + styled("incomplete · restored to composer", "muted", ""))
+			m.appendLine("  " + style.Styled("incomplete · restored to composer", "muted", ""))
 		} else {
-			m.appendLine("  " + styled("incomplete", "muted", ""))
+			m.appendLine("  " + style.Styled("incomplete", "muted", ""))
 		}
 	}
 }
@@ -563,5 +564,5 @@ func compactToolNames(names []string) string {
 	if len(names) > visible {
 		text += fmt.Sprintf(" +%d", len(names)-visible)
 	}
-	return truncate(text, 120)
+	return style.Truncate(text, 120)
 }

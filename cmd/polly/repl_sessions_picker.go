@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/swarm"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -112,6 +114,15 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 		if status == "approval needed" {
 			return 0
 		}
+		if owned {
+			for _, root := range r.tabs {
+				if s := root.swarmSnapshot; s != nil {
+					if m := s.Members[info.ID]; m != nil && swarm.MemberState(s, m).Attention {
+						return 0
+					}
+				}
+			}
+		}
 		if active {
 			return 1
 		}
@@ -141,6 +152,9 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 			r.expandPickerParent(info.Name)
 		}
 	}
+	if r.pickerExpanded == nil {
+		r.pickerExpanded = map[string]bool{}
+	}
 	m := &replModal{
 		title: "Sessions", expanded: r.pickerExpanded,
 		width: 64, maxRows: 14, showCount: true,
@@ -165,6 +179,7 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 	p.modal = m
 	m.refresh = func() { r.refreshSessionsPicker(p, m) }
 	m.items = r.sessionsPickerItems(p)
+	expandPickerSelection(m, target)
 	if m.nested() {
 		m.width = sessionsPickerNestedWidth
 	}
@@ -215,6 +230,7 @@ func pickerSelection(m *replModal) string {
 
 func (r *managedREPL) refreshSessionsPickerItems(p *sessionsPicker, m *replModal, selected string) {
 	m.items = r.sessionsPickerItems(p)
+	expandPickerSelection(m, selected)
 	if m.nested() {
 		m.width = sessionsPickerNestedWidth
 	}
@@ -308,19 +324,19 @@ func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
 	for _, row := range p.rows {
 		summary := p.infos[row.id]
 		info := summary.Metadata
-		name := truncate(sessionTreeName(info, row.depth), nameWidth)
+		name := style.Truncate(sessionTreeName(info, row.depth), nameWidth)
 		age := formatCompactDuration(time.Since(info.LastUsed))
 		length := formatSessionMessageCount(summary.MessageCount)
 		nameColumn := fmt.Sprintf("%-*s", nameWidth, name)
 		ageColumn := fmt.Sprintf("%4s", age)
 		lengthColumn := fmt.Sprintf("%*s", lengthWidth, length)
 		label := nameColumn + "  " + ageColumn + "  " + lengthColumn
-		display := styleEscape(nameColumn) + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
-		selectedDisplay := styled(nameColumn, "accent", "bold") + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
+		display := style.Escape(nameColumn) + "  " + style.Styled(ageColumn, "muted", "") + "  " + style.Styled(lengthColumn, "muted", "")
+		selectedDisplay := style.Styled(nameColumn, "accent", "bold") + "  " + style.Styled(ageColumn, "muted", "") + "  " + style.Styled(lengthColumn, "muted", "")
 		if sessions.DisplayLabel(info) != info.Name {
 			label += "  " + info.Name
-			display += "  " + styled(styleEscape(info.Name), "muted", "")
-			selectedDisplay += "  " + styled(styleEscape(info.Name), "muted", "")
+			display += "  " + style.Styled(style.Escape(info.Name), "muted", "")
+			selectedDisplay += "  " + style.Styled(style.Escape(info.Name), "muted", "")
 		}
 		mark, color, status := "", "", ""
 		tab := r.summaryTab(summary)
@@ -352,15 +368,15 @@ func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
 		}
 		var plain, shown []string
 		if mark != "" {
-			plain, shown = append(plain, mark), append(shown, styled(mark, color, ""))
+			plain, shown = append(plain, mark), append(shown, style.Styled(mark, color, ""))
 		}
 		if status != "" {
-			plain, shown = append(plain, status), append(shown, styled(status, "muted", ""))
+			plain, shown = append(plain, status), append(shown, style.Styled(status, "muted", ""))
 		}
 		if len(plain) > 0 {
 			label += "  " + strings.Join(plain, " · ")
-			display += "  " + strings.Join(shown, styled(" · ", "muted", ""))
-			selectedDisplay += "  " + strings.Join(shown, styled(" · ", "muted", ""))
+			display += "  " + strings.Join(shown, style.Styled(" · ", "muted", ""))
+			selectedDisplay += "  " + strings.Join(shown, style.Styled(" · ", "muted", ""))
 		}
 		item := replModalItem{
 			label: label, value: info.Name, identity: summary.ID, display: display, selectedDisplay: selectedDisplay,
@@ -370,15 +386,15 @@ func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
 		if row.depth > 0 {
 			item.parent = p.infos[summary.ParentID].Metadata.Name
 			if brief := strings.Join(strings.Fields(info.Description), " "); brief != "" && brief != sessions.DisplayLabel(info) {
-				item.display += "  " + styled(styleEscape(brief), "muted", "")
-				item.selectedDisplay += "  " + styled(styleEscape(brief), "muted", "")
+				item.display += "  " + style.Styled(style.Escape(brief), "muted", "")
+				item.selectedDisplay += "  " + style.Styled(style.Escape(brief), "muted", "")
 			}
 		} else if item.children > 0 {
 			item.nestDetail = r.agentsSummary(info.Name)
 		}
 		items = append(items, item)
 	}
-	return items
+	return r.agentHistoryItems(p, items)
 }
 
 // tabActivityLine is what a tab is doing, for a listing: the live activity
@@ -433,9 +449,9 @@ func (r *managedREPL) agentsSummary(name string) string {
 // that wait on an approval.
 func (r *managedREPL) agentCountsFor(root *replTab) (running, approvals int) {
 	seen := map[string]bool{}
-	if root.swarmSnapshot != nil && root.state != nil && root.state.swarm != nil {
+	if root.swarmSnapshot != nil {
 		for id := range root.swarmSnapshot.Members {
-			status, active, _ := r.swarmListing(id, root.state.swarm.ID)
+			status, active, _ := r.swarmListing(id, root.viewID())
 			seen[id] = true
 			if status == "approval needed" {
 				approvals++
@@ -466,7 +482,7 @@ func (r *managedREPL) swarmListing(id, swarmID string) (status string, active, o
 		return
 	}
 	for _, root := range r.tabs {
-		if root.state == nil || root.state.swarm == nil || root.state.swarm.ID != swarmID || root.swarmSnapshot == nil {
+		if root.viewID() != swarmID || root.swarmSnapshot == nil {
 			continue
 		}
 		member := root.swarmSnapshot.Members[id]

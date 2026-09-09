@@ -55,20 +55,21 @@ type Member struct {
 	ReadOnly   bool     `json:"readOnly"`
 }
 type Task struct {
-	StartingSnapshot string   `json:"startingSnapshot,omitempty"`
-	Execution        string   `json:"execution,omitempty"`
-	ID               string   `json:"id"`
-	Run              string   `json:"run"`
-	Description      string   `json:"description"`
-	Criteria         string   `json:"criteria"`
-	Dependencies     []string `json:"dependencies"`
-	Owner            string   `json:"owner,omitempty"`
-	Status           string   `json:"status"`
-	Revision         int      `json:"revision"`
-	AcceptedRevision int      `json:"acceptedRevision,omitempty"`
-	Result           any      `json:"result,omitempty"`
-	Feedback         string   `json:"feedback,omitempty"`
-	Snapshot         string   `json:"snapshot,omitempty"`
+	Deferral         *TaskDeferral `json:"deferral,omitempty"`
+	StartingSnapshot string        `json:"startingSnapshot,omitempty"`
+	Execution        string        `json:"execution,omitempty"`
+	ID               string        `json:"id"`
+	Run              string        `json:"run"`
+	Description      string        `json:"description"`
+	Criteria         string        `json:"criteria"`
+	Dependencies     []string      `json:"dependencies"`
+	Owner            string        `json:"owner,omitempty"`
+	Status           string        `json:"status"`
+	Revision         int           `json:"revision"`
+	AcceptedRevision int           `json:"acceptedRevision,omitempty"`
+	Result           any           `json:"result,omitempty"`
+	Feedback         string        `json:"feedback,omitempty"`
+	Snapshot         string        `json:"snapshot,omitempty"`
 }
 type Mail struct {
 	ReplyID   string    `json:"replyID,omitempty"`
@@ -93,6 +94,8 @@ type Publication struct {
 	Posted     time.Time       `json:"posted"`
 }
 type Execution struct {
+	// Workflow is assigned by the host, not inferred from display call IDs.
+	Workflow   string                 `json:"workflow,omitempty"`
 	InputSaved bool                   `json:"inputSaved"`
 	Intent     []messages.ChatMessage `json:"intent,omitempty"`
 	Usage      Usage                  `json:"usage"`
@@ -404,6 +407,9 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 		if t == nil || revision <= 0 || t.Status != "awaiting_review" || t.Revision != revision {
 			return fail("stale_task", "review must name the current submitted revision")
 		}
+		if err := reactivateTask(s, t); err != nil {
+			return err
+		}
 		if accept {
 			if owner := s.Members[t.Owner]; owner != nil && !owner.ReadOnly && t.Snapshot == "" {
 				return errors.New("editing task has no integration candidate")
@@ -439,6 +445,9 @@ func (r *Runtime) CancelTask(ctx context.Context, taskID string) error {
 		t := s.Tasks[taskID]
 		if t == nil {
 			return errors.New("unknown task")
+		}
+		if err := reactivateTask(s, t); err != nil {
+			return err
 		}
 		t.Status = "canceled"
 		t.AcceptedRevision = 0
@@ -499,6 +508,9 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 		if t == nil || t.Revision != revision || t.Status == "done" || t.Status == "canceled" {
 			return fail("stale_task", "task is not editable at this revision")
 		}
+		if err := reactivateTask(s, t); err != nil {
+			return err
+		}
 		if owner != "" && s.Members[owner] == nil {
 			return errors.New("unknown task owner")
 		}
@@ -551,6 +563,9 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 		t := s.Tasks[taskID]
 		if t == nil || t.Revision != revision || t.Owner != actor || t.Status == "done" || t.Status == "canceled" {
 			return fail("stale_task", "task owner or revision changed")
+		}
+		if err := reactivateTask(s, t); err != nil {
+			return err
 		}
 		if strings.TrimSpace(reason) == "" {
 			return errors.New("blocker reason is required")

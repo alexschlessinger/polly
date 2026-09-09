@@ -6,13 +6,14 @@ import (
 	"strings"
 	"testing"
 
+	"sync/atomic"
+
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
 	ui "github.com/metaspartan/gotui/v5"
-	"sync/atomic"
 )
 
 func newTitleSwarm(t *testing.T, model llm.LLM, configure func(*swarm.Config)) *managedREPL {

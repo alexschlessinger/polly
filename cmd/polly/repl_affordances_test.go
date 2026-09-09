@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -164,7 +165,7 @@ func TestAgentCueSelectsCompletedCountNotFailureCount(t *testing.T) {
 		{"3 agents, 1 failed", "3", true},
 		{"3 agents, 1 canceled", "3", false},
 	} {
-		row := parseStyledCells(activityRowHeader("▾", tc.label), ui.NewStyle(ui.ColorClear))
+		row := style.ParseCells(activityRowHeader("▾", tc.label), ui.NewStyle(ui.ColorClear))
 		placement := turnDockPlacement{X: 4, Cols: len([]rune(tc.label))}
 		if tc.first {
 			placement = turnDockPlacement{X: 2, Cols: len([]rune(tc.label)) + 2}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
@@ -26,7 +27,7 @@ func checkInspectorHeaderGeometry(t *testing.T, header inspectorHeaderLayout, bo
 	t.Helper()
 	lines := strings.Split(header.text, "\n")
 	for _, line := range lines {
-		if width := styledTextWidth(line); width > bounds.Dx() {
+		if width := style.TextWidth(line); width > bounds.Dx() {
 			t.Fatalf("header row overflows: %d > %d: %q", width, bounds.Dx(), plainStyledText(line))
 		}
 	}
@@ -40,7 +41,7 @@ func checkInspectorHeaderGeometry(t *testing.T, header inspectorHeaderLayout, bo
 			}
 		}
 		var label strings.Builder
-		for _, cell := range ui.BuildCellWithXArray(parseStyledCells(lines[button.rect.Min.Y-bounds.Min.Y], ui.StyleClear)) {
+		for _, cell := range ui.BuildCellWithXArray(style.ParseCells(lines[button.rect.Min.Y-bounds.Min.Y], ui.StyleClear)) {
 			if bounds.Min.X+cell.X >= button.rect.Min.X && bounds.Min.X+cell.X < button.rect.Max.X {
 				label.WriteRune(cell.Cell.Rune)
 			}

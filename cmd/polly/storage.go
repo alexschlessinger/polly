@@ -412,7 +412,7 @@ func handleCreateContext(ctx context.Context, store sessions.SessionStore, confi
 	info.Created = time.Now()
 	info.LastUsed = time.Now()
 	if len(config.Tools) > 0 {
-		loaders, err := resolveCreateTools(config)
+		loaders, err := resolveCreateTools(config, store)
 		if err != nil {
 			return err
 		}
@@ -446,8 +446,16 @@ func handleCreateContext(ctx context.Context, store sessions.SessionStore, confi
 // resolveCreateTools loads the command-line tools the way a turn would, under
 // the same sandbox policy, and returns the loader records to persist; the
 // registry itself is discarded once the tools are known.
-func resolveCreateTools(config *Config) ([]tools.ToolLoaderInfo, error) {
-	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, nil)
+func resolveCreateTools(config *Config, stores ...sessions.SessionStore) ([]tools.ToolLoaderInfo, error) {
+	var store sessions.SessionStore
+	if len(stores) > 0 {
+		store = stores[0]
+	}
+	privatePaths, err := sessionPrivatePaths(store)
+	if err != nil {
+		return nil, err
+	}
+	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, nil, privatePaths...)
 	if err != nil {
 		return nil, err
 	}

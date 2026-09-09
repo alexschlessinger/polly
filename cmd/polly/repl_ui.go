@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -51,7 +52,7 @@ const (
 // two cannot drift apart.
 type transcriptEntry struct {
 	text          string
-	images        []transcriptImage
+	images        []style.Image
 	initialPrompt bool
 	// Completed assistant Markdown is materialized on the next visible paint.
 	markdown  string
@@ -260,7 +261,7 @@ type transcriptVisualBlock struct {
 	cells             []ui.Cell
 	followed          bool
 	rows              [][]ui.Cell
-	images            []transcriptImage
+	images            []style.Image
 	imageSpans        []transcriptImageSpan
 	reasoningIDs      []int64
 	toolDisclosureIDs []int64
@@ -313,8 +314,8 @@ type toolDisclosureRow struct {
 	agent            *agentActivity
 	label            string
 	line             string
-	images           []transcriptImage
-	inspectionImages []transcriptImage
+	images           []style.Image
+	inspectionImages []style.Image
 	settled          bool
 }
 
@@ -363,10 +364,10 @@ type managedREPL struct {
 
 	logoW                              *transcriptParagraph
 	transcriptW                        *transcriptParagraph
-	dividerW                           *literalParagraph
-	inputW                             *literalParagraph
-	turnDockW                          *literalParagraph
-	statusW                            *literalParagraph
+	dividerW                           *style.LiteralParagraph
+	inputW                             *style.LiteralParagraph
+	turnDockW                          *style.LiteralParagraph
+	statusW                            *style.LiteralParagraph
 	modalW                             *modalParagraph
 	rootFlex                           ui.Drawable
 	chrome                             chromeGeometry
@@ -412,7 +413,7 @@ type managedREPL struct {
 	inspectorRatio      float64
 	inspectorRefreshAt  time.Time
 	inspectorW          *transcriptParagraph
-	inspectorHeaderW    *literalParagraph
+	inspectorHeaderW    *style.LiteralParagraph
 	inspectorHeaderRows int
 	inspectorButtons    []inspectorButton
 	inspectorDragging   bool
@@ -1011,7 +1012,7 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 	default:
 		m.finishAssistantBlock("failed" + unsavedSuffix)
 		m.labelTurnOutcome("failed" + unsavedSuffix)
-		m.appendLine(styled("Error: "+err.Error(), "err", ""))
+		m.appendLine(style.Styled("Error: "+err.Error(), "err", ""))
 		m.discardQueuedInputs()
 		if !m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
 			m.appendNoticeLine("Input available with ↑ · current draft preserved")
@@ -1028,7 +1029,7 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 			m.signalHiddenLocked(signalTurnDone, formatElapsed(m.lastElapsed))
 		case turnOutcomeFailed:
 			m.unseenOutcome = m.lastOutcome
-			m.signalHiddenLocked(signalTurnFailed, truncate(err.Error(), 120))
+			m.signalHiddenLocked(signalTurnFailed, style.Truncate(err.Error(), 120))
 		case turnOutcomeIncomplete:
 			// err is nil for a token cap, so the detail is elapsed, not err.
 			m.unseenOutcome = m.lastOutcome

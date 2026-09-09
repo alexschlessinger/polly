@@ -5,6 +5,7 @@ import (
 	"image"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
 )
@@ -107,7 +108,7 @@ func (m *replModel) dividerRow(l frameLayout) string {
 	if l.dividerRows == 0 || l.width <= 0 {
 		return ""
 	}
-	rule := func(n int) string { return styled(strings.Repeat("─", max(0, n)), "muted", "") }
+	rule := func(n int) string { return style.Styled(strings.Repeat("─", max(0, n)), "muted", "") }
 	if m.status.parentName == "" {
 		return rule(l.width)
 	}
@@ -125,5 +126,5 @@ func (m *replModel) dividerRow(l frameLayout) string {
 		label += " "
 		tail--
 	}
-	return rule(col) + styled(label, "accent", "") + rule(tail)
+	return rule(col) + style.Styled(label, "accent", "") + rule(tail)
 }

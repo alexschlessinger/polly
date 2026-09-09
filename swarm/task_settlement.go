@@ -79,7 +79,7 @@ func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 		}
 	}
 	eligible := func(s *State, task *Task) bool {
-		return task.Status == "awaiting_review" && acceptedTaskRevision(task) && unchangedTask(s, task)
+		return task.Status == "awaiting_review" && !TaskDeferred(s, task) && acceptedTaskRevision(task) && unchangedTask(s, task)
 	}
 	for _, task := range s.Tasks {
 		if eligible(s, task) {
@@ -101,7 +101,7 @@ func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 func unsettledTask(s *State, run string) *Task {
 	ids := make([]string, 0, len(s.Tasks))
 	for id, task := range s.Tasks {
-		if task.Run == run && task.Status != "done" && task.Status != "canceled" {
+		if (task.Run == run || task.Deferral != nil) && task.Status != "done" && task.Status != "canceled" && !TaskDeferred(s, task) {
 			ids = append(ids, id)
 		}
 	}

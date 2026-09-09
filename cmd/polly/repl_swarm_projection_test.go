@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/swarm"
@@ -92,7 +93,7 @@ func TestSwarmProjectionGroupsWorkflowMembersAndPreservesDirectRows(t *testing.T
 	if strings.Count(plainStyledText(detail), "Workflow · review change") != 1 || len(links) < 3 {
 		t.Fatalf("workflow group or links missing: %s, %+v", detail, links)
 	}
-	visual := transcriptVisualRows(detail, ui.StyleClear, 32)
+	visual := style.VisualRows(detail, ui.StyleClear, 32)
 	for _, link := range links {
 		if link.Y >= len(visual) {
 			t.Fatalf("agent link outside wrapped detail: %+v", link)

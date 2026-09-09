@@ -5,38 +5,14 @@ import (
 	"slices"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/swarm"
 )
 
 func swarmMemberActivity(s *swarm.State, member *swarm.Member) (string, bool) {
-	switch member.Status {
-	case "queued", "running", "waiting":
-		return member.Status, true
-	}
-	task := s.Tasks[member.Task]
-	// Retirement releases execution resources; it does not settle parent work.
-	if member.Status == "retired" {
-		if task != nil && task.Status != "done" && task.Status != "canceled" {
-			return "retired · " + swarm.TaskStatus(task), false
-		}
-		return "retired", false
-	}
-	if execution := s.Executions[member.Execution]; execution != nil {
-		if member.Status == "paused" && execution.StopReason == messages.StopReasonMaxIterations {
-			return fmt.Sprintf("paused · iteration limit reached (%d/%d)", execution.Iterations, execution.Request.MaxIterations), false
-		}
-		if execution.Status == "failed" {
-			return "failed", false
-		}
-	}
-	if member.Status == "idle" {
-		if task != nil {
-			return swarm.TaskStatus(task), false
-		}
-		return "idle", false
-	}
-	return member.Status, false
+	state := swarm.MemberState(s, member)
+	return state.Display, state.Active
 }
 
 // Swarm executions, rather than UI tabs or the result of the spawn tool,
@@ -85,7 +61,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 			}
 			label := a.label
 			if row.isProjectedAgent() {
-				label = sanitizeTranscriptImageText(spawnLabel(member.Label, member.Name))
+				label = style.SanitizeImageText(spawnLabel(member.Label, member.Name))
 			}
 			in, out := 0, 0
 			if execution := s.Executions[member.Execution]; execution != nil {
@@ -98,7 +74,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 			}
 			if a.label != label || a.session != member.Name || a.status != status || a.active != active || !a.attached || a.inputTokens != in || a.outputTokens != out {
 				task := s.Tasks[member.Task]
-				awaitingReview := member.Status == "idle" && task != nil && task.Status == "awaiting_review"
+				awaitingReview := task != nil && task.Status == "awaiting_review" && !swarm.TaskDeferred(s, task)
 				if a.active && !active && (status == "done" || awaitingReview) {
 					m.noteAgentCompletion(record.id)
 				}
@@ -133,17 +109,27 @@ func (r *managedREPL) refreshSwarmActivities() {
 		return
 	}
 	for _, tab := range r.tabs {
-		if tab.state == nil || tab.state.swarm == nil || tab.swarmLoading || time.Now().Before(tab.swarmRefreshAt) {
+		if tab.state == nil || tab.swarmLoading || time.Now().Before(tab.swarmRefreshAt) {
 			continue
 		}
-		runtime, id := tab.state.swarm, tab.viewID()
+		state, runtime, id := tab.state, tab.state.swarm, tab.viewID()
+		viewStore, canView := state.sessionStore.(sessions.CoordinationViewStore)
+		if runtime == nil && (!canView || r.rootTab(tab) != tab || id == "") {
+			continue
+		}
 		tab.swarmLoading = true
 		tab.swarmRefreshAt = time.Now().Add(500 * time.Millisecond)
 		if !r.background(func() {
-			s, err := runtime.State(r.work.ctx)
+			var s *swarm.State
+			var err error
+			if runtime != nil {
+				s, err = runtime.State(r.work.ctx)
+			} else {
+				s, err = swarm.ReadStateView(r.work.ctx, viewStore, id)
+			}
 			r.postUI(r.work.ctx, func() {
 				tab.swarmLoading = false
-				if err != nil || !slices.Contains(r.tabs, tab) || tab.viewID() != id || tab.state == nil || tab.state.swarm != runtime {
+				if err != nil || !slices.Contains(r.tabs, tab) || tab.viewID() != id || tab.state != state || tab.state.swarm != runtime {
 					return
 				}
 				tab.swarmSnapshot = s
@@ -154,7 +140,9 @@ func (r *managedREPL) refreshSwarmActivities() {
 				}
 				tab.model.mu.Lock()
 				tab.model.hydrateSwarmAgents(s)
-				r.announceSwarmCompletions(tab, s)
+				if runtime != nil {
+					r.announceSwarmCompletions(tab, s)
+				}
 				tab.model.mu.Unlock()
 			})
 		}) {

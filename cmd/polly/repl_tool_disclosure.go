@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -52,7 +53,7 @@ func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
 }
 
 func (m *replModel) appendToolStartRow(id, label string) *toolDisclosureRecord {
-	label = stripTranscriptImageMarkers(label)
+	label = style.StripImageMarkers(label)
 	record := m.ensureToolDisclosure()
 	row := len(record.rows)
 	record.rows = append(record.rows, toolDisclosureRow{
@@ -94,7 +95,7 @@ func toolDisclosureHeader(total int, expanded bool) string {
 	return activityRowHeader(glyph, turnToolLabel(total))
 }
 
-func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage) {
+func toolDisclosureText(record *toolDisclosureRecord) (string, []style.Image) {
 	if record == nil {
 		return "", nil
 	}
@@ -108,11 +109,11 @@ func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage
 	}
 	var b strings.Builder
 	b.WriteString(header)
-	var images []transcriptImage
+	var images []style.Image
 	seen := make(map[string]struct{})
 	if len(rows) > toolPreviewRows {
 		b.WriteString("\n  ")
-		b.WriteString(styled(fmt.Sprintf("… %d earlier", len(rows)-toolPreviewRows), "muted", ""))
+		b.WriteString(style.Styled(fmt.Sprintf("… %d earlier", len(rows)-toolPreviewRows), "muted", ""))
 		rows = rows[len(rows)-toolPreviewRows:]
 	}
 	for _, row := range rows {
@@ -126,19 +127,19 @@ func toolDisclosureText(record *toolDisclosureRecord) (string, []transcriptImage
 	return b.String(), images
 }
 
-func transcriptImageIdentity(img transcriptImage) string {
+func transcriptImageIdentity(img style.Image) string {
 	if img.Path != "" {
 		return img.Path
 	}
 	return img.DisplayPath + "\x00" + img.Alt
 }
 
-func appendToolDisclosureImages(b *strings.Builder, rendered *[]transcriptImage, candidates []transcriptImage, prefix string, seen map[string]struct{}) {
-	remaining := maxTranscriptImagesPerBlock - len(*rendered)
+func appendToolDisclosureImages(b *strings.Builder, rendered *[]style.Image, candidates []style.Image, prefix string, seen map[string]struct{}) {
+	remaining := style.MaxImagesPerBlock - len(*rendered)
 	if remaining <= 0 || len(candidates) == 0 {
 		return
 	}
-	selected := make([]transcriptImage, 0, min(len(candidates), remaining))
+	selected := make([]style.Image, 0, min(len(candidates), remaining))
 	for _, img := range candidates {
 		identity := transcriptImageIdentity(img)
 		if _, duplicate := seen[identity]; duplicate {
@@ -153,7 +154,7 @@ func appendToolDisclosureImages(b *strings.Builder, rendered *[]transcriptImage,
 	if len(selected) == 0 {
 		return
 	}
-	block := offsetTranscriptImageMarkers(renderTranscriptImages(selected, prefix), len(*rendered))
+	block := style.OffsetImageMarkers(style.RenderImages(selected, prefix), len(*rendered))
 	if block == "" {
 		return
 	}
@@ -162,8 +163,8 @@ func appendToolDisclosureImages(b *strings.Builder, rendered *[]transcriptImage,
 	*rendered = append(*rendered, selected...)
 }
 
-func (m *replModel) toolInspectionImages(ids []int64) []transcriptImage {
-	images := make([]transcriptImage, 0)
+func (m *replModel) toolInspectionImages(ids []int64) []style.Image {
+	images := make([]style.Image, 0)
 	for _, id := range ids {
 		record := m.toolDisclosures.get(id)
 		if record == nil {
@@ -172,7 +173,7 @@ func (m *replModel) toolInspectionImages(ids []int64) []transcriptImage {
 		for _, row := range record.rows {
 			for _, img := range row.inspectionImages {
 				images = append(images, img)
-				if len(images) == maxTranscriptImagesPerBlock {
+				if len(images) == style.MaxImagesPerBlock {
 					return images
 				}
 			}
@@ -200,7 +201,7 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 	}
 	index := record.transcriptIndex
 	text, images := toolDisclosureText(record)
-	if m.transcript[index].text == text && transcriptImagesEqual(m.transcript[index].images, images) {
+	if m.transcript[index].text == text && style.ImagesEqual(m.transcript[index].images, images) {
 		return
 	}
 	// Tool activity renders inline in the transcript, so updates re-anchor a
@@ -270,11 +271,11 @@ const arrowPulsePeriod = 500 * time.Millisecond
 // runningToolLine renders a still-executing tool entry: a breathing arrow whose
 // modifier is chosen from elapsed time, the label, and a live elapsed timer.
 func runningToolLine(label string, elapsed time.Duration) string {
-	label = stripTranscriptImageMarkers(label)
+	label = style.StripImageMarkers(label)
 	mod := arrowPulse[int(elapsed/arrowPulsePeriod)%len(arrowPulse)]
-	return "  " + styled("→", "run", mod) + " " +
+	return "  " + style.Styled("→", "run", mod) + " " +
 		styledToolText(label) + " " +
-		styled("· "+formatElapsed(elapsed), "muted", "")
+		style.Styled("· "+formatElapsed(elapsed), "muted", "")
 }
 
 func (m *replModel) toggleToolDisclosure(recordID int64) bool {
@@ -385,15 +386,15 @@ func (m *replModel) settleActiveTools(reason string) {
 // literal text. Tool rows always flow through parseStyledCells, which restores
 // these temporary bracket runes after assigning the intended style.
 func styledToolText(text string) string {
-	return styled(stripTranscriptImageMarkers(text), "muted", "")
+	return style.Styled(style.StripImageMarkers(text), "muted", "")
 }
 
 func toolOKLine(label, duration, meta string) string {
-	return "  " + styled("✓", "ok", "bold") + " " + styledToolText(toolLineBody(label, meta, duration))
+	return "  " + style.Styled("✓", "ok", "bold") + " " + styledToolText(toolLineBody(label, meta, duration))
 }
 
 func toolDeniedLine(label string) string {
-	return "  " + styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(label, "denied", ""))
+	return "  " + style.Styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(label, "denied", ""))
 }
 
 // toolErrorLine renders a failed tool call as a red ✗ plus the muted metadata
@@ -401,14 +402,14 @@ func toolDeniedLine(label string) string {
 // tool's own output/error text is deliberately not shown; the model still
 // receives the full output, this is display only.
 func toolErrorLine(label, duration, meta string) string {
-	return "  " + styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(label, meta, duration))
+	return "  " + style.Styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(label, meta, duration))
 }
 
 // hydratedToolLine rebuilds a settled row from its stored result. The raw
 // result body is never shown; the recorded duration is, when the result
 // carries one.
 func hydratedToolLine(label string, msg messages.ChatMessage) string {
-	label = stripTranscriptImageMarkers(label)
+	label = style.StripImageMarkers(label)
 	if toolWasDenied(msg.Content) {
 		return toolDeniedLine(label)
 	}
@@ -430,7 +431,7 @@ func hydratedToolLine(label string, msg messages.ChatMessage) string {
 
 // pendingToolLine is the row for a tool call whose outcome is not (yet) known.
 func pendingToolLine(label string) string {
-	return "  " + styled("·", "muted", "bold") + " " + styledToolText(label)
+	return "  " + style.Styled("·", "muted", "bold") + " " + styledToolText(label)
 }
 
 func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *toolDisclosureRecord {
@@ -442,9 +443,9 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 		complete: true,
 	}
 	for i := range record.rows {
-		record.rows[i].label = stripTranscriptImageMarkers(record.rows[i].label)
+		record.rows[i].label = style.StripImageMarkers(record.rows[i].label)
 		if len(record.rows[i].images) == 0 {
-			record.rows[i].line = stripTranscriptImageMarkers(record.rows[i].line)
+			record.rows[i].line = style.StripImageMarkers(record.rows[i].line)
 		}
 		if record.rows[i].line == "" {
 			record.rows[i].line = pendingToolLine(record.rows[i].label)

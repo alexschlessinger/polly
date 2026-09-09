@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/swarm"
 )
 
 // workspaceTabs lists the workspace roots in tab order: the navigation list
@@ -116,6 +117,18 @@ func (r *managedREPL) attentionAgentName() string {
 	for _, tab := range r.tabs {
 		if tab != owner && r.rootTab(tab) == owner && r.peekTabActivity(tab) == "approval needed" {
 			return tab.name
+		}
+	}
+	if owner.swarmSnapshot != nil {
+		ids := make([]string, 0, len(owner.swarmSnapshot.Members))
+		for id := range owner.swarmSnapshot.Members {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		for _, id := range ids {
+			if swarm.MemberState(owner.swarmSnapshot, owner.swarmSnapshot.Members[id]).Attention {
+				return id
+			}
 		}
 	}
 	return ""

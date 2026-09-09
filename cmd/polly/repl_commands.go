@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
@@ -357,7 +358,7 @@ func (r *replCommandRegistry) helpLinesStyled(markup bool) []string {
 	row := func(name, desc string, width int) string {
 		name = fmt.Sprintf("%-*s", width, name)
 		if markup {
-			return "  " + styleEscape(name) + "  " + styled(desc, "muted", "")
+			return "  " + style.Escape(name) + "  " + style.Styled(desc, "muted", "")
 		}
 		return "  " + name + "  " + desc
 	}
@@ -386,7 +387,7 @@ func (r *replCommandRegistry) helpLinesStyled(markup bool) []string {
 	for _, g := range groups {
 		title := g.title
 		if markup {
-			title = styled(title, "", "bold")
+			title = style.Styled(title, "", "bold")
 		}
 		lines = append(lines, "", title)
 		for _, k := range g.rows {
