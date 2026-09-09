@@ -244,28 +244,6 @@ func TestIterationGrantRestoresSameExecutionAndWorktreeFromDisk(t *testing.T) {
 	}
 }
 
-func TestLegacyIterationFailureBecomesRecoverablePause(t *testing.T) {
-	for _, message := range []string{llm.ErrMaxIterations.Error(), "max iterations exceeded\ncheckpoint failed"} {
-		executions, _ := json.Marshal(map[string]*Execution{"e": {ID: "e", Member: "member", Status: "failed", Iterations: 8, Request: AgentRequest{MaxIterations: 8}, Error: message}})
-		var records map[string]json.RawMessage
-		if err := json.Unmarshal(executions, &records); err != nil {
-			t.Fatal(err)
-		}
-		s, err := decodeState(&sessions.CoordinationState{Records: map[string]map[string]json.RawMessage{"execution": records}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		e := s.Executions["e"]
-		if message == llm.ErrMaxIterations.Error() {
-			if e.Status != "paused" || e.StopReason != messages.StopReasonMaxIterations || !strings.Contains(e.Error, "8/8") {
-				t.Fatalf("legacy failure: %+v", e)
-			}
-		} else if e.Status != "failed" {
-			t.Fatal("mixed failure became resumable exhaustion")
-		}
-	}
-}
-
 func TestWorkflowIterationPauseAllowsExplicitTakeover(t *testing.T) {
 	var calls atomic.Int32
 	entered, release := make(chan struct{}), make(chan struct{})

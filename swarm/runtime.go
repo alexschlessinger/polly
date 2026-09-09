@@ -258,6 +258,9 @@ func (r *Runtime) prepare(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if s.Format == nil {
+			s.Format = &FormatRecord{Version: swarmFormatVersion}
+		}
 		for _, e := range s.Executions {
 			if e.Status == "running" || e.Status == "waiting" || e.Status == "queued" {
 				e.Generation++

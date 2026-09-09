@@ -150,10 +150,20 @@ type State struct {
 	Snapshots    map[string]*worktree.Snapshot    `json:"snapshots"`
 	Previews     map[string]*worktree.Preview     `json:"previews"`
 	Workflows    map[string]*workflow.Report      `json:"workflows"`
+	// Format is nil until the root's first coordination mutation records it.
+	Format *FormatRecord `json:"format,omitempty"`
 }
 
 func decodeState(raw *sessions.CoordinationState) (*State, error) {
 	s := &State{}
+	format, err := decodeFormat(raw)
+	if err != nil {
+		return nil, err
+	}
+	if swarmRecordsPresent(raw) && (format == nil || format.Version != swarmFormatVersion) {
+		return nil, unsupportedFormat(raw.ParentID, format)
+	}
+	s.Format = format
 	// Keep each domain in separately keyed records. All affected records and
 	// transcript receipts commit in the same SQLite transaction.
 	steps := map[string]*workflow.Step{}
@@ -174,7 +184,6 @@ func decodeState(raw *sessions.CoordinationState) (*State, error) {
 	if err := attachWorkflowSteps(s.Workflows, steps); err != nil {
 		return nil, err
 	}
-	s.normalizeIterationLimits()
 	return s, nil
 }
 func encodeState(raw *sessions.CoordinationState, s *State) error {
@@ -193,11 +202,20 @@ func encodeState(raw *sessions.CoordinationState, s *State) error {
 		}
 		raw.Records[kind] = group
 	}
+	format := map[string]json.RawMessage{}
+	if s.Format != nil {
+		data, err := json.Marshal(s.Format)
+		if err != nil {
+			return err
+		}
+		format[formatID] = data
+	}
+	raw.Records[formatKind] = format
 	return nil
 }
 
 // Step records are keyed "<report>/<index>". A report that still carries
-// embedded steps predates the split and is read as it was written.
+// embedded steps predates the split and is unsupported.
 func detachWorkflowSteps(reports map[string]*workflow.Report) (map[string]*workflow.Report, map[string]workflow.Step) {
 	headers := make(map[string]*workflow.Report, len(reports))
 	steps := map[string]workflow.Step{}
@@ -226,7 +244,7 @@ func attachWorkflowSteps(reports map[string]*workflow.Report, steps map[string]*
 	}
 	for id, report := range reports {
 		if len(report.Steps) > 0 {
-			continue
+			return fmt.Errorf("read swarm workflow %s: embedded steps: %w", id, ErrUnsupportedFormat)
 		}
 		report.Steps = make([]workflow.Step, len(indexed[id]))
 		for index, step := range indexed[id] {
