@@ -2,50 +2,14 @@ package main
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
-	"github.com/alexschlessinger/pollytool/subagent"
 	rw "github.com/mattn/go-runewidth"
-	ui "github.com/metaspartan/gotui/v5"
 )
-
-func TestDeliveredVisibleChildClosesOnParentLink(t *testing.T) {
-	for _, outcome := range []error{nil, errors.New("provider failed"), context.Canceled} {
-		t.Run(string(storedChildReport(subagent.Result{}, outcome).Status), func(t *testing.T) {
-			r, _ := newChildTestREPL(t)
-			parent := r.visibleTab()
-			r.runTurn = func(_ context.Context, _ string, turnUI TurnUI) error {
-				turnUI.AppendAssistantText("agent result")
-				return outcome
-			}
-			result := spawnFromTool(context.Background(), r, parent, subagent.Request{Task: "inspect"}, "")
-			runUITask(t, r)
-			child := r.tabs[1]
-			r.showTab(1)
-			settleUntil(t, r, settled(child))
-			awaitReport(t, result)
-			settleUntil(t, r, func() bool { return child.delivered })
-			if r.visibleTab() != child || len(r.tabs) != 2 {
-				t.Fatal("visible child closed on delivery")
-			}
-			bar := plainStyledText(child.model.dividerRow(r.frameLayoutFor(80, 24)))
-			if !strings.Contains(bar, "← Back to caller") {
-				t.Fatalf("parent link missing: %q", bar)
-			}
-			target := child.model.parentLink
-			r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: target.Min.X, Y: target.Min.Y}})
-			r.applyTabRequests()
-			if r.visibleTab() != parent || len(r.tabs) != 1 {
-				t.Fatal("parent link did not close delivered child and return to parent")
-			}
-		})
-	}
-}
 
 func savedAgentREPL(t *testing.T, parentOpen bool) *managedREPL {
 	t.Helper()
@@ -187,37 +151,5 @@ func TestParentDividerFollowsLayout(t *testing.T) {
 	row := plainStyledText(m.dividerRow(l))
 	if row != strings.Repeat("─", 80) || !m.parentLink.Empty() || l.dividerRows != 1 {
 		t.Fatalf("ordinary session rule = %q link=%v layout=%+v", row, m.parentLink, l)
-	}
-}
-
-type failedAgentReportSession struct{ sessions.Session }
-
-func (s *failedAgentReportSession) Report(context.Context, sessions.Report) error {
-	return errors.New("report storage unavailable")
-}
-
-func TestFailedReportDeliveryKeepsAgentTab(t *testing.T) {
-	r, _ := newChildTestREPL(t)
-	parent := r.visibleTab()
-	spawn := r.opener.spawn
-	r.opener.spawn = func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error) {
-		child, err := spawn(ctx, parent, req)
-		if err == nil {
-			child.session = &failedAgentReportSession{child.session}
-		}
-		return child, err
-	}
-	result := spawnFromTool(context.Background(), r, parent, subagent.Request{Task: "inspect", Background: true}, "")
-	runUITask(t, r)
-	child := r.tabs[1]
-	awaitReport(t, result)
-	settleUntil(t, r, func() bool { return child.turnDone == nil && child.report == nil && !child.reporting })
-	r.showTab(r.tabIndexOfModel(child.model))
-	r.runParent()
-	if child.delivered || len(r.tabs) != 2 {
-		t.Fatal("undelivered report lost its tab")
-	}
-	if !strings.Contains(plainStyledText(parent.model.fullTranscript()), "could not be delivered") {
-		t.Fatal("delivery error not shown")
 	}
 }

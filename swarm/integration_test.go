@@ -3,7 +3,6 @@ package swarm
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -122,14 +121,14 @@ func TestWorkflowExampleFixRepairReviewAndParentApply(t *testing.T) {
 		}
 	}
 	taskID := summary["task"].(string)
-	preview, err := r.preview(ctx, taskID)
+	candidate, err := r.PrepareIntegration(ctx, []TaskReference{{Task: taskID, Revision: s.Tasks[taskID].Revision}}, "paths")
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, _ := json.Marshal(preview)
-	var p struct{ ID string }
-	_ = json.Unmarshal(encoded, &p)
-	if err := r.apply(ctx, taskID, p.ID); err != nil {
+	if _, err = r.AcceptIntegration(ctx, candidate.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.ApplyIntegration(ctx, candidate.ID); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(filepath.Join(root, "a.txt"))

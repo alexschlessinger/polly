@@ -43,6 +43,9 @@ relaunch there. Context-specific binding discards tool/server sandbox overlays
 that could restore the parent's write grants. Required incompatible tools fail
 launch; optional ones are omitted and reported. Later skill activation cannot
 expand the member's inherited tool capabilities.
+Typed `/spawn`, model delegation, and scripted `polly.agent` all enter this same
+runtime. A TUI tab does not grant a child the parent's bound tools or filesystem
+access. `/spawn --read-only` uses the same research policy as `read_only:true`.
 
 Member policies deny parent/sibling files, session databases, and every write to
 common Git metadata and the linked worktree's `.git` entry. The default 512

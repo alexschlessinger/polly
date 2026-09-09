@@ -1409,29 +1409,58 @@ func (r *Runtime) AcknowledgeWorkflow(ctx context.Context, id string) error {
 // RunWorkflow reserves invoked members to this attempt. Restart is another
 // call with explicit inputs; it never resumes a JavaScript heap or replays steps.
 func (r *Runtime) RunWorkflow(ctx context.Context, source string, input any) (*workflow.Report, error) {
-	controller := ids.New()
+	run, err := r.launchWorkflow(ctx, source, input, false)
+	if err != nil {
+		return nil, err
+	}
+	// Cancellation stops the script, but the host must finish active writes and
+	// their receipts before the foreground caller observes completion.
+	<-run.done
+	return run.report, run.err
+}
+
+type workflowInvocation struct {
+	id     string
+	done   chan struct{}
+	report *workflow.Report
+	err    error
+}
+
+// launchWorkflow owns persistence, registration and teardown for both launch
+// modes. Only the caller's cancellation lifetime differs.
+func (r *Runtime) launchWorkflow(ctx context.Context, source string, input any, background bool) (*workflowInvocation, error) {
 	r.launchMu.Lock()
+	defer r.launchMu.Unlock()
 	if r.closing {
-		r.launchMu.Unlock()
 		return nil, context.Canceled
+	}
+	run := &workflowInvocation{id: ids.New(), done: make(chan struct{})}
+	if err := r.SaveWorkflow(ctx, workflow.Report{ID: run.id, Source: source, Input: input, Status: "running", Started: time.Now().UTC()}); err != nil {
+		return nil, err
+	}
+	if background {
+		ctx = context.WithoutCancel(ctx)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(r.ctx, cancel)
 	r.mu.Lock()
-	r.workflowCancels[controller] = cancel
+	r.workflowCancels[run.id] = cancel
 	r.mu.Unlock()
 	r.wg.Add(1)
-	r.launchMu.Unlock()
-	defer func() {
-		cancel()
-		stop()
-		r.mu.Lock()
-		delete(r.workflowCancels, controller)
-		r.mu.Unlock()
-		r.changed()
-		r.wg.Done()
+	go func() {
+		defer r.wg.Done()
+		defer close(run.done)
+		defer func() {
+			cancel()
+			stop()
+			r.mu.Lock()
+			delete(r.workflowCancels, run.id)
+			r.mu.Unlock()
+			r.changed()
+		}()
+		run.report, run.err = r.runWorkflow(runCtx, run.id, source, input)
 	}()
-	return r.runWorkflow(runCtx, controller, source, input)
+	return run, nil
 }
 
 func (r *Runtime) runWorkflow(ctx context.Context, controller, source string, input any) (*workflow.Report, error) {
@@ -1462,32 +1491,11 @@ func (r *Runtime) runWorkflow(ctx context.Context, controller, source string, in
 }
 
 func (r *Runtime) StartWorkflow(ctx context.Context, source string, input any) (string, error) {
-	r.launchMu.Lock()
-	defer r.launchMu.Unlock()
-	if r.closing {
-		return "", context.Canceled
-	}
-	id := ids.New()
-	if err := r.SaveWorkflow(ctx, workflow.Report{ID: id, Source: source, Input: input, Status: "running", Started: time.Now().UTC()}); err != nil {
+	run, err := r.launchWorkflow(ctx, source, input, true)
+	if err != nil {
 		return "", err
 	}
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	stop := context.AfterFunc(r.ctx, cancel)
-	r.mu.Lock()
-	r.workflowCancels[id] = cancel
-	r.mu.Unlock()
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
-		defer cancel()
-		defer stop()
-		_, _ = r.runWorkflow(runCtx, id, source, input)
-		r.mu.Lock()
-		delete(r.workflowCancels, id)
-		r.mu.Unlock()
-		r.changed()
-	}()
-	return id, nil
+	return run.id, nil
 }
 
 func (r *Runtime) CancelWorkflow(id string) error {

@@ -488,7 +488,7 @@ Model calls inherit the host's iteration limit; the model-facing tool rejects
 `max_iterations`. Trusted Go callers may set `Request.MaxIterations` explicitly.
 What running the child means is the host's `Runner`; the
 library's `AgentRunner` runs an in-memory `llm.Agent` over a derived view
-of the parent's tools (never `spawn_agent` itself), with the brief as the
+of the parent's tools, with the brief as the
 only user message after your base messages:
 
 ```go
@@ -517,8 +517,17 @@ retains the lightweight shared-registry behavior; constructing a swarm is option
 child. `WithRuntimeScheduler` delegates slot ownership to that runtime.
 The library's `AgentRunner` uses the base messages you supply; CLI coding
 defaults and automatic `AGENTS.md` loading are not injected by the library.
+`ChildRegistry` excludes `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
+`send_message`, and `read_messages`, even when the parent registers them later.
+Those coordination tools carry the parent's identity and cannot be inherited by
+a lightweight child. Use the swarm runtime to bind a member's own identity.
 
 ## Swarms and workflows
+
+The CLI/TUI uses one swarm runtime for model `spawn_agent` calls, typed `/spawn`,
+and JavaScript `polly.agent`. Direct and scripted coordination share storage,
+budgets, worktree policy, and execution. Standalone `llm.Agent` and the lightweight
+`subagent.AgentRunner` remain available without constructing a swarm.
 
 `swarm.New(swarm.Config{Store, Parent, Registry, Client, Request, Agent, Root})`
 creates one parent's runtime. `Parent` must implement
@@ -582,7 +591,10 @@ parent authority in the tool closure and is absent from child/bound registries.
 
 `RunWorkflow(ctx, source, input)` runs a fresh Goja VM over the same runtime;
 `StartWorkflow` returns a report ID for background execution. `CancelWorkflow`
-cancels that attempt. Saved reports include source, input, every operation intent,
+cancels that attempt. Both launch modes share persistence, registration, member
+reservation, and teardown. `RunWorkflow` honors caller cancellation and drains
+host effects before returning; `StartWorkflow` detaches from caller cancellation.
+Both stop on runtime shutdown. Saved reports include source, input, every operation intent,
 results, failure details, and final output. Restarting a script is an explicit new
 attempt; there is no persisted JavaScript heap or automatic effect replay.
 Failed/interrupted reports block settlement until `AcknowledgeWorkflow` records

@@ -448,8 +448,7 @@ type managedREPL struct {
 	// history couldn't be opened (best-effort — never fatal).
 	histFile *os.File
 
-	// runTurn executes a turn for a tab; Run sets it, and children spawned
-	// from the event loop start their turns through it.
+	// runTurn executes interactive tab turns. Swarm members run independently.
 	runTurn turnRunner
 	// spawnRequests are the /spawn commands recorded by handlers for the
 	// event loop to apply.
@@ -466,10 +465,9 @@ type managedREPL struct {
 	// screen model and turn; r.model and r.state mirror the visible one.
 	// showTabRequest (-1 when none) and closeTabRequest are recorded by
 	// handlers and applied by the event loop.
-	tabs                []*replTab
-	pendingAgentUpdates []*replTab
-	showTabRequest      int
-	closeTabRequest     bool
+	tabs            []*replTab
+	showTabRequest  int
+	closeTabRequest bool
 
 	// Opening sessions (/resume, /new). opener builds the runtime; nil in
 	// unit tests, where a selection only records itself. opening names the
@@ -788,14 +786,8 @@ func (r *managedREPL) needsTick() bool {
 			return true
 		}
 	}
-	if len(r.pendingAgentUpdates) > 0 {
-		return true
-	}
 	for _, tab := range r.tabs {
 		if tab.state != nil && tab.state.swarm != nil && (tab.swarmActive || tab.state.swarm.HasActive()) {
-			return true
-		}
-		if tab.agentActivity != nil && tab.report != nil {
 			return true
 		}
 	}
@@ -848,7 +840,7 @@ func (r *managedREPL) takePendingTurn() (pendingTurn, bool) {
 // loop with no model lock held.
 func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn managedTurnInput, runTurn turnRunner) {
 	r.startupLogoVisible = false
-	if tab.parentName != "" && tab.report == nil {
+	if tab.parentName != "" {
 		tab.keepOpen = true
 	}
 	m := tab.model
@@ -870,15 +862,8 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 	done := make(chan error, 1)
 	tab.turnDone = done
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, state: tab.state, turnID: turnID, reuseUser: reuseUser, turn: cloneManagedTurn(turn), persistence: persistence}
-	if tab.report != nil {
-		tui.observer = tab.report
-	}
-	firstChildTurn := tab.report != nil
 	go func() {
 		err := runTurn(turnCtx, turn.displayText, tui)
-		if firstChildTurn {
-			tab.markSettled()
-		}
 		done <- err
 		r.wakeTabs()
 	}()

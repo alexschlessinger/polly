@@ -120,8 +120,36 @@ func TestIntegrationWorkflowClientsInSandboxedLinkedCheckout(t *testing.T) {
 			r.RegisterParentTools(registry)
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
+			var managed *managedREPL
+			if client == "tui command" {
+				managed = newManagedREPL(&Config{}, "integration-parent", 0, 0)
+				state := &conversationState{sessionStore: store, session: parent, artifactStore: parent.ArtifactStore(), toolRegistry: registry, swarm: r, settings: Settings{Model: "test/model", MaxIterations: 20}}
+				if err := managed.addTab(state); err != nil {
+					t.Fatal(err)
+				}
+				defer managed.closeTabs()
+			}
 			refs := []swarm.TaskReference{}
 			for _, brief := range []string{"WRITE_A", "WRITE_B"} {
+				if managed != nil {
+					managed.runTabCommand("/spawn " + brief)
+					runUITask(t, managed)
+					s := waitSwarmIdle(t, r)
+					var ref swarm.TaskReference
+					for _, task := range s.Tasks {
+						if task.Description == brief {
+							ref = swarm.TaskReference{Task: task.ID, Revision: task.Revision}
+							if task.Status != "awaiting_review" || s.Contexts[s.Members[task.Owner].Context].Checkout == nil {
+								t.Fatalf("typed editing agent did not produce an isolated result: %+v", task)
+							}
+						}
+					}
+					if ref.Task == "" || len(managed.tabs) != 1 {
+						t.Fatal("typed launch did not use the shared runtime", plainStyledText(managed.model.fullTranscript()))
+					}
+					refs = append(refs, ref)
+					continue
+				}
 				result, err := r.Agent(ctx, "", swarm.AgentRequest{Task: brief, Tools: []string{"write_file"}})
 				if err != nil {
 					t.Fatal(err)

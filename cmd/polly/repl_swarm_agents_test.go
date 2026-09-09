@@ -9,7 +9,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/subagent"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -87,7 +87,7 @@ func TestSwarmIterationPauseRendersReasonAndResumesThroughCommand(t *testing.T) 
 			t.Fatalf("command grant: %+v", e)
 		}
 	}
-	stored := storedChildReport(subagent.Result{Text: "partial"}, llm.ErrMaxIterations)
+	stored := sessions.Report{Status: sessions.ReportPaused, Text: "partial", Error: llm.ErrMaxIterations.Error()}
 	if spawnOutcomeStatus(stored.Status) != "paused · iteration limit" || !strings.Contains(reportHeader(stored), "paused") {
 		t.Fatalf("legacy report labels pause as failure: %+v", stored)
 	}

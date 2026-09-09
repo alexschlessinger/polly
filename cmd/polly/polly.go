@@ -23,7 +23,6 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
-	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -157,9 +156,6 @@ type sessionOpener struct {
 	prepare func(ctx context.Context, name string, notify func(string)) (string, Settings, error)
 	open    func(ctx context.Context, name string, settings Settings, auto bool) (*conversationState, error)
 	newName func(ctx context.Context) (string, error)
-	// spawn builds a child's runtime for a subagent of parent (see
-	// openChildState); nil when the REPL cannot spawn.
-	spawn func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error)
 }
 
 // effectiveTools includes the agent's private built-ins for display and
@@ -441,7 +437,7 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		return nil, fmt.Errorf("read context metadata: %w", err)
 	}
 	if metadata.SwarmID != "" {
-		return nil, fmt.Errorf("this swarm member is inspected through /agents and resumed through its parent %q with /swarm resume; independent execution would lose its worktree binding", metadata.Parent)
+		return nil, fmt.Errorf("this swarm member is inspected through /sessions and resumed through its parent %q with /swarm resume; independent execution would lose its worktree binding", metadata.Parent)
 	}
 
 	// Discover skills before building the runtime tool registry, passing the
@@ -786,9 +782,6 @@ func (r *commandRunner) runConversation() (retErr error) {
 			},
 			newName: func(ctx context.Context) (string, error) {
 				return generateSessionName(ctx, r.sessionStore)
-			},
-			spawn: func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error) {
-				return openChildState(ctx, r.llmClient, parent, req)
 			},
 		}
 		return runManagedREPL(signalCtx, config, state, opener)
@@ -1144,11 +1137,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		},
 	}
 	if state.swarm != nil {
-		systemPrompt := settings.SystemPrompt
-		state.swarm.UpdateDefaults(*req, llm.AgentConfig{MaxIterations: settings.MaxIterations, ToolTimeout: settings.ToolTimeout}, func(registry *tools.ToolRegistry) string {
-			instructions, _ := loadRepositoryInstructions(registry)
-			return systemPrompt + "\n\n" + codingContract + "\n\n" + instructions
-		})
+		updateSwarmDefaults(state, req, *settings)
 		state.swarm.BindParent(callbacks, turnUI.TurnPersistenceAllowed)
 	}
 	resp, err := state.agent.Run(ctx, req, callbacks)

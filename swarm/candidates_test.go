@@ -244,6 +244,11 @@ func TestIntegrationAuthorityAndGenericToolBypass(t *testing.T) {
 	r, p := applyFixture(t, false)
 	ctx := context.Background()
 	r.RegisterParentTools(r.config.Registry)
+	for _, name := range []string{"swarm_preview", "swarm_apply"} {
+		if _, exists := r.config.Registry.Get(name); exists {
+			t.Fatal("obsolete integration alias registered", name)
+		}
+	}
 	for _, key := range []string{"identity", "actor", "parent", "controller", "run", "IDentity"} {
 		_, err := r.integrationOperation(ctx, map[string]any{"op": "read", "id": "candidate", key: r.ID})
 		candidateError(t, err, "invalid_args")

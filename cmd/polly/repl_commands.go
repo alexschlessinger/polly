@@ -11,6 +11,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -80,7 +81,7 @@ type replCommandContext struct {
 	// one session and leaves them nil.
 	newTab      func()
 	closeTab    func()
-	spawnAgent  func(brief string)
+	spawnAgent  func(subagent.Request)
 	inspectView func(string)
 	openSwarm   func(string)
 }
@@ -195,8 +196,8 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	})
 	r.register(replCommand{
 		name:     "/spawn",
-		usage:    "/spawn <brief>",
-		summary:  "start a background agent that reports back here",
+		usage:    "/spawn [--read-only] <brief>",
+		summary:  "start a background swarm member; inspect with /sessions",
 		busySafe: true,
 		run:      replSpawnCommand,
 	})
@@ -902,14 +903,19 @@ func replCloseCommand(ctx *replCommandContext, args []string) replCommandResult 
 }
 
 func replSpawnCommand(ctx *replCommandContext, args []string) replCommandResult {
-	brief := strings.TrimSpace(strings.Join(args[1:], " "))
+	args = args[1:]
+	readOnly := len(args) > 0 && args[0] == "--read-only"
+	if readOnly {
+		args = args[1:]
+	}
+	brief := strings.TrimSpace(strings.Join(args, " "))
 	if brief == "" {
-		return replCommandResult{err: ctx.replyLine("usage: /spawn <brief>")}
+		return replCommandResult{err: ctx.replyLine("usage: /spawn [--read-only] <brief>")}
 	}
 	if ctx == nil || ctx.spawnAgent == nil {
 		return replCommandResult{err: ctx.replyLine("agents are available only in the managed TUI")}
 	}
-	ctx.spawnAgent(brief)
+	ctx.spawnAgent(subagent.Request{Task: brief, ReadOnly: readOnly})
 	return replCommandResult{}
 }
 

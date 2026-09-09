@@ -22,9 +22,6 @@ type gotuiTurnUI struct {
 	reuseUser   bool
 	turn        managedTurnInput
 	persistence *turnPersistenceAck
-	// observer, when set, also hears the turn's text, tool starts, tokens,
-	// and finish: a child tab's reply recorder (see repl_children.go).
-	observer TurnUI
 }
 
 func (t *gotuiTurnUI) Start() {}
@@ -87,9 +84,6 @@ func (t *gotuiTurnUI) AppendAssistantText(content string) {
 		t.model.mu.Unlock()
 		return
 	}
-	if t.observer != nil {
-		defer t.observer.AppendAssistantText(content)
-	}
 	t.model.state = turnStateStreaming
 	if content != "" {
 		t.model.turnHasOutput = true
@@ -108,9 +102,6 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	defer t.model.mu.Unlock()
 	if !t.acceptingLocked() {
 		return
-	}
-	if t.observer != nil {
-		defer t.observer.AppendToolStart(calls)
 	}
 	if len(calls) > 0 {
 		t.model.turnHasOutput = true
@@ -309,9 +300,6 @@ func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 		t.model.mu.Unlock()
 		return
 	}
-	if t.observer != nil {
-		defer t.observer.RecordTurnTokens(in, out)
-	}
 	t.model.lastIn = in
 	t.model.lastOut = out
 	t.model.turnDock.inputTokens = in
@@ -334,9 +322,6 @@ func (t *gotuiTurnUI) FinishTextTurn() {
 		t.model.finishAssistantBlock("")
 	}
 	t.model.mu.Unlock()
-	if accepted && t.observer != nil {
-		t.observer.FinishTextTurn()
-	}
 }
 
 func (t *gotuiTurnUI) CompleteTurn(completion turnCompletion) {
@@ -346,7 +331,4 @@ func (t *gotuiTurnUI) CompleteTurn(completion turnCompletion) {
 		t.model.completion = &completion
 	}
 	t.model.mu.Unlock()
-	if accepted && t.observer != nil {
-		t.observer.CompleteTurn(completion)
-	}
 }

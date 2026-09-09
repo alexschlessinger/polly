@@ -4,6 +4,9 @@ Polly automatically registers a parent's direct children in a local swarm.
 Sharing belongs to that family: no nested swarms, remote machines, or separately
 started agent tools in this version. A workflow is an optional program over the
 same scheduler, tasks, mailboxes, and isolated files that model tools use.
+There is no separate "workflow swarm". A parent may coordinate directly, run a
+script, or combine both. `/spawn` supplies one brief directly; asking the model
+to delegate lets it choose the assignments. Neither requires JavaScript.
 
 ## Running a workflow
 
@@ -21,6 +24,11 @@ loads the full saved report. These tools also work in one-shot CLI prompts.
 The blocking result includes only report ID, status, output, and step count.
 Full source, inputs, intermediate results, typed failures, and artifact
 references stay available in the inspector and SQLite.
+Foreground and background launches share durable registration, member reservation,
+and cleanup. Foreground work honors caller cancellation and waits for active host
+effects and their receipts to finish. Background work outlives the launching call;
+explicit cancellation and runtime shutdown still stop it. Restart always runs an
+explicit new attempt; saved JavaScript is never replayed automatically.
 
 Use [fix-review-findings.js](examples/workflows/fix-review-findings.js) with a
 copy of [input.json](examples/workflows/input.json). Replace the absolute source,
@@ -178,7 +186,7 @@ and an optional immutable snapshot. Authors may supersede their own findings;
 history is retained. `swarm_search` performs case-insensitive literal search of
 explicit publications across retained runs. `swarm_read_artifact` opens only
 family-pinned bytes. Private transcripts and unpublished artifacts are not
-discoverable through these tools. Human inspection through `/agents` remains
+discoverable through these tools. Human inspection through `/sessions` remains
 separate from model-visible publications.
 
 Task states are `pending`, `running`, `blocked`, `changes_requested`,
@@ -285,9 +293,11 @@ rechecks them before changing files. All editing contributions, including repair
 become done only after confirmed application. `read` includes source references,
 conflicts, predecessor/successor links, acceptance, drift policy, and any receipt.
 Inspect them in `/swarm integrations`. Existing legacy previews without task
-revision provenance require fresh preparation. `swarm_preview` prepares a real
-single-task candidate; `swarm_apply` records that explicit candidate's acceptance
-from the already accepted task revision and uses the same apply service.
+revision provenance require fresh preparation. Single-task and multi-task
+integration both use `swarm_integration`; the former `swarm_preview` and
+`swarm_apply` model tools are removed. Prepare with `tasks:[{task,revision}]`,
+then explicitly `accept` and `apply` the returned candidate ID. Task review
+alone does not accept an integration candidate.
 
 The default `paths` policy checks every changed path's existence, file type,
 Git mode and content identity, including both rename endpoints. Relevant ancestors
@@ -310,7 +320,8 @@ fences the write. A separate ten-second phase records the outcome, and runtime
 shutdown waits for active writes and receipts. Timeouts and I/O failures require
 inspection. On restart, matching after-states complete the original revisions;
 matching before-states permit an explicit retry; mixed states require recovery.
-Use `swarm_apply` with `reconcile:true` (or `Runtime.ReconcileApply`) to
+Use `swarm_integration` with `op:"reconcile", id:CANDIDATE_ID`
+(or `Runtime.ReconcileApply`) to
 inspect an interrupted intent before an explicit retry. Later task revisions are
 never overwritten. No automatic patch replay or rollback
 is attempted. Parent branch and index stay unchanged.

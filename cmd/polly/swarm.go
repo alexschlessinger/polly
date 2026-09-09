@@ -57,6 +57,16 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 	return nil
 }
 
+// updateSwarmDefaults snapshots the current parent settings for both model and
+// typed launches; subsequent member executions use the runtime's copy.
+func updateSwarmDefaults(state *conversationState, req *llm.CompletionRequest, settings Settings) {
+	systemPrompt := settings.SystemPrompt
+	state.swarm.UpdateDefaults(*req, llm.AgentConfig{MaxIterations: settings.MaxIterations, ToolTimeout: settings.ToolTimeout}, func(registry *tools.ToolRegistry) string {
+		instructions, _ := loadRepositoryInstructions(registry)
+		return systemPrompt + "\n\n" + codingContract + "\n\n" + instructions
+	})
+}
+
 // memberCallbacks routes a member's output and approvals. A member spawned
 // from a turn reports through that turn's UI; one launched by a command or
 // woken by peer mail has no turn, so the session's host screen takes over.

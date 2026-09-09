@@ -279,11 +279,11 @@ func parseRequest(args tools.Args) (Request, error) {
 }
 
 // ChildRegistry derives a child's view of the parent's tools: those the
-// brief allows, or all of them, and never spawn_agent itself, so a child
-// does not spawn children of its own. The child's built-ins it registers
+// brief allows, excluding nested spawning and coordination tools bound to
+// the parent's identity. The child's built-ins it registers
 // later stay visible regardless (see tools.ToolRegistry.Derive).
 func ChildRegistry(parent *tools.ToolRegistry, allow []string) *tools.ToolRegistry {
-	opts := []tools.DeriveOption{tools.DenyTools(ToolName)}
+	opts := []tools.DeriveOption{tools.DenyTools(ToolName, "swarm_*", "workflow_*", "list_agents", "send_message", "read_messages")}
 	if allow != nil && len(allow) == 0 {
 		opts = append(opts, tools.DenyTools("*"))
 	}

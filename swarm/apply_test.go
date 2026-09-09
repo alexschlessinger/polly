@@ -91,7 +91,7 @@ func TestApplyReceiptsEmptyDeltaAndRecovery(t *testing.T) {
 		t.Run(map[bool]string{false: "patch", true: "empty"}[empty], func(t *testing.T) {
 			r, plan := applyFixture(t, empty)
 			ctx := context.Background()
-			if err := r.apply(ctx, "task", plan.ID); err != nil {
+			if _, err := r.ApplyIntegration(ctx, plan.ID); err != nil {
 				t.Fatal(err)
 			}
 			s, err := r.read(ctx)
@@ -105,7 +105,7 @@ func TestApplyReceiptsEmptyDeltaAndRecovery(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(r.config.Root, "a.txt"), []byte("later\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := r.apply(ctx, "task", plan.ID); err != nil {
+			if _, err := r.ApplyIntegration(ctx, plan.ID); err != nil {
 				t.Fatal(err)
 			}
 			if data, _ := os.ReadFile(filepath.Join(r.config.Root, "a.txt")); string(data) != "later\n" {
@@ -176,7 +176,7 @@ func TestApplyFinishesAfterCancellationAndShutdownWaits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- r.apply(ctx, "task", plan.ID) }()
+	go func() { _, err := r.ApplyIntegration(ctx, plan.ID); done <- err }()
 	select {
 	case <-started:
 	case <-time.After(10 * time.Second):
@@ -212,7 +212,7 @@ func TestApplyCancellationBeforeWriteAndWriteTimeout(t *testing.T) {
 	r, plan := applyFixture(t, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := r.apply(ctx, "task", plan.ID); !errors.Is(err, context.Canceled) {
+	if _, err := r.ApplyIntegration(ctx, plan.ID); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	s, _ := r.read(context.Background())
@@ -231,7 +231,7 @@ func TestApplyCancellationBeforeWriteAndWriteTimeout(t *testing.T) {
 	}, sandbox.Config{}))
 	defer registry.Close()
 	r.worktrees.Registry = registry
-	if err := r.apply(context.Background(), "task", plan.ID); err == nil {
+	if _, err := r.ApplyIntegration(context.Background(), plan.ID); err == nil {
 		t.Fatal("timeout succeeded")
 	}
 	s, _ = r.read(context.Background())
@@ -255,7 +255,7 @@ func TestApplyLeaseLossLeavesRecoverableIntent(t *testing.T) {
 	defer registry.Close()
 	r.worktrees.Registry = registry
 	done := make(chan error, 1)
-	go func() { done <- r.apply(context.Background(), "task", plan.ID) }()
+	go func() { _, err := r.ApplyIntegration(context.Background(), plan.ID); done <- err }()
 	select {
 	case <-started:
 	case <-time.After(10 * time.Second):
