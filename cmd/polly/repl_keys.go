@@ -9,19 +9,13 @@ import (
 )
 
 func (r *managedREPL) requestQuit() {
-	select {
-	case r.quit <- struct{}{}:
-	default:
-	}
+	nudge(r.quit)
 }
 
 // requestSuspend queues a Ctrl-Z suspension on the UI loop, which restores
 // the terminal before stopping the foreground process group.
 func (r *managedREPL) requestSuspend() {
-	select {
-	case r.suspend <- struct{}{}:
-	default:
-	}
+	nudge(r.suspend)
 }
 
 // handleEvent mutates the model in response to a UI event. Returns true on

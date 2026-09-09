@@ -43,9 +43,6 @@ const (
 	turnOutcomeIncomplete
 )
 
-// replModel is the mutex-protected state for the MVP TUI. Mutated from both
-// the main event loop and any in-flight turn goroutine, so every read/write
-// holds mu.
 // transcriptEntry is one transcript block: its rendered text and the explicit
 // local image references it carries (nil when none), kept in one value so the
 // two cannot drift apart.
@@ -58,6 +55,9 @@ type transcriptEntry struct {
 	codeCache *markdown.CodeCache
 }
 
+// replModel is the mutex-protected state for the TUI. Mutated from both the
+// main event loop and any in-flight turn goroutine, so every read/write
+// holds mu.
 type replModel struct {
 	mu          sync.Mutex
 	affordances affordanceState

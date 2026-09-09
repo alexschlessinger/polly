@@ -191,7 +191,6 @@ func (r *commandRunner) runConversation() (retErr error) {
 	if err != nil {
 		return err
 	}
-	session := state.session
 
 	defer func() {
 		if err := state.Close(); err != nil {
@@ -199,17 +198,11 @@ func (r *commandRunner) runConversation() (retErr error) {
 		}
 	}()
 
-	// Make the lease context the direct parent so lease loss is observable
-	// synchronously by the agent and TUI. Signal/caller cancellation is bridged
-	// into the same typed-cause context for the other shutdown path.
-	ctx, cancelRun := context.WithCancelCause(session.Context())
-	stopSignalCancel := context.AfterFunc(signalCtx, func() {
-		cancelRun(context.Cause(signalCtx))
-	})
-	defer func() {
-		stopSignalCancel()
-		cancelRun(nil)
-	}()
+	// The lease context is the direct parent so lease loss is observable
+	// synchronously by the agent and TUI; signal/caller cancellation is
+	// bridged into the same typed-cause context.
+	ctx, cancelRun := turnContext(signalCtx, state)
+	defer cancelRun()
 
 	switch input.mode {
 	case conversationModeOneShot:

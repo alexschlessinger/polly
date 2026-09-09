@@ -165,3 +165,12 @@ func writeStructured(stdout, stderr io.Writer, content string, schema *llm.Schem
 	fmt.Fprintln(stdout, string(jsonBytes))
 	return nil
 }
+
+// nudge wakes a one-slot signal channel without blocking; a wakeup already
+// pending stands for this one too.
+func nudge(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}

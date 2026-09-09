@@ -22,10 +22,7 @@ type turnRunner func(ctx context.Context, prompt string, turnUI TurnUI) error
 // goroutine; a wake already pending covers this one, since the scan looks at
 // every tab.
 func (r *managedREPL) wakeTabs() {
-	select {
-	case r.tabEvents <- struct{}{}:
-	default:
-	}
+	nudge(r.tabEvents)
 }
 
 // settleTabs handles what changed on any tab: a turn that returned settles
@@ -156,18 +153,12 @@ func (r *managedREPL) quitSettled() bool {
 }
 
 // cancelTabTurn cancels the turn on tab the way Ctrl-C does on the visible
-// one: the partial output freezes, the context is canceled, and a pending
-// approval is denied. Runs on the event loop with no model lock held.
+// one, without the detach grace. Runs on the event loop with no model lock
+// held.
 func (r *managedREPL) cancelTabTurn(tab *replTab) {
-	m := tab.model
-	m.mu.Lock()
-	if m.busy && !m.canceling {
-		m.canceling = true
-		m.finishAssistantBlock("")
-	}
-	m.denyApprovalLocked()
-	m.mu.Unlock()
-	r.cancelTurn(tab)
+	tab.model.mu.Lock()
+	defer tab.model.mu.Unlock()
+	r.cancelTurnLocked(tab)
 }
 
 // cancelTurns cancels every tab's turn context and denies every pending
@@ -359,20 +350,10 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 	} else if err != nil && m.lastOutcome != turnOutcomeIncomplete {
 		activeToolReason = "failed"
 	}
-	m.turnDock.reasoningIDs = append([]int64(nil), m.turnReasoningIDs...)
-	m.turnDock.toolIDs = append([]int64(nil), m.turnToolDisclosureIDs...)
 	// A partially persisted turn keeps its completed iterations — reasoning
 	// included — so only a turn that saved nothing marks its thinking unsaved.
 	progressSaved := completion.ProgressSaved
-	m.completeThinkingTurn(err != nil && !progressSaved)
-	m.settleActiveTools(activeToolReason)
-	m.activeTools = nil
-	m.activeToolsPhase = -1
-	m.runningTools = 0
-	// Like reasoning, tool activity defaults closed and auto-collapses when the
-	// turn settles. Canceled/failed row details remain one click away.
-	m.completeToolDisclosure()
-	m.collapseTurnToolDisclosures()
+	m.settleTurnActivity(activeToolReason, err != nil && !progressSaved)
 	// Only call out data loss. Persisted progress needs no extra success label.
 	unsavedSuffix := ""
 	if !progressSaved {
@@ -397,18 +378,12 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 	case m.lastOutcome == turnOutcomeCanceled:
 		m.finishAssistantBlock("canceled" + unsavedSuffix)
 		m.labelTurnOutcome("canceled" + unsavedSuffix)
-		m.discardQueuedInputs()
-		if !m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
-			m.appendNoticeLine("Input available with ↑ · current draft preserved")
-		}
+		m.restoreTurnInput(m.currentTurn, m.currentPersistence)
 	default:
 		m.finishAssistantBlock("failed" + unsavedSuffix)
 		m.labelTurnOutcome("failed" + unsavedSuffix)
 		m.appendLine(style.Styled("Error: "+err.Error(), "err", ""))
-		m.discardQueuedInputs()
-		if !m.restoreTurnDraft(m.currentTurn, m.currentPersistence) {
-			m.appendNoticeLine("Input available with ↑ · current draft preserved")
-		}
+		m.restoreTurnInput(m.currentTurn, m.currentPersistence)
 	}
 	m.settleTurnDock()
 	m.attachTurnDockTrailer()
@@ -454,7 +429,42 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 	// A settled turn owns no callbacks. Advance the generation before exposing
 	// the idle prompt so a provider goroutine that emits late cannot reopen the
 	// assistant block or move the status back to streaming.
-	m.turnID++
+	r.detachTurn(tab)
+}
+
+// settleTurnActivity closes a turn's reasoning and tool activity: the dock
+// keeps the turn's record IDs, thinking closes (marked unsaved when nothing
+// persisted), tools still running settle to reason, and the disclosures
+// collapse as they do for every settled turn. Caller must hold m.mu.
+func (m *replModel) settleTurnActivity(reason string, thinkingUnsaved bool) {
+	m.turnDock.reasoningIDs = append([]int64(nil), m.turnReasoningIDs...)
+	m.turnDock.toolIDs = append([]int64(nil), m.turnToolDisclosureIDs...)
+	m.completeThinkingTurn(thinkingUnsaved)
+	m.settleActiveTools(reason)
+	m.activeTools = nil
+	m.activeToolsPhase = -1
+	m.runningTools = 0
+	// Like reasoning, tool activity defaults closed and auto-collapses when the
+	// turn settles. Canceled/failed row details remain one click away.
+	m.completeToolDisclosure()
+	m.collapseTurnToolDisclosures()
+}
+
+// restoreTurnInput drops the queued follow-ups of a turn that did not
+// complete and hands its prompt back to the composer, or says where to find
+// it when a draft is already there. Caller must hold m.mu.
+func (m *replModel) restoreTurnInput(turn managedTurnInput, persistence *turnPersistenceAck) {
+	m.discardQueuedInputs()
+	if !m.restoreTurnDraft(turn, persistence) {
+		m.appendNoticeLine("Input available with ↑ · current draft preserved")
+	}
+}
+
+// detachTurn ends tab's turn generation: the old turn's callbacks are
+// ignored from here, its context is canceled, and the detach deadline
+// clears. Caller must hold tab.model.mu.
+func (r *managedREPL) detachTurn(tab *replTab) {
+	tab.model.turnID++
 	tab.turnDone = nil
 	tab.cancelDetachAt = time.Time{}
 	r.cancelTurn(tab)
@@ -486,10 +496,7 @@ func (r *managedREPL) abandonCanceledTurn(tab *replTab) {
 	if !m.busy || !m.canceling {
 		return
 	}
-	tab.turnDone = nil
-	tab.cancelDetachAt = time.Time{}
-	r.cancelTurn(tab)
-	m.turnID++
+	r.detachTurn(tab)
 	if !m.turnStarted.IsZero() {
 		m.lastElapsed = time.Since(m.turnStarted)
 	}
@@ -504,15 +511,7 @@ func (r *managedREPL) abandonCanceledTurn(tab *replTab) {
 	m.resetAssistantStream()
 	m.turnStarted = time.Time{}
 	m.toolName = ""
-	m.turnDock.reasoningIDs = append([]int64(nil), m.turnReasoningIDs...)
-	m.turnDock.toolIDs = append([]int64(nil), m.turnToolDisclosureIDs...)
-	m.completeThinkingTurn(true)
-	m.settleActiveTools("canceled")
-	m.activeTools = nil
-	m.activeToolsPhase = -1
-	m.runningTools = 0
-	m.completeToolDisclosure()
-	m.collapseTurnToolDisclosures()
+	m.settleTurnActivity("canceled", true)
 	m.denyApprovalLocked()
 	m.state = turnStateIdle
 	m.lastOutcome = turnOutcomeCanceled
@@ -523,10 +522,7 @@ func (r *managedREPL) abandonCanceledTurn(tab *replTab) {
 	m.currentPrompt = ""
 	m.currentTurn = managedTurnInput{}
 	m.currentPersistence = nil
-	m.discardQueuedInputs()
-	if !m.restoreTurnDraft(restored, restoredPersistence) {
-		m.appendNoticeLine("Input available with ↑ · current draft preserved")
-	}
+	m.restoreTurnInput(restored, restoredPersistence)
 	m.appendNoticeLine("Cancellation timed out · turn detached")
 }
 
@@ -570,20 +566,27 @@ func (r *managedREPL) handleInterrupt() bool {
 	return false
 }
 
-// cancelBusyTurn cancels the in-flight turn: freezes the visible partial,
-// cancels the turn context, and denies any pending approval so the turn
-// goroutine isn't parked on the reply channel. Pending input is marked not sent
-// when cancellation settles. Caller must hold m.mu and ensure m.busy &&
-// !m.canceling.
+// cancelBusyTurn cancels the visible tab's in-flight turn and arms the
+// detach grace. Pending input is marked not sent when cancellation settles.
+// Caller must hold m.mu.
 func (r *managedREPL) cancelBusyTurn() {
-	m := r.model
-	m.canceling = true
-	// Freeze the visible partial immediately, but do not label it unsaved until
-	// the turn actually settles as canceled. Completion and cancel can race; a
-	// successful result must never retain a false "not saved" label.
-	m.finishAssistantBlock("")
 	tab := r.visibleTab()
-	r.cancelTurn(tab)
+	r.cancelTurnLocked(tab)
 	r.armCancelDetach(tab)
+}
+
+// cancelTurnLocked cancels tab's turn: freezes the partial output, cancels
+// the turn context, and denies any pending approval so the turn goroutine
+// isn't parked on the reply channel. Caller must hold tab.model.mu.
+func (r *managedREPL) cancelTurnLocked(tab *replTab) {
+	m := tab.model
+	if m.busy && !m.canceling {
+		m.canceling = true
+		// Freeze the visible partial immediately, but do not label it unsaved
+		// until the turn actually settles as canceled. Completion and cancel can
+		// race; a successful result must never retain a false "not saved" label.
+		m.finishAssistantBlock("")
+	}
+	r.cancelTurn(tab)
 	m.denyApprovalLocked()
 }

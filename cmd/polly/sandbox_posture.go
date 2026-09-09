@@ -287,3 +287,9 @@ func isTempWritablePath(path string) bool {
 	}
 	return false
 }
+
+// sandboxNoticeLine reports exceptional sandbox posture at REPL startup.
+// An active sandbox with no issues needs no notice.
+func sandboxNoticeLine(config *Config, state *conversationState) string {
+	return currentSandboxPosture(config, state).noticeString()
+}

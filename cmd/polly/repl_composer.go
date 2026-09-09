@@ -794,3 +794,30 @@ func printableRune(e ui.Event) (rune, bool) {
 	}
 	return runes[0], true
 }
+
+// prepareManagedTurnLocked resolves every attachment, externalizes prepared
+// bytes when possible, and validates only this immutable queued turn. Earlier
+// images are selected later by llm.Agent's model projection.
+// Caller must hold r.model.mu.
+func (r *managedREPL) prepareManagedTurnLocked(prompt string) (managedTurnInput, error) {
+	attachments, err := r.model.promptAttachments(prompt)
+	if err != nil {
+		return managedTurnInput{}, fmt.Errorf("error processing attachments: %w", err)
+	}
+	userMessage, err := buildREPLUserMessage(prompt, attachments)
+	if err != nil {
+		return managedTurnInput{}, fmt.Errorf("error processing attachments: %w", err)
+	}
+	if r.state != nil {
+		userMessage, err = externalizeMessageImages(r.state.session.Context(), userMessage, r.state.artifactStore)
+		if err != nil {
+			return managedTurnInput{}, fmt.Errorf("persist attachment: %w", err)
+		}
+	}
+	r.model.rememberArtifactAttachments(userMessage)
+	turn := cloneManagedTurn(managedTurnInput{displayText: prompt, userMessage: userMessage})
+	if err := messages.ValidateImageMessage(turn.userMessage); err != nil {
+		return managedTurnInput{}, err
+	}
+	return turn, nil
+}

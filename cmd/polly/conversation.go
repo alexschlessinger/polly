@@ -235,7 +235,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 			return
 		}
 		if toolRegistry != nil {
-			_ = toolRegistry.Close()
+			retErr = closeAfterError(toolRegistry, "tool registry", retErr)
 		}
 		retErr = closeAfterError(session, "session", retErr)
 	}()

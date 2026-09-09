@@ -174,10 +174,7 @@ func (w *broadWritablePathWarner) emit(path, body string) {
 	}
 	w.seen[path] = true
 	w.pending = append(w.pending, body)
-	select {
-	case w.notify <- struct{}{}:
-	default:
-	}
+	nudge(w.notify)
 }
 
 func canonicalWarningPath(path string) string {

@@ -50,12 +50,21 @@ func completeToolsCommand(ctx *replCommandContext, fields []string, prefix strin
 	return nil
 }
 
+// tools is the conversation's loaded registry, or nil outside one.
+func (ctx *replCommandContext) tools() *tools.ToolRegistry {
+	if ctx == nil || ctx.state == nil {
+		return nil
+	}
+	return ctx.state.effectiveTools()
+}
+
 func loadedToolNames(ctx *replCommandContext) []string {
-	if ctx == nil || ctx.state == nil || ctx.state.effectiveTools() == nil {
+	reg := ctx.tools()
+	if reg == nil {
 		return nil
 	}
 	var names []string
-	for _, t := range ctx.state.effectiveTools().All() {
+	for _, t := range reg.All() {
 		names = append(names, t.GetName())
 	}
 	return names
@@ -75,8 +84,8 @@ func loadedToolNamespaces(ctx *replCommandContext) []string {
 
 func replListTools(ctx *replCommandContext, namespace string) replCommandResult {
 	var all []tools.Tool
-	if ctx != nil && ctx.state != nil && ctx.state.effectiveTools() != nil {
-		all = ctx.state.effectiveTools().All()
+	if reg := ctx.tools(); reg != nil {
+		all = reg.All()
 	}
 	if len(all) == 0 {
 		return replCommandResult{err: ctx.replyLine("no tools loaded")}
@@ -104,10 +113,11 @@ func replListTools(ctx *replCommandContext, namespace string) replCommandResult 
 }
 
 func replShowTool(ctx *replCommandContext, name string) replCommandResult {
-	if ctx == nil || ctx.state == nil || ctx.state.effectiveTools() == nil {
+	reg := ctx.tools()
+	if reg == nil {
 		return replCommandResult{err: ctx.replyLine("tool not found: " + name)}
 	}
-	tool, ok := ctx.state.effectiveTools().Get(name)
+	tool, ok := reg.Get(name)
 	if !ok {
 		return replCommandResult{err: ctx.replyLine("tool not found: " + name)}
 	}

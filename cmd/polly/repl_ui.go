@@ -2,16 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"image"
 	"os"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
-	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
-	"golang.org/x/term"
 )
 
 type managedREPL struct {
@@ -154,39 +151,6 @@ func (r *managedREPL) currentModel() string {
 	return ""
 }
 
-// prepareManagedTurnLocked resolves every attachment, externalizes prepared
-// bytes when possible, and validates only this immutable queued turn. Earlier
-// images are selected later by llm.Agent's model projection.
-// Caller must hold r.model.mu.
-func (r *managedREPL) prepareManagedTurnLocked(prompt string) (managedTurnInput, error) {
-	attachments, err := r.model.promptAttachments(prompt)
-	if err != nil {
-		return managedTurnInput{}, fmt.Errorf("error processing attachments: %w", err)
-	}
-	userMessage, err := buildREPLUserMessage(prompt, attachments)
-	if err != nil {
-		return managedTurnInput{}, fmt.Errorf("error processing attachments: %w", err)
-	}
-	if r.state != nil {
-		userMessage, err = externalizeMessageImages(r.state.session.Context(), userMessage, r.state.artifactStore)
-		if err != nil {
-			return managedTurnInput{}, fmt.Errorf("persist attachment: %w", err)
-		}
-	}
-	r.model.rememberArtifactAttachments(userMessage)
-	turn := cloneManagedTurn(managedTurnInput{displayText: prompt, userMessage: userMessage})
-	if err := messages.ValidateImageMessage(turn.userMessage); err != nil {
-		return managedTurnInput{}, err
-	}
-	return turn, nil
-}
-
-// sandboxNoticeLine reports exceptional sandbox posture at REPL startup.
-// An active sandbox with no issues needs no notice.
-func sandboxNoticeLine(config *Config, state *conversationState) string {
-	return currentSandboxPosture(config, state).noticeString()
-}
-
 func newManagedREPL(config *Config, contextName string, toolCount, skillCount int) *managedREPL {
 	m := newReplModel()
 	if contextName == "" {
@@ -221,7 +185,7 @@ func supportsManagedREPL() bool {
 	if os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !terminalFD(int(os.Stdin.Fd())) || !terminalFD(int(os.Stdout.Fd())) {
 		return false
 	}
 	return true
