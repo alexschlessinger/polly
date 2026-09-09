@@ -46,6 +46,9 @@ type Step struct {
 }
 
 type Report struct {
+	// CallID identifies the host tool call that launched this workflow, when
+	// available. It is display provenance and grants no execution authority.
+	CallID string `json:"callID,omitempty"`
 	// Run and Acknowledged are optional coordinator bookkeeping. A recorder
 	// preserves them across the runner's successive checkpoint writes.
 	Run          string    `json:"run,omitempty"`

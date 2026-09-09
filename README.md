@@ -182,6 +182,12 @@ other callers cannot continue those sessions concurrently. Read-only versus edit
 blocking versus background, and new versus continued sessions are independent
 choices. An ordinary parent turn can also work alone without starting members.
 
+All members appear in the parent's inline **Agents** disclosures, including typed
+`/spawn` and workflow launches. Workflow members are grouped under their workflow;
+rows show live status and token usage, and open the same conversation inspector.
+These rows are restored from saved swarm state even without a `spawn_agent` call
+in the parent's history. Waiting and resuming do not create duplicate member rows.
+
 Children inherit the parent's configured `--maxiterations` limit (default 1024
 model calls). `spawn_agent` and JavaScript `polly.agent` cannot override it;
 `max_iterations` / `maxIterations` arguments are rejected. This is a ceiling,

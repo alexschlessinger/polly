@@ -69,6 +69,12 @@ func toolSectionKey(r *toolDisclosureRecord) string {
 	if len(r.rows) == 0 {
 		return ""
 	}
+	if row := r.rows[0]; row.isProjectedAgent() {
+		if row.agent.workflowID != "" {
+			return "swarm:workflow:" + row.agent.workflowID
+		}
+		return "swarm:member:" + row.agent.viewID
+	}
 	return r.rows[0].inspectionKey
 }
 

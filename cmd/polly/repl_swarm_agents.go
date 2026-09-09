@@ -58,6 +58,15 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 		}
 	}
 	for _, record := range m.toolDisclosures {
+		for i := range record.rows {
+			row := &record.rows[i]
+			if row.agent != nil && row.agent.viewID == "" && counts[row.callID] == 1 && len(byCall[row.callID]) == 1 {
+				row.agent.viewID = byCall[row.callID][0]
+			}
+		}
+	}
+	m.projectSwarmAgents(s)
+	for _, record := range m.toolDisclosures {
 		changed := false
 		for i := range record.rows {
 			row := &record.rows[i]
@@ -66,14 +75,18 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 				continue
 			}
 			id := a.viewID
-			if id == "" && counts[row.callID] == 1 && len(byCall[row.callID]) == 1 {
-				id = byCall[row.callID][0]
-			}
 			member := s.Members[id]
 			if member == nil {
 				continue
 			}
 			status, active := swarmMemberActivity(s, member)
+			if m.memberNeedsApproval(member.ID) {
+				status = "approval needed"
+			}
+			label := a.label
+			if row.isProjectedAgent() {
+				label = sanitizeTranscriptImageText(spawnLabel(member.Label, member.Name))
+			}
 			in, out := 0, 0
 			if execution := s.Executions[member.Execution]; execution != nil {
 				if execution.Usage.InputTokens != nil {
@@ -83,13 +96,13 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 					out = *execution.Usage.OutputTokens
 				}
 			}
-			if a.viewID != id || a.session != member.Name || a.status != status || a.active != active || !a.attached || a.inputTokens != in || a.outputTokens != out {
+			if a.label != label || a.session != member.Name || a.status != status || a.active != active || !a.attached || a.inputTokens != in || a.outputTokens != out {
 				task := s.Tasks[member.Task]
 				awaitingReview := member.Status == "idle" && task != nil && task.Status == "awaiting_review"
 				if a.active && !active && (status == "done" || awaitingReview) {
 					m.noteAgentCompletion(record.id)
 				}
-				a.viewID, a.session, a.status = id, member.Name, status
+				a.label, a.viewID, a.session, a.status = label, id, member.Name, status
 				a.active, a.attached = active, true
 				a.inputTokens, a.outputTokens = in, out
 				changed = true
@@ -99,6 +112,18 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 			m.refreshAgentRecord(record)
 		}
 	}
+}
+
+func (m *replModel) memberNeedsApproval(id string) bool {
+	if m.approval != nil && m.approval.requester == id {
+		return true
+	}
+	for _, a := range m.approvalQueue {
+		if a.requester == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Never read SQLite on the paint path. Poll at most twice a second while a
@@ -138,7 +163,7 @@ func (r *managedREPL) refreshSwarmActivities() {
 	}
 }
 
-// Typed launches have no inline tool row. Their completion is a display notice,
+// Typed launches also retain a concise completion notice. This is display-only,
 // never another parent input or a second owner of the member's execution.
 func (r *managedREPL) announceSwarmCompletions(tab *replTab, s *swarm.State) {
 	for id, previous := range tab.swarmAnnounced {
