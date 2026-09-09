@@ -97,7 +97,7 @@ func TestListContextsNestsAgentsUnlessFlat(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if strings.Contains(flat, "↳") || !strings.Contains(flat, "\ndelta (spawned by gamma) - ") {
+	if strings.Contains(flat, "↳") || !strings.Contains(flat, "\ndelta · count files (spawned by gamma) - ") {
 		t.Fatalf("flat list = %q, want one plain line per session naming the agent's parent", flat)
 	}
 }

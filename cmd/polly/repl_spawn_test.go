@@ -61,8 +61,8 @@ func TestSpawnCommandUsesSwarmAuthorityAndCurrentSettings(t *testing.T) {
 			t.Fatal("outside-Git research allocated a checkout")
 		}
 		notice := plainStyledText(parent.model.fullTranscript())
-		if !strings.Contains(notice, m.ID) || !strings.Contains(notice, "/sessions") {
-			t.Fatalf("missing stable inspection hint: %s", notice)
+		if !strings.Contains(notice, "Agent "+m.Name+" started") || strings.Contains(notice, m.ID) || !strings.Contains(notice, "/sessions") {
+			t.Fatalf("missing human session handle: %s", notice)
 		}
 		if text := swarmInspectorText(s, "members"); strings.Contains(text, "unknown") || !strings.Contains(text, "awaiting review") {
 			t.Fatalf("member status: %s", text)
@@ -247,5 +247,75 @@ func TestSpawnCommandEditingRequiresGitAndEmptyBriefIsRefused(t *testing.T) {
 	s := waitSwarmIdle(t, r.state.swarm)
 	if len(s.Members) != 0 {
 		t.Fatal("non-Git editing member created")
+	}
+}
+
+func TestTypedSpawnSeedsTitleAndUsesSessionHandle(t *testing.T) {
+	const brief = "Review the portable session picker"
+	started, finish := make(chan struct{}), make(chan struct{})
+	r := newTitleSwarm(t, integrationModel(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
+		close(started)
+		select {
+		case <-finish:
+		case <-ctx.Done():
+		}
+		return spawnTestReply("reviewed")
+	}), nil)
+	r.runTabCommand("/spawn --read-only " + brief)
+	runUITask(t, r)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("typed member did not start")
+	}
+	s, err := r.state.swarm.State(context.Background())
+	if err != nil || len(s.Members) != 1 {
+		t.Fatalf("typed member state: %+v %v", s, err)
+	}
+	var id string
+	for key, member := range s.Members {
+		id = key
+		if member.Label != brief {
+			t.Fatalf("typed brief omitted from member: %+v", member)
+		}
+	}
+	view, err := r.state.sessionStore.(sessions.ViewStore).ReadView(context.Background(), sessions.ViewTarget{ID: id}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := view.Metadata
+	if md.Title != brief || md.Description != brief || md.TitleSource != sessions.TitleSourceAgent || md.Name == id {
+		t.Fatalf("typed title seed: %+v", md)
+	}
+	var notice string
+	var item replModalItem
+	var tracked bool
+	func() {
+		r.model.mu.Lock()
+		defer r.model.mu.Unlock()
+		r.model.renderPendingMarkdown()
+		notice = plainStyledText(r.model.fullTranscript())
+		_, tracked = r.visibleTab().swarmAnnounced[id]
+		r.openSessionsPickerSelected(id)
+		item = pickerItem(t, r.model.modal, id)
+	}()
+	if !strings.Contains(notice, "Agent "+md.Name+" started") || strings.Contains(notice, id) {
+		t.Fatalf("launch notice did not use picker handle: %q", notice)
+	}
+	if !tracked {
+		t.Fatal("completion tracking lost stable member ID")
+	}
+	if item.value != md.Name || !strings.Contains(item.searchText, brief) || !strings.Contains(item.label, md.Name) {
+		t.Fatalf("typed picker identity: %+v", item)
+	}
+	close(finish)
+	waitSwarmIdle(t, r.state.swarm)
+	refreshPickerSwarm(t, r)
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	r.model.renderPendingMarkdown()
+	notice = plainStyledText(r.model.fullTranscript())
+	if strings.Count(notice, md.Name+" · awaiting review") != 1 {
+		t.Fatalf("completion did not match launch handle: %q", notice)
 	}
 }

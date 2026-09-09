@@ -250,7 +250,7 @@ func (r *managedREPL) applySpawnRequests() {
 		if r.tabIndexOfModel(parent.model) < 0 || parent.state == nil || parent.state.swarm == nil {
 			continue
 		}
-		runtime := parent.state.swarm
+		runtime, store := parent.state.swarm, parent.state.sessionStore
 		probe := parent.state.sandboxProbe
 		parent.model.mu.Lock()
 		settings := parent.state.settings.clone()
@@ -265,6 +265,19 @@ func (r *managedREPL) applySpawnRequests() {
 			if err == nil {
 				res, err = runtime.Spawn(r.work.ctx, sr.req)
 			}
+			// Spawn returns the stable member ID. Resolve the display handle off
+			// the event loop without acquiring the member's execution lease.
+			name := ""
+			if err == nil {
+				if summaries, listErr := store.ListSummaries(r.work.ctx); listErr == nil {
+					for _, summary := range summaries {
+						if summary.ID == res.Session && summary.Metadata != nil {
+							name = summary.Metadata.Name
+							break
+						}
+					}
+				}
+			}
 			r.postUI(r.work.ctx, func() {
 				if r.tabIndexOfModel(parent.model) < 0 || parent.state.swarm != runtime {
 					return
@@ -275,7 +288,15 @@ func (r *managedREPL) applySpawnRequests() {
 					parent.model.appendErrorLine("could not spawn an agent: " + err.Error())
 				} else {
 					parent.swarmActive = true
-					parent.model.appendNoticeLine("Agent " + res.Session + " started · /sessions to inspect · /swarm to coordinate")
+					if parent.swarmAnnounced == nil {
+						parent.swarmAnnounced = make(map[string]string)
+					}
+					parent.swarmAnnounced[res.Session] = ""
+					notice := "Agent started"
+					if name != "" {
+						notice = "Agent " + name + " started"
+					}
+					parent.model.appendNoticeLine(notice + " · /sessions to inspect · /swarm to coordinate")
 				}
 			})
 		})

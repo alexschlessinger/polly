@@ -112,6 +112,7 @@ func (r *managedREPL) refreshSwarmActivities() {
 				if err != nil || !slices.Contains(r.tabs, tab) || tab.viewID() != id || tab.state == nil || tab.state.swarm != runtime {
 					return
 				}
+				tab.swarmSnapshot = s
 				tab.swarmActive = false
 				for _, member := range s.Members {
 					_, active := swarmMemberActivity(s, member)
@@ -119,10 +120,33 @@ func (r *managedREPL) refreshSwarmActivities() {
 				}
 				tab.model.mu.Lock()
 				tab.model.hydrateSwarmAgents(s)
+				r.announceSwarmCompletions(tab, s)
 				tab.model.mu.Unlock()
 			})
 		}) {
 			tab.swarmLoading = false
 		}
+	}
+}
+
+// Typed launches have no inline tool row. Their completion is a display notice,
+// never another parent input or a second owner of the member's execution.
+func (r *managedREPL) announceSwarmCompletions(tab *replTab, s *swarm.State) {
+	for id, previous := range tab.swarmAnnounced {
+		member := s.Members[id]
+		if member == nil {
+			continue
+		}
+		status, active := swarmMemberActivity(s, member)
+		e := s.Executions[member.Execution]
+		if active || e == nil {
+			continue
+		}
+		key := fmt.Sprintf("%s:%d:%s", e.ID, e.Generation, e.Status)
+		if previous == key {
+			continue
+		}
+		tab.swarmAnnounced[id] = key
+		tab.model.appendNoticeLine(member.Name + " · " + status)
 	}
 }

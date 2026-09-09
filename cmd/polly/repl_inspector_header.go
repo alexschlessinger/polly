@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -95,12 +96,20 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	b.newline()
 	root := r.visibleTab()
 	isRoot := r.targetsVisibleTab(i.target)
-	name := i.target.session.Name
+	name, detail := i.target.session.Name, ""
 	if i.current != nil && i.current.info != nil && i.current.info.Metadata != nil {
 		metadata := i.current.info.Metadata
-		name = metadata.Name
-		if title := strings.Join(strings.Fields(metadata.Description), " "); !isRoot && title != "" {
-			name = title
+		name = sessions.DisplayLabel(metadata)
+		if !isRoot {
+			if name != metadata.Name {
+				detail = metadata.Name
+			}
+			if brief := strings.Join(strings.Fields(metadata.Description), " "); brief != "" && brief != name {
+				if detail != "" {
+					detail += " · "
+				}
+				detail += brief
+			}
 		}
 	}
 	if name == "" {
@@ -139,6 +148,9 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		b.write(rw.Truncate(itemName, titleWidth, "…"), "accent", "bold", "parent")
 	} else {
 		b.write(rw.Truncate(name, titleWidth, "…"), "accent", "bold", "parent")
+		if room := titleWidth - rw.StringWidth(name) - 3; detail != "" && room >= 8 {
+			b.write(" · "+rw.Truncate(detail, room, "…"), "muted", "", "parent")
+		}
 	}
 
 	// The second row carries the item's state and its actions; it exists
@@ -180,24 +192,53 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			}
 		}
 	} else if i.target.kind == conversationViewKind && !isRoot {
-		if r.inspectedSwarm(i.target) != nil {
+		if runtime := r.inspectedSwarm(i.target); runtime != nil {
+			r.model.mu.Lock()
+			status, active, _ := r.swarmListing(i.target.session.ID, runtime.ID)
+			r.model.mu.Unlock()
 			b.newline()
-			b.link("Stop agent", "stop", true, false)
+			if status != "" {
+				b.item(status, "muted", "", "")
+			}
+			if active {
+				sep()
+				b.link("Stop agent", "stop", true, false)
+			}
 			sep()
 			b.link("Send request", "message", true, false)
-		} else if tab := r.inspectionTab(i.target); tab != nil && tab != root {
-			m := tab.model
-			m.mu.Lock()
-			busy, canceling, approval := m.busy, m.canceling, m.approval != nil
-			m.mu.Unlock()
-			if busy || approval {
-				b.newline()
+			if status == "approval needed" {
+				sep()
+				b.link("Review approval", "review", true, true)
 			}
+		} else {
+			busy, canceling, approval := false, false, false
+			outcome, elapsed := turnOutcomeNone, time.Duration(0)
+			if tab := r.inspectionTab(i.target); tab != nil && tab != root {
+				m := tab.model
+				m.mu.Lock()
+				busy, canceling, approval = m.busy, m.canceling, m.approval != nil
+				outcome, elapsed = m.lastOutcome, m.lastElapsed
+				m.mu.Unlock()
+			} else if i.current != nil && i.current.model != nil {
+				outcome, elapsed = i.current.model.lastOutcome, i.current.model.lastElapsed
+			}
+			status := ""
 			switch {
 			case approval:
-				b.item("approval needed", "muted", "", "")
+				status = "approval needed"
 			case busy:
-				b.item("running", "muted", "", "")
+				status = "running"
+			case outcome != turnOutcomeNone:
+				status = turnOutcomeLabel(outcome)
+				if elapsed > 0 && outcome != turnOutcomeCanceled {
+					status += " · " + formatElapsed(elapsed)
+				}
+			case i.current != nil && i.current.info != nil && i.current.info.Metadata != nil && i.current.info.Metadata.SpawnOutcome != "":
+				status = spawnOutcomeStatus(i.current.info.Metadata.SpawnOutcome)
+			}
+			if status != "" {
+				b.newline()
+				b.item(status, "muted", "", "")
 			}
 			if busy {
 				sep()

@@ -535,6 +535,13 @@ creates one parent's runtime. `Parent` must implement
 runtime before the parent session and registry. Disk storage is required for
 cross-process recovery; the CLI supplies an automatic `Promote` callback.
 
+Hosts with session-scoped tools can declare `MemberToolNames` and supply
+`PrepareMember(ctx, session, registry)`. It runs on each execution slice with the
+member's current lease; a nil registry means tools are disabled. Bind tools to
+that session rather than capturing a parent session. Returned guidance is
+request-only, omitted for structured output, and never enters saved history.
+The CLI uses this hook to seed and edit child titles without changing handles.
+
 Call `runtime.RegisterParentTools(registry)` and `runtime.BindParent(callbacks,
 persistenceAllowed)` when running a parent model. `BindParent` adds safe mail
 admission, progressive persistence, interrupted-tool journaling, and settlement.
@@ -670,6 +677,24 @@ err = session.Reset(sessionCtx, metadata)
 - `ListSummaries` includes stable `ID` and `ParentID` alongside metadata,
   message count, and lease status. Family pickers can resolve ancestry without
   loading transcripts; `ParentID` is empty when the parent has been deleted.
+- `Metadata.Title` is a descriptive label independent of the `Name` resume
+  handle. `TitleSource` is `sessions.TitleSourceAgent` or `TitleSourceUser`;
+  an absent title has no source. Existing sessions need no migration or
+  backfill. A nonempty title with an unknown/missing source is user-owned.
+- SQLite sessions implement the optional `sessions.TitleSession` capability:
+  `SetTitle(ctx, title, source) (string, error)` returns the normalized title.
+  It collapses whitespace, rejects control characters and empty titles, and
+  allows up to 80 Unicode characters. Duplicate titles are allowed.
+  Agent writes cannot replace user titles (`sessions.ErrTitleProtected`);
+  invalid text/source returns `sessions.ErrInvalidTitle`. Manual writes claim
+  ownership even when the title text is unchanged. Both require the lease and
+  leave the handle, retention, TTL, and last-used time unchanged.
+- `SetMetadata`, `Clear`, and `Reset` preserve the current title and ownership;
+  use `TitleSession.SetTitle` to change them. `Rename` still changes the handle
+  and its retention policy independently. `sessions.DisplayLabel(metadata)`
+  chooses the title, then a child's task description, then the handle.
+  The CLI registers `set_session_title` on each conversation's own runtime;
+  the generic library agent does not inject naming policy or register it.
 - `SQLiteStore.ReadView(ctx, sessions.ViewTarget{Name: name}, knownRevision)`
   reads a consistent snapshot without acquiring a lease or updating last-used
   time. Its `SessionView` includes stable `ID`, `ParentID`, `Revision`, metadata, history,

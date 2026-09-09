@@ -150,8 +150,8 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 	if got := modalWidthForTerminal(140, r.model.modal.width); got != 64 {
 		t.Fatalf("rendered modal width = %d, want 64", got)
 	}
-	if footer := plainStyledText(r.model.modal.text(40, 64)); !strings.Contains(footer, "F2 rename") {
-		t.Fatalf("resume modal lacks rename affordance: %q", footer)
+	if footer := plainStyledText(r.model.modal.text(40, 64)); !strings.Contains(footer, "F2 edit title") {
+		t.Fatalf("resume modal lacks title affordance: %q", footer)
 	}
 	for _, item := range r.model.modal.items {
 		if strings.Contains(item.label, "openai/") {
@@ -235,7 +235,7 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 	}
 }
 
-func TestResumePickerRenamesSavedAndCurrentSessions(t *testing.T) {
+func TestResumePickerTitlesSavedAndCurrentSessions(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	saved := testAcquireSession(t, store, "saved-work")
 	if err := saved.Close(); err != nil {
@@ -243,7 +243,9 @@ func TestResumePickerRenamesSavedAndCurrentSessions(t *testing.T) {
 	}
 	current := testAcquireSession(t, store, "current-work")
 	r := newManagedREPL(&Config{}, "current-work", 0, 0)
-	r.state = &conversationState{sessionStore: store, session: current}
+	if err := r.addTab(&conversationState{sessionStore: store, session: current}); err != nil {
+		t.Fatal(err)
+	}
 
 	r.openSessionsPicker()
 	for i, item := range r.model.modal.items {
@@ -252,19 +254,23 @@ func TestResumePickerRenamesSavedAndCurrentSessions(t *testing.T) {
 		}
 	}
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<F2>"})
-	if r.model.modal == nil || r.model.modal.title != "Rename session" || r.model.modal.input.text() != "saved-work" {
+	if r.model.modal == nil || r.model.modal.title != "Edit title" || r.model.modal.input.text() != "saved-work" {
 		t.Fatalf("saved rename modal = %#v", r.model.modal)
 	}
 	r.model.modal.input.setText("renamed-work")
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if exists, err := store.Exists(context.Background(), "renamed-work"); err != nil || !exists {
+	if exists, err := store.Exists(context.Background(), "renamed-work"); err != nil || exists {
 		t.Fatalf("renamed saved session exists=%v, err=%v", exists, err)
 	}
-	if exists, err := store.Exists(context.Background(), "saved-work"); err != nil || exists {
+	if exists, err := store.Exists(context.Background(), "saved-work"); err != nil || !exists {
 		t.Fatalf("old saved session exists=%v, err=%v", exists, err)
 	}
-	if r.model.modal == nil || r.model.modal.items[r.model.modal.selected].value != "renamed-work" {
+	if r.model.modal == nil || r.model.modal.items[r.model.modal.selected].value != "saved-work" {
 		t.Fatalf("picker did not retain renamed selection: %#v", r.model.modal)
+	}
+	metadata, err := store.GetAllMetadata(context.Background())
+	if err != nil || metadata["saved-work"].Title != "renamed-work" || metadata["saved-work"].TitleSource != sessions.TitleSourceUser {
+		t.Fatalf("saved title metadata = %+v, %v", metadata, err)
 	}
 
 	for i, item := range r.model.modal.items {
@@ -275,10 +281,10 @@ func TestResumePickerRenamesSavedAndCurrentSessions(t *testing.T) {
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<F2>"})
 	r.model.modal.input.setText("renamed-current")
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	if got := r.model.status.contextName; got != "renamed-current" {
+	if got := r.model.status.displayLabel(); got != "renamed-current" {
 		t.Fatalf("status session after rename = %q", got)
 	}
-	if got, err := current.GetName(context.Background()); err != nil || got != "renamed-current" {
+	if got, err := current.GetName(context.Background()); err != nil || got != "current-work" {
 		t.Fatalf("current session after rename = %q, %v", got, err)
 	}
 	select {
@@ -387,7 +393,7 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 
 	r.openSessionsPicker()
 	m := r.model.modal
-	if m == nil || m.width != 72 {
+	if m == nil || m.width != sessionsPickerNestedWidth {
 		t.Fatalf("picker with agents = %#v, want the wider modal", m)
 	}
 	if got := strings.Join(values(), " "); got != "current-work gamma" {
@@ -410,7 +416,7 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 		t.Fatalf("expanding moved the selection to %q", selectedValue())
 	}
 	items := m.filteredItems()
-	if !strings.HasPrefix(items[2].label, "↳ count files") || items[2].parent != "gamma" {
+	if !strings.HasPrefix(items[2].label, "↳ count files") || items[2].parent != "gamma" || !strings.Contains(items[2].searchText, "count files") {
 		t.Fatalf("agent row = %#v, want it named by its label under gamma", items[2])
 	}
 	if !strings.HasPrefix(items[3].label, "↳ epsilon") {
@@ -478,7 +484,11 @@ func TestSessionsPickerListsOpenWorkspacesFirstWithAgents(t *testing.T) {
 	root := r.tabs[0]
 	// Live agent tabs report to root without holding the screen.
 	for _, name := range []string{"idle-agent", "waiting-agent"} {
-		r.tabs = append(r.tabs, &replTab{name: name, parent: root, parentName: root.name, model: newReplModel()})
+		info, err := store.(sessions.ViewStore).ReadView(ctx, sessions.ViewTarget{Name: name}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.tabs = append(r.tabs, &replTab{name: name, viewTarget: sessions.ViewTarget{ID: info.ID}, parent: root, parentName: root.name, model: newReplModel()})
 	}
 	r.showTab(0)
 	r.tabs[1].model.busy = true
@@ -501,9 +511,9 @@ func TestSessionsPickerListsOpenWorkspacesFirstWithAgents(t *testing.T) {
 		labels[item.value] = item.label
 	}
 	for value, want := range map[string]string{
-		"root":          "current · 1 need approval",
+		"root":          "current",
 		"second":        "workspace 2 · streaming",
-		"waiting-agent": "active agent · approval needed",
+		"waiting-agent": "approval needed",
 	} {
 		if !strings.HasSuffix(labels[value], want) {
 			t.Fatalf("%s row = %q, want suffix %q", value, labels[value], want)

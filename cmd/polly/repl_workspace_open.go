@@ -16,7 +16,11 @@ type workspaceEntry struct {
 // Follow stored parent identities, never a last-known display name. Missing
 // ancestors leave the highest surviving conversation as a standalone root.
 func resolveWorkspaceEntry(ctx context.Context, store sessions.ViewStore, name string) (*workspaceEntry, error) {
-	selected, err := store.ReadView(ctx, sessions.ViewTarget{Name: name}, "")
+	return resolveWorkspaceTarget(ctx, store, sessions.ViewTarget{Name: name})
+}
+
+func resolveWorkspaceTarget(ctx context.Context, store sessions.ViewStore, target sessions.ViewTarget) (*workspaceEntry, error) {
+	selected, err := store.ReadView(ctx, target, "")
 	if err != nil {
 		return nil, err
 	}
@@ -45,6 +49,11 @@ func resolveWorkspaceEntry(ctx context.Context, store sessions.ViewStore, name s
 }
 
 func (r *managedREPL) beginWorkspaceOpen(name string) bool {
+	return r.beginWorkspaceTarget(sessions.ViewTarget{Name: name})
+}
+
+func (r *managedREPL) beginWorkspaceTarget(target sessions.ViewTarget) bool {
+	name := target.Name
 	if r.state == nil || r.opener == nil {
 		return false
 	}
@@ -65,7 +74,7 @@ func (r *managedREPL) beginWorkspaceOpen(name string) bool {
 		local[tab.viewID()] = true
 	}
 	go func() {
-		e, err := resolveWorkspaceEntry(ctx, store, name)
+		e, err := resolveWorkspaceTarget(ctx, store, target)
 		res := openResult{name: name, err: err, workspaceEntry: e}
 		if err == nil {
 			res.name = e.root.Metadata.Name

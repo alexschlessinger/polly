@@ -72,6 +72,7 @@ type replCommandContext struct {
 	attachImage func(path string) (string, error)
 	// setContextName updates the UI's displayed context name after /rename.
 	setContextName func(name string)
+	titleChanged   func()
 	// Picker callbacks are managed-TUI operations. Keeping
 	// them out of command parsing lets the fallback REPL retain textual /set.
 	openModelPicker    func()
@@ -171,6 +172,9 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		usage:   "/rename <name>",
 		summary: "rename the current context",
 		run:     replRenameCommand,
+	})
+	r.register(replCommand{
+		name: "/title", usage: "/title <text>", summary: "edit the current session title", run: replTitleCommand,
 	})
 	r.register(replCommand{
 		name:     "/sessions",
@@ -512,6 +516,9 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 				r.tabs[i].name = name
 			}
 		},
+		titleChanged: func() {
+			r.refreshSessionTitle(r.visibleTab().viewID(), r.model)
+		},
 		resetConversation: func() error {
 			if r.state == nil || r.state.session == nil {
 				return fmt.Errorf("no active session")
@@ -834,6 +841,26 @@ func replRenameCommand(ctx *replCommandContext, args []string) replCommandResult
 	return replCommandResult{err: ctx.replyLine(fmt.Sprintf("renamed context '%s' to '%s'", oldName, newName))}
 }
 
+func replTitleCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) < 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /title <text>")}
+	}
+	if ctx.state == nil || ctx.state.session == nil {
+		return replCommandResult{err: ctx.replyLine("no active session")}
+	}
+	setter, ok := ctx.state.session.(sessions.TitleSession)
+	if !ok {
+		return replCommandResult{err: ctx.replyLine("session titles are unavailable")}
+	}
+	if _, err := setter.SetTitle(ctx.operationContext(), strings.Join(args[1:], " "), sessions.TitleSourceUser); err != nil {
+		return replCommandResult{err: ctx.replyLine("title update failed: " + err.Error())}
+	}
+	if ctx.titleChanged != nil {
+		ctx.titleChanged()
+	}
+	return replCommandResult{}
+}
+
 func replResetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if len(args) != 2 || args[1] != "confirm" {
 		return replCommandResult{err: ctx.replyLine("reset clears durable conversation history; run /reset confirm")}
@@ -915,7 +942,7 @@ func replSpawnCommand(ctx *replCommandContext, args []string) replCommandResult 
 	if ctx == nil || ctx.spawnAgent == nil {
 		return replCommandResult{err: ctx.replyLine("agents are available only in the managed TUI")}
 	}
-	ctx.spawnAgent(subagent.Request{Task: brief, ReadOnly: readOnly})
+	ctx.spawnAgent(subagent.Request{Task: brief, Label: brief, ReadOnly: readOnly})
 	return replCommandResult{}
 }
 
@@ -931,6 +958,13 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
 	}
 	lines := []string{"context: " + name}
+	md, err := s.GetMetadata(opCtx)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+	}
+	if label := sessions.DisplayLabel(md); label != name {
+		lines = append(lines, "title: "+label)
+	}
 	if settings.Model != "" {
 		lines = append(lines, "model: "+stripProviderPrefix(settings.Model))
 	}

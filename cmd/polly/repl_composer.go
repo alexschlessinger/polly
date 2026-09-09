@@ -169,8 +169,13 @@ func (h *promptHistory) searchDisplay() string {
 // handleApprovalAnswer applies one answer to the pending approval batch.
 // Returns true when the batch is complete and the reply was sent.
 func (m *replModel) handleApprovalAnswer(answer byte) bool {
-	a := m.approval
-	if a == nil {
+	return m.answerApprovalRequest(m.approval, answer)
+}
+
+// The inspector may answer a queued member directly; its captured request
+// must still belong to this model when the user submits the dialog.
+func (m *replModel) answerApprovalRequest(a *approvalState, answer byte) bool {
+	if !m.hasApprovalRequest(a) {
 		return false
 	}
 	if a.out == nil {
@@ -181,7 +186,7 @@ func (m *replModel) handleApprovalAnswer(answer byte) bool {
 		for i := a.index; i < len(a.out); i++ {
 			a.out[i] = true
 		}
-		m.finishApproval()
+		m.resolveApprovalLocked(a, append([]bool(nil), a.out...))
 		return true
 	case 'y':
 		a.out[a.index] = true
@@ -191,7 +196,7 @@ func (m *replModel) handleApprovalAnswer(answer byte) bool {
 		a.index++
 	}
 	if a.index >= len(a.out) {
-		m.finishApproval()
+		m.resolveApprovalLocked(a, append([]bool(nil), a.out...))
 		return true
 	}
 	return false
@@ -239,12 +244,6 @@ func (m *replModel) approvalPromptRows(maxRows, width int) string {
 	rows := approvalCallBlock(a.calls[a.index], m.approvalCallLines(), width, maxRows-1)
 	rows = append(rows, m.approvalPrompt(width))
 	return strings.Join(rows, "\n")
-}
-
-func (m *replModel) finishApproval() {
-	if m.approval != nil {
-		m.resolveApprovalLocked(m.approval, append([]bool(nil), m.approval.out...))
-	}
 }
 
 // inputPromptWidth is the visible column count of the "▎ " gutter (and

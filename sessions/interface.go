@@ -157,6 +157,8 @@ type Metadata struct {
 	SwarmID          string        `json:"swarmID,omitempty"`
 	ExecutionContext string        `json:"executionContext,omitempty"`
 	Name             string        `json:"name"`
+	Title            string        `json:"title,omitempty"`
+	TitleSource      TitleSource   `json:"titleSource,omitempty"`
 	Created          time.Time     `json:"created"`
 	LastUsed         time.Time     `json:"lastUsed"`
 	Description      string        `json:"description,omitempty"`

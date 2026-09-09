@@ -190,8 +190,13 @@ func (r *managedREPL) refreshInspector(width int) {
 	if live != nil {
 		m := live.model
 		m.mu.Lock()
+		if i.target.kind == conversationViewKind {
+			// A hidden tab's running tool rows tick only when something
+			// paints them; the inspector is that something.
+			m.refreshActiveTools()
+		}
 		revision := fmt.Sprintf("live:%p:%s:%q:%d:%d:%d:%d:%d", m, live.name, m.status.description, m.visual.revision, m.streamRaw.Len(), m.inspections.version, m.turnReasoningID, m.thinkingSegmentStart.UnixNano())
-		source.info = &sessions.SessionView{ID: live.viewID(), Metadata: &sessions.Metadata{Name: live.name, Parent: live.parentName, Description: m.status.description}, Artifacts: m.artifactStore}
+		source.info = &sessions.SessionView{ID: live.viewID(), Metadata: &sessions.Metadata{Name: live.name, Title: m.status.title, TitleSource: m.status.titleSource, Parent: live.parentName, Description: m.status.description}, Artifacts: m.artifactStore}
 		// The saved view's ParentID is the stable ancestry; a runtime parent
 		// tab only stands in when the tab was never read from the store.
 		if live.childView != nil && live.childView.ParentID != "" {
