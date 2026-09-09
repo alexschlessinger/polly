@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,23 +39,29 @@ func (d *denyingTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) [
 	return make([]bool, len(calls))
 }
 
-func TestChildTurnUIKeepsTheFinalReply(t *testing.T) {
-	ui := &childTurnUI{}
-	ui.AppendAssistantText("let me look")
-	ui.AppendToolStart(nil)
-	ui.AppendAssistantText("the ")
-	ui.AppendAssistantText("answer")
-	ui.RecordTurnTokens(5, 2)
-	if reply, in, out := ui.result(); reply != "the answer" || in != 5 || out != 2 {
-		t.Fatalf("unfinished result = %q %d %d", reply, in, out)
-	}
-	ui.FinishTextTurn()
-	if reply, _, _ := ui.result(); reply != "the answer" {
-		t.Fatalf("finished result = %q", reply)
-	}
-	if got := ui.ApproveToolCalls([]messages.ChatMessageToolCall{{Name: "bash"}}); len(got) != 1 || !got[0] {
-		t.Fatal("a child without a parent UI should approve")
-	}
+// collectingTurnUI retains the parent's final text for integration assertions.
+type collectingTurnUI struct {
+	childTurnUI
+	mu   sync.Mutex
+	text strings.Builder
+}
+
+func (u *collectingTurnUI) AppendAssistantText(content string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.text.WriteString(content)
+}
+
+func (u *collectingTurnUI) AppendToolStart([]messages.ChatMessageToolCall) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.text.Reset()
+}
+
+func (u *collectingTurnUI) result() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.text.String()
 }
 
 // Both command and model launch tests use the production swarm runtime. Tabs
@@ -129,12 +136,12 @@ func TestModelSpawnUsesParentSwarmAndPrivateSession(t *testing.T) {
 		return spawnTestReply("blocked")
 	})
 	r = newSwarmTestREPL(t, model, nil)
-	parentUI := &childTurnUI{}
+	parentUI := &collectingTurnUI{}
 	_, err := executeTurnWithUserMessage(context.Background(), r.config, r.state, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "delegate this"}, nil, nil, parentUI, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reply, _, _ := parentUI.result(); reply != "the agent says: found it" {
+	if reply := parentUI.result(); reply != "the agent says: found it" {
 		t.Fatal(reply)
 	}
 	s := waitSwarmIdle(t, r.state.swarm)

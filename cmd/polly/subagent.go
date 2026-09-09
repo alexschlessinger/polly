@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -35,18 +33,11 @@ func toolCallFrom(ctx context.Context) messages.ChatMessageToolCall {
 	return call
 }
 
-// childTurnUI keeps the child's reply for the parent's tool result. Optional
-// line activity reports progress without exposing that reply; approvals go to
-// the parent's UI so a confirming user still decides.
+// childTurnUI reports child activity and routes approvals to the parent.
+// The swarm runtime owns the child's reply and usage.
 type childTurnUI struct {
 	parent   TurnUI
 	activity *lineChildActivity
-
-	mu    sync.Mutex
-	text  strings.Builder
-	reply string
-	in    int
-	out   int
 }
 
 func (u *childTurnUI) Start() {}
@@ -87,20 +78,12 @@ func (u *childTurnUI) AppendAssistantText(content string) {
 	if u.activity != nil && content != "" {
 		u.activity.phase(turnStateStreaming)
 	}
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.text.WriteString(content)
 }
 
-// AppendToolStart drops the text streamed before a tool batch: that was
-// the child working, not its reply.
 func (u *childTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	if u.activity != nil {
 		u.activity.tools(calls)
 	}
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.text.Reset()
 }
 
 func (u *childTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
@@ -118,31 +101,12 @@ func (u *childTurnUI) RecordTurnTokens(in, out int) {
 	if u.activity != nil {
 		u.activity.usage(in, out)
 	}
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.in, u.out = in, out
 }
 
-func (u *childTurnUI) FinishTextTurn() {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.reply = u.text.String()
-}
+func (u *childTurnUI) FinishTextTurn() {}
 
 func (u *childTurnUI) CompleteTurn(completion turnCompletion) {
 	if u.activity != nil {
 		u.activity.complete(completion)
 	}
-}
-
-// result is the reply and usage; a turn that never finished (a failure)
-// yields the text streamed so far.
-func (u *childTurnUI) result() (reply string, in, out int) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	reply = u.reply
-	if reply == "" {
-		reply = u.text.String()
-	}
-	return reply, u.in, u.out
 }
