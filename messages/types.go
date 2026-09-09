@@ -121,8 +121,12 @@ const (
 	// MetadataKeyAgentReport marks a user message the REPL composed from
 	// child-agent reports, so a resumed transcript shows it as a notice
 	// rather than as something the user typed. It is UI-only.
-	MetadataKeyAgentReport = "agent_report"
-	MetadataKeyAgentSynthetic   = "agent_synthetic"
+	MetadataKeyAgentReport    = "agent_report"
+	MetadataKeyAgentSynthetic = "agent_synthetic"
+	// MetadataKeySwarmMessages carries runtime-authenticated mailbox IDs for
+	// durable admission receipts. Older messages may lack AgentSynthetic;
+	// display clients can recognize these IDs without inspecting message text.
+	MetadataKeySwarmMessages = "swarm_messages"
 	// MetadataKeyThinkingMillis records how long an assistant message streamed
 	// reasoning before its first content (or the end of the response), in
 	// milliseconds. It is display-only accounting so a resumed transcript can

@@ -39,7 +39,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			fmt.Fprintf(&text, "\nFrom %s; %s; message %s; reply-to %s:\n%s\n", m.From, m.Kind, m.ID, m.ReplyTo, m.Text)
 		}
 		text.WriteString("</peer_messages>")
-		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: text.String(), Metadata: map[string]any{"swarm_messages": append([]string(nil), staged...)}}}, nil
+		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: text.String(), Metadata: map[string]any{messages.MetadataKeySwarmMessages: append([]string(nil), staged...), messages.MetadataKeyAgentSynthetic: true}}}, nil
 	}
 	cb.Checkpoint = func(ctx context.Context, checkpoint llm.AgentCheckpoint) error {
 		if len(checkpoint.Generated) < persisted {
@@ -81,7 +81,7 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			// actually in this accepted prefix. Projection failure admits none.
 			admitted := map[string]bool{}
 			for _, m := range raw.Append {
-				if ids, ok := m.Metadata["swarm_messages"].([]string); ok {
+				if ids, ok := m.Metadata[messages.MetadataKeySwarmMessages].([]string); ok {
 					for _, id := range ids {
 						admitted[id] = true
 					}
@@ -217,6 +217,6 @@ func (r *Runtime) BindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 		}
 		prompted = true
 		last = fingerprint
-		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "Coordination is still outstanding: " + settleErr.Error() + ". Read addressed messages and swarm_tasks, respond to requests, review results, and integrate accepted editing work. Inspect failed workflow reports with workflow_read and acknowledge only after arranging recovery or reporting the blocker. The previous answer remains provisional."}}, nil
+		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "Coordination is still outstanding: " + settleErr.Error() + ". Read addressed messages and swarm_tasks, respond to requests, review results, and integrate accepted editing work. Inspect failed workflow reports with workflow_read and acknowledge only after arranging recovery or reporting the blocker. The previous answer remains provisional.", Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true}}}, nil
 	}
 }

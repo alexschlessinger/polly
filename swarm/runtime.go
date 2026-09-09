@@ -604,6 +604,15 @@ func (r *Runtime) Agent(ctx context.Context, controller string, req AgentRequest
 		return AgentResult{Session: i.member}, ctx.Err()
 	}
 }
+
+// agentResultText keeps prose readable while retaining JSON for structured results.
+func agentResultText(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return tools.Result(value)
+}
+
 func (r *Runtime) Spawn(ctx context.Context, req subagent.Request) (subagent.Result, error) {
 	r.mu.Lock()
 	yield := r.yield
@@ -615,11 +624,7 @@ func (r *Runtime) Spawn(ctx context.Context, req subagent.Request) (subagent.Res
 	result := func() subagent.Result {
 		res := subagent.Result{Session: i.member, Done: i.done}
 		if i.result.Value != nil {
-			if text, ok := i.result.Value.(string); ok {
-				res.Text = text
-			} else {
-				res.Text = tools.Result(i.result.Value)
-			}
+			res.Text = agentResultText(i.result.Value)
 		}
 		if i.result.Usage.InputTokens != nil {
 			res.InputTokens = *i.result.Usage.InputTokens
@@ -1081,7 +1086,7 @@ func (r *Runtime) finish(i *invocation) {
 				task.Revision++
 			}
 		}
-		mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Text: "Agent " + m.Label + " " + e.Status + ". Session: " + m.ID + ". Task: " + m.Task + ". Result: " + tools.Result(i.result.Value), Posted: time.Now().UTC()}
+		mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Text: "Agent " + m.Label + " " + e.Status + ". Session: " + m.ID + ". Task: " + m.Task + ". Result: " + agentResultText(i.result.Value), Posted: time.Now().UTC()}
 		if i.err != nil {
 			mail.Text += " Reason: " + e.Error
 		}

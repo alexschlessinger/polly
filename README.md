@@ -77,6 +77,8 @@ Limits: 32 concurrent, 256 executions per run (`--swarm-concurrent`,
 `--swarm-executions`). Quitting pauses; `/swarm resume ID [N]` continues with
 N extra model calls; `/swarm grant N` adds execution starts. `/swarm`
 inspects members, tasks, messages, publications, reports, integrations.
+Peer messages stay out of the main conversation view, including after resume;
+inspect them through `/swarm`.
 `/workflow SCRIPT.js INPUT.json` runs a JavaScript workflow. Everything else:
 [WORKFLOWS.md](WORKFLOWS.md).
 
