@@ -569,6 +569,16 @@ retains partial results, and saves execution status `paused` with stop reason
 `max_iterations`. `llm.IsIterationLimit(err)` excludes joined persistence or
 provider failures from this recoverable classification.
 
+Unstructured member finals without meaningful text or media receive one
+corrective continuation within the same execution and iteration allowance.
+The retry reservation persists across yields and recovery. A second blank final
+returns `*swarm.EmptyResultError` wrapping `swarm.ErrEmptyResult`, with the member
+and execution IDs, and saves a failed execution. Structured and response-tool
+contracts retain their existing validation. Empty finals after denied tools or a
+failed response tool fail immediately without another approval attempt. Text in
+content parts is included in the returned value; media-only and successful
+response-tool finals provide a reference to their saved member session.
+
 `Resume(ctx, memberID, executionGrant)` preserves the remaining call allowance;
 an exhausted one requires a trusted host to use
 `ResumeWithIterations(ctx, memberID, additionalCalls)`. That grants calls to the
@@ -583,6 +593,12 @@ The runtime exposes `State`, `CreateTask`, `Claim`, `Submit`, `Review`,
 `Cleanup`, `Settle`, and lifecycle `OnEvent` callbacks. The Go host is trusted;
 model-facing authority is bound in registered closures rather than supplied as a
 caller ID. Task revisions and atomic transactions reject stale claims/submissions.
+`Review` completes an accepted unchanged snapshot by comparing its immutable tree
+with the task's original starting snapshot; changed candidates still require
+integration. `Settle` also completes previously accepted unchanged submissions,
+using retained provenance after context cleanup. `TaskStatus` provides display
+text without changing machine statuses; the `swarm_tasks` tool includes this as
+`displayStatus`, and `swarm_review` returns status plus any required next action.
 
 Parent hosts use `PrepareIntegration(ctx, []TaskReference, drift)`,
 `ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`,
