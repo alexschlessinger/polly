@@ -200,7 +200,7 @@ func (r *managedREPL) postUITask(task func()) {
 // background tool activation cannot mutate the model or terminal directly.
 // Caller must hold r.model.mu.
 func (r *managedREPL) appendPendingSandboxWarningsLocked() bool {
-	if r == nil || r.state == nil {
+	if r == nil {
 		return false
 	}
 	warnings := r.state.drainSandboxWarnings()
@@ -254,7 +254,7 @@ func (r *managedREPL) wantsRenderForEvent(ev ui.Event) bool {
 	if ev.Type == ui.MouseEvent && ev.ID == "<MouseRelease>" {
 		return r.chromeHoverChanged
 	}
-	if mouse, ok := ev.Payload.(ui.Mouse); ok && mouse.Drag && !r.inspectorDragging && r.scrollDrag.pane == "" {
+	if mouse, ok := ev.Payload.(ui.Mouse); ok && r.passiveDrag(mouse) {
 		return false
 	}
 	if ev.ID == pasteStartID {

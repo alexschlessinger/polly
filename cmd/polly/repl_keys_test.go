@@ -46,4 +46,9 @@ func TestKeyBindingsAreUniqueAndDocumented(t *testing.T) {
 	if _, ok := keyIndex[globalPhase]["<C-z>"]; !ok {
 		t.Fatal("Ctrl-Z missing from the global phase")
 	}
+	for _, id := range []string{"y", "n", "a", "<Enter>", "<Escape>"} {
+		if _, ok := keyIndex[approvalPhase][id]; !ok {
+			t.Fatalf("approval key %s missing from the table", id)
+		}
+	}
 }

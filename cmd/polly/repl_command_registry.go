@@ -198,20 +198,19 @@ func (r *replCommandRegistry) helpLinesStyled(markup bool) []string {
 	for n, cmd := range commands {
 		lines = append(lines, row(names[n], cmd.summary, width))
 	}
-	groups := keyHelpGroups()
 	width = 0
-	for _, g := range groups {
-		for _, k := range g.rows {
+	for _, g := range keyTable {
+		for _, k := range g.helpRows() {
 			width = max(width, len(k.key))
 		}
 	}
-	for _, g := range groups {
+	for _, g := range keyTable {
 		title := g.title
 		if markup {
 			title = style.Styled(title, "", "bold")
 		}
 		lines = append(lines, "", title)
-		for _, k := range g.rows {
+		for _, k := range g.helpRows() {
 			lines = append(lines, row(k.key, k.desc, width))
 		}
 	}
