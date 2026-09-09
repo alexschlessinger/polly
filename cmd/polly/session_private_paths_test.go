@@ -83,7 +83,13 @@ func TestPrivateStorageDeniedToShellAndMCP(t *testing.T) {
 		}
 		paths = append(paths, path)
 	}
-	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, nil, paths...)
+	control := filepath.Join(root, "public.txt")
+	if err := os.WriteFile(control, []byte("PUBLIC_STORAGE_FIXTURE"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Expose the fixture workspace through Linux's private /tmp while keeping
+	// the database and sidecars explicitly denied inside that workspace.
+	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "workspace"}, nil, paths...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +102,9 @@ func TestPrivateStorageDeniedToShellAndMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	bash, _, _ := registry.GetIfAllowed("bash")
+	if out, err := bash.Execute(context.Background(), map[string]any{"command": "cat '" + control + "'"}); err != nil || !strings.Contains(out, "PUBLIC_STORAGE_FIXTURE") {
+		t.Fatalf("shell cannot read public fixture: %s %v", out, err)
+	}
 	for _, path := range paths {
 		out, _ := bash.Execute(context.Background(), map[string]any{"command": "cat '" + path + "'"})
 		if strings.Contains(out, "PRIVATE_STORAGE_FIXTURE") {
@@ -104,8 +113,11 @@ func TestPrivateStorageDeniedToShellAndMCP(t *testing.T) {
 	}
 	script := filepath.Join(root, "mcp_probe.py")
 	code := `import json, sys
+with open(sys.argv[1]) as source:
+    if source.read() != "PUBLIC_STORAGE_FIXTURE":
+        raise RuntimeError("MCP cannot read public fixture")
 leaked = False
-for path in sys.argv[1:]:
+for path in sys.argv[2:]:
     try:
         with open(path) as source:
             leaked |= "PRIVATE_STORAGE_FIXTURE" in source.read()
@@ -128,7 +140,7 @@ for line in sys.stdin:
 		t.Fatal(err)
 	}
 	config := filepath.Join(root, "mcp.json")
-	data, err := json.Marshal(map[string]any{"mcpServers": map[string]any{"probe": map[string]any{"command": python, "args": append([]string{script}, paths...)}}})
+	data, err := json.Marshal(map[string]any{"mcpServers": map[string]any{"probe": map[string]any{"command": python, "args": append([]string{script, control}, paths...)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
