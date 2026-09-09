@@ -139,7 +139,7 @@ func (m *replModel) mastheadTextRows(width int) []string {
 // mastheadTitle is `polly · session · model`, dropping the model and then
 // the session when the row would not fit.
 func (m *replModel) mastheadTitle(width int) string {
-	session := m.status.contextName
+	session := m.status.displayLabel()
 	if session == "-" {
 		session = ""
 	}

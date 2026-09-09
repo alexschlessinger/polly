@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -22,6 +23,8 @@ const turnCancelDetachAfter = 2 * time.Second
 type sessionStatus struct {
 	modelName    string
 	contextName  string
+	title        string
+	titleSource  sessions.TitleSource
 	description  string
 	toolCount    int
 	skillCount   int
@@ -47,6 +50,10 @@ func newSessionStatus(settings *Settings, contextName string, toolCount, skillCo
 		s.recentModels = []string{settings.Model}
 	}
 	return s
+}
+
+func (s *sessionStatus) displayLabel() string {
+	return sessions.DisplayLabel(&sessions.Metadata{Name: s.contextName, Title: s.title, Parent: s.parentName, Description: s.description})
 }
 
 // rememberModel puts a newly chosen model at the front of the picker's
@@ -166,7 +173,7 @@ func (m *replModel) statusRow(width int) string {
 		// "openai/gpt-5.4").
 		fields = append(fields, field{drop: 3, text: shortModelName(m.status.modelName)})
 	}
-	fields = append(fields, field{drop: 0, text: m.status.contextName, session: true})
+	fields = append(fields, field{drop: 0, text: m.status.displayLabel(), session: true})
 	if context := m.status.contextUsageText(); context != "" {
 		fields = append(fields, field{drop: 1, text: context, rendered: m.status.contextUsageStyled()})
 	}
@@ -326,8 +333,8 @@ func formatElapsed(d time.Duration) string {
 // Caller must hold m.mu.
 func (m *replModel) frameTitle() string {
 	title := "polly"
-	if m.status.contextName != "" && m.status.contextName != "-" {
-		title += " · " + m.status.contextName
+	if label := m.status.displayLabel(); label != "" && label != "-" {
+		title += " · " + label
 	}
 	switch {
 	case m.approval != nil:

@@ -474,12 +474,14 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 		model := &captureCompletionLLM{response: messages.ChatMessage{
 			Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn,
 		}}
-		return &conversationState{
+		state := &conversationState{
 			session: session, artifactStore: artifactStore, toolRegistry: registry,
 			agent:           llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
 			displayContract: markdownDisplayContract,
 			settings:        Settings{Model: "test/model", MaxTokens: 128, SystemPrompt: persona},
-		}, model
+		}
+		registerSessionTitleTool(state)
+		return state, model
 	}
 	config := &Config{}
 	runTurn := func(t *testing.T, state *conversationState, schema *llm.Schema) {
@@ -498,7 +500,7 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 	state, model := newState(t, "mechanics-plain", "")
 	runTurn(t, state, nil)
 	request := projectedRequestText(model.request)
-	for _, want := range []string{codingContract, contextMechanicsContract, markdownDisplayContract, "first-repository-guidance"} {
+	for _, want := range []string{codingContract, contextMechanicsContract, sessionTitleContract, markdownDisplayContract, "first-repository-guidance"} {
 		if !strings.Contains(request, want) {
 			t.Fatalf("request lacks %q: %q", want, request)
 		}
@@ -515,7 +517,7 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, msg := range history {
-		if msg.Role == messages.MessageRoleSystem || strings.Contains(msg.Content, "repository-guidance") {
+		if msg.Role == messages.MessageRoleSystem || strings.Contains(msg.Content, "repository-guidance") || strings.Contains(msg.Content, sessionTitleContract) {
 			t.Fatalf("runtime guidance reached durable history: %+v", history)
 		}
 	}
@@ -526,13 +528,13 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 	schemaState, schemaModel := newState(t, "mechanics-schema", "")
 	runTurn(t, schemaState, llm.SchemaFromJSON(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`))
 	request = projectedRequestText(schemaModel.request)
-	if strings.Contains(request, contextMechanicsContract) || strings.Contains(request, markdownDisplayContract) || strings.Contains(request, codingContract) {
+	if strings.Contains(request, contextMechanicsContract) || strings.Contains(request, markdownDisplayContract) || strings.Contains(request, codingContract) || strings.Contains(request, sessionTitleContract) {
 		t.Fatalf("structured-output request carries send-time contracts: %q", request)
 	}
 	personaState, personaModel := newState(t, "mechanics-persona", "Translate the user's text into French.")
 	runTurn(t, personaState, nil)
 	request = projectedRequestText(personaModel.request)
-	if !strings.Contains(request, personaState.settings.SystemPrompt) || !strings.Contains(request, contextMechanicsContract) || strings.Contains(request, codingContract) {
+	if !strings.Contains(request, personaState.settings.SystemPrompt) || !strings.Contains(request, contextMechanicsContract) || !strings.Contains(request, sessionTitleContract) || strings.Contains(request, codingContract) {
 		t.Fatalf("custom persona did not replace coding defaults: %q", request)
 	}
 	// An invalid file is skipped with a warning shown once, never a failed turn.

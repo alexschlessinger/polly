@@ -71,14 +71,11 @@ func sessionTree(infos []*sessions.Metadata) []sessionTreeNode {
 // sessionTreeName is what a session is listed as: an agent goes by the
 // label of its brief under its parent, everything else by its name.
 func sessionTreeName(info *sessions.Metadata, depth int) string {
+	name := sessions.DisplayLabel(info)
 	if depth > 0 {
-		name := info.Name
-		if info.Description != "" {
-			name = info.Description
-		}
 		return "↳ " + name
 	}
-	return info.Name
+	return name
 }
 
 // orderSessionGroups puts the subtrees rooted at open workspaces first, in

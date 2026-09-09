@@ -15,6 +15,7 @@ import (
 type replModalItem struct {
 	label           string
 	value           string
+	searchText      string // full text, independent of truncated display columns
 	display         string
 	selectedDisplay string
 	// parent is the value of the item this one nests under; such an item
@@ -47,12 +48,12 @@ type replModal struct {
 	bodyRows int
 	// expanded holds the values of parent items whose children are listed.
 	// Sharing the map across openings keeps the choice for the process.
-	expanded map[string]bool
-	onSubmit func(string)
-	onClear  func()
-	onRename func(string)
-	onCancel func()
-	onDraft  func(string)
+	expanded    map[string]bool
+	onSubmit    func(string)
+	onClear     func()
+	onEditTitle func(string)
+	onCancel    func()
+	onDraft     func(string)
 }
 
 func (m *replModal) wipe() {
@@ -83,7 +84,7 @@ func (m *replModal) filteredItems() []replModalItem {
 	// spawn reply is found without knowing which parent to expand.
 	out := make([]replModalItem, 0, len(m.items))
 	for _, item := range m.items {
-		if strings.Contains(strings.ToLower(item.label), needle) || strings.Contains(strings.ToLower(item.value), needle) {
+		if strings.Contains(strings.ToLower(item.label), needle) || strings.Contains(strings.ToLower(item.value), needle) || strings.Contains(strings.ToLower(item.searchText), needle) {
 			out = append(out, item)
 		}
 	}
@@ -216,7 +217,7 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 			}
 			filter = rw.Truncate("/"+filter, 10, "…")
 		} else {
-			if m.onRename != nil {
+			if m.onEditTitle != nil {
 				count = fmt.Sprintf("%d–%d/%d", start+1, end, len(items))
 				filter = "filter"
 			} else {
@@ -225,8 +226,8 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 			}
 		}
 		footer = count + " · " + filter + " · ↑↓ · Enter open"
-		if m.onRename != nil {
-			footer += " · F2 rename"
+		if m.onEditTitle != nil {
+			footer += " · F2 edit title"
 		}
 		if m.nested() {
 			footer += " · → agents"
@@ -511,6 +512,11 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 		label := nameColumn + "  " + ageColumn + "  " + lengthColumn
 		display := styleEscape(nameColumn) + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
 		selectedDisplay := styled(nameColumn, "accent", "bold") + "  " + styled(ageColumn, "muted", "") + "  " + styled(lengthColumn, "muted", "")
+		if sessions.DisplayLabel(info) != info.Name {
+			label += "  " + info.Name
+			display += "  " + styled(info.Name, "muted", "")
+			selectedDisplay += "  " + styled(info.Name, "muted", "")
+		}
 		mark, color := "", ""
 		switch tab := r.tabIndexOf(info.Name); {
 		case info.Name == current:
@@ -539,7 +545,8 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 		}
 		item := replModalItem{
 			label: label, value: info.Name, display: display, selectedDisplay: selectedDisplay,
-			children: node.Children,
+			searchText: info.Title + " " + info.Name + " " + info.Description,
+			children:   node.Children,
 		}
 		if node.Depth > 0 {
 			item.parent = info.Parent
@@ -577,7 +584,14 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 			}
 			r.requestOpenLocked(name)
 		},
-		onRename: r.openSessionRenameInput,
+		onEditTitle: func(name string) {
+			for _, summary := range infos {
+				if summary.Metadata.Name == name {
+					r.openSessionTitleInput(summary)
+					return
+				}
+			}
+		},
 	}
 	if m.nested() {
 		// Room for the agent count after a row's marks.
@@ -606,89 +620,6 @@ func formatSessionMessageCount(count int) string {
 		unit = "msg"
 	}
 	return humanizeTokens(count) + " " + unit
-}
-
-func (r *managedREPL) openSessionRenameInput(name string) {
-	m := &replModal{
-		title: "Rename session", inputMode: true, width: 64,
-		helper:   "Enter save · Esc back",
-		onCancel: func() { r.openSessionsPickerSelected(name) },
-		onSubmit: func(newName string) { r.renameSession(name, newName) },
-	}
-	m.input.setText(name)
-	r.openModal(m)
-}
-
-func (r *managedREPL) renameSession(oldName, newName string) {
-	if oldName == "" || newName == "" || r.state == nil || r.state.sessionStore == nil {
-		r.model.appendNoticeLine("Rename failed · session unavailable")
-		return
-	}
-	if oldName == newName {
-		r.openSessionsPickerSelected(oldName)
-		return
-	}
-	ctx := r.work.ctx
-	current := r.visibleTab().name
-	var err error
-	target := r.state.session
-	closeTarget := false
-	// A session open in another tab is renamed through that tab's lease.
-	tab := r.tabIndexOf(oldName)
-	switch {
-	case oldName == current && target != nil:
-	case tab >= 0 && r.tabs[tab].state.session != nil:
-		target = r.tabs[tab].state.session
-	default:
-		options := sessions.AcquireOptions{ExistingOnly: true}
-		if tab >= 0 {
-			options.ExpectedID = r.tabs[tab].viewID()
-		}
-		target, err = r.state.sessionStore.Acquire(ctx, oldName, options)
-		if err != nil {
-			r.model.appendNoticeLine("Rename failed · " + err.Error())
-			r.openSessionsPickerSelected(oldName)
-			return
-		}
-		closeTarget = true
-	}
-	if err := target.Rename(ctx, newName); err != nil {
-		if closeTarget {
-			_ = target.Close()
-		}
-		r.model.appendNoticeLine("Rename failed · " + err.Error())
-		r.openSessionsPickerSelected(oldName)
-		return
-	}
-	switch {
-	case closeTarget:
-		if err := target.Close(); err != nil {
-			r.model.appendNoticeLine("Renamed · releasing the session failed · " + err.Error())
-		}
-		if tab >= 0 {
-			r.tabs[tab].name = newName
-			if r.tabs[tab].model == r.model {
-				r.model.setContextName(newName)
-			} else {
-				r.tabs[tab].model.mu.Lock()
-				r.tabs[tab].model.setContextName(newName)
-				r.tabs[tab].model.mu.Unlock()
-			}
-		}
-	case oldName == current:
-		r.model.setContextName(newName)
-		if i := r.visibleTabIndex(); i >= 0 {
-			r.tabs[i].name = newName
-		}
-	default:
-		hidden := r.tabs[tab]
-		hidden.name = newName
-		hidden.model.mu.Lock()
-		hidden.model.setContextName(newName)
-		hidden.model.mu.Unlock()
-	}
-	r.model.appendNoticeLine("Renamed session '" + oldName + "' to '" + newName + "'")
-	r.openSessionsPickerSelected(newName)
 }
 
 func formatCompactDuration(d time.Duration) string {
@@ -820,7 +751,7 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 			m.toggle(e.ID == "<Right>")
 		}
 	case "<F2>":
-		if m.inputMode || m.onRename == nil {
+		if m.inputMode || m.onEditTitle == nil {
 			break
 		}
 		items := m.filteredItems()
@@ -828,10 +759,10 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 			return true
 		}
 		m.selected = min(m.selected, len(items)-1)
-		rename := m.onRename
+		editTitle := m.onEditTitle
 		value := items[m.selected].value
 		r.closeModal()
-		rename(value)
+		editTitle(value)
 	case "<C-d>":
 		if m.inputMode && m.onClear != nil {
 			clear := m.onClear

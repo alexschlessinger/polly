@@ -714,16 +714,24 @@ func TestLostLeaseUnderAHiddenTurnDropsTheTabOnceItSettles(t *testing.T) {
 	}
 }
 
-func TestRenameFromPickerRenamesSessionOpenInAnotherTab(t *testing.T) {
+func TestTitleFromPickerUpdatesSessionOpenInAnotherTab(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "first-work", "second-work")
 
-	r.renameSession("first-work", "renamed-work")
-	if r.tabs[0].name != "renamed-work" || r.tabs[0].model.status.contextName != "renamed-work" {
-		t.Fatalf("hidden tab not renamed: name=%q status=%q", r.tabs[0].name, r.tabs[0].model.status.contextName)
+	summaries, err := store.ListSummaries(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !testStoreExists(t, store, "renamed-work") || testStoreExists(t, store, "first-work") {
-		t.Fatal("rename did not reach the store")
+	for _, summary := range summaries {
+		if summary.Metadata.Name == "first-work" {
+			r.editSessionTitle(summary, "New title")
+		}
+	}
+	if r.tabs[0].name != "first-work" || r.tabs[0].model.status.displayLabel() != "New title" {
+		t.Fatalf("hidden tab title: name=%q title=%q", r.tabs[0].name, r.tabs[0].model.status.displayLabel())
+	}
+	if !testStoreExists(t, store, "first-work") {
+		t.Fatal("title edit changed the handle")
 	}
 	if r.tabs[0].state.session.Context().Err() != nil {
 		t.Fatal("renaming through the hidden tab's lease closed it")
@@ -732,7 +740,7 @@ func TestRenameFromPickerRenamesSessionOpenInAnotherTab(t *testing.T) {
 		t.Fatal("rename did not reopen the picker")
 	}
 	for _, item := range r.model.modal.items {
-		if item.value == "renamed-work" && !strings.HasSuffix(item.label, "workspace 1") {
+		if item.value == "first-work" && !strings.HasSuffix(item.label, "workspace 1") {
 			t.Fatalf("renamed session not marked with its tab: %q", item.label)
 		}
 	}

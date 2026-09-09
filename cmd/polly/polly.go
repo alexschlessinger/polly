@@ -514,6 +514,7 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		sandboxWarnings: sandboxWarnings,
 		sandboxProbe:    probe,
 	}
+	registerSessionTitleTool(state)
 	if err := registerSwarm(state, config, llmClient); err != nil {
 		return nil, err
 	}
@@ -988,10 +989,17 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	var instructionWarnings []string
 	if schema == nil {
 		contract := sendTimeContracts(state.displayContract)
+		titleGuidance, err := sessionTitleGuidance(ctx, state)
+		if err != nil {
+			return 1, err
+		}
 		if settings.SystemPrompt == "" {
 			instructions, warnings := loadRepositoryInstructions(state.toolRegistry)
 			instructionWarnings = state.changedInstructionWarnings(warnings)
 			contract = codingContract + "\n\n" + contract + "\n\n" + instructions
+		}
+		if titleGuidance != "" {
+			contract += "\n\n" + titleGuidance
 		}
 		requestMessages = applyDisplayContract(requestMessages, contract)
 	}

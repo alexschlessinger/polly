@@ -46,6 +46,13 @@ type Config struct {
 	// DurableMessages retains host display markers while removing denied
 	// provider exchanges. Nil uses llm.StripDeniedExchanges.
 	DurableMessages func([]messages.ChatMessage) []messages.ChatMessage
+	// MemberToolNames declares session tools that PrepareMember binds after
+	// acquiring the member lease; explicit tool allowlists may name them.
+	MemberToolNames []string
+	// PrepareMember binds host tools to the current member session and returns
+	// ephemeral guidance. A nil registry means tools are disabled. Guidance is
+	// omitted for structured output and is never saved in member history.
+	PrepareMember func(context.Context, sessions.Session, *tools.ToolRegistry) (string, error)
 }
 type Event struct{ Kind, Member, Text string }
 type AgentRequest struct {
@@ -723,6 +730,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if err != nil {
 		return AgentResult{}, err
 	}
+	ec.BuiltinTools = append(ec.BuiltinTools, r.config.MemberToolNames...)
 	registry, omitted, err := r.config.Registry.BindExecutionContext(ec, m.Tools)
 	if err != nil {
 		return AgentResult{}, err
@@ -822,8 +830,6 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if !agentConfig.DisableTools {
 		r.registerMemberTools(registry, m.ID, i.id, coord)
 	}
-	a := llm.NewAgent(r.config.Client, registry, agentConfig)
-	defer a.Close()
 	req := defaults.request
 	req.Messages = history
 	req.Model = m.Model
@@ -832,6 +838,26 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if e.Request.Schema != nil {
 		req.ResponseSchema = &schema.Schema{Raw: e.Request.Schema, Strict: true}
 	}
+	if r.config.PrepareMember != nil {
+		memberRegistry := registry
+		if agentConfig.DisableTools {
+			memberRegistry = nil
+		}
+		guidance, err := r.config.PrepareMember(ctx, session, memberRegistry)
+		if err != nil {
+			return AgentResult{}, err
+		}
+		if guidance != "" && !agentConfig.DisableTools && req.ResponseSchema == nil {
+			req.Messages = append([]messages.ChatMessage(nil), history...)
+			if len(req.Messages) > 0 && req.Messages[0].Role == messages.MessageRoleSystem {
+				req.Messages[0].Content += "\n\n" + guidance
+			} else {
+				req.Messages = append([]messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: guidance}}, req.Messages...)
+			}
+		}
+	}
+	a := llm.NewAgent(r.config.Client, registry, agentConfig)
+	defer a.Close()
 	req.CacheSessionID, err = session.CacheSessionID(ctx)
 	if err != nil {
 		return AgentResult{}, err

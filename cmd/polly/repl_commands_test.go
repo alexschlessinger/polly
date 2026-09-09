@@ -587,7 +587,7 @@ func TestHintFor(t *testing.T) {
 		{"/he\nlp", ""},
 		{"/zzz", ""},
 		// Typing the name: many matches list bare names, few include summaries.
-		{"/t", "/tools — inspect loaded tools and skills"},
+		{"/t", "/title — edit the current session title   /tools — inspect loaded tools and skills"},
 		{"/to", "/tools — inspect loaded tools and skills"},
 		{"/q", "/quit — leave the REPL"},
 		// Typing arguments: keyword matches from the command's completer.

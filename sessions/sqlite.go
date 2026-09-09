@@ -1851,6 +1851,7 @@ func metadataFromSnapshot(snap sessionSnapshot) (*Metadata, error) {
 	if err := json.Unmarshal(snap.settings, &metadata); err != nil {
 		return nil, fmt.Errorf("decode metadata for session %q: %w", snap.name, err)
 	}
+	canonicalizeTitle(&metadata)
 	metadata.Name = snap.name
 	metadata.Created = time.Unix(0, snap.createdNS).UTC()
 	metadata.LastUsed = time.Unix(0, snap.updatedNS).UTC()
@@ -2192,6 +2193,7 @@ func (s *sqliteSession) Reset(ctx context.Context, info *Metadata) error {
 		metadata.LastUsed = now
 		metadata.Parent = current.Parent
 		preserveSpawnMetadata(metadata, current)
+		preserveTitle(metadata, current)
 		if metadata.TTL < 0 {
 			return fmt.Errorf("session TTL cannot be negative")
 		}
@@ -2350,6 +2352,7 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 		metadata.LastUsed = current.LastUsed
 		metadata.Parent = current.Parent
 		preserveSpawnMetadata(metadata, current)
+		preserveTitle(metadata, current)
 		if metadata.TTL < 0 {
 			return fmt.Errorf("session TTL cannot be negative")
 		}
