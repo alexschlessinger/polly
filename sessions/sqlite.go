@@ -1198,7 +1198,15 @@ func (s *SQLiteStore) ensureOpen() error {
 	return nil
 }
 
-func (s *SQLiteStore) withWrite(ctx context.Context, fn func(*sql.Conn) error) (err error) {
+func (s *SQLiteStore) withWrite(ctx context.Context, fn func(*sql.Conn) error) error {
+	return s.withTransaction(ctx, "BEGIN IMMEDIATE", fn)
+}
+
+func (s *SQLiteStore) withRead(ctx context.Context, fn func(*sql.Conn) error) error {
+	return s.withTransaction(ctx, "BEGIN", fn)
+}
+
+func (s *SQLiteStore) withTransaction(ctx context.Context, begin string, fn func(*sql.Conn) error) (err error) {
 	s.dbMu.RLock()
 	defer s.dbMu.RUnlock()
 	conn, err := s.db.Conn(ctx)
@@ -1215,34 +1223,7 @@ func (s *SQLiteStore) withWrite(ctx context.Context, fn func(*sql.Conn) error) (
 	// Cancellation can mask a BEGIN that SQLite already executed. Install
 	// rollback before dispatch so that connection never returns to the pool
 	// in an uncertain transaction, including failures starting the transaction.
-	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return err
-	}
-	if err = fn(conn); err != nil {
-		return err
-	}
-	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return err
-	}
-	committed = true
-	return nil
-}
-
-func (s *SQLiteStore) withRead(ctx context.Context, fn func(*sql.Conn) error) (err error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	committed := false
-	defer func() {
-		if !committed {
-			rollbackConn(conn)
-		}
-	}()
-	if _, err = conn.ExecContext(ctx, "BEGIN"); err != nil {
+	if _, err = conn.ExecContext(ctx, begin); err != nil {
 		return err
 	}
 	if err = fn(conn); err != nil {
@@ -2008,43 +1989,8 @@ func (s *sqliteSession) GetHistory(ctx context.Context) ([]messages.ChatMessage,
 			"SELECT next_sequence FROM sessions WHERE id = ?", s.id).Scan(&nextSequence); err != nil {
 			return err
 		}
-		rows, err := conn.QueryContext(opCtx, `
-			SELECT sequence,payload_json FROM messages
-			WHERE session_id = ? ORDER BY sequence`, s.id)
-		if err != nil {
-			return err
-		}
-		var expected int64
-		for rows.Next() {
-			var sequence int64
-			var payload []byte
-			if err := rows.Scan(&sequence, &payload); err != nil {
-				_ = rows.Close()
-				return err
-			}
-			if sequence != expected {
-				_ = rows.Close()
-				return fmt.Errorf("session message sequence is corrupt: got %d, want %d", sequence, expected)
-			}
-			var message messages.ChatMessage
-			if err := json.Unmarshal(payload, &message); err != nil {
-				_ = rows.Close()
-				return fmt.Errorf("decode session message %d: %w", sequence, err)
-			}
-			history = append(history, message)
-			expected++
-		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		if err := rows.Close(); err != nil {
-			return err
-		}
-		if expected != nextSequence {
-			return fmt.Errorf("session message sequence is corrupt: read %d messages, expected %d", expected, nextSequence)
-		}
-		return nil
+		history, err = readHistory(opCtx, conn, s.id, nextSequence)
+		return err
 	})
 	if err != nil {
 		return nil, s.mapError(ctx, err)

@@ -143,7 +143,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		view.Revision = hex.EncodeToString(digest[:])
 		view.Unchanged = view.Revision == knownRevision
 		if !view.Unchanged {
-			view.History, err = readViewHistory(ctx, conn, id, snap.nextSeq)
+			view.History, err = readHistory(ctx, conn, id, snap.nextSeq)
 		}
 		return err
 	})
@@ -156,7 +156,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 	return view, nil
 }
 
-func readViewHistory(ctx context.Context, conn *sql.Conn, id []byte, next int64) ([]messages.ChatMessage, error) {
+func readHistory(ctx context.Context, conn *sql.Conn, id []byte, next int64) ([]messages.ChatMessage, error) {
 	rows, err := conn.QueryContext(ctx, "SELECT sequence,payload_json FROM messages WHERE session_id=? ORDER BY sequence", id)
 	if err != nil {
 		return nil, err
@@ -179,6 +179,9 @@ func readViewHistory(ctx context.Context, conn *sql.Conn, id []byte, next int64)
 		history = append(history, msg)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 	if int64(len(history)) != next {
