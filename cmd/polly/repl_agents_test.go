@@ -63,9 +63,9 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	if m.turnToolCallCount() != 5 || m.runningTools != 0 {
 		t.Fatalf("execution counters changed: %d / %d", m.turnToolCallCount(), m.runningTools)
 	}
-	m.toggleToolDisclosureGroup(ids)
-	m.toggleAgentDisclosureGroup(ids)
-	m.toggleImageDisclosureGroup(ids)
+	m.toggleDisclosureGroup(activityTools, ids, 0)
+	m.toggleDisclosureGroup(activityAgents, ids, 0)
+	m.toggleDisclosureGroup(activityImages, ids, 0)
 	record := m.toolDisclosures.get(ids[0])
 	if !record.expanded || !record.agentsExpanded || !record.imagesExpanded {
 		t.Fatal("controls did not expand independently")
@@ -78,7 +78,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	if got := plainStyledText(detail); got != "  ✓ Trace sessions · done\n  ✓ Review picker · done" {
 		t.Fatalf("agent detail = %q", got)
 	}
-	m.toggleAgentDisclosureGroup(ids)
+	m.toggleDisclosureGroup(activityAgents, ids, 0)
 	if !record.expanded || record.agentsExpanded || !record.imagesExpanded {
 		t.Fatal("Agents collapsed another disclosure")
 	}
@@ -89,7 +89,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	if len(blocks) != 2 || !strings.Contains(plainStyledText(blocks[1].text), "1 agent") || strings.Contains(plainStyledText(blocks[1].text), "tool") {
 		t.Fatalf("prose did not separate agent-only batch: %+v", blocks)
 	}
-	m.toggleAgentDisclosureGroup(ids)
+	m.toggleDisclosureGroup(activityAgents, ids, 0)
 	r.endTurn(nil)
 	// Settling collapses the disclosures; the trailer is status only and the
 	// activity stays inline, where the agents can be reopened.
@@ -103,7 +103,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), "3 tools · 2 agents · 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
 		t.Fatalf("settled launch rows = %+v", settled)
 	}
-	if !m.toggleAgentDisclosureGroup(ids) {
+	if !m.toggleDisclosureGroup(activityAgents, ids, 0) {
 		t.Fatal("settled Agents did not expand")
 	}
 	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▾ ") || !strings.Contains(got, "Trace sessions · done") {
@@ -134,7 +134,7 @@ func TestAgentLaunchFailuresAndFallbacks(t *testing.T) {
 			if row.agent.label != tc.label || row.agent.status != tc.status || row.agent.active {
 				t.Fatalf("row = %+v", row.agent)
 			}
-			m.toggleAgentDisclosureGroup([]int64{record.id})
+			m.toggleDisclosureGroup(activityAgents, []int64{record.id}, 0)
 			text := plainStyledText(activityBlocks(m, 80)[0].text)
 			if strings.Contains(text, "tool") || !strings.Contains(text, tc.label+" · "+tc.status) {
 				t.Fatalf("agent-only activity = %q", text)
@@ -171,7 +171,7 @@ func TestAgentLinksWrapAndScroll(t *testing.T) {
 		row.agent.session = fmt.Sprintf("child-%d", i)
 	}
 	record := m.currentToolDisclosure()
-	m.toggleAgentDisclosureGroup([]int64{record.id})
+	m.toggleDisclosureGroup(activityAgents, []int64{record.id}, 0)
 	for _, width := range []int{20, 40, 120} {
 		rows := m.transcriptRows(width)
 		links := m.visibleAgentLinks(fullViewport(len(rows), width))
@@ -199,7 +199,7 @@ func TestAgentLinksWrapAndScroll(t *testing.T) {
 			break
 		}
 	}
-	m.toggleAgentDisclosureGroup([]int64{record.id})
+	m.toggleDisclosureGroup(activityAgents, []int64{record.id}, 0)
 	rows = transcriptRowsText(m.transcriptRows(40))
 	if !strings.Contains(rows[m.scrollAnchor], "anchor below") {
 		t.Fatalf("collapse moved scroll anchor to %q", rows[m.scrollAnchor])
@@ -230,9 +230,9 @@ func TestAgentLabelHitboxesWithToolAndViewedImages(t *testing.T) {
 				a.agent.session = "child"
 				a.agent.inputTokens, a.agent.outputTokens = 12000, 2400
 				ids := []int64{record.id}
-				m.toggleToolDisclosureGroup(ids)
-				m.toggleAgentDisclosureGroup(ids)
-				m.toggleImageDisclosureGroup(ids)
+				m.toggleDisclosureGroup(activityTools, ids, 0)
+				m.toggleDisclosureGroup(activityAgents, ids, 0)
+				m.toggleDisclosureGroup(activityImages, ids, 0)
 				check := func() {
 					t.Helper()
 					rows := m.transcriptRows(width)
@@ -252,7 +252,7 @@ func TestAgentLabelHitboxesWithToolAndViewedImages(t *testing.T) {
 					}
 				}
 				check()
-				m.toggleImageDisclosureGroup(ids)
+				m.toggleDisclosureGroup(activityImages, ids, 0)
 				check()
 				if !record.agentsExpanded || !record.expanded {
 					t.Fatal("image toggle changed Agents or Tools")
@@ -318,7 +318,7 @@ func TestAgentLabelClickKeepsTheAgentsDisclosureOpen(t *testing.T) {
 	row.agent.session = "child"
 	r.tabs = append(r.tabs, child)
 	r.endTurn(nil)
-	m.toggleAgentDisclosureGroup([]int64{record.id})
+	m.toggleDisclosureGroup(activityAgents, []int64{record.id}, 0)
 	rows := m.transcriptRows(80)
 	m.agentLinkPlacements = m.visibleAgentLinks(fullViewport(len(rows), 80))
 	if len(m.agentLinkPlacements) != 1 {

@@ -93,10 +93,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []terminalImagePlacement {
 	for n := range m.agentLinkPlacements {
 		m.agentLinkPlacements[n].X += x
 	}
-	m.reasoningPlacements = m.visibleReasoningPlacements(viewport)
-	m.toolDisclosurePlacements = m.visibleToolDisclosurePlacements(viewport)
-	m.agentDisclosurePlacements = m.visibleDisclosurePlacements(viewport, activityAgents)
-	m.imageDisclosurePlacements = m.visibleImageDisclosurePlacements(viewport)
+	m.placeDisclosures(viewport)
 	m.inspectionLinks = m.visibleInspectionLinks(viewport, x)
 	return placements
 }

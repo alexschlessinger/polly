@@ -302,7 +302,7 @@ func (m *replModel) clearDisplay() {
 	m.clearReasoningRecords()
 	m.turnTrailers.reset()
 	m.agentLinkPlacements = nil
-	m.agentDisclosurePlacements = nil
+	m.disclosurePlacements[activityAgents] = nil
 	for i := range m.queue {
 		m.queue[i].transcriptShown = false
 	}

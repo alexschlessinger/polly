@@ -362,10 +362,7 @@ func (r *managedREPL) render() {
 	viewport := paneLayout.transcriptViewport(len(transcriptRows), topRow, pinTranscriptBottom, len(overlay))
 	imagePlacements := r.model.visibleImagePlacements(viewport)
 	r.model.imagePlacements = imagePlacements
-	r.model.reasoningPlacements = r.model.visibleReasoningPlacements(viewport)
-	r.model.toolDisclosurePlacements = r.model.visibleToolDisclosurePlacements(viewport)
-	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(viewport)
-	r.model.agentDisclosurePlacements = r.model.visibleDisclosurePlacements(viewport, activityAgents)
+	r.model.placeDisclosures(viewport)
 	r.model.agentLinkPlacements = r.model.visibleAgentLinks(viewport)
 	r.model.inspectionLinks = r.model.visibleInspectionLinks(viewport, 0)
 	var affordanceSpans []affordanceSpan

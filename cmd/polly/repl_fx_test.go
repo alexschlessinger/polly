@@ -621,11 +621,11 @@ func TestClearDuringReasoningStartsOneCleanDisclosure(t *testing.T) {
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("reasoning before clear")
-	m.reasoningPlacements = []disclosurePlacement{{recordID: m.turnReasoningID, Cols: 10}}
+	m.disclosurePlacements[activityThought] = []disclosurePlacement{{recordID: m.turnReasoningID, Cols: 10}}
 	m.clearDisplay()
-	if m.reasoningRecords.count() != 0 || m.reasoningRecords.count() != 0 || len(m.reasoningPlacements) != 0 || m.currentReasoningRecord() != nil {
+	if m.reasoningRecords.count() != 0 || m.reasoningRecords.count() != 0 || len(m.disclosurePlacements[activityThought]) != 0 || m.currentReasoningRecord() != nil {
 		t.Fatalf("clear retained reasoning state: records=%d at=%d placements=%d current=%#v",
-			m.reasoningRecords.count(), m.reasoningRecords.count(), len(m.reasoningPlacements), m.currentReasoningRecord())
+			m.reasoningRecords.count(), m.reasoningRecords.count(), len(m.disclosurePlacements[activityThought]), m.currentReasoningRecord())
 	}
 
 	tui.ShowThinking("reasoning after clear")
@@ -796,15 +796,15 @@ func TestCompletedReasoningKeepsInlineHitbox(t *testing.T) {
 
 	// The settled reasoning block stays inline and clickable.
 	rows := m.transcriptRows(width)
-	visible := m.visibleReasoningPlacements(fullViewport(len(rows), width))
+	visible := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityThought)
 	if len(visible) != 1 || visible[0].recordID != record.id {
 		t.Fatalf("completed reasoning lost its transcript hitbox: %#v", visible)
 	}
 
 	// Clicking the row's triangle opens the thought; the trailer below is
 	// status only.
-	m.reasoningPlacements = visible
-	if !m.toggleReasoningAt(visible[0].X, visible[0].Y, width) || !record.expanded {
+	m.disclosurePlacements[activityThought] = visible
+	if !m.toggleDisclosureAt(visible[0].X, visible[0].Y, width) || !record.expanded {
 		t.Fatal("clicking the completed thought control did not open it")
 	}
 	if trailer := m.turnTrailers.latest(); trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "thought") {
@@ -941,7 +941,7 @@ func TestToggleToolDisclosureGroupAppliesBeforeRefresh(t *testing.T) {
 	ids := append([]int64(nil), m.turnToolDisclosureIDs...)
 
 	// Expand the group; every record must end expanded.
-	if !m.toggleToolDisclosureGroup(ids) {
+	if !m.toggleDisclosureGroup(activityTools, ids, 0) {
 		t.Fatal("group expand returned false")
 	}
 	for _, id := range ids {
@@ -954,7 +954,7 @@ func TestToggleToolDisclosureGroupAppliesBeforeRefresh(t *testing.T) {
 	// collapse every record rather than re-expand the closed member.
 	m.toolDisclosures.get(ids[1]).expanded = false
 	m.refreshToolDisclosure(m.toolDisclosures.get(ids[1]))
-	if !m.toggleToolDisclosureGroup(ids) {
+	if !m.toggleDisclosureGroup(activityTools, ids, 0) {
 		t.Fatal("mixed group collapse returned false")
 	}
 	for _, id := range ids {

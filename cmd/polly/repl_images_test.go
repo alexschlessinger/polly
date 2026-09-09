@@ -283,12 +283,12 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	}
 
 	rows := r.model.transcriptRows(100)
-	r.model.imageDisclosurePlacements = r.model.visibleImageDisclosurePlacements(fullViewport(len(rows), 100))
-	if len(r.model.imageDisclosurePlacements) != 1 {
-		t.Fatalf("Images hitboxes = %#v", r.model.imageDisclosurePlacements)
+	r.model.disclosurePlacements[activityImages] = r.model.visibleDisclosurePlacements(fullViewport(len(rows), 100), activityImages)
+	if len(r.model.disclosurePlacements[activityImages]) != 1 {
+		t.Fatalf("Images hitboxes = %#v", r.model.disclosurePlacements[activityImages])
 	}
-	p := r.model.imageDisclosurePlacements[0]
-	if !r.model.toggleImageDisclosureAt(p.X, p.Y) {
+	p := r.model.disclosurePlacements[activityImages][0]
+	if !r.model.toggleDisclosureAt(p.X, p.Y, 0) {
 		t.Fatal("Images control did not expand")
 	}
 	if !record.imagesExpanded || record.expanded {
@@ -361,11 +361,11 @@ func TestImagesDisclosureTogglePreservesHeldViewport(t *testing.T) {
 			t.Fatalf("%s moved held viewport: anchor=%d rows=%#v", stage, m.scrollAnchor, rows)
 		}
 	}
-	if !m.toggleImageDisclosureGroup([]int64{record.id}) {
+	if !m.toggleDisclosureGroup(activityImages, []int64{record.id}, 0) {
 		t.Fatal("Images expansion returned false")
 	}
 	assertHeld("expanding Images")
-	if !m.toggleImageDisclosureGroup([]int64{record.id}) {
+	if !m.toggleDisclosureGroup(activityImages, []int64{record.id}, 0) {
 		t.Fatal("Images collapse returned false")
 	}
 	assertHeld("collapsing Images")
@@ -390,7 +390,7 @@ func TestToolAndImagesDisclosuresKeepIndependentImageMarkers(t *testing.T) {
 	tui.AppendToolEnd(call, discoveredPath, time.Millisecond, nil)
 	tui.AppendToolMedia(call, inspectionTranscriptImages(testToolImageResult(t, inspectedPath, call.ID), nil))
 	record := m.currentToolDisclosure()
-	if record == nil || !m.toggleToolDisclosure(record.id) || !m.toggleImageDisclosureGroup([]int64{record.id}) {
+	if record == nil || !m.toggleToolDisclosure(record.id) || !m.toggleDisclosureGroup(activityImages, []int64{record.id}, 0) {
 		t.Fatalf("mixed image disclosures did not expand: %#v", record)
 	}
 
@@ -475,7 +475,7 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 	if !strings.Contains(header, "1 tool") || !strings.Contains(header, "1 image viewed") {
 		t.Fatalf("hydrated image activity row = %q", header)
 	}
-	if !m.toggleImageDisclosureGroup([]int64{record.id}) {
+	if !m.toggleDisclosureGroup(activityImages, []int64{record.id}, 0) {
 		t.Fatal("hydrated Images disclosure did not expand")
 	}
 	expanded := activity()
@@ -486,7 +486,7 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 	if !strings.Contains(plain, "viewed · durable.png · 6×3") || !strings.Contains(plain, "│") {
 		t.Fatalf("hydrated inspection gallery = %q", plain)
 	}
-	if !m.toggleImageDisclosureGroup([]int64{record.id}) || len(activity().images) != 0 {
+	if !m.toggleDisclosureGroup(activityImages, []int64{record.id}, 0) || len(activity().images) != 0 {
 		t.Fatalf("hydrated Images disclosure did not collapse cleanly: %#v", activity().images)
 	}
 }

@@ -102,7 +102,8 @@ func modelHoverTarget(m *replModel, p image.Point, disclosureX, right int) hover
 			return hoverTarget{rect: image.Rect(link.X, link.Y, link.X+link.Cols, link.Y+1)}
 		}
 	}
-	for _, placements := range [][]disclosurePlacement{m.reasoningPlacements, m.toolDisclosurePlacements, m.agentDisclosurePlacements, m.imageDisclosurePlacements} {
+	for _, kind := range disclosureKinds {
+		placements := m.disclosurePlacements[kind]
 		for _, pl := range placements {
 			if x := pl.X + disclosureX; p.Y == pl.Y && p.X >= x && p.X < x+pl.Cols {
 				return hoverTarget{rect: image.Rect(x, pl.Y, x+pl.Cols, pl.Y+1)}

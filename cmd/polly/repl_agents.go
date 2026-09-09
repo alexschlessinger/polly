@@ -290,32 +290,6 @@ func (m *replModel) appendAgentDetail(block *transcriptDisplayBlock, ids []int64
 	block.text += "\n" + detail
 }
 
-func (m *replModel) toggleAgentDisclosureGroup(ids []int64) bool {
-	if _, ok := m.agentField(ids, false); !ok {
-		return false
-	}
-	m.noteDisclosure(activityAgents, ids[0])
-	expand := !m.agentsExpanded(ids)
-	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(ids), func(bool) {
-		for _, id := range ids {
-			if record := m.toolDisclosures.get(id); record != nil {
-				record.agentsExpanded = expand
-			}
-		}
-		m.visual.invalidate()
-	})
-	return true
-}
-
-func (m *replModel) toggleAgentDisclosureAt(x, y int) bool {
-	for _, p := range m.agentDisclosurePlacements {
-		if p.Y == y && x >= p.X && x < p.X+p.Cols {
-			return m.toggleAgentDisclosureGroup(p.recordIDs)
-		}
-	}
-	return false
-}
-
 func (m *replModel) visibleAgentLinks(v transcriptViewport) []agentLink {
 	var links []agentLink
 	offset := 0

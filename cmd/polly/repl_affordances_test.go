@@ -43,17 +43,17 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	r.endTurn(nil)
 	m.ed.setText("draft") // Keep the normal editor cursor throughout this check.
 	r.render()
-	if len(m.toolDisclosurePlacements) != 1 {
-		t.Fatalf("tool disclosure hitboxes = %#v, want one", m.toolDisclosurePlacements)
+	if len(m.disclosurePlacements[activityTools]) != 1 {
+		t.Fatalf("tool disclosure hitboxes = %#v, want one", m.disclosurePlacements[activityTools])
 	}
-	target := m.toolDisclosurePlacements[0]
+	target := m.disclosurePlacements[activityTools][0]
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: target.X, Y: target.Y}})
 	r.render()
 	at := m.affordances.disclosures[affordanceTarget{activityTools, target.recordID}]
 	if at.IsZero() {
 		t.Fatal("click did not arm disclosure feedback")
 	}
-	for _, p := range m.toolDisclosurePlacements {
+	for _, p := range m.disclosurePlacements[activityTools] {
 		if p.recordID == target.recordID {
 			target = p
 		}
@@ -63,14 +63,14 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	for i := range rows {
 		rows[i] = append([]ui.Cell(nil), m.visual.rows[i]...)
 	}
-	placements := append([]disclosurePlacement(nil), m.toolDisclosurePlacements...)
+	placements := append([]disclosurePlacement(nil), m.disclosurePlacements[activityTools]...)
 	_, before, _ := screen.Get(target.X, target.Y)
 	r.tickAffordances(at.Add(500 * time.Millisecond))
 	glyph, highlighted, _ := screen.Get(target.X, target.Y)
 	if glyph != "▾" || highlighted == before {
 		t.Fatalf("disclosure did not visibly react: glyph=%q before=%v after=%v", glyph, before, highlighted)
 	}
-	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.toolDisclosurePlacements) || canonical != strings.Join(transcriptTexts(m), "\n") {
+	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.disclosurePlacements[activityTools]) || canonical != strings.Join(transcriptTexts(m), "\n") {
 		t.Fatal("style-only tick changed transcript/cache/click geometry")
 	}
 	r.tickAffordances(at.Add(2 * time.Second))

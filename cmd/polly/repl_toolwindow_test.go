@@ -28,11 +28,11 @@ func toolRows(m *replModel) []string {
 func clickToolDisclosure(t *testing.T, m *replModel, recordID int64, width int) {
 	t.Helper()
 	rows := m.transcriptRows(width)
-	placements := m.visibleToolDisclosurePlacements(fullViewport(len(rows), width))
-	m.toolDisclosurePlacements = placements
+	placements := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityTools)
+	m.disclosurePlacements[activityTools] = placements
 	for _, placement := range placements {
 		if placement.recordID == recordID {
-			if !m.toggleToolDisclosureAt(placement.X+1, placement.Y) {
+			if !m.toggleDisclosureAt(placement.X+1, placement.Y, 0) {
 				t.Fatalf("clicking tool disclosure %d did not toggle it", recordID)
 			}
 			return
@@ -760,13 +760,13 @@ func TestCompletedToolsKeepInlineHitboxAndTrailerControl(t *testing.T) {
 	// The settled tool block stays inline and clickable. Both batches of the
 	// unbroken run share one aggregated record.
 	rows := m.transcriptRows(width)
-	visible := m.visibleToolDisclosurePlacements(fullViewport(len(rows), width))
+	visible := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityTools)
 	if len(visible) != 1 || len(visible[0].recordIDs) != 1 || visible[0].recordIDs[0] != record.id {
 		t.Fatalf("completed tools lost their transcript hitbox: %#v", visible)
 	}
 
-	m.toolDisclosurePlacements = visible
-	if !m.toggleToolDisclosureAt(visible[0].X+1, visible[0].Y) || !record.expanded {
+	m.disclosurePlacements[activityTools] = visible
+	if !m.toggleDisclosureAt(visible[0].X+1, visible[0].Y, 0) || !record.expanded {
 		t.Fatal("clicking the completed tool control did not open it")
 	}
 }
@@ -827,10 +827,10 @@ func TestDraggedMouseSampleDoesNotRetoggleDisclosure(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "a", Name: "alpha"}})
 	record := m.currentToolDisclosure()
 	r.render()
-	if len(m.toolDisclosurePlacements) == 0 {
+	if len(m.disclosurePlacements[activityTools]) == 0 {
 		t.Fatal("no disclosure placement after render")
 	}
-	p := m.toolDisclosurePlacements[0]
+	p := m.disclosurePlacements[activityTools][0]
 	press := ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: p.X + 1, Y: p.Y}}
 	r.handleEvent(press)
 	if !record.expanded {

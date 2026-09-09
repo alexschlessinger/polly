@@ -45,15 +45,15 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 	}
 
 	rows := m.transcriptRows(120)
-	thoughts := m.visibleReasoningPlacements(fullViewport(len(rows), 120))
-	tools := m.visibleToolDisclosurePlacements(fullViewport(len(rows), 120))
-	images := m.visibleImageDisclosurePlacements(fullViewport(len(rows), 120))
+	thoughts := m.visibleDisclosurePlacements(fullViewport(len(rows), 120), activityThought)
+	tools := m.visibleDisclosurePlacements(fullViewport(len(rows), 120), activityTools)
+	images := m.visibleDisclosurePlacements(fullViewport(len(rows), 120), activityImages)
 	if len(thoughts) != 1 || len(tools) != 1 || len(images) != 1 || thoughts[0].Y != tools[0].Y || tools[0].Y != images[0].Y ||
 		thoughts[0].X+thoughts[0].Cols > tools[0].X || tools[0].X+tools[0].Cols > images[0].X {
 		t.Fatalf("three-part activity hitboxes: thought=%#v tools=%#v images=%#v", thoughts, tools, images)
 	}
-	m.imageDisclosurePlacements = images
-	if !m.toggleImageDisclosureAt(images[0].X, images[0].Y) {
+	m.disclosurePlacements[activityImages] = images
+	if !m.toggleDisclosureAt(images[0].X, images[0].Y, 0) {
 		t.Fatal("Images hitbox did not expand")
 	}
 	record := m.toolDisclosures.get(activity.toolDisclosureIDs[0])
@@ -163,8 +163,8 @@ func TestInlineActivitySmoke(t *testing.T) {
 	}
 
 	rows := m.transcriptRows(100)
-	reasoningHit := m.visibleReasoningPlacements(fullViewport(len(rows), 100))
-	toolHit := m.visibleToolDisclosurePlacements(fullViewport(len(rows), 100))
+	reasoningHit := m.visibleDisclosurePlacements(fullViewport(len(rows), 100), activityThought)
+	toolHit := m.visibleDisclosurePlacements(fullViewport(len(rows), 100), activityTools)
 	if len(reasoningHit) != 1 || len(toolHit) != 1 || reasoningHit[0].Y != toolHit[0].Y ||
 		reasoningHit[0].X+reasoningHit[0].Cols > toolHit[0].X {
 		t.Fatalf("one-line activity controls need distinct same-row hitboxes: thought=%#v tools=%#v", reasoningHit, toolHit)
@@ -244,19 +244,19 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 		t.Fatalf("uninterrupted activity should aggregate into one row: %#v", activityLines)
 	}
 	rows := m.transcriptRows(100)
-	m.reasoningPlacements = m.visibleReasoningPlacements(fullViewport(len(rows), 100))
-	if len(m.reasoningPlacements) != 1 || len(m.reasoningPlacements[0].recordIDs) != 1 {
-		t.Fatalf("aggregate thought hitbox = %#v", m.reasoningPlacements)
+	m.disclosurePlacements[activityThought] = m.visibleDisclosurePlacements(fullViewport(len(rows), 100), activityThought)
+	if len(m.disclosurePlacements[activityThought]) != 1 || len(m.disclosurePlacements[activityThought][0].recordIDs) != 1 {
+		t.Fatalf("aggregate thought hitbox = %#v", m.disclosurePlacements[activityThought])
 	}
-	p := m.reasoningPlacements[0]
-	if !m.toggleReasoningAt(p.X, p.Y, 100) {
+	p := m.disclosurePlacements[activityThought][0]
+	if !m.toggleDisclosureAt(p.X, p.Y, 100) {
 		t.Fatal("aggregate thought control did not expand")
 	}
 	expanded := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
 	if !strings.Contains(expanded, "first pass") || !strings.Contains(expanded, "second pass") {
 		t.Fatalf("aggregate thought expansion omitted a phase: %q", expanded)
 	}
-	if !m.toggleReasoningAt(p.X, p.Y, 100) {
+	if !m.toggleDisclosureAt(p.X, p.Y, 100) {
 		t.Fatal("aggregate thought control did not collapse")
 	}
 
@@ -304,7 +304,7 @@ func TestAggregatedReasoningUsesOneGlobalPreviewBudget(t *testing.T) {
 		tui.AppendToolEnd(call, "ok", 10*time.Millisecond, nil)
 	}
 	ids := append([]int64(nil), m.reasoningOrder...)
-	if len(ids) != 1 || !m.toggleReasoningGroup(ids, width) {
+	if len(ids) != 1 || !m.toggleDisclosureGroup(activityThought, ids, width) {
 		t.Fatalf("aggregated reasoning did not expand as one record: %#v", ids)
 	}
 
@@ -329,7 +329,7 @@ func TestAggregatedReasoningUsesOneGlobalPreviewBudget(t *testing.T) {
 
 	// Settling collapses the group; reopening it inline keeps the same budget.
 	r.endTurn(nil)
-	if !m.toggleReasoningGroup(ids, width) {
+	if !m.toggleDisclosureGroup(activityThought, ids, width) {
 		t.Fatal("settled aggregate did not reopen")
 	}
 	for _, block := range m.transcriptDisplayEntries(width) {
@@ -355,8 +355,8 @@ func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
 	m.visual.invalidate()
 
 	rows := m.transcriptRows(width)
-	thoughts := m.visibleReasoningPlacements(fullViewport(len(rows), width))
-	tools := m.visibleToolDisclosurePlacements(fullViewport(len(rows), width))
+	thoughts := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityThought)
+	tools := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityTools)
 	if len(thoughts) != 1 || thoughts[0].X != 2 || thoughts[0].Cols != 9 {
 		t.Fatalf("fully visible thought hitbox = %#v, want x=2 cols=9", thoughts)
 	}
@@ -366,8 +366,8 @@ func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
 
 	const fullyTruncatedWidth = 8
 	rows = m.transcriptRows(fullyTruncatedWidth)
-	thoughts = m.visibleReasoningPlacements(fullViewport(len(rows), fullyTruncatedWidth))
-	tools = m.visibleToolDisclosurePlacements(fullViewport(len(rows), fullyTruncatedWidth))
+	thoughts = m.visibleDisclosurePlacements(fullViewport(len(rows), fullyTruncatedWidth), activityThought)
+	tools = m.visibleDisclosurePlacements(fullViewport(len(rows), fullyTruncatedWidth), activityTools)
 	if len(thoughts) != 0 || len(tools) != 0 {
 		t.Fatalf("fully truncated controls retained fallback hitboxes: thoughts=%#v tools=%#v", thoughts, tools)
 	}
@@ -420,11 +420,11 @@ func TestActivityGroupTogglesReanchorProjectedVisualBlockOnce(t *testing.T) {
 			t.Fatalf("%s moved held viewport: anchor=%d rows=%#v", stage, m.scrollAnchor, rows)
 		}
 	}
-	if !m.toggleReasoningGroup(ids, width) {
+	if !m.toggleDisclosureGroup(activityThought, ids, width) {
 		t.Fatal("group expansion returned false")
 	}
 	assertAnchored("expanding merged reasoning group")
-	if !m.toggleReasoningGroup(ids, width) {
+	if !m.toggleDisclosureGroup(activityThought, ids, width) {
 		t.Fatal("group collapse returned false")
 	}
 	assertAnchored("collapsing merged reasoning group")
@@ -433,11 +433,11 @@ func TestActivityGroupTogglesReanchorProjectedVisualBlockOnce(t *testing.T) {
 	if len(toolIDs) != 2 {
 		t.Fatalf("fixture tool disclosure IDs = %v, want 2", toolIDs)
 	}
-	if !m.toggleToolDisclosureGroup(toolIDs) {
+	if !m.toggleDisclosureGroup(activityTools, toolIDs, 0) {
 		t.Fatal("tool group expansion returned false")
 	}
 	assertAnchored("expanding merged tool group")
-	if !m.toggleToolDisclosureGroup(toolIDs) {
+	if !m.toggleDisclosureGroup(activityTools, toolIDs, 0) {
 		t.Fatal("tool group collapse returned false")
 	}
 	assertAnchored("collapsing merged tool group")

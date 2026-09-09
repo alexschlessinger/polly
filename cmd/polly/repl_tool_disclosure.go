@@ -254,8 +254,8 @@ func (m *replModel) clearToolDisclosures() {
 	m.toolDisclosures.reset()
 	m.turnToolDisclosureID = 0
 	m.turnToolDisclosureIDs = nil
-	m.toolDisclosurePlacements = nil
-	m.imageDisclosurePlacements = nil
+	m.disclosurePlacements[activityTools] = nil
+	m.disclosurePlacements[activityImages] = nil
 }
 
 // arrowPulse breathes the running-tool arrow between two brightnesses of one

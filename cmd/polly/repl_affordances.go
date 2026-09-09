@@ -297,11 +297,8 @@ func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptVi
 			spans = append(spans, affordanceSpan{x: x, y: y, cols: cols, at: at, duration: duration, color: color})
 		}
 	}
-	for kind, placements := range map[activityKind][]disclosurePlacement{
-		activityThought: m.reasoningPlacements, activityTools: m.toolDisclosurePlacements,
-		activityAgents: m.agentDisclosurePlacements, activityImages: m.imageDisclosurePlacements,
-	} {
-		for _, p := range placements {
+	for _, kind := range disclosureKinds {
+		for _, p := range m.disclosurePlacements[kind] {
 			add(p.X, p.Y, 1, m.affordances.disclosures[affordanceTarget{kind, p.recordID}], 1500*time.Millisecond, ui.ColorWhite)
 		}
 	}

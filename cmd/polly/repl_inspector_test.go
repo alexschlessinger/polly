@@ -560,7 +560,7 @@ func TestInspectorInlineToolAndThoughtLinksDoNotReplaceDropdowns(t *testing.T) {
 	if !foundTool || !foundThought {
 		t.Fatalf("missing links: %#v", links)
 	}
-	for _, header := range m.visibleToolDisclosurePlacements(v) {
+	for _, header := range m.visibleDisclosurePlacements(v, activityTools) {
 		for _, link := range links {
 			if link.rect.Overlaps(image.Rect(header.X, header.Y, header.X+header.Cols, header.Y+1)) {
 				t.Fatal("detail link swallowed dropdown header")

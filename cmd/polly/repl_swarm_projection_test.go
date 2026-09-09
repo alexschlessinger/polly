@@ -184,7 +184,7 @@ func TestSwarmProjectionKeepsInterleavedWorkflowsGrouped(t *testing.T) {
 		t.Fatal("late workflow member displaced an active tool row")
 	}
 	blocks := activityBlocks(m, 120)
-	if len(blocks) != 1 || !m.toggleAgentDisclosureGroup(blocks[0].toolDisclosureIDs) {
+	if len(blocks) != 1 || !m.toggleDisclosureGroup(activityAgents, blocks[0].toolDisclosureIDs, 0) {
 		t.Fatalf("workflow batch did not share an Agents disclosure: %+v", blocks)
 	}
 	text := strings.Join(transcriptRowsText(m.transcriptRows(120)), "\n")

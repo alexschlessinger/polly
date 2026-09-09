@@ -138,17 +138,17 @@ type replModel struct {
 	activeToolsPhase int
 	// Tool activity is a semantic disclosure from its first call. It defaults
 	// collapsed; deliberate expansion reveals every live or completed row.
-	toolDisclosures           transcriptRegistry[*toolDisclosureRecord]
-	turnToolDisclosureID      int64
-	turnToolDisclosureIDs     []int64 // every disclosure opened this turn
-	toolDisclosurePlacements  []disclosurePlacement
-	imageDisclosurePlacements []disclosurePlacement
-	agentDisclosurePlacements []disclosurePlacement
-	agentLinkPlacements       []agentLink
-	inspectionLinks           []inspectionLink
-	turnDock                  turnDockState
-	turnTrailers              transcriptRegistry[*turnTrailerRecord]
-	modal                     *replModal
+	toolDisclosures       transcriptRegistry[*toolDisclosureRecord]
+	turnToolDisclosureID  int64
+	turnToolDisclosureIDs []int64 // every disclosure opened this turn
+	// disclosurePlacements is the last rendered frame's activity controls
+	// per kind, in absolute screen cells, for mouse hit-testing.
+	disclosurePlacements [activityKindCount][]disclosurePlacement
+	agentLinkPlacements  []agentLink
+	inspectionLinks      []inspectionLink
+	turnDock             turnDockState
+	turnTrailers         transcriptRegistry[*turnTrailerRecord]
+	modal                *replModal
 
 	ed              lineEditor
 	busy            bool
@@ -209,7 +209,6 @@ type replModel struct {
 	turnReasoningOpen    bool    // pending Ctrl-O pre-arm before the first chunk
 	thinkingSegmentOpen  bool
 	thinkingSegmentStart time.Time
-	reasoningPlacements  []disclosurePlacement
 	reasoningWidth       int // last renderer width; avoids terminal access from provider callbacks
 
 	// focusKnown/focused mirror the terminal's focus reports (tcell
@@ -1353,10 +1352,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			if r.openAgentAt(mouse.X, mouse.Y) {
 				return false
 			}
-			if !m.toggleReasoningAt(mouse.X, mouse.Y, terminalWidth) &&
-				!m.toggleToolDisclosureAt(mouse.X, mouse.Y) &&
-				!m.toggleAgentDisclosureAt(mouse.X, mouse.Y) &&
-				!m.toggleImageDisclosureAt(mouse.X, mouse.Y) {
+			if !m.toggleDisclosureAt(mouse.X, mouse.Y, terminalWidth) {
 				r.openImageAt(mouse.X, mouse.Y)
 			}
 		}

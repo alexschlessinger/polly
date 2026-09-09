@@ -17,6 +17,7 @@ const (
 	activityTools
 	activityAgents
 	activityImages
+	activityKindCount
 )
 
 type turnDockState struct {

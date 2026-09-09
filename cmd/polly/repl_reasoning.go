@@ -217,7 +217,7 @@ func (m *replModel) resetCurrentThinking() {
 func (m *replModel) clearReasoningRecords() {
 	m.reasoningRecords.reset()
 	m.reasoningOrder = nil
-	m.reasoningPlacements = nil
+	m.disclosurePlacements[activityThought] = nil
 	m.resetCurrentThinking()
 }
 
@@ -473,7 +473,7 @@ func (m *replModel) toggleLatestReasoning(width int) bool {
 			if len(ids) == 1 {
 				return m.toggleReasoning(ids[0], width)
 			}
-			return m.toggleReasoningGroup(ids, width)
+			return m.toggleDisclosureGroup(activityThought, ids, width)
 		}
 		// No current-turn record exists yet. Remember the user's choice only
 		// until the first record is created; never target an older turn.

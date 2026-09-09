@@ -53,10 +53,10 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	tui.AppendAssistantText("Found the relevant code.")
 	r.endTurn(nil)
 	r.render()
-	if len(m.toolDisclosurePlacements) != 1 {
-		t.Fatalf("tool hitboxes = %#v, want one", m.toolDisclosurePlacements)
+	if len(m.disclosurePlacements[activityTools]) != 1 {
+		t.Fatalf("tool hitboxes = %#v, want one", m.disclosurePlacements[activityTools])
 	}
-	target := m.toolDisclosurePlacements[0]
+	target := m.disclosurePlacements[activityTools][0]
 	record := m.currentToolDisclosure()
 
 	hoverAt(t, r, image.Pt(target.X+target.Cols-1, target.Y))
