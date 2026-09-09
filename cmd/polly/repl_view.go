@@ -129,10 +129,13 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 		m.artifactStore = source.info.Artifacts
 	}
 	// The tool's state lives in the inspector header; the body is two titled
-	// payloads, arguments then output, under one gutter.
+	// payloads, arguments then output, under one gutter. A bash call shows
+	// the command it runs, as the approval block does, not its JSON envelope.
 	arguments := strings.TrimSpace(t.call.Arguments)
 	title, lines := "arguments", []string{styled("(none)", "muted", "")}
-	if arguments != "" {
+	if cmd, ok := bashCommandOf(t.call); ok {
+		title, lines = "command", highlightCodeLines(cmd, "bash")
+	} else if arguments != "" {
 		lang := ""
 		if json.Valid([]byte(arguments)) {
 			lang = "json"

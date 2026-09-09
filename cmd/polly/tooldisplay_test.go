@@ -118,6 +118,25 @@ func TestExpandToolCallShowsBashCommandVerbatim(t *testing.T) {
 	}
 }
 
+func TestBashCommandOf(t *testing.T) {
+	cases := []struct {
+		name, args, want string
+		ok               bool
+	}{
+		{"bash", `{"command":"ls\n"}`, "ls", true},
+		{"bash", `{"command":"  "}`, "", false},
+		{"bash", `{"cmd":"ls"}`, "", false},
+		{"bash", `{not json`, "", false},
+		{"fetch", `{"command":"ls"}`, "", false},
+	}
+	for _, c := range cases {
+		got, ok := bashCommandOf(messages.ChatMessageToolCall{Name: c.name, Arguments: c.args})
+		if got != c.want || ok != c.ok {
+			t.Fatalf("bashCommandOf(%s %s) = %q, %v; want %q, %v", c.name, c.args, got, ok, c.want, c.ok)
+		}
+	}
+}
+
 func TestExpandToolCallRedactsAndCaps(t *testing.T) {
 	args, _ := json.Marshal(map[string]any{"url": "https://x", "api_key": "hunter2"})
 	got := expandToolCall(messages.ChatMessageToolCall{Name: "fetch", Arguments: string(args)})

@@ -321,16 +321,14 @@ const approvalViewMaxLines = 24
 // values redacted for everything else. Multi-line plain text, capped at
 // approvalViewMaxLines; the caller owns styling.
 func expandToolCall(tc messages.ChatMessageToolCall) string {
+	if cmd, ok := bashCommandOf(tc); ok {
+		return capLines(cmd, approvalViewMaxLines)
+	}
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(tc.Arguments), &raw); err != nil {
 		// Malformed JSON would be executed as-is by the tool layer's own error
 		// path; show the payload rather than pretend there are no arguments.
 		return capLines(tc.Arguments, approvalViewMaxLines)
-	}
-	if tc.Name == "bash" {
-		if cmd, ok := raw["command"].(string); ok && strings.TrimSpace(cmd) != "" {
-			return capLines(strings.TrimRight(cmd, "\n"), approvalViewMaxLines)
-		}
 	}
 	redactSensitiveArgs(raw)
 	// Encoder rather than MarshalIndent: the latter HTML-escapes angle
@@ -343,6 +341,22 @@ func expandToolCall(tc messages.ChatMessageToolCall) string {
 		return capLines(tc.Arguments, approvalViewMaxLines)
 	}
 	return capLines(strings.TrimRight(pretty.String(), "\n"), approvalViewMaxLines)
+}
+
+// bashCommandOf is the shell command a bash call runs, when the call is one:
+// the one argument a reader wants to see, shown verbatim instead of the JSON
+// envelope around it. Trailing newlines go; a blank command is no command.
+func bashCommandOf(tc messages.ChatMessageToolCall) (string, bool) {
+	if tc.Name != "bash" {
+		return "", false
+	}
+	var raw struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(tc.Arguments), &raw); err != nil || strings.TrimSpace(raw.Command) == "" {
+		return "", false
+	}
+	return strings.TrimRight(raw.Command, "\n"), true
 }
 
 // redactSensitiveArgs replaces sensitive values anywhere in a decoded JSON
