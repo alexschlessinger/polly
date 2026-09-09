@@ -403,7 +403,7 @@ func outputConfigFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "quiet",
-			Usage: "Suppress status and tool display output",
+			Usage: "Suppress status, tool display, and sandbox notice output",
 		},
 		&cli.BoolFlag{
 			Name:    "debug",

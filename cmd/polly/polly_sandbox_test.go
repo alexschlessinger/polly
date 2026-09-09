@@ -247,6 +247,33 @@ func TestSandboxRegistryOptionsWarnsBroadBaseOnce(t *testing.T) {
 	}
 }
 
+func TestQuietSilencesBroadWritablePathWarnings(t *testing.T) {
+	skipIfWindows(t)
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return passthroughSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+
+	warnings := newBroadWritablePathWarner()
+	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{
+		SandboxPreset: "base",
+		WritePaths:    []string{string(filepath.Separator)},
+		Quiet:         true,
+	}, warnings)
+	if err != nil {
+		t.Fatalf("sandboxRegistryOptions() error = %v", err)
+	}
+	registry := tools.NewToolRegistry(nil, opts...)
+	t.Cleanup(func() { _ = registry.Close() })
+	if _, err := registry.NewSandbox(&sandbox.Config{WritablePaths: []string{string(filepath.Separator)}}); err != nil {
+		t.Fatalf("NewSandbox() error = %v", err)
+	}
+	if got := warnings.Drain(); len(got) != 0 {
+		t.Fatalf("--quiet still produced warnings: %q", got)
+	}
+}
+
 func TestSandboxRegistryOptionsWarnsBroadPerToolOverlay(t *testing.T) {
 	skipIfWindows(t)
 	originalNewSandbox := newSandbox

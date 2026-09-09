@@ -517,10 +517,11 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 
 	// The same warning-aware factory handles the startup probe and every final
 	// per-tool config produced later by the registry. One shared state suppresses
-	// repeats when the base grant appears in several effective configs.
+	// repeats when the base grant appears in several effective configs. --quiet
+	// silences the warnings at their source, like the sandbox notice.
 	warningFactory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		sb, err := newSandbox(cfg)
-		if err == nil && sb != nil {
+		if err == nil && sb != nil && !config.Quiet {
 			warnings.Warn(cfg)
 		}
 		return sb, err
