@@ -517,7 +517,7 @@ func indexedSearchEmbedding(indexDir, root string) (string, bool, error) {
 		if real, err := filepath.EvalSymlinks(recorded); err == nil {
 			recorded = real
 		}
-		if !searchPathWithin(root, recorded) {
+		if !sandbox.PathWithin(recorded, root) {
 			return "", true, fmt.Errorf("existing zvec-grep index includes paths outside the workspace; use grep or rg in bash for exact search")
 		}
 	}
@@ -540,11 +540,6 @@ func runIndexedSearchCommand(ctx context.Context, sb sandbox.Sandbox, binary, ro
 		err = ctx.Err()
 	}
 	return out.String(), strings.TrimSpace(errOut.String()), out.Truncated(), err
-}
-
-func searchPathWithin(root, path string) bool {
-	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func escapeSearchGlob(path string) string {
@@ -607,7 +602,7 @@ func filterIndexedSearch(text, root, scope string, cfg sandbox.Config, active, s
 			}
 			sawHit = true
 			path := filepath.Join(root, filepath.FromSlash(match[1]))
-			allowed = !filepath.IsAbs(match[1]) && searchPathWithin(root, path) && searchPathWithin(scope, path)
+			allowed = !filepath.IsAbs(match[1]) && sandbox.PathWithin(path, root) && sandbox.PathWithin(path, scope)
 			if active && sandbox.ReadAllowed(cfg, path) != nil {
 				allowed = false
 			}

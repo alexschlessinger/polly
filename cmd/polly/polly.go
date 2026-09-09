@@ -23,7 +23,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
-	"github.com/alexschlessinger/pollytool/subagent"
+	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
@@ -80,6 +80,7 @@ type conversationInput struct {
 }
 
 type conversationState struct {
+	swarm          *swarm.Runtime
 	workspaceEntry *workspaceEntry
 	sessionStore   sessions.SessionStore
 	session        sessions.Session
@@ -113,6 +114,36 @@ type conversationState struct {
 	// process, including failed attempts (entry present, value 0).
 	contextWindowsMu sync.Mutex
 	contextWindows   map[string]int
+	// memberUI, when set, takes the approvals of swarm members that run
+	// outside a turn (launched by a command, or woken by peer mail): the
+	// managed REPL binds the screen of the tab holding this session. turnUI
+	// is the running turn's UI, the fallback for hosts without a screen.
+	uiMu     sync.Mutex
+	memberUI TurnUI
+	turnUI   TurnUI
+}
+
+func (s *conversationState) setMemberUI(ui TurnUI) {
+	s.uiMu.Lock()
+	defer s.uiMu.Unlock()
+	s.memberUI = ui
+}
+
+func (s *conversationState) setTurnUI(ui TurnUI) {
+	s.uiMu.Lock()
+	defer s.uiMu.Unlock()
+	s.turnUI = ui
+}
+
+// hostTurnUI is the UI a swarm member without a parent turn reports to, or
+// nil when nothing on this host can take an approval right now.
+func (s *conversationState) hostTurnUI() TurnUI {
+	s.uiMu.Lock()
+	defer s.uiMu.Unlock()
+	if s.memberUI != nil {
+		return s.memberUI
+	}
+	return s.turnUI
 }
 
 // sessionOpener lets the managed REPL open sessions while it runs. prepare
@@ -125,9 +156,6 @@ type sessionOpener struct {
 	prepare func(ctx context.Context, name string, notify func(string)) (string, Settings, error)
 	open    func(ctx context.Context, name string, settings Settings, auto bool) (*conversationState, error)
 	newName func(ctx context.Context) (string, error)
-	// spawn builds a child's runtime for a subagent of parent (see
-	// openChildState); nil when the REPL cannot spawn.
-	spawn func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error)
 }
 
 // effectiveTools includes the agent's private built-ins for display and
@@ -141,6 +169,11 @@ func (s *conversationState) effectiveTools() *tools.ToolRegistry {
 
 func (s *conversationState) Close() error {
 	var errs []error
+	if s.swarm != nil {
+		if err := s.swarm.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if s.agent != nil {
 		if err := s.agent.Close(); err != nil {
 			errs = append(errs, err)
@@ -403,6 +436,9 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 	if err != nil {
 		return nil, fmt.Errorf("read context metadata: %w", err)
 	}
+	if metadata.SwarmID != "" {
+		return nil, fmt.Errorf("this swarm member is inspected through /sessions and resumed through its parent %q with /swarm resume; independent execution would lose its worktree binding", metadata.Parent)
+	}
 
 	// Discover skills before building the runtime tool registry, passing the
 	// persisted sources so --skill is restored on resume; new sources are
@@ -478,7 +514,9 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		sandboxWarnings: sandboxWarnings,
 		sandboxProbe:    probe,
 	}
-	registerSpawnTool(state, config, llmClient)
+	if err := registerSwarm(state, config, llmClient); err != nil {
+		return nil, err
+	}
 	return state, nil
 }
 
@@ -745,9 +783,6 @@ func (r *commandRunner) runConversation() (retErr error) {
 			newName: func(ctx context.Context) (string, error) {
 				return generateSessionName(ctx, r.sessionStore)
 			},
-			spawn: func(ctx context.Context, parent *conversationState, req subagent.Request) (*conversationState, error) {
-				return openChildState(ctx, r.llmClient, parent, req)
-			},
 		}
 		return runManagedREPL(signalCtx, config, state, opener)
 	}
@@ -974,6 +1009,8 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	}
 	turnUI.Start()
 	defer turnUI.Stop()
+	state.setTurnUI(turnUI)
+	defer state.setTurnUI(nil)
 	activityStart := time.Now()
 	completed := false
 	complete := func(reason messages.StopReason, err error) {
@@ -1042,13 +1079,18 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	turnStart := time.Now()
 	usage := turnUsage{}
 
-	resp, err := state.agent.Run(ctx, req, &llm.AgentCallbacks{
+	line, lineOutput := turnUI.(*lineTurnUI)
+	settledOutput := lineOutput && !config.Stream && !line.interactive
+	if lineOutput {
+		line.settledOutput = settledOutput
+	}
+	callbacks := &llm.AgentCallbacks{
 		OnReasoning: func(content string) {
 			trimLeadingNL = true
 			turnUI.ShowThinking(content)
 		},
 		OnContent: func(content string) {
-			if config.SchemaPath != "" {
+			if config.SchemaPath != "" || settledOutput {
 				return
 			}
 			if trimLeadingNL {
@@ -1067,7 +1109,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
 			return withToolCall(withParentTurnUI(ctx, turnUI), call)
 		},
-		ApproveToolCalls: turnUI.ApproveToolCalls,
+		ApproveToolCalls: func(calls []messages.ChatMessageToolCall) []bool {
+			return approveToolCalls(ctx, turnUI, "", calls)
+		},
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 			stats.record(tc.Name, err)
 			turnUI.AppendToolEnd(tc, result, duration, err)
@@ -1093,7 +1137,12 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			turnUI.RecordTurnTokens(peak, total)
 			turnUI.RecordContextUsage(usage.used, usage.limit, usage.estimated)
 		},
-	})
+	}
+	if state.swarm != nil {
+		updateSwarmDefaults(state, req, *settings)
+		state.swarm.BindParent(callbacks, turnUI.TurnPersistenceAllowed)
+	}
+	resp, err := state.agent.Run(ctx, req, callbacks)
 	if ctx.Err() != nil {
 		// Cancellation outranks whatever error the aborted run surfaced, but
 		// the turn still flows through persistence below: tools that completed
@@ -1144,7 +1193,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			// tool result) with a single write instead of one rewrite per
 			// message. A failed turn additionally records why it ended, so
 			// hydration can settle it instead of rendering an abandoned turn.
-			durable := durableTurnMessages(resp.AllMessages)
+			durable := durableTurnMessages(resp.AllMessages[resp.PersistedMessages:])
 			if runErr != nil {
 				durable = append(durable, interruptedTurnMarker(runErr))
 			}
@@ -1195,9 +1244,17 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 				}
 				return outputStructured(content, schema)
 			}
+			if settledOutput && resp.Message != nil {
+				turnUI.AppendAssistantText(resp.Message.Content)
+			}
 			turnUI.FinishTextTurn()
 			return nil
 		}()
+	}
+	if runErr != nil && settledOutput && config.SchemaPath == "" {
+		name, _ := state.session.GetName(context.WithoutCancel(ctx))
+		turnUI.AppendAssistantText(settledAnswer(resp, runErr, name))
+		turnUI.FinishTextTurn()
 	}
 
 	if outputErr := flushTurnOutputError(turnUI); outputErr != nil {
@@ -1213,6 +1270,16 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, settings.Model, stats, in, out, time.Since(turnStart).Milliseconds()))
 	}
 	return code, runErr
+}
+
+// settledAnswer is what a failed one-shot run still prints on stdout: the
+// answer the model produced, so a consumer keeps it and reads the failure from
+// stderr, or a blocker report naming the session when there is no answer.
+func settledAnswer(resp *llm.AgentResponse, runErr error, session string) string {
+	if resp != nil && resp.Message != nil && strings.TrimSpace(resp.Message.Content) != "" {
+		return resp.Message.Content
+	}
+	return "Blocked: " + runErr.Error() + "\n\nSession: " + session + "\n"
 }
 
 // externalizeMessageImages replaces prepared base64 image parts with private

@@ -93,6 +93,11 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	if m.hasAgentRows() && state.sessionStore != nil {
 		if summaries, err := state.sessionStore.ListSummaries(ctx); err == nil {
 			m.hydrateAgentSessions(name, summaries)
+			if state.swarm != nil {
+				if snapshot, err := state.swarm.State(ctx); err == nil {
+					m.hydrateSwarmAgents(snapshot)
+				}
+			}
 		} else {
 			m.appendNoticeLine("Agent sessions unavailable · " + err.Error())
 		}
@@ -120,9 +125,11 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 	return runREPLLoopWithCommands(ctx, reader, os.Stderr, commandCtx, func(prompt string) error {
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
+		ui := newLineTurnUIWithCapabilities(config, reader, state.outputCapabilities)
+		ui.interactive = true
 		// The exit code is a one-shot concern; the REPL already rendered
 		// any warning.
-		_, err := executeTurn(turnCtx, config, state, prompt, nil, reader, nil)
+		_, err := executeTurn(turnCtx, config, state, prompt, nil, reader, ui)
 		drainSandboxWarningsToWriter(os.Stderr, state)
 		// If the turn was cancelled but the parent context is still alive
 		// (not a shutdown signal), treat it as a recoverable per-turn

@@ -68,7 +68,7 @@ func (t *listDirTool) Execute(ctx context.Context, raw map[string]any) (string, 
 	if offset < 1 {
 		return "", fmt.Errorf("offset must be at least 1")
 	}
-	abs, err := resolveLocalPath(path)
+	abs, err := t.registry.ResolvePath(path)
 	if err != nil {
 		return "", err
 	}

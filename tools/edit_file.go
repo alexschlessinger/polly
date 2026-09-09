@@ -68,7 +68,7 @@ func (t *editFileTool) Execute(ctx context.Context, raw map[string]any) (string,
 	if oldString == newString {
 		return "", fmt.Errorf("old_string and new_string are identical")
 	}
-	abs, err := resolveLocalPath(path)
+	abs, err := t.registry.ResolvePath(path)
 	if err != nil {
 		return "", err
 	}

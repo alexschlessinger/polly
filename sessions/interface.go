@@ -109,6 +109,7 @@ const (
 	ReportFinished ReportStatus = "finished"
 	ReportCanceled ReportStatus = "canceled"
 	ReportFailed   ReportStatus = "failed"
+	ReportPaused   ReportStatus = "paused"
 )
 
 // Report is a subagent's reply addressed to the session whose agent spawned
@@ -151,11 +152,15 @@ type SessionStore interface {
 // Metadata stores session metadata and persisted runtime settings. Name,
 // Created, LastUsed, and TTL are canonicalized from indexed session columns.
 type Metadata struct {
-	Name        string        `json:"name"`
-	Created     time.Time     `json:"created"`
-	LastUsed    time.Time     `json:"lastUsed"`
-	Description string        `json:"description,omitempty"`
-	TTL         time.Duration `json:"ttl,omitempty"`
+	// SwarmID and ExecutionContext bind managed members to their parent's
+	// runtime. A UI may inspect them lease-free; execution resumes via parent.
+	SwarmID          string        `json:"swarmID,omitempty"`
+	ExecutionContext string        `json:"executionContext,omitempty"`
+	Name             string        `json:"name"`
+	Created          time.Time     `json:"created"`
+	LastUsed         time.Time     `json:"lastUsed"`
+	Description      string        `json:"description,omitempty"`
+	TTL              time.Duration `json:"ttl,omitempty"`
 	// Parent names the session whose agent spawned this one as a subagent,
 	// as that session is called now; empty for a session a person started.
 	// Canonical from the store's parent link (see AcquireOptions.Parent):

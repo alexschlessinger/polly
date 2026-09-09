@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 // turnCompletion describes the whole turn, including persistence and output.
@@ -39,33 +41,18 @@ func activityCanceled(err error) bool {
 // A joined persistence/output error must not become a recoverable iteration
 // limit just because another branch of its error chain is that sentinel.
 func onlyIterationLimit(err error) bool {
-	if err == llm.ErrMaxIterations {
-		return true
-	}
-	if multi, ok := err.(interface{ Unwrap() []error }); ok {
-		children := multi.Unwrap()
-		if len(children) == 0 {
-			return false
-		}
-		for _, child := range children {
-			if !onlyIterationLimit(child) {
-				return false
-			}
-		}
-		return true
-	}
-	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
-		return onlyIterationLimit(wrapped.Unwrap())
-	}
-	return false
+	return llm.IsIterationLimit(err)
 }
 
 func toolActivityOutcome(denied bool, err error) string {
+	var toolErr *tools.ToolError
 	switch {
 	case denied:
 		return "denied"
 	case activityCanceled(err):
 		return "canceled"
+	case llm.IsIterationLimit(err) || errors.As(err, &toolErr) && toolErr.Code == "ITERATION_LIMIT":
+		return "paused · iteration limit"
 	case err != nil:
 		return "failed"
 	default:
@@ -100,7 +87,7 @@ type turnActivitySummary struct {
 }
 
 type activityAgentCounts struct {
-	Total, Running, Failed, Canceled int
+	Total, Running, Failed, Canceled, Paused int
 }
 
 func (c *activityAgentCounts) add(status string, active bool) {
@@ -112,6 +99,8 @@ func (c *activityAgentCounts) add(status string, active bool) {
 		c.Failed++
 	case status == "canceled":
 		c.Canceled++
+	case strings.HasPrefix(status, "paused"):
+		c.Paused++
 	}
 }
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"image"
 	"reflect"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -284,32 +282,24 @@ func TestQueuedCueFollowsEntryAcrossEmptyAssistantDelete(t *testing.T) {
 }
 
 func TestDeliveredChildArmsCallerCueAndOnlyCurrentAgentControl(t *testing.T) {
-	r, runs := newChildTestREPL(t)
-	parent := r.visibleTab()
-	parent.model.affordances.enabled = true
-	beginParentToolCall(t, r, runs, "call-1")
-	out := spawnFromTool(context.Background(), r, parent, subagent.Request{Task: "slow", Background: true}, "call-1")
-	runUITask(t, r)
-	if rep := awaitReport(t, out); rep.err != nil {
-		t.Fatal(rep.err)
-	}
-	child := r.tabs[1]
+	r := savedAgentREPL(t, true)
+	parent, child := r.tabs[0], r.tabs[1]
 	child.keepOpen = true
-	// Visit the child once so its affordances are live, then leave it hidden:
-	// the state a background child is in when its delivery lands.
-	r.showTab(1)
+	parent.model.affordances.enabled = true
+	child.model.affordances.enabled = true
+	parent.model.beginTurn("delegate")
+	parent.model.appendToolCallStart(agentCall("call-1", `{}`))
+	record, row := parent.model.toolDisclosureRowForCall("call-1")
+	row.agent.session = child.name
+	row.agent.active, row.agent.status = false, "awaiting review"
 	r.showTab(0)
-	parent.model.mu.Lock()
 	parent.model.takeActiveTool("call-1")
-	parent.model.mu.Unlock()
-	close(runs.release)
-	settleUntil(t, r, settled(parent))
-	close(runs.slow)
-	settleUntil(t, r, settled(child))
-	settleUntil(t, r, func() bool { return child.delivered })
+	r.endTurn(nil)
+	parent.model.noteAgentCompletion(record.id)
 	parent.model.mu.Lock()
 	m := parent.model
 	if len(m.affordances.agents) != 1 {
+		m.mu.Unlock()
 		t.Fatalf("completion did not arm exactly one group cue: %#v", m.affordances.agents)
 	}
 	rows := m.transcriptRows(100)

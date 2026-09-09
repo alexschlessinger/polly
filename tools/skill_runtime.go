@@ -34,7 +34,7 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 	runtime.activateTool = NewSkillActivateTool(catalog, registry)
 	readFileTool := NewSkillReadFileTool(catalog, registry)
 	newSkillBash := func() (*BashTool, error) {
-		bt := newBashTool("")
+		bt := newBashTool(registry.executionRoot)
 		bt.siblingLoaded = registry.hasVisibleTool
 		if registry.HasSandbox() {
 			// Fail closed: the skill bash tool must inherit the registry's base

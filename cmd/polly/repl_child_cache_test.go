@@ -737,10 +737,8 @@ func TestRetiredGrandchildIdentityLandsUnderRetiringChildLock(t *testing.T) {
 	// The child's retirement copies its rows right as the grandchild's
 	// identity write is queued behind the released lease: the retiring
 	// goroutine, not this one, lets it go, so nothing orders the two.
-	childRetire := make(chan struct{})
-	grandState.session = blockingCloseSession{Session: grandState.session, release: releaseGrand, after: func() { close(childRetire) }}
+	grandState.session = blockingCloseSession{Session: grandState.session, release: releaseGrand}
 	childState.session = blockingCloseSession{Session: childState.session, release: releaseChild}
-	child.agentWriteDone = childRetire
 	grandID, childID := grand.viewID(), child.viewID()
 	r.showTab(0)
 	child.keepOpen = false

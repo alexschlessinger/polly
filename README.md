@@ -38,8 +38,9 @@ or `POLLYTOOL_MODEL`.
 
 ## One-shot output
 
-With `-p` or piped input, answers stream immediately and progress appears on
-stderr by default. A capable terminal gets up to two compact status rows,
+With `-p` or piped input, stdout contains one settled answer (or blocker report).
+Progress remains live on stderr. Use `--stream` to emit intermediate assistant
+text immediately. This applies to all one-shot runs, including runs without a swarm. A capable terminal gets up to two compact status rows,
 collapsing to one when they fit. Activity, thought duration, parent tools,
 agents, and inspected images occupy the first row; elapsed time and token usage
 occupy the second. Usage updates after each provider iteration.
@@ -56,11 +57,10 @@ Stdout carries only the answer. Redirecting or piping it preserves raw Markdown
 without rendering escapes, receipts, or status-induced whitespace; terminal
 progress on stderr remains live independently. Redirected stderr and `TERM=dumb`
 get plain state changes and a complete, untruncated trailer without cursor
-controls. `NO_COLOR` disables color while retaining immediate streaming and
-supported cursor updates. `--quiet` suppresses activity and details, including
+controls. `NO_COLOR` disables color while retaining supported cursor updates. `--quiet` suppresses activity and details, including
 image receipts, but still reports warnings and errors.
 
-On a terminal, completed answer blocks enter scrollback. Only the visible
+With `--stream` on a terminal, completed answer blocks enter scrollback. Only the visible
 answer tail is restyled as Markdown arrives or the terminal resizes. Tool
 calls, notices, approvals, images, and completion flush that tail. Native
 images are transmitted once when committed.
@@ -145,49 +145,126 @@ Rules:
 - Settings are per tab. `/set` and `/model` touch only the visible one.
 - Turns keep running in hidden tabs. Start a long run, switch away, keep working. Input queued behind a hidden turn runs when it settles.
 - A hidden tab that finishes or fails posts a one-line notice in the visible transcript, once the visible tab is idle.
-- An agent needing approval raises a persistent attention indicator. Press **Ctrl-G** or use `/agents`, select it, and choose **Review** for an explicitly addressed approval dialog.
+- An agent needing approval raises a persistent attention indicator. Press **Ctrl-G** or use `/sessions`, select it, and choose **Review** for an explicitly addressed approval dialog.
 - Closing a workspace with active turns is refused. Ctrl-C interrupts the root turn; **Stop** in an agent inspector interrupts that agent.
 - Quitting with turns running elsewhere warns once. A second Ctrl-C cancels them, waits briefly for completed work to save, exits.
 - Open sessions are leased. The picker marks sessions held by another polly `in use` and will not open them. Picking a session already open here jumps to its workspace. When opening an agent whose parent is leased elsewhere, the parent is a labeled read-only snapshot. Execution still requires acquiring its lease. A deleted or expired parent is never recreated; a surviving agent opens with **Parent unavailable**.
 
 ### Subagents
 
-The model delegates with the `spawn_agent` tool. Arguments: a brief, an
-optional label, the tools the child may use.
+The model delegates with `spawn_agent`; `/spawn [--read-only] <brief>` delegates
+directly from the TUI. Both use the same runtime. A parent and its direct children
+form a shared swarm automatically. Children cannot spawn another generation.
+Each has a stable session ID, an assignment, private conversation history, and
+access to a roster, addressed messages, tasks, and explicitly published findings.
+Only the parent creates or reassigns tasks, accepts results, and integrates edits.
 
-The child:
+JavaScript is optional. These are coordination choices within one swarm:
 
-- runs in its own session on the same store, with a fresh context window
-- inherits the parent's settings and system prompt (the brief may set a model or iteration cap), active skills, and tools minus `spawn_agent`
-- shares the parent's MCP servers instead of starting them again
-- shares the working directory and files; give editing agents non-overlapping files and inspect their changes
-- returns only its final reply, followed by its session name. `polly -c <name>` or `/resume` opens the full transcript
-- asks for tool approval like the parent does, under `--confirm`
-- counts its own tokens, reported with its reply, not added to the parent's turn
+| Entry point | Who chooses the steps? | Launch behavior |
+| --- | --- | --- |
+| `/spawn <brief>` | You supply one assignment | One background member; parent keeps focus |
+| Ask the model to delegate | The parent model writes briefs and coordinates | Blocking or background `spawn_agent` calls |
+| `/workflow FILE INPUT` | A saved JavaScript program | Background workflow |
+| `workflow_run` / `workflow_start` | A JavaScript program supplied by the parent | Blocking / background workflow |
 
-Several calls in one turn run in parallel, up to 32 at a time per parent session. Canceling a
-blocking call stops waiting; its child retains a slot until it finishes.
+Direct and scripted work may share tasks and results in the same family and
+consume the same execution budget. A script reserves its members while active;
+other callers cannot continue those sessions concurrently. Read-only versus editing,
+blocking versus background, and new versus continued sessions are independent
+choices. An ordinary parent turn can also work alone without starting members.
 
-`/resume` and `--list` nest agents under the session that spawned them,
-named by label. The picker collapses them to a count. `→` on the parent
-expands, `←` collapses. A typed filter finds them either way.
-`--list --flat`: one line per session, for scripts.
+Children inherit the parent's configured `--maxiterations` limit (default 1024
+model calls). `spawn_agent` and JavaScript `polly.agent` cannot override it;
+`max_iterations` / `maxIterations` arguments are rejected. This is a ceiling,
+not a target: agents finish as soon as their assignments are complete.
 
-**Background.** `background: true` returns at once. The reply arrives
-later as a message to the parent and starts a parent turn when the parent
-is idle. Replies landing while the parent is busy arrive together as one
-message. The reply is addressed to the session, not a tab or a process.
-The store holds it until the parent saves it as conversation input. Closed tab, quit polly, no
-matter: it lands the next time the parent is open and idle, in any polly.
-A child cut off by quitting reports as canceled with what it had said so
-far.
+Editing children receive isolated Git worktrees seeded from the parent's current
+files, including staged, unstaged, and non-ignored new files. Source paths choose
+what to copy; they never grant editing access to that checkout. Children do not
+write repository Git metadata or commit. The parent previews a three-way merge
+and applies an accepted candidate without changing its index or branch. Git 2.40+
+is required. `read_only: true` supports research; outside Git it observes live
+files. See [worktree restrictions](WORKFLOWS.md#worktrees-and-integration).
+
+Tools, native paths, shell commands, local MCP servers, repository instructions,
+and available skills bind to the member's directory. Incompatible optional tools
+are reported and omitted; explicitly requested incompatible tools fail launch.
+Semantic search is omitted in members; use exact search with bash. `tools: []`
+disables every model tool, including coordination and private built-ins.
+
+Up to 32 children execute concurrently, with 256 logical executions per run.
+`--swarm-concurrent` and `--swarm-executions` set these limits. Waiting releases
+resources and preserves the remaining iteration allowance; it does not spend a
+new execution. Additional service turns and retries do. Quitting pauses work;
+reopening the parent and using `/swarm resume ID` explicitly resumes it. A
+finished member keeps its conversation and files until cleanup.
+
+Reaching the iteration limit pauses the member and displays the used/allowed
+model calls. Its conversation, task, findings and worktree remain available.
+`/swarm resume ID N` explicitly grants **N additional model calls** and continues
+the same execution without spending another logical start. Plain `resume` cannot
+reset an exhausted allowance. Changing the configured default affects new executions;
+existing ones retain their saved limit until an explicit grant. This is separate
+from `/swarm grant N`, which adds logical execution starts to the family budget.
+If that budget is paused, grant it separately before resuming members.
+
+**Messages and background work.** `background: true` returns a stable member ID
+immediately. Prefer background calls plus `swarm_wait` while coordinating. A
+blocking spawn can also return `yielded` when a child needs the parent; the child
+is still alive. Requests and replies can wake idle members. Information waits for
+the next active turn. Workflow reservations and stopped/failed members prevent
+unsolicited restarts. Mail is admitted before a model request, after the entire
+previous tool batch, with an atomic transcript checkpoint and delivery receipt.
+
+Parent answers remain provisional while work is outstanding. The runtime waits
+for active work and gives the parent a corrective turn for unresolved review,
+reply, or integration work. An unchanged blocker produces an incomplete result,
+not an endless wait. One-shot memory sessions are promoted to the normal SQLite
+store before the first coordination mutation, so the parent can be resumed.
+
+Inline agent rows and `/swarm members` show the swarm's current member state, including
+queued, running, waiting, paused (with the iteration-limit reason when applicable),
+failed, and awaiting review. A completed
+background spawn call does not mean its member finished. Status refreshes do
+not require a child tab or acquire the child's execution lease.
+
+`/swarm` opens the inspector. Categories include members, tasks, messages,
+publications, workflow reports, and integration candidates/previews, with a raw view for
+full saved records. `/swarm stop ID`,
+`/swarm resume ID [ADDITIONAL_ITERATIONS]`, and `/swarm grant N` control execution; budget grants require
+an explicit client/user action. `/swarm cleanup CONTEXT_ID` retires an inactive
+context only when unchanged or its current edits are integrated. Cleanup requires
+members and workflows to stop; a running workflow can release its own inactive
+copies with `polly.release`. Both paths retain unintegrated edits and record
+retirement before removing files. `/swarm cleanup all` also retires Git snapshot
+references.
+
+Parent tools can combine several editing task revisions with `swarm_integration`.
+Prepare, resolve conflicts in a separate copy, review/check, accept, and apply.
+The default checks touched paths and preserves unrelated parent edits; choose
+`drift:"tree"` when the whole parent checkout must match the validated snapshot.
+`/swarm integrations` shows conflicts, supersession, acceptance, and apply receipts.
+
+**JavaScript workflows.** `/workflow SCRIPT.js INPUT.json` starts an explicit
+workflow and saves its report. Model tools `workflow_run`, `workflow_start`,
+`workflow_read`, `workflow_cancel`, and `workflow_acknowledge` use that same runtime in the library, CLI,
+and TUI. Parent scripts coordinate typed agent results, commands, tools, task reviews, and
+integration candidates using the parent's existing authority. See [the workflow API and runnable example](WORKFLOWS.md).
+[The integration recipe](examples/workflows/integrate-results.js) combines task
+revisions, resolves conflicts, reviews/tests, repairs when needed, and applies the
+accepted result. It defaults to two repair executions and one refresh attempt,
+without resetting consumed budgets. `--swarm-apply-timeout` (or
+`POLLYTOOL_SWARM_APPLY_TIMEOUT`) bounds a started write; default `2m`.
+Managed members are inspected through `/sessions`; resume execution through their
+parent so the worktree and policy are restored together.
 
 **In the TUI.** Inline Thought, Tools, Agents, and Images viewed summaries
 keep their existing expand/collapse behavior. Clicking an expanded agent task,
-tool row, or thought detail opens the inspector. **Ctrl-G** and `/agents` open
-the Agents dialog, showing attention-needed agents first, then running agents,
-then completed agents newest first. Agent outcomes still describe the initial
-delegated run; later follow-ups do not change that outcome.
+tool row, or thought detail opens the inspector. **Ctrl-G** and `/sessions` open
+the sessions picker. Agents nest beneath their parent; select one to inspect it.
+Swarm views show current member state;
+saved execution records retain each invocation's outcome.
 Expanded agent rows show input/output token counts as each model response reports
 usage. Input is the peak request size and output is the total for the delegated
 turn, matching the turn summary. Counts stay visible after that run finishes.
@@ -245,9 +322,11 @@ Polly run; a restart begins with the inspector closed unless opening an agent
 explicitly with `polly -c <agent>`.
 
 Closing a workspace with running agents is refused.
-`/spawn <brief>` starts a background child of the visible tab by hand.
-
-One-shot and line mode: the tool always waits for the reply.
+`/spawn <brief>` starts one editing member from the parent session and keeps the
+composer focused there. Use `/spawn --read-only <brief>` for research or reviews;
+outside Git, this observes live files. Inspect with `/sessions` and coordinate with
+`/swarm`. Inspected children cannot spawn agents. Old saved child conversations
+and reports remain readable, but new launches use the swarm mailbox and scheduler.
 
 ### Keys
 
@@ -284,14 +363,13 @@ the terminal's override, usually Shift-drag.
                              (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /model                       Pick a provider and model
 /keys                        Set masked, process-local provider keys
-/resume                      Select or open a saved workspace
+/sessions (/resume)         Select a workspace or inspect an agent
 /new                         Open a new tab on a fresh session
 /tab [n|name]  (/tabs)       List root workspaces, or switch to one
 /close                       Close the visible tab (session stays saved)
 /parent                      Go up through the inspector to the caller
 /inspect [tools|thoughts]    Open the last view, newest tool, or thoughts
-/agents                      Pick an agent to inspect
-/spawn <brief>               Start a background agent that reports back here
+/spawn [--read-only] <brief>  Start one background swarm member; inspect with /sessions
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills
 /rename <name>               Rename the current context
@@ -449,7 +527,10 @@ polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hel
 - bare name: built-in (`bash`, `read_file`, ...)
 
 Names are namespaced: `uppercase__to_uppercase`, `filesystem__read_file`.
-`--confirm` asks before each call.
+`--confirm` asks before each call. In the TUI, concurrent parent and swarm
+member requests queue in their parent workspace. Each member request identifies
+the agent; stopping that execution removes its pending request, and quitting
+denies every pending request.
 
 New contexts start with `bash` and the built-in file tools. `zvec_grep_search`
 loads only when `zg` (zvec-grep) is on `PATH`. Any `--tool` replaces that default.

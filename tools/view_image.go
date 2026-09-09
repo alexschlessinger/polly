@@ -84,7 +84,7 @@ func (t *viewImageTool) ExecuteOutput(ctx context.Context, raw map[string]any) (
 }
 
 func readImageFile(registry *ToolRegistry, path string) ([]byte, string, error) {
-	abs, err := resolveLocalPath(path)
+	abs, err := registry.ResolvePath(path)
 	if err != nil {
 		return nil, "", err
 	}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -158,6 +160,9 @@ func (r *managedREPL) refreshInspector(width int) {
 		return
 	}
 	live := r.inspectionTab(i.target)
+	if i.target.kind == swarmViewKind {
+		live = nil
+	}
 	if v.unavailable && live != nil && i.target.kind != conversationViewKind {
 		// A live catalogue can regain the selected key (a reset followed by a
 		// new turn), so unavailability is re-checked against it each refresh.
@@ -261,9 +266,29 @@ func (r *managedREPL) refreshInspector(width int) {
 	previousRevision := v.revision
 	sameLayout := v.model != nil && v.geometry == geometry && v.stateRevision == state.revision
 	v.loading = true
+	var swarmState *conversationState
+	if r.state != nil {
+		swarmState = r.state
+	}
 	if !r.background(func() {
 		var err error
-		if source.model == nil {
+		if target.kind == swarmViewKind {
+			if swarmState == nil || swarmState.swarm == nil {
+				err = fmt.Errorf("swarm runtime unavailable")
+			} else {
+				state, e := swarmState.swarm.State(r.work.ctx)
+				err = e
+				if err == nil {
+					body := swarmInspectorText(state, target.item)
+					source.model = newReplModel()
+					source.model.appendLine(styleEscape(body))
+					data, _ := json.Marshal(state)
+					source.revision = fmt.Sprintf("swarm:%x", sha256.Sum256(data))
+					source.info = &sessions.SessionView{ID: target.session.ID, Metadata: &sessions.Metadata{Name: target.session.Name}, Revision: source.revision}
+				}
+			}
+		}
+		if source.model == nil && err == nil {
 			if reader == nil {
 				err = fmt.Errorf("saved views unavailable")
 			} else {
@@ -277,6 +302,11 @@ func (r *managedREPL) refreshInspector(width int) {
 							// only through the Agents picker.
 							if summaries, e := tabStoreSummaries(reader, r.work.ctx); e == nil {
 								source.model.hydrateAgentSessions(source.info.Metadata.Name, summaries)
+								if swarmState != nil && swarmState.swarm != nil && swarmState.swarm.ID == source.info.ID {
+									if snapshot, e := swarmState.swarm.State(r.work.ctx); e == nil {
+										source.model.hydrateSwarmAgents(snapshot)
+									}
+								}
 							}
 						}
 						source.revision = source.info.Revision

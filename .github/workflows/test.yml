@@ -41,7 +41,7 @@ jobs:
 
       - name: Sandbox security tests
         if: runner.os != 'Windows'
-        run: go test ./tools/sandbox
+        run: go test ./tools ./tools/sandbox ./swarm ./worktree ./cmd/polly
         env:
           POLLYTOOL_REQUIRE_SANDBOX_TESTS: '1'
 
@@ -56,8 +56,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Race-sensitive storage and conversation tests
-        run: go test -race ./sessions ./cmd/polly ./llm
+      - name: Race-sensitive storage, conversation, and coordination tests
+        run: go test -race ./tools ./sessions ./cmd/polly ./llm ./subagent ./swarm ./workflow ./worktree
 
   cgo-free-build:
     strategy:

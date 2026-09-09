@@ -1,0 +1,9 @@
+{
+  "groups": [{
+    "label": "review fixes",
+    "source": "/absolute/path/to/repository",
+    "evidence": "review.md",
+    "findings": [{"id": "R1", "summary": "Describe the failure to fix."}],
+    "checks": ["CGO_ENABLED=0 go build ./...", "go vet ./...", "go test ./..."]
+  }]
+}

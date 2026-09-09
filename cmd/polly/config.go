@@ -53,6 +53,8 @@ func getCommand() *cli.Command {
 // are read through the spec table; only runtime configuration is hand-listed.
 func parseConfig(cmd *cli.Command) *Config {
 	config := &Config{
+		Stream:          cmd.Bool("stream"),
+		SwarmConcurrent: cmd.Int("swarm-concurrent"), SwarmExecutions: cmd.Int("swarm-executions"), SwarmDirectory: cmd.String("swarm-directory"), SwarmApplyTimeout: cmd.Duration("swarm-apply-timeout"),
 		// Runtime configuration
 		Timeout:       cmd.Duration("timeout"),
 		Deadline:      cmd.Duration("deadline"),
@@ -397,6 +399,11 @@ func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 
 func outputConfigFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.BoolFlag{Name: "stream", Usage: "Stream one-shot assistant text immediately (default: emit the settled answer)", Sources: cli.EnvVars("POLLYTOOL_STREAM")},
+		&cli.IntFlag{Name: "swarm-concurrent", Value: 32, Usage: "Maximum concurrent child executions", Sources: cli.EnvVars("POLLYTOOL_SWARM_CONCURRENT")},
+		&cli.IntFlag{Name: "swarm-executions", Value: 256, Usage: "Total logical child executions per swarm run", Sources: cli.EnvVars("POLLYTOOL_SWARM_EXECUTIONS")},
+		&cli.DurationFlag{Name: "swarm-apply-timeout", Value: 2 * time.Minute, Usage: "Timeout for a started integration write; outcome recording is separately bounded", Sources: cli.EnvVars("POLLYTOOL_SWARM_APPLY_TIMEOUT")},
+		&cli.StringFlag{Name: "swarm-directory", Usage: "Runtime-owned worktree directory outside the source checkout", Sources: cli.EnvVars("POLLYTOOL_SWARM_DIRECTORY")},
 		&cli.BoolFlag{
 			Name:    "activity-details",
 			Usage:   "Print bounded thought, tool, agent, and image details at turn end (one-shot only; ignored by the REPL)",

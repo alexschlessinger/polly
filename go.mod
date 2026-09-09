@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/alecthomas/chroma/v2 v2.27.0
+	github.com/dop251/goja v0.0.0-20260906210903-70ad66ec7ce4
 	github.com/gdamore/tcell/v3 v3.0.5
 	github.com/google/jsonschema-go v0.4.3
 	github.com/lmittmann/tint v1.2.0
@@ -24,9 +25,11 @@ require (
 
 require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
+	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
+	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
+	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect

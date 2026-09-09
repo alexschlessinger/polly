@@ -8,7 +8,7 @@ import (
 )
 
 // replWork owns off-screen I/O. Shutdown cancels reads and pending launches,
-// then waits for their cleanup and any report writes before closing sessions.
+// then waits for their cleanup before closing sessions.
 type replWork struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -72,28 +72,21 @@ func (r *managedREPL) postUI(ctx context.Context, fn func()) bool {
 	}
 }
 
-// closeTabState waits off the event loop for a child's final report write.
+// closeTabState retires a display and closes its runtime off the event loop.
+// Runtime.Close drains delegated execution and durable apply receipts before
+// conversationState.Close releases the parent lease.
 func (r *managedREPL) closeTabState(tab *replTab) {
 	cacheView := r.retiredChildViewTask(tab)
-	// The agent row belongs to the parent's model, whose lock covers the
-	// identity write below (a retiring parent copies its rows under it). A
-	// parent that already closed left no row anyone reads.
 	activity := tab.agentActivity
 	var owner *replModel
 	if tab.parent != nil {
 		owner = tab.parent.model
 	}
-	done, agentDone, state, name := tab.reportWriteDone, tab.agentWriteDone, tab.state, tab.name
+	state, name := tab.state, tab.name
 	if state == nil {
 		return
 	}
 	r.background(func() {
-		if agentDone != nil {
-			<-agentDone
-		}
-		if done != nil {
-			<-done
-		}
 		var view *cachedChildView
 		if cacheView != nil {
 			view = cacheView()
@@ -117,18 +110,4 @@ func (r *managedREPL) closeTabState(tab *replTab) {
 			})
 		}
 	})
-}
-
-// childSnapshot freezes settings while the model lock is held. The runtime
-// and leased session have their own synchronization; caches are copied. The
-// sandbox probe is shared: a child spawned before any parent turn is the
-// first turn on the backend, and must fail the way the parent's would.
-func (s *conversationState) childSnapshot() *conversationState {
-	return &conversationState{
-		sessionStore: s.sessionStore, session: s.session, settings: s.settings.clone(),
-		toolRegistry: s.toolRegistry, skillCatalog: s.skillCatalog, skillRuntime: s.skillRuntime,
-		skillSources: append([]string(nil), s.skillSources...), sandboxWarnings: s.sandboxWarnings,
-		sandboxProbe: s.sandboxProbe, outputCapabilities: s.outputCapabilities,
-		contextWindows: s.cachedContextWindows(),
-	}
 }

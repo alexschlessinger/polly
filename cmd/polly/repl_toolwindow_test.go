@@ -3,12 +3,13 @@ package main
 import (
 	"errors"
 	"fmt"
-	ui "github.com/metaspartan/gotui/v5"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	ui "github.com/metaspartan/gotui/v5"
 
 	"github.com/alexschlessinger/pollytool/messages"
 )

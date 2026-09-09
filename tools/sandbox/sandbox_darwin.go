@@ -125,7 +125,7 @@ func New(cfg Config) (Sandbox, error) {
 		}
 	}
 	writePaths := darwinWritePaths(cfg)
-	authorityRoutes := append([]string{}, cfg.ReadPaths...)
+	authorityRoutes := readAuthorityPaths(cfg)
 	if !cfg.DenyWrite {
 		authorityRoutes = append(authorityRoutes, writePaths...)
 	}
@@ -533,7 +533,7 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedLists ...
 	// Freeze writable/read grant routing entries and their mutable ancestors.
 	// This denies only unlink/rename of the directory entries; writes beneath a
 	// writable directory remain permitted.
-	authorityPaths := append([]string{}, cfg.ReadPaths...)
+	authorityPaths := readAuthorityPaths(cfg)
 	for _, alias := range cfg.readPathAliases {
 		for _, symlink := range alias.symlinks {
 			authorityPaths = append(authorityPaths, symlink.path)

@@ -1795,6 +1795,11 @@ func TestMigrateSchemaV2StripsLegacyPromptsAndUpgradesImports(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		for _, table := range []string{"swarm_records", "swarm_artifacts", "swarm_members"} {
+			if _, err := raw.Exec("DROP TABLE IF EXISTS " + table); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if _, err := raw.Exec("PRAGMA user_version = 1"); err != nil {
 			t.Fatal(err)
 		}
@@ -2026,6 +2031,11 @@ func TestMigrateSchemaV4LinksParentsFromSettings(t *testing.T) {
 	// A v3 database carried the parent only as a name in the settings.
 	if _, err := store.db.Exec("UPDATE sessions SET parent_id = NULL"); err != nil {
 		t.Fatal(err)
+	}
+	for _, table := range []string{"swarm_records", "swarm_artifacts", "swarm_members"} {
+		if _, err := store.db.Exec("DROP TABLE IF EXISTS " + table); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := store.db.Exec("PRAGMA user_version = 3"); err != nil {
 		t.Fatal(err)

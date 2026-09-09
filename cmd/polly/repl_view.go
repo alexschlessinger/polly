@@ -21,6 +21,7 @@ const (
 	conversationViewKind viewKind = iota
 	toolViewKind
 	thoughtViewKind
+	swarmViewKind
 )
 
 // View renders content. It deliberately has no execution, lease, or input API.
@@ -58,6 +59,8 @@ func viewFor(kind viewKind) View {
 		return toolView{}
 	case thoughtViewKind:
 		return thoughtView{}
+	case swarmViewKind:
+		return conversationView{}
 	default:
 		return conversationView{}
 	}
@@ -223,10 +226,22 @@ func (thoughtView) Project(_ context.Context, source viewSource, state viewState
 // sessionWorkspace owns navigation, not child execution. Drafts stay on the
 // runtime or in agentDrafts; neither they nor navigation metadata are evicted.
 type sessionWorkspace struct {
-	inspector        inspectorState
-	states           map[string]*viewState
-	agentDrafts      map[string]string
-	agentSubmissions map[string]string
+	inspector          inspectorState
+	states             map[string]*viewState
+	agentDrafts        map[string]string
+	agentDraftVersions map[string]uint64
+	agentSubmissions   map[string]string
+}
+
+func (w *sessionWorkspace) setAgentDraft(key, text string) {
+	if w.agentDrafts == nil {
+		w.agentDrafts = make(map[string]string)
+	}
+	if w.agentDraftVersions == nil {
+		w.agentDraftVersions = make(map[string]uint64)
+	}
+	w.agentDrafts[key] = text
+	w.agentDraftVersions[key]++
 }
 
 type inspectorState struct {

@@ -483,10 +483,12 @@ parent owns those clients; the child's later activations remain private.
 ## Subagents
 
 The `subagent` package gives a model the `spawn_agent` tool: a brief, an
-optional label, a tool allow-list, and optional model and iteration
-overrides. What running the child means is the host's `Runner`; the
+optional label, a tool allow-list, and an optional model override.
+Model calls inherit the host's iteration limit; the model-facing tool rejects
+`max_iterations`. Trusted Go callers may set `Request.MaxIterations` explicitly.
+What running the child means is the host's `Runner`; the
 library's `AgentRunner` runs an in-memory `llm.Agent` over a derived view
-of the parent's tools (never `spawn_agent` itself), with the brief as the
+of the parent's tools, with the brief as the
 only user message after your base messages:
 
 ```go
@@ -509,15 +511,122 @@ approved. `subagent.WithMaxConcurrent` bounds parallel children (default
 32). A runner whose child outlives the call must return `Result.Done`,
 including on cancellation or error. Close it only when the child actually
 stops; its concurrency slot stays occupied until then. The tool is exempt from `AgentConfig.ToolTimeout`
-through the `tools.UntimedTool` interface. The polly CLI's runner opens a
-child session on the same store, linked to the parent with
-`AcquireOptions.Parent`, and in the TUI runs it on a tab of its own; a
-background child's reply travels as a `sessions.Report` (see
-[Sessions](#sessions)). CLI children share the parent's workspace; separate
-conversations do not isolate file edits. Assign non-overlapping files to
-editing children and inspect their changes before relying on their reports.
+through the `tools.UntimedTool` interface. The polly CLI uses the `swarm` runtime below. The standalone `AgentRunner`
+retains the lightweight shared-registry behavior; constructing a swarm is optional.
+`Result.Yielded` lets a runtime release a blocking parent while preserving its
+child. `WithRuntimeScheduler` delegates slot ownership to that runtime.
 The library's `AgentRunner` uses the base messages you supply; CLI coding
 defaults and automatic `AGENTS.md` loading are not injected by the library.
+`ChildRegistry` excludes `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
+`send_message`, and `read_messages`, even when the parent registers them later.
+Those coordination tools carry the parent's identity and cannot be inherited by
+a lightweight child. Use the swarm runtime to bind a member's own identity.
+
+## Swarms and workflows
+
+The CLI/TUI uses one swarm runtime for model `spawn_agent` calls, typed `/spawn`,
+and JavaScript `polly.agent`. Direct and scripted coordination share storage,
+budgets, worktree policy, and execution. Standalone `llm.Agent` and the lightweight
+`subagent.AgentRunner` remain available without constructing a swarm.
+
+`swarm.New(swarm.Config{Store, Parent, Registry, Client, Request, Agent, Root})`
+creates one parent's runtime. `Parent` must implement
+`sessions.CoordinationSession`; SQLite memory and disk stores do. Close the
+runtime before the parent session and registry. Disk storage is required for
+cross-process recovery; the CLI supplies an automatic `Promote` callback.
+
+Call `runtime.RegisterParentTools(registry)` and `runtime.BindParent(callbacks,
+persistenceAllowed)` when running a parent model. `BindParent` adds safe mail
+admission, progressive persistence, interrupted-tool journaling, and settlement.
+Persist only `response.AllMessages[response.PersistedMessages:]` afterward.
+`BeforeFirstRequest` retains its existing persistence veto. Legacy `llm.Agent`
+callers without these callbacks still persist the whole response once.
+
+`runtime.Agent(ctx, controllerID, swarm.AgentRequest{Task: brief, ReadOnly: true})`
+uses the shared scheduler and returns `Value`, `Session`, `Context`, `Task`, and
+usage. A nonempty controller reserves that member; ordinary hosts should use an
+empty controller. `Session` continues an existing member and inherits its tool,
+model, and filesystem authority. `Source`, `Snapshot`, and `Context` choose the
+source for a **new** isolated checkout. `Tools: []string{}` disables all tools;
+a nil slice inherits compatible parent tools. Logical executions default to
+32 concurrent / 256 starts per run. Waits retain their execution ID and remaining
+iteration budget. Runtime callbacks, instructions, limits, private filesystem
+paths, and worktree directory are configurable through `swarm.Config`.
+`UpdateDefaults(request, agentConfig, instructions)` safely refreshes the parent's
+settings. Member identity, model, tool authority and files remain fixed; an
+execution's iteration cap is captured at its start and survives waits/restarts.
+`AgentRequest.MaxIterations` is a trusted Go host override; JavaScript cannot set
+it. Iteration exhaustion returns `*swarm.IterationLimitError` (wrapping
+`llm.ErrMaxIterations`) with the member/execution IDs and used/allowed counts,
+retains partial results, and saves execution status `paused` with stop reason
+`max_iterations`. `llm.IsIterationLimit(err)` excludes joined persistence or
+provider failures from this recoverable classification.
+
+`Resume(ctx, memberID, executionGrant)` preserves the remaining call allowance;
+an exhausted one requires a trusted host to use
+`ResumeWithIterations(ctx, memberID, additionalCalls)`. That grants calls to the
+same logical execution, conversation, task and worktree without spending a start.
+Positive `executionGrant` values extend the separate logical-start budget. Model
+tools expose neither grant. Active workflow reservations must settle or be
+canceled before a host takes over a member. A completed/failed execution starts
+a new logical turn on resume, and launch refusals are returned synchronously.
+
+The runtime exposes `State`, `CreateTask`, `Claim`, `Submit`, `Review`,
+`UpdateTask`, `BlockTask`, `CancelTask`, `Send`, `Publish`, `Resume`, `ResumeWithIterations`, `StopMember`,
+`Cleanup`, `Settle`, and lifecycle `OnEvent` callbacks. The Go host is trusted;
+model-facing authority is bound in registered closures rather than supplied as a
+caller ID. Task revisions and atomic transactions reject stale claims/submissions.
+
+Parent hosts use `PrepareIntegration(ctx, []TaskReference, drift)`,
+`ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`,
+and `ApplyIntegration`; `ReadTask` returns the current submitted task contract. `TaskReference` holds `Task` and the exact `Revision`.
+`drift` defaults to `paths`; `tree` adds whole-tree equality. Candidates contain
+ordered inputs, repair provenance, pending merges, structured conflicts, immutable
+snapshots, acceptance and supersession links. `RefreshIntegration` returns
+`IntegrationRefresh{IntegrationCandidate, Changed}`; a no-op retains the ID and
+acceptance. Preparation never allocates a checkout. `ApplyIntegration` returns
+an idempotent `ApplyRecord`; `ReconcileApply` observes uncertain writes without
+replaying them. These are trusted host APIs; `swarm_integration` binds their
+parent authority in the tool closure and is absent from child/bound registries.
+
+`RunWorkflow(ctx, source, input)` runs a fresh Goja VM over the same runtime;
+`StartWorkflow` returns a report ID for background execution. `CancelWorkflow`
+cancels that attempt. Both launch modes share persistence, registration, member
+reservation, and teardown. `RunWorkflow` honors caller cancellation and drains
+host effects before returning; `StartWorkflow` detaches from caller cancellation.
+Both stop on runtime shutdown. Saved reports include source, input, every operation intent,
+results, failure details, and final output. Restarting a script is an explicit new
+attempt; there is no persisted JavaScript heap or automatic effect replay.
+Failed/interrupted reports block settlement until `AcknowledgeWorkflow` records
+parent handling; this never accepts tasks or discards files.
+Parent JavaScript uses `polly.integration.prepare/read/revise/refresh/accept/apply`
+and `polly.tasks.read/review` over those same operations. `polly.release(context)`
+removes only an inactive attempt-owned context whose contents are unchanged or
+proven integrated, retaining snapshots and publications. A requested change does
+not wake a reserved member; the script explicitly continues its session. Workflow
+termination waits for host calls and saves late apply receipts before releasing
+registries or reservations. Children and generic context tools gain no parent API.
+
+The independent `workflow.Runner{Host, Config}` can be embedded over another
+trusted host implementing `Call`; optional `Recorder.SaveWorkflow` supplies
+persistence. See [WORKFLOWS.md](WORKFLOWS.md) for the JavaScript contract.
+
+`tools.ExecutionContext` binds `Root`, `ReadOnly`, and a narrowed sandbox policy
+to a fresh registry via `BindExecutionContext`. Custom Go tools implement
+`ContextTool` to rebind or declare `ContextIndependentTool` when appropriate.
+Local stdio MCP processes relaunch in that context; remote MCP servers must
+explicitly declare `contextIndependent: true`. Media stays in `ToolOutput.Media`;
+structured values stay in `ToolOutput.Data` and transcript `tool_data` metadata.
+`tools.CommandError` represents an ordinary shell exit after target startup;
+setup, cancellation, timeout, and policy-construction errors have distinct paths.
+
+Schema v5 adds strict `swarm_records` (domain/key/JSON), `swarm_members`, and
+`swarm_artifacts` tables. Coordination rows and transcript admission commit in one
+lease-fenced transaction. Records and publication pins cascade with the parent,
+including TTL expiry. Pinned child sessions do not independently expire while
+retained by their parent. `sessions.DurableStore.Promote(ctx, path)` moves a memory
+store into the disk store atomically without changing live handles, stable IDs,
+cache identity, or artifact access. Existing unrelated disk sessions remain.
 
 ## Sessions
 
@@ -647,5 +756,18 @@ for event := range client.ChatCompletionStream(ctx, req, processor) {
 - `GetHistory` and `GetMetadata` return detached copies. Mutations are
   transactional, but read-modify-write sequences across calls need
   application-level coordination.
-- Tool `Execute` implementations should be safe to call concurrently; the
-  library doesn't serialize them.
+- Tool `Execute` implementations should be safe to call concurrently. After resolving
+  and approving a tool, the agent loop and workflow host both use
+  `ToolRegistry.ExecuteTool(ctx, tool, args, timeout)`. This shared boundary applies
+  the timeout, holds the registry's execution gate, and preserves rich output.
+  It returns the original error plus a `ToolExecution` containing output, whether
+  invocation began, and the execution context's cancellation/timeout outcome.
+  Each caller retains its own approval callbacks, error presentation, and artifact
+  persistence. Swarm parent tools hold shared access and runtime apply takes
+  exclusive access. `CoordinationTool` identifies trusted orchestration exemptions;
+  `UntimedTool` alone does not. Custom hosts can use `ExecuteTool`, or
+  `GuardExecution` with deferred release when implementing a different executor.
+- `swarm.Config.ApplyTimeout` defaults to two minutes. `Runtime.Close` waits for
+  active integration writes and their bounded outcome recording before the host
+  closes its session. A confirmed apply is idempotent; uncertain writes are reconciled
+  from persisted path states without automatically repeating the patch.

@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -47,6 +48,25 @@ func reply(text string) messages.ChatMessage {
 	return messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: text, StopReason: messages.StopReasonEndTurn}
 }
 
+func TestAgentRunnerRetainsInheritedDisableTools(t *testing.T) {
+	for _, requested := range [][]string{nil, {"effect"}} {
+		t.Run(strings.Join(requested, ","), func(t *testing.T) {
+			calls := 0
+			registry := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "effect", Run: func(context.Context, tools.Args) (string, error) { calls++; return "effect", nil }}})
+			defer registry.Close()
+			model := &sequentialLLM{responses: []messages.ChatMessage{toolCall("effect", `{}`), reply("done")}}
+			run := AgentRunner(model, registry, llm.CompletionRequest{}, llm.AgentConfig{DisableTools: true, MaxIterations: 2})
+			_, err := run(context.Background(), Request{Task: "inspect", Tools: requested})
+			if err == nil || !strings.Contains(err.Error(), "tool execution is disabled") {
+				t.Fatalf("child error: %v", err)
+			}
+			if calls != 0 || model.calls != 1 || len(model.last.Tools) != 0 {
+				t.Fatalf("child widened tool authority: executions=%d requests=%d tools=%d", calls, model.calls, len(model.last.Tools))
+			}
+		})
+	}
+}
+
 func names(ts []tools.Tool) []string {
 	out := make([]string, 0, len(ts))
 	for _, t := range ts {
@@ -64,12 +84,12 @@ func TestToolParsesTheBriefAndFormatsTheReply(t *testing.T) {
 	out, err := tool.Execute(context.Background(), map[string]any{
 		"task": " look around ", "label": "explore",
 		"tools": []any{"read_file", " ", "git__*"},
-		"model": "openai/gpt-5.4", "max_iterations": float64(3),
+		"model": "openai/gpt-5.4",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Request{Task: "look around", Label: "explore", Tools: []string{"read_file", "git__*"}, Model: "openai/gpt-5.4", MaxIterations: 3}
+	want := Request{Task: "look around", Label: "explore", Tools: []string{"read_file", "git__*"}, Model: "openai/gpt-5.4"}
 	if got.Task != want.Task || got.Label != want.Label || !slices.Equal(got.Tools, want.Tools) || got.Model != want.Model || got.MaxIterations != want.MaxIterations {
 		t.Fatalf("request = %+v, want %+v", got, want)
 	}
@@ -82,6 +102,36 @@ func TestToolParsesTheBriefAndFormatsTheReply(t *testing.T) {
 	schema := tool.GetSchema()
 	if schema.Title() != ToolName || !tool.Untimed() || tool.GetType() != "native" {
 		t.Fatalf("tool identity: %s %v %s", schema.Title(), tool.Untimed(), tool.GetType())
+	}
+}
+
+func TestToolRejectsModelIterationOverrides(t *testing.T) {
+	called := false
+	tool := NewTool(func(context.Context, Request) (Result, error) {
+		called = true
+		return Result{}, nil
+	})
+	data, err := json.Marshal(tool.GetSchema())
+	if err != nil || strings.Contains(string(data), "max_iterations") {
+		t.Fatalf("model schema still exposes iteration overrides: %s %v", data, err)
+	}
+	for _, value := range []any{8, 0, -1, nil, "8"} {
+		_, err := tool.Execute(context.Background(), map[string]any{"task": "review", "max_iterations": value})
+		var toolErr *tools.ToolError
+		if !errors.As(err, &toolErr) || toolErr.Code != "INVALID_ARGS" || called {
+			t.Fatalf("override %v: %v called=%t", value, err, called)
+		}
+	}
+}
+
+func TestToolIterationPausePreservesPartialResult(t *testing.T) {
+	tool := NewTool(func(context.Context, Request) (Result, error) {
+		return Result{Session: "reviewer", Text: "finding already established"}, llm.ErrMaxIterations
+	})
+	text, err := tool.Execute(context.Background(), map[string]any{"task": "review"})
+	var toolErr *tools.ToolError
+	if !errors.As(err, &toolErr) || toolErr.Code != "ITERATION_LIMIT" || !strings.Contains(text, "finding already established") || !strings.Contains(text, "reviewer") {
+		t.Fatalf("partial result lost or classified as failure: %q %v", text, err)
 	}
 }
 
@@ -176,6 +226,24 @@ func TestChildRegistryNeverHandsOutSpawnAgent(t *testing.T) {
 	}
 	if got := names(parent.All()); !slices.Contains(got, ToolName) {
 		t.Fatalf("parent lost its spawn tool: %v", got)
+	}
+}
+
+func TestChildRegistryCannotInheritParentCoordination(t *testing.T) {
+	parent := tools.NewToolRegistry(nil)
+	defer parent.Close()
+	for _, allow := range [][]string{nil, {"*"}, {"swarm_*", "workflow_*", "send_message"}} {
+		child := ChildRegistry(parent, allow)
+		defer child.Close()
+		// Register after derivation as well: a live registry must not reopen the
+		// caller identity boundary when the parent enables coordination later.
+		for _, name := range []string{"spawn_agent", "swarm_integration", "swarm_create_task", "swarm_snapshot", "workflow_run", "workflow_start", "list_agents", "send_message", "read_messages"} {
+			parent.Register(&tools.Func{Name: name, Desc: "parent-bound"})
+			parent.MarkAlwaysAllowed(name)
+			if _, exists, allowed := child.GetIfAllowed(name); exists && allowed {
+				t.Fatalf("child inherited %s through %v", name, allow)
+			}
+		}
 	}
 }
 
@@ -368,5 +436,34 @@ func TestCanceledBlockingCallKeepsTheRunningChildSlot(t *testing.T) {
 	defer cancelNext()
 	if _, err := tool.Execute(ctx, map[string]any{"task": "third"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestToolTreatsNullToolsAsOmitted(t *testing.T) {
+	var got Request
+	tool := NewTool(func(_ context.Context, req Request) (Result, error) {
+		got = req
+		return Result{Text: "ok"}, nil
+	})
+	for _, tc := range []struct {
+		value any
+		want  []string
+	}{
+		{nil, nil},
+		{"read_file", []string{"read_file"}},
+		{[]any{}, []string{}},
+		{[]any{" "}, []string{}},
+	} {
+		if _, err := tool.Execute(context.Background(), map[string]any{"task": "look", "tools": tc.value}); err != nil {
+			t.Fatalf("tools %v: %v", tc.value, err)
+		}
+		if (got.Tools == nil) != (tc.want == nil) || !slices.Equal(got.Tools, tc.want) {
+			t.Fatalf("tools %v parsed as %#v, want %#v", tc.value, got.Tools, tc.want)
+		}
+	}
+	_, err := tool.Execute(context.Background(), map[string]any{"task": "look", "tools": 5})
+	var toolErr *tools.ToolError
+	if !errors.As(err, &toolErr) || toolErr.Code != "INVALID_ARGS" {
+		t.Fatalf("numeric tools accepted: %v", err)
 	}
 }

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -22,9 +22,6 @@ type gotuiTurnUI struct {
 	reuseUser   bool
 	turn        managedTurnInput
 	persistence *turnPersistenceAck
-	// observer, when set, also hears the turn's text, tool starts, tokens,
-	// and finish: a child tab's reply recorder (see repl_children.go).
-	observer TurnUI
 }
 
 func (t *gotuiTurnUI) Start() {}
@@ -57,6 +54,15 @@ func (t *gotuiTurnUI) TurnPersistenceAllowed() bool {
 	return t.activeLocked()
 }
 
+// bindMemberUI gives the tab's session a screen for swarm members that run
+// outside a turn, so their approvals land in this tab like a turn's would.
+func (r *managedREPL) bindMemberUI(tab *replTab) {
+	if tab == nil || tab.state == nil {
+		return
+	}
+	tab.state.setMemberUI(&gotuiTurnUI{repl: r, model: tab.model, config: r.config, state: tab.state})
+}
+
 func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {
 	return make([]bool, len(calls))
 }
@@ -78,9 +84,6 @@ func (t *gotuiTurnUI) AppendAssistantText(content string) {
 		t.model.mu.Unlock()
 		return
 	}
-	if t.observer != nil {
-		defer t.observer.AppendAssistantText(content)
-	}
 	t.model.state = turnStateStreaming
 	if content != "" {
 		t.model.turnHasOutput = true
@@ -99,9 +102,6 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	defer t.model.mu.Unlock()
 	if !t.acceptingLocked() {
 		return
-	}
-	if t.observer != nil {
-		defer t.observer.AppendToolStart(calls)
 	}
 	if len(calls) > 0 {
 		t.model.turnHasOutput = true
@@ -127,47 +127,50 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 }
 
 func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	return t.ApproveToolCallsContext(context.Background(), "", calls)
+}
+
+func (t *gotuiTurnUI) ApproveToolCallsContext(ctx context.Context, requester string, calls []messages.ChatMessageToolCall) []bool {
 	if len(calls) == 0 {
 		return nil
 	}
 	t.model.mu.Lock()
-	if !t.activeLocked() || t.model.canceling {
+	if ctx.Err() != nil || !t.acceptingLocked() || t.model.approvalsClosed {
 		t.model.mu.Unlock()
 		return denyToolCalls(calls)
 	}
-	t.model.mu.Unlock()
-
 	if !t.config.Confirm {
+		t.model.mu.Unlock()
 		approved := make([]bool, len(calls))
 		for i := range approved {
 			approved[i] = true
 		}
 		return approved
 	}
-	reply := make(chan []bool, 1)
-	t.model.mu.Lock()
-	if !t.activeLocked() || t.model.canceling {
+	a := &approvalState{ctx: ctx, requester: requester, calls: append([]messages.ChatMessageToolCall(nil), calls...), reply: make(chan []bool, 1)}
+	t.model.approvalQueue = append(t.model.approvalQueue, a)
+	t.model.advanceApprovalLocked()
+	t.model.mu.Unlock()
+	t.wakeApprovals()
+	select {
+	case results, ok := <-a.reply:
+		if !ok || ctx.Err() != nil {
+			return denyToolCalls(calls)
+		}
+		return results
+	case <-ctx.Done():
+		t.model.mu.Lock()
+		t.model.resolveApprovalLocked(a, denyToolCalls(calls))
 		t.model.mu.Unlock()
+		t.wakeApprovals()
 		return denyToolCalls(calls)
 	}
-	t.model.approval = &approvalState{calls: calls, reply: reply}
-	label := toolLabel(calls[0])
-	if len(calls) > 1 {
-		label += fmt.Sprintf(" +%d more", len(calls)-1)
-	}
-	t.model.pushNotice("approval needed: " + truncate(label, 80))
-	t.model.signalHiddenLocked(signalApprovalNeeded, truncate(label, 80))
-	t.model.mu.Unlock()
-	// The visible tab's notice comes from the event loop; wake it,
-	// since nothing else does while the tab holding this turn is hidden.
+}
+
+func (t *gotuiTurnUI) wakeApprovals() {
 	if t.repl != nil {
 		t.repl.wakeTabs()
 	}
-	results, ok := <-reply
-	if !ok {
-		return make([]bool, len(calls))
-	}
-	return results
 }
 
 func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
@@ -300,9 +303,6 @@ func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 		t.model.mu.Unlock()
 		return
 	}
-	if t.observer != nil {
-		defer t.observer.RecordTurnTokens(in, out)
-	}
 	t.model.lastIn = in
 	t.model.lastOut = out
 	t.model.turnDock.inputTokens = in
@@ -325,9 +325,6 @@ func (t *gotuiTurnUI) FinishTextTurn() {
 		t.model.finishAssistantBlock("")
 	}
 	t.model.mu.Unlock()
-	if accepted && t.observer != nil {
-		t.observer.FinishTextTurn()
-	}
 }
 
 func (t *gotuiTurnUI) CompleteTurn(completion turnCompletion) {
@@ -337,7 +334,4 @@ func (t *gotuiTurnUI) CompleteTurn(completion turnCompletion) {
 		t.model.completion = &completion
 	}
 	t.model.mu.Unlock()
-	if accepted && t.observer != nil {
-		t.observer.CompleteTurn(completion)
-	}
 }

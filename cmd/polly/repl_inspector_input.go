@@ -10,6 +10,18 @@ import (
 )
 
 func (r *managedREPL) inspectorAction(action string) {
+	if strings.HasPrefix(action, "swarm_") {
+		section := strings.TrimPrefix(action, "swarm_")
+		if section == "agents" {
+			r.openSessionsPicker()
+			return
+		}
+		target := tabViewTarget(r.visibleTab())
+		target.kind = swarmViewKind
+		target.item = section
+		r.inspect(target)
+		return
+	}
 	w := r.workspace()
 	i := &w.inspector
 	s := w.viewState(i.target)
