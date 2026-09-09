@@ -52,9 +52,12 @@ func TestReviewToolReportsRemainingIntegration(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	if err := r.update(ctx, func(s *State) error {
-		s.Tasks["changed"] = &Task{ID: "changed", Owner: "editor", Status: "awaiting_review", Revision: 2, Snapshot: "candidate"}
-		s.Members["editor"] = &Member{ID: "editor"}
-		s.Snapshots["candidate"] = &worktree.Snapshot{ID: "candidate", Tree: "changed-tree"}
+		base := worktree.Snapshot{ID: "base", Tree: "base-tree", Commit: "base-commit", Source: "parent"}
+		s.Tasks["changed"] = &Task{ID: "changed", Owner: "editor", Status: "awaiting_review", Revision: 2, Snapshot: "candidate", StartingSnapshot: base.ID}
+		s.Members["editor"] = &Member{ID: "editor", Context: "copy"}
+		s.Contexts["copy"] = &ExecutionContext{ID: "copy", Owner: "editor", Root: "child", Checkout: &worktree.Checkout{Path: "child", Base: base}}
+		s.Snapshots[base.ID] = &base
+		s.Snapshots["candidate"] = &worktree.Snapshot{ID: "candidate", Tree: "changed-tree", Commit: "changed-commit", Source: "child"}
 		s.Tasks["research"] = &Task{ID: "research", Status: "awaiting_review", Revision: 3}
 		return nil
 	}); err != nil {
@@ -98,6 +101,28 @@ func TestReviewToolReportsRemainingIntegration(t *testing.T) {
 	}
 	if tasks["changed"].Status != "awaiting_review" || tasks["changed"].DisplayStatus != "accepted · integration pending" || tasks["research"].DisplayStatus != "done" {
 		t.Fatalf("task list lost machine or display status: %s", out)
+	}
+}
+
+func TestReviewToolGuidanceForRetiredOrMissingProvenance(t *testing.T) {
+	ctx := context.Background()
+	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
+	if err := r.update(ctx, func(s *State) error {
+		s.Members["retired"] = &Member{ID: "retired", Status: "retired", Context: "removed"}
+		s.Tasks["task"] = &Task{ID: "task", Owner: "retired", Status: "awaiting_review", Revision: 2, Snapshot: "missing"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.RegisterParentTools(r.config.Registry)
+	review, _, _ := r.config.Registry.GetIfAllowed("swarm_review")
+	out, err := review.Execute(ctx, map[string]any{"task": "task", "revision": 2, "accept": true})
+	if err != nil || !strings.Contains(out, "restore the original task snapshots") {
+		t.Fatalf("missing provenance guidance: %q %v", out, err)
+	}
+	out, err = review.Execute(ctx, map[string]any{"task": "task", "revision": 2, "accept": false, "feedback": "revise the summary"})
+	if err != nil || !strings.Contains(out, "swarm_update_task") || strings.Contains(out, "Wait for") {
+		t.Fatalf("retired member cannot revise: %q %v", out, err)
 	}
 }
 

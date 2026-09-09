@@ -192,9 +192,23 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		}
 		result := map[string]any{"task": task.ID, "revision": task.Revision, "acceptedRevision": task.AcceptedRevision, "status": task.Status, "displayStatus": TaskStatus(task)}
 		if task.Status == "awaiting_review" && task.AcceptedRevision == task.Revision && task.Snapshot != "" {
-			result["nextAction"] = fmt.Sprintf("Use swarm_integration to prepare task %s revision %d, inspect the candidate, then accept and apply it. Cleanup does not integrate this result.", task.ID, task.Revision)
+			if base, _ := taskSnapshots(s, task); base == nil {
+				result["nextAction"] = "Snapshot provenance is unavailable; restore the original task snapshots or cancel the task."
+			} else {
+				result["nextAction"] = fmt.Sprintf("Use swarm_integration to prepare task %s revision %d, inspect the candidate, then accept and apply it. Cleanup does not integrate this result.", task.ID, task.Revision)
+			}
 		} else if task.Status == "changes_requested" {
-			result["nextAction"] = "Wait for the member's revised submission; explicitly continue a workflow-owned member through its workflow."
+			owner := s.Members[task.Owner]
+			switch {
+			case owner == nil || owner.Status == "retired" || s.Contexts[owner.Context] == nil:
+				result["nextAction"] = "The previous member cannot resume; use swarm_update_task to reassign the task to an available member, or cancel the task."
+			case owner.Controller != "":
+				result["nextAction"] = "Explicitly continue the member through its owning workflow to produce a revised submission."
+			case owner.Status == "paused" || owner.Status == "stopped":
+				result["nextAction"] = "Use swarm_control resume with the member ID to request a revised submission; an exhausted iteration allowance requires a user-directed grant."
+			default:
+				result["nextAction"] = "Wait for the member's revised submission."
+			}
 		}
 		return result, nil
 	})
