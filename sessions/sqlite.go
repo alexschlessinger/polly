@@ -2437,7 +2437,10 @@ func (s *sqliteSession) GetTimeToExpiry(ctx context.Context) (time.Duration, err
 	if snap.ttlNS == 0 {
 		return 0, nil
 	}
-	remaining := time.Duration(snap.ttlNS) - time.Since(time.Unix(0, snap.updatedNS))
+	// Writers keep updated_ns strictly increasing even within one clock tick,
+	// so the stamp can sit a nanosecond past now; the answer is never more
+	// than the TTL.
+	remaining := min(time.Duration(snap.ttlNS), time.Duration(snap.ttlNS)-time.Since(time.Unix(0, snap.updatedNS)))
 	if remaining < 0 {
 		return 0, nil
 	}
