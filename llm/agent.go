@@ -650,6 +650,13 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			// Has tool calls, continue to execute them
 		}
 
+		// Providers can return calls even when no schemas were sent. Reject the
+		// batch before callbacks or dispatch; DisableTools is an execution bound.
+		if a.config.DisableTools && len(response.ToolCalls) > 0 {
+			allGenerated = append(allGenerated, completeAbortedToolBatch(response.ToolCalls, nil)...)
+			return responseFor(response, iteration+1), errors.New("tool execution is disabled")
+		}
+
 		// Track if response tool was called in this batch
 		if a.config.ResponseTool != "" {
 			for _, tc := range response.ToolCalls {
@@ -876,6 +883,10 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 
 // executeToolCall performs the actual tool execution
 func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageToolCall, args map[string]any) (tools.ToolOutput, error) {
+	if a.config.DisableTools {
+		err := errors.New("tool execution is disabled")
+		return tools.ToolOutput{Text: err.Error()}, err
+	}
 	// Parse args if not already parsed
 	if args == nil {
 		if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {

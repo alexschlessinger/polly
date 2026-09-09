@@ -48,6 +48,25 @@ func reply(text string) messages.ChatMessage {
 	return messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: text, StopReason: messages.StopReasonEndTurn}
 }
 
+func TestAgentRunnerRetainsInheritedDisableTools(t *testing.T) {
+	for _, requested := range [][]string{nil, {"effect"}} {
+		t.Run(strings.Join(requested, ","), func(t *testing.T) {
+			calls := 0
+			registry := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "effect", Run: func(context.Context, tools.Args) (string, error) { calls++; return "effect", nil }}})
+			defer registry.Close()
+			model := &sequentialLLM{responses: []messages.ChatMessage{toolCall("effect", `{}`), reply("done")}}
+			run := AgentRunner(model, registry, llm.CompletionRequest{}, llm.AgentConfig{DisableTools: true, MaxIterations: 2})
+			_, err := run(context.Background(), Request{Task: "inspect", Tools: requested})
+			if err == nil || !strings.Contains(err.Error(), "tool execution is disabled") {
+				t.Fatalf("child error: %v", err)
+			}
+			if calls != 0 || model.calls != 1 || len(model.last.Tools) != 0 {
+				t.Fatalf("child widened tool authority: executions=%d requests=%d tools=%d", calls, model.calls, len(model.last.Tools))
+			}
+		})
+	}
+}
+
 func names(ts []tools.Tool) []string {
 	out := make([]string, 0, len(ts))
 	for _, t := range ts {

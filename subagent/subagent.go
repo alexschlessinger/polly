@@ -350,7 +350,7 @@ func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.Completion
 			return Result{}, err
 		}
 		agentConfig := config
-		agentConfig.DisableTools = req.Tools != nil && len(req.Tools) == 0
+		agentConfig.DisableTools = agentConfig.DisableTools || req.Tools != nil && len(req.Tools) == 0
 		if req.MaxIterations > 0 {
 			agentConfig.MaxIterations = req.MaxIterations
 		}

@@ -806,7 +806,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	agentConfig := defaults.agent
 	agentConfig.MaxIterations = remaining
 	agentConfig.ArtifactStore = session.ArtifactStore()
-	agentConfig.DisableTools = m.Tools != nil && len(m.Tools) == 0
+	agentConfig.DisableTools = agentConfig.DisableTools || m.Tools != nil && len(m.Tools) == 0
 	if !agentConfig.DisableTools {
 		r.registerMemberTools(registry, m.ID, i.id, coord)
 	}
