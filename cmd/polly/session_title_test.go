@@ -381,3 +381,48 @@ func TestSessionTitleMemberRenameAndManualContinuation(t *testing.T) {
 		}
 	}
 }
+
+func TestF2TitleEditorSupportsRoutineEditingKeys(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	r.model.ed.setText("keep composer draft")
+	_, err := r.state.session.(sessions.TitleSession).SetTitle(context.Background(), "Old title", sessions.TitleSourceAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.openSessionsPickerSelected("root")
+	key := func(id string) { r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+	key("<F2>")
+	m := r.model.modal
+	if m == nil || m.title != "Edit title" || m.input.text() != "Old title" {
+		t.Fatal("missing prefilled title editor")
+	}
+	for _, step := range []struct {
+		key    string
+		cursor int
+	}{{"<Home>", 0}, {"<Right>", 1}, {"<Left>", 0}, {"<End>", 9}, {"<C-a>", 0}, {"<C-e>", 9}} {
+		key(step.key)
+		if m.input.cursor != step.cursor {
+			t.Fatalf("%s cursor = %d, want %d", step.key, m.input.cursor, step.cursor)
+		}
+	}
+	key("<C-u>")
+	if !m.input.empty() {
+		t.Fatal("Ctrl-U retained the prefilled title")
+	}
+	for _, ch := range "New title!" {
+		key(string(ch))
+	}
+	key("<Left>")
+	key("<Delete>")
+	if m.input.text() != "New title" {
+		t.Fatalf("title correction: %q", m.input.text())
+	}
+	key("<Enter>")
+	md, err := r.state.session.GetMetadata(context.Background())
+	if err != nil || md.Title != "New title" || md.TitleSource != sessions.TitleSourceUser || md.Name != "root" {
+		t.Fatalf("edited title: %+v %v", md, err)
+	}
+	if r.model.ed.text() != "keep composer draft" {
+		t.Fatal("modal changed the composer")
+	}
+}

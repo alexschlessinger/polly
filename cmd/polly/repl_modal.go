@@ -527,6 +527,11 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		}
 		return true
 	}
+	// Input dialogs use the same editing motions as the composer. Keep list
+	// navigation and provider Ctrl-D clearing in the modal switch below.
+	if m.inputMode && handleModalInputKey(&m.input, e.ID) {
+		return true
+	}
 	switch e.ID {
 	case "<PageUp>", "<PageDown>", "<Home>", "<End>":
 		if !m.inputMode {
@@ -609,6 +614,40 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 			m.input.insert(ch)
 			m.selected = 0
 		}
+	}
+	return true
+}
+
+func handleModalInputKey(input *lineEditor, key string) bool {
+	switch key {
+	case "<Left>":
+		input.left()
+	case "<Right>":
+		input.right()
+	case "<Home>", "<C-a>":
+		input.home()
+	case "<End>", "<C-e>":
+		input.end()
+	case "<Up>":
+		input.up()
+	case "<Down>":
+		input.down()
+	case "<C-u>":
+		input.killToStart()
+	case "<C-k>":
+		input.killToEnd()
+	case "<C-w>":
+		input.deleteWordBackward()
+	case "<M-d>":
+		input.deleteWordForward()
+	case "<M-b>":
+		input.wordLeft()
+	case "<M-f>":
+		input.wordRight()
+	case "<Delete>":
+		input.deleteForward()
+	default:
+		return false
 	}
 	return true
 }

@@ -312,9 +312,19 @@ func TestSessionsPickerAndInspectorRouteQueuedRuntimeApprovalByIdentity(t *testi
 	if len(r.tabs) != 1 {
 		t.Fatal("inspection acquired a member tab")
 	}
-	// A delayed answer cannot resolve a later request after the captured one ended.
+	// A delayed answer cannot resolve a replacement batch from the same member.
+	replacement := &approvalState{requester: queued.requester, calls: queued.calls, reply: make(chan []bool, 1)}
+	r.model.mu.Lock()
+	r.model.approval = replacement
+	r.model.mu.Unlock()
 	dialog.onSubmit("y")
 	r.applyTabRequests()
+	r.model.mu.Lock()
+	if r.model.approval != replacement || replacement.index != 0 || replacement.out != nil {
+		t.Fatal("stale dialog answered replacement request")
+	}
+	r.model.resolveApprovalLocked(replacement, denyToolCalls(replacement.calls))
+	r.model.mu.Unlock()
 }
 
 func TestHistoricalSwarmCompletionDoesNotAnnounceOnFirstPoll(t *testing.T) {
