@@ -24,7 +24,7 @@ func TestSessionTreeNestsAgentsUnderTheirParent(t *testing.T) {
 		info := infos[node.Index]
 		got = append(got, sessionTreeName(info, node.Depth)+"/"+strings.Repeat("+", node.Depth)+"/"+strings.Repeat("c", node.Children))
 	}
-	want := []string{"alpha//", "gamma//cc", "↳ delta/+/", "↳ epsilon/+/", "omega//"}
+	want := []string{"alpha//", "gamma//cc", "↳ count files/+/", "↳ epsilon/+/", "omega//"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("tree = %q, want %q", got, want)
 	}

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/metaspartan/gotui/v5/widgets"

@@ -367,7 +367,7 @@ func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
 		}
 		if row.depth > 0 {
 			item.parent = p.infos[summary.ParentID].Metadata.Name
-			if brief := strings.Join(strings.Fields(info.Description), " "); brief != "" {
+			if brief := strings.Join(strings.Fields(info.Description), " "); brief != "" && brief != sessions.DisplayLabel(info) {
 				item.display += "  " + styled(styleEscape(brief), "muted", "")
 				item.selectedDisplay += "  " + styled(styleEscape(brief), "muted", "")
 			}
@@ -480,15 +480,7 @@ func (r *managedREPL) swarmListing(id, swarmID string) (status string, active, o
 				}
 				defer m.mu.Unlock()
 			}
-			if m.approval != nil && m.approval.requester == id {
-				return true
-			}
-			for _, a := range m.approvalQueue {
-				if a.requester == id {
-					return true
-				}
-			}
-			return false
+			return m.memberApproval(id) != nil
 		}
 		if approvals() {
 			status = "approval needed"
@@ -500,7 +492,7 @@ func (r *managedREPL) swarmListing(id, swarmID string) (status string, active, o
 
 // agentsStatus is the status row's word on the visible workspace's agents
 // here: the approvals they wait on first, else how many run. Empty when
-// none does. Runs on the event loop with no model lock held.
+// none does. Runs on the event loop with the visible model lock held.
 func (r *managedREPL) agentsStatus() (text, color string) {
 	running, approvals := r.agentCountsFor(r.visibleTab())
 	switch {

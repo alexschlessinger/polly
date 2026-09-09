@@ -416,7 +416,7 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 		t.Fatalf("expanding moved the selection to %q", selectedValue())
 	}
 	items := m.filteredItems()
-	if !strings.HasPrefix(items[2].label, "↳ delta") || items[2].parent != "gamma" || !strings.Contains(items[2].searchText, "count files") {
+	if !strings.HasPrefix(items[2].label, "↳ count files") || items[2].parent != "gamma" || !strings.Contains(items[2].searchText, "count files") {
 		t.Fatalf("agent row = %#v, want it named by its label under gamma", items[2])
 	}
 	if !strings.HasPrefix(items[3].label, "↳ epsilon") {

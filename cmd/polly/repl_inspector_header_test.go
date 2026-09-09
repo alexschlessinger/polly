@@ -89,6 +89,18 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	if strings.Contains(plainStyledText(header.text), "F6") {
 		t.Fatal("header still advertises focus switching")
 	}
+	child.model.lastOutcome, child.model.lastElapsed = turnOutcomeDone, 41800*time.Millisecond
+	defer func() { child.model.lastOutcome, child.model.lastElapsed = turnOutcomeNone, 0 }()
+	header = r.inspectorHeader(50, 20, 90, 3)
+	if !strings.Contains(plainStyledText(header.text), "done · 41.8s") {
+		t.Fatalf("settled agent outcome missing: %q", header.text)
+	}
+	child.model.lastOutcome = turnOutcomeCanceled
+	header = r.inspectorHeader(50, 20, 90, 3)
+	if !strings.Contains(plainStyledText(header.text), "canceled") || strings.Contains(plainStyledText(header.text), "41.8") {
+		t.Fatalf("canceled agent header: %q", header.text)
+	}
+
 }
 
 func TestAgentsShortcutPreservesComposerAndInspector(t *testing.T) {
@@ -187,7 +199,7 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 		}
 		checkInspectorHeaderGeometry(t, header, image.Rect(120, 0, 240, header.rows))
 	}
-	checkTitle(title)
+	checkTitle(title + " · merry-panda")
 	child.model.mu.Lock()
 	child.model.status.description = " \n "
 	child.model.mu.Unlock()
@@ -200,7 +212,7 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 	}
 	r.inspectorRefreshAt = time.Time{}
 	waitInspector(t, r, 240)
-	checkTitle(title)
+	checkTitle(title + " · merry-panda")
 	if len(r.tabs) != 1 || r.inspectionTab(target) != nil {
 		t.Fatal("showing a saved title activated the agent runtime")
 	}

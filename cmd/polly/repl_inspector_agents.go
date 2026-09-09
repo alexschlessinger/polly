@@ -214,6 +214,10 @@ func (r *managedREPL) reviewAgentApproval(target viewTarget) {
 
 func (r *managedREPL) openAgentApproval(target viewTarget) {
 	tab := r.inspectionTab(target)
+	member := r.inspectedSwarm(target) != nil
+	if member {
+		tab = r.visibleTab()
+	}
 	if tab == nil {
 		r.model.mu.Lock()
 		r.model.appendNoticeLine("No approval pending for this agent")
@@ -223,6 +227,9 @@ func (r *managedREPL) openAgentApproval(target viewTarget) {
 	m := tab.model
 	m.mu.Lock()
 	request := m.approval
+	if member {
+		request = m.memberApproval(target.session.ID)
+	}
 	if request == nil {
 		m.mu.Unlock()
 		return
@@ -240,16 +247,16 @@ func (r *managedREPL) openAgentApproval(target viewTarget) {
 		items = append(items, replModalItem{label: "Allow remaining calls in this batch", value: "a"})
 	}
 	r.openModal(&replModal{
-		title: fmt.Sprintf("Approval · %s · %s", tab.name, call.Name), width: width,
+		title: fmt.Sprintf("Approval · %s · %s", target.session.Name, call.Name), width: width,
 		body:  approvalCallBlock(call, strings.Split(expandToolCall(call), "\n"), width-4, approvalPromptMaxRows),
 		items: items,
 		onSubmit: func(answer string) {
 			r.workspaceActions = append(r.workspaceActions, func() {
 				m.mu.Lock()
-				if m.approval == request && request.index == index {
-					m.handleApprovalAnswer(answer[0])
+				if m.hasApprovalRequest(request) && request.index == index {
+					m.answerApprovalRequest(request, answer[0])
 				}
-				more := m.approval != nil
+				more := m.hasApprovalRequest(request)
 				m.mu.Unlock()
 				if more {
 					r.model.mu.Lock()

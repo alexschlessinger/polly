@@ -271,6 +271,10 @@ parent so the worktree and policy are restored together.
 keep their existing expand/collapse behavior. Clicking an expanded agent task,
 tool row, or thought detail opens the inspector. **Ctrl-G** and `/sessions` open
 the sessions picker. Agents nest beneath their parent; select one to inspect it.
+The open picker refreshes current activity and saved sessions without moving the
+selected session. The status row shows running agents or pending approvals and
+opens the same picker when clicked. Agent headers retain their session handle,
+current status, and settled outcome; typed launches announce completion once.
 Swarm views show current member state;
 saved execution records retain each invocation's outcome.
 Expanded agent rows show input/output token counts as each model response reports

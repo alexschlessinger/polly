@@ -69,3 +69,30 @@ func (m *replModel) denyApprovalLocked() {
 	}
 	m.approvalQueue = nil
 }
+
+func (m *replModel) hasApprovalRequest(a *approvalState) bool {
+	if a == nil {
+		return false
+	}
+	if m.approval == a {
+		return true
+	}
+	for _, pending := range m.approvalQueue {
+		if pending == a {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *replModel) memberApproval(id string) *approvalState {
+	if m.approval != nil && m.approval.requester == id {
+		return m.approval
+	}
+	for _, a := range m.approvalQueue {
+		if a.requester == id {
+			return a
+		}
+	}
+	return nil
+}
