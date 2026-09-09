@@ -97,7 +97,7 @@ func TestIntegrationWorkflowClientsInSandboxedLinkedCheckout(t *testing.T) {
 					return spawnTestReply("hold finished")
 				}
 				if strings.Contains(brief, "Independently review") {
-					return spawnTestReply(`{"approved":true,"feedback":"both contributions verified"}`)
+					return spawnTestToolCall("swarm_complete", `{"value":{"approved":true,"feedback":"both contributions verified"}}`)
 				}
 				if req.Messages[len(req.Messages)-1].Role != messages.MessageRoleTool {
 					name := "a.txt"
