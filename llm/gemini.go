@@ -330,16 +330,6 @@ func ConvertToolToGemini(schema *ToolSchema) *gemini.Tool {
 	}
 }
 
-// nativeGeminiCallID returns the provider-issued function call ID, or "" when
-// the ID is one polly synthesized (gemini-<nonce>-<n>) for internal pairing
-// and must not be echoed back to the API.
-func nativeGeminiCallID(id string) string {
-	if strings.HasPrefix(id, "gemini-") {
-		return ""
-	}
-	return id
-}
-
 // MessagesToGeminiContent converts messages to Gemini content format,
 // sharing conversions within this one call.
 func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, string, map[string]string) {
@@ -399,7 +389,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 					}
 					var call *gemini.FunctionCall
 					if raw, valid := replay.geminiArguments(tc.Arguments); valid {
-						call = gemini.NewRawFunctionCall(nativeGeminiCallID(tc.ID), tc.Name, raw)
+						call = gemini.NewRawFunctionCall(adapters.NativeCallID(tc.ID), tc.Name, raw)
 					}
 					if call != nil {
 						part := &gemini.Part{FunctionCall: call}
@@ -440,7 +430,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 				funcName = callIDToName[msg.ToolCallID]
 			}
 
-			result := gemini.NewRawFunctionResponse(nativeGeminiCallID(msg.ToolCallID), funcName, replay.geminiResult(msg.Content))
+			result := gemini.NewRawFunctionResponse(adapters.NativeCallID(msg.ToolCallID), funcName, replay.geminiResult(msg.Content))
 			history = append(history, &gemini.Content{
 				Role: "user",
 				Parts: []*gemini.Part{{

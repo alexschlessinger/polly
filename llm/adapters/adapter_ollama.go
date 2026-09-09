@@ -2,8 +2,6 @@ package adapters
 
 import (
 	"encoding/json"
-	"fmt"
-	"regexp"
 
 	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
@@ -71,7 +69,7 @@ func (a *OllamaAdapter) handleToolCalls(toolCalls []ollama.ToolCall, state strea
 		// Prefer the native call ID when provided; synthesize one otherwise
 		id := tc.ID
 		if id == "" {
-			id = syntheticOllamaCallID(a.idPrefix, base+i)
+			id = SyntheticCallID("ollama", a.idPrefix, base+i)
 		}
 		state.AddToolCall(messages.ChatMessageToolCall{
 			ID:        id,
@@ -79,23 +77,6 @@ func (a *OllamaAdapter) handleToolCalls(toolCalls []ollama.ToolCall, state strea
 			Arguments: string(tcArgStr),
 		})
 	}
-}
-
-// syntheticOllamaCallID names a call the server left unnamed. The shape is
-// polly's own so replay can tell it from a server-issued ID.
-func syntheticOllamaCallID(prefix string, n int) string {
-	return fmt.Sprintf("ollama_call_%s_%d", prefix, n)
-}
-
-// syntheticOllamaCallIDPattern matches polly's synthetic Ollama call IDs:
-// the current ollama_call_<nonce>_<n> and the earlier call_<nonce>_<n>
-// still present in saved sessions (nonce as randomIDPrefix makes it).
-var syntheticOllamaCallIDPattern = regexp.MustCompile(`^(?:ollama_)?call_[0-9a-f]{8}_[0-9]+$`)
-
-// IsSyntheticOllamaCallID reports whether id was synthesized by polly rather
-// than issued by an Ollama server, so it must not be echoed back.
-func IsSyntheticOllamaCallID(id string) bool {
-	return syntheticOllamaCallIDPattern.MatchString(id)
 }
 
 // EnrichFinalMessage adds Ollama-specific metadata to the final message

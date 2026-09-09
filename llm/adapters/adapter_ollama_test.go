@@ -42,24 +42,30 @@ func TestOllamaAdapterNoDoneNoStopReason(t *testing.T) {
 	}
 }
 
-func TestIsSyntheticOllamaCallID(t *testing.T) {
+func TestIsSyntheticCallID(t *testing.T) {
 	adapter := NewOllamaAdapter()
 	state := streaming.NewStreamState()
 	adapter.handleToolCalls([]ollama.ToolCall{{Function: ollama.ToolCallFunction{Name: "f"}}}, state)
 	synthetic := state.GetToolCalls()[0].ID
 	cases := map[string]bool{
-		synthetic:              true,
-		"call_0123abcd_7":      true, // the earlier shape, still in saved sessions
-		"call_abc123":          false,
-		"call_0123abcd":        false,
-		"call_xyz_1":           false,
-		"toolu_01ABC":          false,
-		"ollama_call_zz_1":     false,
-		"ollama_call_0123abcd": false,
+		synthetic:                   true,
+		"gemini_call_0123abcd_2":    true,
+		"call_0123abcd_7":           true, // the earlier Ollama shape, still in saved sessions
+		"gemini-0123abcd-0":         true, // the earlier Gemini shape, still in saved sessions
+		"call_abc123":               false,
+		"call_0123abcd":             false,
+		"call_xyz_1":                false,
+		"toolu_01ABC":               false,
+		"ollama_call_zz_1":          false,
+		"ollama_call_0123abcd":      false,
+		"gemini-native-looking-id1": false,
 	}
 	for id, want := range cases {
-		if got := IsSyntheticOllamaCallID(id); got != want {
-			t.Errorf("IsSyntheticOllamaCallID(%q) = %v, want %v", id, got, want)
+		if got := IsSyntheticCallID(id); got != want {
+			t.Errorf("IsSyntheticCallID(%q) = %v, want %v", id, got, want)
+		}
+		if native := NativeCallID(id); (native == "") != want {
+			t.Errorf("NativeCallID(%q) = %q", id, native)
 		}
 	}
 }

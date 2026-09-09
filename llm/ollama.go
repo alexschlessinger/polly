@@ -234,18 +234,6 @@ func ConvertToolToOllama(schema *ToolSchema) ollama.Tool {
 	}
 }
 
-// nativeOllamaCallID returns the provider-issued tool call ID, or "" when the
-// ID is one polly synthesized for internal pairing and must not be echoed
-// back to the API. Only polly's own shapes are stripped — the current
-// ollama_call_<nonce>_<n> and the earlier call_<nonce>_<n> — so a server
-// that issues its own call_… IDs keeps them.
-func nativeOllamaCallID(id string) string {
-	if adapters.IsSyntheticOllamaCallID(id) {
-		return ""
-	}
-	return id
-}
-
 // MessagesToOllama converts messages to Ollama format
 func MessagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
 	var ollamaMessages []ollama.Message
@@ -291,7 +279,7 @@ func MessagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
 				var args map[string]any
 				if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
 					ollamaToolCalls = append(ollamaToolCalls, ollama.ToolCall{
-						ID: nativeOllamaCallID(tc.ID),
+						ID: adapters.NativeCallID(tc.ID),
 						Function: ollama.ToolCallFunction{
 							// The index positions the call among its
 							// siblings, as the server emitted it; without
@@ -311,7 +299,7 @@ func MessagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
 			ollamaMsg.ToolName = msg.ToolName
 			// Echo the server's call ID so a repeated tool is answered
 			// unambiguously; synthesized IDs stay internal.
-			ollamaMsg.ToolCallID = nativeOllamaCallID(msg.ToolCallID)
+			ollamaMsg.ToolCallID = adapters.NativeCallID(msg.ToolCallID)
 		}
 
 		ollamaMessages = append(ollamaMessages, ollamaMsg)

@@ -109,7 +109,7 @@ func (a *GeminiAdapter) handleFunctionCall(part *gemini.Part, state streaming.St
 	toolCalls := state.GetToolCalls()
 	toolCallID := part.FunctionCall.ID
 	if toolCallID == "" {
-		toolCallID = fmt.Sprintf("gemini-%s-%d", a.idPrefix, len(toolCalls))
+		toolCallID = SyntheticCallID("gemini", a.idPrefix, len(toolCalls))
 	}
 
 	// Add the tool call
