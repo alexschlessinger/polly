@@ -55,20 +55,16 @@ type Config struct {
 	AllowNet      bool
 
 	// Skill configuration
-	NoSkills   bool
-	ListSkills bool
+	NoSkills bool
 
 	// Context operations
 	ContextID      string
-	ResetContext   string // Reset this context (clear history, keep settings)
-	UseLastContext bool   // New field for --last flag
-	ListContexts   bool
-	FlatList       bool // --list prints one line per session without nesting agents
-	DeleteContext  string
-	AddToContext   bool
-	PurgeAll       bool   // Delete all sessions
-	CreateContext  string // Create a new context with this name
-	ShowContext    string // Show configuration for this context
+	UseLastContext bool // --last
+	// Management is the context-management flag given instead of a prompt
+	// (nil for a conversation); ManagementArg names its context when the
+	// flag takes one.
+	Management    *managementFlag
+	ManagementArg string
 
 	// Input/Output configuration
 	Prompt          string

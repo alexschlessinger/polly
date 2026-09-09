@@ -26,15 +26,70 @@ var defaultNativeToolNames = []string{
 
 // needsFileStore determines whether the unified store should use disk mode.
 func needsFileStore(config *Config, contextID string) bool {
-	return contextID != "" ||
-		config.ResetContext != "" ||
-		config.UseLastContext ||
-		config.ListContexts ||
-		config.DeleteContext != "" ||
-		config.AddToContext ||
-		config.PurgeAll ||
-		config.CreateContext != "" ||
-		config.ShowContext != ""
+	return contextID != "" || config.UseLastContext || (config.Management != nil && config.Management.store)
+}
+
+// managementFlag is one of the mutually exclusive context-management flags.
+// Given instead of a prompt, it runs and the process exits.
+type managementFlag struct {
+	name string
+	// takesName marks a string flag naming a context; the rest are booleans.
+	takesName bool
+	// store marks a flag that opens the on-disk session store.
+	store bool
+	run   func(r *commandRunner, name string) error
+}
+
+// managementFlags lists the flags in dispatch order.
+var managementFlags = []*managementFlag{
+	{name: "reset", takesName: true, store: true, run: func(r *commandRunner, name string) error {
+		return handleResetContext(r.ctx, r.sessionStore, r.config, r.cmd, name)
+	}},
+	{name: "list", store: true, run: func(r *commandRunner, _ string) error {
+		return handleListContexts(r.ctx, r.sessionStore, r.cmd.Bool("flat"))
+	}},
+	{name: "listskills", run: func(r *commandRunner, _ string) error {
+		return handleListSkills(r.config)
+	}},
+	{name: "delete", takesName: true, store: true, run: func(r *commandRunner, name string) error {
+		return handleDeleteContext(r.ctx, r.sessionStore, name)
+	}},
+	{name: "add", store: true, run: func(r *commandRunner, _ string) error {
+		return handleAddToContext(r.ctx, r.sessionStore, r.config, r.contextID)
+	}},
+	{name: "purge", store: true, run: func(r *commandRunner, _ string) error {
+		return handlePurgeAll(r.ctx, r.sessionStore)
+	}},
+	{name: "create", takesName: true, store: true, run: func(r *commandRunner, name string) error {
+		return handleCreateContext(r.ctx, r.sessionStore, r.config, name)
+	}},
+	{name: "show", takesName: true, store: true, run: func(r *commandRunner, name string) error {
+		return handleShowContext(r.ctx, r.sessionStore, name)
+	}},
+}
+
+// parseManagementFlag returns the management flag the command line gives,
+// with the context it names, or nil for a conversation.
+func parseManagementFlag(cmd *cli.Command) (*managementFlag, string) {
+	for _, flag := range managementFlags {
+		if flag.takesName {
+			if name := cmd.String(flag.name); name != "" {
+				return flag, name
+			}
+		} else if cmd.Bool(flag.name) {
+			return flag, ""
+		}
+	}
+	return nil, ""
+}
+
+func managementFlagNamed(name string) *managementFlag {
+	for _, flag := range managementFlags {
+		if flag.name == name {
+			return flag
+		}
+	}
+	return nil
 }
 
 // setupSessionStore opens the unified SQLite store. forceFile selects disk

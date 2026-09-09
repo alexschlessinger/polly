@@ -324,12 +324,8 @@ func (r *commandRunner) Run() (retErr error) {
 			retErr = errors.Join(retErr, fmt.Errorf("close context store: %w", err))
 		}
 	}()
-	handled, err := r.handleManagementFlags()
-	if err != nil {
-		return err
-	}
-	if handled {
-		return nil
+	if op := r.config.Management; op != nil {
+		return op.run(r, r.config.ManagementArg)
 	}
 	if err := validateSandboxFlagCombination(r.cmd, r.config); err != nil {
 		return err
@@ -349,38 +345,6 @@ func (r *commandRunner) Run() (retErr error) {
 	}
 
 	return r.runConversation()
-}
-
-func (r *commandRunner) handleManagementFlags() (bool, error) {
-	cfg := r.config
-	store := r.sessionStore
-
-	if cfg.ResetContext != "" {
-		return true, handleResetContext(r.ctx, store, cfg, r.cmd, cfg.ResetContext)
-	}
-	if cfg.ListContexts {
-		return true, handleListContexts(r.ctx, store, cfg.FlatList)
-	}
-	if cfg.ListSkills {
-		return true, handleListSkills(cfg)
-	}
-	if cfg.DeleteContext != "" {
-		return true, handleDeleteContext(r.ctx, store, cfg.DeleteContext)
-	}
-	if cfg.AddToContext {
-		return true, handleAddToContext(r.ctx, store, cfg, r.contextID)
-	}
-	if cfg.PurgeAll {
-		return true, handlePurgeAll(r.ctx, store)
-	}
-	if cfg.CreateContext != "" {
-		return true, handleCreateContext(r.ctx, store, cfg, cfg.CreateContext)
-	}
-	if cfg.ShowContext != "" {
-		return true, handleShowContext(r.ctx, store, cfg.ShowContext)
-	}
-
-	return false, nil
 }
 
 func runCommand(ctx context.Context, cmd *cli.Command) error {

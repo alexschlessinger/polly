@@ -52,10 +52,10 @@ func TestWantsAutoREPLContext(t *testing.T) {
 	if wantsAutoREPLContext(&Config{PromptSet: true}) {
 		t.Fatal("one-shot prompt run must not auto-create a context")
 	}
-	if wantsAutoREPLContext(&Config{ListContexts: true}) {
+	if wantsAutoREPLContext(&Config{Management: managementFlagNamed("list")}) {
 		t.Fatal("context management flags must not auto-create a context")
 	}
-	if wantsAutoREPLContext(&Config{AddToContext: true}) {
+	if wantsAutoREPLContext(&Config{Management: managementFlagNamed("add")}) {
 		t.Fatal("--add must not auto-create a context")
 	}
 	if wantsAutoREPLContext(&Config{Files: []string{"x"}}) {

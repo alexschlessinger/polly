@@ -67,20 +67,11 @@ func parseConfig(cmd *cli.Command) *Config {
 		AllowNet:      cmd.Bool("allownet"),
 
 		// Skill configuration
-		NoSkills:   cmd.Bool("noskills"),
-		ListSkills: cmd.Bool("listskills"),
+		NoSkills: cmd.Bool("noskills"),
 
 		// Context operations
 		ContextID:      cmd.String("context"),
-		ResetContext:   cmd.String("reset"),
 		UseLastContext: cmd.Bool("last"),
-		ListContexts:   cmd.Bool("list"),
-		FlatList:       cmd.Bool("flat"),
-		DeleteContext:  cmd.String("delete"),
-		AddToContext:   cmd.Bool("add"),
-		PurgeAll:       cmd.Bool("purge"),
-		CreateContext:  cmd.String("create"),
-		ShowContext:    cmd.String("show"),
 
 		// Input/Output configuration
 		Prompt:          cmd.String("prompt"),
@@ -94,6 +85,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		Tools:           cmd.StringSlice("tool"),
 		Skills:          cmd.StringSlice("skill"),
 	}
+	config.Management, config.ManagementArg = parseManagementFlag(cmd)
 	for _, spec := range settingSpecs {
 		if spec.fromCmd != nil {
 			spec.fromCmd(&config.Launch, cmd)
