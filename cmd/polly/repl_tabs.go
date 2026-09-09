@@ -67,11 +67,14 @@ type replTab struct {
 	reportWriteDone chan struct{}
 	reporting       bool
 	deliveryPending bool
-	agentActivity   *agentActivity
-	agentWriteDone  chan struct{}
-	spawnCallID     string
-	agentStatus     string
-	agentActive     bool
+	// reportedSettle marks a settle whose news reaches the parent as its
+	// report (or its agent row), so the visible parent needs no signal.
+	reportedSettle bool
+	agentActivity  *agentActivity
+	agentWriteDone chan struct{}
+	spawnCallID    string
+	agentStatus    string
+	agentActive    bool
 
 	// Loop-owned usage snapshot for the original delegated run.
 	agentInputTokens, agentOutputTokens int

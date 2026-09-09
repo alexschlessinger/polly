@@ -666,7 +666,7 @@ func TestStatusRowShowsTheWorkspaceAgents(t *testing.T) {
 		t.Fatalf("agents field %+v does not cover %q in %q", f, text, plain)
 	}
 	// The field gives way before the session name does.
-	if narrow := plainStyledText(m.statusRow(30)); strings.Contains(narrow, "approval") || !strings.Contains(narrow, "root") {
+	if narrow := plainStyledText(m.statusRow(20)); strings.Contains(narrow, "approval") || !strings.Contains(narrow, "root") {
 		t.Fatalf("narrow status row = %q", narrow)
 	}
 	if m.status.agentsField.Cols != 0 {

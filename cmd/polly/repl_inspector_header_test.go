@@ -89,6 +89,18 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	if strings.Contains(plainStyledText(header.text), "F6") {
 		t.Fatal("header still advertises focus switching")
 	}
+	// A settled agent keeps how it ended, with the time it took.
+	child.model.lastOutcome, child.model.lastElapsed = turnOutcomeDone, 41800*time.Millisecond
+	defer func() { child.model.lastOutcome, child.model.lastElapsed = turnOutcomeNone, 0 }()
+	header = r.inspectorHeader(50, 20, 90, 3)
+	if rows := strings.Split(plainStyledText(header.text), "\n"); header.rows != 2 || rows[1] != "done · 41.8s" {
+		t.Fatalf("settled agent header = %q", plainStyledText(header.text))
+	}
+	child.model.lastOutcome = turnOutcomeCanceled
+	header = r.inspectorHeader(50, 20, 90, 3)
+	if rows := strings.Split(plainStyledText(header.text), "\n"); header.rows != 2 || rows[1] != "canceled" {
+		t.Fatalf("canceled agent header = %q", plainStyledText(header.text))
+	}
 }
 
 func TestAgentsShortcutPreservesComposerAndInspector(t *testing.T) {

@@ -34,7 +34,7 @@ func (c *childTestRuns) run(ctx context.Context, prompt string, turnUI TurnUI) e
 	case prompt == "wait":
 		<-ctx.Done()
 		return context.Cause(ctx)
-	case strings.HasPrefix(prompt, "agent ") || strings.HasSuffix(prompt, " agent reports"):
+	case len(turnUI.(*gotuiTurnUI).turn.reportIDs) > 0:
 		tui := turnUI.(*gotuiTurnUI)
 		if err := tui.state.session.AddReportMessage(ctx, tui.turn.userMessage, tui.turn.reportIDs); err != nil {
 			return err
@@ -205,8 +205,8 @@ func TestBackgroundChildReportsToTheIdleParent(t *testing.T) {
 	if parent.turnDone == nil {
 		t.Fatal("the report did not start a parent turn")
 	}
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "agent "+child.name+" finished") || strings.Contains(got, "▎ agent") {
-		t.Fatalf("parent transcript lacks the report echo: %q", got)
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "\n"+child.name+" done · ") || strings.Contains(got, "▎ "+child.name) || strings.Contains(got, "(agent of") {
+		t.Fatalf("parent transcript lacks the one report echo: %q", got)
 	}
 	settleUntil(t, r, settled(parent))
 	reports := runs.reported()
@@ -414,7 +414,7 @@ func TestChildOfAClosedParentReportsThroughTheStore(t *testing.T) {
 	if got := runs.reported(); len(got) != 1 || got[0] != want {
 		t.Fatalf("reopened parent got %q, want %q", got, want)
 	}
-	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, "agent "+child.name+" finished") || strings.Contains(got, "▎ agent") {
+	if got := plainStyledText(r.model.fullTranscript()); !strings.Contains(got, child.name+" done") || strings.Contains(got, "▎ "+child.name) {
 		t.Fatalf("reopened parent transcript lacks the report echo: %q", got)
 	}
 }
@@ -585,12 +585,12 @@ func TestHydratedAgentReportsReadAsNotices(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, Content: "noted"},
 	}, "parent")
 	got := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	for _, want := range []string{"▎ delegate", "\nagent helper finished\n", "\n2 agent reports\n"} {
+	for _, want := range []string{"▎ delegate", "\nhelper done\n", "\n2 agent reports\n"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("hydrated transcript %q missing %q", got, want)
 		}
 	}
-	for _, leaked := range []string{"(agent session", "found it", "▎ agent", "▎ 2 agent", "half done"} {
+	for _, leaked := range []string{"(agent session", "found it", "▎ helper", "▎ 2 agent", "half done", "agent helper finished"} {
 		if strings.Contains(got, leaked) {
 			t.Fatalf("hydrated transcript leaked %q: %q", leaked, got)
 		}

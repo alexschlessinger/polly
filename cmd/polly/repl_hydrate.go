@@ -518,7 +518,7 @@ func historyUserSummary(msg messages.ChatMessage) (display string, restorable, c
 		if len(headers) > 1 {
 			return fmt.Sprintf("%d agent reports", len(headers)), false, false, true
 		}
-		return headers[0], false, false, true
+		return agentReportHeaderNotice(headers[0]), false, false, true
 	}
 	var attachments []string
 	if display == "" {
@@ -556,6 +556,24 @@ func historyUserSummary(msg messages.ChatMessage) (display string, restorable, c
 // agentReportHeaderPattern matches the header line reportHeader writes ahead
 // of each child's reply.
 var agentReportHeaderPattern = regexp.MustCompile(`(?m)^agent \S+ (?:finished|canceled|failed: .*)$`)
+
+var agentReportHeaderParts = regexp.MustCompile(`^agent (\S+) (finished|canceled|failed: (.*))$`)
+
+// agentReportHeaderNotice reads a stored report header back as the notice
+// the parent showed when it arrived, without the time it took.
+func agentReportHeaderNotice(header string) string {
+	parts := agentReportHeaderParts.FindStringSubmatch(header)
+	if parts == nil {
+		return header
+	}
+	switch parts[2] {
+	case "finished":
+		return parts[1] + " done"
+	case "canceled":
+		return parts[1] + " canceled"
+	}
+	return parts[1] + " failed · " + parts[3]
+}
 
 // agentReportHeaders returns the report headers a user message carries: every
 // message the REPL marked as a report, and older ones recognized by the

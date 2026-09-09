@@ -172,28 +172,41 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			}
 		}
 	} else if i.target.kind == conversationViewKind && !isRoot {
+		busy, canceling, approval := false, false, false
+		outcome, elapsed := turnOutcomeNone, time.Duration(0)
 		if tab := r.inspectionTab(i.target); tab != nil && tab != root {
 			m := tab.model
 			m.mu.Lock()
-			busy, canceling, approval := m.busy, m.canceling, m.approval != nil
+			busy, canceling, approval = m.busy, m.canceling, m.approval != nil
+			outcome, elapsed = m.lastOutcome, m.lastElapsed
 			m.mu.Unlock()
-			if busy || approval {
-				b.newline()
+		} else if i.current != nil && i.current.model != nil {
+			// A retired agent's snapshot keeps how its run here ended.
+			outcome, elapsed = i.current.model.lastOutcome, i.current.model.lastElapsed
+		}
+		status := ""
+		switch {
+		case approval:
+			status = "approval needed"
+		case busy:
+			status = "running"
+		case outcome != turnOutcomeNone:
+			status = turnOutcomeLabel(outcome)
+			if elapsed > 0 && outcome != turnOutcomeCanceled {
+				status += " · " + formatElapsed(elapsed)
 			}
-			switch {
-			case approval:
-				b.item("approval needed", "muted", "", "")
-			case busy:
-				b.item("running", "muted", "", "")
-			}
-			if busy {
-				sep()
-				b.link("Stop agent", "stop", !canceling, false)
-			}
-			if approval {
-				sep()
-				b.link("Review approval", "review", true, true)
-			}
+		}
+		if status != "" {
+			b.newline()
+			b.item(status, "muted", "", "")
+		}
+		if busy {
+			sep()
+			b.link("Stop agent", "stop", !canceling, false)
+		}
+		if approval {
+			sep()
+			b.link("Review approval", "review", true, true)
 		}
 	}
 	return b.layout(height)

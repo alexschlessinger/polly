@@ -68,6 +68,14 @@ func (r *managedREPL) relayTabSignals() {
 		m.notificationMu.Lock()
 		var kept []tabSignal
 		for _, s := range m.signals {
+			if s.kind != signalApprovalNeeded && tab.reportedSettle {
+				// The parent hears of the settle as the report notice or
+				// on its agent row; a second line would say it twice.
+				tab.reportedSettle = false
+				if tab.parent != nil && tab.parent.model == r.model {
+					continue
+				}
+			}
 			if busy && s.kind != signalApprovalNeeded {
 				kept = append(kept, s)
 				continue

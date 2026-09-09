@@ -245,6 +245,16 @@ func (r *managedREPL) deliverChildReport(ctx context.Context, tab *replTab, err 
 	r.finishChildAgent(tab, err)
 	rec := tab.report
 	tab.report = nil
+	tab.reportedSettle = true
+	// The report's notice names the time the run took; the tab may have
+	// closed by the time the report is read back.
+	tab.model.mu.Lock()
+	elapsed := tab.model.lastElapsed
+	tab.model.mu.Unlock()
+	if r.agentElapsed == nil {
+		r.agentElapsed = make(map[string]time.Duration)
+	}
+	r.agentElapsed[tab.name] = elapsed
 	res := subagent.Result{Session: tab.name, Done: tab.settled}
 	res.Text, res.InputTokens, res.OutputTokens = rec.result()
 	if tab.waiter != nil && (tab.waitCtx == nil || tab.waitCtx.Err() == nil) {
@@ -366,7 +376,7 @@ func (r *managedREPL) pullReports(ctx context.Context, tab *replTab) bool {
 					r.model.mu.Unlock()
 				}
 			} else {
-				m.queueReports(reports)
+				m.queueReports(reports, r.childElapsed)
 			}
 			if tab.reportsRepull {
 				tab.reportsRepull = false
@@ -392,7 +402,12 @@ func (r *managedREPL) pullReports(ctx context.Context, tab *replTab) bool {
 // queueReports puts one input for the reports not already running, queued,
 // or held as a restored draft ahead of the other queued inputs. Runs with
 // no model lock held.
-func (m *replModel) queueReports(reports []sessions.Report) {
+// queueReports takes reports as the next input; elapsed says how long a
+// child that ran here took, for the notice.
+func (m *replModel) queueReports(reports []sessions.Report, elapsed func(child string) time.Duration) {
+	if elapsed == nil {
+		elapsed = func(string) time.Duration { return 0 }
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	seen := make(map[int64]bool)
@@ -421,7 +436,7 @@ func (m *replModel) queueReports(reports []sessions.Report) {
 		}
 		bodies = append(bodies, reportBody(rep))
 		ids = append(ids, rep.ID)
-		display = reportHeader(rep)
+		display = agentReportNotice(rep, elapsed(rep.Child))
 	}
 	if len(ids) == 0 {
 		return
@@ -461,6 +476,32 @@ func reportHeader(rep sessions.Report) string {
 		return fmt.Sprintf("agent %s failed: %s", rep.Child, rep.Error)
 	}
 	return fmt.Sprintf("agent %s finished", rep.Child)
+}
+
+// agentReportNotice is the transcript's line for a report: the agent by
+// name, how it ended, and how long it took when it ran here.
+func agentReportNotice(rep sessions.Report, elapsed time.Duration) string {
+	switch rep.Status {
+	case sessions.ReportCanceled:
+		return rep.Child + " canceled"
+	case sessions.ReportFailed:
+		return rep.Child + " failed · " + rep.Error
+	}
+	text := rep.Child + " done"
+	if elapsed > 0 {
+		text += " · " + formatElapsed(elapsed)
+	}
+	return text
+}
+
+// childElapsed is how long the named child's reported run here took, zero
+// for one that ran elsewhere. Runs on the event loop.
+func (r *managedREPL) childElapsed(name string) time.Duration {
+	elapsed, ok := r.agentElapsed[name]
+	if ok {
+		delete(r.agentElapsed, name)
+	}
+	return elapsed
 }
 
 // reportBody is the message a report makes for the parent: its header, then
