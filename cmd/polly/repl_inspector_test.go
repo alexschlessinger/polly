@@ -1272,3 +1272,53 @@ func TestToolBodyFences(t *testing.T) {
 		t.Fatalf("pending tool body = %s", text)
 	}
 }
+
+func TestInspectorDeclinesMessagesToASessionHeldElsewhere(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "root")
+	held, err := store.Acquire(context.Background(), "held-agent", sessions.AcquireOptions{Parent: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := held.AddMessage(context.Background(), messages.ChatMessage{Role: messages.MessageRoleUser, Content: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "held-agent"}})
+	v := waitInspector(t, r, 140)
+	if v.info == nil || !v.info.InUse || len(r.tabs) != 1 {
+		t.Fatalf("inspecting a held session: info=%#v tabs=%d", v.info, len(r.tabs))
+	}
+	header := plainStyledText(r.inspectorHeader(80, 3, 0, 0).text)
+	if !strings.Contains(header, "open in another polly") {
+		t.Fatalf("header = %q, want the held-elsewhere status", header)
+	}
+	r.messageInspectedAgent()
+	r.applyTabRequests()
+	if r.model.modal != nil {
+		t.Fatalf("message editor opened for a held session: %q", r.model.modal.title)
+	}
+	if transcript := plainStyledText(r.model.fullTranscript()); !strings.Contains(transcript, "held-agent is open in another polly") {
+		t.Fatalf("transcript = %q, want the held-elsewhere notice", transcript)
+	}
+	if len(r.tabs) != 1 {
+		t.Fatal("declining a message changed the tabs")
+	}
+
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.inspectorRefreshAt = time.Time{}
+	v = waitInspector(t, r, 140)
+	if v.info == nil || v.info.InUse {
+		t.Fatalf("view did not notice the released lease: %#v", v.info)
+	}
+	if header := plainStyledText(r.inspectorHeader(80, 3, 0, 0).text); strings.Contains(header, "open in another polly") {
+		t.Fatalf("header = %q, still reports the released lease", header)
+	}
+	r.messageInspectedAgent()
+	r.applyTabRequests()
+	if r.model.modal == nil || r.model.modal.title != "Message held-agent" {
+		t.Fatalf("message editor did not open once the lease ended: %#v", r.model.modal)
+	}
+}

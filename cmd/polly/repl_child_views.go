@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"sync"
@@ -386,8 +387,12 @@ func (r *managedREPL) activateChildViewLocked(tab *replTab) {
 				return
 			}
 			if err != nil {
+				reason := err.Error()
+				if errors.Is(err, sessions.ErrSessionInUse) {
+					reason = "it is open in another polly"
+				}
 				tab.model.mu.Lock()
-				tab.model.appendErrorLine("could not prepare conversation: " + err.Error())
+				tab.model.appendErrorLine("could not prepare conversation: " + reason)
 				tab.model.mu.Unlock()
 				return
 			}

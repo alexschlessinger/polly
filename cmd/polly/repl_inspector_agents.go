@@ -54,8 +54,26 @@ func (r *managedREPL) messageInspectedAgent() {
 	})
 }
 
+// heldElsewhere reports whether the inspected saved session is leased by
+// another polly: its view says it is in use, no tab here owns it, and it
+// is not a member of this workspace's swarm. Such a view is read-only until
+// the lease ends; the periodic re-read keeps the answer fresh.
+func (r *managedREPL) heldElsewhere(target viewTarget) bool {
+	v := r.workspace().inspector.current
+	if v == nil || v.info == nil || !v.info.InUse || target.kind != conversationViewKind {
+		return false
+	}
+	return r.inspectionTab(target) == nil && r.inspectedSwarm(target) == nil
+}
+
 func (r *managedREPL) openAgentEditor(w *sessionWorkspace, target viewTarget) {
 	if target.kind != conversationViewKind {
+		return
+	}
+	if r.heldElsewhere(target) {
+		r.model.mu.Lock()
+		r.model.appendNoticeLine(target.session.Name + " is open in another polly · sending requires its session lease")
+		r.model.mu.Unlock()
 		return
 	}
 	if w.agentDrafts == nil {

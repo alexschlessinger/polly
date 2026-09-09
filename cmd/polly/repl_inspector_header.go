@@ -225,6 +225,8 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			}
 			status := ""
 			switch {
+			case r.heldElsewhere(i.target):
+				status = "open in another polly · read-only"
 			case approval:
 				status = "approval needed"
 			case busy:
