@@ -107,7 +107,7 @@ func (m *replModel) toggleReasoningGroup(ids []int64, width int) bool {
 	anyExpanded, found := false, false
 	validIDs := make([]int64, 0, len(ids))
 	for _, id := range ids {
-		if record := m.reasoningRecords[id]; record != nil {
+		if record := m.reasoningRecords.get(id); record != nil {
 			found = true
 			anyExpanded = anyExpanded || record.expanded
 			validIDs = append(validIDs, id)
@@ -131,7 +131,7 @@ func (m *replModel) toggleReasoningGroup(ids []int64, width int) bool {
 		// mid-loop would render intermediate frames from a half-toggled group.
 		var changed []*reasoningRecord
 		for _, id := range ids {
-			if record := m.reasoningRecords[id]; record != nil && record.expanded != expand {
+			if record := m.reasoningRecords.get(id); record != nil && record.expanded != expand {
 				record.expanded = expand
 				changed = append(changed, record)
 			}

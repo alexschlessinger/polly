@@ -143,7 +143,7 @@ func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspec
 		}
 		// The bounded thought tail immediately follows the activity header.
 		for n := len(block.reasoningIDs) - 1; n >= 0; n-- {
-			r := m.reasoningRecords[block.reasoningIDs[n]]
+			r := m.reasoningRecords.get(block.reasoningIDs[n])
 			if r == nil || !r.expanded {
 				continue
 			}

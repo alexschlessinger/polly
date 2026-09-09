@@ -37,16 +37,11 @@ func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
 
 func (m *replModel) deleteTranscriptEntry(index int) {
 	m.turnTrailers.deleteLine(index)
-	if id, ok := m.reasoningAt[index]; ok {
-		delete(m.reasoningAt, index)
-		delete(m.reasoningRecords, id)
-		for i, orderedID := range m.reasoningOrder {
-			if orderedID == id {
-				m.reasoningOrder = append(m.reasoningOrder[:i], m.reasoningOrder[i+1:]...)
-				break
-			}
+	if record, ok := m.reasoningRecords.deleteLine(index); ok {
+		if i := slices.Index(m.reasoningOrder, record.id); i >= 0 {
+			m.reasoningOrder = slices.Delete(m.reasoningOrder, i, i+1)
 		}
-		if m.turnReasoningID == id {
+		if m.turnReasoningID == record.id {
 			m.resetCurrentThinking()
 		}
 	}
@@ -64,15 +59,6 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 			}
 		}
 		m.affordances.queued = queued
-	}
-	for i := index + 1; i <= len(m.transcript); i++ {
-		if id, ok := m.reasoningAt[i]; ok {
-			m.reasoningAt[i-1] = id
-			delete(m.reasoningAt, i)
-			if record := m.reasoningRecords[id]; record != nil {
-				record.transcriptIndex = i - 1
-			}
-		}
 	}
 	for i := range m.queue {
 		if !m.queue[i].transcriptShown {
@@ -469,7 +455,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		if q, ok := m.affordances.queued[i]; ok && !q.fading.IsZero() {
 			entry = q.text
 		}
-		reasoningID := m.reasoningAt[i]
+		reasoningID := m.reasoningRecords.idAt(i)
 		toolDisclosureID := m.toolDisclosures.idAt(i)
 		turnTrailerID := m.turnTrailers.idAt(i)
 		// Reasoning and tool activity render inline where they occur. In quiet

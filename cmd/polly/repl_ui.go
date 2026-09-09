@@ -202,10 +202,8 @@ type replModel struct {
 	// transcript strings. The UI retains only a bounded tail; successful turns
 	// already persist their complete provider reasoning on ChatMessage and
 	// hydrate it back into a fresh bounded record after restart.
-	reasoningRecords     map[int64]*reasoningRecord
-	reasoningAt          map[int]int64 // transcript index -> record ID
-	reasoningOrder       []int64       // creation order, for Ctrl-O
-	reasoningSeq         int64
+	reasoningRecords     transcriptRegistry[*reasoningRecord]
+	reasoningOrder       []int64 // creation order, for Ctrl-O
 	turnReasoningID      int64
 	turnReasoningIDs     []int64 // every reasoning record opened this turn
 	turnReasoningOpen    bool    // pending Ctrl-O pre-arm before the first chunk
@@ -276,20 +274,19 @@ type transcriptVisualBlock struct {
 // reasoning. tail is intentionally bounded; the durable ChatMessage remains
 // the authoritative complete copy for successful turns.
 type reasoningRecord struct {
-	inspectionKey   string
-	id              int64
-	transcriptIndex int
-	tail            []rune
-	tailVersion     uint64
-	previewVersion  uint64
-	previewWidth    int
-	previewLines    []string
-	dirty           bool
-	expanded        bool
-	active          bool
-	complete        bool
-	unsaved         bool
-	elapsed         time.Duration
+	transcriptAnchor
+	inspectionKey  string
+	tail           []rune
+	tailVersion    uint64
+	previewVersion uint64
+	previewWidth   int
+	previewLines   []string
+	dirty          bool
+	expanded       bool
+	active         bool
+	complete       bool
+	unsaved        bool
+	elapsed        time.Duration
 }
 
 // disclosurePlacement is the last rendered header-row geometry for one
@@ -344,8 +341,6 @@ func newReplModel() *replModel {
 	baseDir, _ := os.Getwd()
 	m := &replModel{
 		currentAssistant: -1,
-		reasoningRecords: make(map[int64]*reasoningRecord),
-		reasoningAt:      make(map[int]int64),
 		reasoningWidth:   80,
 		imageBaseDir:     baseDir,
 		hist:             promptHistory{idx: -1, match: -1},

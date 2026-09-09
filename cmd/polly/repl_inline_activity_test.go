@@ -201,7 +201,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	}
 
 	// Expand the settled reasoning inline.
-	record := m.reasoningRecords[m.reasoningOrder[0]]
+	record := m.reasoningRecords.get(m.reasoningOrder[0])
 	if !m.toggleReasoning(record.id, 100) {
 		t.Fatal("settled reasoning did not toggle")
 	}
@@ -230,7 +230,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 	if len(m.reasoningOrder) != 1 || len(m.turnToolDisclosureIDs) != 1 {
 		t.Fatalf("unbroken rounds should share one record pair: reasoning=%v tools=%v", m.reasoningOrder, m.turnToolDisclosureIDs)
 	}
-	m.reasoningRecords[m.reasoningOrder[0]].elapsed = 700 * time.Millisecond
+	m.reasoningRecords.get(m.reasoningOrder[0]).elapsed = 700 * time.Millisecond
 	m.visual.invalidate()
 
 	visible := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
@@ -350,7 +350,7 @@ func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
 	tui.ShowThinking("reasoning")
 	call := messages.ChatMessageToolCall{ID: "c1", Name: "bash"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	record := m.reasoningRecords[m.reasoningOrder[0]]
+	record := m.reasoningRecords.get(m.reasoningOrder[0])
 	record.elapsed = 0
 	m.visual.invalidate()
 

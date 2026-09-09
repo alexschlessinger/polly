@@ -148,7 +148,7 @@ func TestPriorThoughtExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
 	firstUI.ShowThinking("prior reasoning detail")
 	firstUI.AppendAssistantText("first answer")
 	r.endTurn(nil)
-	prior := m.reasoningRecords[m.reasoningOrder[0]]
+	prior := m.reasoningRecords.get(m.reasoningOrder[0])
 
 	m.beginTurn("second")
 	if !m.turnDock.visible {

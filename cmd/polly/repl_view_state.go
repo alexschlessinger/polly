@@ -87,7 +87,7 @@ func rememberViewSections(m *replModel, s *viewState) {
 			s.sections[key] = viewSection{tools: r.expanded, images: r.imagesExpanded, agents: r.agentsExpanded}
 		}
 	}
-	for _, r := range m.reasoningRecords {
+	for _, r := range m.reasoningRecords.all() {
 		if r.inspectionKey != "" {
 			s.sections[r.inspectionKey] = viewSection{thought: r.expanded}
 		}
@@ -102,7 +102,7 @@ func applyViewSections(m *replModel, s viewState) {
 			m.refreshToolDisclosureWithAnchor(r, false)
 		}
 	}
-	for _, r := range m.reasoningRecords {
+	for _, r := range m.reasoningRecords.all() {
 		if v, ok := s.sections[r.inspectionKey]; ok {
 			r.expanded = v.thought
 			r.dirty = true

@@ -455,7 +455,7 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	if len(m.reasoningOrder) != 1 {
 		t.Fatalf("denied reasoning disclosures = %d, want 1", len(m.reasoningOrder))
 	}
-	record := m.reasoningRecords[m.reasoningOrder[0]]
+	record := m.reasoningRecords.get(m.reasoningOrder[0])
 	if record == nil || !record.complete || record.unsaved || !strings.Contains(string(record.tail), "inspect the requested file") {
 		t.Fatalf("hydrated denied reasoning = %#v", record)
 	}
@@ -494,14 +494,14 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	}
 	reloaded := newReplModel()
 	reloaded.hydrateHistory(reloadedHistory, "denied-reasoning")
-	if len(reloaded.reasoningOrder) != 1 || !strings.Contains(string(reloaded.reasoningRecords[reloaded.reasoningOrder[0]].tail), "inspect the requested file") {
+	if len(reloaded.reasoningOrder) != 1 || !strings.Contains(string(reloaded.reasoningRecords.get(reloaded.reasoningOrder[0]).tail), "inspect the requested file") {
 		t.Fatalf("reloaded denied reasoning disclosure = %#v", reloaded.reasoningRecords)
 	}
 	var reloadedTools *toolDisclosureRecord
 	for _, candidate := range reloaded.toolDisclosures.all() {
 		reloadedTools = candidate
 	}
-	reloadedReasoning := reloaded.reasoningRecords[reloaded.reasoningOrder[0]]
+	reloadedReasoning := reloaded.reasoningRecords.get(reloaded.reasoningOrder[0])
 	if reloadedTools == nil || len(reloadedTools.rows) != 1 || reloadedReasoning.transcriptIndex >= reloadedTools.transcriptIndex {
 		t.Fatalf("reloaded disclosure order = reasoning %#v tools %#v", reloadedReasoning, reloadedTools)
 	}

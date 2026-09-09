@@ -294,7 +294,7 @@ func (m *replModel) hydrateInspections(history []messages.ChatMessage) {
 	}
 	cursor = len(source.thoughts) - 1
 	for i := len(m.reasoningOrder) - 1; i >= 0 && cursor >= 0; i-- {
-		if record := m.reasoningRecords[m.reasoningOrder[i]]; record != nil {
+		if record := m.reasoningRecords.get(m.reasoningOrder[i]); record != nil {
 			record.inspectionKey = source.thoughts[cursor].key
 			cursor--
 		}

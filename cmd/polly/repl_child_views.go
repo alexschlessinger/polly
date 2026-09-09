@@ -194,8 +194,7 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.inspections = next.inspections
 	m.toolDisclosures = next.toolDisclosures
 	m.turnToolDisclosureID, m.turnToolDisclosureIDs = next.turnToolDisclosureID, next.turnToolDisclosureIDs
-	m.reasoningRecords, m.reasoningAt, m.reasoningOrder = next.reasoningRecords, next.reasoningAt, next.reasoningOrder
-	m.reasoningSeq, m.reasoningWidth = next.reasoningSeq, next.reasoningWidth
+	m.reasoningRecords, m.reasoningOrder, m.reasoningWidth = next.reasoningRecords, next.reasoningOrder, next.reasoningWidth
 	m.turnReasoningID, m.turnReasoningIDs = next.turnReasoningID, next.turnReasoningIDs
 	m.turnTrailers = next.turnTrailers
 	m.turnDock = next.turnDock

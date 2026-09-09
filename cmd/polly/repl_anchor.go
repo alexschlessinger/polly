@@ -70,7 +70,7 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 	if index < 0 || index >= len(m.transcript) {
 		return 0
 	}
-	if m.quiet && (m.reasoningAt[index] != 0 || m.toolDisclosures.idAt(index) != 0) {
+	if m.quiet && (m.reasoningRecords.idAt(index) != 0 || m.toolDisclosures.idAt(index) != 0) {
 		return 0
 	}
 	if width < 1 {

@@ -93,7 +93,7 @@ func (m *replModel) activitySummaryFor(dock turnDockState) turnActivitySummary {
 		}
 	}
 	for _, id := range dock.reasoningIDs {
-		record := m.reasoningRecords[id]
+		record := m.reasoningRecords.get(id)
 		if record == nil || len(record.tail) == 0 {
 			continue
 		}

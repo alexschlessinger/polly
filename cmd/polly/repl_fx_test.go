@@ -348,8 +348,8 @@ func TestThinkingDisclosureStartsCollapsedWithoutLeakingReasoning(t *testing.T) 
 	m.refreshReasoningRecords(testThinkingWidth)
 
 	record := m.currentReasoningRecord()
-	if record == nil || len(m.reasoningRecords) != 1 || len(m.reasoningOrder) != 1 {
-		t.Fatalf("reasoning record = %#v, records/order = %d/%d", record, len(m.reasoningRecords), len(m.reasoningOrder))
+	if record == nil || m.reasoningRecords.count() != 1 || len(m.reasoningOrder) != 1 {
+		t.Fatalf("reasoning record = %#v, records/order = %d/%d", record, m.reasoningRecords.count(), len(m.reasoningOrder))
 	}
 	if record.expanded {
 		t.Fatal("a turn's reasoning disclosure should start collapsed")
@@ -567,18 +567,18 @@ func TestBusyCtrlOTogglesLatestSettledReasoningRun(t *testing.T) {
 		t.Fatal("fixture reasoning record did not expand")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if !m.reasoningRecords[ids[1]].expanded || !m.reasoningRecords[ids[0]].expanded {
+	if !m.reasoningRecords.get(ids[1]).expanded || !m.reasoningRecords.get(ids[0]).expanded {
 		t.Fatalf("Ctrl-O did not expand the latest run while leaving the earlier one open: first=%v second=%v",
-			m.reasoningRecords[ids[0]].expanded, m.reasoningRecords[ids[1]].expanded)
+			m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
 	}
 	if m.turnReasoningOpen {
 		t.Fatal("toggling an existing record incorrectly armed a future segment")
 	}
 
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.reasoningRecords[ids[1]].expanded || !m.reasoningRecords[ids[0]].expanded {
+	if m.reasoningRecords.get(ids[1]).expanded || !m.reasoningRecords.get(ids[0]).expanded {
 		t.Fatalf("second Ctrl-O did not collapse only the latest run: first=%v second=%v",
-			m.reasoningRecords[ids[0]].expanded, m.reasoningRecords[ids[1]].expanded)
+			m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
 	}
 	if m.turnReasoningOpen {
 		t.Fatal("collapsing an existing record incorrectly became a pending pre-arm")
@@ -623,15 +623,15 @@ func TestClearDuringReasoningStartsOneCleanDisclosure(t *testing.T) {
 	tui.ShowThinking("reasoning before clear")
 	m.reasoningPlacements = []disclosurePlacement{{recordID: m.turnReasoningID, Cols: 10}}
 	m.clearDisplay()
-	if len(m.reasoningRecords) != 0 || len(m.reasoningAt) != 0 || len(m.reasoningPlacements) != 0 || m.currentReasoningRecord() != nil {
+	if m.reasoningRecords.count() != 0 || m.reasoningRecords.count() != 0 || len(m.reasoningPlacements) != 0 || m.currentReasoningRecord() != nil {
 		t.Fatalf("clear retained reasoning state: records=%d at=%d placements=%d current=%#v",
-			len(m.reasoningRecords), len(m.reasoningAt), len(m.reasoningPlacements), m.currentReasoningRecord())
+			m.reasoningRecords.count(), m.reasoningRecords.count(), len(m.reasoningPlacements), m.currentReasoningRecord())
 	}
 
 	tui.ShowThinking("reasoning after clear")
 	record := m.currentReasoningRecord()
-	if record == nil || len(m.reasoningRecords) != 1 || len(m.reasoningOrder) != 1 || strings.Contains(string(record.tail), "before clear") {
-		t.Fatalf("post-clear reasoning disclosure = %#v records=%d order=%d", record, len(m.reasoningRecords), len(m.reasoningOrder))
+	if record == nil || m.reasoningRecords.count() != 1 || len(m.reasoningOrder) != 1 || strings.Contains(string(record.tail), "before clear") {
+		t.Fatalf("post-clear reasoning disclosure = %#v records=%d order=%d", record, m.reasoningRecords.count(), len(m.reasoningOrder))
 	}
 }
 
@@ -659,8 +659,8 @@ func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 	}
 	tui.ShowThinking("second phase reasoning")
 	second := m.currentReasoningRecord()
-	if second == nil || second.id == first.id || len(m.reasoningRecords) != 2 {
-		t.Fatalf("second segment did not open its own disclosure: records=%d first=%#v second=%#v", len(m.reasoningRecords), first, second)
+	if second == nil || second.id == first.id || m.reasoningRecords.count() != 2 {
+		t.Fatalf("second segment did not open its own disclosure: records=%d first=%#v second=%#v", m.reasoningRecords.count(), first, second)
 	}
 	if got := string(first.tail); !strings.Contains(got, "first phase reasoning") || strings.Contains(got, "second phase") {
 		t.Fatalf("first segment tail changed after settling: %q", got)

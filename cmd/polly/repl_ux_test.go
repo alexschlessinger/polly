@@ -780,8 +780,8 @@ func TestHydrateHistoryBuildsOneCompletedReasoningDisclosurePerTurn(t *testing.T
 	if len(m.reasoningOrder) != 2 {
 		t.Fatalf("hydrated reasoning disclosures = %d, want one per real user turn", len(m.reasoningOrder))
 	}
-	first := m.reasoningRecords[m.reasoningOrder[0]]
-	second := m.reasoningRecords[m.reasoningOrder[1]]
+	first := m.reasoningRecords.get(m.reasoningOrder[0])
+	second := m.reasoningRecords.get(m.reasoningOrder[1])
 	for i, record := range []*reasoningRecord{first, second} {
 		if record == nil || !record.complete || record.active || record.unsaved || record.expanded {
 			t.Fatalf("hydrated record %d = %#v, want completed and collapsed", i, record)
@@ -839,7 +839,7 @@ func TestCompletedReasoningDisclosureSurvivesDiskReload(t *testing.T) {
 	if len(m.reasoningOrder) != 1 {
 		t.Fatalf("reloaded reasoning disclosures = %d, want 1", len(m.reasoningOrder))
 	}
-	record := m.reasoningRecords[m.reasoningOrder[0]]
+	record := m.reasoningRecords.get(m.reasoningOrder[0])
 	if record == nil || !record.complete || record.unsaved || record.expanded {
 		t.Fatalf("reloaded reasoning record = %#v", record)
 	}

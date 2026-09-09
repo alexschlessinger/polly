@@ -12,7 +12,7 @@ func (m *replModel) inlineReasoningField(ids []int64) (turnDockField, bool) {
 	var elapsed time.Duration
 	active, unsaved, expanded, found := false, false, false, false
 	for _, id := range ids {
-		record := m.reasoningRecords[id]
+		record := m.reasoningRecords.get(id)
 		if record == nil {
 			continue
 		}

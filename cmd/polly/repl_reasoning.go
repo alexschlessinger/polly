@@ -24,8 +24,7 @@ const reasoningBlockIndent = "    "
 // reasoning segments update this record instead of adding more transcript
 // rows. Caller must hold m.mu.
 func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
-	m.reasoningSeq++
-	record := &reasoningRecord{id: m.reasoningSeq, complete: complete}
+	record := &reasoningRecord{complete: complete}
 	if !complete {
 		record.expanded = m.turnReasoningOpen
 		// The pending shortcut applies only to the first record it creates. An
@@ -33,9 +32,7 @@ func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
 		m.turnReasoningOpen = false
 	}
 	m.appendLine("")
-	record.transcriptIndex = len(m.transcript) - 1
-	m.reasoningRecords[record.id] = record
-	m.reasoningAt[record.transcriptIndex] = record.id
+	m.reasoningRecords.add(record, len(m.transcript)-1)
 	m.reasoningOrder = append(m.reasoningOrder, record.id)
 	m.refreshReasoningRecord(record, 80)
 	return record
@@ -45,7 +42,7 @@ func (m *replModel) currentReasoningRecord() *reasoningRecord {
 	if m.turnReasoningID == 0 {
 		return nil
 	}
-	return m.reasoningRecords[m.turnReasoningID]
+	return m.reasoningRecords.get(m.turnReasoningID)
 }
 
 // appendThinking adds one streamed provider chunk to this turn's bounded UI
@@ -194,7 +191,7 @@ func (m *replModel) completeThinkingTurn(unsaved bool) {
 	// Every segment of the turn auto-collapses at settlement; the "not saved"
 	// marker lands on each when the turn persisted nothing.
 	for _, id := range m.turnReasoningIDs {
-		record := m.reasoningRecords[id]
+		record := m.reasoningRecords.get(id)
 		if record == nil {
 			continue
 		}
@@ -218,11 +215,9 @@ func (m *replModel) resetCurrentThinking() {
 }
 
 func (m *replModel) clearReasoningRecords() {
-	m.reasoningRecords = make(map[int64]*reasoningRecord)
-	m.reasoningAt = make(map[int]int64)
+	m.reasoningRecords.reset()
 	m.reasoningOrder = nil
 	m.reasoningPlacements = nil
-	m.reasoningSeq = 0
 	m.resetCurrentThinking()
 }
 
@@ -233,14 +228,14 @@ func (m *replModel) refreshReasoningRecords(width int) {
 	}
 	if widthChanged {
 		for _, id := range m.reasoningOrder {
-			m.refreshReasoningRecord(m.reasoningRecords[id], width)
+			m.refreshReasoningRecord(m.reasoningRecords.get(id), width)
 		}
 		return
 	}
 	// Refresh every record of the active turn: a turn now spans several
 	// per-segment disclosures, and a settled segment may still be dirty.
 	for _, id := range m.turnReasoningIDs {
-		if record := m.reasoningRecords[id]; record != nil && (record.active || record.dirty) {
+		if record := m.reasoningRecords.get(id); record != nil && (record.active || record.dirty) {
 			m.refreshReasoningRecord(record, width)
 		}
 	}
@@ -413,7 +408,7 @@ func splitReasoningWord(word string, width int) []string {
 }
 
 func (m *replModel) toggleReasoning(recordID int64, width int) bool {
-	record := m.reasoningRecords[recordID]
+	record := m.reasoningRecords.get(recordID)
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return false
 	}
@@ -453,7 +448,7 @@ func (m *replModel) latestTurnReasoningGroup(width int) []int64 {
 	for i := len(blocks) - 1; i >= 0; i-- {
 		var ids []int64
 		for _, id := range blocks[i].reasoningIDs {
-			if _, ok := currentTurn[id]; ok && m.reasoningRecords[id] != nil {
+			if _, ok := currentTurn[id]; ok && m.reasoningRecords.get(id) != nil {
 				ids = append(ids, id)
 			}
 		}
@@ -465,7 +460,7 @@ func (m *replModel) latestTurnReasoningGroup(width int) []int64 {
 	// falling back to the newest current-turn record in that mode.
 	for i := len(m.turnReasoningIDs) - 1; i >= 0; i-- {
 		id := m.turnReasoningIDs[i]
-		if m.reasoningRecords[id] != nil {
+		if m.reasoningRecords.get(id) != nil {
 			return []int64{id}
 		}
 	}

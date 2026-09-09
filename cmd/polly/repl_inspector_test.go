@@ -1045,13 +1045,13 @@ func TestHydratedThoughtKeysFollowProseSplits(t *testing.T) {
 		t.Fatalf("thoughts %d records %d, want 3 and 3", len(m.inspections.thoughts), len(m.reasoningOrder))
 	}
 	for i, want := range []string{"thought A", "thought B", "thought C"} {
-		record := m.reasoningRecords[m.reasoningOrder[i]]
+		record := m.reasoningRecords.get(m.reasoningOrder[i])
 		_, thought := m.inspections.selected(viewTarget{kind: thoughtViewKind, item: record.inspectionKey})
 		if thought == nil || !strings.Contains(thought.text, want) {
 			t.Fatalf("record %d opens %+v, want %q", i, thought, want)
 		}
 	}
-	if last := m.reasoningRecords[m.reasoningOrder[2]]; !last.complete || last.expanded {
+	if last := m.reasoningRecords.get(m.reasoningOrder[2]); !last.complete || last.expanded {
 		t.Fatalf("the turn's last reasoning record did not settle collapsed: %+v", last)
 	}
 }

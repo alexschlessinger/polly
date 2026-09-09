@@ -157,19 +157,20 @@ func childDisplayCopy(src *replModel) *replModel {
 	m.lastIn, m.lastOut, m.lastElapsed, m.lastOutcome = src.lastIn, src.lastOut, src.lastElapsed, src.lastOutcome
 	m.turnToolDisclosureIDs = slices.Clone(src.turnToolDisclosureIDs)
 	m.toolDisclosures = src.toolDisclosures.clone(cloneToolDisclosure)
-	m.reasoningAt = maps.Clone(src.reasoningAt)
+	m.reasoningRecords = src.reasoningRecords.clone(cloneReasoningRecord)
 	m.reasoningOrder = slices.Clone(src.reasoningOrder)
-	m.reasoningSeq, m.reasoningWidth = src.reasoningSeq, src.reasoningWidth
+	m.reasoningWidth = src.reasoningWidth
 	m.turnReasoningIDs = slices.Clone(src.turnReasoningIDs)
-	for id, record := range src.reasoningRecords {
-		copy := *record
-		copy.tail = slices.Clone(record.tail)
-		copy.previewLines = slices.Clone(record.previewLines)
-		m.reasoningRecords[id] = &copy
-	}
 	m.turnDock = cloneViewDock(src.turnDock)
 	m.turnTrailers = src.turnTrailers.clone(cloneTurnTrailer)
 	return m
+}
+
+func cloneReasoningRecord(record *reasoningRecord) *reasoningRecord {
+	copy := *record
+	copy.tail = slices.Clone(record.tail)
+	copy.previewLines = slices.Clone(record.previewLines)
+	return &copy
 }
 
 func cloneToolDisclosure(record *toolDisclosureRecord) *toolDisclosureRecord {
