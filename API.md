@@ -568,6 +568,18 @@ The runtime exposes `State`, `CreateTask`, `Claim`, `Submit`, `Review`,
 model-facing authority is bound in registered closures rather than supplied as a
 caller ID. Task revisions and atomic transactions reject stale claims/submissions.
 
+Parent hosts use `PrepareIntegration(ctx, []TaskReference, drift)`,
+`ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`,
+and `ApplyIntegration`. `TaskReference` holds `Task` and the exact `Revision`.
+`drift` defaults to `paths`; `tree` adds whole-tree equality. Candidates contain
+ordered inputs, repair provenance, pending merges, structured conflicts, immutable
+snapshots, acceptance and supersession links. `RefreshIntegration` returns
+`IntegrationRefresh{IntegrationCandidate, Changed}`; a no-op retains the ID and
+acceptance. Preparation never allocates a checkout. `ApplyIntegration` returns
+an idempotent `ApplyRecord`; `ReconcileApply` observes uncertain writes without
+replaying them. These are trusted host APIs; `swarm_integration` binds their
+parent authority in the tool closure and is absent from child/bound registries.
+
 `RunWorkflow(ctx, source, input)` runs a fresh Goja VM over the same runtime;
 `StartWorkflow` returns a report ID for background execution. `CancelWorkflow`
 cancels that attempt. Saved reports include source, input, every operation intent,

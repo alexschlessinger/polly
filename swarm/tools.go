@@ -17,7 +17,7 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 	registry.Register(&publishedArtifactTool{session: session})
 	registry.MarkAlwaysAllowed("swarm_read_artifact")
 	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
-		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_apply", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
+		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_apply" || name == "swarm_preview" || name == "swarm_integration", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := fn(ctx, a)
 			if err != nil {
 				return tools.Result(v), err
@@ -137,12 +137,13 @@ func coordinationFingerprint(s *State) string {
 // RegisterParentTools binds parent-only authority in closures, never in model
 // arguments. A child cannot gain it by supplying a different caller identity.
 func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
+	r.registerIntegrationTool(registry)
 	r.registerMemberTools(registry, r.ID, "", r.parent)
 	spawn := subagent.NewTool(r.Spawn, subagent.WithRuntimeScheduler())
 	registry.Register(spawn)
 	registry.MarkAlwaysAllowed(subagent.ToolName)
 	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
-		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_apply", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
+		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_apply" || name == "swarm_preview" || name == "swarm_integration", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := fn(ctx, a)
 			if err != nil {
 				return tools.Result(v), err
@@ -254,59 +255,36 @@ func (r *Runtime) preview(ctx context.Context, taskID string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := s.Tasks[taskID]
-	if t == nil || t.Snapshot == "" {
-		return nil, errors.New("task has no submitted snapshot")
+	task := s.Tasks[taskID]
+	if task == nil {
+		return nil, errors.New("unknown task")
 	}
-	m := s.Members[t.Owner]
-	if m == nil {
-		return nil, errors.New("unknown task owner")
-	}
-	c := s.Contexts[m.Context]
-	candidate := s.Snapshots[t.Snapshot]
-	if c == nil || c.Checkout == nil || candidate == nil {
-		return nil, errors.New("snapshot context is unavailable")
-	}
-	manager, err := r.manager(ctx)
-	if err != nil {
-		return nil, err
-	}
-	p, err := manager.Preview(ctx, c.Checkout.Base, *candidate)
-	if err != nil {
-		return nil, err
-	}
-	err = r.update(ctx, func(s *State) error { s.Previews[p.ID] = &p; return nil })
-	return p, err
+	return r.PrepareIntegration(ctx, []TaskReference{{Task: taskID, Revision: task.Revision}}, "paths")
 }
-func (r *Runtime) apply(ctx context.Context, taskID, previewID string) error {
-	return r.withApplyLock(ctx, func(ctx context.Context) error {
+func (r *Runtime) apply(ctx context.Context, taskID, candidateID string) error {
+	c, err := r.ReadIntegration(ctx, candidateID)
+	if err != nil {
+		return err
+	}
+	if len(c.Inputs) != 1 || len(c.Repairs) != 0 || c.Inputs[0].Task != taskID {
+		return errors.New("single-task apply requires that task's candidate")
+	}
+	if c.Receipt == nil || c.Receipt.Status != "applied" {
 		s, err := r.read(ctx)
 		if err != nil {
 			return err
 		}
-		if receipt := s.Applies[previewID]; receipt != nil && receipt.Status == "applied" {
-			if len(receipt.Tasks) != 1 || receipt.Tasks[0].Task != taskID {
-				return errors.New("application belongs to another task")
-			}
-			return nil
-		}
-		t, p := s.Tasks[taskID], s.Previews[previewID]
-		if t == nil || p == nil || t.AcceptedRevision != t.Revision || t.Snapshot != p.Candidate.ID {
-			return errors.New("preview is not the currently accepted task revision")
-		}
-		if p.Conflicts != "" {
-			return errors.New("resolve conflicts before applying")
-		}
-		manager, err := r.manager(ctx)
-		if err != nil {
+		if err = acceptedTasks(s, c.references()); err != nil {
 			return err
 		}
-		plan, err := manager.BuildApplyPlan(ctx, previewID, p.Parent, p.Merged, "tree")
-		if err != nil {
+		// The explicit parent apply call names this exact candidate. Preserve the
+		// direct-tool sequence (task review, preview, apply) through the same service.
+		if _, err = r.AcceptIntegration(ctx, candidateID); err != nil {
 			return err
 		}
-		return r.applyPlanLocked(ctx, plan, []TaskReference{{Task: taskID, Revision: t.Revision}})
-	})
+	}
+	_, err = r.ApplyIntegration(ctx, candidateID)
+	return err
 }
 
 func decodeRequest(args map[string]any) (AgentRequest, error) {

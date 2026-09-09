@@ -74,7 +74,7 @@ func applyFixture(t *testing.T, empty bool) (*Runtime, worktree.ApplyPlan) {
 	}
 	if err := r.update(ctx, func(s *State) error {
 		s.Tasks["task"] = &Task{ID: "task", Revision: 1, AcceptedRevision: 1, Status: "awaiting_review", Snapshot: merged.ID}
-		s.Previews[plan.ID] = &worktree.Preview{ID: plan.ID, Parent: base, Candidate: merged, Merged: merged}
+		s.Integrations[plan.ID] = &IntegrationCandidate{ID: plan.ID, Status: "ready", Inputs: []IntegrationInput{{TaskReference: TaskReference{Task: "task", Revision: 1}, Base: base, Submitted: merged}}, Parent: base, Merged: merged, Drift: "tree", Plan: plan, Accepted: true}
 		return nil
 	}); err != nil {
 		t.Fatal(err)

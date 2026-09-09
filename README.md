@@ -214,12 +214,18 @@ background spawn call does not mean its member finished. Status refreshes do
 not require a child tab or acquire the child's execution lease.
 
 `/swarm` opens the inspector. Categories include members, tasks, messages,
-publications, workflow reports, and integration previews, with a raw view for
+publications, workflow reports, and integration candidates/previews, with a raw view for
 full saved records. `/swarm stop ID`,
 `/swarm resume ID [ADDITIONAL_ITERATIONS]`, and `/swarm grant N` control execution; budget grants require
 an explicit client/user action. `/swarm cleanup CONTEXT_ID` retires an inactive
 context only when its current edits are integrated. `/swarm cleanup all` also
 retires Git snapshot references. Unintegrated changes are refused.
+
+Parent tools can combine several editing task revisions with `swarm_integration`.
+Prepare, resolve conflicts in a separate copy, review/check, accept, and apply.
+The default checks touched paths and preserves unrelated parent edits; choose
+`drift:"tree"` when the whole parent checkout must match the validated snapshot.
+`/swarm integrations` shows conflicts, supersession, acceptance, and apply receipts.
 
 **JavaScript workflows.** `/workflow SCRIPT.js INPUT.json` starts an explicit
 workflow and saves its report. Model tools `workflow_run`, `workflow_start`,

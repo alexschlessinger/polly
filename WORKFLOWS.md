@@ -196,9 +196,46 @@ size; `worktree.Config.MaxWorktrees` and `swarm.Config.MaxWorktrees` allow a hos
 to choose a smaller/different capacity. Large policies may exceed platform limits.
 Explicitly clean integrated/unchanged contexts to reuse slots.
 
-`swarm_preview` uses three-way `git merge-tree`, with conflicts confined to an
-integration copy. `swarm_apply` requires a current accepted revision and matching
-candidate, checks the parent's files again, and applies only the merged delta.
+`swarm_integration` exposes parent-only `prepare`, `read`, `revise`, `refresh`,
+`accept`, `apply`, and recovery-only `reconcile` operations. For example:
+
+```json
+{"op":"prepare","tasks":[{"task":"worker-task","revision":3}],"drift":"paths"}
+```
+
+Preparation combines ordered submissions using each task's own starting snapshot.
+It stops at the first conflict and retains the remaining inputs. Candidates and
+merged snapshots are persisted immediately; preparation allocates no checkout.
+Create reviewer or resolver copies on demand from `candidate.merged.id`.
+Conflicts include their type, affected paths, file stages, and base/ours/theirs
+snapshots, including binary and directory conflicts without textual markers.
+
+`revise` takes an `id` and `repair:{task,revision}`. The repair must be a distinct
+editing task based on that exact intermediate snapshot. It becomes a contribution
+and remaining inputs are merged afterward. `refresh` merges the completed result,
+including repairs, against the latest parent. A changed revision or refresh creates
+a new ID and atomically supersedes its predecessor. Superseded candidates cannot
+be accepted or applied. An unchanged refresh returns the same ID with
+`changed:false`, retaining acceptance and allocating no snapshot or checkout.
+
+`accept` binds the exact candidate and all contributing task revisions; `apply`
+rechecks them before changing files. All editing contributions, including repairs,
+become done only after confirmed application. `read` includes source references,
+conflicts, predecessor/successor links, acceptance, drift policy, and any receipt.
+Inspect them in `/swarm integrations`. Existing legacy previews without task
+revision provenance require fresh preparation. `swarm_preview` prepares a real
+single-task candidate; `swarm_apply` records that explicit candidate's acceptance
+from the already accepted task revision and uses the same apply service.
+
+The default `paths` policy checks every changed path's existence, file type,
+Git mode and content identity, including both rename endpoints. Relevant ancestors
+must be real directories; symlinks are not followed. Ignored existing destinations
+are checked too. Unrelated parent edits survive. The final checkout is therefore
+not necessarily identical to the tested snapshot. Optional `tree` policy also
+requires full parent-tree equality. Every changed candidate recomputes its
+preconditions. Receipts distinguish the validated snapshot from the observed
+parent state at application. Parent branch and index remain unchanged.
+
 A runtime-owned execution gate excludes parent tools during application, including
 shell, custom, MCP, and long-running writers. Coordination tools release this
 resource while waiting; orchestration acquires exclusivity inside apply.

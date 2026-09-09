@@ -84,7 +84,7 @@ func memberCallbacks(config *Config, state *conversationState) func(context.Cont
 }
 
 func registerSwarmCommands(r *replCommandRegistry) {
-	r.register(replCommand{name: "/swarm", usage: "/swarm [members|tasks|messages|publications|workflows|previews|raw|stop ID|resume ID [ADDITIONAL_ITERATIONS]|grant N|cleanup CONTEXT_ID|cleanup all|cancel-workflow ID|acknowledge-workflow ID]", summary: "inspect and control this parent's shared swarm", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
+	r.register(replCommand{name: "/swarm", usage: "/swarm [members|tasks|messages|publications|workflows|integrations|previews|raw|stop ID|resume ID [ADDITIONAL_ITERATIONS]|grant N|cleanup CONTEXT_ID|cleanup all|cancel-workflow ID|acknowledge-workflow ID]", summary: "inspect and control this parent's shared swarm", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
 		if ctx.state == nil || ctx.state.swarm == nil {
 			return replCommandResult{err: ctx.replyLine("no parent swarm runtime is attached")}
 		}
@@ -159,6 +159,8 @@ func registerSwarmCommands(r *replCommandRegistry) {
 				value = state.Publications
 			case "workflows":
 				value = state.Workflows
+			case "integrations":
+				value = state.Integrations
 			case "previews":
 				value = state.Previews
 			case "raw":
@@ -274,6 +276,26 @@ func swarmInspectorText(s *swarm.State, section string) string {
 			}
 			b.WriteString("Source, inputs and full step values are available in raw.\n\n")
 		}
+	case "integrations":
+		for _, id := range swarmRecordIDs(s.Integrations) {
+			c := s.Integrations[id]
+			fmt.Fprintf(&b, "%s · %s\nDrift: %s · Accepted: %t\nValidated snapshot: %s\n", c.ID, c.Status, c.Drift, c.Accepted, c.Merged.ID)
+			if c.Predecessor != "" {
+				fmt.Fprintf(&b, "Predecessor: %s\n", c.Predecessor)
+			}
+			if c.Successor != "" {
+				fmt.Fprintf(&b, "Superseded by: %s\n", c.Successor)
+			}
+			fmt.Fprintf(&b, "Inputs: %s\nRepairs: %s\nPending: %d\n", jsonText(c.Inputs), jsonText(c.Repairs), len(c.Pending))
+			for _, conflict := range c.Conflicts {
+				fmt.Fprintf(&b, "%s · %s\n%s\n", conflict.Type, strings.Join(conflict.Paths, ", "), jsonText(conflict))
+			}
+			if receipt := s.Applies[id]; receipt != nil {
+				fmt.Fprintf(&b, "Apply: %s\nParent at application: %s\n%s\n", receipt.Status, receipt.ObservedParent.ID, receipt.Error)
+			}
+			b.WriteByte('\n')
+		}
+
 	case "previews":
 		for _, id := range swarmRecordIDs(s.Previews) {
 			preview := s.Previews[id]

@@ -171,6 +171,34 @@ func (m *Manager) currentStates(ctx context.Context, p ApplyPlan) (Snapshot, map
 			return Snapshot{}, nil, statErr
 		} else if info.IsDir() {
 			states[change.Path] = PathState{Exists: true, Kind: "directory"}
+		} else if !states[change.Path].Exists {
+			// An ignored file is absent from a captured Git tree, but it is
+			// still an existing destination. Never equate it with absence.
+			state := PathState{Exists: true, Kind: "file", Mode: "100644"}
+			var hash []byte
+			if info.Mode()&os.ModeSymlink != 0 {
+				state.Kind, state.Mode = "symlink", "120000"
+				target, err := os.Readlink(filepath.Join(m.Root, filepath.FromSlash(change.Path)))
+				if err != nil {
+					return Snapshot{}, nil, err
+				}
+				hash, err = m.git(ctx, m.Root, nil, []byte(target), "hash-object", "--stdin")
+				if err != nil {
+					return Snapshot{}, nil, err
+				}
+			} else if info.Mode().IsRegular() {
+				if info.Mode()&0111 != 0 {
+					state.Mode = "100755"
+				}
+				hash, err = m.git(ctx, m.Root, nil, nil, "hash-object", "--no-filters", "--", change.Path)
+				if err != nil {
+					return Snapshot{}, nil, err
+				}
+			} else {
+				state.Kind = "unsupported"
+			}
+			state.Object = strings.TrimSpace(string(hash))
+			states[change.Path] = state
 		}
 	}
 	return current, states, nil

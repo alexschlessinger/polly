@@ -164,7 +164,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	} else if i.target.kind == swarmViewKind {
 		b.newline()
 		b.link("Agents", "swarm_agents", true, false)
-		for _, name := range []string{"members", "tasks", "messages", "publications", "workflows", "previews", "raw"} {
+		for _, name := range []string{"members", "tasks", "messages", "publications", "workflows", "integrations", "previews", "raw"} {
 			sep()
 			b.link(name, "swarm_"+name, true, i.target.item == name)
 		}

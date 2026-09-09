@@ -194,6 +194,9 @@ func (r *Runtime) saveApplyOutcome(ctx context.Context, record ApplyRecord) erro
 				}
 			}
 		}
+		if c := s.Integrations[record.ID]; c != nil && record.Status == "applied" {
+			c.Status = "applied"
+		}
 		s.Applies[record.ID] = &record
 		return nil
 	})

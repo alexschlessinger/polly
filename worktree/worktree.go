@@ -327,7 +327,7 @@ func seedIndex(source, destination string) error {
 	// timestamp on these copied stat records can silently hide same-size edits.
 	return os.Chtimes(destination, info.ModTime(), info.ModTime())
 }
-func (m *Manager) capture(ctx context.Context, source string) (Snapshot, error) {
+func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot) (Snapshot, error) {
 	source, err := filepath.Abs(source)
 	if err != nil {
 		return Snapshot{}, err
@@ -451,6 +451,9 @@ func (m *Manager) capture(ctx context.Context, source string) (Snapshot, error) 
 	// afterwards. Only what the tree itself contains gets published.
 	if err := m.validateTree(ctx, source, strings.TrimSpace(string(tree)), tracked); err != nil {
 		return Snapshot{}, err
+	}
+	if len(reuse) == 1 && reuse[0].Tree == strings.TrimSpace(string(tree)) {
+		return reuse[0], nil
 	}
 	return m.snapshotTree(ctx, strings.TrimSpace(string(tree)), source)
 }

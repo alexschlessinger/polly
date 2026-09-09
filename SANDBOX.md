@@ -65,7 +65,11 @@ MCP server, or model-selected command. Read-only reviewers inside Git also use
 this runtime snapshot path. Setup errors do not silently switch to live files.
 Only the parent can accept/apply changes. Apply holds a runtime-owned exclusive gate against parent
 tool execution, preserves its index/branch, rechecks source versions, and records
-a durable intent and receipt. Cancellation after the write boundary finishes the
+a durable intent and receipt. Default touched-path preconditions include rename
+endpoints, existence, type, Git mode, and content identity; ancestors are checked
+without following symlinks. Whole-tree matching is an optional stricter policy.
+Integration candidates allocate no checkout and confer no filesystem authority:
+resolver/reviewer copies use the ordinary isolated context policy. Cancellation after the write boundary finishes the
 apply; lease loss still fences it. Uncertain outcomes require reconciliation. Git 2.40+ and a supported process sandbox (macOS/Linux), or an
 explicit unsafe acknowledgment, are required for editing. See
 [worktree limitations and recovery](WORKFLOWS.md#worktrees-and-integration).

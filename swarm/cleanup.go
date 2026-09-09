@@ -22,7 +22,7 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 		return err
 	}
 	for _, receipt := range s.Applies {
-		if receipt.Status != "applied" {
+		if receipt.Status == "applying" || receipt.Status == "recovery_required" {
 			return errors.New("reconcile or complete interrupted integrations before cleanup")
 		}
 	}
