@@ -91,6 +91,9 @@ are failures. Input is validated before any host operation starts.
 branch and fails with the ordered results if any branch failed. Await all host
 operations. Returning with pending operations, or waiting on a promise with no
 host operation capable of settling it, fails the run.
+Thrown primitives, including `null` and `undefined`, become structured errors
+without stopping the other branches. Getters and `toJSON` methods used to
+serialize workflow output or failures cannot start host operations.
 
 The VM has one owning goroutine. Host work runs asynchronously and resolves
 promises only on that goroutine. Defaults are five seconds per uninterrupted

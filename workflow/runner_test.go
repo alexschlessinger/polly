@@ -50,6 +50,56 @@ func TestWorkflowParallelOrderAndTypedFailures(t *testing.T) {
 	}
 }
 
+func TestWorkflowParallelCollectsPrimitiveAndFrozenFailures(t *testing.T) {
+	for _, mode := range []string{"collect", "throw_after_all"} {
+		t.Run(mode, func(t *testing.T) {
+			r := Runner{Host: hostFunc(func(context.Context, Operation) (any, error) {
+				t.Error("unexpected host call")
+				return nil, nil
+			})}
+			report, err := r.Run(context.Background(), script(`return polly.parallel(
+ [null, undefined, "plain failure", 42, false, Object.freeze(Object.assign(new Error("frozen failure"), {code:"typed_failure", result:{kept:true}})), "done"],
+ (value, index) => { if (index < 6) throw value; return value; },
+ {concurrency:1, errors:"`+mode+`"});`), map[string]any{})
+			var result any
+			if mode == "collect" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				result = report.Output
+			} else {
+				var failure *Error
+				if !errors.As(err, &failure) || failure.Code != "workflow_failed" {
+					t.Fatalf("parallel failure = %v", err)
+				}
+				result = failure.Result
+			}
+			rows, ok := result.([]any)
+			if !ok || len(rows) != 7 {
+				t.Fatalf("parallel did not process every item: %#v", result)
+			}
+			for i, message := range []string{"null", "undefined", "plain failure", "42", "false", "frozen failure"} {
+				row := rows[i].(map[string]any)
+				failure := row["error"].(map[string]any)
+				code := "workflow_failed"
+				if i == 5 {
+					code = "typed_failure"
+					if failure["result"].(map[string]any)["kept"] != true {
+						t.Fatal("frozen failure lost its result")
+					}
+				}
+				if row["ok"] != false || failure["message"] != message || failure["code"] != code {
+					t.Fatalf("item %d: %#v", i, row)
+				}
+			}
+			last := rows[6].(map[string]any)
+			if last["ok"] != true || last["value"] != "done" {
+				t.Fatalf("later item did not finish: %#v", last)
+			}
+		})
+	}
+}
+
 func TestWorkflowInputAndScopeContracts(t *testing.T) {
 	var calls atomic.Int32
 	r := Runner{Host: hostFunc(func(ctx context.Context, op Operation) (any, error) {
@@ -129,6 +179,43 @@ func TestWorkflowCancellationCannotBeSwallowed(t *testing.T) {
 	}
 }
 
+func TestWorkflowSerializationCannotDispatchHostCalls(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"output_to_json", `return {toJSON(){polly.log("late"); return {ok:true};}};`},
+		{"output_getter", `return {get value(){polly.log("late"); return true;}};`},
+		{"error_to_string", `throw {toString(){polly.log("late"); return "failure";}};`},
+		{"error_message", `throw {get message(){polly.log("late"); return "failure";}};`},
+		{"error_result", `throw {message:"failure", result:{toJSON(){polly.log("late"); return {};}}};`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			r := Runner{Host: hostFunc(func(context.Context, Operation) (any, error) {
+				calls.Add(1)
+				return nil, nil
+			})}
+			report, err := r.Run(context.Background(), script(tc.body), map[string]any{})
+			if err == nil || !strings.Contains(err.Error(), "only inside workflow.run") {
+				t.Fatalf("serialization host call was not rejected: %v", err)
+			}
+			if calls.Load() != 0 || len(report.Steps) != 0 || report.Status != "failed" {
+				t.Fatalf("serialization dispatched host work: calls=%d report=%+v", calls.Load(), report)
+			}
+		})
+	}
+}
+
+func TestWorkflowDefinitionCannotHideRejectedHostCalls(t *testing.T) {
+	var calls atomic.Int32
+	r := Runner{Host: hostFunc(func(context.Context, Operation) (any, error) {
+		calls.Add(1)
+		return nil, nil
+	})}
+	report, err := r.Run(context.Background(), `polly.log("too early");`+script(`return true;`), map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "only inside workflow.run") || calls.Load() != 0 || report.Status != "failed" {
+		t.Fatalf("definition host call was not refused: calls=%d error=%v report=%+v", calls.Load(), err, report)
+	}
+}
+
 func TestWorkflowHostWaitDoesNotSpendJSBudget(t *testing.T) {
 	r := Runner{Config: Config{JSBudget: 20 * time.Millisecond}, Host: hostFunc(func(ctx context.Context, op Operation) (any, error) {
 		select {
@@ -187,5 +274,19 @@ func TestScopeRethrowsPrimitiveAndFrozenErrorsIntact(t *testing.T) {
 		if strings.Contains(failure.Message, "TypeError") {
 			t.Fatalf("throw %s became a TypeError: %s", thrown, failure.Message)
 		}
+	}
+}
+
+func TestScopePreservesFrozenTypedFailure(t *testing.T) {
+	r := Runner{Host: hostFunc(func(context.Context, Operation) (any, error) { return nil, nil })}
+	_, err := r.Run(context.Background(), script(`return polly.scope({context:"ctx"}, async () => {
+ throw Object.freeze(Object.assign(new Error("check failed"), {code:"command_failed", result:{exitCode:7}}));
+});`), map[string]any{})
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Code != "command_failed" || failure.Message != "check failed" {
+		t.Fatalf("frozen typed failure changed: %v", err)
+	}
+	if failure.Result.(map[string]any)["exitCode"] != float64(7) {
+		t.Fatalf("frozen failure lost its result: %#v", failure.Result)
 	}
 }

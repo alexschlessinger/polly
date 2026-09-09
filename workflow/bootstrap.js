@@ -18,6 +18,9 @@
     },
   });
   function fail(message, result) { const e = new Error(message); e.code = "workflow_failed"; e.result = result; throw e; }
+  function errorDetails(error) {
+    return { message: String(error?.message || error), code: error?.code || "workflow_failed", result: error?.result, session: error?.session, usage: error?.usage, report: error?.report };
+  }
   const invoke = (kind, args) => call(kind, stringify(args || {}));
   const log = message => invoke("log", { message: String(message) });
   function work(defaults = {}) {
@@ -43,7 +46,7 @@
       while (next < items.length) {
         const i = next++;
         try { result[i] = { ok: true, value: await callback(items[i], i) }; }
-        catch (error) { result[i] = { ok: false, error: { message: String(error.message || error), code: error.code || "workflow_failed", result: error.result, session: error.session, usage: error.usage, report: error.report } }; }
+        catch (error) { result[i] = { ok: false, error: errorDetails(error) }; }
       }
     }));
     if (options.errors === "throw_after_all" && result.some(r => !r.ok)) fail("One or more parallel branches failed", result);
@@ -69,7 +72,7 @@
       catch (error) {
         // A thrown primitive or frozen value cannot carry the scope report;
         // wrap it so the rethrow never turns into a TypeError.
-        const carrier = error !== null && typeof error === "object" && Object.isExtensible(error) ? error : Object.assign(new Error(String(error)), { code: "workflow_failed" });
+        const carrier = error !== null && typeof error === "object" && Object.isExtensible(error) ? error : Object.assign(new Error(), errorDetails(error));
         carrier.report = { label: defaults.label, context: defaults.context };
         throw carrier;
       }

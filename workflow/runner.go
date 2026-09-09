@@ -227,7 +227,11 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 			return rejectError(context.Cause(ctx))
 		}
 		if !activated {
-			return rejectError(errors.New("host calls are allowed only inside workflow.run"))
+			err := errors.New("host calls are allowed only inside workflow.run")
+			// An ignored rejection must not hide a host call from a definition
+			// getter or terminal result serialization.
+			cancel(err)
+			return rejectError(err)
 		}
 		if len(state.Steps) >= limit {
 			err := &Error{Code: "execution_budget", Message: "workflow host-call budget exhausted"}
@@ -364,6 +368,9 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 			}
 		}
 	}
+	// Reading the returned value or rejection can invoke getters and toJSON.
+	// The run has settled, so these accesses must not start more host work.
+	activated = false
 	if ctx.Err() != nil {
 		return nil, context.Cause(ctx)
 	}

@@ -120,6 +120,29 @@ func TestParentWorkflowIntegrationAndTaskAuthority(t *testing.T) {
 	}
 }
 
+func TestWorkflowSerializationCannotApplyIntegration(t *testing.T) {
+	r, plan := applyFixture(t, false)
+	ctx := context.Background()
+	source := `polly.defineWorkflow({name:"serialize-apply",inputSchema:polly.schema.object({id:polly.schema.string()}),async run(input){
+ return {toJSON(){polly.integration.apply(input.id); return {ok:true};}};
+}});`
+	report, err := r.RunWorkflow(ctx, source, map[string]any{"id": plan.ID})
+	if err == nil || report.Status != "failed" || len(report.Steps) != 0 {
+		t.Fatalf("serialization apply was not refused: %v %+v", err, report)
+	}
+	data, err := os.ReadFile(filepath.Join(r.config.Root, "a.txt"))
+	if err != nil || string(data) != "base\n" {
+		t.Fatalf("serialization changed parent files: %q %v", data, err)
+	}
+	state, err := r.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Applies[plan.ID] != nil || state.Tasks["task"].Status != "awaiting_review" {
+		t.Fatal("serialization started an apply or completed its task")
+	}
+}
+
 func TestWorkflowRequestedChangesRequireExplicitContinuation(t *testing.T) {
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
