@@ -47,6 +47,7 @@ type Config struct {
 	MaxUntrackedFileBytes, MaxUntrackedBytes int64
 	// PrivatePaths are runtime-owned files/directories excluded before Git
 	// reads snapshot content. Paths inside Root are excluded in every copy.
+	// Relative paths are resolved against Root.
 	PrivatePaths []string
 	// MaxWorktrees reserves paths before any member sandbox starts. A member
 	// can then deny future sibling paths as well as existing ones.

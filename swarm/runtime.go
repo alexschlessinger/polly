@@ -34,7 +34,9 @@ type Config struct {
 	Root, Directory              string
 	MaxConcurrent, MaxExecutions int
 	MaxWorktrees                 int
-	PrivatePaths                 []string
+	// PrivatePaths are denied to members and excluded from snapshots.
+	// Relative paths are resolved against Root, independently of process cwd.
+	PrivatePaths []string
 	// Promote is called before the first coordination mutation. CLI hosts
 	// use it to durably promote one-shot sessions; library memory mode can omit it.
 	Promote      func(context.Context) error
@@ -129,6 +131,7 @@ func New(c Config) (*Runtime, error) {
 	if c.Agent.MaxIterations <= 0 {
 		c.Agent.MaxIterations = 1024
 	}
+	c.PrivatePaths = append([]string(nil), c.PrivatePaths...)
 	if durable, ok := c.Store.(sessions.DurableStore); ok {
 		mode, path := durable.Location()
 		if mode == sessions.ModeDisk {
@@ -150,6 +153,15 @@ func New(c Config) (*Runtime, error) {
 	c.Root, err = filepath.EvalSymlinks(c.Root)
 	if err != nil {
 		return nil, err
+	}
+	for i, path := range c.PrivatePaths {
+		if path == "" {
+			return nil, errors.New("private paths must not be empty")
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(c.Root, path)
+		}
+		c.PrivatePaths[i] = filepath.Clean(path)
 	}
 	if c.Directory == "" {
 		home, err := os.UserHomeDir()
