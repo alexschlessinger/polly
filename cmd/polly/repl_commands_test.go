@@ -911,7 +911,7 @@ func TestToolsCommandIncludesPrivateAgentBuiltins(t *testing.T) {
 // color with muted descriptions; the line frontend gets the same rows plain.
 func TestHelpGroupsKeysByTask(t *testing.T) {
 	plain := strings.Join(defaultReplCommands.helpLines(), "\n")
-	for _, want := range []string{"\nSend and edit\n", "\nNavigate\n", "\nInspect\n", "\nApprove\n", "  Tab", "Ctrl-A/E Ctrl-U/K", "  y  ", "show or change settings"} {
+	for _, want := range []string{"\nSend and edit\n", "\nNavigate\n", "\nInspect\n", "\nApprove\n", "  Tab", "Home Ctrl-A", "  y  ", "show or change settings"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("help missing %q in %q", want, plain)
 		}

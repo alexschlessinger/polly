@@ -134,21 +134,13 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	}
 	terminalWidth = r.frameLayoutFor(terminalWidth, terminalHeight).mainWidth()
 
+	keys := keyContext{event: e, viewport: viewport, width: terminalWidth, height: terminalHeight}
 	// Scroll keys work in every mode (idle, busy, approval) so the user
 	// can review history without interrupting the agent.
+	if handled, quit := r.runKey(scrollPhase, keys); handled {
+		return quit
+	}
 	switch e.ID {
-	case "<PageUp>":
-		m.scrollByWidth(-viewport/2, viewport, terminalWidth)
-		return false
-	case "<PageDown>":
-		m.scrollByWidth(viewport/2, viewport, terminalWidth)
-		return false
-	case "<MouseWheelUp>":
-		m.scrollByWidth(-3, viewport, terminalWidth)
-		return false
-	case "<MouseWheelDown>":
-		m.scrollByWidth(3, viewport, terminalWidth)
-		return false
 	case "<MouseLeft>":
 		if mouse, ok := e.Payload.(ui.Mouse); ok {
 			if image.Pt(mouse.X, mouse.Y).In(m.parentLink) {
@@ -202,20 +194,9 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	}
 
-	// Ctrl-O toggles the active turn's reasoning disclosure, or the newest
-	// completed one while idle. It never moves focus away from the composer.
-	if e.ID == "<C-o>" {
-		m.toggleLatestReasoning(0)
-		return false
-	}
-
-	// tcell runs the terminal in raw mode, so the terminal driver cannot turn
-	// Ctrl-Z into SIGTSTP for us. Queue suspension on the UI loop, which first
-	// restores the terminal and then stops the foreground process group. This
-	// remains available during turns, searches, and approval prompts.
-	if e.ID == "<C-z>" {
-		r.requestSuspend()
-		return false
+	// Global keys stay available during turns, searches, and approval prompts.
+	if handled, quit := r.runKey(globalPhase, keys); handled {
+		return quit
 	}
 
 	// Reverse-incremental search owns the keyboard while active, so Ctrl-C
@@ -250,90 +231,237 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// compose the next message; Enter queues it (see submitComposerLocked)
 	// rather than submitting immediately. Editing/history/search keys all
 	// work as usual.
-
-	switch e.ID {
-	case "<Escape>":
-		// Escape cancels an in-flight turn like Ctrl-C, but never quits: at
-		// idle (or while already canceling) it hides the slash hint line until
-		// the input next changes.
-		m.slashHintsHidden = true
-		if m.busy && !m.canceling {
-			r.cancelBusyTurn()
-		}
-	case "<C-d>":
-		m.ed.deleteForward()
-	case "<Enter>":
-		return r.submitComposerLocked()
-	case "<C-j>":
-		// Ctrl-J inserts a newline for composing multi-line prompts; Enter sends.
-		m.ed.insert('\n')
-	case "<Backspace>", "<C-h>":
-		m.ed.backspace()
-	case "<Delete>":
-		m.ed.deleteForward()
-	case "<C-w>":
-		m.ed.deleteWordBackward()
-	case "<M-d>":
-		m.ed.deleteWordForward()
-	case "<Left>":
-		m.ed.left()
-	case "<Right>":
-		m.ed.right()
-	case "<M-b>":
-		m.ed.wordLeft()
-	case "<M-f>":
-		m.ed.wordRight()
-	case "<Home>", "<C-a>":
-		m.ed.home()
-	case "<End>", "<C-e>":
-		m.ed.end()
-		m.scrollToBottom()
-	case "<C-u>":
-		m.ed.killToStart()
-	case "<C-k>":
-		m.ed.killToEnd()
-	case "<C-v>":
-		r.captureClipboardToComposer()
-	case "<C-l>":
-		m.clearDisplay()
-	case "<C-r>":
-		m.hist.startSearch()
-	case "<C-g>":
-		// The picker opens on the agent that needs attention, when one does.
-		r.openSessionsPickerSelected(r.attentionAgentName())
-	case "<Up>":
-		// Move up a line within a multi-line prompt; recall older history only
-		// when already on the first line (zsh up-line-or-history).
-		if !m.ed.up() {
-			m.historyUp()
-		}
-	case "<Down>":
-		if !m.ed.down() {
-			m.historyDown()
-		}
-	case "<Space>":
-		m.ed.insert(' ')
-	case "<Tab>":
-		// An empty composer has nothing to complete: Tab hands the keys to
-		// the open inspector instead (Esc or typing hands them back).
-		if i := &r.workspace().inspector; m.ed.empty() && i.open && !i.searching {
-			i.focused = true
-			return false
-		}
-		// Complete with the live command context so completers can see
-		// session state (e.g. loaded tool names for "/tools show").
-		cur := m.ed.text()
-		if completed, _, ok := defaultReplCommands.complete(cur, newManagedReplCommandContext(r)); ok {
-			if completed != cur {
-				m.ed.setText(completed)
-			}
-			return false
-		}
-		m.ed.insert('\t')
-	default:
-		if ch, ok := printableRune(e); ok {
-			m.ed.insert(ch)
-		}
+	if handled, quit := r.runKey(composerPhase, keys); handled {
+		return quit
+	}
+	if ch, ok := printableRune(e); ok {
+		m.ed.insert(ch)
 	}
 	return false
+}
+
+// keyPhase is where in handleEventLocked a binding is consulted: scroll keys
+// before any mode owns input, global keys after paste but before search and
+// approval, composer keys last, once the composer has the keyboard.
+type keyPhase int
+
+const (
+	scrollPhase keyPhase = iota
+	globalPhase
+	composerPhase
+)
+
+type keyContext struct {
+	event                   ui.Event
+	viewport, width, height int
+}
+
+// keyBinding is one action and the event IDs that trigger it. label names it
+// in /keys; an empty label keeps an alias out of the help. run reports quit.
+type keyBinding struct {
+	keys  []string
+	label string
+	desc  string
+	phase keyPhase
+	run   func(r *managedREPL, k keyContext) bool
+}
+
+// keyGroup is a /keys section: its bindings, then notes for keys and mouse
+// actions that other handlers own (dialogs, the inspector, approval).
+type keyGroup struct {
+	title    string
+	bindings []keyBinding
+	notes    []keyHelpRow
+}
+
+type keyHelpRow struct{ key, desc string }
+
+type keyHelpGroup struct {
+	title string
+	rows  []keyHelpRow
+}
+
+func editorKey(label, desc string, edit func(*lineEditor), keys ...string) keyBinding {
+	return keyBinding{keys: keys, label: label, desc: desc, phase: composerPhase, run: func(r *managedREPL, _ keyContext) bool {
+		edit(&r.model.ed)
+		return false
+	}}
+}
+
+func replKey(label, desc string, phase keyPhase, run func(r *managedREPL, k keyContext) bool, keys ...string) keyBinding {
+	return keyBinding{keys: keys, label: label, desc: desc, phase: phase, run: run}
+}
+
+func scrollKey(label, desc string, lines func(viewport int) int, keys ...string) keyBinding {
+	return replKey(label, desc, scrollPhase, func(r *managedREPL, k keyContext) bool {
+		r.model.scrollByWidth(lines(k.viewport), k.viewport, k.width)
+		return false
+	}, keys...)
+}
+
+// keyTable is the single source for key dispatch and the /keys help. It is
+// built in init: the bindings reach the command registry, whose help reads
+// the table back, and a package-level initializer would close that cycle.
+var (
+	keyTable []keyGroup
+	keyIndex map[keyPhase]map[string]keyBinding
+)
+
+func init() {
+	keyTable = keyBindingGroups()
+	keyIndex = indexKeyBindings(keyTable)
+}
+
+func keyBindingGroups() []keyGroup {
+	return []keyGroup{
+		{title: "Send and edit", bindings: []keyBinding{
+			replKey("Enter", "Send the message", composerPhase, func(r *managedREPL, _ keyContext) bool { return r.submitComposerLocked() }, "<Enter>"),
+			editorKey("Ctrl-J", "Insert a newline", func(ed *lineEditor) { ed.insert('\n') }, "<C-j>"),
+			replKey("Tab", "Complete a command · focus an open inspector", composerPhase, completeOrFocusInspector, "<Tab>"),
+			replKey("Ctrl-R", "Search history", composerPhase, func(r *managedREPL, _ keyContext) bool { r.model.hist.startSearch(); return false }, "<C-r>"),
+			replKey("Ctrl-V", "Attach the clipboard image", composerPhase, func(r *managedREPL, _ keyContext) bool { r.captureClipboardToComposer(); return false }, "<C-v>"),
+			replKey("Ctrl-L", "Clear the display", composerPhase, func(r *managedREPL, _ keyContext) bool { r.model.clearDisplay(); return false }, "<C-l>"),
+			// tcell runs the terminal in raw mode, so the terminal driver cannot
+			// turn Ctrl-Z into SIGTSTP. Suspension is queued on the UI loop, which
+			// restores the terminal before stopping the foreground process group.
+			replKey("Ctrl-Z", "Suspend to the shell (fg resumes)", globalPhase, func(r *managedREPL, _ keyContext) bool { r.requestSuspend(); return false }, "<C-z>"),
+			// Escape cancels an in-flight turn like Ctrl-C, but never quits: at
+			// idle (or while already canceling) it hides the slash hint line until
+			// the input next changes.
+			replKey("Esc", "Dismiss a dialog, search, or the inspector · interrupt", composerPhase, func(r *managedREPL, _ keyContext) bool {
+				r.model.slashHintsHidden = true
+				if r.model.busy && !r.model.canceling {
+					r.cancelBusyTurn()
+				}
+				return false
+			}, "<Escape>"),
+			editorKey("Home Ctrl-A", "Line start", (*lineEditor).home, "<Home>", "<C-a>"),
+			replKey("End Ctrl-E", "Line end · scroll to the bottom", composerPhase, func(r *managedREPL, _ keyContext) bool {
+				r.model.ed.end()
+				r.model.scrollToBottom()
+				return false
+			}, "<End>", "<C-e>"),
+			editorKey("Ctrl-U", "Clear to the line start", (*lineEditor).killToStart, "<C-u>"),
+			editorKey("Ctrl-K", "Clear to the line end", (*lineEditor).killToEnd, "<C-k>"),
+			editorKey("Ctrl-W", "Delete the previous word", (*lineEditor).deleteWordBackward, "<C-w>"),
+			editorKey("Alt-D", "Delete the next word", (*lineEditor).deleteWordForward, "<M-d>"),
+			editorKey("Alt-B Alt-F", "Move by word", (*lineEditor).wordLeft, "<M-b>"),
+			editorKey("", "", (*lineEditor).wordRight, "<M-f>"),
+			editorKey("Ctrl-D Delete", "Delete the next character", (*lineEditor).deleteForward, "<C-d>", "<Delete>"),
+			editorKey("", "", (*lineEditor).backspace, "<Backspace>", "<C-h>"),
+			editorKey("", "", (*lineEditor).left, "<Left>"),
+			editorKey("", "", (*lineEditor).right, "<Right>"),
+			editorKey("", "", func(ed *lineEditor) { ed.insert(' ') }, "<Space>"),
+		}, notes: []keyHelpRow{
+			{"Ctrl-C", "Interrupt the turn · twice to quit"},
+		}},
+		{title: "Navigate", bindings: []keyBinding{
+			// Move within a multi-line prompt; recall history only from its first
+			// or last line (zsh up-line-or-history).
+			replKey("Up", "Move up a line or recall older history", composerPhase, func(r *managedREPL, _ keyContext) bool {
+				if !r.model.ed.up() {
+					r.model.historyUp()
+				}
+				return false
+			}, "<Up>"),
+			replKey("Down", "Move down a line or recall newer history", composerPhase, func(r *managedREPL, _ keyContext) bool {
+				if !r.model.ed.down() {
+					r.model.historyDown()
+				}
+				return false
+			}, "<Down>"),
+			scrollKey("PgUp", "Page the transcript up · the inspector when focused", func(v int) int { return -v / 2 }, "<PageUp>"),
+			scrollKey("PgDn", "Page the transcript down · the inspector when focused", func(v int) int { return v / 2 }, "<PageDown>"),
+			scrollKey("", "", func(int) int { return -3 }, "<MouseWheelUp>"),
+			scrollKey("", "", func(int) int { return 3 }, "<MouseWheelDown>"),
+			// The picker opens on the agent that needs attention, when one does.
+			replKey("Ctrl-G", "Open the sessions picker", composerPhase, func(r *managedREPL, _ keyContext) bool {
+				r.openSessionsPickerSelected(r.attentionAgentName())
+				return false
+			}, "<C-g>"),
+		}, notes: []keyHelpRow{
+			{"Alt-1..9 Alt-] Alt-[", "Switch workspace"},
+			{"Shift-drag", "Select terminal text"},
+		}},
+		{title: "Inspect", bindings: []keyBinding{
+			// Toggles the active turn's reasoning disclosure, or the newest
+			// completed one while idle, without moving focus from the composer.
+			replKey("Ctrl-O", "Toggle thinking for the latest turn", globalPhase, func(r *managedREPL, _ keyContext) bool {
+				r.model.toggleLatestReasoning(0)
+				return false
+			}, "<C-o>"),
+		}, notes: []keyHelpRow{
+				{"Left / Right", "Previous or next tool or thought in a focused inspector"},
+			{"Click detail", "Inspect an agent, tool result, or thought"},
+			{"Click disclosure", "Expand thinking or tool calls"},
+			{"Click thumbnail", "Open the image"},
+		}},
+		{title: "Approve", notes: []keyHelpRow{
+			{"y", "Allow"},
+			{"n Enter Esc", "Deny"},
+			{"a", "Allow the rest of the batch"},
+		}},
+	}
+}
+
+// completeOrFocusInspector is Tab: an empty composer has nothing to complete,
+// so Tab hands the keys to the open inspector instead (Esc or typing hands
+// them back). Otherwise it completes with the live command context so
+// completers can see session state (loaded tool names for "/tools show").
+func completeOrFocusInspector(r *managedREPL, _ keyContext) bool {
+	m := r.model
+	if i := &r.workspace().inspector; m.ed.empty() && i.open && !i.searching {
+		i.focused = true
+		return false
+	}
+	cur := m.ed.text()
+	if completed, _, ok := defaultReplCommands.complete(cur, newManagedReplCommandContext(r)); ok {
+		if completed != cur {
+			m.ed.setText(completed)
+		}
+		return false
+	}
+	m.ed.insert('\t')
+	return false
+}
+
+func indexKeyBindings(groups []keyGroup) map[keyPhase]map[string]keyBinding {
+	index := make(map[keyPhase]map[string]keyBinding)
+	for _, g := range groups {
+		for _, b := range g.bindings {
+			if index[b.phase] == nil {
+				index[b.phase] = make(map[string]keyBinding)
+			}
+			for _, id := range b.keys {
+				index[b.phase][id] = b
+			}
+		}
+	}
+	return index
+}
+
+// runKey dispatches the event to the binding registered for phase, if any.
+// Caller must hold r.model.mu.
+func (r *managedREPL) runKey(phase keyPhase, k keyContext) (handled, quit bool) {
+	b, ok := keyIndex[phase][k.event.ID]
+	if !ok {
+		return false, false
+	}
+	return true, b.run(r, k)
+}
+
+// keyHelpGroups projects the binding table into /keys sections.
+func keyHelpGroups() []keyHelpGroup {
+	var groups []keyHelpGroup
+	for _, g := range keyTable {
+		rows := make([]keyHelpRow, 0, len(g.bindings)+len(g.notes))
+		for _, b := range g.bindings {
+			if b.label != "" {
+				rows = append(rows, keyHelpRow{b.label, b.desc})
+			}
+		}
+		rows = append(rows, g.notes...)
+		groups = append(groups, keyHelpGroup{g.title, rows})
+	}
+	return groups
 }

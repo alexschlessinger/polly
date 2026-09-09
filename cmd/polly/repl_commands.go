@@ -184,55 +184,6 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	return r
 }
 
-type keyHelpRow struct{ key, desc string }
-
-type keyHelpGroup struct {
-	title string
-	rows  []keyHelpRow
-}
-
-// keyHelpGroups is the key reference by task. Editing keys follow readline,
-// so two rows cover the chords instead of one row each; no key column is
-// wider than the widest navigation key, which keeps help legible at 80.
-func keyHelpGroups() []keyHelpGroup {
-	return []keyHelpGroup{
-		{"Send and edit", []keyHelpRow{
-			{"Enter", "Send the message"},
-			{"Ctrl-J", "Insert a newline"},
-			{"Tab", "Complete a slash command"},
-			{"Ctrl-R", "Search history"},
-			{"Ctrl-V", "Attach the clipboard image"},
-			{"Ctrl-L", "Clear the display"},
-			{"Ctrl-C", "Interrupt the turn · twice to quit"},
-			{"Ctrl-Z", "Suspend to the shell (fg resumes)"},
-			{"Esc", "Dismiss a dialog, search, or the inspector · interrupt"},
-			{"Ctrl-A/E Ctrl-U/K", "Line start or end · clear to the start or end"},
-			{"Ctrl-W Alt-B/F Alt-D", "Delete the previous word · move or delete by word"},
-		}},
-		{"Navigate", []keyHelpRow{
-			{"Up / Down", "Move or recall history · scroll a focused inspector"},
-			{"PgUp / PgDn", "Page the transcript · the inspector when it has focus"},
-			{"Home / End", "Line start or end · focused inspector top or follow"},
-			{"Alt-1..9 Alt-] Alt-[", "Switch workspace"},
-			{"Ctrl-G", "Open the sessions picker"},
-			{"Shift-drag", "Select terminal text"},
-		}},
-		{"Inspect", []keyHelpRow{
-			{"Tab", "Focus the inspector from an empty composer · Esc returns"},
-			{"Left / Right", "Previous or next tool or thought in a focused inspector"},
-			{"Click detail", "Inspect an agent, tool result, or thought"},
-			{"Click disclosure", "Expand thinking or tool calls"},
-			{"Ctrl-O", "Toggle thinking for the latest turn"},
-			{"Click thumbnail", "Open the image"},
-		}},
-		{"Approve", []keyHelpRow{
-			{"y", "Allow"},
-			{"n Enter Esc", "Deny"},
-			{"a", "Allow the rest of the batch"},
-		}},
-	}
-}
-
 func (ctx *replCommandContext) configOrDefault() *Config {
 	if ctx != nil && ctx.config != nil {
 		return ctx.config
