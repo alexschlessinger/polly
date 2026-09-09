@@ -94,13 +94,13 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	if m.hasAgentRows() && state.sessionStore != nil {
 		if summaries, err := state.sessionStore.ListSummaries(ctx); err == nil {
 			m.hydrateAgentSessions(name, summaries)
-			if state.swarm != nil {
-				if snapshot, err := state.swarm.State(ctx); err == nil {
-					m.hydrateSwarmAgents(snapshot)
-				}
-			}
 		} else {
 			m.appendNoticeLine("Agent sessions unavailable · " + err.Error())
+		}
+	}
+	if state.swarm != nil {
+		if snapshot, err := state.swarm.State(ctx); err == nil {
+			m.hydrateSwarmAgents(snapshot)
 		}
 	}
 	// Seed the bar without network traffic. This is explicitly approximate

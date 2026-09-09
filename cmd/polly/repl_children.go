@@ -10,6 +10,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
+	"github.com/alexschlessinger/pollytool/swarm"
 )
 
 // spawnRequest is a /spawn typed on a tab, applied by the event loop.
@@ -278,6 +279,10 @@ func (r *managedREPL) applySpawnRequests() {
 					}
 				}
 			}
+			var snapshot *swarm.State
+			if err == nil {
+				snapshot, _ = runtime.State(r.work.ctx)
+			}
 			r.postUI(r.work.ctx, func() {
 				if r.tabIndexOfModel(parent.model) < 0 || parent.state.swarm != runtime {
 					return
@@ -292,6 +297,10 @@ func (r *managedREPL) applySpawnRequests() {
 						parent.swarmAnnounced = make(map[string]string)
 					}
 					parent.swarmAnnounced[res.Session] = ""
+					if snapshot != nil {
+						parent.swarmSnapshot = snapshot
+						parent.model.hydrateSwarmAgents(snapshot)
+					}
 					notice := "Agent started"
 					if name != "" {
 						notice = "Agent " + name + " started"
@@ -309,7 +318,11 @@ func (m *replModel) turnToolCallCount() int {
 	n := 0
 	for _, id := range m.turnToolDisclosureIDs {
 		if record := m.toolDisclosures[id]; record != nil {
-			n += len(record.rows)
+			for _, row := range record.rows {
+				if !row.isProjectedAgent() {
+					n++
+				}
+			}
 		}
 	}
 	return n

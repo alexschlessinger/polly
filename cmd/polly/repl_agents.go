@@ -14,13 +14,14 @@ import (
 // agentActivity belongs to the spawn request's disclosure, not its tool
 // execution. A background tool result can settle long before this run does.
 type agentActivity struct {
-	viewID     string
-	label      string
-	status     string
-	session    string
-	background bool
-	active     bool
-	attached   bool
+	viewID                   string
+	label                    string
+	status                   string
+	session                  string
+	background               bool
+	active                   bool
+	attached                 bool
+	workflowID, workflowName string
 
 	// Reported usage for the original delegated run, retained after completion.
 	inputTokens, outputTokens int
@@ -54,7 +55,13 @@ func (row *toolDisclosureRow) setCall(call messages.ChatMessageToolCall) {
 	row.agent = &agentActivity{label: label, status: "starting", active: true, background: args.Background}
 }
 
-func (row *toolDisclosureRow) isAgent() bool { return row.toolName == subagent.ToolName }
+func (row *toolDisclosureRow) isAgent() bool {
+	return row.agent != nil || row.toolName == subagent.ToolName
+}
+
+func (row *toolDisclosureRow) isProjectedAgent() bool {
+	return row.agent != nil && row.toolName == ""
+}
 
 func ordinaryToolRows(rows []toolDisclosureRow) []toolDisclosureRow {
 	var ordinary []toolDisclosureRow
@@ -205,10 +212,14 @@ func agentActivityLine(a *agentActivity) string {
 // agentDetail uses the normal cell wrapper for both display and link geometry.
 // Only the accent label is clickable, including each wrapped fragment.
 func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
-	var lines []string
-	var links []agentLink
-	y := 0
-	linkStyle := parseStyledCells(link("x"), ui.StyleClear)[0].Style
+	// Keep interleaved workflow steps together without moving stored rows:
+	// active tools and inspector links refer to their original row indices.
+	type rowRef struct {
+		record *toolDisclosureRecord
+		index  int
+	}
+	var groups [][]rowRef
+	workflowGroups := map[string]int{}
 	for _, id := range ids {
 		record := m.toolDisclosures[id]
 		if record == nil {
@@ -217,6 +228,29 @@ func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 		for i, row := range record.rows {
 			if !row.isAgent() || row.agent == nil {
 				continue
+			}
+			group, exists := workflowGroups[row.agent.workflowID]
+			if row.agent.workflowID == "" || !exists {
+				group = len(groups)
+				groups = append(groups, nil)
+				if row.agent.workflowID != "" {
+					workflowGroups[row.agent.workflowID] = group
+				}
+			}
+			groups[group] = append(groups[group], rowRef{record, i})
+		}
+	}
+	var lines []string
+	var links []agentLink
+	y := 0
+	linkStyle := parseStyledCells(link("x"), ui.StyleClear)[0].Style
+	for _, group := range groups {
+		for n, ref := range group {
+			row := ref.record.rows[ref.index]
+			if n == 0 && row.agent.workflowID != "" {
+				heading := "  " + styled("Workflow · "+sanitizeTranscriptImageText(row.agent.workflowName), "muted", "")
+				lines = append(lines, heading)
+				y += len(transcriptVisualRows(heading, ui.StyleClear, width))
 			}
 			line := agentActivityLine(row.agent)
 			lines = append(lines, line)
@@ -233,7 +267,7 @@ func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 					x += w
 				}
 				if start >= 0 && start < width && end > start {
-					links = append(links, agentLink{recordID: id, rowIndex: i, X: start, Y: y, Cols: min(end, width) - start})
+					links = append(links, agentLink{recordID: ref.record.id, rowIndex: ref.index, X: start, Y: y, Cols: min(end, width) - start})
 				}
 				y++
 			}

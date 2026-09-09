@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/swarm"
 )
 
 type parentTurnUIKey struct{}
@@ -26,7 +27,7 @@ type toolCallKey struct{}
 // withToolCall hands a tool the call it is answering, so a spawned child can
 // attach itself to that call's disclosure row.
 func withToolCall(ctx context.Context, call messages.ChatMessageToolCall) context.Context {
-	return context.WithValue(ctx, toolCallKey{}, call)
+	return context.WithValue(swarm.WithWorkflowCallID(ctx, call.ID), toolCallKey{}, call)
 }
 
 func toolCallFrom(ctx context.Context) messages.ChatMessageToolCall {

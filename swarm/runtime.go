@@ -1460,6 +1460,7 @@ func (r *Runtime) SaveWorkflow(ctx context.Context, report workflow.Report) erro
 	return r.update(ctx, func(s *State) error {
 		if prior := s.Workflows[report.ID]; prior != nil {
 			report.Run, report.Acknowledged = prior.Run, prior.Acknowledged
+			report.CallID = prior.CallID
 		}
 		if report.Run == "" {
 			report.Run = r.currentRun(s).ID
@@ -1514,7 +1515,8 @@ func (r *Runtime) launchWorkflow(ctx context.Context, source string, input any, 
 		return nil, context.Canceled
 	}
 	run := &workflowInvocation{id: ids.New(), done: make(chan struct{})}
-	if err := r.SaveWorkflow(ctx, workflow.Report{ID: run.id, Source: source, Input: input, Status: "running", Started: time.Now().UTC()}); err != nil {
+	callID, _ := ctx.Value(workflowCallIDKey{}).(string)
+	if err := r.SaveWorkflow(ctx, workflow.Report{ID: run.id, CallID: callID, Source: source, Input: input, Status: "running", Started: time.Now().UTC()}); err != nil {
 		return nil, err
 	}
 	if background {

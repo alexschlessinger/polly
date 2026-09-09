@@ -477,6 +477,9 @@ func (m *replModel) toolDisclosureRowForCall(callID string) (*toolDisclosureReco
 			continue
 		}
 		for rowIndex := len(record.rows) - 1; rowIndex >= 0; rowIndex-- {
+			if record.rows[rowIndex].isProjectedAgent() {
+				continue
+			}
 			if callID != "" && record.rows[rowIndex].callID != callID {
 				continue
 			}

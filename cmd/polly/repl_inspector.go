@@ -307,11 +307,11 @@ func (r *managedREPL) refreshInspector(width int) {
 							// only through the Agents picker.
 							if summaries, e := tabStoreSummaries(reader, r.work.ctx); e == nil {
 								source.model.hydrateAgentSessions(source.info.Metadata.Name, summaries)
-								if swarmState != nil && swarmState.swarm != nil && swarmState.swarm.ID == source.info.ID {
-									if snapshot, e := swarmState.swarm.State(r.work.ctx); e == nil {
-										source.model.hydrateSwarmAgents(snapshot)
-									}
-								}
+							}
+						}
+						if swarmState != nil && swarmState.swarm != nil && swarmState.swarm.ID == source.info.ID {
+							if snapshot, e := swarmState.swarm.State(r.work.ctx); e == nil {
+								source.model.hydrateSwarmAgents(snapshot)
 							}
 						}
 						source.revision = source.info.Revision
