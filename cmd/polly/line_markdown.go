@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	tcell "github.com/gdamore/tcell/v3"
 	rw "github.com/mattn/go-runewidth"
@@ -22,7 +23,7 @@ const (
 // frontends do not drift while keeping the original Markdown source outside
 // this display-only boundary.
 func renderLineMarkdown(src, baseDir string, capabilities outputCapabilities) []byte {
-	rendered, images, _ := renderMarkdownWithLocalImages(src, baseDir, false)
+	rendered, images, _ := markdown.RenderWithLocalImages(src, baseDir, false)
 	if rendered == "" {
 		return nil
 	}

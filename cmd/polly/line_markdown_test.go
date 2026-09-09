@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -277,7 +278,7 @@ func TestLineTurnUIToolResultNeverRendersImage(t *testing.T) {
 func TestLineTurnUITypedToolImageRendersInspectionPreview(t *testing.T) {
 	path := t.TempDir() + "/inspected.png"
 	writeImageFixture(t, path, 8, 4)
-	img, ok := resolveLocalTranscriptImage(path, "inspected.png", "")
+	img, ok := markdown.ResolveLocalImage(path, "inspected.png", "")
 	if !ok {
 		t.Fatal("inspection fixture did not resolve")
 	}

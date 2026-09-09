@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -555,7 +556,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			return nil
 		},
 		attachImage: func(path string) (string, error) {
-			img, ok := resolveLocalTranscriptImage(path, "", r.model.imageBaseDir)
+			img, ok := markdown.ResolveLocalImage(path, "", r.model.imageBaseDir)
 			if !ok {
 				return "", fmt.Errorf("not a readable local image")
 			}

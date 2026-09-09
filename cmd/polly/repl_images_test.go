@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -27,7 +28,7 @@ func TestRenderMarkdownWithLocalImages(t *testing.T) {
 	path := filepath.Join(dir, "chart.png")
 	writeImageFixture(t, path, 8, 4)
 
-	rendered, images, _ := renderMarkdownWithLocalImages("before\n\n![latency chart](chart.png)\n\nafter", dir, false)
+	rendered, images, _ := markdown.RenderWithLocalImages("before\n\n![latency chart](chart.png)\n\nafter", dir, false)
 	if len(images) != 1 {
 		t.Fatalf("images = %d, want 1", len(images))
 	}
@@ -57,7 +58,7 @@ func TestRenderMarkdownWithLocalImagesSanitizesPrivateMarkers(t *testing.T) {
 	path := filepath.Join(dir, filename)
 	writeImageFixture(t, path, 8, 4)
 
-	rendered, images, _ := renderMarkdownWithLocalImages(
+	rendered, images, _ := markdown.RenderWithLocalImages(
 		"before"+marker+"\n\n`code"+marker+"`\n\n![ok]("+filename+")", dir, false,
 	)
 	if len(images) != 1 || images[0].Path != path {
@@ -127,7 +128,7 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 
 func TestRenderMarkdownLeavesRemoteAndMissingImagesAsLinks(t *testing.T) {
 	dir := t.TempDir()
-	rendered, images, _ := renderMarkdownWithLocalImages("![remote](https://example.com/a.png) ![missing](missing.png)", dir, false)
+	rendered, images, _ := markdown.RenderWithLocalImages("![remote](https://example.com/a.png) ![missing](missing.png)", dir, false)
 	if len(images) != 0 {
 		t.Fatalf("images = %#v, want none", images)
 	}
@@ -155,7 +156,7 @@ func TestDiscoverToolOutputImagesIsExplicit(t *testing.T) {
 		"    f.png",
 	}, "\n")
 
-	images := discoverToolOutputImages(body, dir)
+	images := markdown.DiscoverToolOutputImages(body, dir)
 	if len(images) != 2 {
 		t.Fatalf("images = %#v, want Markdown a.png and standalone b.jpg", images)
 	}
@@ -615,7 +616,7 @@ func TestTranscriptImagesFollowTheirEntry(t *testing.T) {
 func TestChangedImageAspectReflowsTranscriptSlot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "changing.png")
 	writeImageFixture(t, path, 2400, 270)
-	img, ok := resolveLocalTranscriptImage(path, "changing", "")
+	img, ok := markdown.ResolveLocalImage(path, "changing", "")
 	if !ok {
 		t.Fatal("wide image did not resolve")
 	}
@@ -981,7 +982,7 @@ func TestResolveLocalTranscriptImageFoldsUnicodeSpaces(t *testing.T) {
 	writeImageFixture(t, realPath, 64, 32)
 
 	plainSpacePath := filepath.Join(dir, "Screenshot 2026-08-26 at 10.09.27 PM.png")
-	img, ok := resolveLocalTranscriptImage(plainSpacePath, "shot", "")
+	img, ok := markdown.ResolveLocalImage(plainSpacePath, "shot", "")
 	if !ok {
 		t.Fatal("plain-space spelling did not resolve to U+202F file")
 	}
@@ -998,18 +999,11 @@ func TestResolveLocalTranscriptImageExactMatchWinsOverFold(t *testing.T) {
 	writeImageFixture(t, filepath.Join(dir, "a b.png"), 64, 32)
 	writeImageFixture(t, filepath.Join(dir, "a\u202Fb.png"), 128, 16)
 
-	img, ok := resolveLocalTranscriptImage(filepath.Join(dir, "a b.png"), "", "")
+	img, ok := markdown.ResolveLocalImage(filepath.Join(dir, "a b.png"), "", "")
 	if !ok {
 		t.Fatal("exact path did not resolve")
 	}
 	if img.Width != 64 {
 		t.Fatalf("exact match lost to fold match: width = %d, want 64", img.Width)
-	}
-}
-
-func TestResolveSpaceFoldedPathMissReturnsInput(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "nope.png")
-	if got := resolveSpaceFoldedPath(missing); got != missing {
-		t.Fatalf("resolveSpaceFoldedPath(missing) = %q, want input unchanged", got)
 	}
 }

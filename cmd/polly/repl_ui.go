@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	tcell "github.com/gdamore/tcell/v3"
@@ -56,7 +57,7 @@ type transcriptEntry struct {
 	initialPrompt bool
 	// Completed assistant Markdown is materialized on the next visible paint.
 	markdown  string
-	codeCache *markdownCodeCache
+	codeCache *markdown.CodeCache
 }
 
 type replModel struct {
@@ -115,7 +116,7 @@ type replModel struct {
 	streamRaw        strings.Builder
 	streamShown      int
 	streamTypewriter assistantTypewriter
-	streamCodeCache  *markdownCodeCache
+	streamCodeCache  *markdown.CodeCache
 	markdownPending  bool
 
 	visual transcriptVisualCache

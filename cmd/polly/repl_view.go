@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
 	ui "github.com/metaspartan/gotui/v5"
@@ -138,16 +139,16 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 	arguments := strings.TrimSpace(t.call.Arguments)
 	title, lines := "arguments", []string{style.Styled("(none)", "muted", "")}
 	if cmd, ok := bashCommandOf(t.call); ok {
-		title, lines = "command", highlightCodeLines(cmd, "bash")
+		title, lines = "command", markdown.HighlightCodeLines(cmd, "bash")
 	} else if arguments != "" {
 		lang := ""
 		if json.Valid([]byte(arguments)) {
 			lang = "json"
 			title += " · json"
 		}
-		lines = highlightCodeLines(strings.TrimRight(readableResult(arguments), "\n"), lang)
+		lines = markdown.HighlightCodeLines(strings.TrimRight(readableResult(arguments), "\n"), lang)
 	}
-	m.appendLine(strings.Join(renderFence(title, lines), "\n"))
+	m.appendLine(strings.Join(markdown.RenderFence(title, lines), "\n"))
 	if !t.complete {
 		m.appendLine(style.Styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("Running… output appears when this tool finishes")
@@ -192,7 +193,7 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 		for n := range raw {
 			raw[n] = style.Escape(raw[n])
 		}
-		m.appendLine(strings.Join(renderFence("output · "+resultLineMeta(text), raw), "\n"))
+		m.appendLine(strings.Join(markdown.RenderFence("output · "+resultLineMeta(text), raw), "\n"))
 	}
 	images := inspectionTranscriptImages(t.result, m.artifactStore)
 	if len(images) > 0 {

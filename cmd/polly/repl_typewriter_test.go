@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
@@ -107,7 +108,7 @@ func TestTypewriterPreservesMarkdownAndFlushesAtBoundaries(t *testing.T) {
 				r.endTurn(context.Canceled)
 			}
 			m.renderPendingMarkdownAt(at.Add(41 * time.Millisecond))
-			want, _, _ := renderMarkdownWithCache(strings.TrimRight(raw, "\n"), m.imageBaseDir, false, nil)
+			want, _, _ := markdown.RenderWithCache(strings.TrimRight(raw, "\n"), m.imageBaseDir, false, nil)
 			if m.transcript[index].text != want || m.currentAssistant != -1 || len(m.streamTypewriter.arrivals) != 0 {
 				t.Fatal("semantic boundary failed to flush the exact complete Markdown")
 			}

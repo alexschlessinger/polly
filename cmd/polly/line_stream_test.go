@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	rw "github.com/mattn/go-runewidth"
@@ -210,13 +211,13 @@ func TestLineSourceClippingPreservesTheSharedMarkdownWalker(t *testing.T) {
 		"Title\n---\n\n~~~go\n\tvar x = 1\n~~~",
 		"| one | two |\n| --- | --- |\n| three | four |",
 	} {
-		doc := newLineMarkdownDocument(source, "", false, nil)
-		rows, _ := doc.render(0, len(source), 1000)
+		doc := markdown.NewDocument(source, "", false, nil)
+		rows, _ := doc.Render(0, len(source), 1000)
 		var parts []string
 		for _, row := range rows {
 			parts = append(parts, lineCellsOutput(row, false))
 		}
-		want, _, _ := renderMarkdownWithLocalImages(source, "", false)
+		want, _, _ := markdown.RenderWithLocalImages(source, "", false)
 		if got := strings.Join(parts, "\n"); got != plainStyledText(want) {
 			t.Fatalf("clipping changed %q:\n%s\nwant:\n%s", source, got, plainStyledText(want))
 		}
@@ -262,29 +263,29 @@ func TestFitPrefixCutsCodeAtLineStartsAndSharesHighlight(t *testing.T) {
 		fmt.Fprintf(&b, "func f%02d() int { return %d } // trailing\n", i, i)
 	}
 	src := b.String()
-	var cache markdownCodeCache
-	doc := newLineMarkdownDocument(src, "", true, &cache)
-	rows, _ := doc.render(0, len(src), 80)
-	cut := doc.fitPrefix(0, len(src), 80, len(rows)-10)
+	var cache markdown.CodeCache
+	doc := markdown.NewDocument(src, "", true, &cache)
+	rows, _ := doc.Render(0, len(src), 80)
+	cut := doc.FitPrefix(0, len(src), 80, len(rows)-10)
 	if cut == 0 || cut == len(src) || src[cut-1] != '\n' {
 		t.Fatalf("cut %d is not a line start", cut)
 	}
 	var head, tail []string
-	for _, row := range must2(doc.render(0, cut, 80)) {
+	for _, row := range must2(doc.Render(0, cut, 80)) {
 		head = append(head, lineCellsOutput(row, false))
 	}
-	for _, row := range must2(doc.render(cut, len(src), 80)) {
+	for _, row := range must2(doc.Render(cut, len(src), 80)) {
 		tail = append(tail, lineCellsOutput(row, false))
 	}
 	var full []string
-	for _, row := range must2(doc.render(0, len(src), 80)) {
+	for _, row := range must2(doc.Render(0, len(src), 80)) {
 		full = append(full, lineCellsOutput(row, false))
 	}
 	if got := append(head, tail...); !slices.Equal(got, full) {
 		t.Fatalf("clipped code = %q, want %q", got, full)
 	}
-	if len(cache.blocks) != 1 || cache.blocks[0].code != strings.TrimPrefix(src, "```go\n") {
-		t.Fatalf("cache does not hold the whole block: %q", cache.blocks[0].code)
+	if code, _ := cache.Block(0); cache.Len() != 1 || code != strings.TrimPrefix(src, "```go\n") {
+		t.Fatalf("cache does not hold the whole block: %q", code)
 	}
 }
 
@@ -453,3 +454,5 @@ func TestSeparateTerminalsDoNotShareCursorOrWhitespace(t *testing.T) {
 		t.Fatalf("independent streams interfered: stdout=%q stderr=%q", out.String(), status.String())
 	}
 }
+
+func must2[T any, U any](t T, _ U) T { return t }

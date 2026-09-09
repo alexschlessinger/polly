@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"testing"
+
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 )
 
 // TestClipboardCaptureManual exercises the real platform clipboard readers.
@@ -20,7 +22,7 @@ func TestClipboardCaptureManual(t *testing.T) {
 	if err != nil {
 		t.Fatalf("captureClipboardImage: %v", err)
 	}
-	img, ok := resolveLocalTranscriptImage(path, "", "")
+	img, ok := markdown.ResolveLocalImage(path, "", "")
 	if !ok {
 		t.Fatalf("captured file %s is not a usable image", path)
 	}

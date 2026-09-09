@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -323,7 +324,7 @@ func (m *replModel) pastedImageAttachments(text string) []style.Image {
 	}
 	images := make([]style.Image, 0, len(paths))
 	for _, path := range paths {
-		img, ok := resolveLocalTranscriptImage(path, "", m.imageBaseDir)
+		img, ok := markdown.ResolveLocalImage(path, "", m.imageBaseDir)
 		if !ok {
 			return nil
 		}
@@ -493,7 +494,7 @@ func preparedMessageTranscriptImagesInDir(msg messages.ChatMessage, dir string) 
 		if label == "" {
 			label = "attachment" + ext
 		}
-		img, ok := resolveLocalTranscriptImage(path, label, dir)
+		img, ok := markdown.ResolveLocalImage(path, label, dir)
 		if !ok {
 			continue
 		}

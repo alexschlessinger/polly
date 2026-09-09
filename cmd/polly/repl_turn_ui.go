@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -168,7 +169,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 		// Tool output can be large. Discovery touches only Markdown/path syntax
 		// and the filesystem, so keep it outside the model lock and let the TUI
 		// continue painting while it runs.
-		discoveredImages = discoverToolOutputImages(result, t.model.imageBaseDir)
+		discoveredImages = markdown.DiscoverToolOutputImages(result, t.model.imageBaseDir)
 	}
 	t.model.mu.Lock()
 	defer t.model.mu.Unlock()

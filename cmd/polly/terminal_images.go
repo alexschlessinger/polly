@@ -270,21 +270,13 @@ func (m *terminalImageManager) readyEvents() <-chan struct{} {
 	return m.ready
 }
 
-func localImageVersion(path string) string {
-	info, err := os.Stat(path)
-	if err != nil {
-		return path + ":missing"
-	}
-	return fmt.Sprintf("%s:%d:%d", path, info.Size(), info.ModTime().UnixNano())
-}
-
 // placementImageVersion identifies the pixel source of a placement. Embedded
 // assets are fixed at compile time, so their name and length suffice.
 func placementImageVersion(placement terminalImagePlacement) string {
 	if placement.Embedded != "" {
 		return fmt.Sprintf("embedded:%s:%d", placement.Embedded, len(embeddedTerminalImages[placement.Embedded]))
 	}
-	return localImageVersion(placement.Path)
+	return images.FileVersion(placement.Path)
 }
 
 // loadPlacementImage decodes a placement's pixels from its embedded asset or

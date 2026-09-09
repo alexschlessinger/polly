@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	rw "github.com/mattn/go-runewidth"
@@ -661,7 +662,7 @@ func (r *managedREPL) captureClipboardToComposer() {
 				m.appendNoticeLine("Clipboard capture failed · " + err.Error())
 				return
 			}
-			img, ok := resolveLocalTranscriptImage(path, "clipboard image", m.imageBaseDir)
+			img, ok := markdown.ResolveLocalImage(path, "clipboard image", m.imageBaseDir)
 			if !ok {
 				m.appendNoticeLine("Clipboard image could not be used")
 				return

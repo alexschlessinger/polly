@@ -12,6 +12,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -231,4 +232,14 @@ func PortableMIMEType(format string) (mimeType string, portable bool) {
 	default:
 		return "", false
 	}
+}
+
+// FileVersion identifies the current pixels behind a path: the path with its
+// size and modification time, or a missing marker when it cannot be read.
+func FileVersion(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return path + ":missing"
+	}
+	return fmt.Sprintf("%s:%d:%d", path, info.Size(), info.ModTime().UnixNano())
 }

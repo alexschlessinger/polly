@@ -38,10 +38,11 @@ func TestMarkdownCacheReusesCodeAndHonorsLateDefinitions(t *testing.T) {
 	m := newReplModel()
 	m.appendAssistant("```go\nvar value = 1\n```\n\nSee [docs][ref].\n")
 	m.renderPendingMarkdown()
-	first := &m.streamCodeCache.blocks[0].lines[0]
+	_, lines := m.streamCodeCache.Block(0)
+	first := &lines[0]
 	m.appendAssistant("\n[ref]: https://example.com\n")
 	m.renderPendingMarkdown()
-	if &m.streamCodeCache.blocks[0].lines[0] != first {
+	if _, lines := m.streamCodeCache.Block(0); &lines[0] != first {
 		t.Fatal("unchanged code was highlighted again")
 	}
 	m.finishAssistantBlock("")

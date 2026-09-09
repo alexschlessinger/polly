@@ -1,4 +1,9 @@
-package main
+// Package markdown renders assistant Markdown into the transcript's styled
+// text: gotui markup with the semantic palette, highlighted code, aligned
+// tables, and sidecar image slots for explicit local image references. The
+// streaming Document renders a growing source by byte range so already
+// shown text never moves.
+package markdown
 
 import (
 	"fmt"
@@ -22,19 +27,19 @@ import (
 // (display_contract.go), which tells the model what this renderer supports.
 var mdParser = goldmark.New(goldmark.WithExtensions(extension.Strikethrough, extension.Table))
 
-// renderMarkdownWithLocalImages keeps the ordinary Markdown surface while
+// RenderWithLocalImages keeps the ordinary Markdown surface while
 // replacing explicit, existing local image references with private transcript
 // slots. The slots are consumed only by the managed TUI; callers that just
 // need text use renderMarkdownDocument with a nil state. streaming marks the
 // source as an in-flight prefix; the returned deferred flag reports that a
 // table rendered unaligned and the caller must re-render at settle.
-func renderMarkdownWithLocalImages(src, baseDir string, streaming bool) (string, []style.Image, bool) {
-	return renderMarkdownWithCache(src, baseDir, streaming, nil)
+func RenderWithLocalImages(src, baseDir string, streaming bool) (string, []style.Image, bool) {
+	return RenderWithCache(src, baseDir, streaming, nil)
 }
 
-func renderMarkdownWithCache(src, baseDir string, streaming bool, cache *markdownCodeCache) (string, []style.Image, bool) {
-	state := &markdownRenderState{baseDir: baseDir, streaming: streaming, codeCache: cache}
-	rendered := renderMarkdownDocument(src, state)
+func RenderWithCache(src, baseDir string, streaming bool, cache *CodeCache) (string, []style.Image, bool) {
+	state := &renderState{baseDir: baseDir, streaming: streaming, codeCache: cache}
+	rendered := renderDocument(src, state)
 	if cache != nil {
 		cache.blocks = cache.blocks[:state.codeIndex]
 	}
@@ -45,13 +50,23 @@ func renderMarkdownWithCache(src, baseDir string, streaming bool, cache *markdow
 // second block reuses completed highlighting without retaining every prefix
 // of a growing block. The AST is still reparsed so late link definitions and
 // table delimiters keep their normal Markdown semantics.
-type markdownCodeCache struct{ blocks []markdownCodeBlock }
+type CodeCache struct{ blocks []markdownCodeBlock }
+
+// Len reports how many code blocks the cache holds.
+func (c *CodeCache) Len() int { return len(c.blocks) }
+
+// Block returns cached block i's source and highlighted lines; the lines
+// slice is the cached one, so callers can check it was reused.
+func (c *CodeCache) Block(i int) (code string, lines []string) {
+	return c.blocks[i].code, c.blocks[i].lines
+}
+
 type markdownCodeBlock struct {
 	code, lang string
 	lines      []string
 }
 
-func (s *markdownRenderState) renderCode(code, lang string) []string {
+func (s *renderState) renderCode(code, lang string) []string {
 	if s == nil || s.codeCache == nil {
 		return renderCodeBlock(code, lang)
 	}
@@ -68,12 +83,11 @@ func (s *markdownRenderState) renderCode(code, lang string) []string {
 	return b.lines
 }
 
-// renderMarkdownDocument converts markdown source into gotui style markup:
-// block structure via goldmark's AST, inline styling through the same styled()
-// palette the rest of the REPL uses. The result contains real newlines;
-// width-aware wrapping stays downstream in the cell layer. A nil state renders
-// plain text with no image slots.
-func renderMarkdownDocument(src string, state *markdownRenderState) string {
+// RenderDocument renders src to styled text with no image slots, for callers
+// that only need text.
+func RenderDocument(src string) string { return renderDocument(src, nil) }
+
+func renderDocument(src string, state *renderState) string {
 	if strings.TrimSpace(src) == "" {
 		return ""
 	}
@@ -87,7 +101,7 @@ func renderMarkdownDocument(src string, state *markdownRenderState) string {
 // slots whenever Markdown shares a transcript block with image sidecars.
 // Image destinations are resolved from the original AST value before display
 // text reaches this boundary, so paths containing those runes still work.
-func markdownSourceText(s string, state *markdownRenderState) string {
+func markdownSourceText(s string, state *renderState) string {
 	if state == nil {
 		return s
 	}
@@ -96,7 +110,7 @@ func markdownSourceText(s string, state *markdownRenderState) string {
 
 // renderBlocks renders a parent's block children, separating siblings with a
 // prefix-bearing blank line so quoted blocks keep their gutter.
-func renderBlocks(parent ast.Node, source []byte, prefix string, state *markdownRenderState) []string {
+func renderBlocks(parent ast.Node, source []byte, prefix string, state *renderState) []string {
 	var out []string
 	for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
 		lines := renderBlock(child, source, prefix, prefix, state)
@@ -111,7 +125,7 @@ func renderBlocks(parent ast.Node, source []byte, prefix string, state *markdown
 	return out
 }
 
-func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, state *markdownRenderState) []string {
+func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, state *renderState) []string {
 	if state != nil && state.clip.excludes(n) {
 		return nil
 	}
@@ -171,7 +185,7 @@ func markdownHeadingStyle(level int) (fg, mod string) {
 	}
 }
 
-func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string, state *markdownRenderState) []string {
+func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string, state *renderState) []string {
 	var out []string
 	num := list.Start
 	if num == 0 {
@@ -214,7 +228,7 @@ func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string, s
 // an overwide table wraps without reflowing its columns. While the table is
 // still streaming its widths aren't final, so rows render unaligned and
 // state.deferredTable asks the stream owner for a settle re-render.
-func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix string, state *markdownRenderState) []string {
+func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix string, state *renderState) []string {
 	// A clip may start inside the table when a streamed frame overflows the
 	// screen. Widths still come from every row, so the committed prefix and
 	// the mutable remainder pad identically, and the header underline follows
@@ -345,7 +359,7 @@ func splitInline(s string) []string {
 // renderInlineChildren walks inline nodes, threading the current color and
 // modifier. Inner spans override outer ones (gotui markup can't combine
 // modifiers), which is the right reading for nested emphasis.
-func renderInlineChildren(n ast.Node, source []byte, fg, mod string, state *markdownRenderState) string {
+func renderInlineChildren(n ast.Node, source []byte, fg, mod string, state *renderState) string {
 	var b strings.Builder
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		b.WriteString(renderInline(c, source, fg, mod, state))
@@ -353,7 +367,7 @@ func renderInlineChildren(n ast.Node, source []byte, fg, mod string, state *mark
 	return b.String()
 }
 
-func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRenderState) string {
+func renderInline(n ast.Node, source []byte, fg, mod string, state *renderState) string {
 	if state != nil && state.clip.excludes(n) {
 		return ""
 	}
@@ -394,7 +408,7 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *markdownRend
 		)
 	case *ast.Image:
 		if state != nil && len(state.images) < style.MaxImagesPerBlock {
-			if img, ok := resolveLocalTranscriptImage(string(i.Destination), nodeText(n, source), state.baseDir); ok {
+			if img, ok := ResolveLocalImage(string(i.Destination), nodeText(n, source), state.baseDir); ok {
 				index := len(state.images)
 				state.images = append(state.images, img)
 				if state.clip != nil {
@@ -471,18 +485,18 @@ func codeBlockText(lines *text.Segments, source []byte) string {
 // and "│ " gutters — with chroma highlighting inside, mapped onto the same
 // semantic ANSI slots as the rest of the UI so it follows the terminal theme.
 func renderCodeBlock(code, lang string) []string {
-	lines := highlightCodeLines(strings.TrimRight(code, "\n"), lang)
+	lines := HighlightCodeLines(strings.TrimRight(code, "\n"), lang)
 	if lang == "" {
 		return gutterLines(lines)
 	}
-	return renderFence(lang, lines)
+	return RenderFence(lang, lines)
 }
 
-// renderFence titles a payload block: the muted "╭─ title" header, then the
+// RenderFence titles a payload block: the muted "╭─ title" header, then the
 // lines under the muted "│ " gutter that the wrapper hard-wraps like code.
 // Tool arguments and output use it with section titles; fenced Markdown
 // code uses it with the language.
-func renderFence(title string, lines []string) []string {
+func RenderFence(title string, lines []string) []string {
 	return append([]string{style.Styled("╭─ "+title, "muted", "")}, gutterLines(lines)...)
 }
 
@@ -531,7 +545,7 @@ func expandCodeTabs(code string) string {
 	return out.String()
 }
 
-func highlightCodeLines(code, lang string) []string {
+func HighlightCodeLines(code, lang string) []string {
 	if code == "" {
 		return nil
 	}
@@ -604,11 +618,11 @@ func chromaStyle(t chroma.TokenType) (fg, mod string) {
 // bounded latency beats a stalled stream.
 const holdbackCap = 120
 
-// safeVisibleLen returns how much of an in-flight markdown message can render
+// SafeVisibleLen returns how much of an in-flight markdown message can render
 // without showing markup that is still likely to change: unclosed inline
 // delimiters near the end of the current line are held back so text appears
 // already styled instead of visibly transforming. Completed lines always show.
-func safeVisibleLen(s string) int {
+func SafeVisibleLen(s string) int {
 	lineStart := strings.LastIndexByte(s, '\n') + 1
 	line := s[lineStart:]
 	if insideOpenFence(s[:lineStart]) {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -134,7 +135,7 @@ func (m *replModel) renderPendingMarkdownAt(now time.Time) {
 			if entry.markdown == "" {
 				continue
 			}
-			rendered, images, _ := renderMarkdownWithCache(entry.markdown, m.imageBaseDir, false, entry.codeCache)
+			rendered, images, _ := markdown.RenderWithCache(entry.markdown, m.imageBaseDir, false, entry.codeCache)
 			entry.markdown, entry.codeCache = "", nil
 			m.setTranscriptEntry(i, rendered, images)
 		}
@@ -152,13 +153,13 @@ func (m *replModel) renderAssistantStream(now time.Time) {
 		return
 	}
 	raw := m.streamRaw.String()
-	visible := raw[:safeVisibleLen(raw)]
+	visible := raw[:markdown.SafeVisibleLen(raw)]
 	if len(visible) != m.streamShown || m.transcript[m.currentAssistant].text == "" {
 		m.streamShown = len(visible)
 		if m.streamCodeCache == nil {
-			m.streamCodeCache = &markdownCodeCache{}
+			m.streamCodeCache = &markdown.CodeCache{}
 		}
-		rendered, images, _ := renderMarkdownWithCache(visible, m.imageBaseDir, true, m.streamCodeCache)
+		rendered, images, _ := markdown.RenderWithCache(visible, m.imageBaseDir, true, m.streamCodeCache)
 		m.setTranscriptEntry(m.currentAssistant, rendered, images)
 	}
 	entry := &m.transcript[m.currentAssistant]

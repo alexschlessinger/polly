@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -19,7 +20,7 @@ import (
 var slashCommands = defaultReplCommands.commandNames()
 
 func renderMarkdown(src string) string {
-	return renderMarkdownDocument(src, nil)
+	return markdown.RenderDocument(src)
 }
 
 // sandboxRegistryOptions waits for the probe, so tests of the options keep

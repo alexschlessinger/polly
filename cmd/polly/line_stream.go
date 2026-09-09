@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	rw "github.com/mattn/go-runewidth"
 	cellui "github.com/metaspartan/gotui/v5"
 	"golang.org/x/term"
@@ -130,7 +131,7 @@ func (ui *lineTurnUI) stopRendererLocked() {
 
 type lineStream struct {
 	frame           lineTerminalFrame
-	cache           markdownCodeCache
+	cache           markdown.CodeCache
 	committed       int // source bytes, not styled cells or rows
 	lastPaint       time.Time
 	lastSource      string
@@ -177,20 +178,20 @@ func (s *lineStream) clear(ui *lineTurnUI, columns, height int) {
 func (s *lineStream) resync(ui *lineTurnUI, columns, height int) {
 	if overflow := s.frame.physicalRows(columns) - height; overflow > 0 && height > 0 {
 		src := ui.markdownBuffer.String()
-		visible := max(safeVisibleLen(src), s.committed)
+		visible := max(markdown.SafeVisibleLen(src), s.committed)
 		if s.committed < visible {
-			doc := newLineMarkdownDocument(src[:visible], ui.imageBaseDir, true, &s.cache)
-			s.committed = doc.fitPrefix(s.committed, visible, max(1, columns-1), overflow)
+			doc := markdown.NewDocument(src[:visible], ui.imageBaseDir, true, &s.cache)
+			s.committed = doc.FitPrefix(s.committed, visible, max(1, columns-1), overflow)
 		}
 	}
 	s.clear(ui, columns, height)
 }
 
-func (s *lineStream) emit(ui *lineTurnUI, doc *lineMarkdownDocument, start, end, width int) {
-	rows, images := doc.render(start, end, width)
+func (s *lineStream) emit(ui *lineTurnUI, doc *markdown.Document, start, end, width int) {
+	rows, images := doc.Render(start, end, width)
 	for _, cells := range rows {
 		if index, prefix := lineImageMarker(cells, len(images)); index >= 0 {
-			key := doc.imagePositions[index]
+			key := doc.ImagePositions[index]
 			if !s.displayedImages[key] {
 				s.displayedImages[key] = true
 				if payload := lineImagePayload(images[index], ui.capabilities, styledCellsWidth(cells[:prefix])); len(payload) > 0 {
@@ -227,26 +228,26 @@ func (s *lineStream) draw(ui *lineTurnUI, force bool) {
 	if throttled && src == s.lastSource && footerText == s.lastFooter {
 		return
 	}
-	visible := safeVisibleLen(src)
+	visible := markdown.SafeVisibleLen(src)
 	if visible < s.committed {
 		visible = s.committed
 	}
-	doc := newLineMarkdownDocument(src[:visible], ui.imageBaseDir, true, &s.cache)
+	doc := markdown.NewDocument(src[:visible], ui.imageBaseDir, true, &s.cache)
 	budget := max(1, height-len(footer))
 	s.resync(ui, columns, height)
 	if ui.bufferSeparator && visible > s.committed {
 		fmt.Fprintln(ui.writer)
 		ui.bufferSeparator = false
 	}
-	if complete := doc.completedEnd(); complete > s.committed {
+	if complete := doc.CompletedEnd(); complete > s.committed {
 		s.emit(ui, doc, s.committed, complete, width)
 		fmt.Fprintln(ui.writer)
 	}
-	rows, images := doc.render(s.committed, visible, width)
+	rows, images := doc.Render(s.committed, visible, width)
 	for len(rows) > budget {
-		cut := doc.fitPrefix(s.committed, visible, width, len(rows)-budget)
+		cut := doc.FitPrefix(s.committed, visible, width, len(rows)-budget)
 		s.emit(ui, doc, s.committed, cut, width)
-		rows, images = doc.render(s.committed, visible, width)
+		rows, images = doc.Render(s.committed, visible, width)
 	}
 	var answer []string
 	for _, cells := range rows {
@@ -276,11 +277,11 @@ func (s *lineStream) flush(ui *lineTurnUI) {
 		fmt.Fprintln(ui.writer)
 		ui.bufferSeparator = false
 	}
-	doc := newLineMarkdownDocument(src, ui.imageBaseDir, false, &s.cache)
+	doc := markdown.NewDocument(src, ui.imageBaseDir, false, &s.cache)
 	s.emit(ui, doc, s.committed, len(src), max(1, columns-1))
 	ui.markdownBuffer.Reset()
 	s.committed = 0
-	s.cache = markdownCodeCache{}
+	s.cache = markdown.CodeCache{}
 	s.lastSource = ""
 	s.displayedImages = make(map[int]bool)
 }

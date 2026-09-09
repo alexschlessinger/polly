@@ -1,4 +1,4 @@
-package main
+package markdown
 
 import (
 	"bytes"
@@ -66,7 +66,7 @@ func clippedCodeLines(lines *text.Segments, clip *markdownSourceRange) (skip, ta
 // lines the clip covers. Streaming probes render many clips of one growing
 // block; keying the highlight cache on the whole block lets them all share
 // one chroma pass instead of paying for one per probe.
-func renderClippedCode(lines *text.Segments, source []byte, lang string, state *markdownRenderState) []string {
+func renderClippedCode(lines *text.Segments, source []byte, lang string, state *renderState) []string {
 	if state == nil || state.clip == nil {
 		return state.renderCode(markdownSourceText(codeBlockText(lines, source), state), lang)
 	}
@@ -87,7 +87,7 @@ func renderClippedCode(lines *text.Segments, source []byte, lang string, state *
 	return state.renderCode(markdownSourceText(clippedCodeBlockText(lines, source, state), state), lang)
 }
 
-func clippedCodeBlockText(lines *text.Segments, source []byte, state *markdownRenderState) string {
+func clippedCodeBlockText(lines *text.Segments, source []byte, state *renderState) string {
 	if state == nil || state.clip == nil {
 		return codeBlockText(lines, source)
 	}
@@ -179,29 +179,31 @@ func markdownSourceBounds(doc ast.Node, source []byte) map[ast.Node]markdownSour
 	return bounds
 }
 
-type lineMarkdownDocument struct {
-	source         []byte
-	doc            ast.Node
-	bounds         map[ast.Node]markdownSourceSpan
-	baseDir        string
-	cache          *markdownCodeCache
-	streaming      bool
-	imagePositions []int
+type Document struct {
+	source    []byte
+	doc       ast.Node
+	bounds    map[ast.Node]markdownSourceSpan
+	baseDir   string
+	cache     *CodeCache
+	streaming bool
+	// ImagePositions are the source offsets of the images the last Render
+	// found, in image order.
+	ImagePositions []int
 }
 
-func newLineMarkdownDocument(src, baseDir string, streaming bool, cache *markdownCodeCache) *lineMarkdownDocument {
+func NewDocument(src, baseDir string, streaming bool, cache *CodeCache) *Document {
 	source := []byte(src)
 	doc := mdParser.Parser().Parse(text.NewReader(source))
-	return &lineMarkdownDocument{source: source, doc: doc, bounds: markdownSourceBounds(doc, source), baseDir: baseDir, streaming: streaming, cache: cache}
+	return &Document{source: source, doc: doc, bounds: markdownSourceBounds(doc, source), baseDir: baseDir, streaming: streaming, cache: cache}
 }
 
-func (d *lineMarkdownDocument) render(start, end, width int) ([][]ui.Cell, []style.Image) {
+func (d *Document) Render(start, end, width int) ([][]ui.Cell, []style.Image) {
 	if start >= end {
 		return nil, nil
 	}
-	state := &markdownRenderState{baseDir: d.baseDir, streaming: d.streaming, codeCache: d.cache, clip: &markdownSourceRange{start: start, end: end, bounds: d.bounds}}
+	state := &renderState{baseDir: d.baseDir, streaming: d.streaming, codeCache: d.cache, clip: &markdownSourceRange{start: start, end: end, bounds: d.bounds}}
 	lines := renderBlocks(d.doc, d.source, "", state)
-	d.imagePositions = state.imagePositions
+	d.ImagePositions = state.imagePositions
 	if d.cache != nil {
 		d.cache.blocks = d.cache.blocks[:state.codeIndex]
 	}
@@ -233,7 +235,7 @@ func (d *lineMarkdownDocument) render(start, end, width int) ([][]ui.Cell, []sty
 	return ui.SplitCells(style.WrapCells(expanded, width), '\n'), state.images
 }
 
-func (d *lineMarkdownDocument) completedEnd() int {
+func (d *Document) CompletedEnd() int {
 	last := d.doc.LastChild()
 	if last == nil || last.PreviousSibling() == nil {
 		return 0
@@ -243,14 +245,14 @@ func (d *lineMarkdownDocument) completedEnd() int {
 	return bytes.LastIndexByte(d.source[:start], '\n') + 1
 }
 
-// fitPrefix finds a source boundary, never a rendered-row index. It prefers
+// FitPrefix finds a source boundary, never a rendered-row index. It prefers
 // line starts, so a cut inside a code block keeps whole highlighted lines and
 // costs one probe per doubling of lines rather than of bytes; only when not
 // even the first line fits does it split that line by rune. Either way the
 // earlier source is never replayed later.
-func (d *lineMarkdownDocument) fitPrefix(start, end, width, rows int) int {
+func (d *Document) FitPrefix(start, end, width, rows int) int {
 	fits := func(at int) bool {
-		part, _ := d.render(start, at, width)
+		part, _ := d.Render(start, at, width)
 		return len(part) <= rows
 	}
 	var lines []int
