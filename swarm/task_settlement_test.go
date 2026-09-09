@@ -16,6 +16,7 @@ import (
 
 func noEditResult(t *testing.T, readOnly bool) (*Runtime, AgentResult, TaskReference) {
 	t.Helper()
+	skipIfWindows(t) // Runtime worktree fixtures require audited POSIX Git.
 	r := runtimeTest(t, nilModel(), 1, 8)
 	if err := os.WriteFile(filepath.Join(r.config.Root, "source.txt"), []byte("untouched\n"), 0600); err != nil {
 		t.Fatal(err)
