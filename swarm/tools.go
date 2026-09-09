@@ -109,6 +109,8 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 }
 
 func (r *Runtime) waitParent(ctx context.Context) error {
+	end := r.parentTurn.beginWait(subagent.CallID(ctx))
+	defer end()
 	s, err := r.read(ctx)
 	if err != nil {
 		return err

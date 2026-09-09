@@ -245,7 +245,7 @@ func TestMemberAssignmentWaitsForProjectionGate(t *testing.T) {
 func TestCheckpointDenialsPreserveAcceptedSequence(t *testing.T) {
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("unused") }), 1, 1)
 	cb := &llm.AgentCallbacks{}
-	r.BindParent(cb, nil)
+	r.bindParent(cb, nil)
 	ctx := context.Background()
 	if err := cb.Checkpoint(ctx, llm.AgentCheckpoint{}); err != nil {
 		t.Fatal(err)

@@ -33,7 +33,7 @@ func failedResearchWorkflow(t *testing.T) (*Runtime, string, *Task) {
 func finishParent(t *testing.T, r *Runtime) {
 	t.Helper()
 	cb := &llm.AgentCallbacks{}
-	r.BindParent(cb, nil)
+	r.bindParent(cb, nil)
 	nudge, err := cb.ContinueAfterFinal(context.Background(), nil)
 	if err != nil || len(nudge) != 0 {
 		t.Fatalf("parent did not finish: %v %v", nudge, err)

@@ -88,6 +88,7 @@ type invocation struct {
 	err        error
 }
 type Runtime struct {
+	parentTurn      parentTracker
 	gate            *tools.ExecutionGate
 	ID              string
 	config          Config
@@ -644,6 +645,8 @@ func (r *Runtime) Agent(ctx context.Context, controller string, req AgentRequest
 	if err != nil {
 		return AgentResult{}, err
 	}
+	end := r.parentTurn.beginWait(subagent.CallID(ctx))
+	defer end()
 	select {
 	case <-i.done:
 		return i.result, i.err
@@ -685,6 +688,8 @@ func (r *Runtime) Spawn(ctx context.Context, req subagent.Request) (subagent.Res
 	if req.Background {
 		return subagent.Result{Started: true, Session: i.member, Done: i.done}, nil
 	}
+	end := r.parentTurn.beginWait(req.CallID)
+	defer end()
 	select {
 	case <-i.done:
 		return result(), i.err
@@ -1620,7 +1625,9 @@ func (r *Runtime) launchWorkflow(ctx context.Context, source string, input any, 
 		return nil, err
 	}
 	if background {
-		ctx = context.WithoutCancel(ctx)
+		// A background workflow outlives the call that started it, so its
+		// agent awaits belong to no parent tool call.
+		ctx = subagent.WithCallID(context.WithoutCancel(ctx), "")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(r.ctx, cancel)

@@ -153,9 +153,10 @@ func (r *Runtime) inspectAgents(ctx context.Context, actor string, a tools.Args)
 	}
 	return struct {
 		inspectionPage
-		Self   string `json:"self"`
-		Parent string `json:"parent"`
-	}{page.(inspectionPage), actor, r.ID}, nil
+		Self        string            `json:"self"`
+		Parent      string            `json:"parent"`
+		ParentState AgentPresentation `json:"parentState"`
+	}{page.(inspectionPage), actor, r.ID, r.ParentState(s)}, nil
 }
 
 func stepSummary(step workflow.Step) any {
