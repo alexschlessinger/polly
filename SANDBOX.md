@@ -50,9 +50,12 @@ access. `/spawn --read-only` uses the same research policy as `read_only:true`.
 Member policies deny parent/sibling files, session databases, and every write to
 common Git metadata and the linked worktree's `.git` entry. The default 512
 worktree directory slots are reserved before member sandboxes start, so future
-siblings are already covered. The common Git object store remains readable;
-this is filesystem isolation, not confidentiality of repository history. Native
-file tools retain their context checks even with an explicit process sandbox
+siblings are already covered. The common Git object store remains readable.
+On macOS, approved `readPaths` also permit metadata checks on their exact
+ancestor directories so Git can resolve linked worktrees from a main checkout.
+This permits neither ancestor directory listings nor reads of sibling files,
+and grants no writes. This is filesystem isolation, not confidentiality of
+repository history. Native file tools retain their context checks even with an explicit process sandbox
 opt-out. An unsandboxed shell necessarily retains ambient host authority.
 
 Runtime-private paths inside the source checkout are omitted from snapshot

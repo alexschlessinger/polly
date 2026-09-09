@@ -597,11 +597,24 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedLists ...
 	}
 
 	// Re-allow read access for exempted paths (last-match-wins in Seatbelt).
+	// Resolving an allowed descendant can require stat/lstat on its denied
+	// ancestors, notably Git resolving a linked worktree's common gitdir.
+	// Permit only metadata on those exact directory entries, never their
+	// listings, contents, or writes. Use the frozen targets and alias routes.
+	readAncestors := make(map[string]bool)
+	allowRead := func(p string) {
+		p = filepath.Clean(expandTilde(p))
+		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p))
+		for ancestor := filepath.Dir(p); !readAncestors[ancestor]; ancestor = filepath.Dir(ancestor) {
+			readAncestors[ancestor] = true
+			sb.WriteString(fmt.Sprintf("(allow file-read-metadata (literal %q))\n", ancestor))
+		}
+	}
 	for _, p := range cfg.ReadPaths {
-		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", filepath.Clean(expandTilde(p))))
+		allowRead(p)
 	}
 	for _, p := range readPathAliasPaths(cfg) {
-		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", filepath.Clean(p)))
+		allowRead(p)
 	}
 
 	// Deny signaling unrelated processes while still allowing a script to manage

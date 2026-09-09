@@ -274,6 +274,8 @@ type Config struct {
 
 	// Paths exempted from the DeniedPaths deny list. Paths are resolved once at
 	// construction; missing exemptions are dropped and cannot appear later.
+	// macOS also permits metadata-only traversal of their ancestor directories,
+	// without allowing ancestor listings, file contents, or writes.
 	ReadPaths []string `json:"readPaths,omitempty"`
 
 	// visiblePaths exposes host directories hidden by private namespace mounts.

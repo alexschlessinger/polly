@@ -559,6 +559,13 @@ a nil slice inherits compatible parent tools. Logical executions default to
 32 concurrent / 256 starts per run. Waits retain their execution ID and remaining
 iteration budget. Runtime callbacks, instructions, limits, private filesystem
 paths, and worktree directory are configurable through `swarm.Config`.
+Use repository-relative paths in `Task` briefs. `Source` selects snapshot input,
+not the member's working directory: tools and ordinary Git inspection run in
+the assigned checkout. Parent files and Git writes stay denied. On macOS the
+common Git read grant includes metadata-only traversal of ancestor directories,
+without allowing their listings or file contents.
+For history tasks, include a source commit ID in the brief: the member's `HEAD`
+is a parentless snapshot, while `git log <source-commit>` reads repository history.
 `UpdateDefaults(request, agentConfig, instructions)` safely refreshes the parent's
 settings. Member identity, model, tool authority and files remain fixed; an
 execution's iteration cap is captured at its start and survives waits/restarts.
