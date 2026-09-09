@@ -291,7 +291,8 @@ without a parent breadcrumb. Agent actions appear below the title.
 Agent headings show the task title, falling back to the session name when untitled.
 Agent transcript inspectors collapse the launch prompt into a clickable
 `▸ Prompt` row above the first agent message; later follow-up prompts remain visible.
-Tool inspector arguments use a JSON code block with syntax highlighting.
+Bash tool inspectors show the command with shell highlighting. Other tool
+arguments use a JSON code block with syntax highlighting.
 Use `/inspect prev`, `/inspect next`, `/inspect back`, and `/inspect forward`
 for navigation, `/inspect find` for search, and `/inspect maximize`,
 `/inspect wider`, or `/inspect narrower` to adjust the pane. Agent **Stop** appears

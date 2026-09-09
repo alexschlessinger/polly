@@ -177,7 +177,7 @@ func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 	r := newTabTestREPL(t, store, "root")
 	m := r.model
 	m.ed.setText("keep my draft")
-	call := messages.ChatMessageToolCall{ID: "one", Name: "bash", Arguments: `{"command":"printf hi"}`}
+	call := messages.ChatMessageToolCall{ID: "one", Name: "fetch", Arguments: `{"url":"https://x"}`}
 	tui := &gotuiTurnUI{model: m, config: r.config, repl: r}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, `{"answer":42}`, time.Second, nil)
@@ -189,17 +189,17 @@ func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 		t.Fatalf("result = %s", inspectorText(v))
 	}
 	// The state belongs to the header; the body opens with the arguments fence.
-	if first := strings.Split(inspectorText(v), "\n")[0]; strings.Contains(first, "bash") || first != "╭─ arguments · json" {
+	if first := strings.Split(inspectorText(v), "\n")[0]; strings.Contains(first, "fetch") || first != "╭─ arguments · json" {
 		t.Fatalf("expected the arguments fence without a repeated tool name: %q", first)
 	}
-	if !strings.Contains(inspectorText(v), `"command": "printf hi"`) || !strings.Contains(inspectorText(v), "╭─ output · 3 lines") {
+	if !strings.Contains(inspectorText(v), `"url": "https://x"`) || !strings.Contains(inspectorText(v), "╭─ output · 3 lines") {
 		t.Fatalf("tool arguments and output are not fenced by default: %s", inspectorText(v))
 	}
-	if !strings.Contains(inspectorText(v), "╭─ arguments · json\n│ {") || !strings.Contains(strings.Join(transcriptTexts(v.model), "\n"), styled(`"printf hi"`, "ok", "")) {
+	if !strings.Contains(inspectorText(v), "╭─ arguments · json\n│ {") || !strings.Contains(strings.Join(transcriptTexts(v.model), "\n"), styled(`"https://x"`, "ok", "")) {
 		t.Fatalf("arguments lack JSON code-block highlighting: %s", strings.Join(transcriptTexts(v.model), "\n"))
 	}
 	header := r.inspectorHeader(60, 20, 0, 0)
-	if rows := strings.Split(plainStyledText(header.text), "\n"); len(rows) != 2 || !strings.HasPrefix(rows[0], "‹ bash") || !strings.HasPrefix(rows[1], "completed · 1.0s") {
+	if rows := strings.Split(plainStyledText(header.text), "\n"); len(rows) != 2 || !strings.HasPrefix(rows[0], "‹ fetch") || !strings.HasPrefix(rows[1], "completed · 1.0s") {
 		t.Fatalf("tool header = %q", plainStyledText(header.text))
 	}
 	if m.ed.text() != "keep my draft" || r.model != m {
@@ -1203,11 +1203,40 @@ func TestNewOutputBaselineIgnoresStaleModelWhileLoading(t *testing.T) {
 	}
 }
 
+// A bash call's body shows the command it runs, exactly as the approval
+// block did, rather than the JSON envelope around it.
+func TestToolBodyShowsBashCommandNotJSON(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	call := messages.ChatMessageToolCall{ID: "one", Name: "bash", Arguments: `{"command":"ls -la /tmp | head -3\n"}`}
+	r.model.appendToolCallStart(call)
+	r.model.inspections.setResult(call, messages.ChatMessage{Content: "alpha"})
+	r.inspectCommand("tools")
+	v := waitInspector(t, r, 140)
+	text := inspectorText(v)
+	if !strings.Contains(text, "╭─ command\n│ ls -la /tmp | head -3\n╭─ output · 1 line\n│ alpha") {
+		t.Fatalf("bash body should fence the command verbatim: %s", text)
+	}
+	for _, stale := range []string{"arguments", `"command"`, "{", "}"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("bash body still shows its JSON envelope (%q): %s", stale, text)
+		}
+	}
+	// A bash call without a usable command falls back to the JSON view.
+	odd := messages.ChatMessageToolCall{ID: "two", Name: "bash", Arguments: `{"command":"  "}`}
+	r.model.appendToolCallStart(odd)
+	r.model.inspections.setResult(odd, messages.ChatMessage{Content: "beta"})
+	r.inspectCommand("tools")
+	v = waitInspector(t, r, 140)
+	if text := inspectorText(v); !strings.Contains(text, "╭─ arguments · json\n│ {") {
+		t.Fatalf("blank command should keep the JSON fence: %s", text)
+	}
+}
+
 // The tool body is two titled payloads under one gutter, so raw output wraps
 // like code and empty or pending output still shows its title.
 func TestToolBodyFences(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	call := messages.ChatMessageToolCall{ID: "one", Name: "bash", Arguments: `{"command":"ls"}`}
+	call := messages.ChatMessageToolCall{ID: "one", Name: "fetch", Arguments: `{"url":"https://x"}`}
 	r.model.appendToolCallStart(call)
 	r.model.inspections.setResult(call, messages.ChatMessage{Content: "alpha\n" + strings.Repeat("wide ", 30) + "\ngamma"})
 	r.inspectCommand("tools")
