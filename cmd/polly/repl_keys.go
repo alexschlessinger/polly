@@ -391,7 +391,7 @@ func keyBindingGroups() []keyGroup {
 				return false
 			}, "<C-o>"),
 		}, notes: []keyHelpRow{
-				{"Left / Right", "Previous or next tool or thought in a focused inspector"},
+			{"Left / Right", "Previous or next tool or thought in a focused inspector"},
 			{"Click detail", "Inspect an agent, tool result, or thought"},
 			{"Click disclosure", "Expand thinking or tool calls"},
 			{"Click thumbnail", "Open the image"},
