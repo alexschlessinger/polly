@@ -152,6 +152,8 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 	if err := subagent.CheckChildTools(req.Tools, registry); err != nil {
 		return nil, err
 	}
+	// Shadow the inherited binding before the child executes any tools.
+	registerSessionTitleTool(&conversationState{session: session, toolRegistry: registry})
 
 	settings := parent.settings.clone()
 	if req.Model != "" {
@@ -196,6 +198,11 @@ func openChildState(ctx context.Context, client llm.LLM, parent *conversationSta
 	// parent's, which a resumed context may have changed.
 	if err := session.Reset(ctx, metadata); err != nil {
 		return nil, fmt.Errorf("write child metadata: %w", err)
+	}
+	if setter, ok := session.(sessions.TitleSession); ok {
+		if _, err := setter.SetTitle(ctx, metadata.Description, sessions.TitleSourceAgent); err != nil && !errors.Is(err, sessions.ErrInvalidTitle) {
+			return nil, fmt.Errorf("set child title: %w", err)
+		}
 	}
 
 	artifactStore := session.ArtifactStore()

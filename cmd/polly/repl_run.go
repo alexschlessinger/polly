@@ -82,6 +82,7 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	if md, err := state.session.GetMetadata(ctx); err == nil && md != nil {
 		m.status.parentName = md.Parent
 		m.status.description = md.Description
+		m.status.title, m.status.titleSource = md.Title, md.TitleSource
 		root = md.Parent == ""
 	}
 	m.quiet = r.config.Quiet

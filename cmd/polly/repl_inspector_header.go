@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -98,10 +99,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	name := i.target.session.Name
 	if i.current != nil && i.current.info != nil && i.current.info.Metadata != nil {
 		metadata := i.current.info.Metadata
-		name = metadata.Name
-		if title := strings.Join(strings.Fields(metadata.Description), " "); !isRoot && title != "" {
-			name = title
-		}
+		name = sessions.DisplayLabel(metadata)
 	}
 	if name == "" {
 		name = "Conversation"

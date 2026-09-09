@@ -152,6 +152,8 @@ type SessionStore interface {
 // Created, LastUsed, and TTL are canonicalized from indexed session columns.
 type Metadata struct {
 	Name        string        `json:"name"`
+	Title       string        `json:"title,omitempty"`
+	TitleSource TitleSource   `json:"titleSource,omitempty"`
 	Created     time.Time     `json:"created"`
 	LastUsed    time.Time     `json:"lastUsed"`
 	Description string        `json:"description,omitempty"`

@@ -41,6 +41,7 @@ func newSpawnTestParent(t *testing.T, model llm.LLM, hits *int) (*conversationSt
 		settings: Settings{Model: "test/model", MaxTokens: 128, MaxIterations: 10},
 	}
 	registerSpawnTool(parent, &Config{}, model)
+	registerSessionTitleTool(parent)
 	return parent, store
 }
 

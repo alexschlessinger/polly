@@ -124,6 +124,14 @@ Every launch without `-c` gets a session with a generated name (`quiet-otter`).
 - A session with no turns is discarded on exit.
 - Status row: model and context use. `ctx 41.2k/156k`. A leading `~` means local estimate.
 
+Polly gives sessions descriptive titles once their purpose is clear, keeping
+them stable unless the overall task changes. The generated handle stays the
+same: `polly -c quiet-otter` still works after its title changes. The picker
+shows both and searches full titles, handles, and agent task labels.
+Use **F2** in the picker or `/title <text>` to set a title the agent cannot
+overwrite. Title edits never change expiry; `/rename <name>` explicitly
+changes the handle and keeps its existing retention behavior.
+
 ### Tabs
 
 One polly, many concurrent session workspaces. The tab list contains root
@@ -294,6 +302,7 @@ the terminal's override, usually Shift-drag.
 /spawn <brief>               Start a background agent that reports back here
 /tools [list [ns]|show <n>]  List or inspect loaded tools
 /skills                      List discovered Agent Skills
+/title <text>                Set a protected session title (expiry unchanged)
 /rename <name>               Rename the current context
 /reset confirm               Clear durable conversation history
 /exit  (/quit)               Leave the TUI
@@ -404,7 +413,7 @@ unreadable, non-text, or oversized is skipped with a warning, shown once
 until the problem changes. Limits are 32 KiB per file and 64 KiB combined.
 
 A non-empty `--system` / `POLLYTOOL_SYSTEM` replaces the coding policy and
-automatic `AGENTS.md` loading. Display and recall guidance still applies.
+automatic `AGENTS.md` loading. Display, recall, and session-title guidance still applies.
 `--schema` runs omit all of these CLI additions so the schema controls the
 response. Explicit user requests take precedence over the coding defaults
 and repository guidance.
@@ -462,6 +471,9 @@ loads only when `zg` (zvec-grep) is on `PATH`. Any `--tool` replaces that defaul
 - `edit_file`: replace an exact literal string. Must be unique, or pass `replace_all`.
 - `list_dir`: one directory, non-recursive.
 - `spawn_agent`: delegate to a child agent. See [Subagents](#subagents).
+- `set_session_title`: set this conversation's descriptive title without
+  changing its handle or expiry; user-assigned titles are protected. Children
+  start with their assigned task label as their title and edit only their own.
 - `zvec_grep_search`: zg's own agent search request, loaded when `zg` (zvec-grep) is on `PATH`: `query` and `queries` for hybrid groups, `fts` and `vector` for supplemental routes, `fuse`, a per-group `limit` (default 7, maximum 50), rg-style `globs` and `insensitiveGlobs`, `fileTypes`, `preferSymbol` and `symbolTypes`, `modifiedAfter` and `modifiedBefore`, and `path` to narrow within the workspace. Polly creates the workspace's `.zvec-grep/` index on first use and refreshes it inside each query. New indexes use the local `potion-code-16m-v2` model; the first query may download it. Existing local-model indexes retain their model and file-selection settings. Results are ranked snippets, not exhaustive matches. See [SEARCH.md](SEARCH.md).
 
 If zg is missing, Polly omits `zvec_grep_search`, including when restoring a session

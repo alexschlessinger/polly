@@ -479,6 +479,7 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		sandboxProbe:    probe,
 	}
 	registerSpawnTool(state, config, llmClient)
+	registerSessionTitleTool(state)
 	return state, nil
 }
 
@@ -953,10 +954,17 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	var instructionWarnings []string
 	if schema == nil {
 		contract := sendTimeContracts(state.displayContract)
+		titleGuidance, err := sessionTitleGuidance(ctx, state)
+		if err != nil {
+			return 1, err
+		}
 		if settings.SystemPrompt == "" {
 			instructions, warnings := loadRepositoryInstructions(state.toolRegistry)
 			instructionWarnings = state.changedInstructionWarnings(warnings)
 			contract = codingContract + "\n\n" + contract + "\n\n" + instructions
+		}
+		if titleGuidance != "" {
+			contract += "\n\n" + titleGuidance
 		}
 		requestMessages = applyDisplayContract(requestMessages, contract)
 	}

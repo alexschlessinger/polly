@@ -126,8 +126,8 @@ func formatContextLine(info *sessions.Metadata, depth int, last bool) string {
 		b.WriteString(strings.Repeat("  ", depth) + "↳ ")
 	}
 	b.WriteString(info.Name)
-	if depth > 0 && info.Description != "" {
-		b.WriteString(" · " + info.Description)
+	if label := sessions.DisplayLabel(info); label != info.Name {
+		b.WriteString(" · " + label)
 	}
 	if info.Model != "" {
 		fmt.Fprintf(&b, " [%s]", info.Model)
@@ -451,6 +451,9 @@ func showContext(ctx context.Context, store sessions.SessionStore, contextID str
 
 	// Prompts and description
 	fmt.Printf("  Description: %s\n", info.Description)
+	if info.Title != "" {
+		fmt.Printf("  Title: %s (%s)\n", info.Title, info.TitleSource)
+	}
 	if info.Parent != "" {
 		fmt.Printf("  Spawned By: %s\n", info.Parent)
 	}

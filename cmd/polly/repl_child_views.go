@@ -91,6 +91,7 @@ func prepareChildDisplay(info *sessions.SessionView, cfg *Config, width int) *re
 	m.status = newSessionStatus(&settings, info.Metadata.Name, len(info.Metadata.ActiveTools), len(info.Metadata.ActiveSkills))
 	m.status.parentName = info.Metadata.Parent
 	m.status.description = info.Metadata.Description
+	m.status.title, m.status.titleSource = info.Metadata.Title, info.Metadata.TitleSource
 	m.artifactStore = info.Artifacts
 	m.hydrateHistory(info.History, info.Metadata.Name)
 	m.renderPendingMarkdown()
@@ -159,6 +160,7 @@ func (r *managedREPL) refreshChildView(tab *replTab, activity *agentActivity, ow
 			}
 			tab.model.mu.Lock()
 			tab.model.status.contextName, tab.model.status.parentName = tab.name, tab.parentName
+			tab.model.setSessionTitle(info.Metadata)
 			tab.model.artifactStore = info.Artifacts
 			tab.model.mu.Unlock()
 			if r.model == tab.model {
@@ -406,6 +408,7 @@ func (r *managedREPL) activateChildViewLocked(tab *replTab) {
 			// Enter that is about to submit it.
 			m.artifactStore, m.status.contextName, m.status.parentName = state.artifactStore, tab.name, tab.parentName
 			m.status.description = fresh.Metadata.Description
+			m.setSessionTitle(fresh.Metadata)
 			tab.stopWatch = context.AfterFunc(state.session.Context(), r.wakeTabs)
 			if r.model == m {
 				r.state = state

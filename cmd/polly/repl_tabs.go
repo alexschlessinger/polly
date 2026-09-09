@@ -25,8 +25,8 @@ type replTab struct {
 	workspaceRoot     bool
 	detachedWorkspace bool
 	workspace         *sessionWorkspace
-	// name is the session's name as the tab shows it; /rename keeps it
-	// current. Read without a lock so a handler can find a tab by name.
+	// name is the resume handle; /rename keeps it current. Display titles
+	// live in the model. Read without a lock to find a tab by handle.
 	name  string
 	state *conversationState
 	model *replModel
