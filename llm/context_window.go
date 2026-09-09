@@ -18,6 +18,15 @@ var ErrContextWindowUnknown = errors.New("model context window is not discoverab
 // tokens) for a provider-prefixed model. Only providers with a model metadata
 // endpoint resolve (anthropic, gemini); the rest return
 // ErrContextWindowUnknown without any network traffic.
+// ModelName strips the provider prefix from a provider-qualified model id,
+// returning ids without one unchanged.
+func ModelName(model string) string {
+	if _, name, ok := strings.Cut(model, "/"); ok {
+		return name
+	}
+	return model
+}
+
 func DiscoverModelContextWindow(ctx context.Context, model, apiKey string) (int, error) {
 	provider, name, ok := strings.Cut(model, "/")
 	if !ok {

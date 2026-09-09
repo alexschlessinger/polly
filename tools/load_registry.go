@@ -1,15 +1,15 @@
-package main
+package tools
 
 import (
 	"errors"
 	"fmt"
-
-	"github.com/alexschlessinger/pollytool/tools"
 )
 
-// loadTools loads tools based on ToolLoaderInfo list
-func loadTools(loaderInfos []tools.ToolLoaderInfo, opts ...tools.RegistryOption) (*tools.ToolRegistry, error) {
-	registry := tools.NewToolRegistry(nil, opts...)
+// LoadRegistry builds a registry holding the tools a session persisted:
+// shell tools by path, MCP servers filtered to the named tools, and native
+// tools by name.
+func LoadRegistry(loaderInfos []ToolLoaderInfo, opts ...RegistryOption) (*ToolRegistry, error) {
+	registry := NewToolRegistry(nil, opts...)
 
 	if len(loaderInfos) == 0 {
 		return registry, nil
@@ -54,7 +54,7 @@ func loadTools(loaderInfos []tools.ToolLoaderInfo, opts ...tools.RegistryOption)
 			// A saved session may have been created on a machine with zg, or
 			// name a tool Polly no longer ships (search_files, folded into
 			// bash grep/rg). Keep its selection persisted; omit the tool now.
-			if errors.Is(err, tools.ErrZvecGrepSearchUnavailable) || !registry.HasNativeTool(name) {
+			if errors.Is(err, ErrZvecGrepSearchUnavailable) || !registry.HasNativeTool(name) {
 				continue
 			}
 			return nil, fmt.Errorf("failed to load native tool %s: %w", name, err)

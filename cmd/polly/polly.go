@@ -53,12 +53,9 @@ func main() {
 }
 
 type commandRunner struct {
-	ctx          context.Context
-	cmd          *cli.Command
-	config       *Config
-	llmClient    *llm.MultiPass
-	sessionStore sessions.SessionStore
-	contextID    string
+	conversationOpener
+	ctx       context.Context
+	contextID string
 	// autoContext marks a generated REPL context name (no -c given): its
 	// creation is silent and it is discarded on exit if no turn ever ran.
 	autoContext bool
@@ -285,13 +282,10 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 	}
 
 	return &commandRunner{
-		ctx:          ctx,
-		cmd:          cmd,
-		config:       config,
-		llmClient:    llm.NewMultiPass(loadAPIKeys()),
-		sessionStore: sessionStore,
-		contextID:    contextID,
-		autoContext:  autoContext,
+		conversationOpener: conversationOpener{config: config, llmClient: llm.NewMultiPass(loadAPIKeys()), sessionStore: sessionStore, cmd: cmd},
+		ctx:                ctx,
+		contextID:          contextID,
+		autoContext:        autoContext,
 	}, nil
 }
 
@@ -356,25 +350,39 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	return runner.Run()
 }
 
-// newConversationState sets up everything a conversation needs: the session,
-// its tool registry and skill runtime, and the agent. A nil llmClient
-// constructs one from config. Session metadata is staged on one object and
-// written once, so a failure part-way through persists nothing. On error
-// every acquired resource is released and nil is returned.
-func newConversationState(ctx context.Context, config *Config, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (*conversationState, error) {
-	contextID, settings, err := initializeConversation(ctx, config, sessionStore, contextID, cmd)
+// conversationOpener builds conversation runtimes for one process from the
+// launch config, provider client, session store, and parsed command that
+// every open reads. A nil llmClient constructs one from the environment.
+type conversationOpener struct {
+	config       *Config
+	llmClient    *llm.MultiPass
+	sessionStore sessions.SessionStore
+	cmd          *cli.Command
+}
+
+// openNew sets up everything a conversation needs: the session, its tool
+// registry and skill runtime, and the agent, with preparation notices going
+// to stderr. Session metadata is staged on one object and written once, so
+// a failure part-way through persists nothing. On error every acquired
+// resource is released and nil is returned.
+func (o *conversationOpener) openNew(ctx context.Context, contextID string, autoContext bool, sandboxWarnings *broadWritablePathWarner) (*conversationState, error) {
+	contextID, settings, err := o.prepare(ctx, contextID, notifyStderr)
 	if err != nil {
 		return nil, err
 	}
-	return openConversationState(ctx, config, settings, llmClient, sessionStore, contextID, autoContext, cmd, sandboxWarnings)
+	return o.open(ctx, contextID, settings, autoContext, sandboxWarnings)
 }
 
-// openConversationState is the second half of newConversationState: it
-// acquires contextID and builds its runtime from the settings that
-// initializeConversation resolved for it. It only reads config, so the
-// managed REPL may run it off the UI goroutine while the visible session
-// keeps serving input.
-func openConversationState(ctx context.Context, config *Config, settings Settings, llmClient *llm.MultiPass, sessionStore sessions.SessionStore, contextID string, autoContext bool, cmd *cli.Command, sandboxWarnings *broadWritablePathWarner) (state *conversationState, retErr error) {
+func notifyStderr(line string) {
+	fmt.Fprintln(os.Stderr, line)
+}
+
+// open is the second half of openNew: it acquires contextID and builds its
+// runtime from the settings prepare resolved for it. It only reads config,
+// so the managed REPL may run it off the UI goroutine while the visible
+// session keeps serving input.
+func (o *conversationOpener) open(ctx context.Context, contextID string, settings Settings, autoContext bool, sandboxWarnings *broadWritablePathWarner) (state *conversationState, retErr error) {
+	config, llmClient, sessionStore, cmd := o.config, o.llmClient, o.sessionStore, o.cmd
 	var err error
 	if llmClient == nil {
 		llmClient = llm.NewMultiPass(loadAPIKeys())
@@ -439,7 +447,7 @@ func openConversationState(ctx context.Context, config *Config, settings Setting
 		}
 		metadata.ActiveTools = toolRegistry.GetActiveToolLoaders()
 	} else {
-		toolRegistry, err = loadTools(metadata.ActiveTools, registryOpts...)
+		toolRegistry, err = tools.LoadRegistry(metadata.ActiveTools, registryOpts...)
 		if err != nil {
 			return nil, loadErr(err)
 		}
@@ -529,7 +537,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// still exits 0/ok. The spawn costs tens of milliseconds, so it runs off
 	// the open; the first turn waits on it before any tool can run, and the
 	// open itself consults it only when a tool that spawns while loading
-	// fails (see openConversationState).
+	// fails (see conversationOpener.open).
 	return []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}, startSandboxProbe(sb), nil
 }
 
@@ -711,7 +719,7 @@ func (r *commandRunner) runConversation() (retErr error) {
 	if entry != nil && entry.root.InUse {
 		state = readOnlyConversationState(config, r.sessionStore, entry.root)
 	} else {
-		state, err = newConversationState(openCtx, config, r.llmClient, r.sessionStore, contextID, r.autoContext, r.cmd, newBroadWritablePathWarner())
+		state, err = r.openNew(openCtx, contextID, r.autoContext, newBroadWritablePathWarner())
 	}
 	if err != nil {
 		return err
@@ -732,11 +740,9 @@ func (r *commandRunner) runConversation() (retErr error) {
 		// every session it holds at exit, which also discards a generated
 		// session that never ran a turn.
 		opener := &sessionOpener{
-			prepare: func(ctx context.Context, name string, notify func(string)) (string, Settings, error) {
-				return prepareConversation(ctx, config, r.sessionStore, name, r.cmd, notify)
-			},
+			prepare: r.prepare,
 			open: func(ctx context.Context, name string, settings Settings, auto bool) (*conversationState, error) {
-				opened, err := openConversationState(ctx, config, settings, r.llmClient, r.sessionStore, name, auto, r.cmd, newBroadWritablePathWarner())
+				opened, err := r.open(ctx, name, settings, auto, newBroadWritablePathWarner())
 				if err != nil {
 					return nil, err
 				}
@@ -900,32 +906,26 @@ func validateREPLConfig(config *Config) error {
 	return fmt.Errorf("%s %s -p or stdin; bare polly starts a text-only REPL", strings.Join(rejected, " and "), verb)
 }
 
-// executeTurn runs one turn and returns the process exit code the turn's
-// outcome maps to (0 end_turn, 2 max_tokens, 3 max_iterations, 1 hard error)
-// alongside any error. Only the one-shot path acts on the code; the REPLs
-// ignore it and consume just the error.
+// executeTurn runs one turn on a prompt (plus --file inputs) and returns the
+// process exit code the turn's outcome maps to (0 end_turn, 2 max_tokens,
+// 3 max_iterations, 1 hard error) alongside any error. Only the one-shot
+// path acts on the code; the REPLs ignore it and consume just the error.
 func executeTurn(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI) (int, error) {
-	return executeTurnWithExistingUser(ctx, config, state, prompt, schema, inputReader, turnUI, false)
-}
-
-// executeTurnWithExistingUser runs a turn and, when reuseUser is true, avoids
-// persisting the same user message twice. This is used when resubmitting an
-// unchanged restored draft whose user message was already durably stored. Reuse is deliberately
-// conservative: only an equivalent user message at the very end of history is
-// reused, so a missing, changed, or non-terminal message is persisted normally.
-func executeTurnWithExistingUser(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (int, error) {
 	userMsg, err := buildMessageWithFiles(prompt, config.Files)
 	if err != nil {
 		return 1, fmt.Errorf("error processing files: %w", err)
 	}
-	return executeTurnWithUserMessage(ctx, config, state, userMsg, schema, inputReader, turnUI, reuseUser)
+	return executeTurnWithUserMessage(ctx, config, state, userMsg, schema, inputReader, turnUI, false)
 }
 
 // executeTurnWithUserMessage is the shared turn body behind a caller-built
 // user message. The one-shot and fallback paths build theirs from --file;
 // the managed REPL builds a multimodal message from composer attachments.
-// The phases live on turnExecution; this sequences them and owns the turn
-// UI's lifecycle.
+// reuseUser avoids persisting the same user message twice when an unchanged
+// restored draft is resubmitted: only an equivalent user message at the very
+// end of history is reused, so a missing, changed, or non-terminal message is
+// persisted normally. The phases live on turnExecution; this sequences them
+// and owns the turn UI's lifecycle.
 func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (exitCode int, finalErr error) {
 	t := &turnExecution{ctx: ctx, config: config, state: state, settings: &state.settings, schema: schema, userMsg: userMsg, reuseUser: reuseUser}
 	requestMessages, instructionWarnings, err := t.prepareRequest()
@@ -1343,21 +1343,14 @@ func createCompletionRequest(config *Config, settings *Settings, history []messa
 	}
 }
 
-// initializeConversation resolves contextID's settings before a conversation
-// starts, reporting a history reset on stderr.
-func initializeConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command) (string, Settings, error) {
-	return prepareConversation(ctx, config, sessionStore, contextID, cmd, func(line string) {
-		fmt.Fprintln(os.Stderr, line)
-	})
-}
-
-// prepareConversation resolves the settings contextID will run with: the
-// launch settings, with every stored value that no flag overrode restored
-// from the session's metadata. When an explicit --system differs from the
-// stored prompt the session's history is reset, reported through notify so
-// the managed REPL can show it without writing to a terminal it owns. The
+// prepare resolves the settings contextID will run with: the launch
+// settings, with every stored value that no flag overrode restored from the
+// session's metadata. When an explicit --system differs from the stored
+// prompt the session's history is reset, reported through notify so the
+// managed REPL can show it without writing to a terminal it owns. The
 // returned name is the session's stored name when it exists.
-func prepareConversation(ctx context.Context, config *Config, sessionStore sessions.SessionStore, contextID string, cmd *cli.Command, notify func(string)) (string, Settings, error) {
+func (o *conversationOpener) prepare(ctx context.Context, contextID string, notify func(string)) (string, Settings, error) {
+	config, sessionStore, cmd := o.config, o.sessionStore, o.cmd
 	settings := config.Launch.clone()
 	var needReset bool
 	var originalContextInfo *sessions.Metadata
@@ -1430,9 +1423,9 @@ func applyFlagSettings(md *sessions.Metadata, settings *Settings, cmd *cli.Comma
 }
 
 // updateContextInfo writes the resolved settings onto md, the metadata staged
-// by openConversationState, and persists it: every flagged row, since the
+// by conversationOpener.open, and persists it: every flagged row, since the
 // resolved settings hold the stored value unless a flag overrode it (see
-// prepareConversation), so the copy is a no-op for an untouched row and an
+// conversationOpener.prepare), so the copy is a no-op for an untouched row and an
 // override for a set flag. Name and LastUsed are storage-owned: SetMetadata
 // overwrites both, so they are not written here.
 func updateContextInfo(ctx context.Context, session sessions.Session, md *sessions.Metadata, settings *Settings, cmd *cli.Command) error {
@@ -1605,26 +1598,4 @@ func writeStructured(stdout, stderr io.Writer, content string, schema *llm.Schem
 	}
 	fmt.Fprintln(stdout, string(jsonBytes))
 	return nil
-}
-
-// stripProviderPrefix returns the bare model name, dropping "provider/" if present.
-func stripProviderPrefix(m string) string {
-	if i := strings.IndexByte(m, '/'); i >= 0 {
-		return m[i+1:]
-	}
-	return m
-}
-
-func toolCount(r *tools.ToolRegistry) int {
-	if r == nil {
-		return 0
-	}
-	return len(r.All())
-}
-
-func skillCount(c *skills.Catalog) int {
-	if c == nil {
-		return 0
-	}
-	return len(c.List())
 }

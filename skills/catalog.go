@@ -317,6 +317,14 @@ func (c *Catalog) IsEmpty() bool {
 }
 
 // List returns the discovered skills in a stable order.
+// Count reports how many skills the catalog holds; a nil catalog holds none.
+func (c *Catalog) Count() int {
+	if c == nil {
+		return 0
+	}
+	return len(c.List())
+}
+
 func (c *Catalog) List() []*Skill {
 	if c == nil {
 		return nil

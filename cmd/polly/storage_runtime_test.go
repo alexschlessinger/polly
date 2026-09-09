@@ -147,9 +147,9 @@ func TestMissingZGDoesNotLoadSearchOrBreakSessionRestore(t *testing.T) {
 
 func initializeToolDefaultsTestSession(t *testing.T, config *Config, store sessions.SessionStore, name string) (sessions.Session, *tools.ToolRegistry) {
 	t.Helper()
-	state, err := newConversationState(context.Background(), config, nil, store, name, false, getCommand(), nil)
+	state, err := (&conversationOpener{config: config, sessionStore: store, cmd: getCommand()}).openNew(context.Background(), name, false, nil)
 	if err != nil {
-		t.Fatalf("newConversationState(%q): %v", name, err)
+		t.Fatalf("openNew(%q): %v", name, err)
 	}
 	return state.session, state.toolRegistry
 }
@@ -223,7 +223,7 @@ func TestInitializeConversationRestoresAuthoritativeZeroSettings(t *testing.T) {
 			SkillDirs:        []string{"/default/skills"},
 		},
 	}
-	contextID, settings, err := initializeConversation(context.Background(), config, store, "zero-settings", getCommand())
+	contextID, settings, err := (&conversationOpener{config: config, sessionStore: store, cmd: getCommand()}).prepare(context.Background(), "zero-settings", notifyStderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestFreshNamedContextSeedsResolvedDefaults(t *testing.T) {
 			if _, err := checkAndPromptForMissingContext(context.Background(), store, "fresh"); err != nil {
 				t.Fatal(err)
 			}
-			_, settings, err := initializeConversation(context.Background(), config, store, "fresh", cmd)
+			_, settings, err := (&conversationOpener{config: config, sessionStore: store, cmd: cmd}).prepare(context.Background(), "fresh", notifyStderr)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -345,7 +345,7 @@ func TestUpdateContextInfoPreservesStoredSettingsWithoutFlags(t *testing.T) {
 		SystemPrompt:     "default system",
 	}}
 	cmd := getCommand()
-	_, settings, err := initializeConversation(context.Background(), config, store, "untouched", cmd)
+	_, settings, err := (&conversationOpener{config: config, sessionStore: store, cmd: cmd}).prepare(context.Background(), "untouched", notifyStderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestInitializeConversationResumesMigratedLegacyContext(t *testing.T) {
 				}
 			}
 			config := &Config{}
-			_, settings, err := initializeConversation(context.Background(), config, store, "legacy", cmd)
+			_, settings, err := (&conversationOpener{config: config, sessionStore: store, cmd: cmd}).prepare(context.Background(), "legacy", notifyStderr)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -506,7 +506,7 @@ func TestInitializeConversationStoresChangedSystemPromptBeforeClear(t *testing.T
 				t.Fatal(err)
 			}
 			config := &Config{Launch: Settings{SystemPrompt: prompt}}
-			if _, _, err := initializeConversation(context.Background(), config, store, "prompt-reset", cmd); err != nil {
+			if _, _, err := (&conversationOpener{config: config, sessionStore: store, cmd: cmd}).prepare(context.Background(), "prompt-reset", notifyStderr); err != nil {
 				t.Fatal(err)
 			}
 

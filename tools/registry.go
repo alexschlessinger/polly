@@ -725,6 +725,14 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 }
 
 // All returns all tools in the registry
+// Count reports how many tools the registry holds; a nil registry holds none.
+func (r *ToolRegistry) Count() int {
+	if r == nil {
+		return 0
+	}
+	return len(r.All())
+}
+
 func (r *ToolRegistry) All() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

@@ -966,7 +966,7 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 		lines = append(lines, "title: "+label)
 	}
 	if settings.Model != "" {
-		lines = append(lines, "model: "+stripProviderPrefix(settings.Model))
+		lines = append(lines, "model: "+llm.ModelName(settings.Model))
 	}
 	totalTokens, err := s.GetTotalTokens(opCtx)
 	if err != nil {

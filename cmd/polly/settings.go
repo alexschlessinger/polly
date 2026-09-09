@@ -16,7 +16,7 @@ import (
 //
 // The gates are deliberately distinct and must stay distinct:
 //   - flagged rows (fromCmd != nil; the flag shares the row's key) gate the
-//     IsSet twin walks in prepareConversation (restore from metadata when
+//     IsSet twin walks in conversationOpener.prepare (restore from metadata when
 //     NOT set) and applyFlagSettings (override metadata when set), and are
 //     updateContextInfo's startup write-back set: the resolved settings hold
 //     the stored value unless a flag overrode it, so the copy is a no-op for
@@ -171,7 +171,7 @@ var settingSpecs = []settingSpec{
 		},
 		fromCmd: func(s *Settings, cmd *cli.Command) { s.SystemPrompt = cmd.String("system") },
 		// The -s conversation-reset detection is control flow, not a copy, and
-		// stays in prepareConversation ahead of the table walk.
+		// stays in conversationOpener.prepare ahead of the table walk.
 		fromMeta: func(s *Settings, md *sessions.Metadata) { s.SystemPrompt = md.SystemPrompt },
 		toMeta:   func(s *Settings, md *sessions.Metadata) { md.SystemPrompt = s.SystemPrompt },
 	},
