@@ -183,11 +183,16 @@ func TestSwarmMemberApprovalsReachParentUI(t *testing.T) {
 				r.state.setMemberUI(parentUI)
 			}
 			res, err := r.state.swarm.Spawn(ctx, subagent.Request{Task: "look", ReadOnly: true})
-			if err != nil {
-				t.Fatal(err)
+			if !errors.Is(err, swarm.ErrEmptyResult) {
+				t.Fatalf("denied tool-only result must be incomplete: %v", err)
 			}
-			if parentUI.approvals != 1 || res.Session == "" {
-				t.Fatalf("approvals %d, result %+v", parentUI.approvals, res)
+			if parentUI.approvals != 1 || model.calls != 1 || res.Session == "" {
+				t.Fatalf("approvals %d, model calls %d, result %+v", parentUI.approvals, model.calls, res)
+			}
+			state := waitSwarmIdle(t, r.state.swarm)
+			member := state.Members[res.Session]
+			if state.Executions[member.Execution].Status != "failed" || state.Tasks[member.Task].Status != "blocked" {
+				t.Fatalf("denial reported a successful task: %+v", state)
 			}
 		})
 	}

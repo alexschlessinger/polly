@@ -892,6 +892,9 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		})
 	})
 	r.bindCheckpoint(coord, i.id, e.Iterations, e.Generation, cb)
+	if req.ResponseSchema == nil {
+		r.bindMemberFinal(coord, i.id, e.Generation, remaining, agentConfig.ResponseTool, cb)
+	}
 	cb.AfterToolBatch = func(context.Context) error {
 		if parked.Load() {
 			return ErrYielded
@@ -928,6 +931,13 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		result.Usage = mergeUsage(e.Usage, usageOf(response.AllMessages))
 		if response.Message != nil {
 			result.Value = response.Message.Content
+			if req.ResponseSchema == nil {
+				responseTool := ""
+				if runErr == nil {
+					responseTool = agentConfig.ResponseTool
+				}
+				result.Value = memberFinalValue(response.Message, m.ID, responseTool)
+			}
 		}
 		if runErr == nil && req.ResponseSchema != nil {
 			raw, ok := result.Value.(string)

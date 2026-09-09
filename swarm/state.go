@@ -106,6 +106,9 @@ type Execution struct {
 	Result     *AgentResult           `json:"result,omitempty"`
 	Error      string                 `json:"error,omitempty"`
 	StopReason messages.StopReason    `json:"stopReason,omitempty"`
+
+	// The final-answer retry belongs to the logical execution across restores.
+	EmptyFinalRetried bool `json:"emptyFinalRetried,omitempty"`
 }
 type ExecutionContext struct {
 	Retiring bool               `json:"retiring,omitempty"`
