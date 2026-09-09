@@ -13,7 +13,7 @@ func TestFrameLayoutSeatsEveryRegion(t *testing.T) {
 	r.model.turnDock.visible = true
 
 	l := r.frameLayoutFor(80, 24)
-	want := frameLayout{width: 80, height: 24, transcriptHeight: 20, dockRows: 1, dividerRows: 1, inputRows: 1, statusRows: 1, chrome: chromeGeometry{main: image.Rect(0, 0, 80, 20)}}
+	want := frameLayout{width: 80, height: 24, transcriptHeight: 20, dockRows: 1, dividerRows: 1, inputRows: 1, statusRows: 1, chrome: chromeGeometry{width: 80, main: image.Rect(0, 0, 80, 20)}}
 	if l != want {
 		t.Fatalf("layout = %+v, want %+v", l, want)
 	}
@@ -32,7 +32,7 @@ func TestFrameLayoutShortTerminalCapsComposer(t *testing.T) {
 	r.model.turnDock.visible = true
 
 	l := r.frameLayoutFor(80, 6)
-	want := frameLayout{width: 80, height: 6, transcriptHeight: 1, inputRows: 4, statusRows: 1, chrome: chromeGeometry{main: image.Rect(0, 0, 80, 1)}}
+	want := frameLayout{width: 80, height: 6, transcriptHeight: 1, inputRows: 4, statusRows: 1, chrome: chromeGeometry{width: 80, main: image.Rect(0, 0, 80, 1)}}
 	if l != want {
 		t.Fatalf("layout = %+v, want %+v", l, want)
 	}

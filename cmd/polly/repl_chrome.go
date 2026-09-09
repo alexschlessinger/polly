@@ -20,6 +20,8 @@ const (
 
 // chromeGeometry holds absolute screen rectangles for one frame.
 type chromeGeometry struct {
+	// width is the terminal width the geometry was derived for.
+	width int
 	// main is the conversation pane; empty while the inspector fills the width.
 	main image.Rectangle
 	// frame is the inspector frame including its borders; empty when the
@@ -77,7 +79,7 @@ func (r *managedREPL) splitColumn(width int) int {
 // rule row instead of spending a region row. It reads loop-owned state only,
 // so it is safe without the model lock.
 func (r *managedREPL) chromeGeometryFor(width, top, rows int, joined bool) chromeGeometry {
-	g := chromeGeometry{}
+	g := chromeGeometry{width: width}
 	region := image.Rect(0, top, width, top+rows)
 	open, maximized := false, false
 	if len(r.tabs) > 0 {
@@ -112,6 +114,17 @@ func (r *managedREPL) chromeGeometryFor(width, top, rows int, joined bool) chrom
 	}
 	g.edge = image.Rect(width-1, g.inner.Min.Y, width, g.inner.Max.Y)
 	return g
+}
+
+// paintedWidth is the terminal width of the last painted frame, which is
+// what the divider's controls resize against; before the first paint it
+// falls back to the terminal.
+func (r *managedREPL) paintedWidth() int {
+	if r.chrome.width > 0 {
+		return r.chrome.width
+	}
+	width, _ := ui.TerminalDimensions()
+	return width
 }
 
 // viewGeometryFor is the projection geometry for the inspector's content.

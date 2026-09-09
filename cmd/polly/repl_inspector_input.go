@@ -103,7 +103,7 @@ func (r *managedREPL) inspectorAction(action string) {
 
 func (r *managedREPL) resizeInspector(direction int) {
 	i := &r.workspace().inspector
-	width, _ := ui.TerminalDimensions()
+	width := r.paintedWidth()
 	if !i.open || i.maximized || width < splitThreshold {
 		return
 	}
@@ -225,8 +225,7 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 				return true
 			}
 			if e.ID == "<MouseLeft>" {
-				width, _ := ui.TerminalDimensions()
-				r.inspectorRatio = float64(mouse.X) / float64(max(1, width-1))
+				r.inspectorRatio = float64(mouse.X) / float64(max(1, r.paintedWidth()-1))
 				return true
 			}
 		}
