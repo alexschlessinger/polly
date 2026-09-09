@@ -49,9 +49,9 @@ func TestWorkflowExampleFixRepairReviewAndParentApply(t *testing.T) {
 			if reviews.Add(1) > 1 {
 				verdict = "fixed"
 			}
-			return answer(tools.Result(map[string]any{"R1": map[string]any{"verdict": verdict, "reasoning": "checked exact candidate", "requiredChange": "repair once"}}))
+			return completion(tools.Result(map[string]any{"R1": map[string]any{"verdict": verdict, "reasoning": "checked exact candidate", "requiredChange": "repair once"}}))
 		}
-		return answer(`{"R1":{"status":"fixed","what":"updated a.txt"}}`)
+		return completion(`{"R1":{"status":"fixed","what":"updated a.txt"}}`)
 	})
 	r := runtimeTest(t, model, 2, 8)
 	root := r.config.Root

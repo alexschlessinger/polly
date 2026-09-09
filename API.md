@@ -539,7 +539,7 @@ Hosts with session-scoped tools can declare `MemberToolNames` and supply
 `PrepareMember(ctx, session, registry)`. It runs on each execution slice with the
 member's current lease; a nil registry means tools are disabled. Bind tools to
 that session rather than capturing a parent session. Returned guidance is
-request-only, omitted for structured output, and never enters saved history.
+request-only, omitted for tool-free structured output, and never enters saved history.
 The CLI uses this hook to seed and edit child titles without changing handles.
 
 Call `runtime.RegisterParentTools(registry)` and `runtime.BindParent(callbacks,
@@ -576,18 +576,36 @@ retains partial results, and saves execution status `paused` with stop reason
 `max_iterations`. `llm.IsIterationLimit(err)` excludes joined persistence or
 provider failures from this recoverable classification.
 
+`AgentRequest.Schema` defines a typed final result. Tool-enabled members receive
+`swarm_complete({value})` instead of a provider-level response format or
+`swarm_submit`. A successful, exclusive completion validates the original JSON
+and returns the same value to the caller and the task's parent-review queue.
+Empty schemas, scalar values and JSON null are supported. Publications remain
+progress records; acceptance and integration still belong to the parent.
+Missing or invalid results receive two corrective continuations within the same
+execution allowance, then fail with the last validation error and saved work.
+Tool-free members use direct JSON output and the same correction policy.
+
+`llm.AgentConfig.RequireResponseToolSuccess` opts into receipt-based completion
+for `ResponseTool`. The tool must execute successfully; merely naming it cannot
+finish the turn. `ContinueAfterFinal` owns corrective input in this mode, with no
+legacy reminder. The flag defaults to false for existing callers.
+The swarm runtime persists accepted values with receipts and checkpoints;
+explicit resume can finalize a durably accepted value without another model
+call. Retry counts survive recovery, while new executions get a fresh contract.
+
 Unstructured member finals without meaningful text or media receive one
 corrective continuation within the same execution and iteration allowance.
 The retry reservation persists across yields and recovery. A second blank final
 returns `*swarm.EmptyResultError` wrapping `swarm.ErrEmptyResult`, with the member
-and execution IDs, and saves a failed execution. Structured and response-tool
-contracts retain their existing validation. Empty finals after denied tools or a
+and execution IDs, and saves a failed execution. Structured results use the
+typed completion contract above. Empty finals after denied tools or a
 failed response tool fail immediately without another approval attempt. Text in
 content parts is included in the returned value; media-only and successful
 response-tool finals provide a reference to their saved member session.
 
 `Resume(ctx, memberID, executionGrant)` preserves the remaining call allowance;
-an exhausted one requires a trusted host to use
+an exhausted one without a durably accepted completion requires a trusted host to use
 `ResumeWithIterations(ctx, memberID, additionalCalls)`. That grants calls to the
 same logical execution, conversation, task and worktree without spending a start.
 Positive `executionGrant` values extend the separate logical-start budget. Model

@@ -35,10 +35,13 @@ type taskToolView struct {
 	DisplayStatus string `json:"displayStatus"`
 }
 
-func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execution string, session sessions.CoordinationSession) {
+func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execution string, session sessions.CoordinationSession, structured bool) {
 	registry.Register(&publishedArtifactTool{session: session})
 	registry.MarkAlwaysAllowed("swarm_read_artifact")
 	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
+		if structured && name == "swarm_submit" {
+			return
+		}
 		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_integration", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := fn(ctx, a)
 			return coordinationToolResult(v, err)
@@ -161,7 +164,7 @@ func coordinationFingerprint(s *State) string {
 // arguments. A child cannot gain it by supplying a different caller identity.
 func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 	r.registerIntegrationTool(registry)
-	r.registerMemberTools(registry, r.ID, "", r.parent)
+	r.registerMemberTools(registry, r.ID, "", r.parent, false)
 	spawn := subagent.NewTool(r.Spawn, subagent.WithRuntimeScheduler())
 	registry.Register(spawn)
 	registry.MarkAlwaysAllowed(subagent.ToolName)

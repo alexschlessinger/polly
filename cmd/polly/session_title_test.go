@@ -285,11 +285,12 @@ func TestSessionTitleMemberRequestBoundaries(t *testing.T) {
 				for _, msg := range req.Messages {
 					hasGuidance = hasGuidance || strings.Contains(msg.Content, sessionTitleContract)
 				}
-				if hasGuidance != (wantTools && !tt.structured) {
+				if hasGuidance != wantTools {
 					t.Errorf("guidance=%v", hasGuidance)
 				}
 				if tt.structured {
-					return spawnTestReply(`{"ok":true}`)
+					return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse,
+						ToolCalls: []messages.ChatMessageToolCall{{ID: "complete", Name: "swarm_complete", Arguments: `{"value":{"ok":true}}`}}}
 				}
 				return spawnTestReply("done")
 			})

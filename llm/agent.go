@@ -57,11 +57,14 @@ type Agent struct {
 
 // AgentConfig configures agent behavior
 type AgentConfig struct {
-	MaxIterations    int             // Maximum LLM calls before giving up (default: 1024)
-	ToolTimeout      time.Duration   // Per-tool execution timeout (0 = no timeout)
-	MaxParallelTools int             // Maximum parallel tool executions (0 = unlimited)
-	ResponseTool     string          // If set, require final response via this tool
-	ArtifactStore    artifacts.Store // Optional private store for context artifacts
+	MaxIterations    int           // Maximum LLM calls before giving up (default: 1024)
+	ToolTimeout      time.Duration // Per-tool execution timeout (0 = no timeout)
+	MaxParallelTools int           // Maximum parallel tool executions (0 = unlimited)
+	ResponseTool     string        // If set, require final response via this tool
+	// RequireResponseToolSuccess requires a successful receipt, not merely a
+	// named call. ContinueAfterFinal owns recovery; the legacy nudge is disabled.
+	RequireResponseToolSuccess bool
+	ArtifactStore              artifacts.Store // Optional private store for context artifacts
 	// DisableTools is an absolute upper bound, including private built-ins.
 	DisableTools bool
 }
@@ -360,6 +363,9 @@ func (a *Agent) SetToolTimeout(d time.Duration) {
 // with interrupted-tool stubs — so callers can persist the partial turn and
 // replay it in later requests.
 func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks) (result *AgentResponse, runErr error) {
+	if a.config.RequireResponseToolSuccess && a.config.ResponseTool == "" {
+		return nil, errors.New("a successful response tool requires a tool name")
+	}
 	// Own the history's nested containers once. Projection can then share the
 	// immutable prefix between iterations without exposing caller-owned slices.
 	msgs := cloneMessages(req.Messages)
@@ -379,6 +385,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	var allGenerated []messages.ChatMessage
 	var nudgedResponseTool bool
 	var responseToolCalled bool
+	var responseToolSucceeded bool
 	var lastProjection ProjectionStats
 	var promptCache PromptCacheStats
 	var persisted int
@@ -407,6 +414,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	}
 
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
+		if a.config.RequireResponseToolSuccess {
+			responseToolCalled, responseToolSucceeded = false, false
+		}
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
@@ -525,15 +535,21 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		a.appendTranscript(*response)
 
 		continueFinal := func() (bool, error) {
-			if cb == nil || cb.ContinueAfterFinal == nil {
+			requireReceipt := func() (bool, error) {
+				if a.config.RequireResponseToolSuccess && !responseToolSucceeded {
+					return false, fmt.Errorf("missing successful %s result", a.config.ResponseTool)
+				}
 				return false, nil
+			}
+			if cb == nil || cb.ContinueAfterFinal == nil {
+				return requireReceipt()
 			}
 			input, err := cb.ContinueAfterFinal(ctx, response)
 			if err != nil {
 				return false, err
 			}
 			if len(input) == 0 {
-				return false, nil
+				return requireReceipt()
 			}
 			for _, msg := range input {
 				if msg.Role != messages.MessageRoleUser || len(msg.ToolCalls) != 0 {
@@ -558,9 +574,14 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			return true, nil
 		}
 		// Check stop reason to determine next action
+		// Some compatible providers label a tool-bearing response as end_turn.
+		// A validated response tool must actually execute before it can finish.
+		if a.config.RequireResponseToolSuccess && response.StopReason == messages.StopReasonEndTurn && len(response.ToolCalls) > 0 {
+			response.StopReason = messages.StopReasonToolUse
+		}
 		switch response.StopReason {
 		case messages.StopReasonEndTurn:
-			if a.config.ResponseTool != "" && !responseToolCalled && !nudgedResponseTool {
+			if a.config.ResponseTool != "" && !a.config.RequireResponseToolSuccess && !responseToolCalled && !nudgedResponseTool {
 				nudgedResponseTool = true
 				nudge := messages.ChatMessage{
 					Role:     messages.MessageRoleUser,
@@ -625,7 +646,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		default:
 			// Unknown stop reason with no tool calls = treat as completion
 			if len(response.ToolCalls) == 0 {
-				if a.config.ResponseTool != "" && !responseToolCalled && !nudgedResponseTool {
+				if a.config.ResponseTool != "" && !a.config.RequireResponseToolSuccess && !responseToolCalled && !nudgedResponseTool {
 					nudgedResponseTool = true
 					nudge := messages.ChatMessage{
 						Role:     messages.MessageRoleUser,
@@ -718,6 +739,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// can't run that"), which pollutes history and teaches it to refuse
 		// preemptively on later turns. The caller already saw the denial.
 		if allDenied(toolMsgs) {
+			if a.config.RequireResponseToolSuccess {
+				return responseFor(response, iteration+1), errors.New("tool batch denied before required response")
+			}
 			// Outstanding coordination is real input, not a denial replay: the
 			// continuation prompt gives the model something concrete to do.
 			if again, err := continueFinal(); err != nil {
@@ -736,6 +760,13 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// so making another LLM call to "process" the tool result would
 		// generate plain text the caller discards anyway.
 		if responseToolCalled {
+			if a.config.RequireResponseToolSuccess {
+				for _, result := range toolMsgs {
+					if success, known := result.ToolSucceeded(); result.ToolName == a.config.ResponseTool && known && success {
+						responseToolSucceeded = true
+					}
+				}
+			}
 			if again, err := continueFinal(); err != nil {
 				return responseFor(response, iteration+1), err
 			} else if again {

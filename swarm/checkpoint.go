@@ -14,7 +14,7 @@ import (
 	"github.com/alexschlessinger/pollytool/subagent"
 )
 
-func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution string, offset, generation int, cb *llm.AgentCallbacks) {
+func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution string, offset, generation int, cb *llm.AgentCallbacks, structured *structuredResultState) {
 	var staged []string
 	var persisted int
 	var sequence *int64
@@ -77,6 +77,11 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			}
 			raw.Append = project(checkpoint.Generated[persisted:])
 			appended = len(raw.Append)
+			if execution != "" && structured != nil {
+				if err := structured.applyCheckpoint(s, s.Executions[execution], raw.Append); err != nil {
+					return err
+				}
+			}
 			// Receipts are committed only if the corresponding staged input is
 			// actually in this accepted prefix. Projection failure admits none.
 			admitted := map[string]bool{}
@@ -173,7 +178,7 @@ func (r *Runtime) BindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 		}
 		return subagent.WithCallID(ctx, call.ID)
 	}
-	r.bindCheckpoint(r.parent, "", 0, 0, cb)
+	r.bindCheckpoint(r.parent, "", 0, 0, cb, nil)
 	checkpoint := cb.Checkpoint
 	cb.Checkpoint = func(ctx context.Context, c llm.AgentCheckpoint) error {
 		if allowed != nil && !allowed() {

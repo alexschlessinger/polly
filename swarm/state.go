@@ -108,7 +108,18 @@ type Execution struct {
 	StopReason messages.StopReason    `json:"stopReason,omitempty"`
 
 	// The final-answer retry belongs to the logical execution across restores.
-	EmptyFinalRetried bool `json:"emptyFinalRetried,omitempty"`
+	EmptyFinalRetried       bool                  `json:"emptyFinalRetried,omitempty"`
+	ResultCorrections       int                   `json:"resultCorrections,omitempty"`
+	PendingResultCorrection string                `json:"pendingResultCorrection,omitempty"`
+	Completion              *StructuredCompletion `json:"completion,omitempty"`
+}
+
+// StructuredCompletion is committed with the successful receipt. A pointer
+// distinguishes an accepted JSON null from an execution without a result.
+type StructuredCompletion struct {
+	Task   string `json:"task"`
+	CallID string `json:"callID,omitempty"`
+	Value  any    `json:"value"`
 }
 type ExecutionContext struct {
 	Retiring bool               `json:"retiring,omitempty"`

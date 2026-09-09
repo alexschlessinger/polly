@@ -39,6 +39,23 @@ session, followed by a fresh reviewer checking every original finding and all
 commands again. Workers make no commits. The parent must review the returned
 task IDs, accept current revisions, preview, and apply editing results.
 
+For documentation-only work, use
+[doc-drift-audit.js](examples/workflows/doc-drift-audit.js) with an input file
+like `{"source":"/repo","docs":[{"path":"README.md","focus":"models"}],"repair":true}`.
+A read-only enumerator extracts checkable claims (tools, commands, flags,
+defaults, env vars) from each doc, an independent verifier checks every claim
+against the code, and one optional editor pass repairs drifted claims in an
+isolated copy before a fresh verifier re-checks the original set. `repair:false`
+limits the run to a structured drift report. Editors make no commits; the parent
+accepts and applies the editing result.
+
+The audit rejects empty claim lists and blank evidence. Claims cite document
+locations; verdicts cite implementation locations, and drifted/stale verdicts
+require an actionable change. Unverifiable findings fail the area as incomplete
+without starting an editor. Reverification reads the editor's immutable snapshot.
+These checks reject missing evidence, not fabricated citations; parent review
+is still required.
+
 ## JavaScript contract
 
 Scripts define exactly one workflow. No Node.js APIs, modules, filesystem,
@@ -86,6 +103,20 @@ keys by default. `keyed(ids, valueSchema)` rejects duplicate IDs before dispatch
 and requires every named key in the result. Agent responses are strictly decoded
 and schema-validated; duplicate JSON keys, trailing JSON, or missing verdicts
 are failures. Input is validated before any host operation starts.
+
+For agents with tools, `schema` describes the final value rather than constraining
+every model response. They investigate normally and finish with the internal
+`swarm_complete({value})` tool, alone in its batch. The runtime validates that
+value and supplies it both to the workflow and the assigned task for parent
+review. `swarm_submit` is omitted for these executions; `swarm_publish` remains
+available for progress. Completion does not accept or integrate a task.
+
+Missing or invalid results receive up to two corrective prompts within the same
+execution and model-call allowance. A third failure rejects the agent operation
+with saved partial work. Successful tool work is not replayed. Tool denials,
+provider errors, cancellation, truncation, and mixed completion batches keep
+their terminal behavior. Explicit `tools: []` and inherited tool prohibitions
+stay tool-free, using validated JSON text with the same correction limit.
 
 `parallel` defaults to `errors: "collect"`. `"throw_after_all"` waits for every
 branch and fails with the ordered results if any branch failed. Await all host
@@ -358,6 +389,13 @@ commit atomically. In-flight tool intents are journaled separately; recovery
 appends interrupted receipts for uncertain calls rather than reexecuting them.
 Provider context projection and the first-input persistence gate remain in effect.
 
+Typed completion values are committed with their successful receipts. Correction
+counts and pending feedback survive waits, budget exhaustion, and recovery.
+Explicitly resuming an execution with a
+durably accepted completion finishes the handoff without another model call,
+even when its call allowance is exhausted. An uncertain completion intent is not
+an accepted result. Historical workflow reports are not automatically rerun.
+
 One-shot memory sessions promote into `~/.pollytool/polly.db` before coordination
 mutates shared state. Live handles, IDs, prompt cache identity, and artifacts
 survive promotion. Library memory mode is deliberately ephemeral unless the host
@@ -377,7 +415,8 @@ and input again as a new attempt. There is no durable JS heap or automatic repla
 For iteration exhaustion, `/swarm resume ID N` grants N additional model calls
 to the **same** execution. Its consumed calls, task and files survive restart;
 this continuation does not spend another logical start. A plain resume preserves
-the existing allowance and refuses an exhausted one. Active workflow reservations
+the existing allowance and refuses an exhausted one unless a completion is
+already durably accepted and only finalization remains. Active workflow reservations
 must settle or be canceled before taking over a member. Resuming its saved agent
 does not replay or resume JavaScript; inspect the workflow report and explicitly
 arrange any remaining workflow steps. `/swarm grant N` only extends the separate

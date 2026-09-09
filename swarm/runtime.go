@@ -51,7 +51,7 @@ type Config struct {
 	MemberToolNames []string
 	// PrepareMember binds host tools to the current member session and returns
 	// ephemeral guidance. A nil registry means tools are disabled. Guidance is
-	// omitted for structured output and is never saved in member history.
+	// omitted for tool-free structured output and is never saved in member history.
 	PrepareMember func(context.Context, sessions.Session, *tools.ToolRegistry) (string, error)
 }
 type Event struct{ Kind, Member, Text string }
@@ -67,7 +67,7 @@ type AgentRequest struct {
 	Tools         []string       `json:"tools"`
 	Model         string         `json:"model,omitempty"`
 	MaxIterations int            `json:"maxIterations,omitempty"`
-	Schema        map[string]any `json:"schema,omitempty"`
+	Schema        map[string]any `json:"schema"`
 	Input         any            `json:"input,omitempty"`
 	CallID        string         `json:"callID,omitempty"`
 }
@@ -827,7 +827,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		limit = defaults.agent.MaxIterations
 	}
 	remaining := limit - e.Iterations
-	if remaining <= 0 {
+	if remaining <= 0 && e.Completion == nil {
 		result = AgentResult{Session: m.ID, Context: c.ID, Task: m.Task, Usage: e.Usage}
 		if e.Result != nil {
 			result.Value = e.Result.Value
@@ -839,15 +839,28 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	agentConfig.ArtifactStore = session.ArtifactStore()
 	agentConfig.DisableTools = agentConfig.DisableTools || m.Tools != nil && len(m.Tools) == 0
 	if !agentConfig.DisableTools {
-		r.registerMemberTools(registry, m.ID, i.id, coord)
+		r.registerMemberTools(registry, m.ID, i.id, coord, e.Request.Schema != nil)
 	}
 	req := defaults.request
 	req.Messages = history
 	req.Model = m.Model
 	req.ResponseSchema = nil
 	req.Skills = registry.ExecutionSkills()
+	var structured *structuredResultState
 	if e.Request.Schema != nil {
-		req.ResponseSchema = &schema.Schema{Raw: e.Request.Schema, Strict: true}
+		structured, err = newStructuredResult(e, m.Task, !agentConfig.DisableTools)
+		if err != nil {
+			return AgentResult{}, err
+		}
+		agentConfig.ResponseTool = ""
+		agentConfig.RequireResponseToolSuccess = false
+		if !agentConfig.DisableTools {
+			structured.register(registry)
+			agentConfig.ResponseTool = completionToolName
+			agentConfig.RequireResponseToolSuccess = true
+		} else {
+			req.ResponseSchema = &schema.Schema{Raw: e.Request.Schema, Strict: true}
+		}
 	}
 	if r.config.PrepareMember != nil {
 		memberRegistry := registry
@@ -866,6 +879,9 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 				req.Messages = append([]messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: guidance}}, req.Messages...)
 			}
 		}
+	}
+	if structured != nil {
+		addResultGuidance(&req, structured.guidance(e.Request.Schema))
 	}
 	a := llm.NewAgent(r.config.Client, registry, agentConfig)
 	defer a.Close()
@@ -902,8 +918,10 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 			parked.Store(true)
 		})
 	})
-	r.bindCheckpoint(coord, i.id, e.Iterations, e.Generation, cb)
-	if req.ResponseSchema == nil {
+	r.bindCheckpoint(coord, i.id, e.Iterations, e.Generation, cb, structured)
+	if structured != nil {
+		structured.bind(cb)
+	} else {
 		r.bindMemberFinal(coord, i.id, e.Generation, remaining, agentConfig.ResponseTool, cb)
 	}
 	cb.AfterToolBatch = func(context.Context) error {
@@ -912,7 +930,19 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		}
 		return nil
 	}
-	response, runErr := a.Run(ctx, &req, cb)
+	var response *llm.AgentResponse
+	if e.Completion != nil {
+		task := s.Tasks[e.Completion.Task]
+		if structured == nil || e.Completion.Task != m.Task || task == nil || task.Owner != m.ID || task.Execution != e.ID || task.Status != "running" {
+			return AgentResult{}, errors.New("saved typed completion task ownership changed")
+		}
+		if err := structured.validator.Validate(e.Completion.Value); err != nil {
+			return AgentResult{}, fmt.Errorf("saved completion: %w", err)
+		}
+		structured.accepted = e.Completion
+	} else {
+		response, runErr = a.Run(ctx, &req, cb)
+	}
 	defer func() {
 		if errors.Is(runErr, ErrYielded) {
 			return
@@ -937,12 +967,12 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if current, readErr := r.read(context.WithoutCancel(ctx)); readErr == nil && current.Members[m.ID] != nil {
 		m.Task = current.Members[m.ID].Task
 	}
-	result = AgentResult{Session: m.ID, Context: c.ID, Task: m.Task}
+	result = AgentResult{Session: m.ID, Context: c.ID, Task: m.Task, Usage: e.Usage}
 	if response != nil {
 		result.Usage = mergeUsage(e.Usage, usageOf(response.AllMessages))
 		if response.Message != nil {
 			result.Value = response.Message.Content
-			if req.ResponseSchema == nil {
+			if structured == nil {
 				responseTool := ""
 				if runErr == nil {
 					responseTool = agentConfig.ResponseTool
@@ -950,19 +980,12 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 				result.Value = memberFinalValue(response.Message, m.ID, responseTool)
 			}
 		}
-		if runErr == nil && req.ResponseSchema != nil {
-			raw, ok := result.Value.(string)
-			if !ok {
-				return result, errors.New("agent returned no structured output")
-			}
-			if err = req.ResponseSchema.Validate(raw); err != nil {
-				return result, err
-			}
-			result.Value, err = schema.DecodeJSON(raw)
-			if err != nil {
-				return result, err
-			}
+	}
+	if runErr == nil && structured != nil {
+		if structured.accepted == nil {
+			return result, errors.New("missing validated completion")
 		}
+		result.Value = structured.accepted.Value
 	}
 	if runErr == nil && !m.ReadOnly && c.Checkout != nil {
 		snapshot, captureErr := manager.Capture(ctx, c.Root)
@@ -1065,6 +1088,12 @@ func (r *Runtime) finish(i *invocation) {
 		if e == nil || m == nil {
 			return errors.New("missing execution")
 		}
+		if i.err == nil && e.Completion != nil {
+			task := s.Tasks[e.Completion.Task]
+			if m.Task != e.Completion.Task || task == nil || task.Owner != m.ID || task.Execution != e.ID || task.Status != "running" {
+				i.err = errors.New("typed completion task ownership changed before finalization")
+			}
+		}
 		e.Result = &i.result
 		e.StopReason = ""
 		if i.err != nil {
@@ -1079,7 +1108,7 @@ func (r *Runtime) finish(i *invocation) {
 				e.Status = "paused"
 			}
 			m.Status = "paused"
-			if task := s.Tasks[m.Task]; task != nil && task.Execution == i.id && task.Status == "running" {
+			if task := s.Tasks[m.Task]; task != nil && task.Owner == m.ID && task.Execution == i.id && task.Status == "running" {
 				task.Status, task.Feedback = "blocked", e.Error
 				task.Revision++
 			}
@@ -1230,7 +1259,7 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 					}
 					e.Request.MaxIterations += additional
 				}
-				if e.Iterations >= e.Request.MaxIterations {
+				if e.Iterations >= e.Request.MaxIterations && e.Completion == nil {
 					return e.iterationLimitError()
 				}
 				if task.Feedback == e.Error {

@@ -420,7 +420,7 @@ func TestMemberFinalPreservesMediaStructuredAndResponseTools(t *testing.T) {
 				case "text part":
 					message.Parts = []messages.ContentPart{{Type: "text", Text: "answer in parts"}}
 				case "structured":
-					message.Content = `{"ok":true}`
+					message = completion(`{"ok":true}`)
 				case "response tool":
 					if n == 1 {
 						message = iterationTool("publish", "swarm_publish", `{"text":"response tool answer"}`)
@@ -435,6 +435,9 @@ func TestMemberFinalPreservesMediaStructuredAndResponseTools(t *testing.T) {
 				req.Schema = map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "required": []string{"ok"}, "additionalProperties": false}
 			}
 			wantCalls := int32(1)
+			if kind == "invalid structured" {
+				wantCalls = 3
+			}
 			if kind == "response tool" {
 				r.UpdateDefaults(r.config.Request, llm.AgentConfig{MaxIterations: 4, ResponseTool: "swarm_publish"}, nil)
 			}
