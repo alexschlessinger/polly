@@ -117,11 +117,6 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 	}
 	prior := cb.BeforeToolBatch
 	cb.BeforeToolBatch = func(ctx context.Context, calls []messages.ChatMessageToolCall) error {
-		for _, call := range calls {
-			if call.Name == "swarm_apply" && len(calls) != 1 {
-				return errors.New("swarm_apply must be the only tool in its batch; no batch tool was started")
-			}
-		}
 		if prior != nil {
 			if err := prior(ctx, calls); err != nil {
 				return err

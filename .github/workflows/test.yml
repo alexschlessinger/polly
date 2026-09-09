@@ -57,7 +57,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Race-sensitive storage, conversation, and coordination tests
-        run: go test -race ./sessions ./cmd/polly ./llm ./subagent ./swarm ./workflow ./worktree
+        run: go test -race ./tools ./sessions ./cmd/polly ./llm ./subagent ./swarm ./workflow ./worktree
 
   cgo-free-build:
     strategy:

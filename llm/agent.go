@@ -907,6 +907,14 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 		defer cancel()
 	}
 
+	// One lexical execution boundary owns the gate, including errors and
+	// panics. Result observers and persistence never own a permit.
+	release, gateErr := a.tools.GuardExecution(ctx, tool)
+	if gateErr != nil {
+		return tools.ToolOutput{Text: gateErr.Error()}, gateErr
+	}
+	defer release()
+
 	// Execute
 	var output tools.ToolOutput
 	var err error

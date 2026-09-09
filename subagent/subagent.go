@@ -154,7 +154,8 @@ func (t *Tool) GetSource() string { return "builtin" }
 
 // Untimed exempts the tool from the agent's per-tool timeout: a child agent
 // runs as long as its own iteration cap and the parent's turn allow.
-func (t *Tool) Untimed() bool { return true }
+func (t *Tool) Untimed() bool     { return true }
+func (t *Tool) Coordinates() bool { return true }
 
 func (t *Tool) GetSchema() *schema.ToolSchema {
 	description := "Delegate a self-contained task to a child agent with its own conversation and context window. Give a complete brief with the goal, relevant paths, constraints and authorization, validation, and what to report back. Treat files as shared unless the host explicitly provides isolation. Give editing agents non-overlapping files, avoid changing those files while they run, and inspect their changes. Parallel calls should describe independent work."

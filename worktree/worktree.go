@@ -663,56 +663,26 @@ func (m *Manager) Preview(ctx context.Context, base, candidate Snapshot) (Previe
 	return p, nil
 }
 
-// Apply must be the only parent mutation in its tool batch. The caller owns
-// acceptance and the parent execution lock; this lock serializes runtime Git.
+// Apply is the low-level single-preview convenience API. Coordinating hosts
+// use the phased API to persist intent and detach their write context.
 func (m *Manager) Apply(ctx context.Context, p Preview) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if p.Conflicts != "" {
 		return errors.New("resolve conflicts in an isolated checkout and publish a new candidate")
 	}
-	current, err := m.capture(ctx, m.Root)
+	plan, err := m.BuildApplyPlan(ctx, p.ID, p.Parent, p.Merged, "tree")
 	if err != nil {
 		return err
 	}
-	if current.Tree != p.Parent.Tree {
-		return errors.New("parent changed since preview; preview again")
-	}
-	patch, err := m.git(ctx, m.Root, nil, nil, "diff", "--binary", "--full-index", p.Parent.Commit, p.Merged.Commit, "--")
-	if err != nil {
+	if _, err = m.PreflightApply(ctx, plan); err != nil {
 		return err
 	}
-	if len(patch) == 0 {
-		return nil
-	}
-	// Applying files needs parent writes, but never its index or refs.
-	cfg, _, err := m.Registry.SandboxReadPolicy()
-	if err != nil {
+	if err = m.RecordApply(p.ID, map[string]any{"plan": plan, "status": "applying"}); err != nil {
 		return err
 	}
-	if cfg.DenyWrite {
-		return errors.New("parent policy forbids integration writes")
-	}
-	cfg.WritablePaths = []string{m.Root, m.Directory}
-	cfg = cfg.Merge(sandbox.Config{DenyWritePaths: []string{m.GitDir, filepath.Join(m.Root, ".git")}})
-	saved := m.sandbox
-	if m.Registry.HasSandbox() {
-		m.sandbox, err = m.Registry.NewSandboxDirect(cfg)
-		if err != nil {
-			return err
-		}
-	}
-	defer func() { m.sandbox = saved }()
-	if _, err = m.git(ctx, m.Root, nil, patch, "apply", "--check", "--binary", "-"); err != nil {
+	if err = m.WriteApply(ctx, plan); err != nil {
 		return err
 	}
-	if err = m.manifest("apply-"+p.ID, map[string]any{"preview": p, "status": "applying"}); err != nil {
-		return err
-	}
-	if _, err = m.git(ctx, m.Root, nil, patch, "apply", "--binary", "-"); err != nil {
-		return fmt.Errorf("apply incomplete; inspect recovery manifest: %w", err)
-	}
-	return m.manifest("apply-"+p.ID, map[string]any{"preview": p, "status": "applied"})
+	return m.RecordApply(p.ID, map[string]any{"plan": plan, "status": "applied"})
 }
 
 // Cleanup removes a runtime checkout only when its current tree still matches

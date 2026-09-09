@@ -199,10 +199,22 @@ Explicitly clean integrated/unchanged contexts to reuse slots.
 `swarm_preview` uses three-way `git merge-tree`, with conflicts confined to an
 integration copy. `swarm_apply` requires a current accepted revision and matching
 candidate, checks the parent's files again, and applies only the merged delta.
-It must be the only tool in its batch, and task mutations serialize with apply.
-An `apply-*.json` recovery manifest records applying/applied status. If interrupted
-during apply, inspect the files and manifest and generate a new preview; no
-automatic replay or rollback is attempted. Parent branch and index stay unchanged.
+A runtime-owned execution gate excludes parent tools during application, including
+shell, custom, MCP, and long-running writers. Coordination tools release this
+resource while waiting; orchestration acquires exclusivity inside apply.
+Task mutations serialize with apply. A durable coordination intent and an
+`apply-*.json` manifest record the patch identity, task revisions, and before/after
+path states, including empty deltas. Confirmed duplicate calls return without writing.
+After preflight, writing ignores turn cancellation (reported as "finishing apply")
+with a two-minute default `swarm.Config.ApplyTimeout`; parent lease loss still
+fences the write. A separate ten-second phase records the outcome, and runtime
+shutdown waits for active writes and receipts. Timeouts and I/O failures require
+inspection. On restart, matching after-states complete the original revisions;
+matching before-states permit an explicit retry; mixed states require recovery.
+Use `swarm_apply` with `reconcile:true` (or `Runtime.ReconcileApply`) to
+inspect an interrupted intent before an explicit retry. Later task revisions are
+never overwritten. No automatic patch replay or rollback
+is attempted. Parent branch and index stay unchanged.
 Publishing commits or PRs remains subject to the task's existing authorization.
 
 ## Persistence, shutdown, and recovery

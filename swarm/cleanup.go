@@ -21,6 +21,12 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 	if err != nil {
 		return err
 	}
+	for _, receipt := range s.Applies {
+		if receipt.Status != "applied" {
+			return errors.New("reconcile or complete interrupted integrations before cleanup")
+		}
+	}
+
 	if contextID != "" && s.Contexts[contextID] == nil {
 		return errors.New("unknown execution context")
 	}

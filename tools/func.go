@@ -8,6 +8,7 @@ import (
 
 // Func is a declarative tool definition. It implements Tool.
 type Func struct {
+	Coordinator bool
 	LongRunning bool
 	Exclusive   bool
 	Name        string
@@ -21,6 +22,7 @@ type Func struct {
 
 func (f *Func) Untimed() bool        { return f.LongRunning }
 func (f *Func) ExclusiveBatch() bool { return f.Exclusive }
+func (f *Func) Coordinates() bool    { return f.Coordinator }
 
 func (f *Func) GetName() string { return f.Name }
 func (f *Func) GetType() string { return "native" }

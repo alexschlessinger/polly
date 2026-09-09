@@ -23,6 +23,8 @@ import (
 )
 
 type Config struct {
+	// ApplyTimeout bounds the write after it stops honoring turn cancellation.
+	ApplyTimeout                 time.Duration
 	Store                        sessions.SessionStore
 	Parent                       sessions.Session
 	Registry                     *tools.ToolRegistry
@@ -76,6 +78,7 @@ type invocation struct {
 	err        error
 }
 type Runtime struct {
+	gate            *tools.ExecutionGate
 	ID              string
 	config          Config
 	defaultsMu      sync.RWMutex
@@ -101,6 +104,12 @@ type Runtime struct {
 }
 
 func New(c Config) (*Runtime, error) {
+	if c.ApplyTimeout < 0 {
+		return nil, errors.New("apply timeout cannot be negative")
+	}
+	if c.ApplyTimeout == 0 {
+		c.ApplyTimeout = 2 * time.Minute
+	}
 	if c.MaxConcurrent < 0 || c.MaxExecutions < 0 || c.MaxWorktrees < 0 {
 		return nil, errors.New("swarm limits cannot be negative")
 	}
@@ -152,8 +161,14 @@ func New(c Config) (*Runtime, error) {
 	ctx, cancel := context.WithCancel(c.Parent.Context())
 	r := &Runtime{ID: parent.ViewID(), config: c, parent: parent, ctx: ctx, cancel: cancel, slots: make(chan struct{}, c.MaxConcurrent), active: map[string]*invocation{}, workflowCancels: map[string]context.CancelFunc{}, notify: make(chan struct{}), yield: make(chan struct{})}
 	r.contextLocks = map[string]*sync.Mutex{}
+	r.gate = tools.NewExecutionGate()
+	c.Registry.SetExecutionGate(r.gate)
 	r.UpdateDefaults(c.Request, c.Agent, c.Instructions)
 	if err := r.recoverParent(ctx); err != nil {
+		cancel()
+		return nil, err
+	}
+	if err := r.recoverApplies(ctx); err != nil {
 		cancel()
 		return nil, err
 	}
@@ -1297,6 +1312,12 @@ func (r *Runtime) Settle(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		for _, receipt := range s.Applies {
+			if receipt.Status == "applying" || receipt.Status == "recovery_required" {
+				return fail("recovery_required", "integration "+receipt.ID+" has an unconfirmed outcome")
+			}
+		}
+
 		if hasWakeMail(s, r.ID) {
 			return fail("blocked", "a member is waiting for a parent reply")
 		}

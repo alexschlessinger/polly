@@ -118,6 +118,7 @@ type ParentTurn struct {
 }
 
 type State struct {
+	Applies      map[string]*ApplyRecord       `json:"applies"`
 	ParentTurns  map[string]*ParentTurn        `json:"parentTurns"`
 	Runs         map[string]*Run               `json:"runs"`
 	Members      map[string]*Member            `json:"members"`
@@ -136,7 +137,7 @@ func decodeState(raw *sessions.CoordinationState) (*State, error) {
 	// Keep each domain in separately keyed records. All affected records and
 	// transcript receipts commit in the same SQLite transaction.
 	steps := map[string]*workflow.Step{}
-	fields := map[string]any{"parent_turn": &s.ParentTurns, "run": &s.Runs, "member": &s.Members, "task": &s.Tasks, "mail": &s.Messages, "publication": &s.Publications, "execution": &s.Executions, "context": &s.Contexts, "snapshot": &s.Snapshots, "preview": &s.Previews, "workflow": &s.Workflows, "workflow_step": &steps}
+	fields := map[string]any{"apply": &s.Applies, "parent_turn": &s.ParentTurns, "run": &s.Runs, "member": &s.Members, "task": &s.Tasks, "mail": &s.Messages, "publication": &s.Publications, "execution": &s.Executions, "context": &s.Contexts, "snapshot": &s.Snapshots, "preview": &s.Previews, "workflow": &s.Workflows, "workflow_step": &steps}
 	for kind, target := range fields {
 		records := raw.Records[kind]
 		if records == nil {
@@ -160,7 +161,7 @@ func encodeState(raw *sessions.CoordinationState, s *State) error {
 	// A workflow's steps are records of their own, so each checkpoint of a
 	// long run rewrites one step instead of the whole report.
 	reports, steps := detachWorkflowSteps(s.Workflows)
-	fields := map[string]any{"parent_turn": s.ParentTurns, "run": s.Runs, "member": s.Members, "task": s.Tasks, "mail": s.Messages, "publication": s.Publications, "execution": s.Executions, "context": s.Contexts, "snapshot": s.Snapshots, "preview": s.Previews, "workflow": reports, "workflow_step": steps}
+	fields := map[string]any{"apply": s.Applies, "parent_turn": s.ParentTurns, "run": s.Runs, "member": s.Members, "task": s.Tasks, "mail": s.Messages, "publication": s.Publications, "execution": s.Executions, "context": s.Contexts, "snapshot": s.Snapshots, "preview": s.Previews, "workflow": reports, "workflow_step": steps}
 	for kind, value := range fields {
 		data, err := json.Marshal(value)
 		if err != nil {

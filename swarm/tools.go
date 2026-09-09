@@ -17,7 +17,7 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 	registry.Register(&publishedArtifactTool{session: session})
 	registry.MarkAlwaysAllowed("swarm_read_artifact")
 	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
-		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_apply" || name == "swarm_snapshot", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
+		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_apply", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := fn(ctx, a)
 			if err != nil {
 				return tools.Result(v), err
@@ -142,7 +142,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 	registry.Register(spawn)
 	registry.MarkAlwaysAllowed(subagent.ToolName)
 	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
-		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_apply" || name == "swarm_snapshot", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
+		registry.Register(&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_apply", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := fn(ctx, a)
 			if err != nil {
 				return tools.Result(v), err
@@ -161,7 +161,10 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		return "review recorded", r.Review(ctx, a.String("task"), a.Int("revision", 0), a.Bool("accept"), a.String("feedback"))
 	})
 	register("swarm_preview", "Prepare a three-way integration preview against the current parent files.", schema.Params{"task": schema.S("Task ID")}, []string{"task"}, func(ctx context.Context, a tools.Args) (any, error) { return r.preview(ctx, a.String("task")) })
-	register("swarm_apply", "Apply an accepted clean preview. This must be the only tool in its batch. The parent's branch and index remain unchanged.", schema.Params{"task": schema.S("Accepted task ID"), "preview": schema.S("Preview ID")}, []string{"task", "preview"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("swarm_apply", "Apply an accepted clean preview under the parent execution gate. The parent's branch and index remain unchanged.", schema.Params{"task": schema.S("Accepted task ID"), "preview": schema.S("Preview ID"), "reconcile": schema.Bool("Observe an interrupted apply without writing")}, []string{"task", "preview"}, func(ctx context.Context, a tools.Args) (any, error) {
+		if a.Bool("reconcile") {
+			return r.ReconcileApply(ctx, a.String("preview"))
+		}
 		return "applied", r.apply(ctx, a.String("task"), a.String("preview"))
 	})
 	register("swarm_control", "Stop or explicitly resume a member using its remaining allowance, cancel a task, or clean an integrated/unchanged execution context. Iteration exhaustion retains saved work and requires a user-directed client grant. Extra execution budgets also require a user-directed client control.", schema.Params{"action": schema.S("stop, resume, cancel_task or cleanup"), "id": schema.S("Member, task or context ID")}, []string{"action"}, func(ctx context.Context, a tools.Args) (any, error) {
@@ -276,25 +279,34 @@ func (r *Runtime) preview(ctx context.Context, taskID string) (any, error) {
 	return p, err
 }
 func (r *Runtime) apply(ctx context.Context, taskID, previewID string) error {
-	r.parentTools.Lock()
-	defer r.parentTools.Unlock()
-	s, err := r.read(ctx)
-	if err != nil {
-		return err
-	}
-	t := s.Tasks[taskID]
-	p := s.Previews[previewID]
-	if t == nil || p == nil || t.AcceptedRevision != t.Revision || t.Snapshot != p.Candidate.ID {
-		return errors.New("preview is not the currently accepted task revision")
-	}
-	manager, err := r.manager(ctx)
-	if err != nil {
-		return err
-	}
-	if err = manager.Apply(ctx, *p); err != nil {
-		return err
-	}
-	return r.update(ctx, func(s *State) error { t := s.Tasks[taskID]; t.Status = "done"; return nil })
+	return r.withApplyLock(ctx, func(ctx context.Context) error {
+		s, err := r.read(ctx)
+		if err != nil {
+			return err
+		}
+		if receipt := s.Applies[previewID]; receipt != nil && receipt.Status == "applied" {
+			if len(receipt.Tasks) != 1 || receipt.Tasks[0].Task != taskID {
+				return errors.New("application belongs to another task")
+			}
+			return nil
+		}
+		t, p := s.Tasks[taskID], s.Previews[previewID]
+		if t == nil || p == nil || t.AcceptedRevision != t.Revision || t.Snapshot != p.Candidate.ID {
+			return errors.New("preview is not the currently accepted task revision")
+		}
+		if p.Conflicts != "" {
+			return errors.New("resolve conflicts before applying")
+		}
+		manager, err := r.manager(ctx)
+		if err != nil {
+			return err
+		}
+		plan, err := manager.BuildApplyPlan(ctx, previewID, p.Parent, p.Merged, "tree")
+		if err != nil {
+			return err
+		}
+		return r.applyPlanLocked(ctx, plan, []TaskReference{{Task: taskID, Revision: t.Revision}})
+	})
 }
 
 func decodeRequest(args map[string]any) (AgentRequest, error) {

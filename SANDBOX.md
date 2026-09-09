@@ -63,9 +63,10 @@ Explicit deny rules, including an extra deny for the same common gitdir, and
 global write denial remain in force; this grant is never exposed to a shell,
 MCP server, or model-selected command. Read-only reviewers inside Git also use
 this runtime snapshot path. Setup errors do not silently switch to live files.
-Only the parent can accept/apply changes. Apply is exclusive within a parent
-tool batch, preserves its index/branch, rechecks source versions, and records a
-recovery manifest. Git 2.40+ and a supported process sandbox (macOS/Linux), or an
+Only the parent can accept/apply changes. Apply holds a runtime-owned exclusive gate against parent
+tool execution, preserves its index/branch, rechecks source versions, and records
+a durable intent and receipt. Cancellation after the write boundary finishes the
+apply; lease loss still fences it. Uncertain outcomes require reconciliation. Git 2.40+ and a supported process sandbox (macOS/Linux), or an
 explicit unsafe acknowledgment, are required for editing. See
 [worktree limitations and recovery](WORKFLOWS.md#worktrees-and-integration).
 

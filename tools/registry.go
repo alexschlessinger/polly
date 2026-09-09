@@ -51,6 +51,11 @@ func (n *NamespacedTool) ExclusiveBatch() bool {
 }
 func (n *NamespacedTool) Untimed() bool { t, ok := n.Tool.(UntimedTool); return ok && t.Untimed() }
 
+func (n *NamespacedTool) Coordinates() bool {
+	t, ok := n.Tool.(CoordinationTool)
+	return ok && t.Coordinates()
+}
+
 // GetSchema returns a schema with the namespaced title
 func (n *NamespacedTool) GetSchema() *schema.ToolSchema {
 	c := n.Tool.GetSchema().Copy()
@@ -68,6 +73,7 @@ func (n *NamespacedTool) GetName() string {
 
 // ToolRegistry manages available tools
 type ToolRegistry struct {
+	executionGate       *ExecutionGate
 	executionSkills     *skills.Catalog
 	executionSourceRoot string
 	executionRoot       string

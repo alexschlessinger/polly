@@ -724,5 +724,12 @@ for event := range client.ChatCompletionStream(ctx, req, processor) {
 - `GetHistory` and `GetMetadata` return detached copies. Mutations are
   transactional, but read-modify-write sequences across calls need
   application-level coordination.
-- Tool `Execute` implementations should be safe to call concurrently; the
-  library doesn't serialize them.
+- Tool `Execute` implementations should be safe to call concurrently. Swarm parents
+  attach a `tools.ExecutionGate`; the agent loop holds shared access during actual
+  execution and runtime apply takes exclusive access. `CoordinationTool` identifies
+  trusted orchestration exemptions; `UntimedTool` alone does not. Hosts executing
+  parent tools directly should use `ToolRegistry.GuardExecution` with deferred release.
+- `swarm.Config.ApplyTimeout` defaults to two minutes. `Runtime.Close` waits for
+  active integration writes and their bounded outcome recording before the host
+  closes its session. A confirmed apply is idempotent; uncertain writes are reconciled
+  from persisted path states without automatically repeating the patch.
