@@ -34,7 +34,7 @@ func (m *replModel) inlineReasoningField(ids []int64) (turnDockField, bool) {
 func (m *replModel) inlineToolField(ids []int64) (turnDockField, bool) {
 	total, expanded, found := 0, false, false
 	for _, id := range ids {
-		if record := m.toolDisclosures[id]; record != nil {
+		if record := m.toolDisclosures.get(id); record != nil {
 			found = true
 			total += len(ordinaryToolRows(record.rows))
 			expanded = expanded || record.expanded

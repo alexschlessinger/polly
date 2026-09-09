@@ -18,7 +18,7 @@ import (
 func toolRows(m *replModel) []string {
 	var rows []string
 	for i, e := range m.transcript {
-		if m.toolDisclosureAt[i] != 0 {
+		if m.toolDisclosures.idAt(i) != 0 {
 			rows = append(rows, e.text)
 		}
 	}
@@ -798,8 +798,8 @@ func TestToolDisclosureResetsPerTurn(t *testing.T) {
 	if first == nil || second == nil || first.id == second.id || !first.complete || !second.complete || first.expanded || second.expanded {
 		t.Fatalf("per-turn disclosures: first=%#v second=%#v", first, second)
 	}
-	if len(first.rows) != 4 || len(second.rows) != 4 || len(m.toolDisclosures) != 2 {
-		t.Fatalf("per-turn row counts: first=%d second=%d records=%d", len(first.rows), len(second.rows), len(m.toolDisclosures))
+	if len(first.rows) != 4 || len(second.rows) != 4 || m.toolDisclosures.count() != 2 {
+		t.Fatalf("per-turn row counts: first=%d second=%d records=%d", len(first.rows), len(second.rows), m.toolDisclosures.count())
 	}
 	if rows := toolRows(m); len(rows) != 2 {
 		t.Fatalf("completed turns rendered %d disclosure entries, want 2: %#v", len(rows), m.transcript)

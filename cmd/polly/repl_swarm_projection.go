@@ -17,7 +17,7 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 	members := map[string]bool{}
 	workflowMembers := map[string]map[string]bool{}
 	groups := map[string]*toolDisclosureRecord{}
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for _, row := range record.rows {
 			if row.callID != "" {
 				calls[row.callID] = record
@@ -47,12 +47,8 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 			return record
 		}
 		if record == nil {
-			m.toolDisclosureSeq++
-			record = &toolDisclosureRecord{id: m.toolDisclosureSeq, complete: true}
 			// A background launch must not flush or split a streaming reply.
-			record.transcriptIndex = m.appendTranscriptEntry("")
-			m.toolDisclosures[record.id] = record
-			m.toolDisclosureAt[record.transcriptIndex] = record.id
+			record = m.toolDisclosures.add(&toolDisclosureRecord{complete: true}, m.appendTranscriptEntry(""))
 		}
 		record.rows = append(record.rows, toolDisclosureRow{settled: true, agent: &agentActivity{
 			viewID: memberID, label: sanitizeTranscriptImageText(spawnLabel(member.Label, member.Name)),

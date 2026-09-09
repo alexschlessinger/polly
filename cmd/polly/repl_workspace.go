@@ -122,7 +122,7 @@ func (r *managedREPL) attentionAgentName() string {
 }
 
 func (r *managedREPL) inspectAgent(source *replModel, parent viewTarget, link agentLink) bool {
-	record := source.toolDisclosures[link.recordID]
+	record := source.toolDisclosures.get(link.recordID)
 	if record == nil || link.rowIndex >= len(record.rows) {
 		return false
 	}

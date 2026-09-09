@@ -457,7 +457,7 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 	// Tool and Images disclosures project canonical sidecars into transient
 	// activity blocks. Keep those copies fresh so reopening either disclosure
 	// cannot resurrect stale dimensions or file versions.
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for rowIndex := range record.rows {
 			updated, copied := refresh(record.rows[rowIndex].images)
 			if copied {

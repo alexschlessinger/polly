@@ -147,7 +147,7 @@ func (m *replModel) toggleToolDisclosureGroup(ids []int64) bool {
 	anyExpanded, found := false, false
 	validIDs := make([]int64, 0, len(ids))
 	for _, id := range ids {
-		if record := m.toolDisclosures[id]; record != nil {
+		if record := m.toolDisclosures.get(id); record != nil {
 			found = true
 			anyExpanded = anyExpanded || record.expanded
 			validIDs = append(validIDs, id)
@@ -162,7 +162,7 @@ func (m *replModel) toggleToolDisclosureGroup(ids []int64) bool {
 		// Apply-then-refresh: see toggleReasoningGroup.
 		var changed []*toolDisclosureRecord
 		for _, id := range ids {
-			if record := m.toolDisclosures[id]; record != nil && record.expanded != expand {
+			if record := m.toolDisclosures.get(id); record != nil && record.expanded != expand {
 				record.expanded = expand
 				changed = append(changed, record)
 			}
@@ -178,7 +178,7 @@ func (m *replModel) toggleImageDisclosureGroup(ids []int64) bool {
 	anyExpanded, found := false, false
 	validIDs := make([]int64, 0, len(ids))
 	for _, id := range ids {
-		record := m.toolDisclosures[id]
+		record := m.toolDisclosures.get(id)
 		if record == nil || len(m.toolInspectionImages([]int64{id})) == 0 {
 			continue
 		}
@@ -193,7 +193,7 @@ func (m *replModel) toggleImageDisclosureGroup(ids []int64) bool {
 	expand := !anyExpanded
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(validIDs), func(bool) {
 		for _, id := range validIDs {
-			m.toolDisclosures[id].imagesExpanded = expand
+			m.toolDisclosures.get(id).imagesExpanded = expand
 		}
 		m.visual.invalidate()
 	})

@@ -30,10 +30,10 @@ type activeTool struct {
 // m.mu.
 func (m *replModel) currentToolDisclosure() *toolDisclosureRecord {
 	if m.turnToolDisclosureID != 0 {
-		return m.toolDisclosures[m.turnToolDisclosureID]
+		return m.toolDisclosures.get(m.turnToolDisclosureID)
 	}
 	if n := len(m.turnToolDisclosureIDs); n > 0 {
-		return m.toolDisclosures[m.turnToolDisclosureIDs[n-1]]
+		return m.toolDisclosures.get(m.turnToolDisclosureIDs[n-1])
 	}
 	return nil
 }
@@ -41,17 +41,13 @@ func (m *replModel) currentToolDisclosure() *toolDisclosureRecord {
 func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
 	// Only the live pointer receives new rows: once a batch settles, the next
 	// batch opens a fresh disclosure at its own transcript position.
-	if record := m.toolDisclosures[m.turnToolDisclosureID]; record != nil {
+	if record := m.toolDisclosures.get(m.turnToolDisclosureID); record != nil {
 		return record
 	}
-	m.toolDisclosureSeq++
-	record := &toolDisclosureRecord{id: m.toolDisclosureSeq, transcriptIndex: len(m.transcript)}
-	m.toolDisclosures[record.id] = record
+	m.appendLine("")
+	record := m.toolDisclosures.add(&toolDisclosureRecord{}, len(m.transcript)-1)
 	m.turnToolDisclosureID = record.id
 	m.turnToolDisclosureIDs = append(m.turnToolDisclosureIDs, record.id)
-	m.appendLine("")
-	record.transcriptIndex = len(m.transcript) - 1
-	m.toolDisclosureAt[record.transcriptIndex] = record.id
 	return record
 }
 
@@ -169,7 +165,7 @@ func appendToolDisclosureImages(b *strings.Builder, rendered *[]transcriptImage,
 func (m *replModel) toolInspectionImages(ids []int64) []transcriptImage {
 	images := make([]transcriptImage, 0)
 	for _, id := range ids {
-		record := m.toolDisclosures[id]
+		record := m.toolDisclosures.get(id)
 		if record == nil {
 			continue
 		}
@@ -187,7 +183,7 @@ func (m *replModel) toolInspectionImages(ids []int64) []transcriptImage {
 
 func (m *replModel) toolInspectionExpanded(ids []int64) bool {
 	for _, id := range ids {
-		if record := m.toolDisclosures[id]; record != nil && record.imagesExpanded {
+		if record := m.toolDisclosures.get(id); record != nil && record.imagesExpanded {
 			return true
 		}
 	}
@@ -222,7 +218,7 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 // expanded disclosure stays open until the turn settles; the next batch opens
 // a fresh disclosure at its own transcript position. Caller must hold m.mu.
 func (m *replModel) completeToolDisclosure() {
-	if record := m.toolDisclosures[m.turnToolDisclosureID]; record != nil {
+	if record := m.toolDisclosures.get(m.turnToolDisclosureID); record != nil {
 		record.complete = true
 		m.refreshToolDisclosure(record)
 	}
@@ -233,7 +229,7 @@ func (m *replModel) completeToolDisclosure() {
 // settlement. Caller must hold m.mu.
 func (m *replModel) collapseTurnToolDisclosures() {
 	for _, id := range m.turnToolDisclosureIDs {
-		if record := m.toolDisclosures[id]; record != nil {
+		if record := m.toolDisclosures.get(id); record != nil {
 			changed := record.expanded || record.imagesExpanded || record.agentsExpanded
 			record.expanded = false
 			record.imagesExpanded = false
@@ -251,16 +247,11 @@ func (m *replModel) collapseTurnToolDisclosures() {
 // resetToolDisclosure drops the active pointer while leaving the previous
 // turn's disclosure in scrollback. Caller must hold m.mu.
 func (m *replModel) resetToolDisclosure() {
-	if record := m.currentToolDisclosure(); record != nil && record.transcriptIndex < 0 {
-		delete(m.toolDisclosures, record.id)
-	}
 	m.turnToolDisclosureID = 0
 }
 
 func (m *replModel) clearToolDisclosures() {
-	m.toolDisclosures = make(map[int64]*toolDisclosureRecord)
-	m.toolDisclosureAt = make(map[int]int64)
-	m.toolDisclosureSeq = 0
+	m.toolDisclosures.reset()
 	m.turnToolDisclosureID = 0
 	m.turnToolDisclosureIDs = nil
 	m.toolDisclosurePlacements = nil
@@ -287,7 +278,7 @@ func runningToolLine(label string, elapsed time.Duration) string {
 }
 
 func (m *replModel) toggleToolDisclosure(recordID int64) bool {
-	record := m.toolDisclosures[recordID]
+	record := m.toolDisclosures.get(recordID)
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return false
 	}
@@ -446,12 +437,9 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 	if len(rows) == 0 {
 		return nil
 	}
-	m.toolDisclosureSeq++
 	record := &toolDisclosureRecord{
-		id:              m.toolDisclosureSeq,
-		transcriptIndex: len(m.transcript),
-		rows:            append([]toolDisclosureRow(nil), rows...),
-		complete:        true,
+		rows:     append([]toolDisclosureRow(nil), rows...),
+		complete: true,
 	}
 	for i := range record.rows {
 		record.rows[i].label = stripTranscriptImageMarkers(record.rows[i].label)
@@ -463,16 +451,14 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 		}
 	}
 	m.appendLine("")
-	record.transcriptIndex = len(m.transcript) - 1
-	m.toolDisclosures[record.id] = record
-	m.toolDisclosureAt[record.transcriptIndex] = record.id
+	m.toolDisclosures.add(record, len(m.transcript)-1)
 	m.refreshToolDisclosure(record)
 	return record
 }
 
 func (m *replModel) toolDisclosureRowForCall(callID string) (*toolDisclosureRecord, *toolDisclosureRow) {
 	for i := len(m.turnToolDisclosureIDs) - 1; i >= 0; i-- {
-		record := m.toolDisclosures[m.turnToolDisclosureIDs[i]]
+		record := m.toolDisclosures.get(m.turnToolDisclosureIDs[i])
 		if record == nil {
 			continue
 		}

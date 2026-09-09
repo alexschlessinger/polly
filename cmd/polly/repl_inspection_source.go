@@ -275,7 +275,7 @@ func (m *replModel) hydrateInspections(history []messages.ChatMessage) {
 	// Match from the end: visible history is a suffix, and call IDs can recur
 	// in different turns. Never identify a call by tool name alone.
 	var records []*toolDisclosureRecord
-	for _, r := range m.toolDisclosures {
+	for _, r := range m.toolDisclosures.all() {
 		records = append(records, r)
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].transcriptIndex < records[j].transcriptIndex })

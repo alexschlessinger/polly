@@ -450,7 +450,7 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 	}, "ctx")
 
 	var record *toolDisclosureRecord
-	for _, candidate := range m.toolDisclosures {
+	for _, candidate := range m.toolDisclosures.all() {
 		if len(candidate.rows) == 1 && candidate.rows[0].callID == "view-call" {
 			record = candidate
 			break

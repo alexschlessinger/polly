@@ -15,7 +15,7 @@ import (
 
 func projectedAgentRows(m *replModel) map[string][]*agentActivity {
 	rows := map[string][]*agentActivity{}
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for _, row := range record.rows {
 			if row.agent != nil && row.agent.viewID != "" {
 				rows[row.agent.viewID] = append(rows[row.agent.viewID], row.agent)
@@ -32,7 +32,7 @@ func TestSwarmProjectionGroupsWorkflowMembersAndPreservesDirectRows(t *testing.T
 	m.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "review"}, {Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{direct, workflowCall}}}, "parent")
 	launch := m.currentToolDisclosure()
 	// Hydrated history need not retain the live turn pointer.
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for _, row := range record.rows {
 			if row.callID == workflowCall.ID {
 				launch = record
@@ -69,8 +69,8 @@ func TestSwarmProjectionGroupsWorkflowMembersAndPreservesDirectRows(t *testing.T
 			t.Errorf("member %s has %d rows", id, len(agents))
 		}
 	}
-	if len(m.toolDisclosures) != 2 {
-		t.Fatalf("expected original launch and typed disclosure, got %d", len(m.toolDisclosures))
+	if m.toolDisclosures.count() != 2 {
+		t.Fatalf("expected original launch and typed disclosure, got %d", m.toolDisclosures.count())
 	}
 	if len(ordinaryToolRows(launch.rows)) != 1 {
 		t.Fatal("projected agents inflated the tool count")
@@ -124,7 +124,7 @@ func TestSwarmProjectionRestoresMembersWithoutToolHistoryAndKeepsStreaming(t *te
 		t.Fatal("missing member without tool history")
 	}
 	view := viewState{}
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		record.agentsExpanded = true
 	}
 	rememberViewSections(m, &view)
@@ -141,7 +141,7 @@ func TestSwarmProjectionRestoresMembersWithoutToolHistoryAndKeepsStreaming(t *te
 	if len(projectedAgentRows(m)["member"]) != 1 {
 		t.Fatal("restored member missing or duplicated")
 	}
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		if !record.agentsExpanded {
 			t.Fatal("restored member lost its inspector disclosure state")
 		}
@@ -248,7 +248,7 @@ func TestTypedAndWorkflowLaunchesExposeClickableMemberRows(t *testing.T) {
 	}
 	var recordID int64
 	var memberID string
-	for _, record := range r.model.toolDisclosures {
+	for _, record := range r.model.toolDisclosures.all() {
 		for _, row := range record.rows {
 			if row.agent != nil && row.agent.workflowID == id {
 				recordID = record.id
@@ -263,7 +263,7 @@ func TestTypedAndWorkflowLaunchesExposeClickableMemberRows(t *testing.T) {
 		t.Fatal("workflow member has no inspector link")
 	}
 	link := links[0]
-	memberID = r.model.toolDisclosures[link.recordID].rows[link.rowIndex].agent.viewID
+	memberID = r.model.toolDisclosures.get(link.recordID).rows[link.rowIndex].agent.viewID
 	if !r.inspectAgent(r.model, tabViewTarget(r.visibleTab()), link) {
 		r.model.mu.Unlock()
 		t.Fatal("workflow member link did not open")

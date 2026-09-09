@@ -66,7 +66,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	m.toggleToolDisclosureGroup(ids)
 	m.toggleAgentDisclosureGroup(ids)
 	m.toggleImageDisclosureGroup(ids)
-	record := m.toolDisclosures[ids[0]]
+	record := m.toolDisclosures.get(ids[0])
 	if !record.expanded || !record.agentsExpanded || !record.imagesExpanded {
 		t.Fatal("controls did not expand independently")
 	}
@@ -288,7 +288,7 @@ func TestHydratedAgentsUseVerifiedIdentityAndFirstOutcome(t *testing.T) {
 		{"done", "renamed-child", "done"}, {"legacy", "", "unknown"}, {"blocking", "", "done"}, {"ambiguous", "", "done"},
 	} {
 		var row *toolDisclosureRow
-		for _, record := range m.toolDisclosures {
+		for _, record := range m.toolDisclosures.all() {
 			for i := range record.rows {
 				if record.rows[i].callID == tc.id {
 					row = &record.rows[i]
@@ -300,7 +300,7 @@ func TestHydratedAgentsUseVerifiedIdentityAndFirstOutcome(t *testing.T) {
 		}
 	}
 	var ids []int64
-	for id := range m.toolDisclosures {
+	for id := range m.toolDisclosures.all() {
 		ids = append(ids, id)
 	}
 	if m.toolRowCount(ids) != 0 {

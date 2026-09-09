@@ -74,7 +74,7 @@ func activityRowHeader(glyph, label string) string {
 func (m *replModel) toolRowCount(ids []int64) int {
 	total := 0
 	for _, id := range ids {
-		if record := m.toolDisclosures[id]; record != nil {
+		if record := m.toolDisclosures.get(id); record != nil {
 			total += len(ordinaryToolRows(record.rows))
 		}
 	}
@@ -86,7 +86,7 @@ func (m *replModel) toolRowCount(ids []int64) int {
 func (m *replModel) activitySummaryFor(dock turnDockState) turnActivitySummary {
 	s := turnActivitySummary{Tools: m.toolRowCount(dock.toolIDs), Agents: m.agentCounts(dock.toolIDs), Outcome: dock.outcome, Elapsed: m.turnDockElapsedFor(dock), In: dock.inputTokens, Out: dock.outputTokens}
 	for _, id := range dock.toolIDs {
-		if record := m.toolDisclosures[id]; record != nil {
+		if record := m.toolDisclosures.get(id); record != nil {
 			for _, row := range record.rows {
 				s.Images += len(row.inspectionImages)
 			}

@@ -50,14 +50,14 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 		}
 	}
 	counts := map[string]int{}
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for _, row := range record.rows {
 			if row.agent != nil {
 				counts[row.callID]++
 			}
 		}
 	}
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for i := range record.rows {
 			row := &record.rows[i]
 			if row.agent != nil && row.agent.viewID == "" && counts[row.callID] == 1 && len(byCall[row.callID]) == 1 {
@@ -66,7 +66,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 		}
 	}
 	m.projectSwarmAgents(s)
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		changed := false
 		for i := range record.rows {
 			row := &record.rows[i]

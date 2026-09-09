@@ -462,11 +462,11 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	if record.elapsed != 3*time.Second {
 		t.Fatalf("hydrated denied reasoning elapsed = %v, want 3s", record.elapsed)
 	}
-	if len(m.toolDisclosures) != 1 {
-		t.Fatalf("denied tool disclosures = %d, want 1", len(m.toolDisclosures))
+	if m.toolDisclosures.count() != 1 {
+		t.Fatalf("denied tool disclosures = %d, want 1", m.toolDisclosures.count())
 	}
 	var tools *toolDisclosureRecord
-	for _, candidate := range m.toolDisclosures {
+	for _, candidate := range m.toolDisclosures.all() {
 		tools = candidate
 	}
 	if tools == nil || !tools.complete || len(tools.rows) != 1 || record.transcriptIndex >= tools.transcriptIndex {
@@ -498,7 +498,7 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 		t.Fatalf("reloaded denied reasoning disclosure = %#v", reloaded.reasoningRecords)
 	}
 	var reloadedTools *toolDisclosureRecord
-	for _, candidate := range reloaded.toolDisclosures {
+	for _, candidate := range reloaded.toolDisclosures.all() {
 		reloadedTools = candidate
 	}
 	reloadedReasoning := reloaded.reasoningRecords[reloaded.reasoningOrder[0]]
@@ -535,7 +535,7 @@ func TestDurableTurnMessagesKeepsProseAndDeniedOutcome(t *testing.T) {
 		t.Fatalf("prose + denial hydration = %q", plain)
 	}
 	var tools *toolDisclosureRecord
-	for _, candidate := range m.toolDisclosures {
+	for _, candidate := range m.toolDisclosures.all() {
 		tools = candidate
 	}
 	if tools == nil || !m.toggleToolDisclosure(tools.id) || !strings.Contains(plainStyledText(m.transcript[tools.transcriptIndex].text), "✗ bash · denied") {
@@ -591,11 +591,11 @@ func TestDurableMixedToolBatchReloadsOneOrderedDisclosure(t *testing.T) {
 	reopened := testAcquireSession(t, reopenedStore, "mixed-tools")
 	m := newReplModel()
 	m.hydrateHistory(testSessionHistory(t, reopened), "mixed-tools")
-	if len(m.toolDisclosures) != 1 {
-		t.Fatalf("reloaded tool disclosures = %d, want 1", len(m.toolDisclosures))
+	if m.toolDisclosures.count() != 1 {
+		t.Fatalf("reloaded tool disclosures = %d, want 1", m.toolDisclosures.count())
 	}
 	var record *toolDisclosureRecord
-	for _, candidate := range m.toolDisclosures {
+	for _, candidate := range m.toolDisclosures.all() {
 		record = candidate
 	}
 	if record == nil || !record.complete || record.expanded || len(record.rows) != 2 {

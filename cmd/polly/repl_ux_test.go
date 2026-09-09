@@ -583,8 +583,8 @@ func TestClearDisplayPreservesParallelToolState(t *testing.T) {
 		t.Fatalf("parallel tools did not settle after final completion: running=%d state=%v", r.model.runningTools, r.model.state)
 	}
 	record := r.model.currentToolDisclosure()
-	if record == nil || len(r.model.toolDisclosures) != 1 || len(record.rows) != 2 {
-		t.Fatalf("post-clear tool disclosure = %#v records=%d", record, len(r.model.toolDisclosures))
+	if record == nil || r.model.toolDisclosures.count() != 1 || len(record.rows) != 2 {
+		t.Fatalf("post-clear tool disclosure = %#v records=%d", record, r.model.toolDisclosures.count())
 	}
 }
 
@@ -658,11 +658,11 @@ func TestHydrateHistoryShowsFiveRecentTurnsAndCollapsesTools(t *testing.T) {
 			t.Fatalf("hydrated transcript missing %q: %q", present, joined)
 		}
 	}
-	if len(m.toolDisclosures) != 1 {
-		t.Fatalf("hydrated tool disclosures = %d, want 1", len(m.toolDisclosures))
+	if m.toolDisclosures.count() != 1 {
+		t.Fatalf("hydrated tool disclosures = %d, want 1", m.toolDisclosures.count())
 	}
 	var tools *toolDisclosureRecord
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		tools = record
 	}
 	if !m.toggleToolDisclosure(tools.id) {
@@ -686,7 +686,7 @@ func TestHydrateHistoryShowsDurableToolFailure(t *testing.T) {
 	m := newReplModel()
 	m.hydrateHistory(history, "ctx")
 	var tools *toolDisclosureRecord
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		tools = record
 	}
 	if tools == nil || !m.toggleToolDisclosure(tools.id) {
@@ -728,8 +728,8 @@ func TestHydrateHistoryAggregatesToolBatchesPerRealUserTurn(t *testing.T) {
 	m.hydrateHistory(history, "ctx")
 	var records []*toolDisclosureRecord
 	for index := range m.transcript {
-		if id := m.toolDisclosureAt[index]; id != 0 {
-			records = append(records, m.toolDisclosures[id])
+		if id := m.toolDisclosures.idAt(index); id != 0 {
+			records = append(records, m.toolDisclosures.get(id))
 		}
 	}
 	if len(records) != 2 {
@@ -883,11 +883,11 @@ func TestCompletedToolDisclosureSurvivesDiskReloadWithoutRawResults(t *testing.T
 	reopened := testAcquireSession(t, reopenedStore, "tools-reload")
 	m := newReplModel()
 	m.hydrateHistory(testSessionHistory(t, reopened), "tools-reload")
-	if len(m.toolDisclosures) != 1 {
-		t.Fatalf("reloaded tool disclosures = %d, want 1", len(m.toolDisclosures))
+	if m.toolDisclosures.count() != 1 {
+		t.Fatalf("reloaded tool disclosures = %d, want 1", m.toolDisclosures.count())
 	}
 	var record *toolDisclosureRecord
-	for _, candidate := range m.toolDisclosures {
+	for _, candidate := range m.toolDisclosures.all() {
 		record = candidate
 	}
 	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))

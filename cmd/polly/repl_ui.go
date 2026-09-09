@@ -138,9 +138,7 @@ type replModel struct {
 	activeToolsPhase int
 	// Tool activity is a semantic disclosure from its first call. It defaults
 	// collapsed; deliberate expansion reveals every live or completed row.
-	toolDisclosures           map[int64]*toolDisclosureRecord
-	toolDisclosureAt          map[int]int64 // transcript index -> disclosure ID
-	toolDisclosureSeq         int64
+	toolDisclosures           transcriptRegistry[*toolDisclosureRecord]
 	turnToolDisclosureID      int64
 	turnToolDisclosureIDs     []int64 // every disclosure opened this turn
 	toolDisclosurePlacements  []disclosurePlacement
@@ -325,13 +323,12 @@ type toolDisclosureRow struct {
 }
 
 type toolDisclosureRecord struct {
-	id              int64
-	transcriptIndex int
-	rows            []toolDisclosureRow
-	expanded        bool
-	imagesExpanded  bool
-	agentsExpanded  bool
-	complete        bool
+	transcriptAnchor
+	rows           []toolDisclosureRow
+	expanded       bool
+	imagesExpanded bool
+	agentsExpanded bool
+	complete       bool
 }
 
 type approvalState struct {
@@ -347,8 +344,6 @@ func newReplModel() *replModel {
 	baseDir, _ := os.Getwd()
 	m := &replModel{
 		currentAssistant: -1,
-		toolDisclosures:  make(map[int64]*toolDisclosureRecord),
-		toolDisclosureAt: make(map[int]int64),
 		reasoningRecords: make(map[int64]*reasoningRecord),
 		reasoningAt:      make(map[int]int64),
 		reasoningWidth:   80,

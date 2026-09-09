@@ -318,7 +318,7 @@ func (r *managedREPL) applySpawnRequests() bool {
 func (m *replModel) turnToolCallCount() int {
 	n := 0
 	for _, id := range m.turnToolDisclosureIDs {
-		if record := m.toolDisclosures[id]; record != nil {
+		if record := m.toolDisclosures.get(id); record != nil {
 			for _, row := range record.rows {
 				if !row.isProjectedAgent() {
 					n++

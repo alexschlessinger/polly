@@ -82,7 +82,7 @@ func rememberViewSections(m *replModel, s *viewState) {
 	if s.sections == nil {
 		s.sections = make(map[string]viewSection)
 	}
-	for _, r := range m.toolDisclosures {
+	for _, r := range m.toolDisclosures.all() {
 		if key := toolSectionKey(r); key != "" {
 			s.sections[key] = viewSection{tools: r.expanded, images: r.imagesExpanded, agents: r.agentsExpanded}
 		}
@@ -96,7 +96,7 @@ func rememberViewSections(m *replModel, s *viewState) {
 }
 
 func applyViewSections(m *replModel, s viewState) {
-	for _, r := range m.toolDisclosures {
+	for _, r := range m.toolDisclosures.all() {
 		if v, ok := s.sections[toolSectionKey(r)]; ok {
 			r.expanded, r.imagesExpanded, r.agentsExpanded = v.tools, v.images, v.agents
 			m.refreshToolDisclosureWithAnchor(r, false)

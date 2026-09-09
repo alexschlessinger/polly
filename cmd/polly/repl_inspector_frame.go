@@ -125,7 +125,7 @@ func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspec
 		}
 		searchAt := 0
 		for _, id := range block.toolDisclosureIDs {
-			r := m.toolDisclosures[id]
+			r := m.toolDisclosures.get(id)
 			if r == nil || !r.expanded {
 				continue
 			}

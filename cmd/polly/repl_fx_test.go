@@ -945,20 +945,20 @@ func TestToggleToolDisclosureGroupAppliesBeforeRefresh(t *testing.T) {
 		t.Fatal("group expand returned false")
 	}
 	for _, id := range ids {
-		if !m.toolDisclosures[id].expanded {
+		if !m.toolDisclosures.get(id).expanded {
 			t.Fatalf("disclosure %d not expanded after group expand", id)
 		}
 	}
 
 	// A mixed group still advertises an open control, so its first click must
 	// collapse every record rather than re-expand the closed member.
-	m.toolDisclosures[ids[1]].expanded = false
-	m.refreshToolDisclosure(m.toolDisclosures[ids[1]])
+	m.toolDisclosures.get(ids[1]).expanded = false
+	m.refreshToolDisclosure(m.toolDisclosures.get(ids[1]))
 	if !m.toggleToolDisclosureGroup(ids) {
 		t.Fatal("mixed group collapse returned false")
 	}
 	for _, id := range ids {
-		if m.toolDisclosures[id].expanded {
+		if m.toolDisclosures.get(id).expanded {
 			t.Fatalf("disclosure %d still expanded after mixed group collapse", id)
 		}
 	}

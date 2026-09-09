@@ -231,7 +231,7 @@ func TestInspectorWholeConversationAndDuplicateCallIDs(t *testing.T) {
 		}
 		seen[tool.key] = true
 	}
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for _, row := range record.rows {
 			if !seen[row.inspectionKey] {
 				t.Fatal("inline row has no catalogue identity")
@@ -636,7 +636,7 @@ func TestInspectorSectionsAndLogicalAnchorSurviveRefreshAndEviction(t *testing.T
 	r.inspect(tabViewTarget(r.visibleTab()))
 	v := waitInspector(t, r, 140)
 	s := r.workspace().viewState(v.target)
-	for _, rec := range v.model.toolDisclosures {
+	for _, rec := range v.model.toolDisclosures.all() {
 		v.model.toggleToolDisclosure(rec.id)
 	}
 	rememberViewSections(v.model, s)
@@ -658,7 +658,7 @@ func TestInspectorSectionsAndLogicalAnchorSurviveRefreshAndEviction(t *testing.T
 	if !strings.Contains(plainCells(v.model.visual.rows[s.top]), "line 060:") {
 		t.Fatalf("lost logical anchor: %d %s", s.top, plainCells(v.model.visual.rows[s.top]))
 	}
-	for _, rec := range v.model.toolDisclosures {
+	for _, rec := range v.model.toolDisclosures.all() {
 		if !rec.expanded {
 			t.Fatal("expanded tools reset")
 		}
@@ -983,7 +983,7 @@ func TestSavedConversationInspectorLinksNestedAgents(t *testing.T) {
 	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "child"}})
 	v := waitInspector(t, r, 140)
 	var row *toolDisclosureRow
-	for _, record := range v.model.toolDisclosures {
+	for _, record := range v.model.toolDisclosures.all() {
 		for i := range record.rows {
 			if record.rows[i].callID == "gcall" {
 				row = &record.rows[i]

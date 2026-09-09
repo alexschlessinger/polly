@@ -50,12 +50,8 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 			m.resetCurrentThinking()
 		}
 	}
-	if id, ok := m.toolDisclosureAt[index]; ok {
-		delete(m.toolDisclosureAt, index)
-		delete(m.toolDisclosures, id)
-		if m.turnToolDisclosureID == id {
-			m.turnToolDisclosureID = 0
-		}
+	if record, ok := m.toolDisclosures.deleteLine(index); ok && m.turnToolDisclosureID == record.id {
+		m.turnToolDisclosureID = 0
 	}
 	m.transcript = slices.Delete(m.transcript, index, index+1)
 	if len(m.affordances.queued) > 0 {
@@ -74,13 +70,6 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 			m.reasoningAt[i-1] = id
 			delete(m.reasoningAt, i)
 			if record := m.reasoningRecords[id]; record != nil {
-				record.transcriptIndex = i - 1
-			}
-		}
-		if id, ok := m.toolDisclosureAt[i]; ok {
-			m.toolDisclosureAt[i-1] = id
-			delete(m.toolDisclosureAt, i)
-			if record := m.toolDisclosures[id]; record != nil {
 				record.transcriptIndex = i - 1
 			}
 		}
@@ -481,7 +470,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			entry = q.text
 		}
 		reasoningID := m.reasoningAt[i]
-		toolDisclosureID := m.toolDisclosureAt[i]
+		toolDisclosureID := m.toolDisclosures.idAt(i)
 		turnTrailerID := m.turnTrailers.idAt(i)
 		// Reasoning and tool activity render inline where they occur. In quiet
 		// mode the records still back the turn summary, but nothing extra is

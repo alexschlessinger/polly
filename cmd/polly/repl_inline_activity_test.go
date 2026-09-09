@@ -56,7 +56,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 	if !m.toggleImageDisclosureAt(images[0].X, images[0].Y) {
 		t.Fatal("Images hitbox did not expand")
 	}
-	record := m.toolDisclosures[activity.toolDisclosureIDs[0]]
+	record := m.toolDisclosures.get(activity.toolDisclosureIDs[0])
 	if record == nil || !record.imagesExpanded || record.expanded {
 		t.Fatalf("Images expansion changed Tools state: %#v", record)
 	}

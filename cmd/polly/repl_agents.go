@@ -115,7 +115,7 @@ func turnAgentLabel(n int) string {
 func (m *replModel) agentCounts(ids []int64) activityAgentCounts {
 	var counts activityAgentCounts
 	for _, id := range ids {
-		record := m.toolDisclosures[id]
+		record := m.toolDisclosures.get(id)
 		if record == nil {
 			continue
 		}
@@ -166,7 +166,7 @@ func turnAgentSummaryLabel(total, running, failed, canceled, paused int) string 
 }
 
 func (m *replModel) hasAgentRows() bool {
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for _, row := range record.rows {
 			if row.isAgent() {
 				return true
@@ -178,7 +178,7 @@ func (m *replModel) hasAgentRows() bool {
 
 func (m *replModel) agentsExpanded(ids []int64) bool {
 	for _, id := range ids {
-		if record := m.toolDisclosures[id]; record != nil && record.agentsExpanded {
+		if record := m.toolDisclosures.get(id); record != nil && record.agentsExpanded {
 			return true
 		}
 	}
@@ -221,7 +221,7 @@ func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 	var groups [][]rowRef
 	workflowGroups := map[string]int{}
 	for _, id := range ids {
-		record := m.toolDisclosures[id]
+		record := m.toolDisclosures.get(id)
 		if record == nil {
 			continue
 		}
@@ -298,7 +298,7 @@ func (m *replModel) toggleAgentDisclosureGroup(ids []int64) bool {
 	expand := !m.agentsExpanded(ids)
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(ids), func(bool) {
 		for _, id := range ids {
-			if record := m.toolDisclosures[id]; record != nil {
+			if record := m.toolDisclosures.get(id); record != nil {
 				record.agentsExpanded = expand
 			}
 		}
@@ -358,14 +358,14 @@ func (m *replModel) hydrateAgentSessions(parent string, summaries []sessions.Ses
 		}
 	}
 	counts := make(map[string]int)
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for _, row := range record.rows {
 			if row.isAgent() {
 				counts[row.callID]++
 			}
 		}
 	}
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for i := range record.rows {
 			row := &record.rows[i]
 			matches := byCall[row.callID]

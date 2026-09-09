@@ -16,7 +16,7 @@ import (
 
 func swarmTestRow(t *testing.T, m *replModel, callID string) *toolDisclosureRow {
 	t.Helper()
-	for _, record := range m.toolDisclosures {
+	for _, record := range m.toolDisclosures.all() {
 		for i := range record.rows {
 			if record.rows[i].callID == callID {
 				return &record.rows[i]
