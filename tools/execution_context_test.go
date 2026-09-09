@@ -81,7 +81,14 @@ func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *tes
 		t.Fatalf("member policy widened the parent's network policy: %+v", ec.Sandbox)
 	}
 	home := t.TempDir()
-	overlay := restrictiveSandboxOverlay(&MCPConfig{Sandbox: json.RawMessage(`{"allowNetwork":true,"writablePaths":["` + home + `"],"denyWrite":true,"denyDNS":true,"denyPaths":["` + home + `/.ssh"]}`)})
+	config, err := json.Marshal(sandbox.Config{
+		AllowNetwork: true, WritablePaths: []string{home},
+		DenyWrite: true, DenyDNS: true, DenyPaths: []string{filepath.Join(home, ".ssh")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := restrictiveSandboxOverlay(&MCPConfig{Sandbox: config})
 	kept, err := sandbox.ParseConfig(overlay)
 	if err != nil || kept == nil {
 		t.Fatalf("overlay: %v %v", kept, err)
