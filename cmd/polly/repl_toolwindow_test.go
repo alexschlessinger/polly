@@ -477,7 +477,7 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 
 	// The canceled trailer is the only way back to the turn's activity, and its
 	// controls derive solely from the dock ID copies in abandonCanceledTurn.
-	trailer := m.turnTrailers[m.turnTrailerSeq]
+	trailer := m.turnTrailers.latest()
 	if trailer == nil {
 		t.Fatal("canceled turn left no settled trailer")
 	}

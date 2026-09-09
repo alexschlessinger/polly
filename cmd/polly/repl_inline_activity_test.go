@@ -76,7 +76,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 		t.Fatalf("settlement did not collapse Images: record=%#v", record)
 	}
 	// The trailer is status only; the images stay on the inline row.
-	if trailer := m.turnTrailers[m.turnTrailerSeq]; trailer != nil && strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "images") {
+	if trailer := m.turnTrailers.latest(); trailer != nil && strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "images") {
 		t.Fatalf("settled trailer repeated the activity: %q", plainStyledText(m.transcript[trailer.transcriptIndex].text))
 	}
 	for _, block := range m.transcriptDisplayEntries(120) {
@@ -192,7 +192,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 			t.Fatalf("settled inline activity keeps its shape: %q", header)
 		}
 	}
-	trailer := m.turnTrailers[m.turnTrailerSeq]
+	trailer := m.turnTrailers.latest()
 	if trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "tool") {
 		t.Fatalf("final trailer should be status only: %#v", trailer)
 	}

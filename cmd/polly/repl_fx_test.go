@@ -807,7 +807,7 @@ func TestCompletedReasoningKeepsInlineHitbox(t *testing.T) {
 	if !m.toggleReasoningAt(visible[0].X, visible[0].Y, width) || !record.expanded {
 		t.Fatal("clicking the completed thought control did not open it")
 	}
-	if trailer := m.turnTrailers[m.turnTrailerSeq]; trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "thought") {
+	if trailer := m.turnTrailers.latest(); trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "thought") {
 		t.Fatalf("settled trailer = %#v", trailer)
 	}
 }

@@ -28,7 +28,7 @@ func TestTrailerExpansionReanchorsAcrossMergedActivity(t *testing.T) {
 	tui.AppendToolEnd(call, "ok", time.Second, nil)
 	tui.AppendAssistantText("Done.")
 	r.endTurn(nil)
-	trailer := m.turnTrailers[m.turnTrailerSeq]
+	trailer := m.turnTrailers.latest()
 	if trailer == nil {
 		t.Fatal("turn did not settle a trailer")
 	}

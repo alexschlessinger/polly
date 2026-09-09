@@ -36,10 +36,7 @@ func (m *replModel) setTranscriptImages(index int, images []transcriptImage) {
 }
 
 func (m *replModel) deleteTranscriptEntry(index int) {
-	if id, ok := m.turnTrailerAt[index]; ok {
-		delete(m.turnTrailerAt, index)
-		delete(m.turnTrailers, id)
-	}
+	m.turnTrailers.deleteLine(index)
 	if id, ok := m.reasoningAt[index]; ok {
 		delete(m.reasoningAt, index)
 		delete(m.reasoningRecords, id)
@@ -84,13 +81,6 @@ func (m *replModel) deleteTranscriptEntry(index int) {
 			m.toolDisclosureAt[i-1] = id
 			delete(m.toolDisclosureAt, i)
 			if record := m.toolDisclosures[id]; record != nil {
-				record.transcriptIndex = i - 1
-			}
-		}
-		if id, ok := m.turnTrailerAt[i]; ok {
-			m.turnTrailerAt[i-1] = id
-			delete(m.turnTrailerAt, i)
-			if record := m.turnTrailers[id]; record != nil {
 				record.transcriptIndex = i - 1
 			}
 		}
@@ -335,9 +325,7 @@ func (m *replModel) clearDisplay() {
 	m.resetAffordances()
 	m.clearToolDisclosures()
 	m.clearReasoningRecords()
-	m.turnTrailers = make(map[int64]*turnTrailerRecord)
-	m.turnTrailerAt = make(map[int]int64)
-	m.turnTrailerSeq = 0
+	m.turnTrailers.reset()
 	m.agentLinkPlacements = nil
 	m.agentDisclosurePlacements = nil
 	for i := range m.queue {
@@ -494,7 +482,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		}
 		reasoningID := m.reasoningAt[i]
 		toolDisclosureID := m.toolDisclosureAt[i]
-		turnTrailerID := m.turnTrailerAt[i]
+		turnTrailerID := m.turnTrailers.idAt(i)
 		// Reasoning and tool activity render inline where they occur. In quiet
 		// mode the records still back the turn summary, but nothing extra is
 		// projected into the transcript so script output stays clean.

@@ -1695,7 +1695,7 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	first.RecordTurnTokens(1000, 250)
 	first.RecordTurnTokens(1200, 300)
 	r.endTurn(nil)
-	firstTrailer := m.turnTrailers[m.turnTrailerSeq]
+	firstTrailer := m.turnTrailers.latest()
 	if got := plainStyledText(m.transcript[firstTrailer.transcriptIndex].text); !strings.Contains(got, "1.2k in / 300 out") {
 		t.Fatalf("first completed trailer = %q", got)
 	}
@@ -1705,7 +1705,7 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	second.RecordTurnTokens(800, 200)
 	r.endTurn(nil)
 
-	secondTrailer := m.turnTrailers[m.turnTrailerSeq]
+	secondTrailer := m.turnTrailers.latest()
 	if got := plainStyledText(m.transcript[secondTrailer.transcriptIndex].text); !strings.Contains(got, "800 in / 200 out") || strings.Contains(got, "2.0k") {
 		t.Fatalf("second completed trailer should show only this turn, got %q", got)
 	}

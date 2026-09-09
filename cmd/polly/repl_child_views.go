@@ -197,7 +197,7 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.reasoningRecords, m.reasoningAt, m.reasoningOrder = next.reasoningRecords, next.reasoningAt, next.reasoningOrder
 	m.reasoningSeq, m.reasoningWidth = next.reasoningSeq, next.reasoningWidth
 	m.turnReasoningID, m.turnReasoningIDs = next.turnReasoningID, next.turnReasoningIDs
-	m.turnTrailers, m.turnTrailerAt, m.turnTrailerSeq = next.turnTrailers, next.turnTrailerAt, next.turnTrailerSeq
+	m.turnTrailers = next.turnTrailers
 	m.turnDock = next.turnDock
 	mergeChildAttachments(m, next)
 	m.adoptRestoredDraft(next)

@@ -42,7 +42,7 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 	if plain != "  ✓ 34.0s · 18.6k in / 1.2k out" {
 		t.Errorf("settled trailer = %q, want the status row alone", plain)
 	}
-	if len(m.turnTrailers) != 1 {
+	if m.turnTrailers.count() != 1 {
 		t.Fatalf("attached trailer records = %#v", m.turnTrailers)
 	}
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(160)), "\n"))
@@ -268,10 +268,10 @@ func TestHydratedHistoryRestoresAttachedTrailers(t *testing.T) {
 	if !strings.Contains(transcript, "1.0k in / 200 out") || !strings.Contains(transcript, "1.8k in / 350 out") {
 		t.Fatalf("hydrated turn trailers missing: %q", transcript)
 	}
-	if m.turnDock.visible || len(m.turnTrailers) != 2 {
+	if m.turnDock.visible || m.turnTrailers.count() != 2 {
 		t.Fatalf("hydrated trailers/dock = trailers:%#v dock:%#v", m.turnTrailers, m.turnDock)
 	}
-	latest := m.turnTrailers[m.turnTrailerSeq]
+	latest := m.turnTrailers.latest()
 	// No duration survives in history, so the row is the outcome and tokens.
 	if plain := plainStyledText(m.transcript[latest.transcriptIndex].text); plain != "  ✓ · 1.8k in / 350 out" {
 		t.Fatalf("latest hydrated trailer = %q", plain)
@@ -289,7 +289,7 @@ func TestHydratedTurnWithoutUsageLeavesNoTrailer(t *testing.T) {
 		{Role: messages.MessageRoleUser, Content: "first"},
 		{Role: messages.MessageRoleAssistant, Content: "first answer"},
 	}, "ctx")
-	if len(m.turnTrailers) != 0 {
+	if m.turnTrailers.count() != 0 {
 		t.Fatalf("usage-free turn attached a trailer: %#v", m.turnTrailers)
 	}
 	if transcript := plainStyledText(strings.Join(transcriptTexts(m), "\n")); strings.Contains(transcript, "✓") {

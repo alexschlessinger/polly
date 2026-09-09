@@ -41,9 +41,8 @@ type turnDockPlacement struct {
 // transcript: outcome, elapsed time, and tokens. The turn's activity stays
 // inline where it ran, with its own disclosures.
 type turnTrailerRecord struct {
-	id              int64
-	transcriptIndex int
-	dock            turnDockState
+	transcriptAnchor
+	dock turnDockState
 }
 
 type turnDockField struct {
@@ -426,12 +425,8 @@ func (m *replModel) attachTurnDockTrailer() {
 		m.clearTurnDock()
 		return
 	}
-	m.turnTrailerSeq++
-	record := &turnTrailerRecord{id: m.turnTrailerSeq, dock: dock}
 	m.appendLine(text)
-	record.transcriptIndex = len(m.transcript) - 1
-	m.turnTrailers[record.id] = record
-	m.turnTrailerAt[record.transcriptIndex] = record.id
+	m.turnTrailers.add(&turnTrailerRecord{dock: dock}, len(m.transcript)-1)
 	m.clearTurnDock()
 }
 

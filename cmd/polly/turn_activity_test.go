@@ -185,7 +185,7 @@ func TestTurnActivityScopeParity(t *testing.T) {
 	}
 	r.endTurn(nil)
 	var dock turnDockState
-	for _, trailer := range r.model.turnTrailers {
+	for _, trailer := range r.model.turnTrailers.all() {
 		dock = trailer.dock
 	}
 	a, b := line.activity.summary(), r.model.activitySummaryFor(dock)

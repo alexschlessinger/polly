@@ -96,7 +96,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	if record.agentsExpanded || record.imagesExpanded || record.expanded {
 		t.Fatalf("settled expansion = %+v", record)
 	}
-	if trailer := m.turnTrailers[m.turnTrailerSeq]; trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "agent") {
+	if trailer := m.turnTrailers.latest(); trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "agent") {
 		t.Fatalf("settled trailer = %#v", trailer)
 	}
 	settled := activityBlocks(m, 120)
@@ -433,7 +433,7 @@ func TestHydratedAgentGroupsStopAtAssistantProse(t *testing.T) {
 		}
 	}
 	// Each group keeps its own row; a usage-free history turn adds no trailer.
-	if len(m.turnTrailers) != 0 {
+	if m.turnTrailers.count() != 0 {
 		t.Fatalf("hydrated agent turn attached a trailer: %+v", m.turnTrailers)
 	}
 }

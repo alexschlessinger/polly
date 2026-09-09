@@ -149,9 +149,7 @@ type replModel struct {
 	agentLinkPlacements       []agentLink
 	inspectionLinks           []inspectionLink
 	turnDock                  turnDockState
-	turnTrailers              map[int64]*turnTrailerRecord
-	turnTrailerAt             map[int]int64
-	turnTrailerSeq            int64
+	turnTrailers              transcriptRegistry[*turnTrailerRecord]
 	modal                     *replModal
 
 	ed              lineEditor
@@ -351,8 +349,6 @@ func newReplModel() *replModel {
 		currentAssistant: -1,
 		toolDisclosures:  make(map[int64]*toolDisclosureRecord),
 		toolDisclosureAt: make(map[int]int64),
-		turnTrailers:     make(map[int64]*turnTrailerRecord),
-		turnTrailerAt:    make(map[int]int64),
 		reasoningRecords: make(map[int64]*reasoningRecord),
 		reasoningAt:      make(map[int]int64),
 		reasoningWidth:   80,

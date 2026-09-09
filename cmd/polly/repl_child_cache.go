@@ -183,15 +183,15 @@ func childDisplayCopy(src *replModel) *replModel {
 		copy.previewLines = slices.Clone(record.previewLines)
 		m.reasoningRecords[id] = &copy
 	}
-	m.turnTrailerAt = maps.Clone(src.turnTrailerAt)
-	m.turnTrailerSeq = src.turnTrailerSeq
 	m.turnDock = cloneViewDock(src.turnDock)
-	for id, record := range src.turnTrailers {
-		copy := *record
-		copy.dock = cloneViewDock(record.dock)
-		m.turnTrailers[id] = &copy
-	}
+	m.turnTrailers = src.turnTrailers.clone(cloneTurnTrailer)
 	return m
+}
+
+func cloneTurnTrailer(record *turnTrailerRecord) *turnTrailerRecord {
+	copy := *record
+	copy.dock = cloneViewDock(record.dock)
+	return &copy
 }
 
 func cloneViewDock(d turnDockState) turnDockState {
