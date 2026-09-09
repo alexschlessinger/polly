@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
@@ -278,4 +280,127 @@ func (t *turnExecution) finishOutput(resp *llm.AgentResponse) error {
 	}
 	t.turnUI.FinishTextTurn()
 	return nil
+}
+
+// executeTurn runs one turn on a prompt (plus --file inputs) and returns the
+// process exit code the turn's outcome maps to (0 end_turn, 2 max_tokens,
+// 3 max_iterations, 1 hard error) alongside any error. Only the one-shot
+// path acts on the code; the REPLs ignore it and consume just the error.
+func executeTurn(ctx context.Context, config *Config, state *conversationState, prompt string, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI) (int, error) {
+	userMsg, err := buildMessageWithFiles(prompt, config.Files)
+	if err != nil {
+		return 1, fmt.Errorf("error processing files: %w", err)
+	}
+	return executeTurnWithUserMessage(ctx, config, state, userMsg, schema, inputReader, turnUI, false)
+}
+
+// executeTurnWithUserMessage is the shared turn body behind a caller-built
+// user message. The one-shot and fallback paths build theirs from --file;
+// the managed REPL builds a multimodal message from composer attachments.
+// reuseUser avoids persisting the same user message twice when an unchanged
+// restored draft is resubmitted: only an equivalent user message at the very
+// end of history is reused, so a missing, changed, or non-terminal message is
+// persisted normally. The phases live on turnExecution; this sequences them
+// and owns the turn UI's lifecycle.
+func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (exitCode int, finalErr error) {
+	t := &turnExecution{ctx: ctx, config: config, state: state, settings: &state.settings, schema: schema, userMsg: userMsg, reuseUser: reuseUser}
+	requestMessages, instructionWarnings, err := t.prepareRequest()
+	if err != nil {
+		return 1, err
+	}
+
+	if turnUI == nil {
+		turnUI = newLineTurnUIWithCapabilities(config, inputReader, state.outputCapabilities)
+	}
+	t.turnUI = turnUI
+	turnUI.Start()
+	defer turnUI.Stop()
+	state.setTurnUI(turnUI)
+	defer state.setTurnUI(nil)
+	activityStart := time.Now()
+	completed := false
+	complete := func(reason messages.StopReason, err error) {
+		if !completed {
+			completed = true
+			turnUI.CompleteTurn(turnCompletion{Reason: reason, Err: err, Elapsed: time.Since(activityStart), ProgressSaved: err == nil || turnProgressSaved(err)})
+		}
+	}
+	defer func() {
+		if !completed {
+			if outputErr := flushTurnOutputError(turnUI); outputErr != nil {
+				finalErr, exitCode = errors.Join(finalErr, outputErr), 1
+			}
+			complete(messages.StopReasonError, finalErr)
+		}
+	}()
+	for _, warning := range instructionWarnings {
+		turnUI.AppendWarning(warning)
+	}
+
+	req := createCompletionRequest(config, t.settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
+	req.MaxContextTokens = resolveContextBudget(ctx, state)
+	req.CacheSessionID, err = state.session.CacheSessionID(ctx)
+	if err != nil {
+		return 1, fmt.Errorf("read session cache identity: %w", err)
+	}
+	if tui, ok := turnUI.(*gotuiTurnUI); ok {
+		t.reportIDs = tui.turn.reportIDs
+	}
+
+	// The sandbox probe started with the open and has normally long
+	// finished. A backend that cannot start fails the turn here, before the
+	// first request and before the user message persists, rather than as
+	// silent tool refusals later.
+	if err := state.sandboxProbe.wait(ctx); err != nil {
+		return 1, err
+	}
+
+	turnStart := time.Now()
+	line, lineOutput := turnUI.(*lineTurnUI)
+	t.settledOutput = lineOutput && !config.Stream && !line.interactive
+	if lineOutput {
+		line.settledOutput = t.settledOutput
+	}
+	callbacks := t.callbacks(req)
+	if state.swarm != nil {
+		updateSwarmDefaults(state, req, *t.settings)
+		state.swarm.BindParent(callbacks, turnUI.TurnPersistenceAllowed)
+	}
+	resp, err := state.agent.Run(ctx, req, callbacks)
+	if ctx.Err() != nil {
+		// Cancellation outranks whatever error the aborted run surfaced, but
+		// the turn still flows through persistence below: tools that completed
+		// changed the world whether or not the user hit cancel.
+		err = context.Cause(ctx)
+	}
+	if err != nil && !t.persistAttempted && !t.reusingPersistedUser {
+		// The run stopped before its first projection cleared the request.
+		err = fmt.Errorf("prompt was not added to the conversation: %w", err)
+	}
+	in, out := t.recordUsage(resp)
+
+	// Folding every later stage's error into runErr means the trailer and
+	// exit code below always describe the turn's final state, whichever
+	// stage failed.
+	runErr := t.settlePersistence(resp, err)
+	if runErr == nil {
+		runErr = t.finishOutput(resp)
+	}
+	if runErr != nil && t.settledOutput && config.SchemaPath == "" {
+		name, _ := state.session.GetName(context.WithoutCancel(ctx))
+		turnUI.AppendAssistantText(settledAnswer(resp, runErr, name))
+		turnUI.FinishTextTurn()
+	}
+
+	// The flush delivers every buffered answer byte; CompleteTurn only writes
+	// chrome to stderr afterwards, so the sticky stdout error is final here.
+	if outputErr := flushTurnOutputError(turnUI); outputErr != nil {
+		runErr = errors.Join(runErr, outputErr)
+	}
+	stopReason, code := classifyOutcome(resp, runErr)
+	complete(stopReason, runErr)
+	if config.Meta {
+		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, t.settings.Model, &t.stats, in, out, time.Since(turnStart).Milliseconds()))
+	}
+	return code, runErr
 }
