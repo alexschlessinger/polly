@@ -50,7 +50,7 @@ func integrationInputs(s *State, refs []TaskReference) ([]IntegrationInput, stri
 	run := ""
 	for _, ref := range refs {
 		t := s.Tasks[ref.Task]
-		if seen[ref.Task] || t == nil || t.Revision != ref.Revision || t.Status != "awaiting_review" || t.Snapshot == "" {
+		if seen[ref.Task] || t == nil || t.Revision != ref.Revision || !integrationTask(s, t) || t.Snapshot == "" {
 			return nil, "", fail("stale_task", "prepare requires unique current submitted editing task revisions")
 		}
 		seen[ref.Task] = true
@@ -110,7 +110,7 @@ func validCandidate(s *State, c *IntegrationCandidate) error {
 	}
 	for _, input := range append(append([]IntegrationInput{}, c.Inputs...), c.Repairs...) {
 		t := s.Tasks[input.Task]
-		if t == nil || t.Run != c.Run || t.Revision != input.Revision || t.Snapshot != input.Submitted.ID || t.Status != "awaiting_review" {
+		if t == nil || t.Run != c.Run || t.Revision != input.Revision || t.Snapshot != input.Submitted.ID || !integrationTask(s, t) {
 			return fail("stale_task", "candidate no longer names current submitted task revisions")
 		}
 	}

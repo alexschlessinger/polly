@@ -199,8 +199,11 @@ blocker; the parent accepts, requests changes with feedback, cancels, or updates
 assignment/dependencies. Changes requested sends a request back to the owner.
 Reassignment requires stopping an active owner. Cycles and cross-run dependencies
 are refused. Canceling a dependency blocks its dependents until the parent
-updates them. Editing tasks become done only after applying their accepted
-snapshot. A late execution cannot overwrite reassigned or canceled work.
+updates them. Accepting an editing snapshot with the same immutable tree as its
+original starting snapshot completes the task immediately. Changed snapshots
+become done after their accepted integration is applied. Explicit integration
+still supports accepted unchanged inputs, including a mixture of unchanged and
+changed tasks. A late execution cannot overwrite reassigned or canceled work.
 
 The first assignment creates a run. All assignments created before its successful
 settlement share its persisted execution budget. A completed run leaves findings

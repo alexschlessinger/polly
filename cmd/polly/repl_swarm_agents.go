@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
@@ -15,6 +14,14 @@ func swarmMemberActivity(s *swarm.State, member *swarm.Member) (string, bool) {
 	case "queued", "running", "waiting":
 		return member.Status, true
 	}
+	task := s.Tasks[member.Task]
+	// Retirement releases execution resources; it does not settle parent work.
+	if member.Status == "retired" {
+		if task != nil && task.Status != "done" && task.Status != "canceled" {
+			return "retired · " + swarm.TaskStatus(task), false
+		}
+		return "retired", false
+	}
 	if execution := s.Executions[member.Execution]; execution != nil {
 		if member.Status == "paused" && execution.StopReason == messages.StopReasonMaxIterations {
 			return fmt.Sprintf("paused · iteration limit reached (%d/%d)", execution.Iterations, execution.Request.MaxIterations), false
@@ -24,8 +31,8 @@ func swarmMemberActivity(s *swarm.State, member *swarm.Member) (string, bool) {
 		}
 	}
 	if member.Status == "idle" {
-		if task := s.Tasks[member.Task]; task != nil {
-			return strings.ReplaceAll(task.Status, "_", " "), false
+		if task != nil {
+			return swarm.TaskStatus(task), false
 		}
 		return "idle", false
 	}
@@ -77,7 +84,9 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 				}
 			}
 			if a.viewID != id || a.session != member.Name || a.status != status || a.active != active || !a.attached || a.inputTokens != in || a.outputTokens != out {
-				if a.active && !active && (status == "done" || status == "awaiting review") {
+				task := s.Tasks[member.Task]
+				awaitingReview := member.Status == "idle" && task != nil && task.Status == "awaiting_review"
+				if a.active && !active && (status == "done" || awaitingReview) {
 					m.noteAgentCompletion(record.id)
 				}
 				a.viewID, a.session, a.status = id, member.Name, status

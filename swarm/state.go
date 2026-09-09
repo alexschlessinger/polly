@@ -106,6 +106,9 @@ type Execution struct {
 	Result     *AgentResult           `json:"result,omitempty"`
 	Error      string                 `json:"error,omitempty"`
 	StopReason messages.StopReason    `json:"stopReason,omitempty"`
+
+	// The final-answer retry belongs to the logical execution across restores.
+	EmptyFinalRetried bool `json:"emptyFinalRetried,omitempty"`
 }
 type ExecutionContext struct {
 	Retiring bool               `json:"retiring,omitempty"`
@@ -387,7 +390,7 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 	var wake string
 	err := r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
-		if t == nil || t.Status != "awaiting_review" || t.Revision != revision {
+		if t == nil || revision <= 0 || t.Status != "awaiting_review" || t.Revision != revision {
 			return fail("stale_task", "review must name the current submitted revision")
 		}
 		if accept {
@@ -395,7 +398,7 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 				return errors.New("editing task has no integration candidate")
 			}
 			t.AcceptedRevision = t.Revision
-			if t.Snapshot == "" {
+			if t.Snapshot == "" || unchangedTask(s, t) {
 				t.Status = "done"
 			}
 		} else {

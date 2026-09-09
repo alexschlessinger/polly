@@ -167,3 +167,124 @@ func TestPausedAgentsAreNotCountedAsCompletedOrFailed(t *testing.T) {
 		t.Fatalf("live tool pause: %q", status)
 	}
 }
+
+func TestSwarmTaskProgressAcrossViews(t *testing.T) {
+	ctx := context.Background()
+	r := newSwarmTestREPL(t, integrationModel(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
+		return spawnTestReply("findings")
+	}), nil)
+	call := agentCall("review-call", `{"label":"review tests","background":true}`)
+	result, err := r.state.swarm.Agent(ctx, "", swarm.AgentRequest{Task: "review", Label: "review tests", ReadOnly: true, CallID: call.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := r.state.swarm.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := s.Members[result.Session]
+	execution, task := s.Executions[member.Execution], s.Tasks[member.Task]
+	r.visibleTab().swarmSnapshot = s
+	inline := newReplModel()
+	inline.affordances.enabled = true
+	inline.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "review"}, {Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}}}, "parent-work")
+	row := swarmTestRow(t, inline, call.ID)
+	r.inspect(viewTarget{session: sessions.ViewTarget{ID: member.ID, Name: member.Name}})
+	waitInspector(t, r, 180)
+	r.model.mu.Lock()
+	r.openSessionsPickerSelected(member.ID)
+	picker := r.model.modal
+	r.model.mu.Unlock()
+
+	for _, tc := range []struct {
+		name, member, execution, task, want, wantTask string
+		accepted, active                              bool
+	}{
+		{"running", "running", "running", "running", "running", "running", false, true},
+		{"accepted", "idle", "completed", "awaiting_review", "accepted · integration pending", "accepted · integration pending", true, false},
+		{"unreviewed", "idle", "completed", "awaiting_review", "awaiting review", "awaiting review", false, false},
+		{"retired accepted", "retired", "completed", "awaiting_review", "retired · accepted · integration pending", "accepted · integration pending", true, false},
+		{"retired unreviewed", "retired", "completed", "awaiting_review", "retired · awaiting review", "awaiting review", false, false},
+		{"done", "idle", "completed", "done", "done", "done", true, false},
+		{"retired done", "retired", "completed", "done", "retired", "done", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Only this display snapshot changes: the runtime, lease, and IDs stay fixed.
+			member.Status, execution.Status, task.Status = tc.member, tc.execution, tc.task
+			task.Snapshot, task.AcceptedRevision = "candidate", 0
+			if tc.accepted {
+				task.AcceptedRevision = task.Revision
+			}
+			inline.hydrateSwarmAgents(s)
+			if row.agent.status != tc.want || row.agent.active != tc.active || row.agent.viewID != member.ID {
+				t.Fatalf("inline projection: %+v", row.agent)
+			}
+			if tc.name == "accepted" && len(inline.affordances.agents) != 1 {
+				t.Fatal("acceptance before paint suppressed the completion cue")
+			}
+			r.model.mu.Lock()
+			r.refreshSessionsPickerItems(picker.picker, picker, member.ID)
+			item := pickerItem(t, picker, member.ID)
+			selected := pickerSelection(picker)
+			agents, _ := r.agentsStatus()
+			r.model.mu.Unlock()
+			if !strings.Contains(item.label, tc.want) || selected != member.ID {
+				t.Fatalf("picker projection: %+v, selected=%s", item, selected)
+			}
+			if (agents != "") != tc.active {
+				t.Fatalf("task state changed execution liveness: %q", agents)
+			}
+			header := r.inspectorHeader(180, 20, 0, 0)
+			if !strings.Contains(plainStyledText(header.text), tc.want) || !headerButton(header.buttons, "stop").Empty() != tc.active {
+				t.Fatalf("inspector projection: %s", header.text)
+			}
+			if text := swarmInspectorText(s, "members"); !strings.Contains(text, "review tests — "+tc.want) || !strings.Contains(text, "Execution: "+tc.execution) {
+				t.Fatalf("member inspector: %s", text)
+			}
+			text := swarmInspectorText(s, "tasks")
+			if !strings.HasPrefix(text, tc.wantTask+" · revision ") || !strings.Contains(text, "Acceptance criteria: "+task.Criteria) {
+				t.Fatalf("task inspector: %s", text)
+			}
+			if strings.Contains(text, "Accepted revision:") != tc.accepted {
+				t.Fatalf("task acceptance missing or fabricated: %s", text)
+			}
+			if len(r.tabs) != 1 || r.visibleTab().state.swarm == nil {
+				t.Fatal("projection acquired a child runtime or changed the parent")
+			}
+		})
+	}
+}
+
+func TestSwarmOpenRunDistinguishesActiveExecutionsFromPendingTasks(t *testing.T) {
+	s := &swarm.State{
+		Runs: map[string]*swarm.Run{"current": {ID: "current", Status: "running", Starts: 4, Limit: 256}},
+		Executions: map[string]*swarm.Execution{
+			"finished": {Run: "current", Status: "completed"},
+			"old":      {Run: "old", Status: "running"},
+		},
+		Tasks: map[string]*swarm.Task{
+			"pending":  {Run: "current", Status: "awaiting_review", Revision: 2, AcceptedRevision: 2, Snapshot: "candidate"},
+			"done":     {Run: "current", Status: "done"},
+			"canceled": {Run: "current", Status: "canceled"},
+			"old":      {Run: "old", Status: "awaiting_review"},
+		},
+	}
+	text := swarmInspectorText(s, "members")
+	if !strings.Contains(text, "open · active executions: 0 · pending tasks: 1 · 4 / 256 logical executions") {
+		t.Fatalf("open run looked like running agents: %s", text)
+	}
+	for _, status := range []string{"queued", "running", "waiting"} {
+		s.Executions[status] = &swarm.Execution{Run: "current", Status: status}
+	}
+	if text = swarmInspectorText(s, "members"); !strings.Contains(text, "open · active executions: 3 · pending tasks: 1") {
+		t.Fatalf("active execution count: %s", text)
+	}
+	s.Runs["current"].Status = "completed"
+	for _, e := range s.Executions {
+		e.Status = "completed"
+	}
+	s.Tasks["pending"].Status = "done"
+	if text = swarmInspectorText(s, "members"); !strings.Contains(text, "completed · active executions: 0 · pending tasks: 0") {
+		t.Fatalf("closed run: %s", text)
+	}
+}
