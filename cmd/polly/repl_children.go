@@ -240,11 +240,11 @@ func (r *managedREPL) requestSpawnLocked(req subagent.Request) {
 
 // applySpawnRequests performs the /spawn requests handlers recorded. Runs on
 // the event loop with no model lock held.
-func (r *managedREPL) applySpawnRequests() {
+func (r *managedREPL) applySpawnRequests() bool {
 	requests := r.spawnRequests
 	r.spawnRequests = nil
 	if r.quitting {
-		return
+		return false
 	}
 	for _, sr := range requests {
 		parent := sr.parent
@@ -310,6 +310,7 @@ func (r *managedREPL) applySpawnRequests() {
 			})
 		})
 	}
+	return len(requests) > 0
 }
 
 // turnToolCallCount counts the tool calls the current turn has made. Caller

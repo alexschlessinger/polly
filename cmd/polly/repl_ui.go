@@ -679,7 +679,6 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			if r.quitSettled() {
 				return nil
 			}
-			r.applyTabRequests()
 			r.render()
 		case <-r.quitDeadline:
 			// The grace for running turns is up; they are cut off.
@@ -741,7 +740,13 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			r.render()
 		case task := <-r.uiTasks:
 			task()
-			r.applyTabRequests()
+			r.render()
+		}
+		// Every arm may leave a recorded tab request behind (a queued /close
+		// drained by settleTabs, a picker choice landing with an open
+		// session), so the loop applies them once per iteration rather than
+		// trusting each arm to remember.
+		if r.applyTabRequests() {
 			r.render()
 		}
 	}

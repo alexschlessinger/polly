@@ -278,25 +278,32 @@ func (r *managedREPL) runningDescendants(parent *replTab) int {
 	return n
 }
 
-// applyTabRequests performs the tab changes handlers recorded. Runs on the
-// event loop with no model lock held.
-func (r *managedREPL) applyTabRequests() {
+// applyTabRequests performs the tab changes handlers recorded and reports
+// whether there were any. Runs on the event loop with no model lock held.
+func (r *managedREPL) applyTabRequests() bool {
+	applied := false
 	actions := r.workspaceActions
 	r.workspaceActions = nil
 	for _, action := range actions {
+		applied = true
 		action()
 	}
 	if req := r.childViewRequest; req != nil {
 		r.childViewRequest = nil
+		applied = true
 		r.showChildView(req)
 	}
-	r.applySpawnRequests()
+	if r.applySpawnRequests() {
+		applied = true
+	}
 	if r.closeTabRequest {
 		r.closeTabRequest = false
+		applied = true
 		r.closeVisibleTab()
 	}
 	if i := r.showTabRequest; i >= 0 {
 		r.showTabRequest = -1
+		applied = true
 		if i < len(r.tabs) {
 			tab := r.tabs[i]
 			if root := r.rootTab(tab); root != nil && root != tab {
@@ -307,6 +314,7 @@ func (r *managedREPL) applyTabRequests() {
 			}
 		}
 	}
+	return applied
 }
 
 // closeVisibleTab closes the visible tab's session and shows its left
