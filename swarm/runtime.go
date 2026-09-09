@@ -720,6 +720,12 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		return AgentResult{}, err
 	}
 	defer session.Close()
+	// The parent owns the scheduler, but this invocation also owns a leased
+	// child conversation. Losing either lease must stop its current work.
+	ctx, cancelMember := context.WithCancelCause(ctx)
+	stopMember := context.AfterFunc(session.Context(), func() { cancelMember(context.Cause(session.Context())) })
+	defer stopMember()
+	defer cancelMember(nil)
 	coord := session.(sessions.CoordinationSession)
 	if err = r.update(ctx, func(s *State) error {
 		s.Executions[i.id].Status = "running"
