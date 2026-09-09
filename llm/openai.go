@@ -90,76 +90,9 @@ func (o OpenAIClient) streamChatCompletions(ctx context.Context, req *Completion
 	slog.Debug("openai_chat_completion_started", "stream", isStreaming, "base_url", o.baseURL)
 
 	if isStreaming {
-		return o.handleStreamingChatCompletion(ctx, params, streamCore)
+		return streamChatCompletion(ctx, o.client, params, streamCore)
 	}
-	return o.handleNonStreamingChatCompletion(ctx, params, streamCore)
-}
-
-func (o OpenAIClient) handleStreamingChatCompletion(ctx context.Context, params *openai.ChatCompletionRequest, streamCore *streaming.StreamingCore) error {
-	for chunk, err := range o.client.StreamChatCompletion(ctx, params) {
-		if err != nil {
-			slog.Debug("openai_chat_stream_error", "error", err)
-			return fmt.Errorf("error during chat completions streaming: %w", err)
-		}
-		if err := streamCore.ProcessChunk(chunk); err != nil {
-			return err
-		}
-
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-		delta := chunk.Choices[0].Delta
-		// Reasoning first: it precedes the answer it produced, and emitting it
-		// after would invert that order for anything displaying the stream.
-		if reasoning := delta.ReasoningText(); reasoning != "" {
-			streamCore.EmitReasoning(reasoning)
-		}
-		if delta.Content != "" {
-			streamCore.EmitContent(delta.Content)
-		}
-	}
-
-	streamCore.CompleteStream()
-	return nil
-}
-
-func (o OpenAIClient) handleNonStreamingChatCompletion(ctx context.Context, params *openai.ChatCompletionRequest, streamCore *streaming.StreamingCore) error {
-	resp, err := o.client.CreateChatCompletion(ctx, params)
-	if err != nil {
-		slog.Debug("openai_chat_completion_failed", "error", err)
-		return fmt.Errorf("failed to create chat completion: %w", err)
-	}
-
-	if len(resp.Choices) > 0 {
-		choice := resp.Choices[0]
-		if reasoning := choice.Message.ReasoningText(); reasoning != "" {
-			streamCore.EmitReasoning(reasoning)
-		}
-		if choice.Message.Content != "" {
-			streamCore.EmitContent(choice.Message.Content)
-		}
-		for _, toolCall := range choice.Message.ToolCalls {
-			if toolCall.Type != "function" {
-				continue
-			}
-			streamCore.GetState().AddToolCall(messages.ChatMessageToolCall{
-				ID:        toolCall.ID,
-				Name:      toolCall.Function.Name,
-				Arguments: toolCall.Function.Arguments,
-			})
-		}
-		streamCore.SetStopReason(adapters.MapOpenAIFinishReason(choice.FinishReason))
-	}
-
-	if resp.Usage != nil {
-		streamCore.SetTokenUsage(int(resp.Usage.PromptTokens), int(resp.Usage.CompletionTokens))
-		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
-			streamCore.SetPromptCacheUsage(read, write)
-		}
-	}
-
-	streamCore.Complete()
-	return nil
+	return completeChatCompletion(ctx, o.client, params, streamCore)
 }
 
 func (o OpenAIClient) streamResponses(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
