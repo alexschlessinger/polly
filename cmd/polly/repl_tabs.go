@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -326,11 +327,11 @@ func (r *managedREPL) applyTabRequests() bool {
 	return applied
 }
 
-// closeVisibleTab closes the visible tab's session and shows its left
-// neighbor. Closing the last workspace replaces it with a fresh session
-// instead of leaving; only when no session can be made does it quit, which
-// closes every session on the way out. Runs on the event loop with no model
-// lock held.
+// closeVisibleTab closes the visible workspace, its agents included, and
+// shows its left neighbor. Closing the last workspace replaces it with a
+// fresh session instead of leaving; only when no session can be made does it
+// quit, which closes every session on the way out. Runs on the event loop
+// with no model lock held.
 func (r *managedREPL) closeVisibleTab() {
 	i := r.visibleTabIndex()
 	if i < 0 {
@@ -342,12 +343,50 @@ func (r *managedREPL) closeVisibleTab() {
 		}
 		return
 	}
-	tab := r.removeTab(i)
-	notice := "Closed " + tab.name
-	r.closeTabState(tab)
+	notice := r.closeWorkspace(r.tabs[i])
 	r.model.mu.Lock()
 	r.model.appendNoticeLine(notice)
 	r.model.mu.Unlock()
+}
+
+// closeWorkspace closes root and every tab beneath it: agents the user kept
+// open, delivered ones, and saved views all leave with the workspace they
+// belong to, deepest first, so no hidden tab outlives its root holding a
+// lease nothing lists. A running turn beneath the root was refused at
+// request time. It returns the transcript notice. Runs on the event loop
+// with no model lock held.
+func (r *managedREPL) closeWorkspace(root *replTab) string {
+	type member struct {
+		tab   *replTab
+		depth int
+	}
+	var descendants []member
+	for _, tab := range r.tabs {
+		if tab == root || r.rootTab(tab) != root {
+			continue
+		}
+		depth := 0
+		for p := tab.parent; p != nil && p != root && depth < len(r.tabs); p = p.parent {
+			depth++
+		}
+		descendants = append(descendants, member{tab, depth})
+	}
+	sort.SliceStable(descendants, func(i, j int) bool { return descendants[i].depth > descendants[j].depth })
+	for _, d := range descendants {
+		if i := r.tabIndexOfModel(d.tab.model); i >= 0 {
+			r.removeTab(i)
+			r.closeTabState(d.tab)
+		}
+	}
+	if i := r.tabIndexOfModel(root.model); i >= 0 {
+		r.removeTab(i)
+		r.closeTabState(root)
+	}
+	notice := "Closed " + root.name
+	if n := len(descendants); n > 0 {
+		notice += " and " + turnAgentLabel(n)
+	}
+	return notice
 }
 
 // replaceLastWorkspace starts a fresh generated session to stand in for the
@@ -591,10 +630,9 @@ func (r *managedREPL) finishOpen(res openResult) {
 	if old := r.replacingTab; old != nil {
 		r.replacingTab = nil
 		if i := r.tabIndexOfModel(old.model); i >= 0 && old.model != r.model {
-			r.removeTab(i)
-			r.closeTabState(old)
+			notice := r.closeWorkspace(old)
 			r.model.mu.Lock()
-			r.model.appendNoticeLine("Closed " + old.name)
+			r.model.appendNoticeLine(notice)
 			r.model.mu.Unlock()
 		}
 	}

@@ -811,3 +811,43 @@ func TestTurnContextFollowsSessionLeaseAndRunContext(t *testing.T) {
 		t.Fatal("a turn without a session must follow the run context alone")
 	}
 }
+
+// Closing a workspace closes the agents beneath it too, kept-open ones
+// included: their leases release with the root's instead of living on in
+// hidden tabs nothing lists.
+func TestClosingAWorkspaceClosesItsKeptOpenAgents(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "first-work", "second-work")
+	seed, err := store.Acquire(context.Background(), "agent", sessions.AcquireOptions{Parent: "second-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	agentState, err := r.opener.open(context.Background(), "agent", Settings{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.addTab(agentState); err != nil {
+		t.Fatal(err)
+	}
+	agent := r.visibleTab()
+	if agent.parent != r.tabs[1] {
+		t.Fatalf("agent tab parent = %v, want second-work", agent.parent)
+	}
+	agent.keepOpen = true // the user continued the conversation
+	r.showTab(1)
+
+	r.runTabCommand("/close")
+	r.work.wg.Wait()
+	if len(r.tabs) != 1 || r.tabs[0].name != "first-work" || r.visibleTabIndex() != 0 {
+		t.Fatalf("tabs after /close = %d, visible %d", len(r.tabs), r.visibleTabIndex())
+	}
+	if agentState.session.Context().Err() == nil {
+		t.Fatal("the kept-open agent's lease outlived its workspace")
+	}
+	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "Closed second-work and 1 agent") {
+		t.Fatalf("closing the workspace did not report its agent: %q", transcript)
+	}
+}
