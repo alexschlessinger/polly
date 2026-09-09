@@ -1074,6 +1074,14 @@ func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName,
 		// rules and DNS block the parent honored for it still apply.
 		config.Sandbox = restrictiveSandboxOverlay(config)
 	}
+	serverSpec := fmt.Sprintf("%s#%s", jsonFile, serverName)
+	return r.prepareMCPServerTools(config, serverName, namespace, serverSpec, nil)
+}
+
+// prepareMCPServerTools connects and wraps a resolved server configuration.
+// Callers own config rebinding, source spelling, and registration semantics.
+// A nil allowlist includes every tool; a non-nil empty one includes none.
+func (r *ToolRegistry) prepareMCPServerTools(config *MCPConfig, serverName, namespace, serverSpec string, allowed map[string]bool) ([]stagedToolRecord, []string, error) {
 	localProcess := config.Transport == "" || config.Transport == "stdio"
 	if localProcess {
 		if err := r.requireProcessSandbox("stdio MCP server"); err != nil {
@@ -1109,7 +1117,6 @@ func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName,
 		return nil, nil, err
 	}
 
-	serverSpec := fmt.Sprintf("%s#%s", jsonFile, serverName)
 	client.serverSpec = serverSpec
 
 	serverTools, err := client.ListTools()
@@ -1123,6 +1130,9 @@ func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName,
 	for _, tool := range serverTools {
 		s := tool.GetSchema()
 		if s == nil || s.Title() == "" {
+			continue
+		}
+		if allowed != nil && !allowed[s.Title()] {
 			continue
 		}
 
@@ -1356,51 +1366,6 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 	} else {
 		return fmt.Errorf("config has multiple servers, need specific server in spec")
 	}
-	localProcess := config.Transport == "" || config.Transport == "stdio"
-	if localProcess {
-		if err := r.requireProcessSandbox("stdio MCP server"); err != nil {
-			return err
-		}
-		if config.SandboxOptOut() && !r.unsafeNoSandbox {
-			return fmt.Errorf("MCP server %s requested sandbox:false; refusing without WithUnsafeNoSandbox", namespace)
-		}
-	}
-
-	// Create sandbox unless user opted out
-	var sb sandbox.Sandbox
-	var sbCfg sandbox.Config
-	var hasSandboxCfg bool
-	if localProcess && r.sandboxFactory != nil && !config.SandboxOptOut() {
-		overlayCfg, specErr := config.SandboxConfig()
-		if specErr != nil {
-			return fmt.Errorf("invalid sandbox config for MCP server %s: %w", namespace, specErr)
-		}
-		sb, sbCfg, err = r.newSandboxFor(namespace, overlayCfg)
-		if err != nil {
-			return fmt.Errorf("sandbox for MCP server %s: %w", namespace, err)
-		}
-		hasSandboxCfg = true
-	}
-
-	// Create client
-	var client *MCPClient
-	if hasSandboxCfg {
-		client, err = newMCPClientFromConfig(&config, sb, sbCfg)
-	} else {
-		client, err = newMCPClientFromConfig(&config, sb)
-	}
-	if err != nil {
-		return err
-	}
-	client.serverSpec = serverSpec
-
-	// Get all tools from server
-	tools, err := client.ListTools()
-	if err != nil {
-		client.Close()
-		return err
-	}
-
 	// Create a set of allowed tools for quick lookup
 	// Note: allowedTools contains namespaced names like "perp__perplexity_search_web"
 	allowed := make(map[string]bool)
@@ -1414,42 +1379,23 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 		}
 	}
 
+	records, toolNames, err := r.prepareMCPServerTools(&config, namespace, namespace, serverSpec, allowed)
+	if err != nil {
+		return err
+	}
+
 	// Register only allowed tools, replacing any earlier registration of the
 	// same server so its client is not stranded.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.dropServerToolsLocked(serverSpec)
-
-	var toolNames []string
-	for _, tool := range tools {
-		s := tool.GetSchema()
-		if s != nil && s.Title() != "" {
-			// Only register if this tool is in the allowed list
-			if allowed[s.Title()] {
-				// Create namespaced name
-				namespacedName := fmt.Sprintf("%s__%s", namespace, s.Title())
-
-				// Set source on the tool for persistence
-				if mcpTool, ok := tool.(*MCPTool); ok {
-					mcpTool.Source = serverSpec
-				}
-
-				// Wrap the tool to provide namespaced schema
-				wrappedTool := &NamespacedTool{
-					Tool:           tool,
-					namespacedName: namespacedName,
-				}
-				r.setToolLocked(namespacedName, wrappedTool, client)
-				toolNames = append(toolNames, namespacedName)
-				slog.Debug("mcp_tool_registered", "tool_name", namespacedName)
-			}
-		}
+	for _, record := range records {
+		r.setToolLocked(record.name, record.tool, record.client)
+		slog.Debug("mcp_tool_registered", "tool_name", record.name)
 	}
 
 	if len(toolNames) == 0 {
-		// Nothing refers to the client, so nothing would ever close it.
-		client.Close()
 		slog.Debug("mcp_server_closed", "server_name", GetMCPDisplayName(serverSpec), "reason", "no_allowed_tools")
 		return nil
 	}
