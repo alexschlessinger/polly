@@ -350,7 +350,7 @@ func TestMemberFinalPreservesHostContinuationAndCancellation(t *testing.T) {
 			r.config.Callbacks = func(context.Context, Member) *llm.AgentCallbacks {
 				return &llm.AgentCallbacks{
 					OnIterationUsage: func(int, int, int) { usages.Add(1) },
-					ContinueAfterFinal: func(context.Context, *messages.ChatMessage) ([]messages.ChatMessage, error) {
+					ContinueAfterFinal: func(callbackCtx context.Context, _ *messages.ChatMessage) ([]messages.ChatMessage, error) {
 						if callbackCalls.Add(1) > 1 {
 							return nil, nil
 						}
@@ -361,17 +361,31 @@ func TestMemberFinalPreservesHostContinuationAndCancellation(t *testing.T) {
 							return nil, hostError
 						default:
 							cancel()
+							// Agent forwards caller cancellation to its detached
+							// invocation from a separate goroutine. Exercise the
+							// wrapper only once that cancellation has arrived.
+							<-callbackCtx.Done()
 							return nil, nil
 						}
 					},
 				}
 			}
-			_, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true})
+			result, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true})
 			wantErr, wantCalls := ErrEmptyResult, int32(3)
 			if stop == "error" {
 				wantErr, wantCalls = hostError, 1
 			} else if stop == "cancel" {
 				wantErr, wantCalls = context.Canceled, 1
+				// The caller returns before the member finishes checkpointing.
+				// Join it before asserting that cancellation issued no retry.
+				waitCtx, stopWait := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stopWait()
+				s := waitIterationMember(t, waitCtx, r, result.Session)
+				for _, e := range s.Executions {
+					if e.Status != "paused" || e.Iterations != 1 || e.EmptyFinalRetried {
+						t.Fatalf("cancellation issued a retry: %+v", e)
+					}
+				}
 			}
 			if !errors.Is(err, wantErr) || modelCalls.Load() != wantCalls || callbackCalls.Load() != wantCalls || usages.Load() != wantCalls {
 				t.Fatalf("err=%v model=%d callbacks=%d usage=%d", err, modelCalls.Load(), callbackCalls.Load(), usages.Load())
