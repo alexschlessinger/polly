@@ -168,11 +168,7 @@ func (t *turnExecution) callbacks(req *llm.CompletionRequest) *llm.AgentCallback
 			turnUI.AppendToolEnd(tc, result, duration, err)
 		},
 		OnToolResult: func(tc messages.ChatMessageToolCall, result messages.ChatMessage) {
-			if receiver, ok := turnUI.(interface {
-				AppendToolResult(messages.ChatMessageToolCall, messages.ChatMessage)
-			}); ok {
-				receiver.AppendToolResult(tc, result)
-			}
+			turnUI.AppendToolResult(tc, result)
 			if images := inspectionTranscriptImages(result, t.state.artifactStore); len(images) > 0 {
 				turnUI.AppendToolMedia(tc, images)
 			}

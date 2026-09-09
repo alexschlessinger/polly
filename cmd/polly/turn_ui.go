@@ -24,8 +24,14 @@ type TurnUI interface {
 	ShowThinking(chunk string)
 	AppendAssistantText(content string)
 	AppendToolStart(calls []messages.ChatMessageToolCall)
-	ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool
+	// ApproveToolCalls asks for each call's approval. ctx ends a pending
+	// request when the execution behind it ends; requester names the swarm
+	// member asking, or is "" for this turn's own calls.
+	ApproveToolCalls(ctx context.Context, requester string, calls []messages.ChatMessageToolCall) []bool
 	AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error)
+	// AppendToolResult surfaces the exact tool result the model saw, for
+	// surfaces that inspect it.
+	AppendToolResult(call messages.ChatMessageToolCall, result messages.ChatMessage)
 	// AppendToolMedia surfaces exact typed image parts that entered the model's
 	// tool result. It is separate from text/path discovery so UIs can pin a
 	// trustworthy inspection receipt without exposing arbitrary tool output.
@@ -47,23 +53,45 @@ type TurnUI interface {
 	TurnPersistenceAllowed() bool
 }
 
-// Context-aware screens can revoke a pending request when its execution ends.
-// Keep this optional for surfaces that handle their own synchronous prompts.
+// approveToolCalls asks ui for approval unless the execution asking has
+// already ended.
 func approveToolCalls(ctx context.Context, ui TurnUI, requester string, calls []messages.ChatMessageToolCall) []bool {
 	if ctx.Err() != nil {
 		return denyToolCalls(calls)
 	}
-	if screen, ok := ui.(interface {
-		ApproveToolCallsContext(context.Context, string, []messages.ChatMessageToolCall) []bool
-	}); ok {
-		return screen.ApproveToolCallsContext(ctx, requester, calls)
-	}
-	return ui.ApproveToolCalls(calls)
+	return ui.ApproveToolCalls(ctx, requester, calls)
 }
+
+func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	return make([]bool, len(calls))
+}
+
+func approveAllToolCalls(calls []messages.ChatMessageToolCall) []bool {
+	approved := make([]bool, len(calls))
+	for i := range approved {
+		approved[i] = true
+	}
+	return approved
+}
+
+// turnUIBase is the no-op behaviour a TurnUI embeds for the events it has
+// no use for: lifecycle brackets, TUI-only meters, and persistence gates
+// that always allow.
+type turnUIBase struct{}
+
+func (turnUIBase) Start()                                                              {}
+func (turnUIBase) Stop()                                                               {}
+func (turnUIBase) AppendToolResult(messages.ChatMessageToolCall, messages.ChatMessage) {}
+func (turnUIBase) RecordContextUsage(int, int, bool)                                   {}
+func (turnUIBase) FinishTextTurn()                                                     {}
+func (turnUIBase) UserMessagePersistenceStarted()                                      {}
+func (turnUIBase) UserMessagePersistenceFinished(bool)                                 {}
+func (turnUIBase) TurnPersistenceAllowed() bool                                        { return true }
 
 // lineTurnUI streams raw output or owns a terminal Markdown tail and footer,
 // according to each stream's capabilities. It also serves fallback REPL turns.
 type lineTurnUI struct {
+	turnUIBase
 	settledOutput bool
 	// interactive marks a REPL turn: the answer streams as it arrives. Settled
 	// output, one answer after the run, is for one-shot and piped runs only.
@@ -265,13 +293,9 @@ func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	ui.activityToolsLocked("", calls)
 }
 
-func (ui *lineTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
+func (ui *lineTurnUI) ApproveToolCalls(_ context.Context, _ string, calls []messages.ChatMessageToolCall) []bool {
 	if ui.approver == nil {
-		approved := make([]bool, len(calls))
-		for i := range approved {
-			approved[i] = true
-		}
-		return approved
+		return approveAllToolCalls(calls)
 	}
 	// Children forward approvals from inside the parent's tool goroutines, so
 	// the stdin read must not hold toolMu: siblings keep consuming their
@@ -367,15 +391,6 @@ func (ui *lineTurnUI) RecordTurnTokens(in, out int) {
 		ui.activity.in, ui.activity.out = in, out
 	}
 }
-
-// RecordContextUsage is TUI chrome: the line surface has no context meter.
-func (ui *lineTurnUI) RecordContextUsage(int, int, bool) {}
-
-func (ui *lineTurnUI) UserMessagePersistenceStarted() {}
-
-func (ui *lineTurnUI) UserMessagePersistenceFinished(persisted bool) {}
-
-func (ui *lineTurnUI) TurnPersistenceAllowed() bool { return true }
 
 func (ui *lineTurnUI) FinishTextTurn() {
 	ui.toolMu.Lock()

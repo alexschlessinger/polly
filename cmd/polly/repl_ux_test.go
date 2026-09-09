@@ -392,7 +392,7 @@ func TestApprovalEnterAndEscapeDenyWithoutQuitting(t *testing.T) {
 func TestEmptyToolApprovalDoesNotInstallBlockingPrompt(t *testing.T) {
 	r := newManagedREPL(&Config{Confirm: true}, "ctx", 0, 0)
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
-	if got := tui.ApproveToolCalls(nil); got != nil {
+	if got := tui.ApproveToolCalls(context.Background(), "", nil); got != nil {
 		t.Fatalf("empty approval = %v, want nil", got)
 	}
 	if r.model.approval != nil {

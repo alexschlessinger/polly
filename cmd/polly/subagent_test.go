@@ -34,7 +34,7 @@ type denyingTurnUI struct {
 	approvals int
 }
 
-func (d *denyingTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
+func (d *denyingTurnUI) ApproveToolCalls(_ context.Context, _ string, calls []messages.ChatMessageToolCall) []bool {
 	d.approvals++
 	return make([]bool, len(calls))
 }

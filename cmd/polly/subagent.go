@@ -36,12 +36,11 @@ func toolCallFrom(ctx context.Context) messages.ChatMessageToolCall {
 // childTurnUI reports child activity and routes approvals to the parent.
 // The swarm runtime owns the child's reply and usage.
 type childTurnUI struct {
+	turnUIBase
 	parent   TurnUI
 	activity *lineChildActivity
 }
 
-func (u *childTurnUI) Start() {}
-func (u *childTurnUI) Stop()  {}
 func (u *childTurnUI) ShowThinking(chunk string) {
 	if u.activity != nil && chunk != "" {
 		u.activity.phase(turnStateThinking)
@@ -52,10 +51,6 @@ func (u *childTurnUI) AppendWarning(text string) {
 		u.activity.warning(text)
 	}
 }
-func (u *childTurnUI) RecordContextUsage(int, int, bool)   {}
-func (u *childTurnUI) UserMessagePersistenceStarted()      {}
-func (u *childTurnUI) UserMessagePersistenceFinished(bool) {}
-func (u *childTurnUI) TurnPersistenceAllowed() bool        { return true }
 func (u *childTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 	if u.activity != nil {
 		u.activity.toolEnd(call, result, duration, err)
@@ -86,15 +81,11 @@ func (u *childTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	}
 }
 
-func (u *childTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
+func (u *childTurnUI) ApproveToolCalls(ctx context.Context, requester string, calls []messages.ChatMessageToolCall) []bool {
 	if u.parent != nil {
-		return u.parent.ApproveToolCalls(calls)
+		return u.parent.ApproveToolCalls(ctx, requester, calls)
 	}
-	approved := make([]bool, len(calls))
-	for i := range approved {
-		approved[i] = true
-	}
-	return approved
+	return approveAllToolCalls(calls)
 }
 
 func (u *childTurnUI) RecordTurnTokens(in, out int) {
@@ -102,8 +93,6 @@ func (u *childTurnUI) RecordTurnTokens(in, out int) {
 		u.activity.usage(in, out)
 	}
 }
-
-func (u *childTurnUI) FinishTextTurn() {}
 
 func (u *childTurnUI) CompleteTurn(completion turnCompletion) {
 	if u.activity != nil {

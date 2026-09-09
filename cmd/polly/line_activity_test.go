@@ -490,7 +490,9 @@ func TestLineActivityApprovalPromptDoesNotBlockSiblings(t *testing.T) {
 	const prompt = "allow? (Y/n/a): "
 
 	reviewApproved := make(chan []bool, 1)
-	go func() { reviewApproved <- review.ApproveToolCalls([]messages.ChatMessageToolCall{tool}) }()
+	go func() {
+		reviewApproved <- review.ApproveToolCalls(context.Background(), "", []messages.ChatMessageToolCall{tool})
+	}()
 	waitForStatusCount(t, status, prompt, 1)
 
 	siblingDone := make(chan struct{})
@@ -514,7 +516,9 @@ func TestLineActivityApprovalPromptDoesNotBlockSiblings(t *testing.T) {
 	// A second prompt waits its turn on the shared reader, so the answers
 	// line up with the prompts in order.
 	testsApproved := make(chan []bool, 1)
-	go func() { testsApproved <- tests.ApproveToolCalls([]messages.ChatMessageToolCall{tool}) }()
+	go func() {
+		testsApproved <- tests.ApproveToolCalls(context.Background(), "", []messages.ChatMessageToolCall{tool})
+	}()
 	fmt.Fprintln(answers, "y")
 	if got := <-reviewApproved; len(got) != 1 || !got[0] {
 		t.Fatalf("first approval = %v", got)

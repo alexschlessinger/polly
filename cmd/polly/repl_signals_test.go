@@ -146,7 +146,7 @@ func TestHiddenApprovalSignalsAndWakesTheLoop(t *testing.T) {
 	answered := make(chan []bool, 1)
 	runTurn := func(_ context.Context, _ string, turnUI TurnUI) error {
 		<-release
-		answered <- turnUI.ApproveToolCalls(calls)
+		answered <- turnUI.ApproveToolCalls(context.Background(), "", calls)
 		return nil
 	}
 	busy := startHiddenTurn(t, r, runTurn)
@@ -263,7 +263,7 @@ func TestApprovalSignalsDoNotWaitForTheVisibleTurn(t *testing.T) {
 	answered := make(chan []bool, 1)
 	runTurn := func(_ context.Context, _ string, turnUI TurnUI) error {
 		<-release
-		answered <- turnUI.ApproveToolCalls(calls)
+		answered <- turnUI.ApproveToolCalls(context.Background(), "", calls)
 		return nil
 	}
 	busy := startHiddenTurn(t, r, runTurn)

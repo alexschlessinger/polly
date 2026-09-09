@@ -10,6 +10,7 @@ import (
 // gotuiTurnUI: the TurnUI implementation that pokes the model under lock.
 
 type gotuiTurnUI struct {
+	turnUIBase
 	repl *managedREPL
 	// model is the screen model of the tab this turn started on. Every
 	// callback lands there, whichever tab is visible when it fires.
@@ -23,9 +24,6 @@ type gotuiTurnUI struct {
 	turn        managedTurnInput
 	persistence *turnPersistenceAck
 }
-
-func (t *gotuiTurnUI) Start() {}
-func (t *gotuiTurnUI) Stop()  {}
 
 func (t *gotuiTurnUI) UserMessagePersistenceStarted() {
 	t.persistence.beginPersistence()
@@ -61,10 +59,6 @@ func (r *managedREPL) bindMemberUI(tab *replTab) {
 		return
 	}
 	tab.state.setMemberUI(&gotuiTurnUI{repl: r, model: tab.model, config: r.config, state: tab.state})
-}
-
-func denyToolCalls(calls []messages.ChatMessageToolCall) []bool {
-	return make([]bool, len(calls))
 }
 
 func (t *gotuiTurnUI) ShowThinking(chunk string) {
@@ -126,11 +120,7 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	t.model.refreshToolDisclosure(record)
 }
 
-func (t *gotuiTurnUI) ApproveToolCalls(calls []messages.ChatMessageToolCall) []bool {
-	return t.ApproveToolCallsContext(context.Background(), "", calls)
-}
-
-func (t *gotuiTurnUI) ApproveToolCallsContext(ctx context.Context, requester string, calls []messages.ChatMessageToolCall) []bool {
+func (t *gotuiTurnUI) ApproveToolCalls(ctx context.Context, requester string, calls []messages.ChatMessageToolCall) []bool {
 	if len(calls) == 0 {
 		return nil
 	}
@@ -141,11 +131,7 @@ func (t *gotuiTurnUI) ApproveToolCallsContext(ctx context.Context, requester str
 	}
 	if !t.config.Confirm {
 		t.model.mu.Unlock()
-		approved := make([]bool, len(calls))
-		for i := range approved {
-			approved[i] = true
-		}
-		return approved
+		return approveAllToolCalls(calls)
 	}
 	a := &approvalState{ctx: ctx, requester: requester, calls: append([]messages.ChatMessageToolCall(nil), calls...), reply: make(chan []bool, 1)}
 	t.model.approvalQueue = append(t.model.approvalQueue, a)

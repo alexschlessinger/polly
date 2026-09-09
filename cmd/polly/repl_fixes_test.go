@@ -25,7 +25,7 @@ import (
 // isTerminal() is false here.
 func TestLineTurnUIAutoApprovesWhenNotInteractive(t *testing.T) {
 	tui := newLineTurnUI(&Config{Confirm: true}, bufio.NewReader(strings.NewReader("")))
-	approved := tui.ApproveToolCalls([]messages.ChatMessageToolCall{{Name: "bash"}})
+	approved := tui.ApproveToolCalls(context.Background(), "", []messages.ChatMessageToolCall{{Name: "bash"}})
 	if len(approved) != 1 || !approved[0] {
 		t.Fatalf("non-interactive --confirm should auto-approve, got %v", approved)
 	}
@@ -49,7 +49,7 @@ func TestLineTurnUIAutoApprovesWhenStdinIsNotTTY(t *testing.T) {
 	if tui.approver != nil {
 		t.Fatal("piped stdin must not create an approver, even when stdout/stderr are TTYs")
 	}
-	approved := tui.ApproveToolCalls([]messages.ChatMessageToolCall{{Name: "bash"}})
+	approved := tui.ApproveToolCalls(context.Background(), "", []messages.ChatMessageToolCall{{Name: "bash"}})
 	if len(approved) != 1 || !approved[0] {
 		t.Fatalf("piped stdin should auto-approve instead of denying on EOF, got %v", approved)
 	}

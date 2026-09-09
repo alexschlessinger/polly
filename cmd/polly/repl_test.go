@@ -1173,7 +1173,7 @@ func TestGotuiTurnUIDeniesApprovalWhileCanceling(t *testing.T) {
 	r.model.canceling = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: 1}
 
-	got := tui.ApproveToolCalls([]messages.ChatMessageToolCall{{Name: "bash"}})
+	got := tui.ApproveToolCalls(context.Background(), "", []messages.ChatMessageToolCall{{Name: "bash"}})
 	if len(got) != 1 || got[0] {
 		t.Fatalf("canceling turn should deny tool approval, got %v", got)
 	}
