@@ -176,11 +176,11 @@ func TestPrepareSessionImageRequestDoesNotDuplicateExactRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	retry, err := prepareSessionImageRequest(context.Background(), session, userMsg, true)
+	retry, err := prepareSessionImageRequest(testHistory(t, session), userMsg, true)
 	if err != nil || len(retry) != 1 {
 		t.Fatalf("exact retry projection = (%d, %v), want one message", len(retry), err)
 	}
-	ordinary, err := prepareSessionImageRequest(context.Background(), session, userMsg, false)
+	ordinary, err := prepareSessionImageRequest(testHistory(t, session), userMsg, false)
 	if err != nil || len(ordinary) != 2 {
 		t.Fatalf("ordinary duplicate projection = (%d, %v), want two messages", len(ordinary), err)
 	}
@@ -208,7 +208,7 @@ func TestPrepareSessionImageRequestRetainsHistoryBeyondModelBudget(t *testing.T)
 		}},
 	}
 
-	prepared, err := prepareSessionImageRequest(context.Background(), session, candidate, false)
+	prepared, err := prepareSessionImageRequest(testHistory(t, session), candidate, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestPrepareSessionImageRequestNormalizesLegacyImageWithoutRewriting(t *test
 		t.Fatal(err)
 	}
 
-	prepared, err := prepareSessionImageRequest(context.Background(), session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "next"}, false)
+	prepared, err := prepareSessionImageRequest(testHistory(t, session), messages.ChatMessage{Role: messages.MessageRoleUser, Content: "next"}, false)
 	if err != nil {
 		t.Fatalf("legacy GIF poisoned the upgraded request: %v", err)
 	}
@@ -862,4 +862,13 @@ func TestDetachedTurnRefusesLatePersistence(t *testing.T) {
 	if !newLineTurnUI(&Config{}, nil).TurnPersistenceAllowed() {
 		t.Fatal("the line UI must default to persisting")
 	}
+}
+
+func testHistory(t *testing.T, session sessions.Session) []messages.ChatMessage {
+	t.Helper()
+	history, err := session.GetHistory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return history
 }

@@ -381,7 +381,7 @@ func TestInitializeSessionFailsWhenSandboxRequestedButUnavailable(t *testing.T) 
 	store := testOpenMemoryStore(t, nil)
 	state, err := (&conversationOpener{config: &Config{
 		NoSkills: true,
-	}, sessionStore: store, cmd: getCommand()}).openNew(context.Background(), "", false, nil)
+	}, sessionStore: store, cmd: getCommand()}).openNew(context.Background(), "", false)
 	if err == nil {
 		t.Fatal("openNew() error = nil, want sandbox startup failure")
 	}
@@ -408,7 +408,7 @@ func TestInitializeSessionSucceedsWithoutSandboxWhenBackendUnavailable(t *testin
 	state, err := (&conversationOpener{config: &Config{
 		NoSandbox: true,
 		NoSkills:  true,
-	}, sessionStore: store, cmd: getCommand()}).openNew(context.Background(), "", false, nil)
+	}, sessionStore: store, cmd: getCommand()}).openNew(context.Background(), "", false)
 	if err != nil {
 		t.Fatalf("openNew() error = %v", err)
 	}
@@ -446,7 +446,7 @@ func TestInitializeSessionClosesRegistryWhenSkillRuntimeFails(t *testing.T) {
 		NoSandbox: true,
 		NoSkills:  true,
 		Tools:     []string{"bash"},
-	}, sessionStore: store, cmd: getCommand()}).openNew(context.Background(), "", false, nil)
+	}, sessionStore: store, cmd: getCommand()}).openNew(context.Background(), "", false)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("openNew() error = %v, want %v", err, wantErr)
 	}
@@ -512,7 +512,7 @@ func TestOpenConversationStateDefersSandboxProbeFailureToTurns(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	store := testOpenMemoryStore(t, nil)
-	state, err := (&conversationOpener{config: &Config{NoSkills: true, SandboxPreset: "base"}, sessionStore: store}).open(context.Background(), "probe-open", Settings{}, false, nil)
+	state, err := (&conversationOpener{config: &Config{NoSkills: true, SandboxPreset: "base"}, sessionStore: store}).open(context.Background(), "probe-open", Settings{}, false)
 	if err != nil {
 		t.Fatalf("open() error = %v, want the open to succeed with the probe pending", err)
 	}
@@ -562,12 +562,12 @@ func TestOpenConversationStateReportsSandboxFailureOverToolLoadFailure(t *testin
 
 	t.Run("command-line tools", func(t *testing.T) {
 		store := testOpenMemoryStore(t, nil)
-		_, err := (&conversationOpener{config: &Config{NoSkills: true, SandboxPreset: "base", Tools: []string{script}}, sessionStore: store}).open(context.Background(), "probe-tools", Settings{}, false, nil)
+		_, err := (&conversationOpener{config: &Config{NoSkills: true, SandboxPreset: "base", Tools: []string{script}}, sessionStore: store}).open(context.Background(), "probe-tools", Settings{}, false)
 		assertSandboxStartFailure(t, err)
 	})
 	t.Run("persisted tools", func(t *testing.T) {
 		store := testOpenMemoryStore(t, &sessions.Metadata{ActiveTools: []tools.ToolLoaderInfo{{Name: "probe_tool", Type: "shell", Source: script}}})
-		_, err := (&conversationOpener{config: &Config{NoSkills: true, SandboxPreset: "base"}, sessionStore: store}).open(context.Background(), "probe-resume", Settings{}, false, nil)
+		_, err := (&conversationOpener{config: &Config{NoSkills: true, SandboxPreset: "base"}, sessionStore: store}).open(context.Background(), "probe-resume", Settings{}, false)
 		assertSandboxStartFailure(t, err)
 	})
 }

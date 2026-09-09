@@ -382,7 +382,7 @@ func getOrCreateSession(ctx context.Context, store sessions.SessionStore, contex
 			err = fmt.Errorf("agent session changed: %w", sessions.ErrSessionNotFound)
 		}
 		if err != nil {
-			return nil, closeSessionAfterError(session, err)
+			return nil, closeAfterError(session, "session", err)
 		}
 	}
 	return session, nil

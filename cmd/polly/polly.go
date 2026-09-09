@@ -34,21 +34,17 @@ func main() {
 		// Signal cancellation travels through the ordinary command return path so
 		// session, store, and terminal defers all run before the process exits.
 		// Do not render that expected shutdown as a generic command error.
-		if code, remaining, ok := splitSignalError(err); ok {
-			if remaining != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", remaining)
-			}
-			cleanupAndExit(code)
-		}
+		code, report := 1, err
 		var ee *exitError
-		if errors.As(err, &ee) {
-			if ee.err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", ee.err)
-			}
-			cleanupAndExit(ee.code)
+		if signalCode, remaining, ok := splitSignalError(err); ok {
+			code, report = signalCode, remaining
+		} else if errors.As(err, &ee) {
+			code, report = ee.code, ee.err
 		}
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		cleanupAndExit(1)
+		if report != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", report)
+		}
+		cleanupAndExit(code)
 	}
 }
 
@@ -200,22 +196,14 @@ func updateMetadata(ctx context.Context, session sessions.Session, mutate func(*
 	return session.SetMetadata(ctx, md)
 }
 
-func closeSessionAfterError(session sessions.Session, cause error) error {
-	if session == nil {
+// closeAfterError releases a resource acquired before cause occurred, joining
+// a failed close (labelled what) onto cause so neither failure is lost.
+func closeAfterError(c io.Closer, what string, cause error) error {
+	if c == nil {
 		return cause
 	}
-	if err := session.Close(); err != nil {
-		return errors.Join(cause, fmt.Errorf("close session: %w", err))
-	}
-	return cause
-}
-
-func closeStoreAfterError(store sessions.SessionStore, cause error) error {
-	if store == nil {
-		return cause
-	}
-	if err := store.Close(); err != nil {
-		return errors.Join(cause, fmt.Errorf("close context store: %w", err))
+	if err := c.Close(); err != nil {
+		return errors.Join(cause, fmt.Errorf("close %s: %w", what, err))
 	}
 	return cause
 }
@@ -231,15 +219,17 @@ func (s *conversationState) changedInstructionWarnings(warnings []string) []stri
 	return warnings
 }
 
+// drainSandboxWarnings and sandboxWarningNotify are safe on a nil state and
+// on a state without a warner (Drain and Notify take a nil receiver).
 func (s *conversationState) drainSandboxWarnings() []string {
-	if s == nil || s.sandboxWarnings == nil {
+	if s == nil {
 		return nil
 	}
 	return s.sandboxWarnings.Drain()
 }
 
 func (s *conversationState) sandboxWarningNotify() <-chan struct{} {
-	if s == nil || s.sandboxWarnings == nil {
+	if s == nil {
 		return nil
 	}
 	return s.sandboxWarnings.Notify()
@@ -268,16 +258,16 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 	if config.UseLastContext {
 		contextID, err = sessionStore.GetLast(ctx)
 		if err != nil {
-			return nil, closeStoreAfterError(sessionStore, fmt.Errorf("failed to find last context: %w", err))
+			return nil, closeAfterError(sessionStore, "context store", fmt.Errorf("failed to find last context: %w", err))
 		}
 		if contextID == "" {
-			return nil, closeStoreAfterError(sessionStore, fmt.Errorf("no last context found"))
+			return nil, closeAfterError(sessionStore, "context store", fmt.Errorf("no last context found"))
 		}
 	}
 	if autoContext {
 		contextID, err = generateSessionName(ctx, sessionStore)
 		if err != nil {
-			return nil, closeStoreAfterError(sessionStore, err)
+			return nil, closeAfterError(sessionStore, "context store", err)
 		}
 	}
 
@@ -302,14 +292,15 @@ func generateSessionName(ctx context.Context, store sessions.SessionStore) (stri
 }
 
 // wantsAutoREPLContext reports whether this invocation will land in the
-// interactive REPL with no context of its own: no prompt or piped stdin, no
-// context-management flag, and a REPL-compatible flag set. Only those runs
+// interactive REPL with no context of its own: the same mode selection the
+// conversation makes later, minus a context-management flag. Only those runs
 // get an auto-generated persistent context.
 func wantsAutoREPLContext(config *Config) bool {
-	return !config.PromptSet &&
-		!hasStdinData() &&
-		!needsFileStore(config, "") &&
-		validateREPLConfig(config) == nil
+	if needsFileStore(config, "") {
+		return false
+	}
+	mode, err := selectConversationMode(config, hasStdinData())
+	return err == nil && mode == conversationModeREPL
 }
 
 func (r *commandRunner) Run() (retErr error) {
@@ -358,6 +349,10 @@ type conversationOpener struct {
 	llmClient    *llm.MultiPass
 	sessionStore sessions.SessionStore
 	cmd          *cli.Command
+	// displayContract and outputCapabilities describe the run's fixed output
+	// surface (see display_contract.go); every opened state carries them.
+	displayContract    string
+	outputCapabilities outputCapabilities
 }
 
 // openNew sets up everything a conversation needs: the session, its tool
@@ -365,12 +360,12 @@ type conversationOpener struct {
 // to stderr. Session metadata is staged on one object and written once, so
 // a failure part-way through persists nothing. On error every acquired
 // resource is released and nil is returned.
-func (o *conversationOpener) openNew(ctx context.Context, contextID string, autoContext bool, sandboxWarnings *broadWritablePathWarner) (*conversationState, error) {
+func (o *conversationOpener) openNew(ctx context.Context, contextID string, autoContext bool) (*conversationState, error) {
 	contextID, settings, err := o.prepare(ctx, contextID, notifyStderr)
 	if err != nil {
 		return nil, err
 	}
-	return o.open(ctx, contextID, settings, autoContext, sandboxWarnings)
+	return o.open(ctx, contextID, settings, autoContext)
 }
 
 func notifyStderr(line string) {
@@ -381,8 +376,8 @@ func notifyStderr(line string) {
 // runtime from the settings prepare resolved for it. It only reads config,
 // so the managed REPL may run it off the UI goroutine while the visible
 // session keeps serving input.
-func (o *conversationOpener) open(ctx context.Context, contextID string, settings Settings, autoContext bool, sandboxWarnings *broadWritablePathWarner) (state *conversationState, retErr error) {
-	config, llmClient, sessionStore, cmd := o.config, o.llmClient, o.sessionStore, o.cmd
+func (o *conversationOpener) open(ctx context.Context, contextID string, settings Settings, autoContext bool) (state *conversationState, retErr error) {
+	config, llmClient, sessionStore := o.config, o.llmClient, o.sessionStore
 	var err error
 	if llmClient == nil {
 		llmClient = llm.NewMultiPass(loadAPIKeys())
@@ -401,7 +396,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		if toolRegistry != nil {
 			_ = toolRegistry.Close()
 		}
-		retErr = closeSessionAfterError(session, retErr)
+		retErr = closeAfterError(session, "session", retErr)
 	}()
 	metadata, err := session.GetMetadata(ctx)
 	if err != nil {
@@ -426,6 +421,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	if err != nil {
 		return nil, err
 	}
+	sandboxWarnings := newBroadWritablePathWarner()
 	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, privatePaths...)
 	if err != nil {
 		return nil, err
@@ -466,7 +462,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	if err := autoActivateSkills(skillResult.autoActivate, skillRuntime); err != nil {
 		return nil, err
 	}
-	if err := updateContextInfo(ctx, session, metadata, &settings, cmd); err != nil {
+	if err := updateContextInfo(ctx, session, metadata, &settings); err != nil {
 		return nil, err
 	}
 
@@ -477,17 +473,19 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		ArtifactStore: artifactStore,
 	})
 	state = &conversationState{
-		sessionStore:    sessionStore,
-		session:         session,
-		settings:        settings,
-		agent:           agent,
-		artifactStore:   artifactStore,
-		toolRegistry:    toolRegistry,
-		skillCatalog:    skillResult.catalog,
-		skillRuntime:    skillRuntime,
-		skillSources:    skillResult.sources,
-		sandboxWarnings: sandboxWarnings,
-		sandboxProbe:    probe,
+		sessionStore:       sessionStore,
+		session:            session,
+		settings:           settings,
+		agent:              agent,
+		artifactStore:      artifactStore,
+		toolRegistry:       toolRegistry,
+		skillCatalog:       skillResult.catalog,
+		skillRuntime:       skillRuntime,
+		skillSources:       skillResult.sources,
+		sandboxWarnings:    sandboxWarnings,
+		sandboxProbe:       probe,
+		displayContract:    o.displayContract,
+		outputCapabilities: o.outputCapabilities,
 	}
 	registerSessionTitleTool(state)
 	if err := registerSwarm(state, config, llmClient); err != nil {
@@ -521,9 +519,8 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// The same warning-aware factory handles the startup probe and every final
 	// per-tool config produced later by the registry. One shared state suppresses
 	// repeats when the base grant appears in several effective configs.
-	factory := newSandbox
 	warningFactory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
-		sb, err := factory(cfg)
+		sb, err := newSandbox(cfg)
 		if err == nil && sb != nil {
 			warnings.Warn(cfg)
 		}
@@ -679,12 +676,7 @@ func broadWritablePathDenied(path string, denyWritePaths []string) bool {
 		return false
 	}
 	for _, denied := range denyWritePaths {
-		denied = filepath.Clean(denied)
-		if denied == "" {
-			continue
-		}
-		rel, err := filepath.Rel(denied, path)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if denied != "" && sandbox.PathWithin(path, filepath.Clean(denied)) {
 			return true
 		}
 	}
@@ -701,7 +693,8 @@ func (r *commandRunner) runConversation() (retErr error) {
 	// The frontend is fixed for the life of the run; resolve it once so the
 	// display contract and the REPL flavor cannot disagree.
 	managedREPL := supportsManagedREPL()
-	outputCapabilities := outputCapabilitiesForRun(input.mode, managedREPL)
+	r.outputCapabilities = outputCapabilitiesForRun(input.mode, managedREPL)
+	r.displayContract = displayContractFor(r.outputCapabilities)
 
 	// Initialize session state once so one-shot and REPL share the same runtime.
 	var entry *workspaceEntry
@@ -722,15 +715,14 @@ func (r *commandRunner) runConversation() (retErr error) {
 	var state *conversationState
 	if entry != nil && entry.root.InUse {
 		state = readOnlyConversationState(config, r.sessionStore, entry.root)
+		state.displayContract, state.outputCapabilities = r.displayContract, r.outputCapabilities
 	} else {
-		state, err = r.openNew(openCtx, contextID, r.autoContext, newBroadWritablePathWarner())
+		state, err = r.openNew(openCtx, contextID, r.autoContext)
 	}
 	if err != nil {
 		return err
 	}
 	state.workspaceEntry = entry
-	state.displayContract = displayContractFor(outputCapabilities)
-	state.outputCapabilities = outputCapabilities
 	session := state.session
 
 	// Set up signal handling
@@ -745,15 +737,7 @@ func (r *commandRunner) runConversation() (retErr error) {
 		// session that never ran a turn.
 		opener := &sessionOpener{
 			prepare: r.prepare,
-			open: func(ctx context.Context, name string, settings Settings, auto bool) (*conversationState, error) {
-				opened, err := r.open(ctx, name, settings, auto, newBroadWritablePathWarner())
-				if err != nil {
-					return nil, err
-				}
-				opened.displayContract = displayContractFor(outputCapabilities)
-				opened.outputCapabilities = outputCapabilities
-				return opened, nil
-			},
+			open:    r.open,
 			newName: func(ctx context.Context) (string, error) {
 				return generateSessionName(ctx, r.sessionStore)
 			},
@@ -811,14 +795,6 @@ func (r *commandRunner) runConversation() (retErr error) {
 	default:
 		return fmt.Errorf("unknown conversation mode")
 	}
-}
-
-func cacheSessionIDForSession(ctx context.Context, session sessions.Session) (string, error) {
-	id, err := session.CacheSessionID(ctx)
-	if err != nil {
-		return "", fmt.Errorf("read session cache identity: %w", err)
-	}
-	return id, nil
 }
 
 // discardUnusedAutoContext closes a generated context that never saw a turn,
@@ -967,9 +943,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 
 	req := createCompletionRequest(config, t.settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
 	req.MaxContextTokens = resolveContextBudget(ctx, state)
-	req.CacheSessionID, err = cacheSessionIDForSession(ctx, state.session)
+	req.CacheSessionID, err = state.session.CacheSessionID(ctx)
 	if err != nil {
-		return 1, err
+		return 1, fmt.Errorf("read session cache identity: %w", err)
 	}
 	if tui, ok := turnUI.(*gotuiTurnUI); ok {
 		t.reportIDs = tui.turn.reportIDs
@@ -1020,15 +996,13 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		turnUI.FinishTextTurn()
 	}
 
+	// The flush delivers every buffered answer byte; CompleteTurn only writes
+	// chrome to stderr afterwards, so the sticky stdout error is final here.
 	if outputErr := flushTurnOutputError(turnUI); outputErr != nil {
 		runErr = errors.Join(runErr, outputErr)
 	}
 	stopReason, code := classifyOutcome(resp, runErr)
 	complete(stopReason, runErr)
-	if outputErr := flushTurnOutputError(turnUI); outputErr != nil {
-		runErr = errors.Join(runErr, outputErr)
-		stopReason, code = classifyOutcome(resp, runErr)
-	}
 	if config.Meta {
 		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, t.settings.Model, &t.stats, in, out, time.Since(turnStart).Milliseconds()))
 	}
@@ -1080,11 +1054,6 @@ func externalizeMessageImages(ctx context.Context, msg messages.ChatMessage, sto
 	return msg, nil
 }
 
-// turnPersistenceAllowed asks the turn UI whether the turn may still write to
-// the session. The managed REPL declines for a turn it has detached (^C
-// cancellation timed out): newer turns may already be appending, so a late
-// write would interleave this turn's messages out of order. UIs without an
-// opinion allow persistence.
 // interruptedTurnMarker records why a partially persisted turn ended. The
 // internal role never reaches a provider; hydration uses it to settle the
 // turn and label it interrupted instead of leaving it looking abandoned.
@@ -1111,14 +1080,15 @@ func interruptedTurnMarker(cause error) messages.ChatMessage {
 // all-denied turn from looking like an incomplete composer draft.
 func durableTurnMessages(generated []messages.ChatMessage) []messages.ChatMessage {
 	stripped := llm.StripDeniedExchanges(generated)
+	deniedIDs := deniedToolCallIDs(generated)
 	allDenied := terminalToolBatchAllDenied(generated)
-	displayToolCalls := deniedDisplayToolCalls(generated)
+	displayToolCalls := deniedDisplayToolCalls(generated, deniedIDs)
 	if allDenied || displayToolCalls != "" {
 		metadata := make(map[string]any)
 		if allDenied {
 			metadata[messages.MetadataKeyTurnStatus] = messages.TurnStatusToolDenied
 		}
-		if reasoning, thinking := deniedDisplayReasoning(generated); reasoning != "" {
+		if reasoning, thinking := deniedDisplayReasoning(generated, deniedIDs); reasoning != "" {
 			metadata[messages.MetadataKeyDisplayReasoning] = reasoning
 			if thinking > 0 {
 				metadata[messages.MetadataKeyThinkingMillis] = int(max(thinking.Milliseconds(), 1))
@@ -1144,13 +1114,19 @@ type durableDisplayToolCall struct {
 	Denied bool   `json:"denied,omitempty"`
 }
 
-func deniedDisplayToolCalls(generated []messages.ChatMessage) string {
+// deniedToolCallIDs collects the IDs of the tool calls in generated whose
+// results are user denials.
+func deniedToolCallIDs(generated []messages.ChatMessage) map[string]struct{} {
 	deniedIDs := make(map[string]struct{})
 	for _, msg := range generated {
-		if msg.Role == messages.MessageRoleTool && msg.Content == llm.ToolDeniedContent {
+		if msg.Role == messages.MessageRoleTool && toolWasDenied(msg.Content) {
 			deniedIDs[msg.ToolCallID] = struct{}{}
 		}
 	}
+	return deniedIDs
+}
+
+func deniedDisplayToolCalls(generated []messages.ChatMessage, deniedIDs map[string]struct{}) string {
 	if len(deniedIDs) == 0 {
 		return ""
 	}
@@ -1192,13 +1168,7 @@ func decodeDisplayToolCalls(value any) []durableDisplayToolCall {
 // provider message and double-counting it as durable model reasoning. The
 // summed thinking time of those stripped messages rides along so the resumed
 // disclosure keeps its elapsed label.
-func deniedDisplayReasoning(generated []messages.ChatMessage) (string, time.Duration) {
-	deniedIDs := make(map[string]struct{})
-	for _, msg := range generated {
-		if msg.Role == messages.MessageRoleTool && msg.Content == llm.ToolDeniedContent {
-			deniedIDs[msg.ToolCallID] = struct{}{}
-		}
-	}
+func deniedDisplayReasoning(generated []messages.ChatMessage, deniedIDs map[string]struct{}) (string, time.Duration) {
 	var segments []string
 	var thinking time.Duration
 	for _, msg := range generated {
@@ -1236,7 +1206,7 @@ func terminalToolBatchAllDenied(generated []messages.ChatMessage) bool {
 			continue
 		}
 		seen = true
-		if msg.Content != llm.ToolDeniedContent {
+		if !toolWasDenied(msg.Content) {
 			return false
 		}
 	}
@@ -1306,19 +1276,16 @@ func equalContentParts(left, right []messages.ContentPart) bool {
 }
 
 // prepareSessionImageRequest projects the exact history that AddMessage will
-// expose to llm.Agent. Image hydration and context budgeting happen inside the
-// agent; this boundary only avoids duplicating an unchanged persisted draft.
-func prepareSessionImageRequest(ctx context.Context, session sessions.Session, userMsg messages.ChatMessage, reuseUser bool) ([]messages.ChatMessage, error) {
+// expose to llm.Agent, given the session's current history. Image hydration
+// and context budgeting happen inside the agent; this boundary only avoids
+// duplicating an unchanged persisted draft.
+func prepareSessionImageRequest(history []messages.ChatMessage, userMsg messages.ChatMessage, reuseUser bool) ([]messages.ChatMessage, error) {
 	if err := messages.ValidateImageMessage(userMsg); err != nil {
 		return nil, err
 	}
-	history, err := session.GetHistory(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read session history: %w", err)
-	}
 	reusingTerminalUser := reuseUser && historyEndsWithEquivalentUserMessage(history, userMsg)
 	if !reusingTerminalUser {
-		history = append(history, userMsg)
+		history = append(history[:len(history):len(history)], userMsg)
 	}
 	// llm.Agent now owns provider-visible image selection and context
 	// projection. The canonical transcript remains complete here.
@@ -1356,63 +1323,39 @@ func createCompletionRequest(config *Config, settings *Settings, history []messa
 func (o *conversationOpener) prepare(ctx context.Context, contextID string, notify func(string)) (string, Settings, error) {
 	config, sessionStore, cmd := o.config, o.sessionStore, o.cmd
 	settings := config.Launch.clone()
-	var needReset bool
-	var originalContextInfo *sessions.Metadata
+	if contextID == "" {
+		return contextID, settings, nil
+	}
 
-	// Load context settings if available
-	if contextID != "" {
-		metadata, err := sessionStore.GetAllMetadata(ctx)
-		if err != nil {
-			return "", Settings{}, fmt.Errorf("list context metadata: %w", err)
-		}
-		if contextInfo := metadata[contextID]; contextInfo != nil {
-			originalContextInfo = contextInfo
+	// GetAllMetadata is keyed by stored name, so an entry proves the session
+	// exists under contextID.
+	metadata, err := sessionStore.GetAllMetadata(ctx)
+	if err != nil {
+		return "", Settings{}, fmt.Errorf("list context metadata: %w", err)
+	}
+	contextInfo := metadata[contextID]
+	if contextInfo == nil {
+		return contextID, settings, nil
+	}
 
-			// Check if system prompt is being changed (only if context has
-			// existing conversation).
-			if cmd.IsSet("system") && cmd.String("system") != contextInfo.SystemPrompt {
-				// Check if there's an existing conversation to reset
-				exists, err := sessionStore.Exists(ctx, contextInfo.Name)
-				if err != nil {
-					return "", Settings{}, fmt.Errorf("check context %q: %w", contextInfo.Name, err)
-				}
-				if exists {
-					needReset = true
-					notify("System prompt changed, resetting conversation...")
-				}
-			}
-
-			// Persisted settings are authoritative for an existing session. Zero
-			// and empty values are intentional settings too, so copy every field
-			// that was not explicitly overridden on this invocation.
-			for _, spec := range settingSpecs {
-				if !spec.flagged() || cmd.IsSet(spec.key) {
-					continue
-				}
-				spec.fromMeta(&settings, contextInfo)
-			}
+	// Persisted settings are authoritative for an existing session. Zero
+	// and empty values are intentional settings too, so copy every field
+	// that was not explicitly overridden on this invocation.
+	for _, spec := range settingSpecs {
+		if spec.flagged() && !cmd.IsSet(spec.key) {
+			spec.fromMeta(&settings, contextInfo)
 		}
 	}
 
-	// Perform reset if system prompt changed
-	if needReset && originalContextInfo != nil {
-		// Get the context name
-		contextName := contextID
-		if originalContextInfo.Name != "" {
-			contextName = originalContextInfo.Name
-		}
-
-		// Reset the context
-		// Store an explicitly changed prompt before Clear: Clear rebuilds the
-		// system message from session metadata, including the meaningful empty
-		// prompt case.
-		if err := resetContextWithSystemPrompt(ctx, sessionStore, contextName, settings.SystemPrompt); err != nil {
+	if cmd.IsSet("system") && cmd.String("system") != contextInfo.SystemPrompt {
+		notify("System prompt changed, resetting conversation...")
+		// Store the explicitly changed prompt before Clear: Clear rebuilds
+		// the system message from session metadata, including the meaningful
+		// empty prompt case.
+		if err := resetContextWithSystemPrompt(ctx, sessionStore, contextID, settings.SystemPrompt); err != nil {
 			return "", Settings{}, fmt.Errorf("failed to reset context: %w", err)
 		}
-		// Context name remains the same after reset
-		contextID = contextName
 	}
-
 	return contextID, settings, nil
 }
 
@@ -1432,7 +1375,7 @@ func applyFlagSettings(md *sessions.Metadata, settings *Settings, cmd *cli.Comma
 // conversationOpener.prepare), so the copy is a no-op for an untouched row and an
 // override for a set flag. Name and LastUsed are storage-owned: SetMetadata
 // overwrites both, so they are not written here.
-func updateContextInfo(ctx context.Context, session sessions.Session, md *sessions.Metadata, settings *Settings, cmd *cli.Command) error {
+func updateContextInfo(ctx context.Context, session sessions.Session, md *sessions.Metadata, settings *Settings) error {
 	for _, spec := range settingSpecs {
 		if spec.flagged() {
 			spec.toMeta(settings, md)
@@ -1520,33 +1463,21 @@ func splitSignalError(err error) (int, error, bool) {
 	return code, stripShutdownSignal(err), true
 }
 
+// stripShutdownSignal drops every branch of a joined error tree that carries
+// the shutdown signal, keeping the independent failures joined beside it.
 func stripShutdownSignal(err error) error {
-	if err == nil {
-		return nil
-	}
-	if _, ok := err.(*shutdownSignal); ok {
-		return nil
-	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		children := joined.Unwrap()
-		remaining := make([]error, 0, len(children))
-		for _, child := range children {
+		var remaining []error
+		for _, child := range joined.Unwrap() {
 			if child = stripShutdownSignal(child); child != nil {
 				remaining = append(remaining, child)
 			}
 		}
 		return errors.Join(remaining...)
 	}
-	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
-		child := wrapped.Unwrap()
-		if child == nil {
-			return err
-		}
-		var shutdown *shutdownSignal
-		if !errors.As(child, &shutdown) {
-			return err
-		}
-		return stripShutdownSignal(child)
+	var shutdown *shutdownSignal
+	if errors.As(err, &shutdown) {
+		return nil
 	}
 	return err
 }
@@ -1592,7 +1523,7 @@ func writeStructured(stdout, stderr io.Writer, content string, schema *llm.Schem
 		fmt.Fprintln(stderr, content)
 		return fmt.Errorf("structured output is not valid JSON: %w", err)
 	}
-	if err := validateJSONAgainstSchema(content, schema); err != nil {
+	if err := schema.Validate(content); err != nil {
 		fmt.Fprintln(stderr, content)
 		return fmt.Errorf("structured output does not match the schema: %w", err)
 	}

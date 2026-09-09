@@ -147,7 +147,7 @@ func TestMissingZGDoesNotLoadSearchOrBreakSessionRestore(t *testing.T) {
 
 func initializeToolDefaultsTestSession(t *testing.T, config *Config, store sessions.SessionStore, name string) (sessions.Session, *tools.ToolRegistry) {
 	t.Helper()
-	state, err := (&conversationOpener{config: config, sessionStore: store, cmd: getCommand()}).openNew(context.Background(), name, false, nil)
+	state, err := (&conversationOpener{config: config, sessionStore: store, cmd: getCommand()}).openNew(context.Background(), name, false)
 	if err != nil {
 		t.Fatalf("openNew(%q): %v", name, err)
 	}
@@ -358,7 +358,7 @@ func TestUpdateContextInfoPreservesStoredSettingsWithoutFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := updateContextInfo(context.Background(), session, md, &settings, cmd); err != nil {
+	if err := updateContextInfo(context.Background(), session, md, &settings); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := session.GetMetadata(context.Background())

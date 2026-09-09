@@ -44,13 +44,3 @@ func loadSchemaFile(path string) (*llm.Schema, error) {
 		Strict: true, // Default to strict validation
 	}, nil
 }
-
-// validateJSONAgainstSchema validates JSON output against a schema with the
-// full JSON Schema validator, so nested constraints, enums, and
-// additionalProperties are enforced, not just the top-level type.
-func validateJSONAgainstSchema(content string, schema *llm.Schema) error {
-	if schema == nil {
-		return nil
-	}
-	return schema.Validate(content)
-}

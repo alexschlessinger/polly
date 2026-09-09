@@ -62,7 +62,7 @@ func (t *turnExecution) prepareRequest() ([]messages.ChatMessage, []string, erro
 			return nil, nil, fmt.Errorf("persist input artifacts: %w", err)
 		}
 	}
-	requestMessages, err := prepareSessionImageRequest(t.ctx, t.state.session, t.userMsg, t.reuseUser)
+	requestMessages, err := prepareSessionImageRequest(history, t.userMsg, t.reuseUser)
 	if err != nil {
 		return nil, nil, err
 	}
