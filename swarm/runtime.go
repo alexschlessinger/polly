@@ -719,7 +719,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if len(omitted) > 0 {
 		r.event("tools_omitted", m.ID, strings.Join(omitted, ", "))
 	}
-	session, err := r.config.Store.Acquire(ctx, m.Name, sessions.AcquireOptions{ExpectedID: m.ID, ExistingOnly: true})
+	session, err := r.acquireMemberSession(ctx, m)
 	if err != nil {
 		return AgentResult{}, err
 	}
@@ -1207,7 +1207,7 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 				return err
 			}
 			m := s.Members[memberID]
-			session, err := r.config.Store.Acquire(ctx, m.Name, sessions.AcquireOptions{ExpectedID: m.ID, ExistingOnly: true})
+			session, err := r.acquireMemberSession(ctx, m)
 			if err != nil {
 				return err
 			}
