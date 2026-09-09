@@ -162,11 +162,14 @@ func registerSwarmCommands(r *replCommandRegistry) {
 		if err != nil {
 			return replCommandResult{err: err}
 		}
-		var value any = state
+		var value any = struct {
+			Parent swarm.AgentPresentation `json:"parent"`
+			*swarm.State
+		}{runtime.ParentState(state), state}
 		if len(args) == 2 {
 			switch args[1] {
 			case "members":
-				value = state.Members
+				value = map[string]any{"parent": runtime.ParentState(state), "members": state.Members}
 			case "tasks":
 				value = state.Tasks
 			case "messages":
@@ -213,7 +216,9 @@ func registerSwarmCommands(r *replCommandRegistry) {
 	}})
 }
 
-func swarmInspectorText(s *swarm.State, section string) string {
+// swarmInspectorText renders one swarm section. The parent's own lifecycle
+// leads the members section when the caller has a live runtime to ask.
+func swarmInspectorText(s *swarm.State, parent *swarm.AgentPresentation, section string) string {
 	var b strings.Builder
 	jsonText := func(value any) string {
 		data, _ := json.MarshalIndent(value, "", "  ")
@@ -343,6 +348,9 @@ func swarmInspectorText(s *swarm.State, section string) string {
 			return "No " + section + " yet."
 		}
 		return b.String()
+	}
+	if parent != nil {
+		fmt.Fprintf(&b, "Parent — %s\n\n", parent.Display)
 	}
 	fmt.Fprintf(&b, "%d members · %d tasks · %d publications · %d workflows\n\n", len(s.Members), len(s.Tasks), len(s.Publications), len(s.Workflows))
 	for _, id := range swarmRecordIDs(s.Runs) {

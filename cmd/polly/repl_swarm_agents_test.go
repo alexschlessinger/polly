@@ -57,7 +57,7 @@ func TestSwarmIterationPauseRendersReasonAndResumesThroughCommand(t *testing.T) 
 	m.hydrateSwarmAgents(s)
 	row := swarmTestRow(t, m, call.ID)
 	want := "paused · iteration limit (1/1)"
-	if row.agent.display() != want || row.agent.busy() || !strings.Contains(swarmInspectorText(s, "members"), want) {
+	if row.agent.display() != want || row.agent.busy() || !strings.Contains(swarmInspectorText(s, nil, "members"), want) {
 		t.Fatalf("pause not visible: %+v", row.agent)
 	}
 	command := &replCommandContext{ctx: ctx, state: &conversationState{swarm: runtime}}
@@ -250,10 +250,10 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 			if !strings.Contains(plainStyledText(header.text), tc.want) || !headerButton(header.buttons, "stop").Empty() != tc.active {
 				t.Fatalf("inspector projection: %s", header.text)
 			}
-			if text := swarmInspectorText(s, "members"); !strings.Contains(text, "review tests — "+tc.want) || !strings.Contains(text, "Execution: "+tc.execution) {
+			if text := swarmInspectorText(s, nil, "members"); !strings.Contains(text, "review tests — "+tc.want) || !strings.Contains(text, "Execution: "+tc.execution) {
 				t.Fatalf("member inspector: %s", text)
 			}
-			text := swarmInspectorText(s, "tasks")
+			text := swarmInspectorText(s, nil, "tasks")
 			if !strings.HasPrefix(text, tc.wantTask+" · revision ") || !strings.Contains(text, "Acceptance criteria: "+task.Criteria) {
 				t.Fatalf("task inspector: %s", text)
 			}
@@ -281,14 +281,14 @@ func TestSwarmOpenRunDistinguishesActiveExecutionsFromPendingTasks(t *testing.T)
 			"old":      {Run: "old", Status: "awaiting_review"},
 		},
 	}
-	text := swarmInspectorText(s, "members")
+	text := swarmInspectorText(s, nil, "members")
 	if !strings.Contains(text, "open · active executions: 0 · pending tasks: 1 · 4 / 256 logical executions") {
 		t.Fatalf("open run looked like running agents: %s", text)
 	}
 	for _, status := range []string{"queued", "running", "waiting"} {
 		s.Executions[status] = &swarm.Execution{Run: "current", Status: status}
 	}
-	if text = swarmInspectorText(s, "members"); !strings.Contains(text, "open · active executions: 3 · pending tasks: 1") {
+	if text = swarmInspectorText(s, nil, "members"); !strings.Contains(text, "open · active executions: 3 · pending tasks: 1") {
 		t.Fatalf("active execution count: %s", text)
 	}
 	s.Runs["current"].Status = "completed"
@@ -296,7 +296,7 @@ func TestSwarmOpenRunDistinguishesActiveExecutionsFromPendingTasks(t *testing.T)
 		e.Status = "completed"
 	}
 	s.Tasks["pending"].Status = "done"
-	if text = swarmInspectorText(s, "members"); !strings.Contains(text, "completed · active executions: 0 · pending tasks: 0") {
+	if text = swarmInspectorText(s, nil, "members"); !strings.Contains(text, "completed · active executions: 0 · pending tasks: 0") {
 		t.Fatalf("closed run: %s", text)
 	}
 }

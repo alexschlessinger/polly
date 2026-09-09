@@ -53,6 +53,43 @@ func (r *managedREPL) workspaceShortcut(id string) (int, bool) {
 	return 0, false
 }
 
+// parentPresentation is the root's own swarm lifecycle. It is an in-memory
+// read over the event-loop-owned snapshot, safe on the paint path and current
+// between polls. Tabs without a runtime (read-only roots) report nothing.
+func (r *managedREPL) parentPresentation(tab *replTab) (swarm.AgentPresentation, bool) {
+	if tab == nil || tab.state == nil || tab.state.swarm == nil {
+		return swarm.AgentPresentation{}, false
+	}
+	return tab.state.swarm.ParentState(tab.swarmSnapshot), true
+}
+
+// tabHasSwarm reports whether the root ever delegated work. Every root owns
+// a runtime, so a parent outcome only means something once a run exists.
+func tabHasSwarm(tab *replTab) bool {
+	return tab != nil && tab.swarmSnapshot != nil && len(tab.swarmSnapshot.Runs) > 0
+}
+
+// parentInformative says whether a parent line adds anything to a listing.
+func parentInformative(p swarm.AgentPresentation) bool {
+	return p.Detail != "" || p.Lifecycle != swarm.LifecycleIdle
+}
+
+// tabActivityBusy reads the tab vocabulary: anything but idle and the settled
+// outcomes means a turn is in progress.
+func tabActivityBusy(status string) bool {
+	return status != "" && status != "done" && status != "failed" && status != "incomplete"
+}
+
+func joinStatus(parts ...string) string {
+	var kept []string
+	for _, part := range parts {
+		if part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, " · ")
+}
+
 // peekTabActivity reads what a tab's turn is doing without blocking: the
 // visible model is already locked by the caller, and another runtime that is
 // busy under its own lock reports a generic activity label.

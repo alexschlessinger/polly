@@ -64,7 +64,7 @@ func TestSpawnCommandUsesSwarmAuthorityAndCurrentSettings(t *testing.T) {
 		if !strings.Contains(notice, "Agent "+m.Name+" started") || strings.Contains(notice, m.ID) || !strings.Contains(notice, "/sessions") {
 			t.Fatalf("missing human session handle: %s", notice)
 		}
-		if text := swarmInspectorText(s, "members"); strings.Contains(text, "unknown") || !strings.Contains(text, "awaiting review") {
+		if text := swarmInspectorText(s, nil, "members"); strings.Contains(text, "unknown") || !strings.Contains(text, "awaiting review") {
 			t.Fatalf("member status: %s", text)
 		}
 	}

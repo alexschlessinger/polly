@@ -110,7 +110,7 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 			if tab := r.summaryTab(info); tab >= 0 {
 				status := r.peekTabActivity(r.tabs[tab])
 				approval = status == "approval needed"
-				active = status != "" && status != "done" && status != "failed" && status != "incomplete"
+				active = tabActivityBusy(status)
 			}
 		}
 		if approval || owned && p.Attention {
@@ -339,6 +339,11 @@ func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
 		}
 		if !owned && tab >= 0 {
 			status = r.tabActivityLine(r.tabs[tab])
+			// A root's own swarm lifecycle follows its turn outcome once the
+			// turn is over; while it runs, the turn's own label speaks.
+			if p, ok := r.parentPresentation(r.tabs[tab]); ok && row.depth == 0 && tabHasSwarm(r.tabs[tab]) && parentInformative(p) && !tabActivityBusy(r.peekTabActivity(r.tabs[tab])) {
+				status = joinStatus(status, p.Display)
+			}
 		}
 		switch {
 		case summary.ID == p.current:
@@ -513,6 +518,12 @@ func (r *managedREPL) agentsStatus() (text, color string) {
 		return "1 needs approval", "active"
 	case running > 0:
 		return turnAgentLabel(running) + " running", "run"
+	}
+	// A paused parent is the swarm's own unfinished business.
+	if root := r.rootTab(r.visibleTab()); root != nil {
+		if p, ok := r.parentPresentation(root); ok && tabHasSwarm(root) && p.Lifecycle == swarm.LifecyclePaused {
+			return "swarm " + p.Display, "active"
+		}
 	}
 	return "", ""
 }
