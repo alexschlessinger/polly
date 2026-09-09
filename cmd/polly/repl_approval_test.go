@@ -9,6 +9,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/swarm"
+	ui "github.com/metaspartan/gotui/v5"
 )
 
 func waitApprovalQueue(t *testing.T, m *replModel, active string, queued int) {
@@ -224,4 +225,67 @@ func TestParentAndMemberApprovalsStayOnHiddenWorkspace(t *testing.T) {
 	r.model.mu.Unlock()
 	assertApprovalResult(t, member, true)
 	assertApprovalResult(t, result, false)
+}
+
+func TestInlineApprovalRequiresRenderedRequest(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "parent-work")
+	r.config.Confirm = true
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	defer cancelSecond()
+	first := startMemberApproval(r, firstCtx, "one")
+	waitApprovalQueue(t, r.model, "one", 0)
+	r.model.mu.Lock()
+	r.model.renderInputForTerminal(6, 120)
+	r.model.mu.Unlock()
+	second := startMemberApproval(r, secondCtx, "two")
+	waitApprovalQueue(t, r.model, "one", 1)
+	cancelFirst()
+	assertApprovalResult(t, first, false)
+	waitApprovalQueue(t, r.model, "two", 0)
+	// The cancellation wakeup and an answer to the old prompt can both be
+	// waiting on the event loop. Handling the key first must not approve two.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "y"})
+	select {
+	case got := <-second:
+		t.Fatalf("unrendered request received the old prompt's answer: %v", got)
+	default:
+	}
+	r.model.mu.Lock()
+	if r.model.approval == nil || r.model.approval.requester != "two" {
+		r.model.mu.Unlock()
+		t.Fatal("unrendered request was resolved")
+	}
+	r.model.renderInputForTerminal(6, 120)
+	r.model.mu.Unlock()
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "y"})
+	assertApprovalResult(t, second, true)
+}
+
+func TestInlineApprovalRequiresRenderedBatchIndex(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "parent-work")
+	a := &approvalState{calls: []messages.ChatMessageToolCall{{ID: "one", Name: "bash"}, {ID: "two", Name: "bash"}}, reply: make(chan []bool, 1)}
+	r.model.mu.Lock()
+	r.model.approval = a
+	r.model.renderInputForTerminal(6, 120)
+	r.model.mu.Unlock()
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "y"})
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "a"})
+	r.model.mu.Lock()
+	if r.model.approval != a || a.index != 1 {
+		r.model.mu.Unlock()
+		t.Fatal("unrendered batch index was approved")
+	}
+	r.model.renderInputForTerminal(6, 120)
+	r.model.mu.Unlock()
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "y"})
+	select {
+	case got := <-a.reply:
+		if len(got) != 2 || !got[0] || !got[1] {
+			t.Fatalf("rendered batch approvals = %v", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("rendered batch did not complete")
+	}
 }

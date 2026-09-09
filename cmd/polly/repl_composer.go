@@ -305,10 +305,12 @@ func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, cur
 	if maxRows < 1 {
 		maxRows = 1
 	}
+	m.paintedApproval = nil
 	switch {
 	case m.hist.searching:
 		return m.hist.searchDisplay(), 0, 0, false
 	case m.approval != nil:
+		m.paintedApproval, m.paintedApprovalIndex = m.approval, m.approval.index
 		return m.approvalPromptRows(maxRows, width), 0, 0, false
 	}
 

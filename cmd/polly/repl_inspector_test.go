@@ -927,6 +927,7 @@ func TestEscapeDefersToApprovalAndSearchWhileInspecting(t *testing.T) {
 	m := r.model
 	approval := &approvalState{calls: []messages.ChatMessageToolCall{{ID: "1", Name: "bash"}}, reply: make(chan []bool, 1)}
 	m.approval = approval
+	m.renderInputForTerminal(6, 140)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
 	if !r.workspace().inspector.open {
 		t.Fatal("escape closed the inspector instead of answering the approval")

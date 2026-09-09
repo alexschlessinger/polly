@@ -373,6 +373,7 @@ func TestApprovalEnterAndEscapeDenyWithoutQuitting(t *testing.T) {
 				calls: []messages.ChatMessageToolCall{{Name: "bash"}},
 				reply: reply,
 			}
+			r.model.renderInputForTerminal(6, 120)
 			if quit := r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: key}); quit {
 				t.Fatalf("%s should deny, not quit", key)
 			}

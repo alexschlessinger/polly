@@ -163,6 +163,10 @@ type replModel struct {
 	approvalQueue   []*approvalState
 	approvalsClosed bool
 	hist            promptHistory
+	// Inline answers belong to the request and batch index shown by the last
+	// input frame, which may differ after a concurrent cancellation.
+	paintedApproval      *approvalState
+	paintedApprovalIndex int
 
 	// queue holds inputs submitted while a turn is in flight (the prompt stays
 	// editable during a turn). Commands remain text-only; prompts carry the
@@ -1422,6 +1426,9 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 
 	// Approval has its own keyset.
 	if m.approval != nil {
+		if m.approval != m.paintedApproval || m.approval.index != m.paintedApprovalIndex {
+			return false
+		}
 		switch e.ID {
 		case "y", "Y":
 			m.handleApprovalAnswer('y')
