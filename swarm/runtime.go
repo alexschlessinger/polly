@@ -1060,6 +1060,24 @@ func (r *Runtime) wake(memberID string) {
 	if active || memberID == r.ID {
 		return
 	}
+	// Launching takes launchMu, which a concurrent StopMember or launch may
+	// hold for a while. Send runs on the sender's own tool goroutine, so the
+	// decision and launch happen together off it.
+	go r.wakeIdleMember(memberID)
+}
+
+func (r *Runtime) wakeIdleMember(memberID string) {
+	r.launchMu.Lock()
+	defer r.launchMu.Unlock()
+	if r.closing || r.ctx.Err() != nil {
+		return
+	}
+	r.mu.Lock()
+	active := r.active[memberID] != nil
+	r.mu.Unlock()
+	if active {
+		return
+	}
 	s, err := r.read(r.ctx)
 	if err != nil {
 		return
@@ -1068,12 +1086,7 @@ func (r *Runtime) wake(memberID string) {
 	if m == nil || m.Status != "idle" || m.Controller != "" || !hasWakeMail(s, memberID) {
 		return
 	}
-	// Launching takes launchMu, which a concurrent StopMember or launch may
-	// hold for a while. Send runs on the sender's own tool goroutine, so the
-	// launch happens off it; the runtime's closing check still applies.
-	go func() {
-		_, _ = r.start(r.ctx, "", AgentRequest{Session: memberID, Task: "Respond to your pending addressed requests and report any resulting work."})
-	}()
+	_, _ = r.startLocked(r.ctx, "", AgentRequest{Session: memberID, Task: "Respond to your pending addressed requests and report any resulting work."})
 }
 
 // Resume continues a paused execution using its remaining iteration allowance.
