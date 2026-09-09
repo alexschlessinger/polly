@@ -95,12 +95,14 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	b.newline()
 	root := r.visibleTab()
 	isRoot := r.targetsVisibleTab(i.target)
-	name := i.target.session.Name
+	// An agent is named by its session, with the brief it was given after
+	// it; a root conversation goes by its name.
+	name, brief := i.target.session.Name, ""
 	if i.current != nil && i.current.info != nil && i.current.info.Metadata != nil {
 		metadata := i.current.info.Metadata
 		name = metadata.Name
-		if title := strings.Join(strings.Fields(metadata.Description), " "); !isRoot && title != "" {
-			name = title
+		if description := strings.Join(strings.Fields(metadata.Description), " "); !isRoot && description != "" {
+			brief = description
 		}
 	}
 	if name == "" {
@@ -133,6 +135,9 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		b.write(rw.Truncate(itemName, titleWidth, "…"), "accent", "bold", "parent")
 	} else {
 		b.write(rw.Truncate(name, titleWidth, "…"), "accent", "bold", "parent")
+		if room := titleWidth - rw.StringWidth(name) - 3; brief != "" && room >= 8 {
+			b.write(" · "+rw.Truncate(brief, room, "…"), "muted", "", "parent")
+		}
 	}
 
 	// The second row carries the item's state and its actions; it exists

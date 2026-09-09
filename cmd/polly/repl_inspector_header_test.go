@@ -187,7 +187,7 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 		}
 		checkInspectorHeaderGeometry(t, header, image.Rect(120, 0, 240, header.rows))
 	}
-	checkTitle(title)
+	checkTitle("merry-panda · " + title)
 	child.model.mu.Lock()
 	child.model.status.description = " \n "
 	child.model.mu.Unlock()
@@ -200,7 +200,7 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 	}
 	r.inspectorRefreshAt = time.Time{}
 	waitInspector(t, r, 240)
-	checkTitle(title)
+	checkTitle("merry-panda · " + title)
 	if len(r.tabs) != 1 || r.inspectionTab(target) != nil {
 		t.Fatal("showing a saved title activated the agent runtime")
 	}
