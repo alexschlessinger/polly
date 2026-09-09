@@ -51,7 +51,7 @@ func runManagedREPL(ctx context.Context, config *Config, state *conversationStat
 		}
 		// The exit code is a one-shot concern; the REPL already rendered
 		// any warning.
-		_, err := executeTurnWithUserMessage(turnCtx, config, tui.state, cloneChatMessage(tui.turn.userMessage), nil, nil, turnUI, tui.reuseUser)
+		_, err := executeTurnWithUserMessage(turnCtx, config, tui.state, tui.turn.userMessage.Clone(), nil, nil, turnUI, tui.reuseUser)
 		return err
 	})
 }

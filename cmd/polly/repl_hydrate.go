@@ -1,16 +1,12 @@
 package main
 
 import (
-	"bytes"
-	"encoding/base64"
 	"fmt"
-	"image"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
-	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -473,7 +469,7 @@ func restorableHistoryTurn(msg messages.ChatMessage, display string, simpleConte
 		case "image_base64":
 			// A normalized upgrade is portable by construction (NormalizeForModel
 			// bounds the edge and the bytes), so only its kind needs checking.
-			if upgraded, err := portableImagePart(part); err != nil || upgraded.Type != "image_base64" {
+			if upgraded, err := messages.PortableImagePart(part); err != nil || upgraded.Type != "image_base64" {
 				return managedTurnInput{}, false
 			}
 			imageCount++
@@ -493,39 +489,6 @@ func restorableHistoryTurn(msg messages.ChatMessage, display string, simpleConte
 		return managedTurnInput{}, false
 	}
 	return cloneManagedTurn(managedTurnInput{displayText: display, userMessage: msg}), true
-}
-
-func portablePersistedImagePart(part messages.ContentPart) bool {
-	return validatePortablePersistedImagePart(part) == nil
-}
-
-func validatePortablePersistedImagePart(part messages.ContentPart) error {
-	if len(part.ImageData) > maxPortableEncodedImageBytes {
-		return fmt.Errorf("encoded image uses %d bytes; per-image portable limit is 10,000,000 bytes (10 MB)", len(part.ImageData))
-	}
-	data, err := base64.StdEncoding.DecodeString(part.ImageData)
-	if err != nil || len(data) == 0 {
-		return fmt.Errorf("invalid or empty base64 data")
-	}
-	config, format, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil || config.Width <= 0 || config.Height <= 0 {
-		return fmt.Errorf("invalid raster image data")
-	}
-	if max(config.Width, config.Height) > uploadMaxLongEdge ||
-		int64(config.Width)*int64(config.Height) > maxLocalImagePixels {
-		return fmt.Errorf("image dimensions %dx%d exceed the prepared-image bounds", config.Width, config.Height)
-	}
-	if _, decodedFormat, err := image.Decode(bytes.NewReader(data)); err != nil || decodedFormat != format {
-		return fmt.Errorf("invalid %s image data", format)
-	}
-	wantMIME, ok := images.PortableMIMEType(format)
-	if !ok {
-		return fmt.Errorf("unsupported image format %q", format)
-	}
-	if part.MimeType != wantMIME {
-		return fmt.Errorf("image MIME %q does not match %q bytes", part.MimeType, format)
-	}
-	return nil
 }
 
 func historyUserSummary(msg messages.ChatMessage) (display string, restorable, contextOnly, notice bool) {

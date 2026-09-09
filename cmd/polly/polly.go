@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1294,7 +1293,7 @@ func settledAnswer(resp *llm.AgentResponse, runErr error, session string) string
 // content-addressed references. Artifact storage is authoritative, so a write
 // failure is returned instead of silently persisting a second inline format.
 func externalizeMessageImages(ctx context.Context, msg messages.ChatMessage, store artifacts.Store) (messages.ChatMessage, error) {
-	msg = cloneChatMessage(msg)
+	msg = msg.Clone()
 	for i, part := range msg.Parts {
 		if part.Type != "image_base64" || part.ImageData == "" {
 			continue
@@ -1306,7 +1305,7 @@ func externalizeMessageImages(ctx context.Context, msg messages.ChatMessage, sto
 		// normalized before its bytes become an immutable artifact: once
 		// externalized, the base64-only portability validation never sees it
 		// again and hydration would replay the bad MIME to providers forever.
-		part, err := portableImagePart(part)
+		part, err := messages.PortableImagePart(part)
 		if err != nil {
 			continue
 		}
@@ -1550,26 +1549,11 @@ func equalContentParts(left, right []messages.ContentPart) bool {
 	return true
 }
 
-// maxEncodedImageHistoryBytes is a portable request budget, not a provider
-// maximum. Counting the persisted base64 text (rather than decoded bytes)
-// keeps the projected inline request safely below the tightest native-client
-// request ceiling while leaving room for JSON and conversation text.
-const (
-	maxEncodedImageHistoryBytes = 16 << 20
-	// Anthropic's direct API caps each base64-encoded image at 10 MB. Keep the
-	// decimal byte limit here (not 10 MiB) so the shared request shape remains
-	// portable across direct and compatible endpoints.
-	maxPortableEncodedImageBytes = 10_000_000
-	// Anthropic's 200k-context models have the smallest native-client request
-	// limit: 100 images across the entire request, including earlier turns.
-	maxPortableRequestImages = 100
-)
-
 // prepareSessionImageRequest projects the exact history that AddMessage will
 // expose to llm.Agent. Image hydration and context budgeting happen inside the
 // agent; this boundary only avoids duplicating an unchanged persisted draft.
 func prepareSessionImageRequest(ctx context.Context, session sessions.Session, userMsg messages.ChatMessage, reuseUser bool) ([]messages.ChatMessage, error) {
-	if err := validatePreparedUserMessage(userMsg); err != nil {
+	if err := messages.ValidateImageMessage(userMsg); err != nil {
 		return nil, err
 	}
 	history, err := session.GetHistory(ctx)
@@ -1582,165 +1566,7 @@ func prepareSessionImageRequest(ctx context.Context, session sessions.Session, u
 	}
 	// llm.Agent now owns provider-visible image selection and context
 	// projection. The canonical transcript remains complete here.
-	return normalizeLegacyImagesForProjection(modelVisibleHistory(history)), nil
-}
-
-func normalizeLegacyImagesForProjection(history []messages.ChatMessage) []messages.ChatMessage {
-	normalized := make([]messages.ChatMessage, len(history))
-	for i, msg := range history {
-		normalized[i] = cloneChatMessage(msg)
-		for j, part := range normalized[i].Parts {
-			if upgraded, err := portableImagePart(part); err == nil {
-				normalized[i].Parts[j] = upgraded
-			}
-		}
-	}
-	return normalized
-}
-
-func validatePreparedUserMessage(msg messages.ChatMessage) error {
-	if _, err := preparePortableImageRequest([]messages.ChatMessage{msg}); err != nil {
-		return err
-	}
-	images := 0
-	for _, part := range msg.Parts {
-		if part.Type == "image_base64" || part.Type == "image_url" ||
-			(part.Artifact != nil && part.Artifact.Kind == artifacts.KindImage) {
-			images++
-		}
-	}
-	if images > maxPromptAttachments {
-		return fmt.Errorf("model-visible message 1 has %d images; portable maximum is %d", images, maxPromptAttachments)
-	}
-	return nil
-}
-
-func preparePortableImageRequest(history []messages.ChatMessage) ([]messages.ChatMessage, error) {
-	// Reject an oversized persisted request before decoding legacy base64 into a
-	// second in-memory copy.
-	if err := validateEncodedImageBudget(history); err != nil {
-		return nil, err
-	}
-	normalized := make([]messages.ChatMessage, len(history))
-	for messageIndex, msg := range history {
-		normalized[messageIndex] = cloneChatMessage(msg)
-		for partIndex, part := range normalized[messageIndex].Parts {
-			upgraded, err := portableImagePart(part)
-			if err != nil {
-				return nil, fmt.Errorf("model-visible message %d has a legacy image that cannot be normalized: %w", messageIndex+1, err)
-			}
-			normalized[messageIndex].Parts[partIndex] = upgraded
-		}
-	}
-	if err := validatePortableImageRequest(normalized); err != nil {
-		return nil, err
-	}
-	return normalized, nil
-}
-
-// portableImagePart returns part unchanged unless it is an inline image that
-// fails the portable contract, in which case it returns the normalized
-// upgrade with the original Reference carried over. Callers keep their own
-// failure policy; this is the one place the "upgrade if nonportable" test
-// lives.
-func portableImagePart(part messages.ContentPart) (messages.ContentPart, error) {
-	if part.Type != "image_base64" || portablePersistedImagePart(part) {
-		return part, nil
-	}
-	upgraded, err := upgradeLegacyImagePart(part)
-	if err != nil {
-		return messages.ContentPart{}, err
-	}
-	upgraded.Reference = part.Reference
-	return upgraded, nil
-}
-
-func upgradeLegacyImagePart(part messages.ContentPart) (messages.ContentPart, error) {
-	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(part.ImageData))
-	data, err := io.ReadAll(io.LimitReader(decoder, int64(maxLocalImageBytes)+1))
-	if err != nil || len(data) == 0 {
-		return messages.ContentPart{}, fmt.Errorf("invalid or empty base64 data")
-	}
-	if len(data) > maxLocalImageBytes {
-		return messages.ContentPart{}, fmt.Errorf("decoded image exceeds the %d MiB preparation limit", maxLocalImageBytes>>20)
-	}
-	if strings.EqualFold(strings.TrimSpace(part.MimeType), "image/svg+xml") || strings.EqualFold(filepath.Ext(part.FileName), ".svg") {
-		label := strings.TrimSpace(part.FileName)
-		if label == "" {
-			label = "legacy.svg"
-		}
-		return messages.ContentPart{Type: "text", Text: "[legacy SVG image omitted: " + label + "]", FileName: part.FileName}, nil
-	}
-	upgraded, err := prepareImageBytesForUpload(data, part.FileName)
-	if err != nil {
-		return messages.ContentPart{}, err
-	}
-	return *upgraded, nil
-}
-
-// validatePortableImageRequest enforces the common request shape accepted by
-// every native multimodal client. It deliberately validates the whole visible
-// history, not only the candidate: a legacy image in an earlier turn is replayed
-// to the provider too and can otherwise poison a restored draft or a new prompt.
-func validatePortableImageRequest(history []messages.ChatMessage) error {
-	if err := validateEncodedImageBudget(history); err != nil {
-		return err
-	}
-	totalImages := 0
-	for messageIndex, msg := range history {
-		imageCount := 0
-		for _, part := range msg.Parts {
-			switch part.Type {
-			case "image_base64":
-				imageCount++
-				totalImages++
-				if imageCount > maxPromptAttachments {
-					return fmt.Errorf("model-visible message %d has %d images; portable maximum is %d", messageIndex+1, imageCount, maxPromptAttachments)
-				}
-				if totalImages > maxPortableRequestImages {
-					return fmt.Errorf("model-visible history has %d images; portable request maximum is %d", totalImages, maxPortableRequestImages)
-				}
-				if err := validatePortablePersistedImagePart(part); err != nil {
-					return fmt.Errorf("model-visible message %d has a nonportable image: %w", messageIndex+1, err)
-				}
-			case "image_url":
-				return fmt.Errorf("model-visible message %d has an image URL; portable requests require prepared PNG, JPEG, or WebP bytes", messageIndex+1)
-			}
-		}
-	}
-	return nil
-}
-
-func validateEncodedImageBudget(history []messages.ChatMessage) error {
-	total := 0
-	for _, msg := range history {
-		for _, part := range msg.Parts {
-			switch part.Type {
-			case "image_base64":
-				total += len(part.ImageData)
-			case "image_url":
-				if strings.HasPrefix(part.ImageURL, "data:") {
-					if comma := strings.IndexByte(part.ImageURL, ','); comma >= 0 {
-						total += len(part.ImageURL) - comma - 1
-					}
-				}
-			}
-			if total > maxEncodedImageHistoryBytes {
-				return fmt.Errorf("encoded images in model-visible history would use %d bytes; portable limit is %d MiB", total, maxEncodedImageHistoryBytes>>20)
-			}
-		}
-	}
-	return nil
-}
-
-func modelVisibleHistory(history []messages.ChatMessage) []messages.ChatMessage {
-	visible := make([]messages.ChatMessage, 0, len(history))
-	for _, msg := range history {
-		if msg.Role != messages.MessageRoleInternal {
-			visible = append(visible, msg)
-		}
-	}
-	return visible
+	return messages.NormalizeImages(messages.ModelVisible(history)), nil
 }
 
 // createCompletionRequest builds an LLM completion request from the process

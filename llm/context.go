@@ -458,13 +458,7 @@ func previewWindows(data []byte) ([]byte, []byte) {
 // store state — unresolvable or ambiguous image references and the aggregate
 // request caps — so callers can reject a prompt before durably persisting it.
 func ValidateImageProjection(history []messages.ChatMessage) error {
-	visible := make([]messages.ChatMessage, 0, len(history))
-	for _, msg := range history {
-		if msg.Role != messages.MessageRoleInternal {
-			visible = append(visible, msg)
-		}
-	}
-	_, err := selectProjectedImages(visible)
+	_, err := selectProjectedImages(messages.ModelVisible(history))
 	return err
 }
 
@@ -1149,21 +1143,7 @@ func stripArtifactParts(history []messages.ChatMessage) []messages.ChatMessage {
 func cloneMessages(history []messages.ChatMessage) []messages.ChatMessage {
 	out := make([]messages.ChatMessage, len(history))
 	for i, msg := range history {
-		out[i] = msg
-		out[i].Parts = append([]messages.ContentPart(nil), msg.Parts...)
-		for j := range out[i].Parts {
-			if msg.Parts[j].Artifact != nil {
-				ref := *msg.Parts[j].Artifact
-				out[i].Parts[j].Artifact = &ref
-			}
-		}
-		out[i].ToolCalls = append([]messages.ChatMessageToolCall(nil), msg.ToolCalls...)
-		if msg.Metadata != nil {
-			out[i].Metadata = make(map[string]any, len(msg.Metadata))
-			for key, value := range msg.Metadata {
-				out[i].Metadata[key] = value
-			}
-		}
+		out[i] = msg.Clone()
 	}
 	return out
 }

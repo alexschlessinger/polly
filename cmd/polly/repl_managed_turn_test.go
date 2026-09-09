@@ -90,7 +90,7 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 			if len(r.model.queue) != 1 || r.model.queue[0].turn == nil {
 				t.Fatalf("queued prompt was not prepared: %#v", r.model.queue)
 			}
-			prepared := cloneChatMessage(r.model.queue[0].turn.userMessage)
+			prepared := r.model.queue[0].turn.userMessage.Clone()
 			queuedTranscriptIndex := r.model.queue[0].transcriptIndex
 			if len(managedImageBytes(t, prepared, artifactStore)) == 0 {
 				t.Fatal("prepared turn has no persisted image bytes")
@@ -101,7 +101,7 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 
 			seen := make(chan messages.ChatMessage, 1)
 			done := r.startNextQueued(context.Background(), func(_ context.Context, _ string, turnUI TurnUI) error {
-				seen <- cloneChatMessage(turnUI.(*gotuiTurnUI).turn.userMessage)
+				seen <- turnUI.(*gotuiTurnUI).turn.userMessage.Clone()
 				return nil
 			})
 			if done == nil {
@@ -285,7 +285,7 @@ func TestAttachmentProjectionDoesNotChargeHistoricalImages(t *testing.T) {
 	if err := session.AddMessage(context.Background(), messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{{
-			Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes), MimeType: "image/png",
+			Type: "image_base64", ImageData: strings.Repeat("A", messages.MaxEncodedImageHistoryBytes), MimeType: "image/png",
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -381,7 +381,7 @@ func TestAttachmentPreparationFailuresLeaveComposerDraft(t *testing.T) {
 }
 
 func TestManagedTurnPreparationDoesNotReplayUnpersistedCurrentImages(t *testing.T) {
-	data := strings.Repeat("A", (maxEncodedImageHistoryBytes/2)+1)
+	data := strings.Repeat("A", (messages.MaxEncodedImageHistoryBytes/2)+1)
 	imageMessage := messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{{
@@ -416,7 +416,7 @@ func TestProjectedBudgetHonorsQueuedResetBarrier(t *testing.T) {
 	if err := session.AddMessage(context.Background(), messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{{
-			Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes), MimeType: "image/png",
+			Type: "image_base64", ImageData: strings.Repeat("A", messages.MaxEncodedImageHistoryBytes), MimeType: "image/png",
 		}},
 	}); err != nil {
 		t.Fatal(err)

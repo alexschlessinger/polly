@@ -369,7 +369,7 @@ func TestPreparePortableImageRequestUpgradesLegacyMainImages(t *testing.T) {
 		},
 	}}
 
-	prepared, err := preparePortableImageRequest(history)
+	prepared, err := messages.PortableImageRequest(history)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -902,19 +902,19 @@ func TestPortableImagePartKeepsReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	valid.Reference = "[image #3]"
-	if got, err := portableImagePart(*valid); err != nil || !reflect.DeepEqual(got, *valid) {
+	if got, err := messages.PortableImagePart(*valid); err != nil || !reflect.DeepEqual(got, *valid) {
 		t.Fatalf("portable part changed: %+v, %v", got, err)
 	}
 	text := messages.ContentPart{Type: "text", Text: "hi"}
-	if got, err := portableImagePart(text); err != nil || got != text {
+	if got, err := messages.PortableImagePart(text); err != nil || got != text {
 		t.Fatalf("text part changed: %+v, %v", got, err)
 	}
 	legacy := messages.ContentPart{Type: "image_base64", ImageData: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", MimeType: "image/gif", FileName: "dot.gif", Reference: "[image #2]"}
-	got, err := portableImagePart(legacy)
+	got, err := messages.PortableImagePart(legacy)
 	if err != nil || got.Type != "image_base64" || got.MimeType != "image/png" || got.Reference != "[image #2]" {
 		t.Fatalf("legacy GIF upgrade = %+v, %v; want a PNG part keeping the reference", got, err)
 	}
-	if _, err := portableImagePart(messages.ContentPart{Type: "image_base64", ImageData: "%%%", MimeType: "image/png"}); err == nil {
+	if _, err := messages.PortableImagePart(messages.ContentPart{Type: "image_base64", ImageData: "%%%", MimeType: "image/png"}); err == nil {
 		t.Fatal("undecodable part upgraded without error")
 	}
 }

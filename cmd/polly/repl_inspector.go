@@ -243,7 +243,7 @@ func (r *managedREPL) refreshInspector(width int) {
 			source.model.inspections = m.inspections.navigation()
 			if tool != nil {
 				copy := *tool
-				copy.result = cloneChatMessage(tool.result)
+				copy.result = tool.result.Clone()
 				source.tool = &copy
 			}
 			if thought != nil {

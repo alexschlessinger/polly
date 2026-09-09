@@ -109,7 +109,7 @@ func (m *replModel) materializeQueuedImagesForReset(ctx context.Context) ([]queu
 }
 
 func materializeArtifactImageParts(ctx context.Context, msg messages.ChatMessage, store artifacts.Store) (messages.ChatMessage, error) {
-	msg = cloneChatMessage(msg)
+	msg = msg.Clone()
 	for i, part := range msg.Parts {
 		if part.Artifact == nil || part.Artifact.Kind != artifacts.KindImage {
 			continue
@@ -161,28 +161,9 @@ func (m *replModel) restoreQueuedImagesAfterReset(ctx context.Context, queue []q
 }
 
 func cloneManagedTurn(turn managedTurnInput) managedTurnInput {
-	turn.userMessage = cloneChatMessage(turn.userMessage)
+	turn.userMessage = turn.userMessage.Clone()
 	turn.reportIDs = append([]int64(nil), turn.reportIDs...)
 	return turn
-}
-
-func cloneChatMessage(msg messages.ChatMessage) messages.ChatMessage {
-	msg.Parts = append([]messages.ContentPart(nil), msg.Parts...)
-	for i := range msg.Parts {
-		if msg.Parts[i].Artifact != nil {
-			ref := *msg.Parts[i].Artifact
-			msg.Parts[i].Artifact = &ref
-		}
-	}
-	msg.ToolCalls = append([]messages.ChatMessageToolCall(nil), msg.ToolCalls...)
-	if msg.Metadata != nil {
-		metadata := make(map[string]any, len(msg.Metadata))
-		for key, value := range msg.Metadata {
-			metadata[key] = value
-		}
-		msg.Metadata = metadata
-	}
-	return msg
 }
 
 // beginManagedTurn echoes a user prompt and marks a turn in flight. Shared by

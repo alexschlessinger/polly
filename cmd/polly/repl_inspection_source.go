@@ -79,7 +79,7 @@ func (s *inspectionSource) setResult(call messages.ChatMessageToolCall, result m
 		s.startTool(call)
 		t = &s.tools[len(s.tools)-1]
 	}
-	t.result, t.available, t.complete = cloneChatMessage(result), true, true
+	t.result, t.available, t.complete = result.Clone(), true, true
 	if t.status == "running" {
 		t.status = "completed"
 	}
@@ -116,7 +116,7 @@ func (s *inspectionSource) appendThought(key *string, text string, segmentBreak 
 func (s inspectionSource) clone() inspectionSource {
 	s.tools = slices.Clone(s.tools)
 	for i := range s.tools {
-		s.tools[i].result = cloneChatMessage(s.tools[i].result)
+		s.tools[i].result = s.tools[i].result.Clone()
 	}
 	s.thoughts = slices.Clone(s.thoughts)
 	for i := range s.thoughts {

@@ -30,10 +30,9 @@ import (
 // source path. Deleting a token from the composer drops the attachment.
 
 const (
-	// maxPromptAttachments bounds how many images one prompt can carry. It is a
-	// sanity cap, not a provider limit; token scans and paste conversion both
-	// honor it.
-	maxPromptAttachments = 16
+	// maxPromptAttachments bounds how many images one prompt can carry; token
+	// scans and paste conversion both honor it.
+	maxPromptAttachments = messages.MaxImagesPerMessage
 
 	// Provider-bound images are downscaled per the portable image contract in
 	// the images package.
@@ -393,16 +392,11 @@ func prepareImageForUpload(path string) (*messages.ContentPart, error) {
 // ingestion boundary, before bytes enter durable history. fileName is display
 // metadata only; the format is always detected from the bytes.
 func prepareImageBytesForUpload(data []byte, fileName string) (*messages.ContentPart, error) {
-	norm, err := images.NormalizeForModel(data, fileName)
+	part, err := messages.ImagePart(data, fileName)
 	if err != nil {
 		return nil, err
 	}
-	return &messages.ContentPart{
-		Type:      "image_base64",
-		ImageData: base64.StdEncoding.EncodeToString(norm.Data),
-		MimeType:  norm.MIMEType,
-		FileName:  norm.FileName,
-	}, nil
+	return &part, nil
 }
 
 // preparedMessageTranscriptImagesWithStore materializes the exact portable
@@ -411,7 +405,7 @@ func prepareImageBytesForUpload(data []byte, fileName string) (*messages.Content
 // is rendered.
 func preparedMessageTranscriptImagesWithStore(msg messages.ChatMessage, store artifacts.Store) []transcriptImage {
 	if store != nil {
-		msg = cloneChatMessage(msg)
+		msg = msg.Clone()
 		for i, part := range msg.Parts {
 			if part.Artifact == nil || part.Artifact.Kind != artifacts.KindImage {
 				continue

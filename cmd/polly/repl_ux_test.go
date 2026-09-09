@@ -969,7 +969,7 @@ func TestHydrateHistoryOnlyRestoresPortablePersistedImages(t *testing.T) {
 		{name: "SVG", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: base64.StdEncoding.EncodeToString([]byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)), MimeType: "image/svg+xml"}}}},
 		{name: "MIME mismatch", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: validPart.ImageData, MimeType: "image/jpeg"}}}, restorable: true},
 		{name: "17 images", msg: tooMany},
-		{name: "over aggregate budget", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes+1), MimeType: "image/png"}}}},
+		{name: "over aggregate budget", msg: messages.ChatMessage{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", ImageData: strings.Repeat("A", messages.MaxEncodedImageHistoryBytes+1), MimeType: "image/png"}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newReplModel()

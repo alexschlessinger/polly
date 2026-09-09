@@ -186,26 +186,13 @@ func TestPrepareSessionImageRequestDoesNotDuplicateExactRetry(t *testing.T) {
 	}
 }
 
-func TestValidateEncodedImageBudgetIncludesDataURLs(t *testing.T) {
-	history := []messages.ChatMessage{{
-		Role: messages.MessageRoleUser,
-		Parts: []messages.ContentPart{
-			{Type: "image_base64", ImageData: strings.Repeat("A", 8<<20)},
-			{Type: "image_url", ImageURL: "data:image/png;base64," + strings.Repeat("B", (8<<20)+1)},
-		},
-	}}
-	if err := validateEncodedImageBudget(history); err == nil || !strings.Contains(err.Error(), "portable limit is 16 MiB") {
-		t.Fatalf("aggregate encoded-image overflow = %v", err)
-	}
-}
-
 func TestPrepareSessionImageRequestRetainsHistoryBeyondModelBudget(t *testing.T) {
 	store := testOpenMemoryStore(t, &sessions.Metadata{MaxHistoryTokens: 2000})
 	session := testAcquireSession(t, store, "trimmed-budget")
 	oldImage := messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{{
-			Type: "image_base64", ImageData: strings.Repeat("A", maxEncodedImageHistoryBytes), MimeType: "image/png",
+			Type: "image_base64", ImageData: strings.Repeat("A", messages.MaxEncodedImageHistoryBytes), MimeType: "image/png",
 		}},
 	}
 	if err := session.AddMessages(context.Background(), []messages.ChatMessage{
@@ -277,10 +264,10 @@ func TestValidatePortableImageRequestEnforcesRequestWideImageLimit(t *testing.T)
 		}
 		return history
 	}
-	if err := validatePortableImageRequest(makeHistory(maxPortableRequestImages)); err != nil {
+	if err := messages.ValidatePortableImageRequest(makeHistory(messages.MaxPortableRequestImages)); err != nil {
 		t.Fatalf("request-wide image limit rejected: %v", err)
 	}
-	err = validatePortableImageRequest(makeHistory(maxPortableRequestImages + 1))
+	err = messages.ValidatePortableImageRequest(makeHistory(messages.MaxPortableRequestImages + 1))
 	if err == nil || !strings.Contains(err.Error(), "portable request maximum is 100") {
 		t.Fatalf("request-wide image overflow = %v", err)
 	}
@@ -290,17 +277,17 @@ func TestValidatePortableImageRequestPerImageEncodedLimit(t *testing.T) {
 	atLimit := messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{{
-			Type: "image_base64", ImageData: portablePNGBase64Size(t, maxPortableEncodedImageBytes), MimeType: "image/png",
+			Type: "image_base64", ImageData: portablePNGBase64Size(t, messages.MaxPortableEncodedImageBytes), MimeType: "image/png",
 		}},
 	}
-	if err := validatePortableImageRequest([]messages.ChatMessage{atLimit}); err != nil {
+	if err := messages.ValidatePortableImageRequest([]messages.ChatMessage{atLimit}); err != nil {
 		t.Fatalf("10,000,000-byte image rejected: %v", err)
 	}
 
 	overLimit := atLimit
 	overLimit.Parts = slices.Clone(atLimit.Parts)
-	overLimit.Parts[0].ImageData = portablePNGBase64Size(t, maxPortableEncodedImageBytes+4)
-	err := validatePortableImageRequest([]messages.ChatMessage{overLimit})
+	overLimit.Parts[0].ImageData = portablePNGBase64Size(t, messages.MaxPortableEncodedImageBytes+4)
+	err := messages.ValidatePortableImageRequest([]messages.ChatMessage{overLimit})
 	if err == nil || !strings.Contains(err.Error(), "per-image portable limit is 10,000,000 bytes") {
 		t.Fatalf("10,000,004-byte image limit error = %v", err)
 	}
@@ -445,7 +432,7 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	}
 
 	history := append([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "do it"}}, durable...)
-	visible := modelVisibleHistory(history)
+	visible := messages.ModelVisible(history)
 	if len(visible) != 1 || visible[0].Role != messages.MessageRoleUser {
 		t.Fatalf("model-visible history leaked internal marker: %#v", visible)
 	}
@@ -489,7 +476,7 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	reopenedStore := testOpenDiskStore(t, dbPath, nil)
 	reopened := testAcquireSession(t, reopenedStore, "denied-reasoning")
 	reloadedHistory := testSessionHistory(t, reopened)
-	if visible := modelVisibleHistory(reloadedHistory); len(visible) != 1 || visible[0].Role != messages.MessageRoleUser {
+	if visible := messages.ModelVisible(reloadedHistory); len(visible) != 1 || visible[0].Role != messages.MessageRoleUser {
 		t.Fatalf("reloaded model history leaked internal reasoning: %#v", visible)
 	}
 	reloaded := newReplModel()

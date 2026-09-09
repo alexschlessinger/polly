@@ -510,7 +510,7 @@ func (r *managedREPL) prepareManagedTurnLocked(prompt string) (managedTurnInput,
 	}
 	r.model.rememberArtifactAttachments(userMessage)
 	turn := cloneManagedTurn(managedTurnInput{displayText: prompt, userMessage: userMessage})
-	if err := validatePreparedUserMessage(turn.userMessage); err != nil {
+	if err := messages.ValidateImageMessage(turn.userMessage); err != nil {
 		return managedTurnInput{}, err
 	}
 	return turn, nil
