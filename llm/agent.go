@@ -164,6 +164,19 @@ type AgentResponse struct {
 	PersistedMessages int                    // Prefix already acknowledged by Checkpoint.
 }
 
+// TokenUsage sums the run's assistant messages: the peak input tokens of any
+// one call and the total output tokens across all of them.
+func (r *AgentResponse) TokenUsage() (peakInput, totalOutput int) {
+	for _, m := range r.AllMessages {
+		if m.Role != messages.MessageRoleAssistant {
+			continue
+		}
+		peakInput = max(peakInput, m.GetInputTokens())
+		totalOutput += m.GetOutputTokens()
+	}
+	return peakInput, totalOutput
+}
+
 // SetProviderAPIKey installs a process-local provider credential when the
 // agent is backed by MultiPass. It returns false for custom LLM clients.
 func (a *Agent) SetProviderAPIKey(provider, apiKey string) bool {

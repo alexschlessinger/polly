@@ -960,60 +960,19 @@ func executeTurnWithExistingUser(ctx context.Context, config *Config, state *con
 // executeTurnWithUserMessage is the shared turn body behind a caller-built
 // user message. The one-shot and fallback paths build theirs from --file;
 // the managed REPL builds a multimodal message from composer attachments.
+// The phases live on turnExecution; this sequences them and owns the turn
+// UI's lifecycle.
 func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (exitCode int, finalErr error) {
-	settings := &state.settings
-	// An unchanged restored draft must reuse the representation already persisted. If a
-	// prior storage failure left prepared bytes inline and the store later
-	// recovers, rewriting only the restored candidate to an artifact would make it
-	// look like a different user turn and persist a duplicate.
-	history, err := state.session.GetHistory(ctx)
+	t := &turnExecution{ctx: ctx, config: config, state: state, settings: &state.settings, schema: schema, userMsg: userMsg, reuseUser: reuseUser}
+	requestMessages, instructionWarnings, err := t.prepareRequest()
 	if err != nil {
-		return 1, fmt.Errorf("read session history: %w", err)
-	}
-	reusingPersistedUser := reuseUser && historyEndsWithEquivalentUserMessage(history, userMsg)
-	if !reusingPersistedUser {
-		userMsg, err = externalizeMessageImages(ctx, userMsg, state.artifactStore)
-		if err != nil {
-			return 1, fmt.Errorf("persist input artifacts: %w", err)
-		}
-	}
-	requestMessages, err := prepareSessionImageRequest(ctx, state.session, userMsg, reuseUser)
-	if err != nil {
-		return 1, err
-	}
-	// Structured output is machine-facing: display guidance is irrelevant
-	// there, "plain text only" could fight the schema on providers whose
-	// structured output is prompt-based, and the context-mechanics guidance
-	// (put findings in replies) is moot when the reply is a schema payload.
-	var instructionWarnings []string
-	if schema == nil {
-		contract := sendTimeContracts(state.displayContract)
-		titleGuidance, err := sessionTitleGuidance(ctx, state)
-		if err != nil {
-			return 1, err
-		}
-		if settings.SystemPrompt == "" {
-			instructions, warnings := loadRepositoryInstructions(state.toolRegistry)
-			instructionWarnings = state.changedInstructionWarnings(warnings)
-			contract = codingContract + "\n\n" + contract + "\n\n" + instructions
-		}
-		if titleGuidance != "" {
-			contract += "\n\n" + titleGuidance
-		}
-		requestMessages = applyDisplayContract(requestMessages, contract)
-	}
-
-	// Image references that resolve to nothing (or ambiguously) are rejected
-	// before anything is persisted; the complete request, after clamping the
-	// budget and applying deterministic reductions, is judged by the run's
-	// first projection below.
-	if err := llm.ValidateImageProjection(requestMessages); err != nil {
 		return 1, err
 	}
 
 	if turnUI == nil {
 		turnUI = newLineTurnUIWithCapabilities(config, inputReader, state.outputCapabilities)
 	}
+	t.turnUI = turnUI
 	turnUI.Start()
 	defer turnUI.Stop()
 	state.setTurnUI(turnUI)
@@ -1038,41 +997,15 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		turnUI.AppendWarning(warning)
 	}
 
-	req := createCompletionRequest(config, settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
+	req := createCompletionRequest(config, t.settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
 	req.MaxContextTokens = resolveContextBudget(ctx, state)
 	req.CacheSessionID, err = cacheSessionIDForSession(ctx, state.session)
 	if err != nil {
 		return 1, err
 	}
-	var reportIDs []int64
 	if tui, ok := turnUI.(*gotuiTurnUI); ok {
-		reportIDs = tui.turn.reportIDs
+		t.reportIDs = tui.turn.reportIDs
 	}
-	// The user message is persisted once the run's first projection shows
-	// the request can be sent, before any provider tokens are spent. Earlier
-	// would make a deterministic projection failure permanent for exact
-	// retries of a persisted-then-unsendable message; later would lose the
-	// input when the call fails. A broken session store (disk full, lost
-	// lease) therefore fails the turn before the call, whose result could
-	// not be saved either.
-	persistAttempted := false
-	persistUser := func(llm.ProjectionStats) error {
-		persistAttempted = true
-		turnUI.UserMessagePersistenceStarted()
-		persistErr := persistUserMessageForTurn(ctx, state.session, userMsg, reuseUser, reportIDs)
-		turnUI.UserMessagePersistenceFinished(persistErr == nil)
-		if persistErr != nil {
-			return fmt.Errorf("failed to persist user message: %w", persistErr)
-		}
-		return nil
-	}
-
-	// trimLeadingNL strips leading newlines from the next content burst.
-	// Armed only after a reasoning event fires — models with thinking enabled
-	// commonly emit a leading "\n\n" to visually separate the (hidden)
-	// reasoning from the reply. We strip only \n/\r so leading spaces/tabs
-	// (e.g. code-block indentation) are preserved.
-	trimLeadingNL := false
 
 	// The sandbox probe started with the open and has normally long
 	// finished. A backend that cannot start fails the turn here, before the
@@ -1082,71 +1015,15 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		return 1, err
 	}
 
-	stats := &turnToolStats{}
 	turnStart := time.Now()
-	usage := turnUsage{}
-
 	line, lineOutput := turnUI.(*lineTurnUI)
-	settledOutput := lineOutput && !config.Stream && !line.interactive
+	t.settledOutput = lineOutput && !config.Stream && !line.interactive
 	if lineOutput {
-		line.settledOutput = settledOutput
+		line.settledOutput = t.settledOutput
 	}
-	callbacks := &llm.AgentCallbacks{
-		OnReasoning: func(content string) {
-			trimLeadingNL = true
-			turnUI.ShowThinking(content)
-		},
-		OnContent: func(content string) {
-			if config.SchemaPath != "" || settledOutput {
-				return
-			}
-			if trimLeadingNL {
-				content = trimLeadingResponseNewlines(content)
-				if content == "" {
-					return
-				}
-				trimLeadingNL = false
-			}
-			turnUI.AppendAssistantText(content)
-		},
-		OnToolStart: func(calls []messages.ChatMessageToolCall) {
-			turnUI.AppendToolStart(calls)
-		},
-		// A spawned child's approvals come back through this turn's UI.
-		BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
-			return withToolCall(withParentTurnUI(ctx, turnUI), call)
-		},
-		ApproveToolCalls: func(calls []messages.ChatMessageToolCall) []bool {
-			return approveToolCalls(ctx, turnUI, "", calls)
-		},
-		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
-			stats.record(tc.Name, err)
-			turnUI.AppendToolEnd(tc, result, duration, err)
-		},
-		OnToolResult: func(tc messages.ChatMessageToolCall, result messages.ChatMessage) {
-			if receiver, ok := turnUI.(interface {
-				AppendToolResult(messages.ChatMessageToolCall, messages.ChatMessage)
-			}); ok {
-				receiver.AppendToolResult(tc, result)
-			}
-			if images := inspectionTranscriptImages(result, state.artifactStore); len(images) > 0 {
-				turnUI.AppendToolMedia(tc, images)
-			}
-		},
-		OnError:            func(err error) {},
-		BeforeFirstRequest: persistUser,
-		OnRequestProjection: func(iteration int, stats llm.ProjectionStats) {
-			usage.project(iteration, stats, req.MaxContextTokens)
-			turnUI.RecordContextUsage(usage.used, usage.limit, usage.estimated)
-		},
-		OnIterationUsage: func(iteration, in, out int) {
-			peak, total := usage.record(iteration, in, out)
-			turnUI.RecordTurnTokens(peak, total)
-			turnUI.RecordContextUsage(usage.used, usage.limit, usage.estimated)
-		},
-	}
+	callbacks := t.callbacks(req)
 	if state.swarm != nil {
-		updateSwarmDefaults(state, req, *settings)
+		updateSwarmDefaults(state, req, *t.settings)
 		state.swarm.BindParent(callbacks, turnUI.TurnPersistenceAllowed)
 	}
 	resp, err := state.agent.Run(ctx, req, callbacks)
@@ -1156,109 +1033,20 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		// changed the world whether or not the user hit cancel.
 		err = context.Cause(ctx)
 	}
-	if err != nil && !persistAttempted && !reusingPersistedUser {
+	if err != nil && !t.persistAttempted && !t.reusingPersistedUser {
 		// The run stopped before its first projection cleared the request.
 		err = fmt.Errorf("prompt was not added to the conversation: %w", err)
 	}
-	var in, out int
-	if resp != nil {
-		// The turn trailer retains peak input usage and total output usage.
-		// Context usage follows the latest call: projection can shrink between
-		// iterations, and an unreported final usage must fall back to its estimate.
-		latestInput := 0
-		for _, m := range resp.AllMessages {
-			if m.Role != messages.MessageRoleAssistant {
-				continue
-			}
-			latestInput = m.GetInputTokens()
-			in = max(in, latestInput)
-			out += m.GetOutputTokens()
-		}
-		turnUI.RecordTurnTokens(in, out)
-		if usage.projected {
-			turnUI.RecordContextUsage(usage.used, usage.limit, usage.estimated)
-		}
-	}
+	in, out := t.recordUsage(resp)
 
-	runErr := err
-
-	// Persist everything the run generated, completed or not. Executed tool
-	// calls already changed the world; dropping their record would leave the
-	// session blind to work that actually happened and make a retry redo it.
-	// Run guarantees AllMessages ends at a provider-valid boundary (an aborted
-	// tool batch is completed with interrupted stubs), so a partial turn
-	// replays cleanly. The detached context keeps a canceled turn's save from
-	// being canceled along with it; the persistence gate stops a detached turn
-	// from appending after newer turns already have.
-	if resp != nil && len(resp.AllMessages) > 0 && turnUI.TurnPersistenceAllowed() {
-		persistCtx := context.WithoutCancel(ctx)
-		perr := func() error {
-			if err := persistActiveSkills(persistCtx, state.session, state.skillRuntime, state.skillSources); err != nil {
-				return fmt.Errorf("failed to persist active skills: %w", err)
-			}
-			// Persist the whole turn (assistant message per iteration + every
-			// tool result) with a single write instead of one rewrite per
-			// message. A failed turn additionally records why it ended, so
-			// hydration can settle it instead of rendering an abandoned turn.
-			durable := durableTurnMessages(resp.AllMessages[resp.PersistedMessages:])
-			if runErr != nil {
-				durable = append(durable, interruptedTurnMarker(runErr))
-			}
-			if perr := state.session.AddMessages(persistCtx, durable); perr != nil {
-				return fmt.Errorf("failed to persist turn: %w", perr)
-			}
-			return nil
-		}()
-		switch {
-		case perr != nil:
-			runErr = errors.Join(runErr, perr)
-		case runErr != nil:
-			// Both facts matter downstream: the turn failed, and the work it
-			// completed is durable. UIs label the outcome accordingly.
-			runErr = &turnProgressSavedError{cause: runErr}
-		}
-	}
-
-	// The success tail covers everything downstream of a completed agent run:
-	// warnings and final output. Folding its error into runErr means the
-	// trailer and exit code below always describe the turn's final state,
-	// whichever stage failed.
+	// Folding every later stage's error into runErr means the trailer and
+	// exit code below always describe the turn's final state, whichever
+	// stage failed.
+	runErr := t.settlePersistence(resp, err)
 	if runErr == nil {
-		runErr = func() error {
-			if resp == nil {
-				return fmt.Errorf("agent returned no response")
-			}
-
-			if resp.Projection.OmittedExchanges > 0 {
-				word := "exchanges"
-				if resp.Projection.OmittedExchanges == 1 {
-					word = "exchange"
-				}
-				turnUI.AppendWarning(fmt.Sprintf("model context omitted %d earlier %s; full transcript retained", resp.Projection.OmittedExchanges, word))
-			}
-
-			if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
-				turnUI.AppendWarning(fmt.Sprintf("response truncated (hit %d token limit, use --maxtokens to increase)", settings.MaxTokens))
-			}
-
-			if config.SchemaPath != "" {
-				if ui, ok := turnUI.(*lineTurnUI); ok {
-					ui.pauseActivity()
-				}
-				var content string
-				if resp.Message != nil {
-					content = resp.Message.Content
-				}
-				return outputStructured(content, schema)
-			}
-			if settledOutput && resp.Message != nil {
-				turnUI.AppendAssistantText(resp.Message.Content)
-			}
-			turnUI.FinishTextTurn()
-			return nil
-		}()
+		runErr = t.finishOutput(resp)
 	}
-	if runErr != nil && settledOutput && config.SchemaPath == "" {
+	if runErr != nil && t.settledOutput && config.SchemaPath == "" {
 		name, _ := state.session.GetName(context.WithoutCancel(ctx))
 		turnUI.AppendAssistantText(settledAnswer(resp, runErr, name))
 		turnUI.FinishTextTurn()
@@ -1274,7 +1062,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		stopReason, code = classifyOutcome(resp, runErr)
 	}
 	if config.Meta {
-		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, settings.Model, stats, in, out, time.Since(turnStart).Milliseconds()))
+		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, t.settings.Model, &t.stats, in, out, time.Since(turnStart).Milliseconds()))
 	}
 	return code, runErr
 }
