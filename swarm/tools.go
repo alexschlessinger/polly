@@ -137,6 +137,9 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 // coordinationFingerprint covers what a waiting parent acts on: task changes
 // and member or workflow status transitions. A member that was already parked
 // when the wait began is not news, so its steady state cannot end the wait.
+// Members hash by lifecycle, control and execution identity: a wake that moves
+// the same execution from queued to running is not a transition, and labels
+// never are.
 func coordinationFingerprint(s *State) string {
 	statuses := map[string]any{}
 	for id, t := range s.Tasks {
@@ -147,7 +150,17 @@ func coordinationFingerprint(s *State) string {
 		}{t.Status, t.Owner, t.Execution, t.Snapshot, t.Feedback, t.Revision, t.AcceptedRevision, TaskDeferred(s, t)}
 	}
 	for id, m := range s.Members {
-		statuses["member:"+id] = MemberState(s, m)
+		generation := 0
+		if e := s.Executions[m.Execution]; e != nil {
+			generation = e.Generation
+		}
+		p := MemberState(s, m)
+		statuses["member:"+id] = struct {
+			Lifecycle  Lifecycle
+			Control    MemberControl
+			Execution  string
+			Generation int
+		}{p.Lifecycle, p.Control, m.Execution, generation}
 	}
 	for id, w := range s.Workflows {
 		statuses["workflow:"+id] = struct {

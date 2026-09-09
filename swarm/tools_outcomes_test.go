@@ -69,7 +69,7 @@ func TestReviewToolReportsRemainingIntegration(t *testing.T) {
 		id, status, display string
 		revision            int
 	}{
-		{"changed", "awaiting_review", "accepted · integration pending", 2},
+		{"changed", "awaiting_review", "integration pending", 2},
 		{"research", "done", "done", 3},
 	} {
 		out, err := review.Execute(ctx, map[string]any{"task": tc.id, "revision": tc.revision, "accept": true})
@@ -105,7 +105,7 @@ func TestReviewToolReportsRemainingIntegration(t *testing.T) {
 	for _, task := range page.Items {
 		tasks[task.ID] = task
 	}
-	if tasks["changed"].Status != "awaiting_review" || tasks["changed"].DisplayStatus != "accepted · integration pending" || tasks["research"].DisplayStatus != "done" {
+	if tasks["changed"].Status != "awaiting_review" || tasks["changed"].DisplayStatus != "integration pending" || tasks["research"].DisplayStatus != "done" {
 		t.Fatalf("task list lost machine or display status: %s", out)
 	}
 }

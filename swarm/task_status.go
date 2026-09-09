@@ -9,7 +9,7 @@ func TaskStatus(task *Task) string {
 		return ""
 	}
 	if task.Status == "awaiting_review" && acceptedTaskRevision(task) && task.Snapshot != "" {
-		return "accepted · integration pending"
+		return "integration pending"
 	}
 	return strings.ReplaceAll(task.Status, "_", " ")
 }

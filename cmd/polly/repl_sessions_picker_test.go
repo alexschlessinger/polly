@@ -60,7 +60,7 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	r.openSessionsPicker()
 	m := r.model.modal
 	item := pickerItem(t, m, id)
-	if !strings.Contains(item.label, "running") || len(r.tabs) != 1 || !r.pickerExpanded[parent.name] {
+	if !strings.Contains(item.label, "active") || len(r.tabs) != 1 || !r.pickerExpanded[parent.name] {
 		t.Fatalf("live picker: %+v, tabs=%d", item, len(r.tabs))
 	}
 	if text, _ := r.agentsStatus(); text != "1 agent running" {
@@ -80,14 +80,14 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	r.model.mu.Lock()
 	m.refresh()
 	item = pickerItem(t, m, id)
-	if !strings.Contains(item.label, "awaiting review") || strings.Contains(item.label, "running") || pickerSelection(m) != id {
+	if !strings.Contains(item.label, "idle · awaiting review") || strings.Contains(item.label, "active") || pickerSelection(m) != id {
 		t.Fatalf("stale picker after completion: %+v", item)
 	}
 	if text, _ := r.agentsStatus(); text != "" {
 		t.Fatalf("settled member counted as active: %s", text)
 	}
 	r.model.renderPendingMarkdown()
-	notice := parent.swarmSnapshot.Members[id].Name + " · awaiting review"
+	notice := parent.swarmSnapshot.Members[id].Name + " · idle · awaiting review"
 	transcript := plainStyledText(r.model.fullTranscript())
 	r.model.mu.Unlock()
 	if strings.Count(transcript, notice) != 1 {

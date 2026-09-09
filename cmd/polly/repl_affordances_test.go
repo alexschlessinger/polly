@@ -10,6 +10,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -292,7 +293,7 @@ func TestDeliveredChildArmsCallerCueAndOnlyCurrentAgentControl(t *testing.T) {
 	parent.model.appendToolCallStart(agentCall("call-1", `{}`))
 	record, row := parent.model.toolDisclosureRowForCall("call-1")
 	row.agent.session = child.name
-	row.agent.active, row.agent.status = false, "awaiting review"
+	row.agent.state, row.agent.local = swarm.AgentPresentation{Lifecycle: swarm.LifecycleIdle, TaskStatus: "awaiting review", Detail: "awaiting review", Display: "idle · awaiting review"}, ""
 	r.showTab(0)
 	parent.model.takeActiveTool("call-1")
 	r.endTurn(nil)

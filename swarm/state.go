@@ -323,7 +323,7 @@ func compactRoster(s *State) string {
 	b.WriteString("Roster at assignment start (use list_agents to refresh):\n")
 	for _, id := range ids[:min(32, len(ids))] {
 		m := s.Members[id]
-		fmt.Fprintf(&b, "%s · %s · %s · task %s\n", m.ID, m.Label, m.Status, m.Task)
+		fmt.Fprintf(&b, "%s · %s · %s · task %s\n", m.ID, m.Label, MemberState(s, m).Display, m.Task)
 	}
 	if len(ids) > 32 {
 		fmt.Fprintf(&b, "%d additional members available through list_agents.\n", len(ids)-32)

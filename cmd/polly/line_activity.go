@@ -197,7 +197,7 @@ func (a *lineActivity) thoughtDuration() time.Duration {
 func (a *lineActivity) summary() turnActivitySummary {
 	s := turnActivitySummary{Reasoned: a.reasoned, Thought: a.thoughtDuration(), Tools: a.tools, Images: a.images, Outcome: a.outcome, Elapsed: a.elapsed, In: a.in, Out: a.out}
 	for _, launch := range a.launches {
-		s.Agents.add(launch.status, launch.active)
+		s.Agents.addOutcome(launch.status, launch.active)
 	}
 	return s
 }

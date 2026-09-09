@@ -353,7 +353,7 @@ func TestHistoricalMemberOutcomeIsDisplayOnly(t *testing.T) {
 	s := &State{Executions: map[string]*Execution{"e": {ID: "e", Member: "m", Status: "completed"}}, Tasks: map[string]*Task{"t": {ID: "t", Status: "done"}}, Workflows: map[string]*workflow.Report{}}
 	m := &Member{ID: "m", Execution: "e", Task: "t", Status: "paused"}
 	p := MemberState(s, m)
-	if p.Outcome != "completed" || p.Display != "done" || p.Active || p.Attention || m.Status != "paused" {
+	if p.Outcome != "completed" || p.Lifecycle != LifecycleIdle || p.Display != "idle · done" || p.Busy || p.Attention || m.Status != "paused" {
 		t.Fatalf("projection: %+v", p)
 	}
 }

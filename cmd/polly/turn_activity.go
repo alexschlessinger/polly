@@ -8,6 +8,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -90,20 +91,35 @@ type activityAgentCounts struct {
 	Total, Running, Failed, Canceled, Paused, Deferred int
 }
 
-func (c *activityAgentCounts) add(status string, active bool) {
-	if strings.HasSuffix(status, " · deferred") {
+// add counts an agent by its presentation. Interrupted and stopped members
+// are paused; only launch-call outcomes can be canceled.
+func (c *activityAgentCounts) add(p swarm.AgentPresentation) {
+	c.Total++
+	if p.Deferred {
 		c.Deferred++
-		status = strings.TrimSuffix(status, " · deferred")
 	}
+	switch {
+	case p.Busy:
+		c.Running++
+	case p.Outcome == "failed":
+		c.Failed++
+	case p.Lifecycle == swarm.LifecyclePaused:
+		c.Paused++
+	}
+}
+
+// addOutcome counts a launch call by its own word: the line UI's launches
+// and rows that never attached to a member.
+func (c *activityAgentCounts) addOutcome(word string, busy bool) {
 	c.Total++
 	switch {
-	case active:
+	case busy:
 		c.Running++
-	case status == "failed", status == "denied":
+	case word == "failed", word == "denied":
 		c.Failed++
-	case status == "canceled":
+	case word == "canceled":
 		c.Canceled++
-	case strings.HasPrefix(status, "paused"):
+	case strings.HasPrefix(word, "paused"):
 		c.Paused++
 	}
 }

@@ -10,7 +10,7 @@ func TestTaskStatus(t *testing.T) {
 	}{
 		{"nil", nil, ""},
 		{"review", &Task{Status: "awaiting_review", Revision: 2}, "awaiting review"},
-		{"accepted", &Task{Status: "awaiting_review", Revision: 2, AcceptedRevision: 2, Snapshot: "candidate"}, "accepted · integration pending"},
+		{"accepted", &Task{Status: "awaiting_review", Revision: 2, AcceptedRevision: 2, Snapshot: "candidate"}, "integration pending"},
 		{"stale", &Task{Status: "awaiting_review", Revision: 3, AcceptedRevision: 2, Snapshot: "candidate"}, "awaiting review"},
 		{"zero", &Task{Status: "awaiting_review", Snapshot: "candidate"}, "awaiting review"},
 		{"no snapshot", &Task{Status: "awaiting_review", Revision: 2, AcceptedRevision: 2}, "awaiting review"},

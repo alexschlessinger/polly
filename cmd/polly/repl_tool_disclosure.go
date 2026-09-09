@@ -364,7 +364,7 @@ func (m *replModel) settleActiveTools(reason string) {
 		}
 		row := &record.rows[at.row]
 		if row.agent != nil && !row.agent.attached {
-			row.agent.status, row.agent.active = reason, false
+			row.agent.setLocal(reason, false)
 		}
 		row.line = toolErrorLine(at.label, "", reason)
 		row.images = nil

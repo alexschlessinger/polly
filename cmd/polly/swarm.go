@@ -380,8 +380,7 @@ func swarmInspectorText(s *swarm.State, section string) string {
 		if label == "" {
 			label = m.Name
 		}
-		status, _ := swarmMemberActivity(s, m)
-		fmt.Fprintf(&b, "%s — %s\n%s\nTask: %s\n", label, status, m.ID, m.Task)
+		fmt.Fprintf(&b, "%s — %s\n%s\nTask: %s\n", label, swarmMemberActivity(s, m).Display, m.ID, m.Task)
 		if e := s.Executions[m.Execution]; e != nil {
 			fmt.Fprintf(&b, "Execution: %s\nModel calls: %d / %d\n", e.Status, e.Iterations, e.Request.MaxIterations)
 			if e.Error != "" {

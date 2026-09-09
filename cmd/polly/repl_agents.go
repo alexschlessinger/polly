@@ -9,6 +9,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
+	"github.com/alexschlessinger/pollytool/swarm"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -17,12 +18,21 @@ import (
 type agentActivity struct {
 	viewID                   string
 	label                    string
-	status                   string
 	session                  string
 	background               bool
-	active                   bool
 	attached                 bool
 	workflowID, workflowName string
+	// state is what the row says about its agent: the swarm's presentation
+	// once attached to a member, else built from the launch call's outcome.
+	// Rows decide on its typed fields, never on its label.
+	state swarm.AgentPresentation
+	// local is the launch-call word behind state for rows without a member
+	// ("starting", "done", "denied", ...). It empties once a presentation
+	// from the swarm or from saved metadata owns the row.
+	local string
+	// approval overlays the swarm facts: this model holds a request from the
+	// agent that a person must answer.
+	approval bool
 
 	// Reported usage for the original delegated run, retained after completion.
 	inputTokens, outputTokens int
@@ -53,7 +63,58 @@ func (row *toolDisclosureRow) setCall(call messages.ChatMessageToolCall) {
 	if label == "" {
 		label = "agent"
 	}
-	row.agent = &agentActivity{label: label, status: "starting", active: true, background: args.Background}
+	row.agent = &agentActivity{label: label, background: args.Background}
+	row.agent.setLocal("starting", true)
+}
+
+func (a *agentActivity) display() string {
+	if a.approval {
+		return "approval needed"
+	}
+	return a.state.Display
+}
+
+func (a *agentActivity) busy() bool { return a.state.Busy }
+
+func (a *agentActivity) setLocal(word string, busy bool) {
+	a.local, a.state = word, localAgentState(word, busy)
+}
+
+// localAgentState maps a launch call's own vocabulary (starting, done,
+// failed, denied, canceled, unknown, paused …) onto presentation facts so
+// glyphs and counters have one input. Display keeps the word.
+func localAgentState(word string, busy bool) swarm.AgentPresentation {
+	p := swarm.AgentPresentation{Display: word}
+	switch {
+	case busy:
+		p.Lifecycle, p.Busy = swarm.LifecycleActive, true
+	case word == "done":
+		p.Lifecycle, p.TaskStatus, p.Detail = swarm.LifecycleIdle, "done", "done"
+	case word == "failed", word == "denied":
+		p.Lifecycle, p.Outcome, p.Detail = swarm.LifecyclePaused, "failed", word
+	case word == "canceled":
+		p.Lifecycle, p.Detail = swarm.LifecyclePaused, "canceled"
+	case strings.HasPrefix(word, "paused"):
+		p.Lifecycle, p.Outcome, p.Detail = swarm.LifecyclePaused, "paused", strings.TrimPrefix(word, "paused · ")
+	default:
+		p.Lifecycle = swarm.LifecycleIdle
+	}
+	return p
+}
+
+// agentGlyph marks a row by what happened, not by how it is worded.
+func agentGlyph(a *agentActivity) (glyph, color string) {
+	switch {
+	case a.approval:
+		return "!", "active"
+	case a.state.Busy:
+		return " ", "muted"
+	case a.state.Outcome == "failed":
+		return "✗", "err"
+	case a.state.Lifecycle == swarm.LifecycleIdle && a.state.TaskStatus == "done":
+		return "✓", "ok"
+	}
+	return "·", "muted"
 }
 
 func (row *toolDisclosureRow) isAgent() bool {
@@ -79,11 +140,11 @@ func (row *toolDisclosureRow) finishAgentCall(_ messages.ChatMessageToolCall, de
 	if a == nil || a.attached {
 		return
 	}
-	a.active = false
-	a.status = toolActivityOutcome(denied, err)
-	if a.background && a.status == "done" {
-		a.status = "unknown"
+	word := toolActivityOutcome(denied, err)
+	if a.background && word == "done" {
+		word = "unknown"
 	}
+	a.setLocal(word, false)
 }
 
 func (row *toolDisclosureRow) hydrateAgentResult(msg messages.ChatMessage) {
@@ -91,16 +152,17 @@ func (row *toolDisclosureRow) hydrateAgentResult(msg messages.ChatMessage) {
 		return
 	}
 	a := row.agent
-	a.active, a.status = false, "unknown"
+	word := "unknown"
 	if toolWasDenied(msg.Content) {
-		a.status = "denied"
+		word = "denied"
 	} else if succeeded, known := msg.ToolSucceeded(); known {
 		if !succeeded {
-			a.status = "failed"
+			word = "failed"
 		} else if !a.background {
-			a.status = "done"
+			word = "done"
 		}
 	}
+	a.setLocal(word, false)
 }
 
 func turnAgentLabel(n int) string {
@@ -125,10 +187,14 @@ func (m *replModel) agentCounts(ids []int64) activityAgentCounts {
 				continue
 			}
 			if row.agent == nil {
-				counts.add("unknown", false)
+				counts.addOutcome("unknown", false)
 				continue
 			}
-			counts.add(row.agent.status, row.agent.active)
+			if row.agent.local != "" {
+				counts.addOutcome(row.agent.local, row.agent.busy())
+				continue
+			}
+			counts.add(row.agent.state)
 		}
 	}
 	return counts
@@ -190,18 +256,8 @@ func (m *replModel) agentsExpanded(ids []int64) bool {
 }
 
 func agentActivityLine(a *agentActivity) string {
-	status := style.SanitizeImageText(a.status)
-	glyph, color := "·", "muted"
-	switch {
-	case status == "approval needed":
-		glyph, color = "!", "active"
-	case a.active:
-		glyph = " "
-	case status == "done":
-		glyph, color = "✓", "ok"
-	case status == "failed" || status == "denied":
-		glyph, color = "✗", "err"
-	}
+	status := style.SanitizeImageText(a.display())
+	glyph, color := agentGlyph(a)
 	label := style.Escape(a.label)
 	if a.session != "" {
 		label = style.Link(a.label)
@@ -310,19 +366,29 @@ func (m *replModel) visibleAgentLinks(v transcriptViewport) []agentLink {
 	return links
 }
 
-func spawnOutcomeStatus(outcome sessions.ReportStatus) string {
+// spawnOutcomeState presents a saved first-run outcome in the lifecycle
+// vocabulary, so archived rows read like live ones.
+func spawnOutcomeState(outcome sessions.ReportStatus) swarm.AgentPresentation {
+	var p swarm.AgentPresentation
 	switch outcome {
 	case sessions.ReportFinished:
-		return "done"
+		p.Lifecycle, p.TaskStatus, p.Detail = swarm.LifecycleIdle, "done", "done"
 	case sessions.ReportFailed:
-		return "failed"
+		p.Lifecycle, p.Outcome, p.Detail = swarm.LifecyclePaused, "failed", "failed"
 	case sessions.ReportCanceled:
-		return "canceled"
+		p.Lifecycle, p.Outcome, p.Detail = swarm.LifecyclePaused, "paused", "interrupted"
 	case sessions.ReportPaused:
-		return "paused · iteration limit"
+		p.Lifecycle, p.Outcome, p.StopReason, p.Detail = swarm.LifecyclePaused, "paused", string(messages.StopReasonMaxIterations), "iteration limit"
 	default:
-		return "unknown"
+		p.Lifecycle, p.Display = swarm.LifecycleIdle, "unknown"
+		return p
 	}
+	p.Display = swarm.DisplayLabel(p.Lifecycle, p.Detail, false)
+	return p
+}
+
+func spawnOutcomeStatus(outcome sessions.ReportStatus) string {
+	return spawnOutcomeState(outcome).Display
 }
 
 // Saved metadata supplies identity and first-run outcomes without parsing
@@ -353,7 +419,7 @@ func (m *replModel) hydrateAgentSessions(parent string, summaries []sessions.Ses
 			md := matches[0].Metadata
 			row.agent.viewID = matches[0].ID
 			row.agent.session, row.agent.attached = md.Name, true
-			row.agent.status, row.agent.active = spawnOutcomeStatus(md.SpawnOutcome), false
+			row.agent.state, row.agent.local = spawnOutcomeState(md.SpawnOutcome), ""
 		}
 	}
 	m.visual.invalidate()

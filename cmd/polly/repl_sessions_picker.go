@@ -104,24 +104,17 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 	}
 	priority := func(node sessionTreeNode) int {
 		info := infos[node.Index]
-		status, active, owned := r.swarmListing(info.ID, info.Metadata.SwarmID)
+		p, approval, owned := r.swarmListing(info.ID, info.Metadata.SwarmID)
+		active := p.Busy
 		if !owned {
 			if tab := r.summaryTab(info); tab >= 0 {
-				status = r.peekTabActivity(r.tabs[tab])
+				status := r.peekTabActivity(r.tabs[tab])
+				approval = status == "approval needed"
 				active = status != "" && status != "done" && status != "failed" && status != "incomplete"
 			}
 		}
-		if status == "approval needed" {
+		if approval || owned && p.Attention {
 			return 0
-		}
-		if owned {
-			for _, root := range r.tabs {
-				if s := root.swarmSnapshot; s != nil {
-					if m := s.Members[info.ID]; m != nil && swarm.MemberState(s, m).Attention {
-						return 0
-					}
-				}
-			}
 		}
 		if active {
 			return 1
@@ -340,7 +333,10 @@ func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
 		}
 		mark, color, status := "", "", ""
 		tab := r.summaryTab(summary)
-		status, _, owned := r.swarmListing(summary.ID, info.SwarmID)
+		listing, approval, owned := r.swarmListing(summary.ID, info.SwarmID)
+		if owned {
+			status = listingLabel(listing, approval)
+		}
 		if !owned && tab >= 0 {
 			status = r.tabActivityLine(r.tabs[tab])
 		}
@@ -451,11 +447,11 @@ func (r *managedREPL) agentCountsFor(root *replTab) (running, approvals int) {
 	seen := map[string]bool{}
 	if root.swarmSnapshot != nil {
 		for id := range root.swarmSnapshot.Members {
-			status, active, _ := r.swarmListing(id, root.viewID())
+			p, approval, _ := r.swarmListing(id, root.viewID())
 			seen[id] = true
-			if status == "approval needed" {
+			if approval {
 				approvals++
-			} else if active {
+			} else if p.Busy {
 				running++
 			}
 		}
@@ -477,7 +473,7 @@ func (r *managedREPL) agentCountsFor(root *replTab) (running, approvals int) {
 
 // swarmListing projects the cached parent-owned runtime and its approval
 // queue by stable member ID. Caller holds the visible model's lock.
-func (r *managedREPL) swarmListing(id, swarmID string) (status string, active, owned bool) {
+func (r *managedREPL) swarmListing(id, swarmID string) (p swarm.AgentPresentation, approval, owned bool) {
 	if id == "" || swarmID == "" {
 		return
 	}
@@ -489,7 +485,7 @@ func (r *managedREPL) swarmListing(id, swarmID string) (status string, active, o
 		if member == nil {
 			return
 		}
-		status, active = swarmMemberActivity(root.swarmSnapshot, member)
+		p = swarmMemberActivity(root.swarmSnapshot, member)
 		approvals := func() bool {
 			m := root.model
 			if m != r.model {
@@ -500,10 +496,7 @@ func (r *managedREPL) swarmListing(id, swarmID string) (status string, active, o
 			}
 			return m.memberApproval(id) != nil
 		}
-		if approvals() {
-			status = "approval needed"
-		}
-		return status, active, true
+		return p, approvals(), true
 	}
 	return
 }

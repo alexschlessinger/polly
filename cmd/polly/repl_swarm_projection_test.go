@@ -105,7 +105,7 @@ func TestSwarmProjectionGroupsWorkflowMembersAndPreservesDirectRows(t *testing.T
 	s.Executions["worker-a"].Usage = swarm.Usage{InputTokens: &in, OutputTokens: &out}
 	m.hydrateSwarmAgents(s)
 	a := rows["worker-a"][0]
-	if a.status != "approval needed" || a.inputTokens != 123 || a.outputTokens != 45 {
+	if a.display() != "approval needed" || !a.approval || a.inputTokens != 123 || a.outputTokens != 45 {
 		t.Fatalf("live projection: %+v", a)
 	}
 }
@@ -133,7 +133,7 @@ func TestSwarmProjectionRestoresMembersWithoutToolHistoryAndKeepsStreaming(t *te
 	s.Members["member"].Status = "retired"
 	m.hydrateSwarmAgents(s)
 	a := projectedAgentRows(m)["member"][0]
-	if a.session != "renamed" || a.status != "retired" || a.active {
+	if a.session != "renamed" || a.display() != "idle · retired" || a.busy() {
 		t.Fatalf("member update: %+v", a)
 	}
 	m.hydrateHistory(nil, "parent")

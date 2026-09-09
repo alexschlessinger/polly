@@ -315,7 +315,7 @@ func TestTypedSpawnSeedsTitleAndUsesSessionHandle(t *testing.T) {
 	defer r.model.mu.Unlock()
 	r.model.renderPendingMarkdown()
 	notice = plainStyledText(r.model.fullTranscript())
-	if strings.Count(notice, md.Name+" · awaiting review") != 1 {
+	if strings.Count(notice, md.Name+" · idle · awaiting review") != 1 {
 		t.Fatalf("completion did not match launch handle: %q", notice)
 	}
 }

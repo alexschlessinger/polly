@@ -195,19 +195,19 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	} else if i.target.kind == conversationViewKind && !isRoot {
 		if runtime := r.inspectedSwarm(i.target); runtime != nil {
 			r.model.mu.Lock()
-			status, active, _ := r.swarmListing(i.target.session.ID, runtime.ID)
+			p, approval, _ := r.swarmListing(i.target.session.ID, runtime.ID)
 			r.model.mu.Unlock()
 			b.newline()
-			if status != "" {
+			if status := listingLabel(p, approval); status != "" {
 				b.item(status, "muted", "", "")
 			}
-			if active {
+			if p.Busy {
 				sep()
 				b.link("Stop agent", "stop", true, false)
 			}
 			sep()
 			b.link("Send request", "message", true, false)
-			if status == "approval needed" {
+			if approval {
 				sep()
 				b.link("Review approval", "review", true, true)
 			}
