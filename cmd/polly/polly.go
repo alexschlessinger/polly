@@ -1327,15 +1327,12 @@ func (o *conversationOpener) prepare(ctx context.Context, contextID string, noti
 		return contextID, settings, nil
 	}
 
-	// GetAllMetadata is keyed by stored name, so an entry proves the session
-	// exists under contextID.
-	metadata, err := sessionStore.GetAllMetadata(ctx)
-	if err != nil {
-		return "", Settings{}, fmt.Errorf("list context metadata: %w", err)
-	}
-	contextInfo := metadata[contextID]
-	if contextInfo == nil {
+	contextInfo, err := sessionStore.GetMetadata(ctx, contextID)
+	if errors.Is(err, sessions.ErrSessionNotFound) {
 		return contextID, settings, nil
+	}
+	if err != nil {
+		return "", Settings{}, fmt.Errorf("read context metadata: %w", err)
 	}
 
 	// Persisted settings are authoritative for an existing session. Zero

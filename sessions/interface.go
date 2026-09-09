@@ -138,6 +138,9 @@ type SessionStore interface {
 	Delete(context.Context, string) error
 	List(context.Context) ([]string, error)
 	Exists(context.Context, string) (bool, error)
+	// GetMetadata reads one session's metadata by name without opening it.
+	// ErrSessionNotFound when no session has that name.
+	GetMetadata(context.Context, string) (*Metadata, error)
 	GetAllMetadata(context.Context) (map[string]*Metadata, error)
 	ListSummaries(context.Context) ([]SessionSummary, error)
 	GetLast(context.Context) (string, error)

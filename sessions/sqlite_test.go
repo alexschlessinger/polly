@@ -2084,3 +2084,34 @@ func TestCloneMetadataDoesNotAliasContextWindows(t *testing.T) {
 		t.Fatal("clone invented a ContextWindows map")
 	}
 }
+
+func TestGetMetadataByName(t *testing.T) {
+	store, _ := openTestStore(t, ModeMemory, nil, 0)
+	if _, err := store.GetMetadata(context.Background(), "absent"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("GetMetadata(absent) error = %v, want ErrSessionNotFound", err)
+	}
+	if _, err := store.GetMetadata(context.Background(), ""); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("GetMetadata(\"\") error = %v, want ErrSessionNotFound", err)
+	}
+	session, err := store.Acquire(context.Background(), "named", AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetMetadata(context.Background(), &Metadata{Model: "openai/gpt-5.4", Description: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	one, err := store.GetMetadata(context.Background(), "named")
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := store.GetAllMetadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(one, all["named"]) {
+		t.Fatalf("GetMetadata = %+v, GetAllMetadata entry = %+v", one, all["named"])
+	}
+}

@@ -1618,6 +1618,31 @@ func insertReport(ctx context.Context, conn *sql.Conn, parentID, childID []byte,
 	return err
 }
 
+// GetMetadata reads one session's metadata by name: one indexed row, where
+// GetAllMetadata scans and decodes every session.
+func (s *SQLiteStore) GetMetadata(ctx context.Context, name string) (*Metadata, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
+	if err := s.ensureOpen(); err != nil {
+		return nil, err
+	}
+	if err := validateSessionName(name); err != nil {
+		return nil, ErrSessionNotFound
+	}
+	var snap sessionSnapshot
+	err := s.db.QueryRowContext(ctx, `
+		SELECT s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.settings_json,s.next_sequence,p.name
+		FROM sessions AS s LEFT JOIN sessions AS p ON p.id = s.parent_id
+		WHERE s.name = ?`, name).Scan(&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq, &snap.parent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSessionNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return metadataFromSnapshot(snap)
+}
+
 func (s *SQLiteStore) GetAllMetadata(ctx context.Context) (map[string]*Metadata, error) {
 	summaries, err := s.ListSummaries(ctx)
 	if err != nil {

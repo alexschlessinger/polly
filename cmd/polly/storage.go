@@ -260,11 +260,11 @@ func handleAddToContext(ctx context.Context, store sessions.SessionStore, config
 		}
 		if lastContext != "" {
 			contextDisplay := lastContext
-			metadata, err := store.GetAllMetadata(ctx)
-			if err != nil {
-				return fmt.Errorf("list context metadata: %w", err)
+			info, err := store.GetMetadata(ctx, lastContext)
+			if err != nil && !errors.Is(err, sessions.ErrSessionNotFound) {
+				return fmt.Errorf("read context metadata: %w", err)
 			}
-			if info := metadata[lastContext]; info != nil && info.Name != "" {
+			if info != nil && info.Name != "" {
 				contextDisplay = info.Name
 			}
 			prompt := fmt.Sprintf("No context specified. Use last context '%s'?", contextDisplay)
@@ -484,13 +484,12 @@ func handleShowContext(ctx context.Context, store sessions.SessionStore, context
 }
 
 func showContext(ctx context.Context, store sessions.SessionStore, contextID string) error {
-	metadata, err := store.GetAllMetadata(ctx)
-	if err != nil {
-		return fmt.Errorf("list context metadata: %w", err)
-	}
-	info := metadata[contextID]
-	if info == nil {
+	info, err := store.GetMetadata(ctx, contextID)
+	if errors.Is(err, sessions.ErrSessionNotFound) {
 		return fmt.Errorf("context '%s' not found", contextID)
+	}
+	if err != nil {
+		return fmt.Errorf("read context metadata: %w", err)
 	}
 
 	// Display detailed configuration
