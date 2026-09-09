@@ -235,6 +235,15 @@ existing linked checkout is supported with `workspace` and the default
 runtime Git administration has its own bounded policy, while agent tools keep
 Git metadata read-only. `source` selects a checkout root in that same Git
 repository; a standalone copy or a package subdirectory is not a valid source.
+Use repository-relative paths in agent briefs and run commands in the member's
+assigned directory. `source` selects snapshot input, not the member's working
+directory or permission to enter the parent's checkout. Ordinary `git log`,
+`git show`, `git diff`, and `git status` work there with either a main or linked
+parent checkout; Git writes remain blocked. Read-only members cannot create
+scratch files, including in temporary directories; return findings in messages.
+`HEAD` is a parentless snapshot commit. For history reviews, include the source
+commit ID in the brief and use `git log <source-commit>` or
+`git diff <older-commit> <source-commit>` from the member's worktree.
 Live read-only files are used only outside Git, never as a fallback for a denied
 or broken Git setup. Report setup errors without modifying `.git`, ignore rules,
 or sandbox settings to work around them.

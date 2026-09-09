@@ -1044,6 +1044,69 @@ func TestSandboxAllowsReadOfExemptedPath(t *testing.T) {
 	}
 }
 
+func TestDarwinReadPathAncestorsAllowMetadataOnly(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	for _, alias := range []bool{false, true} {
+		t.Run(fmt.Sprintf("alias=%t", alias), func(t *testing.T) {
+			base, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent := filepath.Join(base, "parent")
+			allowed := filepath.Join(parent, "nested", "allowed")
+			if err := os.MkdirAll(allowed, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(allowed, "public"), []byte("public"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			secret := filepath.Join(parent, "secret")
+			if err := os.WriteFile(secret, []byte("secret"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			readPath := allowed
+			if alias {
+				readPath = filepath.Join(parent, "alias")
+				if err := os.Symlink(allowed, readPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sb, err := New(Config{WritablePaths: []string{base}, DenyPaths: []string{parent}, ReadPaths: []string{readPath}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, check := range []struct {
+				name    string
+				args    []string
+				allowed bool
+			}{
+				{"read granted file", []string{"/bin/cat", filepath.Join(readPath, "public")}, true},
+				{"stat parent", []string{"/usr/bin/stat", "-f", "%HT", parent}, true},
+				{"stat intermediate ancestor", []string{"/usr/bin/stat", "-f", "%HT", filepath.Dir(allowed)}, true},
+				{"list parent", []string{"/bin/ls", parent}, false},
+				{"list intermediate ancestor", []string{"/bin/ls", filepath.Dir(allowed)}, false},
+				{"read sibling", []string{"/bin/cat", secret}, false},
+				{"stat sibling", []string{"/usr/bin/stat", secret}, false},
+				{"write parent", []string{"/usr/bin/touch", filepath.Join(parent, "new")}, false},
+				{"write granted file", []string{"/usr/bin/touch", filepath.Join(readPath, "public")}, false},
+			} {
+				t.Run(check.name, func(t *testing.T) {
+					cmd := exec.Command(check.args[0], check.args[1:]...)
+					cleanup, err := WrapCmdManaged(sb, cmd)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer cleanup()
+					out, err := cmd.CombinedOutput()
+					if (err == nil) != check.allowed {
+						t.Fatalf("allowed=%t: %v (%s)", check.allowed, err, out)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestDarwinReadPathAliasRemainsUsableAndRejectsRetarget(t *testing.T) {
 	skipIfNoSandboxExec(t)
 	home, err := filepath.EvalSymlinks(t.TempDir())

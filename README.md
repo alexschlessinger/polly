@@ -73,6 +73,8 @@ elsewhere opens with a read-only parent snapshot.
 runtime. Parent plus direct children form a swarm; no grandchildren. Editing
 children get isolated Git worktrees (Git 2.40+), never commit; the parent
 previews a three-way merge and applies. Children inherit `--maxiterations`.
+Give repository-relative paths in briefs; children run Git inspection in their
+assigned worktrees. `source` selects snapshot input, not their working directory.
 Limits: 32 concurrent, 256 executions per run (`--swarm-concurrent`,
 `--swarm-executions`). Quitting pauses; `/swarm resume ID [N]` continues with
 N extra model calls; `/swarm grant N` adds execution starts. `/swarm`
