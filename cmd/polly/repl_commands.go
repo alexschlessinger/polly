@@ -452,59 +452,42 @@ func replResetCommand(ctx *replCommandContext, args []string) replCommandResult 
 	return replCommandResult{err: ctx.replyLine("conversation reset")}
 }
 
-func replModelCommand(ctx *replCommandContext, args []string) replCommandResult {
+// uiCommand runs an argument-free command that opens a TUI surface: pick
+// names the context callback, nil outside the managed TUI, and unavailable
+// is the reply then.
+func uiCommand(ctx *replCommandContext, args []string, usage, unavailable string, pick func(*replCommandContext) func()) replCommandResult {
 	if len(args) != 1 {
-		return replCommandResult{err: ctx.replyLine("usage: /model")}
+		return replCommandResult{err: ctx.replyLine("usage: " + usage)}
 	}
-	if ctx == nil || ctx.openModelPicker == nil {
-		return replCommandResult{err: ctx.replyLine("model picker unavailable here; use /set model provider/model")}
+	var open func()
+	if ctx != nil {
+		open = pick(ctx)
 	}
-	ctx.openModelPicker()
+	if open == nil {
+		return replCommandResult{err: ctx.replyLine(unavailable)}
+	}
+	open()
 	return replCommandResult{}
+}
+
+func replModelCommand(ctx *replCommandContext, args []string) replCommandResult {
+	return uiCommand(ctx, args, "/model", "model picker unavailable here; use /set model provider/model", func(ctx *replCommandContext) func() { return ctx.openModelPicker })
 }
 
 func replKeysCommand(ctx *replCommandContext, args []string) replCommandResult {
-	if len(args) != 1 {
-		return replCommandResult{err: ctx.replyLine("usage: /keys")}
-	}
-	if ctx == nil || ctx.openKeyManager == nil {
-		return replCommandResult{err: ctx.replyLine("key manager is available only in the managed TUI")}
-	}
-	ctx.openKeyManager()
-	return replCommandResult{}
+	return uiCommand(ctx, args, "/keys", "key manager is available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.openKeyManager })
 }
 
 func replSessionsCommand(ctx *replCommandContext, args []string) replCommandResult {
-	if len(args) != 1 {
-		return replCommandResult{err: ctx.replyLine("usage: /sessions")}
-	}
-	if ctx == nil || ctx.openSessionsPicker == nil {
-		return replCommandResult{err: ctx.replyLine("session picker is available only in the managed TUI")}
-	}
-	ctx.openSessionsPicker()
-	return replCommandResult{}
+	return uiCommand(ctx, args, "/sessions", "session picker is available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.openSessionsPicker })
 }
 
 func replNewCommand(ctx *replCommandContext, args []string) replCommandResult {
-	if len(args) != 1 {
-		return replCommandResult{err: ctx.replyLine("usage: /new")}
-	}
-	if ctx == nil || ctx.newTab == nil {
-		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
-	}
-	ctx.newTab()
-	return replCommandResult{}
+	return uiCommand(ctx, args, "/new", "tabs are available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.newTab })
 }
 
 func replCloseCommand(ctx *replCommandContext, args []string) replCommandResult {
-	if len(args) != 1 {
-		return replCommandResult{err: ctx.replyLine("usage: /close")}
-	}
-	if ctx == nil || ctx.closeTab == nil {
-		return replCommandResult{err: ctx.replyLine("tabs are available only in the managed TUI")}
-	}
-	ctx.closeTab()
-	return replCommandResult{}
+	return uiCommand(ctx, args, "/close", "tabs are available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.closeTab })
 }
 
 func replSpawnCommand(ctx *replCommandContext, args []string) replCommandResult {
@@ -553,7 +536,7 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	lines = append(lines, "transcript: "+humanizeTokens(totalTokens)+" estimated tokens (durable)")
 	if settings.MaxHistoryTokens > 0 {
 		line := "model budget: " + humanizeTokens(settings.MaxHistoryTokens) + " estimated tokens"
-		if md, err := s.GetMetadata(opCtx); err == nil && md != nil {
+		if md != nil {
 			if window := md.ContextWindows[settings.Model]; window > 0 {
 				if clamped := llm.ClampContextBudget(settings.MaxHistoryTokens, window, settings.MaxTokens); clamped < settings.MaxHistoryTokens {
 					line = "model budget: " + humanizeTokens(clamped) + " estimated tokens (clamped from " +

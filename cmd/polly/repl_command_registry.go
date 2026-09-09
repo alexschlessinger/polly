@@ -42,6 +42,18 @@ func newReplCommandRegistry() *replCommandRegistry {
 	return &replCommandRegistry{byName: make(map[string]int)}
 }
 
+// withContext returns ctx bound to this registry, a bare context when the
+// caller passed none.
+func (r *replCommandRegistry) withContext(ctx *replCommandContext) *replCommandContext {
+	if ctx == nil {
+		ctx = &replCommandContext{}
+	}
+	if ctx.registry == nil {
+		ctx.registry = r
+	}
+	return ctx
+}
+
 func (r *replCommandRegistry) register(cmd replCommand) {
 	idx := len(r.commands)
 	r.commands = append(r.commands, cmd)
@@ -128,12 +140,7 @@ func (r *replCommandRegistry) dispatch(line string, ctx *replCommandContext) (ha
 	if !ok {
 		return false, false, nil
 	}
-	if ctx == nil {
-		ctx = &replCommandContext{}
-	}
-	if ctx.registry == nil {
-		ctx.registry = r
-	}
+	ctx = r.withContext(ctx)
 	res := cmd.run(ctx, args)
 	return true, res.quit, res.err
 }
@@ -234,12 +241,7 @@ func (r *replCommandRegistry) complete(input string, ctx *replCommandContext) (c
 	if !strings.HasPrefix(input, "/") || strings.Contains(input, "\t") {
 		return "", nil, false
 	}
-	if ctx == nil {
-		ctx = &replCommandContext{}
-	}
-	if ctx.registry == nil {
-		ctx.registry = r
-	}
+	ctx = r.withContext(ctx)
 	endsSpace := strings.HasSuffix(input, " ")
 	fields := strings.Fields(input)
 	if len(fields) == 0 {
@@ -303,12 +305,7 @@ func (r *replCommandRegistry) hintFor(ctx *replCommandContext, input string) str
 	if !strings.HasPrefix(input, "/") || strings.ContainsAny(input, "\n\t") {
 		return ""
 	}
-	if ctx == nil {
-		ctx = &replCommandContext{}
-	}
-	if ctx.registry == nil {
-		ctx.registry = r
-	}
+	ctx = r.withContext(ctx)
 	endsSpace := strings.HasSuffix(input, " ")
 	fields := strings.Fields(input)
 	if len(fields) == 0 {

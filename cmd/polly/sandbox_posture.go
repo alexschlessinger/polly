@@ -178,36 +178,50 @@ func sandboxListBadge(info tools.SandboxInfo) string {
 	return "[sandboxed: " + sandboxCompactSummary(info) + "]"
 }
 
-func sandboxCompactSummary(info tools.SandboxInfo) string {
+// sandboxFacet is one aspect of a tool's sandbox config in two wordings:
+// the list badge's and the /tools show detail's.
+type sandboxFacet struct{ short, long string }
+
+// sandboxFacets describes a config facet by facet: network and DNS, the
+// write policy, the environment policy, and granted unix sockets.
+func sandboxFacets(info tools.SandboxInfo) []sandboxFacet {
 	cfg := info.Config
 	if cfg == nil {
-		return ""
+		return nil
 	}
-	parts := []string{"net off"}
+	facets := []sandboxFacet{{"net off", "network off"}}
 	if cfg.AllowNetwork {
-		parts[0] = "net on"
+		facets[0] = sandboxFacet{"net on", "network on"}
 		if cfg.DenyDNS {
-			parts = append(parts, "dns off")
+			facets = append(facets, sandboxFacet{"dns off", "DNS off"})
 		}
 	}
 	switch {
 	case cfg.DenyWrite:
-		parts = append(parts, "read-only")
+		facets = append(facets, sandboxFacet{"read-only", "writes denied"})
 	case hasCustomWritablePaths(cfg.WritablePaths):
-		parts = append(parts, "temp+custom writes")
+		facets = append(facets, sandboxFacet{"temp+custom writes", "writes limited to temp and custom paths"})
 	default:
-		parts = append(parts, "temp writes")
+		facets = append(facets, sandboxFacet{"temp writes", "writes limited to temp"})
 	}
 	switch {
 	case len(cfg.AllowEnv) > 0:
-		parts = append(parts, "env allowlist")
+		facets = append(facets, sandboxFacet{"env allowlist", "env allowlist active"})
 	case len(cfg.PassEnv) > 0:
-		parts = append(parts, "env filtered+pass")
+		facets = append(facets, sandboxFacet{"env filtered+pass", "env filters credential-like variables (passing: " + strings.Join(cfg.PassEnv, ", ") + ")"})
 	default:
-		parts = append(parts, "env filtered")
+		facets = append(facets, sandboxFacet{"env filtered", "env filters credential-like variables"})
 	}
-	if len(cfg.AllowUnixSockets) > 0 {
-		parts = append(parts, fmt.Sprintf("%d unix socket(s)", len(cfg.AllowUnixSockets)))
+	if n := len(cfg.AllowUnixSockets); n > 0 {
+		facets = append(facets, sandboxFacet{fmt.Sprintf("%d unix socket(s)", n), fmt.Sprintf("Unix sockets: %d granted", n)})
+	}
+	return facets
+}
+
+func sandboxCompactSummary(info tools.SandboxInfo) string {
+	var parts []string
+	for _, f := range sandboxFacets(info) {
+		parts = append(parts, f.short)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -222,35 +236,12 @@ func sandboxShowDetail(info tools.SandboxInfo) string {
 		}
 		return "not sandboxed"
 	}
-	cfg := info.Config
-	if cfg == nil {
+	if info.Config == nil {
 		return "active (details unavailable)"
 	}
-	parts := []string{"network off"}
-	if cfg.AllowNetwork {
-		parts[0] = "network on"
-		if cfg.DenyDNS {
-			parts = append(parts, "DNS off")
-		}
-	}
-	switch {
-	case cfg.DenyWrite:
-		parts = append(parts, "writes denied")
-	case hasCustomWritablePaths(cfg.WritablePaths):
-		parts = append(parts, "writes limited to temp and custom paths")
-	default:
-		parts = append(parts, "writes limited to temp")
-	}
-	switch {
-	case len(cfg.AllowEnv) > 0:
-		parts = append(parts, "env allowlist active")
-	case len(cfg.PassEnv) > 0:
-		parts = append(parts, "env filters credential-like variables (passing: "+strings.Join(cfg.PassEnv, ", ")+")")
-	default:
-		parts = append(parts, "env filters credential-like variables")
-	}
-	if len(cfg.AllowUnixSockets) > 0 {
-		parts = append(parts, fmt.Sprintf("Unix sockets: %d granted", len(cfg.AllowUnixSockets)))
+	var parts []string
+	for _, f := range sandboxFacets(info) {
+		parts = append(parts, f.long)
 	}
 	return strings.Join(parts, "; ")
 }
