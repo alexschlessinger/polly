@@ -251,10 +251,10 @@ func (r *managedREPL) deliverChildReport(ctx context.Context, tab *replTab, err 
 	tab.model.mu.Lock()
 	elapsed := tab.model.lastElapsed
 	tab.model.mu.Unlock()
-	if r.agentElapsed == nil {
-		r.agentElapsed = make(map[string]time.Duration)
+	if r.agentRuns == nil {
+		r.agentRuns = make(map[string]agentRun)
 	}
-	r.agentElapsed[tab.name] = elapsed
+	r.agentRuns[tab.name] = agentRun{outcome: storedChildReport(subagent.Result{}, err).Status, elapsed: elapsed}
 	res := subagent.Result{Session: tab.name, Done: tab.settled}
 	res.Text, res.InputTokens, res.OutputTokens = rec.result()
 	if tab.waiter != nil && (tab.waitCtx == nil || tab.waitCtx.Err() == nil) {
@@ -494,14 +494,25 @@ func agentReportNotice(rep sessions.Report, elapsed time.Duration) string {
 	return text
 }
 
+// agentRun is how an agent that reported here ended and how long it took.
+type agentRun struct {
+	outcome sessions.ReportStatus
+	elapsed time.Duration
+}
+
+// status is the run as a listing says it: "done · 41.8s", "failed".
+func (a agentRun) status() string {
+	status := spawnOutcomeStatus(a.outcome)
+	if a.elapsed > 0 && a.outcome != sessions.ReportCanceled {
+		status += " · " + formatElapsed(a.elapsed)
+	}
+	return status
+}
+
 // childElapsed is how long the named child's reported run here took, zero
 // for one that ran elsewhere. Runs on the event loop.
 func (r *managedREPL) childElapsed(name string) time.Duration {
-	elapsed, ok := r.agentElapsed[name]
-	if ok {
-		delete(r.agentElapsed, name)
-	}
-	return elapsed
+	return r.agentRuns[name].elapsed
 }
 
 // reportBody is the message a report makes for the parent: its header, then

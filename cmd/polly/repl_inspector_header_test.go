@@ -216,6 +216,17 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 	if len(r.tabs) != 1 || r.inspectionTab(target) != nil {
 		t.Fatal("showing a saved title activated the agent runtime")
 	}
+	// How the closed agent ended stays in the header: as it reported here
+	// with its time, else as the store recorded it.
+	r.agentRuns = map[string]agentRun{"merry-panda": {outcome: sessions.ReportFinished, elapsed: 41800 * time.Millisecond}}
+	if rows := strings.Split(plainStyledText(r.inspectorHeader(120, 20, 120, 0).text), "\n"); len(rows) != 2 || rows[1] != "done · 41.8s" {
+		t.Fatalf("closed agent header = %q", rows)
+	}
+	r.agentRuns = nil
+	r.workspace().inspector.current.info.Metadata.SpawnOutcome = sessions.ReportFailed
+	if rows := strings.Split(plainStyledText(r.inspectorHeader(120, 20, 120, 0).text), "\n"); len(rows) != 2 || rows[1] != "failed" {
+		t.Fatalf("stored outcome header = %q", rows)
+	}
 }
 
 func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {

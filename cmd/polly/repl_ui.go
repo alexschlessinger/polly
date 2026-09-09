@@ -454,9 +454,9 @@ type managedREPL struct {
 	// spawnRequests are the /spawn commands recorded by handlers for the
 	// event loop to apply.
 	spawnRequests []spawnRequest
-	// agentElapsed is how long each reported agent's run took, by session
-	// name, until its report is read back and echoed.
-	agentElapsed map[string]time.Duration
+	// agentRuns is how each agent that reported here ended and how long it
+	// took, by session name, for listings and notices after its tab closes.
+	agentRuns map[string]agentRun
 
 	// pickerExpanded names the sessions whose agents the resume picker
 	// lists; the picker shares the map so the choice outlives a modal.

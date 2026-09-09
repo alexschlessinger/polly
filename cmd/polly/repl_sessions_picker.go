@@ -283,7 +283,7 @@ func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
 			mark, color = "in use", "active"
 		default:
 			if row.depth > 0 {
-				status = p.settledStatus(info)
+				status = r.settledStatus(p, info)
 			}
 		}
 		var plain, shown []string
@@ -319,9 +319,12 @@ func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
 
 // settledStatus is how a closed agent ended: as it ran here, with its
 // time, or else as the store recorded it.
-func (p *sessionsPicker) settledStatus(info *sessions.Metadata) string {
+func (r *managedREPL) settledStatus(p *sessionsPicker, info *sessions.Metadata) string {
 	if status, ok := p.settled[info.Name]; ok {
 		return status
+	}
+	if run, ok := r.agentRuns[info.Name]; ok {
+		return run.status()
 	}
 	if info.SpawnOutcome == "" {
 		return ""

@@ -626,6 +626,14 @@ func TestSessionsPickerRefreshesWhileOpen(t *testing.T) {
 	if got := row("busy-agent"); !strings.HasSuffix(got, "done · 41.8s  ") || strings.Contains(got, "active agent") {
 		t.Fatalf("closed agent row = %q", got)
 	}
+	// A picker opened later still knows how an agent that reported here ended.
+	r.agentRuns = map[string]agentRun{"busy-agent": {outcome: sessions.ReportCanceled, elapsed: time.Second}}
+	r.closeModal()
+	r.openSessionsPicker()
+	m = r.model.modal
+	if got := row("busy-agent"); !strings.HasSuffix(got, "canceled  ") {
+		t.Fatalf("reported agent row = %q", got)
+	}
 }
 
 // The status row says what the visible workspace's agents are doing, in a

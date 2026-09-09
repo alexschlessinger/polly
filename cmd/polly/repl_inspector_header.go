@@ -195,6 +195,14 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			if elapsed > 0 && outcome != turnOutcomeCanceled {
 				status += " · " + formatElapsed(elapsed)
 			}
+		default:
+			// A closed agent: how it reported here, else what the store
+			// recorded when it settled.
+			if run, ok := r.agentRuns[i.target.session.Name]; ok {
+				status = run.status()
+			} else if i.current != nil && i.current.info != nil && i.current.info.Metadata != nil && i.current.info.Metadata.SpawnOutcome != "" {
+				status = spawnOutcomeStatus(i.current.info.Metadata.SpawnOutcome)
+			}
 		}
 		if status != "" {
 			b.newline()
