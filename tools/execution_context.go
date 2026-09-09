@@ -158,14 +158,26 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 		case *viewImageTool:
 			tool = NewViewImageTool(bound)
 		case *ShellTool:
+			cfg := ec.Sandbox
+			if overlay := t.SandboxConfig(); overlay != nil {
+				cfg = cfg.Merge(restrictiveSandboxConfig(*overlay))
+			}
+			if cfg.DenyWrite {
+				// A tool-local denial can turn an editing context read-only.
+				// Keep its selected checkout visible inside Linux private temp.
+				cfg, err = sandbox.ExposeReadOnlyPaths(cfg, ec.Root)
+				if err != nil {
+					break
+				}
+			}
 			var sb sandbox.Sandbox
 			if bound.HasSandbox() {
-				sb, err = bound.NewSandboxDirect(ec.Sandbox)
+				sb, err = bound.NewSandboxDirect(cfg)
 			} else {
 				err = bound.requireProcessSandbox("shell tool")
 			}
 			if err == nil {
-				clone := t.withSandboxConfig(sb, ec.Sandbox)
+				clone := t.withSandboxConfig(sb, cfg)
 				clone.workDir = ec.Root
 				if filepath.IsAbs(clone.Command) && ec.SourceRoot != "" {
 					if rel, e := filepath.Rel(ec.SourceRoot, clone.Command); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {

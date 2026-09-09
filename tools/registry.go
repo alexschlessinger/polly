@@ -1034,6 +1034,12 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 	}
 }
 
+// restrictiveSandboxConfig keeps a process tool's restrictions when rebinding
+// it. Tool-local grants cannot enlarge the new execution context.
+func restrictiveSandboxConfig(config sandbox.Config) sandbox.Config {
+	return sandbox.Config{DenyPaths: config.DenyPaths, DenyWritePaths: config.DenyWritePaths, DenyWrite: config.DenyWrite, DenyDNS: config.DenyDNS}
+}
+
 func restrictiveSandboxOverlay(config *MCPConfig) json.RawMessage {
 	if config.SandboxOptOut() {
 		return nil
@@ -1042,7 +1048,7 @@ func restrictiveSandboxOverlay(config *MCPConfig) json.RawMessage {
 	if err != nil || overlay == nil {
 		return nil
 	}
-	restricted := sandbox.Config{DenyPaths: overlay.DenyPaths, DenyWritePaths: overlay.DenyWritePaths, DenyWrite: overlay.DenyWrite, DenyDNS: overlay.DenyDNS}
+	restricted := restrictiveSandboxConfig(*overlay)
 	data, err := json.Marshal(restricted)
 	if err != nil {
 		return nil

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
@@ -101,5 +102,40 @@ func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *tes
 	}
 	if restrictiveSandboxOverlay(&MCPConfig{Sandbox: json.RawMessage(`false`)}) != nil || restrictiveSandboxOverlay(&MCPConfig{}) != nil {
 		t.Fatal("opt-out or absent overlays must bind with the member policy alone")
+	}
+}
+
+func TestBoundShellKeepsRestrictionsWithoutToolGrants(t *testing.T) {
+	root, extra := t.TempDir(), t.TempDir()
+	secret := filepath.Join(root, "secret")
+	writeBlocked := filepath.Join(root, "protected")
+	overlay := sandbox.Config{DenyPaths: []string{secret}, DenyWritePaths: []string{writeBlocked}, DenyWrite: true, DenyDNS: true, AllowNetwork: true, WritablePaths: []string{extra}}
+	tool := &ShellTool{Command: "/bin/sh", schema: schema.ToolSchemaFromString(`{"title":"restricted","type":"object","properties":{}}`), sandboxCfg: &overlay}
+	registry := NewToolRegistry([]Tool{tool}, WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }, sandbox.DefaultConfig()))
+	defer registry.Close()
+	ec, err := registry.ExecutionPolicy(root, false, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, omitted, err := registry.BindExecutionContext(ec, []string{"restricted"})
+	if err != nil {
+		t.Fatalf("bind: %v; omitted %v", err, omitted)
+	}
+	defer bound.Close()
+	got, _ := bound.Get("restricted")
+	config := unwrapTool(got).(*ShellTool).SandboxDetails().Config
+	if config == nil || !config.DenyWrite || !config.DenyDNS || config.AllowNetwork {
+		t.Fatalf("bound shell policy: %+v", config)
+	}
+	if sandbox.ReadAllowed(*config, secret) == nil {
+		t.Fatal("bound shell lost its read denial")
+	}
+	if len(config.DenyWritePaths) != 1 || config.DenyWritePaths[0] != writeBlocked {
+		t.Fatalf("bound shell lost write island: %v", config.DenyWritePaths)
+	}
+	for _, path := range config.WritablePaths {
+		if path == extra {
+			t.Fatal("bound shell retained a tool-local write grant")
+		}
 	}
 }
