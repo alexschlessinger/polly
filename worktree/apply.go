@@ -110,7 +110,9 @@ func (m *Manager) BuildApplyPlan(ctx context.Context, id string, parent, merged 
 }
 
 func (m *Manager) patch(ctx context.Context, p ApplyPlan) ([]byte, error) {
-	patch, err := m.git(ctx, m.Root, nil, nil, "diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", p.Parent.Commit, p.Merged.Commit, "--")
+	// Patch paths are a machine contract with apply's -p1, independent of
+	// repository-local diff.noprefix or diff.mnemonicPrefix preferences.
+	patch, err := m.git(ctx, m.Root, nil, nil, "diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--src-prefix=a/", "--dst-prefix=b/", p.Parent.Commit, p.Merged.Commit, "--")
 	if err == nil && p.PatchHash != "" && fmt.Sprintf("%x", sha256.Sum256(patch)) != p.PatchHash {
 		return nil, errors.New("integration patch identity changed")
 	}
@@ -261,7 +263,7 @@ func (m *Manager) applyPatch(ctx context.Context, patch []byte, check bool) erro
 		}
 	}
 	defer func() { m.sandbox = saved }()
-	args := []string{"apply", "--binary"}
+	args := []string{"apply", "--binary", "-p1"}
 	if check {
 		args = append(args, "--check")
 	}
