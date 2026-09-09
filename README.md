@@ -527,7 +527,10 @@ polly --baseurl https://api.openrouter.ai/api/v1 -m openai/whatevermodel -p "Hel
 - bare name: built-in (`bash`, `read_file`, ...)
 
 Names are namespaced: `uppercase__to_uppercase`, `filesystem__read_file`.
-`--confirm` asks before each call.
+`--confirm` asks before each call. In the TUI, concurrent parent and swarm
+member requests queue in their parent workspace. Each member request identifies
+the agent; stopping that execution removes its pending request, and quitting
+denies every pending request.
 
 New contexts start with `bash` and the built-in file tools. `zvec_grep_search`
 loads only when `zg` (zvec-grep) is on `PATH`. Any `--tool` replaces that default.
