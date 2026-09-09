@@ -64,11 +64,14 @@ type replTab struct {
 	swarmAnnounced map[string]string
 }
 
-// openResult is the outcome of opening a session for a new tab.
+// openResult is the outcome of opening a session for a new tab. A
+// workspace open carries the resolved entry; when its root is held by
+// another polly, state is nil and store backs the read-only tab instead.
 type openResult struct {
 	display        *replModel
 	notices        []string
 	workspaceEntry *workspaceEntry
+	store          sessions.SessionStore
 	name           string
 	state          *conversationState
 	err            error
@@ -118,17 +121,23 @@ func (r *managedREPL) tabIndexOf(name string) int {
 // from here on, so its end wakes the event loop. Runs on the event loop with
 // no model lock held.
 func (r *managedREPL) addTab(state *conversationState) error {
+	return r.addWorkspaceTab(state, false)
+}
+
+// addWorkspaceTab adds a tab on state. detached marks a workspace root whose
+// parent is gone: it stands alone rather than nesting under a parent tab.
+func (r *managedREPL) addWorkspaceTab(state *conversationState, detached bool) error {
 	name, m, err := r.newTabModel(state)
 	if err != nil {
 		return err
 	}
-	return r.addPreparedTab(state, name, m)
+	return r.addPreparedTab(state, name, m, detached)
 }
 
-func (r *managedREPL) addPreparedTab(state *conversationState, name string, m *replModel) error {
+func (r *managedREPL) addPreparedTab(state *conversationState, name string, m *replModel, detached bool) error {
 	tab := &replTab{name: name, state: state, model: m, parentName: m.status.parentName, delivered: m.status.parentName != ""}
 	r.bindMemberUI(tab)
-	tab.detachedWorkspace = state.workspaceEntry != nil && state.workspaceEntry.orphan
+	tab.detachedWorkspace = detached
 	tab.workspaceRoot = tab.parentName == "" || tab.detachedWorkspace
 	if i := r.tabIndexOf(tab.parentName); i >= 0 && !tab.detachedWorkspace {
 		tab.parent = r.tabs[i]
@@ -557,7 +566,7 @@ func (r *managedREPL) finishOpen(res openResult) {
 		res.err = r.finishWorkspaceOpen(res)
 	} else if res.err == nil {
 		if res.display != nil {
-			res.err = r.addPreparedTab(res.state, res.name, res.display)
+			res.err = r.addPreparedTab(res.state, res.name, res.display, false)
 		} else {
 			res.err = r.addTab(res.state)
 		}

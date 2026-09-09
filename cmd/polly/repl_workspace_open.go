@@ -75,7 +75,7 @@ func (r *managedREPL) beginWorkspaceTarget(target sessions.ViewTarget) bool {
 	}
 	go func() {
 		e, err := resolveWorkspaceTarget(ctx, store, target)
-		res := openResult{name: name, err: err, workspaceEntry: e}
+		res := openResult{name: name, err: err, workspaceEntry: e, store: r.state.sessionStore}
 		if err == nil {
 			res.name = e.root.Metadata.Name
 			if !local[e.root.ID] && !e.root.InUse {
@@ -126,6 +126,10 @@ func (r *managedREPL) addReadOnlyWorkspace(info *sessions.SessionView, store ses
 	return tab
 }
 
+// finishWorkspaceOpen lands a resolved workspace: the root becomes a tab
+// (live on res.state, or read-only when another polly holds it), an orphaned
+// root is announced, and a selected descendant opens in the inspector. It
+// serves the first session of a run and every later open alike.
 func (r *managedREPL) finishWorkspaceOpen(res openResult) error {
 	e := res.workspaceEntry
 	var root *replTab
@@ -141,22 +145,19 @@ func (r *managedREPL) finishWorkspaceOpen(res openResult) error {
 		}
 		r.showTab(r.tabIndexOfModel(root.model))
 	} else if res.state != nil {
-		res.state.workspaceEntry = e
 		var err error
 		if res.display != nil {
-			err = r.addPreparedTab(res.state, res.name, res.display)
+			err = r.addPreparedTab(res.state, res.name, res.display, e.orphan)
 		} else {
-			err = r.addTab(res.state)
+			err = r.addWorkspaceTab(res.state, e.orphan)
 		}
 		if err != nil {
 			_ = res.state.Close()
 			return err
 		}
-		res.state.workspaceEntry = nil
 		root = r.visibleTab()
-		root.detachedWorkspace = e.orphan
 	} else {
-		root = r.addReadOnlyWorkspace(e.root, r.state.sessionStore, res.display)
+		root = r.addReadOnlyWorkspace(e.root, res.store, res.display)
 	}
 	if e.orphan {
 		root.model.mu.Lock()

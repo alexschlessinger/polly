@@ -72,10 +72,9 @@ type conversationInput struct {
 }
 
 type conversationState struct {
-	swarm          *swarm.Runtime
-	workspaceEntry *workspaceEntry
-	sessionStore   sessions.SessionStore
-	session        sessions.Session
+	swarm        *swarm.Runtime
+	sessionStore sessions.SessionStore
+	session      sessions.Session
 	// settings are this session's own: resolved from its stored metadata
 	// when it was opened, changed by /set, and read by every turn on it.
 	settings        Settings
@@ -696,35 +695,6 @@ func (r *commandRunner) runConversation() (retErr error) {
 	r.outputCapabilities = outputCapabilitiesForRun(input.mode, managedREPL)
 	r.displayContract = displayContractFor(r.outputCapabilities)
 
-	// Initialize session state once so one-shot and REPL share the same runtime.
-	var entry *workspaceEntry
-	contextID := r.contextID
-	openCtx := ctx
-	if input.mode == conversationModeREPL && managedREPL && !r.autoContext && contextID != "" {
-		if reader, ok := r.sessionStore.(sessions.ViewStore); ok {
-			entry, err = resolveWorkspaceEntry(ctx, reader, contextID)
-			if err != nil && !errors.Is(err, sessions.ErrSessionNotFound) {
-				return err
-			}
-			if entry != nil {
-				contextID = entry.root.Metadata.Name
-				openCtx = context.WithValue(ctx, childViewIdentityKey{}, entry.root.ID)
-			}
-		}
-	}
-	var state *conversationState
-	if entry != nil && entry.root.InUse {
-		state = readOnlyConversationState(config, r.sessionStore, entry.root)
-		state.displayContract, state.outputCapabilities = r.displayContract, r.outputCapabilities
-	} else {
-		state, err = r.openNew(openCtx, contextID, r.autoContext)
-	}
-	if err != nil {
-		return err
-	}
-	state.workspaceEntry = entry
-	session := state.session
-
 	// Set up signal handling
 	signalCtx, cancelSignal := setupSignalHandling(ctx)
 	defer cancelSignal()
@@ -732,9 +702,13 @@ func (r *commandRunner) runConversation() (retErr error) {
 	if input.mode == conversationModeREPL && managedREPL {
 		// Each session's lease context parents that session's turns and ends
 		// the run when it is lost (see managedREPL.Run), so the run context
-		// carries signals only. The REPL owns state from here: it closes
-		// every session it holds at exit, which also discards a generated
-		// session that never ran a turn.
+		// carries signals only. The REPL owns the opened session from here:
+		// it closes every session it holds at exit, which also discards a
+		// generated session that never ran a turn.
+		first, err := r.openFirstWorkspace(ctx)
+		if err != nil {
+			return err
+		}
 		opener := &sessionOpener{
 			prepare: r.prepare,
 			open:    r.open,
@@ -742,8 +716,14 @@ func (r *commandRunner) runConversation() (retErr error) {
 				return generateSessionName(ctx, r.sessionStore)
 			},
 		}
-		return runManagedREPL(signalCtx, config, state, opener)
+		return runManagedREPL(signalCtx, config, first, opener)
 	}
+
+	state, err := r.openNew(ctx, r.contextID, r.autoContext)
+	if err != nil {
+		return err
+	}
+	session := state.session
 
 	defer func() {
 		if err := state.Close(); err != nil {
@@ -820,6 +800,37 @@ func discardUnusedAutoContext(ctx context.Context, state *conversationState) err
 		return fmt.Errorf("close generated context: %w", err)
 	}
 	return nil
+}
+
+// openFirstWorkspace opens the run's first session for the managed REPL.
+// A named context is resolved to its workspace: the open lands on the root
+// of its ancestry, under the root's stored identity, and the named session
+// is selected for inspection when it is a descendant. A root another polly
+// holds is not opened; the result carries the store for a read-only tab. A
+// generated or unnamed context opens directly.
+func (r *commandRunner) openFirstWorkspace(ctx context.Context) (openResult, error) {
+	res := openResult{name: r.contextID, store: r.sessionStore}
+	reader, ok := r.sessionStore.(sessions.ViewStore)
+	if ok && !r.autoContext && r.contextID != "" {
+		entry, err := resolveWorkspaceEntry(ctx, reader, r.contextID)
+		if err != nil && !errors.Is(err, sessions.ErrSessionNotFound) {
+			return openResult{}, err
+		}
+		if entry != nil {
+			res.workspaceEntry = entry
+			res.name = entry.root.Metadata.Name
+			if entry.root.InUse {
+				return res, nil
+			}
+			ctx = context.WithValue(ctx, childViewIdentityKey{}, entry.root.ID)
+		}
+	}
+	state, err := r.openNew(ctx, res.name, r.autoContext)
+	if err != nil {
+		return openResult{}, err
+	}
+	res.state = state
+	return res, nil
 }
 
 func selectConversationMode(config *Config, stdinAvailable bool) (conversationMode, error) {

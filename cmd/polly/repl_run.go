@@ -15,33 +15,24 @@ import (
 
 // Entry points: the managed REPL runner and the line-mode fallback.
 
-// runManagedREPL runs the TUI on state and owns every session the REPL opens
-// from there, the initial one included: all of them close when the loop
-// exits, and a generated session that never ran a turn is discarded by that
-// close.
-func runManagedREPL(ctx context.Context, config *Config, state *conversationState, opener *sessionOpener) (retErr error) {
+// runManagedREPL runs the TUI starting on the session first opened, and owns
+// every session the REPL opens from there, the first one included: all of
+// them close when the loop exits, and a generated session that never ran a
+// turn is discarded by that close. A workspace open lands through the same
+// path a later /resume takes.
+func runManagedREPL(ctx context.Context, config *Config, first openResult, opener *sessionOpener) (retErr error) {
 	repl := newManagedREPL(config, "-", 0, 0)
 	repl.opener = opener
 	defer func() {
 		retErr = errors.Join(retErr, repl.closeTabs())
 	}()
-	entry := state.workspaceEntry
-	if entry != nil && state.session == nil {
-		repl.addReadOnlyWorkspace(entry.root, state.sessionStore)
-	} else {
-		if err := repl.addTab(state); err != nil {
-			return errors.Join(err, state.Close())
+	if first.workspaceEntry != nil {
+		if err := repl.finishWorkspaceOpen(first); err != nil {
+			return err
 		}
+	} else if err := repl.addTab(first.state); err != nil {
+		return errors.Join(err, first.state.Close())
 	}
-	if entry != nil {
-		if entry.orphan {
-			repl.model.appendNoticeLine("Parent unavailable")
-		}
-		if entry.selected.ID != entry.root.ID {
-			repl.inspect(viewTarget{session: sessions.ViewTarget{ID: entry.selected.ID, Name: entry.selected.Metadata.Name}})
-		}
-	}
-	state.workspaceEntry = nil
 	return repl.Run(ctx, func(turnCtx context.Context, _ string, turnUI TurnUI) error {
 		// The turn binds the session of the tab it started on: a tab shown
 		// while this goroutine runs must not redirect its writes.
