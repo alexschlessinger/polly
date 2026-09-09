@@ -413,7 +413,7 @@ func (r *managedREPL) replaceLastWorkspace(old *replTab) bool {
 }
 
 // removeTab takes tab i out of the list, ending its lease watch. When it was
-// on screen its left neighbor takes over. The caller closes the tab's
+// on screen the nearest workspace takes over, the left neighbor first. The caller closes the tab's
 // session. Runs on the event loop with no model lock held.
 func (r *managedREPL) removeTab(i int) *replTab {
 	tab := r.tabs[i]
@@ -430,13 +430,29 @@ func (r *managedREPL) removeTab(i int) *replTab {
 	visible := tab.model == r.model
 	r.tabs = append(r.tabs[:i], r.tabs[i+1:]...)
 	if visible {
-		if workspaces := r.workspaceTabs(); len(workspaces) > 0 {
-			r.showTab(r.tabIndexOfModel(workspaces[len(workspaces)-1].model))
+		if next := r.nearestWorkspace(i); next >= 0 {
+			r.showTab(next)
 		} else if len(r.tabs) > 0 {
 			r.showTab(max(0, min(i-1, len(r.tabs)-1)))
 		}
 	}
 	return tab
+}
+
+// nearestWorkspace is the index of the workspace root closest to position i
+// in the tab list, the left neighbor first, or -1 when there is none.
+func (r *managedREPL) nearestWorkspace(i int) int {
+	for j := min(i, len(r.tabs)) - 1; j >= 0; j-- {
+		if r.tabs[j].workspaceRoot {
+			return j
+		}
+	}
+	for j := max(i, 0); j < len(r.tabs); j++ {
+		if r.tabs[j].workspaceRoot {
+			return j
+		}
+	}
+	return -1
 }
 
 // closeTabs closes every tab's session at exit, the visible one included. A

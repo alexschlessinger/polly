@@ -851,3 +851,18 @@ func TestClosingAWorkspaceClosesItsKeptOpenAgents(t *testing.T) {
 		t.Fatalf("closing the workspace did not report its agent: %q", transcript)
 	}
 }
+
+func TestClosingTheVisibleWorkspaceFocusesItsLeftNeighbor(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "first", "second", "third")
+	r.showTab(1)
+	r.runTabCommand("/close")
+	if got := r.visibleTab().name; got != "first" {
+		t.Fatalf("closing the middle workspace focused %q, want its left neighbor", got)
+	}
+	r.showTab(0)
+	r.runTabCommand("/close")
+	if got := r.visibleTab().name; got != "third" {
+		t.Fatalf("closing the first workspace focused %q, want the one to its right", got)
+	}
+}
