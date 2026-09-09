@@ -68,15 +68,11 @@ func sessionTree(infos []*sessions.Metadata) []sessionTreeNode {
 	return nodes
 }
 
-// sessionTreeName is what a session is listed as: an agent goes by the
-// label of its brief under its parent, everything else by its name.
+// sessionTreeName is what a session is listed as: its name, marked as an
+// agent when it nests under its parent. The brief follows separately.
 func sessionTreeName(info *sessions.Metadata, depth int) string {
 	if depth > 0 {
-		name := info.Name
-		if info.Description != "" {
-			name = info.Description
-		}
-		return "↳ " + name
+		return "↳ " + info.Name
 	}
 	return info.Name
 }

@@ -798,7 +798,8 @@ func (r *managedREPL) needsTick() bool {
 	}
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
-	return r.model.busy
+	// A live listing (the sessions picker) repaints to follow the tabs.
+	return r.model.busy || r.model.modal != nil && r.model.modal.refresh != nil
 }
 
 // wantsRenderForEvent reports whether to repaint after handling ev. Bracketed

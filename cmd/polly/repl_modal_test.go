@@ -387,7 +387,7 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 
 	r.openSessionsPicker()
 	m := r.model.modal
-	if m == nil || m.width != 72 {
+	if m == nil || m.width != sessionsPickerNestedWidth {
 		t.Fatalf("picker with agents = %#v, want the wider modal", m)
 	}
 	if got := strings.Join(values(), " "); got != "current-work gamma" {
@@ -410,8 +410,8 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 		t.Fatalf("expanding moved the selection to %q", selectedValue())
 	}
 	items := m.filteredItems()
-	if !strings.HasPrefix(items[2].label, "↳ count files") || items[2].parent != "gamma" {
-		t.Fatalf("agent row = %#v, want it named by its label under gamma", items[2])
+	if !strings.HasPrefix(items[2].label, "↳ delta") || items[2].parent != "gamma" || items[2].searchText != "count files" || !strings.Contains(items[2].display, styled("count files", "muted", "")) {
+		t.Fatalf("agent row = %#v, want it named by its session under gamma with its brief muted after", items[2])
 	}
 	if !strings.HasPrefix(items[3].label, "↳ epsilon") {
 		t.Fatalf("unlabeled agent row = %q, want its session name", items[3].label)
@@ -497,20 +497,134 @@ func TestSessionsPickerListsOpenWorkspacesFirstWithAgents(t *testing.T) {
 		t.Fatalf("picker order = %q", got)
 	}
 	labels := make(map[string]string)
+	markers := make(map[string]string)
 	for _, item := range m.items {
 		labels[item.value] = item.label
+		markers[item.value] = m.nestMarker(item)
 	}
 	for value, want := range map[string]string{
-		"root":          "current · 1 need approval",
+		"root":          "current",
 		"second":        "workspace 2 · streaming",
-		"waiting-agent": "active agent · approval needed",
+		"waiting-agent": "approval needed",
+		"idle-agent":    "active agent",
 	} {
 		if !strings.HasSuffix(labels[value], want) {
 			t.Fatalf("%s row = %q, want suffix %q", value, labels[value], want)
 		}
 	}
+	// The parent's marker carries the count and what the agents are doing.
+	if markers["root"] != "▾ 2 agents · 1 needs approval" {
+		t.Fatalf("root marker = %q", markers["root"])
+	}
 	if !r.pickerExpanded["root"] {
 		t.Fatal("workspace with live agents did not start expanded")
+	}
+}
+
+// The open picker follows the tabs: an agent's row changes as it works and
+// settles, the parent's marker with it, a session spawned meanwhile joins
+// under its parent, and the selection stays on its row throughout.
+func TestSessionsPickerRefreshesWhileOpen(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	ctx := context.Background()
+	for _, name := range []string{"root", "saved"} {
+		if err := testAcquireSession(t, store, name).Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child, err := store.Acquire(ctx, "busy-agent", sessions.AcquireOptions{Parent: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := newTabTestREPL(t, store, "root")
+	root := r.tabs[0]
+	agent := &replTab{name: "busy-agent", parent: root, parentName: root.name, model: newReplModel()}
+	r.tabs = append(r.tabs, agent)
+	agent.model.busy = true
+	agent.model.state = turnStateTool
+	agent.model.toolName = "bash"
+	agent.model.turnStarted = time.Now().Add(-12 * time.Second)
+	r.showTab(0)
+	r.openSessionsPicker()
+	m := r.model.modal
+	if m == nil || m.refresh == nil || m.picker == nil {
+		t.Fatalf("picker = %#v, want a live listing", m)
+	}
+	row := func(value string) string {
+		for _, item := range m.items {
+			if item.value == value {
+				return item.label + "  " + m.nestMarker(item)
+			}
+		}
+		return ""
+	}
+	values := func() []string {
+		var out []string
+		for _, item := range m.filteredItems() {
+			out = append(out, item.value)
+		}
+		return out
+	}
+	if got := row("busy-agent"); !strings.HasSuffix(got, "running bash · 12s  ") {
+		t.Fatalf("running agent row = %q", got)
+	}
+	if got := row("root"); !strings.HasSuffix(got, "current  ▾ 1 agent · 1 running") {
+		t.Fatalf("parent row = %q", got)
+	}
+
+	// Select the saved session below the agent, then let the agent settle.
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Down>"})
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Down>"})
+	if got := m.filteredItems()[m.selected].value; got != "saved" {
+		t.Fatalf("selected %q, want saved", got)
+	}
+	agent.model.busy = false
+	agent.model.unseenOutcome = turnOutcomeDone
+	agent.model.lastElapsed = 41800 * time.Millisecond
+	m.refresh()
+	if got := row("busy-agent"); !strings.HasSuffix(got, "done · 41.8s  ") {
+		t.Fatalf("settled agent row = %q", got)
+	}
+	if got := row("root"); !strings.HasSuffix(got, "current  ▾ 1 agent") {
+		t.Fatalf("parent row after settling = %q", got)
+	}
+
+	// A session spawned since the picker opened joins under its parent on
+	// the next store read; the selection stays on the saved session.
+	late, err := store.Acquire(ctx, "late-agent", sessions.AcquireOptions{Parent: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m.picker.listedAt = time.Time{}
+	m.refresh()
+	deadline := time.After(5 * time.Second)
+	for m.picker.listing {
+		select {
+		case fn := <-r.uiTasks:
+			fn()
+		case <-deadline:
+			t.Fatal("store listing did not finish")
+		}
+	}
+	m.refresh()
+	if got := strings.Join(values(), " "); got != "root busy-agent late-agent saved" {
+		t.Fatalf("picker after the listing = %q", got)
+	}
+	if got := m.filteredItems()[m.selected].value; got != "saved" {
+		t.Fatalf("selection moved to %q", got)
+	}
+
+	// The agent's tab closing keeps how it ended on its row.
+	r.tabs = r.tabs[:1]
+	m.refresh()
+	if got := row("busy-agent"); !strings.HasSuffix(got, "done · 41.8s  ") || strings.Contains(got, "active agent") {
+		t.Fatalf("closed agent row = %q", got)
 	}
 }
 
