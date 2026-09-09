@@ -36,9 +36,12 @@ var ErrMaxIterations = errors.New("max iterations exceeded")
 // Agent handles the agentic loop without owning session state.
 // It executes completions with automatic tool call handling.
 type Agent struct {
-	client        LLM
-	tools         *tools.ToolRegistry
-	sourceTools   *tools.ToolRegistry
+	client      LLM
+	tools       *tools.ToolRegistry
+	sourceTools *tools.ToolRegistry
+	// The completion builder can advertise an explicit WithTools selection.
+	// Dispatch still uses the registry's current execution policy.
+	requestTools  []tools.Tool
 	config        AgentConfig
 	artifactStore artifacts.Store
 	artifactMu    sync.RWMutex
@@ -224,12 +227,9 @@ func hasToolCall(msg *messages.ChatMessage, name string) bool {
 	return false
 }
 
-// NewAgent creates an agent that handles the agentic loop and its compact,
-// session-scoped model projection. The agent does not own transcript state:
-// callers provide messages and persist the generated messages themselves.
-// Agent built-ins are private to this agent. The caller retains ownership of
-// registry and its configured tools; later registry changes remain visible.
-func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
+// newAgent initializes the shared execution engine. The builder uses it with
+// only caller-provided tools; NewAgent also installs private recall tools.
+func newAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
 	if config.MaxIterations <= 0 {
 		config.MaxIterations = 1024
 	}
@@ -239,11 +239,21 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 	} else if config.ArtifactStore != nil {
 		registry = tools.NewToolRegistry(nil)
 	}
-	agent := &Agent{
+	return &Agent{
 		client: client, tools: registry, sourceTools: source, config: config,
 		artifactStore: config.ArtifactStore,
 		artifactRefs:  make(map[string]artifacts.Ref),
 	}
+}
+
+// NewAgent creates an agent that handles the agentic loop and its compact,
+// session-scoped model projection. The agent does not own transcript state:
+// callers provide messages and persist the generated messages themselves.
+// Agent built-ins are private to this agent. The caller retains ownership of
+// registry and its configured tools; later registry changes remain visible.
+func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
+	agent := newAgent(client, registry, config)
+	registry = agent.tools
 	if config.ArtifactStore != nil && !config.DisableTools {
 		reader := &readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact}
 		registry.Register(reader)
@@ -445,6 +455,8 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		}
 		if a.config.DisableTools {
 			iterReq.Tools = nil
+		} else if len(a.requestTools) > 0 {
+			iterReq.Tools = a.requestTools
 		} else if a.tools != nil {
 			iterReq.Tools = a.tools.All()
 		}
@@ -534,249 +546,108 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		allGenerated = append(allGenerated, *response)
 		a.appendTranscript(*response)
 
-		continueFinal := func() (bool, error) {
-			requireReceipt := func() (bool, error) {
-				if a.config.RequireResponseToolSuccess && !responseToolSucceeded {
-					return false, fmt.Errorf("missing successful %s result", a.config.ResponseTool)
-				}
-				return false, nil
-			}
-			if cb == nil || cb.ContinueAfterFinal == nil {
-				return requireReceipt()
-			}
-			input, err := cb.ContinueAfterFinal(ctx, response)
-			if err != nil {
-				return false, err
-			}
-			if len(input) == 0 {
-				return requireReceipt()
-			}
-			for _, msg := range input {
-				if msg.Role != messages.MessageRoleUser || len(msg.ToolCalls) != 0 {
-					return false, errors.New("continuation input must be user text")
-				}
-			}
-			if iteration+1 >= a.config.MaxIterations {
-				// No model call is left to answer the continuation. Appending it
-				// would leave history ending in a user message, so the budget
-				// ends the turn here with the answer intact.
-				stampMaxIterations(allGenerated)
-				response.StopReason = messages.StopReasonMaxIterations
-				if cb.OnError != nil {
-					cb.OnError(ErrMaxIterations)
-				}
-				return false, ErrMaxIterations
-			}
-			msgs = append(msgs, input...)
-			allGenerated = append(allGenerated, input...)
-			a.appendTranscript(input...)
-			responseToolCalled = false
-			return true, nil
-		}
-		// Check stop reason to determine next action
-		// Some compatible providers label a tool-bearing response as end_turn.
-		// A validated response tool must actually execute before it can finish.
+		// Classify the provider response before dispatch. All successful terminal
+		// paths below converge on continuation, receipt validation, and OnComplete.
 		if a.config.RequireResponseToolSuccess && response.StopReason == messages.StopReasonEndTurn && len(response.ToolCalls) > 0 {
 			response.StopReason = messages.StopReasonToolUse
 		}
-		switch response.StopReason {
-		case messages.StopReasonEndTurn:
-			if a.config.ResponseTool != "" && !a.config.RequireResponseToolSuccess && !responseToolCalled && !nudgedResponseTool {
-				nudgedResponseTool = true
-				nudge := messages.ChatMessage{
-					Role:     messages.MessageRoleUser,
-					Content:  "Respond using the " + a.config.ResponseTool + " tool.",
-					Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true},
-				}
-				msgs = append(msgs, nudge)
-				allGenerated = append(allGenerated, nudge)
-				a.appendTranscript(nudge)
-				continue
-			}
-			if again, err := continueFinal(); err != nil {
-				return responseFor(response, iteration+1), err
-			} else if again {
-				continue
-			}
-			// Normal completion
-			if cb != nil && cb.OnComplete != nil {
-				cb.OnComplete(response)
-			}
-			return responseFor(response, iteration+1), nil
-
-		case messages.StopReasonMaxTokens:
-			if again, err := continueFinal(); err != nil {
-				return responseFor(response, iteration+1), err
-			} else if again {
-				continue
-			}
-			// Response truncated - warn and return
-			slog.Debug("response_truncated", "reason", "max_tokens")
-			if cb != nil && cb.OnComplete != nil {
-				cb.OnComplete(response)
-			}
-			return responseFor(response, iteration+1), nil
-
-		case messages.StopReasonContentFilter:
-			// Response blocked by safety/policy
-			err := errors.New("response blocked by content filter")
+		runTools, err := responseNeedsTools(response)
+		if err != nil {
 			if cb != nil && cb.OnError != nil {
 				cb.OnError(err)
 			}
 			return responseFor(response, iteration+1), err
-
-		case messages.StopReasonError:
-			// Model produced malformed output
-			err := errors.New("model produced malformed output")
-			if cb != nil && cb.OnError != nil {
-				cb.OnError(err)
-			}
-			return responseFor(response, iteration+1), err
-
-		case messages.StopReasonToolUse:
-			if len(response.ToolCalls) == 0 {
-				err := errors.New("model requested tool use without any tool calls")
-				if cb != nil && cb.OnError != nil {
-					cb.OnError(err)
-				}
-				return responseFor(response, iteration+1), err
-			}
-			// Continue to execute tool calls below
-
-		default:
-			// Unknown stop reason with no tool calls = treat as completion
-			if len(response.ToolCalls) == 0 {
-				if a.config.ResponseTool != "" && !a.config.RequireResponseToolSuccess && !responseToolCalled && !nudgedResponseTool {
-					nudgedResponseTool = true
-					nudge := messages.ChatMessage{
-						Role:     messages.MessageRoleUser,
-						Content:  "Respond using the " + a.config.ResponseTool + " tool.",
-						Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true},
-					}
-					msgs = append(msgs, nudge)
-					allGenerated = append(allGenerated, nudge)
-					a.appendTranscript(nudge)
-					continue
-				}
-				if again, err := continueFinal(); err != nil {
-					return responseFor(response, iteration+1), err
-				} else if again {
-					continue
-				}
-				if cb != nil && cb.OnComplete != nil {
-					cb.OnComplete(response)
-				}
-				return responseFor(response, iteration+1), nil
-			}
-			// Has tool calls, continue to execute them
 		}
-
-		// Providers can return calls even when no schemas were sent. Reject the
-		// batch before callbacks or dispatch; DisableTools is an execution bound.
-		if a.config.DisableTools && len(response.ToolCalls) > 0 {
-			allGenerated = append(allGenerated, completeAbortedToolBatch(response.ToolCalls, nil)...)
-			return responseFor(response, iteration+1), errors.New("tool execution is disabled")
-		}
-
-		// Track if response tool was called in this batch
-		if a.config.ResponseTool != "" {
-			for _, tc := range response.ToolCalls {
-				if tc.Name == a.config.ResponseTool {
-					responseToolCalled = true
-					break
-				}
-			}
-		}
-
-		// Execute tool calls in parallel
-		if len(response.ToolCalls) > 1 && a.tools != nil {
+		if runTools {
 			for _, call := range response.ToolCalls {
-				if tool, ok := a.tools.Get(call.Name); ok {
-					if exclusive, ok := tool.(tools.ExclusiveTool); ok && exclusive.ExclusiveBatch() {
-						allGenerated = append(allGenerated, completeAbortedToolBatch(response.ToolCalls, nil)...)
-						return responseFor(response, iteration+1), fmt.Errorf("%s must be the only tool in its batch; no tools were started", call.Name)
-					}
+				if a.config.ResponseTool != "" && call.Name == a.config.ResponseTool {
+					responseToolCalled = true
 				}
 			}
-		}
-		if cb != nil && cb.BeforeToolBatch != nil {
-			if err := cb.BeforeToolBatch(ctx, response.ToolCalls); err != nil {
-				allGenerated = append(allGenerated, completeAbortedToolBatch(response.ToolCalls, nil)...)
-				return responseFor(response, iteration+1), err
-			}
-		}
-		if cb != nil && cb.JournalToolBatch != nil {
-			if err := cb.JournalToolBatch(ctx, AgentCheckpoint{Generated: allGenerated, Iterations: iteration + 1}); err != nil {
-				allGenerated = append(allGenerated, completeAbortedToolBatch(response.ToolCalls, nil)...)
-				return responseFor(response, iteration+1), err
-			}
-		}
-		toolMsgs, toolErr := a.executeToolsParallel(ctx, response.ToolCalls, cb)
-		if toolErr != nil {
-			// The batch aborted, but tools that finished already changed the
-			// world: keep their real results, stub the unanswered calls, and
-			// return the completed batch so AllMessages stays replayable.
-			toolMsgs = completeAbortedToolBatch(response.ToolCalls, toolMsgs)
-			a.commitToolChanges()
-			a.indexArtifactMessages(toolMsgs)
+			toolMsgs, toolErr := a.executeToolBatch(ctx, response.ToolCalls, allGenerated, iteration+1, cb)
+			msgs = append(msgs, toolMsgs...)
 			allGenerated = append(allGenerated, toolMsgs...)
 			a.appendTranscript(toolMsgs...)
-			return responseFor(response, iteration+1), toolErr
-		}
-		a.commitToolChanges()
-		a.indexArtifactMessages(toolMsgs)
-		msgs = append(msgs, toolMsgs...)
-		allGenerated = append(allGenerated, toolMsgs...)
-		a.appendTranscript(toolMsgs...)
-		if cb != nil && cb.AfterToolBatch != nil {
-			if err := cb.AfterToolBatch(ctx); err != nil {
-				return responseFor(response, iteration+1), err
+			if toolErr != nil {
+				return responseFor(response, iteration+1), toolErr
 			}
-		}
+			if cb != nil && cb.AfterToolBatch != nil {
+				if err := cb.AfterToolBatch(ctx); err != nil {
+					return responseFor(response, iteration+1), err
+				}
+			}
 
-		// Short-circuit when every tool in the batch was denied. Looping to
-		// feed the denials back would just make the model editorialize ("I
-		// can't run that"), which pollutes history and teaches it to refuse
-		// preemptively on later turns. The caller already saw the denial.
-		if allDenied(toolMsgs) {
-			if a.config.RequireResponseToolSuccess {
+			// A denied batch ends without a model denial replay. A response tool
+			// ends with its structured result instead of an extra plain-text reply.
+			denied := allDenied(toolMsgs)
+			if denied && a.config.RequireResponseToolSuccess {
 				return responseFor(response, iteration+1), errors.New("tool batch denied before required response")
 			}
-			// Outstanding coordination is real input, not a denial replay: the
-			// continuation prompt gives the model something concrete to do.
-			if again, err := continueFinal(); err != nil {
-				return responseFor(response, iteration+1), err
-			} else if again {
+			if !denied && !responseToolCalled {
 				continue
 			}
-			if cb != nil && cb.OnComplete != nil {
-				cb.OnComplete(response)
-			}
-			return responseFor(response, iteration+1), nil
-		}
-
-		// Short-circuit when the response tool was called: the caller
-		// extracts the structured response from the tool call's arguments,
-		// so making another LLM call to "process" the tool result would
-		// generate plain text the caller discards anyway.
-		if responseToolCalled {
-			if a.config.RequireResponseToolSuccess {
+			if responseToolCalled && a.config.RequireResponseToolSuccess {
 				for _, result := range toolMsgs {
 					if success, known := result.ToolSucceeded(); result.ToolName == a.config.ResponseTool && known && success {
 						responseToolSucceeded = true
 					}
 				}
 			}
-			if again, err := continueFinal(); err != nil {
+		} else if response.StopReason != messages.StopReasonMaxTokens && a.config.ResponseTool != "" && !a.config.RequireResponseToolSuccess && !responseToolCalled && !nudgedResponseTool {
+			// The legacy response-tool reminder is sent once, only after a
+			// normal text completion. Receipt-based callers own their correction.
+			nudgedResponseTool = true
+			nudge := messages.ChatMessage{
+				Role:     messages.MessageRoleUser,
+				Content:  "Respond using the " + a.config.ResponseTool + " tool.",
+				Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true},
+			}
+			msgs = append(msgs, nudge)
+			allGenerated = append(allGenerated, nudge)
+			a.appendTranscript(nudge)
+			continue
+		}
+
+		// Outstanding coordination can reopen any provisional final, including
+		// a denied batch or an unsuccessful response-tool receipt.
+		if cb != nil && cb.ContinueAfterFinal != nil {
+			input, err := cb.ContinueAfterFinal(ctx, response)
+			if err != nil {
 				return responseFor(response, iteration+1), err
-			} else if again {
+			}
+			for _, msg := range input {
+				if msg.Role != messages.MessageRoleUser || len(msg.ToolCalls) != 0 {
+					return responseFor(response, iteration+1), errors.New("continuation input must be user text")
+				}
+			}
+			if len(input) > 0 {
+				if iteration+1 >= a.config.MaxIterations {
+					// Keep the answer intact instead of appending input that no
+					// remaining model call can answer.
+					stampMaxIterations(allGenerated)
+					response.StopReason = messages.StopReasonMaxIterations
+					if cb.OnError != nil {
+						cb.OnError(ErrMaxIterations)
+					}
+					return responseFor(response, iteration+1), ErrMaxIterations
+				}
+				msgs = append(msgs, input...)
+				allGenerated = append(allGenerated, input...)
+				a.appendTranscript(input...)
+				responseToolCalled = false
 				continue
 			}
-			if cb != nil && cb.OnComplete != nil {
-				cb.OnComplete(response)
-			}
-			return responseFor(response, iteration+1), nil
 		}
+		if a.config.RequireResponseToolSuccess && !responseToolSucceeded {
+			return responseFor(response, iteration+1), fmt.Errorf("missing successful %s result", a.config.ResponseTool)
+		}
+		if response.StopReason == messages.StopReasonMaxTokens {
+			slog.Debug("response_truncated", "reason", "max_tokens")
+		}
+		if cb != nil && cb.OnComplete != nil {
+			cb.OnComplete(response)
+		}
+		return responseFor(response, iteration+1), nil
 	}
 
 	// Stamp the last generated assistant message (the one whose tool calls
@@ -789,6 +660,64 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	}
 	// Return the partial response so the caller can save the history
 	return responseFor(last, a.config.MaxIterations), ErrMaxIterations
+}
+
+// responseNeedsTools distinguishes provider failures, tool batches, and finals.
+// Explicit end_turn/max_tokens remain final even if they carry tool calls;
+// receipt-based response tools normalize compatible end_turn responses first.
+func responseNeedsTools(response *messages.ChatMessage) (bool, error) {
+	switch response.StopReason {
+	case messages.StopReasonEndTurn, messages.StopReasonMaxTokens:
+		return false, nil
+	case messages.StopReasonContentFilter:
+		return false, errors.New("response blocked by content filter")
+	case messages.StopReasonError:
+		return false, errors.New("model produced malformed output")
+	case messages.StopReasonToolUse:
+		if len(response.ToolCalls) == 0 {
+			return false, errors.New("model requested tool use without any tool calls")
+		}
+	}
+	return len(response.ToolCalls) > 0, nil
+}
+
+// executeToolBatch validates the whole batch before starting any tool. Every
+// failure returns a complete set of receipts, retaining results already earned.
+func (a *Agent) executeToolBatch(ctx context.Context, calls []messages.ChatMessageToolCall, generated []messages.ChatMessage, iterations int, cb *AgentCallbacks) ([]messages.ChatMessage, error) {
+	abort := func(err error) ([]messages.ChatMessage, error) {
+		return completeAbortedToolBatch(calls, nil), err
+	}
+	// Providers can return calls even when no schemas were sent. DisableTools
+	// is an execution bound and must be checked before callbacks or dispatch.
+	if a.config.DisableTools {
+		return abort(errors.New("tool execution is disabled"))
+	}
+	if len(calls) > 1 && a.tools != nil {
+		for _, call := range calls {
+			if tool, ok := a.tools.Get(call.Name); ok {
+				if exclusive, ok := tool.(tools.ExclusiveTool); ok && exclusive.ExclusiveBatch() {
+					return abort(fmt.Errorf("%s must be the only tool in its batch; no tools were started", call.Name))
+				}
+			}
+		}
+	}
+	if cb != nil && cb.BeforeToolBatch != nil {
+		if err := cb.BeforeToolBatch(ctx, calls); err != nil {
+			return abort(err)
+		}
+	}
+	if cb != nil && cb.JournalToolBatch != nil {
+		if err := cb.JournalToolBatch(ctx, AgentCheckpoint{Generated: generated, Iterations: iterations}); err != nil {
+			return abort(err)
+		}
+	}
+	results, err := a.executeToolsParallel(ctx, calls, cb)
+	if err != nil {
+		results = completeAbortedToolBatch(calls, results)
+	}
+	a.commitToolChanges()
+	a.indexArtifactMessages(results)
+	return results, err
 }
 
 // stampMaxIterations marks the last generated assistant message as ended by
@@ -1185,6 +1114,22 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 		} else {
 			approvedIndices = append(approvedIndices, i)
 		}
+	}
+
+	// A single worker executes in request order, preserving dependencies
+	// between calls without launching goroutines that race for the semaphore.
+	if a.effectiveParallelism(len(approvedIndices)) == 1 {
+		for _, idx := range approvedIndices {
+			if err := ctx.Err(); err != nil {
+				return results, err
+			}
+			result, err := a.executeTool(ctx, toolCalls[idx], cb)
+			if err != nil {
+				return results, err
+			}
+			results[idx] = result
+		}
+		return results, nil
 	}
 
 	g, ctx := errgroup.WithContext(ctx)

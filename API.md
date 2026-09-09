@@ -99,6 +99,21 @@ response, err := llm.NewCompletionBuilder("openai/gpt-5.4").
 // Skills work on the builder too: .WithSkills(catalog)
 ```
 
+`ExecuteWithTools` runs the same engine as `Agent.Run`, with tools executed
+sequentially in request order. It keeps reasoning, typed tool results, and media,
+and records interrupted results when a batch aborts. Tool exchanges are appended
+to the builder's history; the final answer is returned separately. The supplied
+registry stays caller-owned. An explicit `WithTools` selection controls advertised
+schemas; execution still checks the registry's current policy. Without a selection,
+schemas follow the registry between rounds. The builder adds no private tools.
+
+Malformed arguments, missing tools, and policy-blocked calls now become failed
+tool results that the model can correct, matching `Agent.Run`. Provider failures
+and aborted runs return errors with any available partial response. Provider stop
+reasons follow Agent semantics, including content-filter errors and completion on
+`end_turn` or `max_tokens`. A nil registry still performs one completion and returns
+any tool calls without executing them.
+
 ## Core Types
 
 Every provider implements one method:

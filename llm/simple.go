@@ -329,23 +329,15 @@ func (b *CompletionBuilder) ExecuteStreaming(ctx context.Context, client LLM, on
 	return nil
 }
 
-// ExecuteWithTools runs the completion and handles tool calls automatically.
-// Rounds are capped like Agent.Run's MaxIterations default; hitting the cap
-// returns the last response together with ErrMaxIterations.
+// ExecuteWithTools uses Agent.Run with sequential tool execution and its default
+// 1024-iteration limit. Tool exchanges are appended to the builder's history;
+// the final answer is returned separately. Failed calls are fed back to the
+// model, and rich output and interrupted batches retain Agent's durable results.
+// A nil registry performs one completion without executing tool calls.
 func (b *CompletionBuilder) ExecuteWithTools(ctx context.Context, client LLM, toolRegistry *tools.ToolRegistry) (*messages.ChatMessage, error) {
-	// Add tools to request if not already added
-	if len(b.req.Tools) == 0 && toolRegistry != nil {
-		b.req.Tools = toolRegistry.All()
-	}
-
-	const maxToolRounds = 1024
-	var response *messages.ChatMessage
-	for round := 0; round < maxToolRounds; round++ {
-		processor := &SimpleProcessor{}
-		eventChan := client.ChatCompletionStream(ctx, b.req, processor)
-
-		response = nil
-		for event := range eventChan {
+	if toolRegistry == nil {
+		var response *messages.ChatMessage
+		for event := range client.ChatCompletionStream(ctx, b.req, &SimpleProcessor{}) {
 			switch event.Type {
 			case messages.EventTypeComplete:
 				response = event.Message
@@ -353,50 +345,22 @@ func (b *CompletionBuilder) ExecuteWithTools(ctx context.Context, client LLM, to
 				return nil, event.Error
 			}
 		}
-
-		if response == nil || len(response.ToolCalls) == 0 || toolRegistry == nil {
-			return response, nil
-		}
-
-		// The assistant message joins history once, ahead of its results.
-		b.req.Messages = append(b.req.Messages, *response)
-		for _, toolCall := range response.ToolCalls {
-			// Parse arguments
-			var args map[string]any
-			if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
-				return nil, fmt.Errorf("failed to parse tool arguments: %w", err)
-			}
-
-			// Get and execute tool
-			tool, exists, allowed := toolRegistry.GetIfAllowed(toolCall.Name)
-			if !exists {
-				return nil, fmt.Errorf("tool not found: %s", toolCall.Name)
-			}
-			if !allowed {
-				return nil, fmt.Errorf("tool not allowed by active skill policy: %s", toolCall.Name)
-			}
-
-			result, err := tool.Execute(ctx, args)
-			if err != nil {
-				if msg, ok := tools.FormatToolError(err); ok {
-					result = msg
-				} else {
-					result = fmt.Sprintf("Error executing tool: %v", err)
-				}
-			}
-
-			b.req.Messages = append(b.req.Messages, messages.ChatMessage{
-				Role:       messages.MessageRoleTool,
-				Content:    result,
-				ToolCallID: toolCall.ID,
-				ToolName:   toolCall.Name,
-			})
-		}
-		toolRegistry.CommitPendingChanges()
+		return response, nil
 	}
 
-	response.StopReason = messages.StopReasonMaxIterations
-	return response, ErrMaxIterations
+	agent := newAgent(client, toolRegistry, AgentConfig{MaxParallelTools: 1})
+	defer agent.Close()
+	agent.requestTools = b.req.Tools
+	result, err := agent.Run(ctx, b.req, nil)
+	if result == nil {
+		return nil, err
+	}
+	generated := result.AllMessages
+	if n := len(generated); n > 0 && generated[n-1].Role == messages.MessageRoleAssistant && len(generated[n-1].ToolCalls) == 0 {
+		generated = generated[:n-1]
+	}
+	b.req.Messages = append(b.req.Messages, generated...)
+	return result.Message, err
 }
 
 // SimpleProcessor is a basic implementation of EventStreamProcessor
