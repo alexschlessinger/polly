@@ -57,6 +57,12 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	if s.lastRows < 0 && v != nil && v.model != nil && !v.loading {
 		s.lastRows = len(rows)
 	}
+	// A re-wrap at another width changes the row count without any new
+	// output. Carry the baseline across by proportion: a fully seen view
+	// stays fully seen, and unseen rows stay unseen.
+	if s.lastRows >= 0 && s.lastWidth > 0 && s.lastWidth != g.width && s.lastTotal > 0 && len(rows) != s.lastTotal {
+		s.lastRows = min(s.lastRows, s.lastTotal) * len(rows) / s.lastTotal
+	}
 	height := max(0, paneHeight-r.inspectorHeaderRows)
 	if s.follow {
 		s.top = max(0, len(rows)-height)
@@ -64,6 +70,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	} else {
 		s.top = min(s.top, max(0, len(rows)-1))
 	}
+	s.lastWidth, s.lastTotal = g.width, len(rows)
 	pin := s.follow && (i.target.kind == conversationViewKind || len(rows) > height)
 	r.inspectorW.Rows, r.inspectorW.TopRow, r.inspectorW.PinBottom = rows, s.top, pin
 	r.inspectorW.OverlayBottom = nil

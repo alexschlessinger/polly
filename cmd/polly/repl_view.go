@@ -88,9 +88,13 @@ type viewState struct {
 	follow         bool
 	search         string
 	lastRows       int // -1 until a newly selected inspector item has rendered
-	anchor         viewAnchor
-	sections       map[string]viewSection
-	revision       uint64
+	// lastWidth and lastTotal are the width and row count of the last paint,
+	// so a re-wrap can carry the seen/unseen state across instead of reading
+	// the changed row count as new output.
+	lastWidth, lastTotal int
+	anchor               viewAnchor
+	sections             map[string]viewSection
+	revision             uint64
 }
 
 func (s *viewState) resetScroll() {

@@ -1344,3 +1344,46 @@ func TestEntryMeasurementCountsTheCollapsedPromptRow(t *testing.T) {
 		}
 	}
 }
+
+func TestNewOutputBannerSurvivesReWrapOnResize(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = r.work.close() })
+	screen.SetSize(140, 32)
+	call := messages.ChatMessageToolCall{ID: "a", Name: "a"}
+	r.model.appendToolCallStart(call)
+	r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat(strings.Repeat("wrap ", 24)+"\n", 40)})
+	r.inspectCommand("tools")
+	waitInspector(t, r, 140)
+	r.render()
+	s := r.workspace().viewState(r.workspace().inspector.target)
+	s.follow, s.top = false, 0
+	wide := len(r.inspectorW.Rows)
+	if s.lastRows != wide || len(r.inspectorW.OverlayBottom) != 0 {
+		t.Fatalf("baseline after the first paint: lastRows=%d rows=%d overlay=%d", s.lastRows, wide, len(r.inspectorW.OverlayBottom))
+	}
+
+	// Fully seen: a resize re-wraps the same content and must not announce it.
+	screen.SetSize(100, 32)
+	r.render()
+	narrow := len(r.inspectorW.Rows)
+	if narrow == wide {
+		t.Fatalf("resize did not re-wrap the view: %d rows both times", wide)
+	}
+	if len(r.inspectorW.OverlayBottom) != 0 || s.lastRows != narrow {
+		t.Fatalf("re-wrap read as new output: lastRows=%d rows=%d overlay=%d", s.lastRows, narrow, len(r.inspectorW.OverlayBottom))
+	}
+
+	// Unseen output stays unseen across a resize in either direction.
+	s.lastRows = narrow - 10
+	screen.SetSize(140, 32)
+	r.render()
+	if len(r.inspectorW.OverlayBottom) == 0 || s.lastRows >= len(r.inspectorW.Rows) {
+		t.Fatalf("resize swallowed unseen output: lastRows=%d rows=%d", s.lastRows, len(r.inspectorW.Rows))
+	}
+	screen.SetSize(100, 32)
+	r.render()
+	if len(r.inspectorW.OverlayBottom) == 0 || s.lastRows >= len(r.inspectorW.Rows) {
+		t.Fatalf("second resize swallowed unseen output: lastRows=%d rows=%d", s.lastRows, len(r.inspectorW.Rows))
+	}
+}
