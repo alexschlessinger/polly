@@ -232,15 +232,6 @@ type PromptCacheStats struct {
 	WriteInputTokens int
 }
 
-func hasToolCall(msg *messages.ChatMessage, name string) bool {
-	for _, tc := range msg.ToolCalls {
-		if tc.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
 // newAgent initializes the shared execution engine. The builder uses it with
 // only caller-provided tools; NewAgent also installs private recall tools.
 func newAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
@@ -280,7 +271,7 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		viewer := tools.NewViewImageTool(registry)
 		registry.Register(viewer)
 		registry.MarkAlwaysAllowed(viewer.GetName())
-		transcript := &readTranscriptTool{snapshot: agent.transcriptSnapshot, rendered: agent.renderedTranscript}
+		transcript := &readTranscriptTool{rendered: agent.renderedTranscript}
 		registry.Register(transcript)
 		registry.MarkAlwaysAllowed(transcript.GetName())
 		agent.transcriptTool = true
@@ -495,7 +486,6 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			}
 			return responseFor(nil, iteration), err
 		}
-		a.indexArtifactMessages(projected)
 		iterReq.Messages = projected
 		if iteration == 0 && cb != nil && cb.BeforeFirstRequest != nil {
 			// The request is known to be sendable; the caller may now commit
@@ -805,7 +795,7 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 	return response, nil
 }
 
-// drainEvents consumes an abandoned event stream until it closes, so the
+// drainAbandonedEvents consumes an abandoned event stream until it closes, so the
 // processor and provider goroutines feeding it can finish instead of blocking
 // on a channel nobody reads.
 func drainAbandonedEvents(events <-chan *messages.StreamEvent) {
@@ -1157,7 +1147,6 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 	sem := make(chan struct{}, a.effectiveParallelism(len(approvedIndices)))
 
 	for _, idx := range approvedIndices {
-		idx := idx
 		tc := toolCalls[idx]
 		g.Go(func() error {
 			// Acquire semaphore (respects context cancellation)

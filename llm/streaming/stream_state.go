@@ -27,9 +27,21 @@ type StreamStateInterface interface {
 	GetToolCalls() []messages.ChatMessageToolCall
 	GetInputTokens() int
 	GetOutputTokens() int
-	GetCacheReadInputTokens() int
-	GetCacheWriteInputTokens() int
-	HasPromptCacheUsage() bool
+}
+
+// PromptCacheReporter is the usage shape every provider's usage payload
+// exposes: read and write token counts, and whether the provider reported
+// them at all.
+type PromptCacheReporter interface {
+	PromptCacheUsage() (read, write int, reported bool)
+}
+
+// ApplyPromptCacheUsage records provider-reported prompt-cache usage on
+// target, leaving it untouched when the provider reported none.
+func ApplyPromptCacheUsage(target interface{ SetPromptCacheUsage(read, write int) }, usage PromptCacheReporter) {
+	if read, write, reported := usage.PromptCacheUsage(); reported {
+		target.SetPromptCacheUsage(read, write)
+	}
 }
 
 // StreamState holds the common state during streaming for all providers.

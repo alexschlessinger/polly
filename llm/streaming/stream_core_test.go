@@ -12,7 +12,6 @@ type noopAdapter struct{}
 
 func (n *noopAdapter) ProcessChunk(chunk any, state StreamStateInterface) error                 { return nil }
 func (n *noopAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state StreamStateInterface) {}
-func (n *noopAdapter) HandleToolCall(toolData any, state StreamStateInterface) error            { return nil }
 
 func newTestStreamingCore() (*StreamingCore, chan messages.ChatMessage) {
 	ch := make(chan messages.ChatMessage, 10)

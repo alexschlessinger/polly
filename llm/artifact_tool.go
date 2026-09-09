@@ -70,12 +70,12 @@ func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any
 			return tools.ToolOutput{}, err
 		}
 		return tools.ToolOutput{
-			Text:  capArtifactReadText(fmt.Sprintf("Attached image artifact %s (%s, reference %s, %d bytes).", ref.ID, ref.Name, ref.ImageToken, ref.Bytes)),
+			Text:  tools.CapPageText(fmt.Sprintf("Attached image artifact %s (%s, reference %s, %d bytes).", ref.ID, ref.Name, ref.ImageToken, ref.Bytes)),
 			Media: []tools.ToolMedia{{Data: data, MIMEType: ref.MIMEType, Name: ref.Name, Reference: ref.ImageToken}},
 		}, nil
 	}
 	if ref.Kind != artifacts.KindText {
-		return tools.ToolOutput{Text: capArtifactReadText(fmt.Sprintf("Artifact %s is %s (%s, %d bytes); binary payloads are not inserted into model context.", ref.ID, ref.Kind, ref.MIMEType, ref.Bytes))}, nil
+		return tools.ToolOutput{Text: tools.CapPageText(fmt.Sprintf("Artifact %s is %s (%s, %d bytes); binary payloads are not inserted into model context.", ref.ID, ref.Kind, ref.MIMEType, ref.Bytes))}, nil
 	}
 
 	if _, hasByteOffset := raw["byte_offset"]; hasByteOffset {
@@ -115,18 +115,12 @@ func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any
 	if err != nil {
 		return tools.ToolOutput{}, err
 	}
-	text, readErr := boundedArtifactText(ctx, r, offset, limit, args.String("query"))
+	text, readErr := tools.PageLines(ctx, r, "artifact", offset, limit, args.String("query"))
 	closeErr := r.Close()
 	if readErr != nil || closeErr != nil {
 		return tools.ToolOutput{}, errors.Join(readErr, closeErr)
 	}
-	return tools.ToolOutput{Text: capArtifactReadText(text)}, nil
-}
-
-// boundedArtifactText renders numbered artifact lines via the shared pager;
-// see tools.PageLines for the paging and truncation contract.
-func boundedArtifactText(ctx context.Context, r io.Reader, offset, limit int, query string) (string, error) {
-	return tools.PageLines(ctx, r, "artifact", offset, limit, query)
+	return tools.ToolOutput{Text: tools.CapPageText(text)}, nil
 }
 
 // byteWindowArtifactText returns a raw byte window of a text artifact; paging
@@ -205,8 +199,4 @@ func artifactListEntry(position int, ref artifacts.Ref) string {
 	}
 	b.WriteByte('\n')
 	return b.String()
-}
-
-func capArtifactReadText(text string) string {
-	return tools.CapPageText(text)
 }

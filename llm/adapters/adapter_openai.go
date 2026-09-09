@@ -43,7 +43,7 @@ func (a *OpenAIAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 
 	if response.Usage != nil {
 		state.SetTokenUsage(int(response.Usage.PromptTokens), int(response.Usage.CompletionTokens))
-		applyOpenAIPromptCacheUsage(response.Usage, state)
+		streaming.ApplyPromptCacheUsage(state, response.Usage)
 	}
 
 	if len(response.Choices) == 0 {
@@ -78,10 +78,6 @@ func (a *OpenAIAdapter) handleIndexedToolCall(index int, tc openai.ChatToolCallD
 }
 
 func (a *OpenAIAdapter) EnrichFinalMessage(_ *messages.ChatMessage, _ streaming.StreamStateInterface) {
-}
-
-func (a *OpenAIAdapter) HandleToolCall(_ any, _ streaming.StreamStateInterface) error {
-	return nil
 }
 
 // OpenAIResponsesAdapter handles Responses API streaming events.
@@ -194,9 +190,7 @@ func (a *OpenAIResponsesAdapter) applyResponse(resp *openai.Response, state stre
 	}
 	if resp.Usage != nil {
 		state.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
-		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
-			state.SetPromptCacheUsage(read, write)
-		}
+		streaming.ApplyPromptCacheUsage(state, resp.Usage)
 	}
 	// The terminal event carries the finished output items, so harvest
 	// reasoning again here: whether encrypted_content rides on
@@ -248,12 +242,6 @@ func AppendResponsesReasoningItem(state streaming.StreamStateInterface, item *op
 	state.SetMetadata(responsesReasoningItemsStateKey, append(items, entry))
 }
 
-func applyOpenAIPromptCacheUsage(usage *openai.ChatUsage, state streaming.StreamStateInterface) {
-	if read, write, reported := usage.PromptCacheUsage(); reported {
-		state.SetPromptCacheUsage(read, write)
-	}
-}
-
 func (a *OpenAIResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
 	if items, ok := state.GetMetadata(responsesReasoningItemsStateKey); ok {
 		if msg.Metadata == nil {
@@ -272,10 +260,6 @@ func (a *OpenAIResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, s
 		return
 	}
 	msg.SetError(errors.New(errMsg))
-}
-
-func (a *OpenAIResponsesAdapter) HandleToolCall(_ any, _ streaming.StreamStateInterface) error {
-	return nil
 }
 
 // MapOpenAIFinishReason converts Chat Completions finish reasons to Polly's normalized type.

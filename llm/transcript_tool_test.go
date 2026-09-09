@@ -43,7 +43,7 @@ func TestReadTranscriptToolPagesAndSearches(t *testing.T) {
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "alpha\nbeta\ngamma"},
 	}
-	tool := &readTranscriptTool{snapshot: func() []messages.ChatMessage { return history }}
+	tool := &readTranscriptTool{rendered: func() string { return renderTranscript(history) }}
 
 	found, err := tool.Execute(context.Background(), map[string]any{"query": "beta"})
 	if err != nil {
@@ -79,7 +79,7 @@ func TestReadTranscriptFollowsByteContinuation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			history := messages.User(tc.text)
-			tool := &readTranscriptTool{snapshot: func() []messages.ChatMessage { return history }}
+			tool := &readTranscriptTool{rendered: func() string { return renderTranscript(history) }}
 			page, err := tool.Execute(context.Background(), map[string]any{"query": "TAIL-7E62"})
 			if err != nil {
 				t.Fatal(err)
@@ -126,7 +126,7 @@ func TestReadTranscriptFollowsByteContinuation(t *testing.T) {
 
 func TestReadTranscriptByteOffsetValidation(t *testing.T) {
 	history := messages.User("tiny content")
-	tool := &readTranscriptTool{snapshot: func() []messages.ChatMessage { return history }}
+	tool := &readTranscriptTool{rendered: func() string { return renderTranscript(history) }}
 	for _, key := range []string{"offset", "limit", "query"} {
 		if _, err := tool.Execute(context.Background(), map[string]any{"byte_offset": 0, key: 1}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
 			t.Fatalf("byte_offset combined with %s: %v", key, err)

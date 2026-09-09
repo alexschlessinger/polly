@@ -206,16 +206,7 @@ const (
 	EventContentBlockStop  = "content_block_stop"
 	EventMessageDelta      = "message_delta"
 	EventMessageStop       = "message_stop"
-	EventPing              = "ping"
 	EventError             = "error"
-)
-
-// Delta types within content_block_delta events.
-const (
-	DeltaText      = "text_delta"
-	DeltaInputJSON = "input_json_delta"
-	DeltaThinking  = "thinking_delta"
-	DeltaSignature = "signature_delta"
 )
 
 // StreamDelta merges the delta payloads of content_block_delta (text,

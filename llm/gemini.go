@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -135,7 +134,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 			}
 		}
 
-		isStreaming := req.Stream == nil || *req.Stream
+		isStreaming := req.IsStreaming()
 		// Force non-streaming for structured output: streaming + responseSchema
 		// is unreliable on preview models (3.x), which happily emit a prose
 		// preamble like "Here is the JSON" before any object — and with
@@ -223,12 +222,6 @@ func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, req *Co
 	streamCore.Complete()
 }
 
-// jsonSchemaToGeminiSchema converts a JSON Schema map (as parsed from a
-// user-supplied schema file) to the API's typed Schema. The typed path
-// is enforced by Gemini's structured-output backend; the JSON-schema-shaped
-// alternative responseJsonSchema is silently ignored on preview models.
-// Only the subset of JSON Schema that maps cleanly to gemini.Schema is handled
-// — that's enough for the structured-output feature polly exposes.
 // geminiSchemaType maps a JSON Schema type name to the API's enum form.
 func geminiSchemaType(t string) gemini.Type {
 	switch t {
@@ -250,6 +243,12 @@ func geminiSchemaType(t string) gemini.Type {
 	return ""
 }
 
+// jsonSchemaToGeminiSchema converts a JSON Schema map (as parsed from a
+// user-supplied schema file) to the API's typed Schema. The typed path
+// is enforced by Gemini's structured-output backend; the JSON-schema-shaped
+// alternative responseJsonSchema is silently ignored on preview models.
+// Only the subset of JSON Schema that maps cleanly to gemini.Schema is handled
+// — that's enough for the structured-output feature polly exposes.
 func jsonSchemaToGeminiSchema(raw map[string]any) *gemini.Schema {
 	if raw == nil {
 		return nil
@@ -322,16 +321,11 @@ func ConvertToolToGemini(schema *ToolSchema) *gemini.Tool {
 	if schema == nil {
 		return &gemini.Tool{FunctionDeclarations: []*gemini.FunctionDeclaration{{}}}
 	}
-	// Build a parameters-only schema without title/description metadata.
-	params := map[string]any{"type": "object", "properties": schema.Properties()}
-	if req := schema.Required(); len(req) > 0 {
-		params["required"] = req
-	}
 	return &gemini.Tool{
 		FunctionDeclarations: []*gemini.FunctionDeclaration{{
 			Name:                 schema.Title(),
 			Description:          schema.Description(),
-			ParametersJsonSchema: params,
+			ParametersJsonSchema: toolParametersFromSchema(schema),
 		}},
 	}
 }
@@ -346,9 +340,10 @@ func nativeGeminiCallID(id string) string {
 	return id
 }
 
-// MessagesToGeminiContent converts messages to Gemini content format
+// MessagesToGeminiContent converts messages to Gemini content format,
+// sharing conversions within this one call.
 func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, string, map[string]string) {
-	return messagesToGeminiContent(msgs, nil)
+	return messagesToGeminiContent(msgs, &providerReplayCache{})
 }
 
 func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplayCache) ([]*gemini.Content, string, map[string]string) {
@@ -370,21 +365,8 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 					case "text":
 						parts = append(parts, &gemini.Part{Text: part.Text})
 					case "image_base64":
-						if replay != nil {
-							if replay.validGeminiImage(part.ImageData) {
-								parts = append(parts, &gemini.Part{InlineData: gemini.NewBase64Blob(part.MimeType, part.ImageData)})
-							}
-							continue
-						}
-						// Decode base64 to bytes
-						imageData, err := base64.StdEncoding.DecodeString(part.ImageData)
-						if err == nil {
-							parts = append(parts, &gemini.Part{
-								InlineData: &gemini.Blob{
-									MIMEType: part.MimeType,
-									Data:     imageData,
-								},
-							})
+						if replay.validGeminiImage(part.ImageData) {
+							parts = append(parts, &gemini.Part{InlineData: gemini.NewBase64Blob(part.MimeType, part.ImageData)})
 						}
 					case "image_url":
 						// Gemini doesn't directly support URLs, would need to download
@@ -416,15 +398,8 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 						callIDToName[tc.ID] = tc.Name
 					}
 					var call *gemini.FunctionCall
-					if replay != nil {
-						if raw, valid := replay.geminiArguments(tc.Arguments); valid {
-							call = gemini.NewRawFunctionCall(nativeGeminiCallID(tc.ID), tc.Name, raw)
-						}
-					} else {
-						var args map[string]any
-						if json.Unmarshal([]byte(tc.Arguments), &args) == nil {
-							call = &gemini.FunctionCall{ID: nativeGeminiCallID(tc.ID), Name: tc.Name, Args: args}
-						}
+					if raw, valid := replay.geminiArguments(tc.Arguments); valid {
+						call = gemini.NewRawFunctionCall(nativeGeminiCallID(tc.ID), tc.Name, raw)
 					}
 					if call != nil {
 						part := &gemini.Part{FunctionCall: call}
@@ -434,7 +409,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 						// session reload it comes back as map[string]any.
 						if msg.Metadata != nil {
 							var sigStr string
-							switch signatures := msg.Metadata["gemini_thought_signatures"].(type) {
+							switch signatures := msg.Metadata[adapters.GeminiThoughtSignaturesKey].(type) {
 							case map[string]string:
 								sigStr = signatures[tc.ID]
 							case map[string]any:
@@ -465,21 +440,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 				funcName = callIDToName[msg.ToolCallID]
 			}
 
-			var result *gemini.FunctionResponse
-			if replay != nil {
-				result = gemini.NewRawFunctionResponse(nativeGeminiCallID(msg.ToolCallID), funcName, replay.geminiResult(msg.Content))
-			} else {
-				var output any
-				if err := json.Unmarshal([]byte(msg.Content), &output); err != nil {
-					output = msg.Content
-				}
-				// Ensure output is a map[string]any as the API requires.
-				response, ok := output.(map[string]any)
-				if !ok {
-					response = map[string]any{"result": output}
-				}
-				result = &gemini.FunctionResponse{ID: nativeGeminiCallID(msg.ToolCallID), Name: funcName, Response: response}
-			}
+			result := gemini.NewRawFunctionResponse(nativeGeminiCallID(msg.ToolCallID), funcName, replay.geminiResult(msg.Content))
 			history = append(history, &gemini.Content{
 				Role: "user",
 				Parts: []*gemini.Part{{

@@ -230,7 +230,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 	adapter := adapters.NewAnthropicAdapter()
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		params := a.buildRequestParams(req)
-		isStreaming := req.Stream == nil || *req.Stream
+		isStreaming := req.IsStreaming()
 		slog.Debug("anthropic_completion_started", "model", req.Model, "stream", isStreaming)
 
 		if isStreaming {
@@ -316,9 +316,7 @@ func (a *AnthropicClient) processNonStreaming(ctx context.Context, params *anthr
 	// Set token usage
 	if resp.Usage != nil {
 		streamCore.SetTokenUsage(int(resp.Usage.TotalInputTokens()), int(resp.Usage.OutputTokens))
-		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
-			streamCore.SetPromptCacheUsage(read, write)
-		}
+		streaming.ApplyPromptCacheUsage(streamCore, resp.Usage)
 	}
 
 	// Handle structured output if needed
@@ -426,23 +424,9 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 
 			// Check if we have preserved thinking blocks in metadata
 			if msg.Metadata != nil {
-				if thinkingBlocksData, ok := msg.Metadata["anthropic_thinking_blocks"]; ok {
-					// Restore thinking blocks with their signatures. In-process
-					// the adapter stores []map[string]any; after a JSON session
-					// reload the value comes back as []any.
-					var thinkingBlocksList []map[string]any
-					switch v := thinkingBlocksData.(type) {
-					case []map[string]any:
-						thinkingBlocksList = v
-					case []any:
-						for _, item := range v {
-							if m, ok := item.(map[string]any); ok {
-								thinkingBlocksList = append(thinkingBlocksList, m)
-							}
-						}
-					}
-
-					for _, block := range thinkingBlocksList {
+				if thinkingBlocksData, ok := msg.Metadata[adapters.AnthropicThinkingBlocksKey]; ok {
+					// Restore thinking blocks with their signatures.
+					for _, block := range metadataMapList(thinkingBlocksData) {
 						blockType, _ := block["type"].(string)
 						switch blockType {
 						case "thinking":

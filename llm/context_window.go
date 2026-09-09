@@ -14,10 +14,6 @@ import (
 // discoverable context window.
 var ErrContextWindowUnknown = errors.New("model context window is not discoverable")
 
-// DiscoverModelContextWindow fetches the advertised context window (in
-// tokens) for a provider-prefixed model. Only providers with a model metadata
-// endpoint resolve (anthropic, gemini); the rest return
-// ErrContextWindowUnknown without any network traffic.
 // ModelName strips the provider prefix from a provider-qualified model id,
 // returning ids without one unchanged.
 func ModelName(model string) string {
@@ -27,6 +23,10 @@ func ModelName(model string) string {
 	return model
 }
 
+// DiscoverModelContextWindow fetches the advertised context window (in
+// tokens) for a provider-prefixed model. Only providers with a model metadata
+// endpoint resolve (anthropic, gemini); the rest return
+// ErrContextWindowUnknown without any network traffic.
 func DiscoverModelContextWindow(ctx context.Context, model, apiKey string) (int, error) {
 	provider, name, ok := strings.Cut(model, "/")
 	if !ok {

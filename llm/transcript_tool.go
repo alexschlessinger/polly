@@ -17,16 +17,10 @@ import (
 // once their exchange completes.
 type readTranscriptTool struct {
 	tools.NativeTool
-	snapshot func() []messages.ChatMessage
 	rendered func() string
 }
 
-func (t *readTranscriptTool) text() string {
-	if t.rendered != nil {
-		return t.rendered()
-	}
-	return renderTranscript(t.snapshot())
-}
+func (t *readTranscriptTool) text() string { return t.rendered() }
 
 func (t *readTranscriptTool) GetName() string { return "read_transcript" }
 

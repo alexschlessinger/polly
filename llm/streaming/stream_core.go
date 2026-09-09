@@ -37,10 +37,6 @@ type ProviderAdapter interface {
 	// EnrichFinalMessage allows provider to add custom metadata before sending final message
 	// Used for things like Anthropic thinking blocks, Gemini signatures, etc.
 	EnrichFinalMessage(msg *messages.ChatMessage, state StreamStateInterface)
-
-	// HandleToolCall provides custom tool call handling if needed
-	// Can be nil for providers that use standard handling
-	HandleToolCall(toolData any, state StreamStateInterface) error
 }
 
 // NewStreamingCore creates a new streaming coordinator
@@ -77,26 +73,18 @@ func (sc *StreamingCore) activity() {
 
 // EmitContent sends a content chunk through the message channel
 func (sc *StreamingCore) EmitContent(content string) {
-	if content == "" {
-		return
-	}
-	sc.activity()
-
-	select {
-	case <-sc.ctx.Done():
-		return
-	case sc.messageChannel <- messages.ChatMessage{
-		Role:    messages.MessageRoleAssistant,
-		Content: content,
-	}:
-		// Also accumulate in state
-		sc.state.AppendContent(content)
-	}
+	sc.emit(content, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: content}, sc.state.AppendContent)
 }
 
 // EmitReasoning sends a reasoning/thinking chunk through the message channel
 func (sc *StreamingCore) EmitReasoning(reasoning string) {
-	if reasoning == "" {
+	sc.emit(reasoning, messages.ChatMessage{Role: messages.MessageRoleAssistant, Reasoning: reasoning}, sc.state.AppendReasoning)
+}
+
+// emit sends one streamed chunk, then accumulates it in the state once the
+// consumer has taken it. Empty chunks are dropped.
+func (sc *StreamingCore) emit(chunk string, msg messages.ChatMessage, accumulate func(string)) {
+	if chunk == "" {
 		return
 	}
 	sc.activity()
@@ -104,12 +92,8 @@ func (sc *StreamingCore) EmitReasoning(reasoning string) {
 	select {
 	case <-sc.ctx.Done():
 		return
-	case sc.messageChannel <- messages.ChatMessage{
-		Role:      messages.MessageRoleAssistant,
-		Reasoning: reasoning,
-	}:
-		// Also accumulate in state
-		sc.state.AppendReasoning(reasoning)
+	case sc.messageChannel <- msg:
+		accumulate(chunk)
 	}
 }
 
@@ -182,55 +166,34 @@ func (sc *StreamingCore) CompleteStream() {
 	sc.Complete()
 }
 
-// Complete sends the final accumulated message with all metadata
+// Complete sends the final accumulated message with all metadata. Content
+// and reasoning stay empty: both were already streamed.
 func (sc *StreamingCore) Complete() {
-	sc.activity()
-	// Create the final message with accumulated state
-	msg := messages.ChatMessage{
+	sc.complete(messages.ChatMessage{
 		Role:       messages.MessageRoleAssistant,
-		Content:    "", // Always empty to avoid duplication (content was streamed)
 		ToolCalls:  sc.state.ToolCalls,
-		Reasoning:  "", // Already streamed, don't duplicate
 		StopReason: sc.state.StopReason,
-	}
-
-	// Set token usage
-	msg.SetTokenUsage(sc.state.InputTokens, sc.state.OutputTokens)
-	if sc.state.PromptCacheUsageSet {
-		msg.SetPromptCacheUsage(sc.state.CacheReadInputTokens, sc.state.CacheWriteInputTokens)
-	}
-
-	// Let the adapter enrich with provider-specific metadata
-	if sc.adapter != nil {
-		sc.adapter.EnrichFinalMessage(&msg, sc.state)
-	}
-
-	// Send the final message
-	select {
-	case <-sc.ctx.Done():
-		return
-	case sc.messageChannel <- msg:
-		sc.logCompletionDetails()
-	}
+	})
 }
 
-// CompleteWithContent sends final message with explicit content
-// Used for structured output responses that weren't streamed
+// CompleteWithContent sends the final message with explicit content, for
+// structured output responses that were not streamed.
 func (sc *StreamingCore) CompleteWithContent(content string) {
-	sc.activity()
-	msg := messages.ChatMessage{
+	sc.complete(messages.ChatMessage{
 		Role:       messages.MessageRoleAssistant,
-		Content:    content, // Explicit content for structured responses
+		Content:    content,
 		StopReason: sc.state.StopReason,
-	}
+	})
+}
 
-	// Set token usage
+// complete attaches the accumulated usage and the adapter's metadata to msg
+// and sends it as the stream's final message.
+func (sc *StreamingCore) complete(msg messages.ChatMessage) {
+	sc.activity()
 	msg.SetTokenUsage(sc.state.InputTokens, sc.state.OutputTokens)
 	if sc.state.PromptCacheUsageSet {
 		msg.SetPromptCacheUsage(sc.state.CacheReadInputTokens, sc.state.CacheWriteInputTokens)
 	}
-
-	// Let the adapter enrich if needed
 	if sc.adapter != nil {
 		sc.adapter.EnrichFinalMessage(&msg, sc.state)
 	}
@@ -264,10 +227,10 @@ func (sc *StreamingCore) HandleStructuredOutput(toolName string) bool {
 		if tc.Name == toolName {
 			// Parse the arguments to extract the structured data
 			var args map[string]any
-			if err := parseJSON(tc.Arguments, &args); err == nil {
+			if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
 				if data, ok := args["data"]; ok {
 					// Return just the structured data as content
-					if dataJSON, err := marshalJSON(data); err == nil {
+					if dataJSON, err := json.Marshal(data); err == nil {
 						// The structured payload IS the final answer — flip the
 						// stop reason from ToolUse to EndTurn so the agent loop
 						// terminates instead of issuing another LLM call against
@@ -286,6 +249,9 @@ func (sc *StreamingCore) HandleStructuredOutput(toolName string) bool {
 
 // logCompletionDetails logs streaming completion information for debugging
 func (sc *StreamingCore) logCompletionDetails() {
+	if !slog.Default().Enabled(sc.ctx, slog.LevelDebug) {
+		return
+	}
 	state := sc.state.Clone()
 
 	contentPreview := state.ResponseContent
@@ -327,14 +293,4 @@ func (sc *StreamingCore) logCompletionDetails() {
 	}
 
 	slog.Debug("streaming_completed", fields...)
-}
-
-// Helper functions for JSON operations
-
-func parseJSON(data string, v any) error {
-	return json.Unmarshal([]byte(data), v)
-}
-
-func marshalJSON(v any) ([]byte, error) {
-	return json.Marshal(v)
 }

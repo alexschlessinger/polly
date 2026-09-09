@@ -73,7 +73,7 @@ type CompletionRequest struct {
 	Tools          []tools.Tool           // Available tools
 	ResponseSchema *Schema                // Optional schema for structured output
 	ThinkingEffort ThinkingEffort         // Reasoning effort: Off, a named Level, a raw token Budget, or Dynamic
-	Stream         *bool                  // nil = streaming (default), false = non-streaming
+	Stream         *bool                  // nil = streaming (default), false = non-streaming; see IsStreaming
 	Skills         *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
 
 	// Private caches belong to one Agent.Run and are shared by its requests.
@@ -190,4 +190,29 @@ func (w *streamWatchdog) finish(core *streaming.StreamingCore) {
 		core.EmitError(cause)
 	}
 	w.cancel(nil)
+}
+
+// IsStreaming reports whether the request asks for a streamed reply: the
+// default when Stream is unset.
+func (r *CompletionRequest) IsStreaming() bool {
+	return r.Stream == nil || *r.Stream
+}
+
+// metadataMapList decodes a metadata value that holds a list of objects: an
+// adapter stores []map[string]any in-process, and a JSON session reload
+// brings the same value back as []any.
+func metadataMapList(value any) []map[string]any {
+	switch v := value.(type) {
+	case []map[string]any:
+		return v
+	case []any:
+		out := make([]map[string]any, 0, len(v))
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	return nil
 }

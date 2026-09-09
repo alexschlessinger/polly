@@ -15,7 +15,6 @@ type nopAdapter struct{}
 
 func (nopAdapter) ProcessChunk(any, streaming.StreamStateInterface) error                   { return nil }
 func (nopAdapter) EnrichFinalMessage(*messages.ChatMessage, streaming.StreamStateInterface) {}
-func (nopAdapter) HandleToolCall(any, streaming.StreamStateInterface) error                 { return nil }
 
 func collectStreamEvents(t *testing.T, events <-chan *messages.StreamEvent, within time.Duration) []*messages.StreamEvent {
 	t.Helper()

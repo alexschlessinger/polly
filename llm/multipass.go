@@ -21,18 +21,7 @@ type MultiPass struct {
 
 // getEnvVarNameForProvider returns the environment variable name for the given provider
 func getEnvVarNameForProvider(provider string) string {
-	switch provider {
-	case "openai":
-		return "POLLYTOOL_OPENAIKEY"
-	case "anthropic":
-		return "POLLYTOOL_ANTHROPICKEY"
-	case "gemini":
-		return "POLLYTOOL_GEMINIKEY"
-	case "ollama":
-		return "POLLYTOOL_OLLAMAKEY"
-	default:
-		return fmt.Sprintf("POLLYTOOL_%sKEY", strings.ToUpper(provider))
-	}
+	return "POLLYTOOL_" + strings.ToUpper(provider) + "KEY"
 }
 
 // NewMultiPass creates a new multi-provider router using a snapshot of the

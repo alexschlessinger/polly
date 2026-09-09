@@ -71,9 +71,7 @@ func completeChatCompletion(ctx context.Context, client *openai.Client, params *
 
 	if resp.Usage != nil {
 		streamCore.SetTokenUsage(int(resp.Usage.PromptTokens), int(resp.Usage.CompletionTokens))
-		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
-			streamCore.SetPromptCacheUsage(read, write)
-		}
+		streaming.ApplyPromptCacheUsage(streamCore, resp.Usage)
 	}
 
 	streamCore.Complete()

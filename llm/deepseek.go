@@ -49,7 +49,7 @@ func (d DeepSeekClient) ChatCompletionStream(ctx context.Context, req *Completio
 func (d DeepSeekClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := buildChatCompletionRequestParams(req)
 	replayed := applyDeepSeekReasoningReplay(params, req.Messages)
-	isStreaming := req.Stream == nil || *req.Stream
+	isStreaming := req.IsStreaming()
 	slog.Debug("deepseek_completion_started", "stream", isStreaming, "base_url", d.baseURL, "reasoning_replay_count", replayed)
 
 	if isStreaming {

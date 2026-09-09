@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -86,7 +88,7 @@ func (o OpenAIClient) streamChatCompletions(ctx context.Context, req *Completion
 	if o.compatibleProvider == openAICompatibleOpenRouter {
 		params.SessionID = req.CacheSessionID
 	}
-	isStreaming := req.Stream == nil || *req.Stream
+	isStreaming := req.IsStreaming()
 	slog.Debug("openai_chat_completion_started", "stream", isStreaming, "base_url", o.baseURL)
 
 	if isStreaming {
@@ -97,7 +99,7 @@ func (o OpenAIClient) streamChatCompletions(ctx context.Context, req *Completion
 
 func (o OpenAIClient) streamResponses(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := buildResponsesRequestParams(req)
-	isStreaming := req.Stream == nil || *req.Stream
+	isStreaming := req.IsStreaming()
 	slog.Debug("openai_responses_started", "stream", isStreaming, "base_url", o.baseURL)
 
 	if isStreaming {
@@ -720,12 +722,7 @@ func walkJSONSchemaChildren(node map[string]any, visit func(child map[string]any
 }
 
 func sortedSchemaKeys(props map[string]any) []string {
-	keys := make([]string, 0, len(props))
-	for key := range props {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(props))
 }
 
 func schemaRequiredSet(raw any) map[string]struct{} {
@@ -800,19 +797,7 @@ func responsesReasoningReplayItems(msg messages.ChatMessage, model string) []ope
 	if recorded, _ := msg.Metadata[adapters.ResponsesReasoningModelKey].(string); recorded != model {
 		return nil
 	}
-	// In-process the adapter stores []map[string]any; after a JSON session
-	// reload the value comes back as []any.
-	var entries []map[string]any
-	switch v := msg.Metadata[adapters.ResponsesReasoningItemsKey].(type) {
-	case []map[string]any:
-		entries = v
-	case []any:
-		for _, entry := range v {
-			if m, ok := entry.(map[string]any); ok {
-				entries = append(entries, m)
-			}
-		}
-	}
+	entries := metadataMapList(msg.Metadata[adapters.ResponsesReasoningItemsKey])
 
 	items := make([]openai.ResponseInputItem, 0, len(entries))
 	for _, entry := range entries {

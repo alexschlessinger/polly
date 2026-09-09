@@ -8,6 +8,11 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
+// AnthropicThinkingBlocksKey is the message metadata key under which the
+// adapter stores the thinking blocks (with signatures) a reply carried, so
+// the client can replay them on later requests.
+const AnthropicThinkingBlocksKey = "anthropic_thinking_blocks"
+
 // AnthropicAdapter handles Anthropic-specific streaming patterns.
 // Anthropic uses event-based streaming with thinking blocks and structured events.
 type AnthropicAdapter struct {
@@ -56,7 +61,7 @@ func (a *AnthropicAdapter) ProcessChunk(chunk any, state streaming.StreamStateIn
 		}
 		if event.Usage != nil {
 			state.SetTokenUsage(state.GetInputTokens(), int(event.Usage.OutputTokens))
-			applyAnthropicPromptCacheUsage(event.Usage, state)
+			streaming.ApplyPromptCacheUsage(state, event.Usage)
 		}
 
 	case anthropic.EventMessageStop:
@@ -68,13 +73,7 @@ func (a *AnthropicAdapter) ProcessChunk(chunk any, state streaming.StreamStateIn
 
 func applyAnthropicInputUsage(usage *anthropic.Usage, state streaming.StreamStateInterface) {
 	state.SetTokenUsage(int(usage.TotalInputTokens()), state.GetOutputTokens())
-	applyAnthropicPromptCacheUsage(usage, state)
-}
-
-func applyAnthropicPromptCacheUsage(usage *anthropic.Usage, state streaming.StreamStateInterface) {
-	if read, write, reported := usage.PromptCacheUsage(); reported {
-		state.SetPromptCacheUsage(read, write)
-	}
+	streaming.ApplyPromptCacheUsage(state, usage)
 }
 
 // handleContentBlockStart processes content block start events
@@ -169,14 +168,8 @@ func (a *AnthropicAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state s
 		if msg.Metadata == nil {
 			msg.Metadata = make(map[string]any)
 		}
-		msg.Metadata["anthropic_thinking_blocks"] = a.thinkingBlocks
+		msg.Metadata[AnthropicThinkingBlocksKey] = a.thinkingBlocks
 	}
-}
-
-// HandleToolCall provides Anthropic-specific tool call handling
-func (a *AnthropicAdapter) HandleToolCall(toolData any, state streaming.StreamStateInterface) error {
-	// Tool calls are handled in ProcessChunk for Anthropic
-	return nil
 }
 
 // AddThinkingBlock adds a thinking block for non-streaming responses
@@ -200,17 +193,13 @@ func (a *AnthropicAdapter) AddRedactedThinkingBlock(data string) {
 // MapAnthropicStopReason converts Anthropic's stop reason to our normalized type
 func MapAnthropicStopReason(sr anthropic.StopReason) messages.StopReason {
 	switch sr {
-	case "end_turn":
-		return messages.StopReasonEndTurn
-	case "tool_use":
+	case anthropic.StopReasonToolUse:
 		return messages.StopReasonToolUse
-	case "max_tokens":
+	case anthropic.StopReasonMaxTokens:
 		return messages.StopReasonMaxTokens
-	case "refusal":
+	case anthropic.StopReasonRefusal:
 		return messages.StopReasonContentFilter
-	case "stop_sequence":
-		return messages.StopReasonEndTurn
-	default:
+	default: // end_turn, stop_sequence, and anything unknown
 		return messages.StopReasonEndTurn
 	}
 }

@@ -91,11 +91,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		// Create chat request. nil means streaming, per the CompletionRequest
 		// contract; the value is sent explicitly so the request body states
 		// the mode either way.
-		stream := req.Stream
-		if stream == nil {
-			streamTrue := true
-			stream = &streamTrue
-		}
+		isStreaming := req.IsStreaming()
 		options := map[string]any{
 			"num_predict": req.MaxTokens,
 		}
@@ -105,7 +101,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		chatReq := &ollama.ChatRequest{
 			Model:    req.Model,
 			Messages: ollamaMessages,
-			Stream:   stream,
+			Stream:   &isStreaming,
 			Options:  options,
 		}
 
@@ -136,7 +132,6 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			chatReq.Tools = ollamaTools
 		}
 
-		isStreaming := *stream
 		slog.Debug("ollama_chat_started", "model", req.Model, "stream", isStreaming)
 
 		// Some models output content before thinking, then repeat it after.
@@ -313,8 +308,6 @@ func MessagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
 
 		// Handle tool response messages
 		if msg.Role == messages.MessageRoleTool {
-			// Ollama expects tool responses to have "tool" role
-			ollamaMsg.Role = "tool"
 			ollamaMsg.ToolName = msg.ToolName
 			// Echo the server's call ID so a repeated tool is answered
 			// unambiguously; synthesized IDs stay internal.

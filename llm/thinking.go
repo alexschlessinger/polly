@@ -134,16 +134,6 @@ func (e ThinkingEffort) IsEnabled() bool { return e.kind != kindOff }
 // IsDynamic reports whether the model should choose depth itself.
 func (e ThinkingEffort) IsDynamic() bool { return e.kind == kindDynamic }
 
-// Level returns the named level when the effort is a level.
-func (e ThinkingEffort) Level() (ThinkingLevel, bool) {
-	return e.level, e.kind == kindLevel
-}
-
-// Budget returns the raw token budget when the effort is a budget.
-func (e ThinkingEffort) Budget() (int, bool) {
-	return e.budget, e.kind == kindBudget
-}
-
 // AsLevel reduces the effort to a named level for providers that only accept
 // levels (OpenAI, adaptive Anthropic, Gemini 3.x). A Budget maps to the nearest
 // level via the canonical table; Dynamic and Off return dynamicFallback.

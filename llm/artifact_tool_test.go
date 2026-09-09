@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/tools"
 )
 
 func TestReadArtifactToolBoundsAndNumbersText(t *testing.T) {
@@ -372,7 +373,7 @@ func TestBoundedArtifactTextPropagatesLookaheadError(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := io.MultiReader(strings.NewReader("first\n"), artifactToolErrorReader{err: tc.err})
-			if _, err := boundedArtifactText(context.Background(), r, 1, 1, ""); !errors.Is(err, wantErr) {
+			if _, err := tools.PageLines(context.Background(), r, "artifact", 1, 1, ""); !errors.Is(err, wantErr) {
 				t.Fatalf("lookahead error = %v, want %v", err, wantErr)
 			}
 		})

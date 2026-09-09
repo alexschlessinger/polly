@@ -30,11 +30,10 @@ const (
 	// budget; see omissionFront.
 	omissionQuantumDivisor = 5
 
-	// Aggregate caps on the images one projected request may carry, mirroring
-	// the tightest native-client request shape: 100 images per request and a
-	// bounded total of base64-encoded image bytes.
-	maxProjectedRequestImages     = 100
-	maxProjectedEncodedImageBytes = 16 << 20
+	// Aggregate caps on the images one projected request may carry: the
+	// portable request shape messages enforces on model-visible history.
+	maxProjectedRequestImages     = messages.MaxPortableRequestImages
+	maxProjectedEncodedImageBytes = messages.MaxEncodedImageHistoryBytes
 )
 
 var stableImageTokenPattern = regexp.MustCompile(`\[image (?:#[0-9]+|sha256:[0-9a-f]{64})\]`)
@@ -93,10 +92,6 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 	projected, stats, err := projectMessagesCached(ctx, history, budget, store, transcriptReadable, req.projectionCache)
 	stats.RequestEstimatedTokens = stats.EstimatedTokens + overhead
 	return projected, stats, err
-}
-
-func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, transcriptReadable bool) ([]messages.ChatMessage, ProjectionStats, error) {
-	return projectMessagesCached(ctx, history, maxTokens, store, transcriptReadable, nil)
 }
 
 func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, maxTokens int, store artifacts.Store, transcriptReadable bool, cache *projectionCache) ([]messages.ChatMessage, ProjectionStats, error) {
@@ -413,22 +408,6 @@ func appendArtifactPart(parts []messages.ContentPart, ref artifacts.Ref) []messa
 	copy(out, parts)
 	out[len(parts)] = messages.ContentPart{Type: "artifact", Artifact: &ref}
 	return out
-}
-
-// demotedToolResultForm materializes a standalone demotion. The projection's
-// budget gate uses planToolDemotion instead, deferring payload work until a
-// result is actually stored.
-func demotedToolResultForm(msg messages.ChatMessage, hasStore bool) (string, *artifacts.Blob, bool) {
-	plan := planToolDemotion(msg, hasStore)
-	if !plan.ok {
-		return "", nil, false
-	}
-	if !plan.inline {
-		return plan.content, nil, true
-	}
-	blob := &artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(msg.Content)}
-	ref := artifacts.RefForBlob(*blob)
-	return appendArtifactDescriptors(artifactReceipt(ref), msg, ref.ID, " "), blob, true
 }
 
 func isRecallToolName(name string) bool {
@@ -1146,14 +1125,6 @@ func cloneMessages(history []messages.ChatMessage) []messages.ChatMessage {
 		out[i] = msg.Clone()
 	}
 	return out
-}
-
-func estimateProjectedTokens(history []messages.ChatMessage) int {
-	total := 0
-	for _, msg := range history {
-		total += estimateProjectedMessageTokens(msg)
-	}
-	return total
 }
 
 func estimateProjectedMessageTokens(msg messages.ChatMessage) int {

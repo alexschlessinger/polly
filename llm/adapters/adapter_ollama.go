@@ -13,7 +13,6 @@ import (
 // OllamaAdapter handles Ollama-specific streaming patterns. Ollama streams
 // each parsed tool call in its own chunk, so calls accumulate across chunks.
 type OllamaAdapter struct {
-	isDone   bool   // Track if we've received the final chunk
 	idPrefix string // random per-stream namespace for synthetic tool call IDs
 }
 
@@ -31,20 +30,10 @@ func (a *OllamaAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 
 	// Capture token counts from final response
 	if resp.Done {
-		a.isDone = true
 		state.SetTokenUsage(resp.PromptEvalCount, resp.EvalCount)
 	}
 
-	// Handle thinking content (skip final chunk which contains full content)
-	if resp.Message.Thinking != "" && !resp.Done {
-		// Thinking will be emitted by the main streaming loop
-	}
-
-	// Handle regular content (skip final chunk which contains full content)
-	if resp.Message.Content != "" && !resp.Done {
-		// Content will be emitted by the main streaming loop
-	}
-
+	// Thinking and content are emitted by the main streaming loop.
 	// Handle tool calls - each chunk carries only the calls parsed since the last
 	if len(resp.Message.ToolCalls) > 0 {
 		a.handleToolCalls(resp.Message.ToolCalls, state)
@@ -113,10 +102,4 @@ func IsSyntheticOllamaCallID(id string) bool {
 func (a *OllamaAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
 	// Ollama doesn't require special metadata enrichment
 	// Token usage is already set by StreamingCore
-}
-
-// HandleToolCall provides Ollama-specific tool call handling
-func (a *OllamaAdapter) HandleToolCall(toolData any, state streaming.StreamStateInterface) error {
-	// Tool calls are handled in ProcessChunk for Ollama
-	return nil
 }

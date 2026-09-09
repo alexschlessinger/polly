@@ -10,6 +10,11 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
+// GeminiThoughtSignaturesKey is the message metadata key under which the
+// adapter stores each tool call's thought signature (base64), keyed by call
+// ID, so the client can replay them on later requests.
+const GeminiThoughtSignaturesKey = "gemini_thought_signatures"
+
 // GeminiAdapter handles Gemini-specific streaming patterns.
 // Gemini receives complete tool calls per chunk and manages thought signatures.
 type GeminiAdapter struct {
@@ -63,12 +68,8 @@ func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 
 		if candidate.Content != nil {
 			for _, part := range candidate.Content.Parts {
-				// Handle text content (emission handled by main loop)
-				if part.Text != "" {
-					// Content will be emitted by the main streaming loop
-				}
-
-				// Handle function calls
+				// Text is emitted by the main streaming loop; only
+				// function calls need adapter handling.
 				if part.FunctionCall != nil {
 					a.handleFunctionCall(part, state)
 				}
@@ -131,14 +132,8 @@ func (a *GeminiAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state stre
 		if msg.Metadata == nil {
 			msg.Metadata = make(map[string]any)
 		}
-		msg.Metadata["gemini_thought_signatures"] = a.signatures
+		msg.Metadata[GeminiThoughtSignaturesKey] = a.signatures
 	}
-}
-
-// HandleToolCall provides Gemini-specific tool call handling
-func (a *GeminiAdapter) HandleToolCall(toolData any, state streaming.StreamStateInterface) error {
-	// Tool calls are handled in ProcessChunk for Gemini
-	return nil
 }
 
 // mapGeminiFinishReason converts Gemini's finish reason to our normalized
