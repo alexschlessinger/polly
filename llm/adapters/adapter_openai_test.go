@@ -65,8 +65,10 @@ func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
 	if got := toolCalls[0].Arguments; got != `{"city":"San Francisco"}` {
 		t.Fatalf("tool call arguments = %q, want %q", got, `{"city":"San Francisco"}`)
 	}
-	if got := state.StopReason; got != messages.StopReasonToolUse {
-		t.Fatalf("stop reason = %q, want %q", got, messages.StopReasonToolUse)
+	// The adapter records the completed status as an ordinary finish; the
+	// streaming core promotes a reply with calls to a tool turn at completion.
+	if got := state.StopReason; got != messages.StopReasonEndTurn {
+		t.Fatalf("stop reason = %q, want %q", got, messages.StopReasonEndTurn)
 	}
 	if got := state.GetInputTokens(); got != 12 {
 		t.Fatalf("input tokens = %d, want 12", got)

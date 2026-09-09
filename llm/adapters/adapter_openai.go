@@ -278,13 +278,13 @@ func MapOpenAIFinishReason(fr string) messages.StopReason {
 	}
 }
 
-// MapResponsesStopReason converts Responses terminal state to Polly's normalized type.
+// MapResponsesStopReason converts Responses terminal state to Polly's
+// normalized type. A completed response with tool calls maps to an ordinary
+// finish here; the streaming core promotes it to a tool turn at completion.
+// hasToolCalls only decides how an unknown terminal status is read.
 func MapResponsesStopReason(status openai.ResponseStatus, incompleteReason string, hasToolCalls bool) messages.StopReason {
 	switch status {
 	case openai.ResponseStatusCompleted:
-		if hasToolCalls {
-			return messages.StopReasonToolUse
-		}
 		return messages.StopReasonEndTurn
 	case openai.ResponseStatusIncomplete:
 		switch incompleteReason {

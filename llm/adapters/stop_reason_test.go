@@ -70,10 +70,10 @@ func TestMapResponsesStopReason(t *testing.T) {
 			want:         messages.StopReasonEndTurn,
 		},
 		{
-			name:         "completed_tool_use",
+			name:         "completed_with_tool_calls_promoted_by_core",
 			status:       openai.ResponseStatusCompleted,
 			hasToolCalls: true,
-			want:         messages.StopReasonToolUse,
+			want:         messages.StopReasonEndTurn,
 		},
 		{
 			name:             "incomplete_max_output_tokens",

@@ -149,3 +149,34 @@ func TestCompleteDoesNotRepeatBufferedText(t *testing.T) {
 		t.Fatalf("final metadata message changed: %+v", final)
 	}
 }
+
+// TestCompletePromotesToolCallsToToolUse: providers without a tool-use finish
+// reason report a plain stop; the core reads a reply with calls as a tool
+// turn, while a terminal reason survives.
+func TestCompletePromotesToolCallsToToolUse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		stop messages.StopReason
+		want messages.StopReason
+	}{
+		{"end_turn", messages.StopReasonEndTurn, messages.StopReasonToolUse},
+		{"max_tokens_survives", messages.StopReasonMaxTokens, messages.StopReasonMaxTokens},
+		{"content_filter_survives", messages.StopReasonContentFilter, messages.StopReasonContentFilter},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			core, ch := newTestStreamingCore()
+			core.state.AddToolCall(messages.ChatMessageToolCall{ID: "c", Name: "f", Arguments: "{}"})
+			core.SetStopReason(tc.stop)
+			core.Complete()
+			if got := (<-ch).StopReason; got != tc.want {
+				t.Fatalf("stop reason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	core, ch := newTestStreamingCore()
+	core.SetStopReason(messages.StopReasonEndTurn)
+	core.Complete()
+	if got := (<-ch).StopReason; got != messages.StopReasonEndTurn {
+		t.Fatalf("stop reason without calls = %q, want end_turn", got)
+	}
+}

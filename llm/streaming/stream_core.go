@@ -168,7 +168,20 @@ func (sc *StreamingCore) CompleteStream() {
 
 // Complete sends the final accumulated message with all metadata. Content
 // and reasoning stay empty: both were already streamed.
+//
+// A reply that carries tool calls is a tool turn whatever the provider's
+// finish reason said: several providers (Gemini, Ollama, the Responses API)
+// have no tool-use finish reason and report a plain stop. Only a healthy
+// finish is promoted; a terminal reason such as a safety stop, a length cut,
+// or a malformed call survives, or calls accumulated before it would present
+// as an ordinary tool turn.
 func (sc *StreamingCore) Complete() {
+	if calls := sc.state.GetToolCalls(); len(calls) > 0 {
+		switch sc.state.GetStopReason() {
+		case "", messages.StopReasonEndTurn:
+			sc.state.SetStopReason(messages.StopReasonToolUse)
+		}
+	}
 	sc.complete(messages.ChatMessage{
 		Role:       messages.MessageRoleAssistant,
 		ToolCalls:  sc.state.ToolCalls,

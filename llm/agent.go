@@ -575,7 +575,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 
 		// Classify the provider response before dispatch. All successful terminal
 		// paths below converge on continuation, receipt validation, and OnComplete.
-		if a.config.RequireResponseToolSuccess && response.StopReason == messages.StopReasonEndTurn && len(response.ToolCalls) > 0 {
+		// The streaming core already reports a reply with tool calls as a tool
+		// turn; this keeps LLM implementations that bypass it to the same rule.
+		if response.StopReason == messages.StopReasonEndTurn && len(response.ToolCalls) > 0 {
 			response.StopReason = messages.StopReasonToolUse
 		}
 		runTools, err := responseNeedsTools(response)

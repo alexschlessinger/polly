@@ -32,7 +32,7 @@ func TestGeminiAdapterFinishReasonWithToolCalls(t *testing.T) {
 		finish gemini.FinishReason
 		want   messages.StopReason
 	}{
-		{"stop_becomes_tool_use", gemini.FinishReasonStop, messages.StopReasonToolUse},
+		{"stop_stays_end_turn_for_core_promotion", gemini.FinishReasonStop, messages.StopReasonEndTurn},
 		{"safety_survives", gemini.FinishReasonSafety, messages.StopReasonContentFilter},
 		{"max_tokens_survives", gemini.FinishReasonMaxTokens, messages.StopReasonMaxTokens},
 		{"malformed_survives", gemini.FinishReasonMalformedFunctionCall, messages.StopReasonError},

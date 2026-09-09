@@ -38,14 +38,12 @@ func (a *OllamaAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 	}
 
 	// Map the done reason: a reply num_predict cut off must read as
-	// truncated, not as a normal end of turn; otherwise tool calls decide.
+	// truncated, not as a normal end of turn. The streaming core promotes an
+	// ordinary finish with tool calls to a tool turn at completion.
 	if resp.Done {
-		switch {
-		case resp.DoneReason == ollama.DoneReasonLength:
+		if resp.DoneReason == ollama.DoneReasonLength {
 			state.SetStopReason(messages.StopReasonMaxTokens)
-		case len(state.GetToolCalls()) > 0:
-			state.SetStopReason(messages.StopReasonToolUse)
-		default:
+		} else {
 			state.SetStopReason(messages.StopReasonEndTurn)
 		}
 	}
