@@ -22,7 +22,7 @@ func settledWorkflowState() *swarm.State {
 	add := func(id, execution, task string, control swarm.MemberControl) {
 		s.Members[id] = &swarm.Member{ID: id, Name: id, Label: id, Execution: id, Task: id + "-task", Control: control}
 		s.Executions[id] = &swarm.Execution{ID: id, Member: id, Status: execution, Request: swarm.AgentRequest{CallID: "wf/" + id}}
-		s.Tasks[id+"-task"] = &swarm.Task{ID: id + "-task", Owner: id, Status: task, Revision: 1}
+		s.Tasks[id+"-task"] = &swarm.Task{ID: id + "-task", Owner: id, Execution: id, Status: task, Revision: 1}
 		s.Workflows["wf"].Steps = append(s.Workflows["wf"].Steps, workflow.Step{Operation: workflow.Operation{ID: "wf/" + id, Kind: "agent"}})
 	}
 	add("finished", "completed", "done", "")
@@ -32,7 +32,7 @@ func settledWorkflowState() *swarm.State {
 	add("failed", "failed", "blocked", "")
 	s.Members["direct"] = &swarm.Member{ID: "direct", Name: "direct", Label: "direct", Execution: "direct", Task: "direct-task"}
 	s.Executions["direct"] = &swarm.Execution{ID: "direct", Member: "direct", Status: "completed"}
-	s.Tasks["direct-task"] = &swarm.Task{ID: "direct-task", Owner: "direct", Status: "done", Revision: 1}
+	s.Tasks["direct-task"] = &swarm.Task{ID: "direct-task", Owner: "direct", Execution: "direct", Status: "done", Revision: 1}
 	return s
 }
 
@@ -73,7 +73,8 @@ func TestWorkflowGroupCollapsesSettledMembers(t *testing.T) {
 	ids := expandedAgentIDs(m)
 	detail, links := m.agentDetail(ids, 120)
 	lines := strings.Split(plainStyledText(detail), "\n")
-	if len(lines) != 5 || !strings.Contains(lines[0], "Workflow · judges · ▸ 2 done") {
+	// The review and the failed member each owe the parent a decision.
+	if len(lines) != 5 || !strings.Contains(lines[0], "Workflow · judges · 2 need decision · ▸ 2 done") {
 		t.Fatalf("collapsed detail:\n%s", plainStyledText(detail))
 	}
 	for i, want := range []string{"review · idle · awaiting review", "busy · active", "failed · paused · failed", "direct · idle · done"} {
@@ -119,7 +120,7 @@ func TestWorkflowGroupCollapsesSettledMembers(t *testing.T) {
 	m.hydrateSwarmAgents(s)
 	detail, _ = m.agentDetail(ids, 120)
 	lines = strings.Split(plainStyledText(detail), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], "▸ 5 done") || !strings.Contains(lines[1], "direct · idle · done") {
+	if len(lines) != 2 || !strings.Contains(lines[0], "Workflow · judges · ▸ 5 done") || strings.Contains(lines[0], "decision") || !strings.Contains(lines[1], "direct · idle · done") {
 		t.Fatalf("fully settled detail:\n%s", plainStyledText(detail))
 	}
 	m.toggleSettledAgents(headingRecord, "wf")

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/swarm"
@@ -95,5 +96,19 @@ func TestDecisionBadgeOpensItsDecision(t *testing.T) {
 	r.model.approval = &approvalState{requester: "m"}
 	if member, section := r.attentionTarget(); member != "m" || section != "" {
 		t.Fatalf("approval lost priority: %q/%q", member, section)
+	}
+}
+
+// The /swarm members view leads with the decisions and the work in flight.
+func TestSwarmInspectorLeadsWithDecisions(t *testing.T) {
+	s := decisionSnapshot()
+	parent := swarm.AgentPresentation{Lifecycle: swarm.LifecycleIdle, Display: "idle"}
+	text := swarmInspectorTextFor(s, &parent, "members", "parent")
+	want := "Parent — idle\n\nNeeds decision (1)\ntask P revision 1: pending; assign and run the task or cancel it\n\nWorking (1)\nworker · active · task T\n\n1 members · 2 tasks"
+	if !strings.HasPrefix(text, want) {
+		t.Fatalf("members view:\n%s", text)
+	}
+	if text := swarmInspectorTextFor(s, &parent, "tasks", "parent"); strings.Contains(text, "Needs decision") {
+		t.Fatalf("task section carries the decision list: %q", text)
 	}
 }

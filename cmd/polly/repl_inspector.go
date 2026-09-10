@@ -291,7 +291,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				err = e
 				if err == nil {
 					parent := swarmState.swarm.ParentState(state)
-					body := swarmInspectorText(state, &parent, target.item)
+					body := swarmInspectorTextFor(state, &parent, target.item, swarmState.swarm.ID)
 					source.model = newReplModel()
 					source.model.appendLine(style.Escape(body))
 					data, _ := json.Marshal(state)

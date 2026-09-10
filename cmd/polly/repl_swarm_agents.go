@@ -50,6 +50,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 		}
 	}
 	m.projectSwarmAgents(s)
+	byMember, byWorkflow := swarm.DecisionCounts(s, m.swarmParent)
 	for _, record := range m.toolDisclosures.all() {
 		changed := false
 		for i := range record.rows {
@@ -78,7 +79,8 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 					out = *execution.Usage.OutputTokens
 				}
 			}
-			if a.label != label || a.session != member.Name || a.state != now || a.approval != approval || !a.attached || a.inputTokens != in || a.outputTokens != out {
+			decisions, workflowDecisions := byMember[member.ID], byWorkflow[a.workflowID]
+			if a.label != label || a.session != member.Name || a.state != now || a.approval != approval || !a.attached || a.inputTokens != in || a.outputTokens != out || a.decisions != decisions || a.workflowDecisions != workflowDecisions {
 				// The cue fires on the machine facts: work went from busy to
 				// settled with something for the parent to look at.
 				task := s.Tasks[member.Task]
@@ -89,6 +91,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 				a.label, a.viewID, a.session = label, id, member.Name
 				a.state, a.approval, a.local, a.attached = now, approval, "", true
 				a.inputTokens, a.outputTokens = in, out
+				a.decisions, a.workflowDecisions = decisions, workflowDecisions
 				changed = true
 			}
 		}
@@ -146,6 +149,7 @@ func (r *managedREPL) refreshSwarmActivities() {
 					tab.swarmActive = tab.swarmActive || swarmMemberActivity(s, member).Busy
 				}
 				tab.model.mu.Lock()
+				tab.model.swarmParent = tab.viewID()
 				tab.model.hydrateSwarmAgents(s)
 				if runtime != nil {
 					r.announceSwarmCompletions(tab, s)
