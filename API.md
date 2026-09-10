@@ -695,6 +695,9 @@ using retained provenance after context cleanup. `TaskStatus` provides display
 text (an accepted, unintegrated submission reads `integration pending`) without
 changing machine statuses; the `swarm_tasks` tool includes this as
 `displayStatus`, and `swarm_review` returns status plus any required next action.
+`Settle` names a completed workflow's unreviewed consumed research before
+per-task blockers, and a task blocker carries the count (`3 tasks unsettled;
+first: task <id> revision N: …`).
 
 Parent hosts use `PrepareIntegration(ctx, []TaskReference, drift)`,
 `ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`,

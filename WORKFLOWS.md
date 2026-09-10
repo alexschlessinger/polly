@@ -272,7 +272,9 @@ for those reports acknowledgment retains the report and does not accept tasks or
 discard changes. Acknowledging a completed report accepts, in the same
 transaction, the read-only research its script consumed without reviewing and
 reports the count; results the script already reviewed and editing candidates
-with snapshots are untouched.
+with snapshots are untouched. A completed report blocks settlement only while it
+still owns such research, and settlement names that step first, before per-task
+blockers; a task blocker reports how many tasks are open.
 Workflows belong to the same current run even when they never start an agent.
 
 ## Worktrees and integration

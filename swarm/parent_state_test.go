@@ -267,3 +267,27 @@ func TestListAgentsIncludesParentState(t *testing.T) {
 		t.Fatalf("list_agents page: %s", data)
 	}
 }
+
+// The settlement nudge leads with the blocker and ends by asking for the
+// restated answer; an unchanged state after it ends the turn blocked.
+func TestParentNudgeLeadsWithBlockerAndAsksForTheAnswer(t *testing.T) {
+	r := runtimeTest(t, idleModel(), 1, 2)
+	ctx := context.Background()
+	if _, err := r.CreateTask(ctx, "pending work", "review", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	cb := &llm.AgentCallbacks{}
+	r.bindParent(cb, nil)
+	nudge, err := cb.ContinueAfterFinal(ctx, nil)
+	if err != nil || len(nudge) != 1 {
+		t.Fatalf("nudge: %+v %v", nudge, err)
+	}
+	synthetic, _ := nudge[0].Metadata[messages.MetadataKeyAgentSynthetic].(bool)
+	text := nudge[0].Content
+	if nudge[0].Role != messages.MessageRoleUser || !synthetic || !strings.HasPrefix(text, "Coordination is still outstanding: task ") || !strings.HasSuffix(text, "not a description of the coordination steps.") {
+		t.Fatalf("nudge shape: %+v", nudge[0])
+	}
+	if _, err := cb.ContinueAfterFinal(ctx, nil); !errors.Is(err, errSettlementBlocked) {
+		t.Fatalf("unchanged coordination did not end the turn: %v", err)
+	}
+}

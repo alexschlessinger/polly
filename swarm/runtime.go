@@ -1540,12 +1540,19 @@ func (r *Runtime) Settle(ctx context.Context) error {
 				if run.Status == "running" || run.Status == "paused" {
 					current = run.ID
 				}
+			}
+			// One acknowledgment accepts every result a completed workflow
+			// consumed, so that step leads the budget and per-task blockers.
+			if w, research := unacknowledgedResearch(s, current); w != nil {
+				return fail("blocked", fmt.Sprintf("workflow %s completed with %s awaiting review; inspect workflow_read, then workflow_acknowledge to accept all of them, or swarm_review individual tasks first", w.ID, countNoun(len(research), "research result")))
+			}
+			for _, run := range s.Runs {
 				if run.Status == "paused" && !runDeferred(s, run.ID) {
 					return ErrBudget
 				}
 			}
-			if task := unsettledTask(s, current); task != nil {
-				return taskSettlementError(s, task)
+			if tasks := unsettledTasks(s, current); len(tasks) > 0 {
+				return unsettledTasksError(s, tasks)
 			}
 			for _, w := range s.Workflows {
 				if w.Run == current && w.Status != "running" && w.Status != "completed" && !w.Acknowledged {

@@ -11,7 +11,9 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
+	"sort"
 )
 
 func noEditResult(t *testing.T, readOnly bool) (*Runtime, AgentResult, TaskReference) {
@@ -318,5 +320,103 @@ func TestTaskSettlementDiagnostics(t *testing.T) {
 	var limit *IterationLimitError
 	if err := taskSettlementError(s, task); !strings.Contains(err.Error(), "task task revision 2:") || !errors.As(err, &limit) {
 		t.Fatalf("lost task identity or typed iteration grant requirement: %v", err)
+	}
+}
+
+// A completed workflow's unreviewed consumed research is the first blocker
+// settlement names, ahead of per-task blockers and failed reports.
+func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
+	r := runtimeTest(t, nilModel(), 2, 8)
+	ctx := context.Background()
+	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"research",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"investigate a",readOnly:true});return await polly.agent({task:"investigate b",readOnly:true});}})`, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := r.CreateTask(ctx, "pending work", "review", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"failure",inputSchema:polly.schema.object({}),async run(){throw Error("verification failed");}});`, map[string]any{})
+	if err == nil || failed == nil {
+		t.Fatalf("missing failure: %+v %v", failed, err)
+	}
+	var blocker *workflow.Error
+	want := "workflow " + report.ID + " completed with 2 research results awaiting review; inspect workflow_read, then workflow_acknowledge"
+	if err := r.Settle(ctx); err == nil || !strings.HasPrefix(err.Error(), want) || !errors.As(err, &blocker) || blocker.Code != "blocked" {
+		t.Fatalf("settlement did not lead with the completed workflow: %v", err)
+	}
+	if accepted, err := r.AcknowledgeWorkflow(ctx, report.ID); err != nil || accepted != 2 {
+		t.Fatalf("acknowledge = %d, %v; want 2 accepted", accepted, err)
+	}
+	if err := r.Settle(ctx); err == nil || !strings.HasPrefix(err.Error(), "task "+task.ID+" revision 1: pending;") {
+		t.Fatalf("after acknowledging: %v", err)
+	}
+	if err := r.CancelTask(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Settle(ctx); err == nil || !strings.Contains(err.Error(), failed.ID) {
+		t.Fatalf("failed report not named: %v", err)
+	}
+	if accepted, err := r.AcknowledgeWorkflow(ctx, failed.ID); err != nil || accepted != 0 {
+		t.Fatalf("acknowledging the failure = %d, %v", accepted, err)
+	}
+	if err := r.Settle(ctx); err != nil {
+		t.Fatalf("settled swarm still blocked: %v", err)
+	}
+}
+
+// Research the script reviewed itself leaves nothing for acknowledgment to
+// accept, so an unacknowledged completed report does not block settlement.
+func TestCompletedWorkflowWithReviewedResearchSettles(t *testing.T) {
+	r := runtimeTest(t, nilModel(), 1, 2)
+	ctx := context.Background()
+	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"reviewed",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({task:"investigate",readOnly:true});const t=await polly.tasks.read(a.task);await polly.tasks.review({task:t.id,revision:t.revision,accept:true});return a;}})`, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Settle(ctx); err != nil {
+		t.Fatalf("reviewed research still blocked settlement: %v", err)
+	}
+	s, err := r.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Workflows[report.ID].Acknowledged {
+		t.Fatal("settlement acknowledged the report on its own")
+	}
+}
+
+func TestSettleReportsTaskCount(t *testing.T) {
+	r := runtimeTest(t, idleModel(), 1, 1)
+	ctx := context.Background()
+	var ids []string
+	for _, description := range []string{"first", "second", "third"} {
+		task, err := r.CreateTask(ctx, description, "review", nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, task.ID)
+	}
+	sort.Strings(ids)
+	var blocker *workflow.Error
+	if err := r.Settle(ctx); err == nil || !strings.HasPrefix(err.Error(), "3 tasks unsettled; first: task "+ids[0]+" revision 1: pending; resolve its dependencies") || !errors.As(err, &blocker) || blocker.Code != "blocked" {
+		t.Fatalf("task count missing: %v", err)
+	}
+	for _, id := range ids[1:] {
+		if err := r.CancelTask(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Settle(ctx); err == nil || !strings.HasPrefix(err.Error(), "task "+ids[0]+" revision 1:") {
+		t.Fatalf("a single task carried a count: %v", err)
+	}
+	// Typed blockers survive the prefix.
+	s, task := unchangedTaskState()
+	task.Status, task.Execution = "running", "execution"
+	s.Executions = map[string]*Execution{"execution": {ID: "execution", Member: "member", Status: "paused", StopReason: messages.StopReasonMaxIterations}}
+	s.Tasks["zzz"] = &Task{ID: "zzz", Status: "pending", Revision: 1}
+	var limit *IterationLimitError
+	if err := unsettledTasksError(s, []*Task{task, s.Tasks["zzz"]}); err == nil || !strings.HasPrefix(err.Error(), "2 tasks unsettled; first: task task revision 2:") || !errors.As(err, &limit) {
+		t.Fatalf("typed iteration blocker lost behind the count: %v", err)
 	}
 }

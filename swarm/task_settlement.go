@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"errors"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
@@ -142,18 +143,48 @@ func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 	return s, err
 }
 
-func unsettledTask(s *State, run string) *Task {
-	ids := make([]string, 0, len(s.Tasks))
-	for id, task := range s.Tasks {
+// unsettledTasks lists, by ID, the current run's open tasks plus retained
+// tasks whose deferral no longer holds.
+func unsettledTasks(s *State, run string) []*Task {
+	var tasks []*Task
+	for _, task := range s.Tasks {
 		if (task.Run == run || task.Deferral != nil) && task.Status != "done" && task.Status != "canceled" && !TaskDeferred(s, task) {
-			ids = append(ids, id)
+			tasks = append(tasks, task)
 		}
 	}
-	sort.Strings(ids)
-	if len(ids) == 0 {
-		return nil
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID < tasks[j].ID })
+	return tasks
+}
+
+// unsettledTasksError names the first task's blocker and, when several tasks
+// are open, how many. The single-task text is unchanged, and the typed
+// blocker (its code, or the iteration limit) survives the count prefix.
+func unsettledTasksError(s *State, tasks []*Task) error {
+	first := taskSettlementError(s, tasks[0])
+	if len(tasks) == 1 {
+		return first
 	}
-	return s.Tasks[ids[0]]
+	count := fmt.Sprintf("%d tasks unsettled; first: ", len(tasks))
+	var blocker *workflow.Error
+	if errors.As(first, &blocker) {
+		return fail(blocker.Code, count+blocker.Message)
+	}
+	return fmt.Errorf("%s%w", count, first)
+}
+
+// unacknowledgedResearch returns the first (by ID) completed, unacknowledged
+// workflow of the run that still owns consumed research, with that research.
+func unacknowledgedResearch(s *State, run string) (*workflow.Report, []*Task) {
+	for _, id := range sortedInspectionIDs(s.Workflows) {
+		w := s.Workflows[id]
+		if w.Run != run || w.Status != "completed" || w.Acknowledged {
+			continue
+		}
+		if research := workflowResearchTasks(s, w); len(research) > 0 {
+			return w, research
+		}
+	}
+	return nil, nil
 }
 
 func taskSettlementError(s *State, task *Task) error {

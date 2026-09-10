@@ -219,6 +219,14 @@ func (r *Runtime) bindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 		}
 		prompted = true
 		last = fingerprint
-		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "Coordination is still outstanding: " + settleErr.Error() + ". Read addressed messages and swarm_tasks. Review completed research and explicitly review editing candidates before integration. For a failed workflow, inspect workflow_read, then either recover its work or report the failure and use workflow_acknowledge with defer=true and a note to retain unresolved work for later. Deferral does not accept, apply, or cancel work. The previous answer remains provisional.", Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true}}}, nil
+		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "Coordination is still outstanding: " + settleErr.Error() + ". Resolve it, then answer. " +
+			"Research a completed workflow consumed: inspect workflow_read, then workflow_acknowledge accepts all of it at once, or swarm_review individual tasks first. " +
+			"An unreviewed task: swarm_tasks lists them; swarm_review each current revision to accept it or request changes with feedback. " +
+			"An accepted editing candidate: prepare, accept, and apply it with swarm_integration. " +
+			"A member waiting for you: answer its request with send_message. " +
+			"A failed, canceled, or interrupted workflow: inspect workflow_read, then recover its work, or report the failure and call workflow_acknowledge with defer=true and a note; deferral retains the work without accepting, applying, or canceling it. " +
+			"An exhausted execution budget: tell the user; only a user-directed /swarm grant extends it. " +
+			"Any other task blocker states its own operation; swarm_control resumes a member or cancels a task. " +
+			"Your previous answer was provisional. Once coordination settles, reply with the complete answer for the user, restated in full and reflecting what you accepted or acknowledged, not a description of the coordination steps.", Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true}}}, nil
 	}
 }
