@@ -627,6 +627,10 @@ a nil slice inherits compatible parent tools. Logical executions default to
 32 concurrent / 256 starts per run. Waits retain their execution ID and remaining
 iteration budget. Runtime callbacks, instructions, limits, private filesystem
 paths, and worktree directory are configurable through `swarm.Config`.
+Every member context records a private scratch directory
+(`swarm.ExecutionContext.Scratch`): a read-only member's only writable path,
+exported to its processes as `TMPDIR`, `TMP`, `TEMP`, `GOTMPDIR`, and `GOCACHE`
+(with `GOPROXY=off`).
 Use repository-relative paths in `Task` briefs. `Source` selects snapshot input,
 not the member's working directory: tools and ordinary Git inspection run in
 the assigned checkout. Parent files and Git writes stay denied. On macOS the
@@ -744,8 +748,11 @@ The independent `workflow.Runner{Host, Config}` can be embedded over another
 trusted host implementing `Call`; optional `Recorder.SaveWorkflow` supplies
 persistence. See [WORKFLOWS.md](WORKFLOWS.md) for the JavaScript contract.
 
-`tools.ExecutionContext` binds `Root`, `ReadOnly`, and a narrowed sandbox policy
-to a fresh registry via `BindExecutionContext`. Custom Go tools implement
+`tools.ExecutionContext` binds `Root`, `ReadOnly`, `Scratch`, and a narrowed
+sandbox policy to a fresh registry via `BindExecutionContext`;
+`ExecutionPolicy(root, tools.ExecutionGrant{ReadOnly, DeniedReads, DeniedWrites,
+Scratch})` builds that policy, and a read-only grant without a scratch denies all
+writes. Custom Go tools implement
 `ContextTool` to rebind or declare `ContextIndependentTool` when appropriate.
 Local stdio MCP processes relaunch in that context; remote MCP servers must
 explicitly declare `contextIndependent: true`. Media stays in `ToolOutput.Media`;
