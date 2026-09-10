@@ -508,20 +508,25 @@ func replSpawnCommand(ctx *replCommandContext, args []string) replCommandResult 
 }
 
 func replContextCommand(ctx *replCommandContext, args []string) replCommandResult {
+	return replCommandResult{err: ctx.replyLines(contextDetails(ctx))}
+}
+
+// contextDetails describes the session for /context.
+func contextDetails(ctx *replCommandContext) []string {
 	if ctx == nil || ctx.state == nil || ctx.state.session == nil {
-		return replCommandResult{err: ctx.replyLine("no active session")}
+		return []string{"no active session"}
 	}
 	settings := ctx.settingsOrDefault()
 	s := ctx.state.session
 	opCtx := ctx.operationContext()
 	name, err := s.GetName(opCtx)
 	if err != nil {
-		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+		return []string{fmt.Sprintf("context unavailable: %v", err)}
 	}
 	lines := []string{"context: " + name}
 	md, err := s.GetMetadata(opCtx)
 	if err != nil {
-		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+		return []string{fmt.Sprintf("context unavailable: %v", err)}
 	}
 	if label := sessions.DisplayLabel(md); label != name {
 		lines = append(lines, "title: "+label)
@@ -531,7 +536,7 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	}
 	totalTokens, err := s.GetTotalTokens(opCtx)
 	if err != nil {
-		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+		return []string{fmt.Sprintf("context unavailable: %v", err)}
 	}
 	lines = append(lines, "transcript: "+humanizeTokens(totalTokens)+" estimated tokens (durable)")
 	if settings.MaxHistoryTokens > 0 {
@@ -550,16 +555,16 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	}
 	c, err := s.GetMessageCounts(opCtx)
 	if err != nil {
-		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+		return []string{fmt.Sprintf("context unavailable: %v", err)}
 	}
 	lines = append(lines, fmt.Sprintf("messages: user %d · assistant %d · tool %d · system %d",
 		c["user"], c["assistant"], c["tool"], c["system"]))
 	toolCalls, err := s.GetToolCallCount(opCtx)
 	if err != nil {
-		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("context unavailable: %v", err))}
+		return []string{fmt.Sprintf("context unavailable: %v", err)}
 	}
 	lines = append(lines, fmt.Sprintf("tool calls: %d", toolCalls))
-	return replCommandResult{err: ctx.replyLines(lines)}
+	return lines
 }
 
 func completeSetCommand(_ *replCommandContext, fields []string, prefix string) []string {

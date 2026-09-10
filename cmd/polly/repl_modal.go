@@ -38,6 +38,7 @@ type replModal struct {
 	top        int
 	visible    int
 	listBounds image.Rectangle
+	bounds     image.Rectangle
 	width      int
 	maxRows    int
 	showCount  bool
@@ -49,6 +50,9 @@ type replModal struct {
 	// bodyRows is how many rows it took in the last text, list rows follow.
 	body     []string
 	bodyRows int
+	// Non-nil details make a read-only popover above the status row. Plain
+	// text is wrapped into display items at the current terminal width.
+	details []string
 	// expanded holds the values of parent items whose children are listed.
 	// Sharing the map across openings keeps the choice for the process.
 	expanded    map[string]bool
@@ -177,6 +181,14 @@ func (m *replModal) nestMarker(item replModalItem) string {
 }
 
 func (m *replModal) text(maxRows, modalWidth int) string {
+	if m.details != nil {
+		m.items = nil
+		for _, line := range m.details {
+			for _, row := range style.VisualRows(style.Escape(line), ui.StyleClear, max(1, modalWidth-2)) {
+				m.items = append(m.items, replModalItem{label: ui.CellsToString(row)})
+			}
+		}
+	}
 	if m.inputMode {
 		value := m.input.text()
 		if m.masked {
@@ -217,7 +229,9 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		if items[i].display != "" {
 			line = items[i].display
 		}
-		if i == m.selected {
+		if m.details != nil {
+			prefix = ""
+		} else if i == m.selected {
 			prefix = style.Styled("›", "accent", "bold") + " "
 			if items[i].selectedDisplay != "" {
 				line = items[i].selectedDisplay
@@ -232,7 +246,12 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	}
 	filter := m.input.text()
 	footer := ""
-	if m.showCount {
+	if m.details != nil {
+		footer = "Enter/Esc close"
+		if len(items) > visibleRows {
+			footer = "↑↓ scroll · Esc close"
+		}
+	} else if m.showCount {
 		count := ""
 		if filter != "" {
 			count = fmt.Sprintf("%d matches", len(items))
@@ -330,6 +349,26 @@ func (r *managedREPL) openModal(modal *replModal) {
 	// otherwise the native image can be composited over the modal afterward.
 	r.startupLogoVisible = false
 	r.model.modal = modal
+}
+
+func (r *managedREPL) openContextPopover() {
+	details := []string{"no active session"}
+	if r.state != nil && r.state.session != nil {
+		counts, err := r.state.session.GetMessageCounts(r.state.session.Context())
+		if err != nil {
+			details = []string{fmt.Sprintf("message counts unavailable: %v", err)}
+		} else {
+			details = nil
+			for _, role := range []string{"user", "assistant", "tool", "system"} {
+				details = append(details, fmt.Sprintf("%-10s %d", role, counts[role]))
+			}
+		}
+	}
+	r.openModal(&replModal{
+		title:   "Messages",
+		width:   28,
+		details: details,
+	})
 }
 
 func (r *managedREPL) openModelPicker() {
@@ -533,6 +572,12 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		case "<MouseWheelDown>":
 			m.selected = min(len(m.filteredItems())-1, m.selected+3)
 		case "<MouseLeft>":
+			if m.details != nil {
+				if !image.Pt(mouse.X, mouse.Y).In(m.bounds) {
+					r.closeModal()
+				}
+				return true
+			}
 			if !image.Pt(mouse.X, mouse.Y).In(m.listBounds) {
 				return true
 			}
@@ -543,6 +588,18 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 			}
 		}
 		return true
+	}
+	if m.details != nil {
+		// Details own input without editing the underlying draft or filtering
+		// the displayed values. Only navigation and dismissal are meaningful.
+		switch e.ID {
+		case "<Enter>":
+			r.closeModal()
+			return true
+		case "<Escape>", "<Up>", "<Down>", "<PageUp>", "<PageDown>", "<Home>", "<End>":
+		default:
+			return true
+		}
 	}
 	// Input dialogs use the same editing motions as the composer. Keep list
 	// navigation and provider Ctrl-D clearing in the modal switch below.

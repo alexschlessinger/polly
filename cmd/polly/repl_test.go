@@ -1858,7 +1858,7 @@ func TestStatusContextReadsAsCountAndPressure(t *testing.T) {
 	m := newReplModel()
 	m.status.contextName = "ctx"
 	m.status.recordContextUsage(448, 0, false)
-	if got := plainStyledText(m.statusRow(80)); !strings.Contains(got, "ctx · 448 tok") || strings.Contains(got, "░") || strings.Contains(got, "█") {
+	if got := plainStyledText(m.statusRow(80)); !strings.Contains(got, "ctx · "+fmt.Sprintf("%*s", contextStatusWidth, "448 tok")) || strings.Contains(got, "░") || strings.Contains(got, "█") {
 		t.Fatalf("status without a window = %q", got)
 	}
 	if got := m.status.contextUsageStyled(); got != style.Styled("448 tok", "muted", "") {

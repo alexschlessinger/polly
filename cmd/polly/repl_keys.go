@@ -152,6 +152,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				r.openSessionsPickerSelected(r.attentionAgentName())
 				return false
 			}
+			if m.status.contextField.hit(mouse.X, mouse.Y, terminalHeight) {
+				r.openContextPopover()
+				return false
+			}
 			if r.openAgentAt(mouse.X, mouse.Y) {
 				return false
 			}

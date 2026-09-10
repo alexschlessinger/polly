@@ -432,12 +432,17 @@ func (r *managedREPL) render() {
 	if modalOpen {
 		x := (w - modalWidth) / 2
 		y := (h - modalHeight) / 2
+		if r.model.modal.details != nil {
+			x = w - modalWidth
+			y = max(0, h-1-modalHeight)
+		}
 		r.modalW.Text = modalText
 		r.modalW.Title = modalTitle
 		r.modalW.SetRect(x, y, x+modalWidth, y+modalHeight)
 		// The dialog's scrollbar rides its own right border, like the
 		// inspector's rides the frame edge.
 		m := r.model.modal
+		m.bounds = r.modalW.Rectangle
 		listTop := r.modalW.Inner.Min.Y + m.bodyRows
 		m.listBounds = image.Rect(r.modalW.Inner.Min.X, listTop, r.modalW.Inner.Max.X, min(r.modalW.Inner.Max.Y, listTop+m.visible))
 		track := image.Rect(x+modalWidth-1, m.listBounds.Min.Y, x+modalWidth, m.listBounds.Max.Y)

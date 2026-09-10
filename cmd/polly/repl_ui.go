@@ -175,7 +175,7 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 		runCtx:          context.Background(),
 		openImage:       openImageInViewer,
 		suspendProcess:  suspendCurrentProcessGroup,
-		showStartupLogo: true,
+		showStartupLogo: !config.UseLastContext && config.ContextID == "",
 	}
 }
 
