@@ -115,7 +115,7 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	before := coordinationFingerprint(s)
+	before, _ := coordinationEntries(s)
 	for {
 		r.mu.Lock()
 		notify := r.notify
@@ -125,7 +125,7 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if active == 0 || len(inbox(s, r.ID, true)) > 0 || coordinationFingerprint(s) != before {
+		if active == 0 || len(inbox(s, r.ID, true)) > 0 || parentWaitChanged(before, s) {
 			return nil
 		}
 		select {
@@ -136,20 +136,19 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 	}
 }
 
-// coordinationFingerprint covers what a waiting parent acts on: task changes
-// and member or workflow status transitions. A member that was already parked
-// when the wait began is not news, so its steady state cannot end the wait.
-// Members hash by lifecycle, control and execution identity: a wake that moves
-// the same execution from queued to running is not a transition, and labels
-// never are.
-func coordinationFingerprint(s *State) string {
-	statuses := map[string]any{}
+// coordinationEntries derives one comparable record per task, member and
+// workflow, and marks the records a running workflow controls. Members hash
+// by lifecycle, control and execution identity: a wake that moves the same
+// execution from queued to running is not a transition, and labels never are.
+func coordinationEntries(s *State) (entries map[string]any, controlled map[string]bool) {
+	entries, controlled = map[string]any{}, map[string]bool{}
 	for id, t := range s.Tasks {
-		statuses["task:"+id] = struct {
+		entries["task:"+id] = struct {
 			Status, Owner, Execution, Snapshot, Feedback string
 			Revision, Accepted                           int
 			Deferred                                     bool
 		}{t.Status, t.Owner, t.Execution, t.Snapshot, t.Feedback, t.Revision, t.AcceptedRevision, TaskDeferred(s, t)}
+		controlled["task:"+id] = workflowControlled(s, s.Executions[t.Execution])
 	}
 	for id, m := range s.Members {
 		generation := 0
@@ -157,20 +156,44 @@ func coordinationFingerprint(s *State) string {
 			generation = e.Generation
 		}
 		p := MemberState(s, m)
-		statuses["member:"+id] = struct {
+		entries["member:"+id] = struct {
 			Lifecycle  Lifecycle
 			Control    MemberControl
 			Execution  string
 			Generation int
 		}{p.Lifecycle, p.Control, m.Execution, generation}
+		controlled["member:"+id] = workflowControlled(s, s.Executions[m.Execution])
 	}
 	for id, w := range s.Workflows {
-		statuses["workflow:"+id] = struct {
+		entries["workflow:"+id] = struct {
 			Status       string
 			Acknowledged bool
 		}{w.Status, w.Acknowledged}
 	}
-	return tools.Result(statuses)
+	return entries, controlled
+}
+
+// coordinationFingerprint hashes every entry. The settlement nudge in
+// bindParent compares it: any coordination change, workflow-internal or not,
+// earns the parent another nudge rather than a blocked turn.
+func coordinationFingerprint(s *State) string {
+	entries, _ := coordinationEntries(s)
+	return tools.Result(entries)
+}
+
+// parentWaitChanged is what ends a parked parent's wait: an entry that
+// differs from before, unless a running workflow controls it now. Workflow
+// progress reaches the parent once, through the workflow's own status entry,
+// and a record a workflow takes over during the wait is not news either. A
+// member that was already parked when the wait began is not news at all.
+func parentWaitChanged(before map[string]any, s *State) bool {
+	entries, controlled := coordinationEntries(s)
+	for key, value := range entries {
+		if !controlled[key] && before[key] != value {
+			return true
+		}
+	}
+	return false
 }
 
 // RegisterParentTools binds parent-only authority in closures, never in model
