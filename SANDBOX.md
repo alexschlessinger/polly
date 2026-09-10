@@ -110,9 +110,12 @@ declaration in the server configuration before being exposed to a member.
 Parent workflow integration uses the host's existing parent authority. Scripts
 cannot provide an identity or broaden filesystem/tool policy, and generic
 `polly.tool` remains bound to isolated contexts. `polly.release` verifies ownership,
-per-context inactivity, and unchanged/integrated contents before cleanup. The
-content checks and durable retirement routine are shared with ordinary cleanup;
-snapshots and publications remain pinned when releasing a context. Check-copy edits require explicit adoption through
+per-context inactivity, and unchanged/integrated contents before cleanup. An
+unchanged copy is recognized with a cheap Git check (HEAD tree, no
+assume-unchanged or skip-worktree flags, empty status); any other copy is captured
+in full before removal. The content checks and durable retirement routine are
+shared with ordinary cleanup and with the retirement of accepted read-only
+research; snapshots and publications remain pinned when releasing a context. Check-copy edits require explicit adoption through
 an editing task before integration. Tool metadata and peer messages do not grant
 additional user authorization.
 
