@@ -37,6 +37,13 @@ func assertSettleMatchesBlockers(t *testing.T, r *Runtime) error {
 	if errors.As(got, &gotLimit) != errors.As(want, &wantLimit) {
 		t.Fatalf("iteration limit wrapping differs: %v vs %v", got, want)
 	}
+	// No silent blocker: whatever settlement reports is visible as a decision
+	// or as work still moving.
+	if got != nil && got.Error() != "members are waiting for a relevant event" {
+		if p := Present(s, r.ID, r.ID); len(p.Decisions) == 0 && len(p.Working) == 0 {
+			t.Fatalf("settlement blocks on %v but the presentation is empty", got)
+		}
+	}
 	return got
 }
 
