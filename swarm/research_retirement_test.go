@@ -293,3 +293,61 @@ func TestRetirementBatchesTransactions(t *testing.T) {
 		t.Fatalf("acknowledging 3 researchers used %d transactions, want 3", counter.updates)
 	}
 }
+
+// A researcher that still owns an unreviewed submission is not retired when
+// another of its tasks is accepted; it retires once every task is settled.
+func TestRetirementWaitsForEveryTaskOfTheMember(t *testing.T) {
+	r := scratchRuntime(t, doneModel(), false)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	first, err := r.Agent(ctx, "", AgentRequest{Task: "look at a", ReadOnly: true, Tools: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := r.CreateTask(ctx, "look at b", "none", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Agent(ctx, "", AgentRequest{Session: first.Session, TaskID: second.ID, Task: "look at b"}); err != nil {
+		t.Fatal(err)
+	}
+	accept := func(id string) map[string]any {
+		t.Helper()
+		s, err := r.State(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		task := s.Tasks[id]
+		if task == nil || task.Owner != first.Session || task.Status != "awaiting_review" {
+			t.Fatalf("task %s before review: %+v", id, task)
+		}
+		out, err := execParentTool(t, r, "swarm_review", map[string]any{"task": id, "revision": task.Revision, "accept": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reviewed map[string]any
+		if err := json.Unmarshal([]byte(out), &reviewed); err != nil {
+			t.Fatal(err)
+		}
+		return reviewed
+	}
+	if reviewed := accept(second.ID); reviewed["retired"] != nil || reviewed["retirement"] != nil {
+		t.Fatalf("accepting the second task retired the member: %v", reviewed)
+	}
+	s, err := r.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := s.Members[first.Session]; m.Control != MemberControlEnabled || s.Contexts[m.Context] == nil {
+		t.Fatalf("member with an unreviewed task: control=%q context=%v", m.Control, s.Contexts[m.Context] != nil)
+	}
+	if reviewed := accept(first.Task); reviewed["retired"] != float64(1) {
+		t.Fatalf("accepting the last task did not retire the member: %v", reviewed)
+	}
+	if s, err = r.State(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if m := s.Members[first.Session]; m.Control != MemberControlRetired || len(s.Contexts) != 0 {
+		t.Fatalf("member after every task settled: control=%q contexts=%d", m.Control, len(s.Contexts))
+	}
+}

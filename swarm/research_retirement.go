@@ -135,15 +135,28 @@ func (r *Runtime) markAcceptedResearch(ctx context.Context, verified []*Executio
 }
 
 // acceptedResearch reports whether a context belongs to an enabled read-only
-// member whose task is done and whose last execution completed.
+// member whose last execution completed and whose every task is settled:
+// at least one accepted, none still running, submitted, or sent back. A
+// member that still owns an unreviewed submission must stay resumable.
 func acceptedResearch(s *State, c *ExecutionContext, m *Member) bool {
 	if c == nil || m == nil || c.Retiring || !c.ReadOnly || !m.ReadOnly || m.Control != MemberControlEnabled || m.Context != c.ID || c.Owner != m.ID {
 		return false
 	}
-	t := s.Tasks[m.Task]
-	if t == nil || t.Owner != m.ID || t.Status != "done" {
+	if e := s.Executions[m.Execution]; e != nil && e.Status != "completed" {
 		return false
 	}
-	e := s.Executions[m.Execution]
-	return e == nil || e.Status == "completed"
+	accepted := false
+	for _, t := range s.Tasks {
+		if t.Owner != m.ID {
+			continue
+		}
+		switch t.Status {
+		case "done":
+			accepted = true
+		case "canceled":
+		default:
+			return false
+		}
+	}
+	return accepted
 }

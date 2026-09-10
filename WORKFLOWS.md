@@ -469,6 +469,8 @@ reads `paused · stopped`, and a retired member `idle · retired`. Accepted
 read-only research retires itself, through `swarm_review`, a script's
 `tasks.review`, `workflow_acknowledge` or `/swarm acknowledge-workflow`, so
 `idle · retired` is the normal end of a researcher; cleanup retires editing copies.
+A researcher retires only once every task it owns is accepted or canceled: one
+that still holds an unreviewed or sent-back submission stays resumable.
 
 Editing worktrees and Git references require explicit cleanup; parent TTL
 expiry does not delete source changes. Cleanup refuses unintegrated current
