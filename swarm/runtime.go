@@ -66,6 +66,7 @@ type AgentRequest struct {
 	Snapshot      string         `json:"snapshot,omitempty"`
 	Context       string         `json:"context,omitempty"`
 	ReadOnly      bool           `json:"readOnly,omitempty"`
+	Review        bool           `json:"review,omitempty"`
 	Tools         []string       `json:"tools"`
 	Model         string         `json:"model,omitempty"`
 	MaxIterations int            `json:"maxIterations,omitempty"`
@@ -522,6 +523,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 	if strings.TrimSpace(req.Task) == "" {
 		return nil, errors.New("agent task is required")
 	}
+	if req.Session == "" {
+		if _, err := requirementFor(req.Review, req.ReadOnly); err != nil {
+			return nil, err
+		}
+	}
 	defaults := r.currentDefaults()
 	if req.MaxIterations <= 0 {
 		req.MaxIterations = defaults.agent.MaxIterations
@@ -586,6 +592,9 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		m = s.Members[req.Session]
 		if m == nil {
 			return nil, errors.New("unknown member session")
+		}
+		if _, err := requirementFor(req.Review, m.ReadOnly); err != nil {
+			return nil, err
 		}
 		if intent.resume {
 			if r.workflowReserved(m.Controller) {
@@ -711,9 +720,16 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			return errors.New("unknown task")
 		}
 		if task == nil {
-			task = &Task{ID: ids.New(), Run: run.ID, Description: req.Task, Criteria: "Parent reviews and accepts the submitted result"}
+			requirement, err := requirementFor(req.Review, stored.ReadOnly)
+			if err != nil {
+				return err
+			}
+			task = &Task{ID: ids.New(), Run: run.ID, Requirement: requirement, Description: req.Task, Criteria: criteriaFor(requirement)}
 			s.Tasks[task.ID] = task
 		} else {
+			if req.Review && requirementOf(s, task) != RequirementReviewed {
+				return fail("requirement_mismatch", "review cannot change an existing task's completion requirement")
+			}
 			if task.Run != run.ID || task.Owner != "" && task.Owner != m.ID || !depsDone(s, task) || task.Status == "done" || task.Status == "canceled" {
 				return errors.New("task is not available for assignment")
 			}
@@ -772,7 +788,7 @@ func (r *Runtime) Spawn(ctx context.Context, req subagent.Request) (subagent.Res
 	r.mu.Lock()
 	yield := r.yield
 	r.mu.Unlock()
-	i, err := r.start(ctx, "", AgentRequest{Task: req.Task, Label: req.Label, Tools: req.Tools, Model: req.Model, MaxIterations: req.MaxIterations, Source: req.Source, ReadOnly: req.ReadOnly, Session: req.Session, TaskID: req.TaskID, CallID: req.CallID})
+	i, err := r.start(ctx, "", AgentRequest{Task: req.Task, Label: req.Label, Tools: req.Tools, Model: req.Model, MaxIterations: req.MaxIterations, Source: req.Source, ReadOnly: req.ReadOnly, Review: req.Review, Session: req.Session, TaskID: req.TaskID, CallID: req.CallID})
 	if err != nil {
 		return subagent.Result{}, err
 	}

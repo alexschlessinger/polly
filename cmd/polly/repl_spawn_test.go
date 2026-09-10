@@ -235,7 +235,7 @@ func TestSpawnCommandEditingRequiresGitAndEmptyBriefIsRefused(t *testing.T) {
 	}), nil)
 	for _, cmd := range []string{"/spawn", "/spawn --read-only"} {
 		r.runTabCommand(cmd)
-		if !strings.Contains(plainStyledText(r.model.fullTranscript()), "usage: /spawn [--read-only] <brief>") {
+		if !strings.Contains(plainStyledText(r.model.fullTranscript()), "usage: /spawn [--read-only] [--review] <brief>") {
 			t.Fatal("missing usage")
 		}
 	}

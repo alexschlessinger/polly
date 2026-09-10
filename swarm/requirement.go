@@ -2,6 +2,37 @@ package swarm
 
 import "time"
 
+// CreateTaskOptions selects the obligation once, when the task is created.
+type CreateTaskOptions struct {
+	Review      bool
+	Requirement string
+}
+
+func creationRequirement(options CreateTaskOptions, owner *Member) (string, error) {
+	requirement := options.Requirement
+	if requirement == "" {
+		if options.Review {
+			requirement = RequirementReviewed
+		} else if owner != nil {
+			requirement, _ = requirementFor(false, owner.ReadOnly)
+		} else {
+			requirement = RequirementDelivered
+		}
+	}
+	if requirement != RequirementDelivered && requirement != RequirementReviewed && requirement != RequirementApplied {
+		return "", fail("invalid_args", "unknown task completion requirement")
+	}
+	if options.Review && requirement != RequirementReviewed {
+		return "", fail("invalid_args", "review conflicts with the task requirement")
+	}
+	if owner != nil {
+		if err := validateRequirement(&Task{Requirement: requirement}, owner.ReadOnly); err != nil {
+			return "", err
+		}
+	}
+	return requirement, nil
+}
+
 const (
 	RequirementDelivered = "delivered"
 	RequirementReviewed  = "reviewed"

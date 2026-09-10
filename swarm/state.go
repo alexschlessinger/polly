@@ -465,13 +465,20 @@ func sameRecords(a, b map[string]map[string]json.RawMessage) bool {
 	}
 	return true
 }
-func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, deps []string, owner string) (*Task, error) {
+func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, deps []string, owner string, options ...CreateTaskOptions) (*Task, error) {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
 	if description == "" {
 		return nil, errors.New("task description is required")
 	}
 	var task *Task
+	var option CreateTaskOptions
+	if len(options) > 1 {
+		return nil, errors.New("only one task creation option is allowed")
+	}
+	if len(options) == 1 {
+		option = options[0]
+	}
 	err := r.update(ctx, func(s *State) error {
 		run := r.currentRun(s)
 		for _, dep := range deps {
@@ -482,7 +489,14 @@ func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, 
 		if owner != "" && s.Members[owner] == nil {
 			return errors.New("unknown task owner")
 		}
-		task = &Task{ID: ids.New(), Run: r.currentRun(s).ID, Description: description, Criteria: criteria, Dependencies: deps, Owner: owner, Status: "pending", Revision: 1}
+		requirement, err := creationRequirement(option, s.Members[owner])
+		if err != nil {
+			return err
+		}
+		if criteria == "" {
+			criteria = criteriaFor(requirement)
+		}
+		task = &Task{ID: ids.New(), Run: r.currentRun(s).ID, Requirement: requirement, Description: description, Criteria: criteria, Dependencies: deps, Owner: owner, Status: "pending", Revision: 1}
 		s.Tasks[task.ID] = task
 		return nil
 	})
@@ -659,6 +673,11 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 		}
 		if owner != "" && s.Members[owner] == nil {
 			return errors.New("unknown task owner")
+		}
+		if m := s.Members[owner]; m != nil {
+			if err := validateRequirement(t, m.ReadOnly); err != nil {
+				return err
+			}
 		}
 		if t.Owner != "" {
 			r.mu.Lock()

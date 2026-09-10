@@ -240,8 +240,8 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		}}})
 		registry.MarkAlwaysAllowed(name)
 	}
-	register("swarm_create_task", "Create and prioritize shared work. Only you may create, reassign, accept and integrate tasks.", schema.Params{"description": schema.S("Assignment"), "criteria": schema.S("Acceptance criteria"), "dependencies": schema.Strings("Task IDs"), "owner": schema.S("Optional member ID")}, []string{"description", "criteria"}, func(ctx context.Context, a tools.Args) (any, error) {
-		return r.CreateTask(ctx, a.String("description"), a.String("criteria"), a.StringSlice("dependencies"), a.String("owner"))
+	register("swarm_create_task", "Create and prioritize shared work. Only you may create, reassign, accept and integrate tasks.", schema.Params{"description": schema.S("Assignment"), "criteria": schema.S("Acceptance criteria"), "dependencies": schema.Strings("Task IDs"), "owner": schema.S("Optional member ID"), "review": schema.Bool("Require explicit parent review of read-only work"), "requirement": schema.S("Completion requirement: delivered, reviewed, or applied. Use applied for unowned editing work.")}, []string{"description"}, func(ctx context.Context, a tools.Args) (any, error) {
+		return r.CreateTask(ctx, a.String("description"), a.String("criteria"), a.StringSlice("dependencies"), a.String("owner"), CreateTaskOptions{Review: a.Bool("review"), Requirement: a.String("requirement")})
 	})
 	register("swarm_update_task", "Reassign or unblock a task by setting its owner and dependencies. Stop an active owner first; dependency cycles are refused.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "owner": schema.S("Member ID or empty for claims"), "dependencies": schema.Strings("Replacement dependency IDs")}, []string{"task", "revision", "owner", "dependencies"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("updated", r.UpdateTask(ctx, a.String("task"), a.Int("revision", 0), a.String("owner"), a.StringSlice("dependencies")))

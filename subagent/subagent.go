@@ -32,6 +32,7 @@ type Request struct {
 	// outside Git. Session and TaskID continue existing swarm work.
 	Source, Session, TaskID, CallID string
 	ReadOnly                        bool
+	Review                          bool
 	// Task is the brief. It is everything the child knows.
 	Task string
 	// Label names the job in a few words for the people watching.
@@ -173,6 +174,7 @@ func (t *Tool) GetSchema() *schema.ToolSchema {
 		schema.Params{
 			"source":     schema.S("Absolute checkout root used to seed the child's isolated snapshot, not its working directory. Omit to seed from the parent checkout. Must belong to the parent's Git repository; not a file or subdirectory."),
 			"read_only":  schema.Bool("Set true for research, summaries, or reviews without file edits. Inside Git still uses an isolated runtime snapshot; outside Git observes live files. Defaults to false."),
+			"review":     schema.Bool("Read-only work the parent must accept; default false: research completes when its result is delivered"),
 			"session":    schema.S("Existing swarm member ID to continue"),
 			"task_id":    schema.S("Existing task to assign"),
 			"task":       schema.S("The complete brief for the agent. It starts with no other context."),
@@ -255,6 +257,7 @@ func parseRequest(args tools.Args) (Request, error) {
 	}
 	req := Request{
 		Source: args.String("source"), Session: args.String("session"), TaskID: args.String("task_id"), ReadOnly: args.Bool("read_only"),
+		Review:     args.Bool("review"),
 		Task:       strings.TrimSpace(args.String("task")),
 		Label:      strings.TrimSpace(args.String("label")),
 		Model:      strings.TrimSpace(args.String("model")),
@@ -262,6 +265,9 @@ func parseRequest(args tools.Args) (Request, error) {
 	}
 	if req.Task == "" {
 		return Request{}, errors.New("task is required: the complete brief for the agent")
+	}
+	if req.Review && !req.ReadOnly && req.Session == "" {
+		return Request{}, errors.New("review requires read_only work")
 	}
 	// Only an explicit array narrows the child's tools; null means omitted,
 	// and a bare string is one pattern rather than an empty selection.

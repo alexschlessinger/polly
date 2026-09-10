@@ -22,7 +22,7 @@ func TestStartingSnapshotRecordedAtAssignment(t *testing.T) {
 		t.Fatalf("assignment lost snapshot provenance: task=%+v execution=%+v", task, e)
 	}
 	// Claim follows the same assignment path and cannot replace a required base.
-	created, err := r.CreateTask(ctx, "next editing task", "integrate", nil, "")
+	created, err := r.CreateTask(ctx, "next editing task", "integrate", nil, "", CreateTaskOptions{Requirement: RequirementApplied})
 	if err != nil {
 		t.Fatal(err)
 	}

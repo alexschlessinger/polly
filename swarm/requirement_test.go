@@ -50,3 +50,28 @@ func TestDeliveryIdentifiesExactExecutionAndRevision(t *testing.T) {
 		t.Fatal("the exact result was not delivered")
 	}
 }
+
+func TestTaskCreationRequirement(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options CreateTaskOptions
+		owner   *Member
+		want    string
+	}{
+		{"unowned", CreateTaskOptions{}, nil, RequirementDelivered},
+		{"editing", CreateTaskOptions{}, &Member{}, RequirementApplied},
+		{"research", CreateTaskOptions{}, &Member{ReadOnly: true}, RequirementDelivered},
+		{"review", CreateTaskOptions{Review: true}, nil, RequirementReviewed},
+		{"explicit", CreateTaskOptions{Requirement: RequirementApplied}, nil, RequirementApplied},
+		{"conflict", CreateTaskOptions{Review: true, Requirement: RequirementDelivered}, nil, ""},
+		{"incompatible", CreateTaskOptions{Requirement: RequirementApplied}, &Member{ReadOnly: true}, ""},
+		{"unknown", CreateTaskOptions{Requirement: "accepted"}, nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := creationRequirement(tc.options, tc.owner)
+			if got != tc.want || (err != nil) != (tc.want == "") {
+				t.Fatalf("got %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
