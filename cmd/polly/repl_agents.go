@@ -41,9 +41,12 @@ type agentActivity struct {
 }
 
 // agentLink is relative to its rendered block until projected into a viewport.
+// A link with a workflow is the heading's settled-member count; a click on it
+// shows or hides those members instead of opening one.
 type agentLink struct {
 	recordID int64
 	rowIndex int
+	workflow string
 	X, Y     int
 	Cols     int
 }
@@ -304,36 +307,102 @@ func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 	var links []agentLink
 	y := 0
 	linkStyle := style.ParseCells(style.Link("x"), ui.StyleClear)[0].Style
-	for _, group := range groups {
-		for n, ref := range group {
-			row := ref.record.rows[ref.index]
-			if n == 0 && row.agent.workflowID != "" {
-				heading := "  " + style.Styled("Workflow · "+style.SanitizeImageText(row.agent.workflowName), "muted", "")
-				lines = append(lines, heading)
-				y += len(style.VisualRows(heading, ui.StyleClear, width))
-			}
-			line := agentActivityLine(row.agent)
-			lines = append(lines, line)
-			for _, cells := range style.VisualRows(line, ui.StyleClear, width) {
-				x, start, end := 0, -1, 0
-				for _, cell := range cells {
-					w := style.CellWidth(cell)
-					if row.agent.session != "" && cell.Style == linkStyle {
-						if start < 0 {
-							start = x
-						}
-						end = x + w
+	// appendLine renders one line and records its link cells, one link per
+	// wrapped fragment, while advancing the running row count.
+	appendLine := func(line string, link agentLink, linked bool) {
+		lines = append(lines, line)
+		for _, cells := range style.VisualRows(line, ui.StyleClear, width) {
+			x, start, end := 0, -1, 0
+			for _, cell := range cells {
+				w := style.CellWidth(cell)
+				if linked && cell.Style == linkStyle {
+					if start < 0 {
+						start = x
 					}
-					x += w
+					end = x + w
 				}
-				if start >= 0 && start < width && end > start {
-					links = append(links, agentLink{recordID: ref.record.id, rowIndex: ref.index, X: start, Y: y, Cols: min(end, width) - start})
-				}
-				y++
+				x += w
 			}
+			if start >= 0 && start < width && end > start {
+				link.X, link.Y, link.Cols = start, y, min(end, width)-start
+				links = append(links, link)
+			}
+			y++
+		}
+	}
+	for _, group := range groups {
+		first := group[0]
+		workflowID := first.record.rows[first.index].agent.workflowID
+		if workflowID != "" {
+			// Settled members of a workflow fold into a count on its heading;
+			// the count is the click target that lists them again.
+			done, canceled := 0, 0
+			for _, ref := range group {
+				if a := ref.record.rows[ref.index].agent; agentSettled(a) {
+					if a.state.TaskStatus == "canceled" {
+						canceled++
+					} else {
+						done++
+					}
+				}
+			}
+			heading := "  " + style.Styled("Workflow · "+style.SanitizeImageText(first.record.rows[first.index].agent.workflowName), "muted", "")
+			if done+canceled > 0 {
+				marker := "▸"
+				if m.settledAgentsShown[workflowID] {
+					marker = "▾"
+				}
+				heading += style.Styled(" · ", "muted", "") + style.Link(marker+" "+settledAgentsLabel(done, canceled))
+			}
+			appendLine(heading, agentLink{recordID: first.record.id, rowIndex: first.index, workflow: workflowID}, done+canceled > 0)
+		}
+		for _, ref := range group {
+			row := ref.record.rows[ref.index]
+			if workflowID != "" && !m.settledAgentsShown[workflowID] && agentSettled(row.agent) {
+				continue
+			}
+			appendLine(agentActivityLine(row.agent), agentLink{recordID: ref.record.id, rowIndex: ref.index}, row.agent.session != "")
 		}
 	}
 	return strings.Join(lines, "\n"), links
+}
+
+// agentSettled reports a row with nothing left for anyone to do: idle, no
+// approval, no attention, and a task that is done or canceled. A retired
+// member counts by its task, or as done when it never had one. Direct spawn
+// rows are never folded; only workflow groups use this.
+func agentSettled(a *agentActivity) bool {
+	if a == nil || a.approval || a.state.Busy || a.state.Attention || a.state.Lifecycle != swarm.LifecycleIdle {
+		return false
+	}
+	switch a.state.TaskStatus {
+	case "done", "canceled":
+		return true
+	}
+	return a.state.Control == swarm.MemberControlRetired
+}
+
+func settledAgentsLabel(done, canceled int) string {
+	var parts []string
+	if done > 0 {
+		parts = append(parts, fmt.Sprintf("%d done", done))
+	}
+	if canceled > 0 {
+		parts = append(parts, fmt.Sprintf("%d canceled", canceled))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// toggleSettledAgents shows or hides a workflow's settled members, keeping the
+// block anchored on screen as its height changes.
+func (m *replModel) toggleSettledAgents(recordID int64, workflow string) {
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{recordID}), func(bool) {
+		if m.settledAgentsShown == nil {
+			m.settledAgentsShown = map[string]bool{}
+		}
+		m.settledAgentsShown[workflow] = !m.settledAgentsShown[workflow]
+		m.visual.invalidate()
+	})
 }
 
 func (m *replModel) appendAgentDetail(block *transcriptDisplayBlock, ids []int64, width int) {
@@ -438,6 +507,10 @@ func (m *replModel) refreshAgentRecord(record *toolDisclosureRecord) {
 func (r *managedREPL) openAgentAt(x, y int) bool {
 	for _, link := range r.model.agentLinkPlacements {
 		if link.Y == y && x >= link.X && x < link.X+link.Cols {
+			if link.workflow != "" {
+				r.model.toggleSettledAgents(link.recordID, link.workflow)
+				return true
+			}
 			return r.inspectAgent(r.model, tabViewTarget(r.visibleTab()), link)
 		}
 	}
