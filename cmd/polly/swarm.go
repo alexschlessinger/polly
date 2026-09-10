@@ -119,10 +119,20 @@ func registerSwarmCommands(r *replCommandRegistry) {
 			case "cancel-workflow":
 				err = runtime.CancelWorkflow(args[2])
 			case "acknowledge-workflow":
-				var accepted int
+				var accepted, retired int
 				accepted, err = runtime.AcknowledgeWorkflow(opCtx, args[2])
-				if accepted > 0 {
-					reply = fmt.Sprintf("swarm control recorded; accepted %d research results", accepted)
+				if err == nil {
+					var retireErr error
+					retired, retireErr = runtime.RetireAcceptedResearch(opCtx)
+					if accepted > 0 {
+						reply += fmt.Sprintf("; accepted %d research results", accepted)
+					}
+					if retired > 0 {
+						reply += fmt.Sprintf("; retired %d members", retired)
+					}
+					if retireErr != nil {
+						reply += "; retirement incomplete: " + retireErr.Error()
+					}
 				}
 			case "defer-workflow":
 				err = runtime.DeferWorkflow(opCtx, args[2], strings.Join(args[3:], " "))

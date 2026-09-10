@@ -220,7 +220,7 @@ func (r *Runtime) bindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 		prompted = true
 		last = fingerprint
 		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "Coordination is still outstanding: " + settleErr.Error() + ". Resolve it, then answer. " +
-			"Research a completed workflow consumed: inspect workflow_read, then workflow_acknowledge accepts all of it at once, or swarm_review individual tasks first. " +
+			"Research a completed workflow consumed: inspect workflow_read, then workflow_acknowledge accepts all of it at once and retires the researchers, or swarm_review individual tasks first. " +
 			"An unreviewed task: swarm_tasks lists them; swarm_review each current revision to accept it or request changes with feedback. " +
 			"An accepted editing candidate: prepare, accept, and apply it with swarm_integration. " +
 			"A member waiting for you: answer its request with send_message. " +

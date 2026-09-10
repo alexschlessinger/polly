@@ -304,7 +304,7 @@ func workflowNext(s *State, w *workflow.Report) string {
 		return ""
 	case w.Status == "completed":
 		if research := workflowResearchTasks(s, w); len(research) > 0 {
-			return fmt.Sprintf("Completed with %s awaiting review: workflow_acknowledge({id: %q}) accepts them all; swarm_review individual tasks first when a finding needs changes.", countNoun(len(research), "research result"), w.ID)
+			return fmt.Sprintf("Completed with %s awaiting review: workflow_acknowledge({id: %q}) accepts them all and retires their members; swarm_review individual tasks first when a finding needs changes.", countNoun(len(research), "research result"), w.ID)
 		}
 		return "Completed with nothing awaiting review; workflow_acknowledge({id: \"" + w.ID + "\"}) is optional bookkeeping."
 	default:
