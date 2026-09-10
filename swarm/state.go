@@ -508,8 +508,6 @@ func (r *Runtime) Claim(ctx context.Context, actor, taskID string, revision int)
 		if t == nil || t.Run != r.currentRun(s).ID || t.Revision != revision || t.Owner != "" || t.Status != "pending" || !depsDone(s, t) {
 			return fail("not_claimable", "task is no longer claimable")
 		}
-		t.Owner = actor
-		t.Status = "running"
 		m := s.Members[actor]
 		if m == nil {
 			return errors.New("only members can claim tasks")
@@ -517,9 +515,7 @@ func (r *Runtime) Claim(ctx context.Context, actor, taskID string, revision int)
 		if old := s.Tasks[m.Task]; old != nil && old.ID != t.ID && old.Status == "running" {
 			return errors.New("submit or block the current assignment before claiming another")
 		}
-		m.Task, t.Execution = t.ID, m.Execution
-		t.Revision++
-		return nil
+		return assignTask(s, t, m, s.Contexts[m.Context], m.Execution)
 	})
 }
 func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int, result any, snapshot string) error {
@@ -698,7 +694,8 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 			}
 		}
 		t.Owner, t.Dependencies, t.Status = owner, deps, "pending"
-		t.Execution, t.Snapshot = "", ""
+		t.Execution, t.Snapshot, t.StartingSnapshot, t.SourceRoot = "", "", "", ""
+		t.Delivery = nil
 		t.Result, t.AcceptedRevision = nil, 0
 		t.Revision++
 		return nil

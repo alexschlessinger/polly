@@ -11,40 +11,22 @@ import (
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
-// taskSnapshots uses the task's original copy, never the current parent tree.
-// After cleanup, the runtime-authored snapshot links preserve that provenance.
+// taskSnapshots uses the immutable links written at assignment and submission.
+// A member's current workspace may be absent or belong to a later execution.
 func taskSnapshots(s *State, task *Task) (base, submitted *worktree.Snapshot) {
 	if task == nil || task.Snapshot == "" {
 		return nil, nil
 	}
 	owner := s.Members[task.Owner]
-	if owner == nil || owner.ID != task.Owner || owner.Context == "" || owner.ReadOnly {
+	if owner == nil || owner.ID != task.Owner || owner.ReadOnly {
 		return nil, nil
 	}
 	submitted = s.Snapshots[task.Snapshot]
 	if !validTaskSnapshot(submitted, task.Snapshot) {
 		return nil, nil
 	}
-	if c := s.Contexts[owner.Context]; c != nil {
-		if c.Owner != task.Owner || c.Checkout == nil || c.ReadOnly || c.Root == "" || c.Root != c.Checkout.Path || submitted.Source != c.Root {
-			return nil, nil
-		}
-		base = s.Snapshots[c.Checkout.Base.ID]
-		if base == nil || *base != c.Checkout.Base || task.StartingSnapshot != "" && task.StartingSnapshot != base.ID {
-			return nil, nil
-		}
-	} else {
-		// Cleanup pins these two exact snapshot IDs before deleting the copy.
-		// Requiring new fields here would strand previously saved retirements.
-		if owner.Control != MemberControlRetired || task.StartingSnapshot == "" {
-			return nil, nil
-		}
-		base = s.Snapshots[task.StartingSnapshot]
-		if !validTaskSnapshot(base, task.StartingSnapshot) {
-			return nil, nil
-		}
-	}
-	if base == nil || !validTaskSnapshot(base, base.ID) {
+	base = s.Snapshots[task.StartingSnapshot]
+	if !validTaskSnapshot(base, task.StartingSnapshot) {
 		return nil, nil
 	}
 	return base, submitted

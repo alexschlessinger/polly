@@ -98,12 +98,18 @@ func memberCallbacks(config *Config, state *conversationState) func(context.Cont
 }
 
 func registerSwarmCommands(r *replCommandRegistry) {
-	r.register(replCommand{name: "/swarm", usage: "/swarm [members|tasks|messages|publications|workflows|integrations|previews|raw|stop ID|resume ID [ADDITIONAL_ITERATIONS]|grant N|cleanup CONTEXT_ID|cleanup all|cancel-workflow ID|acknowledge-workflow ID|defer-workflow ID NOTE]", summary: "inspect and control this parent's shared swarm", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
+	r.register(replCommand{name: "/swarm", usage: "/swarm [members|tasks|messages|publications|workflows|integrations|previews|raw|stop ID|resume ID [ADDITIONAL_ITERATIONS]|grant N|cleanup CONTEXT_ID|cleanup all|forget|cancel-workflow ID|acknowledge-workflow ID|defer-workflow ID NOTE]", summary: "inspect and control this parent's shared swarm", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
 		if ctx.state == nil || ctx.state.swarm == nil {
 			return replCommandResult{err: ctx.replyLine("no parent swarm runtime is attached")}
 		}
 		runtime := ctx.state.swarm
 		opCtx := ctx.operationContext()
+		if len(args) == 2 && args[1] == "forget" {
+			if err := runtime.Forget(opCtx); err != nil {
+				return replCommandResult{err: err}
+			}
+			return replCommandResult{err: ctx.replyLine("swarm snapshot references forgotten; original snapshots can no longer be restored")}
+		}
 		if len(args) > 2 {
 			var err error
 			reply := "swarm control recorded"

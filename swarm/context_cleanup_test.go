@@ -210,9 +210,9 @@ func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
 	if err := r.Cleanup(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
-	// Mark, delete, then the whole-family snapshot and preview reset.
-	if counter.updates != 3 {
-		t.Fatalf("whole-family cleanup used %d transactions for 3 contexts, want 3", counter.updates)
+	// Mark and delete; task-owned snapshot references stay pinned.
+	if counter.updates != 2 {
+		t.Fatalf("whole-family cleanup used %d transactions for 3 contexts, want 2", counter.updates)
 	}
 	after, err := r.read(ctx)
 	if err != nil {

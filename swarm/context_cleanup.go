@@ -68,11 +68,6 @@ func (r *Runtime) markRetiring(ctx context.Context, contexts []*ExecutionContext
 			if stored == nil {
 				return errors.New("unknown execution context")
 			}
-			for _, task := range s.Tasks {
-				if task.Owner == c.Owner && task.StartingSnapshot == "" && c.Checkout != nil {
-					task.StartingSnapshot = c.Checkout.Base.ID
-				}
-			}
 			stored.Release = WorkspaceReleasing
 			if member := s.Members[c.Owner]; member != nil {
 				member.Control = MemberControlRetired

@@ -711,23 +711,23 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			return errors.New("unknown task")
 		}
 		if task == nil {
-			task = &Task{ID: ids.New(), Run: run.ID, Description: req.Task, Criteria: "Parent reviews and accepts the submitted result", Owner: m.ID, Status: "running", Revision: 1}
+			task = &Task{ID: ids.New(), Run: run.ID, Description: req.Task, Criteria: "Parent reviews and accepts the submitted result"}
 			s.Tasks[task.ID] = task
 		} else {
 			if task.Run != run.ID || task.Owner != "" && task.Owner != m.ID || !depsDone(s, task) || task.Status == "done" || task.Status == "canceled" {
 				return errors.New("task is not available for assignment")
 			}
-			task.Owner = m.ID
-			task.Status = "running"
-			task.AcceptedRevision = 0
-			task.Revision++
 		}
-		stored.Task = task.ID
-		task.Execution = i.id
+		c := s.Contexts[stored.Context]
+		if err := assignTask(s, task, stored, c, i.id); err != nil {
+			return err
+		}
 		stored.Execution = i.id
 		stored.Controller = controller
 		run.Starts++
 		e := &Execution{Workflow: controller, ID: i.id, Run: run.ID, Member: m.ID, Status: "queued", Request: req, Generation: 1}
+		e.Workspace = c.ID
+		e.Base, e.SourceRoot = workspaceSource(c)
 		s.Executions[i.id] = e
 		return nil
 	})

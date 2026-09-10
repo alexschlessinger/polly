@@ -149,6 +149,13 @@ func TestWorkflowExampleFixRepairReviewAndParentApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs := git("for-each-ref", "--format=%(refname)", "refs/polly/snapshots/")
+	if len(refs) == 0 {
+		t.Fatal("workspace cleanup deleted follow-up snapshots")
+	}
+	if err := r.Forget(ctx); err != nil {
+		t.Fatal(err)
+	}
+	refs = git("for-each-ref", "--format=%(refname)", "refs/polly/snapshots/")
 	if len(refs) != 0 {
 		t.Fatalf("snapshot refs leaked: %s", refs)
 	}

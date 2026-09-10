@@ -131,7 +131,7 @@ func TestUnchangedTaskRecoversSavedAcceptance(t *testing.T) {
 func unchangedTaskState() (*State, *Task) {
 	base := worktree.Snapshot{ID: "base", Tree: "same-tree", Commit: "base-commit", Source: "/parent"}
 	submitted := worktree.Snapshot{ID: "submitted", Tree: base.Tree, Commit: "result-commit", Source: "/member"}
-	task := &Task{ID: "task", Owner: "member", Status: "awaiting_review", Revision: 2, AcceptedRevision: 2, Snapshot: submitted.ID}
+	task := &Task{ID: "task", Owner: "member", Status: "awaiting_review", Revision: 2, AcceptedRevision: 2, Snapshot: submitted.ID, StartingSnapshot: base.ID}
 	s := &State{
 		Tasks:     map[string]*Task{task.ID: task},
 		Members:   map[string]*Member{"member": {ID: "member", Context: "copy"}},
@@ -148,17 +148,18 @@ func TestUnchangedTaskRequiresOriginalProvenance(t *testing.T) {
 	}{
 		{"missing candidate", func(s *State, task *Task) { delete(s.Snapshots, task.Snapshot) }},
 		{"missing base", func(s *State, task *Task) { delete(s.Snapshots, "base") }},
-		{"foreign source", func(s *State, task *Task) { s.Snapshots[task.Snapshot].Source = "/another-member" }},
-		{"foreign owner", func(s *State, task *Task) { s.Contexts["copy"].Owner = "other" }},
+		{"missing source", func(s *State, task *Task) { s.Snapshots[task.Snapshot].Source = "" }},
+		{"foreign owner identity", func(s *State, task *Task) { s.Members[task.Owner].ID = "other" }},
 		{"missing owner", func(s *State, task *Task) { delete(s.Members, task.Owner) }},
 		{"snapshot id mismatch", func(s *State, task *Task) { s.Snapshots[task.Snapshot].ID = "other" }},
 		{"empty tree", func(s *State, task *Task) { s.Snapshots[task.Snapshot].Tree = ""; s.Snapshots["base"].Tree = "" }},
 		{"empty commit", func(s *State, task *Task) { s.Snapshots[task.Snapshot].Commit = "" }},
 		{"changed candidate", func(s *State, task *Task) { s.Snapshots[task.Snapshot].Tree = "changed-tree" }},
-		{"different recorded base", func(s *State, task *Task) { task.StartingSnapshot = task.Snapshot }},
+		{"missing recorded base", func(s *State, task *Task) { task.StartingSnapshot = "" }},
 		{"retired missing starting snapshot", func(s *State, task *Task) {
 			delete(s.Contexts, "copy")
 			s.Members[task.Owner].Control = MemberControlRetired
+			task.StartingSnapshot = ""
 		}},
 		{"retired missing base", func(s *State, task *Task) {
 			delete(s.Contexts, "copy")
@@ -187,7 +188,7 @@ func TestUnchangedTaskRequiresOriginalProvenance(t *testing.T) {
 }
 
 func TestUnchangedTaskRecoveryRequiresCurrentAcceptance(t *testing.T) {
-	for _, mutation := range []string{"not accepted", "stale acceptance", "missing candidate", "foreign candidate", "uncertain apply"} {
+	for _, mutation := range []string{"not accepted", "stale acceptance", "missing candidate", "missing candidate source", "uncertain apply"} {
 		t.Run(mutation, func(t *testing.T) {
 			r, _, ref := noEditResult(t, false)
 			ctx := context.Background()
@@ -204,8 +205,8 @@ func TestUnchangedTaskRecoveryRequiresCurrentAcceptance(t *testing.T) {
 					task.AcceptedRevision--
 				case "missing candidate":
 					delete(s.Snapshots, task.Snapshot)
-				case "foreign candidate":
-					s.Snapshots[task.Snapshot].Source = "/foreign"
+				case "missing candidate source":
+					s.Snapshots[task.Snapshot].Source = ""
 				case "uncertain apply":
 					s.Applies["uncertain"] = &ApplyRecord{ID: "uncertain", Status: "applying"}
 				}

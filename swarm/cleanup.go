@@ -8,13 +8,17 @@ import (
 
 // Cleanup retires inactive execution contexts after proving their current
 // files contain no unintegrated changes. An empty ID means the whole family.
-// Whole-family cleanup also explicitly retires published Git snapshots;
-// findings, transcript history and published artifact bytes stay in SQLite.
+// Snapshot references and task provenance survive cleanup; Forget ends their
+// restoration lifetime. Findings and transcript history remain in SQLite.
 func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 	r.launchMu.Lock()
 	defer r.launchMu.Unlock()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
+	return r.cleanupLocked(ctx, contextID)
+}
+
+func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
 	if r.HasActive() {
 		return errors.New("stop active members and workflows before cleanup")
 	}
@@ -83,10 +87,44 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 				return err
 			}
 		}
-		if err := r.worktrees.CleanupSnapshotRefs(ctx); err != nil {
-			return err
-		}
-		return r.update(ctx, func(s *State) error { clear(s.Previews); clear(s.Snapshots); return nil })
 	}
 	return nil
+}
+
+// Forget removes idle workspaces and their pinned snapshot references. It
+// preserves history, but restoring a forgotten snapshot requires an explicit
+// new source. Integration obligations must be resolved before refs can go.
+func (r *Runtime) Forget(ctx context.Context) error {
+	r.launchMu.Lock()
+	defer r.launchMu.Unlock()
+	r.parentTools.Lock()
+	defer r.parentTools.Unlock()
+	s, err := r.read(ctx)
+	if err != nil {
+		return err
+	}
+	for _, c := range s.Integrations {
+		if c.Status != "applied" && c.Status != "superseded" {
+			return errors.New("complete or supersede integration candidates before forgetting snapshots")
+		}
+	}
+	for _, t := range s.Tasks {
+		if t.Status == "awaiting_review" && t.Snapshot != "" {
+			return errors.New("resolve submitted task snapshots before forgetting them")
+		}
+	}
+	if err := r.cleanupLocked(ctx, ""); err != nil {
+		return err
+	}
+	if len(s.Snapshots) == 0 {
+		return nil
+	}
+	m, err := r.manager(ctx)
+	if err != nil {
+		return err
+	}
+	if err := m.CleanupSnapshotRefs(ctx); err != nil {
+		return err
+	}
+	return r.update(ctx, func(s *State) error { clear(s.Snapshots); return nil })
 }
