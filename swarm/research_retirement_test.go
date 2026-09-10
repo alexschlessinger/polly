@@ -351,3 +351,66 @@ func TestRetirementWaitsForEveryTaskOfTheMember(t *testing.T) {
 		t.Fatalf("member after every task settled: control=%q contexts=%d", m.Control, len(s.Contexts))
 	}
 }
+
+// Retiring a context inside a running workflow closes that workflow's tool
+// binding for it before the directory goes, so no bound tool outlives it.
+func TestRetirementClosesWorkflowBinding(t *testing.T) {
+	type observed struct {
+		hosts, bound int
+	}
+	skipIfWindows(t)
+	seen := make(chan observed, 1)
+	var calls atomic.Int32
+	var r *Runtime
+	r = runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+		if calls.Add(1) == 2 {
+			r.mu.Lock()
+			o := observed{hosts: len(r.workflowHosts)}
+			for _, host := range r.workflowHosts {
+				host.mu.Lock()
+				o.bound += len(host.bound)
+				host.mu.Unlock()
+			}
+			r.mu.Unlock()
+			seen <- o
+		}
+		return answer("done")
+	}), 1, 2)
+	if _, err := r.config.Registry.LoadToolAuto("bash"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"bound",inputSchema:polly.schema.object({}),async run(){
+const a=await polly.agent({task:"one",readOnly:true});
+await polly.scope({context:a.context}, w=>w.exec("true"));
+const t=await polly.tasks.read(a.task);
+await polly.tasks.review({task:t.id,revision:t.revision,accept:true});
+const b=await polly.agent({task:"two",readOnly:true});
+return {first:a.context};
+}})`, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case o := <-seen:
+		if o.hosts != 1 || o.bound != 0 {
+			t.Fatalf("after retirement: %d hosts, %d bound contexts; want the retired binding closed", o.hosts, o.bound)
+		}
+	default:
+		t.Fatal("second agent never observed")
+	}
+	r.mu.Lock()
+	remaining := len(r.workflowHosts)
+	r.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("workflow host retained after the run: %d", remaining)
+	}
+	s, err := r.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(report.Output)
+	if strings.Contains(string(raw), `"first":""`) || len(s.Contexts) != 1 {
+		t.Fatalf("output %s, contexts %d", raw, len(s.Contexts))
+	}
+}

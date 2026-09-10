@@ -69,6 +69,7 @@ func (h *workflowHost) release(ctx context.Context, id string) (any, error) {
 	c, err := h.context(ctx, id)
 	if err != nil {
 		if h.retiredMemberContext(ctx, id) {
+			h.unbind(id)
 			return map[string]any{"released": id, "retired": true}, nil
 		}
 		return nil, err
@@ -101,12 +102,6 @@ func (h *workflowHost) release(ctx context.Context, id string) (any, error) {
 	}
 	if err := r.retireContext(ctx, c, tree); err != nil {
 		return nil, err
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if cached := h.bound[c.ID]; cached != nil {
-		cached.registry.Close()
-		delete(h.bound, c.ID)
 	}
 	return map[string]any{"released": c.ID}, nil
 }

@@ -109,12 +109,15 @@ type Runtime struct {
 	mu              sync.Mutex
 	active          map[string]*invocation
 	workflowCancels map[string]context.CancelFunc
-	contextLocks    map[string]*sync.Mutex
-	notify          chan struct{}
-	view            StateCache
-	yield           chan struct{}
-	wg              sync.WaitGroup
-	parentTools     sync.Mutex
+	// workflowHosts are the running workflows' tool bindings, so retirement
+	// can close a context's binding before its directory is removed.
+	workflowHosts map[string]*workflowHost
+	contextLocks  map[string]*sync.Mutex
+	notify        chan struct{}
+	view          StateCache
+	yield         chan struct{}
+	wg            sync.WaitGroup
+	parentTools   sync.Mutex
 }
 
 func New(c Config) (*Runtime, error) {
@@ -183,7 +186,7 @@ func New(c Config) (*Runtime, error) {
 		c.Directory = filepath.Join(home, ".pollytool", "worktrees", parent.ViewID())
 	}
 	ctx, cancel := context.WithCancel(c.Parent.Context())
-	r := &Runtime{ID: parent.ViewID(), config: c, parent: parent, ctx: ctx, cancel: cancel, slots: make(chan struct{}, c.MaxConcurrent), active: map[string]*invocation{}, workflowCancels: map[string]context.CancelFunc{}, notify: make(chan struct{}), yield: make(chan struct{})}
+	r := &Runtime{ID: parent.ViewID(), config: c, parent: parent, ctx: ctx, cancel: cancel, slots: make(chan struct{}, c.MaxConcurrent), active: map[string]*invocation{}, workflowCancels: map[string]context.CancelFunc{}, workflowHosts: map[string]*workflowHost{}, notify: make(chan struct{}), yield: make(chan struct{})}
 	r.contextLocks = map[string]*sync.Mutex{}
 	r.gate = tools.NewExecutionGate()
 	c.Registry.SetExecutionGate(r.gate)
@@ -1826,8 +1829,14 @@ func (r *Runtime) launchWorkflow(ctx context.Context, source string, input any, 
 
 func (r *Runtime) runWorkflow(ctx context.Context, controller, source string, input any) (*workflow.Report, error) {
 	host := &workflowHost{runtime: r, controller: controller}
+	r.mu.Lock()
+	r.workflowHosts[controller] = host
+	r.mu.Unlock()
 	runner := workflow.Runner{Host: host, Config: workflow.Config{RunID: controller}}
 	report, err := runner.Run(ctx, source, input)
+	r.mu.Lock()
+	delete(r.workflowHosts, controller)
+	r.mu.Unlock()
 	host.close()
 	persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer stop()
@@ -1847,6 +1856,21 @@ func (r *Runtime) runWorkflow(ctx context.Context, controller, source string, in
 		r.wake(id)
 	}
 	return report, errors.Join(err, finishErr)
+}
+
+// unbindContext closes every running workflow's tool binding for a context.
+// Retirement calls it before the context's directory is removed, so no bound
+// native tool or local MCP server outlives the directory it was granted.
+func (r *Runtime) unbindContext(id string) {
+	r.mu.Lock()
+	hosts := make([]*workflowHost, 0, len(r.workflowHosts))
+	for _, host := range r.workflowHosts {
+		hosts = append(hosts, host)
+	}
+	r.mu.Unlock()
+	for _, host := range hosts {
+		host.unbind(id)
+	}
 }
 
 func (r *Runtime) StartWorkflow(ctx context.Context, source string, input any) (string, error) {

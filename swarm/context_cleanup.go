@@ -82,9 +82,10 @@ func (r *Runtime) markRetiring(ctx context.Context, contexts []*ExecutionContext
 	})
 }
 
-// finishRetirement removes the files of contexts whose retirement is recorded
-// and deletes their records in one transaction. A context whose removal fails
-// stays Retiring for a later cleanup while the others still finish. Callers
+// finishRetirement closes the workflow tool bindings of contexts whose
+// retirement is recorded, removes their files, and deletes their records in
+// one transaction. A context whose removal fails stays Retiring for a later
+// cleanup while the others still finish. Callers hold the context locks and
 // must have constructed the worktree manager when any context has a checkout.
 func (r *Runtime) finishRetirement(ctx context.Context, contexts []*ExecutionContext, trees map[string]string) (removed []string, err error) {
 	// A canceled caller cannot strand cleanup halfway through retirement.
@@ -93,6 +94,9 @@ func (r *Runtime) finishRetirement(ctx context.Context, contexts []*ExecutionCon
 	defer cancel()
 	var errs []error
 	for _, c := range contexts {
+		// Bound tools and MCP servers hold grants on the directory; they go
+		// before the directory can be reused by the next checkout.
+		r.unbindContext(c.ID)
 		if e := r.removeContextFiles(finishCtx, c, trees[c.ID]); e != nil {
 			errs = append(errs, fmt.Errorf("context %s: %w", c.ID, e))
 			continue

@@ -66,6 +66,17 @@ func (h *workflowHost) registry(ctx context.Context, s *State, c *ExecutionConte
 	return registry, nil
 }
 
+// unbind closes the context's bound registry, if any. Callers hold the
+// context lock, which every step using the registry holds as well.
+func (h *workflowHost) unbind(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if cached := h.bound[id]; cached != nil {
+		cached.registry.Close()
+		delete(h.bound, id)
+	}
+}
+
 // close releases every bound registry once no step is still running.
 func (h *workflowHost) close() {
 	h.calls.Wait()
