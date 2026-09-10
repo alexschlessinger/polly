@@ -53,6 +53,11 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 		registry.MarkAlwaysAllowed(name)
 	}
 	register("list_agents", "List this family's agents that can still act or be inspected: execution outcome, task disposition and context IDs. Retired members are omitted and counted in retired; pass all: true to list them. Page using next as offset; conversations remain private.", inspectionParams(schema.Params{"all": schema.Bool("Include retired members, whose copies were removed (default false)")}), nil, func(ctx context.Context, a tools.Args) (any, error) { return r.inspectAgents(ctx, actor, a) })
+	statusDescription := "Requests awaiting your reply, teammates still working, and your remaining iteration allowance."
+	if actor == r.ID {
+		statusDescription = "What needs your decision, in the order settlement checks it, each with its one action, and what is still working; counts are totals and next names the first thing to do. Page long lists with section: \"decisions\" | \"working\" and offset."
+	}
+	register("swarm_status", statusDescription, inspectionParams(schema.Params{"section": schema.S("Page one list, decisions or working; omit for the summary")}), nil, func(ctx context.Context, a tools.Args) (any, error) { return r.status(ctx, actor, a) })
 	register("send_message", "Send addressed teammate information. A request expects a reply; information waits until the next active turn.", schema.Params{"to": schema.S("Stable member ID"), "kind": schema.S("info, request or reply"), "reply_to": schema.S("Request ID for replies"), "text": schema.S("Message")}, []string{"to", "kind", "text"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return r.Send(ctx, actor, a.String("to"), a.String("kind"), a.String("reply_to"), a.String("text"))
 	})
@@ -97,11 +102,14 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 	register("swarm_snapshot", "Capture an immutable candidate from your isolated files. This does not commit to a branch or accept a task.", nil, nil, func(ctx context.Context, a tools.Args) (any, error) { return r.captureMember(ctx, actor) })
 	waitDescription := "Yield after this tool batch until addressed input is available. The runtime releases your execution slot and preserves your iteration budget."
 	if actor == r.ID {
-		waitDescription = "Park until there is something for you to act on: mail addressed to you, a directly spawned child's outcome or task change, or a background workflow reaching a terminal status. Agents inside a running workflow do not wake you; the workflow reports once when it finishes. Use this instead of sleeping, polling or re-reading reports while children or workflows run. When it returns, read messages, then swarm_tasks or workflow_read."
+		waitDescription = "Park until there is something for you to act on: mail addressed to you, a directly spawned child's outcome or task change, or a background workflow reaching a terminal status. Agents inside a running workflow do not wake you; the workflow reports once when it finishes. Use this instead of sleeping, polling or re-reading reports while children or workflows run. It returns the swarm status: act on needs_decision first; no separate status call is needed."
 	}
 	register("swarm_wait", waitDescription, nil, nil, func(ctx context.Context, a tools.Args) (any, error) {
 		if actor == r.ID {
-			return mutationResult("coordination changed; read messages, then swarm_tasks or workflow_read", r.waitParent(ctx))
+			if err := r.waitParent(ctx); err != nil {
+				return nil, err
+			}
+			return r.status(ctx, actor, tools.Args{})
 		}
 		park, ok := ctx.Value(waitKey{}).(func())
 		if !ok {
@@ -321,7 +329,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		}
 		return map[string]any{"id": report.ID, "status": report.Status, "output": report.Output, "steps": len(report.Steps)}, err
 	})
-	register("workflow_start", "Start a background JavaScript workflow and return at once. Then park with swarm_wait; it wakes you once when the workflow reaches a terminal status or when mail addresses you. Do not poll workflow_read while it runs; read the saved report and acknowledge it afterwards.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("workflow_start", "Start a background JavaScript workflow and return at once. Then park with swarm_wait; it returns the swarm status once when the workflow reaches a terminal status or when mail addresses you. Do not poll workflow_read while it runs; act on needs_decision afterwards.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
 		input, err := schema.DecodeJSON(a.String("input"))
 		if err != nil {
 			return nil, err
@@ -330,7 +338,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"id": id, "status": "started", "next": "Park with swarm_wait; it returns when this workflow is terminal or mail addresses you. Then workflow_read({id: \"" + id + "\"}) and workflow_acknowledge({id: \"" + id + "\"})."}, nil
+		return map[string]any{"id": id, "status": "started", "next": "Park with swarm_wait; it returns the swarm status when this workflow is terminal or mail addresses you. Then act on needs_decision: workflow_read({id: \"" + id + "\"}), then workflow_acknowledge({id: \"" + id + "\"})."}, nil
 	})
 	register("workflow_cancel", "Cancel a running workflow and interrupt its active executions; retain finished outcomes and unresolved tasks.", schema.Params{"id": schema.S("Workflow ID")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("canceled", r.CancelWorkflow(a.String("id")))

@@ -66,14 +66,20 @@ func pageInspection(items []any, a tools.Args) (any, error) {
 	if offset < 1 || limit < 1 || limit > 100 {
 		return nil, errors.New("offset must be positive and limit between 1 and 100")
 	}
+	return pageItems(items, offset, limit, inspectionBytes-2048)
+}
+
+// pageItems cuts one page of at most limit items whose indented JSON fits in
+// room bytes; Next is the 1-based offset that continues the listing.
+func pageItems(items []any, offset, limit, room int) (inspectionPage, error) {
 	page := inspectionPage{Items: []any{}, Total: len(items)}
 	bytes := 128 // envelope and continuation reserve
 	for i := min(offset-1, len(items)); i < len(items); i++ {
 		data, err := json.MarshalIndent(items[i], "", "  ")
 		if err != nil {
-			return nil, err
+			return page, err
 		}
-		if len(page.Items) >= limit || bytes+len(data)+256 > inspectionBytes-2048 {
+		if len(page.Items) >= limit || bytes+len(data)+256 > room {
 			page.Next = i + 1
 			break
 		}
