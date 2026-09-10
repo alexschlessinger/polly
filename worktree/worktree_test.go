@@ -636,3 +636,127 @@ func TestCreateProvidesSlotScratchAndCleanupRemovesIt(t *testing.T) {
 		t.Fatalf("reused slot kept an old scratch: %v", err)
 	}
 }
+
+func snapshotRefCount(t *testing.T, root string) int {
+	t.Helper()
+	out := gitTest(t, root, "for-each-ref", "--format=%(refname)", "refs/polly/snapshots/")
+	return len(strings.Fields(string(out)))
+}
+
+// An unchanged copy is recognized without a capture; anything that could hide
+// an edit from status declines, and the full capture still refuses the edit.
+func TestUnchangedCheckSkipsCaptureAndFallsBackOnHiddenEdits(t *testing.T) {
+	m, root := fixture(t)
+	ctx := context.Background()
+	base, err := m.Capture(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := m.Create(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect := func(step string, want bool) {
+		t.Helper()
+		got, err := m.Unchanged(ctx, child)
+		if err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		if got != want {
+			t.Fatalf("%s: unchanged = %v, want %v", step, got, want)
+		}
+	}
+	refuse := func(step string) {
+		t.Helper()
+		if err := m.Cleanup(ctx, child, ""); err == nil || !strings.Contains(err.Error(), "unintegrated") {
+			t.Fatalf("%s: cleanup = %v, want a refusal", step, err)
+		}
+	}
+	expect("fresh checkout", true)
+	file := filepath.Join(child.Path, "a.txt")
+	writeTest(t, file, "one\ntwo\nthree\nfour\n")
+	expect("modified file", false)
+	refuse("modified file")
+	gitTest(t, child.Path, "update-index", "--assume-unchanged", "a.txt")
+	expect("edit hidden by assume-unchanged", false)
+	refuse("edit hidden by assume-unchanged")
+	gitTest(t, child.Path, "update-index", "--no-assume-unchanged", "a.txt")
+	gitTest(t, child.Path, "checkout", "--", "a.txt")
+	expect("restored file", true)
+	writeTest(t, filepath.Join(child.Path, "new.txt"), "x\n")
+	expect("untracked file", false)
+	refuse("untracked file")
+	if err := os.Remove(filepath.Join(child.Path, "new.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	expect("deleted file", false)
+	refuse("deleted file")
+	gitTest(t, child.Path, "checkout", "--", "a.txt")
+	gitTest(t, child.Path, "config", "core.sparseCheckout", "true")
+	expect("sparse checkout setting", false)
+	gitTest(t, child.Path, "config", "--unset", "core.sparseCheckout")
+	expect("setting cleared", true)
+	writeTest(t, filepath.Join(root, "a.txt"), "changed upstream\n")
+	gitTest(t, root, "commit", "-qam", "next")
+	next := strings.TrimSpace(string(gitTest(t, root, "rev-parse", "HEAD")))
+	gitTest(t, child.Path, "checkout", "-q", "--detach", next)
+	expect("head on another tree", false)
+	refuse("head on another tree")
+	gitTest(t, child.Path, "checkout", "-q", "--detach", base.Commit)
+	expect("head restored", true)
+	refs := snapshotRefCount(t, root)
+	if err := m.Cleanup(ctx, child, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshotRefCount(t, root); got != refs {
+		t.Fatalf("cleanup of an unchanged copy captured a snapshot: refs %d -> %d", refs, got)
+	}
+	if _, err := os.Stat(child.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleanup kept the checkout: %v", err)
+	}
+	if _, err := m.Unchanged(ctx, child); err == nil {
+		t.Fatal("unchanged accepted a checkout the runtime no longer owns")
+	}
+}
+
+// A copy whose paths acquired a content filter is refused before status could
+// run that filter with the runtime's grants, exactly as a capture refuses it.
+func TestUnchangedRefusesFilteredPathsBeforeStatus(t *testing.T) {
+	m, root := fixture(t)
+	ctx := context.Background()
+	base, err := m.Capture(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := m.Create(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	script := filepath.Join(dir, "clean.sh")
+	writeTest(t, script, "#!/bin/sh\necho ran >> "+marker+"\ncat\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The repository configuration is shared with the linked checkout; the
+	// member only needs an attributes file to route its paths through it.
+	gitTest(t, root, "config", "filter.marker.clean", script)
+	writeTest(t, filepath.Join(child.Path, ".gitattributes"), "*.txt filter=marker\n")
+	writeTest(t, filepath.Join(child.Path, "a.txt"), "changed\n")
+	if _, err := m.Unchanged(ctx, child); err == nil || !strings.Contains(err.Error(), "content filters") {
+		t.Fatalf("unchanged = %v, want a content filter refusal", err)
+	}
+	if err := m.Cleanup(ctx, child, ""); err == nil || !strings.Contains(err.Error(), "content filters") {
+		t.Fatalf("cleanup = %v, want a content filter refusal", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the clean filter ran during the unchanged check: %v", err)
+	}
+	if _, err := os.Stat(child.Path); err != nil {
+		t.Fatalf("refused cleanup removed the checkout: %v", err)
+	}
+}

@@ -98,7 +98,7 @@ polly.defineWorkflow({
 | `integration.accept(id)` | Accepts that candidate and all contributing task revisions. |
 | `integration.apply(id)` | Durable apply receipt; rechecks authority, acceptance, revisions, supersession, and filesystem preconditions. |
 | `tasks.read(task)` | Current task description, acceptance criteria, revision, status, feedback, and result. |
-| `tasks.review({task,revision,accept,feedback?})` | Accepts a submitted task or requests changes with feedback. |
+| `tasks.review({task,revision,accept,feedback?})` | Accepts a submitted task or requests changes with feedback. Accepting read-only research also retires that member and removes its copy. |
 | `release(context)` | Removes an inactive workflow-owned copy only when unchanged or demonstrably integrated. `work.release()` uses its scoped context. |
 | `parallel(items, callback, {concurrency?, errors?})` | Ordered `{ok, value}` / `{ok, error}` entries. Default concurrency 8, bounded 1–256. |
 | `log(message)` | Awaitable progress event and saved log step. |
@@ -183,13 +183,18 @@ Successful attempts release safe temporary copies and report dirty copies with
 paths and context IDs. Failed attempts retain their copies for inspection.
 `release` uses per-context activity checks, so finished check copies can be released
 while the workflow continues. It preserves candidate snapshots and publications,
-and refuses unintegrated edits. Workflow release and ordinary swarm cleanup share
-the same Go checks and retirement routine. Both save submission provenance and
-record retirement before deleting files, so interrupted cleanup cannot expose a
-reused directory as an old execution context. After retirement is recorded, cleanup
-finishes under a bounded parent-lease context even if its caller is canceled.
-Ordinary cleanup still requires all members and workflows to stop; workflow release
-checks only the selected copy.
+and refuses unintegrated edits. Workflow release, ordinary swarm cleanup and the
+retirement of accepted research share the same Go checks and retirement routine:
+a copy still at its base is recognized by a cheap Git check (HEAD tree, index
+flags, status) and anything else is captured in full. All of them save submission
+provenance and record every retirement in one transaction before deleting files,
+so interrupted cleanup cannot expose a reused directory as an old execution
+context, then delete the records in one more transaction once the files are gone.
+After retirement is recorded, cleanup finishes under a bounded parent-lease
+context even if its caller is canceled. Ordinary cleanup still requires all
+members and workflows to stop; workflow release and research retirement check
+only the selected copies. Releasing a copy the runtime already retired reports
+`{released, retired: true}`.
 
 Authority is inherited from the parent host, never supplied in JavaScript
 arguments. Generic `tool` calls remain confined to isolated contexts and cannot
@@ -285,9 +290,11 @@ Failed and interrupted reports block settlement until the parent inspects and
 acknowledges them with `workflow_acknowledge` or `/swarm acknowledge-workflow ID`;
 for those reports acknowledgment retains the report and does not accept tasks or
 discard changes. Acknowledging a completed report accepts, in the same
-transaction, the read-only research its script consumed without reviewing and
-reports the count; results the script already reviewed and editing candidates
-with snapshots are untouched. A completed report blocks settlement only while it
+transaction, the read-only research its script consumed without reviewing,
+then retires those members and removes their copies, and reports both counts
+(`acknowledged; accepted 4 research results; retired 4 members`); results the
+script already reviewed and editing candidates with snapshots are untouched.
+A completed report blocks settlement only while it
 still owns such research, and settlement names that step first, before per-task
 blockers; a task blocker reports how many tasks are open.
 Workflows belong to the same current run even when they never start an agent.
@@ -458,11 +465,18 @@ does not replay or resume JavaScript; inspect the workflow report and explicitly
 arrange any remaining workflow steps. `/swarm grant N` only extends the separate
 logical-start budget and cannot replenish an agent's model-call allowance.
 A resumed member reads `active · queued`, then `active`; `/swarm stop ID`
-reads `paused · stopped`, and cleanup `idle · retired`.
+reads `paused · stopped`, and a retired member `idle · retired`. Accepted
+read-only research retires itself, through `swarm_review`, a script's
+`tasks.review`, `workflow_acknowledge` or `/swarm acknowledge-workflow`, so
+`idle · retired` is the normal end of a researcher; cleanup retires editing copies.
+A researcher retires only once every task it owns is accepted or canceled: one
+that still holds an unreviewed or sent-back submission stays resumable.
 
-Filesystem worktrees and Git references require explicit cleanup; parent TTL
+Editing worktrees and Git references require explicit cleanup; parent TTL
 expiry does not delete source changes. Cleanup refuses unintegrated current
-edits. Whole-family cleanup also retires published Git snapshots, while SQLite
+edits, and so does research retirement: a read-only copy changed outside the
+sandbox stays with its member until cleanup names it. Whole-family cleanup also
+retires published Git snapshots, while SQLite
 findings and published artifact bytes follow parent retention. Retired members
 must be replaced with new members rather than executed in a missing directory.
 
@@ -490,7 +504,8 @@ criteria and feedback, or `section: "result"` for the result (including retained
 partial results). `list_agents` returns `items` with caller `self` and `parent`
 identity, each item's `state` (lifecycle, busy, raw outcome, control, task
 disposition, deferral, attention, display), context IDs, and the parent's own
-`parentState`. Listings use
+`parentState`; retired members are omitted and counted in `retired`, and
+`all: true` lists them. Listings use
 1-based `offset`, default `limit: 50`, maximum 100, and a 16 KiB response budget;
 pass `next` back as `offset`. Oversized selections have bounded previews and
 complete pretty-printed text artifacts. Use the receipt's `read_artifact` ID
@@ -511,8 +526,11 @@ before branching on findings or allowing parallel failures to abort the scope.
 Research the script consumed without reviewing is accepted when the parent
 acknowledges the completed workflow: `workflow_acknowledge({id})` on a
 `completed` report accepts every read-only, snapshot-less task it left awaiting
-review and returns `acknowledged; accepted N research results`. Use
-`swarm_review` on individual results first when a finding needs changes.
+review and returns `acknowledged; accepted N research results; retired N
+members`. Acceptance retires each researcher and removes its copy, whether it
+happens here, through `swarm_review`, or through a script's `tasks.review`;
+retired members are replaced, not resumed. Use `swarm_review` on individual
+results first when a finding needs changes.
 
 After reporting a failed, canceled, or interrupted workflow, the parent can use
 `workflow_acknowledge({id, defer: true, note: "reason for retaining work"})`.

@@ -608,7 +608,8 @@ people. `waiting` is recorded only when a member parks after its committed tool
 batch; a wake re-queues the same execution. The parent shows `waiting` only while
 every remaining operation of its turn is a coordination wait (its own
 `swarm_wait`, a blocking spawn, a workflow's agent await, or settlement);
-concurrent model or tool work keeps it `active`. The parent's `swarm_wait` ends
+concurrent model or tool work keeps it `active`, including a workflow step
+that runs a tool while a parallel step awaits an agent. The parent's `swarm_wait` ends
 on mail addressed to the parent, on a change to a task or member no running
 workflow controls, on a workflow status or acknowledgement change, or when
 nothing is active; workflow-internal progress is deferred to the workflow's
@@ -630,7 +631,10 @@ paths, and worktree directory are configurable through `swarm.Config`.
 Every member context records a private scratch directory
 (`swarm.ExecutionContext.Scratch`): a read-only member's writable path besides
 host temp, exported to its processes as `TMPDIR`, `TMP`, `TEMP`, `GOTMPDIR`, and
-`GOCACHE` (with `GOPROXY=off`).
+`GOCACHE` (with `GOPROXY=off`). A checkout's scratch sits inside its slot; a
+live-tree context claims one of the reserved `scratch/live-NNNN` slots in the
+runtime directory, bounded by `MaxWorktrees` like checkout slots, and every
+other slot is denied by name whether or not it exists yet.
 Use repository-relative paths in `Task` briefs. `Source` selects snapshot input,
 not the member's working directory: tools and ordinary Git inspection run in
 the assigned checkout. Parent files and Git writes stay denied. On macOS the
@@ -688,18 +692,27 @@ a new logical turn on resume, spending a run start, and launch refusals are
 returned synchronously; a grant lands only when the launch it funds does.
 `StopMember` records the `stopped` control (`paused · stopped`), is idempotent,
 and is refused for a retired member. `Cleanup` retires members (`idle ·
-retired`); both keep the task disposition as detail, and a resume clears a stop.
+retired`), and `RetireAcceptedResearch` retires every read-only member whose
+task is done, removing its copy; both keep the task disposition as detail, and a
+resume clears a stop.
 
 The runtime exposes `State`, `MemberState`, `ParentState`, `RunParent`,
 `ParentTurnSettled`, `CreateTask`, `Claim`, `Submit`, `Review`,
 `UpdateTask`, `BlockTask`, `CancelTask`, `Send`, `Publish`, `Resume`, `ResumeWithIterations`, `StopMember`,
-`Cleanup`, `Settle`, and lifecycle `OnEvent` callbacks. The Go host is trusted;
+`Cleanup`, `RetireAcceptedResearch`, `Settle`, and lifecycle `OnEvent` callbacks. The Go host is trusted;
 model-facing authority is bound in registered closures rather than supplied as a
 caller ID. Task revisions and atomic transactions reject stale claims/submissions.
 `Review` completes an accepted unchanged snapshot by comparing its immutable tree
 with the task's original starting snapshot; changed candidates still require
 integration. `Settle` also completes previously accepted unchanged submissions,
-using retained provenance after context cleanup. `TaskStatus` provides display
+using retained provenance after context cleanup. `Review` and
+`AcknowledgeWorkflow` are transactions and never retire anything; the
+`swarm_review` and `workflow_acknowledge` tools, a script's `tasks.review`, and
+`/swarm acknowledge-workflow` call `RetireAcceptedResearch` after a successful
+acceptance. Retirement verifies an unchanged copy with
+`worktree.Manager.Unchanged` (HEAD tree, index flags, status) before falling
+back to a full capture, records every retirement in one transaction before any
+file changes, and deletes the records in one more. `TaskStatus` provides display
 text (an accepted, unintegrated submission reads `integration pending`) without
 changing machine statuses; the `swarm_tasks` tool includes this as
 `displayStatus`, and `swarm_review` returns status plus any required next action.
@@ -736,10 +749,13 @@ parent handling; for those reports it never accepts tasks or discards files.
 `AcknowledgeWorkflow(ctx, id) (accepted int, err error)` on a completed report
 also accepts the read-only research the script consumed and left unreviewed,
 inside the acknowledgment transaction, and returns how many results it accepted.
+The `workflow_acknowledge` tool and `/swarm acknowledge-workflow` then run
+`RetireAcceptedResearch` and report both counts.
 Parent JavaScript uses `polly.integration.prepare/read/revise/refresh/accept/apply`
 and `polly.tasks.read/review` over those same operations. `polly.release(context)`
 removes only an inactive attempt-owned context whose contents are unchanged or
-proven integrated, retaining snapshots and publications. A requested change does
+proven integrated, retaining snapshots and publications; releasing the context of
+a member the runtime already retired returns `{released, retired: true}`. A requested change does
 not wake a reserved member; the script explicitly continues its session. Workflow
 termination waits for host calls and saves late apply receipts before releasing
 registries or reservations. Children and generic context tools gain no parent API.
@@ -957,7 +973,7 @@ for event := range client.ChatCompletionStream(ctx, req, processor) {
 failed/canceled/interrupted workflow and defers its exact unresolved task
 revisions. `AcknowledgeWorkflow` on a terminal failure remains acknowledgment
 only; on a completed report it also accepts the consumed read-only research and
-returns the count. Optional
+returns the count, and the tools then retire those researchers. Optional
 `Task.Deferral` and host-authored `Execution.Workflow` metadata persist without
 a schema migration. `TaskDeferred`, `DeferredCount`, `MemberState`, and
 `ParentState` expose read-only derived disposition; they do not accept or repair
@@ -967,7 +983,8 @@ accounting. Accepted editing work still requires separate integration.
 
 Model-facing `workflow_read`, `swarm_tasks`, and `list_agents` use bounded,
 paginated summaries and explicit detail selection; `list_agents` items carry
-`state` (an `AgentPresentation`) and the page carries `parentState`. Complete oversized values
+`state` (an `AgentPresentation`) and the page carries `parentState` and a
+`retired` count; retired members are listed only with `all: true`. Complete oversized values
 are text artifacts readable through existing artifact tools. Workflow JavaScript
 and `AgentResult.Value` retain full values and their existing return shapes.
 `ToolOutput.Media` with valid UTF-8 `text/*` or `application/json` content is

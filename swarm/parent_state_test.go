@@ -291,3 +291,104 @@ func TestParentNudgeLeadsWithBlockerAndAsksForTheAnswer(t *testing.T) {
 		t.Fatalf("unchanged coordination did not end the turn: %v", err)
 	}
 }
+
+// Work inside a call that also awaits an agent keeps the call active: a
+// workflow running a tool in parallel with an agent await is not waiting.
+func TestParentTrackerWorkInsideWaitingCallKeepsActive(t *testing.T) {
+	tracker := &parentTracker{}
+	turn, err := tracker.begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.callStart(turn, "wf")
+	waiting := func() bool {
+		_, waiting, _, _ := tracker.snapshot()
+		return waiting
+	}
+	endWait := tracker.beginWait("wf")
+	if !waiting() {
+		t.Fatal("a call inside one await is not waiting")
+	}
+	endWork := tracker.beginWork("wf")
+	if waiting() {
+		t.Fatal("parallel work inside the awaiting call reported as waiting")
+	}
+	endWork()
+	if !waiting() {
+		t.Fatal("finished work left the awaiting call active")
+	}
+	endWait()
+	if waiting() {
+		t.Fatal("a call with no await is waiting")
+	}
+	if end := tracker.beginWork("unknown"); end == nil {
+		t.Fatal("work outside a live call returned no end")
+	}
+	tracker.callEnd(turn, "wf")
+}
+
+// contextIndependentHold is an in-process tool that bound contexts inherit.
+type contextIndependentHold struct{ *tools.Func }
+
+func (contextIndependentHold) ContextIndependent() bool { return true }
+
+// A foreground workflow that runs a tool step while another step awaits an
+// agent keeps the parent active; it waits once only the await remains.
+func TestParentStateActiveDuringParallelWorkflowTool(t *testing.T) {
+	memberRelease, holdStarted, holdRelease := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	member := modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
+		select {
+		case <-memberRelease:
+		case <-ctx.Done():
+		}
+		return answer("member done")
+	})
+	r := runtimeTest(t, member, 2, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	r.config.Registry.Register(contextIndependentHold{&tools.Func{Name: "hold", Desc: "hold", Run: func(ctx context.Context, _ tools.Args) (string, error) {
+		close(holdStarted)
+		select {
+		case <-holdRelease:
+		case <-ctx.Done():
+		}
+		return "held", nil
+	}}})
+	source := `polly.defineWorkflow({name:"parallel",inputSchema:polly.schema.object({}),async run(){
+const context=await polly.context({readOnly:true});
+const [a,b]=await Promise.all([polly.agent({task:"long work",readOnly:true}), polly.tool("hold",{},{context})]);
+return b.text;}})`
+	var calls atomic.Int32
+	parent := modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
+		if calls.Add(1) == 1 {
+			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "run", Name: "workflow_run", Arguments: tools.Result(map[string]any{"source": source, "input": "{}"})}}}
+		}
+		return answer("done")
+	})
+	agent := parentAgent(t, r, parent, 4)
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.RunParent(ctx, agent, &llm.CompletionRequest{}, nil, nil)
+		done <- err
+	}()
+	select {
+	case <-holdStarted:
+	case <-ctx.Done():
+		t.Fatal("hold never started")
+	}
+	awaitState(t, r, ctx, func(s *State) bool { return runningExecutions(s) == 1 })
+	if p := r.ParentState(nil); p.Lifecycle != LifecycleActive {
+		t.Fatalf("parent with a workflow tool running beside an agent await: %+v", p)
+	}
+	close(holdRelease)
+	awaitParent(t, r, ctx, LifecycleWaiting)
+	close(memberRelease)
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("parent turn never ended")
+	}
+	if p := r.ParentState(nil); p.Busy {
+		t.Fatalf("after the turn: %+v", p)
+	}
+}

@@ -49,6 +49,13 @@ func (r *Runtime) taskOperation(ctx context.Context, args map[string]any) (any, 
 		if err := r.Review(ctx, req.Task, req.Revision, req.Accept, req.Feedback); err != nil {
 			return nil, err
 		}
+		if req.Accept {
+			// Acceptance stands even when a copy cannot be removed now; the
+			// next sweep or an explicit cleanup finishes it.
+			if _, err := r.RetireAcceptedResearch(ctx); err != nil {
+				r.event("retirement_incomplete", "", err.Error())
+			}
+		}
 		return r.ReadTask(ctx, req.Task)
 	default:
 		return nil, fail("invalid_args", "unknown task operation")
@@ -61,6 +68,10 @@ func (h *workflowHost) release(ctx context.Context, id string) (any, error) {
 	defer r.launchMu.Unlock()
 	c, err := h.context(ctx, id)
 	if err != nil {
+		if h.retiredMemberContext(ctx, id) {
+			h.unbind(id)
+			return map[string]any{"released": id, "retired": true}, nil
+		}
 		return nil, err
 	}
 	r.mu.Lock()
@@ -92,11 +103,21 @@ func (h *workflowHost) release(ctx context.Context, id string) (any, error) {
 	if err := r.retireContext(ctx, c, tree); err != nil {
 		return nil, err
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if cached := h.bound[c.ID]; cached != nil {
-		cached.registry.Close()
-		delete(h.bound, c.ID)
-	}
 	return map[string]any{"released": c.ID}, nil
+}
+
+// retiredMemberContext reports whether id named the context of a member the
+// runtime has already retired, so a script releasing a copy after accepting
+// its research sees a release rather than an unknown context.
+func (h *workflowHost) retiredMemberContext(ctx context.Context, id string) bool {
+	s, err := h.runtime.read(ctx)
+	if err != nil || id == "" || s.Contexts[id] != nil {
+		return false
+	}
+	for _, m := range s.Members {
+		if m.Context == id && m.Control == MemberControlRetired {
+			return true
+		}
+	}
+	return false
 }

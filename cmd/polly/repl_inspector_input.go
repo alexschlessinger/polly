@@ -346,6 +346,10 @@ func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
 func (r *managedREPL) inspectViewAt(m *replModel, parent viewTarget, point image.Point) bool {
 	for _, link := range m.agentLinkPlacements {
 		if point.Y == link.Y && point.X >= link.X && point.X < link.X+link.Cols {
+			if link.workflow != "" {
+				m.toggleSettledAgents(link.recordID, link.workflow)
+				return true
+			}
 			return r.inspectAgent(m, parent, link)
 		}
 	}

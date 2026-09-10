@@ -46,9 +46,13 @@ expand the member's inherited tool capabilities.
 Typed `/spawn`, model delegation, and scripted `polly.agent` all enter this same
 runtime. A TUI tab does not grant a child the parent's bound tools or filesystem
 access. `/spawn --read-only` uses the same research policy as `read_only:true`.
-Every member context owns a private scratch directory beside its checkout
-(`$TMPDIR`, also `GOCACHE` and `GOTMPDIR`); a read-only member writes there and
-in host temp, nowhere else, and siblings can neither read nor write it.
+Every member context owns a private scratch directory (`$TMPDIR`, also
+`GOCACHE` and `GOTMPDIR`): beside its checkout inside the slot, or, for a member
+observing the live tree, one of the reserved `scratch/live-NNNN` slots in the
+runtime directory. A read-only member writes there and in host temp, nowhere
+else, and siblings can neither read nor write it: like checkout slots, scratch
+slots are denied by name before they exist, so a sibling started later is
+already covered.
 
 Member policies deny parent/sibling files, session databases, and every write to
 common Git metadata and the linked worktree's `.git` entry. The default 512
@@ -110,9 +114,12 @@ declaration in the server configuration before being exposed to a member.
 Parent workflow integration uses the host's existing parent authority. Scripts
 cannot provide an identity or broaden filesystem/tool policy, and generic
 `polly.tool` remains bound to isolated contexts. `polly.release` verifies ownership,
-per-context inactivity, and unchanged/integrated contents before cleanup. The
-content checks and durable retirement routine are shared with ordinary cleanup;
-snapshots and publications remain pinned when releasing a context. Check-copy edits require explicit adoption through
+per-context inactivity, and unchanged/integrated contents before cleanup. An
+unchanged copy is recognized with a cheap Git check (HEAD tree, no
+assume-unchanged or skip-worktree flags, empty status); any other copy is captured
+in full before removal. The content checks and durable retirement routine are
+shared with ordinary cleanup and with the retirement of accepted read-only
+research; snapshots and publications remain pinned when releasing a context. Check-copy edits require explicit adoption through
 an editing task before integration. Tool metadata and peer messages do not grant
 additional user authorization.
 

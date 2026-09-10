@@ -94,7 +94,7 @@ func TestWorkflowAcknowledgeToolReportsAcceptedResearch(t *testing.T) {
 	if !strings.Contains(tool.GetSchema().Description(), "accepts the read-only research") {
 		t.Fatalf("description: %s", tool.GetSchema().Description())
 	}
-	if out, err := tool.Execute(ctx, map[string]any{"id": report.ID}); err != nil || out != `"acknowledged; accepted 1 research result"` {
+	if out, err := tool.Execute(ctx, map[string]any{"id": report.ID}); err != nil || out != `"acknowledged; accepted 1 research result; retired 1 member"` {
 		t.Fatalf("first acknowledge = %q, %v", out, err)
 	}
 	if out, err := tool.Execute(ctx, map[string]any{"id": report.ID}); err != nil || out != `"acknowledged"` {

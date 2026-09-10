@@ -39,6 +39,20 @@ type Checkout struct {
 // Previews get one too; it is removed with the slot.
 func (c Checkout) ScratchDir() string { return filepath.Join(filepath.Dir(c.Path), "scratch") }
 
+// SlotPaths names the checkout slots a manager over directory reserves, in
+// order, so policies can deny them before any manager or checkout exists.
+// A non-positive max selects the default of 512.
+func SlotPaths(directory string, max int) []string {
+	if max <= 0 {
+		max = 512
+	}
+	slots := make([]string, max)
+	for n := range slots {
+		slots[n] = filepath.Join(directory, fmt.Sprintf("slot-%04d", n))
+	}
+	return slots
+}
+
 type Preview struct {
 	ID        string   `json:"id"`
 	Parent    Snapshot `json:"parent"`
@@ -198,15 +212,12 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 			return nil, err
 		}
 	}
-	if m.MaxWorktrees <= 0 {
-		m.MaxWorktrees = 512
-	}
-	for n := 0; n < m.MaxWorktrees; n++ {
-		slot := filepath.Join(c.Directory, fmt.Sprintf("slot-%04d", n))
+	m.Slots = SlotPaths(c.Directory, m.MaxWorktrees)
+	m.MaxWorktrees = len(m.Slots)
+	for _, slot := range m.Slots {
 		if err := os.MkdirAll(slot, 0700); err != nil {
 			return nil, err
 		}
-		m.Slots = append(m.Slots, slot)
 		m.reclaimStale(ctx, slot)
 		if _, err := os.Stat(filepath.Join(slot, "owner")); errors.Is(err, os.ErrNotExist) {
 			os.RemoveAll(filepath.Join(slot, "scratch"))
@@ -321,6 +332,97 @@ func (m *Manager) Capture(ctx context.Context, source string) (Snapshot, error) 
 		return Snapshot{}, fmt.Errorf("capture snapshot from %q: %w", source, err)
 	}
 	return snapshot, nil
+}
+
+// Unchanged reports whether a runtime checkout still holds exactly its base
+// tree, using a few cheap Git queries instead of a full capture: HEAD must
+// point at the base tree, the settings and index flags that let edits hide
+// from status must be absent, and status must be empty apart from private
+// paths. False never means changed; callers fall back to a capture, which
+// decides.
+func (m *Manager) Unchanged(ctx context.Context, c Checkout) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.owned(c); err != nil {
+		return false, err
+	}
+	return m.unchanged(ctx, c)
+}
+
+// owned checks the runtime's claim on a checkout slot.
+func (m *Manager) owned(c Checkout) error {
+	owner, readErr := os.ReadFile(filepath.Join(filepath.Dir(c.Path), "owner"))
+	if c.ID == "" || !sandbox.PathWithin(c.Path, m.Directory) || readErr != nil || string(owner) != c.ID {
+		return errors.New("not a runtime-owned worktree")
+	}
+	return nil
+}
+
+func (m *Manager) unchanged(ctx context.Context, c Checkout) (bool, error) {
+	source, err := filepath.EvalSymlinks(c.Path)
+	if err != nil {
+		return false, err
+	}
+	head, err := m.git(ctx, source, nil, nil, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(string(head)) != c.Base.Tree {
+		return false, nil
+	}
+	for _, key := range []string{"core.sparseCheckout", "core.splitIndex"} {
+		out, _ := m.git(ctx, source, nil, nil, "config", "--bool", key)
+		if strings.TrimSpace(string(out)) == "true" {
+			return false, nil
+		}
+	}
+	// capture clears assume-unchanged and skip-worktree bits before adding;
+	// status honors them, so any entry that is not plainly cached needs the
+	// full capture.
+	flags, err := m.git(ctx, source, nil, nil, "ls-files", "-v", "-z")
+	if err != nil {
+		return false, err
+	}
+	var names []byte
+	for _, entry := range bytes.Split(flags, []byte{0}) {
+		if len(entry) == 0 {
+			continue
+		}
+		if entry[0] != 'H' || len(entry) < 3 {
+			return false, nil
+		}
+		if name := entry[2:]; !m.privateSourcePath(string(name)) {
+			names = append(append(names, name...), 0)
+		}
+	}
+	untracked, err := m.git(ctx, source, nil, nil, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return false, err
+	}
+	for _, name := range bytes.Split(untracked, []byte{0}) {
+		if len(name) > 0 && !m.privateSourcePath(string(name)) {
+			names = append(append(names, name...), 0)
+		}
+	}
+	// status re-hashes modified files through their clean filter, which
+	// would run with the runtime's grants; capture refuses filtered paths
+	// before touching content, and so does this shortcut.
+	if err := m.checkFilters(ctx, source, names); err != nil {
+		return false, err
+	}
+	status, err := m.git(ctx, source, nil, nil, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range bytes.Split(status, []byte{0}) {
+		if len(entry) == 0 {
+			continue
+		}
+		if len(entry) < 4 || !m.privateSourcePath(string(entry[3:])) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func seedIndex(source, destination string) error {
@@ -753,30 +855,40 @@ func (m *Manager) Apply(ctx context.Context, p Preview) error {
 
 // Cleanup removes a runtime checkout only when its current tree still matches
 // the parent's accepted cleanup evidence. An empty expectedTree means its base.
+// A copy still at its base is recognized by the cheap unchanged check; every
+// other case is captured in full before anything is removed.
 func (m *Manager) Cleanup(ctx context.Context, c Checkout, expectedTree string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	owner, readErr := os.ReadFile(filepath.Join(filepath.Dir(c.Path), "owner"))
-	if c.ID == "" || !sandbox.PathWithin(c.Path, m.Directory) || readErr != nil || string(owner) != c.ID {
-		return errors.New("not a runtime-owned worktree")
-	}
-	current, err := m.capture(ctx, c.Path)
-	if err != nil {
+	if err := m.owned(c); err != nil {
 		return err
 	}
 	if expectedTree == "" {
 		expectedTree = c.Base.Tree
 	}
-	if current.Tree != expectedTree {
-		return errors.New("cleanup refuses unintegrated changes")
+	verified := false
+	if expectedTree == c.Base.Tree {
+		var err error
+		if verified, err = m.unchanged(ctx, c); err != nil {
+			return err
+		}
 	}
-	if _, err = m.git(ctx, m.Root, nil, nil, "worktree", "remove", "--force", c.Path); err != nil {
+	if !verified {
+		current, err := m.capture(ctx, c.Path)
+		if err != nil {
+			return err
+		}
+		if current.Tree != expectedTree {
+			return errors.New("cleanup refuses unintegrated changes")
+		}
+	}
+	if _, err := m.git(ctx, m.Root, nil, nil, "worktree", "remove", "--force", c.Path); err != nil {
 		return err
 	}
-	if err = os.RemoveAll(c.ScratchDir()); err != nil {
+	if err := os.RemoveAll(c.ScratchDir()); err != nil {
 		return err
 	}
-	if err = os.Remove(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {
+	if err := os.Remove(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {
 		return err
 	}
 	return os.Remove(filepath.Join(m.Directory, c.ID+".json"))

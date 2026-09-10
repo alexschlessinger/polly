@@ -145,10 +145,13 @@ type replModel struct {
 	// per kind, in absolute screen cells, for mouse hit-testing.
 	disclosurePlacements [activityKindCount][]disclosurePlacement
 	agentLinkPlacements  []agentLink
-	inspectionLinks      []inspectionLink
-	turnDock             turnDockState
-	turnTrailers         transcriptRegistry[*turnTrailerRecord]
-	modal                *replModal
+	// settledAgentsShown lists the workflows whose settled members are
+	// expanded under their heading; the default folds them into a count.
+	settledAgentsShown map[string]bool
+	inspectionLinks    []inspectionLink
+	turnDock           turnDockState
+	turnTrailers       transcriptRegistry[*turnTrailerRecord]
+	modal              *replModal
 
 	ed              lineEditor
 	busy            bool

@@ -12,6 +12,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // scratchRuntime builds a test runtime whose root is a Git repository when
@@ -89,8 +90,8 @@ func TestContextScratchLifecycle(t *testing.T) {
 				if c.Checkout == nil || c.Scratch != c.Checkout.ScratchDir() {
 					t.Fatalf("checkout scratch = %s, checkout %+v", c.Scratch, c.Checkout)
 				}
-			} else if filepath.Dir(c.Scratch) != canonicalPath(t, r.config.Directory) || filepath.Base(c.Scratch) != "scratch-"+c.ID {
-				t.Fatalf("live scratch = %s, want scratch-%s under %s", c.Scratch, c.ID, r.config.Directory)
+			} else if filepath.Dir(c.Scratch) != filepath.Join(canonicalPath(t, r.config.Directory), "scratch") || !strings.HasPrefix(filepath.Base(c.Scratch), "live-") {
+				t.Fatalf("live scratch = %s, want a reserved live slot under %s/scratch", c.Scratch, r.config.Directory)
 			}
 			ec, err := r.contextPolicy(ctx, s, c)
 			if err != nil {
@@ -98,6 +99,15 @@ func TestContextScratchLifecycle(t *testing.T) {
 			}
 			if !ec.ReadOnly || ec.Sandbox.DenyWrite || ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{c.Scratch}) || ec.Sandbox.Env["TMPDIR"] != c.Scratch || !slices.Contains(ec.Sandbox.DenyWritePaths, canonicalPath(t, c.Root)) {
 				t.Fatalf("member policy = %+v", ec.Sandbox)
+			}
+			// Slots of the other kind are denied by name before they exist.
+			directory := canonicalPath(t, r.config.Directory)
+			foreign := filepath.Join(directory, "slot-0007")
+			if git {
+				foreign = filepath.Join(directory, "scratch")
+			}
+			if err := sandbox.ReadAllowed(ec.Sandbox, filepath.Join(foreign, "notes")); err == nil {
+				t.Fatalf("%s readable from a %s context", foreign, map[bool]string{true: "checkout", false: "live"}[git])
 			}
 			if err := r.Cleanup(ctx, c.ID); err != nil {
 				t.Fatal(err)
@@ -112,21 +122,46 @@ func TestContextScratchLifecycle(t *testing.T) {
 	}
 }
 
+// A live member's policy, bound when it starts, already denies the scratch
+// of a sibling that starts later: scratch slots are reserved by name.
 func TestContextPolicyDeniesSiblingScratch(t *testing.T) {
 	r := scratchRuntime(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), false)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	for _, task := range []string{"first look", "second look"} {
-		if _, err := r.Agent(ctx, "", AgentRequest{Task: task, ReadOnly: true, Tools: []string{}}); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := r.Agent(ctx, "", AgentRequest{Task: "first look", ReadOnly: true, Tools: []string{}}); err != nil {
+		t.Fatal(err)
 	}
 	s, err := r.State(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	first := onlyContext(t, s)
+	early, err := r.contextPolicy(ctx, s, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Agent(ctx, "", AgentRequest{Task: "second look", ReadOnly: true, Tools: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if s, err = r.State(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if len(s.Contexts) != 2 {
 		t.Fatalf("contexts = %d, want 2", len(s.Contexts))
+	}
+	for _, c := range s.Contexts {
+		if c.ID == first.ID {
+			continue
+		}
+		if err := sandbox.ReadAllowed(early.Sandbox, filepath.Join(c.Scratch, "notes")); err == nil {
+			t.Fatalf("policy bound before %s started still reads its scratch %s", c.ID, c.Scratch)
+		}
+		if err := sandbox.WriteAllowed(early.Sandbox, filepath.Join(c.Scratch, "notes")); err == nil {
+			t.Fatalf("policy bound before %s started still writes its scratch %s", c.ID, c.Scratch)
+		}
+	}
+	if err := sandbox.WriteAllowed(early.Sandbox, filepath.Join(first.Scratch, "notes")); err != nil {
+		t.Fatalf("member cannot write its own scratch: %v", err)
 	}
 	for _, c := range s.Contexts {
 		ec, err := r.contextPolicy(ctx, s, c)
@@ -156,7 +191,7 @@ func TestPrepareRemovesOrphanLiveScratch(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := onlyContext(t, s).Scratch
-	orphan := filepath.Join(r.config.Directory, "scratch-orphan")
+	orphan := filepath.Join(r.config.Directory, "scratch", "live-0009")
 	if err := os.MkdirAll(orphan, 0o700); err != nil {
 		t.Fatal(err)
 	}

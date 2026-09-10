@@ -306,6 +306,11 @@ func (r *ToolRegistry) newSchemaSandbox() (sandbox.Sandbox, error) {
 	cfg.DenyPaths = append([]string(nil), baseCfg.DenyPaths...)
 	cfg.DenyWritePaths = append([]string(nil), baseCfg.DenyWritePaths...)
 	cfg.DenyWrite = baseCfg.DenyWrite
+	if cfg.DenyHostTemp = baseCfg.DenyHostTemp; cfg.DenyHostTemp {
+		// The default policy names the host temp directory explicitly; a
+		// withheld temp grant must not return through it.
+		cfg.WritablePaths = nil
+	}
 	return r.NewSandboxDirect(cfg)
 }
 

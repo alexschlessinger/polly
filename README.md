@@ -66,8 +66,8 @@ Parent navigation is a click on the divider link, or the inspector's parent
 action. Settings are per tab. Hidden tabs keep running, queue input, post one
 notice on completion. In the **Ctrl-G** picker, attention-needed and running
 agents precede expandable **History** groups. Finished workflow attempts show
-their outcomes and deferred-item counts; retained work stays inspectable until
-explicit cleanup. Pending approval: **Ctrl-G**, select, **Review**. Ctrl-C
+their outcomes and deferred-item counts; accepted research retires itself, and
+editing copies stay inspectable until explicit cleanup. Pending approval: **Ctrl-G**, select, **Review**. Ctrl-C
 interrupts the root turn; a second at quit cancels the rest. Sessions are
 leased: another polly's show `in use`; an agent whose parent is leased
 elsewhere opens with a read-only parent snapshot.
@@ -132,7 +132,10 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 Tool calls: a collapsed `▸ N tools` row per batch; click for details,
 click a detail for the inspector. `--thinking`: collapsed `▸ thought` row with
 live timer, `Ctrl-O` for the tail. Both reopen after reload. Interrupted turns
-keep every completed iteration and tool result.
+keep every completed iteration and tool result. Agents: a collapsed `▸ N agents`
+row per batch; expanded, a workflow lists only members that are busy, paused or
+need review, and its heading counts the finished ones
+(`Workflow · judges · ▸ 30 done`); click the count to list them.
 
 ### Images
 

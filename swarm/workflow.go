@@ -11,6 +11,7 @@ import (
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/alexschlessinger/pollytool/workflow"
@@ -66,6 +67,17 @@ func (h *workflowHost) registry(ctx context.Context, s *State, c *ExecutionConte
 	return registry, nil
 }
 
+// unbind closes the context's bound registry, if any. Callers hold the
+// context lock, which every step using the registry holds as well.
+func (h *workflowHost) unbind(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if cached := h.bound[id]; cached != nil {
+		cached.registry.Close()
+		delete(h.bound, id)
+	}
+}
+
 // close releases every bound registry once no step is still running.
 func (h *workflowHost) close() {
 	h.calls.Wait()
@@ -88,6 +100,12 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 	defer h.calls.Done()
 	r := h.runtime
 	a := tools.Args(op.Args)
+	if op.Kind != "agent" {
+		// Every operation but an agent await is work of the parent's
+		// workflow call; a parallel step running a tool keeps it active.
+		end := r.parentTurn.beginWork(subagent.CallID(ctx))
+		defer end()
+	}
 	switch op.Kind {
 	case "integration":
 		return r.integrationOperation(ctx, op.Args)
