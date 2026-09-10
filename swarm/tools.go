@@ -166,7 +166,7 @@ func coordinationEntries(s *State) (entries map[string]any, controlled map[strin
 			Execution  string
 			Generation int
 		}{p.Lifecycle, p.Control, m.Execution, generation}
-		controlled["member:"+id] = workflowControlled(s, s.Executions[m.Execution])
+		controlled["member:"+id] = memberControlled(s, m)
 	}
 	for id, w := range s.Workflows {
 		entries["workflow:"+id] = struct {

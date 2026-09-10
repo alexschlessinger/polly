@@ -158,6 +158,11 @@ func TestFingerprintIgnoresWorkflowInternalTransitions(t *testing.T) {
 	s.Members["b"] = &Member{ID: "b", Execution: "eb", Task: "tp"}
 	s.Tasks["tp"].Owner, s.Tasks["tp"].Status, s.Tasks["tp"].Execution = "b", "running", "eb"
 	expect("workflow takes over a pending task", false)
+	s.Members["c"] = &Member{ID: "c", Controller: "w"}
+	expect("workflow member recorded before its execution", false)
+	s.Executions["ec"] = &Execution{ID: "ec", Member: "c", Workflow: "w", Status: "queued", Generation: 1}
+	s.Members["c"].Execution = "ec"
+	expect("workflow member's execution recorded", false)
 	if coordinationFingerprint(s) == full {
 		t.Fatal("the full fingerprint ignored workflow-internal transitions")
 	}
