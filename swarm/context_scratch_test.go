@@ -19,6 +19,9 @@ import (
 // so read-only members observe the live tree.
 func scratchRuntime(t *testing.T, model llm.LLM, git bool) *Runtime {
 	t.Helper()
+	if git {
+		skipIfWindows(t)
+	}
 	r := runtimeTest(t, model, 1, 4)
 	if !git {
 		return r
