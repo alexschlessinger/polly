@@ -372,10 +372,32 @@ func (m *Manager) unchanged(ctx context.Context, c Checkout) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	var names []byte
 	for _, entry := range bytes.Split(flags, []byte{0}) {
-		if len(entry) > 0 && entry[0] != 'H' {
+		if len(entry) == 0 {
+			continue
+		}
+		if entry[0] != 'H' || len(entry) < 3 {
 			return false, nil
 		}
+		if name := entry[2:]; !m.privateSourcePath(string(name)) {
+			names = append(append(names, name...), 0)
+		}
+	}
+	untracked, err := m.git(ctx, source, nil, nil, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return false, err
+	}
+	for _, name := range bytes.Split(untracked, []byte{0}) {
+		if len(name) > 0 && !m.privateSourcePath(string(name)) {
+			names = append(append(names, name...), 0)
+		}
+	}
+	// status re-hashes modified files through their clean filter, which
+	// would run with the runtime's grants; capture refuses filtered paths
+	// before touching content, and so does this shortcut.
+	if err := m.checkFilters(ctx, source, names); err != nil {
+		return false, err
 	}
 	status, err := m.git(ctx, source, nil, nil, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
 	if err != nil {

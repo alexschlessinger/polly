@@ -721,3 +721,42 @@ func TestUnchangedCheckSkipsCaptureAndFallsBackOnHiddenEdits(t *testing.T) {
 		t.Fatal("unchanged accepted a checkout the runtime no longer owns")
 	}
 }
+
+// A copy whose paths acquired a content filter is refused before status could
+// run that filter with the runtime's grants, exactly as a capture refuses it.
+func TestUnchangedRefusesFilteredPathsBeforeStatus(t *testing.T) {
+	m, root := fixture(t)
+	ctx := context.Background()
+	base, err := m.Capture(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := m.Create(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	script := filepath.Join(dir, "clean.sh")
+	writeTest(t, script, "#!/bin/sh\necho ran >> "+marker+"\ncat\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The repository configuration is shared with the linked checkout; the
+	// member only needs an attributes file to route its paths through it.
+	gitTest(t, root, "config", "filter.marker.clean", script)
+	writeTest(t, filepath.Join(child.Path, ".gitattributes"), "*.txt filter=marker\n")
+	writeTest(t, filepath.Join(child.Path, "a.txt"), "changed\n")
+	if _, err := m.Unchanged(ctx, child); err == nil || !strings.Contains(err.Error(), "content filters") {
+		t.Fatalf("unchanged = %v, want a content filter refusal", err)
+	}
+	if err := m.Cleanup(ctx, child, ""); err == nil || !strings.Contains(err.Error(), "content filters") {
+		t.Fatalf("cleanup = %v, want a content filter refusal", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the clean filter ran during the unchanged check: %v", err)
+	}
+	if _, err := os.Stat(child.Path); err != nil {
+		t.Fatalf("refused cleanup removed the checkout: %v", err)
+	}
+}
