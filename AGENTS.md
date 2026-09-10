@@ -18,7 +18,7 @@ go vet ./...
 go test ./...                    # tests are *_test.go colocated with code
 ```
 
-CI (`.github/workflows/test.yml`) runs build + vet + tests on linux/macOS/windows, cross-compiles 5 GOOS/GOARCH targets, and runs `-race` on `./sessions ./cmd/polly ./llm`. Verify all three commands above before declaring done.
+CI (`.github/workflows/test.yml`) runs build + vet + tests on Linux/macOS, cross-compiles 5 GOOS/GOARCH targets including Windows, and runs `-race` on the packages listed in `.github/ci.sh`. Windows runtime tests are disabled. `.github/ci.sh [test|race|cross|all]` is the shared entry point; see [local CI](.github/local-ci/README.md) for disposable macOS/Linux VMs and GitHub runner setup. Verify all three commands above before declaring done.
 
 - Sandbox security tests are opt-in: `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./tools/sandbox` (macOS/Linux only).
 - POSIX-only tests skip via a per-package `skipIfWindows(t)` helper (see `tools/skip_test.go`), not build tags. Use it for anything needing POSIX shell/sandboxing so the Windows CI leg passes.
