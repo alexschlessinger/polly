@@ -36,8 +36,8 @@ type turnExecution struct {
 	// prompt; they are marked read when the user message persists.
 	reportIDs []int64
 
-	// settledOutput is the non-interactive one-shot without --stream: the
-	// final answer prints once instead of streaming.
+	// settledOutput is the non-interactive one-shot without --stream: every
+	// answer block prints once, after the run, instead of streaming.
 	settledOutput bool
 	stats         turnToolStats
 	usage         turnUsage
@@ -275,8 +275,10 @@ func (t *turnExecution) finishOutput(resp *llm.AgentResponse) error {
 		}
 		return outputStructured(content, t.schema)
 	}
-	if t.settledOutput && resp.Message != nil {
-		t.turnUI.AppendAssistantText(resp.Message.Content)
+	if t.settledOutput {
+		if text := answerText(resp); text != "" {
+			t.turnUI.AppendAssistantText(text)
+		}
 	}
 	t.turnUI.FinishTextTurn()
 	return nil

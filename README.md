@@ -30,7 +30,8 @@ Default model `anthropic/claude-sonnet-4-6`; `-m provider/model` or `POLLYTOOL_M
 
 ## One-shot output
 
-Stdout: one settled answer, raw Markdown when redirected. Stderr: live status,
+Stdout: the settled answer, raw Markdown when redirected; a turn that swarm
+settlement reopened prints each answer block in order. Stderr: live status,
 plain lines under `TERM=dumb` or redirect. `--stream` emits text as it arrives.
 `--quiet`: warnings and errors only. `--activity-details`: bounded
 Thought/Tools/Agents/Images groups before the trailer. `--meta`: `polly-meta`

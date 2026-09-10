@@ -468,7 +468,10 @@ All one-shot stdout is settled by default, with stderr progress and explicit
 `--stream` for immediate output. Both CLI and TUI keep a parent's answer
 provisional until coordination settles. Unresolved review, dependency, failure,
 or reply work produces a blocker after one corrective prompt for unchanged
-state. Structured output is emitted only after successful validation.
+state. Structured output is emitted only after successful validation. When
+settlement reopens a provisional answer, piped stdout prints every answer block
+in order, separated by a blank line; the coordination prompts and tool exchanges
+between them never print. `--schema` output stays the single final document.
 
 ### Inspecting and deferring retained work
 
