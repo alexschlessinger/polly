@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -110,17 +111,35 @@ func recordWorkflowDeliveries(s *State, w *workflow.Report) {
 	}
 }
 
+func needsDeliveryNotice(s *State, t *Task) bool {
+	return deliveringTask(s, t) && !TaskDeferred(s, t) && resultNotice(s, t) == nil &&
+		s.Members[t.Owner] != nil && !workflowControlled(s, s.Executions[t.Execution])
+}
+
+// Waiting must not write or broadcast when there is nothing to repair: Settle
+// would wake itself on every iteration. Recheck eligibility in the transaction
+// so a concurrent delivery or workflow change cannot post a stale notice.
+func (r *Runtime) repairDeliveryNotices(ctx context.Context, s *State) (*State, error) {
+	for _, t := range s.Tasks {
+		if needsDeliveryNotice(s, t) {
+			err := r.update(ctx, func(current *State) error {
+				r.ensureDeliveryNotices(current)
+				s = current
+				return nil
+			})
+			return s, err
+		}
+	}
+	return s, nil
+}
+
 func (r *Runtime) ensureDeliveryNotices(s *State) {
 	for _, id := range sortedInspectionIDs(s.Tasks) {
 		t := s.Tasks[id]
-		if !deliveringTask(s, t) || TaskDeferred(s, t) || resultNotice(s, t) != nil {
+		if !needsDeliveryNotice(s, t) {
 			continue
 		}
-		e, m := s.Executions[t.Execution], s.Members[t.Owner]
-		if m == nil || workflowControlled(s, e) {
-			continue
-		}
-		notice := r.completionNotice(m, e, t)
+		notice := r.completionNotice(s.Members[t.Owner], s.Executions[t.Execution], t)
 		s.Messages[notice.ID] = notice
 	}
 }

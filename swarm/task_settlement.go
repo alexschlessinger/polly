@@ -75,11 +75,11 @@ func countNoun(n int, noun string) string {
 func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	err := r.update(ctx, func(s *State) error { r.ensureDeliveryNotices(s); return nil })
+	s, err := r.read(ctx)
 	if err != nil {
 		return nil, err
 	}
-	s, err := r.read(ctx)
+	s, err = r.repairDeliveryNotices(ctx, s)
 	if err != nil {
 		return nil, err
 	}

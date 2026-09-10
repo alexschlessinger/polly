@@ -151,7 +151,8 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 			return err
 		}
 		if active == 0 || len(inbox(s, r.ID, true)) > 0 || parentWaitChanged(before, s) {
-			return r.update(ctx, func(s *State) error { r.ensureDeliveryNotices(s); return nil })
+			_, err := r.repairDeliveryNotices(ctx, s)
+			return err
 		}
 		select {
 		case <-ctx.Done():
@@ -338,7 +339,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		}
 		return map[string]any{"id": report.ID, "status": report.Status, "output": report.Output, "steps": len(report.Steps)}, err
 	})
-	register("workflow_start", "Start a background JavaScript workflow and return at once. Then park with swarm_wait; it returns the swarm status once when the workflow reaches a terminal status or when mail addresses you. Do not poll workflow_read while it runs; act on needs_decision afterwards.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("workflow_start", "Start a background JavaScript workflow and return at once. Supply JavaScript source text, never a file path. Then park with swarm_wait; it returns the swarm status once when the workflow reaches a terminal status or when mail addresses you. Do not poll workflow_read while it runs; act on needs_decision afterwards.", schema.Params{"source": schema.S("JavaScript source text, never a file path"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
 		input, err := schema.DecodeJSON(a.String("input"))
 		if err != nil {
 			return nil, err

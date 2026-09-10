@@ -93,6 +93,7 @@ func TestUnchangedTaskAcceptanceBeforeAndAfterCleanup(t *testing.T) {
 
 func TestUnchangedTaskRecoversSavedAcceptance(t *testing.T) {
 	r, result, ref := noEditResult(t, false)
+	suspendAutoRelease(t, r)
 	ctx := context.Background()
 	// Record the old runtime's accepted-but-awaiting-review state.
 	if err := r.update(ctx, func(s *State) error {
@@ -330,7 +331,7 @@ func TestTaskSettlementDiagnostics(t *testing.T) {
 func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 2, 8)
 	ctx := context.Background()
-	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"research",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"investigate a",readOnly:true});return await polly.agent({task:"investigate b",readOnly:true});}})`, map[string]any{})
+	_, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"research",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"investigate a",readOnly:true});return await polly.agent({task:"investigate b",readOnly:true});}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +349,6 @@ func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
 		t.Fatalf("settlement did not lead with the completed workflow: %v", err)
 	}
 	admitParent(t, r)
-	_ = report
 	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.HasPrefix(err.Error(), "task "+task.ID+" revision 1: pending;") {
 		t.Fatalf("after acknowledging: %v", err)
 	}
