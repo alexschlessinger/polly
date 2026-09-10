@@ -192,7 +192,7 @@ func TestFailedWorkflowWithoutAgentsRequiresAcknowledgment(t *testing.T) {
 	if err == nil || report == nil {
 		t.Fatalf("missing failure: %+v %v", report, err)
 	}
-	if err := r.Settle(ctx); err == nil || !strings.Contains(err.Error(), report.ID) {
+	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.Contains(err.Error(), report.ID) {
 		t.Fatalf("failure disappeared: %v", err)
 	}
 	if _, err := r.AcknowledgeWorkflow(ctx, report.ID); err != nil {
@@ -282,7 +282,7 @@ func TestExhaustedBudgetRemainsBlockedAfterAcceptingFinishedWork(t *testing.T) {
 	if err := r.Review(ctx, task.ID, task.Revision, true, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Settle(ctx); !errors.Is(err, ErrBudget) {
+	if err := assertSettleMatchesBlockers(t, r); !errors.Is(err, ErrBudget) {
 		t.Fatalf("budget exhaustion disappeared: %v", err)
 	}
 	if err := r.Resume(ctx, "", 1); err != nil {

@@ -1602,6 +1602,8 @@ func (r *Runtime) StopMember(ctx context.Context, memberID string) error {
 
 // Settle waits for running invocations. Waiting with no deliverable work,
 // failed members and unresolved task reviews produce a blocker, never a hang.
+// The blockers come from the coordination facts in their settlement order;
+// presentation never feeds them.
 func (r *Runtime) Settle(ctx context.Context) error {
 	for {
 		r.mu.Lock()
@@ -1612,59 +1614,16 @@ func (r *Runtime) Settle(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		for _, receipt := range s.Applies {
-			if receipt.Status == "applying" || receipt.Status == "recovery_required" {
-				return fail("recovery_required", "integration "+receipt.ID+" has an unconfirmed outcome")
-			}
+		f := deriveFacts(s, r.ID)
+		blockers := settlementBlockers(f)
+		// An uncertain integration or a member's request blocks before any
+		// wait: neither resolves on its own.
+		if len(blockers) > 0 && (blockers[0].kind == KindIntegration || blockers[0].kind == KindMail) {
+			return blockerError(f, blockers)
 		}
-
-		if hasWakeMail(s, r.ID) {
-			return fail("blocked", "a member is waiting for a parent reply")
-		}
-		running := false
-		for _, w := range s.Workflows {
-			if w.Status == "running" {
-				// Agent host calls can be parked awaiting the parent. Other
-				// host operations and startup still have work to settle.
-				if len(w.Steps) == 0 {
-					running = true
-				}
-				for _, step := range w.Steps {
-					if step.Status == "running" && step.Kind != "agent" {
-						running = true
-					}
-				}
-			}
-		}
-		for _, e := range s.Executions {
-			if e.Status == "running" || e.Status == "queued" {
-				running = true
-			}
-		}
-		if active == 0 || !running {
-			current := ""
-			for _, run := range s.Runs {
-				if run.Status == "running" || run.Status == "paused" {
-					current = run.ID
-				}
-			}
-			// One acknowledgment accepts every result a completed workflow
-			// consumed, so that step leads the budget and per-task blockers.
-			if w, research := unacknowledgedResearch(s, current); w != nil {
-				return fail("blocked", fmt.Sprintf("workflow %s completed with %s awaiting review; inspect workflow_read, then workflow_acknowledge to accept all of them, or swarm_review individual tasks first", w.ID, countNoun(len(research), "research result")))
-			}
-			for _, run := range s.Runs {
-				if run.Status == "paused" && !runDeferred(s, run.ID) {
-					return ErrBudget
-				}
-			}
-			if tasks := unsettledTasks(s, current); len(tasks) > 0 {
-				return unsettledTasksError(s, tasks)
-			}
-			for _, w := range s.Workflows {
-				if w.Run == current && w.Status != "running" && w.Status != "completed" && !w.Acknowledged {
-					return fail("blocked", "workflow "+w.ID+" "+w.Status+"; inspect its report and explicitly acknowledge the failure after arranging recovery or reporting the blocker")
-				}
+		if active == 0 || !f.running {
+			if err := blockerError(f, blockers); err != nil {
+				return err
 			}
 			if active > 0 {
 				return fail("blocked", "members are waiting for a relevant event")

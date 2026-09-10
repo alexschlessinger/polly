@@ -123,14 +123,11 @@ func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 			return s, nil
 		}
 	}
-	eligible := func(s *State, task *Task) bool {
-		return task.Status == "awaiting_review" && !TaskDeferred(s, task) && acceptedTaskRevision(task) && unchangedTask(s, task)
-	}
 	for _, task := range s.Tasks {
-		if eligible(s, task) {
+		if acceptedUnchangedTask(s, task) {
 			err = r.update(ctx, func(current *State) error {
 				for _, task := range current.Tasks {
-					if eligible(current, task) {
+					if acceptedUnchangedTask(current, task) {
 						task.Status = "done"
 					}
 				}
@@ -141,6 +138,13 @@ func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 		}
 	}
 	return s, err
+}
+
+// acceptedUnchangedTask is an accepted submission whose tree equals its
+// starting snapshot: settlement completes it without an apply, unless an
+// uncertain integration must be reconciled first.
+func acceptedUnchangedTask(s *State, task *Task) bool {
+	return task.Status == "awaiting_review" && !TaskDeferred(s, task) && acceptedTaskRevision(task) && unchangedTask(s, task)
 }
 
 // unsettledTasks lists, by ID, the current run's open tasks plus retained
@@ -172,19 +176,20 @@ func unsettledTasksError(s *State, tasks []*Task) error {
 	return fmt.Errorf("%s%w", count, first)
 }
 
-// unacknowledgedResearch returns the first (by ID) completed, unacknowledged
-// workflow of the run that still owns consumed research, with that research.
-func unacknowledgedResearch(s *State, run string) (*workflow.Report, []*Task) {
+// unacknowledgedResearchReports lists, by ID, the run's completed,
+// unacknowledged workflows that still own consumed research.
+func unacknowledgedResearchReports(s *State, run string) []*workflow.Report {
+	var reports []*workflow.Report
 	for _, id := range sortedInspectionIDs(s.Workflows) {
 		w := s.Workflows[id]
 		if w.Run != run || w.Status != "completed" || w.Acknowledged {
 			continue
 		}
-		if research := workflowResearchTasks(s, w); len(research) > 0 {
-			return w, research
+		if len(workflowResearchTasks(s, w)) > 0 {
+			reports = append(reports, w)
 		}
 	}
-	return nil, nil
+	return reports
 }
 
 func taskSettlementError(s *State, task *Task) error {
@@ -192,28 +197,35 @@ func taskSettlementError(s *State, task *Task) error {
 	if e := s.Executions[task.Execution]; e != nil && e.Status == "paused" && e.StopReason == messages.StopReasonMaxIterations {
 		return fmt.Errorf("%s%w", prefix, e.iterationLimitError())
 	}
-	operation := "inspect the task and explicitly resume its member or cancel the task"
+	why, action := taskDisposition(s, task)
+	operation := action
+	if why != "" {
+		operation = why + "; " + action
+	}
+	return fail("blocked", prefix+operation)
+}
+
+// taskDisposition names why an open task blocks settlement and the one
+// operation that resolves it. The settlement sentence is why, "; ", action.
+func taskDisposition(s *State, task *Task) (why, action string) {
 	switch task.Status {
 	case "awaiting_review":
 		if acceptedTaskRevision(task) && task.Snapshot != "" {
 			if base, _ := taskSnapshots(s, task); base == nil {
-				operation = "accepted, but snapshot provenance is unavailable; restore the original task snapshots or cancel the task"
-			} else {
-				operation = "accepted; prepare, accept, and apply an integration candidate for this revision"
+				return "accepted, but snapshot provenance is unavailable", "restore the original task snapshots or cancel the task"
 			}
-		} else {
-			operation = "awaiting parent review; accept this revision or request changes"
+			return "accepted", "prepare, accept, and apply an integration candidate for this revision"
 		}
+		return "awaiting parent review", "accept this revision or request changes"
 	case "pending":
-		operation = "pending; resolve its dependencies, then assign and run the task or cancel it"
+		return "pending", "resolve its dependencies, then assign and run the task or cancel it"
 	case "blocked":
-		operation = "blocked; update the task to resolve its blocker or cancel it"
+		return "blocked", "update the task to resolve its blocker or cancel it"
 	case "changes_requested":
-		operation = "changes requested; deliver the feedback and resume the member or cancel the task"
-	default:
-		if e := s.Executions[task.Execution]; e != nil {
-			operation = fmt.Sprintf("execution %s is %s; inspect its saved result and explicitly resume member %s or cancel the task", e.ID, e.Status, e.Member)
-		}
+		return "changes requested", "deliver the feedback and resume the member or cancel the task"
 	}
-	return fail("blocked", prefix+operation)
+	if e := s.Executions[task.Execution]; e != nil {
+		return fmt.Sprintf("execution %s is %s", e.ID, e.Status), fmt.Sprintf("inspect its saved result and explicitly resume member %s or cancel the task", e.Member)
+	}
+	return "", "inspect the task and explicitly resume its member or cancel the task"
 }

@@ -127,7 +127,7 @@ func TestDeferralDoesNotHideOtherWorkOrChangedState(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := r.Settle(ctx); err == nil {
+			if err := assertSettleMatchesBlockers(t, r); err == nil {
 				t.Fatal("unsafe or unrelated work was hidden")
 			}
 		})

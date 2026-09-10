@@ -56,7 +56,7 @@ func TestUnchangedTaskAcceptanceBeforeAndAfterCleanup(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if err := r.Settle(ctx); err == nil || !strings.Contains(err.Error(), "awaiting parent review") || !strings.Contains(err.Error(), ref.Task) {
+				if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.Contains(err.Error(), "awaiting parent review") || !strings.Contains(err.Error(), ref.Task) {
 					t.Fatalf("unaccepted task settled or lost review guidance: %v", err)
 				}
 				// A later parent edit is outside this member's unchanged result.
@@ -342,25 +342,25 @@ func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
 	}
 	var blocker *workflow.Error
 	want := "workflow " + report.ID + " completed with 2 research results awaiting review; inspect workflow_read, then workflow_acknowledge"
-	if err := r.Settle(ctx); err == nil || !strings.HasPrefix(err.Error(), want) || !errors.As(err, &blocker) || blocker.Code != "blocked" {
+	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.HasPrefix(err.Error(), want) || !errors.As(err, &blocker) || blocker.Code != "blocked" {
 		t.Fatalf("settlement did not lead with the completed workflow: %v", err)
 	}
 	if accepted, err := r.AcknowledgeWorkflow(ctx, report.ID); err != nil || accepted != 2 {
 		t.Fatalf("acknowledge = %d, %v; want 2 accepted", accepted, err)
 	}
-	if err := r.Settle(ctx); err == nil || !strings.HasPrefix(err.Error(), "task "+task.ID+" revision 1: pending;") {
+	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.HasPrefix(err.Error(), "task "+task.ID+" revision 1: pending;") {
 		t.Fatalf("after acknowledging: %v", err)
 	}
 	if err := r.CancelTask(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Settle(ctx); err == nil || !strings.Contains(err.Error(), failed.ID) {
+	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.Contains(err.Error(), failed.ID) {
 		t.Fatalf("failed report not named: %v", err)
 	}
 	if accepted, err := r.AcknowledgeWorkflow(ctx, failed.ID); err != nil || accepted != 0 {
 		t.Fatalf("acknowledging the failure = %d, %v", accepted, err)
 	}
-	if err := r.Settle(ctx); err != nil {
+	if err := assertSettleMatchesBlockers(t, r); err != nil {
 		t.Fatalf("settled swarm still blocked: %v", err)
 	}
 }
@@ -399,7 +399,7 @@ func TestSettleReportsTaskCount(t *testing.T) {
 	}
 	sort.Strings(ids)
 	var blocker *workflow.Error
-	if err := r.Settle(ctx); err == nil || !strings.HasPrefix(err.Error(), "3 tasks unsettled; first: task "+ids[0]+" revision 1: pending; resolve its dependencies") || !errors.As(err, &blocker) || blocker.Code != "blocked" {
+	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.HasPrefix(err.Error(), "3 tasks unsettled; first: task "+ids[0]+" revision 1: pending; resolve its dependencies") || !errors.As(err, &blocker) || blocker.Code != "blocked" {
 		t.Fatalf("task count missing: %v", err)
 	}
 	for _, id := range ids[1:] {
@@ -407,7 +407,7 @@ func TestSettleReportsTaskCount(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := r.Settle(ctx); err == nil || !strings.HasPrefix(err.Error(), "task "+ids[0]+" revision 1:") {
+	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.HasPrefix(err.Error(), "task "+ids[0]+" revision 1:") {
 		t.Fatalf("a single task carried a count: %v", err)
 	}
 	// Typed blockers survive the prefix.
