@@ -290,7 +290,8 @@ func (r *managedREPL) refreshInspector(width int) {
 				state, e := swarmState.swarm.State(r.work.ctx)
 				err = e
 				if err == nil {
-					body := swarmInspectorText(state, target.item)
+					parent := swarmState.swarm.ParentState(state)
+					body := swarmInspectorText(state, &parent, target.item)
 					source.model = newReplModel()
 					source.model.appendLine(style.Escape(body))
 					data, _ := json.Marshal(state)

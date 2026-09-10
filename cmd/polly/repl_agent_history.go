@@ -37,12 +37,12 @@ func (r *managedREPL) agentHistoryItems(p *sessionsPicker, items []replModalItem
 				continue
 			}
 			state := swarm.MemberState(s, m)
-			status, _, _ := r.swarmListing(item.identity, info.Metadata.SwarmID)
-			if status == "approval needed" || state.Attention {
+			_, approval, _ := r.swarmListing(item.identity, info.Metadata.SwarmID)
+			if approval || state.Attention {
 				priorities[item.identity] = 0
 				break
 			}
-			if state.Active {
+			if state.Busy {
 				priorities[item.identity] = 1
 				break
 			}

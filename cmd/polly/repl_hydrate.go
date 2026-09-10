@@ -162,7 +162,7 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 		row := toolDisclosureRow{callID: call.ID, label: toolLabel(call)}
 		row.setCall(call)
 		if row.agent != nil {
-			row.agent.active, row.agent.status = false, "unknown"
+			row.agent.setLocal("unknown", false)
 		}
 		h.toolRows = append(h.toolRows, row)
 	}
@@ -349,7 +349,7 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 		}
 		row.setCall(messages.ChatMessageToolCall{ID: displayCall.ID, Name: displayCall.Name})
 		if pick < 0 && row.agent != nil {
-			row.agent.active, row.agent.status = false, "unknown"
+			row.agent.setLocal("unknown", false)
 		}
 		if displayCall.Denied {
 			row.finishAgentCall(messages.ChatMessageToolCall{}, true, nil)

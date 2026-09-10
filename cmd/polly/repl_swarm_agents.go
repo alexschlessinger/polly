@@ -10,9 +10,17 @@ import (
 	"github.com/alexschlessinger/pollytool/swarm"
 )
 
-func swarmMemberActivity(s *swarm.State, member *swarm.Member) (string, bool) {
-	state := swarm.MemberState(s, member)
-	return state.Display, state.Active
+func swarmMemberActivity(s *swarm.State, member *swarm.Member) swarm.AgentPresentation {
+	return swarm.MemberState(s, member)
+}
+
+// listingLabel is the row text: the approval overlay outranks the swarm's
+// own label, which is derived, never persisted.
+func listingLabel(p swarm.AgentPresentation, approval bool) string {
+	if approval {
+		return "approval needed"
+	}
+	return p.Display
 }
 
 // Swarm executions, rather than UI tabs or the result of the spawn tool,
@@ -55,10 +63,8 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 			if member == nil {
 				continue
 			}
-			status, active := swarmMemberActivity(s, member)
-			if m.memberNeedsApproval(member.ID) {
-				status = "approval needed"
-			}
+			now := swarmMemberActivity(s, member)
+			approval := m.memberNeedsApproval(member.ID)
 			label := a.label
 			if row.isProjectedAgent() {
 				label = style.SanitizeImageText(spawnLabel(member.Label, member.Name))
@@ -72,14 +78,16 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 					out = *execution.Usage.OutputTokens
 				}
 			}
-			if a.label != label || a.session != member.Name || a.status != status || a.active != active || !a.attached || a.inputTokens != in || a.outputTokens != out {
+			if a.label != label || a.session != member.Name || a.state != now || a.approval != approval || !a.attached || a.inputTokens != in || a.outputTokens != out {
+				// The cue fires on the machine facts: work went from busy to
+				// settled with something for the parent to look at.
 				task := s.Tasks[member.Task]
-				awaitingReview := task != nil && task.Status == "awaiting_review" && !swarm.TaskDeferred(s, task)
-				if a.active && !active && (status == "done" || awaitingReview) {
+				settled := task != nil && (task.Status == "done" || task.Status == "awaiting_review" && !now.Deferred)
+				if a.state.Busy && !now.Busy && settled {
 					m.noteAgentCompletion(record.id)
 				}
-				a.label, a.viewID, a.session, a.status = label, id, member.Name, status
-				a.active, a.attached = active, true
+				a.label, a.viewID, a.session = label, id, member.Name
+				a.state, a.approval, a.local, a.attached = now, approval, "", true
 				a.inputTokens, a.outputTokens = in, out
 				changed = true
 			}
@@ -125,7 +133,7 @@ func (r *managedREPL) refreshSwarmActivities() {
 			if runtime != nil {
 				s, err = runtime.State(r.work.ctx)
 			} else {
-				s, err = swarm.ReadStateView(r.work.ctx, viewStore, id)
+				s, err = tab.swarmView.ReadView(r.work.ctx, viewStore, id)
 			}
 			r.postUI(r.work.ctx, func() {
 				tab.swarmLoading = false
@@ -135,8 +143,7 @@ func (r *managedREPL) refreshSwarmActivities() {
 				tab.swarmSnapshot = s
 				tab.swarmActive = false
 				for _, member := range s.Members {
-					_, active := swarmMemberActivity(s, member)
-					tab.swarmActive = tab.swarmActive || active
+					tab.swarmActive = tab.swarmActive || swarmMemberActivity(s, member).Busy
 				}
 				tab.model.mu.Lock()
 				tab.model.hydrateSwarmAgents(s)
@@ -159,9 +166,9 @@ func (r *managedREPL) announceSwarmCompletions(tab *replTab, s *swarm.State) {
 		if member == nil {
 			continue
 		}
-		status, active := swarmMemberActivity(s, member)
+		p := swarmMemberActivity(s, member)
 		e := s.Executions[member.Execution]
-		if active || e == nil {
+		if p.Busy || e == nil {
 			continue
 		}
 		key := fmt.Sprintf("%s:%d:%s", e.ID, e.Generation, e.Status)
@@ -169,6 +176,6 @@ func (r *managedREPL) announceSwarmCompletions(tab *replTab, s *swarm.State) {
 			continue
 		}
 		tab.swarmAnnounced[id] = key
-		tab.model.appendNoticeLine(member.Name + " · " + status)
+		tab.model.appendNoticeLine(member.Name + " · " + p.Display)
 	}
 }

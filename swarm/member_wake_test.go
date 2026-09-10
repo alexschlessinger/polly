@@ -29,7 +29,7 @@ func TestQueuedPeerWakeRechecksPendingMailUnderLaunchLock(t *testing.T) {
 		r.launchMu.Unlock()
 		t.Fatal(err)
 	}
-	service, err := r.startLocked(ctx, "", AgentRequest{Session: initial.Session, Task: "Handle pending messages"})
+	service, err := r.startLocked(ctx, "", AgentRequest{Session: initial.Session, Task: "Handle pending messages"}, launchIntent{})
 	if err != nil {
 		r.launchMu.Unlock()
 		t.Fatal(err)

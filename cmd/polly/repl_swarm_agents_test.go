@@ -56,8 +56,8 @@ func TestSwarmIterationPauseRendersReasonAndResumesThroughCommand(t *testing.T) 
 	m.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "review"}, {Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}}}, "iteration-parent")
 	m.hydrateSwarmAgents(s)
 	row := swarmTestRow(t, m, call.ID)
-	want := "paused · iteration limit reached (1/1)"
-	if row.agent.status != want || row.agent.active || !strings.Contains(swarmInspectorText(s, "members"), want) {
+	want := "paused · iteration limit (1/1)"
+	if row.agent.display() != want || row.agent.busy() || !strings.Contains(swarmInspectorText(s, nil, "members"), want) {
 		t.Fatalf("pause not visible: %+v", row.agent)
 	}
 	command := &replCommandContext{ctx: ctx, state: &conversationState{swarm: runtime}}
@@ -79,7 +79,7 @@ func TestSwarmIterationPauseRendersReasonAndResumesThroughCommand(t *testing.T) 
 		t.Fatal(err)
 	}
 	m.hydrateSwarmAgents(s)
-	if row.agent.status != "awaiting review" || row.agent.viewID != result.Session || len(s.Executions) != 1 {
+	if row.agent.display() != "idle · awaiting review" || row.agent.viewID != result.Session || len(s.Executions) != 1 {
 		t.Fatalf("continuation not reflected: %+v", row.agent)
 	}
 	for _, e := range s.Executions {
@@ -100,10 +100,10 @@ func TestSwarmRowsFollowMemberLifecycleWithoutChildTabs(t *testing.T) {
 	result.SetToolSucceeded(true)
 	m.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "review"}, {Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}}, result}, "parent")
 	row := swarmTestRow(t, m, call.ID)
-	if row == nil || row.agent.status != "unknown" {
+	if row == nil || row.agent.display() != "unknown" {
 		t.Fatal("fixture must exercise the old background-result gap")
 	}
-	member := &swarm.Member{ID: "member-id", Name: "reviewer", Status: "queued", Execution: "execution", Task: "task"}
+	member := &swarm.Member{ID: "member-id", Name: "reviewer", Execution: "execution", Task: "task"}
 	execution := &swarm.Execution{ID: "execution", Member: member.ID, Request: swarm.AgentRequest{CallID: call.ID}, Status: "queued"}
 	task := &swarm.Task{ID: "task", Status: "running"}
 	s := &swarm.State{Members: map[string]*swarm.Member{member.ID: member}, Executions: map[string]*swarm.Execution{execution.ID: execution}, Tasks: map[string]*swarm.Task{task.ID: task}}
@@ -111,29 +111,29 @@ func TestSwarmRowsFollowMemberLifecycleWithoutChildTabs(t *testing.T) {
 		member, execution, task, want string
 		active                        bool
 	}{
-		{"queued", "queued", "running", "queued", true},
-		{"running", "running", "running", "running", true},
+		{"queued", "queued", "running", "active · queued", true},
+		{"running", "running", "running", "active", true},
 		{"waiting", "waiting", "running", "waiting", true},
-		{"paused", "paused", "running", "paused", false},
-		{"paused", "failed", "blocked", "failed", false},
-		{"idle", "completed", "awaiting_review", "awaiting review", false},
-		{"idle", "completed", "changes_requested", "changes requested", false},
-		{"idle", "completed", "done", "done", false},
-		{"idle", "completed", "canceled", "canceled", false},
+		{"paused", "paused", "running", "paused · interrupted", false},
+		{"paused", "failed", "blocked", "paused · failed", false},
+		{"idle", "completed", "awaiting_review", "idle · awaiting review", false},
+		{"idle", "completed", "changes_requested", "idle · changes requested", false},
+		{"idle", "completed", "done", "idle · done", false},
+		{"idle", "completed", "canceled", "idle · canceled", false},
 	} {
-		member.Status, execution.Status, task.Status = tc.member, tc.execution, tc.task
+		execution.Status, task.Status = tc.execution, tc.task
 		m.hydrateSwarmAgents(s)
-		if row.agent.status != tc.want || row.agent.active != tc.active || row.agent.viewID != member.ID || row.agent.session != member.Name || !row.agent.attached {
+		if row.agent.display() != tc.want || row.agent.busy() != tc.active || row.agent.viewID != member.ID || row.agent.session != member.Name || !row.agent.attached {
 			t.Fatalf("%s/%s/%s: %+v", tc.member, tc.execution, tc.task, row.agent)
 		}
 	}
 	// A deleted ID cannot be rebound to a different member reusing the name or
 	// call ID. Rendering never acquires a child session or an execution lease.
 	delete(s.Members, member.ID)
-	s.Members["replacement"] = &swarm.Member{ID: "replacement", Name: member.Name, Status: "running"}
+	s.Members["replacement"] = &swarm.Member{ID: "replacement", Name: member.Name}
 	execution.Member = "replacement"
 	m.hydrateSwarmAgents(s)
-	if row.agent.viewID != member.ID || row.agent.active {
+	if row.agent.viewID != member.ID || row.agent.busy() {
 		t.Fatal("saved row was rebound to a replacement identity")
 	}
 }
@@ -144,7 +144,7 @@ func TestSwarmRowsRejectAmbiguousCallIdentity(t *testing.T) {
 	m.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "review"}, {Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}}}, "parent")
 	s := &swarm.State{Members: map[string]*swarm.Member{}, Executions: map[string]*swarm.Execution{}}
 	for _, id := range []string{"first", "second"} {
-		s.Members[id] = &swarm.Member{ID: id, Name: id, Status: "running"}
+		s.Members[id] = &swarm.Member{ID: id, Name: id}
 		s.Executions[id] = &swarm.Execution{ID: id, Member: id, Request: swarm.AgentRequest{CallID: call.ID}}
 	}
 	m.hydrateSwarmAgents(s)
@@ -156,11 +156,19 @@ func TestSwarmRowsRejectAmbiguousCallIdentity(t *testing.T) {
 
 func TestPausedAgentsAreNotCountedAsCompletedOrFailed(t *testing.T) {
 	var counts activityAgentCounts
-	counts.add("paused · iteration limit reached (8/8)", false)
-	counts.add("running", true)
+	counts.add(swarm.AgentPresentation{Lifecycle: swarm.LifecyclePaused, Outcome: "paused", StopReason: string(messages.StopReasonMaxIterations)})
+	counts.add(swarm.AgentPresentation{Lifecycle: swarm.LifecycleActive, Busy: true})
 	label := turnAgentSummaryLabel(counts.Total, counts.Running, counts.Failed, counts.Canceled, counts.Paused)
 	if label != "1 agent running, 1 paused" {
 		t.Fatalf("misleading aggregate: %q", label)
+	}
+	// Launch calls keep their own words; only they can be canceled.
+	var local activityAgentCounts
+	for _, word := range []string{"paused · iteration limit", "canceled", "denied", "done"} {
+		local.addOutcome(word, false)
+	}
+	if local.Total != 4 || local.Paused != 1 || local.Canceled != 1 || local.Failed != 1 || local.Running != 0 {
+		t.Fatalf("launch outcome buckets: %+v", local)
 	}
 	err := tools.NewToolError("agent paused", "ITERATION_LIMIT")
 	if status := toolActivityOutcome(false, err); status != "paused · iteration limit" {
@@ -200,23 +208,27 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 		name, member, execution, task, want, wantTask string
 		accepted, active                              bool
 	}{
-		{"running", "running", "running", "running", "running", "running", false, true},
-		{"accepted", "idle", "completed", "awaiting_review", "accepted · integration pending", "accepted · integration pending", true, false},
-		{"unreviewed", "idle", "completed", "awaiting_review", "awaiting review", "awaiting review", false, false},
-		{"retired accepted", "retired", "completed", "awaiting_review", "retired · accepted · integration pending", "accepted · integration pending", true, false},
-		{"retired unreviewed", "retired", "completed", "awaiting_review", "retired · awaiting review", "awaiting review", false, false},
-		{"done", "idle", "completed", "done", "done", "done", true, false},
-		{"retired done", "retired", "completed", "done", "retired", "done", true, false},
+		{"running", "running", "running", "running", "active", "running", false, true},
+		{"accepted", "idle", "completed", "awaiting_review", "idle · integration pending", "integration pending", true, false},
+		{"unreviewed", "idle", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", false, false},
+		{"retired accepted", "retired", "completed", "awaiting_review", "idle · retired · integration pending", "integration pending", true, false},
+		{"retired unreviewed", "retired", "completed", "awaiting_review", "idle · retired · awaiting review", "awaiting review", false, false},
+		{"done", "idle", "completed", "done", "idle · done", "done", true, false},
+		{"retired done", "retired", "completed", "done", "idle · retired", "done", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Only this display snapshot changes: the runtime, lease, and IDs stay fixed.
-			member.Status, execution.Status, task.Status = tc.member, tc.execution, tc.task
+			member.Control = swarm.MemberControlEnabled
+			if tc.member == "retired" {
+				member.Control = swarm.MemberControlRetired
+			}
+			execution.Status, task.Status = tc.execution, tc.task
 			task.Snapshot, task.AcceptedRevision = "candidate", 0
 			if tc.accepted {
 				task.AcceptedRevision = task.Revision
 			}
 			inline.hydrateSwarmAgents(s)
-			if row.agent.status != tc.want || row.agent.active != tc.active || row.agent.viewID != member.ID {
+			if row.agent.display() != tc.want || row.agent.busy() != tc.active || row.agent.viewID != member.ID {
 				t.Fatalf("inline projection: %+v", row.agent)
 			}
 			if tc.name == "accepted" && len(inline.affordances.agents) != 1 {
@@ -238,10 +250,10 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 			if !strings.Contains(plainStyledText(header.text), tc.want) || !headerButton(header.buttons, "stop").Empty() != tc.active {
 				t.Fatalf("inspector projection: %s", header.text)
 			}
-			if text := swarmInspectorText(s, "members"); !strings.Contains(text, "review tests — "+tc.want) || !strings.Contains(text, "Execution: "+tc.execution) {
+			if text := swarmInspectorText(s, nil, "members"); !strings.Contains(text, "review tests — "+tc.want) || !strings.Contains(text, "Execution: "+tc.execution) {
 				t.Fatalf("member inspector: %s", text)
 			}
-			text := swarmInspectorText(s, "tasks")
+			text := swarmInspectorText(s, nil, "tasks")
 			if !strings.HasPrefix(text, tc.wantTask+" · revision ") || !strings.Contains(text, "Acceptance criteria: "+task.Criteria) {
 				t.Fatalf("task inspector: %s", text)
 			}
@@ -269,14 +281,14 @@ func TestSwarmOpenRunDistinguishesActiveExecutionsFromPendingTasks(t *testing.T)
 			"old":      {Run: "old", Status: "awaiting_review"},
 		},
 	}
-	text := swarmInspectorText(s, "members")
+	text := swarmInspectorText(s, nil, "members")
 	if !strings.Contains(text, "open · active executions: 0 · pending tasks: 1 · 4 / 256 logical executions") {
 		t.Fatalf("open run looked like running agents: %s", text)
 	}
 	for _, status := range []string{"queued", "running", "waiting"} {
 		s.Executions[status] = &swarm.Execution{Run: "current", Status: status}
 	}
-	if text = swarmInspectorText(s, "members"); !strings.Contains(text, "open · active executions: 3 · pending tasks: 1") {
+	if text = swarmInspectorText(s, nil, "members"); !strings.Contains(text, "open · active executions: 3 · pending tasks: 1") {
 		t.Fatalf("active execution count: %s", text)
 	}
 	s.Runs["current"].Status = "completed"
@@ -284,7 +296,7 @@ func TestSwarmOpenRunDistinguishesActiveExecutionsFromPendingTasks(t *testing.T)
 		e.Status = "completed"
 	}
 	s.Tasks["pending"].Status = "done"
-	if text = swarmInspectorText(s, "members"); !strings.Contains(text, "completed · active executions: 0 · pending tasks: 0") {
+	if text = swarmInspectorText(s, nil, "members"); !strings.Contains(text, "completed · active executions: 0 · pending tasks: 0") {
 		t.Fatalf("closed run: %s", text)
 	}
 }

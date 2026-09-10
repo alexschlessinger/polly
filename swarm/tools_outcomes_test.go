@@ -69,7 +69,7 @@ func TestReviewToolReportsRemainingIntegration(t *testing.T) {
 		id, status, display string
 		revision            int
 	}{
-		{"changed", "awaiting_review", "accepted · integration pending", 2},
+		{"changed", "awaiting_review", "integration pending", 2},
 		{"research", "done", "done", 3},
 	} {
 		out, err := review.Execute(ctx, map[string]any{"task": tc.id, "revision": tc.revision, "accept": true})
@@ -105,7 +105,7 @@ func TestReviewToolReportsRemainingIntegration(t *testing.T) {
 	for _, task := range page.Items {
 		tasks[task.ID] = task
 	}
-	if tasks["changed"].Status != "awaiting_review" || tasks["changed"].DisplayStatus != "accepted · integration pending" || tasks["research"].DisplayStatus != "done" {
+	if tasks["changed"].Status != "awaiting_review" || tasks["changed"].DisplayStatus != "integration pending" || tasks["research"].DisplayStatus != "done" {
 		t.Fatalf("task list lost machine or display status: %s", out)
 	}
 }
@@ -114,7 +114,7 @@ func TestReviewToolGuidanceForRetiredOrMissingProvenance(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	if err := r.update(ctx, func(s *State) error {
-		s.Members["retired"] = &Member{ID: "retired", Status: "retired", Context: "removed"}
+		s.Members["retired"] = &Member{ID: "retired", Control: MemberControlRetired, Context: "removed"}
 		s.Tasks["task"] = &Task{ID: "task", Owner: "retired", Status: "awaiting_review", Revision: 2, Snapshot: "missing"}
 		return nil
 	}); err != nil {
@@ -150,7 +150,7 @@ func TestCleanupToolReportsRetirementAfterSuccess(t *testing.T) {
 		t.Fatalf("cleanup: %q %v", out, err)
 	}
 	state, err = r.State(ctx)
-	if err != nil || state.Members[result.Session].Status != "retired" {
+	if err != nil || state.Members[result.Session].Control != MemberControlRetired {
 		t.Fatalf("success did not retire member: %+v %v", state, err)
 	}
 }

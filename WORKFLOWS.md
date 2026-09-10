@@ -202,7 +202,8 @@ staging, commits, and publishing are outside these operations.
 Agent calls inherit the host's configured iteration limit; `maxIterations` is
 not a workflow option and is rejected, including through scope defaults.
 An exhausted call rejects with `code: "iteration_limit"`, the saved member
-`session`, partial `result`, and `usage`. It pauses the execution and retains
+`session`, partial `result`, and `usage`. It pauses the execution
+(`paused · iteration limit`) and retains
 the task, publications and worktree; it does not establish a stall or a code
 failure. A script cannot grant itself more calls by retrying a paused member.
 
@@ -212,8 +213,9 @@ Every member receives stable identity, an assignment and its bound directory.
 `read_messages` reads only the caller's mailbox. Runtime-authenticated provenance
 does not make peer text a user instruction or grant extra tools or filesystem
 authority. Information waits until the next active turn. Requests/replies may
-wake an idle member. A failed, stopped, or workflow-reserved member does not
-silently restart on peer traffic.
+wake an idle member. A failed (`paused · failed`), stopped (`paused · stopped`),
+or workflow-reserved member does not silently restart on peer traffic, and
+informational mail never starts anyone.
 
 Admitted mail remains in the model's saved history with its delivery receipt.
 The TUI omits these internal envelopes from user turns and the restored composer,
@@ -230,7 +232,10 @@ discoverable through these tools. Human inspection through `/sessions` remains
 separate from model-visible publications.
 
 Task states are `pending`, `running`, `blocked`, `changes_requested`,
-`awaiting_review`, `done`, and `canceled`. Claims require the current revision,
+`awaiting_review`, `done`, and `canceled`. Displays derive from them: a member
+reads `idle · <disposition>` once its execution completes (`awaiting review`,
+`integration pending`, `done`); see the lifecycle diagram in
+[API.md](API.md#swarm-lifecycle). Claims require the current revision,
 unassigned pending work, and accepted dependencies. Owners submit or record a
 blocker; the parent accepts, requests changes with feedback, cancels, or updates
 assignment/dependencies. Changes requested sends a request back to the owner.
@@ -248,6 +253,8 @@ available but does not reenter the scheduling queue. A subsequent assignment
 starts a new run. Defaults are 32 executing children and 256 logical starts.
 `swarm_wait` parks after the current tool batch, releases its slot, registry and
 session lease, and preserves its execution and remaining iteration allowance.
+The member shows `waiting`; a wake re-queues the same execution. A parent parked
+in its own `swarm_wait` shows `waiting` too.
 Addressed requests/replies and relevant task/dependency changes resume it.
 Blocking spawns can return `yielded` so a parent can answer; background plus wait
 is the preferred coordination pattern. Several simultaneous blocking spawns are
@@ -257,7 +264,8 @@ Workflow calls and ordinary spawns use this same pool and budget. A workflow
 reserves its members across its steps. Concurrent calls to a reserved/busy
 member fail; idle peer traffic cannot create an extra workflow-controlled turn.
 Successful workflows release reservations. Failed or canceled attempts leave
-their interrupted executions paused for explicit parent/user recovery. Completed and failed executions retain their actual outcomes; a failed workflow does not pause completed agents.
+their interrupted executions `paused · interrupted` for explicit parent/user
+recovery. Completed and failed executions retain their actual outcomes; a failed workflow does not pause completed agents.
 Failed and interrupted reports block settlement until the parent inspects and
 acknowledges them with `workflow_acknowledge` or `/swarm acknowledge-workflow ID`.
 Acknowledgment retains the report and does not accept tasks or discard changes.
@@ -403,9 +411,14 @@ supplies a promotion callback. SQLite stores domain-keyed coordination
 records with family-level membership and artifact pins. Published bytes survive
 child retirement. Rows and pins cascade when the parent is deleted or expires.
 Schema v6 adds paused child reports, preserving existing report IDs and delivery
-receipts when upgrading earlier databases.
+receipts when upgrading earlier databases. Each root's swarm records carry a
+format record written with its first coordination mutation. Roots written
+before it do not open: `swarm.ErrUnsupportedFormat` names the cause, no
+migration exists, and delegated work continues in a new session. Their records,
+transcripts, artifacts, and worktrees stay in place.
 
-Shutdown pauses members and marks interrupted workflow attempts. Reopen the
+Shutdown pauses members (`paused · interrupted`), leaves the parent
+`paused · interrupted`, and marks interrupted workflow attempts. Reopen the
 parent, inspect `/swarm`, and explicitly resume a member. A waiting/interrupted
 execution retains its consumed starts and remaining iterations; an explicitly
 retried failed execution spends another start. `/swarm grant N` adds an explicit
@@ -421,6 +434,8 @@ must settle or be canceled before taking over a member. Resuming its saved agent
 does not replay or resume JavaScript; inspect the workflow report and explicitly
 arrange any remaining workflow steps. `/swarm grant N` only extends the separate
 logical-start budget and cannot replenish an agent's model-call allowance.
+A resumed member reads `active · queued`, then `active`; `/swarm stop ID`
+reads `paused · stopped`, and cleanup `idle · retired`.
 
 Filesystem worktrees and Git references require explicit cleanup; parent TTL
 expiry does not delete source changes. Cleanup refuses unintegrated current
@@ -447,7 +462,9 @@ resumes JavaScript or reads the current worktree instead of captured results.
 `swarm_tasks` lists summaries; select `task: "<id>", section: "details"` for
 criteria and feedback, or `section: "result"` for the result (including retained
 partial results). `list_agents` returns `items` with caller `self` and `parent`
-identity, execution outcome, task disposition, and context IDs. Listings use
+identity, each item's `state` (lifecycle, busy, raw outcome, control, task
+disposition, deferral, attention, display), context IDs, and the parent's own
+`parentState`. Listings use
 1-based `offset`, default `limit: 50`, maximum 100, and a 16 KiB response budget;
 pass `next` back as `offset`. Oversized selections have bounded previews and
 complete pretty-printed text artifacts. Use the receipt's `read_artifact` ID
@@ -480,5 +497,6 @@ invalidate it. Recover retained work only after any newer run in the workspace
 settles. Paused executions retain their original remaining budget; an exhausted
 allowance needs an explicit user grant. Failed executions use the existing
 explicit restart and launch accounting. Nothing automatically replays a workflow
-or deletes retained work. Older reports remain historical; display correction
-of misleading paused labels does not accept their tasks.
+or deletes retained work. Older reports remain historical. Labels are derived
+read-only: `paused · <reason>` describes the execution and `idle · <disposition>`
+the task; reading them never accepts tasks.

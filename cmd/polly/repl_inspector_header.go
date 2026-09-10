@@ -176,6 +176,10 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		b.write(hint, "muted", "", "")
 	} else if i.target.kind == swarmViewKind {
 		b.newline()
+		if p, ok := r.parentPresentation(root); ok {
+			b.item(p.Display, "muted", "", "")
+			sep()
+		}
 		b.link("Agents", "swarm_agents", true, false)
 		for _, name := range []string{"members", "tasks", "messages", "publications", "workflows", "integrations", "previews", "raw"} {
 			sep()
@@ -195,19 +199,19 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	} else if i.target.kind == conversationViewKind && !isRoot {
 		if runtime := r.inspectedSwarm(i.target); runtime != nil {
 			r.model.mu.Lock()
-			status, active, _ := r.swarmListing(i.target.session.ID, runtime.ID)
+			p, approval, _ := r.swarmListing(i.target.session.ID, runtime.ID)
 			r.model.mu.Unlock()
 			b.newline()
-			if status != "" {
+			if status := listingLabel(p, approval); status != "" {
 				b.item(status, "muted", "", "")
 			}
-			if active {
+			if p.Busy {
 				sep()
 				b.link("Stop agent", "stop", true, false)
 			}
 			sep()
 			b.link("Send request", "message", true, false)
-			if status == "approval needed" {
+			if approval {
 				sep()
 				b.link("Review approval", "review", true, true)
 			}
@@ -251,6 +255,13 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 				sep()
 				b.link("Review approval", "review", true, true)
 			}
+		}
+	} else if i.target.kind == conversationViewKind && isRoot {
+		// The root's own line: how its last swarm turn ended, or what the
+		// swarm still needs from it.
+		if p, ok := r.parentPresentation(root); ok && tabHasSwarm(root) && parentInformative(p) {
+			b.newline()
+			b.item(p.Display, "muted", "", "")
 		}
 	}
 	return b.layout(height)

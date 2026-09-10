@@ -114,6 +114,12 @@ func WithCallID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, callIDKey{}, id)
 }
 
+// CallID returns the provider call identity planted by WithCallID, or "".
+func CallID(ctx context.Context) string {
+	id, _ := ctx.Value(callIDKey{}).(string)
+	return id
+}
+
 // Option configures the tool.
 type Option func(*Tool)
 
@@ -180,7 +186,7 @@ func (t *Tool) GetSchema() *schema.ToolSchema {
 
 func (t *Tool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	req, err := parseRequest(tools.Args(args))
-	req.CallID, _ = ctx.Value(callIDKey{}).(string)
+	req.CallID = CallID(ctx)
 	if err != nil {
 		return "", tools.NewToolError(err.Error(), "INVALID_ARGS")
 	}

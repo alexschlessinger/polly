@@ -164,7 +164,7 @@ func TestIterationGrantRestoresSameExecutionAndWorktreeFromDisk(t *testing.T) {
 	s := waitIterationMember(t, ctx, r, result.Session)
 	e := s.Executions[limit.Execution]
 	member := s.Members[result.Session]
-	if e.Status != "paused" || e.StopReason != messages.StopReasonMaxIterations || member.Status != "paused" || s.Tasks[result.Task].Status != "blocked" || len(s.Publications) != 1 {
+	if e.Status != "paused" || e.StopReason != messages.StopReasonMaxIterations || MemberState(s, member).Lifecycle != LifecyclePaused || s.Tasks[result.Task].Status != "blocked" || len(s.Publications) != 1 {
 		t.Fatalf("exhaustion state: %+v member=%+v", e, member)
 	}
 	root := s.Contexts[result.Context].Root
@@ -241,28 +241,6 @@ func TestIterationGrantRestoresSameExecutionAndWorktreeFromDisk(t *testing.T) {
 	}
 	if s.Members[result.Session].Context != result.Context || s.Members[result.Session].Task != result.Task || s.Tasks[result.Task].Status != "awaiting_review" || len(s.Publications) != 1 || s.Runs[e.Run].Starts != 1 {
 		t.Fatalf("continuation lost identity, findings or budget: %+v", s)
-	}
-}
-
-func TestLegacyIterationFailureBecomesRecoverablePause(t *testing.T) {
-	for _, message := range []string{llm.ErrMaxIterations.Error(), "max iterations exceeded\ncheckpoint failed"} {
-		executions, _ := json.Marshal(map[string]*Execution{"e": {ID: "e", Member: "member", Status: "failed", Iterations: 8, Request: AgentRequest{MaxIterations: 8}, Error: message}})
-		var records map[string]json.RawMessage
-		if err := json.Unmarshal(executions, &records); err != nil {
-			t.Fatal(err)
-		}
-		s, err := decodeState(&sessions.CoordinationState{Records: map[string]map[string]json.RawMessage{"execution": records}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		e := s.Executions["e"]
-		if message == llm.ErrMaxIterations.Error() {
-			if e.Status != "paused" || e.StopReason != messages.StopReasonMaxIterations || !strings.Contains(e.Error, "8/8") {
-				t.Fatalf("legacy failure: %+v", e)
-			}
-		} else if e.Status != "failed" {
-			t.Fatal("mixed failure became resumable exhaustion")
-		}
 	}
 }
 
@@ -383,7 +361,7 @@ func TestResumeReportsNewTurnBudgetRefusal(t *testing.T) {
 		t.Fatalf("resume swallowed launch refusal: %v", err)
 	}
 	s, err := r.State(ctx)
-	if err != nil || len(s.Executions) != 1 || s.Members[result.Session].Status != "idle" {
+	if err != nil || len(s.Executions) != 1 || MemberState(s, s.Members[result.Session]).Lifecycle != LifecycleIdle {
 		t.Fatalf("refused resume changed the member: %+v %v", s, err)
 	}
 }
@@ -474,7 +452,7 @@ func TestIterationResumeSerializesAssignmentAndStop(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if action == "stop" && s.Members[result.Session].Status != "stopped" {
+			if action == "stop" && s.Members[result.Session].Control != MemberControlStopped {
 				t.Fatal("resume overwrote the concurrent stop")
 			}
 			if s.Tasks[result.Task].Owner != result.Session {

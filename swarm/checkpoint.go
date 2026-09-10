@@ -60,9 +60,11 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 				}
 				e.Intent = nil
 				e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[persisted:]))
-				if checkpoint.Final {
+				// Only a parked invocation is waiting: the yield's final
+				// checkpoint commits the batch and the status together. Every
+				// other exit stays running until finish records its outcome.
+				if checkpoint.Final && errors.Is(checkpoint.Err, ErrYielded) {
 					e.Status = "waiting"
-					s.Members[raw.ActorID].Status = "waiting"
 				}
 			}
 			if execution == "" {
@@ -164,10 +166,11 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 	}
 }
 
-// BindParent adds mail admission and progressive persistence while preserving
-// the UI's first-input gate. The caller persists only response.AllMessages
-// after response.PersistedMessages at turn end.
-func (r *Runtime) BindParent(cb *llm.AgentCallbacks, allowed func() bool) {
+// bindParent adds mail admission, progressive persistence and settlement
+// while preserving the UI's first-input gate. RunParent applies it to a copy
+// of the host's callbacks; the host persists only response.AllMessages after
+// response.PersistedMessages at turn end.
+func (r *Runtime) bindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 	priorToolContext := cb.BeforeToolExecute
 	cb.BeforeToolExecute = func(ctx context.Context, call messages.ChatMessageToolCall, args map[string]any) context.Context {
 		if priorToolContext != nil {
@@ -186,7 +189,9 @@ func (r *Runtime) BindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 	var last [32]byte
 	var prompted bool
 	cb.ContinueAfterFinal = func(ctx context.Context, _ *messages.ChatMessage) ([]messages.ChatMessage, error) {
+		r.parentTurn.setSettling(true)
 		settleErr := r.Settle(ctx)
+		r.parentTurn.setSettling(false)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -210,7 +215,7 @@ func (r *Runtime) BindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 		}
 		fingerprint := sha256.Sum256([]byte(coordinationFingerprint(s)))
 		if prompted && last == fingerprint {
-			return nil, settleErr
+			return nil, &settlementBlockedError{settleErr}
 		}
 		prompted = true
 		last = fingerprint

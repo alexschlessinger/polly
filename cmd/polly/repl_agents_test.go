@@ -131,7 +131,7 @@ func TestAgentLaunchFailuresAndFallbacks(t *testing.T) {
 			tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 			tui.AppendToolEnd(call, tc.result, time.Millisecond, tc.err)
 			record, row := m.toolDisclosureRowForCall("a")
-			if row.agent.label != tc.label || row.agent.status != tc.status || row.agent.active {
+			if row.agent.label != tc.label || row.agent.display() != tc.status || row.agent.busy() {
 				t.Fatalf("row = %+v", row.agent)
 			}
 			m.toggleDisclosureGroup(activityAgents, []int64{record.id}, 0)
@@ -285,7 +285,7 @@ func TestHydratedAgentsUseVerifiedIdentityAndFirstOutcome(t *testing.T) {
 		{Metadata: &sessions.Metadata{Name: "duplicate-2", Parent: "parent", SpawnCallID: "ambiguous"}},
 	})
 	for _, tc := range []struct{ id, session, status string }{
-		{"done", "renamed-child", "done"}, {"legacy", "", "unknown"}, {"blocking", "", "done"}, {"ambiguous", "", "done"},
+		{"done", "renamed-child", "idle · done"}, {"legacy", "", "unknown"}, {"blocking", "", "done"}, {"ambiguous", "", "done"},
 	} {
 		var row *toolDisclosureRow
 		for _, record := range m.toolDisclosures.all() {
@@ -295,7 +295,7 @@ func TestHydratedAgentsUseVerifiedIdentityAndFirstOutcome(t *testing.T) {
 				}
 			}
 		}
-		if row == nil || row.agent.session != tc.session || row.agent.status != tc.status || row.agent.active {
+		if row == nil || row.agent.session != tc.session || row.agent.display() != tc.status || row.agent.busy() {
 			t.Fatalf("%s: %+v", tc.id, row)
 		}
 	}

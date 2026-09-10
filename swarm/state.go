@@ -3,6 +3,7 @@
 package swarm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
@@ -42,17 +44,17 @@ type Usage struct {
 	CachedInputTokens *int `json:"cachedInputTokens"`
 }
 type Member struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Label      string   `json:"label"`
-	Status     string   `json:"status"`
-	Controller string   `json:"controller,omitempty"`
-	Context    string   `json:"context"`
-	Tools      []string `json:"tools"`
-	Model      string   `json:"model"`
-	Task       string   `json:"task,omitempty"`
-	Execution  string   `json:"execution,omitempty"`
-	ReadOnly   bool     `json:"readOnly"`
+	ID         string        `json:"id"`
+	Name       string        `json:"name"`
+	Label      string        `json:"label"`
+	Control    MemberControl `json:"control,omitempty"`
+	Controller string        `json:"controller,omitempty"`
+	Context    string        `json:"context"`
+	Tools      []string      `json:"tools"`
+	Model      string        `json:"model"`
+	Task       string        `json:"task,omitempty"`
+	Execution  string        `json:"execution,omitempty"`
+	ReadOnly   bool          `json:"readOnly"`
 }
 type Task struct {
 	Deferral         *TaskDeferral `json:"deferral,omitempty"`
@@ -150,54 +152,112 @@ type State struct {
 	Snapshots    map[string]*worktree.Snapshot    `json:"snapshots"`
 	Previews     map[string]*worktree.Preview     `json:"previews"`
 	Workflows    map[string]*workflow.Report      `json:"workflows"`
+	// Format is nil until the root's first coordination mutation records it.
+	Format *FormatRecord `json:"format,omitempty"`
 }
 
 func decodeState(raw *sessions.CoordinationState) (*State, error) {
 	s := &State{}
+	format, err := decodeFormat(raw)
+	if err != nil {
+		return nil, err
+	}
+	if swarmRecordsPresent(raw) && (format == nil || format.Version != swarmFormatVersion) {
+		return nil, unsupportedFormat(raw.ParentID, format)
+	}
+	s.Format = format
 	// Keep each domain in separately keyed records. All affected records and
 	// transcript receipts commit in the same SQLite transaction.
 	steps := map[string]*workflow.Step{}
-	fields := map[string]any{"integration": &s.Integrations, "apply": &s.Applies, "parent_turn": &s.ParentTurns, "run": &s.Runs, "member": &s.Members, "task": &s.Tasks, "mail": &s.Messages, "publication": &s.Publications, "execution": &s.Executions, "context": &s.Contexts, "snapshot": &s.Snapshots, "preview": &s.Previews, "workflow": &s.Workflows, "workflow_step": &steps}
-	for kind, target := range fields {
-		records := raw.Records[kind]
-		if records == nil {
-			records = map[string]json.RawMessage{}
-		}
-		data, err := json.Marshal(records)
-		if err != nil {
-			return nil, err
-		}
-		if err = json.Unmarshal(data, target); err != nil {
-			return nil, fmt.Errorf("read swarm %s: %w", kind, err)
-		}
+	if err := errors.Join(
+		decodeRecords(raw, "integration", &s.Integrations),
+		decodeRecords(raw, "apply", &s.Applies),
+		decodeRecords(raw, "parent_turn", &s.ParentTurns),
+		decodeRecords(raw, "run", &s.Runs),
+		decodeRecords(raw, "member", &s.Members),
+		decodeRecords(raw, "task", &s.Tasks),
+		decodeRecords(raw, "mail", &s.Messages),
+		decodeRecords(raw, "publication", &s.Publications),
+		decodeRecords(raw, "execution", &s.Executions),
+		decodeRecords(raw, "context", &s.Contexts),
+		decodeRecords(raw, "snapshot", &s.Snapshots),
+		decodeRecords(raw, "preview", &s.Previews),
+		decodeRecords(raw, "workflow", &s.Workflows),
+		decodeRecords(raw, "workflow_step", &steps),
+	); err != nil {
+		return nil, err
 	}
 	if err := attachWorkflowSteps(s.Workflows, steps); err != nil {
 		return nil, err
 	}
-	s.normalizeIterationLimits()
 	return s, nil
 }
-func encodeState(raw *sessions.CoordinationState, s *State) error {
-	// A workflow's steps are records of their own, so each checkpoint of a
-	// long run rewrites one step instead of the whole report.
-	reports, steps := detachWorkflowSteps(s.Workflows)
-	fields := map[string]any{"integration": s.Integrations, "apply": s.Applies, "parent_turn": s.ParentTurns, "run": s.Runs, "member": s.Members, "task": s.Tasks, "mail": s.Messages, "publication": s.Publications, "execution": s.Executions, "context": s.Contexts, "snapshot": s.Snapshots, "preview": s.Previews, "workflow": reports, "workflow_step": steps}
-	for kind, value := range fields {
+
+// decodeRecords unmarshals one kind's records straight into their typed map.
+// Each record is its own JSON document, so nothing is re-encoded to read it.
+// A kind without records leaves an empty map so callers can index it.
+func decodeRecords[T any](raw *sessions.CoordinationState, kind string, target *map[string]T) error {
+	records := raw.Records[kind]
+	out := make(map[string]T, len(records))
+	for id, data := range records {
+		var value T
+		if err := json.Unmarshal(data, &value); err != nil {
+			return fmt.Errorf("read swarm %s: %w", kind, err)
+		}
+		out[id] = value
+	}
+	*target = out
+	return nil
+}
+func encodeRecords[T any](raw *sessions.CoordinationState, kind string, values map[string]T) error {
+	group := make(map[string]json.RawMessage, len(values))
+	for id, value := range values {
 		data, err := json.Marshal(value)
 		if err != nil {
 			return err
 		}
-		var group map[string]json.RawMessage
-		if err = json.Unmarshal(data, &group); err != nil {
+		group[id] = data
+	}
+	raw.Records[kind] = group
+	return nil
+}
+
+func encodeState(raw *sessions.CoordinationState, s *State) error {
+	// A workflow's steps are records of their own, so each checkpoint of a
+	// long run rewrites one step instead of the whole report.
+	reports, steps := detachWorkflowSteps(s.Workflows)
+	if err := errors.Join(
+		encodeRecords(raw, "integration", s.Integrations),
+		encodeRecords(raw, "apply", s.Applies),
+		encodeRecords(raw, "parent_turn", s.ParentTurns),
+		encodeRecords(raw, "run", s.Runs),
+		encodeRecords(raw, "member", s.Members),
+		encodeRecords(raw, "task", s.Tasks),
+		encodeRecords(raw, "mail", s.Messages),
+		encodeRecords(raw, "publication", s.Publications),
+		encodeRecords(raw, "execution", s.Executions),
+		encodeRecords(raw, "context", s.Contexts),
+		encodeRecords(raw, "snapshot", s.Snapshots),
+		encodeRecords(raw, "preview", s.Previews),
+		encodeRecords(raw, "workflow", reports),
+		encodeRecords(raw, "workflow_step", steps),
+	); err != nil {
+		return err
+	}
+	format := map[string]json.RawMessage{}
+	if s.Format != nil {
+		data, err := json.Marshal(s.Format)
+		if err != nil {
 			return err
 		}
-		raw.Records[kind] = group
+		format[formatID] = data
 	}
+	raw.Records[formatKind] = format
 	return nil
 }
 
 // Step records are keyed "<report>/<index>". A report that still carries
-// embedded steps predates the split and is read as it was written.
+// embedded steps predates the split and is unsupported.
 func detachWorkflowSteps(reports map[string]*workflow.Report) (map[string]*workflow.Report, map[string]workflow.Step) {
 	headers := make(map[string]*workflow.Report, len(reports))
 	steps := map[string]workflow.Step{}
@@ -226,7 +286,7 @@ func attachWorkflowSteps(reports map[string]*workflow.Report, steps map[string]*
 	}
 	for id, report := range reports {
 		if len(report.Steps) > 0 {
-			continue
+			return fmt.Errorf("read swarm workflow %s: embedded steps: %w", id, ErrUnsupportedFormat)
 		}
 		report.Steps = make([]workflow.Step, len(indexed[id]))
 		for index, step := range indexed[id] {
@@ -305,7 +365,7 @@ func compactRoster(s *State) string {
 	b.WriteString("Roster at assignment start (use list_agents to refresh):\n")
 	for _, id := range ids[:min(32, len(ids))] {
 		m := s.Members[id]
-		fmt.Fprintf(&b, "%s · %s · %s · task %s\n", m.ID, m.Label, m.Status, m.Task)
+		fmt.Fprintf(&b, "%s · %s · %s · task %s\n", m.ID, m.Label, MemberState(s, m).Display, m.Task)
 	}
 	if len(ids) > 32 {
 		fmt.Fprintf(&b, "%d additional members available through list_agents.\n", len(ids)-32)
@@ -313,7 +373,55 @@ func compactRoster(s *State) string {
 	return b.String()
 }
 
-func (r *Runtime) State(ctx context.Context) (*State, error) { return r.read(ctx) }
+// State is the display's read. Successive calls share one decode until a
+// record changes, so treat the result as read-only.
+func (r *Runtime) State(ctx context.Context) (*State, error) {
+	raw, err := r.parent.ReadCoordination(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.view.decode(raw)
+}
+
+// StateCache hands back the previous decode whenever a fresh read finds every
+// record byte-identical. A display polling a swarm between checkpoints pays
+// for the row scan, not for decoding megabytes of unchanged records.
+type StateCache struct {
+	mu    sync.Mutex
+	raw   map[string]map[string]json.RawMessage
+	state *State
+}
+
+func (c *StateCache) decode(raw *sessions.CoordinationState) (*State, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != nil && sameRecords(c.raw, raw.Records) {
+		return c.state, nil
+	}
+	s, err := decodeState(raw)
+	if err != nil {
+		return nil, err
+	}
+	c.raw, c.state = raw.Records, s
+	return s, nil
+}
+func sameRecords(a, b map[string]map[string]json.RawMessage) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for kind, group := range a {
+		other, ok := b[kind]
+		if !ok || len(other) != len(group) {
+			return false
+		}
+		for id, value := range group {
+			if previous, ok := other[id]; !ok || !bytes.Equal(previous, value) {
+				return false
+			}
+		}
+	}
+	return true
+}
 func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, deps []string, owner string) (*Task, error) {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()

@@ -109,6 +109,8 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 }
 
 func (r *Runtime) waitParent(ctx context.Context) error {
+	end := r.parentTurn.beginWait(subagent.CallID(ctx))
+	defer end()
 	s, err := r.read(ctx)
 	if err != nil {
 		return err
@@ -137,6 +139,9 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 // coordinationFingerprint covers what a waiting parent acts on: task changes
 // and member or workflow status transitions. A member that was already parked
 // when the wait began is not news, so its steady state cannot end the wait.
+// Members hash by lifecycle, control and execution identity: a wake that moves
+// the same execution from queued to running is not a transition, and labels
+// never are.
 func coordinationFingerprint(s *State) string {
 	statuses := map[string]any{}
 	for id, t := range s.Tasks {
@@ -147,7 +152,17 @@ func coordinationFingerprint(s *State) string {
 		}{t.Status, t.Owner, t.Execution, t.Snapshot, t.Feedback, t.Revision, t.AcceptedRevision, TaskDeferred(s, t)}
 	}
 	for id, m := range s.Members {
-		statuses["member:"+id] = MemberState(s, m)
+		generation := 0
+		if e := s.Executions[m.Execution]; e != nil {
+			generation = e.Generation
+		}
+		p := MemberState(s, m)
+		statuses["member:"+id] = struct {
+			Lifecycle  Lifecycle
+			Control    MemberControl
+			Execution  string
+			Generation int
+		}{p.Lifecycle, p.Control, m.Execution, generation}
 	}
 	for id, w := range s.Workflows {
 		statuses["workflow:"+id] = struct {
@@ -200,8 +215,12 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 			}
 		} else if task.Status == "changes_requested" {
 			owner := s.Members[task.Owner]
+			var execution *Execution
+			if owner != nil {
+				execution = s.Executions[owner.Execution]
+			}
 			switch {
-			case owner == nil || owner.Status == "retired" || s.Contexts[owner.Context] == nil:
+			case owner == nil || owner.Control == MemberControlRetired || s.Contexts[owner.Context] == nil:
 				result["nextAction"] = "The previous member cannot resume; use swarm_update_task to reassign the task to an available member, or cancel the task."
 			case owner.Controller != "":
 				if w := s.Workflows[owner.Controller]; w != nil && w.Status == "running" {
@@ -209,7 +228,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 				} else {
 					result["nextAction"] = "Use swarm_control resume with the member ID after other active work settles. The terminal workflow is not replayed."
 				}
-			case owner.Status == "paused" || owner.Status == "stopped":
+			case owner.Control == MemberControlStopped || execution != nil && (execution.Status == "paused" || execution.Status == "failed"):
 				result["nextAction"] = "Use swarm_control resume with the member ID to request a revised submission; an exhausted iteration allowance requires a user-directed grant."
 			default:
 				result["nextAction"] = "Wait for the member's revised submission."

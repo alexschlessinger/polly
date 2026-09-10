@@ -104,7 +104,7 @@ func TestContextCleanupRecordsRetirementBeforeFilesChange(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if !state.Contexts[copy.ID].Retiring || state.Members[ref.Task].Status != "retired" || state.Tasks[ref.Task].StartingSnapshot != copy.Checkout.Base.ID {
+					if !state.Contexts[copy.ID].Retiring || state.Members[ref.Task].Control != MemberControlRetired || state.Tasks[ref.Task].StartingSnapshot != copy.Checkout.Base.ID {
 						t.Fatal("retirement or provenance was not durable before cleanup")
 					}
 					if _, err := os.Stat(copy.Root); err != nil {

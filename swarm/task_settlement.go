@@ -34,7 +34,7 @@ func taskSnapshots(s *State, task *Task) (base, submitted *worktree.Snapshot) {
 	} else {
 		// Cleanup pins these two exact snapshot IDs before deleting the copy.
 		// Requiring new fields here would strand previously saved retirements.
-		if owner.Status != "retired" || task.StartingSnapshot == "" {
+		if owner.Control != MemberControlRetired || task.StartingSnapshot == "" {
 			return nil, nil
 		}
 		base = s.Snapshots[task.StartingSnapshot]

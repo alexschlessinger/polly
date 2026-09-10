@@ -81,12 +81,14 @@ type AgentResult struct {
 type invocation struct {
 	waitState  string
 	id, member string
+	generation int
 	done       chan struct{}
 	cancel     context.CancelFunc
 	result     AgentResult
 	err        error
 }
 type Runtime struct {
+	parentTurn      parentTracker
 	gate            *tools.ExecutionGate
 	ID              string
 	config          Config
@@ -107,6 +109,7 @@ type Runtime struct {
 	workflowCancels map[string]context.CancelFunc
 	contextLocks    map[string]*sync.Mutex
 	notify          chan struct{}
+	view            StateCache
 	yield           chan struct{}
 	wg              sync.WaitGroup
 	parentTools     sync.Mutex
@@ -257,16 +260,14 @@ func (r *Runtime) prepare(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if s.Format == nil {
+			s.Format = &FormatRecord{Version: swarmFormatVersion}
+		}
 		for _, e := range s.Executions {
 			if e.Status == "running" || e.Status == "waiting" || e.Status == "queued" {
 				e.Generation++
 				e.Status = "paused"
 				e.Error = "process interrupted; explicit resume required"
-			}
-		}
-		for _, m := range s.Members {
-			if m.Status == "running" || m.Status == "waiting" || m.Status == "queued" {
-				m.Status = "paused"
 			}
 		}
 		for _, w := range s.Workflows {
@@ -383,13 +384,32 @@ func (r *Runtime) makeContext(ctx context.Context, actor string, req AgentReques
 	return c, err
 }
 
+// launchIntent is host authority, never model-facing. The zero value is an
+// ordinary launch: a spawn, a workflow agent or a peer wake. A resume clears
+// a stop and a terminal workflow reservation, reactivates deferred work and
+// applies its grant inside the launch transaction, so a refusal changes nothing.
+type launchIntent struct {
+	resume bool
+	grant  int
+}
+
 func (r *Runtime) start(ctx context.Context, controller string, req AgentRequest) (*invocation, error) {
 	r.launchMu.Lock()
 	defer r.launchMu.Unlock()
-	return r.startLocked(ctx, controller, req)
+	return r.startLocked(ctx, controller, req, launchIntent{})
 }
 
-func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentRequest) (*invocation, error) {
+// workflowReserved reports whether a live workflow still owns the member.
+func (r *Runtime) workflowReserved(controller string) bool {
+	if controller == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.workflowCancels[controller] != nil
+}
+
+func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentRequest, intent launchIntent) (*invocation, error) {
 	if r.closing || r.ctx.Err() != nil {
 		return nil, context.Canceled
 	}
@@ -438,7 +458,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 				}
 			}
 		}
-		if run.Starts >= run.Limit || run.Status == "paused" {
+		limit, status := run.Limit, run.Status
+		if intent.grant > 0 {
+			limit, status = limit+intent.grant, "running"
+		}
+		if run.Starts >= limit || status == "paused" {
 			return nil, errors.Join(ErrBudget, r.pauseBudget(ctx, run.ID))
 		}
 	}
@@ -460,7 +484,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if m == nil {
 			return nil, errors.New("unknown member session")
 		}
-		if m.Controller != "" && m.Controller != controller {
+		if intent.resume {
+			if r.workflowReserved(m.Controller) {
+				return nil, fail("session_busy", "member is reserved by an active workflow; wait for it to settle or cancel it before resuming")
+			}
+		} else if m.Controller != "" && m.Controller != controller {
 			return nil, fail("session_busy", "member is reserved by a workflow")
 		}
 		if req.Source != "" || req.Snapshot != "" || req.Context != "" || req.Model != "" || req.Tools != nil {
@@ -501,7 +529,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if model == "" {
 			model = defaults.request.Model
 		}
-		m = &Member{ID: identity, Name: name, Label: req.Label, Status: "idle", Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ReadOnly: c.ReadOnly}
+		m = &Member{ID: identity, Name: name, Label: req.Label, Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ReadOnly: c.ReadOnly}
 		err = r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 			s, err := decodeState(raw)
 			if err != nil {
@@ -535,16 +563,39 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 	r.mu.Unlock()
 	r.parentTools.Lock()
 	err := r.update(ctx, func(s *State) error {
+		stored := s.Members[m.ID]
+		if stored == nil {
+			return errors.New("unknown member session")
+		}
+		if intent.resume {
+			if stored.Control == MemberControlRetired || s.Contexts[stored.Context] == nil {
+				return errors.New("member's execution context has been retired")
+			}
+			if r.workflowReserved(stored.Controller) {
+				return fail("session_busy", "member is reserved by an active workflow; wait for it to settle or cancel it before resuming")
+			}
+			// Deferred work rejoins its original run before the budget is judged.
+			if err := reactivateTask(s, s.Tasks[stored.Task]); err != nil {
+				return err
+			}
+		}
 		run := r.currentRun(s)
+		if err := applyGrant(run, intent.grant); err != nil {
+			return err
+		}
 		if run.Status != "running" || run.Starts >= run.Limit {
 			return ErrBudget
 		}
-		stored := s.Members[m.ID]
-		if stored.Controller != "" && stored.Controller != controller {
+		if intent.resume {
+			stored.Controller = ""
+			if stored.Control == MemberControlStopped {
+				stored.Control = MemberControlEnabled
+			}
+		} else if stored.Controller != "" && stored.Controller != controller {
 			return fail("session_busy", "member reserved by another workflow")
 		}
-		if stored.Status == "paused" || stored.Status == "failed" || stored.Status == "stopped" || stored.Status == "retired" {
-			return errors.New("member is paused; explicit resume or takeover required")
+		if err := launchRefusal(s, stored, intent.resume); err != nil {
+			return err
 		}
 		task := s.Tasks[req.TaskID]
 		if req.Session != "" && req.TaskID == "" {
@@ -571,7 +622,6 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		stored.Task = task.ID
 		task.Execution = i.id
 		stored.Execution = i.id
-		stored.Status = "queued"
 		stored.Controller = controller
 		run.Starts++
 		e := &Execution{Workflow: controller, ID: i.id, Run: run.ID, Member: m.ID, Status: "queued", Request: req, Generation: 1}
@@ -596,6 +646,8 @@ func (r *Runtime) Agent(ctx context.Context, controller string, req AgentRequest
 	if err != nil {
 		return AgentResult{}, err
 	}
+	end := r.parentTurn.beginWait(subagent.CallID(ctx))
+	defer end()
 	select {
 	case <-i.done:
 		return i.result, i.err
@@ -637,6 +689,8 @@ func (r *Runtime) Spawn(ctx context.Context, req subagent.Request) (subagent.Res
 	if req.Background {
 		return subagent.Result{Started: true, Session: i.member, Done: i.done}, nil
 	}
+	end := r.parentTurn.beginWait(req.CallID)
+	defer end()
 	select {
 	case <-i.done:
 		return result(), i.err
@@ -701,6 +755,18 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 			case <-notify:
 			}
 		}
+		// A wake re-queues the same execution: the record says queued while
+		// the invocation waits for a slot and running once the slice starts.
+		if err := r.update(ctx, func(s *State) error {
+			if e := s.Executions[i.id]; e != nil && e.Generation == i.generation && e.Status == "waiting" {
+				e.Status = "queued"
+			}
+			return nil
+		}); err != nil {
+			i.err = err
+			r.finish(i)
+			return
+		}
 	}
 }
 
@@ -715,6 +781,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if m == nil || e == nil {
 		return AgentResult{}, errors.New("execution disappeared")
 	}
+	i.generation = e.Generation
 	i.waitState = waitState(s, i.member)
 	if task := s.Tasks[m.Task]; task != nil && task.Status == "canceled" {
 		return AgentResult{}, errors.New("assigned task was canceled")
@@ -758,7 +825,6 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	coord := session.(sessions.CoordinationSession)
 	if err = r.update(ctx, func(s *State) error {
 		s.Executions[i.id].Status = "running"
-		s.Members[m.ID].Status = "running"
 		return nil
 	}); err != nil {
 		return AgentResult{}, err
@@ -1107,14 +1173,12 @@ func (r *Runtime) finish(i *invocation) {
 			} else if errors.Is(i.err, context.Canceled) {
 				e.Status = "paused"
 			}
-			m.Status = e.Status
 			if task := s.Tasks[m.Task]; task != nil && task.Owner == m.ID && task.Execution == i.id && task.Status == "running" {
 				task.Status, task.Feedback = "blocked", e.Error
 				task.Revision++
 			}
 		} else {
 			e.Status = "completed"
-			m.Status = "idle"
 			if task := s.Tasks[m.Task]; task != nil && task.Execution == i.id && task.Owner == m.ID && task.Status == "running" {
 				task.Result = i.result.Value
 				task.Status = "awaiting_review"
@@ -1171,10 +1235,10 @@ func (r *Runtime) wakeIdleMember(memberID string) {
 		return
 	}
 	m := s.Members[memberID]
-	if m == nil || m.Status != "idle" || m.Controller != "" || !hasWakeMail(s, memberID) {
+	if !wakeEligible(s, m) {
 		return
 	}
-	_, _ = r.startLocked(r.ctx, "", AgentRequest{Session: memberID, Task: "Respond to your pending addressed requests and report any resulting work."})
+	_, _ = r.startLocked(r.ctx, "", AgentRequest{Session: memberID, Task: "Respond to your pending addressed requests and report any resulting work."}, launchIntent{})
 }
 
 // Resume continues a paused execution using its remaining iteration allowance.
@@ -1202,187 +1266,164 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 	if grant < 0 {
 		return errors.New("execution grant cannot be negative")
 	}
+	if memberID == "" {
+		// A bare grant funds the current run without launching anyone.
+		return r.update(ctx, func(s *State) error { return applyGrant(r.currentRun(s), grant) })
+	}
 	r.mu.Lock()
 	busy := r.active[memberID] != nil
 	r.mu.Unlock()
-	if memberID != "" && busy {
+	if busy {
 		return fail("session_busy", "member is already executing")
 	}
+	s, err := r.read(ctx)
+	if err != nil {
+		return err
+	}
+	m := s.Members[memberID]
+	if m == nil {
+		return errors.New("unknown member")
+	}
+	e, continues, err := resumeTarget(s, m, additional, r.workflowReserved(m.Controller))
+	if err != nil {
+		return err
+	}
+	if !continues {
+		// A completed or failed execution needs a new logical turn, which must
+		// fit the run budget. The launch transaction owns the grant, the stop
+		// and the deferral, so a refusal reports synchronously and changes nothing.
+		_, err = r.startLocked(ctx, "", AgentRequest{Session: memberID, Task: "Resume the assigned work after the explicit parent resume. Review pending requests and any blocker feedback."}, launchIntent{resume: true, grant: grant})
+		return err
+	}
+	return r.continueExecution(ctx, memberID, e.ID, grant, additional)
+}
+
+// continueExecution resumes a paused execution in place with its remaining
+// allowance. It spends no run start. Assignment checks and slot registration
+// stay indivisible to task edits: parentTools is held until the goroutine owns
+// the invocation.
+func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID string, grant, additional int) error {
 	var resume *Execution
-	var restart *Member
-	var deferred *TaskDeferral
-	var deferredTask, deferredRun, deferredRunStatus string
-	// Keep assignment checks and slot registration indivisible to task edits.
 	r.parentTools.Lock()
-	unlockTasks := sync.OnceFunc(r.parentTools.Unlock)
-	defer unlockTasks()
+	defer r.parentTools.Unlock()
 	err := r.update(ctx, func(s *State) error {
-		if m := s.Members[memberID]; m != nil {
-			if task := s.Tasks[m.Task]; task != nil && task.Deferral != nil {
-				copy := *task.Deferral
-				deferred, deferredTask, deferredRun = &copy, task.ID, task.Run
-				if run := s.Runs[task.Run]; run != nil {
-					deferredRunStatus = run.Status
-				}
-			}
-			if err := reactivateTask(s, s.Tasks[m.Task]); err != nil {
-				return err
-			}
+		m := s.Members[memberID]
+		if m == nil {
+			return errors.New("unknown member")
+		}
+		e, continues, err := resumeTarget(s, m, additional, r.workflowReserved(m.Controller))
+		if err != nil {
+			return err
+		}
+		if !continues || e.ID != executionID {
+			return errors.New("execution changed; retry the resume")
+		}
+		// Deferred work rejoins its original run before the budget is judged.
+		if err := reactivateTask(s, s.Tasks[m.Task]); err != nil {
+			return err
 		}
 		run := r.currentRun(s)
-		if grant > 0 {
-			if grant > int(^uint(0)>>1)-run.Limit {
-				return errors.New("execution grant exceeds the supported limit")
-			}
-			run.Limit += grant
-			run.Status = "running"
+		if err := applyGrant(run, grant); err != nil {
+			return err
 		}
-		if memberID != "" {
-			m := s.Members[memberID]
-			if m == nil {
-				return errors.New("unknown member")
-			}
-			if m.Status == "retired" || s.Contexts[m.Context] == nil {
-				return errors.New("member's execution context has been retired")
-			}
-			r.mu.Lock()
-			workflowActive := r.workflowCancels[m.Controller] != nil
-			r.mu.Unlock()
-			if workflowActive {
-				return fail("session_busy", "member is reserved by an active workflow; wait for it to settle or cancel it before resuming")
-			}
-			e := s.Executions[m.Execution]
-			if additional > 0 && (e == nil || e.Status != "paused") {
-				return errors.New("additional iterations require a paused execution")
-			}
-			if e != nil && e.Status == "paused" {
-				if run.Status == "paused" || e.Run != run.ID {
-					return ErrBudget
-				}
-				task := s.Tasks[m.Task]
-				if task == nil || task.Owner != m.ID || task.Execution != e.ID || task.Run != run.ID || (task.Status != "blocked" && task.Status != "running" && task.Status != "changes_requested") || !depsDone(s, task) {
-					return errors.New("task is not available for continuation; check its owner, acceptance and dependencies")
-				}
-				if e.Request.MaxIterations <= 0 {
-					e.Request.MaxIterations = r.currentDefaults().agent.MaxIterations
-				}
-				limit := e.Request.MaxIterations
-				if additional > 0 {
-					if additional > int(^uint(0)>>1)-limit {
-						return errors.New("iteration grant exceeds the supported limit")
-					}
-					e.Request.MaxIterations += additional
-				}
-				if e.Iterations >= e.Request.MaxIterations && e.Completion == nil {
-					return e.iterationLimitError()
-				}
-				if task.Feedback == e.Error {
-					task.Feedback = ""
-				}
-				e.Generation++
-				e.Status = "queued"
-				e.Error = ""
-				e.StopReason = ""
-				m.Controller = ""
-				m.Status = "queued"
-				if task.Status == "blocked" {
-					task.Status = "running"
-					task.Revision++
-				}
-				resume = e
-			} else {
-				copy := *m
-				restart = &copy
-				m.Controller = ""
-				m.Status = "idle"
-			}
+		if run.Status == "paused" || e.Run != run.ID {
+			return ErrBudget
 		}
+		task := s.Tasks[m.Task]
+		if task == nil || task.Owner != m.ID || task.Execution != e.ID || task.Run != run.ID || (task.Status != "blocked" && task.Status != "running" && task.Status != "changes_requested") || !depsDone(s, task) {
+			return errors.New("task is not available for continuation; check its owner, acceptance and dependencies")
+		}
+		if e.Request.MaxIterations <= 0 {
+			e.Request.MaxIterations = r.currentDefaults().agent.MaxIterations
+		}
+		if additional > 0 {
+			if additional > int(^uint(0)>>1)-e.Request.MaxIterations {
+				return errors.New("iteration grant exceeds the supported limit")
+			}
+			e.Request.MaxIterations += additional
+		}
+		if e.Iterations >= e.Request.MaxIterations && e.Completion == nil {
+			return e.iterationLimitError()
+		}
+		if task.Feedback == e.Error {
+			task.Feedback = ""
+		}
+		e.Generation++
+		e.Status = "queued"
+		e.Error = ""
+		e.StopReason = ""
+		m.Controller = ""
+		if m.Control == MemberControlStopped {
+			m.Control = MemberControlEnabled
+		}
+		if task.Status == "blocked" {
+			task.Status = "running"
+			task.Revision++
+		}
+		resume = e
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if resume != nil {
-		launched := false
-		defer func() {
-			if !launched {
-				_ = r.update(context.WithoutCancel(ctx), func(s *State) error {
-					s.Executions[resume.ID].Status = "paused"
-					s.Members[memberID].Status = "paused"
-					return nil
-				})
-			}
-		}()
-		// If a process died inside a batch, record what may have happened.
-		// The agent receives interrupted receipts; the runtime never executes
-		// the uncertain calls again on its own.
-		if len(resume.Intent) > 0 {
-			s, err := r.read(ctx)
-			if err != nil {
-				return err
-			}
-			m := s.Members[memberID]
-			session, err := r.acquireMemberSession(ctx, m)
-			if err != nil {
-				return err
-			}
-			err = session.(sessions.CoordinationSession).UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-				s, err := decodeState(raw)
-				if err != nil {
-					return err
-				}
-				e := s.Executions[resume.ID]
-				if e.Generation != resume.Generation {
-					return errors.New("recovery generation changed")
-				}
-				raw.Append = append(raw.Append, e.Intent...)
-				if len(e.Intent) > 0 {
-					for _, call := range e.Intent[len(e.Intent)-1].ToolCalls {
-						raw.Append = append(raw.Append, messages.ChatMessage{Role: messages.MessageRoleTool, ToolName: call.Name, ToolCallID: call.ID, Content: llm.ToolInterruptedContent})
-					}
-				}
-				e.Intent = nil
-				return encodeState(raw, s)
-			})
-			closeErr := session.Close()
-			if err != nil {
-				return err
-			}
-			if closeErr != nil {
-				return closeErr
-			}
-		}
-		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		stop := context.AfterFunc(r.ctx, cancel)
-		i := &invocation{id: resume.ID, member: memberID, done: make(chan struct{}), cancel: func() { stop(); cancel() }}
-		r.mu.Lock()
-		r.active[memberID] = i
-		r.mu.Unlock()
-		r.wg.Add(1)
-		launched = true
-		go r.execute(runCtx, i)
-	} else if restart != nil {
-		// Report launch refusals synchronously. A failed/completed invocation
-		// needs a new logical service turn and must still fit the run budget.
-		unlockTasks()
-		_, err = r.startLocked(ctx, "", AgentRequest{Session: memberID, Task: "Resume the assigned work after the explicit parent resume. Review pending requests and any blocker feedback."})
-		if err != nil {
-			restoreErr := r.update(context.WithoutCancel(ctx), func(s *State) error {
-				if m := s.Members[memberID]; m != nil && m.Execution == restart.Execution && m.Status == "idle" {
-					m.Status, m.Controller = restart.Status, restart.Controller
-					if task := s.Tasks[deferredTask]; deferred != nil && task != nil && task.Execution == deferred.Execution && task.Revision == deferred.Revision && task.AcceptedRevision == deferred.AcceptedRevision {
-						task.Deferral = deferred
-						if run := s.Runs[deferredRun]; run != nil && unsettledTask(s, deferredRun) == nil && grant == 0 {
-							run.Status = deferredRunStatus
-						}
-					}
-				}
+	launched := false
+	defer func() {
+		if !launched {
+			_ = r.update(context.WithoutCancel(ctx), func(s *State) error {
+				s.Executions[resume.ID].Status = "paused"
 				return nil
 			})
-			return errors.Join(err, restoreErr)
+		}
+	}()
+	// If a process died inside a batch, record what may have happened.
+	// The agent receives interrupted receipts; the runtime never executes
+	// the uncertain calls again on its own.
+	if len(resume.Intent) > 0 {
+		s, err := r.read(ctx)
+		if err != nil {
+			return err
+		}
+		m := s.Members[memberID]
+		session, err := r.acquireMemberSession(ctx, m)
+		if err != nil {
+			return err
+		}
+		err = session.(sessions.CoordinationSession).UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
+			s, err := decodeState(raw)
+			if err != nil {
+				return err
+			}
+			e := s.Executions[resume.ID]
+			if e.Generation != resume.Generation {
+				return errors.New("recovery generation changed")
+			}
+			raw.Append = append(raw.Append, e.Intent...)
+			if len(e.Intent) > 0 {
+				for _, call := range e.Intent[len(e.Intent)-1].ToolCalls {
+					raw.Append = append(raw.Append, messages.ChatMessage{Role: messages.MessageRoleTool, ToolName: call.Name, ToolCallID: call.ID, Content: llm.ToolInterruptedContent})
+				}
+			}
+			e.Intent = nil
+			return encodeState(raw, s)
+		})
+		closeErr := session.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 	}
-	return err
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(r.ctx, cancel)
+	i := &invocation{id: resume.ID, member: memberID, done: make(chan struct{}), cancel: func() { stop(); cancel() }}
+	r.mu.Lock()
+	r.active[memberID] = i
+	r.mu.Unlock()
+	r.wg.Add(1)
+	launched = true
+	go r.execute(runCtx, i)
+	return nil
 }
 
 func hasWakeMail(s *State, member string) bool {
@@ -1428,10 +1469,10 @@ func (r *Runtime) StopMember(ctx context.Context, memberID string) error {
 		if i == nil {
 			err := r.update(ctx, func(s *State) error {
 				m := s.Members[memberID]
-				if m == nil {
-					return errors.New("unknown member")
+				if err := stopRefusal(m); err != nil {
+					return err
 				}
-				m.Status = "stopped"
+				m.Control = MemberControlStopped
 				return nil
 			})
 			r.launchMu.Unlock()
@@ -1585,7 +1626,9 @@ func (r *Runtime) launchWorkflow(ctx context.Context, source string, input any, 
 		return nil, err
 	}
 	if background {
-		ctx = context.WithoutCancel(ctx)
+		// A background workflow outlives the call that started it, so its
+		// agent awaits belong to no parent tool call.
+		ctx = subagent.WithCallID(context.WithoutCancel(ctx), "")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(r.ctx, cancel)

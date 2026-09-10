@@ -18,7 +18,7 @@ func TestMailboxAdmissionRetainsSyntheticHistoryAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	cb := &llm.AgentCallbacks{}
-	r.BindParent(cb, nil)
+	r.bindParent(cb, nil)
 	input, err := cb.AdmitInput(ctx)
 	if err != nil || len(input) != 1 {
 		t.Fatalf("admission: %+v %v", input, err)
@@ -49,7 +49,7 @@ func TestSettlementNudgeIsSynthetic(t *testing.T) {
 		t.Fatal(err)
 	}
 	cb := &llm.AgentCallbacks{}
-	r.BindParent(cb, nil)
+	r.bindParent(cb, nil)
 	input, err := cb.ContinueAfterFinal(ctx, nil)
 	if err != nil || len(input) != 1 || input[0].Metadata[messages.MetadataKeyAgentSynthetic] != true {
 		t.Fatalf("settlement nudge is not synthetic: %+v %v", input, err)

@@ -157,7 +157,7 @@ func TestWorkflowLaunchModesShareDurabilityAndLifetime(t *testing.T) {
 					if finish == "success" && m.Controller != "" {
 						t.Fatal("successful attempt retained member reservation")
 					}
-					if finish != "success" && (m.Controller != id || m.Status != "paused") {
+					if finish != "success" && (m.Controller != id || MemberState(s, m).Lifecycle != LifecyclePaused) {
 						t.Fatalf("interrupted reservation: %+v", m)
 					}
 				}

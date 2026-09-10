@@ -153,6 +153,11 @@ type AgentCheckpoint struct {
 	Iterations int
 	Final      bool
 	Request    bool
+	// Err is the run's outcome and is set only on the Final checkpoint: nil
+	// for a completed turn, otherwise the error Run is returning (a host park
+	// sentinel, ErrMaxIterations, cancellation). Persistence uses it to tell a
+	// parked execution from a finished one inside the same commit.
+	Err error
 }
 
 // AgentResponse contains the results after Run completes
@@ -435,7 +440,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		// implementation must still enforce the session lease/generation fence.
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		if err := cb.Checkpoint(persistCtx, AgentCheckpoint{Generated: result.AllMessages, Iterations: result.IterationCount, Final: true}); err != nil {
+		if err := cb.Checkpoint(persistCtx, AgentCheckpoint{Generated: result.AllMessages, Iterations: result.IterationCount, Final: true, Err: runErr}); err != nil {
 			runErr = errors.Join(runErr, err)
 		} else {
 			persisted = len(result.AllMessages)

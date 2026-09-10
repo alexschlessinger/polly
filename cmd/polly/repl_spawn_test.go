@@ -64,7 +64,7 @@ func TestSpawnCommandUsesSwarmAuthorityAndCurrentSettings(t *testing.T) {
 		if !strings.Contains(notice, "Agent "+m.Name+" started") || strings.Contains(notice, m.ID) || !strings.Contains(notice, "/sessions") {
 			t.Fatalf("missing human session handle: %s", notice)
 		}
-		if text := swarmInspectorText(s, "members"); strings.Contains(text, "unknown") || !strings.Contains(text, "awaiting review") {
+		if text := swarmInspectorText(s, nil, "members"); strings.Contains(text, "unknown") || !strings.Contains(text, "awaiting review") {
 			t.Fatalf("member status: %s", text)
 		}
 	}
@@ -315,7 +315,7 @@ func TestTypedSpawnSeedsTitleAndUsesSessionHandle(t *testing.T) {
 	defer r.model.mu.Unlock()
 	r.model.renderPendingMarkdown()
 	notice = plainStyledText(r.model.fullTranscript())
-	if strings.Count(notice, md.Name+" · awaiting review") != 1 {
+	if strings.Count(notice, md.Name+" · idle · awaiting review") != 1 {
 		t.Fatalf("completion did not match launch handle: %q", notice)
 	}
 }

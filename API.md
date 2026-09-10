@@ -559,12 +559,59 @@ that session rather than capturing a parent session. Returned guidance is
 request-only, omitted for tool-free structured output, and never enters saved history.
 The CLI uses this hook to seed and edit child titles without changing handles.
 
-Call `runtime.RegisterParentTools(registry)` and `runtime.BindParent(callbacks,
-persistenceAllowed)` when running a parent model. `BindParent` adds safe mail
-admission, progressive persistence, interrupted-tool journaling, and settlement.
-Persist only `response.AllMessages[response.PersistedMessages:]` afterward.
+Call `runtime.RegisterParentTools(registry)` once, then run each parent turn
+through `runtime.RunParent(ctx, agent, request, callbacks, persistenceAllowed)`
+instead of `agent.Run`. It binds safe mail admission, progressive persistence,
+interrupted-tool journaling, and settlement to a copy of the callbacks, follows
+the parent's lifecycle, and records the outcome on every return, including
+checkpoint and projection failures. Persist only
+`response.AllMessages[response.PersistedMessages:]` afterward, then report the
+verdict of persistence and output with `runtime.ParentTurnSettled(err)`.
 `BeforeFirstRequest` retains its existing persistence veto. Legacy `llm.Agent`
 callers without these callbacks still persist the whole response once.
+
+### Swarm lifecycle
+
+Members and the parent share one derived vocabulary: `idle`, `active`,
+`waiting`, and `paused`. Nothing persists it. A member's lifecycle comes from
+its execution's status plus its control (`""`, `stopped`, or `retired`); the
+parent's comes from the runtime's in-memory view of the current turn. Labels
+read `<lifecycle>[ · <detail>][ · deferred]`, for example `idle · awaiting
+review`, `idle · integration pending`, `idle · done`, `active · queued`,
+`waiting`, `paused · iteration limit (3/5)`, `paused · interrupted`,
+`paused · failed`, `paused · stopped`, and `idle · retired`. The CLI overlays
+only `approval needed`.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> idle: created
+    idle --> active: launch (queued, running)
+    active --> waiting: park (swarm_wait)
+    waiting --> active: wake (queued, running)
+    active --> idle: complete → idle · awaiting review | integration pending | done
+    active --> paused: fail | interrupt | iteration limit
+    waiting --> paused: interrupt | stop
+    paused --> active: resume (/swarm resume ID [N])
+    active --> paused: stop → paused · stopped
+    idle --> paused: stop → paused · stopped
+    idle --> idle: retire → idle · retired
+    paused --> idle: retire → idle · retired
+```
+
+`MemberState(state, member)` and `ParentState(state)` return an
+`AgentPresentation`: `Lifecycle`, `Busy` (active or waiting), the raw execution
+`Outcome`, `Control`, `StopReason`, `Iterations`/`MaxIterations`, `TaskStatus`,
+`Deferred`, `Attention` (open work no execution is advancing), `Workflow`,
+`Detail`, and `Display`. Consumers decide on the typed fields; `Display` is for
+people. `waiting` is recorded only when a member parks after its committed tool
+batch; a wake re-queues the same execution. The parent shows `waiting` only while
+every remaining operation of its turn is a coordination wait (its own
+`swarm_wait`, a blocking spawn, a workflow's agent await, or settlement);
+concurrent model or tool work keeps it `active`. A finished turn leaves it
+`idle`, or `paused · interrupted | iteration limit | blocked | error`; the next
+`RunParent` starts fresh. Archived views without a live runtime omit the parent
+rather than infer it.
 
 `runtime.Agent(ctx, controllerID, swarm.AgentRequest{Task: brief, ReadOnly: true})`
 uses the shared scheduler and returns `Value`, `Session`, `Context`, `Task`, and
@@ -590,7 +637,8 @@ execution's iteration cap is captured at its start and survives waits/restarts.
 it. Iteration exhaustion returns `*swarm.IterationLimitError` (wrapping
 `llm.ErrMaxIterations`) with the member/execution IDs and used/allowed counts,
 retains partial results, and saves execution status `paused` with stop reason
-`max_iterations`. `llm.IsIterationLimit(err)` excludes joined persistence or
+`max_iterations`, shown as `paused · iteration limit (used/allowed)`.
+`llm.IsIterationLimit(err)` excludes joined persistence or
 provider failures from this recoverable classification.
 
 `AgentRequest.Schema` defines a typed final result. Tool-enabled members receive
@@ -628,9 +676,14 @@ same logical execution, conversation, task and worktree without spending a start
 Positive `executionGrant` values extend the separate logical-start budget. Model
 tools expose neither grant. Active workflow reservations must settle or be
 canceled before a host takes over a member. A completed/failed execution starts
-a new logical turn on resume, and launch refusals are returned synchronously.
+a new logical turn on resume, spending a run start, and launch refusals are
+returned synchronously; a grant lands only when the launch it funds does.
+`StopMember` records the `stopped` control (`paused · stopped`), is idempotent,
+and is refused for a retired member. `Cleanup` retires members (`idle ·
+retired`); both keep the task disposition as detail, and a resume clears a stop.
 
-The runtime exposes `State`, `CreateTask`, `Claim`, `Submit`, `Review`,
+The runtime exposes `State`, `MemberState`, `ParentState`, `RunParent`,
+`ParentTurnSettled`, `CreateTask`, `Claim`, `Submit`, `Review`,
 `UpdateTask`, `BlockTask`, `CancelTask`, `Send`, `Publish`, `Resume`, `ResumeWithIterations`, `StopMember`,
 `Cleanup`, `Settle`, and lifecycle `OnEvent` callbacks. The Go host is trusted;
 model-facing authority is bound in registered closures rather than supplied as a
@@ -639,7 +692,8 @@ caller ID. Task revisions and atomic transactions reject stale claims/submission
 with the task's original starting snapshot; changed candidates still require
 integration. `Settle` also completes previously accepted unchanged submissions,
 using retained provenance after context cleanup. `TaskStatus` provides display
-text without changing machine statuses; the `swarm_tasks` tool includes this as
+text (an accepted, unintegrated submission reads `integration pending`) without
+changing machine statuses; the `swarm_tasks` tool includes this as
 `displayStatus`, and `swarm_review` returns status plus any required next action.
 
 Parent hosts use `PrepareIntegration(ctx, []TaskReference, drift)`,
@@ -692,6 +746,12 @@ including TTL expiry. Pinned child sessions do not independently expire while
 retained by their parent. `sessions.DurableStore.Promote(ctx, path)` moves a memory
 store into the disk store atomically without changing live handles, stable IDs,
 cache identity, or artifact access. Existing unrelated disk sessions remain.
+Every root's swarm records carry a `format` record (`{"version":1}`), written
+with the root's first coordination mutation and never at open. `swarm.New`,
+`Runtime.State`, and `ReadStateView` return `swarm.ErrUnsupportedFormat` for a
+root whose records predate it or carry another version; there is no migration,
+and the CLI refuses to open such a root. Its records, transcripts, artifacts, and
+worktrees stay in place; delegated work continues in a new session.
 
 Admitted peer inputs carry `messages.MetadataKeySwarmMessages` delivery IDs and
 `MetadataKeyAgentSynthetic: true`; they remain model-visible user-role messages
@@ -775,7 +835,8 @@ err = session.Reset(sessionCtx, metadata)
   root's saved coordination records by stable identity without acquiring a
   lease, touching last-used time, or loading transcripts. `swarm.ReadStateView`
   decodes these records for history/status views; neither operation activates
-  execution or grants model tools access to other families.
+  execution or grants model tools access to other families. It returns
+  `swarm.ErrUnsupportedFormat` for roots written before the format record.
 - `AcquireOptions{ExpectedID: view.ID}` atomically verifies the viewed identity
   before taking a write lease, and implies `ExistingOnly`. A deleted name reused
   by a different session cannot receive a follow-up intended for the old view.
@@ -792,9 +853,11 @@ err = session.Reset(sessionCtx, metadata)
 - Optional `Metadata.SpawnCallID` (`spawnCallID` in JSON) identifies the
   parent's originating `spawn_agent` call. `Metadata.SpawnOutcome`
   (`spawnOutcome`) records only that child's initial delegated run, using
-  `ReportFinished`, `ReportFailed`, or `ReportCanceled`; empty means unknown
-  or not yet settled. The CLI records these fields for Agents activity in
-  the TUI and leaves the outcome unchanged on child follow-ups. They use the
+  `ReportFinished`, `ReportFailed`, `ReportCanceled`, or `ReportPaused`; empty
+  means unknown or not yet settled. The CLI records these fields for Agents
+  activity in the TUI, renders archived outcomes with the lifecycle words
+  (`idle · done`, `paused · failed`, `paused · interrupted`, `paused · iteration
+  limit`), and leaves the outcome unchanged on child follow-ups. They use the
   existing metadata JSON storage and require no schema migration.
   `SetMetadata` and `Reset` preserve each field once it has a nonempty value.
 - `session.Report(ctx, sessions.Report{...})` posts a subagent's reply to
@@ -873,13 +936,15 @@ for event := range client.ChatCompletionStream(ctx, req, processor) {
 failed/canceled/interrupted workflow and defers its exact unresolved task
 revisions. `AcknowledgeWorkflow` remains acknowledgment only. Optional
 `Task.Deferral` and host-authored `Execution.Workflow` metadata persist without
-a schema migration. `TaskDeferred`, `DeferredCount`, and `MemberState` expose
-read-only derived disposition; they do not accept or repair historical tasks.
+a schema migration. `TaskDeferred`, `DeferredCount`, `MemberState`, and
+`ParentState` expose read-only derived disposition; they do not accept or repair
+historical tasks.
 Explicit recovery waits for any newer run to settle and retains existing budget
 accounting. Accepted editing work still requires separate integration.
 
 Model-facing `workflow_read`, `swarm_tasks`, and `list_agents` use bounded,
-paginated summaries and explicit detail selection; complete oversized values
+paginated summaries and explicit detail selection; `list_agents` items carry
+`state` (an `AgentPresentation`) and the page carries `parentState`. Complete oversized values
 are text artifacts readable through existing artifact tools. Workflow JavaScript
 and `AgentResult.Value` retain full values and their existing return shapes.
 `ToolOutput.Media` with valid UTF-8 `text/*` or `application/json` content is

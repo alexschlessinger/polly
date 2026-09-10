@@ -54,7 +54,7 @@ func TestRenamedMemberContinuesByStableIdentity(t *testing.T) {
 				if err := r.update(ctx, func(s *State) error {
 					m := s.Members[first.Session]
 					e := s.Executions[m.Execution]
-					m.Status, e.Status = "paused", "paused"
+					e.Status = "paused"
 					s.Tasks[m.Task].Status = "blocked"
 					e.Intent = []messages.ChatMessage{{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse,
 						ToolCalls: []messages.ChatMessageToolCall{{ID: "uncertain", Name: "not_replayed", Arguments: `{}`}}}}

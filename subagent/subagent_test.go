@@ -467,3 +467,16 @@ func TestToolTreatsNullToolsAsOmitted(t *testing.T) {
 		t.Fatalf("numeric tools accepted: %v", err)
 	}
 }
+
+func TestCallIDRoundTrip(t *testing.T) {
+	if got := CallID(context.Background()); got != "" {
+		t.Fatalf("CallID on a bare context = %q, want empty", got)
+	}
+	ctx := WithCallID(context.Background(), "call-7")
+	if got := CallID(ctx); got != "call-7" {
+		t.Fatalf("CallID = %q, want call-7", got)
+	}
+	if got := CallID(context.WithoutCancel(ctx)); got != "call-7" {
+		t.Fatalf("CallID lost through WithoutCancel: %q", got)
+	}
+}

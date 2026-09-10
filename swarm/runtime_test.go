@@ -31,6 +31,13 @@ func answer(text string) messages.ChatMessage {
 }
 func runtimeTest(t *testing.T, model llm.LLM, concurrent, starts int) *Runtime {
 	t.Helper()
+	return runtimeTestWithParent(t, model, concurrent, starts, nil)
+}
+
+// runtimeTestWithParent lets a test wrap the root session, for example to
+// hold the parent's coordination writes while observing member state.
+func runtimeTestWithParent(t *testing.T, model llm.LLM, concurrent, starts int, wrap func(sessions.Session) sessions.Session) *Runtime {
+	t.Helper()
 	ctx := context.Background()
 	store, err := sessions.OpenStore(sessions.StoreConfig{Mode: sessions.ModeMemory})
 	if err != nil {
@@ -40,9 +47,12 @@ func runtimeTest(t *testing.T, model llm.LLM, concurrent, starts int) *Runtime {
 	if err != nil {
 		t.Fatal(err)
 	}
+	root := parent
+	if wrap != nil {
+		root = wrap(parent)
+	}
 	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
-	root := t.TempDir()
-	r, err := New(Config{Store: store, Parent: parent, Registry: registry, Client: model, Root: root, Directory: filepath.Join(t.TempDir(), "runtime"), MaxConcurrent: concurrent, MaxExecutions: starts, Agent: llm.AgentConfig{MaxIterations: 5}})
+	r, err := New(Config{Store: store, Parent: root, Registry: registry, Client: model, Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime"), MaxConcurrent: concurrent, MaxExecutions: starts, Agent: llm.AgentConfig{MaxIterations: 5}})
 	if err != nil {
 		t.Fatal(err)
 	}

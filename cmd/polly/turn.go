@@ -362,11 +362,15 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		line.settledOutput = t.settledOutput
 	}
 	callbacks := t.callbacks(req)
+	var resp *llm.AgentResponse
 	if state.swarm != nil {
+		// The runtime owns the parent turn's lifecycle; the host still owns
+		// persistence and output and reports their verdict below.
 		updateSwarmDefaults(state, req, *t.settings)
-		state.swarm.BindParent(callbacks, turnUI.TurnPersistenceAllowed)
+		resp, err = state.swarm.RunParent(ctx, state.agent, req, callbacks, turnUI.TurnPersistenceAllowed)
+	} else {
+		resp, err = state.agent.Run(ctx, req, callbacks)
 	}
-	resp, err := state.agent.Run(ctx, req, callbacks)
 	if ctx.Err() != nil {
 		// Cancellation outranks whatever error the aborted run surfaced, but
 		// the turn still flows through persistence below: tools that completed
@@ -396,6 +400,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	// chrome to stderr afterwards, so the sticky stdout error is final here.
 	if outputErr := flushTurnOutputError(turnUI); outputErr != nil {
 		runErr = errors.Join(runErr, outputErr)
+	}
+	if state.swarm != nil {
+		state.swarm.ParentTurnSettled(runErr)
 	}
 	stopReason, code := classifyOutcome(resp, runErr)
 	complete(stopReason, runErr)

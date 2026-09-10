@@ -229,7 +229,7 @@ func TestIntegrationWorkflowClientsInSandboxedLinkedCheckout(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !strings.Contains(swarmInspectorText(state, "integrations"), "Apply: applied") {
+				if !strings.Contains(swarmInspectorText(state, nil, "integrations"), "Apply: applied") {
 					t.Fatal("TUI inspector missing receipt")
 				}
 			}
