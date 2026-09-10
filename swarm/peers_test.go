@@ -195,7 +195,7 @@ func TestFailedWorkflowWithoutAgentsRequiresAcknowledgment(t *testing.T) {
 	if err := r.Settle(ctx); err == nil || !strings.Contains(err.Error(), report.ID) {
 		t.Fatalf("failure disappeared: %v", err)
 	}
-	if err := r.AcknowledgeWorkflow(ctx, report.ID); err != nil {
+	if _, err := r.AcknowledgeWorkflow(ctx, report.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Settle(ctx); err != nil {

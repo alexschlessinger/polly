@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/workflow"
 )
 
 func TestMailboxAdmissionRetainsSyntheticHistoryAndReceipt(t *testing.T) {
@@ -93,5 +96,181 @@ func TestCompletionMailReferencesPreservedResults(t *testing.T) {
 				t.Fatalf("plain report was JSON-escaped: %q", report)
 			}
 		})
+	}
+}
+
+// A workflow reports for its agents once: no per-agent completion mail while
+// it runs, and one notice committed with its terminal status.
+func TestWorkflowPostsOneCompletionMail(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, status string
+		contains, excludes   []string
+	}{
+		{
+			name:     "completed",
+			source:   `polly.defineWorkflow({name:"two",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"one",readOnly:true});return await polly.agent({task:"two",readOnly:true});}})`,
+			status:   "completed",
+			contains: []string{"Workflow two completed: 2 agents", "workflow_read({id: \"", "workflow_acknowledge({id: \""},
+			excludes: []string{"Reason:", "failed or paused", "defer: true"},
+		},
+		{
+			name:     "failed",
+			source:   `polly.defineWorkflow({name:"defer fixture",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"investigate",readOnly:true});polly.fail("verification incomplete")}})`,
+			status:   "failed",
+			contains: []string{"Workflow defer fixture failed: 1 agents", "defer: true", "Reason: ", "verification incomplete"},
+			excludes: []string{"failed or paused"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 2, 2)
+			ctx := context.Background()
+			report, err := r.RunWorkflow(ctx, tc.source, map[string]any{})
+			if report == nil || report.Status != tc.status || (err == nil) != (tc.status == "completed") {
+				t.Fatalf("workflow outcome: %+v %v", report, err)
+			}
+			s, err := r.State(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(s.Messages) != 1 {
+				t.Fatalf("mail count = %d, want the workflow notice alone: %+v", len(s.Messages), s.Messages)
+			}
+			for _, mail := range s.Messages {
+				if mail.To != r.ID || mail.From != report.ID || mail.Kind != "info" {
+					t.Fatalf("notice envelope: %+v", mail)
+				}
+				for _, want := range append(tc.contains, report.ID) {
+					if !strings.Contains(mail.Text, want) {
+						t.Errorf("notice lacks %q: %s", want, mail.Text)
+					}
+				}
+				for _, unwanted := range tc.excludes {
+					if strings.Contains(mail.Text, unwanted) {
+						t.Errorf("notice carries %q: %s", unwanted, mail.Text)
+					}
+				}
+			}
+		})
+	}
+}
+
+// finish decides at finish time: a running workflow's agent stays silent, and
+// the same member, restarted once the report is terminal, reports as usual.
+func TestWorkflowAgentPostsNoCompletionMail(t *testing.T) {
+	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	setStatus := func(status string) {
+		t.Helper()
+		if err := r.update(ctx, func(s *State) error {
+			s.Workflows["wf"] = &workflow.Report{ID: "wf", Status: status}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setStatus("running")
+	result, err := r.Agent(ctx, "wf", AgentRequest{Task: "report", ReadOnly: true, Tools: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := r.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Messages) != 0 {
+		t.Fatalf("workflow agent mailed the parent: %+v", s.Messages)
+	}
+	first := s.Members[result.Session].Execution
+	setStatus("completed")
+	if err := r.Resume(ctx, result.Session, 0); err != nil {
+		t.Fatal(err)
+	}
+	s = awaitState(t, r, ctx, func(s *State) bool {
+		m := s.Members[result.Session]
+		e := s.Executions[m.Execution]
+		return m.Execution != first && e != nil && e.Status == "completed"
+	})
+	var texts []string
+	for _, mail := range s.Messages {
+		if mail.From == result.Session {
+			texts = append(texts, mail.Text)
+		}
+	}
+	if len(texts) != 1 || !strings.Contains(texts[0], "completed") || !strings.Contains(texts[0], "swarm_tasks") {
+		t.Fatalf("restarted member mail = %q", texts)
+	}
+}
+
+// A member interrupted by a canceled workflow is an ordinary member again once
+// the report is terminal: resuming it reports the outcome to the parent.
+func TestInterruptedWorkflowMemberResumeReportsToParent(t *testing.T) {
+	var calls atomic.Int32
+	started := make(chan struct{})
+	r := runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+		if calls.Add(1) == 1 {
+			// The cancel must interrupt this call, never the resumed one.
+			close(started)
+			<-ctx.Done()
+			return answer("interrupted")
+		}
+		return answer("resumed")
+	}), 1, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	id, err := r.StartWorkflow(ctx, `polly.defineWorkflow({name:"cancel",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"inspect",readOnly:true});}})`, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("workflow agent never called the model")
+	}
+	if err := r.CancelWorkflow(id); err != nil {
+		t.Fatal(err)
+	}
+	s := waitWorkflowIdle(t, r)
+	if s.Workflows[id].Status != "interrupted" {
+		t.Fatalf("workflow status = %s, want interrupted", s.Workflows[id].Status)
+	}
+	var member string
+	for _, m := range s.Members {
+		member = m.ID
+	}
+	if e := s.Executions[s.Members[member].Execution]; e == nil || e.Status != "paused" {
+		t.Fatalf("interrupted execution = %+v", e)
+	}
+	notices, before := 0, 0
+	for _, mail := range s.Messages {
+		switch mail.From {
+		case id:
+			notices++
+			if !strings.Contains(mail.Text, "interrupted") || !strings.Contains(mail.Text, "defer: true") {
+				t.Fatalf("interrupted notice: %s", mail.Text)
+			}
+		case member:
+			before++
+		}
+	}
+	if notices != 1 {
+		t.Fatalf("workflow notices = %d, want 1", notices)
+	}
+	if err := r.Resume(ctx, member, 0); err != nil {
+		t.Fatal(err)
+	}
+	s = awaitState(t, r, ctx, func(s *State) bool {
+		e := s.Executions[s.Members[member].Execution]
+		return e != nil && e.Status == "completed"
+	})
+	after, completed := 0, false
+	for _, mail := range s.Messages {
+		if mail.From == member {
+			after++
+			completed = completed || strings.Contains(mail.Text, "completed")
+		}
+	}
+	if after != before+1 || !completed {
+		t.Fatalf("member mail after resume = %d (before %d), completed notice %v", after, before, completed)
 	}
 }

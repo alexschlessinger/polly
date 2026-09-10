@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -1776,5 +1777,56 @@ func TestExpandHome(t *testing.T) {
 		if p.Kind != DeniedPathDir {
 			t.Fatalf("expected kind %q, got %q", DeniedPathDir, p.Kind)
 		}
+	}
+}
+
+func TestMergeEnvLaterWinsAndNeverAliases(t *testing.T) {
+	base := Config{Env: map[string]string{"A": "1", "TMPDIR": "/base"}}
+	overlay := Config{Env: map[string]string{"TMPDIR": "/over", "B": "2"}}
+	merged := base.Merge(overlay)
+	want := map[string]string{"A": "1", "B": "2", "TMPDIR": "/over"}
+	if !maps.Equal(merged.Env, want) {
+		t.Fatalf("merged env = %v, want %v", merged.Env, want)
+	}
+	base.Env["A"], overlay.Env["B"] = "mutated", "mutated"
+	if !maps.Equal(merged.Env, want) {
+		t.Fatalf("merged env aliases an operand: %v", merged.Env)
+	}
+	if (Config{}).Merge(Config{}).Env != nil {
+		t.Fatal("merging empty envs allocated a map")
+	}
+}
+
+func TestMergeDenyHostTempOR(t *testing.T) {
+	if !(Config{DenyHostTemp: true}).Merge(Config{}).DenyHostTemp || !(Config{}).Merge(Config{DenyHostTemp: true}).DenyHostTemp {
+		t.Fatal("DenyHostTemp did not survive Merge from either side")
+	}
+	if (Config{}).Merge(Config{}).DenyHostTemp {
+		t.Fatal("DenyHostTemp appeared from nowhere")
+	}
+}
+
+func TestParseConfigEnvAndDenyHostTemp(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"env":{"TMPDIR":"/x"},"denyHostTemp":true}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Env["TMPDIR"] != "/x" || !cfg.DenyHostTemp {
+		t.Fatalf("parsed config = %+v", cfg)
+	}
+	if _, err := PrepareConfig(Config{Env: map[string]string{"BAD=NAME": "v"}}); err == nil || !strings.Contains(err.Error(), "invalid explicit target environment name") {
+		t.Fatalf("invalid env name accepted: %v", err)
+	}
+}
+
+func TestNormalizeConfigPathsCopiesEnv(t *testing.T) {
+	env := map[string]string{"TMPDIR": "/scratch"}
+	prepared, err := PrepareConfig(Config{Env: env})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env["TMPDIR"] = "/mutated"
+	if prepared.Env["TMPDIR"] != "/scratch" {
+		t.Fatalf("prepared Env aliases the caller's map: %v", prepared.Env)
 	}
 }

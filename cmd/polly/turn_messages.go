@@ -13,12 +13,40 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
-// settledAnswer is what a failed one-shot run still prints on stdout: the
+// answerBlocks returns every answer the run produced, in order: each
+// assistant message without tool calls. Swarm settlement can reopen a
+// provisional answer with a synthetic user message, so a turn may hold
+// several; the coordination messages and tool exchanges between them are not
+// answers. A response without a generated transcript falls back to Message.
+func answerBlocks(resp *llm.AgentResponse) []string {
+	if resp == nil {
+		return nil
+	}
+	var blocks []string
+	add := func(m messages.ChatMessage) {
+		if m.Role == messages.MessageRoleAssistant && len(m.ToolCalls) == 0 && strings.TrimSpace(m.Content) != "" {
+			blocks = append(blocks, strings.Trim(m.Content, "\r\n"))
+		}
+	}
+	for _, m := range resp.AllMessages {
+		add(m)
+	}
+	if len(blocks) == 0 && resp.Message != nil {
+		add(*resp.Message)
+	}
+	return blocks
+}
+
+// answerText joins the answer blocks with a blank line, mirroring the
+// separator the streaming path prints between text bursts.
+func answerText(resp *llm.AgentResponse) string { return strings.Join(answerBlocks(resp), "\n\n") }
+
+// settledAnswer is what a failed one-shot run still prints on stdout: every
 // answer the model produced, so a consumer keeps it and reads the failure from
 // stderr, or a blocker report naming the session when there is no answer.
 func settledAnswer(resp *llm.AgentResponse, runErr error, session string) string {
-	if resp != nil && resp.Message != nil && strings.TrimSpace(resp.Message.Content) != "" {
-		return resp.Message.Content
+	if text := answerText(resp); text != "" {
+		return text
 	}
 	return "Blocked: " + runErr.Error() + "\n\nSession: " + session + "\n"
 }

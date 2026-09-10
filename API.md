@@ -608,7 +608,11 @@ people. `waiting` is recorded only when a member parks after its committed tool
 batch; a wake re-queues the same execution. The parent shows `waiting` only while
 every remaining operation of its turn is a coordination wait (its own
 `swarm_wait`, a blocking spawn, a workflow's agent await, or settlement);
-concurrent model or tool work keeps it `active`. A finished turn leaves it
+concurrent model or tool work keeps it `active`. The parent's `swarm_wait` ends
+on mail addressed to the parent, on a change to a task or member no running
+workflow controls, on a workflow status or acknowledgement change, or when
+nothing is active; workflow-internal progress is deferred to the workflow's
+terminal status. A finished turn leaves it
 `idle`, or `paused · interrupted | iteration limit | blocked | error`; the next
 `RunParent` starts fresh. Archived views without a live runtime omit the parent
 rather than infer it.
@@ -623,6 +627,10 @@ a nil slice inherits compatible parent tools. Logical executions default to
 32 concurrent / 256 starts per run. Waits retain their execution ID and remaining
 iteration budget. Runtime callbacks, instructions, limits, private filesystem
 paths, and worktree directory are configurable through `swarm.Config`.
+Every member context records a private scratch directory
+(`swarm.ExecutionContext.Scratch`): a read-only member's writable path besides
+host temp, exported to its processes as `TMPDIR`, `TMP`, `TEMP`, `GOTMPDIR`, and
+`GOCACHE` (with `GOPROXY=off`).
 Use repository-relative paths in `Task` briefs. `Source` selects snapshot input,
 not the member's working directory: tools and ordinary Git inspection run in
 the assigned checkout. Parent files and Git writes stay denied. On macOS the
@@ -695,6 +703,9 @@ using retained provenance after context cleanup. `TaskStatus` provides display
 text (an accepted, unintegrated submission reads `integration pending`) without
 changing machine statuses; the `swarm_tasks` tool includes this as
 `displayStatus`, and `swarm_review` returns status plus any required next action.
+`Settle` names a completed workflow's unreviewed consumed research before
+per-task blockers, and a task blocker carries the count (`3 tasks unsettled;
+first: task <id> revision N: …`).
 
 Parent hosts use `PrepareIntegration(ctx, []TaskReference, drift)`,
 `ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`,
@@ -713,11 +724,18 @@ parent authority in the tool closure and is absent from child/bound registries.
 cancels that attempt. Both launch modes share persistence, registration, member
 reservation, and teardown. `RunWorkflow` honors caller cancellation and drains
 host effects before returning; `StartWorkflow` detaches from caller cancellation.
-Both stop on runtime shutdown. Saved reports include source, input, every operation intent,
+Both stop on runtime shutdown. The checkpoint that moves a report from running to
+completed, failed, or interrupted (`SaveWorkflow`) posts one informational message
+to the parent naming the report; executions launched by a running workflow
+(`Execution.Workflow`) post no per-agent completion mail and notify the parent
+normally once the workflow is terminal. Saved reports include source, input, every operation intent,
 results, failure details, and final output. Restarting a script is an explicit new
 attempt; there is no persisted JavaScript heap or automatic effect replay.
 Failed/interrupted reports block settlement until `AcknowledgeWorkflow` records
-parent handling; this never accepts tasks or discards files.
+parent handling; for those reports it never accepts tasks or discards files.
+`AcknowledgeWorkflow(ctx, id) (accepted int, err error)` on a completed report
+also accepts the read-only research the script consumed and left unreviewed,
+inside the acknowledgment transaction, and returns how many results it accepted.
 Parent JavaScript uses `polly.integration.prepare/read/revise/refresh/accept/apply`
 and `polly.tasks.read/review` over those same operations. `polly.release(context)`
 removes only an inactive attempt-owned context whose contents are unchanged or
@@ -730,8 +748,11 @@ The independent `workflow.Runner{Host, Config}` can be embedded over another
 trusted host implementing `Call`; optional `Recorder.SaveWorkflow` supplies
 persistence. See [WORKFLOWS.md](WORKFLOWS.md) for the JavaScript contract.
 
-`tools.ExecutionContext` binds `Root`, `ReadOnly`, and a narrowed sandbox policy
-to a fresh registry via `BindExecutionContext`. Custom Go tools implement
+`tools.ExecutionContext` binds `Root`, `ReadOnly`, `Scratch`, and a narrowed
+sandbox policy to a fresh registry via `BindExecutionContext`;
+`ExecutionPolicy(root, tools.ExecutionGrant{ReadOnly, DeniedReads, DeniedWrites,
+Scratch})` builds that policy, and a read-only grant without a scratch denies all
+writes. Custom Go tools implement
 `ContextTool` to rebind or declare `ContextIndependentTool` when appropriate.
 Local stdio MCP processes relaunch in that context; remote MCP servers must
 explicitly declare `contextIndependent: true`. Media stays in `ToolOutput.Media`;
@@ -934,7 +955,9 @@ for event := range client.ChatCompletionStream(ctx, req, processor) {
 
 `Runtime.DeferWorkflow(ctx, reportID, note)` atomically acknowledges a terminal
 failed/canceled/interrupted workflow and defers its exact unresolved task
-revisions. `AcknowledgeWorkflow` remains acknowledgment only. Optional
+revisions. `AcknowledgeWorkflow` on a terminal failure remains acknowledgment
+only; on a completed report it also accepts the consumed read-only research and
+returns the count. Optional
 `Task.Deferral` and host-authored `Execution.Workflow` metadata persist without
 a schema migration. `TaskDeferred`, `DeferredCount`, `MemberState`, and
 `ParentState` expose read-only derived disposition; they do not accept or repair

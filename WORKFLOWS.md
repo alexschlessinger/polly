@@ -30,6 +30,13 @@ effects and their receipts to finish. Background work outlives the launching cal
 explicit cancellation and runtime shutdown still stop it. Restart always runs an
 explicit new attempt; saved JavaScript is never replayed automatically.
 
+A parent that started a background workflow parks in `swarm_wait`: agent progress
+inside a running workflow does not wake it, and the workflow posts one
+informational message when its report turns terminal (completed, failed, or
+interrupted), naming the report for `workflow_read` and `workflow_acknowledge`.
+Members of a running workflow post no per-agent completion mail; directly spawned
+children still do.
+
 Use [fix-review-findings.js](examples/workflows/fix-review-findings.js) with a
 copy of [input.json](examples/workflows/input.json). Replace the absolute source,
 evidence filename, findings, and check commands. The example makes an isolated
@@ -253,22 +260,36 @@ available but does not reenter the scheduling queue. A subsequent assignment
 starts a new run. Defaults are 32 executing children and 256 logical starts.
 `swarm_wait` parks after the current tool batch, releases its slot, registry and
 session lease, and preserves its execution and remaining iteration allowance.
-The member shows `waiting`; a wake re-queues the same execution. A parent parked
-in its own `swarm_wait` shows `waiting` too.
-Addressed requests/replies and relevant task/dependency changes resume it.
-Blocking spawns can return `yielded` so a parent can answer; background plus wait
-is the preferred coordination pattern. Several simultaneous blocking spawns are
-released together when a member yields.
+The member shows `waiting`; a wake re-queues the same execution. Addressed
+requests/replies and relevant task/dependency changes resume it. A parent parked
+in its own `swarm_wait` shows `waiting` too; it returns on mail addressed to the
+parent, on a directly spawned child's launch, outcome or task change, when a
+workflow reaches a terminal status or is acknowledged, or when nothing is active.
+Transitions of members and tasks that a running workflow controls do not end the
+parent's wait. Blocking spawns can return `yielded` so a parent can answer;
+background plus `swarm_wait` is the coordination pattern, never sleeping or
+re-reading reports. Several simultaneous blocking spawns are released together
+when a member yields.
 
 Workflow calls and ordinary spawns use this same pool and budget. A workflow
 reserves its members across its steps. Concurrent calls to a reserved/busy
 member fail; idle peer traffic cannot create an extra workflow-controlled turn.
-Successful workflows release reservations. Failed or canceled attempts leave
+Successful workflows release reservations. A workflow's agents report to the
+parent through the workflow: no per-agent completion mail is posted while the
+attempt runs, and one informational message arrives with the terminal report;
+afterwards its members are ordinary members again and explicit resumes notify
+the parent as usual. Failed or canceled attempts leave
 their interrupted executions `paused · interrupted` for explicit parent/user
 recovery. Completed and failed executions retain their actual outcomes; a failed workflow does not pause completed agents.
 Failed and interrupted reports block settlement until the parent inspects and
-acknowledges them with `workflow_acknowledge` or `/swarm acknowledge-workflow ID`.
-Acknowledgment retains the report and does not accept tasks or discard changes.
+acknowledges them with `workflow_acknowledge` or `/swarm acknowledge-workflow ID`;
+for those reports acknowledgment retains the report and does not accept tasks or
+discard changes. Acknowledging a completed report accepts, in the same
+transaction, the read-only research its script consumed without reviewing and
+reports the count; results the script already reviewed and editing candidates
+with snapshots are untouched. A completed report blocks settlement only while it
+still owns such research, and settlement names that step first, before per-task
+blockers; a task blocker reports how many tasks are open.
 Workflows belong to the same current run even when they never start an agent.
 
 ## Worktrees and integration
@@ -284,8 +305,10 @@ Use repository-relative paths in agent briefs and run commands in the member's
 assigned directory. `source` selects snapshot input, not the member's working
 directory or permission to enter the parent's checkout. Ordinary `git log`,
 `git show`, `git diff`, and `git status` work there with either a main or linked
-parent checkout; Git writes remain blocked. Read-only members cannot create
-scratch files, including in temporary directories; return findings in messages.
+parent checkout; Git writes remain blocked. Read-only members cannot modify
+their checkout; each member has a private scratch directory (`$TMPDIR`, also the
+Go build cache) that siblings cannot read and that is removed with the context.
+Return findings in messages, not as scratch files.
 `HEAD` is a parentless snapshot commit. For history reviews, include the source
 commit ID in the brief and use `git log <source-commit>` or
 `git diff <older-commit> <source-commit>` from the member's worktree.
@@ -447,7 +470,10 @@ All one-shot stdout is settled by default, with stderr progress and explicit
 `--stream` for immediate output. Both CLI and TUI keep a parent's answer
 provisional until coordination settles. Unresolved review, dependency, failure,
 or reply work produces a blocker after one corrective prompt for unchanged
-state. Structured output is emitted only after successful validation.
+state. Structured output is emitted only after successful validation. When
+settlement reopens a provisional answer, piped stdout prints every answer block
+in order, separated by a blank line; the coordination prompts and tool exchanges
+between them never print. `--schema` output stays the single final document.
 
 ### Inspecting and deferring retained work
 
@@ -482,12 +508,19 @@ or unverifiable findings. It does not certify a clean verdict or accept an
 editing candidate. The audit and fix-review examples perform this bookkeeping
 before branching on findings or allowing parallel failures to abort the scope.
 
+Research the script consumed without reviewing is accepted when the parent
+acknowledges the completed workflow: `workflow_acknowledge({id})` on a
+`completed` report accepts every read-only, snapshot-less task it left awaiting
+review and returns `acknowledged; accepted N research results`. Use
+`swarm_review` on individual results first when a finding needs changes.
+
 After reporting a failed, canceled, or interrupted workflow, the parent can use
 `workflow_acknowledge({id, defer: true, note: "reason for retaining work"})`.
 Acknowledgment and deferral commit together. Deferral retains unresolved tasks,
 results, snapshots, and worktrees without accepting, applying, or canceling them.
 It lets the parent finish without repeatedly prompting about those exact task
-revisions. Acknowledgment without `defer` retains its previous behavior.
+revisions. Acknowledgment without `defer` on a failed, canceled, or interrupted
+report records the acknowledgment only.
 Active work, unanswered requests, approvals, uncertain integrations, and
 unrelated tasks still require attention.
 

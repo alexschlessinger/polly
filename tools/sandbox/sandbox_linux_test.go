@@ -3407,3 +3407,40 @@ func TestLinuxBuildBwrapArgsGrantedSocketBindOrdering(t *testing.T) {
 		t.Fatalf("socket bind emitted before its covering private tmpfs (bind at %d, tmpfs at %d): %v", bindAt, coveringAt, args)
 	}
 }
+
+func TestLinuxPolicyEnvAppliedAfterTempRewrite(t *testing.T) {
+	skipIfNoBwrap(t)
+	sb, err := New(Config{Env: map[string]string{"TMPDIR": "/work/scratch", "GOCACHE": "/work/scratch/go-build"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("true")
+	cmd.Env = []string{"TMPDIR=/host", "TMP=/host"}
+	cleanup, err := WrapCmdWithEnvManaged(sb, cmd, map[string]string{"TMPDIR": "/explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	env := strings.Join(readLinuxEnvPayload(t, cmd.ExtraFiles[1]), "\n")
+	for _, want := range []string{"TMPDIR=/work/scratch", "TMP=/tmp", "GOCACHE=/work/scratch/go-build"} {
+		if !strings.Contains(env, want) {
+			t.Fatalf("target environment lacks %q:\n%s", want, env)
+		}
+	}
+	for _, unwanted := range []string{"/explicit", "/host"} {
+		if strings.Contains(env, unwanted) {
+			t.Fatalf("policy env lost to an earlier layer (%q):\n%s", unwanted, env)
+		}
+	}
+}
+
+func TestLinuxBuildBwrapArgsDenyHostTempKeepsPrivateTmpfs(t *testing.T) {
+	scratch := t.TempDir()
+	joined := strings.Join(buildBwrapArgs(Config{DenyHostTemp: true, WritablePaths: []string{scratch}}, nil), " ")
+	if !strings.Contains(joined, "--tmpfs /tmp") || strings.Contains(joined, "--remount-ro /tmp") {
+		t.Fatalf("DenyHostTemp changed the private tmpfs:\n%s", joined)
+	}
+	if !strings.Contains(joined, scratch) {
+		t.Fatalf("scratch grant missing under DenyHostTemp:\n%s", joined)
+	}
+}

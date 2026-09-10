@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"sort"
 
+	"errors"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
@@ -63,6 +65,49 @@ func integrationTask(s *State, task *Task) bool {
 	return task != nil && (task.Status == "awaiting_review" || task.Status == "done" && acceptedTaskRevision(task) && unchangedTask(s, task))
 }
 
+// acceptTask records the parent's acceptance of the current submitted
+// revision inside the caller's transaction. Snapshot-less research and an
+// unchanged candidate finish immediately; a changed candidate stays awaiting
+// its integration receipt. Accepting always reactivates retained work first.
+func acceptTask(s *State, t *Task) error {
+	if err := reactivateTask(s, t); err != nil {
+		return err
+	}
+	t.AcceptedRevision = t.Revision
+	if t.Snapshot == "" || unchangedTask(s, t) {
+		t.Status = "done"
+	}
+	return nil
+}
+
+// workflowResearchTasks lists the read-only, snapshot-less submissions a
+// workflow's completed executions left awaiting review: research the script
+// consumed without reviewing. Results the script already reviewed and editing
+// candidates are never included. Sorted by task ID.
+func workflowResearchTasks(s *State, w *workflow.Report) []*Task {
+	var tasks []*Task
+	for _, t := range s.Tasks {
+		if t.Run != w.Run || t.Status != "awaiting_review" || t.Snapshot != "" {
+			continue
+		}
+		e, owner := s.Executions[t.Execution], s.Members[t.Owner]
+		if e == nil || e.Workflow != w.ID || e.Run != w.Run || e.Member != t.Owner || e.Status != "completed" || owner == nil || !owner.ReadOnly {
+			continue
+		}
+		tasks = append(tasks, t)
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID < tasks[j].ID })
+	return tasks
+}
+
+// countNoun formats "1 research result" or "40 research results".
+func countNoun(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 // settlementState repairs saved, explicitly accepted no-op submissions through
 // the same lease-fenced transaction and task lock as review and integration.
 func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
@@ -98,18 +143,48 @@ func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 	return s, err
 }
 
-func unsettledTask(s *State, run string) *Task {
-	ids := make([]string, 0, len(s.Tasks))
-	for id, task := range s.Tasks {
+// unsettledTasks lists, by ID, the current run's open tasks plus retained
+// tasks whose deferral no longer holds.
+func unsettledTasks(s *State, run string) []*Task {
+	var tasks []*Task
+	for _, task := range s.Tasks {
 		if (task.Run == run || task.Deferral != nil) && task.Status != "done" && task.Status != "canceled" && !TaskDeferred(s, task) {
-			ids = append(ids, id)
+			tasks = append(tasks, task)
 		}
 	}
-	sort.Strings(ids)
-	if len(ids) == 0 {
-		return nil
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID < tasks[j].ID })
+	return tasks
+}
+
+// unsettledTasksError names the first task's blocker and, when several tasks
+// are open, how many. The single-task text is unchanged, and the typed
+// blocker (its code, or the iteration limit) survives the count prefix.
+func unsettledTasksError(s *State, tasks []*Task) error {
+	first := taskSettlementError(s, tasks[0])
+	if len(tasks) == 1 {
+		return first
 	}
-	return s.Tasks[ids[0]]
+	count := fmt.Sprintf("%d tasks unsettled; first: ", len(tasks))
+	var blocker *workflow.Error
+	if errors.As(first, &blocker) {
+		return fail(blocker.Code, count+blocker.Message)
+	}
+	return fmt.Errorf("%s%w", count, first)
+}
+
+// unacknowledgedResearch returns the first (by ID) completed, unacknowledged
+// workflow of the run that still owns consumed research, with that research.
+func unacknowledgedResearch(s *State, run string) (*workflow.Report, []*Task) {
+	for _, id := range sortedInspectionIDs(s.Workflows) {
+		w := s.Workflows[id]
+		if w.Run != run || w.Status != "completed" || w.Acknowledged {
+			continue
+		}
+		if research := workflowResearchTasks(s, w); len(research) > 0 {
+			return w, research
+		}
+	}
+	return nil, nil
 }
 
 func taskSettlementError(s *State, task *Task) error {

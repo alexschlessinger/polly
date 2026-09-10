@@ -145,3 +145,56 @@ func TestSelectedTextArtifactWorksThroughRealAgentLoop(t *testing.T) {
 		t.Fatal("missing response")
 	}
 }
+
+func TestWorkflowReadNextHint(t *testing.T) {
+	r := runtimeTest(t, nilModel(), 1, 4)
+	ctx := context.Background()
+	if err := r.update(ctx, func(s *State) error {
+		for id, status := range map[string]string{"run": "running", "done": "completed", "bare": "completed", "acked": "completed", "failed": "failed", "interrupted": "interrupted"} {
+			s.Workflows[id] = &workflow.Report{ID: id, Name: id, Status: status, Run: "run1", Acknowledged: id == "acked"}
+		}
+		s.Members["m"] = &Member{ID: "m", ReadOnly: true, Task: "t", Execution: "e"}
+		s.Executions["e"] = &Execution{ID: "e", Run: "run1", Member: "m", Workflow: "done", Status: "completed", Generation: 1}
+		s.Tasks["t"] = &Task{ID: "t", Run: "run1", Owner: "m", Execution: "e", Status: "awaiting_review", Revision: 2}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.RegisterParentTools(r.config.Registry)
+	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_read")
+	next := func(id string) (string, bool) {
+		t.Helper()
+		out, err := tool.Execute(ctx, map[string]any{"id": id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var summary map[string]any
+		if err := json.Unmarshal([]byte(out), &summary); err != nil {
+			t.Fatal(err)
+		}
+		hint, ok := summary["next"].(string)
+		return hint, ok
+	}
+	for _, tc := range []struct {
+		id       string
+		present  bool
+		contains []string
+	}{
+		{id: "run", present: true, contains: []string{"swarm_wait", "do not poll"}},
+		{id: "done", present: true, contains: []string{"1 research result", `workflow_acknowledge({id: "done"})`, "swarm_review"}},
+		{id: "bare", present: true, contains: []string{"nothing awaiting review", "optional"}},
+		{id: "acked"},
+		{id: "failed", present: true, contains: []string{"Terminal failed", "defer: true", "recover"}},
+		{id: "interrupted", present: true, contains: []string{"Terminal interrupted", "defer: true"}},
+	} {
+		hint, ok := next(tc.id)
+		if ok != tc.present {
+			t.Fatalf("%s: next present = %v (%q), want %v", tc.id, ok, hint, tc.present)
+		}
+		for _, want := range tc.contains {
+			if !strings.Contains(hint, want) {
+				t.Errorf("%s: next %q lacks %q", tc.id, hint, want)
+			}
+		}
+	}
+}

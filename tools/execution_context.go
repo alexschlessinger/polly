@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"errors"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -17,7 +18,29 @@ type ExecutionContext struct {
 	SourceRoot   string         `json:"-"`
 	Root         string         `json:"root"`
 	ReadOnly     bool           `json:"readOnly"`
+	Scratch      string         `json:"scratch,omitempty"`
 	Sandbox      sandbox.Config `json:"-"`
+}
+
+// ExecutionGrant is the authority a context receives beyond reading its root.
+type ExecutionGrant struct {
+	// ReadOnly denies writes to the root. With a Scratch the context may write
+	// only there; without one it denies every write.
+	ReadOnly     bool
+	DeniedReads  []string
+	DeniedWrites []string
+	// Scratch is an existing directory outside the root, exported to the
+	// context's processes as TMPDIR and the Go cache root. It is the only
+	// writable path of a read-only context. A missing or nested scratch fails
+	// closed.
+	Scratch string
+}
+
+// scratchEnv points a context's processes at its scratch: temp files, Go's
+// work directory and build cache land there, and module lookups fail fast
+// instead of dialing, since the module cache is never writable in a context.
+func scratchEnv(scratch string) map[string]string {
+	return map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch, "GOTMPDIR": scratch, "GOCACHE": filepath.Join(scratch, "go-build"), "GOPROXY": "off"}
 }
 
 // ContextTool explicitly binds a custom tool to a new execution context.
@@ -52,7 +75,9 @@ func (r *ToolRegistry) ResolvePath(path string) (string, error) {
 
 // ExecutionPolicy narrows the parent's grants. Workspace-dependent write
 // roots are replaced; inherited deny rules and network policy are retained.
-func (r *ToolRegistry) ExecutionPolicy(root string, readOnly bool, deniedReads, deniedWrites []string) (ExecutionContext, error) {
+// A read-only grant with a scratch writes only there; without one it keeps
+// the all-writes-denied policy. An operator's denyWrite base still wins.
+func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (ExecutionContext, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return ExecutionContext{}, err
@@ -60,6 +85,21 @@ func (r *ToolRegistry) ExecutionPolicy(root string, readOnly bool, deniedReads, 
 	abs, err = filepath.EvalSymlinks(abs)
 	if err != nil {
 		return ExecutionContext{}, err
+	}
+	scratch := ""
+	if grant.Scratch != "" {
+		if scratch, err = filepath.Abs(grant.Scratch); err != nil {
+			return ExecutionContext{}, err
+		}
+		if scratch, err = filepath.EvalSymlinks(scratch); err != nil {
+			return ExecutionContext{}, fmt.Errorf("execution scratch %q: must be an existing directory: %w", grant.Scratch, err)
+		}
+		if info, err := os.Stat(scratch); err != nil || !info.IsDir() {
+			return ExecutionContext{}, fmt.Errorf("execution scratch %q: must be an existing directory", grant.Scratch)
+		}
+		if sandbox.PathWithin(scratch, abs) || sandbox.PathWithin(abs, scratch) {
+			return ExecutionContext{}, errors.New("execution scratch must be outside the execution root")
+		}
 	}
 	base, err := r.preparedBaseSandboxConfig()
 	if err != nil {
@@ -72,17 +112,39 @@ func (r *ToolRegistry) ExecutionPolicy(root string, readOnly bool, deniedReads, 
 	cfg.PassEnv = append([]string(nil), base.PassEnv...)
 	cfg.DenyPaths = append(cfg.DenyPaths, base.DenyPaths...)
 	cfg.DenyWritePaths = append(cfg.DenyWritePaths, base.DenyWritePaths...)
-	cfg.DenyPaths = append(cfg.DenyPaths, deniedReads...)
-	cfg.DenyWritePaths = append(cfg.DenyWritePaths, deniedWrites...)
-	cfg.WritablePaths = []string{abs}
-	cfg.DenyWrite = readOnly || base.DenyWrite
-	if cfg.DenyWrite {
+	cfg.DenyPaths = append(cfg.DenyPaths, grant.DeniedReads...)
+	cfg.DenyWritePaths = append(cfg.DenyWritePaths, grant.DeniedWrites...)
+	cfg.DenyWrite = base.DenyWrite
+	cfg.DenyHostTemp = base.DenyHostTemp
+	switch {
+	case grant.ReadOnly && scratch != "":
+		// Read-only research writes in its scratch and, like every context,
+		// in host temp: the root is an explicit read-only island. Withholding
+		// host temp would break here-documents, because macOS's bash 3.2 puts
+		// them in a system temp directory or, failing that, the working
+		// directory, which is the read-only checkout.
+		cfg.WritablePaths = []string{scratch}
+		cfg.DenyWritePaths = append(cfg.DenyWritePaths, abs)
+	case grant.ReadOnly:
+		cfg.WritablePaths = []string{abs}
+		cfg.DenyWrite = true
+	default:
+		cfg.WritablePaths = []string{abs}
+		if scratch != "" {
+			cfg.WritablePaths = append(cfg.WritablePaths, scratch)
+		}
+	}
+	if scratch != "" && !cfg.DenyWrite {
+		cfg.Env = scratchEnv(scratch)
+	}
+	if grant.ReadOnly || cfg.DenyWrite {
+		// Keep the checkout visible inside Linux private temp; not a write grant.
 		cfg, err = sandbox.ExposeReadOnlyPaths(cfg, abs)
 		if err != nil {
 			return ExecutionContext{}, err
 		}
 	}
-	return ExecutionContext{Root: abs, ReadOnly: cfg.DenyWrite, Sandbox: cfg}, nil
+	return ExecutionContext{Root: abs, ReadOnly: grant.ReadOnly || cfg.DenyWrite, Scratch: scratch, Sandbox: cfg}, nil
 }
 
 // BindExecutionContext owns fresh native tools and local MCP servers. It

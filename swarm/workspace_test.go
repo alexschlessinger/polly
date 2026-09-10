@@ -202,6 +202,9 @@ func assertGitInspectionIsolation(t *testing.T, ctx context.Context, r *Runtime,
 	if out, err := bash.Execute(ctx, map[string]any{"command": "ls " + quote(r.config.Root)}); err == nil && strings.TrimSpace(out) != "" {
 		t.Errorf("member listed parent files: %s", out)
 	}
+	if out, err := bash.Execute(ctx, map[string]any{"command": `printf ok > "$TMPDIR/probe" && cat "$TMPDIR/probe"`}); err != nil || strings.TrimSpace(out) != "ok" {
+		t.Errorf("member scratch unusable: %s %v", out, err)
+	}
 	checks := []string{
 		"cat " + quote(filepath.Join(r.config.Root, "dirty.txt")),
 		"touch " + quote(filepath.Join(gitDir, "objects", "forbidden")),
@@ -213,6 +216,9 @@ func assertGitInspectionIsolation(t *testing.T, ctx context.Context, r *Runtime,
 	for _, sibling := range state.Contexts {
 		if sibling.Root != member.Root {
 			checks = append(checks, "cat "+quote(filepath.Join(sibling.Root, "dirty.txt")))
+			if sibling.Scratch != "" {
+				checks = append(checks, "touch "+quote(filepath.Join(sibling.Scratch, "x")))
+			}
 			break
 		}
 	}

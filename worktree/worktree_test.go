@@ -191,7 +191,7 @@ func TestMemberProcessSandbox(t *testing.T) {
 			denied = append(denied, slot)
 		}
 	}
-	ec, err := registry.ExecutionPolicy(child.Path, false, denied, []string{m.GitDir, filepath.Join(child.Path, ".git")})
+	ec, err := registry.ExecutionPolicy(child.Path, tools.ExecutionGrant{DeniedReads: denied, DeniedWrites: []string{m.GitDir, filepath.Join(child.Path, ".git")}, Scratch: child.ScratchDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestMemberProcessSandbox(t *testing.T) {
 	}
 	defer bound.Close()
 	bash, _ := bound.Get("bash")
-	if out, err := bash.Execute(ctx, map[string]any{"command": "pwd; git status --porcelain; printf allowed > member.txt"}); err != nil || !strings.Contains(out, child.Path) {
+	if out, err := bash.Execute(ctx, map[string]any{"command": `pwd; git status --porcelain; printf allowed > member.txt; printf t > "$TMPDIR/probe" && test -f '` + child.ScratchDir() + `/probe'`}); err != nil || !strings.Contains(out, child.Path) {
 		t.Fatalf("member command: %s %v", out, err)
 	}
 	// Construct this sibling after the member sandbox. Its pre-reserved path
@@ -212,7 +212,7 @@ func TestMemberProcessSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	quote := func(path string) string { return "'" + strings.ReplaceAll(path, "'", "'\\''") + "'" }
-	for _, command := range []string{"cat " + quote(filepath.Join(m.Root, "a.txt")), "cat " + quote(filepath.Join(sibling.Path, "a.txt")), "git add member.txt", "printf bad > " + quote(filepath.Join(m.GitDir, "config"))} {
+	for _, command := range []string{"cat " + quote(filepath.Join(m.Root, "a.txt")), "cat " + quote(filepath.Join(sibling.Path, "a.txt")), "ls " + quote(sibling.ScratchDir()), "git add member.txt", "printf bad > " + quote(filepath.Join(m.GitDir, "config"))} {
 		if out, err := bash.Execute(ctx, map[string]any{"command": command}); err == nil {
 			t.Fatalf("sandbox allowed %s: %s", command, out)
 		}
@@ -588,5 +588,51 @@ func TestFailedCreateReleasesSlotAndNewReclaimsStaleClaims(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(m.Slots[0], "owner")); err != nil {
 		t.Fatal("live checkout reclaimed")
+	}
+}
+
+func TestCreateProvidesSlotScratchAndCleanupRemovesIt(t *testing.T) {
+	m, root := fixture(t)
+	ctx := context.Background()
+	base, err := m.Capture(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := m.Create(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch := child.ScratchDir()
+	if scratch != filepath.Join(filepath.Dir(child.Path), "scratch") {
+		t.Fatalf("scratch = %s, want a sibling of %s", scratch, child.Path)
+	}
+	if info, err := os.Stat(scratch); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("scratch stat = %v %v", info, err)
+	}
+	if err := os.WriteFile(filepath.Join(scratch, "note"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Cleanup(ctx, child, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleanup kept the scratch: %v", err)
+	}
+	stale := filepath.Join(m.Slots[0], "scratch")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "stale"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := m.Create(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(again.Path) != m.Slots[0] {
+		t.Fatalf("freed slot not reused: %s", again.Path)
+	}
+	if _, err := os.Stat(filepath.Join(again.ScratchDir(), "stale")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reused slot kept an old scratch: %v", err)
 	}
 }

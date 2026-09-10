@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/workflow"
 )
 
 // memberFixture builds the smallest state that exercises one presentation.
@@ -97,4 +98,80 @@ func TestFingerprintStableAcrossQueuedToRunning(t *testing.T) {
 	if coordinationFingerprint(s) == resumed {
 		t.Fatal("a control change did not change the fingerprint")
 	}
+}
+
+func TestWorkflowControlledFollowsWorkflowStatus(t *testing.T) {
+	s := &State{Workflows: map[string]*workflow.Report{}}
+	for _, status := range []string{"running", "completed", "failed", "interrupted", "canceled"} {
+		s.Workflows[status] = &workflow.Report{ID: status, Status: status}
+	}
+	for _, tc := range []struct {
+		name string
+		e    *Execution
+		want bool
+	}{
+		{name: "nil execution"},
+		{name: "direct spawn", e: &Execution{ID: "e"}},
+		{name: "running workflow", e: &Execution{ID: "e", Workflow: "running"}, want: true},
+		{name: "completed workflow", e: &Execution{ID: "e", Workflow: "completed"}},
+		{name: "failed workflow", e: &Execution{ID: "e", Workflow: "failed"}},
+		{name: "interrupted workflow", e: &Execution{ID: "e", Workflow: "interrupted"}},
+		{name: "canceled workflow", e: &Execution{ID: "e", Workflow: "canceled"}},
+		{name: "missing workflow", e: &Execution{ID: "e", Workflow: "missing"}},
+	} {
+		if got := workflowControlled(s, tc.e); got != tc.want {
+			t.Errorf("%s: workflowControlled = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A parked parent sleeps through what a running workflow controls; the full
+// fingerprint that drives the settlement nudge still moves on every change.
+func TestFingerprintIgnoresWorkflowInternalTransitions(t *testing.T) {
+	s := &State{Members: map[string]*Member{}, Executions: map[string]*Execution{}, Tasks: map[string]*Task{}, Workflows: map[string]*workflow.Report{}}
+	s.Workflows["w"] = &workflow.Report{ID: "w", Status: "running"}
+	s.Executions["ea"] = &Execution{ID: "ea", Member: "a", Workflow: "w", Status: "running", Generation: 1}
+	s.Members["a"] = &Member{ID: "a", Execution: "ea", Task: "ta"}
+	s.Tasks["ta"] = &Task{ID: "ta", Execution: "ea", Owner: "a", Status: "running", Revision: 1}
+	s.Executions["ed"] = &Execution{ID: "ed", Member: "d", Status: "running", Generation: 1}
+	s.Members["d"] = &Member{ID: "d", Execution: "ed", Task: "td"}
+	s.Tasks["td"] = &Task{ID: "td", Execution: "ed", Owner: "d", Status: "running", Revision: 1}
+	s.Tasks["tp"] = &Task{ID: "tp", Status: "pending", Revision: 1}
+	before, _ := coordinationEntries(s)
+	full := coordinationFingerprint(s)
+	expect := func(step string, want bool) {
+		t.Helper()
+		if got := parentWaitChanged(before, s); got != want {
+			t.Fatalf("%s: parentWaitChanged = %v, want %v", step, got, want)
+		}
+		if want {
+			before, _ = coordinationEntries(s)
+		}
+	}
+	s.Executions["ea"].Status = "waiting"
+	expect("workflow member parks", false)
+	s.Executions["ea"].Status = "completed"
+	s.Tasks["ta"].Status = "awaiting_review"
+	s.Tasks["ta"].Revision++
+	expect("workflow member completes", false)
+	s.Executions["eb"] = &Execution{ID: "eb", Member: "b", Workflow: "w", Status: "running", Generation: 1}
+	s.Members["b"] = &Member{ID: "b", Execution: "eb", Task: "tp"}
+	s.Tasks["tp"].Owner, s.Tasks["tp"].Status, s.Tasks["tp"].Execution = "b", "running", "eb"
+	expect("workflow takes over a pending task", false)
+	s.Members["c"] = &Member{ID: "c", Controller: "w"}
+	expect("workflow member recorded before its execution", false)
+	s.Executions["ec"] = &Execution{ID: "ec", Member: "c", Workflow: "w", Status: "queued", Generation: 1}
+	s.Members["c"].Execution = "ec"
+	expect("workflow member's execution recorded", false)
+	if coordinationFingerprint(s) == full {
+		t.Fatal("the full fingerprint ignored workflow-internal transitions")
+	}
+	s.Executions["ed"].Status = "completed"
+	expect("direct child completes", true)
+	s.Workflows["w"].Status = "completed"
+	expect("workflow completes", true)
+	s.Workflows["w"].Acknowledged = true
+	expect("workflow acknowledged", true)
+	s.Executions["ea"].Generation++
+	expect("resume after the workflow ended", true)
 }

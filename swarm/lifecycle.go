@@ -105,6 +105,37 @@ func ExecutionWorkflow(s *State, e *Execution) string {
 	return ""
 }
 
+// workflowControlled reports whether a running workflow still owns an
+// execution's progress. The parent hears about such work once, when the
+// workflow reaches a terminal status; afterwards the member is an ordinary
+// member again and its transitions and outcomes reach the parent directly.
+// Only the host-authored Execution.Workflow counts, as for deferral.
+func workflowControlled(s *State, e *Execution) bool {
+	if e == nil || e.Workflow == "" {
+		return false
+	}
+	w := s.Workflows[e.Workflow]
+	return w != nil && w.Status == "running"
+}
+
+// memberControlled extends workflowControlled to the member record: a member
+// reserved by a running workflow is controlled from the moment it is created,
+// including the window before its first execution is recorded, so a parked
+// parent does not wake on the workflow's own launches.
+func memberControlled(s *State, m *Member) bool {
+	if m == nil {
+		return false
+	}
+	if workflowControlled(s, s.Executions[m.Execution]) {
+		return true
+	}
+	if m.Controller == "" {
+		return false
+	}
+	w := s.Workflows[m.Controller]
+	return w != nil && w.Status == "running"
+}
+
 // MemberState derives a member's presentation. Reading never repairs records,
 // accepts tasks or claims an execution.
 func MemberState(s *State, m *Member) AgentPresentation {

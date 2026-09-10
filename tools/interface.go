@@ -5,6 +5,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
+	"maps"
 )
 
 // Tool is the generic interface for all tools
@@ -111,6 +112,7 @@ func copySandboxConfig(cfg *sandbox.Config) *sandbox.Config {
 	c.AllowEnv = append([]string(nil), cfg.AllowEnv...)
 	c.PassEnv = append([]string(nil), cfg.PassEnv...)
 	c.AllowUnixSockets = append([]string(nil), cfg.AllowUnixSockets...)
+	c.Env = maps.Clone(cfg.Env)
 	return &c
 }
 

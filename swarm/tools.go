@@ -95,9 +95,13 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 		return pubs, nil
 	})
 	register("swarm_snapshot", "Capture an immutable candidate from your isolated files. This does not commit to a branch or accept a task.", nil, nil, func(ctx context.Context, a tools.Args) (any, error) { return r.captureMember(ctx, actor) })
-	register("swarm_wait", "Yield after this tool batch until addressed input is available. The runtime releases your execution slot and preserves your iteration budget.", nil, nil, func(ctx context.Context, a tools.Args) (any, error) {
+	waitDescription := "Yield after this tool batch until addressed input is available. The runtime releases your execution slot and preserves your iteration budget."
+	if actor == r.ID {
+		waitDescription = "Park until there is something for you to act on: mail addressed to you, a directly spawned child's outcome or task change, or a background workflow reaching a terminal status. Agents inside a running workflow do not wake you; the workflow reports once when it finishes. Use this instead of sleeping, polling or re-reading reports while children or workflows run. When it returns, read messages, then swarm_tasks or workflow_read."
+	}
+	register("swarm_wait", waitDescription, nil, nil, func(ctx context.Context, a tools.Args) (any, error) {
 		if actor == r.ID {
-			return mutationResult("coordination changed; inspect messages and tasks", r.waitParent(ctx))
+			return mutationResult("coordination changed; read messages, then swarm_tasks or workflow_read", r.waitParent(ctx))
 		}
 		park, ok := ctx.Value(waitKey{}).(func())
 		if !ok {
@@ -115,7 +119,7 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	before := coordinationFingerprint(s)
+	before, _ := coordinationEntries(s)
 	for {
 		r.mu.Lock()
 		notify := r.notify
@@ -125,7 +129,7 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if active == 0 || len(inbox(s, r.ID, true)) > 0 || coordinationFingerprint(s) != before {
+		if active == 0 || len(inbox(s, r.ID, true)) > 0 || parentWaitChanged(before, s) {
 			return nil
 		}
 		select {
@@ -136,20 +140,19 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 	}
 }
 
-// coordinationFingerprint covers what a waiting parent acts on: task changes
-// and member or workflow status transitions. A member that was already parked
-// when the wait began is not news, so its steady state cannot end the wait.
-// Members hash by lifecycle, control and execution identity: a wake that moves
-// the same execution from queued to running is not a transition, and labels
-// never are.
-func coordinationFingerprint(s *State) string {
-	statuses := map[string]any{}
+// coordinationEntries derives one comparable record per task, member and
+// workflow, and marks the records a running workflow controls. Members hash
+// by lifecycle, control and execution identity: a wake that moves the same
+// execution from queued to running is not a transition, and labels never are.
+func coordinationEntries(s *State) (entries map[string]any, controlled map[string]bool) {
+	entries, controlled = map[string]any{}, map[string]bool{}
 	for id, t := range s.Tasks {
-		statuses["task:"+id] = struct {
+		entries["task:"+id] = struct {
 			Status, Owner, Execution, Snapshot, Feedback string
 			Revision, Accepted                           int
 			Deferred                                     bool
 		}{t.Status, t.Owner, t.Execution, t.Snapshot, t.Feedback, t.Revision, t.AcceptedRevision, TaskDeferred(s, t)}
+		controlled["task:"+id] = workflowControlled(s, s.Executions[t.Execution])
 	}
 	for id, m := range s.Members {
 		generation := 0
@@ -157,20 +160,44 @@ func coordinationFingerprint(s *State) string {
 			generation = e.Generation
 		}
 		p := MemberState(s, m)
-		statuses["member:"+id] = struct {
+		entries["member:"+id] = struct {
 			Lifecycle  Lifecycle
 			Control    MemberControl
 			Execution  string
 			Generation int
 		}{p.Lifecycle, p.Control, m.Execution, generation}
+		controlled["member:"+id] = memberControlled(s, m)
 	}
 	for id, w := range s.Workflows {
-		statuses["workflow:"+id] = struct {
+		entries["workflow:"+id] = struct {
 			Status       string
 			Acknowledged bool
 		}{w.Status, w.Acknowledged}
 	}
-	return tools.Result(statuses)
+	return entries, controlled
+}
+
+// coordinationFingerprint hashes every entry. The settlement nudge in
+// bindParent compares it: any coordination change, workflow-internal or not,
+// earns the parent another nudge rather than a blocked turn.
+func coordinationFingerprint(s *State) string {
+	entries, _ := coordinationEntries(s)
+	return tools.Result(entries)
+}
+
+// parentWaitChanged is what ends a parked parent's wait: an entry that
+// differs from before, unless a running workflow controls it now. Workflow
+// progress reaches the parent once, through the workflow's own status entry,
+// and a record a workflow takes over during the wait is not news either. A
+// member that was already parked when the wait began is not news at all.
+func parentWaitChanged(before map[string]any, s *State) bool {
+	entries, controlled := coordinationEntries(s)
+	for key, value := range entries {
+		if !controlled[key] && before[key] != value {
+			return true
+		}
+	}
+	return false
 }
 
 // RegisterParentTools binds parent-only authority in closures, never in model
@@ -267,22 +294,32 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		}
 		return map[string]any{"id": report.ID, "status": report.Status, "output": report.Output, "steps": len(report.Steps)}, err
 	})
-	register("workflow_start", "Start a background JavaScript workflow. Inspect its saved report and coordinate until the swarm settles.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("workflow_start", "Start a background JavaScript workflow and return at once. Then park with swarm_wait; it wakes you once when the workflow reaches a terminal status or when mail addresses you. Do not poll workflow_read while it runs; read the saved report and acknowledge it afterwards.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
 		input, err := schema.DecodeJSON(a.String("input"))
 		if err != nil {
 			return nil, err
 		}
 		id, err := r.StartWorkflow(ctx, a.String("source"), input)
-		return mutationResult(map[string]any{"id": id, "status": "started"}, err)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"id": id, "status": "started", "next": "Park with swarm_wait; it returns when this workflow is terminal or mail addresses you. Then workflow_read({id: \"" + id + "\"}) and workflow_acknowledge({id: \"" + id + "\"})."}, nil
 	})
 	register("workflow_cancel", "Cancel a running workflow and interrupt its active executions; retain finished outcomes and unresolved tasks.", schema.Params{"id": schema.S("Workflow ID")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("canceled", r.CancelWorkflow(a.String("id")))
 	})
-	register("workflow_acknowledge", "Acknowledge a terminal workflow report. After reporting a failure, defer=true with a nonblank note retains its unresolved work for later without accepting, applying or canceling it.", schema.Params{"id": schema.S("Workflow report ID"), "defer": schema.Bool("Explicitly defer unresolved work from a terminal failure"), "note": schema.S("Required explanation when deferring")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("workflow_acknowledge", "Acknowledge a terminal workflow report. On a completed report this also accepts the read-only research the script consumed and left unreviewed, never editing candidates, and reports the count. After reporting a failure, defer=true with a nonblank note retains its unresolved work for later without accepting, applying or canceling it.", schema.Params{"id": schema.S("Workflow report ID"), "defer": schema.Bool("Explicitly defer unresolved work from a terminal failure"), "note": schema.S("Required explanation when deferring")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
 		if a.Bool("defer") {
 			return mutationResult("acknowledged and deferred", r.DeferWorkflow(ctx, a.String("id"), a.String("note")))
 		}
-		return mutationResult("acknowledged", r.AcknowledgeWorkflow(ctx, a.String("id")))
+		accepted, err := r.AcknowledgeWorkflow(ctx, a.String("id"))
+		if err != nil {
+			return nil, err
+		}
+		if accepted == 0 {
+			return "acknowledged", nil
+		}
+		return "acknowledged; accepted " + countNoun(accepted, "research result"), nil
 	})
 	register("workflow_read", "Inspect a saved workflow without executing it. Defaults to a compact summary. List steps, then select a stable step ID; pointer selects within a section. Large selections are attached as readable artifacts.", inspectionParams(schema.Params{"id": schema.S("Workflow report ID"), "section": schema.S("summary (default), steps, step, source, input or output"), "step": schema.S("Stable step ID for section=step"), "pointer": schema.S("Optional JSON Pointer within the selected section, e.g. /value/value/claims/0")}), []string{"id"}, r.inspectWorkflow)
 }

@@ -2380,3 +2380,54 @@ func TestDarwinSandboxAllowsGrantedUnixSocket(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildProfileDenyHostTempOmitsTempAllows(t *testing.T) {
+	scratch := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := buildProfile(Config{DenyHostTemp: true, WritablePaths: []string{scratch}})
+	var allows []string
+	for _, line := range strings.Split(profile, "\n") {
+		if strings.Contains(line, "(allow file-write* (subpath ") {
+			allows = append(allows, line)
+		}
+	}
+	if len(allows) != 1 || !(strings.Contains(allows[0], filepath.Clean(scratch)) || strings.Contains(allows[0], resolved)) {
+		t.Fatalf("DenyHostTemp write allows = %q, want the scratch alone\nprofile:\n%s", allows, profile)
+	}
+	if strings.Contains(profile, `(allow file-write* (subpath "/private/tmp"))`) {
+		t.Fatalf("DenyHostTemp kept the shared /private/tmp grant:\n%s", profile)
+	}
+	if control := buildProfile(Config{WritablePaths: []string{scratch}}); !strings.Contains(control, `(allow file-write* (subpath "/private/tmp"))`) {
+		t.Fatalf("host temp grant missing without DenyHostTemp:\n%s", control)
+	}
+}
+
+func TestDarwinPolicyEnvIsFinalLayer(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	dir := t.TempDir()
+	sb, err := New(Config{Env: map[string]string{"TMPDIR": dir, "POLLY_SCRATCH": "yes"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-c", `printf '%s|%s' "$TMPDIR" "$POLLY_SCRATCH"`)
+	cmd.Env = []string{"TMPDIR=/ambient"}
+	cleanup, err := WrapCmdWithEnvManaged(sb, cmd, map[string]string{"TMPDIR": "/explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandboxed target failed: %v (%s)", err, out)
+	}
+	if string(out) != dir+"|yes" {
+		t.Fatalf("target environment = %q, want the policy values", out)
+	}
+	if joined := strings.Join(cmd.Args, " "); strings.Contains(joined, "/explicit") || strings.Contains(joined, "/ambient") {
+		t.Fatalf("wrapper argv exposes environment values: %v", cmd.Args)
+	}
+	_ = os.Remove
+}

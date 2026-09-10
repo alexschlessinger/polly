@@ -46,11 +46,20 @@ expand the member's inherited tool capabilities.
 Typed `/spawn`, model delegation, and scripted `polly.agent` all enter this same
 runtime. A TUI tab does not grant a child the parent's bound tools or filesystem
 access. `/spawn --read-only` uses the same research policy as `read_only:true`.
+Every member context owns a private scratch directory beside its checkout
+(`$TMPDIR`, also `GOCACHE` and `GOTMPDIR`); a read-only member writes there and
+in host temp, nowhere else, and siblings can neither read nor write it.
 
 Member policies deny parent/sibling files, session databases, and every write to
 common Git metadata and the linked worktree's `.git` entry. The default 512
 worktree directory slots are reserved before member sandboxes start, so future
-siblings are already covered. The common Git object store remains readable.
+siblings are already covered. A read-only member's checkout is listed in
+`denyWritePaths` on top of the missing write grant. Host temp stays writable for
+it as for every context: macOS's bash 3.2 puts here-documents in a system temp
+directory or, failing that, the working directory, so withholding host temp
+would break them inside the read-only checkout. `$TMPDIR` users and Go builds
+land in the scratch, which is removed with the context. The common Git object
+store remains readable.
 On macOS, approved `readPaths` also permit metadata checks on their exact
 ancestor directories so Git can resolve linked worktrees from a main checkout.
 This permits neither ancestor directory listings nor reads of sibling files,
@@ -88,7 +97,9 @@ explicit unsafe acknowledgment, are required for editing. See
 Runtime Git and read-only members explicitly expose their selected checkout
 paths when Linux private temp mounts would otherwise hide them. These frozen
 read-only bindings preserve credential and custom deny rules; they are not
-`ReadPaths` exemptions and do not grant writes to the source checkout.
+`ReadPaths` exemptions and do not grant writes to the source checkout. The same
+bindings apply when a member's scratch is its only write grant; the checkout
+itself is never writable.
 
 Workflow JavaScript has no direct process/filesystem/network APIs. The workflow
 host and agent loop share the Go tool invoker for timeouts, execution gates, and
@@ -198,8 +209,10 @@ refused unless the caller chose `--nosandbox` / `WithUnsafeNoSandbox`.
 | `denyWritePaths` | string[] | paths kept read-only even inside a `writablePaths` entry |
 | `allowEnv` | string[] | strict allowlist: if set, *only* these env vars pass through |
 | `passEnv` | string[] | additive exemptions from sensitive-var stripping (ignored when `allowEnv` is set) |
+| `env` | object | explicit target variables (name → value), applied after filtering, per-call explicit env, and the Linux temp rewrite; a later overlay's value wins per name |
 | `allowUnixSockets` | string[] | absolute Unix-socket paths the process may connect to |
 | `denyWrite` | bool | deny all writes, even temp; overrides `writablePaths` |
+| `denyHostTemp` | bool | withhold the implicit host temp write grant; only `writablePaths` stay writable (Linux keeps its private per-command tmpfs) |
 
 Path fields support `~`. The **base policy** (`sandbox.DefaultConfig()`,
 preset `base`) denies writes everywhere except the sandbox temp dir, denies
@@ -216,6 +229,8 @@ or restrictions but never remove one. Details:
 
 - `denyWrite: true` overrides `writablePaths`. `denyDNS` only matters with
   `allowNetwork`.
+- `env` merges per variable name and the later overlay's value replaces the
+  earlier one; `denyHostTemp`, like `denyWrite`, only ever tightens.
 - `allowEnv` is a mode switch: when set, only the listed variables flow and
   `passEnv` is ignored. Prefer `passEnv` to add one variable.
 - `~` expands to your home and relative entries resolve against polly's
@@ -387,6 +402,9 @@ bwrap \
   pinned bootstrap reads a sealed anonymous env descriptor after
   namespaces, mounts, and seccomp are active, then `exec`s the target with
   its exact argv. Target values never appear in bwrap's environment or argv.
+  `TMPDIR`, `TMP`, and `TEMP` are rewritten to the private `/tmp`; a policy
+  `env` value, such as a member's scratch directory, is applied after that
+  rewrite.
 - **Writes are physically impossible** outside private temp and writable
   binds: the root is a read-only mount, not a policy check, and
   capabilities are dropped so a root launcher cannot remount.
@@ -440,7 +458,8 @@ terminal.
   reads, never writes. Rules cover both the literal path and its
   symlink-resolved target, since Seatbelt matches resolved vnode paths.
 - **Automatic writable roots**, including the construction-time `TMPDIR`,
-  are frozen like configured grants.
+  are frozen like configured grants. `denyHostTemp` omits these automatic
+  roots, leaving only `writablePaths`.
 - `allowNetwork` enables TCP/UDP but still denies outbound Unix-domain
   sockets, except macOS's fixed `mDNSResponder` socket when DNS is enabled;
   `denyDNS` removes that exception and blocks port 53.
@@ -506,7 +525,8 @@ a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The 
   do.
 - **macOS is allow-by-default.** Process enumeration and Mach services stay
   reachable ([differences](#differences-at-a-glance)), and `/private/tmp`
-  is shared because Seatbelt has no mount namespace.
+  is shared because Seatbelt has no mount namespace; `denyHostTemp` withholds
+  it for policies that grant explicit writable paths only.
 - **No resource limits.** A sandboxed fork bomb is still a fork bomb.
 - **A granted agent socket is a signing oracle.** `allowUnixSockets` and the
   `ssh` preset let a prompt-injected command sign with your SSH agent while
