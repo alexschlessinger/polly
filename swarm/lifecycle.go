@@ -45,6 +45,7 @@ type AgentPresentation struct {
 	MaxIterations int           `json:"maxIterations,omitempty"`
 	TaskStatus    string        `json:"taskStatus,omitempty"`
 	Deferred      bool          `json:"deferred"`
+	Delivering    bool          `json:"delivering,omitempty"`
 	// Attention marks open work that no execution is advancing.
 	Attention bool   `json:"attention"`
 	Workflow  string `json:"workflow,omitempty"`

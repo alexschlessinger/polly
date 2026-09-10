@@ -36,7 +36,7 @@ func TestSwarmIterationPauseRendersReasonAndResumesThroughCommand(t *testing.T) 
 		spawnTestToolCall("swarm_publish", `{"text":"saved review finding"}`),
 		spawnTestReply("completed review"),
 	}, failErr: errors.New("unexpected repeated model call")}
-	runtime, err := swarm.New(swarm.Config{Store: store, Parent: parent, Registry: registry, Client: model, Root: t.TempDir(), Agent: llm.AgentConfig{MaxIterations: 1}})
+	runtime, err := swarm.New(swarm.Config{Store: store, Parent: parent, Registry: registry, Client: model, Root: t.TempDir(), Directory: t.TempDir(), Agent: llm.AgentConfig{MaxIterations: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

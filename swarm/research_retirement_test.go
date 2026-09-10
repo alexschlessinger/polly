@@ -229,7 +229,7 @@ func TestRetirementRetainsChangedReadOnlyCheckout(t *testing.T) {
 	if m := s.Members[result.Session]; m.Control != MemberControlEnabled || MemberState(s, m).Display != "idle · done" {
 		t.Fatalf("member with a changed copy: control=%q display=%q", m.Control, MemberState(s, m).Display)
 	}
-	if kept := s.Contexts[c.ID]; kept == nil || kept.Retiring {
+	if kept := s.Contexts[c.ID]; kept == nil || kept.Release != "" {
 		t.Fatalf("changed copy not retained: %+v", kept)
 	}
 	if _, err := execParentTool(t, r, "swarm_control", map[string]any{"action": "cleanup", "id": c.ID}); err == nil || !strings.Contains(err.Error(), "unintegrated") {
@@ -253,7 +253,7 @@ func TestRetirementFinishesLeftoverRetiringContext(t *testing.T) {
 	}
 	c := onlyContext(t, s)
 	if err := r.update(ctx, func(s *State) error {
-		s.Contexts[c.ID].Retiring = true
+		s.Contexts[c.ID].Release = WorkspaceReleasing
 		s.Members[result.Session].Control = MemberControlRetired
 		return nil
 	}); err != nil {

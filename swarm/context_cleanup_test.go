@@ -59,7 +59,7 @@ func TestContextCleanupRequiresCurrentIntegratedContents(t *testing.T) {
 					}
 				} else {
 					candidateError(t, err, "unintegrated_changes")
-					if statErr != nil || after.Contexts[copy.ID] == nil || after.Contexts[copy.ID].Retiring {
+					if statErr != nil || after.Contexts[copy.ID] == nil || after.Contexts[copy.ID].Release != "" {
 						t.Fatal("refused cleanup changed the copy")
 					}
 				}
@@ -104,7 +104,7 @@ func TestContextCleanupRecordsRetirementBeforeFilesChange(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if !state.Contexts[copy.ID].Retiring || state.Members[ref.Task].Control != MemberControlRetired || state.Tasks[ref.Task].StartingSnapshot != copy.Checkout.Base.ID {
+					if state.Contexts[copy.ID].Release == "" || state.Members[ref.Task].Control != MemberControlRetired || state.Tasks[ref.Task].StartingSnapshot != copy.Checkout.Base.ID {
 						t.Fatal("retirement or provenance was not durable before cleanup")
 					}
 					if _, err := os.Stat(copy.Root); err != nil {
@@ -126,7 +126,7 @@ func TestContextCleanupRecordsRetirementBeforeFilesChange(t *testing.T) {
 						t.Fatalf("cancellation stranded retirement: %v", err)
 					}
 				} else {
-					if err == nil || after.Contexts[copy.ID] == nil || !after.Contexts[copy.ID].Retiring {
+					if err == nil || after.Contexts[copy.ID] == nil || after.Contexts[copy.ID].Release == "" {
 						t.Fatal("lost reply erased retirement state")
 					}
 					if _, err := r.makeContext(context.Background(), r.ID, AgentRequest{Context: copy.ID, ReadOnly: true}); err == nil {
@@ -147,7 +147,7 @@ func TestWholeFamilyCleanupChecksEveryCopyBeforeRemovingAny(t *testing.T) {
 	state, _ := r.read(ctx)
 	for _, ref := range []TaskReference{clean, dirty} {
 		copy := state.Contexts[ref.Task]
-		if copy == nil || copy.Retiring {
+		if copy == nil || copy.Release != "" {
 			t.Fatal("refused family cleanup retired a copy")
 		}
 		if _, err := os.Stat(copy.Root); err != nil {
@@ -198,7 +198,7 @@ func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i, ref := range refs {
-			if c := state.Contexts[ref.Task]; c == nil || !c.Retiring || state.Members[ref.Task].Control != MemberControlRetired {
+			if c := state.Contexts[ref.Task]; c == nil || c.Release == "" || state.Members[ref.Task].Control != MemberControlRetired {
 				t.Fatalf("first commit did not record every retirement: %+v", c)
 			}
 			if _, err := os.Stat(roots[i]); err != nil {

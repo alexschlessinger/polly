@@ -72,11 +72,11 @@ func integrationInputs(s *State, refs []TaskReference) ([]IntegrationInput, stri
 		c := s.Contexts[owner.Context]
 		snapshot := s.Snapshots[t.Snapshot]
 		var base *worktree.Snapshot
-		if c != nil && !c.Retiring && c.Checkout != nil && snapshot != nil && snapshot.Source == c.Root {
+		if c != nil && c.Release == "" && c.Checkout != nil && snapshot != nil && snapshot.Source == c.Root {
 			b := c.Checkout.Base
 			base = &b
 		}
-		if (c == nil || c.Retiring) && t.StartingSnapshot != "" {
+		if (c == nil || c.Release != "") && t.StartingSnapshot != "" {
 			base = s.Snapshots[t.StartingSnapshot]
 		}
 		if base == nil || snapshot == nil {

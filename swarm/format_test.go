@@ -46,7 +46,7 @@ func TestFormatRecordWrittenLazily(t *testing.T) {
 	if _, err := r.CreateTask(ctx, "describe", "criteria", nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := string(rawRecords(t, r)[formatKind][formatID]); got != `{"version":1}` {
+	if got := string(rawRecords(t, r)[formatKind][formatID]); got != `{"version":2}` {
 		t.Fatalf("format record %q", got)
 	}
 }
@@ -70,8 +70,9 @@ func TestUnsupportedFormatForLegacyRecords(t *testing.T) {
 		wantRoot bool
 	}{
 		"members without a format record": {records: map[string]map[string]json.RawMessage{"member": member}, wantRoot: true},
-		"newer format":                    {records: map[string]map[string]json.RawMessage{formatKind: {formatID: json.RawMessage(`{"version":2}`)}, "member": member}, wantRoot: true},
-		"embedded workflow steps":         {records: map[string]map[string]json.RawMessage{formatKind: {formatID: json.RawMessage(`{"version":1}`)}, "workflow": {"w": json.RawMessage(`{"id":"w","steps":[{"id":"s"}]}`)}}},
+		"version 1 members":               {records: map[string]map[string]json.RawMessage{formatKind: {formatID: json.RawMessage(`{"version":1}`)}, "member": member}, wantRoot: true},
+		"newer format":                    {records: map[string]map[string]json.RawMessage{formatKind: {formatID: json.RawMessage(`{"version":3}`)}, "member": member}, wantRoot: true},
+		"embedded workflow steps":         {records: map[string]map[string]json.RawMessage{formatKind: {formatID: json.RawMessage(`{"version":2}`)}, "workflow": {"w": json.RawMessage(`{"id":"w","steps":[{"id":"s"}]}`)}}},
 	} {
 		_, err := decodeState(&sessions.CoordinationState{ParentID: "root-1", Records: tc.records})
 		if !errors.Is(err, ErrUnsupportedFormat) || tc.wantRoot && !strings.Contains(err.Error(), "root-1") {

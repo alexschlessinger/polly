@@ -49,7 +49,7 @@ type Member struct {
 	Label      string        `json:"label"`
 	Control    MemberControl `json:"control,omitempty"`
 	Controller string        `json:"controller,omitempty"`
-	Context    string        `json:"context"`
+	Context    string        `json:"context,omitempty"`
 	Tools      []string      `json:"tools"`
 	Model      string        `json:"model"`
 	Task       string        `json:"task,omitempty"`
@@ -57,6 +57,10 @@ type Member struct {
 	ReadOnly   bool          `json:"readOnly"`
 }
 type Task struct {
+	Requirement      string        `json:"requirement,omitempty"`
+	Delivery         *TaskDelivery `json:"delivery,omitempty"`
+	Follows          string        `json:"follows,omitempty"`
+	SourceRoot       string        `json:"sourceRoot,omitempty"`
 	Deferral         *TaskDeferral `json:"deferral,omitempty"`
 	StartingSnapshot string        `json:"startingSnapshot,omitempty"`
 	Execution        string        `json:"execution,omitempty"`
@@ -74,6 +78,10 @@ type Task struct {
 	Snapshot         string        `json:"snapshot,omitempty"`
 }
 type Mail struct {
+	Task      string    `json:"task,omitempty"`
+	Revision  int       `json:"revision,omitempty"`
+	Execution string    `json:"execution,omitempty"`
+	Workflow  string    `json:"workflow,omitempty"`
 	ReplyID   string    `json:"replyID,omitempty"`
 	ID        string    `json:"id"`
 	From      string    `json:"from"`
@@ -96,6 +104,9 @@ type Publication struct {
 	Posted     time.Time       `json:"posted"`
 }
 type Execution struct {
+	Workspace  string `json:"workspace,omitempty"`
+	Base       string `json:"base,omitempty"`
+	SourceRoot string `json:"sourceRoot,omitempty"`
 	// Workflow is assigned by the host, not inferred from display call IDs.
 	Workflow   string                 `json:"workflow,omitempty"`
 	InputSaved bool                   `json:"inputSaved"`
@@ -127,7 +138,8 @@ type StructuredCompletion struct {
 	Value  any    `json:"value"`
 }
 type ExecutionContext struct {
-	Retiring bool               `json:"retiring,omitempty"`
+	Release  string             `json:"release,omitempty"`
+	Reason   string             `json:"reason,omitempty"`
 	ID       string             `json:"id"`
 	Owner    string             `json:"owner"`
 	Root     string             `json:"root"`
@@ -772,7 +784,7 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 // The common Git object store stays readable; filesystem isolation is not
 // source-code secrecy.
 func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
-	if c == nil || c.Retiring {
+	if c == nil || c.Release != "" {
 		return tools.ExecutionContext{}, fail("context_denied", "execution context is retiring")
 	}
 	var manager *worktree.Manager

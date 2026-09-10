@@ -36,6 +36,8 @@ type Counts struct {
 	Working       int `json:"working"`
 	Done          int `json:"done"`
 	Dormant       int `json:"dormant"`
+	Delivering    int `json:"delivering,omitempty"`
+	Retained      int `json:"retained,omitempty"`
 	Retired       int `json:"retired,omitempty"`
 	Deferred      int `json:"deferred,omitempty"`
 }

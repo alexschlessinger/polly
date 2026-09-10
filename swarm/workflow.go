@@ -289,7 +289,7 @@ func (h *workflowHost) context(ctx context.Context, id string) (*ExecutionContex
 		return nil, err
 	}
 	c := s.Contexts[id]
-	if c == nil || c.Retiring {
+	if c == nil || c.Release != "" {
 		return nil, errors.New("unknown or retiring execution context")
 	}
 	if c.Owner == h.controller {

@@ -26,7 +26,7 @@ func (r *Runtime) RetireAcceptedResearch(ctx context.Context) (int, error) {
 		c := s.Contexts[id]
 		owner := s.Members[c.Owner]
 		switch {
-		case c.Retiring:
+		case c.Release != "":
 			if owner != nil && owner.Control == MemberControlRetired {
 				leftovers = append(leftovers, c)
 			}
@@ -139,7 +139,7 @@ func (r *Runtime) markAcceptedResearch(ctx context.Context, verified []*Executio
 // at least one accepted, none still running, submitted, or sent back. A
 // member that still owns an unreviewed submission must stay resumable.
 func acceptedResearch(s *State, c *ExecutionContext, m *Member) bool {
-	if c == nil || m == nil || c.Retiring || !c.ReadOnly || !m.ReadOnly || m.Control != MemberControlEnabled || m.Context != c.ID || c.Owner != m.ID {
+	if c == nil || m == nil || c.Release != "" || !c.ReadOnly || !m.ReadOnly || m.Control != MemberControlEnabled || m.Context != c.ID || c.Owner != m.ID {
 		return false
 	}
 	if e := s.Executions[m.Execution]; e != nil && e.Status != "completed" {

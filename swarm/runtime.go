@@ -74,11 +74,13 @@ type AgentRequest struct {
 	CallID        string         `json:"callID,omitempty"`
 }
 type AgentResult struct {
-	Value   any    `json:"value"`
-	Session string `json:"session"`
-	Context string `json:"context"`
-	Usage   Usage  `json:"usage"`
-	Task    string `json:"task"`
+	Execution string `json:"execution,omitempty"`
+	Revision  int    `json:"revision,omitempty"`
+	Value     any    `json:"value"`
+	Session   string `json:"session"`
+	Context   string `json:"context"`
+	Usage     Usage  `json:"usage"`
+	Task      string `json:"task"`
 }
 type invocation struct {
 	waitState  string
@@ -352,7 +354,7 @@ func (r *Runtime) makeContext(ctx context.Context, actor string, req AgentReques
 	}
 	if req.Context != "" {
 		c := s.Contexts[req.Context]
-		if c == nil || c.Retiring || c.Owner != actor && actor != r.ID {
+		if c == nil || c.Release != "" || c.Owner != actor && actor != r.ID {
 			return nil, errors.New("unknown execution context")
 		}
 		source = c.Root

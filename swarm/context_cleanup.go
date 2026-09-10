@@ -73,7 +73,7 @@ func (r *Runtime) markRetiring(ctx context.Context, contexts []*ExecutionContext
 					task.StartingSnapshot = c.Checkout.Base.ID
 				}
 			}
-			stored.Retiring = true
+			stored.Release = WorkspaceReleasing
 			if member := s.Members[c.Owner]; member != nil {
 				member.Control = MemberControlRetired
 			}
