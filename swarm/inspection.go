@@ -143,8 +143,15 @@ func (r *Runtime) inspectAgents(ctx context.Context, actor string, a tools.Args)
 		return nil, err
 	}
 	items := []any{}
+	retired := 0
 	for _, id := range sortedInspectionIDs(s.Members) {
 		m := s.Members[id]
+		// A retired member cannot act, resume or be messaged; it is counted
+		// unless the caller asks for everyone.
+		if m.Control == MemberControlRetired && !a.Bool("all") {
+			retired++
+			continue
+		}
 		items = append(items, map[string]any{"id": m.ID, "name": m.Name, "label": clipInspection(m.Label, 512), "context": m.Context, "task": m.Task, "execution": m.Execution, "state": MemberState(s, m), "readOnly": m.ReadOnly})
 	}
 	page, err := pageInspection(items, a)
@@ -156,7 +163,8 @@ func (r *Runtime) inspectAgents(ctx context.Context, actor string, a tools.Args)
 		Self        string            `json:"self"`
 		Parent      string            `json:"parent"`
 		ParentState AgentPresentation `json:"parentState"`
-	}{page.(inspectionPage), actor, r.ID, r.ParentState(s)}, nil
+		Retired     int               `json:"retired,omitempty"`
+	}{page.(inspectionPage), actor, r.ID, r.ParentState(s), retired}, nil
 }
 
 func stepSummary(step workflow.Step) any {

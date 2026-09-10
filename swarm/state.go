@@ -361,7 +361,12 @@ func member(s *State, parent, actor string) error {
 
 func compactRoster(s *State) string {
 	ids := make([]string, 0, len(s.Members))
-	for id := range s.Members {
+	retired := 0
+	for id, m := range s.Members {
+		if m.Control == MemberControlRetired {
+			retired++
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -373,6 +378,9 @@ func compactRoster(s *State) string {
 	}
 	if len(ids) > 32 {
 		fmt.Fprintf(&b, "%d additional members available through list_agents.\n", len(ids)-32)
+	}
+	if retired > 0 {
+		fmt.Fprintf(&b, "%s omitted.\n", countNoun(retired, "retired member"))
 	}
 	return b.String()
 }

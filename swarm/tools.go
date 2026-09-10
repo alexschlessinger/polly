@@ -52,7 +52,7 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 		}}})
 		registry.MarkAlwaysAllowed(name)
 	}
-	register("list_agents", "List this family's agents with execution outcome, task disposition and context IDs. Page using next as offset; conversations remain private.", inspectionParams(nil), nil, func(ctx context.Context, a tools.Args) (any, error) { return r.inspectAgents(ctx, actor, a) })
+	register("list_agents", "List this family's agents that can still act or be inspected: execution outcome, task disposition and context IDs. Retired members are omitted and counted in retired; pass all: true to list them. Page using next as offset; conversations remain private.", inspectionParams(schema.Params{"all": schema.Bool("Include retired members, whose copies were removed (default false)")}), nil, func(ctx context.Context, a tools.Args) (any, error) { return r.inspectAgents(ctx, actor, a) })
 	register("send_message", "Send addressed teammate information. A request expects a reply; information waits until the next active turn.", schema.Params{"to": schema.S("Stable member ID"), "kind": schema.S("info, request or reply"), "reply_to": schema.S("Request ID for replies"), "text": schema.S("Message")}, []string{"to", "kind", "text"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return r.Send(ctx, actor, a.String("to"), a.String("kind"), a.String("reply_to"), a.String("text"))
 	})

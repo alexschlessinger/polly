@@ -69,8 +69,13 @@ func TestMemberStateLifecycleTable(t *testing.T) {
 func TestCompactRosterPrintsDisplay(t *testing.T) {
 	s, m := memberFixture("", "completed", "done", "")
 	m.Label = "worker label"
-	if roster := compactRoster(s); !strings.Contains(roster, "m · worker label · idle · done · task t") {
+	if roster := compactRoster(s); !strings.Contains(roster, "m · worker label · idle · done · task t") || strings.Contains(roster, "omitted") {
 		t.Fatalf("roster %q", roster)
+	}
+	s.Members["gone"] = &Member{ID: "gone", Label: "retired researcher", Control: MemberControlRetired, Task: "tg"}
+	roster := compactRoster(s)
+	if strings.Contains(roster, "retired researcher") || !strings.Contains(roster, "1 retired member omitted.") {
+		t.Fatalf("roster with a retired member %q", roster)
 	}
 }
 
