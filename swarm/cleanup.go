@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// Cleanup retires inactive execution contexts after proving their current
+// Cleanup releases inactive execution contexts after proving their current
 // files contain no unintegrated changes. An empty ID means the whole family.
 // Snapshot references and task provenance survive cleanup; Forget ends their
 // restoration lifetime. Findings and transcript history remain in SQLite.
@@ -19,6 +19,12 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 }
 
 func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
+	r.releaseMu.Lock()
+	releasing := r.releaseRunning
+	r.releaseMu.Unlock()
+	if releasing {
+		return errors.New("release in progress; retry")
+	}
 	if r.HasActive() {
 		return errors.New("stop active members and workflows before cleanup")
 	}
@@ -43,6 +49,29 @@ func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
 		}
 		contexts = append(contexts, c)
 	}
+	// Try every context before proving or removing any of them.
+	var held []func()
+	defer func() {
+		for _, unlock := range held {
+			unlock()
+		}
+	}()
+	for _, c := range contexts {
+		lock := r.contextMutex(c.ID)
+		if !lock.TryLock() {
+			return errors.New("release in progress; retry")
+		}
+		held = append(held, lock.Unlock)
+		if m := s.Members[c.Owner]; m != nil {
+			if e := s.Executions[m.Execution]; e != nil && e.Status == "paused" {
+				for _, t := range s.Tasks {
+					if t.Owner == m.ID && t.Status != "done" && t.Status != "canceled" {
+						return errors.New("paused execution has open work; resume or cancel before cleanup")
+					}
+				}
+			}
+		}
+	}
 	// Validate every requested context before removing any checkout.
 	for _, c := range contexts {
 		tree, err := r.contextCleanupTree(ctx, s, c)
@@ -66,13 +95,13 @@ func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
 			}
 		}
 	}
-	// One transaction records every retirement before any file changes, and
+	// One transaction records every release before any file changes, and
 	// one deletes the records after the files are gone.
 	if len(contexts) > 0 {
-		if err := r.markRetiring(ctx, contexts); err != nil {
+		if err := r.markReleasing(ctx, contexts); err != nil {
 			return err
 		}
-		if _, err := r.finishRetirement(ctx, contexts, acceptedTrees); err != nil {
+		if _, err := r.finishRelease(ctx, contexts, acceptedTrees); err != nil {
 			return err
 		}
 	}

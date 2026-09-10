@@ -38,7 +38,6 @@ type Counts struct {
 	Dormant       int `json:"dormant"`
 	Delivering    int `json:"delivering,omitempty"`
 	Retained      int `json:"retained,omitempty"`
-	Retired       int `json:"retired,omitempty"`
 	Deferred      int `json:"deferred,omitempty"`
 }
 
@@ -116,10 +115,6 @@ func presentation(f *coordinationFacts, parent string) Presentation {
 	for _, m := range f.replies {
 		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindMail, ID: m.ID, Label: "reply " + m.ID + " from " + m.From, Why: "unread answer to your request", Action: "read_messages", Member: m.From, State: memberDisplay(s, m.From)})
 	}
-	for _, research := range f.research {
-		w := research.report
-		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindWorkflow, ID: w.ID, Label: "workflow " + w.ID, Why: fmt.Sprintf("completed with %s awaiting review", countNoun(len(research.tasks), "research result")), Action: workflowNext(s, w)})
-	}
 	if f.budget != nil {
 		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindBudget, ID: f.budget.ID, Label: "run " + f.budget.ID, Why: fmt.Sprintf("execution budget exhausted (%d/%d)", f.budget.Starts, f.budget.Limit), Action: "tell the user; only a user-directed /swarm grant N extends it"})
 	}
@@ -130,6 +125,9 @@ func presentation(f *coordinationFacts, parent string) Presentation {
 		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindWorkflow, ID: w.ID, Label: "workflow " + w.ID, Why: w.Status, Action: workflowNext(s, w)})
 	}
 	p.Working = append(p.Working, workflowWork(s)...)
+	for _, w := range f.outputs {
+		p.Working = append(p.Working, WorkingItem{Kind: KindWorkflow, ID: w.ID, Label: "workflow " + w.ID, State: "delivering"})
+	}
 	p.Working = append(p.Working, memberWork(f, "", false)...)
 	p.Working = append(p.Working, taskWork...)
 	p.Counts = counts(f, len(p.Decisions), len(p.Working), repaired)
@@ -139,6 +137,8 @@ func presentation(f *coordinationFacts, parent string) Presentation {
 	switch {
 	case len(p.Decisions) > 0:
 		p.Next = p.Decisions[0].Label + ": " + p.Decisions[0].Action
+	case deliveryCount(f) > 0:
+		p.Next = deliveryNext(deliveryCount(f))
 	case len(p.Working) > 0:
 		p.Next = "Park with swarm_wait; it returns this status when a decision is due or nothing is active."
 	case len(s.Runs) > 0:
@@ -168,6 +168,9 @@ func memberPresentation(f *coordinationFacts) Presentation {
 		p.Next = "Reply to the requests above, then continue your task."
 	} else {
 		p.Next = "Continue your task; swarm_submit when done, swarm_wait to park until addressed input."
+		if m := s.Members[f.actor]; m != nil && requirementOf(s, s.Tasks[m.Task]) == RequirementDelivered {
+			p.Next = "Continue your task and end your turn with the result; it completes on durable delivery. Use swarm_wait to park until addressed input."
+		}
 	}
 	return p
 }
@@ -276,12 +279,17 @@ func counts(f *coordinationFacts, decisions, working, repaired int) Counts {
 		}
 	}
 	for _, m := range s.Members {
-		if m.Control == MemberControlRetired {
-			c.Retired++
+		if p := MemberState(s, m); p.Delivering {
+			c.Delivering++
 			continue
 		}
 		if p := MemberState(s, m); m.Control == MemberControlEnabled && !p.Busy && !p.Attention {
 			c.Dormant++
+		}
+	}
+	for _, context := range s.Contexts {
+		if context.Release == WorkspaceRetained {
+			c.Retained++
 		}
 	}
 	return c
@@ -351,8 +359,6 @@ func (c *classifier) bucket(id string) taskBucket {
 func (c *classifier) compute(tf taskFact) taskBucket {
 	f := c.f
 	switch {
-	case tf.covered != "":
-		return bucketFoldedDecision
 	case tf.controlled != "":
 		return bucketFoldedWorking
 	case tf.unchanged && f.uncertainApply:
@@ -360,6 +366,9 @@ func (c *classifier) compute(tf taskFact) taskBucket {
 		return bucketWorking
 	case tf.unchanged:
 		return bucketDone
+	case tf.delivering:
+		c.reason[tf.task.ID] = "delivering"
+		return bucketWorking
 	case tf.advancing:
 		return bucketFoldedWorking
 	case tf.parked && c.asking[tf.owner.ID]:
@@ -411,7 +420,7 @@ func (c *classifier) decision(tf taskFact) DecisionItem {
 		item.Why, item.Action = taskDisposition(s, task)
 	}
 	switch {
-	case task.Owner != "" && tf.owner == nil, tf.owner != nil && tf.owner.Control == MemberControlRetired:
+	case task.Owner != "" && tf.owner == nil:
 		item.Action = "reassign it with swarm_update_task or cancel it"
 	case tf.owner != nil && tf.owner.Control == MemberControlStopped:
 		item.Action += ", or swarm_control resume " + tf.owner.ID

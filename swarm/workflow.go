@@ -100,7 +100,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 	defer h.calls.Done()
 	r := h.runtime
 	a := tools.Args(op.Args)
-	if op.Kind != "agent" {
+	if op.Kind != "agent" && op.Kind != "followup" {
 		// Every operation but an agent await is work of the parent's
 		// workflow call; a parallel step running a tool keeps it active.
 		end := r.parentTurn.beginWork(subagent.CallID(ctx))
@@ -119,6 +119,17 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 			return nil, err
 		}
 		return h.release(ctx, request.Context)
+	case "followup":
+		var req FollowupRequest
+		if err := strictRequest(op.Args, &req); err != nil {
+			return nil, err
+		}
+		req.CallID = op.ID
+		task, err := r.Followup(ctx, h.controller, req)
+		if err != nil {
+			return nil, err
+		}
+		return r.Agent(ctx, h.controller, AgentRequest{Session: task.Owner, TaskID: task.ID, Task: req.Question, Label: req.Label, CallID: op.ID})
 	case "agent":
 		req, err := decodeRequest(op.Args)
 		if err != nil {
@@ -290,7 +301,7 @@ func (h *workflowHost) context(ctx context.Context, id string) (*ExecutionContex
 	}
 	c := s.Contexts[id]
 	if c == nil || c.Release != "" {
-		return nil, errors.New("unknown or retiring execution context")
+		return nil, errors.New("unknown or releasing execution context")
 	}
 	if c.Owner == h.controller {
 		return c, nil

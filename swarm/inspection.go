@@ -100,8 +100,8 @@ func sortedInspectionIDs[T any](items map[string]T) []string {
 
 func taskSummary(s *State, t *Task) any {
 	return map[string]any{"id": t.ID, "owner": t.Owner, "run": t.Run, "execution": t.Execution,
-		"status": t.Status, "displayStatus": TaskStatus(t), "revision": t.Revision,
-		"acceptedRevision": t.AcceptedRevision, "snapshot": t.Snapshot, "deferred": TaskDeferred(s, t),
+		"status": t.Status, "displayStatus": TaskStatusIn(s, t), "revision": t.Revision,
+		"requirement": t.Requirement, "delivery": t.Delivery, "follows": t.Follows, "acceptedRevision": t.AcceptedRevision, "snapshot": t.Snapshot, "deferred": TaskDeferred(s, t),
 		"description": clipInspection(t.Description, 512), "read": map[string]any{"task": t.ID, "section": "result"}}
 }
 
@@ -149,13 +149,14 @@ func (r *Runtime) inspectAgents(ctx context.Context, actor string, a tools.Args)
 		return nil, err
 	}
 	items := []any{}
-	retired := 0
+	dormant := 0
 	for _, id := range sortedInspectionIDs(s.Members) {
 		m := s.Members[id]
-		// A retired member cannot act, resume or be messaged; it is counted
-		// unless the caller asks for everyone.
-		if m.Control == MemberControlRetired && !a.Bool("all") {
-			retired++
+		state := MemberState(s, m)
+		c := s.Contexts[m.Context]
+		retained := c != nil && c.Release == WorkspaceRetained
+		if !state.Busy && !state.Attention && !state.Delivering && !retained && !a.Bool("all") {
+			dormant++
 			continue
 		}
 		items = append(items, map[string]any{"id": m.ID, "name": m.Name, "label": clipInspection(m.Label, 512), "context": m.Context, "task": m.Task, "execution": m.Execution, "state": MemberState(s, m), "readOnly": m.ReadOnly})
@@ -169,8 +170,8 @@ func (r *Runtime) inspectAgents(ctx context.Context, actor string, a tools.Args)
 		Self        string            `json:"self"`
 		Parent      string            `json:"parent"`
 		ParentState AgentPresentation `json:"parentState"`
-		Retired     int               `json:"retired,omitempty"`
-	}{page.(inspectionPage), actor, r.ID, r.ParentState(s), retired}, nil
+		Dormant     int               `json:"dormant,omitempty"`
+	}{page.(inspectionPage), actor, r.ID, r.ParentState(s), dormant}, nil
 }
 
 func stepSummary(step workflow.Step) any {
@@ -317,10 +318,7 @@ func workflowNext(s *State, w *workflow.Report) string {
 	case w.Acknowledged:
 		return ""
 	case w.Status == "completed":
-		if research := workflowResearchTasks(s, w); len(research) > 0 {
-			return fmt.Sprintf("Completed with %s awaiting review: workflow_acknowledge({id: %q}) accepts them all and retires their members; swarm_review individual tasks first when a finding needs changes.", countNoun(len(research), "research result"), w.ID)
-		}
-		return "Completed with nothing awaiting review; workflow_acknowledge({id: \"" + w.ID + "\"}) is optional bookkeeping."
+		return "Completed; its output is delivered with the notice. workflow_read({id: \"" + w.ID + "\", section: \"output\"}) shows it again; no acknowledgment is needed."
 	default:
 		return "Terminal " + w.Status + ": inspect steps and agents, then either recover its work or report the failure and workflow_acknowledge({id: \"" + w.ID + "\", defer: true, note: \"...\"}) to retain unresolved work for later. Deferral does not accept, apply, or cancel work."
 	}

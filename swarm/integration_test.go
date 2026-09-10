@@ -142,6 +142,8 @@ func TestWorkflowExampleFixRepairReviewAndParentApply(t *testing.T) {
 	if !bytes.Equal(beforeIndex, afterIndex) || !bytes.Equal(head, git("rev-parse", "HEAD")) {
 		t.Fatal("parent index or HEAD changed")
 	}
+	admitParent(t, r)
+	awaitIdle(t, r, ctx)
 	if err := r.Settle(ctx); err != nil {
 		t.Fatal(err)
 	}

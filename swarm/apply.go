@@ -194,6 +194,7 @@ func (r *Runtime) reconcileRecord(ctx context.Context, record ApplyRecord) error
 }
 
 func (r *Runtime) saveApplyOutcome(ctx context.Context, record ApplyRecord) error {
+	defer r.scheduleRelease()
 	return r.update(ctx, func(s *State) error {
 		if record.Status == "applied" {
 			if err := acceptedTasks(s, record.Tasks); err != nil {

@@ -9,13 +9,13 @@ import (
 // Acknowledging a completed workflow accepts the read-only research its script
 // consumed without reviewing; results the script reviewed and snapshot-backed
 // candidates in the same run are left alone.
-func TestAcknowledgeCompletedWorkflowAcceptsResearch(t *testing.T) {
+func TestAcknowledgeCompletedWorkflowDoesNotAcceptTasks(t *testing.T) {
 	// Two starts: the script's rejection leaves member a with undelivered
 	// request mail, and a third start would let the post-workflow wake spend it.
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"consume",inputSchema:polly.schema.object({}),async run(){
-const a=await polly.agent({task:"investigate a",readOnly:true});
+const a=await polly.agent({task:"investigate a",readOnly:true,review:true});
 const b=await polly.agent({task:"investigate b",readOnly:true});
 const t=await polly.tasks.read(a.task);
 await polly.tasks.review({task:t.id,revision:t.revision,accept:false,feedback:"look deeper"});
@@ -53,14 +53,14 @@ return {a:a.task,b:b.task};
 	}); err != nil {
 		t.Fatal(err)
 	}
-	accepted, err := r.AcknowledgeWorkflow(ctx, report.ID)
-	if err != nil || accepted != 1 {
-		t.Fatalf("acknowledge = %d, %v; want 1 accepted", accepted, err)
+	err = r.AcknowledgeWorkflow(ctx, report.ID)
+	if err != nil {
+		t.Fatalf("acknowledge = %d, %v; want 1 accepted", 0, err)
 	}
 	if s, err = r.State(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if b := byDescription(s, "investigate b"); b.Status != "done" || b.AcceptedRevision != b.Revision {
+	if b := byDescription(s, "investigate b"); b.Status != "done" || b.AcceptedRevision != 0 || b.Delivery == nil {
 		t.Fatalf("consumed research not accepted: %+v", b)
 	}
 	if a := byDescription(s, "investigate a"); a.Status != "changes_requested" || a.AcceptedRevision != 0 {
@@ -71,15 +71,20 @@ return {a:a.task,b:b.task};
 			t.Fatalf("snapshot-backed task %s changed: %+v", id, task)
 		}
 	}
-	if !s.Workflows[report.ID].Acknowledged || len(s.Applies) != 0 {
+	if s.Workflows[report.ID].Acknowledged || len(s.Applies) != 0 {
 		t.Fatalf("acknowledgment state: acknowledged=%v applies=%d", s.Workflows[report.ID].Acknowledged, len(s.Applies))
 	}
-	if accepted, err := r.AcknowledgeWorkflow(ctx, report.ID); err != nil || accepted != 0 {
-		t.Fatalf("second acknowledge = %d, %v; want nothing left to accept", accepted, err)
+	admitParent(t, r)
+	s, _ = r.read(ctx)
+	if !s.Workflows[report.ID].Acknowledged {
+		t.Fatal("delivered output was not acknowledged")
+	}
+	if err := r.AcknowledgeWorkflow(ctx, report.ID); err != nil {
+		t.Fatalf("second acknowledge = %d, %v; want nothing left to accept", 0, err)
 	}
 }
 
-func TestWorkflowAcknowledgeToolReportsAcceptedResearch(t *testing.T) {
+func TestWorkflowAcknowledgeToolIsHarmlessOnCompletedReport(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"one",inputSchema:polly.schema.object({}),async run(){return await polly.agent({task:"investigate",readOnly:true});}})`, map[string]any{})
@@ -91,10 +96,10 @@ func TestWorkflowAcknowledgeToolReportsAcceptedResearch(t *testing.T) {
 	if tool == nil {
 		t.Fatal("workflow_acknowledge is not registered")
 	}
-	if !strings.Contains(tool.GetSchema().Description(), "accepts the read-only research") {
+	if !strings.Contains(tool.GetSchema().Description(), "Completed reports need no acknowledgment") {
 		t.Fatalf("description: %s", tool.GetSchema().Description())
 	}
-	if out, err := tool.Execute(ctx, map[string]any{"id": report.ID}); err != nil || out != `"acknowledged; accepted 1 research result; retired 1 member"` {
+	if out, err := tool.Execute(ctx, map[string]any{"id": report.ID}); err != nil || out != `"acknowledged"` {
 		t.Fatalf("first acknowledge = %q, %v", out, err)
 	}
 	if out, err := tool.Execute(ctx, map[string]any{"id": report.ID}); err != nil || out != `"acknowledged"` {
@@ -106,8 +111,8 @@ func TestWorkflowAcknowledgeToolReportsAcceptedResearch(t *testing.T) {
 func TestAcknowledgeFailedWorkflowDoesNotAcceptTasks(t *testing.T) {
 	r, id, task := failedResearchWorkflow(t)
 	ctx := context.Background()
-	if accepted, err := r.AcknowledgeWorkflow(ctx, id); err != nil || accepted != 0 {
-		t.Fatalf("acknowledge = %d, %v; want nothing accepted", accepted, err)
+	if err := r.AcknowledgeWorkflow(ctx, id); err != nil {
+		t.Fatalf("acknowledge = %d, %v; want nothing accepted", 0, err)
 	}
 	s, err := r.State(ctx)
 	if err != nil {

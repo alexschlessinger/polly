@@ -98,6 +98,7 @@ func TestSubmitRejectsAnotherSourceSnapshot(t *testing.T) {
 func TestCleanupKeepsSnapshotRefsUntilForget(t *testing.T) {
 	r, _, ref := noEditResult(t, false)
 	ctx := context.Background()
+	suspendAutoRelease(t, r)
 	if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
 		t.Fatal(err)
 	}

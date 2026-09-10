@@ -17,3 +17,11 @@ func TaskStatus(task *Task) string {
 func acceptedTaskRevision(task *Task) bool {
 	return task != nil && task.Revision > 0 && task.AcceptedRevision == task.Revision
 }
+
+// TaskStatusIn includes derived delivery without adding a persisted status.
+func TaskStatusIn(s *State, task *Task) string {
+	if deliveringTask(s, task) {
+		return "delivering"
+	}
+	return TaskStatus(task)
+}

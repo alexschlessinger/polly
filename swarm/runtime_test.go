@@ -171,15 +171,15 @@ func TestClaimsReviewAndNoTools(t *testing.T) {
 		return answer("done")
 	}), 2, 4)
 	ctx := context.Background()
-	a, err := r.Agent(ctx, "", AgentRequest{Task: "one", ReadOnly: true, Tools: []string{}})
+	a, err := r.Agent(ctx, "", AgentRequest{Task: "one", ReadOnly: true, Review: true, Tools: []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := r.Agent(ctx, "", AgentRequest{Task: "two", ReadOnly: true, Tools: []string{}})
+	b, err := r.Agent(ctx, "", AgentRequest{Task: "two", ReadOnly: true, Review: true, Tools: []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, err := r.CreateTask(ctx, "claim me", "correct", nil, "")
+	task, err := r.CreateTask(ctx, "claim me", "correct", nil, "", CreateTaskOptions{Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestRestartResumesLogicalExecutionAndJournalsUncertainCalls(t *testing.T) {
 	}
 	briefs := 0
 	for _, m := range history {
-		if m.Role == messages.MessageRoleUser && m.Content == "wait then recover" {
+		if m.Role == messages.MessageRoleUser && strings.HasPrefix(m.Content, "wait then recover\n\nCompletion: ") {
 			briefs++
 		}
 	}

@@ -13,7 +13,7 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// settledWorkflowState seeds one workflow with a finished member, a retired
+// settledWorkflowState seeds one workflow with a finished member, a released
 // member and three that still need someone, plus a direct member that is done.
 func settledWorkflowState() *swarm.State {
 	s := &swarm.State{Members: map[string]*swarm.Member{}, Executions: map[string]*swarm.Execution{}, Tasks: map[string]*swarm.Task{}, Workflows: map[string]*workflow.Report{
@@ -26,7 +26,7 @@ func settledWorkflowState() *swarm.State {
 		s.Workflows["wf"].Steps = append(s.Workflows["wf"].Steps, workflow.Step{Operation: workflow.Operation{ID: "wf/" + id, Kind: "agent"}})
 	}
 	add("finished", "completed", "done", "")
-	add("gone", "completed", "done", swarm.MemberControlRetired)
+	add("gone", "completed", "done", swarm.MemberControlEnabled)
 	add("review", "completed", "awaiting_review", "")
 	add("busy", "running", "running", "")
 	add("failed", "failed", "blocked", "")
@@ -126,7 +126,7 @@ func TestWorkflowGroupCollapsesSettledMembers(t *testing.T) {
 	m.toggleSettledAgents(headingRecord, "wf")
 	detail, links = m.agentDetail(ids, 120)
 	text := plainStyledText(detail)
-	if !strings.Contains(text, "▾ 5 done") || !strings.Contains(text, "gone · idle · retired") || !strings.Contains(text, "finished · idle · done") || len(links) != 7 {
+	if !strings.Contains(text, "▾ 5 done") || !strings.Contains(text, "gone · idle · done") || !strings.Contains(text, "finished · idle · done") || len(links) != 7 {
 		t.Fatalf("expanded detail (%d links):\n%s", len(links), text)
 	}
 }
@@ -167,7 +167,7 @@ func TestWorkflowHeadingClickTogglesSettledMembers(t *testing.T) {
 		t.Fatalf("heading click did not toggle the settled members: shown=%v inspector=%v", m.settledAgentsShown, r.workspace().inspector.open)
 	}
 	rows = transcriptRowsText(m.transcriptRows(80))
-	if text := strings.Join(rows, "\n"); !strings.Contains(text, "▾ 2 done") || !strings.Contains(text, "gone · idle · retired") || !strings.Contains(text, "finished · idle · done") {
+	if text := strings.Join(rows, "\n"); !strings.Contains(text, "▾ 2 done") || !strings.Contains(text, "gone · idle · done") || !strings.Contains(text, "finished · idle · done") {
 		t.Fatalf("expanded transcript:\n%s", text)
 	}
 	if !strings.Contains(rows[m.scrollAnchor], "anchor below") {
@@ -182,7 +182,7 @@ func TestWorkflowHeadingClickTogglesSettledMembers(t *testing.T) {
 	if !r.inspectViewAt(m, viewTarget{}, image.Point{X: link.X, Y: link.Y}) || m.settledAgentsShown["wf"] {
 		t.Fatal("inspector click did not fold the settled members")
 	}
-	if text := strings.Join(transcriptRowsText(m.transcriptRows(80)), "\n"); strings.Contains(text, "gone · idle · retired") || !strings.Contains(text, "▸ 2 done") {
+	if text := strings.Join(transcriptRowsText(m.transcriptRows(80)), "\n"); strings.Contains(text, "gone · idle · done") || !strings.Contains(text, "▸ 2 done") {
 		t.Fatalf("folded transcript:\n%s", text)
 	}
 }

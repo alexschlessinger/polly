@@ -84,7 +84,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 				// The cue fires on the machine facts: work went from busy to
 				// settled with something for the parent to look at.
 				task := s.Tasks[member.Task]
-				settled := task != nil && (task.Status == "done" || task.Status == "awaiting_review" && !now.Deferred)
+				settled := task != nil && (task.Status == "done" || (now.Delivering || task.Status == "awaiting_review") && !now.Deferred)
 				if a.state.Busy && !now.Busy && settled {
 					m.noteAgentCompletion(record.id)
 				}

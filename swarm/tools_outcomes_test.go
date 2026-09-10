@@ -19,7 +19,7 @@ func TestFailedCoordinationMutationsDoNotReportSuccess(t *testing.T) {
 		name string
 		args map[string]any
 	}{
-		{"swarm_control", map[string]any{"action": "cleanup", "id": "execution-not-context"}},
+		{"swarm_control", map[string]any{"action": "release", "id": "execution-not-context"}},
 		{"swarm_control", map[string]any{"action": "stop", "id": "missing"}},
 		{"swarm_control", map[string]any{"action": "cancel_task", "id": "missing"}},
 		{"swarm_review", map[string]any{"task": "missing", "revision": 1, "accept": true}},
@@ -36,7 +36,7 @@ func TestFailedCoordinationMutationsDoNotReportSuccess(t *testing.T) {
 			if err == nil || out != "" {
 				t.Fatalf("failed mutation reported output %q, error %v", out, err)
 			}
-			if tc.args["action"] == "cleanup" && (!strings.Contains(err.Error(), "execution-not-context") || !strings.Contains(err.Error(), "list_agents")) {
+			if tc.args["action"] == "release" && (!strings.Contains(err.Error(), "execution-not-context") || !strings.Contains(err.Error(), "list_agents")) {
 				t.Fatalf("cleanup error lacks the requested ID and recovery guidance: %v", err)
 			}
 		})
@@ -110,12 +110,12 @@ func TestReviewToolReportsRemainingIntegration(t *testing.T) {
 	}
 }
 
-func TestReviewToolGuidanceForRetiredOrMissingProvenance(t *testing.T) {
+func TestReviewToolGuidanceForReleasedOrMissingProvenance(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	if err := r.update(ctx, func(s *State) error {
-		s.Members["retired"] = &Member{ID: "retired", Control: MemberControlRetired, Context: "removed"}
-		s.Tasks["task"] = &Task{ID: "task", Owner: "retired", Status: "awaiting_review", Revision: 2, Snapshot: "missing"}
+		s.Members["released"] = &Member{ID: "released", Control: MemberControlEnabled, Context: "removed"}
+		s.Tasks["task"] = &Task{ID: "task", Owner: "released", Status: "awaiting_review", Revision: 2, Snapshot: "missing"}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -127,12 +127,12 @@ func TestReviewToolGuidanceForRetiredOrMissingProvenance(t *testing.T) {
 		t.Fatalf("missing provenance guidance: %q %v", out, err)
 	}
 	out, err = review.Execute(ctx, map[string]any{"task": "task", "revision": 2, "accept": false, "feedback": "revise the summary"})
-	if err != nil || !strings.Contains(out, "swarm_update_task") || strings.Contains(out, "Wait for") {
-		t.Fatalf("retired member cannot revise: %q %v", out, err)
+	if err != nil || !strings.Contains(out, "Wait for") {
+		t.Fatalf("released member cannot revise: %q %v", out, err)
 	}
 }
 
-func TestCleanupToolReportsRetirementAfterSuccess(t *testing.T) {
+func TestReleaseToolSchedulesWithoutCompletingTask(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	result, err := r.Spawn(ctx, subagent.Request{Task: "research", ReadOnly: true})
@@ -145,13 +145,13 @@ func TestCleanupToolReportsRetirementAfterSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	control, _, _ := r.config.Registry.GetIfAllowed("swarm_control")
-	out, err := control.Execute(ctx, map[string]any{"action": "cleanup", "id": state.Members[result.Session].Context})
-	if err != nil || out != `"retired"` {
+	out, err := control.Execute(ctx, map[string]any{"action": "release", "id": state.Members[result.Session].Context})
+	if err != nil || out != `"scheduled"` {
 		t.Fatalf("cleanup: %q %v", out, err)
 	}
 	state, err = r.State(ctx)
-	if err != nil || state.Members[result.Session].Control != MemberControlRetired {
-		t.Fatalf("success did not retire member: %+v %v", state, err)
+	if err != nil || state.Members[result.Session].Control != MemberControlEnabled {
+		t.Fatalf("scheduling changed member control: %+v %v", state, err)
 	}
 }
 

@@ -65,6 +65,17 @@ func requirementFor(review, readOnly bool) (string, error) {
 	return RequirementApplied, nil
 }
 
+func completionGuidance(requirement string) string {
+	switch requirement {
+	case RequirementDelivered:
+		return "End your turn with the result; it completes when durably delivered to the parent or workflow. Do not call swarm_submit or request acceptance."
+	case RequirementReviewed:
+		return "Return your result for explicit parent review of this task's submitted revision."
+	default:
+		return "Return your changes and result; the parent must integrate the candidate or accept its unchanged proof."
+	}
+}
+
 // Empty requirements exist only in hand-built fixtures; persisted tasks set one
 // when created. Keep those fixtures' original review and integration obligations.
 func requirementOf(s *State, t *Task) string {
@@ -120,7 +131,7 @@ func deliveringTask(s *State, t *Task) bool {
 		return false
 	}
 	e := s.Executions[t.Execution]
-	return e != nil && e.Status == "completed"
+	return e != nil && e.Status == "completed" && e.Member == t.Owner && e.Result != nil && e.Result.Task == t.ID && e.Result.Execution == e.ID && e.Result.Revision == t.Revision
 }
 
 func resultNotice(s *State, t *Task) *Mail {

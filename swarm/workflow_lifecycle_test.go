@@ -201,7 +201,10 @@ func TestWorkflowLaunchFailureDoesNotRegisterOrDispatch(t *testing.T) {
 				if failure == "canceled" && !errors.Is(err, context.Canceled) {
 					t.Fatal(err)
 				}
-				if r.HasActive() {
+				r.mu.Lock()
+				registered := len(r.active) + len(r.workflowCancels)
+				r.mu.Unlock()
+				if registered > 0 {
 					t.Fatal("failed launch retained execution registration")
 				}
 				s, err := r.State(context.Background())

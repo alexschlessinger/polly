@@ -95,7 +95,7 @@ func TestStructuredWorkflowReadsThenCompletes(t *testing.T) {
 		if e.Status != "completed" || e.Completion == nil || e.Iterations != 2 || e.ResultCorrections != 0 {
 			t.Fatalf("execution=%+v", e)
 		}
-		if !reflect.DeepEqual(e.Result.Value, value) || !reflect.DeepEqual(s.Tasks[e.Result.Task].Result, value) || s.Tasks[e.Result.Task].Status != "awaiting_review" {
+		if !reflect.DeepEqual(e.Result.Value, value) || !reflect.DeepEqual(s.Tasks[e.Result.Task].Result, value) || s.Tasks[e.Result.Task].Status != "done" {
 			t.Fatal("workflow and task results differ")
 		}
 	}

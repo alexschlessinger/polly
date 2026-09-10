@@ -46,3 +46,38 @@ func TestRequirementEntrypoints(t *testing.T) {
 		t.Fatal("invalid request allocated workspace")
 	}
 }
+
+func TestReassignmentCannotWeakenDependentEditingObligation(t *testing.T) {
+	r := runtimeTest(t, doneModel(), 1, 3)
+	ctx := context.Background()
+	research, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true, Review: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := r.CreateTask(ctx, "edit", "", nil, "", CreateTaskOptions{Requirement: RequirementApplied})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dependent, err := r.CreateTask(ctx, "verify", "", []string{task.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := *task
+	if err := r.UpdateTask(ctx, task.ID, task.Revision, research.Session, nil); err == nil {
+		t.Fatal("editing obligation converted to delivered research")
+	}
+	if err := r.Claim(ctx, research.Session, task.ID, task.Revision); err == nil {
+		t.Fatal("researcher claimed editing obligation")
+	}
+	s, _ := r.read(ctx)
+	if !reflect.DeepEqual(*s.Tasks[task.ID], before) || depsDone(s, s.Tasks[dependent.ID]) {
+		t.Fatal("failed reassignment changed dependencies or provenance")
+	}
+	if err := r.CancelTask(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = r.read(ctx)
+	if depsDone(s, s.Tasks[dependent.ID]) {
+		t.Fatal("cancellation satisfied a dependency")
+	}
+}

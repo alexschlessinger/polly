@@ -44,8 +44,6 @@ func TestMemberStateLifecycleTable(t *testing.T) {
 		{name: "failed", execution: "failed", task: "blocked", lifecycle: LifecyclePaused, display: "paused · failed", attention: true},
 		{name: "stopped with open work", control: "stopped", execution: "paused", task: "blocked", lifecycle: LifecyclePaused, display: "paused · stopped · blocked", attention: true},
 		{name: "stopped after acceptance", control: "stopped", execution: "completed", task: "done", lifecycle: LifecyclePaused, display: "paused · stopped"},
-		{name: "retired with review pending", control: "retired", execution: "completed", task: "awaiting_review", lifecycle: LifecycleIdle, display: "idle · retired · awaiting review", attention: true},
-		{name: "retired outranks a stale execution", control: "retired", execution: "running", task: "done", lifecycle: LifecycleIdle, display: "idle · retired"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, m := memberFixture(tc.control, tc.execution, tc.task, tc.stop)
@@ -72,9 +70,9 @@ func TestCompactRosterCountsAndWorking(t *testing.T) {
 	if roster := compactRoster(s); !strings.Contains(roster, "1 members: 0 working, 1 idle, 0 paused.\nWorking now: none.") || strings.Contains(roster, "worker label") || strings.Contains(roster, "omitted") {
 		t.Fatalf("roster %q", roster)
 	}
-	s.Members["gone"] = &Member{ID: "gone", Label: "retired researcher", Control: MemberControlRetired, Task: "tg"}
-	if roster := compactRoster(s); strings.Contains(roster, "retired researcher") || !strings.Contains(roster, "1 members: 0 working, 1 idle, 0 paused; 1 retired member omitted.") {
-		t.Fatalf("roster with a retired member %q", roster)
+	s.Members["gone"] = &Member{ID: "gone", Label: "released researcher", Context: "", Task: "tg"}
+	if roster := compactRoster(s); strings.Contains(roster, "released researcher") || !strings.Contains(roster, "2 members: 0 working, 2 idle, 0 paused.") {
+		t.Fatalf("roster with a released member %q", roster)
 	}
 	s, m = memberFixture("", "running", "running", "")
 	m.Label = "worker label"

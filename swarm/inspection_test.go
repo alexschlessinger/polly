@@ -181,8 +181,8 @@ func TestWorkflowReadNextHint(t *testing.T) {
 		contains []string
 	}{
 		{id: "run", present: true, contains: []string{"swarm_wait", "do not poll"}},
-		{id: "done", present: true, contains: []string{"1 research result", `workflow_acknowledge({id: "done"})`, "swarm_review"}},
-		{id: "bare", present: true, contains: []string{"nothing awaiting review", "optional"}},
+		{id: "done", present: true, contains: []string{"output", "no acknowledgment"}},
+		{id: "bare", present: true, contains: []string{"output", "no acknowledgment"}},
 		{id: "acked"},
 		{id: "failed", present: true, contains: []string{"Terminal failed", "defer: true", "recover"}},
 		{id: "interrupted", present: true, contains: []string{"Terminal interrupted", "defer: true"}},

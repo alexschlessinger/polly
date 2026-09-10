@@ -57,6 +57,7 @@ type Member struct {
 	ReadOnly   bool          `json:"readOnly"`
 }
 type Task struct {
+	FollowupCallID   string        `json:"followupCallID,omitempty"`
 	Requirement      string        `json:"requirement,omitempty"`
 	Delivery         *TaskDelivery `json:"delivery,omitempty"`
 	Follows          string        `json:"follows,omitempty"`
@@ -375,14 +376,10 @@ func member(s *State, parent, actor string) error {
 // the members working right now. Finished members are counted, not listed;
 // list_agents and swarm_status show the rest on demand.
 func compactRoster(s *State) string {
-	working, idle, paused, retired := 0, 0, 0, 0
+	working, idle, paused := 0, 0, 0
 	var lines []string
 	for _, id := range sortedInspectionIDs(s.Members) {
 		m := s.Members[id]
-		if m.Control == MemberControlRetired {
-			retired++
-			continue
-		}
 		p := MemberState(s, m)
 		switch {
 		case p.Busy:
@@ -398,9 +395,6 @@ func compactRoster(s *State) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Roster at assignment start (use list_agents to refresh): %d members: %d working, %d idle, %d paused", working+idle+paused, working, idle, paused)
-	if retired > 0 {
-		fmt.Fprintf(&b, "; %s omitted", countNoun(retired, "retired member"))
-	}
 	b.WriteString(".\n")
 	if working == 0 {
 		b.WriteString("Working now: none.\n")
@@ -526,7 +520,7 @@ func (r *Runtime) Claim(ctx context.Context, actor, taskID string, revision int)
 		if m == nil {
 			return errors.New("only members can claim tasks")
 		}
-		if old := s.Tasks[m.Task]; old != nil && old.ID != t.ID && old.Status == "running" {
+		if old := s.Tasks[m.Task]; old != nil && old.ID != t.ID && old.Status == "running" && !deliveringTask(s, old) {
 			return errors.New("submit or block the current assignment before claiming another")
 		}
 		return assignTask(s, t, m, s.Contexts[m.Context], m.Execution)
@@ -537,6 +531,9 @@ func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int
 	defer r.parentTools.Unlock()
 	return r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
+		if t != nil && requirementOf(s, t) == RequirementDelivered {
+			return fail("invalid_args", "task completes on delivery; end your turn with the result")
+		}
 		if t == nil || t.Owner != actor || t.Revision != revision || t.Status == "canceled" || t.Status == "done" {
 			return fail("stale_task", "task owner or revision changed")
 		}
@@ -561,10 +558,14 @@ func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int
 	})
 }
 func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accept bool, feedback string) error {
+	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	var wake string
 	err := r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
+		if t != nil && requirementOf(s, t) == RequirementDelivered {
+			return fail("invalid_args", "task "+taskID+" completes on delivery; ask a follow-up with swarm_followup")
+		}
 		if t == nil || revision <= 0 || t.Status != "awaiting_review" || t.Revision != revision {
 			return fail("stale_task", "review must name the current submitted revision")
 		}
@@ -599,6 +600,7 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 	return err
 }
 func (r *Runtime) CancelTask(ctx context.Context, taskID string) error {
+	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
 	return r.update(ctx, func(s *State) error {
@@ -661,10 +663,14 @@ func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text strin
 // UpdateTask changes assignment and dependencies under parent authority.
 // A running owner must first be stopped; published candidates remain in history.
 func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, owner string, deps []string) error {
+	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
 	return r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
+		if deliveringTask(s, t) {
+			return fail("blocked", "its result awaits delivery; cancel it or wait")
+		}
 		if t == nil || t.Revision != revision || t.Status == "done" || t.Status == "canceled" {
 			return fail("stale_task", "task is not editable at this revision")
 		}
@@ -727,6 +733,9 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 	defer r.parentTools.Unlock()
 	return r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
+		if deliveringTask(s, t) {
+			return fail("blocked", "result awaits delivery; use a follow-up for new work")
+		}
 		if t == nil || t.Revision != revision || t.Owner != actor || t.Status == "done" || t.Status == "canceled" {
 			return fail("stale_task", "task owner or revision changed")
 		}
@@ -801,7 +810,7 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 // source-code secrecy.
 func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
 	if c == nil || c.Release != "" {
-		return tools.ExecutionContext{}, fail("context_denied", "execution context is retiring")
+		return tools.ExecutionContext{}, fail("context_denied", "execution context is releasing")
 	}
 	var manager *worktree.Manager
 	if c.Checkout != nil {

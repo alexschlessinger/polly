@@ -144,15 +144,16 @@ func TestPresentationBuckets(t *testing.T) {
 			t.Fatalf("decision = %+v", d)
 		}
 	})
-	t.Run("retired owner of an open task", func(t *testing.T) {
+	t.Run("missing owner of an open task", func(t *testing.T) {
 		x := seedState()
 		m := x.member("m", false, "T", "e")
-		m.Control = MemberControlRetired
+		m.Context = ""
+		delete(x.s.Members, "m")
 		x.exec("e", "m", "completed", "")
 		x.task("T", "m", "e", "awaiting_review")
 		p := x.present()
 		expectLists(t, p, "task:T", "")
-		if d := p.Decisions[0]; d.Action != "reassign it with swarm_update_task or cancel it" || p.Counts.Retired != 1 {
+		if d := p.Decisions[0]; d.Action != "reassign it with swarm_update_task or cancel it" || p.Counts.Dormant != 0 {
 			t.Fatalf("decision = %+v counts = %+v", d, p.Counts)
 		}
 	})
@@ -263,10 +264,8 @@ func TestPresentationBuckets(t *testing.T) {
 		x.exec("ee", "ed", "completed", "wf")
 		x.task("te", "ed", "ee", "awaiting_review").Snapshot = "snap"
 		p := x.present()
-		expectLists(t, p, "workflow:wf task:te", "")
-		if d := p.Decisions[0]; d.Why != "completed with 2 research results awaiting review" || !strings.Contains(d.Action, `workflow_acknowledge({id: "wf"})`) {
-			t.Fatalf("workflow decision = %+v", d)
-		}
+		expectLists(t, p, "task:te task:tr1 task:tr2", "")
+
 	})
 	t.Run("accepted unchanged task with and without an uncertain apply", func(t *testing.T) {
 		s, task := unchangedTaskState()
@@ -397,7 +396,7 @@ func TestDecisionCountsAndFirstDecision(t *testing.T) {
 	x.task("T", "m", "e", "awaiting_review")
 	x.s.Messages["ask"] = &Mail{ID: "ask", From: "m", To: "parent", Kind: "request", Text: "?"}
 	byMember, byWorkflow := DecisionCounts(x.s, "parent")
-	if byMember["m"] != 2 || byMember["r"] != 0 || byWorkflow["wf"] != 1 {
+	if byMember["m"] != 2 || byMember["r"] != 1 || byWorkflow["wf"] != 0 {
 		t.Fatalf("byMember = %v byWorkflow = %v", byMember, byWorkflow)
 	}
 	first, ok := FirstDecision(x.s, "parent")

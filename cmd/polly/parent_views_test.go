@@ -127,7 +127,7 @@ func TestSwarmDisplayRefreshDoesNotWakeMembers(t *testing.T) {
 	if calls.Load() != before || len(after.Executions) != 1 || r.state.swarm.HasActive() {
 		t.Fatalf("display refresh changed the swarm: calls %d→%d executions=%d", before, calls.Load(), len(after.Executions))
 	}
-	if p := swarm.MemberState(after, after.Members[member]); p.Display != "idle · awaiting review" {
+	if p := swarm.MemberState(after, after.Members[member]); p.Display != "idle · delivering" {
 		t.Fatalf("member after refreshes: %+v", p)
 	}
 }

@@ -119,7 +119,7 @@ func TestIterationGrantRestoresSameExecutionAndWorktreeFromDisk(t *testing.T) {
 		case 2:
 			var assignment, write, reply int
 			for _, m := range req.Messages {
-				if m.Content == "review and fix" {
+				if strings.HasPrefix(m.Content, "review and fix\n\nCompletion: ") {
 					assignment++
 				}
 				if m.ToolCallID == "write" {

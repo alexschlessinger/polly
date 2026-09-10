@@ -18,7 +18,7 @@ func TestQueuedPeerWakeRechecksPendingMailUnderLaunchLock(t *testing.T) {
 		calls.Add(1)
 		return answer("done")
 	}), 1, 5)
-	initial, err := r.Agent(ctx, "", AgentRequest{Task: "initial task", ReadOnly: true})
+	initial, err := r.Agent(ctx, "", AgentRequest{Task: "initial task", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}

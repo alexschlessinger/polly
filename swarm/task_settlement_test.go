@@ -30,7 +30,7 @@ func noEditResult(t *testing.T, readOnly bool) (*Runtime, AgentResult, TaskRefer
 			t.Fatalf("git: %s %v", out, err)
 		}
 	}
-	result, err := r.Agent(context.Background(), "", AgentRequest{Task: "Review source only. Do not write files.", ReadOnly: readOnly})
+	result, err := r.Agent(context.Background(), "", AgentRequest{Task: "Review source only. Do not write files.", ReadOnly: readOnly, Review: readOnly})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +50,7 @@ func TestUnchangedTaskAcceptanceBeforeAndAfterCleanup(t *testing.T) {
 		for _, cleanupFirst := range []bool{false, true} {
 			t.Run(fmt.Sprintf("readOnly=%t/cleanupFirst=%t", readOnly, cleanupFirst), func(t *testing.T) {
 				r, result, ref := noEditResult(t, readOnly)
+				suspendAutoRelease(t, r)
 				ctx := context.Background()
 				if cleanupFirst {
 					if err := r.Cleanup(ctx, result.Context); err != nil {
@@ -82,8 +83,8 @@ func TestUnchangedTaskAcceptanceBeforeAndAfterCleanup(t *testing.T) {
 					t.Fatal("settlement overwrote parent changes")
 				}
 				s, _ = r.State(ctx)
-				if len(s.Applies) != 0 || s.Members[result.Session].Control != MemberControlRetired {
-					t.Fatal("settlement required an apply or failed to retire the member")
+				if len(s.Applies) != 0 || s.Members[result.Session].Control != MemberControlEnabled {
+					t.Fatal("settlement required an apply or changed the member control")
 				}
 			})
 		}
@@ -156,19 +157,19 @@ func TestUnchangedTaskRequiresOriginalProvenance(t *testing.T) {
 		{"empty commit", func(s *State, task *Task) { s.Snapshots[task.Snapshot].Commit = "" }},
 		{"changed candidate", func(s *State, task *Task) { s.Snapshots[task.Snapshot].Tree = "changed-tree" }},
 		{"missing recorded base", func(s *State, task *Task) { task.StartingSnapshot = "" }},
-		{"retired missing starting snapshot", func(s *State, task *Task) {
+		{"released missing starting snapshot", func(s *State, task *Task) {
 			delete(s.Contexts, "copy")
-			s.Members[task.Owner].Control = MemberControlRetired
+			s.Members[task.Owner].Context = ""
 			task.StartingSnapshot = ""
 		}},
-		{"retired missing base", func(s *State, task *Task) {
+		{"released missing base", func(s *State, task *Task) {
 			delete(s.Contexts, "copy")
-			s.Members[task.Owner].Control = MemberControlRetired
+			s.Members[task.Owner].Context = ""
 			task.StartingSnapshot = "missing"
 		}},
-		{"retired base id mismatch", func(s *State, task *Task) {
+		{"released base id mismatch", func(s *State, task *Task) {
 			delete(s.Contexts, "copy")
-			s.Members[task.Owner].Control = MemberControlRetired
+			s.Members[task.Owner].Context = ""
 			task.StartingSnapshot = "base"
 			s.Snapshots["base"].ID = "foreign"
 		}},
@@ -342,13 +343,12 @@ func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
 		t.Fatalf("missing failure: %+v %v", failed, err)
 	}
 	var blocker *workflow.Error
-	want := "workflow " + report.ID + " completed with 2 research results awaiting review; inspect workflow_read, then workflow_acknowledge"
+	want := "1 result awaits delivery"
 	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.HasPrefix(err.Error(), want) || !errors.As(err, &blocker) || blocker.Code != "blocked" {
 		t.Fatalf("settlement did not lead with the completed workflow: %v", err)
 	}
-	if accepted, err := r.AcknowledgeWorkflow(ctx, report.ID); err != nil || accepted != 2 {
-		t.Fatalf("acknowledge = %d, %v; want 2 accepted", accepted, err)
-	}
+	admitParent(t, r)
+	_ = report
 	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.HasPrefix(err.Error(), "task "+task.ID+" revision 1: pending;") {
 		t.Fatalf("after acknowledging: %v", err)
 	}
@@ -358,8 +358,8 @@ func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
 	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.Contains(err.Error(), failed.ID) {
 		t.Fatalf("failed report not named: %v", err)
 	}
-	if accepted, err := r.AcknowledgeWorkflow(ctx, failed.ID); err != nil || accepted != 0 {
-		t.Fatalf("acknowledging the failure = %d, %v", accepted, err)
+	if err := r.AcknowledgeWorkflow(ctx, failed.ID); err != nil {
+		t.Fatalf("acknowledging the failure = %d, %v", 0, err)
 	}
 	if err := assertSettleMatchesBlockers(t, r); err != nil {
 		t.Fatalf("settled swarm still blocked: %v", err)
@@ -371,10 +371,11 @@ func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
 func TestCompletedWorkflowWithReviewedResearchSettles(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
-	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"reviewed",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({task:"investigate",readOnly:true});const t=await polly.tasks.read(a.task);await polly.tasks.review({task:t.id,revision:t.revision,accept:true});return a;}})`, map[string]any{})
+	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"reviewed",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({task:"investigate",readOnly:true,review:true});const t=await polly.tasks.read(a.task);await polly.tasks.review({task:t.id,revision:t.revision,accept:true});return a;}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	admitParent(t, r)
 	if err := r.Settle(ctx); err != nil {
 		t.Fatalf("reviewed research still blocked settlement: %v", err)
 	}
@@ -382,8 +383,8 @@ func TestCompletedWorkflowWithReviewedResearchSettles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Workflows[report.ID].Acknowledged {
-		t.Fatal("settlement acknowledged the report on its own")
+	if !s.Workflows[report.ID].Acknowledged {
+		t.Fatal("parent checkpoint did not acknowledge delivered output")
 	}
 }
 
@@ -400,6 +401,7 @@ func TestSettleReportsTaskCount(t *testing.T) {
 	}
 	sort.Strings(ids)
 	var blocker *workflow.Error
+	admitParent(t, r)
 	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.HasPrefix(err.Error(), "3 tasks unsettled; first: task "+ids[0]+" revision 1: pending; resolve its dependencies") || !errors.As(err, &blocker) || blocker.Code != "blocked" {
 		t.Fatalf("task count missing: %v", err)
 	}

@@ -62,7 +62,7 @@ func TestWorkflowReleaseDuringAttemptAndRetainsDirtyCopies(t *testing.T) {
 	other := &workflowHost{runtime: r, controller: "other"}
 	defer other.close()
 	_, err = other.release(ctx, dirty)
-	candidateError(t, err, "context_denied")
+	candidateError(t, err, "unknown_context")
 }
 
 func TestContextCleanupRetainsIntegrationProvenance(t *testing.T) {
@@ -72,6 +72,11 @@ func TestContextCleanupRetainsIntegrationProvenance(t *testing.T) {
 			ctx := context.Background()
 			ref := submittedInput(t, r, p.Parent, map[string]string{})
 			cleanup := contextCleanupCaller(t, r, via, ref.Task)
+			if via == "workflow" {
+				if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := cleanup(ctx, ref.Task); err != nil {
 				t.Fatal(err)
 			}
@@ -150,7 +155,7 @@ func TestWorkflowRequestedChangesRequireExplicitContinuation(t *testing.T) {
 		return answer("reviewed")
 	}), 1, 4)
 	script := `polly.defineWorkflow({name:"continue",inputSchema:polly.schema.object({}),async run(){
- const first=await polly.agent({task:"inspect",readOnly:true,tools:[]});
+ const first=await polly.agent({task:"inspect",readOnly:true,review:true,tools:[]});
  const task=await polly.tasks.read(first.task);
  await polly.tasks.review({task:task.id,revision:task.revision,accept:false,feedback:"check again"});
  const second=await polly.agent({session:first.session,task:"check again"});

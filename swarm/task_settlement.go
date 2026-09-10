@@ -56,30 +56,10 @@ func acceptTask(s *State, t *Task) error {
 		return err
 	}
 	t.AcceptedRevision = t.Revision
-	if t.Snapshot == "" || unchangedTask(s, t) {
+	if t.Requirement == RequirementReviewed || t.Snapshot == "" || unchangedTask(s, t) {
 		t.Status = "done"
 	}
 	return nil
-}
-
-// workflowResearchTasks lists the read-only, snapshot-less submissions a
-// workflow's completed executions left awaiting review: research the script
-// consumed without reviewing. Results the script already reviewed and editing
-// candidates are never included. Sorted by task ID.
-func workflowResearchTasks(s *State, w *workflow.Report) []*Task {
-	var tasks []*Task
-	for _, t := range s.Tasks {
-		if t.Run != w.Run || t.Status != "awaiting_review" || t.Snapshot != "" {
-			continue
-		}
-		e, owner := s.Executions[t.Execution], s.Members[t.Owner]
-		if e == nil || e.Workflow != w.ID || e.Run != w.Run || e.Member != t.Owner || e.Status != "completed" || owner == nil || !owner.ReadOnly {
-			continue
-		}
-		tasks = append(tasks, t)
-	}
-	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID < tasks[j].ID })
-	return tasks
 }
 
 // countNoun formats "1 research result" or "40 research results".
@@ -95,6 +75,10 @@ func countNoun(n int, noun string) string {
 func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
+	err := r.update(ctx, func(s *State) error { r.ensureDeliveryNotices(s); return nil })
+	if err != nil {
+		return nil, err
+	}
 	s, err := r.read(ctx)
 	if err != nil {
 		return nil, err
@@ -158,22 +142,6 @@ func unsettledTasksError(s *State, tasks []*Task) error {
 	return fmt.Errorf("%s%w", count, first)
 }
 
-// unacknowledgedResearchReports lists, by ID, the run's completed,
-// unacknowledged workflows that still own consumed research.
-func unacknowledgedResearchReports(s *State, run string) []*workflow.Report {
-	var reports []*workflow.Report
-	for _, id := range sortedInspectionIDs(s.Workflows) {
-		w := s.Workflows[id]
-		if w.Run != run || w.Status != "completed" || w.Acknowledged {
-			continue
-		}
-		if len(workflowResearchTasks(s, w)) > 0 {
-			reports = append(reports, w)
-		}
-	}
-	return reports
-}
-
 func taskSettlementError(s *State, task *Task) error {
 	prefix := fmt.Sprintf("task %s revision %d: ", task.ID, task.Revision)
 	if e := s.Executions[task.Execution]; e != nil && e.Status == "paused" && e.StopReason == messages.StopReasonMaxIterations {
@@ -190,6 +158,9 @@ func taskSettlementError(s *State, task *Task) error {
 // taskDisposition names why an open task blocks settlement and the one
 // operation that resolves it. The settlement sentence is why, "; ", action.
 func taskDisposition(s *State, task *Task) (why, action string) {
+	if deliveringTask(s, task) {
+		return "result awaiting delivery", "the runtime re-posts its notice at settlement"
+	}
 	switch task.Status {
 	case "awaiting_review":
 		if acceptedTaskRevision(task) && task.Snapshot != "" {

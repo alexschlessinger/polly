@@ -46,13 +46,13 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 		if structured && name == "swarm_submit" {
 			return
 		}
-		registry.Register(&inspectionTool{&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_integration", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
+		registry.Register(&inspectionTool{&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_followup", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_integration" || name == "swarm_followup", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := fn(ctx, a)
 			return coordinationToolResult(v, err)
 		}}})
 		registry.MarkAlwaysAllowed(name)
 	}
-	register("list_agents", "List this family's agents that can still act or be inspected: execution outcome, task disposition and context IDs. Retired members are omitted and counted in retired; pass all: true to list them. Page using next as offset; conversations remain private.", inspectionParams(schema.Params{"all": schema.Bool("Include retired members, whose copies were removed (default false)")}), nil, func(ctx context.Context, a tools.Args) (any, error) { return r.inspectAgents(ctx, actor, a) })
+	register("list_agents", "List this family's agents that can still act or be inspected: execution outcome, task disposition and context IDs. Idle members with no outstanding work are omitted and counted in dormant; retained workspaces remain visible. Pass all:true for the full history. Page using next as offset; conversations remain private.", inspectionParams(schema.Params{"all": schema.Bool("Include idle members with no work outstanding (default false)")}), nil, func(ctx context.Context, a tools.Args) (any, error) { return r.inspectAgents(ctx, actor, a) })
 	statusDescription := "Requests awaiting your reply, teammates still working, and your remaining iteration allowance."
 	if actor == r.ID {
 		statusDescription = "What needs your decision, in the order settlement checks it, each with its one action, and what is still working; counts are totals and next names the first thing to do. Page long lists with section: \"decisions\" | \"working\" and offset."
@@ -61,12 +61,25 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 	register("send_message", "Send addressed teammate information. A request expects a reply; information waits until the next active turn.", schema.Params{"to": schema.S("Stable member ID"), "kind": schema.S("info, request or reply"), "reply_to": schema.S("Request ID for replies"), "text": schema.S("Message")}, []string{"to", "kind", "text"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return r.Send(ctx, actor, a.String("to"), a.String("kind"), a.String("reply_to"), a.String("text"))
 	})
-	register("read_messages", "Read mail addressed to you. Only input admission marks delivery.", nil, nil, func(ctx context.Context, a tools.Args) (any, error) {
+	register("read_messages", "Read mail addressed to you. Only input admission marks delivery. Select message for the complete text; list pages use offset and limit.", inspectionParams(schema.Params{"message": schema.S("Optional message ID")}), nil, func(ctx context.Context, a tools.Args) (any, error) {
 		s, err := r.read(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return inbox(s, actor, false), nil
+		if id := a.String("message"); id != "" {
+			m := s.Messages[id]
+			if m == nil || m.To != actor {
+				return nil, errors.New("unknown addressed message")
+			}
+			return m, nil
+		}
+		items := []any{}
+		for _, m := range inbox(s, actor, false) {
+			copy := *m
+			copy.Text = clipInspection(copy.Text, 512)
+			items = append(items, copy)
+		}
+		return pageInspection(items, a)
 	})
 	register("swarm_tasks", "List compact shared task summaries. Select task=<id> and section=details for criteria/feedback or section=result for the saved value. pointer is a JSON Pointer within the selection. Page using next as offset.", inspectionParams(schema.Params{"task": schema.S("Stable task ID"), "section": schema.S("summary (default), details or result"), "pointer": schema.S("Optional JSON Pointer within selected task content")}), nil, r.inspectTasks)
 	register("swarm_block", "Record a blocker on your assigned task. The parent updates dependencies or resumes work explicitly.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "reason": schema.S("Blocker")}, []string{"task", "revision", "reason"}, func(ctx context.Context, a tools.Args) (any, error) {
@@ -75,7 +88,7 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 	register("swarm_claim", "Atomically claim an unassigned pending task whose dependencies are accepted.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision")}, []string{"task", "revision"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("claimed", r.Claim(ctx, actor, a.String("task"), a.Int("revision", 0)))
 	})
-	register("swarm_submit", "Submit your task result for parent review. A snapshot records the exact editing candidate.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "result": schema.S("Result and evidence"), "snapshot": schema.S("Published snapshot ID")}, []string{"task", "revision", "result"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("swarm_submit", "Submit a reviewed or applied task for parent review. A snapshot records the exact editing candidate. Ordinary research completes on delivery: end your turn with the result instead.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "result": schema.S("Result and evidence"), "snapshot": schema.S("Published snapshot ID")}, []string{"task", "revision", "result"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("submitted", r.Submit(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("result"), a.String("snapshot")))
 	})
 	register("swarm_publish", "Publish attributed findings with source references; optionally supersede your earlier publication.", schema.Params{"artifacts": schema.Strings("IDs of your own artifacts to publish"), "text": schema.S("Finding and evidence"), "sources": schema.Strings("Source references"), "supersedes": schema.S("Earlier publication ID"), "snapshot": schema.S("Snapshot ID")}, []string{"text"}, func(ctx context.Context, a tools.Args) (any, error) {
@@ -138,7 +151,7 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 			return err
 		}
 		if active == 0 || len(inbox(s, r.ID, true)) > 0 || parentWaitChanged(before, s) {
-			return nil
+			return r.update(ctx, func(s *State) error { r.ensureDeliveryNotices(s); return nil })
 		}
 		select {
 		case <-ctx.Done():
@@ -158,8 +171,8 @@ func coordinationEntries(s *State) (entries map[string]any, controlled map[strin
 		entries["task:"+id] = struct {
 			Status, Owner, Execution, Snapshot, Feedback string
 			Revision, Accepted                           int
-			Deferred                                     bool
-		}{t.Status, t.Owner, t.Execution, t.Snapshot, t.Feedback, t.Revision, t.AcceptedRevision, TaskDeferred(s, t)}
+			Deferred, PendingNotice                      bool
+		}{t.Status, t.Owner, t.Execution, t.Snapshot, t.Feedback, t.Revision, t.AcceptedRevision, TaskDeferred(s, t), resultNotice(s, t) != nil && !resultNotice(s, t).Delivered}
 		controlled["task:"+id] = workflowControlled(s, s.Executions[t.Execution])
 	}
 	for id, m := range s.Members {
@@ -210,23 +223,6 @@ func parentWaitChanged(before map[string]any, s *State) bool {
 
 // RegisterParentTools binds parent-only authority in closures, never in model
 // arguments. A child cannot gain it by supplying a different caller identity.
-// acknowledgeResult words an acknowledgment for the parent: what it accepted
-// and how many researchers it retired; a retirement problem is reported, never
-// hidden, and never undoes the acknowledgment.
-func acknowledgeResult(accepted, retired int, retireErr error) string {
-	text := "acknowledged"
-	if accepted > 0 {
-		text += "; accepted " + countNoun(accepted, "research result")
-	}
-	if retired > 0 {
-		text += "; retired " + countNoun(retired, "member")
-	}
-	if retireErr != nil {
-		text += "; retirement incomplete: " + retireErr.Error()
-	}
-	return text
-}
-
 func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 	r.registerIntegrationTool(registry)
 	r.registerMemberTools(registry, r.ID, "", r.parent, false)
@@ -234,25 +230,39 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 	registry.Register(spawn)
 	registry.MarkAlwaysAllowed(subagent.ToolName)
 	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
-		registry.Register(&inspectionTool{&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_integration", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
+		registry.Register(&inspectionTool{&tools.Func{Name: name, LongRunning: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_followup", Exclusive: name == "swarm_snapshot", Coordinator: strings.HasPrefix(name, "workflow_") || name == "swarm_wait" || name == "swarm_integration" || name == "swarm_followup", Desc: desc, Params: params, Required: required, Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := fn(ctx, a)
 			return coordinationToolResult(v, err)
 		}}})
 		registry.MarkAlwaysAllowed(name)
 	}
+	register("swarm_followup", "Ask a new question of a completed task's member. Keeps its conversation and original snapshot by default; an explicit known snapshot refreshes only the new task. Released workspaces are recreated.", schema.Params{"task": schema.S("Completed task ID"), "question": schema.S("Complete follow-up question"), "snapshot": schema.S("Optional known snapshot for an explicit refresh"), "label": schema.S("Short task label"), "background": schema.Bool("Return as soon as the member starts")}, []string{"task", "question"}, func(ctx context.Context, a tools.Args) (any, error) {
+		req := FollowupRequest{Task: a.String("task"), Question: a.String("question"), Snapshot: a.String("snapshot"), Label: a.String("label"), Background: a.Bool("background"), CallID: subagent.CallID(ctx)}
+		task, err := r.Followup(ctx, "", req)
+		if err != nil {
+			return nil, err
+		}
+		result, err := r.Spawn(ctx, subagent.Request{Session: task.Owner, TaskID: task.ID, Task: req.Question, Label: req.Label, Background: req.Background, CallID: req.CallID})
+		output := map[string]any{"task": task.ID, "follows": task.Follows, "member": task.Owner}
+		if result.Started {
+			output["started"] = true
+		} else {
+			output["result"] = result.String()
+		}
+		if result.Yielded {
+			output["yielded"] = true
+		}
+		return output, err
+	})
 	register("swarm_create_task", "Create and prioritize shared work. Only you may create, reassign, accept and integrate tasks.", schema.Params{"description": schema.S("Assignment"), "criteria": schema.S("Acceptance criteria"), "dependencies": schema.Strings("Task IDs"), "owner": schema.S("Optional member ID"), "review": schema.Bool("Require explicit parent review of read-only work"), "requirement": schema.S("Completion requirement: delivered, reviewed, or applied. Use applied for unowned editing work.")}, []string{"description"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return r.CreateTask(ctx, a.String("description"), a.String("criteria"), a.StringSlice("dependencies"), a.String("owner"), CreateTaskOptions{Review: a.Bool("review"), Requirement: a.String("requirement")})
 	})
 	register("swarm_update_task", "Reassign or unblock a task by setting its owner and dependencies. Stop an active owner first; dependency cycles are refused.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "owner": schema.S("Member ID or empty for claims"), "dependencies": schema.Strings("Replacement dependency IDs")}, []string{"task", "revision", "owner", "dependencies"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("updated", r.UpdateTask(ctx, a.String("task"), a.Int("revision", 0), a.String("owner"), a.StringSlice("dependencies")))
 	})
-	register("swarm_review", "Accept the current submitted revision or request changes with feedback. Accepted unchanged candidates finish immediately; changed candidates still require swarm_integration. Accepting read-only research also retires that member and removes its copy; retired members are replaced, not resumed. Read the returned status and next action.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Submitted revision"), "accept": schema.Bool("Accept result"), "feedback": schema.S("Changes requested")}, []string{"task", "revision", "accept"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("swarm_review", "Accept the current submitted revision or request changes with feedback. Accepted unchanged candidates finish immediately; changed candidates still require swarm_integration. Ordinary research completes on delivery and refuses review; use swarm_followup for a correction. Read the returned status and next action.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Submitted revision"), "accept": schema.Bool("Accept result"), "feedback": schema.S("Changes requested")}, []string{"task", "revision", "accept"}, func(ctx context.Context, a tools.Args) (any, error) {
 		if err := r.Review(ctx, a.String("task"), a.Int("revision", 0), a.Bool("accept"), a.String("feedback")); err != nil {
 			return nil, err
-		}
-		retired, retireErr := 0, error(nil)
-		if a.Bool("accept") {
-			retired, retireErr = r.RetireAcceptedResearch(ctx)
 		}
 		s, err := r.read(ctx)
 		if err != nil {
@@ -262,13 +272,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		if task == nil {
 			return nil, errors.New("reviewed task is no longer available")
 		}
-		result := map[string]any{"task": task.ID, "revision": task.Revision, "acceptedRevision": task.AcceptedRevision, "status": task.Status, "displayStatus": TaskStatus(task)}
-		if retired > 0 {
-			result["retired"] = retired
-		}
-		if retireErr != nil {
-			result["retirement"] = retireErr.Error()
-		}
+		result := map[string]any{"task": task.ID, "revision": task.Revision, "acceptedRevision": task.AcceptedRevision, "status": task.Status, "displayStatus": TaskStatusIn(s, task)}
 		if task.Status == "awaiting_review" && task.AcceptedRevision == task.Revision && task.Snapshot != "" {
 			if base, _ := taskSnapshots(s, task); base == nil {
 				result["nextAction"] = "Snapshot provenance is unavailable; restore the original task snapshots or cancel the task."
@@ -282,7 +286,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 				execution = s.Executions[owner.Execution]
 			}
 			switch {
-			case owner == nil || owner.Control == MemberControlRetired || s.Contexts[owner.Context] == nil:
+			case owner == nil:
 				result["nextAction"] = "The previous member cannot resume; use swarm_update_task to reassign the task to an available member, or cancel the task."
 			case owner.Controller != "":
 				if w := s.Workflows[owner.Controller]; w != nil && w.Status == "running" {
@@ -298,7 +302,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		}
 		return result, nil
 	})
-	register("swarm_control", "Stop or explicitly resume a member using its remaining allowance, cancel a task, or clean an integrated/unchanged execution context. Cleanup retires the context; it does not accept or integrate tasks. Iteration exhaustion retains saved work and requires a user-directed client grant. Extra execution budgets also require a user-directed client control.", schema.Params{"action": schema.S("stop, resume, cancel_task or cleanup"), "id": schema.S("stop/resume: member ID; cancel_task: task ID; cleanup: context ID from list_agents.items[].context, not the execution ID")}, []string{"action"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("swarm_control", "Stop or explicitly resume a member using its remaining allowance, cancel a task, or schedule release of eligible workspaces. Release preserves the member and its task provenance. Iteration exhaustion retains saved work and requires a user-directed client grant. Extra execution budgets also require a user-directed client control.", schema.Params{"action": schema.S("stop, resume, cancel_task or release"), "id": schema.S("stop/resume: member ID; cancel_task: task ID; release: context ID from list_agents.items[].context, not the execution ID")}, []string{"action"}, func(ctx context.Context, a tools.Args) (any, error) {
 		switch a.String("action") {
 		case "stop":
 			return mutationResult("stopped", r.StopMember(ctx, a.String("id")))
@@ -309,11 +313,16 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 			return "resumed", nil
 		case "cancel_task":
 			return mutationResult("canceled", r.CancelTask(ctx, a.String("id")))
-		case "cleanup":
-			if a.String("id") == "" {
-				return nil, errors.New("name an inactive execution context; whole-family cleanup is a client control")
+		case "release":
+			s, err := r.read(ctx)
+			if err != nil {
+				return nil, err
 			}
-			return mutationResult("retired", r.Cleanup(ctx, a.String("id")))
+			if s.Contexts[a.String("id")] == nil {
+				return nil, fmt.Errorf("unknown context %q; use the context from list_agents, not an execution ID", a.String("id"))
+			}
+			r.scheduleRelease()
+			return "scheduled", nil
 		default:
 			return nil, errors.New("budget grants require explicit user-directed resume through the client")
 		}
@@ -338,21 +347,16 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"id": id, "status": "started", "next": "Park with swarm_wait; it returns the swarm status when this workflow is terminal or mail addresses you. Then act on needs_decision: workflow_read({id: \"" + id + "\"}), then workflow_acknowledge({id: \"" + id + "\"})."}, nil
+		return map[string]any{"id": id, "status": "started", "next": "Park with swarm_wait; it returns the swarm status when this workflow is terminal or mail addresses you. Read the output delivered with its notice and act on needs_decision."}, nil
 	})
 	register("workflow_cancel", "Cancel a running workflow and interrupt its active executions; retain finished outcomes and unresolved tasks.", schema.Params{"id": schema.S("Workflow ID")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("canceled", r.CancelWorkflow(a.String("id")))
 	})
-	register("workflow_acknowledge", "Acknowledge a terminal workflow report. On a completed report this also accepts the read-only research the script consumed and left unreviewed, never editing candidates, retires those members and removes their copies, and reports the counts. After reporting a failure, defer=true with a nonblank note retains its unresolved work for later without accepting, applying or canceling it.", schema.Params{"id": schema.S("Workflow report ID"), "defer": schema.Bool("Explicitly defer unresolved work from a terminal failure"), "note": schema.S("Required explanation when deferring")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("workflow_acknowledge", "Acknowledge a terminal workflow report. Completed reports need no acknowledgment; results complete at their durable delivery boundary. After reporting a failure, defer=true with a nonblank note retains its unresolved work for later without accepting, applying or canceling it.", schema.Params{"id": schema.S("Workflow report ID"), "defer": schema.Bool("Explicitly defer unresolved work from a terminal failure"), "note": schema.S("Required explanation when deferring")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
 		if a.Bool("defer") {
 			return mutationResult("acknowledged and deferred", r.DeferWorkflow(ctx, a.String("id"), a.String("note")))
 		}
-		accepted, err := r.AcknowledgeWorkflow(ctx, a.String("id"))
-		if err != nil {
-			return nil, err
-		}
-		retired, retireErr := r.RetireAcceptedResearch(ctx)
-		return acknowledgeResult(accepted, retired, retireErr), nil
+		return mutationResult("acknowledged", r.AcknowledgeWorkflow(ctx, a.String("id")))
 	})
 	register("workflow_read", "Inspect a saved workflow without executing it. Defaults to a compact summary. List steps, then select a stable step ID; pointer selects within a section. Large selections are attached as readable artifacts.", inspectionParams(schema.Params{"id": schema.S("Workflow report ID"), "section": schema.S("summary (default), steps, step, source, input or output"), "step": schema.S("Stable step ID for section=step"), "pointer": schema.S("Optional JSON Pointer within the selected section, e.g. /value/value/claims/0")}), []string{"id"}, r.inspectWorkflow)
 }
