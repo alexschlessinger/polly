@@ -244,14 +244,12 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		}
 		lines = append(lines, prefix+line)
 	}
+	if m.details != nil {
+		return strings.Join(lines, "\n")
+	}
 	filter := m.input.text()
 	footer := ""
-	if m.details != nil {
-		footer = "Enter/Esc close"
-		if len(items) > visibleRows {
-			footer = "↑↓ scroll · Esc close"
-		}
-	} else if m.showCount {
+	if m.showCount {
 		count := ""
 		if filter != "" {
 			count = fmt.Sprintf("%d matches", len(items))
