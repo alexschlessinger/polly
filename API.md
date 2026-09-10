@@ -608,7 +608,8 @@ people. `waiting` is recorded only when a member parks after its committed tool
 batch; a wake re-queues the same execution. The parent shows `waiting` only while
 every remaining operation of its turn is a coordination wait (its own
 `swarm_wait`, a blocking spawn, a workflow's agent await, or settlement);
-concurrent model or tool work keeps it `active`. The parent's `swarm_wait` ends
+concurrent model or tool work keeps it `active`, including a workflow step
+that runs a tool while a parallel step awaits an agent. The parent's `swarm_wait` ends
 on mail addressed to the parent, on a change to a task or member no running
 workflow controls, on a workflow status or acknowledgement change, or when
 nothing is active; workflow-internal progress is deferred to the workflow's

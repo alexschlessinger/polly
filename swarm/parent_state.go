@@ -23,9 +23,10 @@ type parentTracker struct {
 	detail   string
 }
 
-// inflightCall counts the coordination waits a tool call is inside; a
-// workflow call can await several agents at once.
-type inflightCall struct{ waits int }
+// inflightCall counts the coordination waits a tool call is inside and the
+// other operations it is running; a workflow call can await several agents
+// while a parallel step still executes a tool.
+type inflightCall struct{ waits, work int }
 
 func (t *parentTracker) begin() (uint64, error) {
 	t.mu.Lock()
@@ -86,6 +87,29 @@ func (t *parentTracker) beginWait(id string) (end func()) {
 	}
 }
 
+// beginWork marks an operation inside a known tool call that is not a
+// coordination wait, such as a workflow step executing a tool; while any is
+// running the call is active even if a sibling step awaits an agent.
+func (t *parentTracker) beginWork(id string) (end func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	call := t.inflight[id]
+	if !t.running || id == "" || call == nil {
+		return func() {}
+	}
+	turn := t.turn
+	call.work++
+	return func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if t.running && t.turn == turn {
+			if call := t.inflight[id]; call != nil {
+				call.work--
+			}
+		}
+	}
+}
+
 func (t *parentTracker) finish(turn uint64, lifecycle Lifecycle, detail string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -105,7 +129,8 @@ func (t *parentTracker) settled(err error) {
 }
 
 // snapshot reports waiting only when every remaining operation of the turn
-// is a coordination wait; concurrent model or tool work keeps it active.
+// is a coordination wait; concurrent model or tool work keeps it active,
+// including work inside a call that is also awaiting an agent.
 func (t *parentTracker) snapshot() (running, waiting bool, outcome Lifecycle, detail string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -113,7 +138,7 @@ func (t *parentTracker) snapshot() (running, waiting bool, outcome Lifecycle, de
 	if !waiting && len(t.inflight) > 0 {
 		waiting = true
 		for _, call := range t.inflight {
-			if call.waits == 0 {
+			if call.waits == 0 || call.work > 0 {
 				waiting = false
 				break
 			}
