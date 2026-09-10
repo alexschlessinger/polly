@@ -913,7 +913,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 			}
 			switch {
 			case c.ReadOnly && c.Scratch != "":
-				system += " This context is read-only: files in " + c.Root + " and anywhere outside your scratch directory cannot be created or changed. Return findings in messages; do not copy the checkout into scratch or probe writes elsewhere."
+				system += " This context is read-only: files in " + c.Root + " cannot be created or changed; keep temporary files in your scratch directory. Return findings in messages; do not copy the checkout into scratch or probe writes elsewhere."
 			case c.ReadOnly:
 				system += " This context is read-only, including scratch files and temporary directories. Return findings in messages without creating copies or probing writes."
 			}

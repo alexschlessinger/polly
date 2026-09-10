@@ -93,7 +93,7 @@ func TestContextScratchLifecycle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !ec.ReadOnly || ec.Sandbox.DenyWrite || !ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{c.Scratch}) || ec.Sandbox.Env["TMPDIR"] != c.Scratch || !slices.Contains(ec.Sandbox.DenyWritePaths, canonicalPath(t, c.Root)) {
+			if !ec.ReadOnly || ec.Sandbox.DenyWrite || ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{c.Scratch}) || ec.Sandbox.Env["TMPDIR"] != c.Scratch || !slices.Contains(ec.Sandbox.DenyWritePaths, canonicalPath(t, c.Root)) {
 				t.Fatalf("member policy = %+v", ec.Sandbox)
 			}
 			if err := r.Cleanup(ctx, c.ID); err != nil {

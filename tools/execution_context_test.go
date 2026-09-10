@@ -162,7 +162,7 @@ func TestExecutionPolicyReadOnlyScratch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ec.ReadOnly || ec.Scratch != scratch || ec.Sandbox.DenyWrite || !ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{scratch}) || !slices.Contains(ec.Sandbox.DenyWritePaths, root) {
+	if !ec.ReadOnly || ec.Scratch != scratch || ec.Sandbox.DenyWrite || ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{scratch}) || !slices.Contains(ec.Sandbox.DenyWritePaths, root) {
 		t.Fatalf("read-only scratch policy = %+v", ec)
 	}
 	wantEnv := map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch, "GOTMPDIR": scratch, "GOCACHE": filepath.Join(scratch, "go-build"), "GOPROXY": "off"}
@@ -175,8 +175,10 @@ func TestExecutionPolicyReadOnlyScratch(t *testing.T) {
 	if err := sandbox.WriteAllowed(ec.Sandbox, filepath.Join(scratch, "f")); err != nil {
 		t.Fatalf("scratch write refused: %v", err)
 	}
-	if err := sandbox.WriteAllowed(ec.Sandbox, filepath.Join(os.TempDir(), "polly-scratch-probe")); err == nil {
-		t.Fatal("host temp writable for a read-only context")
+	// Host temp stays writable, as for every context: bash 3.2 here-documents
+	// need a system temp directory or they land in the read-only checkout.
+	if err := sandbox.WriteAllowed(ec.Sandbox, filepath.Join(os.TempDir(), "polly-scratch-probe")); err != nil {
+		t.Fatalf("host temp refused for a read-only context: %v", err)
 	}
 	bound, _, err := registry.BindExecutionContext(ec, nil)
 	if err != nil {

@@ -47,17 +47,19 @@ Typed `/spawn`, model delegation, and scripted `polly.agent` all enter this same
 runtime. A TUI tab does not grant a child the parent's bound tools or filesystem
 access. `/spawn --read-only` uses the same research policy as `read_only:true`.
 Every member context owns a private scratch directory beside its checkout
-(`$TMPDIR`, also `GOCACHE` and `GOTMPDIR`); for a read-only member it is the
-only writable location, and siblings can neither read nor write it.
+(`$TMPDIR`, also `GOCACHE` and `GOTMPDIR`); a read-only member writes there and
+in host temp, nowhere else, and siblings can neither read nor write it.
 
 Member policies deny parent/sibling files, session databases, and every write to
 common Git metadata and the linked worktree's `.git` entry. The default 512
 worktree directory slots are reserved before member sandboxes start, so future
 siblings are already covered. A read-only member's checkout is listed in
-`denyWritePaths` on top of the missing write grant, and `denyHostTemp` withholds
-the host temp grant, so heredocs and Go builds land in the scratch and nowhere
-else; the scratch is removed with the context. The common Git object store
-remains readable.
+`denyWritePaths` on top of the missing write grant. Host temp stays writable for
+it as for every context: macOS's bash 3.2 puts here-documents in a system temp
+directory or, failing that, the working directory, so withholding host temp
+would break them inside the read-only checkout. `$TMPDIR` users and Go builds
+land in the scratch, which is removed with the context. The common Git object
+store remains readable.
 On macOS, approved `readPaths` also permit metadata checks on their exact
 ancestor directories so Git can resolve linked worktrees from a main checkout.
 This permits neither ancestor directory listings nor reads of sibling files,
@@ -523,8 +525,8 @@ a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The 
   do.
 - **macOS is allow-by-default.** Process enumeration and Mach services stay
   reachable ([differences](#differences-at-a-glance)), and `/private/tmp`
-  is shared because Seatbelt has no mount namespace. Read-only swarm members
-  opt out of it with `denyHostTemp`.
+  is shared because Seatbelt has no mount namespace; `denyHostTemp` withholds
+  it for policies that grant explicit writable paths only.
 - **No resource limits.** A sandboxed fork bomb is still a fork bomb.
 - **A granted agent socket is a signing oracle.** `allowUnixSockets` and the
   `ssh` preset let a prompt-injected command sign with your SSH agent while

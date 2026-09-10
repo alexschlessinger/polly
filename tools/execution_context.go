@@ -118,11 +118,13 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 	cfg.DenyHostTemp = base.DenyHostTemp
 	switch {
 	case grant.ReadOnly && scratch != "":
-		// Read-only research writes only in its scratch: the root is an
-		// explicit read-only island and the shared host temp is withheld.
+		// Read-only research writes in its scratch and, like every context,
+		// in host temp: the root is an explicit read-only island. Withholding
+		// host temp would break here-documents, because macOS's bash 3.2 puts
+		// them in a system temp directory or, failing that, the working
+		// directory, which is the read-only checkout.
 		cfg.WritablePaths = []string{scratch}
 		cfg.DenyWritePaths = append(cfg.DenyWritePaths, abs)
-		cfg.DenyHostTemp = true
 	case grant.ReadOnly:
 		cfg.WritablePaths = []string{abs}
 		cfg.DenyWrite = true
