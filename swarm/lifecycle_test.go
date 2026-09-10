@@ -66,16 +66,21 @@ func TestMemberStateLifecycleTable(t *testing.T) {
 	}
 }
 
-func TestCompactRosterPrintsDisplay(t *testing.T) {
+func TestCompactRosterCountsAndWorking(t *testing.T) {
 	s, m := memberFixture("", "completed", "done", "")
 	m.Label = "worker label"
-	if roster := compactRoster(s); !strings.Contains(roster, "m · worker label · idle · done · task t") || strings.Contains(roster, "omitted") {
+	if roster := compactRoster(s); !strings.Contains(roster, "1 members: 0 working, 1 idle, 0 paused.\nWorking now: none.") || strings.Contains(roster, "worker label") || strings.Contains(roster, "omitted") {
 		t.Fatalf("roster %q", roster)
 	}
 	s.Members["gone"] = &Member{ID: "gone", Label: "retired researcher", Control: MemberControlRetired, Task: "tg"}
-	roster := compactRoster(s)
-	if strings.Contains(roster, "retired researcher") || !strings.Contains(roster, "1 retired member omitted.") {
+	if roster := compactRoster(s); strings.Contains(roster, "retired researcher") || !strings.Contains(roster, "1 members: 0 working, 1 idle, 0 paused; 1 retired member omitted.") {
 		t.Fatalf("roster with a retired member %q", roster)
+	}
+	s, m = memberFixture("", "running", "running", "")
+	m.Label = "worker label"
+	s.Members["stuck"] = &Member{ID: "stuck", Label: "stuck", Control: MemberControlStopped}
+	if roster := compactRoster(s); !strings.Contains(roster, "2 members: 1 working, 0 idle, 1 paused.\nWorking now:\nm · worker label · active · task t\n") {
+		t.Fatalf("roster with a working member %q", roster)
 	}
 }
 
