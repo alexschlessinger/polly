@@ -95,9 +95,13 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 		return pubs, nil
 	})
 	register("swarm_snapshot", "Capture an immutable candidate from your isolated files. This does not commit to a branch or accept a task.", nil, nil, func(ctx context.Context, a tools.Args) (any, error) { return r.captureMember(ctx, actor) })
-	register("swarm_wait", "Yield after this tool batch until addressed input is available. The runtime releases your execution slot and preserves your iteration budget.", nil, nil, func(ctx context.Context, a tools.Args) (any, error) {
+	waitDescription := "Yield after this tool batch until addressed input is available. The runtime releases your execution slot and preserves your iteration budget."
+	if actor == r.ID {
+		waitDescription = "Park until there is something for you to act on: mail addressed to you, a directly spawned child's outcome or task change, or a background workflow reaching a terminal status. Agents inside a running workflow do not wake you; the workflow reports once when it finishes. Use this instead of sleeping, polling or re-reading reports while children or workflows run. When it returns, read messages, then swarm_tasks or workflow_read."
+	}
+	register("swarm_wait", waitDescription, nil, nil, func(ctx context.Context, a tools.Args) (any, error) {
 		if actor == r.ID {
-			return mutationResult("coordination changed; inspect messages and tasks", r.waitParent(ctx))
+			return mutationResult("coordination changed; read messages, then swarm_tasks or workflow_read", r.waitParent(ctx))
 		}
 		park, ok := ctx.Value(waitKey{}).(func())
 		if !ok {
@@ -290,13 +294,16 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		}
 		return map[string]any{"id": report.ID, "status": report.Status, "output": report.Output, "steps": len(report.Steps)}, err
 	})
-	register("workflow_start", "Start a background JavaScript workflow. Inspect its saved report and coordinate until the swarm settles.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("workflow_start", "Start a background JavaScript workflow and return at once. Then park with swarm_wait; it wakes you once when the workflow reaches a terminal status or when mail addresses you. Do not poll workflow_read while it runs; read the saved report and acknowledge it afterwards.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
 		input, err := schema.DecodeJSON(a.String("input"))
 		if err != nil {
 			return nil, err
 		}
 		id, err := r.StartWorkflow(ctx, a.String("source"), input)
-		return mutationResult(map[string]any{"id": id, "status": "started"}, err)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"id": id, "status": "started", "next": "Park with swarm_wait; it returns when this workflow is terminal or mail addresses you. Then workflow_read({id: \"" + id + "\"}) and workflow_acknowledge({id: \"" + id + "\"})."}, nil
 	})
 	register("workflow_cancel", "Cancel a running workflow and interrupt its active executions; retain finished outcomes and unresolved tasks.", schema.Params{"id": schema.S("Workflow ID")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("canceled", r.CancelWorkflow(a.String("id")))

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"encoding/json"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/subagent"
@@ -182,5 +183,33 @@ func TestDirectSpawnStillWakesParentDuringWorkflow(t *testing.T) {
 		return false
 	})
 	close(release)
+	waitWorkflowIdle(t, r)
+}
+
+func TestWorkflowStartResultNamesSwarmWait(t *testing.T) {
+	r := runtimeTest(t, nilModel(), 1, 1)
+	ctx := context.Background()
+	r.RegisterParentTools(r.config.Registry)
+	wait, _, _ := r.config.Registry.GetIfAllowed("swarm_wait")
+	if desc := wait.GetSchema().Description(); !strings.Contains(desc, "terminal status") || !strings.Contains(desc, "instead of sleeping") {
+		t.Fatalf("parent swarm_wait description: %s", desc)
+	}
+	start, _, _ := r.config.Registry.GetIfAllowed("workflow_start")
+	if desc := start.GetSchema().Description(); !strings.Contains(desc, "swarm_wait") || strings.Contains(desc, "coordinate until") {
+		t.Fatalf("workflow_start description: %s", desc)
+	}
+	out, err := start.Execute(ctx, map[string]any{"source": `polly.defineWorkflow({name:"noop",inputSchema:polly.schema.object({}),async run(){return 1}})`, "input": "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := result["id"].(string)
+	next, _ := result["next"].(string)
+	if result["status"] != "started" || id == "" || !strings.Contains(next, "swarm_wait") || !strings.Contains(next, `workflow_read({id: "`+id+`"})`) || !strings.Contains(next, "workflow_acknowledge") {
+		t.Fatalf("workflow_start result: %s", out)
+	}
 	waitWorkflowIdle(t, r)
 }

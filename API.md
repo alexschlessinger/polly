@@ -608,7 +608,11 @@ people. `waiting` is recorded only when a member parks after its committed tool
 batch; a wake re-queues the same execution. The parent shows `waiting` only while
 every remaining operation of its turn is a coordination wait (its own
 `swarm_wait`, a blocking spawn, a workflow's agent await, or settlement);
-concurrent model or tool work keeps it `active`. A finished turn leaves it
+concurrent model or tool work keeps it `active`. The parent's `swarm_wait` ends
+on mail addressed to the parent, on a change to a task or member no running
+workflow controls, on a workflow status or acknowledgement change, or when
+nothing is active; workflow-internal progress is deferred to the workflow's
+terminal status. A finished turn leaves it
 `idle`, or `paused · interrupted | iteration limit | blocked | error`; the next
 `RunParent` starts fresh. Archived views without a live runtime omit the parent
 rather than infer it.
@@ -716,7 +720,11 @@ parent authority in the tool closure and is absent from child/bound registries.
 cancels that attempt. Both launch modes share persistence, registration, member
 reservation, and teardown. `RunWorkflow` honors caller cancellation and drains
 host effects before returning; `StartWorkflow` detaches from caller cancellation.
-Both stop on runtime shutdown. Saved reports include source, input, every operation intent,
+Both stop on runtime shutdown. The checkpoint that moves a report from running to
+completed, failed, or interrupted (`SaveWorkflow`) posts one informational message
+to the parent naming the report; executions launched by a running workflow
+(`Execution.Workflow`) post no per-agent completion mail and notify the parent
+normally once the workflow is terminal. Saved reports include source, input, every operation intent,
 results, failure details, and final output. Restarting a script is an explicit new
 attempt; there is no persisted JavaScript heap or automatic effect replay.
 Failed/interrupted reports block settlement until `AcknowledgeWorkflow` records

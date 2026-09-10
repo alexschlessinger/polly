@@ -30,6 +30,13 @@ effects and their receipts to finish. Background work outlives the launching cal
 explicit cancellation and runtime shutdown still stop it. Restart always runs an
 explicit new attempt; saved JavaScript is never replayed automatically.
 
+A parent that started a background workflow parks in `swarm_wait`: agent progress
+inside a running workflow does not wake it, and the workflow posts one
+informational message when its report turns terminal (completed, failed, or
+interrupted), naming the report for `workflow_read` and `workflow_acknowledge`.
+Members of a running workflow post no per-agent completion mail; directly spawned
+children still do.
+
 Use [fix-review-findings.js](examples/workflows/fix-review-findings.js) with a
 copy of [input.json](examples/workflows/input.json). Replace the absolute source,
 evidence filename, findings, and check commands. The example makes an isolated
@@ -253,17 +260,25 @@ available but does not reenter the scheduling queue. A subsequent assignment
 starts a new run. Defaults are 32 executing children and 256 logical starts.
 `swarm_wait` parks after the current tool batch, releases its slot, registry and
 session lease, and preserves its execution and remaining iteration allowance.
-The member shows `waiting`; a wake re-queues the same execution. A parent parked
-in its own `swarm_wait` shows `waiting` too.
-Addressed requests/replies and relevant task/dependency changes resume it.
-Blocking spawns can return `yielded` so a parent can answer; background plus wait
-is the preferred coordination pattern. Several simultaneous blocking spawns are
-released together when a member yields.
+The member shows `waiting`; a wake re-queues the same execution. Addressed
+requests/replies and relevant task/dependency changes resume it. A parent parked
+in its own `swarm_wait` shows `waiting` too; it returns on mail addressed to the
+parent, on a directly spawned child's launch, outcome or task change, when a
+workflow reaches a terminal status or is acknowledged, or when nothing is active.
+Transitions of members and tasks that a running workflow controls do not end the
+parent's wait. Blocking spawns can return `yielded` so a parent can answer;
+background plus `swarm_wait` is the coordination pattern, never sleeping or
+re-reading reports. Several simultaneous blocking spawns are released together
+when a member yields.
 
 Workflow calls and ordinary spawns use this same pool and budget. A workflow
 reserves its members across its steps. Concurrent calls to a reserved/busy
 member fail; idle peer traffic cannot create an extra workflow-controlled turn.
-Successful workflows release reservations. Failed or canceled attempts leave
+Successful workflows release reservations. A workflow's agents report to the
+parent through the workflow: no per-agent completion mail is posted while the
+attempt runs, and one informational message arrives with the terminal report;
+afterwards its members are ordinary members again and explicit resumes notify
+the parent as usual. Failed or canceled attempts leave
 their interrupted executions `paused · interrupted` for explicit parent/user
 recovery. Completed and failed executions retain their actual outcomes; a failed workflow does not pause completed agents.
 Failed and interrupted reports block settlement until the parent inspects and

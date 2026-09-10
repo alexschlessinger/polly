@@ -210,7 +210,11 @@ func (r *Runtime) inspectWorkflow(ctx context.Context, a tools.Args) (any, error
 		if w.Error != nil {
 			failure = map[string]any{"code": w.Error.Code, "message": clipInspection(w.Error.Message, 512)}
 		}
-		value = map[string]any{"id": w.ID, "name": clipInspection(w.Name, 512), "run": w.Run, "status": w.Status, "acknowledged": w.Acknowledged, "steps": len(w.Steps), "stepCounts": counts, "agents": page, "error": failure, "deferred": DeferredCount(s, w.ID), "started": w.Started, "finished": w.Finished, "read": "Use section=steps to list step IDs; section=step with step=<id> to inspect one. Sections source, input and output are also available; pointer selects a JSON Pointer within the selected value."}
+		summary := map[string]any{"id": w.ID, "name": clipInspection(w.Name, 512), "run": w.Run, "status": w.Status, "acknowledged": w.Acknowledged, "steps": len(w.Steps), "stepCounts": counts, "agents": page, "error": failure, "deferred": DeferredCount(s, w.ID), "started": w.Started, "finished": w.Finished, "read": "Use section=steps to list step IDs; section=step with step=<id> to inspect one. Sections source, input and output are also available; pointer selects a JSON Pointer within the selected value."}
+		if next := workflowNext(s, w); next != "" {
+			summary["next"] = next
+		}
+		value = summary
 	case "steps":
 		items := []any{}
 		for _, step := range w.Steps {
@@ -289,4 +293,21 @@ func selectInspection(value any, pointer string) (any, error) {
 		}
 	}
 	return value, nil
+}
+
+// workflowNext tells the parent what the report asks of it now.
+func workflowNext(s *State, w *workflow.Report) string {
+	switch {
+	case w.Status == "running":
+		return "Running: park with swarm_wait; do not poll. It wakes you once when the workflow finishes or when mail addresses you."
+	case w.Acknowledged:
+		return ""
+	case w.Status == "completed":
+		if research := workflowResearchTasks(s, w); len(research) > 0 {
+			return fmt.Sprintf("Completed with %s awaiting review: workflow_acknowledge({id: %q}) accepts them all; swarm_review individual tasks first when a finding needs changes.", countNoun(len(research), "research result"), w.ID)
+		}
+		return "Completed with nothing awaiting review; workflow_acknowledge({id: \"" + w.ID + "\"}) is optional bookkeeping."
+	default:
+		return "Terminal " + w.Status + ": inspect steps and agents, then either recover its work or report the failure and workflow_acknowledge({id: \"" + w.ID + "\", defer: true, note: \"...\"}) to retain unresolved work for later. Deferral does not accept, apply, or cancel work."
+	}
 }
