@@ -133,3 +133,23 @@ func TestWriteAllowedRelativePathRejected(t *testing.T) {
 		t.Fatal("expected relative path to be rejected")
 	}
 }
+
+func TestWriteAllowedDenyHostTempExcludesHostTemp(t *testing.T) {
+	dir := t.TempDir()
+	scratch := filepath.Join(dir, "scratch")
+	if err := os.Mkdir(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{DenyHostTemp: true, WritablePaths: []string{scratch}}
+	if err := WriteAllowed(cfg, filepath.Join(scratch, "f")); err != nil {
+		t.Fatalf("scratch write refused: %v", err)
+	}
+	for _, path := range []string{filepath.Join(dir, "f"), filepath.Join(os.TempDir(), "polly-host-temp-probe"), "/tmp/polly-host-temp-probe"} {
+		if err := WriteAllowed(cfg, path); err == nil || !strings.Contains(err.Error(), "outside the sandbox policy's writable paths") {
+			t.Fatalf("host temp write %s allowed under DenyHostTemp: %v", path, err)
+		}
+	}
+	if err := WriteAllowed(Config{WritablePaths: []string{scratch}}, filepath.Join(dir, "f")); err != nil {
+		t.Fatalf("host temp write refused without DenyHostTemp: %v", err)
+	}
+}

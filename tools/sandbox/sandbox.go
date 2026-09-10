@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -302,6 +303,17 @@ type Config struct {
 	// Ignored when AllowEnv is set — a strict allowlist stays strict.
 	PassEnv []string `json:"passEnv,omitempty"`
 
+	// Env is applied to every wrapped process after ambient filtering, per-call
+	// explicit values, and platform temp rewriting, so a policy-selected TMPDIR
+	// cannot be undone by an inherited or tool-configured value. Merge keeps the
+	// later overlay's value per name. Values are configuration, never secrets.
+	Env map[string]string `json:"env,omitempty"`
+
+	// DenyHostTemp withholds the implicit host temp write grant (/tmp,
+	// os.TempDir(), /private/tmp on macOS); only WritablePaths stay writable.
+	// Linux keeps its private per-command tmpfs, which is never host-visible.
+	DenyHostTemp bool `json:"denyHostTemp,omitempty"`
+
 	// Absolute Unix-socket paths a sandboxed process may connect to (supports
 	// ~ expansion). Paths are resolved once at construction; missing grants
 	// are dropped. A grant whose path is no longer a live socket is dropped
@@ -349,6 +361,10 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 	cfg.readPathAliases = cloneReadPathAliasIdentities(cfg.readPathAliases)
 	cfg.AllowEnv = append([]string(nil), cfg.AllowEnv...)
 	cfg.PassEnv = append([]string(nil), cfg.PassEnv...)
+	cfg.Env = maps.Clone(cfg.Env)
+	if err := validateExplicitEnv(cfg.Env); err != nil {
+		return Config{}, fmt.Errorf("sandbox env: %w", err)
+	}
 
 	var cwd string
 	normalize := func(field string, paths []string) ([]string, error) {
@@ -1030,6 +1046,7 @@ func ParseConfig(raw json.RawMessage) (*Config, error) {
 // Merge returns a new Config combining c (base) with overlay.
 // Booleans are OR'd (either side can widen allowances or add restrictions,
 // but neither can reduce them). Slices are concatenated into fresh arrays.
+// Env merges per variable name; the overlay's value replaces the base's.
 func (c Config) Merge(overlay Config) Config {
 	c.AllowNetwork = c.AllowNetwork || overlay.AllowNetwork
 	c.DenyDNS = c.DenyDNS || overlay.DenyDNS
@@ -1042,10 +1059,24 @@ func (c Config) Merge(overlay Config) Config {
 	c.PassEnv = concatStrings(c.PassEnv, overlay.PassEnv)
 	c.AllowUnixSockets = concatStrings(c.AllowUnixSockets, overlay.AllowUnixSockets)
 	c.DenyWrite = c.DenyWrite || overlay.DenyWrite
+	c.DenyHostTemp = c.DenyHostTemp || overlay.DenyHostTemp
+	c.Env = mergeEnvMaps(c.Env, overlay.Env)
 	c.gitPolicies = concatGitWorkspacePolicies(c.gitPolicies, overlay.gitPolicies)
 	c.authorityPaths = append(cloneAuthorityPathIdentities(c.authorityPaths), overlay.authorityPaths...)
 	c.readPathAliases = append(cloneReadPathAliasIdentities(c.readPathAliases), cloneReadPathAliasIdentities(overlay.readPathAliases)...)
 	return c
+}
+
+// mergeEnvMaps returns a fresh map holding a's entries with b's written over
+// them, or nil when both are empty. Neither operand is aliased or mutated.
+func mergeEnvMaps(a, b map[string]string) map[string]string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(a)+len(b))
+	maps.Copy(merged, a)
+	maps.Copy(merged, b)
+	return merged
 }
 
 // concatStrings returns a/b joined in a freshly allocated slice. Merge must not

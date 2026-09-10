@@ -177,6 +177,10 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 	}
 	filtered, stripped := filterEnv(env, s.cfg.AllowEnv, s.cfg.PassEnv)
 	filtered = mergeExplicitEnv(filtered, explicitEnv)
+	if len(s.cfg.Env) > 0 {
+		// Policy env is the final layer over ambient and per-call values.
+		filtered = mergeExplicitEnv(filtered, s.cfg.Env)
+	}
 
 	origArgs := cmd.Args
 	origPath, err := resolvedExecutablePath(cmd)
@@ -469,12 +473,15 @@ func authorityWritePins(authorityPaths, writablePaths []string) []string {
 }
 
 func darwinWritePaths(cfg Config) []string {
-	paths := []string{"/private/tmp"}
-	if tmpdir := os.TempDir(); tmpdir != "" && tmpdir != "/private/tmp" && tmpdir != "/tmp" {
-		if real, err := filepath.EvalSymlinks(tmpdir); err == nil {
-			tmpdir = real
+	paths := []string{}
+	if !cfg.DenyHostTemp {
+		paths = append(paths, "/private/tmp")
+		if tmpdir := os.TempDir(); tmpdir != "" && tmpdir != "/private/tmp" && tmpdir != "/tmp" {
+			if real, err := filepath.EvalSymlinks(tmpdir); err == nil {
+				tmpdir = real
+			}
+			paths = append(paths, tmpdir)
 		}
-		paths = append(paths, tmpdir)
 	}
 	for _, path := range cfg.WritablePaths {
 		paths = append(paths, filepath.Clean(expandTilde(path)))

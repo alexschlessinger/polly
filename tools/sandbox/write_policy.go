@@ -8,7 +8,8 @@ import (
 
 // WriteAllowed reports whether an in-process write of path is consistent with
 // the write policy this config applies to wrapped commands: writes are allowed
-// only under the OS temp directories and cfg.WritablePaths, excluding the
+// only under the OS temp directories (withheld by DenyHostTemp) and
+// cfg.WritablePaths, excluding the
 // cfg.DenyWritePaths islands and the credential deny list (which ReadPaths
 // exempts from reads but deliberately never from writes), and DenyWrite denies
 // everything. Tools that write files directly (rather than through a wrapped
@@ -55,13 +56,14 @@ func WriteAllowed(cfg Config, path string) error {
 }
 
 // writableRootRoutes mirrors the write grants the OS backends give wrapped
-// commands: the OS temp directories plus cfg.WritablePaths, each in lexical
-// and resolved form.
+// commands: the OS temp directories, unless DenyHostTemp withholds them, plus
+// cfg.WritablePaths, each in lexical and resolved form.
 func writableRootRoutes(cfg Config) []string {
-	roots := []string{"/tmp", os.TempDir()}
-	for _, p := range cfg.WritablePaths {
-		roots = append(roots, p)
+	roots := []string{}
+	if !cfg.DenyHostTemp {
+		roots = append(roots, "/tmp", os.TempDir())
 	}
+	roots = append(roots, cfg.WritablePaths...)
 	return writePolicyRoutes(roots...)
 }
 

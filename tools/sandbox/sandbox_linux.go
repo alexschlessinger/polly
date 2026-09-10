@@ -494,6 +494,11 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 			filtered[i] = name + "=/tmp"
 		}
 	}
+	if len(s.cfg.Env) > 0 {
+		// Policy env is the final layer: a scratch TMPDIR bound through
+		// WritablePaths must survive the private-temp rewrite above.
+		filtered = mergeExplicitEnv(filtered, s.cfg.Env)
+	}
 
 	allDenied := allDeniedPaths(s.cfg)
 	denied := existingDeniedPaths(allDenied)
