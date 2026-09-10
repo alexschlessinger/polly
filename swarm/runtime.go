@@ -1185,11 +1185,14 @@ func (r *Runtime) finish(i *invocation) {
 				task.Revision++
 			}
 		}
-		mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Text: "Agent " + clipInspection(m.Label, 512) + " " + e.Status + ". Session: " + m.ID + ". Task: " + m.Task + ". Inspect: swarm_tasks({task: \"" + m.Task + "\", section: \"result\"}).", Posted: time.Now().UTC()}
-		if i.err != nil {
-			mail.Text += " Reason: " + clipInspection(e.Error, 1024)
+		// A running workflow reports for its agents once, when it finishes.
+		if !workflowControlled(s, e) {
+			mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Text: "Agent " + clipInspection(m.Label, 512) + " " + e.Status + ". Session: " + m.ID + ". Task: " + m.Task + ". Inspect: swarm_tasks({task: \"" + m.Task + "\", section: \"result\"}).", Posted: time.Now().UTC()}
+			if i.err != nil {
+				mail.Text += " Reason: " + clipInspection(e.Error, 1024)
+			}
+			s.Messages[mail.ID] = mail
 		}
-		s.Messages[mail.ID] = mail
 		return nil
 	})
 	if err != nil {
@@ -1564,7 +1567,8 @@ func (r *Runtime) Settle(ctx context.Context) error {
 
 func (r *Runtime) SaveWorkflow(ctx context.Context, report workflow.Report) error {
 	return r.update(ctx, func(s *State) error {
-		if prior := s.Workflows[report.ID]; prior != nil {
+		prior := s.Workflows[report.ID]
+		if prior != nil {
 			report.Run, report.Acknowledged = prior.Run, prior.Acknowledged
 			report.CallID = prior.CallID
 		}
@@ -1572,8 +1576,46 @@ func (r *Runtime) SaveWorkflow(ctx context.Context, report workflow.Report) erro
 			report.Run = r.currentRun(s).ID
 		}
 		s.Workflows[report.ID] = &report
+		// The checkpoint that turns a report terminal is the workflow's one
+		// notice to the parent. It shares the transaction with the status
+		// change, so a parked parent wakes once and finds the mail waiting.
+		if report.Status != "running" && (prior == nil || prior.Status == "running") {
+			mail := r.workflowNotice(s, &report)
+			s.Messages[mail.ID] = mail
+		}
 		return nil
 	})
+}
+
+// workflowNotice summarizes a terminal workflow for the parent. Agents are
+// counted through the host-authored Execution.Workflow, as deferral does.
+func (r *Runtime) workflowNotice(s *State, w *workflow.Report) *Mail {
+	agents, unsettled := 0, 0
+	for _, e := range s.Executions {
+		if e.Workflow == w.ID {
+			agents++
+			if e.Status != "completed" {
+				unsettled++
+			}
+		}
+	}
+	name := clipInspection(w.Name, 512)
+	if name == "" {
+		name = w.ID
+	}
+	text := fmt.Sprintf("Workflow %s %s: %d agents", name, w.Status, agents)
+	if unsettled > 0 {
+		text += fmt.Sprintf(", %d failed or paused", unsettled)
+	}
+	if w.Status == "completed" {
+		text += ". Inspect: workflow_read({id: \"" + w.ID + "\"}), then workflow_acknowledge({id: \"" + w.ID + "\"})."
+	} else {
+		text += ". Inspect: workflow_read({id: \"" + w.ID + "\"}), then recover its unresolved work or report the failure and workflow_acknowledge({id: \"" + w.ID + "\", defer: true, note: \"...\"}) to retain it."
+		if w.Error != nil {
+			text += " Reason: " + clipInspection(w.Error.Code+": "+w.Error.Message, 1024)
+		}
+	}
+	return &Mail{ID: ids.New(), From: w.ID, To: r.ID, Kind: "info", Text: text, Posted: time.Now().UTC()}
 }
 
 // AcknowledgeWorkflow records that the parent has handled a terminal failure.

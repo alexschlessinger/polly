@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/workflow"
 )
 
 // memberFixture builds the smallest state that exercises one presentation.
@@ -96,5 +97,30 @@ func TestFingerprintStableAcrossQueuedToRunning(t *testing.T) {
 	m.Control = MemberControlStopped
 	if coordinationFingerprint(s) == resumed {
 		t.Fatal("a control change did not change the fingerprint")
+	}
+}
+
+func TestWorkflowControlledFollowsWorkflowStatus(t *testing.T) {
+	s := &State{Workflows: map[string]*workflow.Report{}}
+	for _, status := range []string{"running", "completed", "failed", "interrupted", "canceled"} {
+		s.Workflows[status] = &workflow.Report{ID: status, Status: status}
+	}
+	for _, tc := range []struct {
+		name string
+		e    *Execution
+		want bool
+	}{
+		{name: "nil execution"},
+		{name: "direct spawn", e: &Execution{ID: "e"}},
+		{name: "running workflow", e: &Execution{ID: "e", Workflow: "running"}, want: true},
+		{name: "completed workflow", e: &Execution{ID: "e", Workflow: "completed"}},
+		{name: "failed workflow", e: &Execution{ID: "e", Workflow: "failed"}},
+		{name: "interrupted workflow", e: &Execution{ID: "e", Workflow: "interrupted"}},
+		{name: "canceled workflow", e: &Execution{ID: "e", Workflow: "canceled"}},
+		{name: "missing workflow", e: &Execution{ID: "e", Workflow: "missing"}},
+	} {
+		if got := workflowControlled(s, tc.e); got != tc.want {
+			t.Errorf("%s: workflowControlled = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
