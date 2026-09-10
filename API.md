@@ -717,7 +717,10 @@ Both stop on runtime shutdown. Saved reports include source, input, every operat
 results, failure details, and final output. Restarting a script is an explicit new
 attempt; there is no persisted JavaScript heap or automatic effect replay.
 Failed/interrupted reports block settlement until `AcknowledgeWorkflow` records
-parent handling; this never accepts tasks or discards files.
+parent handling; for those reports it never accepts tasks or discards files.
+`AcknowledgeWorkflow(ctx, id) (accepted int, err error)` on a completed report
+also accepts the read-only research the script consumed and left unreviewed,
+inside the acknowledgment transaction, and returns how many results it accepted.
 Parent JavaScript uses `polly.integration.prepare/read/revise/refresh/accept/apply`
 and `polly.tasks.read/review` over those same operations. `polly.release(context)`
 removes only an inactive attempt-owned context whose contents are unchanged or
@@ -934,7 +937,9 @@ for event := range client.ChatCompletionStream(ctx, req, processor) {
 
 `Runtime.DeferWorkflow(ctx, reportID, note)` atomically acknowledges a terminal
 failed/canceled/interrupted workflow and defers its exact unresolved task
-revisions. `AcknowledgeWorkflow` remains acknowledgment only. Optional
+revisions. `AcknowledgeWorkflow` on a terminal failure remains acknowledgment
+only; on a completed report it also accepts the consumed read-only research and
+returns the count. Optional
 `Task.Deferral` and host-authored `Execution.Workflow` metadata persist without
 a schema migration. `TaskDeferred`, `DeferredCount`, `MemberState`, and
 `ParentState` expose read-only derived disposition; they do not accept or repair

@@ -522,9 +522,8 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 			if owner := s.Members[t.Owner]; owner != nil && !owner.ReadOnly && t.Snapshot == "" {
 				return errors.New("editing task has no integration candidate")
 			}
-			t.AcceptedRevision = t.Revision
-			if t.Snapshot == "" || unchangedTask(s, t) {
-				t.Status = "done"
+			if err := acceptTask(s, t); err != nil {
+				return err
 			}
 		} else {
 			if strings.TrimSpace(feedback) == "" {

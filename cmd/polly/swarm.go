@@ -106,6 +106,7 @@ func registerSwarmCommands(r *replCommandRegistry) {
 		opCtx := ctx.operationContext()
 		if len(args) > 2 {
 			var err error
+			reply := "swarm control recorded"
 			switch args[1] {
 			case "stop":
 				err = runtime.StopMember(opCtx, args[2])
@@ -118,7 +119,11 @@ func registerSwarmCommands(r *replCommandRegistry) {
 			case "cancel-workflow":
 				err = runtime.CancelWorkflow(args[2])
 			case "acknowledge-workflow":
-				err = runtime.AcknowledgeWorkflow(opCtx, args[2])
+				var accepted int
+				accepted, err = runtime.AcknowledgeWorkflow(opCtx, args[2])
+				if accepted > 0 {
+					reply = fmt.Sprintf("swarm control recorded; accepted %d research results", accepted)
+				}
 			case "defer-workflow":
 				err = runtime.DeferWorkflow(opCtx, args[2], strings.Join(args[3:], " "))
 			case "resume":
@@ -148,7 +153,7 @@ func registerSwarmCommands(r *replCommandRegistry) {
 			if err != nil {
 				return replCommandResult{err: err}
 			}
-			return replCommandResult{err: ctx.replyLine("swarm control recorded")}
+			return replCommandResult{err: ctx.replyLine(reply)}
 		}
 		if ctx.openSwarm != nil {
 			section := ""

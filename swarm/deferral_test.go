@@ -43,7 +43,7 @@ func finishParent(t *testing.T, r *Runtime) {
 func TestWorkflowDeferralPersistsWithoutAcceptingOrApplying(t *testing.T) {
 	r, id, task := failedResearchWorkflow(t)
 	ctx := context.Background()
-	if err := r.AcknowledgeWorkflow(ctx, id); err != nil {
+	if _, err := r.AcknowledgeWorkflow(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Settle(ctx); err == nil {

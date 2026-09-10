@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
@@ -61,6 +62,49 @@ func unchangedTask(s *State, task *Task) bool {
 // after review or recovery has completed them without a filesystem apply.
 func integrationTask(s *State, task *Task) bool {
 	return task != nil && (task.Status == "awaiting_review" || task.Status == "done" && acceptedTaskRevision(task) && unchangedTask(s, task))
+}
+
+// acceptTask records the parent's acceptance of the current submitted
+// revision inside the caller's transaction. Snapshot-less research and an
+// unchanged candidate finish immediately; a changed candidate stays awaiting
+// its integration receipt. Accepting always reactivates retained work first.
+func acceptTask(s *State, t *Task) error {
+	if err := reactivateTask(s, t); err != nil {
+		return err
+	}
+	t.AcceptedRevision = t.Revision
+	if t.Snapshot == "" || unchangedTask(s, t) {
+		t.Status = "done"
+	}
+	return nil
+}
+
+// workflowResearchTasks lists the read-only, snapshot-less submissions a
+// workflow's completed executions left awaiting review: research the script
+// consumed without reviewing. Results the script already reviewed and editing
+// candidates are never included. Sorted by task ID.
+func workflowResearchTasks(s *State, w *workflow.Report) []*Task {
+	var tasks []*Task
+	for _, t := range s.Tasks {
+		if t.Run != w.Run || t.Status != "awaiting_review" || t.Snapshot != "" {
+			continue
+		}
+		e, owner := s.Executions[t.Execution], s.Members[t.Owner]
+		if e == nil || e.Workflow != w.ID || e.Run != w.Run || e.Member != t.Owner || e.Status != "completed" || owner == nil || !owner.ReadOnly {
+			continue
+		}
+		tasks = append(tasks, t)
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID < tasks[j].ID })
+	return tasks
+}
+
+// countNoun formats "1 research result" or "40 research results".
+func countNoun(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // settlementState repairs saved, explicitly accepted no-op submissions through

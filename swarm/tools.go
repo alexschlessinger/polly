@@ -301,11 +301,18 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 	register("workflow_cancel", "Cancel a running workflow and interrupt its active executions; retain finished outcomes and unresolved tasks.", schema.Params{"id": schema.S("Workflow ID")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("canceled", r.CancelWorkflow(a.String("id")))
 	})
-	register("workflow_acknowledge", "Acknowledge a terminal workflow report. After reporting a failure, defer=true with a nonblank note retains its unresolved work for later without accepting, applying or canceling it.", schema.Params{"id": schema.S("Workflow report ID"), "defer": schema.Bool("Explicitly defer unresolved work from a terminal failure"), "note": schema.S("Required explanation when deferring")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("workflow_acknowledge", "Acknowledge a terminal workflow report. On a completed report this also accepts the read-only research the script consumed and left unreviewed, never editing candidates, and reports the count. After reporting a failure, defer=true with a nonblank note retains its unresolved work for later without accepting, applying or canceling it.", schema.Params{"id": schema.S("Workflow report ID"), "defer": schema.Bool("Explicitly defer unresolved work from a terminal failure"), "note": schema.S("Required explanation when deferring")}, []string{"id"}, func(ctx context.Context, a tools.Args) (any, error) {
 		if a.Bool("defer") {
 			return mutationResult("acknowledged and deferred", r.DeferWorkflow(ctx, a.String("id"), a.String("note")))
 		}
-		return mutationResult("acknowledged", r.AcknowledgeWorkflow(ctx, a.String("id")))
+		accepted, err := r.AcknowledgeWorkflow(ctx, a.String("id"))
+		if err != nil {
+			return nil, err
+		}
+		if accepted == 0 {
+			return "acknowledged", nil
+		}
+		return "acknowledged; accepted " + countNoun(accepted, "research result"), nil
 	})
 	register("workflow_read", "Inspect a saved workflow without executing it. Defaults to a compact summary. List steps, then select a stable step ID; pointer selects within a section. Large selections are attached as readable artifacts.", inspectionParams(schema.Params{"id": schema.S("Workflow report ID"), "section": schema.S("summary (default), steps, step, source, input or output"), "step": schema.S("Stable step ID for section=step"), "pointer": schema.S("Optional JSON Pointer within the selected section, e.g. /value/value/claims/0")}), []string{"id"}, r.inspectWorkflow)
 }

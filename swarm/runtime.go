@@ -1618,10 +1618,19 @@ func (r *Runtime) workflowNotice(s *State, w *workflow.Report) *Mail {
 	return &Mail{ID: ids.New(), From: w.ID, To: r.ID, Kind: "info", Text: text, Posted: time.Now().UTC()}
 }
 
-// AcknowledgeWorkflow records that the parent has handled a terminal failure.
-// It never accepts tasks, discards edits, resumes members, or replays JavaScript.
-func (r *Runtime) AcknowledgeWorkflow(ctx context.Context, id string) error {
-	return r.update(ctx, func(s *State) error {
+// AcknowledgeWorkflow records that the parent has handled a terminal report
+// and returns how many research results it accepted. Acknowledging a
+// completed workflow accepts, in the same transaction, the read-only research
+// its executions left awaiting review (workflowResearchTasks); editing
+// candidates still go through review and integration. Acknowledging a failed,
+// canceled or interrupted workflow only records the flag: it never accepts
+// tasks, discards edits, resumes members, or replays JavaScript.
+func (r *Runtime) AcknowledgeWorkflow(ctx context.Context, id string) (int, error) {
+	accepted := 0
+	r.parentTools.Lock()
+	defer r.parentTools.Unlock()
+	err := r.update(ctx, func(s *State) error {
+		accepted = 0
 		w := s.Workflows[id]
 		if w == nil {
 			return errors.New("unknown workflow")
@@ -1630,8 +1639,18 @@ func (r *Runtime) AcknowledgeWorkflow(ctx context.Context, id string) error {
 			return errors.New("workflow is still running")
 		}
 		w.Acknowledged = true
+		if w.Status != "completed" {
+			return nil
+		}
+		for _, t := range workflowResearchTasks(s, w) {
+			if err := acceptTask(s, t); err != nil {
+				return err
+			}
+			accepted++
+		}
 		return nil
 	})
+	return accepted, err
 }
 
 // RunWorkflow reserves invoked members to this attempt. Restart is another

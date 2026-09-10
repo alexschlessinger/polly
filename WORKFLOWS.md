@@ -267,8 +267,12 @@ Successful workflows release reservations. Failed or canceled attempts leave
 their interrupted executions `paused · interrupted` for explicit parent/user
 recovery. Completed and failed executions retain their actual outcomes; a failed workflow does not pause completed agents.
 Failed and interrupted reports block settlement until the parent inspects and
-acknowledges them with `workflow_acknowledge` or `/swarm acknowledge-workflow ID`.
-Acknowledgment retains the report and does not accept tasks or discard changes.
+acknowledges them with `workflow_acknowledge` or `/swarm acknowledge-workflow ID`;
+for those reports acknowledgment retains the report and does not accept tasks or
+discard changes. Acknowledging a completed report accepts, in the same
+transaction, the read-only research its script consumed without reviewing and
+reports the count; results the script already reviewed and editing candidates
+with snapshots are untouched.
 Workflows belong to the same current run even when they never start an agent.
 
 ## Worktrees and integration
@@ -482,12 +486,19 @@ or unverifiable findings. It does not certify a clean verdict or accept an
 editing candidate. The audit and fix-review examples perform this bookkeeping
 before branching on findings or allowing parallel failures to abort the scope.
 
+Research the script consumed without reviewing is accepted when the parent
+acknowledges the completed workflow: `workflow_acknowledge({id})` on a
+`completed` report accepts every read-only, snapshot-less task it left awaiting
+review and returns `acknowledged; accepted N research results`. Use
+`swarm_review` on individual results first when a finding needs changes.
+
 After reporting a failed, canceled, or interrupted workflow, the parent can use
 `workflow_acknowledge({id, defer: true, note: "reason for retaining work"})`.
 Acknowledgment and deferral commit together. Deferral retains unresolved tasks,
 results, snapshots, and worktrees without accepting, applying, or canceling them.
 It lets the parent finish without repeatedly prompting about those exact task
-revisions. Acknowledgment without `defer` retains its previous behavior.
+revisions. Acknowledgment without `defer` on a failed, canceled, or interrupted
+report records the acknowledgment only.
 Active work, unanswered requests, approvals, uncertain integrations, and
 unrelated tasks still require attention.
 
