@@ -155,3 +155,75 @@ func TestWholeFamilyCleanupChecksEveryCopyBeforeRemovingAny(t *testing.T) {
 		}
 	}
 }
+
+type countingCoordinationSession struct {
+	sessions.CoordinationSession
+	updates int
+	onFirst func()
+}
+
+func (s *countingCoordinationSession) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {
+	err := s.CoordinationSession.UpdateCoordination(ctx, fn)
+	if err == nil {
+		s.updates++
+		if s.updates == 1 && s.onFirst != nil {
+			s.onFirst()
+		}
+	}
+	return err
+}
+
+// Whole-family cleanup records every retirement in one transaction, removes
+// the copies, then deletes the records in one more; it does not pay two
+// transactions per context.
+func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
+	r, p := applyFixture(t, false)
+	var refs []TaskReference
+	for range 3 {
+		refs = append(refs, submittedInput(t, r, p.Parent, nil))
+	}
+	ctx := context.Background()
+	before, err := r.read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roots []string
+	for _, ref := range refs {
+		roots = append(roots, before.Contexts[ref.Task].Root)
+	}
+	counter := &countingCoordinationSession{CoordinationSession: r.parent}
+	counter.onFirst = func() {
+		state, err := r.read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, ref := range refs {
+			if c := state.Contexts[ref.Task]; c == nil || !c.Retiring || state.Members[ref.Task].Control != MemberControlRetired {
+				t.Fatalf("first commit did not record every retirement: %+v", c)
+			}
+			if _, err := os.Stat(roots[i]); err != nil {
+				t.Fatalf("copy removed before its retirement was durable: %v", err)
+			}
+		}
+	}
+	r.parent = counter
+	if err := r.Cleanup(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Mark, delete, then the whole-family snapshot and preview reset.
+	if counter.updates != 3 {
+		t.Fatalf("whole-family cleanup used %d transactions for 3 contexts, want 3", counter.updates)
+	}
+	after, err := r.read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ref := range refs {
+		if after.Contexts[ref.Task] != nil {
+			t.Fatalf("context %s survived cleanup", ref.Task)
+		}
+		if _, err := os.Stat(roots[i]); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("copy %s survived cleanup: %v", roots[i], err)
+		}
+	}
+}

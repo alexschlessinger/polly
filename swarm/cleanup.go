@@ -62,8 +62,13 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 			}
 		}
 	}
-	for _, c := range contexts {
-		if err := r.retireContext(ctx, c, acceptedTrees[c.ID]); err != nil {
+	// One transaction records every retirement before any file changes, and
+	// one deletes the records after the files are gone.
+	if len(contexts) > 0 {
+		if err := r.markRetiring(ctx, contexts); err != nil {
+			return err
+		}
+		if _, err := r.finishRetirement(ctx, contexts, acceptedTrees); err != nil {
 			return err
 		}
 	}
