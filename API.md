@@ -630,7 +630,10 @@ paths, and worktree directory are configurable through `swarm.Config`.
 Every member context records a private scratch directory
 (`swarm.ExecutionContext.Scratch`): a read-only member's writable path besides
 host temp, exported to its processes as `TMPDIR`, `TMP`, `TEMP`, `GOTMPDIR`, and
-`GOCACHE` (with `GOPROXY=off`).
+`GOCACHE` (with `GOPROXY=off`). A checkout's scratch sits inside its slot; a
+live-tree context claims one of the reserved `scratch/live-NNNN` slots in the
+runtime directory, bounded by `MaxWorktrees` like checkout slots, and every
+other slot is denied by name whether or not it exists yet.
 Use repository-relative paths in `Task` briefs. `Source` selects snapshot input,
 not the member's working directory: tools and ordinary Git inspection run in
 the assigned checkout. Parent files and Git writes stay denied. On macOS the

@@ -39,6 +39,20 @@ type Checkout struct {
 // Previews get one too; it is removed with the slot.
 func (c Checkout) ScratchDir() string { return filepath.Join(filepath.Dir(c.Path), "scratch") }
 
+// SlotPaths names the checkout slots a manager over directory reserves, in
+// order, so policies can deny them before any manager or checkout exists.
+// A non-positive max selects the default of 512.
+func SlotPaths(directory string, max int) []string {
+	if max <= 0 {
+		max = 512
+	}
+	slots := make([]string, max)
+	for n := range slots {
+		slots[n] = filepath.Join(directory, fmt.Sprintf("slot-%04d", n))
+	}
+	return slots
+}
+
 type Preview struct {
 	ID        string   `json:"id"`
 	Parent    Snapshot `json:"parent"`
@@ -198,15 +212,12 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 			return nil, err
 		}
 	}
-	if m.MaxWorktrees <= 0 {
-		m.MaxWorktrees = 512
-	}
-	for n := 0; n < m.MaxWorktrees; n++ {
-		slot := filepath.Join(c.Directory, fmt.Sprintf("slot-%04d", n))
+	m.Slots = SlotPaths(c.Directory, m.MaxWorktrees)
+	m.MaxWorktrees = len(m.Slots)
+	for _, slot := range m.Slots {
 		if err := os.MkdirAll(slot, 0700); err != nil {
 			return nil, err
 		}
-		m.Slots = append(m.Slots, slot)
 		m.reclaimStale(ctx, slot)
 		if _, err := os.Stat(filepath.Join(slot, "owner")); errors.Is(err, os.ErrNotExist) {
 			os.RemoveAll(filepath.Join(slot, "scratch"))

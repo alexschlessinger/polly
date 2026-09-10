@@ -747,9 +747,11 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 	return result, err
 }
 
-// ContextPolicy denies live siblings, their scratch directories and parent
-// files, and grants the member's own scratch. The common Git object store
-// stays readable; filesystem isolation is not source-code secrecy.
+// ContextPolicy denies sibling checkouts, every reserved scratch slot but the
+// member's own, and parent files, and grants the member's own scratch. Slots
+// are denied by name, existing or not, so a sibling started later is covered.
+// The common Git object store stays readable; filesystem isolation is not
+// source-code secrecy.
 func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
 	if c == nil || c.Retiring {
 		return tools.ExecutionContext{}, fail("context_denied", "execution context is retiring")
@@ -761,23 +763,33 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 			return tools.ExecutionContext{}, err
 		}
 	}
+	dir, err := r.runtimeDirectory()
+	if err != nil {
+		return tools.ExecutionContext{}, err
+	}
 	denied := append([]string(nil), r.config.PrivatePaths...)
 	for _, other := range s.Contexts {
 		if other.Root != c.Root {
 			denied = append(denied, other.Root)
-		}
-		// Checkout scratches sit inside slots that are denied below.
-		if other.ID != c.ID && other.Checkout == nil && other.Scratch != "" {
-			denied = append(denied, other.Scratch)
 		}
 	}
 	if c.Checkout != nil {
 		// Every reserved slot is denied individually: sandboxes refuse writes
 		// inside a denied tree even where reads are exempted, so the runtime
 		// directory itself cannot be denied around the member's own checkout.
-		denied = append(denied, r.config.Root)
+		// Live scratches all sit under one directory this member never needs.
+		denied = append(denied, r.config.Root, filepath.Join(dir, "scratch"))
 		for _, slot := range manager.Slots {
 			if slot != filepath.Dir(c.Root) {
+				denied = append(denied, slot)
+			}
+		}
+	} else {
+		// Checkout scratches sit inside the slots; a live member's own
+		// scratch is one reserved live slot, so the others are denied by name.
+		denied = append(denied, worktree.SlotPaths(dir, r.config.MaxWorktrees)...)
+		for _, slot := range r.liveScratchSlots(dir) {
+			if slot != c.Scratch {
 				denied = append(denied, slot)
 			}
 		}

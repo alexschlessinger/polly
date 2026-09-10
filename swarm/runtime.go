@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -405,13 +406,9 @@ func (r *Runtime) makeContext(ctx context.Context, actor string, req AgentReques
 	return c, err
 }
 
-// liveScratch creates the private scratch directory of a context observing a
-// live tree. It lives in the runtime directory, outside the observed root, so
-// the member's own sandbox can grant it while siblings deny it. When the
-// runtime directory sits inside the observed tree (polly run from the home
-// directory that also holds it), a scratch there would fall inside the
-// read-only island, so the context gets none and keeps denying every write.
-func (r *Runtime) liveScratch(root, id string) (string, error) {
+// runtimeDirectory resolves the runtime directory, creating it, so scratch
+// paths match the resolved forms policies compare against.
+func (r *Runtime) runtimeDirectory() (string, error) {
 	dir, err := filepath.Abs(r.config.Directory)
 	if err != nil {
 		return "", err
@@ -419,17 +416,54 @@ func (r *Runtime) liveScratch(root, id string) (string, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	if dir, err = filepath.EvalSymlinks(dir); err != nil {
+	return filepath.EvalSymlinks(dir)
+}
+
+// liveScratchSlots names the reserved scratch directories of live-tree
+// contexts under the runtime directory, existing or not. Like checkout slots,
+// the names are fixed before any member sandbox starts, so a policy denies
+// every future sibling's scratch as well as the current ones. MaxWorktrees
+// bounds them too.
+func (r *Runtime) liveScratchSlots(dir string) []string {
+	max := r.config.MaxWorktrees
+	if max <= 0 {
+		max = 512
+	}
+	slots := make([]string, max)
+	for n := range slots {
+		slots[n] = filepath.Join(dir, "scratch", fmt.Sprintf("live-%04d", n))
+	}
+	return slots
+}
+
+// liveScratch claims the private scratch directory of a context observing a
+// live tree: the lowest free reserved slot in the runtime directory, outside
+// the observed root, so the member's own sandbox can grant it while siblings
+// deny it. When the runtime directory sits inside the observed tree (polly
+// run from the home directory that also holds it), a scratch there would fall
+// inside the read-only island, so the context gets none and keeps denying
+// every write.
+func (r *Runtime) liveScratch(root, id string) (string, error) {
+	dir, err := r.runtimeDirectory()
+	if err != nil {
 		return "", err
 	}
 	if sandbox.PathWithin(dir, root) {
 		return "", nil
 	}
-	scratch := filepath.Join(dir, "scratch-"+id)
-	if err := os.Mkdir(scratch, 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "scratch"), 0700); err != nil {
 		return "", err
 	}
-	return scratch, nil
+	for _, slot := range r.liveScratchSlots(dir) {
+		err := os.Mkdir(slot, 0700)
+		if err == nil {
+			return slot, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+	}
+	return "", errors.New("scratch capacity exhausted; clean up retired contexts")
 }
 
 // pruneLiveScratch removes scratch directories of live-tree contexts no
@@ -440,7 +474,7 @@ func (r *Runtime) pruneLiveScratch(live map[string]bool) {
 	if err != nil {
 		return
 	}
-	entries, _ := filepath.Glob(filepath.Join(dir, "scratch-*"))
+	entries, _ := filepath.Glob(filepath.Join(dir, "scratch", "live-*"))
 	for _, entry := range entries {
 		if !live[entry] {
 			os.RemoveAll(entry)
