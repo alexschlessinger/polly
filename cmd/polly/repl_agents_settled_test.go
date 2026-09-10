@@ -1,7 +1,9 @@
 package main
 
 import (
+	"cmp"
 	"image"
+	"slices"
 	"strings"
 	"testing"
 
@@ -34,12 +36,30 @@ func settledWorkflowState() *swarm.State {
 	return s
 }
 
+// expandedAgentIDs expands every agents disclosure and returns the record
+// IDs with the workflow's record first: the registry iterates in map order
+// and hydration creates records from a map too, so the tests order them.
 func expandedAgentIDs(m *replModel) []int64 {
 	var ids []int64
+	workflow := map[int64]bool{}
 	for _, record := range m.toolDisclosures.all() {
 		record.agentsExpanded = true
 		ids = append(ids, record.id)
+		for _, row := range record.rows {
+			if row.agent.workflowID != "" {
+				workflow[record.id] = true
+			}
+		}
 	}
+	slices.SortFunc(ids, func(a, b int64) int {
+		if workflow[a] != workflow[b] {
+			if workflow[a] {
+				return -1
+			}
+			return 1
+		}
+		return cmp.Compare(a, b)
+	})
 	return ids
 }
 
