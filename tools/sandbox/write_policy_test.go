@@ -144,7 +144,11 @@ func TestWriteAllowedDenyHostTempExcludesHostTemp(t *testing.T) {
 	if err := WriteAllowed(cfg, filepath.Join(scratch, "f")); err != nil {
 		t.Fatalf("scratch write refused: %v", err)
 	}
-	for _, path := range []string{filepath.Join(dir, "f"), filepath.Join(os.TempDir(), "polly-host-temp-probe"), "/tmp/polly-host-temp-probe"} {
+	probes := []string{filepath.Join(dir, "f"), filepath.Join(os.TempDir(), "polly-host-temp-probe")}
+	if filepath.IsAbs("/tmp") {
+		probes = append(probes, "/tmp/polly-host-temp-probe")
+	}
+	for _, path := range probes {
 		if err := WriteAllowed(cfg, path); err == nil || !strings.Contains(err.Error(), "outside the sandbox policy's writable paths") {
 			t.Fatalf("host temp write %s allowed under DenyHostTemp: %v", path, err)
 		}
