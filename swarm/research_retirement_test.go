@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 // execParentTool runs one of the parent's registered tools by name.
@@ -274,23 +276,55 @@ func TestRetirementFinishesLeftoverRetiringContext(t *testing.T) {
 	}
 }
 
+// countingSession counts committed coordination transactions. It wraps the
+// root session before the runtime exists, so no runtime goroutine ever reads
+// a parent field the test is swapping.
+type countingSession struct {
+	sessions.Session
+	coord   sessions.CoordinationSession
+	updates atomic.Int64
+}
+
+func newCountingSession(parent sessions.Session) *countingSession {
+	return &countingSession{Session: parent, coord: parent.(sessions.CoordinationSession)}
+}
+func (s *countingSession) ViewID() string { return s.coord.ViewID() }
+func (s *countingSession) ReadCoordination(ctx context.Context) (*sessions.CoordinationState, error) {
+	return s.coord.ReadCoordination(ctx)
+}
+func (s *countingSession) OpenPublishedArtifact(ctx context.Context, id string) (io.ReadCloser, error) {
+	return s.coord.OpenPublishedArtifact(ctx, id)
+}
+func (s *countingSession) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {
+	err := s.coord.UpdateCoordination(ctx, fn)
+	if err == nil {
+		s.updates.Add(1)
+	}
+	return err
+}
+
 // Retiring several researchers costs one accept, one mark and one delete
-// transaction, however many members there are.
+// transaction, however many members there are. The finishing workflow wakes
+// its released members on their own goroutines, so the count is sampled
+// around the acknowledge rather than installed after RunWorkflow returns.
 func TestRetirementBatchesTransactions(t *testing.T) {
-	r := runtimeTest(t, nilModel(), 1, 3)
+	var counter *countingSession
+	r := runtimeTestWithParent(t, nilModel(), 1, 3, func(parent sessions.Session) sessions.Session {
+		counter = newCountingSession(parent)
+		return counter
+	})
 	ctx := context.Background()
 	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"three",inputSchema:polly.schema.object({}),async run(){for (const n of ["a","b","c"]) await polly.agent({task:n,readOnly:true});return true;}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	counter := &countingCoordinationSession{CoordinationSession: r.parent}
-	r.parent = counter
+	before := counter.updates.Load()
 	out, err := execParentTool(t, r, "workflow_acknowledge", map[string]any{"id": report.ID})
 	if err != nil || out != `"acknowledged; accepted 3 research results; retired 3 members"` {
 		t.Fatalf("acknowledge = %s, %v", out, err)
 	}
-	if counter.updates != 3 {
-		t.Fatalf("acknowledging 3 researchers used %d transactions, want 3", counter.updates)
+	if n := counter.updates.Load() - before; n != 3 {
+		t.Fatalf("acknowledging 3 researchers used %d transactions, want 3", n)
 	}
 }
 
