@@ -109,6 +109,7 @@ type Runtime struct {
 	workflowCancels map[string]context.CancelFunc
 	contextLocks    map[string]*sync.Mutex
 	notify          chan struct{}
+	view            StateCache
 	yield           chan struct{}
 	wg              sync.WaitGroup
 	parentTools     sync.Mutex

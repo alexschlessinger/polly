@@ -68,11 +68,17 @@ func DisplayLabel(lifecycle Lifecycle, detail string, deferred bool) string {
 // ReadStateView observes a root's coordination state without constructing a
 // runtime, repairing records, claiming a lease or reading private transcripts.
 func ReadStateView(ctx context.Context, store sessions.CoordinationViewStore, rootID string) (*State, error) {
+	return new(StateCache).ReadView(ctx, store, rootID)
+}
+
+// ReadView is ReadStateView for a display that polls: an unchanged root
+// returns the previous decode, which the caller must treat as read-only.
+func (c *StateCache) ReadView(ctx context.Context, store sessions.CoordinationViewStore, rootID string) (*State, error) {
 	raw, err := store.ReadCoordinationView(ctx, rootID)
 	if err != nil {
 		return nil, err
 	}
-	return decodeState(raw)
+	return c.decode(raw)
 }
 
 // ExecutionWorkflow also supports pre-binding records for display only.

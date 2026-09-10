@@ -133,7 +133,7 @@ func (r *managedREPL) refreshSwarmActivities() {
 			if runtime != nil {
 				s, err = runtime.State(r.work.ctx)
 			} else {
-				s, err = swarm.ReadStateView(r.work.ctx, viewStore, id)
+				s, err = tab.swarmView.ReadView(r.work.ctx, viewStore, id)
 			}
 			r.postUI(r.work.ctx, func() {
 				tab.swarmLoading = false
