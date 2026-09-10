@@ -211,6 +211,29 @@ func TestExecutionPolicyReadOnlyScratch(t *testing.T) {
 	}
 }
 
+// Executable --schema discovery keeps the operator's host-temp denial along
+// with the other deny rules it retains; the default policy's explicit temp
+// grant does not bring it back.
+func TestSchemaSandboxKeepsDenyHostTemp(t *testing.T) {
+	var configs []sandbox.Config
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		configs = append(configs, cfg)
+		return &mockSandbox{}, nil
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{DenyHostTemp: true}))
+	defer registry.Close()
+	if _, err := registry.newSchemaSandbox(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := configs[len(configs)-1]
+	if !cfg.DenyHostTemp {
+		t.Fatalf("schema discovery dropped denyHostTemp: %+v", cfg)
+	}
+	if err := sandbox.WriteAllowed(cfg, filepath.Join(os.TempDir(), "polly-schema-probe")); err == nil {
+		t.Fatal("host temp stayed writable during schema discovery")
+	}
+}
+
 // An operator's readonly preset keeps denying every write, scratch included.
 func TestDenyWritePresetStillDeniesScratch(t *testing.T) {
 	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{DenyWrite: true}))
