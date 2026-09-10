@@ -205,16 +205,16 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 	r.model.mu.Unlock()
 
 	for _, tc := range []struct {
-		name, member, execution, task, want, wantTask string
-		accepted, active                              bool
+		name, member, execution, task, want, wantTask, agents string
+		accepted, active                                      bool
 	}{
-		{"running", "running", "running", "running", "active", "running", false, true},
-		{"accepted", "idle", "completed", "awaiting_review", "idle · integration pending", "integration pending", true, false},
-		{"unreviewed", "idle", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", false, false},
-		{"retired accepted", "retired", "completed", "awaiting_review", "idle · retired · integration pending", "integration pending", true, false},
-		{"retired unreviewed", "retired", "completed", "awaiting_review", "idle · retired · awaiting review", "awaiting review", false, false},
-		{"done", "idle", "completed", "done", "idle · done", "done", true, false},
-		{"retired done", "retired", "completed", "done", "idle · retired", "done", true, false},
+		{"running", "running", "running", "running", "active", "running", "1 agent running", false, true},
+		{"accepted", "idle", "completed", "awaiting_review", "idle · integration pending", "integration pending", "1 needs decision", true, false},
+		{"unreviewed", "idle", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "1 needs decision", false, false},
+		{"retired accepted", "retired", "completed", "awaiting_review", "idle · retired · integration pending", "integration pending", "1 needs decision", true, false},
+		{"retired unreviewed", "retired", "completed", "awaiting_review", "idle · retired · awaiting review", "awaiting review", "1 needs decision", false, false},
+		{"done", "idle", "completed", "done", "idle · done", "done", "", true, false},
+		{"retired done", "retired", "completed", "done", "idle · retired", "done", "", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Only this display snapshot changes: the runtime, lease, and IDs stay fixed.
@@ -243,8 +243,8 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 			if !strings.Contains(item.label, tc.want) || selected != member.ID {
 				t.Fatalf("picker projection: %+v, selected=%s", item, selected)
 			}
-			if (agents != "") != tc.active {
-				t.Fatalf("task state changed execution liveness: %q", agents)
+			if agents != tc.agents {
+				t.Fatalf("status row = %q, want %q", agents, tc.agents)
 			}
 			header := r.inspectorHeader(180, 20, 0, 0)
 			if !strings.Contains(plainStyledText(header.text), tc.want) || !headerButton(header.buttons, "stop").Empty() != tc.active {

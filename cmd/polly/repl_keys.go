@@ -149,7 +149,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				return false
 			}
 			if m.status.agentsField.hit(mouse.X, mouse.Y, terminalHeight) {
-				r.openSessionsPickerSelected(r.attentionAgentName())
+				r.openAttention()
 				return false
 			}
 			if m.status.contextField.hit(mouse.X, mouse.Y, terminalHeight) {
@@ -387,9 +387,10 @@ func keyBindingGroups() []keyGroup {
 			scrollKey("PgDn", "Page the transcript down · the inspector when focused", func(v int) int { return v / 2 }, "<PageDown>"),
 			scrollKey("", "", func(int) int { return -3 }, "<MouseWheelUp>"),
 			scrollKey("", "", func(int) int { return 3 }, "<MouseWheelDown>"),
-			// The picker opens on the agent that needs attention, when one does.
+			// Ctrl-G lands on what needs attention, when something does: an
+			// approval, else the first decision the swarm needs.
 			action("Ctrl-G", "Open the sessions picker", composerPhase, func(r *managedREPL) {
-				r.openSessionsPickerSelected(r.attentionAgentName())
+				r.openAttention()
 			}, "<C-g>"),
 		}, notes: []keyHelpRow{
 			{"Alt-1..9 Alt-] Alt-[", "Switch workspace"},

@@ -39,8 +39,8 @@ func TestParentLifecycleFollowsTurnOutcome(t *testing.T) {
 		listed       bool
 	}{
 		{name: "no swarm", want: "idle"},
-		{name: "blocked", task: true, want: "paused · blocked", agents: "swarm paused · blocked", listed: true},
-		{name: "interrupted", task: true, cancel: true, want: "paused · interrupted", agents: "swarm paused · interrupted", listed: true},
+		{name: "blocked", task: true, want: "paused · blocked", agents: "1 needs decision", listed: true},
+		{name: "interrupted", task: true, cancel: true, want: "paused · interrupted", agents: "1 needs decision", listed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
