@@ -133,6 +133,10 @@ type ExecutionContext struct {
 	Root     string             `json:"root"`
 	ReadOnly bool               `json:"readOnly"`
 	Checkout *worktree.Checkout `json:"checkout,omitempty"`
+	// Scratch is the member's private writable directory: the slot's scratch
+	// for checkouts, a runtime-directory entry for live trees. Empty on records
+	// written before scratch directories existed; those keep denying all writes.
+	Scratch string `json:"scratch,omitempty"`
 }
 type ParentTurn struct {
 	Intent []messages.ChatMessage `json:"intent,omitempty"`
@@ -735,8 +739,9 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 	return result, err
 }
 
-// ContextPolicy denies live siblings and parent files. The common Git object
-// store stays readable; filesystem isolation is not source-code secrecy.
+// ContextPolicy denies live siblings, their scratch directories and parent
+// files, and grants the member's own scratch. The common Git object store
+// stays readable; filesystem isolation is not source-code secrecy.
 func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
 	if c == nil || c.Retiring {
 		return tools.ExecutionContext{}, fail("context_denied", "execution context is retiring")
@@ -752,6 +757,10 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 	for _, other := range s.Contexts {
 		if other.Root != c.Root {
 			denied = append(denied, other.Root)
+		}
+		// Checkout scratches sit inside slots that are denied below.
+		if other.ID != c.ID && other.Checkout == nil && other.Scratch != "" {
+			denied = append(denied, other.Scratch)
 		}
 	}
 	if c.Checkout != nil {
@@ -770,7 +779,7 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 	if c.Checkout != nil {
 		writes = append(writes, manager.GitDir, c.Root+"/.git")
 	}
-	ec, err := r.config.Registry.ExecutionPolicy(c.Root, c.ReadOnly, denied, writes)
+	ec, err := r.config.Registry.ExecutionPolicy(c.Root, tools.ExecutionGrant{ReadOnly: c.ReadOnly, DeniedReads: denied, DeniedWrites: writes, Scratch: c.Scratch})
 	if err != nil {
 		return ec, err
 	}

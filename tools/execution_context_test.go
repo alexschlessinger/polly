@@ -11,6 +11,9 @@ import (
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
+	"maps"
+	"slices"
+	"strings"
 )
 
 func TestBoundNativeFilesAndReadOnlyPolicy(t *testing.T) {
@@ -28,7 +31,7 @@ func TestBoundNativeFilesAndReadOnlyPolicy(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ec, err := registry.ExecutionPolicy(child, true, []string{parent}, nil)
+	ec, err := registry.ExecutionPolicy(child, ExecutionGrant{ReadOnly: true, DeniedReads: []string{parent}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +77,7 @@ func TestBashDistinguishesSandboxSetupFromCommandExit(t *testing.T) {
 func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *testing.T) {
 	registry := NewToolRegistry(nil, WithSandboxFactory(func(cfg sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }, sandbox.Config{AllowNetwork: true, DenyDNS: true}))
 	defer registry.Close()
-	ec, err := registry.ExecutionPolicy(t.TempDir(), false, nil, nil)
+	ec, err := registry.ExecutionPolicy(t.TempDir(), ExecutionGrant{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +116,7 @@ func TestBoundShellKeepsRestrictionsWithoutToolGrants(t *testing.T) {
 	tool := &ShellTool{Command: "/bin/sh", schema: schema.ToolSchemaFromString(`{"title":"restricted","type":"object","properties":{}}`), sandboxCfg: &overlay}
 	registry := NewToolRegistry([]Tool{tool}, WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }, sandbox.DefaultConfig()))
 	defer registry.Close()
-	ec, err := registry.ExecutionPolicy(root, false, nil, nil)
+	ec, err := registry.ExecutionPolicy(root, ExecutionGrant{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,6 +139,91 @@ func TestBoundShellKeepsRestrictionsWithoutToolGrants(t *testing.T) {
 	for _, path := range config.WritablePaths {
 		if path == extra {
 			t.Fatal("bound shell retained a tool-local write grant")
+		}
+	}
+}
+
+func TestExecutionPolicyReadOnlyScratch(t *testing.T) {
+	canonical := func(path string) string {
+		t.Helper()
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resolved
+	}
+	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	defer registry.Close()
+	if _, err := registry.LoadToolAuto("write_file"); err != nil {
+		t.Fatal(err)
+	}
+	root, scratch := canonical(t.TempDir()), canonical(t.TempDir())
+	ec, err := registry.ExecutionPolicy(root, ExecutionGrant{ReadOnly: true, Scratch: scratch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ec.ReadOnly || ec.Scratch != scratch || ec.Sandbox.DenyWrite || !ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{scratch}) || !slices.Contains(ec.Sandbox.DenyWritePaths, root) {
+		t.Fatalf("read-only scratch policy = %+v", ec)
+	}
+	wantEnv := map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch, "GOTMPDIR": scratch, "GOCACHE": filepath.Join(scratch, "go-build"), "GOPROXY": "off"}
+	if !maps.Equal(ec.Sandbox.Env, wantEnv) {
+		t.Fatalf("scratch env = %v, want %v", ec.Sandbox.Env, wantEnv)
+	}
+	if err := sandbox.WriteAllowed(ec.Sandbox, filepath.Join(root, "f")); err == nil {
+		t.Fatal("read-only root writable in-process")
+	}
+	if err := sandbox.WriteAllowed(ec.Sandbox, filepath.Join(scratch, "f")); err != nil {
+		t.Fatalf("scratch write refused: %v", err)
+	}
+	if err := sandbox.WriteAllowed(ec.Sandbox, filepath.Join(os.TempDir(), "polly-scratch-probe")); err == nil {
+		t.Fatal("host temp writable for a read-only context")
+	}
+	bound, _, err := registry.BindExecutionContext(ec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	writer, _ := bound.Get("write_file")
+	if _, err := writer.Execute(context.Background(), map[string]any{"path": "file.txt", "content": "bad"}); err == nil {
+		t.Fatal("bound write into the read-only root succeeded")
+	}
+	if _, err := writer.Execute(context.Background(), map[string]any{"path": filepath.Join(scratch, "note.txt"), "content": "ok"}); err != nil {
+		t.Fatalf("bound write into the scratch: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(scratch, "note.txt")); err != nil || string(data) != "ok" {
+		t.Fatalf("scratch file = %q %v", data, err)
+	}
+	if _, err := registry.ExecutionPolicy(root, ExecutionGrant{ReadOnly: true, Scratch: filepath.Join(scratch, "missing")}); err == nil || !strings.Contains(err.Error(), "must be an existing directory") {
+		t.Fatalf("missing scratch accepted: %v", err)
+	}
+	nested := filepath.Join(root, "scratch")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.ExecutionPolicy(root, ExecutionGrant{ReadOnly: true, Scratch: nested}); err == nil || !strings.Contains(err.Error(), "outside the execution root") {
+		t.Fatalf("nested scratch accepted: %v", err)
+	}
+	editing, err := registry.ExecutionPolicy(root, ExecutionGrant{Scratch: scratch})
+	if err != nil || editing.ReadOnly || editing.Sandbox.DenyHostTemp || editing.Sandbox.DenyWrite || !slices.Equal(editing.Sandbox.WritablePaths, []string{root, scratch}) || !maps.Equal(editing.Sandbox.Env, wantEnv) {
+		t.Fatalf("editing scratch policy = %+v %v", editing, err)
+	}
+}
+
+// An operator's readonly preset keeps denying every write, scratch included.
+func TestDenyWritePresetStillDeniesScratch(t *testing.T) {
+	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{DenyWrite: true}))
+	defer registry.Close()
+	scratch := t.TempDir()
+	for _, readOnly := range []bool{true, false} {
+		ec, err := registry.ExecutionPolicy(t.TempDir(), ExecutionGrant{ReadOnly: readOnly, Scratch: scratch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ec.Sandbox.DenyWrite || !ec.ReadOnly || ec.Sandbox.Env != nil {
+			t.Fatalf("readOnly=%v: operator denyWrite weakened: %+v", readOnly, ec.Sandbox)
+		}
+		if err := sandbox.WriteAllowed(ec.Sandbox, filepath.Join(scratch, "f")); err == nil || !strings.Contains(err.Error(), "denies all file writes") {
+			t.Fatalf("readOnly=%v: scratch writable under denyWrite: %v", readOnly, err)
 		}
 	}
 }

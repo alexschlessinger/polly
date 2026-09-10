@@ -5,7 +5,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/alexschlessinger/pollytool/workflow"
+	"os"
+	"path/filepath"
 )
 
 // contextCleanupTree proves the copy is unchanged or exactly matches an
@@ -65,6 +68,13 @@ func (r *Runtime) retireContext(ctx context.Context, c *ExecutionContext, tree s
 	if c.Checkout != nil {
 		if err := r.worktrees.Cleanup(finishCtx, *c.Checkout, tree); err != nil {
 			return err
+		}
+	} else if c.Scratch != "" {
+		// A live-tree scratch is runtime-owned only inside the runtime directory.
+		if dir, err := filepath.EvalSymlinks(r.config.Directory); err == nil && sandbox.PathWithin(c.Scratch, dir) {
+			if err := os.RemoveAll(c.Scratch); err != nil {
+				return err
+			}
 		}
 	}
 	return r.update(finishCtx, func(s *State) error { delete(s.Contexts, c.ID); return nil })

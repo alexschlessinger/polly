@@ -18,6 +18,7 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
@@ -252,6 +253,7 @@ func (r *Runtime) prepare(ctx context.Context) error {
 	}
 	// The parent lease fences scheduler ownership. Recovered executions are
 	// paused, retaining uncertain intents; no completed effect is replayed.
+	live := map[string]bool{}
 	err := r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 		if raw.ActorID != raw.ParentID {
 			return errors.New("only a root session can own a swarm")
@@ -262,6 +264,11 @@ func (r *Runtime) prepare(ctx context.Context) error {
 		}
 		if s.Format == nil {
 			s.Format = &FormatRecord{Version: swarmFormatVersion}
+		}
+		for _, c := range s.Contexts {
+			if c.Checkout == nil && c.Scratch != "" {
+				live[c.Scratch] = true
+			}
 		}
 		for _, e := range s.Executions {
 			if e.Status == "running" || e.Status == "waiting" || e.Status == "queued" {
@@ -280,6 +287,7 @@ func (r *Runtime) prepare(ctx context.Context) error {
 	})
 	if err == nil {
 		r.prepared = true
+		r.pruneLiveScratch(live)
 	}
 	return err
 }
@@ -325,6 +333,11 @@ func (r *Runtime) manager(ctx context.Context) (*worktree.Manager, error) {
 }
 
 func (r *Runtime) makeContext(ctx context.Context, actor string, req AgentRequest) (*ExecutionContext, error) {
+	// Preparation prunes unreferenced live scratches; it must run before this
+	// context's scratch exists on disk and before its record is committed.
+	if err := r.prepare(ctx); err != nil {
+		return nil, err
+	}
 	s, err := r.read(ctx)
 	if err != nil {
 		return nil, err
@@ -373,6 +386,11 @@ func (r *Runtime) makeContext(ctx context.Context, actor string, req AgentReques
 		c.Root = checkout.Path
 		c.Checkout = &checkout
 	}
+	if c.Checkout != nil {
+		c.Scratch = c.Checkout.ScratchDir()
+	} else if c.Scratch, err = r.liveScratch(c.Root, c.ID); err != nil {
+		return nil, err
+	}
 	err = r.update(ctx, func(s *State) error {
 		s.Contexts[c.ID] = c
 		if c.Checkout != nil {
@@ -381,7 +399,53 @@ func (r *Runtime) makeContext(ctx context.Context, actor string, req AgentReques
 		}
 		return nil
 	})
+	if err != nil && c.Checkout == nil && c.Scratch != "" {
+		os.RemoveAll(c.Scratch)
+	}
 	return c, err
+}
+
+// liveScratch creates the private scratch directory of a context observing a
+// live tree. It lives in the runtime directory, outside the observed root, so
+// the member's own sandbox can grant it while siblings deny it. When the
+// runtime directory sits inside the observed tree (polly run from the home
+// directory that also holds it), a scratch there would fall inside the
+// read-only island, so the context gets none and keeps denying every write.
+func (r *Runtime) liveScratch(root, id string) (string, error) {
+	dir, err := filepath.Abs(r.config.Directory)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	if dir, err = filepath.EvalSymlinks(dir); err != nil {
+		return "", err
+	}
+	if sandbox.PathWithin(dir, root) {
+		return "", nil
+	}
+	scratch := filepath.Join(dir, "scratch-"+id)
+	if err := os.Mkdir(scratch, 0700); err != nil {
+		return "", err
+	}
+	return scratch, nil
+}
+
+// pruneLiveScratch removes scratch directories of live-tree contexts no
+// record references, such as those a crashed run left behind. Checkout
+// scratches follow their slots instead.
+func (r *Runtime) pruneLiveScratch(live map[string]bool) {
+	dir, err := filepath.EvalSymlinks(r.config.Directory)
+	if err != nil {
+		return
+	}
+	entries, _ := filepath.Glob(filepath.Join(dir, "scratch-*"))
+	for _, entry := range entries {
+		if !live[entry] {
+			os.RemoveAll(entry)
+		}
+	}
 }
 
 // launchIntent is host authority, never model-facing. The zero value is an
@@ -844,7 +908,13 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 			if c.Checkout != nil {
 				system += " Use repository-relative paths and run Git inspection commands in your assigned worktree. HEAD is a parentless snapshot; for history, use git log with the source commit ID supplied in the brief, or request that ID from the parent. Parent/source checkout paths in the brief identify the snapshot input; they do not change your working directory or grant access to parent files. Do not cd or git -C to the parent checkout, override Git routing, or copy Git metadata to work around a denial. Report a blocker if a command in your assigned worktree is denied."
 			}
-			if c.ReadOnly {
+			if c.Scratch != "" {
+				system += " Your private scratch directory is " + c.Scratch + "; it is $TMPDIR and holds the Go build cache (GOCACHE), so heredocs, temporary files, go build -o \"$TMPDIR/bin\" ./..., go vet and go test work there. It is removed with this context; nothing in it is integrated or published."
+			}
+			switch {
+			case c.ReadOnly && c.Scratch != "":
+				system += " This context is read-only: files in " + c.Root + " and anywhere outside your scratch directory cannot be created or changed. Return findings in messages; do not copy the checkout into scratch or probe writes elsewhere."
+			case c.ReadOnly:
 				system += " This context is read-only, including scratch files and temporary directories. Return findings in messages without creating copies or probing writes."
 			}
 			system += "\n\n" + compactRoster(s)

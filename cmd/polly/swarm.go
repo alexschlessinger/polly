@@ -402,6 +402,9 @@ func swarmInspectorText(s *swarm.State, parent *swarm.AgentPresentation, section
 		}
 		if c := s.Contexts[m.Context]; c != nil {
 			fmt.Fprintf(&b, "Directory: %s\n", c.Root)
+			if c.Scratch != "" {
+				fmt.Fprintf(&b, "Scratch: %s\n", c.Scratch)
+			}
 		}
 		if m.Controller != "" {
 			fmt.Fprintf(&b, "Workflow reservation: %s\n", m.Controller)

@@ -33,6 +33,12 @@ type Checkout struct {
 	Path string   `json:"path"`
 	Base Snapshot `json:"base"`
 }
+
+// ScratchDir is the checkout's private scratch directory: a sibling of the
+// tree inside its slot, so sandboxes that deny other slots deny it as well.
+// Previews get one too; it is removed with the slot.
+func (c Checkout) ScratchDir() string { return filepath.Join(filepath.Dir(c.Path), "scratch") }
+
 type Preview struct {
 	ID        string   `json:"id"`
 	Parent    Snapshot `json:"parent"`
@@ -202,6 +208,9 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		}
 		m.Slots = append(m.Slots, slot)
 		m.reclaimStale(ctx, slot)
+		if _, err := os.Stat(filepath.Join(slot, "owner")); errors.Is(err, os.ErrNotExist) {
+			os.RemoveAll(filepath.Join(slot, "scratch"))
+		}
 	}
 	return m, nil
 }
@@ -237,6 +246,7 @@ func (m *Manager) releaseSlot(ctx context.Context, tree string) {
 			m.git(ctx, m.Root, nil, nil, "worktree", "prune")
 		}
 	}
+	os.RemoveAll(filepath.Join(filepath.Dir(tree), "scratch"))
 	os.Remove(filepath.Join(filepath.Dir(tree), "owner"))
 }
 
@@ -656,6 +666,16 @@ func (m *Manager) create(ctx context.Context, s Snapshot) (Checkout, error) {
 	if c.Path == "" {
 		return Checkout{}, errors.New("worktree capacity exhausted; explicitly clean integrated worktrees")
 	}
+	// A reused slot never hands a new occupant an old scratch.
+	scratch := c.ScratchDir()
+	if err := os.RemoveAll(scratch); err != nil {
+		m.releaseSlot(ctx, c.Path)
+		return Checkout{}, err
+	}
+	if err := os.Mkdir(scratch, 0700); err != nil {
+		m.releaseSlot(ctx, c.Path)
+		return Checkout{}, err
+	}
 	if _, err := m.git(ctx, m.Root, nil, nil, "worktree", "add", "--detach", c.Path, s.Commit); err != nil {
 		m.releaseSlot(ctx, c.Path)
 		return Checkout{}, err
@@ -751,6 +771,9 @@ func (m *Manager) Cleanup(ctx context.Context, c Checkout, expectedTree string) 
 		return errors.New("cleanup refuses unintegrated changes")
 	}
 	if _, err = m.git(ctx, m.Root, nil, nil, "worktree", "remove", "--force", c.Path); err != nil {
+		return err
+	}
+	if err = os.RemoveAll(c.ScratchDir()); err != nil {
 		return err
 	}
 	if err = os.Remove(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {

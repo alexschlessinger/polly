@@ -53,7 +53,7 @@ func TestBoundShellRestrictionsSandbox(t *testing.T) {
 	if out, err := parent.Execute(context.Background(), map[string]any{}); err == nil || strings.Contains(out, "restricted-value") {
 		t.Fatalf("parent restriction did not apply: %q %v", out, err)
 	}
-	ec, err := registry.ExecutionPolicy(dir, false, nil, nil)
+	ec, err := registry.ExecutionPolicy(dir, ExecutionGrant{})
 	if err != nil {
 		t.Fatal(err)
 	}
