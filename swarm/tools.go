@@ -328,7 +328,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 			return nil, errors.New("budget grants require explicit user-directed resume through the client")
 		}
 	})
-	register("workflow_run", "Run a JavaScript workflow using the same swarm scheduler and tool authority. Supply source containing polly.defineWorkflow and JSON input. Parent workflows integrate editing task revisions with polly.integrate and can inspect or repair candidates through polly.integration. Children retain their existing permissions.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("workflow_run", "Run a JavaScript workflow using the same swarm scheduler and tool authority. Supply source containing polly.defineWorkflow and JSON input. Parent workflows integrate editing task revisions with polly.integrate and can inspect or repair candidates through polly.integration. Children retain their existing permissions.", schema.Params{"source": schema.S(`JavaScript source text, for example: polly.defineWorkflow({name:"repair",inputSchema:polly.schema.object({}),async run(){return await polly.agent({snapshot:"ID",task:"repair brief"})}}). Agent results contain task, session, context and value; read polly.tasks.read(result.task) for the current task revision.`), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
 		input, err := schema.DecodeJSON(a.String("input"))
 		if err != nil {
 			return nil, err
