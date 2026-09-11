@@ -15,7 +15,7 @@ const (
 )
 
 // coordinationFacts is everything settlement and the decision presentation
-// read, derived once per state. Settlement consumes the complete legacy sets
+// read, derived once per state. Settlement consumes the complete obligation sets
 // in Settle's order; presentation groups and folds them. Neither feeds the
 // other, so a display rule can never change a settlement outcome.
 type coordinationFacts struct {
@@ -25,9 +25,6 @@ type coordinationFacts struct {
 	run *Run
 	// applies are uncertain integration receipts, sorted by ID.
 	applies []*ApplyRecord
-	// wakeMail is settlement's mail blocker: an undelivered request or reply
-	// addressed to the actor.
-	wakeMail bool
 	// requests are addressed requests the actor has not answered, delivered
 	// or not; replies are answers the actor has not read yet.
 	requests []*Mail
@@ -119,7 +116,6 @@ func deriveFacts(s *State, actor string) *coordinationFacts {
 		}
 	}
 	f.uncertainApply = len(f.applies) > 0
-	f.wakeMail = hasWakeMail(s, actor)
 	for _, m := range inbox(s, actor, false) {
 		switch {
 		case m.Kind == "request" && m.ReplyID == "":
@@ -191,16 +187,15 @@ type blocker struct {
 }
 
 // settlementBlockers is the complete blocker set in Settle's order: uncertain
-// integrations, a parent reply, consumed research of completed workflows
-// (one acknowledgment accepts every result, so that step leads the budget and
-// per-task blockers), an exhausted budget, every unsettled task, then
+// integrations, unanswered parent requests or unread replies, pending delivery,
+// an exhausted budget, every unsettled task, then
 // unacknowledged failures. No presentation rule applies here.
 func settlementBlockers(f *coordinationFacts) []blocker {
 	var out []blocker
 	for _, a := range f.applies {
 		out = append(out, blocker{kind: KindIntegration, err: fail("recovery_required", "integration "+a.ID+" has an unconfirmed outcome")})
 	}
-	if f.wakeMail {
+	if len(f.requests) > 0 || len(f.replies) > 0 {
 		out = append(out, blocker{kind: KindMail, err: fail("blocked", "a member is waiting for a parent reply")})
 	}
 	if n := deliveryCount(f); n > 0 {
