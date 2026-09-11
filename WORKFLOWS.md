@@ -280,9 +280,17 @@ Active tools, paused executions, open tasks, unintegrated edits, and uncertain
 applies prevent release. Retained workspaces need inspection and an explicit retry.
 
 `/swarm cleanup ID` or `/swarm cleanup all` removes safe inactive workspaces and
-previews while preserving snapshots. It requires active work to stop and can return
-`release in progress; retry`. Model `swarm_control` with `action:"release"` schedules
-a global pass; `scheduled` is not proof that the named context was eligible or removed.
+previews while preserving snapshots. It requires active members and workflows to
+stop, then waits cancelably for any current automatic release pass. The TUI runs
+cleanup and forget in the background and reports completion in the originating
+workspace. Background release does not count as active agent work or prevent
+closing a workspace; runtime shutdown still joins its worker. Cleanup of an already released member workspace
+succeeds using its saved execution provenance.
+
+Model `swarm_control` with `action:"release"` attempts only the named context and
+returns `context` and `status`: `released`, `ineligible`, `retained`, or `busy`.
+Unreleased outcomes include a `reason`; unexpected file or storage failures remain
+errors. A repeated release of a known released member workspace reports `released`.
 The default capacity is 512 workspace slots, including validation copies; explicit
 release lets workflows reuse slots. Model calls default to 32 concurrent children.
 

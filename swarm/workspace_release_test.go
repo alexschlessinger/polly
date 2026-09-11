@@ -60,7 +60,12 @@ func awaitReleased(t *testing.T, r *Runtime, member string) *State {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return awaitState(t, r, ctx, func(s *State) bool { return s.Members[member].Context == "" && !r.HasActive() })
+	return awaitState(t, r, ctx, func(s *State) bool {
+		r.releaseMu.Lock()
+		releasing := r.releaseRunning
+		r.releaseMu.Unlock()
+		return s.Members[member].Context == "" && !r.HasActive() && !releasing
+	})
 }
 
 func TestDeliveredResearchReleasesAndFollowupRestoresSameMember(t *testing.T) {
@@ -164,6 +169,11 @@ func suspendAutoRelease(t *testing.T, r *Runtime) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	awaitIdle(t, r, ctx)
+	awaitState(t, r, ctx, func(*State) bool {
+		r.releaseMu.Lock()
+		defer r.releaseMu.Unlock()
+		return !r.releaseRunning
+	})
 }
 
 func TestReleaseRecoversAfterFilesGoneAndProtectsReusedSlot(t *testing.T) {

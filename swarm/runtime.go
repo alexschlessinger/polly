@@ -97,6 +97,7 @@ type Runtime struct {
 	releasePending, releaseRunning, releaseStopped bool
 	releaseSignals                                 map[string]chan struct{}
 	releaseFailures                                map[string]int
+	maintenance                                    chan struct{}
 
 	parentTurn      parentTracker
 	gate            *tools.ExecutionGate
@@ -1714,13 +1715,12 @@ func waitState(s *State, member string) string {
 	return state
 }
 
+// HasActive reports executing members and workflows, not background reclamation.
+// Close still joins the release worker before returning.
 func (r *Runtime) HasActive() bool {
-	r.releaseMu.Lock()
-	releasing := r.releaseRunning
-	r.releaseMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return releasing || len(r.active) > 0 || len(r.workflowCancels) > 0
+	return len(r.active) > 0 || len(r.workflowCancels) > 0
 }
 func (r *Runtime) StopMember(ctx context.Context, memberID string) error {
 	for {

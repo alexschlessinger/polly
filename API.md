@@ -609,7 +609,7 @@ trusted; model authority is bound in registered closures, never caller-supplied 
 | Parent lifecycle | `RegisterParentTools`, `RunParent`, `ParentTurnSettled`, `ParentState`, `UpdateDefaults`, `Close` | Checkpoint and settle parent turns; close waits for active applies and their receipts. |
 | Launch | `Agent(ctx, controller, AgentRequest)`, `Spawn(ctx, subagent.Request)` | Shared scheduler, tasks, budgets, and workspace policy; a nonempty controller reserves a workflow member. Ordinary Go hosts use an empty controller. |
 | Follow-up creation | `Followup(ctx, controller, FollowupRequest)` | Creates a linked `*Task` on the completed task's member. **Does not launch it**; the caller uses `Agent` or `Spawn`. Model/JS follow-up operations perform both steps. |
-| Execution control | `Resume(ctx, memberID, grant)`, `ResumeWithIterations(ctx, memberID, additional)`, `StopMember`, `HasActive` | Resume remaining calls or explicitly grant more; stop records `stopped`. `HasActive` includes release work and is not a count of model calls. |
+| Execution control | `Resume(ctx, memberID, grant)`, `ResumeWithIterations(ctx, memberID, additional)`, `StopMember`, `HasActive` | Resume remaining calls or explicitly grant more; stop records `stopped`. `HasActive` reports active members/workflows, excluding background release; `Close` still joins the release worker. |
 | Tasks | `CreateTask`, `ReadTask`, `Claim`, `Submit`, `Review`, `UpdateTask`, `BlockTask`, `CancelTask` | Exact revisions, ownership, dependencies, and immutable completion requirements. |
 | Sharing | `Send`, `Publish` | Addressed mail and explicitly published family knowledge. |
 | Completion | `Integrate`, `Settle` | Integrate editing revisions; settlement preserves every unresolved obligation. |
@@ -793,7 +793,7 @@ absent from child and generic context-bound registries.
 | `swarm_review` | Accept reviewed research, or request changes with feedback. Use integration for editing acceptance. |
 | `swarm_integrate` | Finish exact editing revisions or an existing candidate; inspect its halt if refused. |
 | `swarm_integration` | Advanced `prepare`, `read`, `revise`, `refresh`, `accept`, `apply`, and recovery `reconcile`. |
-| `swarm_control` | `stop`, `resume`, `cancel_task`, `release`; no model budget grants. Release schedules a global pass, not synchronous context deletion. |
+| `swarm_control` | `stop`, `resume`, `cancel_task`, `release`; no model budget grants. Release attempts only the named context and returns `context`, `status` (`released`, `ineligible`, `retained`, `busy`), and a refusal `reason` when applicable. |
 | `send_message`, `read_messages`, `swarm_wait` | Addressed communication and event waiting. |
 | `swarm_publish`, `swarm_search`, `swarm_snapshot`, `swarm_read_artifact` | Publish/search family findings and inspect pinned evidence. |
 | `workflow_run`, `workflow_start` | JavaScript **source text**, not a file path, plus input; foreground or background attempt. |
@@ -874,8 +874,9 @@ from member registries. Rich wrappers preserve `ToolOutput.Media` and `Data`.
 
 Automatic release requires settled tasks, no active/paused execution or invocation,
 no active reservation, and no uncertain apply, plus unchanged/integrated filesystem
-proof. `Cleanup` can require a retry during a release pass. `Forget` removes snapshots
-after safe cleanup and resolved integration obligations. `polly.release` can release
+proof. `Cleanup` waits cancelably for an automatic release pass before taking
+scheduler locks. `Forget` removes snapshots after safe cleanup and resolved
+integration obligations. `polly.release` can release
 its own idle check copies or settled members while retaining its reservation;
 repeated release returns `{released, dormant:true}` only to the historical owner.
 Unintegrated changes or repeated cleanup failures produce a retained context with

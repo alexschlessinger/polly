@@ -303,7 +303,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		}
 		return result, nil
 	})
-	register("swarm_control", "Stop or explicitly resume a member using its remaining allowance, cancel a task, or schedule release of eligible workspaces. Release preserves the member and its task provenance. Iteration exhaustion retains saved work and requires a user-directed client grant. Extra execution budgets also require a user-directed client control.", schema.Params{"action": schema.S("stop, resume, cancel_task or release"), "id": schema.S("stop/resume: member ID; cancel_task: task ID; release: context ID from list_agents.items[].context, not the execution ID")}, []string{"action"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("swarm_control", "Stop or explicitly resume a member using its remaining allowance, cancel a task, or release the named eligible workspace. Release returns context and status (released, ineligible, retained, or busy), with a reason when not released; it preserves the member and task provenance. Iteration exhaustion retains saved work and requires a user-directed client grant. Extra execution budgets also require a user-directed client control.", schema.Params{"action": schema.S("stop, resume, cancel_task or release"), "id": schema.S("stop/resume: member ID; cancel_task: task ID; release: context ID from list_agents.items[].context, not the execution ID")}, []string{"action"}, func(ctx context.Context, a tools.Args) (any, error) {
 		switch a.String("action") {
 		case "stop":
 			return mutationResult("stopped", r.StopMember(ctx, a.String("id")))
@@ -315,15 +315,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		case "cancel_task":
 			return mutationResult("canceled", r.CancelTask(ctx, a.String("id")))
 		case "release":
-			s, err := r.read(ctx)
-			if err != nil {
-				return nil, err
-			}
-			if s.Contexts[a.String("id")] == nil {
-				return nil, fmt.Errorf("unknown context %q; use the context from list_agents, not an execution ID", a.String("id"))
-			}
-			r.scheduleRelease()
-			return "scheduled", nil
+			return r.releaseWorkspace(ctx, a.String("id"))
 		default:
 			return nil, errors.New("budget grants require explicit user-directed resume through the client")
 		}

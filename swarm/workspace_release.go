@@ -135,7 +135,102 @@ func (r *Runtime) scheduleRelease() {
 	}()
 }
 
+// Maintenance serializes automatic release, targeted release, cleanup and forget.
+// Acquire it before context or scheduler locks so queued cleanup never prevents
+// the worker from obtaining launchMu/parentTools to finish its current pass.
+func (r *Runtime) lockMaintenance(ctx context.Context) (func(), error) {
+	r.releaseMu.Lock()
+	if r.maintenance == nil {
+		r.maintenance = make(chan struct{}, 1)
+	}
+	ch := r.maintenance
+	r.releaseMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := r.ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-r.ctx.Done():
+		return nil, r.ctx.Err()
+	}
+}
+
+func releasedWorkspace(s *State, id string) bool {
+	for _, e := range s.Executions {
+		if e.Workspace == id {
+			return true
+		}
+	}
+	return false
+}
+
+// releaseWorkspace reports the selected workspace's actual outcome. It does not
+// schedule a family-wide pass or turn an eligibility refusal into success.
+func (r *Runtime) releaseWorkspace(ctx context.Context, id string) (any, error) {
+	// Like the automatic worker, explicit release must finish its durable
+	// removal receipt before Close allows the parent lease to be closed.
+	r.launchMu.Lock()
+	if r.closing {
+		r.launchMu.Unlock()
+		return nil, context.Canceled
+	}
+	r.wg.Add(1)
+	r.launchMu.Unlock()
+	defer r.wg.Done()
+	unlock, err := r.lockMaintenance(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	s, err := r.read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if id == "" || s.Contexts[id] == nil && !releasedWorkspace(s, id) {
+		return nil, fmt.Errorf("unknown context %q; use the context from list_agents, not an execution ID", id)
+	}
+	if s.Contexts[id] != nil {
+		if _, err := r.releaseWorkspacesLocked(ctx, id); err != nil {
+			return nil, err
+		}
+		s, err = r.read(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	c := s.Contexts[id]
+	if c == nil {
+		return map[string]any{"context": id, "status": "released"}, nil
+	}
+	if c.Release == WorkspaceRetained {
+		return map[string]any{"context": id, "status": "retained", "reason": c.Reason}, nil
+	}
+	r.mu.Lock()
+	ok, why := releaseEligible(s, c, r.active, func(id string) bool { return r.workflowCancels[id] != nil })
+	r.mu.Unlock()
+	status := "ineligible"
+	if ok || c.Release == WorkspaceReleasing {
+		status, why = "busy", "workspace is in use by another operation; retry when it finishes"
+	}
+	return map[string]any{"context": id, "status": status, "reason": why}, nil
+}
+
 func (r *Runtime) releaseWorkspaces(ctx context.Context) (int, error) {
+	unlock, err := r.lockMaintenance(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	return r.releaseWorkspacesLocked(ctx, "")
+}
+
+func (r *Runtime) releaseWorkspacesLocked(ctx context.Context, only string) (int, error) {
 	s, err := r.read(ctx)
 	if err != nil {
 		return 0, err
@@ -154,6 +249,9 @@ func (r *Runtime) releaseWorkspaces(ctx context.Context) (int, error) {
 		}
 	}()
 	for _, id := range sortedInspectionIDs(s.Contexts) {
+		if only != "" && id != only {
+			continue
+		}
 		c := s.Contexts[id]
 		r.mu.Lock()
 		ok, _ := releaseEligible(s, c, r.active, func(id string) bool { return r.workflowCancels[id] != nil })

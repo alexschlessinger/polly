@@ -142,7 +142,7 @@ func TestReviewToolGuidanceForReleasedOrMissingProvenance(t *testing.T) {
 	}
 }
 
-func TestReleaseToolSchedulesWithoutCompletingTask(t *testing.T) {
+func TestReleaseToolRefusesWithoutCompletingTask(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	result, err := r.Spawn(ctx, subagent.Request{Task: "research", ReadOnly: true})
@@ -156,12 +156,12 @@ func TestReleaseToolSchedulesWithoutCompletingTask(t *testing.T) {
 	}
 	control, _, _ := r.config.Registry.GetIfAllowed("swarm_control")
 	out, err := control.Execute(ctx, map[string]any{"action": "release", "id": state.Members[result.Session].Context})
-	if err != nil || out != `"scheduled"` {
+	if err != nil || !strings.Contains(out, `"status": "ineligible"`) {
 		t.Fatalf("cleanup: %q %v", out, err)
 	}
 	state, err = r.State(ctx)
 	if err != nil || state.Members[result.Session].Control != MemberControlEnabled {
-		t.Fatalf("scheduling changed member control: %+v %v", state, err)
+		t.Fatalf("release refusal changed member control: %+v %v", state, err)
 	}
 }
 

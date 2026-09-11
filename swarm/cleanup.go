@@ -11,6 +11,11 @@ import (
 // Snapshot references and task provenance survive cleanup; Forget ends their
 // restoration lifetime. Findings and transcript history remain in SQLite.
 func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
+	unlock, err := r.lockMaintenance(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	r.launchMu.Lock()
 	defer r.launchMu.Unlock()
 	r.parentTools.Lock()
@@ -19,11 +24,8 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 }
 
 func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
-	r.releaseMu.Lock()
-	releasing := r.releaseRunning
-	r.releaseMu.Unlock()
-	if releasing {
-		return errors.New("release in progress; retry")
+	if r.closing {
+		return context.Canceled
 	}
 	if r.HasActive() {
 		return errors.New("stop active members and workflows before cleanup")
@@ -39,6 +41,9 @@ func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
 	}
 
 	if contextID != "" && s.Contexts[contextID] == nil {
+		if releasedWorkspace(s, contextID) {
+			return nil
+		}
 		return fmt.Errorf("unknown execution context %q; cleanup requires the context field from list_agents, not an execution ID", contextID)
 	}
 	contexts := []*ExecutionContext{}
@@ -124,6 +129,11 @@ func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
 // preserves history, but restoring a forgotten snapshot requires an explicit
 // new source. Integration obligations must be resolved before refs can go.
 func (r *Runtime) Forget(ctx context.Context) error {
+	unlock, err := r.lockMaintenance(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	r.launchMu.Lock()
 	defer r.launchMu.Unlock()
 	r.parentTools.Lock()

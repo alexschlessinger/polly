@@ -107,10 +107,7 @@ func registerSwarmCommands(r *replCommandRegistry) {
 		runtime := ctx.state.swarm
 		opCtx := ctx.operationContext()
 		if len(args) == 2 && args[1] == "forget" {
-			if err := runtime.Forget(opCtx); err != nil {
-				return replCommandResult{err: err}
-			}
-			return replCommandResult{err: ctx.replyLine("swarm snapshot references forgotten; original snapshots can no longer be restored")}
+			return replCommandResult{err: ctx.maintainSwarm("swarm forget", "swarm snapshot references forgotten; original snapshots can no longer be restored", runtime.Forget)}
 		}
 		if len(args) > 2 {
 			var err error
@@ -123,7 +120,7 @@ func registerSwarmCommands(r *replCommandRegistry) {
 				if id == "all" {
 					id = ""
 				}
-				err = runtime.Cleanup(opCtx, id)
+				return replCommandResult{err: ctx.maintainSwarm("swarm cleanup", "swarm workspace cleanup complete", func(opCtx context.Context) error { return runtime.Cleanup(opCtx, id) })}
 			case "cancel-workflow":
 				err = runtime.CancelWorkflow(args[2])
 			case "acknowledge-workflow":

@@ -53,6 +53,8 @@ type replCommandContext struct {
 	spawnAgent  func(subagent.Request)
 	inspectView func(string)
 	openSwarm   func(string)
+	// Maintenance may wait for automatic release; the TUI runs it off-screen.
+	swarmMaintenance func(label, success string, run func(context.Context) error) error
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -221,10 +223,11 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 	}
 	settings := r.sessionSettings()
 	return &replCommandContext{
-		config:   cfg,
-		settings: settings,
-		state:    r.state,
-		registry: defaultReplCommands,
+		config:           cfg,
+		settings:         settings,
+		state:            r.state,
+		registry:         defaultReplCommands,
+		swarmMaintenance: r.startSwarmMaintenance,
 		reply: func(line string) error {
 			r.model.appendNoticeLine(line)
 			return nil

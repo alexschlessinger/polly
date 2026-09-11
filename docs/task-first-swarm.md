@@ -145,6 +145,6 @@ These are proposals with no delivery promise and no additional current API:
   applying a task to the local parent, and this design does not add automatic publishing.
 - **Go workspace naming.** Renaming `ExecutionContext` can improve vocabulary but
   changes no lifecycle; the current record kind remains `context`.
-- **Additional human integration controls and release ergonomics.** A `/swarm integrate`
-  command or more precise release scheduling/results would need their own contract.
+- **Additional human integration controls.** A `/swarm integrate`
+  command would need its own contract.
   The current normal surface is the parent integration tool or workflow API.
