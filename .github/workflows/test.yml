@@ -4,14 +4,21 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        os: [ubuntu-latest, macos-latest]
+    # Forks retain hosted runners. Disable the corresponding repository
+    # variable to route future runs back to GitHub when the Mac is unavailable.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && ((matrix.os == 'macos-latest' && vars.POLLY_LOCAL_MACOS == 'true' && fromJSON('["self-hosted","macOS","ARM64","polly-local-macos"]')) || (matrix.os == 'ubuntu-latest' && vars.POLLY_LOCAL_LINUX == 'true' && fromJSON('["self-hosted","Linux","ARM64","polly-local-linux"]'))) || matrix.os }}
+    timeout-minutes: 30
     env:
       CGO_ENABLED: '0'
     steps:
@@ -20,9 +27,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: ${{ runner.environment != 'self-hosted' }}
 
       - name: Install Linux sandbox backend
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap
@@ -35,56 +43,33 @@ jobs:
           /usr/bin/bwrap --ro-bind / / --dev /dev --proc /proc \
             --unshare-pid --die-with-parent /usr/bin/true
 
-      - run: go build ./...
-
-      - run: go vet ./...
-
-      - name: Sandbox security tests
-        if: runner.os != 'Windows'
-        run: go test ./tools ./tools/sandbox ./swarm ./worktree ./cmd/polly
-        env:
-          POLLYTOOL_REQUIRE_SANDBOX_TESTS: '1'
-
-      - run: go test ./...
+      - name: Build, vet, and test including required sandbox tests
+        run: .github/ci.sh test
 
   race:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.POLLY_LOCAL_LINUX == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","Linux","ARM64","polly-local-linux"]') || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: ${{ runner.environment != 'self-hosted' }}
 
       - name: Race-sensitive storage, conversation, and coordination tests
-        run: go test -race ./tools ./sessions ./cmd/polly ./llm ./subagent ./swarm ./workflow ./worktree
+        run: .github/ci.sh race
 
   cgo-free-build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: linux
-            arch: amd64
-          - os: linux
-            arch: arm64
-          - os: darwin
-            arch: amd64
-          - os: darwin
-            arch: arm64
-          - os: windows
-            arch: amd64
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.POLLY_LOCAL_LINUX == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","Linux","ARM64","polly-local-linux"]') || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: ${{ runner.environment != 'self-hosted' }}
 
-      - name: Build ${{ matrix.os }}/${{ matrix.arch }} without CGO
-        env:
-          CGO_ENABLED: '0'
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
-        run: go build ./cmd/polly
+      - name: Build all five targets without CGO
+        run: .github/ci.sh cross
