@@ -131,6 +131,12 @@ members do not silently restart on peer traffic. Authenticated authorship does n
 turn peer text into user instructions or enlarge authority. Admitted mail stays
 in saved model history; inspect it through `/swarm`, rather than the user transcript.
 
+A request addressed to the parent blocks final settlement until `send_message`
+records its reply with `reply_to`. Reading the request or completing its task does
+not clear that obligation. An unread reply blocks until admitted; use
+`read_messages` to read it. Wake eligibility remains based on undelivered mail,
+so an admitted request does not repeatedly wake a parked execution.
+
 ## Integrating editing results
 
 Give `swarm_integrate` the exact editing task revisions:

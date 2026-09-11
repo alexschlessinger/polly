@@ -136,12 +136,15 @@ all obligations; presentation groups them into decisions, working items, and
 counts. Running workflows fold their own members; candidate inputs fold into one
 integration decision. That grouping never changes settlement.
 
-Settlement prioritizes uncertain applies and undelivered parent requests/replies,
-then delivery, budget, unresolved tasks, and terminal workflow failures. It waits
-while execution or host work can progress. Purely parked members cannot make an
-answer safe by themselves; unresolved work needs an event or decision. The harness
-repairs missing notices and accepted unchanged completion. An unchanged notice
-scan performs no coordination write, so it cannot wake its own wait loop.
+Settlement prioritizes uncertain applies, unanswered parent requests, and unread
+replies, then delivery, budget, unresolved tasks, and terminal workflow failures.
+Reading a request does not clear its reply obligation, even after its task is done;
+only recording the reply does. Wake eligibility still uses undelivered mail.
+Settlement waits while execution or host work can progress. Purely parked members
+cannot make an answer safe by themselves; unresolved work needs an event or
+decision. The harness repairs missing notices and accepted unchanged completion.
+An unchanged notice scan performs no coordination write, so it cannot wake its
+own wait loop.
 
 The implementation boundaries are [decisions.go](../swarm/decisions.go),
 [lifecycle.go](../swarm/lifecycle.go), [runtime.go](../swarm/runtime.go),
