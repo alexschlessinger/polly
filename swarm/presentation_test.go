@@ -187,11 +187,16 @@ func TestPresentationBuckets(t *testing.T) {
 			t.Fatalf("next = %q", p.Next)
 		}
 		f := deriveFacts(x.s, "parent")
-		if f.wakeMail || len(settlementBlockers(f)) != 1 || settlementBlockers(f)[0].kind != KindTask {
-			t.Fatal("settlement changed: delivered mail no longer wakes, the parked task blocks")
+		blockers := settlementBlockers(f)
+		if hasWakeMail(x.s, "parent") || len(blockers) != 2 || blockers[0].kind != KindMail || blockers[1].kind != KindTask {
+			t.Fatalf("admitted mail must not wake, but its unanswered request and parked task must block: %+v", blockers)
 		}
 		x.s.Messages["ask"].ReplyID = "answer"
 		expectLists(t, x.present(), "task:T", "")
+		blockers = settlementBlockers(deriveFacts(x.s, "parent"))
+		if len(blockers) != 1 || blockers[0].kind != KindTask {
+			t.Fatalf("only the parked task must block after the reply: %+v", blockers)
+		}
 	})
 	t.Run("unread reply", func(t *testing.T) {
 		x := seedState()
