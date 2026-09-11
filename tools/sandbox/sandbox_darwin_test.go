@@ -14,11 +14,36 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+func TestFiniteCancellationDarwinSessionAndAttributes(t *testing.T) {
+	for _, sb := range []Sandbox{nil, stubSandbox{}, &darwinSandbox{sandboxExecPath: darwinSandboxExecPath}} {
+		cmd := exec.CommandContext(context.Background(), "sh", "-c", "exit 0")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setpgid: true, Noctty: true}
+		cleanup, err := WrapFiniteCmdManaged(sb, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cleanup(); err != nil {
+			t.Fatal(err)
+		}
+		if !cmd.SysProcAttr.Setsid || cmd.SysProcAttr.Setpgid || !cmd.SysProcAttr.Noctty {
+			t.Fatalf("private session or unrelated attributes changed: %+v", cmd.SysProcAttr)
+		}
+	}
+	for _, attr := range []*syscall.SysProcAttr{{Pgid: syscall.Getpgrp()}, {Foreground: true}} {
+		cmd := exec.CommandContext(context.Background(), "sh", "-c", "exit 0")
+		cmd.SysProcAttr = attr
+		if _, err := WrapFiniteCmdManaged(nil, cmd); err == nil {
+			t.Fatalf("external process group accepted: %+v", attr)
+		}
+	}
+}
 
 func skipIfNoSandboxExec(t *testing.T) {
 	t.Helper()

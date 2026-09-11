@@ -14,10 +14,40 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
 )
+
+func TestFiniteCancellationLinuxNamespaceAndGroups(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", "exit 0")
+	if err := configureFiniteCancellation(&linuxSandbox{}, cmd); err != nil {
+		t.Fatal(err)
+	}
+	if cmd.SysProcAttr != nil {
+		t.Fatal("bubblewrap was assigned a host process group")
+	}
+	for _, session := range []bool{false, true} {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: session, Noctty: true}
+		cleanup, err := WrapFiniteCmdManaged(stubSandbox{}, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cleanup(); err != nil {
+			t.Fatal(err)
+		}
+		if cmd.SysProcAttr.Setsid != session || cmd.SysProcAttr.Setpgid == session || !cmd.SysProcAttr.Noctty {
+			t.Fatalf("private group or unrelated attributes changed: %+v", cmd.SysProcAttr)
+		}
+	}
+	for _, attr := range []*syscall.SysProcAttr{{Pgid: syscall.Getpgrp()}, {Foreground: true}} {
+		cmd.SysProcAttr = attr
+		if _, err := WrapFiniteCmdManaged(nil, cmd); err == nil {
+			t.Fatalf("external process group accepted: %+v", attr)
+		}
+	}
+}
 
 func skipIfNoBwrap(t *testing.T) {
 	t.Helper()

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -81,7 +80,7 @@ func newShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool,
 		schemaJSON, err = tool.runCommand("--schema", nil)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to get schema from %s: %v", command, err)
+		return nil, fmt.Errorf("failed to get schema from %s: %w", command, err)
 	}
 
 	// Extract the sandbox spec before parsing the standard schema.
@@ -153,40 +152,31 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 	// Convert args to JSON
 	argsJSON, err := json.Marshal(args)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal arguments: %v", err)
+		return "", fmt.Errorf("failed to marshal arguments: %w", err)
 	}
-
-	// Run command with --execute using context for timeout
-	cmd := exec.CommandContext(ctx, s.Command, "--execute", string(argsJSON))
-	cmd.Dir = s.workDir
-
-	closeSandboxFiles, err := sandbox.WrapCmdManaged(s.sandbox, cmd)
-	if err != nil {
-		return "", fmt.Errorf("sandbox: %w", err)
-	}
-	defer func() { _ = closeSandboxFiles() }()
 
 	output := newBoundedBuffer(capturedOutputLimit)
-	cmd.Stdout = output
-	cmd.Stderr = output
-	err = cmd.Run()
+	state, err := runFiniteCommand(ctx, s.sandbox, finiteCommand{
+		name: s.Command, args: []string{"--execute", string(argsJSON)}, dir: s.workDir,
+		stdout: output, stderr: output,
+	})
 
 	// Log execution details
-	if cmd.ProcessState != nil {
+	if state != nil {
 		name := ""
 		if s.schema != nil {
 			name = s.schema.Title()
 		}
 		slog.Debug("shell_tool_completed",
 			"tool_name", name,
-			"user_time", cmd.ProcessState.UserTime(),
-			"system_time", cmd.ProcessState.SystemTime(),
-			"exit_code", cmd.ProcessState.ExitCode())
+			"user_time", state.UserTime(),
+			"system_time", state.SystemTime(),
+			"exit_code", state.ExitCode())
 	}
 
 	result := strings.TrimSpace(output.String())
 	if err != nil {
-		return result, fmt.Errorf("tool execution failed: %v (output: %s)", err, result)
+		return result, fmt.Errorf("tool execution failed: %w (output: %s)", err, result)
 	}
 
 	return result, nil
@@ -205,24 +195,19 @@ const (
 func (s *ShellTool) runCommand(arg string, sb sandbox.Sandbox) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), schemaDiscoveryTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, s.Command, arg)
-	closeSandboxFiles, err := sandbox.WrapCmdManaged(sb, cmd)
-	if err != nil {
-		return "", fmt.Errorf("sandbox: %w", err)
-	}
-	defer func() { _ = closeSandboxFiles() }()
 	stdout := newBoundedBuffer(schemaOutputLimit)
 	stderr := newBoundedBuffer(schemaOutputLimit)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
+	_, err := runFiniteCommand(ctx, sb, finiteCommand{
+		name: s.Command, args: []string{arg}, stdout: stdout, stderr: stderr,
+	})
+	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("%s %s timed out after %v", s.Command, arg, schemaDiscoveryTimeout)
+			return stdout.String(), fmt.Errorf("%s %s timed out after %v: %w", s.Command, arg, schemaDiscoveryTimeout, err)
 		}
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("%w: %s", err, msg)
+			return stdout.String(), fmt.Errorf("%w: %s", err, msg)
 		}
-		return "", err
+		return stdout.String(), err
 	}
 	if stdout.Truncated() {
 		return "", fmt.Errorf("%s %s produced more than %d bytes", s.Command, arg, schemaOutputLimit)

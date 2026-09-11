@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/safefile"
 	"github.com/alexschlessinger/pollytool/schema"
@@ -525,20 +524,10 @@ func indexedSearchEmbedding(indexDir, root string) (string, bool, error) {
 }
 
 func runIndexedSearchCommand(ctx context.Context, sb sandbox.Sandbox, binary, root string, args []string) (stdout, stderr string, truncated bool, err error) {
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Dir = root
-	cmd.WaitDelay = time.Second
-	cleanup, err := sandbox.WrapCmdManaged(sb, cmd)
-	if err != nil {
-		return "", "", false, err
-	}
-	defer func() { _ = cleanup() }()
 	out, errOut := newBoundedBuffer(searchMaxBytes), newBoundedBuffer(4096)
-	cmd.Stdout, cmd.Stderr = out, errOut
-	err = cmd.Run()
-	if ctx.Err() != nil {
-		err = ctx.Err()
-	}
+	_, err = runFiniteCommand(ctx, sb, finiteCommand{
+		name: binary, args: args, dir: root, stdout: out, stderr: errOut,
+	})
 	return out.String(), strings.TrimSpace(errOut.String()), out.Truncated(), err
 }
 
