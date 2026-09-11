@@ -154,8 +154,19 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ### Transcript
 
 Tool calls: a collapsed `▸ N tools` row per batch; click for details,
-click a detail for the inspector. `--thinking`: collapsed `▸ thought` row with
-live timer, `Ctrl-O` for the tail. Both reopen after reload. Interrupted turns
+click a detail for the inspector. Expanded tool calls fit one line at the current
+pane width, with short labels such as `read`, `edit`, and `list`. File paths are
+relative to the conversation's known workspace; long paths shorten from the
+middle, keeping filenames and read ranges visible. `$` introduces Bash commands,
+and `…` marks folded setup or omitted text. Status and timing take priority over
+output counts. Tool state and elapsed time sit at the right edge of the
+inspector's title row. The Bash inspector folds recognizable leading `cd` and
+`export` steps into a collapsed `setup` row; click it to reveal the full setup. Expansion
+is remembered when resizing or revisiting that call. Short pipelines stay on one
+line when they fit; longer commands and output wrap at word or path boundaries
+with indented continuations. Ambiguous shell setup stays visible. Stored calls and
+output remain unchanged. `--thinking`: collapsed
+`▸ thought` row with live timer, `Ctrl-O` for the tail. Both reopen after reload. Interrupted turns
 keep every completed iteration and tool result. Agents: a collapsed `▸ N agents`
 row per batch; expanded, a workflow lists only members that are busy, paused or
 need a decision; its heading counts the decisions it owes and the finished ones

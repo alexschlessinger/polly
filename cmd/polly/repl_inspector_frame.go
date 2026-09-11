@@ -85,10 +85,16 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	m := v.model
 	offset := 0
 	for _, block := range m.visual.blocks {
-		if block.key == "initial-prompt" && viewport.contains(offset) {
+		action := ""
+		switch block.key {
+		case "initial-prompt":
+			action = "prompt"
+		case "bash-setup":
+			action = "bash-setup"
+		}
+		if action != "" && viewport.contains(offset) {
 			row := viewport.screenY(offset)
-			r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, row, x+g.width, row+1), "prompt"})
-			break
+			r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, row, x+g.width, row+1), action})
 		}
 		offset += len(block.rows)
 	}
@@ -135,15 +141,18 @@ func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspec
 			if r == nil || !r.expanded {
 				continue
 			}
-			for _, row := range ordinaryToolRows(r.rows) {
-				if row.line == "" {
+			rows := ordinaryToolRows(r.rows)
+			rows = rows[max(0, len(rows)-toolPreviewRows):]
+			for _, row := range rows {
+				line := row.inlineLineAt(v.width, m.toolBaseDir)
+				if line == "" {
 					continue
 				}
-				n := strings.Index(block.text[searchAt:], row.line)
+				n := strings.Index(block.text[searchAt:], line)
 				if n >= 0 {
 					n += searchAt
-					add(n, n+len(row.line), toolViewKind, row.inspectionKey)
-					searchAt = n + len(row.line)
+					add(n, n+len(line), toolViewKind, row.inspectionKey)
+					searchAt = n + len(line)
 				}
 			}
 		}

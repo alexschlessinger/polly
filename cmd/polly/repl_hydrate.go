@@ -197,7 +197,7 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 	}
 	if pick >= 0 {
 		h.toolRows[pick].hydrateAgentResult(msg)
-		h.toolRows[pick].line = hydratedToolLine(h.toolRows[pick].label, msg)
+		h.toolRows[pick].setLine(hydratedInlineTool(msg))
 		h.toolRows[pick].inspectionImages = inspectionImages
 		h.toolRows[pick].settled = true
 	}
@@ -251,7 +251,7 @@ func (h *historyHydrator) flushTools() {
 	} else {
 		for i := range h.toolRows {
 			if h.toolRows[i].line == "" {
-				h.toolRows[i].line = pendingToolLine(h.toolRows[i].label)
+				h.toolRows[i].setLine(inlineToolLine{glyph: "·", tone: "muted", modifier: "bold"})
 			}
 		}
 		h.tools.rows = append(h.tools.rows, h.toolRows...)
@@ -353,11 +353,11 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 		}
 		if displayCall.Denied {
 			row.finishAgentCall(messages.ChatMessageToolCall{}, true, nil)
-			row.line = toolDeniedLine(name)
+			row.setLine(inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: "denied"})
 			row.images = nil
 			row.settled = true
 		} else if row.line == "" {
-			row.line = pendingToolLine(name)
+			row.setLine(inlineToolLine{glyph: "·", tone: "muted", modifier: "bold"})
 		}
 		ordered = append(ordered, row)
 	}

@@ -83,6 +83,7 @@ func readOnlyConversationState(config *Config, store sessions.SessionStore, info
 func prepareChildDisplay(info *sessions.SessionView, cfg *Config, width int) *replModel {
 	m := newReplModel()
 	m.hidden, m.quiet = true, cfg.Quiet
+	m.toolBaseDir = "" // a saved conversation need not belong to this process's cwd
 	settings := cfg.Launch.clone()
 	for _, spec := range settingSpecs {
 		if spec.fromMeta != nil {
@@ -116,6 +117,7 @@ func (r *managedREPL) refreshChildView(tab *replTab, activity *agentActivity, ow
 		var cached *cachedChildView
 		if err == nil && !info.Unchanged {
 			next = prepareChildDisplay(info, r.config, width)
+			resolveToolBaseDir(r.work.ctx, store, info, next)
 			if next.hasAgentRows() {
 				if summaries, e := tabStoreSummaries(store, r.work.ctx); e == nil {
 					next.hydrateAgentSessions(info.Metadata.Name, summaries)
@@ -188,6 +190,8 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transcript, m.markdownPending, m.visual = next.transcript, next.markdownPending, next.visual
+	m.toolBaseDir, m.inspectorWrap = next.toolBaseDir, next.inspectorWrap
+	m.bashInspector, m.bashSetupExpanded = next.bashInspector, next.bashSetupExpanded
 	m.displayCleared = next.displayCleared
 	m.userPromptSeen = next.userPromptSeen
 	m.status = next.status

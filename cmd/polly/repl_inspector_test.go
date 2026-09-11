@@ -1205,8 +1205,8 @@ func TestNewOutputBaselineIgnoresStaleModelWhileLoading(t *testing.T) {
 	}
 }
 
-// A bash call's body shows the command it runs, exactly as the approval
-// block did, rather than the JSON envelope around it.
+// A Bash call's body formats the command as shell, preserving the original
+// call in the inspection source rather than showing the JSON envelope.
 func TestToolBodyShowsBashCommandNotJSON(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	call := messages.ChatMessageToolCall{ID: "one", Name: "bash", Arguments: `{"command":"ls -la /tmp | head -3\n"}`}
@@ -1215,8 +1215,11 @@ func TestToolBodyShowsBashCommandNotJSON(t *testing.T) {
 	r.inspectCommand("tools")
 	v := waitInspector(t, r, 140)
 	text := inspectorText(v)
-	if !strings.Contains(text, "╭─ command\n│ ls -la /tmp | head -3\n╭─ output · 1 line\n│ alpha") {
-		t.Fatalf("bash body should fence the command verbatim: %s", text)
+	if !strings.Contains(text, "╭─ command\n│ ls -la /tmp |\n│   head -3\n╭─ output · 1 line\n│ alpha") {
+		t.Fatalf("bash body should format the command: %s", text)
+	}
+	if r.model.inspections.toolForCall(call.ID).call.Arguments != call.Arguments {
+		t.Fatal("formatting changed the original command")
 	}
 	for _, stale := range []string{"arguments", `"command"`, "{", "}"} {
 		if strings.Contains(text, stale) {
@@ -1234,8 +1237,42 @@ func TestToolBodyShowsBashCommandNotJSON(t *testing.T) {
 	}
 }
 
-// The tool body is two titled payloads under one gutter, so raw output wraps
-// like code and empty or pending output still shows its title.
+func TestBashInspectorWrapsLongPathAndAlignsPipeline(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	call := messages.ChatMessageToolCall{ID: "long-path", Name: "bash", Arguments: `{"command":"ls /Users/alex/.pollytool/worktrees/56fb08bea51eafe6fc1f07e792ca978a/slot-0005/tree && grep -rn \"swarm_snapshot\" --include=*.go . | grep -v gopath | head -20"}`}
+	r.model.appendToolCallStart(call)
+	r.model.inspections.setResult(call, messages.ChatMessage{Content: "result"})
+	r.inspectCommand("tools")
+	v := waitInspector(t, r, 140)
+	for _, width := range []int{32, 50, 80, 140, 50} {
+		var lines []string
+		for _, row := range v.view.Rows(v.model, width) {
+			if style.CellsWidth(row) > width {
+				t.Fatalf("width %d overflow: %q", width, plainCells(row))
+			}
+			lines = append(lines, plainCells(row))
+		}
+		text := strings.Join(lines, "\n")
+		if !strings.HasPrefix(lines[1], "│ ls /Users/alex/") {
+			t.Fatalf("width %d orphaned command: %s", width, text)
+		}
+		if !strings.Contains(text, "\n│   grep -v gopath |\n│   head -20\n") {
+			t.Fatalf("width %d uneven pipeline: %s", width, text)
+		}
+		if width == 50 {
+			want := "╭─ command\n│ ls /Users/alex/.pollytool/worktrees/\n│   56fb08bea51eafe6fc1f07e792ca978a/slot-0005/\n│   tree &&\n│   grep -rn \"swarm_snapshot\" --include=*.go . |\n│   grep -v gopath |\n│   head -20\n╭─ output · 1 line\n│ result"
+			if text != want {
+				t.Fatalf("wrapped screenshot command:\n%s\nwant:\n%s", text, want)
+			}
+		}
+	}
+	if r.model.inspections.toolForCall(call.ID).call.Arguments != call.Arguments {
+		t.Fatal("wrapping changed the original command")
+	}
+}
+
+// The tool body is two titled payloads under one gutter. Output wraps with
+// continuation indentation; empty or pending output still shows its title.
 func TestToolBodyFences(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	call := messages.ChatMessageToolCall{ID: "one", Name: "fetch", Arguments: `{"url":"https://x"}`}
@@ -1262,7 +1299,7 @@ func TestToolBodyFences(t *testing.T) {
 		}
 	}
 	if continued < 2 {
-		t.Fatalf("long raw output did not hard-wrap under the gutter: %d rows", continued)
+		t.Fatalf("long output did not wrap under the gutter: %d rows", continued)
 	}
 	pending := messages.ChatMessageToolCall{ID: "two", Name: "bash"}
 	r.model.appendToolCallStart(pending)

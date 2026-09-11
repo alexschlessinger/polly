@@ -162,6 +162,9 @@ func (r *managedREPL) refreshInspector(width int) {
 		}
 	}
 	v := i.current
+	if v.model != nil {
+		v.model.setBashSetupExpanded(state.bashSetupExpanded)
+	}
 	if v.loading {
 		return
 	}
@@ -308,6 +311,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				if err == nil && !source.info.Unchanged {
 					if target.kind == conversationViewKind {
 						source.model = prepareChildDisplay(source.info, r.config, geometry.width)
+						resolveToolBaseDir(r.work.ctx, reader, source.info, source.model)
 						if source.model.hasAgentRows() {
 							// Saved spawn rows link to their sessions the way a
 							// live tab's do; otherwise nested agents are reachable
@@ -402,6 +406,10 @@ func (r *managedREPL) refreshInspector(width int) {
 			}
 			latest := w.viewState(i.target)
 			model.setInitialPromptExpanded(latest.promptExpanded)
+			if model.bashSetupExpanded != latest.bashSetupExpanded {
+				model.setBashSetupExpanded(latest.bashSetupExpanded)
+				v.view.Rows(model, geometry.width)
+			}
 			if v.model != nil {
 				rememberViewPosition(v.model, latest)
 			}

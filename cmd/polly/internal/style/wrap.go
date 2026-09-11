@@ -21,6 +21,17 @@ const UserGutterGlyph = '▎'
 // lines repeat their styled "│ " gutter and hard-wrap so source whitespace is
 // never reflowed.
 func WrapCells(cells []ui.Cell, width int) []ui.Cell {
+	return wrapCells(cells, width, false)
+}
+
+// WrapInspectorCells keeps logical command/output lines intact while giving
+// wrapped continuations a hanging indent. Ordinary Markdown fences and tables
+// retain their existing hard-wrap behavior through WrapCells.
+func WrapInspectorCells(cells []ui.Cell, width int) []ui.Cell {
+	return wrapCells(cells, width, true)
+}
+
+func wrapCells(cells []ui.Cell, width int, inspector bool) []ui.Cell {
 	if len(cells) == 0 || width <= 0 {
 		return append([]ui.Cell(nil), cells...)
 	}
@@ -31,14 +42,81 @@ func WrapCells(cells []ui.Cell, width int) []ui.Cell {
 		if cell.Rune != '\n' {
 			continue
 		}
-		out = appendTranscriptRows(out, wrapTranscriptLine(cells[lineStart:i], width))
+		out = appendTranscriptRows(out, wrapLine(cells[lineStart:i], width, inspector))
 		out = append(out, cell)
 		lineStart = i + 1
 	}
 	if lineStart < len(cells) {
-		out = appendTranscriptRows(out, wrapTranscriptLine(cells[lineStart:], width))
+		out = appendTranscriptRows(out, wrapLine(cells[lineStart:], width, inspector))
 	}
 	return out
+}
+
+func wrapLine(line []ui.Cell, width int, inspector bool) [][]ui.Cell {
+	if inspector {
+		if prefix, _, content, hard, ok := transcriptHangingPrefix(line); ok && hard && width > 6 {
+			return wrapInspectorLine(prefix, content, width)
+		}
+	}
+	return wrapTranscriptLine(line, width)
+}
+
+func wrapInspectorLine(prefix, content []ui.Cell, width int) [][]ui.Cell {
+	continuation := append([]ui.Cell(nil), prefix...)
+	indent := 0
+	for indent < len(content) && content[indent].Rune == ' ' && indent < width/4 {
+		continuation = append(continuation, content[indent])
+		indent++
+	}
+	continuation = append(continuation, ui.Cell{Rune: ' '}, ui.Cell{Rune: ' '})
+	var rows [][]ui.Cell
+	for first := true; first || len(content) > 0; first = false {
+		p := continuation
+		if first {
+			p = prefix
+		}
+		capacity := width - CellsWidth(p)
+		end := transcriptFitIndex(content, capacity)
+		if end < len(content) && !transcriptWrapSpace(content[end].Rune) {
+			space, slash, seen := 0, 0, false
+			for i := 0; i < end; i++ {
+				if transcriptWrapSpace(content[i].Rune) {
+					if seen {
+						space = i + 1
+					}
+				} else {
+					seen = true
+				}
+				if content[i].Rune == '/' {
+					slash = i + 1
+				}
+			}
+			// Keep ordinary words together when the next word can fit on a
+			// continuation. An oversized path/token has to split regardless;
+			// use the current row rather than orphaning its command or label.
+			nextWidth := 0
+			continuationCapacity := width - CellsWidth(continuation)
+			for i := space; i < len(content) && !transcriptWrapSpace(content[i].Rune); i++ {
+				nextWidth += CellWidth(content[i])
+				if nextWidth > continuationCapacity {
+					break
+				}
+			}
+			oversized := nextWidth > continuationCapacity
+			if space > 0 && !oversized {
+				end = space
+			} else if slash > space && CellsWidth(content[:slash]) >= capacity/2 {
+				end = slash
+			}
+		}
+		// Retain every source cell, including whitespace. Only the continuation
+		// gutter/indent and the visual newline are added by this projection.
+		row := append([]ui.Cell(nil), p...)
+		row = append(row, content[:end]...)
+		rows = append(rows, row)
+		content = content[end:]
+	}
+	return rows
 }
 
 // VisualRows parses gotui inline styles, wraps the resulting cells,

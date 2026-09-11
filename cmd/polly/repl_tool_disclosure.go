@@ -59,8 +59,8 @@ func (m *replModel) appendToolStartRow(id, label string) *toolDisclosureRecord {
 	record.rows = append(record.rows, toolDisclosureRow{
 		callID: id,
 		label:  label,
-		line:   runningToolLine(label, 0),
 	})
+	record.rows[row].setLine(runningInlineTool(0))
 	if len(m.activeTools) == 0 {
 		// A fresh batch restarts the pulse clock; drop the drained batch's
 		// phase so a bucket collision cannot skip the first repaint.
@@ -96,6 +96,10 @@ func toolDisclosureHeader(total int, expanded bool) string {
 }
 
 func toolDisclosureText(record *toolDisclosureRecord) (string, []style.Image) {
+	return toolDisclosureTextAtWidth(record, 0)
+}
+
+func toolDisclosureTextAtWidth(record *toolDisclosureRecord, width int) (string, []style.Image) {
 	if record == nil {
 		return "", nil
 	}
@@ -121,7 +125,7 @@ func toolDisclosureText(record *toolDisclosureRecord) (string, []style.Image) {
 			continue
 		}
 		b.WriteByte('\n')
-		b.WriteString(row.line)
+		b.WriteString(row.inlineLine(width))
 		appendToolDisclosureImages(&b, &images, row.images, "    ", seen)
 	}
 	return b.String(), images
@@ -206,13 +210,20 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 	}
 	// Tool activity renders inline in the transcript, so updates re-anchor a
 	// held viewport like any other transcript mutation.
-	if !reanchor {
+	apply := func(bool) {
+		record.displayRows = nil
+		if record.expanded {
+			rows := ordinaryToolRows(record.rows)
+			rows = rows[max(0, len(rows)-toolPreviewRows):]
+			record.displayRows = append([]toolDisclosureRow(nil), rows...)
+		}
 		m.setTranscriptEntry(index, text, images)
+	}
+	if !reanchor {
+		apply(false)
 		return
 	}
-	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
-		m.setTranscriptEntry(index, text, images)
-	})
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), apply)
 }
 
 // completeToolDisclosure settles the live tool disclosure. A deliberately
@@ -316,8 +327,7 @@ func (m *replModel) refreshActiveTools() {
 		if at.row < 0 || at.row >= len(record.rows) {
 			continue
 		}
-		label := at.label
-		record.rows[at.row].line = runningToolLine(label, time.Since(at.started))
+		record.rows[at.row].setLine(runningInlineTool(time.Since(at.started)))
 	}
 	m.refreshToolDisclosure(record)
 }
@@ -366,7 +376,7 @@ func (m *replModel) settleActiveTools(reason string) {
 		if row.agent != nil && !row.agent.attached {
 			row.agent.setLocal(reason, false)
 		}
-		row.line = toolErrorLine(at.label, "", reason)
+		row.setLine(inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: reason})
 		row.images = nil
 		row.settled = true
 	}
@@ -410,23 +420,27 @@ func toolErrorLine(label, duration, meta string) string {
 // carries one.
 func hydratedToolLine(label string, msg messages.ChatMessage) string {
 	label = style.StripImageMarkers(label)
+	return hydratedInlineTool(msg).render(label)
+}
+
+func hydratedInlineTool(msg messages.ChatMessage) inlineToolLine {
 	if toolWasDenied(msg.Content) {
-		return toolDeniedLine(label)
+		return inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: "denied"}
 	}
 	duration := ""
 	if d := msg.ToolDuration(); d > 0 {
 		duration = formatElapsed(d)
 	}
 	if msg.IsError() {
-		return toolErrorLine(label, duration, "failed")
+		return inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: "failed", duration: duration}
 	}
 	if succeeded, known := msg.ToolSucceeded(); known {
 		if succeeded {
-			return toolOKLine(label, duration, "")
+			return inlineToolLine{glyph: "✓", tone: "ok", modifier: "bold", duration: duration}
 		}
-		return toolErrorLine(label, duration, "failed")
+		return inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: "failed", duration: duration}
 	}
-	return pendingToolLine(label)
+	return inlineToolLine{glyph: "·", tone: "muted", modifier: "bold"}
 }
 
 // pendingToolLine is the row for a tool call whose outcome is not (yet) known.

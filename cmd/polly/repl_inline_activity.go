@@ -78,6 +78,11 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 			continue
 		}
 		detail := inlineActivityDetail(block.text)
+		if len(block.toolDisclosureIDs) == 1 {
+			if record := m.toolDisclosures.get(block.toolDisclosureIDs[0]); record != nil {
+				detail = inlineToolDetail(detail, record.displayRows, width, m.toolBaseDir)
+			}
+		}
 		if len(block.reasoningIDs) > 0 {
 			block.activityReasoningDetail = detail
 		} else {

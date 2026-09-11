@@ -62,9 +62,13 @@ type transcriptEntry struct {
 // main event loop and any in-flight turn goroutine, so every read/write
 // holds mu.
 type replModel struct {
-	mu          sync.Mutex
-	affordances affordanceState
-	inspections inspectionSource
+	mu                sync.Mutex
+	inspectorWrap     bool   // soft code wrapping belongs to tool inspectors only
+	toolBaseDir       string // the inspected conversation's own execution root
+	affordances       affordanceState
+	inspections       inspectionSource
+	bashInspector     *bashInspectorCommand // immutable tool-inspector display data
+	bashSetupExpanded bool
 
 	// transcript is the accumulated content rendered into the upper pane.
 	// Each entry is a logical "block" (user prompt, assistant turn, notice,
@@ -323,6 +327,9 @@ type toolDisclosureRow struct {
 	agent            *agentActivity
 	label            string
 	line             string
+	inline           *inlineToolLine
+	bash             *bashSummary
+	file             *inlineFileSummary
 	images           []style.Image
 	inspectionImages []style.Image
 	settled          bool
@@ -330,7 +337,10 @@ type toolDisclosureRow struct {
 
 type toolDisclosureRecord struct {
 	transcriptAnchor
-	rows           []toolDisclosureRow
+	rows []toolDisclosureRow
+	// displayRows snapshots the visible rows with the canonical transcript
+	// update, so width projection cannot observe a half-applied mutation.
+	displayRows    []toolDisclosureRow
 	expanded       bool
 	imagesExpanded bool
 	agentsExpanded bool
@@ -352,6 +362,7 @@ func newReplModel() *replModel {
 		currentAssistant: -1,
 		reasoningWidth:   80,
 		imageBaseDir:     baseDir,
+		toolBaseDir:      baseDir,
 		hist:             promptHistory{idx: -1, match: -1},
 		state:            turnStateIdle,
 		followBottom:     true,

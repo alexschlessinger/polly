@@ -83,11 +83,12 @@ func (t viewTarget) key() string {
 }
 
 type viewState struct {
-	promptExpanded bool
-	top            int
-	follow         bool
-	search         string
-	lastRows       int // -1 until a newly selected inspector item has rendered
+	promptExpanded    bool
+	bashSetupExpanded bool
+	top               int
+	follow            bool
+	search            string
+	lastRows          int // -1 until a newly selected inspector item has rendered
 	// lastWidth and lastTotal are the width and row count of the last paint,
 	// so a re-wrap can carry the seen/unseen state across instead of reading
 	// the changed row count as new output.
@@ -134,6 +135,7 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 	}
 	t := source.tool
 	m := newReplModel()
+	m.inspectorWrap = true
 	if source.info != nil {
 		m.artifactStore = source.info.Artifacts
 	}
@@ -143,7 +145,8 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 	arguments := strings.TrimSpace(t.call.Arguments)
 	title, lines := "arguments", []string{style.Styled("(none)", "muted", "")}
 	if cmd, ok := bashCommandOf(t.call); ok {
-		title, lines = "command", markdown.HighlightCodeLines(cmd, "bash")
+		m.bashInspector = newBashInspectorCommand(cmd)
+		m.setBashSetupExpanded(state.bashSetupExpanded)
 	} else if arguments != "" {
 		lang := ""
 		if json.Valid([]byte(arguments)) {
@@ -152,7 +155,11 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 		}
 		lines = markdown.HighlightCodeLines(strings.TrimRight(readableResult(arguments), "\n"), lang)
 	}
-	m.appendLine(strings.Join(markdown.RenderFence(title, lines), "\n"))
+	if m.bashInspector != nil {
+		m.appendLine(m.bashInspector.formatted)
+	} else {
+		m.appendLine(strings.Join(markdown.RenderFence(title, lines), "\n"))
+	}
 	if !t.complete {
 		m.appendLine(style.Styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("Running… output appears when this tool finishes")
@@ -193,10 +200,9 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 		m.appendNoticeLine("No text output")
 	} else {
 		text := strings.TrimRight(style.StripImageMarkers(readableResult(body)), "\n")
-		raw := strings.Split(text, "\n")
-		for n := range raw {
-			raw[n] = style.Escape(raw[n])
-		}
+		// Use the literal code renderer's tab stops, so tab-separated output
+		// (such as go test's package and duration) keeps visible spacing.
+		raw := markdown.HighlightCodeLines(text, "")
 		m.appendLine(strings.Join(markdown.RenderFence("output · "+resultLineMeta(text), raw), "\n"))
 	}
 	images := inspectionTranscriptImages(t.result, m.artifactStore)

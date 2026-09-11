@@ -412,6 +412,9 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			if cells == nil {
 				cells = style.ParseCells(source.text, ui.StyleClear)
 			}
+			if m.inspectorWrap {
+				cells = style.WrapInspectorCells(cells, width)
+			}
 			rows, imageSpans = transcriptCellRowsWithImages(
 				cells, followed, width, source.images, nativeSlots,
 				m.imageCellWidth, m.imageCellHeight,
@@ -474,6 +477,13 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 	if masthead, ok := m.mastheadBlock(width); ok {
 		blocks = append(blocks, masthead)
 	}
+	if b := m.bashInspector; b != nil && b.setup != "" {
+		blocks = append(blocks, transcriptDisplayBlock{key: "bash-setup", text: b.setupLabel(width, m.bashSetupExpanded)})
+		if m.bashSetupExpanded {
+			lines := markdown.RenderFence("setup", markdown.HighlightCodeLines(b.setup, "bash"))
+			blocks = append(blocks, transcriptDisplayBlock{key: "bash-setup-body", text: strings.Join(lines[1:], "\n")})
+		}
+	}
 	for i := range m.transcript {
 		if m.collapseInitialPrompt && m.transcript[i].initialPrompt {
 			blocks = append(blocks, transcriptDisplayBlock{key: "initial-prompt", text: initialPromptRow(m.initialPromptExpanded)})
@@ -482,6 +492,9 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			}
 		}
 		entry := m.transcript[i].text
+		if i == 0 && m.bashInspector != nil {
+			entry = m.bashInspector.commandAtWidth(width)
+		}
 		var cells []ui.Cell
 		if q, ok := m.affordances.queued[i]; ok && !q.fading.IsZero() {
 			entry = q.text

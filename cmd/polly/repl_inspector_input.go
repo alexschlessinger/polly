@@ -55,6 +55,13 @@ func (r *managedREPL) inspectorAction(action string) {
 			s.lastRows = -1
 			i.current.model.setInitialPromptExpanded(s.promptExpanded)
 		}
+	case "bash-setup":
+		if i.current != nil && i.current.model != nil && i.current.model.bashInspector != nil {
+			s.bashSetupExpanded = !s.bashSetupExpanded
+			s.lastRows = -1
+			s.follow = false
+			i.current.model.setBashSetupExpanded(s.bashSetupExpanded)
+		}
 	case "parent":
 		// Navigation leaves the Find row behind; it belongs to the item.
 		i.searching = false

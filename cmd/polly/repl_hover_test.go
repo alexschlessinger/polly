@@ -95,7 +95,7 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	// The expanded tool row under the pointer mixes a green check, a bright
 	// label, and muted metadata; the mark stays one color across all three.
 	before := underlinedRun(screen, r.hover.rect.Min.Y)
-	if !strings.HasPrefix(before, "✓ read_file") || !strings.HasSuffix(before, "1.0s") {
+	if !strings.HasPrefix(before, "✓ read") || !strings.HasSuffix(before, "1.0s") {
 		t.Fatalf("hovered tool row underline = %q, want one line from the check to the duration", before)
 	}
 	r.tickAffordances(at.Add(500 * time.Millisecond))

@@ -193,16 +193,15 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	if !toolDisplayEnabled(t.config) {
 		return
 	}
-	var final string
+	final := inlineToolLine{modifier: "bold", duration: formatElapsed(duration)}
 	switch {
 	case denied:
-		final = toolDeniedLine(label)
+		final.glyph, final.tone, final.meta, final.duration = "✗", "err", "denied", ""
 	case err != nil:
-		final = toolErrorLine(label, formatElapsed(duration), toolFailureMeta(err))
+		final.glyph, final.tone, final.meta = "✗", "err", toolFailureMeta(err)
 	default:
-		final = toolOKLine(label, formatElapsed(duration), resultLineMeta(result))
+		final.glyph, final.tone, final.meta = "✓", "ok", resultLineMeta(result)
 	}
-	final = style.StripImageMarkers(final)
 	images := discoveredImages
 	// Freeze the final line over its running disclosure row. Fall back to a new
 	// row if the display was cleared while the tool was in flight.
@@ -210,7 +209,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	if rowIndex, ok := m.takeActiveTool(call.ID); ok && record != nil && rowIndex >= 0 && rowIndex < len(record.rows) {
 		row := &record.rows[rowIndex]
 		row.finishAgentCall(call, denied, err)
-		row.line = final
+		row.setLine(final)
 		row.images = append([]style.Image(nil), images...)
 		row.settled = true
 	} else {
@@ -218,12 +217,12 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 		record.rows = append(record.rows, toolDisclosureRow{
 			callID:  call.ID,
 			label:   label,
-			line:    final,
 			images:  append([]style.Image(nil), images...),
 			settled: true,
 		})
 		row := &record.rows[len(record.rows)-1]
 		row.setCall(call)
+		row.setLine(final)
 		row.finishAgentCall(call, denied, err)
 	}
 	m.refreshToolDisclosure(record)
@@ -250,11 +249,11 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 		record.rows = append(record.rows, toolDisclosureRow{
 			callID:  call.ID,
 			label:   style.StripImageMarkers(toolLabel(call)),
-			line:    toolOKLine(toolLabel(call), "", ""),
 			settled: true,
 		})
 		row = &record.rows[len(record.rows)-1]
 		row.setCall(call)
+		row.setLine(inlineToolLine{glyph: "✓", tone: "ok", modifier: "bold"})
 	}
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
 		row.inspectionImages = append([]style.Image(nil), images...)

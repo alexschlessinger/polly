@@ -56,6 +56,12 @@ type agentLink struct {
 
 func (row *toolDisclosureRow) setCall(call messages.ChatMessageToolCall) {
 	row.toolName = call.Name
+	if command, ok := bashCommandOf(call); ok {
+		row.bash = newBashSummary(command)
+	}
+	if call.Arguments != "" {
+		row.file = fileSummaryOf(call)
+	}
 	if call.Name != subagent.ToolName || row.agent != nil {
 		return
 	}

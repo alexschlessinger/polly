@@ -179,7 +179,7 @@ func TestExpandedToolsPreserveLiteralBracketsWithoutLeakingStyleMarkup(t *testin
 	assertRendered := func(stage string, rows [][]ui.Cell) {
 		t.Helper()
 		shown := strings.Join(rowsText(rows), "\n")
-		for _, want := range []string{"grep [", "read_file notes.txt"} {
+		for _, want := range []string{"grep [", "read notes.txt"} {
 			if !strings.Contains(shown, want) {
 				t.Fatalf("%s expanded tools %q missing %q", stage, shown, want)
 			}
