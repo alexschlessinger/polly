@@ -27,11 +27,13 @@ else:
     link.symlink_to(helper)
 
 config = {"repository": "alexschlessinger/polly", "tart": shutil.which("tart"), "gh": shutil.which("gh"),
+          "docker": shutil.which("docker", path=os.environ["PATH"] + ":/usr/local/bin"),
+          "docker_context": "orbstack",
           "platforms": {
               "macos": {"base_vm": "polly-ci-base", "label": "polly-local-macos", "os": "macOS", "home": "/Users/admin"},
-              "linux": {"base_vm": "polly-ci-linux-base", "label": "polly-local-linux", "os": "Linux", "home": "/home/admin"}}}
-if not config["tart"] or not config["gh"]:
-    sys.exit("Tart and GitHub CLI must be installed")
+              "linux": {"engine": "docker", "image": "polly-local-ci:go1.27", "label": "polly-local-linux", "os": "Linux"}}}
+if not config["tart"] or not config["gh"] or not config["docker"]:
+    sys.exit("Tart, Docker and GitHub CLI must be installed")
 path = root / "config.json"
 if path.exists() and json.loads(path.read_text()) != config:
     sys.exit("Existing configuration differs; inspect it before replacing")

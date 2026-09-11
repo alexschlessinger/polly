@@ -107,6 +107,39 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(queued_local_job([{"status": "queued", "labels": ["ubuntu-latest"]}], "local-linux"))
         self.assertTrue(queued_local_job([{"status": "queued", "labels": ["self-hosted", "local-linux"]}], "local-linux"))
 
+    def test_container_uses_nonroot_without_host_mounts_or_added_capabilities(self):
+        self.supervisor.config.update(docker="docker", docker_context="orbstack")
+        config = {"engine": "docker", "image": "ci-image", "os": "Linux", "label": "local-linux"}
+        args = self.supervisor.container_command(self.vm, config, "test")
+        self.assertEqual(args[args.index("--user") + 1], "1000:1000")
+        self.assertEqual(args[args.index("--cap-drop") + 1], "ALL")
+        self.assertEqual(args[args.index("--network") + 1], "none")
+        self.assertIn("no-new-privileges", args)
+        self.assertIn("systempaths=unconfined", args)
+        self.assertFalse(set(args) & {"--privileged", "--cap-add", "--mount", "--volume", "-v"})
+        self.supervisor.api = Mock(return_value={"runner": {"id": 42}, "encoded_jit_config": "one-job-secret"})
+        self.supervisor.recover = Mock()
+        runner = Mock(returncode=0)
+        runner.poll.return_value = 0
+        with patch("supervisor.subprocess.Popen", return_value=runner) as start:
+            self.supervisor.run_container(config, None)
+        self.assertNotIn("one-job-secret", " ".join(start.call_args.args[0]))
+        runner.communicate.assert_called_once_with("one-job-secret\n", timeout=35 * 60)
+        self.supervisor.tart.assert_not_called()
+
+    def test_container_cleanup_reclaims_only_recorded_labeled_container_before_api(self):
+        self.supervisor.config.update(docker="docker", docker_context="orbstack")
+        self.supervisor.save_active({"container": self.vm, "runner_id": 42})
+        self.supervisor.command = Mock(side_effect=["redis\n" + self.vm, ""])
+        self.supervisor.api = Mock(side_effect=OSError("offline"))
+        with self.assertRaises(OSError):
+            self.supervisor.recover()
+        calls = self.supervisor.command.call_args_list
+        self.assertIn("label=com.polly.ci.repository=owner/project", calls[0].args[0])
+        self.assertEqual(calls[1].args[0][-3:], ["rm", "--force", self.vm])
+        self.assertTrue(self.supervisor.active_path.exists())
+        self.supervisor.tart.assert_not_called()
+
 
 class CommandTests(unittest.TestCase):
     def test_all_runs_sandbox_suite_once_then_race_and_every_cross_target(self):

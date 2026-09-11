@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one GitHub Actions job per disposable Tart VM, booting only on demand."""
+"""Run GitHub jobs on demand in disposable macOS VMs or Linux containers."""
 
 import argparse
 import fcntl
@@ -55,6 +55,19 @@ class Supervisor:
     def tart(self, *args):
         return self.command([self.config["tart"], *args])
 
+    def docker(self, *args):
+        return [self.config["docker"], "--context", self.config["docker_context"], *args]
+
+    def container_command(self, name, config, mode):
+        args = self.docker("run", "--rm", "--init", "--name", name,
+            "--label", "com.polly.ci.repository=" + self.repo,
+            "--cpus", "6", "--memory", "8g", "--cap-drop", "ALL", "--user", "1000:1000",
+            "--security-opt", "no-new-privileges", "--security-opt", "seccomp=unconfined",
+            "--security-opt", "systempaths=unconfined")
+        if mode != "runner":
+            args += ["--network", "none"]
+        return args + ["-i", config["image"], mode]
+
     def has_work(self, wanted=None):
         for status in ("queued", "in_progress"):
             runs = self.api(f"repos/{self.repo}/actions/runs?status={status}&per_page=100")
@@ -87,16 +100,22 @@ class Supervisor:
         if not self.active_path.exists():
             return
         active = json.loads(self.active_path.read_text())
-        vm = active["vm"]
+        vm = active.get("container") or active["vm"]
         if not re.fullmatch(PREFIX + r"[a-f0-9]{12}", vm):
             raise ValueError("refusing cleanup of an unknown VM name")
         # Reclaim compute first, even if GitHub is offline or has not yet noticed
         # a canceled runner. Retain the journal until remote cleanup succeeds.
-        names = self.tart("list", "--source", "local", "--quiet").splitlines()
-        if vm in names:
-            subprocess.run([self.config["tart"], "stop", vm], env=self.env,
-                           capture_output=True, timeout=30)
-            self.tart("delete", vm)
+        if active.get("container"):
+            names = self.command(self.docker("ps", "--all", "--format", "{{.Names}}",
+                "--filter", "label=com.polly.ci.repository=" + self.repo)).splitlines()
+            if vm in names:
+                self.command(self.docker("rm", "--force", vm))
+        else:
+            names = self.tart("list", "--source", "local", "--quiet").splitlines()
+            if vm in names:
+                subprocess.run([self.config["tart"], "stop", vm], env=self.env,
+                               capture_output=True, timeout=30)
+                self.tart("delete", vm)
         if not active.get("local") and not active.get("runner_id"):
             # Registration can succeed just before the journal write is lost.
             page = 1
@@ -126,6 +145,8 @@ class Supervisor:
 
     def run_one(self, platform, force=False, local=None):
         config = self.config["platforms"][platform]
+        if config.get("engine") == "docker":
+            return self.run_container(config, local)
         vm = PREFIX + uuid.uuid4().hex[:12]
         active = {"vm": vm}
         if local:
@@ -217,6 +238,50 @@ class Supervisor:
         subprocess.run(self.guest(vm, "/bin/bash", "-c", command), env=self.env,
                        check=True, timeout=35 * 60)
 
+    def run_container(self, config, local):
+        name = PREFIX + uuid.uuid4().hex[:12]
+        active = {"container": name, "local": bool(local)}
+        self.save_active(active)
+        process = None
+        try:
+            if local:
+                directory, revision, mode = local
+                revision = self.command(["git", "-C", str(directory), "rev-parse", "--verify",
+                                         "--end-of-options", revision + "^{commit}"])
+                with tempfile.TemporaryFile() as archive:
+                    subprocess.run(["git", "-C", str(directory), "archive", "--format=tar", revision],
+                                   stdout=archive, check=True, timeout=60)
+                    archive.seek(0)
+                    print(f"Running {mode} in Docker at {revision}", flush=True)
+                    process = subprocess.Popen(self.container_command(name, config, mode),
+                                               stdin=archive, env=self.env)
+                    process.wait(timeout=35 * 60)
+            else:
+                registration = self.api(f"repos/{self.repo}/actions/runners/generate-jitconfig",
+                    method="POST", body={"name": name, "runner_group_id": 1,
+                    "labels": ["self-hosted", config["os"], "ARM64", config["label"]],
+                    "work_folder": "_work"})
+                active["runner_id"] = registration["runner"]["id"]
+                self.save_active(active)
+                logging.info("registered one-job container runner %s", name)
+                with (self.root / "logs" / "runner.log").open("w") as runner_log:
+                    process = subprocess.Popen(self.container_command(name, config, "runner"),
+                        env=self.env, stdin=subprocess.PIPE, stdout=runner_log,
+                        stderr=subprocess.STDOUT, text=True)
+                    process.communicate(registration["encoded_jit_config"] + "\n", timeout=35 * 60)
+            if process.returncode:
+                raise RuntimeError("container exited unsuccessfully; inspect its output")
+            logging.info("container finished %s", name)
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            self.recover()
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -247,7 +312,7 @@ def main():
         try:
             if args.local:
                 with (root / "job.lock").open("w") as job_lock:
-                    print("Waiting for the local CI VM slot…", flush=True)
+                    print("Waiting for the local CI worker slot…", flush=True)
                     fcntl.flock(job_lock, fcntl.LOCK_EX)
                     supervisor.recover()
                     supervisor.run_one(args.platform, local=(args.repository_dir, args.revision, args.local))
