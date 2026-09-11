@@ -107,6 +107,8 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 		defer end()
 	}
 	switch op.Kind {
+	case "integrate":
+		return r.integrateOperation(ctx, op.Args)
 	case "integration":
 		return r.integrationOperation(ctx, op.Args)
 	case "task":

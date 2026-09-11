@@ -569,13 +569,13 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 		if t == nil || revision <= 0 || t.Status != "awaiting_review" || t.Revision != revision {
 			return fail("stale_task", "review must name the current submitted revision")
 		}
+		if accept && editingTask(s, t) {
+			return fail("invalid_args", fmt.Sprintf("task %s is editing work; integrate it with %s or request changes with feedback", t.ID, integrateTasksAction([]TaskReference{{Task: t.ID, Revision: t.Revision}})))
+		}
 		if err := reactivateTask(s, t); err != nil {
 			return err
 		}
 		if accept {
-			if owner := s.Members[t.Owner]; owner != nil && !owner.ReadOnly && t.Snapshot == "" {
-				return errors.New("editing task has no integration candidate")
-			}
 			if err := acceptTask(s, t); err != nil {
 				return err
 			}

@@ -261,7 +261,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 	register("swarm_update_task", "Reassign or unblock a task by setting its owner and dependencies. Stop an active owner first; dependency cycles are refused.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "owner": schema.S("Member ID or empty for claims"), "dependencies": schema.Strings("Replacement dependency IDs")}, []string{"task", "revision", "owner", "dependencies"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("updated", r.UpdateTask(ctx, a.String("task"), a.Int("revision", 0), a.String("owner"), a.StringSlice("dependencies")))
 	})
-	register("swarm_review", "Accept the current submitted revision or request changes with feedback. Accepted unchanged candidates finish immediately; changed candidates still require swarm_integration. Ordinary research completes on delivery and refuses review; use swarm_followup for a correction. Read the returned status and next action.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Submitted revision"), "accept": schema.Bool("Accept result"), "feedback": schema.S("Changes requested")}, []string{"task", "revision", "accept"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("swarm_review", "Accept the current submitted revision of research you asked to review, or request changes with feedback on any submitted task. Editing work is accepted by integrating it: use swarm_integrate. Ordinary research completes on delivery and refuses review; use swarm_followup for a correction. Read the returned status and next action.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Submitted revision"), "accept": schema.Bool("Accept result"), "feedback": schema.S("Changes requested")}, []string{"task", "revision", "accept"}, func(ctx context.Context, a tools.Args) (any, error) {
 		if err := r.Review(ctx, a.String("task"), a.Int("revision", 0), a.Bool("accept"), a.String("feedback")); err != nil {
 			return nil, err
 		}
@@ -278,7 +278,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 			if base, _ := taskSnapshots(s, task); base == nil {
 				result["nextAction"] = "Snapshot provenance is unavailable; restore the original task snapshots or cancel the task."
 			} else {
-				result["nextAction"] = fmt.Sprintf("Use swarm_integration to prepare task %s revision %d, inspect the candidate, then accept and apply it. Cleanup does not integrate this result.", task.ID, task.Revision)
+				result["nextAction"] = fmt.Sprintf("Integrate task %s revision %d with swarm_integrate; cleanup does not integrate this result.", task.ID, task.Revision)
 			}
 		} else if task.Status == "changes_requested" {
 			owner := s.Members[task.Owner]
@@ -328,7 +328,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 			return nil, errors.New("budget grants require explicit user-directed resume through the client")
 		}
 	})
-	register("workflow_run", "Run a JavaScript workflow using the same swarm scheduler and tool authority. Supply source containing polly.defineWorkflow and JSON input. Parent workflows can review tasks and prepare, repair, accept, and apply integration candidates. Children retain their existing permissions.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("workflow_run", "Run a JavaScript workflow using the same swarm scheduler and tool authority. Supply source containing polly.defineWorkflow and JSON input. Parent workflows integrate editing task revisions with polly.integrate and can inspect or repair candidates through polly.integration. Children retain their existing permissions.", schema.Params{"source": schema.S("JavaScript source"), "input": schema.S("JSON input")}, []string{"source", "input"}, func(ctx context.Context, a tools.Args) (any, error) {
 		input, err := schema.DecodeJSON(a.String("input"))
 		if err != nil {
 			return nil, err

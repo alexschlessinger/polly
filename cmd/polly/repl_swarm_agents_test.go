@@ -12,6 +12,7 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/worktree"
 )
 
 func swarmTestRow(t *testing.T, m *replModel, callID string) *toolDisclosureRow {
@@ -215,6 +216,8 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 		{"released unreviewed", "released", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "1 needs decision", false, false},
 		{"done", "idle", "completed", "done", "idle · done", "done", "", true, false},
 		{"released done", "released", "completed", "done", "idle · done", "done", "", true, false},
+		{"conflicted", "idle", "completed", "awaiting_review", "idle · integration halted", "integration halted", "1 needs decision", true, false},
+		{"unchanged in conflict", "idle", "completed", "done", "idle · done", "done", "1 needs decision", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Only this display snapshot changes: the runtime, lease, and IDs stay fixed.
@@ -226,6 +229,29 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 			task.Snapshot, task.AcceptedRevision = "candidate", 0
 			if tc.accepted {
 				task.AcceptedRevision = task.Revision
+			}
+			member.ReadOnly, task.Requirement = true, swarm.RequirementReviewed
+			delete(s.Integrations, "merge")
+			delete(s.Tasks, "other")
+			delete(s.Members, "other")
+			if tc.name == "conflicted" || tc.name == "unchanged in conflict" {
+				member.ReadOnly, task.Requirement = false, swarm.RequirementApplied
+				base := worktree.Snapshot{ID: "base", Tree: "base-tree", Commit: "base-commit", Source: "parent"}
+				submitted := worktree.Snapshot{ID: "candidate", Tree: "changed-tree", Commit: "candidate-commit", Source: "child"}
+				if tc.name == "unchanged in conflict" {
+					submitted.Tree = base.Tree
+				}
+				task.StartingSnapshot = base.ID
+				s.Snapshots[base.ID], s.Snapshots[submitted.ID] = &base, &submitted
+				c := &swarm.IntegrationCandidate{ID: "merge", Run: task.Run, Status: "conflicted", Parent: base, Merged: submitted, Inputs: []swarm.IntegrationInput{{TaskReference: swarm.TaskReference{Task: task.ID, Revision: task.Revision}, Base: base, Submitted: submitted}}}
+				if tc.name == "unchanged in conflict" {
+					other := &swarm.Task{ID: "other", Run: task.Run, Owner: "other", Status: "awaiting_review", Requirement: swarm.RequirementApplied, Revision: 1, AcceptedRevision: 1, Snapshot: "changed", StartingSnapshot: base.ID}
+					s.Tasks[other.ID], s.Members[other.Owner] = other, &swarm.Member{ID: other.Owner, Task: other.ID, Control: swarm.MemberControlEnabled}
+					changed := worktree.Snapshot{ID: "changed", Tree: "changed-tree", Commit: "changed-commit", Source: "other"}
+					s.Snapshots[changed.ID] = &changed
+					c.Inputs = append(c.Inputs, swarm.IntegrationInput{TaskReference: swarm.TaskReference{Task: other.ID, Revision: other.Revision}, Base: base, Submitted: changed})
+				}
+				s.Integrations[c.ID] = c
 			}
 			inline.hydrateSwarmAgents(s)
 			if row.agent.display() != tc.want || row.agent.busy() != tc.active || row.agent.viewID != member.ID {

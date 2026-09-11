@@ -33,7 +33,7 @@ func (r *Runtime) completionNotice(m *Member, e *Execution, t *Task) *Mail {
 	case RequirementReviewed:
 		mail.Text += fmt.Sprintf(" Review it: swarm_review({task: %q, revision: %d, accept: true}) or request changes.", t.ID, t.Revision)
 	case RequirementApplied:
-		mail.Text += fmt.Sprintf(" Candidate %s awaits integration.", t.Snapshot)
+		mail.Text += fmt.Sprintf(" Candidate %s awaits integration: %s or request changes with swarm_review.", t.Snapshot, integrateTasksAction([]TaskReference{{Task: t.ID, Revision: t.Revision}}))
 	}
 	return mail
 }

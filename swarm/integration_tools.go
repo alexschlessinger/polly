@@ -1,9 +1,7 @@
 package swarm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -20,15 +18,9 @@ type integrationRequest struct {
 // integrationOperation is reached only through a parent-bound tool or the
 // trusted parent workflow host. Identity is never part of the script contract.
 func (r *Runtime) integrationOperation(ctx context.Context, args map[string]any) (any, error) {
-	data, err := json.Marshal(args)
-	if err != nil {
-		return nil, err
-	}
 	var request integrationRequest
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(&request); err != nil {
-		return nil, fail("invalid_args", err.Error())
+	if err := strictRequest(args, &request); err != nil {
+		return nil, err
 	}
 	switch request.Op {
 	case "prepare":
@@ -50,10 +42,27 @@ func (r *Runtime) integrationOperation(ctx context.Context, args map[string]any)
 	}
 }
 
+func (r *Runtime) integrateOperation(ctx context.Context, args map[string]any) (any, error) {
+	var request IntegrateRequest
+	if err := strictRequest(args, &request); err != nil {
+		return nil, err
+	}
+	return r.Integrate(ctx, request)
+}
+
 func (r *Runtime) registerIntegrationTool(registry *tools.ToolRegistry) {
 	reference := map[string]any{"type": "object", "properties": schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Expected revision")}, "required": []string{"task", "revision"}, "additionalProperties": false}
+	registry.Register(&tools.Func{Name: "swarm_integrate", Coordinator: true, LongRunning: true,
+		Desc:   "Accept and integrate exact editing task revisions in one call. Name tasks to prepare and apply them, or a ready candidate to finish a repair or refresh. Unchanged tasks finish without an apply. Conflicts retain one candidate with repair guidance. Research completes on delivery or explicit review. Drift belongs only to tasks: paths (default) or tree.",
+		Params: schema.Params{"tasks": schema.Array("Exact task revisions to integrate together", reference), "candidate": schema.S("Existing candidate ID; omit tasks and drift"), "drift": schema.S("paths (default) or tree; only with tasks")},
+		Run: func(ctx context.Context, a tools.Args) (string, error) {
+			v, err := r.integrateOperation(ctx, a)
+			return tools.Result(v), err
+		},
+	})
+	registry.MarkAlwaysAllowed("swarm_integrate")
 	registry.Register(&tools.Func{Name: "swarm_integration", Coordinator: true, LongRunning: true,
-		Desc:   "Parent-authorized integration: prepare ordered task revisions, read conflicts and receipts, revise from an exact repair snapshot, refresh, accept, apply, or reconcile an uncertain write. Default drift checks touched paths; tree requires full parent equality. Preparation allocates no checkout.",
+		Desc:   "Use swarm_integrate for ordinary editing completion. Stepwise inspection and repair: prepare ordered task revisions, read conflicts and receipts, revise from an exact repair snapshot, refresh, accept, apply, or reconcile an uncertain write. Default drift checks touched paths; tree requires full parent equality. Preparation allocates no checkout.",
 		Params: schema.Params{"op": schema.S("prepare, read, revise, refresh, accept, apply, reconcile"), "id": schema.S("Candidate ID"), "tasks": schema.Array("Ordered task revisions", reference), "repair": reference, "drift": schema.S("paths (default) or tree")}, Required: []string{"op"},
 		Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := r.integrationOperation(ctx, a)

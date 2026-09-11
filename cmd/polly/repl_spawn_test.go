@@ -20,7 +20,7 @@ func TestSpawnCommandUsesSwarmAuthorityAndCurrentSettings(t *testing.T) {
 	model := integrationModel(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		for _, tool := range req.Tools {
 			switch tool.GetName() {
-			case "spawn_agent", "workflow_run", "swarm_integration", "swarm_create_task", "swarm_review", "swarm_control":
+			case "spawn_agent", "workflow_run", "swarm_integrate", "swarm_integration", "swarm_create_task", "swarm_review", "swarm_control":
 				t.Errorf("child inherited parent authority: %s", tool.GetName())
 			}
 		}

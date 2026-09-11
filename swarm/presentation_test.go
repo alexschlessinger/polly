@@ -125,7 +125,7 @@ func TestPresentationBuckets(t *testing.T) {
 		x.task("T2", "m", "e2", "running")
 		p := x.present()
 		expectLists(t, p, "task:T1", "member:m=active")
-		if d := p.Decisions[0]; d.Why != "awaiting parent review" || d.Action != "accept this revision or request changes" || d.Member != "m" || d.State != "active" {
+		if d := p.Decisions[0]; d.Why != "candidate ready" || !strings.Contains(d.Action, "swarm_integrate") || d.Member != "m" || d.State != "active" {
 			t.Fatalf("decision = %+v", d)
 		}
 		if p.Working[0].Task != "T2" {

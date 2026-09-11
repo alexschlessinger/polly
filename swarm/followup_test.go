@@ -167,8 +167,12 @@ func TestForgottenAndPrunedSourcesRefuseBothRoles(t *testing.T) {
 				r, a, ref := noEditResult(t, readOnly)
 				ctx := context.Background()
 				suspendAutoRelease(t, r)
-				if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
-					t.Fatal(err)
+				if readOnly {
+					if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					integrateOK(t, r, IntegrateRequest{Tasks: []TaskReference{ref}})
 				}
 				if unavailable == "forgotten" {
 					if err := r.Forget(ctx); err != nil {
@@ -256,7 +260,7 @@ func TestEditingFollowupRefusesExtraEditsOnMatchingBase(t *testing.T) {
 	r, a, ref := noEditResult(t, false)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
-	if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
+	if _, err := r.Integrate(ctx, IntegrateRequest{Tasks: []TaskReference{ref}}); err != nil {
 		t.Fatal(err)
 	}
 	s, _ := r.read(ctx)

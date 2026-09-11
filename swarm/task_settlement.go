@@ -163,11 +163,20 @@ func taskDisposition(s *State, task *Task) (why, action string) {
 	}
 	switch task.Status {
 	case "awaiting_review":
-		if acceptedTaskRevision(task) && task.Snapshot != "" {
-			if base, _ := taskSnapshots(s, task); base == nil {
-				return "accepted, but snapshot provenance is unavailable", "restore the original task snapshots or cancel the task"
+		if editingTask(s, task) {
+			if candidate := currentCandidate(s, task); candidate != nil {
+				if candidate.Status == "conflicted" {
+					return "integration " + candidate.ID + " halted · conflicted", integrationHalt(candidate).Message
+				}
+				return "candidate " + candidate.ID + " ready", integrateCandidateAction(candidate.ID)
 			}
-			return "accepted", "prepare, accept, and apply an integration candidate for this revision"
+			if acceptedTaskRevision(task) {
+				if base, _ := taskSnapshots(s, task); base == nil {
+					return "accepted, but snapshot provenance is unavailable", "restore the original task snapshots or cancel the task"
+				}
+				return "accepted", integrateTasksAction([]TaskReference{{Task: task.ID, Revision: task.Revision}})
+			}
+			return "candidate ready", integrateTasksAction([]TaskReference{{Task: task.ID, Revision: task.Revision}}) + " or request changes with swarm_review"
 		}
 		return "awaiting parent review", "accept this revision or request changes"
 	case "pending":

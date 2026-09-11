@@ -72,7 +72,7 @@ func completionGuidance(requirement string) string {
 	case RequirementReviewed:
 		return "Return your result for explicit parent review of this task's submitted revision."
 	default:
-		return "Return your changes and result; the parent must integrate the candidate or accept its unchanged proof."
+		return "Return your changes and result; the parent completes the task by integrating the candidate."
 	}
 }
 

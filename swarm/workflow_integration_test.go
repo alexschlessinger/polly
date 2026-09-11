@@ -73,7 +73,7 @@ func TestContextCleanupRetainsIntegrationProvenance(t *testing.T) {
 			ref := submittedInput(t, r, p.Parent, map[string]string{})
 			cleanup := contextCleanupCaller(t, r, via, ref.Task)
 			if via == "workflow" {
-				if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
+				if _, err := r.Integrate(ctx, IntegrateRequest{Tasks: []TaskReference{ref}}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -103,8 +103,7 @@ func TestParentWorkflowIntegrationAndTaskAuthority(t *testing.T) {
  const candidate=await polly.integration.prepare({tasks:[{task:task.id,revision:task.revision}]});
  const copy=await polly.context({snapshot:candidate.merged.id});
  await polly.release(copy);
- await polly.integration.accept(candidate.id);
- return await polly.integration.apply(candidate.id);
+ return (await polly.integrate({candidate:candidate.id})).receipt;
 }});`
 	report, err := r.RunWorkflow(ctx, script, map[string]any{"task": ref.Task})
 	if err != nil {
